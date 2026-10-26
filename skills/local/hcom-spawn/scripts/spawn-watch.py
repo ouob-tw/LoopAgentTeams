@@ -5,9 +5,12 @@ Finds the launch batch, subscribes the spawner to each new agent's approval-bloc
 renames each new agent's Herdr tab to <spawner>-<agent>, compares model, effort and
 permission on the agent's screen with the launch command, tells the spawner about any
 mismatch or anything it could not confirm, and removes the subscriptions once the agents
-stop.
+stop. Until then it also types Continue once when a Codex agent stops on model capacity
+(see capacity_step).
 """
 import argparse
+import contextlib
+import fcntl
 import importlib.util
 import json
 import os
@@ -42,9 +45,16 @@ CLAUDE_MODES = re.compile(r'(bypass permissions on|auto mode on|accept edits on|
 CODEX_STATUS = re.compile(rf'^\s*(\S+) ({EFFORTS}) · ')
 CODEX_BANNER = re.compile(rf'model:\s+(\S+)\s+({EFFORTS})\b')
 CODEX_PERMISSION = re.compile(r'permissions:\s+(.+?)\s*(?:│|$)')
+CAPACITY_POLL = 5          # seconds between capacity checks of the watched Codex agents
+CAPACITY_NOTICE = 5 * 60   # seconds after Continue before telling the spawner
+CAPACITY_CONTINUE = 'Continue'
+CAPACITY_ERROR = re.compile(r'^■\s+Selected model is at capacity\b', re.IGNORECASE)
+TRANSCRIPT_TAIL_BYTES = 256 * 1024
 
 clock, sleep = time.monotonic, time.sleep
 PROC = Path('/proc')
+episodes = {}            # agent base name -> current capacity episode
+last_capacity_check = [None]
 
 
 def hcom(*args, timeout=30):
@@ -91,6 +101,7 @@ def state_dir():
     path = base / 'hcom-spawn'
     (path / 'subs').mkdir(parents=True, exist_ok=True)
     (path / 'claims').mkdir(parents=True, exist_ok=True)
+    (path / 'capacity').mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -210,7 +221,11 @@ def watch_blocked(event, watched):
         return
     for name in data['instances']:
         if NAME.match(name):
-            watched[name] = (subscribe(name, spawner, event['id']), event['id'])
+            full = full_name(data, name)
+            watched[name] = (subscribe(name, spawner, event['id']), event['id'], full, spawner,
+                             data.get('tool'))
+            if data.get('tool') == 'codex':
+                mark_covered(full)
             if (not stopped_since(name, event['id'])
                     and events('--type', 'status', '--status', 'blocked', '--agent', name,
                                '--sql', f"id > {event['id']}")):
@@ -260,6 +275,7 @@ def find_batch(spawner, tool, tag, after_id, model, effort, watched):
                 continue
             if claim(batch_id):
                 return event, why
+        check_capacity(watched)
         if not last:
             sleep(POLL)
     return None, None
@@ -409,11 +425,212 @@ def report(tool, full, expected, seen, reason, unattributed=None):
 
 def release_stopped(watched):
     """Unsubscribe watched agents that stopped since their launch."""
-    for name, (sub, launch_id) in list(watched.items()):
+    for name, (sub, launch_id, full, *_) in list(watched.items()):
         if stopped_since(name, launch_id):
             if sub:
                 unsubscribe(sub)
+            release(name, full)
             del watched[name]
+
+
+def release(name, full):
+    """Stop covering an agent's capacity: lat-watch takes it over again."""
+    episodes.pop(name, None)
+    (state_dir() / 'capacity' / f'{full}.json').unlink(missing_ok=True)
+    (state_dir() / 'capacity' / f'{full}.continued.json').unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def capacity_lock():
+    """Lock shared with lat-watch, which checks coverage and types Continue while holding it."""
+    fd = os.open(state_dir() / 'capacity', os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def process_start(pid):
+    """Start time of a process (field 22 of /proc/<pid>/stat), or None."""
+    try:
+        stat = (PROC / str(pid) / 'stat').read_text()
+        return int(stat.rsplit(')', 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def mark_covered(full):
+    """Record that this process handles the agent's capacity, so lat-watch skips it.
+
+    lat-watch trusts the record while the process with this pid and start time runs.
+    """
+    pid = os.getpid()
+    record = {'agent': full, 'pid': pid, 'start': process_start(pid)}
+    with capacity_lock():
+        (state_dir() / 'capacity' / f'{full}.json').write_text(json.dumps(record))
+
+
+def lat_continue(full, transcript):
+    """(clock() time, transcript size) of a Continue lat-watch typed into this transcript
+    before this watcher covered the agent, or None. lat-watch writes
+    <agent>.continued.json while holding capacity_lock, so it exists by the time
+    mark_covered returns; a record for another transcript is left over from an earlier
+    agent with the same name."""
+    path = state_dir() / 'capacity' / f'{full}.continued.json'
+    try:
+        record = json.loads(path.read_text())
+        at, size = float(record['at']), record.get('size')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    path.unlink(missing_ok=True)
+    if record.get('transcript') not in (None, transcript):
+        return None
+    return clock() - max(0.0, time.time() - at), size if isinstance(size, int) else None
+
+
+def check_capacity(watched):
+    """Run capacity_step for the watched Codex agents at most every CAPACITY_POLL seconds."""
+    if last_capacity_check[0] is not None and clock() - last_capacity_check[0] < CAPACITY_POLL:
+        return
+    last_capacity_check[0] = clock()
+    for name, (_, launch_id, full, spawner, tool) in list(watched.items()):
+        if tool == 'codex' and not stopped_since(name, launch_id):
+            capacity_step(name, full, spawner)
+
+
+def capacity_on_screen(lines, input_text=''):
+    """True when the last error on a Codex screen is the model-capacity error."""
+    for index in range(len(lines) - 1, -1, -1):
+        if CAPACITY_ERROR.search(lines[index]):
+            return capacity_is_current(lines, index, input_text)
+    return False
+
+
+def capacity_is_current(lines, index, input_text=''):
+    """Same rule as lat-watch: any later reply, error, work or submitted prompt replaces it.
+
+    The last prompt row showing the unsent input_text is the input box, not a new prompt.
+    """
+    prompts = [i for i in range(index + 1, len(lines)) if lines[i].startswith('› ')]
+    typed = (input_text or '').strip().split('\n')[0].strip()
+    for i, line in enumerate(lines[index + 1:], index + 1):
+        stripped = line.strip()
+        if stripped.startswith('Working (') or line.startswith(('• ', '■ ')):
+            return False
+        if line.startswith('› ') and stripped != '› Ask Codex to do anything':
+            shown = stripped[2:].strip()
+            if not (typed and shown and i == prompts[-1]
+                    and (typed.startswith(shown) or shown.startswith(typed))):
+                return False
+    return True
+
+
+def transcript_records(transcript, offset, size):
+    """Complete records of the transcript between offset and size (at most the last
+    TRANSCRIPT_TAIL_BYTES); unreadable is none."""
+    if not transcript or size <= offset:
+        return []
+    start = max(offset, size - TRANSCRIPT_TAIL_BYTES)
+    try:
+        with Path(transcript).open('rb') as stream:
+            stream.seek(start)
+            lines = stream.read(size - start).split(b'\n')
+    except OSError:
+        return []
+    # The last piece is empty or a record still being written; a cut first line is partial.
+    lines = lines[1:-1] if start > offset else lines[:-1]
+    records = []
+    for raw in lines:
+        try:
+            record = json.loads(raw)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(record, dict) and isinstance(record.get('payload'), dict):
+            records.append(record)
+    return records
+
+
+def is_output(record):
+    """A complete Codex reply or tool record (same rule as lat-watch)."""
+    payload = record['payload']
+    if record.get('type') == 'response_item':
+        return (payload.get('role') == 'assistant'
+                or payload.get('type') not in ('message', 'reasoning'))
+    item = payload.get('item')
+    return record.get('type') == 'event_msg' and (
+        payload.get('type') == 'agent_message'
+        or (payload.get('type') == 'item_completed' and isinstance(item, dict)
+            and item.get('type') == 'AgentMessage'))
+
+
+def output_since(transcript, offset, size):
+    """True only for a complete Codex reply or tool record after offset; unknown is False."""
+    return any(is_output(record) for record in transcript_records(transcript, offset, size))
+
+
+def capacity_step(name, full, spawner):
+    """Handle one check of a Codex agent that may be stopped on model capacity.
+
+    An episode starts when the last error on the screen is the capacity error. With an
+    empty input box Continue + Enter is typed once; with text in it the spawner is told at
+    once instead. Still on capacity CAPACITY_NOTICE seconds after Continue, the spawner is
+    told once. Only a complete agent reply or tool call in the transcript after the episode
+    began ends it. A Continue lat-watch typed before this watcher covered the agent starts
+    the episode instead of a new one. Inactive agents are left alone; failed sends are
+    retried next check.
+    """
+    code, out = hcom('list', full, '--json')
+    try:
+        info = json.loads(out) if code == 0 else None
+    except ValueError:
+        info = None
+    if not isinstance(info, dict) or info.get('status') == 'inactive':
+        return
+    transcript = info.get('transcript_path') or ''
+    try:
+        size = Path(transcript).stat().st_size if transcript else 0
+    except OSError:
+        size = 0
+    episode = episodes.get(name)
+    if episode and output_since(transcript, episode['offset'], size):
+        del episodes[name]
+        episode = None
+    if episode is None and (handed := lat_continue(full, transcript)) is not None:
+        # lat-watch typed Continue for this episode; the 5 minutes count from then, and
+        # output written since then already ended it.
+        at, offset = handed
+        offset = size if offset is None else offset
+        if not output_since(transcript, offset, size):
+            episode = episodes[name] = {'offset': offset, 'at': at, 'continued': True}
+    code, out = hcom('term', full, '--json', timeout=10)
+    try:
+        screen = json.loads(out) if code == 0 else None
+    except ValueError:
+        screen = None
+    if not isinstance(screen, dict) or not capacity_on_screen(
+            [str(line) for line in screen.get('lines') or []], screen.get('input_text')):
+        return
+    where = f'{full} (codex) stopped on "Selected model is at capacity".'
+    if episode is None:
+        if screen.get('prompt_empty') is not True or screen.get('input_text'):
+            if notify(spawner, f'hcom-spawn: {where} Continue was not typed because its input '
+                               f'box has text. Look at it with `hcom term {full}`; switch '
+                               'model or hand the work to another agent.') == 0:
+                episodes[name] = {'offset': size, 'at': clock(), 'continued': False}
+            return
+        code, out = hcom('term', 'inject', full, CAPACITY_CONTINUE, '--enter')
+        if code:
+            log(f'Continue not typed into {full}: {out.strip()[:200]}')
+            return
+        episodes[name] = {'offset': size, 'at': clock(), 'continued': True}
+    elif (episode['continued'] and not episode.get('notified')
+          and clock() - episode['at'] >= CAPACITY_NOTICE):
+        if notify(spawner, f'hcom-spawn: {where} Continue was sent '
+                           f"{int((clock() - episode['at']) // 60)} minutes ago with no "
+                           f'reaction. Switch model or hand the work to another agent '
+                           f'(`hcom term {full}`).') == 0:
+            episode['notified'] = True
 
 
 def check(tool, agents, expected, watched, launch_id, start, unattributed=None):
@@ -426,6 +643,7 @@ def check(tool, agents, expected, watched, launch_id, start, unattributed=None):
     ready_at, logs, pending, stopped = {}, {}, set(agents), set()
     while pending and clock() - start < DEADLINE:
         release_stopped(watched)
+        check_capacity(watched)
         stopped |= {name for name in pending if stopped_since(name, launch_id)}
         pending -= stopped
         for name in sorted(pending):
@@ -461,7 +679,7 @@ def check(tool, agents, expected, watched, launch_id, start, unattributed=None):
 
 
 def notify(spawner, text):
-    hcom('send', f'@{spawner}', '--intent', 'inform', '--from', SENDER, '--', text)
+    return hcom('send', f'@{spawner}', '--intent', 'inform', '--from', SENDER, '--', text)[0]
 
 
 def main(argv=None):
@@ -492,9 +710,14 @@ def main(argv=None):
                           unattributed).values():
             if text:
                 notify(spawner, text)
-    while watched:
-        sleep(STOP_POLL)
-        release_stopped(watched)
+    try:
+        while watched:
+            sleep(STOP_POLL)
+            release_stopped(watched)
+            check_capacity(watched)
+    finally:
+        for name, (_, _, full, *_) in watched.items():
+            release(name, full)
     if batch:
         labels.join()
     return 0

@@ -138,6 +138,8 @@ class Observation(NamedTuple):
     screen_digest: str = ''
     # The transcript has more than the watcher's Continue since it was typed.
     capacity_output: bool = False
+    # hcom-spawn's spawn-watch types Continue and sends the 5-minute notice for this agent.
+    capacity_covered: bool = False
 
 
 class QuotaIssue(NamedTuple):
@@ -207,7 +209,7 @@ def owner_notice(observation, state, now, reason):
 
 
 def quota_notice(observation, unchanged_minutes=None, continue_minutes=None,
-                 input_has_text=False):
+                 input_has_text=False, covered=False):
     issue = observation.quota_issue
     reset = f' Reset time: {issue.reset_time}.' if issue.reset_time else ''
     if issue.kind == 'crash':
@@ -221,6 +223,9 @@ def quota_notice(observation, unchanged_minutes=None, continue_minutes=None,
     if continue_minutes is not None:
         recovery = f'Continue was sent {continue_minutes} minutes ago with no reaction. '
         action_needed = 'hand the work to another agent'
+    elif covered:
+        recovery = ('hcom-spawn spawn-watch handles Continue and the 5-minute notice for '
+                    'this agent. ')
     elif observation.quota_screen:
         recovery = ('The watcher checks the active cswap account each cycle and only resumes '
                     'a verified Claude quota menu when both usage windows are below 100%. ')
@@ -616,6 +621,24 @@ def detect_screen_quota(lines, client, claude_notice=None):
     return None
 
 
+def spawn_capacity_dir():
+    base = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state'))
+    return base / 'hcom-spawn/capacity'
+
+
+def spawn_watch_covers(agent):
+    """True while a running hcom-spawn spawn-watch.py handles this agent's model capacity.
+
+    spawn-watch writes hcom-spawn/capacity/<agent>.json with its pid and start time.
+    """
+    try:
+        record = json.loads((spawn_capacity_dir() / f'{agent}.json').read_text())
+        stat = (Path('/proc') / str(int(record['pid'])) / 'stat').read_text()
+        return int(stat.rsplit(')', 1)[1].split()[19]) == record['start']
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return False
+
+
 def hcom_quota_issue(info):
     context = info.get('status_context', info.get('context', ''))
     detail = info.get('status_detail', '')
@@ -967,9 +990,14 @@ def decide(previous, observation, now):
     input_has_text = capacity and (observation.prompt_empty is not True
                                    or bool(observation.input_text))
     capacity_continue = capacity and observation.status != 'inactive' and not input_has_text
+    covered = capacity and observation.capacity_covered
     continue_at = state.get('capacity_continue_at')
     if observation.quota_issue is not None and not state['quota_notified']:
-        if capacity_continue:
+        if covered:
+            # spawn-watch already typed Continue or told the spawner; only repeats remain.
+            state['quota_notified'] = True
+            state['quota_notified_at'] = now
+        elif capacity_continue:
             actions = (Action('capacity-continue', observation.agent, text=CAPACITY_CONTINUE),)
             state['quota_notified'] = True
             state['quota_notified_at'] = now
@@ -979,7 +1007,7 @@ def decide(previous, observation, now):
             actions = (quota_notice(observation, input_has_text=input_has_text),)
             state['quota_notified'] = True
             state['quota_notified_at'] = now
-    elif (capacity and continue_at is not None
+    elif (capacity and continue_at is not None and not covered
           and not state.get('capacity_continue_notified')):
         if (observation.status != 'inactive'
                 and now - continue_at >= CAPACITY_CONTINUE_SECONDS):
@@ -995,7 +1023,8 @@ def decide(previous, observation, now):
             actions = (quota_notice(
                 observation, int((now - state['quota_screen_since']) // 60),
                 continue_minutes=(None if continue_at is None
-                                  else int((now - continue_at) // 60))),)
+                                  else int((now - continue_at) // 60)),
+                covered=covered and continue_at is None),)
             state['quota_notified_at'] = now
     elif prompt_stalled and not state['prompt_recovery_attempted']:
         actions = (Action(
@@ -1073,6 +1102,8 @@ def decide(previous, observation, now):
     if actions:
         state['decision'] = ('quota-issue' if actions[0].category == 'quota'
                              else actions[0].kind)
+    elif covered:
+        state['decision'] = 'capacity-covered'
     elif state.get('orchestrator_handled'):
         state['decision'] = 'orchestrator-handled'
     elif observation.wait_active:
@@ -2016,6 +2047,9 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
         quota_screen=(tuple(lines[-30:]) if client.lower() == 'claude' and quota_issue
                       and quota_issue.kind != 'crash' else ()),
         screen_digest=hashlib.sha256('\n'.join(lines).encode()).hexdigest(),
+        capacity_covered=(client.lower() == 'codex' and quota_issue is not None
+                          and quota_issue.kind == 'model-capacity'
+                          and spawn_watch_covers(agent)),
     )
 
 
@@ -2053,6 +2087,40 @@ def perform_nudge(action, orchestrator, workspace=None):
         failure=f'hcom inject failed for {action.agent}',
     )
     return {'delivery': 'terminal'}
+
+
+def perform_capacity_continue(action, orchestrator, workspace=None):
+    """Type Continue unless spawn-watch now covers the agent.
+
+    The check and the typing hold the lock spawn-watch takes to start covering an agent,
+    and <agent>.continued.json tells spawn-watch when this Continue was typed and how long
+    the transcript was, so a watcher that starts covering meanwhile neither types again,
+    restarts the 5 minutes nor misses output written since.
+    """
+    directory = spawn_capacity_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    lock = os.open(directory, os.O_RDONLY)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if spawn_watch_covers(action.agent):
+            return {'delivery': 'skipped', 'reason': 'spawn-watch covers the agent'}
+        transcript, size = transcript_now(action.agent, orchestrator)
+        result = perform_nudge(action, orchestrator, workspace)
+        write_json_atomic(directory / f'{action.agent}.continued.json',
+                          {'at': time.time(), 'transcript': transcript, 'size': size})
+        return result
+    finally:
+        os.close(lock)
+
+
+def transcript_now(agent, orchestrator):
+    """(transcript path, size) of an agent, or (None, None) when unknown."""
+    try:
+        path = run_json(['hcom', 'list', agent, '--json', '--name', orchestrator])
+        path = path.get('transcript_path') if isinstance(path, dict) else None
+        return (path, Path(path).stat().st_size) if path else (None, None)
+    except (OSError, ValueError):
+        return None, None
 
 
 def send_notification(action, orchestrator, intent):
@@ -2279,7 +2347,7 @@ ACTION_POLICIES = {
     ),
     'notify-user': (perform_notify_user, 'user_notified', ()),
     'recover-prompt': (perform_prompt_recovery, None, ()),
-    'capacity-continue': (perform_nudge, None, ()),
+    'capacity-continue': (perform_capacity_continue, None, ()),
 }
 
 
