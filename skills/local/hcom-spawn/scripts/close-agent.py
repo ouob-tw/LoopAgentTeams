@@ -63,6 +63,8 @@ def pane_open(pane):
 def tie(name, rows, caller):
     """Return (pane, reason): the pane to close, or None and why it is not tied."""
     pane = pane_of(rows[name])
+    if name == caller:
+        return None, 'the agent is the caller itself'
     if not pane:
         return None, 'no Herdr pane recorded in hcom list'
     sharers = sorted(other for other, row in rows.items() if other != name and pane_of(row) == pane)
@@ -84,35 +86,41 @@ def kill(name, caller):
 def close(name, rows, caller):
     """Close one agent; return (ok, report line)."""
     pane, untied = tie(name, rows, caller)
-    if untied and pane_of(rows[name]):
+    if untied and (name == caller or pane_of(rows[name])):
         # hcom kill closes the recorded pane itself, so an untied pane stops the whole close.
         return False, f'{name}: not closed: {untied}'
     how, out = kill(name, caller)
     if how == 'no-pid':
         code, out = hcom('stop', name, '--name', caller)
         how = 'stopped' if code == 0 else 'failed'
+    error = None
     if how == 'failed':
-        return False, f'{name}: not closed: {out.strip()[:300]}'
-    if pane and pane_open(pane):
+        error = out.strip()[:300]
+    elif pane and pane_open(pane):
         code, out = herdr('pane', 'close', pane)
         if code:
-            return False, f'{name}: {how}, but herdr pane close {pane} failed: {out.strip()[:200]}'
+            error = f'herdr pane close {pane} failed: {out.strip()[:200]}'
 
+    # A failed or timed-out command may still have taken effect, so always check what is left.
     end = clock() + VERIFY_WAIT
     while True:
         rows_now = listed(caller)
         name_left = rows_now is None or name in rows_now
-        pane_left = pane is not None and pane_open(pane) is not False
-        if not (name_left or pane_left) or clock() >= end:
+        pane_state = pane_open(pane) if pane else False
+        if not (name_left or pane_state is not False) or clock() >= end:
             break
         sleep(POLL)
     left = []
     if name_left:
         left.append('name still in hcom list' if rows_now is not None else 'hcom list unreadable')
-    if pane_left:
+    if pane_state:
         left.append(f'pane {pane} still open')
+    elif pane_state is None:
+        left.append(f'pane {pane} state unreadable in Herdr')
     if untied:
         left.append(f'pane not checked: {untied}')
+    if error:
+        return False, f"{name}: {how}: {error}; left: {'; '.join(left) or 'nothing'}"
     if left:
         return False, f"{name}: {how}; left: {'; '.join(left)}"
     return True, f'{name}: {how}; name gone from hcom list; pane {pane} gone from Herdr'

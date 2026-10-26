@@ -29,6 +29,8 @@ class Host:
         self.panes, self.tracked = set(panes), set(tracked)
         self.calls, self.now = [], 0.0
         self.stop_leaves_name = False
+        self.close_fails = False
+        self.kill_error = None
 
     def clock(self):
         return self.now
@@ -42,6 +44,8 @@ class Host:
             return 0, json.dumps(list(self.agents.values()))
         name = args[1]
         if args[0] == 'kill':
+            if self.kill_error:
+                return 1, self.kill_error
             if name not in self.tracked:
                 return 1, (f"Error: No tracked PID for '{name}' — use 'hcom stop {name}' instead\n"
                            + json.dumps({'ok': False}))
@@ -61,6 +65,8 @@ class Host:
                 return 0, json.dumps({'result': {'pane': {'pane_id': pane}}})
             return 1, json.dumps({'error': {'code': 'pane_not_found'}})
         if args[:2] == ('pane', 'close'):
+            if self.close_fails:
+                return 1, 'RPC timeout'
             self.panes.discard(pane)
             return 0, ''
         raise AssertionError(args)
@@ -115,6 +121,13 @@ class CloseAgentTest(unittest.TestCase):
         self.assertIn("pane p1 is the caller's own pane", out)
         self.assertEqual(host.closed_panes(), [])
 
+    def test_the_caller_cannot_close_itself(self):
+        host = Host([row('vare', 'p1')], {'p1'}, tracked={'vare'})
+        code, out = self.run_helper(host, 'vare')
+        self.assertEqual(code, 1)
+        self.assertIn('vare: not closed: the agent is the caller itself', out)
+        self.assertEqual([c for c in host.calls if c[1] != 'list'], [])
+
     def test_agent_with_no_recorded_pane_is_stopped_but_reported_as_left_over(self):
         host = Host([row('vare', 'p1'), row('vare-board-gazu')], {'p1'})
         code, out = self.run_helper(host, 'vare-board-gazu')
@@ -128,6 +141,23 @@ class CloseAgentTest(unittest.TestCase):
         code, out = self.run_helper(host, 'vare-board-gazu')
         self.assertEqual(code, 1)
         self.assertIn('vare-board-gazu: stopped; left: name still in hcom list', out)
+
+    def test_failed_pane_close_still_checks_and_reports_what_is_left(self):
+        host = Host([row('vare', 'p1'), row('vare-board-gazu', 'p2')], {'p1', 'p2'})
+        host.close_fails = True
+        code, out = self.run_helper(host, 'vare-board-gazu')
+        self.assertEqual(code, 1)
+        self.assertIn('vare-board-gazu: stopped: herdr pane close p2 failed: RPC timeout; '
+                      'left: pane p2 still open', out)
+
+    def test_failed_kill_still_checks_and_reports_the_name_left(self):
+        host = Host([row('vare', 'p1'), row('vare-board-gazu', 'p2')], {'p1', 'p2'})
+        host.kill_error = 'Error: database is locked'
+        code, out = self.run_helper(host, 'vare-board-gazu')
+        self.assertEqual(code, 1)
+        self.assertIn('vare-board-gazu: failed: Error: database is locked; '
+                      'left: name still in hcom list; pane p2 still open', out)
+        self.assertEqual(host.closed_panes(), [])
 
     def test_unknown_name_is_reported_and_nothing_is_run(self):
         host = Host([row('vare', 'p1')], {'p1'})
