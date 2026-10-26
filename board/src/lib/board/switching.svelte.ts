@@ -25,6 +25,8 @@ class Switching {
 	/** Open conversations by controller ID: their live feed keeps `current` up to date. */
 	watched = $state<Record<string, number>>({});
 	#loads: Record<string, number> = {};
+	/** The newest status read still on its way, by controller ID: the one whose answer counts. */
+	#reading: Record<string, { done: Promise<void>; signal?: AbortSignal }> = {};
 	/** When each controller's status was last read, and for which of its states. */
 	#read: Record<string, { key: string; at: number }> = {};
 
@@ -41,11 +43,12 @@ class Switching {
 		if (update.ok && (again || this.current[controllerId] === undefined)) this.current[controllerId] = update.page.current ?? null;
 	}
 
-	/** `load`, unless the status was read for the same state of the controller in the last 30 s:
-	 *  enough for the label. Opening a menu and applying a switch read it afresh with `load`. */
+	/** `load`, unless the status was read for the same state of the controller in the last 30 s, or
+	 *  that read is still on its way: enough for the label. Opening a menu and applying a switch read
+	 *  it afresh. */
 	async loadFresh(controllerId: string, state: string, signal?: AbortSignal): Promise<void> {
 		const last = this.#read[controllerId];
-		if (last?.key === state && Date.now() - last.at < FRESH_MS && this.status[controllerId]) return;
+		if (last?.key === state && Date.now() - last.at < FRESH_MS && (this.status[controllerId] || this.#reading[controllerId])) return;
 		this.#read[controllerId] = { key: state, at: Date.now() };
 		await this.load(controllerId, signal);
 	}
@@ -65,8 +68,29 @@ class Switching {
 
 	/** Aborting `signal` (the page left, or another controller opened) ends the read on the server
 	 *  too, and leaves everything as it was. */
-	async load(controllerId: string, signal?: AbortSignal): Promise<void> {
+	load(controllerId: string, signal?: AbortSignal): Promise<void> {
 		const load = (this.#loads[controllerId] = (this.#loads[controllerId] ?? 0) + 1);
+		const done = this.#fetchStatus(controllerId, load, signal).finally(() => {
+			if (this.#reading[controllerId]?.done === done) delete this.#reading[controllerId];
+		});
+		this.#reading[controllerId] = { done, signal };
+		return done;
+	}
+
+	/** Wait for the status read already on its way, or `load` when none is: a picker clicked again
+	 *  while it reads does not start another read, which would drop the answer it waits for. A newer
+	 *  read that takes over is waited for in turn. A read that failed or was aborted is not waited
+	 *  for again. */
+	async joinOrLoad(controllerId: string): Promise<void> {
+		let reading = this.#reading[controllerId];
+		if (!reading || reading.signal?.aborted) return this.load(controllerId);
+		while (reading) {
+			await reading.done;
+			reading = this.#reading[controllerId];
+		}
+	}
+
+	async #fetchStatus(controllerId: string, load: number, signal?: AbortSignal): Promise<void> {
 		const result = await request<ModelStatus>(`/api/model?controller=${encodeURIComponent(controllerId)}`, { signal });
 		if (!result.ok && result.unpaired) return;
 		// Reported below, unless a newer load has taken over.

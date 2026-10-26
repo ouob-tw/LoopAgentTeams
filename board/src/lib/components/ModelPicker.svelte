@@ -73,17 +73,23 @@
 	const shownNow = $derived(controller ? shownSettings(lastApplied(entries), switching.current[id]) : { settings: undefined, waiting: false });
 	const current = $derived(shownNow.settings);
 
+	/** Ended when another recipient is shown or the picker goes: the reads for this one stop. New
+	 *  board data does not end them, or a slow read would never answer. */
+	let leave = new AbortController();
+	$effect(() => {
+		void id;
+		const abort = (leave = new AbortController());
+		return () => abort.abort();
+	});
 	// What can be switched: read for another recipient, or when this one starts or ends, unless
-	// read for that state moments ago. The settings come from its conversation, which keeps them
-	// current while its information page is open.
+	// read for that state moments ago or still on its way. The settings come from its conversation,
+	// which keeps them current while its information page is open.
 	$effect(() => {
 		if (!controller) return;
 		const target = controller.id;
 		const state = `${controller.status}/${controller.running}`;
-		const abort = new AbortController();
-		void switching.loadFresh(target, state, abort.signal);
-		if (untrack(() => switching.current[target]) === undefined) void switching.loadCurrent(target, false, abort.signal);
-		return () => abort.abort();
+		void switching.loadFresh(target, state, leave.signal);
+		if (untrack(() => switching.current[target]) === undefined) void switching.loadCurrent(target, false, leave.signal);
 	});
 	// With every new board data (each hands a new `controller` object), which is when a resume's
 	// result or the next turn comes in: the sent log while it is not read yet or a switch is still
@@ -149,14 +155,15 @@
 		confirmingSwitch = false;
 	});
 
-	/** Opening a menu reads whether the controller can switch now: the status kept for the label
-	 *  may be up to 30 s old, and a turn can end without the roster changing. A part that looked
-	 *  blocked opens once the fresh read clears it. */
+	/** Opening a menu reads whether the controller can switch now, or waits for the read already on
+	 *  its way: the status kept for the label may be up to 30 s old, and a turn can end without the
+	 *  roster changing. A part that looked blocked opens once that read clears it; clicking it again
+	 *  meanwhile waits for the same read. */
 	async function toggle(kind: Kind) {
 		if (menu === kind) return close();
 		if (!controller) return;
 		const target = id;
-		const read = switching.load(target);
+		const read = switching.joinOrLoad(target);
 		if (reason(kind)) await read;
 		if (target !== id || reason(kind)) return;
 		menu = kind;

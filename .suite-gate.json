@@ -120,7 +120,7 @@
       {"paths": ["board/src/lib/server/switch.ts"],
        "tests": ["board/tests/server/agent-switch.test.ts", "board/tests/server/closed-agents.test.ts", "board/tests/unit/log.test.ts"]},
       {"paths": ["board/src/lib/board/switching.svelte.ts"],
-       "tests": ["board/tests/server/agent-switch.test.ts", "board/tests/server/closed-agents.test.ts"]},
+       "tests": ["board/tests/server/agent-switch.test.ts", "board/tests/server/closed-agents.test.ts", "board/tests/browser/model-picker-slow-read.test.ts"]},
       {"paths": ["board/src/routes/api/agents/model/**"],
        "tests": ["board/tests/server/agent-switch.test.ts", "board/tests/server/closed-agents.test.ts"]},
       {"paths": ["board/src/lib/components/AgentModelPicker.svelte"],
