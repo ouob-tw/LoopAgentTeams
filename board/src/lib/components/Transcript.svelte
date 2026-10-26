@@ -13,6 +13,7 @@
 	import { lastSegment } from '#lib/board/agents.ts';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
+	import Copy from '@lucide/svelte/icons/copy';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import { EarlierReads, transcriptUrl, type TranscriptFeed } from '#lib/board/earlier.ts';
 	import { askingTexts } from '#lib/board/question-message.ts';
@@ -139,6 +140,15 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const timer = setTimeout(() => (targetAtLastPage = judged ?? null), JUDGE_WITHOUT_PAGE_MS);
 		return () => clearTimeout(timer);
 	});
+	async function copyText(text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			toasts.show('ok', '已複製訊息。');
+		} catch {
+			toasts.show('failed', '複製失敗，瀏覽器不允許寫入剪貼簿。');
+		}
+	}
+
 	/** Whether English replies show translated: the board's setting, unless the button was used on this conversation. */
 	const translating = $derived(translatePref.on);
 	$effect.pre(() => translatePref.enter(id));
@@ -566,6 +576,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 									<span class="translating" role="status"><span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>翻譯中</span>
 								{/if}
 							</p>
+							<button class="copy" type="button" title="複製訊息" aria-label="複製訊息" onclick={() => copyText(segment.item.text)}><Copy size="1em" /></button>
 							{#if translation?.status === 'done'}
 								<div class="text md" lang="zh-Hant-TW">{@html translatedMarkdown.html(segment.item.seq, translation.text)}</div>
 								<button class="fold original-toggle" aria-expanded={!!originals[segment.key]} onclick={() => (originals[segment.key] = !originals[segment.key])}>
@@ -689,6 +700,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		}
 	}
 	.said {
+		position: relative;
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		padding: 0.5rem 0.7rem;
@@ -725,6 +737,20 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	}
 	.text {
 		overflow-wrap: anywhere;
+	}
+	.copy {
+		position: absolute;
+		top: 0.3rem;
+		right: 0.4rem;
+		display: inline-flex;
+		padding: 0.25rem;
+		border: 0;
+		background: none;
+		color: var(--muted);
+		cursor: pointer;
+	}
+	.copy:hover {
+		color: var(--text);
 	}
 	.translating {
 		display: inline-flex;
