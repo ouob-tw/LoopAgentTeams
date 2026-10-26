@@ -104,12 +104,12 @@ class PreauthCase(unittest.TestCase):
     def gate_record(self, ref='HEAD', suites=SUITES, passed=True):
         """A record in the temp gate store, fingerprinted the way the gate computes it."""
         gate = load_suite_gate()
-        tree = gate.content_tree(self.repo, (), git(self.repo, 'rev-parse', ref))
+        registry = gate.load_registry(self.repo) or {}
         self.gate_state.mkdir(exist_ok=True)
         with open(self.gate_state / 'ledger.jsonl', 'a') as ledger:
             for suite in suites:
-                fingerprint = gate.digest(tree, [suite['command']],
-                                          gate.rel_cwd(self.repo, self.repo / suite['cwd']))
+                fingerprint = gate.suite_fingerprint(self.repo, registry, suite,
+                                                     git(self.repo, 'rev-parse', ref))
                 ledger.write(json.dumps({'fingerprint': fingerprint, 'reusable': passed,
                                          'exit_code': 0 if passed else 1}) + '\n')
 
@@ -291,6 +291,28 @@ class ConditionTests(PreauthCase):
                 self.assertEqual(self.check(action)['reasons'], [
                     f'no passing full-suite record for {head[:12]}: bun test (in web)'])
 
+    def test_a_suite_with_depends_on_keeps_its_pass_until_its_paths_change(self):
+        suites = [{'command': 'bun test', 'cwd': 'web', 'depends_on': ['lib/**']},
+                  {'command': 'uv run pytest', 'cwd': 'api', 'depends_on': []}]
+        for folder in ('web', 'api', 'lib', 'docs'):
+            (self.repo / folder).mkdir()
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'full_suites': suites}))
+        git(self.repo, 'add', '.suite-gate.json')
+        self.commit('scoped suites', 'api/a.txt')
+        self.allow_all()
+        self.gate_record(suites=suites)
+        docs = self.commit('docs only', 'docs/guide.md')
+        lib = self.commit('library', 'lib/util.txt')
+        for action in ('deploy-prod', 'install-host'):
+            with self.subTest(action=action, change='docs'):
+                git(self.repo, 'reset', '-q', '--hard', docs)
+                verdict = self.check(action)
+                self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+            with self.subTest(action=action, change='lib'):
+                git(self.repo, 'reset', '-q', '--hard', lib)
+                self.assertEqual(self.check(action)['reasons'], [
+                    f'no passing full-suite record for {lib[:12]}: bun test (in web)'])
+
     def test_deploy_commit_must_be_head(self):
         self.allow_all()
         self.gate_record()
@@ -422,6 +444,19 @@ class PushTests(PreauthCase):
             self.assertEqual(len(self.check('push', '--branch', 'dev')['reasons']), 2)
             self.assertIn(f'no passing full-suite record for {second[:12]}: uv run pytest',
                           self.check('push', '--branch', 'dev')['reasons'][0])
+
+    def test_a_scoped_suite_pass_counts_for_a_push_until_its_paths_change(self):
+        suites = [{'command': 'bun test', 'cwd': 'web', 'depends_on': []}]
+        (self.repo / 'web').mkdir()
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'full_suites': suites}))
+        git(self.repo, 'add', '.suite-gate.json')
+        self.commit('feat(web): scoped (#313)', 'web/a.txt')
+        self.gate_record(suites=suites)
+        self.commit('docs: elsewhere (#313)', 'c.txt')
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+        web = self.commit('fix(web): change (#313)', 'web/a.txt')
+        self.assertEqual(self.check('push', '--branch', 'dev')['reasons'],
+                         [f'no passing full-suite record for {web[:12]}: bun test (in web)'])
 
     def test_commits_outside_the_round_ask_and_are_listed(self):
         own = self.commit('feat(lat): mine (#313)')

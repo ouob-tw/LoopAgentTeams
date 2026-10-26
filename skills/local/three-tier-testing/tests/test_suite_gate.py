@@ -2968,7 +2968,9 @@ class RegisteredFormTests(PrePushCase):
         git(self.repo, 'commit', '-qam', 'registry')
         result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertEqual(self.full_runs(), ['root', 'web'])
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
+        self.assertIn('suite-gate: .: exit 3', result.stderr)
+        self.assertIn('suite-gate: web: passed', result.stderr)
 
     def test_run_registered_runs_the_named_suites(self):
         result = self.gate('run', '--registered', 'web', '--purpose', 'post-merge')
@@ -3147,7 +3149,7 @@ class RegisteredCheckoutTests(PrePushCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         ran_in = self.where.read_text().strip()
         self.assertEqual((self.tmp / 'bun.log').read_text(), f'{ran_in} install --frozen-lockfile\n')
-        self.assertEqual(self.full_runs(), ['web', 'root'])
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
         self.fake_bun(1)
         self.counter.unlink()
         rerun = self.gate('run', '--registered', '--rerun', 'deps', '--purpose', 'post-merge')
@@ -3157,6 +3159,127 @@ class RegisteredCheckoutTests(PrePushCase):
         self.assertEqual(self.full_runs(), ['root'], 'the other suites still run')
         self.assertEqual(len(self.records()), 3, 'no record for the suite that did not run')
         self.assertEqual(self.checkouts_left(), ([], []))
+
+
+class ScopedFingerprintTests(PrePushCase):
+    """A full suite that declares `depends_on` is fingerprinted on its directory, the
+    gate-wide files and those paths; one without keeps the whole repo."""
+
+    def setUp(self):
+        super().setUp()
+        self.registry['full_suites'] = [
+            {'command': self.full('web'), 'cwd': 'web', 'depends_on': ['src/util.py']},
+            {'command': self.full('tests'), 'cwd': 'tests', 'depends_on': []},
+            {'command': self.full('docs'), 'cwd': 'docs'}]
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'scoped suites')
+        self.passed()
+
+    def passed(self):
+        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.lacking(), [])
+
+    def lacking(self):
+        with mock.patch.dict(os.environ, self.env):
+            return [s['cwd'] for s in gate.lacking_full_suites(self.repo, head(self.repo),
+                                                               gate.load_registry(self.repo))]
+
+    def change(self, name, text='changed\n'):
+        self.touch(name, text)
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, f'change {name}')
+
+    def test_a_change_outside_a_declared_scope_keeps_the_pass(self):
+        self.change('README.md')
+        self.assertEqual(self.lacking(), ['docs'], 'only the suite without a declaration')
+        reused = self.gate('run', '--purpose', 'post-merge', '--', self.full('web'),
+                           cwd=self.repo / 'web')
+        self.assertEqual(reused.returncode, 0, reused.stderr)
+        self.assertEqual(sorted(self.full_runs()), ['docs', 'tests', 'web'],
+                         'the gate in the work tree reuses the scoped pass')
+        self.passed()
+        self.assertEqual(sorted(self.full_runs()), ['docs', 'docs', 'tests', 'web'])
+        self.change('src/util.py')
+        self.assertEqual(self.lacking(), ['web', 'docs'], 'a declared path counts')
+        self.passed()
+        self.change('tests/test_app.py')
+        self.assertEqual(self.lacking(), ['tests', 'docs'], 'the own directory counts')
+
+    def test_a_gate_wide_change_makes_every_suite_lacking(self):
+        base = head(self.repo)
+        for name, text in (('.suite-gate.d/extra.json', '{"map": []}'),
+                           ('.gitignore', 'ignored/\n.env.test\nmore/\n')):
+            with self.subTest(name=name):
+                self.change(name, text)
+                self.assertEqual(self.lacking(), ['web', 'tests', 'docs'])
+                git(self.repo, 'reset', '-q', '--hard', base)
+                self.assertEqual(self.lacking(), [])
+        self.registry['integration_branch'] = 'feature'
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'registry')
+        self.assertEqual(self.lacking(), ['web', 'tests', 'docs'])
+
+    def test_depends_on_must_list_paths(self):
+        for value in ('src/**', [''], [1]):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, r'full_suites\[0\]\.depends_on'):
+                    gate.read_full_suites({'full_suites': [
+                        {'command': 'x', 'cwd': 'web', 'depends_on': value}]})
+
+
+class ConcurrentRegisteredTests(PrePushCase):
+    """`run --registered` starts every suite at once as its own gate run; host slots decide
+    how many run together."""
+
+    def suites(self, body):
+        """Register a suite at . (root) and one at web, each running body(name)."""
+        self.registry['full_suites'] = [{'command': body('root'), 'cwd': '.'},
+                                        {'command': body('web'), 'cwd': 'web'}]
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'suites')
+
+    def test_suites_run_together_and_mark_their_output(self):
+        other = {'root': 'web', 'web': 'root'}
+        # Each suite waits for the other to start, so they pass only when run together.
+        self.suites(lambda name: f'touch {self.tmp}/started-{name}; i=0; '
+                                 f'while [ ! -f {self.tmp}/started-{other[name]} ]; do '
+                                 'sleep 0.05; i=$((i+1)); [ $i -gt 400 ] && exit 9; done; '
+                                 f'echo {name}-done')
+        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('[.] root-done\n', result.stdout)
+        self.assertIn('[web] web-done\n', result.stdout)
+        self.assertEqual(sorted((r['rel_cwd'], r['reusable']) for r in self.records()),
+                         [('.', True), ('web', True)])
+
+    def test_the_host_slot_limit_holds(self):
+        self.set_config(min_slots=1, max_slots=1)
+        log = self.tmp / 'times'
+        self.suites(lambda name: f'echo "{name} $(date +%s%N) start" >> {log}; sleep 0.3; '
+                                 f'echo "{name} $(date +%s%N) end" >> {log}')
+        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = [line.split() for line in log.read_text().splitlines()]
+        self.assertEqual([e[2] for e in sorted(events, key=lambda e: int(e[1]))],
+                         ['start', 'end', 'start', 'end'], 'one at a time')
+
+    def test_an_interrupt_ends_every_running_suite(self):
+        self.suites(lambda name: f'echo $$ > {self.tmp}/{name}.pid; '
+                                 'while true; do sleep 0.05; done')
+        proc = self.start('run', '--registered', '--purpose', 'post-merge')
+        pids = [self.tmp / f'{name}.pid' for name in ('root', 'web')]
+        self.wait_until(lambda: all(p.exists() and p.read_text().strip() for p in pids),
+                        message='both suites to start')
+        proc.send_signal(signal.SIGINT)
+        code, _out, err = self.finish(proc)
+        self.assertEqual(code, 128 + signal.SIGINT, err)
+        for path in pids:
+            self.assertFalse(self.alive(int(path.read_text())), path.name)
+        self.assertEqual(self.records(), [])
+        self.assertFalse(list((self.state / 'checkouts').iterdir()))
 
 
 class PrePushInstallTests(PrePushCase):

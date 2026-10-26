@@ -29,6 +29,7 @@ import copy
 import difflib
 import fcntl
 import fnmatch
+import functools
 import hashlib
 import json
 import math
@@ -49,6 +50,8 @@ from pathlib import Path
 
 REGISTRY_NAME = '.suite-gate.json'
 MAP_DIR = '.suite-gate.d'  # more affected.map rules, one file per topic
+# In the fingerprint of every full suite that declares `depends_on`.
+GATE_WIDE = (REGISTRY_NAME, f'{MAP_DIR}/**', '.gitignore')
 DEFAULTS = {'min_slots': 2, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds': 30.0,
             'sample_seconds': 2.0, 'brake_io_high': 40.0, 'brake_io_low': 20.0,
             'brake_cpu_high': 50.0, 'brake_cpu_low': 25.0, 'default_cores': 4.0,
@@ -786,10 +789,10 @@ def repo_root(cwd):
     return Path(result.stdout.strip())
 
 
-def content_tree(root, include=(), commit=None):
+def content_tree(root, include=(), commit=None, scope=None):
     """Tree hash of tracked plus unignored new files (or of commit's tree when given), plus
     the `include` paths from the work tree, via a throwaway index so the real one is
-    untouched."""
+    untouched. With scope (path globs), only the files matching one of them count."""
     with tempfile.TemporaryDirectory(prefix='suite-gate-') as tmp:
         index = Path(tmp) / 'index'
         env = dict(os.environ, GIT_INDEX_FILE=str(index))
@@ -809,6 +812,19 @@ def content_tree(root, include=(), commit=None):
             result = git(step, root, env)
             if result.returncode != 0:
                 raise RuntimeError(f'git {" ".join(step[:2])} failed: {result.stderr.strip()}')
+        if scope is not None:
+            listed = git(['ls-files', '--stage', '-z'], root, env)
+            if listed.returncode != 0:
+                raise RuntimeError(f'git ls-files failed: {listed.stderr.strip()}')
+            # Each entry is "<mode> <object> <stage>\t<path>", the form --index-info reads.
+            kept = [e for e in listed.stdout.split('\0') if e
+                    and any(glob_match(e.split('\t', 1)[1], p) for p in scope)]
+            env = dict(env, GIT_INDEX_FILE=str(Path(tmp) / 'scoped'))
+            result = subprocess.run(['git', 'update-index', '-z', '--index-info'], cwd=root,
+                                    env=env, input=''.join(e + '\0' for e in kept),
+                                    capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f'git update-index failed: {result.stderr.strip()}')
         result = git(['write-tree'], root, env)
         if result.returncode != 0:
             raise RuntimeError(f'git write-tree failed: {result.stderr.strip()}')
@@ -838,14 +854,34 @@ def rel_cwd(root, cwd):
     return os.path.relpath(Path(cwd).resolve(), root.resolve())
 
 
+def suite_scope(root, registry, rel, argv):
+    """The path globs the fingerprint of argv run in rel covers: for a registered full suite
+    that declares `depends_on`, its directory, the gate-wide files, the `fingerprint_include`
+    patterns and the declared paths; None (the whole repo) for anything else."""
+    if len(argv) != 1 or rel == '.':
+        return None
+    try:
+        suites = read_full_suites(registry)
+    except ValueError:
+        return None
+    command = normalize_command(argv)
+    suite = next((s for s in suites if s['command'] == command
+                  and rel_cwd(root, suite_cwd(root, s)) == rel), None)
+    if suite is None or suite.get('depends_on') is None:
+        return None
+    return [f'{rel}/**', *GATE_WIDE, *include_patterns(registry), *suite['depends_on']]
+
+
 def fingerprint(cwd, argv):
     """Dict with fingerprint, tree, repo, relative cwd and profile key; None outside a Git
     work tree."""
     root = repo_root(cwd)
     if root is None:
         return None
-    tree = content_tree(root, include_patterns(load_registry(cwd) or {}))
+    registry = load_registry(cwd) or {}
     rel = rel_cwd(root, cwd)
+    tree = content_tree(root, include_patterns(registry),
+                        scope=suite_scope(root, registry, rel, argv))
     return {'fingerprint': digest(tree, argv, rel), 'tree': tree, 'repo': str(root),
             'rel_cwd': rel, 'profile_key': profile_key(root, rel, normalize_command(argv))}
 
@@ -2060,9 +2096,69 @@ def prepare_dependencies(directory):
     return None
 
 
+def start_registered(suite, cwd, flags, started, relay):
+    """Start `run` of a registered suite in cwd as its own gate process, so it queues for a
+    host slot like any other suite while the others run; with relay its output lines carry
+    the suite's directory. The process gets no terminal signals: stop_registered forwards
+    them."""
+    argv = [sys.executable, str(SCRIPT), 'run', *flags, '--', suite['command']]
+    pipe = subprocess.PIPE if relay else None
+    # No signal between starting it and listing it in started with its output read.
+    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
+    try:
+        child = subprocess.Popen(argv, cwd=cwd, stdout=pipe, stderr=pipe,
+                                 start_new_session=True, preexec_fn=_child_setup({}))
+        child.relays = []
+        if relay:
+            prefix = f"[{suite['cwd']}] ".encode()
+            child.relays = [threading.Thread(target=relay_lines, args=(stream, out, prefix),
+                                             daemon=True)
+                            for stream, out in ((child.stdout, sys.stdout.buffer),
+                                                (child.stderr, sys.stderr.buffer))]
+            for thread in child.relays:
+                thread.start()
+        started.append(child)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+    return child
+
+
+RELAY_LOCK = threading.Lock()
+
+
+def relay_lines(stream, out, prefix):
+    for line in iter(stream.readline, b''):
+        with RELAY_LOCK:
+            out.write(prefix + line + (b'' if line.endswith(b'\n') else b'\n'))
+            out.flush()
+
+
+def wait_registered(child):
+    code = child.wait()
+    for thread in child.relays:
+        thread.join()
+    return 128 - code if code < 0 else code
+
+
+def stop_registered(started, signum):
+    """Pass an interrupt on to the registered suites still running and wait until each has
+    ended its suite, so the checkout is removed only after them."""
+    for sig in SIGNALS:
+        signal.signal(sig, signal.SIG_IGN)
+    running = [child for child in started if child.poll() is None]
+    if running:
+        warn(f'interrupted: ending {len(running)} running suite(s)')
+    for child in running:
+        child.send_signal(signum)
+    for child in started:
+        wait_registered(child)
+
+
 def cmd_run_registered(names, rerun, purpose, reason):
     """Run the registered full suites, all or those named by directory or command, in their
-    registered form, each through the gate, in a temporary clean checkout of HEAD."""
+    registered form, each through the gate, in a temporary clean checkout of HEAD. They
+    start together and the gate's host-slot admission decides how many run at once; every
+    suite runs whatever the others do, and the exit code is the first failing one's."""
     error = run_args_error(rerun, purpose, reason)
     if error:
         warn(error)
@@ -2102,22 +2198,31 @@ def cmd_run_registered(names, rerun, purpose, reason):
             return 2
         if names:
             suites = [s for s in suites if any(named(s, n) for n in names)]
-        code, prepared = 0, {}
-        for suite in suites:
-            warn(f"full suite in {suite['cwd']}: {suite['command']}")
-            cwd = suite_cwd(checkout, suite)
-            if cwd not in prepared:
-                prepared[cwd] = prepare_dependencies(cwd)
-            if prepared[cwd]:
-                warn(f"not run: preparing {suite['cwd']} failed ({prepared[cwd]}); this is "
-                     'not a test result')
-                code = code or 2
-                continue
-            gate = Gate([suite['command']], cwd, rerun.strip() if rerun else None,
-                        load_config(), extra)
-            result = _drive(gate, gate.run)
-            code = code or result
-        return code
+        flags = (*purpose_flags(purpose, reason), *(('--rerun', rerun.strip()) if rerun else ()))
+        started, results, prepared = [], [], {}
+        try:
+            for suite in suites:
+                warn(f"full suite in {suite['cwd']}: {suite['command']}")
+                cwd = suite_cwd(checkout, suite)
+                if cwd not in prepared:
+                    prepared[cwd] = prepare_dependencies(cwd)
+                if prepared[cwd]:
+                    warn(f"not run: preparing {suite['cwd']} failed ({prepared[cwd]}); this "
+                         'is not a test result')
+                    results.append((suite, None))
+                    continue
+                results.append((suite, start_registered(suite, cwd, flags, started,
+                                                        len(suites) > 1)))
+            codes = [2 if child is None else wait_registered(child) for _, child in results]
+        except Interrupted as exc:
+            stop_registered(started, exc.signum)
+            raise
+        if len(suites) > 1:
+            for (suite, child), code in zip(results, codes):
+                outcome = ('not run' if child is None else 'passed' if code == 0
+                           else f'exit {code}')
+                warn(f"{suite['cwd']}: {outcome}")
+        return next((code for code in codes if code), 0)
 
     def body():
         warn(f'testing HEAD {commit[:12]} in a temporary clean checkout; later changes to '
@@ -2185,13 +2290,18 @@ def read_map(registry):
 
 
 def read_full_suites(registry):
-    """The registry's full suites as [{command, cwd}]. ValueError when missing or bad."""
+    """The registry's full suites as [{command, cwd}], plus depends_on where declared.
+    ValueError when missing or bad."""
     suites = registry.get('full_suites')
     if not isinstance(suites, list) or not suites or not all(
             isinstance(s, dict) and isinstance(s.get('command'), str) and s['command'].strip()
             and isinstance(s.get('cwd', '.'), str) for s in suites):
         raise ValueError('full_suites must list {"command": "...", "cwd": "<dir>"} entries')
-    return [{'command': s['command'].strip(), 'cwd': _dir_key(s.get('cwd', '.'))}
+    for i, suite in enumerate(suites):
+        if 'depends_on' in suite:
+            _strings(suite['depends_on'], f'full_suites[{i}].depends_on')
+    return [dict({'command': s['command'].strip(), 'cwd': _dir_key(s.get('cwd', '.'))},
+                 **({'depends_on': s['depends_on']} if 'depends_on' in s else {}))
             for s in suites]
 
 
@@ -2202,6 +2312,11 @@ def suite_cwd(root, suite):
 
 def glob_match(path, pattern):
     """Path glob: `*` and `?` stay within one directory, `**` spans directories."""
+    return _glob_regex(pattern).fullmatch(path) is not None
+
+
+@functools.lru_cache(maxsize=1024)
+def _glob_regex(pattern):
     out, i = [], 0
     while i < len(pattern):
         if pattern.startswith('**/', i):
@@ -2213,7 +2328,7 @@ def glob_match(path, pattern):
         else:
             out.append({'*': '[^/]*', '?': '[^/]'}.get(pattern[i]) or re.escape(pattern[i]))
             i += 1
-    return re.fullmatch(''.join(out), path) is not None
+    return re.compile(''.join(out))
 
 
 def _git_paths(args, root):
@@ -3173,15 +3288,22 @@ def release_command(root, suite):
     return f'cd {shlex.quote(str(suite_cwd(root, suite)))} && {run}'
 
 
+def suite_fingerprint(root, registry, suite, commit=None):
+    """The fingerprint the gate computes for a registered full suite run in its directory:
+    commit's content (the work tree's when None) within the suite's scope, plus the
+    `fingerprint_include` files from the work tree, the command and its directory."""
+    rel, argv = rel_cwd(root, suite_cwd(root, suite)), [suite['command']]
+    tree = content_tree(root, include_patterns(registry), commit,
+                        suite_scope(root, registry, rel, argv))
+    return digest(tree, argv, rel)
+
+
 def lacking_full_suites(root, commit, registry):
-    """The registered full suites with no reusable pass for commit's content (its tree plus
-    `fingerprint_include` files from the work tree, the command and its directory: the
-    fingerprint the gate would compute). ValueError when the registry lists no full suites,
-    RuntimeError when Git fails. LAT's pre-authorization check calls this too."""
+    """The registered full suites with no reusable pass for commit's content
+    (suite_fingerprint). ValueError when the registry lists no full suites, RuntimeError
+    when Git fails. LAT's pre-authorization check calls this too."""
     suites = read_full_suites(registry)
-    tree = content_tree(root, include_patterns(registry), commit)
-    return [s for s in suites if not reusable_record(
-        digest(tree, [s['command']], rel_cwd(root, root / s['cwd'])))]
+    return [s for s in suites if not reusable_record(suite_fingerprint(root, registry, s, commit))]
 
 
 def cmd_pre_push():
