@@ -1,6 +1,7 @@
 // Restarting afresh, for a model switch, a client that has had no turn yet (see the top of
 // `switch.ts`): one hcom launch with the arguments hcom started it with and the new settings, then
-// a wait for it to run in Herdr, its tab named and placed like the old one, and the switch ended.
+// a wait for it to run in Herdr, its tab named and placed like the old one (or kept, when it runs in
+// the shell the stop held in that tab), and the switch ended.
 // The wait runs in the background of the request that launched it; a relaunch no board process
 // waits for (the board restarted meanwhile) is settled by the board's reads.
 import { isLaunchClient } from '../board/launch.ts';
@@ -12,7 +13,7 @@ import { chooseWorkspace, listHerdrAgents, moveTab, renameTab, type HerdrAgent }
 import { queued } from './send.ts';
 import type { SentLog } from './sent-log.ts';
 import { switchView } from './sent-views.ts';
-import { currentSwitch, respondLogged, step, type Result, type SwitchTarget } from './switch.ts';
+import { currentSwitch, heldPane, respondLogged, step, type Result, type SwitchTarget } from './switch.ts';
 
 /** Relaunches whose client is being waited for by this board process. One the board does not
  *  wait for (it restarted meanwhile) is settled by its reads (`settleRelaunches`). */
@@ -62,7 +63,9 @@ export async function relaunchSwitch(board: Board, controller: SwitchTarget, vie
 	if (view.state === 'resuming' && typeof standing === 'object') step(board, view.id, { state: 'resume-failed', error: standing.failed });
 	const fail = (error: string, status = 502) => respondLogged(board, view.id, { reason: error, status }, step(board, view.id, { state: 'resume-failed', error }));
 	if (!isLaunchClient(controller.client)) return fail(`看板不會重新啟動 ${controller.client || '這個 client'}。`, 409);
-	const workspace = await chooseWorkspace(config, controller.workspace, view.agent?.workspace);
+	// In the shell the stop left in its old tab while it is still open, else in a new tab.
+	const held = await heldPane(config, view.holdPane);
+	const workspace = await chooseWorkspace(config, controller.workspace, held?.workspace ?? view.agent?.workspace);
 	if (!workspace.ok) return fail(`沒有重新啟動：${workspace.reason}`);
 	// In the log before hcom runs, with no name yet: a board stopped meanwhile waits out the launch
 	// wait before it launches again.
@@ -75,7 +78,8 @@ export async function relaunchSwitch(board: Board, controller: SwitchTarget, vie
 		herdrWorkspace: workspace.id,
 		prompt: '',
 		// Later arguments win over the ones hcom kept, the way a resume's do.
-		extraArgs: [...relaunch.args, ...modelArgs(controller.client, view.to)]
+		extraArgs: [...relaunch.args, ...modelArgs(controller.client, view.to)],
+		intoPane: held?.pane
 	});
 	if (launched.outcome === 'failed' || !launched.hcomName) {
 		following.delete(view.id);
@@ -108,12 +112,14 @@ async function followRelaunch(board: Board, switchId: string, controllerId: stri
 	board.agentActed(controllerId);
 }
 
-/** End a relaunch whose client runs: give its tab the old label and place (a failure is noted)
- *  and mark the switch done. Returns why the log could not be written, or null. */
+/** End a relaunch whose client runs: give its tab the old label and place (a failure is noted),
+ *  unless it runs in the shell held in its old tab, and mark the switch done. Returns why the log
+ *  could not be written, or null. */
 async function finishRelaunch(board: Board, view: SwitchView, found: HerdrAgent): Promise<string | null> {
 	const { config } = board;
 	const relaunch = view.relaunch!;
 	const problems: string[] = [];
+	if (found.pane === view.holdPane) return step(board, view.id, { state: 'done', error: null });
 	if (relaunch.tabLabel) {
 		const renamed = await renameTab(config, found.tab, relaunch.tabLabel);
 		if (!renamed.ok) problems.push(`改分頁名稱失敗：${renamed.reason}`);

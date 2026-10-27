@@ -45,8 +45,8 @@ import type { Controller } from '../board/types.ts';
 import { WAKE_UNKNOWN_REASON, type SentWake } from '../board/wake.ts';
 import type { Board } from './board.ts';
 import { modelLock, readCurrent, readLaunchArgs, readTranscript } from './helper.ts';
-import { killAgent, listAgents, type HcomAgent } from './hcom.ts';
-import { paneExists } from './herdr.ts';
+import { hasHoldTerminal, killAgent, listAgents, type HcomAgent } from './hcom.ts';
+import { closePane, paneExists, paneTab, splitPane } from './herdr.ts';
 import { switchPlace } from './agents.ts';
 import { queued } from './send.ts';
 import { appendSent, readLines, type SwitchStep } from './sent-log.ts';
@@ -200,16 +200,24 @@ export async function startSwitch(board: Board, controller: SwitchTarget, entry:
 /** A first switch: check the client once more, log the switch, stop the client and, once it is
  *  seen to be gone, resume the conversation with the new settings. */
 async function restartSwitch(board: Board, controller: SwitchTarget, entry: SentSwitch, seen: HcomAgent): Promise<Result<SwitchResponse>> {
-	const ready = await recheck(board, controller, seen.name);
-	if ('refuse' in ready) return finish(board, entry, { reason: ready.refuse });
+	// Before the last check, so nothing is awaited between that check and the stop.
+	const hold = await holdShell(board, null, seen.pane);
+	const ready = await recheck(board, controller, seen.name, hold?.beside);
+	if ('refuse' in ready) {
+		await dropHold(board, hold);
+		return finish(board, entry, { reason: ready.refuse });
+	}
 	entry.route = 'restart';
 	entry.state = 'stopping';
 	entry.pane = ready.agent.pane;
+	if (hold) entry.holdPane = hold.pane;
 	try {
 		appendSent(board.config.stateDir, entry);
 	} catch (error) {
+		await dropHold(board, hold);
 		entry.route = null;
 		entry.state = 'refused';
+		entry.holdPane = undefined;
 		entry.error = `寫不進送出紀錄，沒有切換：${(error as Error).message}`;
 		return respond(entry, { reason: entry.error, status: 500 }, (error as Error).message);
 	}
@@ -217,14 +225,15 @@ async function restartSwitch(board: Board, controller: SwitchTarget, entry: Sent
 }
 
 /** The client again just before it is stopped: still this session under the name it had a moment
- *  ago, and still `listening`. */
-async function recheck(board: Board, controller: SwitchTarget, name: string): Promise<{ agent: HcomAgent } | { refuse: string }> {
+ *  ago, still `listening`, and still in the pane a shell was held beside, when one was. */
+async function recheck(board: Board, controller: SwitchTarget, name: string, heldBeside?: string | null): Promise<{ agent: HcomAgent } | { refuse: string }> {
 	const list = await listAgents(board.config);
 	if (!list.ok) return { refuse: `${WAKE_UNKNOWN_REASON}：${list.reason}` };
 	const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
 	if (!agent) return { refuse: notRunningReason(controller) };
 	if (agent.name !== name) return { refuse: `${noun(controller)}的 HCOM 名稱剛剛變了（@${name} → @${agent.name}），沒有切換，請再試一次` };
 	if (agent.status !== 'listening') return { refuse: busyReason(controller) };
+	if (heldBeside !== undefined && agent.pane !== heldBeside) return { refuse: `${noun(controller)}的 Herdr 窗格剛剛變了，沒有切換，請再試一次` };
 	// Stopping closes the pane hcom has for the client; never the one the board itself runs in.
 	if (agent.pane !== null && agent.pane === board.config.ownPane) return { refuse: OWN_PANE_REASON };
 	return { agent };
@@ -237,6 +246,38 @@ async function stopThenResume(board: Board, controller: SwitchTarget, switchId: 
 	if (stopped.state !== 'stopped') return respondLogged(board, switchId, { reason: stopped.error, status: 502 }, logError);
 	if (logError) return respondLogged(board, switchId, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
 	return resumeSwitch(board, controller, switchId, NO_CHOICE);
+}
+
+/** A shell held in the client's tab for the stop: `pane`, split off beside `beside` (null for one
+ *  an earlier stop left), `fresh` when this stop split it. */
+type Hold = { pane: string; beside: string | null; fresh: boolean };
+
+/**
+ * Keep the client's tab, and its place, through the stop: a shell split off beside its pane stays
+ * when the stop closes the pane, and the client comes back in it (`heldPane`) instead of in a new
+ * tab Herdr would add at the end. A shell an earlier stop of this switch left that can still be
+ * used is kept. Called before the last check of the client: the caller logs the shell with the
+ * stop and gives it up (`dropHold`) when there is no stop. Null without hcom's `HOLD_TERMINAL` or
+ * when the split fails: the client comes back in a new tab as before.
+ */
+async function holdShell(board: Board, earlier: string | null | undefined, pane: string | null): Promise<Hold | null> {
+	if (await heldPane(board.config, earlier)) return { pane: earlier!, beside: null, fresh: false };
+	if (!pane || !(await hasHoldTerminal(board.config))) return null;
+	const split = await splitPane(board.config, pane);
+	return 'reason' in split ? null : { pane: split.pane, beside: pane, fresh: true };
+}
+
+/** Close a shell this stop split off when the stop does not run after all. */
+async function dropHold(board: Board, hold: Hold | null): Promise<void> {
+	if (hold?.fresh) await closePane(board.config, hold.pane);
+}
+
+/** The held shell's workspace while Herdr still lists the pane and hcom still has
+ *  `HOLD_TERMINAL` to run a client in it; null otherwise, or when that cannot be told. */
+export async function heldPane(config: Board['config'], pane: string | null | undefined): Promise<{ pane: string; workspace: string } | null> {
+	if (!pane) return null;
+	const [place, terminal] = await Promise.all([paneTab(config, pane), hasHoldTerminal(config)]);
+	return terminal && place && 'tab' in place ? { pane, workspace: place.workspace } : null;
 }
 
 /** Run `hcom kill` and check the client is gone: no longer in hcom's list, and its pane closed. */
@@ -293,12 +334,19 @@ export async function continueSwitch(board: Board, controller: SwitchTarget, ope
 		// Stopped again later than the settings were chosen: the effort to carry is the latest one.
 		// Read before the last check, so nothing is awaited between that check and the stop.
 		const carry = await carried(board, controller, to);
-		const ready = await recheck(board, controller, agent.name);
-		if ('refuse' in ready) return respondLogged(board, open.id, { reason: ready.refuse, status: 409 }, null);
+		const hold = await holdShell(board, open.holdPane, agent.pane);
+		const ready = await recheck(board, controller, agent.name, hold?.beside ?? undefined);
+		if ('refuse' in ready) {
+			await dropHold(board, hold);
+			return respondLogged(board, open.id, { reason: ready.refuse, status: 409 }, null);
+		}
 		// In the log before the stop runs, like a first stop: a board stopped meanwhile, or a result
 		// that cannot be written, must leave this stop's pane to check, not the earlier one.
-		const logError = step(board, open.id, { state: 'stopping', error: null, pane: ready.agent.pane, ...carry });
-		if (logError) return respondLogged(board, open.id, { reason: `寫不進送出紀錄，沒有停止：${logError}`, status: 500 }, logError);
+		const logError = step(board, open.id, { state: 'stopping', error: null, pane: ready.agent.pane, ...carry, ...(hold?.fresh && { holdPane: hold.pane }) });
+		if (logError) {
+			await dropHold(board, hold);
+			return respondLogged(board, open.id, { reason: `寫不進送出紀錄，沒有停止：${logError}`, status: 500 }, logError);
+		}
 		return stopThenResume(board, controller, open.id, ready.agent);
 	}
 	const gone = await isGone(board, controller, open.pane);
@@ -360,7 +408,10 @@ async function resumeSwitch(board: Board, controller: SwitchTarget, switchId: st
 		outcome: 'refused',
 		error: null
 	};
-	const delivered = await resume(board, controller, wake, controller.onAgentTab ? controller.agent?.workspace : undefined);
+	// Back in the shell the stop left in its tab, in that tab's workspace, while it is still open.
+	const held = await heldPane(board.config, view.holdPane);
+	if (held) wake.holdPane = held.pane;
+	const delivered = await resume(board, controller, wake, held?.workspace ?? (controller.onAgentTab ? controller.agent?.workspace : undefined));
 	let logError = delivered.logError;
 	if (!delivered.logged && !logError) {
 		// The resume did not get as far as hcom: kept in the log so the switch shows why.

@@ -32,6 +32,11 @@
 // `kill`, but takes the agent off the list only, and before it sleeps (so a stop that runs out of time
 // has still stopped it): its pane and Herdr agent stay, as `hcom stop` leaves them. `breaksList:
 // { exit, stderr }` makes every list after it fail that way, as `listFail` does.
+// `config terminal --info` is logged to <dir>/hcom-config-calls.jsonl and lists the presets, with
+// `herdr-reuse` among them only when `holdTerminal` is set. A launch or resume with
+// `--terminal herdr-reuse` runs in the pane HCOM_REUSE_PANE names, and its tab, of the fake
+// Herdr's <dir>/herdr.json instead of a new one; it fails, as the preset's `herdr pane run` would,
+// without `holdTerminal` or when the fake Herdr does not list that pane.
 // `events` (the board asks for `stopped` life events in full form, `--after` a time) prints the
 // events of <dir>/hcom-events.jsonl, one JSON object per line as `hcom events --full` does, those
 // at or after `--after` alone; it is logged to <dir>/hcom-events-calls.jsonl. `eventsFail:
@@ -76,6 +81,12 @@ if (args[0] === 'list') {
 	process.exit(0);
 }
 
+if (args[0] === 'config') {
+	appendFileSync(join(dir, 'hcom-config-calls.jsonl'), JSON.stringify(args) + '\n');
+	process.stdout.write(`HCOM_TERMINAL\n\nManaged (open + close on kill):\n  [+] herdr          panes\n${plan.holdTerminal ? '  [+] herdr-reuse    (open + close)\n' : ''}`);
+	process.exit(0);
+}
+
 if (args[0] === 'events') {
 	appendFileSync(join(dir, 'hcom-events-calls.jsonl'), JSON.stringify(args) + '\n');
 	if (plan.eventsFail) {
@@ -92,6 +103,23 @@ if (args[0] === 'events') {
 	const zoned = (/** @type {string} */ ts) => (/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : `${ts}Z`);
 	for (const line of lines) if (Date.parse(zoned(JSON.parse(line).ts)) >= after) process.stdout.write(line + '\n');
 	process.exit(0);
+}
+
+const reusing = args.includes('herdr-reuse');
+/** The Herdr agent as it runs in the pane HCOM_REUSE_PANE names, taken out of the pane list so it
+ *  is listed once; as it is when not run with `--terminal herdr-reuse`. */
+function intoHeld(/** @type {any} */ herdr, /** @type {any} */ agent) {
+	const held = reusing && (herdr.panes ?? []).find((/** @type {any} */ pane) => pane.pane_id === process.env.HCOM_REUSE_PANE);
+	if (!held) return agent;
+	herdr.panes = herdr.panes.filter((/** @type {any} */ pane) => pane !== held);
+	return { ...agent, pane_id: held.pane_id, tab_id: held.tab_id, workspace_id: held.workspace_id };
+}
+
+/** Whether the fake Herdr lists the pane HCOM_REUSE_PANE names. */
+function heldPaneListed() {
+	const herdrFile = join(dir, 'herdr.json');
+	const panes = existsSync(herdrFile) ? (JSON.parse(readFileSync(herdrFile, 'utf8')).panes ?? []) : [];
+	return panes.some((/** @type {any} */ pane) => pane.pane_id === process.env.HCOM_REUSE_PANE);
 }
 
 const log = join(dir, 'hcom-calls.jsonl');
@@ -145,6 +173,9 @@ if (args[0] === 'stop') {
 		process.stderr.write(kill.stderr ?? '');
 		process.exitCode = kill.exit ?? 0;
 	}, kill.sleepMs ?? 0);
+} else if (reusing && !(plan.holdTerminal && heldPaneListed())) {
+	process.stderr.write(`herdr-reuse: no pane ${process.env.HCOM_REUSE_PANE ?? '(HCOM_REUSE_PANE not set)'}\n`);
+	process.exitCode = 1;
 } else {
 	const call = readFileSync(log, 'utf8').trim().split('\n').length;
 	if (args[0] === 'r' && plan.resumed) write(addedFile, JSON.stringify([...added(), plan.resumed]));
@@ -165,7 +196,7 @@ if (args[0] === 'stop') {
 	if (args[0] === 'r' && resumedHerdr) {
 		const herdrFile = join(dir, 'herdr.json');
 		const herdr = existsSync(herdrFile) ? JSON.parse(readFileSync(herdrFile, 'utf8')) : {};
-		const resumed = resumedHerdr;
+		const resumed = intoHeld(herdr, resumedHerdr);
 		herdr.agents = [...(herdr.agents ?? []), resumed];
 		herdr.panes = [...(herdr.panes ?? []), { pane_id: resumed.pane_id, workspace_id: resumed.workspace_id, cwd: resumed.cwd, tab_id: resumed.tab_id }];
 		// Its new tab goes last, as Herdr adds one.
@@ -181,10 +212,13 @@ if (args[0] === 'stop') {
 	if (launchedHerdr) {
 		const herdrFile = join(dir, 'herdr.json');
 		const herdr = existsSync(herdrFile) ? JSON.parse(readFileSync(herdrFile, 'utf8')) : {};
-		for (const { tab_label, ...agent } of [launchedHerdr].flat()) {
+		for (const { tab_label, ...launched } of [launchedHerdr].flat()) {
+			const agent = intoHeld(herdr, launched);
 			herdr.agents = [...(herdr.agents ?? []), agent];
 			herdr.panes = [...(herdr.panes ?? []), { pane_id: agent.pane_id, workspace_id: agent.workspace_id, cwd: agent.cwd, tab_id: agent.tab_id }];
-			herdr.tabs = [...(herdr.tabs ?? []), { tab_id: agent.tab_id, label: tab_label, workspace_id: agent.workspace_id }];
+			if (!herdr.tabs?.some((/** @type {any} */ tab) => tab.tab_id === agent.tab_id)) {
+				herdr.tabs = [...(herdr.tabs ?? []), { tab_id: agent.tab_id, label: tab_label, workspace_id: agent.workspace_id }];
+			}
 		}
 		write(herdrFile, JSON.stringify(herdr));
 	}

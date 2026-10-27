@@ -71,7 +71,7 @@ function setHerdr(sessions: string[]) {
 		join(fixture.dir, 'herdr.json'),
 		JSON.stringify({
 			agents: sessions.map((session) => herdrAgent(session)),
-			panes: sessions.map((session) => ({ pane_id: pane(session), workspace_id: 'wA', cwd: `/projects/${session}` })),
+			panes: sessions.map((session) => ({ pane_id: pane(session), workspace_id: 'wA', tab_id: `wA:t-${session}`, cwd: `/projects/${session}` })),
 			workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
 			tabs: sessions.map((session) => ({ tab_id: `wA:t-${session}`, workspace_id: 'wA', label: `tab-${session}` }))
 		})
@@ -119,6 +119,75 @@ async function restart() {
 	await fixture.refresh(cookie);
 }
 
+test('with hcom\'s herdr-reuse preset a shell is held in the agent\'s tab before the stop, and it is resumed there without moving the tab', async () => {
+	// Planned in a pane and tab of its own: only HCOM_REUSE_PANE puts it in the held one.
+	hcomPlan({ holdTerminal: true, resumed: hcomAgent('clio', 's-claude', 'listening', 'wA:p-new'), resumedHerdr: { ...herdrAgent('s-claude', 'wA:p-new'), tab_id: 'wA:t-new' } });
+	const tabsBefore = JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8')).tabs;
+
+	const switched = await change('s-claude', 'claude-sonnet-5-5', 'high');
+	expect(switched.status).toBe(200);
+	expect(herdrActs()).toEqual([['pane', 'split', 'wA:p-s-claude', '--direction', 'right', '--no-focus']]);
+	const [kill, resume] = hcomCalls();
+	expect(kill).toEqual(['kill', 'clio']);
+	expect(resume).toEqual(['r', 's-claude', '--terminal', 'herdr-reuse', '--no-run-here', '--go', '--model', 'claude-sonnet-5-5', '--effort', 'high']);
+	expect(resumeWorkspaces()).toEqual(['wA']);
+	// The shell is in the log before the stop, so a board restarted meanwhile still finds it.
+	expect(sentLog().find((line) => line.kind === 'switch' && line.id === switched.body.entry!.id)).toMatchObject({ state: 'stopping', holdPane: 'wA:p-s-claude-split' });
+
+	await until(() => sentLog().some((line) => line.kind === 'resume-pane' && line.pane === 'wA:p-s-claude-split'), 5_000, 'the resumed pane noted');
+	await fixture.refresh(cookie);
+	expect(await find('s-claude')).toMatchObject({ inHerdr: true, switch: null, herdr: { pane: 'wA:p-s-claude-split' } });
+	expect(lines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((call: string[]) => call[0] === 'tab' && call[1] === 'move')).toEqual([]);
+	expect(JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8')).tabs).toEqual(tabsBefore);
+});
+
+/** Make the fake Herdr's `pane split` wait this long, or fail. */
+function splitPlan(plan: { slowMs?: number; fail?: boolean }) {
+	const file = join(fixture.dir, 'herdr.json');
+	const herdr = JSON.parse(readFileSync(file, 'utf8'));
+	if (plan.slowMs) herdr.slowMs = { 'pane split': plan.slowMs };
+	if (plan.fail) herdr.fail = { 'pane split': { exit: 1, stderr: 'split refused' } };
+	writeFileSync(file, JSON.stringify(herdr));
+}
+
+test('an agent that starts working while its shell is split off is not stopped, and the shell is closed again', async () => {
+	hcomPlan({ holdTerminal: true });
+	splitPlan({ slowMs: 1500 });
+	const switching = change('s-claude', 'claude-sonnet-5-5', 'high');
+	await new Promise((resolve) => setTimeout(resolve, 500));
+	hcomPlan({ holdTerminal: true, agents: [hcomAgent('clio', 's-claude', 'active'), hcomAgent('coxa', 's-codex')] });
+
+	const refused = await switching;
+	expect(refused.status).toBe(409);
+	expect(hcomCalls()).toEqual([]);
+	expect(herdrActs()).toEqual([
+		['pane', 'split', 'wA:p-s-claude', '--direction', 'right', '--no-focus'],
+		['pane', 'close', 'wA:p-s-claude-split']
+	]);
+});
+
+test('with hcom\'s herdr-reuse preset a split that fails leaves the switch to open a new tab as before', async () => {
+	hcomPlan({ holdTerminal: true, resumed: hcomAgent('clio', 's-claude', 'listening', 'wA:p-new'), resumedHerdr: herdrAgent('s-claude', 'wA:p-new') });
+	splitPlan({ fail: true });
+
+	const switched = await change('s-claude', null, 'high');
+	expect(switched.status).toBe(200);
+	expect(switched.body.entry?.holdPane).toBeUndefined();
+	expect(hcomCalls()[1].slice(0, 5)).toEqual(['r', 's-claude', '--terminal', 'herdr', '--no-run-here']);
+});
+
+test('a held shell is not used on a retry once hcom no longer has the herdr-reuse preset: the resume opens a new tab', async () => {
+	hcomPlan({ holdTerminal: true, exit: 1, stderr: 'resume refused' });
+	const failed = await change('s-claude', null, 'high');
+	expect(failed.status).toBe(502);
+	expect(hcomCalls()[1].slice(0, 4)).toEqual(['r', 's-claude', '--terminal', 'herdr-reuse']);
+
+	hcomPlan({ agents: [hcomAgent('coxa', 's-codex')], resumed: hcomAgent('clio', 's-claude', 'listening', 'wA:p-new'), resumedHerdr: herdrAgent('s-claude', 'wA:p-new') });
+	const retried = await carryOn('s-claude');
+	expect(retried.status).toBe(200);
+	expect(hcomCalls().at(-1)!.slice(0, 4)).toEqual(['r', 's-claude', '--terminal', 'herdr']);
+});
+
 test('a listening agent linked to hcom is stopped and resumed in its own workspace with the new settings', async () => {
 	hcomPlan({ resumed: hcomAgent('clio', 's-claude', 'listening', 'wA:p-new'), resumedHerdr: herdrAgent('s-claude', 'wA:p-new') });
 	const switched = await change('s-claude', 'claude-sonnet-5-5', 'high');
@@ -129,8 +198,8 @@ test('a listening agent linked to hcom is stopped and resumed in its own workspa
 	expect(resume.slice(0, 2)).toEqual(['r', 's-claude']);
 	expect(resume.slice(-4)).toEqual(['--model', 'claude-sonnet-5-5', '--effort', 'high']);
 	expect(resumeWorkspaces()).toEqual(['wA']);
-	// Nothing is typed into the conversation.
-	expect(herdrActs().filter((call) => call[0] === 'agent')).toEqual([]);
+	// Nothing is typed into the conversation, and without hcom's herdr-reuse preset no shell is held.
+	expect(herdrActs().filter((call) => call[0] === 'agent' || call[0] === 'pane')).toEqual([]);
 
 	// Back in Herdr under its session; the switch is over once hcom lists it.
 	await fixture.refresh(cookie);
@@ -462,8 +531,9 @@ async function switchReaches(switchId: string, states: string[], timeoutMs = 14_
 const noRecord = (session: string) => rmSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), { force: true });
 /** After the stop (hcom's first call), hcom starts a fresh client under this name, which Herdr runs
  *  in a new tab at the end unless `runs` is false. */
-function freshPlan(name: string, client: 'claude' | 'codex', runs = true) {
+function freshPlan(name: string, client: 'claude' | 'codex', runs = true, holdTerminal = false) {
 	hcomPlan({
+		holdTerminal,
 		names: [null, name],
 		launched: [null, hcomAgent(name, `s-${name}`, 'listening', `wA:p-${name}`)],
 		launchedHerdr: [
@@ -495,6 +565,23 @@ test('an agent with no saved conversation is started afresh with its launch argu
 	await fixture.refresh(cookie);
 	expect(await find('s-claude')).toBeUndefined();
 	expect(await find('s-nova')).toMatchObject({ hcomName: 'nova', inHerdr: true, herdr: { tabPlace: { label: 'tab-s-claude' } } });
+});
+
+test('with hcom\'s herdr-reuse preset an agent with no saved conversation starts afresh in a shell held in its old tab, left as it is', async () => {
+	noRecord('s-claude');
+	launchArgs('s-claude', ['--dangerously-skip-permissions']);
+	freshPlan('mira', 'claude', true, true);
+
+	const switched = await change('s-claude', null, 'medium');
+	expect(switched.status).toBe(200);
+	expect(herdrActs()).toContainEqual(['pane', 'split', 'wA:p-s-claude', '--direction', 'right', '--no-focus']);
+	expect(hcomCalls().at(-1)).toEqual(['claude', '--dir', '/projects/s-claude', '--terminal', 'herdr-reuse', '--no-run-here', '--go', '--dangerously-skip-permissions', '--effort', 'medium']);
+	await switchReaches(switched.body.entry!.id, ['done']);
+	// Already where it was, under its old label: neither renamed nor moved.
+	expect(herdrActs().filter((call) => call[0] === 'tab')).toEqual([]);
+	expect(lines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((call: string[]) => call[0] === 'tab' && call[1] === 'move')).toEqual([]);
+	await fixture.refresh(cookie);
+	expect(await find('s-mira')).toMatchObject({ inHerdr: true, herdr: { pane: 'wA:p-s-claude-split', tabPlace: { label: 'tab-s-claude' } } });
 });
 
 test('a Codex with no saved conversation is started afresh too, with -c overrides after its own arguments', async () => {

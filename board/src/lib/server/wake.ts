@@ -261,7 +261,8 @@ export async function resume(board: Board, controller: Pick<Controller, 'workspa
 		sessionId: entry.controllerId,
 		herdrWorkspace: workspace.id,
 		prompt: entry.text,
-		extraArgs: entry.extraArgs
+		extraArgs: entry.extraArgs,
+		intoPane: entry.holdPane
 	});
 	entry.outcome = resumed.outcome;
 	entry.error = resumed.reason;
@@ -302,7 +303,8 @@ const fronting = new Set<string>();
  * The new tab goes first in its workspace (`started`: hcom did not fail): the one of the pane hcom
  * listed for it, or else once Herdr runs the session: hcom may not list its pane yet, or, after a
  * model switch's stop, still list the closed one. That pane is noted then, so the board's reads
- * do not move the tab again. Not waited for:
+ * do not move the tab again. A model switch's client back in the shell held in its old tab
+ * (`holdPane`) is already in its place: that tab is not moved. Not waited for:
  * where it ends up does not change the outcome, and a slow Herdr must not hold up the answer.
  * Open pages hear when it moved.
  */
@@ -312,7 +314,7 @@ function toFront(board: Board, entry: SentWake, started: boolean): void {
 	const deadline = config.now() + config.launchWaitMs;
 	const follow = async () => {
 		if (entry.pane) {
-			if ((await tabToFront(config, entry.pane)) === null) board.tabMoved();
+			if (entry.pane !== entry.holdPane && (await tabToFront(config, entry.pane)) === null) board.tabMoved();
 			return;
 		}
 		for (;;) {
@@ -320,7 +322,7 @@ function toFront(board: Board, entry: SentWake, started: boolean): void {
 			const runs = herdr.ok ? resumedIn(entry, herdr.agents) : undefined;
 			if (runs) {
 				appendSent(config.stateDir, { kind: 'resume-pane', wakeId: entry.id, pane: runs.pane, time: new Date(config.now()).toISOString() });
-				if ((await moveToFront(config, runs.tab)) === null) board.tabMoved();
+				if (runs.pane !== entry.holdPane && (await moveToFront(config, runs.tab)) === null) board.tabMoved();
 				return;
 			}
 			if (config.now() >= deadline) return;
@@ -421,7 +423,7 @@ export function settleResumes(
 		try {
 			if (!wake.pane && pane) {
 				log.append({ kind: 'resume-pane', wakeId: wake.id, pane, time: new Date(now).toISOString() });
-				if (!fronting.has(wake.id)) onPane(pane);
+				if (!fronting.has(wake.id) && pane !== wake.holdPane) onPane(pane);
 			}
 			if (running) log.append(resumeClosed(wake.id, 'succeeded', now));
 			else if (verdict && typeof verdict === 'object') log.append(resumeClosed(wake.id, 'failed', now, verdict.failed));
@@ -439,7 +441,7 @@ export function settleResumes(
 		} catch (error) {
 			return (error as Error).message;
 		}
-		if (!fronting.has(wake.id)) onPane(pane);
+		if (!fronting.has(wake.id) && pane !== wake.holdPane) onPane(pane);
 	}
 	return null;
 }

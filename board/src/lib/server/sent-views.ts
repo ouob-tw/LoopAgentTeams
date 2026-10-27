@@ -74,6 +74,7 @@ function switchesOf(lines: readonly Line[], wakes: WakeView[]): SwitchView[] {
 				// Empty while a relaunch's hcom run is on its way.
 				if (step.relaunchedName !== undefined) view.relaunchedName = step.relaunchedName || null;
 				if (step.relaunchedName) view.appliedAt = step.time;
+				if (step.holdPane) view.holdPane = step.holdPane;
 			}
 			const wake = resumes.get(logged.id);
 			if (wake && wake.outcome !== 'failed' && wake.outcome !== 'refused') view.appliedAt = wake.time;

@@ -47,9 +47,10 @@ export function ownEnv(): NodeJS.ProcessEnv {
 /** The environment hcom starts or resumes an agent in: the board's own, as the background service
  *  has it even when the board was started from inside an agent's shell or a Herdr pane, with
  *  Herdr's tab opening in this workspace. */
-function hcomEnv(herdrWorkspace: string): NodeJS.ProcessEnv {
+function hcomEnv(herdrWorkspace: string, intoPane?: string): NodeJS.ProcessEnv {
 	const env = ownEnv();
 	env.HERDR_WORKSPACE_ID = herdrWorkspace;
+	if (intoPane) env.HCOM_REUSE_PANE = intoPane;
 	return env;
 }
 
@@ -72,20 +73,38 @@ function launchResult(run: ExternalResult, action = '啟動'): LaunchResult {
  */
 const IN_A_HERDR_TAB = ['--terminal', 'herdr', '--no-run-here'];
 
+/**
+ * The hcom terminal preset that runs the client in a pane that is already open, named by
+ * HCOM_REUSE_PANE, instead of a new tab: a model switch keeps the old tab, and its place, with a
+ * shell left in it (`splitPane`). It lives in hcom's config.toml, which the board does not write
+ * (see the board's README); without it a switch opens a new tab as before.
+ */
+export const HOLD_TERMINAL = 'herdr-reuse';
+
+/** Where hcom puts the agent: in this pane when one is given, else a new Herdr tab. */
+const terminalArgs = (intoPane?: string) => (intoPane ? ['--terminal', HOLD_TERMINAL, '--no-run-here'] : IN_A_HERDR_TAB);
+
+/** Whether hcom has the `HOLD_TERMINAL` preset, its program found: `hcom config terminal --info`
+ *  lists it marked `[+]`. Not known counts as no. */
+export async function hasHoldTerminal(config: BoardConfig): Promise<boolean> {
+	const run = await runCommand(config.hcomCommand, ['config', 'terminal', '--info'], { timeoutMs: config.hcomListTimeoutMs });
+	return !run.failure && new RegExp(`^\\s*\\[\\+\\]\\s+${HOLD_TERMINAL}\\s`, 'm').test(run.stdout);
+}
+
 /** Start one agent of this client in the folder, with this first message (none when it is
- *  empty), in a new Herdr tab of the workspace. `extraArgs` go to the client, after hcom's own flags.
+ *  empty), in a new Herdr tab of the workspace, or in `intoPane`. `extraArgs` go to the client, after hcom's own flags.
  *  hcom prints the agent's name at once, then waits until the client is ready: `onName` gets the
  *  name as soon as it is printed. */
 export async function launchAgent(
 	config: BoardConfig,
-	launch: { client: LaunchClient; folder: string; herdrWorkspace: string; prompt: string; extraArgs: string[]; onName?: (name: string) => void }
+	launch: { client: LaunchClient; folder: string; herdrWorkspace: string; prompt: string; extraArgs: string[]; intoPane?: string; onName?: (name: string) => void }
 ): Promise<LaunchResult> {
 	const prompt = launch.prompt ? ['--hcom-prompt', launch.prompt] : [];
-	const args = [launch.client, '--dir', launch.folder, ...IN_A_HERDR_TAB, '--go', ...prompt, ...launch.extraArgs];
+	const args = [launch.client, '--dir', launch.folder, ...terminalArgs(launch.intoPane), '--go', ...prompt, ...launch.extraArgs];
 	const { onName } = launch;
 	const run = await runCommand(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
-		env: hcomEnv(launch.herdrWorkspace),
+		env: hcomEnv(launch.herdrWorkspace, launch.intoPane),
 		// Whole lines only: a name cut off in the middle is not the agent's.
 		onStdout: onName && ((stdout) => {
 			const name = launchedName(stdout.slice(0, stdout.lastIndexOf('\n') + 1));
@@ -95,17 +114,18 @@ export async function launchAgent(
 	return launchResult(run);
 }
 
-/** Resume the conversation with this session ID in a new Herdr tab of the workspace, with this
- *  first message (none when it is empty). `extraArgs` go to the client, after hcom's own flags. */
+/** Resume the conversation with this session ID in a new Herdr tab of the workspace, or in
+ *  `intoPane`, with this first message (none when it is empty). `extraArgs` go to the client,
+ *  after hcom's own flags. */
 export async function resumeAgent(
 	config: BoardConfig,
-	resume: { sessionId: string; herdrWorkspace: string; prompt: string; extraArgs: string[] }
+	resume: { sessionId: string; herdrWorkspace: string; prompt: string; extraArgs: string[]; intoPane?: string }
 ): Promise<LaunchResult> {
 	const prompt = resume.prompt ? ['--hcom-prompt', resume.prompt] : [];
-	const args = ['r', resume.sessionId, ...IN_A_HERDR_TAB, '--go', ...prompt, ...resume.extraArgs];
+	const args = ['r', resume.sessionId, ...terminalArgs(resume.intoPane), '--go', ...prompt, ...resume.extraArgs];
 	const run = await runCommand(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
-		env: hcomEnv(resume.herdrWorkspace)
+		env: hcomEnv(resume.herdrWorkspace, resume.intoPane)
 	});
 	return launchResult(run, '接回');
 }

@@ -4,10 +4,11 @@
 // the panes, workspaces, agents and tabs `pane list`, `workspace list`, `agent list` and `tab list`
 // print, the ID `workspace create` answers with (`created`; null leaves it out), and per command
 // ("pane list", "workspace list", "agent list", "tab list", "workspace create", "agent prompt",
-// "agent send-keys", "pane close", "tab rename") a failure to act out, `fail: { exit, stderr }`, or output to
+// "agent send-keys", "pane close", "pane split", "tab rename") a failure to act out, `fail: { exit, stderr }`, or output to
 // print instead, `raw: <text>`. `agent prompt` and `agent send-keys` succeed otherwise, without
 // checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed;
-// `tab rename <tab> <label>` gives the listed tab that label. `reconnect: { <pane>: <agent> }` has an
+// `tab rename <tab> <label>` gives the listed tab that label; `pane split <pane>` adds a pane
+// `<pane>-split` in that pane's tab and workspace, and fails for a pane it does not list. `reconnect: { <pane>: <agent> }` has an
 // `agent prompt` to that pane add the agent to the fake hcom's list (<dir>/hcom-added.json), the way
 // typing `hcom start --as` brings one back.
 // `slowMs: { <command>: ms }` makes a command wait that long before it answers.
@@ -60,6 +61,17 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.pane_id !== args[2]);
 		write(planFile, JSON.stringify(plan));
 		stdout += JSON.stringify({ id: 'cli:pane:close', result: { type: 'ok' } });
+	} else if (command === 'pane split') {
+		const from = (plan.panes ?? []).find((/** @type {any} */ pane) => pane.pane_id === args[2]);
+		if (from) {
+			const pane = { ...from, pane_id: `${from.pane_id}-split` };
+			plan.panes = [...plan.panes, pane];
+			write(planFile, JSON.stringify(plan));
+			stdout += JSON.stringify({ id: 'cli:pane:split', result: { pane, type: 'pane_info' } });
+		} else {
+			stderr += `pane ${args[2]} not found\n`;
+			code = 1;
+		}
 	} else if (command === 'tab move') {
 		const tab = (plan.tabs ?? []).find((/** @type {any} */ candidate) => candidate.tab_id === args[2]);
 		if (tab) {

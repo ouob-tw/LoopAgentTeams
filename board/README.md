@@ -30,12 +30,12 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_CONFIG_DIR` | 看板的設定目錄，放使用者樣式檔 `user.css` | `$XDG_CONFIG_HOME/lat/board` |
 | `LAT_BOARD_INJECT_COMMAND` | 傳話用的輸入指令（JSON 字串陣列），看板會在後面加上 `<HCOM 名稱> <文字> --enter`；文字剛好是 `--help`、`-h`、`--name`、`--go`、`--enter` 這五個之一時，輸入指令會當成自己的選項，所以改分兩次呼叫（第一個字元，再接其餘字元與 `--enter`），輸入框收到的字元不變（這種訊息送出最多慢約 2 秒） | `["hcom","term","inject"]` |
 | `LAT_BOARD_INJECT_TIMEOUT_SECONDS` | 輸入指令多久沒結束就放棄 | `15` |
-| `LAT_BOARD_HCOM_COMMAND` | hcom 指令（JSON 字串陣列）。新建時看板在後面加上 `<client> --dir <資料夾> --terminal herdr --go --hcom-prompt <第一則訊息>`，喚醒接回時加上 `r <session ID> --terminal herdr --go --hcom-prompt <第一則訊息>`（切換 Codex 模型的接回沒有第一則訊息），兩者之後再接選定的模型與思考強度參數；判斷 client 是否還在（每次讀取資料與喚醒前）時加上 `list --json`，切換模型與在「Herdr」分頁關閉有接 HCOM 的 Agent 時加上 `kill <HCOM 名稱>` | `["hcom"]` |
+| `LAT_BOARD_HCOM_COMMAND` | hcom 指令（JSON 字串陣列）。新建時看板在後面加上 `<client> --dir <資料夾> --terminal herdr --go --hcom-prompt <第一則訊息>`，喚醒接回時加上 `r <session ID> --terminal herdr --go --hcom-prompt <第一則訊息>`（切換 Codex 模型的接回沒有第一則訊息），兩者之後再接選定的模型與思考強度參數；判斷 client 是否還在（每次讀取資料與喚醒前）時加上 `list --json`，切換模型與在「Herdr」分頁關閉有接 HCOM 的 Agent 時加上 `kill <HCOM 名稱>`，切換模型停止前加上 `config terminal --info`（查有沒有 `herdr-reuse`，見「接回」一段） | `["hcom"]` |
 | `LAT_BOARD_HCOM_TIMEOUT_SECONDS` | hcom 啟動或接回指令多久沒結束就不再等（含 hcom 自己等 client 就緒的時間）；逾時算「仍在啟動」，不算失敗 | `60` |
 | `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS` | `hcom list --json` 多久沒結束就當成讀不到（此時喚醒不送出，名冊沿用上次的清單）；`hcom kill` 也用這個時間，逾時算「停止結果不明」（關閉 Agent 時算結果不明） | `15` |
 | `LAT_BOARD_MODEL_OPTIONS` | 表單提供的模型與思考強度（JSON），例如 `{"codex":{"models":["gpt-6.1-sol"]}}`；只取代有寫到的 client 與清單，其餘用內建清單 | 內建清單 |
 | `LAT_BOARD_STATUS_POLL_SECONDS`、`LAT_BOARD_STATUS_WORKING_POLL_SECONDS`、`LAT_BOARD_STATUS_POLL_TIMEOUT_SECONDS`、`LAT_BOARD_STATUS_AFTER_ACTION_SECONDS` | Agent 狀態輕量輪詢（只讀 hcom 與 Herdr 的 Agent 清單）：有頁面連著時的間隔、每次讀取的上限、傳話或中斷後補讀的等待 | `5`、`2`、`4`、`2` |
-| `LAT_BOARD_HERDR_COMMAND` | Herdr 指令（JSON 字串陣列），看板會在後面加上 `pane list`、`workspace list`、`workspace create --cwd <專案或所選資料夾> --label <名稱> --no-focus`，以及每次讀取資料時的 `agent list`、`workspace list`、`tab list`，傳話與中斷時的 `agent prompt <窗格> <文字>`、`agent send-keys <窗格> esc`，關閉沒接 HCOM 的 Agent 時的 `pane close <窗格>`，調整分頁順序與改分頁名稱時的 `tab list --workspace <工作區>`、`tab rename <分頁> <名稱>`（「Herdr」分頁） | `["herdr"]` |
+| `LAT_BOARD_HERDR_COMMAND` | Herdr 指令（JSON 字串陣列），看板會在後面加上 `pane list`、`workspace list`、`workspace create --cwd <專案或所選資料夾> --label <名稱> --no-focus`，以及每次讀取資料時的 `agent list`、`workspace list`、`tab list`，傳話與中斷時的 `agent prompt <窗格> <文字>`、`agent send-keys <窗格> esc`，關閉沒接 HCOM 的 Agent 時的 `pane close <窗格>`，切換模型停止前留位的 `pane split <窗格> --direction right --no-focus`，調整分頁順序與改分頁名稱時的 `tab list --workspace <工作區>`、`tab rename <分頁> <名稱>`（「Herdr」分頁） | `["herdr"]` |
 | `LAT_BOARD_HERDR_TIMEOUT_SECONDS` | 每個 Herdr 指令多久沒結束就放棄 | `10` |
 | `HERDR_SOCKET_PATH` | Herdr 的連線介面，用於 CLI 沒有的移動分頁（接回與開新後移到最前面、在「Herdr」分頁調整順序）；逾時同上一項 | `$XDG_CONFIG_HOME/herdr/herdr.sock` |
 | `LAT_BOARD_LAUNCH_WAIT_SECONDS` | 新建後多久還沒出現綁定，就在新建紀錄提示「已開分頁，但主控尚未啟用」；喚醒接回後多久還沒在 hcom 清單出現，就在送出紀錄提示「接回後仍未出現」 | `180` |
@@ -247,6 +247,15 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 接回前先寫一行 `wake`（`pending`，未結案），寫不進去就不執行 hcom；hcom 結束後再追加一行 `resume-result` 記結果。看板在 hcom 執行中停掉，或結果那行寫不進去，這筆接回就維持未結案，由下一次喚醒查證。
 - 接回結果：結束碼 0 記 `started`、結束碼 2 或逾時記 `pending`，兩者都是「未結案」；其他結束碼記 `failed`，直接結案。接回後看板再讀一次 hcom 清單，記下同 session 或同名 Agent 的 `launch_context.pane_id`。
 - 接回開出的新分頁會移到該工作區的最前面（喚醒與切換模型都一樣）：窗格一查到（接回當下，或之後補記 `resume-pane` 時；切換模型的接回只補記，窗格取 Herdr 執行這個 session 的窗格，因為停止後 hcom 清單可能還列著已關閉的舊窗格），看板從 `herdr pane list` 找出它的分頁，再經 Herdr 的連線介面送 `tab.move`（`insert_index: 0`；Herdr 0.9.3 的 CLI 沒有移動分頁的指令）。連線介面預設是 `~/.config/herdr/herdr.sock`，可用 `HERDR_SOCKET_PATH` 指定。移動在結果寫進紀錄之後才做、不等它完成，失敗也不影響接回。
+- 切換模型保留原分頁與位置：hcom 有 `herdr-reuse` 這組開窗設定時（`hcom config terminal --info` 列出 `[+] herdr-reuse`），停止前先在舊窗格旁切出一個空白窗格（`herdr pane split`），再做停止前的最後確認（還要在同一個窗格），與停止一起記下（`switch` 或再次停止的 `switch-step` 的 `holdPane`）；確認沒過或寫不進紀錄就關掉它、不停止。舊窗格關掉後分頁靠它留著。接回（`hcom r`）或重新啟動（沒有對話紀錄時）改用 `--terminal herdr-reuse`，以環境變數 `HCOM_REUSE_PANE` 指定那個窗格，client 直接在原分頁執行，不開新分頁，也不移動或改名分頁（`wake` 記下 `holdPane`，補記窗格時遇到它就不移）。每次接回或重新啟動前都再確認這個窗格還在、hcom 還有這組設定；任一不成立或切分失敗時，照舊開新分頁再移動。接回失敗或放棄切換時，留下的空白窗格不會自動關閉。這組設定寫在 hcom 的 `~/.hcom/config.toml`，看板不會替你寫：
+
+  ```toml
+  [terminal.presets.herdr-reuse]
+  open = ["sh", "-c", "herdr pane run \"$HCOM_REUSE_PANE\" \"bash $1\" >/dev/null && printf '%s\\n' \"$HCOM_REUSE_PANE\"", "hcom-herdr-reuse", "{script}"]
+  close = ["herdr", "pane", "close", "{pane_id}"]
+  binary = "herdr"
+  pane_id_env = "HERDR_PANE_ID"
+  ```
 - 未結案的接回由後來追加的行結案：`resume-closed` 記結果（`succeeded`、`ended`、`abandoned`），`resume-pane` 補記後來才查到的窗格。每次讀取資料讀到的 hcom 清單上出現該 session，就結案為成功。
 - 再次喚醒前的查證依序是：session 在 hcom 清單上 → 結案為成功，改走輸入框；清單上有主控原本的名稱或接回輸出的名稱（含還沒綁定的 Agent）或記下的窗格還在 `herdr pane list` 裡 → 拒絕；記下的窗格已不在 → 結案為已結束，照常接回；沒記到窗格 → 拒絕並回傳可放棄的那一筆（`abandon`）。窗格清單讀不到也拒絕。等待時間只用來顯示提示，不會放行。
 - 閒置主控的資訊頁有「關閉」（`ControllerInfo.svelte`），與 Herdr 分頁的「關閉 Agent」共用 `AgentClose.svelte` 與 `POST /api/agents/close`：拒絕條件、確認與結果通知都相同，確認文字一律說明可以從主控資訊頁喚醒接回，與從 Herdr 分頁打開它時相同。按鈕只在這次讀到的 Herdr 清單上有同一個 session ID 的 Agent 時出現，找不到時說明無法從這裡關閉；它有未完成的模型切換時，與 Agent 頁面一樣不顯示按鈕、只說明要先處理切換；進行中的主控同樣在 Herdr 清單上找得到時有「關閉 Agent」（與 Herdr 分頁的主控頁相同），有接 HCOM 或暫停通訊時旁邊另有「暫停通訊」／「恢復通訊」；有未完成的模型切換時照 Agent 頁只說明要先處理切換。關閉後 session 從 hcom 清單消失，下一次讀取資料就顯示為已關閉。

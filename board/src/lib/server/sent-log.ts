@@ -95,6 +95,9 @@ export interface SwitchStep {
 	carriedEffort?: string | null;
 	/** The HCOM name of the client a relaunch started; empty when a relaunch's hcom run begins. */
 	relaunchedName?: string;
+	/** The shell left beside the client's pane before the stop, which keeps its tab, and that tab's
+	 *  place, for the resumed or relaunched client to run in. */
+	holdPane?: string;
 	time: string;
 }
 

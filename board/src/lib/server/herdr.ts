@@ -114,6 +114,15 @@ export async function paneExists(config: BoardConfig, paneId: string): Promise<{
 	return { exists: paneList.some((pane) => pane.pane_id === paneId) };
 }
 
+/** Split this pane, leaving a plain shell beside it without taking the focus; returns the new
+ *  pane's ID, or why there is none. */
+export async function splitPane(config: BoardConfig, paneId: string): Promise<{ pane: string } | { reason: string }> {
+	const split = await herdr(config, ['pane', 'split', paneId, '--direction', 'right', '--no-focus']);
+	if ('reason' in split) return { reason: `切分 Herdr 窗格失敗：${split.reason}` };
+	const id = (split.result.pane as { pane_id?: unknown } | undefined)?.pane_id;
+	return typeof id === 'string' ? { pane: id } : { reason: '切分 Herdr 窗格失敗：輸出缺少窗格編號' };
+}
+
 /** The tab and workspace of the pane with this ID, null when Herdr does not list it; or why that
  *  cannot be told. */
 export async function paneTab(config: BoardConfig, paneId: string): Promise<{ tab: string; workspace: string } | null | { reason: string }> {

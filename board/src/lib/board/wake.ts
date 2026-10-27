@@ -48,6 +48,9 @@ export interface SentWake {
 	carriedEffort?: string | null;
 	/** The model switch this resume carries out; it has no text then. Null or missing for a wake. */
 	switchId?: string | null;
+	/** The pane left in the switched client's old tab that the resume runs it in, so its tab is not
+	 *  moved; missing when it opens a new tab. */
+	holdPane?: string;
 	outcome: WakeOutcome;
 	/** Why it failed or was refused, or what hcom said about a resume not known to be ready. */
 	error: string | null;

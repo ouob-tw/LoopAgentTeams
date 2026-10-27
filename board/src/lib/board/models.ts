@@ -181,6 +181,9 @@ export interface SentSwitch {
 	 *  makes hcom forget them) and the new settings after them, in a tab named and placed like
 	 *  its old one. */
 	relaunch?: SwitchRelaunch;
+	/** The shell split off beside the client's pane before the stop, which keeps its tab, and that
+	 *  tab's place, for the client to come back in; missing when none was. */
+	holdPane?: string;
 }
 
 export interface SwitchRelaunch {
