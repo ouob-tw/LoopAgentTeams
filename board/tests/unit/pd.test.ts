@@ -90,7 +90,9 @@ test('a denial answers ok, gone, unreachable or failed', () => {
 	expect(denyReply(exited(1, '', 'pd: no pending request #7\n'))).toEqual({ status: 409, body: { error: '這個請求已不在待核准清單（可能已核准、逾時或被拒絕）' } });
 	expect(denyReply(exited(69, '', 'pd: cannot reach pdd\n'))).toEqual({ status: 503, body: { error: '連不上 pd 服務，沒有拒絕' } });
 	expect(denyReply(notStarted)).toEqual({ status: 503, body: { error: '這台主機沒有安裝 pd' } });
-	expect(denyReply(exited(77, '', 'pd: refused: x\n'))).toEqual({ status: 502, body: { error: 'pd 沒有拒絕（結束碼 77）' } });
+	// Settled between pd reading its list and asking to deny it: the daemon refuses.
+	expect(denyReply(exited(77, '', 'pd: refused: x\n'))).toEqual({ status: 409, body: { error: '這個請求已不在待核准清單（可能已核准、逾時或被拒絕）' } });
+	expect(denyReply(exited(2, '', 'usage\n'))).toEqual({ status: 502, body: { error: 'pd 沒有拒絕（結束碼 2）' } });
 });
 
 test('a request’s time counts down from what pd said, or up from its wait without it', () => {

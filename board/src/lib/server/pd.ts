@@ -11,10 +11,13 @@ type Json = Record<string, unknown>;
 const isRecord = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value);
 const text = (value: unknown) => (typeof value === 'string' ? value : '');
 const words = (value: unknown) => (Array.isArray(value) ? value.filter((word) => typeof word === 'string') : []);
-const seconds = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null);
+const wholeSeconds = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null);
 
 /** pd's exit when it cannot reach its daemon (EX_UNAVAILABLE). */
 const EXIT_UNAVAILABLE = 69;
+/** `pd deny <id>`'s exits when the request is not pending: 1 when pd's own list no longer has it,
+ *  the refusal's when it was settled between pd reading the list and asking to deny it. */
+const NOT_PENDING_EXITS = [1, 77];
 const NOT_INSTALLED = '這台主機沒有安裝 pd';
 
 /** A link the page may open: a web address only. */
@@ -57,8 +60,8 @@ export function parsePdPending(run: ExternalResult): PdSnapshot {
 					fields: words(row.fields),
 					command: words(row.argv),
 					cwd: text(row.cwd),
-					waiting: seconds(row.waiting) ?? 0,
-					remaining: seconds(row.remaining),
+					waiting: wholeSeconds(row.waiting) ?? 0,
+					remaining: wholeSeconds(row.remaining),
 					approvalUrl: webAddress(row.approval_url)
 				}
 			];
@@ -75,8 +78,7 @@ export function denyReply(run: ExternalResult): { status: number; body: { ok: tr
 	if (run.code === 0) return { status: 200, body: { ok: true } };
 	if (run.ended === 'not-started') return { status: 503, body: { error: NOT_INSTALLED } };
 	if (run.code === EXIT_UNAVAILABLE) return { status: 503, body: { error: '連不上 pd 服務，沒有拒絕' } };
-	// pd's exit when the request is not pending (any more).
-	if (run.code === 1) return { status: 409, body: { error: '這個請求已不在待核准清單（可能已核准、逾時或被拒絕）' } };
+	if (run.code !== null && NOT_PENDING_EXITS.includes(run.code)) return { status: 409, body: { error: '這個請求已不在待核准清單（可能已核准、逾時或被拒絕）' } };
 	return { status: 502, body: { error: `pd 沒有拒絕（${ended(run)}）` } };
 }
 
@@ -110,7 +112,8 @@ export function createPdPoller(read: () => Promise<PdSnapshot>, options: { inter
 	}
 	function enqueue(): Promise<void> {
 		queued++;
-		tail = tail.then(poll).finally(() => void queued--);
+		// A failed read must not stop the ones after it.
+		tail = tail.then(poll).catch(() => {}).finally(() => void queued--);
 		return tail;
 	}
 	void enqueue();
