@@ -45,8 +45,9 @@ export class LiveBoard {
 	 *  kept while the board still has them recorded and the answered list read does not have them yet. */
 	#recorded: InboxQuestion[] = [];
 
-	constructor(initial: BoardSnapshot) {
+	constructor(initial: BoardSnapshot, pd: PdSnapshot | null = null) {
 		this.snapshot = $state(initial);
+		if (pd) this.pd = { snapshot: pd, at: Date.now() };
 	}
 
 	/** Start listening; returns the function that stops it. */

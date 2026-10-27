@@ -41,7 +41,7 @@
 	let { data } = $props();
 
 	// svelte-ignore state_referenced_locally
-	const board = new LiveBoard(data.snapshot);
+	const board = new LiveBoard(data.snapshot, data.pd);
 	// The notice times read the board's calendar day.
 	$effect.pre(() => {
 		clock.timeZone = board.snapshot.closed.timeZone;

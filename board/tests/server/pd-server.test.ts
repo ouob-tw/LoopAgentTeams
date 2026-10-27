@@ -55,6 +55,10 @@ test('waiting requests reach the page, and 拒絕 denies one through pd deny', a
 		approvalUrl: 'https://pd.example.net/?request=7'
 	});
 	expect(JSON.stringify(watch.pds)).not.toContain('item-uuid');
+	// The page comes with the reading already, so the section does not push the inbox down later.
+	const page = await (await board.fetch('/', { cookie })).text();
+	expect(page).toContain('npm token');
+	expect(page).not.toContain('item-uuid');
 
 	const denied = await deny(board, cookie, 7);
 	expect(denied.status).toBe(200);
