@@ -1,0 +1,4 @@
+{"map": [
+  {"paths": ["board/src/lib/server/pd.ts", "board/src/lib/board/pd.ts", "board/src/routes/api/pd/**", "board/src/lib/components/PdPending.svelte"], "tests": ["board/tests/*/pd*.test.ts"]},
+  {"paths": ["board/tests/*/pd*.test.ts"], "tests": ["board/tests/*/pd*.test.ts"]}
+]}

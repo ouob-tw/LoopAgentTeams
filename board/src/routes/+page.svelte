@@ -31,6 +31,7 @@
 	import Inbox from '#lib/components/Inbox.svelte';
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
+	import PdPending from '#lib/components/PdPending.svelte';
 	import QuotaList from '#lib/components/QuotaList.svelte';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
@@ -445,6 +446,7 @@
 				<AgentList {agents} {controllers} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
 				<ClosedAgents {closed} currentId={agentId} onopen={openAgent} />
 			{:else}
+				<PdPending pd={board.pd} />
 				<Inbox
 					items={listedInbox}
 					asks={openAsks}

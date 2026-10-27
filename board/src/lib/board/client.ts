@@ -3,6 +3,7 @@
 // from a server that is down.
 import { createRequest, type ApiResult } from './api.ts';
 import type { ArchivePage } from './archive.ts';
+import type { PdSnapshot } from './pd.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import type { TranslateMode } from './translate-mode.ts';
 import type { UsageStyle } from './usage.ts';
@@ -21,6 +22,8 @@ export interface ConnectionOptions {
 	onAgentAction?(agentId: string): void;
 	/** The accounts' quotas as the server last read them; not part of the snapshot. */
 	onQuota?(quota: QuotaSnapshot): void;
+	/** pd's waiting requests as the server last read them; not part of the snapshot. */
+	onPd?(pd: PdSnapshot): void;
 	/** How the usage line reads, the same on every device; sent on connecting and at every change. */
 	onUsageStyle?(style: UsageStyle): void;
 	/** Whether conversations open translated, the same on every device; sent on connecting and at every change. */
@@ -105,6 +108,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		else if (event === 'tab-moved') options.onTabMoved?.();
 		else if (event === 'agent-action') options.onAgentAction?.(JSON.parse(data).agentId);
 		else if (event === 'quota') options.onQuota?.(JSON.parse(data));
+		else if (event === 'pd') options.onPd?.(JSON.parse(data));
 		else if (event === 'usage-style') hearStyle(JSON.parse(data));
 		else if (event === 'translate-mode') hearMode(JSON.parse(data));
 	}

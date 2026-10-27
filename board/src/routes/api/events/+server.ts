@@ -2,7 +2,8 @@ import { DEVICE_COOKIE } from '#lib/server/auth.ts';
 import { getBoard } from '#lib/server/board.ts';
 import type { RequestHandler } from './$types';
 
-/** Event stream: `board` carries a full snapshot, `quota` the 額度 tab's reading, `usage-style` how the usage line reads, `translate-mode` whether
+/** Event stream: `board` carries a full snapshot, `quota` the 額度 tab's reading, `pd` pd's
+ *  waiting requests, `usage-style` how the usage line reads, `translate-mode` whether
  *  conversations open translated, `ping` keeps the
  *  connection alive, `unpaired` tells a revoked device to go back to the login screen. */
 export const GET: RequestHandler = async ({ cookies }) => {
@@ -33,6 +34,8 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			send('board', JSON.stringify(await board.current()));
 			const quota = board.quota();
 			if (quota) send('quota', JSON.stringify(quota));
+			const pd = board.pd();
+			if (pd) send('pd', JSON.stringify(pd));
 			send('usage-style', JSON.stringify(board.usageStyle()));
 			send('translate-mode', JSON.stringify(board.translateMode()));
 		},

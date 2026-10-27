@@ -29,6 +29,8 @@ import { HEARTBEAT_MS as ASK_HEARTBEAT_MS, isAskFile, notifyExecuted, readAsks, 
 import type { BoardAsk } from '../board/board-asks.ts';
 import type { QuotaSnapshot } from '../board/quota.ts';
 import { createQuotaPoller, readClaudeQuota, readCodexQuota } from './quota.ts';
+import type { PdSnapshot } from '../board/pd.ts';
+import { createPdPoller, readPdPending } from './pd.ts';
 import { loadUsageStyle, saveUsageStyle } from './usage-style.ts';
 import type { UsageStyle } from '../board/usage.ts';
 import { loadTranslateMode, saveTranslateMode } from './translate-mode.ts';
@@ -83,6 +85,10 @@ export interface Board {
 	agentActed(agentId: string): void;
 	/** The 額度 tab's last reading; null until the first one is done. */
 	quota(): QuotaSnapshot | null;
+	/** pd's waiting requests as last read; null until the first reading is done. */
+	pd(): PdSnapshot | null;
+	/** Read pd's waiting requests now, as after a denial; resolves once every open page was told. */
+	refreshPd(): Promise<void>;
 	/** How the usage line reads on every device. */
 	usageStyle(): UsageStyleState;
 	/** Save the style and tell every open page. Throws, leaving the style as it was, when it cannot be saved. */
@@ -227,6 +233,14 @@ function createBoard(): Board {
 			}
 		}
 	);
+
+	// Also on its own timer: pd missing or its daemon down leaves the rest of the board alone.
+	const pdPoller = createPdPoller(() => readPdPending(config.pdCommand, config.pdTimeoutMs), {
+		intervalMs: config.pdIntervalMs,
+		onChange: (pd) => {
+			for (const stream of streams) stream.send('pd', JSON.stringify(pd));
+		}
+	});
 
 	// Tells the board-ask hook a board runs: without it the hook leaves the client's own menu.
 	touchHeartbeat(config.asksDir);
@@ -658,6 +672,8 @@ function createBoard(): Board {
 			for (const stream of streams) stream.send('agent-action', JSON.stringify({ agentId }));
 		},
 		quota: () => quotaPoller.current(),
+		pd: () => pdPoller.current(),
+		refreshPd: () => pdPoller.refresh(),
 		usageStyle: () => (usageStyle ??= { style: loadUsageStyle(config.stateDir), revision: Date.now() }),
 		setUsageStyle(style) {
 			const revision = board.usageStyle().revision + 1;
@@ -677,6 +693,7 @@ function createBoard(): Board {
 		close() {
 			closed = true;
 			quotaPoller.close();
+			pdPoller.close();
 			clearTimeout(debounce);
 			clearTimeout(fallback);
 			clearTimeout(pollTimer);
