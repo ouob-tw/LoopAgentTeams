@@ -307,3 +307,25 @@ test.skipIf(!CHROME)("at a phone's width the tag shows the duty; a long press ex
 	await tab.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
 	await tab.until(`location.search.includes('controller=')`, 'the controller opened by a tap');
 }, 60_000);
+
+test.skipIf(!CHROME)('opened at a report, another tab stays open when the board data refreshes, and a new opening comes back to the conversation', async () => {
+	await visit(1280);
+	await tab.eval(`${tabButton('回報')}.click()`);
+	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-reports"]'`, 'the reports panel');
+	await tab.eval(`[...document.querySelectorAll('#panel-reports button')].find((b) => b.innerText.includes('交付第一張票')).click()`);
+	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-transcript"]'`, 'the conversation, opened at the report');
+
+	await tab.eval(`${tabButton('工作總表')}.click()`);
+	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-ledger"]'`, 'the ledger panel');
+	// New data reaches the page: the same report comes back as a new object.
+	fixture.report(luna.session_id, { tag: 'DONE', summary: '交付第三張票', hcom_name: 'luna', workspace: luna.workspace });
+	await fixture.refresh(cookie);
+	await tab.until(`${tabButton('回報')}.innerText.includes('3')`, 'the new report counted');
+	await sleep(300);
+	expect(await tab.eval(SHOWN)).toEqual(['panel-ledger']);
+
+	await tab.eval(`${tabButton('回報')}.click()`);
+	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-reports"]'`, 'the reports panel');
+	await tab.eval(`[...document.querySelectorAll('#panel-reports button')].find((b) => b.innerText.includes('交付第一張票')).click()`);
+	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-transcript"]'`, 'the conversation, opened at the report again');
+}, 60_000);

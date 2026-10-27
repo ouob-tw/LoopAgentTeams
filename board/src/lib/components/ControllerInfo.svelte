@@ -97,10 +97,13 @@
 		{ id: 'sent', label: '送出紀錄', count: messaging.sent[controller.id]?.length ?? null },
 		...(agent ? [{ id: 'log', label: '操作紀錄', count: agentControl.logCount(agent.id) } as const] : [])
 	] as const satisfies readonly { id: Tab; label: string; count: number | null }[]);
-	// Opening the target, the same one again too, shows it in the conversation.
+	// Opening the target, the same one again too, shows it in the conversation. Only by its key:
+	// the board's data refreshing hands over the same target as a new object, which must not pull
+	// the user off the tab they chose.
+	const targetKey = $derived(target?.key);
 	$effect.pre(() => {
 		void opens;
-		if (target) tab = 'transcript';
+		if (targetKey) tab = 'transcript';
 	});
 </script>
 
