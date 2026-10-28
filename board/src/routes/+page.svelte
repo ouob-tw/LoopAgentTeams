@@ -706,6 +706,10 @@
 		overflow-y: auto;
 		border-right: 1px solid var(--line);
 	}
+	/* What it covers is out of reach of the keyboard too. */
+	.inbox:has(> :global(.pd)) > :global(:not(.pd)) {
+		visibility: hidden;
+	}
 	.pd-off {
 		margin: 0 0 0.4rem;
 		font-size: max(0.8rem, var(--min-font, 0px));
@@ -1055,6 +1059,13 @@
 		}
 		.viewing .detail {
 			display: flex;
+		}
+		/* An open pd overlay takes the screen over the content too; 稍後 gives it back. */
+		.viewing .inbox:has(> :global(.pd)) {
+			display: block;
+		}
+		.viewing:has(.inbox > :global(.pd)) .detail {
+			display: none;
 		}
 		/* Below the bar, which stays on top. */
 		.placeholder {

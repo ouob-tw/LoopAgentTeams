@@ -80,6 +80,14 @@ test.skipIf(!CHROME)('requests take the middle column\'s place on a phone, with 
 	expect(JSON.parse(readFileSync(join(fixture.dir, 'pd.json'), 'utf8')).pending.map((request: { id: number }) => request.id)).toEqual([4]);
 	expect(await tab.eval<string>(`document.body.innerText`)).toContain('已拒絕 pd 請求 #3（npm token）');
 
+	// Over a screen of the content column too, which 稍後 gives back.
+	await tab.navigate(`${fixture.url}/?controller=gone`);
+	await tab.until(`document.querySelector('.inbox .pd')?.offsetParent !== null && document.querySelector('section.detail').offsetParent === null`, 'the overlay over the content screen');
+	await tab.pointerClick('.pd button.later');
+	await tab.until(`!document.querySelector('.inbox .pd') && document.querySelector('section.detail').offsetParent !== null`, 'the content screen back');
+	await tab.navigate(`${fixture.url}/`);
+	await tab.until(`!!document.querySelector('.inbox .pd .card')`, 'the overlay on the list again');
+
 	setPd({ pending: [] });
 	// Nothing waiting: neither the overlay nor its badge, and the column is back.
 	await tab.until(`!document.querySelector('.inbox .pd, .pd-badge')`, 'no pd overlay when nothing waits');
@@ -106,6 +114,8 @@ test.skipIf(!CHROME)('on a desktop the overlay covers the middle column on every
 			&& !inside(column.left - 20, column.top + 100) && !inside(column.right + 20, column.top + 100);
 	})()`;
 	expect(await tab.eval(COVERS)).toBe(true);
+	// What it covers is out of the keyboard's reach.
+	expect(await tab.eval(`getComputedStyle(document.querySelector('.inbox .middle-tabs')).visibility`)).toBe('hidden');
 	// The same on the other lists, which the page switches behind it.
 	for (const middle of ['agents', 'quota', 'inbox']) {
 		await tab.eval(`document.querySelector('[data-middle="${middle}"]').click()`);
@@ -115,10 +125,10 @@ test.skipIf(!CHROME)('on a desktop the overlay covers the middle column on every
 
 	// 稍後 folds it to a badge above the tabs, which opens it again.
 	await tab.pointerClick('.pd button.later');
-	await tab.until(`!document.querySelector('.inbox .pd') && document.querySelector('.inbox .pd-badge')?.innerText === 'pd 待核准 1'`, 'the badge');
+	await tab.until(`!document.querySelector('.inbox .pd') && document.querySelector('.inbox .pd-badge')?.innerText === 'pd 待核准 1' && document.activeElement === document.querySelector('.pd-badge')`, 'the badge, focused');
 	expect(await tab.eval(`document.querySelector('.pd-badge').nextElementSibling.classList.contains('middle-tabs')`)).toBe(true);
 	await tab.pointerClick('.pd-badge');
-	await tab.until(`!!document.querySelector('.inbox .pd') && !document.querySelector('.pd-badge')`, 'the overlay open again');
+	await tab.until(`document.activeElement === document.querySelector('.inbox .pd') && !document.querySelector('.pd-badge')`, 'the overlay open again, focused');
 
 	// Folded, a new request opens it.
 	await tab.pointerClick('.pd button.later');

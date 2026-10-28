@@ -1,6 +1,6 @@
-// The pd 待核准 section's data: what `pd pending --json` and `pd deny` answered, read into the
-// fields the section shows and the answers the deny and passkey relay routes give, and how the
-// section words a request's time. Test values only.
+// The pd 待核准 overlay's data: what `pd pending --json` and `pd deny` answered, read into the
+// fields the overlay shows and the answers the deny and passkey relay routes give, and how the
+// overlay words a request's time and shortens its command. Test values only.
 import { expect, test } from 'bun:test';
 import { shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';

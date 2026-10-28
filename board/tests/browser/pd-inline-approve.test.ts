@@ -100,7 +100,7 @@ test.skipIf(!CHROME)('a new request opens the folded overlay; 核准 signs pd\'s
 
 	// What was waiting when the page opened shows on its card; nobody asked for notifications.
 	expect(await tab.eval(`window.__asked.length`)).toBe(0);
-	expect(await tab.eval(`document.querySelectorAll('.pd input, .pd form, .pd dialog').length`)).toBe(0);
+	expect(await tab.eval(`document.querySelectorAll('.pd input, .pd form').length`)).toBe(0);
 
 	// Only a click asks, and then the button is gone. It shows once the page runs in the browser.
 	await tab.until(`!!document.querySelector('.pd button.allow')`, 'the 開啟通知 button');

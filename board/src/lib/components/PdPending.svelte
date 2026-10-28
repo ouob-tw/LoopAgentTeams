@@ -35,6 +35,15 @@
 	/** Whether the overlay is open rather than folded to its badge. */
 	let open = $state(true);
 	let overlay = $state<HTMLElement>();
+	let badge = $state<HTMLElement>();
+
+	/** Open or fold the overlay and put the focus on what stands in its place, as the control
+	 *  pressed is gone. */
+	async function show(value: boolean) {
+		open = value;
+		await tick();
+		(value ? overlay : badge)?.focus();
+	}
 
 	const notifications = typeof Notification === 'function';
 	let permission = $state<NotificationPermission>(notifications ? Notification.permission : 'denied');
@@ -42,12 +51,10 @@
 	function notify(item: PdRequest) {
 		if (!notifications || Notification.permission !== 'granted') return;
 		const shown = new Notification(`pd 請求 #${item.id} 等你核准`, { body: `${item.item}：${item.command.join(' ')}`, tag: `pd-${item.id}` });
-		shown.onclick = async () => {
+		shown.onclick = () => {
 			window.focus();
-			open = true;
 			shown.close();
-			await tick();
-			overlay?.focus();
+			void show(true);
 		};
 	}
 
@@ -114,7 +121,7 @@
 		<section class="pd" aria-label="pd 待核准" tabindex="-1" bind:this={overlay}>
 			<header>
 				<h2>pd 待核准 <span class="count">（{requests.length}）</span></h2>
-				<button type="button" class="later" onclick={() => (open = false)}>稍後</button>
+				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
 			</header>
 			<ul class="cards">
 				{#each requests as item (item.id)}
@@ -161,7 +168,7 @@
 			{/if}
 		</section>
 	{:else}
-		<button type="button" class="pd-badge" onclick={() => (open = true)}>pd 待核准 {requests.length}</button>
+		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}>pd 待核准 {requests.length}</button>
 	{/if}
 {/if}
 
