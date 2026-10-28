@@ -1,6 +1,6 @@
 // What a resume adds to the arguments hcom stored, to keep a Claude session's permission mode.
 import { expect, test } from 'bun:test';
-import { permissionArgs } from '../../src/lib/server/permission.ts';
+import { codexKeepArgs, permissionArgs } from '../../src/lib/server/permission.ts';
 
 test('the mode is added when the stored arguments leave it to the default or give another', () => {
 	expect(permissionArgs([], 'bypassPermissions')).toEqual(['--permission-mode', 'bypassPermissions']);
@@ -35,4 +35,19 @@ test('stored with the bypass flag, another mode also turns bypass permissions of
 	expect(permissionArgs(before, 'default')).toEqual(['--permission-mode', 'default']);
 	// Other settings of its own are not the one that turns bypass permissions off.
 	expect(permissionArgs([...forced, '--settings', '{}', '--permission-mode', 'auto'], 'auto')).toEqual(['--settings', DISABLE_BYPASS, '--permission-mode', 'auto']);
+});
+
+test("a Codex session's mode is given again on a resume, with hcom's folder for a sandboxed one", () => {
+	expect(codexKeepArgs({ approval: 'on-request', sandbox: 'workspace-write', reviewer: 'user' }, ['--yolo'], '/h/.hcom')).toEqual([
+		'-c', 'default_permissions=":workspace"', '-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="user"', '--add-dir', '/h/.hcom'
+	]);
+	expect(codexKeepArgs({ approval: 'never', sandbox: 'danger-full-access', reviewer: 'user' }, [], '/h/.hcom')).toEqual([
+		'-c', 'default_permissions=":danger-full-access"', '-c', 'approval_policy="never"', '-c', 'approvals_reviewer="user"'
+	]);
+	// Forced by the stored --yolo already: nothing added.
+	expect(codexKeepArgs({ approval: 'never', sandbox: 'danger-full-access', reviewer: 'user' }, ['--model', 'x', '--yolo'], '/h/.hcom')).toEqual([]);
+	// A mode the board does not switch to, or a record that cannot tell, is left to the stored arguments.
+	expect(codexKeepArgs({ approval: 'on-request', sandbox: 'read-only', reviewer: 'user' }, [], '/h/.hcom')).toEqual([]);
+	expect(codexKeepArgs({ approval: 'on-request', sandbox: 'workspace-write' }, [], '/h/.hcom')).toEqual([]);
+	expect(codexKeepArgs(null, [], '/h/.hcom')).toEqual([]);
 });

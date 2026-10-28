@@ -44,6 +44,7 @@ beforeEach(async () => {
 	setHerdr({});
 	fixture.setHcom({ agents: [hcomAgent('clio', 's-claude'), hcomAgent('coxa', 's-codex')] });
 	lastTurn('s-codex', 'gpt-6.1-sol');
+	rmSync(join(fixture.dir, 'transcripts', 's-codex.permission.json'), { force: true });
 	await fixture.refresh(cookie);
 });
 
@@ -287,4 +288,18 @@ test("the agent in the board's own pane is offered no switch, and none is presse
 	const refused = await post({ session: 's-own', mode: 'auto' });
 	expect(refused.status).toBe(409);
 	expect(keyPresses()).toEqual([]);
+});
+
+test('a later resume of a Codex agent in a sandboxed mode gives the mode again, with hcom\'s folder', async () => {
+	// Its latest turn ran in Ask for approval, after a permission switch left hcom no stored arguments.
+	writeFileSync(join(fixture.dir, 'transcripts', 's-codex.permission.json'), JSON.stringify({ approval: 'on-request', sandbox: 'workspace-write', reviewer: 'user' }));
+	fixture.setHcom({ agents: [hcomAgent('clio', 's-claude'), hcomAgent('coxa', 's-codex')], resumed: hcomAgent('coxa', 's-codex') });
+	await fixture.refresh(cookie);
+	const switched = await fixture.fetch('/api/agents/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-codex', model: null, effort: 'high' }), cookie });
+	expect(switched.status).toBe(200);
+	const resume = hcomCalls().find((call) => call[0] === 'r')!;
+	expect(resume.slice(resume.indexOf('--go') + 1)).toEqual([
+		'-c', 'default_permissions=":workspace"', '-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="user"', '--add-dir', join(fixture.dir, 'home', '.hcom'),
+		'-c', 'model_reasoning_effort="high"'
+	]);
 });
