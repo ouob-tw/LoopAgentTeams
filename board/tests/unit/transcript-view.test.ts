@@ -3,6 +3,7 @@
 import { expect, test } from 'bun:test';
 import {
 	askPlaces,
+	pdRunPlace,
 	segments,
 	toolLine,
 	toolsSummary,
@@ -106,4 +107,26 @@ test('an earlier page that arrives after the latest page jumped ahead is dropped
 
 	expect(seqs(after.items)).toEqual(seqs(texts(151, 200)));
 	expect(after.before).toBe(151);
+});
+
+test('a pd request is found at the `pd run` that made it: its command first, then the nearest in time', () => {
+	const at = Date.parse('2026-10-29T10:00:00Z');
+	const time = (seconds: number) => new Date(at + seconds * 1000).toISOString();
+	const tool = (seq: number, seconds: number, detail: string) => ({ seq, kind: 'tool' as const, time: time(seconds), name: 'Bash', label: '執行指令', detail, error: false });
+	const items = [
+		tool(1, -200, 'pd run -- gh api user'),
+		tool(2, -40, 'pd run -- python3 /home/u/tools/npm_login.py'),
+		tool(3, -2, 'pd …'),
+		tool(4, -1, 'ls /home/u'),
+		tool(5, -900, 'pd run -- python3 /home/u/tools/npm_login.py')
+	];
+	const look = { at, command: ['python3', '/home/u/tools/npm_login.py'] };
+	// The one whose command shows, though another pd call is nearer; one too long ago does not count.
+	expect(pdRunPlace({ items, before: null, skipped: 0 }, look)).toBe(2);
+	// Without one showing the command, the nearest pd call.
+	expect(pdRunPlace({ items: [items[0], items[2], items[3]], before: null, skipped: 0 }, look)).toBe(3);
+	// None near: null once the pages reach back far enough or the conversation starts, else undefined.
+	expect(pdRunPlace({ items: [items[3], items[4]].sort((a, b) => a.seq - b.seq), before: null, skipped: 0 }, look)).toBeNull();
+	expect(pdRunPlace({ items: [items[3]], before: 40, skipped: 0 }, look)).toBeUndefined();
+	expect(pdRunPlace({ items: [tool(0, -1000, 'ls'), items[3]], before: 40, skipped: 0 }, look)).toBeNull();
 });

@@ -215,10 +215,6 @@ test.skipIf(!CHROME)('on a desktop the window floats over the middle column on e
 	await tab.navigate(`${fixture.url}/`);
 	await tab.until(SETTLED, 'the window after a reload');
 	expect(await tab.eval(RECT)).toEqual({ x: 1280 - 360, y: 0, w: 360, h: 200 });
-	// 復位 puts it back over the column and forgets the place.
-	await tab.pointerClick('.pd button.reset');
-	await tab.until(`!document.querySelector('.pd button.reset') && localStorage.getItem('lat-board-pd-window') === null`, 'the default place back');
-	expect(await tab.eval(DEFAULT)).toBe(true);
 
 	// 稍後 folds it to a badge above the tabs, which opens it again.
 	await tab.pointerClick('.pd button.later');

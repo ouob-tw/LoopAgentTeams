@@ -122,6 +122,39 @@ async function main() {
 		talk('s-idle', [['user', '先停在這裡']]);
 		for (const session of ['s-old1', 's-old2']) talk(session, [['user', '做完這張票'], ['assistant', '做完了。']]);
 
+		// pd: requests waiting for approval, from luna (pd vouched for it), rana (it did not) and one
+		// that only names itself, the first two made by a `pd run` in their conversations, so 查看對話
+		// has a step to find; their clocks run on as pd's do.
+		const step = (session: string, ago: number, name: string, detail: string) =>
+			appendFileSync(join(dir, 'transcripts', `${session}.jsonl`), JSON.stringify({ kind: 'tool', time: iso(now - ago), name, label: '執行指令', detail, error: false }) + '\n');
+		step('s-luna', 100_000, 'Bash', 'ls /tmp/scratch');
+		step('s-luna', 90_000, 'Bash', 'pd run --item npm-s1 -- python3 /tmp/scratch/npm_login.py');
+		step('s-rana', 60_000, 'exec', 'pd …');
+		const caller = (name: string, client: string, verified: boolean) => ({
+			name, client, group: null, orchestrator: true, source: 'auto', pid: verified ? 4242 : null, start_time: verified ? 98765 : null, program: verified ? client : null, verified, notice: '程序樹查證，非防竄改'
+		});
+		const pdRequest = (id: number, waiting: number, item: string, argv: string[], extra: Record<string, unknown>) => ({
+			id, waiting, remaining: 900 - waiting, item, item_id: `demo-${id}`, fields: ['username', 'password'], argv, cwd: '/home/someone/projects/board', ...extra
+		});
+		const pdFile = join(dir, 'pd.json');
+		writeFileSync(pdFile, JSON.stringify({ pending: [
+			pdRequest(3, 90, 'npm s1', ['python3', '/tmp/scratch/npm_login.py'], { caller: 'luna', caller_info: caller('luna', 'claude', true) }),
+			pdRequest(4, 60, 'GitHub token', ['gh', 'api', 'user', '--jq', '.login'], { caller: 'rana', caller_info: caller('rana', 'codex', false) }),
+			pdRequest(5, 10, 'Cloudflare API key', ['curl', '-H', 'Authorization'], { caller: 'codex' })
+		] }));
+		setInterval(() => {
+			try {
+				const state = JSON.parse(readFileSync(pdFile, 'utf8'));
+				for (const request of state.pending ?? []) {
+					request.waiting += 5;
+					if (typeof request.remaining === 'number') request.remaining = Math.max(0, request.remaining - 5);
+				}
+				writeFileSync(pdFile, JSON.stringify(state));
+			} catch {
+				// Removed or being rewritten: the next tick tries again.
+			}
+		}, 5_000);
+
 		// 額度: claude-swap and codex-multi-auth.
 		const usageWindow = (pct: number, resetsAt: number) => ({ pct, resetsAt: iso(resetsAt).replace('Z', '+00:00') });
 		writeFileSync(join(dir, 'cswap.json'), JSON.stringify({ output: {

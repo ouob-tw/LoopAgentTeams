@@ -7,7 +7,7 @@
 	// and the signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it
 	// through the board at once, as `pd deny` does without a code. On a wide screen it floats over
 	// the middle column at first; its heading drags it and its corner resizes it, and that place is
-	// kept in this browser until 復位. 稍後 folds it to a one-line badge above the column's tabs,
+	// kept in this browser. 稍後 folds it to a one-line badge above the column's tabs,
 	// which opens it again; a request that appears opens it too and, once the user allowed it (the
 	// 開啟通知 button, never asked for unprompted), raises a browser notification whose click comes
 	// back to it. With nothing waiting it is not shown; the page says on the 待辦 list when pd is
@@ -31,14 +31,27 @@
 		type PdSnapshot
 	} from '#lib/board/pd.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
-	import { forget, remember, rememberedText } from '#lib/board/prefs.ts';
+	import { remember, rememberedText } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import ExplainTip from './ExplainTip.svelte';
 
 	/** `open`: whether it is open rather than folded to its badge. `onaway` takes the focus when
 	 *  folding leaves no badge on screen: a phone hides the middle column, badge and all, while it
-	 *  shows a content screen. */
-	let { pd, open = $bindable(true), onaway }: { pd: { snapshot: PdSnapshot; at: number } | null; open?: boolean; onaway?: () => void } = $props();
+	 *  shows a content screen. `onlook` opens a request's caller's conversation at its `pd run`
+	 *  (查看對話), for a request `lookable` says the board knows the caller of. */
+	let {
+		pd,
+		open = $bindable(true),
+		onaway,
+		lookable,
+		onlook
+	}: {
+		pd: { snapshot: PdSnapshot; at: number } | null;
+		open?: boolean;
+		onaway?: () => void;
+		lookable?: (item: PdRequest) => boolean;
+		onlook?: (item: PdRequest) => void;
+	} = $props();
 
 	const requests = $derived(pd?.snapshot.ok ? pd.snapshot.requests : []);
 	let now = $state(Date.now());
@@ -115,10 +128,6 @@
 		if (!gesture) return;
 		gesture = null;
 		if (box) remember(PD_WINDOW_KEY, JSON.stringify(box));
-	}
-	function resetPlace() {
-		box = null;
-		forget(PD_WINDOW_KEY);
 	}
 	const place = $derived(wide && box ? `left: ${box.x}px; top: ${box.y}px; width: ${box.w}px; height: ${box.h}px;` : undefined);
 
@@ -220,7 +229,7 @@
 	{#if open}
 		<section class="pd" class:moving={gesture} style={place} aria-label="pd 待核准" tabindex="-1" bind:this={panel}>
 			<!-- The heading drags the window in the wide layout; its buttons stay buttons. Dragging is a
-			     pointer's convenience: the window works where it opens, and 復位 brings it back. -->
+			     pointer's convenience: the window works where it opens, and stays on screen. -->
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<header class:handle={wide} onpointerdown={(event) => begin(event, false)} onpointermove={follow} onpointerup={end} onpointercancel={end}>
 				<h2>pd 待核准 <span class="count">{requests.length}</span></h2>
@@ -240,9 +249,6 @@
 				{/if}
 				{#if notifications && permission === 'default'}
 					<button type="button" class="allow" title="有新的 pd 請求時發瀏覽器通知（只在看板開著時）" onclick={() => void allowNotifications()}>開啟通知</button>
-				{/if}
-				{#if wide && box}
-					<button type="button" class="reset" title="回到中間欄上的預設位置與大小" onclick={resetPlace}>復位</button>
 				{/if}
 				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
 			</header>
@@ -297,6 +303,17 @@
 							<button type="button" class="deny" disabled={denying.includes(item.id)} onclick={() => void deny(item)}
 								>{denying.includes(item.id) ? '拒絕中…' : '拒絕'}</button
 							>
+							{#if lookable?.(item)}
+								<!-- A caller pd did not vouch for may not be the one that asked: said on the button, and on
+								     the step it finds. -->
+								<button
+									type="button"
+									class="look"
+									title={item.callerInfo?.verified ? undefined : '可能不準：pd 沒有查證呼叫者'}
+									aria-describedby={item.callerInfo?.verified ? undefined : `pd-caller-${item.id}`}
+									onclick={() => onlook?.(item)}>查看對話</button
+								>
+							{/if}
 						</p>
 					</li>
 				{/each}
@@ -407,8 +424,7 @@
 		text-align: center;
 	}
 	.later,
-	.allow,
-	.reset {
+	.allow {
 		padding: 0.2rem 0.6rem;
 		background: none;
 		border-color: transparent;
@@ -416,8 +432,7 @@
 		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	.later:hover,
-	.allow:hover,
-	.reset:hover {
+	.allow:hover {
 		color: var(--text);
 		border-color: var(--line);
 	}
@@ -599,6 +614,18 @@
 	.deny:hover {
 		border-color: var(--danger);
 	}
+	/* Beside the decision, not part of it. */
+	.actions .look {
+		margin-left: auto;
+		padding: 0.3rem 0.6rem;
+		background: none;
+		border-color: transparent;
+		color: var(--accent);
+		font-size: max(0.85rem, var(--min-font, 0px));
+	}
+	.actions .look:hover {
+		border-color: var(--line);
+	}
 	/* Folded: one line that opens it again. */
 	.pd-badge {
 		display: block;
@@ -638,7 +665,7 @@
 		dt:not(:first-child) {
 			margin-top: 0.3rem;
 		}
-		.actions > button {
+		.actions > button:not(.look) {
 			flex: 1;
 		}
 	}

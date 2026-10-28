@@ -20,11 +20,13 @@
 	import { splitAttachments } from '#lib/board/attachments.ts';
 	import { answering } from '#lib/board/answering.svelte.ts';
 	import { RenderedMarkdown } from '#lib/board/markdown.ts';
+	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
 		import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { BoardAsk } from '#lib/board/board-asks.ts';
 	import {
 		askPlaces,
 		isQuestion,
+		pdRunPlace,
 		questionPlace,
 		reportPlace,
 		segments,
@@ -44,7 +46,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	import { isEnglish, Translations, type Translation } from '#lib/board/translate.ts';
 	import { itemLabel, type Controller, type InboxQuestion, type InboxReport } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
-	import { onMount, untrack, type Snippet } from 'svelte';
+	import { onMount, tick, untrack, type Snippet } from 'svelte';
 	import CopyButton from './CopyButton.svelte';
 	import AttachmentList from './AttachmentList.svelte';
 	import BoardAskCard from './BoardAskCard.svelte';
@@ -440,6 +442,41 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const margin = at === undefined ? parseFloat(getComputedStyle(element).scrollMarginTop) || 0 : at - portTop;
 		tail.style.height = `${Math.max(0, Math.ceil(port - margin - below))}px`;
 	}
+	/** The pd request the pd window's 查看對話 asked for in this conversation, until it is placed. */
+	const pdTarget = $derived(pdLooking.target?.id === id ? pdLooking.target : null);
+	/** Whose conversation `view` holds: for a moment after another is opened, still the last one's. */
+	let viewOf = $state<string | null>(null);
+	const pdView = $derived(viewOf === id ? view : null);
+	const pdFound = $derived(pdTarget && pdView ? pdRunPlace(pdView, pdTarget) : undefined);
+	/** Its `pd run`, marked once found; `unsure` when pd could not vouch for the caller. */
+	let pdHit = $state<{ seq: number; unsure: boolean } | null>(null);
+	// Earlier parts until its `pd run` is found or lies too far back; then it is shown, or, when
+	// none fits or the earlier parts cannot be read, the newest part with a word why.
+	$effect(() => {
+		if (pdTarget && pdView && pdFound === undefined && !loadingEarlier && !earlierFailed) untrack(() => void loadEarlier());
+	});
+	$effect(() => {
+		if (!pdTarget || !pdView) return;
+		const seq = pdFound === undefined && earlierFailed ? null : pdFound;
+		if (seq === undefined) return;
+		const unsure = pdTarget.unsure;
+		pdLooking.done();
+		untrack(() => void showPdRun(seq, unsure));
+	});
+	async function showPdRun(seq: number | null, unsure: boolean) {
+		if (seq === null) {
+			pdHit = null;
+			list?.scrollIntoView({ block: 'start' });
+			toasts.show('failed', '對話裡找不到這次 pd 請求的那一步，先顯示最新的部分。');
+			return;
+		}
+		const group = shown.find((row) => row.kind === 'tools' && row.items.some((tool) => tool.seq === seq));
+		if (group) opened[group.key] = true;
+		pdHit = { seq, unsure };
+		await tick();
+		list?.querySelector('[data-pd-hit]')?.scrollIntoView({ block: 'center' });
+	}
+
 	// Earlier parts until the report's text is found or the conversation starts.
 	$effect(() => {
 		if (target && view && place === undefined && !loadingEarlier && !earlierFailed) untrack(() => void loadEarlier());
@@ -448,6 +485,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	$effect(() => {
 		const controllerId = id;
 		view = null;
+		viewOf = null;
+		pdHit = null;
 		usage = null;
 		problem = null;
 		opened = {};
@@ -468,6 +507,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
 			if (update.ok) {
 				view = withLatest(view, update.page);
+				viewOf = controllerId;
 				targetAtLastPage = untrack(() => judgedId) ?? null;
 				// The command line's label shows what the latest turn used.
 				switching.current[controllerId] = update.page.current ?? null;
@@ -600,7 +640,11 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 							{#if opened[segment.key]}
 								<ul>
 									{#each segment.items as tool (tool.seq)}
-										<li class:failed={tool.error}>{toolLine(tool)}</li>
+										<li class:failed={tool.error} class:pd-hit={pdHit?.seq === tool.seq} data-pd-hit={pdHit?.seq === tool.seq || undefined}
+											>{toolLine(tool)}{#if pdHit?.seq === tool.seq && pdHit.unsure}<span class="unsure" title="pd 沒有查證呼叫者，這一步可能不是那個請求的"
+													>可能不準</span
+												>{/if}</li
+										>
 									{/each}
 								</ul>
 							{/if}
@@ -795,6 +839,27 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	}
 	.failed {
 		color: var(--danger);
+	}
+	/* The `pd run` the pd window's 查看對話 asked for. */
+	.pd-hit {
+		margin: 0 -0.4rem;
+		padding: 0.1rem 0.4rem;
+		border-left: 3px solid var(--warn);
+		border-radius: calc(var(--radius) - 4px);
+		background: color-mix(in srgb, var(--warn) 14%, transparent);
+		scroll-margin: 4rem;
+	}
+	:global(:root[data-theme='light']) .pd-hit {
+		background: none;
+		outline: 2px solid var(--warn);
+	}
+	.unsure {
+		margin-left: 0.5rem;
+		padding: 0 0.4rem;
+		border: 1px solid var(--warn);
+		border-radius: var(--radius-pill);
+		font-size: max(0.75rem, var(--min-font, 0px));
+		color: var(--warn);
 	}
 	.note,
 	.empty {

@@ -206,3 +206,41 @@ export function questionPlace(
 	if (view.before !== null && !(since && first && Date.parse(first) <= Date.parse(since))) return undefined;
 	return null;
 }
+
+/** A pd request looked for in its caller's conversation: when it was made and the command it runs. */
+export interface PdLook {
+	/** The conversation, by the ID its feed is read with: a controller's, or an agent's session. */
+	id: string;
+	/** When the request was made, in ms. */
+	at: number;
+	command: string[];
+	/** Whether pd could not vouch for the caller, so the conversation may not be the right one. */
+	unsure: boolean;
+}
+
+/** How far from the request's time its `pd run` may be. */
+const PD_NEAR_MS = 5 * 60_000;
+
+/**
+ * Where the `pd run` that made a request is in the conversation, as the operation's `seq`: an
+ * operation running pd within a few minutes of the request, one whose shown command has every word
+ * of the request's command first (a long or quoted command shows only as `pd …`), then the nearest
+ * in time. Undefined while the pages loaded do not reach that far back; null once they do and
+ * nothing fits.
+ */
+export function pdRunPlace(view: TranscriptView, look: Pick<PdLook, 'at' | 'command'>): number | null | undefined {
+	const near = view.items.filter(
+		(item): item is TranscriptTool => item.kind === 'tool' && /^pd( |$)/.test(item.detail) && !!item.time && Math.abs(Date.parse(item.time) - look.at) <= PD_NEAR_MS
+	);
+	const words = look.command.map((word) => word.split('/').pop() || word);
+	const score = (item: TranscriptTool) => [words.every((word) => item.detail.includes(word)) ? 0 : 1, Math.abs(Date.parse(item.time!) - look.at)];
+	const best = near.reduce<TranscriptTool | null>((best, item) => {
+		if (!best) return item;
+		const [a, b] = [score(item), score(best)];
+		return a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]) ? item : best;
+	}, null);
+	if (best) return best.seq;
+	const first = view.items[0]?.time;
+	if (view.before !== null && !(first && Date.parse(first) < look.at - PD_NEAR_MS)) return undefined;
+	return null;
+}

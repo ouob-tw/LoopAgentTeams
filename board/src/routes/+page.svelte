@@ -32,6 +32,8 @@
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
 	import PdPending from '#lib/components/PdPending.svelte';
+	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
+	import type { PdRequest } from '#lib/board/pd.ts';
 	import QuotaList from '#lib/components/QuotaList.svelte';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
@@ -190,6 +192,24 @@
 	/** Whether the pd window is open rather than folded to its badge. */
 	let pdOpen = $state(true);
 	let pdBanner = $state<HTMLElement>();
+	/** Who asked for a pd request, as the board knows them by HCOM name: a roster controller, else a
+	 *  Herdr agent; both are opened at their conversation by the same session ID. */
+	function pdCaller(item: PdRequest): { place: Place; id: string } | null {
+		const name = item.callerInfo?.name ?? item.caller;
+		const controller = controllers.find((candidate) => candidate.hcomName === name);
+		if (controller) return { place: { kind: 'controller', id: controller.id }, id: controller.id };
+		const id = agents.find((candidate) => candidate.hcomName === name && candidate.id)?.id;
+		return id ? { place: { kind: 'agent', id }, id } : null;
+	}
+	/** 查看對話: the caller's conversation at the request's `pd run`, from when pd says it was made. A
+	 *  phone folds the sheet, which would cover it. */
+	function lookAtCaller(item: PdRequest) {
+		const caller = pdCaller(item);
+		if (!caller || !board.pd) return;
+		pdLooking.look({ id: caller.id, at: board.pd.at - item.waiting * 1000, command: item.command, unsure: !item.callerInfo?.verified });
+		navigation.go(caller.place);
+		if (!matchMedia('(min-width: 761px)').matches) pdOpen = false;
+	}
 
 	const openKey = $derived(view?.kind === 'item' ? view.item.key : null);
 	const listed = $derived(known.some((item) => item.key === openKey));
@@ -442,7 +462,14 @@
 
 		<section class="inbox">
 			<!-- A window over the column (a sheet on a phone) while a pd request waits; its badge at the top of the column once folded. -->
-			<PdPending bind:this={pdPending} bind:open={pdOpen} pd={board.pd} onaway={() => (pdBanner ?? detail).focus({ preventScroll: true })} />
+			<PdPending
+				bind:this={pdPending}
+				bind:open={pdOpen}
+				pd={board.pd}
+				onaway={() => (pdBanner ?? detail).focus({ preventScroll: true })}
+				lookable={(item) => pdCaller(item) !== null}
+				onlook={lookAtCaller}
+			/>
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
 			     views, as the list they switch has no panel of its own around it. -->
 			<div class="middle-tabs" role="group" aria-label="清單">
