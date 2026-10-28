@@ -1,20 +1,22 @@
 <script lang="ts">
 	// The pd 待核准 window, over whichever screen the board shows: one card per request pd's daemon
-	// holds for approval, with what it asks for, the time it has left, who asked
-	// and its command on short lines that a tap opens to the whole command, folder and caller, with
-	// what pd's check of the caller is worth. 核准 signs pd's one-time challenge with the user's
-	// passkey right here (rpId ouob.net); the board server only relays the challenge and the
-	// signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it through
-	// the board at once, as `pd deny` does without a code. On a wide screen it floats over the middle
-	// column at first; its heading drags it and its corner resizes it, and that place is kept in this
-	// browser until 復位. 稍後 folds it to a one-line badge above the column's tabs, which opens it again; a request that appears opens it too and, once the user
-	// allowed it (the 開啟通知 button, never asked for unprompted), raises a browser notification
-	// whose click comes back to it. With nothing waiting it is not shown; the page says on the 待辦
-	// list when pd is missing or down.
+	// holds for approval, with what it asks for, the time it has left, who asked and its command on
+	// short lines that a tap opens to the whole command, folder and caller; what pd's check of the
+	// caller is worth is in the box its mark explains itself with. 核准 signs pd's one-time challenge
+	// with the user's passkey right here (rpId ouob.net); the board server only relays the challenge
+	// and the signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it
+	// through the board at once, as `pd deny` does without a code. On a wide screen it floats over
+	// the middle column at first; its heading drags it and its corner resizes it, and that place is
+	// kept in this browser until 復位. 稍後 folds it to a one-line badge above the column's tabs,
+	// which opens it again; a request that appears opens it too and, once the user allowed it (the
+	// 開啟通知 button, never asked for unprompted), raises a browser notification whose click comes
+	// back to it. With nothing waiting it is not shown; the page says on the 待辦 list when pd is
+	// missing or down.
 	import { onMount, tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import {
 		assertionJson,
+		callerNote,
 		callerParts,
 		callerText,
 		clampBox,
@@ -28,8 +30,10 @@
 		type PdRequest,
 		type PdSnapshot
 	} from '#lib/board/pd.ts';
+	import { Explainer } from '#lib/board/explain.svelte.ts';
 	import { forget, remember, rememberedText } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
+	import ExplainTip from './ExplainTip.svelte';
 
 	/** `open`: whether it is open rather than folded to its badge. `onaway` takes the focus when
 	 *  folding leaves no badge on screen: a phone hides the middle column, badge and all, while it
@@ -125,6 +129,23 @@
 		passkeyHere = window.isSecureContext && !!navigator.credentials && /(^|\.)ouob\.net$/.test(location.hostname);
 	});
 
+	const NO_PASSKEY = '這個網址不能用 passkey 核准，請從 https://lat.ouob.net 開看板。';
+	/** The short marks' explanations, in a box on hover, a long press or keyboard focus: `passkey`
+	 *  for the heading's warning, a request's number for its caller. Its words are also each
+	 *  element's description, for a screen reader. A tap on the warning, which does nothing else,
+	 *  shows it a moment too. */
+	const explainer = new Explainer<'passkey' | number>(() => {});
+	let tapped: ReturnType<typeof setTimeout> | undefined;
+	function tapExplain(event: MouseEvent & { currentTarget: HTMLElement }) {
+		explainer.explain(event.currentTarget, 'passkey');
+		clearTimeout(tapped);
+		tapped = setTimeout(explainer.dismiss, 2500);
+	}
+	const noteOf = (key: 'passkey' | number) => {
+		const item = requests.find((candidate) => candidate.id === key);
+		return item ? callerNote(item) : NO_PASSKEY;
+	};
+
 	const notifications = typeof Notification === 'function';
 	let permission = $state<NotificationPermission>(notifications ? Notification.permission : 'denied');
 
@@ -174,7 +195,7 @@
 	}
 
 	async function approve(item: PdRequest) {
-		if (!passkeyHere) return toasts.show('failed', '這個網址不能用 passkey 核准：請從 https://lat.ouob.net 開看板。');
+		if (!passkeyHere) return toasts.show('failed', NO_PASSKEY);
 		approving = [...approving, item.id];
 		try {
 			const challenge = await post<{ options: PdChallenge }>('/api/pd/challenge', { id: item.id });
@@ -203,6 +224,20 @@
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<header class:handle={wide} onpointerdown={(event) => begin(event, false)} onpointermove={follow} onpointerup={end} onpointercancel={end}>
 				<h2>pd 待核准 <span class="count">{requests.length}</span></h2>
+				{#if !passkeyHere}
+					<button
+						type="button"
+						class="nopasskey"
+						aria-label="不能用 passkey"
+						aria-describedby="pd-no-passkey"
+						onclick={tapExplain}
+						onpointerenter={(event) => explainer.hover(event, 'passkey')}
+						onpointerleave={explainer.leave}
+						onfocus={(event) => explainer.focus(event, 'passkey')}
+						onblur={explainer.dismiss}>⚠</button
+					>
+					<span id="pd-no-passkey" hidden>{NO_PASSKEY}</span>
+				{/if}
 				{#if notifications && permission === 'default'}
 					<button type="button" class="allow" title="有新的 pd 請求時發瀏覽器通知（只在看板開著時）" onclick={() => void allowNotifications()}>開啟通知</button>
 				{/if}
@@ -211,9 +246,6 @@
 				{/if}
 				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
 			</header>
-			{#if !passkeyHere}
-				<p class="nopasskey">這個網址不能用 passkey 核准，請從 https://lat.ouob.net 開看板。</p>
-			{/if}
 			<ul class="cards">
 				{#each requests as item (item.id)}
 					{@const time = timeText(item, now - pd.at)}
@@ -225,10 +257,27 @@
 							<span class="time" class:soon={time.soon} class:low={time.low} role="timer">{time.text}</span>
 						</p>
 						<details>
-							<summary>
-								<span class="caller" class:verified={item.callerInfo?.verified} class:unverified={item.callerInfo && !item.callerInfo.verified}
-									><span class="who">{caller.who}</span><span class="mark">{caller.mark}</span></span
+							<summary
+								aria-describedby="pd-caller-{item.id}"
+								onfocus={(event) => explainer.focus(event, item.id)}
+								onblur={explainer.dismiss}
+								onclick={(event) => explainer.click(event, item.id)}
+							>
+								<!-- The chip explains its mark to a pointer; a long press shows it without opening the
+								     details. The keyboard and a screen reader get it from the summary. -->
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<span
+									class="caller"
+									class:verified={item.callerInfo?.verified}
+									class:unverified={item.callerInfo && !item.callerInfo.verified}
+									onpointerenter={(event) => explainer.hover(event, item.id)}
+									onpointerleave={explainer.leave}
+									onpointerdown={(event) => explainer.down(event, item.id)}
+									onpointerup={explainer.release}
+									onpointercancel={explainer.release}
+									oncontextmenu={(event) => event.preventDefault()}><span class="who">{caller.who}</span><span class="mark">{caller.mark}</span></span
 								> <code>{shortCommand(item.command)}</code>
+								<span id="pd-caller-{item.id}" hidden>{callerNote(item)}</span>
 							</summary>
 							<dl>
 								<dt>欄位</dt>
@@ -238,15 +287,11 @@
 								<dt>工作目錄</dt>
 								<dd><code>{item.cwd}</code></dd>
 								<dt>呼叫者</dt>
-								{#if item.callerInfo}
-									<dd>{callerText(item)}<span class="notice">（{item.callerInfo.notice}）</span></dd>
-								{:else}
-									<dd>{item.caller}（對方自稱，未驗證）</dd>
-								{/if}
+								<dd>{callerText(item)}</dd>
 							</dl>
 						</details>
 						<p class="actions">
-							<button type="button" class="approve" disabled={approving.includes(item.id)} onclick={() => void approve(item)}
+							<button type="button" class="approve" aria-describedby={passkeyHere ? undefined : 'pd-no-passkey'} disabled={approving.includes(item.id)} onclick={() => void approve(item)}
 								>{approving.includes(item.id) ? '核准中…' : '核准'}</button
 							>
 							<button type="button" class="deny" disabled={denying.includes(item.id)} onclick={() => void deny(item)}
@@ -260,6 +305,9 @@
 				<span class="grip" aria-hidden="true" onpointerdown={(event) => begin(event, true)} onpointermove={follow} onpointerup={end} onpointercancel={end}></span>
 			{/if}
 		</section>
+		{#if explainer.tip}
+			<ExplainTip id="pd-tip" place={explainer.tip}>{noteOf(explainer.tip.key)}</ExplainTip>
+		{/if}
 	{:else}
 		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}>pd 待核准 <span class="count">{requests.length}</span></button>
 	{/if}
@@ -373,13 +421,14 @@
 		color: var(--text);
 		border-color: var(--line);
 	}
+	/* The heading's warning that the passkey cannot be used here; its words are in its box. */
 	.nopasskey {
-		flex: none;
-		margin: 0;
-		padding: 0.4rem 0.75rem;
-		border-bottom: 1px solid var(--line);
-		font-size: max(0.8rem, var(--min-font, 0px));
+		padding: 0.1rem 0.4rem;
+		background: none;
+		border-color: transparent;
 		color: var(--warn);
+		font-size: max(0.9rem, var(--min-font, 0px));
+		line-height: 1;
 	}
 	.cards {
 		flex: 1;
@@ -398,11 +447,11 @@
 		height: 1.1rem;
 		cursor: nwse-resize;
 		touch-action: none;
-		background: linear-gradient(135deg, transparent 45%, var(--muted) 45% 52%, transparent 52% 64%, var(--muted) 64% 71%, transparent 71% 83%, var(--muted) 83% 90%, transparent 90%);
-		opacity: 0.7;
+		--grip: var(--muted);
+		background: linear-gradient(135deg, transparent 45%, var(--grip) 45% 52%, transparent 52% 64%, var(--grip) 64% 71%, transparent 71% 83%, var(--grip) 83% 90%, transparent 90%);
 	}
 	.grip:hover {
-		opacity: 1;
+		--grip: var(--text);
 	}
 	.card {
 		display: flex;
@@ -514,8 +563,7 @@
 		border-radius: calc(var(--radius) - 2px);
 		font-size: max(0.8rem, var(--min-font, 0px));
 	}
-	dt,
-	.notice {
+	dt {
 		color: var(--muted);
 	}
 	dd {

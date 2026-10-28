@@ -81,7 +81,18 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	await tab.pointerClick('.pd [data-pd-request="3"] summary');
 	await tab.until(`${card(3)}.querySelector('details').open`, 'the details open');
 	const first = await tab.eval<string>(`${card(3)}.innerText`);
-	for (const text of ['password、username', argv.join(' '), '/home/u/a-rather-long-folder-name/for-the-project-that-asks', 'codex（對方自稱，未驗證）']) expect(first).toContain(text);
+	for (const text of ['password、username', argv.join(' '), '/home/u/a-rather-long-folder-name/for-the-project-that-asks', 'codex（自稱）']) expect(first).toContain(text);
+	// What the marks are worth is in their explanation, not on the card: a screen reader hears it as
+	// the line's description.
+	expect(first).not.toContain('對方自稱');
+	const described = (id: number) => `document.getElementById(${card(id)}.querySelector('summary').getAttribute('aria-describedby')).textContent`;
+	expect(await tab.eval<string>(described(3))).toBe('對方自稱，未驗證');
+	// A long press on the chip shows it, and leaves the details as they were.
+	const chip = await tab.eval<{ x: number; y: number }>(`(() => { const r = ${card(4)}.querySelector('.caller').getBoundingClientRect(); return { x: r.left + 10, y: r.top + r.height / 2 }; })()`);
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [chip] });
+	await tab.until(`document.getElementById('pd-tip')?.textContent === '程序樹查證，非防竄改'`, 'the chip explained');
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	expect(await tab.eval(`${card(4)}.querySelector('details').open`)).toBe(false);
 	// pd's check of the caller on the line, and what it is worth once opened.
 	expect(await tab.eval<string>(`${card(4)}.querySelector('summary .who').textContent + ${card(4)}.querySelector('summary .mark').textContent`)).toBe('dahe-t09-vafu（codex，群組 dahe-t09）未通過查證');
 	// Too long for a phone's line: the caller's name is cut short, its mark and the command stay whole.
@@ -96,14 +107,19 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	await tab.eval(`document.querySelector('.pd [data-pd-request="4"] summary').scrollIntoView({ block: 'nearest' })`);
 	await tab.pointerClick('.pd [data-pd-request="4"] summary');
 	await tab.until(`${card(4)}.querySelector('details').open`, 'the details of #4 open');
-	expect(await tab.eval<string>(`${card(4)}.innerText`)).toContain('dahe-t09-vafu（codex，群組 dahe-t09）未通過查證（程序樹查證，非防竄改）');
+	expect(await tab.eval<string>(`${card(4)}.innerText`)).toContain('dahe-t09-vafu（codex，群組 dahe-t09）未通過查證');
+	expect(await tab.eval<string>(`${card(4)}.innerText`)).not.toContain('程序樹查證');
+	expect(await tab.eval<string>(described(4))).toBe('程序樹查證，非防竄改');
 	expect(await tab.eval<string>(`${card(3)}.querySelector('.time').innerText`)).toMatch(/^剩 1:3\d$/);
 	// A pd that gives no time left: how long it has waited instead.
 	expect(await tab.eval<string>(`${card(4)}.querySelector('.time').innerText`)).toMatch(/^已等待 0:0\d$/);
-	// Approval is here only: no link to pd's own page. This address is not under ouob.net, so the
-	// window says once where the passkey works.
+	// Approval is here only: no link to pd's own page. This address is not under ouob.net, so a
+	// warning in the heading, explained on a tap, says where the passkey works; 核准 is described by it.
 	expect(await tab.eval(`document.querySelectorAll('.pd a').length`)).toBe(0);
-	expect(await tab.eval<string>(`document.querySelector('.pd .nopasskey').innerText`)).toBe('這個網址不能用 passkey 核准，請從 https://lat.ouob.net 開看板。');
+	expect(await tab.eval<string>(`document.querySelector('.pd .nopasskey').innerText`)).toBe('⚠');
+	expect(await tab.eval(`document.querySelector('.pd .nopasskey').getAttribute('aria-describedby') === 'pd-no-passkey' && ${card(3)}.querySelector('button.approve').getAttribute('aria-describedby') === 'pd-no-passkey'`)).toBe(true);
+	await tab.pointerClick('.pd .nopasskey');
+	await tab.until(`document.getElementById('pd-tip')?.textContent === '這個網址不能用 passkey 核准，請從 https://lat.ouob.net 開看板。'`, 'the warning explained');
 	// Nothing on the section asks for a code.
 	expect(await tab.eval(`document.querySelectorAll('.pd input, .pd form').length`)).toBe(0);
 	expect(await tab.eval(`${card(3)}.querySelector('button.approve').innerText`)).toBe('核准');
@@ -162,6 +178,12 @@ test.skipIf(!CHROME)('on a desktop the window floats over the middle column on e
 			&& !document.querySelector('.inbox .pd').getAttribute('style');
 	})()`;
 	expect(await tab.eval(DEFAULT)).toBe(true);
+	// A pointer over the caller's chip explains its mark.
+	const over = await tab.eval<{ x: number; y: number }>(`(() => { const r = document.querySelector('.pd .caller').getBoundingClientRect(); return { x: r.left + 10, y: r.top + r.height / 2 }; })()`);
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...over });
+	await tab.until(`document.getElementById('pd-tip')?.textContent === '對方自稱，未驗證'`, 'the chip explained');
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5 });
+	await tab.until(`!document.getElementById('pd-tip')`, 'the explanation gone');
 	// The same on the other lists, which the page switches behind it.
 	for (const middle of ['agents', 'quota', 'inbox']) {
 		await tab.eval(`document.querySelector('[data-middle="${middle}"]').click()`);

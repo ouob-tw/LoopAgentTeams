@@ -2,7 +2,7 @@
 // fields the panel shows and the answers the deny and passkey relay routes give, and how the
 // panel words a request's time and shortens its command, and where its window may lie. Test values only.
 import { expect, test } from 'bun:test';
-import { callerText, clampBox, readBox, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
+import { callerNote, callerText, clampBox, readBox, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
 import { approveReply, challengeReply, checkAssertion, createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
 
@@ -117,6 +117,9 @@ test('a caller pd checked reads with its client, role and check; without the che
 	expect(callerText(request({ callerInfo: info }))).toBe('dahe-t09-vafu（codex，群組 dahe-t09）未通過查證');
 	expect(callerText(request({ callerInfo: { ...info, name: 'x', group: null, orchestrator: null, source: 'manual' } }))).toBe('x（codex，手動）未通過查證');
 	expect(callerText(request())).toBe('claude（自稱）');
+	// What the mark is worth, for its explanation: pd's words, or that the name is only claimed.
+	expect(callerNote(request({ callerInfo: info }))).toBe('程序樹查證，非防竄改');
+	expect(callerNote(request())).toBe('對方自稱，未驗證');
 	// Fields missing read unknown, and only an explicit true on a whole record is verified.
 	const sparse = parsePdPending(exited(0, JSON.stringify([{ ...listed, caller_info: { verified: 'yes' } }])));
 	expect(sparse.ok && sparse.requests[0].callerInfo).toEqual({ name: 'unknown', client: 'unknown', group: null, orchestrator: null, source: 'unknown', verified: false, notice: '程序樹查證，非防竄改' });

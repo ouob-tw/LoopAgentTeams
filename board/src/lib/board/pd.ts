@@ -119,6 +119,12 @@ export function callerParts(request: PdRequest): { who: string; mark: string } {
 	return { who: `${info.name}（${notes.join('，')}）`, mark: info.verified ? '✓' : '未通過查證' };
 }
 
+/** What the caller's mark is worth, for its explanation: pd's own words for its check, or that the
+ *  name is the caller's own claim. */
+export function callerNote(request: PdRequest): string {
+	return request.callerInfo ? request.callerInfo.notice : '對方自稱，未驗證';
+}
+
 export function callerText(request: PdRequest): string {
 	const { who, mark } = callerParts(request);
 	return who + mark;
