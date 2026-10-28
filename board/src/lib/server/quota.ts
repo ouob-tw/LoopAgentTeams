@@ -172,7 +172,8 @@ export function parseClaudeList(stdout: string, code: number | null, timedOut: b
 	if (code !== 0 || !Array.isArray(parsed.accounts)) return { ok: false, reason: `claude-swap 沒有回答（${ended}）` };
 	return {
 		ok: true,
-		accounts: parsed.accounts.filter(isRecord).map((row): QuotaAccount => {
+		// An account held out with `cswap disable` is not in use: the tab leaves it out.
+		accounts: parsed.accounts.filter((row) => isRecord(row) && row.disabled !== true).map((row): QuotaAccount => {
 			const fresh = row.usageStatus === 'ok' && isRecord(row.usage);
 			const usage = fresh ? (row.usage as Json) : isRecord(row.lastGoodUsage) ? row.lastGoodUsage : null;
 			const observedAt = fresh ? time(row.usageFetchedAt) : usage ? time(row.lastGoodFetchedAt) : null;

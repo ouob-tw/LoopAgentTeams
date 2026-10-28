@@ -319,3 +319,8 @@ test('the poller reads both sources, keeps one failing from the other, and tells
 	expect(seen.length).toBe(2);
 	expect(poller.current()?.codex).toEqual(codex);
 });
+
+test('claude-swap rows: a disabled account is left out', () => {
+	const group = parseClaudeList(claudeList([{ number: 1, email: 'on@example.com', active: true, usageStatus: 'ok' }, { number: 2, email: 'off@example.com', active: false, usageStatus: 'unavailable', disabled: true }]), 0, false);
+	expect(group.ok && group.accounts.map((account) => account.email)).toEqual(['on@example.com']);
+});
