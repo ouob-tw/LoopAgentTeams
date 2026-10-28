@@ -463,7 +463,7 @@
        "tests": []}
     ],
     "checks": [
-      {"paths": ["board/src/**", "board/tests/**", "board/scripts/**", "board/*.ts", "board/*.json"],
+      {"paths": ["board/**"],
        "cwd": "board", "command": "bun run check"}
     ],
     "shared": [
