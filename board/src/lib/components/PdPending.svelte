@@ -139,7 +139,7 @@
 						</p>
 						<details>
 							<summary>
-								<span class="who">{caller.who}</span><span class="mark">{caller.mark}</span><code>{shortCommand(item.command)}</code>
+								<span class="who">{caller.who}</span><span class="mark">{caller.mark}</span> <code>{shortCommand(item.command)}</code>
 							</summary>
 							<dl>
 								<dt>欄位</dt>
@@ -273,10 +273,12 @@
 		display: none;
 	}
 	summary::before {
+		content: '▸';
 		content: '▸' / '';
 		flex: none;
 	}
 	details[open] summary::before {
+		content: '▾';
 		content: '▾' / '';
 	}
 	summary > * {

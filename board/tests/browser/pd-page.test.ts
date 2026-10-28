@@ -60,7 +60,7 @@ test.skipIf(!CHROME)('requests take the middle column\'s place on a phone, with 
 	// Folded: the item, number, time and buttons, and the command shortened on one line.
 	const folded = await tab.eval<string>(`${card(3)}.innerText`);
 	for (const text of ['npm token', '#3', 'python3 npm_login.py --registry …', '核准', '拒絕']) expect(folded).toContain(text);
-	expect(await tab.eval<string>(`${card(3)}.querySelector('summary').textContent`)).toContain('codex（自稱）python3 npm_login.py --registry …');
+	expect(await tab.eval<string>(`${card(3)}.querySelector('summary').textContent`)).toContain('codex（自稱） python3 npm_login.py --registry …');
 	for (const text of ['/usr/bin/python3', '/home/u/a-rather-long-folder-name', '對方自稱']) expect(folded).not.toContain(text);
 	expect(await tab.eval(`${card(3)}.querySelector('summary').getClientRects().length === 1 && ${card(3)}.querySelector('summary').clientHeight < 30`)).toBe(true);
 	// A tap opens the whole command, the folder and the caller.
