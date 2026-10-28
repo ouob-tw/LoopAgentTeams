@@ -140,12 +140,10 @@
 	>
 {/snippet}
 
-{#if pd}
+{#if pd && (!pd.snapshot.ok || requests.length)}
 	<section class="pd" aria-label="pd 待核准">
 		{#if !pd.snapshot.ok}
 			<p class="quiet">pd 待核准：{pd.snapshot.reason}</p>
-		{:else if !requests.length}
-			<p class="quiet">pd 目前沒有待核准的請求</p>
 		{:else}
 			<h2>pd 待核准 <span class="count">（{requests.length}）</span></h2>
 			<ul class="cards">

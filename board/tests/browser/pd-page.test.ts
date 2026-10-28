@@ -69,7 +69,8 @@ test.skipIf(!CHROME)('requests show above the inbox with their time and pd\'s pa
 	expect(await tab.eval<string>(`document.body.innerText`)).toContain('已拒絕 pd 請求 #3（npm token）');
 
 	setPd({ pending: [] });
-	await tab.until(`document.querySelector('.inbox .pd .quiet')?.innerText === 'pd 目前沒有待核准的請求'`, 'the quiet empty line');
+	// Nothing waiting: the section is not shown at all.
+	await tab.until(`!document.querySelector('.inbox .pd')`, 'no pd section when nothing waits');
 	setPd({ pending: [], unavailable: true });
 	await tab.until(`document.querySelector('.inbox .pd .quiet')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'the quiet unavailable line');
 	// The inbox below goes on as ever.
