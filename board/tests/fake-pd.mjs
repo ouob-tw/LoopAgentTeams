@@ -6,8 +6,8 @@
 // nothing is pending. `pd passkey challenge <id>` prints WebAuthn options for a pending request
 // (`challenge` in the state, else a fixed one; `allowCredentials` likewise), and
 // `pd passkey approve <id>` appends what it read on stdin to <dir>/pd-assertions.jsonl and takes
-// the request off the list, unless `reject` is set: then it refuses as pd does (77). The fake does
-// not verify signatures; pd's own tests do.
+// the request off the list, unless `reject` is set or stdin is not a JSON object: then it refuses
+// as pd does (77). The fake does not verify signatures; pd's own tests do.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -40,8 +40,15 @@ if (args[0] === 'pending' && args[1] === '--json') {
 		const options = { challenge: state.challenge ?? 'Y2hhbGxlbmdlLWZvci10ZXN0cw', rpId: 'ouob.net', userVerification: 'required', timeout: 60000, allowCredentials: state.allowCredentials ?? [] };
 		process.stdout.write(JSON.stringify(options) + '\n');
 	} else {
-		appendFileSync(join(dir, 'pd-assertions.jsonl'), JSON.stringify({ id, stdin: readFileSync(0, 'utf8') }) + '\n');
-		if (state.reject) {
+		const stdin = readFileSync(0, 'utf8');
+		appendFileSync(join(dir, 'pd-assertions.jsonl'), JSON.stringify({ id, stdin }) + '\n');
+		let assertion;
+		try {
+			assertion = JSON.parse(stdin);
+		} catch {
+			assertion = null;
+		}
+		if (state.reject || typeof assertion !== 'object' || assertion === null || Array.isArray(assertion)) {
 			process.stderr.write('pd: refused: passkey assertion rejected; request remains unapproved\n');
 			process.exit(77);
 		}

@@ -25,8 +25,9 @@
 	let denying = $state<number[]>([]);
 	let approving = $state<number[]>([]);
 
-	/** The requests this page has seen, from its first reading on: only later ones are new. */
-	let known: Set<number> | null = null;
+	/** The requests in the reading before: one not in it is new. pd numbers from 1 again after its
+	 *  daemon restarts, so a number that left and came back is a new request too. */
+	let previous: Set<number> | null = null;
 	/** New requests whose prompt is still to be answered or closed, oldest first. */
 	let queue = $state<number[]>([]);
 	const prompted = $derived(queue.map((id) => requests.find((item) => item.id === id)).find((item) => item !== undefined));
@@ -47,15 +48,12 @@
 
 	$effect(() => {
 		if (!pd?.snapshot.ok) return;
-		const ids = requests.map((item) => item.id);
-		if (known === null) {
-			known = new Set(ids);
-			return;
-		}
-		const fresh = requests.filter((item) => !known!.has(item.id));
-		for (const item of fresh) known.add(item.id);
-		if (!fresh.length) return;
-		untrack(() => (queue = [...queue, ...fresh.map((item) => item.id)]));
+		const ids = new Set(requests.map((item) => item.id));
+		const before = previous;
+		previous = ids;
+		if (before === null) return;
+		const fresh = requests.filter((item) => !before.has(item.id));
+		untrack(() => (queue = [...queue.filter((id) => ids.has(id)), ...fresh.map((item) => item.id)]));
 		for (const item of fresh) notify(item);
 	});
 	$effect(() => {
@@ -76,13 +74,12 @@
 		toasts.show('failed', typeof said === 'string' ? said : fallback);
 	}
 
+	const post = <T,>(path: string, body: unknown) =>
+		request<T>(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
 	async function deny(item: PdRequest) {
 		denying = [...denying, item.id];
-		const result = await request<{ ok: true }>('/api/pd/deny', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ id: item.id })
-		});
+		const result = await post<{ ok: true }>('/api/pd/deny', { id: item.id });
 		denying = denying.filter((id) => id !== item.id);
 		if (result.ok) {
 			settle(item.id);
@@ -90,9 +87,6 @@
 		}
 		failed(result, '沒有拒絕成功：看板沒有回應，請稍後再試。');
 	}
-
-	const post = <T,>(path: string, body: unknown) =>
-		request<T>(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
 	async function approve(item: PdRequest) {
 		// Passkeys need a secure page whose address is under ouob.net: https://lat.ouob.net.

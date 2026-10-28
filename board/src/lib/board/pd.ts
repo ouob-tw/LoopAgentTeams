@@ -37,17 +37,17 @@ export interface PdAssertion {
 	response: { clientDataJSON: string; authenticatorData: string; signature: string; userHandle: string | null };
 }
 
-const toBytes = (value: string) => Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - (value.length % 4)) % 4)), (c) => c.charCodeAt(0));
-const toText = (value: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(value))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+const fromBase64url = (value: string) => Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - (value.length % 4)) % 4)), (c) => c.charCodeAt(0));
+const toBase64url = (value: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(value))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 
 /** The options as `navigator.credentials.get` takes them. */
 export function requestOptions(options: PdChallenge): PublicKeyCredentialRequestOptions {
 	return {
-		challenge: toBytes(options.challenge),
+		challenge: fromBase64url(options.challenge),
 		rpId: options.rpId,
 		userVerification: options.userVerification,
 		timeout: options.timeout,
-		allowCredentials: options.allowCredentials.map((credential) => ({ type: credential.type, id: toBytes(credential.id) }))
+		allowCredentials: options.allowCredentials.map((credential) => ({ type: credential.type, id: fromBase64url(credential.id) }))
 	};
 }
 
@@ -56,13 +56,13 @@ export function assertionJson(credential: PublicKeyCredential): PdAssertion {
 	const response = credential.response as AuthenticatorAssertionResponse;
 	return {
 		id: credential.id,
-		rawId: toText(credential.rawId),
+		rawId: toBase64url(credential.rawId),
 		type: 'public-key',
 		response: {
-			clientDataJSON: toText(response.clientDataJSON),
-			authenticatorData: toText(response.authenticatorData),
-			signature: toText(response.signature),
-			userHandle: response.userHandle ? toText(response.userHandle) : null
+			clientDataJSON: toBase64url(response.clientDataJSON),
+			authenticatorData: toBase64url(response.authenticatorData),
+			signature: toBase64url(response.signature),
+			userHandle: response.userHandle ? toBase64url(response.userHandle) : null
 		}
 	};
 }

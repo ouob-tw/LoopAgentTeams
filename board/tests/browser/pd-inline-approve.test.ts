@@ -140,5 +140,12 @@ test.skipIf(!CHROME)('a new request opens a prompt; 核准 signs pd\'s challenge
 	await tab.pointerClick('dialog.prompt button.deny');
 	await tab.until(`!document.querySelector('[data-pd-request="5"]') && !document.querySelector('dialog.prompt').open`, 'the denied request gone');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5']);
+
+	// pd numbers from 1 again after its daemon restarts: a number that left and came back is new.
+	setPd([waiting(5, 'Docker token')]);
+	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for the reused #5');
+	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5', 'pd-5']);
+	await tab.pointerClick('dialog.prompt button.later');
+	await tab.until(`!document.querySelector('dialog.prompt').open`, 'the prompt closed');
 	expect(tab.errors).toEqual([]);
 }, 30_000);

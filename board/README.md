@@ -64,7 +64,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `CODEX_MULTI_AUTH_DIR` | codex-multi-auth 的資料夾，「額度」分頁直接讀其中的 `openai-codex-accounts.json` 與 `quota-cache.json`，只取 email、使用中、方案、用量、重置時間與更新時間，不執行 codex-multi-auth；沒設定時用 `$CODEX_HOME/multi-auth` | `~/.codex/multi-auth` |
 | `LAT_BOARD_COOKIE_NAME` | 登入 cookie 的名稱；同一個主機名稱下要並存的第二個看板（例如示意看板）才需要改 | `lat_board_device` |
 | `LAT_BOARD_QUOTA_SECONDS` | 「額度」分頁的資料多久讀一次，所有瀏覽器共用 | `30` |
-| `LAT_BOARD_PD_COMMAND` | pd 指令（JSON 字串陣列），看板只會在後面加上 `pending --json`（讀待核准請求）、`deny <編號>`（拒絕），或 passkey 轉送的 `passkey challenge <編號>`、`passkey approve <編號>`（簽章從標準輸入給）；不會執行要確認碼的 pd 指令。正式環境用 `["/home/swy/.local/bin/pd-group"]` | `["pd"]` |
+| `LAT_BOARD_PD_COMMAND` | pd 指令（JSON 字串陣列），看板只會在後面加上 `pending --json`（讀待核准請求）、`deny <編號>`（拒絕），或 passkey 轉送的 `passkey challenge <編號>`、`passkey approve <編號>`（簽章從標準輸入給）；不會執行要確認碼的 pd 指令。正式環境指向以 pdclient 群組執行 pd 的包裝指令 | `["pd"]` |
 | `LAT_BOARD_PD_TIMEOUT_SECONDS` | 上一項多久沒結束就放棄 | `5` |
 | `LAT_BOARD_PD_SECONDS` | pd 待核准請求多久讀一次，所有瀏覽器共用 | `5` |
 

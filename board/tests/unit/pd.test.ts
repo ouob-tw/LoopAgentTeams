@@ -122,12 +122,14 @@ async function until(done: () => boolean) {
 }
 
 test('a challenge keeps only the options a page needs, and pd\'s exits are worded by the board', () => {
-	const printed = { challenge: 'b25l', rpId: 'ouob.net', userVerification: 'required', timeout: 60000, allowCredentials: [{ type: 'public-key', id: 'Y3JlZA', transports: ['usb'] }, { id: 'not base64url!' }], extra: 'x' };
+	const printed = { challenge: 'b25l', rpId: 'ouob.net', userVerification: 'required', timeout: 60000, allowCredentials: [{ type: 'public-key', id: 'Y3JlZA', transports: ['usb'] }], extra: 'x' };
 	expect(challengeReply(exited(0, JSON.stringify(printed)))).toEqual({
 		status: 200,
 		body: { options: { challenge: 'b25l', rpId: 'ouob.net', userVerification: 'required', timeout: 60000, allowCredentials: [{ type: 'public-key', id: 'Y3JlZA' }] } }
 	});
 	expect(challengeReply(exited(0, '{"rpId":"ouob.net","allowCredentials":[]}')).status).toBe(502);
+	expect(challengeReply(exited(0, JSON.stringify({ ...printed, allowCredentials: [{ id: 'Y3JlZA' }, { id: 'not base64url!' }] }))).status).toBe(502);
+	expect(challengeReply(exited(0, JSON.stringify({ ...printed, timeout: undefined }))).status).toBe(502);
 	expect(challengeReply(exited(0, 'nope')).status).toBe(502);
 	expect(challengeReply(exited(77, '', 'pd: refused: request no longer pending')).status).toBe(409);
 	expect(challengeReply(exited(69)).status).toBe(503);

@@ -145,13 +145,15 @@ export function parseChallenge(stdout: string): PdChallenge | null {
 		return null;
 	}
 	if (!isRecord(parsed) || !base64url(parsed.challenge) || typeof parsed.rpId !== 'string' || !Array.isArray(parsed.allowCredentials)) return null;
-	const allow = parsed.allowCredentials.filter((credential): credential is Json => isRecord(credential) && base64url(credential.id));
+	if (typeof parsed.timeout !== 'number' || !Number.isFinite(parsed.timeout) || parsed.timeout <= 0) return null;
+	const allow = parsed.allowCredentials;
+	if (!allow.every((credential) => isRecord(credential) && base64url(credential.id))) return null;
 	return {
 		challenge: parsed.challenge,
 		rpId: parsed.rpId,
 		userVerification: 'required',
-		timeout: typeof parsed.timeout === 'number' && Number.isFinite(parsed.timeout) ? parsed.timeout : 60_000,
-		allowCredentials: allow.map((credential) => ({ type: 'public-key', id: credential.id as string }))
+		timeout: parsed.timeout,
+		allowCredentials: allow.map((credential) => ({ type: 'public-key', id: (credential as Json).id as string }))
 	};
 }
 

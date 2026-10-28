@@ -3,8 +3,8 @@ import { getBoard } from '#lib/server/board.ts';
 import { denyPdRequest } from '#lib/server/pd.ts';
 import type { RequestHandler } from './$types';
 
-/** Deny one of pd's waiting requests with `pd deny <id>`, which needs no code. There is no route to
- *  approve one: that is only on pd's passkey page. Every open page then reads the list without it. */
+/** Deny one of pd's waiting requests with `pd deny <id>`, which needs no code. Approving needs the
+ *  user's passkey (/api/pd/challenge and /api/pd/approve). Every open page then reads the list without it. */
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.json().catch(() => null);
 	const id = body?.id;
