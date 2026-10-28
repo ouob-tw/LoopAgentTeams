@@ -11,7 +11,8 @@ import { startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser } from '../browser.ts';
 
 const SCREEN = `({ search: location.search, middle: document.querySelector('.inbox')?.innerText ?? '' })`;
-const FITS = `document.documentElement.scrollWidth <= window.innerWidth && [...document.querySelectorAll('.inbox .pd, .inbox .pd *')].every((node) => node.scrollWidth <= node.clientWidth + 1)`;
+// The one-line summary of a card ends in an ellipsis when it is longer; everything else wraps.
+const FITS = `document.documentElement.scrollWidth <= window.innerWidth && [...document.querySelectorAll('.inbox .pd, .inbox .pd *')].every((node) => node.closest('summary') || node.scrollWidth <= node.clientWidth + 1)`;
 
 let fixture: Fixture;
 let cookie: string;
@@ -42,7 +43,9 @@ afterAll(async () => {
 
 test.skipIf(!CHROME)('requests take the middle column\'s place on a phone, with their time and pd\'s page one link away; 拒絕 denies, then a quiet line', async () => {
 	const argv = ['/usr/bin/python3', '/home/u/tools/npm_login.py', '--registry', 'https://registry.npmjs.org'];
-	setPd({ pending: [waiting(3, 'npm token', { remaining: 95, argv }), waiting(4, 'GitHub token')] });
+	// #4 comes with pd's check of its caller; #3 from a pd without it, by its declared name only.
+	const checked = { name: 'dahe-t09-vafu', client: 'codex', group: 'dahe-t09', orchestrator: false, source: 'auto', pid: 4242, start_time: 98765, program: null, verified: false, notice: '程序樹查證，非防竄改' };
+	setPd({ pending: [waiting(3, 'npm token', { remaining: 95, argv }), waiting(4, 'GitHub token', { caller: 'dahe-t09-vafu', caller_info: checked })] });
 	browser = await launchChrome({ screen: SCREEN });
 	const tab = browser.tab;
 	const [name, value] = cookie.split('=');
@@ -56,7 +59,7 @@ test.skipIf(!CHROME)('requests take the middle column\'s place on a phone, with 
 	const card = (id: number) => `document.querySelector('.pd [data-pd-request="${id}"]')`;
 	// Folded: the item, number, time and buttons, and the command shortened on one line.
 	const folded = await tab.eval<string>(`${card(3)}.innerText`);
-	for (const text of ['npm token', '#3', 'python3 npm_login.py --registry …', '核准', '拒絕']) expect(folded).toContain(text);
+	for (const text of ['npm token', '#3', 'codex python3 npm_login.py --registry …', '核准', '拒絕']) expect(folded).toContain(text);
 	for (const text of ['/usr/bin/python3', '/home/u/a-rather-long-folder-name', '對方自稱']) expect(folded).not.toContain(text);
 	expect(await tab.eval(`${card(3)}.querySelector('summary').getClientRects().length === 1 && ${card(3)}.querySelector('summary').clientHeight < 30`)).toBe(true);
 	// A tap opens the whole command, the folder and the caller.
@@ -64,6 +67,12 @@ test.skipIf(!CHROME)('requests take the middle column\'s place on a phone, with 
 	await tab.until(`${card(3)}.querySelector('details').open`, 'the details open');
 	const first = await tab.eval<string>(`${card(3)}.innerText`);
 	for (const text of ['password、username', argv.join(' '), '/home/u/a-rather-long-folder-name/for-the-project-that-asks', 'codex（對方自稱，未驗證）']) expect(first).toContain(text);
+	// pd's check of the caller on the line, and what it is worth once opened.
+	expect(await tab.eval<string>(`${card(4)}.querySelector('summary').innerText`)).toBe('dahe-t09-vafu（codex，群組 dahe-t09）未查證 npm publish --dry-run');
+	expect(await tab.eval<string>(`${card(4)}.innerText`)).not.toContain('程序樹查證');
+	await tab.pointerClick('.pd [data-pd-request="4"] summary');
+	await tab.until(`${card(4)}.querySelector('details').open`, 'the details of #4 open');
+	expect(await tab.eval<string>(`${card(4)}.innerText`)).toContain('dahe-t09-vafu（codex，群組 dahe-t09）未查證（程序樹查證，非防竄改）');
 	expect(await tab.eval<string>(`${card(3)}.querySelector('.time').innerText`)).toMatch(/^剩 1:3\d$/);
 	// A pd that gives no time left: how long it has waited instead.
 	expect(await tab.eval<string>(`${card(4)}.querySelector('.time').innerText`)).toMatch(/^已等待 0:0\d$/);

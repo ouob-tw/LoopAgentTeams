@@ -3,10 +3,26 @@
 // ever reach a page; pd itself never lists a secret value. 核准 signs pd's challenge with the user's
 // passkey in the page; the board server only relays it, and pd's daemon decides.
 
+/** Who asked as pd's daemon checked it against the process tree (`caller_info`). The group and
+ *  controller flag are what the requester's HCOM records say; `verified` is not proof against a
+ *  program of the same account that means to fake it. */
+export interface PdCaller {
+	name: string;
+	client: string;
+	group: string | null;
+	/** True for an HCOM agent without a tag, false with one, null when unknown. */
+	orchestrator: boolean | null;
+	source: string;
+	verified: boolean;
+	notice: string;
+}
+
 export interface PdRequest {
 	id: number;
 	/** Who asked, as the requester declared it: not verified. */
 	caller: string;
+	/** The daemon's check of the caller; null from a pd that does not give one. */
+	callerInfo: PdCaller | null;
 	item: string;
 	fields: string[];
 	/** The command the request would run, word by word, with any value pd recognised masked. */
@@ -89,4 +105,14 @@ export function timeText(request: PdRequest, elapsed: number): { text: string; l
 export function shortCommand(command: string[]): string {
 	const words = command.slice(0, 3).map((word) => (word.includes('/') && !word.includes('://') ? word.replace(/\/+$/, '').split('/').pop() || word : word));
 	return words.join(' ') + (command.length > 3 ? ' …' : '');
+}
+
+/** Who asked, on one line: `dahe（claude，主控）✓`, `dahe-t09-vafu（codex，群組 dahe-t09）未查證`,
+ *  or the declared name alone from a pd without the daemon's check. */
+export function callerText(request: PdRequest): string {
+	const info = request.callerInfo;
+	if (!info) return request.caller;
+	const role = info.orchestrator ? '主控' : info.group ? `群組 ${info.group}` : null;
+	const notes = [info.client, role, info.source === 'manual' ? '手動' : null].filter((note) => note !== null);
+	return `${info.name}（${notes.join('，')}）${info.verified ? '✓' : '未查證'}`;
 }

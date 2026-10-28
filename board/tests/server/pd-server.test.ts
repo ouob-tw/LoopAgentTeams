@@ -47,6 +47,7 @@ test('waiting requests reach the page, and 拒絕 denies one through pd deny', a
 	expect(listed.ok && listed.requests[0]).toEqual({
 		id: 7,
 		caller: 'claude',
+		callerInfo: null,
 		item: 'GitHub token',
 		fields: ['password'],
 		command: ['gh', 'api', 'user'],

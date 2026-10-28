@@ -1,7 +1,8 @@
 <script lang="ts">
 	// The pd 待核准 overlay over the middle column, whichever list it shows: one card per request
-	// pd's daemon holds for approval, with what it asks for, the time it has left and its command on
-	// one short line that a tap opens to the whole command, folder and caller. 核准 signs pd's
+	// pd's daemon holds for approval, with what it asks for, the time it has left, and who asked and
+	// its command on one short line that a tap opens to the whole command, folder and caller, with
+	// what pd's check of the caller is worth. 核准 signs pd's
 	// one-time challenge with the user's passkey right here (rpId ouob.net); the board server only
 	// relays the challenge and the signature, pd's daemon verifies it, and the board never asks for a
 	// code. 拒絕 denies it through the board at once, as `pd deny` does without a code. 稍後 folds it
@@ -11,7 +12,7 @@
 	// page says on the 待辦 list when pd is missing or down.
 	import { tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
-	import { assertionJson, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
+	import { assertionJson, callerText, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
 	/** `onaway` takes the focus when folding leaves no badge on screen: a phone hides the middle
@@ -137,7 +138,7 @@
 							<span class="time" class:low={time.low} role="timer">{time.text}</span>
 						</p>
 						<details>
-							<summary><code>{shortCommand(item.command)}</code></summary>
+							<summary>{callerText(item)} <code>{shortCommand(item.command)}</code></summary>
 							<dl>
 								<dt>欄位</dt>
 								<dd>{item.fields.join('、')}</dd>
@@ -146,7 +147,11 @@
 								<dt>工作目錄</dt>
 								<dd><code>{item.cwd}</code></dd>
 								<dt>呼叫者</dt>
-								<dd>{item.caller}（對方自稱，未驗證）</dd>
+								{#if item.callerInfo}
+									<dd>{callerText(item)}<span class="notice">（{item.callerInfo.notice}）</span></dd>
+								{:else}
+									<dd>{item.caller}（對方自稱，未驗證）</dd>
+								{/if}
 							</dl>
 						</details>
 						<p class="actions">
@@ -203,6 +208,7 @@
 	}
 	.count,
 	.quiet,
+	.notice,
 	.number {
 		color: var(--muted);
 		font-weight: 400;
