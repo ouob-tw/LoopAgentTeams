@@ -432,7 +432,7 @@
 
 		<section class="inbox">
 			<!-- Over the column on every list while a pd request waits; its badge above the tabs once folded. -->
-			<PdPending pd={board.pd} />
+			<PdPending pd={board.pd} onaway={() => detail.focus({ preventScroll: true })} />
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
 			     views, as the list they switch has no panel of its own around it. -->
 			<div class="middle-tabs" role="group" aria-label="清單">

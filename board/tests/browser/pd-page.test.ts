@@ -84,7 +84,7 @@ test.skipIf(!CHROME)('requests take the middle column\'s place on a phone, with 
 	await tab.navigate(`${fixture.url}/?controller=gone`);
 	await tab.until(`document.querySelector('.inbox .pd')?.offsetParent !== null && document.querySelector('section.detail').offsetParent === null`, 'the overlay over the content screen');
 	await tab.pointerClick('.pd button.later');
-	await tab.until(`!document.querySelector('.inbox .pd') && document.querySelector('section.detail').offsetParent !== null`, 'the content screen back');
+	await tab.until(`!document.querySelector('.inbox .pd') && document.querySelector('section.detail').offsetParent !== null && document.activeElement === document.querySelector('section.detail')`, 'the content screen back, focused');
 	await tab.navigate(`${fixture.url}/`);
 	await tab.until(`!!document.querySelector('.inbox .pd .card')`, 'the overlay on the list again');
 

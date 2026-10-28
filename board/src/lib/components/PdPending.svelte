@@ -14,7 +14,9 @@
 	import { assertionJson, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
-	let { pd }: { pd: { snapshot: PdSnapshot; at: number } | null } = $props();
+	/** `onaway` takes the focus when folding leaves no badge on screen: a phone hides the middle
+	 *  column, badge and all, while it shows a content screen. */
+	let { pd, onaway }: { pd: { snapshot: PdSnapshot; at: number } | null; onaway?: () => void } = $props();
 
 	const requests = $derived(pd?.snapshot.ok ? pd.snapshot.requests : []);
 	let now = $state(Date.now());
@@ -42,7 +44,9 @@
 	async function show(value: boolean) {
 		open = value;
 		await tick();
-		(value ? overlay : badge)?.focus();
+		if (value) overlay?.focus();
+		else if (badge?.checkVisibility()) badge.focus();
+		else onaway?.();
 	}
 
 	const notifications = typeof Notification === 'function';
