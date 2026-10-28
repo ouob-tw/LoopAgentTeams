@@ -1,22 +1,40 @@
 <script lang="ts">
-	// The pd 待核准 panel at the top of the middle column, above whichever list it shows: one card per
-	// request pd's daemon holds for approval, with what it asks for, the time it has left, who asked
+	// The pd 待核准 window, over whichever screen the board shows: one card per request pd's daemon
+	// holds for approval, with what it asks for, the time it has left, who asked
 	// and its command on short lines that a tap opens to the whole command, folder and caller, with
 	// what pd's check of the caller is worth. 核准 signs pd's one-time challenge with the user's
 	// passkey right here (rpId ouob.net); the board server only relays the challenge and the
 	// signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it through
-	// the board at once, as `pd deny` does without a code. 稍後 folds it to a one-line badge above the
-	// column's tabs, which opens it again; a request that appears opens it too and, once the user
+	// the board at once, as `pd deny` does without a code. On a wide screen it floats over the middle
+	// column at first; its heading drags it and its corner resizes it, and that place is kept in this
+	// browser until 復位. 稍後 folds it to a one-line badge above the column's tabs, which opens it again; a request that appears opens it too and, once the user
 	// allowed it (the 開啟通知 button, never asked for unprompted), raises a browser notification
 	// whose click comes back to it. With nothing waiting it is not shown; the page says on the 待辦
 	// list when pd is missing or down.
 	import { onMount, tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
-	import { assertionJson, callerParts, callerText, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
+	import {
+		assertionJson,
+		callerParts,
+		callerText,
+		clampBox,
+		PD_WINDOW_KEY,
+		readBox,
+		requestOptions,
+		shortCommand,
+		timeText,
+		type PdBox,
+		type PdChallenge,
+		type PdRequest,
+		type PdSnapshot
+	} from '#lib/board/pd.ts';
+	import { forget, remember, rememberedText } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
-	/** `onfresh` hears of new requests. */
-	let { pd, onfresh }: { pd: { snapshot: PdSnapshot; at: number } | null; onfresh?: () => void } = $props();
+	/** `open`: whether it is open rather than folded to its badge. `onaway` takes the focus when
+	 *  folding leaves no badge on screen: a phone hides the middle column, badge and all, while it
+	 *  shows a content screen. */
+	let { pd, open = $bindable(true), onaway }: { pd: { snapshot: PdSnapshot; at: number } | null; open?: boolean; onaway?: () => void } = $props();
 
 	const requests = $derived(pd?.snapshot.ok ? pd.snapshot.requests : []);
 	let now = $state(Date.now());
@@ -34,8 +52,6 @@
 	 *  reading forgets it, for a pd that does not name its daemon start. */
 	let previous: Set<string> | null = null;
 	const key = (item: PdRequest) => `${item.daemon ?? ''}#${item.id}`;
-	/** Whether the panel is open rather than folded to its badge. */
-	let open = $state(true);
 	let panel = $state<HTMLElement>();
 	let badge = $state<HTMLElement>();
 
@@ -45,11 +61,62 @@
 		open = value;
 		await tick();
 		if (value) panel?.focus();
-		else badge?.focus();
+		else if (badge?.checkVisibility()) badge.focus();
+		else onaway?.();
 	}
 
-	/** Open it and put the focus on it, which scrolls it into view: where a phone's banner leads. */
+	/** Open it and put the focus on it: where a phone's banner leads. */
 	export const reveal = () => show(true);
+
+	/** The wide layout, where it floats and moves; a phone shows it as a sheet the page places. */
+	let wide = $state(false);
+	/** Its place once moved or resized, inside the window; null for the page's default over the
+	 *  middle column. */
+	let box = $state<PdBox | null>(null);
+	const view = () => ({ w: window.innerWidth, h: window.innerHeight });
+	onMount(() => {
+		const query = matchMedia('(min-width: 761px)');
+		const saved = readBox(rememberedText(PD_WINDOW_KEY));
+		box = saved && clampBox(saved, view());
+		const fit = () => {
+			wide = query.matches;
+			if (box) box = clampBox(box, view());
+		};
+		fit();
+		query.addEventListener('change', fit);
+		addEventListener('resize', fit);
+		return () => {
+			query.removeEventListener('change', fit);
+			removeEventListener('resize', fit);
+		};
+	});
+
+	/** A drag of the heading or the corner under way: where the pointer and the box started. */
+	let gesture = $state<{ resize: boolean; x: number; y: number; from: PdBox } | null>(null);
+	function begin(event: PointerEvent, resize: boolean) {
+		if (!wide || !panel || event.button !== 0 || (!resize && (event.target as Element).closest('button'))) return;
+		const { left, top, width, height } = panel.getBoundingClientRect();
+		gesture = { resize, x: event.clientX, y: event.clientY, from: box ?? { x: left, y: top, w: width, h: height } };
+		(event.currentTarget as Element).setPointerCapture(event.pointerId);
+		event.preventDefault();
+	}
+	function follow(event: PointerEvent) {
+		if (!gesture) return;
+		const { from, resize } = gesture;
+		const dx = event.clientX - gesture.x;
+		const dy = event.clientY - gesture.y;
+		box = clampBox(resize ? { ...from, w: from.w + dx, h: from.h + dy } : { ...from, x: from.x + dx, y: from.y + dy }, view());
+	}
+	function end() {
+		if (!gesture) return;
+		gesture = null;
+		if (box) remember(PD_WINDOW_KEY, JSON.stringify(box));
+	}
+	function resetPlace() {
+		box = null;
+		forget(PD_WINDOW_KEY);
+	}
+	const place = $derived(wide && box ? `left: ${box.x}px; top: ${box.y}px; width: ${box.w}px; height: ${box.h}px;` : undefined);
 
 	/** Whether this page can sign with the passkey, which is bound to ouob.net: only a secure page
 	 *  under it, such as https://lat.ouob.net, in a browser with WebAuthn. Read in the browser. */
@@ -81,10 +148,7 @@
 		previous = new Set(requests.map(key));
 		if (before === null) return;
 		const fresh = requests.filter((item) => !before.has(key(item)));
-		if (fresh.length) {
-			open = true;
-			onfresh?.();
-		}
+		if (fresh.length) open = true;
 		for (const item of fresh) notify(item);
 	});
 
@@ -133,11 +197,17 @@
 
 {#if requests.length && pd}
 	{#if open}
-		<section class="pd" aria-label="pd 待核准" tabindex="-1" bind:this={panel}>
-			<header>
+		<section class="pd" class:moving={gesture} style={place} aria-label="pd 待核准" tabindex="-1" bind:this={panel}>
+			<!-- The heading drags the window in the wide layout; its buttons stay buttons. Dragging is a
+			     pointer's convenience: the window works where it opens, and 復位 brings it back. -->
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<header class:handle={wide} onpointerdown={(event) => begin(event, false)} onpointermove={follow} onpointerup={end} onpointercancel={end}>
 				<h2>pd 待核准 <span class="count">{requests.length}</span></h2>
 				{#if notifications && permission === 'default'}
 					<button type="button" class="allow" title="有新的 pd 請求時發瀏覽器通知（只在看板開著時）" onclick={() => void allowNotifications()}>開啟通知</button>
+				{/if}
+				{#if wide && box}
+					<button type="button" class="reset" title="回到中間欄上的預設位置與大小" onclick={resetPlace}>復位</button>
 				{/if}
 				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
 			</header>
@@ -186,6 +256,9 @@
 					</li>
 				{/each}
 			</ul>
+			{#if wide}
+				<span class="grip" aria-hidden="true" onpointerdown={(event) => begin(event, true)} onpointermove={follow} onpointerup={end} onpointercancel={end}></span>
+			{/if}
 		</section>
 	{:else}
 		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}>pd 待核准 <span class="count">{requests.length}</span></button>
@@ -193,18 +266,25 @@
 {/if}
 
 <style>
-	/* Its place at the top of the column is the page's to say; this is how it looks: one panel, a
-	   card for each request, with a scroll of its own under its heading once several wait. */
+	/* Its default place and the phone's sheet are the page's to say; this is how it looks: a
+	   raised window, a card for each request, scrolling under its heading once several wait. */
 	.pd {
-		flex: none;
+		display: flex;
+		flex-direction: column;
 		min-width: 0;
-		max-height: min(60vh, 36rem);
-		margin-bottom: 0.5rem;
 		background: var(--surface);
 		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		overflow-y: auto;
+		border-radius: calc(var(--radius) + 4px);
+		box-shadow:
+			0 1.2rem 2.5rem -0.6rem color-mix(in srgb, #000 55%, transparent),
+			0 0.2rem 0.6rem color-mix(in srgb, #000 30%, transparent);
+		overflow: hidden;
 		animation: arrive 160ms ease-out;
+	}
+	/* Light theme: nothing see-through, so a heavier frame stands in for the shadow. */
+	:global(:root[data-theme='light']) .pd {
+		box-shadow: none;
+		border-width: 2px;
 	}
 	@keyframes arrive {
 		from {
@@ -224,18 +304,31 @@
 		outline: 2px solid var(--accent);
 	}
 	header {
-		position: sticky;
-		top: 0;
-		z-index: 1;
+		flex: none;
 		display: flex;
 		align-items: center;
 		gap: 0.25rem;
-		padding: 0.35rem 0.35rem 0.35rem 0.75rem;
+		padding: 0.4rem 0.4rem 0.4rem 0.8rem;
 		border-bottom: 1px solid var(--line);
 		background: color-mix(in srgb, var(--warn) 7%, var(--surface));
 	}
+	/* Dragged by its heading: the hand says so. */
+	header.handle {
+		cursor: grab;
+		touch-action: none;
+		user-select: none;
+	}
+	.moving,
+	.moving header.handle {
+		cursor: grabbing;
+		user-select: none;
+	}
+	header button {
+		cursor: pointer;
+	}
 	h2 {
 		flex: 1;
+		min-width: 0;
 		display: flex;
 		align-items: center;
 		gap: 0.45rem;
@@ -266,7 +359,8 @@
 		text-align: center;
 	}
 	.later,
-	.allow {
+	.allow,
+	.reset {
 		padding: 0.2rem 0.6rem;
 		background: none;
 		border-color: transparent;
@@ -274,11 +368,13 @@
 		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	.later:hover,
-	.allow:hover {
+	.allow:hover,
+	.reset:hover {
 		color: var(--text);
 		border-color: var(--line);
 	}
 	.nopasskey {
+		flex: none;
 		margin: 0;
 		padding: 0.4rem 0.75rem;
 		border-bottom: 1px solid var(--line);
@@ -286,9 +382,27 @@
 		color: var(--warn);
 	}
 	.cards {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
 		list-style: none;
 		margin: 0;
 		padding: 0;
+	}
+	/* The corner that resizes it, drawn as three short diagonal lines. */
+	.grip {
+		position: absolute;
+		right: 0;
+		bottom: 0;
+		width: 1.1rem;
+		height: 1.1rem;
+		cursor: nwse-resize;
+		touch-action: none;
+		background: linear-gradient(135deg, transparent 45%, var(--muted) 45% 52%, transparent 52% 64%, var(--muted) 64% 71%, transparent 71% 83%, var(--muted) 83% 90%, transparent 90%);
+		opacity: 0.7;
+	}
+	.grip:hover {
+		opacity: 1;
 	}
 	.card {
 		display: flex;

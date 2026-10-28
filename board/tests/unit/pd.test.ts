@@ -1,8 +1,8 @@
 // The pd 待核准 panel's data: what `pd pending --json` and `pd deny` answered, read into the
 // fields the panel shows and the answers the deny and passkey relay routes give, and how the
-// panel words a request's time and shortens its command. Test values only.
+// panel words a request's time and shortens its command, and where its window may lie. Test values only.
 import { expect, test } from 'bun:test';
-import { callerText, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
+import { callerText, clampBox, readBox, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
 import { approveReply, challengeReply, checkAssertion, createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
 
@@ -180,4 +180,17 @@ test('an assertion is rebuilt from the WebAuthn fields only, all base64url', () 
 	for (const bad of [null, '1234', { code: '1234' }, { ...valid, type: 'password' }, { ...valid, response: { ...response, signature: '' } }, { ...valid, response: { ...response, signature: 'a+b' } }, { ...valid, rawId: 7 }, { ...valid, response: 'x' }, { ...valid, response: { ...response, userHandle: 5 } }]) {
 		expect(checkAssertion(bad)).toBeNull();
 	}
+});
+
+test('the window stays on screen and at least its smallest size, and only a whole saved box is read back', () => {
+	const view = { w: 1280, h: 800 };
+	expect(clampBox({ x: 300, y: 40, w: 420, h: 500 }, view)).toEqual({ x: 300, y: 40, w: 420, h: 500 });
+	// Too narrow and short, then off the right and bottom edges, then off the top left.
+	expect(clampBox({ x: 10, y: 10, w: 120, h: 50 }, view)).toEqual({ x: 10, y: 10, w: 360, h: 200 });
+	expect(clampBox({ x: 1200, y: 760, w: 400, h: 300 }, view)).toEqual({ x: 880, y: 500, w: 400, h: 300 });
+	expect(clampBox({ x: -50, y: -9, w: 400, h: 300 }, view)).toEqual({ x: 0, y: 0, w: 400, h: 300 });
+	// Bigger than the view: the view's size.
+	expect(clampBox({ x: 0, y: 0, w: 2000, h: 2000 }, view)).toEqual({ x: 0, y: 0, w: 1280, h: 800 });
+	expect(readBox('{"x":1,"y":2,"w":400,"h":300}')).toEqual({ x: 1, y: 2, w: 400, h: 300 });
+	for (const text of ['', 'nope', '{"x":1,"y":2,"w":400}', '{"x":"1","y":2,"w":400,"h":300}', 'null']) expect(readBox(text)).toBeNull();
 });

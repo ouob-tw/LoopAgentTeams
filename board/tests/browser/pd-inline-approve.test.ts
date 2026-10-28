@@ -2,7 +2,7 @@
 // (WebAuthn over the DevTools protocol), on the built board with a fake pd (tests/fake-pd.mjs).
 // Chrome reaches the board as lat.ouob.net (resolved to 127.0.0.1, treated as a secure origin), so
 // the page can ask for an assertion for rpId ouob.net as it does in production; nothing leaves the
-// host. A request that appears opens the folded panel again; 核准 signs pd's challenge in the page
+// host. A request that appears opens the folded window again; 核准 signs pd's challenge in the page
 // and the board hands the assertion to `pd passkey approve`. Notifications are asked for only on a
 // click, and a notification's click comes back to the panel.
 import { createHash, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
@@ -66,7 +66,7 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-test.skipIf(!CHROME)('a new request opens the folded panel; 核准 signs pd\'s challenge in the page for rpId ouob.net; notifications only after a click', async () => {
+test.skipIf(!CHROME)('a new request opens the folded window; 核准 signs pd\'s challenge in the page for rpId ouob.net; notifications only after a click', async () => {
 	const port = new URL(fixture.url).port;
 	const origin = `http://lat.ouob.net:${port}`;
 	setPd([waiting(3, 'npm token')]);
@@ -108,10 +108,10 @@ test.skipIf(!CHROME)('a new request opens the folded panel; 核准 signs pd\'s c
 	await tab.until(`!document.querySelector('.pd button.allow')`, 'the 開啟通知 button gone');
 	expect(await tab.eval(`window.__asked`)).toEqual([true]);
 
-	// A new request opens the folded panel, and a notification is raised for it.
+	// A new request opens the folded window, and a notification is raised for it.
 	await fold(tab);
 	setPd([waiting(3, 'npm token'), waiting(4, 'GitHub token')]);
-	await tab.until(shows(4), 'the panel open for #4');
+	await tab.until(shows(4), 'the window open for #4');
 	// Under ouob.net and secure: the passkey works here, so no note says otherwise.
 	expect(await tab.eval(`!!document.querySelector('.pd .nopasskey')`)).toBe(false);
 	expect(await tab.eval<string>(`document.querySelector('.pd [data-pd-request="4"]').innerText`)).toContain('GitHub token');
@@ -120,7 +120,7 @@ test.skipIf(!CHROME)('a new request opens the folded panel; 核准 signs pd\'s c
 	// The notification's click opens it again and puts the focus on it.
 	await fold(tab);
 	await tab.eval(`window.__notes[0].onclick()`);
-	await tab.until(`${shows(4)} && document.activeElement === document.querySelector('.inbox .pd')`, 'the panel back and focused');
+	await tab.until(`${shows(4)} && document.activeElement === document.querySelector('.inbox .pd')`, 'the window back and focused');
 	expect(await tab.eval(`window.__notes[0].closed`)).toBe(true);
 
 	// Below the panel's fold: scrolled to, as a user would.
@@ -147,7 +147,7 @@ test.skipIf(!CHROME)('a new request opens the folded panel; 核准 signs pd\'s c
 	// 拒絕 denies.
 	await fold(tab);
 	setPd([waiting(3, 'npm token'), waiting(5, 'Docker token')]);
-	await tab.until(shows(5), 'the panel open for #5');
+	await tab.until(shows(5), 'the window open for #5');
 	// Below the panel's fold: scrolled to, as a user would.
 	await tab.eval(`document.querySelector('.pd [data-pd-request="5"] button.deny').scrollIntoView({ block: 'nearest' })`);
 	await tab.pointerClick('.pd [data-pd-request="5"] button.deny');
@@ -164,14 +164,14 @@ test.skipIf(!CHROME)('a new request opens the folded panel; 核准 signs pd\'s c
 	// even when the restart fell between two readings.
 	await fold(tab);
 	setPd([waiting(5, 'Docker token', 'start-2')]);
-	await tab.until(shows(5), 'the panel open for #5 after a restart between readings');
+	await tab.until(shows(5), 'the window open for #5 after a restart between readings');
 
 	// After a failed reading, what comes back is new, for a pd that does not name its daemon start.
 	await fold(tab);
 	writeFileSync(join(fixture.dir, 'pd.json'), JSON.stringify({ pending: [], unavailable: true }));
 	await tab.until(`document.querySelector('.inbox .pd-off')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'pd unavailable');
 	setPd([{ ...waiting(5, 'Docker token'), daemon: undefined }]);
-	await tab.until(shows(5), 'the panel open for #5 after pd came back');
+	await tab.until(shows(5), 'the window open for #5 after pd came back');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5', 'pd-5', 'pd-5', 'pd-5']);
 	expect(tab.errors).toEqual([]);
 }, 30_000);

@@ -187,15 +187,9 @@
 		document.title = (pdWaiting ? `(${pdWaiting}) ` : '') + 'LAT 看板';
 	});
 	let pdPending = $state<ReturnType<typeof PdPending>>();
-	/** Counts the new requests' arrivals, so the banner pulses once for each. */
-	let pdFresh = $state(0);
-	/** Set by the banner until the list is shown, where the pd panel is then opened and brought into view. */
-	let pdWanted = $state(false);
-	$effect(() => {
-		if (!pdWanted || view !== null) return;
-		pdWanted = false;
-		void pdPending?.reveal();
-	});
+	/** Whether the pd window is open rather than folded to its badge. */
+	let pdOpen = $state(true);
+	let pdBanner = $state<HTMLElement>();
 
 	const openKey = $derived(view?.kind === 'item' ? view.item.key : null);
 	const listed = $derived(known.some((item) => item.key === openKey));
@@ -447,8 +441,8 @@
 		{@render resize('roster')}
 
 		<section class="inbox">
-			<!-- At the top of the column on every list while a pd request waits; its badge there once folded. -->
-			<PdPending bind:this={pdPending} pd={board.pd} onfresh={() => pdFresh++} />
+			<!-- A window over the column (a sheet on a phone) while a pd request waits; its badge at the top of the column once folded. -->
+			<PdPending bind:this={pdPending} bind:open={pdOpen} pd={board.pd} onaway={() => (pdBanner ?? detail).focus({ preventScroll: true })} />
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
 			     views, as the list they switch has no panel of its own around it. -->
 			<div class="middle-tabs" role="group" aria-label="清單">
@@ -525,14 +519,12 @@
 						{@render refresh()}
 						{@render openSettings()}
 					</span>
-					<!-- A phone hides the middle column and its pd panel behind a content screen: this strip
-					     under the bar says requests wait and goes to them. -->
-					{#if pdWaiting}
-						{#key pdFresh}
-							<button type="button" class="pd-banner" onclick={() => ((pdWanted = true), navigation.go(null))}
-								>pd 待核准 <span class="count">{pdWaiting}</span><span class="see">查看 ›</span></button
-							>
-						{/key}
+					<!-- A phone hides the middle column, and the pd badge with it, behind a content screen: while
+					     the pd window is folded this strip under the bar says requests wait and opens it. -->
+					{#if pdWaiting && !pdOpen}
+						<button type="button" class="pd-banner" bind:this={pdBanner} onclick={() => void pdPending?.reveal()}
+							>pd 待核准 <span class="count">{pdWaiting}</span><span class="see">查看 ›</span></button
+						>
 					{/if}
 				</div>
 
@@ -718,6 +710,17 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
+	}
+	/* The pd window floats over the middle column at first, from its top to the command line, and is
+	   never narrower than its smallest width; once dragged or resized it carries its own place. It
+	   stays clear of the roster's and the command line's pop-ups and of the toasts. */
+	.inbox > :global(.pd) {
+		position: fixed;
+		top: 0.5rem;
+		bottom: calc(var(--dock-h, 0px) + 0.5rem);
+		left: calc(var(--col-roster) + 0.5rem);
+		width: max(360px, calc(var(--col-inbox) - 1rem));
+		z-index: 25;
 	}
 	.pd-off {
 		margin: 0 0 0.4rem;
@@ -920,8 +923,8 @@
 		background: var(--bg);
 		border-bottom: 1px solid var(--line);
 	}
-	/* The strip under a phone's bar while pd requests wait: it hangs from the sticky bar so it stays
-	   with it, and the bar keeps room for it below so it covers nothing. Shown on a phone only. */
+	/* The strip under a phone's bar while pd requests wait folded: it hangs from the sticky bar so it
+	   stays with it, and the bar keeps room for it below so it covers nothing. Shown on a phone only. */
 	.topbar {
 		--pd-banner-h: calc(2.6 * max(0.85rem, var(--min-font, 0px)));
 	}
@@ -942,7 +945,6 @@
 		font-size: max(0.85rem, var(--min-font, 0px));
 		font-weight: 600;
 		text-align: left;
-		animation: pd-pulse 900ms ease-out;
 	}
 	.pd-banner::before {
 		content: '';
@@ -968,21 +970,9 @@
 		font-weight: 400;
 		color: var(--muted);
 	}
-	/* Once as it appears and for each new request. */
-	@keyframes pd-pulse {
-		from {
-			background: color-mix(in srgb, var(--warn) 40%, var(--bg));
-		}
-	}
-	@media (prefers-reduced-motion: reduce) {
-		.pd-banner {
-			animation: none;
-		}
-	}
 	:global(:root[data-theme='light']) .pd-banner {
 		background: var(--bg);
 		border-bottom-width: 2px;
-		animation: none;
 	}
 	/* Two lines like a roster tag, project on top, so both names keep the width the buttons leave. */
 	.whose {
@@ -1134,6 +1124,23 @@
 		}
 		.pd-banner {
 			display: flex;
+		}
+		/* A sheet over whatever screen is shown, full width above the command line. */
+		.inbox > :global(.pd) {
+			top: auto;
+			left: 0;
+			right: 0;
+			width: auto;
+			bottom: var(--dock-h, 0px);
+			max-height: calc(100dvh - var(--dock-h, 0px) - 4rem);
+			border-radius: calc(var(--radius) + 4px) calc(var(--radius) + 4px) 0 0;
+		}
+		/* A content screen hides the middle column: its box goes, so the sheet in it still shows. */
+		.viewing .inbox:has(> :global(.pd)) {
+			display: contents;
+		}
+		.viewing .inbox:has(> :global(.pd)) > :global(:not(.pd)) {
+			display: none;
 		}
 		/* Room under the bar for the strip that hangs from it. */
 		.topbar:has(.pd-banner) {

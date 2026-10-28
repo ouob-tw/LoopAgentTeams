@@ -123,3 +123,29 @@ export function callerText(request: PdRequest): string {
 	const { who, mark } = callerParts(request);
 	return who + mark;
 }
+
+/** Where the pd window lies and how big it is in the wide layout, in px from the window's top left. */
+export type PdBox = { x: number; y: number; w: number; h: number };
+/** The window's place once the user moved or resized it, saved in this browser. */
+export const PD_WINDOW_KEY = 'lat-board-pd-window';
+/** Narrow enough for a small screen, wide enough that a request's lines do not wrap. */
+export const PD_MIN_WIDTH = 360;
+export const PD_MIN_HEIGHT = 200;
+
+/** The box inside a view of `view` px, at least the window's smallest size where the view allows,
+ *  so it never ends up off screen. */
+export function clampBox(box: PdBox, view: { w: number; h: number }): PdBox {
+	const w = Math.round(Math.min(Math.max(box.w, PD_MIN_WIDTH), view.w));
+	const h = Math.round(Math.min(Math.max(box.h, PD_MIN_HEIGHT), view.h));
+	return { w, h, x: Math.round(Math.min(Math.max(box.x, 0), view.w - w)), y: Math.round(Math.min(Math.max(box.y, 0), view.h - h)) };
+}
+
+/** A saved box, or null for anything else. */
+export function readBox(text: string): PdBox | null {
+	try {
+		const box = JSON.parse(text) as Partial<PdBox>;
+		return [box.x, box.y, box.w, box.h].every((value) => typeof value === 'number' && Number.isFinite(value)) ? (box as PdBox) : null;
+	} catch {
+		return null;
+	}
+}
