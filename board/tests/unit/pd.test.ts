@@ -1,6 +1,6 @@
-// The pd 待核准 overlay's data: what `pd pending --json` and `pd deny` answered, read into the
-// fields the overlay shows and the answers the deny and passkey relay routes give, and how the
-// overlay words a request's time and shortens its command. Test values only.
+// The pd 待核准 panel's data: what `pd pending --json` and `pd deny` answered, read into the
+// fields the panel shows and the answers the deny and passkey relay routes give, and how the
+// panel words a request's time and shortens its command. Test values only.
 import { expect, test } from 'bun:test';
 import { callerText, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
@@ -47,7 +47,7 @@ const request = (overrides: Partial<PdRequest> = {}): PdRequest => ({
 	...overrides
 });
 
-test('a pending list keeps only the fields the overlay shows', () => {
+test('a pending list keeps only the fields the panel shows', () => {
 	expect(parsePdPending(exited(0, JSON.stringify([listed]) + '\n'))).toEqual({
 		ok: true,
 		requests: [

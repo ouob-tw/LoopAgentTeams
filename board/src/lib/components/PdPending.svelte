@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The pd 待核准 panel at the top of the middle column, above whichever list it shows: one row per
+	// The pd 待核准 panel at the top of the middle column, above whichever list it shows: one card per
 	// request pd's daemon holds for approval, with what it asks for, the time it has left, who asked
 	// and its command on short lines that a tap opens to the whole command, folder and caller, with
 	// what pd's check of the caller is worth. 核准 signs pd's one-time challenge with the user's
@@ -190,7 +190,7 @@
 
 <style>
 	/* Its place at the top of the column is the page's to say; this is how it looks: one panel, a
-	   row for each request, with a scroll of its own under its heading once several wait. */
+	   card for each request, with a scroll of its own under its heading once several wait. */
 	.pd {
 		flex: none;
 		min-width: 0;
