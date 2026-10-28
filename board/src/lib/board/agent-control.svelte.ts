@@ -1,11 +1,12 @@
 // What the page keeps about actions on the Herdr 分頁's agents: the operation record of the
-// agents it has opened, what a model switch may offer them, and one attempt at a time of sending
-// text, interrupting, closing, pausing or resuming its HCOM link, or switching.
+// agents it has opened, what a model or permission switch may offer them, and one attempt at a
+// time of sending text, interrupting, closing, pausing or resuming its HCOM link, or switching.
 import type { AgentAction, AgentActionResponse } from './agent-actions.ts';
 import { request } from './api.ts';
 import type { ClosedResumeResponse } from './closed-agents.ts';
 import type { Outcome } from './messaging.svelte.ts';
 import type { AgentModelStatus, ModelChoice, SwitchResponse, SwitchView } from './models.ts';
+import type { PermissionStatus } from './permissions.ts';
 
 /** No answer came back, so the action may or may not have been done. */
 const UNKNOWN_OUTCOME = '沒有收到看板伺服器的回應，不確定有沒有執行；再試之前請先看操作紀錄。';
@@ -18,6 +19,8 @@ class AgentControl {
 	loadFailed = $state<Record<string, boolean>>({});
 	/** What a switch may offer, by session ID; missing until loaded. */
 	model = $state<Record<string, AgentModelStatus>>({});
+	/** Its permission mode and what a permission switch offers, by session ID; missing until loaded. */
+	permission = $state<Record<string, PermissionStatus>>({});
 	/** The latest load started per agent; an older one that answers later is dropped. */
 	#loads: Record<string, number> = {};
 
@@ -106,6 +109,19 @@ class AgentControl {
 		const result = await request<AgentModelStatus>(`/api/agents/model?session=${encodeURIComponent(agentId)}`, { signal });
 		// A failure is shown as still loading.
 		if (result.ok) this.model[agentId] = result.value;
+	}
+
+	/** Read the permission mode now (Claude's from its screen); a failed read keeps what is shown. */
+	async loadPermission(agentId: string, signal?: AbortSignal): Promise<void> {
+		const result = await request<PermissionStatus>(`/api/agents/permission?session=${encodeURIComponent(agentId)}`, { signal });
+		if (result.ok) this.permission[agentId] = result.value;
+	}
+
+	/** Switch the permission mode, after the user confirmed it; the mode is read again after. */
+	async switchPermission(agentId: string, mode: string): Promise<Outcome> {
+		const outcome = await this.#post('/api/agents/permission', agentId, { mode });
+		void this.loadPermission(agentId);
+		return outcome;
 	}
 
 	/** Switch the model and effort, or with both null continue the open switch, after the user

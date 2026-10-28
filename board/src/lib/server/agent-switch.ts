@@ -95,7 +95,7 @@ async function attempt(board: Board, agentId: string, choice: ModelChoice): Prom
 				: null;
 		const refused = (reason: string) => ({ status: 409, body: { ok: false, reason, entry: open, abandon: null, logError: null } });
 		if (!target) return refused(AGENT_GONE_REASON);
-		if (!isLaunchClient(target.client) || !offered(config.modelOptions[target.client], choice)) return refused(NOT_OFFERED_REASON);
+		if (!isLaunchClient(target.client) || !offered(config.modelOptions[target.client], choice, target.client)) return refused(NOT_OFFERED_REASON);
 		return continueSwitch(board, target, open, choice);
 	}
 
@@ -109,7 +109,7 @@ async function attempt(board: Board, agentId: string, choice: ModelChoice): Prom
 	if (agent.herdr.pane === config.ownPane) return refused(AGENT_SWITCH_OWN_PANE_REASON);
 	const client = agent.client;
 	if (!isLaunchClient(client)) return refused(`看板不會切換 ${client || '這個 client'} 的模型與思考強度。`);
-	if (!offered(config.modelOptions[client], choice)) return refused(NOT_OFFERED_REASON);
+	if (!offered(config.modelOptions[client], choice, client)) return refused(NOT_OFFERED_REASON);
 	return startSwitch(board, targetOf(agent), entry);
 }
 

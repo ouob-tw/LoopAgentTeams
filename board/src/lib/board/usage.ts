@@ -1,6 +1,7 @@
 // A controller's context use, subscription quota and prompt cache, the way its status line shows
 // them, and its permission mode: the shape the server sends, and the one line the information page
 // makes of it.
+import { CODEX_MODE_LABEL, codexMode } from './permissions.ts';
 
 /** What one controller's latest turn left: any part may be missing. */
 export interface Usage {
@@ -10,8 +11,9 @@ export interface Usage {
 	limits: { minutes: number; used: number }[];
 	/** The prompt cache; `hit` is a ratio from 0 to 1, `expires` a time in milliseconds. */
 	cache: { warm: boolean; hit: number | null; expires: number | null } | null;
-	/** As of the latest turn: a Claude permission mode, or a Codex approval policy and sandbox. */
-	permission: { mode: string } | { approval: string; sandbox: string | null } | null;
+	/** As of the latest turn: a Claude permission mode, or a Codex approval policy, sandbox and who
+	 *  reviews approvals (`user` or `auto_review`; missing in a record that does not say). */
+	permission: { mode: string } | { approval: string; sandbox: string | null; reviewer?: string | null } | null;
 }
 
 /** How the line reads: each part spelt out in Chinese, or short as the status line has it. */
@@ -47,7 +49,11 @@ export function usageFrom(value: unknown): Usage | null {
 		permission: text(permission?.mode)
 			? { mode: permission.mode }
 			: text(permission?.approval)
-				? { approval: permission.approval, sandbox: text(permission.sandbox) ? permission.sandbox : null }
+				? {
+						approval: permission.approval,
+						sandbox: text(permission.sandbox) ? permission.sandbox : null,
+						...(text(permission.reviewer) && { reviewer: permission.reviewer })
+					}
 				: null
 	};
 	return usage.context !== null || usage.limits.length || usage.cache || usage.permission ? usage : null;
@@ -76,6 +82,7 @@ function rounded(value: number): number {
 const MODES: Record<string, string> = {
 	auto: '自動模式',
 	default: '手動確認',
+	manual: '手動確認',
 	acceptEdits: '自動接受修改',
 	plan: '規劃模式',
 	dontAsk: '不再詢問',
@@ -85,6 +92,7 @@ const MODES: Record<string, string> = {
 const MODES_SHORT: Record<string, string> = {
 	auto: 'Auto mode',
 	default: 'Manual',
+	manual: 'Manual',
 	acceptEdits: 'Accept edits',
 	plan: 'Plan mode',
 	dontAsk: "Don't ask",
@@ -123,6 +131,9 @@ function permissionText(
 	if (permission.approval === 'never' && permission.sandbox === 'danger-full-access') {
 		return { short: modes.bypassPermissions, long: modes.bypassPermissions, bypass: true };
 	}
+	// The two other modes of Codex's /permissions, by the names it gives them.
+	const codex = codexMode(permission);
+	if (codex) return { short: CODEX_MODE_LABEL[codex], long: CODEX_MODE_LABEL[codex], bypass: false };
 	if (style === 'compact') {
 		const short = `approval ${permission.approval}`;
 		return { short, long: short, bypass: false };

@@ -41,6 +41,7 @@ import {
 	type SwitchState,
 	type SwitchView
 } from '../board/models.ts';
+import { withoutPermissionFlags } from '../board/permissions.ts';
 import type { Controller } from '../board/types.ts';
 import { WAKE_UNKNOWN_REASON, type SentWake } from '../board/wake.ts';
 import type { Board } from './board.ts';
@@ -179,6 +180,7 @@ export async function startSwitch(board: Board, controller: SwitchTarget, entry:
 		return refused(fixedModelReason(controller));
 	}
 	const record = await readTranscript(board.config, controller.client, controller.id);
+	if (entry.to.permission) return permissionSwitch(board, controller, entry, agent, record);
 	if (!record.ok && record.missing) {
 		// Read now: hcom forgets the arguments once the client is stopped.
 		const launched = await readLaunchArgs(board.config, controller.id);
@@ -194,6 +196,39 @@ export async function startSwitch(board: Board, controller: SwitchTarget, entry:
 	}
 	entry.from = record.ok ? (record.page.current ?? null) : null;
 	if (carriesEffort(entry.to)) entry.carriedEffort = entry.from?.effort ?? null;
+	return restartSwitch(board, controller, entry, agent);
+}
+
+/**
+ * A Codex permission switch: the stored `--yolo` and sandbox flags beat any `-c`, and hcom repeats
+ * them on every `hcom r`, so the conversation is resumed in a fresh launch instead (`relaunch.ts`),
+ * with the stored arguments that do not fix the permission, the latest turn's model and effort,
+ * and the mode's overrides. The arguments are read before the stop, which makes hcom forget them.
+ */
+async function permissionSwitch(
+	board: Board,
+	controller: SwitchTarget,
+	entry: SentSwitch,
+	agent: HcomAgent,
+	record: Awaited<ReturnType<typeof readTranscript>>
+): Promise<Result<SwitchResponse>> {
+	const refused = (reason: string) => finish(board, entry, { reason });
+	if (!record.ok) {
+		return refused(
+			record.missing ? `${noun(controller)}還沒有對話紀錄，沒有可接回的對話，沒有切換權限；等它做完一回合再切換。` : `讀不到${noun(controller)}的對話紀錄，沒有切換權限：${record.reason}`
+		);
+	}
+	const launched = await readLaunchArgs(board.config, controller.id);
+	if (!launched.ok) return refused(`讀不到${noun(controller)}的啟動參數，沒有切換權限：${launched.reason}`);
+	const current = record.page.current ?? null;
+	const row = (await board.current()).agents.find((candidate) => candidate.id === controller.id && candidate.inHerdr);
+	entry.from = current;
+	entry.relaunch = {
+		args: ['resume', controller.id, ...withoutPermissionFlags(launched.args, controller.id), ...modelArgs('codex', { model: current?.model ?? null, effort: current?.effort ?? null })],
+		session: controller.id,
+		tabLabel: row?.herdr.tabPlace?.label ?? null,
+		tabIndex: row?.herdr.tabPlace ? row.herdr.tabPlace.position - 1 : null
+	};
 	return restartSwitch(board, controller, entry, agent);
 }
 

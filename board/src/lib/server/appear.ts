@@ -16,12 +16,16 @@ const EXITED_AFTER = 8;
 /** How many reads in a row Herdr's lists may fail before the wait gives up on them. */
 const UNREAD_AFTER = 5;
 
-/** Which client: the one hcom lists under this name, or with this session ID. */
-export type Wanted = { name: string } | { sessionId: string };
+/** Which client: the one hcom lists under this name, or with this session ID; with both, the one
+ *  with the session ID, else the one under the name (a fresh launch that resumes a session is
+ *  listed under a name of its own until hcom learns its session). */
+export type Wanted = { name: string; sessionId?: string } | { sessionId: string };
 
 /** The Herdr agent that is this client, when both lists are read and agree. */
 export function runningIn(wanted: Wanted, hcom: HcomAgent[], herdr: HerdrAgent[]): { hcom: HcomAgent | undefined; herdr: HerdrAgent | undefined } {
-	const listed = hcom.find((agent) => ('name' in wanted ? agent.name === wanted.name : agent.sessionId === wanted.sessionId));
+	const listed =
+		(wanted.sessionId !== undefined ? hcom.find((agent) => agent.sessionId === wanted.sessionId) : undefined) ??
+		('name' in wanted ? hcom.find((agent) => agent.name === wanted.name) : undefined);
 	// Its session first: a pane hcom still has from an earlier client may hold another agent now.
 	const seen =
 		listed &&
@@ -36,7 +40,7 @@ export type Appearance = { found: HerdrAgent } | { found: null; reason: string }
  *  until it answers true for that pane; an agent `accepts` turns down is not the client, and the
  *  wait goes on. */
 export interface Watch {
-	onPane(pane: string): Promise<boolean>;
+	onPane?(pane: string): Promise<boolean>;
 	accepts?(found: HerdrAgent): boolean;
 }
 
@@ -67,7 +71,7 @@ export async function waitToAppear(
 			const turnedDown = running.herdr && watch?.accepts && !watch.accepts(running.herdr);
 			if (running.herdr && !turnedDown) return { found: running.herdr };
 			const pane = running.hcom?.pane;
-			if (watch && pane && pane !== paneDone && (await watch.onPane(pane))) paneDone = pane;
+			if (watch?.onPane && pane && pane !== paneDone && (await watch.onPane(pane))) paneDone = pane;
 			missing = running.hcom ? 0 : missing + 1;
 			// An agent turned down runs in that pane: the client has not exited.
 			idle = pane && !turnedDown ? idle + 1 : 0;

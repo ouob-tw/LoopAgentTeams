@@ -1,7 +1,9 @@
 // The Herdr 分頁's list: every agent Herdr lists, paired with hcom's list to tell which are
 // reached through hcom. Either list that cannot be read is stood in for by the last one that could.
 // An agent with an open model switch is listed too when Herdr does not list it, from what the
-// switch kept, until the switch is over or given up.
+// switch kept, until the switch is over or given up. The fresh launch a Codex permission switch
+// resumes the session in is that same agent: while hcom and Herdr do not know its session yet, the
+// switch's row stands for it, and its own row is left out.
 import type { SwitchAgent, SwitchView } from '../board/models.ts';
 import { AGENT_STATUSES, type Agent, type AgentStatus, type AgentSwitch, type HerdrWorkspace } from '../board/types.ts';
 import type { AgentList, HcomAgent } from './hcom.ts';
@@ -101,7 +103,10 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 				nextLagging.set(key, entry);
 				return entry.confirmed;
 			};
-			const agents = listed.map((agent): Agent => {
+			/** The names of the fresh launches open switches resume their sessions in. */
+			const resuming = new Set(switches.flatMap((view) => (view.relaunch?.session && view.relaunchedName ? [view.relaunchedName] : [])));
+			const shown = listed.filter((agent) => agent.sessionId !== null || !resuming.has(pairings.get(pairingKey(agent))?.name ?? ''));
+			const agents = shown.map((agent): Agent => {
 				// A list that cannot be read does not mean an agent is not linked: the last pairing stands,
 				// and one that appeared since no list was read is not known either way.
 				const paired = pairings.get(pairingKey(agent));

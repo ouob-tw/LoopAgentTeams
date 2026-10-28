@@ -29,6 +29,10 @@ function lastValue(args: readonly string[], name: string): string | null {
 	return value;
 }
 
+/** Whether these launch arguments turn bypass permissions off for the session, so Shift+Tab never
+ *  reaches it. */
+export const bypassTurnedOff = (args: readonly string[]) => lastValue(args, '--settings') === DISABLE_BYPASS;
+
 /** What to add to the stored arguments so a resume starts in `mode`: nothing when they give it
  *  already or the mode is not known; for a mode other than bypass permissions, which the stored
  *  bypass flag forces, the setting that turns it off too. */

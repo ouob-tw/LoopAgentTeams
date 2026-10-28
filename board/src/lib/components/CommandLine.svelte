@@ -41,6 +41,7 @@
 	import MessageBox from './MessageBox.svelte';
 	import VoiceButton from './VoiceButton.svelte';
 	import AgentModelPicker from './AgentModelPicker.svelte';
+	import AgentPermissionPicker from './AgentPermissionPicker.svelte';
 	import ModelPicker from './ModelPicker.svelte';
 	import SendButton from './SendButton.svelte';
 
@@ -191,6 +192,13 @@
 	let confirming = $state<Record<string, boolean>>({});
 
 	const id = $derived(recipient?.id ?? '');
+	/** The page's own controller as Herdr lists it now, not one an `@name` line names: its permission
+	 *  mode is switched as an agent's. */
+	const recipientAgent = $derived.by((): KnownAgent | undefined => {
+		if (!recipient || recipient.id !== target?.id || command.ok) return undefined;
+		const listed = agents.find((candidate) => candidate.id === recipient.id && candidate.inHerdr);
+		return listed?.id ? { ...listed, id: listed.id } : undefined;
+	});
 	const status = $derived(waking ? switching.status[id] : undefined);
 	// A new model and effort only apply when the client is known not to be running: a running one
 	// is typed into and keeps its settings.
@@ -350,6 +358,7 @@
 	{#if toAgent && agent}
 		<div class="pill-slot">
 			<AgentModelPicker {agent} />
+			<AgentPermissionPicker {agent} />
 		</div>
 	{:else if !toClosed}
 		<div class="pill-slot">
@@ -358,6 +367,7 @@
 				chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }}
 				onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)}
 			/>
+			{#if recipientAgent}<AgentPermissionPicker agent={recipientAgent} />{/if}
 		</div>
 		<!-- Always there on a wide screen, so the box keeps its width whoever it is for; a phone shows
 		     it only for a wake. -->
@@ -448,6 +458,7 @@
 		display: flex;
 		align-items: center;
 		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
+		gap: 4px;
 	}
 	.options {
 		display: inline-flex;

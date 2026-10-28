@@ -6,6 +6,7 @@
 	import { AGENT_SWITCH_STATE_TEXT, choiceText, settingsText, type SwitchView } from '#lib/board/models.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { formatTime } from '#lib/board/format.ts';
+	import { CLAUDE_MODE_LABEL, type ClaudeScreenMode } from '#lib/board/permissions.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { KnownAgent } from '#lib/board/types.ts';
 	import SentText from './SentText.svelte';
@@ -23,7 +24,7 @@
 	);
 	/** A switch whose result is good or still on its way is not shown as a failure. */
 	const switchFailed = (entry: SwitchView) => entry.state !== 'done' && entry.state !== 'resuming' && entry.state !== 'abandoned';
-	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉', move: '已移動', rename: '已改名', resume: '已接回', pause: '已暫停通訊', unpause: '已恢復通訊', 'board-ask': '已送出答案' } as const;
+	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉', move: '已移動', rename: '已改名', resume: '已接回', pause: '已暫停通訊', unpause: '已恢復通訊', 'board-ask': '已送出答案', permission: '已切換' } as const;
 	function routeLabel(entry: AgentAction): string {
 		if (entry.route === 'hcom') {
 			const command = { close: '（hcom kill）', resume: '（hcom r）', pause: '（hcom stop）' } as Partial<Record<AgentAction['action'], string>>;
@@ -58,14 +59,17 @@
 								<span class="failed">✗ {entry.error}</span>
 							{/if}
 						</p>
-						{#if entry.text !== null}<SentText text={entry.text} />{/if}
+						{#if entry.permission}
+							{@const path = entry.permission.seen.map((mode) => CLAUDE_MODE_LABEL[mode as ClaudeScreenMode] ?? mode)}
+							<p class="text">{path.length ? path.join(' → ') : '畫面讀不出模式'}{entry.permission.presses ? `（按了 ${entry.permission.presses} 次 Shift+Tab）` : ''}</p>
+						{:else if entry.text !== null}<SentText text={entry.text} />{/if}
 					</li>
 				{:else}
 					{@const entry = item.entry}
 					<li data-action="model-switch" data-state={entry.state}>
 						<p class="meta">
 							<time datetime={entry.time}>{formatTime(entry.time)}</time>
-							<span>切換模型</span>
+							<span>{entry.to.permission ? '切換權限' : '切換模型'}</span>
 							{#if entry.state === 'refused'}
 								<span class="failed">✗ {entry.error}</span>
 							{:else}
@@ -73,7 +77,7 @@
 							{/if}
 							{#if entry.abandonedAt}<span>放棄於 <time datetime={entry.abandonedAt}>{formatTime(entry.abandonedAt)}</time></span>{/if}
 						</p>
-						<p class="text">{entry.from ? `${settingsText(entry.from)} → ` : ''}{choiceText(entry.to)}</p>
+						<p class="text">{entry.from && !entry.to.permission ? `${settingsText(entry.from)} → ` : ''}{choiceText(entry.to)}</p>
 						{#if entry.error && entry.state !== 'refused'}<p class="note">{entry.error}</p>{/if}
 					</li>
 				{/if}

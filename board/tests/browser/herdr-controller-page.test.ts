@@ -191,7 +191,9 @@ for (const width of [1280, 390]) {
 		await tab.until(CARDS_IN, 'the cards in the conversation');
 		// The command line's model is the controller's.
 		await tab.until(`!!document.querySelector('.dock .pill-slot .part')`, 'the model picker');
-		expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick]')`)).toBe(false);
+		expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`)).toBe(false);
+		// Its permission mode beside them, switched as an agent's is.
+		await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick="permission"]')`, 'the permission picker');
 		expect(await tab.eval(FITS)).toBe(true);
 
 		// Each tab shows its records.
@@ -222,7 +224,7 @@ for (const width of [1280, 390]) {
 		await tab.eval(`document.querySelector('#agent-tab-transcript').click()`);
 		expect(await tab.eval(`!!document.querySelector('.detail .tabbar > button.translate')`)).toBe(true);
 		expect(await tab.eval(`!!document.querySelector('.detail .questions, .history li.report, #panel-reports')`)).toBe(false);
-		await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick]')`, "the agent's model picker");
+		await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`, "the agent's model picker");
 		expect(await tab.eval(FITS)).toBe(true);
 	}, 60_000);
 
@@ -390,7 +392,7 @@ test.skipIf(!CHROME)("the controller's information page is as it was: no operati
 	expect(await tab.eval(TABS)).toEqual(['對話紀錄', '回報', '工作總表', '送出紀錄']);
 	expect(await tab.eval(`!!document.querySelector('.history li.report')`)).toBe(false);
 	expect(await tab.eval(`document.querySelectorAll('.history li.said.reported').length`)).toBe(2);
-	expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick]')`)).toBe(false);
+	expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`)).toBe(false);
 }, 60_000);
 
 test.skipIf(!CHROME)("a running controller's information page closes it after a confirmation, and pauses and resumes its HCOM link at once", async () => {
@@ -494,7 +496,7 @@ test.skipIf(!CHROME)('a controller whose model switch is unfinished stays in the
 	await tab.until(`document.querySelector('.detail')?.innerText.includes('繼續切換或放棄切換')`, 'only continue or give up');
 	expect(await tab.eval(TABS)).toEqual(['對話紀錄', '操作紀錄']);
 	expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .detail .questions')`)).toBe(false);
-	await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick]')`, "the agent's model picker with its continue and give up");
+	await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`, "the agent's model picker with its continue and give up");
 }, 60_000);
 
 test.skipIf(!CHROME)("after a switch a controller's information page shows what it sent until the resumed session has a turn, then that turn", async () => {
