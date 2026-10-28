@@ -1477,3 +1477,29 @@ test.skipIf(!CHROME)('the pause of the HCOM link shows for a linked agent, its r
 		await fixture.refresh(cookie);
 	}
 }, 30_000);
+
+test.skipIf(!CHROME)('a Claude agent shows the mode its screen shows beside its model, and is switched from there by Shift+Tab', async () => {
+	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+	const rule = '─'.repeat(40);
+	const lines = ['⏵⏵ bypass permissions on (shift+tab to cycle)', '⏵⏵ auto mode on (shift+tab to cycle)', '⏸ manual mode on', '⏵⏵ accept edits on', '⏸ plan mode on'];
+	setHerdr(AGENTS, { screens: { 'wB:p-s-long': lines.map((line) => ['Claude Code', rule, '❯ ', rule, `  ${line}`].join('\n')) } });
+	const PILL = '.dock [data-pick="permission"]';
+	try {
+		await fixture.refresh(cookie);
+		await visit(1280, '?agent=s-long');
+		await tab.until(`document.querySelector(${JSON.stringify(PILL)})?.innerText === 'bypass permissions'`, 'the mode read off its screen');
+		await click(PILL);
+		await tab.until(`document.querySelectorAll('.permission [role="menuitemradio"]').length === 3`, 'the three modes');
+		await click('.permission [role="menuitemradio"]:nth-child(3)');
+		await click('[data-action="confirm-permission"]');
+		await tab.until(`document.querySelector(${JSON.stringify(PILL)})?.innerText === 'manual mode'`, 'the new mode shown');
+		expect(herdrCalls()).toEqual([
+			['agent', 'send-keys', 'wB:p-s-long', 'shift+tab'],
+			['agent', 'send-keys', 'wB:p-s-long', 'shift+tab']
+		]);
+		expect(await tab.eval(FITS)).toBe(true);
+	} finally {
+		setHerdr(AGENTS);
+		await fixture.refresh(cookie);
+	}
+}, 30_000);

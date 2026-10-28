@@ -24,9 +24,11 @@
 
 	let { agent, asks = [] }: { agent: KnownAgent; /** Its board asks, oldest first. */ asks?: BoardAsk[] } = $props();
 
-	/** As the conversation's live feed last told; shown only while Herdr lists it. */
+	/** As the conversation's live feed last told; shown only while Herdr lists it. Claude's mode is
+	 *  the one its screen showed when last read: its record only has it from the next prompt on. */
 	let usage = $state<Usage | null>(null);
-	const shownUsage = $derived(agent.inHerdr ? usage : null);
+	const screenMode = $derived(agentControl.permission[agent.id]?.client === 'claude' ? agentControl.permission[agent.id].current : null);
+	const shownUsage = $derived(agent.inHerdr ? (usage && screenMode ? { ...usage, permission: { mode: screenMode } } : usage) : null);
 
 	// Shown or not as on a controller's information page, the same choice for both.
 	let details = $state(false);

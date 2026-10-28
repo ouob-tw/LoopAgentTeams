@@ -316,6 +316,13 @@ export function agentCommand(config: BoardConfig, args: string[]): Promise<Herdr
 	return herdrAct(config, ['agent', ...args]);
 }
 
+/** What the pane shows now, as plain text (`herdr pane read <pane> --source visible`), or why it
+ *  cannot be read. */
+export async function readScreen(config: BoardConfig, pane: string): Promise<{ text: string } | { reason: string }> {
+	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, '--source', 'visible'], { timeoutMs: config.herdrTimeoutMs });
+	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout };
+}
+
 /** Closes a pane and what runs in it: `herdr pane close <pane>`. */
 export function closePane(config: BoardConfig, pane: string): Promise<HerdrAct> {
 	return herdrAct(config, ['pane', 'close', pane]);

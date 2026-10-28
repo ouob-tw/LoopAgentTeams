@@ -505,7 +505,8 @@ def _claude_permission(records):
 
 
 def _codex_permission(records):
-    """The last turn context's approval policy and sandbox type (None when it has none)."""
+    """The last turn context's approval policy, sandbox type and approvals reviewer (None when it
+    has none)."""
     permission = None
     for record in records:
         payload = record.get("payload")
@@ -516,8 +517,10 @@ def _codex_permission(records):
             sandbox = sandbox.get("type")
         if not isinstance(approval, str) or not approval:
             continue
+        reviewer = payload.get("approvals_reviewer")
         permission = {"approval": approval,
-                      "sandbox": sandbox if isinstance(sandbox, str) and sandbox else None}
+                      "sandbox": sandbox if isinstance(sandbox, str) and sandbox else None,
+                      "reviewer": reviewer if isinstance(reviewer, str) and reviewer else None}
     return permission
 
 
@@ -542,7 +545,7 @@ def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_T
     ``usage`` is a Codex record's context use, quota and prompt cache
     (``_codex_usage``); None for Claude, whose record does not hold them.
     ``permission`` is the latest turn's permission mode: ``{"mode"}`` for Claude,
-    ``{"approval", "sandbox"}`` for Codex; None when the record has none.
+    ``{"approval", "sandbox", "reviewer"}`` for Codex; None when the record has none.
     """
     path = transcript_path(client, session_id, env=env)
     records, skipped = _read_records(path)

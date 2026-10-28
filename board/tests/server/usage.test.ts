@@ -196,6 +196,9 @@ describe('the line', () => {
 		expect(usageFrom({ permission: { mode: 'plan' } })?.permission).toEqual({ mode: 'plan' });
 		expect(usageFrom({ permission: { approval: 'never', sandbox: 7 } })?.permission).toEqual({ approval: 'never', sandbox: null });
 		expect(usageFrom({ permission: { mode: 3 } })).toBeNull();
+		// The two Codex modes that ask are named as its /permissions menu names them.
+		expect(texts(usageFrom({ permission: { approval: 'on-request', sandbox: 'workspace-write', reviewer: 'auto_review' } })!)).toBe('權限：Approve for me');
+		expect(texts(usageFrom({ permission: { approval: 'on-request', sandbox: 'workspace-write', reviewer: 'user' } })!)).toBe('權限：Ask for approval');
 	});
 });
 

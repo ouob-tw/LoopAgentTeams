@@ -239,8 +239,12 @@ class PermissionTests(ModelTestCase):
     def test_a_codex_record_gives_the_last_turn_s_approval_and_sandbox(self):
         early, late = codex_turn("2026-10-14T09:00:01Z", "gpt-6-astra", "low"), codex_turn("2026-10-14T09:05:00Z", "gpt-6-astra", "low")
         early["payload"].update(approval_policy="on-request", sandbox_policy={"type": "workspace-write"})
-        late["payload"].update(approval_policy="never", sandbox_policy={"type": "danger-full-access"})
-        self.assertEqual(self.codex([early, late], field="permission"), {"approval": "never", "sandbox": "danger-full-access"})
+        late["payload"].update(approval_policy="never", sandbox_policy={"type": "danger-full-access"}, approvals_reviewer="user")
+        self.assertEqual(self.codex([early, late], field="permission"), {"approval": "never", "sandbox": "danger-full-access", "reviewer": "user"})
+        # "Approve for me" differs from "Ask for approval" only in who reviews.
+        late["payload"].update(approval_policy="on-request", sandbox_policy={"type": "workspace-write"}, approvals_reviewer="auto_review")
+        self.assertEqual(self.codex([early, late], field="permission"), {"approval": "on-request", "sandbox": "workspace-write", "reviewer": "auto_review"})
+        self.assertEqual(self.codex([early], field="permission"), {"approval": "on-request", "sandbox": "workspace-write", "reviewer": None})
         self.assertIsNone(self.codex([codex_turn("2026-10-14T09:00:01Z", "gpt-6-astra", "low")], field="permission"))
 
 

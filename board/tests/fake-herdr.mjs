@@ -1,6 +1,6 @@
 // Stands in for the Herdr CLI, so tests never open or create anything in a real Herdr. Each call
 // is logged to <dir>/herdr-calls.jsonl, except the lists every board read makes (`agent list`,
-// `workspace list`, `tab list`), which go to <dir>/herdr-list-calls.jsonl. <dir>/herdr.json holds
+// `workspace list`, `tab list`) and screen reads (`pane read`), which go to <dir>/herdr-list-calls.jsonl. <dir>/herdr.json holds
 // the panes, workspaces, agents and tabs `pane list`, `workspace list`, `agent list` and `tab list`
 // print, the ID `workspace create` answers with (`created`; null leaves it out), and per command
 // ("pane list", "workspace list", "agent list", "tab list", "workspace create", "agent prompt",
@@ -11,6 +11,8 @@
 // `<pane>-split` in that pane's tab and workspace, and fails for a pane it does not list. `reconnect: { <pane>: <agent> }` has an
 // `agent prompt` to that pane add the agent to the fake hcom's list (<dir>/hcom-added.json), the way
 // typing `hcom start --as` brings one back.
+// `screens: { <pane>: [<text>, ...] }` is what `pane read <pane>` prints, the entry `screenAt[<pane>]`
+// (0 at first) names; `agent send-keys <pane> shift+tab` moves it on by one, round to the first.
 // `slowMs: { <command>: ms }` makes a command wait that long before it answers.
 // `failSeries: { <command>: [...] }` gives that command's next calls in turn: an entry `{ exit, stderr }`
 // acts out a failure, null answers as usual; once the series is used up, `fail` applies again.
@@ -28,7 +30,7 @@ function write(/** @type {string} */ file, /** @type {string} */ text) {
 export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} */ args, transport = 'cli') {
 	let stdout = '', stderr = '', code = 0;
 	const command = args.slice(0, 2).join(' ');
-	const listing = ['agent list', 'workspace list', 'tab list'].includes(command);
+	const listing = ['agent list', 'workspace list', 'tab list', 'pane read'].includes(command);
 	appendFileSync(join(dir, transport === 'socket' ? 'herdr-socket-calls.jsonl' : listing ? 'herdr-list-calls.jsonl' : 'herdr-calls.jsonl'), JSON.stringify(args) + '\n');
 	const planFile = join(dir, 'herdr.json');
 	const plan = existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) : {};
@@ -87,7 +89,18 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		plan.tabs = (plan.tabs ?? []).map((/** @type {any} */ tab) => (tab.tab_id === args[2] ? { ...tab, label: args.slice(3).join(' ') } : tab));
 		write(planFile, JSON.stringify(plan));
 		stdout += JSON.stringify({ id: 'cli:tab:rename', result: { type: 'ok' } });
+	} else if (command === 'pane read') {
+		const screens = plan.screens?.[args[2]];
+		if (screens) stdout += screens[(plan.screenAt?.[args[2]] ?? 0) % screens.length];
+		else {
+			stderr += JSON.stringify({ error: { code: 'pane_not_found', message: `pane ${args[2]} not found` } });
+			code = 1;
+		}
 	} else if (command === 'agent prompt' || command === 'agent send-keys') {
+		if (command === 'agent send-keys' && args[3] === 'shift+tab' && plan.screens?.[args[2]]) {
+			plan.screenAt = { ...plan.screenAt, [args[2]]: (plan.screenAt?.[args[2]] ?? 0) + 1 };
+			write(planFile, JSON.stringify(plan));
+		}
 		const back = command === 'agent prompt' ? plan.reconnect?.[args[2]] : undefined;
 		if (back) {
 			const addedFile = join(dir, 'hcom-added.json');

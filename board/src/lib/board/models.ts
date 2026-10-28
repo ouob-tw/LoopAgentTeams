@@ -3,6 +3,7 @@
 // server and the page.
 import type { SentEntry } from './answers.ts';
 import type { LaunchClient } from './launch.ts';
+import { CODEX_MODE_LABEL, codexPermissionArgs, isCodexMode, type CodexMode } from './permissions.ts';
 
 export interface ClientOptions {
 	models: string[];
@@ -25,19 +26,22 @@ export const DEFAULT_MODEL_OPTIONS: ModelOptions = {
 };
 
 /** A model and effort to use. Null leaves that one as it is: the client's default for a new
- *  controller, the current setting for a switch or a wake. */
+ *  controller, the current setting for a switch or a wake. A Codex agent's switch may carry a
+ *  permission mode instead (`permissions.ts`); missing or null keeps the current one. */
 export interface ModelChoice {
 	model: string | null;
 	effort: string | null;
+	permission?: CodexMode | null;
 }
 
 export const NO_CHOICE: ModelChoice = { model: null, effort: null };
 
 export const chose = (choice: ModelChoice | undefined | null): choice is ModelChoice =>
-	!!choice && (choice.model !== null || choice.effort !== null);
+	!!choice && (choice.model !== null || choice.effort !== null || !!choice.permission);
 
-/** Whether the choice holds only values the lists offer this client. */
-export function offered(options: ClientOptions, choice: ModelChoice): boolean {
+/** Whether the choice holds only values the lists offer this client; a permission mode only Codex's three. */
+export function offered(options: ClientOptions, choice: ModelChoice, client?: string): boolean {
+	if (choice.permission && (client !== 'codex' || !isCodexMode(choice.permission))) return false;
 	return (choice.model === null || options.models.includes(choice.model)) && (choice.effort === null || options.efforts.includes(choice.effort));
 }
 
@@ -54,6 +58,7 @@ export function modelArgs(client: LaunchClient, choice: ModelChoice): string[] {
 	} else {
 		if (choice.model !== null) args.push('-c', `model=${JSON.stringify(choice.model)}`);
 		if (choice.effort !== null) args.push('-c', `model_reasoning_effort=${JSON.stringify(choice.effort)}`);
+		if (choice.permission) args.push(...codexPermissionArgs(choice.permission));
 	}
 	return args;
 }
@@ -187,8 +192,13 @@ export interface SentSwitch {
 }
 
 export interface SwitchRelaunch {
-	/** The client arguments hcom started it with. */
+	/** The client arguments hcom started it with; for a `session` relaunch, `resume <session>` and
+	 *  the stored ones that do not fix the permission, with the latest turn's model and effort. */
 	args: string[];
+	/** Set on a Codex permission switch: the conversation this fresh launch resumes. hcom and Herdr
+	 *  only tell it is that session after its first turn, which the launch sends; until then hcom
+	 *  lists it under a name of its own, and gives it back its old one with that turn. */
+	session?: string;
 	/** The old tab's label, to give the new tab; null when Herdr's tab list did not have it. */
 	tabLabel: string | null;
 	/** The old tab's place among its workspace's tabs, counted from 0; null when not known. */
@@ -294,7 +304,9 @@ export const settingsText = (settings: Partial<ModelChoice> | null | undefined) 
 
 /** A choice as a switch shows it: what it changes, and that the rest is kept. */
 export const choiceText = (choice: ModelChoice) =>
-	`模型 ${choice.model ?? '保持目前'}・思考強度 ${choice.effort ?? '保持目前'}`;
+	choice.permission
+		? `權限 ${CODEX_MODE_LABEL[choice.permission]}`
+		: `模型 ${choice.model ?? '保持目前'}・思考強度 ${choice.effort ?? '保持目前'}`;
 
 /** Settings sent: what was chosen, and the effort carried with a new model, not chosen (none
  *  when it carries none). */

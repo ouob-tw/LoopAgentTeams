@@ -41,6 +41,7 @@
 	import MessageBox from './MessageBox.svelte';
 	import VoiceButton from './VoiceButton.svelte';
 	import AgentModelPicker from './AgentModelPicker.svelte';
+	import AgentPermissionPicker from './AgentPermissionPicker.svelte';
 	import ModelPicker from './ModelPicker.svelte';
 	import SendButton from './SendButton.svelte';
 
@@ -350,6 +351,7 @@
 	{#if toAgent && agent}
 		<div class="pill-slot">
 			<AgentModelPicker {agent} />
+			<AgentPermissionPicker {agent} />
 		</div>
 	{:else if !toClosed}
 		<div class="pill-slot">
@@ -448,6 +450,7 @@
 		display: flex;
 		align-items: center;
 		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
+		gap: 4px;
 	}
 	.options {
 		display: inline-flex;

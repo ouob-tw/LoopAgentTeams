@@ -1,0 +1,16 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/lib/board/permissions.ts"],
+      "tests": ["board/tests/unit/permissions.test.ts", "board/tests/server/agent-permission.test.ts", "board/tests/server/usage.test.ts"]
+    },
+    {
+      "paths": ["board/src/lib/server/permission-switch.ts", "board/src/routes/api/agents/permission/+server.ts"],
+      "tests": ["board/tests/server/agent-permission.test.ts"]
+    },
+    {
+      "paths": ["board/src/lib/components/AgentPermissionPicker.svelte"],
+      "tests": ["board/tests/browser/agents-page.test.ts", "board/tests/browser/picker-shape.test.ts", "board/tests/browser/command-line-layout.test.ts"]
+    }
+  ]
+}

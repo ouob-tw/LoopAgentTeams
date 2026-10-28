@@ -3,8 +3,21 @@ import type { Agent, Controller } from './types.ts';
 
 /** What was done: text typed into the agent's input box, its turn interrupted, it closed, its
  *  Herdr tab moved or renamed, it brought back from the 已關閉 section, its HCOM link paused or
- *  resumed, or its board ask answered. */
-export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume' | 'pause' | 'unpause' | 'board-ask';
+ *  resumed, its board ask answered, or its Claude permission mode switched with Shift+Tab. */
+export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume' | 'pause' | 'unpause' | 'board-ask' | 'permission';
+
+/** A Claude permission switch: the mode its screen showed first (null when it could not be read),
+ *  the one asked for, the one it was left in (null when not known), how many times Shift+Tab was
+ *  pressed, every mode the screen showed on the way, and how it ended (`back`: a whole round went
+ *  by without the target). */
+export interface PermissionSwitch {
+	from: string | null;
+	to: string;
+	mode: string | null;
+	presses: number;
+	seen: string[];
+	outcome: 'reached' | 'back' | 'stopped' | 'already' | 'refused';
+}
 
 /** One line of the board's sent log: one attempt at an action on an agent, made or refused. */
 export interface AgentAction {
@@ -26,6 +39,8 @@ export interface AgentAction {
 	ok: boolean;
 	/** Why it was not done; null when it was. */
 	error: string | null;
+	/** Set on a permission switch. */
+	permission?: PermissionSwitch;
 }
 
 /** What the agent endpoints answer for every attempt they made or refused. */
@@ -46,7 +61,8 @@ export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {
 	resume: '接回',
 	pause: '暫停通訊',
 	unpause: '恢復通訊',
-	'board-ask': '看板提問'
+	'board-ask': '看板提問',
+	permission: '切換權限模式'
 };
 
 /** Whether the controller's turn can be interrupted from its page: its own agent entry (same session

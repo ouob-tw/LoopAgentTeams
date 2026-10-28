@@ -10,7 +10,8 @@ import {
 	AGENT_OWN_PANE_REASON,
 	type AgentAction,
 	type AgentActionKind,
-	type AgentActionResponse
+	type AgentActionResponse,
+	type PermissionSwitch
 } from '../board/agent-actions.ts';
 import type { Agent } from '../board/types.ts';
 import type { Board } from './board.ts';
@@ -47,7 +48,7 @@ export async function listedNow(board: Board, agentId: string): Promise<{ agent:
 }
 
 /** Why a Herdr command did not act, as the page shows it. */
-function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<AgentActionKind, 'move' | 'rename' | 'resume' | 'pause' | 'board-ask'>): string {
+function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<AgentActionKind, 'move' | 'rename' | 'resume' | 'pause' | 'board-ask' | 'permission'>): string {
 	if (act.timedOut) {
 		if (action === 'close') return `Herdr 的關閉指令${act.reason}，結果不明；請到 Herdr 查看。`;
 		if (action === 'unpause') return `Herdr 的傳話指令${act.reason}，接回指令可能已經送進去；暫停紀錄保留，重按前請先看它的畫面。`;
@@ -59,23 +60,26 @@ function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<Agen
 	return `Herdr ${{ send: '拒收', interrupt: '沒有送出 Esc', close: '沒有關閉', unpause: '拒收接回指令' }[action]}：${act.reason}`;
 }
 
-async function attempt(
+/** One action on an agent listed in Herdr's list as read now, logged in the sent log either way.
+ *  Refused while the agent has a model switch open. */
+export async function attempt(
 	board: Board,
 	agentId: string,
 	action: AgentActionKind,
 	text: string | null,
-	act: (agent: Agent) => Promise<{ route: AgentAction['route']; reason: string | null; text?: string }>
+	act: (agent: Agent) => Promise<{ route: AgentAction['route']; reason: string | null; text?: string; permission?: PermissionSwitch }>
 ): Promise<{ status: number; body: AgentActionResponse; gone: boolean }> {
 	const listed = await listedNow(board, agentId);
 	let status = 409;
 	let route: AgentAction['route'] = null;
 	let reason: string | null;
+	let permission: PermissionSwitch | undefined;
 	if ('reason' in listed) reason = listed.reason;
 	// Its open model switch comes first: only continued or given up until it is over.
 	else if (listed.agent.switch) reason = AGENT_SWITCH_UNFINISHED_REASON;
 	else {
 		const done = await act(listed.agent);
-		({ route, reason } = done);
+		({ route, reason, permission } = done);
 		// What was typed, when the action itself decided it.
 		text = done.text ?? text;
 		if (route) status = reason ? 502 : 200;
@@ -91,7 +95,8 @@ async function attempt(
 		pane: listed.agent?.herdr.pane ?? null,
 		text,
 		ok: reason === null,
-		error: reason
+		error: reason,
+		...(permission && { permission })
 	};
 	let logError: string | null = null;
 	try {
