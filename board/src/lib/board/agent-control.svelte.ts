@@ -19,9 +19,8 @@ class AgentControl {
 	loadFailed = $state<Record<string, boolean>>({});
 	/** What a switch may offer, by session ID; missing until loaded. */
 	model = $state<Record<string, AgentModelStatus>>({});
-	/** Its permission mode and what a permission switch offers, by session ID, with when it was
-	 *  read (page clock); missing until loaded. */
-	permission = $state<Record<string, PermissionStatus & { at: number }>>({});
+	/** Its permission mode and what a permission switch offers, by session ID; missing until loaded. */
+	permission = $state<Record<string, PermissionStatus>>({});
 	/** The latest load started per agent; an older one that answers later is dropped. */
 	#loads: Record<string, number> = {};
 
@@ -115,7 +114,7 @@ class AgentControl {
 	/** Read the permission mode now (Claude's from its screen); a failed read keeps what is shown. */
 	async loadPermission(agentId: string, signal?: AbortSignal): Promise<void> {
 		const result = await request<PermissionStatus>(`/api/agents/permission?session=${encodeURIComponent(agentId)}`, { signal });
-		if (result.ok) this.permission[agentId] = { ...result.value, at: Date.now() };
+		if (result.ok) this.permission[agentId] = result.value;
 	}
 
 	/** Switch the permission mode, after the user confirmed it; the mode is read again after. */

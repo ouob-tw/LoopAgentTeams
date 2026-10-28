@@ -3,13 +3,14 @@
 // restarted; logged as an agent action, queued like a send. Codex: a model switch that carries
 // the mode (`agent-switch.ts`), which resumes the same conversation in a fresh launch.
 import type { PermissionSwitch } from '../board/agent-actions.ts';
-import { AGENT_SWITCH_UNFINISHED_REASON, type SwitchResponse } from '../board/models.ts';
+import type { SwitchResponse } from '../board/models.ts';
 import {
 	CLAUDE_MODE_LABEL,
 	CLAUDE_MODES,
 	CODEX_MODE_LABEL,
 	CODEX_MODES,
 	codexMode,
+	BYPASS_TURNED_OFF_REASON,
 	cycleTo,
 	leftOutReason,
 	notOfferedReason,
@@ -20,10 +21,11 @@ import {
 	type PermissionStatus,
 	type ScreenRead
 } from '../board/permissions.ts';
-import { attempt } from './agent-control.ts';
+import { AGENT_GONE_REASON, attempt } from './agent-control.ts';
 import { switchAgentModel } from './agent-switch.ts';
 import type { Board } from './board.ts';
-import { readTranscript } from './helper.ts';
+import { readLaunchArgs, readTranscript } from './helper.ts';
+import { bypassTurnedOff } from './permission.ts';
 import { agentCommand, readScreen } from './herdr.ts';
 import { queued } from './send.ts';
 import { readLines } from './sent-log.ts';
@@ -33,8 +35,8 @@ import { readAgentActions } from './sent-views.ts';
 const SHOW_WAIT_MS = 2_000;
 const SHOW_POLL_MS = 150;
 
-export const PERMISSION_OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，沒有按鍵。';
-export const PERMISSION_BLOCKED_REASON = 'Herdr 說這個 Agent 正停在確認畫面，沒有按鍵。';
+const OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，沒有按鍵。';
+const BLOCKED_REASON = 'Herdr 說這個 Agent 正停在確認畫面，沒有按鍵。';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -54,16 +56,26 @@ async function shown(board: Board, pane: string, previous: ClaudeScreenMode): Pr
 	}
 }
 
-/** The modes a whole round of this session left out, as its latest such round found them. */
-function leftOut(board: Board, agentId: string): Set<string> {
+/** The modes the latest whole round of this session left out, but for those its screen has shown
+ *  since (a resume can bring one back) and the one it shows now. */
+function leftOut(board: Board, agentId: string, now: string | null): Set<string> {
 	let actions;
 	try {
 		actions = readAgentActions(readLines(board.config.stateDir, board.config.now()), agentId);
 	} catch {
 		return new Set();
 	}
-	const round = actions.find((action) => action.permission?.outcome === 'back')?.permission;
-	return new Set(round ? CLAUDE_MODES.filter((mode) => !round.seen.includes(mode)) : []);
+	const at = actions.findIndex((action) => action.permission?.outcome === 'back');
+	if (at < 0) return new Set();
+	const shownSince = new Set([now, ...actions.slice(0, at).flatMap((action) => action.permission?.seen ?? [])]);
+	return new Set(CLAUDE_MODES.filter((mode) => !actions[at].permission!.seen.includes(mode) && !shownSince.has(mode)));
+}
+
+/** Whether the arguments hcom started this session with turn bypass permissions off; false when
+ *  they cannot be read (a whole round then tells). */
+async function bypassOff(board: Board, agentId: string): Promise<boolean> {
+	const read = await readLaunchArgs(board.config, agentId);
+	return read.ok && bypassTurnedOff(read.args);
 }
 
 /** What the agent page offers for a permission switch now; null when the agent is not listed. */
@@ -71,8 +83,9 @@ export async function agentPermissionStatus(board: Board, agentId: string): Prom
 	const agent = (await board.current()).agents.find((candidate) => candidate.id === agentId);
 	if (!agent) return null;
 	if (agent.client === 'claude') {
-		const screen = agent.inHerdr ? await screenOf(board, agent.herdr.pane) : { mode: null, reason: AGENT_SWITCH_UNFINISHED_REASON };
-		const missing = leftOut(board, agentId);
+		const screen = agent.inHerdr ? await screenOf(board, agent.herdr.pane) : { mode: null, reason: AGENT_GONE_REASON };
+		const missing = leftOut(board, agentId, screen.mode);
+		const off = agent.hcom === 'linked' && (await bypassOff(board, agentId));
 		return {
 			client: 'claude',
 			current: screen.mode,
@@ -80,7 +93,7 @@ export async function agentPermissionStatus(board: Board, agentId: string): Prom
 			modes: CLAUDE_MODES.map((mode) => ({
 				id: mode,
 				label: CLAUDE_MODE_LABEL[mode],
-				reason: missing.has(mode) ? leftOutReason(mode) : null
+				reason: off && mode === 'bypassPermissions' ? BYPASS_TURNED_OFF_REASON : missing.has(mode) ? leftOutReason(mode) : null
 			}))
 		};
 	}
@@ -105,8 +118,9 @@ export function switchClaudePermission(board: Board, agentId: string, target: Cl
 			const refuse = (reason: string, fields: Partial<PermissionSwitch> = {}) => ({ route: null, reason, permission: record(fields) });
 			if (agent.client !== 'claude') return refuse(`這個 Agent 是 ${agent.client || '不明的 client'}，不是 Claude，沒有按鍵。`);
 			const pane = agent.herdr.pane;
-			if (pane === board.config.ownPane) return refuse(PERMISSION_OWN_PANE_REASON);
-			if (agent.status === 'blocked') return refuse(PERMISSION_BLOCKED_REASON);
+			if (pane === board.config.ownPane) return refuse(OWN_PANE_REASON);
+			if (agent.status === 'blocked') return refuse(BLOCKED_REASON);
+			if (target === 'bypassPermissions' && agent.hcom === 'linked' && (await bypassOff(board, agentId))) return refuse(BYPASS_TURNED_OFF_REASON);
 			const start = await screenOf(board, pane);
 			if (start.mode === null) return refuse(start.reason);
 			if (start.mode === target) return { route: 'herdr', reason: null, permission: record({ from: start.mode, mode: start.mode, seen: [start.mode], outcome: 'already' }) };

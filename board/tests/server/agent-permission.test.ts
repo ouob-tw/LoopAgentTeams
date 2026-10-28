@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { AgentAction } from '../../src/lib/board/agent-actions.ts';
 import type { SwitchResponse } from '../../src/lib/board/models.ts';
 import {
+	BYPASS_TURNED_OFF_REASON,
 	codexFirstTurnText,
 	leftOutReason,
 	notOfferedReason,
@@ -153,6 +154,16 @@ test('a mode the round never shows leaves the agent in its starting mode, and is
 	]);
 });
 
+test('bypass permissions is not offered, nor pressed for, when the launch settings turn it off', async () => {
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(['auto', 'manual', 'acceptEdits', 'plan']) } });
+	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ 's-claude': ['--dangerously-skip-permissions', '--settings', '{"permissions":{"disableBypassPermissionsMode":"disable"}}'] }));
+	expect((await permission('s-claude')).modes[0]).toEqual({ id: 'bypassPermissions', label: 'bypass permissions', reason: BYPASS_TURNED_OFF_REASON });
+	const refused = await post({ session: 's-claude', mode: 'bypassPermissions' });
+	expect(refused.status).toBe(409);
+	expect(refused.body.reason).toBe(BYPASS_TURNED_OFF_REASON);
+	expect(keyPresses()).toEqual([]);
+});
+
 test('no key is pressed while the screen shows a dialog, or Herdr says the agent waits on one', async () => {
 	setHerdr({ screens: { [pane('s-claude')]: ['Do you want to proceed?\n❯ 1. Yes\n  2. No'] } });
 	const dialog = await post({ session: 's-claude', mode: 'auto' });
@@ -236,6 +247,19 @@ test('a fresh launch whose first turn never comes is not launched again: the swi
 	expect((await continued.json()).reason).toContain('沒有再啟動一次');
 	expect(hcomCalls().filter((call) => call[0] === 'codex')).toHaveLength(1);
 
+	// Its first turn binds it later after all: the board's next read finds it and ends the switch.
+	firstTurn();
+	await fixture.refresh(cookie);
+	await until(() => sentLog().some((line) => line.kind === 'switch-step' && line.switchId === id && line.state === 'done'), 8_000, 'the late switch done');
+	expect(hcomCalls().filter((call) => call[0] === 'codex')).toHaveLength(1);
+});
+
+test('a fresh launch still waiting for its first turn can be given up', async () => {
+	freshResume();
+	await fixture.refresh(cookie);
+	const switched = await post({ session: 's-codex', mode: 'full-access' });
+	const id = switched.body.entry.id;
+	await until(() => sentLog().some((line) => line.kind === 'switch-step' && line.switchId === id && line.state === 'resume-failed'), 10_000, 'the wait given up');
 	const gaveUp = await fixture.fetch('/api/agents/model/abandon', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-codex' }), cookie });
 	expect(gaveUp.status).toBe(200);
 });

@@ -55,12 +55,13 @@ const CHOICE = /^\s*[❯›>]\s*\d+\.\s/;
 /**
  * The mode Claude's screen shows, from what `herdr pane read --source visible` prints: the line
  * under its input box (the `❯` line between two rules) that reads `⏵⏵ … on` or `⏸ … on`. A screen
- * with no input box at its bottom, a numbered choice on it, or no mode line under the box is not
- * read: a dialog or a menu is open, and a key could answer it.
+ * with no input box at its bottom, a numbered choice from the box down, or no mode line under the
+ * box is not read: a dialog or a menu is open, and a key could answer it. A numbered list higher
+ * up is the conversation's.
  */
 export function readClaudeScreen(screen: string): ScreenRead {
 	const lines = screen.split('\n');
-	if (lines.some((line) => CHOICE.test(line))) return { mode: null, reason: SCREEN_DIALOG_REASON };
+	const choice = (from: number) => lines.slice(from).some((line) => CHOICE.test(line));
 	// The input box's bottom rule: the last rule with the `❯` line just above it, after a rule.
 	let bottom = -1;
 	for (let at = lines.length - 1; at >= 2; at--) {
@@ -69,7 +70,8 @@ export function readClaudeScreen(screen: string): ScreenRead {
 			break;
 		}
 	}
-	if (bottom < 0) return { mode: null, reason: SCREEN_NO_INPUT_REASON };
+	if (bottom < 0) return { mode: null, reason: choice(0) ? SCREEN_DIALOG_REASON : SCREEN_NO_INPUT_REASON };
+	if (choice(bottom - 2)) return { mode: null, reason: SCREEN_DIALOG_REASON };
 	for (const line of lines.slice(bottom + 1)) {
 		const words = MODE_LINE.exec(line)?.[1];
 		if (words) return { mode: (Object.keys(SCREEN_WORDS) as ClaudeScreenMode[]).find((mode) => SCREEN_WORDS[mode] === words)! };
@@ -123,6 +125,8 @@ const notOfferedHint = (mode: ClaudeMode) =>
 /** Why a whole round went by without the target, as the page shows it. */
 export const notOfferedReason = (target: ClaudeMode) => `按完一整輪都沒有出現 ${CLAUDE_MODE_LABEL[target]}，已停回原本的模式${notOfferedHint(target)}`;
 
+export const BYPASS_TURNED_OFF_REASON = '這個 Agent 啟動時的設定關掉了 bypass permissions（disableBypassPermissionsMode），按 Shift+Tab 也切不到';
+
 /** Why a mode the latest whole round left out cannot be picked. */
 export const leftOutReason = (mode: ClaudeMode) => `上次按完一整輪沒有出現 ${CLAUDE_MODE_LABEL[mode]}${notOfferedHint(mode)}`;
 
@@ -152,19 +156,18 @@ const FIXING_VALUED = new Set(['-s', '--sandbox', '-a', '--ask-for-approval']);
 /**
  * The arguments hcom stored for a Codex session, without what would keep it from taking a new
  * mode: the bypass and sandbox flags beat any `-c` (and `-s`, `-a` are refused next to `--yolo`),
- * and a leading `resume <session>` hcom adds on a resume, which the relaunch gives itself.
+ * and the `resume <session>` hcom adds on a resume, which the relaunch gives itself.
  */
 export function withoutPermissionFlags(args: readonly string[]): string[] {
 	const kept: string[] = [];
-	let at = args[0] === 'resume' ? 2 : 0;
-	for (; at < args.length; at++) {
+	for (let at = 0; at < args.length; at++) {
 		const arg = args[at];
 		if (arg === '--') {
 			kept.push(...args.slice(at));
 			break;
 		}
 		if (FIXING_FLAGS.has(arg)) continue;
-		if (FIXING_VALUED.has(arg)) {
+		if (FIXING_VALUED.has(arg) || arg === 'resume') {
 			at++;
 			continue;
 		}

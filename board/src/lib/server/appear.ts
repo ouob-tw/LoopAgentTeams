@@ -40,7 +40,7 @@ export type Appearance = { found: HerdrAgent } | { found: null; reason: string }
  *  until it answers true for that pane; an agent `accepts` turns down is not the client, and the
  *  wait goes on. */
 export interface Watch {
-	onPane(pane: string): Promise<boolean>;
+	onPane?(pane: string): Promise<boolean>;
 	accepts?(found: HerdrAgent): boolean;
 }
 
@@ -71,7 +71,7 @@ export async function waitToAppear(
 			const turnedDown = running.herdr && watch?.accepts && !watch.accepts(running.herdr);
 			if (running.herdr && !turnedDown) return { found: running.herdr };
 			const pane = running.hcom?.pane;
-			if (watch && pane && pane !== paneDone && (await watch.onPane(pane))) paneDone = pane;
+			if (watch?.onPane && pane && pane !== paneDone && (await watch.onPane(pane))) paneDone = pane;
 			missing = running.hcom ? 0 : missing + 1;
 			// An agent turned down runs in that pane: the client has not exited.
 			idle = pane && !turnedDown ? idle + 1 : 0;

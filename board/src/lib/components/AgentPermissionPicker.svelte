@@ -43,7 +43,8 @@
 
 	/** Why nothing can be picked now; null when the modes can. */
 	const blocked = $derived.by((): string | null => {
-		if (agent.switch || !agent.inHerdr) return AGENT_SWITCH_UNFINISHED_TEXT;
+		if (agent.switch) return AGENT_SWITCH_UNFINISHED_TEXT;
+		if (!agent.inHerdr) return 'Herdr 的清單上已經沒有這個 Agent，不能切換權限';
 		if (client === 'codex') {
 			if (agent.hcom === 'none') return PERMISSION_NOT_LINKED_REASON;
 			if (agent.hcom === 'paused') return PERMISSION_PAUSED_REASON;

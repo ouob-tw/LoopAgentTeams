@@ -34,31 +34,31 @@ const isRelaunched = (view: SwitchView, found: HerdrAgent) => !view.relaunch?.se
 
 /**
  * Where a relaunch stands by hcom's and Herdr's lists now: its client runs; it may still come
- * (`waiting`, within the launch wait); or it failed, and why, and whether hcom still lists the
- * client it launched (`listed`: a session relaunch whose first turn has not bound it yet). A
+ * (`waiting`, within the launch wait); or it failed, and why, and whether it is a session
+ * relaunch hcom still lists, its first turn not done (`awaitingFirstTurn`). A
  * switch given up or over is `over`.
  */
-async function relaunchStanding(board: Board, view: SwitchView): Promise<{ runs: HerdrAgent } | 'waiting' | 'over' | { failed: string; listed: boolean }> {
+async function relaunchStanding(board: Board, view: SwitchView): Promise<{ runs: HerdrAgent } | 'waiting' | 'over' | { failed: string; awaitingFirstTurn: boolean }> {
 	const { config } = board;
 	if (view.state !== 'resuming' && view.state !== 'resume-failed') return 'over';
 	const name = view.relaunchedName;
-	let listed = false;
+	let awaitingFirstTurn = false;
 	if (name) {
 		const [hcom, herdr] = await Promise.all([listAgents(config), listHerdrAgents(config)]);
 		const running = hcom.ok && herdr.ok ? runningIn(wantedOf(view, name), hcom.agents, herdr.agents) : null;
 		if (running?.herdr && isRelaunched(view, running.herdr)) return { runs: running.herdr };
-		listed = !!view.relaunch?.session && !!running?.hcom;
+		awaitingFirstTurn = !!view.relaunch?.session && !!running?.hcom;
 	}
-	if (view.state === 'resume-failed') return { failed: view.error ?? '重新啟動失敗', listed };
+	if (view.state === 'resume-failed') return { failed: view.error ?? '重新啟動失敗', awaitingFirstTurn };
 	const since = Date.parse(view.appliedAt ?? view.resumingAt ?? view.time);
 	if (config.now() < since + config.launchWaitMs) return 'waiting';
 	return {
 		failed: name
-			? listed
+			? awaitingFirstTurn
 				? firstTurnMissing(board, name)
 				: `重新啟動後等了 ${Math.round(config.launchWaitMs / 1000)} 秒，Herdr 的清單上還沒有 @${name}`
 			: '重新啟動的結果不明（看板在啟動途中停過），請到 Herdr 查看',
-		listed
+		awaitingFirstTurn
 	};
 }
 
@@ -83,7 +83,7 @@ export async function relaunchSwitch(board: Board, controller: SwitchTarget, vie
 	if (view.state === 'resuming' && typeof standing === 'object') step(board, view.id, { state: 'resume-failed', error: standing.failed });
 	// The client it launched still runs, its first turn not done: another launch would resume the
 	// conversation twice. It is waited for, or the switch given up.
-	if (typeof standing === 'object' && standing.listed) {
+	if (typeof standing === 'object' && standing.awaitingFirstTurn) {
 		return respondLogged(board, view.id, { reason: `${standing.failed}；沒有再啟動一次，請到 Herdr 查看它的畫面，或放棄這次切換`, status: 409 }, null);
 	}
 	const fail = (error: string, status = 502) => respondLogged(board, view.id, { reason: error, status }, step(board, view.id, { state: 'resume-failed', error }));
@@ -124,7 +124,6 @@ async function followRelaunch(board: Board, launched: SwitchView, name: string):
 	let appeared: Awaited<ReturnType<typeof waitToAppear>>;
 	try {
 		appeared = await waitToAppear(config, wantedOf(launched, name), config.now() + config.launchWaitMs, `@${name}`, {
-			onPane: async () => true,
 			accepts: (found) => isRelaunched(launched, found)
 		});
 	} catch (error) {
@@ -167,22 +166,25 @@ async function finishRelaunch(board: Board, view: SwitchView, found: HerdrAgent)
 }
 
 /** Settle the relaunches this board process does not wait for (it restarted while one was on its
- *  way): done once the client runs, failed once the launch wait is over. Queued per session like
+ *  way): done once the client runs, failed once the launch wait is over. A session relaunch that
+ *  failed waiting for its first turn is done too once that turn binds it. Queued per session like
  *  every other step of a switch, against the lines of the read that found them (`log`, still kept
  *  up with). Resolves once each has been looked at. */
 export function settleRelaunches(board: Board, log: SentLog, switches: SwitchView[]): Promise<unknown> {
 	const settling: Promise<unknown>[] = [];
 	for (const open of switches) {
-		if (!open.relaunch || open.state !== 'resuming' || following.has(open.id)) continue;
+		const late = (view: SwitchView) => view.state === 'resume-failed' && !!view.relaunch?.session;
+		if (!open.relaunch || (open.state !== 'resuming' && !late(open)) || following.has(open.id)) continue;
 		settling.push(
 			queued(open.controllerId, async () => {
 				// The read's lines, kept up with: what was done to the switch while it waited its turn is in them.
 				const view = switchView(log.lines, open.id, board.config.now(), board.config.launchWaitMs);
-				if (!view || view.state !== 'resuming' || following.has(view.id)) return;
+				if (!view || (view.state !== 'resuming' && !late(view)) || following.has(view.id)) return;
 				const standing = await relaunchStanding(board, view);
 				if (typeof standing !== 'object') return;
 				if ('runs' in standing) await finishRelaunch(board, view, standing.runs);
-				else step(board, view.id, { state: 'resume-failed', error: standing.failed });
+				else if (view.state === 'resuming') step(board, view.id, { state: 'resume-failed', error: standing.failed });
+				else return;
 				board.agentActed(view.controllerId);
 			})
 		);

@@ -91,7 +91,10 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		stdout += JSON.stringify({ id: 'cli:tab:rename', result: { type: 'ok' } });
 	} else if (command === 'pane read') {
 		const screens = plan.screens?.[args[2]];
-		if (screens) stdout += screens[(plan.screenAt?.[args[2]] ?? 0) % screens.length];
+		if (args.slice(3).join(' ') !== '--source visible') {
+			stderr += `unexpected herdr command: ${args.join(' ')}\n`;
+			code = 2;
+		} else if (screens) stdout += screens[(plan.screenAt?.[args[2]] ?? 0) % screens.length];
 		else {
 			stderr += JSON.stringify({ error: { code: 'pane_not_found', message: `pane ${args[2]} not found` } });
 			code = 1;

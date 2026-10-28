@@ -45,6 +45,8 @@ test('a screen with a dialog, a menu or no mode line is not read', () => {
 	expect(readClaudeScreen('Starting Claude...\n')).toEqual({ mode: null, reason: SCREEN_NO_INPUT_REASON });
 	// A slash-command menu takes the place of the lines under the box.
 	expect(readClaudeScreen(screen(null, ['  /model     Set the AI model', '  /permissions  Manage rules']))).toEqual({ mode: null, reason: SCREEN_NO_MODE_REASON });
+	// A numbered list in the conversation, above the box, is no dialog.
+	expect(readClaudeScreen(`> 1. first step\n${screen('  ⏵⏵ auto mode on')}`)).toEqual({ mode: 'auto' });
 	// A mode line above the input box (in the conversation) is not the footer.
 	const quoted = [RULE, '❯ ⏵⏵ auto mode on', RULE].join('\n');
 	expect(readClaudeScreen(`${quoted}\nsome output\n${screen(null)}`)).toEqual({ mode: null, reason: SCREEN_NO_MODE_REASON });
@@ -136,6 +138,7 @@ test('the stored Codex arguments lose what fixes the permission, nothing else', 
 		withoutPermissionFlags(['resume', 's-1', '--no-daemon', '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="low"', '--yolo', '-s', 'workspace-write', '-a', 'on-request', '-c', 'approvals_reviewer="user"'])
 	).toEqual(['--no-daemon', '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="low"', '-c', 'approvals_reviewer="user"']);
 	expect(withoutPermissionFlags(['--dangerously-bypass-approvals-and-sandbox', '--sandbox=read-only', '--ask-for-approval=never', '--full-auto', '--add-dir', '/x'])).toEqual(['--add-dir', '/x']);
+	expect(withoutPermissionFlags(['--no-daemon', 'resume', 's-1', '--yolo'])).toEqual(['--no-daemon']);
 	// What follows `--` is the client's own, left as it is.
 	expect(withoutPermissionFlags(['--', '--yolo'])).toEqual(['--', '--yolo']);
 });
