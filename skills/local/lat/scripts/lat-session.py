@@ -321,10 +321,7 @@ def activate(args):
                   decisions_path=str(args.decisions.resolve(strict=True)),
                   tasks_path=str(args.tasks.resolve(strict=True)), hcom_name=args.hcom_name)
     dependencies(record)
-    spec = importlib.util.spec_from_file_location('lat_watch', WATCH_SCRIPT)
-    watcher = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(watcher)
-    fingerprint = watcher.rule_fingerprint(SKILL_DIR)
+    fingerprint = watch_module().rule_fingerprint(SKILL_DIR)
     path = session_path(workspace, sid)
     original = current_bytes(path)
     new_round = True
@@ -1189,6 +1186,33 @@ def ledger_stop_check(record, message):
     return f'LAT 交付檢查未通過：工作總表無法讀取（{text}）。{fix}，再照原樣結束回合。'
 
 
+def watch_module():
+    spec = importlib.util.spec_from_file_location('lat_watch', WATCH_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def undeclared_wait_check(record, message):
+    """Why a NO REPLY Stop should be held for a missing wait or alarm, or None."""
+    lines = [line for line in message.splitlines() if line.strip()]
+    if not lines or not lines[-1].startswith('NO REPLY:'):
+        return None
+    watch = watch_module()
+    declaration, _ = watch.read_wait(watch.wait_path(record['workspace'], record['hcom_name']))
+    if declaration and declaration.get('active', True):
+        return None
+    script = Path(record['skill_dir']) / 'scripts/lat-watch.py'
+    command = shlex.join([
+        'uv', 'run', '--no-project', 'python', str(script), 'wait',
+        '--workspace', record['workspace'], '--agent', record['hcom_name'],
+        '--for', '<決策 ID 或 Agent 名稱>', '--reason', '<一句原因>'])
+    return ('LAT 等待檢查未通過：這則以 `NO REPLY:` 結尾，但你沒有有效的等待或鬧鐘聲明'
+            '（等待對象回過訊息會使聲明自動失效，也可能是尚未宣告）。沒有聲明時監控不會保溫。'
+            f'若仍在等，先執行 `{command}`（定時喚醒改用 `alarm`），再照原樣結束回合；'
+            '真的不需要聲明（例如有背景指令在跑）就直接照原樣結束回合。')
+
+
 def reports_path(record):
     return reports_directory() / f'{record["session_id"]}.jsonl'
 
@@ -1253,6 +1277,13 @@ def report_stop(record, payload):
         ledger = ledger_stop_check(record, message)
         if ledger:
             reasons.append(ledger)
+        try:
+            undeclared = undeclared_wait_check(record, message)
+        except Exception as exc:  # noqa: BLE001 - a broken wait check never holds the Stop
+            notes.append(f'LAT 等待檢查發生錯誤，未攔下：{exc}')
+        else:
+            if undeclared:
+                reasons.append(undeclared)
         if tag:
             try:
                 reason = stop_check(record, payload)

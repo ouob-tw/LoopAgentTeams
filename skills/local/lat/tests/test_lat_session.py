@@ -213,6 +213,54 @@ class SessionTests(unittest.TestCase):
         payload.update(overrides)
         return self.cli('hook', '--client', client, payload=payload, session=OTHER)
 
+    def declare_wait(self, active=True, **extra):
+        waits = self.work / '.lat/watch/waits'
+        waits.mkdir(parents=True, exist_ok=True)
+        declaration = dict(agent='orch', kind='agent', target='worker', active=active,
+                           declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                           deadline_at=3000)
+        declaration.update(extra)
+        (waits / 'orch.json').write_text(json.dumps(declaration))
+
+    def test_no_reply_without_active_wait_is_held_once_with_the_wait_command(self):
+        for client in ('codex', 'claude'):
+            for setup in ('none', 'released'):
+                with self.subTest(client=client, setup=setup):
+                    self.activate()
+                    record = json.loads(self.record.read_text())
+                    record['client'] = client
+                    self.record.write_text(json.dumps(record))
+                    if setup == 'released':
+                        self.declare_wait(active=False, released_reason='target-replied')
+                    held = json.loads(self.stop_hook('Done\nNO REPLY: waiting', client).stdout)
+                    self.assertEqual(held['decision'], 'block')
+                    self.assertIn('LAT 等待檢查未通過', held['reason'])
+                    for part in (f'{SKILL}/scripts/lat-watch.py wait', f'--workspace {self.work}',
+                                 '--agent orch'):
+                        self.assertIn(part, held['reason'])
+                    self.assertEqual(self.reports(), [])
+                    retry = self.stop_hook('Done\nNO REPLY: waiting', client, stop_hook_active=True)
+                    self.assertIn('本回合已繼續過', json.loads(retry.stdout)['systemMessage'])
+                    self.assertEqual(self.reports()[-1]['tag'], 'NO REPLY')
+                    self.record.unlink()
+                    (self.root / 'reports' / f'{SESSION}.jsonl').unlink()
+
+    def test_no_reply_with_active_wait_or_alarm_is_not_held(self):
+        self.activate()
+        for extra in (dict(), dict(kind='decision', target='LAT-A'),
+                      dict(kind='alarm', target='alarm', due_at=9e12)):
+            with self.subTest(extra=extra):
+                self.declare_wait(**extra)
+                self.assert_silent(self.stop_hook('NO REPLY: waiting'))
+
+    def test_wait_check_ignores_other_tags_plain_messages_and_executors(self):
+        self.activate()
+        self.assert_silent(self.stop_hook('Plain message\nNO REPLY not a tag'))
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+        self.assert_silent(self.cli('hook', '--client', 'codex', session=OTHER, payload=dict(
+            hook_event_name='Stop', cwd=str(self.work), session_id=OTHER,
+            stop_hook_active=False, last_assistant_message='NO REPLY: x')))
+
     def reports(self):
         path = self.root / 'reports' / f'{SESSION}.jsonl'
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
@@ -224,6 +272,7 @@ class SessionTests(unittest.TestCase):
                 record = json.loads(self.record.read_text())
                 record['client'] = client
                 self.record.write_text(json.dumps(record))
+                self.declare_wait()
                 self.decisions.joinpath('LAT-A.md').write_text(
                     '- status: pending\n- advisor: exempt requirement-discussion\n')
                 self.decisions.joinpath('LAT-H.md').write_text(
@@ -277,6 +326,7 @@ class SessionTests(unittest.TestCase):
             self.assert_silent(self.stop_hook('HELP: later conversation'))
             self.assertEqual(len(self.reports()), round_number * 2 - 1)
             self.activate()
+            self.declare_wait()
             self.assert_silent(self.stop_hook('NO REPLY: working'))
             self.assertEqual(len(self.reports()), round_number * 2)
             self.assertFalse(self.reports()[-1]['final'])
@@ -368,6 +418,7 @@ class SessionTests(unittest.TestCase):
         released = self.stop_hook('Work done\nDONE: delivered', stop_hook_active=True)
         self.assertIn('本回合已繼續過，不再攔下', json.loads(released.stdout)['systemMessage'])
         self.assertEqual(self.reports()[-1]['tag'], 'DONE')
+        self.declare_wait()
         for message in ('NO REPLY: waiting', 'Plain message'):
             with self.subTest(message=message):
                 self.assert_silent(self.stop_hook(message))
@@ -487,6 +538,7 @@ class SessionTests(unittest.TestCase):
         path = directory / f'{SESSION}.jsonl'
         original = b'[]\nnull\n{"time":"partial'
         path.write_bytes(original)
+        self.declare_wait()
         self.assert_silent(self.stop_hook('NO REPLY: recovered active report'))
         self.assertTrue(path.read_bytes().startswith(original + b'\n'))
         active = json.loads(path.read_bytes().splitlines()[-1])
@@ -2749,6 +2801,7 @@ class SessionTests(unittest.TestCase):
                                                     stop_hook_active=True).stdout)
                 self.assertEqual(set(warning), {'systemMessage'})
                 self.assertIn('不再攔下', warning['systemMessage'])
+                self.declare_wait()
                 self.assert_silent(self.stop_hook('NO REPLY: 等你回答 LAT-A r1', client))
                 # A new question only in a heading does not excuse an old-only tag line.
                 self.assertIn('最後一行只列出 LAT-A r1', json.loads(self.stop_hook(
@@ -3105,6 +3158,7 @@ class SessionTests(unittest.TestCase):
         self.activate()
         item = self.open_item('#5')
         # Only a DONE last line runs the check.
+        self.declare_wait()
         self.assert_silent(self.stop_hook('NO REPLY: working'))
         result = self.stop_hook('Shipped\nDONE: delivered')
         output = json.loads(result.stdout)
