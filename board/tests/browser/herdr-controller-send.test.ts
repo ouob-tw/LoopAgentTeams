@@ -6,7 +6,7 @@
 // draft; what was typed to a controller as an agent before is moved into it once. Skipped when the
 // host has no Chrome.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, watch, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
@@ -374,6 +374,42 @@ for (const width of [1280, 390]) {
 		}
 	}, 60_000);
 }
+
+// Catch the worst polling phase: fake-hcom appends its list-call signal after reading hcom.json.
+// Change the state on that signal, so the read already in flight still returns the idle sample.
+// The model picker must finish its startup read before we wait for the next periodic sample.
+test('390px: a turn starting just after an idle sample shows and removes its stop within 5 seconds', async () => {
+	const flip = (status: string) => fixture.setHcom({ agents: [hcomAgent('lead', 's-lead', status), ...HCOM_AGENTS.slice(1)] });
+	flip('listening');
+	await fixture.refresh(cookie);
+	try {
+		await visit(390, '?controller=s-lead');
+		await tab.until(`${pageOf('lat')} && document.querySelector('.dock .pill-slot .part[aria-label^="模型："]')?.getAttribute('aria-disabled') === 'false'`, 'the idle controller and its model picker');
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(false);
+		const startedAt = await new Promise<number>((resolve, reject) => {
+			const signal = watch(join(fixture.dir, 'hcom-list-calls.jsonl'), () => {
+				signal.close();
+				clearTimeout(timeout);
+				const at = performance.now();
+				flip('active');
+				resolve(at);
+			});
+			const timeout = setTimeout(() => {
+				signal.close();
+				reject(new Error('no idle hcom sample arrived'));
+			}, 10_000);
+		});
+		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop after an idle sample', 5_000 - (performance.now() - startedAt));
+		expect(performance.now() - startedAt).toBeLessThanOrEqual(5_000);
+		const endedAt = performance.now();
+		flip('listening');
+		await tab.until(`!document.querySelector(${JSON.stringify(STOP)})`, 'the stop gone after the turn', 5_000 - (performance.now() - endedAt));
+		expect(performance.now() - endedAt).toBeLessThanOrEqual(5_000);
+	} finally {
+		fixture.setHcom({ agents: HCOM_AGENTS });
+		await fixture.refresh(cookie);
+	}
+}, 30_000);
 
 // The stop follows the live agent with the controller's session, not the LAT reports. Each case
 // changes only what LAT or the live agent says of `lead` and puts it back.
