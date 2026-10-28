@@ -1,10 +1,9 @@
 // The pd 待核准 panel in a real browser: headless Chrome driven over its DevTools protocol, on the
 // built board with a fake pd (tests/fake-pd.mjs), at a phone's width and a desktop's. It sits at the
 // top of the middle column on every list, the list below it; 稍後 folds it to a badge. On a phone's
-// content screen, which hides the column, a strip under the bar leads back to it. 核准 is a button that signs
-// with a passkey in the page (tests/browser/pd-inline-approve.test.ts); pd's own approval page stays
-// one link away, opened in a new tab; 拒絕 denies through the board. Skipped when the host has no
-// Chrome.
+// content screen, which hides the column, a strip under the bar leads back to it. 核准 is a button
+// that signs with a passkey in the page (tests/browser/pd-inline-approve.test.ts), with no link to
+// pd's own approval page; 拒絕 denies through the board. Skipped when the host has no Chrome.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -42,7 +41,7 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-test.skipIf(!CHROME)('requests sit above the middle column\'s list on a phone, with their time and pd\'s page one link away; 拒絕 denies; a strip over a content screen leads back to them; then a quiet line', async () => {
+test.skipIf(!CHROME)('requests sit above the middle column\'s list on a phone, with their time; 拒絕 denies; a strip over a content screen leads back to them; then a quiet line', async () => {
 	const argv = ['/usr/bin/python3', '/home/u/tools/npm_login.py', '--registry', 'https://registry.npmjs.org'];
 	// #4 comes with pd's check of its caller; #3 from a pd without it, by its declared name only.
 	const checked = { name: 'dahe-t09-vafu', client: 'codex', group: 'dahe-t09', orchestrator: false, source: 'auto', pid: 4242, start_time: 98765, program: null, verified: false, notice: '程序樹查證，非防竄改' };
@@ -90,9 +89,10 @@ test.skipIf(!CHROME)('requests sit above the middle column\'s list on a phone, w
 	expect(await tab.eval<string>(`${card(3)}.querySelector('.time').innerText`)).toMatch(/^剩 1:3\d$/);
 	// A pd that gives no time left: how long it has waited instead.
 	expect(await tab.eval<string>(`${card(4)}.querySelector('.time').innerText`)).toMatch(/^已等待 0:0\d$/);
-	expect(await tab.eval(`${card(3)}.querySelector('.page').getAttribute('href') + ' ' + ${card(3)}.querySelector('.page').target + ' ' + ${card(3)}.querySelector('.page').rel`)).toBe(
-		'https://pd.example.net/?request=3 _blank noopener noreferrer'
-	);
+	// Approval is here only: no link to pd's own page. This address is not under ouob.net, so the
+	// panel says once where the passkey works.
+	expect(await tab.eval(`document.querySelectorAll('.pd a').length`)).toBe(0);
+	expect(await tab.eval<string>(`document.querySelector('.pd .nopasskey').innerText`)).toBe('這個網址不能用 passkey 核准，請從 https://lat.ouob.net 開看板。');
 	// Nothing on the section asks for a code.
 	expect(await tab.eval(`document.querySelectorAll('.pd input, .pd form').length`)).toBe(0);
 	expect(await tab.eval(`${card(3)}.querySelector('button.approve').innerText`)).toBe('核准');

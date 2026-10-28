@@ -112,6 +112,8 @@ test.skipIf(!CHROME)('a new request opens the folded panel; 核准 signs pd\'s c
 	await fold(tab);
 	setPd([waiting(3, 'npm token'), waiting(4, 'GitHub token')]);
 	await tab.until(shows(4), 'the panel open for #4');
+	// Under ouob.net and secure: the passkey works here, so no note says otherwise.
+	expect(await tab.eval(`!!document.querySelector('.pd .nopasskey')`)).toBe(false);
 	expect(await tab.eval<string>(`document.querySelector('.pd [data-pd-request="4"]').innerText`)).toContain('GitHub token');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4']);
 

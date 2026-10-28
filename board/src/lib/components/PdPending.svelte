@@ -10,7 +10,7 @@
 	// allowed it (the 開啟通知 button, never asked for unprompted), raises a browser notification
 	// whose click comes back to it. With nothing waiting it is not shown; the page says on the 待辦
 	// list when pd is missing or down.
-	import { tick } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import { assertionJson, callerParts, callerText, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -50,6 +50,13 @@
 
 	/** Open it and put the focus on it, which scrolls it into view: where a phone's banner leads. */
 	export const reveal = () => show(true);
+
+	/** Whether this page can sign with the passkey, which is bound to ouob.net: only a secure page
+	 *  under it, such as https://lat.ouob.net, in a browser with WebAuthn. Read in the browser. */
+	let passkeyHere = $state(true);
+	onMount(() => {
+		passkeyHere = window.isSecureContext && !!navigator.credentials && /(^|\.)ouob\.net$/.test(location.hostname);
+	});
 
 	const notifications = typeof Notification === 'function';
 	let permission = $state<NotificationPermission>(notifications ? Notification.permission : 'denied');
@@ -103,8 +110,7 @@
 	}
 
 	async function approve(item: PdRequest) {
-		// Passkeys need a secure page whose address is under ouob.net: https://lat.ouob.net.
-		if (!window.isSecureContext || !navigator.credentials) return toasts.show('failed', '這個網址不能用 passkey：請從 https://lat.ouob.net 開看板，或改用 pd 核准頁。');
+		if (!passkeyHere) return toasts.show('failed', '這個網址不能用 passkey 核准：請從 https://lat.ouob.net 開看板。');
 		approving = [...approving, item.id];
 		try {
 			const challenge = await post<{ options: PdChallenge }>('/api/pd/challenge', { id: item.id });
@@ -135,6 +141,9 @@
 				{/if}
 				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
 			</header>
+			{#if !passkeyHere}
+				<p class="nopasskey">這個網址不能用 passkey 核准，請從 https://lat.ouob.net 開看板。</p>
+			{/if}
 			<ul class="cards">
 				{#each requests as item (item.id)}
 					{@const time = timeText(item, now - pd.at)}
@@ -173,9 +182,6 @@
 							<button type="button" class="deny" disabled={denying.includes(item.id)} onclick={() => void deny(item)}
 								>{denying.includes(item.id) ? '拒絕中…' : '拒絕'}</button
 							>
-							{#if item.approvalUrl}
-								<a class="page" href={item.approvalUrl} target="_blank" rel="noopener noreferrer">改用 pd 核准頁</a>
-							{/if}
 						</p>
 					</li>
 				{/each}
@@ -271,6 +277,13 @@
 	.allow:hover {
 		color: var(--text);
 		border-color: var(--line);
+	}
+	.nopasskey {
+		margin: 0;
+		padding: 0.4rem 0.75rem;
+		border-bottom: 1px solid var(--line);
+		font-size: max(0.8rem, var(--min-font, 0px));
+		color: var(--warn);
 	}
 	.cards {
 		list-style: none;
@@ -423,15 +436,6 @@
 	}
 	.deny:hover {
 		border-color: var(--danger);
-	}
-	.page {
-		margin-left: auto;
-		font-size: max(0.75rem, var(--min-font, 0px));
-		color: var(--muted);
-		text-underline-offset: 0.2em;
-	}
-	.page:hover {
-		color: var(--text);
 	}
 	/* Folded: one line that opens it again. */
 	.pd-badge {
