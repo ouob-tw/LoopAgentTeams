@@ -158,7 +158,7 @@ const FIXING_VALUED = new Set(['-s', '--sandbox', '-a', '--ask-for-approval']);
  * mode: the bypass and sandbox flags beat any `-c` (and `-s`, `-a` are refused next to `--yolo`),
  * and the `resume <session>` hcom adds on a resume, which the relaunch gives itself.
  */
-export function withoutPermissionFlags(args: readonly string[]): string[] {
+export function withoutPermissionFlags(args: readonly string[], session: string): string[] {
 	const kept: string[] = [];
 	for (let at = 0; at < args.length; at++) {
 		const arg = args[at];
@@ -167,7 +167,7 @@ export function withoutPermissionFlags(args: readonly string[]): string[] {
 			break;
 		}
 		if (FIXING_FLAGS.has(arg)) continue;
-		if (FIXING_VALUED.has(arg) || arg === 'resume') {
+		if (FIXING_VALUED.has(arg) || (arg === 'resume' && args[at + 1] === session)) {
 			at++;
 			continue;
 		}

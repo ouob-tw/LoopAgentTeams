@@ -224,7 +224,7 @@ async function permissionSwitch(
 	const row = (await board.current()).agents.find((candidate) => candidate.id === controller.id && candidate.inHerdr);
 	entry.from = current;
 	entry.relaunch = {
-		args: ['resume', controller.id, ...withoutPermissionFlags(launched.args), ...modelArgs('codex', { model: current?.model ?? null, effort: current?.effort ?? null })],
+		args: ['resume', controller.id, ...withoutPermissionFlags(launched.args, controller.id), ...modelArgs('codex', { model: current?.model ?? null, effort: current?.effort ?? null })],
 		session: controller.id,
 		tabLabel: row?.herdr.tabPlace?.label ?? null,
 		tabIndex: row?.herdr.tabPlace ? row.herdr.tabPlace.position - 1 : null

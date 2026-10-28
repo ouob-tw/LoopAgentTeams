@@ -135,10 +135,12 @@ test("a Codex turn's permission is named after the /permissions item", () => {
 
 test('the stored Codex arguments lose what fixes the permission, nothing else', () => {
 	expect(
-		withoutPermissionFlags(['resume', 's-1', '--no-daemon', '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="low"', '--yolo', '-s', 'workspace-write', '-a', 'on-request', '-c', 'approvals_reviewer="user"'])
+		withoutPermissionFlags(['resume', 's-1', '--no-daemon', '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="low"', '--yolo', '-s', 'workspace-write', '-a', 'on-request', '-c', 'approvals_reviewer="user"'], 's-1')
 	).toEqual(['--no-daemon', '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="low"', '-c', 'approvals_reviewer="user"']);
-	expect(withoutPermissionFlags(['--dangerously-bypass-approvals-and-sandbox', '--sandbox=read-only', '--ask-for-approval=never', '--full-auto', '--add-dir', '/x'])).toEqual(['--add-dir', '/x']);
-	expect(withoutPermissionFlags(['--no-daemon', 'resume', 's-1', '--yolo'])).toEqual(['--no-daemon']);
+	expect(withoutPermissionFlags(['--dangerously-bypass-approvals-and-sandbox', '--sandbox=read-only', '--ask-for-approval=never', '--full-auto', '--add-dir', '/x'], 's-1')).toEqual(['--add-dir', '/x']);
+	expect(withoutPermissionFlags(['--no-daemon', 'resume', 's-1', '--yolo'], 's-1')).toEqual(['--no-daemon']);
+	// Only the session's own `resume`: a value that happens to be the word stays.
+	expect(withoutPermissionFlags(['-c', 'note=x', 'resume', 'later'], 's-1')).toEqual(['-c', 'note=x', 'resume', 'later']);
 	// What follows `--` is the client's own, left as it is.
-	expect(withoutPermissionFlags(['--', '--yolo'])).toEqual(['--', '--yolo']);
+	expect(withoutPermissionFlags(['--', '--yolo'], 's-1')).toEqual(['--', '--yolo']);
 });
