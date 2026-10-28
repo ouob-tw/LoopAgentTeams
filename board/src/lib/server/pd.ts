@@ -67,7 +67,8 @@ export function parsePdPending(run: ExternalResult): PdSnapshot {
 					cwd: text(row.cwd),
 					waiting: wholeSeconds(row.waiting) ?? 0,
 					remaining: wholeSeconds(row.remaining),
-					approvalUrl: webAddress(row.approval_url)
+					approvalUrl: webAddress(row.approval_url),
+					daemon: typeof row.daemon === 'string' && row.daemon ? row.daemon : null
 				}
 			];
 		})

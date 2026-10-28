@@ -25,14 +25,11 @@
 	let denying = $state<number[]>([]);
 	let approving = $state<number[]>([]);
 
-	/** The requests in the reading before, by number, with when each started (ms). pd numbers from 1
-	 *  again after its daemon restarts and says nothing else of it, so a request is new when its
-	 *  number was not in that reading, when it started at another time (a restart between two
-	 *  readings), or when that reading failed (pd may have restarted meanwhile). */
-	let previous: Map<number, number> | null = null;
-	/** How far a request's start may seem to move between readings: a page's first reading can be a
-	 *  few polls old, and `waiting` is in whole seconds. */
-	const SAME_START_MS = 15_000;
+	/** The requests in the reading before, by daemon start and number: one not in it is new. pd
+	 *  numbers from 1 again after its daemon restarts, so the number alone is not enough. A failed
+	 *  reading forgets it, for a pd that does not name its daemon start. */
+	let previous: Set<string> | null = null;
+	const key = (item: PdRequest) => `${item.daemon ?? ''}#${item.id}`;
 	/** New requests whose prompt is still to be answered or closed, oldest first. */
 	let queue = $state<number[]>([]);
 	const prompted = $derived(queue.map((id) => requests.find((item) => item.id === id)).find((item) => item !== undefined));
@@ -54,19 +51,15 @@
 	$effect(() => {
 		if (!pd) return;
 		if (!pd.snapshot.ok) {
-			previous = new Map();
+			previous = new Set();
 			return;
 		}
-		const at = pd.at;
-		const started = new Map(requests.map((item) => [item.id, at - item.waiting * 1000]));
+		const ids = new Set(requests.map((item) => item.id));
 		const before = previous;
-		previous = started;
+		previous = new Set(requests.map(key));
 		if (before === null) return;
-		const fresh = requests.filter((item) => {
-			const then = before.get(item.id);
-			return then === undefined || Math.abs(then - started.get(item.id)!) > SAME_START_MS;
-		});
-		untrack(() => (queue = [...queue.filter((id) => started.has(id) && !fresh.some((item) => item.id === id)), ...fresh.map((item) => item.id)]));
+		const fresh = requests.filter((item) => !before.has(key(item)));
+		untrack(() => (queue = [...queue.filter((id) => ids.has(id) && !fresh.some((item) => item.id === id)), ...fresh.map((item) => item.id)]));
 		for (const item of fresh) notify(item);
 	});
 	$effect(() => {

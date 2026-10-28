@@ -31,9 +31,10 @@ let fixture: Fixture;
 let cookie: string;
 let browser: Browser | undefined;
 
-const waiting = (id: number, item: string, waited = 2) => ({
+const waiting = (id: number, item: string, daemon = 'start-1') => ({
 	id,
-	waiting: waited,
+	daemon,
+	waiting: 2,
 	remaining: 800,
 	caller: 'claude',
 	item,
@@ -141,23 +142,24 @@ test.skipIf(!CHROME)('a new request opens a prompt; 核准 signs pd\'s challenge
 	await tab.until(`!document.querySelector('[data-pd-request="5"]') && !document.querySelector('dialog.prompt').open`, 'the denied request gone');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5']);
 
-	// pd numbers from 1 again after its daemon restarts: a number that left and came back is new.
-	setPd([waiting(5, 'Docker token', 60)]);
+	// A number that left and came back is new.
+	setPd([waiting(5, 'Docker token')]);
 	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for the reused #5');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5', 'pd-5']);
 	await tab.pointerClick('dialog.prompt button.later');
 	await tab.until(`!document.querySelector('dialog.prompt').open`, 'the prompt closed');
 
-	// A restart between two readings: the same number, started a minute later, is new as well.
-	setPd([waiting(5, 'Docker token', 0)]);
+	// pd numbers from 1 again after its daemon restarts: the same number from another start is new,
+	// even when the restart fell between two readings.
+	setPd([waiting(5, 'Docker token', 'start-2')]);
 	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for #5 after a restart between readings');
 	await tab.pointerClick('dialog.prompt button.later');
 	await tab.until(`!document.querySelector('dialog.prompt').open`, 'the prompt closed');
 
-	// After a failed reading (pd may have restarted meanwhile), what comes back is new.
+	// After a failed reading, what comes back is new, for a pd that does not name its daemon start.
 	writeFileSync(join(fixture.dir, 'pd.json'), JSON.stringify({ pending: [], unavailable: true }));
 	await tab.until(`document.querySelector('.inbox .pd .quiet')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'pd unavailable');
-	setPd([waiting(5, 'Docker token', 0)]);
+	setPd([{ ...waiting(5, 'Docker token'), daemon: undefined }]);
 	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for #5 after pd came back');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5', 'pd-5', 'pd-5', 'pd-5']);
 	expect(tab.errors).toEqual([]);

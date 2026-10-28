@@ -53,7 +53,8 @@ test('waiting requests reach the page, and 拒絕 denies one through pd deny', a
 		cwd: '/home/u/work',
 		waiting: 3,
 		remaining: 117,
-		approvalUrl: 'https://pd.example.net/?request=7'
+		approvalUrl: 'https://pd.example.net/?request=7',
+		daemon: null
 	});
 	expect(JSON.stringify(watch.pds)).not.toContain('item-uuid');
 	// The page comes with the reading already, so the section does not push the inbox down later.

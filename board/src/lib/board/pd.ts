@@ -18,6 +18,9 @@ export interface PdRequest {
 	remaining: number | null;
 	/** The request's page on the passkey site; null when pd gave none that is a web address. */
 	approvalUrl: string | null;
+	/** Which start of pd's daemon holds it: numbers begin at 1 again with each start. Null from a
+	 *  pd that does not say. */
+	daemon: string | null;
 }
 
 /** WebAuthn request options from `pd passkey challenge <id>`, binary values in base64url. */

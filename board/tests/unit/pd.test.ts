@@ -27,7 +27,8 @@ const listed = {
 	fields: ['password'],
 	argv: ['gh', 'api', 'user', '***'],
 	cwd: '/home/u/work',
-	approval_url: 'https://pd.example.net/?request=7'
+	approval_url: 'https://pd.example.net/?request=7',
+	daemon: 'start-1'
 };
 
 const request = (overrides: Partial<PdRequest> = {}): PdRequest => ({
@@ -40,6 +41,7 @@ const request = (overrides: Partial<PdRequest> = {}): PdRequest => ({
 	waiting: 12,
 	remaining: 108,
 	approvalUrl: 'https://pd.example.net/?request=7',
+	daemon: null,
 	...overrides
 });
 
@@ -56,7 +58,8 @@ test('a pending list keeps only the fields the section shows', () => {
 				cwd: '/home/u/work',
 				waiting: 12,
 				remaining: 108,
-				approvalUrl: 'https://pd.example.net/?request=7'
+				approvalUrl: 'https://pd.example.net/?request=7',
+				daemon: 'start-1'
 			}
 		]
 	});
