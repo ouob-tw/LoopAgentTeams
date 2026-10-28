@@ -244,6 +244,8 @@ test.skipIf(!CHROME)('loading an earlier part translates only the replies it bro
 }, 60_000);
 
 test.skipIf(!CHROME)('an English reply that is a pending DONE or HELP report is translated and keeps its 完成／求助 mark', async () => {
+	// Keep these fixed-date reports pending instead of aging into the seven-day archive.
+	fixture.setClock(Date.parse('2026-10-21T01:06:00Z'));
 	codexPlan({ prefix: '譯：' });
 	const done = fixture.bound('gamma', 'mira');
 	const help = fixture.bound('delta', 'kai');
