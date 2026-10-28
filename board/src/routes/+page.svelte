@@ -982,6 +982,7 @@
 	:global(:root[data-theme='light']) .pd-banner {
 		background: var(--bg);
 		border-bottom-width: 2px;
+		animation: none;
 	}
 	/* Two lines like a roster tag, project on top, so both names keep the width the buttons leave. */
 	.whose {
