@@ -204,6 +204,8 @@ export async function startSwitch(board: Board, controller: SwitchTarget, entry:
  * them on every `hcom r`, so the conversation is resumed in a fresh launch instead (`relaunch.ts`),
  * with the stored arguments that do not fix the permission, the latest turn's model and effort,
  * and the mode's overrides. The arguments are read before the stop, which makes hcom forget them.
+ * A mode with a sandbox also gets hcom's own folder with `--add-dir`: the permission profile drops
+ * the `sandbox_workspace_write.writable_roots` hcom gives for it, which `/permissions` keeps.
  */
 async function permissionSwitch(
 	board: Board,
@@ -224,8 +226,15 @@ async function permissionSwitch(
 	const row = (await board.current()).agents.find((candidate) => candidate.id === controller.id && candidate.inHerdr);
 	entry.from = current;
 	entry.relaunch = {
-		args: ['resume', controller.id, ...withoutPermissionFlags(launched.args, controller.id), ...modelArgs('codex', { model: current?.model ?? null, effort: current?.effort ?? null })],
+		args: [
+			'resume',
+			controller.id,
+			...withoutPermissionFlags(launched.args, controller.id),
+			...modelArgs('codex', { model: current?.model ?? null, effort: current?.effort ?? null }),
+			...(entry.to.permission === 'full-access' ? [] : ['--add-dir', board.config.hcomDir])
+		],
 		session: controller.id,
+		...(agent.tag && { tag: agent.tag }),
 		tabLabel: row?.herdr.tabPlace?.label ?? null,
 		tabIndex: row?.herdr.tabPlace ? row.herdr.tabPlace.position - 1 : null
 	};

@@ -104,7 +104,8 @@ export async function relaunchSwitch(board: Board, controller: SwitchTarget, vie
 		prompt: relaunch.session && view.to.permission ? codexFirstTurnText(view.to.permission) : '',
 		// Later arguments win over the ones hcom kept, the way a resume's do.
 		extraArgs: [...relaunch.args, ...modelArgs(controller.client, view.to)],
-		intoPane: held?.pane
+		intoPane: held?.pane,
+		tag: relaunch.tag
 	});
 	if (launched.outcome === 'failed' || !launched.hcomName) {
 		following.delete(view.id);

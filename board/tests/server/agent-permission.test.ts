@@ -187,7 +187,8 @@ const STORED = ['resume', 's-codex', '--no-daemon', '--model', 'gpt-6.1-sol', '-
 function freshResume() {
 	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ 's-codex': STORED }));
 	fixture.setHcom({
-		agents: [hcomAgent('clio', 's-claude'), hcomAgent('coxa', 's-codex')],
+		// Spawned in a group: the launch must bring its name back with the tag.
+		agents: [hcomAgent('clio', 's-claude'), { ...hcomAgent('team-coxa', 's-codex'), tag: 'team' }],
 		names: [null, 'tmpa'],
 		launched: [null, hcomAgent('tmpa', null, 'wA:p-tmpa')],
 		launchedHerdr: [null, { ...herdrAgent(null, 'wA:p-tmpa', 'codex'), tab_label: 'tmpa' }]
@@ -196,7 +197,7 @@ function freshResume() {
 /** The first turn: hcom gives the launch its session and old name, Herdr sees the session. */
 function firstTurn() {
 	const added = join(fixture.dir, 'hcom-added.json');
-	writeFileSync(added, JSON.stringify(JSON.parse(readFileSync(added, 'utf8')).map((agent: any) => (agent.name === 'tmpa' ? hcomAgent('coxa', 's-codex', 'wA:p-tmpa') : agent))));
+	writeFileSync(added, JSON.stringify(JSON.parse(readFileSync(added, 'utf8')).map((agent: any) => (agent.name === 'tmpa' ? { ...hcomAgent('team-coxa', 's-codex', 'wA:p-tmpa'), tag: 'team' } : agent))));
 	const herdrFile = join(fixture.dir, 'herdr.json');
 	const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
 	herdr.agents = herdr.agents.map((agent: any) => (agent.pane_id === 'wA:p-tmpa' ? { ...agent, agent_session: { kind: 'id', value: 's-codex' } } : agent));
@@ -210,12 +211,14 @@ test('a Codex agent resumes its conversation in a fresh launch without its store
 	expect(switched.status).toBe(200);
 	expect(switched.body.entry).toMatchObject({ state: 'resuming', open: true, to: { permission: 'ask-for-approval' }, relaunch: { session: 's-codex' }, relaunchedName: 'tmpa' });
 	expect(hcomCalls()).toEqual([
-		['kill', 'coxa'],
+		['kill', 'team-coxa'],
 		[
-			'codex', '--dir', '/projects/alpha', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', codexFirstTurnText('ask-for-approval'),
+			'codex', '--dir', '/projects/alpha', '--tag', 'team', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', codexFirstTurnText('ask-for-approval'),
 			// The stored arguments without --yolo, the latest turn's model and effort, then the mode.
 			'resume', 's-codex', '--no-daemon', '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="low"',
 			'-c', 'model="gpt-6.1-sol"', '-c', 'model_reasoning_effort="medium"',
+			// hcom's folder stays writable, as /permissions keeps it: the profile drops hcom's own writable root.
+			'--add-dir', join(fixture.dir, 'home', '.hcom'),
 			'-c', 'default_permissions=":workspace"', '-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="user"'
 		]
 	]);
@@ -230,7 +233,7 @@ test('a Codex agent resumes its conversation in a fresh launch without its store
 	await fixture.refresh(cookie);
 	const after = (await agents()).filter((agent) => agent.client === 'codex');
 	expect(after).toHaveLength(1);
-	expect(after[0]).toMatchObject({ id: 's-codex', hcomName: 'coxa', inHerdr: true, switch: null, herdr: { pane: 'wA:p-tmpa' } });
+	expect(after[0]).toMatchObject({ id: 's-codex', hcomName: 'team-coxa', inHerdr: true, switch: null, herdr: { pane: 'wA:p-tmpa' } });
 });
 
 test('a fresh launch whose first turn never comes is not launched again: the switch is continued or given up', async () => {
@@ -239,6 +242,8 @@ test('a fresh launch whose first turn never comes is not launched again: the swi
 	const switched = await post({ session: 's-codex', mode: 'full-access' });
 	expect(switched.status).toBe(200);
 	const id = switched.body.entry.id;
+	// Full Access has no sandbox: nothing is added for hcom's folder.
+	expect(hcomCalls().find((call) => call[0] === 'codex')).not.toContain('--add-dir');
 	await until(() => sentLog().some((line) => line.kind === 'switch-step' && line.switchId === id && line.state === 'resume-failed'), 10_000, 'the wait given up');
 	expect(sentLog().findLast((line) => line.switchId === id && line.state === 'resume-failed').error).toContain('還沒做完第一回合');
 
