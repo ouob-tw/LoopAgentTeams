@@ -111,8 +111,10 @@ export async function relaunchSwitch(board: Board, controller: SwitchTarget, vie
 		following.delete(view.id);
 		return fail(launched.outcome === 'failed' ? (launched.reason ?? '重新啟動失敗') : '重新啟動後沒有拿到它的 HCOM 名稱，看板認不出是哪一個，請到 Herdr 查看');
 	}
-	const named = step(board, view.id, { relaunchedName: launched.hcomName });
-	void followRelaunch(board, view, launched.hcomName);
+	// hcom prints the base name; it lists one launched with a tag as `<tag>-<base>`.
+	const name = relaunch.tag && !launched.hcomName.startsWith(`${relaunch.tag}-`) ? `${relaunch.tag}-${launched.hcomName}` : launched.hcomName;
+	const named = step(board, view.id, { relaunchedName: name });
+	void followRelaunch(board, view, name);
 	return respondLogged(board, view.id, { reason: null }, named);
 }
 

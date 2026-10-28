@@ -190,15 +190,16 @@ function freshResume() {
 	fixture.setHcom({
 		// Spawned in a group: the launch must bring its name back with the tag.
 		agents: [hcomAgent('clio', 's-claude'), { ...hcomAgent('team-coxa', 's-codex'), tag: 'team' }],
+		// hcom prints the base name and lists the launch under its tagged one.
 		names: [null, 'tmpa'],
-		launched: [null, hcomAgent('tmpa', null, 'wA:p-tmpa')],
+		launched: [null, { ...hcomAgent('team-tmpa', null, 'wA:p-tmpa'), tag: 'team' }],
 		launchedHerdr: [null, { ...herdrAgent(null, 'wA:p-tmpa', 'codex'), tab_label: 'tmpa' }]
 	});
 }
 /** The first turn: hcom gives the launch its session and old name, Herdr sees the session. */
 function firstTurn() {
 	const added = join(fixture.dir, 'hcom-added.json');
-	writeFileSync(added, JSON.stringify(JSON.parse(readFileSync(added, 'utf8')).map((agent: any) => (agent.name === 'tmpa' ? { ...hcomAgent('team-coxa', 's-codex', 'wA:p-tmpa'), tag: 'team' } : agent))));
+	writeFileSync(added, JSON.stringify(JSON.parse(readFileSync(added, 'utf8')).map((agent: any) => (agent.name === 'team-tmpa' ? { ...hcomAgent('team-coxa', 's-codex', 'wA:p-tmpa'), tag: 'team' } : agent))));
 	const herdrFile = join(fixture.dir, 'herdr.json');
 	const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
 	herdr.agents = herdr.agents.map((agent: any) => (agent.pane_id === 'wA:p-tmpa' ? { ...agent, agent_session: { kind: 'id', value: 's-codex' } } : agent));
@@ -210,7 +211,7 @@ test('a Codex agent resumes its conversation in a fresh launch without its store
 	await fixture.refresh(cookie);
 	const switched: { status: number; body: SwitchResponse } = await post({ session: 's-codex', mode: 'ask-for-approval' });
 	expect(switched.status).toBe(200);
-	expect(switched.body.entry).toMatchObject({ state: 'resuming', open: true, to: { permission: 'ask-for-approval' }, relaunch: { session: 's-codex' }, relaunchedName: 'tmpa' });
+	expect(switched.body.entry).toMatchObject({ state: 'resuming', open: true, to: { permission: 'ask-for-approval' }, relaunch: { session: 's-codex', tag: 'team' }, relaunchedName: 'team-tmpa' });
 	expect(hcomCalls()).toEqual([
 		['kill', 'team-coxa'],
 		[
@@ -229,8 +230,12 @@ test('a Codex agent resumes its conversation in a fresh launch without its store
 	const before = await agents();
 	expect(before.filter((agent) => agent.client === 'codex').map((agent) => [agent.id, agent.inHerdr])).toEqual([['s-codex', false]]);
 
+	// Wait a little past hcom's grace for a name it does not list, so a wait for the wrong name would fail first.
+	await new Promise((resolve) => setTimeout(resolve, 3_500));
 	firstTurn();
 	await until(() => sentLog().some((line) => line.kind === 'switch-step' && line.switchId === switched.body.entry!.id && line.state === 'done'), 8_000, 'the switch done');
+	// Tracked under its tagged name all the way: never taken for gone on the way.
+	expect(sentLog().filter((line) => line.switchId === switched.body.entry!.id && line.state === 'resume-failed')).toEqual([]);
 	await fixture.refresh(cookie);
 	const after = (await agents()).filter((agent) => agent.client === 'codex');
 	expect(after).toHaveLength(1);
