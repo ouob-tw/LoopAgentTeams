@@ -25,6 +25,9 @@ export interface BoardConfig {
 	injectTimeoutMs: number;
 	/** Command that runs hcom; the board appends e.g. `claude --dir <folder> ...` to start a controller. */
 	hcomCommand: string[];
+	/** Where hcom keeps its data (`HCOM_DIR`, else `~/.hcom`), the folder hcom lets its Codex agents
+	 *  write to; taken to be the one hcom itself resolves, as both read the same environment. */
+	hcomDir: string;
 	/** How long an hcom launch or resume may take, its own wait for the client to be ready included. */
 	hcomTimeoutMs: number;
 	/** How long `hcom list --json` and `hcom kill` may take; neither waits for a client to start. */
@@ -190,6 +193,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		// The command itself waits up to 2 seconds for the client to show the text before submitting.
 		injectTimeoutMs: seconds(env.LAT_BOARD_INJECT_TIMEOUT_SECONDS, 15_000),
 		hcomCommand: commandFrom(env, 'LAT_BOARD_HCOM_COMMAND') ?? ['hcom'],
+		hcomDir: env.HCOM_DIR || join(homedir(), '.hcom'),
 		// hcom itself waits for the client to report ready before it answers.
 		hcomTimeoutMs: seconds(env.LAT_BOARD_HCOM_TIMEOUT_SECONDS, 60_000),
 		hcomListTimeoutMs: seconds(env.LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS, 15_000),

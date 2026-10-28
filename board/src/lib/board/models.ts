@@ -199,6 +199,8 @@ export interface SwitchRelaunch {
 	 *  only tell it is that session after its first turn, which the launch sends; until then hcom
 	 *  lists it under a name of its own, and gives it back its old one with that turn. */
 	session?: string;
+	/** The hcom tag the session's agent had, given to the launch so its name comes back with it. */
+	tag?: string;
 	/** The old tab's label, to give the new tab; null when Herdr's tab list did not have it. */
 	tabLabel: string | null;
 	/** The old tab's place among its workspace's tabs, counted from 0; null when not known. */

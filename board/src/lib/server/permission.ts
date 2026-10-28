@@ -8,6 +8,8 @@
 // session stored with it that was in another mode gets a setting that turns bypass permissions
 // off as well (`DISABLE_BYPASS`; the user chose that, TOSE-262-AC4), so it cannot be switched
 // into it in that session either (Claude Code 2.1.308).
+import { addHcomDir, codexMode, codexPermissionArgs } from '../board/permissions.ts';
+import type { Usage } from '../board/usage.ts';
 import type { BoardConfig } from './config.ts';
 import { storedLaunchArgs } from './hcom.ts';
 import { readTranscript } from './helper.ts';
@@ -44,12 +46,30 @@ export function permissionArgs(stored: readonly string[], mode: string | null): 
 	return lastValue(stored, '--permission-mode') === mode && !disable.length ? [] : [...disable, '--permission-mode', mode];
 }
 
-/** The arguments that keep this session's permission mode on a resume: none but for Claude.
+/**
+ * What keeps a Codex session in its mode on a resume, when the latest turn ran in one of the three
+ * the board switches between. hcom adds `-c sandbox_workspace_write.writable_roots` for its own
+ * folder to every launch, and with that key Codex takes the sandbox from the settings files instead
+ * of the conversation (a sandboxed mode came back as full access, codex-cli 0.164.0), so the mode
+ * is given again, with hcom's folder by `--add-dir`, which the permission profile keeps. Full
+ * Access is left alone when the stored arguments force it already (`--yolo`).
+ */
+export function codexKeepArgs(permission: Usage['permission'], stored: readonly string[], hcomDir: string): string[] {
+	const mode = permission && 'approval' in permission ? codexMode(permission) : null;
+	if (!mode) return [];
+	if (mode === 'full-access') {
+		return stored.some((arg) => arg === '--yolo' || arg === '--dangerously-bypass-approvals-and-sandbox') ? [] : codexPermissionArgs(mode);
+	}
+	return [...codexPermissionArgs(mode), ...addHcomDir(stored, hcomDir)];
+}
+
+/** The arguments that keep this session's permission mode on a resume: none but for Claude and Codex.
  *  Stored arguments that cannot be read count as none, which at worst repeats the mode they give. */
 export async function keepPermission(config: BoardConfig, client: string, sessionId: string): Promise<string[]> {
-	if (client !== 'claude') return [];
+	if (client !== 'claude' && client !== 'codex') return [];
 	const read = await readTranscript(config, client, sessionId);
 	const permission = read.ok ? read.page.usage?.permission : null;
+	if (client === 'codex') return codexKeepArgs(permission ?? null, (await storedLaunchArgs(config, sessionId)) ?? [], config.hcomDir);
 	const mode = permission && 'mode' in permission ? permission.mode : null;
 	if (mode === null) return [];
 	return permissionArgs((await storedLaunchArgs(config, sessionId)) ?? [], mode);

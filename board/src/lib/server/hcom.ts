@@ -97,10 +97,11 @@ export async function hasHoldTerminal(config: BoardConfig): Promise<boolean> {
  *  name as soon as it is printed. */
 export async function launchAgent(
 	config: BoardConfig,
-	launch: { client: LaunchClient; folder: string; herdrWorkspace: string; prompt: string; extraArgs: string[]; intoPane?: string; onName?: (name: string) => void }
+	launch: { client: LaunchClient; folder: string; herdrWorkspace: string; prompt: string; extraArgs: string[]; intoPane?: string; tag?: string; onName?: (name: string) => void }
 ): Promise<LaunchResult> {
 	const prompt = launch.prompt ? ['--hcom-prompt', launch.prompt] : [];
-	const args = [launch.client, '--dir', launch.folder, ...terminalArgs(launch.intoPane), '--go', ...prompt, ...launch.extraArgs];
+	const tag = launch.tag ? ['--tag', launch.tag] : [];
+	const args = [launch.client, '--dir', launch.folder, ...tag, ...terminalArgs(launch.intoPane), '--go', ...prompt, ...launch.extraArgs];
 	const { onName } = launch;
 	const run = await runCommand(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
@@ -139,6 +140,8 @@ export interface HcomAgent {
 	pane: string | null;
 	/** hcom's status, e.g. `listening` or `active`; null when it gave none. */
 	status: string | null;
+	/** Its group tag, the prefix of its name; null or missing when it has none. */
+	tag?: string | null;
 }
 
 /** The agent with this session ID, or else one with any of these names. */
@@ -165,11 +168,12 @@ export async function listAgents(config: BoardConfig): Promise<AgentList> {
 	if (!valid) return { ok: false, reason: 'hcom 的 Agent 清單不是預期的格式' };
 	return {
 		ok: true,
-		agents: (parsed as { name: string; session_id?: string | null; status?: unknown; launch_context?: { pane_id?: unknown } | null }[]).map((agent) => ({
+		agents: (parsed as { name: string; session_id?: string | null; status?: unknown; tag?: unknown; launch_context?: { pane_id?: unknown } | null }[]).map((agent) => ({
 			name: agent.name,
 			sessionId: agent.session_id || null,
 			pane: typeof agent.launch_context?.pane_id === 'string' ? agent.launch_context.pane_id : null,
-			status: typeof agent.status === 'string' ? agent.status : null
+			status: typeof agent.status === 'string' ? agent.status : null,
+			tag: typeof agent.tag === 'string' && agent.tag ? agent.tag : null
 		}))
 	};
 }

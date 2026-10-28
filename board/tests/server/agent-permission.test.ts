@@ -44,6 +44,7 @@ beforeEach(async () => {
 	setHerdr({});
 	fixture.setHcom({ agents: [hcomAgent('clio', 's-claude'), hcomAgent('coxa', 's-codex')] });
 	lastTurn('s-codex', 'gpt-6.1-sol');
+	rmSync(join(fixture.dir, 'transcripts', 's-codex.permission.json'), { force: true });
 	await fixture.refresh(cookie);
 });
 
@@ -187,16 +188,18 @@ const STORED = ['resume', 's-codex', '--no-daemon', '--model', 'gpt-6.1-sol', '-
 function freshResume() {
 	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ 's-codex': STORED }));
 	fixture.setHcom({
-		agents: [hcomAgent('clio', 's-claude'), hcomAgent('coxa', 's-codex')],
+		// Spawned in a group: the launch must bring its name back with the tag.
+		agents: [hcomAgent('clio', 's-claude'), { ...hcomAgent('team-coxa', 's-codex'), tag: 'team' }],
+		// hcom prints the base name and lists the launch under its tagged one.
 		names: [null, 'tmpa'],
-		launched: [null, hcomAgent('tmpa', null, 'wA:p-tmpa')],
+		launched: [null, { ...hcomAgent('team-tmpa', null, 'wA:p-tmpa'), tag: 'team' }],
 		launchedHerdr: [null, { ...herdrAgent(null, 'wA:p-tmpa', 'codex'), tab_label: 'tmpa' }]
 	});
 }
 /** The first turn: hcom gives the launch its session and old name, Herdr sees the session. */
 function firstTurn() {
 	const added = join(fixture.dir, 'hcom-added.json');
-	writeFileSync(added, JSON.stringify(JSON.parse(readFileSync(added, 'utf8')).map((agent: any) => (agent.name === 'tmpa' ? hcomAgent('coxa', 's-codex', 'wA:p-tmpa') : agent))));
+	writeFileSync(added, JSON.stringify(JSON.parse(readFileSync(added, 'utf8')).map((agent: any) => (agent.name === 'team-tmpa' ? { ...hcomAgent('team-coxa', 's-codex', 'wA:p-tmpa'), tag: 'team' } : agent))));
 	const herdrFile = join(fixture.dir, 'herdr.json');
 	const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
 	herdr.agents = herdr.agents.map((agent: any) => (agent.pane_id === 'wA:p-tmpa' ? { ...agent, agent_session: { kind: 'id', value: 's-codex' } } : agent));
@@ -208,14 +211,16 @@ test('a Codex agent resumes its conversation in a fresh launch without its store
 	await fixture.refresh(cookie);
 	const switched: { status: number; body: SwitchResponse } = await post({ session: 's-codex', mode: 'ask-for-approval' });
 	expect(switched.status).toBe(200);
-	expect(switched.body.entry).toMatchObject({ state: 'resuming', open: true, to: { permission: 'ask-for-approval' }, relaunch: { session: 's-codex' }, relaunchedName: 'tmpa' });
+	expect(switched.body.entry).toMatchObject({ state: 'resuming', open: true, to: { permission: 'ask-for-approval' }, relaunch: { session: 's-codex', tag: 'team' }, relaunchedName: 'team-tmpa' });
 	expect(hcomCalls()).toEqual([
-		['kill', 'coxa'],
+		['kill', 'team-coxa'],
 		[
-			'codex', '--dir', '/projects/alpha', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', codexFirstTurnText('ask-for-approval'),
+			'codex', '--dir', '/projects/alpha', '--tag', 'team', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', codexFirstTurnText('ask-for-approval'),
 			// The stored arguments without --yolo, the latest turn's model and effort, then the mode.
 			'resume', 's-codex', '--no-daemon', '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="low"',
 			'-c', 'model="gpt-6.1-sol"', '-c', 'model_reasoning_effort="medium"',
+			// hcom's folder stays writable, as /permissions keeps it: the profile drops hcom's own writable root.
+			'--add-dir', join(fixture.dir, 'home', '.hcom'),
 			'-c', 'default_permissions=":workspace"', '-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="user"'
 		]
 	]);
@@ -225,12 +230,16 @@ test('a Codex agent resumes its conversation in a fresh launch without its store
 	const before = await agents();
 	expect(before.filter((agent) => agent.client === 'codex').map((agent) => [agent.id, agent.inHerdr])).toEqual([['s-codex', false]]);
 
+	// Wait a little past hcom's grace for a name it does not list, so a wait for the wrong name would fail first.
+	await new Promise((resolve) => setTimeout(resolve, 3_500));
 	firstTurn();
 	await until(() => sentLog().some((line) => line.kind === 'switch-step' && line.switchId === switched.body.entry!.id && line.state === 'done'), 8_000, 'the switch done');
+	// Tracked under its tagged name all the way: never taken for gone on the way.
+	expect(sentLog().filter((line) => line.switchId === switched.body.entry!.id && line.state === 'resume-failed')).toEqual([]);
 	await fixture.refresh(cookie);
 	const after = (await agents()).filter((agent) => agent.client === 'codex');
 	expect(after).toHaveLength(1);
-	expect(after[0]).toMatchObject({ id: 's-codex', hcomName: 'coxa', inHerdr: true, switch: null, herdr: { pane: 'wA:p-tmpa' } });
+	expect(after[0]).toMatchObject({ id: 's-codex', hcomName: 'team-coxa', inHerdr: true, switch: null, herdr: { pane: 'wA:p-tmpa' } });
 });
 
 test('a fresh launch whose first turn never comes is not launched again: the switch is continued or given up', async () => {
@@ -239,6 +248,8 @@ test('a fresh launch whose first turn never comes is not launched again: the swi
 	const switched = await post({ session: 's-codex', mode: 'full-access' });
 	expect(switched.status).toBe(200);
 	const id = switched.body.entry.id;
+	// Full Access has no sandbox: nothing is added for hcom's folder.
+	expect(hcomCalls().find((call) => call[0] === 'codex')).not.toContain('--add-dir');
 	await until(() => sentLog().some((line) => line.kind === 'switch-step' && line.switchId === id && line.state === 'resume-failed'), 10_000, 'the wait given up');
 	expect(sentLog().findLast((line) => line.switchId === id && line.state === 'resume-failed').error).toContain('還沒做完第一回合');
 
@@ -282,4 +293,18 @@ test("the agent in the board's own pane is offered no switch, and none is presse
 	const refused = await post({ session: 's-own', mode: 'auto' });
 	expect(refused.status).toBe(409);
 	expect(keyPresses()).toEqual([]);
+});
+
+test('a later resume of a Codex agent in a sandboxed mode gives the mode again, with hcom\'s folder', async () => {
+	// Its latest turn ran in Ask for approval, after a permission switch left hcom no stored arguments.
+	writeFileSync(join(fixture.dir, 'transcripts', 's-codex.permission.json'), JSON.stringify({ approval: 'on-request', sandbox: 'workspace-write', reviewer: 'user' }));
+	fixture.setHcom({ agents: [hcomAgent('clio', 's-claude'), hcomAgent('coxa', 's-codex')], resumed: hcomAgent('coxa', 's-codex') });
+	await fixture.refresh(cookie);
+	const switched = await fixture.fetch('/api/agents/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-codex', model: null, effort: 'high' }), cookie });
+	expect(switched.status).toBe(200);
+	const resume = hcomCalls().find((call) => call[0] === 'r')!;
+	expect(resume.slice(resume.indexOf('--go') + 1)).toEqual([
+		'-c', 'default_permissions=":workspace"', '-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="user"', '--add-dir', join(fixture.dir, 'home', '.hcom'),
+		'-c', 'model_reasoning_effort="high"'
+	]);
 });
