@@ -32,7 +32,8 @@ export interface PdRequest {
 	waiting: number;
 	/** Seconds it had left before timing out when it was read; null from a pd that does not say. */
 	remaining: number | null;
-	/** The request's page on the passkey site; null when pd gave none that is a web address. */
+	/** The request's page on the passkey site; null when pd gave none that is a web address. The
+	 *  board approves in its own panel and no longer links to it. */
 	approvalUrl: string | null;
 	/** Which start of pd's daemon holds it: numbers begin at 1 again with each start. Null from a
 	 *  pd that does not say. */
