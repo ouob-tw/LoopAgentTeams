@@ -59,7 +59,8 @@ test.skipIf(!CHROME)('requests take the middle column\'s place on a phone, with 
 	const card = (id: number) => `document.querySelector('.pd [data-pd-request="${id}"]')`;
 	// Folded: the item, number, time and buttons, and the command shortened on one line.
 	const folded = await tab.eval<string>(`${card(3)}.innerText`);
-	for (const text of ['npm token', '#3', 'codex（自稱）', 'python3 npm_login.py --registry …', '核准', '拒絕']) expect(folded).toContain(text);
+	for (const text of ['npm token', '#3', 'python3 npm_login.py --registry …', '核准', '拒絕']) expect(folded).toContain(text);
+	expect(await tab.eval<string>(`${card(3)}.querySelector('summary').textContent`)).toContain('codex（自稱）python3 npm_login.py --registry …');
 	for (const text of ['/usr/bin/python3', '/home/u/a-rather-long-folder-name', '對方自稱']) expect(folded).not.toContain(text);
 	expect(await tab.eval(`${card(3)}.querySelector('summary').getClientRects().length === 1 && ${card(3)}.querySelector('summary').clientHeight < 30`)).toBe(true);
 	// A tap opens the whole command, the folder and the caller.
@@ -68,13 +69,13 @@ test.skipIf(!CHROME)('requests take the middle column\'s place on a phone, with 
 	const first = await tab.eval<string>(`${card(3)}.innerText`);
 	for (const text of ['password、username', argv.join(' '), '/home/u/a-rather-long-folder-name/for-the-project-that-asks', 'codex（對方自稱，未驗證）']) expect(first).toContain(text);
 	// pd's check of the caller on the line, and what it is worth once opened.
-	expect(await tab.eval<string>(`${card(4)}.querySelector('summary .who').textContent`)).toBe('dahe-t09-vafu（codex，群組 dahe-t09）未通過查證');
-	// Too long for a phone's line: the caller is cut short, the command stays whole.
+	expect(await tab.eval<string>(`${card(4)}.querySelector('summary .who').textContent + ${card(4)}.querySelector('summary .mark').textContent`)).toBe('dahe-t09-vafu（codex，群組 dahe-t09）未通過查證');
+	// Too long for a phone's line: the caller's name is cut short, its mark and the command stay whole.
 	expect(await tab.eval(`(() => {
 		const line = ${card(4)}.querySelector('summary');
+		const whole = (part) => part.scrollWidth <= part.clientWidth + 1 && part.getBoundingClientRect().right <= line.getBoundingClientRect().right + 1;
 		const who = line.querySelector('.who');
-		const command = line.querySelector('code');
-		return who.scrollWidth > who.clientWidth && command.scrollWidth <= command.clientWidth + 1 && command.getBoundingClientRect().right <= line.getBoundingClientRect().right + 1;
+		return who.scrollWidth > who.clientWidth && whole(line.querySelector('.mark')) && whole(line.querySelector('code'));
 	})()`)).toBe(true);
 	expect(await tab.eval<string>(`${card(4)}.innerText`)).not.toContain('程序樹查證');
 	await tab.pointerClick('.pd [data-pd-request="4"] summary');

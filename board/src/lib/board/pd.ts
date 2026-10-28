@@ -107,12 +107,18 @@ export function shortCommand(command: string[]): string {
 	return words.join(' ') + (command.length > 3 ? ' …' : '');
 }
 
-/** Who asked, on one line: `dahe（claude，主控）✓`, `dahe-t09-vafu（codex，群組 dahe-t09）未通過查證`,
- *  or `codex（自稱）`, the declared name, from a pd without the daemon's check. */
-export function callerText(request: PdRequest): string {
+/** Who asked, and the mark of how far to trust it, apart so a short line can cut the name and
+ *  never the mark: `dahe（claude，主控）` `✓`, `dahe-t09-vafu（codex，群組 dahe-t09）` `未通過查證`,
+ *  or `codex` `（自稱）`, the declared name, from a pd without the daemon's check. */
+export function callerParts(request: PdRequest): { who: string; mark: string } {
 	const info = request.callerInfo;
-	if (!info) return `${request.caller}（自稱）`;
+	if (!info) return { who: request.caller, mark: '（自稱）' };
 	const role = info.orchestrator ? '主控' : info.group ? `群組 ${info.group}` : null;
 	const notes = [info.client, role, info.source === 'manual' ? '手動' : null].filter((note) => note !== null);
-	return `${info.name}（${notes.join('，')}）${info.verified ? '✓' : '未通過查證'}`;
+	return { who: `${info.name}（${notes.join('，')}）`, mark: info.verified ? '✓' : '未通過查證' };
+}
+
+export function callerText(request: PdRequest): string {
+	const { who, mark } = callerParts(request);
+	return who + mark;
 }

@@ -11,7 +11,7 @@
 	// page says on the 待辦 list when pd is missing or down.
 	import { tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
-	import { assertionJson, callerText, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
+	import { assertionJson, callerParts, callerText, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
 	/** `onaway` takes the focus when folding leaves no badge on screen: a phone hides the middle
@@ -130,6 +130,7 @@
 			<ul class="cards">
 				{#each requests as item (item.id)}
 					{@const time = timeText(item, now - pd.at)}
+					{@const caller = callerParts(item)}
 					<li class="card" data-pd-request={item.id}>
 						<p class="head">
 							<span class="item">{item.item}</span>
@@ -137,7 +138,9 @@
 							<span class="time" class:low={time.low} role="timer">{time.text}</span>
 						</p>
 						<details>
-							<summary><span class="who">{callerText(item)}</span><code>{shortCommand(item.command)}</code></summary>
+							<summary>
+								<span class="who">{caller.who}</span><span class="mark">{caller.mark}</span><code>{shortCommand(item.command)}</code>
+							</summary>
 							<dl>
 								<dt>欄位</dt>
 								<dd>{item.fields.join('、')}</dd>
@@ -257,8 +260,8 @@
 	.time.low {
 		color: var(--danger);
 	}
-	/* One line however long; the caller gives way first so the command stays readable, and the
-	   rest is under it once opened. A flex summary has no marker of its own. */
+	/* One line however long; the caller's name gives way first so its mark and the command stay
+	   readable, and the rest is under it once opened. The marker is drawn here, Safari's hidden. */
 	summary {
 		display: flex;
 		gap: 0.4rem;
@@ -266,12 +269,15 @@
 		cursor: pointer;
 		font-size: max(0.9rem, var(--min-font, 0px));
 	}
+	summary::-webkit-details-marker {
+		display: none;
+	}
 	summary::before {
-		content: '▸';
+		content: '▸' / '';
 		flex: none;
 	}
 	details[open] summary::before {
-		content: '▾';
+		content: '▾' / '';
 	}
 	summary > * {
 		min-width: 0;
@@ -281,6 +287,10 @@
 	.who {
 		flex: 0 100 auto;
 		min-width: 2em;
+	}
+	summary .mark {
+		flex: none;
+		margin-left: -0.4rem;
 	}
 	summary code {
 		flex: 0 1 auto;
