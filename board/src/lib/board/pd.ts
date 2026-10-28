@@ -91,12 +91,12 @@ export type PdSnapshot = { ok: true; requests: PdRequest[] } | { ok: false; reas
 const clockText = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 
 /** A request's time as it reads `elapsed` milliseconds after it was read: what is left while pd says,
- *  else how long it has waited. `low` once 30 seconds or less are left. */
-export function timeText(request: PdRequest, elapsed: number): { text: string; low: boolean } {
+ *  else how long it has waited. `soon` once two minutes or less are left, `low` once 30 seconds. */
+export function timeText(request: PdRequest, elapsed: number): { text: string; soon: boolean; low: boolean } {
 	const passed = Math.max(0, Math.floor(elapsed / 1000));
-	if (request.remaining === null) return { text: `已等待 ${clockText(request.waiting + passed)}`, low: false };
+	if (request.remaining === null) return { text: `已等待 ${clockText(request.waiting + passed)}`, soon: false, low: false };
 	const left = Math.max(0, request.remaining - passed);
-	return { text: left ? `剩 ${clockText(left)}` : '即將逾時', low: left <= 30 };
+	return { text: left ? `剩 ${clockText(left)}` : '即將逾時', soon: left <= 120, low: left <= 30 };
 }
 
 /** A command short enough for one line: its first three words, each with a slash (a path, or a

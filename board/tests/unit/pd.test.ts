@@ -103,10 +103,11 @@ test('a denial answers ok, gone, unreachable or failed', () => {
 });
 
 test('a request’s time counts down from what pd said, or up from its wait without it', () => {
-	expect(timeText(request(), 0)).toEqual({ text: '剩 1:48', low: false });
-	expect(timeText(request(), 78_400)).toEqual({ text: '剩 0:30', low: true });
-	expect(timeText(request(), 200_000)).toEqual({ text: '即將逾時', low: true });
-	expect(timeText(request({ remaining: null }), 50_000)).toEqual({ text: '已等待 1:02', low: false });
+	expect(timeText(request({ remaining: 121 }), 0)).toEqual({ text: '剩 2:01', soon: false, low: false });
+	expect(timeText(request(), 0)).toEqual({ text: '剩 1:48', soon: true, low: false });
+	expect(timeText(request(), 78_400)).toEqual({ text: '剩 0:30', soon: true, low: true });
+	expect(timeText(request(), 200_000)).toEqual({ text: '即將逾時', soon: true, low: true });
+	expect(timeText(request({ remaining: null }), 50_000)).toEqual({ text: '已等待 1:02', soon: false, low: false });
 });
 
 test('a caller pd checked reads with its client, role and check; without the check, its declared name', () => {

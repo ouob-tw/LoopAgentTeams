@@ -1,14 +1,15 @@
 <script lang="ts">
-	// The pd 待核准 overlay over the middle column, whichever list it shows: one card per request
-	// pd's daemon holds for approval, with what it asks for, the time it has left, and who asked and
-	// its command on one short line that a tap opens to the whole command, folder and caller, with
+	// The pd 待核准 panel at the top of the middle column, above whichever list it shows: one row per
+	// request pd's daemon holds for approval, with what it asks for, the time it has left, who asked
+	// and its command on short lines that a tap opens to the whole command, folder and caller, with
 	// what pd's check of the caller is worth. 核准 signs pd's one-time challenge with the user's
 	// passkey right here (rpId ouob.net); the board server only relays the challenge and the
-	// signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it through the board at once, as `pd deny` does without a code. 稍後 folds it
-	// to a badge above the column's tabs, which opens it again; a request that appears opens it too
-	// and, once the user allowed it (the 開啟通知 button, never asked for unprompted), raises a
-	// browser notification whose click comes back to it. With nothing waiting it is not shown; the
-	// page says on the 待辦 list when pd is missing or down.
+	// signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it through
+	// the board at once, as `pd deny` does without a code. 稍後 folds it to a one-line badge above the
+	// column's tabs, which opens it again; a request that appears opens it too and, once the user
+	// allowed it (the 開啟通知 button, never asked for unprompted), raises a browser notification
+	// whose click comes back to it. With nothing waiting it is not shown; the page says on the 待辦
+	// list when pd is missing or down.
 	import { tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import { assertionJson, callerParts, callerText, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
@@ -34,17 +35,17 @@
 	 *  reading forgets it, for a pd that does not name its daemon start. */
 	let previous: Set<string> | null = null;
 	const key = (item: PdRequest) => `${item.daemon ?? ''}#${item.id}`;
-	/** Whether the overlay is open rather than folded to its badge. */
+	/** Whether the panel is open rather than folded to its badge. */
 	let open = $state(true);
-	let overlay = $state<HTMLElement>();
+	let panel = $state<HTMLElement>();
 	let badge = $state<HTMLElement>();
 
-	/** Open or fold the overlay and put the focus on what stands in its place, as the control
+	/** Open or fold the panel and put the focus on what stands in its place, as the control
 	 *  pressed is gone. */
 	async function show(value: boolean) {
 		open = value;
 		await tick();
-		if (value) overlay?.focus();
+		if (value) panel?.focus();
 		else if (badge?.checkVisibility()) badge.focus();
 		else onaway?.();
 	}
@@ -122,9 +123,9 @@
 
 {#if requests.length && pd}
 	{#if open}
-		<section class="pd" aria-label="pd 待核准" tabindex="-1" bind:this={overlay}>
+		<section class="pd" aria-label="pd 待核准" tabindex="-1" bind:this={panel}>
 			<header>
-				<h2>pd 待核准 <span class="count">（{requests.length}）</span></h2>
+				<h2>pd 待核准 <span class="count">{requests.length}</span></h2>
 				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
 			</header>
 			<ul class="cards">
@@ -135,11 +136,13 @@
 						<p class="head">
 							<span class="item">{item.item}</span>
 							<span class="number">#{item.id}</span>
-							<span class="time" class:low={time.low} role="timer">{time.text}</span>
+							<span class="time" class:soon={time.soon} class:low={time.low} role="timer">{time.text}</span>
 						</p>
 						<details>
 							<summary>
-								<span class="who">{caller.who}</span><span class="mark">{caller.mark}</span> <code>{shortCommand(item.command)}</code>
+								<span class="caller" class:verified={item.callerInfo?.verified} class:unverified={item.callerInfo && !item.callerInfo.verified}
+									><span class="who">{caller.who}</span><span class="mark">{caller.mark}</span></span
+								> <code>{shortCommand(item.command)}</code>
 							</summary>
 							<dl>
 								<dt>欄位</dt>
@@ -170,104 +173,159 @@
 					</li>
 				{/each}
 			</ul>
-			<p class="quiet">核准會在這頁用這台裝置的 passkey 解鎖驗證（通常是指紋或臉部辨識）；看板只轉送簽章，由 pd 驗證，不需要確認碼。</p>
-			{#if notifications && permission === 'default'}
-				<p class="quiet">
-					<button type="button" class="allow" onclick={() => void allowNotifications()}>開啟通知</button>
-					有新的 pd 請求時發瀏覽器通知（只在看板開著時）
-				</p>
-			{/if}
+			<footer>
+				<p>核准會在這頁用這台裝置的 passkey 解鎖驗證（通常是指紋或臉部辨識）；看板只轉送簽章，由 pd 驗證，不需要確認碼。</p>
+				{#if notifications && permission === 'default'}
+					<p>
+						<button type="button" class="allow" onclick={() => void allowNotifications()}>開啟通知</button>
+						有新的 pd 請求時發瀏覽器通知（只在看板開著時）
+					</p>
+				{/if}
+			</footer>
 		</section>
 	{:else}
-		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}>pd 待核准 {requests.length}</button>
+		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}>pd 待核准 <span class="count">{requests.length}</span></button>
 	{/if}
 {/if}
 
 <style>
-	/* Where it lies over the column is the page's to say; this is how it looks. */
+	/* Its place at the top of the column is the page's to say; this is how it looks: one panel, a
+	   row for each request, with a scroll of its own under its heading once several wait. */
 	.pd {
-		display: flex;
-		flex-direction: column;
-		gap: 0.45rem;
+		flex: none;
 		min-width: 0;
-		padding: 0.6rem;
-		background: var(--bg);
-		border-top: 3px solid var(--warn);
-		box-shadow: 0 0.3rem 1rem color-mix(in srgb, #000 35%, transparent);
+		max-height: min(60vh, 36rem);
+		margin-bottom: 0.5rem;
+		background: var(--surface);
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		overflow-y: auto;
+		animation: arrive 160ms ease-out;
+	}
+	@keyframes arrive {
+		from {
+			opacity: 0;
+			transform: translateY(-0.4rem);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.pd {
+			animation: none;
+		}
 	}
 	.pd:focus {
 		outline: none;
 	}
+	.pd:focus-visible {
+		outline: 2px solid var(--accent);
+	}
 	header {
+		position: sticky;
+		top: 0;
+		z-index: 1;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 0.6rem;
+		padding: 0.35rem 0.35rem 0.35rem 0.75rem;
+		border-bottom: 1px solid var(--line);
+		background: color-mix(in srgb, var(--warn) 7%, var(--surface));
 	}
 	h2 {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
 		margin: 0;
-		font-size: max(0.95rem, var(--min-font, 0px));
+		font-size: max(0.85rem, var(--min-font, 0px));
+		font-weight: 600;
 	}
-	.count,
-	.quiet,
-	.notice,
-	.number {
+	/* The dot that says something waits, and the panel's count beside it. */
+	h2::before,
+	.pd-badge::before {
+		content: '';
+		flex: none;
+		width: 0.5rem;
+		height: 0.5rem;
+		border-radius: 50%;
+		background: var(--warn);
+	}
+	.count {
+		display: inline-block;
+		min-width: 1.4em;
+		padding: 0 0.4em;
+		border-radius: var(--radius-pill);
+		background: var(--warn);
+		color: var(--bg);
+		font-family: var(--mono);
+		font-size: max(0.75rem, var(--min-font, 0px));
+		line-height: 1.5;
+		text-align: center;
+	}
+	.later {
+		padding: 0.2rem 0.6rem;
+		background: none;
+		border-color: transparent;
 		color: var(--muted);
-		font-weight: 400;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
-	.quiet {
-		margin: 0;
-		font-size: max(0.8rem, var(--min-font, 0px));
+	.later:hover {
+		color: var(--text);
+		border-color: var(--line);
 	}
 	.cards {
 		list-style: none;
 		margin: 0;
 		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.45rem;
 	}
 	.card {
 		display: flex;
 		flex-direction: column;
 		gap: 0.45rem;
 		min-width: 0;
-		padding: 0.55rem 0.65rem;
-		border: 1px solid var(--line);
-		border-left: 3px solid var(--warn);
-		border-radius: var(--radius);
-		background: var(--surface);
+		padding: 0.65rem 0.75rem 0.7rem;
+	}
+	.card + .card {
+		border-top: 1px solid var(--line);
 	}
 	.head {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: baseline;
-		gap: 0.2rem 0.6rem;
+		gap: 0.1rem 0.45rem;
 		margin: 0;
 	}
 	.item {
 		font-weight: 600;
 		overflow-wrap: anywhere;
 	}
-	.number {
+	.number,
+	.time {
+		font-family: var(--mono);
 		font-size: max(0.75rem, var(--min-font, 0px));
+		color: var(--muted);
 	}
 	.time {
 		margin-left: auto;
-		font-family: var(--mono);
-		font-size: max(0.85rem, var(--min-font, 0px));
+		font-variant-numeric: tabular-nums;
+	}
+	.time.soon {
+		color: var(--warn);
 	}
 	.time.low {
 		color: var(--danger);
+		font-weight: 600;
 	}
-	/* One line however long; the caller's name gives way first so its mark and the command stay
-	   readable, and the rest is under it once opened. The marker is drawn here, Safari's hidden. */
+	/* Who asked on a line of its own, then the command; a line too long ends in an ellipsis, the
+	   caller's name giving way before its mark. The rest is under it once opened. The marker is
+	   drawn here, Safari's hidden. */
 	summary {
-		display: flex;
-		gap: 0.4rem;
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		align-items: center;
+		gap: 0.3rem 0.4rem;
 		white-space: nowrap;
 		cursor: pointer;
-		font-size: max(0.9rem, var(--min-font, 0px));
+		font-size: max(0.8rem, var(--min-font, 0px));
 	}
 	summary::-webkit-details-marker {
 		display: none;
@@ -275,39 +333,62 @@
 	summary::before {
 		content: '▸';
 		content: '▸' / '';
-		flex: none;
+		color: var(--muted);
 	}
 	details[open] summary::before {
 		content: '▾';
 		content: '▾' / '';
 	}
-	summary > * {
-		min-width: 0;
+	.caller {
+		display: flex;
+		justify-self: start;
+		max-width: 100%;
+		padding: 0 0.55rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-pill);
+		color: var(--muted);
+	}
+	.who {
+		min-width: 2em;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
-	.who {
-		flex: 0 100 auto;
-		min-width: 2em;
-	}
-	summary .mark {
+	.mark {
 		flex: none;
-		margin-left: -0.4rem;
+	}
+	.verified .mark {
+		margin-left: 0.25rem;
+		color: var(--ok);
+		font-weight: 600;
+	}
+	.unverified .mark {
+		margin-left: 0.35rem;
+		color: var(--warn);
 	}
 	summary code {
-		flex: 0 1 auto;
-	}
-	details[open] summary {
-		margin-bottom: 0.35rem;
+		grid-column: 2;
+		justify-self: start;
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		padding: 0.1rem 0.5rem;
+		background: var(--bg);
+		border: 1px solid var(--line);
+		border-radius: calc(var(--radius) - 2px);
 	}
 	dl {
 		display: grid;
 		grid-template-columns: max-content 1fr;
-		gap: 0.2rem 0.8rem;
-		margin: 0;
-		font-size: max(0.9rem, var(--min-font, 0px));
+		gap: 0.25rem 0.8rem;
+		margin: 0.45rem 0 0;
+		padding: 0.5rem 0.6rem;
+		background: var(--bg);
+		border: 1px solid var(--line);
+		border-radius: calc(var(--radius) - 2px);
+		font-size: max(0.8rem, var(--min-font, 0px));
 	}
-	dt {
+	dt,
+	.notice {
 		color: var(--muted);
 	}
 	dd {
@@ -317,14 +398,17 @@
 	}
 	code {
 		font-family: var(--mono);
-		font-size: 0.9em;
 	}
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.6rem;
-		margin: 0;
+		gap: 0.5rem;
+		margin: 0.1rem 0 0;
+	}
+	.actions button {
+		padding: 0.3rem 1rem;
+		font-size: max(0.9rem, var(--min-font, 0px));
 	}
 	/* The board's main button: it signs with the passkey here. */
 	.approve {
@@ -333,21 +417,74 @@
 		color: var(--bg);
 		font-weight: 600;
 	}
+	.deny {
+		background: none;
+		color: var(--danger);
+	}
+	.deny:hover {
+		border-color: var(--danger);
+	}
 	.page {
-		font-size: max(0.8rem, var(--min-font, 0px));
+		margin-left: auto;
+		font-size: max(0.75rem, var(--min-font, 0px));
+		color: var(--muted);
+		text-underline-offset: 0.2em;
+	}
+	.page:hover {
+		color: var(--text);
+	}
+	footer {
+		padding: 0.45rem 0.75rem 0.5rem;
+		border-top: 1px solid var(--line);
+		font-size: max(0.75rem, var(--min-font, 0px));
+		line-height: 1.45;
 		color: var(--muted);
 	}
-	.pd-badge {
-		align-self: flex-start;
-		flex: none;
-		border-color: var(--warn);
-		color: var(--warn);
-		font-weight: 600;
-		font-size: max(0.85rem, var(--min-font, 0px));
+	footer p {
+		margin: 0;
 	}
-	.deny {
-		border-color: var(--danger);
-		color: var(--danger);
+	footer p + p {
+		margin-top: 0.3rem;
+	}
+	.allow {
+		padding: 0;
+		background: none;
+		border: 0;
+		color: var(--accent);
+		text-decoration: underline;
+		text-underline-offset: 0.2em;
+	}
+	/* Folded: one line that opens it again. */
+	.pd-badge {
+		display: block;
+		flex: none;
+		width: 100%;
+		margin-bottom: 0.5rem;
+		padding: 0.35rem 0.75rem;
+		text-align: left;
+		font-size: max(0.85rem, var(--min-font, 0px));
+		font-weight: 600;
+		border-left: 3px solid var(--warn);
+	}
+	.pd-badge::before {
+		display: inline-block;
+		margin-right: 0.45rem;
+		vertical-align: 0.05em;
+	}
+	.pd-badge::after {
+		content: '展開 ▾';
+		content: '展開 ▾' / '';
+		float: right;
+		font-weight: 400;
+		color: var(--muted);
+	}
+	.pd-badge .count {
+		margin-left: 0.15rem;
+	}
+	/* Light theme: no tint, a heavier line under the heading instead. */
+	:global(:root[data-theme='light']) header {
+		background: var(--surface);
+		border-bottom-width: 2px;
 	}
 	@media (max-width: 480px) {
 		dl {
@@ -356,12 +493,8 @@
 		dt:not(:first-child) {
 			margin-top: 0.3rem;
 		}
-		.time {
-			margin-left: 0;
-		}
-		.actions > * {
+		.actions > button {
 			flex: 1;
-			text-align: center;
 		}
 	}
 </style>
