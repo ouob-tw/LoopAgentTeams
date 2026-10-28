@@ -116,9 +116,13 @@ test('a caller pd checked reads with its client, role and check; without the che
 	expect(callerText(request({ callerInfo: info }))).toBe('dahe-t09-vafu（codex，群組 dahe-t09）未查證');
 	expect(callerText(request({ callerInfo: { ...info, name: 'x', group: null, orchestrator: null, source: 'manual' } }))).toBe('x（codex，手動）未查證');
 	expect(callerText(request())).toBe('claude');
-	// Fields missing read unknown, and only an explicit true is verified.
+	// Fields missing read unknown, and only an explicit true on a whole record is verified.
 	const sparse = parsePdPending(exited(0, JSON.stringify([{ ...listed, caller_info: { verified: 'yes' } }])));
 	expect(sparse.ok && sparse.requests[0].callerInfo).toEqual({ name: 'unknown', client: 'unknown', group: null, orchestrator: null, source: 'unknown', verified: false, notice: '程序樹查證，非防竄改' });
+	for (const partial of [{ verified: true }, { ...listed.caller_info, pid: null }, { ...listed.caller_info, program: null }, { ...listed.caller_info, name: 'unknown' }]) {
+		const read = parsePdPending(exited(0, JSON.stringify([{ ...listed, caller_info: partial }])));
+		expect(read.ok && read.requests[0].callerInfo?.verified).toBe(false);
+	}
 });
 
 test('a command shortens to its first three words, paths to their last part', () => {

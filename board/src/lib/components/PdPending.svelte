@@ -2,10 +2,9 @@
 	// The pd 待核准 overlay over the middle column, whichever list it shows: one card per request
 	// pd's daemon holds for approval, with what it asks for, the time it has left, and who asked and
 	// its command on one short line that a tap opens to the whole command, folder and caller, with
-	// what pd's check of the caller is worth. 核准 signs pd's
-	// one-time challenge with the user's passkey right here (rpId ouob.net); the board server only
-	// relays the challenge and the signature, pd's daemon verifies it, and the board never asks for a
-	// code. 拒絕 denies it through the board at once, as `pd deny` does without a code. 稍後 folds it
+	// what pd's check of the caller is worth. 核准 signs pd's one-time challenge with the user's
+	// passkey right here (rpId ouob.net); the board server only relays the challenge and the
+	// signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it through the board at once, as `pd deny` does without a code. 稍後 folds it
 	// to a badge above the column's tabs, which opens it again; a request that appears opens it too
 	// and, once the user allowed it (the 開啟通知 button, never asked for unprompted), raises a
 	// browser notification whose click comes back to it. With nothing waiting it is not shown; the

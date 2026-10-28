@@ -42,16 +42,19 @@ function ended(run: ExternalResult): string {
 }
 
 /** pd's check of the caller, without the process number and start time a page has no use for.
- *  A field missing reads unknown, and only an explicit true counts as verified. */
+ *  A field missing reads unknown, and only an explicit true on a whole record counts as verified:
+ *  pd checks the name, client, process number, start time and program together. */
 function callerInfo(value: unknown): PdCaller | null {
 	if (!isRecord(value)) return null;
+	const whole = [value.name, value.client, value.source, value.program].every((field) => typeof field === 'string' && field && field !== 'unknown')
+		&& Number.isInteger(value.pid) && Number.isInteger(value.start_time);
 	return {
 		name: known(value.name),
 		client: known(value.client),
 		group: typeof value.group === 'string' && value.group ? value.group : null,
 		orchestrator: typeof value.orchestrator === 'boolean' ? value.orchestrator : null,
 		source: known(value.source),
-		verified: value.verified === true,
+		verified: value.verified === true && whole,
 		notice: text(value.notice) || '程序樹查證，非防竄改'
 	};
 }
