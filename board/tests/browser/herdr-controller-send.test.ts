@@ -190,7 +190,7 @@ for (const width of [1280, 390]) {
 		if (width > 760) expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @lead');
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).getAttribute('aria-label')`)).toBe('送出');
 		// No agent's model picker: the line is the controller's. It is at work, so its stop sits beside the send button.
-		expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick]')`)).toBe(false);
+		expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`)).toBe(false);
 		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
 		await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
 		await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');
@@ -648,7 +648,7 @@ test.skipIf(!CHROME)("an ordinary agent is still written to as an agent, from a 
 	await visit(1280, '?agent=s-plain');
 	await tab.until(`!!document.querySelector('.detail [data-agent="s-plain"]') && !!document.querySelector(${JSON.stringify(BOX)})`, 'the agent page');
 	expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @plain');
-	await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick]')`, "the agent's model picker");
+	await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`, "the agent's model picker");
 	expect(await tab.eval(`!!document.querySelector(${JSON.stringify(OPTIONS)})`)).toBe(false);
 	await type('給一般 Agent');
 	await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
