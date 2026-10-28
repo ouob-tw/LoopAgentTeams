@@ -2,7 +2,7 @@
 // fields the section shows and the answers the deny and passkey relay routes give, and how the
 // section words a request's time. Test values only.
 import { expect, test } from 'bun:test';
-import { timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
+import { shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
 import { approveReply, challengeReply, checkAssertion, createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
 
@@ -103,6 +103,13 @@ test('a request’s time counts down from what pd said, or up from its wait with
 	expect(timeText(request(), 78_400)).toEqual({ text: '剩 0:30', low: true });
 	expect(timeText(request(), 200_000)).toEqual({ text: '即將逾時', low: true });
 	expect(timeText(request({ remaining: null }), 50_000)).toEqual({ text: '已等待 1:02', low: false });
+});
+
+test('a command shortens to its first three words, paths to their last part', () => {
+	expect(shortCommand(['/usr/bin/python3', '/home/u/tools/npm_login.py'])).toBe('python3 npm_login.py');
+	expect(shortCommand(['npm', 'publish', '--dry-run'])).toBe('npm publish --dry-run');
+	expect(shortCommand(['gh', 'api', 'https://api.github.com/user', '--paginate'])).toBe('gh api https://api.github.com/user …');
+	expect(shortCommand([])).toBe('');
 });
 
 test('a refresh asked for during a read reads once more after it, and only changes go out', async () => {

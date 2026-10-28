@@ -82,3 +82,10 @@ export function timeText(request: PdRequest, elapsed: number): { text: string; l
 	const left = Math.max(0, request.remaining - passed);
 	return { text: left ? `剩 ${clockText(left)}` : '即將逾時', low: left <= 30 };
 }
+
+/** A command short enough for one line: its first three words, a path cut to its last part, and
+ *  `…` when more follows. The card shows the whole command on a tap. */
+export function shortCommand(command: string[]): string {
+	const words = command.slice(0, 3).map((word) => (word.includes('/') && !word.includes('://') ? word.replace(/\/+$/, '').split('/').pop() || word : word));
+	return words.join(' ') + (command.length > 3 ? ' …' : '');
+}
