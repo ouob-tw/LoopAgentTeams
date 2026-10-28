@@ -31,9 +31,9 @@ let fixture: Fixture;
 let cookie: string;
 let browser: Browser | undefined;
 
-const waiting = (id: number, item: string) => ({
+const waiting = (id: number, item: string, waited = 2) => ({
 	id,
-	waiting: 2,
+	waiting: waited,
 	remaining: 800,
 	caller: 'claude',
 	item,
@@ -142,10 +142,23 @@ test.skipIf(!CHROME)('a new request opens a prompt; 核准 signs pd\'s challenge
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5']);
 
 	// pd numbers from 1 again after its daemon restarts: a number that left and came back is new.
-	setPd([waiting(5, 'Docker token')]);
+	setPd([waiting(5, 'Docker token', 60)]);
 	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for the reused #5');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5', 'pd-5']);
 	await tab.pointerClick('dialog.prompt button.later');
 	await tab.until(`!document.querySelector('dialog.prompt').open`, 'the prompt closed');
+
+	// A restart between two readings: the same number, started a minute later, is new as well.
+	setPd([waiting(5, 'Docker token', 0)]);
+	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for #5 after a restart between readings');
+	await tab.pointerClick('dialog.prompt button.later');
+	await tab.until(`!document.querySelector('dialog.prompt').open`, 'the prompt closed');
+
+	// After a failed reading (pd may have restarted meanwhile), what comes back is new.
+	writeFileSync(join(fixture.dir, 'pd.json'), JSON.stringify({ pending: [], unavailable: true }));
+	await tab.until(`document.querySelector('.inbox .pd .quiet')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'pd unavailable');
+	setPd([waiting(5, 'Docker token', 0)]);
+	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for #5 after pd came back');
+	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5', 'pd-5', 'pd-5', 'pd-5']);
 	expect(tab.errors).toEqual([]);
 }, 30_000);
