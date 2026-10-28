@@ -4,12 +4,12 @@ import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { NODE, startFixture, type Fixture } from '../harness.ts';
+import { BUILD_DIR, NODE, startFixture, type Fixture } from '../harness.ts';
 
 const TOKEN = 'secret-asr-token-should-stay-on-server';
 const ROOT = join(import.meta.dir, '../..');
 /** What the built board serves to browsers as files. */
-const CLIENT = join(ROOT, 'build-test/client');
+const CLIENT = join(ROOT, BUILD_DIR, 'client');
 /** Where the fake Codex app server reads its plan and logs its turns. */
 const codexDir = mkdtempSync(join(tmpdir(), 'lat-board-codex-'));
 

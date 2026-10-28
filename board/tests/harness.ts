@@ -35,8 +35,10 @@ export async function answerHerdrList(dir: string, request: { id: string; method
 }
 
 const ROOT = join(import.meta.dir, '..');
-/** The build the test servers run: `bun run build:test` writes it, never the `build/` the running board serves. */
-const BUILD = join(ROOT, 'build-test/index.js');
+/** The build the test servers run: `bun run build:test` writes it, never the `build/` the running board serves.
+ * LAT_BOARD_BUILD_DIR (the variable `build:test` honours) names another one, so runs that overlap each use their own. */
+export const BUILD_DIR = process.env.LAT_BOARD_BUILD_DIR ?? 'build-test';
+const BUILD = join(ROOT, BUILD_DIR, 'index.js');
 // Test servers and Chrome bind port 0, so the system picks a free port; the server says which one
 // on its standard output (`Listening on http://host:port`), Chrome in its profile's DevToolsActivePort.
 
@@ -298,7 +300,7 @@ export async function startFixture(
 		port?: number;
 	} = {}
 ): Promise<Fixture> {
-	if (!existsSync(BUILD)) throw new Error('build-test/ is missing: run `bun run build:test` first');
+	if (!existsSync(BUILD)) throw new Error(`${BUILD_DIR}/ is missing: run \`LAT_BOARD_BUILD_DIR=${BUILD_DIR} bun run build:test\` first`);
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-test-'));
 	// Known once the server has said where it listens; a restart asks for the same port again.
 	let port = options.port ?? 0;

@@ -6,7 +6,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { sleep } from '../harness.ts';
+import { BUILD_DIR, sleep } from '../harness.ts';
 
 const ROOT = join(import.meta.dir, '../..');
 const nodeBinary = Bun.which('node');
@@ -33,7 +33,7 @@ for (const host of hosts) {
 			env = {
 				PATH: bin,
 				HOME: join(dir, 'home'),
-				LAT_BOARD_BUILD_DIR: 'build-test',
+				LAT_BOARD_BUILD_DIR: BUILD_DIR,
 				LAT_BOARD_STATE_DIR: join(dir, 'board-state'),
 				LAT_BOARD_CONFIG_DIR: join(dir, 'board-config'),
 				LAT_REPORTS_DIR: join(dir, 'reports'),
