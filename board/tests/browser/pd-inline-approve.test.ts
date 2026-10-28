@@ -104,8 +104,6 @@ test.skipIf(!CHROME)('a new request opens the folded panel; 核准 signs pd\'s c
 
 	// Only a click asks, and then the button is gone. It shows once the page runs in the browser.
 	await tab.until(`!!document.querySelector('.pd button.allow')`, 'the 開啟通知 button');
-	// Below the panel's fold: scrolled to, as a user would.
-	await tab.eval(`document.querySelector('.pd button.allow').scrollIntoView({ block: 'nearest' })`);
 	await tab.pointerClick('.pd button.allow');
 	await tab.until(`!document.querySelector('.pd button.allow')`, 'the 開啟通知 button gone');
 	expect(await tab.eval(`window.__asked`)).toEqual([true]);

@@ -181,6 +181,22 @@
 		if (showArchive && untrack(() => board.archive) !== 'failed') void board.loadArchive();
 	});
 
+	/** The pd requests waiting, in the window's title too while there are any. */
+	const pdWaiting = $derived(board.pd?.snapshot.ok ? board.pd.snapshot.requests.length : 0);
+	$effect(() => {
+		document.title = (pdWaiting ? `(${pdWaiting}) ` : '') + 'LAT 看板';
+	});
+	let pdPending = $state<ReturnType<typeof PdPending>>();
+	/** Counts the new requests' arrivals, so the banner pulses once for each. */
+	let pdFresh = $state(0);
+	/** Set by the banner until the list is shown, where the pd panel is then opened and brought into view. */
+	let pdWanted = $state(false);
+	$effect(() => {
+		if (!pdWanted || view !== null) return;
+		pdWanted = false;
+		void pdPending?.reveal();
+	});
+
 	const openKey = $derived(view?.kind === 'item' ? view.item.key : null);
 	const listed = $derived(known.some((item) => item.key === openKey));
 	const item = $derived.by(() => {
@@ -432,7 +448,7 @@
 
 		<section class="inbox">
 			<!-- At the top of the column on every list while a pd request waits; its badge there once folded. -->
-			<PdPending pd={board.pd} onaway={() => detail.focus({ preventScroll: true })} />
+			<PdPending bind:this={pdPending} pd={board.pd} onfresh={() => pdFresh++} />
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
 			     views, as the list they switch has no panel of its own around it. -->
 			<div class="middle-tabs" role="group" aria-label="清單">
@@ -509,6 +525,15 @@
 						{@render refresh()}
 						{@render openSettings()}
 					</span>
+					<!-- A phone hides the middle column and its pd panel behind a content screen: this strip
+					     under the bar says requests wait and goes to them. -->
+					{#if pdWaiting}
+						{#key pdFresh}
+							<button type="button" class="pd-banner" onclick={() => ((pdWanted = true), navigation.go(null))}
+								>pd 待核准 <span class="count">{pdWaiting}</span><span class="see">查看 ›</span></button
+							>
+						{/key}
+					{/if}
 				</div>
 
 				{#if view.kind === 'missing'}
@@ -895,6 +920,69 @@
 		background: var(--bg);
 		border-bottom: 1px solid var(--line);
 	}
+	/* The strip under a phone's bar while pd requests wait: it hangs from the sticky bar so it stays
+	   with it, and the bar keeps room for it below so it covers nothing. Shown on a phone only. */
+	.topbar {
+		--pd-banner-h: calc(2.6 * max(0.85rem, var(--min-font, 0px)));
+	}
+	.pd-banner {
+		display: none;
+		position: absolute;
+		top: 100%;
+		left: 0;
+		right: 0;
+		height: var(--pd-banner-h);
+		align-items: center;
+		gap: 0.45rem;
+		padding: 0 1rem;
+		border: 0;
+		border-bottom: 1px solid var(--line);
+		border-radius: 0;
+		background: color-mix(in srgb, var(--warn) 9%, var(--bg));
+		font-size: max(0.85rem, var(--min-font, 0px));
+		font-weight: 600;
+		text-align: left;
+		animation: pd-pulse 900ms ease-out;
+	}
+	.pd-banner::before {
+		content: '';
+		flex: none;
+		width: 0.5rem;
+		height: 0.5rem;
+		border-radius: 50%;
+		background: var(--warn);
+	}
+	.pd-banner .count {
+		min-width: 1.4em;
+		padding: 0 0.4em;
+		border-radius: var(--radius-pill);
+		background: var(--warn);
+		color: var(--bg);
+		font-family: var(--mono);
+		font-size: max(0.75rem, var(--min-font, 0px));
+		line-height: 1.5;
+		text-align: center;
+	}
+	.pd-banner .see {
+		margin-left: auto;
+		font-weight: 400;
+		color: var(--muted);
+	}
+	/* Once as it appears and for each new request. */
+	@keyframes pd-pulse {
+		from {
+			background: color-mix(in srgb, var(--warn) 40%, var(--bg));
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.pd-banner {
+			animation: none;
+		}
+	}
+	:global(:root[data-theme='light']) .pd-banner {
+		background: var(--bg);
+		border-bottom-width: 2px;
+	}
 	/* Two lines like a roster tag, project on top, so both names keep the width the buttons leave. */
 	.whose {
 		display: flex;
@@ -1035,16 +1123,6 @@
 		.viewing .detail {
 			display: flex;
 		}
-		/* An open pd panel takes the screen over the content too, alone; 稍後 gives it back. */
-		.viewing .inbox:has(> :global(.pd)) {
-			display: block;
-		}
-		.viewing .inbox:has(> :global(.pd)) > :global(:not(.pd)) {
-			display: none;
-		}
-		.viewing:has(.inbox > :global(.pd)) .detail {
-			display: none;
-		}
 		/* Below the bar, which stays on top. */
 		.placeholder {
 			position: fixed;
@@ -1052,6 +1130,13 @@
 			overflow-y: auto;
 			/* Its end clear of the command line, like the page's. */
 			padding: 5rem 3px var(--dock-h, 0px);
+		}
+		.pd-banner {
+			display: flex;
+		}
+		/* Room under the bar for the strip that hangs from it. */
+		.topbar:has(.pd-banner) {
+			margin-bottom: var(--pd-banner-h);
 		}
 		.topbar {
 			display: flex;

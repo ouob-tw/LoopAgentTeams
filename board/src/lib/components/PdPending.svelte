@@ -15,9 +15,8 @@
 	import { assertionJson, callerParts, callerText, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
-	/** `onaway` takes the focus when folding leaves no badge on screen: a phone hides the middle
-	 *  column, badge and all, while it shows a content screen. */
-	let { pd, onaway }: { pd: { snapshot: PdSnapshot; at: number } | null; onaway?: () => void } = $props();
+	/** `onfresh` hears of new requests. */
+	let { pd, onfresh }: { pd: { snapshot: PdSnapshot; at: number } | null; onfresh?: () => void } = $props();
 
 	const requests = $derived(pd?.snapshot.ok ? pd.snapshot.requests : []);
 	let now = $state(Date.now());
@@ -46,9 +45,11 @@
 		open = value;
 		await tick();
 		if (value) panel?.focus();
-		else if (badge?.checkVisibility()) badge.focus();
-		else onaway?.();
+		else badge?.focus();
 	}
+
+	/** Open it and put the focus on it, which scrolls it into view: where a phone's banner leads. */
+	export const reveal = () => show(true);
 
 	const notifications = typeof Notification === 'function';
 	let permission = $state<NotificationPermission>(notifications ? Notification.permission : 'denied');
@@ -73,7 +74,10 @@
 		previous = new Set(requests.map(key));
 		if (before === null) return;
 		const fresh = requests.filter((item) => !before.has(key(item)));
-		if (fresh.length) open = true;
+		if (fresh.length) {
+			open = true;
+			onfresh?.();
+		}
 		for (const item of fresh) notify(item);
 	});
 
@@ -126,6 +130,9 @@
 		<section class="pd" aria-label="pd 待核准" tabindex="-1" bind:this={panel}>
 			<header>
 				<h2>pd 待核准 <span class="count">{requests.length}</span></h2>
+				{#if notifications && permission === 'default'}
+					<button type="button" class="allow" title="有新的 pd 請求時發瀏覽器通知（只在看板開著時）" onclick={() => void allowNotifications()}>開啟通知</button>
+				{/if}
 				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
 			</header>
 			<ul class="cards">
@@ -173,15 +180,6 @@
 					</li>
 				{/each}
 			</ul>
-			<footer>
-				<p>核准會在這頁用這台裝置的 passkey 解鎖驗證（通常是指紋或臉部辨識）；看板只轉送簽章，由 pd 驗證，不需要確認碼。</p>
-				{#if notifications && permission === 'default'}
-					<p>
-						<button type="button" class="allow" onclick={() => void allowNotifications()}>開啟通知</button>
-						有新的 pd 請求時發瀏覽器通知（只在看板開著時）
-					</p>
-				{/if}
-			</footer>
 		</section>
 	{:else}
 		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}>pd 待核准 <span class="count">{requests.length}</span></button>
@@ -225,13 +223,13 @@
 		z-index: 1;
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 0.6rem;
+		gap: 0.25rem;
 		padding: 0.35rem 0.35rem 0.35rem 0.75rem;
 		border-bottom: 1px solid var(--line);
 		background: color-mix(in srgb, var(--warn) 7%, var(--surface));
 	}
 	h2 {
+		flex: 1;
 		display: flex;
 		align-items: center;
 		gap: 0.45rem;
@@ -261,14 +259,16 @@
 		line-height: 1.5;
 		text-align: center;
 	}
-	.later {
+	.later,
+	.allow {
 		padding: 0.2rem 0.6rem;
 		background: none;
 		border-color: transparent;
 		color: var(--muted);
 		font-size: max(0.85rem, var(--min-font, 0px));
 	}
-	.later:hover {
+	.later:hover,
+	.allow:hover {
 		color: var(--text);
 		border-color: var(--line);
 	}
@@ -432,27 +432,6 @@
 	}
 	.page:hover {
 		color: var(--text);
-	}
-	footer {
-		padding: 0.45rem 0.75rem 0.5rem;
-		border-top: 1px solid var(--line);
-		font-size: max(0.75rem, var(--min-font, 0px));
-		line-height: 1.45;
-		color: var(--muted);
-	}
-	footer p {
-		margin: 0;
-	}
-	footer p + p {
-		margin-top: 0.3rem;
-	}
-	.allow {
-		padding: 0;
-		background: none;
-		border: 0;
-		color: var(--accent);
-		text-decoration: underline;
-		text-underline-offset: 0.2em;
 	}
 	/* Folded: one line that opens it again. */
 	.pd-badge {

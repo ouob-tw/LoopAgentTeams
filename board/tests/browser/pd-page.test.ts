@@ -1,6 +1,7 @@
 // The pd 待核准 panel in a real browser: headless Chrome driven over its DevTools protocol, on the
 // built board with a fake pd (tests/fake-pd.mjs), at a phone's width and a desktop's. It sits at the
-// top of the middle column on every list, the list below it; 稍後 folds it to a badge. 核准 is a button that signs
+// top of the middle column on every list, the list below it; 稍後 folds it to a badge. On a phone's
+// content screen, which hides the column, a strip under the bar leads back to it. 核准 is a button that signs
 // with a passkey in the page (tests/browser/pd-inline-approve.test.ts); pd's own approval page stays
 // one link away, opened in a new tab; 拒絕 denies through the board. Skipped when the host has no
 // Chrome.
@@ -41,7 +42,7 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-test.skipIf(!CHROME)('requests sit above the middle column\'s list on a phone, with their time and pd\'s page one link away; 拒絕 denies, then a quiet line', async () => {
+test.skipIf(!CHROME)('requests sit above the middle column\'s list on a phone, with their time and pd\'s page one link away; 拒絕 denies; a strip over a content screen leads back to them; then a quiet line', async () => {
 	const argv = ['/usr/bin/python3', '/home/u/tools/npm_login.py', '--registry', 'https://registry.npmjs.org'];
 	// #4 comes with pd's check of its caller; #3 from a pd without it, by its declared name only.
 	const checked = { name: 'dahe-t09-vafu', client: 'codex', group: 'dahe-t09', orchestrator: false, source: 'auto', pid: 4242, start_time: 98765, program: null, verified: false, notice: '程序樹查證，非防竄改' };
@@ -102,18 +103,31 @@ test.skipIf(!CHROME)('requests sit above the middle column\'s list on a phone, w
 	expect(JSON.parse(readFileSync(join(fixture.dir, 'pd.json'), 'utf8')).pending.map((request: { id: number }) => request.id)).toEqual([4]);
 	expect(await tab.eval<string>(`document.body.innerText`)).toContain('已拒絕 pd 請求 #3（npm token）');
 
-	// Over a screen of the content column too, which 稍後 gives back.
+	// A content screen hides the column and its panel: a strip under the bar says how many wait,
+	// covering none of the content, and the window's title counts them too.
 	await tab.navigate(`${fixture.url}/?controller=gone`);
-	await tab.until(`document.querySelector('.inbox .pd')?.offsetParent !== null && document.querySelector('section.detail').offsetParent === null`, 'the panel over the content screen');
-	await tab.pointerClick('.pd button.later');
-	await tab.until(`!document.querySelector('.inbox .pd') && document.querySelector('section.detail').offsetParent !== null && document.activeElement === document.querySelector('section.detail')`, 'the content screen back, focused');
-	await tab.navigate(`${fixture.url}/`);
-	await tab.until(`!!document.querySelector('.inbox .pd .card')`, 'the panel on the list again');
+	await tab.until(`document.querySelector('.pd-banner')?.offsetParent !== null && document.querySelector('.inbox .pd').offsetParent === null`, 'the banner over the content screen');
+	expect(await tab.eval<string>(`document.querySelector('.pd-banner').innerText`)).toMatch(/^pd 待核准\s+1\s+查看 ›$/);
+	expect(await tab.eval(`document.querySelector('.topbar').nextElementSibling.getBoundingClientRect().top >= document.querySelector('.pd-banner').getBoundingClientRect().bottom - 1`)).toBe(true);
+	expect(await tab.eval(`document.title`)).toBe('(1) LAT 看板');
+	// A new request pulses it once: a new strip, its animation running.
+	await tab.eval(`window.__strip = document.querySelector('.pd-banner')`);
+	setPd({ pending: [...JSON.parse(readFileSync(join(fixture.dir, 'pd.json'), 'utf8')).pending, waiting(5, 'npm s2')] });
+	await tab.until(`document.querySelector('.pd-banner') !== window.__strip && document.querySelector('.pd-banner').textContent.startsWith('pd 待核准 2')`, 'the banner for #5');
+	expect(await tab.eval(`document.querySelector('.pd-banner').getAnimations().length`)).toBe(1);
+	expect(await tab.eval(`document.title`)).toBe('(2) LAT 看板');
+	// A tap goes to the list with the panel open and in view.
+	await tab.pointerClick('.pd-banner');
+	await tab.until(
+		`!document.querySelector('.topbar') && document.activeElement === document.querySelector('.inbox .pd') && document.querySelector('.inbox .pd').getBoundingClientRect().top >= 0 && document.querySelector('.inbox .pd').getBoundingClientRect().top < innerHeight / 2`,
+		'the pd panel in view'
+	);
 
 	setPd({ pending: [] });
 	// Nothing waiting: neither the panel nor its badge.
 	await tab.until(`!document.querySelector('.inbox .pd, .pd-badge')`, 'no pd panel when nothing waits');
 	expect(await tab.eval(`document.querySelector('.inbox > .middle-tabs').previousElementSibling`)).toBe(null);
+	expect(await tab.eval(`document.title`)).toBe('LAT 看板');
 	setPd({ pending: [], unavailable: true });
 	await tab.until(`document.querySelector('.inbox .pd-off')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'the quiet unavailable line');
 	expect(await tab.eval(`!!document.querySelector('.inbox .pd')`)).toBe(false);
@@ -155,6 +169,11 @@ test.skipIf(!CHROME)('on a desktop the panel sits at the top of the middle colum
 	await tab.until(`!!document.querySelector('.pd-badge')`, 'the badge');
 	setPd({ pending: [waiting(6, 'npm token'), waiting(7, 'GitHub token')] });
 	await tab.until(`!!document.querySelector('.inbox .pd [data-pd-request="7"]')`, 'the panel open for #7');
+
+	// A content screen leaves the column, panel and all, on screen: no banner.
+	await tab.navigate(`${fixture.url}/?controller=gone`);
+	await tab.until(`document.querySelector('.inbox .pd')?.offsetParent !== null`, 'the panel beside the content screen');
+	expect(await tab.eval(`document.querySelector('.pd-banner')?.offsetParent ?? null`)).toBe(null);
 
 	setPd({ pending: [] });
 	await tab.until(`!document.querySelector('.inbox .pd, .pd-badge')`, 'no pd panel when nothing waits');
