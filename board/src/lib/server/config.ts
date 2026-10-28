@@ -25,7 +25,8 @@ export interface BoardConfig {
 	injectTimeoutMs: number;
 	/** Command that runs hcom; the board appends e.g. `claude --dir <folder> ...` to start a controller. */
 	hcomCommand: string[];
-	/** Where hcom keeps its data (`HCOM_DIR`, else `~/.hcom`); hcom lets its Codex agents write there. */
+	/** Where hcom keeps its data (`HCOM_DIR`, else `~/.hcom`), the folder hcom lets its Codex agents
+	 *  write to; taken to be the one hcom itself resolves, as both read the same environment. */
 	hcomDir: string;
 	/** How long an hcom launch or resume may take, its own wait for the client to be ready included. */
 	hcomTimeoutMs: number;
