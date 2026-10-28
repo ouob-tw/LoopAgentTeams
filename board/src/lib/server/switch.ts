@@ -41,7 +41,7 @@ import {
 	type SwitchState,
 	type SwitchView
 } from '../board/models.ts';
-import { withoutPermissionFlags } from '../board/permissions.ts';
+import { addHcomDir, withoutPermissionFlags } from '../board/permissions.ts';
 import type { Controller } from '../board/types.ts';
 import { WAKE_UNKNOWN_REASON, type SentWake } from '../board/wake.ts';
 import type { Board } from './board.ts';
@@ -225,13 +225,14 @@ async function permissionSwitch(
 	const current = record.page.current ?? null;
 	const row = (await board.current()).agents.find((candidate) => candidate.id === controller.id && candidate.inHerdr);
 	entry.from = current;
+	const kept = withoutPermissionFlags(launched.args, controller.id);
 	entry.relaunch = {
 		args: [
 			'resume',
 			controller.id,
-			...withoutPermissionFlags(launched.args, controller.id),
+			...kept,
 			...modelArgs('codex', { model: current?.model ?? null, effort: current?.effort ?? null }),
-			...(entry.to.permission === 'full-access' ? [] : ['--add-dir', board.config.hcomDir])
+			...(entry.to.permission === 'full-access' ? [] : addHcomDir(kept, board.config.hcomDir))
 		],
 		session: controller.id,
 		...(agent.tag && { tag: agent.tag }),

@@ -46,6 +46,10 @@ test("a Codex session's mode is given again on a resume, with hcom's folder for 
 	]);
 	// Forced by the stored --yolo already: nothing added.
 	expect(codexKeepArgs({ approval: 'never', sandbox: 'danger-full-access', reviewer: 'user' }, ['--model', 'x', '--yolo'], '/h/.hcom')).toEqual([]);
+	// hcom repeats what an earlier resume added: the folder is not given twice.
+	expect(codexKeepArgs({ approval: 'on-request', sandbox: 'workspace-write', reviewer: 'auto_review' }, ['--add-dir', '/h/.hcom'], '/h/.hcom')).toEqual([
+		'-c', 'default_permissions=":workspace"', '-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="auto_review"'
+	]);
 	// A mode the board does not switch to, or a record that cannot tell, is left to the stored arguments.
 	expect(codexKeepArgs({ approval: 'on-request', sandbox: 'read-only', reviewer: 'user' }, [], '/h/.hcom')).toEqual([]);
 	expect(codexKeepArgs({ approval: 'on-request', sandbox: 'workspace-write' }, [], '/h/.hcom')).toEqual([]);

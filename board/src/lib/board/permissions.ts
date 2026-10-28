@@ -149,6 +149,13 @@ export function codexMode(permission: { approval: string; sandbox: string | null
 	return permission.reviewer === 'user' ? 'ask-for-approval' : null;
 }
 
+/** `--add-dir <dir>` for hcom's folder, unless these arguments give it already: hcom keeps what
+ *  each resume adds, and a second one would not be what `/permissions` writes. */
+export function addHcomDir(args: readonly string[], dir: string): string[] {
+	const given = args.some((arg, at) => (arg === '--add-dir' && args[at + 1] === dir) || arg === `--add-dir=${dir}`);
+	return given ? [] : ['--add-dir', dir];
+}
+
 /** Stored Codex launch options that fix the permission whatever `-c` says, and those that take a value. */
 const FIXING_FLAGS = new Set(['--yolo', '--dangerously-bypass-approvals-and-sandbox', '--full-auto', '--approve-for-me']);
 const FIXING_VALUED = new Set(['-s', '--sandbox', '-a', '--ask-for-approval']);
