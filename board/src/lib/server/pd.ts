@@ -1,9 +1,11 @@
 // pd's requests waiting for approval, for the pd 待核准 section: read with `pd pending --json` on a
-// timer and shared by every page, and denied with `pd deny <id>`. The board has no way to approve
-// and never asks for or handles pd's confirmation code: 核准 is a link to pd's own passkey page.
+// timer and shared by every page, and denied with `pd deny <id>`. 核准 is a passkey ceremony in the
+// page: the board only relays pd's challenge (`pd passkey challenge <id>`) and the page's signed
+// assertion (`pd passkey approve <id>`, on stdin); pd's daemon verifies it, so the board cannot
+// approve without the user's passkey. It never asks for or handles pd's confirmation code.
 // pd lists no secret values; only the fields of board/pd.ts are kept, and a reason never repeats
 // pd's own words, which reach every page.
-import type { PdRequest, PdSnapshot } from '../board/pd.ts';
+import type { PdAssertion, PdChallenge, PdRequest, PdSnapshot } from '../board/pd.ts';
 import { runCommand, type ExternalResult } from './external.ts';
 
 type Json = Record<string, unknown>;
@@ -18,6 +20,9 @@ const EXIT_UNAVAILABLE = 69;
 /** `pd deny <id>`'s exits when the request is not pending: 1 when pd's own list no longer has it,
  *  the refusal's when it was settled between pd reading the list and asking to deny it. */
 const NOT_PENDING_EXITS = [1, 77];
+/** pd's exit when its daemon refused: for the passkey relay, the request is not pending, passkeys
+ *  are not set up, or the assertion did not verify. */
+const EXIT_REFUSED = 77;
 const NOT_INSTALLED = '這台主機沒有安裝 pd';
 
 /** A link the page may open: a web address only. */
@@ -126,4 +131,63 @@ export function createPdPoller(read: () => Promise<PdSnapshot>, options: { inter
 			clearInterval(timer);
 		}
 	};
+}
+
+const base64url = (value: unknown): value is string => typeof value === 'string' && value.length <= 65_536 && /^[A-Za-z0-9_-]+$/.test(value);
+
+/** The WebAuthn request options `pd passkey challenge <id>` printed, with only the fields a page
+ *  needs; null when it printed anything else. */
+export function parseChallenge(stdout: string): PdChallenge | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(stdout);
+	} catch {
+		return null;
+	}
+	if (!isRecord(parsed) || !base64url(parsed.challenge) || typeof parsed.rpId !== 'string' || !Array.isArray(parsed.allowCredentials)) return null;
+	const allow = parsed.allowCredentials.filter((credential): credential is Json => isRecord(credential) && base64url(credential.id));
+	return {
+		challenge: parsed.challenge,
+		rpId: parsed.rpId,
+		userVerification: 'required',
+		timeout: typeof parsed.timeout === 'number' && Number.isFinite(parsed.timeout) ? parsed.timeout : 60_000,
+		allowCredentials: allow.map((credential) => ({ type: 'public-key', id: credential.id as string }))
+	};
+}
+
+/** The challenge route's answer to what `pd passkey challenge <id>` did. */
+export function challengeReply(run: ExternalResult): { status: number; body: { options: PdChallenge } | { error: string } } {
+	if (run.ended === 'not-started') return { status: 503, body: { error: NOT_INSTALLED } };
+	if (run.code === EXIT_UNAVAILABLE) return { status: 503, body: { error: '連不上 pd 服務，沒有開始核准' } };
+	if (run.code === EXIT_REFUSED) return { status: 409, body: { error: 'pd 沒有給挑戰值：這個請求可能已不在待核准清單，或 pd 沒有設定 passkey' } };
+	if (run.code !== 0) return { status: 502, body: { error: `pd 沒有給挑戰值（${ended(run)}）` } };
+	const options = parseChallenge(run.stdout);
+	return options ? { status: 200, body: { options } } : { status: 502, body: { error: 'pd 的挑戰值看不懂' } };
+}
+
+export async function pdChallenge(command: string[], id: number, timeoutMs: number) {
+	return challengeReply(await runCommand(command, ['passkey', 'challenge', String(id)], { timeoutMs }));
+}
+
+/** The assertion a page posted, rebuilt from only the fields WebAuthn gives; null when one is
+ *  missing or is not base64url. pd's daemon checks everything else. */
+export function checkAssertion(value: unknown): PdAssertion | null {
+	if (!isRecord(value) || !isRecord(value.response) || value.type !== 'public-key' || !base64url(value.id) || !base64url(value.rawId)) return null;
+	const { clientDataJSON, authenticatorData, signature, userHandle } = value.response;
+	if (!base64url(clientDataJSON) || !base64url(authenticatorData) || !base64url(signature)) return null;
+	if (userHandle !== null && userHandle !== undefined && !base64url(userHandle)) return null;
+	return { id: value.id, rawId: value.rawId, type: 'public-key', response: { clientDataJSON, authenticatorData, signature, userHandle: userHandle ?? null } };
+}
+
+/** The approve route's answer to what `pd passkey approve <id>` did. */
+export function approveReply(run: ExternalResult): { status: number; body: { ok: true } | { error: string } } {
+	if (run.code === 0) return { status: 200, body: { ok: true } };
+	if (run.ended === 'not-started') return { status: 503, body: { error: NOT_INSTALLED } };
+	if (run.code === EXIT_UNAVAILABLE) return { status: 503, body: { error: '連不上 pd 服務，沒有核准' } };
+	if (run.code === EXIT_REFUSED) return { status: 409, body: { error: 'pd 沒有接受這個 passkey 簽章（可能已逾時、已被處理或簽章無效），請求沒有被核准' } };
+	return { status: 502, body: { error: `pd 沒有核准（${ended(run)}）` } };
+}
+
+export async function pdApprove(command: string[], id: number, assertion: PdAssertion, timeoutMs: number) {
+	return approveReply(await runCommand(command, ['passkey', 'approve', String(id)], { timeoutMs, input: JSON.stringify(assertion) }));
 }

@@ -1,7 +1,8 @@
 // The pd 待核准 section in a real browser: headless Chrome driven over its DevTools protocol, on the
-// built board with a fake pd (tests/fake-pd.mjs) at a phone's width. 核准 is only a link to the
-// request's own passkey page, opened in a new tab; 拒絕 denies through the board. Skipped when the
-// host has no Chrome.
+// built board with a fake pd (tests/fake-pd.mjs) at a phone's width. 核准 is a button that signs
+// with a passkey in the page (tests/browser/pd-inline-approve.test.ts); pd's own approval page stays
+// one link away, opened in a new tab; 拒絕 denies through the board. Skipped when the host has no
+// Chrome.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -38,7 +39,7 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-test.skipIf(!CHROME)('requests show above the inbox with their time; 核准 opens the passkey page, 拒絕 denies, then a quiet line', async () => {
+test.skipIf(!CHROME)('requests show above the inbox with their time and pd\'s page one link away; 拒絕 denies, then a quiet line', async () => {
 	setPd({ pending: [waiting(3, 'npm token', { remaining: 95 }), waiting(4, 'GitHub token')] });
 	browser = await launchChrome({ screen: SCREEN });
 	const tab = browser.tab;
@@ -54,11 +55,12 @@ test.skipIf(!CHROME)('requests show above the inbox with their time; 核准 open
 	expect(await tab.eval<string>(`${card(3)}.querySelector('.time').innerText`)).toMatch(/^剩 1:3\d$/);
 	// A pd that gives no time left: how long it has waited instead.
 	expect(await tab.eval<string>(`${card(4)}.querySelector('.time').innerText`)).toMatch(/^已等待 0:0\d$/);
-	expect(await tab.eval(`${card(3)}.querySelector('.approve').getAttribute('href') + ' ' + ${card(3)}.querySelector('.approve').target + ' ' + ${card(3)}.querySelector('.approve').rel`)).toBe(
+	expect(await tab.eval(`${card(3)}.querySelector('.page').getAttribute('href') + ' ' + ${card(3)}.querySelector('.page').target + ' ' + ${card(3)}.querySelector('.page').rel`)).toBe(
 		'https://pd.example.net/?request=3 _blank noopener noreferrer'
 	);
-	// Nothing on the section asks for a code, and 核准 is a link, not something the board does.
-	expect(await tab.eval(`document.querySelectorAll('.pd input, .pd form, .pd button.approve').length`)).toBe(0);
+	// Nothing on the section asks for a code.
+	expect(await tab.eval(`document.querySelectorAll('.pd input, .pd form').length`)).toBe(0);
+	expect(await tab.eval(`${card(3)}.querySelector('button.approve').innerText`)).toBe('核准');
 	expect(await tab.eval(FITS)).toBe(true);
 
 	await tab.eval(`${card(3)}.querySelector('button.deny').click()`);
@@ -67,9 +69,9 @@ test.skipIf(!CHROME)('requests show above the inbox with their time; 核准 open
 	expect(await tab.eval<string>(`document.body.innerText`)).toContain('已拒絕 pd 請求 #3（npm token）');
 
 	setPd({ pending: [] });
-	await tab.until(`document.querySelector('.inbox .pd')?.innerText === 'pd 目前沒有待核准的請求'`, 'the quiet empty line');
+	await tab.until(`document.querySelector('.inbox .pd .quiet')?.innerText === 'pd 目前沒有待核准的請求'`, 'the quiet empty line');
 	setPd({ pending: [], unavailable: true });
-	await tab.until(`document.querySelector('.inbox .pd')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'the quiet unavailable line');
+	await tab.until(`document.querySelector('.inbox .pd .quiet')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'the quiet unavailable line');
 	// The inbox below goes on as ever.
 	expect(await tab.eval(`!!document.querySelector('.inbox [data-middle="inbox"]')`)).toBe(true);
 }, 30_000);

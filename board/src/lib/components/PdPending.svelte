@@ -1,11 +1,15 @@
 <script lang="ts">
 	// The pd 待核准 section above the inbox: one card per request pd's daemon holds for approval,
-	// with what it asks for and the time it has left. 核准 only opens the request's own page on pd's
-	// passkey site in a new tab, where the device's own unlock approves it; the board has no way to
-	// approve and never asks for a code. 拒絕 denies it through the board at once, as `pd deny` does
-	// without a code. With nothing waiting, or pd missing or down, one quiet line says so.
+	// with what it asks for and the time it has left. 核准 signs pd's one-time challenge with the
+	// user's passkey right here (rpId ouob.net); the board server only relays the challenge and the
+	// signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it through
+	// the board at once, as `pd deny` does without a code. A request that appears while the page is
+	// open opens a prompt with the same two buttons and, once the user allowed it (the 開啟通知
+	// button, never asked for unprompted), a browser notification whose click comes back to that
+	// prompt. With nothing waiting, or pd missing or down, one quiet line says so.
+	import { untrack } from 'svelte';
 	import { request } from '#lib/board/api.ts';
-	import { timeText, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
+	import { assertionJson, requestOptions, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
 	let { pd }: { pd: { snapshot: PdSnapshot; at: number } | null } = $props();
@@ -17,8 +21,60 @@
 		const timer = setInterval(() => (now = Date.now()), 1000);
 		return () => clearInterval(timer);
 	});
-	/** The requests being denied, by number. */
+	/** The requests being denied or approved, by number. */
 	let denying = $state<number[]>([]);
+	let approving = $state<number[]>([]);
+
+	/** The requests this page has seen, from its first reading on: only later ones are new. */
+	let known: Set<number> | null = null;
+	/** New requests whose prompt is still to be answered or closed, oldest first. */
+	let queue = $state<number[]>([]);
+	const prompted = $derived(queue.map((id) => requests.find((item) => item.id === id)).find((item) => item !== undefined));
+	let dialog: HTMLDialogElement;
+
+	const notifications = typeof Notification === 'function';
+	let permission = $state<NotificationPermission>(notifications ? Notification.permission : 'denied');
+
+	function notify(item: PdRequest) {
+		if (!notifications || Notification.permission !== 'granted') return;
+		const shown = new Notification(`pd 請求 #${item.id} 等你核准`, { body: `${item.item}：${item.command.join(' ')}`, tag: `pd-${item.id}` });
+		shown.onclick = () => {
+			window.focus();
+			queue = [item.id, ...queue.filter((id) => id !== item.id)];
+			shown.close();
+		};
+	}
+
+	$effect(() => {
+		if (!pd?.snapshot.ok) return;
+		const ids = requests.map((item) => item.id);
+		if (known === null) {
+			known = new Set(ids);
+			return;
+		}
+		const fresh = requests.filter((item) => !known!.has(item.id));
+		for (const item of fresh) known.add(item.id);
+		if (!fresh.length) return;
+		untrack(() => (queue = [...queue, ...fresh.map((item) => item.id)]));
+		for (const item of fresh) notify(item);
+	});
+	$effect(() => {
+		if (prompted && !dialog.open) dialog.showModal();
+		if (!prompted && dialog.open) dialog.close();
+	});
+
+	/** Take a request's prompt away, as closing it or answering it does. */
+	const settle = (id: number) => (queue = queue.filter((queued) => queued !== id));
+
+	async function allowNotifications() {
+		permission = await Notification.requestPermission();
+	}
+
+	function failed(result: { unpaired?: boolean; body?: unknown }, fallback: string) {
+		if (result.unpaired) return;
+		const said = (result.body as { error?: unknown } | undefined)?.error;
+		toasts.show('failed', typeof said === 'string' ? said : fallback);
+	}
 
 	async function deny(item: PdRequest) {
 		denying = [...denying, item.id];
@@ -28,12 +84,61 @@
 			body: JSON.stringify({ id: item.id })
 		});
 		denying = denying.filter((id) => id !== item.id);
-		if (result.ok) return toasts.show('ok', `已拒絕 pd 請求 #${item.id}（${item.item}）`);
-		if (result.unpaired) return;
-		const said = (result.body as { error?: unknown } | undefined)?.error;
-		toasts.show('failed', typeof said === 'string' ? said : '沒有拒絕成功：看板沒有回應，請稍後再試。');
+		if (result.ok) {
+			settle(item.id);
+			return toasts.show('ok', `已拒絕 pd 請求 #${item.id}（${item.item}）`);
+		}
+		failed(result, '沒有拒絕成功：看板沒有回應，請稍後再試。');
+	}
+
+	const post = <T,>(path: string, body: unknown) =>
+		request<T>(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+	async function approve(item: PdRequest) {
+		// Passkeys need a secure page whose address is under ouob.net: https://lat.ouob.net.
+		if (!window.isSecureContext || !navigator.credentials) return toasts.show('failed', '這個網址不能用 passkey：請從 https://lat.ouob.net 開看板，或改用 pd 核准頁。');
+		approving = [...approving, item.id];
+		try {
+			const challenge = await post<{ options: PdChallenge }>('/api/pd/challenge', { id: item.id });
+			if (!challenge.ok) return failed(challenge, '沒有開始核准：看板沒有回應，請稍後再試。');
+			let credential: Credential | null;
+			try {
+				credential = await navigator.credentials.get({ publicKey: requestOptions(challenge.value.options) });
+			} catch {
+				credential = null;
+			}
+			if (!credential) return toasts.show('failed', `passkey 驗證沒有完成，pd 請求 #${item.id} 仍待核准`);
+			const result = await post<{ ok: true }>('/api/pd/approve', { id: item.id, credential: assertionJson(credential as PublicKeyCredential) });
+			if (!result.ok) return failed(result, '沒有核准成功：看板沒有回應，請稍後再試。');
+			settle(item.id);
+			toasts.show('ok', `已核准 pd 請求 #${item.id}（${item.item}）`);
+		} finally {
+			approving = approving.filter((id) => id !== item.id);
+		}
 	}
 </script>
+
+{#snippet details(item: PdRequest)}
+	<dl>
+		<dt>欄位</dt>
+		<dd>{item.fields.join('、')}</dd>
+		<dt>指令</dt>
+		<dd><code>{item.command.join(' ')}</code></dd>
+		<dt>工作目錄</dt>
+		<dd><code>{item.cwd}</code></dd>
+		<dt>呼叫者</dt>
+		<dd>{item.caller}（對方自稱，未驗證）</dd>
+	</dl>
+{/snippet}
+
+{#snippet actions(item: PdRequest)}
+	<button type="button" class="approve" disabled={approving.includes(item.id)} onclick={() => void approve(item)}
+		>{approving.includes(item.id) ? '核准中…' : '核准'}</button
+	>
+	<button type="button" class="deny" disabled={denying.includes(item.id)} onclick={() => void deny(item)}
+		>{denying.includes(item.id) ? '拒絕中…' : '拒絕'}</button
+	>
+{/snippet}
 
 {#if pd}
 	<section class="pd" aria-label="pd 待核准">
@@ -52,33 +157,49 @@
 							<span class="number">#{item.id}</span>
 							<span class="time" class:low={time.low} role="timer">{time.text}</span>
 						</p>
-						<dl>
-							<dt>欄位</dt>
-							<dd>{item.fields.join('、')}</dd>
-							<dt>指令</dt>
-							<dd><code>{item.command.join(' ')}</code></dd>
-							<dt>工作目錄</dt>
-							<dd><code>{item.cwd}</code></dd>
-							<dt>呼叫者</dt>
-							<dd>{item.caller}（對方自稱，未驗證）</dd>
-						</dl>
+						{@render details(item)}
 						<p class="actions">
+							{@render actions(item)}
 							{#if item.approvalUrl}
-								<a class="approve" href={item.approvalUrl} target="_blank" rel="noopener noreferrer">核准</a>
-							{:else}
-								<span class="quiet">pd 沒有給核准頁連結</span>
+								<a class="page" href={item.approvalUrl} target="_blank" rel="noopener noreferrer">改用 pd 核准頁</a>
 							{/if}
-							<button type="button" class="deny" disabled={denying.includes(item.id)} onclick={() => void deny(item)}
-								>{denying.includes(item.id) ? '拒絕中…' : '拒絕'}</button
-							>
 						</p>
 					</li>
 				{/each}
 			</ul>
-			<p class="quiet">核准會在新分頁開啟 pd 的 passkey 核准頁，用這台裝置的解鎖驗證；看板本身不能核准。</p>
+			<p class="quiet">核准會在這頁用這台裝置的 passkey 解鎖驗證（通常是指紋或臉部辨識）；看板只轉送簽章，由 pd 驗證，不需要確認碼。</p>
+		{/if}
+		{#if notifications && permission === 'default'}
+			<p class="quiet">
+				<button type="button" class="allow" onclick={() => void allowNotifications()}>開啟通知</button>
+				有新的 pd 請求時發瀏覽器通知（只在看板開著時）
+			</p>
 		{/if}
 	</section>
 {/if}
+
+<!-- A new request's prompt. Closing it (Esc or 稍後) leaves the request waiting on its card. Only
+     the effect above opens and closes it: a close event comes later and could take the next one. -->
+<dialog
+	bind:this={dialog}
+	class="prompt"
+	aria-labelledby="pd-prompt-title"
+	oncancel={(event) => {
+		event.preventDefault();
+		if (prompted) settle(prompted.id);
+	}}
+>
+	{#if prompted}
+		<div class="body" data-pd-prompt={prompted.id}>
+			<h2 id="pd-prompt-title">pd 請求 #{prompted.id} 等你核准：{prompted.item}</h2>
+			{@render details(prompted)}
+			<p class="actions">
+				{@render actions(prompted)}
+				<button type="button" class="later" onclick={() => settle(prompted.id)}>稍後</button>
+			</p>
+		</div>
+	{/if}
+</dialog>
 
 <style>
 	.pd {
@@ -169,15 +290,36 @@
 		gap: 0.6rem;
 		margin: 0;
 	}
-	/* A link drawn as the board's main button: it opens pd's page, it does not approve here. */
+	/* The board's main button: it signs with the passkey here. */
 	.approve {
-		padding: 0.5rem 0.8rem;
-		border: 1px solid var(--accent);
-		border-radius: var(--radius);
+		border-color: var(--accent);
 		background: var(--accent);
 		color: var(--bg);
 		font-weight: 600;
-		text-decoration: none;
+	}
+	.page {
+		font-size: max(0.8rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
+	.prompt {
+		width: min(26rem, calc(100vw - 2rem));
+		padding: 0;
+		background: var(--surface);
+		color: var(--text);
+		border: 2px solid var(--warn);
+		border-radius: var(--radius);
+	}
+	.prompt::backdrop {
+		background: none;
+	}
+	.prompt .body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
+		padding: 1rem;
+	}
+	.prompt h2 {
+		overflow-wrap: anywhere;
 	}
 	.deny {
 		border-color: var(--danger);

@@ -83,7 +83,7 @@ export interface BoardConfig {
 	codexMultiAuthDir: string;
 	/** How often the 額度 tab's sources are read. */
 	quotaIntervalMs: number;
-	/** Command that runs pd; the board appends `pending --json` or `deny <id>`, never anything that approves. */
+	/** Command that runs pd; the board appends `pending --json`, `deny <id>`, or the passkey relay (`passkey challenge <id>`, `passkey approve <id>` with the page's assertion on stdin), never a confirmation code. */
 	pdCommand: string[];
 	pdTimeoutMs: number;
 	/** How often pd's waiting requests are read. */

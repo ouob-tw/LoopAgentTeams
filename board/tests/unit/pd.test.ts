@@ -1,10 +1,10 @@
 // The pd 待核准 section's data: what `pd pending --json` and `pd deny` answered, read into the
-// fields the section shows and the answer the deny route gives, and how the section words a
-// request's time. Test values only.
+// fields the section shows and the answers the deny and passkey relay routes give, and how the
+// section words a request's time. Test values only.
 import { expect, test } from 'bun:test';
 import { timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
-import { createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
+import { approveReply, challengeReply, checkAssertion, createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
 
 const exited = (code: number, stdout = '', stderr = ''): ExternalResult => ({
 	code,
@@ -120,3 +120,31 @@ test('a refresh asked for during a read reads once more after it, and only chang
 async function until(done: () => boolean) {
 	for (let i = 0; i < 50 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 1));
 }
+
+test('a challenge keeps only the options a page needs, and pd\'s exits are worded by the board', () => {
+	const printed = { challenge: 'b25l', rpId: 'ouob.net', userVerification: 'required', timeout: 60000, allowCredentials: [{ type: 'public-key', id: 'Y3JlZA', transports: ['usb'] }, { id: 'not base64url!' }], extra: 'x' };
+	expect(challengeReply(exited(0, JSON.stringify(printed)))).toEqual({
+		status: 200,
+		body: { options: { challenge: 'b25l', rpId: 'ouob.net', userVerification: 'required', timeout: 60000, allowCredentials: [{ type: 'public-key', id: 'Y3JlZA' }] } }
+	});
+	expect(challengeReply(exited(0, '{"rpId":"ouob.net","allowCredentials":[]}')).status).toBe(502);
+	expect(challengeReply(exited(0, 'nope')).status).toBe(502);
+	expect(challengeReply(exited(77, '', 'pd: refused: request no longer pending')).status).toBe(409);
+	expect(challengeReply(exited(69)).status).toBe(503);
+	expect(challengeReply(notStarted).status).toBe(503);
+	expect(approveReply(exited(0))).toEqual({ status: 200, body: { ok: true } });
+	expect(approveReply(exited(77, '', 'pd: refused: secret detail')).body).not.toHaveProperty('error', 'pd: refused: secret detail');
+	expect(approveReply(exited(77)).status).toBe(409);
+	expect(approveReply(exited(69)).status).toBe(503);
+	expect(approveReply(exited(2)).status).toBe(502);
+});
+
+test('an assertion is rebuilt from the WebAuthn fields only, all base64url', () => {
+	const response = { clientDataJSON: 'Y2Q', authenticatorData: 'YWQ', signature: 'c2ln', userHandle: 'dXNlcg' };
+	const valid = { id: 'aWQ', rawId: 'aWQ', type: 'public-key' as const, response };
+	expect(checkAssertion({ ...valid, code: '1234', response: { ...response, extra: 1 } })).toEqual(valid);
+	expect(checkAssertion({ ...valid, response: { ...response, userHandle: undefined } })?.response.userHandle).toBeNull();
+	for (const bad of [null, '1234', { code: '1234' }, { ...valid, type: 'password' }, { ...valid, response: { ...response, signature: '' } }, { ...valid, response: { ...response, signature: 'a+b' } }, { ...valid, rawId: 7 }, { ...valid, response: 'x' }, { ...valid, response: { ...response, userHandle: 5 } }]) {
+		expect(checkAssertion(bad)).toBeNull();
+	}
+});

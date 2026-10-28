@@ -218,11 +218,11 @@ function endProcess(chrome: ChildProcess) {
  * Start a headless Chrome with a profile of its own and a tab on it. Chrome picks the debugging
  * port itself (`--remote-debugging-port=0`) and says which in the profile's `DevToolsActivePort`.
  * A failure while starting ends the Chrome before it throws. `scripts` run first in every document;
- * `screen` is what `Tab.until` reports when a wait times out.
+ * `screen` is what `Tab.until` reports when a wait times out; `args` are more Chrome flags.
  */
-export async function launchChrome(options: { scripts?: string[]; screen?: string } = {}): Promise<Browser> {
+export async function launchChrome(options: { scripts?: string[]; screen?: string; args?: string[] } = {}): Promise<Browser> {
 	const profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const chrome = spawn(CHROME, [...CHROME_FLAGS, `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+	const chrome = spawn(CHROME, [...CHROME_FLAGS, ...(options.args ?? []), `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
 	const exited = new Promise<void>((resolve) => chrome.once('exit', () => resolve()));
 	// The end of what Chrome wrote to stderr, to say why it ended.
 	let stderr = '';

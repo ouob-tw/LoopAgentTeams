@@ -36,6 +36,8 @@ interface RunOptions {
 	failureFrom?: 'stderr-last' | 'stdout-first';
 	/** Gets all of standard output so far each time more of it comes, while the command runs. */
 	onStdout?: (stdout: string) => void;
+	/** Written to the command's standard input, which is then closed; without it the command gets none. */
+	input?: string;
 }
 
 const DEFAULT_MAX_BUFFER = 16 * 1024 * 1024;
@@ -55,7 +57,7 @@ export function runCommand(command: string[], args: string[], options: RunOption
 				env: options.env,
 				cwd: options.cwd,
 				detached: options.killGroup === true,
-				stdio: ['ignore', 'pipe', 'pipe']
+				stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe']
 			});
 		} catch (error) {
 			// An argument that cannot be passed to a command at all, such as one holding a NUL character.
@@ -98,6 +100,11 @@ export function runCommand(command: string[], args: string[], options: RunOption
 				}
 				stop('too-large', `輸出過大（${stream} 超過 ${maxBuffer / 1024 / 1024} MB）`);
 			});
+		}
+		if (options.input !== undefined) {
+			// A command that exits without reading all of it must not fail the run with EPIPE.
+			child.stdin!.on('error', () => {});
+			child.stdin!.end(options.input);
 		}
 		const timer = setTimeout(() => stop('timeout', `逾時（${options.timeoutMs / 1000} 秒）`), options.timeoutMs);
 		child.on('error', (error) => {

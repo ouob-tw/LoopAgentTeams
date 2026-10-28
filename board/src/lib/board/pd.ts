@@ -1,7 +1,7 @@
 // The pd 待核准 section's data: the requests pd's daemon holds for the user's approval, as the
 // server last read them from `pd pending --json`, and how the section words them. Only these fields
-// ever reach a page; pd itself never lists a secret value. The board cannot approve: 核准 opens the
-// request's own page on pd's passkey site, and only denying goes through the board.
+// ever reach a page; pd itself never lists a secret value. 核准 signs pd's challenge with the user's
+// passkey in the page; the board server only relays it, and pd's daemon decides.
 
 export interface PdRequest {
 	id: number;
@@ -18,6 +18,53 @@ export interface PdRequest {
 	remaining: number | null;
 	/** The request's page on the passkey site; null when pd gave none that is a web address. */
 	approvalUrl: string | null;
+}
+
+/** WebAuthn request options from `pd passkey challenge <id>`, binary values in base64url. */
+export interface PdChallenge {
+	challenge: string;
+	rpId: string;
+	userVerification: 'required';
+	timeout: number;
+	allowCredentials: { type: 'public-key'; id: string }[];
+}
+
+/** A WebAuthn assertion as `pd passkey approve <id>` reads it, binary values in base64url. */
+export interface PdAssertion {
+	id: string;
+	rawId: string;
+	type: 'public-key';
+	response: { clientDataJSON: string; authenticatorData: string; signature: string; userHandle: string | null };
+}
+
+const toBytes = (value: string) => Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - (value.length % 4)) % 4)), (c) => c.charCodeAt(0));
+const toText = (value: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(value))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+
+/** The options as `navigator.credentials.get` takes them. */
+export function requestOptions(options: PdChallenge): PublicKeyCredentialRequestOptions {
+	return {
+		challenge: toBytes(options.challenge),
+		rpId: options.rpId,
+		userVerification: options.userVerification,
+		timeout: options.timeout,
+		allowCredentials: options.allowCredentials.map((credential) => ({ type: credential.type, id: toBytes(credential.id) }))
+	};
+}
+
+/** What `navigator.credentials.get` gave, as the board server takes it. */
+export function assertionJson(credential: PublicKeyCredential): PdAssertion {
+	const response = credential.response as AuthenticatorAssertionResponse;
+	return {
+		id: credential.id,
+		rawId: toText(credential.rawId),
+		type: 'public-key',
+		response: {
+			clientDataJSON: toText(response.clientDataJSON),
+			authenticatorData: toText(response.authenticatorData),
+			signature: toText(response.signature),
+			userHandle: response.userHandle ? toText(response.userHandle) : null
+		}
+	};
 }
 
 export type PdSnapshot = { ok: true; requests: PdRequest[] } | { ok: false; reason: string };

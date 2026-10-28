@@ -64,7 +64,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `CODEX_MULTI_AUTH_DIR` | codex-multi-auth 的資料夾，「額度」分頁直接讀其中的 `openai-codex-accounts.json` 與 `quota-cache.json`，只取 email、使用中、方案、用量、重置時間與更新時間，不執行 codex-multi-auth；沒設定時用 `$CODEX_HOME/multi-auth` | `~/.codex/multi-auth` |
 | `LAT_BOARD_COOKIE_NAME` | 登入 cookie 的名稱；同一個主機名稱下要並存的第二個看板（例如示意看板）才需要改 | `lat_board_device` |
 | `LAT_BOARD_QUOTA_SECONDS` | 「額度」分頁的資料多久讀一次，所有瀏覽器共用 | `30` |
-| `LAT_BOARD_PD_COMMAND` | pd 指令（JSON 字串陣列），看板只會在後面加上 `pending --json`（讀待核准請求）或 `deny <編號>`（拒絕）；不會執行任何核准或要確認碼的 pd 指令 | `["pd"]` |
+| `LAT_BOARD_PD_COMMAND` | pd 指令（JSON 字串陣列），看板只會在後面加上 `pending --json`（讀待核准請求）、`deny <編號>`（拒絕），或 passkey 轉送的 `passkey challenge <編號>`、`passkey approve <編號>`（簽章從標準輸入給）；不會執行要確認碼的 pd 指令。正式環境用 `["/home/swy/.local/bin/pd-group"]` | `["pd"]` |
 | `LAT_BOARD_PD_TIMEOUT_SECONDS` | 上一項多久沒結束就放棄 | `5` |
 | `LAT_BOARD_PD_SECONDS` | pd 待核准請求多久讀一次，所有瀏覽器共用 | `5` |
 
@@ -232,11 +232,12 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 使用方式見[使用說明](../docs/lat-board.md#pd-待核准)。實作上：
 
 - 伺服器以自己的計時器（`LAT_BOARD_PD_SECONDS`）執行 `pd pending --json`（`server/pd.ts`），只留下 `board/pd.ts` 的欄位（`item_id` 等其他欄位不送到瀏覽器；pd 本身不列密碼），和前一次不同才以 `pd` 事件推給所有頁面，頁面載入時就帶著目前的值（`+page.server.ts`，先畫出來，之後才出現的那一行不會把待辦往下推；看板剛啟動、第一次還沒讀完時例外），新連上的事件串流也一連上就收到。還有請求在等時，剩餘時間每次都變，所以每次都推；頁面從收到的時間起每秒倒數。
-- 「核准」只是 pd 給的 `approval_url`（只接受 http／https 網址，其他當成沒有連結）在新分頁開啟，`rel="noopener noreferrer"`；看板沒有核准的路徑，也不讀、不傳確認碼。
+- 「核准」在頁面內做 WebAuthn：`POST /api/pd/challenge`（`{"id"}`，要登入）執行 `pd passkey challenge <id>`，只把 `challenge`、`rpId`、`allowCredentials`、`userVerification`、`timeout` 交給頁面（`server/pd.ts` 的 `parseChallenge`）；頁面以 `navigator.credentials.get` 簽章（rpId ouob.net，只能在 https://lat.ouob.net 這類加密且屬於 ouob.net 的頁面），再 `POST /api/pd/approve`（`{"id", "credential"}`，本文上限 64 KB），伺服器只重組 WebAuthn 欄位（`checkAssertion`，全部要是 base64url，其他欄位丟掉）後從標準輸入交給 `pd passkey approve <id>`，接著重讀清單推給所有頁面。驗證全由 pd 服務做（來源網址、網域雜湊、使用者驗證、挑戰值綁定、簽章、計數器）；看板不讀、不傳確認碼，沒有使用者的 passkey 就不能核准。結果：200 核准；409 pd 拒絕（結束碼 77：請求已不在待核准、passkey 沒設定或簽章無效）；503 沒安裝 pd 或連不上服務；502 其他失敗或挑戰值看不懂；400 編號或簽章格式不對（不會呼叫 pd）。卡片另有「改用 pd 核准頁」連到 pd 給的 `approval_url`（只接受 http／https 網址），`rel="noopener noreferrer"`。
+- 自動提示（`PdPending.svelte`）：頁面第一次讀到的請求當作已知，之後新出現的依序排進提示框（`<dialog>`），「稍後」或 Esc 只把它從提示佇列拿掉；提示框只由一個 effect 開關，不靠非同步的 close 事件，免得關掉的是下一筆。通知：只有按「開啟通知」才呼叫 `Notification.requestPermission()`；允許後每筆新請求發一則 `tag: pd-<id>` 的通知，點了 `window.focus()` 並把那筆排到提示框最前面。
 - 「拒絕」是 `POST /api/pd/deny`（本文 `{"id": 正整數}`，要登入），執行 `pd deny <id>`（不需要確認碼），接著立刻重讀一次清單、推給所有頁面後才回應。結果：200 成功；409 這個編號已不在待核准（結束碼 1：pd 的清單已沒有它；77：pd 讀完清單後、拒絕前它剛好被核准或逾時，服務拒絕）；503 沒安裝 pd 或連不上它的服務（結束碼 69）；502 其他失敗；400 編號不是正整數。
 - 讀不到時只寫看板自己的說明（沒有安裝 pd、連不上 pd 服務、結束碼或逾時），不轉貼 pd 的輸出；pd 的錯誤不算進看板的錯誤，也不影響其他區塊。
 - 看板的連線沒有加密，這些請求內容也只應在內網或私人網路傳送（見開頭）。
-- 測試用 `tests/fake-pd.mjs` 代替 pd 與它的服務（待核准清單存在暫存目錄的 `pd.json`，`deny` 會把那一筆拿掉），不碰真的 pd socket：`tests/unit/pd.test.ts`、`tests/server/pd-server.test.ts`、`tests/browser/pd-page.test.ts`。
+- 測試用 `tests/fake-pd.mjs` 代替 pd 與它的服務（待核准清單存在暫存目錄的 `pd.json`，`deny` 會把那一筆拿掉；`passkey challenge` 印固定或指定的挑戰值，`passkey approve` 把標準輸入記到 `pd-assertions.jsonl`，不驗簽章，驗證由 pd 自己的測試負責），不碰真的 pd socket：`tests/unit/pd.test.ts`、`tests/server/pd-server.test.ts`、`tests/browser/pd-page.test.ts`、`tests/browser/pd-inline-approve.test.ts`（Chrome 虛擬驗證器；以 `--host-resolver-rules` 把 lat.ouob.net 指到本機、`--unsafely-treat-insecure-origin-as-secure` 當成安全來源，檢查 pd 收到的簽章確實是 rpId ouob.net、帶使用者驗證、簽在 pd 的挑戰值上）。
 
 ## 傳話給主控
 
