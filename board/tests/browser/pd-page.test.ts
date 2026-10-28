@@ -59,7 +59,7 @@ test.skipIf(!CHROME)('requests take the middle column\'s place on a phone, with 
 	const card = (id: number) => `document.querySelector('.pd [data-pd-request="${id}"]')`;
 	// Folded: the item, number, time and buttons, and the command shortened on one line.
 	const folded = await tab.eval<string>(`${card(3)}.innerText`);
-	for (const text of ['npm token', '#3', 'codex python3 npm_login.py --registry …', '核准', '拒絕']) expect(folded).toContain(text);
+	for (const text of ['npm token', '#3', 'codex（自稱）', 'python3 npm_login.py --registry …', '核准', '拒絕']) expect(folded).toContain(text);
 	for (const text of ['/usr/bin/python3', '/home/u/a-rather-long-folder-name', '對方自稱']) expect(folded).not.toContain(text);
 	expect(await tab.eval(`${card(3)}.querySelector('summary').getClientRects().length === 1 && ${card(3)}.querySelector('summary').clientHeight < 30`)).toBe(true);
 	// A tap opens the whole command, the folder and the caller.
@@ -68,11 +68,18 @@ test.skipIf(!CHROME)('requests take the middle column\'s place on a phone, with 
 	const first = await tab.eval<string>(`${card(3)}.innerText`);
 	for (const text of ['password、username', argv.join(' '), '/home/u/a-rather-long-folder-name/for-the-project-that-asks', 'codex（對方自稱，未驗證）']) expect(first).toContain(text);
 	// pd's check of the caller on the line, and what it is worth once opened.
-	expect(await tab.eval<string>(`${card(4)}.querySelector('summary').innerText`)).toBe('dahe-t09-vafu（codex，群組 dahe-t09）未查證 npm publish --dry-run');
+	expect(await tab.eval<string>(`${card(4)}.querySelector('summary .who').textContent`)).toBe('dahe-t09-vafu（codex，群組 dahe-t09）未通過查證');
+	// Too long for a phone's line: the caller is cut short, the command stays whole.
+	expect(await tab.eval(`(() => {
+		const line = ${card(4)}.querySelector('summary');
+		const who = line.querySelector('.who');
+		const command = line.querySelector('code');
+		return who.scrollWidth > who.clientWidth && command.scrollWidth <= command.clientWidth + 1 && command.getBoundingClientRect().right <= line.getBoundingClientRect().right + 1;
+	})()`)).toBe(true);
 	expect(await tab.eval<string>(`${card(4)}.innerText`)).not.toContain('程序樹查證');
 	await tab.pointerClick('.pd [data-pd-request="4"] summary');
 	await tab.until(`${card(4)}.querySelector('details').open`, 'the details of #4 open');
-	expect(await tab.eval<string>(`${card(4)}.innerText`)).toContain('dahe-t09-vafu（codex，群組 dahe-t09）未查證（程序樹查證，非防竄改）');
+	expect(await tab.eval<string>(`${card(4)}.innerText`)).toContain('dahe-t09-vafu（codex，群組 dahe-t09）未通過查證（程序樹查證，非防竄改）');
 	expect(await tab.eval<string>(`${card(3)}.querySelector('.time').innerText`)).toMatch(/^剩 1:3\d$/);
 	// A pd that gives no time left: how long it has waited instead.
 	expect(await tab.eval<string>(`${card(4)}.querySelector('.time').innerText`)).toMatch(/^已等待 0:0\d$/);

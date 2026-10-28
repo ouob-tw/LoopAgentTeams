@@ -107,12 +107,12 @@ export function shortCommand(command: string[]): string {
 	return words.join(' ') + (command.length > 3 ? ' …' : '');
 }
 
-/** Who asked, on one line: `dahe（claude，主控）✓`, `dahe-t09-vafu（codex，群組 dahe-t09）未查證`,
- *  or the declared name alone from a pd without the daemon's check. */
+/** Who asked, on one line: `dahe（claude，主控）✓`, `dahe-t09-vafu（codex，群組 dahe-t09）未通過查證`,
+ *  or `codex（自稱）`, the declared name, from a pd without the daemon's check. */
 export function callerText(request: PdRequest): string {
 	const info = request.callerInfo;
-	if (!info) return request.caller;
+	if (!info) return `${request.caller}（自稱）`;
 	const role = info.orchestrator ? '主控' : info.group ? `群組 ${info.group}` : null;
 	const notes = [info.client, role, info.source === 'manual' ? '手動' : null].filter((note) => note !== null);
-	return `${info.name}（${notes.join('，')}）${info.verified ? '✓' : '未查證'}`;
+	return `${info.name}（${notes.join('，')}）${info.verified ? '✓' : '未通過查證'}`;
 }

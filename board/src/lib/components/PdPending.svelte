@@ -137,7 +137,7 @@
 							<span class="time" class:low={time.low} role="timer">{time.text}</span>
 						</p>
 						<details>
-							<summary>{callerText(item)} <code>{shortCommand(item.command)}</code></summary>
+							<summary><span class="who">{callerText(item)}</span><code>{shortCommand(item.command)}</code></summary>
 							<dl>
 								<dt>欄位</dt>
 								<dd>{item.fields.join('、')}</dd>
@@ -257,13 +257,33 @@
 	.time.low {
 		color: var(--danger);
 	}
-	/* One line however long the command; the rest under it once opened. */
+	/* One line however long; the caller gives way first so the command stays readable, and the
+	   rest is under it once opened. A flex summary has no marker of its own. */
 	summary {
-		overflow: hidden;
-		text-overflow: ellipsis;
+		display: flex;
+		gap: 0.4rem;
 		white-space: nowrap;
 		cursor: pointer;
 		font-size: max(0.9rem, var(--min-font, 0px));
+	}
+	summary::before {
+		content: '▸';
+		flex: none;
+	}
+	details[open] summary::before {
+		content: '▾';
+	}
+	summary > * {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.who {
+		flex: 0 100 auto;
+		min-width: 2em;
+	}
+	summary code {
+		flex: 0 1 auto;
 	}
 	details[open] summary {
 		margin-bottom: 0.35rem;
