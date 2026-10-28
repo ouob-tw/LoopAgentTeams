@@ -32,6 +32,8 @@
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
 	import PdPending from '#lib/components/PdPending.svelte';
+	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
+	import type { PdRequest } from '#lib/board/pd.ts';
 	import QuotaList from '#lib/components/QuotaList.svelte';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
@@ -180,6 +182,34 @@
 		void board.snapshot;
 		if (showArchive && untrack(() => board.archive) !== 'failed') void board.loadArchive();
 	});
+
+	/** The pd requests waiting, in the window's title too while there are any. */
+	const pdWaiting = $derived(board.pd?.snapshot.ok ? board.pd.snapshot.requests.length : 0);
+	$effect(() => {
+		document.title = (pdWaiting ? `(${pdWaiting}) ` : '') + 'LAT 看板';
+	});
+	let pdPending = $state<ReturnType<typeof PdPending>>();
+	/** Whether the pd window is open rather than folded to its badge. */
+	let pdOpen = $state(true);
+	let pdBanner = $state<HTMLElement>();
+	/** Who asked for a pd request, as the board knows them by HCOM name: a roster controller, else a
+	 *  Herdr agent; both are opened at their conversation by the same session ID. */
+	function pdCaller(item: PdRequest): { place: Place; id: string } | null {
+		const name = item.callerInfo?.name ?? item.caller;
+		const controller = controllers.find((candidate) => candidate.hcomName === name);
+		if (controller) return { place: { kind: 'controller', id: controller.id }, id: controller.id };
+		const id = agents.find((candidate) => candidate.hcomName === name && candidate.id)?.id;
+		return id ? { place: { kind: 'agent', id }, id } : null;
+	}
+	/** 查看對話: the caller's conversation at the request's `pd run`, from when pd says it was made. A
+	 *  phone folds the sheet, which would cover it. */
+	function lookAtCaller(item: PdRequest) {
+		const caller = pdCaller(item);
+		if (!caller || !board.pd) return;
+		pdLooking.look({ id: caller.id, at: board.pd.at - item.waiting * 1000, command: item.command, unsure: !item.callerInfo?.verified });
+		navigation.go(caller.place);
+		if (!matchMedia('(min-width: 761px)').matches) pdOpen = false;
+	}
 
 	const openKey = $derived(view?.kind === 'item' ? view.item.key : null);
 	const listed = $derived(known.some((item) => item.key === openKey));
@@ -431,8 +461,15 @@
 		{@render resize('roster')}
 
 		<section class="inbox">
-			<!-- Over the column on every list while a pd request waits; its badge above the tabs once folded. -->
-			<PdPending pd={board.pd} onaway={() => detail.focus({ preventScroll: true })} />
+			<!-- A window over the column (a sheet on a phone) while a pd request waits; its badge at the top of the column once folded. -->
+			<PdPending
+				bind:this={pdPending}
+				bind:open={pdOpen}
+				pd={board.pd}
+				onaway={() => (pdBanner ?? detail).focus({ preventScroll: true })}
+				lookable={(item) => pdCaller(item) !== null}
+				onlook={lookAtCaller}
+			/>
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
 			     views, as the list they switch has no panel of its own around it. -->
 			<div class="middle-tabs" role="group" aria-label="清單">
@@ -509,6 +546,13 @@
 						{@render refresh()}
 						{@render openSettings()}
 					</span>
+					<!-- A phone hides the middle column, and the pd badge with it, behind a content screen: while
+					     the pd window is folded this strip under the bar says requests wait and opens it. -->
+					{#if pdWaiting && !pdOpen}
+						<button type="button" class="pd-banner" bind:this={pdBanner} onclick={() => void pdPending?.reveal()}
+							>pd 待核准 <span class="count">{pdWaiting}</span><span class="see">查看 ›</span></button
+						>
+					{/if}
 				</div>
 
 				{#if view.kind === 'missing'}
@@ -694,21 +738,16 @@
 		flex-direction: column;
 		gap: 0.35rem;
 	}
-	/* The pd overlay covers the middle column, above its own scrolling, and leaves the roster, the
-	   content column and the command line free. The handle over the border stays on top. */
+	/* The pd window floats over the middle column at first, from its top to the command line, and is
+	   never narrower than its smallest width; once dragged or resized it carries its own place. It
+	   stays clear of the roster's and the command line's pop-ups and of the toasts. */
 	.inbox > :global(.pd) {
-		position: absolute;
-		top: 0;
-		bottom: var(--dock-h, 0px);
-		left: var(--col-roster);
-		width: var(--col-inbox);
-		z-index: 5;
-		overflow-y: auto;
-		border-right: 1px solid var(--line);
-	}
-	/* What it covers is out of reach of the keyboard too. */
-	.inbox:has(> :global(.pd)) > :global(:not(.pd)) {
-		visibility: hidden;
+		position: fixed;
+		top: 0.5rem;
+		bottom: calc(var(--dock-h, 0px) + 0.5rem);
+		left: calc(var(--col-roster) + 0.5rem);
+		width: max(360px, calc(var(--col-inbox) - 1rem));
+		z-index: 25;
 	}
 	.pd-off {
 		margin: 0 0 0.4rem;
@@ -911,6 +950,57 @@
 		background: var(--bg);
 		border-bottom: 1px solid var(--line);
 	}
+	/* The strip under a phone's bar while pd requests wait folded: it hangs from the sticky bar so it
+	   stays with it, and the bar keeps room for it below so it covers nothing. Shown on a phone only. */
+	.topbar {
+		--pd-banner-h: calc(2.6 * max(0.85rem, var(--min-font, 0px)));
+	}
+	.pd-banner {
+		display: none;
+		position: absolute;
+		top: 100%;
+		left: 0;
+		right: 0;
+		height: var(--pd-banner-h);
+		align-items: center;
+		gap: 0.45rem;
+		padding: 0 1rem;
+		border: 0;
+		border-bottom: 1px solid var(--line);
+		border-radius: 0;
+		background: color-mix(in srgb, var(--warn) 9%, var(--bg));
+		font-size: max(0.85rem, var(--min-font, 0px));
+		font-weight: 600;
+		text-align: left;
+	}
+	.pd-banner::before {
+		content: '';
+		flex: none;
+		width: 0.5rem;
+		height: 0.5rem;
+		border-radius: 50%;
+		background: var(--warn);
+	}
+	.pd-banner .count {
+		min-width: 1.4em;
+		padding: 0 0.4em;
+		border-radius: var(--radius-pill);
+		background: var(--warn);
+		color: var(--bg);
+		font-family: var(--mono);
+		font-size: max(0.75rem, var(--min-font, 0px));
+		line-height: 1.5;
+		text-align: center;
+	}
+	.pd-banner .see {
+		margin-left: auto;
+		font-weight: 400;
+		color: var(--muted);
+	}
+	:global(:root[data-theme='light']) .pd-banner {
+		background: var(--bg);
+		border-bottom-width: 2px;
+	}
 	/* Two lines like a roster tag, project on top, so both names keep the width the buttons leave. */
 	.whose {
 		display: flex;
@@ -1020,15 +1110,6 @@
 		.roster {
 			padding-bottom: 0;
 		}
-		/* The page scrolls as one here: the overlay takes the column's place while it is open. */
-		.inbox > :global(.pd) {
-			position: static;
-			width: auto;
-			overflow-y: visible;
-		}
-		.inbox:has(> :global(.pd)) > :global(:not(.pd)) {
-			display: none;
-		}
 		/* Cards sit 3px from the screen edges; plain text keeps the cards' own inner indent. */
 		.roster,
 		.inbox {
@@ -1036,7 +1117,7 @@
 			padding-right: 3px;
 		}
 		.summary,
-		.inbox > :global(:not(.row, .nest)),
+		.inbox > :global(:not(.row, .nest, .pd, .pd-badge)),
 		.detail > :global(:not(article, .topbar)) {
 			padding-left: 0.6rem;
 			padding-right: 0.6rem;
@@ -1060,13 +1141,6 @@
 		.viewing .detail {
 			display: flex;
 		}
-		/* An open pd overlay takes the screen over the content too; 稍後 gives it back. */
-		.viewing .inbox:has(> :global(.pd)) {
-			display: block;
-		}
-		.viewing:has(.inbox > :global(.pd)) .detail {
-			display: none;
-		}
 		/* Below the bar, which stays on top. */
 		.placeholder {
 			position: fixed;
@@ -1074,6 +1148,30 @@
 			overflow-y: auto;
 			/* Its end clear of the command line, like the page's. */
 			padding: 5rem 3px var(--dock-h, 0px);
+		}
+		.pd-banner {
+			display: flex;
+		}
+		/* A sheet over whatever screen is shown, full width above the command line. */
+		.inbox > :global(.pd) {
+			top: auto;
+			left: 0;
+			right: 0;
+			width: auto;
+			bottom: var(--dock-h, 0px);
+			max-height: calc(100dvh - var(--dock-h, 0px) - 4rem);
+			border-radius: calc(var(--radius) + 4px) calc(var(--radius) + 4px) 0 0;
+		}
+		/* A content screen hides the middle column: its box goes, so the sheet in it still shows. */
+		.viewing .inbox:has(> :global(.pd)) {
+			display: contents;
+		}
+		.viewing .inbox:has(> :global(.pd)) > :global(:not(.pd)) {
+			display: none;
+		}
+		/* Room under the bar for the strip that hangs from it. */
+		.topbar:has(.pd-banner) {
+			margin-bottom: var(--pd-banner-h);
 		}
 		.topbar {
 			display: flex;

@@ -1,8 +1,8 @@
-// The pd 待核准 overlay's data: what `pd pending --json` and `pd deny` answered, read into the
-// fields the overlay shows and the answers the deny and passkey relay routes give, and how the
-// overlay words a request's time and shortens its command. Test values only.
+// The pd 待核准 panel's data: what `pd pending --json` and `pd deny` answered, read into the
+// fields the panel shows and the answers the deny and passkey relay routes give, and how the
+// panel words a request's time and shortens its command, and where its window may lie. Test values only.
 import { expect, test } from 'bun:test';
-import { callerText, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
+import { callerNote, callerText, clampBox, readBox, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
 import { approveReply, challengeReply, checkAssertion, createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
 
@@ -47,7 +47,7 @@ const request = (overrides: Partial<PdRequest> = {}): PdRequest => ({
 	...overrides
 });
 
-test('a pending list keeps only the fields the overlay shows', () => {
+test('a pending list keeps only the fields the panel shows', () => {
 	expect(parsePdPending(exited(0, JSON.stringify([listed]) + '\n'))).toEqual({
 		ok: true,
 		requests: [
@@ -103,10 +103,11 @@ test('a denial answers ok, gone, unreachable or failed', () => {
 });
 
 test('a request’s time counts down from what pd said, or up from its wait without it', () => {
-	expect(timeText(request(), 0)).toEqual({ text: '剩 1:48', low: false });
-	expect(timeText(request(), 78_400)).toEqual({ text: '剩 0:30', low: true });
-	expect(timeText(request(), 200_000)).toEqual({ text: '即將逾時', low: true });
-	expect(timeText(request({ remaining: null }), 50_000)).toEqual({ text: '已等待 1:02', low: false });
+	expect(timeText(request({ remaining: 121 }), 0)).toEqual({ text: '剩 2:01', soon: false, low: false });
+	expect(timeText(request(), 0)).toEqual({ text: '剩 1:48', soon: true, low: false });
+	expect(timeText(request(), 78_400)).toEqual({ text: '剩 0:30', soon: true, low: true });
+	expect(timeText(request(), 200_000)).toEqual({ text: '即將逾時', soon: true, low: true });
+	expect(timeText(request({ remaining: null }), 50_000)).toEqual({ text: '已等待 1:02', soon: false, low: false });
 });
 
 test('a caller pd checked reads with its client, role and check; without the check, its declared name', () => {
@@ -116,6 +117,9 @@ test('a caller pd checked reads with its client, role and check; without the che
 	expect(callerText(request({ callerInfo: info }))).toBe('dahe-t09-vafu（codex，群組 dahe-t09）未通過查證');
 	expect(callerText(request({ callerInfo: { ...info, name: 'x', group: null, orchestrator: null, source: 'manual' } }))).toBe('x（codex，手動）未通過查證');
 	expect(callerText(request())).toBe('claude（自稱）');
+	// What the mark is worth, for its explanation: pd's words, or that the name is only claimed.
+	expect(callerNote(request({ callerInfo: info }))).toBe('程序樹查證，非防竄改');
+	expect(callerNote(request())).toBe('對方自稱，未驗證');
 	// Fields missing read unknown, and only an explicit true on a whole record is verified.
 	const sparse = parsePdPending(exited(0, JSON.stringify([{ ...listed, caller_info: { verified: 'yes' } }])));
 	expect(sparse.ok && sparse.requests[0].callerInfo).toEqual({ name: 'unknown', client: 'unknown', group: null, orchestrator: null, source: 'unknown', verified: false, notice: '程序樹查證，非防竄改' });
@@ -179,4 +183,17 @@ test('an assertion is rebuilt from the WebAuthn fields only, all base64url', () 
 	for (const bad of [null, '1234', { code: '1234' }, { ...valid, type: 'password' }, { ...valid, response: { ...response, signature: '' } }, { ...valid, response: { ...response, signature: 'a+b' } }, { ...valid, rawId: 7 }, { ...valid, response: 'x' }, { ...valid, response: { ...response, userHandle: 5 } }]) {
 		expect(checkAssertion(bad)).toBeNull();
 	}
+});
+
+test('the window stays on screen and at least its smallest size, and only a whole saved box is read back', () => {
+	const view = { w: 1280, h: 800 };
+	expect(clampBox({ x: 300, y: 40, w: 420, h: 500 }, view)).toEqual({ x: 300, y: 40, w: 420, h: 500 });
+	// Too narrow and short, then off the right and bottom edges, then off the top left.
+	expect(clampBox({ x: 10, y: 10, w: 120, h: 50 }, view)).toEqual({ x: 10, y: 10, w: 360, h: 200 });
+	expect(clampBox({ x: 1200, y: 760, w: 400, h: 300 }, view)).toEqual({ x: 880, y: 500, w: 400, h: 300 });
+	expect(clampBox({ x: -50, y: -9, w: 400, h: 300 }, view)).toEqual({ x: 0, y: 0, w: 400, h: 300 });
+	// Bigger than the view: the view's size.
+	expect(clampBox({ x: 0, y: 0, w: 2000, h: 2000 }, view)).toEqual({ x: 0, y: 0, w: 1280, h: 800 });
+	expect(readBox('{"x":1,"y":2,"w":400,"h":300}')).toEqual({ x: 1, y: 2, w: 400, h: 300 });
+	for (const text of ['', 'nope', '{"x":1,"y":2,"w":400}', '{"x":"1","y":2,"w":400,"h":300}', 'null']) expect(readBox(text)).toBeNull();
 });

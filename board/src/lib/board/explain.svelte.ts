@@ -77,6 +77,8 @@ export class Explainer<K> {
 		// `detail` is 0 for a click made with the keyboard, which never ends a long press.
 		if (this.#longPressed && event.detail !== 0) {
 			this.#longPressed = false;
+			// Nor what the browser does with it, such as a <summary> opening its details.
+			event.preventDefault();
 			return;
 		}
 		this.#longPressed = false;

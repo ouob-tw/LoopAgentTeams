@@ -1,22 +1,57 @@
 <script lang="ts">
-	// The pd 待核准 overlay over the middle column, whichever list it shows: one card per request
-	// pd's daemon holds for approval, with what it asks for, the time it has left, and who asked and
-	// its command on one short line that a tap opens to the whole command, folder and caller, with
-	// what pd's check of the caller is worth. 核准 signs pd's one-time challenge with the user's
-	// passkey right here (rpId ouob.net); the board server only relays the challenge and the
-	// signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it through the board at once, as `pd deny` does without a code. 稍後 folds it
-	// to a badge above the column's tabs, which opens it again; a request that appears opens it too
-	// and, once the user allowed it (the 開啟通知 button, never asked for unprompted), raises a
-	// browser notification whose click comes back to it. With nothing waiting it is not shown; the
-	// page says on the 待辦 list when pd is missing or down.
-	import { tick } from 'svelte';
+	// The pd 待核准 window, over whichever screen the board shows: one card per request pd's daemon
+	// holds for approval, with what it asks for, the time it has left, who asked and its command on
+	// short lines that a tap opens to the whole command, folder and caller; what pd's check of the
+	// caller is worth is in the box its mark explains itself with. 核准 signs pd's one-time challenge
+	// with the user's passkey right here (rpId ouob.net); the board server only relays the challenge
+	// and the signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it
+	// through the board at once, as `pd deny` does without a code. On a wide screen it floats over
+	// the middle column at first; its heading drags it and its corner resizes it, and that place is
+	// kept in this browser. 稍後 folds it to a one-line badge above the column's tabs,
+	// which opens it again; a request that appears opens it too and, once the user allowed it (the
+	// 開啟通知 button, never asked for unprompted), raises a browser notification whose click comes
+	// back to it. With nothing waiting it is not shown; the page says on the 待辦 list when pd is
+	// missing or down.
+	import { onMount, tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
-	import { assertionJson, callerParts, callerText, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
+	import {
+		assertionJson,
+		callerNote,
+		callerParts,
+		callerText,
+		clampBox,
+		PD_WINDOW_KEY,
+		readBox,
+		requestOptions,
+		shortCommand,
+		timeText,
+		type PdBox,
+		type PdChallenge,
+		type PdRequest,
+		type PdSnapshot
+	} from '#lib/board/pd.ts';
+	import { Explainer } from '#lib/board/explain.svelte.ts';
+	import { remember, rememberedText } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
+	import ExplainTip from './ExplainTip.svelte';
 
-	/** `onaway` takes the focus when folding leaves no badge on screen: a phone hides the middle
-	 *  column, badge and all, while it shows a content screen. */
-	let { pd, onaway }: { pd: { snapshot: PdSnapshot; at: number } | null; onaway?: () => void } = $props();
+	/** `open`: whether it is open rather than folded to its badge. `onaway` takes the focus when
+	 *  folding leaves no badge on screen: a phone hides the middle column, badge and all, while it
+	 *  shows a content screen. `onlook` opens a request's caller's conversation at its `pd run`
+	 *  (查看對話), for a request `lookable` says the board knows the caller of. */
+	let {
+		pd,
+		open = $bindable(true),
+		onaway,
+		lookable,
+		onlook
+	}: {
+		pd: { snapshot: PdSnapshot; at: number } | null;
+		open?: boolean;
+		onaway?: () => void;
+		lookable?: (item: PdRequest) => boolean;
+		onlook?: (item: PdRequest) => void;
+	} = $props();
 
 	const requests = $derived(pd?.snapshot.ok ? pd.snapshot.requests : []);
 	let now = $state(Date.now());
@@ -34,20 +69,91 @@
 	 *  reading forgets it, for a pd that does not name its daemon start. */
 	let previous: Set<string> | null = null;
 	const key = (item: PdRequest) => `${item.daemon ?? ''}#${item.id}`;
-	/** Whether the overlay is open rather than folded to its badge. */
-	let open = $state(true);
-	let overlay = $state<HTMLElement>();
+	let panel = $state<HTMLElement>();
 	let badge = $state<HTMLElement>();
 
-	/** Open or fold the overlay and put the focus on what stands in its place, as the control
+	/** Open or fold the panel and put the focus on what stands in its place, as the control
 	 *  pressed is gone. */
 	async function show(value: boolean) {
 		open = value;
 		await tick();
-		if (value) overlay?.focus();
+		if (value) panel?.focus();
 		else if (badge?.checkVisibility()) badge.focus();
 		else onaway?.();
 	}
+
+	/** Open it and put the focus on it: where a phone's banner leads. */
+	export const reveal = () => show(true);
+
+	/** The wide layout, where it floats and moves; a phone shows it as a sheet the page places. */
+	let wide = $state(false);
+	/** Its place once moved or resized, inside the window; null for the page's default over the
+	 *  middle column. */
+	let box = $state<PdBox | null>(null);
+	const view = () => ({ w: window.innerWidth, h: window.innerHeight });
+	onMount(() => {
+		const query = matchMedia('(min-width: 761px)');
+		const saved = readBox(rememberedText(PD_WINDOW_KEY));
+		box = saved && clampBox(saved, view());
+		const fit = () => {
+			wide = query.matches;
+			if (box) box = clampBox(box, view());
+		};
+		fit();
+		query.addEventListener('change', fit);
+		addEventListener('resize', fit);
+		return () => {
+			query.removeEventListener('change', fit);
+			removeEventListener('resize', fit);
+		};
+	});
+
+	/** A drag of the heading or the corner under way: where the pointer and the box started. */
+	let gesture = $state<{ resize: boolean; x: number; y: number; from: PdBox } | null>(null);
+	function begin(event: PointerEvent, resize: boolean) {
+		if (!wide || !panel || event.button !== 0 || (!resize && (event.target as Element).closest('button'))) return;
+		const { left, top, width, height } = panel.getBoundingClientRect();
+		gesture = { resize, x: event.clientX, y: event.clientY, from: box ?? { x: left, y: top, w: width, h: height } };
+		(event.currentTarget as Element).setPointerCapture(event.pointerId);
+		event.preventDefault();
+	}
+	function follow(event: PointerEvent) {
+		if (!gesture) return;
+		const { from, resize } = gesture;
+		const dx = event.clientX - gesture.x;
+		const dy = event.clientY - gesture.y;
+		box = clampBox(resize ? { ...from, w: from.w + dx, h: from.h + dy } : { ...from, x: from.x + dx, y: from.y + dy }, view());
+	}
+	function end() {
+		if (!gesture) return;
+		gesture = null;
+		if (box) remember(PD_WINDOW_KEY, JSON.stringify(box));
+	}
+	const place = $derived(wide && box ? `left: ${box.x}px; top: ${box.y}px; width: ${box.w}px; height: ${box.h}px;` : undefined);
+
+	/** Whether this page can sign with the passkey, which is bound to ouob.net: only a secure page
+	 *  under it, such as https://lat.ouob.net, in a browser with WebAuthn. Read in the browser. */
+	let passkeyHere = $state(true);
+	onMount(() => {
+		passkeyHere = window.isSecureContext && !!navigator.credentials && /(^|\.)ouob\.net$/.test(location.hostname);
+	});
+
+	const NO_PASSKEY = '這個網址不能用 passkey 核准，請從 https://lat.ouob.net 開看板。';
+	/** The short marks' explanations, in a box on hover, a long press or keyboard focus: `passkey`
+	 *  for the heading's warning, a request's number for its caller. Its words are also each
+	 *  element's description, for a screen reader. A tap on the warning, which does nothing else,
+	 *  shows it a moment too. */
+	const explainer = new Explainer<'passkey' | number>(() => {});
+	let tapped: ReturnType<typeof setTimeout> | undefined;
+	function tapExplain(event: MouseEvent & { currentTarget: HTMLElement }) {
+		explainer.explain(event.currentTarget, 'passkey');
+		clearTimeout(tapped);
+		tapped = setTimeout(explainer.dismiss, 2500);
+	}
+	const noteOf = (key: 'passkey' | number) => {
+		const item = requests.find((candidate) => candidate.id === key);
+		return item ? callerNote(item) : NO_PASSKEY;
+	};
 
 	const notifications = typeof Notification === 'function';
 	let permission = $state<NotificationPermission>(notifications ? Notification.permission : 'denied');
@@ -98,8 +204,7 @@
 	}
 
 	async function approve(item: PdRequest) {
-		// Passkeys need a secure page whose address is under ouob.net: https://lat.ouob.net.
-		if (!window.isSecureContext || !navigator.credentials) return toasts.show('failed', '這個網址不能用 passkey：請從 https://lat.ouob.net 開看板，或改用 pd 核准頁。');
+		if (!passkeyHere) return toasts.show('failed', NO_PASSKEY);
 		approving = [...approving, item.id];
 		try {
 			const challenge = await post<{ options: PdChallenge }>('/api/pd/challenge', { id: item.id });
@@ -122,9 +227,29 @@
 
 {#if requests.length && pd}
 	{#if open}
-		<section class="pd" aria-label="pd 待核准" tabindex="-1" bind:this={overlay}>
-			<header>
-				<h2>pd 待核准 <span class="count">（{requests.length}）</span></h2>
+		<section class="pd" class:moving={gesture} style={place} aria-label="pd 待核准" tabindex="-1" bind:this={panel}>
+			<!-- The heading drags the window in the wide layout; its buttons stay buttons. Dragging is a
+			     pointer's convenience: the window works where it opens, and stays on screen. -->
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<header class:handle={wide} onpointerdown={(event) => begin(event, false)} onpointermove={follow} onpointerup={end} onpointercancel={end}>
+				<h2>pd 待核准 <span class="count">{requests.length}</span></h2>
+				{#if !passkeyHere}
+					<button
+						type="button"
+						class="nopasskey"
+						aria-label="不能用 passkey"
+						aria-describedby="pd-no-passkey"
+						onclick={tapExplain}
+						onpointerenter={(event) => explainer.hover(event, 'passkey')}
+						onpointerleave={explainer.leave}
+						onfocus={(event) => explainer.focus(event, 'passkey')}
+						onblur={explainer.dismiss}>⚠</button
+					>
+					<span id="pd-no-passkey" hidden>{NO_PASSKEY}</span>
+				{/if}
+				{#if notifications && permission === 'default'}
+					<button type="button" class="allow" title="有新的 pd 請求時發瀏覽器通知（只在看板開著時）" onclick={() => void allowNotifications()}>開啟通知</button>
+				{/if}
 				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
 			</header>
 			<ul class="cards">
@@ -135,11 +260,30 @@
 						<p class="head">
 							<span class="item">{item.item}</span>
 							<span class="number">#{item.id}</span>
-							<span class="time" class:low={time.low} role="timer">{time.text}</span>
+							<span class="time" class:soon={time.soon} class:low={time.low} role="timer">{time.text}</span>
 						</p>
 						<details>
-							<summary>
-								<span class="who">{caller.who}</span><span class="mark">{caller.mark}</span> <code>{shortCommand(item.command)}</code>
+							<summary
+								aria-describedby="pd-caller-{item.id}"
+								onfocus={(event) => explainer.focus(event, item.id)}
+								onblur={explainer.dismiss}
+								onclick={(event) => explainer.click(event, item.id)}
+							>
+								<!-- The chip explains its mark to a pointer; a long press shows it without opening the
+								     details. The keyboard and a screen reader get it from the summary. -->
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<span
+									class="caller"
+									class:verified={item.callerInfo?.verified}
+									class:unverified={item.callerInfo && !item.callerInfo.verified}
+									onpointerenter={(event) => explainer.hover(event, item.id)}
+									onpointerleave={explainer.leave}
+									onpointerdown={(event) => explainer.down(event, item.id)}
+									onpointerup={explainer.release}
+									onpointercancel={explainer.release}
+									oncontextmenu={(event) => event.preventDefault()}><span class="who">{caller.who}</span><span class="mark">{caller.mark}</span></span
+								> <code>{shortCommand(item.command)}</code>
+								<span id="pd-caller-{item.id}" hidden>{callerNote(item)}</span>
 							</summary>
 							<dl>
 								<dt>欄位</dt>
@@ -149,125 +293,230 @@
 								<dt>工作目錄</dt>
 								<dd><code>{item.cwd}</code></dd>
 								<dt>呼叫者</dt>
-								{#if item.callerInfo}
-									<dd>{callerText(item)}<span class="notice">（{item.callerInfo.notice}）</span></dd>
-								{:else}
-									<dd>{item.caller}（對方自稱，未驗證）</dd>
-								{/if}
+								<dd>{callerText(item)}</dd>
 							</dl>
 						</details>
 						<p class="actions">
-							<button type="button" class="approve" disabled={approving.includes(item.id)} onclick={() => void approve(item)}
+							<button type="button" class="approve" aria-describedby={passkeyHere ? undefined : 'pd-no-passkey'} disabled={approving.includes(item.id)} onclick={() => void approve(item)}
 								>{approving.includes(item.id) ? '核准中…' : '核准'}</button
 							>
 							<button type="button" class="deny" disabled={denying.includes(item.id)} onclick={() => void deny(item)}
 								>{denying.includes(item.id) ? '拒絕中…' : '拒絕'}</button
 							>
-							{#if item.approvalUrl}
-								<a class="page" href={item.approvalUrl} target="_blank" rel="noopener noreferrer">改用 pd 核准頁</a>
+							{#if lookable?.(item)}
+								<!-- A caller pd did not vouch for may not be the one that asked: said on the button, and on
+								     the step it finds. -->
+								<button
+									type="button"
+									class="look"
+									title={item.callerInfo?.verified ? undefined : '可能不準：pd 沒有查證呼叫者'}
+									aria-describedby={item.callerInfo?.verified ? undefined : `pd-caller-${item.id}`}
+									onclick={() => onlook?.(item)}>查看對話</button
+								>
 							{/if}
 						</p>
 					</li>
 				{/each}
 			</ul>
-			<p class="quiet">核准會在這頁用這台裝置的 passkey 解鎖驗證（通常是指紋或臉部辨識）；看板只轉送簽章，由 pd 驗證，不需要確認碼。</p>
-			{#if notifications && permission === 'default'}
-				<p class="quiet">
-					<button type="button" class="allow" onclick={() => void allowNotifications()}>開啟通知</button>
-					有新的 pd 請求時發瀏覽器通知（只在看板開著時）
-				</p>
+			{#if wide}
+				<span class="grip" aria-hidden="true" onpointerdown={(event) => begin(event, true)} onpointermove={follow} onpointerup={end} onpointercancel={end}></span>
 			{/if}
 		</section>
+		{#if explainer.tip}
+			<ExplainTip id="pd-tip" place={explainer.tip}>{noteOf(explainer.tip.key)}</ExplainTip>
+		{/if}
 	{:else}
-		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}>pd 待核准 {requests.length}</button>
+		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}>pd 待核准 <span class="count">{requests.length}</span></button>
 	{/if}
 {/if}
 
 <style>
-	/* Where it lies over the column is the page's to say; this is how it looks. */
+	/* Its default place and the phone's sheet are the page's to say; this is how it looks: a
+	   raised window, a card for each request, scrolling under its heading once several wait. */
 	.pd {
 		display: flex;
 		flex-direction: column;
-		gap: 0.45rem;
 		min-width: 0;
-		padding: 0.6rem;
-		background: var(--bg);
-		border-top: 3px solid var(--warn);
-		box-shadow: 0 0.3rem 1rem color-mix(in srgb, #000 35%, transparent);
+		background: var(--surface);
+		border: 1px solid var(--line);
+		border-radius: calc(var(--radius) + 4px);
+		box-shadow:
+			0 1.2rem 2.5rem -0.6rem color-mix(in srgb, #000 55%, transparent),
+			0 0.2rem 0.6rem color-mix(in srgb, #000 30%, transparent);
+		overflow: hidden;
+		animation: arrive 160ms ease-out;
+	}
+	/* Light theme: nothing see-through, so a heavier frame stands in for the shadow. */
+	:global(:root[data-theme='light']) .pd {
+		box-shadow: none;
+		border-width: 2px;
+	}
+	@keyframes arrive {
+		from {
+			opacity: 0;
+			transform: translateY(-0.4rem);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.pd {
+			animation: none;
+		}
 	}
 	.pd:focus {
 		outline: none;
 	}
+	.pd:focus-visible {
+		outline: 2px solid var(--accent);
+	}
 	header {
+		flex: none;
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 0.6rem;
+		gap: 0.25rem;
+		padding: 0.4rem 0.4rem 0.4rem 0.8rem;
+		border-bottom: 1px solid var(--line);
+		background: color-mix(in srgb, var(--warn) 7%, var(--surface));
+	}
+	/* Dragged by its heading: the hand says so. */
+	header.handle {
+		cursor: grab;
+		touch-action: none;
+		user-select: none;
+	}
+	.moving,
+	.moving header.handle {
+		cursor: grabbing;
+		user-select: none;
+	}
+	header button {
+		cursor: pointer;
 	}
 	h2 {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
 		margin: 0;
-		font-size: max(0.95rem, var(--min-font, 0px));
+		font-size: max(0.85rem, var(--min-font, 0px));
+		font-weight: 600;
 	}
-	.count,
-	.quiet,
-	.notice,
-	.number {
+	/* The dot that says something waits, and the panel's count beside it. */
+	h2::before,
+	.pd-badge::before {
+		content: '';
+		flex: none;
+		width: 0.5rem;
+		height: 0.5rem;
+		border-radius: 50%;
+		background: var(--warn);
+	}
+	.count {
+		display: inline-block;
+		min-width: 1.4em;
+		padding: 0 0.4em;
+		border-radius: var(--radius-pill);
+		background: var(--warn);
+		color: var(--bg);
+		font-family: var(--mono);
+		font-size: max(0.75rem, var(--min-font, 0px));
+		line-height: 1.5;
+		text-align: center;
+	}
+	.later,
+	.allow {
+		padding: 0.2rem 0.6rem;
+		background: none;
+		border-color: transparent;
 		color: var(--muted);
-		font-weight: 400;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
-	.quiet {
-		margin: 0;
-		font-size: max(0.8rem, var(--min-font, 0px));
+	.later:hover,
+	.allow:hover {
+		color: var(--text);
+		border-color: var(--line);
+	}
+	/* The heading's warning that the passkey cannot be used here; its words are in its box. */
+	.nopasskey {
+		padding: 0.1rem 0.4rem;
+		background: none;
+		border-color: transparent;
+		color: var(--warn);
+		font-size: max(0.9rem, var(--min-font, 0px));
+		line-height: 1;
 	}
 	.cards {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
 		list-style: none;
 		margin: 0;
 		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.45rem;
+	}
+	/* The corner that resizes it, drawn as three short diagonal lines. */
+	.grip {
+		position: absolute;
+		right: 0;
+		bottom: 0;
+		width: 1.1rem;
+		height: 1.1rem;
+		cursor: nwse-resize;
+		touch-action: none;
+		--grip: var(--muted);
+		background: linear-gradient(135deg, transparent 45%, var(--grip) 45% 52%, transparent 52% 64%, var(--grip) 64% 71%, transparent 71% 83%, var(--grip) 83% 90%, transparent 90%);
+	}
+	.grip:hover {
+		--grip: var(--text);
 	}
 	.card {
 		display: flex;
 		flex-direction: column;
 		gap: 0.45rem;
 		min-width: 0;
-		padding: 0.55rem 0.65rem;
-		border: 1px solid var(--line);
-		border-left: 3px solid var(--warn);
-		border-radius: var(--radius);
-		background: var(--surface);
+		padding: 0.65rem 0.75rem 0.7rem;
+	}
+	.card + .card {
+		border-top: 1px solid var(--line);
 	}
 	.head {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: baseline;
-		gap: 0.2rem 0.6rem;
+		gap: 0.1rem 0.45rem;
 		margin: 0;
 	}
 	.item {
 		font-weight: 600;
 		overflow-wrap: anywhere;
 	}
-	.number {
+	.number,
+	.time {
+		font-family: var(--mono);
 		font-size: max(0.75rem, var(--min-font, 0px));
+		color: var(--muted);
 	}
 	.time {
 		margin-left: auto;
-		font-family: var(--mono);
-		font-size: max(0.85rem, var(--min-font, 0px));
+		font-variant-numeric: tabular-nums;
+	}
+	.time.soon {
+		color: var(--warn);
 	}
 	.time.low {
 		color: var(--danger);
+		font-weight: 600;
 	}
-	/* One line however long; the caller's name gives way first so its mark and the command stay
-	   readable, and the rest is under it once opened. The marker is drawn here, Safari's hidden. */
+	/* Who asked on a line of its own, then the command; a line too long ends in an ellipsis, the
+	   caller's name giving way before its mark. The rest is under it once opened. The marker is
+	   drawn here, Safari's hidden. */
 	summary {
-		display: flex;
-		gap: 0.4rem;
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		align-items: center;
+		gap: 0.3rem 0.4rem;
 		white-space: nowrap;
 		cursor: pointer;
-		font-size: max(0.9rem, var(--min-font, 0px));
+		font-size: max(0.8rem, var(--min-font, 0px));
 	}
 	summary::-webkit-details-marker {
 		display: none;
@@ -275,37 +524,59 @@
 	summary::before {
 		content: '▸';
 		content: '▸' / '';
-		flex: none;
+		color: var(--muted);
 	}
 	details[open] summary::before {
 		content: '▾';
 		content: '▾' / '';
 	}
-	summary > * {
-		min-width: 0;
+	.caller {
+		display: flex;
+		justify-self: start;
+		max-width: 100%;
+		padding: 0 0.55rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-pill);
+		color: var(--muted);
+	}
+	.who {
+		min-width: 2em;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
-	.who {
-		flex: 0 100 auto;
-		min-width: 2em;
-	}
-	summary .mark {
+	.mark {
 		flex: none;
-		margin-left: -0.4rem;
+	}
+	.verified .mark {
+		margin-left: 0.25rem;
+		color: var(--ok);
+		font-weight: 600;
+	}
+	.unverified .mark {
+		margin-left: 0.35rem;
+		color: var(--warn);
 	}
 	summary code {
-		flex: 0 1 auto;
-	}
-	details[open] summary {
-		margin-bottom: 0.35rem;
+		grid-column: 2;
+		justify-self: start;
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		padding: 0.1rem 0.5rem;
+		background: var(--bg);
+		border: 1px solid var(--line);
+		border-radius: calc(var(--radius) - 2px);
 	}
 	dl {
 		display: grid;
 		grid-template-columns: max-content 1fr;
-		gap: 0.2rem 0.8rem;
-		margin: 0;
-		font-size: max(0.9rem, var(--min-font, 0px));
+		gap: 0.25rem 0.8rem;
+		margin: 0.45rem 0 0;
+		padding: 0.5rem 0.6rem;
+		background: var(--bg);
+		border: 1px solid var(--line);
+		border-radius: calc(var(--radius) - 2px);
+		font-size: max(0.8rem, var(--min-font, 0px));
 	}
 	dt {
 		color: var(--muted);
@@ -317,14 +588,17 @@
 	}
 	code {
 		font-family: var(--mono);
-		font-size: 0.9em;
 	}
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.6rem;
-		margin: 0;
+		gap: 0.5rem;
+		margin: 0.1rem 0 0;
+	}
+	.actions button {
+		padding: 0.3rem 1rem;
+		font-size: max(0.9rem, var(--min-font, 0px));
 	}
 	/* The board's main button: it signs with the passkey here. */
 	.approve {
@@ -333,21 +607,56 @@
 		color: var(--bg);
 		font-weight: 600;
 	}
-	.page {
-		font-size: max(0.8rem, var(--min-font, 0px));
-		color: var(--muted);
+	.deny {
+		background: none;
+		color: var(--danger);
 	}
-	.pd-badge {
-		align-self: flex-start;
-		flex: none;
-		border-color: var(--warn);
-		color: var(--warn);
-		font-weight: 600;
+	.deny:hover {
+		border-color: var(--danger);
+	}
+	/* Beside the decision, not part of it. */
+	.actions .look {
+		margin-left: auto;
+		padding: 0.3rem 0.6rem;
+		background: none;
+		border-color: transparent;
+		color: var(--accent);
 		font-size: max(0.85rem, var(--min-font, 0px));
 	}
-	.deny {
-		border-color: var(--danger);
-		color: var(--danger);
+	.actions .look:hover {
+		border-color: var(--line);
+	}
+	/* Folded: one line that opens it again. */
+	.pd-badge {
+		display: block;
+		flex: none;
+		width: 100%;
+		margin-bottom: 0.5rem;
+		padding: 0.35rem 0.75rem;
+		text-align: left;
+		font-size: max(0.85rem, var(--min-font, 0px));
+		font-weight: 600;
+		border-left: 3px solid var(--warn);
+	}
+	.pd-badge::before {
+		display: inline-block;
+		margin-right: 0.45rem;
+		vertical-align: 0.05em;
+	}
+	.pd-badge::after {
+		content: '展開 ▾';
+		content: '展開 ▾' / '';
+		float: right;
+		font-weight: 400;
+		color: var(--muted);
+	}
+	.pd-badge .count {
+		margin-left: 0.15rem;
+	}
+	/* Light theme: no tint, a heavier line under the heading instead. */
+	:global(:root[data-theme='light']) header {
+		background: var(--surface);
+		border-bottom-width: 2px;
 	}
 	@media (max-width: 480px) {
 		dl {
@@ -356,12 +665,8 @@
 		dt:not(:first-child) {
 			margin-top: 0.3rem;
 		}
-		.time {
-			margin-left: 0;
-		}
-		.actions > * {
+		.actions > button:not(.look) {
 			flex: 1;
-			text-align: center;
 		}
 	}
 </style>

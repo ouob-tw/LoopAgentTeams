@@ -32,7 +32,8 @@ export interface PdRequest {
 	waiting: number;
 	/** Seconds it had left before timing out when it was read; null from a pd that does not say. */
 	remaining: number | null;
-	/** The request's page on the passkey site; null when pd gave none that is a web address. */
+	/** The request's page on the passkey site; null when pd gave none that is a web address. The
+	 *  board approves in its own panel and no longer links to it. */
 	approvalUrl: string | null;
 	/** Which start of pd's daemon holds it: numbers begin at 1 again with each start. Null from a
 	 *  pd that does not say. */
@@ -91,12 +92,12 @@ export type PdSnapshot = { ok: true; requests: PdRequest[] } | { ok: false; reas
 const clockText = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 
 /** A request's time as it reads `elapsed` milliseconds after it was read: what is left while pd says,
- *  else how long it has waited. `low` once 30 seconds or less are left. */
-export function timeText(request: PdRequest, elapsed: number): { text: string; low: boolean } {
+ *  else how long it has waited. `soon` once two minutes or less are left, `low` once 30 seconds. */
+export function timeText(request: PdRequest, elapsed: number): { text: string; soon: boolean; low: boolean } {
 	const passed = Math.max(0, Math.floor(elapsed / 1000));
-	if (request.remaining === null) return { text: `已等待 ${clockText(request.waiting + passed)}`, low: false };
+	if (request.remaining === null) return { text: `已等待 ${clockText(request.waiting + passed)}`, soon: false, low: false };
 	const left = Math.max(0, request.remaining - passed);
-	return { text: left ? `剩 ${clockText(left)}` : '即將逾時', low: left <= 30 };
+	return { text: left ? `剩 ${clockText(left)}` : '即將逾時', soon: left <= 120, low: left <= 30 };
 }
 
 /** A command short enough for one line: its first three words, each with a slash (a path, or a
@@ -118,7 +119,39 @@ export function callerParts(request: PdRequest): { who: string; mark: string } {
 	return { who: `${info.name}（${notes.join('，')}）`, mark: info.verified ? '✓' : '未通過查證' };
 }
 
+/** What the caller's mark is worth, for its explanation: pd's own words for its check, or that the
+ *  name is the caller's own claim. */
+export function callerNote(request: PdRequest): string {
+	return request.callerInfo ? request.callerInfo.notice : '對方自稱，未驗證';
+}
+
 export function callerText(request: PdRequest): string {
 	const { who, mark } = callerParts(request);
 	return who + mark;
+}
+
+/** Where the pd window lies and how big it is in the wide layout, in px from the window's top left. */
+export type PdBox = { x: number; y: number; w: number; h: number };
+/** The window's place once the user moved or resized it, saved in this browser. */
+export const PD_WINDOW_KEY = 'lat-board-pd-window';
+/** Narrow enough for a small screen, wide enough that a request's lines do not wrap. */
+export const PD_MIN_WIDTH = 360;
+export const PD_MIN_HEIGHT = 200;
+
+/** The box inside a view of `view` px, at least the window's smallest size where the view allows,
+ *  so it never ends up off screen. */
+export function clampBox(box: PdBox, view: { w: number; h: number }): PdBox {
+	const w = Math.round(Math.min(Math.max(box.w, PD_MIN_WIDTH), view.w));
+	const h = Math.round(Math.min(Math.max(box.h, PD_MIN_HEIGHT), view.h));
+	return { w, h, x: Math.round(Math.min(Math.max(box.x, 0), view.w - w)), y: Math.round(Math.min(Math.max(box.y, 0), view.h - h)) };
+}
+
+/** A saved box, or null for anything else. */
+export function readBox(text: string): PdBox | null {
+	try {
+		const box = JSON.parse(text) as Partial<PdBox>;
+		return [box.x, box.y, box.w, box.h].every((value) => typeof value === 'number' && Number.isFinite(value)) ? (box as PdBox) : null;
+	} catch {
+		return null;
+	}
 }
