@@ -1,18 +1,22 @@
 <script lang="ts">
-	// The pd 待核准 section above the inbox: one card per request pd's daemon holds for approval,
-	// with what it asks for and the time it has left. 核准 signs pd's one-time challenge with the
-	// user's passkey right here (rpId ouob.net); the board server only relays the challenge and the
-	// signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it through
-	// the board at once, as `pd deny` does without a code. A request that appears while the page is
-	// open opens a prompt with the same two buttons and, once the user allowed it (the 開啟通知
-	// button, never asked for unprompted), a browser notification whose click comes back to that
-	// prompt. With nothing waiting, or pd missing or down, one quiet line says so.
-	import { untrack } from 'svelte';
+	// The pd 待核准 overlay over the middle column, whichever list it shows: one card per request
+	// pd's daemon holds for approval, with what it asks for, the time it has left, and who asked and
+	// its command on one short line that a tap opens to the whole command, folder and caller, with
+	// what pd's check of the caller is worth. 核准 signs pd's one-time challenge with the user's
+	// passkey right here (rpId ouob.net); the board server only relays the challenge and the
+	// signature, pd's daemon verifies it, and the board never asks for a code. 拒絕 denies it through the board at once, as `pd deny` does without a code. 稍後 folds it
+	// to a badge above the column's tabs, which opens it again; a request that appears opens it too
+	// and, once the user allowed it (the 開啟通知 button, never asked for unprompted), raises a
+	// browser notification whose click comes back to it. With nothing waiting it is not shown; the
+	// page says on the 待辦 list when pd is missing or down.
+	import { tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
-	import { assertionJson, requestOptions, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
+	import { assertionJson, callerParts, callerText, requestOptions, shortCommand, timeText, type PdChallenge, type PdRequest, type PdSnapshot } from '#lib/board/pd.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
-	let { pd }: { pd: { snapshot: PdSnapshot; at: number } | null } = $props();
+	/** `onaway` takes the focus when folding leaves no badge on screen: a phone hides the middle
+	 *  column, badge and all, while it shows a content screen. */
+	let { pd, onaway }: { pd: { snapshot: PdSnapshot; at: number } | null; onaway?: () => void } = $props();
 
 	const requests = $derived(pd?.snapshot.ok ? pd.snapshot.requests : []);
 	let now = $state(Date.now());
@@ -30,10 +34,20 @@
 	 *  reading forgets it, for a pd that does not name its daemon start. */
 	let previous: Set<string> | null = null;
 	const key = (item: PdRequest) => `${item.daemon ?? ''}#${item.id}`;
-	/** New requests whose prompt is still to be answered or closed, oldest first. */
-	let queue = $state<number[]>([]);
-	const prompted = $derived(queue.map((id) => requests.find((item) => item.id === id)).find((item) => item !== undefined));
-	let dialog: HTMLDialogElement;
+	/** Whether the overlay is open rather than folded to its badge. */
+	let open = $state(true);
+	let overlay = $state<HTMLElement>();
+	let badge = $state<HTMLElement>();
+
+	/** Open or fold the overlay and put the focus on what stands in its place, as the control
+	 *  pressed is gone. */
+	async function show(value: boolean) {
+		open = value;
+		await tick();
+		if (value) overlay?.focus();
+		else if (badge?.checkVisibility()) badge.focus();
+		else onaway?.();
+	}
 
 	const notifications = typeof Notification === 'function';
 	let permission = $state<NotificationPermission>(notifications ? Notification.permission : 'denied');
@@ -43,8 +57,8 @@
 		const shown = new Notification(`pd 請求 #${item.id} 等你核准`, { body: `${item.item}：${item.command.join(' ')}`, tag: `pd-${item.id}` });
 		shown.onclick = () => {
 			window.focus();
-			queue = [item.id, ...queue.filter((id) => id !== item.id)];
 			shown.close();
+			void show(true);
 		};
 	}
 
@@ -54,21 +68,13 @@
 			previous = new Set();
 			return;
 		}
-		const ids = new Set(requests.map((item) => item.id));
 		const before = previous;
 		previous = new Set(requests.map(key));
 		if (before === null) return;
 		const fresh = requests.filter((item) => !before.has(key(item)));
-		untrack(() => (queue = [...queue.filter((id) => ids.has(id) && !fresh.some((item) => item.id === id)), ...fresh.map((item) => item.id)]));
+		if (fresh.length) open = true;
 		for (const item of fresh) notify(item);
 	});
-	$effect(() => {
-		if (prompted && !dialog.open) dialog.showModal();
-		if (!prompted && dialog.open) dialog.close();
-	});
-
-	/** Take a request's prompt away, as closing it or answering it does. */
-	const settle = (id: number) => (queue = queue.filter((queued) => queued !== id));
 
 	async function allowNotifications() {
 		permission = await Notification.requestPermission();
@@ -87,10 +93,7 @@
 		denying = [...denying, item.id];
 		const result = await post<{ ok: true }>('/api/pd/deny', { id: item.id });
 		denying = denying.filter((id) => id !== item.id);
-		if (result.ok) {
-			settle(item.id);
-			return toasts.show('ok', `已拒絕 pd 請求 #${item.id}（${item.item}）`);
-		}
+		if (result.ok) return toasts.show('ok', `已拒絕 pd 請求 #${item.id}（${item.item}）`);
 		failed(result, '沒有拒絕成功：看板沒有回應，請稍後再試。');
 	}
 
@@ -110,7 +113,6 @@
 			if (!credential) return toasts.show('failed', `passkey 驗證沒有完成，pd 請求 #${item.id} 仍待核准`);
 			const result = await post<{ ok: true }>('/api/pd/approve', { id: item.id, credential: assertionJson(credential as PublicKeyCredential) });
 			if (!result.ok) return failed(result, '沒有核准成功：看板沒有回應，請稍後再試。');
-			settle(item.id);
 			toasts.show('ok', `已核准 pd 請求 #${item.id}（${item.item}）`);
 		} finally {
 			approving = approving.filter((id) => id !== item.id);
@@ -118,46 +120,49 @@
 	}
 </script>
 
-{#snippet details(item: PdRequest)}
-	<dl>
-		<dt>欄位</dt>
-		<dd>{item.fields.join('、')}</dd>
-		<dt>指令</dt>
-		<dd><code>{item.command.join(' ')}</code></dd>
-		<dt>工作目錄</dt>
-		<dd><code>{item.cwd}</code></dd>
-		<dt>呼叫者</dt>
-		<dd>{item.caller}（對方自稱，未驗證）</dd>
-	</dl>
-{/snippet}
-
-{#snippet actions(item: PdRequest)}
-	<button type="button" class="approve" disabled={approving.includes(item.id)} onclick={() => void approve(item)}
-		>{approving.includes(item.id) ? '核准中…' : '核准'}</button
-	>
-	<button type="button" class="deny" disabled={denying.includes(item.id)} onclick={() => void deny(item)}
-		>{denying.includes(item.id) ? '拒絕中…' : '拒絕'}</button
-	>
-{/snippet}
-
-{#if pd && (!pd.snapshot.ok || requests.length)}
-	<section class="pd" aria-label="pd 待核准">
-		{#if !pd.snapshot.ok}
-			<p class="quiet">pd 待核准：{pd.snapshot.reason}</p>
-		{:else}
-			<h2>pd 待核准 <span class="count">（{requests.length}）</span></h2>
+{#if requests.length && pd}
+	{#if open}
+		<section class="pd" aria-label="pd 待核准" tabindex="-1" bind:this={overlay}>
+			<header>
+				<h2>pd 待核准 <span class="count">（{requests.length}）</span></h2>
+				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
+			</header>
 			<ul class="cards">
 				{#each requests as item (item.id)}
 					{@const time = timeText(item, now - pd.at)}
+					{@const caller = callerParts(item)}
 					<li class="card" data-pd-request={item.id}>
 						<p class="head">
 							<span class="item">{item.item}</span>
 							<span class="number">#{item.id}</span>
 							<span class="time" class:low={time.low} role="timer">{time.text}</span>
 						</p>
-						{@render details(item)}
+						<details>
+							<summary>
+								<span class="who">{caller.who}</span><span class="mark">{caller.mark}</span> <code>{shortCommand(item.command)}</code>
+							</summary>
+							<dl>
+								<dt>欄位</dt>
+								<dd>{item.fields.join('、')}</dd>
+								<dt>指令</dt>
+								<dd><code>{item.command.join(' ')}</code></dd>
+								<dt>工作目錄</dt>
+								<dd><code>{item.cwd}</code></dd>
+								<dt>呼叫者</dt>
+								{#if item.callerInfo}
+									<dd>{callerText(item)}<span class="notice">（{item.callerInfo.notice}）</span></dd>
+								{:else}
+									<dd>{item.caller}（對方自稱，未驗證）</dd>
+								{/if}
+							</dl>
+						</details>
 						<p class="actions">
-							{@render actions(item)}
+							<button type="button" class="approve" disabled={approving.includes(item.id)} onclick={() => void approve(item)}
+								>{approving.includes(item.id) ? '核准中…' : '核准'}</button
+							>
+							<button type="button" class="deny" disabled={denying.includes(item.id)} onclick={() => void deny(item)}
+								>{denying.includes(item.id) ? '拒絕中…' : '拒絕'}</button
+							>
 							{#if item.approvalUrl}
 								<a class="page" href={item.approvalUrl} target="_blank" rel="noopener noreferrer">改用 pd 核准頁</a>
 							{/if}
@@ -166,46 +171,38 @@
 				{/each}
 			</ul>
 			<p class="quiet">核准會在這頁用這台裝置的 passkey 解鎖驗證（通常是指紋或臉部辨識）；看板只轉送簽章，由 pd 驗證，不需要確認碼。</p>
-		{/if}
-		{#if notifications && permission === 'default'}
-			<p class="quiet">
-				<button type="button" class="allow" onclick={() => void allowNotifications()}>開啟通知</button>
-				有新的 pd 請求時發瀏覽器通知（只在看板開著時）
-			</p>
-		{/if}
-	</section>
+			{#if notifications && permission === 'default'}
+				<p class="quiet">
+					<button type="button" class="allow" onclick={() => void allowNotifications()}>開啟通知</button>
+					有新的 pd 請求時發瀏覽器通知（只在看板開著時）
+				</p>
+			{/if}
+		</section>
+	{:else}
+		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}>pd 待核准 {requests.length}</button>
+	{/if}
 {/if}
 
-<!-- A new request's prompt. Closing it (Esc or 稍後) leaves the request waiting on its card. Only
-     the effect above opens and closes it: a close event comes later and could take the next one. -->
-<dialog
-	bind:this={dialog}
-	class="prompt"
-	aria-labelledby="pd-prompt-title"
-	oncancel={(event) => {
-		event.preventDefault();
-		if (prompted) settle(prompted.id);
-	}}
->
-	{#if prompted}
-		<div class="body" data-pd-prompt={prompted.id}>
-			<h2 id="pd-prompt-title">pd 請求 #{prompted.id} 等你核准：{prompted.item}</h2>
-			{@render details(prompted)}
-			<p class="actions">
-				{@render actions(prompted)}
-				<button type="button" class="later" onclick={() => settle(prompted.id)}>稍後</button>
-			</p>
-		</div>
-	{/if}
-</dialog>
-
 <style>
+	/* Where it lies over the column is the page's to say; this is how it looks. */
 	.pd {
 		display: flex;
 		flex-direction: column;
 		gap: 0.45rem;
 		min-width: 0;
-		margin-bottom: 0.8rem;
+		padding: 0.6rem;
+		background: var(--bg);
+		border-top: 3px solid var(--warn);
+		box-shadow: 0 0.3rem 1rem color-mix(in srgb, #000 35%, transparent);
+	}
+	.pd:focus {
+		outline: none;
+	}
+	header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.6rem;
 	}
 	h2 {
 		margin: 0;
@@ -213,6 +210,7 @@
 	}
 	.count,
 	.quiet,
+	.notice,
 	.number {
 		color: var(--muted);
 		font-weight: 400;
@@ -262,6 +260,46 @@
 	.time.low {
 		color: var(--danger);
 	}
+	/* One line however long; the caller's name gives way first so its mark and the command stay
+	   readable, and the rest is under it once opened. The marker is drawn here, Safari's hidden. */
+	summary {
+		display: flex;
+		gap: 0.4rem;
+		white-space: nowrap;
+		cursor: pointer;
+		font-size: max(0.9rem, var(--min-font, 0px));
+	}
+	summary::-webkit-details-marker {
+		display: none;
+	}
+	summary::before {
+		content: '▸';
+		content: '▸' / '';
+		flex: none;
+	}
+	details[open] summary::before {
+		content: '▾';
+		content: '▾' / '';
+	}
+	summary > * {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.who {
+		flex: 0 100 auto;
+		min-width: 2em;
+	}
+	summary .mark {
+		flex: none;
+		margin-left: -0.4rem;
+	}
+	summary code {
+		flex: 0 1 auto;
+	}
+	details[open] summary {
+		margin-bottom: 0.35rem;
+	}
 	dl {
 		display: grid;
 		grid-template-columns: max-content 1fr;
@@ -299,25 +337,13 @@
 		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
-	.prompt {
-		width: min(26rem, calc(100vw - 2rem));
-		padding: 0;
-		background: var(--surface);
-		color: var(--text);
-		border: 2px solid var(--warn);
-		border-radius: var(--radius);
-	}
-	.prompt::backdrop {
-		background: none;
-	}
-	.prompt .body {
-		display: flex;
-		flex-direction: column;
-		gap: 0.7rem;
-		padding: 1rem;
-	}
-	.prompt h2 {
-		overflow-wrap: anywhere;
+	.pd-badge {
+		align-self: flex-start;
+		flex: none;
+		border-color: var(--warn);
+		color: var(--warn);
+		font-weight: 600;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	.deny {
 		border-color: var(--danger);

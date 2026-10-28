@@ -3,10 +3,26 @@
 // ever reach a page; pd itself never lists a secret value. 核准 signs pd's challenge with the user's
 // passkey in the page; the board server only relays it, and pd's daemon decides.
 
+/** Who asked as pd's daemon checked it against the process tree (`caller_info`). The group and
+ *  controller flag are what the requester's HCOM records say; `verified` is not proof against a
+ *  program of the same account that means to fake it. */
+export interface PdCaller {
+	name: string;
+	client: string;
+	group: string | null;
+	/** True for an HCOM agent without a tag, false with one, null when unknown. */
+	orchestrator: boolean | null;
+	source: string;
+	verified: boolean;
+	notice: string;
+}
+
 export interface PdRequest {
 	id: number;
 	/** Who asked, as the requester declared it: not verified. */
 	caller: string;
+	/** The daemon's check of the caller; null from a pd that does not give one. */
+	callerInfo: PdCaller | null;
 	item: string;
 	fields: string[];
 	/** The command the request would run, word by word, with any value pd recognised masked. */
@@ -81,4 +97,28 @@ export function timeText(request: PdRequest, elapsed: number): { text: string; l
 	if (request.remaining === null) return { text: `已等待 ${clockText(request.waiting + passed)}`, low: false };
 	const left = Math.max(0, request.remaining - passed);
 	return { text: left ? `剩 ${clockText(left)}` : '即將逾時', low: left <= 30 };
+}
+
+/** A command short enough for one line: its first three words, each with a slash (a path, or a
+ *  flag with one) cut to what follows the last, and `…` when more follows. The card shows the
+ *  whole command on a tap. */
+export function shortCommand(command: string[]): string {
+	const words = command.slice(0, 3).map((word) => (word.includes('/') && !word.includes('://') ? word.replace(/\/+$/, '').split('/').pop() || word : word));
+	return words.join(' ') + (command.length > 3 ? ' …' : '');
+}
+
+/** Who asked, and the mark of how far to trust it, apart so a short line can cut the name and
+ *  never the mark: `dahe（claude，主控）` `✓`, `dahe-t09-vafu（codex，群組 dahe-t09）` `未通過查證`,
+ *  or `codex` `（自稱）`, the declared name, from a pd without the daemon's check. */
+export function callerParts(request: PdRequest): { who: string; mark: string } {
+	const info = request.callerInfo;
+	if (!info) return { who: request.caller, mark: '（自稱）' };
+	const role = info.orchestrator ? '主控' : info.group ? `群組 ${info.group}` : null;
+	const notes = [info.client, role, info.source === 'manual' ? '手動' : null].filter((note) => note !== null);
+	return { who: `${info.name}（${notes.join('，')}）`, mark: info.verified ? '✓' : '未通過查證' };
+}
+
+export function callerText(request: PdRequest): string {
+	const { who, mark } = callerParts(request);
+	return who + mark;
 }

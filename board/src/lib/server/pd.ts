@@ -5,7 +5,7 @@
 // approve without the user's passkey. It never asks for or handles pd's confirmation code.
 // pd lists no secret values; only the fields of board/pd.ts are kept, and a reason never repeats
 // pd's own words, which reach every page.
-import type { PdAssertion, PdChallenge, PdRequest, PdSnapshot } from '../board/pd.ts';
+import type { PdAssertion, PdCaller, PdChallenge, PdRequest, PdSnapshot } from '../board/pd.ts';
 import { runCommand, type ExternalResult } from './external.ts';
 
 type Json = Record<string, unknown>;
@@ -13,6 +13,7 @@ type Json = Record<string, unknown>;
 const isRecord = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value);
 const text = (value: unknown) => (typeof value === 'string' ? value : '');
 const words = (value: unknown) => (Array.isArray(value) ? value.filter((word) => typeof word === 'string') : []);
+const known = (value: unknown) => (typeof value === 'string' && value ? value : 'unknown');
 const wholeSeconds = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null);
 
 /** pd's exit when it cannot reach its daemon (EX_UNAVAILABLE). */
@@ -40,6 +41,24 @@ function ended(run: ExternalResult): string {
 	return run.timedOut ? '逾時' : run.code === null ? '沒有正常結束' : `結束碼 ${run.code}`;
 }
 
+/** pd's check of the caller, without the process number and start time a page has no use for.
+ *  A field missing reads unknown, and only an explicit true on a whole record counts as verified:
+ *  pd checks the name, client, process number, start time and program together. */
+function callerInfo(value: unknown): PdCaller | null {
+	if (!isRecord(value)) return null;
+	const whole = [value.name, value.client, value.source, value.program].every((field) => typeof field === 'string' && field && field !== 'unknown')
+		&& Number.isInteger(value.pid) && Number.isInteger(value.start_time);
+	return {
+		name: known(value.name),
+		client: known(value.client),
+		group: typeof value.group === 'string' && value.group ? value.group : null,
+		orchestrator: typeof value.orchestrator === 'boolean' ? value.orchestrator : null,
+		source: known(value.source),
+		verified: value.verified === true && whole,
+		notice: text(value.notice) || '程序樹查證，非防竄改'
+	};
+}
+
 /** What `pd pending --json` answered. A request without its number is left out: it could not be
  *  denied or opened. */
 export function parsePdPending(run: ExternalResult): PdSnapshot {
@@ -61,6 +80,7 @@ export function parsePdPending(run: ExternalResult): PdSnapshot {
 				{
 					id: row.id as number,
 					caller: text(row.caller),
+					callerInfo: callerInfo(row.caller_info),
 					item: text(row.item),
 					fields: words(row.fields),
 					command: words(row.argv),

@@ -2,9 +2,9 @@
 // (WebAuthn over the DevTools protocol), on the built board with a fake pd (tests/fake-pd.mjs).
 // Chrome reaches the board as lat.ouob.net (resolved to 127.0.0.1, treated as a secure origin), so
 // the page can ask for an assertion for rpId ouob.net as it does in production; nothing leaves the
-// host. A request that appears opens a prompt; 核准 signs pd's challenge in the page and the board
-// hands the assertion to `pd passkey approve`. Notifications are asked for only on a click, and a
-// notification's click comes back to the prompt.
+// host. A request that appears opens the folded overlay again; 核准 signs pd's challenge in the page
+// and the board hands the assertion to `pd passkey approve`. Notifications are asked for only on a
+// click, and a notification's click comes back to the overlay.
 import { createHash, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,7 +12,13 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, until, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser } from '../browser.ts';
 
-const SCREEN = `({ prompt: document.querySelector('dialog.prompt')?.innerText ?? null, pd: document.querySelector('.inbox .pd')?.innerText ?? '' })`;
+const SCREEN = `({ badge: document.querySelector('.pd-badge')?.innerText ?? null, pd: document.querySelector('.inbox .pd')?.innerText ?? '' })`;
+// The overlay open with the request's card on it.
+const shows = (id: number) => `!!document.querySelector('.inbox .pd [data-pd-request="${id}"]')`;
+const fold = async (tab: Browser['tab']) => {
+	await tab.pointerClick('.pd button.later');
+	await tab.until(`!document.querySelector('.inbox .pd') && !!document.querySelector('.pd-badge')`, 'the overlay folded');
+};
 // The page's Notification, recorded: what it was asked to show, and when permission was requested
 // whether a user gesture was under way. Its permission starts as a fresh profile's does.
 const NOTIFICATIONS = `(() => {
@@ -60,7 +66,7 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-test.skipIf(!CHROME)('a new request opens a prompt; 核准 signs pd\'s challenge in the page for rpId ouob.net; notifications only after a click', async () => {
+test.skipIf(!CHROME)('a new request opens the folded overlay; 核准 signs pd\'s challenge in the page for rpId ouob.net; notifications only after a click', async () => {
 	const port = new URL(fixture.url).port;
 	const origin = `http://lat.ouob.net:${port}`;
 	setPd([waiting(3, 'npm token')]);
@@ -92,10 +98,9 @@ test.skipIf(!CHROME)('a new request opens a prompt; 核准 signs pd\'s challenge
 	await tab.navigate(`${origin}/`);
 	await tab.until(`document.querySelectorAll('.inbox .pd .card').length === 1`, 'the first card');
 
-	// What was waiting when the page opened shows on its card; no prompt, and nobody asked for notifications.
-	expect(await tab.eval(`document.querySelector('dialog.prompt').open`)).toBe(false);
+	// What was waiting when the page opened shows on its card; nobody asked for notifications.
 	expect(await tab.eval(`window.__asked.length`)).toBe(0);
-	expect(await tab.eval(`document.querySelectorAll('.pd input, .pd form, dialog.prompt input').length`)).toBe(0);
+	expect(await tab.eval(`document.querySelectorAll('.pd input, .pd form').length`)).toBe(0);
 
 	// Only a click asks, and then the button is gone. It shows once the page runs in the browser.
 	await tab.until(`!!document.querySelector('.pd button.allow')`, 'the 開啟通知 button');
@@ -103,21 +108,21 @@ test.skipIf(!CHROME)('a new request opens a prompt; 核准 signs pd\'s challenge
 	await tab.until(`!document.querySelector('.pd button.allow')`, 'the 開啟通知 button gone');
 	expect(await tab.eval(`window.__asked`)).toEqual([true]);
 
-	// A new request: its prompt opens, and a notification is raised for it.
+	// A new request opens the folded overlay, and a notification is raised for it.
+	await fold(tab);
 	setPd([waiting(3, 'npm token'), waiting(4, 'GitHub token')]);
-	await tab.until(`document.querySelector('dialog.prompt')?.open && !!document.querySelector('[data-pd-prompt="4"]')`, 'the prompt for #4');
-	expect(await tab.eval<string>(`document.querySelector('dialog.prompt').innerText`)).toContain('GitHub token');
+	await tab.until(shows(4), 'the overlay open for #4');
+	expect(await tab.eval<string>(`document.querySelector('.pd [data-pd-request="4"]').innerText`)).toContain('GitHub token');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4']);
 
-	// 稍後 closes it; the notification's click brings it back.
-	await tab.pointerClick('dialog.prompt button.later');
-	await tab.until(`!document.querySelector('dialog.prompt').open`, 'the prompt closed');
+	// The notification's click opens it again and puts the focus on it.
+	await fold(tab);
 	await tab.eval(`window.__notes[0].onclick()`);
-	await tab.until(`document.querySelector('dialog.prompt')?.open && !!document.querySelector('[data-pd-prompt="4"]')`, 'the prompt back for #4');
+	await tab.until(`${shows(4)} && document.activeElement === document.querySelector('.inbox .pd')`, 'the overlay back and focused');
 	expect(await tab.eval(`window.__notes[0].closed`)).toBe(true);
 
-	await tab.pointerClick('dialog.prompt button.approve');
-	await tab.until(`!document.querySelector('[data-pd-request="4"]') && !document.querySelector('dialog.prompt').open`, 'the approved request gone');
+	await tab.pointerClick('.pd [data-pd-request="4"] button.approve');
+	await tab.until(`!document.querySelector('[data-pd-request="4"]')`, 'the approved request gone');
 	expect(await tab.eval<string>(`document.body.innerText`)).toContain('已核准 pd 請求 #4（GitHub token）');
 	expect(JSON.parse(readFileSync(join(fixture.dir, 'pd.json'), 'utf8')).pending.map((request: { id: number }) => request.id)).toEqual([3]);
 
@@ -135,32 +140,32 @@ test.skipIf(!CHROME)('a new request opens a prompt; 核准 signs pd\'s challenge
 	const signed = Buffer.concat([authData, createHash('sha256').update(clientData).digest()]);
 	expect(verify('sha256', signed, keys.publicKey, Buffer.from(assertion.response.signature, 'base64url'))).toBe(true);
 
-	// 拒絕 in a prompt denies, as on the card.
+	// 拒絕 denies.
+	await fold(tab);
 	setPd([waiting(3, 'npm token'), waiting(5, 'Docker token')]);
-	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for #5');
-	await tab.pointerClick('dialog.prompt button.deny');
-	await tab.until(`!document.querySelector('[data-pd-request="5"]') && !document.querySelector('dialog.prompt').open`, 'the denied request gone');
+	await tab.until(shows(5), 'the overlay open for #5');
+	await tab.pointerClick('.pd [data-pd-request="5"] button.deny');
+	await tab.until(`!document.querySelector('[data-pd-request="5"]')`, 'the denied request gone');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5']);
 
 	// A number that left and came back is new.
+	await fold(tab);
 	setPd([waiting(5, 'Docker token')]);
-	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for the reused #5');
+	await tab.until(shows(5), 'the overlay open for the reused #5');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5', 'pd-5']);
-	await tab.pointerClick('dialog.prompt button.later');
-	await tab.until(`!document.querySelector('dialog.prompt').open`, 'the prompt closed');
 
 	// pd numbers from 1 again after its daemon restarts: the same number from another start is new,
 	// even when the restart fell between two readings.
+	await fold(tab);
 	setPd([waiting(5, 'Docker token', 'start-2')]);
-	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for #5 after a restart between readings');
-	await tab.pointerClick('dialog.prompt button.later');
-	await tab.until(`!document.querySelector('dialog.prompt').open`, 'the prompt closed');
+	await tab.until(shows(5), 'the overlay open for #5 after a restart between readings');
 
 	// After a failed reading, what comes back is new, for a pd that does not name its daemon start.
+	await fold(tab);
 	writeFileSync(join(fixture.dir, 'pd.json'), JSON.stringify({ pending: [], unavailable: true }));
-	await tab.until(`document.querySelector('.inbox .pd .quiet')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'pd unavailable');
+	await tab.until(`document.querySelector('.inbox .pd-off')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'pd unavailable');
 	setPd([{ ...waiting(5, 'Docker token'), daemon: undefined }]);
-	await tab.until(`!!document.querySelector('[data-pd-prompt="5"]')`, 'the prompt for #5 after pd came back');
+	await tab.until(shows(5), 'the overlay open for #5 after pd came back');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5', 'pd-5', 'pd-5', 'pd-5']);
 	expect(tab.errors).toEqual([]);
 }, 30_000);

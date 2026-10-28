@@ -1,8 +1,8 @@
-// The pd 待核准 section's data: what `pd pending --json` and `pd deny` answered, read into the
-// fields the section shows and the answers the deny and passkey relay routes give, and how the
-// section words a request's time. Test values only.
+// The pd 待核准 overlay's data: what `pd pending --json` and `pd deny` answered, read into the
+// fields the overlay shows and the answers the deny and passkey relay routes give, and how the
+// overlay words a request's time and shortens its command. Test values only.
 import { expect, test } from 'bun:test';
-import { timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
+import { callerText, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
 import { approveReply, challengeReply, checkAssertion, createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
 
@@ -21,7 +21,8 @@ const listed = {
 	id: 7,
 	waiting: 12,
 	remaining: 108,
-	caller: 'claude',
+	caller: 'dahe',
+	caller_info: { name: 'dahe', client: 'claude', group: null, orchestrator: true, source: 'auto', pid: 4242, start_time: 98765, program: 'claude', verified: true, notice: '程序樹查證，非防竄改' },
 	item: 'GitHub token',
 	item_id: 'item-uuid-1',
 	fields: ['password'],
@@ -34,6 +35,7 @@ const listed = {
 const request = (overrides: Partial<PdRequest> = {}): PdRequest => ({
 	id: 7,
 	caller: 'claude',
+	callerInfo: null,
 	item: 'GitHub token',
 	fields: ['password'],
 	command: ['gh', 'api', 'user'],
@@ -45,13 +47,15 @@ const request = (overrides: Partial<PdRequest> = {}): PdRequest => ({
 	...overrides
 });
 
-test('a pending list keeps only the fields the section shows', () => {
+test('a pending list keeps only the fields the overlay shows', () => {
 	expect(parsePdPending(exited(0, JSON.stringify([listed]) + '\n'))).toEqual({
 		ok: true,
 		requests: [
 			{
 				id: 7,
-				caller: 'claude',
+				caller: 'dahe',
+				// Not the process number, start time or program.
+				callerInfo: { name: 'dahe', client: 'claude', group: null, orchestrator: true, source: 'auto', verified: true, notice: '程序樹查證，非防竄改' },
 				item: 'GitHub token',
 				fields: ['password'],
 				command: ['gh', 'api', 'user', '***'],
@@ -103,6 +107,29 @@ test('a request’s time counts down from what pd said, or up from its wait with
 	expect(timeText(request(), 78_400)).toEqual({ text: '剩 0:30', low: true });
 	expect(timeText(request(), 200_000)).toEqual({ text: '即將逾時', low: true });
 	expect(timeText(request({ remaining: null }), 50_000)).toEqual({ text: '已等待 1:02', low: false });
+});
+
+test('a caller pd checked reads with its client, role and check; without the check, its declared name', () => {
+	const checked = parsePdPending(exited(0, JSON.stringify([listed])));
+	expect(checked.ok && callerText(checked.requests[0])).toBe('dahe（claude，主控）✓');
+	const info = { name: 'dahe-t09-vafu', client: 'codex', group: 'dahe-t09', orchestrator: false, source: 'auto', verified: false, notice: '程序樹查證，非防竄改' };
+	expect(callerText(request({ callerInfo: info }))).toBe('dahe-t09-vafu（codex，群組 dahe-t09）未通過查證');
+	expect(callerText(request({ callerInfo: { ...info, name: 'x', group: null, orchestrator: null, source: 'manual' } }))).toBe('x（codex，手動）未通過查證');
+	expect(callerText(request())).toBe('claude（自稱）');
+	// Fields missing read unknown, and only an explicit true on a whole record is verified.
+	const sparse = parsePdPending(exited(0, JSON.stringify([{ ...listed, caller_info: { verified: 'yes' } }])));
+	expect(sparse.ok && sparse.requests[0].callerInfo).toEqual({ name: 'unknown', client: 'unknown', group: null, orchestrator: null, source: 'unknown', verified: false, notice: '程序樹查證，非防竄改' });
+	for (const partial of [{ verified: true }, { ...listed.caller_info, pid: null }, { ...listed.caller_info, program: null }, { ...listed.caller_info, name: 'unknown' }]) {
+		const read = parsePdPending(exited(0, JSON.stringify([{ ...listed, caller_info: partial }])));
+		expect(read.ok && read.requests[0].callerInfo?.verified).toBe(false);
+	}
+});
+
+test('a command shortens to its first three words, paths to their last part', () => {
+	expect(shortCommand(['/usr/bin/python3', '/home/u/tools/npm_login.py'])).toBe('python3 npm_login.py');
+	expect(shortCommand(['npm', 'publish', '--dry-run'])).toBe('npm publish --dry-run');
+	expect(shortCommand(['gh', 'api', 'https://api.github.com/user', '--paginate'])).toBe('gh api https://api.github.com/user …');
+	expect(shortCommand([])).toBe('');
 });
 
 test('a refresh asked for during a read reads once more after it, and only changes go out', async () => {

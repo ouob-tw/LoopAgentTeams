@@ -431,6 +431,8 @@
 		{@render resize('roster')}
 
 		<section class="inbox">
+			<!-- Over the column on every list while a pd request waits; its badge above the tabs once folded. -->
+			<PdPending pd={board.pd} onaway={() => detail.focus({ preventScroll: true })} />
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
 			     views, as the list they switch has no panel of its own around it. -->
 			<div class="middle-tabs" role="group" aria-label="清單">
@@ -446,7 +448,9 @@
 				<AgentList {agents} {controllers} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
 				<ClosedAgents {closed} currentId={agentId} onopen={openAgent} />
 			{:else}
-				<PdPending pd={board.pd} />
+				{#if board.pd && !board.pd.snapshot.ok}
+					<p class="pd-off">pd 待核准：{board.pd.snapshot.reason}</p>
+				{/if}
 				<Inbox
 					items={listedInbox}
 					asks={openAsks}
@@ -689,6 +693,27 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
+	}
+	/* The pd overlay covers the middle column, above its own scrolling, and leaves the roster, the
+	   content column and the command line free. The handle over the border stays on top. */
+	.inbox > :global(.pd) {
+		position: absolute;
+		top: 0;
+		bottom: var(--dock-h, 0px);
+		left: var(--col-roster);
+		width: var(--col-inbox);
+		z-index: 5;
+		overflow-y: auto;
+		border-right: 1px solid var(--line);
+	}
+	/* What it covers is out of reach of the keyboard too. */
+	.inbox:has(> :global(.pd)) > :global(:not(.pd)) {
+		visibility: hidden;
+	}
+	.pd-off {
+		margin: 0 0 0.4rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
+		color: var(--muted);
 	}
 	/* The middle column's two lists, as tabs like those of an information page. */
 	/* One line however narrow the column: the tabs scroll sideways rather than wrap. */
@@ -995,6 +1020,15 @@
 		.roster {
 			padding-bottom: 0;
 		}
+		/* The page scrolls as one here: the overlay takes the column's place while it is open. */
+		.inbox > :global(.pd) {
+			position: static;
+			width: auto;
+			overflow-y: visible;
+		}
+		.inbox:has(> :global(.pd)) > :global(:not(.pd)) {
+			display: none;
+		}
 		/* Cards sit 3px from the screen edges; plain text keeps the cards' own inner indent. */
 		.roster,
 		.inbox {
@@ -1025,6 +1059,13 @@
 		}
 		.viewing .detail {
 			display: flex;
+		}
+		/* An open pd overlay takes the screen over the content too; 稍後 gives it back. */
+		.viewing .inbox:has(> :global(.pd)) {
+			display: block;
+		}
+		.viewing:has(.inbox > :global(.pd)) .detail {
+			display: none;
 		}
 		/* Below the bar, which stays on top. */
 		.placeholder {
