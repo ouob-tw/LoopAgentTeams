@@ -52,6 +52,7 @@
 			if (agent.status !== 'idle') return AGENT_BUSY_REASON;
 		}
 		if (!status) return '讀取中…';
+		if (status.blocked) return status.blocked;
 		if (client === 'claude' && status.reason) return status.reason;
 		if (sending) return '切換中…';
 		return null;

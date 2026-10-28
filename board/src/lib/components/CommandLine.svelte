@@ -192,8 +192,13 @@
 	let confirming = $state<Record<string, boolean>>({});
 
 	const id = $derived(recipient?.id ?? '');
-	/** The recipient controller as Herdr lists it now: its permission mode is switched as an agent's. */
-	const recipientAgent = $derived(recipient ? (agents.find((candidate) => candidate.id === recipient.id && candidate.inHerdr) as KnownAgent | undefined) : undefined);
+	/** The page's own controller as Herdr lists it now, not one an `@name` line names: its permission
+	 *  mode is switched as an agent's. */
+	const recipientAgent = $derived.by((): KnownAgent | undefined => {
+		if (!recipient || recipient.id !== target?.id || command.ok) return undefined;
+		const listed = agents.find((candidate) => candidate.id === recipient.id && candidate.inHerdr);
+		return listed?.id ? { ...listed, id: listed.id } : undefined;
+	});
 	const status = $derived(waking ? switching.status[id] : undefined);
 	// A new model and effort only apply when the client is known not to be running: a running one
 	// is typed into and keeps its settings.

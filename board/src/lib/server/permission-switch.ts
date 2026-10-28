@@ -35,7 +35,7 @@ import { readAgentActions } from './sent-views.ts';
 const SHOW_WAIT_MS = 2_000;
 const SHOW_POLL_MS = 150;
 
-const OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，沒有按鍵。';
+const OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，看板不替它切換權限。';
 const BLOCKED_REASON = 'Herdr 說這個 Agent 正停在確認畫面，沒有按鍵。';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -82,6 +82,7 @@ async function bypassOff(board: Board, agentId: string): Promise<boolean> {
 export async function agentPermissionStatus(board: Board, agentId: string): Promise<PermissionStatus | null> {
 	const agent = (await board.current()).agents.find((candidate) => candidate.id === agentId);
 	if (!agent) return null;
+	const blocked = agent.inHerdr && agent.herdr.pane === board.config.ownPane ? OWN_PANE_REASON : null;
 	if (agent.client === 'claude') {
 		const screen = agent.inHerdr ? await screenOf(board, agent.herdr.pane) : { mode: null, reason: AGENT_GONE_REASON };
 		const missing = leftOut(board, agentId, screen.mode);
@@ -90,6 +91,7 @@ export async function agentPermissionStatus(board: Board, agentId: string): Prom
 			client: 'claude',
 			current: screen.mode,
 			reason: screen.mode === null ? screen.reason : null,
+			blocked,
 			modes: CLAUDE_MODES.map((mode) => ({
 				id: mode,
 				label: CLAUDE_MODE_LABEL[mode],
@@ -104,10 +106,11 @@ export async function agentPermissionStatus(board: Board, agentId: string): Prom
 			client: 'codex',
 			current: permission && 'approval' in permission ? codexMode(permission) : null,
 			reason: read.ok ? null : '讀不到它的對話紀錄，不知道目前的權限',
+			blocked,
 			modes: CODEX_MODES.map((mode) => ({ id: mode, label: CODEX_MODE_LABEL[mode], reason: null }))
 		};
 	}
-	return { client: null, current: null, reason: `看板不會切換 ${agent.client || '這個 client'} 的權限模式`, modes: [] };
+	return { client: null, current: null, reason: `看板不會切換 ${agent.client || '這個 client'} 的權限模式`, blocked: null, modes: [] };
 }
 
 /** Switch a Claude agent's mode with Shift+Tab (see the top of this file). */

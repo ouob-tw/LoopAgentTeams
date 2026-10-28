@@ -184,6 +184,8 @@ export interface PermissionStatus {
 	current: string | null;
 	/** Why the current mode is not known, or why nothing can be switched now; null otherwise. */
 	reason: string | null;
+	/** Why no switch is offered at all, whatever the mode (the board's own pane); null otherwise. */
+	blocked: string | null;
 	/** The three modes, each with why it cannot be picked (null when it can). */
 	modes: { id: string; label: string; reason: string | null }[];
 }

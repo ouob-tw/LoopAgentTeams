@@ -913,7 +913,7 @@ test.skipIf(!CHROME)('on an agent\'s page a line starting with @name still goes 
 	await type('@lead 給主控的話');
 	// Named: the controller is the recipient, with its own model and effort beside the button.
 	await tab.until(`document.querySelector('.dock .to').innerText === '→ @lead'`, 'the controller as recipient');
-	expect(await tab.eval(`!!document.querySelector('.dock [data-action="apply"], .dock [data-pick="model"], .dock [data-pick="effort"]')`)).toBe(false);
+	expect(await tab.eval(`!!document.querySelector('.dock [data-action="apply"], .dock [data-pick]')`)).toBe(false);
 	await click(SEND);
 	await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');
 	const injected = readFileSync(join(injectDir, 'inject-calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));

@@ -272,3 +272,14 @@ test('a Codex agent with no saved conversation is not switched', async () => {
 	expect(refused.body.reason).toContain('還沒有對話紀錄');
 	expect(hcomCalls()).toEqual([]);
 });
+
+test("the agent in the board's own pane is offered no switch, and none is pressed for it", async () => {
+	const own = herdrAgent('s-own', 'wA:p-s-board');
+	setHerdr({ agents: [own], screens: { 'wA:p-s-board': claudeScreens(FULL) } });
+	fixture.setHcom({ agents: [] });
+	await fixture.refresh(cookie);
+	expect((await permission('s-own')).blocked).toContain('看板自己所在的窗格');
+	const refused = await post({ session: 's-own', mode: 'auto' });
+	expect(refused.status).toBe(409);
+	expect(keyPresses()).toEqual([]);
+});
