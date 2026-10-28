@@ -2294,12 +2294,28 @@ def read_map(registry):
         _strings(rule.get('paths'), f'affected.map[{i}].paths', allow_empty=False)
         _strings(rule.get('tests'), f'affected.map[{i}].tests')
     shared = _strings(affected.get('shared', []), 'affected.shared')
+    checks = affected.get('checks', [])
+    if not isinstance(checks, list) or not all(
+            isinstance(c, dict) and isinstance(c.get('command'), str) and c['command'].strip()
+            and isinstance(c.get('cwd', '.'), str) for c in checks):
+        raise ValueError('affected.checks must list {"paths": [...], "command": "...", '
+                         '"cwd": "<dir>"} entries')
+    for i, check in enumerate(checks):
+        _strings(check.get('paths'), f'affected.checks[{i}].paths', allow_empty=False)
     suites = read_full_suites(registry)
     branch = registry.get('integration_branch')
     if branch is not None and (not isinstance(branch, str) or not branch):
         raise ValueError('integration_branch must be a branch name')
     return {'commands': {_dir_key(k): v for k, v in commands.items()}, 'rules': rules,
-            'shared': shared, 'branch': branch, 'suites': suites}
+            'shared': shared, 'branch': branch, 'suites': suites,
+            'checks': [dict(c, cwd=_dir_key(c.get('cwd', '.'))) for c in checks]}
+
+
+def due_checks(amap, changed):
+    """The affected.checks (a command run in a directory, such as a type check) whose paths
+    the changed files touch."""
+    return [c for c in amap['checks']
+            if any(glob_match(path, p) for path in changed for p in c['paths'])]
 
 
 def read_full_suites(registry):
@@ -2533,6 +2549,7 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
         else:
             groups.setdefault(directory, []).append(test)
     code, failed = 0, []
+    checks = due_checks(amap, extra['changed_files'])
 
     def prepared(cwd, what):
         reason = prepare(cwd) if prepare else None
@@ -2547,13 +2564,28 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
         groups = {d: kept for d, tests in groups.items()
                   if (kept := [t for t in tests if not any(
                       s['cwd'] == '.' or t.startswith(s['cwd'] + '/') for s in suites)])}
-        if not groups:
+        if not groups and not checks:
             return code, failed
-    elif not groups:
+    elif not groups and not checks:
         return None, []
-    warn('selected tests:')
+    if groups:
+        warn('selected tests:')
     for test in sorted(t for tests in groups.values() for t in tests):
         warn(f"  {test}  ({'; '.join(selected[test])})")
+    for check in checks:
+        cwd = suite_cwd(root, check)
+        if not prepared(cwd, check['cwd']):
+            code = code or 2
+            failed.append((check['cwd'], check['command'], ['check']))
+            continue
+        warn(f"checking in {check['cwd']}: {check['command']}")
+        gate = Gate([check['command']], cwd, None, load_config(), dict(
+            extra, kind='affected', reusable=False, selected_tests=[], why={},
+            **({'via': via} if via else {})))
+        result = _drive(gate, lambda: gate.execute(fingerprint(cwd, [check['command']])))
+        if result:
+            failed.append((check['cwd'], check['command'], ['check']))
+        code = code or result
     for directory, tests in groups.items():
         rel = [t if directory == '.' else t[len(directory) + 1:] for t in tests]
         text = amap['commands'][directory].replace('{tests}', ' '.join(map(shlex.quote, rel)))
@@ -3551,7 +3583,7 @@ def cmd_pre_commit():
                 return 1
             copy_included(root, checkout, staged)
             selected, fallback = select_tests(checkout, changed, amap, head)
-            if not selected and not fallback:
+            if not selected and not fallback and not due_checks(amap, changed):
                 return 0
             warn(f'pre-commit: testing the staged change against HEAD ({len(changed)} '
                  f'file(s)) in a temporary checkout: {checkout}')

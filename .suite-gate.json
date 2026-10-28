@@ -462,6 +462,10 @@
       {"paths": ["**/*.md", "docs/**", "LICENSE", "scripts/install-matt-skills.py", "skills/matt/**", ".serena/**"],
        "tests": []}
     ],
+    "checks": [
+      {"paths": ["board/**"],
+       "cwd": "board", "command": "bun run check"}
+    ],
     "shared": [
       ".suite-gate.json",
       ".suite-gate.d/**",

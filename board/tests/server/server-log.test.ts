@@ -6,7 +6,7 @@ import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { CLIENT_ERRORS_PER_WINDOW, MAX_CLIENT_ERROR_CHARS, MAX_FRAMES, MAX_USER_AGENT } from '../../src/lib/server/client-errors.ts';
-import { logged, PASSWORD, question, startFixture, type Fixture } from '../harness.ts';
+import { BUILD_DIR, logged, PASSWORD, question, startFixture, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -205,7 +205,7 @@ test('ordinary refusals and successes write nothing', async () => {
 const at = (path: string) => `${fixture.url}${path}`;
 // Two script files this build really has.
 const [CHUNK, ENTRY] = ['chunks', 'entry'].map((dir) => {
-	const file = readdirSync(join(import.meta.dir, '../../build-test/client/_app/immutable', dir)).find((name) => name.endsWith('.js'));
+	const file = readdirSync(join(import.meta.dir, '../..', BUILD_DIR, 'client/_app/immutable', dir)).find((name) => name.endsWith('.js'));
 	return `/_app/immutable/${dir}/${file}`;
 });
 const report = () => ({

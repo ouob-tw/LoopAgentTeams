@@ -176,6 +176,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 | `full_suites[].depends_on` | 這套測試在執行目錄以外還會讀或執行的檔案（路徑 glob，相對 repo 根，寫法同 `map`：`*` 不跨目錄、`**` 跨目錄，整個資料夾寫 `dir/**`）。有這欄時指紋只看執行目錄、共用檔案與這些路徑（見[怎樣算「同一份內容」](#怎樣算同一份內容)）；空清單表示只看自己的目錄。沒有這欄就看整個 repo。漏列的檔案改了不會要求重跑，所以要照測試實際讀到與執行的檔案列。 |
 | `affected.commands` | 執行目錄 → 受影響測試指令樣板，`{tests}` 會換成選出的測試路徑（相對該目錄、已加引號）。 |
 | `affected.map` | 對應規則清單：`paths`（程式路徑樣式）→ `tests`（測試檔或測試路徑樣式，任一層都可以）。`tests` 只能對到可以直接執行的測試檔，不要對到共用的輔助檔。 |
+| `affected.checks` | 檢查清單，每項有 `paths`（樣式）、`cwd`（執行目錄，預設 `.`）、`command`（例如型別檢查）。改動檔符合 `paths` 時，`affected` 與 git pre-commit 在該目錄執行 `command`，失敗就算失敗（pre-commit 因此拒絕提交並顯示指令輸出）；沒符合就不跑，與選出的測試無關。每次寫一筆 `kind: "affected"` 的紀錄。 |
 | `affected.shared` | 改到就改跑整套的路徑樣式，例如依賴鎖定檔、測試共用設定、建置設定。 |
 
 `affected.map` 的規則也可以分放在 repo 根的 `.suite-gate.d/*.json`，每個檔案是 `{"map": [...]}`，依檔名順序接在 `.suite-gate.json` 的規則後面。同一路徑可以出現在多條規則，選到的測試會合併，所以要替既有路徑多對一個測試時，新增一條規則就好，不必改既有那一行。平行進行的工作各自新增檔案（例如 `.suite-gate.d/skill-hints.json`），合併時就不會在同一行衝突。只新增或修改一個片段時，`affected` 只跑該片段對到的測試，不退回整套；`.suite-gate.json` 本身的改動照上面第 2 項判斷。任一檔案讀不懂時，`affected` 寫出檔名後停止。

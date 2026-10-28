@@ -1155,6 +1155,19 @@ class AffectedCase(GateCase):
 
 
 class AffectedTests(AffectedCase):
+    def test_a_check_runs_in_its_directory_for_matching_changes_only(self):
+        self.registry['affected']['checks'] = [
+            {'paths': ['web/src/**'], 'cwd': 'web', 'command': f'echo "$PWD check" >> {self.log}'}]
+        self.write_registry()
+        self.touch('docs/guide.md')
+        self.assertEqual(self.gate('affected', '--base', 'main').returncode, 0)
+        self.assertEqual(self.ran(), [])
+        self.touch('web/src/page.ts')
+        result = self.gate('affected', '--base', 'main')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('checking in web:', result.stderr)
+        self.assertIn(('web', ['check']), self.ran())
+
     def test_mapped_change_runs_selected_tests_per_directory_and_records_them(self):
         self.touch('src/util.py')
         self.touch('web/src/page.ts')
@@ -3469,6 +3482,43 @@ class PreCommitTests(PreCommitCase):
         self.assertEqual(self.full_runs(), [])
         self.assertEqual(self.checkouts_left(), ([], []))
         self.assertEqual(self.git_commit('--no-verify').returncode, 0)
+
+    def test_a_check_runs_only_when_a_staged_path_matches_and_refuses_with_its_output(self):
+        marker = self.tmp / 'check-ran'
+        self.registry['affected']['checks'] = [
+            {'paths': ['web/**'], 'cwd': 'web',
+             'command': f'echo ran >> {marker}; ! grep -q TYPEERROR src/page.ts || '
+                        '{ echo "svelte-check: TYPEERROR in page.ts" >&2; exit 1; }'}]
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'add check')
+        self.touch('src/util.py', 'no web change\n')
+        git(self.repo, 'add', '-A')
+        self.assertEqual(self.git_commit().returncode, 0)
+        self.assertFalse(marker.exists(), 'a commit outside web/ does not run the check')
+        self.touch('web/src/page.ts', 'TYPEERROR\n')
+        git(self.repo, 'add', '-A')
+        before = head(self.repo)
+        refused = self.git_commit()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(head(self.repo), before)
+        self.assertIn('svelte-check: TYPEERROR in page.ts', refused.stderr)
+        self.assertIn('commit refused: these failed on the staged content:\n'
+                      'suite-gate:   web: check\n', refused.stderr)
+        self.touch('web/src/page.ts', 'fixed\n')
+        git(self.repo, 'add', '-A')
+        self.assertEqual(self.git_commit().returncode, 0)
+        self.assertEqual(marker.read_text().split(), ['ran', 'ran'])
+        self.assertEqual(self.checkouts_left(), ([], []))
+
+    def test_a_malformed_check_list_blocks_the_commit(self):
+        self.registry['affected']['checks'] = [{'paths': ['web/**']}]
+        self.write_registry()
+        self.touch('src/util.py', 'changed\n')
+        git(self.repo, 'add', '-A')
+        refused = self.git_commit()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('affected.checks must list', refused.stderr)
 
     def test_an_unreadable_staged_registry_blocks_the_commit(self):
         self.touch('tests/test_app.py', 'FAIL staged\n')
