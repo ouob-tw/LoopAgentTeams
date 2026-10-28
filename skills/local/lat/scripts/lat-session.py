@@ -321,10 +321,7 @@ def activate(args):
                   decisions_path=str(args.decisions.resolve(strict=True)),
                   tasks_path=str(args.tasks.resolve(strict=True)), hcom_name=args.hcom_name)
     dependencies(record)
-    spec = importlib.util.spec_from_file_location('lat_watch', WATCH_SCRIPT)
-    watcher = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(watcher)
-    fingerprint = watcher.rule_fingerprint(SKILL_DIR)
+    fingerprint = watch_module().rule_fingerprint(SKILL_DIR)
     path = session_path(workspace, sid)
     original = current_bytes(path)
     new_round = True
