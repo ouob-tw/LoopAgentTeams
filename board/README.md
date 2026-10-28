@@ -64,6 +64,9 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `CODEX_MULTI_AUTH_DIR` | codex-multi-auth 的資料夾，「額度」分頁直接讀其中的 `openai-codex-accounts.json` 與 `quota-cache.json`，只取 email、使用中、方案、用量、重置時間與更新時間，不執行 codex-multi-auth；沒設定時用 `$CODEX_HOME/multi-auth` | `~/.codex/multi-auth` |
 | `LAT_BOARD_COOKIE_NAME` | 登入 cookie 的名稱；同一個主機名稱下要並存的第二個看板（例如示意看板）才需要改 | `lat_board_device` |
 | `LAT_BOARD_QUOTA_SECONDS` | 「額度」分頁的資料多久讀一次，所有瀏覽器共用 | `30` |
+| `LAT_BOARD_PD_COMMAND` | pd 指令（JSON 字串陣列），看板只會在後面加上 `pending --json`（讀待核准請求）或 `deny <編號>`（拒絕）；不會執行任何核准或要確認碼的 pd 指令 | `["pd"]` |
+| `LAT_BOARD_PD_TIMEOUT_SECONDS` | 上一項多久沒結束就放棄 | `5` |
+| `LAT_BOARD_PD_SECONDS` | pd 待核准請求多久讀一次，所有瀏覽器共用 | `5` |
 
 `XDG_STATE_HOME` 未設定時是 `~/.local/state`，`XDG_CONFIG_HOME` 未設定時是 `~/.config`。
 
@@ -223,6 +226,17 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - Codex 主控：輔助工具的 `board transcript` 從 rollout 最後的 `token_count` 事件算出 `usage`，是看板自己的算法，不一定等於 Codex 畫面上的「context left」：上下文已用 = 最後一次請求的 `input_tokens` ÷ `model_context_window`，快取命中 = `cached_input_tokens` ÷ `input_tokens`，額度取最後一筆方案額度（`limit_id` 為 `codex` 或沒有）的 `rate_limits` 的 `primary`／`secondary`（有幾個就顯示幾個，依 `window_minutes` 命名）；`premium` 這類其他額度的事件不算。
 - Claude 主控：這些數字只有狀態列指令拿得到，所以要在狀態列指令前面串上 `scripts/usage-recorder.sh`。它每次狀態列更新時讀標準輸入，把 `context_window.used_percentage`、`rate_limits` 的 `five_hour`／`seven_day`（`used_percentage`、`resets_at`）、`prompt_cache`（`caching_observed`、`warm`、`hit_ratio`、`expires_at`）與寫入時間存成 `$LAT_USAGE_DIR/<session ID>.json`（先寫暫存檔再改名），不存訊息、路徑或憑證；接著把同一份輸入原封不動交給後面的指令，印出它的輸出。記錄失敗（例如沒有 `jq`、目錄寫不進去、輸入不是 JSON）一律略過，不影響狀態列。需要 `bash` 與 `jq`。
 - 頁面開著時，用量跟著對話紀錄的推送（`/api/transcript/events` 的 `page.usage`）更新：Codex 隨紀錄檔變動；Claude 另外監看用量檔，只有它變了時只重讀這個檔、不重跑輔助工具。用量檔讀不出來時當成沒有，不影響其他區塊。
+
+## pd 待核准
+
+使用方式見[使用說明](../docs/lat-board.md#pd-待核准)。實作上：
+
+- 伺服器以自己的計時器（`LAT_BOARD_PD_SECONDS`）執行 `pd pending --json`（`server/pd.ts`），只留下 `board/pd.ts` 的欄位（`item_id` 等其他欄位不送到瀏覽器；pd 本身不列密碼），和前一次不同才以 `pd` 事件推給所有頁面，頁面載入時就帶著目前的值（`+page.server.ts`，先畫出來，之後才出現的那一行不會把待辦往下推；看板剛啟動、第一次還沒讀完時例外），新連上的事件串流也一連上就收到。還有請求在等時，剩餘時間每次都變，所以每次都推；頁面從收到的時間起每秒倒數。
+- 「核准」只是 pd 給的 `approval_url`（只接受 http／https 網址，其他當成沒有連結）在新分頁開啟，`rel="noopener noreferrer"`；看板沒有核准的路徑，也不讀、不傳確認碼。
+- 「拒絕」是 `POST /api/pd/deny`（本文 `{"id": 正整數}`，要登入），執行 `pd deny <id>`（不需要確認碼），接著立刻重讀一次清單、推給所有頁面後才回應。結果：200 成功；409 這個編號已不在待核准（結束碼 1：pd 的清單已沒有它；77：pd 讀完清單後、拒絕前它剛好被核准或逾時，服務拒絕）；503 沒安裝 pd 或連不上它的服務（結束碼 69）；502 其他失敗；400 編號不是正整數。
+- 讀不到時只寫看板自己的說明（沒有安裝 pd、連不上 pd 服務、結束碼或逾時），不轉貼 pd 的輸出；pd 的錯誤不算進看板的錯誤，也不影響其他區塊。
+- 看板的連線沒有加密，這些請求內容也只應在內網或私人網路傳送（見開頭）。
+- 測試用 `tests/fake-pd.mjs` 代替 pd 與它的服務（待核准清單存在暫存目錄的 `pd.json`，`deny` 會把那一筆拿掉），不碰真的 pd socket：`tests/unit/pd.test.ts`、`tests/server/pd-server.test.ts`、`tests/browser/pd-page.test.ts`。
 
 ## 傳話給主控
 

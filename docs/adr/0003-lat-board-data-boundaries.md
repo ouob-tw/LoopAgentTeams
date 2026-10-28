@@ -12,6 +12,7 @@ status: accepted
    - 為什麼：問題檔的格式、檔案鎖、面板紀錄與來源雜湊只有一份 Python 實作，Herdr 待答面板也在用。看板自己再寫一份，改格式時就要兩邊一起改，改漏會寫壞問題檔。使用者被問過是否要把整個專案改成 TypeScript，選擇維持現狀。
    - 代價：主機要同時有 Bun 或 Node 與 Python；每次讀寫要啟動一次 Python。因此看板以檔案監看觸發重讀，不以固定短間隔反覆呼叫。
    - 2026-10-22 補記（ouob-tw/LoopAgentTeams-work#221）：有兩處是刻意的固定間隔，不違反上面這句。其一是保底重讀（`board.ts` 的 `fallbackGapMs`）：檔案監看會漏掉變動，而且 Herdr 與 hcom 的 Agent 清單變動不會動到任何被監看的檔案，只能靠它補上；間隔由 `LAT_BOARD_FALLBACK_SECONDS` 決定（5 到 60，預設 60），實際間隔再扣掉一次讀取最長的逾時，所以最慢 60 秒。其二是額度輪詢（`quota.ts` 的 `createQuotaPoller`）：額度資料在 claude-swap 與 codex-multi-auth 自己的檔案裡，不在看板監看的範圍，也不是由看板的檔案變動觸發，所以每 `LAT_BOARD_QUOTA_SECONDS` 秒（預設 30）讀一次，所有瀏覽器共用，上一次還沒讀完就不再啟動。這兩處都不是「固定短間隔反覆呼叫輔助工具」：保底重讀是漏掉時的補救，額度輪詢不呼叫 LAT 的 Python 輔助工具：Claude 那半每次啟動一次 claude-swap 的 `list --json --cached-only`（另一個程序，只讀它自己的快取、不連網），Codex 那半直接讀 codex-multi-auth 的檔案；所以間隔不能壓得很短，預設 30 秒。
+   - 2026-10-28 補記（pd 待核准，bw-broker ticket 06）：第三處是 pd 輪詢（`pd.ts` 的 `createPdPoller`）：待核准請求在 pd 服務裡，不在任何檔案，只能每 `LAT_BOARD_PD_SECONDS` 秒（預設 5）執行一次 `pd pending --json`（另一個程序，經 Unix socket 問 pd 服務，不呼叫 LAT 的輔助工具），所有瀏覽器共用，上一次還沒讀完就不再啟動。請求預設最多等 2 分鐘，間隔比額度短才看得到；拒絕後另外立刻讀一次。
 
 2. **看板的主控狀態只用 LAT 自己的資料判斷，不讀 Herdr 的 Agent 狀態。**
    狀態來自面板綁定登記（是否啟用）、問題檔（是否有未送出的待答題）與主控回報紀錄（最新一筆的標籤）。

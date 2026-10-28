@@ -6,6 +6,7 @@ import { connectBoard, type Connection, type LinkState } from './client.ts';
 import { messaging } from './messaging.svelte.ts';
 import { toasts } from './toasts.svelte.ts';
 import { reaches, withEarlier, withNewest, type ArchivePage } from './archive.ts';
+import type { PdSnapshot } from './pd.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import { translatePref } from './translate-pref.svelte.ts';
 import type { TranslateMode } from './translate-mode.ts';
@@ -21,6 +22,9 @@ export class LiveBoard {
 	tabMoves = $state(0);
 	/** The 額度 tab's accounts as the server last read them; null until it sends them. */
 	quota = $state.raw<QuotaSnapshot | null>(null);
+	/** pd's waiting requests as the server last read them, and when this page got them (their
+	 *  times count on from then); null until it sends them. */
+	pd = $state.raw<{ snapshot: PdSnapshot; at: number } | null>(null);
 	/** The processed items loaded so far, newest first; null until loaded, 'failed' when the newest
 	 *  page could not be read: then only the retry button, or opening the view again, reads it. */
 	archive = $state<ArchivePage | 'failed' | null>(null);
@@ -41,8 +45,9 @@ export class LiveBoard {
 	 *  kept while the board still has them recorded and the answered list read does not have them yet. */
 	#recorded: InboxQuestion[] = [];
 
-	constructor(initial: BoardSnapshot) {
+	constructor(initial: BoardSnapshot, pd: PdSnapshot | null = null) {
 		this.snapshot = $state(initial);
+		if (pd) this.pd = { snapshot: pd, at: Date.now() };
 	}
 
 	/** Start listening; returns the function that stops it. */
@@ -62,6 +67,7 @@ export class LiveBoard {
 			onState: (state) => (this.link = state),
 			onTabMoved: () => this.tabMoves++,
 			onQuota: (quota) => (this.quota = quota),
+			onPd: (snapshot) => (this.pd = { snapshot, at: Date.now() }),
 			onUsageStyle: (style) => (appearance.usageStyle = style),
 			onTranslateMode: (mode) => (translatePref.mode = mode),
 			// Only a record this page has loaded is shown anywhere; others load when opened. A

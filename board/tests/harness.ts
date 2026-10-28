@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ArchivePage } from '../src/lib/board/archive.ts';
 import { connectBoard, type LinkState } from '../src/lib/board/client.ts';
+import type { PdSnapshot } from '../src/lib/board/pd.ts';
 import type { QuotaSnapshot } from '../src/lib/board/quota.ts';
 import type { TranslateMode } from '../src/lib/board/translate-mode.ts';
 import type { UsageStyle } from '../src/lib/board/usage.ts';
@@ -273,6 +274,8 @@ export interface Watch {
 	agentActions: string[];
 	/** The 額度 readings the server sent, in order. */
 	quotas: QuotaSnapshot[];
+	/** The pd readings the server sent, in order. */
+	pds: PdSnapshot[];
 	/** The usage line styles the server sent, in order. */
 	usageStyles: UsageStyle[];
 	/** The translation modes the server sent, in order. */
@@ -347,6 +350,8 @@ export async function startFixture(
 		// The 額度 tab reads claude-swap's list and codex-multi-auth's files; never the real ones.
 		LAT_BOARD_CSWAP_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-cswap.mjs'), dir]),
 		CODEX_MULTI_AUTH_DIR: join(dir, 'codex-multi-auth'),
+		// The pd section reads and denies through pd; never the real one or its socket.
+		LAT_BOARD_PD_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-pd.mjs'), dir]),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
 		...options.env,
@@ -491,6 +496,7 @@ export async function startFixture(
 				unpaired: false,
 				agentActions: [],
 				quotas: [],
+				pds: [],
 				usageStyles: [],
 				translateModes: [],
 				latest: () => watch.snapshots.at(-1),
@@ -503,6 +509,7 @@ export async function startFixture(
 				onUnpaired: () => (watch.unpaired = true),
 				onAgentAction: (agentId) => watch.agentActions.push(agentId),
 				onQuota: (quota) => watch.quotas.push(quota),
+				onPd: (pd) => watch.pds.push(pd),
 				onUsageStyle: (style) => watch.usageStyles.push(style),
 				onTranslateMode: (mode) => watch.translateModes.push(mode),
 				retryMs: 200
