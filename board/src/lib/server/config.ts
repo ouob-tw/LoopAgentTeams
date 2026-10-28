@@ -230,7 +230,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		pdCommand: commandFrom(env, 'LAT_BOARD_PD_COMMAND') ?? ['pd'],
 		pdTimeoutMs: seconds(env.LAT_BOARD_PD_TIMEOUT_SECONDS, 5_000),
 		pdIntervalMs: seconds(env.LAT_BOARD_PD_SECONDS, 5_000),
-		statusPollMs: seconds(env.LAT_BOARD_STATUS_POLL_SECONDS, 5_000),
+		statusPollMs: seconds(env.LAT_BOARD_STATUS_POLL_SECONDS, 2_000),
 		statusWorkingPollMs: seconds(env.LAT_BOARD_STATUS_WORKING_POLL_SECONDS, 2_000),
 		statusPollTimeoutMs: seconds(env.LAT_BOARD_STATUS_POLL_TIMEOUT_SECONDS, 4_000),
 		statusAfterActionMs: seconds(env.LAT_BOARD_STATUS_AFTER_ACTION_SECONDS, 2_000),

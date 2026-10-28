@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/lib/server/config.ts", "board/tests/unit/status-poll-config.test.ts"],
+      "tests": ["board/tests/unit/status-poll-config.test.ts", "board/tests/server/status-poll.test.ts", "board/tests/browser/herdr-controller-send.test.ts"]
+    }
+  ]
+}
