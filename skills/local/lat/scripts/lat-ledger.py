@@ -343,7 +343,7 @@ def gate_script():
 
 
 def check_repo(path):
-    """Return (absolute repo path, problem); the path must be an existing git work tree."""
+    """Return (absolute repo path, problem); the path must be inside a git repository."""
     if not Path(path).is_absolute():
         return None, f'--repo {path}: must be an absolute path'
     try:
@@ -353,9 +353,10 @@ def check_repo(path):
     return str(Path(path)), None
 
 
-def subprocess_ok(command):
+def branch_exists(repo, branch):
     try:
-        run_cli(command, timeout=30)
+        run_cli(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', f'{branch}^{{commit}}'],
+                timeout=30)
         return True
     except ValueError:
         return False
@@ -378,8 +379,7 @@ def verify_commit(doc, item, value):
         return None, f'commit {value}: not found in {workspace}'
     branches = [b for b in (item.get('branch'), doc.get('integration_branch')) if b]
     if item.get('repo'):
-        branches = [b for b in branches if subprocess_ok(
-            ['git', '-C', workspace, 'rev-parse', '--verify', '--quiet', f'{b}^{{commit}}'])]
+        branches = [b for b in branches if branch_exists(workspace, b)]
         if not branches:
             return sha, None
     if not branches:
