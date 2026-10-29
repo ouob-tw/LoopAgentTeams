@@ -1836,28 +1836,46 @@ def hcom_send_command(value):
             is not None)
 
 
-def inform_or_ack_send(command):
-    """True when every hcom send in a shell command carries --intent inform or ack."""
+def inform_or_ack_send(command, recipient=None):
+    """True when every hcom send to recipient in a shell command is an inform/ack.
+
+    Commands are tokenized with shell quoting, so operators inside a message body do not split
+    a send. Sends to others are ignored; no send to recipient found, or an unparsable command,
+    is False (the wait releases).
+    """
     if not isinstance(command, str):
         return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|')
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        return False
+
+    def addressed(word):
+        if recipient is None:
+            return True
+        name = word[1:]
+        return (name == recipient or recipient.endswith('-' + name)
+                or (name.endswith('-') and recipient.startswith(name)))
+
     intents = []
-    for segment in re.split(r'&&|\|\||[;|\r\n]', command):
-        try:
-            words = shlex.split(segment)
-        except ValueError:
-            return False
-        if words[:2] != ['hcom', 'send']:
+    for start, word in enumerate(words[:-1]):
+        if word != 'hcom' or words[start + 1] != 'send':
             continue
-        intent = None
-        options = words[2:]
-        if '--' in options:
-            options = options[:options.index('--')]
-        for index, word in enumerate(options):
-            if word == '--intent' and index + 1 < len(options):
-                intent = options[index + 1]
-            elif word.startswith('--intent='):
-                intent = word[len('--intent='):]
-        intents.append(intent)
+        intent, targets = None, []
+        for index in range(start + 2, len(words)):
+            option = words[index]
+            if option == '--' or set(option) <= set(';&|'):
+                break
+            if option == '--intent' and index + 1 < len(words):
+                intent = words[index + 1]
+            elif option.startswith('--intent='):
+                intent = option[len('--intent='):]
+            elif option.startswith('@'):
+                targets.append(option)
+        if any(addressed(target) for target in targets):
+            intents.append(intent)
     return bool(intents) and all(intent in ('inform', 'ack') for intent in intents)
 
 
@@ -1904,7 +1922,7 @@ def successful_hcom_send_since(transcript, declared_at, recipient=None, skip_inf
                     if (item.get('type') == 'tool_use' and item.get('name') == 'Bash'
                             and isinstance(item.get('id'), str)
                             and hcom_send_command(command)
-                            and not (skip_inform_ack and inform_or_ack_send(command))):
+                            and not (skip_inform_ack and inform_or_ack_send(command, recipient))):
                         claude_hcom_send_ids.add(item['id'])
                     if (completed_after_wait and item.get('type') == 'tool_result'
                             and item.get('tool_use_id') in claude_hcom_send_ids
@@ -1926,7 +1944,7 @@ def successful_hcom_send_since(transcript, declared_at, recipient=None, skip_inf
                     and payload.get('type') == 'item_completed'
                     and item.get('type') == 'CommandExecution'
                     and hcom_send_command(shell_command)
-                    and not (skip_inform_ack and inform_or_ack_send(shell_command))
+                    and not (skip_inform_ack and inform_or_ack_send(shell_command, recipient))
                     and item.get('status') == 'completed'
                     and item.get('exit_code') == 0
                     and successful_send_output(
