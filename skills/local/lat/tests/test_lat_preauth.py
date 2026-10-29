@@ -349,6 +349,20 @@ class ConditionTests(PreauthCase):
         self.assertIn('@<other-controller>', steps)
         self.assertIn('No other active controller is recorded', steps)
 
+    def test_next_steps_look_up_events_by_the_base_name(self):
+        self.allow_all()
+        self.gate_record()
+        self.session(None, hcom_name='tag-orch')
+        bin_dir = self.root / 'fakebin'
+        bin_dir.mkdir()
+        hcom = bin_dir / 'hcom'
+        hcom.write_text(f'#!{sys.executable}\nprint(\'[{{"name": "tag-orch", '
+                        '"base_name": "orch"}]\')\n')
+        hcom.chmod(0o755)
+        steps = self.check('deploy-test', path=f'{bin_dir}:{os.environ["PATH"]}')['next_steps']
+        self.assertIn('--name tag-orch', steps)
+        self.assertIn('hcom events --from orch --last 1', steps)
+
     def test_next_steps_without_own_session_never_list_recipients(self):
         self.allow_all()
         self.gate_record()
