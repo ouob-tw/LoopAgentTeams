@@ -115,6 +115,7 @@ LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址�
 | [LAT](skills/local/lat/SKILL.md) | 完整交付流程：角色分工、階段轉換、派工、整合與驗收 |
 | [hcom-spawn](skills/local/hcom-spawn/SKILL.md) | 透過 HCOM 召喚跨 client 的 Agent：模型與 effort 選擇、啟動核對、任務交代與收尾 |
 | [three-tier-testing](skills/local/three-tier-testing/SKILL.md) | 依外部依賴將測試分為單元、整合與 E2E 三層，分開執行，區分模擬與真實服務的驗證 |
+| [ui-copy](skills/local/ui-copy/SKILL.md) | 寫需求、實作與審查介面文字時控制說明句：何時才加、怎麼寫、審查何時算缺陷 |
 
 各階段的具體方法沿用 Matt Pocock 的 [Matt skills](https://github.com/mattpocock/skills)（`grill-with-docs`、`to-spec`、`to-tickets`、`implement`、`code-review` 等），LAT 負責階段銜接與角色協調。
 
