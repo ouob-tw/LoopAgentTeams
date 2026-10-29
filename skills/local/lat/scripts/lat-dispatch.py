@@ -39,7 +39,7 @@ LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
 LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo')
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
 SCOPE_NOTE = ('Write restrictions in this section do not apply to updating the task card '
-              'or running the work-ledger commands below.')
+              'or running work-ledger commands.')
 CARD_RULE_READ_ONLY = 'The orchestrator maintains the task card; do not edit it.'
 LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does not hold, report to the orchestrator first and do not act.
 - Do live actions inside the `live actions` quota yourself; do not ask the orchestrator to approve each step.
