@@ -10,6 +10,7 @@
 	import CopyButton from './CopyButton.svelte';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { Translation } from '#lib/board/translate.ts';
+	import type { Snippet } from 'svelte';
 	import { isAnswered, itemLabel, type HelperOption, type InboxItem } from '#lib/board/types.ts';
 
 	let {
@@ -18,6 +19,7 @@
 		recorded = false,
 		handle,
 		translation = null,
+		note,
 		onunread,
 		onread
 	}: {
@@ -31,6 +33,8 @@
 		handle?: string;
 		/** A report's message translated, as Transcript has it: shown in place of the message. */
 		translation?: Translation | null;
+		/** A question's asking message as the conversation shows it, folded under the title. */
+		note?: Snippet;
 		onunread: (key: string) => Promise<void>;
 		/** Given where opening the report does not read it: an unread report offers to be marked read. */
 		onread?: (key: string) => Promise<void>;
@@ -173,6 +177,7 @@
 		{:else if !listed}
 			<p class="notice" role="status">這一題已經不在待辦：主控已停用 LAT 或已關閉，或題目已被移除。不能再作答。</p>
 		{/if}
+		{@render note?.()}
 		{#if question.context}
 			<div class="text md">{@html renderMarkdown(question.context)}</div>
 		{/if}

@@ -73,7 +73,7 @@
 		/** A box over the page with a copy of the target's card until it is placed; see Transcript. */
 		copy?: HTMLElement | null;
 		/** The cards of the questions one message asked, in its order; see Transcript. */
-		questionCards?: Snippet<[InboxQuestion[]]>;
+		questionCards?: Snippet<[InboxQuestion[], Snippet | undefined]>;
 		/** A DONE report's card, in place of its text; see Transcript. */
 		reportCard?: Snippet<[InboxReport, Translation | null]>;
 		/** Its board asks, oldest first: its permission requests (its menu questions are refused). */

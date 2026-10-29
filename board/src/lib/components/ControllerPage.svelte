@@ -10,6 +10,7 @@
 	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
 	import type { Translation } from '#lib/board/translate.ts';
 	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
+	import type { Snippet } from 'svelte';
 	import ControllerInfo from './ControllerInfo.svelte';
 	import ItemContent from './ItemContent.svelte';
 
@@ -116,9 +117,10 @@
 	});
 </script>
 
-{#snippet placedCard(item: InboxItem, translation: Translation | null = null)}
+{#snippet placedCard(item: InboxItem, translation: Translation | null = null, note?: Snippet)}
 	<ItemContent
 		{item}
+		{note}
 		listed={item.key === openKey ? listed : known.some((entry) => entry.key === item.key)}
 		recorded={board.snapshot.recordedKeys.includes(item.key)}
 		handle={item.hcomName}
@@ -138,10 +140,11 @@
 	/>
 {/snippet}
 
-{#snippet askedCards(entries: InboxQuestion[])}
-	<!-- An opened one among them is the one scrolled to, from the inbox or the Herdr tab. -->
-	{#each entries as entry (entry.key)}
-		<div class="asked" data-opened={entry.key === (openKey ?? agentTarget?.key) || undefined}>{@render placedCard(entry)}</div>
+{#snippet askedCards(entries: InboxQuestion[], note: Snippet | undefined)}
+	<!-- An opened one among them is the one scrolled to, from the inbox or the Herdr tab. What the
+	     message says above its tag line goes in the first. -->
+	{#each entries as entry, index (entry.key)}
+		<div class="asked" data-opened={entry.key === (openKey ?? agentTarget?.key) || undefined}>{@render placedCard(entry, null, index === 0 ? note : undefined)}</div>
 	{/each}
 {/snippet}
 
