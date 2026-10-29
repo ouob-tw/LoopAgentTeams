@@ -889,7 +889,9 @@ def build_parser():
     sub = command('done', 'Close an item with evidence')
     sub.add_argument('--commit', action='append')
     sub.add_argument('--repo', help='git repo to verify --commit in (absolute; replaces the '
-                     "row's repo)")
+                     "row's repo). Refused when it is not a git repo or lacks the commit; the "
+                     "row's branch and the integration branch must contain the commit where "
+                     'they exist in that repo, otherwise only its existence is checked')
     sub.add_argument('--gate', action='append', help='suite-gate record fingerprint')
     sub.add_argument('--file', action='append', help='absolute path of a report or checklist')
     sub = command('cancel', 'Cancel an item (orchestrator only)')
