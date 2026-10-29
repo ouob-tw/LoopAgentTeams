@@ -414,10 +414,9 @@ class WatchDecisionTests(unittest.TestCase):
                          'decision-resolved')
         self.assertIsNone(watch.wait_release_reason(declaration, [], False, True))
 
-    def test_unrelated_inform_and_ack_keep_a_wait_but_request_and_target_release_it(self):
+    def test_inform_and_ack_keep_a_wait_but_request_or_no_intent_releases_it(self):
         watch = load_watch()
         declaration = {'agent': 'worker', 'target': 'reviewer'}
-        names = {'reviewer', 'rev'}
         delivered = [{'type': 'status', 'data': {'context': 'deliver:other', 'position': 9}}]
 
         def message(sender, intent):
@@ -425,19 +424,23 @@ class WatchDecisionTests(unittest.TestCase):
 
         def reason(messages, pending=True):
             return watch.wait_release_reason(
-                declaration, delivered, False, pending, names, messages)
+                declaration, delivered, False, pending, messages)
 
         self.assertIsNone(reason([message('other', 'inform'), message('x', 'ack')]))
         # A request anywhere in a delivered batch releases, even before a later inform.
         self.assertEqual(reason([message('x', 'request'), message('y', 'inform')]),
                          'message-delivered')
+        # The wait target's inform/ack no longer releases; its request or bare message does.
         for sender in ('reviewer', 'rev'):
-            self.assertEqual(reason([message(sender, 'inform')]), 'message-delivered')
+            self.assertIsNone(reason([message(sender, 'inform')]))
+            self.assertIsNone(reason([message(sender, 'ack')]))
+            self.assertEqual(reason([message(sender, 'request')]), 'message-delivered')
+            self.assertEqual(reason([message(sender, None)]), 'message-delivered')
         # Unknown messages keep the old behaviour: release.
         self.assertEqual(reason([]), 'message-delivered')
         self.assertEqual(reason([message('x', 'inform')], pending=False), 'decision-resolved')
         self.assertEqual(watch.wait_release_reason(
-            declaration, [], True, True, names, []), 'target-replied')
+            declaration, [], True, True, []), 'target-replied')
 
     def test_delivered_messages_reads_messages_addressed_to_the_waiter(self):
         watch = load_watch()
@@ -481,7 +484,7 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertNotIn('--after', sent[-1])
         self.assertEqual(watch.wait_release_reason(
             {'agent': 'worker-open', 'target': 'reviewer'}, [deliver], False, True,
-            {'reviewer'}, messages), 'message-delivered')
+            messages), 'message-delivered')
         # First-ever delivery: no earlier cursor, so no lower bound at all.
         with patch.object(watch, 'hcom_events',
                           lambda o, *f: [] if '--context' in f else sent.append(f) or []):
@@ -490,7 +493,7 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertNotIn('--after', sent[-1])
         self.assertEqual(watch.wait_release_reason(
             {'agent': 'worker-open', 'target': 'reviewer'}, [deliver], False, True,
-            {'reviewer'}, messages), 'message-delivered')
+            messages), 'message-delivered')
 
     def test_real_session_status_shapes_release_canonical_agent_waits(self):
         watch = load_watch()
@@ -574,6 +577,43 @@ class WatchDecisionTests(unittest.TestCase):
             self.assertTrue(watch.successful_hcom_send_since(
                 transcript, '2026-10-04T14:00:58+00:00'))
 
+    def test_wait_release_send_check_skips_inform_and_ack_but_not_request_or_bare_sends(self):
+        watch = load_watch()
+
+        def claude(command):
+            return [
+                {'timestamp': '2026-10-04T14:01:41.176Z', 'type': 'assistant',
+                 'message': {'content': [{'type': 'tool_use', 'id': 'tool-1', 'name': 'Bash',
+                                          'input': {'command': command}}]}},
+                {'timestamp': '2026-10-04T14:01:41.273Z', 'type': 'user',
+                 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tool-1',
+                                          'content': 'Sent to: worker', 'is_error': False}]}}]
+
+        def codex(command):
+            return [{'timestamp': '2026-10-04T14:01:41.273Z', 'type': 'event_msg',
+                     'payload': {'type': 'item_completed', 'item': {
+                         'type': 'CommandExecution', 'command': ['/bin/bash', '-lc', command],
+                         'status': 'completed', 'exit_code': 0, 'stdout': 'Sent to: worker\n'}}}]
+
+        cases = (("hcom send @worker --intent inform -- 'ok'", False),
+                 ("hcom send @worker --intent ack -- 'ok'", False),
+                 ("hcom send @worker --intent=inform --file /tmp/r", False),
+                 ("hcom send @worker --intent 'ack' -- ok", False),
+                 ("hcom send @worker --intent request -- 'ok'", True),
+                 ("hcom send @worker --intent informal -- 'ok'", True),
+                 ("hcom send @worker -- 'no intent'", True))
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'agent.jsonl'
+            for make in (claude, codex):
+                for command, releases in cases:
+                    transcript.write_text(
+                        ''.join(json.dumps(row) + '\n' for row in make(command)))
+                    self.assertTrue(watch.successful_hcom_send_since(
+                        transcript, '2026-10-04T14:01:40+00:00'), command)
+                    self.assertEqual(watch.successful_hcom_send_since(
+                        transcript, '2026-10-04T14:01:40+00:00', 'worker',
+                        skip_inform_ack=True), releases, (make.__name__, command))
+
     def test_compound_send_to_third_agent_releases_wait(self):
         watch = load_watch()
         record = {
@@ -650,7 +690,7 @@ class WatchDecisionTests(unittest.TestCase):
             self.assertFalse(watch.successful_hcom_send_since(
                 transcript, '2026-10-04T14:01:00+00:00'))
 
-    def release_wait_after_target_send(self, recipient, participant_events=()):
+    def release_wait_after_target_send(self, recipient, participant_events=(), intent='request'):
         watch = load_watch()
         declaration = {
             'agent': 'waiting-agent', 'target': 'target-agent',
@@ -661,7 +701,7 @@ class WatchDecisionTests(unittest.TestCase):
             'payload': {'type': 'item_completed', 'item': {
                 'type': 'CommandExecution',
                 'command': ['/bin/bash', '-lc',
-                            f"hcom send @{recipient} --intent inform -- 'ok'"],
+                            f"hcom send @{recipient} --intent {intent} -- 'ok'"],
                 'status': 'completed', 'exit_code': 0,
                 'stdout': f'Sent to: ◉ {recipient}\n',
             }},
@@ -697,6 +737,11 @@ class WatchDecisionTests(unittest.TestCase):
             self.release_wait_after_target_send('waiting-agent'),
             'target-replied',
         )
+
+    def test_target_inform_or_ack_to_waiter_keeps_wait(self):
+        for intent in ('inform', 'ack'):
+            self.assertIsNone(
+                self.release_wait_after_target_send('waiting-agent', intent=intent), intent)
 
     def test_same_alias_delivery_does_not_turn_third_party_send_into_target_reply(self):
         collision = [{
@@ -4858,7 +4903,7 @@ esac
             '"session_id":"worker-session"}]\' ;;\n'
             '  *"--type message"*)\n'
             '    printf \'%s\\n\' "{\\"id\\":89,\\"type\\":\\"message\\",'
-            '\\"data\\":{\\"from\\":\\"a\\",\\"delivered_to\\":[\\"open\\"],'
+            '\\"data\\":{\\"from\\":\\"$FAKE_FROM\\",\\"delivered_to\\":[\\"open\\"],'
             '\\"intent\\":\\"$FAKE_INTENT\\"}}";'
             '    printf \'%s\\n\' \'{"id":90,"type":"message","data":{"from":"b",'
             '"delivered_to":["open"],"intent":"inform"}}\' ;;\n'
@@ -4876,12 +4921,18 @@ esac
             'declared_at_utc': '2026-10-04T00:00:00+00:00', 'active': True,
         }
         watch.write_object(watch.wait_path(self.work, 'worker-open'), declaration)
-        for intent, expected in (('inform', None), ('ack', None),
-                                 ('request', 'message-delivered')):
-            with patch.dict(os.environ, {**self.env, 'FAKE_INTENT': intent}):
+        # Sender 'reviewer' is the wait target; 'a' is someone else.
+        for sender, intent, expected in (
+                ('a', 'inform', None), ('a', 'ack', None), ('a', 'request', 'message-delivered'),
+                ('reviewer', 'inform', None), ('reviewer', 'ack', None),
+                ('reviewer', 'request', 'message-delivered'),
+                ('reviewer', 'null', 'message-delivered')):
+            watch.write_object(watch.wait_path(self.work, 'worker-open'), declaration)
+            with patch.dict(os.environ, {**self.env, 'FAKE_INTENT': intent,
+                                         'FAKE_FROM': sender}):
                 reason = watch.release_wait_if_needed(
                     self.work, decisions, 'orch', declaration)
-            self.assertEqual(reason, expected, intent)
+            self.assertEqual(reason, expected, (sender, intent))
             saved = json.loads(watch.wait_path(self.work, 'worker-open').read_text())
             self.assertEqual(saved['active'], expected is None)
 
