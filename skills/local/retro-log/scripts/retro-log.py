@@ -389,7 +389,7 @@ def cmd_done(backlog, args):
             parts.append(f'file {one_line("檔案", args.file, allow_pipe=True)}')
         if args.commit is not None and any(p.kind == 'done' and p.detail.split('; ')[0] == parts[0]
                                            for p in entry.processing):
-            return [], '', f'已存在：#{entry.id} 已有 {parts[0]} 的完成紀錄，未新增'
+            return [], '', f'已存在：retro #{entry.id} 已有 {parts[0]} 的完成紀錄，未新增'
         record = Processing(normalize_time(args.time), 'done', '; '.join(parts))
         if not add_processing(entry, record):
             return unchanged(entry, record)
