@@ -1105,7 +1105,8 @@ def preauth_stop_check(record, message):
 def preauth_ask_stop_check(record, message):
     """`(reason, notes)` for questions whose advisor line is `exempt preauth-ask`: each must
     have a `- action:` line and, rechecked now, an ask whose every reason is one only the user
-    can lift (USER_ONLY_KINDS). A reason the check could not judge only warns."""
+    can lift (USER_ONLY_KINDS). A reason the check could not judge, or a recheck that
+    fails, only warns for that question."""
     decisions = Path(record['decisions_path'])
     module = preauth_module()
     held, notes = [], []
@@ -1119,8 +1120,12 @@ def preauth_ask_stop_check(record, message):
             held.append(f'{name}：沒有 `- action:` 行')
             continue
         action, branch, commit = found
-        result = module.evaluate(action, branch=branch, commit=commit,
-                                 workspace=record['workspace'], session=record['session_id'])
+        try:
+            result = module.evaluate(action, branch=branch, commit=commit,
+                                     workspace=record['workspace'], session=record['session_id'])
+        except Exception as exc:  # noqa: BLE001 - a broken recheck never holds the Stop
+            notes.append(f'LAT 免諮詢 preauth-ask 重查發生錯誤，未攔下：{name}（{exc}）。')
+            continue
         if result['verdict'] == 'allow':
             held.append(f'{name}：重查結果為 allow（{module.verdict_line(result)}）')
             continue

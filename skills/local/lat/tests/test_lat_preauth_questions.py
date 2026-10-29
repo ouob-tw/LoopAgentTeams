@@ -318,22 +318,45 @@ class PreauthAskExemptionTests(PreauthQuestionTests):
         self.assertEqual(set(output), {'systemMessage'})
         self.assertIn('LAT 免諮詢 preauth-ask 重查無法判斷，未攔下：LAT-P r1', output['systemMessage'])
         (self.reports / f'{SESSION}.jsonl').unlink()
+
+    def test_a_failing_recheck_warns_for_its_question_and_others_are_still_checked(self):
         shim = self.root / 'broken-recheck.py'
         shim.write_text(
             'import importlib.util\n'
             f'spec = importlib.util.spec_from_file_location("lat_session", {str(SESSION_SCRIPT)!r})\n'
             'helper = importlib.util.module_from_spec(spec)\n'
             'spec.loader.exec_module(helper)\n'
-            'def broken(*args): raise RuntimeError("broken")\n'
-            'helper.preauth_ask_stop_check = broken\n'
+            'load = helper.preauth_module\n'
+            'def broken_push():\n'
+            '    module = load()\n'
+            '    evaluate = module.evaluate\n'
+            '    def failing(action, **kwargs):\n'
+            '        if action == "push": raise RuntimeError("broken")\n'
+            '        return evaluate(action, **kwargs)\n'
+            '    module.evaluate = failing\n'
+            '    return module\n'
+            'helper.preauth_module = broken_push\n'
             'raise SystemExit(helper.main())\n')
-        payload = dict(hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
-                       stop_hook_active=False, last_assistant_message='問題全文\nDECIDE: LAT-P r1')
-        result = self.run_script(shim, 'hook', '--client', 'codex', payload=payload)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        output = json.loads(result.stdout)
-        self.assertEqual(set(output), {'systemMessage'})
-        self.assertIn('LAT 免諮詢 preauth-ask 重查發生錯誤，未攔下：broken', output['systemMessage'])
+        self.project.write_text('[actions.merge]\nallow = false\n')
+        for failing, invalid in (('LAT-A', 'LAT-B'), ('LAT-B', 'LAT-A')):
+            with self.subTest(failing=failing):
+                (self.decisions / f'{failing}.md').write_text(self.EXEMPT + '- action: push dev\n')
+                (self.decisions / f'{invalid}.md').write_text(self.EXEMPT)
+                payload = dict(hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
+                               stop_hook_active=False,
+                               last_assistant_message='問題全文\nDECIDE: LAT-A r1 LAT-B r1')
+                result = self.run_script(shim, 'hook', '--client', 'codex', payload=payload)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout)
+                self.assertEqual(output['decision'], 'block')
+                self.assertIn(f'核對未通過：{invalid} r1：沒有 `- action:` 行', output['reason'])
+                self.assertNotIn(f'{failing} r1：', output['reason'])
+                (self.reports / f'{SESSION}.jsonl').unlink(missing_ok=True)
+                payload['stop_hook_active'] = True
+                result = self.run_script(shim, 'hook', '--client', 'codex', payload=payload)
+                warning = json.loads(result.stdout)['systemMessage']
+                self.assertIn(f'LAT 免諮詢 preauth-ask 重查發生錯誤，未攔下：{failing} r1（broken）', warning)
+                (self.reports / f'{SESSION}.jsonl').unlink(missing_ok=True)
 
 
 @unittest.skipUnless(HAS_TEXTUAL, 'needs textual==8.2.8 (uv run --with textual==8.2.8)')

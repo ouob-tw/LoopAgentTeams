@@ -47,7 +47,7 @@ ALWAYS_ASK = {'change-acceptance': 'changing or cutting confirmed acceptance cri
 # settle: a layer said no, or a condition the tool enforces does not hold.
 REASON_KINDS = {'allow-false': 'a layer sets allow=false',
                 'condition': 'a condition the tool enforces does not hold',
-                'unset': 'a setting is missing',
+                'unset': 'a setting an earlier answer can stand in for is missing',
                 'precedent': 'the earlier answer does not stand in',
                 'always-ask': 'no setting can pre-authorize it',
                 'error': 'the check could not judge it'}
@@ -258,8 +258,8 @@ def main_checkout_problems(top, branch):
     if common is None or Path(common).parent.resolve() != top.resolve():
         reasons.append(('condition', f'{top} is not the main checkout'))
     if not branch:
-        return reasons + [('unset', 'integration branch unknown (the round ledger names none '
-                                    'and no layer sets integration_branch)')]
+        return reasons + [('condition', 'integration branch unknown (the round ledger names '
+                                        'none and no layer sets integration_branch)')]
     head = git(top, 'rev-parse', 'HEAD')
     tip = git(top, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}')
     if tip is None:
@@ -504,7 +504,7 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None, 
     if action == 'deploy-test':
         found = effective.get('target')
         if found is None:
-            ask('unset', 'the project layer does not set actions.deploy-test.target')
+            ask('condition', 'the project layer does not set actions.deploy-test.target')
         else:
             result['basis'].append(describe('target', *found, label))
     if action == 'push' and branch:

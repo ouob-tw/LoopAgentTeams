@@ -287,6 +287,13 @@ class ConditionTests(PreauthCase):
         verdict = self.check('deploy-prod')
         self.assertIn('HEAD is not the tip of integration branch `dev`', verdict['reasons'])
         self.assertEqual(set(verdict['reason_kinds']), {'condition'})
+        git(self.repo, 'checkout', '-q', 'dev')
+        self.write(self.project_file, '')
+        self.session(None)
+        verdict = self.check('deploy-test')
+        self.assertIn('the project layer does not set actions.deploy-test.target',
+                      verdict['reasons'])
+        self.assertEqual(set(verdict['reason_kinds']), {'condition'})
 
     def allow_all(self):
         self.write(self.global_file, ''.join(f'[actions.{name}]\nallow = true\n' for name in

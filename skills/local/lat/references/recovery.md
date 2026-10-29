@@ -64,7 +64,7 @@ Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 的 DECIDE�
 
 參謀行為 `exempt spec-confirmation` 時，另要求唯一一行格式正確的 `- consensus: v<N> <64 位小寫十六進位 sha256>`，且最後一則訊息出現相同版本的 `共識 v<N>`；缺共識行、格式錯、訊息沒寫版本、版本不同或出現多個不同版本，皆逐題列出原因。其他類別不要求共識。舊紀錄重新提問也適用；[Spec 共識](consensus.md) 說明適用範圍。
 
-參謀行為 `exempt preauth-ask` 時，依當下設定重跑預先授權 `check` 核對 [參謀](advisors.md) 的免諮詢條件：紀錄沒有 `- action:` 行、結果為 `allow`、或原因含 `allow-false`、`condition`、`error` 以外的類別，都逐題列出原因；攔下與只警告規則同上（每回合第一次攔下，之後只警告）。原因只有 `error` 類（`check` 無法判斷）或重查本身出錯時只警告，不攔下。
+參謀行為 `exempt preauth-ask` 時，依當下設定重跑預先授權 `check` 核對 [參謀](advisors.md) 的免諮詢條件：紀錄沒有 `- action:` 行、結果為 `allow`、或原因含 `allow-false`、`condition`、`error` 以外的類別，都逐題列出原因；攔下與只警告規則同上（每回合第一次攔下，之後只警告）。原因只有 `error` 類（`check` 無法判斷）或某題重查本身出錯時，該題只警告、不攔下，其他題照常核對。
 
 已寫入面板或問過使用者的題目補做諮詢後，維持 pending 並寫 `- advisor: late <結論>`；參謀建議定案或自行查證時，重列題目的 ➡️ 行附建議與授權來源，由真人解除待答。
 
