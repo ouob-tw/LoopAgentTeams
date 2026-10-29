@@ -581,7 +581,7 @@ def other_controllers(workspace, session):
             own = name
         elif record.get('status') == 'active' and name not in others:
             others.append(name)
-    return own, others
+    return own, [name for name in others if name != own]
 
 
 def notice_steps(workspace, session):
@@ -592,7 +592,7 @@ def notice_steps(workspace, session):
                               None)
     own, others = other_controllers(workspace, session)
     me = own or '<your-hcom-name>'
-    targets = ' '.join(f'@{name}' for name in others if name != own) or '@<other-controller>'
+    targets = ' '.join(f'@{name}' for name in others) or '@<other-controller>'
     send = f"hcom send {targets} --intent inform --name {me} -- '<text>'"
     lookup = f'hcom events --from {me} --last 1'
     note = ('' if others else
