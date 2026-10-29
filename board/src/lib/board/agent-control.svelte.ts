@@ -117,7 +117,7 @@ class AgentControl {
 		if (result.ok) this.permission[agentId] = result.value;
 	}
 
-	/** Switch the permission mode, after the user confirmed it; the mode is read again after. */
+	/** Switch the permission mode, at the user's pick; the mode is read again after. */
 	async switchPermission(agentId: string, mode: string): Promise<Outcome> {
 		const outcome = await this.#post('/api/agents/permission', agentId, { mode });
 		void this.loadPermission(agentId);

@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { AGENT_HCOM_UNKNOWN_REASON } from '../../src/lib/board/agent-actions.ts';
-import { AGENT_FIXED_MODEL_REASON, AGENT_HCOM_UNKNOWN_SWITCH_REASON, AGENT_NOT_LINKED_SWITCH_REASON, LOCK_UNKNOWN_TEXT } from '../../src/lib/board/models.ts';
+import { AGENT_BUSY_REASON, AGENT_FIXED_MODEL_REASON, AGENT_HCOM_UNKNOWN_SWITCH_REASON, AGENT_NOT_LINKED_SWITCH_REASON, LOCK_UNKNOWN_TEXT } from '../../src/lib/board/models.ts';
+import { PERMISSION_NOT_LINKED_REASON } from '../../src/lib/board/permissions.ts';
 import { NODE, sleep, startFixture, type Fixture } from '../harness.ts';
 
 
@@ -1478,28 +1479,59 @@ test.skipIf(!CHROME)('the pause of the HCOM link shows for a linked agent, its r
 	}
 }, 30_000);
 
-test.skipIf(!CHROME)('a Claude agent shows the mode its screen shows beside its model, and is switched from there by Shift+Tab', async () => {
-	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
-	const rule = '─'.repeat(40);
-	const lines = ['⏵⏵ bypass permissions on (shift+tab to cycle)', '⏵⏵ auto mode on (shift+tab to cycle)', '⏸ manual mode on', '⏵⏵ accept edits on', '⏸ plan mode on'];
-	setHerdr(AGENTS, { screens: { 'wB:p-s-long': lines.map((line) => ['Claude Code', rule, '❯ ', rule, `  ${line}`].join('\n')) } });
-	const PILL = '.dock [data-pick="permission"]';
-	try {
-		await fixture.refresh(cookie);
-		await visit(1280, '?agent=s-long');
-		await tab.until(`document.querySelector(${JSON.stringify(PILL)})?.innerText === 'bypass permissions'`, 'the mode read off its screen');
-		await click(PILL);
-		await tab.until(`document.querySelectorAll('.permission [role="menuitemradio"]').length === 3`, 'the three modes');
-		await click('.permission [role="menuitemradio"]:nth-child(3)');
-		await click('[data-action="confirm-permission"]');
-		await tab.until(`document.querySelector(${JSON.stringify(PILL)})?.innerText === 'manual mode'`, 'the new mode shown');
-		expect(herdrCalls()).toEqual([
-			['agent', 'send-keys', 'wB:p-s-long', 'shift+tab'],
-			['agent', 'send-keys', 'wB:p-s-long', 'shift+tab']
-		]);
-		expect(await tab.eval(FITS)).toBe(true);
-	} finally {
-		setHerdr(AGENTS);
-		await fixture.refresh(cookie);
-	}
+const OPTIONS = '.dock .cmd button.options';
+const MODES = '.dock .popup section[aria-label="權限"]';
+const CURRENT = `document.querySelector('${MODES} [aria-current="true"]')?.innerText.replace('✓', '').trim()`;
+
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: a Claude agent's options pop-up shows the mode its screen shows, and a click switches it by Shift+Tab with no confirm`, async () => {
+		rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+		const rule = '─'.repeat(40);
+		const lines = ['⏵⏵ bypass permissions on (shift+tab to cycle)', '⏵⏵ auto mode on (shift+tab to cycle)', '⏸ manual mode on', '⏵⏵ accept edits on', '⏸ plan mode on'];
+		setHerdr(AGENTS, { screens: { 'wB:p-s-long': lines.map((line) => ['Claude Code', rule, '❯ ', rule, `  ${line}`].join('\n')) } });
+		try {
+			await fixture.refresh(cookie);
+			await visit(width, '?agent=s-long');
+			await tab.until(`!!document.querySelector('.dock .pill-slot .picker')`, 'the model picker');
+			// No permission pill beside the model any more; the options button holds it, on a phone too.
+			expect(await tab.eval(`!!document.querySelector('.dock [data-pick="permission"]')`)).toBe(false);
+			expect(await tab.eval(`!!document.querySelector(${JSON.stringify(OPTIONS)})?.getBoundingClientRect().width && !document.querySelector(${JSON.stringify(OPTIONS)}).disabled`)).toBe(true);
+			await click(OPTIONS);
+			await tab.until(`${CURRENT} === 'bypass permissions'`, 'the mode read off its screen');
+			expect(await tab.eval(`document.querySelectorAll('${MODES} button[data-mode]').length`)).toBe(3);
+			// Only the wake has wake options.
+			expect(await tab.eval(`!!document.querySelector('.dock .popup [aria-label="喚醒選項"]')`)).toBe(false);
+			// The current mode does nothing.
+			await click(`${MODES} [aria-current="true"]`);
+			await sleep(300);
+			expect(herdrCalls()).toEqual([]);
+			await click(`${MODES} button[data-mode="manual"]`);
+			expect(await tab.eval(`!!document.querySelector('[data-action="confirm-permission"]')`)).toBe(false);
+			await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已把 ')`, 'the switch notice');
+			await tab.until(`${CURRENT} === 'manual mode'`, 'the new mode shown in the pop-up');
+			expect(herdrCalls()).toEqual([
+				['agent', 'send-keys', 'wB:p-s-long', 'shift+tab'],
+				['agent', 'send-keys', 'wB:p-s-long', 'shift+tab']
+			]);
+			expect(await tab.eval(FITS)).toBe(true);
+		} finally {
+			setHerdr(AGENTS);
+			await fixture.refresh(cookie);
+		}
+	}, 30_000);
+}
+
+test.skipIf(!CHROME)("390px: a Codex agent that cannot be switched now shows why in its options pop-up, its modes not clickable", async () => {
+	await visit(390, '?agent=s-plain');
+	await tab.until(`!!document.querySelector(${JSON.stringify(OPTIONS)})?.getBoundingClientRect().width`, 'the options button');
+	await click(OPTIONS);
+	await tab.until(`document.querySelectorAll('${MODES} button[data-mode]').length === 3`, 'the three Codex modes');
+	expect(await tab.eval(`[...document.querySelectorAll('${MODES} button[data-mode]')].map((button) => button.innerText.replace('✓', '').trim())`)).toEqual(['Full Access', 'Approve for me', 'Ask for approval']);
+	expect(await tab.eval(`[...document.querySelectorAll('${MODES} button[data-mode]')].every((button) => button.getAttribute('aria-disabled') === 'true')`)).toBe(true);
+	const reason = await tab.eval<string>(`document.querySelector('${MODES} .note.blocked')?.innerText ?? ''`);
+	expect([AGENT_BUSY_REASON, PERMISSION_NOT_LINKED_REASON]).toContain(reason);
+	await click(`${MODES} button[data-mode]:not([aria-current="true"])`);
+	await sleep(300);
+	expect(await tab.eval(`document.querySelector('.dock .toasts')?.innerText ?? ''`)).not.toContain('切換');
+	expect(await tab.eval(FITS)).toBe(true);
 }, 30_000);

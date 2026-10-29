@@ -22,7 +22,8 @@ const FITS = `document.documentElement.scrollWidth <= window.innerWidth`;
 const BOX = '.dock .cmd textarea';
 const SEND = '.dock .cmd .send-slot button:not([data-action="interrupt"])';
 const OPTIONS = '.dock .cmd button.options';
-const POPUP = '.dock .popup[aria-label="喚醒選項"]';
+const POPUP = '.dock .popup [aria-label="喚醒選項"]';
+const MODES = '.dock .popup section[aria-label="權限"]';
 const STOP = '.dock [data-action="interrupt"]';
 /** Click the first button in `scope` whose text includes `text`. */
 const click = (scope: string, text: string) =>
@@ -498,6 +499,8 @@ for (const { width, newRound, kind, value, flags } of [
 		await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
 		await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
 		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).toContain('開新一輪 LAT');
+		// Its pane still in Herdr: its permission sits above the wake's options in the same pop-up.
+		await tab.until(`document.querySelectorAll('${MODES} button[data-mode]').length === 3`, 'its permission modes');
 		if (newRound) await tab.eval(`document.querySelector('${POPUP} input[type=checkbox]').click()`);
 		expect(await tab.eval(FITS)).toBe(true);
 		// Its model or effort for this wake, from the controller's model picker beside the button,
@@ -649,7 +652,11 @@ test.skipIf(!CHROME)("an ordinary agent is still written to as an agent, from a 
 	await tab.until(`!!document.querySelector('.detail [data-agent="s-plain"]') && !!document.querySelector(${JSON.stringify(BOX)})`, 'the agent page');
 	expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @plain');
 	await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`, "the agent's model picker");
-	expect(await tab.eval(`!!document.querySelector(${JSON.stringify(OPTIONS)})`)).toBe(false);
+	// Its options hold its permission only, never a wake's.
+	await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
+	await tab.until(`!!document.querySelector(${JSON.stringify(MODES)})`, 'its permission modes');
+	expect(await tab.eval(`!!document.querySelector(${JSON.stringify(POPUP)})`)).toBe(false);
+	await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
 	await type('給一般 Agent');
 	await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
 	await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');

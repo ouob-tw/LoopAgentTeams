@@ -1,8 +1,9 @@
 <script lang="ts">
 	// The command line at the bottom of the screen: `@name message` goes to that controller, a line
 	// without a name to the controller that is open. The recipient's model and effort sit beside the
-	// send button. An idle or closed controller is woken instead; its other wake options sit in a
-	// pop-up behind a button that shows only then. A phone can put the line away behind a floating
+	// send button. An idle or closed controller is woken instead. A pop-up behind the options button
+	// holds the permission switch of the open agent, or of the page's controller as Herdr lists it, and
+	// a wake's other options while waking; a phone shows the button only when it holds something. A phone can put the line away behind a floating
 	// button, to read more of the page; what was typed stays, also across a reload. While an agent's
 	// page is open, a line without a name goes to that agent instead, from a draft of its own, also
 	// kept across a reload; while it works, a stop button sits beside the send button, whether or not anything is typed.
@@ -41,7 +42,7 @@
 	import MessageBox from './MessageBox.svelte';
 	import VoiceButton from './VoiceButton.svelte';
 	import AgentModelPicker from './AgentModelPicker.svelte';
-	import AgentPermissionPicker from './AgentPermissionPicker.svelte';
+	import AgentPermissionModes from './AgentPermissionModes.svelte';
 	import ModelPicker from './ModelPicker.svelte';
 	import SendButton from './SendButton.svelte';
 
@@ -192,13 +193,19 @@
 	let confirming = $state<Record<string, boolean>>({});
 
 	const id = $derived(recipient?.id ?? '');
-	/** The page's own controller as Herdr lists it now, not one an `@name` line names: its permission
+	/** The page's own controller as Herdr lists it now, not another one an `@name` line names: its permission
 	 *  mode is switched as an agent's. */
 	const recipientAgent = $derived.by((): KnownAgent | undefined => {
-		if (!recipient || recipient.id !== target?.id || command.ok) return undefined;
+		if (!recipient || recipient.id !== target?.id) return undefined;
 		const listed = agents.find((candidate) => candidate.id === recipient.id && candidate.inHerdr);
 		return listed?.id ? { ...listed, id: listed.id } : undefined;
 	});
+	/** Whose permission mode the options pop-up switches: the open agent, or the page's controller. */
+	const permissionAgent = $derived.by((): KnownAgent | undefined => {
+		const one = toAgent ? agent : recipientAgent;
+		return one?.client === 'claude' || one?.client === 'codex' ? one : undefined;
+	});
+	const hasOptions = $derived(waking || permissionAgent !== undefined);
 	const status = $derived(waking ? switching.status[id] : undefined);
 	// A new model and effort only apply when the client is known not to be running: a running one
 	// is typed into and keeps its settings.
@@ -358,7 +365,6 @@
 	{#if toAgent && agent}
 		<div class="pill-slot">
 			<AgentModelPicker {agent} />
-			<AgentPermissionPicker {agent} />
 		</div>
 	{:else if !toClosed}
 		<div class="pill-slot">
@@ -367,18 +373,19 @@
 				chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }}
 				onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)}
 			/>
-			{#if recipientAgent}<AgentPermissionPicker agent={recipientAgent} />{/if}
 		</div>
-		<!-- Always there on a wide screen, so the box keeps its width whoever it is for; a phone shows
-		     it only for a wake. -->
+	{/if}
+	<!-- Always there on a wide screen, so the box keeps its width whoever it is for; a phone shows
+	     it only when it holds something. -->
+	{#if !toClosed}
 		<button
 			type="button"
 			class="options"
-			class:idle={!waking}
-			aria-label="喚醒選項"
-			title={waking ? '喚醒選項：開新一輪 LAT' : '只有閒置或已關閉的主控有喚醒選項'}
+			class:idle={!hasOptions}
+			aria-label="選項"
+			title={permissionAgent && waking ? '權限與喚醒選項' : permissionAgent ? '權限' : waking ? '喚醒選項：開新一輪 LAT' : '只有閒置或已關閉的主控有喚醒選項'}
 			aria-expanded={optionsOpen}
-			disabled={!waking}
+			disabled={!hasOptions}
 			onclick={() => (optionsOpen = !optionsOpen)}
 		>
 			<SlidersHorizontal size="1.1em" />
@@ -392,26 +399,32 @@
 	{#if toClosed && draft.trim()}
 		<p class="closed-note" role="status">{CLOSED_SEND_TEXT}</p>
 	{/if}
-	{#if optionsOpen && waking && recipient}
-		<div class="popup" role="group" aria-label="喚醒選項">
-			<label class="round">
-				<input type="checkbox" bind:checked={() => newRound[id] ?? false, (value) => (newRound[id] = value)} />
-				開新一輪 LAT
-			</label>
-			<p class="note">
-				<span title="@{recipient.hcomName}">@{lastSegment(recipient.hcomName)}</span> {recipient.status === 'closed' ? '已關閉' : recipient.status === 'working' ? '已停用 LAT（正在工作）' : '閒置中'}。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪
-				LAT」會在前面加上 LAT 啟動指令。
-			</p>
-			{#if abandonable[id]}
-				{#if confirming[id]}
-					<p class="warn">{ABANDON_CONFIRM_TEXT}</p>
-					<div class="actions">
-						<button type="button" class="danger" onclick={abandon}>確認放棄</button>
-						<button type="button" onclick={() => delete confirming[id]}>取消</button>
-					</div>
-				{:else}
-					<button type="button" onclick={() => (confirming[id] = true)}>放棄前一次接回</button>
-				{/if}
+	{#if optionsOpen && hasOptions}
+		<div class="popup" role="group" aria-label="選項">
+			{#if permissionAgent}<AgentPermissionModes agent={permissionAgent} />{/if}
+			{#if permissionAgent && waking}<hr />{/if}
+			{#if waking && recipient}
+				<div class="wake" role="group" aria-label="喚醒選項">
+					<label class="round">
+						<input type="checkbox" bind:checked={() => newRound[id] ?? false, (value) => (newRound[id] = value)} />
+						開新一輪 LAT
+					</label>
+					<p class="note">
+						<span title="@{recipient.hcomName}">@{lastSegment(recipient.hcomName)}</span> {recipient.status === 'closed' ? '已關閉' : recipient.status === 'working' ? '已停用 LAT（正在工作）' : '閒置中'}。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪
+						LAT」會在前面加上 LAT 啟動指令。
+					</p>
+					{#if abandonable[id]}
+						{#if confirming[id]}
+							<p class="warn">{ABANDON_CONFIRM_TEXT}</p>
+							<div class="actions">
+								<button type="button" class="danger" onclick={abandon}>確認放棄</button>
+								<button type="button" onclick={() => delete confirming[id]}>取消</button>
+							</div>
+						{:else}
+							<button type="button" onclick={() => (confirming[id] = true)}>放棄前一次接回</button>
+						{/if}
+					{/if}
+				</div>
 			{/if}
 		</div>
 	{/if}
@@ -494,6 +507,18 @@
 		border: 2px solid var(--text);
 		border-radius: var(--radius);
 		box-shadow: 0 4px 16px rgb(0 0 0 / 0.35);
+	}
+	.wake {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		align-items: flex-start;
+	}
+	.popup hr {
+		align-self: stretch;
+		margin: 0.1rem 0;
+		border: 0;
+		border-top: 1px solid var(--line);
 	}
 	.round {
 		display: inline-flex;
