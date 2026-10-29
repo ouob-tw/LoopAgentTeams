@@ -3,8 +3,9 @@
 // until clicked, shown as a reply is and translated as one with 中文 on. A message that is only the
 // tag line, and the other cards of a message that asked several, have no such row. In a real
 // browser: headless Chrome over its DevTools protocol, on the built board with fake data and a
-// fake Codex. Skipped when the host has no Chrome.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+// fake Codex. A card placed before its message comes, or shown without one, has no such row until
+// the message is there. Skipped when the host has no Chrome.
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -23,6 +24,7 @@ let cookie: string;
 let browser: Browser | undefined;
 let tab: Tab;
 let key: (id: string) => string;
+let record: string;
 
 const options = (labels: string[]) => labels.map((label, index) => ({ letter: 'ABC'[index]!, label, impact: '', recommended: index === 0 }));
 const codexCalls = (): string[] => {
@@ -45,9 +47,14 @@ beforeAll(async () => {
 		questions: [
 			question({ id: 'Q-1', title: '第一題', kind: 'single', options: options(['甲', '乙']), asked_at: ASKED_AT }),
 			question({ id: 'Q-2', title: '第二題', kind: 'single', options: options(['丙', '丁']), asked_at: ASKED_AT, section_sha256: 'b'.repeat(64) }),
-			question({ id: 'Q-3', title: '第三題', kind: 'single', options: options(['戊', '己']), asked_at: ASKED_AT, section_sha256: 'c'.repeat(64) })
+			question({ id: 'Q-3', title: '第三題', kind: 'single', options: options(['戊', '己']), asked_at: ASKED_AT, section_sha256: 'c'.repeat(64) }),
+			// Asked before the controller's last report, in no message: its message is not found.
+			question({ id: 'Q-5', title: '沒有原訊息', kind: 'single', options: options(['庚', '辛']), asked_at: '2026-10-20T01:02:00.000Z', section_sha256: 'e'.repeat(64) }),
+			// Asked after it, its turn not over yet: placed where its message will come.
+			question({ id: 'Q-4', title: '訊息還沒來', kind: 'single', options: options(['壬', '癸']), asked_at: '2026-10-20T01:04:00.000Z', section_sha256: 'd'.repeat(64) })
 		]
 	});
+	fixture.report(controller.session_id, { tag: 'DONE', summary: '做完了', time: '2026-10-20T01:03:00.000Z', hcom_name: 'rana', workspace: controller.workspace });
 	key = (id) => `q:${controller.session_id}:${id}`;
 	const lines = [
 		{ kind: 'assistant', time: '2026-10-20T01:00:30.000Z', text: TOGETHER },
@@ -55,7 +62,8 @@ beforeAll(async () => {
 		{ kind: 'assistant', time: '2026-10-20T01:01:00.000Z', text: '之後的訊息。' }
 	];
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
-	writeFileSync(join(fixture.dir, 'transcripts', `${controller.session_id}.jsonl`), lines.map((line) => JSON.stringify(line) + '\n').join(''));
+	record = join(fixture.dir, 'transcripts', `${controller.session_id}.jsonl`);
+	writeFileSync(record, lines.map((line) => JSON.stringify(line) + '\n').join(''));
 	fixture.setHelper({ output: { controllers: [controller] } });
 	await fixture.refresh(cookie);
 	browser = await launchChrome();
@@ -64,7 +72,7 @@ beforeAll(async () => {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
 	await tab.navigate(`${fixture.url}/?controller=${encodeURIComponent(controller.session_id)}`);
-	await tab.until(`document.querySelectorAll('.history form.answer').length === 3`, 'the three cards');
+	await tab.until(`document.querySelectorAll('.history form.answer').length === 3`, 'the three asked cards');
 }, 30_000);
 
 afterAll(async () => {
@@ -134,4 +142,20 @@ test.skipIf(!CHROME)('with 中文 on, English words are translated as a reply is
 	expect(await tab.eval<string>(`${body}.querySelector('.text').innerText`)).toContain('譯：');
 	await tab.eval(`${body}.querySelector('.original-toggle').click()`);
 	await tab.until(`${body}.querySelector('.original')?.innerText.includes('I compared both layouts.')`, 'the original');
+}, 30_000);
+
+test.skipIf(!CHROME)('a card whose message is not found has no row; one placed before its message comes gets the row, closed, once it comes', async () => {
+	await tab.navigate(`${fixture.url}/?item=${encodeURIComponent(key('Q-5'))}`);
+	await tab.until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found notice');
+	expect(await tab.eval(`!!document.querySelector('.detail [data-content="${key('Q-5')}"]')`)).toBe(true);
+	expect(await tab.eval(`!!document.querySelector('.detail .asking-note')`)).toBe(false);
+
+	await tab.navigate(`${fixture.url}/?item=${encodeURIComponent(key('Q-4'))}`);
+	await tab.until(`!!document.querySelector('.history .placed:not([data-seq]) [data-content="${key('Q-4')}"]')`, 'the card where its message will come');
+	expect(await tab.eval(`!!${fold('Q-4')}`)).toBe(false);
+	appendFileSync(record, JSON.stringify({ kind: 'assistant', time: '2026-10-20T01:04:30.000Z', text: '還差一件事要你決定。\n\nDECIDE: Q-4 r1 · 訊息還沒來' }) + '\n');
+	await tab.until(`!!${fold('Q-4')}`, 'the row once the message came');
+	expect(await tab.eval(`${toggle('Q-4')}.getAttribute('aria-expanded')`)).toBe('false');
+	await tab.eval(`${toggle('Q-4')}.click()`);
+	await tab.until(`${fold('Q-4')}.querySelector('.note-body')?.innerText.includes('還差一件事要你決定。')`, 'the words opened');
 }, 30_000);
