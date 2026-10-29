@@ -75,6 +75,9 @@
 		if (!item.unsent && item.question.answer) return { answer: item.question.answer, note: item.question.note };
 		return !answerable && submitted ? { answer: submitted.answer, note: submitted.note } : null;
 	});
+	/** The answer is settled: sent from here or elsewhere, answered, or recorded. A question gone
+	 *  from the page with no answer sent is not. */
+	const decided = $derived(item.kind === 'question' && !answerable && (isAnswered(item) || recorded || !item.unsent || !!submitted));
 	const chosen = $derived(item.kind === 'question' && shownAnswer ? chosenIn(item.question, shownAnswer.answer) : null);
 
 	function choose(position: number, single: boolean) {
@@ -151,10 +154,10 @@
 	</div>
 {/snippet}
 
-<article class="content" data-kind={item.kind} data-content={item.key}>
+<article class="content" data-kind={item.kind} data-decided={decided || undefined} data-content={item.key}>
 	{#if item.kind !== 'question' && item.message}<CopyButton text={item.message} />{/if}
 	<header>
-		<span class="label">{itemLabel(item)}</span>
+		<span class="label" class:open={answerable}>{itemLabel(item)}</span>
 		{#if item.kind === 'question'}
 			<span class="id">{item.question.id} r{item.question.revision}</span>
 			<span>{KIND_TEXT[item.question.kind] ?? item.question.kind}</span>
@@ -332,6 +335,9 @@
 	.content[data-kind='question'] {
 		border-left-color: var(--warn);
 	}
+	.content[data-kind='question'][data-decided] {
+		border-left-color: var(--line);
+	}
 	header {
 		padding-right: 1.6rem;
 		display: flex;
@@ -346,6 +352,12 @@
 		border: 1px solid var(--line);
 		border-radius: var(--radius-pill);
 		color: var(--text);
+	}
+	/* A question that can still be answered: filled like its label in the inbox list. */
+	.label.open {
+		border-color: transparent;
+		background: var(--warn);
+		color: var(--bg);
 	}
 	.id {
 		font-family: var(--mono);
@@ -569,6 +581,24 @@
 	:global(:root[data-theme='light']) .check {
 		font-weight: 700;
 		color: var(--text);
+	}
+	:global(:root[data-theme='light']) .label.open {
+		border-color: var(--warn);
+		font-weight: 600;
+	}
+	/* The answered option's own line, letter and text, is black on white; its description below
+	   keeps the heavy frame. */
+	:global(:root[data-theme='light']) .options li.picked {
+		gap: 0;
+	}
+	:global(:root[data-theme='light']) .options li.picked :is(.check, .letter) {
+		align-self: flex-start;
+	}
+	:global(:root[data-theme='light']) .options li.picked :is(.check, .letter, .option) {
+		padding: 0 0.35rem;
+		line-height: 1.5;
+		background: var(--text);
+		color: var(--bg);
 	}
 	:global(:root[data-theme='light']) .your-note {
 		border: 1px solid var(--line);
