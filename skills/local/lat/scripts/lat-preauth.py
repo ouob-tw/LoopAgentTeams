@@ -594,19 +594,31 @@ def notice_steps(workspace, session):
     me = own or '<your-hcom-name>'
     if not own:
         others = []  # the caller's own record is unknown, so it could be listed as a recipient
+    try:
+        agents = json.loads(run_cli(['hcom', 'list', '--json'], timeout=30))
+    except ValueError:
+        agents = None
+    if not isinstance(agents, list):
+        agents = None  # HCOM unavailable or unreadable
+    else:
+        agents = [item for item in agents if isinstance(item, dict)]
+    sender = hcom_send_name(own, agents) if own and agents is not None else me
+    if agents is None:
+        others = []
+    else:
+        live = {item[key] for item in agents for key in ('name', 'base_name')
+                if isinstance(item.get(key), str)}
+        others = [name for name in others if name in live]  # a send to a gone agent fails
     targets = ' '.join(f'@{name}' for name in others) or '@<other-controller>'
-    sender = me
-    if own:
-        try:
-            sender = hcom_send_name(own, json.loads(run_cli(['hcom', 'list', '--json'],
-                                                            timeout=30)))
-        except (ValueError, TypeError, AttributeError):
-            pass  # HCOM unavailable: the record name is the best guess
     send = f"hcom send {targets} --intent inform --name {me} -- '<text>'"
     lookup = f'hcom events --from {sender} --last 1'
-    note = ('' if others else
-            ' No other active controller is recorded for this session; name any other agent, since HCOM '
-            'rejects a send to yourself and `record` rejects a broadcast.')
+    if agents is None:
+        note = (' HCOM could not be read, so which other controllers are still present is unknown; '
+                'run `hcom list` and name a live agent other than yourself.')
+    else:
+        note = ('' if others else
+                ' No other active controller is recorded for this session; name any other agent, since HCOM '
+                'rejects a send to yourself and `record` rejects a broadcast.')
     return (f'Send the before-notice with `{send}` (to the other controllers, never to '
             f'yourself) and read its event id with `{lookup}` (the `id` field); note --started; '
             'do the action; send the after-notice the same way and read its event id; then '

@@ -330,17 +330,77 @@ class ConditionTests(PreauthCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines()[1], 'Next steps: ' + steps)
 
+    def fake_hcom(self, agents):
+        """A bin dir whose `hcom list --json` prints `agents`; None makes it fail."""
+        bin_dir = self.root / 'fakebin'
+        bin_dir.mkdir(exist_ok=True)
+        hcom = bin_dir / 'hcom'
+        output = 'sys.exit(1)' if agents is None else f'print({json.dumps(agents)!r})'
+        body = f'import sys\nif sys.argv[1:] != ["list", "--json"]:\n    sys.exit(2)\n{output}'
+        hcom.write_text(f'#!{sys.executable}\n{body}\n')
+        hcom.chmod(0o755)
+        return f'{bin_dir}:{os.environ["PATH"]}'
+
+    def other_sessions(self, *rows):
+        for name, status in rows:
+            self.write(self.sessions / f'{name}-session.json',
+                       json.dumps(dict(status=status, hcom_name=name)))
+
     def test_next_steps_name_the_other_active_controllers(self):
         self.allow_all()
         self.gate_record()
-        for name, status in (('kela', 'active'), ('mivo', 'active'), ('old', 'ended')):
-            other = dict(status=status, hcom_name=name)
-            self.write(self.sessions / f'{name}-session.json', json.dumps(other))
-        steps = self.check('deploy-test')['next_steps']
+        self.other_sessions(('kela', 'active'), ('mivo', 'active'), ('old', 'ended'))
+        path = self.fake_hcom([{'name': 'orch'}, {'name': 'kela'}, {'name': 'mivo'},
+                               {'name': 'old'}])
+        steps = self.check('deploy-test', path=path)['next_steps']
         self.assertIn("hcom send @kela @mivo --intent inform --name orch -- '<text>'", steps)
         self.assertNotIn('@orch', steps)
         self.assertNotIn('@old', steps)
         self.assertNotIn('No other active controller', steps)
+
+    def test_next_steps_skip_controllers_hcom_no_longer_has(self):
+        self.allow_all()
+        self.gate_record()
+        self.other_sessions(('kela', 'active'), ('vefi', 'active'))
+        path = self.fake_hcom([{'name': 'orch'}, {'name': 'kela'}])
+        steps = self.check('deploy-test', path=path)['next_steps']
+        self.assertIn("hcom send @kela --intent inform", steps)
+        self.assertNotIn('@vefi', steps)
+
+    def test_next_steps_match_a_tagged_controller_by_name_or_base_name(self):
+        self.allow_all()
+        self.gate_record()
+        self.other_sessions(('tag-kela', 'active'), ('mivo', 'active'))
+        path = self.fake_hcom([{'name': 'tag-kela', 'base_name': 'kela'},
+                               {'name': 'tag-mivo', 'base_name': 'mivo'}])
+        steps = self.check('deploy-test', path=path)['next_steps']
+        self.assertIn('hcom send @mivo @tag-kela --intent inform', steps)
+
+    def test_next_steps_with_no_live_controller_use_the_fallback(self):
+        self.allow_all()
+        self.gate_record()
+        self.other_sessions(('vefi', 'active'), ('hate', 'active'))
+        steps = self.check('deploy-test', path=self.fake_hcom([{'name': 'orch'}]))['next_steps']
+        self.assertIn('hcom send @<other-controller>', steps)
+        self.assertNotIn('@vefi', steps)
+        self.assertIn('No other active controller is recorded', steps)
+
+    def test_next_steps_say_so_when_hcom_lists_something_that_is_not_agents(self):
+        self.allow_all()
+        self.gate_record()
+        self.other_sessions(('kela', 'active'))
+        steps = self.check('deploy-test', path=self.fake_hcom({'error': 'x'}))['next_steps']
+        self.assertNotIn('@kela', steps)
+        self.assertIn('HCOM could not be read', steps)
+
+    def test_next_steps_say_so_when_hcom_cannot_be_read(self):
+        self.allow_all()
+        self.gate_record()
+        self.other_sessions(('kela', 'active'))
+        steps = self.check('deploy-test', path=self.fake_hcom(None))['next_steps']
+        self.assertIn('@<other-controller>', steps)
+        self.assertNotIn('@kela', steps)
+        self.assertIn('HCOM could not be read', steps)
 
     def test_next_steps_without_other_controllers_say_so(self):
         self.allow_all()
