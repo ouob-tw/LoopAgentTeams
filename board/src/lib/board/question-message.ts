@@ -123,3 +123,10 @@ export function askingTexts(
 	}
 	return found;
 }
+
+/** What an asking message says above its tag line, as the conversation shows it with the cards;
+ *  empty when the message is only the tag line. */
+export function askingNote(message: string): string {
+	const lines = message.trimEnd().split('\n');
+	return lines.slice(0, -1).join('\n').replace(/^(\s*\n)+/, '').trimEnd();
+}

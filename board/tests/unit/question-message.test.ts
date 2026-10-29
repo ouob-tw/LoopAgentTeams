@@ -1,7 +1,7 @@
 // Which chat message asked a panel question, from the cases shared with the Herdr side panel.
 import { expect, test } from 'bun:test';
 import fixture from '../fixtures/question-message-match.json';
-import { askedTogether, askingReport, askingTexts, justRecorded, withAnswered } from '../../src/lib/board/question-message.ts';
+import { askedTogether, askingNote, askingReport, askingTexts, justRecorded, withAnswered } from '../../src/lib/board/question-message.ts';
 import type { InboxItem, InboxQuestion } from '../../src/lib/board/types.ts';
 
 for (const entry of fixture.cases) {
@@ -79,4 +79,10 @@ test('a question that left the inbox as recorded stays, recorded, until the answ
 	// Only this controller's, only the recorded ones: a question removed for another reason goes.
 	expect(left.map((item) => [item.key, item.question.status, item.question.answer])).toEqual([[sent.key, 'recorded', 'A. 甲']]);
 	expect(justRecorded([sent], { inbox: [sent], recordedKeys: [] }, 's1')).toEqual([]);
+});
+
+test('an asking message shows what it says above its tag line, and nothing when it is only the tag line', () => {
+	expect(askingNote('我看完了。\n\n- 第一點\n- 第二點\n\nDECIDE: A-1 r1 · 一題 · 回答面板上的題目\n')).toBe('我看完了。\n\n- 第一點\n- 第二點');
+	expect(askingNote('HELP: A-1 r1 · 卡住了')).toBe('');
+	expect(askingNote('  \n\nDECIDE: A-1 r1, B-1 r2\n\n')).toBe('');
 });

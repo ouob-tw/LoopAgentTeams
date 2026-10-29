@@ -15,7 +15,7 @@
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import { EarlierReads, transcriptUrl, type TranscriptFeed } from '#lib/board/earlier.ts';
-	import { askingTexts } from '#lib/board/question-message.ts';
+	import { askingNote, askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { splitAttachments } from '#lib/board/attachments.ts';
 	import { answering } from '#lib/board/answering.svelte.ts';
@@ -81,8 +81,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		/** This controller's questions in the inbox and its answered ones: a message that asked some
 		 *  shows their cards. */
 		questions?: InboxQuestion[];
-		/** The cards of the questions one message asked, in its order. */
-		questionCards?: Snippet<[InboxQuestion[]]>;
+		/** The cards of the questions one message asked, in its order, and what the message says
+		 *  above its tag line, to show folded in the first card; none when it says nothing more. */
+		questionCards?: Snippet<[InboxQuestion[], Snippet | undefined]>;
 		/** A DONE report's card, shown in place of the text it carries. */
 		reportCard?: Snippet<[InboxReport, Translation | null]>;
 		/** Its board asks, oldest first: each card shows where it was asked. */
@@ -157,6 +158,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	});
 	/** Replies whose original the user opened under the translation, by key. */
 	let originals = $state<Record<string, boolean>>({});
+	/** Asking messages whose words above the tag line the user opened in their card, by `seq`. */
+	let notesOpen = $state<Record<number, boolean>>({});
 
 	/** The texts' HTML and their translations', by `seq`: a push renders only what is new. */
 	const markdown = new RenderedMarkdown();
@@ -217,6 +220,15 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const texts = view.items.filter((item): item is TranscriptText => item.kind === 'assistant');
 		return askingTexts(texts, opened ? [opened, ...questionList.filter((question) => question.key !== opened.key)] : questionList);
 	});
+	/** What each text that asked questions says above its tag line, by `seq`; left out when nothing. */
+	const askingNotes = $derived.by(() => {
+		const found = new Map<number, string>();
+		for (const item of view?.items ?? []) {
+			const note = item.kind === 'assistant' && asking.has(item.seq) ? askingNote(item.text) : '';
+			if (note) found.set(item.seq, note);
+		}
+		return found;
+	});
 	/** The `seq` of each reply shown as text that is mostly English: only these are translated,
 	 *  never the user's messages or the questions' cards. A report, listed as text with its mark or
 	 *  shown as its card, is translated like any reply. */
@@ -228,6 +240,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		}
 		return seqs;
 	});
+	/** The words above the tag line that are mostly English, by `seq`: translated like a reply. */
+	const englishNotes = $derived(translating ? new Map([...askingNotes].filter(([, note]) => isEnglish(note))) : new Map<number, string>());
 	/** The message of an opened report's card, translated like the report's card in the conversation,
 	 *  whether the card is placed at a text or shown above the conversation. A question's card is not
 	 *  translated. */
@@ -236,6 +250,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	// Newest first, what is loaded and not asked for yet; pushed and earlier parts as they come.
 	$effect(() => {
 		const texts = shown.flatMap((row) => (row.kind === 'text' && english.has(row.item.seq) ? [row.item.text] : []));
+		texts.push(...englishNotes.values());
 		if (placedTranslation && placedText) texts.unshift(placedText);
 		untrack(() => translations.want(texts));
 	});
@@ -249,6 +264,12 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	const unplaced = $derived(!!target && (place === null || (place === undefined && !!(problem || earlierFailed))));
 	/** The target's question or report, as last seen. */
 	let targetKey: string | undefined;
+	// Each opening shows the words above an asking message's tag line folded again.
+	$effect(() => {
+		void targetId;
+		void opens;
+		notesOpen = {};
+	});
 	// Another question or report is judged on the pages already read.
 	$effect(() => {
 		const key = target?.key;
@@ -491,6 +512,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		problem = null;
 		opened = {};
 		originals = {};
+		notesOpen = {};
 		markdown.clear();
 		translatedMarkdown.clear();
 		// Another conversation, or this one opened again: what failed may be tried again.
@@ -557,6 +579,37 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	});
 </script>
 
+<!-- What an asking message says above its tag line, folded in its first card until opened, and
+     shown and translated as the replies are. -->
+{#snippet askingNoteFold(seq: number)}
+	{@const note = askingNotes.get(seq) ?? ''}
+	{@const translation = englishNotes.has(seq) ? (translated[note] ?? { status: 'pending' as const }) : null}
+	<div class="asking-note" data-translation={translation?.status}>
+		<button class="fold" aria-expanded={!!notesOpen[seq]} onclick={() => (notesOpen[seq] = !notesOpen[seq])}>主控的說明 {notesOpen[seq] ? '▾' : '▸'}</button>
+		{#if notesOpen[seq]}
+			<div class="note-body">
+				{#if translation?.status === 'pending'}
+					<p class="meta translating" role="status"><span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>翻譯中</p>
+				{/if}
+				{#if translation?.status === 'done'}
+					<div class="text md" lang="zh-Hant-TW">{@html translatedMarkdown.html(seq, translation.text)}</div>
+					<button class="fold original-toggle" aria-expanded={!!originals[`n${seq}`]} onclick={() => (originals[`n${seq}`] = !originals[`n${seq}`])}>
+						{originals[`n${seq}`] ? '收起原文' : '看原文'}
+					</button>
+					{#if originals[`n${seq}`]}
+						<div class="text md original" lang="en">{@html markdown.html(seq, note)}</div>
+					{/if}
+				{:else}
+					<div class="text md">{@html markdown.html(seq, note)}</div>
+					{#if translation?.status === 'failed'}
+						<p class="untranslated">翻譯失敗，顯示原文（{translation.reason}）</p>
+					{/if}
+				{/if}
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
 <section class="history" data-block="transcript" bind:this={list} onsubmitcapture={hold}>
 	{#if held}<div class="head" bind:this={head} aria-hidden="true"></div>{/if}
 	<!-- Until the conversation is read, where they were asked is not known: newest first, above it. -->
@@ -581,7 +634,10 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 							<li class="guide"><ArrowUp size="1em" />較新的訊息</li>
 						{/if}
 						<li class="placed" data-seq={segment.seq ?? undefined}>
-							{#if questionCards && placedQuestions.length}{@render questionCards(placedQuestions)}{:else}{@render card?.(placedTranslation)}{/if}
+							{#if questionCards && placedQuestions.length}
+								{#snippet placedNote()}{@render askingNoteFold(segment.seq!)}{/snippet}
+								{@render questionCards(placedQuestions, segment.seq !== null && askingNotes.has(segment.seq) ? placedNote : undefined)}
+							{:else}{@render card?.(placedTranslation)}{/if}
 						</li>
 						{#if index < shown.length - 1 || view.before !== null}
 							<li class="guide"><ArrowDown size="1em" />較早的訊息</li>
@@ -589,7 +645,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 					{:else if segment.kind === 'ask'}
 						<li class="ask"><BoardAskCard ask={segment.ask} /></li>
 					{:else if segment.kind === 'text' && questionCards && asking.has(segment.item.seq)}
-						<li class="asking" data-seq={segment.item.seq}>{@render questionCards(asking.get(segment.item.seq)!)}</li>
+						{@const seq = segment.item.seq}
+						{#snippet note()}{@render askingNoteFold(seq)}{/snippet}
+						<li class="asking" data-seq={seq}>{@render questionCards(asking.get(seq)!, askingNotes.has(seq) ? note : undefined)}</li>
 					{:else if segment.kind === 'text' && reportCard && reported.get(segment.item.seq)?.tag === 'DONE'}
 						{@const translation = english.has(segment.item.seq) ? (translated[segment.item.text] ?? { status: 'pending' as const }) : null}
 						<li class="report" data-seq={segment.item.seq}>{@render reportCard(reported.get(segment.item.seq)!, translation)}</li>
@@ -788,6 +846,14 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		margin-top: 0.2rem;
 		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--muted);
+	}
+	.asking-note {
+		margin: 0 0 0.7rem;
+	}
+	.note-body {
+		margin-top: 0.3rem;
+		padding-left: 0.6rem;
+		border-left: 2px solid var(--line);
 	}
 	.fold {
 		padding: 0.1rem 0;
