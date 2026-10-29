@@ -69,9 +69,9 @@ const lookOf = (id: string) => `(() => {
 	const css = (element, ...names) => Object.fromEntries(names.map((name) => [name, element && getComputedStyle(element)[name]]));
 	const probe = (value) => { const el = document.body.appendChild(document.createElement('i')); el.style.color = value; const color = getComputedStyle(el).color; el.remove(); return color; };
 	const picked = root.querySelector('.options li.picked');
-	const box = (element) => { const rect = element && element.getBoundingClientRect(); return rect && { top: rect.top, height: rect.height }; };
+	const box = (rect) => ({ top: rect.top, height: rect.height });
 	return {
-		line: picked && { li: box(picked), check: box(picked.querySelector('.check')), letter: box(picked.querySelector('.letter')), option: box(picked.querySelector('.option').getClientRects()[0] ? { getBoundingClientRect: () => picked.querySelector('.option').getClientRects()[0] } : null) },
+		line: picked && { li: box(picked.getBoundingClientRect()), check: box(picked.querySelector('.check').getBoundingClientRect()), letter: box(picked.querySelector('.letter').getBoundingClientRect()), option: box(picked.querySelector('.option').getClientRects()[0]) },
 		label: css(root.querySelector('.label'), 'backgroundColor', 'color', 'borderTopColor'),
 		edge: getComputedStyle(root).borderLeftColor,
 		picked: picked && {
