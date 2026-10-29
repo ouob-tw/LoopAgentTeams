@@ -791,11 +791,18 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(len(self.fake.sent), 2)
         self.assertIn(other, self.fake.sent[1])
 
-    def test_api_error_wrapped_over_rows_is_quoted_whole(self):
-        self.fake.screen = [API_ERROR[:60], API_ERROR[60:130], API_ERROR[130:], '',
-                            *CODEX_SCREEN]
+    def test_api_error_wrapped_over_rows_is_quoted_whole_and_once_across_widths(self):
+        def wrapped(*cuts):  # Codex wraps at spaces and indents the following rows
+            words, rows = API_ERROR.split(' '), []
+            for start, end in zip((0, *cuts), (*cuts, None)):
+                rows.append(('  ' if start else '') + ' '.join(words[start:end]))
+            return [*rows, '', *CODEX_SCREEN]
+        self.fake.screen = wrapped(4, 9)
         self.step_at(0)
         self.assertIn(API_ERROR, self.fake.sent[0])
+        self.fake.screen = wrapped(6)  # the pane was resized
+        self.step_at(5)
+        self.assertEqual(len(self.fake.sent), 1)
 
     def test_capacity_and_replaced_api_errors_get_no_api_error_notice(self):
         self.fake.screen = [API_ERROR, CAPACITY, '', *CODEX_SCREEN]

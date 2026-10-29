@@ -437,7 +437,7 @@ def release_stopped(watched):
 
 
 def release(name, full):
-    """Stop covering an agent's capacity: lat-watch takes it over again."""
+    """Stop covering an agent's capacity and API errors: lat-watch takes capacity over again."""
     episodes.pop(name, None)
     api_errors.pop(name, None)
     (state_dir() / 'capacity' / f'{full}.json').unlink(missing_ok=True)
@@ -528,7 +528,7 @@ def api_error_on_screen(lines, input_text=''):
                     pass
                 if not line.strip() or line.lstrip().startswith(('› ', '• ', '■ ', 'Working (')):
                     break
-                text += line.strip()
+                text += ' ' + line.strip()
             return text[:API_ERROR_CHARS]
     return None
 
@@ -596,7 +596,7 @@ def output_since(transcript, offset, size):
 
 
 def capacity_step(name, full, spawner):
-    """Handle one check of a Codex agent that may be stopped on model capacity.
+    """Handle one check of a Codex agent that may be stopped on model capacity or an API error.
 
     An episode starts when the last error on the screen is the capacity error. With an
     empty input box Continue + Enter is typed once; with text in it the spawner is told at
@@ -640,12 +640,13 @@ def capacity_step(name, full, spawner):
     lines = [str(line) for line in screen.get('lines') or []]
     if not capacity_on_screen(lines, screen.get('input_text')):
         error = api_error_on_screen(lines, screen.get('input_text'))
-        told = api_errors.setdefault(name, set())
-        if error and error not in told and notify(
+        # Rows rewrap at another width; compare without whitespace so it is still one error.
+        key = re.sub(r'\s+', '', error or '')
+        if error and key not in api_errors.get(name, set()) and notify(
                 spawner, f'hcom-spawn: {full} (codex) stopped on an API error: {error} '
                          f'It was not retried. Look at it with `hcom term {full}`; switch '
                          'model or account, or hand the work to another agent.') == 0:
-            told.add(error)
+            api_errors.setdefault(name, set()).add(key)
         return
     where = f'{full} (codex) stopped on "Selected model is at capacity".'
     if episode is None:
