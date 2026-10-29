@@ -352,7 +352,7 @@ test('a Word file and an archive still download, and open no window', async () =
 	}
 }, 60_000);
 
-test('a file gone between the list and opening it says so, and opens no window', async () => {
+test('a file gone between the list and opening it says so, and leaves no window open', async () => {
 	await visit('sent');
 	await tab.until(`window.reads.some((read) => read.method === 'HEAD' && read.url.includes(${JSON.stringify(encodeURIComponent(paths['vanish.txt']))}) && read.status === 200)`, 'the file there when listed');
 	renameSync(paths['vanish.txt'], `${paths['vanish.txt']}.moved`);

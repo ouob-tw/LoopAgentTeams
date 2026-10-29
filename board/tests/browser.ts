@@ -117,12 +117,17 @@ export class Tab {
 			socket.addEventListener('error', () => reject(new Error('the Chrome tab did not open')), { once: true });
 		});
 		const tab = new Tab(socket, ended, stderr);
-		await tab.send('Page.enable');
-		await tab.send('Runtime.enable');
-		await tab.send('Page.setLifecycleEventsEnabled', { enabled: true });
-		await tab.send('Network.enable');
-		for (const source of scripts) await tab.send('Page.addScriptToEvaluateOnNewDocument', { source });
+		await tab.start(scripts);
 		return tab;
+	}
+	/** What the tab reports from then on: loads, errors and requests (for `navigate`); `scripts` run
+	 *  first in every document. */
+	async start(scripts: string[] = []) {
+		await this.send('Page.enable');
+		await this.send('Runtime.enable');
+		await this.send('Page.setLifecycleEventsEnabled', { enabled: true });
+		await this.send('Network.enable');
+		for (const source of scripts) await this.send('Page.addScriptToEvaluateOnNewDocument', { source });
 	}
 	/** A DevTools request; one Chrome does not answer within `ms` fails, naming the request. */
 	send(method: string, params: object = {}, ms = REQUEST_MS): Promise<any> {
@@ -171,22 +176,27 @@ export class Tab {
 	 *  without one of its modules never starts. Only that error does; any other failure stays. */
 	async navigate(url: string) {
 		const kept = this.errors.length;
-		for (let tries = 1; ; tries++) {
-			const again = tries < NAVIGATE_TRIES;
-			// The page given up on: its errors go once the next document commits.
-			if (tries > 1) this.#keepErrors = kept;
-			// The load of this navigation's own document: the tab's first, empty one also fires a load.
-			const { loaderId, errorText } = await this.send('Page.navigate', { url });
-			if (errorText === NETWORK_CHANGED && again) continue;
-			if (errorText) throw new Error(`${url}: ${errorText}`);
-			const deadline = Date.now() + 10_000;
-			while (!this.#loaded.has(loaderId)) {
-				if (this.#gone) throw await this.#gone;
-				if (Date.now() > deadline) throw new Error(`timed out loading ${url}`);
-				await sleep(20);
+		try {
+			for (let tries = 1; ; tries++) {
+				const again = tries < NAVIGATE_TRIES;
+				// The page given up on: its errors go once the next document commits.
+				if (tries > 1) this.#keepErrors = kept;
+				// The load of this navigation's own document: the tab's first, empty one also fires a load.
+				const { loaderId, errorText } = await this.send('Page.navigate', { url });
+				if (errorText === NETWORK_CHANGED && again) continue;
+				if (errorText) throw new Error(`${url}: ${errorText}`);
+				const deadline = Date.now() + 10_000;
+				while (!this.#loaded.has(loaderId)) {
+					if (this.#gone) throw await this.#gone;
+					if (Date.now() > deadline) throw new Error(`timed out loading ${url}`);
+					await sleep(20);
+				}
+				if (!this.#networkChanged.has(loaderId) || !again) return;
+				console.error(`${url}: a request was lost to a change in the host's network (${NETWORK_CHANGED}); loading the page again`);
 			}
-			if (!this.#networkChanged.has(loaderId) || !again) return;
-			console.error(`${url}: a request was lost to a change in the host's network (${NETWORK_CHANGED}); loading the page again`);
+		} finally {
+			// A try that failed before its document committed leaves nothing for a later commit to cut.
+			this.#keepErrors = undefined;
 		}
 	}
 	/** Wait for an expression in the page to be true. */
