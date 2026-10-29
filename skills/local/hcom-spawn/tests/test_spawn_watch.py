@@ -23,6 +23,10 @@ CAPACITY = '■ Selected model is at capacity. Please try a different model.'
 CAPACITY_SCREEN = [CAPACITY, '', *CODEX_SCREEN]
 RECOVERED_SCREEN = [CAPACITY, '› Continue', '• Picking up the task again.',
                     'Working (3s · esc to interrupt)', *CODEX_SCREEN]
+API_ERROR = ('■ {"type":"error","status":400,"error":{"type":"invalid_request_error",'
+             '"message":"The \'gpt-6.1-sol\' model is not supported when using Codex with a '
+             'ChatGPT account.","code":"model_not_found"}}')
+API_ERROR_SCREEN = [API_ERROR, '', *CODEX_SCREEN]
 REPLY = {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'OK'}}
 ECHO = {'type': 'event_msg', 'payload': {'type': 'user_message', 'message': 'Continue'}}
 
@@ -581,7 +585,7 @@ class CapacityHcom:
     def __init__(self, transcript, screen=CAPACITY_SCREEN, status='listening'):
         self.transcript, self.screen, self.status = transcript, screen, status
         self.input_text, self.now, self.injected, self.sent = '', 0.0, [], []
-        self.inject_fails = False
+        self.inject_fails = self.send_fails = False
 
     def clock(self):
         return self.now
@@ -599,6 +603,8 @@ class CapacityHcom:
                                   'prompt_empty': not self.input_text,
                                   'input_text': self.input_text})
         if args[0] == 'send':
+            if self.send_fails:
+                return 1, 'send failed'
             self.sent.append(args[-1])
             return 0, ''
         raise AssertionError(f'unexpected hcom call {args}')
@@ -770,6 +776,45 @@ class CapacityTests(unittest.TestCase):
                 self.step_at(0)
                 self.assertEqual(self.fake.injected, [])
 
+    def test_api_error_is_told_once_per_error_with_nothing_typed(self):
+        self.fake.screen = API_ERROR_SCREEN
+        for seconds in (0, 5, 400):
+            self.step_at(seconds)
+        self.assertEqual(self.fake.injected, [])
+        self.assertEqual(len(self.fake.sent), 1)
+        self.assertIn(f'vare-review-kilo (codex) stopped on an API error: {API_ERROR}',
+                      self.fake.sent[0])
+        self.assertIn('It was not retried', self.fake.sent[0])
+        other = '■ {"type":"error","status":401,"error":{"type":"auth_error"}}'
+        self.fake.screen = [API_ERROR, '› Continue', other, '', *CODEX_SCREEN]
+        self.step_at(410)
+        self.assertEqual(len(self.fake.sent), 2)
+        self.assertIn(other, self.fake.sent[1])
+
+    def test_api_error_wrapped_over_rows_is_quoted_whole(self):
+        self.fake.screen = [API_ERROR[:60], API_ERROR[60:130], API_ERROR[130:], '',
+                            *CODEX_SCREEN]
+        self.step_at(0)
+        self.assertIn(API_ERROR, self.fake.sent[0])
+
+    def test_capacity_and_replaced_api_errors_get_no_api_error_notice(self):
+        self.fake.screen = [API_ERROR, CAPACITY, '', *CODEX_SCREEN]
+        self.step_at(0)
+        self.assertEqual(len(self.fake.injected), 1)  # the capacity error's own Continue
+        self.fake.screen = [API_ERROR, '› Continue', '• Picking up the task again.',
+                            *CODEX_SCREEN]
+        self.step_at(5)
+        self.assertEqual(self.fake.sent, [])
+
+    def test_failed_api_error_notice_is_retried_on_the_next_check(self):
+        self.fake.screen = API_ERROR_SCREEN
+        self.fake.send_fails = True
+        self.step_at(0)
+        self.fake.send_fails = False
+        self.step_at(5)
+        self.step_at(10)
+        self.assertEqual(len(self.fake.sent), 1)
+
     def test_failed_continue_is_retried_on_the_next_check(self):
         self.fake.inject_fails = True
         self.step_at(0)
@@ -827,6 +872,14 @@ class CapacityWatchTests(unittest.TestCase):
         # The stopped agent is released at once; the watch ends with its last agent.
         self.assertEqual([send for send in fake.sent if 'Continue was sent' in send[-1]], [])
         self.assertLess(fake.now, 300)
+
+    def test_codex_agent_stopped_on_an_api_error_is_told_to_the_spawner_once(self):
+        fake = FakeHcom(tool='codex', screens=[API_ERROR_SCREEN], stop_after=400)
+        self.run_codex(fake)
+        notices = [send for send in fake.sent if 'API error' in send[-1]]
+        self.assertEqual([send[1] for send in notices], ['@vare'])
+        self.assertIn(API_ERROR, notices[0][-1])
+        self.assertEqual(fake.injected, [])
 
     def test_agent_that_already_ended_gets_nothing(self):
         fake = FakeHcom(tool='codex', screens=[CAPACITY_SCREEN], stop_after=0)

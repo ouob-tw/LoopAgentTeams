@@ -6,7 +6,7 @@ renames each new agent's Herdr tab to <spawner>-<agent>, compares model, effort 
 permission on the agent's screen with the launch command, tells the spawner about any
 mismatch or anything it could not confirm, and removes the subscriptions once the agents
 stop. Until then it also types Continue once when a Codex agent stops on model capacity
-(see capacity_step).
+and tells the spawner once when one stops on another API error (see capacity_step).
 """
 import argparse
 import contextlib
@@ -49,11 +49,14 @@ CAPACITY_POLL = 5          # seconds between capacity checks of the watched Code
 CAPACITY_NOTICE = 5 * 60   # seconds after Continue before telling the spawner
 CAPACITY_CONTINUE = 'Continue'
 CAPACITY_ERROR = re.compile(r'^■\s+Selected model is at capacity\b', re.IGNORECASE)
+API_ERROR = re.compile(r'^■\s+\{"type":\s*"error"')
+API_ERROR_CHARS = 1000     # longest error text quoted to the spawner
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 
 clock, sleep = time.monotonic, time.sleep
 PROC = Path('/proc')
 episodes = {}            # agent base name -> current capacity episode
+api_errors = {}          # agent base name -> API error texts already told to the spawner
 last_capacity_check = [None]
 
 
@@ -436,6 +439,7 @@ def release_stopped(watched):
 def release(name, full):
     """Stop covering an agent's capacity: lat-watch takes it over again."""
     episodes.pop(name, None)
+    api_errors.pop(name, None)
     (state_dir() / 'capacity' / f'{full}.json').unlink(missing_ok=True)
     (state_dir() / 'capacity' / f'{full}.continued.json').unlink(missing_ok=True)
 
@@ -505,6 +509,28 @@ def capacity_on_screen(lines, input_text=''):
         if CAPACITY_ERROR.search(lines[index]):
             return capacity_is_current(lines, index, input_text)
     return False
+
+
+def api_error_on_screen(lines, input_text=''):
+    """Text of the last `■ {"type":"error",...}` on a Codex screen when it is still current
+    (capacity_is_current), else None. Rows the error wrapped onto are joined until its JSON
+    is complete, a blank row or the next prompt, reply or error."""
+    for index in range(len(lines) - 1, -1, -1):
+        if API_ERROR.search(lines[index]):
+            if not capacity_is_current(lines, index, input_text):
+                return None
+            text = lines[index].strip()
+            for line in lines[index + 1:]:
+                try:
+                    json.loads(text[1:])
+                    break
+                except ValueError:
+                    pass
+                if not line.strip() or line.lstrip().startswith(('› ', '• ', '■ ', 'Working (')):
+                    break
+                text += line.strip()
+            return text[:API_ERROR_CHARS]
+    return None
 
 
 def capacity_is_current(lines, index, input_text=''):
@@ -577,8 +603,9 @@ def capacity_step(name, full, spawner):
     once instead. Still on capacity CAPACITY_NOTICE seconds after Continue, the spawner is
     told once. Only a complete agent reply or tool call in the transcript after the episode
     began ends it. A Continue lat-watch typed before this watcher covered the agent starts
-    the episode instead of a new one. Inactive agents are left alone; failed sends are
-    retried next check.
+    the episode instead of a new one. When the last error is another API error
+    (`■ {"type":"error",...}`) the spawner is told once per distinct error text, with
+    nothing typed. Inactive agents are left alone; failed sends are retried next check.
     """
     code, out = hcom('list', full, '--json')
     try:
@@ -608,8 +635,17 @@ def capacity_step(name, full, spawner):
         screen = json.loads(out) if code == 0 else None
     except ValueError:
         screen = None
-    if not isinstance(screen, dict) or not capacity_on_screen(
-            [str(line) for line in screen.get('lines') or []], screen.get('input_text')):
+    if not isinstance(screen, dict):
+        return
+    lines = [str(line) for line in screen.get('lines') or []]
+    if not capacity_on_screen(lines, screen.get('input_text')):
+        error = api_error_on_screen(lines, screen.get('input_text'))
+        told = api_errors.setdefault(name, set())
+        if error and error not in told and notify(
+                spawner, f'hcom-spawn: {full} (codex) stopped on an API error: {error} '
+                         f'It was not retried. Look at it with `hcom term {full}`; switch '
+                         'model or account, or hand the work to another agent.') == 0:
+            told.add(error)
         return
     where = f'{full} (codex) stopped on "Selected model is at capacity".'
     if episode is None:
