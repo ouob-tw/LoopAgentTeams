@@ -499,7 +499,11 @@ class RepoTests(LedgerCase):
         self.assertIn(f'repo：{self.other}', self.ok('show'))
         self.assertEqual(json.loads(self.ok('show', '--json'))['items'][0]['repo'],
                          str(self.other))
-        self.assertIn('ledger check: OK', self.ok('check'))
+        checked = self.ok('check')
+        self.assertIn('ledger check: OK', checked)
+        self.assertIn(f'item {item} repo: {self.other}', checked)
+        self.assertEqual(json.loads(self.ok('check', '--json'))['repos'],
+                         [{'id': item, 'repo': str(self.other)}])
 
     def test_done_repo_sets_the_row_repo_and_records_the_change(self):
         item = self.started()

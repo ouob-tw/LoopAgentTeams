@@ -715,6 +715,8 @@ def cmd_next(args):
 def cmd_check(args):
     doc = read_only(args)
     failures, cancelled = [], []
+    repos = [{'id': item['id'], 'repo': item['repo']} for item in doc['items']
+             if item.get('repo') and item['status'] != 'cancelled']
     for item in doc['items']:
         repo = f', repo {item["repo"]}' if item.get('repo') else ''
         label = f'item {item["id"]} ({item["ticket"]} {item["stage"]}{repo})'
@@ -734,11 +736,14 @@ def cmd_check(args):
         if problems:
             failures.append({'id': item['id'], 'label': label, 'problems': problems})
     if args.json:
-        print(json.dumps({'ok': not failures, 'failures': failures, 'cancelled': cancelled},
+        print(json.dumps({'ok': not failures, 'failures': failures, 'cancelled': cancelled,
+                          'repos': repos},
                          ensure_ascii=False, indent=1))
     else:
         print('ledger check: ' + ('FAIL' if failures else 'OK') +
               f' ({len(doc["items"])} items)')
+        for entry in repos:
+            print(f'- item {entry["id"]} repo: {entry["repo"]}')
         for failure in failures:
             print(f'- {failure["label"]}: ' + '; '.join(failure['problems']))
         for entry in cancelled:
