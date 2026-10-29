@@ -3,10 +3,11 @@
 
 `card` creates the task card for an HCOM tag that was just launched; the agent's full name
 comes from `hcom list --json`. With --native, the card is for a Claude built-in agent: the
-name comes from --agent, HCOM is not consulted and the card is marked `native agent：是`. `brief` turns a four-section Markdown file plus that card into
-a ready-to-send task brief and prints the `hcom send` command; its `--name` values are the
-base names HCOM records for tagged senders. It never launches agents and
-never sends anything. Hand-written cards and briefs stay allowed.
+name comes from --agent, HCOM is not consulted and the card is marked `native agent：是`.
+`brief` turns a four-section Markdown file plus that card into a ready-to-send task brief and
+prints the `hcom send` command; its `--name` values are the base names HCOM records for tagged
+senders. It never launches agents and never sends anything. Hand-written cards and briefs stay
+allowed.
 
 With --ledger, `card` also opens and assigns a row in the LAT work ledger (lat-ledger.py) and
 writes the row into the card; `brief` then carries the row and the start/update/done commands.
