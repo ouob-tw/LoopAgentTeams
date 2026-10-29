@@ -47,7 +47,7 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; 拒絕 denies; over a content screen 稍後 leaves a strip that opens it again; then a quiet line', async () => {
+test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; 拒絕 denies; over a content screen 稍後 leaves a strip that opens it again; then an unavailable notice', async () => {
 	const argv = ['/usr/bin/python3', '/home/u/tools/npm_login.py', '--registry', 'https://registry.npmjs.org'];
 	// #4 comes with pd's check of its caller; #3 from a pd without it, by its declared name only.
 	const checked = { name: 'dahe-t09-vafu', client: 'codex', group: 'dahe-t09', orchestrator: false, source: 'auto', pid: 4242, start_time: 98765, program: null, verified: false, notice: '程序樹查證，非防竄改' };
@@ -157,8 +157,8 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	expect(await tab.eval(`document.querySelector('.inbox > .middle-tabs').previousElementSibling`)).toBe(null);
 	expect(await tab.eval(`document.title`)).toBe('LAT 看板');
 	setPd({ pending: [], unavailable: true });
-	await tab.until(`document.querySelector('.inbox .pd-off')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'the quiet unavailable line');
-	expect(await tab.eval(`!!document.querySelector('.inbox .pd')`)).toBe(false);
+	await tab.until(`${SHOWN('.inbox .pd-unavailable')} && document.querySelector('.inbox .pd-unavailable').textContent === 'pd 服務不可用'`, 'the visible unavailable notice');
+	expect(await tab.eval(SHOWN('.inbox .pd'))).toBe(true);
 }, 30_000);
 
 test.skipIf(!CHROME)('on a desktop the window floats over the middle column on every list, moves and resizes, keeps its place and stays on screen; 稍後 folds it to a badge, a new request opens it', async () => {
