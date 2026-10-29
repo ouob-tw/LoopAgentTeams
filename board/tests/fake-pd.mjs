@@ -20,7 +20,7 @@ if (state.unavailable) {
 	process.stderr.write('pd: cannot reach pdd at /run/pdbroker/pd.sock: [Errno 2] No such file or directory\n');
 	process.exit(69);
 }
-if (args[0] === 'status' && args[1] === '--json') {
+if (args[0] === 'status' && args[1] === '--json' && args.length === 2) {
 	const vault = state.vault ?? 'ok';
 	process.stdout.write(JSON.stringify({ ok: true, vault, last_failure: null }) + '\n');
 	process.exit(vault === 'ok' ? 0 : 69);

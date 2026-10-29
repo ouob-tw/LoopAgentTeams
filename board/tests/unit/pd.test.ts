@@ -217,3 +217,19 @@ test('vault status makes unavailable visible without discarding pending approval
 	}
 	expect(pdNotice({ ok: false, reason: '連不上 pd 服務' })).toBe('pd 服務不可用');
 });
+
+test('fake pd status rejects extra arguments just like the real CLI', async () => {
+	const { mkdtempSync, rmSync } = await import('node:fs');
+	const { tmpdir } = await import('node:os');
+	const { join } = await import('node:path');
+	const dir = mkdtempSync(join(tmpdir(), 'pd-status-args-'));
+	try {
+		const fake = new URL('../fake-pd.mjs', import.meta.url).pathname;
+		for (const extra of [[], ['unexpected'], ['--unknown']]) {
+			const child = Bun.spawn([process.execPath, fake, dir, 'status', '--json', ...extra], { stdout: 'pipe', stderr: 'pipe' });
+			expect(await child.exited).toBe(extra.length ? 2 : 0);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
