@@ -2,10 +2,12 @@
 """Dispatch helper for the LAT orchestrator (stdlib only).
 
 `card` creates the task card for an HCOM tag that was just launched; the agent's full name
-comes from `hcom list --json`. `brief` turns a four-section Markdown file plus that card into
-a ready-to-send task brief and prints the `hcom send` command; its `--name` values are the
-base names HCOM records for tagged senders. It never launches agents and
-never sends anything. Hand-written cards and briefs stay allowed.
+comes from `hcom list --json`. With --native, the card is for a Claude built-in agent: the
+name comes from --agent, HCOM is not consulted and the card is marked `native agent：是`.
+`brief` turns a four-section Markdown file plus that card into a ready-to-send task brief and
+prints the `hcom send` command; its `--name` values are the base names HCOM records for tagged
+senders. It never launches agents and never sends anything. Hand-written cards and briefs stay
+allowed.
 
 With --ledger, `card` also opens and assigns a row in the LAT work ledger (lat-ledger.py) and
 writes the row into the card; `brief` then carries the row and the start/update/done commands.
@@ -146,7 +148,12 @@ def make_card(args):
     if not tasks.is_dir():
         raise Failure(f'task-card directory does not exist: {tasks}')
     ledger = ledger_request(args)
-    agent = agent_for_tag(tag, args.agent)
+    if args.native:
+        if not args.agent or not CARD_AGENT.fullmatch(args.agent):
+            raise Failure('--native needs --agent with the name the orchestrator gave the agent')
+        agent = args.agent
+    else:
+        agent = agent_for_tag(tag, args.agent)
     day = args.date or date.today().isoformat()
     options = {
         'model': args.model, 'branch': args.branch, 'worktree': args.worktree,
@@ -158,6 +165,7 @@ def make_card(args):
     values = {name: single_line(name, value) for name, value in options.items()}
     fields = [
         ('agent', agent), ('orchestrator', single_line('--orchestrator', args.orchestrator)),
+        *([('native agent', '是')] if args.native else []),
         ('model', values['model']), ('branch', values['branch']),
         ('worktree', values['worktree']), ('base commit', values['base commit']),
         ('status', 'dispatched'), ('owned resources', values['owned resources']),
@@ -178,7 +186,8 @@ def make_card(args):
         number += 1
     if ledger:
         row = open_ledger_row(args, ledger, fields[1][1], agent, path)
-        fields.insert(7, ('ledger row', f'{row} ({ledger["path"]})'))
+        fields.insert([name for name, _ in fields].index('status') + 1,
+                      ('ledger row', f'{row} ({ledger["path"]})'))
     try:
         with open(path, 'x', encoding='utf-8') as stream:
             stream.write(card_text(previous, fields))
@@ -424,6 +433,9 @@ def build_parser():
     card = commands.add_parser('card', help='Create the task card for a launched HCOM tag')
     card.add_argument('--tag', required=True)
     card.add_argument('--agent', help='full HCOM name; picks one agent when the tag matches several')
+    card.add_argument('--native', action='store_true',
+                      help='Claude built-in agent without an HCOM name: --agent is its name, '
+                           'HCOM is not consulted')
     card.add_argument('--tasks', type=Path, required=True,
                       help='shared task-card directory (<workspace>/.lat/tasks)')
     card.add_argument('--orchestrator', required=True, help='HCOM name of the orchestrator')

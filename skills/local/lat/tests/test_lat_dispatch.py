@@ -412,6 +412,27 @@ class WatchCompatibilityTests(DispatchCase):
         self.assertEqual(skipped, {})
         self.assertEqual(cards['nanu-impl123-fida']['status'], 'dispatched')
 
+    def test_native_card_needs_no_hcom_lookup_and_is_marked_for_the_watch(self):
+        result = self.run_script(*self.card_args('--native', '--agent', 'nanu-research-web'),
+                                 env={'LAT_DISPATCH_HCOM_LIST': str(self.root / 'absent.json')})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        card = self.tasks / '2026-10-23-nanu-impl123.md'
+        self.assertIn('- agent：nanu-research-web\n- orchestrator：nanu\n- native agent：是\n',
+                      card.read_text())
+        watch = self.load_watch()
+        cards, skipped = watch.monitored_task_cards(self.tasks, 'nanu', {})
+        self.assertEqual(skipped, {})
+        self.assertTrue(cards['nanu-research-web']['_native'])
+        self.assertEqual(watch.monitored_agents(self.tasks, 'nanu'), ['nanu'])
+
+    def test_native_card_without_a_valid_agent_name_is_refused(self):
+        for extra in ((), ('--agent', 'bad name!')):
+            with self.subTest(extra=extra):
+                result = self.run_script(*self.card_args('--native', *extra))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('--native needs --agent', result.stderr)
+                self.assertEqual(list(self.tasks.glob('*.md')), [])
+
 
 LEDGER = SCRIPT.parent / 'lat-ledger.py'
 
@@ -483,6 +504,12 @@ class LedgerCardTests(LedgerCase):
         text = card.read_text()
         self.assertIn(f'- ledger row：1 ({self.ledger})\n', text)
         self.assertIn('- status：dispatched\n', text)
+
+    def test_native_card_keeps_the_ledger_row_after_status(self):
+        card = self.ledger_card('--native', '--agent', 'nanu-research-web')
+        self.assertIn('- native agent：是\n', card.read_text())
+        self.assertIn(f'- status：dispatched\n- ledger row：1 ({self.ledger})\n', card.read_text())
+        self.assertEqual(self.items()[0]['agent'], 'nanu-research-web')
 
     def test_second_card_gets_the_next_row_and_can_depend_on_the_first(self):
         self.ledger_card()
