@@ -430,6 +430,11 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertTrue(self.watch.matches('codex', 'model', 'gpt-6.1-terra', 'GPT-6.1 Terra'))
         self.assertFalse(self.watch.matches('codex', 'model', 'gpt-6.1-sol', 'GPT-6.1 Terra'))
 
+    def test_codex_status_pattern_ignores_conversation_and_banner_lines(self):
+        for line in ('Effort set to high · saved', '• Ran tests, all low · 3 files',
+                     '│ model: gpt-6.1-sol medium · x', 'one two three medium · x'):
+            self.assertFalse(self.watch.CODEX_STATUS.search(line), line)
+
     def test_label_is_last_segment_of_spawner_and_agent_base_name(self):
         self.assertEqual(self.watch.tab_label('bivu-i182-guzu', 'fizo'), 'guzu-fizo')
         self.assertEqual(self.watch.tab_label('bivu', 'feho'), 'bivu-feho')
