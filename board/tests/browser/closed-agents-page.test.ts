@@ -382,3 +382,22 @@ test.skipIf(!CHROME)('once its model switch is given up, the agent moves to the 
 	await tab.until(`!!document.querySelector('[data-closed="s-switch"]')`, 'the row');
 	expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-switch"]')`)).toBe(false);
 }, 30_000);
+
+for (const [kind, session] of [
+	['a running agent', 's-live'],
+	['a closed agent', 's-week']
+] as const) {
+	test.skipIf(!CHROME)(`390px: tapping the top-bar title of ${kind}'s page scrolls back to the top and adds no history entry`, async () => {
+		await visit(390, `?agent=${session}`);
+		await tab.until(`(document.querySelector('.detail .history')?.innerText ?? '').length > 0`, 'its conversation');
+		const title = `document.querySelector('.detail .topbar .whose')`;
+		expect(await tab.eval(`${title}.tagName`)).toBe('BUTTON');
+		// A short conversation does not scroll: give the page a tall tail first.
+		await tab.eval(`document.querySelector('.detail').insertAdjacentHTML('beforeend', '<div style="height:2000px"></div>'); window.scrollTo(0, 200)`);
+		await tab.until(`scrollY > 0`, 'the page scrolled down');
+		const before = await tab.eval<string>(`JSON.stringify([history.length, history.state, location.search])`);
+		await tab.eval(`${title}.click()`);
+		await tab.until(`scrollY === 0`, 'the page back at its top');
+		expect(await tab.eval(`JSON.stringify([history.length, history.state, location.search])`)).toBe(before);
+	}, 30_000);
+}
