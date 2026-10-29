@@ -2500,6 +2500,38 @@ def select_tests(root, changed, amap, base=None):
     return selected, fallback
 
 
+def _test_shape(names):
+    """(prefix, suffix) the test names of one directory share, cut at a word break, such as
+    ('test_', '.py') or ('', '.test.ts'); None when that is no more than an extension."""
+    prefix = os.path.commonprefix(names)
+    prefix = prefix[:max(prefix.rfind(c) for c in '._-') + 1]
+    suffix = os.path.commonprefix([n[::-1] for n in names])[::-1]
+    suffix = suffix[suffix.find('.'):] if '.' in suffix else ''
+    return (prefix, suffix) if prefix or suffix.count('.') > 1 else None
+
+
+def unselected_new_tests(root, base, changed, amap, selected):
+    """Files the change adds (absent at base) that are named like the tests the map knows in
+    the same directory, at least two of them, but that the map did not select."""
+    at_base = set(_git_paths(['ls-tree', '-r', '--name-only', base], root))
+    patterns = [p for rule in amap['rules'] for p in rule['tests']]
+    known = {}
+    for path in _git_paths(['ls-files', '-co', '--exclude-standard'], root):
+        if any(glob_match(path, p) for p in patterns):
+            known.setdefault(os.path.dirname(path), set()).add(os.path.basename(path))
+    missing = []
+    for path in changed:
+        if path in at_base or path in selected or not (root / path).is_file():
+            continue
+        directory, name = os.path.split(path)
+        names = sorted(known.get(directory, set()) - {name})
+        shape = _test_shape(names) if len(names) > 1 else None
+        if shape and name.startswith(shape[0]) and name.endswith(shape[1]) \
+                and len(name) > len(shape[0]) + len(shape[1]):
+            missing.append(path)
+    return missing
+
+
 def command_dir(test, commands):
     """The longest directory in commands that holds test, or None."""
     found = [d for d in commands if d == '.' or test.startswith(d + '/')]
@@ -2525,6 +2557,14 @@ def cmd_affected(base):
         for path in changed:
             warn(f'  {path}')
         selected, fallback = select_tests(root, changed, amap, commit)
+        missing = unselected_new_tests(root, commit, changed, amap, selected)
+        if missing:
+            warn('the affected-test map selects none of these new test files:')
+            for path in missing:
+                warn(f'  {path}')
+            warn(f'add rules in {MAP_DIR}/<topic>.json that map the files they test to them, '
+                 'then run affected again; nothing ran')
+            return 2
         code = run_selected(root, amap, selected, fallback, {'base': commit,
                                                              'changed_files': changed})[0]
         if code is None:
