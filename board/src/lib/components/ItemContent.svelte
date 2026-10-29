@@ -591,8 +591,12 @@
 	:global(:root[data-theme='light']) .options li.picked {
 		gap: 0;
 	}
+	:global(:root[data-theme='light']) .options li.picked :is(.check, .letter) {
+		align-self: flex-start;
+	}
 	:global(:root[data-theme='light']) .options li.picked :is(.check, .letter, .option) {
 		padding: 0 0.35rem;
+		line-height: 1.5;
 		background: var(--text);
 		color: var(--bg);
 	}

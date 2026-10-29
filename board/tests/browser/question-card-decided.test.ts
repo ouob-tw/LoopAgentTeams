@@ -53,6 +53,7 @@ beforeAll(async () => {
 	browser = await launchChrome();
 	const [name, value] = cookie.split('=');
 	await browser.tab.send('Network.setCookie', { name, value, url: fixture.url });
+	await browser.tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: true });
 	await browser.tab.send('Page.navigate', { url: `${fixture.url}/?controller=${encodeURIComponent(session)}` });
 	await browser.tab.until(`document.querySelectorAll('.history [data-content]').length >= 4`, 'the cards');
 }, 30_000);
@@ -68,7 +69,9 @@ const lookOf = (id: string) => `(() => {
 	const css = (element, ...names) => Object.fromEntries(names.map((name) => [name, element && getComputedStyle(element)[name]]));
 	const probe = (value) => { const el = document.body.appendChild(document.createElement('i')); el.style.color = value; const color = getComputedStyle(el).color; el.remove(); return color; };
 	const picked = root.querySelector('.options li.picked');
+	const box = (element) => { const rect = element && element.getBoundingClientRect(); return rect && { top: rect.top, height: rect.height }; };
 	return {
+		line: picked && { li: box(picked), check: box(picked.querySelector('.check')), letter: box(picked.querySelector('.letter')), option: box(picked.querySelector('.option').getClientRects()[0] ? { getBoundingClientRect: () => picked.querySelector('.option').getClientRects()[0] } : null) },
 		label: css(root.querySelector('.label'), 'backgroundColor', 'color', 'borderTopColor'),
 		edge: getComputedStyle(root).borderLeftColor,
 		picked: picked && {
@@ -82,7 +85,9 @@ const lookOf = (id: string) => `(() => {
 	};
 })()`;
 
+type Box = { top: number; height: number };
 type Look = {
+	line: { li: Box; check: Box; letter: Box; option: Box } | null;
 	label: { backgroundColor: string; color: string; borderTopColor: string };
 	edge: string;
 	picked: { frame: Record<string, string>; letter: Record<string, string>; option: Record<string, string>; impact: Record<string, string> } | null;
@@ -121,6 +126,13 @@ for (const theme of ['dark', 'light']) {
 			if (theme === 'light') {
 				expect(picked!.frame).toMatchObject({ borderTopWidth: '3px', borderTopStyle: 'solid', borderTopColor: colours.text });
 				for (const part of [picked!.letter, picked!.option]) expect(part).toEqual({ backgroundColor: colours.text, color: colours.bg });
+				// One bar on the option's first line: the filled marks are as tall as that line, not as the whole row.
+				const { line } = await evaluate<Look>(lookOf(id));
+				for (const mark of [line!.check, line!.letter]) {
+					expect(Math.abs(mark.top - line!.option.top)).toBeLessThan(1);
+					expect(Math.abs(mark.height - line!.option.height)).toBeLessThan(1);
+				}
+				expect(line!.li.height).toBeGreaterThan(line!.option.height * 2);
 				expect(picked!.impact.backgroundColor).toBe(TRANSPARENT);
 				expect(picked!.impact.color).not.toBe(colours.bg);
 			} else {
