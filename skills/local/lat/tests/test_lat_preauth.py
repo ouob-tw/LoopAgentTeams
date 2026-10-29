@@ -633,6 +633,38 @@ class PushTests(PreauthCase):
         self.assertNotIn(own[:12], reasons[0])
         self.assertNotIn(bare[:12], reasons[0])
 
+    def test_a_bare_ledger_number_takes_the_own_tracker_beside_another_repos_row(self):
+        self.session(None, tickets=('370', 'ouob-tw/bw-broker-work#7'))
+        own = self.commit('fix: mine (ouob-tw/LoopAgentTeams-work#370)')
+        other = self.commit('fix: theirs (ouob-tw/other-repo#370)', 'c.txt')
+        self.gate_record()
+        tracker = self.repo / 'docs/agents/issue-tracker.md'
+        prs = ('- **Read a PR**: `gh pr view <number> -R ouob-tw/LoopAgentTeams --comments`\n'
+               '- **Close**: `gh pr close`, each with `-R ouob-tw/LoopAgentTeams`.\n')
+        cases = {'tracker doc names the repo':
+                 'Use `gh` and **always pass `-R ouob-tw/other-repo`**.\n'
+                 '- **Read**: `gh issue view <number> -R ouob-tw/LoopAgentTeams-work --json x`\n'
+                 '- **Close**: `gh issue close <n> -R ouob-tw/loopagentteams-work`\n' + prs,
+                 'no tracker doc': None,
+                 'tracker doc has no gh issue -R':
+                 '**always pass `-R ouob-tw/LoopAgentTeams-work`**\n' + prs,
+                 'tracker doc names two repos': '`gh issue view 1 -R ouob-tw/LoopAgentTeams-work`\n'
+                 '`gh issue list -R a/b`\n'}
+        for case, text in cases.items():
+            with self.subTest(case):
+                if text is None:
+                    tracker.unlink(missing_ok=True)
+                else:
+                    self.write(tracker, text)
+                reasons = self.check('push', '--branch', 'dev')['reasons']
+                self.assertEqual(len(reasons), 1, reasons)
+                self.assertIn(f'{other[:12]} "fix: theirs (ouob-tw/other-repo#370)"', reasons[0])
+                if case == 'tracker doc names the repo':
+                    self.assertNotIn(own[:12], reasons[0])
+                else:  # the own tracker is unknown, so nothing loosens
+                    self.assertIn(f'{own[:12]} "fix: mine (ouob-tw/LoopAgentTeams-work#370)"',
+                                  reasons[0])
+
     def test_commits_the_remote_has_are_not_listed(self):
         self.commit('chore: no ticket but pushed')
         git(self.repo, 'push', '-q', 'origin', 'dev')

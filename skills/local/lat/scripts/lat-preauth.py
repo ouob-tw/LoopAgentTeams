@@ -61,6 +61,8 @@ MAIN_CHECKOUT_ACTIONS = ('deploy-test', 'deploy-prod', 'install-host')
 GATE_ACTIONS = ('push', *MAIN_CHECKOUT_ACTIONS)
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
 ISSUE_REF = re.compile(r'(?<![\w&/])(?:([\w.-]+/[\w.-]+))?#(\d+)\b')
+TRACKER_DOC = 'docs/agents/issue-tracker.md'
+TRACKER_REPO = re.compile(r'gh issue\b[^`\n]*?(?<!\S)-R\s+([\w.-]+/[\w.-]+)')
 SESSION_ENVS = ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')
 ENDED = ('ended', 'completed', 'cancelled')
 HUMAN_ANSWERED = ('answered', 'approved')
@@ -311,13 +313,28 @@ def ticket_name(ticket):
     return f'{ticket[0]}#{ticket[1]}' if ticket[0] else f'#{ticket[1]}'
 
 
-def is_round_ticket(ref, tickets):
+def own_tracker(top):
+    """The project's own tracker repo, lowercased: the one `-R owner/repo` that the `gh issue`
+    commands in docs/agents/issue-tracker.md pass (`gh pr` ones may name the code repo). None
+    when the file is missing or those commands name none or several."""
+    if top is None:
+        return None
+    try:
+        repos = {repo.lower() for repo in TRACKER_REPO.findall((top / TRACKER_DOC).read_text())}
+    except (OSError, UnicodeDecodeError):
+        return None
+    return repos.pop() if len(repos) == 1 else None
+
+
+def is_round_ticket(ref, tickets, own=None):
     """A reference names a round ticket with the same number and, when both name a repo, the
-    same repo. A bare ledger number takes a qualified reference only from a repo some
-    qualified ledger ticket names, if any does."""
+    same repo. A bare ledger number stands for the project's own tracker `own`; it also takes
+    a qualified reference from a repo some qualified ledger ticket names, or from any repo
+    when no ledger ticket names one."""
     repos = {repo for repo, _ in tickets if repo}
     return any(number == ref[1] and (
-        repo == ref[0] if repo and ref[0] else not (ref[0] and repos and ref[0] not in repos))
+        repo == ref[0] if repo and ref[0] else
+        not (ref[0] and repos and ref[0] not in repos and ref[0] != own))
         for repo, number in tickets)
 
 
@@ -327,7 +344,7 @@ def unpushed_commit_problems(top, version, ledger):
     if ledger is None:
         return [('error',
                  'no active round ledger to tell whose tickets the unpushed commits belong to')]
-    tickets = round_tickets(ledger)
+    tickets, own = round_tickets(ledger), own_tracker(top)
     log = git(top, 'log', '--format=%H%x1f%s%x1f%B%x1e', version, '--not', '--remotes')
     if log is None:
         return [('error', f'cannot list the commits the remotes lack for {version[:12]}')]
@@ -335,7 +352,7 @@ def unpushed_commit_problems(top, version, ledger):
     for entry in filter(None, (part.strip('\n') for part in log.split('\x1e'))):
         sha, subject, body = entry.split('\x1f', 2)
         refs = {(repo.lower(), number) for repo, number in ISSUE_REF.findall(body)}
-        others = sorted(ticket_name(ref) for ref in refs if not is_round_ticket(ref, tickets))
+        others = sorted(ticket_name(ref) for ref in refs if not is_round_ticket(ref, tickets, own))
         if not refs:
             foreign.append(f'{sha[:12]} "{subject}" (no ticket)')
         elif others:
