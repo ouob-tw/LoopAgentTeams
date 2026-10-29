@@ -265,6 +265,29 @@ class ConditionTests(PreauthCase):
         self.assertIn('no layer sets actions.merge.branches',
                       self.check('merge', '--branch', 'dev')['reasons'])
 
+    def test_each_reason_carries_its_kind(self):
+        self.write(self.project_file, '[actions.merge]\nallow = false\nbranches = ["dev"]\n')
+        verdict = self.check('merge', '--branch', 'main')
+        self.assertEqual(verdict['reason_kinds'], ['allow-false', 'condition'])
+        self.write(self.project_file, '[actions.merge]\nallow = true\n')
+        self.assertEqual(self.check('merge', '--branch', 'dev')['reason_kinds'], ['unset'])
+        self.assertEqual(self.check('spend')['reason_kinds'], ['always-ask'])
+        self.write(self.project_file, '[actions.merge]\noops = 1\n')
+        self.assertEqual(set(self.check('merge', '--branch', 'dev')['reason_kinds']), {'error'})
+        self.write(self.project_file, '[actions.merge]\nallow = true\nbranches = ["dev"]\n')
+        self.assertEqual(self.check('merge', '--branch', 'dev')['reason_kinds'], [])
+
+    def test_gate_and_checkout_reasons_are_conditions(self):
+        self.allow_all()
+        self.gate_record(suites=SUITES[:1])
+        verdict = self.check('install-host')
+        self.assertEqual(verdict['reason_kinds'], ['condition'] * len(verdict['reasons']))
+        git(self.repo, 'checkout', '-q', '-b', 'side')
+        self.commit('side work', 'side.txt')
+        verdict = self.check('deploy-prod')
+        self.assertIn('HEAD is not the tip of integration branch `dev`', verdict['reasons'])
+        self.assertEqual(set(verdict['reason_kinds']), {'condition'})
+
     def allow_all(self):
         self.write(self.global_file, ''.join(f'[actions.{name}]\nallow = true\n' for name in
                                              ('deploy-test', 'deploy-prod', 'install-host')))

@@ -43,6 +43,15 @@ ALWAYS_ASK = {'change-acceptance': 'changing or cutting confirmed acceptance cri
               'spend': 'spending money or account quota',
               'delete-user-data': "deleting the user's data or shredding it",
               'new-ticket': 'opening new tickets that widen the work'}
+# Each ask reason's kind. Only allow-false and condition leave nothing for an advisor to
+# settle: a layer said no, or a condition the tool enforces does not hold.
+REASON_KINDS = {'allow-false': 'a layer sets allow=false',
+                'condition': 'a condition the tool enforces does not hold',
+                'unset': 'a setting is missing',
+                'precedent': 'the earlier answer does not stand in',
+                'always-ask': 'no setting can pre-authorize it',
+                'error': 'the check could not judge it'}
+USER_ONLY_KINDS = ('allow-false', 'condition')
 ACTION_KEYS = {'allow': bool, 'branches': list, 'target': str, 'source': str}
 ADVISOR_KEYS = {'extended': bool, 'may_settle': list, 'must_ask': list, 'source': str}
 TOP_KEYS = {'version', 'experiment', 'actions', 'advisor', 'integration_branch'}
@@ -240,22 +249,23 @@ def describe(key, value, name, source, path):
 
 
 def main_checkout_problems(top, branch):
-    """Deploy and install run only in the main checkout at the integration branch's tip."""
+    """Deploy and install run only in the main checkout at the integration branch's tip.
+    Each problem is a (kind, reason) pair; the kinds are REASON_KINDS."""
     if top is None:
-        return ['not in a Git repository']
+        return [('error', 'not in a Git repository')]
     reasons = []
     common = git(top, 'rev-parse', '--path-format=absolute', '--git-common-dir')
     if common is None or Path(common).parent.resolve() != top.resolve():
-        reasons.append(f'{top} is not the main checkout')
+        reasons.append(('condition', f'{top} is not the main checkout'))
     if not branch:
-        return reasons + ['integration branch unknown (the round ledger names none and no '
-                          'layer sets integration_branch)']
+        return reasons + [('unset', 'integration branch unknown (the round ledger names none '
+                                    'and no layer sets integration_branch)')]
     head = git(top, 'rev-parse', 'HEAD')
     tip = git(top, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}')
     if tip is None:
-        reasons.append(f'integration branch `{branch}` does not exist')
+        reasons.append(('condition', f'integration branch `{branch}` does not exist'))
     elif head != tip:
-        reasons.append(f'HEAD is not the tip of integration branch `{branch}`')
+        reasons.append(('condition', f'HEAD is not the tip of integration branch `{branch}`'))
     return reasons
 
 
@@ -312,13 +322,15 @@ def is_round_ticket(ref, tickets):
 
 
 def unpushed_commit_problems(top, version, ledger):
-    """Commits the remotes lack must each reference only tickets of this round's ledger."""
+    """Commits the remotes lack must each reference only tickets of this round's ledger.
+    Each problem is a (kind, reason) pair."""
     if ledger is None:
-        return ['no active round ledger to tell whose tickets the unpushed commits belong to']
+        return [('error',
+                 'no active round ledger to tell whose tickets the unpushed commits belong to')]
     tickets = round_tickets(ledger)
     log = git(top, 'log', '--format=%H%x1f%s%x1f%B%x1e', version, '--not', '--remotes')
     if log is None:
-        return [f'cannot list the commits the remotes lack for {version[:12]}']
+        return [('error', f'cannot list the commits the remotes lack for {version[:12]}')]
     foreign = []
     for entry in filter(None, (part.strip('\n') for part in log.split('\x1e'))):
         sha, subject, body = entry.split('\x1f', 2)
@@ -331,7 +343,8 @@ def unpushed_commit_problems(top, version, ledger):
     if not foreign:
         return []
     names = ', '.join(sorted(ticket_name(ticket) for ticket in tickets)) or 'none'
-    return [f"unpushed commits outside this round's tickets ({names}): " + '; '.join(foreign)]
+    return [('condition',
+             f"unpushed commits outside this round's tickets ({names}): " + '; '.join(foreign))]
 
 
 def load_suite_gate():
@@ -343,14 +356,15 @@ def load_suite_gate():
 
 def gate_problems(top, version):
     """Every registered full suite needs a passing record for the version's content: the
-    suite gate's own pre-push check, which reads the gate's records and never runs a test."""
+    suite gate's own pre-push check, which reads the gate's records and never runs a test.
+    Each problem is a (kind, reason) pair."""
     try:
         gate = load_suite_gate()
         lacking = gate.lacking_full_suites(top, version, gate.load_registry(top) or {})
     except (OSError, RuntimeError, ValueError) as error:
-        return [f'full-suite gate check failed: {error}']
-    return [f'no passing full-suite record for {version[:12]}: {suite["command"]} '
-            f'(in {suite["cwd"]})' for suite in lacking]
+        return [('error', f'full-suite gate check failed: {error}')]
+    return [('condition', f'no passing full-suite record for {version[:12]}: '
+                          f'{suite["command"]} (in {suite["cwd"]})') for suite in lacking]
 
 
 def install_gate_problems(top, version):
@@ -366,10 +380,11 @@ def install_gate_problems(top, version):
         _, lacking = gate.lacking_folder_suites(top, gate.load_registry(top) or {}, folders,
                                                 version)
     except (OSError, RuntimeError, ValueError) as error:
-        return [f'full-suite gate check failed: {error}'], None
+        return [('error', f'full-suite gate check failed: {error}')], None
     why = {'failed': 'the latest run of this content failed', 'missing': 'no run of this content'}
-    return [f'no passing full-suite record for {version[:12]}: {suite["command"]} '
-            f'(in {suite["cwd"]}; skill folder {folder}: {why[result]})'
+    return [('condition', f'no passing full-suite record for {version[:12]}: '
+                          f'{suite["command"]} (in {suite["cwd"]}; skill folder {folder}: '
+                          f'{why[result]})')
             for folder, suite, result in lacking], folders
 
 
@@ -409,22 +424,32 @@ def precedent_problems(top, session, decision, action):
 
 
 def evaluate(action, *, branch=None, commit=None, workspace=None, session=None, precedent=None):
-    """The check's verdict as a dict: verdict, action, target, basis lines, reasons."""
+    """The check's verdict as a dict: verdict, action, target, basis lines, reasons, and
+    reason_kinds giving each reason's kind (REASON_KINDS) in the same order."""
     workspace = Path(workspace or Path.cwd())
     session = session or next((os.environ[key] for key in SESSION_ENVS if os.environ.get(key)),
                               None)
     target = ' '.join(part for part in (branch, commit) if part)
-    result = dict(verdict='ask', action=action, target=target, basis=[], reasons=[])
+    result = dict(verdict='ask', action=action, target=target, basis=[], reasons=[],
+                  reason_kinds=[])
+
+    def ask(kind, *reasons):
+        result['reasons'] += reasons
+        result['reason_kinds'] += [kind] * len(reasons)
+
+    def ask_each(problems):
+        for kind, reason in problems:
+            ask(kind, reason)
+
     if action in ALWAYS_ASK:
-        result['reasons'].append(f'always ask: {ALWAYS_ASK[action]}; no setting can '
-                                 'pre-authorize it')
+        ask('always-ask', f'always ask: {ALWAYS_ASK[action]}; no setting can pre-authorize it')
         return result
     if action not in ACTIONS:
-        result['reasons'].append(f'unknown action `{action}`; known: {", ".join(ACTIONS)}')
+        ask('error', f'unknown action `{action}`; known: {", ".join(ACTIONS)}')
         return result
     layers, problems, top = load_layers(workspace, session)
     if problems:
-        result['reasons'] += problems
+        ask('error', *problems)
         return result
     effective = action_settings(layers, action)
     label = f'actions.{action}'
@@ -435,34 +460,32 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None, 
     by_precedent = precedent and allow is None
     if by_precedent:
         problems, approved = precedent_problems(top, session, precedent, action)
-        result['reasons'] += problems
+        ask('precedent', *problems)
         if not problems:
             result['basis'].append(f'earlier answer {precedent} stands in for {label}.allow, '
                                    'which no layer sets')
     elif allow is None:
-        result['reasons'].append(f'no layer sets {label}.allow')
+        ask('unset', f'no layer sets {label}.allow')
     elif allow[0] is False:
-        result['reasons'].append(f'{label}.allow=false from {origin(allow[1], allow[2])}'
-                                 + set_aside)
+        ask('allow-false', f'{label}.allow=false from {origin(allow[1], allow[2])}' + set_aside)
     else:
         result['basis'].append(describe('allow', *allow, label) + set_aside)
     if action in BRANCH_ACTIONS:
         branches = effective.get('branches')
         if not branch:
-            result['reasons'].append('--branch is required for this action')
+            ask('error', '--branch is required for this action')
         elif branches is None:
             if not by_precedent:  # on the precedent path the list applies only when set
-                result['reasons'].append(f'no layer sets {label}.branches')
+                ask('unset', f'no layer sets {label}.branches')
         elif branch not in branches[0]:
-            result['reasons'].append(f'branch `{branch}` is not in {label}.branches '
-                                     f'{json.dumps(branches[0])} from '
-                                     f'{origin(branches[1], branches[2])}')
+            ask('condition', f'branch `{branch}` is not in {label}.branches '
+                             f'{json.dumps(branches[0])} from {origin(branches[1], branches[2])}')
         else:
             result['basis'].append(describe('branches', *branches, label))
         if by_precedent and branch and approved is not None:
             if approved and approved != branch:
-                result['reasons'].append(f'branch `{branch}` is not the branch earlier answer '
-                                         f'{precedent} approved (`{approved}`)')
+                ask('precedent', f'branch `{branch}` is not the branch earlier answer '
+                                 f'{precedent} approved (`{approved}`)')
             elif approved:
                 result['basis'].append(f'earlier answer {precedent} approved branch `{branch}`')
         elif by_precedent and branch:
@@ -472,32 +495,31 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None, 
     version = None
     if action in MAIN_CHECKOUT_ACTIONS:
         found = integration_branch(ledger, layers)
-        result['reasons'] += main_checkout_problems(top, found and found[0])
+        ask_each(main_checkout_problems(top, found and found[0]))
         if found:
             result['basis'].append(f'integration branch `{found[0]}` from {found[1]}')
         version = resolve_version(top, 'HEAD')
         if commit and resolve_version(top, commit) != version:
-            result['reasons'].append(f'commit `{commit}` is not HEAD')
+            ask('condition', f'commit `{commit}` is not HEAD')
     if action == 'deploy-test':
         found = effective.get('target')
         if found is None:
-            result['reasons'].append('the project layer does not set actions.deploy-test.target')
+            ask('unset', 'the project layer does not set actions.deploy-test.target')
         else:
             result['basis'].append(describe('target', *found, label))
     if action == 'push' and branch:
         version = resolve_version(top, commit or f'refs/heads/{branch}')
         if version is None:
-            result['reasons'].append(f'cannot resolve the version to push '
-                                     f'(`{commit or branch}`)')
+            ask('error', f'cannot resolve the version to push (`{commit or branch}`)')
         else:
             problems = unpushed_commit_problems(top, version, ledger)
-            result['reasons'] += problems
+            ask_each(problems)
             if not problems:
                 result['basis'].append(f'every unpushed commit of {version[:12]} references '
                                        'only tickets of the round ledger')
     if action == 'install-host' and version:
         problems, folders = install_gate_problems(top, version)
-        result['reasons'] += problems
+        ask_each(problems)
         if not problems and folders:
             result['basis'].append(f'every full suite in the {len(folders)} skill folders '
                                    f'passed for {version[:12]}')
@@ -505,7 +527,7 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None, 
             result['basis'].append(f'every registered full suite passed for {version[:12]}')
     elif action in GATE_ACTIONS and version:
         problems = gate_problems(top, version)
-        result['reasons'] += problems
+        ask_each(problems)
         if not problems:
             result['basis'].append(f'every registered full suite passed for {version[:12]}')
     if not result['reasons']:

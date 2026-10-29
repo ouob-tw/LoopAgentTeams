@@ -20,8 +20,9 @@ import time
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import (read_advisor_error, read_decision_action, read_decision_kind,
-                                 read_decision_status, read_spec_consensus_error)
+from lat_decision_status import (read_advisor_error, read_advisor_words, read_decision_action,
+                                 read_decision_kind, read_decision_status,
+                                 read_spec_consensus_error)
 from _lat_common import (reports_directory, run_cli, shared_lat_dir, watcher_process_matches,
                          write_json_atomic)
 
@@ -1101,6 +1102,43 @@ def preauth_stop_check(record, message):
     return reason, notes
 
 
+def preauth_ask_stop_check(record, message):
+    """`(reason, notes)` for questions whose advisor line is `exempt preauth-ask`: each must
+    have a `- action:` line and, rechecked now, an ask whose every reason is one only the user
+    can lift (USER_ONLY_KINDS). A reason the check could not judge only warns."""
+    decisions = Path(record['decisions_path'])
+    module = preauth_module()
+    held, notes = [], []
+    for identifier, revision in sorted(question_identifiers(message)):
+        path = decisions / f'{identifier}.md'
+        if not path.is_file() or read_advisor_words(path)[:2] != ['exempt', 'preauth-ask']:
+            continue
+        name = f'{identifier} r{revision}'
+        found = read_decision_action(path)
+        if found is None:
+            held.append(f'{name}：沒有 `- action:` 行')
+            continue
+        action, branch, commit = found
+        result = module.evaluate(action, branch=branch, commit=commit,
+                                 workspace=record['workspace'], session=record['session_id'])
+        if result['verdict'] == 'allow':
+            held.append(f'{name}：重查結果為 allow（{module.verdict_line(result)}）')
+            continue
+        pairs = list(zip(result['reason_kinds'], result['reasons']))
+        others = [f'{kind}：{reason}' for kind, reason in pairs
+                  if kind not in module.USER_ONLY_KINDS and kind != 'error']
+        unjudged = [reason for kind, reason in pairs if kind == 'error']
+        if others:
+            held.append(f'{name}：原因含參謀可能定案的類別（' + '；'.join(others) + '）')
+        elif unjudged:
+            notes.append(f'LAT 免諮詢 preauth-ask 重查無法判斷，未攔下：{name}（'
+                         + '；'.join(unjudged) + '）。')
+    reason = ('LAT 免諮詢 preauth-ask 核對未通過：' + '；'.join(held)
+              + '。這些題目不符合免諮詢條件：改依參謀流程諮詢，或在紀錄改寫正確的參謀行後重新提問。'
+              ) if held else None
+    return reason, notes
+
+
 def stop_check(record, payload):
     """Why this DECIDE/HELP Stop should be held, or None when it passes."""
     message = payload['last_assistant_message']
@@ -1296,6 +1334,14 @@ def report_stop(record, payload):
                 reason, reminders = preauth_stop_check(record, message)
             except Exception as exc:  # noqa: BLE001 - a broken recheck never holds the Stop
                 notes.append(f'LAT 預先授權重查發生錯誤，未攔下：{exc}')
+            else:
+                if reason:
+                    reasons.append(reason)
+                notes += reminders
+            try:
+                reason, reminders = preauth_ask_stop_check(record, message)
+            except Exception as exc:  # noqa: BLE001 - a broken recheck never holds the Stop
+                notes.append(f'LAT 免諮詢 preauth-ask 重查發生錯誤，未攔下：{exc}')
             else:
                 if reason:
                     reasons.append(reason)
