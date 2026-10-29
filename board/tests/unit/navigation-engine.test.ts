@@ -140,6 +140,24 @@ test('going back shows the screen before, and the list at the place it was scrol
 	expect(fake.entries).toHaveLength(3);
 });
 
+test('an agent opened from another agent\'s page takes its entry, so back shows the list at its place', async () => {
+	const fake = fakeBrowser();
+	const { navigation, shown } = start(fake);
+	navigation.go({ kind: 'agent', id: 's-a' });
+	navigation.go({ kind: 'agent', id: 's-b' });
+	await settle(navigation);
+	expect(fake.entries.map((entry) => [entry.search, entry.state?.depth])).toEqual([
+		['', 0],
+		['?agent=s-b&tab=inbox', 1]
+	]);
+
+	navigation.back();
+	await settle(navigation);
+	expect(fake.at).toBe(0);
+	expect(navigation.view).toBeNull();
+	expect(shown.at(-1)).toEqual({ view: null, scrollY: 120 });
+});
+
 test('a reload shows the same screen again, keeping the entries behind it', async () => {
 	const fake = fakeBrowser();
 	const first = start(fake);

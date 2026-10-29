@@ -263,3 +263,45 @@ test("the list's scroll goes into its history entry beside the fields already th
 	expect(listScrollIn(null)).toBeUndefined();
 	expect(listScrollIn({ boardListScroll: 'far' })).toBeUndefined();
 });
+
+test('an agent opened from another agent\'s page takes its entry, so back reaches the screen the first was opened from', () => {
+	const A: Place = { kind: 'agent', id: 's-a' };
+	const B: Place = { kind: 'agent', id: 's-b' };
+	const C: Place = { kind: 'agent', id: 's-c' };
+	for (const from of [null, QUESTION, CONTROLLER]) {
+		const history = new BrowserHistory();
+		const screen = boardOn(history);
+		if (from) screen.open(from);
+		screen.open(A);
+		screen.open(B);
+		screen.open(C);
+		expect(history.place).toEqual(C);
+		expect(history.depth).toBe(from ? 2 : 1);
+		screen.back();
+		expect(history.place).toEqual(from);
+
+		// A reload at the last agent keeps the same entries behind it.
+		history.index = history.entries.length - 1;
+		const reloaded = boardOn(history);
+		expect(history.place).toEqual(C);
+		reloaded.back();
+		expect(history.place).toEqual(from);
+	}
+
+	// An agent's page typed in has the list behind it; another agent opened from it does too.
+	const typed = new BrowserHistory(searchOf(A));
+	const screen = boardOn(typed);
+	screen.open(B);
+	expect(typed.entries.map((entry) => [entry.search, entry.depth])).toEqual([
+		['', 0],
+		[searchOf(B), 1]
+	]);
+
+	// Other screens opened from an agent's page still add an entry.
+	const history = new BrowserHistory();
+	const board = boardOn(history);
+	board.open(A);
+	board.open(CONTROLLER);
+	board.back();
+	expect(history.place).toEqual(A);
+});
