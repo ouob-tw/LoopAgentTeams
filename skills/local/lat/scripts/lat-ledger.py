@@ -342,15 +342,46 @@ def gate_script():
                 LAT_DIR.parent / 'three-tier-testing' / 'scripts' / 'suite-gate.py')
 
 
+def check_repo(path):
+    """Return (absolute repo path, problem); the path must be an existing git work tree."""
+    if not Path(path).is_absolute():
+        return None, f'--repo {path}: must be an absolute path'
+    try:
+        run_cli(['git', '-C', path, 'rev-parse', '--git-dir'], timeout=30)
+    except ValueError:
+        return None, f'--repo {path}: not a git repository'
+    return str(Path(path)), None
+
+
+def subprocess_ok(command):
+    try:
+        run_cli(command, timeout=30)
+        return True
+    except ValueError:
+        return False
+
+
 def verify_commit(doc, item, value):
-    """Return (full sha, problem); the commit must reach the item or integration branch."""
-    workspace = doc['workspace']
+    """Return (full sha, problem); the commit must reach the item or integration branch.
+
+    A row with its own repo is checked there. The branches are only enforced where they exist
+    in that repo, since the integration branch name belongs to the workspace."""
+    workspace = item.get('repo') or doc['workspace']
+    if item.get('repo'):
+        _, problem = check_repo(workspace)
+        if problem:
+            return None, f'commit {value}: {problem}'
     try:
         sha = run_cli(['git', '-C', workspace, 'rev-parse', '--verify', '--quiet',
                        f'{value}^{{commit}}'], timeout=30).strip()
     except ValueError:
         return None, f'commit {value}: not found in {workspace}'
     branches = [b for b in (item.get('branch'), doc.get('integration_branch')) if b]
+    if item.get('repo'):
+        branches = [b for b in branches if subprocess_ok(
+            ['git', '-C', workspace, 'rev-parse', '--verify', '--quiet', f'{b}^{{commit}}'])]
+        if not branches:
+            return sha, None
     if not branches:
         return sha, f'commit {value}: no branch to check reachability (set --branch on the item)'
     for branch in branches:
@@ -492,6 +523,11 @@ def cmd_init(args):
 def cmd_add(args):
     kinds = kinds_of(args.evidence)
     ticket = required_text('--ticket', args.ticket)
+    repo = None
+    if args.repo:
+        repo, problem = check_repo(args.repo)
+        if problem:
+            raise Failure(problem)
     with transaction(args, 'add') as doc:
         known = {item['id'] for item in doc['items']}
         deps = item_ids(args.depends) if args.depends else []
@@ -500,7 +536,7 @@ def cmd_add(args):
             raise Failure(f'unknown item(s): {", ".join(map(str, missing))}')
         at = now()
         item = {'id': doc['next_id'], 'ticket': ticket, 'stage': args.stage, 'agent': None,
-                'card': None, 'branch': args.branch, 'status': 'unassigned',
+                'card': None, 'branch': args.branch, 'repo': repo, 'status': 'unassigned',
                 'depends_on': deps, 'follows': args.follows, 'assigned_at': None,
                 'started_at': None, 'estimate': None,
                 'deadline': stamp(parse_time(args.deadline, at)) if args.deadline else None,
@@ -603,17 +639,24 @@ def cmd_done(args):
     with transaction(args, 'done', args.id) as doc:
         item = find(doc, args.id)
         require_status(item, ('assigned', 'in_progress'), 'done')
+        changes = {'status': 'done'}
+        if args.repo:
+            repo, problem = check_repo(args.repo)
+            if problem:
+                raise Failure(f'item {item["id"]} not closed:\n  - {problem}')
+            changes['repo'] = repo
         problems = [f'{kind} evidence is required for this item' for kind in
                     item['evidence_kinds'] if not given[kind]]
         problems += [f'{kind} evidence was not declared for this item' for kind in KINDS
                      if given[kind] and kind not in item['evidence_kinds']]
-        resolved, failed = verify(doc, item, {kind: given[kind]
-                                              for kind in item['evidence_kinds']})
+        resolved, failed = verify(doc, {**item, **changes}, {kind: given[kind]
+                                                              for kind in item['evidence_kinds']})
         problems += failed
         if problems:
             raise Failure(f'item {item["id"]} not closed:\n' +
                           '\n'.join(f'  - {problem}' for problem in problems))
-        record(args, item, 'done', {'status': 'done', 'evidence': resolved})
+        changes['evidence'] = resolved
+        record(args, item, 'done', changes)
     update_card(item, resolved)
     print(f'item {item["id"]} closed')
 
@@ -673,7 +716,8 @@ def cmd_check(args):
     doc = read_only(args)
     failures, cancelled = [], []
     for item in doc['items']:
-        label = f'item {item["id"]} ({item["ticket"]} {item["stage"]})'
+        repo = f', repo {item["repo"]}' if item.get('repo') else ''
+        label = f'item {item["id"]} ({item["ticket"]} {item["stage"]}{repo})'
         if item['status'] == 'cancelled':
             cancelled.append({'id': item['id'], 'label': label, 'reason': item['cancel_reason']})
             continue
@@ -748,6 +792,7 @@ def cmd_show(args):
             row['blocked_reason'] and f'受阻：{row["blocked_reason"]}',
             row['cancel_reason'] and f'取消：{row["cancel_reason"]}',
             row['follows'] and f'接續自 {row["follows"]}',
+            row.get('repo') and f'repo：{row["repo"]}',
             row['card_mismatch'] and f'任務卡不一致：{row["card_mismatch"]}',
             row['progress'] and f'進度：{row["progress"]}') if text]
         print('| ' + ' | '.join(cell(value) for value in (
@@ -817,6 +862,7 @@ def build_parser():
     sub.add_argument('--follows', type=int, help='item this one continues')
     sub.add_argument('--deadline', help='ISO 8601 or +N[m|h|d]')
     sub.add_argument('--branch', help='branch the commit evidence must reach')
+    sub.add_argument('--repo', help='absolute path of the git repo the commit evidence lives in')
     sub = command('assign', 'Give an item to an agent')
     sub.add_argument('--agent', required=True, help='full HCOM name')
     sub.add_argument('--card', required=True, help='task card path')
@@ -837,6 +883,8 @@ def build_parser():
     sub.add_argument('--reason')
     sub = command('done', 'Close an item with evidence')
     sub.add_argument('--commit', action='append')
+    sub.add_argument('--repo', help='git repo to verify --commit in (absolute; replaces the '
+                     "row's repo)")
     sub.add_argument('--gate', action='append', help='suite-gate record fingerprint')
     sub.add_argument('--file', action='append', help='absolute path of a report or checklist')
     sub = command('cancel', 'Cancel an item (orchestrator only)')

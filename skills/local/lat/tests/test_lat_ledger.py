@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -473,6 +474,78 @@ class DoneTests(LedgerCase):
         self.ok('block', str(item), '--reason', 'x')
         self.assertIn('needs assigned or in_progress',
                       self.fails('done', str(item), '--commit', self.merged))
+
+
+class RepoTests(LedgerCase):
+    def setUp(self):
+        super().setUp()
+        self.init()
+        self.other = self.root / 'other'
+        self.other.mkdir()
+        git(self.other, 'init', '-q', '-b', 'main')
+        git(self.other, 'config', 'user.email', 't@example.com')
+        git(self.other, 'config', 'user.name', 'T')
+        (self.other / 'o.txt').write_text('o\n')
+        git(self.other, 'add', 'o.txt')
+        git(self.other, 'commit', '-q', '-m', 'other work')
+        self.foreign = git(self.other, 'rev-parse', 'HEAD')
+
+    def test_add_repo_then_done_verifies_in_that_repo_and_shows_it(self):
+        item = self.started('--repo', str(self.other))
+        self.assertEqual(self.item(item)['repo'], str(self.other))
+        self.fails('done', str(item), '--commit', self.merged, by='impl')
+        self.ok('done', str(item), '--commit', self.foreign[:10], by='impl')
+        self.assertEqual(self.item(item)['evidence'], {'commit': [self.foreign]})
+        self.assertIn(f'repo：{self.other}', self.ok('show'))
+        self.assertEqual(json.loads(self.ok('show', '--json'))['items'][0]['repo'],
+                         str(self.other))
+        self.assertIn('ledger check: OK', self.ok('check'))
+
+    def test_done_repo_sets_the_row_repo_and_records_the_change(self):
+        item = self.started()
+        self.fails('done', str(item), '--commit', self.foreign, by='impl')
+        self.ok('done', str(item), '--commit', self.foreign, '--repo', str(self.other), by='impl')
+        row = self.item(item)
+        self.assertEqual(row['repo'], str(self.other))
+        self.assertEqual(row['history'][-1]['changes']['repo'], [None, str(self.other)])
+
+    def test_repo_must_be_an_absolute_git_repository(self):
+        plain = self.root / 'plain'
+        plain.mkdir()
+        error = self.fails('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'commit',
+                           '--repo', str(plain))
+        self.assertIn('not a git repository', error)
+        self.assertIn('absolute', self.fails('add', '--ticket', '#1', '--stage', 'impl',
+                                             '--evidence', 'commit', '--repo', 'other'))
+        item = self.started()
+        error = self.fails('done', str(item), '--commit', self.merged, '--repo', str(plain),
+                           by='impl')
+        self.assertIn('not a git repository', error)
+        self.assertEqual(self.item(item)['status'], 'in_progress')
+
+    def test_commit_missing_from_the_repo_is_refused_with_the_repo_named(self):
+        item = self.started('--repo', str(self.other))
+        error = self.fails('done', str(item), '--commit', self.side, by='impl')
+        self.assertIn(f'not found in {self.other}', error)
+
+    def test_branches_that_exist_in_the_repo_still_apply(self):
+        git(self.other, 'switch', '-q', '-c', 'work')
+        (self.other / 'w.txt').write_text('w\n')
+        git(self.other, 'add', 'w.txt')
+        git(self.other, 'commit', '-q', '-m', 'on work')
+        work = git(self.other, 'rev-parse', 'HEAD')
+        git(self.other, 'switch', '-q', 'main')
+        item = self.started('--repo', str(self.other), '--branch', 'main')
+        error = self.fails('done', str(item), '--commit', work, by='impl')
+        self.assertIn('is not reachable from main', error)
+
+    def test_check_fails_when_the_repo_disappears(self):
+        item = self.started('--repo', str(self.other))
+        self.ok('done', str(item), '--commit', self.foreign, by='impl')
+        shutil.rmtree(self.other)
+        result = self.run_ledger('check')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f'repo {self.other}', result.stdout)
 
 
 class NextAndCheckTests(LedgerCase):
