@@ -10,7 +10,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" show
 ```
 
 - `check` 印一行 `allow <動作> <標的> — basis: …`（每個生效值來自哪一層、哪一段與 `source`）或 `ask <動作> <標的> — reasons: …`；結束碼 `allow` 為 0、`ask` 為 1、工具出錯為 2。`--json` 輸出 `verdict`、`action`、`target`、`basis`、`reasons`，以及與 `reasons` 同順序的 `reason_kinds`，每個原因一個類別：`allow-false`（某層明寫 `allow = false`）、`condition`（下方「固定條件」不成立，含沒寫 `target` 或整合分支）、`unset`（舊答覆可代替的設定沒寫：沒有任何層寫 `allow` 或 `branches`）、`precedent`（舊答覆不能代替）、`always-ask`（任何設定都不能預先授權）、`error`（設定讀不出、參數缺漏等 `check` 無法判斷）。參謀免諮詢類別 `exempt preauth-ask` 依這個欄位判斷，見 [參謀](advisors.md)。
-- `deploy-test`、`deploy-prod`、`install-host` 得到 `allow` 時另印 `Next steps:`（`--json` 增加 `next_steps`）：先用 `hcom send @<name>` 發動作前通知並查事件編號，再記下帶時區的 `--started`、執行動作、發動作後通知並查事件編號，最後 `record --kind auto … --notice-before <id> --notice-after <id> --started <time>`。合併、推送與 `ask` 的輸出不變。
+- `deploy-test`、`deploy-prod`、`install-host` 得到 `allow` 時另印 `Next steps:`（`--json` 增加 `next_steps`）：先用 `hcom send @<其他主控> --intent inform --name <自己> -- '<內容>'` 發動作前通知（對象是本專案其他進行中的主控，由 session 紀錄查得；不能發給自己，HCOM 會拒收；沒有其他主控就改點名任一其他 Agent，不可廣播）、再用 `hcom events --from <自己> --last 1` 查事件編號（`id`），再記下帶時區的 `--started`、執行動作、照同樣方式發動作後通知並查事件編號，最後 `record --kind auto … --notice-before <id> --notice-after <id> --started <time>`。合併、推送與 `ask` 的輸出不變。
 - `show` 印三層位置與是否生效、合併後的有效設定，以及每個值的出處；設定有錯時列出錯誤。
 - 在要動作的工作區執行（或給 `--workspace`）。主控層以 `--session-id` 或 client 的 session 環境變數（`CLAUDE_CODE_SESSION_ID`、`CODEX_THREAD_ID`）找本輪 session 紀錄。
 
