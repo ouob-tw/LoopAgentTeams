@@ -1,0 +1,13 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/components/ItemContent.svelte",
+        "board/tests/browser/question-card-decided.test.ts"
+      ],
+      "tests": [
+        "board/tests/browser/question-card-decided.test.ts"
+      ]
+    }
+  ]
+}
