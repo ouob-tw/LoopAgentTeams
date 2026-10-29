@@ -1837,8 +1837,28 @@ def hcom_send_command(value):
 
 
 def inform_or_ack_send(command):
-    return (isinstance(command, str)
-            and re.search(r'--intent(?:\s+|=)[\'"]?(?:inform|ack)(?![\w-])', command) is not None)
+    """True when every hcom send in a shell command carries --intent inform or ack."""
+    if not isinstance(command, str):
+        return False
+    intents = []
+    for segment in re.split(r'&&|\|\||[;|\r\n]', command):
+        try:
+            words = shlex.split(segment)
+        except ValueError:
+            return False
+        if words[:2] != ['hcom', 'send']:
+            continue
+        intent = None
+        options = words[2:]
+        if '--' in options:
+            options = options[:options.index('--')]
+        for index, word in enumerate(options):
+            if word == '--intent' and index + 1 < len(options):
+                intent = options[index + 1]
+            elif word.startswith('--intent='):
+                intent = word[len('--intent='):]
+        intents.append(intent)
+    return bool(intents) and all(intent in ('inform', 'ack') for intent in intents)
 
 
 def successful_send_output(value, recipient=None):

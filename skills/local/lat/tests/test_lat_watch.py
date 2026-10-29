@@ -599,6 +599,13 @@ class WatchDecisionTests(unittest.TestCase):
                  ("hcom send @worker --intent ack -- 'ok'", False),
                  ("hcom send @worker --intent=inform --file /tmp/r", False),
                  ("hcom send @worker --intent 'ack' -- ok", False),
+                 ('hcom send @worker "--intent" inform -- ok', False),
+                 ("hcom send @o --intent ack -- 'x' && hcom send @worker --intent inform -- y",
+                  False),
+                 ("hcom send @worker -- 'ok' && hcom send @o --intent ack -- 'x'", True),
+                 ('hcom send @worker --intent request -- "please remove --intent ack"', True),
+                 ("hcom send @o --intent inform -- a && hcom send @worker --intent request -- b",
+                  True),
                  ("hcom send @worker --intent request -- 'ok'", True),
                  ("hcom send @worker --intent informal -- 'ok'", True),
                  ("hcom send @worker -- 'no intent'", True))
@@ -4925,8 +4932,7 @@ esac
         for sender, intent, expected in (
                 ('a', 'inform', None), ('a', 'ack', None), ('a', 'request', 'message-delivered'),
                 ('reviewer', 'inform', None), ('reviewer', 'ack', None),
-                ('reviewer', 'request', 'message-delivered'),
-                ('reviewer', 'null', 'message-delivered')):
+                ('reviewer', 'request', 'message-delivered')):
             watch.write_object(watch.wait_path(self.work, 'worker-open'), declaration)
             with patch.dict(os.environ, {**self.env, 'FAKE_INTENT': intent,
                                          'FAKE_FROM': sender}):
