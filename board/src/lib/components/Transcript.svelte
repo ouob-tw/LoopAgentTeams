@@ -654,7 +654,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 					{:else if segment.kind === 'text'}
 						{@const marked = reported.get(segment.item.seq)}
 						{@const translation = english.has(segment.item.seq) ? (translated[segment.item.text] ?? { status: 'pending' }) : null}
-						<li class="said" class:reported={!!marked} data-kind={segment.item.kind} data-translation={translation?.status}>
+						<li class="said" class:reported={!!marked} class:done={marked?.tag === 'DONE'} class:unread={marked?.readAt === null} data-kind={segment.item.kind} data-translation={translation?.status}>
 							<p class="meta">
 								{#if marked}<span class="label">{itemLabel(marked)}</span>{/if}
 								<span title={segment.item.kind === 'user' ? undefined : `@${controller.hcomName}`}>{segment.item.kind === 'user' ? '你' : `@${lastSegment(controller.hcomName)}`}</span>
@@ -819,6 +819,16 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		border: 1px solid var(--text);
 		background: var(--bg);
 		color: var(--text);
+	}
+	/* A finished report, read or not, is framed dark green; unread, its label is filled like the
+	   one in the inbox list. */
+	:global(:root[data-theme='light']) .said.reported.done {
+		border-color: var(--ok);
+	}
+	:global(:root[data-theme='light']) .said.reported.done.unread .label {
+		border-color: transparent;
+		background: var(--ok);
+		color: var(--bg);
 	}
 	.meta {
 		display: flex;
