@@ -349,6 +349,19 @@ class ConditionTests(PreauthCase):
         self.assertIn('@<other-controller>', steps)
         self.assertIn('No other active controller is recorded', steps)
 
+    def test_next_steps_without_own_session_never_list_recipients(self):
+        self.allow_all()
+        self.gate_record()
+        self.write(self.sessions / 'kela-session.json',
+                   json.dumps(dict(status='active', hcom_name='kela')))
+        own = self.sessions / f'{SESSION}.json'
+        record = json.loads(own.read_text())
+        del record['hcom_name']
+        own.write_text(json.dumps(record))
+        steps = self.check('deploy-test')['next_steps']
+        self.assertNotIn('@kela', steps)
+        self.assertIn('@<other-controller>', steps)
+
     def test_merge_and_ask_output_has_no_next_steps(self):
         self.allow_all()
         for action, extra in (('merge', ('--branch', 'dev')), ('install-host', ())):

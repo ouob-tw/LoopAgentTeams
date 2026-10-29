@@ -592,11 +592,20 @@ def notice_steps(workspace, session):
                               None)
     own, others = other_controllers(workspace, session)
     me = own or '<your-hcom-name>'
+    if not own:
+        others = []  # the caller's own record is unknown, so it could be listed as a recipient
     targets = ' '.join(f'@{name}' for name in others) or '@<other-controller>'
+    sender = me
+    if own:
+        try:
+            sender = hcom_send_name(own, json.loads(run_cli(['hcom', 'list', '--json'],
+                                                            timeout=30)))
+        except (ValueError, TypeError, AttributeError):
+            pass  # HCOM unavailable: the record name is the best guess
     send = f"hcom send {targets} --intent inform --name {me} -- '<text>'"
-    lookup = f'hcom events --from {me} --last 1'
+    lookup = f'hcom events --from {sender} --last 1'
     note = ('' if others else
-            ' No other active controller is recorded; name any other agent, since HCOM '
+            ' No other active controller is recorded for this session; name any other agent, since HCOM '
             'rejects a send to yourself and `record` rejects a broadcast.')
     return (f'Send the before-notice with `{send}` (to the other controllers, never to '
             f'yourself) and read its event id with `{lookup}` (the `id` field); note --started; '
