@@ -32,3 +32,14 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" uninstall \
 Stop 在主控訊息顯示後才執行；未通過 DECIDE／HELP 檢查會要求主控繼續補做，原訊息仍在。再次未通過與工具錯誤只留使用者可見的警告；判斷範圍與補做順序見 [回合結束檢查](recovery.md#回合結束檢查)。
 
 UserPromptSubmit 在主控收到使用者訊息時列出自己仍待答的題目，提示撤回或改版；只附加內容、不擋訊息，見 [撤回過時題目](question-panel.md#撤回過時題目)。新增此事件後，已安裝的使用者須重跑 install，Codex 另到 `/hooks` 信任新項目，Claude 與 Codex 主控重開後才生效。
+
+## 提交訊息票號檢查
+
+`scripts/lat-commit-ref.py` 是 Git commit-msg hook：分支名稱帶票號（`fix/370`、`fix/issue-366-x`、`issue-366`）時，提交訊息沒有 `#<票號>`（可寫 `owner/repo#<票號>`；`#<別的號碼>` 不算）就拒絕並說明缺哪個號碼。分支名看不出票號（`dev`、`main`、分離 HEAD）與合併提交不檢查；`git commit --no-verify` 可略過。
+
+```bash
+uv run --no-project python "$lat_dir/scripts/lat-commit-ref.py" install --repo /absolute/path/to/repo --preview
+uv run --no-project python "$lat_dir/scripts/lat-commit-ref.py" install --repo /absolute/path/to/repo
+```
+
+寫入該 repo 共用的 `hooks/commit-msg`（Git worktree 共用同一份），已有的 sh hook 內容保留，區塊以標記包住，重跑不重複；`uninstall` 移除。若全域 `core.hooksPath` 指向別的目錄，Git 不會讀 repo 自己的 hooks，安裝指令會印出要在該目錄放的 `commit-msg` 轉交檔（與 pre-commit、pre-push 的轉交寫法相同）。
