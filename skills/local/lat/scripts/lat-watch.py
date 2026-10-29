@@ -1511,22 +1511,21 @@ def delivery_sender(event):
     return None
 
 
-def message_releases_wait(message, target_names):
-    sender = event_value(message, 'from', 'data')
-    return sender in target_names or event_value(message, 'intent', 'data') not in ('inform', 'ack')
+def message_releases_wait(message):
+    return event_value(message, 'intent', 'data') not in ('inform', 'ack')
 
 
 def wait_release_reason(declaration, participant_events, target_replied, decision_pending,
-                        target_names=(), messages=None):
+                        messages=None):
     """Explain why a wait is no longer valid, or return None.
 
     messages are the message events delivered to the waiter; a delivery frees the wait only if
-    one is from the wait target or is not an inform/ack. None or empty releases on any delivery.
+    one is not an inform/ack, whoever sent it. None or empty releases on any delivery.
     """
     if target_replied:
         return 'target-replied'
     if any(delivery_sender(event) is not None for event in participant_events):
-        if not messages or any(message_releases_wait(m, target_names) for m in messages):
+        if not messages or any(message_releases_wait(m) for m in messages):
             return 'message-delivered'
     if decision_pending is False:
         return 'decision-resolved'
@@ -1837,6 +1836,50 @@ def hcom_send_command(value):
             is not None)
 
 
+def inform_or_ack_send(command, recipient=None):
+    """True when every hcom send to recipient in a shell command is an inform/ack.
+
+    Commands are tokenized with shell quoting, so operators inside a message body do not split
+    a send. Sends to others are ignored; no send to recipient found, or an unparsable command,
+    is False (the wait releases).
+    """
+    if not isinstance(command, str):
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|\n')
+        lexer.whitespace = ' \t\r'
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        return False
+
+    def addressed(word):
+        if recipient is None:
+            return True
+        name = word[1:]
+        return (name == recipient or recipient.endswith('-' + name)
+                or (name.endswith('-') and recipient.startswith(name)))
+
+    intents = []
+    for start, word in enumerate(words[:-1]):
+        if word != 'hcom' or words[start + 1] != 'send':
+            continue
+        intent, targets = None, []
+        for index in range(start + 2, len(words)):
+            option = words[index]
+            if option == '--' or set(option) <= set(';&|\n'):
+                break
+            if option == '--intent' and index + 1 < len(words):
+                intent = words[index + 1]
+            elif option.startswith('--intent='):
+                intent = option[len('--intent='):]
+            elif option.startswith('@'):
+                targets.append(option)
+        if any(addressed(target) for target in targets):
+            intents.append(intent)
+    return bool(intents) and all(intent in ('inform', 'ack') for intent in intents)
+
+
 def successful_send_output(value, recipient=None):
     if not isinstance(value, str):
         return False
@@ -1849,8 +1892,11 @@ def successful_send_output(value, recipient=None):
     return any(re.search(pattern, recipients) for recipients in matches)
 
 
-def successful_hcom_send_since(transcript, declared_at, recipient=None):
-    """Find a completed hcom send in one exact agent transcript."""
+def successful_hcom_send_since(transcript, declared_at, recipient=None, skip_inform_ack=False):
+    """Find a completed hcom send in one exact agent transcript.
+
+    skip_inform_ack ignores sends whose command carries --intent inform or ack.
+    """
     claude_hcom_send_ids = set()
     try:
         lines = Path(transcript).open()
@@ -1876,7 +1922,8 @@ def successful_hcom_send_since(transcript, declared_at, recipient=None):
                         if isinstance(item.get('input'), dict) else None
                     if (item.get('type') == 'tool_use' and item.get('name') == 'Bash'
                             and isinstance(item.get('id'), str)
-                            and hcom_send_command(command)):
+                            and hcom_send_command(command)
+                            and not (skip_inform_ack and inform_or_ack_send(command, recipient))):
                         claude_hcom_send_ids.add(item['id'])
                     if (completed_after_wait and item.get('type') == 'tool_result'
                             and item.get('tool_use_id') in claude_hcom_send_ids
@@ -1898,6 +1945,7 @@ def successful_hcom_send_since(transcript, declared_at, recipient=None):
                     and payload.get('type') == 'item_completed'
                     and item.get('type') == 'CommandExecution'
                     and hcom_send_command(shell_command)
+                    and not (skip_inform_ack and inform_or_ack_send(shell_command, recipient))
                     and item.get('status') == 'completed'
                     and item.get('exit_code') == 0
                     and successful_send_output(
@@ -1930,12 +1978,10 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     waiting_name = waiting_info.get('name') if waiting_info else None
     target_replied = bool(
         decision is None and transcript and waiting_name
-        and successful_hcom_send_since(transcript, after, waiting_name))
-    target_names = {name for name in (target, target_info.get('name') if target_info else None,
-                                      target_info.get('base_name') if target_info else None)
-                    if name}
+        and successful_hcom_send_since(
+            transcript, after, waiting_name, skip_inform_ack=True))
     reason = wait_release_reason(
-        declaration, participant, target_replied, decision, target_names,
+        declaration, participant, target_replied, decision,
         delivered_messages(orchestrator, waiting_info or {}, participant, after))
     if reason:
         updated = dict(declaration, active=False, expiry_count=0, expiry_declared_at=[],
