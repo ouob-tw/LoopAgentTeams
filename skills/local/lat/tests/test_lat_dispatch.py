@@ -210,6 +210,16 @@ class BriefTests(DispatchCase):
         text = (self.root / 'brief.brief.md').read_text()
         self.assertNotIn('Update it at the start', text)
         self.assertIn('do not edit it', text)
+        self.assertNotIn('Write restrictions in this section', text)
+
+    def test_default_brief_exempts_card_and_ledger_from_scope_write_limits(self):
+        self.brief()
+        text = (self.root / 'brief.brief.md').read_text()
+        scope = text.index('## 範圍與不能碰')
+        note = text.index('Write restrictions in this section do not apply to updating the task card')
+        self.assertIn('work-ledger commands', text[note:note + 200])
+        self.assertLess(scope, note)
+        self.assertLess(note, text.index('## 其他 Agent 與分工'))
 
     def test_default_brief_keeps_the_card_update_sentence(self):
         self.brief()
