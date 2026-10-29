@@ -55,7 +55,7 @@ class RetroLogTests(unittest.TestCase):
     def test_first_write_creates_repo_without_remote_and_commits_once(self):
         self.assertFalse(self.backlog.exists())
         out = self.add()
-        self.assertIn('已新增 #1 [觀察中]', out)
+        self.assertIn('已新增 retro #1 [觀察中]', out)
         self.assertEqual(self.git('remote').strip(), '')
         self.assertEqual(self.commits(), ['feat: add #1 Flaky waits'])
         self.assertEqual(self.git('status', '--porcelain'), '')
@@ -73,7 +73,7 @@ class RetroLogTests(unittest.TestCase):
         self.assertIn('已存在', out)
         self.assertEqual(len(self.commits()), 1)
         out = self.occur(1, 's2')
-        self.assertIn('#1 [可處理]', out)
+        self.assertIn('retro #1 [可處理]', out)
         self.assertIn('2 個 session', out)
         self.assertEqual(self.commits()[0], 'chore: record occurrence of #1')
         self.assertEqual(self.front(1)['status'], '"ready"')
@@ -82,10 +82,10 @@ class RetroLogTests(unittest.TestCase):
         self.add('Only severe')
         self.add('Two sessions', 's1')
         self.occur(2, 's2')
-        self.assertIn('#1 [可處理]［嚴重］', self.ok('severe', '1', '--reason', 'wrong build shipped', '--time', T2))
+        self.assertIn('retro #1 [可處理]［嚴重］', self.ok('severe', '1', '--reason', 'wrong build shipped', '--time', T2))
         self.ok('severe', '2', '--reason', 'lost a day', '--time', T2)
-        self.assertIn('#1 [觀察中]', self.ok('severe', '1', '--unset', '--time', T3))
-        self.assertIn('#2 [可處理]', self.ok('severe', '2', '--unset', '--time', T3))
+        self.assertIn('retro #1 [觀察中]', self.ok('severe', '1', '--unset', '--time', T3))
+        self.assertIn('retro #2 [可處理]', self.ok('severe', '2', '--unset', '--time', T3))
         self.assertEqual(self.front(1)['severe'], 'false')
         self.assertIn('- 2026-10-02T10:00:00+08:00 | severe | wrong build shipped', self.ok('show', '1'))
 
@@ -93,7 +93,7 @@ class RetroLogTests(unittest.TestCase):
         self.add()
         self.assertIn('--reason', self.refused('severe', '1'))
         out = self.add('Data loss', 's9', T1, '--severe', 'deleted files')
-        self.assertIn('#2 [可處理]［嚴重］', out)
+        self.assertIn('retro #2 [可處理]［嚴重］', out)
 
     def test_state_follows_record_time_not_insertion_order(self):
         self.add('set first', 'a')
@@ -128,15 +128,15 @@ class RetroLogTests(unittest.TestCase):
         self.ok('done', '6', '--commit', 'c1', '--time', T2)
         self.occur(6, 'k', T3)
         out = self.ok('list', '--status', 'ready').splitlines()
-        self.assertEqual([line.split(' ')[0] for line in out], ['#3', '#6', '#5', '#4', '#2'])
+        self.assertEqual([line.split(' ')[1] for line in out], ['#3', '#6', '#5', '#4', '#2'])
         self.assertEqual(len(self.ok('list', '--status', 'ready', '--limit', '2').splitlines()), 2)
-        self.assertEqual(self.ok('list', '--status', 'observing').split(' ')[0], '#1')
+        self.assertEqual(self.ok('list', '--status', 'observing').split(' ')[1], '#1')
 
     def test_search_matches_title_and_body_and_show_prints_entry(self):
         self.add('Flaky waits')
         self.add('Ports collide', 's2', description='Board tests reused port 7100')
-        self.assertTrue(self.ok('search', 'flaky').startswith('#1 '))
-        self.assertTrue(self.ok('search', '7100').startswith('#2 '))
+        self.assertTrue(self.ok('search', 'flaky').startswith('retro #1 '))
+        self.assertTrue(self.ok('search', '7100').startswith('retro #2 '))
         self.assertIn('沒有符合', self.ok('search', 'nothing-here'))
         shown = self.ok('show', '2')
         for part in ('title: "Ports collide"', 'Board tests reused port 7100', 'Use hcom listen',
@@ -209,12 +209,12 @@ class RetroLogTests(unittest.TestCase):
         self.assertIn('restore', err)
         self.assertIn('stray.txt', self.ok('restore'))
         self.assertEqual(self.git('status', '--porcelain'), '')
-        self.assertIn('#1 [可處理]', self.ok('occur', '1', '--project', 'p', '--client', 'codex',
+        self.assertIn('retro #1 [可處理]', self.ok('occur', '1', '--project', 'p', '--client', 'codex',
                                              '--session', 's2', '--evidence', 'e'))
 
     def test_invalid_operations_exit_nonzero_with_reason(self):
         self.add()
-        self.assertIn('#9', self.refused('occur', '9', '--project', 'p', '--client', 'codex', '--session', 's',
+        self.assertIn('retro #9', self.refused('occur', '9', '--project', 'p', '--client', 'codex', '--session', 's',
                                          '--evidence', 'e'))
         self.assertIn('client', self.refused('occur', '1', '--project', 'p', '--client', 'gemini', '--session', 's',
                                              '--evidence', 'e'))
@@ -223,7 +223,7 @@ class RetroLogTests(unittest.TestCase):
                                            '--evidence', 'a\nb'))
         self.assertIn('分行', self.refused('occur', '1', '--project', 'p', '--client', 'codex', '--session', 's',
                                            '--evidence', 'a\x0cb'))
-        self.assertIn('#1', self.ok('list'))
+        self.assertIn('retro #1', self.ok('list'))
         self.assertEqual(len(self.commits()), 1)
 
     def state(self, entry_id):
@@ -239,7 +239,7 @@ class RetroLogTests(unittest.TestCase):
         self.assertIn('--reason', self.refused('wontfix', '1', '--time', T2))
         self.assertIn('「;」', self.refused('done', '1', '--commit', 'a; b', '--time', T2))
         self.assertEqual(len(self.commits()), 1)
-        self.assertIn('#1 [已完成]', self.ok('done', '1', '--file', 'skills/x/SKILL.md', '--time', T2))
+        self.assertIn('retro #1 [已完成]', self.ok('done', '1', '--file', 'skills/x/SKILL.md', '--time', T2))
         self.assertIn('| done | file skills/x/SKILL.md', self.ok('show', '1'))
 
     def test_done_reopens_as_recurring_only_for_a_session_new_after_done(self):
@@ -249,7 +249,7 @@ class RetroLogTests(unittest.TestCase):
         self.assertEqual(self.state(1), ('done', 'false'))
         self.occur(1, 's1', T4)  # a session already seen before the fix
         self.assertEqual(self.state(1), ('done', 'false'))
-        self.assertIn('#1 [可處理]［復發］', self.occur(1, 's3', T4))
+        self.assertIn('retro #1 [可處理]［復發］', self.occur(1, 's3', T4))
         self.assertEqual(self.state(1), ('ready', 'true'))
 
     def test_wontfix_reopens_after_two_new_sessions_without_recurring(self):
@@ -257,9 +257,9 @@ class RetroLogTests(unittest.TestCase):
         self.ok('wontfix', '1', '--reason', 'not worth it', '--time', T2)
         self.occur(1, 's1', T3)
         out = self.occur(1, 's2', T3)
-        self.assertIn('#1 [不做]', out)
+        self.assertIn('retro #1 [不做]', out)
         self.assertIn('2 個 session', out)
-        self.assertIn('#1 [可處理] skip（3 個 session）', self.occur(1, 's3', T4))
+        self.assertIn('retro #1 [可處理] skip（3 個 session）', self.occur(1, 's3', T4))
         self.assertEqual(self.state(1), ('ready', 'false'))
         # closing again counts from the latest record: s4 alone does not reopen, s5 does
         self.ok('wontfix', '1', '--reason', 'still not worth it', '--time', T5)
@@ -282,15 +282,15 @@ class RetroLogTests(unittest.TestCase):
     def test_manual_ready_holds_until_closed_and_reopens_closed_entries(self):
         self.add('manual', 's1', T1)
         self.ok('severe', '1', '--reason', 'r', '--time', T2)
-        self.assertIn('#1 [可處理]', self.ok('ready', '1', '--time', T3))
+        self.assertIn('retro #1 [可處理]', self.ok('ready', '1', '--time', T3))
         self.ok('severe', '1', '--unset', '--time', T4)
         self.assertEqual(self.state(1), ('ready', 'false'))
         self.ok('done', '1', '--commit', 'c1', '--time', T5)
         self.assertEqual(self.state(1), ('done', 'false'))
-        self.assertIn('#1 [已完成]［嚴重］', self.ok('severe', '1', '--reason', 'r2', '--time', T6))
+        self.assertIn('retro #1 [已完成]［嚴重］', self.ok('severe', '1', '--reason', 'r2', '--time', T6))
         self.add('dropped', 's1', T1)
         self.ok('wontfix', '2', '--reason', 'meh', '--time', T2)
-        self.assertIn('#2 [可處理]', self.ok('ready', '2', '--time', T3))
+        self.assertIn('retro #2 [可處理]', self.ok('ready', '2', '--time', T3))
         self.ok('ready', '1', '--time', '2026-10-07T10:00:00+08:00')
         for entry_id in (1, 2):
             self.assertEqual(self.state(entry_id), ('ready', 'false'))
@@ -365,16 +365,16 @@ class RetroLogTests(unittest.TestCase):
         self.add('candidate', 's1', T1)
         self.occur(1, 's2', T2)
         candidate, commits = self.ok('show', '1'), len(self.commits())
-        self.assertIn('#9', self.refused('add', '--title', 'x', '--description', 'd', '--suggestion', 's',
+        self.assertIn('retro #9', self.refused('add', '--title', 'x', '--description', 'd', '--suggestion', 's',
                                          '--project', 'p', '--client', 'codex', '--session', 's3', '--evidence', 'e',
                                          '--suspected', '9'))
         self.assertEqual(len(self.commits()), commits)
         out = self.add('maybe the same', 's3', T3, '--suspected', '1')
-        self.assertIn('#2 [觀察中]', out)
-        self.assertIn('疑似 #1', out)
+        self.assertIn('retro #2 [觀察中]', out)
+        self.assertIn('疑似 retro #1', out)
         self.assertEqual(self.ok('show', '1'), candidate)
         self.assertIn('suspected: [1]', self.ok('show', '2'))
-        self.assertEqual([line.split(' ')[0] for line in self.ok('list', '--suspected').splitlines()], ['#2'])
+        self.assertEqual([line.split(' ')[1] for line in self.ok('list', '--suspected').splitlines()], ['#2'])
         self.assertIn('已清除', self.ok('unsuspect', '2'))
         self.assertEqual(self.front(2)['suspected'], '[]')
         self.assertIn('沒有符合', self.ok('list', '--suspected'))
@@ -386,8 +386,8 @@ class RetroLogTests(unittest.TestCase):
         self.ok('severe', '2', '--unset', '--time', T4)
         self.ok('ready', '2', '--time', T5)
         out = self.merge(2, 1)
-        self.assertIn('已將 #2 併入 #1', out)
-        self.assertIn('#1 [可處理]', out)
+        self.assertIn('已將 retro #2 併入 retro #1', out)
+        self.assertIn('retro #1 [可處理]', out)
         records = self.records(1)
         self.assertIn(f'{T1} | proj | claude | s1 |', records)
         self.assertNotIn(T2, records)
@@ -407,7 +407,7 @@ class RetroLogTests(unittest.TestCase):
         self.add('seen after fix', 's3', T4)
         self.merge(3, 1)
         self.assertEqual(self.state(1), ('done', 'false'))
-        self.assertIn('#2 [可處理]［復發］', self.merge(4, 2))
+        self.assertIn('retro #2 [可處理]［復發］', self.merge(4, 2))
 
     def test_merge_into_wontfix_target_reopens_after_two_new_sessions(self):
         for entry_id in (1, 2):
@@ -425,9 +425,9 @@ class RetroLogTests(unittest.TestCase):
     def test_merge_keeps_severe_from_source_with_a_record_at_merge_time(self):
         self.add('plain target', 's1', T1)
         self.add('severe source', 's2', T1, '--severe', 'shipped a broken build')
-        self.assertIn('#1 [可處理]［嚴重］', self.merge(2, 1))
+        self.assertIn('retro #1 [可處理]［嚴重］', self.merge(2, 1))
         self.assertIn('2026-10-09T10:00:00+08:00 | severe | 合併時 #2 為嚴重：shipped a broken build', self.records(1))
-        self.assertIn('#1 [可處理]［嚴重］', self.occur(1, 's3', '2026-10-10T10:00:00+08:00'))
+        self.assertIn('retro #1 [可處理]［嚴重］', self.occur(1, 's3', '2026-10-10T10:00:00+08:00'))
 
     def test_merge_with_same_time_processing_is_refused_in_both_directions(self):
         self.add('done at T2', 's1', T1)
@@ -437,15 +437,15 @@ class RetroLogTests(unittest.TestCase):
         commits = self.commits()
         for source, target in ((1, 2), (2, 1)):
             err = self.refused('merge', str(source), str(target))
-            self.assertIn(f'#1 {T2} | done | commit c1', err)
-            self.assertIn(f'#2 {T2} | wontfix | meh', err)
+            self.assertIn(f'retro #1 {T2} | done | commit c1', err)
+            self.assertIn(f'retro #2 {T2} | wontfix | meh', err)
         self.assertEqual(self.commits(), commits)
         self.add('ready at T3', 's3', T1)
         self.add('ready at T3 too', 's4', T1)
         self.ok('ready', '3', '--time', T3)
         self.ok('ready', '4', '--time', T3)
         commits = self.commits()
-        self.assertIn(f'#3 {T3} | ready', self.refused('merge', '4', '3'))  # identical records clash too
+        self.assertIn(f'retro #3 {T3} | ready', self.refused('merge', '4', '3'))  # identical records clash too
         self.assertEqual(self.commits(), commits)
 
     def test_merge_refuses_self_and_merged_entries_except_a_repeat_of_the_same_merge(self):
@@ -454,21 +454,21 @@ class RetroLogTests(unittest.TestCase):
         self.assertIn('自己', self.refused('merge', '1', '1'))
         self.merge(2, 1)
         commits = self.commits()
-        self.assertIn('#2 已併入 #1', self.refused('merge', '3', '2'))
-        self.assertIn('#2 已併入 #1', self.refused('merge', '2', '3'))
-        self.assertIn('已併入 #1', self.merge(2, 1))
+        self.assertIn('retro #2 已併入 retro #1', self.refused('merge', '3', '2'))
+        self.assertIn('retro #2 已併入 retro #1', self.refused('merge', '2', '3'))
+        self.assertIn('已併入 retro #1', self.merge(2, 1))
         self.assertEqual(self.commits(), commits)
 
     def test_list_leaves_out_merged_entries_unless_asked(self):
         self.add('kept', 's1', T1)
         self.add('merged away', 's2', T1)
         self.merge(2, 1)
-        self.assertEqual([line.split(' ')[0] for line in self.ok('list').splitlines()], ['#1'])
-        self.assertEqual([line.split(' ')[0] for line in self.ok('list', '--status', 'ready').splitlines()], ['#1'])
+        self.assertEqual([line.split(' ')[1] for line in self.ok('list').splitlines()], ['#1'])
+        self.assertEqual([line.split(' ')[1] for line in self.ok('list', '--status', 'ready').splitlines()], ['#1'])
         self.add('merged too', 's3', T1)
         self.merge(3, 1)
-        self.assertEqual([line.split(' ')[0] for line in self.ok('list', '--merged').splitlines()], ['#2', '#3'])
-        self.assertIn('#2 [已併入 #1]', self.ok('list', '--merged', '--limit', '1'))
+        self.assertEqual([line.split(' ')[1] for line in self.ok('list', '--merged').splitlines()], ['#2', '#3'])
+        self.assertIn('retro #2 [已併入 retro #1]', self.ok('list', '--merged', '--limit', '1'))
         self.assertEqual(len(self.ok('list', '--merged', '--limit', '1').splitlines()), 1)
         self.assertIn('--merged', self.refused('list', '--merged', '--status', 'ready'))
 
@@ -478,12 +478,12 @@ class RetroLogTests(unittest.TestCase):
         self.occur(1, 's2', T3)
         self.assertEqual(self.front(1)['recurring'], 'true')
         out = self.ok('retime', '1', '--from', T2, '--to', T4)
-        self.assertIn('#1 [已完成]', out)
+        self.assertIn('retro #1 [已完成]', out)
         self.assertEqual(self.front(1)['recurring'], 'false')
         self.assertIn(f'{T4} | done | commit c1', self.records(1))
         self.assertNotIn(f'{T2} | done', self.records(1))
         self.assertEqual(self.commits()[0], 'chore: retime processing record of #1')
-        self.assertIn('#1 [可處理]［復發］', self.ok('retime', '1', '--from', T4, '--to', T2))
+        self.assertIn('retro #1 [可處理]［復發］', self.ok('retime', '1', '--from', T4, '--to', T2))
         commits = self.commits()
         self.assertIn('未改動', self.ok('retime', '1', '--from', T2, '--to', T2))
         self.assertIn('可能先前已改過', self.refused('retime', '1', '--from', T4, '--to', T2))
@@ -498,7 +498,7 @@ class RetroLogTests(unittest.TestCase):
         self.assertIn(f'沒有時間 {T4}', self.refused('retime', '1', '--from', T4, '--to', T5))
         self.add('merged away', 's2', T1)
         self.merge(2, 1)
-        self.assertIn('#2 已併入 #1', self.refused('retime', '2', '--from', T2, '--to', T5))
+        self.assertIn('retro #2 已併入 retro #1', self.refused('retime', '2', '--from', T2, '--to', T5))
         self.assertEqual(len(self.commits()), len(commits) + 2)
 
     def test_retime_commit_failure_restores(self):
@@ -521,7 +521,7 @@ class RetroLogTests(unittest.TestCase):
         self.ok('wontfix', '2', '--reason', 'meh', '--time', T2)
         self.assertIn('retime', self.refused('merge', '2', '1'))
         self.ok('retime', '2', '--from', T2, '--to', T3)
-        self.assertIn('已將 #2 併入 #1', self.merge(2, 1))
+        self.assertIn('已將 retro #2 併入 retro #1', self.merge(2, 1))
         self.assertIn(f'{T3} | wontfix | meh', self.records(1))
         self.assertEqual(self.front(1)['status'], '"wontfix"')
 
@@ -538,7 +538,7 @@ class RetroLogTests(unittest.TestCase):
         self.assertEqual(self.git('status', '--porcelain'), '')
         self.assertEqual([self.ok('show', n) for n in ('1', '2')], files)
         repair()
-        self.assertIn('#1 [可處理] target（2 個 session）', self.ok('merge', '2', '1', '--time', T4))
+        self.assertIn('retro #1 [可處理] target（2 個 session）', self.ok('merge', '2', '1', '--time', T4))
         self.assertEqual(self.records(1).count(' | s1 | '), 1)
         self.assertIn(f'{T2} | proj | claude | s2', self.records(1))
 

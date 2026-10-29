@@ -265,6 +265,9 @@ class BriefTests(DispatchCase):
         self.assertIn(
             f'hcom send @nanu-impl123-fida --intent request --name nanu --file {output}',
             result.stdout)
+        self.assertEqual(
+            result.stdout.splitlines()[-1],
+            f'hcom send @nanu-impl123-fida --intent request --name nanu --file {output}')
         self.assertNotIn('<<', result.stdout)
 
     def test_send_names_are_the_base_names_hcom_records_for_tagged_agents(self):

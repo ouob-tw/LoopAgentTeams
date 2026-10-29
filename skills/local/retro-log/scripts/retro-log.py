@@ -217,7 +217,7 @@ class Backlog:
     def existing_path(self, entry_id):
         path = self.path(entry_id)
         if not path.exists():
-            raise Refused(f'找不到條目 #{entry_id}')
+            raise Refused(f'找不到條目 retro #{entry_id}')
         return path
 
     def get(self, entry_id):
@@ -287,15 +287,15 @@ def backlog_root():
 
 def summary(entry):
     if entry.merged_into is not None:
-        return f'#{entry.id} [已併入 #{entry.merged_into}] {entry.title}'
+        return f'retro #{entry.id} [已併入 retro #{entry.merged_into}] {entry.title}'
     state = entry.state()
     flags = ''.join(['［嚴重］' if state['severe'] else '', '［復發］' if state['recurring'] else '',
                      f'［疑似 {suspects(entry)}］' if entry.suspected else ''])
-    return f'#{entry.id} [{STATUS_LABELS[state["status"]]}]{flags} {entry.title}（{state["sessions"]} 個 session）'
+    return f'retro #{entry.id} [{STATUS_LABELS[state["status"]]}]{flags} {entry.title}（{state["sessions"]} 個 session）'
 
 
 def suspects(entry):
-    return '、'.join(f'#{n}' for n in entry.suspected)
+    return '、'.join(f'retro #{n}' for n in entry.suspected)
 
 
 def occurrence_from(args):
@@ -311,13 +311,13 @@ def add_processing(entry, record):
     if any(p.kind == record.kind and p.detail == record.detail for p in same_time):
         return False
     if same_time:
-        raise Refused(f'#{entry.id} 已有時間 {record.time} 的處理紀錄，請用 --time 指定不同的時間')
+        raise Refused(f'retro #{entry.id} 已有時間 {record.time} 的處理紀錄，請用 --time 指定不同的時間')
     entry.processing.append(record)
     return True
 
 
 def unchanged(entry, record):
-    return [], '', f'已存在：#{entry.id} 已有相同的處理紀錄（{record.time} {record.kind}），未新增'
+    return [], '', f'已存在：retro #{entry.id} 已有相同的處理紀錄（{record.time} {record.kind}），未新增'
 
 
 def cmd_init(backlog, args):
@@ -335,7 +335,7 @@ def cmd_add(backlog, args):
                       [occurrence], suspected=sorted({live(backlog, n).id for n in args.suspected or []}))
         if args.severe is not None:
             add_processing(entry, Processing(occurrence.time, 'severe', one_line('嚴重理由', args.severe, allow_pipe=True)))
-        unsure = f'\n拿不準：#{entry.id} 疑似與 {suspects(entry)} 相同，候選條目未改動' if entry.suspected else ''
+        unsure = f'\n拿不準：retro #{entry.id} 疑似與 {suspects(entry)} 相同，候選條目未改動' if entry.suspected else ''
         return [entry], f'feat: add #{entry.id} {entry.title}', f'已新增 {summary(entry)}{unsure}'
     return backlog.transaction(change)
 
@@ -346,12 +346,12 @@ def cmd_occur(backlog, args):
         occurrence = occurrence_from(args)
         existing = next((o for o in entry.occurrences if o.session == occurrence.session), None)
         if existing and when(existing.time) <= when(occurrence.time):
-            return [], '', f'已存在：#{entry.id} 已有 session {occurrence.session} 的出現紀錄，未增加次數'
+            return [], '', f'已存在：retro #{entry.id} 已有 session {occurrence.session} 的出現紀錄，未增加次數'
         if existing:  # keep the earlier time, as a merge does, so the result does not depend on write order
             entry.occurrences.remove(existing)
             entry.occurrences.append(occurrence)
             return ([entry], f'chore: move occurrence of #{entry.id} to an earlier time',
-                    f'已改用較早的時間：#{entry.id} 的 session {occurrence.session} 改記為 {occurrence.time}，'
+                    f'已改用較早的時間：retro #{entry.id} 的 session {occurrence.session} 改記為 {occurrence.time}，'
                     f'未增加次數 {summary(entry)}')
         entry.occurrences.append(occurrence)
         return [entry], f'chore: record occurrence of #{entry.id}', f'已記錄出現 {summary(entry)}'
@@ -427,16 +427,16 @@ def cmd_retime(backlog, args):
         if record is None:
             # a rerun after a lost reply lands here; the record at the new time may or may not be the moved one
             taken = any(when(p.time) == when(new) for p in entry.processing)
-            raise Refused(f'#{entry.id} 沒有時間 {old} 的處理紀錄'
+            raise Refused(f'retro #{entry.id} 沒有時間 {old} 的處理紀錄'
                           + (f'，但已有時間 {new} 的處理紀錄，可能先前已改過' if taken else '')
                           + f'；用 show {entry.id} 查看各筆紀錄的時間')
         if when(new) == when(record.time):
-            return [], '', f'#{entry.id} 的這筆處理紀錄已是 {record.time}，未改動'
+            return [], '', f'retro #{entry.id} 的這筆處理紀錄已是 {record.time}，未改動'
         if any(when(p.time) == when(new) for p in entry.processing):
-            raise Refused(f'#{entry.id} 已有時間 {new} 的處理紀錄，請改用不同的時間')
+            raise Refused(f'retro #{entry.id} 已有時間 {new} 的處理紀錄，請改用不同的時間')
         record.time = new
         return ([entry], f'chore: retime processing record of #{entry.id}',
-                f'已將 #{entry.id} 的 {record.kind} 處理紀錄改到 {new} {summary(entry)}')
+                f'已將 retro #{entry.id} 的 {record.kind} 處理紀錄改到 {new} {summary(entry)}')
     return backlog.transaction(change)
 
 
@@ -444,7 +444,7 @@ def cmd_unsuspect(backlog, args):
     def change():
         entry = live(backlog, args.id)
         if not entry.suspected:
-            return [], '', f'#{entry.id} 沒有疑似相同標記'
+            return [], '', f'retro #{entry.id} 沒有疑似相同標記'
         entry.suspected = []
         return [entry], f'chore: clear suspected duplicates of #{entry.id}', f'已清除疑似標記 {summary(entry)}'
     return backlog.transaction(change)
@@ -453,10 +453,10 @@ def cmd_unsuspect(backlog, args):
 def cmd_merge(backlog, args):
     def change():
         if args.source == args.target:
-            raise Refused(f'不能把 #{args.source} 併入自己')
+            raise Refused(f'不能把 retro #{args.source} 併入自己')
         source, target = backlog.get(args.source), live(backlog, args.target)
         if source.merged_into == target.id:  # the same merge already succeeded, e.g. a rerun after a lost reply
-            return [], '', f'已併入 #{target.id}：#{source.id} 先前已併入，未改動'
+            return [], '', f'已併入 retro #{target.id}：retro #{source.id} 先前已併入，未改動'
         source = live(backlog, source.id)
         merge_time = normalize_time(args.time)
         severe = [f'#{e.id} 為嚴重：{e.state()["severe_reason"]}' for e in (source, target) if e.state()['severe']]
@@ -464,7 +464,7 @@ def cmd_merge(backlog, args):
         for o in sorted(target.occurrences + source.occurrences, key=lambda o: when(o.time)):
             occurrences.setdefault(o.session, o)  # the earlier time of a session wins
         # even identical records at the same time clash: the Spec refuses any two at one time after a merge
-        labelled = [(f'#{e.id}', p) for e in (target, source) for p in e.processing]
+        labelled = [(f'retro #{e.id}', p) for e in (target, source) for p in e.processing]
         if severe:
             labelled.append(('合併新增', Processing(merge_time, 'severe', f'合併時 {"；".join(severe)}')))
         clashes = [(label, p) for label, p in labelled if sum(when(q.time) == when(p.time) for _, q in labelled) > 1]
@@ -478,7 +478,7 @@ def cmd_merge(backlog, args):
         source.occurrences, source.processing, source.merged_into = [], [], target.id
         # target first, so a failure in between leaves the source unmarked; the rollback undoes both anyway
         return ([target, source], f'chore: merge #{source.id} into #{target.id}',
-                f'已將 #{source.id} 併入 #{target.id}：{summary(target)}')
+                f'已將 retro #{source.id} 併入 retro #{target.id}：{summary(target)}')
     return backlog.transaction(change)
 
 
@@ -491,7 +491,7 @@ def recorded(entry, verb, status):
 def live(backlog, entry_id):
     entry = backlog.get(entry_id)
     if entry.merged_into is not None:
-        raise Refused(f'#{entry.id} 已併入 #{entry.merged_into}，請改用 #{entry.merged_into}')
+        raise Refused(f'retro #{entry.id} 已併入 retro #{entry.merged_into}，請改用 retro #{entry.merged_into}')
     return entry
 
 
