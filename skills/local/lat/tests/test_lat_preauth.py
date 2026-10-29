@@ -282,6 +282,32 @@ class ConditionTests(PreauthCase):
                 self.assertIn(f'every registered full suite passed for {head[:12]}',
                               verdict['basis'])
 
+    def test_allowed_deploy_and_install_explain_notice_sequence(self):
+        self.allow_all()
+        self.gate_record()
+        for action in ('deploy-test', 'deploy-prod', 'install-host'):
+            with self.subTest(action=action):
+                verdict = self.check(action)
+                self.assertIn('next_steps', verdict)
+                steps = verdict['next_steps']
+                for word in ('hcom send @<name>', 'event id', '--started', 'action',
+                             'after-notice', 'record --kind auto', '--notice-before',
+                             '--notice-after'):
+                    self.assertIn(word, steps)
+                result = self.run_tool('check', '--action', action)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines()[1], 'Next steps: ' + steps)
+
+    def test_merge_and_ask_output_has_no_next_steps(self):
+        self.allow_all()
+        for action, extra in (('merge', ('--branch', 'dev')), ('install-host', ())):
+            with self.subTest(action=action):
+                verdict = self.check(action, *extra)
+                self.assertNotIn('next_steps', verdict)
+                result = self.run_tool('check', '--action', action, *extra)
+                self.assertEqual(len(result.stdout.splitlines()), 1)
+                self.assertNotIn('Next steps:', result.stdout)
+
     def test_deploy_and_install_check_the_gate(self):
         self.allow_all()
         self.gate_record(suites=SUITES[:1])
@@ -419,6 +445,8 @@ class PushTests(PreauthCase):
         result = self.run_tool('check', '--action', 'push', '--branch', 'dev')
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn('allow push dev — basis: ', result.stdout)
+        self.assertEqual(len(result.stdout.splitlines()), 1)
+        self.assertNotIn('next_steps', self.check('push', '--branch', 'dev'))
         self.assertIn(f'every unpushed commit of {sha[:12]} references only tickets of the '
                       'round ledger', result.stdout)
         self.assertIn(f'every registered full suite passed for {sha[:12]}', result.stdout)
@@ -747,7 +775,7 @@ class RecordTests(WriteCase):
                                                     mentions=())], {}, 'is a broadcast'),
                 ('reversed', [self.notice(1, '2026-10-25T10:10:00+00:00'),
                               self.notice(2, '2026-10-25T10:00:00+00:00')], {},
-                 'not earlier than --started'),
+                 'later than --started'),
                 ('after before before', good, dict(before=2, after=1),
                  'is not later than before notice'),
                 ('both before the start', [good[0], self.notice(2, '2026-10-25T10:01:00+00:00')],
@@ -765,6 +793,32 @@ class RecordTests(WriteCase):
             result = self.record('--action', 'deploy-test', '--commit', 'abc', '--basis', 'x',
                                  '--result', 'succeeded')
             self.assertIn('needs --notice-before, --notice-after and --started', result.stderr)
+
+    def test_notice_order_uses_started_precision(self):
+        cases = (
+            # Whole seconds allow a before-notice within that second, but not the next.
+            ('00', '00.4', '01.2', True),
+            ('00', '01.2', '02', False),
+            ('00', '00.4', '00.9', False),
+            ('00', '00.4', '00.4', False),
+            ('00', '00.4', '00.2', False),
+            # Preserve the supplied fractional precision, including explicit zeroes.
+            ('00.400', '00.4009', '00.401', True),
+            ('00.400', '00.401', '01', False),
+            ('00.400', '00.399', '00.4009', False),
+            ('00.000', '00.001', '01', False),
+            ('00.400000', '00.400001', '01', False),
+        )
+        for started, before, after, allowed in cases:
+            with self.subTest(started=started, before=before, after=after):
+                # Different offsets describe the same instant; compare real time.
+                self.events.write_text(json.dumps([
+                    self.notice(1, f'2026-10-25T04:00:{before}+00:00'),
+                    self.notice(2, f'2026-10-25T12:00:{after}+08:00')]))
+                count = len(self.records())
+                result = self.deploy(started=f'2026-10-25T12:00:{started}+08:00')
+                self.assertEqual(result.returncode, 0 if allowed else 1, result.stderr)
+                self.assertEqual(len(self.records()), count + int(allowed))
 
     def test_tagged_controller_notices_carry_its_base_name(self):
         self.session(None, hcom_name='lat-fix-orch')

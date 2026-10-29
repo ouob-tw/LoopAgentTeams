@@ -497,7 +497,18 @@ def cmd_check(args):
     result = evaluate(args.action, branch=args.branch, commit=args.commit,
                       workspace=args.workspace, session=args.session_id,
                       precedent=args.precedent)
-    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else verdict_line(result))
+    if result['verdict'] == 'allow' and args.action in MAIN_CHECKOUT_ACTIONS:
+        result['next_steps'] = (
+            'Send the before-notice with hcom send @<name> and read its event id; '
+            'note --started; do the action; send the after-notice and read its event id; '
+            'then record --kind auto … --notice-before <id> --notice-after <id> '
+            '--started <time>.')
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(verdict_line(result))
+        if 'next_steps' in result:
+            print('Next steps: ' + result['next_steps'])
     return 0 if result['verdict'] == 'allow' else 1
 
 
@@ -974,13 +985,21 @@ def auto_entry(args, record):
     problems, before = notice_problems('before', args.notice_before, sender, senders)
     more, after = notice_problems('after', args.notice_after, sender, senders)
     problems += more
-    if before and before >= started:
-        problems.append(f'before notice #{args.notice_before} ({before.isoformat()}) is not '
-                        f'earlier than --started {started.isoformat()}')
+    # Use the precision supplied by the caller, not the event store's microseconds.
+    fraction = re.search(r'[Tt ]\d{2}:?\d{2}:?\d{2}[.,](\d+)', args.started)
+    digits = min(len(fraction[1]), 6) if fraction else 0
+    quantum = 10 ** (6 - digits)
+
+    def at_started_precision(moment):
+        return moment.replace(microsecond=moment.microsecond // quantum * quantum)
+
+    if before and at_started_precision(before) > started:
+        problems.append(f'before notice #{args.notice_before} ({before.isoformat()}) is later '
+                        f'than --started {started.isoformat()} at its precision')
     if before and after and after <= before:
         problems.append(f'after notice #{args.notice_after} is not later than before notice '
                         f'#{args.notice_before}')
-    if after and after <= started:
+    if after and at_started_precision(after) <= started:
         problems.append(f'after notice #{args.notice_after} ({after.isoformat()}) is not later '
                         f'than --started {started.isoformat()}')
     if problems:

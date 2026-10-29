@@ -10,6 +10,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" show
 ```
 
 - `check` 印一行 `allow <動作> <標的> — basis: …`（每個生效值來自哪一層、哪一段與 `source`）或 `ask <動作> <標的> — reasons: …`；結束碼 `allow` 為 0、`ask` 為 1、工具出錯為 2。`--json` 輸出 `verdict`、`action`、`target`、`basis`、`reasons`。
+- `deploy-test`、`deploy-prod`、`install-host` 得到 `allow` 時另印 `Next steps:`（`--json` 增加 `next_steps`）：先用 `hcom send @<name>` 發動作前通知並查事件編號，再記下帶時區的 `--started`、執行動作、發動作後通知並查事件編號，最後 `record --kind auto … --notice-before <id> --notice-after <id> --started <time>`。合併、推送與 `ask` 的輸出不變。
 - `show` 印三層位置與是否生效、合併後的有效設定，以及每個值的出處；設定有錯時列出錯誤。
 - 在要動作的工作區執行（或給 `--workspace`）。主控層以 `--session-id` 或 client 的 session 環境變數（`CLAUDE_CODE_SESSION_ID`、`CODEX_THREAD_ID`）找本輪 session 紀錄。
 
@@ -106,7 +107,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-i
   --self-reported '<…>' --clear-expected '<…>' --single-ticket '<…>' --restores-stated '<…>'
 ```
 
-- `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區）與前後兩則 HCOM 通知的事件編號（`hcom send` 後以 `hcom events --from <自己> --last 1` 查 `id`）。工具以 `hcom events` 核對：兩則都由本主控送出（發送者等於工作階段紀錄的 HCOM 名稱，或 `hcom list --json` 給它的基本名；有 tag 的主控，HCOM 記的是基本名）、以 `@名稱` 指定對象（不是廣播）、前一則早於 `--started`、後一則晚於 `--started` 也晚於前一則；不符就拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
+- `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區）與前後兩則 HCOM 通知的事件編號（`hcom send` 後以 `hcom events --from <自己> --last 1` 查 `id`）。工具以 `hcom events` 核對：兩則都由本主控送出（發送者等於工作階段紀錄的 HCOM 名稱，或 `hcom list --json` 給它的基本名；有 tag 的主控，HCOM 記的是基本名）、以 `@名稱` 指定對象（不是廣播）、依 `--started` 提供的小數秒位數比較（未提供小數就比較整秒）：前一則可早於或等於開始時間，後一則必須晚於開始時間，且原始時間也必須晚於前一則。例如 `--started 2026-10-29T12:00:00+08:00` 接受前一則在 `12:00:00.4`，拒絕 `12:00:01.2`；後一則在 `12:00:00.9` 仍不合格；不符就拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
 - `precedent` 的 `--source` 必須有真人答覆（同 `grant` 的核對）；`bug-intake` 的四項依據都要寫。
 
 ## 免確認開短流程 bug 票
