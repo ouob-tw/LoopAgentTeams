@@ -427,6 +427,7 @@ class ConditionTests(PreauthCase):
         self.assertNotIn('production', out)
 
 
+@unittest.skipUnless(INSTALLER.is_file(), 'needs the repo copy of scripts/install-skills.py')
 class InstallHostGateTests(PreauthCase):
     """install-host counts only the full suites inside the skill folders the installer would
     install, judged by the installer's own code, so both give the same answer."""

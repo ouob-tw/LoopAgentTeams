@@ -61,7 +61,7 @@
   "integration_branch": "dev",
   "full_suites": [
     {"cwd": "board", "command": "bun run test:all", "depends_on": ["skills/local/lat/herdr-panel/**", "skills/local/lat/scripts/**"]},
-    {"cwd": "skills/local/lat", "command": "uv run --no-project --with textual==8.2.8 python -m unittest discover -s tests", "depends_on": ["skills/local/three-tier-testing/scripts/suite-gate.py", "skills/local/hcom-spawn/scripts/spawn-watch.py", "skills/local/hcom-spawn/scripts/spawn-guard.py"]},
+    {"cwd": "skills/local/lat", "command": "uv run --no-project --with textual==8.2.8 python -m unittest discover -s tests", "depends_on": ["skills/local/three-tier-testing/scripts/suite-gate.py", "skills/local/hcom-spawn/scripts/spawn-watch.py", "skills/local/hcom-spawn/scripts/spawn-guard.py", "scripts/install-skills.py"]},
     {"cwd": "skills/local/three-tier-testing", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
     {"cwd": "skills/local/hcom-spawn", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
     {"cwd": "skills/local/lat-handover", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
