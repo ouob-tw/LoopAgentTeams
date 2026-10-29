@@ -142,7 +142,11 @@ export function arrive(place: Place, depth: number | undefined, trail: Trail): v
 	if (place !== null) trail.push(place, 1);
 }
 
-/** Open a screen from the one at `here`. Opening the open screen again adds nothing to go back to. */
+/** Open a screen from the one at `here`. Opening the open screen again adds nothing to go back to,
+ *  and an agent opened from another agent's page takes that page's entry, so going back from
+ *  either reaches the screen the first was opened from, not the agent seen before. */
 export function advance(next: Place, here: { place: Place; depth: number }, trail: Trail): void {
-	if (!samePlace(next, here.place)) trail.push(next, here.depth + 1);
+	if (samePlace(next, here.place)) return;
+	if (next?.kind === 'agent' && here.place?.kind === 'agent') trail.replace(next, here.depth);
+	else trail.push(next, here.depth + 1);
 }
