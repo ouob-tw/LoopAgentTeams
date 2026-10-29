@@ -335,8 +335,8 @@ class ConditionTests(PreauthCase):
         bin_dir = self.root / 'fakebin'
         bin_dir.mkdir(exist_ok=True)
         hcom = bin_dir / 'hcom'
-        body = ('import sys; sys.exit(1)' if agents is None
-                else f'print({json.dumps(agents)!r})')
+        output = 'sys.exit(1)' if agents is None else f'print({json.dumps(agents)!r})'
+        body = f'import sys\nif sys.argv[1:] != ["list", "--json"]:\n    sys.exit(2)\n{output}'
         hcom.write_text(f'#!{sys.executable}\n{body}\n')
         hcom.chmod(0o755)
         return f'{bin_dir}:{os.environ["PATH"]}'
@@ -384,6 +384,14 @@ class ConditionTests(PreauthCase):
         self.assertIn('hcom send @<other-controller>', steps)
         self.assertNotIn('@vefi', steps)
         self.assertIn('No other active controller is recorded', steps)
+
+    def test_next_steps_say_so_when_hcom_lists_something_that_is_not_agents(self):
+        self.allow_all()
+        self.gate_record()
+        self.other_sessions(('kela', 'active'))
+        steps = self.check('deploy-test', path=self.fake_hcom({'error': 'x'}))['next_steps']
+        self.assertNotIn('@kela', steps)
+        self.assertIn('HCOM could not be read', steps)
 
     def test_next_steps_say_so_when_hcom_cannot_be_read(self):
         self.allow_all()

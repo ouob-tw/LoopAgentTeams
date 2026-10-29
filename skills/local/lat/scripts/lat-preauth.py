@@ -595,10 +595,13 @@ def notice_steps(workspace, session):
     if not own:
         others = []  # the caller's own record is unknown, so it could be listed as a recipient
     try:
-        agents = [item for item in json.loads(run_cli(['hcom', 'list', '--json'], timeout=30))
-                  if isinstance(item, dict)]
-    except (ValueError, TypeError):
-        agents = None  # HCOM unavailable
+        agents = json.loads(run_cli(['hcom', 'list', '--json'], timeout=30))
+    except ValueError:
+        agents = None
+    if not isinstance(agents, list):
+        agents = None  # HCOM unavailable or unreadable
+    else:
+        agents = [item for item in agents if isinstance(item, dict)]
     sender = hcom_send_name(own, agents) if own and agents is not None else me
     if agents is None:
         others = []
