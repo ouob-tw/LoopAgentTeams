@@ -2572,6 +2572,26 @@ class DetectionTests(unittest.TestCase):
         self.assertFalse(gate.is_full_suite('cat > f <<EOF\npytest\nEOF', registry={}))
         self.assertTrue(gate.is_full_suite('bash <<EOF\npytest\nEOF', registry={}))
 
+    def test_quoted_text_in_a_heredoc_substitution_is_read_as_the_shell_reads_it(self):
+        """Quotes inside `$(...)` of an unquoted heredoc are shell quotes: they neither hide
+        a suite nor make the body unreadable; only an unclosed quote still blocks."""
+        registry = {'suites': ['*bun run test:all', '*bun run test:all *']}
+        pairs = [
+            ('cat > f <<EOF\n- live: $( [ $t = a ] && echo "web, 40 pages" || echo "none" )\n'
+             '- full suite: none\nEOF',
+             'cat > f <<EOF\n$( [ $t = a ] && echo "x" || bun run test:all )\nEOF'),
+            ("cat > f <<EOF\n$(sed 's/^/> /' spec.md)\nrun bun run test:all later\nEOF",
+             "cat > f <<EOF\n$(sed 's/)/x/' spec.md; bun run test:all)\nEOF"),
+            ('cat > f <<EOF\n$(echo ")")\nEOF', 'cat > f <<EOF\n$(echo "$(bun run test:all)")\nEOF'),
+            ("cat > f <<EOF\n`echo 'bun run test:all'`\nEOF",
+             "cat > f <<EOF\n`echo 'x'; bun run test:all`\nEOF"),
+            ('cat > f <<EOF\n$(echo "bun run test:all")\nEOF',
+             "cat > f <<EOF\n$(echo 'unclosed)\nEOF"),
+        ]
+        for data, run in pairs:
+            self.assertFalse(gate.is_full_suite(data, registry=registry), data)
+            self.assertTrue(gate.is_full_suite(run, registry=registry), run)
+
     def test_registry_is_read_from_the_repo_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -2841,6 +2861,27 @@ class MappedHookTests(AffectedCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.full_runs(), ['root'])
         self.assertEqual(self.records()[-1]['purpose'], 'reason')
+
+    def test_writing_a_card_or_brief_whose_text_names_test_commands_passes(self):
+        """The two commands of #386: a heredoc whose `$(...)` holds quotes, written in a loop
+        or next to text naming test commands, runs no suite."""
+        self.registry['suites'] = ['*bun run test:all', '*bun run test:all *']
+        self.write_registry()
+        card = ('for t in a b; do cat > .lat/tasks/$t.md <<EOF\n'
+                '- live actions：$( [ $t = a ] && echo "web pages, at most 40" || echo "無" )\n'
+                '- 整套測試：無\nEOF\ndone; git log --since=2026-09-01 --oneline -- src | wc -l')
+        brief = ('S=/tmp/s; for m in x y; do cat > $S/hq-$m.md <<EOF\n'
+                 '$(sed \'s/^/> /\' $S/369.md)\n'
+                 'In \\`board/\\`: \\`bun run build:test\\`, then '
+                 '\\`bun run demo --port 7384\\`; never \\`bun run test:all\\`.\nEOF\n'
+                 'uv run --no-project python lat-dispatch.py brief --input $S/hq-$m.md; done')
+        for text in (card, brief):
+            for client, command in self.formats(text).items():
+                with self.subTest(client=client, text=text):
+                    result = run_hook(command, self.repo, self.env)
+                    self.assertEqual((result.returncode, result.stderr), (0, ''))
+        run = card.replace('echo "無"', 'bun run test:all')
+        self.assertEqual(run_hook(run, self.repo, self.env).returncode, 2)
 
     def test_an_unmapped_project_keeps_the_gate_rewrite(self):
         del self.registry['affected']
