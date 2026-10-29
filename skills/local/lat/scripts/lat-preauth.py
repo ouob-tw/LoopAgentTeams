@@ -353,6 +353,26 @@ def gate_problems(top, version):
             f'(in {suite["cwd"]})' for suite in lacking]
 
 
+def install_gate_problems(top, version):
+    """(problems, skill folders checked). Only the full suites inside the skill folders the
+    installer would install count, judged by the same suite-gate code the installer uses: the
+    latest run on the same folder content must have passed. Without skill folders every
+    registered suite counts (gate_problems)."""
+    try:
+        gate = load_suite_gate()
+        folders = list(gate.skill_folders(top).values())
+        if not folders:
+            return gate_problems(top, version), None
+        _, lacking = gate.lacking_folder_suites(top, gate.load_registry(top) or {}, folders,
+                                                version)
+    except (OSError, RuntimeError, ValueError) as error:
+        return [f'full-suite gate check failed: {error}'], None
+    why = {'failed': 'the latest run of this content failed', 'missing': 'no run of this content'}
+    return [f'no passing full-suite record for {version[:12]}: {suite["command"]} '
+            f'(in {suite["cwd"]}; skill folder {folder}: {why[result]})'
+            for folder, suite, result in lacking], folders
+
+
 def resolve_version(top, ref):
     return git(top, 'rev-parse', '--verify', '--quiet', f'{ref}^{{commit}}') if top else None
 
@@ -475,7 +495,15 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None, 
             if not problems:
                 result['basis'].append(f'every unpushed commit of {version[:12]} references '
                                        'only tickets of the round ledger')
-    if action in GATE_ACTIONS and version:
+    if action == 'install-host' and version:
+        problems, folders = install_gate_problems(top, version)
+        result['reasons'] += problems
+        if not problems and folders:
+            result['basis'].append(f'every full suite in the {len(folders)} skill folders '
+                                   f'passed for {version[:12]}')
+        elif not problems:
+            result['basis'].append(f'every registered full suite passed for {version[:12]}')
+    elif action in GATE_ACTIONS and version:
         problems = gate_problems(top, version)
         result['reasons'] += problems
         if not problems:

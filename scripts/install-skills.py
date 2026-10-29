@@ -11,7 +11,6 @@ bunx reads a snapshot of the checked content, so a change made meanwhile is not 
 import argparse
 import importlib.util
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -21,7 +20,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / 'skills/local/three-tier-testing/scripts/suite-gate.py'
-NAME = re.compile(r'^name:\s*["\']?([^"\'\s]+)', re.M)
 
 
 def load_gate():
@@ -31,64 +29,13 @@ def load_gate():
     return module
 
 
-def skill_dirs():
-    """{name: folder relative to the repo} for every SKILL.md under skills/."""
-    found = {}
-    for path in sorted((ROOT / 'skills').rglob('SKILL.md')):
-        rel = path.parent.relative_to(ROOT)
-        if any(part.startswith('.') for part in rel.parts):
-            continue
-        text = path.read_text()
-        match = NAME.search(text.split('---', 2)[1]) if text.startswith('---\n') else None
-        if not match:
-            raise ValueError(f'no name in the frontmatter of {path}')
-        found[match.group(1)] = rel.as_posix()
-    return found
-
-
-def subtrees(specs):
-    """The object each `<tree>:<path>` names, or None when it does not exist."""
-    if not specs:
-        return []
-    result = subprocess.run(['git', 'cat-file', '--batch-check=%(objectname)'], cwd=ROOT,
-                            input=''.join(f'{spec}\n' for spec in specs),
-                            capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f'git cat-file failed: {result.stderr.strip()}')
-    return [None if line.endswith(' missing') else line
-            for line in result.stdout.splitlines()]
-
-
-def suite_result(records, suite, folder, current):
-    """'passed', 'failed' or 'missing': the latest full run of this suite whose content of
-    folder equals current decides, as the gate's own reuse does for the whole tree."""
-    runs = [r for r in records if not r.get('kind') and not r.get('content_changed')
-            and r.get('rel_cwd') == suite['cwd'] and r.get('command') == suite['command']
-            and isinstance(r.get('tree'), str)]
-    for record, tree in zip(runs, subtrees([f"{r['tree']}:{folder}" for r in runs])):
-        if tree == current:
-            return 'passed' if record.get('reusable') else 'failed'
-    return 'missing'
-
-
 def check(gate, folders):
     """(content tree, [(skill, suite, result)] for each suite under the folders that has no
     reusable pass)."""
-    registry = gate.load_registry(ROOT) or {}
-    suites = gate.read_full_suites(registry)
-    tree = gate.content_tree(ROOT, gate.include_patterns(registry))
-    records = list(reversed(gate.read_records()))
-    lacking = []
-    for name, folder in folders.items():
-        current = subtrees([f'{tree}:{folder}'])[0]
-        if current is None:
-            raise RuntimeError(f'{folder} is not in the content the gate fingerprints')
-        for suite in suites:
-            if suite['cwd'] == folder or suite['cwd'].startswith(folder + '/'):
-                result = suite_result(records, suite, folder, current)
-                if result != 'passed':
-                    lacking.append((name, suite, result))
-    return tree, lacking
+    names = {folder: name for name, folder in folders.items()}
+    tree, lacking = gate.lacking_folder_suites(ROOT, gate.load_registry(ROOT) or {},
+                                               list(folders.values()))
+    return tree, [(names[folder], suite, result) for folder, suite, result in lacking]
 
 
 def find_bunx():
@@ -129,7 +76,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     gate = load_gate()
     try:
-        skills = skill_dirs()
+        skills = gate.skill_folders(ROOT)
         unknown = sorted(set(args.skill or ()) - set(skills))
         if unknown:
             parser.error(f"unknown skill: {', '.join(unknown)} "
