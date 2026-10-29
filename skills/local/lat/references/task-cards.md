@@ -4,7 +4,7 @@
 
 每張派工建立 `.lat/tasks/YYYY-MM-DD-<tag>.md`，日期為派發日期。外部 Agent 的 tag 用 /hcom-spawn 的 HCOM `--tag`；內建 Agent 由 Orchestrator 指派唯一任務 tag。同日同 tag 重派依序加 `-2`、`-3`，第一行註明接續的任務卡。
 
-HCOM Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自動填完整名稱與模板、重派加序號與接續行，見 [Agent 設定](agents.md#派工)）；內建 Agent 用 `card --native --agent <名稱>`，不查 HCOM。手寫仍然允許。
+HCOM Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自動填名稱與模板、重派加序號與接續行，見 [Agent 設定](agents.md#派工)）；手寫亦可。
 
 ## 欄位模板
 
@@ -13,7 +13,7 @@ HCOM Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自�
 
 - agent：
 - orchestrator：
-- native agent：（只有 Claude 內建 Agent 才加這行，填「是」）
+- native agent：是（僅內建 Agent 加這行）
 - model：
 - branch：
 - worktree：
@@ -32,7 +32,7 @@ HCOM Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自�
 - deliverable commit：待 Orchestrator 從 Git 查證後填入
 ```
 
-agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括號（如 `<名稱> (HCOM tag ...)`、`<名稱>（QA）`）；orchestrator 填派工主控的 HCOM 名稱。[停住監控](stall-watch.md) 靠這兩欄找出每位主控要盯的 Agent；`native agent：是` 的卡只檢查必填欄位，監控不查它在不在 HCOM、也不催它（內建 Agent 的狀態由主控的工具通知）。缺少 agent、orchestrator、status 任一欄，或 agent 欄留空、名稱後接其他符號的卡片無法辨識，監控會跳過並記錄，該 Agent 不受監控。不適用的欄位填「無」，不可省略資源歸屬或虛構 commit。status 使用 `dispatched / in progress / committed / merged`，沒有 commit 的 Spec 文件審查與參謀以 `completed` 結束；受阻原因與恢復條件寫在 next step。
+agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括號（如 `<名稱>（QA）`）；orchestrator 填派工主控的 HCOM 名稱。[停住監控](stall-watch.md) 靠這兩欄找出每位主控要盯的 Agent；缺少 agent、orchestrator、status 任一欄，或 agent 欄留空、名稱後接其他符號的卡片無法辨識，監控會跳過並記錄，該 Agent 不受監控。不適用的欄位填「無」，不可省略資源歸屬或虛構 commit。status 使用 `dispatched / in progress / committed / merged`，沒有 commit 的 Spec 文件審查與參謀以 `completed` 結束；受阻原因與恢復條件寫在 next step。
 
 ## 票資料位置
 

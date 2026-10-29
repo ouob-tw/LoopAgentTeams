@@ -12,7 +12,7 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 
 ## 監控誰、何時出手
 
-監控對象是主控自己，加上 `$tasks` 下（不含 `done/`）`orchestrator` 欄等於該主控、status 還不是 `merged` 的任務卡所列 Agent；[內建 Agent 的卡](task-cards.md#欄位模板) 只做必填欄位檢查。hcom-spawn 單獨召喚、沒有任務卡的 Agent 不在監控內。
+監控對象是主控自己，加上 `$tasks` 下（不含 `done/`）`orchestrator` 欄等於該主控、status 還不是 `merged` 的任務卡所列 Agent。卡上有 `native agent：是`（Claude 內建 Agent，沒有 HCOM 名稱；`lat-dispatch.py card --native --agent <名稱>` 建卡時不查 HCOM）時只做[必填欄位檢查](#任務卡必填欄位檢查)，不查它在不在 HCOM、不催它；它的狀態由主控的工具通知。hcom-spawn 單獨召喚、沒有任務卡的 Agent 不在監控內。
 
 紀錄檔或 HCOM 事件有變動就算有進展，計時歸零；但監控自己輸入的完整 `[lat-watch]` 催促、其即時回聲／只有簡短文字（去除前後空白後不超過 200 字元，Claude 的思考區塊不計）的回覆、client 錯誤、檔案歷史快照／附件／回合結束等內部紀錄與同一 session 的相關回合狀態變動不算進展，不會重新催促或延後通知。催促後新的工具操作、檔案修改、較長回覆或傳出 HCOM 訊息仍會歸零；其他 Agent 傳入的訊息仍照原規則計算。無法辨識或讀取催促後紀錄時，沿用原本的變動判斷。HCOM 事件以 `hcom list --json` 提供的 session ID 歸屬，不會把其他同短名 Agent 的事件算進來。沒有進展時：
 
