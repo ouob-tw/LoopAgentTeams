@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/tests/browser/navigate-network-change.test.ts"],
+      "tests": ["board/tests/browser/navigate-network-change.test.ts"]
+    }
+  ]
+}

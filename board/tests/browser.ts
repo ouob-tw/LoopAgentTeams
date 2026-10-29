@@ -26,6 +26,11 @@ export const REQUEST_MS = 10_000;
 const SCREEN_MS = 2_000;
 /** How long a closed tab waits for its Chrome to exit, to say how Chrome ended. */
 const EXIT_MS = 1_000;
+/** How Chrome fails a request still connecting when the host's network changes: another program
+ *  adding or removing an interface or address (Docker does, for each container) is enough. */
+const NETWORK_CHANGED = 'net::ERR_NETWORK_CHANGED';
+/** How many times `Tab.navigate` loads a page whose load lost a request to such a change. */
+const NAVIGATE_TRIES = 3;
 
 /** A request as a failure names it: the method and what it was given, cut short. */
 function describe(method: string, params: object): string {
@@ -43,6 +48,11 @@ export class Tab {
 	#failures = new Set<(error: Error) => void>();
 	/** The documents that have loaded, by the loader that loaded them. */
 	#loaded = new Set<string>();
+	/** The loader of each request still going, and the loaders that lost one to a network change. */
+	#loaderOf = new Map<string, string>();
+	#networkChanged = new Set<string>();
+	/** How many errors to keep when the next document commits: those of a load that is loaded again go. */
+	#keepErrors: number | undefined;
 	/** The requests held by `Fetch.enable`, waiting for `Fetch.continueRequest`. */
 	paused: string[] = [];
 	/** The page's uncaught exceptions and console errors; empty it (`errors.length = 0`) to start over. */
@@ -59,6 +69,16 @@ export class Tab {
 			const message = JSON.parse(String(event.data));
 			if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') this.#loaded.add(message.params.loaderId);
 			if (message.method === 'Fetch.requestPaused') this.paused.push(message.params.requestId);
+			if (message.method === 'Network.requestWillBeSent') this.#loaderOf.set(message.params.requestId, message.params.loaderId);
+			if (message.method === 'Network.loadingFinished' || message.method === 'Network.loadingFailed') {
+				const loader = this.#loaderOf.get(message.params.requestId);
+				if (loader && message.params.errorText === NETWORK_CHANGED) this.#networkChanged.add(loader);
+				this.#loaderOf.delete(message.params.requestId);
+			}
+			if (message.method === 'Page.frameNavigated' && !message.params.frame.parentId && this.#keepErrors !== undefined) {
+				this.errors.length = this.#keepErrors;
+				this.#keepErrors = undefined;
+			}
 			if (message.method === 'Runtime.exceptionThrown') this.errors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
 			if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') {
 				this.errors.push(message.params.args.map((arg: { value?: string; description?: string }) => arg.value ?? arg.description).join(' '));
@@ -97,11 +117,17 @@ export class Tab {
 			socket.addEventListener('error', () => reject(new Error('the Chrome tab did not open')), { once: true });
 		});
 		const tab = new Tab(socket, ended, stderr);
-		await tab.send('Page.enable');
-		await tab.send('Runtime.enable');
-		await tab.send('Page.setLifecycleEventsEnabled', { enabled: true });
-		for (const source of scripts) await tab.send('Page.addScriptToEvaluateOnNewDocument', { source });
+		await tab.start(scripts);
 		return tab;
+	}
+	/** What the tab reports from then on: loads, errors and requests (for `navigate`); `scripts` run
+	 *  first in every document. */
+	async start(scripts: string[] = []) {
+		await this.send('Page.enable');
+		await this.send('Runtime.enable');
+		await this.send('Page.setLifecycleEventsEnabled', { enabled: true });
+		await this.send('Network.enable');
+		for (const source of scripts) await this.send('Page.addScriptToEvaluateOnNewDocument', { source });
 	}
 	/** A DevTools request; one Chrome does not answer within `ms` fails, naming the request. */
 	send(method: string, params: object = {}, ms = REQUEST_MS): Promise<any> {
@@ -145,16 +171,32 @@ export class Tab {
 			await this.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
 		}
 	}
-	/** Load a new document and wait until it has loaded. */
+	/** Load a new document and wait until it has loaded. A load that lost a request to a change in the
+	 *  host's network loads again, up to NAVIGATE_TRIES times: nothing in the page caused it, and a page
+	 *  without one of its modules never starts. Only that error does; any other failure stays. */
 	async navigate(url: string) {
-		// The load of this navigation's own document: the tab's first, empty one also fires a load.
-		const { loaderId, errorText } = await this.send('Page.navigate', { url });
-		if (errorText) throw new Error(`${url}: ${errorText}`);
-		const deadline = Date.now() + 10_000;
-		while (!this.#loaded.has(loaderId)) {
-			if (this.#gone) throw await this.#gone;
-			if (Date.now() > deadline) throw new Error(`timed out loading ${url}`);
-			await sleep(20);
+		const kept = this.errors.length;
+		try {
+			for (let tries = 1; ; tries++) {
+				const again = tries < NAVIGATE_TRIES;
+				// The page given up on: its errors go once the next document commits.
+				if (tries > 1) this.#keepErrors = kept;
+				// The load of this navigation's own document: the tab's first, empty one also fires a load.
+				const { loaderId, errorText } = await this.send('Page.navigate', { url });
+				if (errorText === NETWORK_CHANGED && again) continue;
+				if (errorText) throw new Error(`${url}: ${errorText}`);
+				const deadline = Date.now() + 10_000;
+				while (!this.#loaded.has(loaderId)) {
+					if (this.#gone) throw await this.#gone;
+					if (Date.now() > deadline) throw new Error(`timed out loading ${url}`);
+					await sleep(20);
+				}
+				if (!this.#networkChanged.has(loaderId) || !again) return;
+				console.error(`${url}: a request was lost to a change in the host's network (${NETWORK_CHANGED}); loading the page again`);
+			}
+		} finally {
+			// A try that failed before its document committed leaves nothing for a later commit to cut.
+			this.#keepErrors = undefined;
 		}
 	}
 	/** Wait for an expression in the page to be true. */
