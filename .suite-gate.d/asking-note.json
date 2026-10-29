@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/lib/board/question-message.ts", "board/src/lib/components/Transcript.svelte", "board/src/lib/components/ControllerInfo.svelte", "board/src/lib/components/ControllerPage.svelte", "board/src/lib/components/ItemContent.svelte"],
+      "tests": ["board/tests/browser/asking-note.test.ts"]
+    }
+  ]
+}
