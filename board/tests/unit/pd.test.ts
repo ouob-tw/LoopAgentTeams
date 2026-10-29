@@ -197,3 +197,23 @@ test('the window stays on screen and at least its smallest size, and only a whol
 	expect(readBox('{"x":1,"y":2,"w":400,"h":300}')).toEqual({ x: 1, y: 2, w: 400, h: 300 });
 	for (const text of ['', 'nope', '{"x":1,"y":2,"w":400}', '{"x":"1","y":2,"w":400,"h":300}', 'null']) expect(readBox(text)).toBeNull();
 });
+
+test('vault status makes unavailable visible without discarding pending approvals', async () => {
+	const { parsePdStatus } = await import('../../src/lib/server/pd.ts');
+	const { pdNotice } = await import('../../src/lib/board/pd.ts');
+	const pending = parsePdPending(exited(0, JSON.stringify([listed])));
+	for (const status of [exited(69, JSON.stringify({ ok: true, vault: 'unavailable', last_failure: { reason: 'secret' } })), exited(69)]) {
+		const snapshot = parsePdStatus(status, pending);
+		expect(pdNotice(snapshot)).toBe('pd 服務不可用');
+		expect(snapshot.ok && snapshot.requests.length).toBe(1);
+		expect(JSON.stringify(snapshot)).not.toContain('secret');
+	}
+	const empty = parsePdPending(exited(0, '[]'));
+	expect(pdNotice(parsePdStatus(exited(69), empty))).toBe('pd 服務不可用');
+	expect(pdNotice(parsePdStatus(exited(0, '{"ok":true,"vault":"ok"}'), empty))).toBeNull();
+	expect(pdNotice(parsePdStatus(exited(69, '{"ok":true,"vault":"locked"}'), empty))).toBe('pd 已鎖定');
+	for (const invalid of ['{}', '[]', 'null', '{"ok":false,"vault":"ok"}', 'garbage']) {
+		expect(pdNotice(parsePdStatus(exited(0, invalid), empty))).toBe('pd 服務不可用');
+	}
+	expect(pdNotice({ ok: false, reason: '連不上 pd 服務' })).toBe('pd 服務不可用');
+});

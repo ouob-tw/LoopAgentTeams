@@ -10,8 +10,8 @@
 	// kept in this browser. 稍後 folds it to a one-line badge above the column's tabs,
 	// which opens it again; a request that appears opens it too and, once the user allowed it (the
 	// 開啟通知 button, never asked for unprompted), raises a browser notification whose click comes
-	// back to it. With nothing waiting it is not shown; the page says on the 待辦 list when pd is
-	// missing or down.
+	// back to it. With nothing waiting it stays hidden while healthy; vault outages and an
+	// unreachable daemon keep a visible notice here, on every screen.
 	import { onMount, tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import {
@@ -21,6 +21,7 @@
 		callerText,
 		clampBox,
 		PD_WINDOW_KEY,
+		pdNotice,
 		readBox,
 		requestOptions,
 		shortCommand,
@@ -53,6 +54,7 @@
 		onlook?: (item: PdRequest) => void;
 	} = $props();
 
+	const notice = $derived(pd ? pdNotice(pd.snapshot) : null);
 	const requests = $derived(pd?.snapshot.ok ? pd.snapshot.requests : []);
 	let now = $state(Date.now());
 	$effect(() => {
@@ -225,8 +227,8 @@
 	}
 </script>
 
-{#if requests.length && pd}
-	{#if open}
+{#if (requests.length || notice) && pd}
+	{#if open || notice}
 		<section class="pd" class:moving={gesture} style={place} aria-label="pd 待核准" tabindex="-1" bind:this={panel}>
 			<!-- The heading drags the window in the wide layout; its buttons stay buttons. Dragging is a
 			     pointer's convenience: the window works where it opens, and stays on screen. -->
@@ -250,8 +252,9 @@
 				{#if notifications && permission === 'default'}
 					<button type="button" class="allow" title="有新的 pd 請求時發瀏覽器通知（只在看板開著時）" onclick={() => void allowNotifications()}>開啟通知</button>
 				{/if}
-				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
+				{#if !notice}<button type="button" class="later" onclick={() => void show(false)}>稍後</button>{/if}
 			</header>
+			{#if notice}<p class="pd-unavailable" role="status">{notice}</p>{/if}
 			<ul class="cards">
 				{#each requests as item (item.id)}
 					{@const time = timeText(item, now - pd.at)}
@@ -331,6 +334,13 @@
 {/if}
 
 <style>
+	.pd-unavailable {
+		margin: 0;
+		padding: 0.75rem 1rem;
+		font-weight: 700;
+		color: var(--fg);
+		border-left: 4px solid #d88b26;
+	}
 	/* Its default place and the phone's sheet are the page's to say; this is how it looks: a
 	   raised window, a card for each request, scrolling under its heading once several wait. */
 	.pd {

@@ -95,8 +95,29 @@ export function parsePdPending(run: ExternalResult): PdSnapshot {
 	};
 }
 
+/** Health is separate from pending approvals: a vault outage must not remove their controls.
+ * Never forward diagnostic text from status to the browser. */
+export function parsePdStatus(run: ExternalResult, pending: PdSnapshot): PdSnapshot {
+	if (!pending.ok) return pending;
+	let status: unknown;
+	try {
+		status = JSON.parse(run.stdout);
+	} catch {
+		return { ...pending, vault: 'unavailable' };
+	}
+	if (!run.timedOut && (run.code === 0 || run.code === EXIT_UNAVAILABLE) && isRecord(status) && status.ok === true) {
+		if (run.code === 0 && status.vault === 'ok') return pending;
+		if (status.vault === 'locked') return { ...pending, vault: 'locked' };
+	}
+	return { ...pending, vault: 'unavailable' };
+}
+
 export async function readPdPending(command: string[], timeoutMs: number): Promise<PdSnapshot> {
-	return parsePdPending(await runCommand(command, ['pending', '--json'], { timeoutMs }));
+	const [pending, status] = await Promise.all([
+		runCommand(command, ['pending', '--json'], { timeoutMs }),
+		runCommand(command, ['status', '--json'], { timeoutMs })
+	]);
+	return parsePdStatus(status, parsePdPending(pending));
 }
 
 /** The deny route's answer to what `pd deny <id>` did. */

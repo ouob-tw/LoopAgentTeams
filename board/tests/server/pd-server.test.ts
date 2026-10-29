@@ -76,8 +76,8 @@ test('waiting requests reach the page, and 拒絕 denies one through pd deny', a
 	expect((await again.json()).error).toContain('已不在待核准清單');
 	for (const id of ['8', 0, 1.5, null]) expect((await deny(board, cookie, id)).status).toBe(400);
 
-	// pd was only ever asked for its list and to deny, and never given a code.
-	for (const args of calls(board)) expect([['pending', '--json'], ['deny', '7']]).toContainEqual(args);
+	// pd was only ever asked for its list, status and to deny, and never given a code.
+	for (const args of calls(board)) expect([['pending', '--json'], ['status', '--json'], ['deny', '7']]).toContainEqual(args);
 	const json = { 'content-type': 'application/json' };
 	expect((await board.fetch('/api/pd/deny', { method: 'POST', headers: json, body: '{"id":8}' })).status).toBe(401);
 });
@@ -130,8 +130,8 @@ test('核准 relays pd\'s challenge and the page\'s assertion; pd decides, and t
 		expect((await post(board, cookie, '/api/pd/approve', body)).status).toBe(400);
 	}
 	for (const body of [{ id: '8' }, {}, 'not json']) expect((await post(board, cookie, '/api/pd/challenge', body)).status).toBe(400);
-	expect(calls(board).slice(before).filter((args) => args[0] !== 'pending')).toEqual([]);
-	for (const args of calls(board)) expect(['pending', 'passkey']).toContain(args[0]);
+	expect(calls(board).slice(before).filter((args) => !['pending', 'status'].includes(args[0]))).toEqual([]);
+	for (const args of calls(board)) expect(['pending', 'status', 'passkey']).toContain(args[0]);
 	expect(JSON.stringify(calls(board))).not.toContain('1234');
 
 	expect((await post(board, undefined, '/api/pd/challenge', { id: 8 })).status).toBe(401);

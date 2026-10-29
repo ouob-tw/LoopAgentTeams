@@ -87,7 +87,13 @@ export function assertionJson(credential: PublicKeyCredential): PdAssertion {
 	};
 }
 
-export type PdSnapshot = { ok: true; requests: PdRequest[] } | { ok: false; reason: string };
+export type PdSnapshot = { ok: true; requests: PdRequest[]; vault?: 'locked' | 'unavailable' } | { ok: false; reason: string };
+
+/** Current availability only; historical failure text does not keep a warning visible. */
+export function pdNotice(snapshot: PdSnapshot): string | null {
+	if (!snapshot.ok || snapshot.vault === 'unavailable') return 'pd 服務不可用';
+	return snapshot.vault === 'locked' ? 'pd 已鎖定' : null;
+}
 
 const clockText = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 
