@@ -36,8 +36,9 @@ def ticket_of(branch):
 
 
 def cites(message, number):
-    """True when a non-comment line of message holds `#<number>` (not `#<number>0`)."""
-    body = ''.join(line for line in message.splitlines(True) if not line.startswith('#'))
+    """True when a non-comment line of message holds `#<number>` (not `#<number>0`).
+    Comment lines are Git's template ones (`# ...` or a bare `#`); `#370 fix` is text."""
+    body = ''.join(line for line in message.splitlines(True) if not re.match(r'#(\s|$)', line))
     return re.search(rf'#{number}(?!\d)', body) is not None
 
 

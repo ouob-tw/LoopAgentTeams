@@ -43,6 +43,7 @@ class TicketOfBranch(unittest.TestCase):
         self.assertFalse(ref.cites('fix: x\n\nRefs #3701', '370'))
         self.assertFalse(ref.cites('fix: x\n\nRefs #371', '370'))
         self.assertFalse(ref.cites('fix: x\n# Refs #370 (comment line)\n', '370'))
+        self.assertTrue(ref.cites('#370 fix: x\n', '370'))
 
 
 class HookInRepo(unittest.TestCase):
@@ -73,6 +74,10 @@ class HookInRepo(unittest.TestCase):
         git(self.repo, 'switch', '-q', '-c', 'fix/issue-370-x')
         self.assertEqual(self.commit('fix: a\n\nRefs #370').returncode, 0)
         self.assertEqual(self.commit('fix: b\n\nRefs owner/repo#370').returncode, 0)
+
+    def test_message_starting_with_the_reference_passes(self):
+        git(self.repo, 'switch', '-q', '-c', 'fix/370')
+        self.assertEqual(self.commit('#370 fix: a thing').returncode, 0)
 
     def test_branch_without_number_is_not_checked(self):
         self.assertEqual(self.commit('chore: no ticket').returncode, 0)
