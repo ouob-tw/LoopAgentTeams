@@ -38,6 +38,8 @@ NONE = '無'
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
 LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo')
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
+SCOPE_NOTE = ('Write restrictions in this section do not apply to updating the task card '
+              'or running work-ledger commands.')
 CARD_RULE_READ_ONLY = 'The orchestrator maintains the task card; do not edit it.'
 LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does not hold, report to the orchestrator first and do not act.
 - Do live actions inside the `live actions` quota yourself; do not ask the orchestrator to approve each step.
@@ -393,7 +395,9 @@ def make_brief(args):
         except (OSError, UnicodeError) as error:
             raise Failure(f'--include unreadable: {error}') from error
     parts = [f'# Task brief for {card["agent"]}\n']
-    parts += [f'## {title}\n\n{bodies[title]}\n' for title in SECTIONS]
+    for title in SECTIONS:
+        note = f'\n{SCOPE_NOTE}\n' if title == SECTIONS[1] and not args.read_only else ''
+        parts.append(f'## {title}\n\n{bodies[title]}\n{note}')
     if extra:
         parts.append(extra + '\n')
     parts.append('## Task card live actions and preflight (authoritative; copied from the card)\n\n'
