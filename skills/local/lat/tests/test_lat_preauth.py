@@ -321,13 +321,33 @@ class ConditionTests(PreauthCase):
                 verdict = self.check(action)
                 self.assertIn('next_steps', verdict)
                 steps = verdict['next_steps']
-                for word in ('hcom send @<name>', 'event id', '--started', 'action',
+                for word in ('hcom send @<other-controller>', '--name orch', 'event id',
+                             'hcom events --from orch --last 1', '--started', 'action',
                              'after-notice', 'record --kind auto', '--notice-before',
                              '--notice-after'):
                     self.assertIn(word, steps)
                 result = self.run_tool('check', '--action', action)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines()[1], 'Next steps: ' + steps)
+
+    def test_next_steps_name_the_other_active_controllers(self):
+        self.allow_all()
+        self.gate_record()
+        for name, status in (('kela', 'active'), ('mivo', 'active'), ('old', 'ended')):
+            other = dict(status=status, hcom_name=name)
+            self.write(self.sessions / f'{name}-session.json', json.dumps(other))
+        steps = self.check('deploy-test')['next_steps']
+        self.assertIn("hcom send @kela @mivo --intent inform --name orch -- '<text>'", steps)
+        self.assertNotIn('@orch', steps)
+        self.assertNotIn('@old', steps)
+        self.assertNotIn('No other active controller', steps)
+
+    def test_next_steps_without_other_controllers_say_so(self):
+        self.allow_all()
+        self.gate_record()
+        steps = self.check('deploy-test')['next_steps']
+        self.assertIn('@<other-controller>', steps)
+        self.assertIn('No other active controller is recorded', steps)
 
     def test_merge_and_ask_output_has_no_next_steps(self):
         self.allow_all()

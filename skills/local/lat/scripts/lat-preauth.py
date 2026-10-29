@@ -560,16 +560,57 @@ def verdict_line(result):
     return f'{head} — reasons: ' + '; '.join(result['reasons'])
 
 
+def other_controllers(workspace, session):
+    """(own HCOM name or None, HCOM names of the other active controllers) from the session
+    records in the shared .lat directory."""
+    own, others = None, []
+    try:
+        workspace = Path(workspace or Path.cwd())
+        paths = sorted((shared_lat_dir(workspace) / 'sessions').glob('*.json'))
+    except (OSError, ValueError):
+        return own, others
+    for path in paths:
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        name = record.get('hcom_name') if isinstance(record, dict) else None
+        if not isinstance(name, str) or not name:
+            continue
+        if path.stem == session:
+            own = name
+        elif record.get('status') == 'active' and name not in others:
+            others.append(name)
+    return own, others
+
+
+def notice_steps(workspace, session):
+    """The check's Next steps for an action that needs before and after notices. `record`
+    accepts a notice only if this controller sent it to named agents, and the other active
+    controllers are the ones who need to know the main checkout is about to change."""
+    session = session or next((os.environ[key] for key in SESSION_ENVS if os.environ.get(key)),
+                              None)
+    own, others = other_controllers(workspace, session)
+    me = own or '<your-hcom-name>'
+    targets = ' '.join(f'@{name}' for name in others if name != own) or '@<other-controller>'
+    send = f"hcom send {targets} --intent inform --name {me} -- '<text>'"
+    lookup = f'hcom events --from {me} --last 1'
+    note = ('' if others else
+            ' No other active controller is recorded; name any other agent, since HCOM '
+            'rejects a send to yourself and `record` rejects a broadcast.')
+    return (f'Send the before-notice with `{send}` (to the other controllers, never to '
+            f'yourself) and read its event id with `{lookup}` (the `id` field); note --started; '
+            'do the action; send the after-notice the same way and read its event id; then '
+            'record --kind auto … --notice-before <id> --notice-after <id> '
+            f'--started <time>.{note}')
+
+
 def cmd_check(args):
     result = evaluate(args.action, branch=args.branch, commit=args.commit,
                       workspace=args.workspace, session=args.session_id,
                       precedent=args.precedent)
     if result['verdict'] == 'allow' and args.action in MAIN_CHECKOUT_ACTIONS:
-        result['next_steps'] = (
-            'Send the before-notice with hcom send @<name> and read its event id; '
-            'note --started; do the action; send the after-notice and read its event id; '
-            'then record --kind auto … --notice-before <id> --notice-after <id> '
-            '--started <time>.')
+        result['next_steps'] = notice_steps(args.workspace, args.session_id)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
