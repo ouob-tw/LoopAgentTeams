@@ -2583,6 +2583,8 @@ class DetectionTests(unittest.TestCase):
             ("cat > f <<EOF\n$(sed 's/^/> /' spec.md)\nrun bun run test:all later\nEOF",
              "cat > f <<EOF\n$(sed 's/)/x/' spec.md; bun run test:all)\nEOF"),
             ('cat > f <<EOF\n$(echo ")")\nEOF', 'cat > f <<EOF\n$(echo "$(bun run test:all)")\nEOF'),
+            ('cat > f <<EOF\n$(echo "`date`")\nEOF', 'cat > f <<EOF\n$(echo "`bun run test:all`")\nEOF'),
+            ("cat > f <<EOF\n$(echo 'a`b')\nEOF", 'cat > f <<EOF\n$(echo `bun run test:all`)\nEOF'),
             ("cat > f <<EOF\n`echo 'bun run test:all'`\nEOF",
              "cat > f <<EOF\n`echo 'x'; bun run test:all`\nEOF"),
             ('cat > f <<EOF\n$(echo "bun run test:all")\nEOF',
