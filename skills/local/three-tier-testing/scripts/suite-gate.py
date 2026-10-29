@@ -428,8 +428,8 @@ def _stdin_heredoc(heredocs):
 
 class UnreadableShellInput(ValueError):
     """Text the shell runs that the hook does not read: piped echo/printf text with a `%d`
-    or `%b` form or an escape other than `\\n`, or a heredoc `$(...)` holding quotes or
-    backslashes. The command counts as a full suite."""
+    or `%b` form or an escape other than `\\n`, or a heredoc substitution with an unclosed
+    quote or a backtick pair holding a backslash. The command counts as a full suite."""
 
 
 def _piped_text(words, stdin):
@@ -551,28 +551,72 @@ def _open_shell(words, heredocs=(), stdin=()):
 
 
 def _substitutions(text):
-    """The text inside each `$(...)` and backtick pair of a heredoc body the shell expands.
+    """The text inside each `$(...)` and backtick pair of a heredoc body the shell expands,
+    and of each one nested in those, quoted or not.
 
-    UnreadableShellInput when one holds a quote or backslash, which can move its end."""
+    A `$(...)` ends at the `)` that closes it outside quotes, as the shell reads it.
+    UnreadableShellInput when one holds an unclosed quote, or a backtick pair holds a
+    backslash, which can move its end."""
     found, i = [], 0
     while i < len(text):
-        if text.startswith('$(', i):
-            depth, j = 1, i + 2
-            while j < len(text) and depth:
-                depth += {'(': 1, ')': -1}.get(text[j], 0)
-                j += 1
-            found.append(text[i + 2:j - 1 if depth == 0 else j])
-            i = j
-        elif text[i] == '`':
-            j = text.find('`', i + 1)
-            j = len(text) if j < 0 else j
-            found.append(text[i + 1:j])
-            i = j + 1
+        end = _substitution(text, i, found)
+        if end is not None:
+            i = end + 1
         else:
             i += 2 if text[i] == '\\' else 1
-    if any(c in inner for inner in found for c in '\'"\\'):
-        raise UnreadableShellInput('quotes or escapes in a heredoc substitution')
     return found
+
+
+def _substitution(text, i, found):
+    """When a `$(` or backtick starts at i, add its text and every substitution nested in
+    it to found and return the index of its last character; otherwise None."""
+    if text.startswith('$(', i):
+        end = _substitution_end(text, i + 2, found)
+        found.append(text[i + 2:end])
+        return end
+    if text[i] == '`':
+        end = text.find('`', i + 1)
+        end = len(text) if end < 0 else end
+        if '\\' in text[i + 1:end]:
+            raise UnreadableShellInput('escapes in a heredoc backtick substitution')
+        found.append(text[i + 1:end])
+        return end
+    return None
+
+
+def _substitution_end(text, i, found):
+    """Index of the `)` that closes a `$(` whose text starts at i (len(text) when none),
+    skipping quoted text and escapes; substitutions nested in it are added to found."""
+    depth = 1
+    while i < len(text):
+        c = text[i]
+        if c == '\\':
+            i += 2
+            continue
+        if (end := _substitution(text, i, found)) is not None:
+            i = end
+        elif c == "'":
+            i = text.find("'", i + 1)
+            if i < 0:
+                raise UnreadableShellInput('unclosed quote in a heredoc substitution')
+        elif c == '"':
+            i += 1
+            while i < len(text) and text[i] != '"':
+                if (end := _substitution(text, i, found)) is not None:
+                    i = end
+                elif text[i] == '\\':
+                    i += 1
+                i += 1
+            if i >= len(text):
+                raise UnreadableShellInput('unclosed quote in a heredoc substitution')
+        elif c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if not depth:
+                return i
+        i += 1
+    return len(text)
 
 
 def _strip_assignments(words):
