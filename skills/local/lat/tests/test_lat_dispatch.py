@@ -425,11 +425,13 @@ class WatchCompatibilityTests(DispatchCase):
         self.assertTrue(cards['nanu-research-web']['_native'])
         self.assertEqual(watch.monitored_agents(self.tasks, 'nanu'), ['nanu'])
 
-    def test_native_card_without_agent_name_is_refused(self):
-        result = self.run_script(*self.card_args('--native'))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('--native needs --agent', result.stderr)
-        self.assertEqual(list(self.tasks.glob('*.md')), [])
+    def test_native_card_without_a_valid_agent_name_is_refused(self):
+        for extra in ((), ('--agent', 'bad name!')):
+            with self.subTest(extra=extra):
+                result = self.run_script(*self.card_args('--native', *extra))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('--native needs --agent', result.stderr)
+                self.assertEqual(list(self.tasks.glob('*.md')), [])
 
 
 LEDGER = SCRIPT.parent / 'lat-ledger.py'
@@ -502,6 +504,12 @@ class LedgerCardTests(LedgerCase):
         text = card.read_text()
         self.assertIn(f'- ledger row：1 ({self.ledger})\n', text)
         self.assertIn('- status：dispatched\n', text)
+
+    def test_native_card_keeps_the_ledger_row_after_status(self):
+        card = self.ledger_card('--native', '--agent', 'nanu-research-web')
+        self.assertIn('- native agent：是\n', card.read_text())
+        self.assertIn(f'- status：dispatched\n- ledger row：1 ({self.ledger})\n', card.read_text())
+        self.assertEqual(self.items()[0]['agent'], 'nanu-research-web')
 
     def test_second_card_gets_the_next_row_and_can_depend_on_the_first(self):
         self.ledger_card()

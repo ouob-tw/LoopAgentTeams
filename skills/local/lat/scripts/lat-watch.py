@@ -1293,6 +1293,7 @@ def monitored_task_cards(tasks, orchestrator, incomplete=None):
                 card['agent'] = task_agent(card['agent'])
                 card['_updated_at'] = path.stat().st_mtime
                 card['_path'] = str(path)
+                # A prefix match, so a card copied from the template's 是（…） line counts.
                 card['_native'] = card.get('native agent', '').startswith('是')
                 cards.setdefault(card['agent'], card)
                 unfilled = [name for name in ENVELOPE_FIELDS if not card.get(name)]

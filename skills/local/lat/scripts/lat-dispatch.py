@@ -165,6 +165,7 @@ def make_card(args):
     values = {name: single_line(name, value) for name, value in options.items()}
     fields = [
         ('agent', agent), ('orchestrator', single_line('--orchestrator', args.orchestrator)),
+        *([('native agent', '是')] if args.native else []),
         ('model', values['model']), ('branch', values['branch']),
         ('worktree', values['worktree']), ('base commit', values['base commit']),
         ('status', 'dispatched'), ('owned resources', values['owned resources']),
@@ -183,11 +184,9 @@ def make_card(args):
             break
         previous = done if done.exists() and not path.exists() else path
         number += 1
-    if args.native:
-        fields.insert(2, ('native agent', '是'))
     if ledger:
         row = open_ledger_row(args, ledger, fields[1][1], agent, path)
-        fields.insert(fields.index(('status', 'dispatched')) + 1,
+        fields.insert([name for name, _ in fields].index('status') + 1,
                       ('ledger row', f'{row} ({ledger["path"]})'))
     try:
         with open(path, 'x', encoding='utf-8') as stream:
