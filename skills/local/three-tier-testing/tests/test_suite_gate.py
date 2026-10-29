@@ -1323,6 +1323,17 @@ class AffectedTests(AffectedCase):
             self.assertIn(text, result.stderr)
         self.assertEqual((self.ran(), self.full_runs(), self.records()), ([], [], []))
 
+    def test_a_new_file_matching_a_test_pattern_but_left_unselected_stops_affected(self):
+        # A shared path falls back before selection, so the matching test is not selected.
+        self.registry['affected']['shared'].append('web/tests/**')
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'web tests shared')
+        self.touch('web/tests/new.test.ts')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('web/tests/new.test.ts', result.stderr)
+        self.assertEqual((self.ran(), self.full_runs(), self.records()), ([], [], []))
+
     def test_a_selected_new_test_or_an_unlike_new_file_runs_as_before(self):
         self.e2e_project()
         self.touch('web/e2e/c.test.ts')

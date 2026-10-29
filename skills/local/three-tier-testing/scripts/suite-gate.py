@@ -2511,8 +2511,9 @@ def _test_shape(names):
 
 
 def unselected_new_tests(root, base, changed, amap, selected):
-    """Files the change adds (absent at base) that are named like the tests the map knows in
-    the same directory, at least two of them, but that the map did not select."""
+    """Files the change adds (absent at base) that the map did not select although they match
+    its test patterns or are named like the tests it knows in the same directory (at least
+    two of them)."""
     at_base = set(_git_paths(['ls-tree', '-r', '--name-only', base], root))
     patterns = [p for rule in amap['rules'] for p in rule['tests']]
     known = {}
@@ -2522,6 +2523,9 @@ def unselected_new_tests(root, base, changed, amap, selected):
     missing = []
     for path in changed:
         if path in at_base or path in selected or not (root / path).is_file():
+            continue
+        if any(glob_match(path, p) for p in patterns):
+            missing.append(path)
             continue
         directory, name = os.path.split(path)
         names = sorted(known.get(directory, set()) - {name})
