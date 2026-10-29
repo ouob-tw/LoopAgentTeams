@@ -158,7 +158,7 @@
 	</div>
 {/snippet}
 
-<article class="content" data-kind={item.kind} data-decided={decided || undefined} data-done={(item.kind === 'report' && item.tag === 'DONE') || undefined} data-unread={(item.kind === 'report' && item.readAt === null) || undefined} data-content={item.key}>
+<article class="content" data-kind={item.kind} data-decided={decided || undefined} data-done={(item.kind === 'report' && item.tag === 'DONE') || undefined} data-unread={(item.kind === 'report' && item.readAt === null && !item.archived) || undefined} data-content={item.key}>
 	{#if item.kind !== 'question' && item.message}<CopyButton text={item.message} />{/if}
 	<header>
 		<span class="label" class:open={answerable}>{itemLabel(item)}</span>
