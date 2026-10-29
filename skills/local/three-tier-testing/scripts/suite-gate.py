@@ -3351,6 +3351,72 @@ def lacking_full_suites(root, commit, registry):
     return [s for s in suites if not reusable_record(suite_fingerprint(root, registry, s, commit))]
 
 
+SKILL_NAME = re.compile(r'^name:\s*["\']?([^"\'\s]+)', re.M)
+
+
+def skill_folders(root):
+    """{name: folder relative to root} for every SKILL.md under skills/ in the work tree,
+    skipping folders inside a dot-directory. ValueError when a SKILL.md names no skill."""
+    found = {}
+    for path in sorted((root / 'skills').rglob('SKILL.md')):
+        rel = path.parent.relative_to(root)
+        if any(part.startswith('.') for part in rel.parts):
+            continue
+        text = path.read_text()
+        match = SKILL_NAME.search(text.split('---', 2)[1]) if text.startswith('---\n') else None
+        if not match:
+            raise ValueError(f'no name in the frontmatter of {path}')
+        found[match.group(1)] = rel.as_posix()
+    return found
+
+
+def subtrees(root, specs):
+    """The object each `<tree>:<path>` names, or None when it does not exist."""
+    if not specs:
+        return []
+    result = subprocess.run(['git', 'cat-file', '--batch-check=%(objectname)'], cwd=root,
+                            input=''.join(f'{spec}\n' for spec in specs),
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f'git cat-file failed: {result.stderr.strip()}')
+    return [None if line.endswith(' missing') else line
+            for line in result.stdout.splitlines()]
+
+
+def folder_suite_result(root, records, suite, folder, current):
+    """'passed', 'failed' or 'missing': the latest full run of this suite (records newest
+    first) whose content of folder equals current decides, as reusable_record does for the
+    whole fingerprint."""
+    runs = [r for r in records if not r.get('kind') and not r.get('content_changed')
+            and r.get('rel_cwd') == suite['cwd'] and r.get('command') == suite['command']
+            and isinstance(r.get('tree'), str)]
+    for record, tree in zip(runs, subtrees(root, [f"{r['tree']}:{folder}" for r in runs])):
+        if tree == current:
+            return 'passed' if record.get('reusable') else 'failed'
+    return 'missing'
+
+
+def lacking_folder_suites(root, registry, folders, commit=None):
+    """(content tree, [(folder, suite, 'failed' or 'missing')]) for each registered full suite
+    run inside one of folders whose latest run on the same folder content did not pass.
+    Content is commit's (the work tree's when None). Changes outside a folder keep its
+    suites' passes. The skill installer and LAT's install-host check both call this."""
+    suites = read_full_suites(registry)
+    tree = content_tree(root, include_patterns(registry), commit)
+    records = list(reversed(read_records()))
+    lacking = []
+    for folder in folders:
+        current = subtrees(root, [f'{tree}:{folder}'])[0]
+        if current is None:
+            raise RuntimeError(f'{folder} is not in the content the gate fingerprints')
+        for suite in suites:
+            if suite['cwd'] == folder or suite['cwd'].startswith(folder + '/'):
+                result = folder_suite_result(root, records, suite, folder, current)
+                if result != 'passed':
+                    lacking.append((folder, suite, result))
+    return tree, lacking
+
+
 def cmd_pre_push():
     """Git pre-push: refuse pushing main or a tag unless every registered full suite has a
     reusable pass for the pushed commit (lacking_full_suites)."""

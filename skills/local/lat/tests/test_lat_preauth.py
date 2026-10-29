@@ -12,6 +12,7 @@ import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-preauth.py'
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
+INSTALLER = Path(__file__).resolve().parents[4] / 'scripts/install-skills.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
 SUITES = [{'command': 'uv run pytest', 'cwd': '.'}, {'command': 'bun test', 'cwd': 'web'}]
 
@@ -424,6 +425,89 @@ class ConditionTests(PreauthCase):
         out = self.run_tool('show').stdout
         self.assertIn('    target = "staging on :9000"  ← project', out)
         self.assertNotIn('production', out)
+
+
+@unittest.skipUnless(INSTALLER.is_file(), 'needs the repo copy of scripts/install-skills.py')
+class InstallHostGateTests(PreauthCase):
+    """install-host counts only the full suites inside the skill folders the installer would
+    install, judged by the installer's own code, so both give the same answer."""
+    SKILL = 'skills/local/alpha'
+    SKILL_SUITES = [{'command': 'uv run pytest', 'cwd': 'skills/local/alpha'},
+                    {'command': 'bun test', 'cwd': 'board'}]
+
+    def setUp(self):
+        super().setUp()
+        self.write(self.repo / self.SKILL / 'SKILL.md', '---\nname: alpha\ndescription: x\n---\n')
+        self.write(self.repo / 'skills/matt/beta/SKILL.md', '---\nname: beta\ndescription: x\n---\n')
+        self.write(self.repo / 'board/app.js', 'app\n')
+        self.write(self.repo / 'scripts/install-skills.py', INSTALLER.read_text())
+        self.write(self.repo / 'skills/local/three-tier-testing/scripts/suite-gate.py',
+                   SUITE_GATE.read_text())
+        self.write(self.repo / '.gitignore', '.lat/\n__pycache__/\n')
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'full_suites': self.SKILL_SUITES}))
+        git(self.repo, 'add', '-A')
+        git(self.repo, 'commit', '-q', '-m', 'skills')
+        self.write(self.global_file, '[actions.install-host]\nallow = true\n')
+        self.session(None)
+        bunx = self.root / 'bin' / 'bunx'
+        self.write(bunx, '#!/bin/sh\nexit 0\n')
+        bunx.chmod(0o755)
+
+    def folder_record(self, suite, passed=True):
+        """A gate record of suite run on the repo's HEAD content, as the gate writes it."""
+        gate = load_suite_gate()
+        tree = gate.content_tree(self.repo, commit=git(self.repo, 'rev-parse', 'HEAD'))
+        self.gate_state.mkdir(exist_ok=True)
+        with open(self.gate_state / 'ledger.jsonl', 'a') as ledger:
+            ledger.write(json.dumps({'fingerprint': 'f' + tree, 'tree': tree,
+                                     'command': suite['command'], 'rel_cwd': suite['cwd'],
+                                     'reusable': passed, 'content_changed': False}) + '\n')
+
+    def install(self):
+        environment = dict(GIT_ENV, SUITE_GATE_STATE_DIR=str(self.gate_state),
+                           PATH=f"{self.root / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        return subprocess.run([sys.executable, str(self.repo / 'scripts/install-skills.py')],
+                              cwd=self.repo, env=environment, capture_output=True, text=True,
+                              timeout=60)
+
+    def test_a_board_suite_without_a_pass_does_not_ask(self):
+        self.folder_record(self.SKILL_SUITES[0])
+        verdict = self.check('install-host')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        self.assertIn(f'every full suite in the 2 skill folders passed for {head[:12]}',
+                      verdict['basis'])
+        self.assertEqual(self.install().returncode, 0)
+        with self.subTest('push still needs every registered suite'):
+            self.write(self.global_file, self.global_file.read_text() +
+                       '[actions.push]\nallow = true\nbranches = ["dev"]\n')
+            self.assertIn(f'no passing full-suite record for {head[:12]}: bun test (in board)',
+                          self.check('push', '--branch', 'dev')['reasons'])
+
+    def test_a_skill_suite_without_a_pass_asks_and_names_it(self):
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        for passed, why in ((None, 'no run of this content'),
+                            (False, 'the latest run of this content failed')):
+            with self.subTest(why=why):
+                if passed is not None:
+                    self.folder_record(self.SKILL_SUITES[0], passed=passed)
+                self.folder_record(self.SKILL_SUITES[1])
+                self.assertEqual(self.check('install-host')['reasons'], [
+                    f'no passing full-suite record for {head[:12]}: uv run pytest '
+                    f'(in {self.SKILL}; skill folder {self.SKILL}: {why})'])
+                result = self.install()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(f'  alpha: {self.SKILL}: uv run pytest ({why})', result.stderr)
+
+    def test_changes_outside_the_skill_folders_keep_the_pass(self):
+        self.folder_record(self.SKILL_SUITES[0])
+        self.commit('board change', 'board/app.js')
+        self.assertEqual(self.check('install-host')['verdict'], 'allow')
+        self.assertEqual(self.install().returncode, 0)
+        changed = self.commit('skill change', f'{self.SKILL}/notes.md')
+        self.assertIn(f'no passing full-suite record for {changed[:12]}: uv run pytest',
+                      self.check('install-host')['reasons'][0])
+        self.assertEqual(self.install().returncode, 1)
 
 
 class PushTests(PreauthCase):
