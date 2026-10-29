@@ -1297,6 +1297,55 @@ class AffectedTests(AffectedCase):
         self.assertIn('tests/test_util.py  (test file changed)', result.stderr)
         self.assertEqual(self.ran(), [('.', ['tests/test_util.py'])])
 
+    def e2e_project(self):
+        """web/e2e holds two mapped tests and an older one no rule selects; a broad rule
+        covers the rest of the directory without selecting anything."""
+        for name in ('a.test.ts', 'b.test.ts', 'old.test.ts'):
+            self.touch(f'web/e2e/{name}', '')
+        self.registry['affected']['map'] += [
+            {'paths': ['web/src/a.ts'], 'tests': ['web/e2e/a.test.ts']},
+            {'paths': ['web/src/b.ts'], 'tests': ['web/e2e/b.test.ts']},
+            {'paths': ['web/e2e/**'], 'tests': []}]
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'e2e tests')
+
+    def test_a_new_test_file_the_map_does_not_select_stops_affected_unrecorded(self):
+        self.e2e_project()
+        self.touch('web/e2e/c.test.ts')
+        self.touch('web/e2e/d.test.ts')
+        git(self.repo, 'add', 'web/e2e/c.test.ts')
+        git(self.repo, 'commit', '-qm', 'c')  # committed or not, both are new since the base
+        self.touch('src/app.py')
+        result = self.gate('affected', '--base', 'HEAD~1')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        for text in ('web/e2e/c.test.ts', 'web/e2e/d.test.ts', '.suite-gate.d/'):
+            self.assertIn(text, result.stderr)
+        self.assertEqual((self.ran(), self.full_runs(), self.records()), ([], [], []))
+
+    def test_a_new_file_matching_a_test_pattern_but_left_unselected_stops_affected(self):
+        # A shared path falls back before selection, so the matching test is not selected.
+        self.registry['affected']['shared'].append('web/tests/**')
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'web tests shared')
+        self.touch('web/tests/new.test.ts')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('web/tests/new.test.ts', result.stderr)
+        self.assertEqual((self.ran(), self.full_runs(), self.records()), ([], [], []))
+
+    def test_a_selected_new_test_or_an_unlike_new_file_runs_as_before(self):
+        self.e2e_project()
+        self.touch('web/e2e/c.test.ts')
+        self.touch('web/e2e/helper.ts')  # not named like the tests here: not a test file
+        self.touch('web/e2e/old.test.ts')  # an old test no rule selects: not new
+        self.touch('.suite-gate.d/e2e.json', json.dumps(
+            {'map': [{'paths': ['web/src/c.ts'], 'tests': ['web/e2e/c.test.ts']}]}))
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [('web', ['e2e/c.test.ts'])])
+        self.assertEqual(self.full_runs(), [])
+
     def test_the_change_counts_commits_staged_unstaged_and_new_files_since_the_merge_base(self):
         self.touch('src/app.py')
         git(self.repo, 'add', '-A')
