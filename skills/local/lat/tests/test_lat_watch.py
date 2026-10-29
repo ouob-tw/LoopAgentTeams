@@ -611,6 +611,10 @@ class WatchDecisionTests(unittest.TestCase):
                  ('hcom send @worker --intent inform -- "phase A; phase B"', False),
                  ('hcom send @worker --intent ack -- "a | b\nc"', False),
                  ('hcom send @other --intent inform -- x', True),
+                 ('hcom send @worker --intent inform --file /tmp/p\n'
+                  'hcom send @other --intent request --file /tmp/r', False),
+                 ('hcom send @other --intent inform --file /tmp/p\n'
+                  'hcom send @worker --intent request --file /tmp/r', True),
                  ("hcom send @worker --intent request -- 'ok'", True),
                  ("hcom send @worker --intent informal -- 'ok'", True),
                  ("hcom send @worker -- 'no intent'", True))

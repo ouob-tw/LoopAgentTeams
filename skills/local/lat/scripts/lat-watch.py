@@ -1846,7 +1846,8 @@ def inform_or_ack_send(command, recipient=None):
     if not isinstance(command, str):
         return False
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|')
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|\n')
+        lexer.whitespace = ' \t\r'
         lexer.whitespace_split = True
         words = list(lexer)
     except ValueError:
@@ -1866,7 +1867,7 @@ def inform_or_ack_send(command, recipient=None):
         intent, targets = None, []
         for index in range(start + 2, len(words)):
             option = words[index]
-            if option == '--' or set(option) <= set(';&|'):
+            if option == '--' or set(option) <= set(';&|\n'):
                 break
             if option == '--intent' and index + 1 < len(words):
                 intent = words[index + 1]
