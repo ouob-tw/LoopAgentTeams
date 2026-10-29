@@ -21,7 +21,7 @@ BEGIN = '# >>> lat-commit-ref commit-msg >>>'
 END = '# <<< lat-commit-ref commit-msg <<<'
 CREATED = '# lat-commit-ref created this file; uninstall removes it.'
 SH_SHEBANG = re.compile(r'#!\s*(?:\S*/)?(?:env\s+)?(?:\S*/)?(?:sh|bash|dash|zsh)(?:\s.*)?')
-ISSUE_WORD = re.compile(r'(?:^|[/_-])issue[-_](\d{1,6})(?=$|[-_/])')
+ISSUE_WORD = re.compile(r'(?:^|[/_-])issue[-_](\d{1,6})(?=$|[-_/])', re.I)
 NUMBER_SEGMENT = re.compile(r'(?:^|/)(\d{1,6})(?=$|[-_/])')
 
 
@@ -32,7 +32,7 @@ def git(args, cwd=None):
 def ticket_of(branch):
     """The ticket number a branch name carries, or None."""
     found = ISSUE_WORD.search(branch) or NUMBER_SEGMENT.search(branch)
-    return found.group(1) if found else None
+    return str(int(found.group(1))) if found else None
 
 
 def cites(message, number):
@@ -126,7 +126,8 @@ def cmd_configure(action, repo, preview):
     else:
         write_file(path, after)
         print(f'Updated {path}')
-    if action == 'install' and active != path.parent:
+    shim = active / 'commit-msg'
+    if action == 'install' and active != path.parent and not os.access(shim, os.X_OK):
         print(f'Installed but NOT active: core.hooksPath={active} runs hooks from there, not '
               f'from {path.parent}. Add a commit-msg file there (chmod +x) with:\n'
               '  #!/bin/sh\n'

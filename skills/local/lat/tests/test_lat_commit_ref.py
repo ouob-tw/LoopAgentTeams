@@ -30,7 +30,8 @@ class TicketOfBranch(unittest.TestCase):
     def test_names_that_carry_a_number(self):
         for name, number in [('fix/370', '370'), ('fix/issue-366-x', '366'),
                              ('issue-366', '366'), ('feat/12-add-thing', '12'),
-                             ('fix-issue_5', '5')]:
+                             ('fix-issue_5', '5'),
+                             ('fix/Issue-12', '12'), ('fix/0370', '370')]:
             self.assertEqual(ref.ticket_of(name), number, name)
 
     def test_names_without_one(self):
@@ -126,6 +127,28 @@ class Installing(unittest.TestCase):
         self.assertTrue(os.access(self.hook, os.X_OK))
         installer(self.repo, 'uninstall')
         self.assertFalse(self.hook.exists())
+
+    def test_shared_hooks_path_with_a_shim_is_quiet(self):
+        shared = self.repo / 'shared-hooks'
+        shared.mkdir()
+        (shared / 'commit-msg').write_text('#!/bin/sh\nexit 0\n')
+        (shared / 'commit-msg').chmod(0o755)
+        git(self.repo, 'config', 'core.hooksPath', str(shared))
+        self.assertNotIn('NOT active', installer(self.repo).stdout)
+
+    def test_chained_hook_still_runs_and_can_still_block(self):
+        marker = self.repo / 'ran'
+        self.hook.write_text(f'#!/bin/sh\ntouch {marker}\ngrep -q nope "$1" && exit 1\nexit 0\n')
+        self.hook.chmod(0o755)
+        self.assertEqual(installer(self.repo).returncode, 0)
+        git(self.repo, 'config', 'user.email', 't@example.com')
+        git(self.repo, 'config', 'user.name', 't')
+        git(self.repo, 'switch', '-q', '-c', 'fix/9')
+        ok = git(self.repo, 'commit', '-q', '--allow-empty', '-m', 'a #9', check=False)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertTrue(marker.exists())
+        bad = git(self.repo, 'commit', '-q', '--allow-empty', '-m', 'nope #9', check=False)
+        self.assertNotEqual(bad.returncode, 0)
 
     def test_non_shell_hook_is_left_alone(self):
         self.hook.write_text('#!/usr/bin/env python3\nprint(1)\n')
