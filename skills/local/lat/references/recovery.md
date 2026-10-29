@@ -60,9 +60,11 @@ Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 的 DECIDE�
 
 沒寫題號、任一題號沒有同名待決紀錄或狀態不是 pending、任何決策紀錄讀不出狀態，都會不通過；確定屬於其他主控的紀錄（題目不在自己的問題檔與其歸檔，且 `- session:` 是別的 session，或題目在其他主控的問題檔或歸檔中；未綁定面板時只看 `- session:`）不列入讀不出狀態與遺漏檢查，本則提問寫出的題號除外；看不出屬於誰的紀錄照常檢查。`HELP:` 列出的題號紀錄另須有 `- kind: help`。以上都通過、但最後一行列出的題號與版本（沒列時改看標題行）全都已在本 session 先前的 `DECIDE:`／`HELP:` 回報（見下方「主控回報紀錄」）出現過時，同樣擋下，要求把新題號寫進最後一行，或改以 `NO REPLY:` 結尾；有任一新題或新版本就通過。回報紀錄讀不到時視為沒問過。狀態使用遺漏檢查的共用讀法；缺狀態行、空值、純空白、第一字不是 pending 但後面含 pending，都算讀不出狀態。已有自己的 session 面板綁定時，另逐題核對自己的問題檔中有同版本「待答」題目，並要求遺漏檢查通過；不比對聊天裡有沒有題目全文。未綁定時不要求面板。
 
-每個寫出的題號還須有參謀行，取第一行以 `- advisor:` 開頭的行，鍵名不分大小寫，值去除前後空白並以空白分詞。第一字接受 `needs-human`；`exempt` 的第二字限 `spec-confirmation`、`ticket-confirmation`、`requirement-discussion`、`account-quota`；`late` 的第二字限 `needs-human`、`resolved`、`self-check`。後續字詞可加註記（如 `same-family-degraded`）。缺行、空值、未知第一字或缺少／未知第二字，都逐題列出原因。未被 DECIDE／HELP 引用的 `advising`／`advisor-resolved` 紀錄不算面板漏題；被引用仍須符合 pending 與面板版本檢查。
+每個寫出的題號還須有參謀行，取第一行以 `- advisor:` 開頭的行，鍵名不分大小寫，值去除前後空白並以空白分詞。第一字接受 `needs-human`；`exempt` 的第二字限 `spec-confirmation`、`ticket-confirmation`、`requirement-discussion`、`account-quota`、`preauth-ask`；`late` 的第二字限 `needs-human`、`resolved`、`self-check`。後續字詞可加註記（如 `same-family-degraded`）。缺行、空值、未知第一字或缺少／未知第二字，都逐題列出原因。未被 DECIDE／HELP 引用的 `advising`／`advisor-resolved` 紀錄不算面板漏題；被引用仍須符合 pending 與面板版本檢查。
 
 參謀行為 `exempt spec-confirmation` 時，另要求唯一一行格式正確的 `- consensus: v<N> <64 位小寫十六進位 sha256>`，且最後一則訊息出現相同版本的 `共識 v<N>`；缺共識行、格式錯、訊息沒寫版本、版本不同或出現多個不同版本，皆逐題列出原因。其他類別不要求共識。舊紀錄重新提問也適用；[Spec 共識](consensus.md) 說明適用範圍。
+
+參謀行為 `exempt preauth-ask` 時，依當下設定重跑預先授權 `check` 核對 [參謀](advisors.md) 的免諮詢條件：紀錄沒有 `- action:` 行、結果為 `allow`、或原因含 `allow-false`、`condition`、`error` 以外的類別，都逐題列出原因；攔下與只警告規則同上（每回合第一次攔下，之後只警告）。原因只有 `error` 類（`check` 無法判斷）或某題重查本身出錯時，該題只警告、不攔下，其他題照常核對。
 
 已寫入面板或問過使用者的題目補做諮詢後，維持 pending 並寫 `- advisor: late <結論>`；參謀建議定案或自行查證時，重列題目的 ➡️ 行附建議與授權來源，由真人解除待答。
 

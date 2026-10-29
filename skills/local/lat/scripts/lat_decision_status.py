@@ -42,7 +42,7 @@ def advisor_error(value):
     if words[0] == 'needs-human':
         return None
     allowed = {'exempt': ('spec-confirmation', 'ticket-confirmation',
-                           'requirement-discussion', 'account-quota'),
+                           'requirement-discussion', 'account-quota', 'preauth-ask'),
                'late': ('needs-human', 'resolved', 'self-check')}
     if words[0] not in allowed:
         return f'未知參謀結論：{words[0]}'
@@ -51,6 +51,15 @@ def advisor_error(value):
     if words[1] not in allowed[words[0]]:
         return f'參謀 {words[0]} 的第二個字不在清單內：{words[1]}'
     return None
+
+
+def read_advisor_words(path):
+    """The first advisor line's value as lowercase words; [] without one."""
+    for line in Path(path).read_text(encoding='utf-8').splitlines():
+        match = re.match(r'^- advisor:(.*)$', line, re.IGNORECASE)
+        if match:
+            return match.group(1).strip().lower().split()
+    return []
 
 
 def read_spec_consensus_error(path, message):

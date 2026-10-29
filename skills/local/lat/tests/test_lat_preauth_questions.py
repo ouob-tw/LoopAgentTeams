@@ -274,6 +274,91 @@ class StopTests(PreauthQuestionTests):
                 (self.reports / f'{SESSION}.jsonl').unlink()
 
 
+class PreauthAskExemptionTests(PreauthQuestionTests):
+    EXEMPT = '- status: pending\n- advisor: exempt preauth-ask\n'
+    HELD = 'LAT 免諮詢 preauth-ask 核對未通過：LAT-P r1：'
+
+    def setUp(self):
+        super().setUp()
+        self.controller()
+        self.decision.write_text(self.EXEMPT + '- action: merge dev\n')
+
+    def test_ask_for_user_only_reasons_passes(self):
+        for settings in ('[actions.merge]\nallow = false\nbranches = ["dev"]\n',
+                         '[actions.merge]\nallow = true\nbranches = ["main"]\n'):
+            with self.subTest(settings=settings):
+                self.project.write_text(settings)
+                self.assertEqual(self.stop('問題全文\nDECIDE: LAT-P r1'), {})
+                (self.reports / f'{SESSION}.jsonl').unlink()
+
+    def test_unqualified_records_are_listed_per_question(self):
+        cases = (('no action', self.EXEMPT, '[actions.merge]\nallow = false\n',
+                  '沒有 `- action:` 行'),
+                 ('allow', None, ALLOW_MERGE, '重查結果為 allow（allow merge dev'),
+                 ('unset', None, '[actions.merge]\nbranches = ["main"]\n',
+                  '原因含參謀可能定案的類別（unset：no layer sets actions.merge.allow）'))
+        for label, record, settings, why in cases:
+            with self.subTest(label):
+                if record:
+                    self.decision.write_text(record)
+                self.project.write_text(settings)
+                output = self.stop('問題全文\nDECIDE: LAT-P r1')
+                self.assertEqual(output['decision'], 'block')
+                self.assertIn(self.HELD + why, output['reason'])
+                warning = self.stop('問題全文\nDECIDE: LAT-P r1', active=True)
+                self.assertEqual(set(warning), {'systemMessage'})
+                self.assertIn(self.HELD + why, warning['systemMessage'])
+                self.assertIn('不再攔下', warning['systemMessage'])
+                (self.reports / f'{SESSION}.jsonl').unlink()
+                self.decision.write_text(self.EXEMPT + '- action: merge dev\n')
+
+    def test_check_errors_only_warn(self):
+        self.project.write_text('[actions.merge]\noops = 1\n')
+        output = self.stop('問題全文\nDECIDE: LAT-P r1')
+        self.assertEqual(set(output), {'systemMessage'})
+        self.assertIn('LAT 免諮詢 preauth-ask 重查無法判斷，未攔下：LAT-P r1', output['systemMessage'])
+        (self.reports / f'{SESSION}.jsonl').unlink()
+
+    def test_a_failing_recheck_warns_for_its_question_and_others_are_still_checked(self):
+        shim = self.root / 'broken-recheck.py'
+        shim.write_text(
+            'import importlib.util\n'
+            f'spec = importlib.util.spec_from_file_location("lat_session", {str(SESSION_SCRIPT)!r})\n'
+            'helper = importlib.util.module_from_spec(spec)\n'
+            'spec.loader.exec_module(helper)\n'
+            'load = helper.preauth_module\n'
+            'def broken_push():\n'
+            '    module = load()\n'
+            '    evaluate = module.evaluate\n'
+            '    def failing(action, **kwargs):\n'
+            '        if action == "push": raise RuntimeError("broken")\n'
+            '        return evaluate(action, **kwargs)\n'
+            '    module.evaluate = failing\n'
+            '    return module\n'
+            'helper.preauth_module = broken_push\n'
+            'raise SystemExit(helper.main())\n')
+        self.project.write_text('[actions.merge]\nallow = false\n')
+        for failing, invalid in (('LAT-A', 'LAT-B'), ('LAT-B', 'LAT-A')):
+            with self.subTest(failing=failing):
+                (self.decisions / f'{failing}.md').write_text(self.EXEMPT + '- action: push dev\n')
+                (self.decisions / f'{invalid}.md').write_text(self.EXEMPT)
+                payload = dict(hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
+                               stop_hook_active=False,
+                               last_assistant_message='問題全文\nDECIDE: LAT-A r1 LAT-B r1')
+                result = self.run_script(shim, 'hook', '--client', 'codex', payload=payload)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout)
+                self.assertEqual(output['decision'], 'block')
+                self.assertIn(f'核對未通過：{invalid} r1：沒有 `- action:` 行', output['reason'])
+                self.assertNotIn(f'{failing} r1：', output['reason'])
+                (self.reports / f'{SESSION}.jsonl').unlink(missing_ok=True)
+                payload['stop_hook_active'] = True
+                result = self.run_script(shim, 'hook', '--client', 'codex', payload=payload)
+                warning = json.loads(result.stdout)['systemMessage']
+                self.assertIn(f'LAT 免諮詢 preauth-ask 重查發生錯誤，未攔下：{failing} r1（broken）', warning)
+                (self.reports / f'{SESSION}.jsonl').unlink(missing_ok=True)
+
+
 @unittest.skipUnless(HAS_TEXTUAL, 'needs textual==8.2.8 (uv run --with textual==8.2.8)')
 class PanelMarkerTests(PreauthQuestionTests, unittest.IsolatedAsyncioTestCase):
     MARKER = '目前已預先授權，可由你決定撤回'
