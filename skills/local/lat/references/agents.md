@@ -12,9 +12,8 @@ hcom-spawn 的「自身名稱」是發起委派的那一方：主控派工時是
 
 ## 派工
 
-- 工具：Agent 啟動後，`scripts/lat-dispatch.py card --tag <tag> --tasks <主工作區 .lat/tasks> --orchestrator <主控名稱> --live-actions … --preflight …` 依 tag 查完整名稱建任務卡；`brief --card <卡片> --input <小檔>` 把 `##` 四段小檔（「目標與完成條件」「範圍與不能碰」「其他 Agent 與分工」「現場動作額度」）接上下列固定項目、原樣帶入卡片 `live actions` 與 `preflight`，並在最後一行只印可直接執行的 `hcom send … --file` 指令（無前綴），其中 `--name` 用 HCOM 基本名。兩位共用 tag（如參謀）用 `card --agent <完整名稱>`；唯讀任務用 `brief --read-only`，共用文字用 `brief --include <檔案>`。任務要合併、推送、部署或安裝時加 `brief --preauth <動作>[:<分支>]`，只帶入查得 `allow` 的動作。手寫仍然允許；以下各項是手寫時的要求，也是工具輸出的內容。
-- 工作總表：`card` 加 `--ledger <主工作區總表絕對路徑> --ticket --stage --evidence --deadline [--depends]` 會同時開列並指派，任務卡多一行 `ledger row`；不加則行為不變。`brief` 讀到該行，就帶上列編號與 `start`、`update`、`done` 三道指令；沒有該行時印警告，簡報不含總表指令。手寫時自行寫入同樣內容。
-- 總表列的提交在另一個 repo 時：`card`（或 `lat-ledger.py add`）加 `--repo <repo 絕對路徑>`，或結案時 `done --commit <版本> --repo <repo 絕對路徑>`；`done` 到該 repo 核對提交，路徑不是 Git repo 或提交不在其中就拒絕。該 repo 裡存在的列分支／整合分支仍須含此提交，都不存在則只核對提交存在。`show`、`check` 會標示列的 repo；沒給 `--repo` 時行為不變。
+- 工具：Agent 啟動後，`scripts/lat-dispatch.py card --tag <tag> --tasks <主工作區 .lat/tasks> --orchestrator <主控名稱> --live-actions … --preflight …` 依 tag 查完整名稱建任務卡；`brief --card <卡片> --input <小檔>` 把 `##` 四段小檔（「目標與完成條件」「範圍與不能碰」「其他 Agent 與分工」「現場動作額度」）接上下列固定項目、原樣帶入卡片 `live actions` 與 `preflight`，並在最後一行只印 `hcom send … --file` 指令，其中 `--name` 用 HCOM 基本名。兩位共用 tag（如參謀）用 `card --agent <完整名稱>`；唯讀任務用 `brief --read-only`，共用文字用 `brief --include <檔案>`。任務要合併、推送、部署或安裝時加 `brief --preauth <動作>[:<分支>]`，只帶入查得 `allow` 的動作。手寫亦可；以下各項是手寫的要求，也是工具輸出的內容。
+- 工作總表：`card` 加 `--ledger <主工作區總表絕對路徑> --ticket --stage --evidence --deadline [--depends] [--repo]` 會同時開列並指派，任務卡多一行 `ledger row`；不加則行為不變。`brief` 讀到該行就帶上列編號與 `start`、`update`、`done` 三道指令；沒有該行時印警告，簡報不含總表指令。手寫時自行寫入同樣內容。
 - 外部 Agent 的第一則任務訊息照 /hcom-spawn 的固定欄位寫，再補上 SKILL.md「交接」要求的項目，以及「做完才收工」規則和填好主控 `$lat_dir`、`$workspace` 絕對路徑的 `lat-watch wait` 與 `lat-watch alarm` 指令（格式見 [停住監控](stall-watch.md#結束回合前)）。鬧鐘範例：`uv run --no-project python <主控 lat_dir>/scripts/lat-watch.py alarm --workspace <主控 workspace> --agent <執行 Agent 完整名稱> --after 30 --reason 'Continue after the cooldown'`；並寫明不要用背景程式傳訊息給自己（HCOM 會拒收）。
 - 第一則任務訊息須帶上任務卡 `runs` 欄的絕對路徑（主工作區 `.lat/runs/issue-<N>/`，見 [任務卡](task-cards.md#票資料位置)），QA 草稿、清單與證據都放那裡；需要隔離 client 家目錄時放 `.lat` 以外的暫存位置，規則見 [任務卡](task-cards.md#隔離-client-家目錄)。
 - 第一則任務訊息須帶上任務卡 `live actions` 與 `preflight` 兩欄的完整內容（沒有也寫「無」），以及額度內的做法與回報時機；填法與行為見 [任務卡](task-cards.md#現場動作額度)。
@@ -24,13 +23,13 @@ hcom-spawn 的「自身名稱」是發起委派的那一方：主控派工時是
 - [Spec 文件審查](spec-review.md) 派給全新、與 Designer 不同家模型的 Agent：Designer 是 Claude 時派 Codex `gpt-6-astra`、effort `medium`；是 Codex 時派 Claude，模型依 /hcom-spawn 預設。它在確認前審 Spec 本身，與實作後審程式的 Spec 面向不同，不互相取代。
 - 不同家模型不可用時，先依 /hcom-spawn 的額度與恢復程序處理（如 Codex 換帳號）；仍不可用，依 SKILL.md「使用者待決事項」問使用者要等待還是改用同家全新 Agent。答覆前不改用同家模型、不略過審查，也不發 Spec 確認題。
 - 參謀一位 Codex `gpt-6-astra`、effort `medium`，一位 Claude、模型依 /hcom-spawn 預設。這是上一條的例外：某一家不可用時改用兩位同家參謀、不問使用者，見 [參謀](advisors.md#模型與降級)。
-- 每項任務用自己的 tag，不跨任務共用，關閉整組時才不會誤關其他任務的 Agents。
+- 每項任務用自己的 tag，不跨任務共用，整組關閉時才不誤關其他任務的 Agents。
 - 執行 Agent 卡住時，由召喚它的一方依 /hcom-spawn 的升級規則提高 effort 或換模型；走完仍卡住，交回主控決定新 context 或拆小任務。
 
 ## 存活與恢復
 
 - Agent 沉默時，先讀它的任務卡確認已完成工作、下一步及資源歸屬，再依 /hcom-spawn 查執行狀態。停住監控已定時巡查、催醒卡在 `active` 的 Agent 並往上通知；收到通知依 [停住監控](stall-watch.md#主控處理監控通知) 處理，不必另設計時器。
-- 內建 Agent 沒有 HCOM 畫面：查 client 提供的狀態與任務卡，仍不清楚就直接傳訊詢問，不讀完整 subagent transcript（塞滿主控 context）。
+- 內建 Agent 沒有 HCOM 畫面：查 client 提供的狀態與任務卡，仍不清楚就傳訊詢問，不讀完整 subagent transcript（塞滿主控 context）。
 - 主控的 HCOM 身分掉線時，依 /hcom-spawn 恢復並補讀漏掉的事件後，再核對任務卡與 `.lat/decisions/` 待決紀錄才續作。
 
 ## 收尾
