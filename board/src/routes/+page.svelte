@@ -1018,6 +1018,7 @@
 		background: none;
 		color: inherit;
 		font: inherit;
+		line-height: 1.25;
 		text-align: left;
 		cursor: pointer;
 	}
