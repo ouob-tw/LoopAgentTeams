@@ -1247,7 +1247,8 @@ def parse_task(path):
     fields = {'_digest': hashlib.sha256(content).hexdigest()}
     for line in content.decode().splitlines():
         match = re.fullmatch(
-            r'-\s+(agent|orchestrator|status|next step|live actions|preflight)：\s*(.*)', line)
+            r'-\s+(agent|orchestrator|status|next step|live actions|preflight|native agent)：\s*(.*)',
+            line)
         if match:
             fields[match.group(1)] = match.group(2).strip()
     return fields
@@ -1272,7 +1273,9 @@ def monitored_task_cards(tasks, orchestrator, incomplete=None):
     """Return (cards by agent, skipped {card name: (digest, error)}).
 
     When given, `incomplete` collects {card name: (digest, agent, missing envelope fields)}
-    for monitored cards; those cards stay in the returned cards.
+    for monitored cards; those cards stay in the returned cards. Cards marked
+    `native agent：是` (a Claude built-in agent, no HCOM name) carry `_native`; only their
+    fields are checked, not their HCOM presence.
     """
     cards, skipped = {}, {}
     if not tasks.is_dir():
@@ -1290,6 +1293,7 @@ def monitored_task_cards(tasks, orchestrator, incomplete=None):
                 card['agent'] = task_agent(card['agent'])
                 card['_updated_at'] = path.stat().st_mtime
                 card['_path'] = str(path)
+                card['_native'] = card.get('native agent', '').startswith('是')
                 cards.setdefault(card['agent'], card)
                 unfilled = [name for name in ENVELOPE_FIELDS if not card.get(name)]
                 if unfilled and incomplete is not None:
@@ -1301,7 +1305,11 @@ def monitored_task_cards(tasks, orchestrator, incomplete=None):
 
 def monitored_agents(tasks, orchestrator):
     cards, _ = monitored_task_cards(tasks, orchestrator)
-    return [valid_name(orchestrator), *cards]
+    return [valid_name(orchestrator), *hcom_card_agents(cards)]
+
+
+def hcom_card_agents(cards):
+    return [agent for agent, card in cards.items() if not card['_native']]
 
 
 def read_watch_file(path, log, now):
@@ -2874,7 +2882,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                 'error': f'Missing task-card directory: {tasks}',
             })
             missing_tasks.touch()
-    agents = [orchestrator, *cards]
+    agents = [orchestrator, *hcom_card_agents(cards)]
     log_skipped_cards(path.with_name('skipped-cards.json'), log, skipped, now)
     notify_incomplete_cards(path.with_name('incomplete-cards.json'), log, incomplete,
                             orchestrator, workspace, now)

@@ -3620,6 +3620,25 @@ esac
         self.assertIn('last seen status: listening', notices[-1]['message'])
         self.assertIn('1970-01-01T00:03:00+00:00', notices[-1]['message'])
 
+    def test_native_agent_card_is_field_checked_but_never_reported_missing_or_nudged(self):
+        self.write_card('native.md', 'vuho-uitext-web（Claude 內建 Agent）',
+                        fields='- native agent：是\n- live actions：無\n')
+        self.disappearance_hcom()
+        self.run_cycles(load_watch(), 0, 60, 120, 1800)
+        notices = self.disappearance_notices()
+        self.assertEqual(len(notices), 1)
+        self.assertIn('worker-open', notices[0]['message'])
+        self.assertFalse(any(record.get('agent') == 'vuho-uitext-web'
+                             for record in self.watch_records()))
+        commands = self.hcom_log.read_text().splitlines()
+        self.assertFalse(any('vuho-uitext-web' in line for line in commands
+                             if not line.startswith('send @orch ')))
+        self.assertEqual([card for _, card, _ in self.field_records()], ['native.md'])
+        status = self.cli('status', '--workspace', self.work,
+                          '--orchestrator', 'orch', '--tasks', self.tasks)
+        self.assertEqual([item['agent'] for item in json.loads(status.stdout)['targets']],
+                         ['orch', 'worker-open'])
+
     def test_card_archived_before_shutdown_does_not_notify(self):
         self.disappearance_hcom('listening')
         self.run_cycles(load_watch(), 0)

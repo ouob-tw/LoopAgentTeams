@@ -412,6 +412,25 @@ class WatchCompatibilityTests(DispatchCase):
         self.assertEqual(skipped, {})
         self.assertEqual(cards['nanu-impl123-fida']['status'], 'dispatched')
 
+    def test_native_card_needs_no_hcom_lookup_and_is_marked_for_the_watch(self):
+        result = self.run_script(*self.card_args('--native', '--agent', 'nanu-research-web'),
+                                 env={'LAT_DISPATCH_HCOM_LIST': str(self.root / 'absent.json')})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        card = self.tasks / '2026-10-23-nanu-impl123.md'
+        self.assertIn('- agent：nanu-research-web\n- orchestrator：nanu\n- native agent：是\n',
+                      card.read_text())
+        watch = self.load_watch()
+        cards, skipped = watch.monitored_task_cards(self.tasks, 'nanu', {})
+        self.assertEqual(skipped, {})
+        self.assertTrue(cards['nanu-research-web']['_native'])
+        self.assertEqual(watch.monitored_agents(self.tasks, 'nanu'), ['nanu'])
+
+    def test_native_card_without_agent_name_is_refused(self):
+        result = self.run_script(*self.card_args('--native'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--native needs --agent', result.stderr)
+        self.assertEqual(list(self.tasks.glob('*.md')), [])
+
 
 LEDGER = SCRIPT.parent / 'lat-ledger.py'
 
