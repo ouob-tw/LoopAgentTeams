@@ -254,7 +254,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 
 使用方式見[使用說明](../docs/lat-board.md#喚醒閒置或已關閉的主控)。實作上：
 
-- 由指令列喚醒（電腦與手機相同）：對象是閒置或已關閉的主控時，送出按鈕從箭頭圖示改成「喚醒」，旁邊出現選項按鈕，點開的浮動框裡有「開新一輪 LAT」、額度提醒，以及「放棄前一次接回」；模型與思考強度在指令列的模型標籤上選（`ModelPicker.svelte`）。
+- 由指令列喚醒（電腦與手機相同）：對象是閒置或已關閉的主控時，送出按鈕從箭頭圖示改成「喚醒」，旁邊選項按鈕的浮動框裡多出「開新一輪 LAT」、額度提醒，以及「放棄前一次接回」；模型與思考強度在指令列的模型標籤上選（`ModelPicker.svelte`）。
 
 - `POST /api/wake`（`controllerId`、`text`、`newRound`）喚醒一次；`POST /api/wake/abandon`（`controllerId`、`wakeId`）放棄一筆未結案的接回。兩者都要登入，並與傳話排在同一個主控的隊伍裡依序處理，所以同時按兩次也只會接回一次。
 - client 是否還在只看 `hcom list --json` 裡有沒有這個主控的 session ID，不看 Herdr 的 Agent 狀態。在就用傳話的輸入指令打進它的輸入框；不在就用 `hcom r <session ID>` 接回，工作區照新建的規則選（專案範圍是主控回報裡的工作區路徑）。清單讀不到就什麼都不做。
@@ -426,7 +426,7 @@ bun run build:test && bun run measure:commandline   # 無頭 Chrome；違反規�
 bun scripts/measure-commandline.ts --serve     # 啟動已登入的假資料看板，再用 scripts/measure-commandline.py 以 WebKit 量同樣的案例
 ```
 
-手機寬度（760px 以下）的指令列分兩行：迴紋針與麥克風由 `CommandLine.svelte` 自己放（`MessageBox` 的 `tools={false}`，麥克風呼叫它的 `insert`），寬版時仍在輸入框左邊、外觀與放在框內時相同；手機時外層改成 `display: contents`，以 `order` 排成第一行只有輸入框，第二行迴紋針、模型與思考強度、麥克風、喚醒選項、收起鈕（最右）。模型標籤的選單在手機改從指令列左側往上展開。`tests/browser/command-line-layout.test.ts` 檢查寬版一行與 360、390px 兩行的順序、每個按鈕點得到、沒有橫向捲動，以及收起後能再展開。
+手機寬度（760px 以下）的指令列分兩行：迴紋針與麥克風由 `CommandLine.svelte` 自己放（`MessageBox` 的 `tools={false}`，麥克風呼叫它的 `insert`），寬版時仍在輸入框左邊、外觀與放在框內時相同；手機時外層改成 `display: contents`，以 `order` 排成第一行只有輸入框，第二行迴紋針、模型與思考強度、麥克風、選項按鈕（浮動框有權限段或喚醒選項時才顯示）、收起鈕（最右）。模型標籤的選單在手機改從指令列左側往上展開。`tests/browser/command-line-layout.test.ts` 檢查寬版一行與 360、390px 兩行的順序、每個按鈕點得到、沒有橫向捲動，以及收起後能再展開。
 
 錯誤紀錄的伺服器端在 `tests/server/server-log.test.ts`（起點加 63），格式與限頻本身在 `tests/unit/log.test.ts`；`tests/browser/client-error-page.test.ts` 用無頭 Chrome（起點加 64 與加 65）讓頁面變成 Internal Error，檢查 journal 那一行。
 

@@ -23,7 +23,6 @@
 	const id = $derived(agent.id);
 	const client = $derived(agent.client === 'claude' || agent.client === 'codex' ? agent.client : null);
 	const status = $derived(agentControl.permission[id]);
-	let sending = $state(false);
 
 	// Read again for another agent, and whenever its state or its switch moves on; not for each
 	// board read that leaves them as they were.
@@ -51,16 +50,14 @@
 		if (!status) return '讀取中…';
 		if (status.blocked) return status.blocked;
 		if (client === 'claude' && status.reason) return status.reason;
-		if (sending) return '切換中…';
+		if (agentControl.permissionSending[id]) return '切換中…';
 		return null;
 	});
 
 	async function pick(mode: string) {
 		if (blocked || mode === status?.current) return;
 		const { id: target, name } = agent;
-		sending = true;
 		const result = await agentControl.switchPermission(target, mode);
-		sending = false;
 		const done = client === 'codex' ? `已切換 ${name} 的權限，等它接回並跑完確認的一回合。` : `已把 ${name} 切換為 ${label(mode)}。`;
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `${done}${result.reason ?? ''}` : (result.reason ?? '切換失敗'));
 	}

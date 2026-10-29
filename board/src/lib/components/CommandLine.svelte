@@ -3,10 +3,11 @@
 	// without a name to the controller that is open. The recipient's model and effort sit beside the
 	// send button. An idle or closed controller is woken instead. A pop-up behind the options button
 	// holds the permission switch of the open agent, or of the page's controller as Herdr lists it, and
-	// a wake's other options while waking; a phone shows the button only when it holds something. A phone can put the line away behind a floating
-	// button, to read more of the page; what was typed stays, also across a reload. While an agent's
-	// page is open, a line without a name goes to that agent instead, from a draft of its own, also
-	// kept across a reload; while it works, a stop button sits beside the send button, whether or not anything is typed.
+	// a wake's other options while waking; a phone shows the button only when it holds something. A
+	// phone can put the line away behind a floating button, to read more of the page; what was typed
+	// stays, also across a reload. While an agent's page is open, a line without a name goes to that
+	// agent instead, from a draft of its own, also kept across a reload; while it works, a stop button
+	// sits beside the send button, whether or not anything is typed.
 	// A closed agent's page, from the 已關閉 section, says it must be brought back first.
 	// A controller's page on the Herdr tab is written to as the controller it is, from the controllers' draft.
 	// A controller in a turn in a Herdr pane is interrupted the same way, while nothing is typed; its
@@ -216,6 +217,10 @@
 		void id;
 		void owner;
 		optionsOpen = false;
+	});
+	// Nothing left behind the button (an `@name` line typed on an agent's page) closes it too.
+	$effect.pre(() => {
+		if (!hasOptions) optionsOpen = false;
 	});
 
 	async function submit() {
