@@ -348,13 +348,16 @@
 		void tick().then(() => card.scrollIntoView({ block: 'center' }));
 	});
 	const openController = (id: string) => navigation.go({ kind: 'controller', id });
+	function scrollToTop() {
+		detail.scrollTop = 0;
+		window.scrollTo(0, 0);
+	}
 	/** The phone's top-bar title: from an item it opens the controller's page; on that page it only
 	 *  scrolls back to the top, so there is no new history entry. */
 	function tapTitle() {
 		if (!controller) return;
 		if (view?.kind !== 'controller') return openController(controller.id);
-		detail.scrollTop = 0;
-		window.scrollTo(0, 0);
+		scrollToTop();
 	}
 	const openLaunch = () => navigation.go({ kind: 'launch' });
 	const openAgent = (id: string) => navigation.go({ kind: 'agent', id });
@@ -521,15 +524,15 @@
 				<div class="topbar">
 					<button onclick={() => navigation.back()} aria-label="返回">←</button>
 					{#if agent}
-						<span class="whose" title="{agent.folder} {agent.name}">
+						<button class="whose" title="{agent.folder} {agent.name}" onclick={scrollToTop}>
 							<strong>{folderName(agent.folder)}</strong>
 							<span class="handle">{agent.hcomName ? `@${shortName(agent)}` : agent.name}</span>
-						</span>
+						</button>
 					{:else if closedAgent}
-						<span class="whose" title="{closedAgent.folder} @{closedAgent.hcomName}">
+						<button class="whose" title="{closedAgent.folder} @{closedAgent.hcomName}" onclick={scrollToTop}>
 							<strong>{folderName(closedAgent.folder)}</strong>
 							<span class="handle">@{lastSegment(closedAgent.hcomName)}</span>
-						</span>
+						</button>
 					{:else if owner}
 						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->
 						{#if controller}
@@ -1015,6 +1018,7 @@
 		background: none;
 		color: inherit;
 		font: inherit;
+		line-height: 1.25;
 		text-align: left;
 		cursor: pointer;
 	}
