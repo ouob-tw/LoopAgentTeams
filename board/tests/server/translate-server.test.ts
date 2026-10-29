@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DAY, NODE, startFixture, type Fixture } from '../harness.ts';
+import { DAY, NODE, startFixture, until, type Fixture } from '../harness.ts';
 
 const ROOT = join(import.meta.dir, '../..');
 const codexDir = mkdtempSync(join(tmpdir(), 'lat-board-codex-'));
@@ -137,6 +137,9 @@ test('a saved translation comes at once, before one still being translated, and 
 	expect(first).toEqual({ index: 1, text: '譯：Saved reply number one.' });
 	expect(Date.now() - started).toBeLessThan(600);
 	while (!(await reader.read()).done);
+	// The line goes out as Codex streams it; the file is written once its turn ends.
+	const savedFile = join(fixture.dir, 'board-state', 'translations.json');
+	await until(() => existsSync(savedFile) && readFileSync(savedFile, 'utf8').includes('譯：A slow new reply.'), 10_000, 'the slow reply saved');
 
 	await fixture.stop();
 	await fixture.start();

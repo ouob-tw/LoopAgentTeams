@@ -469,13 +469,20 @@ const TITLE = `(() => {
 	const middle = h2.querySelector('.middle');
 	const extension = h2.querySelector('.extension').getBoundingClientRect();
 	const download = document.querySelector('${DIALOG} header a[download]');
+	// The lines of the text itself: in some fonts (Noto Sans, under a C locale) the spans' boxes
+	// start a pixel above their text, which is no second line.
+	const tops = [];
+	const texts = document.createTreeWalker(h2, NodeFilter.SHOW_TEXT);
 	const range = document.createRange();
-	range.selectNodeContents(h2);
+	for (let text = texts.nextNode(); text; text = texts.nextNode()) {
+		range.selectNodeContents(text);
+		for (const rect of range.getClientRects()) if (rect.width) tops.push(Math.round(rect.top));
+	}
 	const inView = (element) => { const r = element.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.width > 0; };
 	return {
 		text: h2.textContent,
 		extension: h2.querySelector('.extension').textContent,
-		lines: new Set([...range.getClientRects()].filter((rect) => rect.width).map((rect) => Math.round(rect.top))).size,
+		lines: new Set(tops).size,
 		cut: middle.scrollWidth > middle.clientWidth,
 		opening: h2.querySelector('.opening').textContent,
 		openingShown: h2.querySelector('.opening').getBoundingClientRect().left >= h2.getBoundingClientRect().left && h2.querySelector('.opening').getBoundingClientRect().width > 0,
