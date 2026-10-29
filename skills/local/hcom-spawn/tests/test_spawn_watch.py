@@ -420,6 +420,21 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertFalse(matches('codex', 'model', 'gpt-6.1-sol', 'gpt-6-astra'))
         self.assertFalse(matches('codex', 'model', 'gpt-6.1-sol', 'gpt-6.1-sol-mini'))
 
+    def test_codex_status_line_model_may_contain_spaces(self):
+        for line, model, effort in (
+                ('  GPT-6.1 Terra medium · ~/work', 'GPT-6.1 Terra', 'medium'),
+                ('  GPT-6.1-Sol medium · ~/work', 'GPT-6.1-Sol', 'medium')):
+            seen = {}
+            self.watch.read_screen('codex', ['› Ask Codex to do anything', line], seen)
+            self.assertEqual(seen, {'model': (model, 'screen'), 'effort': (effort, 'screen')})
+        self.assertTrue(self.watch.matches('codex', 'model', 'gpt-6.1-terra', 'GPT-6.1 Terra'))
+        self.assertFalse(self.watch.matches('codex', 'model', 'gpt-6.1-sol', 'GPT-6.1 Terra'))
+
+    def test_codex_status_pattern_ignores_conversation_and_banner_lines(self):
+        for line in ('Effort set to high · saved', '• Ran tests, all low · 3 files',
+                     '│ model: gpt-6.1-sol medium · x', 'one two three medium · x'):
+            self.assertFalse(self.watch.CODEX_STATUS.search(line), line)
+
     def test_label_is_last_segment_of_spawner_and_agent_base_name(self):
         self.assertEqual(self.watch.tab_label('bivu-i182-guzu', 'fizo'), 'guzu-fizo')
         self.assertEqual(self.watch.tab_label('bivu', 'feho'), 'bivu-feho')
