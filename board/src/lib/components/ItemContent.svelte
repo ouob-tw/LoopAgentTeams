@@ -158,7 +158,7 @@
 	</div>
 {/snippet}
 
-<article class="content" data-kind={item.kind} data-decided={decided || undefined} data-content={item.key}>
+<article class="content" data-kind={item.kind} data-decided={decided || undefined} data-done={(item.kind === 'report' && item.tag === 'DONE') || undefined} data-unread={(item.kind === 'report' && item.readAt === null) || undefined} data-content={item.key}>
 	{#if item.kind !== 'question' && item.message}<CopyButton text={item.message} />{/if}
 	<header>
 		<span class="label" class:open={answerable}>{itemLabel(item)}</span>
@@ -336,6 +336,20 @@
 		border-left: 3px solid var(--ok);
 		border-radius: var(--radius);
 		padding: 0.9rem 1rem;
+	}
+	/* The light theme frames a finished report dark green, and fills its label while it is unread
+	   like the one in the inbox list. */
+	:global(:root[data-theme='light']) .content[data-done] {
+		border-color: var(--ok);
+	}
+	:global(:root[data-theme='light']) .content[data-done] .label {
+		border-color: var(--text);
+		background: var(--bg);
+	}
+	:global(:root[data-theme='light']) .content[data-done][data-unread] .label {
+		border-color: transparent;
+		background: var(--ok);
+		color: var(--bg);
 	}
 	.content[data-kind='question'] {
 		border-left-color: var(--warn);

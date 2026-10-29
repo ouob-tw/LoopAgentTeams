@@ -1,0 +1,14 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/components/ItemContent.svelte",
+        "board/src/lib/components/Transcript.svelte",
+        "board/tests/browser/done-label-light.test.ts"
+      ],
+      "tests": [
+        "board/tests/browser/done-label-light.test.ts"
+      ]
+    }
+  ]
+}
