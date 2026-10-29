@@ -358,7 +358,12 @@ test('a file gone between the list and opening it says so, and opens no window',
 	renameSync(paths['vanish.txt'], `${paths['vanish.txt']}.moved`);
 	try {
 		await tab.eval(`${entry('sent', 'vanish.txt')}.querySelector('button').click()`);
-		await tab.until(`document.querySelector('${SENT}').innerText.includes(${JSON.stringify(`檔案已不在：${paths['vanish.txt']}`)})`, 'the missing file noted');
+		// The list may ask about its files again by itself, and that answer can note the file gone before
+		// the window's own read finds it gone and closes the window: a window left open still fails.
+		await tab.until(
+			`document.querySelector('${SENT}').innerText.includes(${JSON.stringify(`檔案已不在：${paths['vanish.txt']}`)}) && !document.querySelector('${DIALOG}')`,
+			'the missing file noted and no window open'
+		);
 		expect(await tab.eval<boolean>(`!!document.querySelector('${DIALOG}')`)).toBe(false);
 	} finally {
 		renameSync(`${paths['vanish.txt']}.moved`, paths['vanish.txt']);
