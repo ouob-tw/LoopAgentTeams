@@ -107,6 +107,13 @@ test.skipIf(!CHROME)('opened from the inbox at the second question, the first ca
 	expect(await tab.eval(`${toggle('Q-1')}.getAttribute('aria-expanded')`)).toBe('false');
 	expect(await tab.eval(`!!${fold('Q-2')}`)).toBe(false);
 
+	// Opened, then another question of the message picked in the inbox: closed again.
+	await tab.eval(`${toggle('Q-1')}.click()`);
+	await tab.until(`${toggle('Q-1')}.getAttribute('aria-expanded') === 'true'`, 'the words opened');
+	await tab.eval(`[...document.querySelectorAll('button, a')].find((el) => el.innerText.includes('第一題') && !el.closest('.history')).click()`);
+	await tab.until(`!!document.querySelector('.history .placed [data-opened] [data-content="${key('Q-1')}"]')`, 'the first question opened');
+	await tab.until(`${toggle('Q-1')}.getAttribute('aria-expanded') === 'false'`, 'the words closed again');
+
 	await tab.navigate(`${fixture.url}/?item=${encodeURIComponent(key('Q-3'))}`);
 	await tab.until(`!!document.querySelector('.history .placed [data-content="${key('Q-3')}"]')`, 'the lone question placed');
 	expect(await tab.eval(`!!${fold('Q-3')}`)).toBe(false);
