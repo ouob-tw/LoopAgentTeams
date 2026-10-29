@@ -62,7 +62,7 @@ GATE_ACTIONS = ('push', *MAIN_CHECKOUT_ACTIONS)
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
 ISSUE_REF = re.compile(r'(?<![\w&/])(?:([\w.-]+/[\w.-]+))?#(\d+)\b')
 TRACKER_DOC = 'docs/agents/issue-tracker.md'
-TRACKER_REPO = re.compile(r'(?<!\S)-R\s+([\w.-]+/[\w.-]+)')
+TRACKER_REPO = re.compile(r'gh issue\b[^`\n]*?(?<!\S)-R\s+([\w.-]+/[\w.-]+)')
 SESSION_ENVS = ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')
 ENDED = ('ended', 'completed', 'cancelled')
 HUMAN_ANSWERED = ('answered', 'approved')
@@ -314,11 +314,14 @@ def ticket_name(ticket):
 
 
 def own_tracker(top):
-    """The project's own tracker repo, lowercased: the one `-R owner/repo` that
-    docs/agents/issue-tracker.md names. None when the file is missing or names none or several."""
+    """The project's own tracker repo, lowercased: the one `-R owner/repo` that the `gh issue`
+    commands in docs/agents/issue-tracker.md pass (`gh pr` ones may name the code repo). None
+    when the file is missing or those commands name none or several."""
+    if top is None:
+        return None
     try:
         repos = {repo.lower() for repo in TRACKER_REPO.findall((top / TRACKER_DOC).read_text())}
-    except (OSError, UnicodeDecodeError, TypeError):
+    except (OSError, UnicodeDecodeError):
         return None
     return repos.pop() if len(repos) == 1 else None
 

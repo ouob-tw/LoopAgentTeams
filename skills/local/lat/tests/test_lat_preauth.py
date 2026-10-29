@@ -639,11 +639,17 @@ class PushTests(PreauthCase):
         other = self.commit('fix: theirs (ouob-tw/other-repo#370)', 'c.txt')
         self.gate_record()
         tracker = self.repo / 'docs/agents/issue-tracker.md'
+        prs = ('- **Read a PR**: `gh pr view <number> -R ouob-tw/LoopAgentTeams --comments`\n'
+               '- **Close**: `gh pr close`, each with `-R ouob-tw/LoopAgentTeams`.\n')
         cases = {'tracker doc names the repo':
-                 'Always pass `-R ouob-tw/LoopAgentTeams-work`; `gh issue view 1 -R '
-                 'ouob-tw/loopagentteams-work`.\n',
+                 'Use `gh` and **always pass `-R ouob-tw/other-repo`**.\n'
+                 '- **Read**: `gh issue view <number> -R ouob-tw/LoopAgentTeams-work --json x`\n'
+                 '- **Close**: `gh issue close <n> -R ouob-tw/loopagentteams-work`\n' + prs,
                  'no tracker doc': None,
-                 'tracker doc names two repos': '-R ouob-tw/LoopAgentTeams-work\n-R a/b\n'}
+                 'tracker doc has no gh issue -R':
+                 '**always pass `-R ouob-tw/LoopAgentTeams-work`**\n' + prs,
+                 'tracker doc names two repos': '`gh issue view 1 -R ouob-tw/LoopAgentTeams-work`\n'
+                 '`gh issue list -R a/b`\n'}
         for case, text in cases.items():
             with self.subTest(case):
                 if text is None:
