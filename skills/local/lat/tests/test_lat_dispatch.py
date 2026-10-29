@@ -492,6 +492,13 @@ class LedgerCardTests(LedgerCase):
         self.assertIn('- ledger row：2 (', second.read_text())
         self.assertEqual(self.items()[1]['depends_on'], [1])
 
+    def test_repo_option_is_passed_to_the_ledger_row(self):
+        repo = self.root / 'other'
+        repo.mkdir()
+        subprocess.run(['git', '-C', str(repo), 'init', '-q'], check=True)
+        self.ledger_card('--repo', str(repo))
+        self.assertEqual(self.items()[0]['repo'], str(repo))
+
     def test_card_without_ledger_options_is_unchanged(self):
         card = self.make_card()
         self.assertNotIn('ledger row', card.read_text())

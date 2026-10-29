@@ -34,7 +34,7 @@ CARD_FIELD = re.compile(r'-\s+([^：\n]+)：\s*(.*)')
 CARD_AGENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?=$|[\s(（])')
 NONE = '無'
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
-LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends')
+LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo')
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
 CARD_RULE_READ_ONLY = 'The orchestrator maintains the task card; do not edit it.'
 LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does not hold, report to the orchestrator first and do not act.
@@ -196,7 +196,7 @@ def ledger_request(args):
     given = [name for name in LEDGER_OPTIONS if getattr(args, name)]
     if not args.ledger:
         if given:
-            raise Failure('--ticket, --stage, --evidence, --deadline and --depends need --ledger')
+            raise Failure('--ticket, --stage, --evidence, --deadline, --depends and --repo need --ledger')
         return None
     missing = [f'--{name}' for name in ('ticket', 'stage', 'evidence', 'deadline')
                if not getattr(args, name)]
@@ -226,6 +226,8 @@ def open_ledger_row(args, ledger, orchestrator, agent, card):
         add += ['--evidence', evidence]
     if args.depends:
         add += ['--depends', args.depends]
+    if args.repo:
+        add += ['--repo', args.repo]
     if args.branch != NONE:
         add += ['--branch', args.branch.strip()]
     row = run_ledger(args, 'add', *base, *add)
@@ -439,6 +441,7 @@ def build_parser():
                       help='ledger row: evidence kinds (commit, gate, file); comma-separated or repeated')
     card.add_argument('--deadline', help='ledger row: latest finish, ISO 8601 or +N[m|h|d]')
     card.add_argument('--depends', help='ledger row: comma-separated item numbers it waits for')
+    card.add_argument('--repo', help='ledger row: git repo (absolute) the commit evidence lives in')
     card.add_argument('--lat-dir', type=Path, default=LAT_DIR,
                       help='LAT skill directory holding scripts/lat-ledger.py')
     brief = commands.add_parser('brief', help='Build the task brief from four sections + a card')
