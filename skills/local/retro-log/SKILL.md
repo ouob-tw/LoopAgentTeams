@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 反饋庫是所有專案共用的本機 git repo，由小程式管理。計數、狀態、復發、排序、去重與 git commit 都由小程式負責，你負責判斷「是不是同一個問題」「是否嚴重」，並撰寫條目內容。條目檔只透過小程式改動。
 
-小程式：`uv run --no-project python <本次實際載入的本技能目錄絕對路徑>/scripts/retro-log.py <指令>`，下文簡寫為 `retro-log <指令>`。各指令參數見 `retro-log <指令> --help`。指令被拒時照訊息修正後重跑，下方 Gotchas 另有規定的除外。
+小程式：`uv run --no-project python <本次實際載入的本技能目錄絕對路徑>/scripts/retro-log.py <指令>`，下文簡寫為 `retro-log <指令>`。條目編號一律寫成「retro #N」，避免被當成 issue 編號；其他 session 只要查條目，執行 `retro-log show <N>`（主機的 `~/.local/bin/retro-log` 捷徑會執行已安裝的小程式），不必找技能路徑。各指令參數見 `retro-log <指令> --help`。指令被拒時照訊息修正後重跑，下方 Gotchas 另有規定的除外。
 
 ## 記錄一次 retro
 
@@ -18,7 +18,7 @@ disable-model-invocation: true
    - `--session`：本對話用 `$CLAUDE_CODE_SESSION_ID`（Claude）或 `$CODEX_THREAD_ID`（Codex）；其他 session 用它的 session ID。
    - `--project`：該 session 工作的 git repo 名稱（主 worktree 的資料夾名，不是 `.worktrees/` 下的分支資料夾）。
    - `--time`：該 session 中觸發 /retro 那則使用者訊息的時間戳記；查不到時用該 session 最後一則紀錄的時間。本對話也照查，不用現在時間。
-3. **逐條搜尋**：每條反饋用兩三組關鍵字（含同義詞、中英文說法）跑 `retro-log search <關鍵字…>`，再對看起來相關的候選跑 `retro-log show <編號>` 讀全文。搜尋只比對字面，措辭不同的同一問題要靠換關鍵字找。結果顯示「已併入 #N」時改看 #N。
+3. **逐條搜尋**：每條反饋用兩三組關鍵字（含同義詞、中英文說法）跑 `retro-log search <關鍵字…>`，再對看起來相關的候選跑 `retro-log show <編號>` 讀全文。搜尋只比對字面，措辭不同的同一問題要靠換關鍵字找。結果顯示「已併入 retro #N」時改看 retro #N。
 4. **判斷相同、新開或拿不準**：
    - **相同**：根本原因相同，同一個修法能同時解決。用 `retro-log occur <編號> …`。
    - **新開**：沒有候選，或候選明顯是別的問題。用 `retro-log add …`。
@@ -29,16 +29,16 @@ disable-model-invocation: true
 
 ```markdown
 **本次寫入**
-- 新開：#12 標題；#13 標題
-- 併入舊條目：#4 標題（現 2 個 session，轉可處理）
-- 拿不準：#13 疑似 #7；確認相同可說「把 #13 併入 #7」
+- 新開：retro #12 標題；retro #13 標題
+- 併入舊條目：retro #4 標題（現 2 個 session，轉可處理）
+- 拿不準：retro #13 疑似 retro #7；確認相同可說「把 retro #13 併入 retro #7」
 
 **可處理前三名**
-1. #4 標題［嚴重］：一句話說明問題與影響
+1. retro #4 標題［嚴重］：一句話說明問題與影響
 2. …
 3. …
 
-**推薦先做**：#4，一句理由。
+**推薦先做**：retro #4，一句理由。
 ```
 
 某一類清單是空的就寫「無」。可處理不到三筆就列現有的。修問題不是本技能的工作；使用者挑中後照平常方式處理。

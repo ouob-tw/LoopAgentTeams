@@ -247,6 +247,8 @@ uv run --no-project python ~/LoopAgentTeams/scripts/install-skills.py --skill la
 
 腳本預設安裝 repo 內所有技能，固定帶 `--global --agent claude-code codex --yes` 執行 `bunx skills add`。有登記整套測試的技能（`.suite-gate.json` 的 `full_suites`），資料夾目前內容須有 three-tier-testing 閘門的通過紀錄，且最近一次跑同樣內容的結果是通過；任一技能不符時整批不安裝，列出缺紀錄的技能與要透過閘門執行的測試指令。資料夾外的改動不影響判斷。`bunx` 讀的是檢查當下內容的暫存快照，檢查後才合併進來的改動不會被裝上；因此 skills 的安裝紀錄裡來源會是已刪除的暫存資料夾，更新請重跑本腳本。腳本先找 PATH 上的 `bunx`，找不到再用 `~/.bun/bin/bunx`；兩處都沒有就說明找過哪裡並以非零狀態結束。
 
+改了 LAT 看板（`board/`）後重建並重啟，在 `board` 目錄執行 `bash scripts/deploy.sh`（只建置已提交的 `HEAD`，成功才換上並重啟 `lat-board`）；或手動 `bun run build && systemctl --user restart lat-board`。注意 `bun run build` 會直接覆蓋正在跑的看板檔案，重啟 `lat-board` 前正在使用的看板頁面會壞掉。細節見[使用說明](docs/lat-board.md)。
+
 安裝 host-guard hook 後，Agent 直接對本地 clone 執行 `bunx skills add` 會被擋下並提示改用腳本；使用者在自己的終端機執行不受影響。
 
 ## 授權

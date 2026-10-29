@@ -412,7 +412,7 @@ def make_brief(args):
     parts.append(fixed)
     write_text_atomic(output, '\n'.join(parts), mode=0o644)
     print(f'brief: {output}')
-    print('send: hcom send @{} --intent request --name {} --file {}'.format(
+    print('hcom send @{} --intent request --name {} --file {}'.format(
         card['agent'], hcom_send_name(card['orchestrator'], agents), shlex.quote(str(output))))
 
 
