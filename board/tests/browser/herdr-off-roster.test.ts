@@ -22,7 +22,7 @@ const FITS = `document.documentElement.scrollWidth <= window.innerWidth`;
 const BOX = '.dock .cmd textarea';
 const SEND = '.dock .cmd .send-slot button:not([data-action="interrupt"])';
 const OPTIONS = '.dock .cmd button.options';
-const POPUP = '.dock .popup[aria-label="喚醒選項"]';
+const POPUP = '.dock .popup [aria-label="喚醒選項"]';
 const CARD = `document.querySelector('.inbox button.agent[data-agent="s-old"]')`;
 /** Click the first button in `scope` whose text includes `text`. */
 const click = (scope: string, text: string) =>

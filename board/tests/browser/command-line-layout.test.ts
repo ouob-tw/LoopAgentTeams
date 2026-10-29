@@ -105,3 +105,14 @@ for (const width of [360, 390]) {
 		await tab().until(shown('.cmd textarea'), 'the line back');
 	});
 }
+
+// A controller at work that Herdr does not list: no wake and no permission, so nothing to open.
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: a controller Herdr does not list, not woken, has nothing behind the options button`, async () => {
+		const at = await visit(width);
+		if (width > 760) expect(await tab().eval(`document.querySelector('.cmd .options').disabled`)).toBe(true);
+		else expect(at.options).toBeNull();
+		await tab().eval(`document.querySelector('.cmd .options').click()`);
+		expect(await tab().eval(`!!document.querySelector('.cmd .popup')`)).toBe(false);
+	});
+}

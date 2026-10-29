@@ -202,12 +202,6 @@ export interface PermissionStatus {
 export const codexFirstTurnText = (mode: CodexMode) =>
 	`（看板訊息）權限已切換為 ${CODEX_MODE_LABEL[mode]}。這則只是讓這段對話接回，不需要做任何事，回覆「ok」即可。`;
 
-export const PERMISSION_CONFIRM_TEXT = {
-	claude: (label: string) => `切換為 ${label}？看板會在這個 Agent 的畫面按 Shift+Tab，每按一次就看畫面底部的模式，看到 ${label} 就停；不會重開它。`,
-	codex: (label: string) =>
-		`切換為 ${label}？看板會停止這個 Agent，再以新權限在同一個位置接回同一段對話，並送一則很短的訊息讓它跑一回合來確認新權限。`
-};
-
 export const PERMISSION_NOT_LINKED_REASON = '這個 Agent 沒有接 HCOM，看板只能替有接 HCOM 的 Codex 切換權限';
 export const PERMISSION_PAUSED_REASON = '這個 Agent 暫停通訊中，先按「恢復通訊」接回 HCOM 才能切換權限';
 export const PERMISSION_HCOM_UNKNOWN_REASON = 'HCOM 連線無法確認：hcom 的清單讀不到，不知道這個 Agent 有沒有接 HCOM，現在不能切換權限';

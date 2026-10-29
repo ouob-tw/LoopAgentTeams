@@ -192,8 +192,12 @@ for (const width of [1280, 390]) {
 		// The command line's model is the controller's.
 		await tab.until(`!!document.querySelector('.dock .pill-slot .part')`, 'the model picker');
 		expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`)).toBe(false);
-		// Its permission mode beside them, switched as an agent's is.
-		await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick="permission"]')`, 'the permission picker');
+		// Its permission mode in the options pop-up, on a phone too, switched as an agent's is.
+		expect(await tab.eval(`!!document.querySelector('.dock [data-pick="permission"]')`)).toBe(false);
+		await tab.until(`!!document.querySelector('.dock .cmd button.options:not(:disabled)')?.getBoundingClientRect().width`, 'the options button');
+		await tab.eval(`document.querySelector('.dock .cmd button.options').click()`);
+		await tab.until(`document.querySelectorAll('.dock .popup section[aria-label="權限"] button[data-mode]').length === 3`, 'the permission modes');
+		await tab.eval(`document.querySelector('.dock .cmd button.options').click()`);
 		expect(await tab.eval(FITS)).toBe(true);
 
 		// Each tab shows its records.

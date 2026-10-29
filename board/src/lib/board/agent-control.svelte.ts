@@ -21,6 +21,8 @@ class AgentControl {
 	model = $state<Record<string, AgentModelStatus>>({});
 	/** Its permission mode and what a permission switch offers, by session ID; missing until loaded. */
 	permission = $state<Record<string, PermissionStatus>>({});
+	/** Agents whose permission switch is under way, so a pop-up opened again meanwhile offers none. */
+	permissionSending = $state<Record<string, boolean>>({});
 	/** The latest load started per agent; an older one that answers later is dropped. */
 	#loads: Record<string, number> = {};
 
@@ -117,9 +119,11 @@ class AgentControl {
 		if (result.ok) this.permission[agentId] = result.value;
 	}
 
-	/** Switch the permission mode, after the user confirmed it; the mode is read again after. */
+	/** Switch the permission mode, at the user's pick; the mode is read again after. */
 	async switchPermission(agentId: string, mode: string): Promise<Outcome> {
+		this.permissionSending[agentId] = true;
 		const outcome = await this.#post('/api/agents/permission', agentId, { mode });
+		delete this.permissionSending[agentId];
 		void this.loadPermission(agentId);
 		return outcome;
 	}
