@@ -99,13 +99,15 @@ export class PreauthEditor {
 	}
 
 	/** Save what differs from the file. Saves run one at a time, each naming the hash the one before
-	 *  it left, so quick changes do not refuse one another. A refusal puts back what it sent. */
+	 *  it left, so quick changes do not refuse one another. A refusal puts back what it sent; a change
+	 *  made meanwhile still gets its own try, and a later success does not hide the refusal. */
 	async save() {
 		if (this.#saving) {
 			this.#again = true;
 			return;
 		}
 		this.#saving = true;
+		let refusal: PreauthRefusal | null = null;
 		do {
 			this.#again = false;
 			const changes = this.#changes();
@@ -119,9 +121,9 @@ export class PreauthEditor {
 			});
 			if (!result.ok) {
 				this.form = revertedForm(formFrom(this.layer), sent, $state.snapshot(this.form)!);
-				this.#again = false;
 				if (!result.unpaired) this.#refused(result, '沒有送出，請檢查網路後再改一次。');
-				break;
+				refusal = this.refusal;
+				continue;
 			}
 			// Text typed while this was on its way stays in the form for its own save.
 			if (JSON.stringify(this.form) === JSON.stringify(sent)) {
@@ -136,6 +138,7 @@ export class PreauthEditor {
 			clearTimeout(this.#markTimer);
 			this.#markTimer = setTimeout(() => (this.savedMark = false), SAVED_MARK_MS);
 		} while (this.#again);
+		this.refusal ??= refusal;
 		this.#saving = false;
 	}
 }

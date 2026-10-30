@@ -140,9 +140,15 @@ export function revertedForm(saved: PreauthForm, sent: PreauthForm, now: Preauth
 		if (!same(sent.actions[name].branches, now.actions[name].branches)) form.actions[name].branches = now.actions[name].branches;
 	}
 	if (sent.target !== now.target) form.target = now.target;
-	if (!same(sent.may_settle, now.may_settle)) form.may_settle = now.may_settle;
-	if (!same(sent.must_ask, now.must_ask)) form.must_ask = now.must_ask;
+	form.may_settle = revertedList(saved.may_settle, sent.may_settle, now.may_settle);
+	form.must_ask = revertedList(saved.must_ask, sent.must_ask, now.must_ask);
 	return form;
+}
+
+/** Row by row while the rows are the same ones; a row added or removed since keeps the list as it is now. */
+function revertedList(saved: string[], sent: string[], now: string[]): string[] {
+	if (sent.length !== now.length) return now;
+	return now.map((row, index) => (row !== sent[index] ? row : saved[index])).filter((row) => row !== undefined);
 }
 
 /** One value in effect, as the page shows it under an action. */

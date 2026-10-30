@@ -90,6 +90,15 @@ test('a refused save puts back what it sent and keeps what was edited after', ()
 	expect(form.actions.push.allow).toBe('allow');
 	expect(form.may_settle).toEqual(['a']);
 	expect(form.must_ask).toEqual(['之後打的']);
+
+	// Two rows of one list: the refused row goes back, the row typed after stays.
+	const rows = structuredClone(saved);
+	rows.may_settle = ['a', ''];
+	const sentRows = structuredClone(rows);
+	sentRows.may_settle = ['被拒的', ''];
+	const nowRows = structuredClone(sentRows);
+	nowRows.may_settle = ['被拒的', '之後打的'];
+	expect(revertedForm(rows, sentRows, nowRows).may_settle).toEqual(['a', '之後打的']);
 });
 
 test('a file with errors makes every result ask, whatever the values say', () => {

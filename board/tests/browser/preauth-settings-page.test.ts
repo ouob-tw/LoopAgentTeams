@@ -119,6 +119,23 @@ test.skipIf(!CHROME)('of two tabs that read the same file, the second change is 
 	expect(await b.eval(alertText)).toBe('');
 }, 60_000);
 
+test.skipIf(!CHROME)('a change made while a refused save is on its way does not stay looking saved', async () => {
+	writeFileSync(file, FILE_TEXT);
+	const tab = await browse();
+	await loaded(tab);
+	await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/preauth' }] });
+	await tab.eval(`${group('合併')}.querySelector('button.allow').click()`);
+	for (let i = 0; i < 50 && !tab.paused.length; i++) await Bun.sleep(50);
+	expect(tab.paused.length).toBe(1);
+	await tab.eval(`${group('推送')}.querySelector('button.ask').click()`);
+	const elsewhere = `${FILE_TEXT}\n[actions.deploy-prod]\nallow = false\n`;
+	writeFileSync(file, elsewhere);
+	await tab.send('Fetch.disable');
+	for (const requestId of tab.paused.splice(0)) await tab.send('Fetch.continueRequest', { requestId }).catch(() => {});
+	await tab.until(`(${alertText}).includes('重新載入') && ${pressed('合併', 'ask')} && ${pressed('推送', 'allow')}`, 'both changes put back, with the reason');
+	expect(readFileSync(file, 'utf8')).toBe(elsewhere);
+}, 60_000);
+
 test.skipIf(!CHROME)('a broken file shows its error and nothing can be changed', async () => {
 	const broken = `${FILE_TEXT}surprise = 1\n`;
 	writeFileSync(file, broken);
