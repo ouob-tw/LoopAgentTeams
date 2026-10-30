@@ -16,6 +16,9 @@
 	/* A chosen control: a pressed toggle, a picked option. */
 	--selected-bg: var(--accent);
 	--selected-text: var(--bg);
+	/* A chosen 沿用上層; 允許 and 要問 use --ok and --warn with --selected-text. */
+	--inherit-bg: #4a4f57;
+	--inherit-text: #fff;
 	--disabled-opacity: 0.4;
 	/* The blank of the roster folds or unfolds it: the browser's own arrows, which follow the system's cursor size. */
 	--cursor-expand: e-resize;
@@ -42,6 +45,8 @@
 	--ok: #14532d;
 	--danger: #8b0000;
 	--selected-bg: var(--text);
+	--inherit-bg: #e0e0e0;
+	--inherit-text: #000;
 	--disabled-opacity: 1;
 	color-scheme: light;
 }

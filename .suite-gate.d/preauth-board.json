@@ -1,12 +1,12 @@
 {"map": [
   {"paths": ["skills/local/lat/scripts/lat-preauth.py", "skills/local/lat/herdr-panel/lat_panel.py"],
    "tests": ["skills/local/lat/tests/test_lat_preauth.py", "board/tests/server/preauth.test.ts", "board/tests/browser/preauth-settings-page.test.ts", "board/tests/browser/preauth-controller-page.test.ts"]},
-  {"paths": ["board/src/lib/board/preauth.ts"],
+  {"paths": ["board/src/lib/board/preauth.ts", "board/src/lib/board/preauth-editor.svelte.ts", "board/src/lib/board/settings-link.ts"],
    "tests": ["board/tests/unit/preauth.test.ts", "board/tests/browser/preauth-settings-page.test.ts", "board/tests/browser/preauth-controller-page.test.ts"]},
   {"paths": ["board/src/lib/server/helper.ts", "board/tests/fake-helper.mjs"],
    "tests": ["board/tests/server/preauth.test.ts"]},
   {"paths": ["board/src/routes/api/preauth/+server.ts"],
    "tests": ["board/tests/server/preauth.test.ts", "board/tests/browser/preauth-settings-page.test.ts", "board/tests/browser/preauth-controller-page.test.ts"]},
-  {"paths": ["board/src/lib/components/PreauthEffective.svelte", "board/src/lib/components/PreauthSettings.svelte", "board/src/lib/components/ControllerInfo.svelte", "board/src/lib/components/Settings.svelte"],
+  {"paths": ["board/src/lib/components/ControllerPreauth.svelte", "board/src/lib/components/PreauthAllow.svelte", "board/src/lib/components/PreauthChips.svelte", "board/src/lib/components/PreauthNotices.svelte", "board/src/lib/components/PreauthSettings.svelte", "board/src/lib/components/ControllerInfo.svelte", "board/src/lib/components/Settings.svelte"],
    "tests": ["board/tests/browser/preauth-settings-page.test.ts", "board/tests/browser/preauth-controller-page.test.ts", "board/tests/browser/usage-style-page.test.ts", "board/tests/browser/translate-mode-page.test.ts"]}
 ]}

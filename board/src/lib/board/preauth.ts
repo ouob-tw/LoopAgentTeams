@@ -1,6 +1,6 @@
 // The pre-authorization settings as the board edits and shows them. The helper owns the files, their
 // checks and their comments; here is only what the page needs: one layer's values, what the form
-// changes from them, and the merged result in words.
+// changes from them, and what the merged result comes to in words.
 export const PREAUTH_ACTIONS = [
 	{ name: 'merge', label: '合併', branches: true, target: false },
 	{ name: 'push', label: '推送', branches: true, target: false },
@@ -10,9 +10,9 @@ export const PREAUTH_ACTIONS = [
 ] as const;
 
 export const ALLOW_CHOICES = [
-	{ value: 'allow', label: '允許' },
-	{ value: 'ask', label: '要問' },
-	{ value: 'inherit', label: '沿用上層' }
+	{ value: 'allow', label: '允許', mark: '✓' },
+	{ value: 'ask', label: '要問', mark: '?' },
+	{ value: 'inherit', label: '沿用上層', mark: '↑' }
 ] as const;
 
 export type AllowChoice = (typeof ALLOW_CHOICES)[number]['value'];
@@ -104,21 +104,42 @@ export function changesFrom(layer: PreauthLayer, form: PreauthForm, scope: Preau
 
 const LAYER_LABELS = { project: '專案', global: '全域' } as const;
 
-const inWords = (value: unknown, separator: string) => (typeof value === 'boolean' ? (value ? '允許' : '要問') : (Array.isArray(value) ? value.join(separator) : String(value)) || '（空）');
+const fromLayer = (origin: PreauthOrigin) => `來自${LAYER_LABELS[origin.layer]}`;
 
-/** One value in effect and where it comes from, as the page shows it. */
-export function originText(origin: PreauthOrigin | undefined, separator = '、'): string {
-	return origin ? `${inWords(origin.value, separator)}，來自${LAYER_LABELS[origin.layer]}` : '未設定';
+/** What ends up happening for one action. `fromGlobal`: the global file decides it. */
+export interface PreauthOutcome {
+	asks: boolean;
+	text: string;
+	note: string;
+	fromGlobal: boolean;
 }
 
-/** What one action has in effect. A time window is not edited here, but "allowed" without it would mislead. */
-export function effectiveRows(name: string, values: Record<string, PreauthOrigin> = {}): { label: string; text: string }[] {
+const hasValue = (origin: PreauthOrigin | undefined) => (Array.isArray(origin?.value) ? origin.value.length > 0 : !!origin?.value);
+
+/** The answer the tool would give, as far as settings alone tell: the fixed conditions are checked
+ *  when it runs. `broken` means a file has errors, which makes every query ask. */
+export function outcomeOf(name: string, values: Record<string, PreauthOrigin> = {}, broken = false): PreauthOutcome {
+	const asks = (note: string, fromGlobal = false): PreauthOutcome => ({ asks: true, text: '會問你', note, fromGlobal });
+	if (broken) return asks('設定檔有錯');
+	const { allow } = values;
+	if (!allow) return asks('沒有設定');
+	const fromGlobal = allow.layer === 'global';
+	if (allow.value !== true) return asks(fromLayer(allow), fromGlobal);
 	const { branches, target } = PREAUTH_ACTIONS.find((action) => action.name === name)!;
-	return [
-		{ label: '授權', text: originText(values.allow) },
-		...(branches ? [{ label: '分支', text: originText(values.branches) }] : []),
-		...(target ? [{ label: '測試環境', text: originText(values.target) }] : []),
-		...(values.hours ? [{ label: '時段', text: originText(values.hours) }] : []),
-		...(values.timezone ? [{ label: '時區', text: originText(values.timezone) }] : [])
-	];
+	if (branches && !hasValue(values.branches)) return asks('缺分支清單', fromGlobal);
+	if (target && !hasValue(values.target)) return asks('缺測試環境', fromGlobal);
+	return { asks: false, text: '不問直接做', note: fromLayer(allow), fromGlobal };
+}
+
+/** One value in effect, as the page shows it under an action. */
+export interface PreauthValue {
+	text: string;
+	note: string;
+	fromGlobal: boolean;
+}
+
+export function valueOf(origin: PreauthOrigin | undefined): PreauthValue {
+	if (!hasValue(origin)) return { text: '', note: '未設定', fromGlobal: false };
+	const { value, layer } = origin!;
+	return { text: Array.isArray(value) ? value.join('、') : String(value), note: fromLayer(origin!), fromGlobal: layer === 'global' };
 }

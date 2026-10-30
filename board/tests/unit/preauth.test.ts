@@ -1,6 +1,6 @@
 // What the settings form sends: only the keys it changes, with null deleting a key.
 import { expect, test } from 'bun:test';
-import { changesFrom, effectiveRows, formFrom, type PreauthLayer } from '../../src/lib/board/preauth.ts';
+import { changesFrom, formFrom, outcomeOf, valueOf, type PreauthLayer } from '../../src/lib/board/preauth.ts';
 
 const layer: PreauthLayer = {
 	path: '/x',
@@ -53,16 +53,33 @@ test('the test environment is the project form\'s, and [advisor] only the global
 	expect(changesFrom(project, form, 'global').actions?.['deploy-test']).toEqual({ allow: null });
 });
 
-test('a value in effect says where it comes from; one not in effect says it is not set', () => {
-	const push = { allow: { value: true, layer: 'project', source: null }, branches: { value: ['dev', 'rel'], layer: 'global', source: 'D-1' } } as const;
-	expect(effectiveRows('push', push)).toEqual([
-		{ label: '授權', text: '允許，來自專案' },
-		{ label: '分支', text: 'dev、rel，來自全域' }
-	]);
-	expect(effectiveRows('deploy-test', { allow: { value: false, layer: 'global', source: null } })).toEqual([
-		{ label: '授權', text: '要問，來自全域' },
-		{ label: '測試環境', text: '未設定' }
-	]);
-	expect(effectiveRows('merge', { branches: { value: [], layer: 'project', source: null } })[1].text).toBe('（空），來自專案');
-	expect(effectiveRows('deploy-prod', { allow: { value: true, layer: 'global', source: null }, hours: { value: '09:00-18:00', layer: 'project', source: null } }).map((row) => row.text)).toEqual(['允許，來自全域', '09:00-18:00，來自專案']);
+const project = (value: unknown) => ({ value, layer: 'project', source: null }) as const;
+const global = (value: unknown) => ({ value, layer: 'global', source: null }) as const;
+
+test('the result says what ends up happening, and where the allow comes from', () => {
+	const goes = { asks: false, text: '不問直接做' };
+	const asks = { asks: true, text: '會問你' };
+	expect(outcomeOf('push', { allow: project(true), branches: global(['dev']) })).toEqual({ ...goes, note: '來自專案', fromGlobal: false });
+	expect(outcomeOf('deploy-prod', { allow: global(true) })).toEqual({ ...goes, note: '來自全域', fromGlobal: true });
+	expect(outcomeOf('push', { allow: project(false), branches: global(['dev']) })).toEqual({ ...asks, note: '來自專案', fromGlobal: false });
+	expect(outcomeOf('merge', { allow: global(false) })).toEqual({ ...asks, note: '來自全域', fromGlobal: true });
+	expect(outcomeOf('deploy-prod')).toEqual({ ...asks, note: '沒有設定', fromGlobal: false });
+});
+
+test('allowed without what the tool also needs still asks, and says what is missing', () => {
+	expect(outcomeOf('merge', { allow: global(true) })).toMatchObject({ asks: true, note: '缺分支清單', fromGlobal: true });
+	expect(outcomeOf('merge', { allow: project(true), branches: project([]) })).toMatchObject({ asks: true, note: '缺分支清單', fromGlobal: false });
+	expect(outcomeOf('deploy-test', { allow: global(true) })).toMatchObject({ asks: true, note: '缺測試環境' });
+	expect(outcomeOf('deploy-test', { allow: global(true), target: project('staging') })).toMatchObject({ asks: false });
+});
+
+test('a file with errors makes every result ask, whatever the values say', () => {
+	expect(outcomeOf('deploy-prod', { allow: global(true) }, true)).toEqual({ asks: true, text: '會問你', note: '設定檔有錯', fromGlobal: false });
+});
+
+test('a value under an action names its own layer', () => {
+	expect(valueOf(global(['dev', 'rel']))).toEqual({ text: 'dev、rel', note: '來自全域', fromGlobal: true });
+	expect(valueOf(project('staging'))).toEqual({ text: 'staging', note: '來自專案', fromGlobal: false });
+	expect(valueOf(undefined)).toEqual({ text: '', note: '未設定', fromGlobal: false });
+	expect(valueOf(project([]))).toEqual({ text: '', note: '未設定', fromGlobal: false });
 });

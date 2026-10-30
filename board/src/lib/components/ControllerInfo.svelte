@@ -23,10 +23,10 @@
 	import AgentClose from './AgentClose.svelte';
 	import AgentLog from './AgentLog.svelte';
 	import ControllerHeader from './ControllerHeader.svelte';
+	import ControllerPreauth from './ControllerPreauth.svelte';
 	import LedgerBlock from './LedgerBlock.svelte';
 	import PendingQuestions from './PendingQuestions.svelte';
-	import PreauthSettings from './PreauthSettings.svelte';
-	import RecordTabs from './RecordTabs.svelte';
+		import RecordTabs from './RecordTabs.svelte';
 	import ReportList from './ReportList.svelte';
 	import SentLog from './SentLog.svelte';
 	import Transcript from './Transcript.svelte';
@@ -109,7 +109,7 @@
 	});
 
 	// Read when its tab opens, not with the page, and again at each opening: the file changes elsewhere.
-	let preauth = $state<PreauthSettings>();
+	let preauth = $state<ControllerPreauth>();
 	$effect(() => {
 		if (tab !== 'preauth' || !preauth) return;
 		untrack(() => void preauth!.opened());
@@ -148,7 +148,7 @@
 		{:else if id === 'sent'}
 			<SentLog {controller} />
 		{:else if id === 'preauth'}
-			{#key controller.id}<PreauthSettings bind:this={preauth} controller={controller.id} />{/key}
+			{#key controller.id}<ControllerPreauth bind:this={preauth} controller={controller.id} />{/key}
 		{:else if agent}
 			<AgentLog {agent} />
 		{/if}
