@@ -172,18 +172,12 @@ test('a dialog under a scrolled-up pane still stops the switch with its own reas
 	expect(keyPresses()).toEqual([]);
 });
 
-test('a scroll that fails stops a pane left scrolled up, saying why, and does not matter at the bottom', async () => {
-	const fail = { 'pane scroll': { exit: 1, stderr: 'pane gone' } };
-	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(FULL) }, scrolled: { [pane('s-claude')]: SCROLLBACK }, fail });
-	const refused = await post({ session: 's-claude', mode: 'auto' });
+test('a scroll that fails stops the switch, saying why: an old input box in the scrollback must not be taken for the mode', async () => {
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(FULL) }, scrolled: { [pane('s-claude')]: claudeScreens(FULL)[1] }, fail: { 'pane scroll': { exit: 1, stderr: 'pane gone' } } });
+	const refused = await post({ session: 's-claude', mode: 'manual' });
 	expect(refused.status).toBe(409);
 	expect(refused.body.reason).toContain('pane gone');
 	expect(keyPresses()).toEqual([]);
-
-	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(FULL) }, fail });
-	const switched = await post({ session: 's-claude', mode: 'auto' });
-	expect(switched.status).toBe(200);
-	expect(keyPresses()).toEqual([['agent', 'send-keys', pane('s-claude'), 'shift+tab']]);
 });
 
 test('a mode the round never shows leaves the agent in its starting mode, and is not offered after', async () => {

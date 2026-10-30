@@ -37,7 +37,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_STATUS_POLL_SECONDS`、`LAT_BOARD_STATUS_WORKING_POLL_SECONDS`、`LAT_BOARD_STATUS_POLL_TIMEOUT_SECONDS`、`LAT_BOARD_STATUS_AFTER_ACTION_SECONDS` | Agent 狀態輕量輪詢（只讀 hcom 與 Herdr 的 Agent 清單）：有頁面連著時的間隔、每次讀取的上限、傳話或中斷後補讀的等待 | `2`、`2`、`4`、`2` |
 | `LAT_BOARD_HERDR_COMMAND` | Herdr 指令（JSON 字串陣列），看板會在後面加上 `pane list`、`workspace list`、`workspace create --cwd <專案或所選資料夾> --label <名稱> --no-focus`，以及每次讀取資料時的 `agent list`、`workspace list`、`tab list`，傳話與中斷時的 `agent prompt <窗格> <文字>`、`agent send-keys <窗格> esc`，關閉沒接 HCOM 的 Agent 時的 `pane close <窗格>`，切換模型停止前留位的 `pane split <窗格> --direction right --no-focus`，調整分頁順序與改分頁名稱時的 `tab list --workspace <工作區>`、`tab rename <分頁> <名稱>`（「Herdr」分頁） | `["herdr"]` |
 | `LAT_BOARD_HERDR_TIMEOUT_SECONDS` | 每個 Herdr 指令多久沒結束就放棄 | `10` |
-| `HERDR_SOCKET_PATH` | Herdr 的連線介面，用於 CLI 沒有的移動分頁（接回與開新後移到最前面、在「Herdr」分頁調整順序）；逾時同上一項 | `$XDG_CONFIG_HOME/herdr/herdr.sock` |
+| `HERDR_SOCKET_PATH` | Herdr 的連線介面，用於 CLI 沒有的移動分頁（接回與開新後移到最前面、在「Herdr」分頁調整順序）與切換 Claude 權限前捲到最下方；逾時同上一項 | `$XDG_CONFIG_HOME/herdr/herdr.sock` |
 | `LAT_BOARD_LAUNCH_WAIT_SECONDS` | 新建後多久還沒出現綁定，就在新建紀錄提示「已開分頁，但主控尚未啟用」；喚醒接回後多久還沒在 hcom 清單出現，就在送出紀錄提示「接回後仍未出現」 | `180` |
 | `LAT_HCOM_PAUSED_DIR` | 暫停通訊紀錄的目錄（絕對路徑；不是絕對路徑時當成沒設），LAT 停住監控與程序回收讀同一個目錄 | `$XDG_STATE_HOME/lat/hcom-paused` |
 | `LAT_BOARD_ASKS_DIR` | 看板提問的共用目錄（絕對路徑；不是絕對路徑時當成沒設），hook 與看板讀寫同一個目錄，兩邊要一致 | `$XDG_STATE_HOME/lat/board-asks` |

@@ -126,10 +126,11 @@ export function switchClaudePermission(board: Board, agentId: string, target: Cl
 			if (pane === board.config.ownPane) return refuse(OWN_PANE_REASON);
 			if (agent.status === 'blocked') return refuse(BLOCKED_REASON);
 			if (target === 'bypassPermissions' && agent.hcom === 'linked' && (await bypassOff(board, agentId))) return refuse(BYPASS_TURNED_OFF_REASON);
-			// A failed scroll matters only if the box is then out of sight: a pane at the bottom needs none.
+			// Not scrolled, the screen may be scrollback, and an old input box there would read as the mode now.
 			const scrollFailure = await scrollToBottom(board.config, pane);
+			if (scrollFailure) return refuse(`${scrollFailure}，沒有按鍵`);
 			const start = await screenOf(board, pane);
-			if (start.mode === null) return refuse(scrollFailure ? `${scrollFailure}，沒有按鍵` : start.reason);
+			if (start.mode === null) return refuse(start.reason);
 			if (start.mode === target) return { route: 'herdr', reason: null, permission: record({ from: start.mode, mode: start.mode, seen: [start.mode], outcome: 'already' }) };
 			const press = async () => {
 				const act = await agentCommand(board.config, ['send-keys', pane, 'shift+tab']);
