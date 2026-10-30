@@ -310,6 +310,9 @@ def activate(args):
     )
     if not args.hcom_name or not HCOM_NAME.fullmatch(args.hcom_name):
         raise ValueError(f'A valid explicit --hcom-name is required; rerun: {command}')
+    # The wait check looks up waits/<name>.json, which lat-watch writes under the full name.
+    watch = watch_module()
+    args.hcom_name = watch.resolve_agent_name(watch.list_hcom(), args.hcom_name, required=True)
     duty = None
     if (args.duty_text is None) != (args.duty_expected is None):
         raise ValueError('--duty-text and --duty-expected go together; nothing activated')

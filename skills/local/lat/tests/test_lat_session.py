@@ -33,6 +33,10 @@ def setUpModule():
     unittest.addModuleCleanup(patcher.stop)
 
 
+HCOM_TEST_NAMES = ('orch', 'next-orch', 'nifo-bind-lezo', 'upgraded-orch', 'team-task-orch',
+                   'orch-two')
+
+
 class SessionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -61,6 +65,18 @@ class SessionTests(unittest.TestCase):
         )
         uv.chmod(0o755)
         self.addCleanup(self.stop_fake_watchers)
+        # activate resolves --hcom-name against HCOM; tests list the names they activate with.
+        self.hcom_list = self.root / 'hcom-list.json'
+        self.set_hcom_agents(*HCOM_TEST_NAMES)
+        hcom = self.binary / 'hcom'
+        hcom.write_text(
+            '#!/bin/sh\n'
+            'while IFS= read -r line; do printf \'%s\\n\' "$line"; done < "$FAKE_HCOM_LIST"\n'
+        )
+        hcom.chmod(0o755)
+
+    def set_hcom_agents(self, *names):
+        self.hcom_list.write_text(json.dumps([dict(name=name) for name in names]) + '\n')
 
     def cli(self, *args, payload=None, session=SESSION, claude_session='', extra_env=None,
             watch_args=True, script=SCRIPT):
@@ -83,6 +99,7 @@ class SessionTests(unittest.TestCase):
             env.pop(variable, None)
         env['HERDR_PLUGIN_CONFIG_DIR'] = str(self.root / 'plugin-config')
         env['FAKE_UV_LOG'] = str(self.fake_uv_log)
+        env['FAKE_HCOM_LIST'] = str(self.hcom_list)
         env['LAT_REPORTS_DIR'] = str(self.root / 'reports')
         env['PATH'] = f'{self.binary}:{env["PATH"]}'
         # The activation check for unregistered sessions has its own tests.
@@ -244,6 +261,42 @@ class SessionTests(unittest.TestCase):
                     self.assertEqual(self.reports()[-1]['tag'], 'NO REPLY')
                     self.record.unlink()
                     (self.root / 'reports' / f'{SESSION}.jsonl').unlink()
+
+    def activate_named(self, name, *agents):
+        self.set_hcom_agents(*agents)
+        return self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                        '--decisions', self.decisions, '--hcom-name', name)
+
+    def test_base_name_activate_records_the_full_name_so_the_wait_check_passes(self):
+        result = self.activate_named('futa', 'team-futa', 'team-worker', 'other-kela')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['hcom_name'], 'team-futa')
+        self.assertTrue(json.loads(self.record.read_text())['ledger_path'].endswith('-r1.json'))
+        held = json.loads(self.stop_hook('Done\nNO REPLY: waiting').stdout)
+        self.assertEqual(held['decision'], 'block')
+        self.assertIn('--agent team-futa', held['reason'])
+        waited = subprocess.run(
+            [sys.executable, str(SKILL / 'scripts/lat-watch.py'), 'wait', '--workspace',
+             str(self.work), '--agent', 'futa', '--for', 'worker', '--reason', 'testing'],
+            text=True, capture_output=True, cwd=self.work, env=self.cli_environment())
+        self.assertEqual(waited.returncode, 0, waited.stderr)
+        self.assertTrue((self.work / '.lat/watch/waits/team-futa.json').exists())
+        self.assert_silent(self.stop_hook('Done\nNO REPLY: waiting'))
+
+    def test_full_name_activate_records_it_unchanged(self):
+        result = self.activate_named('team-futa', 'team-futa', 'other-futa')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['hcom_name'], 'team-futa')
+
+    def test_ambiguous_or_unknown_name_is_refused_with_the_usable_full_names(self):
+        for name, agents, message in (
+                ('futa', ('a-futa', 'b-futa'), 'Ambiguous HCOM agent futa: a-futa, b-futa'),
+                ('futa', ('a-kela',), 'Unknown HCOM agent: futa')):
+            with self.subTest(agents=agents):
+                result = self.activate_named(name, *agents)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(self.record.exists())
 
     def test_no_reply_with_active_wait_or_alarm_is_not_held(self):
         self.activate()
