@@ -1520,7 +1520,16 @@ def delivery_sender(event):
     return None
 
 
+def request_watch_notice(message):
+    """HCOM's own "X went idle without responding to your request" notice."""
+    text = event_value(message, 'text', 'data')
+    return (event_value(message, 'from', 'data') == '[hcom-events]'
+            and isinstance(text, str) and '[sub:reqwatch-' in text)
+
+
 def message_releases_wait(message):
+    if request_watch_notice(message):
+        return False
     return event_value(message, 'intent', 'data') not in ('inform', 'ack')
 
 

@@ -442,6 +442,36 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertEqual(watch.wait_release_reason(
             declaration, [], True, True, []), 'target-replied')
 
+    def test_request_watch_notice_keeps_a_wait_but_other_hcom_events_release_it(self):
+        watch = load_watch()
+        declaration = {'agent': 'worker', 'target': 'reviewer'}
+        delivered = [{'type': 'status', 'data': {'context': 'deliver:[hcom-events]', 'position': 9}}]
+
+        def message(sender, text, intent=None):
+            data = {'from': sender, 'text': text}
+            if intent:
+                data['intent'] = intent
+            return {'type': 'message', 'data': data}
+
+        notice = message('[hcom-events]', '@worker [sub:reqwatch-12-sofe] #14 sofe went idle '
+                         'without responding to your request #12')
+        idle = message('[hcom-events]', '@worker [sub:idle-sofe] #15 sofe is idle')
+        request = message('lead', 'please look', 'request')
+
+        def reason(messages):
+            return watch.wait_release_reason(declaration, delivered, False, True, messages)
+
+        self.assertIsNone(reason([notice]))
+        self.assertIsNone(reason([notice, notice]))
+        self.assertEqual(reason([notice, request]), 'message-delivered')
+        self.assertEqual(reason([request, notice]), 'message-delivered')
+        self.assertEqual(reason([idle]), 'message-delivered')
+        self.assertEqual(reason([notice, idle]), 'message-delivered')
+        # Only HCOM's own sender counts as a notice, and only with the subscription tag.
+        self.assertEqual(reason([message('lead', '[sub:reqwatch-12-sofe] copy')]),
+                         'message-delivered')
+        self.assertEqual(reason([message('[hcom-events]', None)]), 'message-delivered')
+
     def test_delivered_messages_reads_messages_addressed_to_the_waiter(self):
         watch = load_watch()
         events = [{'type': 'status', 'data': {'context': 'deliver:x', 'position': 7}},
