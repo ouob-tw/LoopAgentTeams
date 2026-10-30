@@ -1059,6 +1059,15 @@ class WatchDecisionTests(unittest.TestCase):
                 self.assertFalse(watch.background_process_running(
                     'worker', info, tree, current_pid=99))
 
+    def test_command_left_behind_by_an_mcp_server_cannot_be_told_from_a_helper(self):
+        # Known limit: the cost is one extra nudge; counting it would hide every silent stop.
+        watch = load_watch()
+        info = {'tool': 'claude', 'launch_context': {'pid_identity': 'linux:boot-id:100'}}
+        tree, _, env = self.resident_helper_tree(watch, 'claude')
+        command = watch.Process(30, 20, 110, 'S', 30, ('bash', '-c', 'bun test'), env)
+        self.assertFalse(watch.background_process_running(
+            'worker', info, [*tree, command], current_pid=99))
+
     def test_real_work_still_counts_beside_resident_helpers(self):
         watch = load_watch()
         for tool in ('codex', 'claude'):
