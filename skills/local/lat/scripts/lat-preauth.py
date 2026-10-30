@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """LAT pre-authorization lookup (stdlib only).
 
-Three layers say which actions the controller may take without asking: global
-($XDG_CONFIG_HOME/lat/preauth.toml), project (the main checkout's .lat/preauth.toml) and
-controller (the `preauth` field of this round's session record). Each key is read from the
-narrowest layer that sets it: controller > project > global. `check` answers allow or ask for
-one action after the fixed conditions the tool enforces (branch list, the full-suite gate's
-passing records, which tickets the unpushed commits belong to, main checkout at the
-integration branch's tip); with --precedent, an earlier human answer to the same action stands
-in for `allow` when no layer sets it, and the fixed conditions still hold. `show` prints the effective settings and where each value came
-from. Any unreadable or unknown setting makes every check ask. `grant` writes one rule that a
-human-answered decision record names; `record` logs what was done under pre-authorization and
-`report` lists this round's log for the delivery report. The tool never runs the action itself.
+Two layers say which actions the controller may take without asking: global
+($XDG_CONFIG_HOME/lat/preauth.toml) and project (the main checkout's .lat/preauth.toml). Each key
+is read from the narrowest layer that sets it: project > global. `target` comes from the project
+layer alone and [advisor] from the global layer alone. `check` answers allow or ask for one action
+after the fixed conditions the tool enforces (branch list, the full-suite gate's passing records,
+which tickets the unpushed commits belong to, main checkout at the integration branch's tip).
+`show` prints the effective settings and where each value came from. Any unreadable or unknown
+setting makes every check ask. `grant` writes one rule that a human-answered decision record
+names; `record` logs what was done under pre-authorization and `report` lists this round's log for
+the delivery report. The tool never runs the action itself.
 """
 import argparse
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import fcntl
@@ -28,12 +27,9 @@ import sys
 import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import (hcom_send_name, run_cli, shared_lat_dir, write_json_atomic,
-                         write_text_atomic)
-from lat_decision_status import (read_decision_action, read_decision_session,
-                                 read_decision_status)
+from _lat_common import hcom_send_name, run_cli, shared_lat_dir, write_text_atomic
+from lat_decision_status import read_decision_status
 
-LAYERS = ('controller', 'project', 'global')  # narrowest first
 ACTIONS = {'merge': 'merge into the integration branch', 'push': 'push to the remote',
            'deploy-test': 'deploy to the test environment',
            'deploy-prod': 'deploy to production',
@@ -47,14 +43,13 @@ ALWAYS_ASK = {'change-acceptance': 'changing or cutting confirmed acceptance cri
 # settle: a layer said no, or a condition the tool enforces does not hold.
 REASON_KINDS = {'allow-false': 'a layer sets allow=false',
                 'condition': 'a condition the tool enforces does not hold',
-                'unset': 'a setting an earlier answer can stand in for is missing',
-                'precedent': 'the earlier answer does not stand in',
+                'unset': 'no layer sets allow or branches',
                 'always-ask': 'no setting can pre-authorize it',
                 'error': 'the check could not judge it'}
 USER_ONLY_KINDS = ('allow-false', 'condition')
 ACTION_KEYS = {'allow': bool, 'branches': list, 'target': str, 'source': str}
 ADVISOR_KEYS = {'extended': bool, 'may_settle': list, 'must_ask': list, 'source': str}
-TOP_KEYS = {'version', 'experiment', 'actions', 'advisor', 'integration_branch'}
+TOP_KEYS = {'version', 'actions', 'advisor', 'integration_branch'}
 VERSION = 1
 BRANCH_ACTIONS = ('merge', 'push')
 MAIN_CHECKOUT_ACTIONS = ('deploy-test', 'deploy-prod', 'install-host')
@@ -69,9 +64,7 @@ HUMAN_ANSWERED = ('answered', 'approved')
 DECISION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
 GRANT_KEYS = ('allow', 'branches')
 RESULTS = ('succeeded', 'failed')
-REPORT_GROUPS = (('auto', '依預先授權自動執行'), ('precedent', '引用舊答覆定案'),
-                 ('bug-intake', '免確認開工'), ('grant', '設定寫入'))
-ISO_TIME = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:\d\d)?')
+REPORT_GROUPS = (('auto', '依預先授權自動執行'), ('bug-intake', '免確認開工'), ('grant', '設定寫入'))
 
 
 @dataclass
@@ -101,8 +94,6 @@ def validate(data, where):
         problems.append(f'{where}: unknown key `{key}`')
     if 'version' in data and (type(data['version']) is not int or data['version'] != VERSION):
         problems.append(f'{where}: version must be {VERSION}')
-    if 'experiment' in data and not isinstance(data['experiment'], bool):
-        problems.append(f'{where}: experiment must be true or false')
     if 'integration_branch' in data and (not isinstance(data['integration_branch'], str)
                                          or not data['integration_branch'].strip()):
         problems.append(f'{where}: integration_branch must be a branch name')
@@ -155,59 +146,17 @@ def file_layer(name, path):
     return layer, validate(layer.data, f'{name} layer {path}')
 
 
-def controller_layer(workspace, session):
-    """The `preauth` field of this round's session record; only an active round counts."""
-    if not session:
-        return Layer('controller', '(no session ID)', note='no session ID'), []
-    if workspace is None:
-        return Layer('controller', '(not in a Git repository)', note='no Git repository'), []
-    path = shared_lat_dir(workspace) / 'sessions' / f'{session}.json'
-    layer = Layer('controller', f'{path} `preauth`')
-    try:
-        record = json.loads(path.read_text(encoding='utf-8'))
-    except FileNotFoundError:
-        layer.note = 'no session record'
-        return layer, []
-    except (OSError, ValueError) as error:
-        return layer, [f'controller layer {path}: unreadable session record ({error})']
-    if not isinstance(record, dict):
-        return layer, [f'controller layer {path}: session record is not a JSON object']
-    if record.get('status') != 'active':
-        layer.note = f'session is {record.get("status") or "not active"}'
-        return layer, []
-    value = record.get('preauth')
-    if value is None:
-        layer.note = 'no `preauth` field'
-        return layer, []
-    history = record.get('history', [])
-    if not isinstance(history, list) or not all(isinstance(item, dict) for item in history):
-        return layer, [f'controller layer {path}: session `history` is not a list of objects']
-    current = len(history) + 1
-    round_number = value.get('round') if isinstance(value, dict) else None
-    if (not isinstance(value, dict) or value.keys() != {'round', 'settings'}
-            or not isinstance(value['settings'], dict)
-            or type(round_number) is not int or round_number < 1):
-        return layer, [f'controller layer {path}: `preauth` must hold exactly a positive '
-                       'integer `round` and a `settings` table']
-    if round_number != current:
-        layer.note = f'written for round {value.get("round")}, this is round {current}'
-        return layer, []
-    layer.present, layer.data = True, value['settings']
-    return layer, validate(layer.data, f'controller layer {path}')
-
-
-def load_layers(workspace, session):
-    """(layers narrowest first, problems). Problems make every check ask."""
+def load_layers(workspace):
+    """([project layer, global layer], problems, Git top). Problems make every check ask."""
     top = git(workspace, 'rev-parse', '--show-toplevel') if workspace else None
     top = Path(top) if top else None
-    controller, problems = controller_layer(top, session)
     if top is None:
-        project, more = Layer('project', '(not in a Git repository)', note='no Git repository'), []
+        project = Layer('project', '(not in a Git repository)', note='no Git repository')
+        problems = []
     else:
-        project, more = file_layer('project', shared_lat_dir(top) / 'preauth.toml')
-    problems += more
+        project, problems = file_layer('project', shared_lat_dir(top) / 'preauth.toml')
     global_layer, more = file_layer('global', global_path())
-    return [controller, project, global_layer], problems + more, top
+    return [project, global_layer], problems + more, top
 
 
 def section(layer, path):
@@ -236,10 +185,16 @@ def action_settings(layers, action):
     so `target` comes from the project layer alone."""
     effective = resolve(layers, ('actions', action), ACTION_KEYS)
     effective.pop('target', None)
-    project = section(layers[1], ('actions', action)) if layers[1].present else None
+    project = section(layers[0], ('actions', action)) if layers[0].present else None
     if project and 'target' in project:
         effective['target'] = (project['target'], 'project', project.get('source'))
     return effective
+
+
+def advisor_settings(layers):
+    """Effective [advisor] keys. What advisors may settle is the user's own call across
+    projects, so only the global layer counts."""
+    return resolve(layers[1:], ('advisor',), ADVISOR_KEYS)
 
 
 def origin(name, source):
@@ -409,38 +364,7 @@ def resolve_version(top, ref):
     return git(top, 'rev-parse', '--verify', '--quiet', f'{ref}^{{commit}}') if top else None
 
 
-def decisions_dir(top, session):
-    """The decisions directory the round's session record names, else the shared default."""
-    try:
-        record = json.loads((shared_lat_dir(top) / 'sessions' / f'{session}.json').read_text())
-        directory = record.get('decisions_path')
-    except (OSError, ValueError, AttributeError, TypeError):
-        directory = None
-    return Path(directory) if isinstance(directory, str) else shared_lat_dir(top) / 'decisions'
-
-
-def precedent_problems(top, session, decision, action):
-    """(problems, the branch the earlier answer approved, or None when its record has no
-    `- action:` line). Whether the answer said yes and was never reversed is the advisors' call."""
-    if top is None:
-        return ['not in a Git repository'], None
-    if not DECISION_ID.fullmatch(decision):
-        return [f'invalid decision record ID `{decision}`'], None
-    path = decisions_dir(top, session) / f'{decision}.md'
-    problems, text = human_answer_problems(path)
-    if not text:
-        return problems, None
-    named = read_decision_action(path)
-    if named is None:
-        return problems, None
-    if named[0] != action:
-        problems.append(f'earlier answer {decision} is for `{named[0]}`, not `{action}`')
-    elif action in BRANCH_ACTIONS and not named[1]:
-        problems.append(f'earlier answer {decision} names no branch on its `- action:` line')
-    return problems, named[1] or ''
-
-
-def evaluate(action, *, branch=None, commit=None, workspace=None, session=None, precedent=None):
+def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
     """The check's verdict as a dict: verdict, action, target, basis lines, reasons, and
     reason_kinds giving each reason's kind (REASON_KINDS) in the same order."""
     workspace = Path(workspace or Path.cwd())
@@ -464,50 +388,30 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None, 
     if action not in ACTIONS:
         ask('error', f'unknown action `{action}`; known: {", ".join(ACTIONS)}')
         return result
-    layers, problems, top = load_layers(workspace, session)
+    layers, problems, top = load_layers(workspace)
     if problems:
         ask('error', *problems)
         return result
     effective = action_settings(layers, action)
     label = f'actions.{action}'
     allow = effective.get('allow')
-    # A set `allow` is the user's decision; an earlier answer only fills in a missing one.
-    set_aside = (f'; {label}.allow is set, so earlier answer {precedent} does not apply'
-                 if precedent else '')
-    by_precedent = precedent and allow is None
-    if by_precedent:
-        problems, approved = precedent_problems(top, session, precedent, action)
-        ask('precedent', *problems)
-        if not problems:
-            result['basis'].append(f'earlier answer {precedent} stands in for {label}.allow, '
-                                   'which no layer sets')
-    elif allow is None:
+    if allow is None:
         ask('unset', f'no layer sets {label}.allow')
     elif allow[0] is False:
-        ask('allow-false', f'{label}.allow=false from {origin(allow[1], allow[2])}' + set_aside)
+        ask('allow-false', f'{label}.allow=false from {origin(allow[1], allow[2])}')
     else:
-        result['basis'].append(describe('allow', *allow, label) + set_aside)
+        result['basis'].append(describe('allow', *allow, label))
     if action in BRANCH_ACTIONS:
         branches = effective.get('branches')
         if not branch:
             ask('error', '--branch is required for this action')
         elif branches is None:
-            if not by_precedent:  # on the precedent path the list applies only when set
-                ask('unset', f'no layer sets {label}.branches')
+            ask('unset', f'no layer sets {label}.branches')
         elif branch not in branches[0]:
             ask('condition', f'branch `{branch}` is not in {label}.branches '
                              f'{json.dumps(branches[0])} from {origin(branches[1], branches[2])}')
         else:
             result['basis'].append(describe('branches', *branches, label))
-        if by_precedent and branch and approved is not None:
-            if approved and approved != branch:
-                ask('precedent', f'branch `{branch}` is not the branch earlier answer '
-                                 f'{precedent} approved (`{approved}`)')
-            elif approved:
-                result['basis'].append(f'earlier answer {precedent} approved branch `{branch}`')
-        elif by_precedent and branch:
-            result['basis'].append(f'earlier answer {precedent} has no `- action:` line; the '
-                                   'advisors must name its branch in `- authority:`')
     ledger = round_ledger(top, session) if action in GATE_ACTIONS else None
     version = None
     if action in MAIN_CHECKOUT_ACTIONS:
@@ -696,8 +600,7 @@ def cmd_notice(args):
 
 def cmd_check(args):
     result = evaluate(args.action, branch=args.branch, commit=args.commit,
-                      workspace=args.workspace, session=args.session_id,
-                      precedent=args.precedent)
+                      workspace=args.workspace, session=args.session_id)
     if result['verdict'] == 'allow' and args.action in MAIN_CHECKOUT_ACTIONS:
         result['next_steps'] = notice_steps()
     if args.json:
@@ -710,10 +613,7 @@ def cmd_check(args):
 
 
 def cmd_show(args):
-    workspace = Path(args.workspace or Path.cwd())
-    session = args.session_id or next(
-        (os.environ[key] for key in SESSION_ENVS if os.environ.get(key)), None)
-    layers, problems, _ = load_layers(workspace, session)
+    layers, problems, _ = load_layers(Path(args.workspace or Path.cwd()))
     lines = ['Layers (narrowest first):']
     for layer in layers:
         state = 'in effect' if layer.present else f'not in effect: {layer.note}'
@@ -731,10 +631,12 @@ def cmd_show(args):
         lines.append(f'  [actions.{name}]' + ('' if effective else ' (not set; asks)'))
         lines += [f'    {key} = {json.dumps(value, ensure_ascii=False)}  ← {origin(layer, src)}'
                   for key, (value, layer, src) in effective.items()]
-    effective = resolve(layers, ('advisor',), ADVISOR_KEYS)
+    effective = advisor_settings(layers)
     lines.append('  [advisor]' + ('' if effective else ' (not set)'))
     lines += [f'    {key} = {json.dumps(value, ensure_ascii=False)}  ← {origin(layer, src)}'
               for key, (value, layer, src) in effective.items()]
+    if layers[0].present and 'advisor' in layers[0].data:
+        lines.append(f'    專案層的 [advisor] 不生效 ({layers[0].location})')
     print('\n'.join(lines))
     return 0
 
@@ -893,43 +795,12 @@ def grant_problems(text, layer, action, values):
             f'; found: ' + ' | '.join(line.strip() for line in lines)]
 
 
-def answer_times(text):
-    times = []
-    for section in sections(text, '答覆'):
-        for match in ISO_TIME.findall(section[0]):
-            moment = parse_time(match)
-            if moment is not None:
-                times.append(moment)
-    return times
-
-
 def parse_time(value):
     try:
         moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
     except ValueError:
         return None
     return moment if moment.tzinfo else None
-
-
-def round_problems(text, path, session, record):
-    """The controller layer only takes an answer given in this session's current round."""
-    owner = read_decision_session(path)
-    if owner != session:
-        return [f'{path.stem} belongs to session {owner or "(none)"}, not this session {session}']
-    history = record.get('history', [])
-    if not history:
-        return []
-    ended = parse_time(str(history[-1].get('ended_at_utc', '')))
-    if ended is None:
-        return ['previous round has no readable ended_at_utc; cannot tell which round '
-                f'{path.stem} was answered in']
-    times = answer_times(text)
-    if not times:
-        return [f'{path.stem} answer heading has no time; cannot tell which round it was '
-                'answered in']
-    if max(times) <= ended:
-        return [f'{path.stem} was answered in an earlier round (before {ended.isoformat()})']
-    return []
 
 
 def toml_value(value):
@@ -1003,20 +874,6 @@ def write_file_layer(path, action, values):
     return original, write_text_atomic(path, updated, expected=original)
 
 
-def write_controller_layer(path, record, original, round_number, action, values):
-    current = record.get('preauth')
-    settings = (current['settings'] if isinstance(current, dict)
-                and current.get('round') == round_number
-                and isinstance(current.get('settings'), dict) else {})
-    settings = json.loads(json.dumps(settings))
-    settings.setdefault('actions', {}).setdefault(action, {}).update(values)
-    if problems := validate(settings, f'controller layer {path}'):
-        raise Refused('; '.join(problems))
-    return original, write_json_atomic(
-        path, dict(record, preauth={'round': round_number, 'settings': settings}),
-        expected=original)
-
-
 def cmd_grant(args):
     if args.action not in ACTIONS:
         raise Refused(f'`{args.action}` is not a pre-authorizable action; known: '
@@ -1029,49 +886,35 @@ def cmd_grant(args):
     if not values:
         raise Refused('nothing to write: give --allow and/or --branches')
     top, session = round_owner(args)
-    if args.layer == 'controller':
-        target = None
-    else:
-        target = global_path() if args.layer == 'global' else shared_lat_dir(top) / 'preauth.toml'
+    target = global_path() if args.layer == 'global' else shared_lat_dir(top) / 'preauth.toml'
     # The session lock also serializes this round's log; the file lock covers other sessions.
-    file_lock = locked(target.with_name(f'.{target.name}.lock')) if target else nullcontext()
-    with locked(session_lock(top, session)), file_lock:
+    with locked(session_lock(top, session)), locked(target.with_name(f'.{target.name}.lock')):
         return grant_locked(args, top, session, target, values)
 
 
 def grant_locked(args, top, session, target, values):
-    path, record, original, round_number = current_round(top, session)
+    _, record, _, round_number = current_round(top, session)
     source = decision_path(top, record, args.source)
     problems, text = human_answer_problems(source)
     if text:
         problems += grant_problems(text, args.layer, args.action, values)
-        if args.layer == 'controller':
-            problems += round_problems(text, source, session, record)
     if problems:
         raise Refused('; '.join(problems))
     values['source'] = args.source
-    if target is None:
-        changed = path
-        before, written = write_controller_layer(path, record, original, round_number,
-                                                 args.action, values)
-        where = f'{path} `preauth`'
-    else:
-        changed = target
-        before, written = write_file_layer(target, args.action, values)
-        where = str(target)
+    before, written = write_file_layer(target, args.action, values)
     line = ' '.join(grant_words(args.layer, args.action, values))
     try:
         append_record(top, session, round_number,
-                      dict(kind='grant', grant=line, source=args.source, file=where))
+                      dict(kind='grant', grant=line, source=args.source, file=str(target)))
     except (OSError, ValueError) as error:
         # A grant that report cannot list must not stay in effect.
         try:
-            restore(changed, before, written)
+            restore(target, before, written)
         except (OSError, ValueError) as undo:
-            raise ValueError(f'granted {line} to {where} but could not log it ({error}) nor '
+            raise ValueError(f'granted {line} to {target} but could not log it ({error}) nor '
                              f'undo it ({undo}); remove it by hand') from None
-        raise ValueError(f'could not log the grant ({error}); {where} was restored') from None
-    print(f'granted {line} (source {args.source}) → {where}')
+        raise ValueError(f'could not log the grant ({error}); {target} was restored') from None
+    print(f'granted {line} (source {args.source}) → {target}')
     return 0
 
 
@@ -1179,20 +1022,6 @@ def record_locked(args, top, session):
     _, record, _, round_number = current_round(top, session)
     if args.kind == 'auto':
         entry = auto_entry(args, record, top, session, round_number)
-    elif args.kind == 'precedent':
-        missing = [flag for flag, value in (('--decision', args.decision),
-                                             ('--source', args.source),
-                                             ('--basis', args.basis)) if not value]
-        if missing:
-            raise Refused(f'a precedent record needs {", ".join(missing)}')
-        cited = re.fullmatch(r'(\S+) r[1-9][0-9]*', args.source)
-        if not cited:
-            raise Refused('--source must be `<decision ID> r<version>` of the earlier answer')
-        problems, _ = human_answer_problems(decision_path(top, record, cited[1]))
-        if problems:
-            raise Refused('; '.join(problems))
-        entry = dict(kind='precedent', decision=args.decision, source=args.source,
-                     basis=args.basis)
     else:
         conditions = dict(self_reported=args.self_reported, clear_expected=args.clear_expected,
                           single_ticket=args.single_ticket, restores_stated=args.restores_stated)
@@ -1267,9 +1096,6 @@ def report_line(entry):
                    f'{report_notice(entry["notice_after"])}'
                    if 'notice_before' in entry else '')
         return f'- {head}：{entry.get("result")}；依據：{entry.get("basis")}{notices}'
-    if kind == 'precedent':
-        return (f'- {entry.get("decision")} 引用 {entry.get("source")}；依據：{entry.get("basis")}'
-                '（建議寫成規則）')
     if kind == 'bug-intake':
         return (f'- {entry.get("issue")}；原訊息：{entry.get("source")}；本人回報：'
                 f'{entry.get("self_reported")}；哪裡錯與應該怎樣：{entry.get("clear_expected")}；'
@@ -1313,9 +1139,6 @@ def build_parser():
     sub.add_argument('--action', required=True, help=', '.join(ACTIONS))
     sub.add_argument('--branch', help='target branch (merge, push)')
     sub.add_argument('--commit', help='commit the action uses')
-    sub.add_argument('--precedent', metavar='DECISION_ID',
-                     help='earlier human-answered decision record for the same action; it '
-                          'stands in for allow only when no layer sets allow')
     sub.add_argument('--json', action='store_true')
     sub = commands.add_parser('notice', parents=[common],
                               help='send a before/after notice and print its HCOM event ID (none-<n> '
@@ -1327,21 +1150,20 @@ def build_parser():
                         help='effective settings and where each value came from')
     sub = commands.add_parser('grant', parents=[common],
                               help='write one rule a human-answered decision record names')
-    sub.add_argument('--layer', required=True, choices=('global', 'project', 'controller'))
+    sub.add_argument('--layer', required=True, choices=('global', 'project'))
     sub.add_argument('--action', required=True, help=', '.join(ACTIONS))
     sub.add_argument('--allow', choices=('true', 'false'))
     sub.add_argument('--branches', nargs='+', help='branch names')
     sub.add_argument('--source', required=True, help='decision record ID with the answer')
     sub = commands.add_parser('record', parents=[common],
                               help='log one thing done under pre-authorization')
-    sub.add_argument('--kind', choices=('auto', 'precedent', 'bug-intake'), default='auto',
-                     help='auto: an action done under pre-authorization (default); precedent: '
-                          'settled by citing an earlier answer; bug-intake: a short-flow bug '
-                          'ticket started without confirmation')
+    sub.add_argument('--kind', choices=('auto', 'bug-intake'), default='auto',
+                     help='auto: an action done under pre-authorization (default); bug-intake: a '
+                          'short-flow bug ticket started without confirmation')
     sub.add_argument('--action', help='auto: ' + ', '.join(ACTIONS))
     sub.add_argument('--branch', help='auto: target branch')
     sub.add_argument('--commit', help='auto: commit the action used')
-    sub.add_argument('--basis', help='auto: the check line; precedent: why it is the same kind')
+    sub.add_argument('--basis', help='auto: the check line')
     sub.add_argument('--result', choices=RESULTS, help='auto: how the action ended')
     sub.add_argument('--started', help='auto deploy/install: ISO time the action started')
     sub.add_argument('--notice-before', type=notice_id, help='auto deploy/install: HCOM event ID '
@@ -1351,9 +1173,7 @@ def build_parser():
     sub.add_argument('--notice-after', type=notice_id, help='auto deploy/install: HCOM event ID '
                                                             'of the notice sent after '
                                                             'finishing, or a none-<n> id')
-    sub.add_argument('--decision', help='precedent: the decision record settled')
-    sub.add_argument('--source', help='precedent: `<ID> r<version>` of the earlier answer; '
-                                      "bug-intake: where the user's own message is")
+    sub.add_argument('--source', help="bug-intake: where the user's own message is")
     sub.add_argument('--issue', help='bug-intake: the tracker issue opened')
     sub.add_argument('--self-reported', help='bug-intake: why the user reported it in person')
     sub.add_argument('--clear-expected', help='bug-intake: what is wrong and what it should be')
