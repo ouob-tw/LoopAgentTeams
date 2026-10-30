@@ -90,14 +90,13 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 - 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者（含隔離 client 家目錄）先用 `shred -u`，再移除所在 worktree。核對 `temp paths` 的位置都已不存在、`.lat` 內沒有家目錄副本。
 - 以 `git worktree remove` 移除該任務的獨立 worktree，在整合分支所在的工作區執行 `git branch -d` 刪除任務分支（無上游分支時 `-d` 檢查是否已合入該工作區的 `HEAD`，有上游分支時檢查是否已合入上游）；`-D` 僅限使用者明確確認放棄該分支。
-- **先**將任務卡移至 `.lat/tasks/done/`，**再**關閉 Agent；移走後停住監控不再盯該 Agent；卡片仍在而 Agent 消失會被視為意外消失並通知主控。
-- 卡上有 `ledger row` 時，移卡後立刻執行 `uv run --no-project python <lat_dir>/scripts/lat-ledger.py update <列編號> --ledger <總表> --card <done/ 下的新路徑>`，`show` 才不會標示任務卡不一致。`lat-ledger done` 已自動把卡的 `status` 改為 `committed`（檔案證據為 `completed`）並填入 deliverable commit。
+- **先**結案任務卡，**再**關閉 Agent：`uv run --no-project python <lat_dir>/scripts/lat-dispatch.py card close --card <卡片> --status committed|merged|completed --deliverable <commit 或證據文字>`。一次完成改 `status`、填 deliverable commit、移到 `.lat/tasks/done/`、更新總表；失敗則全部還原。移走後停住監控不再盯該 Agent；卡片仍在而 Agent 消失會被視為意外消失並通知主控。
 - `hcom kill` 關閉 Agent 並核對已停止後，立即執行 `uv run --no-project python <lat_dir>/scripts/lat-reap.py reap --agent <Agent 名稱>` 收掉它留下的服務。
 
 只有任務卡明列待完成後續工作時可暫留（如 QA 保留 worktree 供複驗），完成後立即收尾。
 
 交付前以 `uv run --no-project python <lat_dir>/scripts/lat-reap.py scan --limit 0` 列出本輪關閉的程序與仍保留的服務，寫入交付回報。
 
-[Spec 文件審查](spec-review.md#收尾) 沒有 commit，不適用合併門檻：使用者確認或放棄該 Spec 後，主控先將 status 改為 `completed`、deliverable commit 填「無（證據為 issue 留言）」並把任務卡移至 `.lat/tasks/done/`，再關閉審查者。
+[Spec 文件審查](spec-review.md#收尾) 沒有 commit，不適用合併門檻：使用者確認或放棄該 Spec 後，主控先以 `card close --status completed --deliverable '無（證據為 issue 留言）'` 結案任務卡，再關閉審查者。
 
-參謀沒有 commit：階段交界、交付或取消時，主控將 status 改為 `completed`、deliverable commit 填「無（參謀無提交）」，先移卡至 `.lat/tasks/done/`，再關閉 Agent。
+參謀沒有 commit：階段交界、交付或取消時，主控先以 `card close --status completed --deliverable '無（參謀無提交）'` 結案任務卡，再關閉 Agent。

@@ -818,5 +818,63 @@ class PreauthBriefTests(DispatchCase):
         self.assertIn("--preauth must be ACTION or ACTION:BRANCH, not 'Merge dev'", result.stderr)
 
 
+class CardCloseTests(LedgerCase):
+    EVIDENCE = '無（證據為 issue #5 留言 a/b\\c & $x）'
+
+    def close(self, card, *extra, status='completed', deliverable=EVIDENCE):
+        return self.run_script('card', 'close', '--card', str(card), '--status', status,
+                               '--deliverable', deliverable, '--by', 'nanu', *extra)
+
+    def test_close_sets_fields_moves_the_card_and_repoints_the_ledger_row(self):
+        card = self.ledger_card()
+        result = self.close(card)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        done = self.tasks / 'done' / card.name
+        self.assertEqual(result.stdout.strip(), str(done))
+        self.assertFalse(card.exists())
+        text = done.read_text()
+        self.assertIn('- status：completed\n', text)
+        self.assertIn(f'- deliverable commit：{self.EVIDENCE}\n', text)
+        self.assertIn('- agent：nanu-impl123-fida\n', text)
+        self.assertEqual(self.items()[0]['card'], str(done))
+
+    def test_close_without_a_ledger_row_still_closes_the_card(self):
+        card = self.make_card()
+        result = self.close(card, status='merged', deliverable='abc1234')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.tasks / 'done' / card.name).read_text()
+        self.assertIn('- status：merged\n- ', text)
+        self.assertIn('- deliverable commit：abc1234\n', text)
+
+    def test_wrong_ledger_row_leaves_card_and_ledger_unchanged(self):
+        card = self.ledger_card()
+        card.write_text(card.read_text().replace('ledger row：1', 'ledger row：99'))
+        before, items = card.read_text(), self.items()
+        result = self.close(card)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('99', result.stderr)
+        self.assertEqual(card.read_text(), before)
+        self.assertFalse((self.tasks / 'done' / card.name).exists())
+        self.assertEqual(self.items(), items)
+
+    def test_existing_target_unknown_status_and_missing_field_change_nothing(self):
+        card = self.make_card()
+        done = self.tasks / 'done'
+        done.mkdir()
+        (done / card.name).write_text('keep')
+        before = card.read_text()
+        result = self.close(card)
+        self.assertIn('already exists', result.stderr)
+        self.assertEqual((done / card.name).read_text(), 'keep')
+        self.assertNotEqual(self.close(card, status='dispatched').returncode, 0)
+        (done / card.name).unlink()
+        card.write_text(before.replace('- deliverable commit：', '- other：'))
+        broken = card.read_text()
+        result = self.close(card)
+        self.assertIn('deliverable commit', result.stderr)
+        self.assertEqual(card.read_text(), broken)
+        self.assertEqual(list(done.iterdir()), [])
+
+
 if __name__ == '__main__':
     unittest.main()

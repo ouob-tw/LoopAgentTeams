@@ -4,6 +4,8 @@
 `card` creates the task card for an HCOM tag that was just launched; the agent's and the
 orchestrator's full names come from `hcom list --json`. With --native, the card is for a Claude
 built-in agent: its name comes from --agent as given and the card is marked `native agent：是`.
+`card close` ends a card: sets its status and deliverable commit, moves it to done/ and points its
+ledger row at the new path, all or nothing.
 `brief` turns a four-section Markdown file plus that card into a ready-to-send task brief and
 prints the `hcom send` command; its `--name` values are the base names HCOM records for tagged
 senders. It never launches agents and never sends anything. Hand-written cards and briefs stay
@@ -36,6 +38,7 @@ CARD_FIELD = re.compile(r'-\s+([^：\n]+)：\s*(.*)')
 CARD_AGENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?=$|[\s(（])')
 NONE = '無'
 STAGE_ALIASES = {'implement': 'impl'}
+CLOSE_STATUSES = ('committed', 'merged', 'completed')
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
 LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo')
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
@@ -439,10 +442,61 @@ def make_brief(args):
         card['agent'], hcom_send_name(card['orchestrator'], agents), shlex.quote(str(output))))
 
 
+def close_card(args):
+    """Set status and deliverable commit, move the card to done/ and update its ledger row.
+    The ledger row changes first and the original card is removed last, so a failure at any
+    step is rolled back and leaves the card and the ledger as they were."""
+    path = Path(args.card).resolve()
+    deliverable = single_line('--deliverable', args.deliverable)
+    if not deliverable:
+        raise Failure('--deliverable must not be empty')
+    if path.parent.name == 'done':
+        raise Failure(f'card is already in done/: {path}')
+    target = path.parent / 'done' / path.name
+    if target.exists():
+        raise Failure(f'{target} already exists; nothing changed')
+    try:
+        text = path.read_text(encoding='utf-8')
+    except (OSError, UnicodeError) as error:
+        raise Failure(f'task card unreadable: {error}') from error
+    values = {'status': args.status, 'deliverable commit': deliverable}
+    lines, row = text.splitlines(keepends=True), None
+    for index, line in enumerate(lines):
+        match = CARD_FIELD.fullmatch(line.strip())
+        key = match.group(1).strip() if match else None
+        if key == 'ledger row':
+            row = LEDGER_ROW.fullmatch(match.group(2).strip())
+        if key in values:
+            ending = '\n' if line.endswith('\n') else ''
+            lines[index] = f'- {key}：{values.pop(key)}{ending}'
+    if values:
+        raise Failure(f'task card lacks the {" and ".join(values)} field; nothing changed')
+    by = ['--by', args.by] if args.by else []
+
+    def point_ledger_at(card):
+        number, ledger = row.groups()
+        run_ledger(args, 'update', number, '--ledger', ledger, *by, '--card', str(card))
+
+    if row:
+        point_ledger_at(target)
+    try:
+        target.parent.mkdir(exist_ok=True)
+        with open(target, 'x', encoding='utf-8') as stream:
+            stream.write(''.join(lines))
+        path.unlink()
+    except OSError as error:
+        target.unlink(missing_ok=True)
+        if row:
+            point_ledger_at(path)
+        raise Failure(f'card not closed: {error}') from error
+    print(target)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description='LAT dispatch helper')
     commands = parser.add_subparsers(dest='command', required=True)
-    card = commands.add_parser('card', help='Create the task card for a launched HCOM tag')
+    card = commands.add_parser('card', help='Create the task card for a launched HCOM tag '
+                                         '(`card close` ends one: see card close --help)')
     card.add_argument('--tag', required=True)
     card.add_argument('--agent', help='HCOM name (full or base); picks one agent when the tag '
                       'matches several')
@@ -473,6 +527,14 @@ def build_parser():
                       'in (not owner/repo)')
     card.add_argument('--lat-dir', type=Path, default=LAT_DIR,
                       help='LAT skill directory holding scripts/lat-ledger.py')
+    close = commands.add_parser('card-close', prog='lat-dispatch.py card close',
+                                help='Close a card: status, deliverable, move to done/, ledger row')
+    close.add_argument('--card', type=Path, required=True)
+    close.add_argument('--status', required=True, choices=CLOSE_STATUSES)
+    close.add_argument('--deliverable', required=True, help='commit or evidence text, kept as given')
+    close.add_argument('--by', help='actor recorded in the ledger; default as lat-ledger.py')
+    close.add_argument('--lat-dir', type=Path, default=LAT_DIR,
+                       help='LAT skill directory holding scripts/lat-ledger.py')
     brief = commands.add_parser('brief', help='Build the task brief from four sections + a card')
     brief.add_argument('--card', type=Path)
     brief.add_argument('--input', type=Path, required=True)
@@ -494,9 +556,12 @@ def build_parser():
 
 
 def main():
-    args = build_parser().parse_args()
+    argv = sys.argv[1:]
+    if argv[:2] == ['card', 'close']:
+        argv = ['card-close', *argv[2:]]
+    args = build_parser().parse_args(argv)
     try:
-        {'card': make_card, 'brief': make_brief}[args.command](args)
+        {'card': make_card, 'card-close': close_card, 'brief': make_brief}[args.command](args)
     except (Failure, ValueError, OSError) as error:
         print(f'lat-dispatch: {error}', file=sys.stderr)
         return 1
