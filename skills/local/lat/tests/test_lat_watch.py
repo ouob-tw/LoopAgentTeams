@@ -2177,6 +2177,20 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertEqual([record['agent'] for record in records if 'agent' in record],
                          ['orch', 'sora'])
 
+    def test_comma_list_waits_on_first_and_names_the_rest_in_reason(self):
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'absent, reviewer,qa-one', '--reason', 'review round')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertEqual(saved['target'], 'absent')
+        self.assertEqual(saved['reason'], 'review round (also waiting for: reviewer, qa-one)')
+
+    def test_comma_list_rejects_an_invalid_extra_name(self):
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'absent,bad name', '--reason', 'review round')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Invalid HCOM name', result.stderr)
+
     def test_normal_release_rearms_completed_expiry_notification(self):
         watch = load_watch()
         path = watch.wait_path(self.work, 'worker-open')
