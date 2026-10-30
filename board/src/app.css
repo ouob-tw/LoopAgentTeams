@@ -16,7 +16,7 @@
 	/* A chosen control: a pressed toggle, a picked option. */
 	--selected-bg: var(--accent);
 	--selected-text: var(--bg);
-	/* A chosen 沿用上層; 允許 and 要問 use --ok and --warn with --selected-text. */
+	/* A chosen 沿用全域; 允許 and 要問 use --ok and --warn with --selected-text. */
 	--inherit-bg: #4a4f57;
 	--inherit-text: #fff;
 	--disabled-opacity: 0.4;

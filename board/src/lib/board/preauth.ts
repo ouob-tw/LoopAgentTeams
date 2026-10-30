@@ -12,7 +12,7 @@ export const PREAUTH_ACTIONS = [
 export const ALLOW_CHOICES = [
 	{ value: 'allow', label: '允許', mark: '✓' },
 	{ value: 'ask', label: '要問', mark: '?' },
-	{ value: 'inherit', label: '沿用上層', mark: '↑' }
+	{ value: 'inherit', label: '沿用全域', mark: '↑' }
 ] as const;
 
 export type AllowChoice = (typeof ALLOW_CHOICES)[number]['value'];

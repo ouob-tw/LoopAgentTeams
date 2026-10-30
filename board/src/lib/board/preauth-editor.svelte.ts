@@ -113,6 +113,8 @@ export class PreauthEditor {
 			const changes = this.#changes();
 			if (!this.layer || !Object.keys(changes).length) continue;
 			this.#saves++;
+			// A mark left from the last save must not stand beside this one's failure.
+			this.savedMark = false;
 			const sent = $state.snapshot(this.form)!;
 			const result = await request<PreauthSettings>(this.#url, {
 				method: 'PUT',

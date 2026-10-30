@@ -141,6 +141,7 @@ test.skipIf(!CHROME)('a chosen button is filled in the colour of its meaning, re
 	}
 	await tab.eval(`document.documentElement.dataset.theme = 'dark'`);
 	expect(await tab.eval(`${allow('merge', 'allow')}.innerText.replace(/\\s+/g, '')`)).toBe('✓允許');
+	expect(await tab.eval(`${allow('deploy-prod', 'inherit')}.innerText.replace(/\\s+/g, '')`)).toBe('↑沿用全域');
 }, 60_000);
 
 test.skipIf(!CHROME)('a value from the global file opens the dialog at its action, marked for a moment; project values are no links', async () => {
