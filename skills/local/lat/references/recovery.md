@@ -69,8 +69,8 @@ Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 的 DECIDE�
 參謀行為 `exempt prior-promise` 或 `exempt must-ask` 時，取第一行 `- exempt-basis:` 核對 [參謀](advisors.md) 的依據，逐題列出原因，攔下與只警告規則同上：
 
 - 兩類都攔：缺依據行或值為空。
-- `prior-promise`：格式不是 `<待決 ID> r<版本>`；引用的紀錄不存在；或紀錄沒有該版本的真人答覆（標題以 `答覆` 或 `真人答覆` 開頭、內有 `- 來源：` 行的 `##` 段落）。段落的標題、`- 題目：`、`- 題號版本：` 都沒寫版本時，算回答紀錄目前的版本。
-- `must-ask`：依據不是 `spend`、`delete-user-data`，也不是全域 `must_ask` 的原文；或依據是 `change-acceptance`、`new-ticket`、`scope-expansion` 而全域 `may_settle` 不是空的。
+- `prior-promise`：格式不是 `<待決 ID> r<版本>`；引用的紀錄不存在或讀不出；或紀錄沒有該版本的真人答覆（標題以 `答覆` 或 `真人答覆` 開頭、內有 `- 來源：` 行的 `##` 段落）。段落的標題與 `- 題目：`、`- 題目版本：`、`- 題號版本：`、`- revision:` 都沒寫版本時，算回答紀錄目前的版本。
+- `must-ask`：依據不是 `spend`、`delete-user-data`，也不是全域 `must_ask` 的原文；或依據是 `change-acceptance`、`new-ticket`、`scope-expansion` 而全域 `may_settle` 不是空的，即使這三個字也寫在 `must_ask` 裡。
 - 只警告：全域設定讀不出（`spend`、`delete-user-data` 不需設定，照常通過），或核對本身出錯。專案層設定有錯不影響，`[advisor]` 只取全域層。
 
 已寫入面板或問過使用者的題目補做諮詢後，維持 pending 並寫 `- advisor: late <結論>`；參謀建議定案或自行查證時，重列題目的 ➡️ 行附建議與授權來源，由真人解除待答。

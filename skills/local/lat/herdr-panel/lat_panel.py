@@ -649,8 +649,6 @@ def _check_exempt_basis(advisor_words, basis, decisions):
     """Refuse an exemption whose basis does not hold; settings that cannot be read only warn."""
     category = exempt_basis_category(advisor_words)
     if category is None:
-        if basis is not None:
-            raise ValueError("--exempt-basis only applies to exempt prior-promise or must-ask")
         return
     error, warning = _lat_session().preauth_module().exempt_basis_problem(
         category, basis, decisions)
@@ -676,8 +674,12 @@ def _ask(args):
         error = advisor_error(args.advisor, args.help_question)
         if error:
             raise ValueError(f"--advisor: {error}")
-        _check_exempt_basis(args.advisor.strip().lower().split(), args.exempt_basis,
-                            args.decisions)
+        advisor_words = args.advisor.strip().lower().split()
+        if args.exempt_basis is not None:
+            args.exempt_basis = args.exempt_basis.strip()
+            if exempt_basis_category(advisor_words) is None:
+                raise ValueError("--exempt-basis only applies to exempt prior-promise or must-ask")
+        _check_exempt_basis(advisor_words, args.exempt_basis, args.decisions)
         session = args.session_id or _ask_session(args.questions)
         help_question = args.help_question
     else:

@@ -866,7 +866,7 @@ def answer_names_revision(section, revision, record_revision):
     """Whether an answer section answers `revision`. One whose heading and question line name
     no version answers the record's current version."""
     named = [line for line in section
-             if line.startswith('## ') or re.match(r'^- (題目|題號版本)：', line)]
+             if line.startswith('## ') or re.match(r'^- (題目|題目版本|題號版本|revision)[：:]', line)]
     versions = re.findall(r'(?<![0-9A-Za-z_-])r([1-9][0-9]*)(?![0-9A-Za-z_-])', '\n'.join(named))
     return revision in (versions or record_revision)
 
@@ -879,7 +879,10 @@ def prior_promise_problem(basis, decisions):
     path = Path(decisions) / f'{match[1]}.md'
     if not path.is_file():
         return f'{match[1]} 紀錄不存在'
-    text = path.read_text(encoding='utf-8')
+    try:
+        text = path.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError) as error:
+        return f'{match[1]} 紀錄讀不出（{error}）'
     record_revision = re.findall(r'^- version:\s*r([0-9]+)\b', text, re.MULTILINE | re.IGNORECASE)[:1]
     if not any(re.match(r'^- 來源：\s*\S', line)
                and answer_names_revision(section, match[2], record_revision)
@@ -898,13 +901,13 @@ def must_ask_problem(basis):
     if layers[1].problems:
         return None, '；'.join(layers[1].problems)
     settings = advisor_settings(layers)
+    if basis in SETTLEABLE_WORDS:
+        if settings.get('may_settle', ([],))[0]:
+            return f'全域 may_settle 不是空的，{basis} 可能由參謀定案，照常諮詢', None
+        return None, None
     if basis in [item.strip() for item in settings.get('must_ask', ([],))[0]]:
         return None, None
-    if basis not in SETTLEABLE_WORDS:
-        return f'依據不在全域 must_ask 內，也不是 {"、".join(MUST_ASK_WORDS)}：{basis}', None
-    if settings.get('may_settle', ([],))[0]:
-        return f'全域 may_settle 不是空的，{basis} 可能由參謀定案，照常諮詢', None
-    return None, None
+    return f'依據不在全域 must_ask 內，也不是 {"、".join(MUST_ASK_WORDS)}：{basis}', None
 
 
 def exempt_basis_problem(category, basis, decisions):

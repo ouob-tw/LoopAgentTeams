@@ -503,6 +503,7 @@ class ExemptBasisTests(PreauthQuestionTests):
     def test_older_answer_section_forms_count(self):
         forms = (('## 真人答覆\n- 答覆：A\n- 題號版本：LAT-A r2\n- 來源：面板\n', 'r2'),
                  ('## 答覆 r2（聊天，2026-10-22）\n- 來源：聊天\n', 'r2'),
+                 ('## 真人答覆\n- 題目版本：LAT-A r2\n- 來源：面板\n', 'r2'),
                  # No section names a version, so it answers the record's current one.
                  ('## 答覆\n- 來源：聊天\n', 'r2'))
         for section, version in forms:
@@ -554,6 +555,10 @@ class ExemptBasisTests(PreauthQuestionTests):
         self.config.unlink()
         self.assertEqual(self.stop_record(self.MUST + '- exempt-basis: new-ticket\n'), {})
 
+    def test_the_settleable_words_listed_in_must_ask_still_need_an_empty_may_settle(self):
+        self.config.write_text('[advisor]\nmay_settle = ["細節"]\nmust_ask = ["new-ticket"]\n')
+        self.assert_held(self.MUST + '- exempt-basis: new-ticket\n', 'may_settle')
+
     def test_the_project_layer_advisor_section_does_not_count(self):
         self.project.write_text('[advisor]\nmust_ask = ["專案自己寫的"]\n')
         self.assert_held(self.MUST + '- exempt-basis: 專案自己寫的\n', '不在全域')
@@ -582,14 +587,48 @@ class ExemptBasisTests(PreauthQuestionTests):
         self.assert_held(self.MUST + '- exempt-basis: 主控覺得該問\n', '不在全域')
 
     def test_a_failing_check_warns_for_its_question_and_others_are_still_checked(self):
-        self.cited.write_bytes(b'\xff\xfe')
+        shim = self.root / 'shim.py'
+        shim.write_text(
+            'import importlib.util\n'
+            f'spec = importlib.util.spec_from_file_location("lat_session", {str(SESSION_SCRIPT)!r})\n'
+            'helper = importlib.util.module_from_spec(spec)\n'
+            'spec.loader.exec_module(helper)\n'
+            'load = helper.preauth_module\n'
+            'def broken_promise():\n'
+            '    module = load()\n'
+            '    check = module.exempt_basis_problem\n'
+            '    def failing(category, basis, decisions):\n'
+            '        if category == "prior-promise": raise RuntimeError("broken")\n'
+            '        return check(category, basis, decisions)\n'
+            '    module.exempt_basis_problem = failing\n'
+            '    return module\n'
+            'helper.preauth_module = broken_promise\n'
+            'raise SystemExit(helper.main())\n')
         (self.decisions / 'LAT-B.md').write_text(self.MUST)
         self.decision.write_text(self.PROMISE + '- exempt-basis: LAT-A r2\n')
-        output = self.stop('問題全文\nDECIDE: LAT-P r1 LAT-B r1')
+        payload = dict(hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
+                       stop_hook_active=False,
+                       last_assistant_message='問題全文\nDECIDE: LAT-P r1 LAT-B r1')
+        output = json.loads(self.run_script(shim, 'hook', '--client', 'codex', payload=payload).stdout)
         self.assertIn('LAT-B r1：缺依據行', output['reason'])
         self.assertNotIn('LAT-P r1：', output['reason'])
-        warning = self.stop('問題全文\nDECIDE: LAT-P r1 LAT-B r1', active=True)['systemMessage']
-        self.assertIn('LAT 免諮詢依據核對發生錯誤，未攔下：LAT-P r1', warning)
+        payload['stop_hook_active'] = True
+        result = self.run_script(shim, 'hook', '--client', 'codex', payload=payload)
+        self.assertIn('LAT 免諮詢依據核對發生錯誤，未攔下：LAT-P r1（broken）',
+                      json.loads(result.stdout)['systemMessage'])
+
+    def test_a_record_that_cannot_be_read_is_held_in_stop_and_ask(self):
+        self.cited.write_bytes(b'\xff\xfe')
+        self.assert_held(self.PROMISE + '- exempt-basis: LAT-A r2\n', 'LAT-A 紀錄讀不出')
+        result = self.ask('--advisor', 'exempt prior-promise', '--exempt-basis', 'LAT-A r2')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('LAT-A 紀錄讀不出', result.stderr)
+
+    def test_a_reopened_record_keeps_the_version_its_answer_names(self):
+        self.cited.write_text('- status: pending\n- version: r2\n\n## 真人答覆\n'
+                              '- 題目版本：LAT-A r1\n- 來源：面板\n')
+        self.assertEqual(self.stop_record(self.PROMISE + '- exempt-basis: LAT-A r1\n'), {})
+        self.assert_held(self.PROMISE + '- exempt-basis: LAT-A r2\n', '沒有 r2 的真人答覆')
 
     def test_other_categories_need_no_basis(self):
         for advisor in ('exempt account-quota', 'exempt requirement-discussion', 'needs-human',
@@ -607,6 +646,16 @@ class ExemptBasisTests(PreauthQuestionTests):
                           identifier='LAT-O')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('- exempt-basis: LAT-A r2\n', (self.decisions / 'LAT-O.md').read_text())
+
+    def test_ask_strips_the_basis_like_the_line_is_read(self):
+        result = self.ask('--advisor', 'exempt must-ask', '--exempt-basis', ' spend ')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('- exempt-basis: spend\n', (self.decisions / 'LAT-N.md').read_text())
+
+    def test_ask_ignores_a_leftover_basis_after_the_category_changes(self):
+        self.decision.write_text('- status: pending\n- advisor: needs-human\n- exempt-basis: nope\n')
+        result = self.ask(identifier='LAT-P')
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_ask_refuses_a_wrong_basis_and_writes_nothing(self):
         for label, extra, why in (
