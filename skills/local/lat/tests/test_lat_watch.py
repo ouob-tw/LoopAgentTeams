@@ -794,6 +794,157 @@ class WatchDecisionTests(unittest.TestCase):
                 return watch.release_wait_if_needed(
                     root, decisions, 'orch', declaration, agents=agents)
 
+    def release_multi_wait(self, declaration, *, messages=(), replied=(), deliver=True,
+                           decisions_text=None):
+        """Run one release check; returns (reason, stored declaration)."""
+        watch = load_watch()
+        declaration = {'agent': 'waiting-agent', 'target': 'one-sofe', 'kind': 'agent',
+                       'declared_at_utc': '2026-10-04T14:00:58+00:00', 'active': True,
+                       'targets': [{'target': 'one-sofe', 'kind': 'agent'},
+                                   {'target': 'two-teho', 'kind': 'agent'}], **declaration}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            decisions = root / 'decisions'
+            decisions.mkdir()
+            for name, text in (decisions_text or {}).items():
+                (decisions / f'{name}.md').write_text(text)
+            path = watch.wait_path(root, 'waiting-agent')
+            watch.write_object(path, declaration)
+            agents = {'waiting-agent': {'name': 'waiting-agent', 'base_name': 'waiter',
+                                        'session_id': 's'}}
+            for name in ('one-sofe', 'two-teho'):
+                base = name.split('-')[1]
+                agents[name] = {'name': name, 'base_name': base, 'session_id': name,
+                                'transcript_path': str(root / name)}
+                if name in replied:
+                    (root / name).write_text('')
+            events = [{'type': 'status', 'data': {'context': 'deliver:x', 'position': 9}}]
+            with (patch.object(watch, 'session_events', return_value=events if deliver else []),
+                  patch.object(watch, 'delivered_messages', return_value=list(messages)),
+                  patch.object(watch, 'successful_hcom_send_since',
+                               side_effect=lambda transcript, *_, **__: Path(transcript).exists())):
+                reason = watch.release_wait_if_needed(root, decisions, 'orch', declaration,
+                                                      agents=agents)
+            return reason, json.loads(path.read_text())
+
+    @staticmethod
+    def sent(sender, intent=None):
+        data = {'from': sender, 'text': 'x'}
+        if intent:
+            data['intent'] = intent
+        return {'type': 'message', 'data': data}
+
+    def test_multi_wait_one_reply_keeps_it_active_and_moves_to_the_next_target(self):
+        reason, stored = self.release_multi_wait({}, messages=[self.sent('sofe')])
+        self.assertIsNone(reason)
+        self.assertTrue(stored['active'])
+        self.assertEqual(stored['answered'], ['one-sofe'])
+        self.assertEqual(stored['target'], 'two-teho')
+
+    def test_multi_wait_reply_is_read_from_the_targets_transcript_too(self):
+        reason, stored = self.release_multi_wait({}, replied=['two-teho'], deliver=False)
+        self.assertIsNone(reason)
+        self.assertEqual(stored['answered'], ['two-teho'])
+        self.assertEqual(stored['target'], 'one-sofe')
+
+    def test_multi_wait_ends_only_when_all_answered(self):
+        reason, stored = self.release_multi_wait(
+            {'answered': ['one-sofe'], 'target': 'two-teho'}, messages=[self.sent('teho')])
+        self.assertEqual(reason, 'targets-answered')
+        self.assertFalse(stored['active'])
+        self.assertEqual(stored['released_reason'], 'targets-answered')
+
+    def test_multi_wait_answered_target_writing_again_keeps_it_active(self):
+        reason, stored = self.release_multi_wait(
+            {'answered': ['one-sofe'], 'target': 'two-teho'},
+            messages=[self.sent('sofe', 'request')])
+        self.assertIsNone(reason)
+        self.assertTrue(stored['active'])
+
+    def test_multi_wait_inform_or_ack_from_a_target_is_not_an_answer(self):
+        for intent in ('inform', 'ack'):
+            with self.subTest(intent=intent):
+                reason, stored = self.release_multi_wait(
+                    {}, messages=[self.sent('sofe', intent)])
+                self.assertIsNone(reason)
+                self.assertNotIn('answered', stored)
+                self.assertEqual(stored['target'], 'one-sofe')
+
+    def test_multi_wait_third_party_request_still_releases(self):
+        reason, stored = self.release_multi_wait(
+            {}, messages=[self.sent('sofe'), self.sent('lead', 'request')])
+        self.assertEqual(reason, 'message-delivered')
+        self.assertFalse(stored['active'])
+
+    def test_multi_wait_unreadable_delivery_still_releases(self):
+        reason, _ = self.release_multi_wait({})
+        self.assertEqual(reason, 'message-delivered')
+
+    def test_multi_wait_with_a_decision_needs_it_resolved(self):
+        mixed = {'target': 'D1', 'kind': 'decision', 'match': 'exact',
+                 'targets': [{'target': 'D1', 'kind': 'decision', 'match': 'exact'},
+                             {'target': 'two-teho', 'kind': 'agent'}]}
+        reason, stored = self.release_multi_wait(mixed, messages=[self.sent('teho')],
+                                                 decisions_text={'D1': '- status: pending\n'})
+        self.assertIsNone(reason)
+        self.assertEqual(stored['answered'], ['two-teho'])
+        self.assertEqual((stored['target'], stored['kind']), ('D1', 'decision'))
+        reason, stored = self.release_multi_wait(mixed, deliver=False,
+                                                 decisions_text={'D1': '- status: approved\n'})
+        self.assertIsNone(reason)
+        self.assertEqual((stored['target'], stored['kind'], stored['answered']),
+                         ('two-teho', 'agent', ['D1']))
+        self.assertNotIn('match', stored)
+
+    def test_multi_wait_expired_is_not_rewritten_but_can_still_be_released(self):
+        expired = {'active': False, 'released_reason': 'expired', 'expiry_count': 1}
+        reason, stored = self.release_multi_wait(expired, messages=[self.sent('sofe')])
+        self.assertIsNone(reason)
+        self.assertEqual(stored['target'], 'one-sofe')
+        self.assertNotIn('answered', stored)
+        reason, stored = self.release_multi_wait(
+            expired, messages=[self.sent('sofe'), self.sent('teho')])
+        self.assertEqual(reason, 'targets-answered')
+        self.assertEqual(stored['expiry_count'], 0)
+
+    def test_multi_wait_expiry_nudge_names_only_unanswered_targets(self):
+        watch = load_watch()
+        idle = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        saved, actions, _ = watch.decide_wait(
+            dict(agent='worker', target='two', kind='agent', declared_at=0,
+                 declared_at_utc='1970-01-01T00:00:00+00:00', active=True,
+                 targets=[dict(target=name, kind='agent') for name in ('one', 'two', 'three')],
+                 answered=['one']), idle, None, None, 3600)
+        self.assertEqual(saved['released_reason'], 'expired')
+        self.assertIn('wait for two, three expired', actions[0].text)
+
+    def test_silent_stop_without_any_wait_still_reaches_the_orchestrator(self):
+        # Dispatch no longer gets HCOM's idle notice, so the stall watch must see this alone.
+        watch = load_watch()
+        idle = watch.Observation('worker', 'listening', True, False, 100, 1_000, 10,
+                                 orchestrator_wait_started_at=0)
+        state, _ = watch.decide(None, idle, now=0)
+        state, actions = watch.decide(state, idle, now=600)
+        self.assertEqual([action.kind for action in actions], ['nudge'])
+        state, actions = watch.decide(state, idle, now=1_200)
+        self.assertEqual([action.kind for action in actions], ['notify-orchestrator'])
+
+    def test_target_idle_with_only_a_background_process_does_not_keep_the_waiter_waiting(self):
+        # A background command hides the stall from the target's own checks; the waiter's
+        # deadline must still fire, since background work alone is not progress.
+        watch = load_watch()
+        target = watch.Observation('worker', 'listening', True, True, 100, 1_000, 10)
+        state, actions = watch.decide(None, target, now=0)
+        state, actions = watch.decide(state, target, now=3_000)
+        self.assertEqual(actions, ())
+        waiter = watch.Observation('orch', 'listening', True, False, 10, 10, 1)
+        saved, _, events = watch.decide_wait(
+            dict(agent='orch', target='worker', kind='agent', declared_at=0, deadline_at=3_000,
+                 declared_at_utc='1970-01-01T00:00:00+00:00', active=True),
+            waiter, target, dict(state, last_progress_at=0), 3_000)
+        self.assertEqual(events, ['wait-expired'])
+        self.assertFalse(saved['active'])
+
     def test_target_message_to_third_party_does_not_release_wait(self):
         self.assertIsNone(self.release_wait_after_target_send('third-agent'))
 
@@ -1562,7 +1713,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -2236,13 +2387,78 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertEqual([record['agent'] for record in records if 'agent' in record],
                          ['orch', 'sora'])
 
-    def test_comma_list_waits_on_first_and_names_the_rest_in_reason(self):
+    def test_comma_list_waits_for_every_entry(self):
         result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
-                          '--for', 'absent, reviewer,qa-one', '--reason', 'review round')
+                          '--for', 'absent, reviewer,qa-one,absent,', '--reason', 'review round')
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = json.loads(result.stdout)
         self.assertEqual(saved['target'], 'absent')
-        self.assertEqual(saved['reason'], 'review round (also waiting for: reviewer, qa-one)')
+        self.assertEqual(saved['reason'], 'review round')
+        self.assertEqual(saved['targets'], [{'target': name, 'kind': 'agent'}
+                                            for name in ('absent', 'reviewer', 'qa-one')])
+        self.assertIn('deadline_at', saved)
+
+    def test_single_target_declaration_has_no_list(self):
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'reviewer,reviewer', '--reason', 'review round')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('targets', json.loads(result.stdout))
+
+    def test_comma_list_mixes_decisions_and_agents(self):
+        decisions = self.wait_session()
+        (decisions / 'HELP.md').write_text('- status: pending\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'HELP,reviewer', '--minutes', '5', '--reason', 'both')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertEqual((saved['kind'], saved['target'], saved['match']),
+                         ('decision', 'HELP', 'exact'))
+        self.assertEqual(saved['targets'], [
+            {'target': 'HELP', 'kind': 'decision', 'match': 'exact'},
+            {'target': 'reviewer', 'kind': 'agent'}])
+        self.assertEqual(saved['deadline_at'], saved['declared_at'] + 300)
+
+    def test_comma_list_rejects_a_resolved_decision_or_self_anywhere_and_keeps_the_old_wait(self):
+        decisions = self.wait_session()
+        (decisions / 'DONE.md').write_text('- status: approved\n')
+        (decisions / 'OPEN.md').write_text('- status: pending\n')
+        path = self.work / '.lat/watch/waits/worker-open.json'
+        self.assertEqual(self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                                  '--for', 'OPEN', '--reason', 'old').returncode, 0)
+        before = path.read_bytes()
+        for targets, text in (('reviewer,DONE', 'Cannot wait on DONE'),
+                              ('reviewer,worker-open', 'Cannot wait on yourself')):
+            with self.subTest(targets=targets):
+                result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                                  '--for', targets, '--reason', 'x')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(text, result.stderr)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_minutes_is_rejected_only_when_no_listed_target_has_a_deadline(self):
+        decisions = self.wait_session()
+        for name in ('A', 'B'):
+            (decisions / f'{name}.md').write_text('- status: pending\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'A,B', '--minutes', '5', '--reason', 'x')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--minutes is not allowed', result.stderr)
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'A,B', '--reason', 'x')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('deadline_at', json.loads(result.stdout))
+
+    def test_orchestrator_in_a_list_does_not_lift_the_other_agents_deadline(self):
+        self.wait_session()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"},{"name":"qa"}]\'\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'orch,qa', '--reason', 'x')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertEqual(saved['target'], 'orch')
+        self.assertIn('deadline_at', saved)
 
     def test_comma_list_rejects_an_invalid_extra_name(self):
         result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
@@ -2764,7 +2980,7 @@ esac
             with self.subTest(status=status):
                 (decisions / 'teho-lid-1.md').write_text(f'- status: {status}\n')
                 result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
-                                  '--for', 'teho,teho-lid-1', '--reason', 'waiting')
+                                  '--for', 'teho', '--reason', 'waiting')
                 self.assertEqual(result.returncode, 0, result.stderr)
                 stored = json.loads(wait.read_text())
                 self.assertEqual((stored['kind'], stored['target']), ('agent', 'teho'))
@@ -4925,7 +5141,9 @@ esac
             'open.md', 'worker-open', 'orch', 'in progress', 'inspect failure')
         os.utime(self.tasks / 'open.md', (1_700, 1_700))
         watch.write_object(watch.wait_path(self.work, 'orch'), {
-            'agent': 'orch', 'target': 'worker-wait',
+            'agent': 'orch', 'target': 'someone-else', 'kind': 'agent',
+            'targets': [{'target': 'someone-else', 'kind': 'agent'},
+                        {'target': 'worker-wait', 'kind': 'agent'}],
             'reason': 'orchestrator handling',
             'declared_at': 1_300, 'declared_at_utc': '2026-10-04T00:00:00+00:00',
             'active': False, 'released_reason': 'message-delivered',
@@ -5367,7 +5585,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -5391,7 +5609,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -6075,7 +6293,7 @@ esac
         self.assertEqual(state['worker']['decision'], 'valid-wait')
         self.assertEqual(self.wait_file.read_bytes(), before)
         self.assertEqual(state['worker']['feature_versions'],
-                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1})
+                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1})
         # The wait still expires at its original deadline, counted once, with the real
         # idle time, and the agent is nudged for the expiry rather than as a stall.
         self.cycle(self.start + 3000)

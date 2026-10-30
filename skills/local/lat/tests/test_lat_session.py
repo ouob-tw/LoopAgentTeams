@@ -332,7 +332,10 @@ class SessionTests(unittest.TestCase):
     def test_no_reply_with_active_wait_or_alarm_is_not_held(self):
         self.activate()
         for extra in (dict(), dict(kind='decision', target='LAT-A'),
-                      dict(kind='alarm', target='alarm', due_at=9e12)):
+                      dict(kind='alarm', target='alarm', due_at=9e12),
+                      dict(kind='agent', target='qa', answered=['impl'],
+                           targets=[dict(target='impl', kind='agent'),
+                                    dict(target='qa', kind='agent')])):
             with self.subTest(extra=extra):
                 self.declare_wait(**extra)
                 self.assert_silent(self.stop_hook('NO REPLY: waiting'))

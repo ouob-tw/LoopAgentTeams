@@ -1307,7 +1307,7 @@ def undeclared_wait_check(record, message):
         '--workspace', record['workspace'], '--agent', record['hcom_name'],
         '--for', '<決策 ID 或 Agent 名稱>', '--reason', '<一句原因>'])
     return ('LAT 等待檢查未通過：這則以 `NO REPLY:` 結尾，但你沒有有效的等待或鬧鐘聲明'
-            '（等待對象回過訊息會使聲明自動失效，也可能是尚未宣告）。沒有聲明時監控不會保溫。'
+            '（等待對象全部回過訊息會使聲明自動失效，也可能是尚未宣告）。沒有聲明時監控不會保溫。'
             f'若仍在等，先執行 `{command}`（定時喚醒改用 `alarm`），再照原樣結束回合；'
             '真的不需要聲明（例如有背景指令在跑）就直接照原樣結束回合。')
 
