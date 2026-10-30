@@ -16,6 +16,7 @@ import {
 	resolveTheme,
 	SCALE,
 	THEME_KEY,
+	THEMES,
 	WIDTHS,
 	type Column,
 	type Theme
@@ -53,7 +54,7 @@ class Appearance {
 		const query = window.matchMedia('(prefers-color-scheme: light)');
 		const read = () => (query.matches ? 'light' : 'dark');
 		this.system = read();
-		this.saved = remembered<Theme | ''>(THEME_KEY, ['dark', 'light'], '') || null;
+		this.saved = remembered<Theme | ''>(THEME_KEY, THEMES, '') || null;
 		this.apply();
 		query.addEventListener('change', () => {
 			this.system = read();
