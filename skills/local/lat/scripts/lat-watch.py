@@ -3427,9 +3427,12 @@ def declare_wait(args):
               f'as given: {error}', file=sys.stderr)
     else:
         agent = resolve_agent_name(agents, agent, required=True)
+    # A comma list waits on its first entry; the others are named in the reason.
+    target, *also = (part.strip() for part in args.target.split(','))
+    also = [valid_name(name) for name in also if name]
     declaration = {
         'agent': agent,
-        'target': valid_name(args.target),
+        'target': valid_name(target),
         'reason': args.reason.strip(),
         'declared_at': time.time(),
         'declared_at_utc': datetime.now(timezone.utc).isoformat(),
@@ -3437,6 +3440,8 @@ def declare_wait(args):
     }
     if not declaration['reason']:
         raise ValueError('--reason must not be empty')
+    if also:
+        declaration['reason'] += f' (also waiting for: {", ".join(also)})'
     decision_target = False
     owners = []
     for path in sorted((lat_dir(workspace) / 'sessions').glob('*.json')):
@@ -3461,15 +3466,15 @@ def declare_wait(args):
                 continue
         decisions = Path(record['decisions_path'])
         owners.append((owner, decisions))
-        decision = pending_decision(decisions, args.target)
+        decision = pending_decision(decisions, target)
         decision_target = decision_target or decision is not None
         if decision is False:
-            matches = sorted(path for path in decisions.glob(f'{args.target}*')
+            matches = sorted(path for path in decisions.glob(f'{target}*')
                              if path.is_file())
             statuses = ', '.join(f'{path}: {read_decision_status(path).status}'
                                  for path in matches)
             raise ValueError(
-                f'Cannot wait on {args.target}: no pending decision for {owner}; '
+                f'Cannot wait on {target}: no pending decision for {owner}; '
                 f'matching records: {statuses}. To wait on the user\'s reply or a '
                 'manual step, record it as a pending decision and wait on that ID.')
     declaration['kind'] = 'decision' if decision_target else 'agent'
@@ -3704,7 +3709,8 @@ def main():
     waiting = commands.add_parser('wait', help='Declare an agent wait condition')
     waiting.add_argument('--workspace', type=Path, required=True)
     waiting.add_argument('--agent', required=True)
-    waiting.add_argument('--for', dest='target', required=True)
+    waiting.add_argument('--for', dest='target', required=True,
+                         help='Decision ID or agent name; a comma list waits on the first')
     waiting.add_argument('--reason', required=True)
     waiting.add_argument('--minutes', type=int, choices=range(1, 721),
                          metavar='1..720', help=f'Agent wait deadline (default: {WAIT_DEFAULT_MINUTES} minutes)')
