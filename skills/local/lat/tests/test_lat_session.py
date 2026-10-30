@@ -71,6 +71,7 @@ class SessionTests(unittest.TestCase):
         hcom = self.binary / 'hcom'
         hcom.write_text(
             '#!/bin/sh\n'
+            'case "$*" in "list --json"|"list --json --name "*) ;; *) exit 2;; esac\n'
             'while IFS= read -r line; do printf \'%s\\n\' "$line"; done < "$FAKE_HCOM_LIST"\n'
         )
         hcom.chmod(0o755)
