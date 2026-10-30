@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-dispatch.py'
 WATCH = SCRIPT.parent / 'lat-watch.py'
@@ -866,6 +867,53 @@ class CardCloseTests(LedgerCase):
         self.assertIn('card not closed', result.stderr)
         self.assertEqual(card.read_text(), before)
         self.assertEqual(self.ledger.read_text(), stored)
+
+    def close_in_process(self, card, wrap_ledger=None, fail_unlink=None):
+        spec = importlib.util.spec_from_file_location('lat_dispatch_close', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        args = module.build_parser().parse_args(
+            ['card-close', '--card', str(card), '--status', 'completed', '--deliverable', 'x',
+             '--by', 'nanu'])
+        original, run = Path.unlink, module.run_ledger
+        self.listing.write_text(json.dumps(self.agents))
+
+        def unlink(path, *a, **k):
+            if path == fail_unlink:
+                raise PermissionError('injected')
+            return original(path, *a, **k)
+
+        def ledger(args, command, *rest):
+            result = run(args, command, *rest)
+            if wrap_ledger and command == 'update':
+                raise module.Failure('lat-ledger update timed out')
+            return result
+
+        with mock.patch.dict(os.environ, {'LAT_LEDGER_HCOM_LIST': str(self.listing)}), \
+                mock.patch.object(Path, 'unlink', unlink), \
+                mock.patch.object(module, 'run_ledger', ledger):
+            with self.assertRaises(module.Failure) as raised:
+                module.close_card(args)
+        return str(raised.exception)
+
+    def assert_back_in_place(self, card, before):
+        self.assertEqual(card.read_text(), before)
+        self.assertEqual(self.items()[0]['card'], str(card))
+        self.assertFalse((self.tasks / 'done' / card.name).exists())
+
+    def test_failing_to_remove_the_original_card_puts_card_and_ledger_row_back(self):
+        card = self.ledger_card()
+        before = card.read_text()
+        message = self.close_in_process(card, fail_unlink=card)
+        self.assertIn('injected', message)
+        self.assert_back_in_place(card, before)
+
+    def test_ledger_update_that_committed_before_failing_is_compensated(self):
+        card = self.ledger_card()
+        before = card.read_text()
+        message = self.close_in_process(card, wrap_ledger=True)
+        self.assertIn('timed out', message)
+        self.assert_back_in_place(card, before)
 
     def test_malformed_ledger_row_field_is_refused_before_anything_changes(self):
         card = self.ledger_card()

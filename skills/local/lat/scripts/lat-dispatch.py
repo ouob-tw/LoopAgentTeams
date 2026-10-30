@@ -483,6 +483,25 @@ def close_card(args):
         number, ledger = row.groups()
         run_ledger(args, 'update', number, '--ledger', ledger, *by, '--card', str(card))
 
+    def ledger_points_to():
+        number, ledger = row.groups()
+        shown = json.loads(run_ledger(args, 'show', '--ledger', ledger, '--json'))
+        return next((item.get('card') for item in shown['items'] if str(item['id']) == number),
+                    None)
+
+    def put_ledger_back(reason):
+        """Point the row at the original card again unless it already does."""
+        number, ledger = row.groups()
+        fix = shlex.join(['lat-ledger.py', 'update', number, '--ledger', ledger, '--card',
+                          str(path)])
+        try:
+            if ledger_points_to() not in (None, str(path)):
+                point_ledger_at(path)
+        except (Failure, ValueError) as error:
+            target.unlink(missing_ok=True)
+            raise Failure(f'{reason}; the ledger row could not be put back ({error}); '
+                          f'the original card is untouched, fix the row with: {fix}') from None
+
     try:
         target.parent.mkdir(exist_ok=True)
         stream = open(target, 'x', encoding='utf-8')
@@ -497,14 +516,15 @@ def close_card(args):
     try:
         if row:
             point_ledger_at(target)
-    except Failure:
+    except Failure as error:
+        put_ledger_back(str(error))
         target.unlink(missing_ok=True)
         raise
     try:
         path.unlink()
     except OSError as error:
         if row:
-            point_ledger_at(path)
+            put_ledger_back(f'card not closed: {error}')
         target.unlink(missing_ok=True)
         raise Failure(f'card not closed: {error}') from error
     print(target)
