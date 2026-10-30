@@ -1085,13 +1085,25 @@ class WatchDecisionTests(unittest.TestCase):
                     self.assertTrue(watch.background_process_running(
                         'worker', info, [*tree, orphan], current_pid=99))
 
+    def test_other_clients_keep_counting_any_separate_session(self):
+        # A client that relaunches itself under node must not look like a helper.
+        watch = load_watch()
+        info = {'tool': 'gemini', 'launch_context': {'pid_identity': 'linux:boot-id:100'}}
+        env = ('HCOM_INSTANCE_NAME=worker',)
+        client = watch.Process(10, 1, 100, 'S', 10, ('node', '/bin/gemini'), env)
+        child = watch.Process(11, 10, 101, 'S', 10, ('node', '/bin/gemini'), env)
+        command = watch.Process(12, 11, 102, 'S', 12, ('bun', 'test'), env)
+        self.assertTrue(watch.background_process_running(
+            'worker', info, [client, child, command], current_pid=99))
+
     def test_own_watchers_are_not_background_work(self):
         watch = load_watch()
         info = {'tool': 'claude', 'launch_context': {'pid_identity': 'linux:boot-id:100'}}
         env = ('HCOM_INSTANCE_NAME=worker',)
         client = watch.Process(10, 1, 100, 'S', 10, ('/bin/claude',), env)
         for command in (('python3', '/skills/hcom-spawn/scripts/spawn-watch.py', '--spawner', 'x'),
-                        ('uv', 'run', 'python', '/skills/lat/scripts/lat-watch.py', 'run')):
+                        ('uv', 'run', 'python', '/skills/lat/scripts/lat-watch.py', 'run'),
+                        ('/usr/bin/bash', '/home/x/.hcom/.tmp/launch/hcom_1_2.sh')):
             with self.subTest(command=command):
                 watcher = watch.Process(40, 1, 120, 'S', 40, command, env)
                 self.assertFalse(watch.background_process_running(

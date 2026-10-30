@@ -1468,8 +1468,12 @@ def descendants_below(pid, parents, roots):
     return (pid, lineage) if pid in roots else None
 
 
-# Watchers an agent's own commands leave behind; they live on and are not its work.
+# What an agent's own commands leave behind that lives on and is not its work: watchers, and
+# the launcher script of each agent it spawned.
 WATCHER_SCRIPTS = {'lat-watch.py', 'spawn-watch.py'}
+HCOM_LAUNCHERS = '/.hcom/.tmp/launch/'
+# Other clients may relaunch themselves under an interpreter, which would look like a helper.
+HELPER_RULE_CLIENTS = ('claude', 'codex')
 
 
 def tool_command_lineage(lineage, client, process_by_pid, tool):
@@ -1513,7 +1517,8 @@ def background_process_running(agent, info, processes, current_pid=None):
     for process in processes:
         if process.pid in clients or process.pid in excluded or process.state == 'Z':
             continue
-        if WATCHER_SCRIPTS.intersection(Path(part).name for part in process.command):
+        if (WATCHER_SCRIPTS.intersection(Path(part).name for part in process.command)
+                or any(HCOM_LAUNCHERS in part for part in process.command)):
             continue
         provenance = descendants_below(process.pid, parents, clients)
         same_agent = owner_marker in process.environment
@@ -1522,7 +1527,8 @@ def background_process_running(agent, info, processes, current_pid=None):
             continue
         if belongs_to_client:
             client, lineage = provenance
-            if tool_command_lineage(lineage, client, process_by_pid, info.get('tool') or ''):
+            tool = info.get('tool') if info.get('tool') in HELPER_RULE_CLIENTS else ''
+            if tool_command_lineage(lineage, client, process_by_pid, tool):
                 return True
             continue
         # A detached tool may be reparented after its shell exits; its HCOM marker
