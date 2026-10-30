@@ -120,7 +120,7 @@ test('a closed controller\'s question cannot be answered and a message is refuse
 		join(commandDir, 'herdr.json'),
 		JSON.stringify({ panes: [{ workspace_id: 'wA', cwd: orin.workspace, pane_id: 'wA:p1' }], workspaces: [{ workspace_id: 'wA', number: 1, label: 'alpha' }] })
 	);
-	const wake = await post('/api/wake', { controllerId: orin.session_id, text: '接回來', newRound: false });
+	const wake = await post('/api/wake', { controllerId: orin.session_id, text: '接回來' });
 	expect(wake.body).toMatchObject({ ok: true, entry: { route: 'resume' } });
 	expect(resumes().map((call) => call.args.slice(0, 2))).toEqual([['r', orin.session_id]]);
 	expect(injects()).toEqual([]);

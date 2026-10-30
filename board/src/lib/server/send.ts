@@ -22,6 +22,16 @@ export function typedText(text: string): string {
 	return text.replace(/\r\n?/g, '\n');
 }
 
+/**
+ * What a Codex controller is given for a message that starts with `/lat`: Codex mentions a skill
+ * with `$lat`, and `/lat` means nothing to it. Only a leading `/lat` followed by white space or the
+ * end is changed; `/latest` and a `/lat` inside the text are not. Every other client gets the text
+ * as it is. Every message the board types into a controller goes through here.
+ */
+export function forClient(client: string, text: string): string {
+	return client === 'codex' ? text.replace(/^\/lat(?=\s|$)/, '$$lat') : text;
+}
+
 // The input command reads these as its own flags when one is a whole argument, wherever it stands
 // (there is no way to mark an argument as text: after `--` the `--` itself is typed too). `--enter`
 // is dropped, `--help` and `-h` print usage and type nothing, `--name` takes the next argument and
@@ -92,12 +102,13 @@ async function closedNow(board: Board, controllerId: string): Promise<boolean> {
 }
 
 async function attempt(board: Board, controllerId: string, rawText: string) {
-	const text = typedText(rawText);
 	// Ask the binding registry now: the target must still be bound at this moment, whatever the
 	// board's last snapshot says. A registry that cannot be read confirms nothing.
 	const registry = await listControllers(board.config);
 	const binding = registry.ok ? registry.controllers.find((candidate) => candidate.session_id === controllerId) : undefined;
 	let hcomName = binding?.hcom_name ?? '';
+	// An unbound controller gets nothing typed, so its text only reaches the log as typed.
+	const text = forClient(binding?.client ?? '', typedText(rawText));
 
 	let status = 409;
 	let reason: string | null;

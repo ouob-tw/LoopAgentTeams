@@ -70,11 +70,11 @@ class Messaging {
 
 	/** One wake of an ended controller; the caller keeps the text when it fails. The model and
 	 *  effort apply only when the conversation is resumed. */
-	async wake(controllerId: string, text: string, newRound: boolean, choice: ModelChoice = NO_CHOICE): Promise<Outcome> {
+	async wake(controllerId: string, text: string, choice: ModelChoice = NO_CHOICE): Promise<Outcome> {
 		const result = await request<WakeResponse>('/api/wake', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ controllerId, text, newRound, ...choice })
+			body: JSON.stringify({ controllerId, text, ...choice })
 		});
 		if (!result.ok && result.kind === 'network') return this.#unknown(controllerId);
 		if (!result.ok && result.unpaired) return { ok: false, reason: '這台裝置已不是登入狀態，沒有送出。' };

@@ -48,7 +48,6 @@ const wake = (id: string, switchId: string, days: number) => ({
 	controllerId: 'session-a',
 	hcomName: 'luna',
 	text: '',
-	newRound: false,
 	route: 'resume',
 	herdrWorkspace: null,
 	herdrWorkspaceLabel: null,

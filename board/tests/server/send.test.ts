@@ -86,6 +86,27 @@ test('a two-line message is typed into a Claude and a Codex controller as one me
 	expect(await sentTo(codex.session_id)).toMatchObject([{ hcomName: 'nova', text: 'line one\nline two', ok: true }]);
 });
 
+test('a leading /lat becomes $lat for a Codex controller only', async () => {
+	const claude = fixture.bound('alpha', 'luna', { client: 'claude' });
+	const codex = fixture.bound('beta', 'nova', { client: 'codex' });
+	fixture.list([claude, codex]);
+
+	await send(claude.session_id, '/lat 做某事');
+	const sent = await send(codex.session_id, '/lat 做某事');
+	await send(codex.session_id, '/latest 消息');
+	await send(codex.session_id, '先看 /lat 怎麼用');
+
+	expect(calls()).toEqual([
+		['luna', '/lat 做某事', '--enter'],
+		['nova', '$lat 做某事', '--enter'],
+		['nova', '/latest 消息', '--enter'],
+		['nova', '先看 /lat 怎麼用', '--enter']
+	]);
+	// The sent log shows what was typed.
+	expect(sent.body.entry?.text).toBe('$lat 做某事');
+	expect((await sentTo(codex.session_id)).map((entry) => entry.text)).toContain('$lat 做某事');
+});
+
 test('line endings that would submit early are turned into plain new lines', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.list([luna]);

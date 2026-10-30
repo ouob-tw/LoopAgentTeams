@@ -91,7 +91,6 @@ const wake = (id: string): SentWake => ({
 	controllerId: 'session-a',
 	hcomName: 'luna',
 	text: 'wake up',
-	newRound: false,
 	route: 'resume',
 	herdrWorkspace: 'ws-project',
 	herdrWorkspaceLabel: 'project',

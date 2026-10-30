@@ -103,11 +103,11 @@ async function ended(client = 'claude'): Promise<{ id: string; name: string; wor
 	return { id, name, workspace };
 }
 
-async function wake(controllerId: string, text: string, newRound = false): Promise<{ status: number; body: WakeResponse }> {
+async function wake(controllerId: string, text: string): Promise<{ status: number; body: WakeResponse }> {
 	const response = await fixture.fetch('/api/wake', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ controllerId, text, newRound }),
+		body: JSON.stringify({ controllerId, text }),
 		cookie
 	});
 	return { status: response.status, body: await response.json() };
@@ -140,7 +140,7 @@ async function openAttempt(plan: Parameters<typeof hcomPlan>[0] = {}) {
 
 // --- Client still running ---------------------------------------------------------------------
 
-test('a running client gets the text typed into its input box, as is when the box is not ticked', async () => {
+test('a running client gets the text typed into its input box, as is', async () => {
 	const target = await ended();
 	hcomPlan({ agents: [agent('other', 'someone-else'), agent(`${target.name}`, target.id, 'wP:p9')] });
 
@@ -148,23 +148,31 @@ test('a running client gets the text typed into its input box, as is when the bo
 
 	expect(status).toBe(200);
 	expect(body).toMatchObject({ ok: true, reason: null, abandon: null });
-	expect(body.entry).toMatchObject({ route: 'inject', outcome: 'sent', text: '還在嗎\n第二行', newRound: false, open: false });
+	expect(body.entry).toMatchObject({ route: 'inject', outcome: 'sent', text: '還在嗎\n第二行', open: false });
 	expect(injects()).toEqual([[target.name, '還在嗎\n第二行', '--enter']]);
 	expect(resumes()).toEqual([]);
 	const [logged] = await wakes(target.id);
-	expect(logged).toMatchObject({ kind: 'wake', route: 'inject', outcome: 'sent', newRound: false });
+	expect(logged).toMatchObject({ kind: 'wake', route: 'inject', outcome: 'sent' });
 });
 
-test('a ticked box puts /lat in front for Claude and $lat for Codex', async () => {
+test('a leading /lat becomes $lat for Codex only, and nothing else is changed', async () => {
 	const claude = await ended('claude');
 	const codex = await ended('codex');
 	hcomPlan({ agents: [agent(claude.name, claude.id), agent(codex.name, codex.id)] });
 
-	expect((await wake(claude.id, '繼續做', true)).body.entry?.text).toBe('/lat 繼續做');
-	expect((await wake(codex.id, 'keep going', true)).body.entry?.text).toBe('$lat keep going');
+	expect((await wake(claude.id, '/lat 繼續做')).body.entry?.text).toBe('/lat 繼續做');
+	expect((await wake(codex.id, '/lat keep going')).body.entry?.text).toBe('$lat keep going');
+	expect((await wake(codex.id, '/lat\n換行')).body.entry?.text).toBe('$lat\n換行');
+	expect((await wake(codex.id, '/lat')).body.entry?.text).toBe('$lat');
+	expect((await wake(codex.id, '/latest news')).body.entry?.text).toBe('/latest news');
+	expect((await wake(codex.id, '先看 /lat 怎麼用')).body.entry?.text).toBe('先看 /lat 怎麼用');
 	expect(injects()).toEqual([
 		[claude.name, '/lat 繼續做', '--enter'],
-		[codex.name, '$lat keep going', '--enter']
+		[codex.name, '$lat keep going', '--enter'],
+		[codex.name, '$lat\n換行', '--enter'],
+		[codex.name, '$lat', '--enter'],
+		[codex.name, '/latest news', '--enter'],
+		[codex.name, '先看 /lat 怎麼用', '--enter']
 	]);
 });
 
@@ -328,27 +336,23 @@ test('a board restarted before Herdr ran the resumed session moves its tab by it
 	expect(moves()).toHaveLength(1);
 });
 
-test('a resume with a ticked box has the LAT start command in its first message', async () => {
+test('a resume of a Codex controller turns a leading /lat into $lat in its first message', async () => {
 	const target = await ended('codex');
 	hcomPlan({});
 
-	await wake(target.id, '開始', true);
+	await wake(target.id, '/lat 開始');
 
 	expect(resumes()[0].args).toEqual(['r', target.id, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '$lat 開始']);
 });
 
-test('the sent log says 已喚醒, or 已喚醒，等主控啟用 for a new round', async () => {
+test('the sent log says 已喚醒 for a wake that went through', async () => {
 	const plain = await ended();
 	await wake(plain.id, '問一下');
-	const round = await ended();
-	hcomPlan({ resumed: agent(round.name, round.id) });
-	await wake(round.id, '做下一輪', true);
 
 	expect(wakeText((await wakes(plain.id))[0])).toBe('已喚醒');
-	expect(wakeText((await wakes(round.id))[0])).toBe('已喚醒，等主控啟用');
 });
 
-test('without the box ticked the controller stays 閒置; with it, it is active again once it binds', async () => {
+test('a woken controller stays 閒置 until a LAT round starts and it binds again', async () => {
 	const plain = await ended();
 	hcomPlan({ resumed: agent(plain.name, plain.id) });
 	await wake(plain.id, '問一下');
@@ -356,7 +360,7 @@ test('without the box ticked the controller stays 閒置; with it, it is active 
 
 	const round = await ended();
 	hcomPlan({ resumed: agent(round.name, round.id) });
-	await wake(round.id, '做下一輪', true);
+	await wake(round.id, '/lat 做下一輪');
 	fixture.list([fixture.bound('x', round.name, { session_id: round.id, workspace: round.workspace })]);
 	const controller = (await fixture.refresh(cookie)).controllers.find((candidate) => candidate.id === round.id);
 	expect(isInactive(controller!.status)).toBe(false);
@@ -641,7 +645,7 @@ test('two wakes sent at once resume only once', async () => {
 
 test('malformed wakes are rejected without running anything', async () => {
 	const target = await ended();
-	for (const body of [{ controllerId: target.id, text: '  ', newRound: false }, { controllerId: target.id, text: 'x' }, { text: 'x', newRound: false }]) {
+	for (const body of [{ controllerId: target.id, text: '  ' }, { controllerId: target.id }, { text: 'x' }]) {
 		const response = await fixture.fetch('/api/wake', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), cookie });
 		expect(response.status).toBe(400);
 	}

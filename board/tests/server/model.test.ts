@@ -830,7 +830,7 @@ async function wake(controllerId: string, model: string | null, effort: string |
 	const response = await fixture.fetch('/api/wake', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ controllerId, text: '接著做', newRound: false, model, effort }),
+		body: JSON.stringify({ controllerId, text: '接著做', model, effort }),
 		cookie
 	});
 	return { status: response.status, body: await response.json() };
