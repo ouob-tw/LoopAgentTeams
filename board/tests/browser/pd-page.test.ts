@@ -140,7 +140,7 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	await load(tab, '?controller=gone');
 	await tab.until(`${SHOWN('.inbox .pd')} && ${SHOWN('section.detail')}`, 'the sheet over the content screen');
 	expect(await tab.eval(`!!document.querySelector('.pd-banner')`)).toBe(false);
-	// Set once the page has started, which may be just after the window shows.
+	// Set by the page's script.
 	await tab.until(`document.title === '(1) LAT 看板'`, 'the count in the title');
 	// 稍後 leaves a strip under the bar saying how many wait, covering none of the content.
 	await tab.pointerClick('.pd button.later');
