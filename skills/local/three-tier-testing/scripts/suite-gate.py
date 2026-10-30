@@ -884,46 +884,6 @@ def normalize_command(argv):
     return shlex.join(argv)
 
 
-WORD_BREAK = ' \t\n;&|()<>'  # a `#` after one of these starts a comment
-
-
-def has_pipe(command):
-    """Whether the shell string has a pipe operator, reading it as sh does: text in quotes
-    or after a backslash, a comment, `||` and `>|` are not pipes. A pipe inside `$(...)` in
-    double quotes and an unterminated quote count, so a real pipeline is never run without
-    the check. A case pattern (`x|y)`) also counts, which only costs a different shell."""
-    i, prev = 0, ' '  # prev: the last lexical character; an escape or quote is a word character
-    while i < len(command):
-        char = command[i]
-        if char == '\\':
-            i, prev = i + 2, 'x'
-            continue
-        if char in '\'"':
-            end = i + 1
-            while end < len(command) and command[end] != char:
-                end += 2 if char == '"' and command[end] == '\\' else 1
-            if end >= len(command):
-                return True
-            quoted = command[i:end]
-            if char == '"' and '|' in quoted and ('$(' in quoted or '`' in quoted):
-                return True
-            i, prev = end + 1, 'x'
-            continue
-        if char == '#' and prev in WORD_BREAK:
-            i = command.find('\n', i)
-            if i < 0:
-                return False
-            continue
-        if char == '|':
-            if command[i + 1:i + 2] == '|':
-                i += 2
-                continue
-            if prev != '>':
-                return True
-        i, prev = i + 1, char
-    return False
-
-
 @functools.lru_cache(maxsize=None)
 def sh_has_pipefail():
     return subprocess.run(['/bin/sh', '-c', 'set -o pipefail'],
@@ -934,9 +894,11 @@ def shell_argv(command):
     """The argv that runs a shell string. A command with a pipe runs with pipefail, so a
     failing earlier stage is the run's failure instead of the last stage's status hiding it;
     one without a pipe runs under plain /bin/sh as always. /bin/sh is dash on some hosts and
-    has no pipefail there, so bash in POSIX mode (the closest to sh) stands in for it. Only
-    the way the command runs changes: the fingerprint is made from the command text alone."""
-    if not has_pipe(command):
+    has no pipefail there, so bash in POSIX mode (the closest to sh) stands in for it. Any `|`
+    in the text counts, quoted or not: pipefail changes nothing without a real pipeline, so
+    over-matching keeps the exit status. Only the way the command runs changes: the
+    fingerprint is made from the command text alone."""
+    if '|' not in command:
         return ['/bin/sh', '-c', command]
     if sh_has_pipefail():
         return ['/bin/sh', '-o', 'pipefail', '-c', command]

@@ -327,27 +327,19 @@ class RunAndReuseTests(GateCase):
         self.assertEqual(self.records()[0]['exit_code'], 3)
 
     def test_commands_without_a_pipe_keep_their_exit_status_and_fingerprint(self):
-        for command, code in ((self.suite(code=3), 3), ('false || true', 0), ('false', 1),
-                              ("echo 'a|b' >/dev/null; exit 0", 0)):
+        for command, code in ((self.suite(code=3), 3), ('false', 1)):
             self.assertEqual(self.gate('run', '--', command).returncode, code, command)
-        self.assertEqual([r['exit_code'] for r in self.records()], [3, 0, 1, 0])
-        for command in ('false || true', self.suite(code=3)):
+        self.assertEqual([r['exit_code'] for r in self.records()], [3, 1])
+        for command in (self.suite(code=3), 'false'):
             [record] = [r for r in self.records() if r['command'] == command]
             self.assertEqual(record['fingerprint'],
                              gate.fingerprint(self.repo, [command])['fingerprint'])
+        self.assertEqual(gate.shell_argv('false'), ['/bin/sh', '-c', 'false'])
 
-    def test_text_that_only_looks_like_a_pipe_keeps_running_under_plain_sh(self):
-        for command in ('false || true', "echo 'a|b' >/dev/null; echo -e ok", 'echo "|"',
-                        'echo hi >| /dev/null', 'echo x # a | b', "grep -E 'x|y' /dev/null",
-                        r'echo a\|b', "echo foo'|'bar", 'echo $# # a | b', 'echo "a \\" | b"'):
-            self.assertEqual(gate.shell_argv(command), ['/bin/sh', '-c', command], command)
-            self.assertFalse(gate.has_pipe(command), command)
-        for command in ('a|b', 'a 2>&1 | b', '(a)|b', 'a |& b', "echo '|' | cat",
-                        'x=$(a | b)', "echo 'unbalanced | x", 'echo "$(a | b)"',
-                        'false x#y | cat', 'echo a#b | cat', 'echo ${#x} | cat',
-                        'false x\\ #y | cat', 'false \\>| cat'):
-            self.assertTrue(gate.has_pipe(command), command)
-        self.assertEqual(self.gate('run', '--', 'false x#y | cat').returncode, 1)
+    def test_a_pipe_character_that_is_not_a_pipeline_keeps_its_exit_status(self):
+        for command, code in (('false || true', 0), ("echo 'a|b' >/dev/null; exit 4", 4),
+                              (r'echo a\|b; exit 0', 0), ('echo "|"; false', 1)):
+            self.assertEqual(self.gate('run', '--', command).returncode, code, command)
 
     def test_the_fingerprint_of_a_piped_command_does_not_depend_on_the_shell_it_runs_in(self):
         self.gate('run', '--', 'true | cat')
