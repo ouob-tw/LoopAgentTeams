@@ -72,7 +72,7 @@ export interface HelperQuestion {
 	context: string;
 	/** The question's full explanation; absent from helpers that do not write it yet. */
 	details?: string | null;
-	/** The question's demo links; absent from helpers that do not write them yet. */
+	/** The question's demo links; absent when it has none. */
 	visuals?: string[];
 	kind: 'single' | 'multi' | 'text';
 	options: HelperOption[];

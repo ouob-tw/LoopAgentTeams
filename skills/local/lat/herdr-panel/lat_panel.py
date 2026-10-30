@@ -616,9 +616,13 @@ def _ask_session(questions):
                  if os.environ.get(key)), None)
 
 
+def _input_section(args):
+    return add_visual_links(args.file.read_text(encoding="utf-8"), args.visual)
+
+
 def _ask(args):
     """One controller command per question: record, panel question, version, gap check."""
-    text = add_visual_links(args.file.read_text(encoding="utf-8"), args.visual)
+    text = _input_section(args)
     incoming = _question_input(text)
     path = Path(args.decisions) / f"{args.id}.md"
     if not Path(args.decisions).is_dir():
@@ -725,8 +729,7 @@ def main(argv=None):
     try:
         if args.command == "question" and args.question_command == "upsert":
             return _upsert(args.questions, args.decisions, args.id,
-                           add_visual_links(args.file.read_text(encoding="utf-8"),
-                                            args.visual))[0]
+                           _input_section(args))[0]
         if args.command == "question" and args.question_command == "ask":
             return _ask(args)
         if args.command == "question" and args.question_command == "record-chat":

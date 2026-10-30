@@ -416,6 +416,29 @@ class VisualLinkTest(AskTestCase):
         self.assertEqual(question["visuals"], [self.URL])
         self.assertEqual(question["recommendation"], "➡️ A：先讓本機一致。")
 
+    def test_a_link_written_above_the_details_block_counts(self):
+        section = SECTION + f"\n【示意】{self.URL}\n\n【詳細資訊】\n來由。\n【詳細資訊結束】\n"
+        self.assertEqual(self.ask(section, "--advisor", "exempt requirement-discussion",
+                                  "--session-id", SESSION).returncode, 0)
+        question = self.board()
+        self.assertEqual(question["visuals"], [self.URL])
+        self.assertEqual(question["recommendation"], "➡️ A：先讓本機一致。")
+
+    def test_a_bad_link_above_the_details_block_is_refused(self):
+        section = SECTION + "\n【示意】javascript:alert(1)\n\n【詳細資訊】\n來由。\n【詳細資訊結束】\n"
+        result = self.ask(section, "--advisor", "exempt requirement-discussion",
+                          "--session-id", SESSION)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.questions.exists())
+
+    def test_blank_lines_between_links_keep_them_links(self):
+        section = SECTION + f"\n【示意】{self.URL}\n\n【示意】{self.URL}2\n"
+        self.assertEqual(self.ask(section, "--advisor", "exempt requirement-discussion",
+                                  "--session-id", SESSION).returncode, 0)
+        question = self.board()
+        self.assertEqual(question["visuals"], [self.URL, self.URL + "2"])
+        self.assertEqual(question["recommendation"], "➡️ A：先讓本機一致。")
+
     def test_question_without_a_link_has_none(self):
         self.assertEqual(self.upsert().returncode, 0)
         self.assertNotIn("【示意】", self.questions.read_text())

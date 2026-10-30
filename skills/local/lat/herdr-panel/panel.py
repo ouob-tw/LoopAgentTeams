@@ -25,8 +25,8 @@ from pathlib import Path
 import socket
 import sys
 import tempfile
+import subprocess
 import tomllib
-import webbrowser
 
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -220,13 +220,19 @@ def open_popup(env=None, *, request=rpc):
 
 
 def open_in_browser(url, env=os.environ):
-    """Open ``url`` where a graphical browser can appear; report whether it did.
+    """Hand ``url`` to the system's opener where a graphical browser can appear.
 
-    Without a display ``webbrowser`` would start a console browser over the panel.
+    Its output is dropped and a console browser is never asked for: either would draw over the panel.
     """
     if sys.platform != "darwin" and not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
         return False
-    return webbrowser.open(url)
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    try:
+        subprocess.Popen([opener, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return False
+    return True
 
 
 def wrap_rows(rows, width):

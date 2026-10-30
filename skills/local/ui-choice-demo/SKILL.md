@@ -1,6 +1,6 @@
 ---
 name: ui-choice-demo
-description: Use before asking the user to choose a UI, layout, or interaction, in any conversation: the choice needs something they can open and look at. Also when a decision card or question about how a screen should look or behave is being written.
+description: Use before asking the user to choose a UI, layout, or interaction, in any conversation, so the choice comes with something they can open and look at. Also when writing a decision card or question about how a screen should look or behave.
 ---
 
 # 介面題先給看

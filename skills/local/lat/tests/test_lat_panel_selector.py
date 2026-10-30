@@ -183,12 +183,14 @@ class LayoutTests(SelectorTestCase):
             self.assertFalse([key for key, _, _ in app.units if key[0] == "visual"])
 
     def test_no_browser_is_started_without_a_display(self):
-        with patch("webbrowser.open") as start, patch.object(self.panel.sys, "platform", "linux"):
+        with patch.object(self.panel.subprocess, "Popen") as start, \
+                patch.object(self.panel.sys, "platform", "linux"):
             self.assertFalse(self.panel.open_in_browser(self.VISUAL, {}))
             start.assert_not_called()
-            start.return_value = True
             self.assertTrue(self.panel.open_in_browser(self.VISUAL, {"DISPLAY": ":0"}))
-            start.assert_called_once_with(self.VISUAL)
+            self.assertEqual(start.call_args.args[0], ["xdg-open", self.VISUAL])
+            start.side_effect = FileNotFoundError
+            self.assertFalse(self.panel.open_in_browser(self.VISUAL, {"DISPLAY": ":0"}))
 
     async def test_details_show_in_full_after_the_recommendation(self):
         details = "【詳細資訊】\n來由：上次漏寫。\n\nA. 不是選項\n【詳細資訊結束】\n\n"

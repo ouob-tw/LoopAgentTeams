@@ -332,7 +332,7 @@ _VISUAL_MARKER = "【示意】"
 
 
 # The links are the body's last lines, so the same words elsewhere stay text.
-_VISUAL_LINES = re.compile(rf"(?:^{_VISUAL_MARKER}.*\n?)+\Z", re.MULTILINE)
+_VISUAL_LINES = re.compile(rf"(?:^{_VISUAL_MARKER}.*\n*)+\Z", re.MULTILINE)
 
 
 def visual_link_error(url):
@@ -349,14 +349,15 @@ def visual_link_error(url):
     return None
 
 
-def _visual_lines(body):
-    match = _VISUAL_LINES.search(body)
-    return match.group().splitlines() if match else []
+def _written_visuals(body):
+    match = _VISUAL_LINES.search(_split_details(body)[0])
+    lines = match.group().split("\n") if match else []
+    return [line.removeprefix(_VISUAL_MARKER).strip() for line in lines if line]
 
 
-def _check_visual_links(body):
-    for line in _visual_lines(body):
-        error = visual_link_error(line.removeprefix(_VISUAL_MARKER).strip())
+def _check_visual_links(urls):
+    for url in urls:
+        error = visual_link_error(url)
         if error:
             raise ValueError(f"demo link refused: {error}")
 
@@ -365,19 +366,15 @@ def add_visual_links(text, urls):
     """Append ``urls`` to one question's section text as its last lines."""
     if not urls:
         return text
-    for url in urls:
-        error = visual_link_error(url)
-        if error:
-            raise ValueError(f"demo link refused: {error}")
+    _check_visual_links(urls)
     lines = "\n".join(_VISUAL_MARKER + url for url in urls)
     return f"{text.rstrip()}\n\n{lines}\n"
 
 
 def question_visuals(question):
     """The question's http and https demo links, in the order written."""
-    urls = [line.removeprefix(_VISUAL_MARKER).strip()
-            for line in _visual_lines(question.get("body") or "")]
-    return [url for url in urls if visual_link_error(url) is None]
+    return [url for url in _written_visuals(question.get("body") or "")
+            if visual_link_error(url) is None]
 
 
 def _question_display_parts(question):
@@ -925,7 +922,7 @@ def _question_input(text):
         raise ValueError("question file must start with one '## <question title>' heading")
     body = (match.group("body") or "").strip("\n")
     _check_details_markers(body)
-    _check_visual_links(body)
+    _check_visual_links(_written_visuals(body))
     return {"title": match.group("title"), "body": body}
 
 

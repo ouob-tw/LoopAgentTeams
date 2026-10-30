@@ -38,14 +38,14 @@ afterAll(async () => {
 
 const key = (id: string) => `q:${controller.session_id}:${id}`;
 const card = (id: string) => `[data-content="${key(id)}"]`;
-const opened = (url: string) => ['看示意', url, '_blank', 'noopener noreferrer'];
+const opened = (url: string, label = '看示意') => [label, url, '_blank', 'noopener noreferrer'];
 
 test.skipIf(!CHROME)('the question card shows a button per link, in a new tab, and none without links', async () => {
 	const tab = browser!.tab;
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
 	for (const [id, links] of [
 		['V-1', [opened(URL_B)]],
-		['V-2', [['看示意 1', URL_B, '_blank', 'noopener noreferrer'], ['看示意 2', URL_C, '_blank', 'noopener noreferrer']]],
+		['V-2', [opened(URL_B, '看示意 1'), opened(URL_C, '看示意 2')]],
 		['V-3', []]
 	] as const) {
 		await tab.send('Page.navigate', { url: `${fixture.url}/?item=${encodeURIComponent(key(id))}` });
