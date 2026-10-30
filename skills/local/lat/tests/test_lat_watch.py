@@ -909,6 +909,15 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertGreaterEqual(stored['deadline_at'], before + 300)
         self.assertLess(stored['deadline_at'], before + 330)
 
+    def test_multi_wait_moving_off_the_owning_orchestrator_restarts_the_deadline(self):
+        owner = {'target': 'orch', 'declared_at': 0, 'deadline_at': 300, 'wait_seconds': 300,
+                 'targets': [{'target': 'orch', 'kind': 'agent'},
+                             {'target': 'two-teho', 'kind': 'agent'}]}
+        before = time.time()
+        _, stored = self.release_multi_wait(owner, messages=[self.sent('orch')])
+        self.assertEqual(stored['target'], 'two-teho')
+        self.assertGreaterEqual(stored['deadline_at'], before + 300)
+
     def test_multi_wait_moving_between_agents_keeps_the_deadline(self):
         _, stored = self.release_multi_wait({'declared_at': 0, 'deadline_at': 300},
                                             messages=[self.sent('sofe')])
