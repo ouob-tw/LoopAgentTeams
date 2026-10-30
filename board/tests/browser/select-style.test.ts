@@ -54,7 +54,8 @@ for (const theme of ['dark', 'light']) {
 			await until(`!!document.querySelector('.settings select')`);
 			// Let hydration finish so it does not rebuild the form under the check.
 			await sleep(500);
-			await evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
+			// Saved as well: if hydration is late, the page's own theme code then applies this one too.
+			await evaluate(`localStorage.setItem('lat-board-theme', ${JSON.stringify(theme)}); document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
 			for (const disabled of [false, true]) {
 				const look = JSON.parse(await evaluate<string>(LOOK(disabled)));
 				const { height: _selectHeight, fontSize: selectSize, ...select } = look.select;
