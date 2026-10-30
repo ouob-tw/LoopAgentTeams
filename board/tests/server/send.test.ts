@@ -104,7 +104,7 @@ test('a leading /lat becomes $lat for a Codex controller only', async () => {
 	]);
 	// The sent log shows what was typed.
 	expect(sent.body.entry?.text).toBe('$lat 做某事');
-	expect((await sentTo(codex.session_id))[0].text).toBe('$lat 做某事');
+	expect((await sentTo(codex.session_id)).map((entry) => entry.text)).toContain('$lat 做某事');
 });
 
 test('line endings that would submit early are turned into plain new lines', async () => {

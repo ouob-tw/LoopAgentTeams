@@ -544,9 +544,8 @@ for (const width of [1280, 390]) {
 			expect(await tab.eval(hit)).toBe(true);
 			await tab.pointerClick('[data-test-high]');
 			await tab.until(`document.querySelector('.dock .pill-slot .part[aria-label^="思考強度："]').getAttribute('aria-label').includes('high')`, 'the effort chosen');
-			// The wake options stay usable.
-			await tab.pointerClick(`${POPUP} input[type=checkbox]`);
-			expect(await tab.eval(`document.querySelector('${POPUP} input[type=checkbox]').checked`)).toBe(true);
+			// The wake options stay open.
+			expect(await tab.eval(`!!document.querySelector(${JSON.stringify(POPUP)})`)).toBe(true);
 			expect(await tab.eval(FITS)).toBe(true);
 		}, 60_000);
 	}

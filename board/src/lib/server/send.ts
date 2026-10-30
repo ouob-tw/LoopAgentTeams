@@ -11,7 +11,6 @@ import { listControllers } from './helper.ts';
 import { agentCommand } from './herdr.ts';
 import { isClosed, isPaused } from './model.ts';
 import { appendSent } from './sent-log.ts';
-import { everyController } from '../board/types.ts';
 
 /**
  * The text as it is typed: the command writes it to the terminal unchanged and then sends a
@@ -103,13 +102,13 @@ async function closedNow(board: Board, controllerId: string): Promise<boolean> {
 }
 
 async function attempt(board: Board, controllerId: string, rawText: string) {
-	const client = everyController(await board.current()).find((candidate) => candidate.id === controllerId)?.client ?? '';
-	const text = forClient(client, typedText(rawText));
 	// Ask the binding registry now: the target must still be bound at this moment, whatever the
 	// board's last snapshot says. A registry that cannot be read confirms nothing.
 	const registry = await listControllers(board.config);
 	const binding = registry.ok ? registry.controllers.find((candidate) => candidate.session_id === controllerId) : undefined;
 	let hcomName = binding?.hcom_name ?? '';
+	// An unbound controller gets nothing typed, so its text only reaches the log as typed.
+	const text = forClient(binding?.client ?? '', typedText(rawText));
 
 	let status = 409;
 	let reason: string | null;

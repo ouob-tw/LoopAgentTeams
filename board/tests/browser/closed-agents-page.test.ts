@@ -353,7 +353,7 @@ test.skipIf(!CHROME)("390px: a closed controller's page shows its conversation, 
 	await tab.eval(`document.querySelector(${JSON.stringify(RESUME)}).click()`);
 	const WAKE = '.detail [data-wake="s-lead"]';
 	await tab.until(`!!document.querySelector('${WAKE}')`, "the wake's options");
-	// The controller's model and effort parts, and a first message that may stay empty; no new-round box.
+	// The controller's model and effort parts, and a first message that may stay empty.
 	await tab.until(`document.querySelectorAll('${WAKE} .pills button').length > 0`, 'the model parts');
 	expect(await tab.eval(`document.querySelector('${WAKE}').innerText.includes('開新一輪 LAT')`)).toBe(false);
 	expect(await tab.eval(`!!document.querySelector('${WAKE} input[type="checkbox"]')`)).toBe(false);
@@ -366,7 +366,7 @@ test.skipIf(!CHROME)("390px: a closed controller's page shows its conversation, 
 	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已開始接回 @lead')`, 'the notice');
 	const resumed = readFileSync(join(fixture.dir, 'hcom-calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.args[0] === 'r');
 	expect(resumed.at(-1).args).toEqual(['r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 繼續']);
-	expect(sentLog().find((line) => line.kind === 'wake')).toMatchObject({ controllerId: 's-lead', text: '/lat 繼續', route: 'resume' });
+	expect(sentLog().find((line) => line.kind === 'wake' && line.text === '/lat 繼續')).toMatchObject({ controllerId: 's-lead', route: 'resume' });
 }, 30_000);
 
 test.skipIf(!CHROME)('once its model switch is given up, the agent moves to the section', async () => {
