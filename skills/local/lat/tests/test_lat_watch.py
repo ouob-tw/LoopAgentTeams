@@ -2756,7 +2756,7 @@ esac
         decisions = self.wait_session()
         self.install_hcom(
             '#!/bin/sh\n'
-            '[ "$1 $2" = "list --json" ] || exit 2\n'
+            '[ "$1 $2 $3" = "list --json --name" ] && [ $# -eq 4 ] || exit 2\n'
             'printf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"},{"name":"teho"}]\'\n'
         )
         wait = self.work / '.lat/watch/waits/worker-open.json'
@@ -2774,7 +2774,7 @@ esac
         decisions = self.wait_session()
         self.install_hcom(
             '#!/bin/sh\n'
-            '[ "$1 $2" = "list --json" ] || exit 2\n'
+            '[ "$1 $2 $3" = "list --json --name" ] && [ $# -eq 4 ] || exit 2\n'
             'printf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"},'
             '{"name":"a-teho"},{"name":"b-teho"}]\'\n'
         )
@@ -2816,7 +2816,7 @@ esac
         decisions = self.work / 'decisions'
         decisions.mkdir()
         (decisions / 'teho-lid-1.md').write_text('- status: approved\n')
-        self.install_hcom('#!/bin/sh\n[ "$1 $2" = "list --json" ] || exit 2\nprintf \'[]\\n\'\n')
+        self.install_hcom('#!/bin/sh\n[ "$1 $2 $3" = "list --json --name" ] && [ $# -eq 4 ] || exit 2\nprintf \'[]\\n\'\n')
         base = {'agent': 'worker-open', 'target': 'teho', 'reason': 'x',
                 'declared_at': time.time(), 'declared_at_utc': '2026-10-04T00:00:00+00:00',
                 'active': True}
