@@ -857,6 +857,24 @@ class CardCloseTests(LedgerCase):
         self.assertFalse((self.tasks / 'done' / card.name).exists())
         self.assertEqual(self.items(), items)
 
+    def test_unwritable_done_directory_leaves_card_and_ledger_untouched(self):
+        card = self.ledger_card()
+        (self.tasks / 'done').write_text('a file where the done/ directory should be')
+        before, stored = card.read_text(), self.ledger.read_text()
+        result = self.close(card)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(card.read_text(), before)
+        self.assertEqual(self.ledger.read_text(), stored)
+
+    def test_malformed_ledger_row_field_is_refused_before_anything_changes(self):
+        card = self.ledger_card()
+        card.write_text(card.read_text().replace('ledger row：1', 'ledger row：one'))
+        before = card.read_text()
+        result = self.close(card)
+        self.assertIn('ledger row', result.stderr)
+        self.assertEqual(card.read_text(), before)
+        self.assertFalse((self.tasks / 'done').exists())
+
     def test_existing_target_unknown_status_and_missing_field_change_nothing(self):
         card = self.make_card()
         done = self.tasks / 'done'

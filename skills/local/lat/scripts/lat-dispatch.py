@@ -444,8 +444,9 @@ def make_brief(args):
 
 def close_card(args):
     """Set status and deliverable commit, move the card to done/ and update its ledger row.
-    The ledger row changes first and the original card is removed last, so a failure at any
-    step is rolled back and leaves the card and the ledger as they were."""
+    The new card is written first, the ledger row changes next and the original card is removed
+    last, so a failure at any step leaves the card and the ledger as they were (the ledger is
+    touched only after the steps most likely to fail have passed)."""
     path = Path(args.card).resolve()
     deliverable = single_line('--deliverable', args.deliverable)
     if not deliverable:
@@ -466,6 +467,9 @@ def close_card(args):
         key = match.group(1).strip() if match else None
         if key == 'ledger row':
             row = LEDGER_ROW.fullmatch(match.group(2).strip())
+            if not row:
+                raise Failure(f'task card ledger row is not "<number> (<ledger path>)": '
+                              f'{match.group(2).strip()!r}; nothing changed')
         if key in values:
             ending = '\n' if line.endswith('\n') else ''
             lines[index] = f'- {key}：{values.pop(key)}{ending}'
@@ -477,17 +481,24 @@ def close_card(args):
         number, ledger = row.groups()
         run_ledger(args, 'update', number, '--ledger', ledger, *by, '--card', str(card))
 
-    if row:
-        point_ledger_at(target)
     try:
         target.parent.mkdir(exist_ok=True)
         with open(target, 'x', encoding='utf-8') as stream:
             stream.write(''.join(lines))
+    except OSError as error:
+        raise Failure(f'card not closed: {error}') from error
+    try:
+        if row:
+            point_ledger_at(target)
+    except Failure:
+        target.unlink(missing_ok=True)
+        raise
+    try:
         path.unlink()
     except OSError as error:
-        target.unlink(missing_ok=True)
         if row:
             point_ledger_at(path)
+        target.unlink(missing_ok=True)
         raise Failure(f'card not closed: {error}') from error
     print(target)
 
@@ -531,8 +542,8 @@ def build_parser():
                                 help='Close a card: status, deliverable, move to done/, ledger row')
     close.add_argument('--card', type=Path, required=True)
     close.add_argument('--status', required=True, choices=CLOSE_STATUSES)
-    close.add_argument('--deliverable', required=True, help='commit or evidence text, kept as given')
-    close.add_argument('--by', help='actor recorded in the ledger; default as lat-ledger.py')
+    close.add_argument('--deliverable', required=True, help='commit or evidence text, written to the card as given')
+    close.add_argument('--by', help='actor recorded in the ledger (default: lat-ledger.py\'s own default)')
     close.add_argument('--lat-dir', type=Path, default=LAT_DIR,
                        help='LAT skill directory holding scripts/lat-ledger.py')
     brief = commands.add_parser('brief', help='Build the task brief from four sections + a card')
@@ -557,7 +568,7 @@ def build_parser():
 
 def main():
     argv = sys.argv[1:]
-    if argv[:2] == ['card', 'close']:
+    if argv[:2] == ['card', 'close']:  # `card` itself has required options; close has its own set
         argv = ['card-close', *argv[2:]]
     args = build_parser().parse_args(argv)
     try:
