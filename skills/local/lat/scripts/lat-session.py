@@ -310,6 +310,13 @@ def activate(args):
     )
     if not args.hcom_name or not HCOM_NAME.fullmatch(args.hcom_name):
         raise ValueError(f'A valid explicit --hcom-name is required; rerun: {command}')
+    # The wait check looks up waits/<name>.json, which lat-watch writes under the full name.
+    watch = watch_module()
+    agents = watch.list_hcom()
+    args.hcom_name = watch.resolve_agent_name(agents, args.hcom_name, required=False)
+    if args.hcom_name not in agents:
+        raise ValueError(f'Unknown HCOM agent: {args.hcom_name}; '
+                         f'HCOM lists: {", ".join(sorted(agents)) or "no agents"}')
     duty = None
     if (args.duty_text is None) != (args.duty_expected is None):
         raise ValueError('--duty-text and --duty-expected go together; nothing activated')
@@ -326,6 +333,7 @@ def activate(args):
     path = session_path(workspace, sid)
     original = current_bytes(path)
     new_round = True
+    stale_watcher = None
     if path.exists():
         existing = read_json(path)
         if existing.get('status') in ENDED:
@@ -356,9 +364,18 @@ def activate(args):
             record = dict(existing, tasks_path=record['tasks_path'], hcom_name=record['hcom_name'])
             new_round = False
         else:
-            if any(existing.get(key) != value for key, value in record.items()):
+            # A record from before activate resolved names holds the base name of the same controller.
+            old_name = existing.get('hcom_name')
+            upgrade = (isinstance(old_name, str) and old_name != record['hcom_name']
+                       and record['hcom_name'].endswith(f'-{old_name}'))
+            if any(existing.get(key) != value for key, value in record.items()
+                   if not (upgrade and key == 'hcom_name')):
                 raise ValueError('Existing session record differs; do not reset or rebind it')
-            record = existing
+            if upgrade:
+                stale_watcher = existing
+                record = dict(existing, hcom_name=record['hcom_name'])
+            else:
+                record = existing
             new_round = False
     if new_round:
         record['started_at_utc'] = datetime.now(timezone.utc).isoformat()
@@ -409,6 +426,12 @@ def activate(args):
             print(f'側欄未更新：{display["reason"]}')
     else:
         print('面板未啟用，略過綁定')
+    if stale_watcher:
+        # It runs under the old name, so the full-name command would not match it.
+        _, lock_path, _ = watcher_paths(stale_watcher)
+        with lock_path.open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            _stop_watcher_locked(stale_watcher)
     if ensure_watcher(record, path) is None:
         raise ValueError('Session was deactivated while starting its watcher')
     start_autoclean(workspace)
