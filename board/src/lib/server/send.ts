@@ -83,6 +83,14 @@ export function sendMessage(
 	return queued(controllerId, () => attempt(board, controllerId, rawText));
 }
 
+/** Whether the controller's client is gone from hcom's list. The last read may have listed hcom
+ *  before the controller was bound or came back, so it is refused only on a read begun now. */
+async function closedNow(board: Board, controllerId: string): Promise<boolean> {
+	if (!isClosed(await board.sources(), controllerId)) return false;
+	await board.refresh();
+	return isClosed(await board.sources(), controllerId);
+}
+
 async function attempt(board: Board, controllerId: string, rawText: string) {
 	const text = typedText(rawText);
 	// Ask the binding registry now: the target must still be bound at this moment, whatever the
@@ -100,7 +108,7 @@ async function attempt(board: Board, controllerId: string, rawText: string) {
 		const known = (await board.refresh()).controllers.find((candidate) => candidate.id === controllerId);
 		hcomName = known?.hcomName ?? '';
 		reason = known ? ENDED_REASON : UNKNOWN_CONTROLLER_REASON;
-	} else if (isClosed(await board.sources(), controllerId)) {
+	} else if (await closedNow(board, controllerId)) {
 		// Its client is gone from hcom's list: there is no input box to type into; the page wakes it.
 		reason = CLOSED_REASON;
 	} else if (isPaused(await board.sources(), controllerId)) {

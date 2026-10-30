@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser } from '../browser.ts';
+import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
 
 const SCREEN = `({ search: location.search, middle: document.querySelector('.inbox')?.innerText ?? '' })`;
 // The caller's and the command's lines of a card end in an ellipsis when longer; everything else wraps.
@@ -37,6 +37,12 @@ const SHOWN = (selector: string) => `!!document.querySelector('${selector}')?.ch
 const SETTLED = `!!document.querySelector('.inbox .pd')?.checkVisibility() && document.querySelector('.inbox .pd').getAnimations().length === 0`;
 const RECT = `(() => { const r = document.querySelector('.inbox .pd').getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; })()`;
 const setPd = (state: unknown) => writeFileSync(join(fixture.dir, 'pd.json'), JSON.stringify(state));
+/** Load the board at `search` and wait until its script has started: the server draws the pd
+ *  window already, and before then its buttons do nothing and the script has not laid it out. */
+async function load(tab: Tab, search = '') {
+	await tab.navigate(`${fixture.url}/${search}`);
+	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+}
 
 beforeAll(async () => {
 	fixture = await startFixture({ env: { LAT_BOARD_PD_SECONDS: '1' } });
@@ -57,7 +63,7 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 360, height: 900, deviceScaleFactor: 1, mobile: true });
-	await tab.send('Page.navigate', { url: `${fixture.url}/` });
+	await load(tab);
 	await tab.until(`document.querySelectorAll('.inbox .pd .card').length === 2 && ${SETTLED}`, 'the pd cards');
 	// A sheet the screen's width, resting on the command line, over the list; it does not move.
 	expect(await tab.eval(`(() => {
@@ -131,7 +137,7 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	expect(await tab.eval<string>(`document.body.innerText`)).toContain('已拒絕 pd 請求 #3（npm token）');
 
 	// Over a content screen too, which hides the column; the window's title counts the requests.
-	await tab.navigate(`${fixture.url}/?controller=gone`);
+	await load(tab, '?controller=gone');
 	await tab.until(`${SHOWN('.inbox .pd')} && ${SHOWN('section.detail')}`, 'the sheet over the content screen');
 	expect(await tab.eval(`!!document.querySelector('.pd-banner')`)).toBe(false);
 	// Set once the page has started, which may be just after the window shows.
@@ -165,7 +171,7 @@ test.skipIf(!CHROME)('on a desktop the window floats over the middle column on e
 	const tab = browser!.tab;
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
 	setPd({ pending: [waiting(6, 'npm token')] });
-	await tab.navigate(`${fixture.url}/`);
+	await load(tab);
 	await tab.until(`!!document.querySelector('.inbox .pd [data-pd-request="6"]') && ${SETTLED}`, 'the window');
 
 	// At first over the middle column, from its top to the command line, on top of what is there.
@@ -207,12 +213,12 @@ test.skipIf(!CHROME)('on a desktop the window floats over the middle column on e
 	const moved = { x: start.x + 200, y: start.y + 60, w: start.w + 80, h: start.h - 100 };
 	expect(await tab.eval(RECT)).toEqual(moved);
 	expect(JSON.parse(await tab.eval<string>(`localStorage.getItem('lat-board-pd-window')`))).toEqual(moved);
-	await tab.navigate(`${fixture.url}/`);
+	await load(tab);
 	await tab.until(SETTLED, 'the window after a reload');
 	expect(await tab.eval(RECT)).toEqual(moved);
 	// A place off screen, or smaller than the window can be, is pulled back on screen at its smallest size.
 	await tab.eval(`localStorage.setItem('lat-board-pd-window', JSON.stringify({ x: 5000, y: -300, w: 100, h: 50 }))`);
-	await tab.navigate(`${fixture.url}/`);
+	await load(tab);
 	await tab.until(SETTLED, 'the window after a reload');
 	expect(await tab.eval(RECT)).toEqual({ x: 1280 - 360, y: 0, w: 360, h: 200 });
 
@@ -230,7 +236,7 @@ test.skipIf(!CHROME)('on a desktop the window floats over the middle column on e
 	await tab.until(`!!document.querySelector('.inbox .pd [data-pd-request="7"]')`, 'the window open for #7');
 
 	// A content screen leaves the column, badge and all, on screen: no banner once folded either.
-	await tab.navigate(`${fixture.url}/?controller=gone`);
+	await load(tab, '?controller=gone');
 	await tab.until(SHOWN('.inbox .pd'), 'the window beside the content screen');
 	await tab.pointerClick('.pd button.later');
 	await tab.until(SHOWN('.pd-badge'), 'the badge');

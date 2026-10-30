@@ -150,7 +150,7 @@ async function visit(width: number, search = '') {
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
-	await tab.send('Page.navigate', { url: `${fixture.url}/${search}` });
+	await tab.navigate(`${fixture.url}/${search}`);
 	// Started: the board's first history write is done, so its buttons work.
 	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
 }

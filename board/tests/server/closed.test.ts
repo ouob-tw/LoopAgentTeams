@@ -167,6 +167,18 @@ test('a closed controller that reappears in the list is active again, typed into
 	expect(injects()).toEqual([['orin', '回來了嗎', '--enter']]);
 });
 
+test('a message to a controller the last read saw closed is typed in when hcom lists it again by now', async () => {
+	const { luna, orin } = scene();
+	fixture.setHcom({ agents: running(luna) });
+	expect(named(await fixture.refresh(cookie), 'orin')?.status).toBe('closed');
+
+	// Back in hcom's list before the board read it again.
+	fixture.setHcom({ agents: running(luna, orin) });
+	const message = await post('/api/messages', { controllerId: orin.session_id, text: '回來了嗎' });
+	expect(message).toMatchObject({ status: 200, body: { ok: true } });
+	expect(injects()).toEqual([['orin', '回來了嗎', '--enter']]);
+});
+
 test('a list that cannot be read since startup shows every bound controller as active, with an error', async () => {
 	const hcomDir = mkdtempSync(join(tmpdir(), 'lat-board-closed-start-'));
 	writeFileSync(join(hcomDir, 'hcom.json'), JSON.stringify({ listFail: { exit: 3, stderr: 'not ready' } }));
