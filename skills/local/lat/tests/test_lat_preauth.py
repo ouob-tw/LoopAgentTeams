@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-preauth.py'
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
@@ -53,6 +54,7 @@ class PreauthCase(unittest.TestCase):
         self.global_file = self.config / 'lat' / 'preauth.toml'
         self.project_file = self.repo / '.lat' / 'preauth.toml'
         self.sessions = self.repo / '.lat' / 'sessions'
+        self.script = SCRIPT
 
     def run_tool(self, *args, cwd=None, path=None, wait=True):
         environment = {key: value for key, value in os.environ.items()
@@ -65,7 +67,7 @@ class PreauthCase(unittest.TestCase):
         if path:
             environment['PATH'] = path
         environment['CLAUDE_CODE_SESSION_ID'] = SESSION
-        command = [sys.executable, str(SCRIPT), *args]
+        command = [sys.executable, str(self.script), *args]
         if not wait:
             return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, cwd=cwd or self.repo, env=environment)
@@ -444,6 +446,125 @@ class ConditionTests(PreauthCase):
         out = self.run_tool('show').stdout
         self.assertIn('    target = "staging on :9000"  ← project', out)
         self.assertNotIn('production', out)
+
+
+class TimeWindowTests(PreauthCase):
+    """`check` runs through a shim that freezes the tool's clock; the real clock is never read."""
+    WINDOW = 'hours = "01:00-08:00"\ntimezone = "Asia/Taipei"\n'
+    ALLOW = '[actions.merge]\nallow = true\nbranches = ["dev"]\n'
+
+    def setUp(self):
+        super().setUp()
+        self.script = self.root / 'frozen-preauth.py'
+        self.script.write_text(
+            'from datetime import datetime\n'
+            'import importlib.util, os\n'
+            f'spec = importlib.util.spec_from_file_location("lat_preauth", {str(SCRIPT)!r})\n'
+            'module = importlib.util.module_from_spec(spec)\n'
+            'spec.loader.exec_module(module)\n'
+            'module.current_time = lambda: datetime.fromisoformat(os.environ["FROZEN_NOW"])\n'
+            'raise SystemExit(module.main())\n')
+
+    def merge_at(self, moment, *extra):
+        with patch.dict(os.environ, FROZEN_NOW=moment):
+            return self.check('merge', '--branch', 'dev', *extra)
+
+    def verdicts(self, cases):
+        for moment, verdict in cases:
+            with self.subTest(moment):
+                self.assertEqual(self.merge_at(moment)['verdict'], verdict)
+
+    def test_only_inside_the_window_allows_with_the_end_excluded(self):
+        self.write(self.project_file, self.ALLOW + self.WINDOW)
+        self.verdicts((('2026-10-30T00:59:59+08:00', 'ask'), ('2026-10-30T01:00:00+08:00', 'allow'),
+                       ('2026-10-30T07:59:59+08:00', 'allow'), ('2026-10-30T08:00:00+08:00', 'ask')))
+
+    def test_a_window_across_midnight_is_one_span_over_two_days(self):
+        self.write(self.project_file, self.ALLOW
+                   + 'hours = "22:00-06:00"\ntimezone = "Asia/Taipei"\n')
+        self.verdicts((('2026-10-30T21:59:00+08:00', 'ask'), ('2026-10-30T22:00:00+08:00', 'allow'),
+                       ('2026-10-30T23:59:00+08:00', 'allow'), ('2026-10-31T00:00:00+08:00', 'allow'),
+                       ('2026-10-31T05:59:00+08:00', 'allow'), ('2026-10-31T06:00:00+08:00', 'ask')))
+
+    def test_the_window_reads_the_configured_zone_not_the_clock_zone(self):
+        self.write(self.project_file, self.ALLOW + self.WINDOW)
+        self.verdicts((('2026-10-29T19:00:00+00:00', 'allow'), ('2026-10-30T03:00:00+00:00', 'ask')))
+
+    def test_outside_is_a_condition_that_names_the_window_inside_goes_in_the_basis(self):
+        self.write(self.project_file, self.ALLOW + self.WINDOW + 'source = "P-1"\n')
+        window = ('actions.merge.hours 01:00-08:00 from project (source P-1), '
+                  'timezone Asia/Taipei from project (source P-1)')
+        verdict = self.merge_at('2026-10-30T09:30:00+08:00')
+        self.assertEqual(verdict['reason_kinds'], ['condition'])
+        self.assertEqual(verdict['reasons'], [f'now 09:30 is outside {window}'])
+        verdict = self.merge_at('2026-10-30T03:00:00+08:00')
+        self.assertIn(f'now 03:00 is inside {window}', verdict['basis'])
+
+    def test_show_names_the_window(self):
+        self.write(self.project_file, self.ALLOW + self.WINDOW)
+        output = self.run_tool('show').stdout
+        self.assertIn('hours = "01:00-08:00"  ← project', output)
+        self.assertIn('timezone = "Asia/Taipei"  ← project', output)
+
+    def test_a_bad_window_is_a_setting_error_even_at_a_time_it_would_cover(self):
+        for settings, reason in (
+                ('hours = "01:00-08:00"\n', 'no layer sets `timezone`'),
+                ('timezone = "Asia/Taipei"\n', 'no layer sets `hours`'),
+                ('hours = "01:00-08:00"\ntimezone = "Mars/Base"\n', '`timezone` must be'),
+                ('hours = "01:00-08:00"\ntimezone = ""\n', '`timezone` must be'),
+                ('hours = "01:00-08:00"\ntimezone = "localtime"\n', '`timezone` must be'),
+                ('hours = "1:00-8:00"\ntimezone = "Asia/Taipei"\n', '`hours` must be'),
+                ('hours = "01:00-24:00"\ntimezone = "Asia/Taipei"\n', '`hours` must be'),
+                ('hours = "03:00-03:00"\ntimezone = "Asia/Taipei"\n', '`hours` must be'),
+                ('hours = 1\ntimezone = "Asia/Taipei"\n', '`hours` must be a string')):
+            with self.subTest(settings):
+                self.write(self.project_file, self.ALLOW + settings)
+                verdict = self.merge_at('2026-10-30T03:00:00+08:00')
+                self.assertEqual(verdict['verdict'], 'ask')
+                self.assertEqual(set(verdict['reason_kinds']), {'error'})
+                self.assertTrue(any(reason in item for item in verdict['reasons']),
+                                verdict['reasons'])
+
+    def test_the_narrowest_window_wins_and_an_inherited_one_still_binds(self):
+        self.write(self.global_file, self.ALLOW + self.WINDOW)
+        self.write(self.project_file, '[actions.merge]\nallow = true\n')
+        self.verdicts((('2026-10-30T03:00:00+08:00', 'allow'), ('2026-10-30T09:00:00+08:00', 'ask')))
+        self.write(self.project_file, '[actions.merge]\nhours = "09:00-10:00"\n'
+                                      'timezone = "Asia/Taipei"\n')
+        self.verdicts((('2026-10-30T03:00:00+08:00', 'ask'), ('2026-10-30T09:00:00+08:00', 'allow')))
+
+    def test_hours_and_timezone_resolve_key_by_key_and_each_names_its_layer(self):
+        self.write(self.global_file, self.ALLOW + self.WINDOW)
+        self.write(self.project_file, '[actions.merge]\nhours = "02:00-04:00"\n')
+        self.verdicts((('2026-10-30T03:00:00+08:00', 'allow'), ('2026-10-30T01:30:00+08:00', 'ask')))
+        self.assertIn('now 03:00 is inside actions.merge.hours 02:00-04:00 from project, '
+                      'timezone Asia/Taipei from global',
+                      self.merge_at('2026-10-30T03:00:00+08:00')['basis'])
+        self.write(self.project_file, '[actions.merge]\ntimezone = "UTC"\n')
+        self.verdicts((('2026-10-30T03:00:00+00:00', 'allow'), ('2026-10-30T03:00:00+08:00', 'ask')))
+
+    def test_a_bad_value_in_a_wider_layer_is_still_a_setting_error(self):
+        self.write(self.global_file, '[actions.merge]\ntimezone = "Mars/Base"\n')
+        self.write(self.project_file, self.ALLOW + self.WINDOW)
+        verdict = self.merge_at('2026-10-30T03:00:00+08:00')
+        self.assertEqual(set(verdict['reason_kinds']), {'error'})
+
+    def test_allow_false_stays_even_inside_the_window(self):
+        self.write(self.project_file, '[actions.merge]\nallow = false\nbranches = ["dev"]\n'
+                   + self.WINDOW)
+        verdict = self.merge_at('2026-10-30T03:00:00+08:00')
+        self.assertEqual(verdict['reason_kinds'], ['allow-false'])
+
+    def test_inside_the_window_deploy_prod_keeps_its_fixed_conditions(self):
+        git(self.repo, 'switch', '-q', '-c', 'side')
+        self.commit('side work')
+        self.session()
+        self.write(self.project_file, '[actions.deploy-prod]\nallow = true\n' + self.WINDOW)
+        with patch.dict(os.environ, FROZEN_NOW='2026-10-30T03:00:00+08:00'):
+            verdict = self.check('deploy-prod')
+        self.assertEqual(verdict['verdict'], 'ask')
+        self.assertIn('HEAD is not the tip of integration branch `dev`', verdict['reasons'])
+        self.assertTrue(any('no passing full-suite record' in item for item in verdict['reasons']))
 
 
 class NoticeTests(PreauthCase):
