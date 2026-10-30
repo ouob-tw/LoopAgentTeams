@@ -112,7 +112,7 @@
 		align-items: center;
 		gap: 0.35rem;
 		white-space: nowrap;
-		padding: 0.4rem 0.8rem;
+		padding: 0.4rem 0.65rem;
 		border: 0;
 		border-bottom: 2px solid transparent;
 		border-radius: 0;

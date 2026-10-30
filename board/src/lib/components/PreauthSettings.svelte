@@ -1,23 +1,33 @@
 <script lang="ts">
-	// The global pre-authorization file, in the settings dialog. The form follows the file only when
-	// it loads or saves, so a change made elsewhere meanwhile is refused at saving rather than lost.
+	// A pre-authorization file and its form: the global one in the settings dialog, or, given a
+	// controller, its project's on the controller's page with the merged result above. The form
+	// follows the file only when it loads or saves, so a change made elsewhere meanwhile is refused
+	// at saving rather than lost.
 	import { request } from '#lib/board/api.ts';
 	import { ALLOW_CHOICES, PREAUTH_ACTIONS, changesFrom, formFrom, type PreauthForm, type PreauthLayer, type PreauthSettings } from '#lib/board/preauth.ts';
+	import PreauthEffective from './PreauthEffective.svelte';
+
+	let { controller }: { /** The controller whose project file this edits; none edits the global file. */ controller?: string } = $props();
 
 	type Refusal = { reason?: string; problems?: string[]; current?: string | null; toUndo?: string[]; message?: string };
 
+	const scope = $derived(controller ? 'project' : 'global');
+	const url = $derived(controller ? `/api/preauth?controller=${encodeURIComponent(controller)}` : '/api/preauth');
+
+	let settings = $state.raw<PreauthSettings | null>(null);
 	let layer = $state<PreauthLayer | null>(null);
 	let form = $state<PreauthForm | null>(null);
 	let refusal = $state<Refusal | null>(null);
 	let saved = $state(false);
 	let busy = $state(false);
 
-	const changes = $derived(layer && form ? changesFrom(layer, form) : {});
+	const changes = $derived(layer && form ? changesFrom(layer, form, scope) : {});
 	const dirty = $derived(Object.keys(changes).length > 0);
 
-	function show(settings: PreauthSettings) {
-		layer = settings.layers.global;
-		form = formFrom(layer);
+	function show(read: PreauthSettings) {
+		settings = read;
+		layer = read.layers[scope] ?? null;
+		form = layer && formFrom(layer);
 		refusal = null;
 	}
 
@@ -29,7 +39,7 @@
 	async function reload() {
 		busy = true;
 		saved = false;
-		const result = await request<PreauthSettings>('/api/preauth');
+		const result = await request<PreauthSettings>(url);
 		busy = false;
 		if (result.ok) show(result.value);
 		else if (!result.unpaired) refused(result, '讀不到設定，請檢查網路後再試。');
@@ -39,7 +49,7 @@
 	export async function opened() {
 		saved = false;
 		if (dirty) return;
-		const result = await request<PreauthSettings>('/api/preauth');
+		const result = await request<PreauthSettings>(url);
 		if (dirty) return;
 		if (result.ok) show(result.value);
 		else if (!result.unpaired) refused(result, '讀不到設定，請檢查網路後再試。');
@@ -49,10 +59,10 @@
 		if (!layer) return;
 		busy = true;
 		saved = false;
-		const result = await request<PreauthSettings>('/api/preauth', {
+		const result = await request<PreauthSettings>(url, {
 			method: 'PUT',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ layer: 'global', sha256: layer.sha256, changes })
+			body: JSON.stringify({ layer: scope, controller, sha256: layer.sha256, changes })
 		});
 		busy = false;
 		if (result.ok) {
@@ -80,18 +90,28 @@
 	<button onclick={() => items.push('')}>新增{name}</button>
 {/snippet}
 
-<section class="preauth" aria-label="預先授權（全域）">
-	<h3>預先授權（全域）</h3>
-	<p class="note">專案設定優先；全域選「沿用上層」等於沒設定，會要問。</p>
+<section class="preauth" class:dialog={!controller} aria-label={controller ? '預先授權（專案）' : '預先授權（全域）'}>
+	{#if controller}
+		{#if settings && !settings.problems.length}<PreauthEffective {settings} />{/if}
+		<h3>專案設定</h3>
+	{:else}
+		<h3>預先授權（全域）</h3>
+		<p class="note">專案設定優先；全域選「沿用上層」等於沒設定，會要問。</p>
+	{/if}
 
-	{#if layer?.problems.length}
+	<!-- A broken file cannot be edited; the other layer's errors, or a window only half set, can stay
+	     while this file is. -->
+	{#if settings?.problems.length}
 		<div role="alert">
 			<p>設定檔有錯，所有查詢都會要問。修好檔案後重新載入。</p>
 			<ul class="problems">
-				{#each layer.problems as problem}<li>{problem}</li>{/each}
+				{#each settings.problems as problem}<li>{problem}</li>{/each}
 			</ul>
 		</div>
-	{:else if form}
+	{/if}
+	{#if settings && !layer}
+		<p class="note">這個主控不在 Git 專案裡，沒有專案設定。</p>
+	{:else if form && !layer?.problems.length}
 		{#each PREAUTH_ACTIONS as action (action.name)}
 			<section>
 				<h4>{action.label}</h4>
@@ -105,16 +125,22 @@
 				{#if action.branches}
 					{@render list(form.actions[action.name].branches, `${action.label}分支`, false)}
 				{/if}
+				{#if controller && action.name === 'deploy-test'}
+					<label class="target">測試環境 <input aria-label="測試環境" bind:value={form.target} /></label>
+					<p class="note">部署測試版需要填寫測試環境才會生效</p>
+				{/if}
 			</section>
 		{/each}
-		<section>
-			<h4>參謀可自行定案</h4>
-			{@render list(form.may_settle, '可自行定案', true)}
-		</section>
-		<section>
-			<h4>參謀仍要問</h4>
-			{@render list(form.must_ask, '仍要問', true)}
-		</section>
+		{#if !controller}
+			<section>
+				<h4>參謀可自行定案</h4>
+				{@render list(form.may_settle, '可自行定案', true)}
+			</section>
+			<section>
+				<h4>參謀仍要問</h4>
+				{@render list(form.must_ask, '仍要問', true)}
+			</section>
+		{/if}
 	{/if}
 
 	{#if refusal}
@@ -152,10 +178,12 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.9rem;
+	}
+	.dialog {
 		padding-top: 0.9rem;
 		border-top: 1px solid var(--line);
 	}
-	.preauth > .note {
+	.dialog > .note {
 		margin: -0.6rem 0 0;
 	}
 	h3 {
@@ -172,6 +200,17 @@
 		flex-wrap: wrap;
 		gap: 0.4rem;
 		align-items: center;
+	}
+	.target {
+		display: flex;
+		gap: 0.4rem;
+		align-items: center;
+		margin-top: 0.4rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
+	}
+	.target input {
+		flex: 1;
+		min-width: 0;
 	}
 	.note {
 		margin: 0.35rem 0 0;

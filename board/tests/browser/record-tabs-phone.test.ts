@@ -3,7 +3,7 @@
 // the strip scrolls sideways instead of the page; the open tab, however it was opened, is brought
 // into view; the translation button stays at the strip's end. With the default text size the tabs
 // fit where there is room (desktop, the agent's strip): nothing scrolls, and on a phone they share
-// the width. Where they do not fit (the controller's five tabs on a phone) the strip scrolls
+// the width. Where they do not fit (the controller's six tabs on a phone) the strip scrolls
 // sideways, the last tab reachable, and the page never scrolls sideways.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -32,7 +32,7 @@ beforeAll(async () => {
 	if (!CHROME) return;
 	fixture = await startFixture();
 	cookie = await fixture.login('record-tabs-phone');
-	// A controller in a Herdr tab, so its page has all five tabs, with a report to open; and an agent.
+	// A controller in a Herdr tab, so its page has all six tabs, with a report to open; and an agent.
 	const lead = fixture.bound('lat', 'lead', { session_id: 's-lead' });
 	fixture.report('s-lead', { tag: 'DONE', summary: '交付第一張票', hcom_name: 'lead', workspace: lead.workspace });
 	// A ledger of one item, so its tab shows a count like the others.
@@ -68,10 +68,10 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-/** The two strips: the page of the controller Herdr runs, with its five tabs, and an agent's, with two. */
+/** The two strips: the page of the controller Herdr runs, with its six tabs, and an agent's, with two; the pre-authorization tab has no count. */
 const PAGES = [
-	{ page: 'controller', search: '?agent=s-lead', ids: ['transcript', 'reports', 'ledger', 'sent', 'log'], prefix: 'tab-' },
-	{ page: 'agent', search: '?agent=s-plain', ids: ['transcript', 'log'], prefix: 'agent-tab-' }
+	{ page: 'controller', search: '?agent=s-lead', ids: ['transcript', 'reports', 'ledger', 'sent', 'preauth', 'log'], counts: 4, prefix: 'tab-' },
+	{ page: 'agent', search: '?agent=s-plain', ids: ['transcript', 'log'], counts: 1, prefix: 'agent-tab-' }
 ] as const;
 
 /** A new Chrome on `search`, `width` wide, the smallest text size set to `minFont` if given. */
@@ -149,11 +149,11 @@ async function untilShownWhole(id: string) {
 	}
 }
 
-for (const { page, search, ids, prefix } of PAGES) {
+for (const { page, search, ids, counts, prefix } of PAGES) {
 	test.skipIf(!CHROME)(`${page}'s page at 390px with the largest text: one line a tab, the strip scrolls, the open tab in view`, async () => {
 		await visit(search, 390, 24);
 		// Every count in, as one arriving later widens its tab.
-		await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length} && document.querySelectorAll('[role="tab"] small').length === ${ids.length - 1} && !!document.querySelector('.translate')`, 'the tab strip and its counts');
+		await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length} && document.querySelectorAll('[role="tab"] small').length === ${counts} && !!document.querySelector('.translate')`, 'the tab strip and its counts');
 		let shape = await strip();
 		expect(shape.tabs.map((entry) => entry.id)).toEqual([...ids]);
 		for (const entry of shape.tabs) expect({ id: entry.id, lines: entry.lines, oneLine: entry.oneLine }).toEqual({ id: entry.id, lines: 1, oneLine: true });
@@ -188,9 +188,9 @@ for (const { page, search, ids, prefix } of PAGES) {
 		for (const width of [1280, 390]) {
 			await visit(search, width);
 			// Every count in, as one arriving later widens its tab and can push the last one past the edge.
-			await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length} && document.querySelectorAll('[role="tab"] small').length === ${ids.length - 1}`, 'the tab strip and its counts');
+			await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length} && document.querySelectorAll('[role="tab"] small').length === ${counts}`, 'the tab strip and its counts');
 			const shape = await strip();
-			// Only the controller's five tabs may overflow, and only on a phone.
+			// Only the controller's six tabs may overflow, and only on a phone.
 			const scrolls = shape.strip.scrollWidth > shape.strip.clientWidth;
 			if (width > 760 || page === 'agent') expect(scrolls).toBe(false);
 			expect(shape.page).toBe(shape.window);
@@ -241,7 +241,7 @@ test.skipIf(!CHROME)('counts that arrive after the last tab opened bring it back
 	// reports' and the ledger's, which come by other requests.
 	await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/messages?controller=*' }, { urlPattern: '*/api/agents/log*' }] });
 	await tab.navigate(`${fixture.url}/?agent=s-lead`);
-	await tab.until(`document.querySelectorAll('[role="tab"]').length === 5`, 'the tab strip');
+	await tab.until(`document.querySelectorAll('[role="tab"]').length === 6`, 'the tab strip');
 	const release = async () => {
 		await tab.send('Fetch.disable');
 		for (const requestId of tab.paused.splice(0)) await tab.send('Fetch.continueRequest', { requestId }).catch(() => {});

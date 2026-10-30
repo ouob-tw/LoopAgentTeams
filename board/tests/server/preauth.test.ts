@@ -164,3 +164,53 @@ test('the controller report lists a board write', async () => {
 	const report = tool('report');
 	expect(report.stdout.split('### 設定寫入')[1]).toContain('[actions.install-host] allow = true');
 });
+
+test('a project file: what it says over the global file, a section emptied by a save, and its errors', async () => {
+	reset('[actions.push]\nallow = false\n\n[actions.deploy-test]\nallow = true\n\n[advisor]\nmay_settle = ["全域的一條"]\n');
+	const kira = fixture.bound('delta', 'kira');
+	spawnSync('git', ['init', '-q', '-b', 'dev', kira.workspace]);
+	const projectFile = join(kira.workspace, '.lat/preauth.toml');
+	writeFileSync(projectFile, '# project notes\n[actions.push]\nallow = true\n\n[actions.deploy-test]\nallow = false\ntarget = "stage"\n\n[advisor]\nmay_settle = ["專案的一條"]\n');
+	fixture.setHelper({ output: { controllers: [kira] }, realPreauth: python });
+	await fixture.refresh(cookie);
+	const url = `/api/preauth?controller=${kira.session_id}`;
+	const read = async () => (await fixture.fetch(url, { cookie })).json();
+	const save = (sha256: string, changes: unknown) =>
+		fixture.fetch('/api/preauth', { method: 'PUT', cookie, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ layer: 'project', controller: kira.session_id, sha256, changes }) });
+
+	const before = await read();
+	expect(before.effective.actions.push.allow).toMatchObject({ value: true, layer: 'project' });
+	expect(before.project_advisor).toBe(true);
+	expect(before.effective.advisor.may_settle).toMatchObject({ value: ['全域的一條'], layer: 'global' });
+
+	const written = await save(before.layers.project.sha256, { actions: { 'deploy-test': { allow: null, target: null } } });
+	expect(written.status).toBe(200);
+	const after = await written.json();
+	expect(after.effective.actions['deploy-test'].allow).toMatchObject({ value: true, layer: 'global' });
+	expect(after.effective.actions['deploy-test'].target).toBeUndefined();
+	const text = readFileSync(projectFile, 'utf8');
+	expect(text).toContain('# project notes\n[actions.push]\nallow = true\n');
+	expect(text).not.toMatch(/target|allow = false/);
+
+	// A controller sees its report on the workspace's own session record.
+	const sessions = join(kira.workspace, '.lat/sessions');
+	mkdirSync(sessions, { recursive: true });
+	writeFileSync(join(sessions, 'SESSION-2.json'), JSON.stringify({ status: 'active', history: [], started_at_utc: new Date(Date.now() - 60_000).toISOString() }));
+	const report = spawnSync(python, [TOOL, 'report'], { cwd: kira.workspace, encoding: 'utf8', env: { ...fixture.serverEnv(), CLAUDE_CODE_SESSION_ID: 'SESSION-2' } });
+	expect(report.stdout.split('### 設定寫入')[1]).toContain('[actions.deploy-test] allow 移除');
+
+	// `[advisor]` in the project file is not refused, but a save may not change it.
+	const refused = await save(after.layers.project.sha256, { advisor: { may_settle: ['x'] } });
+	expect(refused.status).toBe(422);
+
+	const broken = `${text}surprise = 1\n`;
+	writeFileSync(projectFile, broken);
+	const bad = await read();
+	expect(bad.problems.join()).toContain('surprise');
+	expect(bad.effective).toEqual({ actions: {}, advisor: {} });
+	expect((await save(bad.layers.project.sha256, { actions: { push: { allow: false } } })).status).toBe(422);
+	expect(readFileSync(projectFile, 'utf8')).toBe(broken);
+
+	fixture.setHelper({ output: { controllers: [] }, realPreauth: python });
+	await fixture.refresh(cookie);
+});

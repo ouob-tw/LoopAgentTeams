@@ -199,7 +199,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 
 ## 預先授權
 
-使用說明見[預先授權](../docs/lat-board.md#預先授權)。TOML 的讀寫、驗證與紀錄都在 `lat-preauth.py`（`board_settings`、`board_write`），看板只透過 `board preauth-read`、`board preauth-write` 呼叫。`GET /api/preauth` 回各層內容、內容雜湊與合併結果（帶 `?controller=` 才含該主控的專案層），`PUT /api/preauth`（本文 `{"layer":…, "controller":…, "sha256":…, "changes":…}`，專案層要有 `controller`；`changes` 只放改動的鍵，`null` 刪鍵）寫入，成功回同樣的內容：內容雜湊不符回 409、檔案有錯或不允許的改動回 422、紀錄寫不進去回 500（`log_failed` 已還原；`restore_failed` 另帶目前內容與要手動改回的項目）。紀錄在狀態目錄的 `preauth-writes.jsonl`；`lat-preauth.py report` 從同一個位置讀，所以改了 `LAT_BOARD_STATE_DIR` 或 `XDG_CONFIG_HOME` 時，主控也要用相同的值。
+使用說明見[預先授權](../docs/lat-board.md#預先授權)。TOML 的讀寫、驗證與紀錄都在 `lat-preauth.py`（`board_settings`、`board_write`），看板只透過 `board preauth-read`、`board preauth-write` 呼叫；`PreauthSettings.svelte` 同時是「設定」對話框的全域區塊與主控頁面「預先授權」分頁的專案區塊（帶 `controller`），分頁另以 `PreauthEffective.svelte` 顯示合併結果。`GET /api/preauth` 回各層內容、內容雜湊與合併結果（帶 `?controller=` 才含該主控的專案層），`PUT /api/preauth`（本文 `{"layer":…, "controller":…, "sha256":…, "changes":…}`，專案層要有 `controller`；`changes` 只放改動的鍵，`null` 刪鍵）寫入，成功回同樣的內容：內容雜湊不符回 409、檔案有錯或不允許的改動回 422、紀錄寫不進去回 500（`log_failed` 已還原；`restore_failed` 另帶目前內容與要手動改回的項目）。紀錄在狀態目錄的 `preauth-writes.jsonl`；`lat-preauth.py report` 從同一個位置讀，所以改了 `LAT_BOARD_STATE_DIR` 或 `XDG_CONFIG_HOME` 時，主控也要用相同的值。
 
 ## 看板提問
 

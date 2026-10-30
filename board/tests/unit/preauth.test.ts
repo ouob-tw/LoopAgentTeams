@@ -1,6 +1,6 @@
 // What the settings form sends: only the keys it changes, with null deleting a key.
 import { expect, test } from 'bun:test';
-import { changesFrom, formFrom, type PreauthLayer } from '../../src/lib/board/preauth.ts';
+import { changesFrom, effectiveRows, formFrom, type PreauthLayer } from '../../src/lib/board/preauth.ts';
 
 const layer: PreauthLayer = {
 	path: '/x',
@@ -34,4 +34,29 @@ test('a blank row is not saved, and removing the last row deletes the key', () =
 	form.may_settle = ['  '];
 	form.actions.push.branches = [];
 	expect(changesFrom(layer, form)).toEqual({ actions: { push: { branches: null } }, advisor: { may_settle: null } });
+});
+
+test('the test environment is the project form\'s, and [advisor] only the global form\'s', () => {
+	const project: PreauthLayer = { ...layer, actions: { 'deploy-test': { allow: true, target: 'stage' } }, advisor: { may_settle: [' hand written '] } };
+	const form = formFrom(project);
+	expect(form.target).toBe('stage');
+	expect(changesFrom(project, form, 'project')).toEqual({});
+	form.target = '  ';
+	form.actions['deploy-test'].allow = 'inherit';
+	form.may_settle.push('不會送出');
+	expect(changesFrom(project, form, 'project')).toEqual({ actions: { 'deploy-test': { allow: null, target: null } } });
+	expect(changesFrom(project, form, 'global').actions?.['deploy-test']).toEqual({ allow: null });
+});
+
+test('a value in effect says where it comes from; one not in effect says it is not set', () => {
+	const push = { allow: { value: true, layer: 'project', source: null }, branches: { value: ['dev', 'rel'], layer: 'global', source: 'D-1' } } as const;
+	expect(effectiveRows('push', push)).toEqual([
+		{ label: '授權', text: '允許，來自專案' },
+		{ label: '分支', text: 'dev、rel，來自全域' }
+	]);
+	expect(effectiveRows('deploy-test', { allow: { value: false, layer: 'global', source: null } })).toEqual([
+		{ label: '授權', text: '要問，來自全域' },
+		{ label: '測試環境', text: '未設定' }
+	]);
+	expect(effectiveRows('deploy-prod', { allow: { value: true, layer: 'global', source: null }, hours: { value: '09:00-18:00', layer: 'project', source: null } }).map((row) => row.text)).toEqual(['允許，來自全域', '09:00-18:00，來自專案']);
 });

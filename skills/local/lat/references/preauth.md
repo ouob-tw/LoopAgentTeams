@@ -82,7 +82,7 @@ source = "<待決紀錄 ID>"
 
 ## 看板寫入
 
-使用者在看板「設定」對話框改全域設定，視同直接編輯檔案，不需要待決紀錄。看板透過 `lat_panel.py board preauth-read`、`preauth-write` 讀寫，只改被修改的鍵，其他段落與註解不變；寫入的段落記 `source = "board:<帶時區的時間>"`。檔案有錯、或讀取後被改過時拒絕；每次寫入在看板狀態資料夾的 `preauth-writes.jsonl` 記一筆，記不進去就還原設定並回報失敗。
+使用者在看板「設定」對話框改全域設定、在主控頁面改專案設定，都視同直接編輯檔案，不需要待決紀錄。看板透過 `lat_panel.py board preauth-read`、`preauth-write` 讀寫，只改被修改的鍵，其他段落與註解不變；寫入的段落記 `source = "board:<帶時區的時間>"`。檔案有錯、或讀取後被改過時拒絕；每次寫入在看板狀態資料夾的 `preauth-writes.jsonl` 記一筆，記不進去就還原設定並回報失敗。
 
 ## 寫入設定：grant
 

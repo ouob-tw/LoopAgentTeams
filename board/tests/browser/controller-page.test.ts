@@ -99,9 +99,9 @@ test.skipIf(!CHROME)('the header names the controller and its phase; the details
 test.skipIf(!CHROME)('the tabs: conversation first, report count, switched by click and by the arrow keys, wrapping round', async () => {
 	await visit(1280);
 	const tabs = await tab.eval<{ text: string; selected: boolean }[]>(TABS);
-	expect(tabs.map((entry) => entry.text.replace(/ \d+$/, ''))).toEqual(['對話紀錄', '回報', '工作總表', '送出紀錄']);
+	expect(tabs.map((entry) => entry.text.replace(/ \d+$/, ''))).toEqual(['對話紀錄', '回報', '工作總表', '送出紀錄', '預先授權']);
 	expect(tabs[1].text).toBe('回報 2');
-	expect(tabs.map((entry) => entry.selected)).toEqual([true, false, false, false]);
+	expect(tabs.map((entry) => entry.selected)).toEqual([true, false, false, false, false]);
 	expect(await tab.eval(SHOWN)).toEqual(['panel-transcript']);
 
 	await tab.eval(`${tabButton('回報')}.click()`);
@@ -113,14 +113,16 @@ test.skipIf(!CHROME)('the tabs: conversation first, report count, switched by cl
 	const key = (name: string) => `document.querySelector('.detail [role="tablist"]').dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(name)}, bubbles: true }))`;
 	await tab.eval(key('ArrowRight'));
 	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-ledger"]'`, 'the ledger panel');
-	expect((await tab.eval<{ focused: boolean }[]>(TABS)).map((entry) => entry.focused)).toEqual([false, false, true, false]);
+	expect((await tab.eval<{ focused: boolean }[]>(TABS)).map((entry) => entry.focused)).toEqual([false, false, true, false, false]);
 	await tab.eval(key('ArrowRight'));
 	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-sent"]'`, 'the sent panel');
-	expect((await tab.eval<{ focused: boolean }[]>(TABS)).map((entry) => entry.focused)).toEqual([false, false, false, true]);
+	expect((await tab.eval<{ focused: boolean }[]>(TABS)).map((entry) => entry.focused)).toEqual([false, false, false, true, false]);
+	await tab.eval(key('ArrowRight'));
+	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-preauth"]'`, 'the pre-authorization panel');
 	await tab.eval(key('ArrowRight'));
 	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-transcript"]'`, 'the conversation, wrapped round');
 	await tab.eval(key('ArrowLeft'));
-	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-sent"]'`, 'the sent panel, wrapped back');
+	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-preauth"]'`, 'the pre-authorization panel, wrapped back');
 }, 60_000);
 
 test.skipIf(!CHROME)("a report row opens the report in the conversation; a question's bar opens the question", async () => {
@@ -159,7 +161,7 @@ test.skipIf(!CHROME)("at a phone's width the tabs share the width and nothing sc
 		return { tabs, content: strip.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), gap: parseFloat(style.columnGap) || 0 };
 	})()`);
 	const { tabs } = shape;
-	expect(tabs).toHaveLength(4);
+	expect(tabs).toHaveLength(5);
 	// The tabs fill the strip, or overflow it by no more than their labels need, and share it;
 	// one whose label and count do not fit its share is as wide as they are.
 	const needed = tabs.reduce((sum, entry) => sum + entry.natural, 0) + shape.gap * (tabs.length - 1);
