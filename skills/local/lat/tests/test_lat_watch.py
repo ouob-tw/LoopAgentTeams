@@ -472,6 +472,25 @@ class WatchDecisionTests(unittest.TestCase):
                          'message-delivered')
         self.assertEqual(reason([message('[hcom-events]', None)]), 'message-delivered')
 
+    def test_lat_watch_own_notice_keeps_a_wait_but_other_agents_requests_release_it(self):
+        watch = load_watch()
+        declaration = {'agent': 'worker', 'target': 'reviewer'}
+        delivered = [{'type': 'status', 'data': {'context': 'deliver:lat-watch', 'position': 9}}]
+
+        def message(sender, intent='request'):
+            return {'type': 'message', 'data': {
+                'from': sender, 'intent': intent,
+                'text': 'LAT skill rules updated. Changed files: SKILL.md.'}}
+
+        def reason(messages):
+            return watch.wait_release_reason(declaration, delivered, False, True, messages)
+
+        self.assertIsNone(reason([message('lat-watch')]))
+        self.assertIsNone(reason([message('lat-watch'), message('lat-watch')]))
+        self.assertEqual(reason([message('lat-watch'), message('reviewer')]), 'message-delivered')
+        self.assertEqual(reason([message('reviewer')]), 'message-delivered')
+        self.assertEqual(reason([message('lat-watcher')]), 'message-delivered')
+
     def test_delivered_messages_reads_messages_addressed_to_the_waiter(self):
         watch = load_watch()
         events = [{'type': 'status', 'data': {'context': 'deliver:x', 'position': 7}},

@@ -1533,7 +1533,7 @@ def request_watch_notice(message):
 
 
 def message_releases_wait(message):
-    if request_watch_notice(message):
+    if request_watch_notice(message) or event_value(message, 'from', 'data') == 'lat-watch':
         return False
     return event_value(message, 'intent', 'data') not in ('inform', 'ack')
 
