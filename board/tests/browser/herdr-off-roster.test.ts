@@ -23,6 +23,8 @@ const BOX = '.dock .cmd textarea';
 const SEND = '.dock .cmd .send-slot button:not([data-action="interrupt"])';
 const OPTIONS = '.dock .cmd button.options';
 const POPUP = '.dock .popup [aria-label="喚醒選項"]';
+// The options pop-up as a whole: it holds the permission modes, and the wake group only to give up a resume.
+const POPUP_ANY = '.dock .popup';
 const CARD = `document.querySelector('.inbox button.agent[data-agent="s-old"]')`;
 /** Click the first button in `scope` whose text includes `text`. */
 const click = (scope: string, text: string) =>
@@ -169,8 +171,8 @@ for (const width of [1280, 390]) {
 		// The wake's options, as on any closed controller's page; addressed by its name too.
 		await type(`@old ${text}`);
 		await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
-		await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
-		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).not.toContain('開新一輪 LAT');
+		await tab.until(`!!document.querySelector(${JSON.stringify(POPUP_ANY)})`, 'the options pop-up');
+		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP_ANY)}).innerText`)).not.toContain('開新一輪 LAT');
 		expect(await tab.eval(FITS)).toBe(true);
 		await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
 		await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');

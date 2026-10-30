@@ -205,7 +205,9 @@
 		const one = toAgent ? agent : recipientAgent;
 		return one?.client === 'claude' || one?.client === 'codex' ? one : undefined;
 	});
-	const hasOptions = $derived(waking || permissionAgent !== undefined);
+	// A wake's only option left to show is giving up the previous resume.
+	const wakeOptions = $derived(waking && !!abandonable[id]);
+	const hasOptions = $derived(wakeOptions || permissionAgent !== undefined);
 	const status = $derived(waking ? switching.status[id] : undefined);
 	// A new model and effort only apply when the client is known not to be running: a running one
 	// is typed into and keeps its settings.
@@ -386,7 +388,7 @@
 			class="options"
 			class:idle={!hasOptions}
 			aria-label="選項"
-			title={permissionAgent && waking ? '權限與喚醒選項' : permissionAgent ? '權限' : waking ? '喚醒選項' : '只有閒置或已關閉的主控有喚醒選項'}
+			title={permissionAgent && wakeOptions ? '權限與放棄接回' : permissionAgent ? '權限' : wakeOptions ? '放棄前一次接回' : '目前沒有可用的選項'}
 			aria-expanded={optionsOpen}
 			disabled={!hasOptions}
 			onclick={() => (optionsOpen = !optionsOpen)}
@@ -405,22 +407,17 @@
 	{#if optionsOpen && hasOptions}
 		<div class="popup" role="group" aria-label="選項">
 			{#if permissionAgent}<AgentPermissionModes agent={permissionAgent} />{/if}
-			{#if permissionAgent && waking}<hr />{/if}
-			{#if waking && recipient}
+			{#if permissionAgent && wakeOptions}<hr />{/if}
+			{#if wakeOptions}
 				<div class="wake" role="group" aria-label="喚醒選項">
-					<p class="note">
-						<span title="@{recipient.hcomName}">@{lastSegment(recipient.hcomName)}</span> {recipient.status === 'closed' ? '已關閉' : recipient.status === 'working' ? '已停用 LAT（正在工作）' : '閒置中'}。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。
-					</p>
-					{#if abandonable[id]}
-						{#if confirming[id]}
-							<p class="warn">{ABANDON_CONFIRM_TEXT}</p>
-							<div class="actions">
-								<button type="button" class="danger" onclick={abandon}>確認放棄</button>
-								<button type="button" onclick={() => delete confirming[id]}>取消</button>
-							</div>
-						{:else}
-							<button type="button" onclick={() => (confirming[id] = true)}>放棄前一次接回</button>
-						{/if}
+					{#if confirming[id]}
+						<p class="warn">{ABANDON_CONFIRM_TEXT}</p>
+						<div class="actions">
+							<button type="button" class="danger" onclick={abandon}>確認放棄</button>
+							<button type="button" onclick={() => delete confirming[id]}>取消</button>
+						</div>
+					{:else}
+						<button type="button" onclick={() => (confirming[id] = true)}>放棄前一次接回</button>
 					{/if}
 				</div>
 			{/if}
@@ -518,7 +515,6 @@
 		border: 0;
 		border-top: 1px solid var(--line);
 	}
-	.note,
 	.warn {
 		margin: 0;
 		font-size: max(0.8rem, var(--min-font, 0px));

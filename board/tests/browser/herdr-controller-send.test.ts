@@ -23,6 +23,8 @@ const BOX = '.dock .cmd textarea';
 const SEND = '.dock .cmd .send-slot button:not([data-action="interrupt"])';
 const OPTIONS = '.dock .cmd button.options';
 const POPUP = '.dock .popup [aria-label="喚醒選項"]';
+// The options pop-up as a whole: it holds the permission modes, and the wake group only to give up a resume.
+const POPUP_ANY = '.dock .popup';
 const MODES = '.dock .popup section[aria-label="權限"]';
 const STOP = '.dock [data-action="interrupt"]';
 /** Click the first button in `scope` whose text includes `text`. */
@@ -441,8 +443,9 @@ for (const { name, report, ended, lat, hcom, herdr, stop } of LEAD_CASES) {
 				await type('在嗎');
 				await tab.until(`document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, 'the wake button');
 				await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
-				await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
-				expect(await tab.eval(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).toContain('已停用 LAT（正在工作）');
+				await tab.until(`!!document.querySelector(${JSON.stringify(POPUP_ANY)})`, 'the options pop-up');
+				// No fixed note about the state or the cost of a wake.
+				expect(await tab.eval(`document.querySelector(${JSON.stringify(POPUP_ANY)}).innerText.includes('已停用 LAT')`)).toBe(false);
 				await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
 				await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');
 				expect(injects()).toEqual([['lead', '在嗎', '--enter']]);
@@ -453,10 +456,10 @@ for (const { name, report, ended, lat, hcom, herdr, stop } of LEAD_CASES) {
 				// With the wake options open, the stop closes them: one pop-up at a time, never overlapping.
 				if (ended) {
 					await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
-					await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
+					await tab.until(`!!document.querySelector(${JSON.stringify(POPUP_ANY)})`, 'the options pop-up');
 				}
 				await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
-				expect(await tab.eval(`!!document.querySelector(${JSON.stringify(POPUP)})`)).toBe(false);
+				expect(await tab.eval(`!!document.querySelector(${JSON.stringify(POPUP_ANY)})`)).toBe(false);
 				await tab.until(`document.querySelector('.dock')?.innerText.includes('已對 @lead 送出 Esc')`, 'the interrupt notice');
 				// The Esc went to the pane of the session that was open, nobody else's.
 				expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
@@ -497,8 +500,8 @@ for (const { width, kind, value, flags } of [
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).disabled`)).toBe(false);
 		await type(text);
 		await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
-		await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
-		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).not.toContain('開新一輪 LAT');
+		await tab.until(`!!document.querySelector(${JSON.stringify(POPUP_ANY)})`, 'the options pop-up');
+		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP_ANY)}).innerText`)).not.toContain('開新一輪 LAT');
 		// Its pane still in Herdr: its permission sits above the wake's options in the same pop-up.
 		await tab.until(`document.querySelectorAll('${MODES} button[data-mode]').length === 3`, 'its permission modes');
 		expect(await tab.eval(FITS)).toBe(true);
@@ -535,7 +538,7 @@ for (const width of [1280, 390]) {
 			await visit(width, search);
 			await tab.until(`${pageOf('dusk')} && document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, "the closed controller's page");
 			await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
-			await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
+			await tab.until(`!!document.querySelector(${JSON.stringify(POPUP_ANY)})`, 'the options pop-up');
 			const menu = `.dock [role="menu"][aria-label="思考強度"]`;
 			await openMenu('.dock .pill-slot .part[aria-label^="思考強度："]', menu, 'the effort menu');
 			const item = `[...document.querySelectorAll('${menu} button')].find((b) => b.querySelector('small')?.innerText === 'high')`;
@@ -545,7 +548,7 @@ for (const width of [1280, 390]) {
 			await tab.pointerClick('[data-test-high]');
 			await tab.until(`document.querySelector('.dock .pill-slot .part[aria-label^="思考強度："]').getAttribute('aria-label').includes('high')`, 'the effort chosen');
 			// The wake options stay open.
-			expect(await tab.eval(`!!document.querySelector(${JSON.stringify(POPUP)})`)).toBe(true);
+			expect(await tab.eval(`!!document.querySelector(${JSON.stringify(POPUP_ANY)})`)).toBe(true);
 			expect(await tab.eval(FITS)).toBe(true);
 		}, 60_000);
 	}
