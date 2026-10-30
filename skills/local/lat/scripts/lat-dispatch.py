@@ -475,6 +475,8 @@ def close_card(args):
             lines[index] = f'- {key}：{values.pop(key)}{ending}'
     if values:
         raise Failure(f'task card lacks the {" and ".join(values)} field; nothing changed')
+    if not os.access(path.parent, os.W_OK):
+        raise Failure(f'{path.parent} is not writable; nothing changed')
     by = ['--by', args.by] if args.by else []
 
     def point_ledger_at(card):
@@ -483,9 +485,14 @@ def close_card(args):
 
     try:
         target.parent.mkdir(exist_ok=True)
-        with open(target, 'x', encoding='utf-8') as stream:
+        stream = open(target, 'x', encoding='utf-8')
+    except OSError as error:
+        raise Failure(f'card not closed: {error}') from error
+    try:
+        with stream:
             stream.write(''.join(lines))
     except OSError as error:
+        target.unlink(missing_ok=True)
         raise Failure(f'card not closed: {error}') from error
     try:
         if row:

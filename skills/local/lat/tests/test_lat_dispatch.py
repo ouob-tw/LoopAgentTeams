@@ -863,6 +863,7 @@ class CardCloseTests(LedgerCase):
         before, stored = card.read_text(), self.ledger.read_text()
         result = self.close(card)
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn('card not closed', result.stderr)
         self.assertEqual(card.read_text(), before)
         self.assertEqual(self.ledger.read_text(), stored)
 
