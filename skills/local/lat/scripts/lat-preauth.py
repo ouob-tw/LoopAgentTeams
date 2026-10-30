@@ -609,7 +609,8 @@ def notice_agents():
         raise Refused(f'HCOM could not be read, so no recipient is known to be live: {error}')
     if not isinstance(agents, list):
         raise Refused('HCOM could not be read, so no recipient is known to be live')
-    if not all(isinstance(item, dict) for item in agents):
+    if not all(isinstance(item, dict) and isinstance(item.get('name'), str) and item['name']
+               for item in agents):
         raise Refused('HCOM could not be read, so no recipient is known to be live: '
                       'malformed agent list')
     return agents

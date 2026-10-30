@@ -572,11 +572,13 @@ class NoticeTests(PreauthCase):
 
     def test_a_malformed_agent_list_is_not_taken_as_no_one_live(self):
         self.other_sessions(('kela', 'active'))
-        self.set_agents(json.dumps([None, {}]))
-        result = self.notice()
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.stdout, '')
-        self.assertIn('malformed agent list', result.stderr)
+        for agents in ([None, {}], [{}], [{'name': None}], [{'name': ''}]):
+            with self.subTest(agents=agents):
+                self.set_agents(json.dumps(agents))
+                result = self.notice()
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, '')
+                self.assertIn('malformed agent list', result.stderr)
 
     def test_a_named_recipient_that_is_not_live_still_fails(self):
         self.other_sessions(('vuho', 'active'))
