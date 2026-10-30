@@ -431,7 +431,7 @@ bun run build:test && bun run measure:commandline   # 無頭 Chrome；違反規�
 bun scripts/measure-commandline.ts --serve     # 啟動已登入的假資料看板，再用 scripts/measure-commandline.py 以 WebKit 量同樣的案例
 ```
 
-手機寬度（760px 以下）的指令列分兩行：迴紋針與麥克風由 `CommandLine.svelte` 自己放（`MessageBox` 的 `tools={false}`，麥克風呼叫它的 `insert`），寬版時仍在輸入框左邊、外觀與放在框內時相同；手機時外層改成 `display: contents`，以 `order` 排成第一行只有輸入框，第二行迴紋針、模型與思考強度、麥克風、選項按鈕（浮動框有權限段或喚醒選項時才顯示）、收起鈕（最右）。模型標籤的選單在手機改從指令列左側往上展開。`tests/browser/command-line-layout.test.ts` 檢查寬版一行與 360、390px 兩行的順序、每個按鈕點得到、沒有橫向捲動，以及收起後能再展開。
+手機寬度（760px 以下）的指令列分兩行：迴紋針與麥克風由 `CommandLine.svelte` 自己放（`MessageBox` 的 `tools={false}`，麥克風呼叫它的 `insert`），寬版時仍在輸入框左邊、外觀與放在框內時相同；手機時外層改成 `display: contents`，以 `order` 排成第一行只有輸入框，第二行迴紋針、模型與思考強度、麥克風、選項按鈕（浮動框有權限段或「放棄前一次接回」時才顯示）、收起鈕（最右）。模型標籤的選單在手機改從指令列左側往上展開。`tests/browser/command-line-layout.test.ts` 檢查寬版一行與 360、390px 兩行的順序、每個按鈕點得到、沒有橫向捲動，以及收起後能再展開。
 
 錯誤紀錄的伺服器端在 `tests/server/server-log.test.ts`（起點加 63），格式與限頻本身在 `tests/unit/log.test.ts`；`tests/browser/client-error-page.test.ts` 用無頭 Chrome（起點加 64 與加 65）讓頁面變成 Internal Error，檢查 journal 那一行。
 
