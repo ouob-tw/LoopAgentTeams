@@ -116,11 +116,12 @@ test.skipIf(!CHROME)('a style that cannot be saved shows a notice and the page k
 test.skipIf(!CHROME)('the theme stays each browser\'s own while the usage style is shared', async () => {
 	const [a, b] = [browsers[0].tab, browsers[1].tab];
 	await closeSettings(a);
+	const systemTheme = await a.eval<string>(`matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'`);
 	await openSettings(a);
-	await a.eval(`[...document.querySelectorAll('dialog [aria-label="主題"] button')].find((button) => button.innerText.startsWith('淺色')).click()`);
-	await a.until(`document.documentElement.dataset.theme === 'light'`, 'the light theme here');
+	await a.eval(`[...document.querySelectorAll('dialog [aria-label="主題"] button')].find((button) => button.innerText !== '自動').click()`);
+	await a.until(`document.documentElement.dataset.theme !== '${systemTheme}'`, 'the other theme here');
 	await a.eval(`${choice('精簡')}.click()`);
 	await b.until(`(${LINE}) === ${JSON.stringify(COMPACT)}`, 'the compact line in the other browser');
-	expect(await b.eval(`document.documentElement.dataset.theme`)).not.toBe('light');
+	expect(await b.eval(`document.documentElement.dataset.theme`)).toBe(systemTheme);
 	expect(await b.eval(`localStorage.getItem('lat-board-theme')`)).toBeNull();
 });

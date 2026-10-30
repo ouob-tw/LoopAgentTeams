@@ -35,9 +35,9 @@
 			<section>
 				<h4>主題</h4>
 				<div class="choices" role="group" aria-label="主題">
-					<button aria-pressed={appearance.theme === 'dark'} onclick={() => appearance.setTheme('dark')}>深色</button>
-					<button aria-pressed={appearance.theme === 'light'} onclick={() => appearance.setTheme('light')}>
-						淺色（高對比）
+					<button aria-pressed={appearance.auto} onclick={() => appearance.setTheme(null)}>自動</button>
+					<button aria-pressed={!appearance.auto} onclick={() => appearance.setTheme(appearance.other)}>
+						{appearance.other === 'light' ? '淺色（高對比）' : '深色'}
 					</button>
 				</div>
 			</section>

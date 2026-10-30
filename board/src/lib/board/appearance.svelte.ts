@@ -9,9 +9,11 @@ import {
 	LEGACY_TRANSLATE_KEY,
 	LEGACY_USAGE_STYLE_KEY,
 	MIN_FONT,
+	oppositeTheme,
 	remember,
 	remembered,
 	rememberedNumber,
+	resolveTheme,
 	SCALE,
 	THEME_KEY,
 	THEMES,
@@ -25,7 +27,21 @@ const WIDTH_VARIABLE = { roster: '--roster-w', inbox: '--inbox-w' } as const;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 class Appearance {
-	theme = $state<Theme>('dark');
+	/** The theme saved on this device; null follows the system. */
+	private saved = $state<Theme | null>(null);
+	private system = $state<Theme>('dark');
+	private resolved = $derived(resolveTheme(this.saved, this.system));
+	get theme(): Theme {
+		return this.resolved.theme;
+	}
+	/** True while 自動 is the selected choice. */
+	get auto(): boolean {
+		return this.resolved.auto;
+	}
+	/** The theme the second button offers: the one the system is not showing. */
+	get other(): Theme {
+		return oppositeTheme(this.system);
+	}
 	/** Overall size in percent. */
 	scale = $state<number>(SCALE.base);
 	/** Smallest text size in px; null when there is no floor. */
@@ -35,17 +51,31 @@ class Appearance {
 
 	/** Take over what the startup script applied. */
 	restore(): void {
-		this.theme = remembered(THEME_KEY, THEMES, 'dark');
+		const query = window.matchMedia('(prefers-color-scheme: light)');
+		const read = () => (query.matches ? 'light' : 'dark');
+		this.system = read();
+		this.saved = remembered<Theme | ''>(THEME_KEY, THEMES, '') || null;
+		this.apply();
+		query.addEventListener('change', () => {
+			this.system = read();
+			this.apply();
+		});
 		this.scale = rememberedNumber(SCALE.key, SCALE.min, SCALE.max) ?? SCALE.base;
 		this.minFont = rememberedNumber(MIN_FONT.key, MIN_FONT.min, MIN_FONT.max);
 		forget(LEGACY_USAGE_STYLE_KEY);
 		forget(LEGACY_TRANSLATE_KEY);
 	}
 
-	setTheme(theme: Theme): void {
-		this.theme = theme;
-		document.documentElement.dataset.theme = theme;
-		remember(THEME_KEY, theme);
+	private apply(): void {
+		document.documentElement.dataset.theme = this.theme;
+	}
+
+	/** null is 自動: follow the system and forget any saved theme. */
+	setTheme(theme: Theme | null): void {
+		this.saved = theme;
+		this.apply();
+		if (theme === null) forget(THEME_KEY);
+		else remember(THEME_KEY, theme);
 	}
 
 	setScale(percent: number): void {
