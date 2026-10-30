@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-dispatch.py'
 WATCH = SCRIPT.parent / 'lat-watch.py'
@@ -816,6 +817,140 @@ class PreauthBriefTests(DispatchCase):
                                  str(self.write_brief()), '--preauth', 'Merge dev', env=self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn("--preauth must be ACTION or ACTION:BRANCH, not 'Merge dev'", result.stderr)
+
+
+class CardCloseTests(LedgerCase):
+    EVIDENCE = '無（證據為 issue #5 留言 a/b\\c & $x）'
+
+    def close(self, card, *extra, status='completed', deliverable=EVIDENCE):
+        return self.run_script('card', 'close', '--card', str(card), '--status', status,
+                               '--deliverable', deliverable, '--by', 'nanu', *extra)
+
+    def test_close_sets_fields_moves_the_card_and_repoints_the_ledger_row(self):
+        card = self.ledger_card()
+        result = self.close(card)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        done = self.tasks / 'done' / card.name
+        self.assertEqual(result.stdout.strip(), str(done))
+        self.assertFalse(card.exists())
+        text = done.read_text()
+        self.assertIn('- status：completed\n', text)
+        self.assertIn(f'- deliverable commit：{self.EVIDENCE}\n', text)
+        self.assertIn('- agent：nanu-impl123-fida\n', text)
+        self.assertEqual(self.items()[0]['card'], str(done))
+
+    def test_close_without_a_ledger_row_still_closes_the_card(self):
+        card = self.make_card()
+        result = self.close(card, status='merged', deliverable='abc1234')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.tasks / 'done' / card.name).read_text()
+        self.assertIn('- status：merged\n- ', text)
+        self.assertIn('- deliverable commit：abc1234\n', text)
+
+    def test_wrong_ledger_row_leaves_card_and_ledger_unchanged(self):
+        card = self.ledger_card()
+        card.write_text(card.read_text().replace('ledger row：1', 'ledger row：99'))
+        before, items = card.read_text(), self.items()
+        result = self.close(card)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('99', result.stderr)
+        self.assertEqual(card.read_text(), before)
+        self.assertFalse((self.tasks / 'done' / card.name).exists())
+        self.assertEqual(self.items(), items)
+
+    def test_unwritable_done_directory_leaves_card_and_ledger_untouched(self):
+        card = self.ledger_card()
+        (self.tasks / 'done').write_text('a file where the done/ directory should be')
+        before, stored = card.read_text(), self.ledger.read_text()
+        result = self.close(card)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('card not closed', result.stderr)
+        self.assertEqual(card.read_text(), before)
+        self.assertEqual(self.ledger.read_text(), stored)
+
+    def close_in_process(self, card, wrap_ledger=None, fail_unlink=None, fail_show=False):
+        spec = importlib.util.spec_from_file_location('lat_dispatch_close', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        args = module.build_parser().parse_args(
+            ['card-close', '--card', str(card), '--status', 'completed', '--deliverable', 'x',
+             '--by', 'nanu'])
+        original, run = Path.unlink, module.run_ledger
+        self.listing.write_text(json.dumps(self.agents))
+
+        def unlink(path, *a, **k):
+            if path == fail_unlink:
+                raise PermissionError('injected')
+            return original(path, *a, **k)
+
+        def ledger(args, command, *rest):
+            if fail_show and command == 'show':
+                raise module.Failure('lat-ledger show timed out')
+            result = run(args, command, *rest)
+            if wrap_ledger and command == 'update':
+                raise module.Failure('lat-ledger update timed out')
+            return result
+
+        with mock.patch.dict(os.environ, {'LAT_LEDGER_HCOM_LIST': str(self.listing)}), \
+                mock.patch.object(Path, 'unlink', unlink), \
+                mock.patch.object(module, 'run_ledger', ledger):
+            with self.assertRaises(module.Failure) as raised:
+                module.close_card(args)
+        return str(raised.exception)
+
+    def assert_back_in_place(self, card, before):
+        self.assertEqual(card.read_text(), before)
+        self.assertEqual(self.items()[0]['card'], str(card))
+        self.assertFalse((self.tasks / 'done' / card.name).exists())
+
+    def test_failing_to_remove_the_original_card_puts_card_and_ledger_row_back(self):
+        card = self.ledger_card()
+        before = card.read_text()
+        message = self.close_in_process(card, fail_unlink=card)
+        self.assertIn('injected', message)
+        self.assert_back_in_place(card, before)
+
+    def test_ledger_update_that_committed_before_failing_is_compensated(self):
+        card = self.ledger_card()
+        before = card.read_text()
+        message = self.close_in_process(card, wrap_ledger=True)
+        self.assertIn('timed out', message)
+        self.assert_back_in_place(card, before)
+
+    def test_unreadable_row_after_a_failed_update_names_the_fix_command(self):
+        card = self.ledger_card()
+        message = self.close_in_process(card, wrap_ledger=True, fail_show=True)
+        self.assertIn('could not be put back', message)
+        self.assertIn(f'lat-ledger.py update 1 --ledger {self.ledger} --card {card}', message)
+        self.assertEqual(list((self.tasks / 'done').iterdir()), [])
+        self.assertTrue(card.exists())
+
+    def test_malformed_ledger_row_field_is_refused_before_anything_changes(self):
+        card = self.ledger_card()
+        card.write_text(card.read_text().replace('ledger row：1', 'ledger row：one'))
+        before = card.read_text()
+        result = self.close(card)
+        self.assertIn('ledger row', result.stderr)
+        self.assertEqual(card.read_text(), before)
+        self.assertFalse((self.tasks / 'done').exists())
+
+    def test_existing_target_unknown_status_and_missing_field_change_nothing(self):
+        card = self.make_card()
+        done = self.tasks / 'done'
+        done.mkdir()
+        (done / card.name).write_text('keep')
+        before = card.read_text()
+        result = self.close(card)
+        self.assertIn('already exists', result.stderr)
+        self.assertEqual((done / card.name).read_text(), 'keep')
+        self.assertNotEqual(self.close(card, status='dispatched').returncode, 0)
+        (done / card.name).unlink()
+        card.write_text(before.replace('- deliverable commit：', '- other：'))
+        broken = card.read_text()
+        result = self.close(card)
+        self.assertIn('deliverable commit', result.stderr)
+        self.assertEqual(card.read_text(), broken)
+        self.assertEqual(list(done.iterdir()), [])
 
 
 if __name__ == '__main__':
