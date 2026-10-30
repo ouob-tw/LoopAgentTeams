@@ -324,7 +324,7 @@ class ConditionTests(PreauthCase):
                 steps = verdict['next_steps']
                 for word in ('lat-preauth.py notice --text', 'event id', '--started', 'action',
                              'after-notice', 'record --kind auto', '--notice-before',
-                             '--notice-after'):
+                             '--notice-after', 'lat-preauth.py now', '--controller-workspace'):
                     self.assertIn(word, steps)
                 self.assertNotIn('--last 1', steps)
                 result = self.run_tool('check', '--action', action)
@@ -570,7 +570,7 @@ class TimeWindowTests(PreauthCase):
         self.assertTrue(any('no passing full-suite record' in item for item in verdict['reasons']))
 
 
-class NoticeTests(PreauthCase):
+class NoticeCase(PreauthCase):
     """`notice` against a stub hcom that keeps its agents, sends and events in files."""
     TEXT = 'about to install the host skills'
 
@@ -625,6 +625,8 @@ class NoticeTests(PreauthCase):
         return [json.loads(line) for line in self.sends.read_text().splitlines()] \
             if self.sends.exists() else []
 
+
+class NoticeTests(NoticeCase):
     def test_sends_to_live_controllers_and_prints_the_event_id_of_this_message(self):
         self.other_sessions(('kela', 'active'), ('old', 'ended'))
         self.events.write_text(json.dumps(dict(
@@ -758,6 +760,193 @@ class NoticeTests(PreauthCase):
 
 
 @unittest.skipUnless(INSTALLER.is_file(), 'needs the repo copy of scripts/install-skills.py')
+class CrossRepoTests(NoticeCase):
+    """The controller's session lives in repo A (self.repo); the action happens in repo B."""
+    STARTED = '2026-10-25T10:05:00+00:00'
+
+    def setUp(self):
+        super().setUp()
+        self.other = self.root / 'other'
+        self.other.mkdir()
+        git(self.other, 'init', '-q', '-b', 'dev')
+        git(self.other, 'config', 'user.email', 't@example.com')
+        git(self.other, 'config', 'user.name', 'T')
+        git(self.other, 'commit', '-q', '--allow-empty', '-m', 'first')
+        self.other_records = self.other / '.lat' / 'preauth-records'
+        self.cross = ('--workspace', str(self.other), '--controller-workspace', str(self.repo))
+        self.records_file = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r1.jsonl'
+
+    def tool(self, *args, **kwargs):
+        return self.run_tool(*args, path=f'{self.bin}:{os.environ["PATH"]}', **kwargs)
+
+    def in_other(self, name, status='active', stem=None):
+        self.write(self.other / '.lat' / 'sessions' / f'{stem or name + "-session"}.json',
+                   json.dumps(dict(status=status, hcom_name=name)))
+
+    def record_merge(self, *extra):
+        return self.tool('record', '--action', 'merge', '--branch', 'dev', '--commit', 'abc123',
+                         '--basis', 'allow merge dev', '--result', 'succeeded', *extra)
+
+    def install_flow(self, *flags, **kwargs):
+        """Before-notice, `now`, after-notice, record: the steps of a sub-second action."""
+        before = self.tool('notice', '--text', 'before', *flags, **kwargs)
+        self.assertEqual(before.returncode, 0, before.stderr)
+        started = self.tool('now')
+        self.assertEqual(started.returncode, 0, started.stderr)
+        after = self.tool('notice', '--text', 'after', *flags, **kwargs)
+        self.assertEqual(after.returncode, 0, after.stderr)
+        return self.record_install(started.stdout.strip(), before.stdout.strip(),
+                                   after.stdout.strip(), *flags, **kwargs)
+
+    def record_install(self, started, before, after, *flags, **kwargs):
+        return self.tool('record', '--action', 'install-host', '--commit', 'abc123', '--basis',
+                         'allow install-host', '--result', 'succeeded', '--started', started,
+                         '--notice-before', before, '--notice-after', after, *flags, **kwargs)
+
+    def entries(self):
+        return [json.loads(line) for line in self.records_file.read_text().splitlines()]
+
+    def test_without_the_controller_workspace_a_foreign_repo_is_refused_with_the_way_out(self):
+        for label, result in (
+                ('notice', self.tool('notice', '--text', 'x', '--workspace', str(self.other))),
+                ('record', self.record_merge('--workspace', str(self.other))),
+                ('report', self.tool('report', '--workspace', str(self.other)))):
+            with self.subTest(label):
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn('--controller-workspace', result.stderr)
+        self.assertEqual(self.sent(), [])
+        self.assertFalse(self.other_records.exists())
+
+    def test_check_notice_record_and_report_all_work_across_repos(self):
+        self.write(self.other / '.lat' / 'preauth.toml',
+                   '[actions.merge]\nallow = true\nbranches = ["dev"]\n')
+        self.assertEqual(self.check('merge', '--branch', 'dev', '--workspace',
+                                    str(self.other))['verdict'], 'allow')
+        notice = self.tool('notice', '--text', self.TEXT, *self.cross)
+        self.assertEqual(notice.returncode, 0, notice.stderr)
+        result = self.record_merge(*self.cross)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([entry.get('action_repo') for entry in self.entries()], [str(self.other)])
+        self.assertFalse(self.other_records.exists())
+        for flags in ((), self.cross):
+            with self.subTest(flags=flags):
+                report = self.tool('report', *flags)
+                self.assertEqual(report.returncode, 0, report.stderr)
+                self.assertIn(f'merge dev abc123（動作在 {self.other}）：succeeded', report.stdout)
+
+    def test_a_push_in_another_repo_still_asks_because_the_round_ledger_is_not_there(self):
+        self.write(self.other / '.lat' / 'preauth.toml',
+                   '[actions.push]\nallow = true\nbranches = ["dev"]\n')
+        verdict = self.check('push', '--branch', 'dev', '--workspace', str(self.other))
+        self.assertEqual(verdict['verdict'], 'ask')
+        self.assertIn('no active round ledger', ' '.join(verdict['reasons']))
+
+    def test_identity_comes_from_the_controller_and_recipients_cover_both_repos(self):
+        self.other_sessions(('kela', 'active'))
+        self.in_other('zono')
+        self.in_other('gone', status='ended')
+        self.in_other('orch')  # the same controller's older record in B
+        self.in_other('fake', stem=SESSION)  # B must not decide who this session is
+        self.set_agents([{'name': 'orch'}, {'name': 'kela'}, {'name': 'zono'}, {'name': 'fake'}])
+        result = self.tool('notice', '--text', self.TEXT, *self.cross)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.sent(), [['@kela', '@zono', '--intent', 'inform', '--name', 'orch',
+                                        '--', self.TEXT]])
+
+    def test_no_one_to_notify_is_logged_with_the_controller_and_accepted_by_record(self):
+        result = self.install_flow(*self.cross)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.sent(), [])
+        self.assertTrue((self.repo / '.lat' / 'preauth-records' /
+                         f'{SESSION}-r1-no-recipient.jsonl').is_file())
+        self.assertFalse(self.other_records.exists())
+        self.assertEqual(self.entries()[0]['action_repo'], str(self.other))
+
+    def test_the_action_repo_defaults_to_the_current_directory(self):
+        result = self.tool('record', '--action', 'merge', '--branch', 'dev', '--commit', 'abc123',
+                           '--basis', 'x', '--result', 'succeeded', '--controller-workspace',
+                           str(self.repo), cwd=self.other)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.entries()[0]['action_repo'], str(self.other))
+
+    def test_a_workspace_outside_git_is_refused_before_anything_is_sent(self):
+        self.other_sessions(('kela', 'active'))
+        outside = self.root / 'plain'
+        outside.mkdir()
+        flags = ('--workspace', str(outside), '--controller-workspace', str(self.repo))
+        for label, result in (('notice', self.tool('notice', '--text', 'x', *flags)),
+                              ('record', self.record_merge(*flags))):
+            with self.subTest(label):
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn('not in a Git repository', result.stderr)
+        self.assertEqual(self.sent(), [])
+        self.assertFalse(self.records_file.exists())
+
+    def test_the_same_repo_keeps_the_single_repo_record(self):
+        linked = self.root / 'linked'
+        git(self.repo, 'worktree', 'add', '-q', '-b', 'side', str(linked))
+        cases = (('no flag', ()),
+                 ('flag names the same repo', ('--controller-workspace', str(self.repo))),
+                 ('a worktree of the controller repo',
+                  ('--workspace', str(linked), '--controller-workspace', str(self.repo))))
+        for label, flags in cases:
+            with self.subTest(label):
+                self.records_file.unlink(missing_ok=True)
+                result = self.record_merge(*flags)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(set(self.entries()[0]),
+                                 {'at', 'kind', 'action', 'target', 'commit', 'basis', 'result'})
+                self.assertNotIn('動作在', self.tool('report').stdout)
+
+    def test_an_action_in_a_worktree_of_the_other_repo_records_its_main_checkout(self):
+        linked = self.root / 'other-linked'
+        git(self.other, 'worktree', 'add', '-q', '-b', 'side', str(linked))
+        result = self.record_merge('--workspace', str(linked), '--controller-workspace',
+                                   str(self.repo))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.entries()[0]['action_repo'], str(self.other))
+
+    def test_older_records_still_read(self):
+        self.write(self.records_file, json.dumps(dict(
+            at='2026-10-25T10:00:00+00:00', kind='auto', action='merge', target='dev',
+            commit='abc123', basis='allow merge dev', result='succeeded')) + '\n')
+        report = self.tool('report')
+        self.assertEqual(report.returncode, 0, report.stderr)
+        self.assertIn('- merge dev abc123：succeeded；依據：allow merge dev', report.stdout)
+
+    def test_now_prints_microseconds_and_a_time_zone(self):
+        printed = self.tool('now').stdout.strip()
+        self.assertRegex(printed, r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}[+-]\d\d:\d\d$')
+
+    def test_a_sub_second_action_records_with_now(self):
+        self.other_sessions(('kela', 'active'))
+        with self.subTest('same repo'):
+            result = self.install_flow()
+            self.assertEqual(result.returncode, 0, result.stderr)
+        with self.subTest('across repos'):
+            result = self.install_flow(*self.cross)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.entries()), 2)
+
+    def test_notice_order_is_still_checked_against_now(self):
+        self.other_sessions(('kela', 'active'))
+        first = self.tool('notice', '--text', 'first').stdout.strip()
+        between = self.tool('now').stdout.strip()
+        second = self.tool('notice', '--text', 'second').stdout.strip()
+        late = self.tool('now').stdout.strip()
+        for label, started, before, after, reason in (
+                ('before-notice after the start', between, second, second,
+                 'later than --started'),
+                ('after-notice before the start', late, first, second, 'is not later than --started'),
+                ('after-notice not after before-notice', between, first, first,
+                 'is not later than before notice')):
+            with self.subTest(label):
+                result = self.record_install(started, before, after)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(reason, result.stderr)
+        self.assertFalse(self.records_file.exists())
+
+
 class InstallHostGateTests(PreauthCase):
     """install-host counts only the full suites inside the skill folders the installer would
     install, judged by the installer's own code, so both give the same answer."""
