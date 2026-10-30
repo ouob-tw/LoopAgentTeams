@@ -57,8 +57,10 @@
 		saved = false;
 		const result = await request<PreauthSettings>(url);
 		if (result.ok) {
-			if (dirty) settings = result.value;
-			else show(result.value);
+			if (dirty) {
+				settings = result.value;
+				refusal = null;
+			} else show(result.value);
 		} else if (!result.unpaired) refused(result, '讀不到設定，請檢查網路後再試。');
 	}
 
@@ -116,7 +118,7 @@
 	     while this file is. The dialog reads no project, one of which may set a window's other half. -->
 	{#if settings?.problems.length}
 		<div role="alert">
-			<p>{controller || layer?.problems.length ? '設定檔有錯，所有查詢都會要問。修好檔案後重新載入。' : '時段或時區只寫了一個，專案沒補上另一個時，所有查詢都會要問。'}</p>
+			<p>{controller || settings.layers[scope]?.problems.length ? '設定檔有錯，所有查詢都會要問。修好檔案後重新載入。' : '時段或時區只寫了一個，專案沒補上另一個時，所有查詢都會要問。'}</p>
 			<ul class="problems">
 				{#each settings.problems as problem}<li>{problem}</li>{/each}
 			</ul>
