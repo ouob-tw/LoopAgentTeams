@@ -114,10 +114,10 @@ export interface PreauthOutcome {
 	fromGlobal: boolean;
 }
 
-const hasValue = (origin: PreauthOrigin | undefined) => (Array.isArray(origin?.value) ? origin.value.length > 0 : !!origin?.value);
-
-/** The answer the tool would give, as far as settings alone tell: the fixed conditions are checked
- *  when it runs. `broken` means a file has errors, which makes every query ask. */
+/** The answer `lat-preauth.py check` would give, as far as settings alone tell: the fixed conditions
+ *  and whether it is inside a time window are for when it runs. It wants a branch from the list, so
+ *  an empty list is as good as none, but only that a target is written, even blank. `broken` means a
+ *  file has errors, which makes every query ask. */
 export function outcomeOf(name: string, values: Record<string, PreauthOrigin> = {}, broken = false): PreauthOutcome {
 	const asks = (note: string, fromGlobal = false): PreauthOutcome => ({ asks: true, text: '會問你', note, fromGlobal });
 	if (broken) return asks('設定檔有錯');
@@ -126,9 +126,23 @@ export function outcomeOf(name: string, values: Record<string, PreauthOrigin> = 
 	const fromGlobal = allow.layer === 'global';
 	if (allow.value !== true) return asks(fromLayer(allow), fromGlobal);
 	const { branches, target } = PREAUTH_ACTIONS.find((action) => action.name === name)!;
-	if (branches && !hasValue(values.branches)) return asks('缺分支清單', fromGlobal);
-	if (target && !hasValue(values.target)) return asks('缺測試環境', fromGlobal);
-	return { asks: false, text: '不問直接做', note: fromLayer(allow), fromGlobal };
+	if (branches && !(values.branches?.value as string[] | undefined)?.length) return asks('缺分支清單', fromGlobal);
+	if (target && !values.target) return asks('缺測試環境', fromGlobal);
+	return { asks: false, text: '不問直接做', note: `${fromLayer(allow)}${values.hours ? '，時段外會問你' : ''}`, fromGlobal };
+}
+
+/** The form after a refused save: back to the file, except what was edited after that save was sent. */
+export function revertedForm(saved: PreauthForm, sent: PreauthForm, now: PreauthForm): PreauthForm {
+	const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+	const form = structuredClone(saved);
+	for (const { name } of PREAUTH_ACTIONS) {
+		if (!same(sent.actions[name].allow, now.actions[name].allow)) form.actions[name].allow = now.actions[name].allow;
+		if (!same(sent.actions[name].branches, now.actions[name].branches)) form.actions[name].branches = now.actions[name].branches;
+	}
+	if (sent.target !== now.target) form.target = now.target;
+	if (!same(sent.may_settle, now.may_settle)) form.may_settle = now.may_settle;
+	if (!same(sent.must_ask, now.must_ask)) form.must_ask = now.must_ask;
+	return form;
 }
 
 /** One value in effect, as the page shows it under an action. */
@@ -139,7 +153,7 @@ export interface PreauthValue {
 }
 
 export function valueOf(origin: PreauthOrigin | undefined): PreauthValue {
-	if (!hasValue(origin)) return { text: '', note: '未設定', fromGlobal: false };
-	const { value, layer } = origin!;
-	return { text: Array.isArray(value) ? value.join('、') : String(value), note: fromLayer(origin!), fromGlobal: layer === 'global' };
+	if (!origin) return { text: '', note: '未設定', fromGlobal: false };
+	const { value, layer } = origin;
+	return { text: (Array.isArray(value) ? value.join('、') : String(value)) || '（空）', note: fromLayer(origin), fromGlobal: layer === 'global' };
 }

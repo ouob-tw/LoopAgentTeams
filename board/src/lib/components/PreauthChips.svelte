@@ -14,7 +14,8 @@
 </script>
 
 <div class="chips" role="group" aria-label={label}>
-	{#each items as item, index (item)}
+	<!-- By place: a hand-written file may name a branch twice. -->
+	{#each items as item, index (index)}
 		<span class="chip">{item}<button aria-label={`移除 ${item}`} onclick={() => onchange(items.toSpliced(index, 1))}>×</button></span>
 	{/each}
 	<input aria-label={`新增${label}`} placeholder="＋ 分支" bind:value={draft} onkeydown={add} />

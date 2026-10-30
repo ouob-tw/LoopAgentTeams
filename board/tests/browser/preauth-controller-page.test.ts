@@ -177,6 +177,14 @@ test.skipIf(!CHROME)('a project [advisor] is marked as not in effect, and the gl
 	expect(await tab.eval(`!!${allow('merge', 'allow')}`)).toBe(true);
 }, 60_000);
 
+test.skipIf(!CHROME)('a branch written twice by hand does not take the page down', async () => {
+	writeFileSync(globalFile, GLOBAL);
+	writeFileSync(projectFile, '[actions.push]\nallow = true\nbranches = ["dev", "dev", "main"]\n');
+	const tab = await openTab();
+	await tab.until(`${SECTION}.querySelectorAll('button[aria-label="移除 dev"]').length === 2`, 'both chips');
+	expect(await tab.eval(SUB_RESULT('push', '分支'))).toBe('dev、dev、main 來自專案');
+}, 60_000);
+
 test.skipIf(!CHROME)('a broken project file shows its error and offers no controls', async () => {
 	writeFileSync(globalFile, GLOBAL);
 	const broken = '[actions.push]\nallow = true\nsurprise = 1\n';

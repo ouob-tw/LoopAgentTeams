@@ -1,6 +1,6 @@
 // What the settings form sends: only the keys it changes, with null deleting a key.
 import { expect, test } from 'bun:test';
-import { changesFrom, formFrom, outcomeOf, valueOf, type PreauthLayer } from '../../src/lib/board/preauth.ts';
+import { changesFrom, formFrom, outcomeOf, revertedForm, valueOf, type PreauthLayer } from '../../src/lib/board/preauth.ts';
 
 const layer: PreauthLayer = {
 	path: '/x',
@@ -71,6 +71,25 @@ test('allowed without what the tool also needs still asks, and says what is miss
 	expect(outcomeOf('merge', { allow: project(true), branches: project([]) })).toMatchObject({ asks: true, note: '缺分支清單', fromGlobal: false });
 	expect(outcomeOf('deploy-test', { allow: global(true) })).toMatchObject({ asks: true, note: '缺測試環境' });
 	expect(outcomeOf('deploy-test', { allow: global(true), target: project('staging') })).toMatchObject({ asks: false });
+	// `check` wants only that a target is written.
+	expect(outcomeOf('deploy-test', { allow: global(true), target: project('') })).toMatchObject({ asks: false });
+});
+
+test('allowed with a time window says it asks outside it', () => {
+	expect(outcomeOf('deploy-prod', { allow: project(true), hours: global('09:00-18:00'), timezone: global('Asia/Taipei') })).toMatchObject({ asks: false, note: '來自專案，時段外會問你' });
+});
+
+test('a refused save puts back what it sent and keeps what was edited after', () => {
+	const saved = formFrom(layer);
+	const sent = structuredClone(saved);
+	sent.actions.push.allow = 'ask';
+	sent.may_settle = ['a', '送出的'];
+	const now = structuredClone(sent);
+	now.must_ask = ['之後打的'];
+	const form = revertedForm(saved, sent, now);
+	expect(form.actions.push.allow).toBe('allow');
+	expect(form.may_settle).toEqual(['a']);
+	expect(form.must_ask).toEqual(['之後打的']);
 });
 
 test('a file with errors makes every result ask, whatever the values say', () => {
@@ -81,5 +100,5 @@ test('a value under an action names its own layer', () => {
 	expect(valueOf(global(['dev', 'rel']))).toEqual({ text: 'dev、rel', note: '來自全域', fromGlobal: true });
 	expect(valueOf(project('staging'))).toEqual({ text: 'staging', note: '來自專案', fromGlobal: false });
 	expect(valueOf(undefined)).toEqual({ text: '', note: '未設定', fromGlobal: false });
-	expect(valueOf(project([]))).toEqual({ text: '', note: '未設定', fromGlobal: false });
+	expect(valueOf(project([]))).toEqual({ text: '（空）', note: '來自專案', fromGlobal: false });
 });

@@ -2,7 +2,7 @@
 // made. The form follows the file when it loads or saves, so a change made elsewhere meanwhile is
 // refused at saving rather than lost.
 import { request } from './api.ts';
-import { changesFrom, formFrom, type AllowChoice, type PreauthForm, type PreauthLayer, type PreauthScope, type PreauthSettings } from './preauth.ts';
+import { changesFrom, formFrom, revertedForm, type AllowChoice, type PreauthForm, type PreauthLayer, type PreauthScope, type PreauthSettings } from './preauth.ts';
 
 export interface PreauthRefusal {
 	reason?: string;
@@ -99,7 +99,7 @@ export class PreauthEditor {
 	}
 
 	/** Save what differs from the file. Saves run one at a time, each naming the hash the one before
-	 *  it left, so quick changes do not refuse one another. A refusal puts the form back. */
+	 *  it left, so quick changes do not refuse one another. A refusal puts back what it sent. */
 	async save() {
 		if (this.#saving) {
 			this.#again = true;
@@ -111,20 +111,20 @@ export class PreauthEditor {
 			const changes = this.#changes();
 			if (!this.layer || !Object.keys(changes).length) continue;
 			this.#saves++;
-			const sent = JSON.stringify(this.form);
+			const sent = $state.snapshot(this.form)!;
 			const result = await request<PreauthSettings>(this.#url, {
 				method: 'PUT',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ layer: this.scope, controller: this.#controller, sha256: this.layer.sha256, changes })
 			});
 			if (!result.ok) {
-				this.form = formFrom(this.layer);
+				this.form = revertedForm(formFrom(this.layer), sent, $state.snapshot(this.form)!);
 				this.#again = false;
 				if (!result.unpaired) this.#refused(result, '沒有送出，請檢查網路後再改一次。');
 				break;
 			}
 			// Text typed while this was on its way stays in the form for its own save.
-			if (JSON.stringify(this.form) === sent) {
+			if (JSON.stringify(this.form) === JSON.stringify(sent)) {
 				this.#show(result.value);
 			} else {
 				this.settings = result.value;
