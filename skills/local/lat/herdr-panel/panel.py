@@ -23,9 +23,9 @@ import os
 import re
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import tempfile
-import subprocess
 import tomllib
 
 if str(Path(__file__).resolve().parent) not in sys.path:
@@ -222,7 +222,8 @@ def open_popup(env=None, *, request=rpc):
 def open_in_browser(url, env=os.environ):
     """Hand ``url`` to the system's opener where a graphical browser can appear.
 
-    Its output is dropped and a console browser is never asked for: either would draw over the panel.
+    Without a display it could start a console browser; its output is dropped so nothing
+    draws over the panel. Only a missing display or opener reports ``False``.
     """
     if sys.platform != "darwin" and not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
         return False

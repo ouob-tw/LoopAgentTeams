@@ -350,7 +350,7 @@ def visual_link_error(url):
 
 
 def _written_visuals(body):
-    match = _VISUAL_LINES.search(_split_details(body)[0])
+    match = _VISUAL_LINES.search(_normalize_newlines(_split_details(body)[0]))
     lines = match.group().split("\n") if match else []
     return [line.removeprefix(_VISUAL_MARKER).strip() for line in lines if line]
 

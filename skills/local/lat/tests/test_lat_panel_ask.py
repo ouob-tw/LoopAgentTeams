@@ -431,6 +431,13 @@ class VisualLinkTest(AskTestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.questions.exists())
 
+    def test_a_bad_link_in_a_crlf_file_is_refused(self):
+        section = SECTION + "\n【示意】javascript:alert(1)\r\n\r\n【示意】https://demo.example/\r\n"
+        result = self.ask(section, "--advisor", "exempt requirement-discussion",
+                          "--session-id", SESSION)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.questions.exists())
+
     def test_blank_lines_between_links_keep_them_links(self):
         section = SECTION + f"\n【示意】{self.URL}\n\n【示意】{self.URL}2\n"
         self.assertEqual(self.ask(section, "--advisor", "exempt requirement-discussion",
