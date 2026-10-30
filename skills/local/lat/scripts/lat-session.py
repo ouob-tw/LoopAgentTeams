@@ -20,7 +20,8 @@ import time
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import (read_advisor_error, read_advisor_words, read_decision_action,
+from lat_decision_status import (exempt_basis_category, read_advisor_error, read_advisor_words,
+                                 read_decision_action, read_exempt_basis,
                                  read_decision_kind, read_decision_status,
                                  read_spec_consensus_error)
 from _lat_common import (full_hcom_name, reports_directory, run_cli, shared_lat_dir,
@@ -1172,6 +1173,33 @@ def preauth_ask_stop_check(record, message):
     return reason, notes
 
 
+def exempt_basis_stop_check(record, message):
+    """`(reason, notes)` for questions whose exemption needs a `- exempt-basis:` line. Settings
+    that cannot be read, or a check that fails, only warn for that question."""
+    decisions = Path(record['decisions_path'])
+    module = preauth_module()
+    held, notes = [], []
+    for identifier, revision in sorted(question_identifiers(message)):
+        path = decisions / f'{identifier}.md'
+        category = exempt_basis_category(read_advisor_words(path)) if path.is_file() else None
+        if category is None:
+            continue
+        name = f'{identifier} r{revision}'
+        try:
+            error, warning = module.exempt_basis_problem(category, read_exempt_basis(path), decisions)
+        except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
+            notes.append(f'LAT 免諮詢依據核對發生錯誤，未攔下：{name}（{exc}）。')
+            continue
+        if error:
+            held.append(f'{name}：{error}')
+        elif warning:
+            notes.append(f'LAT 免諮詢依據無法判斷，未攔下：{name}（{warning}）。')
+    reason = ('LAT 免諮詢依據核對未通過：' + '；'.join(held)
+              + '。這些題目不符合免諮詢條件：改依參謀流程諮詢，或在紀錄改寫正確的依據後重新提問。'
+              ) if held else None
+    return reason, notes
+
+
 def stop_check(record, payload):
     """Why this DECIDE/HELP Stop should be held, or None when it passes."""
     message = payload['last_assistant_message']
@@ -1375,6 +1403,14 @@ def report_stop(record, payload):
                 reason, reminders = preauth_ask_stop_check(record, message)
             except Exception as exc:  # noqa: BLE001 - a broken recheck never holds the Stop
                 notes.append(f'LAT 免諮詢 preauth-ask 重查發生錯誤，未攔下：{exc}')
+            else:
+                if reason:
+                    reasons.append(reason)
+                notes += reminders
+            try:
+                reason, reminders = exempt_basis_stop_check(record, message)
+            except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
+                notes.append(f'LAT 免諮詢依據核對發生錯誤，未攔下：{exc}')
             else:
                 if reason:
                     reasons.append(reason)

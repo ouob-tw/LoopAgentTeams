@@ -447,6 +447,203 @@ class PreauthAskExemptionTests(PreauthQuestionTests):
                 (self.reports / f'{SESSION}.jsonl').unlink(missing_ok=True)
 
 
+class ExemptBasisTests(PreauthQuestionTests):
+    PROMISE = '- status: pending\n- advisor: exempt prior-promise\n'
+    MUST = '- status: pending\n- advisor: exempt must-ask\n'
+    MESSAGE = '問題全文\nDECIDE: LAT-P r1'
+    MUST_ASK = '花錢、動帳號或額度'
+    SETTINGS = f'[advisor]\nmay_settle = ["細節"]\nmust_ask = ["{MUST_ASK}"]\n'
+    ANSWER = ('- status: approved\n- version: r2\n\n## 答覆（r2，面板，2026-10-30T12:19:59+08:00）\n\n'
+              '- 題目：LAT-A r2\n- 答覆：A\n- 來源：面板，panel-journal.jsonl 第 1 行\n')
+
+    def setUp(self):
+        super().setUp()
+        self.controller()
+        self.config = self.root / 'xdg/lat/preauth.toml'
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(self.SETTINGS)
+        self.cited = self.decisions / 'LAT-A.md'
+        self.cited.write_text(self.ANSWER)
+        self.questions = self.work / '.lat/questions/orch.md'
+        self.questions.parent.mkdir(parents=True)
+
+    def stop_record(self, record, active=False):
+        self.decision.write_text(record)
+        output = self.stop(self.MESSAGE, active=active)
+        (self.reports / f'{SESSION}.jsonl').unlink(missing_ok=True)
+        return output
+
+    def assert_held(self, record, why):
+        output = self.stop_record(record)
+        self.assertEqual(output.get('decision'), 'block', output)
+        self.assertIn('LAT 免諮詢依據核對未通過：LAT-P r1：', output['reason'])
+        self.assertIn(why, output['reason'])
+        warning = self.stop_record(record, active=True)
+        self.assertEqual(set(warning), {'systemMessage'})
+        self.assertIn('不再攔下', warning['systemMessage'])
+
+    def ask(self, *extra, identifier='LAT-N'):
+        # The base record is pending with no panel question, which the gap check would report.
+        if identifier != 'LAT-P':
+            self.decision.unlink(missing_ok=True)
+        return self.run_script(PANEL, 'question', 'ask', '--questions', self.questions,
+                               '--decisions', self.decisions, '--id', identifier,
+                               '--file', self.source, *extra)
+
+    def test_a_correct_basis_passes_the_stop_check(self):
+        for label, record in (
+                ('panel answer', self.PROMISE + '- exempt-basis: LAT-A r2\n'),
+                ('note after the category', '- status: pending\n- advisor: exempt must-ask '
+                                            'same-family-degraded\n- exempt-basis: spend\n'),
+                ('must_ask text', self.MUST + f'- exempt-basis: {self.MUST_ASK}\n'),
+                ('delete-user-data', self.MUST + '- exempt-basis: delete-user-data\n')):
+            with self.subTest(label):
+                self.assertEqual(self.stop_record(record), {})
+
+    def test_older_answer_section_forms_count(self):
+        forms = (('## 真人答覆\n- 答覆：A\n- 題號版本：LAT-A r2\n- 來源：面板\n', 'r2'),
+                 ('## 答覆 r2（聊天，2026-10-22）\n- 來源：聊天\n', 'r2'),
+                 # No section names a version, so it answers the record's current one.
+                 ('## 答覆\n- 來源：聊天\n', 'r2'))
+        for section, version in forms:
+            with self.subTest(section):
+                self.cited.write_text(f'- status: answered\n- version: r2\n\n{section}')
+                self.assertEqual(
+                    self.stop_record(self.PROMISE + f'- exempt-basis: LAT-A {version}\n'), {})
+
+    def test_a_wrong_basis_is_held_with_its_reason(self):
+        for label, record, why in (
+                ('no line, promise', self.PROMISE, '缺依據行'),
+                ('no line, must-ask', self.MUST, '缺依據行'),
+                ('empty line', self.MUST + '- exempt-basis:  \n', '缺依據行'),
+                ('not an ID and version', self.PROMISE + '- exempt-basis: LAT-A\n', '依據格式'),
+                ('path escape', self.PROMISE + '- exempt-basis: ../LAT-A r2\n', '依據格式'),
+                ('missing record', self.PROMISE + '- exempt-basis: LAT-Z r1\n', 'LAT-Z 紀錄不存在'),
+                ('other version', self.PROMISE + '- exempt-basis: LAT-A r1\n', '沒有 r1 的真人答覆'),
+                ('not in must_ask', self.MUST + '- exempt-basis: 主控覺得該問\n', '不在全域'),
+                ('partial must_ask', self.MUST + '- exempt-basis: 花錢\n', '不在全域'),
+                ('spend in capitals', self.MUST + '- exempt-basis: SPEND\n', '不在全域'),
+                ('change-acceptance', self.MUST + '- exempt-basis: change-acceptance\n', 'may_settle'),
+                ('new-ticket', self.MUST + '- exempt-basis: new-ticket\n', 'may_settle'),
+                ('scope-expansion', self.MUST + '- exempt-basis: scope-expansion\n', 'may_settle')):
+            with self.subTest(label):
+                self.assert_held(record, why)
+
+    def test_a_record_without_a_human_answer_is_held(self):
+        for label, text in (
+                ('no section', '- status: pending\n- version: r2\n\n## 參謀意見\n- 來源：參謀\n'),
+                ('section without source', '- status: approved\n- version: r2\n\n## 答覆（r2）\n- 答覆：A\n')):
+            with self.subTest(label):
+                self.cited.write_text(text)
+                self.assert_held(self.PROMISE + '- exempt-basis: LAT-A r2\n', '沒有 r2 的真人答覆')
+
+    def test_only_the_first_lines_count(self):
+        self.assert_held(self.MUST + '- exempt-basis: nope\n- exempt-basis: spend\n', '不在全域')
+        self.assertEqual(self.stop_record(self.MUST + '- exempt-basis: spend\n- exempt-basis: nope\n'), {})
+        self.assertEqual(self.stop_record('- status: pending\n- advisor: needs-human\n'
+                                          '- advisor: exempt must-ask\n'), {})
+
+    def test_the_settleable_words_pass_only_when_may_settle_is_empty(self):
+        for label, settings in (('empty list', '[advisor]\nmay_settle = []\n'),
+                                ('no advisor section', 'version = 1\n'),
+                                ('no key', '[advisor]\nextended = true\n')):
+            self.config.write_text(settings)
+            for word in ('change-acceptance', 'new-ticket', 'scope-expansion'):
+                with self.subTest(label, word=word):
+                    self.assertEqual(self.stop_record(self.MUST + f'- exempt-basis: {word}\n'), {})
+        self.config.unlink()
+        self.assertEqual(self.stop_record(self.MUST + '- exempt-basis: new-ticket\n'), {})
+
+    def test_the_project_layer_advisor_section_does_not_count(self):
+        self.project.write_text('[advisor]\nmust_ask = ["專案自己寫的"]\n')
+        self.assert_held(self.MUST + '- exempt-basis: 專案自己寫的\n', '不在全域')
+        self.config.write_text('[advisor]\nmay_settle = []\n')
+        self.project.write_text('[advisor]\nmay_settle = ["細節"]\n')
+        self.assertEqual(self.stop_record(self.MUST + '- exempt-basis: new-ticket\n'), {})
+
+    def test_unreadable_settings_only_warn(self):
+        for label, content in (('malformed', 'not toml ['),
+                               ('invalid', '[advisor]\nmay_settle = "細節"\n')):
+            self.config.write_text(content)
+            for basis in ('new-ticket', '任何文字'):
+                with self.subTest(label, basis=basis):
+                    output = self.stop_record(self.MUST + f'- exempt-basis: {basis}\n')
+                    self.assertEqual(set(output), {'systemMessage'})
+                    self.assertIn('LAT 免諮詢依據無法判斷，未攔下：LAT-P r1', output['systemMessage'])
+
+    def test_unreadable_settings_still_hold_what_needs_no_settings(self):
+        self.config.write_text('not toml [')
+        self.assert_held(self.MUST, '缺依據行')
+        self.assert_held(self.PROMISE + '- exempt-basis: LAT-Z r1\n', 'LAT-Z 紀錄不存在')
+        self.assertEqual(self.stop_record(self.MUST + '- exempt-basis: spend\n'), {})
+
+    def test_a_broken_project_layer_does_not_stop_the_global_check(self):
+        self.project.write_text('not toml [')
+        self.assert_held(self.MUST + '- exempt-basis: 主控覺得該問\n', '不在全域')
+
+    def test_a_failing_check_warns_for_its_question_and_others_are_still_checked(self):
+        self.cited.write_bytes(b'\xff\xfe')
+        (self.decisions / 'LAT-B.md').write_text(self.MUST)
+        self.decision.write_text(self.PROMISE + '- exempt-basis: LAT-A r2\n')
+        output = self.stop('問題全文\nDECIDE: LAT-P r1 LAT-B r1')
+        self.assertIn('LAT-B r1：缺依據行', output['reason'])
+        self.assertNotIn('LAT-P r1：', output['reason'])
+        warning = self.stop('問題全文\nDECIDE: LAT-P r1 LAT-B r1', active=True)['systemMessage']
+        self.assertIn('LAT 免諮詢依據核對發生錯誤，未攔下：LAT-P r1', warning)
+
+    def test_other_categories_need_no_basis(self):
+        for advisor in ('exempt account-quota', 'exempt requirement-discussion', 'needs-human',
+                        'late resolved'):
+            with self.subTest(advisor):
+                self.assertEqual(self.stop_record(f'- status: pending\n- advisor: {advisor}\n'), {})
+
+    def test_ask_writes_the_basis_line_below_the_advisor_line(self):
+        result = self.ask('--advisor', 'exempt must-ask', '--exempt-basis', self.MUST_ASK)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = (self.decisions / 'LAT-N.md').read_text().splitlines()
+        self.assertEqual(lines[3:5], ['- advisor: exempt must-ask',
+                                      f'- exempt-basis: {self.MUST_ASK}'])
+        result = self.ask('--advisor', 'exempt prior-promise', '--exempt-basis', 'LAT-A r2',
+                          identifier='LAT-O')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('- exempt-basis: LAT-A r2\n', (self.decisions / 'LAT-O.md').read_text())
+
+    def test_ask_refuses_a_wrong_basis_and_writes_nothing(self):
+        for label, extra, why in (
+                ('no basis', ('--advisor', 'exempt must-ask'), '缺依據行'),
+                ('not in must_ask', ('--advisor', 'exempt must-ask', '--exempt-basis', 'x'), '不在全域'),
+                ('may_settle', ('--advisor', 'exempt must-ask', '--exempt-basis', 'new-ticket'), 'may_settle'),
+                ('no answer', ('--advisor', 'exempt prior-promise', '--exempt-basis', 'LAT-A r1'),
+                 '沒有 r1 的真人答覆'),
+                ('other category', ('--advisor', 'needs-human', '--exempt-basis', 'spend'),
+                 '--exempt-basis')):
+            with self.subTest(label):
+                result = self.ask(*extra)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(why, result.stderr)
+                self.assertFalse((self.decisions / 'LAT-N.md').exists())
+                self.assertFalse((self.questions).exists())
+
+    def test_ask_checks_an_existing_record_and_refuses_the_flag_on_it(self):
+        self.decision.write_text(self.MUST)
+        result = self.ask(identifier='LAT-P')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('缺依據行', result.stderr)
+        self.assertFalse((self.questions).exists())
+        self.assertIn('--exempt-basis only apply',
+                      self.ask('--exempt-basis', 'spend', identifier='LAT-P').stderr)
+        self.decision.write_text(self.MUST + '- exempt-basis: spend\n')
+        result = self.ask(identifier='LAT-P')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ask_only_warns_when_settings_are_unreadable(self):
+        self.config.write_text('not toml [')
+        result = self.ask('--advisor', 'exempt must-ask', '--exempt-basis', 'new-ticket')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('無法判斷', result.stderr)
+        self.assertIn('- exempt-basis: new-ticket\n', (self.decisions / 'LAT-N.md').read_text())
+
+
 @unittest.skipUnless(HAS_TEXTUAL, 'needs textual==8.2.8 (uv run --with textual==8.2.8)')
 class PanelMarkerTests(PreauthQuestionTests, unittest.IsolatedAsyncioTestCase):
     MARKER = '目前已預先授權，可由你決定撤回'

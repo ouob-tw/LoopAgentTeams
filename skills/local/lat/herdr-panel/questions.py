@@ -1328,7 +1328,8 @@ def _decision_fields(text):
 
 
 def new_decision_record(question_id, incoming, *, advisor, session_id, question=None,
-                        authority_gap=None, blocked_work=None, help_question=False):
+                        authority_gap=None, blocked_work=None, help_question=False,
+                        exempt_basis=None):
     """The text of a new pending decision record for ``question ask``, at r1.
 
     Unset fields default from the question: its title and its option letters and labels.
@@ -1341,6 +1342,8 @@ def new_decision_record(question_id, incoming, *, advisor, session_id, question=
     # The advisor line sits right below the status line (references/advisors.md).
     lines = [f"# {question_id} {incoming['title']}", "", "- status: pending",
              f"- advisor: {advisor}"]
+    if exempt_basis:
+        lines.append(f"- exempt-basis: {exempt_basis}")
     if help_question:
         lines.append("- kind: help")
     if session_id:

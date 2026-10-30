@@ -58,7 +58,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
       [--visual URL]...
   question ask --questions PATH --decisions DIR --id ID --file section.md \
       [--advisor TEXT] [--help-question] [--session-id ID] [--question TEXT] \
-      [--authority-gap TEXT] [--blocked-work TEXT] [--visual URL]...
+      [--authority-gap TEXT] [--blocked-work TEXT] [--exempt-basis TEXT] [--visual URL]...
   question record-chat --questions PATH --decisions DIR --id ID --text TEXT \
       --source TEXT
   question section-hash --questions PATH --id ID
@@ -107,7 +107,8 @@ import sys
 import argparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from lat_decision_status import advisor_error, read_decision_kind, read_decision_status
+from lat_decision_status import (advisor_error, exempt_basis_category, read_advisor_words,
+                                 read_decision_kind, read_decision_status, read_exempt_basis)
 from _lat_common import plugin_directory, run_cli, write_text_atomic as _replace_locked
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import questions
@@ -599,7 +600,7 @@ def preauthorized_questions(questions, question_ids):
 
 # Fields only a new record takes; --session-id defaults from the binding or the client.
 ASK_RECORD_FIELDS = ("--advisor", "--session-id", "--question", "--authority-gap",
-                     "--blocked-work")
+                     "--blocked-work", "--exempt-basis")
 
 
 def _upsert(questions, decisions, question_id, text, first_revision=1):
@@ -644,6 +645,21 @@ def _input_section(args):
     return add_visual_links(args.file.read_text(encoding="utf-8"), args.visual)
 
 
+def _check_exempt_basis(advisor_words, basis, decisions):
+    """Refuse an exemption whose basis does not hold; settings that cannot be read only warn."""
+    category = exempt_basis_category(advisor_words)
+    if category is None:
+        if basis is not None:
+            raise ValueError("--exempt-basis only applies to exempt prior-promise or must-ask")
+        return
+    error, warning = _lat_session().preauth_module().exempt_basis_problem(
+        category, basis, decisions)
+    if error:
+        raise ValueError(f"exempt {category}: {error}")
+    if warning:
+        print(f"lat-panel: exempt {category} 無法判斷，未攔下：{warning}", file=sys.stderr)
+
+
 def _ask(args):
     """One controller command per question: record, panel question, version, gap check."""
     text = _input_section(args)
@@ -660,6 +676,8 @@ def _ask(args):
         error = advisor_error(args.advisor, args.help_question)
         if error:
             raise ValueError(f"--advisor: {error}")
+        _check_exempt_basis(args.advisor.strip().lower().split(), args.exempt_basis,
+                            args.decisions)
         session = args.session_id or _ask_session(args.questions)
         help_question = args.help_question
     else:
@@ -668,6 +686,7 @@ def _ask(args):
         status = read_decision_status(path)
         if status.error:
             raise ValueError(f"decision record status unreadable: {status.error}")
+        _check_exempt_basis(read_advisor_words(path), read_exempt_basis(path), args.decisions)
         help_question = args.help_question or read_decision_kind(path) == "help"
         # A question already archived from the panel continues from the record's version.
         known = decision_revision(path) or 0
@@ -681,7 +700,8 @@ def _ask(args):
             _replace_locked(path, new_decision_record(
                 args.id, incoming, advisor=args.advisor, session_id=session,
                 question=args.question, authority_gap=args.authority_gap,
-                blocked_work=args.blocked_work, help_question=help_question))
+                blocked_work=args.blocked_work, help_question=help_question,
+                exempt_basis=args.exempt_basis))
     code = 1
     try:
         code, revision, written = _upsert(args.questions, args.decisions, args.id, text,
