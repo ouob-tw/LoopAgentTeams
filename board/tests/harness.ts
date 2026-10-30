@@ -22,9 +22,9 @@ import type {
 	Report
 } from '../src/lib/board/types.ts';
 
-/** Answer list requests from the exact same plan and failure controls as the fake CLI. */
+/** Answer list and scroll requests from the exact same plan and failure controls as the fake CLI. */
 export async function answerHerdrList(dir: string, request: { id: string; method: string; params?: { tab_id?: string; insert_index?: number; pane_id?: string; offset_from_bottom?: number } }, moves = false): Promise<string | null> {
-	if (!(moves ? ['agent.list', 'workspace.list', 'tab.list', 'tab.move', 'pane.scroll'] : ['agent.list', 'workspace.list', 'tab.list']).includes(request.method)) return null;
+	if (!(moves ? ['agent.list', 'workspace.list', 'tab.list', 'pane.scroll', 'tab.move'] : ['agent.list', 'workspace.list', 'tab.list', 'pane.scroll']).includes(request.method)) return null;
 	const args =
 		request.method === 'tab.move' ? ['tab', 'move', request.params?.tab_id ?? '', String(request.params?.insert_index ?? 0)]
 		: request.method === 'pane.scroll' ? ['pane', 'scroll', request.params?.pane_id ?? '', String(request.params?.offset_from_bottom)]

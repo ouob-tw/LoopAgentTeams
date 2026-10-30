@@ -104,11 +104,19 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 			code = 1;
 		}
 	} else if (command === 'pane scroll') {
-		if (args[3] === '0' && plan.scrolled) {
-			delete plan.scrolled[args[2]];
-			write(planFile, JSON.stringify(plan));
+		if (!plan.screens?.[args[2]]) {
+			stderr += JSON.stringify({ error: { code: 'pane_not_found', message: `pane ${args[2]} not found` } });
+			code = 1;
+		} else if (!/^\d+$/.test(args[3])) {
+			stderr += `unexpected herdr command: ${args.join(' ')}\n`;
+			code = 2;
+		} else {
+			if (args[3] === '0' && plan.scrolled) {
+				delete plan.scrolled[args[2]];
+				write(planFile, JSON.stringify(plan));
+			}
+			stdout += JSON.stringify({ id: 'cli:pane:scroll', result: { type: 'pane_info' } });
 		}
-		stdout += JSON.stringify({ id: 'cli:pane:scroll', result: { type: 'pane_info' } });
 	} else if (command === 'agent prompt' || command === 'agent send-keys') {
 		if (command === 'agent send-keys' && args[3] === 'shift+tab' && plan.screens?.[args[2]]) {
 			plan.screenAt = { ...plan.screenAt, [args[2]]: (plan.screenAt?.[args[2]] ?? 0) + 1 };

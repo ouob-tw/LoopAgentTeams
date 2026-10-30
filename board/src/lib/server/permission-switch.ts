@@ -1,7 +1,8 @@
 // Switching the permission mode of an agent of the Herdr 分頁 (see `../board/permissions.ts`).
 // Claude: its pane scrolled to the bottom, then Shift+Tab pressed there through Herdr, its screen
-// read after each press, never restarted; logged as an agent action, queued like a send. Codex: a model switch that carries
-// the mode (`agent-switch.ts`), which resumes the same conversation in a fresh launch.
+// read after each press, never restarted; logged as an agent action, queued like a send. Codex: a
+// model switch that carries the mode (`agent-switch.ts`), which resumes the same conversation in a
+// fresh launch.
 import type { PermissionSwitch } from '../board/agent-actions.ts';
 import type { SwitchResponse } from '../board/models.ts';
 import {
@@ -26,7 +27,7 @@ import { switchAgentModel } from './agent-switch.ts';
 import type { Board } from './board.ts';
 import { readLaunchArgs, readTranscript } from './helper.ts';
 import { bypassTurnedOff } from './permission.ts';
-import { agentCommand, readScreen, scrollToBottom } from './herdr.ts';
+import { agentCommand, readScreen, scrollToBottom, type ScreenSource } from './herdr.ts';
 import { queued } from './send.ts';
 import { readLines } from './sent-log.ts';
 import { readAgentActions } from './sent-views.ts';
@@ -41,7 +42,7 @@ const BLOCKED_REASON = 'Herdr 說這個 Agent 正停在確認畫面，沒有按�
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The screen of this pane read now. */
-async function screenOf(board: Board, pane: string, source?: 'detection'): Promise<ScreenRead> {
+async function screenOf(board: Board, pane: string, source: ScreenSource = 'visible'): Promise<ScreenRead> {
 	const read = await readScreen(board.config, pane, source);
 	return 'reason' in read ? { mode: null, reason: `${read.reason}，沒有按鍵` } : readClaudeScreen(read.text);
 }
@@ -125,10 +126,10 @@ export function switchClaudePermission(board: Board, agentId: string, target: Cl
 			if (pane === board.config.ownPane) return refuse(OWN_PANE_REASON);
 			if (agent.status === 'blocked') return refuse(BLOCKED_REASON);
 			if (target === 'bypassPermissions' && agent.hcom === 'linked' && (await bypassOff(board, agentId))) return refuse(BYPASS_TURNED_OFF_REASON);
-			const unscrolled = await scrollToBottom(board.config, pane);
-			if (unscrolled) return refuse(`${unscrolled}，沒有按鍵`);
+			// A failed scroll matters only if the box is then out of sight: a pane at the bottom needs none.
+			const scrollFailure = await scrollToBottom(board.config, pane);
 			const start = await screenOf(board, pane);
-			if (start.mode === null) return refuse(start.reason);
+			if (start.mode === null) return refuse(scrollFailure ? `${scrollFailure}，沒有按鍵` : start.reason);
 			if (start.mode === target) return { route: 'herdr', reason: null, permission: record({ from: start.mode, mode: start.mode, seen: [start.mode], outcome: 'already' }) };
 			const press = async () => {
 				const act = await agentCommand(board.config, ['send-keys', pane, 'shift+tab']);

@@ -316,10 +316,12 @@ export function agentCommand(config: BoardConfig, args: string[]): Promise<Herdr
 	return herdrAct(config, ['agent', ...args]);
 }
 
-/** The pane as plain text (`herdr pane read <pane> --source <source>`), or why it cannot be read:
- *  `visible` is what it shows now, scrollback when it is scrolled up; `detection` is its bottom,
- *  wherever it is scrolled to, and does not move it. */
-export async function readScreen(config: BoardConfig, pane: string, source: 'visible' | 'detection' = 'visible'): Promise<{ text: string } | { reason: string }> {
+/** What of a pane to read: `visible` is what it shows now, scrollback when it is scrolled up;
+ *  `detection` is its bottom, wherever it is scrolled to, and does not move it. */
+export type ScreenSource = 'visible' | 'detection';
+
+/** The pane as plain text (`herdr pane read <pane> --source <source>`), or why it cannot be read. */
+export async function readScreen(config: BoardConfig, pane: string, source: ScreenSource): Promise<{ text: string } | { reason: string }> {
 	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, '--source', source], { timeoutMs: config.herdrTimeoutMs });
 	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout };
 }

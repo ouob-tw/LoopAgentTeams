@@ -102,6 +102,7 @@ const FULL = ['bypassPermissions', 'auto', 'manual', 'acceptEdits', 'plan'];
 const lines = (file: string): any[] => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []);
 const keyPresses = () => lines(join(fixture.dir, 'herdr-calls.jsonl')).filter((call: string[]) => call[0] === 'agent' && call[1] === 'send-keys');
 const scrolls = () => lines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((call: string[]) => call[0] === 'pane' && call[1] === 'scroll');
+const scrolledPanes = () => JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8')).scrolled;
 const hcomCalls = (): string[][] => lines(join(fixture.dir, 'hcom-calls.jsonl')).map((call: { args: string[] }) => call.args);
 const sentLog = (): any[] => lines(join(fixture.dir, 'board-state', 'sent-log.jsonl'));
 
@@ -128,7 +129,7 @@ test('a Claude agent is switched by Shift+Tab until its screen shows the mode, p
 		['agent', 'send-keys', pane('s-claude'), 'shift+tab'],
 		['agent', 'send-keys', pane('s-claude'), 'shift+tab']
 	]);
-	// Scrolled nowhere: only the presses reached it.
+	// The scroll is asked for at the bottom too, and is no key: only the presses reached Claude.
 	expect(scrolls()).toEqual([['pane', 'scroll', pane('s-claude'), '0']]);
 	// Nothing went through hcom: no stop, no resume.
 	expect(hcomCalls()).toEqual([]);
@@ -149,7 +150,7 @@ test('a pane scrolled up is brought to the bottom before its screen is read, by 
 	expect(switched.body.entry).toMatchObject({ ok: true, permission: { from: 'bypassPermissions', mode: 'auto', presses: 1, outcome: 'reached' } });
 	expect(scrolls()).toEqual([['pane', 'scroll', pane('s-claude'), '0']]);
 	expect(keyPresses()).toEqual([['agent', 'send-keys', pane('s-claude'), 'shift+tab']]);
-	expect(JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8')).scrolled).toEqual({});
+	expect(scrolledPanes()).toEqual({});
 });
 
 test('reading the mode for the page tells it from the bottom and leaves a scrolled-up pane where it is', async () => {
@@ -159,7 +160,7 @@ test('reading the mode for the page tells it from the bottom and leaves a scroll
 	expect(status.current).toBe('bypassPermissions');
 	expect(status.reason).toBeNull();
 	expect(scrolls()).toEqual([]);
-	expect(JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8')).scrolled).toEqual({ [pane('s-claude')]: SCROLLBACK });
+	expect(scrolledPanes()).toEqual({ [pane('s-claude')]: SCROLLBACK });
 });
 
 test('a dialog under a scrolled-up pane still stops the switch with its own reason, no key pressed', async () => {
@@ -171,13 +172,18 @@ test('a dialog under a scrolled-up pane still stops the switch with its own reas
 	expect(keyPresses()).toEqual([]);
 });
 
-test('a pane that cannot be brought to the bottom is not pressed, and says why', async () => {
-	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(FULL) }, fail: { 'pane scroll': { exit: 1, stderr: 'pane gone' } } });
-
+test('a scroll that fails stops a pane left scrolled up, saying why, and does not matter at the bottom', async () => {
+	const fail = { 'pane scroll': { exit: 1, stderr: 'pane gone' } };
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(FULL) }, scrolled: { [pane('s-claude')]: SCROLLBACK }, fail });
 	const refused = await post({ session: 's-claude', mode: 'auto' });
 	expect(refused.status).toBe(409);
 	expect(refused.body.reason).toContain('pane gone');
 	expect(keyPresses()).toEqual([]);
+
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(FULL) }, fail });
+	const switched = await post({ session: 's-claude', mode: 'auto' });
+	expect(switched.status).toBe(200);
+	expect(keyPresses()).toEqual([['agent', 'send-keys', pane('s-claude'), 'shift+tab']]);
 });
 
 test('a mode the round never shows leaves the agent in its starting mode, and is not offered after', async () => {
