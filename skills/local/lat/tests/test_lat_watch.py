@@ -3536,6 +3536,18 @@ esac
         ], 'codex')
         self.assertEqual(wrapped_current.reset_time, 'Oct 10, 2026 9:30 PM')
 
+    def test_codex_usage_limit_accepts_curly_apostrophe(self):
+        watch = load_watch()
+        issue = watch.detect_screen_quota([
+            '', '', '', '', '', '', '', '',
+            '■ You’ve hit your usage limit · resets Oct 10, 2026',
+            '', '', '› Ask Codex to do anything', '',
+            '  GPT-6.1-Sol medium · ~/repo · 0% left',
+        ], 'codex')
+
+        self.assertIn('You’ve hit your usage limit', issue.line)
+        self.assertEqual(issue.reset_time, 'Oct 10, 2026')
+
     def test_claude_primary_quota_line_extracts_reset_time(self):
         watch = load_watch()
         issue = watch.detect_screen_quota([
