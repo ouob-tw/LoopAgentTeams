@@ -238,6 +238,16 @@ class AskHelpTests(AskTestCase):
                       self.record().read_text())
         self.assertIn("- options: A 已完成 / B 做不到\n", self.record().read_text())
 
+    def test_user_account_exemption_is_only_for_help_questions(self):
+        refused = self.ask(SECTION, "--advisor", "exempt user-account")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("只能用在求助紀錄", refused.stderr)
+        self.assertFalse(self.record().exists())
+
+        accepted = self.ask(HELP_SECTION, "--advisor", "exempt user-account", "--help-question")
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        self.assertIn("- advisor: exempt user-account\n- kind: help\n", self.record().read_text())
+
     def test_help_question_without_a_done_option_is_refused(self):
         result = self.ask(SECTION, "--advisor", "needs-human", "--help-question")
 
