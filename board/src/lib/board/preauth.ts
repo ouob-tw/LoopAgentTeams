@@ -2,11 +2,11 @@
 // checks and their comments; here is only what the page needs: one layer's values, what the form
 // changes from them, and the merged result in words.
 export const PREAUTH_ACTIONS = [
-	{ name: 'merge', label: '合併', branches: true },
-	{ name: 'push', label: '推送', branches: true },
-	{ name: 'deploy-test', label: '部署測試版', branches: false },
-	{ name: 'deploy-prod', label: '部署正式版', branches: false },
-	{ name: 'install-host', label: '更新主機技能', branches: false }
+	{ name: 'merge', label: '合併', branches: true, target: false },
+	{ name: 'push', label: '推送', branches: true, target: false },
+	{ name: 'deploy-test', label: '部署測試版', branches: false, target: true },
+	{ name: 'deploy-prod', label: '部署正式版', branches: false, target: false },
+	{ name: 'install-host', label: '更新主機技能', branches: false, target: false }
 ] as const;
 
 export const ALLOW_CHOICES = [
@@ -16,6 +16,8 @@ export const ALLOW_CHOICES = [
 ] as const;
 
 export type AllowChoice = (typeof ALLOW_CHOICES)[number]['value'];
+
+export type PreauthScope = 'global' | 'project';
 
 /** One settings file as `board preauth-read` prints it; no settings when `problems` has any. */
 export interface PreauthLayer {
@@ -30,7 +32,7 @@ export interface PreauthLayer {
 /** One value in effect and the layer it comes from. */
 export interface PreauthOrigin {
 	value: unknown;
-	layer: 'project' | 'global';
+	layer: PreauthScope;
 	source: string | null;
 }
 
@@ -43,8 +45,6 @@ export interface PreauthSettings {
 	/** The project file has an [advisor] section, which is not in effect. */
 	project_advisor: boolean;
 }
-
-export type PreauthScope = 'global' | 'project';
 
 export interface PreauthForm {
 	actions: Record<string, { allow: AllowChoice; branches: string[] }>;
@@ -74,14 +74,15 @@ export function formFrom(layer: PreauthLayer): PreauthForm {
 /** The list as it will be saved, or undefined when that is what the file has; empty deletes the key. */
 function changedList(saved: string[] | undefined, edited: string[]): string[] | null | undefined {
 	const items = edited.map((item) => item.trim()).filter(Boolean);
-	if (JSON.stringify(items) === JSON.stringify(saved ?? [])) return undefined;
+	const unchanged = (saved ?? []).map((item) => item.trim()).filter(Boolean);
+	if (JSON.stringify(items) === JSON.stringify(unchanged)) return undefined;
 	return items.length ? items : null;
 }
 
 /** Each layer sends only what the board edits there: `target` the project's, [advisor] the global's. */
-export function changesFrom(layer: PreauthLayer, form: PreauthForm, scope: PreauthScope = 'global'): PreauthChanges {
+export function changesFrom(layer: PreauthLayer, form: PreauthForm, scope: PreauthScope): PreauthChanges {
 	const changes: PreauthChanges = {};
-	for (const { name, branches } of PREAUTH_ACTIONS) {
+	for (const { name, branches, target } of PREAUTH_ACTIONS) {
 		const saved = layer.actions[name] ?? {};
 		const edited = form.actions[name];
 		const allow = edited.allow === 'inherit' ? undefined : edited.allow === 'allow';
@@ -89,7 +90,7 @@ export function changesFrom(layer: PreauthLayer, form: PreauthForm, scope: Preau
 		if (allow !== saved.allow) action.allow = allow ?? null;
 		const list = branches ? changedList(saved.branches, edited.branches) : undefined;
 		if (list !== undefined) action.branches = list;
-		if (scope === 'project' && name === 'deploy-test' && form.target.trim() !== (saved.target ?? '').trim()) action.target = form.target.trim() || null;
+		if (scope === 'project' && target && form.target.trim() !== (saved.target ?? '').trim()) action.target = form.target.trim() || null;
 		if (Object.keys(action).length) (changes.actions ??= {})[name] = action;
 	}
 	if (scope === 'global') {
@@ -103,7 +104,7 @@ export function changesFrom(layer: PreauthLayer, form: PreauthForm, scope: Preau
 
 const LAYER_LABELS = { project: '專案', global: '全域' } as const;
 
-const inWords = (value: unknown, separator: string) => (typeof value === 'boolean' ? (value ? '允許' : '要問') : Array.isArray(value) ? value.join(separator) : String(value));
+const inWords = (value: unknown, separator: string) => (typeof value === 'boolean' ? (value ? '允許' : '要問') : (Array.isArray(value) ? value.join(separator) : String(value)) || '（空）');
 
 /** One value in effect and where it comes from, as the page shows it. */
 export function originText(origin: PreauthOrigin | undefined, separator = '、'): string {
@@ -112,11 +113,11 @@ export function originText(origin: PreauthOrigin | undefined, separator = '、')
 
 /** What one action has in effect. A time window is not edited here, but "allowed" without it would mislead. */
 export function effectiveRows(name: string, values: Record<string, PreauthOrigin> = {}): { label: string; text: string }[] {
-	const { branches } = PREAUTH_ACTIONS.find((action) => action.name === name)!;
+	const { branches, target } = PREAUTH_ACTIONS.find((action) => action.name === name)!;
 	return [
 		{ label: '授權', text: originText(values.allow) },
 		...(branches ? [{ label: '分支', text: originText(values.branches) }] : []),
-		...(name === 'deploy-test' ? [{ label: '測試環境', text: originText(values.target) }] : []),
+		...(target ? [{ label: '測試環境', text: originText(values.target) }] : []),
 		...(values.hours ? [{ label: '時段', text: originText(values.hours) }] : []),
 		...(values.timezone ? [{ label: '時區', text: originText(values.timezone) }] : [])
 	];

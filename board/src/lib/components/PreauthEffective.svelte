@@ -24,7 +24,6 @@
 			<div><dt>可自行定案</dt><dd class="lines">{originText(settings.effective.advisor.may_settle, '\n')}</dd></div>
 			<div><dt>仍要問</dt><dd class="lines">{originText(settings.effective.advisor.must_ask, '\n')}</dd></div>
 		</dl>
-		{#if settings.project_advisor}<p class="note">專案檔的 [advisor] 不生效</p>{/if}
 	</section>
 </section>
 
@@ -65,12 +64,7 @@
 	.lines {
 		white-space: pre-line;
 	}
-	dl,
-	.note {
+	dl {
 		font-size: max(0.85rem, var(--min-font, 0px));
-	}
-	.note {
-		margin: 0.2rem 0 0;
-		color: var(--warn);
 	}
 </style>

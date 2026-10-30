@@ -12,7 +12,7 @@ const layer: PreauthLayer = {
 };
 
 test('an untouched form changes nothing', () => {
-	expect(changesFrom(layer, formFrom(layer))).toEqual({});
+	expect(changesFrom(layer, formFrom(layer), 'global')).toEqual({});
 });
 
 test('each edit names only its own key', () => {
@@ -21,7 +21,7 @@ test('each edit names only its own key', () => {
 	form.actions.push.allow = 'inherit';
 	form.actions.push.branches.push('rel');
 	form.must_ask.push('花錢');
-	expect(changesFrom(layer, form)).toEqual({
+	expect(changesFrom(layer, form, 'global')).toEqual({
 		actions: { merge: { allow: true }, push: { allow: null, branches: ['dev', 'rel'] } },
 		advisor: { must_ask: ['花錢'] }
 	});
@@ -30,10 +30,15 @@ test('each edit names only its own key', () => {
 test('a blank row is not saved, and removing the last row deletes the key', () => {
 	const form = formFrom(layer);
 	form.may_settle.push('  ');
-	expect(changesFrom(layer, form)).toEqual({});
+	expect(changesFrom(layer, form, 'global')).toEqual({});
 	form.may_settle = ['  '];
 	form.actions.push.branches = [];
-	expect(changesFrom(layer, form)).toEqual({ actions: { push: { branches: null } }, advisor: { may_settle: null } });
+	expect(changesFrom(layer, form, 'global')).toEqual({ actions: { push: { branches: null } }, advisor: { may_settle: null } });
+});
+
+test('hand-written spaces in a list are not an edit', () => {
+	const handWritten: PreauthLayer = { ...layer, actions: { push: { branches: [' dev'] } }, advisor: { may_settle: ['a\n'] } };
+	expect(changesFrom(handWritten, formFrom(handWritten), 'global')).toEqual({});
 });
 
 test('the test environment is the project form\'s, and [advisor] only the global form\'s', () => {
@@ -58,5 +63,6 @@ test('a value in effect says where it comes from; one not in effect says it is n
 		{ label: '授權', text: '要問，來自全域' },
 		{ label: '測試環境', text: '未設定' }
 	]);
+	expect(effectiveRows('merge', { branches: { value: [], layer: 'project', source: null } })[1].text).toBe('（空），來自專案');
 	expect(effectiveRows('deploy-prod', { allow: { value: true, layer: 'global', source: null }, hours: { value: '09:00-18:00', layer: 'project', source: null } }).map((row) => row.text)).toEqual(['允許，來自全域', '09:00-18:00，來自專案']);
 });

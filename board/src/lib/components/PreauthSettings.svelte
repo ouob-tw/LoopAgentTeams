@@ -1,8 +1,14 @@
+<script lang="ts" module>
+	/** Saves of the global file, which change what a controller's page shows as in effect. */
+	let globalSaves = $state(0);
+</script>
+
 <script lang="ts">
 	// A pre-authorization file and its form: the global one in the settings dialog, or, given a
 	// controller, its project's on the controller's page with the merged result above. The form
 	// follows the file only when it loads or saves, so a change made elsewhere meanwhile is refused
 	// at saving rather than lost.
+	import { untrack } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import { ALLOW_CHOICES, PREAUTH_ACTIONS, changesFrom, formFrom, type PreauthForm, type PreauthLayer, type PreauthSettings } from '#lib/board/preauth.ts';
 	import PreauthEffective from './PreauthEffective.svelte';
@@ -24,9 +30,9 @@
 	const changes = $derived(layer && form ? changesFrom(layer, form, scope) : {});
 	const dirty = $derived(Object.keys(changes).length > 0);
 
-	function show(read: PreauthSettings) {
-		settings = read;
-		layer = read.layers[scope] ?? null;
+	function show(loaded: PreauthSettings) {
+		settings = loaded;
+		layer = loaded.layers[scope] ?? null;
 		form = layer && formFrom(layer);
 		refusal = null;
 	}
@@ -45,15 +51,20 @@
 		else if (!result.unpaired) refused(result, '讀不到設定，請檢查網路後再試。');
 	}
 
-	/** Called when the dialog opens: edits not yet saved stay, also those made while it reads. */
+	/** Called when the dialog or tab opens. Edits not yet saved stay, also those made while it reads,
+	 *  and keep the hash they were made from; only what is in effect is brought up to date. */
 	export async function opened() {
 		saved = false;
-		if (dirty) return;
 		const result = await request<PreauthSettings>(url);
-		if (dirty) return;
-		if (result.ok) show(result.value);
-		else if (!result.unpaired) refused(result, '讀不到設定，請檢查網路後再試。');
+		if (result.ok) {
+			if (dirty) settings = result.value;
+			else show(result.value);
+		} else if (!result.unpaired) refused(result, '讀不到設定，請檢查網路後再試。');
 	}
+
+	$effect(() => {
+		if (controller && globalSaves) untrack(() => void opened());
+	});
 
 	async function save() {
 		if (!layer) return;
@@ -68,6 +79,7 @@
 		if (result.ok) {
 			show(result.value);
 			saved = true;
+			if (!controller) globalSaves++;
 		} else if (!result.unpaired) {
 			refused(result, '沒有送出，請檢查網路後再按一次。');
 		}
@@ -94,23 +106,24 @@
 	{#if controller}
 		{#if settings && !settings.problems.length}<PreauthEffective {settings} />{/if}
 		<h3>專案設定</h3>
+		{#if settings?.project_advisor}<p class="note warn">專案檔的 [advisor] 不生效</p>{/if}
 	{:else}
 		<h3>預先授權（全域）</h3>
 		<p class="note">專案設定優先；全域選「沿用上層」等於沒設定，會要問。</p>
 	{/if}
 
 	<!-- A broken file cannot be edited; the other layer's errors, or a window only half set, can stay
-	     while this file is. -->
+	     while this file is. The dialog reads no project, one of which may set a window's other half. -->
 	{#if settings?.problems.length}
 		<div role="alert">
-			<p>設定檔有錯，所有查詢都會要問。修好檔案後重新載入。</p>
+			<p>{controller || layer?.problems.length ? '設定檔有錯，所有查詢都會要問。修好檔案後重新載入。' : '時段或時區只寫了一個，專案沒補上另一個時，所有查詢都會要問。'}</p>
 			<ul class="problems">
 				{#each settings.problems as problem}<li>{problem}</li>{/each}
 			</ul>
 		</div>
 	{/if}
 	{#if settings && !layer}
-		<p class="note">這個主控不在 Git 專案裡，沒有專案設定。</p>
+		<p class="note">找不到這個主控所在的 Git 專案，沒有專案設定。</p>
 	{:else if form && !layer?.problems.length}
 		{#each PREAUTH_ACTIONS as action (action.name)}
 			<section>
@@ -125,7 +138,7 @@
 				{#if action.branches}
 					{@render list(form.actions[action.name].branches, `${action.label}分支`, false)}
 				{/if}
-				{#if controller && action.name === 'deploy-test'}
+				{#if controller && action.target}
 					<label class="target">測試環境 <input aria-label="測試環境" bind:value={form.target} /></label>
 					<p class="note">部署測試版需要填寫測試環境才會生效</p>
 				{/if}
@@ -216,6 +229,9 @@
 		margin: 0.35rem 0 0;
 		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
+	}
+	.warn {
+		color: var(--warn);
 	}
 	ul {
 		display: flex;
