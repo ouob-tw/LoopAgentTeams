@@ -38,6 +38,19 @@ export async function answerHerdrList(dir: string, request: { id: string; method
 	}
 }
 
+/** Move a workspace in the fake Herdr's list as Herdr 0.9.5 does: before the one at `index` in the
+ *  list as it is, itself still counted, and the numbers follow the new order. */
+export function moveFakeWorkspace(planFile: string, id: string, index: number) {
+	const plan = JSON.parse(readFileSync(planFile, 'utf8'));
+	const inOrder: { workspace_id: string; number: number }[] = [...plan.workspaces].sort((a, b) => a.number - b.number);
+	const moved = inOrder.find((workspace) => workspace.workspace_id === id)!;
+	const before = inOrder[index];
+	const others = inOrder.filter((workspace) => workspace !== moved);
+	const at = before === moved ? inOrder.indexOf(moved) : before ? others.indexOf(before) : others.length;
+	plan.workspaces = [...others.slice(0, at), moved, ...others.slice(at)].map((workspace, place) => ({ ...workspace, number: place + 1 }));
+	writeFileSync(planFile, JSON.stringify(plan));
+}
+
 const ROOT = join(import.meta.dir, '..');
 /** The build the test servers run: `bun run build:test` writes it, never the `build/` the running board serves.
  * LAT_BOARD_BUILD_DIR (the variable `build:test` honours) names another one, so runs that overlap each use their own. */

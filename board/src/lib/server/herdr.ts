@@ -209,6 +209,22 @@ export async function moveTab(config: BoardConfig, tabId: string, index: number)
 	return 'reason' in moved ? `移動分頁失敗：${moved.reason}` : null;
 }
 
+/** Herdr's workspaces in the order it shows them; or why they cannot be told. */
+export async function workspacesInOrder(config: BoardConfig): Promise<{ workspaces: { id: string; label: string }[] } | { reason: string }> {
+	const workspaces = await herdr(config, ['workspace', 'list']);
+	if ('reason' in workspaces) return { reason: `讀不到 Herdr 的工作區清單：${workspaces.reason}` };
+	const workspaceList = workspaces.result.workspaces;
+	if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) return { reason: '讀不到 Herdr 的工作區清單：輸出不是預期的格式' };
+	return { workspaces: [...workspaceList].sort((a, b) => a.number - b.number).map((workspace) => ({ id: workspace.workspace_id, label: workspace.label })) };
+}
+
+/** Move a workspace to this place among the workspaces, counted as `moveTab` counts tabs (Herdr
+ *  0.9.5, tried on a server of its own). Returns why it did not move, or null. */
+export async function moveWorkspace(config: BoardConfig, workspaceId: string, index: number): Promise<string | null> {
+	const moved = await socketRequest(config, 'workspace.move', { workspace_id: workspaceId, insert_index: index });
+	return 'reason' in moved ? `移動工作區失敗：${moved.reason}` : null;
+}
+
 /** Give a tab this label: `herdr tab rename <tab> <label>`. */
 export function renameTab(config: BoardConfig, tabId: string, label: string): Promise<HerdrAct> {
 	return herdrAct(config, ['tab', 'rename', tabId, label]);

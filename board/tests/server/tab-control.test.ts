@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentAction, AgentActionResponse } from '../../src/lib/board/agent-actions.ts';
 import { loadConfig } from '../../src/lib/server/config.ts';
-import { answerHerdrList, startFixture, type Fixture } from '../harness.ts';
+import { answerHerdrList, moveFakeWorkspace, startFixture, type Fixture } from '../harness.ts';
 
 const socketDir = mkdtempSync(join(tmpdir(), 'lat-board-tab-control-'));
 const socketPath = join(socketDir, 'herdr.sock');
@@ -29,6 +29,10 @@ beforeAll(async () => {
 			if (listing !== null) return connection.write(listing);
 			appendFileSync(join(fixture.dir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
 			if (moveFails) return connection.write(JSON.stringify({ id: request.id, error: { message: moveFails } }) + '\n');
+			if (request.method === 'workspace.move') {
+				moveFakeWorkspace(herdrFile(), request.params.workspace_id, request.params.insert_index);
+				return connection.write(JSON.stringify({ id: request.id, result: { type: 'workspace_list' } }) + '\n');
+			}
 			// As Herdr 0.9.5 does: the tab goes before the one at insert_index among the workspace's
 			// tabs as they are, itself still counted; past the last one it goes last.
 			const plan = readJson(herdrFile());
@@ -162,6 +166,60 @@ test('dragged towards the end, a tab lands after the target tab; a split tab mov
 	await move('s-one', 'wA:t-one', 'wA:t-last');
 	expect(herdrCalls().at(-1)).toEqual(['socket', 'tab.move', { tab_id: 'wA:t-one', insert_index: 5 }]);
 	expect(herdrOrder()).toEqual(['shell', 'board', 'pair', 'last', 'one']);
+});
+
+/** Workspace labels in Herdr's order now, and the board's list of them. */
+const workspaceOrder = () => readJson(herdrFile()).workspaces.sort((a: { number: number }, b: { number: number }) => a.number - b.number).map((workspace: { label: string }) => workspace.label);
+const threeWorkspaces = () =>
+	setHerdr({
+		workspaces: [
+			{ workspace_id: 'wA', number: 1, label: 'Alpha' },
+			{ workspace_id: 'wB', number: 2, label: 'Beta' },
+			{ workspace_id: 'wC', number: 3, label: 'Gamma' }
+		]
+	});
+const moveSpace = (workspace: string, onto: string) => post('/api/agents/workspace/move', { workspace, onto });
+
+test('a workspace dragged towards the front lands before the target, towards the end after it; the list follows and the move is logged', async () => {
+	threeWorkspaces();
+	await fixture.refresh(cookie);
+	const toFront = await moveSpace('wC', 'wA');
+	expect(toFront.status).toBe(200);
+	expect(herdrCalls()).toEqual([['socket', 'workspace.move', { workspace_id: 'wC', insert_index: 0 }]]);
+	expect(workspaceOrder()).toEqual(['Gamma', 'Alpha', 'Beta']);
+	expect((await fixture.board(cookie)).workspaces.map((workspace: { id: string }) => workspace.id)).toEqual(['wC', 'wA', 'wB']);
+
+	const toEnd = await moveSpace('wC', 'wB');
+	expect(toEnd.status).toBe(200);
+	expect(herdrCalls().at(-1)).toEqual(['socket', 'workspace.move', { workspace_id: 'wC', insert_index: 3 }]);
+	expect(workspaceOrder()).toEqual(['Alpha', 'Beta', 'Gamma']);
+	expect((await fixture.board(cookie)).workspaces.map((workspace: { id: string }) => workspace.id)).toEqual(['wA', 'wB', 'wC']);
+	const entry = logged().at(-1)!;
+	expect(entry).toMatchObject({ action: 'move', agentId: '', ok: true, route: 'herdr', text: '工作區「Gamma」移到「Beta」之後（第 3 個工作區）' });
+});
+
+test('a workspace move is refused unless both are listed now, or when it names no move; Herdr refusing answers 502', async () => {
+	expect((await moveSpace('wA', 'wA')).status).toBe(400);
+	expect((await post('/api/agents/workspace/move', { workspace: 'wA' })).status).toBe(400);
+	expect(logged()).toEqual([]);
+	for (const [workspace, onto] of [['wGone', 'wA'], ['wA', 'wGone']]) {
+		const refused = await moveSpace(workspace, onto);
+		expect(refused.status).toBe(409);
+		expect(refused.body.reason).toBe('工作區已不在 Herdr 的清單上，沒有移動。');
+	}
+	expect(herdrCalls()).toEqual([]);
+
+	moveFails = 'workspace is busy';
+	const failed = await moveSpace('wB', 'wA');
+	expect(failed.status).toBe(502);
+	expect(failed.body.reason).toBe('移動工作區失敗：workspace is busy');
+	expect(workspaceOrder()).toEqual(['Alpha', 'Beta']);
+});
+
+test('moving a workspace needs a login', async () => {
+	const response = await fixture.fetch('/api/agents/workspace/move', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspace: 'wA', onto: 'wB' }) });
+	expect(response.status).toBe(401);
+	expect(herdrCalls()).toEqual([]);
 });
 
 test('a tab dropped on itself, as on another card of its own tab, is not a request: nothing is called or logged', async () => {

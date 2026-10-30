@@ -1,12 +1,12 @@
-// Moving and renaming a Herdr tab from an agent's card on the Herdr tab. Each request reads the
-// workspace's tab list again and acts only on a tab it still lists there, never on what the page
-// last saw. The board's own tab is treated like any other: moving or renaming it leaves the
+// Moving and renaming a Herdr tab from an agent's card on the Herdr tab, and moving a workspace from
+// its heading. Each request reads the workspace's tab list, or the workspace list, again and acts
+// only on what it still lists there, never on what the page last saw. The board's own tab is treated like any other: moving or renaming it leaves the
 // board running. One attempt each, no retry, logged in the sent log either way; the list is read
 // again afterwards either way, so the page shows the order and names Herdr really has.
 import { randomUUID } from 'node:crypto';
 import type { AgentAction, AgentActionResponse } from '../board/agent-actions.ts';
 import type { Board } from './board.ts';
-import { moveTab, renameTab, workspaceTabs } from './herdr.ts';
+import { moveTab, moveWorkspace, renameTab, workspacesInOrder, workspaceTabs } from './herdr.ts';
 import { queued } from './send.ts';
 import { appendSent } from './sent-log.ts';
 
@@ -18,26 +18,33 @@ export interface TabTarget {
 	tab: string;
 }
 
+type Outcome = { text: string | null; reason: string | null; acted: boolean };
+
 async function attempt(
 	board: Board,
 	target: TabTarget,
 	action: 'move' | 'rename',
-	act: (tabs: { id: string; label: string }[]) => Promise<{ text: string | null; reason: string | null; acted: boolean }>
+	act: (tabs: { id: string; label: string }[]) => Promise<Outcome>
 ): Promise<{ status: number; body: AgentActionResponse }> {
 	const listed = await workspaceTabs(board.config, target.workspace);
-	let outcome: { text: string | null; reason: string | null; acted: boolean };
+	let outcome: Outcome;
 	if ('reason' in listed) outcome = { text: null, reason: `${listed.reason}，沒有執行。`, acted: false };
 	else if (!listed.tabs.some((tab) => tab.id === target.tab)) {
 		outcome = { text: null, reason: '這個分頁已不在 Herdr 的這個工作區裡，沒有執行。', acted: false };
 	} else outcome = await act(listed.tabs);
+	return finish(board, target.session, action, outcome);
+}
+
+/** Read the list again, write the attempt in the sent log, and answer with both. */
+async function finish(board: Board, session: string | null, action: 'move' | 'rename', outcome: Outcome): Promise<{ status: number; body: AgentActionResponse }> {
 	await board.refresh();
-	const agent = target.session === null ? undefined : (await board.current()).agents.find((candidate) => candidate.id === target.session);
+	const agent = session === null ? undefined : (await board.current()).agents.find((candidate) => candidate.id === session);
 	const entry: AgentAction = {
 		id: randomUUID(),
 		kind: 'agent-action',
 		action,
 		time: new Date().toISOString(),
-		agentId: target.session ?? '',
+		agentId: session ?? '',
 		name: agent?.name ?? '',
 		route: outcome.acted ? 'herdr' : null,
 		pane: agent?.herdr.pane ?? null,
@@ -52,7 +59,7 @@ async function attempt(
 		// It was done or refused either way; that outcome is what the page must show.
 		logError = (error as Error).message;
 	}
-	if (target.session !== null) board.agentActed(target.session);
+	if (session !== null) board.agentActed(session);
 	const status = outcome.reason === null ? 200 : outcome.acted ? 502 : 409;
 	return { status, body: { ok: entry.ok, reason: outcome.reason, entry, logError } };
 }
@@ -75,6 +82,29 @@ export function moveAgentTab(board: Board, target: TabTarget, onto: string) {
 			return { text, reason, acted: true };
 		})
 	);
+}
+
+/**
+ * Move a workspace next to the workspace `onto` (the one it was dropped on), the same way a tab
+ * moves among its workspace's tabs. No agent is on the record, as a workspace may have none.
+ * Requests are queued, since each counts places in the whole list.
+ */
+export function moveHerdrWorkspace(board: Board, workspace: string, onto: string) {
+	return queued('workspaces', async () => {
+		const listed = await workspacesInOrder(board.config);
+		let outcome: Outcome;
+		if ('reason' in listed) outcome = { text: null, reason: `${listed.reason}，沒有執行。`, acted: false };
+		else {
+			const from = listed.workspaces.findIndex((candidate) => candidate.id === workspace);
+			const to = listed.workspaces.findIndex((candidate) => candidate.id === onto);
+			if (from < 0 || to < 0) outcome = { text: null, reason: '工作區已不在 Herdr 的清單上，沒有移動。', acted: false };
+			else {
+				const text = `工作區「${listed.workspaces[from].label}」移到「${listed.workspaces[to].label}」${to < from ? '之前' : '之後'}（第 ${to + 1} 個工作區）`;
+				outcome = { text, reason: await moveWorkspace(board.config, workspace, to < from ? to : to + 1), acted: true };
+			}
+		}
+		return finish(board, null, 'move', outcome);
+	});
 }
 
 /** Give the tab this label, already trimmed and not empty. Queued with the workspace's moves. */

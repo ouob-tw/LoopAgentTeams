@@ -101,6 +101,11 @@ class AgentControl {
 		return this.#post('/api/agents/tab/move', agentId, { ...place, onto });
 	}
 
+	/** Move a Herdr workspace next to the workspace `onto`, the one it was dropped on. */
+	moveWorkspace(workspace: string, onto: string): Promise<Outcome> {
+		return this.#post('/api/agents/workspace/move', null, { workspace, onto });
+	}
+
 	/** Rename the card's Herdr tab; the label is already trimmed and not empty. */
 	renameTab(agentId: string | null, place: { workspace: string; tab: string }, label: string): Promise<Outcome> {
 		return this.#post('/api/agents/tab/rename', agentId, { ...place, label });

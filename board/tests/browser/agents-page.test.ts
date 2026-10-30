@@ -10,7 +10,7 @@ import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { AGENT_HCOM_UNKNOWN_REASON } from '../../src/lib/board/agent-actions.ts';
 import { AGENT_FIXED_MODEL_REASON, AGENT_HCOM_UNKNOWN_SWITCH_REASON, AGENT_NOT_LINKED_SWITCH_REASON, LOCK_UNKNOWN_TEXT } from '../../src/lib/board/models.ts';
 import { PERMISSION_NOT_LINKED_REASON } from '../../src/lib/board/permissions.ts';
-import { NODE, sleep, startFixture, type Fixture } from '../harness.ts';
+import { moveFakeWorkspace, NODE, sleep, startFixture, type Fixture } from '../harness.ts';
 
 
 
@@ -83,6 +83,10 @@ beforeAll(async () => {
 			appendFileSync(join(fixture.dir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
 			if (moveFails) return connection.write(JSON.stringify({ id: request.id, error: { message: moveFails } }) + '\n');
 			const planFile = join(fixture.dir, 'herdr.json');
+			if (request.method === 'workspace.move') {
+				moveFakeWorkspace(planFile, request.params.workspace_id, request.params.insert_index);
+				return connection.write(JSON.stringify({ id: request.id, result: { type: 'workspace_list' } }) + '\n');
+			}
 			const plan = JSON.parse(readFileSync(planFile, 'utf8'));
 			// As Herdr 0.9.5 does: before the tab at insert_index among the workspace's tabs as they are.
 			const moved = plan.tabs.find((candidate: { tab_id: string }) => candidate.tab_id === request.params.tab_id);
@@ -1178,6 +1182,23 @@ async function freshTabs() {
 	await fixture.refresh(cookie);
 }
 
+test.skipIf(!CHROME)('dragging a workspace to the top edge of a long list scrolls it, and the drop counts the scroll', async () => {
+	await freshTabs();
+	const crowd = Array.from({ length: 30 }, (_, i) => herdrAgent(`s-c${String(i).padStart(2, '0')}`, {}));
+	setHerdr([...AGENTS, ...crowd]);
+	await fixture.refresh(cookie);
+	await visit(1280);
+	await openTab();
+	const SPACE_GRIP = '.inbox [data-workspace="wB"] .workspace-grip';
+	await tab.until(`!!document.querySelector(${JSON.stringify(SPACE_GRIP)})`, 'the crowded list');
+	await tab.eval(`document.querySelector('.inbox').scrollTop = 1e6, 0`);
+	const from = await point(SPACE_GRIP);
+	const edge = await tab.eval<number>(`document.querySelector('.inbox').getBoundingClientRect().top + 4`);
+	await drag(false, from, { x: from.x, y: edge }, () => tab.until(`document.querySelector('.inbox').scrollTop === 0`, 'the list scrolled to its top'));
+	await tab.until(`document.querySelector('.inbox [data-workspace]').dataset.workspace === 'wB'`, 'the workspace moved first');
+	expect(herdrCalls() as unknown[][]).toEqual([['socket', 'workspace.move', { workspace_id: 'wB', insert_index: 0 }]]);
+}, 30_000);
+
 for (const width of [1280, 390]) {
 	const touch = width < 761;
 	test.skipIf(!CHROME)(`${width}px: a card's handle drags its tab within its workspace, showing where it lands; outside it nothing moves`, async () => {
@@ -1215,6 +1236,41 @@ for (const width of [1280, 390]) {
 		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('排序失敗：移動分頁失敗：tab is busy')`, 'the failure');
 		expect(await cardsOf('wA')).toEqual(['s-plain', 's-lead']);
 		expect(herdrCalls()).toHaveLength(2);
+		expect(await tab.eval(FITS)).toBe(true);
+	}, 30_000);
+
+	test.skipIf(!CHROME)(`${width}px: a workspace heading's handle drags the workspace among the others, showing where it lands`, async () => {
+		await freshTabs();
+		await visit(width);
+		if (touch) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+		await openTab();
+		const HEAD = (id: string) => `.inbox [data-workspace="${id}"]`;
+		const WORKSPACE_GRIP = (id: string) => `${HEAD(id)} .workspace-grip`;
+		const order = () => tab.eval<string[]>(`[...document.querySelectorAll('.inbox [data-workspace]')].map((group) => group.dataset.workspace)`);
+		await tab.until(`!!document.querySelector(${JSON.stringify(WORKSPACE_GRIP('wB'))})`, 'the heading handles');
+		expect(await order()).toEqual(['wA', 'wB']);
+		expect(await tab.eval(`getComputedStyle(document.querySelector(${JSON.stringify(WORKSPACE_GRIP('wB'))})).touchAction`)).toBe('none');
+
+		await drag(touch, await point(WORKSPACE_GRIP('wB')), await point(CARD('s-lead')), async () => {
+			expect(await hasClass(HEAD('wB'), 'dragging')).toBe(true);
+			expect(await hasClass(HEAD('wA'), 'drop-before')).toBe(true);
+		});
+		await tab.until(`JSON.stringify([...document.querySelectorAll('.inbox [data-workspace]')].map((group) => group.dataset.workspace)) === '["wB","wA"]'`, 'Herdr’s new order');
+		expect(herdrCalls() as unknown[][]).toEqual([['socket', 'workspace.move', { workspace_id: 'wB', insert_index: 0 }]]);
+		expect(await tab.eval(`document.querySelector(${JSON.stringify(HEAD('wB'))}).style.transform`)).toBe('');
+		// Dragging by the handle does not open an agent.
+		expect((await screen()).search).not.toContain('agent=');
+
+		// Dropped on itself: nothing is asked of Herdr.
+		const own = await point(WORKSPACE_GRIP('wB'));
+		await drag(touch, own, { x: own.x, y: own.y + 4 });
+		expect(herdrCalls()).toHaveLength(1);
+
+		// Herdr refuses: its reason shows, and the list keeps Herdr's real order.
+		moveFails = 'workspace is busy';
+		await drag(touch, await point(WORKSPACE_GRIP('wA')), await point(CARD('s-other')));
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('排序失敗：移動工作區失敗：workspace is busy')`, 'the failure');
+		expect(await order()).toEqual(['wB', 'wA']);
 		expect(await tab.eval(FITS)).toBe(true);
 	}, 30_000);
 

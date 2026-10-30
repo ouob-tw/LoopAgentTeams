@@ -6,6 +6,7 @@
 	// longer lists them. A card's handle drags its Herdr tab to another place in the same workspace;
 	// its context menu (a long press on a touch screen) renames the tab on the card itself. Hovering
 	// a card explains it, a controller's with the duty it recorded; its menu shows the duty too.
+	// A workspace heading's handle drags the workspace to another place among Herdr's workspaces.
 	import GripVertical from '@lucide/svelte/icons/grip-vertical';
 	import Plus from '@lucide/svelte/icons/plus';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -98,6 +99,20 @@
 		x: number;
 		y: number;
 	} | null = null;
+	/** The workspace being dragged by its heading, and the workspace it would land next to. */
+	let groupDrag = $state<{ workspace: string; startY: number; offset: number; over: { workspace: string; after: boolean } | null } | null>(null);
+	/** Where Herdr's workspaces were when that drag started, and what scrolls the list. */
+	let groupFrame: {
+		ids: string[];
+		index: number;
+		bottoms: number[];
+		scroller: Element;
+		scrolled: number;
+		reach: { up: number; down: number };
+		y: number;
+	} | null = null;
+	/** The workspace whose move is under way. */
+	let movingGroup = $state<string | null>(null);
 	let scrolling: ReturnType<typeof setTimeout> | null = null;
 	/** The card whose menu is open, and where. */
 	let menu = $state<{ agent: Agent; x: number; y: number } | null>(null);
@@ -184,11 +199,69 @@
 		if (!scrolling) scrolling = setTimeout(autoScroll, SCROLL_TICK_MS);
 	}
 
+	function grabGroup(event: PointerEvent, workspace: string) {
+		if (event.button !== 0 || movingGroup) return;
+		event.preventDefault();
+		const handle = event.currentTarget as HTMLElement;
+		handle.setPointerCapture(event.pointerId);
+		const group = handle.closest('.group')!;
+		const scroller = scrollerOf(group);
+		const box = group.getBoundingClientRect();
+		const top = box.top - scrollBox(scroller).top + scroller.scrollTop;
+		const ids = workspaces.map((listed) => listed.id);
+		groupFrame = {
+			ids,
+			index: ids.indexOf(workspace),
+			bottoms: ids.map((id) => group.parentElement!.querySelector(`.group[data-workspace="${CSS.escape(id)}"]`)!.getBoundingClientRect().bottom),
+			scroller,
+			scrolled: scroller.scrollTop,
+			reach: { up: -top, down: scroller.scrollHeight - top - box.height },
+			y: event.clientY
+		};
+		menu = null;
+		explainer.dismiss();
+		groupDrag = { workspace, startY: event.clientY, offset: 0, over: null };
+	}
+
+	/** The workspace under the pointer, counting how far the list has scrolled since the drag began. */
+	function aimGroup() {
+		if (!groupDrag || !groupFrame) return;
+		const { ids, index, bottoms, scroller, scrolled, reach, y: screenY } = groupFrame;
+		const moved = scroller.scrollTop - scrolled;
+		// The first workspace not above the pointer, by where they were before the drag.
+		let at = bottoms.findIndex((bottom) => screenY + moved < bottom);
+		if (at < 0) at = ids.length - 1;
+		const over = at === index ? null : { workspace: ids[at], after: at > index };
+		groupDrag = { ...groupDrag, offset: Math.min(Math.max(screenY - groupDrag.startY + moved, reach.up), reach.down), over };
+	}
+
+	function dragGroupTo(event: PointerEvent) {
+		if (!groupDrag || !groupFrame) return;
+		groupFrame.y = event.clientY;
+		aimGroup();
+		if (!scrolling) scrolling = setTimeout(autoScroll, SCROLL_TICK_MS);
+	}
+
+	async function dropGroup(event: PointerEvent) {
+		if (!groupDrag) return;
+		const { workspace, over } = groupDrag;
+		groupDrag = null;
+		groupFrame = null;
+		stopScrolling();
+		if (event.type !== 'pointerup' || !over) return;
+		movingGroup = workspace;
+		const outcome = await agentControl.moveWorkspace(workspace, over.workspace);
+		movingGroup = null;
+		if (outcome.ok) toasts.show('ok', `已調整工作區順序${outcome.reason ?? ''}`);
+		else toasts.show('failed', `排序失敗：${outcome.reason}`);
+	}
+
 	/** How far to scroll this frame: toward the edge the pointer is within SCROLL_EDGE_PX of, more the nearer. */
 	function autoScroll() {
 		scrolling = null;
-		if (!drag || !dragFrame) return;
-		const { scroller, y } = dragFrame;
+		const frame = dragFrame ?? groupFrame;
+		if (!frame) return;
+		const { scroller, y } = frame;
 		const { top, bottom } = visibleEdges(scroller);
 		const down = y - (bottom - SCROLL_EDGE_PX);
 		const up = top + SCROLL_EDGE_PX - y;
@@ -201,6 +274,7 @@
 		// At the end it stops until the pointer moves again.
 		if (scroller.scrollTop === before) return;
 		aim();
+		aimGroup();
 		scrolling = setTimeout(autoScroll, SCROLL_TICK_MS);
 	}
 
@@ -327,11 +401,30 @@
 
 {#each groups as group (group.workspace)}
 	{@const listed = workspaces.some((workspace) => workspace.id === group.workspace)}
-	<section class="group" data-workspace={group.workspace}>
+	<section
+		class="group"
+		class:dragging={groupDrag?.workspace === group.workspace}
+		class:drop-before={groupDrag?.over?.workspace === group.workspace && !groupDrag.over.after}
+		class:drop-after={groupDrag?.over?.workspace === group.workspace && groupDrag.over.after}
+		class:busy={movingGroup === group.workspace}
+		data-workspace={group.workspace}
+		style:transform={groupDrag?.workspace === group.workspace ? `translateY(${groupDrag.offset}px)` : null}
+	>
 		<div class="heading">
 			<h3>{group.label}</h3>
-			<!-- Only a workspace Herdr lists can take a new tab. -->
+			<!-- Only a workspace Herdr lists can take a new tab or move. -->
 			{#if listed}
+				<span
+					class="workspace-grip"
+					title="拖曳調整工作區順序"
+					aria-hidden="true"
+					onpointerdown={(event) => grabGroup(event, group.workspace)}
+					onpointermove={dragGroupTo}
+					onpointerup={dropGroup}
+					onpointercancel={dropGroup}
+				>
+					<GripVertical size="1.2em" />
+				</span>
 				<button
 					type="button"
 					class="new"
@@ -471,21 +564,26 @@
 <style>
 	/* Laid out like the column it sits in, which lists its children this far apart. */
 	.group {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
+	}
+	.group.dragging {
+		background: var(--surface);
 	}
 	.heading {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 0.5rem;
+		gap: 0.25rem;
 		margin: 0.9rem 0 0.1rem;
 	}
 	.group:first-child > .heading {
 		margin-top: 0.2rem;
 	}
 	h3 {
+		flex: 1;
 		margin: 0;
 		min-width: 0;
 		font-size: max(0.8rem, var(--min-font, 0px));
@@ -508,6 +606,24 @@
 	.new.current {
 		background: var(--selected-bg);
 		color: var(--selected-text);
+	}
+	/* A finger wide; touching it drags instead of scrolling the list. */
+	.workspace-grip {
+		flex: none;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 2.2rem;
+		height: 2.2rem;
+		color: var(--muted);
+		cursor: grab;
+		touch-action: none;
+	}
+	.workspace-grip:hover {
+		color: var(--text);
+	}
+	.dragging > .heading .workspace-grip {
+		cursor: grabbing;
 	}
 	.empty-workspace {
 		margin: 0;
