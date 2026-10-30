@@ -72,7 +72,7 @@ test.skipIf(!CHROME)('each change saves at once, one after another; only the off
 	expect(await tab.eval(`[...${SECTION}.querySelectorAll('h4')].map((h) => h.innerText)`)).toEqual([
 		'合併', '推送', '部署測試版', '部署正式版', '更新主機技能', '參謀可自行定案', '參謀仍要問'
 	]);
-	expect(await tab.eval<string>(`${SECTION}.innerText`)).not.toMatch(/target|測試環境|改驗收|開新票|花錢|刪資料|沿用上層/);
+	expect(await tab.eval<string>(`${SECTION}.innerText`)).not.toMatch(/target|測試環境|改驗收|開新票|花錢|刪資料|沿用全域/);
 	expect(await tab.eval(`!!${button(SECTION, '儲存')}`)).toBe(false);
 	// An unset global reads as 要問, and pressing it writes nothing.
 	expect(await tab.eval(pressed('合併', 'ask'))).toBe(true);
