@@ -438,7 +438,9 @@ def make_brief(args):
     parts.append(fixed)
     write_text_atomic(output, '\n'.join(parts), mode=0o644)
     print(f'brief: {output}')
-    print('hcom send @{} --intent request --name {} --file {}'.format(
+    # --intent request makes HCOM notify the sender at the agent's next turn end, even with
+    # background work still running; the stall watch covers a card agent that really stops.
+    print('hcom send @{} --name {} --file {}'.format(
         card['agent'], hcom_send_name(card['orchestrator'], agents), shlex.quote(str(output))))
 
 

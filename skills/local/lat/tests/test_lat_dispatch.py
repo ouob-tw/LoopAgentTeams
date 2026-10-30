@@ -310,12 +310,14 @@ class BriefTests(DispatchCase):
         _, _, result = self.brief()
         output = self.root / 'brief.brief.md'
         self.assertIn(
-            f'hcom send @nanu-impl123-fida --intent request --name nanu --file {output}',
+            f'hcom send @nanu-impl123-fida --name nanu --file {output}',
             result.stdout)
         self.assertEqual(
             result.stdout.splitlines()[-1],
-            f'hcom send @nanu-impl123-fida --intent request --name nanu --file {output}')
+            f'hcom send @nanu-impl123-fida --name nanu --file {output}')
         self.assertNotIn('<<', result.stdout)
+        # --intent request would have HCOM wake the sender at the agent's next turn end.
+        self.assertNotIn('--intent', result.stdout)
 
     def test_send_names_are_the_base_names_hcom_records_for_tagged_agents(self):
         self.agents.append({'name': 'lat-fix-nanu', 'base_name': 'nanu', 'tag': 'lat-fix'})
@@ -325,7 +327,7 @@ class BriefTests(DispatchCase):
         _, _, result = self.brief(card=card)
         self.assertEqual(result.returncode, 0, result.stderr)
         output = self.root / 'brief.brief.md'
-        self.assertIn(f'hcom send @nanu-impl123-fida --intent request --name nanu --file {output}',
+        self.assertIn(f'hcom send @nanu-impl123-fida --name nanu --file {output}',
                       result.stdout)
         self.assertIn('`hcom send @lat-fix-nanu --name fida`', output.read_text())
 
@@ -333,7 +335,7 @@ class BriefTests(DispatchCase):
         self.agents = [{'name': 'fida', 'base_name': 'fida', 'tag': 'nanu-impl123'}, ORCH]
         _, _, result = self.brief()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('--intent request --name nanu --file', result.stdout)
+        self.assertIn('--name nanu --file', result.stdout)
         self.assertIn('`hcom send @nanu --name fida`', (self.root / 'brief.brief.md').read_text())
 
     def test_live_actions_and_preflight_are_copied_verbatim_with_quota_rules(self):

@@ -1468,6 +1468,29 @@ def descendants_below(pid, parents, roots):
     return (pid, lineage) if pid in roots else None
 
 
+# What an agent's own commands leave behind that lives on and is not its work: watchers, and
+# the launcher script of each agent it spawned.
+WATCHER_SCRIPTS = {'lat-watch.py', 'spawn-watch.py'}
+HCOM_LAUNCHERS = '/.hcom/.tmp/launch/'
+# Other clients may relaunch themselves under an interpreter, which would look like a helper.
+HELPER_RULE_CLIENTS = ('claude', 'codex')
+
+
+def tool_command_lineage(lineage, client, process_by_pid, tool):
+    """True if a client process itself started this lineage in a separate session.
+
+    Tool commands run in their own session. MCP servers stay in the client's session, so
+    anything below one is its helper, even a language server that started a new session.
+    """
+    for pid in reversed(lineage):
+        process = process_by_pid[pid]
+        if process.session != process_by_pid[client].session:
+            return True
+        if not (process.command and Path(process.command[0]).name.startswith(tool)):
+            return False
+    return False
+
+
 def background_process_running(agent, info, processes, current_pid=None):
     """Detect a surviving command tied to the HCOM-bound client process."""
     identity = info.get('launch_context', {}).get('pid_identity', '')
@@ -1494,6 +1517,9 @@ def background_process_running(agent, info, processes, current_pid=None):
     for process in processes:
         if process.pid in clients or process.pid in excluded or process.state == 'Z':
             continue
+        if (WATCHER_SCRIPTS.intersection(Path(part).name for part in process.command)
+                or any(HCOM_LAUNCHERS in part for part in process.command)):
+            continue
         provenance = descendants_below(process.pid, parents, clients)
         same_agent = owner_marker in process.environment
         belongs_to_client = provenance is not None
@@ -1501,10 +1527,8 @@ def background_process_running(agent, info, processes, current_pid=None):
             continue
         if belongs_to_client:
             client, lineage = provenance
-            # Tool commands run in a separate session. Resident MCP/language-server
-            # helpers inherit the client session even when the client was shell-launched.
-            if any(process_by_pid[pid].session != process_by_pid[client].session
-                   for pid in lineage):
+            tool = info.get('tool') if info.get('tool') in HELPER_RULE_CLIENTS else ''
+            if tool_command_lineage(lineage, client, process_by_pid, tool):
                 return True
             continue
         # A detached tool may be reparented after its shell exits; its HCOM marker
@@ -1557,6 +1581,48 @@ def wait_release_reason(declaration, participant_events, target_replied, decisio
     if decision_pending is False:
         return 'decision-resolved'
     return None
+
+
+def wait_targets(declaration):
+    """Every target of a wait; a multi-target wait keeps the current one at the top level too."""
+    return declaration.get('targets') or [declaration]
+
+
+def outstanding_targets(declaration):
+    answered = declaration.get('answered', [])
+    return [entry for entry in wait_targets(declaration) if entry['target'] not in answered]
+
+
+def target_sender_names(entry, agents):
+    """The names an agent target's messages can carry: HCOM records senders by base name."""
+    if entry['kind'] != 'agent':
+        return set()
+    target = entry['target']
+    info = agent_info(agents, target) or {}
+    return {target, target.rsplit('-', 1)[-1], info.get('name'), info.get('base_name')} - {None}
+
+
+def multi_wait_progress(declaration, participant_events, messages, agents, is_answered):
+    """Return (release reason or None, names of the targets answered so far).
+
+    A listed target's message only marks it answered; anyone else's frees the wait as usual.
+    """
+    listed = set().union(*(target_sender_names(entry, agents)
+                           for entry in wait_targets(declaration)))
+    if any(delivery_sender(event) is not None for event in participant_events):
+        if not messages or any(message_releases_wait(message)
+                               and event_value(message, 'from', 'data') not in listed
+                               for message in messages):
+            return 'message-delivered', declaration.get('answered', [])
+    senders = {event_value(message, 'from', 'data') for message in messages
+               if message_releases_wait(message)}
+    answered = [entry['target'] for entry in wait_targets(declaration)
+                if entry['target'] in declaration.get('answered', [])
+                or senders & target_sender_names(entry, agents)
+                or is_answered(entry)]
+    if len(answered) == len(wait_targets(declaration)):
+        return 'targets-answered', answered
+    return None, answered
 
 
 def delivered_messages(orchestrator, waiting_info, participant_events, after):
@@ -1762,12 +1828,14 @@ def decide_wait(declaration, observation, target_observation, target_state, now,
             events.append('wait-expired')
     if saved.get('expiry_nudge_pending') and idle_prompt(observation):
         minutes = int((now - saved['declared_at']) // 60)
-        text = (f"[lat-watch] Your wait for {saved['target']} expired after {minutes} minutes. "
+        names = ', '.join(entry['target'] for entry in outstanding_targets(saved))
+        text = (f"[lat-watch] Your wait for {names} expired after {minutes} minutes. "
                 'Check that agent status, continue your work or declare a new wait.')
         actions.append(Action('nudge', observation.agent, text=text, category='wait-expiry'))
     notice = saved.get('expiry_notice')
     if saved.get('expiry_count', 0) >= 2 and not saved.get('expiry_notified') and not notice:
-        notice = dict(target=saved['target'], declared_at=saved['expiry_declared_at'],
+        notice = dict(target=', '.join(entry['target'] for entry in outstanding_targets(saved)),
+                      declared_at=saved['expiry_declared_at'],
                       conversation_delivered=False, delivered=False)
         saved['expiry_notice'] = notice
     if notice and not notice['delivered'] and not saved.get('expiry_notified'):
@@ -2013,22 +2081,48 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     waiting_info = agent_info(agents, agent)
     participant = session_events(
         orchestrator, waiting_info, '--after', after)
-    if declaration.get('kind') == 'agent':
+
+    def entry_pending(entry):
+        return pending_decision(decisions, entry['target'], exact=entry.get('match') == 'exact',
+                                log=state_path(workspace, orchestrator).with_name('watch.jsonl'),
+                                agent=agent)
+
+    if declaration.get('kind') == 'agent' or declaration.get('targets'):
         decision = None
     else:
-        decision = pending_decision(
-            decisions, target, exact=declaration.get('match') == 'exact',
-            log=state_path(workspace, orchestrator).with_name('watch.jsonl'), agent=agent)
-    target_info = agent_info(agents, target)
-    transcript = target_info.get('transcript_path') if target_info else None
+        decision = entry_pending(declaration)
     waiting_name = waiting_info.get('name') if waiting_info else None
-    target_replied = bool(
-        decision is None and transcript and waiting_name
-        and successful_hcom_send_since(
+
+    def agent_replied(name):
+        target_info = agent_info(agents, name)
+        transcript = target_info.get('transcript_path') if target_info else None
+        return bool(transcript and waiting_name and successful_hcom_send_since(
             transcript, after, waiting_name, skip_inform_ack=True))
-    reason = wait_release_reason(
-        declaration, participant, target_replied, decision,
-        delivered_messages(orchestrator, waiting_info or {}, participant, after))
+
+    def entry_answered(entry):
+        if entry['kind'] == 'agent':
+            return agent_replied(entry['target'])
+        return entry_pending(entry) is False
+
+    messages = delivered_messages(orchestrator, waiting_info or {}, participant, after)
+    if declaration.get('targets'):
+        reason, answered = multi_wait_progress(declaration, participant, messages, agents,
+                                               entry_answered)
+        if (not reason and declaration.get('active', True)
+                and answered != declaration.get('answered', [])):
+            # The top level follows the first target still unanswered, for every other reader.
+            updated = {key: value for key, value in declaration.items() if key != 'match'}
+            updated.update(next(entry for entry in declaration['targets']
+                                if entry['target'] not in answered), answered=answered)
+            deadline = declaration.get('deadline_at')
+            # Time spent on a target with no deadline must not expire the next one on arrival.
+            if (deadline is not None and time.time() >= deadline
+                    and (declaration.get('kind') != 'agent' or target == orchestrator)):
+                updated['deadline_at'] = time.time() + declaration['wait_seconds']
+            write_wait(wait_path(workspace, agent), updated, expected=expected)
+    else:
+        reason = wait_release_reason(declaration, participant,
+                                     decision is None and agent_replied(target), decision, messages)
     if reason:
         updated = dict(declaration, active=False, expiry_count=0, expiry_declared_at=[],
                        expiry_notified=False, expiry_nudge_pending=False, released_reason=reason,
@@ -2100,7 +2194,8 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
     orchestrator_wait_started_at = 0
     if agent != orchestrator:
         orchestrator_wait = read_object(wait_path(workspace, orchestrator))
-        if orchestrator_wait and orchestrator_wait.get('target') == agent:
+        if orchestrator_wait and any(entry.get('target') == agent
+                                     for entry in wait_targets(orchestrator_wait)):
             declared_at = orchestrator_wait.get('declared_at', 0)
             if isinstance(declared_at, (int, float)):
                 orchestrator_wait_started_at = declared_at
@@ -3253,7 +3348,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
     own = states.setdefault(orchestrator, {})
     own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5,
                                'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1,
-                               'capacity_continue': 1}
+                               'capacity_continue': 1, 'wait_targets': 1}
     if ledger_state:
         own['ledger'] = ledger_state
     else:
@@ -3449,12 +3544,11 @@ def declare_wait(args):
               f'as given: {error}', file=sys.stderr)
     else:
         agent = full_hcom_name(agents, agent, '--agent')
-    # A comma list waits on its first entry; the others are named in the reason.
+    # A comma list waits for every entry; the first one still unanswered is the current target.
     target, *also = (part.strip() for part in args.target.split(','))
-    also = [valid_name(name) for name in also if name]
+    names = [valid_name(target), *(valid_name(name) for name in also if name)]
     declaration = {
         'agent': agent,
-        'target': valid_name(target),
         'reason': args.reason.strip(),
         'declared_at': time.time(),
         'declared_at_utc': datetime.now(timezone.utc).isoformat(),
@@ -3462,9 +3556,7 @@ def declare_wait(args):
     }
     if not declaration['reason']:
         raise ValueError('--reason must not be empty')
-    if also:
-        declaration['reason'] += f' (also waiting for: {", ".join(also)})'
-    decision_target = False
+    decision_targets = set()
     owners = []
     for path in sorted((lat_dir(workspace) / 'sessions').glob('*.json')):
         try:
@@ -3488,31 +3580,42 @@ def declare_wait(args):
                 continue
         decisions = Path(record['decisions_path'])
         owners.append((owner, decisions))
-        decision = None if is_hcom_agent(agents, target) else pending_decision(decisions, target)
-        decision_target = decision_target or decision is not None
-        if decision is False:
-            matches = decision_records(decisions, target, True)
-            statuses = ', '.join(f'{path}: {read_decision_status(path).status}'
-                                 for path in matches)
-            raise ValueError(
-                f'Cannot wait on {target}: no pending decision for {owner}; '
-                f'matching records: {statuses}. To wait on the user\'s reply or a '
-                'manual step, record it as a pending decision and wait on that ID.')
-    declaration['kind'] = 'decision' if decision_target else 'agent'
-    if decision_target:
-        declaration['match'] = 'exact'
-    if decision_target and args.minutes is not None:
+        for name in names:
+            decision = None if is_hcom_agent(agents, name) else pending_decision(decisions, name)
+            if decision is not None:
+                decision_targets.add(name)
+            if decision is False:
+                matches = decision_records(decisions, name, True)
+                statuses = ', '.join(f'{path}: {read_decision_status(path).status}'
+                                     for path in matches)
+                raise ValueError(
+                    f'Cannot wait on {name}: no pending decision for {owner}; '
+                    f'matching records: {statuses}. To wait on the user\'s reply or a '
+                    'manual step, record it as a pending decision and wait on that ID.')
+    entries = []
+    for name in names:
+        if name in decision_targets:
+            entry = {'target': name, 'kind': 'decision', 'match': 'exact'}
+        else:
+            entry = {'target': resolve_agent_name(agents, name, required=False), 'kind': 'agent'}
+            if entry['target'] == agent:
+                raise ValueError('Cannot wait on yourself; use lat-watch alarm instead')
+        if entry not in entries:
+            entries.append(entry)
+    declaration.update(entries[0])
+    if len(entries) > 1:
+        declaration['targets'] = entries
+    agent_targets = [entry['target'] for entry in entries if entry['kind'] == 'agent']
+    owner_names = {owner for owner, _ in owners}
+    if args.minutes is not None and not agent_targets:
         raise ValueError('--minutes is not allowed for a decision target')
-    waits_for_orchestrator = False
-    if not decision_target:
-        declaration['target'] = resolve_agent_name(agents, declaration['target'], required=False)
-        if declaration['target'] == agent:
-            raise ValueError('Cannot wait on yourself; use lat-watch alarm instead')
-        waits_for_orchestrator = any(declaration['target'] == owner for owner, _ in owners)
-        if waits_for_orchestrator and args.minutes is not None:
-            raise ValueError('--minutes is not allowed when waiting for your owning orchestrator')
-        if not waits_for_orchestrator:
-            declaration['deadline_at'] = declaration['declared_at'] + (args.minutes or WAIT_DEFAULT_MINUTES) * 60
+    if args.minutes is not None and set(agent_targets) <= owner_names:
+        raise ValueError('--minutes is not allowed when waiting for your owning orchestrator')
+    if not set(agent_targets) <= owner_names:
+        declaration['deadline_at'] = declaration['declared_at'] + (args.minutes or WAIT_DEFAULT_MINUTES) * 60
+        if len(entries) > 1:
+            declaration['wait_seconds'] = (args.minutes or WAIT_DEFAULT_MINUTES) * 60
+    waits_for_orchestrator = declaration['kind'] == 'agent' and declaration['target'] in owner_names
     path = wait_path(workspace, agent)
     previous, wait_original = read_wait(path)
     if previous and previous.get('expiry_count', 0):
@@ -3733,7 +3836,7 @@ def main():
     waiting.add_argument('--workspace', type=Path, required=True)
     waiting.add_argument('--agent', required=True)
     waiting.add_argument('--for', dest='target', required=True,
-                         help='Decision ID or agent name; a comma list waits on the first')
+                         help='a decision ID or agent name; a comma list waits for every entry')
     waiting.add_argument('--reason', required=True)
     waiting.add_argument('--minutes', type=int, choices=range(1, 721),
                          metavar='1..720', help=f'Agent wait deadline (default: {WAIT_DEFAULT_MINUTES} minutes)')
