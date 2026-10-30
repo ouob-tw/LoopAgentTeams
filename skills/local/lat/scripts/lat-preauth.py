@@ -10,13 +10,16 @@ which tickets the unpushed commits belong to, main checkout at the integration b
 `show` prints the effective settings and where each value came from. Any unreadable or unknown
 setting makes every check ask. `grant` writes one rule that a human-answered decision record
 names; `record` logs what was done under pre-authorization and `report` lists this round's log for
-the delivery report. The tool never runs the action itself.
+the delivery report. The board reads and writes settings through `board_settings` and `board_write`,
+which the panel helper's `board preauth-read` and `board preauth-write` commands call. The tool never
+runs the action itself.
 """
 import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -64,7 +67,11 @@ HUMAN_ANSWERED = ('answered', 'approved')
 DECISION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
 GRANT_KEYS = ('allow', 'branches')
 RESULTS = ('succeeded', 'failed')
-REPORT_GROUPS = (('auto', '依預先授權自動執行'), ('bug-intake', '免確認開工'), ('grant', '設定寫入'))
+REPORT_GROUPS = ((('auto',), '依預先授權自動執行'), (('bug-intake',), '免確認開工'),
+                 (('grant', 'board'), '設定寫入'))
+# Long free text: written one item per line.
+ADVISOR_LISTS = ('may_settle', 'must_ask')
+BOARD_WRITES = 'preauth-writes.jsonl'
 
 
 @dataclass
@@ -74,6 +81,8 @@ class Layer:
     data: dict = field(default_factory=dict)
     present: bool = False
     note: str = ''  # why the layer does not apply, when it does not
+    sha256: str = ''  # of the bytes `data` was parsed from; a missing file hashes as empty
+    problems: list = field(default_factory=list)
 
 
 def git(workspace, *args):
@@ -128,10 +137,16 @@ def section_problems(section, keys, where):
     return problems
 
 
+def content_hash(content):
+    return hashlib.sha256(content or b'').hexdigest()
+
+
 def file_layer(name, path):
-    layer = Layer(name, str(path))
+    layer = Layer(name, str(path), sha256=content_hash(None))
     try:
-        text = path.read_text(encoding='utf-8')
+        content = path.read_bytes()
+        layer.sha256 = content_hash(content)
+        text = content.decode('utf-8')
     except FileNotFoundError:
         layer.note = 'no file'
         return layer, []
@@ -156,6 +171,7 @@ def load_layers(workspace):
     else:
         project, problems = file_layer('project', shared_lat_dir(top) / 'preauth.toml')
     global_layer, more = file_layer('global', global_path())
+    project.problems, global_layer.problems = problems, more
     return [project, global_layer], problems + more, top
 
 
@@ -645,6 +661,18 @@ class Refused(Exception):
     """The write was refused; nothing was changed."""
 
 
+class LayerInvalid(Refused):
+    """The settings file already has errors; `problems` lists them."""
+
+    def __init__(self, problems):
+        super().__init__('; '.join(problems) + '; fix it by hand first')
+        self.problems = problems
+
+
+class Conflict(Refused):
+    """The settings file is not the one the writer read."""
+
+
 def session_of(args):
     return args.session_id or next(
         (os.environ[key] for key in SESSION_ENVS if os.environ.get(key)), None)
@@ -814,42 +842,73 @@ def toml_value(value):
 TABLE_HEADER = re.compile(r'^\s*\[\s*([^\[\]]+?)\s*\]\s*(?:#.*)?$')
 
 
-def edit_action_section(text, action, values):
-    """Set `values` inside [actions.<action>] and leave every other byte of `text` alone."""
+def parses(text):
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return False
+    return True
+
+
+def assignment(key, value):
+    if key in ADVISOR_LISTS:
+        items = ''.join(f'  {toml_value(item)},\n' for item in value)
+        return f'{key} = [\n{items}]\n'
+    return f'{key} = {toml_value(value)}\n'
+
+
+def replace_key(body, index, key, value):
+    """Set or (value None) delete the key assigned at body[index]. The comment closing a one-line
+    assignment stays with a new value; full-line comments inside a multi-line value always stay."""
+    stop = next((stop for stop in range(index + 1, len(body) + 1)
+                 if parses(''.join(body[index:stop]))), index + 1)
+    kept = [line for line in body[index + 1:stop] if line.lstrip().startswith('#')]
+    new = []
+    if value is not None:
+        comment = next((body[index][found.start():].rstrip('\n')
+                        for found in re.finditer('#', body[index])
+                        if parses(body[index][:found.start()])), '') if stop == index + 1 else ''
+        new = [assignment(key, value)]
+        if comment:
+            new = [f'{new[0].rstrip()}  {comment}\n']
+    body[index:stop] = [*kept, *new]
+
+
+def edit_section(text, path, values):
+    """Set `values` inside the table named by `path` and leave every other byte of `text` alone;
+    a value of None deletes the key."""
     lines = text.splitlines(keepends=True)
-    header = re.compile(rf'actions\s*\.\s*(?:{re.escape(action)}|"{re.escape(action)}"|'
-                        rf"'{re.escape(action)}')")
+    header = re.compile(r'\s*\.\s*'.join(
+        rf"""(?:{re.escape(part)}|"{re.escape(part)}"|'{re.escape(part)}')""" for part in path))
     start = next((index for index, line in enumerate(lines)
                   if (match := TABLE_HEADER.match(line)) and header.fullmatch(match[1])), None)
-    assignments = {key: f'{key} = {toml_value(value)}\n' for key, value in values.items()}
     if start is None:
         prefix = text if not text or text.endswith('\n') else text + '\n'
-        return (prefix + ('\n' if prefix.strip() else '') + f'[actions.{action}]\n'
-                + ''.join(assignments.values()))
+        return (prefix + ('\n' if prefix.strip() else '') + f'[{".".join(path)}]\n'
+                + ''.join(assignment(key, value) for key, value in values.items()
+                          if value is not None))
     end = next((index for index in range(start + 1, len(lines))
                 if lines[index].lstrip().startswith('[')), len(lines))
     body = lines[start + 1:end]
-    for key, assignment in assignments.items():
+    for key, value in values.items():
         pattern = re.compile(rf'^\s*(?:{key}|"{key}"|\'{key}\')\s*=')
         index = next((i for i, line in enumerate(body) if pattern.match(line)), None)
-        if index is None:
+        if index is not None:
+            replace_key(body, index, key, value)
+        elif value is not None:
             last = max((i for i, line in enumerate(body)
                         if line.strip() and not line.lstrip().startswith('#')), default=-1)
             if last >= 0 and not body[last].endswith('\n'):
                 body[last] += '\n'  # the file's final line, written without a newline
             elif last < 0 and not lines[start].endswith('\n'):
                 lines[start] += '\n'
-            body.insert(last + 1, assignment)
-            continue
-        stop = index + 1
-        if body[index].split('=', 1)[1].strip().startswith('[') and ']' not in body[index]:
-            while stop < len(body) and ']' not in body[stop - 1]:
-                stop += 1
-        body[index:stop] = [assignment]
+            body.insert(last + 1, assignment(key, value))
     return ''.join(lines[:start + 1] + body + lines[end:])
 
 
-def write_file_layer(path, action, values):
+def write_file_layer(path, edits, *, expected_sha256=None):
+    """Apply {table path: {key: value or None}} to one settings file. (bytes before, bytes after).
+    `expected_sha256` refuses a file other than the one the writer read."""
     try:
         original = path.read_bytes()
     except FileNotFoundError:
@@ -860,17 +919,28 @@ def write_file_layer(path, action, values):
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise Refused(f'{path} is not readable TOML ({error}); fix it by hand first') from None
     if problems := validate(data, str(path)):
-        raise Refused('; '.join(problems) + '; fix it by hand first')
-    updated = edit_action_section(text, action, values)
-    expected = json.loads(json.dumps(data))
-    expected.setdefault('actions', {}).setdefault(action, {}).update(values)
+        raise LayerInvalid(problems)
+    if expected_sha256 is not None and content_hash(original) != expected_sha256:
+        raise Conflict(f'{path} changed after it was read')
+    updated, expected = text, json.loads(json.dumps(data))
+    for table, values in edits.items():
+        updated = edit_section(updated, table, values)
+        target = expected
+        for part in table:
+            target = target.setdefault(part, {})
+        for key, value in values.items():
+            if value is None:
+                target.pop(key, None)
+            else:
+                target[key] = value
     try:
         result = tomllib.loads(updated)
     except tomllib.TOMLDecodeError:
         result = None
     if result != expected or validate(result, str(path)):
-        raise Refused(f'could not edit [actions.{action}] in {path} without touching other '
-                      'settings; edit the file by hand')
+        names = ', '.join(f'[{".".join(table)}]' for table in edits)
+        raise Refused(f'could not edit {names} in {path} without touching other settings; edit '
+                      'the file by hand')
     return original, write_text_atomic(path, updated, expected=original)
 
 
@@ -901,7 +971,7 @@ def grant_locked(args, top, session, target, values):
     if problems:
         raise Refused('; '.join(problems))
     values['source'] = args.source
-    before, written = write_file_layer(target, args.action, values)
+    before, written = write_file_layer(target, {('actions', args.action): values})
     line = ' '.join(grant_words(args.layer, args.action, values))
     try:
         append_record(top, session, round_number,
@@ -1101,12 +1171,15 @@ def report_line(entry):
                 f'{entry.get("self_reported")}；哪裡錯與應該怎樣：{entry.get("clear_expected")}；'
                 f'一張票做得完：{entry.get("single_ticket")}；回到使用者說的樣子：'
                 f'{entry.get("restores_stated")}')
+    if kind == 'board':
+        changes = '、'.join(change_text(change) for change in entry.get('changes', []))
+        return f'- 看板 {entry.get("layer")}：{changes}（來源 board，{entry.get("at")}）→ {entry.get("file")}'
     return f'- {entry.get("grant")}（source {entry.get("source")}）→ {entry.get("file")}'
 
 
 def cmd_report(args):
     top, session = round_owner(args)
-    _, _, _, round_number = current_round(top, session, active=False)
+    _, record, _, round_number = current_round(top, session, active=False)
     path = records_path(top, session, round_number)
     entries = []
     try:
@@ -1119,12 +1192,214 @@ def cmd_report(args):
         except ValueError:
             raise Refused(f'{path} line {number} is not JSON') from None
         entries.append(entry)
+    entries += board_writes_since(top, record)
     out = [f'預先授權紀錄（session {session} 第 {round_number} 輪）']
-    for kind, title in REPORT_GROUPS:
+    for kinds, title in REPORT_GROUPS:
         out += ['', f'### {title}']
-        out += [report_line(entry) for entry in entries if entry.get('kind') == kind] or ['- 無']
+        out += [report_line(entry) for entry in entries if entry.get('kind') in kinds] or ['- 無']
     print('\n'.join(out))
     return 0
+
+
+def board_writes_path():
+    """The log of board writes, in the board's state folder because it spans projects."""
+    state = os.environ.get('LAT_BOARD_STATE_DIR') or Path(
+        os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'lat/board'
+    return Path(state) / BOARD_WRITES
+
+
+def board_writes_since(top, record):
+    """Board writes to this project's and the global file since the round in `record` began; all
+    of them when the record does not say when it began."""
+    path = board_writes_path()
+    files = (str(shared_lat_dir(top) / 'preauth.toml'), str(global_path()))
+    since = parse_time(str(record.get('started_at_utc', '')))
+    found = []
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except FileNotFoundError:
+        return found
+    for number, line in enumerate(lines, 1):
+        try:
+            entry = json.loads(line)
+            moment = parse_time(entry['at'])
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise Refused(f'{path} line {number} is not a board write record') from None
+        if entry.get('file') in files and (since is None or (moment and moment >= since)):
+            found.append(entry)
+    return found
+
+
+def append_board_write(entry):
+    path = board_writes_path()
+    with locked(path.with_name(f'.{path.name}.lock')):
+        try:
+            original = path.read_bytes()
+        except FileNotFoundError:
+            original = None
+        entry = dict(at=datetime.now(timezone.utc).isoformat(), kind='board', **entry)
+        write_text_atomic(path, (original or b'').decode('utf-8')
+                          + json.dumps(entry, ensure_ascii=False) + '\n', expected=original)
+
+
+def change_text(change):
+    head = f'[{change["section"]}] {change["key"]}'
+    return f'{head} 移除' if change['value'] is None else f'{head} = {toml_value(change["value"])}'
+
+
+def board_view(layer):
+    """One layer as the board edits it; no settings when its file has errors."""
+    usable = layer.present and not layer.problems
+    return dict(path=layer.location, exists=layer.present, sha256=layer.sha256,
+                problems=layer.problems,
+                actions={name: section(layer, ('actions', name)) or {} for name in ACTIONS}
+                if usable else {},
+                advisor=(section(layer, ('advisor',)) or {}) if usable else {})
+
+
+def board_settings(workspace=None):
+    """Each layer's own settings and the merged result; the project layer needs a workspace."""
+    layers, problems, top = load_layers(workspace)
+    def origin_of(found):
+        return {key: dict(value=value, layer=name, source=source)
+                for key, (value, name, source) in found.items()}
+
+    views = dict(project=board_view(layers[0]), **{'global': board_view(layers[1])})
+    if top is None:
+        del views['project']
+    return dict(status='ok', layers=views, problems=problems,
+                effective=dict(actions={name: origin_of(action_settings(layers, name))
+                                        for name in ACTIONS},
+                               advisor=origin_of(advisor_settings(layers))),
+                project_advisor=bool(layers[0].present and 'advisor' in layers[0].data))
+
+
+def board_text(value, what):
+    if not isinstance(value, str) or not value.strip():
+        raise Refused(f'{what}不能是空白')
+    return value.strip()
+
+
+def board_list(value, what, *, single_word=False):
+    if not isinstance(value, list):
+        raise Refused(f'{what}必須是清單')
+    items = [board_text(item, what) for item in value]
+    if single_word and any(len(item.split()) > 1 for item in items):
+        raise Refused(f'{what}不能有空白字元')
+    return list(dict.fromkeys(items)) or None
+
+
+def board_section_edits(current, wanted, cleaners, name):
+    """{key: new value or None} for what `wanted` changes from `current`."""
+    if not isinstance(wanted, dict):
+        raise Refused(f'{name} 的改動格式不對')
+    values = {}
+    for key, value in wanted.items():
+        if key not in cleaners:
+            raise Refused(f'{name} 不能設定 {key}')
+        value = None if value is None else cleaners[key](value)
+        if value != current.get(key):
+            values[key] = value
+    return values
+
+
+def board_allow(value):
+    if type(value) is not bool:
+        raise Refused('allow 必須是 true 或 false')
+    return value
+
+
+def board_target(value):
+    if not isinstance(value, str):
+        raise Refused('測試環境必須是文字')
+    return value.strip() or None
+
+
+def board_edits(layer, data, changes):
+    """Turn the board's {actions: {name: {key: value or null}}, advisor: {…}} into edits holding
+    only what differs from the file. It offers only what the board may set on this layer."""
+    if not isinstance(changes, dict) or changes.keys() - {'actions', 'advisor'}:
+        raise Refused('改動格式不對')
+    edits = {}
+    actions = changes.get('actions', {})
+    if not isinstance(actions, dict):
+        raise Refused('改動格式不對')
+    for action, wanted in actions.items():
+        if action not in ACTIONS:
+            raise Refused(f'{action} 不能預先授權')
+        cleaners = dict(allow=board_allow)
+        if action in BRANCH_ACTIONS:
+            cleaners['branches'] = lambda value: board_list(value, '分支名稱', single_word=True)
+        if action == 'deploy-test' and layer == 'project':
+            cleaners['target'] = board_target
+        current = data.get('actions', {}).get(action, {})
+        if values := board_section_edits(current, wanted, cleaners, action):
+            edits[('actions', action)] = values
+    if 'advisor' in changes:
+        if layer != 'global':
+            raise Refused('參謀範圍只能在全域設定修改')
+        cleaners = {key: lambda value: board_list(value, '參謀範圍') for key in ADVISOR_LISTS}
+        if values := board_section_edits(data.get('advisor', {}), changes['advisor'], cleaners,
+                                         'advisor'):
+            edits[('advisor',)] = values
+    return edits
+
+
+def board_write(layer, workspace, expected_sha256, changes):
+    """Write one layer for the board, as one JSON-ready result. `status` is ok, conflict (the file
+    is not the one read), invalid (refused; nothing changed), log_failed (no record could be
+    written, so the file was restored) or restore_failed (nor could it be restored)."""
+    if layer == 'global':
+        target = global_path()
+    else:
+        top = git(workspace, 'rev-parse', '--show-toplevel') if workspace else None
+        if not top:
+            return dict(status='invalid', reason=f'{workspace} 不在 Git 專案裡', problems=[])
+        target = shared_lat_dir(Path(top)) / 'preauth.toml'
+    try:
+        with locked(target.with_name(f'.{target.name}.lock')):
+            result = board_write_locked(layer, target, expected_sha256, changes)
+    except LayerInvalid as error:
+        return dict(status='invalid', reason='設定檔有錯，沒有寫入，請手動修好再重新載入',
+                    problems=error.problems)
+    except Conflict:
+        return dict(status='conflict', reason='設定檔已被改過，沒有寫入，請重新載入', problems=[])
+    except Refused as error:
+        return dict(status='invalid', reason=f'沒有寫入：{error}', problems=[])
+    return dict(result, settings=board_settings(workspace)) if result['status'] == 'ok' else result
+
+
+def board_write_locked(layer, target, expected_sha256, changes):
+    loaded, problems = file_layer(layer, target)
+    if problems:
+        raise LayerInvalid(problems)
+    if loaded.sha256 != expected_sha256:
+        raise Conflict(f'{target} changed after it was read')
+    edits = board_edits(layer, loaded.data, changes)
+    listed = [dict(section='.'.join(table), key=key, value=value)
+              for table, values in edits.items() for key, value in values.items()]
+    if not edits:
+        return dict(status='ok', changes=[])
+    stamp = f'board:{datetime.now().astimezone().isoformat(timespec="seconds")}'
+    before, written = write_file_layer(
+        target, {table: dict(values, source=stamp) for table, values in edits.items()},
+        expected_sha256=expected_sha256)
+    try:
+        append_board_write(dict(layer=layer, file=str(target), changes=listed, source=stamp))
+    except (OSError, ValueError) as error:
+        # A write the report cannot list must not stay in effect.
+        try:
+            restore(target, before, written)
+        except (OSError, ValueError) as undo:
+            try:
+                current = target.read_text(encoding='utf-8')
+            except (OSError, UnicodeDecodeError) as unread:
+                current = f'（讀不到：{unread}）'
+            return dict(status='restore_failed', current=current,
+                        to_remove=[change_text(change) for change in listed],
+                        reason=f'紀錄寫不進去（{error}），也無法還原（{undo}），請手動改回 {target}')
+        return dict(status='log_failed', reason=f'紀錄寫不進去（{error}），設定已還原')
+    return dict(status='ok', changes=listed)
 
 
 def build_parser():

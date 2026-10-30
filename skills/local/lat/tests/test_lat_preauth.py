@@ -8,11 +8,14 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
+import unittest.mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-preauth.py'
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
 INSTALLER = Path(__file__).resolve().parents[4] / 'scripts/install-skills.py'
+PANEL = Path(__file__).resolve().parents[1] / 'herdr-panel/lat_panel.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
 SUITES = [{'command': 'uv run pytest', 'cwd': '.'}, {'command': 'bun test', 'cwd': 'web'}]
 
@@ -1241,6 +1244,256 @@ class RecordTests(WriteCase):
         self.assertNotIn('舊答覆', out)
         self.session(status='ended', history=1)
         self.assertIn('abc123', self.run_tool('report').stdout)
+
+
+GLOBAL_FILE = """# my notes
+version = 1
+
+[actions.merge]
+allow = true  # keep merging
+branches = ["dev"]
+source = "D-1"
+
+# pushing
+[actions.push]
+allow = true
+branches = [
+  "dev",  # the one
+  # and the other
+  "rel[1]",
+]
+source = "D-1"
+
+# advisor scope
+[advisor]
+extended = true
+source = "D-1"
+may_settle = [
+  "details [of] the spec",
+]
+"""
+
+
+class BoardTests(PreauthCase):
+    """The board's `board preauth-read` and `board preauth-write`, run the way the board does."""
+
+    def setUp(self):
+        super().setUp()
+        self.state = self.root / 'state' / 'lat' / 'board'
+
+    def panel_env(self):
+        environment = {key: value for key, value in os.environ.items()
+                       if key != 'LAT_BOARD_STATE_DIR'}
+        environment.update(HOME=str(self.root / 'home'), XDG_CONFIG_HOME=str(self.config),
+                           GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                           XDG_STATE_HOME=str(self.root / 'state'))
+        return environment
+
+    def panel(self, *args):
+        result = subprocess.run([sys.executable, str(PANEL), 'board', *args], capture_output=True,
+                                text=True, cwd=self.repo, env=self.panel_env(), timeout=60)
+        return json.loads(result.stdout), result.returncode
+
+    def read(self, workspace=None):
+        return self.panel('preauth-read', *([f'--workspace={workspace}'] if workspace else []))[0]
+
+    def write_layer(self, changes, layer='global', sha=None, workspace=None):
+        if sha is None:
+            sha = self.read(workspace or self.repo)['layers'][layer]['sha256']
+        return self.panel('preauth-write', f'--layer={layer}', f'--expected-sha256={sha}',
+                          f'--changes={json.dumps(changes)}',
+                          *([f'--workspace={workspace or self.repo}'] if layer == 'project' else []))
+
+    def log(self):
+        path = self.state / 'preauth-writes.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_changing_one_key_leaves_the_rest_of_the_file_alone(self):
+        self.write(self.global_file, GLOBAL_FILE)
+        result, code = self.write_layer({'actions': {'push': {'allow': False}}})
+        self.assertEqual((result['status'], code), ('ok', 0), result)
+        text = self.global_file.read_text()
+        source = tomllib.loads(text)['actions']['push']['source']
+        self.assertRegex(source, r'^board:\d{4}-.*[+-]\d\d:\d\d$')
+        pushing, rest = GLOBAL_FILE.split('[actions.push]\n')
+        changed = rest.replace('allow = true', 'allow = false', 1).replace('"D-1"', f'"{source}"', 1)
+        self.assertEqual(text, f'{pushing}[actions.push]\n{changed}')
+        verdict = self.check('push', '--branch', 'dev')
+        self.assertIn('allow-false', verdict['reason_kinds'])
+        self.assertEqual(self.log()[0]['changes'],
+                         [{'section': 'actions.push', 'key': 'allow', 'value': False}])
+        self.assertEqual(result['settings']['layers']['global']['actions']['push']['allow'], False)
+
+    def test_a_kept_key_keeps_its_comment_and_new_list_values_replace_a_multi_line_one(self):
+        self.write(self.global_file, GLOBAL_FILE)
+        self.assertEqual(self.write_layer({'actions': {
+            'merge': {'allow': False},
+            'push': {'branches': ['dev', 'next']}}})[0]['status'], 'ok')
+        text = self.global_file.read_text()
+        self.assertIn('allow = false  # keep merging\n', text)
+        self.assertIn('branches = ["dev", "next"]\n', text)
+        self.assertIn('# and the other\n', text)
+        self.assertNotIn('rel[1]', text)
+
+    def test_inherit_and_an_empty_list_delete_the_key(self):
+        self.write(self.global_file, GLOBAL_FILE)
+        result, _ = self.write_layer({'actions': {'push': {'allow': None, 'branches': []}}})
+        self.assertEqual(result['status'], 'ok', result)
+        data = tomllib.loads(self.global_file.read_text())
+        self.assertEqual(set(data['actions']['push']), {'source'})
+        self.assertEqual(self.log()[0]['changes'][1]['value'], None)
+
+    def test_a_new_may_settle_entry_shows_and_keeps_the_others(self):
+        self.write(self.global_file, GLOBAL_FILE)
+        result, _ = self.write_layer({'advisor': {'may_settle': ['details [of] the spec', '小範圍 "補票"']}})
+        self.assertEqual(result['status'], 'ok', result)
+        data = tomllib.loads(self.global_file.read_text())
+        self.assertEqual(data['advisor']['may_settle'], ['details [of] the spec', '小範圍 "補票"'])
+        self.assertIs(data['advisor']['extended'], True)
+        self.assertIn('小範圍', self.run_tool('show').stdout)
+        self.assertIn('# advisor scope\n[advisor]\n', self.global_file.read_text())
+
+    def test_the_first_write_creates_the_file(self):
+        result, _ = self.write_layer({'actions': {'deploy-prod': {'allow': False}},
+                                      'advisor': {'must_ask': ['花錢']}})
+        self.assertEqual(result['status'], 'ok', result)
+        data = tomllib.loads(self.global_file.read_text())
+        self.assertIs(data['actions']['deploy-prod']['allow'], False)
+        self.assertEqual(data['advisor']['must_ask'], ['花錢'])
+
+    def test_nothing_changed_writes_nothing(self):
+        self.write(self.global_file, GLOBAL_FILE)
+        result, code = self.write_layer({'actions': {'push': {'allow': True}}})
+        self.assertEqual((result['status'], result['changes'], code), ('ok', [], 0))
+        self.assertEqual(self.global_file.read_text(), GLOBAL_FILE)
+        self.assertEqual(self.log(), [])
+
+    def test_a_second_writer_from_an_older_read_is_refused(self):
+        self.write(self.global_file, GLOBAL_FILE)
+        stale = self.read()['layers']['global']['sha256']
+        self.assertEqual(self.write_layer({'actions': {'push': {'allow': False}}}, sha=stale)[0]['status'], 'ok')
+        after = self.global_file.read_text()
+        result, code = self.write_layer({'actions': {'merge': {'allow': False}}}, sha=stale)
+        self.assertEqual((result['status'], code), ('conflict', 1))
+        self.assertEqual(self.global_file.read_text(), after)
+        self.assertEqual(len(self.log()), 1)
+
+    def test_a_broken_file_is_shown_and_refused_unchanged(self):
+        broken = GLOBAL_FILE + 'surprise = 1\n'
+        self.write(self.global_file, broken)
+        view = self.read()['layers']['global']
+        self.assertIn('unknown key `surprise`', view['problems'][0])
+        self.assertEqual((view['actions'], view['advisor']), ({}, {}))
+        result, code = self.write_layer({'actions': {'push': {'allow': False}}}, sha=view['sha256'])
+        self.assertEqual((result['status'], code), ('invalid', 1))
+        self.assertIn('unknown key `surprise`', result['problems'][0])
+        self.assertEqual(self.global_file.read_text(), broken)
+        self.write(self.global_file, 'not toml [')
+        self.assertEqual(self.write_layer({}, sha=view['sha256'])[0]['status'], 'invalid')
+        self.assertEqual(self.global_file.read_text(), 'not toml [')
+
+    def test_a_layout_the_editor_cannot_keep_is_refused_unchanged(self):
+        inline = 'actions.push.allow = true\n'
+        self.write(self.global_file, inline)
+        result, _ = self.write_layer({'actions': {'push': {'allow': False}}})
+        self.assertEqual(result['status'], 'invalid', result)
+        self.assertEqual(self.global_file.read_text(), inline)
+
+    def test_only_what_the_layer_offers_can_be_written(self):
+        for changes, layer in (({'actions': {'deploy-test': {'target': 'stage'}}}, 'global'),
+                               ({'actions': {'push': {'target': 'stage'}}}, 'project'),
+                               ({'actions': {'deploy-prod': {'branches': ['dev']}}}, 'global'),
+                               ({'advisor': {'may_settle': ['x']}}, 'project'),
+                               ({'advisor': {'extended': False}}, 'global'),
+                               ({'actions': {'push': {'source': 'me'}}}, 'global'),
+                               ({'actions': {'new-ticket': {'allow': True}}}, 'global'),
+                               ({'actions': {'spend': {'allow': True}}}, 'project'),
+                               ({'actions': {'push': {'allow': 'yes'}}}, 'global'),
+                               ({'actions': {'push': {'branches': ['a b']}}}, 'global'),
+                               ({'actions': {'push': {'branches': ['  ']}}}, 'global'),
+                               ({'advisor': {'must_ask': 'x'}}, 'global'),
+                               ({'version': 1}, 'global')):
+            result, code = self.write_layer(changes, layer=layer)
+            self.assertEqual((result['status'], code), ('invalid', 1), changes)
+        self.assertFalse(self.global_file.exists())
+        self.assertFalse(self.project_file.exists())
+
+    def test_log_failure_restores_the_file(self):
+        self.write(self.global_file, GLOBAL_FILE)
+        self.state.parent.mkdir(parents=True)
+        self.state.write_text('not a folder')
+        result, code = self.write_layer({'actions': {'push': {'allow': False}}})
+        self.assertEqual((result['status'], code), ('log_failed', 1), result)
+        self.assertEqual(self.global_file.read_text(), GLOBAL_FILE)
+
+    def test_log_failure_on_a_new_file_removes_it(self):
+        self.state.parent.mkdir(parents=True)
+        self.state.write_text('not a folder')
+        self.assertEqual(self.write_layer({'actions': {'push': {'allow': False}}})[0]['status'], 'log_failed')
+        self.assertFalse(self.global_file.exists())
+
+    def test_when_the_restore_fails_too_the_result_says_what_is_in_the_file(self):
+        self.write(self.global_file, GLOBAL_FILE)
+        spec = importlib.util.spec_from_file_location('lat_preauth_restore', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        def fail_log(entry):
+            self.global_file.write_text(self.global_file.read_text() + '# edited meanwhile\n')
+            raise OSError('disk full')
+
+        module.append_board_write = fail_log
+        with unittest.mock.patch.dict(os.environ, self.panel_env()):
+            sha = module.board_settings()['layers']['global']['sha256']
+            result = module.board_write('global', None, sha, {'actions': {'push': {'allow': False}}})
+        self.assertEqual(result['status'], 'restore_failed')
+        self.assertIn('allow = false', result['current'])
+        self.assertIn('edited meanwhile', result['current'])
+        self.assertEqual(result['to_remove'], ['[actions.push] allow = false'])
+
+    def test_report_lists_this_rounds_writes_to_this_project_and_global(self):
+        self.write(self.state / 'preauth-writes.jsonl', ''.join(json.dumps(entry) + '\n' for entry in (
+            dict(at='2026-01-01T00:00:00+00:00', kind='board', layer='global', source='board:x',
+                 file=str(self.global_file), changes=[{'section': 'actions.merge', 'key': 'allow', 'value': True}]),
+            dict(at='2026-06-01T00:00:00+00:00', kind='board', layer='project', source='board:x',
+                 file=str(self.root / 'other' / '.lat' / 'preauth.toml'),
+                 changes=[{'section': 'actions.deploy-prod', 'key': 'allow', 'value': True}]))))
+        self.session(started_at_utc='2026-03-01T00:00:00+00:00')
+        self.write(self.global_file, GLOBAL_FILE)
+        self.assertEqual(self.write_layer({'actions': {'push': {'allow': False}}})[0]['status'], 'ok')
+        self.assertEqual(self.write_layer({'actions': {'push': {'allow': True}}}, layer='project')[0]['status'], 'ok')
+        result = self.run_tool('report')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        writes = result.stdout.split('### 設定寫入')[1]
+        self.assertIn(f'看板 global：[actions.push] allow = false', writes)
+        self.assertIn(f'→ {self.global_file}', writes)
+        self.assertIn(f'看板 project：[actions.push] allow = true', writes)
+        self.assertNotIn('actions.merge', writes)
+        self.assertNotIn('deploy-prod', writes)
+
+    def test_the_project_layer_from_a_worktree_is_the_main_checkouts_file(self):
+        self.write(self.project_file, '[actions.deploy-test]\nallow = true\ntarget = "stage"\n')
+        self.write(self.global_file, '[actions.deploy-test]\nallow = false\n')
+        worktree = self.root / 'tree'
+        git(self.repo, 'worktree', 'add', '-q', str(worktree), '-b', 'side')
+        result, _ = self.write_layer({'actions': {'deploy-test': {'allow': None, 'target': ''}}},
+                                     layer='project', workspace=worktree)
+        self.assertEqual(result['status'], 'ok', result)
+        self.assertEqual(set(tomllib.loads(self.project_file.read_text())['actions']['deploy-test']), {'source'})
+        effective = result['settings']['effective']['actions']['deploy-test']
+        self.assertEqual((effective['allow']['value'], effective['allow']['layer']), (False, 'global'))
+        self.assertNotIn('target', effective)
+
+    def test_read_gives_each_layer_and_the_merged_result(self):
+        self.write(self.global_file, GLOBAL_FILE)
+        self.write(self.project_file, '[actions.push]\nallow = false\n[advisor]\nmust_ask = ["x"]\n')
+        view = self.read(self.repo)
+        self.assertEqual(view['effective']['actions']['push']['allow']['layer'], 'project')
+        self.assertEqual(view['effective']['actions']['push']['branches']['layer'], 'global')
+        self.assertEqual(view['effective']['advisor']['may_settle']['layer'], 'global')
+        self.assertNotIn('must_ask', view['effective']['advisor'])
+        self.assertIs(view['project_advisor'], True)
+        self.assertEqual(self.read()['layers'].keys(), {'global'})
 
 
 class RemovedOptionTests(WriteCase):

@@ -86,6 +86,8 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   board launch-args --session-id ID
   board ledger [--workspace ROOT --session-id ID]... [--seconds N]
   board prune-reports --reports-dir DIR --now TIME --session-id ID...
+  board preauth-read [--workspace ROOT]
+  board preauth-write --layer (global|project) [--workspace ROOT] --expected-sha256 HEX --changes JSON
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
@@ -372,10 +374,17 @@ def _run_board(args):
                 raise ValueError("--now must include a time zone")
             deleted, failed = prune_reports(args.reports_dir, now, args.session_id)
             result, code = {"status": "ok", "deleted": deleted, "failed": failed}, 0
+        elif args.board_command == "preauth-read":
+            result, code = _lat_preauth().board_settings(args.workspace), 0
+        elif args.board_command == "preauth-write":
+            result = _lat_preauth().board_write(
+                args.layer, args.workspace, args.expected_sha256, json.loads(args.changes),
+            )
+            code = 0 if result["status"] == "ok" else 1
         else:
             result = notify_controller(args.questions)
             code = 1 if result["status"] == "failed" else 0
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         result, code = {"status": "error", "reason": str(error)}, 1
     print(json.dumps(result, ensure_ascii=False))
     return code
@@ -491,7 +500,22 @@ def _build_parser():
     prune.add_argument("--reports-dir", required=True, type=Path)
     prune.add_argument("--now", required=True)
     prune.add_argument("--session-id", required=True, action="append")
+    preauth_read = board_commands.add_parser("preauth-read")
+    preauth_read.add_argument("--workspace", type=Path)
+    preauth_write = board_commands.add_parser("preauth-write")
+    preauth_write.add_argument("--layer", required=True, choices=("global", "project"))
+    preauth_write.add_argument("--workspace", type=Path)
+    preauth_write.add_argument("--expected-sha256", required=True)
+    preauth_write.add_argument("--changes", required=True)
     return parser
+
+
+def _lat_preauth():
+    path = Path(__file__).resolve().parents[1] / "scripts/lat-preauth.py"
+    spec = importlib.util.spec_from_file_location("lat_preauth", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _lat_session():
