@@ -1378,12 +1378,13 @@ class Panel(App):
         self.refresh_view()
 
     def open_visual(self, draft):
-        """Open the demo link under the focus; where that is impossible, show it to copy."""
+        """Open the demo link under the focus; where that is impossible, copy it and show it."""
         if self.focus[1] >= len(draft.visuals):
             return
         url = draft.visuals[self.focus[1]]
         if not open_in_browser(url):
-            self.set_notice("action", f"這裡開不了瀏覽器，請自行開啟：{url}")
+            self.copy_to_clipboard(url)
+            self.set_notice("action", f"已複製網址，貼到瀏覽器開啟：{url}")
 
     def select_option(self, draft, index):
         """Select one option; 其他 replaces the answer only once text is typed."""
