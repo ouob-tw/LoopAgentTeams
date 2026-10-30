@@ -897,8 +897,9 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertNotIn('match', stored)
 
     def test_multi_wait_moving_off_a_decision_past_the_deadline_restarts_it(self):
+        # A deadline already moved once must not stretch the next restart.
         mixed = {'target': 'D1', 'kind': 'decision', 'match': 'exact', 'declared_at': 0,
-                 'deadline_at': 300,
+                 'deadline_at': 900, 'wait_seconds': 300,
                  'targets': [{'target': 'D1', 'kind': 'decision', 'match': 'exact'},
                              {'target': 'two-teho', 'kind': 'agent'}]}
         before = time.time()
@@ -906,6 +907,7 @@ class WatchDecisionTests(unittest.TestCase):
                                             decisions_text={'D1': '- status: approved\n'})
         self.assertEqual(stored['target'], 'two-teho')
         self.assertGreaterEqual(stored['deadline_at'], before + 300)
+        self.assertLess(stored['deadline_at'], before + 330)
 
     def test_multi_wait_moving_between_agents_keeps_the_deadline(self):
         _, stored = self.release_multi_wait({'declared_at': 0, 'deadline_at': 300},
@@ -2438,6 +2440,7 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
             {'target': 'HELP', 'kind': 'decision', 'match': 'exact'},
             {'target': 'reviewer', 'kind': 'agent'}])
         self.assertEqual(saved['deadline_at'], saved['declared_at'] + 300)
+        self.assertEqual(saved['wait_seconds'], 300)
 
     def test_comma_list_rejects_a_resolved_decision_or_self_anywhere_and_keeps_the_old_wait(self):
         decisions = self.wait_session()

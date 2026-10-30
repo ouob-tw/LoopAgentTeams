@@ -2094,7 +2094,7 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
             # Time spent on a target with no deadline must not expire the next one on arrival.
             if (deadline is not None and time.time() >= deadline
                     and (declaration.get('kind') != 'agent' or target == orchestrator)):
-                updated['deadline_at'] = time.time() + deadline - declaration['declared_at']
+                updated['deadline_at'] = time.time() + declaration['wait_seconds']
             write_wait(wait_path(workspace, agent), updated, expected=expected)
     else:
         reason = wait_release_reason(declaration, participant,
@@ -3589,6 +3589,8 @@ def declare_wait(args):
         raise ValueError('--minutes is not allowed when waiting for your owning orchestrator')
     if not set(agent_targets) <= owner_names:
         declaration['deadline_at'] = declaration['declared_at'] + (args.minutes or WAIT_DEFAULT_MINUTES) * 60
+        if len(entries) > 1:
+            declaration['wait_seconds'] = (args.minutes or WAIT_DEFAULT_MINUTES) * 60
     waits_for_orchestrator = declaration['kind'] == 'agent' and declaration['target'] in owner_names
     path = wait_path(workspace, agent)
     previous, wait_original = read_wait(path)
