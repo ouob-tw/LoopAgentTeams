@@ -1,0 +1,3 @@
+{"map": [
+  {"paths": ["board/src/lib/server/send.ts"], "tests": ["board/tests/server/closed.test.ts"]}
+]}
