@@ -884,6 +884,32 @@ def normalize_command(argv):
     return shlex.join(argv)
 
 
+@functools.lru_cache(maxsize=None)
+def sh_has_pipefail():
+    return subprocess.run(['/bin/sh', '-c', 'set -o pipefail'],
+                          capture_output=True).returncode == 0
+
+
+def shell_argv(command):
+    """The argv that runs a shell string. A command with a pipe runs with pipefail, so a
+    failing earlier stage is the run's failure instead of the last stage's status hiding it;
+    one without a pipe runs under plain /bin/sh as always. /bin/sh is dash on some hosts and
+    has no pipefail there, so bash in POSIX mode (the closest to sh) stands in for it. Any `|`
+    in the text counts, quoted or not. pipefail alone changes nothing without a real
+    pipeline, but where bash stands in for dash a command that relies on dash-only
+    behaviour (e.g. `echo -e`) can behave differently. The fingerprint is made from the
+    command text alone, so it does not change."""
+    if '|' not in command:
+        return ['/bin/sh', '-c', command]
+    if sh_has_pipefail():
+        return ['/bin/sh', '-o', 'pipefail', '-c', command]
+    bash = shutil.which('bash')
+    if bash:
+        return [bash, '-o', 'posix', '-o', 'pipefail', '-c', command]
+    raise OSError('the command has a pipe, and neither /bin/sh nor bash supports pipefail, '
+                  'so a failing earlier stage could not be told from a pass')
+
+
 def include_patterns(registry):
     return [p for p in registry.get('fingerprint_include') or [] if isinstance(p, str)]
 
@@ -1816,15 +1842,15 @@ class Gate:
             end_session(self.child.pid, self.child)
 
     def execute(self, info):
-        argv = ['/bin/sh', '-c', self.argv[0]] if len(self.argv) == 1 else self.argv
         started, start_iso = time.monotonic(), now_iso()
         # The reaper logs whole seconds; a kill in the run's first second must still count.
         started_at = datetime.now(timezone.utc).replace(microsecond=0)
         try:
+            argv = shell_argv(self.argv[0]) if len(self.argv) == 1 else self.argv
             child = self._start(argv, True) if self._scope_ready() else None
             child = child or self._start(argv, False)
         except OSError as exc:
-            warn(f'could not start /bin/sh: {exc}')
+            warn(f'could not start the command: {exc}')
             return 127
         tail = Tail()
         pumps = [threading.Thread(target=pump, args=(stream, out, tail), daemon=True)
