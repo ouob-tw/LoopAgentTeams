@@ -582,6 +582,7 @@ class LedgerCardTests(LedgerCase):
         text = self.run_script('card', '--help').stdout
         for stage in ('impl', 'qa-draft', 'spec-review', 'implement'):
             self.assertIn(stage, text)
+        self.assertIn('absolute path of the local git checkout', ' '.join(text.split()))
 
     def test_repo_given_as_owner_name_is_refused_with_the_absolute_path_hint(self):
         result = self.run_script(*self.card_args(
@@ -591,7 +592,6 @@ class LedgerCardTests(LedgerCase):
         self.assertIn('absolute path of the local git checkout', result.stderr)
         self.assertEqual(list(self.tasks.iterdir()), [])
         self.assertEqual(self.items(), [])
-        self.assertIn('checkout', ' '.join(self.run_script('card', '--help').stdout.split()))
 
     def test_card_without_ledger_options_is_unchanged(self):
         card = self.make_card()

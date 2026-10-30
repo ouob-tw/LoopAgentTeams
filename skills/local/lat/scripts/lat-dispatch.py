@@ -238,7 +238,8 @@ def run_ledger(args, command, *rest):
 
 def open_ledger_row(args, ledger, orchestrator, agent, card):
     base = ['--ledger', ledger['path'], '--by', orchestrator]
-    add = ['--ticket', args.ticket, '--stage', STAGE_ALIASES.get(args.stage, args.stage), '--deadline', args.deadline]
+    stage = STAGE_ALIASES.get(args.stage, args.stage)
+    add = ['--ticket', args.ticket, '--stage', stage, '--deadline', args.deadline]
     for evidence in args.evidence:
         add += ['--evidence', evidence]
     if args.depends:
