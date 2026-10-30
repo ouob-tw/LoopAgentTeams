@@ -3,6 +3,7 @@
 Run with Textual available:
   uv run --no-project --with textual==8.2.8 python -m unittest discover -s "$lat_dir/tests"
 """
+import base64
 import fcntl
 import json
 import os
@@ -159,6 +160,8 @@ class LayoutTests(SelectorTestCase):
                 await pilot.press("enter")
                 await pilot.pause()
                 opened.assert_called_once_with(self.VISUAL)
+                self.assertEqual(app.clipboard, "")
+                self.assertEqual(str(app.query_one("#status").render()), "")
                 # Opening a link answers nothing.
                 self.assertEqual(app.current.selected, [])
                 first = next(first for key, first, _ in app.units if key[0] == "visual")
@@ -174,7 +177,9 @@ class LayoutTests(SelectorTestCase):
                 await self.focus_visual(pilot, app)
                 await pilot.press("enter")
                 await pilot.pause()
-                self.assertIn(self.VISUAL, str(app.query_one("#status").render()))
+                self.assertEqual(str(app.query_one("#status").render()),
+                                 f"已複製網址，貼到瀏覽器開啟：{self.VISUAL}")
+                self.assertEqual(app.clipboard, self.VISUAL)
 
     async def test_question_without_a_link_shows_no_button(self):
         app = self.make_app()
@@ -1714,7 +1719,7 @@ class TerminalMouseTests(SelectorTestCase):
             os.environ, LAT_PANEL_FILE=str(self.questions), LAT_PANEL_SESSION_ID="s-a",
             LAT_PANEL_HERDR_WORKSPACE="ws-a", TERM="xterm-256color",
         )
-        for name in ("LAT_PANEL_CHOICES", "LAT_PANEL_ERROR"):
+        for name in ("LAT_PANEL_CHOICES", "LAT_PANEL_ERROR", "DISPLAY", "WAYLAND_DISPLAY"):
             environment.pop(name, None)
         pid, terminal = pty.fork()
         if pid == 0:
@@ -1774,6 +1779,18 @@ class TerminalMouseTests(SelectorTestCase):
         output = self.read_until(terminal, "其他（自己輸入）".encode(), output)
         self.assertIn("其他（自己輸入）".encode(), output)
         self.assertNotIn(b"\x1b[?1016h", output)
+
+    @unittest.skipIf(sys.platform == "darwin", "a display is always available there")
+    def test_enter_on_a_demo_link_writes_it_to_the_clipboard_without_a_display(self):
+        url = "http://demo.example/board?variant=b"
+        self.questions.write_text(SINGLE.replace("\n答覆：", f"\n【示意】{url}\n\n答覆：", 1))
+        terminal = self.run_panel(100, 30)
+        output = self.read_until(terminal, url.encode())
+        for key in (b"\x1b[B", b"\x1b[B", b"\r"):
+            os.write(terminal, key)
+            output += self.read(terminal, 0.5)
+        sequence = b"\x1b]52;c;" + base64.b64encode(url.encode()) + b"\x07"
+        self.assertIn(sequence, self.read_until(terminal, sequence, output))
 
     def test_growing_the_terminal_still_redraws_without_in_band_resize(self):
         terminal = self.run_panel(40, 12)
