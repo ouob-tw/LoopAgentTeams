@@ -6940,10 +6940,13 @@ esac
 
     def ledger(self, command, *args, at=0):
         when = datetime.fromtimestamp(self.START + at, timezone.utc).isoformat()
+        listing = self.root / 'ledger-hcom-list.json'
+        listing.write_text(json.dumps([{'name': name} for name in ('orch', 'worker', 'worker2')]))
         result = subprocess.run(
             [sys.executable, str(SCRIPT.with_name('lat-ledger.py')), command,
              '--ledger', str(self.ledger_path), '--by', 'orch', *map(str, args)],
-            text=True, capture_output=True, env=dict(self.env, LAT_LEDGER_NOW=when))
+            text=True, capture_output=True,
+            env=dict(self.env, LAT_LEDGER_NOW=when, LAT_LEDGER_HCOM_LIST=str(listing)))
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def assign(self, deadline='+2h'):

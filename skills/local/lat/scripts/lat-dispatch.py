@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Dispatch helper for the LAT orchestrator (stdlib only).
 
-`card` creates the task card for an HCOM tag that was just launched; the agent's full name
-comes from `hcom list --json`. With --native, the card is for a Claude built-in agent: the
-name comes from --agent, HCOM is not consulted and the card is marked `native agent：是`.
+`card` creates the task card for an HCOM tag that was just launched; the agent's and the
+orchestrator's full names come from `hcom list --json`. With --native, the card is for a Claude
+built-in agent: its name comes from --agent as given and the card is marked `native agent：是`.
 `brief` turns a four-section Markdown file plus that card into a ready-to-send task brief and
 prints the `hcom send` command; its `--name` values are the base names HCOM records for tagged
 senders. It never launches agents and never sends anything. Hand-written cards and briefs stay
@@ -25,7 +25,7 @@ import shlex
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import hcom_send_name, run_cli, write_text_atomic
+from _lat_common import full_hcom_name, hcom_send_name, run_cli, write_text_atomic
 
 LAT_DIR = Path(__file__).resolve().parents[1]
 SECTIONS = ('目標與完成條件', '範圍與不能碰', '其他 Agent 與分工', '現場動作額度')
@@ -112,16 +112,16 @@ def read_hcom_list():
     return value
 
 
-def agent_for_tag(tag, agent=None):
-    names = sorted({item['name'] for item in read_hcom_list()
+def agent_for_tag(items, tag, agent=None):
+    names = sorted({item['name'] for item in items
                     if item.get('tag') == tag and isinstance(item.get('name'), str)})
     if not names:
         raise Failure(f'no HCOM agent carries tag {tag!r}; launch it first, then rerun')
     if agent is not None:
-        if agent not in names:
-            raise Failure(f'--agent {agent!r} is not among the agents carrying tag {tag!r}: '
-                          f'{", ".join(names)}')
-        return agent
+        try:
+            return full_hcom_name(names, agent, '--agent')
+        except ValueError as error:
+            raise Failure(f'{error} (agents carrying tag {tag!r})') from None
     if len(names) > 1:
         raise Failure(f'tag {tag!r} is not unique: {", ".join(names)}; use a tag of its own or pass --agent')
     return names[0]
@@ -150,12 +150,13 @@ def make_card(args):
     if not tasks.is_dir():
         raise Failure(f'task-card directory does not exist: {tasks}')
     ledger = ledger_request(args)
-    if args.native:
-        if not args.agent or not CARD_AGENT.fullmatch(args.agent):
-            raise Failure('--native needs --agent with the name the orchestrator gave the agent')
-        agent = args.agent
-    else:
-        agent = agent_for_tag(tag, args.agent)
+    if args.native and (not args.agent or not CARD_AGENT.fullmatch(args.agent)):
+        raise Failure('--native needs --agent with the name the orchestrator gave the agent')
+    items = read_hcom_list()
+    agent = args.agent if args.native else agent_for_tag(items, tag, args.agent)
+    orchestrator = full_hcom_name(
+        {item['name'] for item in items if isinstance(item.get('name'), str)},
+        single_line('--orchestrator', args.orchestrator), '--orchestrator')
     day = args.date or date.today().isoformat()
     options = {
         'model': args.model, 'branch': args.branch, 'worktree': args.worktree,
@@ -166,7 +167,7 @@ def make_card(args):
     }
     values = {name: single_line(name, value) for name, value in options.items()}
     fields = [
-        ('agent', agent), ('orchestrator', single_line('--orchestrator', args.orchestrator)),
+        ('agent', agent), ('orchestrator', orchestrator),
         *([('native agent', '是')] if args.native else []),
         ('model', values['model']), ('branch', values['branch']),
         ('worktree', values['worktree']), ('base commit', values['base commit']),
@@ -245,7 +246,8 @@ def open_ledger_row(args, ledger, orchestrator, agent, card):
     if not row.isdigit():
         raise Failure(f'lat-ledger add printed an unexpected row number: {row!r}')
     try:
-        run_ledger(args, 'assign', row, *base, '--agent', agent, '--card', str(card))
+        run_ledger(args, 'assign', row, *base, '--agent', agent, '--card', str(card),
+                   *(['--native'] if args.native else []))
     except Failure as error:
         raise Failure(f'{error}; ledger row {row} was added but not assigned, no card made') from error
     return row
@@ -436,13 +438,15 @@ def build_parser():
     commands = parser.add_subparsers(dest='command', required=True)
     card = commands.add_parser('card', help='Create the task card for a launched HCOM tag')
     card.add_argument('--tag', required=True)
-    card.add_argument('--agent', help='full HCOM name; picks one agent when the tag matches several')
+    card.add_argument('--agent', help='HCOM name (full or base); picks one agent when the tag '
+                      'matches several')
     card.add_argument('--native', action='store_true',
                       help='Claude built-in agent without an HCOM name: --agent is its name, '
-                           'HCOM is not consulted')
+                           'kept as given')
     card.add_argument('--tasks', type=Path, required=True,
                       help='shared task-card directory (<workspace>/.lat/tasks)')
-    card.add_argument('--orchestrator', required=True, help='HCOM name of the orchestrator')
+    card.add_argument('--orchestrator', required=True,
+                      help='HCOM name of the orchestrator, written as the full name')
     card.add_argument('--live-actions', required=True)
     card.add_argument('--preflight', required=True)
     card.add_argument('--date', help='YYYY-MM-DD; default today')

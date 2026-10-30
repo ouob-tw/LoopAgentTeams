@@ -22,8 +22,9 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import DecisionStatus, read_decision_status
-from _lat_common import (process_starttime, run_cli, shared_lat_dir, watcher_process_matches,
-                         write_json_atomic, read_hcom_pauses)
+from _lat_common import (process_starttime, resolve_agent_name, run_cli, same_controller,
+                         shared_lat_dir, watcher_process_matches, write_json_atomic,
+                         read_hcom_pauses)
 
 
 IDLE_SECONDS = 10 * 60
@@ -1267,11 +1268,6 @@ def card_digest(path, error):
     except OSError:
         content = str(error).encode()
     return hashlib.sha256(content).hexdigest()
-
-
-def same_controller(card_name, orchestrator):
-    """A card may name its orchestrator by base name; the record holds the full HCOM name."""
-    return card_name == orchestrator or orchestrator.endswith(f'-{card_name}')
 
 
 def monitored_task_cards(tasks, orchestrator, incomplete=None):
@@ -3336,21 +3332,6 @@ def run_forever(args):
         except Exception as error:
             reap_failure = log_cycle_failure(log, reap_failure, error, now, 'reap-failed')
         time.sleep(CHECK_SECONDS)
-
-
-def resolve_agent_name(agents, name, *, required):
-    """Resolve exact/unique suffix names; targets may be absent from HCOM."""
-    if name in agents:
-        return name
-    matches = sorted(candidate for candidate in agents if candidate.endswith(f'-{name}'))
-    if len(matches) > 1:
-        raise ValueError(f'Ambiguous HCOM agent {name}: {", ".join(matches)}; '
-                         'use the full HCOM name')
-    if matches:
-        return matches[0]
-    if required:
-        raise ValueError(f'Unknown HCOM agent: {name}')
-    return name
 
 
 def alarm_condition_met(declaration):

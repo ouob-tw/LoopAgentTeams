@@ -49,9 +49,17 @@ class LedgerCase(unittest.TestCase):
         self.tasks = self.workspace / '.lat' / 'tasks'
         self.tasks.mkdir(parents=True)
         self.now = NOW
+        self.hcom_list = self.root / 'hcom-list.json'
+        self.set_hcom('orch', 'impl', 'impl2', 'a', 'b', 'new')
+
+    def set_hcom(self, *names):
+        """Untagged names are their own full names; `<tag>-<base>` ones carry a tag."""
+        self.hcom_list.write_text(json.dumps([
+            {'name': name, 'base_name': name.rsplit('-', 1)[-1]} for name in names]))
 
     def run_ledger(self, *args, by='orch', env=None):
         environment = {**os.environ, 'LAT_LEDGER_NOW': self.now, 'HCOM_INSTANCE_NAME': by,
+                       'LAT_LEDGER_HCOM_LIST': str(self.hcom_list),
                        'SUITE_GATE_STATE_DIR': str(self.gate_state),
                        'XDG_CONFIG_HOME': str(self.root / 'config'), **(env or {})}
         environment.pop('SUITE_GATE_CONFIG', None)
@@ -236,7 +244,8 @@ class StorageTests(LedgerCase):
 
     def test_concurrent_writers_all_land(self):
         self.init()
-        environment = {**os.environ, 'LAT_LEDGER_NOW': NOW, 'HCOM_INSTANCE_NAME': 'orch'}
+        environment = {**os.environ, 'LAT_LEDGER_NOW': NOW, 'HCOM_INSTANCE_NAME': 'orch',
+                       'LAT_LEDGER_HCOM_LIST': str(self.hcom_list)}
         writers = [subprocess.Popen([sys.executable, str(SCRIPT), 'add', '--ledger',
                                      str(self.ledger), '--ticket', f'#{n}', '--stage', 'impl',
                                      '--evidence', 'file'], env=environment,
@@ -685,6 +694,58 @@ class ShowTests(LedgerCase):
                       json.loads(self.ok('show', '--json'))['items'][0]['card_mismatch'])
         self.ok('update', str(item), '--card', str(moved))
         self.assertIsNone(json.loads(self.ok('show', '--json'))['items'][0]['card_mismatch'])
+
+
+class NameTests(LedgerCase):
+    """Names are written as HCOM full names (#394); older base names still match."""
+
+    def test_base_names_are_written_as_full_names(self):
+        self.set_hcom('lead-orch', 'team-impl', 'team-impl2')
+        self.init()
+        item = self.add()
+        self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.card()),
+                '--deadline', '+2h')
+        self.ok('start', str(item), '--eta', '+1h', by='impl')
+        self.ok('reassign', str(item), '--agent', 'impl2', '--reason', 'impl vanished',
+                '--by', 'orch')
+        doc = self.doc()
+        self.assertEqual(doc['orchestrator'], 'lead-orch')
+        self.assertEqual(doc['history'][0]['by'], 'lead-orch')
+        self.assertEqual(self.item(item)['agent'], 'team-impl2')
+        self.assertEqual([entry['by'] for entry in self.item(item)['history']],
+                         ['lead-orch', 'lead-orch', 'team-impl', 'lead-orch'])
+
+    def test_ambiguous_unknown_or_unreadable_names_write_nothing(self):
+        self.init()
+        item = self.add()
+        before = self.ledger.read_bytes()
+        self.set_hcom('orch', 'x-impl', 'y-impl')
+        error = self.fails('assign', str(item), '--agent', 'impl', '--card', str(self.card()),
+                           '--deadline', '+2h')
+        self.assertIn('--agent: Ambiguous HCOM agent impl: x-impl, y-impl', error)
+        error = self.fails('block', str(item), '--reason', 'r', by='ghost')
+        self.assertIn('--by: Unknown HCOM agent: ghost; HCOM lists: orch, x-impl, y-impl; '
+                      'nothing written', error)
+        self.hcom_list.unlink()
+        self.assertIn('HCOM agent list unreadable', self.fails('block', str(item), '--reason', 'r'))
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_os_user_and_native_agent_need_no_hcom(self):
+        self.init()
+        self.hcom_list.unlink()
+        item = int(self.ok('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file',
+                           by='').strip())
+        self.ok('assign', str(item), '--agent', 'nanu-research-web', '--native', '--card',
+                str(self.card()), '--deadline', '+2h', by='')
+        self.assertEqual(self.item(item)['agent'], 'nanu-research-web')
+        self.assertTrue(all(entry['by'] for entry in self.item(item)['history']))
+
+    def test_base_name_orchestrator_from_older_ledgers_may_still_cancel(self):
+        self.init()
+        item = self.add()
+        self.set_hcom('lead-orch')
+        self.ok('cancel', str(item), '--reason', 'dropped')
+        self.assertEqual(self.item(item)['status'], 'cancelled')
 
 
 if __name__ == '__main__':

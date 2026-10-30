@@ -2461,6 +2461,7 @@ class SessionTests(unittest.TestCase):
             self.assertNotIn(other, text)
 
     def test_deactivate_preserves_record_and_stops_recovery(self):
+        self.set_hcom_agents(*HCOM_TEST_NAMES, 'nova')
         for extra, successor in (((), None), (('--successor', 'nova'), 'nova'),
                                  (('--status', 'completed'), None),
                                  (('--status', 'cancelled'), None)):
@@ -2486,6 +2487,25 @@ class SessionTests(unittest.TestCase):
         self.assertIn('Invalid successor', result.stderr)
         self.assertEqual(self.record.read_bytes(), original)
         self.assertEqual(self.watcher_pid(), pid)
+
+    def test_deactivate_writes_the_successor_full_name_or_refuses_without_changes(self):
+        self.set_hcom_agents(*HCOM_TEST_NAMES, 'lat-nova', 'a-vega', 'b-vega')
+        self.activate()
+        original = self.record.read_bytes()
+        for successor, env, problem in (
+                ('ghost', None, '--successor: Unknown HCOM agent: ghost; HCOM lists: a-vega,'),
+                ('vega', None, '--successor: Ambiguous HCOM agent vega: a-vega, b-vega'),
+                ('nova', dict(FAKE_HCOM_LIST=str(self.root / 'absent.json')),
+                 '--successor: HCOM agent list unreadable')):
+            with self.subTest(successor=successor):
+                result = self.cli('deactivate', '--workspace', self.work, '--successor',
+                                  successor, extra_env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(problem, result.stderr)
+                self.assertEqual(self.record.read_bytes(), original)
+        result = self.cli('deactivate', '--workspace', self.work, '--successor', 'nova')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['successor'], 'lat-nova')
 
     def test_older_finished_statuses_still_start_a_new_round(self):
         for status in ('completed', 'cancelled'):
@@ -3125,10 +3145,13 @@ class SessionTests(unittest.TestCase):
         return self.work / '.lat/ledgers' / f'{SESSION}-r{round_number}.json'
 
     def ledger(self, *args, round_number=1):
+        listing = self.root / 'ledger-hcom-list.json'
+        listing.write_text(json.dumps([{'name': name} for name in ('orch', 'worker')]))
         result = subprocess.run(
             [sys.executable, str(SKILL / 'scripts/lat-ledger.py'), args[0], '--ledger',
              str(self.ledger_path(round_number)), '--by', 'orch', *map(str, args[1:])],
-            text=True, capture_output=True)
+            text=True, capture_output=True,
+            env=dict(os.environ, LAT_LEDGER_HCOM_LIST=str(listing)))
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 

@@ -75,6 +75,50 @@ def hcom_send_name(name, agents):
     return name
 
 
+def read_hcom_list(stand_in_env):
+    """`hcom list --json` as dicts; in tests the file named by `stand_in_env` stands in for it."""
+    fake = os.environ.get(stand_in_env)
+    try:
+        text = Path(fake).read_text() if fake else run_cli(
+            ['hcom', 'list', '--json'], timeout=30, failure='hcom list failed')
+        value = json.loads(text)
+    except (OSError, ValueError) as error:
+        raise ValueError(f'HCOM agent list unreadable: {error}') from error
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ValueError('HCOM agent list unreadable: not a list of agents')
+    return value
+
+
+def resolve_agent_name(agents, name, *, required):
+    """Resolve exact/unique suffix names; targets may be absent from HCOM."""
+    if name in agents:
+        return name
+    matches = sorted(candidate for candidate in agents if candidate.endswith(f'-{name}'))
+    if len(matches) > 1:
+        raise ValueError(f'Ambiguous HCOM agent {name}: {", ".join(matches)}; '
+                         'use the full HCOM name')
+    if matches:
+        return matches[0]
+    if required:
+        raise ValueError(f'Unknown HCOM agent: {name}')
+    return name
+
+
+def full_hcom_name(agents, name, flag):
+    """The HCOM full name every LAT tool writes for `name` (#394); ambiguous or unknown names
+    are refused with the full names HCOM lists, so no base name gets written."""
+    try:
+        return resolve_agent_name(agents, name, required=True)
+    except ValueError as error:
+        raise ValueError(f'{flag}: {error}; HCOM lists: {", ".join(sorted(agents)) or "no agents"}'
+                         '; nothing written') from None
+
+
+def same_controller(stored, full_name):
+    """Older data may hold a base name where new writes hold the full HCOM name."""
+    return stored == full_name or full_name.endswith(f'-{stored}')
+
+
 def shared_lat_dir(workspace):
     """One .lat per repository, in the main checkout; linked worktrees share it."""
     workspace = Path(workspace)

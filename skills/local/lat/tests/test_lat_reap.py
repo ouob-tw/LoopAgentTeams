@@ -770,6 +770,28 @@ class KeepTests(ReapTestCase):
         self.assertTrue(self.alive(other))
         self.assertEqual({record['trigger'] for record in self.log()}, {'deactivate'})
 
+    def test_keep_stores_the_full_name_and_release_matches_older_base_names(self):
+        orchestrator = self.live_agent('orch')
+        owner = self.live_agent('mine', services=['mine-server'])
+        listed = [('orch', 'orch', orchestrator['orch-client']),
+                  ('mine', 'mine', owner['mine-client'])]
+        self.set_hcom(listed)
+        keeps = self.state / 'lat/reaper/keeps.json'
+        self.assertEqual(self.keep(owner['mine-server'], by='orch').returncode, 0)
+        self.assertEqual(json.loads(keeps.read_text())['keeps'][0]['by'], 'test-orch')
+        before = keeps.read_bytes()
+        unknown = self.keep(owner['mine-server'], by='nobody')
+        self.assertEqual(unknown.returncode, 1)
+        self.assertIn('HCOM lists: test-mine, test-orch; nothing written', unknown.stdout)
+        self.set_hcom(listed + [('x-orch', 'xorch', orchestrator['orch-client'])])
+        ambiguous = self.keep(owner['mine-server'], by='orch')
+        self.assertIn('Ambiguous HCOM agent orch: test-orch, test-x-orch', ambiguous.stdout)
+        self.assertEqual(keeps.read_bytes(), before)
+        value = json.loads(before)
+        value['keeps'][0]['by'] = 'orch'  # written before #394
+        keeps.write_text(json.dumps(value))
+        self.assertIn('Released 1', self.run_reaper('release', '--by', 'test-orch').stdout)
+
     def test_valid_keep_inside_a_released_keep_survives(self):
         tree = self.node('outer', [self.node('inner', [self.node('inner-worker')]),
                                    self.node('outer-worker')])
@@ -804,7 +826,8 @@ class KeepTests(ReapTestCase):
                                        self.node('hcom-tool', exe=str(self.bin / 'hcom'),
                       env=self.agent_env('hcomtool'))])
         others = self.spawn(tree, self.agent_env('dead'))
-        self.set_hcom([('agent', 'agent', pids['agent-client'])])
+        self.set_hcom([('agent', 'agent', pids['agent-client']),
+                       ('orch', 'orch', pids['agent-client'])])
         cases = {
             'client': pids['agent-client'], 'client child without shell': pids['agent-helper'],
             'tool shell': pids['agent-shell'], 'no marker': others['no-marker'],
