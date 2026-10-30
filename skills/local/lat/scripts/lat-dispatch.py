@@ -53,6 +53,7 @@ FIXED = '''## Fixed fields
 - Language: all agent-to-agent communication (hcom messages, hand-offs, reports) is in English.
 - On completion report: where the results are, test results (for a full suite, attach the suite-gate record: the fingerprint, or the entry `suite-gate.py status` shows; do not rerun just to report), and anything unfinished.
 - Stuck rule: if the same acceptance target fails 3 rounds of fix -> verify (fix -> deploy -> verify when there is a deploy step), report to {orchestrator} immediately with the failure evidence and your next hypothesis. Reset the count when the target passes or changes.
+- Report only results, blockers, live-action quota hits and questions outside the Spec; never send a start or progress ack.
 - Report with: `hcom send @{orchestrator} --name {agent_name}`. If you forget the syntax, run `hcom <command> --help`; do not guess.
 - Always address messages: `@<name>` for one agent, `@<tag>-` for a group. Never run `hcom send` without `@`; it broadcasts to every agent.
 - Nobody watches your terminal window, so do not explain anything there; send every report with `hcom send`.
