@@ -36,7 +36,7 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 ## 票資料位置
 
-每張票的 QA 情境草稿、實作路徑清單、測試清單、證據、截圖與重測結果，放在主工作區的 `.lat/runs/issue-<N>/`，N 是 tracker 的票號。沒有票號的工作（研究、原型）放 `.lat/runs/misc-<YYYY-MM-DD>-<tag>/`。主控進度索引維持單一檔案 `.lat/progress/<hcom-name>.md`，`progress/` 下不建子資料夾或票的筆記。不再新建 `.lat/evidence/`、`.lat/prototypes/`、`.lat/handoffs/`；原型放 `runs/`，交接寫 tracker。舊資料不搬，經 [清理指令](cleanup.md) 由使用者確認後刪除。
+每張票的 QA 情境草稿、實作路徑清單、測試清單、證據、截圖與重測結果，放在主工作區的 `.lat/runs/issue-<N>/`，N 是 tracker 的票號。別的 tracker 的票放 `issue-<N>-<短名>/` 以免撞號：沿用 `runs/` 同 tracker 的短名，否則用 repo 名小寫。沒有票號的工作（研究、原型）放 `.lat/runs/misc-<YYYY-MM-DD>-<tag>/`。主控進度索引維持單一檔案 `.lat/progress/<hcom-name>.md`，`progress/` 下不建子資料夾或票的筆記。不再新建 `.lat/evidence/`、`.lat/prototypes/`、`.lat/handoffs/`；原型放 `runs/`，交接寫 tracker。舊資料不搬，經 [清理指令](cleanup.md) 由使用者確認後刪除。
 
 任務卡的 `runs` 欄寫該票資料夾的絕對路徑，派工訊息也帶同一個路徑。路徑一律指向主工作區的 `.lat`（所有 worktree 共用），不在 worktree 內另建。證據只存結論、指令輸出、必要截圖與單一檔案節錄；通過的項目不存 Playwright trace，只存截圖或輸出（失敗才留 trace，設定見 three-tier-testing）。
 

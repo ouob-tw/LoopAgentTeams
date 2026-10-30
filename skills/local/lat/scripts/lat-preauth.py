@@ -11,7 +11,9 @@ which tickets the unpushed commits belong to, main checkout at the integration b
 `show` prints the effective settings and where each value came from. Any unreadable or unknown
 setting makes every check ask. `grant` writes one rule that a human-answered decision record
 names; `record` logs what was done under pre-authorization and `report` lists this round's log for
-the delivery report. The board reads and writes settings through `board_settings` and `board_write`,
+the delivery report; `now` prints the time to give `record --started`. `notice`, `record` and `report`
+take the controller's identity from the session record in --controller-workspace when the action is
+in another repo, which --workspace names. The board reads and writes settings through `board_settings` and `board_write`,
 which the panel helper's `board preauth-read` and `board preauth-write` commands call. The tool never
 runs the action itself.
 """
@@ -552,27 +554,29 @@ def verdict_line(result):
     return f'{head} — reasons: ' + '; '.join(result['reasons'])
 
 
-def other_controllers(workspace, session):
+def other_controllers(workspace, session, action_repo=None):
     """(own HCOM name or None, HCOM names of the other active controllers) from the session
-    records in the shared .lat directory."""
+    records in the shared .lat directory. Only the controller's own directory says who this
+    session is; `action_repo` adds the controllers working in the repo the action touches."""
     own, others = None, []
-    try:
-        workspace = Path(workspace or Path.cwd())
-        paths = sorted((shared_lat_dir(workspace) / 'sessions').glob('*.json'))
-    except (OSError, ValueError):
-        return own, others
-    for path in paths:
+    workspace = Path(workspace or Path.cwd())
+    for folder in filter(None, (workspace, action_repo)):
         try:
-            record = json.loads(path.read_text(encoding='utf-8'))
+            paths = sorted((shared_lat_dir(folder) / 'sessions').glob('*.json'))
         except (OSError, ValueError):
             continue
-        name = record.get('hcom_name') if isinstance(record, dict) else None
-        if not isinstance(name, str) or not name:
-            continue
-        if path.stem == session:
-            own = name
-        elif record.get('status') == 'active' and name not in others:
-            others.append(name)
+        for path in paths:
+            try:
+                record = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            name = record.get('hcom_name') if isinstance(record, dict) else None
+            if not isinstance(name, str) or not name:
+                continue
+            if path.stem == session:
+                own = name if folder == workspace else own
+            elif record.get('status') == 'active' and name not in others:
+                others.append(name)
     return own, [name for name in others if name != own]
 
 
@@ -584,9 +588,11 @@ def notice_steps():
             'other live controllers of this session, or to `--to <name>…` to name others; never '
             'yourself, never a broadcast) and keep the event id it prints; with no other live '
             'controller it sends nothing and prints a `none-<n>` id; if it fails or prints no '
-            'id, the notice was not sent: do not do the action. Note '
-            '--started; do the action; send the after-notice the same way; then '
-            'record --kind auto … --notice-before <id> --notice-after <id> --started <time>.')
+            'id, the notice was not sent: do not do the action. Get --started from '
+            '`lat-preauth.py now`; do the action; send the after-notice the same way; then '
+            'record --kind auto … --notice-before <id> --notice-after <id> --started <time>. '
+            "When this controller's session is in another repo, add `--workspace <action repo> "
+            '--controller-workspace <its repo>` to notice and record.')
 
 
 def live_names(agents):
@@ -636,10 +642,12 @@ def cmd_notice(args):
     text = args.text.strip()
     if not text:
         raise Refused('the notice text is empty')
-    own, others = other_controllers(args.workspace, session_of(args))
+    own, others = other_controllers(controller_workspace(args), session_of(args),
+                                    action_repo(args))
     if not own:
         raise Refused('this controller has no HCOM name in its session record, so the sender '
-                      'is unknown')
+                      "is unknown; if the session is in another repo, give it as "
+                      '--controller-workspace')
     agents = notice_agents()
     sender = hcom_send_name(own, agents)
     live = live_names(agents)
@@ -758,9 +766,27 @@ def locked(lock_path):
         yield
 
 
+def controller_workspace(args):
+    """Where this controller's session record lives; `grant` has no --controller-workspace."""
+    return Path(getattr(args, 'controller_workspace', None) or args.workspace or Path.cwd())
+
+
+def action_repo(args):
+    """The main checkout of the repo the action is in, when it is not the controller's own."""
+    if not args.controller_workspace:
+        return None
+    workspace = Path(args.workspace or Path.cwd())
+    top = git(workspace, 'rev-parse', '--show-toplevel')
+    if not top:
+        raise Refused(f'{workspace} is not in a Git repository')
+    own = round_owner(args)[0]
+    lat = shared_lat_dir(Path(top))
+    return None if lat.resolve() == shared_lat_dir(own).resolve() else lat.parent
+
+
 def round_owner(args):
     """(top, session ID) the write belongs to."""
-    workspace = Path(args.workspace or Path.cwd())
+    workspace = controller_workspace(args)
     top = git(workspace, 'rev-parse', '--show-toplevel')
     if not top:
         raise Refused(f'{workspace} is not in a Git repository')
@@ -783,7 +809,8 @@ def current_round(top, session, *, active=True):
         original = path.read_bytes()
         record = json.loads(original)
     except FileNotFoundError:
-        raise Refused(f'no session record {path}') from None
+        raise Refused(f'no session record {path}; if the session is in another repo, notice, '
+                      'record and report take it as --controller-workspace') from None
     except ValueError as error:
         raise Refused(f'unreadable session record {path} ({error})') from None
     history = record.get('history', []) if isinstance(record, dict) else None
@@ -1239,6 +1266,9 @@ def record_locked(args, top, session):
     _, record, _, round_number = current_round(top, session)
     if args.kind == 'auto':
         entry = auto_entry(args, record, top, session, round_number)
+        repo = action_repo(args)
+        if repo:
+            entry['action_repo'] = str(repo)
     else:
         conditions = dict(self_reported=args.self_reported, clear_expected=args.clear_expected,
                           single_ticket=args.single_ticket, restores_stated=args.restores_stated)
@@ -1309,6 +1339,8 @@ def report_line(entry):
     if kind == 'auto':
         head = ' '.join(str(part) for part in (entry.get('action'), entry.get('target'),
                                                entry.get('commit')) if part)
+        if 'action_repo' in entry:
+            head += f'（動作在 {entry["action_repo"]}）'
         notices = (f'；通知 {report_notice(entry["notice_before"])} → '
                    f'{report_notice(entry["notice_after"])}'
                    if 'notice_before' in entry else '')
@@ -1324,6 +1356,11 @@ def report_line(entry):
         changes = '、'.join(change_text(change) for change in entry.get('changes', []))
         return f'- 看板 {entry.get("layer")}：{changes}（來源 board，{entry.get("at")}）→ {entry.get("file")}'
     return f'- {entry.get("grant")}（source {entry.get("source")}）→ {entry.get("file")}'
+
+
+def cmd_now(args):
+    print(current_time().astimezone().isoformat(timespec='microseconds'))
+    return 0
 
 
 def cmd_report(args):
@@ -1575,6 +1612,10 @@ def build_parser():
                                             'directory')
     common.add_argument('--session-id', help='controller session ID; default '
                                              '$CLAUDE_CODE_SESSION_ID, then $CODEX_THREAD_ID')
+    across = argparse.ArgumentParser(add_help=False)
+    across.add_argument('--controller-workspace',
+                        help="the controller's own repo, holding its session record, when the "
+                             'action is in the repo --workspace names; default --workspace')
     parser = argparse.ArgumentParser(description='LAT pre-authorization lookup')
     commands = parser.add_subparsers(dest='command', required=True)
     sub = commands.add_parser('check', parents=[common], help='allow or ask for one action')
@@ -1582,7 +1623,7 @@ def build_parser():
     sub.add_argument('--branch', help='target branch (merge, push)')
     sub.add_argument('--commit', help='commit the action uses')
     sub.add_argument('--json', action='store_true')
-    sub = commands.add_parser('notice', parents=[common],
+    sub = commands.add_parser('notice', parents=[common, across],
                               help='send a before/after notice and print its HCOM event ID (none-<n> '
                                    'when no other controller is live)')
     sub.add_argument('--text', required=True, help='notice text')
@@ -1597,7 +1638,7 @@ def build_parser():
     sub.add_argument('--allow', choices=('true', 'false'))
     sub.add_argument('--branches', nargs='+', help='branch names')
     sub.add_argument('--source', required=True, help='decision record ID with the answer')
-    sub = commands.add_parser('record', parents=[common],
+    sub = commands.add_parser('record', parents=[common, across],
                               help='log one thing done under pre-authorization')
     sub.add_argument('--kind', choices=('auto', 'bug-intake'), default='auto',
                      help='auto: an action done under pre-authorization (default); bug-intake: a '
@@ -1607,7 +1648,7 @@ def build_parser():
     sub.add_argument('--commit', help='auto: commit the action used')
     sub.add_argument('--basis', help='auto: the check line')
     sub.add_argument('--result', choices=RESULTS, help='auto: how the action ended')
-    sub.add_argument('--started', help='auto deploy/install: ISO time the action started')
+    sub.add_argument('--started', help='auto deploy/install: time the action started, from `now`')
     sub.add_argument('--notice-before', type=notice_id, help='auto deploy/install: HCOM event ID '
                                                              'of the notice sent before '
                                                              'starting, or the none-<n> id of '
@@ -1622,15 +1663,17 @@ def build_parser():
     sub.add_argument('--single-ticket', help='bug-intake: why one ticket finishes it')
     sub.add_argument('--restores-stated', help="bug-intake: why the fix only restores what the "
                                                'user described')
-    commands.add_parser('report', parents=[common],
+    commands.add_parser('report', parents=[common, across],
                         help="this round's records, grouped for the delivery report")
+    commands.add_parser('now', help='the current time for record --started, with microseconds '
+                                    'and a time zone')
     return parser
 
 
 def main():
     args = build_parser().parse_args()
     commands = {'check': cmd_check, 'show': cmd_show, 'grant': cmd_grant, 'notice': cmd_notice,
-                'record': cmd_record, 'report': cmd_report}
+                'record': cmd_record, 'report': cmd_report, 'now': cmd_now}
     try:
         return commands[args.command](args)
     except Refused as error:

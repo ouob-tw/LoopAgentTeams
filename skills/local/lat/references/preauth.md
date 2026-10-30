@@ -10,10 +10,49 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" show
 ```
 
 - `check` 印一行 `allow <動作> <標的> — basis: …`（每個生效值來自哪一層、哪一段與 `source`）或 `ask <動作> <標的> — reasons: …`；結束碼 `allow` 為 0、`ask` 為 1、工具出錯為 2。`--json` 輸出 `verdict`、`action`、`target`、`basis`、`reasons`，以及與 `reasons` 同順序的 `reason_kinds`，每個原因一個類別：`allow-false`（某層明寫 `allow = false`）、`condition`（不在下方「時段」內，或下方「固定條件」不成立，含沒寫 `target` 或整合分支）、`unset`（沒有任何層寫 `allow` 或 `branches`）、`always-ask`（任何設定都不能預先授權）、`error`（設定讀不出、參數缺漏等 `check` 無法判斷）。參謀免諮詢類別 `exempt preauth-ask` 依這個欄位判斷，見 [參謀](advisors.md)。
-- `deploy-test`、`deploy-prod`、`install-host` 得到 `allow` 時另印 `Next steps:`（`--json` 增加 `next_steps`）：用 `notice --text '<內容>'` 發動作前通知並記下它印的事件編號，再記下帶時區的 `--started`、執行動作、同樣發動作後通知，最後 `record --kind auto … --notice-before <id> --notice-after <id> --started <time>`。`notice` 沒印編號就是沒送出，不可執行動作；沒有其他在線主控時它不發訊息，改印 `none-<n>`，可原樣給 `--notice-before`／`--notice-after`。合併、推送與 `ask` 的輸出不變。
-- `notice --text '<內容>' [--to <名稱>…]` 代主控以 `@名稱` 發 `--intent inform` 通知，成功時只印這則訊息的 HCOM 事件編號。收件人預設是本專案其他進行中的主控（由 session 紀錄查得），或用 `--to` 點名；只發給 `hcom list --json` 目前還在的（紀錄裡已離線的主控略過並提示；`--to` 點名的不在線就整則不送），不能是自己，不廣播。沒有 `--to` 且沒有其他在線主控時，不發訊息、寫入本輪 `.lat/preauth-records/<session>-r<輪數>-no-recipient.jsonl`（發送者、時間、當時記錄的其他主控都已離線），印 `none-<n>` 並以 0 結束，不需隨便點名無關的 Agent。送出後以發送者、內容完全相同、開始發送之後的時間到 `hcom events` 找出這則訊息；`--to` 的收件人都不在線、HCOM 讀不到、發送失敗、找不到訊息或找到多則相同的，都以非 0 結束並說明原因，不印編號。
+- `deploy-test`、`deploy-prod`、`install-host` 得到 `allow` 時另印 `Next steps:`（`--json` 增加 `next_steps`）：用 `notice --text '<內容>'` 發動作前通知並記下它印的事件編號，再以 `now` 取得 `--started`、執行動作、同樣發動作後通知，最後 `record --kind auto … --notice-before <id> --notice-after <id> --started <time>`。`notice` 沒印編號就是沒送出，不可執行動作，步驟的串接見 [動作前後的步驟](#動作前後的步驟)；沒有其他在線主控時它不發訊息，改印 `none-<n>`，可原樣給 `--notice-before`／`--notice-after`。合併、推送與 `ask` 的輸出不變。
+- `notice --text '<內容>' [--to <名稱>…]` 代主控以 `@名稱` 發 `--intent inform` 通知，成功時只印這則訊息的 HCOM 事件編號。收件人預設是本專案其他進行中的主控（由 session 紀錄查得；[跨 repo](#主控與動作不在同一個-repo) 時再加上動作所在 repo 的主控），或用 `--to` 點名；只發給 `hcom list --json` 目前還在的（紀錄裡已離線的主控略過並提示；`--to` 點名的不在線就整則不送），不能是自己，不廣播。沒有 `--to` 且沒有其他在線主控時，不發訊息、寫入本輪 `.lat/preauth-records/<session>-r<輪數>-no-recipient.jsonl`（發送者、時間、當時記錄的其他主控都已離線），印 `none-<n>` 並以 0 結束，不需隨便點名無關的 Agent。送出後以發送者、內容完全相同、開始發送之後的時間到 `hcom events` 找出這則訊息；`--to` 的收件人都不在線、HCOM 讀不到、發送失敗、找不到訊息或找到多則相同的，都以非 0 結束並說明原因，不印編號。
 - `show` 印兩層位置與是否生效、合併後的有效設定，以及每個值的出處；專案檔寫了 `[advisor]` 時在該段註明「專案層的 [advisor] 不生效」；設定有錯時列出錯誤。
 - 在要動作的工作區執行（或給 `--workspace`）。`check` 以 `--session-id` 或 client 的 session 環境變數（`CLAUDE_CODE_SESSION_ID`、`CODEX_THREAD_ID`）找本輪工作總表。
+- `now` 印出現在時間（到微秒、帶時區），給 `record --started` 用。不要用 `date -Iseconds`：只到秒，不到一秒完成的動作會因後一則通知落在同一秒而被 `record` 拒絕。
+
+## 動作前後的步驟
+
+要發通知的動作，前後步驟用 `&&` 串接，前一步失敗後面就不做。不要用 `;`：公告失敗時動作會照樣執行。動作本身失敗仍要發後一則通知並記錄，所以動作的結果另外接住：
+
+```bash
+p() { uv run --no-project python "$lat_dir/scripts/lat-preauth.py" "$@"; }
+checked=$(p check --action install-host --commit <版本>) \
+  && before=$(p notice --text '開始更新主機技能') \
+  && started=$(p now) \
+  && {
+    if <動作>; then result=succeeded; else result=failed; fi
+    after=$(p notice --text "更新主機技能：$result") \
+      && p record --action install-host --commit <版本> --basis "${checked%%$'\n'*}" --result "$result" \
+        --started "$started" --notice-before "$before" --notice-after "$after"
+  }
+```
+
+`merge`、`push` 不必發通知，同樣以 `&&` 接在 `check` 之後，做完再 `record`。
+
+## 主控與動作不在同一個 repo
+
+主控的 session 紀錄在 A repo、動作在 B repo 時，`--workspace` 一律寫 B；`notice`、`record`、`report` 另加 `--controller-workspace <A>`。
+
+```bash
+p check --action merge --branch dev --workspace <B>
+p notice --text '<內容>' --workspace <B> --controller-workspace <A>
+p record --action merge --branch dev --commit <版本> --basis '<check 印的那行>' --result succeeded --workspace <B> --controller-workspace <A>
+p report --controller-workspace <A>
+```
+
+- 主控身分、本輪輪數與紀錄檔都來自 A 的 `.lat`，B 的 `.lat` 不會多出任何紀錄。沒給 `--controller-workspace` 時拒絕，訊息會提示這個選項。B 不在 Git 專案裡也拒絕，且不發訊息、不寫紀錄。
+- `record` 把 B 的主工作區路徑寫進 `action_repo`，`report` 顯示在動作後面：`merge dev abc123（動作在 <B>）`。同一 repo（含它的 worktree）不寫這個欄位，舊紀錄照常讀取。
+- `notice` 的預設收件人是 A 與 B 其他進行中的主控：動作影響 B，A 的主控也需要知道主控在做什麼。
+- `check` 沒有這個選項，只看 B：
+  - 設定取 B 的專案層與全域層。
+  - 本輪工作總表在 A，`check` 找不到，所以 `push` 一律 `ask`（`no active round ledger`），要照「使用者待決事項」提問；部署與 `install-host` 的整合分支只取設定的 `integration_branch`。
+- 待決紀錄的 `- action:` 重查（見 [接上提問](#接上提問)）在主控工作區 A 執行，結果可能與 `check --workspace <B>` 不同；B 的動作以 `check --workspace <B>` 為準，不要只憑重查的結論動手。
 
 ## 兩層與合併
 
@@ -105,13 +144,13 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" grant --layer globa
 ```bash
 # 依預先授權執行
 uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --action <動作> [--branch <分支>] --commit <版本> --basis '<check 印的那行>' --result succeeded|failed \
-  [--started <ISO 時間> --notice-before <HCOM 事件編號> --notice-after <HCOM 事件編號>]
+  [--started <now 印的時間> --notice-before <HCOM 事件編號> --notice-after <HCOM 事件編號>]
 # 免確認開短流程 bug 票
 uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-intake --issue <票> --source '<使用者原訊息位置>' \
   --self-reported '<…>' --clear-expected '<…>' --single-ticket '<…>' --restores-stated '<…>'
 ```
 
-- `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區）與前後兩則 HCOM 通知的事件編號（取自 `notice` 印出的編號）。工具以 `hcom events` 核對：兩則都由本主控送出（發送者等於工作階段紀錄的 HCOM 名稱，或 `hcom list --json` 給它的基本名；有 tag 的主控，HCOM 記的是基本名）、以 `@名稱` 指定對象（不是廣播）、依 `--started` 提供的小數秒位數比較（未提供小數就比較整秒）：前一則可早於或等於開始時間，後一則必須晚於開始時間，且原始時間也必須晚於前一則。例如 `--started 2026-10-29T12:00:00+08:00` 接受前一則在 `12:00:00.4`，拒絕 `12:00:01.2`；後一則在 `12:00:00.9` 仍不合格；不符就拒絕。`--notice-*` 也可給 `notice` 印的 `none-<n>`：工具核對它是本輪由本主控的 `notice` 寫下的無人可通知紀錄，時間順序規則相同，兩則可一真一無；工具另核對該紀錄裡記錄的其他主控確實都不在線；`report` 顯示「無人可通知（none-1，未發訊息）」。HCOM 的 agent 清單格式異常時 `notice` 拒絕，不當作無人在線。事件的 `delivered_to` 為空（沒送到任何人）一律拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
+- `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區，用 `now` 取得）與前後兩則 HCOM 通知的事件編號（取自 `notice` 印出的編號）。工具以 `hcom events` 核對：兩則都由本主控送出（發送者等於工作階段紀錄的 HCOM 名稱，或 `hcom list --json` 給它的基本名；有 tag 的主控，HCOM 記的是基本名）、以 `@名稱` 指定對象（不是廣播）、依 `--started` 提供的小數秒位數比較（未提供小數就比較整秒）：前一則可早於或等於開始時間，後一則必須晚於開始時間，且原始時間也必須晚於前一則。只到秒的舊寫法仍接受，例如 `--started 2026-10-29T12:00:00+08:00` 接受前一則在 `12:00:00.4`，拒絕 `12:00:01.2`；後一則在 `12:00:00.9` 仍不合格；不符就拒絕。`--notice-*` 也可給 `notice` 印的 `none-<n>`：工具核對它是本輪由本主控的 `notice` 寫下的無人可通知紀錄，時間順序規則相同，兩則可一真一無；工具另核對該紀錄裡記錄的其他主控確實都不在線；`report` 顯示「無人可通知（none-1，未發訊息）」。HCOM 的 agent 清單格式異常時 `notice` 拒絕，不當作無人在線。事件的 `delivered_to` 為空（沒送到任何人）一律拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
 - `bug-intake` 的四項依據都要寫。
 
 ## 免確認開短流程 bug 票
