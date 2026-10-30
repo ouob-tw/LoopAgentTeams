@@ -91,8 +91,8 @@ const isLabel = (text: string, shape: 'card' | 'message', name: 'ok' | 'bg') => 
 
 const open = async (url: string, theme: string, shape: 'card' | 'message') => {
 	await browser!.tab.navigate(`${fixture.url}${url}`);
-	await browser!.tab.until(`!!document.documentElement.dataset`, 'the page');
-	await evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
+	await evaluate(`localStorage.setItem('lat-board-theme', ${JSON.stringify(theme)})`);
+	await browser!.tab.navigate(`${fixture.url}${url}`);
 	await browser!.tab.until(`!!(${lookOf(TEXTS.read, shape)})`, `the ${shape}s`);
 };
 
