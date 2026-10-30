@@ -384,11 +384,28 @@ def branch_exists(repo, branch):
         return False
 
 
+def default_branches(repo):
+    """The repo's default branch as the refs that exist: what origin/HEAD names, else (no
+    origin/HEAD, or it names a gone ref) main or master, each local or remote-tracking."""
+    try:
+        head = run_cli(['git', '-C', repo, 'symbolic-ref', '--quiet', '--short',
+                        'refs/remotes/origin/HEAD'], timeout=30).strip()
+        named = [head.removeprefix('origin/'), head]
+    except ValueError:
+        named = []
+    for candidates in (named, ['main', 'master', 'origin/main', 'origin/master']):
+        found = [branch for branch in candidates if branch_exists(repo, branch)]
+        if found:
+            return found
+    return []
+
+
 def verify_commit(doc, item, value):
     """Return (full sha, problem); the commit must reach the item or integration branch.
 
     A row with its own repo is checked there. The branches are only enforced where they exist
-    in that repo, since the integration branch name belongs to the workspace."""
+    in that repo, since the integration branch name belongs to the workspace. A deleted task
+    branch with no integration branch recorded leaves the repo's default branch to check."""
     workspace = item.get('repo') or doc['workspace']
     if item.get('repo'):
         _, problem = check_repo(workspace)
@@ -406,6 +423,13 @@ def verify_commit(doc, item, value):
             return sha, None
     if not branches:
         return sha, f'commit {value}: no branch to check reachability (set --branch on the item)'
+    hint = ''
+    if not doc.get('integration_branch') and not branch_exists(workspace, item['branch']):
+        hint = (f'; task branch {item["branch"]} no longer exists, name the branch the commit '
+                f'reached with `update {item["id"]} --branch <branch>`')
+        branches = default_branches(workspace)
+        if not branches:
+            return sha, f'commit {value}: no default branch found in {workspace}{hint}'
     for branch in branches:
         try:
             run_cli(['git', '-C', workspace, 'merge-base', '--is-ancestor', sha, branch],
@@ -413,7 +437,7 @@ def verify_commit(doc, item, value):
             return sha, None
         except ValueError:
             continue
-    return sha, f'commit {value} is not reachable from {" or ".join(branches)} in {workspace}'
+    return sha, f'commit {value} is not reachable from {" or ".join(branches)} in {workspace}{hint}'
 
 
 def verify_gate(doc, value):
