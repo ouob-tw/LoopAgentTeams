@@ -1,6 +1,7 @@
 <script lang="ts">
 	// A bar for each of a controller's questions waiting for an answer, each leading to its card.
 	import { isInactive, STATUS_LABEL, type Controller, type InboxItem, type InboxQuestion } from '#lib/board/types.ts';
+	import VisualLinks from './VisualLinks.svelte';
 
 	let {
 		status,
@@ -19,10 +20,13 @@
 {#if questions.length}
 	<div class="questions">
 		{#each questions as item (item.key)}
-			<button type="button" class="question" onclick={() => onopen(item)}>
-				<span class="title">▲ <b>待決</b>：{item.title || '（沒有標題）'}</span>
-				<span class="answer">{inactive || !item.unsent ? '查看' : '作答'} ›</span>
-			</button>
+			<div class="row">
+				<button type="button" class="question" onclick={() => onopen(item)}>
+					<span class="title">▲ <b>待決</b>：{item.title || '（沒有標題）'}</span>
+					<span class="answer">{inactive || !item.unsent ? '查看' : '作答'} ›</span>
+				</button>
+				<VisualLinks urls={item.question.visuals} />
+			</div>
 		{/each}
 		{#if inactive}
 			<p class="none">主控{STATUS_LABEL[status]}，它的待決題不能再作答。</p>
@@ -41,9 +45,16 @@
 		flex-direction: column;
 		gap: 0.4rem;
 	}
+	.row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+	}
 	/* A question waiting for an answer: warn-coloured, its title and the way to it. */
 	.question {
 		display: flex;
+		flex: 1 1 60%;
+		min-width: 0;
 		gap: 0.8rem;
 		align-items: baseline;
 		padding: 0.5rem 0.7rem;

@@ -8,6 +8,7 @@
 	import { noticeTime } from '#lib/board/format.ts';
 	import { renderLinks, renderMarkdown } from '#lib/board/markdown.ts';
 	import CopyButton from './CopyButton.svelte';
+	import VisualLinks from './VisualLinks.svelte';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { Translation } from '#lib/board/translate.ts';
 	import type { Snippet } from 'svelte';
@@ -183,6 +184,9 @@
 		{@render note?.()}
 		{#if question.context}
 			<div class="text md">{@html renderMarkdown(question.context)}</div>
+		{/if}
+		{#if question.visuals?.length}
+			<div class="visual-row"><VisualLinks urls={question.visuals} /></div>
 		{/if}
 		{#if question.options.length}
 			<ul class="options">
@@ -413,6 +417,9 @@
 	/* Markdown already turned the line breaks into elements. */
 	.text.md {
 		white-space: normal;
+	}
+	.visual-row {
+		margin-bottom: 0.7rem;
 	}
 	.options {
 		display: flex;

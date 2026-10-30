@@ -54,10 +54,11 @@ Public API used by the Textual panel and LAT controller:
 
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
-  question upsert --questions PATH --decisions DIR --id ID --file section.md
+  question upsert --questions PATH --decisions DIR --id ID --file section.md \
+      [--visual URL]...
   question ask --questions PATH --decisions DIR --id ID --file section.md \
       [--advisor TEXT] [--help-question] [--session-id ID] [--question TEXT] \
-      [--authority-gap TEXT] [--blocked-work TEXT]
+      [--authority-gap TEXT] [--blocked-work TEXT] [--visual URL]...
   question record-chat --questions PATH --decisions DIR --id ID --text TEXT \
       --source TEXT
   question section-hash --questions PATH --id ID
@@ -109,6 +110,7 @@ from _lat_common import plugin_directory, run_cli, write_text_atomic as _replace
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import questions
 from questions import (
+    add_visual_links,
     ANSWERED_STATUS,
     AnswerFormatError,
     QuestionAnswer,
@@ -200,6 +202,7 @@ from questions import (
     question_provenance,
     question_recommendation,
     question_section_sha256,
+    question_visuals,
     record_chat_answer,
     remove_empty_questions,
     render_answer_area,
@@ -391,12 +394,14 @@ def _build_parser():
     upsert.add_argument("--decisions", required=True, type=Path)
     upsert.add_argument("--id", required=True)
     upsert.add_argument("--file", required=True, type=Path)
+    upsert.add_argument("--visual", action="append", default=[], metavar="URL")
     ask = question_commands.add_parser("ask")
     ask.add_argument("--questions", required=True, type=Path)
     ask.add_argument("--decisions", required=True, type=Path)
     ask.add_argument("--id", required=True)
     ask.add_argument("--file", required=True, type=Path)
     ask.add_argument("--help-question", action="store_true")
+    ask.add_argument("--visual", action="append", default=[], metavar="URL")
     for field in ASK_RECORD_FIELDS:
         ask.add_argument(field)
     record_chat = question_commands.add_parser("record-chat")
@@ -611,9 +616,13 @@ def _ask_session(questions):
                  if os.environ.get(key)), None)
 
 
+def _input_section(args):
+    return add_visual_links(args.file.read_text(encoding="utf-8"), args.visual)
+
+
 def _ask(args):
     """One controller command per question: record, panel question, version, gap check."""
-    text = args.file.read_text(encoding="utf-8")
+    text = _input_section(args)
     incoming = _question_input(text)
     path = Path(args.decisions) / f"{args.id}.md"
     if not Path(args.decisions).is_dir():
@@ -720,7 +729,7 @@ def main(argv=None):
     try:
         if args.command == "question" and args.question_command == "upsert":
             return _upsert(args.questions, args.decisions, args.id,
-                           args.file.read_text(encoding="utf-8"))[0]
+                           _input_section(args))[0]
         if args.command == "question" and args.question_command == "ask":
             return _ask(args)
         if args.command == "question" and args.question_command == "record-chat":
