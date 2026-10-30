@@ -328,14 +328,18 @@
 	:global(:root[data-theme='light']) .options li.chosen .option {
 		font-weight: 700;
 	}
+	/* The answered option is one inverted block, white on black, description and all. */
 	:global(:root[data-theme='light']) .options li.picked {
 		border: 3px solid var(--text);
 		padding: calc(0.5rem - 2px) calc(0.7rem - 2px);
-		background: none;
+		background: var(--text);
+		color: var(--bg);
+	}
+	:global(:root[data-theme='light']) .options li.picked :is(.option, .check, .impact) {
+		color: inherit;
 	}
 	:global(:root[data-theme='light']) .options li.picked .option,
 	:global(:root[data-theme='light']) .check {
 		font-weight: 700;
-		color: var(--text);
 	}
 </style>

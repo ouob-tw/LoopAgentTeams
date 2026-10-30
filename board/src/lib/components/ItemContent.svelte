@@ -591,33 +591,41 @@
 	:global(:root[data-theme='light']) .options li.chosen .option {
 		font-weight: 700;
 	}
+	/* The answered option is one inverted block, white on black, description and all. */
 	:global(:root[data-theme='light']) .options li.picked {
 		border: 3px solid var(--text);
 		padding: calc(0.5rem - 2px) calc(0.7rem - 2px);
-		background: none;
+		background: var(--text);
+		color: var(--bg);
+	}
+	:global(:root[data-theme='light']) .options li.picked :is(.option, .check, .impact) {
+		color: inherit;
 	}
 	:global(:root[data-theme='light']) .options li.picked .option,
 	:global(:root[data-theme='light']) .check {
 		font-weight: 700;
-		color: var(--text);
+	}
+	:global(:root[data-theme='light']) .options li.picked em {
+		color: inherit;
+		border-color: currentColor;
+	}
+	/* Inside the block the markdown's accent links and dark borders would vanish on black. */
+	:global(:root[data-theme='light']) .options li.picked .impact :global(a) {
+		color: inherit;
+		text-decoration: underline;
+	}
+	:global(:root[data-theme='light']) .options li.picked .impact :global(:is(code, pre, blockquote, th, td, hr)) {
+		border-color: var(--bg);
+	}
+	:global(:root[data-theme='light']) .options li.picked .impact :global(pre) {
+		background: none;
+	}
+	:global(:root[data-theme='light']) .options li.picked .impact :global(blockquote) {
+		color: inherit;
 	}
 	:global(:root[data-theme='light']) .label.open {
 		border-color: var(--warn);
 		font-weight: 600;
-	}
-	/* The answered option's own line, letter and text, is black on white; its description below
-	   keeps the heavy frame. */
-	:global(:root[data-theme='light']) .options li.picked {
-		gap: 0;
-	}
-	:global(:root[data-theme='light']) .options li.picked :is(.check, .letter) {
-		align-self: flex-start;
-	}
-	:global(:root[data-theme='light']) .options li.picked :is(.check, .letter, .option) {
-		padding: 0 0.35rem;
-		line-height: 1.5;
-		background: var(--text);
-		color: var(--bg);
 	}
 	:global(:root[data-theme='light']) .your-note {
 		border: 1px solid var(--line);
