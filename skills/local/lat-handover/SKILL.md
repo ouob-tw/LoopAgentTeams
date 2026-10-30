@@ -1,7 +1,6 @@
 ---
 name: lat-handover
-description: "把 LAT 主控換成新的 Agent，或把手上工作交給新的 LAT 主控時手動觸發：整理交接文件、用 HCOM 開新主控接手，確認接手後通知協作者、停用自己的 LAT 紀錄並關閉自己。"
-disable-model-invocation: true
+description: "使用者明確要求換掉或交接 LAT 主控時才使用（例如「換主控」「交接給新主控」）；只是要寫交接文件，或對話變長時，不要自行使用。會整理交接文件、用 HCOM 開新主控接手，確認接手後通知協作者、停用自己的 LAT 紀錄並關閉自己。"
 ---
 
 # LAT 主控換班
