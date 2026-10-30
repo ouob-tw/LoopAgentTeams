@@ -13,6 +13,8 @@
 // typing `hcom start --as` brings one back.
 // `screens: { <pane>: [<text>, ...] }` is what `pane read <pane>` prints, the entry `screenAt[<pane>]`
 // (0 at first) names; `agent send-keys <pane> shift+tab` moves it on by one, round to the first.
+// `scrolled: { <pane>: <text> }` is what `pane read <pane> --source visible` prints while the pane
+// is scrolled up, until `pane.scroll` brings it to the bottom; `--source detection` always reads the bottom.
 // `slowMs: { <command>: ms }` makes a command wait that long before it answers.
 // `failSeries: { <command>: [...] }` gives that command's next calls in turn: an entry `{ exit, stderr }`
 // acts out a failure, null answers as usual; once the series is used up, `fail` applies again.
@@ -91,14 +93,22 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		stdout += JSON.stringify({ id: 'cli:tab:rename', result: { type: 'ok' } });
 	} else if (command === 'pane read') {
 		const screens = plan.screens?.[args[2]];
-		if (args.slice(3).join(' ') !== '--source visible') {
+		const source = args.slice(3).join(' ');
+		if (source !== '--source visible' && source !== '--source detection') {
 			stderr += `unexpected herdr command: ${args.join(' ')}\n`;
 			code = 2;
-		} else if (screens) stdout += screens[(plan.screenAt?.[args[2]] ?? 0) % screens.length];
+		} else if (source === '--source visible' && plan.scrolled?.[args[2]] !== undefined) stdout += plan.scrolled[args[2]];
+		else if (screens) stdout += screens[(plan.screenAt?.[args[2]] ?? 0) % screens.length];
 		else {
 			stderr += JSON.stringify({ error: { code: 'pane_not_found', message: `pane ${args[2]} not found` } });
 			code = 1;
 		}
+	} else if (command === 'pane scroll') {
+		if (args[3] === '0' && plan.scrolled) {
+			delete plan.scrolled[args[2]];
+			write(planFile, JSON.stringify(plan));
+		}
+		stdout += JSON.stringify({ id: 'cli:pane:scroll', result: { type: 'pane_info' } });
 	} else if (command === 'agent prompt' || command === 'agent send-keys') {
 		if (command === 'agent send-keys' && args[3] === 'shift+tab' && plan.screens?.[args[2]]) {
 			plan.screenAt = { ...plan.screenAt, [args[2]]: (plan.screenAt?.[args[2]] ?? 0) + 1 };

@@ -80,6 +80,7 @@ beforeAll(async () => {
 			if (!fixture) return connection.write(JSON.stringify({ id: request.id, result: { agents: [], workspaces: [], tabs: [] } }) + '\n');
 			const listing = await answerHerdrList(fixture.dir, request);
 			if (listing !== null) return connection.write(listing);
+			if (request.method === 'pane.scroll') return connection.write(JSON.stringify({ id: request.id, result: { type: 'pane_info' } }) + '\n');
 			appendFileSync(join(fixture.dir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
 			if (moveFails) return connection.write(JSON.stringify({ id: request.id, error: { message: moveFails } }) + '\n');
 			const planFile = join(fixture.dir, 'herdr.json');

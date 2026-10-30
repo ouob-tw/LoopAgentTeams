@@ -316,11 +316,20 @@ export function agentCommand(config: BoardConfig, args: string[]): Promise<Herdr
 	return herdrAct(config, ['agent', ...args]);
 }
 
-/** What the pane shows now, as plain text (`herdr pane read <pane> --source visible`), or why it
- *  cannot be read. */
-export async function readScreen(config: BoardConfig, pane: string): Promise<{ text: string } | { reason: string }> {
-	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, '--source', 'visible'], { timeoutMs: config.herdrTimeoutMs });
+/** The pane as plain text (`herdr pane read <pane> --source <source>`), or why it cannot be read:
+ *  `visible` is what it shows now, scrollback when it is scrolled up; `detection` is its bottom,
+ *  wherever it is scrolled to, and does not move it. */
+export async function readScreen(config: BoardConfig, pane: string, source: 'visible' | 'detection' = 'visible'): Promise<{ text: string } | { reason: string }> {
+	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, '--source', source], { timeoutMs: config.herdrTimeoutMs });
 	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout };
+}
+
+/** Scrolls the pane to its bottom over Herdr's socket, so no key reaches what runs in it (Herdr
+ *  0.9.5: `send-keys` has no key for it, and the keys it does send leave the pane scrolled). Returns
+ *  why it did not, or null. */
+export async function scrollToBottom(config: BoardConfig, pane: string): Promise<string | null> {
+	const scrolled = await socketRequest(config, 'pane.scroll', { pane_id: pane, offset_from_bottom: 0 });
+	return 'reason' in scrolled ? `Herdr 沒有把它捲到最下方：${scrolled.reason}` : null;
 }
 
 /** Closes a pane and what runs in it: `herdr pane close <pane>`. */

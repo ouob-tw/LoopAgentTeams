@@ -36,7 +36,7 @@ beforeAll(async () => {
 afterAll(() => fixture.cleanup());
 beforeEach(async () => {
 	checkRunHere(fixture.dir);
-	for (const file of ['herdr-calls.jsonl', 'herdr.json', 'hcom.json', 'hcom-calls.jsonl', 'hcom-added.json', 'hcom-events.jsonl', 'launch-args.json']) {
+	for (const file of ['herdr-calls.jsonl', 'herdr-socket-calls.jsonl', 'herdr.json', 'hcom.json', 'hcom-calls.jsonl', 'hcom-added.json', 'hcom-events.jsonl', 'launch-args.json']) {
 		rmSync(join(fixture.dir, file), { force: true });
 	}
 	rmSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), { force: true });
@@ -95,10 +95,13 @@ const MODE_LINE: Record<string, string> = {
 };
 /** Claude's screen in each mode of `order`, in the order Shift+Tab goes round them. */
 const claudeScreens = (order: string[]) => order.map((mode) => ['Claude Code v2.1.312', RULE, '❯ ', RULE, '  Sonnet 5.5 M · ~/projects/alpha', MODE_LINE[mode]].join('\n'));
+/** What the pane shows scrolled up: conversation, no input box. */
+const SCROLLBACK = 'earlier output\nmore earlier output';
 const FULL = ['bypassPermissions', 'auto', 'manual', 'acceptEdits', 'plan'];
 
 const lines = (file: string): any[] => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []);
 const keyPresses = () => lines(join(fixture.dir, 'herdr-calls.jsonl')).filter((call: string[]) => call[0] === 'agent' && call[1] === 'send-keys');
+const scrolls = () => lines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((call: string[]) => call[0] === 'pane' && call[1] === 'scroll');
 const hcomCalls = (): string[][] => lines(join(fixture.dir, 'hcom-calls.jsonl')).map((call: { args: string[] }) => call.args);
 const sentLog = (): any[] => lines(join(fixture.dir, 'board-state', 'sent-log.jsonl'));
 
@@ -125,6 +128,8 @@ test('a Claude agent is switched by Shift+Tab until its screen shows the mode, p
 		['agent', 'send-keys', pane('s-claude'), 'shift+tab'],
 		['agent', 'send-keys', pane('s-claude'), 'shift+tab']
 	]);
+	// Scrolled nowhere: only the presses reached it.
+	expect(scrolls()).toEqual([['pane', 'scroll', pane('s-claude'), '0']]);
 	// Nothing went through hcom: no stop, no resume.
 	expect(hcomCalls()).toEqual([]);
 	expect((await permission('s-claude')).current).toBe('manual');
@@ -134,6 +139,45 @@ test('a Claude agent is switched by Shift+Tab until its screen shows the mode, p
 	expect(again.status).toBe(200);
 	expect(again.body.entry).toMatchObject({ ok: true, permission: { outcome: 'already', presses: 0 } });
 	expect(keyPresses()).toHaveLength(2);
+});
+
+test('a pane scrolled up is brought to the bottom before its screen is read, by no key, and then switched', async () => {
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(FULL) }, scrolled: { [pane('s-claude')]: SCROLLBACK } });
+
+	const switched = await post({ session: 's-claude', mode: 'auto' });
+	expect(switched.status).toBe(200);
+	expect(switched.body.entry).toMatchObject({ ok: true, permission: { from: 'bypassPermissions', mode: 'auto', presses: 1, outcome: 'reached' } });
+	expect(scrolls()).toEqual([['pane', 'scroll', pane('s-claude'), '0']]);
+	expect(keyPresses()).toEqual([['agent', 'send-keys', pane('s-claude'), 'shift+tab']]);
+	expect(JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8')).scrolled).toEqual({});
+});
+
+test('reading the mode for the page tells it from the bottom and leaves a scrolled-up pane where it is', async () => {
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(FULL) }, scrolled: { [pane('s-claude')]: SCROLLBACK } });
+
+	const status = await permission('s-claude');
+	expect(status.current).toBe('bypassPermissions');
+	expect(status.reason).toBeNull();
+	expect(scrolls()).toEqual([]);
+	expect(JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8')).scrolled).toEqual({ [pane('s-claude')]: SCROLLBACK });
+});
+
+test('a dialog under a scrolled-up pane still stops the switch with its own reason, no key pressed', async () => {
+	setHerdr({ screens: { [pane('s-claude')]: ['Do you want to proceed?\n❯ 1. Yes\n  2. No'] }, scrolled: { [pane('s-claude')]: SCROLLBACK } });
+
+	const refused = await post({ session: 's-claude', mode: 'auto' });
+	expect(refused.status).toBe(409);
+	expect(refused.body.reason).toBe(SCREEN_DIALOG_REASON);
+	expect(keyPresses()).toEqual([]);
+});
+
+test('a pane that cannot be brought to the bottom is not pressed, and says why', async () => {
+	setHerdr({ screens: { [pane('s-claude')]: claudeScreens(FULL) }, fail: { 'pane scroll': { exit: 1, stderr: 'pane gone' } } });
+
+	const refused = await post({ session: 's-claude', mode: 'auto' });
+	expect(refused.status).toBe(409);
+	expect(refused.body.reason).toContain('pane gone');
+	expect(keyPresses()).toEqual([]);
 });
 
 test('a mode the round never shows leaves the agent in its starting mode, and is not offered after', async () => {
