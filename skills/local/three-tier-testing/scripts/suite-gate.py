@@ -884,20 +884,44 @@ def normalize_command(argv):
     return shlex.join(argv)
 
 
-OPERATOR_CHARS = frozenset('();<>|&')
-PIPE = re.compile(r'(?<![|>])\|(?!\|)')  # a pipe, not the `||` of an or-list or `>|`
+WORD_BREAK = ' \t\n;&|()<>'  # a `#` after one of these starts a comment
 
 
 def has_pipe(command):
-    """Whether the shell string has a pipe operator. Quoted and commented text does not
-    count; an unparsable string does, so it is never run without the check. A case pattern
-    (`x|y)`) still counts, which only costs a different shell."""
-    lexer = shlex.shlex(command, posix=False, punctuation_chars=True)
-    lexer.whitespace_split = True
-    try:
-        return any(PIPE.search(word) for word in lexer if set(word) <= OPERATOR_CHARS)
-    except ValueError:
-        return True
+    """Whether the shell string has a pipe operator, reading it as sh does: text in quotes
+    or after a backslash, a comment, `||` and `>|` are not pipes. A pipe inside `$(...)` in
+    double quotes and an unterminated quote count, so a real pipeline is never run without
+    the check. A case pattern (`x|y)`) also counts, which only costs a different shell."""
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if char == '\\':
+            i += 2
+            continue
+        if char in '\'"':
+            end = i + 1
+            while end < len(command) and command[end] != char:
+                end += 2 if char == '"' and command[end] == '\\' else 1
+            if end >= len(command):
+                return True
+            quoted = command[i:end]
+            if char == '"' and '|' in quoted and ('$(' in quoted or '`' in quoted):
+                return True
+            i = end + 1
+            continue
+        if char == '#' and (i == 0 or command[i - 1] in WORD_BREAK):
+            i = command.find('\n', i)
+            if i < 0:
+                return False
+            continue
+        if char == '|':
+            if command[i + 1:i + 2] == '|':
+                i += 2
+                continue
+            if command[i - 1:i] != '>':
+                return True
+        i += 1
+    return False
 
 
 @functools.lru_cache(maxsize=None)

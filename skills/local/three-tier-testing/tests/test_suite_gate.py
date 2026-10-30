@@ -338,12 +338,15 @@ class RunAndReuseTests(GateCase):
 
     def test_text_that_only_looks_like_a_pipe_keeps_running_under_plain_sh(self):
         for command in ('false || true', "echo 'a|b' >/dev/null; echo -e ok", 'echo "|"',
-                        'echo hi >| /dev/null', 'echo x # a | b', "grep -E 'x|y' /dev/null"):
+                        'echo hi >| /dev/null', 'echo x # a | b', "grep -E 'x|y' /dev/null",
+                        r'echo a\|b', "echo foo'|'bar", 'echo $# # a | b', 'echo "a \\" | b"'):
             self.assertEqual(gate.shell_argv(command), ['/bin/sh', '-c', command], command)
             self.assertFalse(gate.has_pipe(command), command)
         for command in ('a|b', 'a 2>&1 | b', '(a)|b', 'a |& b', "echo '|' | cat",
-                        'x=$(a | b)', "echo 'unbalanced | x"):
+                        'x=$(a | b)', "echo 'unbalanced | x", 'echo "$(a | b)"',
+                        'false x#y | cat', 'echo a#b | cat', 'echo ${#x} | cat'):
             self.assertTrue(gate.has_pipe(command), command)
+        self.assertEqual(self.gate('run', '--', 'false x#y | cat').returncode, 1)
 
     def test_the_fingerprint_of_a_piped_command_does_not_depend_on_the_shell_it_runs_in(self):
         self.gate('run', '--', 'true | cat')
