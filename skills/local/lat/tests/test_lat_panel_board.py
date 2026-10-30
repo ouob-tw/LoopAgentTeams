@@ -1010,9 +1010,11 @@ class LedgerTests(BoardTestCase):
         path.write_text(json.dumps(dict(session_id="s-a", status="active", **fields)))
 
     def ledger_tool(self, *args):
+        listing = self.root / "ledger-hcom-list.json"
+        listing.write_text(json.dumps([{"name": "orch"}, {"name": "tevu-impl302-zaga"}]))
         result = subprocess.run(
             [sys.executable, str(LEDGER_TOOL), *args, "--ledger", str(self.ledger), "--by", "orch"],
-            text=True, capture_output=True,
+            text=True, capture_output=True, env=dict(os.environ, LAT_LEDGER_HCOM_LIST=str(listing)),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 

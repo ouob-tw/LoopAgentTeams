@@ -31,6 +31,10 @@ QA 由 nanu-qa123-xxxx 負責。
 '''
 
 
+# The orchestrator the cards name: an untagged HCOM agent, so its full name is `nanu`.
+ORCH = {'name': 'nanu', 'base_name': 'nanu'}
+
+
 class DispatchCase(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -39,12 +43,14 @@ class DispatchCase(unittest.TestCase):
         self.workspace = self.root / 'ws'
         self.tasks = self.workspace / '.lat' / 'tasks'
         self.tasks.mkdir(parents=True)
-        self.agents = [{'name': 'nanu-impl123-fida', 'base_name': 'fida', 'tag': 'nanu-impl123'}]
+        self.agents = [{'name': 'nanu-impl123-fida', 'base_name': 'fida', 'tag': 'nanu-impl123'},
+                       ORCH]
+        self.listing = self.root / 'hcom-list.json'
 
     def run_script(self, *args, agents='default', env=None):
-        listing = self.root / 'hcom-list.json'
-        listing.write_text(json.dumps(self.agents if agents == 'default' else agents))
-        env = {**os.environ, 'LAT_DISPATCH_HCOM_LIST': str(listing), **(env or {})}
+        self.listing.write_text(json.dumps(self.agents if agents == 'default' else agents))
+        env = {**os.environ, 'LAT_DISPATCH_HCOM_LIST': str(self.listing),
+               'LAT_LEDGER_HCOM_LIST': str(self.listing), **(env or {})}
         return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
                               text=True, env=env, timeout=60)
 
@@ -105,25 +111,49 @@ class CardTests(DispatchCase):
 
     def test_agent_option_picks_one_of_several_agents_sharing_a_tag(self):
         pair = [{'name': 'nanu-impl123-fida', 'tag': 'nanu-impl123'},
-                {'name': 'nanu-impl123-gape', 'tag': 'nanu-impl123'}]
-        result = self.run_script(*self.card_args('--agent', 'nanu-impl123-gape'), agents=pair)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('- agent：nanu-impl123-gape\n',
-                      (self.tasks / '2026-10-23-nanu-impl123.md').read_text())
+                {'name': 'nanu-impl123-gape', 'tag': 'nanu-impl123'}, ORCH]
+        for given, number in (('nanu-impl123-gape', ''), ('gape', '-2')):
+            with self.subTest(agent=given):
+                result = self.run_script(*self.card_args('--agent', given), agents=pair)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('- agent：nanu-impl123-gape\n',
+                              (self.tasks / f'2026-10-23-nanu-impl123{number}.md').read_text())
         for other in ('nanu-impl123-zzzz', 'nanu-impl123'):
             with self.subTest(agent=other):
                 result = self.run_script(*self.card_args('--agent', other), agents=pair)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('is not among the agents', result.stderr)
+                self.assertIn(f'--agent: Unknown HCOM agent: {other}; HCOM lists: '
+                              'nanu-impl123-fida, nanu-impl123-gape', result.stderr)
+
+    def test_orchestrator_base_name_is_written_as_its_full_hcom_name(self):
+        tagged = {'name': 'lat-fix-nanu', 'base_name': 'nanu', 'tag': 'lat-fix'}
+        self.agents = [self.agents[0], tagged]
+        self.assertIn('- orchestrator：lat-fix-nanu\n', self.make_card().read_text())
+
+    def test_unknown_or_ambiguous_orchestrator_makes_no_card(self):
+        fida = self.agents[0]
+        for agents, reason in (
+                ([fida], '--orchestrator: Unknown HCOM agent: nanu; HCOM lists: '
+                         'nanu-impl123-fida; nothing written'),
+                ([fida, {'name': 'a-nanu'}, {'name': 'b-nanu'}],
+                 '--orchestrator: Ambiguous HCOM agent nanu: a-nanu, b-nanu')):
+            for extra in ((), ('--native', '--agent', 'nanu-research-web')):
+                with self.subTest(reason=reason, extra=extra):
+                    result = self.run_script(*self.card_args(*extra), agents=agents)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(reason, result.stderr)
+                    self.assertEqual(list(self.tasks.iterdir()), [])
 
     def test_unreadable_hcom_list_fails_without_creating_a_card(self):
         listing = self.root / 'missing.json'
         env = {**os.environ, 'LAT_DISPATCH_HCOM_LIST': str(listing)}
-        result = subprocess.run([sys.executable, str(SCRIPT), *self.card_args()],
-                                capture_output=True, text=True, env=env, timeout=60)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('unreadable', result.stderr)
-        self.assertEqual(list(self.tasks.iterdir()), [])
+        for extra in ((), ('--native', '--agent', 'nanu-research-web')):
+            with self.subTest(extra=extra):
+                result = subprocess.run([sys.executable, str(SCRIPT), *self.card_args(*extra)],
+                                        capture_output=True, text=True, env=env, timeout=60)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('unreadable', result.stderr)
+                self.assertEqual(list(self.tasks.iterdir()), [])
 
     def test_missing_live_actions_or_preflight_is_refused(self):
         for kwargs in ({'live': None}, {'preflight': None}, {'live': '  '}, {'preflight': ''}):
@@ -293,7 +323,7 @@ class BriefTests(DispatchCase):
         self.assertIn('`hcom send @lat-fix-nanu --name fida`', output.read_text())
 
     def test_untagged_agent_keeps_its_name(self):
-        self.agents = [{'name': 'fida', 'base_name': 'fida', 'tag': 'nanu-impl123'}]
+        self.agents = [{'name': 'fida', 'base_name': 'fida', 'tag': 'nanu-impl123'}, ORCH]
         _, _, result = self.brief()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--intent request --name nanu --file', result.stdout)
@@ -422,9 +452,9 @@ class WatchCompatibilityTests(DispatchCase):
         self.assertEqual(skipped, {})
         self.assertEqual(cards['nanu-impl123-fida']['status'], 'dispatched')
 
-    def test_native_card_needs_no_hcom_lookup_and_is_marked_for_the_watch(self):
+    def test_native_card_keeps_the_agent_name_and_is_marked_for_the_watch(self):
         result = self.run_script(*self.card_args('--native', '--agent', 'nanu-research-web'),
-                                 env={'LAT_DISPATCH_HCOM_LIST': str(self.root / 'absent.json')})
+                                 agents=[ORCH])
         self.assertEqual(result.returncode, 0, result.stderr)
         card = self.tasks / '2026-10-23-nanu-impl123.md'
         self.assertIn('- agent：nanu-research-web\n- orchestrator：nanu\n- native agent：是\n',
@@ -466,12 +496,15 @@ class LedgerCase(DispatchCase):
         self.sha = git(self.workspace, 'rev-parse', 'HEAD')
         self.ledger = self.workspace / '.lat' / 'ledgers' / 'round-1.json'
         self.ledger_env = {**os.environ, 'SUITE_GATE_STATE_DIR': str(self.root / 'gate'),
-                           'XDG_CONFIG_HOME': str(self.root / 'config')}
-        self.ledger_env.pop('SUITE_GATE_CONFIG', None)
+                           'XDG_CONFIG_HOME': str(self.root / 'config'),
+                           'LAT_LEDGER_HCOM_LIST': str(self.listing)}
+        for name in ('SUITE_GATE_CONFIG', 'HCOM_INSTANCE_NAME'):
+            self.ledger_env.pop(name, None)
         self.run_ledger('init', '--workspace', str(self.workspace), '--integration-branch', 'dev',
                         '--orchestrator', 'nanu')
 
     def run_ledger(self, *args):
+        self.listing.write_text(json.dumps(self.agents))
         result = subprocess.run(
             [sys.executable, str(LEDGER), args[0], '--ledger', str(self.ledger), *args[1:]],
             capture_output=True, text=True, env=self.ledger_env, timeout=60)

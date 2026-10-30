@@ -22,12 +22,14 @@ import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import run_cli, write_text_atomic
+from _lat_common import full_hcom_name, read_hcom_list, run_cli, same_controller, write_text_atomic
 
 LAT_DIR = Path(__file__).resolve().parents[1]
-# Overrides for tests: a fixed clock and another suite-gate script.
+# Overrides for tests: a fixed clock, another suite-gate script and a file for `hcom list --json`.
 NOW_ENV = 'LAT_LEDGER_NOW'
 GATE_ENV = 'LAT_LEDGER_SUITE_GATE'
+HCOM_LIST_ENV = 'LAT_LEDGER_HCOM_LIST'
+READ_ONLY = ('next', 'check', 'show')
 VERSION = 1
 STAGES = {'impl': '實作', 'review': '審查', 'qa-draft': 'QA 草稿', 'qa': '驗收',
           'merge': '整合', 'spec-review': 'Spec 審查', 'research': '研究', 'advisor': '參謀',
@@ -75,7 +77,27 @@ def loads_time(text):
 
 
 def actor(args):
-    return args.by or os.environ.get('HCOM_INSTANCE_NAME') or getpass.getuser()
+    return args.by
+
+
+def resolve_names(args):
+    """Turn --by (default $HCOM_INSTANCE_NAME), --orchestrator and --agent into HCOM full names
+    before anything is written; without any HCOM name the OS user acts. An unreadable HCOM
+    list refuses the command rather than writing a name it could not check."""
+    by = args.by or os.environ.get('HCOM_INSTANCE_NAME')
+    # (attribute, flag, name): init takes --orchestrator, assign/reassign --agent.
+    names = [('by', '--by', by),
+             ('orchestrator', '--orchestrator', getattr(args, 'orchestrator', None))]
+    if not getattr(args, 'native', False):
+        names.append(('agent', '--agent', getattr(args, 'agent', None)))
+    names = [entry for entry in names if entry[2]]
+    if names:
+        agents = {item['name'] for item in read_hcom_list(HCOM_LIST_ENV)
+                  if isinstance(item.get('name'), str)}
+        for attribute, flag, name in names:
+            setattr(args, attribute, full_hcom_name(agents, name, flag))
+    if not by:
+        args.by = getpass.getuser()
 
 
 def item_ids(text):
@@ -664,7 +686,7 @@ def cmd_done(args):
 def cmd_cancel(args):
     reason = required_text('--reason', args.reason)
     with transaction(args, 'cancel', args.id, reason) as doc:
-        if doc.get('orchestrator') and actor(args) != doc['orchestrator']:
+        if doc.get('orchestrator') and not same_controller(doc['orchestrator'], actor(args)):
             raise Failure(f'only the orchestrator {doc["orchestrator"]} may cancel items')
         item = find(doc, args.id)
         require_status(item, ('unassigned',) + OPEN, 'cancel')
@@ -844,7 +866,8 @@ def cmd_repair(args):
 def build_parser():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--ledger', required=True, help='absolute path of the ledger JSON')
-    common.add_argument('--by', help='who acts; default $HCOM_INSTANCE_NAME, then the OS user')
+    common.add_argument('--by', help='who acts; default $HCOM_INSTANCE_NAME, then the OS user. '
+                        'HCOM names are stored as full names')
     parser = argparse.ArgumentParser(description='LAT work ledger')
     commands = parser.add_subparsers(dest='command', required=True)
 
@@ -857,7 +880,8 @@ def build_parser():
     sub = command('init', 'Create a new ledger', item=False)
     sub.add_argument('--workspace', required=True, help='main workspace (absolute)')
     sub.add_argument('--integration-branch', help='branch every commit may reach, e.g. dev')
-    sub.add_argument('--orchestrator', help='HCOM name allowed to cancel items')
+    sub.add_argument('--orchestrator', help='HCOM name allowed to cancel items, stored as the '
+                     'full name')
     sub = command('add', 'Add an item', item=False)
     sub.add_argument('--ticket', required=True)
     sub.add_argument('--stage', required=True, choices=sorted(STAGES))
@@ -869,7 +893,9 @@ def build_parser():
     sub.add_argument('--branch', help='branch the commit evidence must reach')
     sub.add_argument('--repo', help='absolute path of the git repo the commit evidence lives in')
     sub = command('assign', 'Give an item to an agent')
-    sub.add_argument('--agent', required=True, help='full HCOM name')
+    sub.add_argument('--agent', required=True, help='HCOM name, stored as the full name')
+    sub.add_argument('--native', action='store_true',
+                     help='Claude built-in agent without an HCOM name: --agent is kept as given')
     sub.add_argument('--card', required=True, help='task card path')
     sub.add_argument('--deadline', help='required unless add set one')
     sub = command('start', 'Agent starts work')
@@ -897,7 +923,9 @@ def build_parser():
     sub = command('cancel', 'Cancel an item (orchestrator only)')
     sub.add_argument('--reason', required=True)
     sub = command('reassign', 'Hand an open item to another agent')
-    sub.add_argument('--agent', required=True)
+    sub.add_argument('--agent', required=True, help='HCOM name, stored as the full name')
+    sub.add_argument('--native', action='store_true',
+                     help='Claude built-in agent without an HCOM name: --agent is kept as given')
     sub.add_argument('--card')
     sub.add_argument('--reason', required=True)
     for name, text in (('next', 'Items ready to dispatch'), ('check', 'Verify every item'),
@@ -916,6 +944,8 @@ def main():
                 'done': cmd_done, 'cancel': cmd_cancel, 'reassign': cmd_reassign,
                 'next': cmd_next, 'check': cmd_check, 'show': cmd_show, 'repair': cmd_repair}
     try:
+        if args.command not in READ_ONLY:
+            resolve_names(args)
         return handlers[args.command](args) or 0
     except (Failure, ValueError, OSError) as error:
         print(f'lat-ledger: {error}', file=sys.stderr)

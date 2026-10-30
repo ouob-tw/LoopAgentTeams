@@ -433,6 +433,8 @@
        "tests": ["skills/local/lat/tests/test_lat_commit_ref.py"]},
       {"paths": ["skills/local/lat/scripts/lat-dispatch.py"],
        "tests": ["skills/local/lat/tests/test_lat_dispatch.py"]},
+      {"paths": ["skills/local/lat/scripts/lat-ledger.py"],
+       "tests": ["skills/local/lat/tests/test_lat_ledger.py", "skills/local/lat/tests/test_lat_dispatch.py", "skills/local/lat/tests/test_lat_session.py", "skills/local/lat/tests/test_lat_watch.py", "skills/local/lat/tests/test_lat_panel_board.py"]},
       {"paths": ["skills/local/lat/scripts/_lat_common.py", "skills/local/lat/scripts/lat_decision_status.py"],
        "tests": ["skills/local/lat/tests/test_*.py"]},
       {"paths": ["skills/local/lat/herdr-panel/**"],

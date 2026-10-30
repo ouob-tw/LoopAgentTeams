@@ -23,7 +23,8 @@ import time
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import process_starttime, run_cli, write_json_atomic, read_hcom_pauses
+from _lat_common import (full_hcom_name, process_starttime, run_cli, same_controller,
+                         write_json_atomic, read_hcom_pauses)
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 MARKER = 'HCOM_PROCESS_ID'
@@ -741,11 +742,17 @@ def keep(args):
         if args.pid in world.protected:
             print(f'Refused: PID {args.pid} is never handled ({world.protected[args.pid]})')
             return 1
+        try:
+            by = full_hcom_name({agent['name'] for agent in world.agents.values()}, args.by,
+                                '--by')
+        except ValueError as error:
+            print(f'Refused: {error}')
+            return 1
         record = {'pid': process.pid, 'starttime': process.starttime,
                   'process_id': process.env[MARKER],
                   'agent': agent_name(process.env[MARKER], world.processes, world.agents),
                   'command': ' '.join(process.argv)[:COMMAND_CHARS], 'reason': args.reason.strip(),
-                  'until': until.isoformat(timespec='seconds'), 'by': args.by,
+                  'until': until.isoformat(timespec='seconds'), 'by': by,
                   'session': args.session, 'created_at': now_utc().isoformat(timespec='seconds')}
         keeps = [item for item in keeps
                  if (item['pid'], item['starttime']) != (process.pid, process.starttime)]
@@ -769,7 +776,7 @@ def release(args):
         moment = now_utc().isoformat(timespec='seconds')
         count = 0
         for item in keeps:
-            if item['by'] == args.by and not item.get('released_at'):
+            if same_controller(item['by'], args.by) and not item.get('released_at'):
                 item['released_at'] = moment
                 count += 1
         if count:
@@ -890,7 +897,8 @@ def main():
     hold.add_argument('--pid', type=int, required=True)
     hold.add_argument('--reason', required=True)
     hold.add_argument('--until', required=True, help='ISO 8601 expiry time')
-    hold.add_argument('--by', required=True, help='HCOM name of the orchestrator keeping it')
+    hold.add_argument('--by', required=True,
+                      help='HCOM name of the orchestrator keeping it, stored as the full name')
     hold.add_argument('--session', required=True, help="The orchestrator's LAT session ID")
     free = sub.add_parser('release', help='End every keep an orchestrator made (on deactivate)')
     free.add_argument('--by', required=True, help='HCOM name of the orchestrator')
