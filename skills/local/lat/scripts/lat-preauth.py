@@ -67,6 +67,11 @@ TRACKER_REPO = re.compile(r'gh issue\b[^`\n]*?(?<!\S)-R\s+([\w.-]+/[\w.-]+)')
 SESSION_ENVS = ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')
 ENDED = ('ended', 'completed', 'cancelled')
 HUMAN_ANSWERED = ('answered', 'approved')
+# Older records head the answer section `## 真人答覆`.
+ANSWER_HEADINGS = ('答覆', '真人答覆')
+MUST_ASK_WORDS = ('spend', 'delete-user-data')
+# Advisors may settle these within may_settle, so they only count when it is empty.
+SETTLEABLE_WORDS = ('change-acceptance', 'new-ticket', 'scope-expansion')
 DECISION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
 GRANT_KEYS = ('allow', 'branches')
 RESULTS = ('succeeded', 'failed')
@@ -855,6 +860,66 @@ def human_answer_problems(path):
                for line in section):
         problems.append(f'{path.stem} has no answer section with a `- 來源：` line')
     return problems, text
+
+
+def answer_names_revision(section, revision, record_revision):
+    """Whether an answer section answers `revision`. One whose heading and question line name
+    no version answers `record_revision`, a list of at most one."""
+    named = [line for line in section
+             if line.startswith('## ') or re.match(r'^- (題目|題目版本|題號版本|revision)[：:]', line)]
+    versions = re.findall(r'(?<![0-9A-Za-z_-])r([1-9][0-9]*)(?![0-9A-Za-z_-])', '\n'.join(named))
+    return revision in (versions or record_revision)
+
+
+def prior_promise_problem(basis, decisions):
+    """Why `<ID> r<N>` names no recorded human answer, or None when it does."""
+    match = re.fullmatch(r'(\S+) r([1-9][0-9]*)', basis)
+    if not match or not DECISION_ID.fullmatch(match[1]):
+        return f'依據格式應為 `<待決 ID> r<版本>`：{basis}'
+    path = Path(decisions) / f'{match[1]}.md'
+    if not path.is_file():
+        return f'{match[1]} 紀錄不存在'
+    try:
+        text = path.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError) as error:
+        return f'{match[1]} 紀錄讀不出（{error}）'
+    # A pending record was reopened at a new version, so a section naming no version answers
+    # an earlier one that it cannot tell.
+    record_revision = ([] if read_decision_status(path).status == 'pending' else
+                       re.findall(r'^- version:\s*r([0-9]+)\b', text, re.MULTILINE | re.IGNORECASE)[:1])
+    if not any(re.match(r'^- 來源：\s*\S', line)
+               and answer_names_revision(section, match[2], record_revision)
+               for heading in ANSWER_HEADINGS for section in sections(text, heading)
+               for line in section):
+        return f'{match[1]} 沒有 r{match[2]} 的真人答覆（`## 答覆` 段落與 `- 來源：` 行）'
+    return None
+
+
+def must_ask_problem(basis):
+    """`(error, warning)` for a must-ask basis against the global [advisor] section, which is
+    the only layer that counts; settings that cannot be read only warn."""
+    if basis in MUST_ASK_WORDS:
+        return None, None
+    layers = load_layers(None)[0]
+    if layers[1].problems:
+        return None, '；'.join(layers[1].problems)
+    settings = advisor_settings(layers)
+    if basis in SETTLEABLE_WORDS:
+        if settings.get('may_settle', ([],))[0]:
+            return f'全域 may_settle 不是空的，{basis} 可能由參謀定案，照常諮詢', None
+        return None, None
+    if basis in [item.strip() for item in settings.get('must_ask', ([],))[0]]:
+        return None, None
+    return f'依據不在全域 must_ask 內，也不是 {"、".join(MUST_ASK_WORDS)}：{basis}', None
+
+
+def exempt_basis_problem(category, basis, decisions):
+    """`(error, warning)` for an exemption that needs a basis; both None when it holds."""
+    if not basis:
+        return '缺依據行（- exempt-basis:）', None
+    if category == 'prior-promise':
+        return prior_promise_problem(basis, decisions), None
+    return must_ask_problem(basis)
 
 
 def grant_words(layer, action, values):

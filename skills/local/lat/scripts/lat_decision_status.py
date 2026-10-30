@@ -4,6 +4,10 @@ import re
 from typing import NamedTuple
 
 
+# Exemptions that need a `- exempt-basis:` line, checked by lat-preauth's exempt_basis_problem.
+EXEMPT_BASIS_CATEGORIES = ('prior-promise', 'must-ask')
+
+
 class DecisionStatus(NamedTuple):
     status: str | None
     error: str | None
@@ -46,7 +50,7 @@ def advisor_error(value, help_record=False):
         return None
     allowed = {'exempt': ('spec-confirmation', 'ticket-confirmation',
                            'requirement-discussion', 'account-quota', 'preauth-ask',
-                           'user-account'),
+                           'user-account') + EXEMPT_BASIS_CATEGORIES,
                'late': ('needs-human', 'resolved', 'self-check')}
     if words[0] not in allowed:
         return f'未知參謀結論：{words[0]}'
@@ -66,6 +70,22 @@ def read_advisor_words(path):
         if match:
             return match.group(1).strip().lower().split()
     return []
+
+
+def exempt_basis_category(words):
+    """The category of advisor words that need a basis line, or None for any other words."""
+    if words[:1] == ['exempt'] and words[1:2] and words[1] in EXEMPT_BASIS_CATEGORIES:
+        return words[1]
+    return None
+
+
+def read_exempt_basis(path):
+    """The first `- exempt-basis:` value with its case kept, or None when empty or absent."""
+    for line in Path(path).read_text(encoding='utf-8').splitlines():
+        match = re.match(r'^- exempt-basis:(.*)$', line, re.IGNORECASE)
+        if match:
+            return match.group(1).strip() or None
+    return None
 
 
 def read_spec_consensus_error(path, message):
