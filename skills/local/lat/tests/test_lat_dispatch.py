@@ -868,7 +868,7 @@ class CardCloseTests(LedgerCase):
         self.assertEqual(card.read_text(), before)
         self.assertEqual(self.ledger.read_text(), stored)
 
-    def close_in_process(self, card, wrap_ledger=None, fail_unlink=None):
+    def close_in_process(self, card, wrap_ledger=None, fail_unlink=None, fail_show=False):
         spec = importlib.util.spec_from_file_location('lat_dispatch_close', SCRIPT)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -884,6 +884,8 @@ class CardCloseTests(LedgerCase):
             return original(path, *a, **k)
 
         def ledger(args, command, *rest):
+            if fail_show and command == 'show':
+                raise module.Failure('lat-ledger show timed out')
             result = run(args, command, *rest)
             if wrap_ledger and command == 'update':
                 raise module.Failure('lat-ledger update timed out')
@@ -914,6 +916,14 @@ class CardCloseTests(LedgerCase):
         message = self.close_in_process(card, wrap_ledger=True)
         self.assertIn('timed out', message)
         self.assert_back_in_place(card, before)
+
+    def test_unreadable_row_after_a_failed_update_names_the_fix_command(self):
+        card = self.ledger_card()
+        message = self.close_in_process(card, wrap_ledger=True, fail_show=True)
+        self.assertIn('could not be put back', message)
+        self.assertIn(f'lat-ledger.py update 1 --ledger {self.ledger} --card {card}', message)
+        self.assertEqual(list((self.tasks / 'done').iterdir()), [])
+        self.assertTrue(card.exists())
 
     def test_malformed_ledger_row_field_is_refused_before_anything_changes(self):
         card = self.ledger_card()

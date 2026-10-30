@@ -497,7 +497,7 @@ def close_card(args):
         try:
             if ledger_points_to() not in (None, str(path)):
                 point_ledger_at(path)
-        except (Failure, ValueError) as error:
+        except (Failure, ValueError, KeyError, TypeError) as error:
             target.unlink(missing_ok=True)
             raise Failure(f'{reason}; the ledger row could not be put back ({error}); '
                           f'the original card is untouched, fix the row with: {fix}') from None
