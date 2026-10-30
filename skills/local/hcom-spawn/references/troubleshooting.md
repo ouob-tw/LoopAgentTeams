@@ -71,7 +71,7 @@ HCOM 接回同一個 session 時換模型尚未驗證，所以換模型改用新
   1. 切換前先執行 `codex-multi-auth status`，確認目前 current／pinned 帳號及受影響的 Agent 使用的帳號；不能把目前的全域選擇當成它啟動時的帳號。
   2. 再執行 `codex-multi-auth check` 即時查證該帳號的額度。步驟 1 的帳號確認與此步驟的額度為 0 兩項都成立，才可切換；無法確認就不切換也不重啟。若額度已恢復，改走「同帳號補到額度」，不換帳號。
   3. 記下 session ID、工作目錄、未提交成果與原本的 model／effort／權限參數；`hcom kill <名稱> --name <自身名稱>` 結束舊程序並確認退出，再 `codex-multi-auth switch <n>`，核對帳號並做下方「帳號探測」，通過後依 [SKILL.md 的「接回已關閉的 Agent」](../SKILL.md#接回已關閉的-agent) 以原 session ID 續接。
-- **帳號探測**：換帳號（上面的「換帳號續接」或使用者要求換帳號）之後，續接或在新釘選的帳號上啟動 Codex 前，先用要跑的模型與 effort 確認這個帳號跑得了它；沒換過帳號的一般啟動不必探測。探測走 `codex-multi-auth switch` 釘選（目前使用）的帳號：
+- **帳號探測**：換帳號（釘選新帳號）後，續接任何 Agent 前；以及在還沒確認跑得了該模型的帳號上啟動 Codex 前（例如帳號、釘選或額度重置後第一次啟動某個模型），先用要跑的模型與 effort 確認這個帳號跑得了它。這個帳號與模型的組合本次已確認能跑的，不必再探測。探測走 `codex-multi-auth switch` 釘選（目前使用）的帳號：
 
   ```bash
   codex exec -m <模型> -c 'model_reasoning_effort="<effort>"' --skip-git-repo-check --ephemeral -s read-only 'Reply with OK only.' </dev/null
