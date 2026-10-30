@@ -12,6 +12,7 @@ import re
 import textwrap
 import time
 from typing import NamedTuple
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from lat_decision_status import read_decision_kind, read_decision_session, read_decision_status
@@ -327,9 +328,64 @@ def question_details(question):
     return _split_details(question.get("body") or "")[1]
 
 
+_VISUAL_MARKER = "【示意】"
+
+
+# The links are the body's last lines, so the same words elsewhere stay text.
+_VISUAL_LINES = re.compile(rf"(?:^{_VISUAL_MARKER}.*\n?)+\Z", re.MULTILINE)
+
+
+def visual_link_error(url):
+    """Why ``url`` cannot be a question's demo link, or ``None``."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return f"not a valid http or https link: {url!r}"
+    if parts.scheme not in ("http", "https") or not host:
+        return f"only http and https links are accepted: {url!r}"
+    if " " in url or not url.isprintable():
+        return f"http or https link has spaces or control characters: {url!r}"
+    return None
+
+
+def _visual_lines(body):
+    match = _VISUAL_LINES.search(body)
+    return match.group().splitlines() if match else []
+
+
+def _check_visual_links(body):
+    for line in _visual_lines(body):
+        error = visual_link_error(line.removeprefix(_VISUAL_MARKER).strip())
+        if error:
+            raise ValueError(f"demo link refused: {error}")
+
+
+def add_visual_links(text, urls):
+    """Append ``urls`` to one question's section text as its last lines."""
+    if not urls:
+        return text
+    for url in urls:
+        error = visual_link_error(url)
+        if error:
+            raise ValueError(f"demo link refused: {error}")
+    lines = "\n".join(_VISUAL_MARKER + url for url in urls)
+    return f"{text.rstrip()}\n\n{lines}\n"
+
+
+def question_visuals(question):
+    """The question's http and https demo links, in the order written."""
+    urls = [line.removeprefix(_VISUAL_MARKER).strip()
+            for line in _visual_lines(question.get("body") or "")]
+    return [url for url in urls if visual_link_error(url) is None]
+
+
 def _question_display_parts(question):
     """Split an unindented arrow paragraph from selectable content."""
     body = _split_details(question.get("body") or "")[0]
+    visuals = _VISUAL_LINES.search(body)
+    if visuals:
+        body = body[:visuals.start()].rstrip("\n")
     marker = _RECOMMENDATION.search(body)
     if marker is None:
         return body, ""
@@ -499,6 +555,9 @@ def question_plain_text(question):
     context = question_context(question)
     if context:
         blocks.append(plain_markdown(context))
+    visuals = question_visuals(question)
+    if visuals:
+        blocks.append("\n".join(f"看示意：{url}" for url in visuals))
     parsed = parse_question_options(question)
     if parsed.options:
         lines = ["（複選題，可選多項）"] if parsed.kind == "multi" else []
@@ -866,6 +925,7 @@ def _question_input(text):
         raise ValueError("question file must start with one '## <question title>' heading")
     body = (match.group("body") or "").strip("\n")
     _check_details_markers(body)
+    _check_visual_links(body)
     return {"title": match.group("title"), "body": body}
 
 

@@ -31,6 +31,7 @@ from questions import (
     question_context,
     question_details,
     question_recommendation,
+    question_visuals,
     render_answer_area,
 )
 from bindings import (
@@ -93,7 +94,7 @@ def _board_question(section, asked_times):
     parsed = parse_question_options(section)
     letters = _option_letters(parsed)
     answer, note = _answer_text_and_note(section["answer"] or "")
-    return {
+    question = {
         "id": section["id"],
         "revision": section["revision"],
         "status": "submitted" if section["status"] == "ready" else section["status"],
@@ -117,6 +118,10 @@ def _board_question(section, asked_times):
         "recorded_at": section["recorded_at"],
         "section_sha256": _section_sha256(section),
     }
+    visuals = question_visuals(section)
+    if visuals:
+        question["visuals"] = visuals
+    return question
 
 
 def _unique_sections(document):

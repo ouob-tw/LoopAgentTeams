@@ -77,13 +77,15 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
    uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question ask \
      --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md \
      --advisor "<參謀結論>" [--help-question] \
-     [--question "<問題>"] [--authority-gap "<授權缺口>"] [--blocked-work "<受阻工作>"]
+     [--question "<問題>"] [--authority-gap "<授權缺口>"] [--blocked-work "<受阻工作>"] \
+     [--visual "<示意網址>"]
    ```
 
    - 紀錄不存在時建立 `.lat/decisions/<ID>.md`：`pending` 狀態、參謀行、session、版本、問題、選項、授權缺口與受阻工作。`--advisor` 必填，寫法見 [參謀](advisors.md#待決紀錄的狀態與參謀行)；session 取問題檔綁定的 session，沒有綁定時取 client 的 session 環境變數，可用 `--session-id` 指定。問題預設為標題、選項取自題目；授權缺口預設「需使用者決定」、受阻工作預設「未指定」，只適合簡單題，有實際缺口或受阻工作時明確給。
    - `--help-question` 標成求助題：紀錄寫 `- kind: help`，題目沒有單選「已完成」選項時拒絕，不改任何檔。
    - 紀錄已存在時就是改版：只接受 `--help-question`（把紀錄的 `- kind:` 改成或補上 `help`），其他紀錄欄位參數一律拒絕。寫入後紀錄的版本行改為面板版本。紀錄已非 `pending`（例如答覆含糊要重問）時，題目內容須有改變，寫入後狀態改回 `pending`，舊答覆保留；內容相同則拒絕，除非上次已寫入面板、但紀錄還停在較舊版本（同步中斷），這時重跑同一指令會補完。題目已從問題檔歸檔時，從紀錄版本的下一版開始。
    - 寫題的其餘行為與下方 `question upsert` 相同（清理、印 `<ID> r<版本>`、確認題職責提醒、預先授權重查、側欄）；寫入失敗時剛建立的紀錄會移除。最後執行與「待決題目檢查」相同的檢查（帶綁定的 session），有問題時以非零結束，依該節表格處理。
+   - `--visual`（可重複，`question upsert` 也接受）寫入示意連結，只接受 http／https，其他一律拒絕寫題，不改任何檔。連結存成題目內文最後的 `【示意】<網址>` 行，所以換連結算改題、會升版；同一題重寫時要再帶一次，沒帶就是拿掉。面板在背景句之後顯示 `[看示意] <網址>`，點擊或按 Enter 開啟；這台主機開不了瀏覽器時，狀態列顯示網址供複製。看板的待答題目卡與主控頁題目列顯示「看示意」按鈕，在新分頁開啟。聊天顯示的題目列出 `看示意：<網址>`。
    - Spec 確認題寫題後另跑共識檢查工具寫入共識行，見 [Spec 共識](consensus.md)。
 
 3. 檢查通過後依「聊天提問格式」提問；使用者可在面板或聊天作答。
