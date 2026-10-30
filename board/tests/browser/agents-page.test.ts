@@ -1523,6 +1523,8 @@ test.skipIf(!CHROME)('a Claude agent\'s options pop-up shows the mode its screen
 		await click(OPTIONS);
 		await tab.until(`${CURRENT} === 'bypass permissions'`, 'the mode read off its screen');
 		expect(await tab.eval(`document.querySelectorAll('${MODES} button[data-mode]').length`)).toBe(3);
+		// No fixed how-to note under the modes.
+		expect(await tab.eval(`document.querySelector('${MODES}').innerText.includes('點一下就切換')`)).toBe(false);
 		// Only the wake has wake options.
 		expect(await tab.eval(`!!document.querySelector('.dock .popup [aria-label="喚醒選項"]')`)).toBe(false);
 		// The current mode does nothing.
