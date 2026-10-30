@@ -385,15 +385,19 @@ def branch_exists(repo, branch):
 
 
 def default_branches(repo):
-    """The repo's default branch as the refs that exist: what origin/HEAD names, else main or
-    master, each local or remote-tracking."""
+    """The repo's default branch as the refs that exist: what origin/HEAD names, else (no
+    origin/HEAD, or it names a gone ref) main or master, each local or remote-tracking."""
     try:
         head = run_cli(['git', '-C', repo, 'symbolic-ref', '--quiet', '--short',
                         'refs/remotes/origin/HEAD'], timeout=30).strip()
-        candidates = [head.removeprefix('origin/'), head]
+        named = [head.removeprefix('origin/'), head]
     except ValueError:
-        candidates = ['main', 'master', 'origin/main', 'origin/master']
-    return [branch for branch in candidates if branch_exists(repo, branch)]
+        named = []
+    for candidates in (named, ['main', 'master', 'origin/main', 'origin/master']):
+        found = [branch for branch in candidates if branch_exists(repo, branch)]
+        if found:
+            return found
+    return []
 
 
 def verify_commit(doc, item, value):
@@ -420,8 +424,7 @@ def verify_commit(doc, item, value):
     if not branches:
         return sha, f'commit {value}: no branch to check reachability (set --branch on the item)'
     hint = ''
-    if (item.get('branch') and not doc.get('integration_branch')
-            and not branch_exists(workspace, item['branch'])):
+    if not doc.get('integration_branch') and not branch_exists(workspace, item['branch']):
         hint = (f'; task branch {item["branch"]} no longer exists, name the branch the commit '
                 f'reached with `update {item["id"]} --branch <branch>`')
         branches = default_branches(workspace)

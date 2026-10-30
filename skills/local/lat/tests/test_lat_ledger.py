@@ -692,6 +692,7 @@ class DeletedBranchWithoutIntegrationTests(LedgerCase):
         git(self.workspace, 'branch', '-q', '-D', 'side')
         result = self.run_ledger('check')
         self.assertEqual(result.returncode, 1)
+        self.assertIn('no default branch found', result.stdout)
         self.assertIn('task branch side no longer exists', result.stdout)
         self.assertIn(f'update {item} --branch <branch>', result.stdout)
         self.ok('update', str(item), '--branch', 'dev')
@@ -708,6 +709,13 @@ class DeletedBranchWithoutIntegrationTests(LedgerCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('is not reachable from origin/trunk', result.stdout)
         git(self.workspace, 'update-ref', 'refs/remotes/origin/trunk', self.side)
+        self.ok('check')
+
+    def test_origin_head_naming_a_gone_ref_falls_back_to_main(self):
+        self.closed_on_side()
+        self.merge_side_into_main()
+        git(self.workspace, 'branch', '-q', '-D', 'side')
+        git(self.workspace, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/gone')
         self.ok('check')
 
     def test_a_surviving_task_branch_is_still_the_only_branch_checked(self):
