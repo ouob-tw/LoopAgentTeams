@@ -44,7 +44,7 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 ## 啟動
 
-tag 用 `<自身名稱>-<主題>`，主題一兩個英文小寫單字（`review`、`docs`、`api-probe`）。HCOM 會把 Agent 名稱變成 `<tag>-xxxx`，所以同一位召喚者開的每組都認得出來，也能用 `@<tag>-` 一次傳給整組。
+tag 用 `<自身名稱>-<主題>`，主題一兩個英文小寫單字（`review`、`docs`、`api-probe`）。HCOM 會把 Agent 名稱變成 `<tag>-xxxx`，所以同一位召喚者開的每組都認得出來，也能用 `@<tag>-` 一次傳給整組；它只比對完全相同的 tag，要傳給多組就逐組指定或列出名稱（`@<自身名稱>-` 傳不到 `<自身名稱>-<主題>` 的各組）。
 
 ```bash
 hcom 1 codex --tag <自身名稱>-<主題> --go --name <自身名稱> \
