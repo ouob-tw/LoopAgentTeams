@@ -1481,11 +1481,18 @@ class BoardTests(PreauthCase):
         self.assertIn(f'看板 project：[actions.push] allow = true', writes)
         self.assertNotIn('actions.merge', writes)
         self.assertNotIn('deploy-prod', writes)
-        with open(self.state / 'preauth-writes.jsonl', 'a') as log:
-            log.write('not json\n')
-        result = self.run_tool('report')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('讀不懂', result.stdout.split('### 設定寫入')[1])
+        for bad in (b'not json\n', b'\xff\n', b'[]\n',
+                    json.dumps(dict(at='later', file=str(self.global_file), changes=[])).encode() + b'\n',
+                    json.dumps(dict(at='2026-06-01T00:00:00+00:00', file=str(self.global_file),
+                                    changes=[{}])).encode() + b'\n'):
+            with open(self.state / 'preauth-writes.jsonl', 'ab') as log:
+                log.write(bad)
+            result = self.run_tool('report')
+            self.assertEqual(result.returncode, 0, (bad, result.stderr))
+            self.assertIn('讀不懂', result.stdout.split('### 設定寫入')[1])
+            self.assertIn('allow = false', result.stdout)
+            (self.state / 'preauth-writes.jsonl').write_bytes(
+                (self.state / 'preauth-writes.jsonl').read_bytes().removesuffix(bad))
 
     def test_the_project_layer_from_a_worktree_is_the_main_checkouts_file(self):
         self.write(self.project_file, '[actions.deploy-test]\nallow = true\ntarget = "stage"\n')

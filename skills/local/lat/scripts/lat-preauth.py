@@ -1233,18 +1233,21 @@ def board_writes_since(top, record):
     since = parse_time(str(record.get('started_at_utc', '')))
     found = []
     try:
-        lines = path.read_text(encoding='utf-8').splitlines()
+        lines = path.read_bytes().decode('utf-8', errors='replace').splitlines()
     except FileNotFoundError:
         return found
     for number, line in enumerate(lines, 1):
         try:
             entry = json.loads(line)
             moment = parse_time(entry['at'])
+            if moment is None or not all({'section', 'key', 'value'} <= change.keys()
+                                         for change in entry['changes']):
+                raise ValueError('not a board write record')
         except (ValueError, KeyError, TypeError, AttributeError):
             # The log spans projects: one bad line must not take every project's report with it.
             found.append(dict(kind='board', unreadable=f'{path} 第 {number} 行'))
             continue
-        if entry.get('file') in files and (since is None or (moment and moment >= since)):
+        if entry.get('file') in files and (since is None or moment >= since):
             found.append(entry)
     return found
 
