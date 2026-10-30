@@ -313,12 +313,10 @@ def activate(args):
     # The wait check looks up waits/<name>.json, which lat-watch writes under the full name.
     watch = watch_module()
     agents = watch.list_hcom()
-    try:
-        args.hcom_name = watch.resolve_agent_name(agents, args.hcom_name, required=True)
-    except ValueError as error:
-        if str(error).startswith('Unknown'):
-            raise ValueError(f'{error}; HCOM lists: {", ".join(sorted(agents)) or "no agents"}') from error
-        raise
+    args.hcom_name = watch.resolve_agent_name(agents, args.hcom_name, required=False)
+    if args.hcom_name not in agents:
+        raise ValueError(f'Unknown HCOM agent: {args.hcom_name}; '
+                         f'HCOM lists: {", ".join(sorted(agents)) or "no agents"}')
     duty = None
     if (args.duty_text is None) != (args.duty_expected is None):
         raise ValueError('--duty-text and --duty-expected go together; nothing activated')
@@ -335,6 +333,7 @@ def activate(args):
     path = session_path(workspace, sid)
     original = current_bytes(path)
     new_round = True
+    stale_watcher = None
     if path.exists():
         existing = read_json(path)
         if existing.get('status') in ENDED:
@@ -373,11 +372,7 @@ def activate(args):
                    if not (upgrade and key == 'hcom_name')):
                 raise ValueError('Existing session record differs; do not reset or rebind it')
             if upgrade:
-                _, lock_path, _ = watcher_paths(existing)
-                lock_path.parent.mkdir(parents=True, exist_ok=True)
-                with lock_path.open('a') as lock:
-                    fcntl.flock(lock, fcntl.LOCK_EX)
-                    _stop_watcher_locked(existing)  # it runs under the old name; ensure_watcher restarts it
+                stale_watcher = existing
                 record = dict(existing, hcom_name=record['hcom_name'])
             else:
                 record = existing
@@ -431,6 +426,12 @@ def activate(args):
             print(f'側欄未更新：{display["reason"]}')
     else:
         print('面板未啟用，略過綁定')
+    if stale_watcher:
+        # It runs under the old name, so the full-name command would not match it.
+        _, lock_path, _ = watcher_paths(stale_watcher)
+        with lock_path.open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            _stop_watcher_locked(stale_watcher)
     if ensure_watcher(record, path) is None:
         raise ValueError('Session was deactivated while starting its watcher')
     start_autoclean(workspace)
