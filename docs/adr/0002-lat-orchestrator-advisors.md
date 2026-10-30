@@ -28,6 +28,7 @@ status: accepted
    參謀行為 `needs-human`、`exempt <類別>` 或 `late <結論>`。例外類別固定為 Spec 確認、需求討論、帳號額度三種。
    - 為什麼：先前經驗是只寫規則擋不住（見 ouob-tw/LoopAgentTeams-work#57）。工具只能核對紀錄格式，無法證明真的諮詢過，這是可接受的界線。
    - 2026-10-21 補記（ouob-tw/LoopAgentTeams-work#98）：例外類別增為四種，新增 `ticket-confirmation`（短流程確認題），因為短流程沒有 Spec 共識行可引用；工具接受的類別見 `skills/local/lat/scripts/lat_decision_status.py`。
+   - 2026-10-30 補記（ouob-tw/LoopAgentTeams-work#418）：新增 `prior-promise`（兌現已記錄的真人條件）與 `must-ask`（只落在一定要問的類別），因為這類題目的結論在開參謀前就已確定；兩類都要寫 `- exempt-basis:` 依據行，由工具核對。
 
 5. **參謀照常建任務卡、受停住監控看管，回覆後以完整 HCOM 名稱登記待命，回覆主控用 `--intent inform`。**
    - 為什麼：參謀停住或消失時，主控必須被叫醒，不能永遠等。實測發現短名登記不生效、以 request 回覆會被 HCOM 的「未回應」通知解除待命，所以這兩點寫進做法（ouob-tw/LoopAgentTeams-work#73、#75）。
