@@ -9,7 +9,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" check --action <動
 uv run --no-project python "$lat_dir/scripts/lat-preauth.py" show
 ```
 
-- `check` 印一行 `allow <動作> <標的> — basis: …`（每個生效值來自哪一層、哪一段與 `source`）或 `ask <動作> <標的> — reasons: …`；結束碼 `allow` 為 0、`ask` 為 1、工具出錯為 2。`--json` 輸出 `verdict`、`action`、`target`、`basis`、`reasons`，以及與 `reasons` 同順序的 `reason_kinds`，每個原因一個類別：`allow-false`（某層明寫 `allow = false`）、`condition`（下方「固定條件」不成立，含沒寫 `target` 或整合分支）、`unset`（沒有任何層寫 `allow` 或 `branches`）、`always-ask`（任何設定都不能預先授權）、`error`（設定讀不出、參數缺漏等 `check` 無法判斷）。參謀免諮詢類別 `exempt preauth-ask` 依這個欄位判斷，見 [參謀](advisors.md)。
+- `check` 印一行 `allow <動作> <標的> — basis: …`（每個生效值來自哪一層、哪一段與 `source`）或 `ask <動作> <標的> — reasons: …`；結束碼 `allow` 為 0、`ask` 為 1、工具出錯為 2。`--json` 輸出 `verdict`、`action`、`target`、`basis`、`reasons`，以及與 `reasons` 同順序的 `reason_kinds`，每個原因一個類別：`allow-false`（某層明寫 `allow = false`）、`condition`（不在下方「時段」內，或下方「固定條件」不成立，含沒寫 `target` 或整合分支）、`unset`（沒有任何層寫 `allow` 或 `branches`）、`always-ask`（任何設定都不能預先授權）、`error`（設定讀不出、參數缺漏等 `check` 無法判斷）。參謀免諮詢類別 `exempt preauth-ask` 依這個欄位判斷，見 [參謀](advisors.md)。
 - `deploy-test`、`deploy-prod`、`install-host` 得到 `allow` 時另印 `Next steps:`（`--json` 增加 `next_steps`）：用 `notice --text '<內容>'` 發動作前通知並記下它印的事件編號，再記下帶時區的 `--started`、執行動作、同樣發動作後通知，最後 `record --kind auto … --notice-before <id> --notice-after <id> --started <time>`。`notice` 沒印編號就是沒送出，不可執行動作；沒有其他在線主控時它不發訊息，改印 `none-<n>`，可原樣給 `--notice-before`／`--notice-after`。合併、推送與 `ask` 的輸出不變。
 - `notice --text '<內容>' [--to <名稱>…]` 代主控以 `@名稱` 發 `--intent inform` 通知，成功時只印這則訊息的 HCOM 事件編號。收件人預設是本專案其他進行中的主控（由 session 紀錄查得），或用 `--to` 點名；只發給 `hcom list --json` 目前還在的（紀錄裡已離線的主控略過並提示；`--to` 點名的不在線就整則不送），不能是自己，不廣播。沒有 `--to` 且沒有其他在線主控時，不發訊息、寫入本輪 `.lat/preauth-records/<session>-r<輪數>-no-recipient.jsonl`（發送者、時間、當時記錄的其他主控都已離線），印 `none-<n>` 並以 0 結束，不需隨便點名無關的 Agent。送出後以發送者、內容完全相同、開始發送之後的時間到 `hcom events` 找出這則訊息；`--to` 的收件人都不在線、HCOM 讀不到、發送失敗、找不到訊息或找到多則相同的，都以非 0 結束並說明原因，不印編號。
 - `show` 印兩層位置與是否生效、合併後的有效設定，以及每個值的出處；專案檔寫了 `[advisor]` 時在該段註明「專案層的 [advisor] 不生效」；設定有錯時列出錯誤。
@@ -25,7 +25,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" show
 - 逐段落、逐鍵由窄到寬取第一個有寫的值：專案 > 全域。整段沒寫就往上一層找；兩層都沒寫 `allow` 就是 `ask`。專案層可放寬也可收緊。
 - 例外：`target` 只取專案層，`[advisor]` 只取全域層；寫在另一層不生效，但仍會檢查格式。
 - 想只放寬一段時間，就改設定檔，做完再改回來。
-- 任一層讀不出、TOML 格式錯、未知鍵、未知動作、值的型別錯，或寫了永遠要問的類別，每個 `check` 都回 `ask` 並列出錯誤，不會因錯誤而放寬。
+- 任一層讀不出、TOML 格式錯、未知鍵、未知動作、值的型別錯、時段或時區有誤，或寫了永遠要問的類別，每個 `check` 都回 `ask` 並列出錯誤，不會因錯誤而放寬。
 
 ## 設定檔格式
 
@@ -38,6 +38,12 @@ allow = true
 branches = ["dev"]
 source = "<待決紀錄 ID>"
 
+[actions.push]
+allow = true
+branches = ["dev"]
+hours = "01:00-08:00"
+timezone = "Asia/Taipei"
+
 [actions.deploy-test]
 target = "<測試環境說明或位置>"
 
@@ -49,9 +55,18 @@ source = "<待決紀錄 ID>"
 ```
 
 - 最上層的鍵：`version`（只能是 1）、`integration_branch`（整合分支名稱；本輪工作總表沒寫整合分支時才用，哪一層都可寫，專案層優先）。
-- 動作段 `[actions.<動作>]` 的鍵：`allow`（true／false）、`branches`（字串清單）、`target`（字串，只取專案層，全域層寫了不生效）、`source`（字串）。`[advisor]` 只取全域層，鍵：`extended`、`may_settle`、`must_ask`、`source`。`source` 是出處，不參與判斷，`show` 與 `check` 附在該層的值旁。
+- 動作段 `[actions.<動作>]` 的鍵：`allow`（true／false）、`branches`（字串清單）、`target`（字串，只取專案層，全域層寫了不生效）、`source`（字串）、`hours` 與 `timezone`（見「時段」）。`[advisor]` 只取全域層，鍵：`extended`、`may_settle`、`must_ask`、`source`。`source` 是出處，不參與判斷，`show` 與 `check` 附在該層的值旁。
 - 動作固定五種：`merge`（合併到整合分支）、`push`（推送到遠端）、`deploy-test`、`deploy-prod`、`install-host`（更新主機上安裝的 Skills 與 hooks）。
 - 修改或縮減已確認驗收（`change-acceptance`）、花錢或動帳號額度（`spend`）、刪使用者資料或 shred（`delete-user-data`）、開新票擴大工作量（`new-ticket`）永遠要問：查詢一律 `ask`，寫進設定算錯誤。這只限制 `check`；參謀能否定案改驗收與開新票，依 `[advisor]` 段判斷，見 [參謀](advisors.md#參謀結論)。
+
+## 時段
+
+動作段可寫 `hours = "HH:MM-HH:MM"`（24 小時制）與 `timezone`（時區名稱，如 `Asia/Taipei`），限定只在該時段內 `allow`。
+
+- 合併兩層後缺任一個鍵、格式錯、起訖相同、時區認不得或寫 `localtime`，都算設定錯誤，每個 `check` 都回 `ask`。
+- 起始時間算在內，結束時間不算；起始晚於結束就是跨午夜的連續區間（`22:00-06:00` 含 23:00 與 05:59，不含 06:00）。
+- 時段外回 `ask`，類別 `condition`，原因寫出當地現在時間與時段；時段內 `basis` 同樣寫出。`allow` 的其他條件照常判斷，時段不放寬固定條件。
+- 分層同 `allow`：兩個鍵各自取專案層，沒寫才取全域層，可放寬也可收緊。`grant` 不寫時段，要手動改設定。
 
 ## 固定條件
 
@@ -118,7 +133,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" report
 
 要問的是上面五種動作之一時，待決紀錄加一行 `- action: <動作> [分支] [版本]`：`merge`、`push` 先寫分支再寫版本，例如 `- action: push dev`；其他三種沒有分支，第二個字就是版本，例如 `- action: deploy-test` 或 `- action: install-host 1a2b3c4`。版本可省略，意思同 `check` 不給 `--commit`。
 
-面板寫題（`question upsert`）與回合結束的 DECIDE／HELP 檢查遇到有 `- action:` 的紀錄，一律依當下設定重跑 `check`，不採用紀錄裡先前寫的結論：
+面板寫題（`question upsert`）與回合結束的 DECIDE／HELP 檢查遇到有 `- action:` 的紀錄，一律依當下設定與當下時間重跑 `check`，不採用紀錄裡先前寫的結論：
 
 - **已送出**：題號曾在主控自己的問題檔或其歸檔出現，或曾出現在本 session 主控回報紀錄的 `DECIDE:`／`HELP:` 訊息（聊天提問）；任一成立即算，不論版本。
 - **未送出且 `allow`**：`question upsert` 拒絕寫入（結束碼 1，不改任何檔）；回合結束檢查首次擋下，同回合第二次只警告。不要提問：直接做，做完以 `record` 記一筆，並在待決紀錄寫明改依預先授權處理。
