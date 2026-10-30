@@ -196,6 +196,8 @@ export interface HelperPlan extends FixedOutput {
 	/** The error `board answered` gives a question file, by path. */
 	answeredErrors?: Record<string, string>;
 	answered?: FixedOutput;
+	/** The Python interpreter that runs the real helper's `preauth-read` and `preauth-write`. */
+	realPreauth?: string;
 	/** Notifying the controller fails with this reason; the answer is still written. */
 	notifyFails?: string;
 	/** `board transcript` waits this long on a child process instead of reading, writing the

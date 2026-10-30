@@ -1,19 +1,30 @@
 <script lang="ts">
-	// Two groups: this device's settings (theme, overall size, smallest text size) and the board's, which every
-	// device shares (how the usage line reads, whether conversations open translated).
+	// Three groups: this device's settings (theme, overall size, smallest text size), the board's, which every
+	// device shares (how the usage line reads, whether conversations open translated), and the global
+	// pre-authorization file.
+	import { onMount } from 'svelte';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { MIN_FONT, SCALE } from '#lib/board/prefs.ts';
+	import { registerSettings } from '#lib/board/settings-link.ts';
 	import { translatePref } from '#lib/board/translate-pref.svelte.ts';
+	import PreauthSettings from './PreauthSettings.svelte';
 	import type { TranslateMode } from '#lib/board/translate-mode.ts';
 	import type { UsageStyle } from '#lib/board/usage.ts';
 
 	let { onusagestyle, ontranslatemode }: { onusagestyle: (style: UsageStyle) => void; ontranslatemode: (mode: TranslateMode) => void } = $props();
 
 	let dialog: HTMLDialogElement;
+	let preauth: PreauthSettings;
 
-	export function open() {
-		dialog.showModal();
+	/** With `anchor`, at that pre-authorization action, once the file is read. */
+	export function open(anchor?: string) {
+		if (!dialog.open) dialog.showModal();
+		void preauth.opened().then(() => {
+			if (anchor) void preauth.reveal(anchor);
+		});
 	}
+
+	onMount(() => registerSettings(open));
 </script>
 
 <!-- A click on the dialog element itself is a click on the area around its content. -->
@@ -107,6 +118,8 @@
 				<p class="note">手動切換時，按分頁列的翻譯圖示才翻，只影響目前對話。</p>
 			</section>
 		</section>
+
+		<PreauthSettings bind:this={preauth} />
 	</div>
 </dialog>
 

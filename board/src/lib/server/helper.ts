@@ -2,6 +2,7 @@
 // and work ledger: the LAT panel helper's `board` commands.
 import { ledgerFrom, type LedgerView } from '../board/ledger.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
+import type { PreauthSettings } from '../board/preauth.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
 import { usageFrom } from '../board/usage.ts';
@@ -323,5 +324,71 @@ export async function readLedgers(config: BoardConfig, controllers: { workspace:
 	return {
 		ok: true,
 		ledgers: new Map(entries.map((entry) => [entry.session_id, { view: ledgerFrom(entry), path: textOrNull(entry.ledger_path) }]))
+	};
+}
+
+const isPreauthSettings = (value: unknown): value is PreauthSettings => {
+	const layer = (value as PreauthSettings | null)?.layers?.global;
+	return (
+		typeof layer === 'object' &&
+		layer !== null &&
+		typeof layer.path === 'string' &&
+		typeof layer.sha256 === 'string' &&
+		Array.isArray(layer.problems) &&
+		typeof layer.actions === 'object' &&
+		typeof layer.advisor === 'object'
+	);
+};
+
+/** The pre-authorization files as the helper reads them; the project's only with a workspace. */
+export async function readPreauth(config: BoardConfig, workspace: string | null): Promise<{ ok: true; settings: PreauthSettings } | { ok: false; reason: string }> {
+	const read = await run(config, ['preauth-read', ...(workspace ? [`--workspace=${workspace}`] : [])]);
+	const parsed = parseJsonOutput<{ reason?: unknown } | null>(read, '輔助工具的輸出不是 JSON');
+	if (!parsed.ok) return parsed;
+	if (read.failure || !isPreauthSettings(parsed.value)) return { ok: false, reason: textOrNull(parsed.value?.reason) ?? read.failure ?? '輔助工具的輸出缺少預先授權設定' };
+	return { ok: true, settings: parsed.value };
+}
+
+/** What `board preauth-write` answers. `status` other than ok means the write did not stay. */
+export interface PreauthWrite {
+	status: string;
+	reason: string | null;
+	problems: string[];
+	/** Only when the write could be neither logged nor undone: the file now, and how to put it back. */
+	current: string | null;
+	toUndo: string[];
+	settings: PreauthSettings | null;
+}
+
+/** Write the changed keys to one layer, unless its file is no longer the one with this hash. */
+export async function writePreauth(
+	config: BoardConfig,
+	write: { layer: 'global' | 'project'; workspace: string | null; sha256: string; changes: unknown }
+): Promise<PreauthWrite> {
+	const written = await run(config, [
+		'preauth-write',
+		`--layer=${write.layer}`,
+		...(write.workspace ? [`--workspace=${write.workspace}`] : []),
+		`--expected-sha256=${write.sha256}`,
+		`--changes=${JSON.stringify(write.changes)}`
+	]);
+	const parsed = parseJsonOutput<{
+		status?: unknown;
+		reason?: unknown;
+		problems?: unknown;
+		current?: unknown;
+		to_undo?: unknown;
+		settings?: unknown;
+	} | null>(written, '輔助工具的輸出不是預期的格式');
+	const payload = parsed.ok ? parsed.value : null;
+	const texts = (value: unknown) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []);
+	return {
+		// A timeout may have stopped the helper before or after it wrote, so it is no success.
+		status: typeof payload?.status === 'string' ? payload.status : 'error',
+		reason: textOrNull(payload?.reason) ?? written.failure ?? (parsed.ok ? null : parsed.reason),
+		problems: texts(payload?.problems),
+		current: textOrNull(payload?.current),
+		toUndo: texts(payload?.to_undo),
+		settings: isPreauthSettings(payload?.settings) ? payload.settings : null
 	};
 }

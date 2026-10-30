@@ -3,14 +3,14 @@
 	// (its conversation still open in Herdr, as on the Herdr 分頁) with a running one's HCOM pause or
 	// resume beside, a bar for each question waiting
 	// for an answer, then its conversation, its reports not yet archived, its work ledger and what was
-	// sent to it, one tab at a time. Its model and effort, and messages and wakes, go through the command line at the
+	// sent to it and its project's pre-authorization, one tab at a time. Its model and effort, and messages and wakes, go through the command line at the
 	// bottom of the screen.
 	// Opened for a report, the conversation shows that report where it is in the history; opened
 	// for a question, the question where the message that asked it is. Any message that asked
 	// questions still in the inbox, or answered ones, shows their cards in its place.
 	// Opened from the Herdr tab, the page is also the agent's: its close, and what was done to it
 	// as a last tab. Its permission requests on the board show in its conversation, where they were asked.
-	import type { Snippet } from 'svelte';
+	import { untrack, type Snippet } from 'svelte';
 	import type { BoardAsk } from '#lib/board/board-asks.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
@@ -23,9 +23,10 @@
 	import AgentClose from './AgentClose.svelte';
 	import AgentLog from './AgentLog.svelte';
 	import ControllerHeader from './ControllerHeader.svelte';
+	import ControllerPreauth from './ControllerPreauth.svelte';
 	import LedgerBlock from './LedgerBlock.svelte';
 	import PendingQuestions from './PendingQuestions.svelte';
-	import RecordTabs from './RecordTabs.svelte';
+		import RecordTabs from './RecordTabs.svelte';
 	import ReportList from './ReportList.svelte';
 	import SentLog from './SentLog.svelte';
 	import Transcript from './Transcript.svelte';
@@ -88,13 +89,14 @@
 	let usage = $state<Usage | null>(null);
 	const shown = $derived(usage && controller.running ? usage : null);
 
-	type Tab = 'transcript' | 'reports' | 'ledger' | 'sent' | 'log';
+	type Tab = 'transcript' | 'reports' | 'ledger' | 'sent' | 'preauth' | 'log';
 	let tab = $state<Tab>('transcript');
 	const tabs = $derived([
 		{ id: 'transcript', label: '對話紀錄', count: null },
 		{ id: 'reports', label: '回報', count: reports.length },
 		{ id: 'ledger', label: '工作總表', count: controller.ledger.state === 'ok' ? controller.ledger.items.length : null },
 		{ id: 'sent', label: '送出紀錄', count: messaging.sent[controller.id]?.length ?? null },
+		{ id: 'preauth', label: '預先授權', count: null },
 		...(agent ? [{ id: 'log', label: '操作紀錄', count: agentControl.logCount(agent.id) } as const] : [])
 	] as const satisfies readonly { id: Tab; label: string; count: number | null }[]);
 	// Opening the target, the same one again too, shows it in the conversation. Only by its key:
@@ -104,6 +106,13 @@
 	$effect.pre(() => {
 		void opens;
 		if (targetKey) tab = 'transcript';
+	});
+
+	// Read when its tab opens, not with the page, and again at each opening: the file changes elsewhere.
+	let preauth = $state<ControllerPreauth>();
+	$effect(() => {
+		if (tab !== 'preauth' || !preauth) return;
+		untrack(() => void preauth!.opened());
 	});
 </script>
 
@@ -138,6 +147,8 @@
 			<LedgerBlock ledger={controller.ledger} />
 		{:else if id === 'sent'}
 			<SentLog {controller} />
+		{:else if id === 'preauth'}
+			{#key controller.id}<ControllerPreauth bind:this={preauth} controller={controller.id} />{/key}
 		{:else if agent}
 			<AgentLog {agent} />
 		{/if}

@@ -14,7 +14,8 @@
 // the child's PID to transcript-child.pid (`launchArgsChildMs` does the same for `board launch-args`). `board launch-args` prints what <dir>/launch-args.json holds for the
 // session: a list of arguments, or `{ "unknown": reason }`. `board prune-reports` deletes nothing,
 // unless the plan sets `realPrune` to a Python interpreter: then that runs the real helper's command,
-// on the test's own reports directory that the board passes it. `board ledger` prints, for each
+// on the test's own reports directory that the board passes it; `realPreauth` does the same for
+// `board preauth-read` and `board preauth-write`, which otherwise fail. `board ledger` prints, for each
 // session, the plan's `ledgers` entry for it (`status`, and `ledger` or `reason`), or no ledger.
 // Each call is logged to
 // <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
@@ -231,8 +232,18 @@ function prune() {
 	return { raw: run.stdout, exit: run.status ?? 1 };
 }
 
+/** The real helper's preauth commands, on the files the test's environment names. */
+function preauth() {
+	if (!plan.realPreauth) return { output: { status: 'error', reason: 'the plan has no realPreauth' }, exit: 1 };
+	const helper = join(import.meta.dirname, '../../skills/local/lat/herdr-panel/lat_panel.py');
+	const run = spawnSync(plan.realPreauth, [helper, ...args], { encoding: 'utf8' });
+	return { raw: run.stdout, exit: run.status ?? 1 };
+}
+
 const act =
-	command === 'answer'
+	command === 'preauth-read' || command === 'preauth-write'
+		? preauth
+		: command === 'answer'
 		? answer
 		: command === 'questions'
 			? questions

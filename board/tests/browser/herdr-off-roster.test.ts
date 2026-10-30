@@ -163,7 +163,7 @@ for (const width of [1280, 390]) {
 		await tab.eval(`${CARD}.click()`);
 		await tab.until(`${pageOf('qa')} && document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, "the controller's page");
 		expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-old');
-		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '回報', '工作總表', '送出紀錄', '操作紀錄']);
+		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '回報', '工作總表', '送出紀錄', '預先授權', '操作紀錄']);
 		expect(await tab.eval<string>(`document.querySelector('.detail .profile').innerText`)).toContain('已關閉');
 		if (width > 760) expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @old');
 		// The wake's options, as on any closed controller's page; addressed by its name too.

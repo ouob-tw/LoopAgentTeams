@@ -20,7 +20,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_BUILD_DIR` | 建置輸出到哪個目錄、`start` 啟動哪一份建置（相對看板目錄）；`bun run build:test` 設為 `build-test`，讓測試不改寫常駐看板正在用的 `build/` | `build` |
 | `LAT_BOARD_LAT_DIR` | LAT 技能目錄 | `~/.agents/skills/lat` |
 | `LAT_BOARD_HELPER_COMMAND` | 直接指定輔助工具指令（JSON 字串陣列），看板會在後面加上 `board list` 等參數 | 由技能目錄組出 |
-| `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已登入裝置、密碼雜湊、回報的已讀與封存、用量列樣式 `usage-style.json`、送出紀錄） | `$XDG_STATE_HOME/lat/board` |
+| `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已登入裝置、密碼雜湊、回報的已讀與封存、用量列樣式 `usage-style.json`、送出紀錄、預先授權寫入紀錄 `preauth-writes.jsonl`） | `$XDG_STATE_HOME/lat/board` |
 | `LAT_REPORTS_DIR` | 主控回報紀錄目錄，須與 LAT hook 寫入的位置相同 | `$XDG_STATE_HOME/lat/reports` |
 | `LAT_USAGE_DIR` | Claude 主控用量檔的目錄，須與狀態列記錄程式寫入的位置相同（見「用量與快取」） | `$XDG_STATE_HOME/lat/usage` |
 | `LAT_BOARD_FALLBACK_SECONDS` | 漏掉檔案變動時，最慢幾秒內補上（從變動到畫面更新）；5 到 60 | `60` |
@@ -196,6 +196,10 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 已關閉的介面：所有工作區之後一列摺疊的「已關閉 N」，展開後依停止時間分「今天」「昨天」「近 7 天」，以看板主機時區的日曆日判斷（頁面每分鐘更新一次今天是哪天），組內新到舊。每列顯示分頁名稱（沒有時用 HCOM 名稱）、HCOM 名稱、client、資料夾、原工作區與停止時間（今天的只顯示時刻），主控標「主控」，接回中或失敗時另顯示一行。整列是按鈕，點了以 `?agent=<session ID>` 打開它的頁面（`ClosedAgentInfo.svelte`，與 Agent 頁同一個網址與返回行為；`viewOf` 認得「已關閉」清單上的 session）：資訊卡（已關閉、分頁名稱與 HCOM 名稱、client、資料夾、原工作區、停止時間、session ID），下方是「接回」（`ClosedResume.svelte`），再下方是對話紀錄（與 Agent 頁相同的 `Transcript.svelte`，可往前翻頁）；操作紀錄端點只認 Herdr 清單上的 Agent，所以這頁沒有操作紀錄分頁。指令列在這頁停用，提示「已關閉，先接回才能傳訊息」；之前留下的草稿（含以 `@名稱` 指定它本身的）也不送，草稿擋住提示時，提示改顯示在指令列上方。接回後同一個 session 出現在 Herdr 清單上，頁面就換成 Agent 頁或主控頁。
 - 接回（`POST /api/agents/closed/resume`，`session`；主控另帶喚醒選項 `text`、`newRound`、`model`、`effort`）：只接受這次重讀後仍在「已關閉」清單上的；不在清單上或正在接回時拒絕（409），也寫一行操作紀錄。這次的 hcom 清單、Herdr 清單或停止紀錄讀不到（只有上次的可用），或這個 session 最後一筆停止事件已不是列入時那筆，也拒絕，不執行任何指令。用 `hcom r <session ID> --terminal herdr --no-run-here --go`（不帶第一則訊息與其他參數）接回同一段對話，工作區以原工作區為優先、不在時依資料夾挑（`chooseWorkspace` 的 `prefer`，與 Agent 切換模型的接回相同）。與新建主控、開新 Agent 共用同一個排隊（`inLaunchQueue`），一次只跑一個，等前一個出現或逾時才開始下一個。hcom 跑完就回應；之後等它在 Herdr 執行（`waitToAppear`，以 session ID 認），出現後把分頁移到該工作區最前面。成功或任何一步失敗都寫一行操作紀錄（`action: resume`，成功時文字寫開在哪個工作區，移動失敗也寫在文字裡）；進行中與失敗原因只記在看板程序的記憶體，顯示在它的頁面與該列（失敗時該列保留，可以再按）；hcom 在 Herdr 執行它之前就會列出接回的 client（一直沒起來的也是），所以接回中或失敗的列在 Herdr 執行它之前不因 hcom 清單有它而離開，這段期間再按接回會被拒絕。接回後 hcom 清單有這個 session 就離開「已關閉」，回到清單主體。主控的「接回」先在它的頁面展開喚醒選項（模型與思考強度用 `ModelPicker.svelte`，只有確定 client 不在執行時才帶上；開新一輪 LAT；可留空的第一則訊息；前一次接回卡住時的「放棄前一次接回」），按「喚醒接回」後伺服器以 `wakeController` 喚醒（同主控資訊頁：排在該主控的隊伍、檢查未結案的接回、記在主控的送出紀錄），喚醒允許沒有訊息，但主控其實還在執行時拒絕而不打空白進去；之後同樣等它在 Herdr 執行（分頁由喚醒移到最前面），出現才寫成功的 `resume` 操作紀錄，沒出現或失敗都寫原因並留在該列。
 - 測試以 `tests/fake-herdr.mjs`（`agent list`、`tab list`、`agent prompt`、`agent send-keys`、`pane close`、`tab rename`；每次讀取資料的清單呼叫另記在 `herdr-list-calls.jsonl`）與 `tests/fake-hcom.mjs`（含 `kill`，kill 時記一筆 `by: cli` 的停止事件；`events` 印出 `hcom-events.jsonl` 的停止事件；接回時可用 `resumedHerdr` 把 Agent 加回假的 Herdr）代替真的指令；harness 預設就用假的 Herdr，所以測試不會讀到真的 Herdr。
+
+## 預先授權
+
+使用說明見[預先授權](../docs/lat-board.md#預先授權)。TOML 的讀寫、驗證與紀錄都在 `lat-preauth.py`（`board_settings`、`board_write`），看板只透過 `board preauth-read`、`board preauth-write` 呼叫；全域在「設定」對話框（`PreauthSettings.svelte`），專案在主控頁面的「預先授權」分頁（`ControllerPreauth.svelte`），兩者共用 `preauth-editor.svelte.ts`：每個改動自動儲存、一次送一筆（下一筆用上一筆留下的內容雜湊），被拒絕時表單改回原值。其他元件要打開對話框用 `settings-link.ts`。`GET /api/preauth` 回各層內容、內容雜湊與合併結果（帶 `?controller=` 才含該主控的專案層），`PUT /api/preauth`（本文 `{"layer":…, "controller":…, "sha256":…, "changes":…}`，專案層要有 `controller`；`changes` 只放改動的鍵，`null` 刪鍵）寫入，成功回同樣的內容：內容雜湊不符回 409、檔案有錯或不允許的改動回 422、紀錄寫不進去回 500（`log_failed` 已還原；`restore_failed` 另帶目前內容與要手動改回的項目）。紀錄在狀態目錄的 `preauth-writes.jsonl`；`lat-preauth.py report` 從同一個位置讀，所以改了 `LAT_BOARD_STATE_DIR` 或 `XDG_CONFIG_HOME` 時，主控也要用相同的值。
 
 ## 看板提問
 
