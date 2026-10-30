@@ -5,7 +5,8 @@ Two layers say which actions the controller may take without asking: global
 ($XDG_CONFIG_HOME/lat/preauth.toml) and project (the main checkout's .lat/preauth.toml). Each key
 is read from the narrowest layer that sets it: project > global. `target` comes from the project
 layer alone and [advisor] from the global layer alone. `check` answers allow or ask for one action
-after the fixed conditions the tool enforces (branch list, the full-suite gate's passing records,
+after the action's time window, read against the current time, and the fixed conditions the tool
+enforces (branch list, the full-suite gate's passing records,
 which tickets the unpushed commits belong to, main checkout at the integration branch's tip).
 `show` prints the effective settings and where each value came from. Any unreadable or unknown
 setting makes every check ask. `grant` writes one rule that a human-answered decision record
@@ -28,6 +29,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _lat_common import hcom_send_name, run_cli, shared_lat_dir, write_text_atomic
@@ -50,7 +52,8 @@ REASON_KINDS = {'allow-false': 'a layer sets allow=false',
                 'always-ask': 'no setting can pre-authorize it',
                 'error': 'the check could not judge it'}
 USER_ONLY_KINDS = ('allow-false', 'condition')
-ACTION_KEYS = {'allow': bool, 'branches': list, 'target': str, 'source': str}
+ACTION_KEYS = {'allow': bool, 'branches': list, 'target': str, 'source': str, 'hours': str,
+               'timezone': str}
 ADVISOR_KEYS = {'extended': bool, 'may_settle': list, 'must_ask': list, 'source': str}
 TOP_KEYS = {'version', 'actions', 'advisor', 'integration_branch'}
 VERSION = 1
@@ -69,6 +72,7 @@ GRANT_KEYS = ('allow', 'branches')
 RESULTS = ('succeeded', 'failed')
 REPORT_GROUPS = ((('auto',), '依預先授權自動執行'), (('bug-intake',), '免確認開工'),
                  (('grant', 'board'), '設定寫入'))
+HOURS = re.compile(r'((?:[01]\d|2[0-3]):[0-5]\d)-((?:[01]\d|2[0-3]):[0-5]\d)')
 # Long free text: written one item per line.
 ADVISOR_LISTS = ('may_settle', 'must_ask')
 BOARD_WRITES = 'preauth-writes.jsonl'
@@ -89,6 +93,10 @@ def git(workspace, *args):
     result = subprocess.run(['git', '-C', str(workspace), *args], capture_output=True,
                             text=True, timeout=30)
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def current_time():
+    return datetime.now(timezone.utc)
 
 
 def global_path():
@@ -117,6 +125,7 @@ def validate(data, where):
             problems.append(f'{where}: unknown action [actions.{name}]')
         else:
             problems += section_problems(section, ACTION_KEYS, f'{where} [actions.{name}]')
+            problems += window_problems(section, f'{where} [actions.{name}]')
     if 'advisor' in data:
         problems += section_problems(data['advisor'], ADVISOR_KEYS, f'{where} [advisor]')
     return problems
@@ -139,6 +148,42 @@ def section_problems(section, keys, where):
 
 def content_hash(content):
     return hashlib.sha256(content or b'').hexdigest()
+
+
+def known_zone(name):
+    if name == 'localtime':  # the host's zone, not one written explicitly
+        return False
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return False
+    return True
+
+
+def window_problems(section, where):
+    """Problems with the time window keys one layer writes; a key the layer leaves out may come
+    from another layer (window_gaps)."""
+    if not isinstance(section, dict):
+        return []
+    problems = []
+    hours, zone = section.get('hours'), section.get('timezone')
+    if isinstance(hours, str):
+        found = HOURS.fullmatch(hours)
+        if not found or found[1] == found[2]:
+            problems.append(f'{where}: `hours` must be "HH:MM-HH:MM" (24-hour) with different '
+                            f'start and end, not {json.dumps(hours)}')
+    if isinstance(zone, str) and not known_zone(zone):
+        problems.append(f'{where}: `timezone` must be a time zone name such as "Asia/Taipei", '
+                        f'not {json.dumps(zone)}')
+    return problems
+
+
+def in_window(hours, moment):
+    """Whether the local time is in `hours`, start included and end excluded; a start later
+    than the end runs across midnight."""
+    start, end = hours.split('-')
+    now = moment.strftime('%H:%M')
+    return start <= now < end if start < end else now >= start or now < end
 
 
 def file_layer(name, path):
@@ -172,7 +217,8 @@ def load_layers(workspace):
         project, problems = file_layer('project', shared_lat_dir(top) / 'preauth.toml')
     global_layer, more = file_layer('global', global_path())
     project.problems, global_layer.problems = problems, more
-    return [project, global_layer], problems + more, top
+    layers = [project, global_layer]
+    return layers, problems + more + window_gaps(layers), top
 
 
 def section(layer, path):
@@ -211,6 +257,17 @@ def advisor_settings(layers):
     """Effective [advisor] keys. What advisors may settle is the user's own call across
     projects, so only the global layer counts."""
     return resolve(layers[1:], ('advisor',), ADVISOR_KEYS)
+
+
+def window_gaps(layers):
+    """Once the layers are merged, an action's window needs both `hours` and `timezone`."""
+    problems = []
+    for action in ACTIONS:
+        effective = action_settings(layers, action)
+        for key, other in (('hours', 'timezone'), ('timezone', 'hours')):
+            if key in effective and other not in effective:
+                problems.append(f'[actions.{action}]: `{key}` is set but no layer sets `{other}`')
+    return problems
 
 
 def origin(name, source):
@@ -417,6 +474,16 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
         ask('allow-false', f'{label}.allow=false from {origin(allow[1], allow[2])}')
     else:
         result['basis'].append(describe('allow', *allow, label))
+    hours = effective.get('hours')
+    if hours:
+        zone = effective['timezone']
+        now = current_time().astimezone(ZoneInfo(zone[0]))
+        window = (f'{label}.hours {hours[0]} from {origin(hours[1], hours[2])}, '
+                  f'timezone {zone[0]} from {origin(zone[1], zone[2])}')
+        if in_window(hours[0], now):
+            result['basis'].append(f'now {now:%H:%M} is inside {window}')
+        else:
+            ask('condition', f'now {now:%H:%M} is outside {window}')
     if action in BRANCH_ACTIONS:
         branches = effective.get('branches')
         if not branch:

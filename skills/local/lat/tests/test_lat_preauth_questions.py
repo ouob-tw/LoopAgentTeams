@@ -274,6 +274,94 @@ class StopTests(PreauthQuestionTests):
                 (self.reports / f'{SESSION}.jsonl').unlink()
 
 
+class TimeWindowRecheckTests(PreauthQuestionTests):
+    """Both recheck paths run through shims that freeze the check's clock, so a question is
+    judged by the time of each recheck and never by an earlier one."""
+    INSIDE = '2026-10-30T03:00:00+08:00'
+    OUTSIDE = '2026-10-30T09:00:00+08:00'
+    FREEZE = (
+        'from datetime import datetime\n'
+        'import importlib.util, os, sys\n'
+        'def load(path):\n'
+        '    spec = importlib.util.spec_from_file_location("frozen_" + os.path.basename(path)'
+        '.replace("-", "_")[:-3], path)\n'
+        '    module = importlib.util.module_from_spec(spec)\n'
+        '    spec.loader.exec_module(module)\n'
+        '    return module\n'
+        'def frozen_session():\n'
+        f'    session = load({str(SESSION_SCRIPT)!r})\n'
+        '    load_preauth = session.preauth_module\n'
+        '    def preauth_module():\n'
+        '        module = load_preauth()\n'
+        '        module.current_time = lambda: datetime.fromisoformat(os.environ["FROZEN_NOW"])\n'
+        '        return module\n'
+        '    session.preauth_module = preauth_module\n'
+        '    return session\n')
+
+    def setUp(self):
+        super().setUp()
+        self.project.write_text(ALLOW_MERGE + 'hours = "01:00-08:00"\ntimezone = "Asia/Taipei"\n')
+        self.controller()
+        self.session_shim = self.root / 'frozen-session.py'
+        self.session_shim.write_text(
+            self.FREEZE + 'raise SystemExit(frozen_session().main())\n')
+        self.panel_shim = self.root / 'frozen-panel.py'
+        self.panel_shim.write_text(
+            self.FREEZE + f'sys.path.insert(0, {str(PANEL.parent)!r})\n'
+            f'panel = load({str(PANEL)!r})\n'
+            'panel._lat_session = frozen_session\n'
+            'raise SystemExit(panel.main())\n')
+
+    def at(self, moment, *args, payload=None):
+        with patch.dict(os.environ, FROZEN_NOW=moment):
+            return self.run_script(*args, payload=payload)
+
+    def upsert_at(self, moment, questions):
+        return self.at(moment, self.panel_shim, 'question', 'upsert', '--questions', questions,
+                       '--decisions', self.decisions, '--id', 'LAT-P', '--file', self.source)
+
+    def stop_at(self, moment, message='問題全文\nDECIDE: LAT-P r1'):
+        payload = dict(hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
+                       stop_hook_active=False, last_assistant_message=message)
+        result = self.at(moment, self.session_shim, 'hook', '--client', 'codex', payload=payload)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout) if result.stdout.strip() else {}
+
+    def test_upsert_refuses_inside_the_window_and_writes_outside_it(self):
+        questions = self.bind()
+        inside = self.upsert_at(self.INSIDE, questions)
+        self.assertEqual(inside.returncode, 1)
+        self.assertIn('now 03:00 is inside actions.merge.hours 01:00-08:00', inside.stderr)
+        self.assertFalse(questions.exists())
+        outside = self.upsert_at(self.OUTSIDE, questions)
+        self.assertEqual(outside.returncode, 0, outside.stderr)
+        self.assertIn('LAT-P · r1 · 待答', questions.read_text())
+        [line] = self.preauth_lines()
+        self.assertIn('now 09:00 is outside actions.merge.hours 01:00-08:00', line)
+
+    def test_a_question_recorded_inside_the_window_is_asked_outside_it(self):
+        self.decision.write_text(RECORD + '- preauth: allow merge dev — basis: now 03:00 is inside '
+                                          'actions.merge.hours 01:00-08:00\n')
+        self.assertEqual(self.stop_at(self.OUTSIDE), {})
+        (self.reports / f'{SESSION}.jsonl').unlink()
+        self.assertEqual(self.upsert_at(self.OUTSIDE, self.bind()).returncode, 0)
+
+    def test_stop_holds_an_unsent_question_only_inside_the_window(self):
+        output = self.stop_at(self.INSIDE)
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('LAT 預先授權檢查未通過：LAT-P（allow merge dev', output['reason'])
+        self.assertEqual(self.stop_at(self.OUTSIDE), {})
+
+    def test_an_exempt_preauth_ask_counts_outside_the_window_as_user_only(self):
+        self.decision.write_text('- status: pending\n- advisor: exempt preauth-ask\n'
+                                 '- action: merge dev\n')
+        self.assertEqual(self.stop_at(self.OUTSIDE), {})
+        (self.reports / f'{SESSION}.jsonl').unlink()
+        output = self.stop_at(self.INSIDE)
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('重查結果為 allow', output['reason'])
+
+
 class PreauthAskExemptionTests(PreauthQuestionTests):
     EXEMPT = '- status: pending\n- advisor: exempt preauth-ask\n'
     HELD = 'LAT 免諮詢 preauth-ask 核對未通過：LAT-P r1：'
