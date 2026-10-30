@@ -1037,6 +1037,56 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertTrue(watch.background_process_running(
             'worker', info, [client, reparented_node_command], current_pid=99))
 
+    def resident_helper_tree(self, watch, tool, *argv):
+        """A client (Codex: its wrapper plus binary) with an MCP server and language servers."""
+        env = ('HCOM_INSTANCE_NAME=worker',)
+        client = watch.Process(10, 1, 100, 'S', 10, ('node', '/bun/bin/codex') if tool == 'codex'
+                               else ('/bin/claude',), env)
+        binary = watch.Process(11, 10, 101, 'S', 10, ('/vendor/bin/codex',), env)
+        owner = 11 if tool == 'codex' else 10
+        serena = watch.Process(20, owner, 102, 'S', 10, ('/uv/bin/python', '/bin/serena'), env)
+        server = watch.Process(21, 20, 103, 'S', 21, ('node', 'typescript-language-server'), env)
+        server_child = watch.Process(22, 21, 104, 'S', 21, ('/fnm/bin/node', 'tsserver.js'), env)
+        tree = [client, serena, server, server_child]
+        return ([*tree, binary] if tool == 'codex' else tree), owner, env
+
+    def test_mcp_servers_and_their_language_servers_are_not_background_work(self):
+        watch = load_watch()
+        for tool in ('codex', 'claude'):
+            with self.subTest(tool=tool):
+                info = {'tool': tool, 'launch_context': {'pid_identity': 'linux:boot-id:100'}}
+                tree, _, _ = self.resident_helper_tree(watch, tool)
+                self.assertFalse(watch.background_process_running(
+                    'worker', info, tree, current_pid=99))
+
+    def test_real_work_still_counts_beside_resident_helpers(self):
+        watch = load_watch()
+        for tool in ('codex', 'claude'):
+            for command in (('bash', '-c', 'uv run suite-gate.py run'), ('bun', 'test')):
+                with self.subTest(tool=tool, command=command):
+                    info = {'tool': tool,
+                            'launch_context': {'pid_identity': 'linux:boot-id:100'}}
+                    tree, owner, env = self.resident_helper_tree(watch, tool)
+                    shell = watch.Process(30, owner, 110, 'S', 30, command, env)
+                    child = watch.Process(31, 30, 111, 'S', 30, ('bun', 'test'), env)
+                    self.assertTrue(watch.background_process_running(
+                        'worker', info, [*tree, shell, child], current_pid=99))
+                    orphan = watch.Process(32, 1, 112, 'S', 32, command, env)
+                    self.assertTrue(watch.background_process_running(
+                        'worker', info, [*tree, orphan], current_pid=99))
+
+    def test_own_watchers_are_not_background_work(self):
+        watch = load_watch()
+        info = {'tool': 'claude', 'launch_context': {'pid_identity': 'linux:boot-id:100'}}
+        env = ('HCOM_INSTANCE_NAME=worker',)
+        client = watch.Process(10, 1, 100, 'S', 10, ('/bin/claude',), env)
+        for command in (('python3', '/skills/hcom-spawn/scripts/spawn-watch.py', '--spawner', 'x'),
+                        ('uv', 'run', 'python', '/skills/lat/scripts/lat-watch.py', 'run')):
+            with self.subTest(command=command):
+                watcher = watch.Process(40, 1, 120, 'S', 40, command, env)
+                self.assertFalse(watch.background_process_running(
+                    'worker', info, [client, watcher], current_pid=99))
+
     def test_same_starttime_clients_only_attribute_their_own_background_work(self):
         watch = load_watch()
         idle_info = {'launch_context': {

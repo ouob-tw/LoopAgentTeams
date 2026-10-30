@@ -1468,6 +1468,25 @@ def descendants_below(pid, parents, roots):
     return (pid, lineage) if pid in roots else None
 
 
+# Watchers an agent's own commands leave behind; they live on and are not its work.
+WATCHER_SCRIPTS = {'lat-watch.py', 'spawn-watch.py'}
+
+
+def tool_command_lineage(lineage, client, process_by_pid, tool):
+    """True if a client process itself started this lineage in a separate session.
+
+    Tool commands run in their own session. MCP servers stay in the client's session, so
+    anything below one is its helper, even a language server that started a new session.
+    """
+    for pid in reversed(lineage):
+        process = process_by_pid[pid]
+        if process.session != process_by_pid[client].session:
+            return True
+        if not (process.command and Path(process.command[0]).name.startswith(tool)):
+            return False
+    return False
+
+
 def background_process_running(agent, info, processes, current_pid=None):
     """Detect a surviving command tied to the HCOM-bound client process."""
     identity = info.get('launch_context', {}).get('pid_identity', '')
@@ -1494,6 +1513,8 @@ def background_process_running(agent, info, processes, current_pid=None):
     for process in processes:
         if process.pid in clients or process.pid in excluded or process.state == 'Z':
             continue
+        if WATCHER_SCRIPTS.intersection(Path(part).name for part in process.command):
+            continue
         provenance = descendants_below(process.pid, parents, clients)
         same_agent = owner_marker in process.environment
         belongs_to_client = provenance is not None
@@ -1501,10 +1522,7 @@ def background_process_running(agent, info, processes, current_pid=None):
             continue
         if belongs_to_client:
             client, lineage = provenance
-            # Tool commands run in a separate session. Resident MCP/language-server
-            # helpers inherit the client session even when the client was shell-launched.
-            if any(process_by_pid[pid].session != process_by_pid[client].session
-                   for pid in lineage):
+            if tool_command_lineage(lineage, client, process_by_pid, info.get('tool') or ''):
                 return True
             continue
         # A detached tool may be reparented after its shell exits; its HCOM marker
