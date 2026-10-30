@@ -127,6 +127,15 @@ test('the question shows on its agent\'s page, is answered there and goes back t
 		'✓ Cherry, sour Small.',
 		'✓ 其他：Mango'
 	]);
+	// Light theme: each picked option, 其他 included, is one black block with white text, description too.
+	await tab.eval(`document.documentElement.dataset.theme = 'light'`);
+	expect(await tab.eval(`[...document.querySelectorAll('${card} li.picked')].map((li) => [li, li.querySelector('.impact')].filter(Boolean).map((el) => getComputedStyle(el).backgroundColor + '/' + getComputedStyle(el).color).join(' '))`)).toEqual([
+		'rgb(0, 0, 0)/rgb(255, 255, 255) rgba(0, 0, 0, 0)/rgb(255, 255, 255)',
+		'rgb(0, 0, 0)/rgb(255, 255, 255) rgba(0, 0, 0, 0)/rgb(255, 255, 255)',
+		'rgb(0, 0, 0)/rgb(255, 255, 255) rgba(0, 0, 0, 0)/rgb(255, 255, 255)',
+		'rgb(0, 0, 0)/rgb(255, 255, 255)'
+	]);
+	await tab.eval(`document.documentElement.dataset.theme = 'dark'`);
 	await tab.until(`!document.querySelector('[data-agent="s-ask"]').innerText.includes('等你回答')`, 'the list to stop saying 等你回答');
 
 	await tab.eval(`document.querySelector('.detail [data-tab="log"]').click()`);

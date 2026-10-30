@@ -17,8 +17,8 @@ const key = (id: string) => `q:${session}:${id}`;
 const card = (id: string) => `document.querySelector('.history [data-content="${key(id)}"]')`;
 
 const options = [
-	{ letter: 'A', label: '甲方案', impact: '甲的說明', recommended: true },
-	{ letter: 'B', label: '乙方案', impact: '乙的說明', recommended: false }
+	{ letter: 'A', label: '甲方案', impact: '甲的說明 [連結](https://example.com) `code`', recommended: true },
+	{ letter: 'B', label: '乙方案', impact: '乙的說明 [連結](https://example.com) `code`', recommended: false }
 ];
 const ASKED_AT = '2026-10-20T01:00:00.000Z';
 const MESSAGE = '請決定。\n\nDECIDE: Q-OPEN r1 · 開放；Q-SENT r1 · 已送出；Q-REC r1 · 已記錄';
@@ -69,13 +69,15 @@ const lookOf = (id: string) => `(() => {
 	const css = (element, ...names) => Object.fromEntries(names.map((name) => [name, element && getComputedStyle(element)[name]]));
 	const probe = (value) => { const el = document.body.appendChild(document.createElement('i')); el.style.color = value; const color = getComputedStyle(el).color; el.remove(); return color; };
 	const picked = root.querySelector('.options li.picked');
-	const box = (rect) => ({ top: rect.top, height: rect.height });
 	return {
-		line: picked && { li: box(picked.getBoundingClientRect()), check: box(picked.querySelector('.check').getBoundingClientRect()), letter: box(picked.querySelector('.letter').getBoundingClientRect()), option: box(picked.querySelector('.option').getClientRects()[0]) },
 		label: css(root.querySelector('.label'), 'backgroundColor', 'color', 'borderTopColor'),
 		edge: getComputedStyle(root).borderLeftColor,
 		picked: picked && {
 			frame: css(picked, 'borderTopWidth', 'borderTopStyle', 'borderTopColor'),
+			block: css(picked, 'backgroundColor', 'color'),
+			link: css(picked.querySelector('.impact a'), 'color', 'textDecorationLine'),
+			code: css(picked.querySelector('.impact code'), 'color', 'borderTopColor'),
+			other: getComputedStyle(root.querySelector('.options li:not(.picked)')).backgroundColor,
 			letter: css(picked.querySelector('.letter'), 'backgroundColor', 'color'),
 			option: css(picked.querySelector('.option'), 'backgroundColor', 'color'),
 			impact: css(picked.querySelector('.impact'), 'backgroundColor', 'color')
@@ -85,12 +87,10 @@ const lookOf = (id: string) => `(() => {
 	};
 })()`;
 
-type Box = { top: number; height: number };
 type Look = {
-	line: { li: Box; check: Box; letter: Box; option: Box } | null;
 	label: { backgroundColor: string; color: string; borderTopColor: string };
 	edge: string;
-	picked: { frame: Record<string, string>; letter: Record<string, string>; option: Record<string, string>; impact: Record<string, string> } | null;
+	picked: { frame: Record<string, string>; block: Record<string, string>; link: Record<string, string>; code: Record<string, string>; other: string; letter: Record<string, string>; option: Record<string, string>; impact: Record<string, string> } | null;
 	chosen: Record<string, string> | null;
 	palette: { warn: string; bg: string; line: string; text: string };
 };
@@ -119,22 +119,19 @@ for (const theme of ['dark', 'light']) {
 		expect({ background: open.label.backgroundColor, color: open.label.color }).toEqual(listed);
 	}, 30_000);
 
-	test.skipIf(!CHROME)(`${theme} theme: the answered option ${theme === 'light' ? 'line is black on white under the heavy frame' : 'looks as before'}, an option being picked keeps its frame`, async () => {
+	test.skipIf(!CHROME)(`${theme} theme: the answered option ${theme === 'light' ? 'is one black block with white text' : 'looks as before'}, an option being picked keeps its frame`, async () => {
 		await evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
 		for (const id of ['Q-SENT', 'Q-REC']) {
 			const { picked, palette: colours } = await evaluate<Look>(lookOf(id));
 			if (theme === 'light') {
 				expect(picked!.frame).toMatchObject({ borderTopWidth: '3px', borderTopStyle: 'solid', borderTopColor: colours.text });
-				for (const part of [picked!.letter, picked!.option]) expect(part).toEqual({ backgroundColor: colours.text, color: colours.bg });
-				// One bar on the option's first line: the filled marks are as tall as that line, not as the whole row.
-				const { line } = await evaluate<Look>(lookOf(id));
-				for (const mark of [line!.check, line!.letter]) {
-					expect(Math.abs(mark.top - line!.option.top)).toBeLessThan(1);
-					expect(Math.abs(mark.height - line!.option.height)).toBeLessThan(1);
-				}
-				expect(line!.li.height).toBeGreaterThan(line!.option.height * 2);
-				expect(picked!.impact.backgroundColor).toBe(TRANSPARENT);
-				expect(picked!.impact.color).not.toBe(colours.bg);
+				// The whole option is one black block: the frame's fill, with white text and description.
+				expect(picked!.block).toEqual({ backgroundColor: colours.text, color: colours.bg });
+				for (const part of [picked!.letter, picked!.option, picked!.impact]) expect(part).toEqual({ backgroundColor: TRANSPARENT, color: colours.bg });
+				expect(picked!.link).toMatchObject({ color: colours.bg, textDecorationLine: 'underline' });
+				expect(picked!.code).toMatchObject({ color: colours.bg, borderTopColor: colours.bg });
+				// Another option stays unchanged.
+				expect(picked!.other).toBe(TRANSPARENT);
 			} else {
 				for (const part of [picked!.letter, picked!.option]) expect(part.backgroundColor).toBe(TRANSPARENT);
 			}
