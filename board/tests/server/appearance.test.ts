@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { FOLDED_KEY, MIN_FONT, SCALE, THEME_KEY, WIDTHS } from '../../src/lib/board/prefs.ts';
+import { FOLDED_KEY, MIN_FONT, oppositeTheme, resolveTheme, SCALE, THEME_KEY, WIDTHS } from '../../src/lib/board/prefs.ts';
 import { question, startFixture, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
@@ -101,12 +101,15 @@ test('an unpaired device gets neither the user stylesheet nor a reference to it'
 // --- Startup script ----------------------------------------------------------------------------
 
 /** Run the page's startup script against a stand-in for the browser. */
-async function startUp(saved: Record<string, string> | 'blocked' | 'throwing') {
+async function startUp(saved: Record<string, string> | 'blocked' | 'throwing', system: 'dark' | 'light' = 'dark') {
 	const script = /<script>([\s\S]*?)<\/script>/.exec(await page('/login', false))?.[1];
 	if (!script) throw new Error('the page has no inline startup script');
 	const root = { dataset: {} as Record<string, string>, style: {} as Record<string, string> };
 	const style = { setProperty: (name: string, value: string) => void (root.style[name] = value) };
+	const listeners: (() => void)[] = [];
+	const query = { matches: system === 'light', addEventListener: (_: string, run: () => void) => void listeners.push(run) };
 	const browser = {
+		matchMedia: () => query,
 		document: { documentElement: { dataset: root.dataset, style } },
 		get localStorage() {
 			if (saved === 'blocked') throw new Error('SecurityError');
@@ -115,7 +118,13 @@ async function startUp(saved: Record<string, string> | 'blocked' | 'throwing') {
 		}
 	};
 	new Function('browser', `with (browser) { ${script} }`)(browser);
-	return root;
+	return Object.assign(root, {
+		/** The system switches theme after the page started. */
+		switchSystem(to: 'dark' | 'light') {
+			query.matches = to === 'light';
+			for (const run of listeners) run();
+		}
+	});
 }
 
 test('the startup script puts back the theme, overall size, folded roster and column widths', async () => {
@@ -173,11 +182,44 @@ test('with nothing saved the startup script leaves the defaults', async () => {
 	expect(root.style).toEqual({});
 });
 
-test.each(['blocked', 'throwing'] as const)('with browser storage %s the startup script changes nothing and does not fail', async (storage) => {
-	const root = await startUp(storage);
+test.each(['blocked', 'throwing'] as const)('with browser storage %s the startup script only follows the system and does not fail', async (storage) => {
+	const root = await startUp(storage, 'light');
 
-	expect(root.dataset).toEqual({});
+	expect(root.dataset).toEqual({ theme: 'light' });
 	expect(root.style).toEqual({});
+});
+
+test.each(['dark', 'light'] as const)('a first visit on a %s system shows that theme before the first paint, login page included', async (system) => {
+	const root = await startUp({}, system);
+
+	expect(root.dataset).toEqual({ theme: system });
+});
+
+test('an automatic theme follows the system when it switches, a saved one that differs does not', async () => {
+	const auto = await startUp({}, 'dark');
+	auto.switchSystem('light');
+	expect(auto.dataset.theme).toBe('light');
+
+	const saved = await startUp({ [THEME_KEY]: 'light' }, 'dark');
+	expect(saved.dataset.theme).toBe('light');
+	saved.switchSystem('light');
+	expect(saved.dataset.theme).toBe('light');
+	// The saved theme stays in force when the system goes back.
+	saved.switchSystem('dark');
+	expect(saved.dataset.theme).toBe('light');
+});
+
+test('what is resolved from a saved theme: nothing or the system\'s own is 自動, the other one is the opposite choice', () => {
+	for (const system of ['dark', 'light'] as const) {
+		const other = oppositeTheme(system);
+		expect(resolveTheme(null, system)).toEqual({ theme: system, auto: true });
+		expect(resolveTheme('sepia', system)).toEqual({ theme: system, auto: true });
+		expect(resolveTheme(system, system)).toEqual({ theme: system, auto: true });
+		expect(resolveTheme(other, system)).toEqual({ theme: other, auto: false });
+	}
+	// The system turns into the saved theme: it reads as 自動 and offers the new opposite, and the theme stays.
+	expect(resolveTheme('light', 'light')).toEqual({ theme: 'light', auto: true });
+	expect(oppositeTheme('light')).toBe('dark');
 });
 
 // --- Roster markup -----------------------------------------------------------------------------
@@ -206,8 +248,8 @@ test('the page offers the settings entry, the fold control and both column handl
 	expect(html).toContain('aria-label="收起主控名冊"');
 	expect(html).toContain('aria-label="展開主控名冊"');
 	expect(html.match(/role="separator"/g)).toHaveLength(2);
-	// The settings dialog offers both themes and the overall size with a way back to the default.
-	for (const text of ['深色', '淺色（高對比）', 'aria-label="縮小"', 'aria-label="放大"', '還原預設']) expect(html).toContain(text);
+	// The settings dialog offers 自動 and the theme opposite to the system's (its label follows the system), and the overall size with a way back to the default.
+	for (const text of ['自動', 'aria-label="縮小"', 'aria-label="放大"', '還原預設']) expect(html).toContain(text);
 	// And a floor for the text size, off until it is raised.
 	for (const text of ['最小字體', 'aria-label="調小"', 'aria-label="調大"']) expect(html).toContain(text);
 });

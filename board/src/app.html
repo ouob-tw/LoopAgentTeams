@@ -8,15 +8,37 @@
 			// This device's appearance, applied before the first paint so a reload does not flash the
 			// defaults. Keys and limits are those of src/lib/board/prefs.ts; anything else is ignored.
 			(function () {
+				var root = document.documentElement;
+				var store = null;
 				try {
-					var root = document.documentElement;
-					var store = localStorage;
+					store = localStorage;
+				} catch (error) {
+					// Storage is blocked: nothing is remembered, the theme still follows the system.
+				}
+				try {
+					// A saved theme wins; without one (or with a bad value) the system's theme shows.
+					var query = matchMedia('(prefers-color-scheme: light)');
+					var theme = function () {
+						var saved = null;
+						try {
+							saved = store && store.getItem('lat-board-theme');
+						} catch (error) {}
+						return saved === 'light' || saved === 'dark' ? saved : query.matches ? 'light' : 'dark';
+					};
+					root.dataset.theme = theme();
+					query.addEventListener('change', function () {
+						root.dataset.theme = theme();
+					});
+				} catch (error) {
+					// No way to ask the system: the default theme stays.
+				}
+				if (!store) return;
+				try {
 					var number = function (key, min, max) {
 						var saved = store.getItem(key);
 						var value = Number(saved);
 						return saved !== null && saved.trim() !== '' && value >= min && value <= max ? value : null;
 					};
-					root.dataset.theme = store.getItem('lat-board-theme') === 'light' ? 'light' : 'dark';
 					if (store.getItem('lat-board-roster-folded') === '1') root.dataset.roster = 'folded';
 					var scale = number('lat-board-scale', 80, 150);
 					if (scale !== null) root.style.setProperty('--ui-scale', String(scale / 100));
