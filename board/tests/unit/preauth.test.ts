@@ -99,6 +99,16 @@ test('a refused save puts back what it sent and keeps what was edited after', ()
 	const nowRows = structuredClone(sentRows);
 	nowRows.may_settle = ['被拒的', '之後打的'];
 	expect(revertedForm(rows, sentRows, nowRows).may_settle).toEqual(['a', '之後打的']);
+
+	// A refused deletion brings the row back, also the last one.
+	const three = structuredClone(saved);
+	three.may_settle = ['a', 'b', 'c'];
+	const sentTwo = structuredClone(three);
+	sentTwo.may_settle = ['a', 'c'];
+	expect(revertedForm(three, sentTwo, structuredClone(sentTwo)).may_settle).toEqual(['a', 'b', 'c']);
+	const none = structuredClone(saved);
+	none.may_settle = [];
+	expect(revertedForm(saved, none, structuredClone(none)).may_settle).toEqual(['a']);
 });
 
 test('a file with errors makes every result ask, whatever the values say', () => {

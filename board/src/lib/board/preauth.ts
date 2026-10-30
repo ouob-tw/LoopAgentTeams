@@ -145,10 +145,12 @@ export function revertedForm(saved: PreauthForm, sent: PreauthForm, now: Preauth
 	return form;
 }
 
-/** Row by row while the rows are the same ones; a row added or removed since keeps the list as it is now. */
+/** Back to the file when nothing changed since it was sent; row by row while the rows are the same
+ *  ones. If rows were added or removed as well, the list stays as shown, for its next save to write. */
 function revertedList(saved: string[], sent: string[], now: string[]): string[] {
-	if (sent.length !== now.length) return now;
-	return now.map((row, index) => (row !== sent[index] ? row : saved[index])).filter((row) => row !== undefined);
+	if (JSON.stringify(sent) === JSON.stringify(now)) return saved;
+	if (saved.length !== sent.length || sent.length !== now.length) return now;
+	return now.map((row, index) => (row !== sent[index] ? row : saved[index]));
 }
 
 /** One value in effect, as the page shows it under an action. */
