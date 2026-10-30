@@ -75,7 +75,7 @@ CLIENT_PROFILES = {
     'codex': {
         'error': re.compile(
             r'^■\s+(?:(?P<capacity>Selected model is at capacity\b)|'
-            r"(?P<usage>You've hit your usage limit\b|Quota exceeded\b))", re.IGNORECASE),
+            r"(?P<usage>You['’]ve hit your usage limit\b|Quota exceeded\b))", re.IGNORECASE),
         'model': re.compile(
             r'^\s*((?:GPT|o)[A-Za-z0-9. -]*?)\s+'
             r'(?:minimal|low|medium|high|xhigh|max|ultra)\s+·', re.IGNORECASE),
