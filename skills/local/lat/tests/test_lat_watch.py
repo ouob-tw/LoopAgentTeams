@@ -2756,6 +2756,7 @@ esac
         decisions = self.wait_session()
         self.install_hcom(
             '#!/bin/sh\n'
+            '[ "$1 $2" = "list --json" ] || exit 2\n'
             'printf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"},{"name":"teho"}]\'\n'
         )
         wait = self.work / '.lat/watch/waits/worker-open.json'
@@ -2768,6 +2769,26 @@ esac
                 stored = json.loads(wait.read_text())
                 self.assertEqual((stored['kind'], stored['target']), ('agent', 'teho'))
                 self.assertIn('deadline_at', stored)
+
+    def test_wait_for_ambiguous_short_name_falls_back_to_exact_decision(self):
+        decisions = self.wait_session()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            '[ "$1 $2" = "list --json" ] || exit 2\n'
+            'printf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"},'
+            '{"name":"a-teho"},{"name":"b-teho"}]\'\n'
+        )
+        (decisions / 'teho.md').write_text('- status: pending\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'teho', '--reason', 'waiting')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stored = json.loads((self.work / '.lat/watch/waits/worker-open.json').read_text())
+        self.assertEqual(stored['kind'], 'decision')
+        (decisions / 'teho.md').unlink()
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'teho', '--reason', 'waiting')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Ambiguous', result.stderr)
 
     def test_wait_for_decision_needs_the_full_id(self):
         decisions = self.wait_session()
@@ -2795,7 +2816,7 @@ esac
         decisions = self.work / 'decisions'
         decisions.mkdir()
         (decisions / 'teho-lid-1.md').write_text('- status: approved\n')
-        self.install_hcom('#!/bin/sh\nprintf \'[]\\n\'\n')
+        self.install_hcom('#!/bin/sh\n[ "$1 $2" = "list --json" ] || exit 2\nprintf \'[]\\n\'\n')
         base = {'agent': 'worker-open', 'target': 'teho', 'reason': 'x',
                 'declared_at': time.time(), 'declared_at_utc': '2026-10-04T00:00:00+00:00',
                 'active': True}

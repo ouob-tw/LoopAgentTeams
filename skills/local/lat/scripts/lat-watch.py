@@ -1783,11 +1783,11 @@ def decide_wait(declaration, observation, target_observation, target_state, now,
 
 
 def is_hcom_agent(agents, name):
-    """True if HCOM lists `name` (full, or a short name; an ambiguous one still counts)."""
+    """True if HCOM lists `name` in full or as a uniquely resolvable short name."""
     try:
         return resolve_agent_name(agents, name, required=False) in agents
     except ValueError:
-        return True
+        return False
 
 
 def decision_records(decisions, target, exact):
