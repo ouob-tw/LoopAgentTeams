@@ -35,6 +35,7 @@ TAG = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*')
 CARD_FIELD = re.compile(r'-\s+([^：\n]+)：\s*(.*)')
 CARD_AGENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?=$|[\s(（])')
 NONE = '無'
+STAGE_ALIASES = {'implement': 'impl'}
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
 LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo')
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
@@ -215,6 +216,9 @@ def ledger_request(args):
                if not getattr(args, name)]
     if missing:
         raise Failure(f'--ledger also needs {", ".join(missing)}')
+    if args.repo and not Path(args.repo).is_absolute():
+        raise Failure(f'--repo must be the absolute path of the local git checkout, not '
+                      f'{args.repo!r} (an owner/repo name is not accepted)')
     path = args.ledger
     if not path.is_absolute():
         raise Failure(f'--ledger must be an absolute path: {path}')
@@ -234,7 +238,8 @@ def run_ledger(args, command, *rest):
 
 def open_ledger_row(args, ledger, orchestrator, agent, card):
     base = ['--ledger', ledger['path'], '--by', orchestrator]
-    add = ['--ticket', args.ticket, '--stage', args.stage, '--deadline', args.deadline]
+    stage = STAGE_ALIASES.get(args.stage, args.stage)
+    add = ['--ticket', args.ticket, '--stage', stage, '--deadline', args.deadline]
     for evidence in args.evidence:
         add += ['--evidence', evidence]
     if args.depends:
@@ -318,9 +323,9 @@ def split_sections(text):
     return {title: '\n'.join(lines).strip('\n') for title, lines in bodies.items()}, problems
 
 
-def load_preauth():
-    path = Path(__file__).resolve().parent / 'lat-preauth.py'
-    spec = importlib.util.spec_from_file_location('lat_preauth', path)
+def load_script(name):
+    path = Path(__file__).resolve().parent / f'{name}.py'
+    spec = importlib.util.spec_from_file_location(name.replace('-', '_'), path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -337,7 +342,7 @@ def preauth_part(args, workspace, orchestrator):
         requests.append(match.groups())
     if not requests:
         return None
-    preauth = load_preauth()
+    preauth = load_script('lat-preauth')
     session = args.session_id or next(
         (os.environ[key] for key in preauth.SESSION_ENVS if os.environ.get(key)), None)
     lines, notified = [], []
@@ -457,12 +462,15 @@ def build_parser():
     card.add_argument('--ledger', type=Path,
                       help='absolute path of the work ledger; adds and assigns a row for this card')
     card.add_argument('--ticket', help='ledger row: ticket')
-    card.add_argument('--stage', help='ledger row: stage (see lat-ledger.py add --help)')
+    stages = ', '.join(load_script('lat-ledger').STAGES)
+    card.add_argument('--stage', help=f'ledger row: stage, one of {stages} (implement is accepted '
+                                      'as impl)')
     card.add_argument('--evidence', action='append',
                       help='ledger row: evidence kinds (commit, gate, file); comma-separated or repeated')
     card.add_argument('--deadline', help='ledger row: latest finish, ISO 8601 or +N[m|h|d]')
     card.add_argument('--depends', help='ledger row: comma-separated item numbers it waits for')
-    card.add_argument('--repo', help='ledger row: git repo (absolute) the commit evidence lives in')
+    card.add_argument('--repo', help='ledger row: absolute path of the local git checkout the commit evidence lives '
+                      'in (not owner/repo)')
     card.add_argument('--lat-dir', type=Path, default=LAT_DIR,
                       help='LAT skill directory holding scripts/lat-ledger.py')
     brief = commands.add_parser('brief', help='Build the task brief from four sections + a card')
