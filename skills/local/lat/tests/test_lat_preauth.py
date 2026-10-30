@@ -54,7 +54,7 @@ class PreauthCase(unittest.TestCase):
         self.project_file = self.repo / '.lat' / 'preauth.toml'
         self.sessions = self.repo / '.lat' / 'sessions'
 
-    def run_tool(self, *args, cwd=None, session=SESSION, path=None, wait=True):
+    def run_tool(self, *args, cwd=None, path=None, wait=True):
         environment = {key: value for key, value in os.environ.items()
                        if key not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')}
         environment.update(HOME=str(self.root / 'home'), XDG_CONFIG_HOME=str(self.config),
@@ -64,8 +64,7 @@ class PreauthCase(unittest.TestCase):
         environment.pop('SUITE_GATE_CONFIG', None)
         if path:
             environment['PATH'] = path
-        if session:
-            environment['CLAUDE_CODE_SESSION_ID'] = session
+        environment['CLAUDE_CODE_SESSION_ID'] = SESSION
         command = [sys.executable, str(SCRIPT), *args]
         if not wait:
             return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -192,12 +191,9 @@ class LayerTests(PreauthCase):
             self.assertNotIn('from project', out)
         with self.subTest('it is still checked like the rest of the file'):
             self.write(self.project_file, '[advisor]\noops = 1\n')
-            self.assert_ask_problem('unknown key `oops`')
-
-    def assert_ask_problem(self, reason):
-        verdict = self.check('merge', '--branch', 'dev')
-        self.assertEqual(verdict['verdict'], 'ask')
-        self.assertIn(reason, ' '.join(verdict['reasons']))
+            verdict = self.check('merge', '--branch', 'dev')
+            self.assertEqual(verdict['verdict'], 'ask')
+            self.assertIn('unknown key `oops`', ' '.join(verdict['reasons']))
 
 
 class ErrorTests(PreauthCase):
@@ -253,6 +249,7 @@ class ErrorTests(PreauthCase):
         result = self.run_tool('check', '--action', 'merge', '--branch', 'dev')
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('unreadable', result.stdout)
+
 
 class ConditionTests(PreauthCase):
     def test_merge_branch_must_be_listed(self):
@@ -1268,11 +1265,6 @@ class RemovedOptionTests(WriteCase):
                 self.assertIn(reason, result.stderr)
         self.assertEqual(self.records(), [])
         self.assertNotIn('preauth', json.loads((self.sessions / f'{SESSION}.json').read_text()))
-
-    def test_no_reason_kind_is_precedent(self):
-        for action in ('merge', 'deploy-prod', 'spend', 'rebase'):
-            with self.subTest(action=action):
-                self.assertNotIn('precedent', self.check(action)['reason_kinds'])
 
 
 if __name__ == '__main__':

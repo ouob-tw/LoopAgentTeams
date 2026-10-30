@@ -902,20 +902,19 @@ def grant_locked(args, top, session, target, values):
         raise Refused('; '.join(problems))
     values['source'] = args.source
     before, written = write_file_layer(target, args.action, values)
-    where = str(target)
     line = ' '.join(grant_words(args.layer, args.action, values))
     try:
         append_record(top, session, round_number,
-                      dict(kind='grant', grant=line, source=args.source, file=where))
+                      dict(kind='grant', grant=line, source=args.source, file=str(target)))
     except (OSError, ValueError) as error:
         # A grant that report cannot list must not stay in effect.
         try:
             restore(target, before, written)
         except (OSError, ValueError) as undo:
-            raise ValueError(f'granted {line} to {where} but could not log it ({error}) nor '
+            raise ValueError(f'granted {line} to {target} but could not log it ({error}) nor '
                              f'undo it ({undo}); remove it by hand') from None
-        raise ValueError(f'could not log the grant ({error}); {where} was restored') from None
-    print(f'granted {line} (source {args.source}) → {where}')
+        raise ValueError(f'could not log the grant ({error}); {target} was restored') from None
+    print(f'granted {line} (source {args.source}) → {target}')
     return 0
 
 
