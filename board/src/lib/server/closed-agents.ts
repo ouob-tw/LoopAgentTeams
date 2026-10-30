@@ -299,8 +299,8 @@ const CLOSED_BUSY_REASON = '它正在接回，請稍候。';
 export const CLOSED_LISTED_REASON = 'hcom 的清單上還有它（可能仍在啟動，或卡住了），請到 Herdr 分頁查看，沒有再接回。';
 
 /** What a controller's 接回 is woken with, as its wake options give it: a first message (may be
- *  empty), a new LAT round, a model and effort (null keeps the current one). */
-type ClosedWake = Pick<WakeRequest, 'text' | 'newRound' | 'model' | 'effort'>;
+ *  empty), a model and effort (null keeps the current one). */
+type ClosedWake = Pick<WakeRequest, 'text' | 'model' | 'effort'>;
 
 /** Bring a closed agent back (see the top of this file). A plain agent's answers once hcom has run;
  *  the rest is followed in the background. A controller is woken (`wakeController`). Either's

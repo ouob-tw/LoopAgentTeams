@@ -23,7 +23,6 @@ const wake = (id: string, fields: Partial<SentWake> = {}): SentWake => ({
 	controllerId: 'session-a',
 	hcomName: 'luna',
 	text: 'wake up',
-	newRound: false,
 	route: 'resume',
 	herdrWorkspace: 'ws-1',
 	herdrWorkspaceLabel: 'project',

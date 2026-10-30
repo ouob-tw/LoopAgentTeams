@@ -185,7 +185,6 @@
 	);
 
 	// The wake's options, by controller ID. '' keeps the current model or effort.
-	let newRound = $state<Record<string, boolean>>({});
 	let model = $state<Record<string, string>>({});
 	let effort = $state<Record<string, string>>({});
 	/** The resume attempt that stopped the last wake and may be given up, by controller ID. */
@@ -243,13 +242,12 @@
 			? { model: status?.lock === 'fixed' ? null : model[to.id] || null, effort: effort[to.id] || null }
 			: { model: null, effort: null };
 		const result = wake
-			? await messaging.wake(to.id, parsed.text, newRound[to.id] ?? false, choice)
+			? await messaging.wake(to.id, parsed.text, choice)
 			: await messaging.send(to.id, parsed.text);
 		sending = false;
 		if (result.ok && read(from) === sentText) write(from, '');
 		if (result.ok) attaching.sent(files, paths);
 		if (result.ok) {
-			delete newRound[to.id];
 			delete model[to.id];
 			delete effort[to.id];
 			delete abandonable[to.id];
@@ -388,7 +386,7 @@
 			class="options"
 			class:idle={!hasOptions}
 			aria-label="選項"
-			title={permissionAgent && waking ? '權限與喚醒選項' : permissionAgent ? '權限' : waking ? '喚醒選項：開新一輪 LAT' : '只有閒置或已關閉的主控有喚醒選項'}
+			title={permissionAgent && waking ? '權限與喚醒選項' : permissionAgent ? '權限' : waking ? '喚醒選項' : '只有閒置或已關閉的主控有喚醒選項'}
 			aria-expanded={optionsOpen}
 			disabled={!hasOptions}
 			onclick={() => (optionsOpen = !optionsOpen)}
@@ -410,13 +408,8 @@
 			{#if permissionAgent && waking}<hr />{/if}
 			{#if waking && recipient}
 				<div class="wake" role="group" aria-label="喚醒選項">
-					<label class="round">
-						<input type="checkbox" bind:checked={() => newRound[id] ?? false, (value) => (newRound[id] = value)} />
-						開新一輪 LAT
-					</label>
 					<p class="note">
-						<span title="@{recipient.hcomName}">@{lastSegment(recipient.hcomName)}</span> {recipient.status === 'closed' ? '已關閉' : recipient.status === 'working' ? '已停用 LAT（正在工作）' : '閒置中'}。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪
-						LAT」會在前面加上 LAT 啟動指令。
+						<span title="@{recipient.hcomName}">@{lastSegment(recipient.hcomName)}</span> {recipient.status === 'closed' ? '已關閉' : recipient.status === 'working' ? '已停用 LAT（正在工作）' : '閒置中'}。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。
 					</p>
 					{#if abandonable[id]}
 						{#if confirming[id]}
@@ -524,12 +517,6 @@
 		margin: 0.1rem 0;
 		border: 0;
 		border-top: 1px solid var(--line);
-	}
-	.round {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	.note,
 	.warn {

@@ -22,10 +22,8 @@ export interface SentWake {
 	/** The controller's session ID: the session a resume asks hcom for. */
 	controllerId: string;
 	hcomName: string;
-	/** The text as it was sent: with the LAT start command in front when a new round was asked for. */
+	/** The text as it was sent: a leading `/lat` is `$lat` for a Codex controller. */
 	text: string;
-	/** The user ticked 「開新一輪 LAT」. */
-	newRound: boolean;
 	/** Null when nothing was tried. */
 	route: WakeRoute | null;
 	herdrWorkspace: string | null;
@@ -80,9 +78,8 @@ export interface WakeView extends SentWake {
 /** What `POST /api/wake` takes. */
 export interface WakeRequest {
 	controllerId: string;
-	/** The user's text, without the LAT start command. */
+	/** The user's text, as typed. */
 	text: string;
-	newRound: boolean;
 	/** Used only when the conversation is resumed; null keeps what the controller had. */
 	model: string | null;
 	effort: string | null;
@@ -121,7 +118,6 @@ export const RESUME_CLOSE_TEXT: Record<ResumeClose, string> = {
 };
 
 /** What the sent log shows for a wake that went through. */
-export function wakeText(wake: Pick<SentWake, 'outcome' | 'newRound'>): string {
-	if (wake.outcome === 'pending') return RESUME_PENDING_TEXT;
-	return wake.newRound ? '已喚醒，等主控啟用' : '已喚醒';
+export function wakeText(wake: Pick<SentWake, 'outcome'>): string {
+	return wake.outcome === 'pending' ? RESUME_PENDING_TEXT : '已喚醒';
 }

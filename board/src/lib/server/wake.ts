@@ -5,7 +5,7 @@
 // every later wake checks it again before anything runs, so one conversation is never resumed
 // twice. Wakes share the per-controller queue of messages.
 import { randomUUID } from 'node:crypto';
-import { isLaunchClient, latCommand } from '../board/launch.ts';
+import { isLaunchClient } from '../board/launch.ts';
 import {
 	chose,
 	FIXED_MODEL_REASON,
@@ -36,7 +36,7 @@ import { findAgent, listAgents, resumeAgent, type HcomAgent } from './hcom.ts';
 import { runningIn } from './appear.ts';
 import { chooseWorkspace, listHerdrAgents, paneExists, tabToFront, type HerdrAgent } from './herdr.ts';
 import { moveToFront } from './launch.ts';
-import { inject, queued, typedText } from './send.ts';
+import { forClient, inject, queued, typedText } from './send.ts';
 import { modelLock, readCurrent } from './helper.ts';
 import { appendSent, readLines, type ResumeMark, type ResumeResult, type SentLog } from './sent-log.ts';
 import { openResume, openResumes, openSwitch, unplacedResumes } from './sent-views.ts';
@@ -92,10 +92,7 @@ async function deliver(board: Board, controller: Controller | undefined, request
 	const refuse = (reason: string, abandon: string | null = null): Delivery => ((entry.error = reason), { abandon, logged: false, logError: null });
 	if (!controller) return refuse(UNKNOWN_CONTROLLER_REASON);
 	const client = controller.client;
-	if (request.newRound) {
-		if (!isLaunchClient(client)) return refuse(`不知道 ${client || '這個 client'} 的 LAT 啟動指令，沒有送出。`);
-		entry.text = latCommand(client, entry.text);
-	}
+	entry.text = forClient(client, entry.text);
 	const choice = { model: request.model, effort: request.effort };
 	if (chose(choice)) {
 		if (!isLaunchClient(client)) return refuse(`不知道怎麼替 ${client || '這個 client'} 選模型與思考強度，沒有送出。`);
@@ -146,7 +143,6 @@ async function attempt(board: Board, request: WakeRequest): Promise<Result<WakeR
 		controllerId: request.controllerId,
 		hcomName: controller?.hcomName ?? '',
 		text: typedText(request.text),
-		newRound: request.newRound,
 		route: null,
 		herdrWorkspace: null,
 		herdrWorkspaceLabel: null,

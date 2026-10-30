@@ -439,7 +439,6 @@ async function resumeSwitch(board: Board, controller: SwitchTarget, switchId: st
 		controllerId: controller.id,
 		hcomName: controller.hcomName,
 		text: '',
-		newRound: false,
 		route: null,
 		herdrWorkspace: null,
 		herdrWorkspaceLabel: null,

@@ -1,7 +1,7 @@
 <script lang="ts">
 	// A closed agent's 接回, under its information card where a running agent's 關閉 sits: a plain
 	// agent is resumed in a new Herdr tab; a controller's opens the wake's options first (model,
-	// effort, a new LAT round, a first message, giving up a stuck resume) and is woken like one. How it
+	// effort, a first message, giving up a stuck resume) and is woken like one. How it
 	// goes shows under the button until the agent is back in Herdr and its page becomes the agent's.
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -30,7 +30,6 @@
 	let waking = $state<Record<string, true>>({});
 	// A controller's wake options. '' keeps the current model or effort.
 	let text = $state<Record<string, string>>({});
-	let newRound = $state<Record<string, boolean>>({});
 	let model = $state<Record<string, string>>({});
 	let effort = $state<Record<string, string>>({});
 	/** The resume attempt that stopped the last wake and may be given up. */
@@ -49,14 +48,14 @@
 			const status = switching.status[id];
 			const resumes = status?.running === false && status.options !== null;
 			const choice = resumes ? { model: status.lock === 'fixed' ? null : model[id] || null, effort: effort[id] || null } : NO_CHOICE;
-			wake = { text: text[id] ?? '', newRound: newRound[id] ?? false, ...choice };
+			wake = { text: text[id] ?? '', ...choice };
 		}
 		asking[id] = true;
 		const outcome = await agentControl.resumeClosed(id, wake);
 		delete asking[id];
 		if (agent.controller) void messaging.load(id);
 		if (outcome.ok) {
-			for (const option of [text, newRound, model, effort, abandonable, waking]) delete option[id];
+			for (const option of [text, model, effort, abandonable, waking]) delete option[id];
 			toasts.show('ok', `已開始接回 @${lastSegment(agent.hcomName)}。${outcome.reason ?? ''}`);
 			return;
 		}
@@ -98,7 +97,6 @@
 			<div class="pills">
 				<ModelPicker {controller} chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }} onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)} />
 			</div>
-			<label class="round"><input type="checkbox" bind:checked={() => newRound[id] ?? false, (value) => (newRound[id] = value)} /> 開新一輪 LAT</label>
 			<textarea
 				aria-label="接回後的第一則訊息"
 				placeholder="接回後的第一則訊息（可以留空）"
@@ -150,12 +148,6 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.4rem;
-	}
-	.round {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	.wake textarea {
 		box-sizing: border-box;

@@ -273,14 +273,14 @@ test("a closed controller is marked, and its 接回 is the controller's wake wit
 	expect(await closedOf()).toMatchObject([{ id: 's-lead', controller: true }]);
 	fixture.setHcom({ agents: [], resumed: { name: 'lead', session_id: 's-lead', status: 'listening', launch_context: { pane_id: 'ws-lat:p-back' } } });
 
-	const answer = await resume('s-lead', { text: '繼續', newRound: true, model: null, effort: null });
+	const answer = await resume('s-lead', { text: '/lat 繼續', model: null, effort: null });
 	expect(answer.status).toBe(200);
 	expect(await answer.json()).toMatchObject({ ok: true, abandon: null });
-	// Woken like a controller: the LAT start command and the message as its first message, in its
+	// Woken like a controller: the message as its first message, in its
 	// project's workspace.
 	const resumed = hcomCalls().filter((call) => call.args[0] === 'r');
 	expect(resumed).toEqual([{ args: ['r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 繼續'], workspace: expect.any(String), tag: null }]);
-	expect(sentLog().find((line) => line.kind === 'wake')).toMatchObject({ controllerId: 's-lead', route: 'resume', newRound: true });
+	expect(sentLog().find((line) => line.kind === 'wake')).toMatchObject({ controllerId: 's-lead', route: 'resume', text: '/lat 繼續' });
 	// Logged as back once Herdr runs it.
 	const back = await until(() => sentLog().find((line) => line.action === 'resume'), 10_000, 'the resume logged');
 	expect(back).toMatchObject({ agentId: 's-lead', ok: true, route: 'hcom' });
@@ -305,7 +305,7 @@ test("a closed controller's 接回 takes the model and effort chosen, and the ro
 	await closedController();
 	// hcom lists it once resumed, but nothing runs in Herdr: the outcome comes once the wait is out.
 	fixture.setHcom({ agents: [], resumedExits: true, resumed: { name: 'lead', session_id: 's-lead', status: 'listening', launch_context: { pane_id: 'ws-lat:p-gone' } } });
-	const answer = await resume('s-lead', { text: '', newRound: false, model: 'claude-sonnet-5-5', effort: 'high' });
+	const answer = await resume('s-lead', { text: '', model: 'claude-sonnet-5-5', effort: 'high' });
 	expect(answer.status).toBe(200);
 	expect(hcomCalls().filter((call) => call.args[0] === 'r').at(-1)?.args).toEqual([
 		'r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go', '--model', 'claude-sonnet-5-5', '--effort', 'high'
@@ -319,7 +319,7 @@ test("a closed controller's 接回 takes the model and effort chosen, and the ro
 	expect(failed.error).toContain('接回後');
 	// The row keeps why; another 接回 is refused while hcom still lists it.
 	expect(await closedOf()).toMatchObject([{ id: 's-lead', resume: { state: 'failed', reason: failed.error } }]);
-	const again = await resume('s-lead', { text: '', newRound: false, model: null, effort: null });
+	const again = await resume('s-lead', { text: '', model: null, effort: null });
 	expect(again.status).toBe(409);
 	expect((await again.json()).reason).toBe(CLOSED_LISTED_REASON);
 }, 30_000);
@@ -329,12 +329,12 @@ test("a closed controller's 接回 stopped by an earlier resume offers to give t
 	// An earlier resume with no pane recorded: whether it ended cannot be told.
 	mkdirSync(join(fixture.dir, 'board-state'), { recursive: true });
 	const earlier = {
-		id: 'wake-earlier', kind: 'wake', time: new Date().toISOString(), controllerId: 's-lead', hcomName: 'lead', text: '早先', newRound: false,
+		id: 'wake-earlier', kind: 'wake', time: new Date().toISOString(), controllerId: 's-lead', hcomName: 'lead', text: '早先',
 		route: 'resume', herdrWorkspace: null, herdrWorkspaceLabel: null, workspaceCreated: false, resumedName: null, pane: null, extraArgs: [],
 		outcome: 'pending', error: null
 	};
 	appendFileSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), JSON.stringify(earlier) + '\n');
-	const answer = await resume('s-lead', { text: '', newRound: false, model: null, effort: null });
+	const answer = await resume('s-lead', { text: '', model: null, effort: null });
 	expect(answer.status).toBe(502);
 	const body = await answer.json();
 	expect(body).toMatchObject({ ok: false, abandon: 'wake-earlier' });

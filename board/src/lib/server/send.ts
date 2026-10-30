@@ -11,6 +11,7 @@ import { listControllers } from './helper.ts';
 import { agentCommand } from './herdr.ts';
 import { isClosed, isPaused } from './model.ts';
 import { appendSent } from './sent-log.ts';
+import { everyController } from '../board/types.ts';
 
 /**
  * The text as it is typed: the command writes it to the terminal unchanged and then sends a
@@ -20,6 +21,16 @@ import { appendSent } from './sent-log.ts';
  */
 export function typedText(text: string): string {
 	return text.replace(/\r\n?/g, '\n');
+}
+
+/**
+ * What a Codex controller is given for a message that starts with `/lat`: Codex mentions a skill
+ * with `$lat`, and `/lat` means nothing to it. Only a leading `/lat` followed by white space or the
+ * end is changed; `/latest` and a `/lat` inside the text are not. Every other client gets the text
+ * as it is. Every message the board types into a controller goes through here.
+ */
+export function forClient(client: string, text: string): string {
+	return client === 'codex' ? text.replace(/^\/lat(?=\s|$)/, '$$lat') : text;
 }
 
 // The input command reads these as its own flags when one is a whole argument, wherever it stands
@@ -92,7 +103,8 @@ async function closedNow(board: Board, controllerId: string): Promise<boolean> {
 }
 
 async function attempt(board: Board, controllerId: string, rawText: string) {
-	const text = typedText(rawText);
+	const client = everyController(await board.current()).find((candidate) => candidate.id === controllerId)?.client ?? '';
+	const text = forClient(client, typedText(rawText));
 	// Ask the binding registry now: the target must still be bound at this moment, whatever the
 	// board's last snapshot says. A registry that cannot be read confirms nothing.
 	const registry = await listControllers(board.config);

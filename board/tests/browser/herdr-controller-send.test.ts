@@ -483,14 +483,14 @@ test.skipIf(!CHROME)("a controller's last report of today shows the time only (t
 	expect(shown).toMatch(reportedToday ? /最後回報 \d{2}:\d{2}:\d{2}$/ : /最後回報 \d+\/\d+ \d{2}:\d{2}:\d{2}$/);
 }, 60_000);
 
-// Wide: a new LAT round and an effort; a phone: the same conversation with another model.
-for (const { width, newRound, kind, value, flags } of [
-	{ width: 1280, newRound: true, kind: '思考強度', value: 'high', flags: ['--effort', 'high'] },
-	{ width: 390, newRound: false, kind: '模型', value: 'claude-sonnet-5-5', flags: ['--model', 'claude-sonnet-5-5'] }
+// Wide: an effort; a phone: the same conversation with another model.
+for (const { width, kind, value, flags } of [
+	{ width: 1280, kind: '思考強度', value: 'high', flags: ['--effort', 'high'] },
+	{ width: 390, kind: '模型', value: 'claude-sonnet-5-5', flags: ['--model', 'claude-sonnet-5-5'] }
 ]) {
 	test.skipIf(!CHROME)(`${width}px: a closed controller is woken with the wake's options, resuming its conversation, and the wake is in its sent log`, async () => {
 		const text = `醒來 ${width}`;
-		const prompt = newRound ? `/lat ${text}` : text;
+		const prompt = text;
 		await visit(width, '?agent=s-gone');
 		await tab.until(`${pageOf('dusk')} && document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, "the closed controller's page");
 		if (width > 760) expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @gone');
@@ -498,10 +498,9 @@ for (const { width, newRound, kind, value, flags } of [
 		await type(text);
 		await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
 		await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
-		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).toContain('開新一輪 LAT');
+		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).not.toContain('開新一輪 LAT');
 		// Its pane still in Herdr: its permission sits above the wake's options in the same pop-up.
 		await tab.until(`document.querySelectorAll('${MODES} button[data-mode]').length === 3`, 'its permission modes');
-		if (newRound) await tab.eval(`document.querySelector('${POPUP} input[type=checkbox]').click()`);
 		expect(await tab.eval(FITS)).toBe(true);
 		// Its model or effort for this wake, from the controller's model picker beside the button,
 		// opened once the board has read what it may be woken with.
@@ -515,7 +514,7 @@ for (const { width, newRound, kind, value, flags } of [
 		expect(injects()).toEqual([]);
 		expect(await agentLog('s-gone')).toEqual([]);
 		const wake = (await sentLog('s-gone')).find((entry) => said(entry, prompt));
-		expect(wake).toMatchObject({ kind: 'wake', route: 'resume', newRound });
+		expect(wake).toMatchObject({ kind: 'wake', route: 'resume' });
 		await tab.eval(click('.detail [role="tablist"]', '送出紀錄'));
 		await tab.until(`document.querySelector('#panel-sent:not([hidden])')?.innerText.includes(${JSON.stringify(text)})`, 'the wake in the sent log');
 		// The attempt stays open until the resumed client shows; given up for the next test.

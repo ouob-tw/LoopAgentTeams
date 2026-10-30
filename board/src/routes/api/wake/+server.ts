@@ -8,7 +8,7 @@ import type { RequestHandler } from './$types';
  *  attempt answers with its sent-log entry. */
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.json().catch(() => null);
-	const { controllerId, text, newRound, model = null, effort = null } = body ?? {};
+	const { controllerId, text, model = null, effort = null } = body ?? {};
 	const board = getBoard();
 	if (
 		(model !== null && typeof model !== 'string') ||
@@ -16,11 +16,10 @@ export const POST: RequestHandler = async ({ request }) => {
 		typeof controllerId !== 'string' ||
 		!controllerId ||
 		typeof text !== 'string' ||
-		!typedText(text).trim() ||
-		typeof newRound !== 'boolean'
+		!typedText(text).trim()
 	) {
 		return json({ error: 'invalid_wake' }, { status: 400 });
 	}
-	const result = await wakeController(board, { controllerId, text, newRound, model, effort });
+	const result = await wakeController(board, { controllerId, text, model, effort });
 	return json(result.body, { status: result.status });
 };

@@ -170,7 +170,7 @@ for (const width of [1280, 390]) {
 		await type(`@old ${text}`);
 		await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
 		await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
-		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).toContain('開新一輪 LAT');
+		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).not.toContain('開新一輪 LAT');
 		expect(await tab.eval(FITS)).toBe(true);
 		await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
 		await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');
@@ -220,7 +220,7 @@ for (const width of [1280, 390]) {
 		await tab.eval(`document.querySelector('${ROW}').click()`);
 		await tab.until(`!!document.querySelector('.detail [data-closed-agent="${session}"]')`, 'its page');
 		await tab.eval(`document.querySelector('.detail [data-action="resume"]').click()`);
-		await tab.until(`(document.querySelector('${WAKE}')?.innerText ?? '').includes('開新一輪 LAT')`, "the wake's options");
+		await tab.until(`!!document.querySelector('${WAKE} textarea')`, "the wake's options");
 		expect(await tab.eval(`document.querySelectorAll('${WAKE} .pills button').length`)).toBeGreaterThan(0);
 		expect(await tab.eval(FITS)).toBe(true);
 		await tab.eval(`(() => { const box = document.querySelector('${WAKE} textarea'); box.value = ${JSON.stringify(text)}; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
