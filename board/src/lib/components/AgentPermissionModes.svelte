@@ -84,11 +84,6 @@
 		{#each status?.modes.filter((mode) => mode.reason) ?? [] as mode (mode.id)}
 			<p class="note">{mode.reason}</p>
 		{/each}
-		<p class="note">
-			{client === 'claude'
-				? '點一下就切換：看板在它的畫面按 Shift+Tab，看到選的模式就停，不會重開；目前模式以畫面為準。'
-				: '點一下就切換：看板會停止它，再以新權限在同一個位置接回同一段對話；要等它這一回合做完才能切換。'}
-		</p>
 	</section>
 {/if}
 
