@@ -1945,6 +1945,16 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
                 for record in self.watch_records()
                 if record.get('decision') == 'task-card-fields-missing']
 
+    def test_cards_naming_the_base_name_of_a_full_name_orchestrator_stay_monitored(self):
+        self.write_card('base.md', 'poni', orchestrator='orch')
+        self.write_card('other.md', 'kela', orchestrator='other-orch2')
+        watch = load_watch()
+
+        cards, _ = watch.monitored_task_cards(self.tasks, 'team-orch')
+        self.assertIn('poni', cards)
+        self.assertNotIn('kela', cards)
+        self.assertIn('kela', watch.monitored_task_cards(self.tasks, 'other-orch2')[0])
+
     def test_cards_with_both_envelope_fields_are_not_reported(self):
         self.write_fields_card('filled.md', 'poni', '- live actions：重建 2 次；請求 50 個\n'
                                                    '- preflight：帳號已核對\n')

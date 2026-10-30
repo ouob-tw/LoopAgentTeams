@@ -312,7 +312,13 @@ def activate(args):
         raise ValueError(f'A valid explicit --hcom-name is required; rerun: {command}')
     # The wait check looks up waits/<name>.json, which lat-watch writes under the full name.
     watch = watch_module()
-    args.hcom_name = watch.resolve_agent_name(watch.list_hcom(), args.hcom_name, required=True)
+    agents = watch.list_hcom()
+    try:
+        args.hcom_name = watch.resolve_agent_name(agents, args.hcom_name, required=True)
+    except ValueError as error:
+        if str(error).startswith('Unknown'):
+            raise ValueError(f'{error}; HCOM lists: {", ".join(sorted(agents)) or "no agents"}') from error
+        raise
     duty = None
     if (args.duty_text is None) != (args.duty_expected is None):
         raise ValueError('--duty-text and --duty-expected go together; nothing activated')
@@ -359,9 +365,22 @@ def activate(args):
             record = dict(existing, tasks_path=record['tasks_path'], hcom_name=record['hcom_name'])
             new_round = False
         else:
-            if any(existing.get(key) != value for key, value in record.items()):
+            # A record from before activate resolved names holds the base name of the same controller.
+            old_name = existing.get('hcom_name')
+            upgrade = (isinstance(old_name, str) and old_name != record['hcom_name']
+                       and record['hcom_name'].endswith(f'-{old_name}'))
+            if any(existing.get(key) != value for key, value in record.items()
+                   if not (upgrade and key == 'hcom_name')):
                 raise ValueError('Existing session record differs; do not reset or rebind it')
-            record = existing
+            if upgrade:
+                _, lock_path, _ = watcher_paths(existing)
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                with lock_path.open('a') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    _stop_watcher_locked(existing)  # it runs under the old name; ensure_watcher restarts it
+                record = dict(existing, hcom_name=record['hcom_name'])
+            else:
+                record = existing
             new_round = False
     if new_round:
         record['started_at_utc'] = datetime.now(timezone.utc).isoformat()

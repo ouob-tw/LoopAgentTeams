@@ -284,6 +284,36 @@ class SessionTests(unittest.TestCase):
         self.assertTrue((self.work / '.lat/watch/waits/team-futa.json').exists())
         self.assert_silent(self.stop_hook('Done\nNO REPLY: waiting'))
 
+    def test_rerun_with_the_base_name_upgrades_an_old_record_and_restarts_the_watcher(self):
+        self.assertEqual(self.activate_named('futa', 'futa').returncode, 0)
+        old_pid = self.watcher_pid()
+        self.addCleanup(self.stop_process_group, old_pid)
+        self.wait_for(self.fake_uv_log.exists)
+        before = json.loads(self.record.read_text())
+        self.assertEqual(before['hcom_name'], 'futa')
+
+        result = self.activate_named('futa', 'team-futa')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = json.loads(self.record.read_text())
+        self.assertEqual(after, dict(before, hcom_name='team-futa'))
+        self.wait_for(lambda: not self.process_exists(old_pid))
+        self.assertNotEqual(self.watcher_pid(), old_pid)
+        self.addCleanup(self.stop_process_group, self.watcher_pid())
+        self.assertIn('--orchestrator team-futa', self.fake_uv_log.read_text().splitlines()[-1])
+
+    def test_rerun_with_the_base_name_still_refuses_any_other_difference(self):
+        self.assertEqual(self.activate_named('futa', 'futa').returncode, 0)
+        self.addCleanup(self.stop_process_group, self.watcher_pid())
+        before = self.record.read_text()
+        other = self.work / 'other-progress.md'
+        other.write_text('x\n')
+        self.set_hcom_agents('team-futa')
+        result = self.cli('activate', '--workspace', self.work, '--progress', other,
+                          '--decisions', self.decisions, '--hcom-name', 'futa')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Existing session record differs', result.stderr)
+        self.assertEqual(self.record.read_text(), before)
+
     def test_full_name_activate_records_it_unchanged(self):
         result = self.activate_named('team-futa', 'team-futa', 'other-futa')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -292,7 +322,7 @@ class SessionTests(unittest.TestCase):
     def test_ambiguous_or_unknown_name_is_refused_with_the_usable_full_names(self):
         for name, agents, message in (
                 ('futa', ('a-futa', 'b-futa'), 'Ambiguous HCOM agent futa: a-futa, b-futa'),
-                ('futa', ('a-kela',), 'Unknown HCOM agent: futa')):
+                ('futa', ('a-kela', 'b-mivo'), 'Unknown HCOM agent: futa; HCOM lists: a-kela, b-mivo')):
             with self.subTest(agents=agents):
                 result = self.activate_named(name, *agents)
                 self.assertEqual(result.returncode, 1)

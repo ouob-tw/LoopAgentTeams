@@ -1269,6 +1269,11 @@ def card_digest(path, error):
     return hashlib.sha256(content).hexdigest()
 
 
+def same_controller(card_name, orchestrator):
+    """A card may name its orchestrator by base name; the record holds the full HCOM name."""
+    return card_name == orchestrator or orchestrator.endswith(f'-{card_name}')
+
+
 def monitored_task_cards(tasks, orchestrator, incomplete=None):
     """Return (cards by agent, skipped {card name: (digest, error)}).
 
@@ -1283,7 +1288,7 @@ def monitored_task_cards(tasks, orchestrator, incomplete=None):
     for path in sorted(tasks.glob('*.md')):
         try:
             card = parse_task(path)
-            if card.get('orchestrator', orchestrator) != orchestrator:
+            if not same_controller(card.get('orchestrator', orchestrator), orchestrator):
                 continue
             missing = [name for name in ('agent', 'orchestrator', 'status')
                        if name not in card]
