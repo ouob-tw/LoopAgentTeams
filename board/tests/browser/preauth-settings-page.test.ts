@@ -150,6 +150,10 @@ test.skipIf(!CHROME)('when the log cannot be written the page says so, the contr
 	writeFileSync(file, FILE_TEXT);
 	const tab = await browse();
 	await loaded(tab);
+	// A save just before, whose mark is still up, must not read as this failure's result.
+	await tab.eval(`${group('合併')}.querySelector('button.allow').click()`);
+	await tab.until(SAVED, 'the saved mark');
+	const before = readFileSync(file, 'utf8');
 	chmodSync(join(fixture.dir, 'board-state'), 0o500);
 	try {
 		await tab.eval(`${group('推送')}.querySelector('button.ask').click()`);
@@ -157,7 +161,7 @@ test.skipIf(!CHROME)('when the log cannot be written the page says so, the contr
 	} finally {
 		chmodSync(join(fixture.dir, 'board-state'), 0o700);
 	}
-	expect(readFileSync(file, 'utf8')).toBe(FILE_TEXT);
+	expect(readFileSync(file, 'utf8')).toBe(before);
 	expect(await tab.eval(pressed('推送', 'allow'))).toBe(true);
 	expect(await tab.eval(`${SECTION}.querySelector('[role="status"]')`)).toBeNull();
 }, 60_000);
