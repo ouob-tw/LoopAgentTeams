@@ -335,7 +335,15 @@ class RunAndReuseTests(GateCase):
             [record] = [r for r in self.records() if r['command'] == command]
             self.assertEqual(record['fingerprint'],
                              gate.fingerprint(self.repo, [command])['fingerprint'])
-        self.assertEqual(gate.shell_argv('false || true'), ['/bin/sh', '-c', 'false || true'])
+
+    def test_text_that_only_looks_like_a_pipe_keeps_running_under_plain_sh(self):
+        for command in ('false || true', "echo 'a|b' >/dev/null; echo -e ok", 'echo "|"',
+                        'echo hi >| /dev/null', 'echo x # a | b', "grep -E 'x|y' /dev/null"):
+            self.assertEqual(gate.shell_argv(command), ['/bin/sh', '-c', command], command)
+            self.assertFalse(gate.has_pipe(command), command)
+        for command in ('a|b', 'a 2>&1 | b', '(a)|b', 'a |& b', "echo '|' | cat",
+                        'x=$(a | b)', "echo 'unbalanced | x"):
+            self.assertTrue(gate.has_pipe(command), command)
 
     def test_the_fingerprint_of_a_piped_command_does_not_depend_on_the_shell_it_runs_in(self):
         self.gate('run', '--', 'true | cat')

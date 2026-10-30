@@ -884,7 +884,20 @@ def normalize_command(argv):
     return shlex.join(argv)
 
 
-PIPE = re.compile(r'(?<!\|)\|(?!\|)')  # a pipe, not the `||` of an or-list
+OPERATOR_CHARS = frozenset('();<>|&')
+PIPE = re.compile(r'(?<![|>])\|(?!\|)')  # a pipe, not the `||` of an or-list or `>|`
+
+
+def has_pipe(command):
+    """Whether the shell string has a pipe operator. Quoted and commented text does not
+    count; an unparsable string does, so it is never run without the check. A case pattern
+    (`x|y)`) still counts, which only costs a different shell."""
+    lexer = shlex.shlex(command, posix=False, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return any(PIPE.search(word) for word in lexer if set(word) <= OPERATOR_CHARS)
+    except ValueError:
+        return True
 
 
 @functools.lru_cache(maxsize=None)
@@ -899,7 +912,7 @@ def shell_argv(command):
     one without a pipe runs under plain /bin/sh as always. /bin/sh is dash on some hosts and
     has no pipefail there, so bash in POSIX mode (the closest to sh) stands in for it. Only
     the way the command runs changes: the fingerprint is made from the command text alone."""
-    if not PIPE.search(command):
+    if not has_pipe(command):
         return ['/bin/sh', '-c', command]
     if sh_has_pipefail():
         return ['/bin/sh', '-o', 'pipefail', '-c', command]
