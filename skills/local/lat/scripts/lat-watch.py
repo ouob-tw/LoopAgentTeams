@@ -1518,6 +1518,9 @@ def background_process_running(agent, info, processes, current_pid=None):
     return False
 
 
+WATCH_SENDER = 'lat-watch'
+
+
 def delivery_sender(event):
     context = status_context(event)
     if isinstance(context, str) and context.startswith('deliver:'):
@@ -1532,8 +1535,13 @@ def request_watch_notice(message):
             and isinstance(text, str) and '[sub:reqwatch-' in text)
 
 
+def own_notice(message):
+    """A notice lat-watch itself sent, e.g. "LAT skill rules updated"."""
+    return event_value(message, 'from', 'data') == WATCH_SENDER
+
+
 def message_releases_wait(message):
-    if request_watch_notice(message):
+    if request_watch_notice(message) or own_notice(message):
         return False
     return event_value(message, 'intent', 'data') not in ('inform', 'ack')
 
@@ -2195,7 +2203,7 @@ def transcript_now(agent, orchestrator):
 def send_notification(action, orchestrator, intent):
     run_command(
         ['hcom', 'send', f'@{orchestrator}', '--intent', intent,
-         '--from', 'lat-watch', '--name', orchestrator, '--', action.message],
+         '--from', WATCH_SENDER, '--name', orchestrator, '--', action.message],
         failure=f'hcom notification failed for {orchestrator}',
     )
 
