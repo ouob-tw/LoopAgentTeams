@@ -589,9 +589,10 @@ def notice_steps():
     sends each one and prints its event id, which `record` accepts only if this controller sent
     it to named agents."""
     return ("Send the before-notice with `lat-preauth.py notice --text '<text>'` (it goes to the "
-            'other live controllers of this session, or to `--to <name>…` when none is '
-            'recorded; never yourself, never a broadcast) and keep the event id it prints; if '
-            'it fails or prints no id, the notice was not sent: do not do the action. Note '
+            'other live controllers of this session, or to `--to <name>…` to name others; never '
+            'yourself, never a broadcast) and keep the event id it prints; with no other live '
+            'controller it sends nothing and prints a `none-<n>` id; if it fails or prints no '
+            'id, the notice was not sent: do not do the action. Note '
             '--started; do the action; send the after-notice the same way; then '
             'record --kind auto … --notice-before <id> --notice-after <id> --started <time>.')
 
@@ -608,7 +609,35 @@ def notice_agents():
         raise Refused(f'HCOM could not be read, so no recipient is known to be live: {error}')
     if not isinstance(agents, list):
         raise Refused('HCOM could not be read, so no recipient is known to be live')
-    return [item for item in agents if isinstance(item, dict)]
+    if not all(isinstance(item, dict) and isinstance(item.get('name'), str) and item['name']
+               for item in agents):
+        raise Refused('HCOM could not be read, so no recipient is known to be live: '
+                      'malformed agent list')
+    return agents
+
+
+def no_recipient_path(top, session, round_number):
+    return shared_lat_dir(top) / 'preauth-records' / f'{session}-r{round_number}-no-recipient.jsonl'
+
+
+def note_no_recipient(top, session, round_number, own, wanted, gone):
+    """Log that `own` found no other live controller to notify and return the `none-<n>` id
+    that `record` accepts in place of an HCOM event id."""
+    path = no_recipient_path(top, session, round_number)
+    try:
+        original = path.read_bytes()
+    except FileNotFoundError:
+        original = None
+    old = (original or b'').decode('utf-8')
+    identifier = f'none-{len(old.splitlines()) + 1}'
+    entry = dict(id=identifier, sender=own, recorded=wanted, not_live=gone,
+                 self_names=[name for name in wanted if name not in gone],
+                 at=datetime.now(timezone.utc).isoformat())
+    write_text_atomic(path, old + json.dumps(entry, ensure_ascii=False) + '\n', expected=original)
+    detail = f' (recorded but not live: {", ".join(gone)})' if gone else ''
+    print(f'lat-preauth: no other live controller to notify{detail}; nothing sent',
+          file=sys.stderr)
+    return identifier
 
 
 def cmd_notice(args):
@@ -627,10 +656,14 @@ def cmd_notice(args):
     targets = [name for name in wanted if name in live and name not in (own, sender)]
     if args.to and gone:  # named on purpose, so no partial send
         raise Refused(f'not live on HCOM: {", ".join(gone)}')
-    if not targets:
-        raise Refused('no recipient is live on HCOM'
-                      + (f' (not live: {", ".join(gone)})' if gone else
-                         '; no other active controller is recorded, name one with --to'))
+    if not targets and args.to:
+        raise Refused('no recipient is live on HCOM')
+    if not targets:  # no other live controller: nobody to tell, so say so on the record
+        top, session = round_owner(args)
+        with locked(session_lock(top, session)):
+            _, _, _, round_number = current_round(top, session)
+            print(note_no_recipient(top, session, round_number, own, wanted, gone))
+        return 0
     if gone:  # recorded controllers HCOM no longer has
         print(f'lat-preauth: not sent to {", ".join(gone)}: not live on HCOM', file=sys.stderr)
     started = datetime.now(timezone.utc)
@@ -1069,6 +1102,48 @@ def controller_senders(name):
     return {name, hcom_send_name(name, [item for item in agents if isinstance(item, dict)])}
 
 
+def notice_label(identifier):
+    return identifier if isinstance(identifier, str) else f'#{identifier}'
+
+
+def report_notice(identifier):
+    return f'無人可通知（{identifier}，未發訊息）' if isinstance(identifier, str) else f'#{identifier}'
+
+
+def notice_id(value):
+    """An HCOM event ID, or the `none-<n>` id `notice` prints when no one was live."""
+    if re.fullmatch(r'[0-9]+', value):
+        return int(value)
+    if re.fullmatch(r'none-[1-9][0-9]*', value):
+        return value
+    raise argparse.ArgumentTypeError(f'`{value}` is neither an HCOM event ID nor a none-<n> id')
+
+
+def no_recipient_problems(label, identifier, top, session, round_number, sender, senders):
+    """(problems, time) for a `none-<n>` id `notice` gave when no other controller was live."""
+    try:
+        lines = no_recipient_path(top, session, round_number).read_text(
+            encoding='utf-8').splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get('id') == identifier:
+            moment = parse_time(str(entry.get('at', '')))
+            recorded, not_live, mine = (entry.get(key) for key in
+                                        ('recorded', 'not_live', 'self_names'))
+            if (entry.get('sender') != sender or moment is None
+                    or not all(isinstance(item, list) for item in (recorded, not_live, mine))
+                    or not set(mine) <= senders or list(recorded) != [
+                        name for name in recorded if name in not_live or name in mine]):
+                break
+            return [], moment
+    return [f'{label} notice {identifier} was not issued by `notice` in this round'], None
+
+
 def notice_problems(label, event_id, sender, senders):
     """(problems, time) for one HCOM notice the controller says it sent."""
     event = hcom_event(event_id)
@@ -1084,6 +1159,10 @@ def notice_problems(label, event_id, sender, senders):
     if data.get('scope') != 'mentions' or not data.get('mentions'):
         problems.append(f'{label} notice #{event_id} is a broadcast; address the other '
                         'controllers with @name')
+    elif not data.get('delivered_to'):
+        problems.append(f'{label} notice #{event_id} reached no one (delivered_to is empty); '
+                        'send it to a live controller, or run `notice` again for the '
+                        'no-one-to-notify result')
     moment = parse_time(str(event.get('ts', '')))
     if moment is None:
         problems.append(f'{label} notice #{event_id} has no readable time')
@@ -1099,7 +1178,7 @@ def cmd_record(args):
 def record_locked(args, top, session):
     _, record, _, round_number = current_round(top, session)
     if args.kind == 'auto':
-        entry = auto_entry(args, record)
+        entry = auto_entry(args, record, top, session, round_number)
     elif args.kind == 'precedent':
         missing = [flag for flag, value in (('--decision', args.decision),
                                              ('--source', args.source),
@@ -1127,7 +1206,7 @@ def record_locked(args, top, session):
     return 0
 
 
-def auto_entry(args, record):
+def auto_entry(args, record, top, session, round_number):
     if args.action not in ACTIONS:
         raise Refused(f'`{args.action}` is not a pre-authorizable action; known: '
                       f'{", ".join(ACTIONS)}')
@@ -1146,8 +1225,15 @@ def auto_entry(args, record):
         raise Refused('--started must be an ISO time with a time zone')
     sender = record.get('hcom_name')
     senders = controller_senders(sender)
-    problems, before = notice_problems('before', args.notice_before, sender, senders)
-    more, after = notice_problems('after', args.notice_after, sender, senders)
+
+    def check(label, identifier):
+        if isinstance(identifier, str):
+            return no_recipient_problems(label, identifier, top, session, round_number, sender,
+                                         senders)
+        return notice_problems(label, identifier, sender, senders)
+
+    problems, before = check('before', args.notice_before)
+    more, after = check('after', args.notice_after)
     problems += more
     # Use the precision supplied by the caller, not the event store's microseconds.
     fraction = re.search(r'[Tt ]\d{2}:?\d{2}:?\d{2}[.,](\d+)', args.started)
@@ -1158,14 +1244,14 @@ def auto_entry(args, record):
         return moment.replace(microsecond=moment.microsecond // quantum * quantum)
 
     if before and at_started_precision(before) > started:
-        problems.append(f'before notice #{args.notice_before} ({before.isoformat()}) is later '
-                        f'than --started {started.isoformat()} at its precision')
+        problems.append(f'before notice {notice_label(args.notice_before)} '
+                        f'({before.isoformat()}) is later than --started {started.isoformat()} at its precision')
     if before and after and after <= before:
-        problems.append(f'after notice #{args.notice_after} is not later than before notice '
-                        f'#{args.notice_before}')
+        problems.append(f'after notice {notice_label(args.notice_after)} is not later than '
+                        f'before notice {notice_label(args.notice_before)}')
     if after and at_started_precision(after) <= started:
-        problems.append(f'after notice #{args.notice_after} ({after.isoformat()}) is not later '
-                        f'than --started {started.isoformat()}')
+        problems.append(f'after notice {notice_label(args.notice_after)} ({after.isoformat()}) '
+                        f'is not later than --started {started.isoformat()}')
     if problems:
         raise Refused('; '.join(problems))
     return dict(entry, started=started.isoformat(), notice_before=args.notice_before,
@@ -1177,7 +1263,8 @@ def report_line(entry):
     if kind == 'auto':
         head = ' '.join(str(part) for part in (entry.get('action'), entry.get('target'),
                                                entry.get('commit')) if part)
-        notices = (f'；通知 #{entry["notice_before"]} → #{entry["notice_after"]}'
+        notices = (f'；通知 {report_notice(entry["notice_before"])} → '
+                   f'{report_notice(entry["notice_after"])}'
                    if 'notice_before' in entry else '')
         return f'- {head}：{entry.get("result")}；依據：{entry.get("basis")}{notices}'
     if kind == 'precedent':
@@ -1231,7 +1318,8 @@ def build_parser():
                           'stands in for allow only when no layer sets allow')
     sub.add_argument('--json', action='store_true')
     sub = commands.add_parser('notice', parents=[common],
-                              help='send a before/after notice and print its HCOM event ID')
+                              help='send a before/after notice and print its HCOM event ID (none-<n> '
+                                   'when no other controller is live)')
     sub.add_argument('--text', required=True, help='notice text')
     sub.add_argument('--to', nargs='+', metavar='NAME',
                      help='recipients; default the other active controllers of this session')
@@ -1256,10 +1344,13 @@ def build_parser():
     sub.add_argument('--basis', help='auto: the check line; precedent: why it is the same kind')
     sub.add_argument('--result', choices=RESULTS, help='auto: how the action ended')
     sub.add_argument('--started', help='auto deploy/install: ISO time the action started')
-    sub.add_argument('--notice-before', type=int, help='auto deploy/install: HCOM event ID of '
-                                                       'the notice sent before starting')
-    sub.add_argument('--notice-after', type=int, help='auto deploy/install: HCOM event ID of '
-                                                      'the notice sent after finishing')
+    sub.add_argument('--notice-before', type=notice_id, help='auto deploy/install: HCOM event ID '
+                                                             'of the notice sent before '
+                                                             'starting, or the none-<n> id of '
+                                                             'a no-one-to-notify result')
+    sub.add_argument('--notice-after', type=notice_id, help='auto deploy/install: HCOM event ID '
+                                                            'of the notice sent after '
+                                                            'finishing, or a none-<n> id')
     sub.add_argument('--decision', help='precedent: the decision record settled')
     sub.add_argument('--source', help='precedent: `<ID> r<version>` of the earlier answer; '
                                       "bug-intake: where the user's own message is")
