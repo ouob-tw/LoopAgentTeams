@@ -892,11 +892,11 @@ def has_pipe(command):
     or after a backslash, a comment, `||` and `>|` are not pipes. A pipe inside `$(...)` in
     double quotes and an unterminated quote count, so a real pipeline is never run without
     the check. A case pattern (`x|y)`) also counts, which only costs a different shell."""
-    i = 0
+    i, prev = 0, ' '  # prev: the last lexical character; an escape or quote is a word character
     while i < len(command):
         char = command[i]
         if char == '\\':
-            i += 2
+            i, prev = i + 2, 'x'
             continue
         if char in '\'"':
             end = i + 1
@@ -907,9 +907,9 @@ def has_pipe(command):
             quoted = command[i:end]
             if char == '"' and '|' in quoted and ('$(' in quoted or '`' in quoted):
                 return True
-            i = end + 1
+            i, prev = end + 1, 'x'
             continue
-        if char == '#' and (i == 0 or command[i - 1] in WORD_BREAK):
+        if char == '#' and prev in WORD_BREAK:
             i = command.find('\n', i)
             if i < 0:
                 return False
@@ -918,9 +918,9 @@ def has_pipe(command):
             if command[i + 1:i + 2] == '|':
                 i += 2
                 continue
-            if command[i - 1:i] != '>':
+            if prev != '>':
                 return True
-        i += 1
+        i, prev = i + 1, char
     return False
 
 

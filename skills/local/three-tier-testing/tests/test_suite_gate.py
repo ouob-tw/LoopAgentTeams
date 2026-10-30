@@ -344,7 +344,8 @@ class RunAndReuseTests(GateCase):
             self.assertFalse(gate.has_pipe(command), command)
         for command in ('a|b', 'a 2>&1 | b', '(a)|b', 'a |& b', "echo '|' | cat",
                         'x=$(a | b)', "echo 'unbalanced | x", 'echo "$(a | b)"',
-                        'false x#y | cat', 'echo a#b | cat', 'echo ${#x} | cat'):
+                        'false x#y | cat', 'echo a#b | cat', 'echo ${#x} | cat',
+                        'false x\\ #y | cat', 'false \\>| cat'):
             self.assertTrue(gate.has_pipe(command), command)
         self.assertEqual(self.gate('run', '--', 'false x#y | cat').returncode, 1)
 
