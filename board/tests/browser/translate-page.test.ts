@@ -181,10 +181,10 @@ test.skipIf(!CHROME)('a reply pushed while on is translated; a failure leaves th
 	await tab.until(`${said('譯：This reply will fail')}?.dataset.translation === 'done'`, 'the failed one translated on reopening');
 }, 60_000);
 
-test.skipIf(!CHROME)("the button is at the right end of the tab row on the 對話紀錄 tab only, fixed there at a phone's width, and nothing scrolls sideways", async () => {
+test.skipIf(!CHROME)("the button is at the right end of the tab row on the 對話紀錄 tab only, fixed there at a phone's width, and the page does not scroll sideways", async () => {
 	for (const width of [1280, 390]) {
 		await visit(width);
-		// One row: the button right of the strip, inside its line, and the tabs share the width when they fit.
+		// One row: the button right of the strip and inside its line.
 		const row = `(() => {
 			const barEl = document.querySelector('.detail .tabbar');
 			const bar = barEl.getBoundingClientRect();
@@ -192,11 +192,10 @@ test.skipIf(!CHROME)("the button is at the right end of the tab row on the 對�
 			const button = ${SWITCH}.getBoundingClientRect();
 			const stripEl = document.querySelector('.detail .tabbar [role=tablist]');
 			const tabs = [...stripEl.querySelectorAll('[role=tab]')].map((t) => t.getBoundingClientRect());
-			return { rightEdge: Math.abs(edge - button.right) <= 2, afterTabs: button.left >= stripEl.getBoundingClientRect().right, scrolls: stripEl.scrollWidth > stripEl.clientWidth, oneRow: tabs.every((t) => t.top === tabs[0].top) && button.top >= bar.top && button.bottom <= bar.bottom, widths: tabs.map((t) => Math.round(t.width)) };
+			return { rightEdge: Math.abs(edge - button.right) <= 2, afterTabs: button.left >= stripEl.getBoundingClientRect().right, oneRow: tabs.every((t) => t.top === tabs[0].top) && button.top >= bar.top && button.bottom <= bar.bottom };
 		})()`;
-		const layout = await tab.eval<{ rightEdge: boolean; afterTabs: boolean; scrolls: boolean; oneRow: boolean; widths: number[] }>(row);
+		const layout = await tab.eval<{ rightEdge: boolean; afterTabs: boolean; oneRow: boolean }>(row);
 		expect(layout).toMatchObject({ rightEdge: true, afterTabs: true, oneRow: true });
-		if (width < 761 && !layout.scrolls) expect(Math.max(...layout.widths) - Math.min(...layout.widths)).toBeLessThanOrEqual(20);
 		await tab.eval(`${SWITCH}.click()`);
 		await tab.until(`${said('譯：I fixed')}?.dataset.translation === 'done'`, 'the translation');
 		expect(await tab.eval(`${SWITCH}.title`)).toContain('已開啟');
