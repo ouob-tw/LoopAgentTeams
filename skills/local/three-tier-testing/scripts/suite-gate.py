@@ -895,9 +895,10 @@ def shell_argv(command):
     failing earlier stage is the run's failure instead of the last stage's status hiding it;
     one without a pipe runs under plain /bin/sh as always. /bin/sh is dash on some hosts and
     has no pipefail there, so bash in POSIX mode (the closest to sh) stands in for it. Any `|`
-    in the text counts, quoted or not: pipefail changes nothing without a real pipeline, so
-    over-matching keeps the exit status. Only the way the command runs changes: the
-    fingerprint is made from the command text alone."""
+    in the text counts, quoted or not. pipefail alone changes nothing without a real
+    pipeline, but where bash stands in for dash a command that relies on dash-only
+    behaviour (e.g. `echo -e`) can behave differently. The fingerprint is made from the
+    command text alone, so it does not change."""
     if '|' not in command:
         return ['/bin/sh', '-c', command]
     if sh_has_pipefail():
