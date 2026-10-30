@@ -46,13 +46,13 @@ afterAll(async () => {
 	rmSync(config, { recursive: true, force: true });
 });
 
-const load = async (device = cookie) => (await fixture.fetch('/api/preauth', { cookie: device })).json();
+const load = async () => (await (await fixture.fetch('/api/preauth', { cookie })).json()).layers.global;
 const put = (sha256: string, changes: unknown, device: string | null = cookie) =>
 	fixture.fetch('/api/preauth', {
 		method: 'PUT',
 		...(device ? { cookie: device } : {}),
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ sha256, changes })
+		body: JSON.stringify({ layer: 'global', sha256, changes })
 	});
 const tool = (...args: string[]) =>
 	spawnSync(python, [TOOL, ...args], { cwd: repo, encoding: 'utf8', env: { ...fixture.serverEnv(), CLAUDE_CODE_SESSION_ID: 'SESSION-1' } });
@@ -75,7 +75,7 @@ test('a save writes the changed key, keeps the rest, and the tools see it', asyn
 	const response = await put(layer.sha256, { actions: { push: { allow: false } }, advisor: { may_settle: ['a', '新的一條'] } });
 	expect(response.status).toBe(200);
 	const after = await response.json();
-	expect(after.actions.push.allow).toBe(false);
+	expect(after.layers.global.actions.push.allow).toBe(false);
 	const text = readFileSync(file, 'utf8');
 	expect(text).toContain('# my notes\n[actions.push]\nallow = false\nbranches = ["dev"]\nsource = "board:');
 	expect(text).toContain('# advisor scope\n[advisor]');
@@ -132,6 +132,26 @@ test('a write the log cannot take is undone and reported as failed', async () =>
 	expect(body.reason).toContain('已還原');
 	expect(readFileSync(file, 'utf8')).toBe(FILE_TEXT);
 	expect(existsSync(log) ? readFileSync(log, 'utf8') : '').toBe(before);
+});
+
+test('a listed controller reads and writes its own project file; an unknown one is refused', async () => {
+	reset();
+	const orin = fixture.bound('gamma', 'orin');
+	spawnSync('git', ['init', '-q', '-b', 'dev', orin.workspace]);
+	fixture.setHelper({ output: { controllers: [orin] }, realPreauth: python });
+	await fixture.refresh(cookie);
+	const url = `/api/preauth?controller=${orin.session_id}`;
+	const read = await (await fixture.fetch(url, { cookie })).json();
+	const put = (body: object) => fixture.fetch('/api/preauth', { method: 'PUT', cookie, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+	const written = await put({ layer: 'project', controller: orin.session_id, sha256: read.layers.project.sha256, changes: { actions: { 'deploy-test': { allow: true, target: 'stage' } } } });
+	expect(written.status).toBe(200);
+	const after = await written.json();
+	expect(after.effective.actions['deploy-test'].target).toMatchObject({ value: 'stage', layer: 'project' });
+	expect(readFileSync(join(orin.workspace, '.lat/preauth.toml'), 'utf8')).toContain('target = "stage"');
+	expect((await fixture.fetch('/api/preauth?controller=nobody', { cookie })).status).toBe(404);
+	expect((await put({ layer: 'project', controller: 'nobody', sha256: read.layers.project.sha256, changes: {} })).status).toBe(404);
+	fixture.setHelper({ output: { controllers: [] }, realPreauth: python });
+	await fixture.refresh(cookie);
 });
 
 test('the controller report lists a board write', async () => {

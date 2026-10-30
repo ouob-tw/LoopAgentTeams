@@ -857,17 +857,32 @@ def assignment(key, value):
     return f'{key} = {toml_value(value)}\n'
 
 
+def line_comment(line):
+    """The `# …` ending this line of TOML, outside any string; empty when it has none."""
+    quote, escaped = None, False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+        elif quote:
+            escaped = char == '\\' and quote == '"'
+            quote = None if char == quote else quote
+        elif char in '"\'':
+            quote = char
+        elif char == '#':
+            return line[index:].rstrip('\n')
+    return ''
+
+
 def replace_key(body, index, key, value):
-    """Set or (value None) delete the key assigned at body[index]. The comment closing a one-line
-    assignment stays with a new value; full-line comments inside a multi-line value always stay."""
+    """Set or (value None) delete the key assigned at body[index]. A new one-line value keeps the
+    comment closing its line; every comment inside a multi-line value moves above the key."""
     stop = next((stop for stop in range(index + 1, len(body) + 1)
                  if parses(''.join(body[index:stop]))), index + 1)
-    kept = [line for line in body[index + 1:stop] if line.lstrip().startswith('#')]
     new = []
+    kept = [comment + '\n' for line in body[index:stop] if stop > index + 1
+            and (comment := line_comment(line))]
     if value is not None:
-        comment = next((body[index][found.start():].rstrip('\n')
-                        for found in re.finditer('#', body[index])
-                        if parses(body[index][:found.start()])), '') if stop == index + 1 else ''
+        comment = line_comment(body[index]) if stop == index + 1 else ''
         new = [assignment(key, value)]
         if comment:
             new = [f'{new[0].rstrip()}  {comment}\n']
@@ -1171,6 +1186,8 @@ def report_line(entry):
                 f'{entry.get("self_reported")}；哪裡錯與應該怎樣：{entry.get("clear_expected")}；'
                 f'一張票做得完：{entry.get("single_ticket")}；回到使用者說的樣子：'
                 f'{entry.get("restores_stated")}')
+    if 'unreadable' in entry:
+        return f'- 看板紀錄 {entry["unreadable"]} 讀不懂，可能漏列一筆'
     if kind == 'board':
         changes = '、'.join(change_text(change) for change in entry.get('changes', []))
         return f'- 看板 {entry.get("layer")}：{changes}（來源 board，{entry.get("at")}）→ {entry.get("file")}'
@@ -1224,7 +1241,9 @@ def board_writes_since(top, record):
             entry = json.loads(line)
             moment = parse_time(entry['at'])
         except (ValueError, KeyError, TypeError, AttributeError):
-            raise Refused(f'{path} line {number} is not a board write record') from None
+            # The log spans projects: one bad line must not take every project's report with it.
+            found.append(dict(kind='board', unreadable=f'{path} 第 {number} 行'))
+            continue
         if entry.get('file') in files and (since is None or (moment and moment >= since)):
             found.append(entry)
     return found
@@ -1247,6 +1266,19 @@ def change_text(change):
     return f'{head} 移除' if change['value'] is None else f'{head} = {toml_value(change["value"])}'
 
 
+def undo_lines(data, edits):
+    """What to change by hand to put these edits back, given the settings before them."""
+    lines = []
+    for table, values in edits.items():
+        before = data
+        for part in table:
+            before = before.get(part, {})
+        for key in values:
+            head = f'[{".".join(table)}] {key}'
+            lines.append(f'{head} 改回 {toml_value(before[key])}' if key in before else f'{head} 移除')
+    return lines
+
+
 def board_view(layer):
     """One layer as the board edits it; no settings when its file has errors."""
     usable = layer.present and not layer.problems
@@ -1267,10 +1299,11 @@ def board_settings(workspace=None):
     views = dict(project=board_view(layers[0]), **{'global': board_view(layers[1])})
     if top is None:
         del views['project']
+    # A file with errors makes every check ask, so nothing it says is in effect.
     return dict(status='ok', layers=views, problems=problems,
-                effective=dict(actions={name: origin_of(action_settings(layers, name))
-                                        for name in ACTIONS},
-                               advisor=origin_of(advisor_settings(layers))),
+                effective=dict(actions={}, advisor={}) if problems else dict(
+                    actions={name: origin_of(action_settings(layers, name)) for name in ACTIONS},
+                    advisor=origin_of(advisor_settings(layers))),
                 project_advisor=bool(layers[0].present and 'advisor' in layers[0].data))
 
 
@@ -1360,7 +1393,7 @@ def board_write(layer, workspace, expected_sha256, changes):
         with locked(target.with_name(f'.{target.name}.lock')):
             result = board_write_locked(layer, target, expected_sha256, changes)
     except LayerInvalid as error:
-        return dict(status='invalid', reason='設定檔有錯，沒有寫入，請手動修好再重新載入',
+        return dict(status='invalid', reason='設定檔有錯，沒有寫入，修好檔案後重新載入',
                     problems=error.problems)
     except Conflict:
         return dict(status='conflict', reason='設定檔已被改過，沒有寫入，請重新載入', problems=[])
@@ -1381,9 +1414,8 @@ def board_write_locked(layer, target, expected_sha256, changes):
     if not edits:
         return dict(status='ok', changes=[])
     stamp = f'board:{datetime.now().astimezone().isoformat(timespec="seconds")}'
-    before, written = write_file_layer(
-        target, {table: dict(values, source=stamp) for table, values in edits.items()},
-        expected_sha256=expected_sha256)
+    stamped = {table: dict(values, source=stamp) for table, values in edits.items()}
+    before, written = write_file_layer(target, stamped, expected_sha256=expected_sha256)
     try:
         append_board_write(dict(layer=layer, file=str(target), changes=listed, source=stamp))
     except (OSError, ValueError) as error:
@@ -1396,7 +1428,7 @@ def board_write_locked(layer, target, expected_sha256, changes):
             except (OSError, UnicodeDecodeError) as unread:
                 current = f'（讀不到：{unread}）'
             return dict(status='restore_failed', current=current,
-                        to_remove=[change_text(change) for change in listed],
+                        to_undo=undo_lines(loaded.data, stamped),
                         reason=f'紀錄寫不進去（{error}），也無法還原（{undo}），請手動改回 {target}')
         return dict(status='log_failed', reason=f'紀錄寫不進去（{error}），設定已還原')
     return dict(status='ok', changes=listed)

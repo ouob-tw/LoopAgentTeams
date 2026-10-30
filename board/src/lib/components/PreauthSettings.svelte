@@ -2,9 +2,9 @@
 	// The global pre-authorization file, in the settings dialog. The form follows the file only when
 	// it loads or saves, so a change made elsewhere meanwhile is refused at saving rather than lost.
 	import { request } from '#lib/board/api.ts';
-	import { ALLOW_CHOICES, PREAUTH_ACTIONS, changesFrom, formFrom, type PreauthForm, type PreauthLayer } from '#lib/board/preauth.ts';
+	import { ALLOW_CHOICES, PREAUTH_ACTIONS, changesFrom, formFrom, type PreauthForm, type PreauthLayer, type PreauthSettings } from '#lib/board/preauth.ts';
 
-	type Refusal = { status?: string; reason?: string; problems?: string[]; current?: string | null; toRemove?: string[]; message?: string };
+	type Refusal = { reason?: string; problems?: string[]; current?: string | null; toUndo?: string[]; message?: string };
 
 	let layer = $state<PreauthLayer | null>(null);
 	let form = $state<PreauthForm | null>(null);
@@ -15,43 +15,51 @@
 	const changes = $derived(layer && form ? changesFrom(layer, form) : {});
 	const dirty = $derived(Object.keys(changes).length > 0);
 
-	function show(loaded: PreauthLayer) {
-		layer = loaded;
-		form = formFrom(loaded);
+	function show(settings: PreauthSettings) {
+		layer = settings.layers.global;
+		form = formFrom(layer);
 		refusal = null;
 	}
 
-	/** Read the file again. */
-	export async function reload() {
-		busy = true;
-		saved = false;
-		const result = await request<PreauthLayer>('/api/preauth');
-		busy = false;
-		if (result.ok) show(result.value);
-		else if (!result.unpaired) refusal = result.kind === 'http' ? (result.body as Refusal) : { reason: '讀不到設定，請檢查網路後再試。' };
+	function refused(result: { kind: string; body?: unknown }, noAnswer: string) {
+		refusal = result.kind === 'http' ? ((result.body as Refusal | null) ?? {}) : { reason: noAnswer };
 	}
 
-	/** Called when the dialog opens: edits not yet saved stay. */
-	export function opened() {
+	/** Read the file again. */
+	async function reload() {
+		busy = true;
 		saved = false;
-		if (!dirty) void reload();
+		const result = await request<PreauthSettings>('/api/preauth');
+		busy = false;
+		if (result.ok) show(result.value);
+		else if (!result.unpaired) refused(result, '讀不到設定，請檢查網路後再試。');
+	}
+
+	/** Called when the dialog opens: edits not yet saved stay, also those made while it reads. */
+	export async function opened() {
+		saved = false;
+		if (dirty) return;
+		const result = await request<PreauthSettings>('/api/preauth');
+		if (dirty) return;
+		if (result.ok) show(result.value);
+		else if (!result.unpaired) refused(result, '讀不到設定，請檢查網路後再試。');
 	}
 
 	async function save() {
 		if (!layer) return;
 		busy = true;
 		saved = false;
-		const result = await request<PreauthLayer>('/api/preauth', {
+		const result = await request<PreauthSettings>('/api/preauth', {
 			method: 'PUT',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ sha256: layer.sha256, changes })
+			body: JSON.stringify({ layer: 'global', sha256: layer.sha256, changes })
 		});
 		busy = false;
 		if (result.ok) {
 			show(result.value);
 			saved = true;
 		} else if (!result.unpaired) {
-			refusal = result.kind === 'http' ? (result.body as Refusal) : { reason: '沒有送出，請檢查網路後再按一次。' };
+			refused(result, '沒有送出，請檢查網路後再按一次。');
 		}
 	}
 </script>
@@ -117,10 +125,10 @@
 					{#each refusal.problems as problem}<li>{problem}</li>{/each}
 				</ul>
 			{/if}
-			{#if refusal.toRemove?.length}
-				<p>要手動移除：</p>
+			{#if refusal.toUndo?.length}
+				<p>要手動改回：</p>
 				<ul class="problems">
-					{#each refusal.toRemove as line}<li>{line}</li>{/each}
+					{#each refusal.toUndo as line}<li>{line}</li>{/each}
 				</ul>
 			{/if}
 			{#if refusal.current}
@@ -135,7 +143,7 @@
 			<button class="primary" disabled={busy || !dirty} onclick={save}>儲存</button>
 		{/if}
 		<button disabled={busy} onclick={reload}>重新載入</button>
-		{#if saved}<span role="status">已儲存</span>{/if}
+		{#if saved && !dirty}<span role="status">已儲存</span>{/if}
 	</div>
 </section>
 

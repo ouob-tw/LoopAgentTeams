@@ -955,14 +955,14 @@ class GrantTests(WriteCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.global_file.read_text(), original.replace(
             'branches = [\n  "dev",  # only dev\n]\nsource = "OLD"\n',
-            'branches = ["dev", "release"]\nsource = "D-3"\n'))
+            '# only dev\nbranches = ["dev", "release"]\nsource = "D-3"\n'))
         self.decision('D-4', ['- grant: global deploy-prod allow=false'])
         self.assertEqual(self.grant('--layer', 'global', '--action', 'deploy-prod', '--allow',
                                     'false', '--source', 'D-4').returncode, 0)
         text = self.global_file.read_text()
         self.assertTrue(text.startswith(original.replace(
             'branches = [\n  "dev",  # only dev\n]\nsource = "OLD"\n',
-            'branches = ["dev", "release"]\nsource = "D-3"\n')))
+            '# only dev\nbranches = ["dev", "release"]\nsource = "D-3"\n')))
         self.assertTrue(text.endswith('\n[actions.deploy-prod]\nallow = false\nsource = "D-4"\n'))
 
     def test_quoted_keys_and_a_missing_final_newline_are_edited_in_place(self):
@@ -1335,6 +1335,15 @@ class BoardTests(PreauthCase):
         self.assertIn('# and the other\n', text)
         self.assertNotIn('rel[1]', text)
 
+    def test_comments_inside_a_rewritten_list_stay_in_the_file(self):
+        self.write(self.global_file, '[advisor]\nmust_ask = [ # open\n  "a # not a comment", # why a\n'
+                                     '  # about b\n  "b",\n] # close\n')
+        self.assertEqual(self.write_layer({'advisor': {'must_ask': ['a # not a comment']}})[0]['status'], 'ok')
+        text = self.global_file.read_text()
+        for comment in ('# open', '# why a', '# about b', '# close'):
+            self.assertIn(comment, text)
+        self.assertEqual(tomllib.loads(text)['advisor']['must_ask'], ['a # not a comment'])
+
     def test_inherit_and_an_empty_list_delete_the_key(self):
         self.write(self.global_file, GLOBAL_FILE)
         result, _ = self.write_layer({'actions': {'push': {'allow': None, 'branches': []}}})
@@ -1384,6 +1393,7 @@ class BoardTests(PreauthCase):
         view = self.read()['layers']['global']
         self.assertIn('unknown key `surprise`', view['problems'][0])
         self.assertEqual((view['actions'], view['advisor']), ({}, {}))
+        self.assertEqual(self.read()['effective'], {'actions': {}, 'advisor': {}})
         result, code = self.write_layer({'actions': {'push': {'allow': False}}}, sha=view['sha256'])
         self.assertEqual((result['status'], code), ('invalid', 1))
         self.assertIn('unknown key `surprise`', result['problems'][0])
@@ -1449,7 +1459,8 @@ class BoardTests(PreauthCase):
         self.assertEqual(result['status'], 'restore_failed')
         self.assertIn('allow = false', result['current'])
         self.assertIn('edited meanwhile', result['current'])
-        self.assertEqual(result['to_remove'], ['[actions.push] allow = false'])
+        self.assertEqual(result['to_undo'][0], '[actions.push] allow 改回 true')
+        self.assertEqual(result['to_undo'][1], '[actions.push] source 改回 "D-1"')
 
     def test_report_lists_this_rounds_writes_to_this_project_and_global(self):
         self.write(self.state / 'preauth-writes.jsonl', ''.join(json.dumps(entry) + '\n' for entry in (
@@ -1470,6 +1481,11 @@ class BoardTests(PreauthCase):
         self.assertIn(f'看板 project：[actions.push] allow = true', writes)
         self.assertNotIn('actions.merge', writes)
         self.assertNotIn('deploy-prod', writes)
+        with open(self.state / 'preauth-writes.jsonl', 'a') as log:
+            log.write('not json\n')
+        result = self.run_tool('report')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('讀不懂', result.stdout.split('### 設定寫入')[1])
 
     def test_the_project_layer_from_a_worktree_is_the_main_checkouts_file(self):
         self.write(self.project_file, '[actions.deploy-test]\nallow = true\ntarget = "stage"\n')

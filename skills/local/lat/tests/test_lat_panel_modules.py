@@ -144,6 +144,8 @@ assert not {{'questions', 'bindings', 'board', 'lat_panel'}} & sys.modules.keys(
                 if args == ['board', '--help']:
                     # `board ledger` came after the split; test_lat_panel_board.py covers it.
                     results[1].stdout = results[1].stdout.replace(b',ledger', b'')
+                    # `board preauth-*` came after the split; test_lat_preauth.py covers them.
+                    results[1].stdout = results[1].stdout.replace(b',preauth-read,preauth-write', b'')
                 if args == ['question', '--help']:
                     # `question ask` and `record-chat` came after the split; test_lat_panel_ask.py covers them.
                     results[1].stdout = results[1].stdout.replace(b',ask,record-chat', b'')

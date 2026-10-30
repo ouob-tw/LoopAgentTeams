@@ -23,8 +23,24 @@ export interface PreauthLayer {
 	exists: boolean;
 	sha256: string;
 	problems: string[];
-	actions: Record<string, { allow?: boolean; branches?: string[] }>;
+	actions: Record<string, { allow?: boolean; branches?: string[]; target?: string }>;
 	advisor: { may_settle?: string[]; must_ask?: string[] };
+}
+
+/** One value in effect and the layer it comes from. */
+export interface PreauthOrigin {
+	value: unknown;
+	layer: 'project' | 'global';
+	source: string | null;
+}
+
+/** All of `board preauth-read`: each file, and the merged result (empty when a file has errors). */
+export interface PreauthSettings {
+	layers: { global: PreauthLayer; project?: PreauthLayer };
+	problems: string[];
+	effective: { actions: Record<string, Record<string, PreauthOrigin>>; advisor: Record<string, PreauthOrigin> };
+	/** The project file has an [advisor] section, which is not in effect. */
+	project_advisor: boolean;
 }
 
 export interface PreauthForm {

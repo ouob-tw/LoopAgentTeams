@@ -16,7 +16,7 @@
 
 	export function open() {
 		dialog.showModal();
-		preauth.opened();
+		void preauth.opened();
 	}
 </script>
 
