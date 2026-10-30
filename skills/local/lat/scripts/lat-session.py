@@ -454,11 +454,11 @@ def ledger_command(action, path, *extra):
                        '--ledger', str(path), *extra])
 
 
-def project_integration_branch(workspace, sid):
+def project_integration_branch(workspace):
     """The preauth config's `integration_branch`, or None when none is set or it cannot be read."""
     preauth = preauth_module()
     try:
-        found = preauth.integration_branch(None, preauth.load_layers(workspace, sid)[0])
+        found = preauth.integration_branch(None, preauth.load_layers(workspace)[0])
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
     return found[0] if found else None
@@ -473,7 +473,7 @@ def round_ledger(workspace, sid, round_number, hcom_name):
     if any(item.exists() for item in (store.path, store.seal, store.journal)):
         return path
     flags = ['--orchestrator', hcom_name, '--by', hcom_name]
-    branch = project_integration_branch(workspace, sid)
+    branch = project_integration_branch(workspace)
     if branch:
         flags += ['--integration-branch', branch]
     result = ledger_cli('init', '--ledger', path, '--workspace', lat.parent, *flags)
@@ -722,8 +722,6 @@ def deactivate(args):
         if record['status'] not in ENDED:
             record['ended_at_utc'] = datetime.now(timezone.utc).isoformat()
         record['status'] = 'ended'
-        # The controller pre-authorization layer lives only as long as this round.
-        record.pop('preauth', None)
         if args.successor:
             record['successor'] = args.successor
         if forced:

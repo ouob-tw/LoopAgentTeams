@@ -13,7 +13,7 @@
   | `ticket-confirmation` | 短流程確認題，確認改走短流程與 issue 的驗收條件；不要求 Spec 共識行。 |
   | `requirement-discussion` | Spec 或短流程確認前的需求討論題。 |
   | `account-quota` | 沒有可用訂閱帳號、Claude 額度用完等規則明定由使用者決定的事（Claude 後端實作任務依 /hcom-spawn 自動改派 GPT，不屬此類）。參謀本身缺一家時依「模型與降級」自動處理，不屬此例外。 |
-  | `preauth-ask` | 有 `- action:` 行的授權題，當下重跑 [預先授權](preauth.md) `check` 為 `ask`，且每個原因的類別都是 `allow-false`（某層明寫 `allow = false`）或 `condition`（固定條件不成立，例如分支不在清單、HEAD 不是整合分支最新版本、整套測試沒有通過紀錄、提交未引用本輪票號）。只要有一個原因是 `unset`（例如沒有任何層寫 `allow`）、`precedent` 或 `always-ask`，參謀仍可能以舊答覆定案或另有規則，照常諮詢。 |
+  | `preauth-ask` | 有 `- action:` 行的授權題，當下重跑 [預先授權](preauth.md) `check` 為 `ask`，且每個原因的類別都是 `allow-false`（某層明寫 `allow = false`）或 `condition`（固定條件不成立，例如分支不在清單、HEAD 不是整合分支最新版本、整套測試沒有通過紀錄、提交未引用本輪票號）。只要有一個原因是 `unset`（例如沒有任何層寫 `allow`）或 `always-ask`，參謀仍可能依其他授權來源定案，照常諮詢。 |
 
 - 參謀只處理原本要問使用者的事。執行 Agent 卡住回報給主控、主控在授權內本可自行裁決的事，仍由主控處理，不諮詢。
 
@@ -53,9 +53,9 @@
 - Spec／tracker：<Spec 位置>；<tracker 設定位置>
 - 待決目錄：<決策目錄絕對路徑>（含先前參謀的結論與真人答覆）
 - 授權規則：<LAT 技能目錄絕對路徑>/SKILL.md 的「確認與自動推進」「使用者待決事項」；結論格式見同目錄 references/advisors.md 的「參謀結論」
-- 預先授權：`uv run --no-project python <LAT 技能目錄絕對路徑>/scripts/lat-preauth.py show --workspace <主控工作區> --session-id <主控 session ID>` 印出 `[advisor]` 段與動作設定；引用舊答覆前以同樣的 `--workspace`、`--session-id` 跑 `check --action <動作> [--branch <分支>] --precedent <舊紀錄 ID>`
+- 預先授權：`uv run --no-project python <LAT 技能目錄絕對路徑>/scripts/lat-preauth.py show --workspace <主控工作區>` 印出 `[advisor]` 段與動作設定
 - 限制：只讀不改，不修改程式、Spec、待決紀錄或任務卡；不聯絡使用者；只回覆主控。
-- 回覆格式：第一行 `<ID> r<版本>: resolved <選項或做法>`、`needs-human` 或 `self-check`，下一行起寫理由；resolved 必須引用已確認 Spec 的具體段落，或含真人答覆證據的待決紀錄 ID 與版本，或預先授權（`預先授權 <層>：<段落>`、`舊答覆 <ID> r<版本>`，見 references/advisors.md 的「參謀結論」）。以 `hcom send` 回覆主控時一律用 `--intent inform`：結論不需主控回覆，主控需要更多時會再諮詢；用 `--intent request` 而主控沒回，HCOM 會送來「未回應」通知，讓你的待命被提前解除並被催促。
+- 回覆格式：第一行 `<ID> r<版本>: resolved <選項或做法>`、`needs-human` 或 `self-check`，下一行起寫理由；resolved 必須引用已確認 Spec 的具體段落，或含真人答覆證據的待決紀錄 ID 與版本，或預先授權（`預先授權 <層>：<段落>`，見 references/advisors.md 的「參謀結論」）。以 `hcom send` 回覆主控時一律用 `--intent inform`：結論不需主控回覆，主控需要更多時會再諮詢；用 `--intent request` 而主控沒回，HCOM 會送來「未回應」通知，讓你的待命被提前解除並被催促。
 - 回覆後：以 `lat-watch wait --workspace <主控工作區> --agent <你的完整 HCOM 名稱> --for <主控完整 HCOM 名稱> --reason '<一句>'` 聲明待命再結束回合；完整名稱含 tag，短名會依 `hcom list --json` 唯一解析，撞名或查無名稱時拒絕寫入，清單讀取失敗時會警告並沿用輸入。
 ```
 
@@ -63,11 +63,9 @@
 
 ## 參謀結論
 
-- **`resolved`（定案）**：選某個選項或明確做法，並引用授權來源：已確認 Spec 的具體段落，或含真人答覆證據的待決紀錄 ID 與版本。引用不到就不能定案，只能判 `needs-human`。
-  預先授權（實驗，見 [預先授權](preauth.md)）另提供兩種授權來源，`- authority:` 照下列格式寫：
-  - `預先授權 <層>：<段落>`：`show` 印出的設定。全域設定的 `[advisor]` 段取代使用者私人全域說明檔裡的參謀擴權實驗文字作為授權來源：`may_settle` 列參謀可定案的範圍，`must_ask` 列仍要問的範圍；引用時寫明為何屬於可定案範圍。動作段（如 `[actions.merge]`）只在 `check` 結果為 `allow` 時才能引用。
-  - `舊答覆 <ID> r<版本>`：同一專案、同一動作、使用者答「做」，且之後沒有同動作、答案相反的真人答覆。先以 `check --precedent <ID>` 核對，結果為 `allow` 才能引用：任一層寫了該動作的 `allow` 時以設定為準、舊答覆不適用，固定條件照樣要過；舊紀錄沒有 `- action:` 行時，`- authority:` 另寫明舊答覆同意的分支。工具只核對紀錄有真人答覆、動作與分支相同，是否同類由參謀判斷。
-- **`needs-human`（需要真人）**：寫明超出授權之處，或為何只有使用者能提供。花錢、動帳號一律屬此；改需求、擴大範圍（含改驗收、開新票）也屬此，除非落在預先授權 `[advisor]` 段的 `may_settle` 內且不屬 `must_ask`。
+- **`resolved`（定案）**：選某個選項或明確做法，並引用授權來源：已確認 Spec 的具體段落，或含真人答覆證據的待決紀錄 ID 與版本，或預先授權設定（實驗，見 [預先授權](preauth.md)）。引用不到就不能定案，只能判 `needs-human`。
+  預先授權的 `- authority:` 寫 `預先授權 <層>：<段落>`，內容是 `show` 印出的設定。全域設定的 `[advisor]` 段取代使用者私人全域說明檔裡的參謀擴權實驗文字作為授權來源：`may_settle` 列參謀可定案的範圍，`must_ask` 列仍要問的範圍；引用時寫明為何屬於可定案範圍。專案層的 `[advisor]` 不生效，不能引用。動作段（如 `[actions.merge]`）只在 `check` 結果為 `allow` 時才能引用。
+- **`needs-human`（需要真人）**：寫明超出授權之處，或為何只有使用者能提供。花錢、動帳號額度、刪使用者資料一律屬此；改需求、擴大範圍（含改驗收、開新票）也屬此，除非落在全域預先授權 `[advisor]` 段的 `may_settle` 內且不屬 `must_ask`，這時可以定案。這與動作查詢是兩回事：`check --action change-acceptance`、`check --action new-ticket` 仍一律回 `ask`，也不能寫成動作設定。
 - **`self-check`（可以自己查，主要針對 HELP）**：寫明去哪裡查。
 
 ## 意見合併
@@ -82,7 +80,7 @@
 ## 與真人授權的關係
 
 - 參謀定案不是真人核准，而是「這件事已在既有真人授權內」的判斷；`advisor-resolved` 的效力完全來自它引用的授權來源。
-- 主控與執行 Agent 的「雙方核對」：引用的是已確認 Spec 段落，或確有真人答覆證據的待決紀錄，或引用預先授權（`預先授權 <層>：<段落>` 並寫明可定案理由，或 `舊答覆 <ID> r<版本>` 且該紀錄有真人答覆），就視為既有授權內，可以放行。引用缺失、引用的紀錄沒有真人答覆，或該事項先前已是送交真人的 `pending`，都停止相依工作並回報。
+- 主控與執行 Agent 的「雙方核對」：引用的是已確認 Spec 段落，或確有真人答覆證據的待決紀錄，或引用預先授權（`預先授權 <層>：<段落>` 並寫明可定案理由），就視為既有授權內，可以放行。引用缺失、引用的紀錄沒有真人答覆，或該事項先前已是送交真人的 `pending`，都停止相依工作並回報。
 - `advising` 只用於還沒問過使用者的事。已寫進面板，或已用 DECIDE／HELP 問過使用者的 `pending` 事項，只有真人答覆能解除；參謀意見不能把它改成 `advisor-resolved` 或其他狀態。例外是求助題由主控自行查證完成，依 [待答問題面板](question-panel.md#求助題結案) 結案。
 
 ### 補做諮詢
@@ -121,5 +119,5 @@
 ## 回報
 
 - 參謀定案不即時通知使用者。主控在批次成果與交付回報列出參謀定案清單：每項一行題號與一句結論，含自行查證結案的項目。
-- 引用舊答覆定案時，主控以 `lat-preauth record --kind precedent` 記一筆。交付回報把 `lat-preauth report` 的輸出另列一組，貼在參謀定案清單旁；其中引用舊答覆的項目附「建議寫成規則」，使用者同意後主控以 `grant` 寫進設定。
+- 交付回報把 `lat-preauth report` 的輸出另列一組，貼在參謀定案清單旁。
 - 使用者推翻時，依 [待答問題面板](question-panel.md#聊天答覆與更正) 的更正流程新增更正紀錄，舊結論標為「已由更正項目取代」；沒有面板時同樣適用。

@@ -2041,19 +2041,6 @@ class SessionTests(unittest.TestCase):
         self.assertNotIn('ended_at_utc', current)
         self.assertEqual(current['history'][0]['ended_at_utc'], ended['ended_at_utc'])
 
-    def test_controller_preauthorization_ends_with_its_round(self):
-        self.activate()
-        record = json.loads(self.record.read_text())
-        record['preauth'] = {'round': 1, 'settings': {'actions': {'merge': {'allow': True}}}}
-        self.record.write_text(json.dumps(record))
-        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
-        self.assertNotIn('preauth', json.loads(self.record.read_text()))
-
-        self.activate()
-        current = json.loads(self.record.read_text())
-        self.assertNotIn('preauth', current)
-        self.assertNotIn('preauth', current['history'][0])
-
     def test_activate_and_deactivate_trigger_autoclean_and_never_fail_on_it(self):
         log = self.work / '.lat/cleanup.log'
         self.activate()

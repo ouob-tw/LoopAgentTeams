@@ -84,15 +84,14 @@ class PreauthCase(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
 
-    def session(self, settings, *, status='active', round_number=1, history=0,
-                integration='dev', tickets=('313',), hcom_name='orch'):
+    def session(self, *, status='active', history=0, integration='dev', tickets=('313',),
+                hcom_name='orch', **extra):
         ledger = self.repo / '.lat' / 'ledgers' / 'round.json'
         self.write(ledger, json.dumps({'integration_branch': integration,
                                        'items': [{'ticket': t} for t in tickets]}))
         record = dict(status=status, history=[{}] * history, ledger_path=str(ledger),
-                      hcom_name=hcom_name, decisions_path=str(self.repo / '.lat' / 'decisions'))
-        if settings is not None:
-            record['preauth'] = {'round': round_number, 'settings': settings}
+                      hcom_name=hcom_name, decisions_path=str(self.repo / '.lat' / 'decisions'),
+                      **extra)
         self.write(self.sessions / f'{SESSION}.json', json.dumps(record))
 
 
@@ -147,41 +146,58 @@ class LayerTests(PreauthCase):
         self.assertIn('allow=true from project (source P-2)', result.stdout)
         self.assertIn('branches=["dev"] from global (source G-1)', result.stdout)
 
-    def test_controller_layer_overrides_project(self):
+    def test_a_preauth_field_left_in_the_session_record_is_ignored(self):
         self.write(self.project_file, '[actions.merge]\nallow = false\nbranches = ["dev"]\n')
-        self.session({'actions': {'merge': {'allow': True, 'source': 'C-1'}}})
-        verdict = self.check('merge', '--branch', 'dev')
-        self.assertEqual(verdict['verdict'], 'allow')
-        self.assertIn('allow=true from controller (source C-1) [actions.merge]', verdict['basis'])
-
-    def test_controller_layer_lapses_when_round_ended_or_moved_on(self):
-        self.write(self.project_file, '[actions.merge]\nbranches = ["dev"]\n')
-        settings = {'actions': {'merge': {'allow': True}}}
-        for label, kwargs in (('ended', dict(status='ended')),
-                              ('earlier round', dict(round_number=1, history=1))):
+        for label, preauth in (
+                ('this round', {'round': 1, 'settings': {'actions': {'merge': {'allow': True}}}}),
+                ('malformed', {'oops': True}),
+                ('unknown key', {'round': 1, 'settings': {'actions': {'merge': {'oops': 1}}}})):
             with self.subTest(label):
-                self.session(settings, **kwargs)
-                self.assertEqual(self.check('merge', '--branch', 'dev')['verdict'], 'ask')
-        with self.subTest('another session'):
-            self.session(settings)
-            self.assertEqual(self.check('merge', '--branch', 'dev',
-                                        session='22222222')['verdict'], 'ask')
+                self.session(preauth=preauth)
+                verdict = self.check('merge', '--branch', 'dev')
+                self.assertEqual(verdict['reason_kinds'], ['allow-false'])
+                self.assertNotIn('controller', self.run_tool('show').stdout)
 
-    def test_show_prints_effective_settings_and_origins(self):
-        self.write(self.global_file, 'version = 1\nexperiment = true\n'
+    def test_show_lists_the_two_layers_with_effective_settings_and_origins(self):
+        self.write(self.global_file, 'version = 1\n'
                    '[actions.push]\nallow = true\nbranches = ["dev"]\nsource = "G-2"\n'
                    '[advisor]\nextended = true\nmay_settle = ["small fixes"]\n')
         self.write(self.project_file, '[actions.push]\nallow = false\n')
-        self.session(None, status='ended')
         result = self.run_tool('show')
         self.assertEqual(result.returncode, 0, result.stderr)
         out = result.stdout
-        self.assertIn('controller: ', out)
-        self.assertIn('not in effect: session is ended', out)
+        layers = out.split('Effective settings:')[0].splitlines()[1:]
+        self.assertEqual([line.split(':')[0].strip() for line in layers], ['project', 'global'])
         self.assertIn('    allow = false  ← project', out)
         self.assertIn('    branches = ["dev"]  ← global (source G-2)', out)
         self.assertIn('  [actions.merge] (not set; asks)', out)
         self.assertIn('    may_settle = ["small fixes"]  ← global', out)
+        self.assertNotIn('專案層的 [advisor] 不生效', out)
+
+    def test_project_advisor_section_is_not_in_effect(self):
+        self.write(self.global_file, '[advisor]\nmay_settle = ["from global"]\n')
+        self.write(self.project_file, '[advisor]\nmay_settle = ["from project"]\n'
+                   'must_ask = ["project only"]\n')
+        out = self.run_tool('show').stdout
+        self.assertIn('    may_settle = ["from global"]  ← global', out)
+        self.assertIn('專案層的 [advisor] 不生效', out)
+        self.assertNotIn('from project', out)
+        self.assertNotIn('project only', out)
+        self.assertNotIn('must_ask', out)
+        with self.subTest('nothing in the global layer'):
+            self.global_file.unlink()
+            out = self.run_tool('show').stdout
+            self.assertIn('  [advisor] (not set)', out)
+            self.assertIn('專案層的 [advisor] 不生效', out)
+            self.assertNotIn('from project', out)
+        with self.subTest('it is still checked like the rest of the file'):
+            self.write(self.project_file, '[advisor]\noops = 1\n')
+            self.assert_ask_problem('unknown key `oops`')
+
+    def assert_ask_problem(self, reason):
+        verdict = self.check('merge', '--branch', 'dev')
+        self.assertEqual(verdict['verdict'], 'ask')
+        self.assertIn(reason, ' '.join(verdict['reasons']))
 
 
 class ErrorTests(PreauthCase):
@@ -201,6 +217,11 @@ class ErrorTests(PreauthCase):
 
     def test_unknown_key_asks(self):
         self.assert_asks('[actions.push]\nalow = true\n', 'unknown key `alow`')
+
+    def test_the_removed_experiment_key_is_an_unknown_key(self):
+        for value in ('true', '"yes"'):
+            with self.subTest(value=value):
+                self.assert_asks(f'experiment = {value}\n', 'unknown key `experiment`')
 
     def test_wrong_value_type_asks(self):
         self.assert_asks('[actions.push]\nallow = "yes"\n', '`allow` must be true or false')
@@ -232,28 +253,6 @@ class ErrorTests(PreauthCase):
         result = self.run_tool('check', '--action', 'merge', '--branch', 'dev')
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('unreadable', result.stdout)
-
-    def test_bad_controller_field_asks(self):
-        self.session({'actions': {'merge': {'allow': True, 'oops': 1}}})
-        verdict = self.check('merge', '--branch', 'dev')
-        self.assertEqual(verdict['verdict'], 'ask')
-        self.assertIn('unknown key `oops`', ' '.join(verdict['reasons']))
-
-    def test_malformed_controller_envelope_asks(self):
-        self.write(self.project_file, '[actions.merge]\nallow = false\nbranches = ["dev"]\n')
-        settings = {'actions': {'merge': {'allow': True}}}
-        for label, preauth, history in (
-                ('missing round', {'settings': settings}, []),
-                ('boolean round', {'round': True, 'settings': settings}, []),
-                ('extra key', {'round': 1, 'oops': True, 'settings': settings}, []),
-                ('broken history', {'round': 1, 'settings': settings}, 'broken')):
-            with self.subTest(label):
-                self.write(self.sessions / f'{SESSION}.json', json.dumps(
-                    dict(status='active', history=history, preauth=preauth)))
-                verdict = self.check('merge', '--branch', 'dev')
-                self.assertEqual(verdict['verdict'], 'ask')
-                self.assertIn('controller layer', ' '.join(verdict['reasons']))
-
 
 class ConditionTests(PreauthCase):
     def test_merge_branch_must_be_listed(self):
@@ -289,7 +288,7 @@ class ConditionTests(PreauthCase):
         self.assertEqual(set(verdict['reason_kinds']), {'condition'})
         git(self.repo, 'checkout', '-q', 'dev')
         self.write(self.project_file, '')
-        self.session(None)
+        self.session()
         verdict = self.check('deploy-test')
         self.assertIn('the project layer does not set actions.deploy-test.target',
                       verdict['reasons'])
@@ -299,7 +298,7 @@ class ConditionTests(PreauthCase):
         self.write(self.global_file, ''.join(f'[actions.{name}]\nallow = true\n' for name in
                                              ('deploy-test', 'deploy-prod', 'install-host')))
         self.write(self.project_file, '[actions.deploy-test]\ntarget = "staging on :9000"\n')
-        self.session(None)
+        self.session()
 
     def test_main_checkout_at_integration_tip_with_passing_gate_allows(self):
         self.allow_all()
@@ -398,14 +397,14 @@ class ConditionTests(PreauthCase):
 
     def test_unknown_integration_branch_asks(self):
         self.allow_all()
-        self.session(None, integration=None)
+        self.session(integration=None)
         self.assertIn('integration branch unknown (the round ledger names none and no layer '
                       'sets integration_branch)', self.check('install-host')['reasons'])
 
     def test_integration_branch_setting_fills_a_null_ledger_value(self):
         self.allow_all()
         self.gate_record()
-        self.session(None, integration=None)
+        self.session(integration=None)
         self.write(self.global_file, 'integration_branch = "main"\n' +
                    self.global_file.read_text())
         self.write(self.project_file, 'integration_branch = "dev"\n' +
@@ -425,15 +424,6 @@ class ConditionTests(PreauthCase):
         self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
         self.assertIn('integration branch `dev` from the round ledger', verdict['basis'])
 
-    def test_controller_layer_integration_branch_wins_over_project(self):
-        self.allow_all()
-        self.gate_record()
-        self.session({'integration_branch': 'dev'}, integration=None)
-        self.write(self.project_file, 'integration_branch = "main"\n' +
-                   self.project_file.read_text())
-        self.assertIn('integration branch `dev` from controller integration_branch',
-                      self.check('install-host')['basis'])
-
     def test_integration_branch_setting_must_be_a_name(self):
         self.allow_all()
         self.write(self.project_file, 'integration_branch = ""\n')
@@ -448,9 +438,10 @@ class ConditionTests(PreauthCase):
                       self.check('deploy-test')['reasons'])
         self.assertNotIn('target = "x"', self.run_tool('show').stdout)
 
-    def test_show_and_check_name_the_project_target_over_narrower_layers(self):
+    def test_show_and_check_name_the_project_target_over_the_global_one(self):
         self.allow_all()
-        self.session({'actions': {'deploy-test': {'target': 'production'}}})
+        self.write(self.global_file, self.global_file.read_text().replace(
+            '[actions.deploy-test]\n', '[actions.deploy-test]\ntarget = "production"\n'))
         self.assertIn('target="staging on :9000" from project [actions.deploy-test]',
                       self.check('deploy-test')['basis'])
         out = self.run_tool('show').stdout
@@ -464,7 +455,7 @@ class NoticeTests(PreauthCase):
 
     def setUp(self):
         super().setUp()
-        self.session(None)
+        self.session()
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         self.agents = self.root / 'agents.json'
@@ -526,7 +517,7 @@ class NoticeTests(PreauthCase):
                                         self.TEXT]])
 
     def test_tagged_controller_sends_as_its_name_and_matches_its_base_name(self):
-        self.session(None, hcom_name='tag-orch')
+        self.session(hcom_name='tag-orch')
         self.other_sessions(('tag-kela', 'active'))
         self.set_agents([{'name': 'tag-orch', 'base_name': 'orch'},
                          {'name': 'tag-kela', 'base_name': 'kela'}])
@@ -632,7 +623,7 @@ class NoticeTests(PreauthCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, '')
         self.set_agents([{'name': 'orch'}, {'name': 'kela'}])
-        self.session(None, hcom_name='')
+        self.session(hcom_name='')
         result = self.notice()
         self.assertEqual(result.returncode, 1)
         self.assertIn('sender is unknown', result.stderr)
@@ -666,7 +657,7 @@ class InstallHostGateTests(PreauthCase):
         git(self.repo, 'add', '-A')
         git(self.repo, 'commit', '-q', '-m', 'skills')
         self.write(self.global_file, '[actions.install-host]\nallow = true\n')
-        self.session(None)
+        self.session()
         bunx = self.root / 'bin' / 'bunx'
         self.write(bunx, '#!/bin/sh\nexit 0\n')
         bunx.chmod(0o755)
@@ -738,7 +729,7 @@ class PushTests(PreauthCase):
         git(self.repo, 'remote', 'add', 'origin', str(remote))
         git(self.repo, 'push', '-q', 'origin', 'dev')
         self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["dev"]\n')
-        self.session(None, tickets=('313', 'ouob-tw/LoopAgentTeams-work#314'))
+        self.session(tickets=('313', 'ouob-tw/LoopAgentTeams-work#314'))
 
     def test_listed_branch_passing_gate_and_round_commits_allow(self):
         self.commit('feat(lat): gate check (#313)')
@@ -806,7 +797,7 @@ class PushTests(PreauthCase):
         self.assertNotIn(own[:12], reasons[0])
 
     def test_same_number_in_another_repo_is_not_a_round_ticket(self):
-        self.session(None, tickets=('ouob-tw/LoopAgentTeams-work#313', '314'))
+        self.session(tickets=('ouob-tw/LoopAgentTeams-work#313', '314'))
         own = self.commit('feat: mine (ouob-tw/LoopAgentTeams-work#313)')
         bare = self.commit('feat: bare (#313)', 'c.txt')
         other = self.commit('feat: theirs (someone/else#313)', 'd.txt')
@@ -822,7 +813,7 @@ class PushTests(PreauthCase):
         self.assertNotIn(bare[:12], reasons[0])
 
     def test_a_bare_ledger_number_takes_the_own_tracker_beside_another_repos_row(self):
-        self.session(None, tickets=('370', 'ouob-tw/bw-broker-work#7'))
+        self.session(tickets=('370', 'ouob-tw/bw-broker-work#7'))
         own = self.commit('fix: mine (ouob-tw/LoopAgentTeams-work#370)')
         other = self.commit('fix: theirs (ouob-tw/other-repo#370)', 'c.txt')
         self.gate_record()
@@ -863,7 +854,7 @@ class PushTests(PreauthCase):
     def test_without_a_round_ledger_push_asks(self):
         self.commit('feat(lat): mine (#313)')
         self.gate_record()
-        self.session(None, status='ended')
+        self.session(status='ended')
         self.assertIn('no active round ledger to tell whose tickets the unpushed commits '
                       'belong to', self.check('push', '--branch', 'dev')['reasons'])
 
@@ -889,25 +880,23 @@ ANSWER = ('## 答覆（r1，面板，{time}）\n\n- 題目：{id} r1\n- 答覆�
 class WriteCase(PreauthCase):
     def setUp(self):
         super().setUp()
-        self.session(None)
+        self.session()
         self.decisions = self.repo / '.lat' / 'decisions'
 
-    def decision(self, identifier, grants=(), *, status='answered', answer=True,
-                 session=SESSION, time='2026-10-25T00:30:34+08:00', action=None):
-        text = f'# Q\n- version: r1\n- status: {status}\n- session: {session}\n'
-        text += f'- action: {action}\n' if action else ''
+    def decision(self, identifier, grants=(), *, status='answered', answer=True):
+        text = f'# Q\n- version: r1\n- status: {status}\n- session: {SESSION}\n'
         text += '\n## 問題與選項\n'
         text += '- grant: global push allow=true branches=dev\n'  # outside the approved scope
         if answer:
-            text += '\n' + ANSWER.format(time=time, id=identifier)
+            text += '\n' + ANSWER.format(time='2026-10-25T00:30:34+08:00', id=identifier)
         text += '\n## 核准範圍（主控判斷）\n使用者同意。\n' + ''.join(f'{g}\n' for g in grants)
         self.write(self.decisions / f'{identifier}.md', text)
 
-    def grant(self, *args, session=SESSION):
-        return self.run_tool('grant', *args, session=session)
+    def grant(self, *args):
+        return self.run_tool('grant', *args)
 
-    def records(self, round_number=1):
-        path = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r{round_number}.jsonl'
+    def records(self):
+        path = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r1.jsonl'
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
@@ -1002,12 +991,12 @@ class GrantTests(WriteCase):
         self.assertFalse(self.global_file.exists())
 
     def test_grant_waits_for_deactivate_and_then_refuses(self):
-        self.decision('D-10', ['- grant: controller merge allow=true'])
+        self.decision('D-10', ['- grant: project merge allow=true'])
         lock = self.repo / '.lat' / 'watch' / f'{SESSION}.lock'
         lock.parent.mkdir(parents=True)
         with lock.open('a') as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
-            process = self.run_tool('grant', '--layer', 'controller', '--action', 'merge',
+            process = self.run_tool('grant', '--layer', 'project', '--action', 'merge',
                                     '--allow', 'true', '--source', 'D-10', wait=False)
             self.addCleanup(process.kill)
             with self.assertRaises(subprocess.TimeoutExpired):
@@ -1019,6 +1008,7 @@ class GrantTests(WriteCase):
         self.assertIn('only an active round can write', stderr)
         self.assertEqual(json.loads((self.sessions / f'{SESSION}.json').read_text())['status'],
                          'ended')
+        self.assertFalse(self.project_file.exists())
 
     def test_broken_file_is_refused_not_rewritten(self):
         self.write(self.global_file, '[actions.merge\n')
@@ -1029,38 +1019,12 @@ class GrantTests(WriteCase):
         self.assertIn('not readable TOML', result.stderr)
         self.assertEqual(self.global_file.read_text(), '[actions.merge\n')
 
-    def test_controller_grant_needs_this_sessions_current_round(self):
-        line = ['- grant: controller merge allow=true branches=dev']
-        args = ('--layer', 'controller', '--action', 'merge', '--allow', 'true', '--branches',
-                'dev', '--source', 'D-6')
-        self.decision('D-6', line, session='22222222-2222-4222-8222-222222222222')
-        result = self.grant(*args)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('not this session', result.stderr)
-        record = json.loads((self.sessions / f'{SESSION}.json').read_text())
-        record['history'] = [{'ended_at_utc': '2026-10-25T00:00:00+00:00'}]
-        self.write(self.sessions / f'{SESSION}.json', json.dumps(record))
-        self.decision('D-6', line, time='2026-10-24T23:00:00+00:00')
-        result = self.grant(*args)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('earlier round', result.stderr)
-        self.assertNotIn('preauth', json.loads((self.sessions / f'{SESSION}.json').read_text()))
-
-        self.decision('D-6', line, time='2026-10-25T01:00:00+00:00')
-        result = self.grant(*args)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        stored = json.loads((self.sessions / f'{SESSION}.json').read_text())['preauth']
-        self.assertEqual(stored, {'round': 2, 'settings': {'actions': {'merge': {
-            'allow': True, 'branches': ['dev'], 'source': 'D-6'}}}})
-        self.assertEqual(self.check('merge', '--branch', 'dev')['verdict'], 'allow')
-        self.assertEqual(self.records(2)[0]['grant'], 'controller merge allow=true branches=dev')
-
     def test_grant_needs_an_active_round_and_a_real_action(self):
         self.decision('D-7', ['- grant: project spend allow=true'])
         self.assertIn('not a pre-authorizable action',
                       self.grant('--layer', 'project', '--action', 'spend', '--allow', 'true',
                                  '--source', 'D-7').stderr)
-        self.session(None, status='ended')
+        self.session(status='ended')
         self.decision('D-7', ['- grant: project merge allow=true'])
         result = self.grant('--layer', 'project', '--action', 'merge', '--allow', 'true',
                             '--source', 'D-7')
@@ -1221,7 +1185,7 @@ class RecordTests(WriteCase):
                 self.assertEqual(len(self.records()), count + int(allowed))
 
     def test_tagged_controller_notices_carry_its_base_name(self):
-        self.session(None, hcom_name='lat-fix-orch')
+        self.session(hcom_name='lat-fix-orch')
         self.agents.write_text(json.dumps([
             {'name': 'lat-fix-orch', 'base_name': 'orch', 'tag': 'lat-fix'},
             {'name': 'qa-zorch', 'base_name': 'zorch', 'tag': 'qa'}]))
@@ -1248,31 +1212,22 @@ class RecordTests(WriteCase):
         self.assertEqual((entry['kind'], entry['action'], entry['result'], entry['notice_before'],
                           entry['notice_after']), ('auto', 'install-host', 'failed', 1, 2))
 
-    def test_merge_needs_no_notices_and_precedent_needs_a_human_answer(self):
+    def test_merge_needs_no_notices_and_bug_intake_needs_its_four_conditions(self):
         self.assertEqual(self.record('--action', 'merge', '--branch', 'dev', '--commit', 'abc',
                                      '--basis', 'allow merge dev', '--result',
                                      'succeeded').returncode, 0)
-        self.decision('OLD-1', status='pending', answer=False)
-        result = self.record('--kind', 'precedent', '--decision', 'NEW-1', '--source',
-                             'OLD-1 r1', '--basis', 'same project, same action')
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('status is pending', result.stderr)
-        self.decision('OLD-1')
-        self.assertEqual(self.record('--kind', 'precedent', '--decision', 'NEW-1', '--source',
-                                     'OLD-1 r1', '--basis', 'same project').returncode, 0)
         result = self.record('--kind', 'bug-intake', '--issue', '#9', '--source', 'chat 12:00')
         self.assertIn('--self-reported', result.stderr)
-        self.assertEqual([entry['kind'] for entry in self.records()], ['auto', 'precedent'])
+        self.assertEqual([entry['kind'] for entry in self.records()], ['auto'])
 
-    def test_report_lists_only_this_round_in_four_groups(self):
+    def test_report_lists_only_this_round_in_three_groups(self):
         old = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r1.jsonl'
         self.write(old, json.dumps(dict(kind='auto', action='push', commit='OLDROUND',
                                         basis='b', result='succeeded')) + '\n')
-        self.session(None, history=1)
+        self.session(history=1)
         self.assertEqual(self.record('--action', 'push', '--branch', 'dev', '--commit',
                                      'abc123', '--basis', 'allow push dev', '--result',
                                      'succeeded').returncode, 0)
-        self.decision('OLD-2')
         self.assertEqual(self.record('--kind', 'bug-intake', '--issue', '#9', '--source',
                                      'chat 12:00', '--self-reported', 'user typed it',
                                      '--clear-expected', 'says X should be Y', '--single-ticket',
@@ -1282,110 +1237,42 @@ class RecordTests(WriteCase):
         out = result.stdout
         self.assertIn(f'session {SESSION} 第 2 輪', out)
         self.assertNotIn('OLDROUND', out)
-        auto, precedent, bug, grants = out.split('### ')[1:]
+        auto, bug, grants = out.split('### ')[1:]
         self.assertIn('依預先授權自動執行\n- push dev abc123：succeeded；依據：allow push dev', auto)
-        self.assertEqual(precedent, '引用舊答覆定案\n- 無\n\n')
         self.assertIn('免確認開工\n- #9；原訊息：chat 12:00；本人回報：user typed it', bug)
         self.assertEqual(grants, '設定寫入\n- 無\n')
-        self.session(None, status='ended', history=1)
+        self.assertNotIn('舊答覆', out)
+        self.session(status='ended', history=1)
         self.assertIn('abc123', self.run_tool('report').stdout)
 
 
-class PrecedentTests(WriteCase):
-    """check --precedent: a set `allow` wins; otherwise the earlier answer fills it in and the
-    fixed conditions still hold."""
+class RemovedOptionTests(WriteCase):
+    """The controller layer and earlier-answer citations are gone from the command line."""
 
-    def setUp(self):
-        super().setUp()
-        remote = self.root / 'remote.git'
-        git(self.root, 'init', '-q', '--bare', str(remote))
-        git(self.repo, 'remote', 'add', 'origin', str(remote))
-        git(self.repo, 'push', '-q', 'origin', 'dev')
-        git(self.repo, 'branch', 'main')
-        self.commit('feat(lat): mine (#313)')
-        self.gate_record()
+    def test_removed_options_are_rejected_as_unknown(self):
+        self.decision('D-1', ['- grant: controller merge allow=true'])
+        for label, args, reason in (
+                ('grant --layer controller',
+                 ('grant', '--layer', 'controller', '--action', 'merge', '--allow', 'true',
+                  '--source', 'D-1'), "invalid choice: 'controller'"),
+                ('check --precedent', ('check', '--action', 'merge', '--branch', 'dev',
+                                       '--precedent', 'D-1'), 'unrecognized arguments'),
+                ('record --kind precedent',
+                 ('record', '--kind', 'precedent', '--source', 'D-1 r1', '--basis', 'same'),
+                 "invalid choice: 'precedent'"),
+                ('record --decision', ('record', '--kind', 'bug-intake', '--decision', 'D-1'),
+                 'unrecognized arguments')):
+            with self.subTest(label):
+                result = self.run_tool(*args)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn(reason, result.stderr)
+        self.assertEqual(self.records(), [])
+        self.assertNotIn('preauth', json.loads((self.sessions / f'{SESSION}.json').read_text()))
 
-    def precedent(self, action, *extra):
-        return self.check(action, *extra, '--precedent', 'OLD-1')
-
-    def test_a_set_allow_false_asks_even_with_an_earlier_yes(self):
-        self.write(self.global_file, '[actions.deploy-prod]\nallow = false\n')
-        self.decision('OLD-1', action='deploy-prod')
-        verdict = self.precedent('deploy-prod')
-        self.assertEqual(verdict['verdict'], 'ask')
-        self.assertIn('actions.deploy-prod.allow=false from global; actions.deploy-prod.allow '
-                      'is set, so earlier answer OLD-1 does not apply', verdict['reasons'])
-
-    def test_a_set_allow_keeps_its_branch_list_over_the_earlier_answer(self):
-        self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["dev"]\n')
-        self.decision('OLD-1', action='push main')
-        verdict = self.precedent('push', '--branch', 'main')
-        self.assertEqual(verdict['verdict'], 'ask')
-        self.assertIn('branch `main` is not in actions.push.branches ["dev"] from global',
-                      verdict['reasons'][0])
-
-    def test_branch_list_alone_and_the_same_branch_allow_push(self):
-        self.write(self.global_file, '[actions.push]\nbranches = ["dev"]\n')
-        self.decision('OLD-1', action='push dev')
-        self.assertEqual(self.check('push', '--branch', 'dev')['reasons'],
-                         ['no layer sets actions.push.allow'])
-        verdict = self.precedent('push', '--branch', 'dev')
-        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
-        self.assertIn('earlier answer OLD-1 stands in for actions.push.allow, which no layer '
-                      'sets', verdict['basis'])
-        self.assertIn('earlier answer OLD-1 approved branch `dev`', verdict['basis'])
-        with self.subTest('the earlier answer approved main, a branch outside the list'):
-            self.decision('OLD-1', action='push main')
-            reasons = self.precedent('push', '--branch', 'main')['reasons']
-            self.assertIn('branch `main` is not in actions.push.branches', reasons[0])
-            self.assertEqual(self.precedent('push', '--branch', 'dev')['reasons'], [
-                'branch `dev` is not the branch earlier answer OLD-1 approved (`main`)'])
-        with self.subTest('with no list set, only the approved branch'):
-            self.write(self.global_file, '')
-            self.assertEqual(self.precedent('push', '--branch', 'dev')['reasons'], [
-                'branch `dev` is not the branch earlier answer OLD-1 approved (`main`)'])
-            self.decision('OLD-1', action='push dev')
-            self.assertEqual(self.precedent('push', '--branch', 'dev')['verdict'], 'allow')
-        with self.subTest('the fixed conditions still hold'):
-            self.commit('chore: no ticket', 'c.txt')
-            self.gate_record()
-            reasons = self.precedent('push', '--branch', 'dev')['reasons']
-            self.assertIn("unpushed commits outside this round's tickets", reasons[0])
-
-    def test_target_alone_and_an_earlier_yes_allow_deploy_test(self):
-        self.write(self.project_file, '[actions.deploy-test]\ntarget = "staging on :9000"\n')
-        self.decision('OLD-1', action='deploy-test')
-        self.assertEqual(self.check('deploy-test')['reasons'],
-                         ['no layer sets actions.deploy-test.allow'])
-        verdict = self.precedent('deploy-test')
-        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
-        self.assertIn('target="staging on :9000" from project [actions.deploy-test]',
-                      verdict['basis'])
-        with self.subTest('the fixed conditions still hold'):
-            git(self.repo, 'checkout', '-q', 'main')
-            self.assertIn('HEAD is not the tip of integration branch `dev`',
-                          self.precedent('deploy-test')['reasons'])
-
-    def test_the_earlier_record_must_hold_a_human_answer_to_the_same_action(self):
-        self.write(self.project_file, '[actions.deploy-test]\ntarget = "staging"\n')
-        self.decision('OLD-1', status='pending', answer=False, action='deploy-test')
-        reasons = self.precedent('deploy-test')['reasons']
-        self.assertIn('OLD-1 status is pending, not answered or approved', reasons)
-        self.assertIn('OLD-1 has no answer section with a `- 來源：` line', reasons)
-        self.decision('OLD-1', action='install-host')
-        self.assertEqual(self.precedent('deploy-test')['reasons'],
-                         ['earlier answer OLD-1 is for `install-host`, not `deploy-test`'])
-        self.assertEqual(self.check('deploy-test', '--precedent', 'NOPE')['verdict'], 'ask')
-
-    def test_without_an_action_line_the_advisors_name_the_branch(self):
-        self.decision('OLD-1')
-        verdict = self.precedent('push', '--branch', 'dev')
-        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
-        self.assertIn('earlier answer OLD-1 has no `- action:` line; the advisors must name its '
-                      'branch in `- authority:`', verdict['basis'])
-        self.decision('OLD-1', action='push')
-        self.assertEqual(self.precedent('push', '--branch', 'dev')['reasons'],
-                         ['earlier answer OLD-1 names no branch on its `- action:` line'])
+    def test_no_reason_kind_is_precedent(self):
+        for action in ('merge', 'deploy-prod', 'spend', 'rebase'):
+            with self.subTest(action=action):
+                self.assertNotIn('precedent', self.check(action)['reason_kinds'])
 
 
 if __name__ == '__main__':
