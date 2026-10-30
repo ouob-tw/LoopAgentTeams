@@ -564,6 +564,19 @@ class NoticeTests(PreauthCase):
         self.assertIn('vuho', result.stderr)
         self.assertEqual(self.sent(), [])
         self.assertEqual(self.notice().stdout, 'none-2\n')
+        [first, _] = [json.loads(line) for line in next(
+            (self.repo / '.lat' / 'preauth-records').glob('*-no-recipient.jsonl')
+        ).read_text().splitlines()]
+        self.assertEqual((first['sender'], first['recorded'], first['not_live']),
+                         ('orch', ['vuho'], ['vuho']))
+
+    def test_a_malformed_agent_list_is_not_taken_as_no_one_live(self):
+        self.other_sessions(('kela', 'active'))
+        self.set_agents(json.dumps([None, {}]))
+        result = self.notice()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('malformed agent list', result.stderr)
 
     def test_a_named_recipient_that_is_not_live_still_fails(self):
         self.other_sessions(('vuho', 'active'))
@@ -1117,11 +1130,12 @@ class RecordTests(WriteCase):
                                  '--result', 'succeeded')
             self.assertIn('needs --notice-before, --notice-after and --started', result.stderr)
 
-    def none_ids(self, *rows, sender='orch', round_number=1):
+    def none_ids(self, *rows, sender='orch', round_number=1, recorded=()):
         """Write the no-one-to-notify log `notice` keeps; rows are (id, time)."""
         self.write(self.repo / '.lat' / 'preauth-records' /
                    f'{SESSION}-r{round_number}-no-recipient.jsonl',
-                   ''.join(json.dumps(dict(id=name, sender=sender, not_live=[], at=at)) + '\n'
+                   ''.join(json.dumps(dict(id=name, sender=sender, recorded=list(recorded), not_live=list(recorded),
+                                   self_names=[], at=at)) + '\n'
                            for name, at in rows))
 
     def test_no_one_to_notify_ids_stand_in_for_notices_and_show_in_the_report(self):
@@ -1134,7 +1148,8 @@ class RecordTests(WriteCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([(e['notice_before'], e['notice_after']) for e in self.records()],
                          [('none-1', 'none-2')])
-        self.assertIn('通知 none-1 → none-2', self.run_tool('report').stdout)
+        self.assertIn('通知 無人可通知（none-1，未發訊息） → 無人可通知（none-2，未發訊息）',
+                      self.run_tool('report').stdout)
 
     def test_no_one_to_notify_ids_are_checked(self):
         self.none_ids(('none-1', '2026-10-25T10:00:00+00:00'),
@@ -1157,13 +1172,22 @@ class RecordTests(WriteCase):
             result = self.deploy(before='none-1', after='none-2')
             self.assertEqual(result.returncode, 1)
             self.assertIn('before notice none-1 was not issued', result.stderr)
+        with self.subTest('a log whose controllers were not all offline'):
+            self.write(self.repo / '.lat' / 'preauth-records' /
+                       f'{SESSION}-r1-no-recipient.jsonl',
+                       json.dumps(dict(id='none-1', sender='orch', recorded=['kela'],
+                                       not_live=[], self_names=[],
+                                       at='2026-10-25T10:00:00+00:00')) + '\n')
+            result = self.deploy(before='none-1', after='none-2')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('was not issued by `notice`', result.stderr)
         with self.subTest('another round\'s log does not count'):
             self.none_ids(('none-1', '2026-10-25T10:00:00+00:00'), round_number=2)
             self.none_ids(round_number=1)
             result = self.deploy(before='none-1', after='none-2')
             self.assertEqual(result.returncode, 1)
 
-    def test_notice_after_a_real_one_is_accepted_in_either_order_of_kinds(self):
+    def test_a_real_before_notice_and_a_none_after_notice_can_mix(self):
         self.none_ids(('none-1', '2026-10-25T10:10:00+00:00'))
         self.events.write_text(json.dumps([self.notice(1, '2026-10-25T10:00:00+00:00')]))
         self.assertEqual(self.deploy(before=1, after='none-1').returncode, 0)
