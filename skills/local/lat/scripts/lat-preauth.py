@@ -864,7 +864,7 @@ def human_answer_problems(path):
 
 def answer_names_revision(section, revision, record_revision):
     """Whether an answer section answers `revision`. One whose heading and question line name
-    no version answers the record's current version."""
+    no version answers `record_revision`, a list of at most one."""
     named = [line for line in section
              if line.startswith('## ') or re.match(r'^- (題目|題目版本|題號版本|revision)[：:]', line)]
     versions = re.findall(r'(?<![0-9A-Za-z_-])r([1-9][0-9]*)(?![0-9A-Za-z_-])', '\n'.join(named))
@@ -883,7 +883,10 @@ def prior_promise_problem(basis, decisions):
         text = path.read_text(encoding='utf-8')
     except (OSError, UnicodeDecodeError) as error:
         return f'{match[1]} 紀錄讀不出（{error}）'
-    record_revision = re.findall(r'^- version:\s*r([0-9]+)\b', text, re.MULTILINE | re.IGNORECASE)[:1]
+    # A pending record was reopened at a new version, so a section naming no version answers
+    # an earlier one that it cannot tell.
+    record_revision = ([] if read_decision_status(path).status == 'pending' else
+                       re.findall(r'^- version:\s*r([0-9]+)\b', text, re.MULTILINE | re.IGNORECASE)[:1])
     if not any(re.match(r'^- 來源：\s*\S', line)
                and answer_names_revision(section, match[2], record_revision)
                for heading in ANSWER_HEADINGS for section in sections(text, heading)

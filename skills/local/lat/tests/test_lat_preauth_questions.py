@@ -624,6 +624,13 @@ class ExemptBasisTests(PreauthQuestionTests):
         self.assertEqual(result.returncode, 1)
         self.assertIn('LAT-A 紀錄讀不出', result.stderr)
 
+    def test_a_reopened_record_with_an_unversioned_answer_answers_no_version(self):
+        self.cited.write_text('- status: pending\n- version: r2\n\n## 真人答覆\n- 來源：面板\n')
+        for version in ('r1', 'r2'):
+            with self.subTest(version):
+                self.assert_held(self.PROMISE + f'- exempt-basis: LAT-A {version}\n',
+                                 f'沒有 {version} 的真人答覆')
+
     def test_a_reopened_record_keeps_the_version_its_answer_names(self):
         self.cited.write_text('- status: pending\n- version: r2\n\n## 真人答覆\n'
                               '- 題目版本：LAT-A r1\n- 來源：面板\n')
