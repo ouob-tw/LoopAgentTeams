@@ -612,9 +612,11 @@
 	:global(:root[data-theme='light']) .check {
 		font-weight: 700;
 	}
+	/* The 建議 pill turns back to white with black text so it stays a mark on the black block. */
 	:global(:root[data-theme='light']) .options li.picked em {
-		color: inherit;
-		border-color: currentColor;
+		background: var(--bg);
+		color: var(--text);
+		border-color: var(--bg);
 	}
 	/* Inside the block the markdown's accent links and dark borders would vanish on black. */
 	:global(:root[data-theme='light']) .options li.picked .impact :global(a) {

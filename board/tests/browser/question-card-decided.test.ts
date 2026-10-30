@@ -80,19 +80,22 @@ const lookOf = (id: string) => `(() => {
 			other: getComputedStyle(root.querySelector('.options li:not(.picked)')).backgroundColor,
 			letter: css(picked.querySelector('.letter'), 'backgroundColor', 'color'),
 			option: css(picked.querySelector('.option'), 'backgroundColor', 'color'),
-			impact: css(picked.querySelector('.impact'), 'backgroundColor', 'color')
+			impact: css(picked.querySelector('.impact'), 'backgroundColor', 'color'),
+			pill: css(picked.querySelector('em'), 'backgroundColor', 'color', 'borderTopColor')
 		},
+		unpickedPill: css(root.querySelector('.options li:not(.picked) em'), 'backgroundColor', 'color', 'borderTopColor'),
 		chosen: css(root.querySelector('.options li.chosen'), 'borderTopWidth', 'borderTopColor', 'backgroundColor'),
-		palette: { warn: probe('var(--warn)'), bg: probe('var(--bg)'), line: probe('var(--line)'), text: probe('var(--text)') }
+		palette: { accent: probe('var(--accent)'), warn: probe('var(--warn)'), bg: probe('var(--bg)'), line: probe('var(--line)'), text: probe('var(--text)') }
 	};
 })()`;
 
 type Look = {
 	label: { backgroundColor: string; color: string; borderTopColor: string };
 	edge: string;
-	picked: { frame: Record<string, string>; block: Record<string, string>; link: Record<string, string>; code: Record<string, string>; other: string; letter: Record<string, string>; option: Record<string, string>; impact: Record<string, string> } | null;
+	picked: { frame: Record<string, string>; block: Record<string, string>; link: Record<string, string>; code: Record<string, string>; other: string; letter: Record<string, string>; option: Record<string, string>; impact: Record<string, string>; pill: Record<string, string> } | null;
+	unpickedPill: Record<string, string>;
 	chosen: Record<string, string> | null;
-	palette: { warn: string; bg: string; line: string; text: string };
+	palette: { accent: string; warn: string; bg: string; line: string; text: string };
 };
 const TRANSPARENT = 'rgba(0, 0, 0, 0)';
 
@@ -122,7 +125,7 @@ for (const theme of ['dark', 'light']) {
 	test.skipIf(!CHROME)(`${theme} theme: the answered option ${theme === 'light' ? 'is one black block with white text' : 'looks as before'}, an option being picked keeps its frame`, async () => {
 		await evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
 		for (const id of ['Q-SENT', 'Q-REC']) {
-			const { picked, palette: colours } = await evaluate<Look>(lookOf(id));
+			const { picked, palette: colours, unpickedPill } = await evaluate<Look>(lookOf(id));
 			if (theme === 'light') {
 				expect(picked!.frame).toMatchObject({ borderTopWidth: '3px', borderTopStyle: 'solid', borderTopColor: colours.text });
 				// The whole option is one black block: the frame's fill, with white text and description.
@@ -130,9 +133,14 @@ for (const theme of ['dark', 'light']) {
 				for (const part of [picked!.letter, picked!.option, picked!.impact]) expect(part).toEqual({ backgroundColor: TRANSPARENT, color: colours.bg });
 				expect(picked!.link).toMatchObject({ color: colours.bg, textDecorationLine: 'underline' });
 				expect(picked!.code).toMatchObject({ color: colours.bg, borderTopColor: colours.bg });
+				// Q-SENT picked the recommended option A, Q-REC picked B, so its pill is on the unpicked A.
+				// Its 建議 pill is white with black text; an unpicked option's pill keeps the accent look.
+				if (id === 'Q-SENT') expect(picked!.pill).toEqual({ backgroundColor: colours.bg, color: colours.text, borderTopColor: colours.bg });
+				else expect(unpickedPill).toEqual({ backgroundColor: TRANSPARENT, color: colours.accent, borderTopColor: colours.accent });
 				// Another option stays unchanged.
 				expect(picked!.other).toBe(TRANSPARENT);
 			} else {
+				if (id === 'Q-SENT') expect(picked!.pill).toMatchObject({ backgroundColor: TRANSPARENT, color: colours.accent });
 				for (const part of [picked!.letter, picked!.option]) expect(part.backgroundColor).toBe(TRANSPARENT);
 			}
 		}
