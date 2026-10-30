@@ -788,9 +788,15 @@ class KeepTests(ReapTestCase):
         self.assertIn('Ambiguous HCOM agent orch: test-orch, test-x-orch', ambiguous.stdout)
         self.assertEqual(keeps.read_bytes(), before)
         value = json.loads(before)
-        value['keeps'][0]['by'] = 'orch'  # written before #394
+        value['keeps'][0]['by'] = 'orch'  # written before full names were enforced
         keeps.write_text(json.dumps(value))
+        self.assertIn('Released 0', self.run_reaper('release', '--by', 'orch-two').stdout)
         self.assertIn('Released 1', self.run_reaper('release', '--by', 'test-orch').stdout)
+        value['keeps'][0].update(by='test-orch')
+        value['keeps'][0].pop('released_at', None)
+        keeps.write_text(json.dumps(value))
+        # A base name given to release never matches the full names of tagged controllers.
+        self.assertIn('Released 0', self.run_reaper('release', '--by', 'orch').stdout)
 
     def test_valid_keep_inside_a_released_keep_survives(self):
         tree = self.node('outer', [self.node('inner', [self.node('inner-worker')]),

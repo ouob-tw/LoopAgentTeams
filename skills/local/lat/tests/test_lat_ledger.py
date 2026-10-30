@@ -737,7 +737,9 @@ class NameTests(LedgerCase):
                            by='').strip())
         self.ok('assign', str(item), '--agent', 'nanu-research-web', '--native', '--card',
                 str(self.card()), '--deadline', '+2h', by='')
-        self.assertEqual(self.item(item)['agent'], 'nanu-research-web')
+        self.ok('reassign', str(item), '--agent', 'nanu-research-two', '--native', '--reason',
+                'first one left', by='')
+        self.assertEqual(self.item(item)['agent'], 'nanu-research-two')
         self.assertTrue(all(entry['by'] for entry in self.item(item)['history']))
 
     def test_base_name_orchestrator_from_older_ledgers_may_still_cancel(self):

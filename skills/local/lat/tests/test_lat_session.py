@@ -3215,9 +3215,11 @@ class SessionTests(unittest.TestCase):
 
     def test_activate_reuses_a_ledger_left_by_an_unfinished_activate(self):
         self.ledger_path().parent.mkdir(parents=True)
+        # No HCOM name: the OS user creates it, so the host's HCOM list is never read.
+        env = {key: value for key, value in os.environ.items() if key != 'HCOM_INSTANCE_NAME'}
         subprocess.run([sys.executable, str(SKILL / 'scripts/lat-ledger.py'), 'init', '--ledger',
                         str(self.ledger_path()), '--workspace', str(self.work)], check=True,
-                       capture_output=True)
+                       capture_output=True, env=env)
         before = self.ledger_path().read_bytes()
         self.activate(duty=False)
         self.assertEqual(json.loads(self.record.read_text())['ledger_path'], str(self.ledger_path()))

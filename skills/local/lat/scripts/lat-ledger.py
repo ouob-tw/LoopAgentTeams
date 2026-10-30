@@ -85,14 +85,17 @@ def resolve_names(args):
     before anything is written; without any HCOM name the OS user acts. An unreadable HCOM
     list refuses the command rather than writing a name it could not check."""
     by = args.by or os.environ.get('HCOM_INSTANCE_NAME')
-    names = {'--by': by, '--orchestrator': getattr(args, 'orchestrator', None),
-             '--agent': None if getattr(args, 'native', False) else getattr(args, 'agent', None)}
-    if any(names.values()):
+    # (attribute, flag, name): init takes --orchestrator, assign/reassign --agent.
+    names = [('by', '--by', by),
+             ('orchestrator', '--orchestrator', getattr(args, 'orchestrator', None))]
+    if not getattr(args, 'native', False):
+        names.append(('agent', '--agent', getattr(args, 'agent', None)))
+    names = [entry for entry in names if entry[2]]
+    if names:
         agents = {item['name'] for item in read_hcom_list(HCOM_LIST_ENV)
                   if isinstance(item.get('name'), str)}
-        for flag, name in names.items():
-            if name:
-                setattr(args, flag[2:], full_hcom_name(agents, name, flag))
+        for attribute, flag, name in names:
+            setattr(args, attribute, full_hcom_name(agents, name, flag))
     if not by:
         args.by = getpass.getuser()
 
@@ -920,7 +923,9 @@ def build_parser():
     sub = command('cancel', 'Cancel an item (orchestrator only)')
     sub.add_argument('--reason', required=True)
     sub = command('reassign', 'Hand an open item to another agent')
-    sub.add_argument('--agent', required=True)
+    sub.add_argument('--agent', required=True, help='HCOM name, stored as the full name')
+    sub.add_argument('--native', action='store_true',
+                     help='Claude built-in agent without an HCOM name: --agent is kept as given')
     sub.add_argument('--card')
     sub.add_argument('--reason', required=True)
     for name, text in (('next', 'Items ready to dispatch'), ('check', 'Verify every item'),

@@ -22,9 +22,9 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import DecisionStatus, read_decision_status
-from _lat_common import (process_starttime, resolve_agent_name, run_cli, same_controller,
-                         shared_lat_dir, watcher_process_matches, write_json_atomic,
-                         read_hcom_pauses)
+from _lat_common import (full_hcom_name, process_starttime, resolve_agent_name, run_cli,
+                         same_controller, shared_lat_dir, watcher_process_matches,
+                         write_json_atomic, read_hcom_pauses)
 
 
 IDLE_SECONDS = 10 * 60
@@ -3357,7 +3357,7 @@ def alarm_watcher_running(workspace, record):
 
 def declare_alarm(args):
     workspace = args.workspace.resolve(strict=True)
-    agent = resolve_agent_name(list_hcom(valid_name(args.agent)), args.agent, required=True)
+    agent = full_hcom_name(list_hcom(valid_name(args.agent)), args.agent, '--agent')
     reason = args.reason.strip()
     if not reason:
         raise ValueError('--reason must not be empty')
@@ -3421,7 +3421,7 @@ def declare_wait(args):
         print(f'LAT watch warning: hcom list failed; accepting --agent {agent} '
               f'as given: {error}', file=sys.stderr)
     else:
-        agent = resolve_agent_name(agents, agent, required=True)
+        agent = full_hcom_name(agents, agent, '--agent')
     # A comma list waits on its first entry; the others are named in the reason.
     target, *also = (part.strip() for part in args.target.split(','))
     also = [valid_name(name) for name in also if name]

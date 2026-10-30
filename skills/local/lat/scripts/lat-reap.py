@@ -776,9 +776,7 @@ def release(args):
         moment = now_utc().isoformat(timespec='seconds')
         count = 0
         for item in keeps:
-            # Either side may be a base name: older keeps, or a session record made before #389.
-            if ((same_controller(item['by'], args.by) or same_controller(args.by, item['by']))
-                    and not item.get('released_at')):
+            if same_controller(item['by'], args.by) and not item.get('released_at'):
                 item['released_at'] = moment
                 count += 1
         if count:

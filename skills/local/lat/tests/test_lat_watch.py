@@ -2622,6 +2622,7 @@ esac
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(message, result.stderr.lower())
                     self.assertIn(agent, result.stderr)
+                    self.assertIn('HCOM lists: other-advisor, team-advisor', result.stderr)
                     self.assertEqual(result.stdout, '')
                     if previous is None:
                         self.assertFalse(path.exists())

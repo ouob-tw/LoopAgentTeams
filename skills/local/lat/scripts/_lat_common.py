@@ -105,7 +105,7 @@ def resolve_agent_name(agents, name, *, required):
 
 
 def full_hcom_name(agents, name, flag):
-    """The HCOM full name every LAT tool writes for `name` (#394); ambiguous or unknown names
+    """The HCOM full name every LAT tool writes for `name`; ambiguous or unknown names
     are refused with the full names HCOM lists, so no base name gets written."""
     try:
         return resolve_agent_name(agents, name, required=True)
