@@ -769,6 +769,22 @@ class SessionTests(unittest.TestCase):
                 self.assert_stop_block(self.stop_hook(client=client), '不是 pending')
             binding_path.write_text(original)
 
+    def test_stop_accepts_user_account_exemption_only_on_help_records(self):
+        for client in ('codex', 'claude'):
+            self.write_legacy_record(client=client)
+            questions = self.bind_stop_panel(client)
+            questions.write_text('## Question\nLAT-H · r1 · 待答\n')
+            path = self.decisions / 'LAT-H.md'
+            for message in ('HELP: LAT-H r1', 'DECIDE: LAT-H r1'):
+                with self.subTest(client=client, message=message):
+                    path.write_text('- status: pending\n- advisor: exempt user-account\n- kind: help\n')
+                    self.assert_stop_pass(self.stop_hook(message, client), 'LAT-H r1 - Question')
+            for kind in ('', '- kind: decide\n'):
+                with self.subTest(client=client, kind=kind):
+                    path.write_text(f'- status: pending\n- advisor: exempt user-account\n{kind}')
+                    self.assert_stop_block(self.stop_hook('DECIDE: LAT-H r1', client),
+                                           'LAT-H r1：參謀 exempt user-account 只能用在求助紀錄')
+
     def test_stop_reports_each_advisor_gap_and_ignores_unreferenced_advisor_states(self):
         for client in ('codex', 'claude'):
             self.write_legacy_record(client=client)
