@@ -1782,8 +1782,24 @@ def decide_wait(declaration, observation, target_observation, target_state, now,
     return saved, actions, events
 
 
-def pending_decision(decisions, target, *, log=None, agent=None):
-    matches = [path for path in decisions.glob(f'{target}*') if path.is_file()]
+def is_hcom_agent(agents, name):
+    """True if HCOM lists `name` in full or as a uniquely resolvable short name."""
+    try:
+        return resolve_agent_name(agents, name, required=False) in agents
+    except ValueError:
+        return False
+
+
+def decision_records(decisions, target, exact):
+    if exact:
+        path = decisions / f'{target}.md'
+        return [path] if path.is_file() else []
+    # Declarations written before the exact rule matched by file-name prefix.
+    return [path for path in decisions.glob(f'{target}*') if path.is_file()]
+
+
+def pending_decision(decisions, target, *, log=None, agent=None, exact=True):
+    matches = decision_records(decisions, target, exact)
     if not matches:
         return None
     pending = False
@@ -1997,9 +2013,12 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     waiting_info = agent_info(agents, agent)
     participant = session_events(
         orchestrator, waiting_info, '--after', after)
-    decision = pending_decision(
-        decisions, target,
-        log=state_path(workspace, orchestrator).with_name('watch.jsonl'), agent=agent)
+    if declaration.get('kind') == 'agent':
+        decision = None
+    else:
+        decision = pending_decision(
+            decisions, target, exact=declaration.get('match') == 'exact',
+            log=state_path(workspace, orchestrator).with_name('watch.jsonl'), agent=agent)
     target_info = agent_info(agents, target)
     transcript = target_info.get('transcript_path') if target_info else None
     waiting_name = waiting_info.get('name') if waiting_info else None
@@ -3027,7 +3046,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                 declaration, wait_original = read_alarm_wait(wait_file)
                 if declaration and 'kind' not in declaration:
                     declaration['kind'] = ('decision' if pending_decision(
-                        decisions, declaration['target']) is not None else 'agent')
+                        decisions, declaration['target'], exact=False) is not None else 'agent')
                 target_observation, target_state = None, None
                 waits_for_orchestrator = False
                 if declaration and declaration.get('kind') == 'agent':
@@ -3469,11 +3488,10 @@ def declare_wait(args):
                 continue
         decisions = Path(record['decisions_path'])
         owners.append((owner, decisions))
-        decision = pending_decision(decisions, target)
+        decision = None if is_hcom_agent(agents, target) else pending_decision(decisions, target)
         decision_target = decision_target or decision is not None
         if decision is False:
-            matches = sorted(path for path in decisions.glob(f'{target}*')
-                             if path.is_file())
+            matches = decision_records(decisions, target, True)
             statuses = ', '.join(f'{path}: {read_decision_status(path).status}'
                                  for path in matches)
             raise ValueError(
@@ -3481,6 +3499,8 @@ def declare_wait(args):
                 f'matching records: {statuses}. To wait on the user\'s reply or a '
                 'manual step, record it as a pending decision and wait on that ID.')
     declaration['kind'] = 'decision' if decision_target else 'agent'
+    if decision_target:
+        declaration['match'] = 'exact'
     if decision_target and args.minutes is not None:
         raise ValueError('--minutes is not allowed for a decision target')
     waits_for_orchestrator = False

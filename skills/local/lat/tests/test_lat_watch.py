@@ -2684,8 +2684,7 @@ esac
 
     def test_wait_refuses_resolved_decision_without_writing_or_replacing_declaration(self):
         decisions = self.wait_session()
-        (decisions / 'HELP-r1.md').write_text('- status: approved\n')
-        (decisions / 'HELP-r2.md').write_text('- status: rejected\n')
+        (decisions / 'HELP.md').write_text('- status: approved\n')
         declaration = self.work / '.lat/watch/waits/worker-open.json'
         for previous in (None, b'{"active": true, "target": "reviewer"}\n'):
             with self.subTest(previous=previous):
@@ -2697,20 +2696,17 @@ esac
                                   '--reason', 'waiting for manual step')
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, '')
-                for text in ('HELP-r1.md', 'approved', 'HELP-r2.md', 'rejected',
-                             'pending decision', 'manual step'):
+                for text in ('HELP.md', 'approved', 'pending decision', 'manual step'):
                     self.assertIn(text, result.stderr)
                 if previous is None:
                     self.assertFalse(declaration.exists())
                 else:
                     self.assertEqual(declaration.read_bytes(), previous)
 
-    def test_wait_accepts_pending_unreadable_prefix_and_agent_targets(self):
+    def test_wait_accepts_pending_unreadable_and_agent_targets(self):
         decisions = self.wait_session()
         cases = {
             'PENDING': [('PENDING.md', '- status: pending\n')],
-            'PREFIX': [('PREFIX-r1.md', '- status: approved\n'),
-                       ('PREFIX-r2.md', '- status: pending\n')],
             'UNKNOWN': [('UNKNOWN.md', '# no status\n')],
             'MALFORMED': [('MALFORMED.md', '- status: approved pending\n')],
             'reviewer': [],
@@ -2755,6 +2751,88 @@ esac
         stored = json.loads((self.work / '.lat/watch/waits/worker-open.json').read_text())
         self.assertEqual(stored['target'], 'HELP')
         self.assertTrue(stored['active'])
+
+    def test_wait_for_agent_name_that_prefixes_a_decision_id(self):
+        decisions = self.wait_session()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            '[ "$1 $2 $3" = "list --json --name" ] && [ $# -eq 4 ] || exit 2\n'
+            'printf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"},{"name":"teho"}]\'\n'
+        )
+        wait = self.work / '.lat/watch/waits/worker-open.json'
+        for status in ('approved', 'pending'):
+            with self.subTest(status=status):
+                (decisions / 'teho-lid-1.md').write_text(f'- status: {status}\n')
+                result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                                  '--for', 'teho,teho-lid-1', '--reason', 'waiting')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                stored = json.loads(wait.read_text())
+                self.assertEqual((stored['kind'], stored['target']), ('agent', 'teho'))
+                self.assertIn('deadline_at', stored)
+
+    def test_wait_for_ambiguous_short_name_falls_back_to_exact_decision(self):
+        decisions = self.wait_session()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            '[ "$1 $2 $3" = "list --json --name" ] && [ $# -eq 4 ] || exit 2\n'
+            'printf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"},'
+            '{"name":"a-teho"},{"name":"b-teho"}]\'\n'
+        )
+        (decisions / 'teho.md').write_text('- status: pending\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'teho', '--reason', 'waiting')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stored = json.loads((self.work / '.lat/watch/waits/worker-open.json').read_text())
+        self.assertEqual(stored['kind'], 'decision')
+        (decisions / 'teho.md').unlink()
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'teho', '--reason', 'waiting')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Ambiguous', result.stderr)
+
+    def test_wait_for_decision_needs_the_full_id(self):
+        decisions = self.wait_session()
+        (decisions / 'teho-lid-1.md').write_text('- status: pending\n')
+        wait = self.work / '.lat/watch/waits/worker-open.json'
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'teho-lid-1', '--reason', 'waiting')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stored = json.loads(wait.read_text())
+        self.assertEqual((stored['kind'], stored['match']), ('decision', 'exact'))
+        (decisions / 'teho-lid-1.md').write_text('- status: approved\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'teho-lid-1', '--reason', 'waiting')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no pending decision', result.stderr)
+        # Neither a bare prefix of the ID nor an unknown name is a decision.
+        (decisions / 'teho-lid-1.md').write_text('- status: pending\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'teho-lid', '--reason', 'waiting')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(wait.read_text())['kind'], 'agent')
+
+    def test_release_ignores_decision_files_for_agent_declaration(self):
+        watch = load_watch()
+        decisions = self.work / 'decisions'
+        decisions.mkdir()
+        (decisions / 'teho-lid-1.md').write_text('- status: approved\n')
+        self.install_hcom('#!/bin/sh\n[ "$1 $2 $3" = "list --json --name" ] && [ $# -eq 4 ] || exit 2\nprintf \'[]\\n\'\n')
+        base = {'agent': 'worker-open', 'target': 'teho', 'reason': 'x',
+                'declared_at': time.time(), 'declared_at_utc': '2026-10-04T00:00:00+00:00',
+                'active': True}
+        cases = [({**base, 'kind': 'agent'}, None),
+                 ({**base, 'target': 'teho-lid-1', 'kind': 'decision'}, 'decision-resolved'),
+                 ({**base, 'target': 'teho-lid-1', 'kind': 'decision', 'match': 'exact'},
+                  'decision-resolved'),
+                 ({**base, 'target': 'teho-lid'}, 'decision-resolved'),
+                 ({**base, 'target': 'teho-lid', 'kind': 'decision', 'match': 'exact'}, None)]
+        for declaration, expected in cases:
+            with self.subTest(declaration=declaration):
+                watch.write_object(watch.wait_path(self.work, 'worker-open'), declaration)
+                with patch.dict(os.environ, self.env):
+                    reason = watch.release_wait_if_needed(
+                        self.work, decisions, 'orch', declaration, {})
+                self.assertEqual(reason, expected)
 
     def test_wait_without_owning_active_coordinator_keeps_existing_behavior(self):
         own = self.wait_session(status='completed')
