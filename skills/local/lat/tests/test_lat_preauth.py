@@ -313,7 +313,7 @@ class ConditionTests(PreauthCase):
                 self.assertIn(f'every registered full suite passed for {head[:12]}',
                               verdict['basis'])
 
-    def test_allowed_deploy_and_install_explain_notice_sequence(self):
+    def test_allowed_deploy_and_install_point_to_the_notice_command(self):
         self.allow_all()
         self.gate_record()
         for action in ('deploy-test', 'deploy-prod', 'install-host'):
@@ -321,120 +321,14 @@ class ConditionTests(PreauthCase):
                 verdict = self.check(action)
                 self.assertIn('next_steps', verdict)
                 steps = verdict['next_steps']
-                for word in ('hcom send @<other-controller>', '--name orch', 'event id',
-                             'hcom events --from orch --last 1', '--started', 'action',
+                for word in ('lat-preauth.py notice --text', 'event id', '--started', 'action',
                              'after-notice', 'record --kind auto', '--notice-before',
                              '--notice-after'):
                     self.assertIn(word, steps)
+                self.assertNotIn('--last 1', steps)
                 result = self.run_tool('check', '--action', action)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines()[1], 'Next steps: ' + steps)
-
-    def fake_hcom(self, agents):
-        """A bin dir whose `hcom list --json` prints `agents`; None makes it fail."""
-        bin_dir = self.root / 'fakebin'
-        bin_dir.mkdir(exist_ok=True)
-        hcom = bin_dir / 'hcom'
-        output = 'sys.exit(1)' if agents is None else f'print({json.dumps(agents)!r})'
-        body = f'import sys\nif sys.argv[1:] != ["list", "--json"]:\n    sys.exit(2)\n{output}'
-        hcom.write_text(f'#!{sys.executable}\n{body}\n')
-        hcom.chmod(0o755)
-        return f'{bin_dir}:{os.environ["PATH"]}'
-
-    def other_sessions(self, *rows):
-        for name, status in rows:
-            self.write(self.sessions / f'{name}-session.json',
-                       json.dumps(dict(status=status, hcom_name=name)))
-
-    def test_next_steps_name_the_other_active_controllers(self):
-        self.allow_all()
-        self.gate_record()
-        self.other_sessions(('kela', 'active'), ('mivo', 'active'), ('old', 'ended'))
-        path = self.fake_hcom([{'name': 'orch'}, {'name': 'kela'}, {'name': 'mivo'},
-                               {'name': 'old'}])
-        steps = self.check('deploy-test', path=path)['next_steps']
-        self.assertIn("hcom send @kela @mivo --intent inform --name orch -- '<text>'", steps)
-        self.assertNotIn('@orch', steps)
-        self.assertNotIn('@old', steps)
-        self.assertNotIn('No other active controller', steps)
-
-    def test_next_steps_skip_controllers_hcom_no_longer_has(self):
-        self.allow_all()
-        self.gate_record()
-        self.other_sessions(('kela', 'active'), ('vefi', 'active'))
-        path = self.fake_hcom([{'name': 'orch'}, {'name': 'kela'}])
-        steps = self.check('deploy-test', path=path)['next_steps']
-        self.assertIn("hcom send @kela --intent inform", steps)
-        self.assertNotIn('@vefi', steps)
-
-    def test_next_steps_match_a_tagged_controller_by_name_or_base_name(self):
-        self.allow_all()
-        self.gate_record()
-        self.other_sessions(('tag-kela', 'active'), ('mivo', 'active'))
-        path = self.fake_hcom([{'name': 'tag-kela', 'base_name': 'kela'},
-                               {'name': 'tag-mivo', 'base_name': 'mivo'}])
-        steps = self.check('deploy-test', path=path)['next_steps']
-        self.assertIn('hcom send @mivo @tag-kela --intent inform', steps)
-
-    def test_next_steps_with_no_live_controller_use_the_fallback(self):
-        self.allow_all()
-        self.gate_record()
-        self.other_sessions(('vefi', 'active'), ('hate', 'active'))
-        steps = self.check('deploy-test', path=self.fake_hcom([{'name': 'orch'}]))['next_steps']
-        self.assertIn('hcom send @<other-controller>', steps)
-        self.assertNotIn('@vefi', steps)
-        self.assertIn('No other active controller is recorded', steps)
-
-    def test_next_steps_say_so_when_hcom_lists_something_that_is_not_agents(self):
-        self.allow_all()
-        self.gate_record()
-        self.other_sessions(('kela', 'active'))
-        steps = self.check('deploy-test', path=self.fake_hcom({'error': 'x'}))['next_steps']
-        self.assertNotIn('@kela', steps)
-        self.assertIn('HCOM could not be read', steps)
-
-    def test_next_steps_say_so_when_hcom_cannot_be_read(self):
-        self.allow_all()
-        self.gate_record()
-        self.other_sessions(('kela', 'active'))
-        steps = self.check('deploy-test', path=self.fake_hcom(None))['next_steps']
-        self.assertIn('@<other-controller>', steps)
-        self.assertNotIn('@kela', steps)
-        self.assertIn('HCOM could not be read', steps)
-
-    def test_next_steps_without_other_controllers_say_so(self):
-        self.allow_all()
-        self.gate_record()
-        steps = self.check('deploy-test')['next_steps']
-        self.assertIn('@<other-controller>', steps)
-        self.assertIn('No other active controller is recorded', steps)
-
-    def test_next_steps_look_up_events_by_the_base_name(self):
-        self.allow_all()
-        self.gate_record()
-        self.session(None, hcom_name='tag-orch')
-        bin_dir = self.root / 'fakebin'
-        bin_dir.mkdir()
-        hcom = bin_dir / 'hcom'
-        hcom.write_text(f'#!{sys.executable}\nprint(\'[{{"name": "tag-orch", '
-                        '"base_name": "orch"}]\')\n')
-        hcom.chmod(0o755)
-        steps = self.check('deploy-test', path=f'{bin_dir}:{os.environ["PATH"]}')['next_steps']
-        self.assertIn('--name tag-orch', steps)
-        self.assertIn('hcom events --from orch --last 1', steps)
-
-    def test_next_steps_without_own_session_never_list_recipients(self):
-        self.allow_all()
-        self.gate_record()
-        self.write(self.sessions / 'kela-session.json',
-                   json.dumps(dict(status='active', hcom_name='kela')))
-        own = self.sessions / f'{SESSION}.json'
-        record = json.loads(own.read_text())
-        del record['hcom_name']
-        own.write_text(json.dumps(record))
-        steps = self.check('deploy-test')['next_steps']
-        self.assertNotIn('@kela', steps)
-        self.assertIn('@<other-controller>', steps)
 
     def test_merge_and_ask_output_has_no_next_steps(self):
         self.allow_all()
@@ -565,6 +459,156 @@ class ConditionTests(PreauthCase):
 
 
 @unittest.skipUnless(INSTALLER.is_file(), 'needs the repo copy of scripts/install-skills.py')
+class NoticeTests(PreauthCase):
+    """`notice` against a stub hcom that keeps its agents, sends and events in files."""
+    TEXT = 'about to install the host skills'
+
+    def setUp(self):
+        super().setUp()
+        self.session(None)
+        self.bin = self.root / 'bin'
+        self.bin.mkdir()
+        self.agents = self.root / 'agents.json'
+        self.mode = self.root / 'mode'
+        self.events = self.root / 'events.jsonl'
+        self.sends = self.root / 'sends.log'
+        self.set_agents([{'name': 'orch'}, {'name': 'kela'}])
+        self.mode.write_text('ok')
+        self.events.write_text('')
+        hcom = self.bin / 'hcom'
+        hcom.write_text(f'#!{sys.executable}\n' + (
+            'import datetime, json, sys\n'
+            f'agents, mode = open({str(self.agents)!r}).read(), open({str(self.mode)!r}).read()\n'
+            'if sys.argv[1] == "list":\n'
+            '    if agents == "FAIL": sys.exit(1)\n'
+            '    print(agents); sys.exit()\n'
+            'if sys.argv[1] == "send":\n'
+            f'    open({str(self.sends)!r}, "a").write(json.dumps(sys.argv[2:]) + "\\n")\n'
+            '    if mode == "fail": print("No active agent for @kela", file=sys.stderr); sys.exit(1)\n'
+            '    args = sys.argv[2:]\n'
+            '    text = args[args.index("--") + 1]\n'
+            '    to = [a[1:] for a in args if a.startswith("@")]\n'
+            '    count = {"dup": 2, "silent": 0}.get(mode, 1)\n'
+            f'    with open({str(self.events)!r}, "a") as out:\n'
+            '        for _ in range(count):\n'
+            '            out.write(json.dumps(dict(id=500 + len(open(' + repr(str(self.events)) + ').read().splitlines()),'
+            ' type="message", ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),'
+            ' data={"from": "orch", "mentions": to, "scope": "mentions", "text": text})) + "\\n")\n'
+            '    sys.exit()\n'
+            'if sys.argv[1] == "events": sys.stdout.write(open(' + repr(str(self.events)) + ').read())\n'))
+        hcom.chmod(0o755)
+
+    def set_agents(self, agents):
+        self.agents.write_text(agents if isinstance(agents, str) else json.dumps(agents))
+
+    def other_sessions(self, *rows):
+        for name, status in rows:
+            self.write(self.sessions / f'{name}-session.json',
+                       json.dumps(dict(status=status, hcom_name=name)))
+
+    def notice(self, *extra, text=None):
+        return self.run_tool('notice', '--text', text or self.TEXT, *extra,
+                             path=f'{self.bin}:{os.environ["PATH"]}')
+
+    def sent(self):
+        return [json.loads(line) for line in self.sends.read_text().splitlines()] \
+            if self.sends.exists() else []
+
+    def test_sends_to_live_controllers_and_prints_the_event_id_of_this_message(self):
+        self.other_sessions(('kela', 'active'), ('old', 'ended'))
+        self.events.write_text(json.dumps(dict(
+            id=7, type='message', ts='2020-01-01T00:00:00+00:00',
+            data={'from': 'orch', 'mentions': ['kela'], 'scope': 'mentions',
+                  'text': self.TEXT})) + '\n')  # an older, identical message
+        result = self.notice()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '501\n')
+        self.assertEqual(self.sent(), [['@kela', '--intent', 'inform', '--name', 'orch', '--',
+                                        self.TEXT]])
+
+    def test_tagged_controller_sends_as_its_name_and_matches_its_base_name(self):
+        self.session(None, hcom_name='tag-orch')
+        self.other_sessions(('tag-kela', 'active'))
+        self.set_agents([{'name': 'tag-orch', 'base_name': 'orch'},
+                         {'name': 'tag-kela', 'base_name': 'kela'}])
+        result = self.notice()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.sent()[0][:5], ['@tag-kela', '--intent', 'inform', '--name',
+                                              'tag-orch'])
+
+    def test_to_names_the_recipients_and_skips_the_ones_not_live(self):
+        result = self.notice('--to', 'kela', 'gone')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('not sent to gone', result.stderr)
+        self.assertEqual(self.sent(), [['@kela', '--intent', 'inform', '--name', 'orch', '--',
+                                        self.TEXT]])
+
+    def test_no_live_recipient_fails_without_an_id_or_a_send(self):
+        self.other_sessions(('vuho', 'active'))  # recorded, but HCOM no longer has it
+        result = self.notice()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('no recipient is live', result.stderr)
+        self.assertEqual(self.sent(), [])
+
+    def test_naming_only_a_gone_agent_or_yourself_fails(self):
+        for names in (['gone'], ['orch']):
+            with self.subTest(names=names):
+                result = self.notice('--to', *names)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, '')
+        self.assertEqual(self.sent(), [])
+
+    def test_hcom_send_failure_fails_without_an_id(self):
+        self.other_sessions(('kela', 'active'))
+        self.mode.write_text('fail')
+        result = self.notice()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('No active agent for @kela', result.stderr)
+
+    def test_a_send_that_left_no_event_fails_even_with_an_older_identical_message(self):
+        self.other_sessions(('kela', 'active'))
+        self.mode.write_text('silent')
+        self.events.write_text(json.dumps(dict(
+            id=7, type='message', ts='2020-01-01T00:00:00+00:00',
+            data={'from': 'orch', 'mentions': ['kela'], 'scope': 'mentions',
+                  'text': self.TEXT})) + '\n')
+        result = self.notice()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('not found in hcom events', result.stderr)
+
+    def test_two_identical_new_messages_are_ambiguous(self):
+        self.other_sessions(('kela', 'active'))
+        self.mode.write_text('dup')
+        result = self.notice()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('cannot tell which', result.stderr)
+
+    def test_unreadable_hcom_or_unknown_sender_fails(self):
+        self.other_sessions(('kela', 'active'))
+        for agents in ('FAIL', json.dumps({'error': 'x'})):
+            with self.subTest(agents=agents):
+                self.set_agents(agents)
+                result = self.notice()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, '')
+        self.set_agents([{'name': 'orch'}, {'name': 'kela'}])
+        self.session(None, hcom_name='')
+        result = self.notice()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('sender is unknown', result.stderr)
+        self.assertEqual(self.sent(), [])
+
+    def test_empty_text_fails(self):
+        self.other_sessions(('kela', 'active'))
+        result = self.notice(text='  ')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.sent(), [])
+
+
 class InstallHostGateTests(PreauthCase):
     """install-host counts only the full suites inside the skill folders the installer would
     install, judged by the installer's own code, so both give the same answer."""

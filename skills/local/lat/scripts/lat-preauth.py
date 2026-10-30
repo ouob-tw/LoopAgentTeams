@@ -584,46 +584,79 @@ def other_controllers(workspace, session):
     return own, [name for name in others if name != own]
 
 
-def notice_steps(workspace, session):
-    """The check's Next steps for an action that needs before and after notices. `record`
-    accepts a notice only if this controller sent it to named agents, and the other active
-    controllers are the ones who need to know the main checkout is about to change."""
-    session = session or next((os.environ[key] for key in SESSION_ENVS if os.environ.get(key)),
-                              None)
-    own, others = other_controllers(workspace, session)
-    me = own or '<your-hcom-name>'
-    if not own:
-        others = []  # the caller's own record is unknown, so it could be listed as a recipient
+def notice_steps():
+    """The check's Next steps for an action that needs before and after notices. `notice`
+    sends each one and prints its event id, which `record` accepts only if this controller sent
+    it to named agents."""
+    return ("Send the before-notice with `lat-preauth.py notice --text '<text>'` (it goes to the "
+            'other live controllers of this session, or to `--to <name>…` when none is '
+            'recorded; never yourself, never a broadcast) and keep the event id it prints; if '
+            'it fails or prints no id, the notice was not sent: do not do the action. Note '
+            '--started; do the action; send the after-notice the same way; then '
+            'record --kind auto … --notice-before <id> --notice-after <id> --started <time>.')
+
+
+def live_names(agents):
+    return {item[key] for item in agents for key in ('name', 'base_name')
+            if isinstance(item.get(key), str)}
+
+
+def notice_agents():
     try:
         agents = json.loads(run_cli(['hcom', 'list', '--json'], timeout=30))
-    except ValueError:
-        agents = None
+    except ValueError as error:
+        raise Refused(f'HCOM could not be read, so no recipient is known to be live: {error}')
     if not isinstance(agents, list):
-        agents = None  # HCOM unavailable or unreadable
-    else:
-        agents = [item for item in agents if isinstance(item, dict)]
-    sender = hcom_send_name(own, agents) if own and agents is not None else me
-    if agents is None:
-        others = []
-    else:
-        live = {item[key] for item in agents for key in ('name', 'base_name')
-                if isinstance(item.get(key), str)}
-        others = [name for name in others if name in live]  # a send to a gone agent fails
-    targets = ' '.join(f'@{name}' for name in others) or '@<other-controller>'
-    send = f"hcom send {targets} --intent inform --name {me} -- '<text>'"
-    lookup = f'hcom events --from {sender} --last 1'
-    if agents is None:
-        note = (' HCOM could not be read, so which other controllers are still present is unknown; '
-                'run `hcom list` and name a live agent other than yourself.')
-    else:
-        note = ('' if others else
-                ' No other active controller is recorded for this session; name any other agent, since HCOM '
-                'rejects a send to yourself and `record` rejects a broadcast.')
-    return (f'Send the before-notice with `{send}` (to the other controllers, never to '
-            f'yourself) and read its event id with `{lookup}` (the `id` field); note --started; '
-            'do the action; send the after-notice the same way and read its event id; then '
-            'record --kind auto … --notice-before <id> --notice-after <id> '
-            f'--started <time>.{note}')
+        raise Refused('HCOM could not be read, so no recipient is known to be live')
+    return [item for item in agents if isinstance(item, dict)]
+
+
+def cmd_notice(args):
+    text = args.text.strip()
+    if not text:
+        raise Refused('the notice text is empty')
+    own, others = other_controllers(args.workspace, session_of(args))
+    if not own:
+        raise Refused('this controller has no HCOM name in its session record, so the sender '
+                      'is unknown')
+    agents = notice_agents()
+    sender = hcom_send_name(own, agents)
+    live = live_names(agents)
+    wanted = list(dict.fromkeys(args.to or others))
+    gone = [name for name in wanted if name not in live]
+    targets = [name for name in wanted if name in live and name not in (own, sender)]
+    if not targets:
+        raise Refused('no recipient is live on HCOM'
+                      + (f' (not live: {", ".join(gone)})' if gone else
+                         '; no other active controller is recorded, name one with --to'))
+    if gone:
+        print(f'lat-preauth: not sent to {", ".join(gone)}: not live on HCOM', file=sys.stderr)
+    started = datetime.now(timezone.utc)
+    run_cli(['hcom', 'send', *(f'@{name}' for name in targets), '--intent', 'inform',
+             '--name', own, '--', text], timeout=60, failure='hcom send failed')
+    found = run_cli(['hcom', 'events', '--type', 'message', '--from', sender, '--full',
+                     '--after', started.isoformat(), '--last', '200'], timeout=30)
+    ids = []
+    for line in found.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        data = event.get('data') if isinstance(event, dict) else None
+        moment = parse_time(str(event.get('ts', ''))) if isinstance(event, dict) else None
+        if (isinstance(data, dict) and moment and moment >= started
+                and event.get('type') == 'message' and isinstance(event.get('id'), int)
+                and data.get('from') == sender and data.get('scope') == 'mentions'
+                and data.get('text') == text):
+            ids.append(event['id'])
+    if not ids:
+        raise Refused('hcom send returned but the message was not found in hcom events; it may '
+                      'not have been delivered')
+    if len(ids) > 1:
+        raise Refused(f'the same text was sent more than once since the send began '
+                      f'({", ".join(map(str, ids))}); cannot tell which one is this notice')
+    print(ids[0])
+    return 0
 
 
 def cmd_check(args):
@@ -631,7 +664,7 @@ def cmd_check(args):
                       workspace=args.workspace, session=args.session_id,
                       precedent=args.precedent)
     if result['verdict'] == 'allow' and args.action in MAIN_CHECKOUT_ACTIONS:
-        result['next_steps'] = notice_steps(args.workspace, args.session_id)
+        result['next_steps'] = notice_steps()
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
@@ -1195,6 +1228,11 @@ def build_parser():
                      help='earlier human-answered decision record for the same action; it '
                           'stands in for allow only when no layer sets allow')
     sub.add_argument('--json', action='store_true')
+    sub = commands.add_parser('notice', parents=[common],
+                              help='send a before/after notice and print its HCOM event ID')
+    sub.add_argument('--text', required=True, help='notice text')
+    sub.add_argument('--to', nargs='+', metavar='NAME',
+                     help='recipients; default the other active controllers of this session')
     commands.add_parser('show', parents=[common],
                         help='effective settings and where each value came from')
     sub = commands.add_parser('grant', parents=[common],
@@ -1236,7 +1274,7 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
-    commands = {'check': cmd_check, 'show': cmd_show, 'grant': cmd_grant, 'record': cmd_record,
+    commands = {'check': cmd_check, 'show': cmd_show, 'grant': cmd_grant, 'notice': cmd_notice, 'record': cmd_record,
                 'report': cmd_report}
     try:
         return commands[args.command](args)
