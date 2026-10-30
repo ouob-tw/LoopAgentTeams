@@ -896,6 +896,23 @@ class WatchDecisionTests(unittest.TestCase):
                          ('two-teho', 'agent', ['D1']))
         self.assertNotIn('match', stored)
 
+    def test_multi_wait_moving_off_a_decision_past_the_deadline_restarts_it(self):
+        mixed = {'target': 'D1', 'kind': 'decision', 'match': 'exact', 'declared_at': 0,
+                 'deadline_at': 300,
+                 'targets': [{'target': 'D1', 'kind': 'decision', 'match': 'exact'},
+                             {'target': 'two-teho', 'kind': 'agent'}]}
+        before = time.time()
+        _, stored = self.release_multi_wait(mixed, deliver=False,
+                                            decisions_text={'D1': '- status: approved\n'})
+        self.assertEqual(stored['target'], 'two-teho')
+        self.assertGreaterEqual(stored['deadline_at'], before + 300)
+
+    def test_multi_wait_moving_between_agents_keeps_the_deadline(self):
+        _, stored = self.release_multi_wait({'declared_at': 0, 'deadline_at': 300},
+                                            messages=[self.sent('sofe')])
+        self.assertEqual(stored['target'], 'two-teho')
+        self.assertEqual(stored['deadline_at'], 300)
+
     def test_multi_wait_expired_is_not_rewritten_but_can_still_be_released(self):
         expired = {'active': False, 'released_reason': 'expired', 'expiry_count': 1}
         reason, stored = self.release_multi_wait(expired, messages=[self.sent('sofe')])
@@ -917,6 +934,10 @@ class WatchDecisionTests(unittest.TestCase):
                  answered=['one']), idle, None, None, 3600)
         self.assertEqual(saved['released_reason'], 'expired')
         self.assertIn('wait for two, three expired', actions[0].text)
+        saved['expiry_declared_at'] = ['a', 'b']
+        saved['expiry_count'] = 2
+        _, actions, _ = watch.decide_wait(saved, idle._replace(status='active'), None, None, 3660)
+        self.assertIn('expired waits for two, three;', actions[0].message)
 
     def test_silent_stop_without_any_wait_still_reaches_the_orchestrator(self):
         # Dispatch no longer gets HCOM's idle notice, so the stall watch must see this alone.

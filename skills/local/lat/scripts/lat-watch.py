@@ -1810,7 +1810,8 @@ def decide_wait(declaration, observation, target_observation, target_state, now,
         actions.append(Action('nudge', observation.agent, text=text, category='wait-expiry'))
     notice = saved.get('expiry_notice')
     if saved.get('expiry_count', 0) >= 2 and not saved.get('expiry_notified') and not notice:
-        notice = dict(target=saved['target'], declared_at=saved['expiry_declared_at'],
+        notice = dict(target=', '.join(entry['target'] for entry in outstanding_targets(saved)),
+                      declared_at=saved['expiry_declared_at'],
                       conversation_delivered=False, delivered=False)
         saved['expiry_notice'] = notice
     if notice and not notice['delivered'] and not saved.get('expiry_notified'):
@@ -2056,12 +2057,16 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     waiting_info = agent_info(agents, agent)
     participant = session_events(
         orchestrator, waiting_info, '--after', after)
+
+    def entry_pending(entry):
+        return pending_decision(decisions, entry['target'], exact=entry.get('match') == 'exact',
+                                log=state_path(workspace, orchestrator).with_name('watch.jsonl'),
+                                agent=agent)
+
     if declaration.get('kind') == 'agent' or declaration.get('targets'):
         decision = None
     else:
-        decision = pending_decision(
-            decisions, target, exact=declaration.get('match') == 'exact',
-            log=state_path(workspace, orchestrator).with_name('watch.jsonl'), agent=agent)
+        decision = entry_pending(declaration)
     waiting_name = waiting_info.get('name') if waiting_info else None
 
     def agent_replied(name):
@@ -2073,9 +2078,7 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     def entry_answered(entry):
         if entry['kind'] == 'agent':
             return agent_replied(entry['target'])
-        return pending_decision(decisions, entry['target'], exact=entry.get('match') == 'exact',
-                                log=state_path(workspace, orchestrator).with_name('watch.jsonl'),
-                                agent=agent) is False
+        return entry_pending(entry) is False
 
     messages = delivered_messages(orchestrator, waiting_info or {}, participant, after)
     if declaration.get('targets'):
@@ -2087,6 +2090,11 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
             updated = {key: value for key, value in declaration.items() if key != 'match'}
             updated.update(next(entry for entry in declaration['targets']
                                 if entry['target'] not in answered), answered=answered)
+            deadline = declaration.get('deadline_at')
+            # Time spent on a target with no deadline must not expire the next one on arrival.
+            if (deadline is not None and time.time() >= deadline
+                    and (declaration.get('kind') != 'agent' or target == orchestrator)):
+                updated['deadline_at'] = time.time() + deadline - declaration['declared_at']
             write_wait(wait_path(workspace, agent), updated, expected=expected)
     else:
         reason = wait_release_reason(declaration, participant,
@@ -3802,7 +3810,7 @@ def main():
     waiting.add_argument('--workspace', type=Path, required=True)
     waiting.add_argument('--agent', required=True)
     waiting.add_argument('--for', dest='target', required=True,
-                         help='Decision ID or agent name; a comma list waits on the first')
+                         help='a decision ID or agent name; a comma list waits for every entry')
     waiting.add_argument('--reason', required=True)
     waiting.add_argument('--minutes', type=int, choices=range(1, 721),
                          metavar='1..720', help=f'Agent wait deadline (default: {WAIT_DEFAULT_MINUTES} minutes)')
