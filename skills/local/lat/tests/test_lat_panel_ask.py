@@ -370,5 +370,124 @@ class RecordChatTests(AskTestCase):
         self.assertIn("already recorded", result.stderr)
 
 
+class VisualLinkTest(AskTestCase):
+    URL = "https://demo.example/board?variant=b"
+
+    def upsert(self, *extra):
+        return self.cli("question", "upsert", "--questions", self.questions,
+                        "--decisions", self.decisions, "--id", "Q1",
+                        "--file", self.section(SECTION), *extra)
+
+    def board(self):
+        result = self.cli("board", "questions", "--questions", self.questions)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["questions"][0]
+
+    def test_ask_writes_each_link_into_the_question(self):
+        other = "http://demo.example/board?variant=c"
+        result = self.ask(SECTION, "--advisor", "exempt requirement-discussion", "--session-id", SESSION,
+                          "--visual", self.URL, "--visual", other)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"【示意】{self.URL}\n【示意】{other}\n", self.questions.read_text())
+        question = self.board()
+        self.assertEqual(question["visuals"], [self.URL, other])
+        # The links are not part of what the question shows as text.
+        self.assertEqual(question["recommendation"], "➡️ A：先讓本機一致。")
+        self.assertEqual([option["label"] for option in question["options"]],
+                         ["合併，不推送", "先不合併"])
+        self.assertNotIn("示意", json.dumps(question, ensure_ascii=False).replace('"visuals"', ""))
+
+    def test_upsert_writes_a_link_and_changing_it_is_a_new_revision(self):
+        result = self.upsert("--visual", self.URL)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Q1 r1", result.stdout)
+        self.assertEqual(self.board()["visuals"], [self.URL])
+        self.assertIn("Q1 r1", self.upsert("--visual", self.URL).stdout)
+        self.assertIn("Q1 r2", self.upsert("--visual", self.URL + "2").stdout)
+        self.assertIn("Q1 r3", self.upsert().stdout)
+        self.assertNotIn("visuals", self.board())
+
+    def test_links_follow_a_details_block(self):
+        details = SECTION + "\n【詳細資訊】\n來由。\n【詳細資訊結束】\n"
+        self.assertEqual(self.ask(details, "--advisor", "exempt requirement-discussion", "--session-id", SESSION,
+                                  "--visual", self.URL).returncode, 0)
+        question = self.board()
+        self.assertEqual(question["details"], "來由。")
+        self.assertEqual(question["visuals"], [self.URL])
+        self.assertEqual(question["recommendation"], "➡️ A：先讓本機一致。")
+
+    def test_a_link_written_above_the_details_block_counts(self):
+        section = SECTION + f"\n【示意】{self.URL}\n\n【詳細資訊】\n來由。\n【詳細資訊結束】\n"
+        self.assertEqual(self.ask(section, "--advisor", "exempt requirement-discussion",
+                                  "--session-id", SESSION).returncode, 0)
+        question = self.board()
+        self.assertEqual(question["visuals"], [self.URL])
+        self.assertEqual(question["recommendation"], "➡️ A：先讓本機一致。")
+
+    def test_a_bad_link_above_the_details_block_is_refused(self):
+        section = SECTION + "\n【示意】javascript:alert(1)\n\n【詳細資訊】\n來由。\n【詳細資訊結束】\n"
+        result = self.ask(section, "--advisor", "exempt requirement-discussion",
+                          "--session-id", SESSION)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.questions.exists())
+
+    def test_blank_lines_between_links_keep_them_links(self):
+        section = SECTION + f"\n【示意】{self.URL}\n\n【示意】{self.URL}2\n"
+        self.assertEqual(self.ask(section, "--advisor", "exempt requirement-discussion",
+                                  "--session-id", SESSION).returncode, 0)
+        question = self.board()
+        self.assertEqual(question["visuals"], [self.URL, self.URL + "2"])
+        self.assertEqual(question["recommendation"], "➡️ A：先讓本機一致。")
+
+    def test_question_without_a_link_has_none(self):
+        self.assertEqual(self.upsert().returncode, 0)
+        self.assertNotIn("【示意】", self.questions.read_text())
+        self.assertNotIn("visuals", self.board())
+
+    def test_other_schemes_and_malformed_links_write_nothing(self):
+        for bad in ("javascript:alert(1)", "ftp://demo.example/a", "file:///etc/passwd",
+                    "demo.example/a", "https://", "https://a b/", "https://a/\n## 另一題",
+                    "https://a/\x1b]8;;"):
+            with self.subTest(bad):
+                for result in (
+                    self.upsert("--visual", bad),
+                    self.ask(SECTION, "--advisor", "exempt requirement-discussion", "--session-id", SESSION,
+                             "--visual", bad),
+                ):
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("http", result.stderr)
+                self.assertFalse(self.questions.exists())
+                self.assertFalse(self.record().exists())
+
+    def test_a_section_file_cannot_carry_another_scheme(self):
+        section = SECTION + "\n【示意】javascript:alert(1)\n"
+        result = self.ask(section, "--advisor", "exempt requirement-discussion", "--session-id", SESSION)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("http", result.stderr)
+        self.assertFalse(self.questions.exists())
+
+    def test_a_hand_edited_link_of_another_scheme_is_not_offered(self):
+        self.assertEqual(self.upsert("--visual", self.URL).returncode, 0)
+        self.questions.write_text(self.questions.read_text().replace(self.URL, "javascript:alert(1)"))
+        self.assertNotIn("visuals", self.board())
+
+    def test_a_marker_inside_the_text_is_plain_text(self):
+        section = SECTION.replace("驗收都過了。", "驗收都過了。\n\n【示意】先看這裡")
+        self.assertEqual(self.ask(section, "--advisor", "exempt requirement-discussion",
+                                  "--session-id", SESSION).returncode, 0)
+        question = self.board()
+        self.assertNotIn("visuals", question)
+        self.assertIn("【示意】先看這裡", question["context"])
+
+    def test_plain_text_lists_the_links_after_the_background(self):
+        module = load_module()
+        self.assertEqual(self.upsert("--visual", self.URL).returncode, 0)
+        section = module.parse_questions(self.questions.read_text())[0]
+        text = module.question_plain_text(section)
+        self.assertNotIn("【示意】", text)
+        self.assertLess(text.index("驗收都過了。"), text.index(f"看示意：{self.URL}"))
+        self.assertLess(text.index(f"看示意：{self.URL}"), text.index("A. 合併"))
+
+
 if __name__ == "__main__":
     unittest.main()

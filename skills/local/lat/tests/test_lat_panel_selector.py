@@ -123,6 +123,75 @@ class LayoutTests(SelectorTestCase):
                     self.assertEqual(text.count("➡️ B："), 1)
                     self.assertEqual(app.current.selected, [])
 
+    VISUAL = "https://demo.example/board?variant=b"
+
+    def write_visual(self, *urls):
+        lines = "".join(f"【示意】{url}\n" for url in urls)
+        self.questions.write_text(SINGLE.replace("\n答覆：", f"\n{lines}\n答覆：", 1))
+
+    async def focus_visual(self, pilot, app):
+        for _ in range(50):
+            if app.focus[0] == "visual":
+                return
+            await pilot.press("down")
+            await pilot.pause()
+        self.fail("the focus never reached the button")
+
+    async def test_visual_link_shows_as_a_button_before_the_options(self):
+        self.write_visual(self.VISUAL)
+        app = self.make_app()
+        async with app.run_test(size=(80, 40)):
+            text = self.view(app)
+            self.assertNotIn("【示意】", text)
+            self.assertLess(text.index("審查和驗收"), text.index(f"[看示意] {self.VISUAL}"))
+            self.assertLess(text.index(f"[看示意] {self.VISUAL}"), text.index("合併到 dev，不推送"))
+            self.assertEqual(len(app.current.options), 3)
+            links = {segment.style.link for strip in app.screen._compositor.render_strips()
+                     for segment in strip if segment.style}
+            self.assertIn(self.VISUAL, links)
+
+    async def test_click_and_enter_open_the_visual_link(self):
+        self.write_visual(self.VISUAL)
+        app = self.make_app()
+        with patch.object(self.panel, "open_in_browser", return_value=True) as opened:
+            async with app.run_test(size=(80, 40)) as pilot:
+                await self.focus_visual(pilot, app)
+                await pilot.press("enter")
+                await pilot.pause()
+                opened.assert_called_once_with(self.VISUAL)
+                # Opening a link answers nothing.
+                self.assertEqual(app.current.selected, [])
+                first = next(first for key, first, _ in app.units if key[0] == "visual")
+                app.click_view(first)
+                await pilot.pause()
+                self.assertEqual(opened.call_count, 2)
+
+    async def test_where_no_browser_can_open_the_link_is_shown(self):
+        self.write_visual(self.VISUAL)
+        app = self.make_app()
+        with patch.object(self.panel, "open_in_browser", return_value=False):
+            async with app.run_test(size=(80, 40)) as pilot:
+                await self.focus_visual(pilot, app)
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn(self.VISUAL, str(app.query_one("#status").render()))
+
+    async def test_question_without_a_link_shows_no_button(self):
+        app = self.make_app()
+        async with app.run_test(size=(80, 40)):
+            self.assertNotIn("看示意", self.view(app))
+            self.assertFalse([key for key, _, _ in app.units if key[0] == "visual"])
+
+    def test_no_browser_is_started_without_a_display(self):
+        with patch.object(self.panel.subprocess, "Popen") as start, \
+                patch.object(self.panel.sys, "platform", "linux"):
+            self.assertFalse(self.panel.open_in_browser(self.VISUAL, {}))
+            start.assert_not_called()
+            self.assertTrue(self.panel.open_in_browser(self.VISUAL, {"DISPLAY": ":0"}))
+            self.assertEqual(start.call_args.args[0], ["xdg-open", self.VISUAL])
+            start.side_effect = FileNotFoundError
+            self.assertFalse(self.panel.open_in_browser(self.VISUAL, {"DISPLAY": ":0"}))
+
     async def test_details_show_in_full_after_the_recommendation(self):
         details = "【詳細資訊】\n來由：上次漏寫。\n\nA. 不是選項\n【詳細資訊結束】\n\n"
         footer = "➡️ B：Original advice.\n\n"

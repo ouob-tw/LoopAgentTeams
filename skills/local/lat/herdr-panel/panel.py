@@ -23,6 +23,7 @@ import os
 import re
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -218,6 +219,23 @@ def open_popup(env=None, *, request=rpc):
     }, env)
 
 
+def open_in_browser(url, env=os.environ):
+    """Hand ``url`` to the system's opener where a graphical browser can appear.
+
+    Without a display it could start a console browser; its output is dropped so nothing
+    draws over the panel. Only a missing display or opener reports ``False``.
+    """
+    if sys.platform != "darwin" and not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
+        return False
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    try:
+        subprocess.Popen([opener, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return False
+    return True
+
+
 def wrap_rows(rows, width):
     """Wrap ``(first_prefix, text, style)`` rows CJK-aware with hanging indents.
 
@@ -288,6 +306,7 @@ class Draft:
         self.reason = parsed.reason
         self.context = lat_panel.question_context(section)
         self.details = lat_panel.question_details(section)
+        self.visuals = lat_panel.question_visuals(section)
         self.recommendation = lat_panel.question_recommendation(section)
         self.malformed_submission = section["malformed_submission"]
         if section["status_label"] == "已記錄":
@@ -939,6 +958,9 @@ class Panel(App):
         for number, paragraph in enumerate(paragraphs, 1):
             rows.extend((("", "", ""), ("", paragraph, "")))
             keys.extend((None, ("text", number)))
+        for index, url in enumerate(draft.visuals):
+            rows.extend((("", "", ""), ("", f"[看示意] {url}", f"{accent} link {url}")))
+            keys.extend((None, ("visual", index)))
         rows.append(("", "", ""))
         keys.append(None)
         if draft.kind is not None:
@@ -1249,6 +1271,10 @@ class Panel(App):
                 self.submit()
             self.refresh_view()
             return
+        if self.focus[0] == "visual":
+            self.open_visual(draft)
+            self.refresh_view()
+            return
         if not draft.editable:
             self.refresh_view()
             return
@@ -1340,7 +1366,9 @@ class Panel(App):
         self.kept_scroll = None
         self.focus = key
         draft = self.current
-        if draft and draft.editable and draft.kind is None and key[:2] == ("post", "answer"):
+        if draft and key[0] == "visual":
+            self.open_visual(draft)
+        elif draft and draft.editable and draft.kind is None and key[:2] == ("post", "answer"):
             self.open_input("text")
         elif draft and draft.editable and key[0] == "option":
             if draft.kind == "multi":
@@ -1348,6 +1376,14 @@ class Panel(App):
             else:
                 self.select_option(draft, draft.cursor)
         self.refresh_view()
+
+    def open_visual(self, draft):
+        """Open the demo link under the focus; where that is impossible, show it to copy."""
+        if self.focus[1] >= len(draft.visuals):
+            return
+        url = draft.visuals[self.focus[1]]
+        if not open_in_browser(url):
+            self.set_notice("action", f"這裡開不了瀏覽器，請自行開啟：{url}")
 
     def select_option(self, draft, index):
         """Select one option; 其他 replaces the answer only once text is typed."""

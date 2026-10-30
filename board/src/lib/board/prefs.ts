@@ -8,6 +8,15 @@ export const THEMES = ['dark', 'light'] as const;
 export type Theme = (typeof THEMES)[number];
 export const THEME_KEY = 'lat-board-theme';
 
+export const oppositeTheme = (theme: Theme): Theme => (theme === 'dark' ? 'light' : 'dark');
+
+/** What shows for this saved value (nothing saved or unknown means follow the system) under this system theme.
+ *  `auto` is true while the choice reads as 自動: nothing saved, or a saved theme equal to the system's. */
+export function resolveTheme(saved: string | null, system: Theme): { theme: Theme; auto: boolean } {
+	const chosen = THEMES.find((theme) => theme === saved) ?? null;
+	return { theme: chosen ?? system, auto: chosen === null || chosen === system };
+}
+
 /** Where the usage line's style used to be kept. It is the board's setting for every device now;
  *  the old value is only cleared. */
 export const LEGACY_USAGE_STYLE_KEY = 'lat-board-usage-style';
