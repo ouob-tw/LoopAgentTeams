@@ -293,6 +293,12 @@ class BriefTests(DispatchCase):
         self.assertIn('No reply from the user is not approval', text)
         self.assertIn('contact them directly', text)
 
+    def test_fixed_section_tells_the_agent_not_to_send_start_or_progress_acks(self):
+        self.brief()
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertIn('Report only results, blockers, live-action quota hits and questions '
+                      'outside the Spec; never send a start or progress ack.', text)
+
     def test_longer_fence_may_contain_a_shorter_fence_with_a_heading(self):
         text = BRIEF.replace('- 清單項目', '````\n```\n## 目標與完成條件\n```\n````')
         source, _, result = self.brief(text)
