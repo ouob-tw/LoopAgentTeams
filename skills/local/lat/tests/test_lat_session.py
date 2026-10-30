@@ -769,6 +769,22 @@ class SessionTests(unittest.TestCase):
                 self.assert_stop_block(self.stop_hook(client=client), '不是 pending')
             binding_path.write_text(original)
 
+    def test_stop_accepts_user_account_exemption_only_on_help_records(self):
+        for client in ('codex', 'claude'):
+            self.write_legacy_record(client=client)
+            questions = self.bind_stop_panel(client)
+            questions.write_text('## Question\nLAT-H · r1 · 待答\n')
+            path = self.decisions / 'LAT-H.md'
+            for message in ('HELP: LAT-H r1', 'DECIDE: LAT-H r1'):
+                with self.subTest(client=client, message=message):
+                    path.write_text('- status: pending\n- advisor: exempt user-account\n- kind: help\n')
+                    self.assert_stop_pass(self.stop_hook(message, client), 'LAT-H r1 - Question')
+            for kind in ('', '- kind: decide\n'):
+                with self.subTest(client=client, kind=kind):
+                    path.write_text(f'- status: pending\n- advisor: exempt user-account\n{kind}')
+                    self.assert_stop_block(self.stop_hook('DECIDE: LAT-H r1', client),
+                                           'LAT-H r1：參謀 exempt user-account 只能用在求助紀錄')
+
     def test_stop_reports_each_advisor_gap_and_ignores_unreferenced_advisor_states(self):
         for client in ('codex', 'claude'):
             self.write_legacy_record(client=client)
@@ -2448,6 +2464,7 @@ class SessionTests(unittest.TestCase):
             self.assertNotIn(other, text)
 
     def test_deactivate_preserves_record_and_stops_recovery(self):
+        self.set_hcom_agents(*HCOM_TEST_NAMES, 'nova')
         for extra, successor in (((), None), (('--successor', 'nova'), 'nova'),
                                  (('--status', 'completed'), None),
                                  (('--status', 'cancelled'), None)):
@@ -2473,6 +2490,25 @@ class SessionTests(unittest.TestCase):
         self.assertIn('Invalid successor', result.stderr)
         self.assertEqual(self.record.read_bytes(), original)
         self.assertEqual(self.watcher_pid(), pid)
+
+    def test_deactivate_writes_the_successor_full_name_or_refuses_without_changes(self):
+        self.set_hcom_agents(*HCOM_TEST_NAMES, 'lat-nova', 'a-vega', 'b-vega')
+        self.activate()
+        original = self.record.read_bytes()
+        for successor, env, problem in (
+                ('ghost', None, '--successor: Unknown HCOM agent: ghost; HCOM lists: a-vega,'),
+                ('vega', None, '--successor: Ambiguous HCOM agent vega: a-vega, b-vega'),
+                ('nova', dict(FAKE_HCOM_LIST=str(self.root / 'absent.json')),
+                 '--successor: HCOM agent list unreadable')):
+            with self.subTest(successor=successor):
+                result = self.cli('deactivate', '--workspace', self.work, '--successor',
+                                  successor, extra_env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(problem, result.stderr)
+                self.assertEqual(self.record.read_bytes(), original)
+        result = self.cli('deactivate', '--workspace', self.work, '--successor', 'nova')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['successor'], 'lat-nova')
 
     def test_older_finished_statuses_still_start_a_new_round(self):
         for status in ('completed', 'cancelled'):
@@ -3112,10 +3148,13 @@ class SessionTests(unittest.TestCase):
         return self.work / '.lat/ledgers' / f'{SESSION}-r{round_number}.json'
 
     def ledger(self, *args, round_number=1):
+        listing = self.root / 'ledger-hcom-list.json'
+        listing.write_text(json.dumps([{'name': name} for name in ('orch', 'worker')]))
         result = subprocess.run(
             [sys.executable, str(SKILL / 'scripts/lat-ledger.py'), args[0], '--ledger',
              str(self.ledger_path(round_number)), '--by', 'orch', *map(str, args[1:])],
-            text=True, capture_output=True)
+            text=True, capture_output=True,
+            env=dict(os.environ, LAT_LEDGER_HCOM_LIST=str(listing)))
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
@@ -3179,9 +3218,11 @@ class SessionTests(unittest.TestCase):
 
     def test_activate_reuses_a_ledger_left_by_an_unfinished_activate(self):
         self.ledger_path().parent.mkdir(parents=True)
+        # No HCOM name: the OS user creates it, so the host's HCOM list is never read.
+        env = {key: value for key, value in os.environ.items() if key != 'HCOM_INSTANCE_NAME'}
         subprocess.run([sys.executable, str(SKILL / 'scripts/lat-ledger.py'), 'init', '--ledger',
                         str(self.ledger_path()), '--workspace', str(self.work)], check=True,
-                       capture_output=True)
+                       capture_output=True, env=env)
         before = self.ledger_path().read_bytes()
         self.activate(duty=False)
         self.assertEqual(json.loads(self.record.read_text())['ledger_path'], str(self.ledger_path()))

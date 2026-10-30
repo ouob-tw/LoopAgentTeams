@@ -14,6 +14,7 @@
   | `requirement-discussion` | Spec 或短流程確認前的需求討論題。 |
   | `account-quota` | 沒有可用訂閱帳號、Claude 額度用完等規則明定由使用者決定的事（Claude 後端實作任務依 /hcom-spawn 自動改派 GPT，不屬此類）。參謀本身缺一家時依「模型與降級」自動處理，不屬此例外。 |
   | `preauth-ask` | 有 `- action:` 行的授權題，當下重跑 [預先授權](preauth.md) `check` 為 `ask`，且每個原因的類別都是 `allow-false`（某層明寫 `allow = false`）或 `condition`（固定條件不成立，例如分支不在清單、HEAD 不是整合分支最新版本、整套測試沒有通過紀錄、提交未引用本輪票號）。只要有一個原因是 `unset`（例如沒有任何層寫 `allow`）或 `always-ask`，參謀仍可能依其他授權來源定案，照常諮詢。 |
+  | `user-account` | 只限求助題（紀錄有 `- kind: help`）：答案或動作只存在使用者自己的帳號或裝置，例如密碼庫項目名稱、passkey／2FA 核准、登入。代理人查得到的事不適用。非求助紀錄寫此類別會被攔下。 |
 
 - 參謀只處理原本要問使用者的事。執行 Agent 卡住回報給主控、主控在授權內本可自行裁決的事，仍由主控處理，不諮詢。
 
@@ -29,7 +30,7 @@
 | `answered` | 使用者已在面板或看板送出，程式已記下答覆原文與來源；主控判斷意思、寫核准範圍後改為 `approved`（求助題 `resolved`），見 [待答問題面板](question-panel.md#收到-lat-panel-通知)。不是 `pending`。 | 沿用 `pending` 時的參謀行 |
 
 - 參謀行讀法比照狀態行：取第一行以 `- advisor:` 開頭的行，鍵名與值都不分大小寫；第一個字決定結論，`exempt`、`late` 的第二個字決定類別或結論，其後可接註記。同家降級時在結論後加 `same-family-degraded`，例如 `- advisor: needs-human same-family-degraded`。
-- 結束回合的 DECIDE／HELP 檢查要求每個寫出的題號都有 `needs-human`、`exempt <spec-confirmation｜ticket-confirmation｜requirement-discussion｜account-quota｜preauth-ask>` 或 `late <needs-human｜resolved｜self-check>` 參謀行；缺少或寫錯就攔下，補做順序見 [主控恢復程序](recovery.md) 的「回合結束檢查」。`exempt preauth-ask` 另依當下設定重跑 `check` 核對上表條件，不符就逐題攔下；設定讀不出等 `check` 無法判斷的原因（類別 `error`）只警告。
+- 結束回合的 DECIDE／HELP 檢查要求每個寫出的題號都有 `needs-human`、`exempt <spec-confirmation｜ticket-confirmation｜requirement-discussion｜account-quota｜preauth-ask｜user-account>` 或 `late <needs-human｜resolved｜self-check>` 參謀行；缺少或寫錯就攔下，補做順序見 [主控恢復程序](recovery.md) 的「回合結束檢查」。`exempt preauth-ask` 另依當下設定重跑 `check` 核對上表條件，不符就逐題攔下；設定讀不出等 `check` 無法判斷的原因（類別 `error`）只警告。
 
 `## 參謀意見` 每位參謀一行：`<HCOM 名稱>（<client> <模型>）：<結論>；<理由與引用>`；再議時另起一行寫第二輪。`advisor-resolved` 紀錄另寫 `- authority:` 行，列出引用的授權來源。
 
@@ -114,6 +115,7 @@
 
 - Codex 參謀：`gpt-6-astra`，effort `medium`。Claude 參謀：依 /hcom-spawn 預設。
 - Codex 額度用完先依 /hcom-spawn 換帳號。某一家仍不可用時，主控不問使用者，直接改用兩位同家參謀，參謀行加註 `same-family-degraded`。這是 [Agent 設定](agents.md)「不同家模型不可用時問使用者」的例外，只適用參謀。
+- 參謀模型在每個可用帳號的 /hcom-spawn「帳號探測」都回 `model is not supported`，算該家不可用，照上一條同家降級，不問使用者。
 - 兩家都不可用時才屬 `account-quota`：只就帳號、等待或替代方案問使用者；原本要諮詢的事維持 `advising` 並受阻，不改為直接問使用者。參謀恢復後照常諮詢。
 
 ## 回報

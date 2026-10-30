@@ -309,6 +309,59 @@ class RunAndReuseTests(GateCase):
         self.assertEqual(self.gate('run', '--', f"echo run >> {self.counter}; ls '*.txt'").returncode, 2)
         self.assertEqual(self.runs(), 2)
 
+    def test_a_failing_earlier_pipeline_stage_is_recorded_as_a_failure(self):
+        failed = self.gate('run', '--', 'false | cat')
+        self.assertEqual(failed.returncode, 1)
+        passed = self.gate('run', '--', 'true | cat')
+        self.assertEqual(passed.returncode, 0)
+        failing, passing = self.records()
+        self.assertEqual((failing['exit_code'], failing['reusable']), (1, False))
+        self.assertEqual((passing['exit_code'], passing['reusable']), (0, True))
+
+    def test_the_issue_396_shape_with_failing_tests_before_a_while_loop_fails(self):
+        command = (f'{{ echo run >> {self.counter}; echo FAIL; exit 3; }} 2>&1 '
+                   '| while read l; do printf "> %s\\n" "$l"; done')
+        result = self.gate('run', '--', command)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn('> FAIL', result.stdout)
+        self.assertEqual(self.records()[0]['exit_code'], 3)
+
+    def test_commands_without_a_pipe_keep_their_exit_status_and_fingerprint(self):
+        for command, code in ((self.suite(code=3), 3), ('false', 1)):
+            self.assertEqual(self.gate('run', '--', command).returncode, code, command)
+        self.assertEqual([r['exit_code'] for r in self.records()], [3, 1])
+        for command in (self.suite(code=3), 'false'):
+            [record] = [r for r in self.records() if r['command'] == command]
+            self.assertEqual(record['fingerprint'],
+                             gate.fingerprint(self.repo, [command])['fingerprint'])
+        self.assertEqual(gate.shell_argv('false'), ['/bin/sh', '-c', 'false'])
+
+    def test_a_pipe_character_that_is_not_a_pipeline_keeps_its_exit_status(self):
+        for command, code in (('false || true', 0), ("echo 'a|b' >/dev/null; exit 4", 4),
+                              (r'echo a\|b; exit 0', 0), ('echo "|"; false', 1)):
+            self.assertEqual(self.gate('run', '--', command).returncode, code, command)
+
+    def test_the_fingerprint_of_a_piped_command_does_not_depend_on_the_shell_it_runs_in(self):
+        self.gate('run', '--', 'true | cat')
+        [record] = self.records()
+        self.assertEqual(record['fingerprint'],
+                         gate.fingerprint(self.repo, ['true | cat'])['fingerprint'])
+        self.assertEqual(record['command'], 'true | cat')
+
+    def test_a_piped_command_runs_in_a_shell_that_has_pipefail(self):
+        argv = gate.shell_argv('true | cat')
+        self.assertEqual(argv[-2:], ['-c', 'true | cat'])
+        self.assertEqual(subprocess.run([*argv[:-1], 'false | cat'],
+                                        capture_output=True).returncode, 1)
+
+    def test_a_piped_command_is_refused_unrecorded_when_no_shell_has_pipefail(self):
+        with mock.patch.object(gate, 'sh_has_pipefail', return_value=False), \
+                mock.patch.object(gate.shutil, 'which', return_value=None):
+            with self.assertRaises(OSError) as ctx:
+                gate.shell_argv('false | cat')
+            self.assertIn('pipefail', str(ctx.exception))
+            self.assertEqual(gate.shell_argv('false'), ['/bin/sh', '-c', 'false'])
+
     def test_shell_string_and_split_arguments_are_different_commands(self):
         split = ['echo', '-e', 'a\\nb']
         shell = gate.normalize_command(split)

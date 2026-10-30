@@ -27,6 +27,19 @@ API_ERROR = ('■ {"type":"error","status":400,"error":{"type":"invalid_request_
              '"message":"The \'gpt-6.1-sol\' model is not supported when using Codex with a '
              'ChatGPT account.","code":"model_not_found"}}')
 API_ERROR_SCREEN = [API_ERROR, '', *CODEX_SCREEN]
+USAGE_LIMIT = ("■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), "
+               'visit https://chatgpt.com/settings/usage to purchase more credits or try again '
+               'at Oct 30th, 2026 12:03 AM.')
+USAGE_LIMIT_SCREEN = [USAGE_LIMIT, '', *CODEX_SCREEN]
+# Captured from a real Codex 0.164.0 agent started on a model its account does not support:
+# rows wrap at 62 columns without indent.
+UNSUPPORTED_MODEL_SCREEN = [
+    '', '› Reply OK', '', '  When done, send your result back to @hubo via hcom.', '', '',
+    '■ {"type":"error","status":400,"error":',
+    '{"type":"invalid_request_error","message":"The \'gpt-6-fake\'',
+    'model is not supported when using Codex with a ChatGPT',
+    'account.","code":"model_not_found"}}', '', '', '› Ask Codex to do anything', '',
+    '  gpt-6-fake low · /tmp · Context …  ⚠ 1 warning · f2 to view']
 REPLY = {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'OK'}}
 ECHO = {'type': 'event_msg', 'payload': {'type': 'user_message', 'message': 'Continue'}}
 
@@ -813,6 +826,63 @@ class CapacityTests(unittest.TestCase):
         self.step_at(5)
         self.assertEqual(self.fake.sent, [])
 
+    def test_unsupported_model_screen_as_codex_draws_it_is_told_once(self):
+        self.fake.screen = UNSUPPORTED_MODEL_SCREEN
+        for seconds in (0, 5, 400):
+            self.step_at(seconds)
+        self.assertEqual(self.fake.injected, [])
+        self.assertEqual(len(self.fake.sent), 1)
+        self.assertIn('''"message":"The 'gpt-6-fake' model is not supported when using Codex '''
+                      '''with a ChatGPT account."''', self.fake.sent[0])
+
+    def test_usage_limit_is_told_once_with_the_reset_time_and_nothing_typed(self):
+        self.fake.screen = USAGE_LIMIT_SCREEN
+        for seconds in (0, 5, 400):
+            self.step_at(seconds)
+        self.assertEqual(self.fake.injected, [])
+        self.assertEqual(len(self.fake.sent), 1)
+        self.assertIn(f'vare-review-kilo (codex) stopped on its usage limit: {USAGE_LIMIT}',
+                      self.fake.sent[0])
+        self.assertIn('troubleshooting.md', self.fake.sent[0])
+
+    def test_usage_limit_with_a_typographic_apostrophe_is_told_once(self):
+        self.fake.screen = [USAGE_LIMIT.replace("You've", 'You’ve'), '', *CODEX_SCREEN]
+        self.step_at(0)
+        self.step_at(5)
+        self.assertEqual(len(self.fake.sent), 1)
+
+    def test_usage_limit_wrapped_over_rows_is_quoted_whole_and_once_across_widths(self):
+        def wrapped(*cuts):
+            words, rows = USAGE_LIMIT.split(' '), []
+            for start, end in zip((0, *cuts), (*cuts, None)):
+                rows.append(' '.join(words[start:end]))
+            return [*rows, '', *CODEX_SCREEN]
+        self.fake.screen = wrapped(7, 15)
+        self.step_at(0)
+        self.assertIn(USAGE_LIMIT, self.fake.sent[0])
+        self.fake.screen = wrapped(10)  # the pane was resized
+        self.step_at(5)
+        self.assertEqual(len(self.fake.sent), 1)
+
+    def test_a_later_usage_limit_with_another_reset_time_is_told_again(self):
+        self.fake.screen = USAGE_LIMIT_SCREEN
+        self.step_at(0)
+        self.fake.screen = [USAGE_LIMIT, '› Continue', USAGE_LIMIT.replace('12:03', '3:45'),
+                            '', *CODEX_SCREEN]
+        self.step_at(5)
+        self.assertEqual(len(self.fake.sent), 2)
+        self.assertIn('3:45 AM', self.fake.sent[1])
+
+    def test_replaced_usage_limit_and_capacity_after_it_get_no_usage_notice(self):
+        for screen in ([USAGE_LIMIT, '› Continue', '• Picking up the task again.',
+                        *CODEX_SCREEN],
+                       [USAGE_LIMIT, CAPACITY, '', *CODEX_SCREEN]):
+            with self.subTest(screen=screen):
+                self.fake.sent.clear()
+                self.fake.screen = screen
+                self.step_at(0)
+                self.assertFalse([text for text in self.fake.sent if 'usage limit' in text])
+
     def test_failed_api_error_notice_is_retried_on_the_next_check(self):
         self.fake.screen = API_ERROR_SCREEN
         self.fake.send_fails = True
@@ -886,6 +956,14 @@ class CapacityWatchTests(unittest.TestCase):
         notices = [send for send in fake.sent if 'API error' in send[-1]]
         self.assertEqual([send[1] for send in notices], ['@vare'])
         self.assertIn(API_ERROR, notices[0][-1])
+        self.assertEqual(fake.injected, [])
+
+    def test_codex_agent_stopped_on_its_usage_limit_is_told_to_the_spawner_once(self):
+        fake = FakeHcom(tool='codex', screens=[USAGE_LIMIT_SCREEN], stop_after=400)
+        self.run_codex(fake)
+        notices = [send for send in fake.sent if 'usage limit' in send[-1]]
+        self.assertEqual([send[1] for send in notices], ['@vare'])
+        self.assertIn(USAGE_LIMIT, notices[0][-1])
         self.assertEqual(fake.injected, [])
 
     def test_agent_that_already_ended_gets_nothing(self):

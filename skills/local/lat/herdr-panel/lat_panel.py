@@ -624,7 +624,7 @@ def _ask(args):
     if created:
         if args.advisor is None:
             raise ValueError(f"a new record needs --advisor: {path}")
-        error = advisor_error(args.advisor)
+        error = advisor_error(args.advisor, args.help_question)
         if error:
             raise ValueError(f"--advisor: {error}")
         session = args.session_id or _ask_session(args.questions)

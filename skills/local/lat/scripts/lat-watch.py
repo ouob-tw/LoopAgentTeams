@@ -22,7 +22,8 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import DecisionStatus, read_decision_status
-from _lat_common import (process_starttime, run_cli, shared_lat_dir, watcher_process_matches,
+from _lat_common import (full_hcom_name, process_starttime, resolve_agent_name, run_cli,
+                         same_controller, shared_lat_dir, watcher_process_matches,
                          write_json_atomic, read_hcom_pauses)
 
 
@@ -1267,11 +1268,6 @@ def card_digest(path, error):
     except OSError:
         content = str(error).encode()
     return hashlib.sha256(content).hexdigest()
-
-
-def same_controller(card_name, orchestrator):
-    """A card may name its orchestrator by base name; the record holds the full HCOM name."""
-    return card_name == orchestrator or orchestrator.endswith(f'-{card_name}')
 
 
 def monitored_task_cards(tasks, orchestrator, incomplete=None):
@@ -3346,21 +3342,6 @@ def run_forever(args):
         time.sleep(CHECK_SECONDS)
 
 
-def resolve_agent_name(agents, name, *, required):
-    """Resolve exact/unique suffix names; targets may be absent from HCOM."""
-    if name in agents:
-        return name
-    matches = sorted(candidate for candidate in agents if candidate.endswith(f'-{name}'))
-    if len(matches) > 1:
-        raise ValueError(f'Ambiguous HCOM agent {name}: {", ".join(matches)}; '
-                         'use the full HCOM name')
-    if matches:
-        return matches[0]
-    if required:
-        raise ValueError(f'Unknown HCOM agent: {name}')
-    return name
-
-
 def alarm_condition_met(declaration):
     condition = declaration['condition']
     if condition['kind'] == 'file':
@@ -3384,7 +3365,7 @@ def alarm_watcher_running(workspace, record):
 
 def declare_alarm(args):
     workspace = args.workspace.resolve(strict=True)
-    agent = resolve_agent_name(list_hcom(valid_name(args.agent)), args.agent, required=True)
+    agent = full_hcom_name(list_hcom(valid_name(args.agent)), args.agent, '--agent')
     reason = args.reason.strip()
     if not reason:
         raise ValueError('--reason must not be empty')
@@ -3448,7 +3429,7 @@ def declare_wait(args):
         print(f'LAT watch warning: hcom list failed; accepting --agent {agent} '
               f'as given: {error}', file=sys.stderr)
     else:
-        agent = resolve_agent_name(agents, agent, required=True)
+        agent = full_hcom_name(agents, agent, '--agent')
     # A comma list waits on its first entry; the others are named in the reason.
     target, *also = (part.strip() for part in args.target.split(','))
     also = [valid_name(name) for name in also if name]

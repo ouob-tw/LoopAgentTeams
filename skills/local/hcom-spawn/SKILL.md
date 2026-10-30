@@ -44,7 +44,7 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 ## 啟動
 
-tag 用 `<自身名稱>-<主題>`，主題一兩個英文小寫單字（`review`、`docs`、`api-probe`）。HCOM 會把 Agent 名稱變成 `<tag>-xxxx`，所以同一位召喚者開的每組都認得出來，也能用 `@<tag>-` 一次傳給整組。
+tag 用 `<自身名稱>-<主題>`，主題一兩個英文小寫單字（`review`、`docs`、`api-probe`）。HCOM 會把 Agent 名稱變成 `<tag>-xxxx`，所以同一位召喚者開的每組都認得出來，也能用 `@<tag>-` 一次傳給整組；它只比對完全相同的 tag，要傳給多組就逐組指定或列出名稱（`@<自身名稱>-` 傳不到 `<自身名稱>-<主題>` 的各組）。
 
 ```bash
 hcom 1 codex --tag <自身名稱>-<主題> --go --name <自身名稱> \
@@ -56,7 +56,9 @@ hcom 1 claude --tag <自身名稱>-<主題> --go --name <自身名稱> \
   --model claude-opus-5-5 --effort medium --dangerously-skip-permissions
 ```
 
-Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在第一則訊息裡。主機裝有派工把關 hook 時，缺這些參數的派工指令會被擋下，放行的派工會在背景自動核對，不符或 Agent 停在確認畫面時通知你；Codex 停在模型滿載時背景會先送一次 `Continue`，5 分鐘沒恢復再通知你；停在其他 API 錯誤時直接通知你並附上錯誤內容；安裝方式見 [references/spawn-guard.md](references/spawn-guard.md)。
+Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在第一則訊息裡。主機裝有派工把關 hook 時，缺這些參數的派工指令會被擋下，放行的派工會在背景自動核對，不符或 Agent 停在確認畫面時通知你；Codex 停在模型滿載時背景會先送一次 `Continue`，5 分鐘沒恢復再通知你；停在其他 API 錯誤或額度用完時直接通知你並附上錯誤內容，不自動換帳號；安裝方式見 [references/spawn-guard.md](references/spawn-guard.md)。
+
+本次還沒確認帳號跑得了這個 Codex 模型時（例如換帳號或額度重置後第一次啟動它），啟動前先做 [troubleshooting 的帳號探測](references/troubleshooting.md#codex-額度與換帳號)。
 
 使用者指定 HERDR workspace 時，先 `herdr workspace list` 查目標 ID，再 `HERDR_WORKSPACE_ID=<目標ID> hcom 1 <client> --terminal herdr ...`。未指定就照常執行，Agent 會開在呼叫端所在的 workspace。
 

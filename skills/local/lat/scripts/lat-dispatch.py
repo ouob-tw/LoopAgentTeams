@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Dispatch helper for the LAT orchestrator (stdlib only).
 
-`card` creates the task card for an HCOM tag that was just launched; the agent's full name
-comes from `hcom list --json`. With --native, the card is for a Claude built-in agent: the
-name comes from --agent, HCOM is not consulted and the card is marked `native agent：是`.
+`card` creates the task card for an HCOM tag that was just launched; the agent's and the
+orchestrator's full names come from `hcom list --json`. With --native, the card is for a Claude
+built-in agent: its name comes from --agent as given and the card is marked `native agent：是`.
 `brief` turns a four-section Markdown file plus that card into a ready-to-send task brief and
 prints the `hcom send` command; its `--name` values are the base names HCOM records for tagged
 senders. It never launches agents and never sends anything. Hand-written cards and briefs stay
@@ -25,7 +25,7 @@ import shlex
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import hcom_send_name, run_cli, write_text_atomic
+from _lat_common import full_hcom_name, hcom_send_name, run_cli, write_text_atomic
 
 LAT_DIR = Path(__file__).resolve().parents[1]
 SECTIONS = ('目標與完成條件', '範圍與不能碰', '其他 Agent 與分工', '現場動作額度')
@@ -35,6 +35,7 @@ TAG = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*')
 CARD_FIELD = re.compile(r'-\s+([^：\n]+)：\s*(.*)')
 CARD_AGENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?=$|[\s(（])')
 NONE = '無'
+STAGE_ALIASES = {'implement': 'impl'}
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
 LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo')
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
@@ -53,6 +54,7 @@ FIXED = '''## Fixed fields
 - Language: all agent-to-agent communication (hcom messages, hand-offs, reports) is in English.
 - On completion report: where the results are, test results (for a full suite, attach the suite-gate record: the fingerprint, or the entry `suite-gate.py status` shows; do not rerun just to report), and anything unfinished.
 - Stuck rule: if the same acceptance target fails 3 rounds of fix -> verify (fix -> deploy -> verify when there is a deploy step), report to {orchestrator} immediately with the failure evidence and your next hypothesis. Reset the count when the target passes or changes.
+- Report only results, blockers, live-action quota hits and questions outside the Spec; never send a start or progress ack.
 - Report with: `hcom send @{orchestrator} --name {agent_name}`. If you forget the syntax, run `hcom <command> --help`; do not guess.
 - Always address messages: `@<name>` for one agent, `@<tag>-` for a group. Never run `hcom send` without `@`; it broadcasts to every agent.
 - Nobody watches your terminal window, so do not explain anything there; send every report with `hcom send`.
@@ -112,16 +114,16 @@ def read_hcom_list():
     return value
 
 
-def agent_for_tag(tag, agent=None):
-    names = sorted({item['name'] for item in read_hcom_list()
+def agent_for_tag(items, tag, agent=None):
+    names = sorted({item['name'] for item in items
                     if item.get('tag') == tag and isinstance(item.get('name'), str)})
     if not names:
         raise Failure(f'no HCOM agent carries tag {tag!r}; launch it first, then rerun')
     if agent is not None:
-        if agent not in names:
-            raise Failure(f'--agent {agent!r} is not among the agents carrying tag {tag!r}: '
-                          f'{", ".join(names)}')
-        return agent
+        try:
+            return full_hcom_name(names, agent, '--agent')
+        except ValueError as error:
+            raise Failure(f'{error} (agents carrying tag {tag!r})') from None
     if len(names) > 1:
         raise Failure(f'tag {tag!r} is not unique: {", ".join(names)}; use a tag of its own or pass --agent')
     return names[0]
@@ -150,12 +152,13 @@ def make_card(args):
     if not tasks.is_dir():
         raise Failure(f'task-card directory does not exist: {tasks}')
     ledger = ledger_request(args)
-    if args.native:
-        if not args.agent or not CARD_AGENT.fullmatch(args.agent):
-            raise Failure('--native needs --agent with the name the orchestrator gave the agent')
-        agent = args.agent
-    else:
-        agent = agent_for_tag(tag, args.agent)
+    if args.native and (not args.agent or not CARD_AGENT.fullmatch(args.agent)):
+        raise Failure('--native needs --agent with the name the orchestrator gave the agent')
+    items = read_hcom_list()
+    agent = args.agent if args.native else agent_for_tag(items, tag, args.agent)
+    orchestrator = full_hcom_name(
+        {item['name'] for item in items if isinstance(item.get('name'), str)},
+        single_line('--orchestrator', args.orchestrator), '--orchestrator')
     day = args.date or date.today().isoformat()
     options = {
         'model': args.model, 'branch': args.branch, 'worktree': args.worktree,
@@ -166,7 +169,7 @@ def make_card(args):
     }
     values = {name: single_line(name, value) for name, value in options.items()}
     fields = [
-        ('agent', agent), ('orchestrator', single_line('--orchestrator', args.orchestrator)),
+        ('agent', agent), ('orchestrator', orchestrator),
         *([('native agent', '是')] if args.native else []),
         ('model', values['model']), ('branch', values['branch']),
         ('worktree', values['worktree']), ('base commit', values['base commit']),
@@ -213,6 +216,9 @@ def ledger_request(args):
                if not getattr(args, name)]
     if missing:
         raise Failure(f'--ledger also needs {", ".join(missing)}')
+    if args.repo and not Path(args.repo).is_absolute():
+        raise Failure(f'--repo must be the absolute path of the local git checkout, not '
+                      f'{args.repo!r} (an owner/repo name is not accepted)')
     path = args.ledger
     if not path.is_absolute():
         raise Failure(f'--ledger must be an absolute path: {path}')
@@ -232,7 +238,8 @@ def run_ledger(args, command, *rest):
 
 def open_ledger_row(args, ledger, orchestrator, agent, card):
     base = ['--ledger', ledger['path'], '--by', orchestrator]
-    add = ['--ticket', args.ticket, '--stage', args.stage, '--deadline', args.deadline]
+    stage = STAGE_ALIASES.get(args.stage, args.stage)
+    add = ['--ticket', args.ticket, '--stage', stage, '--deadline', args.deadline]
     for evidence in args.evidence:
         add += ['--evidence', evidence]
     if args.depends:
@@ -245,7 +252,8 @@ def open_ledger_row(args, ledger, orchestrator, agent, card):
     if not row.isdigit():
         raise Failure(f'lat-ledger add printed an unexpected row number: {row!r}')
     try:
-        run_ledger(args, 'assign', row, *base, '--agent', agent, '--card', str(card))
+        run_ledger(args, 'assign', row, *base, '--agent', agent, '--card', str(card),
+                   *(['--native'] if args.native else []))
     except Failure as error:
         raise Failure(f'{error}; ledger row {row} was added but not assigned, no card made') from error
     return row
@@ -315,9 +323,9 @@ def split_sections(text):
     return {title: '\n'.join(lines).strip('\n') for title, lines in bodies.items()}, problems
 
 
-def load_preauth():
-    path = Path(__file__).resolve().parent / 'lat-preauth.py'
-    spec = importlib.util.spec_from_file_location('lat_preauth', path)
+def load_script(name):
+    path = Path(__file__).resolve().parent / f'{name}.py'
+    spec = importlib.util.spec_from_file_location(name.replace('-', '_'), path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -334,7 +342,7 @@ def preauth_part(args, workspace, orchestrator):
         requests.append(match.groups())
     if not requests:
         return None
-    preauth = load_preauth()
+    preauth = load_script('lat-preauth')
     session = args.session_id or next(
         (os.environ[key] for key in preauth.SESSION_ENVS if os.environ.get(key)), None)
     lines, notified = [], []
@@ -436,13 +444,15 @@ def build_parser():
     commands = parser.add_subparsers(dest='command', required=True)
     card = commands.add_parser('card', help='Create the task card for a launched HCOM tag')
     card.add_argument('--tag', required=True)
-    card.add_argument('--agent', help='full HCOM name; picks one agent when the tag matches several')
+    card.add_argument('--agent', help='HCOM name (full or base); picks one agent when the tag '
+                      'matches several')
     card.add_argument('--native', action='store_true',
                       help='Claude built-in agent without an HCOM name: --agent is its name, '
-                           'HCOM is not consulted')
+                           'kept as given')
     card.add_argument('--tasks', type=Path, required=True,
                       help='shared task-card directory (<workspace>/.lat/tasks)')
-    card.add_argument('--orchestrator', required=True, help='HCOM name of the orchestrator')
+    card.add_argument('--orchestrator', required=True,
+                      help='HCOM name of the orchestrator, written as the full name')
     card.add_argument('--live-actions', required=True)
     card.add_argument('--preflight', required=True)
     card.add_argument('--date', help='YYYY-MM-DD; default today')
@@ -452,12 +462,15 @@ def build_parser():
     card.add_argument('--ledger', type=Path,
                       help='absolute path of the work ledger; adds and assigns a row for this card')
     card.add_argument('--ticket', help='ledger row: ticket')
-    card.add_argument('--stage', help='ledger row: stage (see lat-ledger.py add --help)')
+    stages = ', '.join(load_script('lat-ledger').STAGES)
+    card.add_argument('--stage', help=f'ledger row: stage, one of {stages} (implement is accepted '
+                                      'as impl)')
     card.add_argument('--evidence', action='append',
                       help='ledger row: evidence kinds (commit, gate, file); comma-separated or repeated')
     card.add_argument('--deadline', help='ledger row: latest finish, ISO 8601 or +N[m|h|d]')
     card.add_argument('--depends', help='ledger row: comma-separated item numbers it waits for')
-    card.add_argument('--repo', help='ledger row: git repo (absolute) the commit evidence lives in')
+    card.add_argument('--repo', help='ledger row: absolute path of the local git checkout the commit evidence lives '
+                      'in (not owner/repo)')
     card.add_argument('--lat-dir', type=Path, default=LAT_DIR,
                       help='LAT skill directory holding scripts/lat-ledger.py')
     brief = commands.add_parser('brief', help='Build the task brief from four sections + a card')

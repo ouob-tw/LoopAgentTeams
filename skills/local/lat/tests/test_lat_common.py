@@ -84,6 +84,28 @@ class CliTests(unittest.TestCase):
                 common.run_cli(['herdr'], timeout=5)
 
 
+class NameTests(unittest.TestCase):
+    """The write rule of #394 and the read rule for older base names."""
+
+    def test_full_name_rule(self):
+        agents = {'lead-orch', 'a-vega', 'b-vega', 'puvi'}
+        for name, full in (('orch', 'lead-orch'), ('lead-orch', 'lead-orch'), ('puvi', 'puvi')):
+            self.assertEqual(common.full_hcom_name(agents, name, '--by'), full)
+        for name, problem in (('vega', 'Ambiguous HCOM agent vega: a-vega, b-vega'),
+                              ('ghost', 'Unknown HCOM agent: ghost')):
+            with self.assertRaises(ValueError) as caught:
+                common.full_hcom_name(agents, name, '--by')
+            self.assertIn(f'--by: {problem}', str(caught.exception))
+            self.assertIn('HCOM lists: a-vega, b-vega, lead-orch, puvi; nothing written',
+                          str(caught.exception))
+
+    def test_stored_base_name_matches_the_full_name(self):
+        self.assertTrue(common.same_controller('orch', 'lead-orch'))
+        self.assertTrue(common.same_controller('lead-orch', 'lead-orch'))
+        self.assertFalse(common.same_controller('lead-orch', 'orch'))
+        self.assertFalse(common.same_controller('rch', 'lead-orch'))
+
+
 class WatcherTests(unittest.TestCase):
     expected = ('run', '--workspace', '/work', '--orchestrator', 'owner')
 

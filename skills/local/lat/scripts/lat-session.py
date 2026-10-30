@@ -23,8 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import (read_advisor_error, read_advisor_words, read_decision_action,
                                  read_decision_kind, read_decision_status,
                                  read_spec_consensus_error)
-from _lat_common import (reports_directory, run_cli, shared_lat_dir, watcher_process_matches,
-                         write_json_atomic)
+from _lat_common import (full_hcom_name, reports_directory, run_cli, shared_lat_dir,
+                         watcher_process_matches, write_json_atomic)
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 GROUP_NAME = 'lat-codex-recovery'
@@ -684,6 +684,13 @@ def remove_empty_questions(panel, workspace, record):
 def deactivate(args):
     if args.successor and not HCOM_NAME.fullmatch(args.successor):
         raise ValueError('Invalid successor HCOM name; record unchanged')
+    if args.successor:
+        try:
+            agents = watch_module().list_hcom()
+        except (OSError, ValueError) as error:
+            raise ValueError(f'--successor: HCOM agent list unreadable ({error}); record '
+                             'unchanged. Retry, or deactivate without --successor') from None
+        args.successor = full_hcom_name(agents, args.successor, '--successor')
     args.reason = (args.reason or '').strip()
     if args.force_unfinished and not args.reason:
         raise ValueError('--force-unfinished needs a non-empty --reason; record unchanged')
@@ -1749,7 +1756,8 @@ def main():
     start.add_argument('--duty-expected', help='With --duty-text: what the user will see when done')
     stop = sub.add_parser('deactivate', help='End a controller, retaining its record')
     stop.add_argument('--workspace', type=Path, required=True)
-    stop.add_argument('--successor', help='HCOM name of the controller taking over')
+    stop.add_argument('--successor', help='HCOM name of the controller taking over, stored as '
+                      'the full name')
     # Accepted for older callers; every deactivation ends as 'ended'.
     stop.add_argument('--status', choices=('completed', 'cancelled'), help=argparse.SUPPRESS)
     stop.add_argument('--session-id', help='Explicit ID for manual stale-record deactivation')
