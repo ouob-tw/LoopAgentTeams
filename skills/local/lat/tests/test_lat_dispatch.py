@@ -575,6 +575,24 @@ class LedgerCardTests(LedgerCase):
         self.ledger_card('--repo', str(repo))
         self.assertEqual(self.items()[0]['repo'], str(repo))
 
+    def test_stage_implement_is_recorded_as_impl_and_help_lists_the_stages(self):
+        self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'implement',
+                       '--evidence', 'commit', '--deadline', '+2h')
+        self.assertEqual(self.items()[0]['stage'], 'impl')
+        text = self.run_script('card', '--help').stdout
+        for stage in ('impl', 'qa-draft', 'spec-review', 'implement'):
+            self.assertIn(stage, text)
+
+    def test_repo_given_as_owner_name_is_refused_with_the_absolute_path_hint(self):
+        result = self.run_script(*self.card_args(
+            '--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'impl',
+            '--evidence', 'commit', '--deadline', '+2h', '--repo', 'owner/name'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('absolute path of the local git checkout', result.stderr)
+        self.assertEqual(list(self.tasks.iterdir()), [])
+        self.assertEqual(self.items(), [])
+        self.assertIn('checkout', ' '.join(self.run_script('card', '--help').stdout.split()))
+
     def test_card_without_ledger_options_is_unchanged(self):
         card = self.make_card()
         self.assertNotIn('ledger row', card.read_text())
