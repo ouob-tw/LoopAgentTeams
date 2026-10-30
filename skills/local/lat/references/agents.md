@@ -13,7 +13,7 @@ hcom-spawn 的「自身名稱」是發起委派的那一方：主控派工時是
 ## 派工
 
 - 工具：Agent 啟動後，`scripts/lat-dispatch.py card --tag <tag> --tasks <主工作區 .lat/tasks> --orchestrator <主控名稱> --live-actions … --preflight …` 依 tag 查完整名稱建任務卡；`brief --card <卡片> --input <小檔>` 把 `##` 四段小檔（「目標與完成條件」「範圍與不能碰」「其他 Agent 與分工」「現場動作額度」）接上下列固定項目、原樣帶入卡片 `live actions` 與 `preflight`，並在最後一行只印 `hcom send … --file` 指令，其中 `--name` 用 HCOM 基本名。兩位共用 tag（如參謀）用 `card --agent <完整名稱>`；唯讀任務用 `brief --read-only`，共用文字用 `brief --include <檔案>`。任務要合併、推送、部署或安裝時加 `brief --preauth <動作>[:<分支>]`，只帶入查得 `allow` 的動作。手寫亦可；以下各項是手寫的要求，也是工具輸出的內容。
-- 傳給任務卡 Agent 的訊息（含派工後的追問）不加 `--intent request`，避免它回合結束時 HCOM 叫醒你；原因與限制見 [停住監控](stall-watch.md#不靠-hcom-的沒回覆通知)。
+- 傳給任務卡 Agent 的訊息（含追問）不加 `--intent request`，見 [停住監控](stall-watch.md#沒回覆通知)。
 - 工作總表：`card` 加 `--ledger <主工作區總表絕對路徑> --ticket --stage --evidence --deadline [--depends] [--repo]` 會同時開列並指派，任務卡多一行 `ledger row`；不加則行為不變。`brief` 讀到該行就帶上列編號與 `start`、`update`、`done` 三道指令；沒有該行時印警告，簡報不含總表指令。手寫時自行寫入同樣內容。
 - 外部 Agent 的第一則任務訊息照 /hcom-spawn 的固定欄位寫，再補上 SKILL.md「交接」要求的項目，以及「做完才收工」規則和填好主控 `$lat_dir`、`$workspace` 絕對路徑的 `lat-watch wait` 與 `lat-watch alarm` 指令（格式見 [停住監控](stall-watch.md#結束回合前)）。鬧鐘範例：`uv run --no-project python <主控 lat_dir>/scripts/lat-watch.py alarm --workspace <主控 workspace> --agent <執行 Agent 完整名稱> --after 30 --reason 'Continue after the cooldown'`；並寫明不要用背景程式傳訊息給自己（HCOM 會拒收）。
 - 第一則任務訊息須帶上任務卡 `runs` 欄的絕對路徑（主工作區 `.lat/runs/issue-<N>/`，見 [任務卡](task-cards.md#票資料位置)），QA 草稿、清單與證據都放那裡；需要隔離 client 家目錄時放 `.lat` 以外的暫存位置，規則見 [任務卡](task-cards.md#隔離-client-家目錄)。

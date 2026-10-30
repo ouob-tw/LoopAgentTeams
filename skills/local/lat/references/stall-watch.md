@@ -202,7 +202,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" cache-history --sessi
 
 開頭是 `[lat-watch] Prompt cache keep-alive.` 的是[快取保溫](#快取保溫)：有未讀訊息就照上面處理；沒有新事就保持原等待，不要重新聲明，也不要執行工具，用最短的一句話結束回合。
 
-## 不靠 HCOM 的沒回覆通知
+## 沒回覆通知
 
 `hcom send --intent request` 會讓 HCOM 在對方下一次回合結束或離開時，直接通知寄件者 `<名稱> went idle without responding to your request`。回合結束時背景測試或審查可能還在跑，這則通知沒有資訊，還會叫醒主控。
 
