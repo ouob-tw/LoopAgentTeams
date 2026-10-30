@@ -116,6 +116,7 @@
 
 - Codex 參謀：`gpt-6-astra`，effort `medium`。Claude 參謀：依 /hcom-spawn 預設。
 - Codex 額度用完先依 /hcom-spawn 換帳號。某一家仍不可用時，主控不問使用者，直接改用兩位同家參謀，參謀行加註 `same-family-degraded`。這是 [Agent 設定](agents.md)「不同家模型不可用時問使用者」的例外，只適用參謀。
+- 參謀模型在每個可用帳號的 /hcom-spawn「帳號探測」都回 `model is not supported`，算該家不可用，照上一條同家降級，不問使用者。
 - 兩家都不可用時才屬 `account-quota`：只就帳號、等待或替代方案問使用者；原本要諮詢的事維持 `advising` 並受阻，不改為直接問使用者。參謀恢復後照常諮詢。
 
 ## 回報
