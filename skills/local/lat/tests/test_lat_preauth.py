@@ -458,7 +458,6 @@ class ConditionTests(PreauthCase):
         self.assertNotIn('production', out)
 
 
-@unittest.skipUnless(INSTALLER.is_file(), 'needs the repo copy of scripts/install-skills.py')
 class NoticeTests(PreauthCase):
     """`notice` against a stub hcom that keeps its agents, sends and events in files."""
     TEXT = 'about to install the host skills'
@@ -536,12 +535,25 @@ class NoticeTests(PreauthCase):
         self.assertEqual(self.sent()[0][:5], ['@tag-kela', '--intent', 'inform', '--name',
                                               'tag-orch'])
 
-    def test_to_names_the_recipients_and_skips_the_ones_not_live(self):
-        result = self.notice('--to', 'kela', 'gone')
+    def test_to_names_the_recipients(self):
+        result = self.notice('--to', 'kela')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('not sent to gone', result.stderr)
         self.assertEqual(self.sent(), [['@kela', '--intent', 'inform', '--name', 'orch', '--',
                                         self.TEXT]])
+
+    def test_a_named_recipient_not_live_fails_without_a_partial_send(self):
+        result = self.notice('--to', 'kela', 'gone')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('not live on HCOM: gone', result.stderr)
+        self.assertEqual(self.sent(), [])
+
+    def test_recorded_controllers_hcom_no_longer_has_are_skipped(self):
+        self.other_sessions(('kela', 'active'), ('vuho', 'active'))
+        result = self.notice()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('not sent to vuho', result.stderr)
+        self.assertEqual(self.sent()[0][0], '@kela')
 
     def test_no_live_recipient_fails_without_an_id_or_a_send(self):
         self.other_sessions(('vuho', 'active'))  # recorded, but HCOM no longer has it
@@ -609,6 +621,7 @@ class NoticeTests(PreauthCase):
         self.assertEqual(self.sent(), [])
 
 
+@unittest.skipUnless(INSTALLER.is_file(), 'needs the repo copy of scripts/install-skills.py')
 class InstallHostGateTests(PreauthCase):
     """install-host counts only the full suites inside the skill folders the installer would
     install, judged by the installer's own code, so both give the same answer."""

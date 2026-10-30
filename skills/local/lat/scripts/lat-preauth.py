@@ -625,11 +625,13 @@ def cmd_notice(args):
     wanted = list(dict.fromkeys(args.to or others))
     gone = [name for name in wanted if name not in live]
     targets = [name for name in wanted if name in live and name not in (own, sender)]
+    if args.to and gone:  # named on purpose, so no partial send
+        raise Refused(f'not live on HCOM: {", ".join(gone)}')
     if not targets:
         raise Refused('no recipient is live on HCOM'
                       + (f' (not live: {", ".join(gone)})' if gone else
                          '; no other active controller is recorded, name one with --to'))
-    if gone:
+    if gone:  # recorded controllers HCOM no longer has
         print(f'lat-preauth: not sent to {", ".join(gone)}: not live on HCOM', file=sys.stderr)
     started = datetime.now(timezone.utc)
     run_cli(['hcom', 'send', *(f'@{name}' for name in targets), '--intent', 'inform',
@@ -1274,8 +1276,8 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
-    commands = {'check': cmd_check, 'show': cmd_show, 'grant': cmd_grant, 'notice': cmd_notice, 'record': cmd_record,
-                'report': cmd_report}
+    commands = {'check': cmd_check, 'show': cmd_show, 'grant': cmd_grant, 'notice': cmd_notice,
+                'record': cmd_record, 'report': cmd_report}
     try:
         return commands[args.command](args)
     except Refused as error:
