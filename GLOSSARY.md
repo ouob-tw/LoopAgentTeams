@@ -81,7 +81,7 @@ _Avoid_: 待辦（那是看板的）、backlog（口語可用）、反饋清單
 _Avoid_: 反饋（指 retro 裡的一條原始建議）、待辦項目
 
 **出現紀錄**：
-反饋條目中的一行，記某個問題在一次 session 出現：時間（該 session 中 /retro 的時間，不是寫入時間）、專案、client、session ID 與一句證據。同一條目內同一 session 只記一次，可處理的門檻依不同 session 數計算。
+反饋條目中的一行，記某個問題在一次 session 出現：時間（該 session 中觸發這次 /retro 或 /retro-log 的時間，流程呼叫時為呼叫當下，不是寫入時間）、專案、client、session ID 與一句證據。同一條目內同一 session 只記一次，可處理的門檻依不同 session 數計算。
 _Avoid_: 次數（是由出現紀錄算出的結果）、事件
 
 **復發**：

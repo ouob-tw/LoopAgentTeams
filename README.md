@@ -145,7 +145,7 @@ bunx skills add ouob-tw/LoopAgentTeams \
 
 ```bash
 bunx skills add mattpocock/skills \
-  --skill code-review prototype grilling domain-modeling tdd \
+  --skill code-review prototype grilling domain-modeling tdd retro \
   --global --agent claude-code codex
 ```
 
