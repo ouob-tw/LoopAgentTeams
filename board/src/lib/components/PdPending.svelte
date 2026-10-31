@@ -11,7 +11,8 @@
 	// which opens it again; a request that appears opens it too and, once the user allowed it (the
 	// 開啟通知 button, never asked for unprompted), raises a browser notification whose click comes
 	// back to it. With nothing waiting it stays hidden while healthy; vault outages and an
-	// unreachable daemon keep a visible notice here, on every screen.
+	// unreachable daemon keep a visible notice here, on every screen, which 稍後 folds to the badge
+	// (or a phone's strip) that goes on saying it.
 	import { onMount, tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import {
@@ -228,7 +229,7 @@
 </script>
 
 {#if (requests.length || notice) && pd}
-	{#if open || notice}
+	{#if open}
 		<section class="pd" class:moving={gesture} style={place} aria-label="pd 待核准" tabindex="-1" bind:this={panel}>
 			<!-- The heading drags the window in the wide layout; its buttons stay buttons. Dragging is a
 			     pointer's convenience: the window works where it opens, and stays on screen. -->
@@ -252,7 +253,7 @@
 				{#if notifications && permission === 'default'}
 					<button type="button" class="allow" title="有新的 pd 請求時發瀏覽器通知（只在看板開著時）" onclick={() => void allowNotifications()}>開啟通知</button>
 				{/if}
-				{#if !notice}<button type="button" class="later" onclick={() => void show(false)}>稍後</button>{/if}
+				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
 			</header>
 			{#if notice}<p class="pd-unavailable" role="status">{notice}</p>{/if}
 			<ul class="cards">
@@ -329,7 +330,9 @@
 			<ExplainTip id="pd-tip" place={explainer.tip}>{noteOf(explainer.tip.key)}</ExplainTip>
 		{/if}
 	{:else}
-		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}>pd 待核准 <span class="count">{requests.length}</span></button>
+		<button type="button" class="pd-badge" bind:this={badge} onclick={() => void show(true)}
+			>{notice ?? 'pd 待核准'}{#if requests.length}{' '}<span class="count">{requests.length}</span>{/if}</button
+		>
 	{/if}
 {/if}
 

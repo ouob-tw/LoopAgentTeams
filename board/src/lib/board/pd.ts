@@ -3,9 +3,9 @@
 // ever reach a page; pd itself never lists a secret value. 核准 signs pd's challenge with the user's
 // passkey in the page; the board server only relays it, and pd's daemon decides.
 
-/** Who asked as pd's daemon checked it against the process tree (`caller_info`). The group and
- *  controller flag are what the requester's HCOM records say; `verified` is not proof against a
- *  program of the same account that means to fake it. */
+/** Who asked as pd's daemon checked it against the process tree (`caller_info`). The name, group and
+ *  controller flag are what the requester says; `verified` covers the process only, and is not proof
+ *  against a program of the same account that means to fake it. */
 export interface PdCaller {
 	name: string;
 	client: string;

@@ -34,6 +34,17 @@ test('pd outage is visible with zero pending requests, survives pending requests
 		expect(await tab.eval(`document.querySelector('[data-pd-request="1"]').textContent.includes('拒絕')`)).toBe(true);
 		set({ pending: [], vault: 'ok' });
 		await tab.until(`!document.querySelector('.pd-unavailable')`, 'final recovery');
+		// A notice can be folded: the badge goes on saying it, and opens it again.
+		set({ pending: [], vault: 'locked' });
+		await tab.until(`document.querySelector('.pd-unavailable')?.textContent === 'pd 已鎖定'`, 'locked notice');
+		await tab.pointerClick('.pd button.later');
+		await tab.until(`!document.querySelector('.inbox .pd') && document.querySelector('.pd-badge')?.innerText === 'pd 已鎖定'`, 'locked notice folded');
+		await tab.pointerClick('.pd-badge');
+		await tab.until(`document.querySelector('.pd-unavailable')?.textContent === 'pd 已鎖定' && !document.querySelector('.pd-badge')`, 'locked notice open again');
+		await tab.pointerClick('.pd button.later');
+		await tab.until(`!!document.querySelector('.pd-badge')`, 'folded again');
+		set({ pending: [], vault: 'ok' });
+		await tab.until(`!document.querySelector('.pd-badge')`, 'recovery clears the folded notice');
 	} finally {
 		await browser.close();
 		await fixture.cleanup();

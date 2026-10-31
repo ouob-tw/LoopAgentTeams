@@ -33,7 +33,7 @@
 	import NewController from '#lib/components/NewController.svelte';
 	import PdPending from '#lib/components/PdPending.svelte';
 	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
-	import type { PdRequest } from '#lib/board/pd.ts';
+	import { pdNotice, type PdRequest } from '#lib/board/pd.ts';
 	import QuotaList from '#lib/components/QuotaList.svelte';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
@@ -185,6 +185,7 @@
 
 	/** The pd requests waiting, in the window's title too while there are any. */
 	const pdWaiting = $derived(board.pd?.snapshot.ok ? board.pd.snapshot.requests.length : 0);
+	const pdTrouble = $derived(board.pd ? pdNotice(board.pd.snapshot) : null);
 	$effect(() => {
 		document.title = (pdWaiting ? `(${pdWaiting}) ` : '') + 'LAT 看板';
 	});
@@ -551,9 +552,9 @@
 					</span>
 					<!-- A phone hides the middle column, and the pd badge with it, behind a content screen: while
 					     the pd window is folded this strip under the bar says requests wait and opens it. -->
-					{#if pdWaiting && !pdOpen}
+					{#if (pdWaiting || pdTrouble) && !pdOpen}
 						<button type="button" class="pd-banner" bind:this={pdBanner} onclick={() => void pdPending?.reveal()}
-							>pd 待核准 <span class="count">{pdWaiting}</span><span class="see">查看 ›</span></button
+							>{pdTrouble ?? 'pd 待核准'}{#if pdWaiting}{' '}<span class="count">{pdWaiting}</span>{/if}<span class="see">查看 ›</span></button
 						>
 					{/if}
 				</div>
