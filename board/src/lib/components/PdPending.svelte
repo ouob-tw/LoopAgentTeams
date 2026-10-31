@@ -163,12 +163,17 @@
 
 	function notify(item: PdRequest) {
 		if (!notifications || Notification.permission !== 'granted') return;
-		const shown = new Notification(`pd 請求 #${item.id} 等你核准`, { body: `${item.item}：${item.command.join(' ')}`, tag: `pd-${item.id}` });
-		shown.onclick = () => {
-			window.focus();
-			shown.close();
-			void show(true);
-		};
+		// Android Chrome has Notification but its constructor throws; a failed notice must not break the page.
+		try {
+			const shown = new Notification(`pd 請求 #${item.id} 等你核准`, { body: `${item.item}：${item.command.join(' ')}`, tag: `pd-${item.id}` });
+			shown.onclick = () => {
+				window.focus();
+				shown.close();
+				void show(true);
+			};
+		} catch {
+			// No notice on this browser; the panel is already open.
+		}
 	}
 
 	$effect(() => {
