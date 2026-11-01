@@ -6,7 +6,7 @@ import { question, sleep, startFixture, type Fixture } from '../harness.ts';
 import { launchChrome, type Browser, type Tab } from '../browser.ts';
 
 /** Lets the test make the next refreshes fail, as the server failing them or with no answer. */
-const FAKE_REFRESH = `(() => { const fetch = window.fetch; window.fetch = async (input, init) => { if (String(input).startsWith('/api/messages')) { window.messageReads = (window.messageReads ?? 0) + 1; if (window.failMessages) return new Response('{}', { status: 500 }); } if (String(input) === '/api/refresh' && window.slowRefresh) await new Promise((resolve) => setTimeout(resolve, window.slowRefresh)); if (String(input) === '/api/refresh' && window.failRefresh === 'http') return Promise.resolve(new Response('{}', { status: 500 })); if (String(input) === '/api/refresh' && window.failRefresh === 'network') return Promise.reject(new TypeError('Failed to fetch')); return fetch(input, init); }; })()`;
+const FAKE_REFRESH = `(() => { const fetch = window.fetch; window.fetch = async (input, init) => { if (String(input) === '/api/inbox/read') { window.markTries = (window.markTries ?? 0) + 1; if (window.failMark) return new Response('{}', { status: 500 }); } if (String(input).startsWith('/api/messages')) { window.messageReads = (window.messageReads ?? 0) + 1; if (window.failMessages) return new Response('{}', { status: 500 }); } if (String(input) === '/api/refresh' && window.slowRefresh) await new Promise((resolve) => setTimeout(resolve, window.slowRefresh)); if (String(input) === '/api/refresh' && window.failRefresh === 'http') return Promise.resolve(new Response('{}', { status: 500 })); if (String(input) === '/api/refresh' && window.failRefresh === 'network') return Promise.reject(new TypeError('Failed to fetch')); return fetch(input, init); }; })()`;
 /** The refresh buttons a person can see now. */
 const SHOWN = `[...document.querySelectorAll('button.tool.icon')].filter((button) => /重新整理|讀取中/.test(button.ariaLabel ?? '') && button.getClientRects().length && getComputedStyle(button).visibility === 'visible')`;
 const NOTICES = `(document.querySelector('.dock .toasts')?.innerText ?? '').trim()`;
@@ -142,21 +142,37 @@ test('a read of the page that failed is quiet while the link is down, comes back
 	const SENT = '的送出紀錄讀取失敗';
 	const reads = () => tab.eval<number>(`window.messageReads ?? 0`);
 	const open = `document.querySelector('nav.roster .unfolded [data-controller], nav.roster .unfolded li button').click()`;
+	const report = (summary: string) => `[...document.querySelectorAll('.inbox [data-item]')].find((row) => row.innerText.includes('${summary}'))`;
+	for (const summary of ['first report', 'second report']) fixture.report(controller.session_id, { tag: 'DONE', summary, hcom_name: 'tavi', workspace: controller.workspace });
+	await fixture.refresh(cookie);
 	await tab.navigate(`${fixture.url}/`);
 	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
 	await idle();
 	await tab.until(`!document.querySelector('button.tool.offline')`, 'the link up');
 
-	// A failure from before the link was seen to be down goes when it is.
+	// A failure from before the link was seen to be down goes when it is. With the link up, marking
+	// an opened report read that failed still says so.
 	await tab.eval(`window.failRefresh = 'http'`);
 	await spin();
 	await tab.until(`${NOTICES}.includes(${JSON.stringify(FAILED)})`, 'the failure notice');
-	await tab.eval(`window.failRefresh = undefined`);
+	await tab.eval(`window.failRefresh = undefined; window.failMark = true`);
+	await tab.until(report('first report'), 'the first report');
+	await tab.eval(`${report('first report')}.querySelector('.main').click()`);
+	await tab.until(`${NOTICES}.includes('沒有標為已讀')`, 'the notice of a mark that failed');
+	await tab.eval(`window.failMark = false; window.markTries = 0`);
 
 	// Opened while down: its read fails with no answer, and nothing says so.
 	await fixture.stop();
 	await tab.until(`document.querySelector('button.tool.offline')`, 'the link down', 15_000);
 	expect(await tab.eval<string>(NOTICES)).toBe('');
+
+	// A report opened while down: not marked read, and nothing says so; its row stays unread.
+	await tab.eval(`${report('second report')}.querySelector('.main').click()`);
+	await tab.until(`window.markTries > 0`, 'the mark to be tried');
+	await sleep(300);
+	expect(await tab.eval<string>(NOTICES)).toBe('');
+	expect(await tab.eval<boolean>(`${report('second report')}.classList.contains('fresh')`)).toBe(true);
+
 	await tab.eval(`document.querySelector('.tool.fold') && getComputedStyle(document.querySelector('nav.roster .unfolded')).display === 'none' && document.querySelector('nav.roster .folded > *').click()`);
 	await tab.eval(open);
 	await tab.until(`window.messageReads > 0`, 'the read of the sent log');

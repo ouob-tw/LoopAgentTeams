@@ -319,7 +319,7 @@
 		// while it is still open. An archived report keeps the read state it had.
 		const listed = inbox.find((entry) => entry.key === next.key);
 		if (listed?.kind === 'report' && listed.readAt === null) {
-			board.mark(listed.key, true).catch(() => toasts.show('failed', '沒有標為已讀，請重新點開再試一次。'));
+			board.mark(listed.key, true).catch(() => toasts.readFailed('沒有標為已讀，請重新點開再試一次。'));
 		}
 	}
 	/** The ask whose card the screen being opened scrolls to, and whether that screen is shown (it

@@ -80,7 +80,7 @@
 		// Opening reads an inbox report here too, as opening it from the inbox does.
 		const listed = inbox.find((entry) => entry.key === next.key);
 		if (listed?.kind === 'report' && listed.readAt === null) {
-			board.mark(listed.key, true).catch(() => toasts.show('failed', '沒有標為已讀，請重新點開再試一次。'));
+			board.mark(listed.key, true).catch(() => toasts.readFailed('沒有標為已讀，請重新點開再試一次。'));
 		}
 	}
 
