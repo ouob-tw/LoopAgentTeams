@@ -27,7 +27,8 @@ import shlex
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import full_hcom_name, hcom_send_name, run_cli, write_text_atomic
+from _lat_common import (full_hcom_name, hcom_send_name, run_cli, same_controller, shared_lat_dir,
+                         write_text_atomic)
 
 LAT_DIR = Path(__file__).resolve().parents[1]
 SECTIONS = ('目標與完成條件', '範圍與不能碰', '其他 Agent 與分工', '現場動作額度')
@@ -85,6 +86,7 @@ LEDGER_FIXED = '''
   - Start, with your own estimate of the finish time: `{cmd} start {row} --ledger {ledger_arg} --by {agent} --eta +<N>m`
   - At each checkpoint: `{cmd} update {row} --ledger {ledger_arg} --by {agent} --progress '<one sentence>'`; when the estimate or deadline moves, add `--eta` or `--deadline` and `--reason`.
   - Close, with the evidence the row declares (a commit, a suite-gate fingerprint and/or a report file; the tool checks it exists): `{cmd} done {row} --ledger {ledger_arg} --by {agent} --commit <sha> --gate <fingerprint> --file <absolute path>` (pass only the kinds the row declares).
+  - After closing, if your verdict or the delivered version changes: `{cmd} amend {row} --ledger {ledger_arg} --by {agent} --reason '<what changed>'`; add `--commit`, `--gate` or `--file` to replace that evidence.
 - `done` writes `status` and `deliverable commit` into the task card; do not fill them by hand.
 '''
 PREAUTH_REQUEST = re.compile(r'([a-z][a-z-]*)(?::(\S+))?')
@@ -379,6 +381,39 @@ def preauth_part(args, workspace, orchestrator):
                                 notices=notices)
 
 
+def former_controllers(workspace, orchestrator):
+    """HCOM names of the controllers whose handovers lead to `orchestrator`, per session records."""
+    handovers = {}
+    for path in (shared_lat_dir(workspace) / 'sessions').glob('*.json'):
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue  # this check only warns; lat-session reports a damaged record
+        if not isinstance(record, dict):
+            continue
+        name, successor = record.get('hcom_name'), record.get('successor')
+        if name and successor and isinstance(name, str) and isinstance(successor, str):
+            handovers[name] = successor
+    former, current = set(), {orchestrator}
+    while current:
+        current = {name for name, successor in handovers.items() if name not in former
+                   and any(same_controller(successor, full) for full in current)}
+        former |= current
+    return former
+
+
+def warn_former_controllers(text, workspace, orchestrator):
+    """The fixed fields already name the current controller, so an older name in the input
+    would send the agent's reports to someone who has left."""
+    keep = {orchestrator, orchestrator.rsplit('-', 1)[-1]}
+    for name in sorted(former_controllers(workspace, orchestrator)):
+        spellings = {name, name.rsplit('-', 1)[-1]} - keep
+        if any(re.search(rf'(?<![A-Za-z0-9_-]){re.escape(word)}(?![A-Za-z0-9_-])', text) for word in spellings):
+            print(f'lat-dispatch: warning: the input names former orchestrator {name}; '
+                  f'{orchestrator} took over, so change it unless it is only background',
+                  file=sys.stderr)
+
+
 def make_brief(args):
     card = read_card(args.card)
     source = Path(args.input)
@@ -412,6 +447,7 @@ def make_brief(args):
             extra = Path(args.include).read_text(encoding='utf-8').strip('\n')
         except (OSError, UnicodeError) as error:
             raise Failure(f'--include unreadable: {error}') from error
+    warn_former_controllers('\n'.join([text, extra or '']), workspace, card['orchestrator'])
     parts = [f'# Task brief for {card["agent"]}\n']
     for title in SECTIONS:
         note = f'\n{SCOPE_NOTE}\n' if title == SECTIONS[1] and not args.read_only else ''

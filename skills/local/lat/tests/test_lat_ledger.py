@@ -414,6 +414,53 @@ class DoneTests(LedgerCase):
         self.assertIn('- status：committed\n', text)
         self.assertIn(f'- deliverable commit：{self.merged}\n', text)
 
+    def closed(self, card=None):
+        item = self.started(card=card or self.card())
+        self.ok('done', str(item), '--commit', self.merged, by='impl')
+        return item
+
+    def test_amend_notes_a_closed_row_and_keeps_its_evidence(self):
+        item = self.closed()
+        self.ok('amend', str(item), '--reason', 'QA re-judged Q5: PASS', by='impl')
+        row = self.item(item)
+        self.assertEqual(row['status'], 'done')
+        self.assertEqual(row['evidence'], {'commit': [self.merged]})
+        self.assertEqual(row['history'][-1]['action'], 'amend')
+        self.assertEqual(row['history'][-1]['reason'], 'QA re-judged Q5: PASS')
+        self.assertIn('補記：QA re-judged Q5: PASS', self.ok('show'))
+        self.ok('check')
+
+    def test_amend_replaces_evidence_and_only_the_cards_deliverable(self):
+        git(self.workspace, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
+        card = self.card()
+        item = self.closed(card=card)
+        card.write_text(card.read_text().replace('- status：committed', '- status：merged'))
+        self.ok('amend', str(item), '--commit', self.side, '--reason', 'fix after QA', by='impl')
+        self.assertEqual(self.item(item)['evidence'], {'commit': [self.side]})
+        text = card.read_text()
+        self.assertIn('- status：merged\n', text)
+        self.assertIn(f'- deliverable commit：{self.side}\n', text)
+        self.ok('check')
+
+    def test_amend_with_bad_or_undeclared_evidence_changes_nothing(self):
+        item = self.closed()
+        before = self.item(item)
+        self.assertIn('is not reachable', self.fails(
+            'amend', str(item), '--commit', self.side, '--reason', 'x'))
+        self.assertIn('file evidence was not declared', self.fails(
+            'amend', str(item), '--file', str(self.ledger), '--reason', 'x'))
+        self.assertEqual(self.item(item), before)
+
+    def test_amend_needs_a_reason_and_a_closed_row(self):
+        item = self.started()
+        self.assertIn('needs done', self.fails('amend', str(item), '--reason', 'x'))
+        closed = self.closed()
+        self.assertIn('--reason is required', self.fails('amend', str(closed), '--reason', ' '))
+
+    def test_update_progress_on_a_closed_row_points_to_amend(self):
+        item = self.closed()
+        self.assertIn('use amend', self.fails('update', str(item), '--progress', 'late note'))
+
     def test_commit_on_the_item_branch_counts(self):
         item = self.started('--branch', 'side')
         self.ok('done', str(item), '--commit', self.side)

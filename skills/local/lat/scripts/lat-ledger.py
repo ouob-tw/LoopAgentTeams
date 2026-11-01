@@ -523,14 +523,19 @@ def card_mismatch(item):
 
 
 def update_card(item, resolved):
-    """Mirror a close into the task card; a failure only warns (the ledger is authoritative)."""
-    path = item.get('card')
-    if not path:
-        return
+    """Mirror a close into the task card."""
     commits = resolved.get('commit')
     values = {'status': 'committed' if commits else 'completed'}
     if commits:
         values['deliverable commit'] = ', '.join(commits)
+    write_card_fields(item, values)
+
+
+def write_card_fields(item, values):
+    """Set the card's fields; a failure only warns (the ledger is authoritative)."""
+    path = item.get('card')
+    if not path:
+        return
     try:
         text = Path(path).read_text(encoding='utf-8')
         lines = text.splitlines(keepends=True)
@@ -631,6 +636,9 @@ def cmd_update(args):
     with transaction(args, 'update', args.id, reason) as doc:
         item = find(doc, args.id)
         if args.eta or args.deadline or args.progress:
+            if item['status'] == 'done':
+                raise Failure(f'item {item["id"]} is done; to note a later change or replace '
+                              'its evidence, use amend')
             require_status(item, OPEN, 'update')
         elif args.depends is not None:
             require_status(item, ('unassigned',) + OPEN, 'update --depends')
@@ -705,6 +713,27 @@ def cmd_done(args):
         record(args, item, 'done', changes)
     update_card(item, resolved)
     print(f'item {item["id"]} closed')
+
+
+def cmd_amend(args):
+    reason = required_text('--reason', args.reason)
+    given = {'commit': args.commit or [], 'gate': args.gate or [], 'file': args.file or []}
+    with transaction(args, 'amend', args.id, reason) as doc:
+        item = find(doc, args.id)
+        require_status(item, ('done',), 'amend')
+        problems = [f'{kind} evidence was not declared for this item' for kind in KINDS
+                    if given[kind] and kind not in item['evidence_kinds']]
+        resolved, failed = verify(doc, item, given)
+        problems += failed
+        if problems:
+            raise Failure(f'item {item["id"]} not amended:\n' +
+                          '\n'.join(f'  - {problem}' for problem in problems))
+        record(args, item, 'amend', {'progress': f'補記：{reason}',
+                                     'evidence': {**item['evidence'], **resolved}}, reason)
+    if resolved.get('commit'):
+        # Only the version changed: a card already marked merged stays merged.
+        write_card_fields(item, {'deliverable commit': ', '.join(resolved['commit'])})
+    print(f'item {item["id"]} amended')
 
 
 def cmd_cancel(args):
@@ -944,6 +973,12 @@ def build_parser():
                      'they exist in that repo, otherwise only its existence is checked')
     sub.add_argument('--gate', action='append', help='suite-gate record fingerprint')
     sub.add_argument('--file', action='append', help='absolute path of a report or checklist')
+    sub = command('amend', 'Note a later change on a closed item; evidence given replaces '
+                  'that kind')
+    sub.add_argument('--reason', required=True, help='what changed after the close')
+    sub.add_argument('--commit', action='append')
+    sub.add_argument('--gate', action='append', help='suite-gate record fingerprint')
+    sub.add_argument('--file', action='append', help='absolute path of a report or checklist')
     sub = command('cancel', 'Cancel an item (orchestrator only)')
     sub.add_argument('--reason', required=True)
     sub = command('reassign', 'Hand an open item to another agent')
@@ -965,8 +1000,9 @@ def main():
     args = build_parser().parse_args()
     handlers = {'init': cmd_init, 'add': cmd_add, 'assign': cmd_assign, 'start': cmd_start,
                 'update': cmd_update, 'block': cmd_block, 'unblock': cmd_unblock,
-                'done': cmd_done, 'cancel': cmd_cancel, 'reassign': cmd_reassign,
-                'next': cmd_next, 'check': cmd_check, 'show': cmd_show, 'repair': cmd_repair}
+                'done': cmd_done, 'amend': cmd_amend, 'cancel': cmd_cancel,
+                'reassign': cmd_reassign, 'next': cmd_next, 'check': cmd_check, 'show': cmd_show,
+                'repair': cmd_repair}
     try:
         if args.command not in READ_ONLY:
             resolve_names(args)
