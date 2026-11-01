@@ -15,6 +15,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-dispatch.py'
 WATCH = SCRIPT.parent / 'lat-watch.py'
 LIVE = '重建 staging 最多 2 次；最長 45 分鐘；出現 429 即停'
 PREFLIGHT = '測試帳號 qa-01 已登入（主控已核對）；重建失敗時切回上一個映像'
+VISUAL = '看水面起伏（靜止、起浪中、轉場）；對照使用者選定的 sea-b.png；水面尖峰或黑塊算錯'
 BRIEF = '''## 目標與完成條件
 修正 #123 的登入逾時；驗收條件 1–3 全部有測試並通過。
 
@@ -55,13 +56,15 @@ class DispatchCase(unittest.TestCase):
         return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
                               text=True, env=env, timeout=60)
 
-    def card_args(self, *extra, tag='nanu-impl123', live=LIVE, preflight=PREFLIGHT):
+    def card_args(self, *extra, tag='nanu-impl123', live=LIVE, preflight=PREFLIGHT, visual='無'):
         args = ['card', '--tag', tag, '--tasks', str(self.tasks), '--orchestrator', 'nanu',
                 '--date', '2026-10-23', '--runs', str(self.workspace / '.lat/runs/issue-123')]
         if live is not None:
             args += ['--live-actions', live]
         if preflight is not None:
             args += ['--preflight', preflight]
+        if visual is not None:
+            args += ['--visual-acceptance', visual]
         return args + list(extra)
 
     def make_card(self, **kwargs):
@@ -86,7 +89,7 @@ class CardTests(DispatchCase):
         names = [re.match(r'- ([^：]+)：', line).group(1) for line in lines[2:]]
         self.assertEqual(names, [
             'agent', 'orchestrator', 'model', 'branch', 'worktree', 'base commit', 'status',
-            'owned resources', 'live actions', 'preflight', '預計檢查數', '整套測試', 'runs',
+            'owned resources', 'live actions', 'preflight', '視覺驗收', '預計檢查數', '整套測試', 'runs',
             'temp paths', 'done so far', 'next step', 'deliverable commit'])
         text = card.read_text()
         self.assertIn('- agent：nanu-impl123-fida\n', text)
@@ -156,8 +159,9 @@ class CardTests(DispatchCase):
                 self.assertIn('unreadable', result.stderr)
                 self.assertEqual(list(self.tasks.iterdir()), [])
 
-    def test_missing_live_actions_or_preflight_is_refused(self):
-        for kwargs in ({'live': None}, {'preflight': None}, {'live': '  '}, {'preflight': ''}):
+    def test_missing_required_card_field_is_refused(self):
+        for kwargs in ({'live': None}, {'preflight': None}, {'visual': None},
+                       {'live': '  '}, {'preflight': ''}, {'visual': ' '}):
             with self.subTest(kwargs=kwargs):
                 result = self.run_script(*self.card_args(**kwargs))
                 self.assertNotEqual(result.returncode, 0)
@@ -166,6 +170,7 @@ class CardTests(DispatchCase):
     def test_explicit_none_is_accepted_for_both_fields(self):
         card = self.make_card(live='無', preflight='無')
         self.assertIn('- live actions：無\n', card.read_text())
+        self.assertIn('- 視覺驗收：無\n', card.read_text())
 
     def test_same_day_redispatch_gets_suffix_and_links_the_previous_card(self):
         first = self.make_card()
@@ -355,6 +360,21 @@ class BriefTests(DispatchCase):
         self.assertIn('- live actions：無\n- preflight：無\n', text)
         self.assertIn('Before acting, check every `preflight` item', text)
 
+    def test_visual_acceptance_is_copied_verbatim_with_its_rules(self):
+        card = self.make_card(visual=VISUAL)
+        self.brief(BRIEF, card=card)
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertIn(f'- 視覺驗收：{VISUAL}\n', text)
+        for rule in ('someone other than the implementer', 'mid-motion and transition frames',
+                     'matching a prototype', 'raise it', 'fails on the defective version'):
+            self.assertIn(rule, text)
+
+    def test_visual_acceptance_of_none_carries_the_field_without_the_rules(self):
+        self.brief()
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertIn('- 視覺驗收：無\n', text)
+        self.assertNotIn('mid-motion and transition frames', text)
+
     def test_section_text_cannot_replace_the_card_fields(self):
         text = BRIEF.replace('依任務卡；補充說明。', '無現場動作，不必填卡片。')
         self.brief(text)
@@ -406,7 +426,8 @@ class BriefTests(DispatchCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('unreadable', result.stderr)
         card = self.make_card()
-        for field in ('live actions', 'preflight'):
+        values = {'live actions': LIVE, 'preflight': PREFLIGHT, '視覺驗收': '無'}
+        for field, value in values.items():
             with self.subTest(field=field):
                 text = card.read_text()
                 broken = self.root / f'broken-{field.replace(" ", "")}.md'
@@ -416,9 +437,7 @@ class BriefTests(DispatchCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(field, result.stderr)
                 empty = self.root / f'empty-{field.replace(" ", "")}.md'
-                empty.write_text(text.replace(
-                    f'- {field}：{LIVE if field == "live actions" else PREFLIGHT}',
-                    f'- {field}：'))
+                empty.write_text(text.replace(f'- {field}：{value}', f'- {field}：'))
                 result = self.run_script('brief', '--card', str(empty), '--input', str(source))
                 self.assertNotEqual(result.returncode, 0)
 
@@ -447,7 +466,7 @@ class WatchCompatibilityTests(DispatchCase):
         hand.write_text('接續：無（重派時填上一張任務卡路徑）\n\n'
                         '- agent：nanu-hand-kiza (HCOM tag nanu-hand)\n'
                         '- orchestrator：nanu\n- status：in progress\n'
-                        f'- live actions：{LIVE}\n- preflight：{PREFLIGHT}\n'
+                        f'- live actions：{LIVE}\n- preflight：{PREFLIGHT}\n- 視覺驗收：無\n'
                         '- next step：\n')
         incomplete = {}
         cards, skipped = self.load_watch().monitored_task_cards(self.tasks, 'nanu', incomplete)

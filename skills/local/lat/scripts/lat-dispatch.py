@@ -50,6 +50,10 @@ LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does 
 - Report to the orchestrator only when: (1) you are about to exceed or have exceeded any quota; (2) a stop condition triggers; (3) a login, human-verification or risk-control signal appears; (4) a decision outside the Spec comes up; (5) you have the final result.
 - If the quota is used up and the goal is not met, stop and report; never add quota yourself.
 - The 現場動作額度 section above only supplements these two card fields; it never replaces them.'''
+VISUAL_RULES = '''- This work changes something visible, so it is accepted only after someone other than the implementer (the orchestrator or an independent viewer) has looked at it and said whether it looks right against what the user wants. Passing tests or matching a prototype does not count.
+- Implementing: deliver frame sheets covering each changed look, including mid-motion and transition frames, and report their paths. Open web pages in a real browser, try every control and check the console first.
+- If a prototype or reference itself looks wrong, raise it to the orchestrator; do not copy the defect.
+- Turn each defect found by eye into a testable bound where possible, and show the test fails on the defective version (example: water surface height limit 5%, defective version 86.9%).'''
 FIXED = '''## Fixed fields
 
 - Working directory: {workdir}
@@ -148,7 +152,8 @@ def make_card(args):
     tag = args.tag
     if not TAG.fullmatch(tag):
         raise Failure(f'invalid tag {tag!r}')
-    for label, value in (('--live-actions', args.live_actions), ('--preflight', args.preflight)):
+    for label, value in (('--live-actions', args.live_actions), ('--preflight', args.preflight),
+                         ('--visual-acceptance', args.visual_acceptance)):
         if not value.strip():
             raise Failure(f'{label} must not be empty; write 無 when there is nothing to do')
     tasks = args.tasks.resolve()
@@ -167,6 +172,7 @@ def make_card(args):
         'model': args.model, 'branch': args.branch, 'worktree': args.worktree,
         'base commit': args.base_commit, 'owned resources': args.owned_resources,
         'live actions': args.live_actions, 'preflight': args.preflight,
+        '視覺驗收': args.visual_acceptance,
         '預計檢查數': args.expected_checks, '整套測試': args.full_suite, 'runs': args.runs,
         'temp paths': args.temp_paths, 'next step': args.next_step,
     }
@@ -178,6 +184,7 @@ def make_card(args):
         ('worktree', values['worktree']), ('base commit', values['base commit']),
         ('status', 'dispatched'), ('owned resources', values['owned resources']),
         ('live actions', values['live actions']), ('preflight', values['preflight']),
+        ('視覺驗收', values['視覺驗收']),
         ('預計檢查數', values['預計檢查數']), ('整套測試', values['整套測試']),
         ('runs', values['runs']), ('temp paths', values['temp paths']),
         ('done so far', ''), ('next step', values['next step']),
@@ -274,7 +281,7 @@ def read_card(path):
         match = CARD_FIELD.fullmatch(line)
         if match:
             fields.setdefault(match.group(1).strip(), match.group(2).strip())
-    missing = [name for name in ('live actions', 'preflight') if not fields.get(name)]
+    missing = [name for name in ('live actions', 'preflight', '視覺驗收') if not fields.get(name)]
     if missing:
         raise Failure(f'task card {path} lacks {" and ".join(missing)}; fill each '
                       '(write 無 when none) before generating a brief')
@@ -414,6 +421,9 @@ def make_brief(args):
     parts.append('## Task card live actions and preflight (authoritative; copied from the card)\n\n'
                  f'- live actions：{card["live actions"]}\n- preflight：{card["preflight"]}\n\n'
                  f'{LIVE_RULES}\n')
+    visual = card['視覺驗收']
+    parts.append('## Task card visual acceptance (authoritative; copied from the card)\n\n'
+                 f'- 視覺驗收：{visual}\n' + ('' if visual == NONE else f'\n{VISUAL_RULES}\n'))
     agents = read_hcom_list()
     preauth = preauth_part(args, workspace, card['orchestrator'])
     if preauth:
@@ -549,6 +559,9 @@ def build_parser():
                       help='HCOM name of the orchestrator, written as the full name')
     card.add_argument('--live-actions', required=True)
     card.add_argument('--preflight', required=True)
+    card.add_argument('--visual-acceptance', required=True,
+                      help='what to look at, what to compare with, what counts as wrong; '
+                           '無 when nothing visible changes')
     card.add_argument('--date', help='YYYY-MM-DD; default today')
     for option in ('model', 'branch', 'worktree', 'base-commit', 'owned-resources',
                    'expected-checks', 'full-suite', 'runs', 'temp-paths', 'next-step'):
