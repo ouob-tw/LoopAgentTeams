@@ -14,6 +14,11 @@ import type { UsageStyle } from './usage.ts';
 import { justRecorded } from './question-message.ts';
 import type { BoardSnapshot, InboxQuestion } from './types.ts';
 
+/** One turn of the refresh icon: the page's `spin` animation. */
+const TURN_MS = 1_000;
+/** The animation starts a frame or so after the refresh does. */
+const TURN_START_MS = 50;
+
 export class LiveBoard {
 	snapshot: BoardSnapshot;
 	link = $state<LinkState>('connecting');
@@ -64,7 +69,21 @@ export class LiveBoard {
 				}
 				this.snapshot = snapshot;
 			},
-			onState: (state) => (this.link = state),
+			onState: (state) => {
+				const back = this.link === 'offline' && state === 'live';
+				this.link = state;
+				toasts.setLinkDown(state === 'offline');
+				if (!back) return;
+				// What could not be read while it was down: a new snapshot may not come to read it again.
+				// Not failed until this read says so, or its notice would show meanwhile.
+				for (const owner of [agentControl, messaging]) {
+					for (const [id, failed] of Object.entries(owner.loadFailed)) {
+						if (!failed) continue;
+						owner.loadFailed[id] = false;
+						void owner.load(id);
+					}
+				}
+			},
 			onTabMoved: () => this.tabMoves++,
 			onQuota: (quota) => (this.quota = quota),
 			onPd: (snapshot) => (this.pd = { snapshot, at: Date.now() }),
@@ -166,7 +185,7 @@ export class LiveBoard {
 			page = (await this.#connection?.archive(before)) ?? { items: [], before };
 		} catch {
 			this.archiveEarlier = 'failed';
-			toasts.show('failed', '更早的已處理項目載入失敗，請按「載入更早」再試一次。');
+			toasts.readFailed('更早的已處理項目載入失敗，請按「載入更早」再試一次。');
 			return;
 		}
 		this.archiveEarlier = 'idle';
@@ -176,12 +195,15 @@ export class LiveBoard {
 
 	async refresh(): Promise<void> {
 		this.refreshing = true;
+		const started = performance.now();
 		try {
 			await this.#connection?.refresh();
 		} catch {
-			toasts.show('failed', '重新整理失敗，請稍後再試。');
+			toasts.readFailed('重新整理失敗，請稍後再試。');
 		} finally {
-			this.refreshing = false;
+			// The icon stops at the end of a turn, at least one, so a quick answer still shows.
+			const elapsed = performance.now() - started;
+			setTimeout(() => (this.refreshing = false), Math.max(1, Math.ceil(elapsed / TURN_MS)) * TURN_MS + TURN_START_MS - elapsed);
 		}
 	}
 }

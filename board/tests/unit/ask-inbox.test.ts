@@ -35,7 +35,7 @@ const AGENTS = [agent('s-1', 'asker', '/work/alpha'), agent('s-2', 'other', '/wo
 test('an ask is an entry until it ended; each ended state is processed and says its result', () => {
 	const states: BoardAskState[] = ['waiting', 'answered', 'timed_out', 'relaying', 'filled', 'relayed', 'relay_unknown', 'gone', 'interrupted'];
 	const open = states.filter((state) => askRows([ask('a', { state })], AGENTS)[0].open);
-	expect(open).toEqual(['waiting', 'answered', 'timed_out', 'relaying']);
+	expect(open).toEqual(['waiting', 'answered']);
 	const row = askRows([ask('a', { state: 'relayed', endedAt: at('09:30') })], AGENTS)[0];
 	expect(askNote(row, Date.parse(at('09:31')))).toBe(BOARD_ASK_STATE_TEXT.relayed);
 	expect(BOARD_ASK_STATE_TEXT.filled).toBe('已填回');

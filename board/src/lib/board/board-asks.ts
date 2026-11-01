@@ -78,9 +78,12 @@ export const BOARD_ASK_STATE_TEXT: Record<BoardAskState, string> = {
 	allowed_unmatched: '已允許，看板無法確認是哪一次執行，沒有通知它'
 };
 
-/** The states an ask is over in: nothing more happens to it, and it is removed 7 days after. */
+/** The states an ask no longer wants the user in: listed among the processed, and removed 7 days
+ *  after, except while `relaying`. A `timed_out` one still takes an answer, as a message. */
 export const ENDED_ASK_STATES: ReadonlySet<BoardAskState> = new Set([
 	'filled',
+	'timed_out',
+	'relaying',
 	'relayed',
 	'relay_unknown',
 	'gone',

@@ -24,11 +24,11 @@
 	// Shown while the problem lasts, without pushing the log down.
 	$effect(() => {
 		const id = controller.id;
-		toasts.stand(`sent-read:${id}`, 'failed', messaging.loadFailed[id] ? `@${lastSegment(controller.hcomName)} 的送出紀錄讀取失敗。` : null);
+		toasts.standRead(`sent-read:${id}`, messaging.loadFailed[id] ? `@${lastSegment(controller.hcomName)} 的送出紀錄讀取失敗。` : null);
 		const logError = messaging.logError[id];
 		toasts.stand(`sent-write:${id}`, 'failed', logError ? `送出紀錄寫入失敗，答覆的狀態可能不是最新的：${logError}` : null);
 		return () => {
-			toasts.stand(`sent-read:${id}`, 'failed', null);
+			toasts.standRead(`sent-read:${id}`, null);
 			toasts.stand(`sent-write:${id}`, 'failed', null);
 		};
 	});

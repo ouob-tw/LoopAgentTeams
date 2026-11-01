@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import type { AgentAction } from '../../src/lib/board/agent-actions.ts';
 import { ASK_TAKEN_REASON } from '../../src/lib/board/board-asks.ts';
-import { DAY, NODE, startFixture, until, type Fixture } from '../harness.ts';
+import { DAY, NODE, sleep, startFixture, until, type Fixture } from '../harness.ts';
 
 const HOOK = join(import.meta.dir, '../../hooks/board-ask.py');
 
@@ -251,11 +251,37 @@ test('an ask that ended 7 days ago is removed with its files; a newer one, and o
 	putAsk('old-relayed', { ageMs: 8 * DAY });
 	timeOut('old-relayed', new Date(Date.now() - 8 * DAY));
 	writeFileSync(join(asksDir, 'old-relayed.late.json'), JSON.stringify({ kind: 'answer', answers: { 'Pick a color?': 'Red' }, picks: null, at: new Date(Date.now() - 8 * DAY).toISOString(), outcome: 'relayed', outcome_at: new Date(Date.now() - 8 * DAY).toISOString() }));
-	// Timed out 8 days ago and never answered: not over, so kept.
-	putAsk('old-open', { ageMs: 8 * DAY });
-	timeOut('old-open', new Date(Date.now() - 8 * DAY));
+	// Timed out and never answered: gone 7 days after it timed out, however long ago it was asked.
+	putAsk('old-timed-out', { ageMs: 8 * DAY });
+	timeOut('old-timed-out', new Date(Date.now() - 8 * DAY));
+	putAsk('new-timed-out', { ageMs: 30 * DAY });
+	timeOut('new-timed-out', new Date(Date.now() - 6 * DAY));
 
 	const snapshot = await fixture.refresh(cookie);
-	expect(snapshot.asks.map((ask) => ask.id).toSorted()).toEqual(['new-interrupted', 'old-open']);
-	expect(readdirSync(asksDir).filter((name) => name.startsWith('old-')).toSorted()).toEqual(['old-open.json', 'old-open.result.json']);
+	expect(snapshot.asks.map((ask) => ask.id).toSorted()).toEqual(['new-interrupted', 'new-timed-out']);
+	expect(readdirSync(asksDir).filter((name) => name.startsWith('old-'))).toEqual([]);
+});
+
+test('a timed-out ask has ended at the moment it timed out, and still takes an answer', async () => {
+	const moment = new Date(Date.now() - 3 * DAY);
+	putAsk('timed-out', { ageMs: 4 * DAY });
+	timeOut('timed-out', moment);
+	const ask = (await fixture.refresh(cookie)).asks.find((candidate) => candidate.id === 'timed-out')!;
+	expect(ask).toMatchObject({ state: 'timed_out', endedAt: moment.toISOString() });
+	expect(await answer('timed-out', [1])).toMatchObject({ status: 200, body: { status: 'accepted' } });
+	expect(await stateOf('timed-out')).toBe('relayed');
+});
+
+test('an ask past its 7 days stays while its message is being sent again', async () => {
+	putAsk('resent', { ageMs: 8 * DAY });
+	timeOut('resent', new Date(Date.now() - 8 * DAY));
+	// Past 7 days in a moment, while the resend below takes longer than that.
+	writeFileSync(join(asksDir, 'resent.late.json'), JSON.stringify({ kind: 'answer', answers: { 'Pick a color?': 'Red' }, picks: null, at: new Date(Date.now() - 7 * DAY + 500).toISOString() }));
+	setHerdr(true, { slowMs: { 'agent prompt': 1_500 } });
+	const sending = resend('resent');
+	await sleep(800);
+	expect(await stateOf('resent')).toBe('relaying');
+	expect((await sending).status).toBe(200);
+	expect(await stateOf('resent')).toBe('relayed');
+	expect(existsSync(join(asksDir, 'resent.late.json'))).toBe(true);
 });

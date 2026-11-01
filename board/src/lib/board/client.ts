@@ -159,6 +159,8 @@ export function connectBoard(options: ConnectionOptions): Connection {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' }
 			});
+			// No answer came back: trouble with the link, which the red button tells once the stream notices.
+			if (!result.ok && result.kind === 'network') return;
 			const snapshot = valueOf(result, null);
 			if (snapshot) hearBoard(snapshot);
 		},

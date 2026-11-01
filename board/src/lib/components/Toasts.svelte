@@ -1,6 +1,6 @@
 <script lang="ts">
 	// Notices float over the page's corner, so showing or closing one never moves the content.
-	// `standing` are the board's own conditions (offline, read errors), shown while they last, like
+	// `standing` are the board's own conditions (read errors), shown while they last, like
 	// those components put in `toasts.standing`.
 	import X from '@lucide/svelte/icons/x';
 	import { toasts, type ToastKind } from '#lib/board/toasts.svelte.ts';
@@ -13,7 +13,8 @@
 		const current = new Set(all.map((notice) => notice.text));
 		if (hidden.some((text) => !current.has(text))) hidden = hidden.filter((text) => current.has(text));
 	});
-	const all = $derived([...standing, ...Object.values(toasts.standing)]);
+	const reads = $derived(toasts.linkDown ? [] : Object.values(toasts.standingReads).map((text) => ({ kind: 'failed' as const, text })));
+	const all = $derived([...standing, ...Object.values(toasts.standing), ...reads]);
 	const shown = $derived(all.filter((notice) => !hidden.includes(notice.text)));
 </script>
 

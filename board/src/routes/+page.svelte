@@ -319,7 +319,7 @@
 		// while it is still open. An archived report keeps the read state it had.
 		const listed = inbox.find((entry) => entry.key === next.key);
 		if (listed?.kind === 'report' && listed.readAt === null) {
-			board.mark(listed.key, true).catch(() => toasts.show('failed', '沒有標為已讀，請重新點開再試一次。'));
+			board.mark(listed.key, true).catch(() => toasts.readFailed('沒有標為已讀，請重新點開再試一次。'));
 		}
 	}
 	/** The ask whose card the screen being opened scrolls to, and whether that screen is shown (it
@@ -374,13 +374,15 @@
 {/snippet}
 
 {#snippet refresh()}
+	{@const offline = board.link === 'offline'}
 	<button
 		class="tool icon"
 		class:spinning={board.refreshing}
+		class:offline
 		onclick={() => board.refresh()}
 		disabled={board.refreshing}
-		aria-label={board.refreshing ? '讀取中' : '重新整理'}
-		title="立即重新讀取所有資料"
+		aria-label={board.refreshing ? '讀取中' : offline ? '連線中斷，重新整理' : '重新整理'}
+		title={offline ? '連線中斷，正在重新連線。按一下立即重新讀取所有資料' : '立即重新讀取所有資料'}
 	>
 		<RefreshCw size="1.1em" />
 	</button>
@@ -650,10 +652,7 @@
 		     on-screen keyboard. The notices float just above it, however tall its box has grown. -->
 		<div class="dock" bind:clientHeight={dockHeight} style:--keyboard="{keyboard}px">
 			<Toasts
-				standing={[
-					...(board.link === 'offline' ? [{ kind: 'failed' as const, text: '連線中斷，正在重新連線…' }] : []),
-					...board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))
-				]}
+				standing={board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))}
 			/>
 			<!-- A controller's page on the Herdr tab is written to as on its information page. -->
 			<CommandLine
@@ -865,6 +864,20 @@
 	.tool.icon {
 		width: 2em;
 		padding: 0;
+	}
+	/* The link is down. On e-ink the light theme's dark red reads as black, so it adds a thick frame;
+	   a disabled button there is grey, but this one is only disabled while it turns. */
+	.tool.offline,
+	:global(:root[data-theme='light']) .tool.offline:disabled {
+		color: var(--danger);
+	}
+	:global(:root[data-theme='light']) .tool.offline,
+	:global(:root[data-theme='light']) .tool.offline:disabled {
+		border: 2px solid var(--danger);
+	}
+	/* Not dimmed like other disabled buttons: the turning has to be seen. */
+	.tool.spinning:disabled {
+		opacity: 1;
 	}
 	.spinning :global(svg) {
 		animation: spin 1s linear infinite;
