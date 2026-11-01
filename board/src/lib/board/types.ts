@@ -74,6 +74,8 @@ export interface HelperQuestion {
 	details?: string | null;
 	/** The question's demo links; absent when it has none. */
 	visuals?: string[];
+	/** What each of `visuals` shows, by position, empty for an unlabeled one; absent when none has a label. */
+	visual_labels?: string[];
 	kind: 'single' | 'multi' | 'text';
 	options: HelperOption[];
 	recommendation: string;

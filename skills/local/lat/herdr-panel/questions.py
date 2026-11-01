@@ -349,32 +349,70 @@ def visual_link_error(url):
     return None
 
 
+class VisualLink(NamedTuple):
+    """One demo link and, when written, the option letter and label it carries."""
+
+    url: str
+    option: str
+    label: str
+
+    @property
+    def title(self):
+        """What tells this link apart: ``A. 新版``, ``A``, ``新版``, or empty."""
+        return ". ".join(part for part in (self.option, self.label) if part)
+
+    @property
+    def text(self):
+        return f"看示意 {self.title}" if self.title else "看示意"
+
+
+def _parse_visual(written):
+    """Read ``[option letter|][label|]url``; a bare link may itself contain ``|``."""
+    option = label = ""
+    head, bar, rest = written.partition("|")
+    if bar and re.fullmatch("[A-Z]", head.strip()):
+        option, written = head.strip(), rest
+        head, bar, rest = written.partition("|")
+    if bar and visual_link_error(head.strip()) is not None:
+        label, written = head.strip(), rest
+    return VisualLink(written.strip(), option, label)
+
+
 def _written_visuals(body):
     match = _VISUAL_LINES.search(_split_details(body)[0])
     lines = match.group().split("\n") if match else []
-    return [line.removeprefix(_VISUAL_MARKER).strip() for line in lines if line]
+    return [_parse_visual(line.removeprefix(_VISUAL_MARKER).strip()) for line in lines if line]
 
 
-def _check_visual_links(urls):
-    for url in urls:
-        error = visual_link_error(url)
+def _check_visual_links(links):
+    for link in links:
+        error = visual_link_error(link.url)
+        if error is None and not link.label.isprintable():
+            error = f"label has control characters: {link.label!r}"
         if error:
             raise ValueError(f"demo link refused: {error}")
 
 
-def add_visual_links(text, urls):
-    """Append ``urls`` to one question's section text as its last lines."""
-    if not urls:
+def _check_visual_options(links, body):
+    letters = _option_letters(parse_question_options({"body": body}))
+    for link in links:
+        if link.option and link.option not in letters:
+            raise ValueError(f"demo link refused: the question has no option {link.option}")
+
+
+def add_visual_links(text, visuals):
+    """Append ``visuals``, each ``[option letter|][label|]url``, as the section's last lines."""
+    if not visuals:
         return text
-    _check_visual_links(urls)
-    lines = "\n".join(_VISUAL_MARKER + url for url in urls)
+    _check_visual_links([_parse_visual(visual) for visual in visuals])
+    lines = "\n".join(_VISUAL_MARKER + visual for visual in visuals)
     return f"{text.rstrip()}\n\n{lines}\n"
 
 
 def question_visuals(question):
-    """The question's http and https demo links, in the order written."""
-    return [url for url in _written_visuals(question.get("body") or "")
-            if visual_link_error(url) is None]
+    """The question's http and https demo links as ``VisualLink``, in the order written."""
+    return [link for link in _written_visuals(question.get("body") or "")
+            if visual_link_error(link.url) is None]
 
 
 def _question_display_parts(question):
@@ -554,7 +592,7 @@ def question_plain_text(question):
         blocks.append(plain_markdown(context))
     visuals = question_visuals(question)
     if visuals:
-        blocks.append("\n".join(f"看示意：{url}" for url in visuals))
+        blocks.append("\n".join(f"{link.text}：{link.url}" for link in visuals))
     parsed = parse_question_options(question)
     if parsed.options:
         lines = ["（複選題，可選多項）"] if parsed.kind == "multi" else []
@@ -922,7 +960,9 @@ def _question_input(text):
         raise ValueError("question file must start with one '## <question title>' heading")
     body = (match.group("body") or "").strip("\n")
     _check_details_markers(body)
-    _check_visual_links(_written_visuals(body))
+    links = _written_visuals(body)
+    _check_visual_links(links)
+    _check_visual_options(links, body)
     return {"title": match.group("title"), "body": body}
 
 

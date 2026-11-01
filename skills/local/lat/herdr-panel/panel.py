@@ -958,8 +958,8 @@ class Panel(App):
         for number, paragraph in enumerate(paragraphs, 1):
             rows.extend((("", "", ""), ("", paragraph, "")))
             keys.extend((None, ("text", number)))
-        for index, url in enumerate(draft.visuals):
-            rows.extend((("", "", ""), ("", f"[看示意] {url}", f"{accent} link {url}")))
+        for index, link in enumerate(draft.visuals):
+            rows.extend((("", "", ""), ("", f"[{link.text}] {link.url}", f"{accent} link {link.url}")))
             keys.extend((None, ("visual", index)))
         rows.append(("", "", ""))
         keys.append(None)
@@ -1381,7 +1381,7 @@ class Panel(App):
         """Open the demo link under the focus; where that is impossible, copy it and show it."""
         if self.focus[1] >= len(draft.visuals):
             return
-        url = draft.visuals[self.focus[1]]
+        url = draft.visuals[self.focus[1]].url
         if not open_in_browser(url):
             self.copy_to_clipboard(url)
             self.set_notice("action", f"已複製網址，貼到瀏覽器開啟：{url}")

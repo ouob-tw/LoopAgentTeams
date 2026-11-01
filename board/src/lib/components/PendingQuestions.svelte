@@ -25,7 +25,7 @@
 					<span class="title">▲ <b>待決</b>：{item.title || '（沒有標題）'}</span>
 					<span class="answer">{inactive || !item.unsent ? '查看' : '作答'} ›</span>
 				</button>
-				<VisualLinks urls={item.question.visuals} />
+				<VisualLinks urls={item.question.visuals} labels={item.question.visual_labels} />
 			</div>
 		{/each}
 		{#if inactive}

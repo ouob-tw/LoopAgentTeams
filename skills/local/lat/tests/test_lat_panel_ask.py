@@ -488,6 +488,62 @@ class VisualLinkTest(AskTestCase):
         self.assertLess(text.index("驗收都過了。"), text.index(f"看示意：{self.URL}"))
         self.assertLess(text.index(f"看示意：{self.URL}"), text.index("A. 合併"))
 
+    def test_each_link_can_say_which_option_it_shows(self):
+        other = self.URL + "2"
+        third = self.URL + "3"
+        result = self.upsert("--visual", f"A|新版|{self.URL}", "--visual", f"B|{other}",
+                             "--visual", f"整體比較|{third}", "--visual", self.URL + "4")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"【示意】A|新版|{self.URL}\n【示意】B|{other}\n", self.questions.read_text())
+        question = self.board()
+        self.assertEqual(question["visuals"], [self.URL, other, third, self.URL + "4"])
+        self.assertEqual(question["visual_labels"], ["A. 新版", "B", "整體比較", ""])
+        self.assertEqual([option["label"] for option in question["options"]], ["合併，不推送", "先不合併"])
+        section = load_module().parse_questions(self.questions.read_text())[0]
+        text = load_module().question_plain_text(section)
+        self.assertNotIn("|", text)
+        for line in (f"看示意 A. 新版：{self.URL}", f"看示意 B：{other}", f"看示意 整體比較：{third}",
+                     f"看示意：{self.URL}4"):
+            self.assertIn(line, text.splitlines())
+
+    def test_unlabeled_links_carry_no_labels(self):
+        self.assertEqual(self.upsert("--visual", self.URL, "--visual", self.URL + "2").returncode, 0)
+        question = self.board()
+        self.assertEqual(question["visuals"], [self.URL, self.URL + "2"])
+        self.assertNotIn("visual_labels", question)
+
+    def test_a_bar_inside_the_link_stays_part_of_the_link(self):
+        url = "https://demo.example/a?x=1|2"
+        self.assertEqual(self.upsert("--visual", url, "--visual", f"新版|{url}",
+                                     "--visual", f"A|新版|{url}").returncode, 0)
+        question = self.board()
+        self.assertEqual(question["visuals"], [url, url, url])
+        self.assertEqual(question["visual_labels"], ["", "新版", "A. 新版"])
+
+    def test_a_label_does_not_let_a_bad_link_through(self):
+        for bad in ("新版|javascript:alert(1)", "A|新版|ftp://demo.example/a", "A|新版|demo.example/a",
+                    "A|新版", "A|", f"新版\n## 另一題|{self.URL}"):
+            with self.subTest(bad):
+                result = self.upsert("--visual", bad)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("demo link refused", result.stderr)
+                self.assertFalse(self.questions.exists())
+
+    def test_a_letter_must_be_one_of_the_options(self):
+        for text, letter in ((SECTION, "C"), ("## 還有什麼想法？\n\n請自由回答。\n", "A")):
+            with self.subTest(letter):
+                result = self.cli("question", "upsert", "--questions", self.questions,
+                                  "--decisions", self.decisions, "--id", "Q1",
+                                  "--file", self.section(text), "--visual", f"{letter}|新版|{self.URL}")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"no option {letter}", result.stderr)
+                self.assertFalse(self.questions.exists())
+        multi = "## 要開哪些？\n\n- [ ] 綁定\n- [ ] 封存\n"
+        self.assertEqual(self.cli("question", "upsert", "--questions", self.questions,
+                                  "--decisions", self.decisions, "--id", "Q1", "--file", self.section(multi),
+                                  "--visual", f"B|封存|{self.URL}").returncode, 0)
+        self.assertEqual(self.board()["visual_labels"], ["B. 封存"])
+
 
 if __name__ == "__main__":
     unittest.main()

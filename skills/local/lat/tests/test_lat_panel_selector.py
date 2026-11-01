@@ -151,6 +151,22 @@ class LayoutTests(SelectorTestCase):
                      for segment in strip if segment.style}
             self.assertIn(self.VISUAL, links)
 
+    async def test_a_labeled_link_says_what_it_shows_and_opens_only_the_url(self):
+        self.write_visual(f"A|新版|{self.VISUAL}", f"B|{self.VISUAL}2", f"[red]比較[/]|{self.VISUAL}3",
+                          f"{self.VISUAL}4")
+        app = self.make_app()
+        with patch.object(self.panel, "open_in_browser", return_value=True) as opened:
+            async with app.run_test(size=(80, 40)) as pilot:
+                text = self.view(app)
+                for button in (f"[看示意 A. 新版] {self.VISUAL}", f"[看示意 B] {self.VISUAL}2",
+                               f"[看示意 [red]比較[/]] {self.VISUAL}3", f"[看示意] {self.VISUAL}4"):
+                    self.assertIn(button, text)
+                self.assertLess(text.index("看示意 A. 新版"), text.index("合併到 dev，不推送"))
+                await self.focus_visual(pilot, app)
+                await pilot.press("enter")
+                await pilot.pause()
+                opened.assert_called_once_with(self.VISUAL)
+
     async def test_click_and_enter_open_the_visual_link(self):
         self.write_visual(self.VISUAL)
         app = self.make_app()

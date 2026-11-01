@@ -78,14 +78,17 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
      --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md \
      --advisor "<參謀結論>" [--exempt-basis "<依據>"] [--help-question] \
      [--question "<問題>"] [--authority-gap "<授權缺口>"] [--blocked-work "<受阻工作>"] \
-     [--visual "<示意網址>"]
+     [--visual "[<選項字母>|][<標題>|]<示意網址>"]
    ```
 
    - 紀錄不存在時建立 `.lat/decisions/<ID>.md`：`pending` 狀態、參謀行、session、版本、問題、選項、授權缺口與受阻工作。`--advisor` 必填，寫法見 [參謀](advisors.md#待決紀錄的狀態與參謀行)；session 取問題檔綁定的 session，沒有綁定時取 client 的 session 環境變數，可用 `--session-id` 指定。`exempt prior-promise`、`exempt must-ask` 要加 `--exempt-basis`，依據不符就拒絕，不改任何檔，寫法見 [參謀](advisors.md#適用範圍)；其他結論不接受這個參數。問題預設為標題、選項取自題目；授權缺口預設「需使用者決定」、受阻工作預設「未指定」，只適合簡單題，有實際缺口或受阻工作時明確給。
    - `--help-question` 標成求助題：紀錄寫 `- kind: help`，題目沒有單選「已完成」選項時拒絕，不改任何檔。
    - 紀錄已存在時就是改版：只接受 `--help-question`（把紀錄的 `- kind:` 改成或補上 `help`），其他紀錄欄位參數一律拒絕。紀錄的參謀行是 `exempt prior-promise`、`exempt must-ask` 時，同樣核對紀錄內的依據行。寫入後紀錄的版本行改為面板版本。紀錄已非 `pending`（例如答覆含糊要重問）時，題目內容須有改變，寫入後狀態改回 `pending`，舊答覆保留；內容相同則拒絕，除非上次已寫入面板、但紀錄還停在較舊版本（同步中斷），這時重跑同一指令會補完。題目已從問題檔歸檔時，從紀錄版本的下一版開始。
    - 寫題的其餘行為與下方 `question upsert` 相同（清理、印 `<ID> r<版本>`、確認題職責提醒、預先授權重查、側欄）；寫入失敗時剛建立的紀錄會移除。最後執行與「待決題目檢查」相同的檢查（帶綁定的 session），有問題時以非零結束，依該節表格處理。
-   - `--visual`（可重複，`question upsert` 也接受）寫入示意連結，只接受 http／https，其他一律拒絕寫題，不改任何檔。連結存成題目內文最後的 `【示意】<網址>` 行，所以換連結算改題、會升版；同一題重寫時要再帶一次，沒帶就是拿掉。面板在背景句之後顯示 `[看示意] <網址>`，點擊或按 Enter 開啟；沒有 `DISPLAY`／`WAYLAND_DISPLAY` 或找不到開啟工具時，改為複製到剪貼簿（OSC 52，要使用者的終端機接受）並在狀態列顯示網址。看板的待決題卡片與主控頁的待決題列顯示「看示意」按鈕，在新分頁開啟。聊天顯示的題目列出 `看示意：<網址>`。
+   - `--visual`（可重複，`question upsert` 也接受）寫入示意連結，只接受 http／https，其他一律拒絕寫題，不改任何檔。
+     - 有多個連結時，每個都標明它對應什麼：`--visual 'A|新版|https://…'`（選項 A，標題「新版」）、`--visual 'A|https://…'`（只標選項）、`--visual '整體比較|https://…'`（只寫標題）。只給網址仍可用，舊題照常顯示。字母是大寫單一字母，題目沒有這個選項（含「其他」列）時拒絕寫題；標題裡不能有 `|`。
+     - 連結存成題目內文最後的 `【示意】<同上寫法>` 行，所以換連結或標題算改題、會升版；同一題重寫時要再帶一次，沒帶就是拿掉。
+     - 面板在背景句之後顯示 `[看示意 A. 新版] <網址>`，點擊或按 Enter 開啟；沒有 `DISPLAY`／`WAYLAND_DISPLAY` 或找不到開啟工具時，改為複製到剪貼簿（OSC 52，要使用者的終端機接受）並在狀態列顯示網址。看板的待決題卡片與主控頁的待決題列顯示「看示意 A. 新版」按鈕，在新分頁開啟；沒有標題的連結顯示「看示意」，同題有多個連結時顯示「看示意 2」。聊天顯示的題目列出 `看示意 A. 新版：<網址>`，沒有標題時是 `看示意：<網址>`。
    - Spec 確認題寫題後另跑共識檢查工具寫入共識行，見 [Spec 共識](consensus.md)。
 
 3. 檢查通過後依「聊天提問格式」提問；使用者可在面板或聊天作答。
@@ -385,6 +388,8 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board list
 | `status` | `pending`（待答）、`submitted`（已送出未記錄）、`recorded`（已記錄）。 |
 | `context` | 背景文字，不含詳細資訊、選項與推薦段落。 |
 | `details` | 詳細資訊區塊內的原文（不含標記）；沒有區塊時為 `null`。 |
+| `visuals` | 示意網址，依寫入順序；沒有連結時沒有這個欄位。 |
+| `visual_labels` | 與 `visuals` 逐項對應的標題（如 `A. 新版`），沒有標題的是空字串；所有連結都沒有標題時沒有這個欄位。 |
 | `kind` | `single`、`multi`、`text`；混用格式或沒有選項的題目是 `text`。 |
 | `options` | 依題目順序；每項有 `letter`（依「題目格式」的選項字母，複選第 27 項起為空字串）、`label`（不含「（建議）」）、`impact`、`recommended`。 |
 | `recommendation` | 題末 `➡️` 推薦段落原文，沒有時為空字串。 |

@@ -120,7 +120,9 @@ def _board_question(section, asked_times):
     }
     visuals = question_visuals(section)
     if visuals:
-        question["visuals"] = visuals
+        question["visuals"] = [link.url for link in visuals]
+        if any(link.title for link in visuals):
+            question["visual_labels"] = [link.title for link in visuals]
     return question
 
 

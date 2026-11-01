@@ -55,10 +55,10 @@ Public API used by the Textual panel and LAT controller:
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
   question upsert --questions PATH --decisions DIR --id ID --file section.md \
-      [--visual URL]...
+      [--visual [LETTER|][LABEL|]URL]...
   question ask --questions PATH --decisions DIR --id ID --file section.md \
       [--advisor TEXT] [--help-question] [--session-id ID] [--question TEXT] \
-      [--authority-gap TEXT] [--blocked-work TEXT] [--exempt-basis TEXT] [--visual URL]...
+      [--authority-gap TEXT] [--blocked-work TEXT] [--exempt-basis TEXT] [--visual [LETTER|][LABEL|]URL]...
   question record-chat --questions PATH --decisions DIR --id ID --text TEXT \
       --source TEXT
   question section-hash --questions PATH --id ID
@@ -404,14 +404,14 @@ def _build_parser():
     upsert.add_argument("--decisions", required=True, type=Path)
     upsert.add_argument("--id", required=True)
     upsert.add_argument("--file", required=True, type=Path)
-    upsert.add_argument("--visual", action="append", default=[], metavar="URL")
+    upsert.add_argument("--visual", action="append", default=[], metavar="[LETTER|][LABEL|]URL")
     ask = question_commands.add_parser("ask")
     ask.add_argument("--questions", required=True, type=Path)
     ask.add_argument("--decisions", required=True, type=Path)
     ask.add_argument("--id", required=True)
     ask.add_argument("--file", required=True, type=Path)
     ask.add_argument("--help-question", action="store_true")
-    ask.add_argument("--visual", action="append", default=[], metavar="URL")
+    ask.add_argument("--visual", action="append", default=[], metavar="[LETTER|][LABEL|]URL")
     for field in ASK_RECORD_FIELDS:
         ask.add_argument(field)
     record_chat = question_commands.add_parser("record-chat")

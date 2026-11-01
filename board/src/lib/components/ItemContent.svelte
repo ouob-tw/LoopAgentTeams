@@ -186,7 +186,7 @@
 			<div class="text md">{@html renderMarkdown(question.context)}</div>
 		{/if}
 		{#if question.visuals?.length}
-			<div class="visual-row"><VisualLinks urls={question.visuals} /></div>
+			<div class="visual-row"><VisualLinks urls={question.visuals} labels={question.visual_labels} /></div>
 		{/if}
 		{#if question.options.length}
 			<ul class="options">
