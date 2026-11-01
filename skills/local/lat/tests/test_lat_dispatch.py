@@ -553,13 +553,13 @@ class LedgerCase(DispatchCase):
         return Path(result.stdout.splitlines()[0])
 
     def brief_commands(self, card):
-        """The three ledger commands of a generated brief, with placeholders filled in."""
+        """The four ledger commands of a generated brief, with placeholders filled in."""
         source = self.write_brief()
         result = self.run_script('brief', '--card', str(card), '--input', str(source))
         self.assertEqual(result.returncode, 0, result.stderr)
         text = (self.root / 'brief.brief.md').read_text()
         commands = re.findall(r'`(uv run [^`]*lat-ledger\.py[^`]*)`', text)
-        self.assertEqual(len(commands), 3, text)
+        self.assertEqual(len(commands), 4, text)
         return text, commands
 
 
@@ -664,10 +664,10 @@ class LedgerCardTests(LedgerCase):
 
 
 class LedgerBriefTests(LedgerCase):
-    def test_fixed_section_names_the_row_and_the_three_commands_with_absolute_paths(self):
+    def test_fixed_section_names_the_row_and_the_four_commands_with_absolute_paths(self):
         text, commands = self.brief_commands(self.ledger_card())
         self.assertIn(f'Your ledger row is 1 in {self.ledger}', text)
-        for command, verb in zip(commands, ('start', 'update', 'done')):
+        for command, verb in zip(commands, ('start', 'update', 'done', 'amend'), strict=True):
             self.assertIn(f'lat-ledger.py {verb} 1 --ledger {self.ledger} --by nanu-impl123-fida',
                           command)
             self.assertIn(str(LEDGER), command)
@@ -679,6 +679,54 @@ class LedgerBriefTests(LedgerCase):
         self.run_ledger('init', '--workspace', str(self.workspace))
         _, commands = self.brief_commands(self.ledger_card())
         self.assertIn(f"--ledger '{spaced}'", commands[0])
+
+    def session(self, name, status='ended', successor=None):
+        sessions = self.workspace / '.lat' / 'sessions'
+        sessions.mkdir(parents=True, exist_ok=True)
+        (sessions / f'{name}.json').write_text(json.dumps(
+            {'hcom_name': name, 'status': status, 'successor': successor}))
+
+    def former_warning(self, text):
+        card = self.make_card()
+        result = self.run_script('brief', '--card', str(card), '--input', str(self.write_brief(text)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.splitlines()[-1].startswith('hcom send @'))
+        self.assertTrue((self.root / 'brief.brief.md').exists())
+        return [line for line in result.stderr.splitlines() if 'former orchestrator' in line]
+
+    def test_brief_warns_when_the_input_names_a_controller_that_handed_over(self):
+        self.session('pono', successor='nanu')
+        warnings = self.former_warning(BRIEF.replace('QA 由', 'Report to pono. QA 由'))
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('pono', warnings[0])
+        self.assertIn('nanu', warnings[0])
+
+    def test_brief_follows_the_handover_chain_and_base_names(self):
+        self.session('old-lead-mide', successor='pono')
+        self.session('pono', successor='lead-nanu')
+        self.agents = [*self.agents[:-1], {'name': 'lead-nanu', 'base_name': 'nanu'}]
+        card = self.card_args()
+        card[card.index('--orchestrator') + 1] = 'lead-nanu'
+        self.run_script(*card)
+        path = next(self.tasks.glob('*.md'))
+        source = self.write_brief(BRIEF.replace('QA 由', 'Ask mide and @pono. QA 由'))
+        result = self.run_script('brief', '--card', str(path), '--input', str(source))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('mide', result.stderr)
+        self.assertIn('pono', result.stderr)
+
+    def test_brief_stays_quiet_about_other_controllers_and_longer_names(self):
+        self.session('pono', successor='nanu')
+        self.session('sibo', status='active')
+        self.session('dako', successor='other')
+        self.assertEqual(self.former_warning(
+            BRIEF.replace('QA 由', 'Ask sibo, dako and pono-adv-bevu. QA 由')), [])
+
+    def test_unreadable_session_record_does_not_block_the_brief(self):
+        self.session('pono', successor='nanu')
+        (self.workspace / '.lat' / 'sessions' / 'bad.json').write_text('{not json')
+        (self.workspace / '.lat' / 'sessions' / 'list.json').write_text('[]')
+        self.assertEqual(len(self.former_warning(BRIEF.replace('QA 由', 'pono: QA 由'))), 1)
 
     def test_card_without_a_row_warns_but_still_produces_the_brief(self):
         card = self.make_card()
@@ -703,7 +751,7 @@ class LedgerLifecycleTests(LedgerCase):
 
     def test_agent_runs_the_brief_commands_and_done_updates_the_card(self):
         card = self.ledger_card()
-        _, (start, update, done) = self.brief_commands(card)
+        _, (start, update, done, amend) = self.brief_commands(card)
         self.run_command(start)
         self.run_command(update, **{'one sentence': 'half way'})
         self.assertEqual(self.items()[0]['progress'], 'half way')
@@ -713,6 +761,8 @@ class LedgerLifecycleTests(LedgerCase):
         self.assertIn('- status：committed\n', text)
         self.assertIn(f'- deliverable commit：{self.sha}\n', text)
         self.assertEqual(self.items()[0]['status'], 'done')
+        self.run_command(amend, **{'what changed': 'QA re-judged'})
+        self.assertEqual(self.items()[0]['progress'], '補記：QA re-judged')
 
     def test_card_branch_lets_done_accept_a_commit_that_is_not_integrated_yet(self):
         git(self.workspace, 'switch', '-q', '-c', 'feat/x')
@@ -723,7 +773,7 @@ class LedgerLifecycleTests(LedgerCase):
         git(self.workspace, 'switch', '-q', 'dev')
         card = self.ledger_card('--branch', 'feat/x')
         self.assertEqual(self.items()[0]['branch'], 'feat/x')
-        _, (start, _update, done) = self.brief_commands(card)
+        _, (start, _update, done, _amend) = self.brief_commands(card)
         self.run_command(start)
         self.run_command(done.replace('--commit <sha> --gate <fingerprint> --file <absolute path>',
                                       f'--commit {sha}'))
@@ -733,7 +783,7 @@ class LedgerLifecycleTests(LedgerCase):
         card = self.ledger_card(evidence='file')
         report = self.root / 'report.md'
         report.write_text('checked\n')
-        _, (start, _update, done) = self.brief_commands(card)
+        _, (start, _update, done, _amend) = self.brief_commands(card)
         self.run_command(start)
         done = done.replace('--commit <sha> --gate <fingerprint> --file <absolute path>',
                             f'--file {report}')
@@ -742,7 +792,7 @@ class LedgerLifecycleTests(LedgerCase):
 
     def test_missing_card_does_not_stop_done(self):
         card = self.ledger_card()
-        _, (start, _update, done) = self.brief_commands(card)
+        _, (start, _update, done, _amend) = self.brief_commands(card)
         self.run_command(start)
         card.unlink()
         self.run_command(done.replace('--commit <sha> --gate <fingerprint> --file <absolute path>',
@@ -751,7 +801,7 @@ class LedgerLifecycleTests(LedgerCase):
 
     def test_moving_the_card_to_done_then_updating_the_row_clears_the_mismatch(self):
         card = self.ledger_card()
-        _, (start, _update, done) = self.brief_commands(card)
+        _, (start, _update, done, _amend) = self.brief_commands(card)
         self.run_command(start)
         self.run_command(done.replace('--commit <sha> --gate <fingerprint> --file <absolute path>',
                                       f'--commit {self.sha}'))
