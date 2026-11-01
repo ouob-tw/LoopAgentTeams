@@ -70,7 +70,7 @@ CAPACITY_KEYS = ('capacity_continue_at', 'capacity_continue_notified', 'capacity
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 NAME = re.compile(NAME_PATTERN)
 CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
-ENVELOPE_FIELDS = ('live actions', 'preflight')
+ENVELOPE_FIELDS = ('live actions', 'preflight', '視覺驗收')
 CLIENT_PROFILES = {
     'codex': {
         'error': re.compile(
@@ -1248,7 +1248,7 @@ def parse_task(path):
     fields = {'_digest': hashlib.sha256(content).hexdigest()}
     for line in content.decode().splitlines():
         match = re.fullmatch(
-            r'-\s+(agent|orchestrator|status|next step|live actions|preflight|native agent)：\s*(.*)',
+            r'-\s+(agent|orchestrator|status|next step|live actions|preflight|視覺驗收|native agent)：\s*(.*)',
             line)
         if match:
             fields[match.group(1)] = match.group(2).strip()
@@ -1367,7 +1367,7 @@ def notify_incomplete_cards(path, log, incomplete, orchestrator, workspace, now)
                 'notify-orchestrator', agent,
                 f'LAT stall watcher: task card {name} has missing or empty required field(s): '
                 f'{", ".join(fields)}. Add each as a `- <field>：<value>` line; write 無 '
-                'when the task has no live actions, otherwise fill them in as described in '
+                'when the field does not apply, otherwise fill it in as described in '
                 'references/task-cards.md. The agent stays monitored; this reminder is '
                 'sent once per card content.',
                 category='task-card-fields-missing')

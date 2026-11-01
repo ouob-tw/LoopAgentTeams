@@ -55,7 +55,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
 - [ ] QA 情境草稿：兩種流程都在派發前同步派 QA，依下方「測試清單」從需求獨立列出情境；短流程以該 issue 的驗收條件為需求來源，之後派發、實作（含 /code-review）、整合、驗收與交付照常。
 - [ ] 派發：Orchestrator 核對規劃與分工。
   - [ ] 若本票只完成已確認需求的一部分，其餘必要工作須同時建立 tracker Ticket，列明驗收條件與依賴，不只寫「之後補做」。超出已確認需求的功能，不自行加票；參謀定案的除外。
-  - [ ] 依 [任務卡](references/task-cards.md) 建立每張派工卡，配置各 Agent 的獨立 sandbox／container prefix 與 port range，登記資源歸屬，並填好必填的 `live actions`、`preflight` 與 `runs`；派實作與 QA 時另填 `整套測試`。
+  - [ ] 依 [任務卡](references/task-cards.md) 建立每張派工卡，配置各 Agent 的獨立 sandbox／container prefix 與 port range，登記資源歸屬，並填好必填的 `live actions`、`preflight`、`視覺驗收` 與 `runs`；派實作與 QA 時另填 `整套測試`。
   - [ ] 平行派發前，列出各 Ticket 預計修改的檔案與整合後必須成立的限制，先協調解決衝突。
   - [ ] 共用檔案依序修改，指定目前負責的 Ticket；接手前由 Orchestrator 更新分工與依賴，下一張 Ticket 從已整合版本接續。
   - [ ] 將可開始的 Tickets 交給 Implementer，每張實作任務使用新 context。
@@ -72,6 +72,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
         新解除阻塞的項目重新進入「派發」，含其下的分工與限制協調。所有 Tickets 完成前，流程不停在階段交接點。
 - [ ] 驗收：Orchestrator 與 QA 先依下方「測試清單」合併需求與整合後實作的情境，再逐項執行；問題交回 Implementer 修正，更新受影響項目後複驗。
   - [ ] 使用者介面的驗收條件，須透過真實 UI 按使用者操作方式驗證；直接呼叫 API 可用於準備資料或診斷，不算 UI 驗收通過。
+  - [ ] 任務卡 `視覺驗收` 不是「無」的成果，由實作者以外的人依 [視覺驗收](references/visual-acceptance.md) 看逐格圖判讀，並把看出的缺陷轉成可測門檻；測試通過或符合原型都不算看起來對。
   - [ ] 對先前未攔下的缺陷，依證據辨別原因：缺少情境、走錯路徑、斷言不足、未執行／環境不符，或測試替換行為掩蓋缺陷；未知則保留未知。在同一修正與複驗流程補足覆蓋；修產品 bug 時，回歸證據依 three-tier-testing 的「測試可信度」要求處理。
 - [ ] 交付：Orchestrator 核對驗收證據，確認測試資源已依 three-tier-testing 清理或交接，並核對各任務已完成收尾或在任務卡明列待完成後續工作；`DONE:` 與 deactivate 都會執行工作總表 `check`，未結案時 deactivate 只能以 `--force-unfinished --reason` 強制並留下原因。回報成果與未完成事項；必要驗證未執行時，不宣告完成。
   - [ ] 同步 tracker：本輪範圍內、每項驗收條件都有證據通過的 Ticket，留言交付 commit 與驗證證據後，依 tracker 說明關閉；本機檔案 tracker 把 Status 改為完成。驗收條件經使用者同意縮減時，留言寫明縮減內容並附同意出處；找不到同意紀錄就不關。部分完成、驗收未過或未驗證的 Ticket 保持開啟，留言寫明已完成與未完成項目。上層 Spec 在子票清單上所有 Ticket 都已關閉、測試清單在改動範圍內沒有 `FAIL`／`UNPROVEN`／`NOT_EXECUTED`，且 QA 未執行的主控項目（如主機安裝、首次實際執行）已有證據時，主控留言附證據後關閉，Spec 所出自的原 issue 一併關閉；不成立就保持開啟。拿不準就不關，列入交付回報的未完成事項。
@@ -98,7 +99,7 @@ QA 逐項記錄 `PASS`（證據支持）、`FAIL`（結果不符）、`UNPROVEN`
 
 每次委派前呼叫 /hcom-spawn 選定模型、effort 與權限並核對生效，再讀 [Agent 設定](references/agents.md) 的 LAT 補充規則；原生 Subagent、HCOM 與各階段內部再委派都適用。
 
-- **Prototype**：需要具體素材驗證設計問題時，委派 /prototype，將成果與結論交回 Designer。
+- **Prototype**：需要具體素材驗證設計問題時，委派 /prototype，成果依 [視覺驗收](references/visual-acceptance.md) 看過後，連同結論交回 Designer。
 - **Wayfinder**：工作太大、關鍵決策尚未釐清時，委派 /wayfinder 建立與推進決策地圖，結果交回 Designer；需要使用者參與的決策仍由使用者回答。
 - **Agent 機制**：內建 Agent 能套用 /hcom-spawn 選定的設定時優先使用，否則透過 HCOM 啟動；內建 Agent 用原生訊息管道協調，外部 Agent 用 HCOM 訊息協調。
 - **工作區**：平行實作或需要保留現有工作區時，使用獨立 Git worktree 與分支，預設放在專案的 `.worktrees/<task-id>/`，不放 Temp；建立前確認 `.worktrees/` 已被 Git 忽略。單一實作且工作區乾淨時，可直接開發。

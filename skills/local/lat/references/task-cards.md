@@ -23,6 +23,7 @@ HCOM Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自�
 - owned resources：ports、containers、images、sandbox prefix
 - live actions：無（有現場動作時寫額度，見「現場動作額度」）
 - preflight：無（有現場動作時寫動手前的核對事項）
+- 視覺驗收：無（填法見 [視覺驗收](visual-acceptance.md)）
 - 預計檢查數：無（派 QA 時寫預計的檢查數量級，如約 10 項）
 - 整套測試：無（派實作與 QA 時必填：由誰、何時經閘門跑一次；有對照表的專案寫「受影響測試，依 three-tier-testing」，整批合併後的整套寫明指定的人與 `post-merge` 用途；沒有對照表的專案照 three-tier-testing 的舊規則；QA 寫「不跑，查實作者的閘門紀錄」）
 - runs：主工作區 `.lat/runs/` 下該票資料夾的絕對路徑（見「票資料位置」）；沒有自己票號的卡（Spec 審查、參謀）寫上層票的資料夾，都沒有寫「無」
@@ -85,7 +86,7 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 ## 更新與歸檔
 
-- Orchestrator 派工時建立卡片並填好任務位置、資源分配、`live actions` 與 `preflight`。
+- Orchestrator 派工時建立卡片並填好任務位置、資源分配與必填欄位。
 - Agent 在開工、檢查點及結束時更新狀態、已完成工作與下一步，不累加日誌。內建 Agent 無檔案存取時，由 Orchestrator 代寫。
 - Orchestrator 從 Git 查證後填入 deliverable commit，整合後標記 merged。
 

@@ -54,15 +54,15 @@ Codex 畫面最後的錯誤是 `Selected model is at capacity`、輸入框是空
 
 ## 任務卡必填欄位檢查
 
-監控每輪檢查上述監控對象的任務卡（`orchestrator` 欄等於該主控、不在 `done/`、status 不是 `merged`）：`live actions` 或 `preflight` 缺少或值為空時，以 HCOM 傳一則 `LAT stall watcher: task card <檔名>` 開頭的英文訊息給該主控（`--intent request`），寫明卡片檔名與缺少的欄位。只給主控，不通知使用者，10 分鐘內未處理也不升級。
+監控每輪檢查上述監控對象的任務卡（`orchestrator` 欄等於該主控、不在 `done/`、status 不是 `merged`）：`live actions`、`preflight` 或 `視覺驗收` 缺少或值為空時，以 HCOM 傳一則 `LAT stall watcher: task card <檔名>` 開頭的英文訊息給該主控（`--intent request`），寫明卡片檔名與缺少的欄位。只給主控，不通知使用者，10 分鐘內未處理也不升級。
 
 - 這類卡片的 Agent 照常受停住監控，不會被跳過；缺 agent、orchestrator、status 而無法辨識的卡片維持「跳過並記錄」，不做這項檢查。
 - 同一張卡片同一內容只通知一次；內容改變後仍缺欄位會再通知；補齊、移到 `done/` 或標為 `merged` 後不再通知，之後再缺才重新計算。
 - 已通知的內容指紋保存在 `$workspace/.lat/watch/<主控 HCOM 名稱>/incomplete-cards.json`，監控重啟後不重複通知。通知失敗時下一輪重試，成功後才記為已通知。
 - 每次通知（含失敗）在 `watch.jsonl` 記一筆 `task-card-fields-missing`，含卡片檔名 `card`、缺少的欄位 `fields` 與傳送結果。
-- 監控只檢查欄位有沒有填，不解析額度內容，不計算已用額度，也不判斷 `live actions` 是否該填「無」。
+- 監控只檢查欄位有沒有填，不解析額度內容，不計算已用額度，也不判斷欄位是否該填「無」。
 
-主控收到後依 [任務卡](task-cards.md#現場動作額度) 補上兩欄，並把補上的內容傳給該執行 Agent。
+主控收到後依 [任務卡](task-cards.md#現場動作額度) 與 [視覺驗收](visual-acceptance.md) 補上缺的欄位，並把補上的內容傳給該執行 Agent。
 
 ## 工作總表到期檢查
 

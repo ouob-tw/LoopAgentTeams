@@ -1542,6 +1542,7 @@ class WatchCliTests(unittest.TestCase):
             f'- status：{status}\n'
             f'- live actions：無\n'
             f'- preflight：無\n'
+            f'- 視覺驗收：無\n'
             f'- next step：{next_step}\n'
         )
 
@@ -2229,7 +2230,7 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
                          ['list --json --name orch'])
 
     def write_card(self, relative, agent_field, orchestrator='orch', status='in progress',
-                   fields='- live actions：無\n- preflight：無\n'):
+                   fields='- live actions：無\n- preflight：無\n- 視覺驗收：無\n'):
         path = self.tasks / relative
         path.write_text(f'- agent：{agent_field}\n- orchestrator：{orchestrator}\n'
                         f'- status：{status}\n{fields}')
@@ -2261,7 +2262,8 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
 
     def test_cards_with_both_envelope_fields_are_not_reported(self):
         self.write_fields_card('filled.md', 'poni', '- live actions：重建 2 次；請求 50 個\n'
-                                                   '- preflight：帳號已核對\n')
+                                                   '- preflight：帳號已核對\n'
+                                                   '- 視覺驗收：看水面；水面尖峰算錯\n')
 
         self.run_cycles(load_watch(), 0, 60)
 
@@ -2270,26 +2272,32 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
 
     def test_missing_or_empty_envelope_fields_notify_the_orchestrator_once(self):
         self.write_fields_card('a-none.md', 'poni')
-        self.write_fields_card('b-no-preflight.md', 'kemo', '- live actions：無\n')
-        self.write_fields_card('c-empty.md', 'tabi', '- live actions：  \n- preflight：無\n')
+        self.write_fields_card('b-no-preflight.md', 'kemo', '- live actions：無\n- 視覺驗收：無\n')
+        self.write_fields_card('c-empty.md', 'tabi',
+                               '- live actions：  \n- preflight：無\n- 視覺驗收：無\n')
+        self.write_fields_card('d-no-visual.md', 'vilo', '- live actions：無\n- preflight：無\n')
 
         self.run_cycles(load_watch(), 0, 60)
 
         self.assertEqual(self.field_records(), [
-            (0, 'a-none.md', ['live actions', 'preflight']),
+            (0, 'a-none.md', ['live actions', 'preflight', '視覺驗收']),
             (0, 'b-no-preflight.md', ['preflight']),
             (0, 'c-empty.md', ['live actions']),
+            (0, 'd-no-visual.md', ['視覺驗收']),
         ])
         notices = self.field_notices()
-        self.assertEqual(len(notices), 3)
+        self.assertEqual(len(notices), 4)
         self.assertTrue(all('@orch --intent request --from lat-watch --name orch -- '
                             'LAT stall watcher: task card ' in line for line in notices))
         self.assertIn('a-none.md', notices[0])
-        self.assertIn('field(s): live actions, preflight. ', notices[0])
+        self.assertIn('field(s): live actions, preflight, 視覺驗收. ', notices[0])
         self.assertIn('b-no-preflight.md', notices[1])
         self.assertIn('field(s): preflight. ', notices[1])
         self.assertIn('c-empty.md', notices[2])
         self.assertIn('field(s): live actions. ', notices[2])
+        self.assertIn('d-no-visual.md', notices[3])
+        self.assertIn('field(s): 視覺驗收. ', notices[3])
+        self.assertIn('write 無 when the field does not apply', notices[0])
         self.assertEqual(self.herdr_log.exists(), False)
 
     def test_agents_of_cards_missing_envelope_fields_stay_monitored(self):
@@ -2315,7 +2323,8 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.run_cycles(watch, 120, 180)
         self.write_fields_card('card.md', 'poni')
         self.run_cycles(watch, 240)
-        self.write_fields_card('card.md', 'poni', '- live actions：無\n- preflight：無\n')
+        self.write_fields_card('card.md', 'poni',
+                               '- live actions：無\n- preflight：無\n- 視覺驗收：無\n')
         self.run_cycles(watch, 300, 360)
 
         self.assertEqual([at for at, _, _ in self.field_records()], [0, 120])
@@ -6228,7 +6237,7 @@ class KeepaliveCycleTests(PinnedEnvironment):
         self.tasks.mkdir(parents=True)
         (self.tasks / 'open.md').write_text(
             '- agent：helper (Claude)\n- orchestrator：worker\n- status：in progress\n'
-            '- live actions：無\n- preflight：無\n- next step：\n')
+            '- live actions：無\n- preflight：無\n- 視覺驗收：無\n- next step：\n')
         self.decisions = self.work / '.lat/decisions'
         self.decisions.mkdir()
         self.transcript = self.root / 'transcript.jsonl'
@@ -6446,7 +6455,7 @@ esac
         for role in ('Implementer', 'Advisor'):
             (self.tasks / 'open.md').write_text(
                 f'- agent：helper ({role})\n- orchestrator：worker\n- status：in progress\n'
-                '- live actions：無\n- preflight：無\n')
+                '- live actions：無\n- preflight：無\n- 視覺驗收：無\n')
             for status in ('listening', 'inactive'):
                 self.agents[1].update(status=status, status_context='failure:rate_limit')
                 self.show(status=status)
@@ -7255,7 +7264,8 @@ class ClaudeQuotaRecoveryTests(unittest.TestCase):
         tasks.mkdir(parents=True)
         (self.root / '.git').mkdir()
         (tasks / 'worker.md').write_text('- agent：worker\n- orchestrator：orch\n'
-                                        '- status：active\n- live actions：none\n- preflight：none\n')
+                                        '- status：active\n- live actions：none\n- preflight：none\n'
+                                        '- 視覺驗收：none\n')
         hcom = {name: {'name': name, 'status': 'listening', 'tool': 'claude',
                        'session_id': name} for name in ('orch', 'worker')}
         original = self.command
