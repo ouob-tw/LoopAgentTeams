@@ -389,8 +389,11 @@ def former_controllers(workspace, orchestrator):
             record = json.loads(path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             continue  # this check only warns; lat-session reports a damaged record
-        if isinstance(record, dict) and record.get('successor') and record.get('hcom_name'):
-            handovers[record['hcom_name']] = record['successor']
+        if not isinstance(record, dict):
+            continue
+        name, successor = record.get('hcom_name'), record.get('successor')
+        if name and successor and isinstance(name, str) and isinstance(successor, str):
+            handovers[name] = successor
     former, current = set(), {orchestrator}
     while current:
         current = {name for name, successor in handovers.items() if name not in former
@@ -405,7 +408,7 @@ def warn_former_controllers(text, workspace, orchestrator):
     keep = {orchestrator, orchestrator.rsplit('-', 1)[-1]}
     for name in sorted(former_controllers(workspace, orchestrator)):
         spellings = {name, name.rsplit('-', 1)[-1]} - keep
-        if any(re.search(rf'(?<![\w-]){re.escape(word)}(?![\w-])', text) for word in spellings):
+        if any(re.search(rf'(?<![A-Za-z0-9_-]){re.escape(word)}(?![A-Za-z0-9_-])', text) for word in spellings):
             print(f'lat-dispatch: warning: the input names former orchestrator {name}; '
                   f'{orchestrator} took over, so change it unless it is only background',
                   file=sys.stderr)

@@ -701,6 +701,11 @@ class LedgerBriefTests(LedgerCase):
         self.assertIn('pono', warnings[0])
         self.assertIn('nanu', warnings[0])
 
+    def test_brief_warns_about_a_name_right_next_to_chinese_text(self):
+        self.session('pono', successor='nanu')
+        for mention in ('完成後回報給pono。', '回報給@pono並附證據。'):
+            self.assertEqual(len(self.former_warning(BRIEF.replace('QA 由', f'{mention}QA 由'))), 1)
+
     def test_brief_follows_the_handover_chain_and_base_names(self):
         self.session('old-lead-mide', successor='pono')
         self.session('pono', successor='lead-nanu')
@@ -726,6 +731,10 @@ class LedgerBriefTests(LedgerCase):
         self.session('pono', successor='nanu')
         (self.workspace / '.lat' / 'sessions' / 'bad.json').write_text('{not json')
         (self.workspace / '.lat' / 'sessions' / 'list.json').write_text('[]')
+        (self.workspace / '.lat' / 'sessions' / 'types.json').write_text(
+            json.dumps({'hcom_name': ['old'], 'successor': 'nanu'}))
+        (self.workspace / '.lat' / 'sessions' / 'types2.json').write_text(
+            json.dumps({'hcom_name': 'old2', 'successor': {'name': 'nanu'}}))
         self.assertEqual(len(self.former_warning(BRIEF.replace('QA 由', 'pono: QA 由'))), 1)
 
     def test_card_without_a_row_warns_but_still_produces_the_brief(self):
