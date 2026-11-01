@@ -6,7 +6,7 @@ import { question, startFixture, type Fixture } from '../harness.ts';
 import { launchChrome, type Browser, type Tab } from '../browser.ts';
 
 /** Lets the test make the next refreshes fail, as the server failing them or with no answer. */
-const FAKE_REFRESH = `(() => { const fetch = window.fetch; window.fetch = (input, init) => { if (String(input) === '/api/refresh' && window.failRefresh === 'http') return Promise.resolve(new Response('{}', { status: 500 })); if (String(input) === '/api/refresh' && window.failRefresh === 'network') return Promise.reject(new TypeError('Failed to fetch')); return fetch(input, init); }; })()`;
+const FAKE_REFRESH = `(() => { const fetch = window.fetch; window.fetch = async (input, init) => { if (String(input) === '/api/refresh' && window.slowRefresh) await new Promise((resolve) => setTimeout(resolve, window.slowRefresh)); if (String(input) === '/api/refresh' && window.failRefresh === 'http') return Promise.resolve(new Response('{}', { status: 500 })); if (String(input) === '/api/refresh' && window.failRefresh === 'network') return Promise.reject(new TypeError('Failed to fetch')); return fetch(input, init); }; })()`;
 /** The refresh buttons a person can see now. */
 const SHOWN = `[...document.querySelectorAll('button.tool.icon')].filter((button) => /重新整理|讀取中/.test(button.ariaLabel ?? '') && button.getClientRects().length && getComputedStyle(button).visibility === 'visible')`;
 const NOTICES = `(document.querySelector('.dock .toasts')?.innerText ?? '').trim()`;
@@ -73,6 +73,15 @@ test('the icon makes at least a whole turn for a quick answer, and stops; with r
 	expect(await tab.eval<number>(`${SHOWN}[0].querySelector('svg').getAnimations().length`)).toBe(0);
 	await idle();
 	await tab.send('Emulation.setEmulatedMedia', { features: [] });
+}, 30_000);
+
+test('a slow refresh stops the icon at the end of a turn', async () => {
+	await idle();
+	await tab.eval(`window.slowRefresh = 3_200`);
+	const { turned } = await spin();
+	await tab.eval(`window.slowRefresh = undefined`);
+	expect(turned).toBeGreaterThanOrEqual(4_000);
+	expect(turned).toBeLessThan(4_150);
 }, 30_000);
 
 test('with the link up a refresh the server failed is a notice; one that got no answer is not', async () => {

@@ -14,9 +14,10 @@ import type { UsageStyle } from './usage.ts';
 import { justRecorded } from './question-message.ts';
 import type { BoardSnapshot, InboxQuestion } from './types.ts';
 
-/** How long the refresh icon stays turning per turn: the page's 1s animation, and a little for it
- *  to start a frame or so after the refresh does. */
-const SPIN_MS = 1_050;
+/** One turn of the refresh icon: the page's `spin` animation. */
+const TURN_MS = 1_000;
+/** The animation starts a frame or so after the refresh does. */
+const TURN_START_MS = 50;
 
 export class LiveBoard {
 	snapshot: BoardSnapshot;
@@ -188,7 +189,8 @@ export class LiveBoard {
 			if (this.link !== 'offline') toasts.show('failed', '重新整理失敗，請稍後再試。');
 		} finally {
 			// The icon stops at the end of a turn, at least one, so a quick answer still shows.
-			setTimeout(() => (this.refreshing = false), SPIN_MS - ((performance.now() - started) % SPIN_MS));
+			const elapsed = performance.now() - started;
+			setTimeout(() => (this.refreshing = false), Math.max(1, Math.ceil(elapsed / TURN_MS)) * TURN_MS + TURN_START_MS - elapsed);
 		}
 	}
 }

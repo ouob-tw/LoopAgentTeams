@@ -374,14 +374,15 @@
 {/snippet}
 
 {#snippet refresh()}
+	{@const offline = board.link === 'offline'}
 	<button
 		class="tool icon"
 		class:spinning={board.refreshing}
-		class:offline={board.link === 'offline'}
+		class:offline
 		onclick={() => board.refresh()}
 		disabled={board.refreshing}
-		aria-label={board.refreshing ? '讀取中' : board.link === 'offline' ? '連線中斷，重新整理' : '重新整理'}
-		title={board.link === 'offline' ? '連線中斷，正在重新連線。按一下立即重新讀取所有資料' : '立即重新讀取所有資料'}
+		aria-label={board.refreshing ? '讀取中' : offline ? '連線中斷，重新整理' : '重新整理'}
+		title={offline ? '連線中斷，正在重新連線。按一下立即重新讀取所有資料' : '立即重新讀取所有資料'}
 	>
 		<RefreshCw size="1.1em" />
 	</button>

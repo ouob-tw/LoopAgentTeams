@@ -227,6 +227,20 @@ test('Codex allowed after its turn ended: nothing sent until the run is seen, th
 	expect((await entries('s-cx')).filter((entry) => entry.ok).map((entry) => entry.text)).toEqual([sent[0][3]]);
 });
 
+test('Codex being told stays in 待辦 as executed until it was told', async () => {
+	putAsk('telling', { client: 'codex', session: 's-cx', outcome: 'allowed' });
+	answered('telling', 'allow');
+	write('telling.stopped.json', { at: iso(Date.now()) });
+	write('telling.executed.json', { kind: 'executed', summary: '', at: iso(Date.now()) });
+	setHerdr(['s-cx'], { slowMs: { 'agent prompt': 800 } });
+	const seen = new Set<string>();
+	for (let tries = 0; tries < 40 && !seen.has('notified'); tries++) {
+		seen.add((await askOf('telling'))!.state);
+		await sleep(50);
+	}
+	expect([...seen]).toEqual(['executed', 'notified']);
+});
+
 test('Codex allowed after its turn ended and not seen run in the wait: not told, then or later; a run two asks match is not told either', async () => {
 	putAsk('expired', { client: 'codex', session: 's-cx', outcome: 'allowed', outcomeAt: Date.now() - EXECUTION_WAIT_MS - 100 });
 	answered('expired', 'allow');
