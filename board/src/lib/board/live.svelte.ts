@@ -72,11 +72,17 @@ export class LiveBoard {
 			onState: (state) => {
 				const back = this.link === 'offline' && state === 'live';
 				this.link = state;
-				toasts.linkDown = state === 'offline';
+				toasts.setLinkDown(state === 'offline');
 				if (!back) return;
 				// What could not be read while it was down: a new snapshot may not come to read it again.
-				for (const [agentId, failed] of Object.entries(agentControl.loadFailed)) if (failed) void agentControl.load(agentId);
-				for (const [controllerId, failed] of Object.entries(messaging.loadFailed)) if (failed) void messaging.load(controllerId);
+				// Not failed until this read says so, or its notice would show meanwhile.
+				for (const owner of [agentControl, messaging]) {
+					for (const [id, failed] of Object.entries(owner.loadFailed)) {
+						if (!failed) continue;
+						owner.loadFailed[id] = false;
+						void owner.load(id);
+					}
+				}
 			},
 			onTabMoved: () => this.tabMoves++,
 			onQuota: (quota) => (this.quota = quota),

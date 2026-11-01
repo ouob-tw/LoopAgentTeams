@@ -147,9 +147,16 @@ test('a read of the page that failed is quiet while the link is down, comes back
 	await idle();
 	await tab.until(`!document.querySelector('button.tool.offline')`, 'the link up');
 
+	// A failure from before the link was seen to be down goes when it is.
+	await tab.eval(`window.failRefresh = 'http'`);
+	await spin();
+	await tab.until(`${NOTICES}.includes(${JSON.stringify(FAILED)})`, 'the failure notice');
+	await tab.eval(`window.failRefresh = undefined`);
+
 	// Opened while down: its read fails with no answer, and nothing says so.
 	await fixture.stop();
 	await tab.until(`document.querySelector('button.tool.offline')`, 'the link down', 15_000);
+	expect(await tab.eval<string>(NOTICES)).toBe('');
 	await tab.eval(`document.querySelector('.tool.fold') && getComputedStyle(document.querySelector('nav.roster .unfolded')).display === 'none' && document.querySelector('nav.roster .folded > *').click()`);
 	await tab.eval(open);
 	await tab.until(`window.messageReads > 0`, 'the read of the sent log');
@@ -158,7 +165,9 @@ test('a read of the page that failed is quiet while the link is down, comes back
 
 	// Back up and it still fails: now it says so.
 	await tab.eval(`window.failMessages = true`);
+	const failedReads = await reads();
 	await fixture.start();
+	await tab.until(`window.messageReads > ${failedReads}`, 'the read tried again', 15_000);
 	await tab.until(`${NOTICES}.includes(${JSON.stringify(SENT)})`, 'the notice after a read that still fails', 15_000);
 
 	// Down again: taken away, and with reads working again it does not come back.
@@ -166,8 +175,11 @@ test('a read of the page that failed is quiet while the link is down, comes back
 	await tab.until(`!${NOTICES}`, 'the notice taken away while down', 15_000);
 	await tab.eval(`window.failMessages = false`);
 	const before = await reads();
+	// Every notice shown from here on, however short.
+	await tab.eval(`window.notices = []; new MutationObserver(() => window.notices.push(${NOTICES})).observe(document.querySelector('.dock'), { childList: true, subtree: true, characterData: true })`);
 	await fixture.start();
 	await tab.until(`window.messageReads > ${before} && !document.querySelector('button.tool.offline')`, 'the read tried again', 15_000);
 	await sleep(300);
 	expect(await tab.eval<string>(NOTICES)).toBe('');
+	expect((await tab.eval<string[]>(`window.notices`)).filter(Boolean)).toEqual([]);
 }, 60_000);

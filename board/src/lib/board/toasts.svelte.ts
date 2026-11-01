@@ -6,6 +6,8 @@ export interface Toast {
 	id: number;
 	kind: ToastKind;
 	text: string;
+	/** A read of the page's own that failed: goes when the link turns out to be down. */
+	read?: boolean;
 }
 
 const OK_MS = 4_000;
@@ -35,7 +37,16 @@ class Toasts {
 
 	/** A read of the page's own that failed once: a failure notice, unless the link is down. */
 	readFailed(text: string): void {
-		if (!this.linkDown) this.show('failed', text);
+		if (this.linkDown) return;
+		this.show('failed', text);
+		this.list = this.list.map((toast) => (toast.text === text ? { ...toast, read: true } : toast));
+	}
+
+	/** Follow the link's state. A read may have failed before the link was seen to be down, which
+	 *  is what failed it. */
+	setLinkDown(down: boolean): void {
+		this.linkDown = down;
+		if (down) this.list = this.list.filter((toast) => !toast.read);
 	}
 
 	show(kind: ToastKind, text: string): void {
