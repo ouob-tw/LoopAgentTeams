@@ -564,7 +564,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		if (result.kind === 'failed') earlierFailed = '沒有收到看板伺服器的回應。';
 		else if (result.update.ok) view = withEarlier(view, result.update.page, requested);
 		else earlierFailed = result.update.reason;
-		if (earlierFailed) toasts.show('failed', `更早的紀錄載入失敗：${earlierFailed}`);
+		if (earlierFailed) toasts.readFailed(`更早的紀錄載入失敗：${earlierFailed}`);
 	}
 
 	// Watched again after every load, so an end that is still in view loads the next part. After a

@@ -38,8 +38,8 @@
 
 	$effect(() => {
 		const id = agent.id;
-		toasts.stand(`agent-log:${id}`, 'failed', agentControl.loadFailed[id] ? `${agent.name} 的操作紀錄讀取失敗。` : null);
-		return () => toasts.stand(`agent-log:${id}`, 'failed', null);
+		toasts.standRead(`agent-log:${id}`, agentControl.loadFailed[id] ? `${agent.name} 的操作紀錄讀取失敗。` : null);
+		return () => toasts.standRead(`agent-log:${id}`, null);
 	});
 </script>
 

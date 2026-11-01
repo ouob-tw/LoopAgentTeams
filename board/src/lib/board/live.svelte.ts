@@ -69,7 +69,15 @@ export class LiveBoard {
 				}
 				this.snapshot = snapshot;
 			},
-			onState: (state) => (this.link = state),
+			onState: (state) => {
+				const back = this.link === 'offline' && state === 'live';
+				this.link = state;
+				toasts.linkDown = state === 'offline';
+				if (!back) return;
+				// What could not be read while it was down: a new snapshot may not come to read it again.
+				for (const [agentId, failed] of Object.entries(agentControl.loadFailed)) if (failed) void agentControl.load(agentId);
+				for (const [controllerId, failed] of Object.entries(messaging.loadFailed)) if (failed) void messaging.load(controllerId);
+			},
 			onTabMoved: () => this.tabMoves++,
 			onQuota: (quota) => (this.quota = quota),
 			onPd: (snapshot) => (this.pd = { snapshot, at: Date.now() }),
@@ -171,7 +179,7 @@ export class LiveBoard {
 			page = (await this.#connection?.archive(before)) ?? { items: [], before };
 		} catch {
 			this.archiveEarlier = 'failed';
-			toasts.show('failed', '更早的已處理項目載入失敗，請按「載入更早」再試一次。');
+			toasts.readFailed('更早的已處理項目載入失敗，請按「載入更早」再試一次。');
 			return;
 		}
 		this.archiveEarlier = 'idle';
@@ -185,8 +193,7 @@ export class LiveBoard {
 		try {
 			await this.#connection?.refresh();
 		} catch {
-			// While the link is down the red refresh button says it all.
-			if (this.link !== 'offline') toasts.show('failed', '重新整理失敗，請稍後再試。');
+			toasts.readFailed('重新整理失敗，請稍後再試。');
 		} finally {
 			// The icon stops at the end of a turn, at least one, so a quick answer still shows.
 			const elapsed = performance.now() - started;

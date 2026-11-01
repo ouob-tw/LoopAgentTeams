@@ -14,12 +14,28 @@ class Toasts {
 	list = $state<Toast[]>([]);
 	/** Standing notices by the key of their condition. */
 	standing = $state<Record<string, { kind: ToastKind; text: string }>>({});
+	/** Standing notices of the page's own reads that failed, by the key of their condition. */
+	standingReads = $state<Record<string, string>>({});
+	/** The link to the server is down: the red refresh button says so, and reads that fail say nothing. */
+	linkDown = $state(false);
 	#next = 0;
 
 	/** Show a standing notice while `text` is set; null takes it away. */
 	stand(key: string, kind: ToastKind, text: string | null): void {
 		if (text === null) delete this.standing[key];
 		else this.standing[key] = { kind, text };
+	}
+
+	/** A read of the page's own failing: a standing notice while `text` is set, kept back while the
+	 *  link is down. */
+	standRead(key: string, text: string | null): void {
+		if (text === null) delete this.standingReads[key];
+		else this.standingReads[key] = text;
+	}
+
+	/** A read of the page's own that failed once: a failure notice, unless the link is down. */
+	readFailed(text: string): void {
+		if (!this.linkDown) this.show('failed', text);
 	}
 
 	show(kind: ToastKind, text: string): void {
