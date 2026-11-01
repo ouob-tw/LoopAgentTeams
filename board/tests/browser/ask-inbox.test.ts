@@ -2,8 +2,8 @@ import { launchChrome, type Browser, type Tab } from '../browser.ts';
 // Board asks in 待辦 in a real browser: the real hook asks into the test board's shared folder; the
 // ask is one entry of 待辦 titled with its agent, kind, first question and time left; opening it
 // shows the agent's page at the card; answering there (or in another browser) moves the entry to
-// 已處理 with its result; a timed-out ask stays until it is answered as a message; by project it
-// sits under its agent's working folder.
+// 已處理 with its result; a timed-out ask goes to 已處理 too and is answered from there as a message;
+// by project it sits under its agent's working folder.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
@@ -119,20 +119,32 @@ test('an answer in another browser changes the entry here too', async () => {
 	await mine.until(`!document.querySelector(${JSON.stringify(row('s-one'))})`, 'the entry to leave 待辦 on the other browser');
 }, 60_000);
 
-test('a timed-out ask stays in 待辦; answering sends a message and moves it to 已處理 as 已傳話', async () => {
-	await ask('s-two', { LAT_BOARD_ASK_WAIT_SECONDS: '1' });
+test('by project a waiting ask sits under the project of its agent\'s folder', async () => {
+	const answered = ask('s-two');
 	const tab = await open();
-	await tab.until(`document.querySelector(${JSON.stringify(row('s-two'))})`, 'the timed-out ask in 待辦');
-	expect(await text(tab, row('s-two'))).toContain('已逾時，作答會當訊息傳給它');
-
-	// By project: under the project of the agent's folder.
+	await tab.until(`document.querySelector(${JSON.stringify(row('s-two'))})`, 'the ask in 待辦');
 	await tab.eval(`[...document.querySelectorAll('.inbox .toggle button')].find((button) => button.innerText === '依專案').click()`);
 	await tab.until(`[...document.querySelectorAll('.inbox h3')].some((heading) => heading.innerText === 'beta')`, 'the project heading');
-	expect(await tab.eval<string[]>(`[...document.querySelectorAll('.inbox h3')].map((heading) => heading.innerText)`)).toContain('beta');
 	expect(await tab.eval<boolean>(`(() => { const heading = [...document.querySelectorAll('.inbox h3')].find((entry) => entry.innerText === 'beta'); let next = heading.nextElementSibling; while (next && next.tagName !== 'H3') { if (next.querySelector('[data-ask-row]') || next.matches('[data-ask-row]')) return true; next = next.nextElementSibling; } return false; })()`)).toBe(true);
-
 	await tab.eval(`[...document.querySelectorAll('.inbox .toggle button')].find((button) => button.innerText === '依時間').click()`);
 	await tab.until(`document.querySelector(${JSON.stringify(row('s-two'))})`, 'the time order again');
+	await tab.eval(`document.querySelector(${JSON.stringify(row('s-two'))} + ' .main').click()`);
+	await tab.until(`document.querySelector('${card}[data-state="waiting"]')`, 'the card');
+	await choose(tab, 'Red');
+	await tab.eval(`document.querySelector('${card} form button').click()`);
+	await answered;
+	expect(tab.errors).toEqual([]);
+}, 60_000);
+
+test('a timed-out ask leaves 待辦 for 已處理; answered from there it goes as a message and reads 已傳話', async () => {
+	await ask('s-two', { LAT_BOARD_ASK_WAIT_SECONDS: '1' });
+	const tab = await open();
+	await tab.until(`document.querySelector('.inbox .toggle button')`, 'the inbox');
+	expect(await tab.eval<boolean>(`!!document.querySelector(${JSON.stringify(row('s-two'))})`)).toBe(false);
+	await processed(tab);
+	await tab.until(`document.querySelector(${JSON.stringify(row('s-two'))})`, 'the timed-out ask among the processed');
+	expect(await text(tab, row('s-two'))).toContain('已逾時');
+
 	await tab.eval(`document.querySelector(${JSON.stringify(row('s-two'))} + ' .main').click()`);
 	await tab.until(`document.querySelector('${card}[data-state="timed_out"]')`, 'the timed-out card');
 	await choose(tab, 'Red');
@@ -140,14 +152,11 @@ test('a timed-out ask stays in 待辦; answering sends a message and moves it to
 	await tab.until(`document.querySelector('${card}').dataset.state === 'relayed'`, 'the card to read 已傳話');
 	const calls = join(fixture.dir, 'herdr-calls.jsonl');
 	expect(existsSync(calls) && readFileSync(calls, 'utf8')).toContain('回答：Red');
-	await tab.until(`!document.querySelector(${JSON.stringify(row('s-two'))})`, 'the entry to leave 待辦');
-	await processed(tab);
-	await tab.until(`document.querySelector(${JSON.stringify(row('s-two'))})`, 'the entry among the processed');
-	expect(await text(tab, row('s-two'))).toContain('已傳話');
+	await tab.until(`document.querySelector(${JSON.stringify(row('s-two'))})?.innerText.includes('已傳話')`, 'the entry to read 已傳話');
 	expect(tab.errors).toEqual([]);
 }, 60_000);
 
-test('opening an older ask from 待辦 leaves the operation record, and scrolls to its card below newer ones', async () => {
+test('opening an older ask from 已處理 leaves the operation record, and scrolls to its card below newer ones', async () => {
 	await ask('s-one', { LAT_BOARD_ASK_WAIT_SECONDS: '1' }, { ...QUESTION, question: 'Older question?' });
 	await ask('s-one', { LAT_BOARD_ASK_WAIT_SECONDS: '1' }, { ...QUESTION, question: 'Newer question?' });
 	const tab = await open('/?agent=s-one');
@@ -156,8 +165,9 @@ test('opening an older ask from 待辦 leaves the operation record, and scrolls 
 	await tab.until(`document.querySelector('#agent-panel-transcript').hidden`, 'the operation record');
 	const older = `.inbox [data-ask-row]:has(.title)`;
 	await tab.eval(`document.querySelector('[data-middle="inbox"]').click()`);
+	await processed(tab);
 	const olderRow = `[...document.querySelectorAll('${older}')].find((entry) => entry.innerText.includes('Older question?'))`;
-	await tab.until(olderRow, 'the older ask in 待辦');
+	await tab.until(olderRow, 'the older ask among the processed');
 	await tab.eval(`${olderRow}.querySelector('.main').click()`);
 	const olderCard = `.detail [data-ask]:has(h2)`;
 	await tab.until(`!document.querySelector('#agent-panel-transcript').hidden`, 'the conversation to be shown again');

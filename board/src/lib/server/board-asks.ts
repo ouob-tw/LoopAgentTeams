@@ -172,7 +172,7 @@ function standing(files: AskFiles, now: number, executionWaitMs: number): { stat
 	if (!result) return at('waiting', null);
 	if (result.kind === 'terminal') return at(result.decision === 'deny' ? 'terminal_denied' : 'terminal', result.at);
 	if (result.kind === 'interrupted' || result.kind === 'handed_back') return at(result.kind, result.at);
-	if (result.kind === 'timeout') return at(relayState(ask.id, late, resend, 'timed_out', 'relayed'), relayEnd(late));
+	if (result.kind === 'timeout') return at(relayState(ask.id, late, resend, 'timed_out', 'relayed'), relayEnd(late) ?? ask.outcome_at ?? result.at);
 	if (allowedLate(files)) {
 		const expires = Date.parse(ask.outcome_at ?? result.at ?? ask.created_at) + executionWaitMs;
 		// Seen run after the wait ended counts for nothing: the card already said no one was told.
@@ -387,7 +387,8 @@ function logEnd(stateDir: string, ask: BoardAsk, agents: Agent[], at: number, er
 export function settleAsks(config: Pick<BoardConfig, 'asksDir' | 'stateDir' | 'askExecutionWaitMs'>, agents: Agent[], now = Date.now()): void {
 	const dir = config.asksDir;
 	for (const ask of readAsks(dir, { now, executionWaitMs: config.askExecutionWaitMs })) {
-		if (ask.endedAt !== null && now - Date.parse(ask.endedAt) >= ASK_RETENTION_MS) {
+		// Its message is being sent, and the send writes its outcome beside the ask when it returns.
+		if (ask.state !== 'relaying' && ask.endedAt !== null && now - Date.parse(ask.endedAt) >= ASK_RETENTION_MS) {
 			for (const suffix of ASK_SUFFIXES) rmSync(join(dir, `${ask.id}${suffix}`), { force: true });
 			continue;
 		}

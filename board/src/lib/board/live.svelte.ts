@@ -14,6 +14,10 @@ import type { UsageStyle } from './usage.ts';
 import { justRecorded } from './question-message.ts';
 import type { BoardSnapshot, InboxQuestion } from './types.ts';
 
+/** How long the refresh icon stays turning per turn: the page's 1s animation, and a little for it
+ *  to start a frame or so after the refresh does. */
+const SPIN_MS = 1_050;
+
 export class LiveBoard {
 	snapshot: BoardSnapshot;
 	link = $state<LinkState>('connecting');
@@ -176,12 +180,15 @@ export class LiveBoard {
 
 	async refresh(): Promise<void> {
 		this.refreshing = true;
+		const started = performance.now();
 		try {
 			await this.#connection?.refresh();
 		} catch {
-			toasts.show('failed', '重新整理失敗，請稍後再試。');
+			// While the link is down the red refresh button says it all.
+			if (this.link !== 'offline') toasts.show('failed', '重新整理失敗，請稍後再試。');
 		} finally {
-			this.refreshing = false;
+			// The icon stops at the end of a turn, at least one, so a quick answer still shows.
+			setTimeout(() => (this.refreshing = false), SPIN_MS - ((performance.now() - started) % SPIN_MS));
 		}
 	}
 }
