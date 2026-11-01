@@ -404,6 +404,10 @@ def add_visual_links(text, visuals):
     """Append ``visuals``, each ``[option letter|][label|]url``, as the section's last lines."""
     if not visuals:
         return text
+    # The parser trims each field, so a line break must be caught before the text is stored as it came.
+    for visual in visuals:
+        if not visual.isprintable():
+            raise ValueError(f"demo link refused: control characters in {visual!r}")
     _check_visual_links([_parse_visual(visual) for visual in visuals])
     lines = "\n".join(_VISUAL_MARKER + visual for visual in visuals)
     return f"{text.rstrip()}\n\n{lines}\n"

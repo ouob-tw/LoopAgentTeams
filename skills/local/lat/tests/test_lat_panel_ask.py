@@ -529,6 +529,24 @@ class VisualLinkTest(AskTestCase):
                 self.assertIn("demo link refused", result.stderr)
                 self.assertFalse(self.questions.exists())
 
+    def test_a_line_break_trimmed_from_a_field_still_writes_nothing(self):
+        for bad in (f"Z|\n新版|{self.URL}", f"A|\n新版|{self.URL}", f"A|新版|\n{self.URL}", f"{self.URL}\n"):
+            with self.subTest(bad):
+                for result in (
+                    self.upsert("--visual", bad),
+                    self.ask(SECTION, "--advisor", "exempt requirement-discussion", "--session-id", SESSION,
+                             "--visual", bad),
+                ):
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("demo link refused", result.stderr)
+                self.assertFalse(self.questions.exists())
+                self.assertFalse(self.record().exists())
+        # Rewriting an existing question takes the same path.
+        self.assertEqual(self.upsert("--visual", f"A|新版|{self.URL}").returncode, 0)
+        before = self.questions.read_text()
+        self.assertNotEqual(self.upsert("--visual", f"Z|\n新版|{self.URL}").returncode, 0)
+        self.assertEqual(self.questions.read_text(), before)
+
     def test_a_letter_must_be_one_of_the_options(self):
         for text, letter in ((SECTION, "C"), ("## 還有什麼想法？\n\n請自由回答。\n", "A")):
             with self.subTest(letter):
