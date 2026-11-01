@@ -276,10 +276,10 @@ test('an ask past its 7 days stays while its message is being sent again', async
 	putAsk('resent', { ageMs: 8 * DAY });
 	timeOut('resent', new Date(Date.now() - 8 * DAY));
 	// Past 7 days in a moment, while the resend below takes longer than that.
-	writeFileSync(join(asksDir, 'resent.late.json'), JSON.stringify({ kind: 'answer', answers: { 'Pick a color?': 'Red' }, picks: null, at: new Date(Date.now() - 7 * DAY + 300).toISOString() }));
+	writeFileSync(join(asksDir, 'resent.late.json'), JSON.stringify({ kind: 'answer', answers: { 'Pick a color?': 'Red' }, picks: null, at: new Date(Date.now() - 7 * DAY + 500).toISOString() }));
 	setHerdr(true, { slowMs: { 'agent prompt': 1_500 } });
 	const sending = resend('resent');
-	await sleep(600);
+	await sleep(800);
 	expect(await stateOf('resent')).toBe('relaying');
 	expect((await sending).status).toBe(200);
 	expect(await stateOf('resent')).toBe('relayed');

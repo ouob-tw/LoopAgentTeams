@@ -178,9 +178,9 @@ function standing(files: AskFiles, now: number, executionWaitMs: number): { stat
 		// Seen run after the wait ended counts for nothing: the card already said no one was told.
 		if (executed && Date.parse(executed.at) < expires) {
 			if (executed.kind === 'ambiguous') return at('allowed_unmatched', executed.at);
-			// Being told is still `executed`: it stays in 待辦 until told, and comes back if that fails.
+			// Being told the first time is still `executed`: it stays in 待辦 until told, or if that fails.
 			const told = relayState(ask.id, notified, resend, 'executed', 'notified');
-			return at(told === 'relaying' ? 'executed' : told, relayEnd(notified));
+			return at(told === 'relaying' && !resend ? 'executed' : told, relayEnd(notified));
 		}
 		return now >= expires ? at('allowed_expired', new Date(expires).toISOString()) : at('allowed_waiting', null);
 	}

@@ -241,6 +241,22 @@ test('Codex being told stays in 待辦 as executed until it was told', async () 
 	expect([...seen]).toEqual(['executed', 'notified']);
 });
 
+test('a Codex notice sent again stays among the processed while it goes', async () => {
+	putAsk('again', { client: 'codex', session: 's-cx', outcome: 'allowed' });
+	answered('again', 'allow');
+	write('again.stopped.json', { at: iso(Date.now()) });
+	write('again.executed.json', { kind: 'executed', summary: '', at: iso(Date.now()) });
+	// Taken by a board that stopped while sending.
+	write('again.notified.json', { at: iso(Date.now()) });
+	expect((await askOf('again'))!.state).toBe('relay_unknown');
+	setHerdr(['s-cx'], { slowMs: { 'agent prompt': 800 } });
+	const sending = fixture.fetch('/api/asks/resend', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'again' }), cookie });
+	await sleep(300);
+	expect((await askOf('again'))!.state).toBe('relaying');
+	expect((await sending).status).toBe(200);
+	expect((await askOf('again'))!.state).toBe('notified');
+});
+
 test('Codex allowed after its turn ended and not seen run in the wait: not told, then or later; a run two asks match is not told either', async () => {
 	putAsk('expired', { client: 'codex', session: 's-cx', outcome: 'allowed', outcomeAt: Date.now() - EXECUTION_WAIT_MS - 100 });
 	answered('expired', 'allow');
