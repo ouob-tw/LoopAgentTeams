@@ -90,7 +90,9 @@ BARE_SUBSTITUTION = re.compile(r'\$\{?\w+\}?|\$\(.*\)|`.*`', re.S)
 OPERATORS = ';&|()`\n'
 # Options of PREFIXES that take the next word as their value (sudo -u USER, nice -n 10).
 VALUE_OPTIONS = {'sudo': {'-u', '-g', '-h', '-p', '-r', '-t', '-C', '-D', '-R', '-T', '-U',
-                          '--user', '--group'},
+                          '--user', '--group', '--host', '--prompt', '--role', '--type',
+                          '--chdir', '--chroot', '--close-from', '--command-timeout',
+                          '--other-user'},
                  'nice': {'-n', '--adjustment'},
                  'ionice': {'-c', '-n', '--class', '--classdata'},
                  'env': {'-u', '-C', '-S', '--unset', '--chdir'},
@@ -104,6 +106,8 @@ PREFIXES = {'sudo', 'nice', 'ionice', 'env', 'exec', 'command', 'xargs', 'nohup'
             'timeout'}
 ASSIGNMENT = re.compile(r'^[A-Za-z_]\w*=')
 DURATION = re.compile(r'[\d.]+[smhd]?')
+# A redirection before a command; without an attached target the next word is that target.
+REDIRECTION = re.compile(r'\d*[<>]+&?(?P<target>.*)')
 # Words that may come before a command in a statement.
 SHELL_KEYWORDS = {'{', '!', 'if', 'then', 'elif', 'else', 'while', 'until', 'do'}
 # pkill short options that take a value, so the rest of a cluster such as -ufoo is that value.
@@ -420,9 +424,14 @@ def quoted_at(line, index):
     return any(i == index and quote for i, _, quote in _quote_states(line))
 
 
-def heredocs(command):
-    """Yield (delimiter, quoted, body start, body end, end of the delimiter line or None when it
-    never comes) for each heredoc.
+def heredoc_end(text, opener, name, position):
+    """The match of the delimiter line closing a heredoc whose body starts at position, or None."""
+    strip = r'\t*' if opener.group(1) else ''
+    return re.compile(r'^' + strip + re.escape(name) + r'$', re.M).search(text, position)
+
+
+def expanding_heredoc(command):
+    """(delimiter, what) for the first unquoted heredoc whose body substitutes a command.
 
     Walks the heredocs in order and skips each body, so text inside a quoted heredoc that
     looks like another heredoc is not read as one. Several openers on one line take their
@@ -432,10 +441,10 @@ def heredocs(command):
     while True:
         match = HEREDOC_START.search(command, position)
         if not match:
-            return
+            return None
         line_end = command.find('\n', match.end())
         if line_end < 0:
-            return
+            return None
         header = command[match.end():line_end]
         header = header[:shell_text_end(header)]
         openers = [match, *(m for m in HEREDOC_START.finditer(header)
@@ -443,35 +452,14 @@ def heredocs(command):
         position = line_end + 1
         for opener in openers:
             name, quoted = heredoc_word(opener.group(2))
-            strip = r'\t*' if opener.group(1) else ''
-            end = re.compile(r'^' + strip + re.escape(name) + r'$', re.M).search(command, position)
+            end = heredoc_end(command, opener, name, position)
+            if not quoted:
+                found = substitution(command[position:end.start() if end else len(command)])
+                if found:
+                    return name, found
             if not end:
-                yield name, quoted, position, len(command), None
-                return
-            yield name, quoted, position, end.start(), end.end()
+                return None
             position = end.end() + 1
-
-
-def expanding_heredoc(command):
-    """(delimiter, what) for the first unquoted heredoc whose body substitutes a command."""
-    for name, quoted, start, stop, _ in heredocs(command):
-        found = None if quoted else substitution(command[start:stop])
-        if found:
-            return name, found
-    return None
-
-
-def without_heredoc_bodies(command):
-    """command with each heredoc body and delimiter line removed. An opener whose delimiter
-    never comes is more likely text (`"a << b"`), so what follows it stays."""
-    kept, position = [], 0
-    for _, _, start, _, end in heredocs(command):
-        if end is None:
-            break
-        kept.append(command[position:start])
-        position = end
-    kept.append(command[position:])
-    return ''.join(kept)
 
 
 def scan_root(command, roots):
@@ -587,7 +575,7 @@ def repo_install(command, cwd):
     `cd DIR` moves the directory relative sources are read from, within its `( )` or
     `sh -c` scope. A source is a word that looks like a path (~, /, ., $VAR or a slash);
     skill names and options are not."""
-    tokens = shell_tokens(HEREDOC.sub('', command))
+    tokens = shell_tokens(command)
     base, scopes, words = Path(cwd), [], []
     for token in [*tokens, (';',)]:
         if isinstance(token, str):
@@ -604,11 +592,29 @@ def repo_install(command, cwd):
     return None
 
 
+def double_quote_end(text, start):
+    """Where the double quote opened before start closes. A heredoc inside `$(...)` is skipped
+    whole, so quotes in its body do not close it (git commit -m "$(cat <<'EOF' ...)."""
+    i, substituting = start, False
+    while i < len(text) and text[i] != '"':
+        if text[i] == '\\':
+            i += 2
+            continue
+        substituting = substituting or text.startswith('$(', i)
+        opener = HEREDOC_START.match(text, i) if substituting else None
+        line_end = text.find('\n', opener.end()) if opener else -1
+        end = line_end >= 0 and heredoc_end(text, opener, heredoc_word(opener.group(2))[0],
+                                            line_end + 1)
+        i = end.end() if end else i + 1
+    return i
+
+
 def shell_tokens(text):
     """Words (quotes removed) and operators (1-tuples) of shell text. An operator is only
     an unquoted, unescaped character of OPERATORS; `#` starting a word comments out the
-    rest of the line. An unclosed quote runs to the end of the text."""
-    tokens, word, quoted, i = [], [], False, 0
+    rest of the line. An unclosed quote runs to the end of the text. Heredoc bodies are
+    dropped, up to their delimiter line or the end of the text. The & of `>&` stays in its word."""
+    tokens, word, quoted, i, bodies = [], [], False, 0, []
 
     def end_word():
         nonlocal word, quoted
@@ -624,9 +630,8 @@ def shell_tokens(text):
             i += 2
             continue
         if char in '\'"':
-            close = i + 1
-            while close < len(text) and text[close] != char:
-                close += 2 if char == '"' and text[close] == '\\' else 1
+            close = double_quote_end(text, i + 1) if char == '"' else text.find("'", i + 1)
+            close = len(text) if close < 0 else close
             word.append(text[i + 1:close])
             quoted, i = True, close + 1
             continue
@@ -634,9 +639,22 @@ def shell_tokens(text):
             i = text.find('\n', i)
             i = len(text) if i < 0 else i
             continue
-        if char in OPERATORS:
+        opener = HEREDOC_START.match(text, i) if char == '<' else None
+        if opener:
+            end_word()
+            bodies.append(opener)
+            i = opener.end()
+            continue
+        if char == '&' and word[-1:] in (['>'], ['<']):
+            word.append(char)
+        elif char in OPERATORS:
             end_word()
             tokens.append((char,))
+            if char == '\n':
+                for body in bodies:
+                    end = heredoc_end(text, body, heredoc_word(body.group(2))[0], i + 1)
+                    i = end.end() if end else len(text)
+                bodies = []
         elif char in ' \t\r':
             end_word()
         else:
@@ -652,7 +670,10 @@ def after_prefixes(words):
     prefix = None
     while words:
         word, name = words[0], os.path.basename(words[0])
-        if name in PREFIXES:
+        redirection = REDIRECTION.fullmatch(word)
+        if redirection:
+            words = words[1:] if redirection.group('target') else words[2:]
+        elif name in PREFIXES:
             prefix, words = name, words[1:]
         elif ASSIGNMENT.match(word) or prefix and DURATION.fullmatch(word):
             words = words[1:]
@@ -728,7 +749,7 @@ def pattern_kill(command):
     read with shell quoting, so quoted text and heredoc bodies are data; a `sh -c` script is
     read as a command of its own."""
     words = []
-    for token in [*shell_tokens(without_heredoc_bodies(command)), (';',)]:
+    for token in [*shell_tokens(command), (';',)]:
         if isinstance(token, str):
             words.append(token)
             continue

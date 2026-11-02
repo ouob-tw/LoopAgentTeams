@@ -254,7 +254,14 @@ class PatternKillTests(HookCase):
                         'echo `pkill -f node`', '(pkill -f node)', '{ pkill -f node; }',
                         '! pkill -f node', 'if true; then pkill -f node; fi',
                         'for p in a; do pkill -f $p; done', 'pkill -f node &',
-                        "cat <<'EOF'\nnote\nEOF\npkill -f node"]:
+                        "cat <<'EOF'\nnote\nEOF\npkill -f node",
+                        'sudo --host localhost pkill -f node', '> /tmp/out pkill -f node',
+                        '>/tmp/out pkill -f node', '2>/dev/null killall node',
+                        '>&2 pkill -f node', "bash -c '> /tmp/out pkill -f node'",
+                        'sudo > /tmp/out pkill -f node',
+                        'echo "<<EOF"\npkill -f node\nEOF', 'echo \'<<EOF\'\nkillall node\nEOF',
+                        '# <<EOF\npkill -f node\nEOF',
+                        'echo "a << b"\npkill -f node']:
             with self.subTest(command):
                 self.assert_kill_blocked(command)
 
@@ -274,6 +281,9 @@ class PatternKillTests(HookCase):
                         "cat <<'END-NOTE'\npkill -f node\nEND-NOTE",
                         'cat <<\\EOF\nkillall node\nEOF',
                         "cat <<-'EOF'\n\tpkill -f node\n\tEOF",
+                        "cat <<'EOF'\npkill -f node", "cat <<'A' <<'B'\nkillall x\nA\nkillall y\nB",
+                        'cat <<< "killall node"',
+                        'git commit -m "$(cat <<\'EOF\'\nsaid "x\nkillall is blocked\nEOF\n)"',
                         """git commit -F - <<'EOF'\nfix\nkillall node\nEOF\ngit log -1"""]:
             with self.subTest(command):
                 self.assert_allowed(self.bash(command))
