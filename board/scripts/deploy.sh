@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy the board from the committed HEAD, never from the working folder's uncommitted edits:
 # build in a temporary detached git worktree, swap the result in as build/, restart the service
-# and wait for the login page. Before the swap a failure leaves the live build/ untouched; after
+# and wait for the login page, then print the inbox. Before the swap a failure leaves the live build/ untouched; after
 # it a failed restart or login check puts the previous build/ back and restarts once more.
 #
 #   bash board/scripts/deploy.sh
@@ -88,6 +88,8 @@ if sh -c "$restart" >&2 && wait_for_login; then
 	say "login page answers 200 on port $port"
 	[ -d "$board/build-prev" ] && trash "$board/build-prev"
 	say "deployed $head"
+	# The login page says the service is up; this says what the new build makes of the real data.
+	(cd "$board" && bun run --silent board inbox) >&2 || say "the inbox could not be read in full; run: bun run board inbox"
 	exit 0
 fi
 

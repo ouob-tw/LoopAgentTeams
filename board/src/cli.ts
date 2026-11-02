@@ -1,18 +1,20 @@
 // Host commands for the board: start the built server, set the login password, list and revoke
-// logged-in devices. Runs under Bun, or under Node 22.18+ (22.17 with --experimental-strip-types).
+// logged-in devices, print what the inbox holds. Runs under Bun, or under Node 22.18+ (22.17 with --experimental-strip-types).
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './lib/server/config.ts';
 import { listDevices, revokeDevice } from './lib/server/devices.ts';
+import { formatInboxStatus, readInboxStatus } from './lib/server/inbox-status.ts';
 import { hasPassword, setPassword } from './lib/server/password.ts';
 
 const USAGE = `用法：
   start [--host <位址>] [--port <連接埠>]   啟動看板（需先 build）
   password                                  設定或變更登入密碼（輸入兩次）
   devices                                   列出已登入的裝置
-  revoke <裝置 ID>                          撤銷一台裝置`;
+  revoke <裝置 ID>                          撤銷一台裝置
+  inbox                                     列出待辦與已處理的現況（只讀，不需登入）`;
 
 const DEFAULT_PORT = '7100';
 
@@ -134,6 +136,12 @@ async function main(argv: string[]): Promise<number> {
 		}
 		console.log(`已撤銷裝置 ${args[0]}。`);
 		return 0;
+	}
+
+	if (command === 'inbox') {
+		const status = await readInboxStatus(config);
+		console.log(formatInboxStatus(status));
+		return status.problems.length ? 1 : 0;
 	}
 
 	console.error(USAGE);
