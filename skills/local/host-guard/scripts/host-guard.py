@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PreToolUse hook that keeps agents from starving a shared host.
 
-Six rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
+Seven rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
 - whole-disk scans: find / du / grep -r / rg / fd / tree / ls -R rooted at /, /mnt,
   /media or a configured extra root are blocked;
 - CPU load generators (busy loops, stress, stress-ng, sysbench cpu, yes > /dev/null)
@@ -14,7 +14,9 @@ Six rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
 - `bunx skills add` from a LoopAgentTeams checkout is blocked: its install script installs
   only skills whose full suite passed for their current content;
 - a test runner (bun test, pytest, vitest, cargo test) must run under a memory limit and a
-  timeout: a runaway test can take all the memory of the host.
+  timeout: a runaway test can take all the memory of the host;
+- pkill -f and killall are blocked: they reach every process that matches, including the
+  caller's own shell, other agents and live services. Kill by PID instead.
 """
 import argparse
 import copy
@@ -85,13 +87,27 @@ SEPARATORS = r'&&|\|\||[;&|()\n]'
 LITERAL = {'$': '\x01', '`': '\x02', '~': '\x03'}
 BARE_SUBSTITUTION = re.compile(r'\$\{?\w+\}?|\$\(.*\)|`.*`', re.S)
 # Command words for the `bunx skills add` rule, read with shell quoting.
-OPERATORS = ';&|()\n'
+OPERATORS = ';&|()`\n'
 # Options of PREFIXES that take the next word as their value (sudo -u USER, nice -n 10).
-VALUE_OPTIONS = {'-u', '-g', '-n', '-s', '-k', '-C', '-D', '-p', '-r', '-t', '-U', '-c', '-S'}
+VALUE_OPTIONS = {'sudo': {'-u', '-g', '-h', '-p', '-r', '-t', '-C', '-D', '-R', '-T', '-U',
+                          '--user', '--group'},
+                 'nice': {'-n', '--adjustment'},
+                 'ionice': {'-c', '-n', '--class', '--classdata'},
+                 'env': {'-u', '-C', '-S', '--unset', '--chdir'},
+                 'exec': {'-a'},
+                 'xargs': {'-I', '-n', '-P', '-L', '-s', '-a', '-d', '-E', '--max-args',
+                           '--max-procs', '--max-lines', '--max-chars', '--arg-file', '--delimiter'},
+                 'time': {'-f', '-o', '--format', '--output'},
+                 'timeout': {'-k', '-s', '--kill-after', '--signal'}}
 SHELLS = {'sh', 'bash', 'zsh', 'dash'}
 PREFIXES = {'sudo', 'nice', 'ionice', 'env', 'exec', 'command', 'xargs', 'nohup', 'time',
             'timeout'}
 ASSIGNMENT = re.compile(r'^[A-Za-z_]\w*=')
+DURATION = re.compile(r'[\d.]+[smhd]?')
+# Words that may come before a command in a statement.
+SHELL_KEYWORDS = {'{', '!', 'if', 'then', 'elif', 'else', 'while', 'until', 'do'}
+# pkill short options that take a value, so the rest of a cluster such as -ufoo is that value.
+PKILL_VALUE_FLAGS = 'gGOPstuUFrq'
 INSTALL_SCRIPT = 'scripts/install-skills.py'
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
                         r'(?P<path>(?:[\w.~/-]*/)?[\w.-]+\.sh)\b')
@@ -129,6 +145,10 @@ INSTALL_MESSAGE = ('Blocked: this installs skills straight from the LoopAgentTea
                    '  uv run --no-project python {script} [--skill NAME ...]\n'
                    'Installs from other sources (for example mattpocock/skills) are not '
                    'affected.')
+KILL_MESSAGE = ('Blocked: {tool} reaches every process that matches, including your own shell, '
+                'other agents and live services. Find the process with `pgrep -af PATTERN`, '
+                'check that it is yours, then `kill <PID>`; for a process you start yourself, '
+                'keep its PID (`$!`).')
 
 
 def config_path():
@@ -400,8 +420,9 @@ def quoted_at(line, index):
     return any(i == index and quote for i, _, quote in _quote_states(line))
 
 
-def expanding_heredoc(command):
-    """(delimiter, what) for the first unquoted heredoc whose body substitutes a command.
+def heredocs(command):
+    """Yield (delimiter, quoted, body start, body end, end of the delimiter line or None when it
+    never comes) for each heredoc.
 
     Walks the heredocs in order and skips each body, so text inside a quoted heredoc that
     looks like another heredoc is not read as one. Several openers on one line take their
@@ -411,10 +432,10 @@ def expanding_heredoc(command):
     while True:
         match = HEREDOC_START.search(command, position)
         if not match:
-            return None
+            return
         line_end = command.find('\n', match.end())
         if line_end < 0:
-            return None
+            return
         header = command[match.end():line_end]
         header = header[:shell_text_end(header)]
         openers = [match, *(m for m in HEREDOC_START.finditer(header)
@@ -424,13 +445,33 @@ def expanding_heredoc(command):
             name, quoted = heredoc_word(opener.group(2))
             strip = r'\t*' if opener.group(1) else ''
             end = re.compile(r'^' + strip + re.escape(name) + r'$', re.M).search(command, position)
-            if not quoted:
-                found = substitution(command[position:end.start() if end else len(command)])
-                if found:
-                    return name, found
             if not end:
-                return None
+                yield name, quoted, position, len(command), None
+                return
+            yield name, quoted, position, end.start(), end.end()
             position = end.end() + 1
+
+
+def expanding_heredoc(command):
+    """(delimiter, what) for the first unquoted heredoc whose body substitutes a command."""
+    for name, quoted, start, stop, _ in heredocs(command):
+        found = None if quoted else substitution(command[start:stop])
+        if found:
+            return name, found
+    return None
+
+
+def without_heredoc_bodies(command):
+    """command with each heredoc body and delimiter line removed. An opener whose delimiter
+    never comes is more likely text (`"a << b"`), so what follows it stays."""
+    kept, position = [], 0
+    for _, _, start, _, end in heredocs(command):
+        if end is None:
+            break
+        kept.append(command[position:start])
+        position = end
+    kept.append(command[position:])
+    return ''.join(kept)
 
 
 def scan_root(command, roots):
@@ -605,24 +646,44 @@ def shell_tokens(text):
     return tokens
 
 
+def after_prefixes(words):
+    """The words of a simple command past assignments and PREFIXES with their options and
+    durations; empty for `command -v NAME`, which only looks NAME up."""
+    prefix = None
+    while words:
+        word, name = words[0], os.path.basename(words[0])
+        if name in PREFIXES:
+            prefix, words = name, words[1:]
+        elif ASSIGNMENT.match(word) or prefix and DURATION.fullmatch(word):
+            words = words[1:]
+        elif prefix and word.startswith('-'):
+            if prefix == 'command' and word in ('-v', '-V'):
+                return []
+            words = words[2:] if word in VALUE_OPTIONS.get(prefix, ()) else words[1:]
+        else:
+            break
+    return words
+
+
+def shell_script(words):
+    """The script of a shell command's -c option, or None."""
+    flag = next((i for i, w in enumerate(words[1:], 1)
+                 if w.startswith('-') and not w.startswith('--') and 'c' in w), None)
+    return words[flag + 1] if flag is not None and flag + 1 < len(words) else None
+
+
 def command_install(words, base):
     """(checkout the simple command installs from or None, directory after it)."""
     def where(word):
         return base / os.path.expanduser(os.path.expandvars(word))
 
-    prefixed = False
-    while words and (ASSIGNMENT.match(words[0]) or os.path.basename(words[0]) in PREFIXES
-                     or prefixed and (words[0].startswith('-') or words[0][:1].isdigit())):
-        prefixed = prefixed or os.path.basename(words[0]) in PREFIXES
-        words = words[2:] if prefixed and words[0] in VALUE_OPTIONS else words[1:]
+    words = after_prefixes(words)
     name = os.path.basename(words[0]) if words else ''
     if name == 'cd':
         target = [w for w in words[1:] if w not in ('--', '-L', '-P', '-e', '-@')]
         return None, where(target[0] if target else '~')
     if name in SHELLS:
-        flag = next((i for i, w in enumerate(words[1:], 1)
-                     if w.startswith('-') and not w.startswith('--') and 'c' in w), None)
-        body = words[flag + 1] if flag is not None and flag + 1 < len(words) else None
+        body = shell_script(words)
         return (repo_install(body, base) if body else None), base
     if name in ('bunx', 'npx'):
         rest = words[1:]
@@ -643,6 +704,48 @@ def command_install(words, base):
         if repo:
             return repo, base
     return None, base
+
+
+def pkill_full(args):
+    """True when pkill arguments ask to match the full command line."""
+    for word in args:
+        if word == '--':
+            return False
+        if word.startswith('--'):
+            if '--full'.startswith(word):
+                return True
+        elif word.startswith('-'):
+            for char in word[1:]:
+                if char == 'f':
+                    return True
+                if char in PKILL_VALUE_FLAGS:
+                    break
+    return False
+
+
+def pattern_kill(command):
+    """'pkill -f' or 'killall' when a command of the shell text runs it, else None. The text is
+    read with shell quoting, so quoted text and heredoc bodies are data; a `sh -c` script is
+    read as a command of its own."""
+    words = []
+    for token in [*shell_tokens(without_heredoc_bodies(command)), (';',)]:
+        if isinstance(token, str):
+            words.append(token)
+            continue
+        while words and words[0] in SHELL_KEYWORDS:
+            words = words[1:]
+        words = after_prefixes(words)
+        name = os.path.basename(words[0]) if words else ''
+        if name in SHELLS:
+            found = pattern_kill(shell_script(words) or '')
+            if found:
+                return found
+        elif name == 'killall':
+            return name
+        elif name == 'pkill' and pkill_full(words[1:]):
+            return 'pkill -f'
+        words = []
+    return None
 
 
 def shell_text(command):
@@ -682,6 +785,10 @@ def cmd_hook():
     repo = repo_install(command, cwd if os.path.isdir(cwd) else os.getcwd())
     if repo:
         print(INSTALL_MESSAGE.format(repo=repo, script=repo / INSTALL_SCRIPT), file=sys.stderr)
+        return 2
+    killer = pattern_kill(command)
+    if killer:
+        print(KILL_MESSAGE.format(tool=killer), file=sys.stderr)
         return 2
     if unlimited_tests(command) and memory_limit_usable():
         print(TEST_MESSAGE.format(limit=config['test_memory']), file=sys.stderr)

@@ -198,7 +198,7 @@ class TestRunTests(HookCase):
 
     def test_mentions_are_not_test_runs(self):
         for command in ['grep pytest pyproject.toml', 'uv pip install pytest', 'which pytest',
-                        'echo "bun test failed"', "pkill -f 'bun test tests/unit'",
+                        'echo "bun test failed"', "pgrep -f 'bun test tests/unit'",
                         'cargo testing', 'bun install', 'cargo build', 'ls pytest.ini',
                         'git log --grep pytest', 'cat <<\'EOF\'\nbun test\nEOF',
                         "suite-gate.py run -- 'uv run pytest -q'",
@@ -219,6 +219,73 @@ class TestRunTests(HookCase):
         self.assertIn('MemoryMax=12G', self.run_hook('pytest').stderr)
         self.config.write_text(json.dumps({'test_memory_limit': '1 G; rm'}))
         self.assertIn('MemoryMax=40G', self.run_hook('pytest').stderr)
+
+
+class PatternKillTests(HookCase):
+    """pkill -f and killall reach every matching process, not only the one meant."""
+
+    def assert_kill_blocked(self, command):
+        result = self.bash(command)
+        self.assert_blocked(result, 'kill <PID>')
+        self.assertIn('pgrep -af', result.stderr)
+
+    def test_pattern_kills_are_blocked(self):
+        for command in ["pkill -f 'http.server 7111 --bind'", 'pkill --full node', 'pkill --ful node',
+                        'pkill -9fx node', 'pkill -xf node', 'pkill -9 -f node', 'pkill node -f',
+                        'pkill "-f" node', 'pkill -TERM -f node', 'pkill -u swy -f node',
+                        '/usr/bin/pkill -f node', '\\pkill -f node', 'killall node',
+                        'killall -9 node', '/usr/bin/killall node']:
+            with self.subTest(command):
+                self.assert_kill_blocked(command)
+
+    def test_prefixes_and_nested_commands_are_blocked(self):
+        for command in ['sudo pkill -f node', 'sudo -u swy pkill -f node', 'sudo -n killall node',
+                        'sudo --user swy pkill -f node', 'timeout 5 pkill -f node',
+                        'timeout 5s killall node', 'timeout -k 5 10 pkill -f node',
+                        'timeout --signal KILL 5 pkill -f node', 'timeout .5 pkill -f node',
+                        'echo node | xargs pkill -f', 'echo node | xargs -r pkill -f',
+                        'echo node | xargs -I {} pkill -f {}', 'echo node | xargs -n 1 killall',
+                        'nice -n 5 pkill -f node', 'nohup killall node', 'env A=1 pkill -f node',
+                        'A=1 pkill -f node', 'command pkill -f node', 'exec killall node',
+                        "bash -c 'pkill -f node'", "bash -lc 'killall node'", 'sh -c "pkill -f node"',
+                        "/bin/bash -c 'pkill -f node'", "sudo bash -c 'pkill -f node'",
+                        """bash -c "bash -c 'pkill -f node'\"""", "cd /tmp && pkill -f node",
+                        'true; killall node', 'false || pkill -f node', 'x=$(pkill -f node)',
+                        'echo `pkill -f node`', '(pkill -f node)', '{ pkill -f node; }',
+                        '! pkill -f node', 'if true; then pkill -f node; fi',
+                        'for p in a; do pkill -f $p; done', 'pkill -f node &',
+                        "cat <<'EOF'\nnote\nEOF\npkill -f node"]:
+            with self.subTest(command):
+                self.assert_kill_blocked(command)
+
+    def test_codex_list_command_is_blocked(self):
+        result = self.hook({'tool_name': 'Bash', 'tool_input': {
+            'command': ['bash', '-lc', 'pkill -f node']}})
+        self.assert_blocked(result, 'kill <PID>')
+
+    def test_mentions_pass(self):
+        for command in ['grep pkill notes.md', 'grep -f list pkill', 'echo pkill -f node',
+                        'echo killall', 'man killall', 'which killall', 'command -v killall',
+                        "echo 'pkill -f node'", 'echo "; killall node"',
+                        'git commit -m "stop using pkill -f node"', '# pkill -f node',
+                        'echo done # killall node', 'echo \\`pkill -f node\\`',
+                        "cat <<'EOF'\npkill -f node\nEOF",
+                        'cat <<EOF\nkillall node\nEOF',
+                        "cat <<'END-NOTE'\npkill -f node\nEND-NOTE",
+                        'cat <<\\EOF\nkillall node\nEOF',
+                        "cat <<-'EOF'\n\tpkill -f node\n\tEOF",
+                        """git commit -F - <<'EOF'\nfix\nkillall node\nEOF\ngit log -1"""]:
+            with self.subTest(command):
+                self.assert_allowed(self.bash(command))
+
+    def test_narrow_kills_pass(self):
+        for command in ['pkill node', 'pkill -x node', 'pkill -9 node', 'pkill -HUP node',
+                        'pkill -SIGTERM node', 'pkill -ufoo node', 'pkill -u foo node',
+                        'pkill --signal TERM node', 'pkill -- -f', 'pgrep -f node', 'pgrep -af node',
+                        'kill 123', 'kill -9 123', 'sudo kill 123', 'kill $(cat pidfile)',
+                        'pgrep -f node | xargs kill', 'killall5-notes']:
+            with self.subTest(command):
+                self.assert_allowed(self.bash(command))
 
 
 class HeredocTests(HookCase):
@@ -410,7 +477,8 @@ class SkillsAddTests(HookCase):
                 ('bunx skills add ~/Loop\\AgentTeams', None),
                 ('bunx skills add "$HOME"/\'LoopAgentTeams\'', None),
                 ('CI=1 \\\n  bunx skills add ~/LoopAgentTeams', None),
-                ('env CI=1 \\\n  bunx \\\n  skills add ~/LoopAgentTeams --skill lat', None)]:
+                ('env CI=1 \\\n  bunx \\\n  skills add ~/LoopAgentTeams --skill lat', None),
+                ('echo x | xargs -r bunx skills add ~/LoopAgentTeams', None)]:
             with self.subTest(command):
                 result = self.bash(command, cwd)
                 self.assert_blocked(result, f'{self.repo}/scripts/install-skills.py')

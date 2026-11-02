@@ -274,6 +274,15 @@ class AskHelpTests(AskTestCase):
         self.assertIn("- version: r2\n", self.record().read_text())
 
 
+class HelpTextTests(AskTestCase):
+    def test_ask_and_upsert_help_show_how_to_write_the_done_option(self):
+        for command in ("ask", "upsert"):
+            with self.subTest(command):
+                result = self.cli("question", command, "--help")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("- A. 已完成", result.stdout)
+
+
 class RecordChatTests(AskTestCase):
     def setUp(self):
         super().setUp()

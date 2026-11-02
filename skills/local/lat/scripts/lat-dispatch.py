@@ -48,6 +48,7 @@ SCOPE_NOTE = ('Write restrictions in this section do not apply to updating the t
 CARD_RULE_READ_ONLY = 'The orchestrator maintains the task card; do not edit it.'
 LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does not hold, report to the orchestrator first and do not act.
 - Do live actions inside the `live actions` quota yourself; do not ask the orchestrator to approve each step.
+- QA with live actions keeps at least one use of the quota for the final candidate version and starts spending the quota only after the implementer says the version is final.
 - Report to the orchestrator only when: (1) you are about to exceed or have exceeded any quota; (2) a stop condition triggers; (3) a login, human-verification or risk-control signal appears; (4) a decision outside the Spec comes up; (5) you have the final result.
 - If the quota is used up and the goal is not met, stop and report; never add quota yourself.
 - The 現場動作額度 section above only supplements these two card fields; it never replaces them.'''
@@ -603,7 +604,8 @@ def build_parser():
                    'expected-checks', 'full-suite', 'runs', 'temp-paths', 'next-step'):
         card.add_argument(f'--{option}', default=NONE)
     card.add_argument('--ledger', type=Path,
-                      help='absolute path of the work ledger; adds and assigns a row for this card')
+                      help='absolute path of the work ledger; adds and assigns a row for this card. '
+                           'Needs --ticket, --stage, --evidence and --deadline together')
     card.add_argument('--ticket', help='ledger row: ticket')
     stages = ', '.join(load_script('lat-ledger').STAGES)
     card.add_argument('--stage', help=f'ledger row: stage, one of {stages} (implement is accepted '
