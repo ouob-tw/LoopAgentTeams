@@ -1,6 +1,6 @@
 <script lang="ts">
 	// The folded roster of the wide layout: one status mark per controller. A mark opens its
-	// controller and leaves the roster folded; the blank of the rail unfolds it. Hovering a
+	// controller and leaves the roster folded; the grip unfolds it. Hovering a
 	// mark, or pressing and holding it on a touch screen, explains it.
 	import { lastSegment } from '#lib/board/agents.ts';
 	import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
@@ -34,21 +34,14 @@
 	 *  that opens their list. */
 	const parts = $derived(splitRoster(controllers, Date.now()));
 
-	/** A click on the rail unfolds the roster, unless it was on a mark or a tool. */
-	function expand(event: MouseEvent) {
-		if (!(event.target as Element).closest('.entry, .tools')) onexpand();
-	}
-
 	const label = (controller: Controller) =>
 		`${controller.project} @${lastSegment(controller.hcomName)}：${STATUS_LABEL[controller.status]}` +
 		(controller.paused ? '，暫停通訊' : '') +
 		(controller.pendingCount ? `，待決 ${controller.pendingCount} 題` : '');
 </script>
 
-<!-- The grip is the keyboard's way to unfold; a click anywhere else on the rail does the same. -->
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="rail" onclick={expand}>
-	<button class="grip" aria-label="展開主控名冊" title="展開主控名冊"><PanelLeftOpen size="1.1em" /></button>
+<div class="rail">
+	<button class="grip" onclick={onexpand} aria-label="展開主控名冊" title="展開主控名冊"><PanelLeftOpen size="1.1em" /></button>
 	{#each parts.groups as group, index (group[0].id)}
 		{#if index > 0}<hr class="sep" />{/if}
 		{#each group as controller (controller.id)}
@@ -97,7 +90,6 @@
 		flex: 1;
 		padding: 0.8rem 0 0;
 		background: var(--surface);
-		cursor: var(--cursor-expand);
 		/* Touch highlights the outermost pointer ancestor, which is the whole rail, not the pressed mark. */
 		-webkit-tap-highlight-color: transparent;
 	}
@@ -135,21 +127,6 @@
 	}
 	.entry.current {
 		border-color: var(--accent);
-	}
-	/* Reaches half the rail's gap (and the border) above and below, so neighbouring marks touch,
-	   and sideways to the edges of the rail (which clips it), so the pointer never crosses the
-	   blank, and its expand cursor, between or beside them. */
-	.entry {
-		position: relative;
-	}
-	.entry::after {
-		content: '';
-		position: absolute;
-		inset: calc(-0.225rem - 1px) -1rem;
-	}
-	/* Across the line between two runs, up to where the mark above reaches. */
-	.sep + .entry::after {
-		top: calc(-0.875rem - 2px);
 	}
 	.sep {
 		flex: none;
