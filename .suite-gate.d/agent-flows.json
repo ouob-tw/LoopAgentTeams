@@ -1,0 +1,87 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/wake.ts",
+        "board/src/lib/server/paused.ts",
+        "board/src/lib/server/closed-agents.ts",
+        "board/src/lib/server/relaunch.ts",
+        "board/src/lib/server/relink.ts",
+        "board/src/lib/server/process-hooks.ts",
+        "board/src/lib/server/agent-control.ts"
+      ],
+      "tests": [
+        "board/tests/server/wake.test.ts",
+        "board/tests/server/closed.test.ts",
+        "board/tests/server/closed-agents.test.ts",
+        "board/tests/server/agent-relink.test.ts",
+        "board/tests/server/agent-close.test.ts",
+        "board/tests/server/agent-pause.test.ts",
+        "board/tests/server/agent-control.test.ts",
+        "board/tests/server/agent-switch.test.ts",
+        "board/tests/browser/herdr-controller-send.test.ts",
+        "board/tests/browser/herdr-off-roster.test.ts",
+        "board/tests/browser/agent-relink-page.test.ts",
+        "board/tests/browser/closed-agents-page.test.ts",
+        "board/tests/browser/herdr-controller-page.test.ts",
+        "board/tests/browser/ended-place.test.ts",
+        "board/tests/unit/pause-records.test.ts",
+        "board/tests/unit/closed-agents-rules.test.ts",
+        "board/tests/unit/controller-agent.test.ts",
+        "board/tests/unit/controller-status.test.ts",
+        "board/tests/unit/sent-views.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/paused.ts",
+        "board/src/lib/server/process-hooks.ts"
+      ],
+      "tests": [
+        "board/tests/browser/agents-page.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/model.ts",
+        "board/src/lib/server/send.ts",
+        "board/src/lib/server/agents.ts"
+      ],
+      "tests": [
+        "board/tests/server/wake.test.ts",
+        "board/tests/server/agent-relink.test.ts",
+        "board/tests/server/agent-pause.test.ts",
+        "board/tests/browser/herdr-controller-send.test.ts",
+        "board/tests/browser/herdr-off-roster.test.ts",
+        "board/tests/browser/closed-agents-page.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/inbox-status.ts"
+      ],
+      "tests": [
+        "board/tests/unit/inbox-status.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/routes/api/agents/pause/**",
+        "board/src/routes/api/agents/unpause/**"
+      ],
+      "tests": [
+        "board/tests/server/agent-pause.test.ts",
+        "board/tests/browser/agents-page.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/routes/api/agents/relink/**"
+      ],
+      "tests": [
+        "board/tests/server/agent-relink.test.ts",
+        "board/tests/browser/agent-relink-page.test.ts"
+      ]
+    }
+  ]
+}
