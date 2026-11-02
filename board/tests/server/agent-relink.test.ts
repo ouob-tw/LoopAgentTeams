@@ -218,6 +218,18 @@ test('a turn that starts during the checks stops it before /exit', async () => {
 	expect(hcomCalls().some((call: string[]) => call[0] === 'r')).toBe(false);
 });
 
+test('stopped and then stopped short: the record keeps its name for the next press', async () => {
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }], stop: { herdrStatus: 'working' } }));
+	expect((await act('relink')).body.ok).toBe(false);
+	expect(hasRecord()).toBe(true);
+	expect(await listed()).toMatchObject({ noHooks: true, hcom: 'paused', hcomName: 'modi' });
+	setHerdr();
+	fixture.setHcom(hcomPlan({ resumed: back('nova') }));
+	const again = await act('relink');
+	expect(again.body.ok).toBe(false);
+	expect(again.body.reason).toContain('@nova');
+});
+
 test('a stored option that gives more than the mode is refused', async () => {
 	storedArgs(['--allowedTools', 'Bash(*)']);
 	const result = await act('relink');
@@ -260,6 +272,7 @@ test('a stop that fails leaves the process alone', async () => {
 	expect(result.status).toBe(502);
 	expect(result.body.reason).toContain('hcom stop');
 	expect(prompts()).toEqual([]);
+	expect(hasRecord()).toBe(false);
 });
 
 test('hcom r failing says why, names the way back and keeps the pause record', async () => {

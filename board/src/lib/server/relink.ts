@@ -17,7 +17,7 @@ import type { Board } from './board.ts';
 import { readTranscript } from './helper.ts';
 import { hasHoldTerminal, listAgents, resumeAgent, stopAgent, storedLaunchArgs } from './hcom.ts';
 import { agentCommand, listHerdrAgents, paneProcess, readScreen, type PaneProcess } from './herdr.ts';
-import { clearPause, isConnected, linkedAgain, readPauses } from './paused.ts';
+import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause } from './paused.ts';
 import { codexKeepArgs, permissionArgs } from './permission.ts';
 import { isClient, judgeHooks, relinkable } from './process-hooks.ts';
 import { queued } from './send.ts';
@@ -213,7 +213,24 @@ export function relinkAgent(board: Board, agentId: string) {
 				// A registered name must leave hcom's list for `hcom r` to take it back.
 				const stopped = ready.listed && ready.name !== null;
 				if (stopped) {
-					const stop = await stopAgent(config, ready.name!);
+					// As a pause does: the record is the only way back to the name once hcom's list no longer has it.
+					const recorded = readPauses(config.pausedDir).has(agentId);
+					if (!recorded) {
+						try {
+							writePause(config.pausedDir, { session_id: agentId, hcom_name: ready.name!, client: agent.client, pane, paused_at: new Date().toISOString() });
+						} catch (error) {
+							return { route: null, reason: `暫停紀錄寫不進去，沒有重新啟動：${(error as Error).message}` };
+						}
+					}
+					pausing.add(agentId);
+					const stop = await stopAgent(config, ready.name!).finally(() => pausing.delete(agentId));
+					if (stop.failure && !recorded) {
+						try {
+							clearPause(config.pausedDir, agentId);
+						} catch {
+							// Still on its link, so a later read removes it.
+						}
+					}
 					if (stop.failure) return { route: 'hcom', reason: `hcom stop ${stop.timedOut ? stop.failure : `失敗：${stop.failure}`}，它的程序沒有動，沒有重新啟動。` };
 				}
 				const route = stopped ? 'hcom' : null;
