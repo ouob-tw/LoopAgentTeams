@@ -261,7 +261,12 @@ class PatternKillTests(HookCase):
                         'sudo > /tmp/out pkill -f node',
                         'echo "<<EOF"\npkill -f node\nEOF', 'echo \'<<EOF\'\nkillall node\nEOF',
                         '# <<EOF\npkill -f node\nEOF',
-                        'echo "a << b"\npkill -f node']:
+                        'echo "a << b"\npkill -f node', 'echo $((1<<2))\npkill -f node',
+                        '((x = 1 << 2))\nkillall node', 'taskset -c 0 pkill -f node',
+                        'taskset 0x1 killall node', 'setsid killall node',
+                        'stdbuf -oL pkill -f node', 'stdbuf -o L pkill -f node',
+                        'systemd-run --user --scope pkill -f node',
+                        'systemd-run --user --scope -p MemoryMax=1G killall node']:
             with self.subTest(command):
                 self.assert_kill_blocked(command)
 

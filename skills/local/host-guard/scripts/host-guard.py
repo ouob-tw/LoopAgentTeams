@@ -100,12 +100,18 @@ VALUE_OPTIONS = {'sudo': {'-u', '-g', '-h', '-p', '-r', '-t', '-C', '-D', '-R', 
                  'xargs': {'-I', '-n', '-P', '-L', '-s', '-a', '-d', '-E', '--max-args',
                            '--max-procs', '--max-lines', '--max-chars', '--arg-file', '--delimiter'},
                  'time': {'-f', '-o', '--format', '--output'},
-                 'timeout': {'-k', '-s', '--kill-after', '--signal'}}
+                 'timeout': {'-k', '-s', '--kill-after', '--signal'},
+                 'stdbuf': {'-i', '-o', '-e', '--input', '--output', '--error'},
+                 'taskset': {'-c', '--cpu-list'},
+                 'systemd-run': {'-p', '-u', '-E', '-H', '-M', '--property', '--unit', '--setenv',
+                                 '--slice', '--uid', '--gid', '--working-directory',
+                                 '--description', '--host', '--machine'}}
 SHELLS = {'sh', 'bash', 'zsh', 'dash'}
 PREFIXES = {'sudo', 'nice', 'ionice', 'env', 'exec', 'command', 'xargs', 'nohup', 'time',
-            'timeout'}
+            'timeout', 'setsid', 'stdbuf', 'taskset', 'systemd-run'}
 ASSIGNMENT = re.compile(r'^[A-Za-z_]\w*=')
-DURATION = re.compile(r'[\d.]+[smhd]?')
+# A wrapper's bare argument: timeout's duration, taskset's mask.
+WRAPPER_NUMBER = re.compile(r'0x[\da-fA-F]+|[\d.]+[smhd]?')
 # A redirection before a command; without an attached target the next word is that target.
 REDIRECTION = re.compile(r'\d*[<>]+&?(?P<target>.*)')
 # Words that may come before a command in a statement.
@@ -613,8 +619,9 @@ def shell_tokens(text):
     """Words (quotes removed) and operators (1-tuples) of shell text. An operator is only
     an unquoted, unescaped character of OPERATORS; `#` starting a word comments out the
     rest of the line. An unclosed quote runs to the end of the text. Heredoc bodies are
-    dropped, up to their delimiter line or the end of the text. The & of `>&` stays in its word."""
-    tokens, word, quoted, i, bodies = [], [], False, 0, []
+    dropped, up to their delimiter line or the end of the text; `<<` within `((...))` is a
+    shift. The & of `>&` stays in its word."""
+    tokens, word, quoted, i, bodies, arithmetic = [], [], False, 0, [], False
 
     def end_word():
         nonlocal word, quoted
@@ -639,7 +646,9 @@ def shell_tokens(text):
             i = text.find('\n', i)
             i = len(text) if i < 0 else i
             continue
-        opener = HEREDOC_START.match(text, i) if char == '<' else None
+        if text.startswith(('((', '))'), i):
+            arithmetic = char == '('
+        opener = HEREDOC_START.match(text, i) if char == '<' and not arithmetic else None
         if opener:
             end_word()
             bodies.append(opener)
@@ -665,8 +674,8 @@ def shell_tokens(text):
 
 
 def after_prefixes(words):
-    """The words of a simple command past assignments and PREFIXES with their options and
-    durations; empty for `command -v NAME`, which only looks NAME up."""
+    """The words of a simple command past assignments, redirections and PREFIXES with their
+    options and bare numbers; empty for `command -v NAME`, which only looks NAME up."""
     prefix = None
     while words:
         word, name = words[0], os.path.basename(words[0])
@@ -675,7 +684,7 @@ def after_prefixes(words):
             words = words[1:] if redirection.group('target') else words[2:]
         elif name in PREFIXES:
             prefix, words = name, words[1:]
-        elif ASSIGNMENT.match(word) or prefix and DURATION.fullmatch(word):
+        elif ASSIGNMENT.match(word) or prefix and WRAPPER_NUMBER.fullmatch(word):
             words = words[1:]
         elif prefix and word.startswith('-'):
             if prefix == 'command' and word in ('-v', '-V'):
