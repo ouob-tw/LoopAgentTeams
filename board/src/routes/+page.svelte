@@ -19,6 +19,7 @@
 	import { folderName, lastSegment, shortName, workspaceFolders } from '#lib/board/agents.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
+	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { everyController, type InboxItem, type KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
@@ -550,7 +551,7 @@
 					{#if view.what === 'controller'}
 						<p class="empty">這個主控已不存在。</p>
 					{:else if view.what === 'agent'}
-						<p class="empty">這個 Agent 已不在 Herdr 的清單上。</p>
+						<p class="empty">{agentControl.relinking ? '正在重新啟動並接回 HCOM，舊程序結束後它會暫時不在 Herdr 的清單上⋯' : '這個 Agent 已不在 Herdr 的清單上。'}</p>
 					{:else if view.what === 'workspace'}
 						<p class="empty">Herdr 裡已經沒有這個工作區。</p>
 					{:else if board.archive === 'failed' || (board.archiveEarlier === 'failed' && board.earlierFrom)}

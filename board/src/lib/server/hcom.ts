@@ -142,6 +142,8 @@ export interface HcomAgent {
 	status: string | null;
 	/** Its group tag, the prefix of its name; null or missing when it has none. */
 	tag?: string | null;
+	/** hcom holds the client's process, which only a launch through hcom gives. */
+	processBound?: boolean;
 }
 
 /** The agent with this session ID, or else one with any of these names. */
@@ -168,12 +170,13 @@ export async function listAgents(config: BoardConfig): Promise<AgentList> {
 	if (!valid) return { ok: false, reason: 'hcom 的 Agent 清單不是預期的格式' };
 	return {
 		ok: true,
-		agents: (parsed as { name: string; session_id?: string | null; status?: unknown; tag?: unknown; launch_context?: { pane_id?: unknown } | null }[]).map((agent) => ({
+		agents: (parsed as { name: string; session_id?: string | null; status?: unknown; tag?: unknown; process_bound?: unknown; launch_context?: { pane_id?: unknown } | null }[]).map((agent) => ({
 			name: agent.name,
 			sessionId: agent.session_id || null,
 			pane: typeof agent.launch_context?.pane_id === 'string' ? agent.launch_context.pane_id : null,
 			status: typeof agent.status === 'string' ? agent.status : null,
-			tag: typeof agent.tag === 'string' && agent.tag ? agent.tag : null
+			tag: typeof agent.tag === 'string' && agent.tag ? agent.tag : null,
+			processBound: agent.process_bound === true
 		}))
 	};
 }

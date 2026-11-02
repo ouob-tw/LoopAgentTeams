@@ -52,7 +52,9 @@ interface AgentRoster {
 		hcom: AgentList,
 		controllers: Set<string>,
 		switches: SwitchView[],
-		paused?: Map<string, PauseRecord>
+		paused?: Map<string, PauseRecord>,
+		/** The panes whose process has no hcom hooks (`process-hooks.ts`). */
+		hookless?: Set<string>
 	): { agents: Agent[]; workspaces: HerdrWorkspace[]; herdrError: string | null };
 }
 
@@ -76,7 +78,7 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 
 	return {
 		confirming: () => [...lagging.values()].some((entry) => !entry.confirmed),
-		update(herdr, hcom, controllers, switches, paused = new Map()) {
+		update(herdr, hcom, controllers, switches, paused = new Map(), hookless = new Set()) {
 			if (herdr.ok) {
 				lastHerdr = herdr.agents;
 				lastWorkspaces = herdr.workspaces;
@@ -123,6 +125,7 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 					name: hcomName ?? agent.title ?? agent.pane,
 					hcomName,
 					hcom: hcomState,
+					noHooks: hookless.has(agent.pane),
 					client: agent.client,
 					folder: agent.cwd,
 					herdr: {
@@ -152,6 +155,7 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 					name: view.agent.name,
 					hcomName: view.hcomName || null,
 					hcom: 'linked',
+					noHooks: false,
 					client: view.client,
 					folder: view.agent.folder,
 					herdr: {

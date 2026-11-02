@@ -101,6 +101,7 @@ test('lists every Herdr agent across workspaces, named and stated by hcom when l
 		name: 'tab-s-beta',
 		hcomName: null,
 		hcom: 'none',
+		noHooks: false,
 		client: 'codex',
 		folder: '/projects/beta',
 		herdr: { workspace: 'wB', workspaceLabel: 'Beta', workspaceNumber: 2, tab: 'wB:t-s-beta', tabPlace: { label: 'tab-s-beta', position: 1 }, pane: 'wB:p-s-beta' },

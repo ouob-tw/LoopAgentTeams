@@ -225,6 +225,25 @@ export async function moveWorkspace(config: BoardConfig, workspaceId: string, in
 	return 'reason' in moved ? `移動工作區失敗：${moved.reason}` : null;
 }
 
+/** What runs in a pane: its shell (null when it has none) and the foreground process group. */
+export interface PaneProcess {
+	shellPid: number | null;
+	groupId: number | null;
+	foreground: { pid: number; argv: string[] }[];
+}
+
+/** What runs in this pane now, over Herdr's socket; or why that cannot be told. */
+export async function paneProcess(config: BoardConfig, pane: string): Promise<PaneProcess | { reason: string }> {
+	const read = await socketRequest(config, 'pane.process_info', { pane_id: pane });
+	if ('reason' in read) return { reason: `讀不到它的 Herdr 窗格程序：${read.reason}` };
+	const info = (read.result as { process_info?: Record<string, unknown> } | null)?.process_info;
+	const foreground = info?.foreground_processes;
+	const valid = Array.isArray(foreground) && foreground.every((process) => typeof process?.pid === 'number' && Array.isArray(process.argv));
+	if (!valid) return { reason: '讀不到它的 Herdr 窗格程序：輸出不是預期的格式' };
+	const number = (value: unknown) => (typeof value === 'number' ? value : null);
+	return { shellPid: number(info?.shell_pid), groupId: number(info?.foreground_process_group_id), foreground: foreground.map(({ pid, argv }) => ({ pid, argv })) };
+}
+
 /** Give a tab this label: `herdr tab rename <tab> <label>`. */
 export function renameTab(config: BoardConfig, tabId: string, label: string): Promise<HerdrAct> {
 	return herdrAct(config, ['tab', 'rename', tabId, label]);

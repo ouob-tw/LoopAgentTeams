@@ -15,6 +15,9 @@
 // (0 at first) names; `agent send-keys <pane> shift+tab` moves it on by one, round to the first.
 // `scrolled: { <pane>: <text> }` is what `pane read <pane> --source visible` prints while the pane
 // is scrolled up, until `pane.scroll` brings it to the bottom; `--source detection` always reads the bottom.
+// `processes: { <pane>: <process_info> }` is what `pane process-info --pane <pane>` and the socket's
+// `pane.process_info` answer, as Herdr prints them; a pane not in it fails. `exitOnPrompt: { <pane>: true }`
+// has `agent prompt <pane> /exit` end the client: its agent leaves the list and only its shell is left.
 // `slowMs: { <command>: ms }` makes a command wait that long before it answers.
 // `failSeries: { <command>: [...] }` gives that command's next calls in turn: an entry `{ exit, stderr }`
 // acts out a failure, null answers as usual; once the series is used up, `fail` applies again.
@@ -117,7 +120,20 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 			}
 			stdout += JSON.stringify({ id: 'cli:pane:scroll', result: { type: 'pane_info' } });
 		}
+	} else if (command === 'pane process-info') {
+		const info = plan.processes?.[args.at(-1) ?? ''];
+		if (info) stdout += JSON.stringify({ id: 'cli:pane:process_info', result: { type: 'pane_process_info', process_info: info } });
+		else {
+			stderr += JSON.stringify({ error: { code: 'pane_not_found', message: `pane ${args.at(-1)} not found` } });
+			code = 1;
+		}
 	} else if (command === 'agent prompt' || command === 'agent send-keys') {
+		if (command === 'agent prompt' && args[3] === '/exit' && plan.exitOnPrompt?.[args[2]]) {
+			const info = plan.processes[args[2]];
+			plan.agents = plan.agents.filter((/** @type {any} */ agent) => agent.pane_id !== args[2]);
+			plan.processes[args[2]] = { ...info, foreground_process_group_id: info.shell_pid, foreground_processes: [{ pid: info.shell_pid, name: 'bash', argv: ['bash'] }] };
+			write(planFile, JSON.stringify(plan));
+		}
 		if (command === 'agent send-keys' && args[3] === 'shift+tab' && plan.screens?.[args[2]]) {
 			plan.screenAt = { ...plan.screenAt, [args[2]]: (plan.screenAt?.[args[2]] ?? 0) + 1 };
 			write(planFile, JSON.stringify(plan));

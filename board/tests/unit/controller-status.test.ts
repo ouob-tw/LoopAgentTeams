@@ -105,6 +105,7 @@ const live = (id: string | null, status: Agent['status'], overrides: Partial<Age
 	name: id ?? 'x',
 	hcomName: id,
 	hcom: 'linked',
+	noHooks: false,
 	client: 'claude',
 	folder: '/w',
 	herdr: { workspace: 'w', workspaceLabel: null, workspaceNumber: null, tab: 't', tabPlace: null, pane: 'p' },

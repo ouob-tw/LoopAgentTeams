@@ -160,6 +160,11 @@ export function addHcomDir(args: readonly string[], dir: string): string[] {
 const FIXING_FLAGS = new Set(['--yolo', '--dangerously-bypass-approvals-and-sandbox', '--full-auto', '--approve-for-me']);
 const FIXING_VALUED = new Set(['-s', '--sandbox', '-a', '--ask-for-approval']);
 
+/** The first stored Codex option that fixes the permission whatever `-c` says; null when none does. */
+export function permissionFixedBy(args: readonly string[]): string | null {
+	return args.find((arg) => FIXING_FLAGS.has(arg) || FIXING_VALUED.has(arg) || [...FIXING_VALUED].some((name) => name.startsWith('--') && arg.startsWith(`${name}=`))) ?? null;
+}
+
 /**
  * The arguments hcom stored for a Codex session, without what would keep it from taking a new
  * mode: the bypass and sandbox flags beat any `-c` (and `-s`, `-a` are refused next to `--yolo`),
@@ -204,4 +209,5 @@ export const codexFirstTurnText = (mode: CodexMode) =>
 
 export const PERMISSION_NOT_LINKED_REASON = '這個 Agent 沒有接 HCOM，看板只能替有接 HCOM 的 Codex 切換權限';
 export const PERMISSION_PAUSED_REASON = '這個 Agent 暫停通訊中，先按「恢復通訊」接回 HCOM 才能切換權限';
+export const PERMISSION_NO_HOOKS_REASON = '這個 Agent 沒有經 hcom 啟動，先按「重新啟動並接回 HCOM」才能切換權限';
 export const PERMISSION_HCOM_UNKNOWN_REASON = 'HCOM 連線無法確認：hcom 的清單讀不到，不知道這個 Agent 有沒有接 HCOM，現在不能切換權限';

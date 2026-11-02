@@ -24,6 +24,7 @@
 		AGENT_CONTINUE_CONFIRM_TEXT,
 		AGENT_FIXED_MODEL_REASON,
 		AGENT_HCOM_UNKNOWN_SWITCH_REASON,
+		AGENT_NO_HOOKS_SWITCH_REASON,
 		AGENT_NOT_LINKED_SWITCH_REASON,
 		AGENT_PAUSED_SWITCH_REASON,
 		AGENT_SWITCH_STATE_TEXT,
@@ -59,6 +60,7 @@
 	/** Why neither part can be picked now; null when both can (the model may still be fixed). */
 	const blocked = $derived.by((): string | null => {
 		if (agent.switch || !agent.inHerdr) return AGENT_SWITCH_UNFINISHED_TEXT;
+		if (agent.noHooks) return AGENT_NO_HOOKS_SWITCH_REASON;
 		if (agent.hcom === 'none') return AGENT_NOT_LINKED_SWITCH_REASON;
 		if (agent.hcom === 'paused') return AGENT_PAUSED_SWITCH_REASON;
 		if (agent.hcom === 'unknown') return AGENT_HCOM_UNKNOWN_SWITCH_REASON;

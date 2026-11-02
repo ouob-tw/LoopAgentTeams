@@ -48,6 +48,7 @@ const agent = (id: string | null, name: string, isBound = false): Agent => ({
 	name,
 	hcomName: name,
 	hcom: 'linked',
+	noHooks: false,
 	client: 'claude',
 	folder: '/w/p',
 	herdr: { workspace: 'w', workspaceLabel: 'W', workspaceNumber: 1, tab: `t-${name}`, tabPlace: null, pane: `p-${name}` },
