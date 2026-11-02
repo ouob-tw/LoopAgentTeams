@@ -1,5 +1,5 @@
-// The board's screens and the browser's history kept together: opening a screen adds an entry,
-// going back shows the screen before, and a reload shows the entry's screen again. Runs the
+// The board's screens and the browser's history kept together: opening a screen writes its entry,
+// going back shows the level above, and a reload shows the entry's screen again. Runs the
 // engine on a fake browser; back-navigation.test.ts does the same in a real one.
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -23,12 +23,17 @@ type Archive = ConstructorParameters<typeof Navigation>[0]['archive'];
 function fakeBrowser() {
 	const entries: { search: string; state: Record<string, unknown> | null }[] = [{ search: '', state: null }];
 	let at = 0;
+	let left = false;
 	let onpop: (state: unknown) => void = () => {};
 	const searchOf = (url: string) => url.slice(url.indexOf('?') >= 0 ? url.indexOf('?') : url.length);
 	return {
 		entries,
 		get at() {
 			return at;
+		},
+		/** Whether a step back went past the first entry, which leaves the board. */
+		get left() {
+			return left;
 		},
 		listen(popped: (state: unknown) => void) {
 			onpop = popped;
@@ -45,9 +50,12 @@ function fakeBrowser() {
 			replaceState(state: unknown, url?: string) {
 				entries[at] = { search: url === undefined ? entries[at].search : searchOf(url), state: state as Record<string, unknown> };
 			},
-			back() {
-				if (at === 0) return;
-				at--;
+			back(steps: number) {
+				if (at - steps < 0) {
+					left = true;
+					return;
+				}
+				at -= steps;
 				// The browser tells the page later, as popstate does.
 				queueMicrotask(() => onpop(entries[at].state));
 			},
@@ -97,34 +105,36 @@ const settle = async (navigation: { settled(): Promise<unknown> }) => {
 	await navigation.settled();
 };
 
-test('opening screens adds an entry each, shown once the address names it; opening the open one adds none', async () => {
+const entriesOf = (fake: ReturnType<typeof fakeBrowser>) => fake.entries.map((entry) => [entry.search, entry.state?.depth]);
+
+test('a page sits on the list, an item on the page, and opening the open one adds nothing', async () => {
 	const fake = fakeBrowser();
 	const { navigation, shown } = start(fake);
 	await settle(navigation);
 	expect(fake.entries).toEqual([{ search: '', state: { depth: 0 } }]);
 
 	navigation.go({ kind: 'controller', id: 'c-1' });
-	navigation.go({ kind: 'controller', id: 'c-2' });
-	navigation.go({ kind: 'controller', id: 'c-2' });
+	navigation.go({ kind: 'item', key: 'r-1' });
+	navigation.go({ kind: 'item', key: 'r-1' });
 	await settle(navigation);
-	expect(fake.entries.map((entry) => [entry.search, entry.state?.depth])).toEqual([
+	expect(entriesOf(fake)).toEqual([
 		['', 0],
 		['?controller=c-1', 1],
-		['?controller=c-2', 2]
+		['?item=r-1', 2]
 	]);
 	expect(fake.at).toBe(2);
-	expect(navigation.view).toEqual({ kind: 'controller', id: 'c-2' });
 	// The list's scroll is kept in its own entry, for going back to it after a reload too.
 	expect(fake.entries[0].state).toMatchObject({ boardListScroll: 120 });
 	expect(shown.map((entry) => entry.scrollY)).toEqual([0, 0, 0]);
 });
 
-test('going back shows the screen before, and the list at the place it was scrolled to', async () => {
+test('going back shows the level above, and the list at the place it was scrolled to', async () => {
 	const fake = fakeBrowser();
-	const { navigation, shown } = start(fake);
+	const { navigation, shown } = start(fake, noArchive, new Set(['r-1']));
 	navigation.go({ kind: 'controller', id: 'c-1' });
-	navigation.go({ kind: 'controller', id: 'c-2' });
+	navigation.go({ kind: 'item', key: 'r-1' });
 	await settle(navigation);
+	expect(navigation.view).toMatchObject({ kind: 'item' });
 
 	navigation.back();
 	await settle(navigation);
@@ -140,22 +150,86 @@ test('going back shows the screen before, and the list at the place it was scrol
 	expect(fake.entries).toHaveLength(3);
 });
 
-test('an agent opened from another agent\'s page takes its entry, so back shows the list at its place', async () => {
+test('another page goes through the list unseen: only it is shown, and back shows the list at its place', async () => {
 	const fake = fakeBrowser();
-	const { navigation, shown } = start(fake);
-	navigation.go({ kind: 'agent', id: 's-a' });
-	navigation.go({ kind: 'agent', id: 's-b' });
+	const { navigation, shown } = start(fake, noArchive, new Set(['r-1']));
+	navigation.go({ kind: 'controller', id: 'c-1' });
+	navigation.go({ kind: 'item', key: 'r-1' });
 	await settle(navigation);
-	expect(fake.entries.map((entry) => [entry.search, entry.state?.depth])).toEqual([
+	const before = shown.length;
+
+	navigation.go({ kind: 'controller', id: 'c-2' });
+	await settle(navigation);
+	expect(entriesOf(fake)).toEqual([
 		['', 0],
-		['?agent=s-b&tab=inbox', 1]
+		['?controller=c-2', 1]
 	]);
+	expect(fake.at).toBe(1);
+	expect(shown.slice(before).map((entry) => entry.view)).toEqual([{ kind: 'controller', id: 'c-2' }]);
+	expect(navigation.view).toEqual({ kind: 'controller', id: 'c-2' });
 
 	navigation.back();
 	await settle(navigation);
-	expect(fake.at).toBe(0);
 	expect(navigation.view).toBeNull();
 	expect(shown.at(-1)).toEqual({ view: null, scrollY: 120 });
+});
+
+test('going back through the list keeps the tab shown now in the list and the new page', async () => {
+	const fake = fakeBrowser();
+	const { navigation } = start(fake);
+	navigation.go({ kind: 'controller', id: 'c-1' });
+	await settle(navigation);
+	navigation.setMiddle('quota');
+	navigation.go({ kind: 'controller', id: 'c-2' });
+	await settle(navigation);
+	expect(entriesOf(fake)).toEqual([
+		['?tab=quota', 0],
+		['?controller=c-2&tab=quota', 1]
+	]);
+	expect(navigation.middle).toBe('quota');
+	navigation.back();
+	await settle(navigation);
+	expect(navigation.middle).toBe('quota');
+});
+
+test('a back and an opening asked one right after the other land where they should', async () => {
+	const fake = fakeBrowser();
+	const { navigation } = start(fake, noArchive, new Set(['r-1']));
+	navigation.go({ kind: 'controller', id: 'c-1' });
+	navigation.go({ kind: 'item', key: 'r-1' });
+	await settle(navigation);
+	navigation.back();
+	navigation.go({ kind: 'controller', id: 'c-2' });
+	await settle(navigation);
+	expect(entriesOf(fake)).toEqual([
+		['', 0],
+		['?controller=c-2', 1]
+	]);
+	expect(navigation.view).toEqual({ kind: 'controller', id: 'c-2' });
+});
+
+test('a second "←" before the first has arrived stays on the board', async () => {
+	const fake = fakeBrowser();
+	const { navigation } = start(fake);
+	navigation.go({ kind: 'controller', id: 'c-1' });
+	await settle(navigation);
+	navigation.back();
+	navigation.back();
+	await settle(navigation);
+	expect(fake.at).toBe(0);
+	expect(fake.left).toBe(false);
+});
+
+test('a step through the history that never arrives stops nothing after it and rewrites no entry as the list', async () => {
+	const fake = fakeBrowser();
+	const { navigation } = start(fake);
+	navigation.go({ kind: 'controller', id: 'c-1' });
+	await settle(navigation);
+	fake.browser.back = () => {};
+	navigation.go({ kind: 'controller', id: 'c-2' });
+	await settle(navigation);
+	expect(navigation.view).toEqual({ kind: 'controller', id: 'c-2' });
+	expect(fake.entries.map((entry) => entry.search)).toEqual(['', '?controller=c-1', '?controller=c-2']);
 });
 
 test('a reload shows the same screen again, keeping the entries behind it', async () => {

@@ -1,6 +1,7 @@
-// Which content screen is open, kept in the address and the browser's history: each opened screen
-// is one history entry, so the board's "←" and the phone's own back go to the screen before, and a
-// reload opens the same screen again.
+// Which content screen is open, kept in the address and the browser's history. The entries follow
+// the screens' levels, not the order they were seen in: the list, then an agent's or a controller's
+// page, then an item. So the board's "←" and the phone's own back go one level up, and a reload opens
+// the same screen again.
 import type { Agent, Controller, HerdrWorkspace, InboxItem } from './types.ts';
 import type { BoardAsk } from './board-asks.ts';
 
@@ -124,11 +125,24 @@ export function listScrollIn(state: unknown): number | undefined {
 	return typeof saved === 'number' ? saved : undefined;
 }
 
+/** An entry's depth, beside SvelteKit's fields for the same reason. It always matches the address;
+ *  going back by an outdated depth could leave the board. */
+const DEPTH = 'boardDepth';
+export function withDepth(state: unknown, depth: number): object {
+	return { ...(state as object | null), [DEPTH]: depth };
+}
+export function depthIn(state: unknown): number | undefined {
+	const depth = (state as Record<string, unknown> | null)?.[DEPTH];
+	return typeof depth === 'number' ? depth : undefined;
+}
+
 /** The browser's history as the board writes it. `depth` is how many of the board's own entries
  *  lie behind this one: 0 for the list, which is always the first. */
 export interface Trail {
 	push(place: Place, depth: number): void;
 	replace(place: Place, depth: number): void;
+	/** Go `depth` entries back, to the list. */
+	rewind(depth: number): void;
 }
 
 /**
@@ -142,11 +156,19 @@ export function arrive(place: Place, depth: number | undefined, trail: Trail): v
 	if (place !== null) trail.push(place, 1);
 }
 
-/** Open a screen from the one at `here`. Opening the open screen again adds nothing to go back to,
- *  and an agent opened from another agent's page takes that page's entry, so going back from
- *  either reaches the screen the first was opened from, not the agent seen before. */
-export function advance(next: Place, here: { place: Place; depth: number }, trail: Trail): void {
-	if (samePlace(next, here.place)) return;
-	if (next?.kind === 'agent' && here.place?.kind === 'agent') trail.replace(next, here.depth);
-	else trail.push(next, here.depth + 1);
+/** Open a screen from the one at `here`; `fromList` when it was picked in the list, whichever screen
+ *  is open beside it. Opening the open screen again adds nothing to go back to, unless the list now
+ *  picks the item a page opened: it then sits on the list like any other it picks. An item opened from
+ *  a page goes on top of that page, and one opened from another item takes its entry, so back
+ *  reaches that page or the list. Anything else sits right on the list: going back to the list first
+ *  also drops the entries ahead, so going forward cannot bring an item of another page back on top. */
+export function advance(next: Place, here: { place: Place; depth: number }, trail: Trail, fromList = false): void {
+	if (samePlace(next, here.place) && !(fromList && here.depth > 1)) return;
+	if (next?.kind === 'item' && !fromList && here.place !== null) {
+		if (here.place.kind === 'item') trail.replace(next, here.depth);
+		else trail.push(next, here.depth + 1);
+		return;
+	}
+	if (here.depth > 0) trail.rewind(here.depth);
+	trail.push(next, 1);
 }

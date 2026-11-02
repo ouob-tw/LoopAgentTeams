@@ -5,12 +5,14 @@ import { expect, test } from 'bun:test';
 import {
 	advance,
 	arrive,
+	depthIn,
 	listScrollIn,
 	placeIn,
 	samePlace,
 	searchOf,
 	tabIn,
 	viewOf,
+	withDepth,
 	withListScroll,
 	type Place,
 	type Trail
@@ -37,6 +39,9 @@ class BrowserHistory implements Trail {
 	replace(place: Place, depth: number) {
 		this.entries[this.index] = { search: searchOf(place), depth };
 	}
+	rewind(depth: number) {
+		this.index -= depth;
+	}
 	/** The phone's back, or the board's "←" when there is an entry of the board's behind. */
 	back() {
 		if (this.index === 0) this.left = true;
@@ -48,7 +53,7 @@ class BrowserHistory implements Trail {
 function boardOn(history: BrowserHistory) {
 	arrive(history.place, history.depth, history);
 	return {
-		open: (next: Place) => advance(next, { place: history.place, depth: history.depth ?? 0 }, history),
+		open: (next: Place, fromList = false) => advance(next, { place: history.place, depth: history.depth ?? 0 }, history, fromList),
 		/** The board's "←", which the page shows on every screen but the list. */
 		back: () => {
 			expect(history.place).not.toBeNull();
@@ -113,14 +118,12 @@ test('the 額度 tab rides along in every address, an agent\'s too', () => {
 	expect(searchOf({ kind: 'agent', id: 's-1' }, 'quota')).toBe('?agent=s-1&tab=quota');
 });
 
-test('question, its controller, back to the question, back to the list, then back leaves the board', () => {
+test('from an item, a controller goes back to the list, then back leaves the board', () => {
 	const history = new BrowserHistory();
 	const screen = boardOn(history);
 	screen.open(QUESTION);
 	screen.open(CONTROLLER);
 
-	screen.back();
-	expect(history.place).toEqual(QUESTION);
 	screen.back();
 	expect(history.place).toBeNull();
 	expect(history.left).toBe(false);
@@ -149,27 +152,31 @@ test('opening the open screen again adds nothing to go back to', () => {
 	expect(history.place).toBeNull();
 });
 
-test('a new controller opened from the form goes back to the form', () => {
-	const history = new BrowserHistory();
-	const screen = boardOn(history);
-	screen.open({ kind: 'launch' });
-	screen.open(CONTROLLER);
-	screen.back();
-	expect(history.place).toEqual({ kind: 'launch' });
+test('the new-agent and new-controller forms sit on the list, and what they open goes back to the list', () => {
+	for (const form of [{ kind: 'launch' }, { kind: 'new-agent', workspace: 'wA' }] as Place[]) {
+		const history = new BrowserHistory();
+		const screen = boardOn(history);
+		screen.open(CONTROLLER);
+		screen.open(form);
+		expect(history.depth).toBe(1);
+		screen.open(CONTROLLER);
+		screen.back();
+		expect(history.place).toBeNull();
+	}
 });
 
 test('a reload keeps the screen and the way back', () => {
 	const history = new BrowserHistory();
 	const screen = boardOn(history);
-	screen.open(QUESTION);
 	screen.open(CONTROLLER);
+	screen.open(QUESTION);
 
 	// The browser keeps the entries; the page starts again on the last one.
 	const reloaded = boardOn(history);
-	expect(history.place).toEqual(CONTROLLER);
+	expect(history.place).toEqual(QUESTION);
 	expect(history.entries).toHaveLength(3);
 	reloaded.back();
-	expect(history.place).toEqual(QUESTION);
+	expect(history.place).toEqual(CONTROLLER);
 	history.back();
 	expect(history.place).toBeNull();
 	expect(history.left).toBe(false);
@@ -264,44 +271,111 @@ test("the list's scroll goes into its history entry beside the fields already th
 	expect(listScrollIn({ boardListScroll: 'far' })).toBeUndefined();
 });
 
-test('an agent opened from another agent\'s page takes its entry, so back reaches the screen the first was opened from', () => {
-	const A: Place = { kind: 'agent', id: 's-a' };
-	const B: Place = { kind: 'agent', id: 's-b' };
-	const C: Place = { kind: 'agent', id: 's-c' };
-	for (const from of [null, QUESTION, CONTROLLER]) {
-		const history = new BrowserHistory();
-		const screen = boardOn(history);
-		if (from) screen.open(from);
-		screen.open(A);
-		screen.open(B);
-		screen.open(C);
-		expect(history.place).toEqual(C);
-		expect(history.depth).toBe(from ? 2 : 1);
-		screen.back();
-		expect(history.place).toEqual(from);
+test("an entry's depth goes into its history state beside the fields already there", () => {
+	const kit = { 'sveltekit:history': { historyIndex: 3 } };
+	const state = withDepth(kit, 2);
+	expect(state).toMatchObject(kit);
+	expect(depthIn(state)).toBe(2);
+	expect(depthIn(withListScroll(state, 40))).toBe(2);
+	expect(depthIn(kit)).toBeUndefined();
+	expect(depthIn(null)).toBeUndefined();
+});
 
-		// A reload at the last agent keeps the same entries behind it.
-		history.index = history.entries.length - 1;
-		const reloaded = boardOn(history);
-		expect(history.place).toEqual(C);
-		reloaded.back();
-		expect(history.place).toEqual(from);
-	}
+const A: Place = { kind: 'agent', id: 's-a' };
+const B: Place = { kind: 'agent', id: 's-b' };
 
-	// An agent's page typed in has the list behind it; another agent opened from it does too.
-	const typed = new BrowserHistory(searchOf(A));
-	const screen = boardOn(typed);
+test('from a page, an agent or a controller goes back to the list, however many were seen on the way', () => {
+	const history = new BrowserHistory();
+	const screen = boardOn(history);
+	screen.open(A);
+	screen.open(CONTROLLER);
 	screen.open(B);
+	expect(history.entries.map((entry) => [entry.search, entry.depth])).toEqual([
+		['', 0],
+		[searchOf(B), 1]
+	]);
+	screen.back();
+	expect(history.place).toBeNull();
+
+	// A reload keeps it, and an address typed in sits on the list the same way.
+	const typed = new BrowserHistory(searchOf(A));
+	const board = boardOn(typed);
+	board.open(B);
+	const reloaded = boardOn(typed);
 	expect(typed.entries.map((entry) => [entry.search, entry.depth])).toEqual([
 		['', 0],
 		[searchOf(B), 1]
 	]);
+	reloaded.back();
+	expect(typed.place).toBeNull();
+});
 
-	// Other screens opened from an agent's page still add an entry.
+test("an item of a page goes back to the page, then the list; another page from the item goes straight to the list", () => {
+	for (const page of [A, CONTROLLER]) {
+		const history = new BrowserHistory();
+		const screen = boardOn(history);
+		screen.open(page);
+		screen.open(REPORT);
+		screen.back();
+		expect(history.place).toEqual(page);
+		screen.back();
+		expect(history.place).toBeNull();
+
+		// Back on the item; its own page and any other go to the list alike.
+		for (const next of [page, B]) {
+			screen.open(page);
+			screen.open(REPORT);
+			screen.open(next);
+			expect(history.depth).toBe(1);
+			screen.back();
+			expect(history.place).toBeNull();
+		}
+	}
+});
+
+test('an item opened from another item takes its entry, so back reaches what the first came from', () => {
+	for (const from of [null, CONTROLLER]) {
+		const history = new BrowserHistory();
+		const screen = boardOn(history);
+		if (from) screen.open(from);
+		screen.open(QUESTION);
+		screen.open(REPORT);
+		screen.back();
+		expect(history.place).toEqual(from);
+	}
+});
+
+test('an item picked in the list sits on the list, whichever screen is open beside it', () => {
+	for (const from of [A, CONTROLLER, QUESTION]) {
+		const history = new BrowserHistory();
+		const screen = boardOn(history);
+		screen.open(from);
+		screen.open(REPORT, true);
+		expect(history.depth).toBe(1);
+		screen.back();
+		expect(history.place).toBeNull();
+	}
+	// On top of a page's item too, the very item open included.
+	for (const picked of [REPORT, QUESTION]) {
+		const history = new BrowserHistory();
+		const screen = boardOn(history);
+		screen.open(CONTROLLER);
+		screen.open(QUESTION);
+		screen.open(picked, true);
+		expect(history.place).toEqual(picked);
+		screen.back();
+		expect(history.place).toBeNull();
+	}
+});
+
+test('an entry left ahead cannot put an old screen back on top', () => {
 	const history = new BrowserHistory();
-	const board = boardOn(history);
-	board.open(A);
-	board.open(CONTROLLER);
-	board.back();
+	const screen = boardOn(history);
+	screen.open(A);
+	screen.open(REPORT);
+	screen.back();
 	expect(history.place).toEqual(A);
+	// The report of A is still ahead here; another page drops it.
+	screen.open(B);
+	expect(history.entries.map((entry) => entry.search)).toEqual(['', searchOf(B)]);
 });

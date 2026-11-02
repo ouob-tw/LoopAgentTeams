@@ -216,7 +216,7 @@ test.skipIf(!CHROME)('a reload keeps the tab the list was switched to', async ()
 	expect(await tab.eval(`document.querySelector('[data-middle="agents"]').getAttribute('aria-pressed')`)).toBe('true');
 }, 30_000);
 
-test.skipIf(!CHROME)('an agent opened from another agent\'s page takes its entry: back reaches the list, after a reload too', async () => {
+test.skipIf(!CHROME)('an agent opened from another agent\'s page goes back to the list, after a reload too', async () => {
 	const LIST = `location.search === '?tab=agents' && !document.querySelector('.detail [data-agent]')`;
 	await visit(1280);
 	await openTab();
@@ -237,8 +237,8 @@ test.skipIf(!CHROME)('an agent opened from another agent\'s page takes its entry
 	await tab.send('Page.reload');
 	await tab.until(`!window.beforeReload && JSON.stringify(history.state).includes('depth') && !!document.querySelector('.detail [data-agent="s-other"]')`, 'the reloaded agent');
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: true });
-	await tab.eval(`document.querySelector('.topbar button').click()`);
-	await tab.until(LIST, 'the list after the reload');
+	// Tapped until it works: the reloaded entry has its depth before the page's buttons do.
+	await tab.until(`(document.querySelector('.topbar button')?.click(), ${LIST})`, 'the list after the reload');
 }, 30_000);
 
 test.skipIf(!CHROME)('an address that opens an agent shows its tab; an agent Herdr no longer lists says so', async () => {

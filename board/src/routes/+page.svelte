@@ -12,7 +12,7 @@
 	import type { InboxSort } from '#lib/board/inbox.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
-	import { placeIn, tabIn, viewOf, type Place } from '#lib/board/navigation.ts';
+	import { depthIn, placeIn, tabIn, viewOf, withDepth, type Place } from '#lib/board/navigation.ts';
 	import { Navigation } from '#lib/board/navigation.svelte.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { voice } from '#lib/board/voice.svelte.ts';
@@ -135,10 +135,14 @@
 				search: () => location.search,
 				pathname: () => location.pathname,
 				state: () => history.state,
-				depth: () => page.state.depth,
+				// An entry from before the board kept its own has it in page.state alone.
+				depth: () => depthIn(history.state) ?? page.state.depth,
 				replaceState: (state, url) => history.replaceState(state, '', url),
-				back: () => history.back(),
-				write: (url, replace, depth) => goto(url, { shallow: true, replace, state: { depth }, persistState: true }),
+				back: (steps) => history.go(-steps),
+				write: async (url, replace, depth) => {
+					await goto(url, { shallow: true, replace, state: { depth }, persistState: true });
+					history.replaceState(withDepth(history.state, depth), '');
+				},
 				scrollY: () => window.scrollY
 			},
 			viewAt,
@@ -297,11 +301,11 @@
 		if (on) locateTimer = setTimeout(() => locate(false), 8_000);
 	}
 
-	function openItem(next: InboxItem) {
+	function openItem(next: InboxItem, fromList = false) {
 		kept.set(next.key, next);
 		// Kept on the list from now: the read state may reach the page before the item is shown.
 		if (listedInbox.some((entry) => entry.key === next.key)) lingering = next.key;
-		navigation.go({ kind: 'item', key: next.key });
+		navigation.go({ kind: 'item', key: next.key }, fromList);
 		// Opening an inbox report reads it. Only opening does: a report marked unread stays unread
 		// while it is still open. An archived report keeps the read state it had.
 		const listed = inbox.find((entry) => entry.key === next.key);
@@ -497,7 +501,7 @@
 						showArchive = true;
 						void board.loadArchive();
 					}}
-					onopen={openItem}
+					onopen={(item) => openItem(item, true)}
 					onask={openAsk}
 					oncontroller={openController}
 				/>
