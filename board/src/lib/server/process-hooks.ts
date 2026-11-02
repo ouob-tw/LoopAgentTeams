@@ -42,12 +42,13 @@ export function judgeHooks(info: PaneProcess, client: string): ProcessHooks {
 	return told.some(({ running, env }) => env === false && isClient(running.argv, client)) ? 'none' : 'unknown';
 }
 
-/** Whether the pane is seen not to run this client: closed, or with something else in front. A
- *  pane that cannot be read, or a foreground that says nothing, is not seen to. */
-export async function clientGone(config: BoardConfig, pane: string, client: string): Promise<boolean> {
+/** Whether the pane is seen not to run a client: closed, or with only a waiting shell in front.
+ *  Anything else may be one (`hcom pty claude` does not read as the client itself), and so may a
+ *  pane that cannot be read. */
+export async function clientGone(config: BoardConfig, pane: string): Promise<boolean> {
 	const info = await paneProcess(config, pane);
 	if ('reason' in info) return info.missing === true;
-	return info.foreground.length > 0 && !info.foreground.some((running) => isClient(running.argv, client));
+	return info.foreground.length > 0 && info.foreground.every((running) => isIdleShell(running.argv));
 }
 
 export function createHookWatch() {

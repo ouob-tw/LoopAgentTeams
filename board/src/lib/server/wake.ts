@@ -110,7 +110,7 @@ async function deliver(board: Board, controller: Controller | undefined, request
 	// Herdr may go on listing a closed session in its old pane, so its list alone does not say it
 	// runs. Asked of that pane now; one that cannot be told is taken to run.
 	const listed = plan.agent ? undefined : agents.find((agent) => agent.id === controller.id && agent.inHerdr);
-	if (listed && !(await clientGone(board.config, listed.herdr.pane, listed.client))) return refuse(AGENT_RUNNING_WAKE_REASON);
+	if (listed && !(await clientGone(board.config, listed.herdr.pane))) return refuse(AGENT_RUNNING_WAKE_REASON);
 	if (!plan.agent) {
 		// A model switch that stopped this client without seeing it gone may have left it running:
 		// resuming now could make a second copy, so 繼續切換 has to settle it first.

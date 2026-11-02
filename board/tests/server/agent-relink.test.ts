@@ -326,6 +326,20 @@ test('a controller Herdr runs and hcom does not list is not woken, even when its
 	expect(hcomCalls().some((call: string[]) => call[0] === 'r')).toBe(false);
 });
 
+test('a wake sees a client under hcom pty, stopped from hcom\'s list, as running; a waiting shell in its old pane as not', async () => {
+	fixture.list([fixture.bound('alpha', 'modi', { session_id: SESSION })]);
+	fixture.setHcom(hcomPlan());
+	setHerdr({ processes: { [PANE]: clientProcess(hooked, ['hcom', 'pty', 'claude']) } });
+	await fixture.refresh(cookie);
+	const wake = () => fixture.fetch('/api/wake', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ controllerId: SESSION, text: 'hi', model: null, effort: null }), cookie });
+	expect((await wake()).status).toBe(409);
+	expect(hcomCalls().some((call: string[]) => call[0] === 'r')).toBe(false);
+	setHerdr({ processes: { [PANE]: clientProcess(SHELL, ['bash']) } });
+	await fixture.refresh(cookie);
+	await wake();
+	expect(hcomCalls().some((call: string[]) => call[0] === 'r')).toBe(true);
+});
+
 test('a controller being restarted does not read as closed while it is off Herdr\'s list', async () => {
 	fixture.list([fixture.bound('alpha', 'modi', { session_id: SESSION })]);
 	fixture.setHcom(hcomPlan({ resumeDelayMs: 2_000 }));
