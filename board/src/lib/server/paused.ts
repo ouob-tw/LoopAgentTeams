@@ -87,18 +87,19 @@ export const pausing = new Set<string>();
 
 /**
  * The records left once this read's lists have had their say: one whose session hcom lists on its
- * link again (resumed, from the board or by hand) is over, and so is one whose Herdr pane is gone
+ * link again (resumed, from the board or by hand; not by `hcom start` in a process with no hooks,
+ * `hookless` panes, which only listens by hand) is over, and so is one whose Herdr pane is gone
  * (asked of Herdr's pane list only when its agent list no longer has it). A list that cannot be read
  * ends nothing, nor does one asked for before the record was written (`listedAt`, real clock
  * milliseconds) or while its pause is under way. A record that cannot be removed stays, to be tried
  * again at the next read.
  */
-export async function settlePauses(config: BoardConfig, hcom: AgentList, herdr: HerdrAgentList, listedAt: number, askHerdr = true): Promise<Map<string, PauseRecord>> {
+export async function settlePauses(config: BoardConfig, hcom: AgentList, herdr: HerdrAgentList, listedAt: number, askHerdr = true, hookless: Set<string> = new Set()): Promise<Map<string, PauseRecord>> {
 	const records = readPauses(config.pausedDir);
 	for (const record of [...records.values()]) {
 		const id = record.session_id;
 		if (pausing.has(id) || !(Date.parse(record.paused_at) < listedAt)) continue;
-		let over = hcom.ok && linkedAgain(hcom.agents, id) !== undefined;
+		let over = hcom.ok && linkedAgain(hcom.agents, id) !== undefined && !(record.pane && hookless.has(record.pane));
 		if (!over && askHerdr && herdr.ok && record.pane && !herdr.agents.some((agent) => agent.sessionId === id || agent.pane === record.pane)) {
 			const pane = await paneExists(config, record.pane);
 			over = 'exists' in pane && !pane.exists;

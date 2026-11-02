@@ -104,9 +104,8 @@ async function attempt(board: Board, agentId: string, choice: ModelChoice): Prom
 	const refused = (reason: string) => finish(board, entry, { reason });
 	if (!agent) return refused('reason' in listed ? listed.reason : AGENT_GONE_REASON);
 	if (agent.hcom === 'unknown') return refused(AGENT_HCOM_UNKNOWN_SWITCH_REASON);
-	if (agent.noHooks) return refused(AGENT_NO_HOOKS_SWITCH_REASON);
 	if (agent.hcom === 'none') return refused(AGENT_NOT_LINKED_SWITCH_REASON);
-	if (agent.hcom === 'paused') return refused(AGENT_PAUSED_SWITCH_REASON);
+	if (agent.hcom === 'paused') return refused(agent.noHooks ? AGENT_NO_HOOKS_SWITCH_REASON : AGENT_PAUSED_SWITCH_REASON);
 	// Stopping closes its pane; never the one the board itself runs in (hcom's is checked before the stop).
 	if (agent.herdr.pane === config.ownPane) return refused(AGENT_SWITCH_OWN_PANE_REASON);
 	const client = agent.client;

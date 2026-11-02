@@ -43,9 +43,8 @@
 		if (agent.switch) return AGENT_SWITCH_UNFINISHED_TEXT;
 		if (!agent.inHerdr) return 'Herdr 的清單上已經沒有這個 Agent，不能切換權限';
 		if (client === 'codex') {
-			if (agent.noHooks) return PERMISSION_NO_HOOKS_REASON;
 			if (agent.hcom === 'none') return PERMISSION_NOT_LINKED_REASON;
-			if (agent.hcom === 'paused') return PERMISSION_PAUSED_REASON;
+			if (agent.hcom === 'paused') return agent.noHooks ? PERMISSION_NO_HOOKS_REASON : PERMISSION_PAUSED_REASON;
 			if (agent.hcom === 'unknown') return PERMISSION_HCOM_UNKNOWN_REASON;
 			if (agent.status !== 'idle') return AGENT_BUSY_REASON;
 		}

@@ -22,7 +22,8 @@ import { settleResumes } from './wake.ts';
 import { createAgentRoster, LAG_CONFIRM_MS, type HerdrAgentList } from './agents.ts';
 import { createClosedRoster } from './closed-agents.ts';
 import { linkedAgain, settlePauses } from './paused.ts';
-import { createHookWatch, relinking } from './process-hooks.ts';
+import { createHookWatch } from './process-hooks.ts';
+import { relinking } from './relink.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
@@ -375,8 +376,8 @@ function createBoard(): Board {
 		} catch {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
-		const paused = await settlePauses(config, agents, herdrAgents, listedAt);
 		const hookless = await hookWatch.update(config, herdrAgents, agents);
+		const paused = await settlePauses(config, agents, herdrAgents, listedAt, true, hookless);
 		// Pausing and the sent log took time too: the newest lists as of now go into the roster.
 		const rosterNow = () => agentRoster.update(newer(herdrAgents, listedAt, newest.herdr), newer(agents, listedAt, newest.agents), new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused, hookless);
 		const allAgents = rosterNow();
@@ -542,8 +543,8 @@ function createBoard(): Board {
 			if (closed || !sources || (!agents.ok && !herdrAgents.ok)) return;
 			keepNewest(began, agents, herdrAgents);
 			// Without Herdr's pane check, which is outside this read's time limit: the full read ends a pause that only that check can.
-			const paused = await settlePauses(config, agents, herdrAgents, Date.now(), false);
 			const hookless = await hookWatch.update(limited, herdrAgents, agents);
+			const paused = await settlePauses(config, agents, herdrAgents, Date.now(), false, hookless);
 			// The newest lists as of now: a full read may have read newer ones meanwhile.
 			const useAgents = newer(agents, began, newest.agents);
 			const useHerdr = newer(herdrAgents, began, newest.herdr);

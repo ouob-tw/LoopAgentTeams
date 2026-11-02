@@ -15,9 +15,6 @@ export type ProcessHooks = 'hcom' | 'none' | 'unknown';
 /** The clients whose hooks only an hcom launch loads, of those the board can restart. */
 export const relinkable = (client: string) => client === 'claude' || client === 'codex';
 
-/** Sessions being restarted (`relink.ts`): off Herdr's list for a moment, and not closed. */
-export const relinking = new Set<string>();
-
 /** Whether this process runs with hcom's environment; null when that cannot be read. */
 function hasHcomEnv(pid: number): boolean | null {
 	try {
@@ -32,8 +29,8 @@ export const isClient = (argv: string[], client: string) => argv.slice(0, 2).som
 
 /** `hcom` once any foreground process has hcom's environment (`hcom pty` holds it for a client on
  *  a terminal of its own); `none` only when the client itself is seen without it. */
-export function judgeHooks(process: PaneProcess, client: string): ProcessHooks {
-	const told = process.foreground.map((running) => ({ running, env: hasHcomEnv(running.pid) }));
+export function judgeHooks(info: PaneProcess, client: string): ProcessHooks {
+	const told = info.foreground.map((running) => ({ running, env: hasHcomEnv(running.pid) }));
 	if (told.some(({ env }) => env === true)) return 'hcom';
 	return told.some(({ running, env }) => env === false && isClient(running.argv, client)) ? 'none' : 'unknown';
 }
@@ -51,8 +48,8 @@ export function createHookWatch() {
 					if (!relinkable(agent.client)) return;
 					const entry = hcom.ok ? (hcom.agents.find((candidate) => candidate.sessionId === agent.sessionId && agent.sessionId) ?? hcom.agents.find((candidate) => candidate.pane === agent.pane)) : undefined;
 					if (entry?.processBound && isConnected(entry)) return;
-					const process = await paneProcess(config, agent.pane);
-					const hooks = 'reason' in process ? 'unknown' : judgeHooks(process, agent.client);
+					const info = await paneProcess(config, agent.pane);
+					const hooks = 'reason' in info ? 'unknown' : judgeHooks(info, agent.client);
 					if (hooks === 'none' || (hooks === 'unknown' && hookless.has(agent.pane))) next.add(agent.pane);
 				})
 			);

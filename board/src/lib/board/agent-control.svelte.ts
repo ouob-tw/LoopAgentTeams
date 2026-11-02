@@ -24,7 +24,7 @@ class AgentControl {
 	/** Agents whose permission switch is under way, so a pop-up opened again meanwhile offers none. */
 	permissionSending = $state<Record<string, boolean>>({});
 	/** Restarts this page asked for that have not answered: the agent is off Herdr's list meanwhile. */
-	relinking = $state(0);
+	relinking = $state<Record<string, boolean>>({});
 	/** The latest load started per agent; an older one that answers later is dropped. */
 	#loads: Record<string, number> = {};
 
@@ -95,9 +95,9 @@ class AgentControl {
 
 	/** Restart one with no hcom hooks so it links; answers once it is back or that failed. */
 	async relink(agentId: string): Promise<Outcome> {
-		this.relinking++;
+		this.relinking[agentId] = true;
 		const outcome = await this.#post('/api/agents/relink', agentId, {});
-		this.relinking--;
+		delete this.relinking[agentId];
 		return outcome;
 	}
 

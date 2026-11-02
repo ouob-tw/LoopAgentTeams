@@ -552,7 +552,7 @@
 					{#if view.what === 'controller'}
 						<p class="empty">這個主控已不存在。</p>
 					{:else if view.what === 'agent'}
-						<p class="empty">{agentControl.relinking ? RELINKING_TEXT : '這個 Agent 已不在 Herdr 的清單上。'}</p>
+						<p class="empty">這個 Agent 已不在 Herdr 的清單上。</p>
 					{:else if view.what === 'workspace'}
 						<p class="empty">Herdr 裡已經沒有這個工作區。</p>
 					{:else if board.archive === 'failed' || (board.archiveEarlier === 'failed' && board.earlierFrom)}
@@ -570,7 +570,7 @@
 							{#if closedAgent}
 								<ClosedAgentInfo agent={closedAgent} timeZone={closed.timeZone} controllers={herdrControllers} />
 							{:else}
-								<p class="empty">{agentControl.relinking ? RELINKING_TEXT : '這個 Agent 已不在 Herdr 的清單上：它已關閉。'}</p>
+								<p class="empty">{agentControl.relinking[view.id] ? RELINKING_TEXT : '這個 Agent 已不在 Herdr 的清單上：它已關閉。'}</p>
 							{/if}
 							{#each agentAsks.toReversed() as ask (ask.id)}
 								<BoardAskCard {ask} />

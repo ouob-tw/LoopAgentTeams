@@ -198,6 +198,50 @@ test('finished background subagents do not hold it back', async () => {
 	expect((await act('relink')).body.ok).toBe(true);
 });
 
+test('a count from before this process started is not running: subagents do not outlive their process', async () => {
+	conversation(SESSION, [{ ...turnEnd(1), timestamp: '2026-01-01T00:00:00.000Z' }]);
+	expect((await act('relink')).body.ok).toBe(true);
+});
+
+test('a count from this process holds it back', async () => {
+	conversation(SESSION, [{ ...turnEnd(1), timestamp: new Date().toISOString() }]);
+	expect((await act('relink')).status).toBe(409);
+});
+
+test('a turn that starts during the checks stops it before /exit', async () => {
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }], stop: { herdrStatus: 'working' } }));
+	const result = await act('relink');
+	expect(result.body.ok).toBe(false);
+	expect(result.body.reason).toContain('它正在工作');
+	expect(result.body.reason).toContain('程序沒有動');
+	expect(prompts()).toEqual([]);
+	expect(hcomCalls().some((call: string[]) => call[0] === 'r')).toBe(false);
+});
+
+test('a stored option that gives more than the mode is refused', async () => {
+	storedArgs(['--allowedTools', 'Bash(*)']);
+	const result = await act('relink');
+	expect(result.status).toBe(409);
+	expect(result.body.reason).toContain('--allowedTools');
+	expect(prompts()).toEqual([]);
+});
+
+test('`hcom start` in a process with no hooks does not end its pause record', async () => {
+	pauseRecord('modi');
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'listening', tool: 'adhoc', process_bound: false, launch_context: { pane_id: PANE } }] }));
+	await listed();
+	await listed();
+	expect(hasRecord()).toBe(true);
+});
+
+test('the way back in a failure gives the mode too', async () => {
+	storedArgs(['--dangerously-skip-permissions']);
+	fixture.setHcom(hcomPlan({ exit: 1, stderr: 'cannot resume\n', resumed: undefined, resumedHerdr: undefined, resumedProcess: undefined }));
+	const result = await act('relink');
+	expect(result.body.reason).toContain('--permission-mode auto');
+	expect(result.body.reason).toContain(`'{"permissions":{"disableBypassPermissionsMode":"disable"}}'`);
+});
+
 test('a client that does not exit is left running and no second one starts', async () => {
 	pauseRecord('modi');
 	fixture.setHcom(hcomPlan());
@@ -294,6 +338,15 @@ test('Codex restored by Herdr: same flow, its mode and profile given explicitly'
 	expect(args).toContain('default_permissions=":workspace"');
 	expect(args.slice(args.indexOf('--profile'), args.indexOf('--profile') + 2)).toEqual(['--profile', 'slim']);
 	expect(prompts()).toEqual([['agent', 'prompt', PANE, '/exit']]);
+});
+
+test('Codex: a flag that a stop brings to light is seen before /exit', async () => {
+	codex(ASK);
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: CODEX, status: 'inactive', tool: 'adhoc', process_bound: false }], stop: { launchArgs: ['--yolo'] } }, 'codex', CODEX));
+	const result = await act('relink', CODEX);
+	expect(result.body.ok).toBe(false);
+	expect(result.body.reason).toContain('--yolo');
+	expect(prompts()).toEqual([]);
 });
 
 test('Codex in a mode not known, or with a stored flag that would override it, is refused', async () => {

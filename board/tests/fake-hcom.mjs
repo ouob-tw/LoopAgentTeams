@@ -31,6 +31,8 @@
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
 // Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it, and a
 // `stopped` event by `cli` is added for it, with the agent's `launch_args` when it has them.
+// `stop.herdrStatus` makes the fake Herdr list every agent in that status from then on, and
+// `stop.launchArgs` adds a `stopped` event for the session with those arguments, as a stop records them.
 // `stop <name>` is logged the same way and follows `stop` (`exit`, `stderr`, `sleepMs`, `stays`) like
 // `kill`, but takes the agent off the list only, and before it sleeps (so a stop that runs out of time
 // has still stopped it): its pane and Herdr agent stay, as `hcom stop` leaves them. `breaksList:
@@ -133,6 +135,17 @@ appendFileSync(join(dir, 'hcom-env.jsonl'), JSON.stringify({ command: args[0], a
 
 if (args[0] === 'stop') {
 	const stop = plan.stop ?? {};
+	if (stop.herdrStatus) {
+		const herdrFile = join(dir, 'herdr.json');
+		const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
+		herdr.agents = herdr.agents.map((/** @type {any} */ agent) => ({ ...agent, agent_status: stop.herdrStatus }));
+		write(herdrFile, JSON.stringify(herdr));
+	}
+	if (stop.launchArgs) {
+		const session = (plan.agents ?? []).find((/** @type {any} */ agent) => agent.name === args[1])?.session_id;
+		const event = { id: 99, instance: args[1], ts: new Date().toISOString(), type: 'life', data: { action: 'stopped', by: 'cli', reason: 'stop', snapshot: { name: args[1], session_id: session, tool: 'codex', launch_args: JSON.stringify(stop.launchArgs) } } };
+		appendFileSync(join(dir, 'hcom-events.jsonl'), JSON.stringify(event) + '\n');
+	}
 	if (!stop.exit && !stop.stays) {
 		plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.name !== args[1]);
 		write(addedFile, JSON.stringify(added().filter((/** @type {any} */ agent) => agent.name !== args[1])));
