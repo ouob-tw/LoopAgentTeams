@@ -264,6 +264,7 @@ class PatternKillTests(HookCase):
                         'echo "a << b"\npkill -f node', 'echo $((1<<2))\npkill -f node',
                         '((x = 1 << 2))\nkillall node', 'taskset -c 0 pkill -f node',
                         'taskset 0x1 killall node', 'setsid killall node',
+                        'timeout 1e3 pkill -f node', 'mask=$((1 << 3))\npkill -f node',
                         'stdbuf -oL pkill -f node', 'stdbuf -o L pkill -f node',
                         'systemd-run --user --scope pkill -f node',
                         'systemd-run --user --scope -p MemoryMax=1G killall node']:
@@ -493,7 +494,11 @@ class SkillsAddTests(HookCase):
                 ('bunx skills add "$HOME"/\'LoopAgentTeams\'', None),
                 ('CI=1 \\\n  bunx skills add ~/LoopAgentTeams', None),
                 ('env CI=1 \\\n  bunx \\\n  skills add ~/LoopAgentTeams --skill lat', None),
-                ('echo x | xargs -r bunx skills add ~/LoopAgentTeams', None)]:
+                ('echo x | xargs -r bunx skills add ~/LoopAgentTeams', None),
+                ('timeout 1e3 bunx skills add ~/LoopAgentTeams', None),
+                ('{ bunx skills add ~/LoopAgentTeams; }', None),
+                ('mask=$((1 << 3))\nbunx skills add ~/LoopAgentTeams', None),
+                ('v=`cd /tmp; pwd`; bunx skills add .', self.repo)]:
             with self.subTest(command):
                 result = self.bash(command, cwd)
                 self.assert_blocked(result, f'{self.repo}/scripts/install-skills.py')
@@ -513,6 +518,7 @@ class SkillsAddTests(HookCase):
                         'echo "bash -lc \'bunx skills add ~/LoopAgentTeams\'"',
                         "cd /tmp && bash -c 'cd ~/LoopAgentTeams' && bunx skills add .",
                         'cd ~/other && (cd ~/LoopAgentTeams) && bunx skills add .',
+                        'cd ~/other && v=`cd ~/LoopAgentTeams; pwd`; bunx skills add .',
                         "echo ';' bunx skills add ~/LoopAgentTeams",
                         'echo \\; bunx skills add ~/LoopAgentTeams',
                         "printf '%s\\n' '&&' bunx skills add ~/LoopAgentTeams",

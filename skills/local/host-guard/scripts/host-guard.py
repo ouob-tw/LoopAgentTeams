@@ -111,7 +111,7 @@ PREFIXES = {'sudo', 'nice', 'ionice', 'env', 'exec', 'command', 'xargs', 'nohup'
             'timeout', 'setsid', 'stdbuf', 'taskset', 'systemd-run'}
 ASSIGNMENT = re.compile(r'^[A-Za-z_]\w*=')
 # A wrapper's bare argument: timeout's duration, taskset's mask.
-WRAPPER_NUMBER = re.compile(r'0x[\da-fA-F]+|[\d.]+[smhd]?')
+WRAPPER_NUMBER = re.compile(r'\.?\d\S*')
 # A redirection before a command; without an attached target the next word is that target.
 REDIRECTION = re.compile(r'\d*[<>]+&?(?P<target>.*)')
 # Words that may come before a command in a statement.
@@ -430,9 +430,10 @@ def quoted_at(line, index):
     return any(i == index and quote for i, _, quote in _quote_states(line))
 
 
-def heredoc_end(text, opener, name, position):
+def heredoc_end(text, opener, position):
     """The match of the delimiter line closing a heredoc whose body starts at position, or None."""
     strip = r'\t*' if opener.group(1) else ''
+    name = heredoc_word(opener.group(2))[0]
     return re.compile(r'^' + strip + re.escape(name) + r'$', re.M).search(text, position)
 
 
@@ -458,7 +459,7 @@ def expanding_heredoc(command):
         position = line_end + 1
         for opener in openers:
             name, quoted = heredoc_word(opener.group(2))
-            end = heredoc_end(command, opener, name, position)
+            end = heredoc_end(command, opener, position)
             if not quoted:
                 found = substitution(command[position:end.start() if end else len(command)])
                 if found:
@@ -582,7 +583,7 @@ def repo_install(command, cwd):
     `sh -c` scope. A source is a word that looks like a path (~, /, ., $VAR or a slash);
     skill names and options are not."""
     tokens = shell_tokens(command)
-    base, scopes, words = Path(cwd), [], []
+    base, scopes, words, in_backticks = Path(cwd), [], [], False
     for token in [*tokens, (';',)]:
         if isinstance(token, str):
             words.append(token)
@@ -591,9 +592,12 @@ def repo_install(command, cwd):
         if repo:
             return repo
         words = []
-        if token == ('(',):
+        opening = token == ('(',) or token == ('`',) and not in_backticks
+        if token == ('`',):
+            in_backticks = not in_backticks
+        if opening:
             scopes.append(base)
-        elif token == (')',) and scopes:
+        elif token in ((')',), ('`',)) and scopes:
             base = scopes.pop()
     return None
 
@@ -609,8 +613,7 @@ def double_quote_end(text, start):
         substituting = substituting or text.startswith('$(', i)
         opener = HEREDOC_START.match(text, i) if substituting else None
         line_end = text.find('\n', opener.end()) if opener else -1
-        end = line_end >= 0 and heredoc_end(text, opener, heredoc_word(opener.group(2))[0],
-                                            line_end + 1)
+        end = heredoc_end(text, opener, line_end + 1) if line_end >= 0 else None
         i = end.end() if end else i + 1
     return i
 
@@ -661,7 +664,7 @@ def shell_tokens(text):
             tokens.append((char,))
             if char == '\n':
                 for body in bodies:
-                    end = heredoc_end(text, body, heredoc_word(body.group(2))[0], i + 1)
+                    end = heredoc_end(text, body, i + 1)
                     i = end.end() if end else len(text)
                 bodies = []
         elif char in ' \t\r':
@@ -674,8 +677,8 @@ def shell_tokens(text):
 
 
 def after_prefixes(words):
-    """The words of a simple command past assignments, redirections and PREFIXES with their
-    options and bare numbers; empty for `command -v NAME`, which only looks NAME up."""
+    """The words of a simple command past shell keywords, assignments, redirections and
+    PREFIXES with their options and bare numbers; empty for `command -v NAME`, which only looks NAME up."""
     prefix = None
     while words:
         word, name = words[0], os.path.basename(words[0])
@@ -684,7 +687,8 @@ def after_prefixes(words):
             words = words[1:] if redirection.group('target') else words[2:]
         elif name in PREFIXES:
             prefix, words = name, words[1:]
-        elif ASSIGNMENT.match(word) or prefix and WRAPPER_NUMBER.fullmatch(word):
+        elif (ASSIGNMENT.match(word) or word in SHELL_KEYWORDS
+              or prefix and WRAPPER_NUMBER.fullmatch(word)):
             words = words[1:]
         elif prefix and word.startswith('-'):
             if prefix == 'command' and word in ('-v', '-V'):
@@ -762,8 +766,6 @@ def pattern_kill(command):
         if isinstance(token, str):
             words.append(token)
             continue
-        while words and words[0] in SHELL_KEYWORDS:
-            words = words[1:]
         words = after_prefixes(words)
         name = os.path.basename(words[0]) if words else ''
         if name in SHELLS:

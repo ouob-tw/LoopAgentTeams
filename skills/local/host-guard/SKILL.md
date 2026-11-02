@@ -59,7 +59,7 @@ systemd-run --user --scope -q -p MemoryMax=40G -p MemorySwapMax=0 -p OOMPolicy=c
 
 ## 依名稱結束程序
 
-`pkill -f`、`pkill --full`、合併旗標（`pkill -9fx`）與 `killall` 一律擋下：比對到的每個程序都會被結束，包括下這個指令的 shell、其他 Agent 與線上服務。2026-10-19 打掛過線上 7100 看板，之後也有 Agent 比對到自己的 shell 而被殺（exit 144）。前面接 `sudo`、`timeout`、`xargs` 等前綴，或寫在 `bash -c '…'`、`$(…)` 裡同樣會擋。
+`pkill -f`、`pkill --full`、合併旗標（`pkill -9fx`）與 `killall` 一律擋下：比對到的每個程序都會被結束，包括下這個指令的 shell、其他 Agent 與線上服務。前面接 `sudo`、`timeout`、`xargs` 等前綴，或寫在 `bash -c '…'`、`$(…)` 裡同樣會擋。
 
 被擋後改用 PID：
 
