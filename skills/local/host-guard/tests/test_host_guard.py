@@ -185,6 +185,7 @@ class TestRunTests(HookCase):
             'timeout 600 systemd-run --user --scope -p MemoryMax=8G bun test'))
         self.assert_allowed(self.run_hook(self.LIMITED + "bash -c 'pytest -q'"))
         self.assert_allowed(self.run_hook(self.LIMITED + "/bin/bash -c 'pytest -q'"))
+        self.assert_allowed(self.run_hook(self.LIMITED + "bash -c \"bash -c 'pytest -q'\""))
         self.assert_allowed(self.run_hook(
             'systemd-run --user --scope -p MemoryMax=8G timeout .5 pytest -q'))
         self.assert_allowed(self.run_hook(

@@ -56,7 +56,7 @@ RUN_WRAPPERS = (r'(?:\w+=\S*\s+'
 SHELL = r'(?:[\w./~-]*/)?(?:ba|z|da)?sh\s+(?:-\S+\s+)*'
 TEST_RUN = re.compile(
     TEST_START
-    + r'(?P<prefix>' + RUN_WRAPPERS + r'(?:' + SHELL + r'-\w*c\s+[\'"]\s*' + RUN_WRAPPERS + r')?)'
+    + r'(?P<prefix>' + RUN_WRAPPERS + r'(?:' + SHELL + r'-\w*c\s+[\'"]\s*' + RUN_WRAPPERS + r')*)'
     r'(?:uv\s+run\s+' + FLAGS + r')?'
     r'(?:bunx\s+|bun\s+x\s+|npx\s+|python3?\s+-m\s+)?'
     r'(?:[\w./~-]*/)?'
