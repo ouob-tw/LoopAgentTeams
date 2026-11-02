@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PreToolUse hook that keeps agents from starving a shared host.
 
-Five rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
+Six rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
 - whole-disk scans: find / du / grep -r / rg / fd / tree / ls -R rooted at /, /mnt,
   /media or a configured extra root are blocked;
 - CPU load generators (busy loops, stress, stress-ng, sysbench cpu, yes > /dev/null)
@@ -12,7 +12,9 @@ Five rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
   deletes the parent folder if it comes out empty, or when it targets a folder of agent
   conversation records or state (or a folder above one);
 - `bunx skills add` from a LoopAgentTeams checkout is blocked: its install script installs
-  only skills whose full suite passed for their current content.
+  only skills whose full suite passed for their current content;
+- a test runner (bun test, pytest, vitest, cargo test) must run under a memory limit and a
+  timeout: a runaway test can take all the memory of the host.
 """
 import argparse
 import copy
@@ -42,6 +44,20 @@ LOAD = re.compile(r'while\s+(?::|true)\s*;\s*do\s*:?\s*;?\s*done'
                   r'|(?:^|[\s;&|(`\'"])yes(?:\s[^;&|\n]*)?>\s*/dev/null')
 LIMIT = re.compile(r'\btaskset\b|\bcpulimit\b|\bsystemd-run\b[^\n]*(?:AllowedCPUs|CPUQuota)=')
 TASKSET_LIST = re.compile(r'\btaskset\s+(?:-\S*c\S*\s+|--cpu-list\s+)(?P<list>[\d,\-]+)')
+# A test runner at the start of a shell command, behind any of the wrappers people put there.
+# Anchored so that `grep pytest` or `uv pip install pytest` are not test runs.
+TEST_RUN = re.compile(
+    r'(?:^|[;&|(`\'"\n])\s*'
+    r'(?P<prefix>(?:\w+=\S*\s+'
+    r'|(?:sudo|nice|ionice|env|exec|command|xargs)\s+(?:-\S+\s+(?:\d+\s+)?)*'
+    r'|timeout\s+(?:-\S+\s+)*\S+\s+'
+    r'|systemd-run\s+(?:-\S+(?:\s+\w+=\S+)?\s+)*)*)'
+    r'(?:uv\s+run\s+(?:-\S+(?:\s+[^-\s;&|]\S*)?\s+)*)?'
+    r'(?:bunx\s+|bun\s+x\s+|npx\s+|python3?\s+-m\s+)?'
+    r'(?:[\w./~-]*/)?'
+    r'(?:bun\s+test|bun\s+run\s+test[\w:-]*|pytest|py\.test|vitest|cargo\s+(?:\+\S+\s+)?test)'
+    r'(?=[\s;&|)\'"`]|$)')
+DEFAULT_TEST_MEMORY = '40G'
 # Heredoc bodies and quoted text are data (messages, prompts), except a script after `-c`.
 HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re.S | re.M)
 # `<<`, not `<<<`; the delimiter word ends at whitespace or a shell operator.
@@ -78,6 +94,10 @@ LOAD_MESSAGE = ('Blocked: this generates CPU load on every core ({where}). Other
                 '`taskset -c 0-{last} <command>` (child processes inherit the limit, so wrapping '
                 'the script that starts the load is enough), or '
                 '`systemd-run --user --scope -p AllowedCPUs=0-{last} <command>`.')
+TEST_MESSAGE = ('Blocked: this runs tests without a memory limit and a timeout. A runaway test can '
+                'take all the memory of this shared host. Run it as `systemd-run --user --scope -q '
+                '-p MemoryMax={limit} -p MemorySwapMax=0 -p OOMPolicy=continue timeout <seconds> '
+                '<test command>`; only the test is killed if it goes over.')
 HEREDOC_MESSAGE = ('Blocked: the heredoc <<{name} is unquoted and its body contains {what}, so the '
                    'shell runs that as a command while writing the text. Quote the delimiter '
                    "(<<'{name}') to keep the body literal, or write the file with the Write tool "
@@ -105,7 +125,7 @@ def config_path():
 
 
 def load_config():
-    """Extra scan roots and the core limit; a bad or missing file falls back to defaults."""
+    """Extra scan roots, the core limit and the test memory limit; a bad or missing file falls back to defaults."""
     try:
         data = json.loads(config_path().read_text())
     except (OSError, ValueError):
@@ -116,7 +136,11 @@ def load_config():
     cores = data.get('max_load_cores')
     if not isinstance(cores, int) or isinstance(cores, bool) or cores < 1:
         cores = max(1, (os.cpu_count() or 4) // 4)
-    return {'roots': {r.rstrip('/') or '/' for r in (*DEFAULT_ROOTS, *extra)}, 'cores': cores}
+    memory = data.get('test_memory_limit')
+    if not isinstance(memory, str) or not re.fullmatch(r'\d+[KMGT]?', memory):
+        memory = DEFAULT_TEST_MEMORY
+    return {'roots': {r.rstrip('/') or '/' for r in (*DEFAULT_ROOTS, *extra)}, 'cores': cores,
+            'test_memory': memory}
 
 
 def code_only(text):
@@ -442,6 +466,22 @@ def unlimited_load(text, cores):
     return False
 
 
+def memory_limit_usable():
+    """systemd-run --user needs the binary and a running user manager; elsewhere the
+    suggested command would fail, so the rule stays out of the way."""
+    runtime = os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}'
+    return bool(shutil.which('systemd-run')) and Path(runtime, 'systemd/private').exists()
+
+
+def unlimited_tests(command):
+    """True when a test runner starts without both a memory limit and a timeout."""
+    for match in TEST_RUN.finditer(code_only(command)):
+        prefix = match.group('prefix')
+        if 'MemoryMax=' not in prefix or not re.search(r'(?:^|\s)timeout\s', prefix):
+            return True
+    return False
+
+
 def called_scripts(command, cwd):
     """Readable shell scripts a command runs, with their text."""
     found = []
@@ -621,6 +661,9 @@ def cmd_hook():
     repo = repo_install(command, cwd if os.path.isdir(cwd) else os.getcwd())
     if repo:
         print(INSTALL_MESSAGE.format(repo=repo, script=repo / INSTALL_SCRIPT), file=sys.stderr)
+        return 2
+    if unlimited_tests(command) and memory_limit_usable():
+        print(TEST_MESSAGE.format(limit=config['test_memory']), file=sys.stderr)
         return 2
     where = load_problem(command, cwd if os.path.isdir(cwd) else os.getcwd(), config['cores'])
     if where:

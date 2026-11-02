@@ -2511,6 +2511,15 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
                                             for name in ('absent', 'reviewer', 'qa-one')])
         self.assertIn('deadline_at', saved)
 
+    def test_repeated_for_waits_for_every_entry(self):
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'absent', '--for', 'reviewer,qa-one', '--reason', 'review round')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertEqual(saved['target'], 'absent')
+        self.assertEqual(saved['targets'], [{'target': name, 'kind': 'agent'}
+                                            for name in ('absent', 'reviewer', 'qa-one')])
+
     def test_single_target_declaration_has_no_list(self):
         result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'reviewer,reviewer', '--reason', 'review round')
