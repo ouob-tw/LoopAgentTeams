@@ -163,6 +163,7 @@ test('an input box is empty only when it shows what an empty one shows', () => {
 	expect(inputBoxEmpty('codex', codex('› a draft'))).toBe(false);
 	// A draft that starts with a new line.
 	expect(inputBoxEmpty('codex', codex('›\n  two'))).toBe(false);
+	expect(inputBoxEmpty('codex', codex('›\n\n  two'))).toBe(false);
 	expect(inputBoxEmpty('codex', 'no box here')).toBe(false);
 	expect(inputBoxEmpty('gemini', '❯')).toBe(false);
 });

@@ -73,8 +73,8 @@ export function inputBoxEmpty(client: string, screen: string): boolean {
 	}
 	if (client !== 'codex') return false;
 	const box = lines.findLastIndex((line) => line.trimStart().startsWith('›'));
-	// A blank line under it: a draft that starts with a new line shows its text there.
-	return box >= 0 && CODEX_EMPTY_INPUT.test(lines[box]) && !lines[box + 1]?.trim();
+	// Under it only a blank line and its one footer line: a draft that starts with new lines shows its text there.
+	return box >= 0 && CODEX_EMPTY_INPUT.test(lines[box]) && !lines[box + 1]?.trim() && lines.slice(box + 1).filter((line) => line.trim()).length <= 1;
 }
 
 /**
