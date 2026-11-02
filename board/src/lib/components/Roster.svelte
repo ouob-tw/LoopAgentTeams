@@ -41,8 +41,8 @@
 	}
 	@media (min-width: 761px) {
 		/* Half the gap above and below, so neighbouring cards touch, and sideways to the edges of
-		   the column's padding, so the pointer never crosses the blank (and its collapse cursor)
-		   between or beside them. */
+		   the column's padding, so the pointer is over a card
+		   between and beside them. */
 		.people > :global(.person) {
 			position: relative;
 		}

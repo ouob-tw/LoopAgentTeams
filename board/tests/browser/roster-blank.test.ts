@@ -1,6 +1,6 @@
 // Clicking the blank of the roster, folded or unfolded, changes nothing; the fold and unfold buttons
-// still work. In a real browser: headless Chrome driven over its
-// DevTools protocol, on the built board with fake data. Skipped when the host has no Chrome.
+// still work. In a real browser: headless Chrome driven over its DevTools protocol, on the built
+// board with fake data. Skipped when the host has no Chrome.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { FOLDED_KEY } from '../../src/lib/board/prefs.ts';
 import { question, startFixture, type Fixture } from '../harness.ts';
@@ -16,7 +16,7 @@ const until = (expression: string) => browser!.tab.until(expression);
 beforeAll(async () => {
 	if (!CHROME) return;
 	fixture = await startFixture();
-	const cookie = await fixture.login('rail-cursor');
+	const cookie = await fixture.login('roster-blank');
 	// One controller waiting for the user, then two at work: two runs, with a line between them.
 	const [luna, sol, vega] = ['luna', 'sol', 'vega'].map((name) => fixture.bound('alpha', name, name === 'luna' ? { questions: [question()] } : {}));
 	fixture.report(luna.session_id, { tag: 'HELP', summary: '需要你看一下', hcom_name: 'luna', workspace: luna.workspace });
@@ -47,7 +47,7 @@ const BLANK = `(() => {
 	const x = column.left + 3;
 	for (let y = column.top + 8; y < column.bottom; y += 2) {
 		const el = document.elementFromPoint(x, y);
-		if (el && el.closest('.roster') && !el.closest('button, a, .entry, .person, .resize')) return { x, y, tag: el.className };
+		if (el && el.closest('.roster') && !el.closest('button, a, .entry, .person, .resize')) return { x, y };
 	}
 	return null;
 })()`;
