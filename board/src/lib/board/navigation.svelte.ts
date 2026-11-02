@@ -138,7 +138,7 @@ export class Navigation {
 	enter(): void {
 		this.#move((trail, depth) => arrive(this.addressed(), depth, trail));
 		// After the first writes, which may put the list in front of the address for a moment.
-		if (this.view?.kind === 'missing' || this.#itemGone(this.addressed())) this.#queue(() => void this.restore(this.addressed()));
+		if (this.view?.kind === 'missing' || this.#itemNotLoaded(this.addressed())) this.#queue(() => void this.restore(this.addressed()));
 	}
 
 	/** Gone back or forward to another of the board's entries. */
@@ -176,7 +176,7 @@ export class Navigation {
 	async restore(place: Place): Promise<void> {
 		const { archive, viewAt } = this.#host;
 		const own = ++this.#restores;
-		const sought = () => (viewAt(place)?.kind === 'missing' && place?.kind === 'item') || this.#itemGone(place);
+		const sought = () => (viewAt(place)?.kind === 'missing' && place?.kind === 'item') || this.#itemNotLoaded(place);
 		if (sought() && (archive.archive === null || archive.earlierFrom)) {
 			this.seeking = true;
 			if (archive.archive === null) await archive.loadArchive();
@@ -194,12 +194,17 @@ export class Navigation {
 		}
 		this.seeking = false;
 		// The entry's item is nowhere, so it is no step of its own: on to the page behind it.
-		if (this.#itemGone(place)) return this.back();
+		if (this.#itemNotLoaded(place)) {
+			this.#queue(() => {
+				if (samePlace(place, this.addressed())) this.back();
+			});
+			return;
+		}
 		await this.#present(viewAt(place));
 	}
 
 	/** The place is an item on an agent's page that the board has not loaded. */
-	#itemGone(place: Place): boolean {
+	#itemNotLoaded(place: Place): boolean {
 		const shown = this.#host.viewAt(place);
 		return place?.kind === 'agent' && place.item !== undefined && shown?.kind === 'agent' && shown.item === undefined;
 	}

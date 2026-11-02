@@ -79,6 +79,7 @@ function viewAt(archived: Set<string>) {
 			return archived.has(place.key) ? { kind: 'item', item: { key: place.key } as never } : { kind: 'missing', what: 'item' };
 		}
 		if (place.kind === 'new-agent') return { kind: 'missing', what: 'workspace' };
+		if (place.id !== 'a-1') return { kind: 'missing', what: 'agent' };
 		// An agent's page, whose item is shown only if the board has it.
 		return place.item === undefined || archived.has(place.item) ? place : { kind: 'agent', id: place.id };
 	};
