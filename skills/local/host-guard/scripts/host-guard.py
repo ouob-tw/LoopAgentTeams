@@ -68,7 +68,7 @@ MEMORY_CAP = re.compile(r'\bsystemd-run\s(?:.*\s)?(?:-p\s*|--property[=\s])Memor
 TIME_CAP = re.compile(r'(?:^|\s)timeout\s+(?:-\S+\s+(?:[\d.]\S*\s+(?=[\d.]))?)*'
                       r'(?!0*\.?0*[smhd]?\s)(?:\d|\.\d)')
 # A shell at the start of a command, so `echo bash -c 'pytest'` stays text.
-SHELL_BEFORE = re.compile(TEST_START + RUN_WRAPPERS + SHELL + r'$')
+SHELL_BEFORE = re.compile(r'(?:^|[;&|(`\n])\s*' + RUN_WRAPPERS + SHELL + r'$')
 DEFAULT_TEST_MEMORY = '40G'
 # Heredoc bodies and quoted text are data (messages, prompts), except a script after `-c`.
 HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re.S | re.M)
