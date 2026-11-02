@@ -78,7 +78,9 @@ function viewAt(archived: Set<string>) {
 		if (place.kind === 'item') {
 			return archived.has(place.key) ? { kind: 'item', item: { key: place.key } as never } : { kind: 'missing', what: 'item' };
 		}
-		return { kind: 'missing', what: 'agent' };
+		if (place.kind === 'new-agent') return { kind: 'missing', what: 'workspace' };
+		// An agent's page, whose item is shown only if the board has it.
+		return place.item === undefined || archived.has(place.item) ? place : { kind: 'agent', id: place.id };
 	};
 }
 const noArchive: Archive = { archive: { items: [], before: null }, archiveEarlier: 'idle', earlierFrom: null, loadArchive: async () => {}, loadEarlier: async () => {} };
@@ -96,6 +98,7 @@ function start(fake: ReturnType<typeof fakeBrowser>, archive = noArchive, archiv
 }
 const placeIn = (search: string): Place => {
 	const params = new URLSearchParams(search);
+	if (params.get('agent')) return { kind: 'agent', id: params.get('agent')!, ...(params.get('item') ? { item: params.get('item')! } : {}) };
 	return params.get('controller') ? { kind: 'controller', id: params.get('controller')! } : params.get('item') ? { kind: 'item', key: params.get('item')! } : null;
 };
 const settle = async (navigation: { settled(): Promise<unknown> }) => {
@@ -230,6 +233,51 @@ test('a step through the history that never arrives stops nothing after it and r
 	await settle(navigation);
 	expect(navigation.view).toEqual({ kind: 'controller', id: 'c-2' });
 	expect(fake.entries.map((entry) => entry.search)).toEqual(['', '?controller=c-1', '?controller=c-2']);
+});
+
+test("a reload on an agent's item the board no longer has goes on to the agent's page, whose back shows the list", async () => {
+	const fake = fakeBrowser();
+	const archived = new Set(['r-1']);
+	const first = start(fake, noArchive, archived);
+	first.navigation.go({ kind: 'agent', id: 'a-1' });
+	first.navigation.go({ kind: 'agent', id: 'a-1', item: 'r-1' });
+	await settle(first.navigation);
+	expect(first.navigation.view).toEqual({ kind: 'agent', id: 'a-1', item: 'r-1' });
+
+	archived.clear();
+	fake.reload();
+	const { navigation } = start(fake, noArchive, archived);
+	await settle(navigation);
+	expect(fake.at).toBe(1);
+	expect(navigation.addressed()).toEqual({ kind: 'agent', id: 'a-1' });
+	expect(navigation.view).toEqual({ kind: 'agent', id: 'a-1' });
+
+	navigation.back();
+	await settle(navigation);
+	expect(fake.at).toBe(0);
+	expect(navigation.view).toBeNull();
+	expect(fake.left).toBe(false);
+});
+
+test("a reload on an agent's item only the archive holds reads the archive and shows it", async () => {
+	const fake = fakeBrowser();
+	fake.entries[0] = { search: '?agent=a-1&item=r-old', state: { depth: 2 } };
+	const archived = new Set<string>();
+	const archive: Archive = {
+		archive: null,
+		archiveEarlier: 'idle',
+		earlierFrom: null,
+		loadArchive: async () => {
+			archived.add('r-old');
+			archive.archive = { items: [], before: null };
+		},
+		loadEarlier: async () => {}
+	};
+	const { navigation } = start(fake, archive, archived);
+	await settle(navigation);
+	expect(navigation.view).toEqual({ kind: 'agent', id: 'a-1', item: 'r-old' });
+	expect(navigation.addressed()).toEqual({ kind: 'agent', id: 'a-1', item: 'r-old' });
+	expect(navigation.opens).toBe(1);
 });
 
 test('a reload shows the same screen again, keeping the entries behind it', async () => {

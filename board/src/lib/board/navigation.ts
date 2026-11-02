@@ -103,7 +103,9 @@ export function viewOf(
 	if (place.kind === 'agent') {
 		const listed = (agents?: readonly Pick<Agent, 'id'>[]) => agents?.some((agent) => agent.id === place.id);
 		const asked = from.asks?.some((ask) => ask.sessionId === place.id);
-		return listed(from.agents) || listed(from.closed) || asked ? place : { kind: 'missing', what: 'agent' };
+		if (!(listed(from.agents) || listed(from.closed) || asked)) return { kind: 'missing', what: 'agent' };
+		// An item the board has not loaded: the agent's page alone.
+		return place.item === undefined || from.kept.has(place.item) || from.items.some((candidate) => candidate.key === place.item) ? place : { kind: 'agent', id: place.id };
 	}
 	if (place.kind === 'controller') {
 		return from.controllers.some((controller) => controller.id === place.id)

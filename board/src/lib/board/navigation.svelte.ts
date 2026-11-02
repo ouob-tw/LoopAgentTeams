@@ -138,7 +138,7 @@ export class Navigation {
 	enter(): void {
 		this.#move((trail, depth) => arrive(this.addressed(), depth, trail));
 		// After the first writes, which may put the list in front of the address for a moment.
-		if (this.view?.kind === 'missing') this.#queue(() => void this.restore(this.addressed()));
+		if (this.view?.kind === 'missing' || this.#itemGone(this.addressed())) this.#queue(() => void this.restore(this.addressed()));
 	}
 
 	/** Gone back or forward to another of the board's entries. */
@@ -176,13 +176,14 @@ export class Navigation {
 	async restore(place: Place): Promise<void> {
 		const { archive, viewAt } = this.#host;
 		const own = ++this.#restores;
-		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && (archive.archive === null || archive.earlierFrom)) {
+		const sought = () => (viewAt(place)?.kind === 'missing' && place?.kind === 'item') || this.#itemGone(place);
+		if (sought() && (archive.archive === null || archive.earlierFrom)) {
 			this.seeking = true;
 			if (archive.archive === null) await archive.loadArchive();
 			// Each round must get further back; one that fails or does not stops. A page the archive
 			// view is already reading counts as a round.
 			let from = archive.earlierFrom;
-			while (own === this.#restores && viewAt(place)?.kind === 'missing' && from) {
+			while (own === this.#restores && sought() && from) {
 				await archive.loadEarlier();
 				if (archive.archiveEarlier === 'failed' || archive.earlierFrom === from) break;
 				from = archive.earlierFrom;
@@ -192,7 +193,15 @@ export class Navigation {
 			if (!samePlace(place, this.addressed())) return;
 		}
 		this.seeking = false;
+		// The entry's item is nowhere, so it is no step of its own: on to the page behind it.
+		if (this.#itemGone(place)) return this.back();
 		await this.#present(viewAt(place));
+	}
+
+	/** The place is an item on an agent's page that the board has not loaded. */
+	#itemGone(place: Place): boolean {
+		const shown = this.#host.viewAt(place);
+		return place?.kind === 'agent' && place.item !== undefined && shown?.kind === 'agent' && shown.item === undefined;
 	}
 
 	async #present(next: View): Promise<void> {

@@ -409,6 +409,15 @@ test("an address of an item in place on an agent's page opened from elsewhere go
 	expect(history.left).toBe(false);
 });
 
+test('an item in place the board no longer has shows the agent page alone', () => {
+	const place: Place = { kind: 'agent', id: 's-a', item: 'report:s:1' };
+	const agents = [{ id: 's-a' } as Agent];
+	const item = { key: 'report:s:1' } as InboxItem;
+	expect(viewOf(place, { kept: new Map(), items: [item], controllers: [], agents })).toEqual(place);
+	expect(viewOf(place, { kept: new Map([[item.key, item]]), items: [], controllers: [], agents })).toEqual(place);
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents })).toEqual(A);
+});
+
 test('an entry left ahead cannot put an old screen back on top', () => {
 	const history = new BrowserHistory();
 	const screen = boardOn(history);
