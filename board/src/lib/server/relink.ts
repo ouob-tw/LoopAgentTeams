@@ -19,7 +19,7 @@ import { hasHoldTerminal, listAgents, resumeAgent, stopAgent, storedLaunchArgs }
 import { agentCommand, listHerdrAgents, paneProcess, readScreen, type PaneProcess } from './herdr.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause } from './paused.ts';
 import { codexKeepArgs, permissionArgs } from './permission.ts';
-import { isClient, judgeHooks, relinkable } from './process-hooks.ts';
+import { isClient, isIdleShell, judgeHooks, relinkable } from './process-hooks.ts';
 import { queued } from './send.ts';
 
 const EXIT_WAIT_MS = 15_000;
@@ -181,15 +181,18 @@ async function prepare(board: Board, agent: Agent & { id: string }): Promise<{ r
 	return { keep, name, listed: entry !== undefined };
 }
 
-/** True once its pane is back at its shell with the client gone; otherwise why not. */
+/** True once the client is gone from its pane's foreground and a shell waits there, the pane's own
+ *  or one nested in it (hcom's launcher leaves a `bash -l`), which `herdr pane run` types into all
+ *  the same; otherwise why not. */
 async function waitForExit(board: Board, pane: string, client: string): Promise<true | string> {
 	const until = Date.now() + EXIT_WAIT_MS;
 	let why = '';
 	for (;;) {
 		const info = await paneProcess(board.config, pane);
 		if ('reason' in info) why = info.reason;
-		else if (info.shellPid !== null && info.groupId === info.shellPid && !info.foreground.some((running) => isClient(running.argv, client))) return true;
-		else why = '它的程序還在';
+		else if (info.foreground.some((running) => isClient(running.argv, client))) why = '它的程序還在';
+		else if (info.foreground.length && info.foreground.every((running) => isIdleShell(running.argv))) return true;
+		else why = `它已經結束，但窗格前景是 ${info.foreground.map((running) => running.argv[0]).join('、') || '不明的程序'}，不是等著輸入的 shell`;
 		if (Date.now() >= until) return why;
 		await sleep(POLL_MS);
 	}
@@ -268,7 +271,7 @@ export function relinkAgent(board: Board, agentId: string) {
 					return { route: 'herdr', reason: `${told}。沒有啟動新程序；請到 Herdr 看它的畫面。`, text: '/exit' };
 				}
 				const gone = await waitForExit(board, pane, agent.client);
-				if (gone !== true) return { route: 'herdr', reason: `送出 /exit 後 ${EXIT_WAIT_MS / 1000} 秒它還沒有結束（${gone}），沒有啟動新程序；/exit 可能還排著，請到 Herdr 看它的畫面。`, text: '/exit' };
+				if (gone !== true) return { route: 'herdr', reason: `送出 /exit 後等了 ${EXIT_WAIT_MS / 1000} 秒，窗格還不能開新程序（${gone}），沒有啟動新程序；/exit 可能還排著，請到 Herdr 看它的畫面。`, text: '/exit' };
 				const resumed = await resumeAgent(config, { sessionId: agentId, herdrWorkspace: agent.herdr.workspace, prompt: '', extraArgs, intoPane: pane });
 				if (resumed.outcome === 'failed') return { route: 'hcom', reason: `舊程序已結束，但新程序沒有啟動：${resumed.reason}。${wayBack}`, text };
 				const back = await waitForLink(board, agentId, pane);

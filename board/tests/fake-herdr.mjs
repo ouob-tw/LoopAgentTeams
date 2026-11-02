@@ -17,7 +17,8 @@
 // is scrolled up, until `pane.scroll` brings it to the bottom; `--source detection` always reads the bottom.
 // `processes: { <pane>: <process_info> }` is what `pane process-info --pane <pane>` and the socket's
 // `pane.process_info` answer, as Herdr prints them; a pane not in it fails. `exitOnPrompt: { <pane>: true }`
-// has `agent prompt <pane> /exit` end the client: its agent leaves the list and only its shell is left.
+// has `agent prompt <pane> /exit` end the client: its agent leaves the list and only its shell is left,
+// or what the value gives instead of `true`: `{ foreground: [...] }`, processes left in the foreground.
 // `slowMs: { <command>: ms }` makes a command wait that long before it answers.
 // `failSeries: { <command>: [...] }` gives that command's next calls in turn: an entry `{ exit, stderr }`
 // acts out a failure, null answers as usual; once the series is used up, `fail` applies again.
@@ -131,7 +132,8 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		if (command === 'agent prompt' && args[3] === '/exit' && plan.exitOnPrompt?.[args[2]]) {
 			const info = plan.processes[args[2]];
 			plan.agents = plan.agents.filter((/** @type {any} */ agent) => agent.pane_id !== args[2]);
-			plan.processes[args[2]] = { ...info, foreground_process_group_id: info.shell_pid, foreground_processes: [{ pid: info.shell_pid, name: 'bash', argv: ['bash'] }] };
+			const left = plan.exitOnPrompt[args[2]].foreground ?? [{ pid: info.shell_pid, name: 'bash', argv: ['bash'] }];
+			plan.processes[args[2]] = { ...info, foreground_process_group_id: left[0].pid, foreground_processes: left };
 			write(planFile, JSON.stringify(plan));
 		}
 		if (command === 'agent send-keys' && args[3] === 'shift+tab' && plan.screens?.[args[2]]) {

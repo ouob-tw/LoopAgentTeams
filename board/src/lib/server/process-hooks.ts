@@ -27,6 +27,10 @@ function hasHcomEnv(pid: number): boolean | null {
 /** Whether this foreground process is the client, its program being run directly or by Node. */
 export const isClient = (argv: string[], client: string) => argv.slice(0, 2).some((arg) => basename(arg) === client);
 
+/** Whether this foreground process is a shell waiting at its prompt: no script or command given.
+ *  One hcom's launcher left (`bash -l`) counts as much as the pane's own. */
+export const isIdleShell = (argv: string[]) => /^-?(?:ba|z|da|fi)?sh$/.test(basename(argv[0] ?? '')) && argv.slice(1).every((arg) => arg.startsWith('-') && arg !== '-c');
+
 /** `hcom` once any foreground process has hcom's environment (`hcom pty` holds it for a client on
  *  a terminal of its own); `none` only when the client itself is seen without it. */
 export function judgeHooks(info: PaneProcess, client: string): ProcessHooks {

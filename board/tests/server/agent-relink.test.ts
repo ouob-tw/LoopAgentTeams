@@ -373,10 +373,27 @@ test('a client that does not exit is left running and no second one starts', asy
 	setHerdr({ exitOnPrompt: {} });
 	const result = await act('relink');
 	expect(result.status).toBe(502);
-	expect(result.body.reason).toContain('沒有結束');
+	expect(result.body.reason).toContain('它的程序還在');
 	expect(result.body.reason).toContain('沒有啟動新程序');
 	expect(hcomCalls().some((call: string[]) => call[0] === 'r')).toBe(false);
 	expect(hasRecord()).toBe(true);
+}, 30_000);
+
+test('a shell nested in the pane is enough: the new client starts in that pane', async () => {
+	setHerdr({ exitOnPrompt: { [PANE]: { foreground: [{ pid: 5151, name: 'bash', argv: ['bash', '-l'] }] } } });
+	const result = await act('relink');
+	expect(result.body).toMatchObject({ ok: true, reason: null });
+	expect(hcomCalls().at(-1)!.slice(0, 2)).toEqual(['r', SESSION]);
+	expect(await listed()).toMatchObject({ hcom: 'linked', herdr: { pane: PANE } });
+});
+
+test('gone but with something other than a waiting shell in front, nothing is typed and it says so', async () => {
+	setHerdr({ exitOnPrompt: { [PANE]: { foreground: [{ pid: 5151, name: 'bash', argv: ['bash', '/tmp/job.sh'] }] } } });
+	const result = await act('relink');
+	expect(result.status).toBe(502);
+	expect(result.body.reason).toContain('它已經結束');
+	expect(result.body.reason).toContain('bash');
+	expect(hcomCalls().some((call: string[]) => call[0] === 'r')).toBe(false);
 }, 30_000);
 
 test('a stop that fails leaves the process alone', async () => {
