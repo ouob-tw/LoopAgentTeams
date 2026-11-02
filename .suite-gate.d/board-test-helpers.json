@@ -1,0 +1,60 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/tests/fake-inject.mjs"
+      ],
+      "tests": [
+        "board/tests/browser/agents-page.test.ts",
+        "board/tests/browser/attachment-preview.test.ts",
+        "board/tests/browser/attachments-qa.test.ts",
+        "board/tests/browser/controller-short-name.test.ts",
+        "board/tests/browser/herdr-controller-send.test.ts",
+        "board/tests/browser/herdr-off-roster.test.ts",
+        "board/tests/browser/skill-hints-page.test.ts",
+        "board/tests/server/agent-control.test.ts",
+        "board/tests/server/board-ask-late.test.ts",
+        "board/tests/server/board-ask-permission.test.ts",
+        "board/tests/server/closed.test.ts",
+        "board/tests/server/model.test.ts",
+        "board/tests/server/send.test.ts",
+        "board/tests/server/wake.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/tests/fake-codex.mjs"
+      ],
+      "tests": [
+        "board/tests/browser/asking-note.test.ts",
+        "board/tests/browser/page-navigation.test.ts",
+        "board/tests/browser/skill-hints-page.test.ts",
+        "board/tests/browser/translate-mode-page.test.ts",
+        "board/tests/browser/translate-opened-report.test.ts",
+        "board/tests/browser/translate-page.test.ts",
+        "board/tests/browser/translate-report-card.test.ts",
+        "board/tests/server/skills.test.ts",
+        "board/tests/server/translate-server.test.ts",
+        "board/tests/server/voice-server.test.ts",
+        "board/tests/unit/translate.test.ts",
+        "board/tests/unit/voice-log.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/tests/browser/chrome-leak-case.ts"
+      ],
+      "tests": [
+        "board/tests/browser/browser-fixtures.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/tests/server/interrupted-create.ts"
+      ],
+      "tests": [
+        "board/tests/server/launch-new-folder.test.ts"
+      ]
+    }
+  ]
+}
