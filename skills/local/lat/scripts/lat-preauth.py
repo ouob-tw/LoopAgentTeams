@@ -1271,9 +1271,11 @@ def record_locked(args, top, session):
             entry['action_repo'] = str(repo)
     else:
         conditions = dict(self_reported=args.self_reported, clear_expected=args.clear_expected,
-                          single_ticket=args.single_ticket, restores_stated=args.restores_stated)
+                          single_ticket=args.single_ticket, restores_stated=args.restores_stated,
+                          no_existing_guard=args.no_existing_guard)
         missing = [f'--{key.replace("_", "-")}' for key, value in
-                   dict(issue=args.issue, source=args.source, **conditions).items() if not value]
+                   dict(issue=args.issue, source=args.source, **conditions).items()
+                   if not (value or '').strip()]
         if missing:
             raise Refused(f'a bug-intake record needs {", ".join(missing)}')
         entry = dict(kind='bug-intake', issue=args.issue, source=args.source, **conditions)
@@ -1346,10 +1348,13 @@ def report_line(entry):
                    if 'notice_before' in entry else '')
         return f'- {head}：{entry.get("result")}；依據：{entry.get("basis")}{notices}'
     if kind == 'bug-intake':
+        # Records written before this condition existed have no such field.
+        guard = (f'；查過沒有既有保護：{entry["no_existing_guard"]}'
+                 if 'no_existing_guard' in entry else '')
         return (f'- {entry.get("issue")}；原訊息：{entry.get("source")}；本人回報：'
                 f'{entry.get("self_reported")}；哪裡錯與應該怎樣：{entry.get("clear_expected")}；'
                 f'一張票做得完：{entry.get("single_ticket")}；回到使用者說的樣子：'
-                f'{entry.get("restores_stated")}')
+                f'{entry.get("restores_stated")}{guard}')
     if 'unreadable' in entry:
         return f'- 看板紀錄 {entry["unreadable"]} 讀不懂，可能漏列一筆'
     if kind == 'board':
@@ -1663,6 +1668,8 @@ def build_parser():
     sub.add_argument('--single-ticket', help='bug-intake: why one ticket finishes it')
     sub.add_argument('--restores-stated', help="bug-intake: why the fix only restores what the "
                                                'user described')
+    sub.add_argument('--no-existing-guard', help='bug-intake: which tests and docs were checked, '
+                                                 'none stating the behaviour is intended')
     commands.add_parser('report', parents=[common, across],
                         help="this round's records, grouped for the delivery report")
     commands.add_parser('now', help='the current time for record --started, with microseconds '
