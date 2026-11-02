@@ -265,6 +265,7 @@ class PatternKillTests(HookCase):
                         '((x = 1 << 2))\nkillall node', 'taskset -c 0 pkill -f node',
                         'taskset 0x1 killall node', 'setsid killall node',
                         'timeout 1e3 pkill -f node', 'mask=$((1 << 3))\npkill -f node',
+                        'echo $(((1+(2))<<2))\npkill -f node',
                         'stdbuf -oL pkill -f node', 'stdbuf -o L pkill -f node',
                         'systemd-run --user --scope pkill -f node',
                         'systemd-run --user --scope -p MemoryMax=1G killall node']:

@@ -624,7 +624,7 @@ def shell_tokens(text):
     rest of the line. An unclosed quote runs to the end of the text. Heredoc bodies are
     dropped, up to their delimiter line or the end of the text; `<<` within `((...))` is a
     shift. The & of `>&` stays in its word."""
-    tokens, word, quoted, i, bodies, arithmetic = [], [], False, 0, [], False
+    tokens, word, quoted, i, bodies, arithmetic = [], [], False, 0, [], 0
 
     def end_word():
         nonlocal word, quoted
@@ -649,8 +649,10 @@ def shell_tokens(text):
             i = text.find('\n', i)
             i = len(text) if i < 0 else i
             continue
-        if text.startswith(('((', '))'), i):
-            arithmetic = char == '('
+        if char == '(' and (arithmetic or text.startswith('((', i)):
+            arithmetic += 1
+        elif char == ')' and arithmetic:
+            arithmetic -= 1
         opener = HEREDOC_START.match(text, i) if char == '<' and not arithmetic else None
         if opener:
             end_word()
