@@ -46,7 +46,8 @@ export function createHookWatch() {
 			await Promise.all(
 				herdr.agents.map(async (agent) => {
 					if (!relinkable(agent.client)) return;
-					const entry = hcom.ok ? (hcom.agents.find((candidate) => candidate.sessionId === agent.sessionId && agent.sessionId) ?? hcom.agents.find((candidate) => candidate.pane === agent.pane)) : undefined;
+					// By its session only: an entry for its pane may be an earlier client's.
+					const entry = hcom.ok && agent.sessionId ? hcom.agents.find((candidate) => candidate.sessionId === agent.sessionId) : undefined;
 					if (entry?.processBound && isConnected(entry)) return;
 					const info = await paneProcess(config, agent.pane);
 					const hooks = 'reason' in info ? 'unknown' : judgeHooks(info, agent.client);

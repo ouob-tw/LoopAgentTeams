@@ -281,6 +281,21 @@ test('what hcom lists for it does not route to hcom: a send goes through Herdr, 
 	expect(hcomCalls()).toEqual([]);
 });
 
+test('an entry left on its pane by an earlier client does not make it count as hooked', async () => {
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'old', session_id: 's-earlier', status: 'listening', tool: 'claude', process_bound: true, launch_context: { pane_id: PANE } }] }));
+	expect(await listed()).toMatchObject({ noHooks: true, hcom: 'none' });
+});
+
+test('a controller with no hooks is typed into through Herdr, not hcom', async () => {
+	const lead = fixture.bound('alpha', 'modi', { session_id: SESSION });
+	fixture.list([lead]);
+	fixture.setHcom(hcomPlan({ agents: [ADHOC] }));
+	await fixture.refresh(cookie);
+	const send = await fixture.fetch('/api/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ controllerId: SESSION, text: 'hi' }), cookie });
+	expect(await send.json()).toMatchObject({ ok: true, reason: null });
+	expect(prompts()).toEqual([['agent', 'prompt', PANE, 'hi']]);
+});
+
 test('a listed one\'s own launch arguments are seen before the stop', async () => {
 	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ [SESSION]: ['--allowedTools', 'Bash(*)'] }));
 	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }] }));

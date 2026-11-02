@@ -122,11 +122,13 @@ async function attempt(board: Board, controllerId: string, rawText: string) {
 	} else if (await closedNow(board, controllerId)) {
 		// Its client is gone from hcom's list: there is no input box to type into; the page wakes it.
 		reason = CLOSED_REASON;
-	} else if (isPaused(await board.sources(), controllerId)) {
+	} else if (isPaused(await board.sources(), controllerId) || (await board.sources()).agents.some((agent) => agent.id === controllerId && agent.noHooks)) {
+		// hcom's input does not reach it: paused, or its process has no hooks.
 		const sources = await board.sources();
-		const pane = sources.agents.find((agent) => agent.id === controllerId)?.herdr.pane || binding.herdr_pane;
+		const listed = sources.agents.find((agent) => agent.id === controllerId);
+		const pane = listed?.herdr.pane || binding.herdr_pane;
 		const act = await agentCommand(board.config, ['prompt', pane, text]);
-		reason = act.ok ? null : `HCOM 通訊暫停中，改由 Herdr 輸入也沒有送出：${act.reason}`;
+		reason = act.ok ? null : `${listed?.noHooks ? '它沒有經 hcom 啟動' : 'HCOM 通訊暫停中'}，改由 Herdr 輸入也沒有送出：${act.reason}`;
 		status = reason ? 502 : 200;
 	} else {
 		reason = await inject(board.config, hcomName, text);
