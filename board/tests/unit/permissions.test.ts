@@ -164,6 +164,9 @@ test('an input box is empty only when it shows what an empty one shows', () => {
 	// A draft that starts with a new line.
 	expect(inputBoxEmpty('codex', codex('›\n  two'))).toBe(false);
 	expect(inputBoxEmpty('codex', codex('›\n\n  two'))).toBe(false);
+	// Blank lines first and no footer shown, and a marker inside a longer draft.
+	expect(inputBoxEmpty('codex', '›\n\n  two')).toBe(false);
+	expect(inputBoxEmpty('codex', codex('› hello\n  ›'))).toBe(false);
 	expect(inputBoxEmpty('codex', 'no box here')).toBe(false);
 	expect(inputBoxEmpty('gemini', '❯')).toBe(false);
 });

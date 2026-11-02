@@ -49,7 +49,7 @@ export const SCREEN_NO_MODE_REASON = '輸入框下方讀不到權限模式的提
 
 const RULE = /^\s*─{8,}\s*$/;
 /** What an empty Codex input box shows (codex-cli 0.164.0): its marker, with or without this hint. */
-const CODEX_EMPTY_INPUT = /^\s*›\s*(?:Ask Codex to do anything)?\s*$/;
+const CODEX_EMPTY_INPUT = /^›\s*(?:Ask Codex to do anything)?\s*$/;
 const MODE_LINE = /(?:⏵⏵|⏸)\s+(bypass permissions|auto mode|manual mode|accept edits|plan mode) on\b/;
 /** A numbered choice with the cursor on it, as Claude's dialogs and menus show one. */
 const CHOICE = /^\s*[❯›>]\s*\d+\.\s/;
@@ -72,9 +72,12 @@ export function inputBoxEmpty(client: string, screen: string): boolean {
 		return bottom >= 0 && lines[bottom - 1].trim() === '❯' && RULE.test(lines[bottom - 2]);
 	}
 	if (client !== 'codex') return false;
-	const box = lines.findLastIndex((line) => line.trimStart().startsWith('›'));
-	// Under it only a blank line and its one footer line: a draft that starts with new lines shows its text there.
-	return box >= 0 && CODEX_EMPTY_INPUT.test(lines[box]) && !lines[box + 1]?.trim() && lines.slice(box + 1).filter((line) => line.trim()).length <= 1;
+	// At the line's start: a marker in a longer draft is indented under the box's first line.
+	const box = lines.findLastIndex((line) => line.startsWith('›'));
+	if (box < 0 || !CODEX_EMPTY_INPUT.test(lines[box]) || lines[box + 1]?.trim()) return false;
+	// Under it only its footer (`model · folder`): a draft that starts with new lines shows its text there.
+	const below = lines.slice(box + 1).filter((line) => line.trim());
+	return below.length === 1 && below[0].includes(' · ');
 }
 
 /**

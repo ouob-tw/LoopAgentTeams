@@ -314,17 +314,16 @@ export function unpauseAgent(board: Board, agentId: string) {
 	return queued(agentId, () =>
 		attempt(board, agentId, 'unpause', null, async (agent) => {
 			const { config } = board;
-			if (agent.noHooks) return { route: null, reason: AGENT_NO_HOOKS_UNPAUSE_REASON };
+			if (agent.hcom !== 'paused') {
+				const why = { linked: '它已經接著 HCOM', none: '它沒有暫停通訊', unknown: 'hcom 的清單讀不到，無法確認它是否仍暫停通訊' }[agent.hcom];
+				return { route: null, reason: `${why}，沒有送出接回指令。` };
+			}
 			// Read now: typing the line into a process with no hooks only looks as if it worked.
 			if (relinkable(agent.client)) {
 				const info = await paneProcess(config, agent.herdr.pane);
 				const hooks = 'reason' in info ? 'unknown' : judgeHooks(info, agent.client);
 				if (hooks === 'none') return { route: null, reason: AGENT_NO_HOOKS_UNPAUSE_REASON };
 				if (hooks === 'unknown') return { route: null, reason: `確認不了它的程序有沒有經 hcom 啟動${'reason' in info ? `（${info.reason}）` : ''}，沒有送出接回指令；暫停紀錄保留，等確認得到再按。` };
-			}
-			if (agent.hcom !== 'paused') {
-				const why = { linked: '它已經接著 HCOM', none: '它沒有暫停通訊', unknown: 'hcom 的清單讀不到，無法確認它是否仍暫停通訊' }[agent.hcom];
-				return { route: null, reason: `${why}，沒有送出接回指令。` };
 			}
 			const record = readPauses(config.pausedDir).get(agent.id!);
 			if (!record) return { route: null, reason: '找不到它的暫停紀錄，沒有送出接回指令。' };

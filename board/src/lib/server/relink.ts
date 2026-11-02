@@ -257,9 +257,8 @@ export function relinkAgent(board: Board, agentId: string) {
 				const extraArgs = ready.keep(stored);
 				if ('refuse' in extraArgs) return { route, reason: `${extraArgs.refuse}${untouched}` };
 				// Everything above took time: a turn may have started since the first look.
-				const busy = await whyBusy(board, agentId, pane);
+				const [busy, draft] = await Promise.all([whyBusy(board, agentId, pane), whyNotEmpty(board, agent.client, pane)]);
 				if (busy) return { route, reason: `${busy}，沒有重新啟動；等它停下再按。${untouched}` };
-				const draft = await whyNotEmpty(board, agent.client, pane);
 				if (draft) return { route, reason: `${draft}，沒有重新啟動；清空輸入框再按。${untouched}` };
 				const text = `hcom r ${agentId} ${extraArgs.map(quoted).join(' ')}`.trim();
 				const wayBack = `對話沒有遺失，可以在那個窗格執行 ${text} 接回。`;
