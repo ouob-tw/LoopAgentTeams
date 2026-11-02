@@ -172,7 +172,10 @@ function transcript() {
 	let skipped = 0;
 	for (const line of lines) {
 		try {
-			items.push({ ...JSON.parse(line), seq: items.length });
+			const item = JSON.parse(line);
+			// A line of the client's own log, there for the board to read directly: the real helper prints none.
+			if (item.type === 'system') continue;
+			items.push({ ...item, seq: items.length });
 		} catch {
 			skipped += 1;
 		}

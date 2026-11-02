@@ -6,6 +6,8 @@ import { AGENT_SWITCH_UNFINISHED_REASON } from '../board/models.ts';
 import {
 	AGENT_HCOM_UNKNOWN_CLOSE_REASON,
 	AGENT_HCOM_UNKNOWN_REASON,
+	AGENT_NO_HOOKS_PAUSE_REASON,
+	AGENT_NO_HOOKS_UNPAUSE_REASON,
 	AGENT_OWN_PANE_PAUSE_REASON,
 	AGENT_OWN_PANE_REASON,
 	type AgentAction,
@@ -17,8 +19,9 @@ import type { Agent } from '../board/types.ts';
 import type { Board } from './board.ts';
 import type { ExternalResult } from './external.ts';
 import { killAgent, listAgents, stopAgent } from './hcom.ts';
-import { agentCommand, closePane, paneExists, type HerdrAct } from './herdr.ts';
+import { agentCommand, closePane, paneExists, paneProcess, type HerdrAct } from './herdr.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause, type PauseRecord } from './paused.ts';
+import { judgeHooks, relinkable } from './process-hooks.ts';
 import { inject, queued, typedText } from './send.ts';
 import { appendSent } from './sent-log.ts';
 
@@ -32,7 +35,7 @@ const UNPAUSE_CHECK_MS = 1_000;
 
 /** An HCOM name as one agent's: `hcom kill` and `hcom stop` read `all` and `tag:…` as many, and a
  *  resume types the name into a command line. */
-const ONE_AGENT_NAME = /^(?!all$)[\w-]+$/;
+export const ONE_AGENT_NAME = /^(?!all$)[\w-]+$/;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -48,7 +51,7 @@ export async function listedNow(board: Board, agentId: string): Promise<{ agent:
 }
 
 /** Why a Herdr command did not act, as the page shows it. */
-function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<AgentActionKind, 'move' | 'rename' | 'resume' | 'pause' | 'board-ask' | 'permission'>): string {
+function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<AgentActionKind, 'move' | 'rename' | 'resume' | 'pause' | 'relink' | 'board-ask' | 'permission'>): string {
 	if (act.timedOut) {
 		if (action === 'close') return `Herdr 的關閉指令${act.reason}，結果不明；請到 Herdr 查看。`;
 		if (action === 'unpause') return `Herdr 的傳話指令${act.reason}，接回指令可能已經送進去；暫停紀錄保留，重按前請先看它的畫面。`;
@@ -258,6 +261,7 @@ export function pauseAgent(board: Board, agentId: string) {
 		attempt(board, agentId, 'pause', null, async (agent) => {
 			const { config } = board;
 			if (agent.herdr.pane === config.ownPane) return { route: null, reason: AGENT_OWN_PANE_PAUSE_REASON };
+			if (agent.noHooks) return { route: null, reason: AGENT_NO_HOOKS_PAUSE_REASON };
 			if (agent.hcom !== 'linked') {
 				const why = { paused: '它已經暫停通訊', none: '它沒有接 HCOM', unknown: 'hcom 的清單讀不到，不知道它有沒有接 HCOM' }[agent.hcom];
 				return { route: null, reason: `${why}，沒有暫停通訊。` };
@@ -313,6 +317,13 @@ export function unpauseAgent(board: Board, agentId: string) {
 			if (agent.hcom !== 'paused') {
 				const why = { linked: '它已經接著 HCOM', none: '它沒有暫停通訊', unknown: 'hcom 的清單讀不到，無法確認它是否仍暫停通訊' }[agent.hcom];
 				return { route: null, reason: `${why}，沒有送出接回指令。` };
+			}
+			// Read now: typing the line into a process with no hooks only looks as if it worked.
+			if (relinkable(agent.client)) {
+				const info = await paneProcess(config, agent.herdr.pane);
+				const hooks = 'reason' in info ? 'unknown' : judgeHooks(info, agent.client);
+				if (hooks === 'none') return { route: null, reason: AGENT_NO_HOOKS_UNPAUSE_REASON };
+				if (hooks === 'unknown') return { route: null, reason: `確認不了它的程序有沒有經 hcom 啟動${'reason' in info ? `（${info.reason}）` : ''}，沒有送出接回指令；暫停紀錄保留，等確認得到再按。` };
 			}
 			const record = readPauses(config.pausedDir).get(agent.id!);
 			if (!record) return { route: null, reason: '找不到它的暫停紀錄，沒有送出接回指令。' };

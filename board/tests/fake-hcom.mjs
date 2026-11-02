@@ -10,6 +10,9 @@
 //     tabs, its tab at the end. Without it, a `resumed`
 //     agent with a session is added in its pane (or a new one) of the workspace hcom was given,
 //     unless `resumedExits` is set: then hcom lists it, but nothing runs in Herdr.
+//   - `resumeDelayMs`: a resume waits this long before anything it adds shows.
+//   - `resumedElsewhere`: a resume with `--terminal herdr-reuse` ends up in the pane `resumedHerdr` names anyway.
+//   - `resumedProcess`: what the fake Herdr's `processes` then has for the pane a resume ran in.
 //   - `readOnly`: a file a resume makes read-only while it runs, so the board cannot write it.
 //   - `launched`, `launchedHerdr`: per launch in turn (not a resume), the agent it adds to the
 //     agent list like `resumed`, and the Herdr agent (or a list of them) it adds to the fake
@@ -28,6 +31,8 @@
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
 // Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it, and a
 // `stopped` event by `cli` is added for it, with the agent's `launch_args` when it has them.
+// `stop.herdrScreen` replaces the fake Herdr's `screens`, and `stop.herdrStatus` makes the fake Herdr list every agent in that status from then on, and
+// `stop.launchArgs` adds a `stopped` event for the session with those arguments, as a stop records them.
 // `stop <name>` is logged the same way and follows `stop` (`exit`, `stderr`, `sleepMs`, `stays`) like
 // `kill`, but takes the agent off the list only, and before it sleeps (so a stop that runs out of time
 // has still stopped it): its pane and Herdr agent stay, as `hcom stop` leaves them. `breaksList:
@@ -110,7 +115,7 @@ const reusing = args.includes('herdr-reuse');
  *  is listed once; as it is when not run with `--terminal herdr-reuse`. */
 function intoHeld(/** @type {any} */ herdr, /** @type {any} */ agent) {
 	const held = reusing && (herdr.panes ?? []).find((/** @type {any} */ pane) => pane.pane_id === process.env.HCOM_REUSE_PANE);
-	if (!held) return agent;
+	if (!held || plan.resumedElsewhere) return agent;
 	herdr.panes = herdr.panes.filter((/** @type {any} */ pane) => pane !== held);
 	return { ...agent, pane_id: held.pane_id, tab_id: held.tab_id, workspace_id: held.workspace_id };
 }
@@ -130,6 +135,21 @@ appendFileSync(join(dir, 'hcom-env.jsonl'), JSON.stringify({ command: args[0], a
 
 if (args[0] === 'stop') {
 	const stop = plan.stop ?? {};
+	if (stop.herdrStatus) {
+		const herdrFile = join(dir, 'herdr.json');
+		const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
+		herdr.agents = herdr.agents.map((/** @type {any} */ agent) => ({ ...agent, agent_status: stop.herdrStatus }));
+		write(herdrFile, JSON.stringify(herdr));
+	}
+	if (stop.herdrScreen) {
+		const herdrFile = join(dir, 'herdr.json');
+		write(herdrFile, JSON.stringify({ ...JSON.parse(readFileSync(herdrFile, 'utf8')), screens: stop.herdrScreen }));
+	}
+	if (stop.launchArgs) {
+		const session = (plan.agents ?? []).find((/** @type {any} */ agent) => agent.name === args[1])?.session_id;
+		const event = { id: 99, instance: args[1], ts: new Date().toISOString(), type: 'life', data: { action: 'stopped', by: 'cli', reason: 'stop', snapshot: { name: args[1], session_id: session, tool: 'codex', launch_args: JSON.stringify(stop.launchArgs) } } };
+		appendFileSync(join(dir, 'hcom-events.jsonl'), JSON.stringify(event) + '\n');
+	}
 	if (!stop.exit && !stop.stays) {
 		plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.name !== args[1]);
 		write(addedFile, JSON.stringify(added().filter((/** @type {any} */ agent) => agent.name !== args[1])));
@@ -177,6 +197,7 @@ if (args[0] === 'stop') {
 	process.stderr.write(`herdr-reuse: no pane ${process.env.HCOM_REUSE_PANE ?? '(HCOM_REUSE_PANE not set)'}\n`);
 	process.exitCode = 1;
 } else {
+	if (args[0] === 'r' && plan.resumeDelayMs) await new Promise((resolve) => setTimeout(resolve, plan.resumeDelayMs));
 	const call = readFileSync(log, 'utf8').trim().split('\n').length;
 	if (args[0] === 'r' && plan.resumed) write(addedFile, JSON.stringify([...added(), plan.resumed]));
 	// A resumed client runs in Herdr like a real one, unless the plan says it exited at once.
@@ -203,6 +224,12 @@ if (args[0] === 'stop') {
 		if (herdr.tabs && !herdr.tabs.some((/** @type {any} */ tab) => tab.tab_id === resumed.tab_id)) {
 			herdr.tabs = [...herdr.tabs, { tab_id: resumed.tab_id, workspace_id: resumed.workspace_id, label: 'resumed' }];
 		}
+		write(herdrFile, JSON.stringify(herdr));
+	}
+	if (args[0] === 'r' && plan.resumedProcess) {
+		const herdrFile = join(dir, 'herdr.json');
+		const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
+		herdr.processes = { ...herdr.processes, [process.env.HCOM_REUSE_PANE ?? '']: plan.resumedProcess };
 		write(herdrFile, JSON.stringify(herdr));
 	}
 	if (args[0] === 'r' && plan.readOnly) chmodSync(plan.readOnly, 0o444);

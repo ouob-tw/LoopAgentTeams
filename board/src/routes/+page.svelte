@@ -19,6 +19,8 @@
 	import { folderName, lastSegment, shortName, workspaceFolders } from '#lib/board/agents.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
+	import { RELINKING_TEXT } from '#lib/board/agent-actions.ts';
+	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { everyController, type InboxItem, type KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
@@ -568,7 +570,7 @@
 							{#if closedAgent}
 								<ClosedAgentInfo agent={closedAgent} timeZone={closed.timeZone} controllers={herdrControllers} />
 							{:else}
-								<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
+								<p class="empty">{agentControl.relinking[view.id] ? RELINKING_TEXT : '這個 Agent 已不在 Herdr 的清單上：它已關閉。'}</p>
 							{/if}
 							{#each agentAsks.toReversed() as ask (ask.id)}
 								<BoardAskCard {ask} />

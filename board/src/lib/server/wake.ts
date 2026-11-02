@@ -19,6 +19,7 @@ import {
 	type SwitchState
 } from '../board/models.ts';
 import { UNKNOWN_CONTROLLER_REASON } from '../board/messages.ts';
+import { AGENT_NO_HOOKS_WAKE_REASON, AGENT_RUNNING_WAKE_REASON } from '../board/agent-actions.ts';
 import { everyController, type Controller } from '../board/types.ts';
 import {
 	RESUME_BUSY_REASON,
@@ -39,6 +40,8 @@ import { moveToFront } from './launch.ts';
 import { forClient, inject, queued, typedText } from './send.ts';
 import { modelLock, readCurrent } from './helper.ts';
 import { appendSent, readLines, type ResumeMark, type ResumeResult, type SentLog } from './sent-log.ts';
+import { runsWithoutHooks } from './model.ts';
+import { clientGone } from './process-hooks.ts';
 import { openResume, openResumes, openSwitch, unplacedResumes } from './sent-views.ts';
 import { keepPermission } from './permission.ts';
 
@@ -100,6 +103,14 @@ async function deliver(board: Board, controller: Controller | undefined, request
 	}
 	const plan: Plan = await check(board, entry.controllerId).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有送出：${error.message}` }));
 	if ('refuse' in plan) return refuse(plan.refuse, plan.abandon);
+	// hcom's list cannot tell that it runs, so a resume would make a second process, and its input does not reach it.
+	await board.refresh();
+	const { agents } = await board.sources();
+	if (runsWithoutHooks({ agents }, controller.id)) return refuse(AGENT_NO_HOOKS_WAKE_REASON);
+	// Herdr may go on listing a closed session in its old pane, so its list alone does not say it
+	// runs. Asked of that pane now; one that cannot be told is taken to run.
+	const listed = plan.agent ? undefined : agents.find((agent) => agent.id === controller.id && agent.inHerdr);
+	if (listed && !(await clientGone(board.config, listed.herdr.pane))) return refuse(AGENT_RUNNING_WAKE_REASON);
 	if (!plan.agent) {
 		// A model switch that stopped this client without seeing it gone may have left it running:
 		// resuming now could make a second copy, so 繼續切換 has to settle it first.

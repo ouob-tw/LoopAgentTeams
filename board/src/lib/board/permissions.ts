@@ -48,9 +48,37 @@ export const SCREEN_DIALOG_REASON = '畫面正在顯示選項（確認視窗或�
 export const SCREEN_NO_MODE_REASON = '輸入框下方讀不到權限模式的提示（可能正在顯示選單），沒有按鍵';
 
 const RULE = /^\s*─{8,}\s*$/;
+/** What an empty Codex input box shows (codex-cli 0.164.0): its marker, with or without this hint. */
+const CODEX_EMPTY_INPUT = /^›\s*(?:Ask Codex to do anything)?\s*$/;
 const MODE_LINE = /(?:⏵⏵|⏸)\s+(bypass permissions|auto mode|manual mode|accept edits|plan mode) on\b/;
 /** A numbered choice with the cursor on it, as Claude's dialogs and menus show one. */
 const CHOICE = /^\s*[❯›>]\s*\d+\.\s/;
+
+/** The line of the input box's bottom rule: the last rule with the `❯` line just above it, after a rule; -1 when none. */
+function claudeInputBottom(lines: string[]): number {
+	for (let at = lines.length - 1; at >= 2; at--) {
+		if (RULE.test(lines[at]) && lines[at - 1].trimStart().startsWith('❯')) return lines.slice(0, at - 1).some((line) => RULE.test(line)) ? at : -1;
+	}
+	return -1;
+}
+
+/** Whether the screen shows the client's input box with nothing typed in it. A box not recognised,
+ *  or one showing anything but what an empty one shows, is not empty: it may hold a draft. */
+export function inputBoxEmpty(client: string, screen: string): boolean {
+	const lines = screen.split('\n');
+	if (client === 'claude') {
+		const bottom = claudeInputBottom(lines);
+		// One line, between its two rules: a `❯` line lower in a longer draft is not the box's first.
+		return bottom >= 0 && lines[bottom - 1].trim() === '❯' && RULE.test(lines[bottom - 2]);
+	}
+	if (client !== 'codex') return false;
+	// At the line's start: a marker in a longer draft is indented under the box's first line.
+	const box = lines.findLastIndex((line) => line.startsWith('›'));
+	if (box < 0 || !CODEX_EMPTY_INPUT.test(lines[box]) || lines[box + 1]?.trim()) return false;
+	// Under it only its footer (`model · folder`): a draft that starts with new lines shows its text there.
+	const below = lines.slice(box + 1).filter((line) => line.trim());
+	return below.length === 1 && below[0].includes(' · ');
+}
 
 /**
  * The mode Claude's screen shows, from what `herdr pane read --source visible` prints: the line
@@ -62,14 +90,7 @@ const CHOICE = /^\s*[❯›>]\s*\d+\.\s/;
 export function readClaudeScreen(screen: string): ScreenRead {
 	const lines = screen.split('\n');
 	const choice = (from: number) => lines.slice(from).some((line) => CHOICE.test(line));
-	// The input box's bottom rule: the last rule with the `❯` line just above it, after a rule.
-	let bottom = -1;
-	for (let at = lines.length - 1; at >= 2; at--) {
-		if (RULE.test(lines[at]) && lines[at - 1].trimStart().startsWith('❯')) {
-			if (lines.slice(0, at - 1).some((line) => RULE.test(line))) bottom = at;
-			break;
-		}
-	}
+	const bottom = claudeInputBottom(lines);
 	if (bottom < 0) return { mode: null, reason: choice(0) ? SCREEN_DIALOG_REASON : SCREEN_NO_INPUT_REASON };
 	if (choice(bottom - 2)) return { mode: null, reason: SCREEN_DIALOG_REASON };
 	for (const line of lines.slice(bottom + 1)) {
@@ -160,6 +181,11 @@ export function addHcomDir(args: readonly string[], dir: string): string[] {
 const FIXING_FLAGS = new Set(['--yolo', '--dangerously-bypass-approvals-and-sandbox', '--full-auto', '--approve-for-me']);
 const FIXING_VALUED = new Set(['-s', '--sandbox', '-a', '--ask-for-approval']);
 
+/** The first stored Codex option that fixes the permission whatever `-c` says; null when none does. */
+export function permissionFixedBy(args: readonly string[]): string | null {
+	return args.find((arg) => FIXING_FLAGS.has(arg) || FIXING_VALUED.has(arg) || [...FIXING_VALUED].some((name) => name.startsWith('--') && arg.startsWith(`${name}=`))) ?? null;
+}
+
 /**
  * The arguments hcom stored for a Codex session, without what would keep it from taking a new
  * mode: the bypass and sandbox flags beat any `-c` (and `-s`, `-a` are refused next to `--yolo`),
@@ -204,4 +230,5 @@ export const codexFirstTurnText = (mode: CodexMode) =>
 
 export const PERMISSION_NOT_LINKED_REASON = '這個 Agent 沒有接 HCOM，看板只能替有接 HCOM 的 Codex 切換權限';
 export const PERMISSION_PAUSED_REASON = '這個 Agent 暫停通訊中，先按「恢復通訊」接回 HCOM 才能切換權限';
+export const PERMISSION_NO_HOOKS_REASON = '這個 Agent 沒有經 hcom 啟動，先按「重新啟動並接回 HCOM」才能切換權限';
 export const PERMISSION_HCOM_UNKNOWN_REASON = 'HCOM 連線無法確認：hcom 的清單讀不到，不知道這個 Agent 有沒有接 HCOM，現在不能切換權限';

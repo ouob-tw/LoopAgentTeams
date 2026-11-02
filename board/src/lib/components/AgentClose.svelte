@@ -1,11 +1,12 @@
 <script lang="ts">
 	// An agent's close, asked for and then confirmed, and beside it the pause of its HCOM link (one
 	// linked now) or its resume (one paused), done at once, with an icon that tells what a pause does.
+	// One whose process has no hcom hooks gets neither: only a restart links it.
 	// An agent with a switch left unfinished is pointed to the command line to continue or give it up
 	// instead; one Herdr no longer lists is shown only for that. A controller's information page
 	// closes its agent this way too.
 	import Info from '@lucide/svelte/icons/info';
-	import { AGENT_HCOM_UNKNOWN_REASON, AGENT_PAUSE_POINTS, agentCloseConfirmText } from '#lib/board/agent-actions.ts';
+	import { AGENT_ACTION_LABEL, AGENT_HCOM_UNKNOWN_REASON, AGENT_NO_HOOKS_TEXT, AGENT_PAUSE_POINTS, agentCloseConfirmText } from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -21,7 +22,7 @@
 	// (the server refuses it too).
 	const closable = $derived(agent.hcom !== 'unknown');
 
-	const linkable = $derived(agent.hcom === 'linked' || agent.hcom === 'paused');
+	const linkable = $derived(!agent.noHooks && (agent.hcom === 'linked' || agent.hcom === 'paused'));
 	// What a pause does shows after a tap on the icon, until a tap on it again or anywhere else; only
 	// for the agent it was opened for.
 	let infoFor = $state<string | null>(null);
@@ -55,6 +56,15 @@
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已關閉 ${name}。${result.reason ?? ''}` : (result.reason ?? '關閉失敗'));
 	}
 
+	/** Restart it so it links. It leaves the list meanwhile, so the notice is what shows the result. */
+	async function relink() {
+		const { id, name } = agent;
+		busy[id] = true;
+		const result = await agentControl.relink(id);
+		busy[id] = false;
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `${name} 已重新啟動並接回 HCOM。` : (result.reason ?? '重新啟動失敗'));
+	}
+
 	/** Pause or resume its HCOM link; a resume answers once it is back, or the wait ran out. */
 	async function link(action: 'pause' | 'unpause') {
 		const { id, name } = agent;
@@ -75,6 +85,9 @@
 		{#if !closable}
 			<p class="note">{AGENT_HCOM_UNKNOWN_REASON}</p>
 		{/if}
+		{#if agent.noHooks}
+			<p class="note" data-note="no-hooks">{AGENT_NO_HOOKS_TEXT}</p>
+		{/if}
 		{#if confirming[agent.id]}
 			<div class="confirm" role="group" aria-label="確認關閉">
 				<p class="warn">{agentCloseConfirmText(agent)}</p>
@@ -86,6 +99,9 @@
 		{:else}
 			<div class="actions">
 				<button type="button" data-action="close" disabled={!closable || busy[agent.id]} onclick={() => (confirming[agent.id] = true)}>{label}</button>
+				{#if agent.noHooks}
+					<button type="button" data-action="relink" disabled={!closable || busy[agent.id]} onclick={relink}>{busy[agent.id] ? '處理中…' : AGENT_ACTION_LABEL.relink}</button>
+				{/if}
 				{#if linkable}
 					{@const action = agent.hcom === 'linked' ? 'pause' : 'unpause'}
 					<button type="button" data-action={action} disabled={busy[agent.id]} onclick={() => link(action)}

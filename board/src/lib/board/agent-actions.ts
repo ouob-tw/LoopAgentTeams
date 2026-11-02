@@ -3,8 +3,8 @@ import type { Agent, Controller } from './types.ts';
 
 /** What was done: text typed into the agent's input box, its turn interrupted, it closed, its
  *  Herdr tab moved or renamed, it brought back from the 已關閉 section, its HCOM link paused or
- *  resumed, its board ask answered, or its Claude permission mode switched with Shift+Tab. */
-export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume' | 'pause' | 'unpause' | 'board-ask' | 'permission';
+ *  resumed, it restarted to link it to HCOM, its board ask answered, or its Claude permission mode switched with Shift+Tab. */
+export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume' | 'pause' | 'unpause' | 'relink' | 'board-ask' | 'permission';
 
 /** A Claude permission switch: the mode its screen showed first (null when it could not be read),
  *  the one asked for, the one it was left in (null when not known), how many times Shift+Tab was
@@ -61,6 +61,7 @@ export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {
 	resume: '接回',
 	pause: '暫停通訊',
 	unpause: '恢復通訊',
+	relink: '重新啟動並接回 HCOM',
 	'board-ask': '看板提問',
 	permission: '切換權限模式'
 };
@@ -84,6 +85,16 @@ export const AGENT_HCOM_UNKNOWN_CLOSE_REASON =
 export const AGENT_OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，關閉會連看板一起關掉，沒有關閉。';
 
 export const AGENT_OWN_PANE_PAUSE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，沒有暫停通訊。';
+
+export const AGENT_OWN_PANE_RELINK_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，沒有重新啟動。';
+
+/** On the page of an agent whose process has no hcom hooks. */
+export const AGENT_NO_HOOKS_TEXT = '它沒有經 hcom 啟動，要重新啟動才能接回 HCOM。對話、HCOM 名稱和所在分頁都會保留。';
+export const RELINKING_TEXT = '正在重新啟動並接回 HCOM，舊程序結束後它會暫時不在 Herdr 的清單上⋯';
+export const AGENT_NO_HOOKS_PAUSE_REASON = '它沒有經 hcom 啟動，暫停後接不回來，沒有暫停通訊；要接 HCOM 請按「重新啟動並接回 HCOM」。';
+export const AGENT_NO_HOOKS_WAKE_REASON = '它還在執行，只是沒有經 hcom 啟動，接回會多開一個程序，沒有接回；請按「重新啟動並接回 HCOM」。';
+export const AGENT_RUNNING_WAKE_REASON = 'Herdr 上它還在執行，接回會多開一個程序，沒有接回。';
+export const AGENT_NO_HOOKS_UNPAUSE_REASON = '它沒有經 hcom 啟動，打接回指令也連不上，沒有送出；請按「重新啟動並接回 HCOM」。';
 
 /** What pausing the HCOM link does, in the info beside the pause and resume. */
 export const AGENT_PAUSE_POINTS = [

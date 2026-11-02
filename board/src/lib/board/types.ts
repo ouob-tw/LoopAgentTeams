@@ -275,6 +275,9 @@ export interface Agent {
 	/** The HCOM name, as last read, or the one it was paused under; null unless linked or paused. */
 	hcomName: string | null;
 	hcom: AgentHcom;
+	/** Its process was not started through hcom, so it has no hcom hooks: only a restart links it
+	 *  (`relink.ts`). Told by the process, not by hcom's list; false while that cannot be told. */
+	noHooks: boolean;
 	/** The client, as Herdr names it: `claude`, `codex` and the like. */
 	client: string;
 	/** The folder it works in. */
