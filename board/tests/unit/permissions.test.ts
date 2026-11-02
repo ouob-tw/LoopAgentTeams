@@ -6,6 +6,7 @@ import {
 	codexPermissionArgs,
 	cycleTo,
 	MAX_PRESSES,
+	inputBoxEmpty,
 	readClaudeScreen,
 	SCREEN_DIALOG_REASON,
 	SCREEN_NO_INPUT_REASON,
@@ -143,4 +144,21 @@ test('the stored Codex arguments lose what fixes the permission, nothing else', 
 	expect(withoutPermissionFlags(['-c', 'note=x', 'resume', 'later'], 's-1')).toEqual(['-c', 'note=x', 'resume', 'later']);
 	// What follows `--` is the client's own, left as it is.
 	expect(withoutPermissionFlags(['--', '--yolo'], 's-1')).toEqual(['--', '--yolo']);
+});
+
+test('an input box is empty only when it shows what an empty one shows', () => {
+	const rule = '─'.repeat(40);
+	const claude = (box: string) => ['done', rule, box, rule, '  ⏵⏵ auto mode on (shift+tab to cycle)'].join('\n');
+	expect(inputBoxEmpty('claude', claude('❯'))).toBe(true);
+	expect(inputBoxEmpty('claude', claude('❯ '))).toBe(true);
+	expect(inputBoxEmpty('claude', claude('❯ a draft'))).toBe(false);
+	// A draft of two lines: the rule's upper neighbour is no longer the `❯` line.
+	expect(inputBoxEmpty('claude', claude('❯ one\n  two'))).toBe(false);
+	expect(inputBoxEmpty('claude', 'no box here')).toBe(false);
+	const codex = (box: string) => `› an earlier message\n\n${box}\n\n  GPT-6 low · ~/x`;
+	expect(inputBoxEmpty('codex', codex('› Ask Codex to do anything'))).toBe(true);
+	expect(inputBoxEmpty('codex', codex('›'))).toBe(true);
+	expect(inputBoxEmpty('codex', codex('› a draft'))).toBe(false);
+	expect(inputBoxEmpty('codex', 'no box here')).toBe(false);
+	expect(inputBoxEmpty('gemini', '❯')).toBe(false);
 });

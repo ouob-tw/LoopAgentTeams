@@ -7,11 +7,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import type { Agent, BoardSnapshot } from '../../src/lib/board/types.ts';
 import type { AgentActionResponse } from '../../src/lib/board/agent-actions.ts';
-import { named, question, startFixture, type Fixture } from '../harness.ts';
+import { hcomStartedProcess, named, question, startFixture, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
 let pausedDir: string;
+/** Every agent here was started through hcom; its pane's process says so. */
+const started = hcomStartedProcess('');
 
 beforeAll(async () => {
 	fixture = await startFixture({
@@ -26,7 +28,10 @@ beforeAll(async () => {
 	pausedDir = join(fixture.dir, 'hcom-paused');
 	cookie = await fixture.login();
 });
-afterAll(() => fixture.cleanup());
+afterAll(async () => {
+	started.child.kill();
+	await fixture.cleanup();
+});
 beforeEach(async () => {
 	for (const file of ['herdr-calls.jsonl', 'herdr.json', 'hcom.json', 'hcom-calls.jsonl', 'hcom-added.json']) rmSync(join(fixture.dir, file), { force: true });
 	rmSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), { force: true });
@@ -58,6 +63,7 @@ function setHerdr(sessions: string[], extra: object = {}, status: Record<string,
 			panes: sessions.map((session) => ({ pane_id: pane(session) })),
 			workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
 			tabs: sessions.map((session) => ({ tab_id: `wA:t-${session}`, workspace_id: 'wA', label: 'tab' })),
+			processes: Object.fromEntries(sessions.map((session) => [pane(session), started.info])),
 			...extra
 		})
 	);

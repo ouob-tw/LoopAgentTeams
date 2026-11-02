@@ -31,7 +31,7 @@
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
 // Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it, and a
 // `stopped` event by `cli` is added for it, with the agent's `launch_args` when it has them.
-// `stop.herdrStatus` makes the fake Herdr list every agent in that status from then on, and
+// `stop.herdrScreen` replaces the fake Herdr's `screens`, and `stop.herdrStatus` makes the fake Herdr list every agent in that status from then on, and
 // `stop.launchArgs` adds a `stopped` event for the session with those arguments, as a stop records them.
 // `stop <name>` is logged the same way and follows `stop` (`exit`, `stderr`, `sleepMs`, `stays`) like
 // `kill`, but takes the agent off the list only, and before it sleeps (so a stop that runs out of time
@@ -140,6 +140,10 @@ if (args[0] === 'stop') {
 		const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
 		herdr.agents = herdr.agents.map((/** @type {any} */ agent) => ({ ...agent, agent_status: stop.herdrStatus }));
 		write(herdrFile, JSON.stringify(herdr));
+	}
+	if (stop.herdrScreen) {
+		const herdrFile = join(dir, 'herdr.json');
+		write(herdrFile, JSON.stringify({ ...JSON.parse(readFileSync(herdrFile, 'utf8')), screens: stop.herdrScreen }));
 	}
 	if (stop.launchArgs) {
 		const session = (plan.agents ?? []).find((/** @type {any} */ agent) => agent.name === args[1])?.session_id;

@@ -9,7 +9,7 @@
 // time, queued like a send.
 import { readFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { codexMode, permissionFixedBy, readClaudeScreen } from '../board/permissions.ts';
+import { codexMode, inputBoxEmpty, permissionFixedBy, readClaudeScreen } from '../board/permissions.ts';
 import { AGENT_OWN_PANE_RELINK_REASON, type AgentAction } from '../board/agent-actions.ts';
 import type { Agent } from '../board/types.ts';
 import { attempt, ONE_AGENT_NAME } from './agent-control.ts';
@@ -134,6 +134,14 @@ async function whyBusy(board: Board, sessionId: string, pane: string): Promise<s
 	return status === 'idle' || status === 'done' ? null : 'Herdr 說不出它現在的狀態，不確定它有沒有在工作';
 }
 
+/** Why `/exit` must not be typed now: `herdr agent prompt` would submit a draft with it. Null when
+ *  the input box is seen to be empty. */
+async function whyNotEmpty(board: Board, client: string, pane: string): Promise<string | null> {
+	const screen = await readScreen(board.config, pane, 'detection');
+	if ('reason' in screen) return `${screen.reason}，不知道它的輸入框是不是空的`;
+	return inputBoxEmpty(client, screen.text) ? null : '它的輸入框裡有還沒送出的文字，或讀不出輸入框是不是空的；這些字不能被送出去';
+}
+
 /** Why it may not be restarted now, or what the restart needs. */
 async function prepare(board: Board, agent: Agent & { id: string }): Promise<{ refuse: string } | { keep: KeepMode; name: string | null; listed: boolean }> {
 	const { config } = board;
@@ -161,6 +169,14 @@ async function prepare(board: Board, agent: Agent & { id: string }): Promise<{ r
 	if (!read.ok) return { refuse: read.missing ? '它還沒有對話紀錄，重新啟動也接不回這段對話，沒有重新啟動。' : `讀不到它的對話紀錄，沒有重新啟動：${read.reason}` };
 	const keep = agent.client === 'claude' ? await claudeKeep(board, agent, read, info) : codexKeep(board, read.page.usage?.permission, info);
 	if ('refuse' in keep) return keep;
+	// What hcom holds now: a stop can only replace it, so what would be refused is refused untouched.
+	// Read again after the stop for what the stop itself records.
+	const stored = await storedLaunchArgs(config, agent.id);
+	if (stored === null) return { refuse: '讀不到 hcom 記著的啟動參數，不確定重新啟動後權限會不會變，沒有重新啟動。' };
+	const kept = keep(stored);
+	if ('refuse' in kept) return { refuse: `${kept.refuse}它的程序沒有動。` };
+	const draft = await whyNotEmpty(board, agent.client, pane);
+	if (draft) return { refuse: `${draft}，沒有重新啟動。它的程序和連線都沒有動；清空輸入框再按。` };
 	return { keep, name, listed: entry !== undefined };
 }
 
@@ -242,6 +258,8 @@ export function relinkAgent(board: Board, agentId: string) {
 				// Everything above took time: a turn may have started since the first look.
 				const busy = await whyBusy(board, agentId, pane);
 				if (busy) return { route, reason: `${busy}，沒有重新啟動；等它停下再按。${untouched}` };
+				const draft = await whyNotEmpty(board, agent.client, pane);
+				if (draft) return { route, reason: `${draft}，沒有重新啟動；清空輸入框再按。${untouched}` };
 				const text = `hcom r ${agentId} ${extraArgs.map(quoted).join(' ')}`.trim();
 				const wayBack = `對話沒有遺失，可以在那個窗格執行 ${text} 接回。`;
 				const exit = await agentCommand(config, ['prompt', pane, '/exit']);

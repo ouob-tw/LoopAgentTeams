@@ -48,9 +48,31 @@ export const SCREEN_DIALOG_REASON = '畫面正在顯示選項（確認視窗或�
 export const SCREEN_NO_MODE_REASON = '輸入框下方讀不到權限模式的提示（可能正在顯示選單），沒有按鍵';
 
 const RULE = /^\s*─{8,}\s*$/;
+/** What an empty Codex input box shows (codex-cli 0.164.0): its marker, with or without this hint. */
+const CODEX_EMPTY_INPUT = /^\s*›\s*(?:Ask Codex to do anything)?\s*$/;
 const MODE_LINE = /(?:⏵⏵|⏸)\s+(bypass permissions|auto mode|manual mode|accept edits|plan mode) on\b/;
 /** A numbered choice with the cursor on it, as Claude's dialogs and menus show one. */
 const CHOICE = /^\s*[❯›>]\s*\d+\.\s/;
+
+/** The line of the input box's bottom rule: the last rule with the `❯` line just above it, after a rule; -1 when none. */
+function claudeInputBottom(lines: string[]): number {
+	for (let at = lines.length - 1; at >= 2; at--) {
+		if (RULE.test(lines[at]) && lines[at - 1].trimStart().startsWith('❯')) return lines.slice(0, at - 1).some((line) => RULE.test(line)) ? at : -1;
+	}
+	return -1;
+}
+
+/** Whether the screen shows the client's input box with nothing typed in it. A box not recognised,
+ *  or one showing anything but what an empty one shows, is not empty: it may hold a draft. */
+export function inputBoxEmpty(client: string, screen: string): boolean {
+	const lines = screen.split('\n');
+	if (client === 'claude') {
+		const bottom = claudeInputBottom(lines);
+		return bottom >= 0 && lines[bottom - 1].trim() === '❯';
+	}
+	const box = lines.findLast((line) => line.trimStart().startsWith('›'));
+	return client === 'codex' && box !== undefined && CODEX_EMPTY_INPUT.test(box);
+}
 
 /**
  * The mode Claude's screen shows, from what `herdr pane read --source visible` prints: the line
@@ -62,14 +84,7 @@ const CHOICE = /^\s*[❯›>]\s*\d+\.\s/;
 export function readClaudeScreen(screen: string): ScreenRead {
 	const lines = screen.split('\n');
 	const choice = (from: number) => lines.slice(from).some((line) => CHOICE.test(line));
-	// The input box's bottom rule: the last rule with the `❯` line just above it, after a rule.
-	let bottom = -1;
-	for (let at = lines.length - 1; at >= 2; at--) {
-		if (RULE.test(lines[at]) && lines[at - 1].trimStart().startsWith('❯')) {
-			if (lines.slice(0, at - 1).some((line) => RULE.test(line))) bottom = at;
-			break;
-		}
-	}
+	const bottom = claudeInputBottom(lines);
 	if (bottom < 0) return { mode: null, reason: choice(0) ? SCREEN_DIALOG_REASON : SCREEN_NO_INPUT_REASON };
 	if (choice(bottom - 2)) return { mode: null, reason: SCREEN_DIALOG_REASON };
 	for (const line of lines.slice(bottom + 1)) {

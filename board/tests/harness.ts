@@ -22,6 +22,14 @@ import type {
 	Report
 } from '../src/lib/board/types.ts';
 
+/** A running process with hcom's environment, as a client hcom started has, and what the fake
+ *  Herdr's `processes` says of a pane it runs in. For the test to stop, by its PID. */
+export function hcomStartedProcess(pane: string) {
+	const child = spawn('sleep', ['600'], { env: { PATH: process.env.PATH ?? '', HCOM_PROCESS_ID: 'some-process' }, stdio: 'ignore' });
+	const pid = child.pid!;
+	return { child, info: { pane_id: pane, shell_pid: 4242, foreground_process_group_id: pid, foreground_processes: [{ pid, name: 'hcom', argv: ['hcom', 'pty', 'claude'] }] } };
+}
+
 /** Answer list and scroll requests from the exact same plan and failure controls as the fake CLI. */
 export async function answerHerdrList(dir: string, request: { id: string; method: string; params?: { tab_id?: string; insert_index?: number; pane_id?: string; offset_from_bottom?: number } }, moves = false): Promise<string | null> {
 	if (!['agent.list', 'workspace.list', 'tab.list', 'pane.scroll', 'pane.process_info', ...(moves ? ['tab.move'] : [])].includes(request.method)) return null;

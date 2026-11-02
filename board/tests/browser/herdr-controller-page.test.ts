@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import type { HelperQuestion } from '../../src/lib/board/types.ts';
-import { jsonLines, question, sleep, startFixture, type Fixture } from '../harness.ts';
+import { hcomStartedProcess, jsonLines, question, sleep, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
 
 
@@ -401,6 +401,7 @@ test.skipIf(!CHROME)("the controller's information page is as it was: no operati
 
 test.skipIf(!CHROME)("a running controller's information page closes it after a confirmation, and pauses and resumes its HCOM link at once", async () => {
 	const pausedDir = join(fixture.dir, 'hcom-paused');
+	const lead = hcomStartedProcess('wA:p-s-lead');
 	const info = `document.querySelector('.detail [aria-label="暫停通訊說明"]')`;
 	const infoShown = `!!document.querySelector('.detail .pause-info')`;
 	try {
@@ -442,11 +443,12 @@ test.skipIf(!CHROME)("a running controller's information page closes it after a 
 		expect(await tab.eval(FITS)).toBe(true);
 		// The resume is done at once too: the reconnect line typed into its pane puts it back on hcom.
 		const plan = JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8'));
-		writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ ...plan, reconnect: { 'wA:p-s-lead': hcomAgent('lead', 's-lead') } }));
+		writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ ...plan, processes: { 'wA:p-s-lead': lead.info }, reconnect: { 'wA:p-s-lead': hcomAgent('lead', 's-lead') } }));
 		await tab.eval(`document.querySelector('.detail [data-action="unpause"]').click()`);
 		await tab.until(`document.querySelector('.dock').innerText.includes('lead 已恢復 HCOM 通訊')`, 'the resume notice');
 		expect(await tab.eval(`!!document.querySelector('.detail .confirm')`)).toBe(false);
 	} finally {
+		lead.child.kill();
 		rmSync(pausedDir, { recursive: true, force: true });
 		fixture.setHcom({ agents: HCOM_AGENTS });
 		setHerdr(LISTED);

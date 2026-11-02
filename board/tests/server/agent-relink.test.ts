@@ -173,6 +173,7 @@ const refusals: [string, () => void | Promise<void>, string][] = [
 	['status not known', () => setHerdr({ agents: [herdrAgent('unknown')] }), '狀態'],
 	['background subagents running', () => conversation(SESSION, [turnEnd(), turnEnd(2)]), '2 個背景 subagent'],
 	['a dialog on its screen', () => setHerdr({ screens: { [PANE]: ['╭\n  ❯ 1. Yes\n    2. No\n'] } }), '權限模式'],
+	['text in its input box', () => setHerdr({ screens: { [PANE]: [screen('auto mode').replace('❯ ', '❯ half a thought')] } }), '輸入框'],
 	['no saved conversation', () => rmSync(join(transcripts(), `${SESSION}.jsonl`)), '對話紀錄'],
 	['no reuse preset', () => fixture.setHcom(hcomPlan({ holdTerminal: false })), 'herdr-reuse'],
 	['its name taken by another session', () => { pauseRecord('modi'); fixture.setHcom(hcomPlan({ agents: [back('modi', 's-other')] })); }, '另一個 session'],
@@ -228,6 +229,44 @@ test('stopped and then stopped short: the record keeps its name for the next pre
 	const again = await act('relink');
 	expect(again.body.ok).toBe(false);
 	expect(again.body.reason).toContain('@nova');
+});
+
+test('text typed during the checks stops it before /exit', async () => {
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }], stop: { herdrScreen: { [PANE]: [screen('auto mode').replace('❯ ', '❯ typed just now')] } } }));
+	const result = await act('relink');
+	expect(result.body.ok).toBe(false);
+	expect(result.body.reason).toContain('輸入框');
+	expect(prompts()).toEqual([]);
+});
+
+test('a stored option seen before the stop leaves the link alone too', async () => {
+	storedArgs(['--allowedTools', 'Bash(*)']);
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }] }));
+	const result = await act('relink');
+	expect(result.status).toBe(409);
+	expect(result.body.reason).toContain('--allowedTools');
+	expect(hcomCalls()).toEqual([]);
+	expect(prompts()).toEqual([]);
+});
+
+test('resuming a paused one whose process cannot be checked is refused, nothing typed', async () => {
+	pauseRecord('modi');
+	setHerdr({ processes: { [PANE]: clientProcess(hooked) } });
+	await fixture.refresh(cookie);
+	setHerdr({ processes: {} });
+	const result = await act('unpause');
+	expect(result.status).toBe(409);
+	expect(result.body.reason).toContain('確認不了');
+	expect(prompts()).toEqual([]);
+	expect(hasRecord()).toBe(true);
+	expect(await listed()).toMatchObject({ noHooks: false, hcom: 'paused' });
+});
+
+test('resuming a paused one started through hcom still types the line', async () => {
+	pauseRecord('modi');
+	setHerdr({ processes: { [PANE]: clientProcess(hooked) } });
+	await act('unpause');
+	expect(prompts()).toEqual([['agent', 'prompt', PANE, '!hcom start --as modi']]);
 });
 
 test('a stored option that gives more than the mode is refused', async () => {
@@ -328,8 +367,9 @@ test('no pause and no resume by `hcom start` for one with no hooks', async () =>
 
 const CODEX = '01a08f3c-cbc8-7bb2-91a5-1573e2050d2d';
 const codexArgv = ['node', '/home/u/.bun/bin/codex', '--profile', 'slim', 'resume', CODEX];
-function codex(permission: object | null, stored?: string[]) {
-	setHerdr({ agents: [herdrAgent('idle', 'codex', CODEX)], processes: { [PANE]: clientProcess(plain, codexArgv) } });
+const codexScreen = (box: string) => `  left.\n\n${box}\n\n  GPT-6-Astra low · ~/obsidian`;
+function codex(permission: object | null, stored?: string[], box = '› Ask Codex to do anything') {
+	setHerdr({ agents: [herdrAgent('idle', 'codex', CODEX)], processes: { [PANE]: clientProcess(plain, codexArgv) }, screens: { [PANE]: [codexScreen(`› an earlier message\n\n${box}`)] } });
 	fixture.setHcom(hcomPlan({}, 'codex', CODEX));
 	conversation(CODEX);
 	if (permission) writeFileSync(join(transcripts(), `${CODEX}.permission.json`), JSON.stringify(permission));
@@ -359,6 +399,16 @@ test('Codex: a flag that a stop brings to light is seen before /exit', async () 
 	const result = await act('relink', CODEX);
 	expect(result.body.ok).toBe(false);
 	expect(result.body.reason).toContain('--yolo');
+	expect(prompts()).toEqual([]);
+});
+
+test('Codex with a draft, or a box that cannot be told, is refused', async () => {
+	for (const box of ['› half a thought', 'no input box at all']) {
+		codex(ASK, undefined, box);
+		const result = await act('relink', CODEX);
+		expect(result.status).toBe(409);
+		expect(result.body.reason).toContain('輸入框');
+	}
 	expect(prompts()).toEqual([]);
 });
 
