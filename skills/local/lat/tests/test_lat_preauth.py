@@ -1522,13 +1522,35 @@ class RecordTests(WriteCase):
         self.assertEqual((entry['kind'], entry['action'], entry['result'], entry['notice_before'],
                           entry['notice_after']), ('auto', 'install-host', 'failed', 1, 2))
 
-    def test_merge_needs_no_notices_and_bug_intake_needs_its_four_conditions(self):
+    def test_merge_needs_no_notices_and_bug_intake_needs_its_five_conditions(self):
         self.assertEqual(self.record('--action', 'merge', '--branch', 'dev', '--commit', 'abc',
                                      '--basis', 'allow merge dev', '--result',
                                      'succeeded').returncode, 0)
         result = self.record('--kind', 'bug-intake', '--issue', '#9', '--source', 'chat 12:00')
         self.assertIn('--self-reported', result.stderr)
         self.assertEqual([entry['kind'] for entry in self.records()], ['auto'])
+
+    def test_bug_intake_without_a_no_existing_guard_writes_nothing(self):
+        conditions = ('--kind', 'bug-intake', '--issue', '#9', '--source', 'chat 12:00',
+                      '--self-reported', 'user typed it', '--clear-expected', 'says X should be Y',
+                      '--single-ticket', 'one file', '--restores-stated', 'back to Y')
+        for guard in ((), ('--no-existing-guard', ''), ('--no-existing-guard', '  ')):
+            with self.subTest(guard):
+                result = self.record(*conditions, *guard)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn('--no-existing-guard', result.stderr)
+                self.assertEqual(self.records(), [])
+
+    def test_report_still_reads_a_bug_intake_record_without_a_no_existing_guard(self):
+        old = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r1.jsonl'
+        self.write(old, json.dumps(dict(kind='bug-intake', issue='#8', source='chat 11:00',
+                                        self_reported='s', clear_expected='c', single_ticket='o',
+                                        restores_stated='r')) + '\n')
+        result = self.run_tool('report')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('#8；原訊息：chat 11:00', result.stdout)
+        self.assertNotIn('查過沒有既有保護', result.stdout)
+        self.assertNotIn('None', result.stdout)
 
     def test_report_lists_only_this_round_in_three_groups(self):
         old = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r1.jsonl'
@@ -1541,7 +1563,8 @@ class RecordTests(WriteCase):
         self.assertEqual(self.record('--kind', 'bug-intake', '--issue', '#9', '--source',
                                      'chat 12:00', '--self-reported', 'user typed it',
                                      '--clear-expected', 'says X should be Y', '--single-ticket',
-                                     'one file', '--restores-stated', 'back to Y').returncode, 0)
+                                     'one file', '--restores-stated', 'back to Y',
+                                     '--no-existing-guard', 'tests/x.py, docs/y.md').returncode, 0)
         result = self.run_tool('report')
         self.assertEqual(result.returncode, 0, result.stderr)
         out = result.stdout
@@ -1550,6 +1573,7 @@ class RecordTests(WriteCase):
         auto, bug, grants = out.split('### ')[1:]
         self.assertIn('依預先授權自動執行\n- push dev abc123：succeeded；依據：allow push dev', auto)
         self.assertIn('免確認開工\n- #9；原訊息：chat 12:00；本人回報：user typed it', bug)
+        self.assertIn('查過沒有既有保護：tests/x.py, docs/y.md', bug)
         self.assertEqual(grants, '設定寫入\n- 無\n')
         self.assertNotIn('舊答覆', out)
         self.session(status='ended', history=1)

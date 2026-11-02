@@ -80,6 +80,14 @@ async function deploy(env: Record<string, string> = {}) {
 	return { status, stderr };
 }
 
+/** The stand-in `board` script `bun run board inbox` finds in the committed HEAD. */
+function standInBoard(script: string) {
+	writeFileSync(join(board, 'package.json'), JSON.stringify({ scripts: { board: 'sh stand-in-board.sh' } }));
+	writeFileSync(join(board, 'stand-in-board.sh'), script);
+	git('add', 'board/package.json', 'board/stand-in-board.sh');
+	git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'stand-in board');
+}
+
 const restarts = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').length : 0);
 const worktrees = () => git('worktree', 'list').trim().split('\n').length;
 const leftovers = () => ['build-new', 'build-prev'].filter((name) => existsSync(join(board, name)));
@@ -93,6 +101,36 @@ test('builds the committed HEAD, swaps it in, restarts and keeps nothing behind'
 	expect(leftovers()).toEqual([]);
 	expect(worktrees()).toBe(1);
 });
+
+test('a deploy that succeeds prints the inbox from the committed HEAD', async () => {
+	fresh();
+	standInBoard('[ "$1" = inbox ] || exit 2\necho "待辦 2"\n');
+	writeFileSync(join(board, 'stand-in-board.sh'), 'echo "uncommitted inbox"\n');
+	const r = await deploy();
+	expect(r.status).toBe(0);
+	expect(r.stderr).toContain('待辦 2');
+	expect(r.stderr).not.toContain('could not be read');
+	expect(r.stderr).not.toContain('uncommitted inbox');
+});
+
+test('an inbox that cannot be read gets a hint and the deploy still succeeds', async () => {
+	fresh();
+	standInBoard('echo "讀不到：輔助工具"\nexit 1\n');
+	const r = await deploy();
+	expect(r.status).toBe(0);
+	expect(r.stderr).toContain('讀不到：輔助工具');
+	expect(r.stderr).toContain('the inbox could not be read in full');
+	expect(r.stderr).toContain('deployed');
+	expect(readFileSync(join(board, 'build/index.js'), 'utf8')).toBe('committed');
+});
+
+test('an inbox that hangs is cut off and the deploy still succeeds', async () => {
+	fresh();
+	standInBoard('sleep 30\n');
+	const r = await deploy();
+	expect(r.status).toBe(0);
+	expect(r.stderr).toContain('the inbox could not be read in full');
+}, 15_000);
 
 test('a failed build leaves build/ alone, does not restart and removes the worktree', async () => {
 	fresh();

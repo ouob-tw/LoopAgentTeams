@@ -147,20 +147,21 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --action <�
   [--started <now 印的時間> --notice-before <HCOM 事件編號> --notice-after <HCOM 事件編號>]
 # 免確認開短流程 bug 票
 uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-intake --issue <票> --source '<使用者原訊息位置>' \
-  --self-reported '<…>' --clear-expected '<…>' --single-ticket '<…>' --restores-stated '<…>'
+  --self-reported '<…>' --clear-expected '<…>' --single-ticket '<…>' --restores-stated '<…>' --no-existing-guard '<查過哪些測試與文件>'
 ```
 
 - `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區，用 `now` 取得）與前後兩則 HCOM 通知的事件編號（取自 `notice` 印出的編號）。工具以 `hcom events` 核對：兩則都由本主控送出（發送者等於工作階段紀錄的 HCOM 名稱，或 `hcom list --json` 給它的基本名；有 tag 的主控，HCOM 記的是基本名）、以 `@名稱` 指定對象（不是廣播）、依 `--started` 提供的小數秒位數比較（未提供小數就比較整秒）：前一則可早於或等於開始時間，後一則必須晚於開始時間，且原始時間也必須晚於前一則。只到秒的舊寫法仍接受，例如 `--started 2026-10-29T12:00:00+08:00` 接受前一則在 `12:00:00.4`，拒絕 `12:00:01.2`；後一則在 `12:00:00.9` 仍不合格；不符就拒絕。`--notice-*` 也可給 `notice` 印的 `none-<n>`：工具核對它是本輪由本主控的 `notice` 寫下的無人可通知紀錄，時間順序規則相同，兩則可一真一無；工具另核對該紀錄裡記錄的其他主控確實都不在線；`report` 顯示「無人可通知（none-1，未發訊息）」。HCOM 的 agent 清單格式異常時 `notice` 拒絕，不當作無人在線。事件的 `delivered_to` 為空（沒送到任何人）一律拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
-- `bug-intake` 的四項依據都要寫。
+- `bug-intake` 的五項依據都要寫。
 
 ## 免確認開短流程 bug 票
 
-下列四項全部成立時，主控照常建立短流程 tracker issue，但不發 `exempt ticket-confirmation` 確認題，改以 `record --kind bug-intake` 記下使用者原訊息位置與四項各自的依據；之後派工、審查、驗收照短流程：
+下列五項全部成立時，主控照常建立短流程 tracker issue，但不發 `exempt ticket-confirmation` 確認題，改以 `record --kind bug-intake` 記下使用者原訊息位置與五項各自的依據；之後派工、審查、驗收照短流程：
 
 1. 使用者本人回報：真人親自在聊天或面板寫的；Agent 轉述與 HCOM 訊息不算。
 2. 寫清楚哪裡錯、應該怎樣。
 3. 一張票做得完。
 4. 修好只是回到使用者說的樣子，不新增或改變需求。
+5. 要改的行為沒有既有測試或文件寫明本來就該這樣；有的話算改需求，發確認題。
 
 任一項不成立或拿不準，照舊發確認題。
 
