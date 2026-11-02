@@ -350,7 +350,9 @@ class BriefTests(DispatchCase):
         self.assertIn(f'- preflight：{PREFLIGHT}', text)
         for rule in ('Before acting, check every `preflight` item',
                      'inside the `live actions` quota yourself', 'stop and report',
-                     'never replaces them'):
+                     'never replaces them',
+                     'keeps at least one use of the quota for the final candidate version',
+                     'after the implementer says the version is final'):
             self.assertIn(rule, text)
 
     def test_no_live_actions_card_still_carries_both_fields_and_rules(self):
@@ -596,6 +598,10 @@ class LedgerCardTests(LedgerCase):
         subprocess.run(['git', '-C', str(repo), 'init', '-q'], check=True)
         self.ledger_card('--repo', str(repo))
         self.assertEqual(self.items()[0]['repo'], str(repo))
+
+    def test_card_help_says_what_ledger_needs(self):
+        text = ' '.join(self.run_script('card', '--help').stdout.split())
+        self.assertIn('Needs --ticket, --stage, --evidence and --deadline together', text)
 
     def test_stage_implement_is_recorded_as_impl_and_help_lists_the_stages(self):
         self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'implement',

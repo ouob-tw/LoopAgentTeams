@@ -60,7 +60,16 @@ HCOM 接回同一個 session 時換模型尚未驗證，所以換模型改用新
 
 ## 召喚者身分掉線
 
-自己的 HCOM 身分掉線時，用 `hcom start --as <自身名稱> --name <自身名稱>` 恢復，再從最後已處理的事件往後補讀 `hcom events` 與相關 transcript，核對哪些 Agent 還開著、哪些回報漏掉了，才繼續指揮。
+自己的 HCOM 身分掉線時，先查 `hcom list <自身名稱> -v` 的 `Bindings`：
+
+- **含 `hooks`**：用 `hcom start --as <自身名稱> --name <自身名稱>` 恢復。
+- **不含 `hooks`**（例如 Herdr 重啟後以純 `claude --resume`／`codex resume` 開回窗格）：`hcom start` 看似成功，卻收不到訊息，因為 hooks 只在 `hcom <工具>` 啟動時載入。結束程序後用 `hcom r` 重開，session 與名稱不變。程序無法重開自己，由使用者或其他 Agent 在同一個窗格操作：
+  1. `hcom stop <名稱>`，再在程序的輸入框送 `/exit`。
+  2. 等程序結束、窗格回到 shell，輸入 `hcom r <名稱> --go <權限參數>`。
+  3. `hcom r` 會重放舊的啟動參數，其中的權限可能比程序當下寬（例如舊紀錄是 `--dangerously-skip-permissions`，實際跑的是 auto）。必須明確傳入程序當下的權限模式，例如 Claude 的 `--permission-mode auto`、Codex 當下的 sandbox 與核准參數，不可因重開放寬權限。
+  4. `hcom list <名稱> -v` 的 `Bindings` 出現 `hooks` 才算接回。
+
+恢復後從最後已處理的事件往後補讀 `hcom events` 與相關 transcript，核對哪些 Agent 還開著、哪些回報漏掉了，才繼續指揮。
 
 ## Codex 額度與換帳號
 

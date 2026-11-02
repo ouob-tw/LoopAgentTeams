@@ -394,18 +394,29 @@ def _run_board(args):
     return code
 
 
+HELP_QUESTION_NOTE = (
+    "A help question (--help-question, or `- kind: help` in the record) needs a\n"
+    "single-choice option for done, written as:\n"
+    "  - A. 已完成"
+)
+
+
 def _build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     question = commands.add_parser("question")
     question_commands = question.add_subparsers(dest="question_command", required=True)
-    upsert = question_commands.add_parser("upsert")
+    upsert = question_commands.add_parser(
+        "upsert", epilog=HELP_QUESTION_NOTE, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     upsert.add_argument("--questions", required=True, type=Path)
     upsert.add_argument("--decisions", required=True, type=Path)
     upsert.add_argument("--id", required=True)
     upsert.add_argument("--file", required=True, type=Path)
     upsert.add_argument("--visual", action="append", default=[], metavar="[LETTER|][LABEL|]URL")
-    ask = question_commands.add_parser("ask")
+    ask = question_commands.add_parser(
+        "ask", epilog=HELP_QUESTION_NOTE, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ask.add_argument("--questions", required=True, type=Path)
     ask.add_argument("--decisions", required=True, type=Path)
     ask.add_argument("--id", required=True)

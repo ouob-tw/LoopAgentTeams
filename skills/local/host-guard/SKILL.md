@@ -1,11 +1,11 @@
 ---
 name: host-guard
-description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench), running tests without a memory limit, searching for files across the whole filesystem, or deleting a path built from a variable on a host shared with other agents. Covers how to pin load to a few cores, how to cap test memory, how to search narrowly, how to write heredocs that stay literal, how to delete safely, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
+description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench), running tests without a memory limit, searching for files across the whole filesystem, deleting a path built from a variable, or killing a process by name on a host shared with other agents. Covers how to pin load to a few cores, how to cap test memory, how to search narrowly, how to write heredocs that stay literal, how to delete safely, how to kill by PID, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
 ---
 
 # 共用主機保護（host-guard）
 
-多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下六類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
+多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下七類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
 
 ## 從根目錄搜尋整個磁碟
 
@@ -56,6 +56,21 @@ systemd-run --user --scope -q -p MemoryMax=40G -p MemorySwapMax=0 -p OOMPolicy=c
 - **Agent 對話紀錄與狀態資料夾本身，或它們的上層**：`~/.claude`、`~/.claude/projects` 與其中任一個專案資料夾、`~/.codex`、`~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.hcom`、`~/.local/state/lat`（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_STATE_HOME` 有設定時依設定），以及 `~` 等上層資料夾。刪裡面的單一檔案照常放行，例如 session-manager 刪一個 `.jsonl`。前面有 `cd` 時，也照刪除時可能所在的每個資料夾檢查。
 
 這條規則只看指令文字，用來接住手誤，不能完整解析 shell；`eval`、腳本檔裡的刪除或刻意繞過都不會被擋。
+
+## 依名稱結束程序
+
+`pkill -f`、`pkill --full`、合併旗標（`pkill -9fx`）與 `killall` 一律擋下：比對到的每個程序都會被結束，包括下這個指令的 shell、其他 Agent 與線上服務。前面接 `sudo`、`timeout`、`xargs` 等前綴，或寫在 `bash -c '…'`、`$(…)` 裡同樣會擋。
+
+被擋後改用 PID：
+
+```bash
+pgrep -af 'http.server 7111'   # 列出符合的程序與完整指令，認出自己的那一個
+kill <PID>
+```
+
+`pgrep -af` 的結果也可能列出正在跑這個指令的 shell，要看完整指令再選。自己啟動的程序，啟動時就記下 `$!`。
+
+沒有 `-f` 的 `pkill <名稱>`、`pgrep -f`、`kill <PID>` 不擋；只是提到也不擋：引號內文字、heredoc 內文、`grep pkill`。這條規則是接住手誤，雙引號裡的 `$(…)`、`eval`、餵給 shell 的 heredoc 與腳本檔裡的指令不解析。
 
 ## 直接從 LoopAgentTeams 安裝技能
 
