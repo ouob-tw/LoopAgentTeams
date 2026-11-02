@@ -5846,7 +5846,7 @@ esac
             try:
                 with patch.dict(os.environ, self.env):
                     watch.declare_wait(argparse.Namespace(
-                        workspace=self.work, agent='worker-open', target='reviewer',
+                        workspace=self.work, agent='worker-open', target=['reviewer'],
                         reason='review', minutes=None))
             except Exception as error:  # surfaced through the assertion below
                 errors.append(error)

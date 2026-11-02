@@ -36,6 +36,8 @@ systemd-run --user --scope -q -p MemoryMax=40G -p MemorySwapMax=0 -p OOMPolicy=c
 
 超過上限時只有這個測試被結束，結束碼是 137。真的需要更多記憶體時調高 `MemoryMax`。
 
+上限要直接包住測試指令。`bash -c 'cd a && pytest'` 裡接在 `&&` 後面的測試看不到外層的上限，要寫在 `&&` 後面，或先 `cd` 再包。
+
 這條規則只看指令文字：經測試閘門跑的整套測試、腳本檔與 `make test` 裡的測試都不會被擋，也沒有這個上限。主機沒有 `systemd-run` 或使用者層的 systemd 時不檢查。
 
 ## 會執行指令的 heredoc

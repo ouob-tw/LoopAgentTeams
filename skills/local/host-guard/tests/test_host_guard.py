@@ -161,7 +161,13 @@ class TestRunTests(HookCase):
                         'cd app && bun test', 'FOO=1 pytest', 'bash -c "cargo test"',
                         'timeout 90 bun test', 'x=1; pytest',
                         'systemd-run --user --scope -p MemoryMax=40G bun test',
-                        'systemd-run --user --scope -p CPUQuota=50% timeout 90 pytest']:
+                        'systemd-run --user --scope -p CPUQuota=50% timeout 90 pytest',
+                        'bun --cwd app test', 'bun --cwd app run test',
+                        'cargo --manifest-path app/Cargo.toml test', 'time pytest -q',
+                        'time -p bun test', 'MemoryMax=40G timeout 600 pytest -q',
+                        'systemd-run --user --scope -p MemoryMax=infinity timeout 600 pytest',
+                        'systemd-run --user --scope -p MemoryMax=8G timeout 0 pytest -q',
+                        "bash -c 'pytest -q'", 'timeout -k 5 600 pytest -q']:
             with self.subTest(command):
                 result = self.run_hook(command)
                 self.assert_blocked(result, 'memory limit')
@@ -174,6 +180,11 @@ class TestRunTests(HookCase):
                 self.assert_allowed(self.run_hook(self.LIMITED + runner))
         self.assert_allowed(self.run_hook(
             'timeout 600 systemd-run --user --scope -p MemoryMax=8G bun test'))
+        self.assert_allowed(self.run_hook(self.LIMITED + "bash -c 'pytest -q'"))
+        self.assert_allowed(self.run_hook(
+            'systemd-run --user --scope --property=MemoryMax=8G timeout 10m cargo test'))
+        self.assert_allowed(self.run_hook(
+            'systemd-run --user --scope -p MemoryMax=8G timeout -k 5 600 pytest -q'))
 
     def test_each_runner_in_a_command_is_checked(self):
         self.assert_blocked(self.run_hook(self.LIMITED + 'pytest -q && bun test'), 'memory limit')
@@ -183,7 +194,9 @@ class TestRunTests(HookCase):
                         'echo "bun test failed"', "pkill -f 'bun test tests/unit'",
                         'cargo testing', 'bun install', 'cargo build', 'ls pytest.ini',
                         'git log --grep pytest', 'cat <<\'EOF\'\nbun test\nEOF',
-                        "suite-gate.py run -- 'uv run pytest -q'"]:
+                        "suite-gate.py run -- 'uv run pytest -q'",
+                        "grep -c 'pytest' pyproject.toml", "rg -c 'bun test' README.md",
+                        'bun test.js', 'cargo test-helper']:
             with self.subTest(command):
                 self.assert_allowed(self.run_hook(command))
 

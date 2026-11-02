@@ -46,17 +46,25 @@ LIMIT = re.compile(r'\btaskset\b|\bcpulimit\b|\bsystemd-run\b[^\n]*(?:AllowedCPU
 TASKSET_LIST = re.compile(r'\btaskset\s+(?:-\S*c\S*\s+|--cpu-list\s+)(?P<list>[\d,\-]+)')
 # A test runner at the start of a shell command, behind any of the wrappers people put there.
 # Anchored so that `grep pytest` or `uv pip install pytest` are not test runs.
+FLAGS = r'(?:-\S+(?:\s+[^-\s;&|]\S*)??\s+)*'
 TEST_RUN = re.compile(
     r'(?:^|[;&|(`\'"\n])\s*'
     r'(?P<prefix>(?:\w+=\S*\s+'
     r'|(?:sudo|nice|ionice|env|exec|command|xargs)\s+(?:-\S+\s+(?:\d+\s+)?)*'
-    r'|timeout\s+(?:-\S+\s+)*\S+\s+'
-    r'|systemd-run\s+(?:-\S+(?:\s+\w+=\S+)?\s+)*)*)'
-    r'(?:uv\s+run\s+(?:-\S+(?:\s+[^-\s;&|]\S*)?\s+)*)?'
+    r'|time\s+(?:-\S+\s+)*'
+    r'|timeout\s+(?:-\S+\s+(?:\d\S*\s+(?=\d))?)*\S+\s+'
+    r'|systemd-run\s+(?:-\S+(?:\s+\w+=\S+)?\s+)*'
+    r'|(?:ba|z|da)?sh\s+(?:-\S+\s+)*-\w*c\s+[\'"]\s*)*)'
+    r'(?:uv\s+run\s+' + FLAGS + r')?'
     r'(?:bunx\s+|bun\s+x\s+|npx\s+|python3?\s+-m\s+)?'
     r'(?:[\w./~-]*/)?'
-    r'(?:bun\s+test|bun\s+run\s+test[\w:-]*|pytest|py\.test|vitest|cargo\s+(?:\+\S+\s+)?test)'
+    r'(?:bun\s+' + FLAGS + r'(?:run\s+' + FLAGS + r')?test[\w:-]*'
+    r'|pytest|py\.test|vitest'
+    r'|cargo\s+(?:\+\S+\s+)?' + FLAGS + r'test)'
     r'(?=[\s;&|)\'"`]|$)')
+MEMORY_CAP = re.compile(r'\bsystemd-run\s(?:.*\s)?(?:-p\s*|--property[=\s])MemoryMax=\d')
+TIME_CAP = re.compile(r'(?:^|\s)timeout\s+(?:-\S+\s+(?:\d\S*\s+(?=\d))?)*(?!0+(?:\.0*)?[smhd]?\s)\d')
+SHELL_BEFORE = re.compile(r'(?:^|[\s;&|(`])(?:[\w./~-]*/)?(?:ba|z|da)?sh\s+(?:-\S+\s+)*$')
 DEFAULT_TEST_MEMORY = '40G'
 # Heredoc bodies and quoted text are data (messages, prompts), except a script after `-c`.
 HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re.S | re.M)
@@ -473,11 +481,20 @@ def memory_limit_usable():
     return bool(shutil.which('systemd-run')) and Path(runtime, 'systemd/private').exists()
 
 
+def shell_code(text):
+    """Like code_only, but a quoted word after -c stays only as a shell's script: in
+    `grep -c 'pytest' file` it is data."""
+    def keep(match):
+        script = match.group(1) and SHELL_BEFORE.search(match.string[:match.start()])
+        return match.group(0) if script else '""'
+    return QUOTED.sub(keep, HEREDOC.sub('', text))
+
+
 def unlimited_tests(command):
     """True when a test runner starts without both a memory limit and a timeout."""
-    for match in TEST_RUN.finditer(code_only(command)):
+    for match in TEST_RUN.finditer(shell_code(command)):
         prefix = match.group('prefix')
-        if 'MemoryMax=' not in prefix or not re.search(r'(?:^|\s)timeout\s', prefix):
+        if not MEMORY_CAP.search(prefix) or not TIME_CAP.search(prefix):
             return True
     return False
 
