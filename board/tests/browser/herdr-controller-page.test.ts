@@ -258,6 +258,61 @@ test.skipIf(!CHROME)("a question's bar shows its card in the conversation, witho
 	expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-lead');
 }, 60_000);
 
+test.skipIf(!CHROME)('phone: a question opened in place on the agent\'s page goes back to the page, then the list, after a reload too', async () => {
+	const atPage = `location.search === '?agent=s-lead' && !document.querySelector('.history .placed')`;
+	const ARROW = `document.querySelector('.topbar button').click()`;
+	await visit(390, '?agent=s-lead');
+	await tab.until(`${leadPage} && ${CARDS_IN}`, 'the cards');
+	await tab.eval(click('.detail .questions', '要不要合併'));
+	await tab.until(`new URLSearchParams(location.search).has('item') && document.querySelector('.history .placed')?.innerText.includes('要不要合併')`, 'the question placed');
+	await tab.eval(ARROW);
+	await tab.until(atPage, 'the agent page');
+	await tab.eval(`history.back()`);
+	await tab.until(`new URLSearchParams(location.search).get('agent') === null && !document.querySelector('.topbar button')`, 'the list');
+
+	// Forward to the question, a reload there, and the same way back by the phone's back.
+	await tab.eval(`history.forward()`);
+	await tab.until(atPage, 'the agent page again');
+	await tab.eval(`history.forward()`);
+	await tab.until(`document.querySelector('.history .placed')?.innerText.includes('要不要合併')`, 'the question again');
+	await tab.eval(`window.beforeReload = true`);
+	await tab.send('Page.reload');
+	await tab.until(`!window.beforeReload && document.querySelector('.history .placed')?.innerText.includes('要不要合併')`, 'the question after the reload');
+	await tab.eval(`history.back()`);
+	await tab.until(atPage, 'the agent page after the reload');
+
+	// Its address opened from elsewhere has the same way back.
+	await tab.eval(`history.forward()`);
+	await tab.until(`new URLSearchParams(location.search).has('item')`, 'the question address');
+	const address = await tab.eval<string>('location.search');
+	await browser?.close();
+	await visit(390, address);
+	await tab.until(`document.querySelector('.history .placed')?.innerText.includes('要不要合併')`, 'the question opened by its address');
+	await tab.eval(ARROW);
+	await tab.until(atPage, 'the agent page behind the address');
+	await tab.eval(ARROW);
+	await tab.until(`new URLSearchParams(location.search).get('agent') === null && !document.querySelector('.topbar button')`, 'the list behind the address');
+}, 60_000);
+
+test.skipIf(!CHROME)('phone: an agent\'s address naming an item the board does not have goes on to the agent\'s page, one "←" from the list', async () => {
+	await visit(390, '?agent=s-lead&item=nothing');
+	await tab.until(`location.search === '?agent=s-lead' && ${leadPage}`, 'the agent page');
+	await tab.eval(`document.querySelector('.topbar button').click()`);
+	await tab.until(`new URLSearchParams(location.search).get('agent') === null && !document.querySelector('.topbar button')`, 'the list');
+}, 60_000);
+
+test.skipIf(!CHROME)('phone: an agent\'s address naming an archived report reads the archive and shows it, one "←" from the agent\'s page', async () => {
+	const title = '八天前的回報';
+	fixture.report('s-lead', { tag: 'DONE', summary: title, message: title, time: new Date(Date.now() - 8 * 86_400_000).toISOString(), hcom_name: 'lead', workspace: lead.workspace });
+	await fixture.refresh(cookie);
+	const key = (await fixture.archive(cookie)).find((entry) => entry.title === title)!.key;
+	await visit(390, `?agent=s-lead&item=${encodeURIComponent(key)}`);
+	await tab.until(`document.querySelector('.detail')?.innerText.includes(${JSON.stringify(title)})`, 'the archived report');
+	expect(new URLSearchParams(await tab.eval<string>('location.search')).get('item')).toBe(key);
+	await tab.eval(`document.querySelector('.topbar button').click()`);
+	await tab.until(`location.search === '?agent=s-lead'`, 'the agent page');
+}, 60_000);
+
 test.skipIf(!CHROME)('answers given on either page show on the other', async () => {
 	await visit(1280, '?agent=s-lead');
 	await tab.until(`${leadPage} && ${CARDS_IN}`, 'the cards');

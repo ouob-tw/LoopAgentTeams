@@ -6,7 +6,6 @@
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { askedTogether, withAnswered } from '#lib/board/question-message.ts';
 	import type { LiveBoard } from '#lib/board/live.svelte.ts';
-	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
 	import type { Translation } from '#lib/board/translate.ts';
 	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
@@ -19,6 +18,7 @@
 		controller,
 		agent,
 		idleAgent,
+		agentItem = null,
 		known,
 		openKey,
 		listed,
@@ -36,6 +36,8 @@
 		agent?: KnownAgent;
 		/** The agent Herdr runs the controller's session in. */
 		idleAgent?: KnownAgent;
+		/** The item the agent's page has open, shown in its conversation. */
+		agentItem?: InboxItem | null;
 		/** Every item the board has loaded: the inbox's, the processed ones and the answered questions. */
 		known: InboxItem[];
 		/** The item open in the content column, and whether the board still has it. */
@@ -61,28 +63,6 @@
 	const answered = $derived(board.answered.questions.filter((entry) => entry.controllerId === controller.id));
 	/** The controller's board asks: its permission requests, answered on every page that shows it. */
 	const asks = $derived(board.snapshot.asks.filter((ask) => ask.sessionId === controller.id));
-
-	/** The question or report of the agent's page last opened from its own bars and report list. */
-	let agentOpened = $state.raw<InboxItem | null>(null);
-	/** That item as the board's data has it now, so an answer or a read shows on it too; as it was
-	 *  opened once the data no longer has it. */
-	const agentTarget = $derived(agentOpened && (known.find((candidate) => candidate.key === agentOpened!.key) ?? agentOpened));
-	let agentOpens = $state(0);
-	// Every board push hands a new `agent`: only another agent drops what was opened.
-	const agentId = $derived(agent?.id);
-	$effect.pre(() => {
-		void agentId;
-		agentOpened = null;
-	});
-	function openInAgent(next: InboxItem) {
-		agentOpened = next;
-		agentOpens++;
-		// Opening reads an inbox report here too, as opening it from the inbox does.
-		const listed = inbox.find((entry) => entry.key === next.key);
-		if (listed?.kind === 'report' && listed.readAt === null) {
-			board.mark(listed.key, true).catch(() => toasts.readFailed('沒有標為已讀，請重新點開再試一次。'));
-		}
-	}
 
 	/** The cards shown at the asking message: every question of the inbox it asked, in its order. */
 	const together = $derived(item?.kind === 'question' ? askedTogether(item, withAnswered(inbox, answered)) : item ? [item] : []);
@@ -144,15 +124,15 @@
 	<!-- An opened one among them is the one scrolled to, from the inbox or the Herdr tab. What the
 	     message says above its tag line goes in the first. -->
 	{#each entries as entry, index (entry.key)}
-		<div class="asked" data-opened={entry.key === (openKey ?? agentTarget?.key) || undefined}>{@render placedCard(entry, null, index === 0 ? note : undefined)}</div>
+		<div class="asked" data-opened={entry.key === (openKey ?? agentItem?.key) || undefined}>{@render placedCard(entry, null, index === 0 ? note : undefined)}</div>
 	{/each}
 {/snippet}
 
 {#snippet agentCard(translation: Translation | null)}
-	{#if agentTarget?.kind === 'report' && agentTarget.tag === 'DONE'}
-		{@render doneCard(agentTarget, translation)}
-	{:else if agentTarget}
-		{@render placedCard(agentTarget, translation)}
+	{#if agentItem?.kind === 'report' && agentItem.tag === 'DONE'}
+		{@render doneCard(agentItem, translation)}
+	{:else if agentItem}
+		{@render placedCard(agentItem, translation)}
 	{/if}
 {/snippet}
 
@@ -170,9 +150,9 @@
 		{agent}
 		{items}
 		{answered}
-		onopen={openInAgent}
-		target={agentTarget ?? undefined}
-		opens={agentOpens}
+		{onopen}
+		target={agentItem ?? undefined}
+		{opens}
 		questionCards={askedCards}
 		reportCard={doneCard}
 		card={agentCard}

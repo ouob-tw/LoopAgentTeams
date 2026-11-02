@@ -20,6 +20,9 @@ import {
 import { MIDDLE_TAB_KEY, remember, remembered } from './prefs.ts';
 
 const MIDDLE_TABS = ['inbox', 'agents', 'quota'] as const;
+/** How long a step through the history is waited for, so one that never comes does not stop every
+ *  later one. */
+const TRAVEL_WAIT_MS = 1000;
 
 /** The browser as the board uses it: its address, its history and the window's scroll. */
 export interface Browser {
@@ -32,7 +35,8 @@ export interface Browser {
 	depth(): number | undefined;
 	/** Replace this entry's state, and its address when `url` is given. */
 	replaceState(state: unknown, url?: string): void;
-	back(): void;
+	/** Go that many entries back; a popstate tells when it is done. */
+	back(steps: number): void;
 	/** Write a board entry at `url` with its depth: a new one, or in place of this one. */
 	write(url: string, replace: boolean, depth: number): Promise<void>;
 	scrollY(): number;
@@ -69,6 +73,8 @@ export class Navigation {
 	#moving: Promise<unknown> = Promise.resolve();
 	/** Only the latest restore shows its screen, and ends the seeking. */
 	#restores = 0;
+	/** The step through the history under way; `quiet` when it only passes on to another screen. */
+	#travelling: { quiet: boolean; done: () => void } | null = null;
 
 	constructor(host: NavigationHost, start: { view: View; middle: MiddleTab }) {
 		this.#host = host;
@@ -88,6 +94,24 @@ export class Navigation {
 		return this.#moving;
 	}
 
+	/** Step through the history, done once the browser has arrived. */
+	#travel(steps: number, quiet: boolean): Promise<void> {
+		return new Promise<void>((resolve) => {
+			const timer = setTimeout(() => {
+				this.#travelling = null;
+				resolve();
+			}, TRAVEL_WAIT_MS);
+			this.#travelling = {
+				quiet,
+				done: () => {
+					clearTimeout(timer);
+					resolve();
+				}
+			};
+			this.#host.browser.back(steps);
+		});
+	}
+
 	#queue(step: () => unknown): void {
 		this.#moving = this.#moving.then(step).catch((error) => console.error(error));
 	}
@@ -98,7 +122,14 @@ export class Navigation {
 			const writes: (() => Promise<void>)[] = [];
 			const write = (replace: boolean) => (place: Place, depth: number) =>
 				void writes.push(() => browser.write(`${browser.pathname()}${searchOf(place, this.middle)}`, replace, depth));
-			step({ push: write(false), replace: write(true) }, browser.depth());
+			const rewind = (depth: number) =>
+				void writes.push(async () => {
+					await this.#travel(depth, true);
+					// The list being left now is the one shown, whichever it was when it was first left.
+					// A step that did not arrive there must not rewrite another entry as the list.
+					if (this.addressed() === null) browser.replaceState(browser.state(), `${browser.pathname()}${searchOf(null, this.middle)}`);
+				});
+			step({ push: write(false), replace: write(true), rewind }, browser.depth());
 			for (const next of writes) await next();
 		});
 	}
@@ -107,31 +138,36 @@ export class Navigation {
 	enter(): void {
 		this.#move((trail, depth) => arrive(this.addressed(), depth, trail));
 		// After the first writes, which may put the list in front of the address for a moment.
-		if (this.view?.kind === 'missing') this.#queue(() => void this.restore(this.addressed()));
+		if (this.view?.kind === 'missing' || this.#itemNotLoaded(this.addressed())) this.#queue(() => void this.restore(this.addressed()));
 	}
 
 	/** Gone back or forward to another of the board's entries. */
 	popped(state: unknown): void {
 		this.#listScroll = listScrollIn(state) ?? this.#listScroll;
+		const travelling = this.#travelling;
+		this.#travelling = null;
+		travelling?.done();
+		if (travelling?.quiet) return;
 		this.middle = tabIn(new URLSearchParams(this.#host.browser.search())) ?? 'inbox';
 		void this.restore(this.addressed());
 	}
 
-	/** Open a screen from the one shown, one history entry further. It is shown once the address
-	 *  names it, so a back pressed meanwhile can never leave the two apart. */
-	go(next: Place): void {
+	/** Open a screen from the one shown, `fromList` when it was picked in the list. It is shown once
+	 *  the address names it, so a back pressed meanwhile can never leave the two apart. */
+	go(next: Place, fromList = false): void {
 		const { browser } = this.#host;
 		this.#move((trail, depth) => {
 			const here = this.addressed();
 			if (here === null) browser.replaceState(withListScroll(browser.state(), browser.scrollY()));
-			advance(next, { place: here, depth: depth ?? 0 }, trail);
+			advance(next, { place: here, depth: depth ?? 0 }, trail, fromList);
 		});
 		this.#queue(() => this.#present(this.#host.viewAt(next)));
 	}
 
-	/** The top bar's "←": every screen but the list has a board entry behind it. */
+	/** The top bar's "←": every screen but the list has a board entry behind it. A second tap that
+	 *  finds the list already reached stays on the board. */
 	back(): void {
-		this.#queue(() => this.#host.browser.back());
+		this.#queue(() => (this.#host.browser.depth() ? this.#travel(1, false) : undefined));
 	}
 
 	/** The screen of an address arrived at by going back or forward, or by a reload. A report not
@@ -140,13 +176,14 @@ export class Navigation {
 	async restore(place: Place): Promise<void> {
 		const { archive, viewAt } = this.#host;
 		const own = ++this.#restores;
-		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && (archive.archive === null || archive.earlierFrom)) {
+		const sought = () => (viewAt(place)?.kind === 'missing' && place?.kind === 'item') || this.#itemNotLoaded(place);
+		if (sought() && (archive.archive === null || archive.earlierFrom)) {
 			this.seeking = true;
 			if (archive.archive === null) await archive.loadArchive();
 			// Each round must get further back; one that fails or does not stops. A page the archive
 			// view is already reading counts as a round.
 			let from = archive.earlierFrom;
-			while (own === this.#restores && viewAt(place)?.kind === 'missing' && from) {
+			while (own === this.#restores && sought() && from) {
 				await archive.loadEarlier();
 				if (archive.archiveEarlier === 'failed' || archive.earlierFrom === from) break;
 				from = archive.earlierFrom;
@@ -156,11 +193,24 @@ export class Navigation {
 			if (!samePlace(place, this.addressed())) return;
 		}
 		this.seeking = false;
+		// The entry's item is nowhere, so it is no step of its own: on to the page behind it.
+		if (this.#itemNotLoaded(place)) {
+			this.#queue(() => {
+				if (samePlace(place, this.addressed())) this.back();
+			});
+			return;
+		}
 		await this.#present(viewAt(place));
 	}
 
+	/** The place is an item on an agent's page that the board has not loaded. */
+	#itemNotLoaded(place: Place): boolean {
+		const shown = this.#host.viewAt(place);
+		return place?.kind === 'agent' && place.item !== undefined && shown?.kind === 'agent' && shown.item === undefined;
+	}
+
 	async #present(next: View): Promise<void> {
-		if (next?.kind === 'item') this.opens++;
+		if (next?.kind === 'item' || (next?.kind === 'agent' && next.item)) this.opens++;
 		this.#host.showing?.(next);
 		if (this.view === null) this.#listScroll = this.#host.browser.scrollY();
 		this.view = next;

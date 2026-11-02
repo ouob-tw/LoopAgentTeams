@@ -188,7 +188,7 @@ const CONTROLLER = () => `?controller=${luna.session_id}`;
 /** Luna has no conversation record: its question is shown alone, with the way to luna, once that is known. */
 const shownAlone = (n: number) => shows(QUESTION(n), '看主控資訊');
 
-test.skipIf(!CHROME)('phone: question, its controller, "←" back to the question, then the list where it was scrolled, then back leaves', async () => {
+test.skipIf(!CHROME)('phone: from a question, its controller goes back to the list where it was scrolled, then back leaves', async () => {
 	await visit(390);
 	await tab.eval(`[...document.querySelectorAll('.inbox button')].find((b) => b.innerText.includes('題目 20')).scrollIntoView()`);
 	const scrolled = await tab.eval<number>('scrollY');
@@ -200,8 +200,6 @@ test.skipIf(!CHROME)('phone: question, its controller, "←" back to the questio
 	await shows(CONTROLLER(), '@luna');
 
 	await tab.eval(ARROW);
-	await shows(QUESTION(20), '題目 20');
-	await tab.eval(ARROW);
 	await showsList();
 	await tab.until(`Math.abs(scrollY - ${scrolled}) <= 1`, `the list scrolled back to ${scrolled}`);
 
@@ -209,7 +207,7 @@ test.skipIf(!CHROME)('phone: question, its controller, "←" back to the questio
 	await tab.until(LEFT, 'leaving the board');
 }, 30_000);
 
-test.skipIf(!CHROME)("phone: a controller's question goes back to the controller by the browser's back, and back to a report finds it again", async () => {
+test.skipIf(!CHROME)("phone: a controller's question goes back to the controller by the browser's back, and going forward to a report finds it again", async () => {
 	await visit(390);
 	await tab.eval(click('.roster', '@luna'));
 	await shows(CONTROLLER(), '題目 3');
@@ -218,15 +216,15 @@ test.skipIf(!CHROME)("phone: a controller's question goes back to the controller
 	await back();
 	await shows(CONTROLLER(), '題目 3');
 
-	// A report opens in its controller's conversation; back to it finds it there again.
+	// A report opens in its controller's conversation; forward to it finds it there again.
 	await tab.eval(ARROW);
 	await showsList();
 	await tab.eval(click('.inbox', '交付第二張票'));
 	await tab.until(`location.search.startsWith('?item=') && !location.search.startsWith('?item=q')`, 'the report');
 	const report = await tab.eval<string>('location.search');
-	await tab.eval(click('.roster', '@luna'));
-	await shows(CONTROLLER(), '題目 3');
 	await back();
+	await showsList();
+	await tab.eval('history.forward()');
 	await shows(report, '交付第二張票');
 	await tab.until(`document.querySelector('.placeholder') === null`, 'the report placed in its conversation');
 	await reload();
@@ -239,18 +237,85 @@ test.skipIf(!CHROME)("phone: a controller's question goes back to the controller
 
 test.skipIf(!CHROME)('a reload keeps the open screen and the way back', async () => {
 	await visit(390);
-	await tab.eval(click('.inbox', '題目 5'));
-	await shownAlone(5);
-	await tab.eval(click('.detail', '看主控資訊'));
-	await shows(CONTROLLER(), '@luna');
+	await tab.eval(click('.roster', '@luna'));
+	await shows(CONTROLLER(), '題目 5');
+	await tab.eval(click('.detail', '題目 5'));
+	await shows(QUESTION(5), '題目 5');
 
 	await reload();
-	await shows(CONTROLLER(), '@luna');
+	await shows(QUESTION(5), '題目 5');
 	await tab.eval(ARROW);
-	await shows(QUESTION(5), '題目 5');
+	await shows(CONTROLLER(), '@luna');
 	await reload();
-	await shows(QUESTION(5), '題目 5');
+	await shows(CONTROLLER(), '@luna');
 	await back();
+	await showsList();
+	await back();
+	await tab.until(LEFT, 'leaving the board');
+}, 30_000);
+
+/** From now on, `window.listSeen` is set if the content screen ever gives way to the list. */
+const WATCH_FOR_LIST = `(() => { window.listSeen = false; new MutationObserver(() => { if (!document.querySelector('.shell').classList.contains('viewing')) window.listSeen = true; }).observe(document.querySelector('.shell'), { attributes: true }); })()`;
+const SOL = () => `?controller=${sol.session_id}`;
+
+test.skipIf(!CHROME)('phone: another controller from a question of the first goes straight to the list, showing no list on the way, and an entry left ahead is gone', async () => {
+	await visit(390);
+	await tab.eval(click('.roster', '@luna'));
+	await shows(CONTROLLER(), '題目 3');
+	await tab.eval(click('.detail', '題目 3'));
+	await shows(QUESTION(3), '題目 3');
+	await tab.eval(WATCH_FOR_LIST);
+	await tab.eval(click('.roster', '@sol'));
+	await shows(SOL(), '@sol');
+	expect(await tab.eval('window.listSeen')).toBe(false);
+	await tab.eval(ARROW);
+	await showsList();
+	await back();
+	await tab.until(LEFT, 'leaving the board');
+
+	// Back on the controller, the question is ahead; another controller drops it.
+	await visit(390);
+	await tab.eval(click('.roster', '@luna'));
+	await shows(CONTROLLER(), '題目 3');
+	await tab.eval(click('.detail', '題目 3'));
+	await shows(QUESTION(3), '題目 3');
+	await back();
+	await shows(CONTROLLER(), '題目 3');
+	await tab.eval(click('.roster', '@sol'));
+	await shows(SOL(), '@sol');
+	await tab.eval('history.forward()');
+	await sleep(200);
+	expect(await tab.eval('location.search')).toBe(SOL());
+	await back();
+	await showsList();
+}, 30_000);
+
+test.skipIf(!CHROME)('phone: after a reload on a question of a controller, the title and another controller go back to the list too', async () => {
+	await visit(390);
+	await tab.eval(click('.roster', '@luna'));
+	await shows(CONTROLLER(), '題目 3');
+	await tab.eval(click('.detail', '題目 3'));
+	await shows(QUESTION(3), '題目 3');
+	await reload();
+	await shows(QUESTION(3), '題目 3');
+	await tab.eval(WATCH_FOR_LIST);
+	await tab.eval(`${TITLE}.click()`);
+	await shows(CONTROLLER(), '@luna');
+	expect(await tab.eval('window.listSeen')).toBe(false);
+	await reload();
+	await shows(CONTROLLER(), '@luna');
+	await tab.eval(click('.roster', '@sol'));
+	await shows(SOL(), '@sol');
+	await back();
+	await showsList();
+	await back();
+	await tab.until(LEFT, 'leaving the board');
+}, 30_000);
+
+test.skipIf(!CHROME)('an address of a question opened from elsewhere goes back to the list, then leaves', async () => {
+	await visit(390, QUESTION(4));
+	await shows(QUESTION(4), '題目 4');
+	await tab.eval(ARROW);
 	await showsList();
 	await back();
 	await tab.until(LEFT, 'leaving the board');
@@ -280,7 +345,7 @@ test.skipIf(!CHROME)('a reloaded screen that no longer exists says so, and back 
 	await showsList();
 }, 30_000);
 
-test.skipIf(!CHROME)('wide: the browser back goes to the screen before', async () => {
+test.skipIf(!CHROME)('wide: an item picked in the list goes back to the list, whichever screen was open beside it', async () => {
 	await visit(1400);
 	await tab.eval(click('.inbox', '題目 1'));
 	await shows(QUESTION(1), '題目 1');
@@ -288,13 +353,24 @@ test.skipIf(!CHROME)('wide: the browser back goes to the screen before', async (
 	await shows(QUESTION(2), '題目 2');
 	await tab.eval(click('.roster', '@luna'));
 	await shows(CONTROLLER(), '@luna');
-	await back();
-	await shows(QUESTION(2), '題目 2');
-	await back();
-	await shows(QUESTION(1), '題目 1');
+	await tab.eval(click('.inbox', '題目 6'));
+	await shows(QUESTION(6), '題目 6');
 	await back();
 	await tab.until(`location.search === ''`, 'the list');
 	expect((await screen()).text).toContain('從待辦選一則');
+	await back();
+	await tab.until(LEFT, 'leaving the board');
+
+	// An item from the controller's own page goes back to that page.
+	await visit(1400);
+	await tab.eval(click('.roster', '@luna'));
+	await shows(CONTROLLER(), '題目 3');
+	await tab.eval(click('.detail', '題目 3'));
+	await shows(QUESTION(3), '題目 3');
+	await back();
+	await shows(CONTROLLER(), '@luna');
+	await back();
+	await tab.until(`location.search === ''`, 'the list');
 }, 30_000);
 
 test.skipIf(!CHROME)('a reload on an archived report past the first archive page opens it again', async () => {
@@ -322,8 +398,6 @@ test.skipIf(!CHROME)('phone: the list comes back where it was scrolled after a r
 		await reload();
 		await shows(CONTROLLER(), '@luna');
 		await goBack();
-		await shows(QUESTION(25), '題目 25');
-		await goBack();
 		await showsList();
 		await tab.until(`Math.abs(scrollY - ${scrolled}) <= 1`, `the list scrolled back to ${scrolled}`);
 	}
@@ -331,7 +405,7 @@ test.skipIf(!CHROME)('phone: the list comes back where it was scrolled after a r
 
 const TITLE = `document.querySelector('.topbar .whose')`;
 
-test.skipIf(!CHROME)('phone: the top-bar title opens the controller at its top from a question and from a report, and back returns', async () => {
+test.skipIf(!CHROME)('phone: the top-bar title opens the controller at its top from a question and from a report, and back reaches the list', async () => {
 	await visit(390);
 	await tab.eval(click('.inbox', '題目 7'));
 	await shows(QUESTION(7), '題目 7');
@@ -341,12 +415,6 @@ test.skipIf(!CHROME)('phone: the top-bar title opens the controller at its top f
 	await shows(CONTROLLER(), '@luna');
 	await tab.until(`scrollY === 0`, 'the controller at its top');
 	await tab.eval(ARROW);
-	await shows(QUESTION(7), '題目 7');
-	await tab.eval(`${TITLE}.click()`);
-	await shows(CONTROLLER(), '@luna');
-	await back();
-	await shows(QUESTION(7), '題目 7');
-	await back();
 	await showsList();
 
 	await unread('交付第二張票');
@@ -354,17 +422,12 @@ test.skipIf(!CHROME)('phone: the top-bar title opens the controller at its top f
 	await tab.until(`[...document.querySelectorAll('.inbox button')].some((b) => b.innerText.includes('交付第二張票'))`, 'the report unread in the inbox');
 	await tab.eval(click('.inbox', '交付第二張票'));
 	await tab.until(`location.search.startsWith('?item=') && !location.search.startsWith('?item=q')`, 'the report');
-	const report = await tab.eval<string>('location.search');
 	await tab.until(`document.querySelector('.placeholder') === null`, 'the report placed in its conversation');
 	await tab.eval(`${TITLE}.click()`);
 	await shows(CONTROLLER(), '@luna');
 	await tab.until(`scrollY === 0`, 'the controller at its top');
-	await tab.eval(ARROW);
-	await shows(report, '交付第二張票');
-	await tab.eval(`${TITLE}.click()`);
-	await shows(CONTROLLER(), '@luna');
 	await back();
-	await shows(report, '交付第二張票');
+	await showsList();
 }, 60_000);
 
 test.skipIf(!CHROME)('phone: the title on the controller page only scrolls to the top, adding no history entry', async () => {
@@ -588,13 +651,13 @@ test.skipIf(!CHROME)('phone: a question opened from another of the same controll
 	await fixture.refresh(cookie);
 }, 30_000);
 
-test.skipIf(!CHROME)('phone: back and reload find the question in its conversation again, like a report', async () => {
+test.skipIf(!CHROME)('phone: forward and reload find the question in its conversation again, like a report', async () => {
 	await visit(390);
 	await tab.eval(click('.inbox', '有原訊息的求助題'));
 	await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
-	await tab.eval(`${TITLE}.click()`);
-	await shows(`?controller=${sol.session_id}`, '@sol');
 	await back();
+	await showsList();
+	await tab.eval('history.forward()');
 	await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
 	await reload();
 	await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
