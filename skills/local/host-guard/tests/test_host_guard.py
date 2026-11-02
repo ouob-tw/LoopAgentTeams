@@ -167,7 +167,10 @@ class TestRunTests(HookCase):
                         'time -p bun test', 'MemoryMax=40G timeout 600 pytest -q',
                         'systemd-run --user --scope -p MemoryMax=infinity timeout 600 pytest',
                         'systemd-run --user --scope -p MemoryMax=8G timeout 0 pytest -q',
-                        "bash -c 'pytest -q'", 'timeout -k 5 600 pytest -q']:
+                        "bash -c 'pytest -q'", "/bin/bash -c 'pytest -q'",
+                        'timeout -k 5 600 pytest -q',
+                        'systemd-run --user --scope -p MemoryMax=8G timeout .0 pytest',
+                        'systemd-run --user --scope -p MemoryMax=8G timeout 0s pytest']:
             with self.subTest(command):
                 result = self.run_hook(command)
                 self.assert_blocked(result, 'memory limit')
@@ -181,6 +184,9 @@ class TestRunTests(HookCase):
         self.assert_allowed(self.run_hook(
             'timeout 600 systemd-run --user --scope -p MemoryMax=8G bun test'))
         self.assert_allowed(self.run_hook(self.LIMITED + "bash -c 'pytest -q'"))
+        self.assert_allowed(self.run_hook(self.LIMITED + "/bin/bash -c 'pytest -q'"))
+        self.assert_allowed(self.run_hook(
+            'systemd-run --user --scope -p MemoryMax=8G timeout .5 pytest -q'))
         self.assert_allowed(self.run_hook(
             'systemd-run --user --scope --property=MemoryMax=8G timeout 10m cargo test'))
         self.assert_allowed(self.run_hook(
@@ -196,7 +202,8 @@ class TestRunTests(HookCase):
                         'git log --grep pytest', 'cat <<\'EOF\'\nbun test\nEOF',
                         "suite-gate.py run -- 'uv run pytest -q'",
                         "grep -c 'pytest' pyproject.toml", "rg -c 'bun test' README.md",
-                        'bun test.js', 'cargo test-helper']:
+                        'bun test.js', 'cargo test-helper', "echo bash -c 'pytest'",
+                        "printf '%s\\n' bash -c 'pytest'"]:
             with self.subTest(command):
                 self.assert_allowed(self.run_hook(command))
 

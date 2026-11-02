@@ -47,14 +47,16 @@ TASKSET_LIST = re.compile(r'\btaskset\s+(?:-\S*c\S*\s+|--cpu-list\s+)(?P<list>[\
 # A test runner at the start of a shell command, behind any of the wrappers people put there.
 # Anchored so that `grep pytest` or `uv pip install pytest` are not test runs.
 FLAGS = r'(?:-\S+(?:\s+[^-\s;&|]\S*)??\s+)*'
+TEST_START = r'(?:^|[;&|(`\'"\n])\s*'
+RUN_WRAPPERS = (r'(?:\w+=\S*\s+'
+                r'|(?:sudo|nice|ionice|env|exec|command|xargs)\s+(?:-\S+\s+(?:\d+\s+)?)*'
+                r'|time\s+(?:-\S+\s+)*'
+                r'|timeout\s+(?:-\S+\s+(?:[\d.]\S*\s+(?=[\d.]))?)*\S+\s+'
+                r'|systemd-run\s+(?:-\S+(?:\s+\w+=\S+)?\s+)*)*')
+SHELL = r'(?:[\w./~-]*/)?(?:ba|z|da)?sh\s+(?:-\S+\s+)*'
 TEST_RUN = re.compile(
-    r'(?:^|[;&|(`\'"\n])\s*'
-    r'(?P<prefix>(?:\w+=\S*\s+'
-    r'|(?:sudo|nice|ionice|env|exec|command|xargs)\s+(?:-\S+\s+(?:\d+\s+)?)*'
-    r'|time\s+(?:-\S+\s+)*'
-    r'|timeout\s+(?:-\S+\s+(?:\d\S*\s+(?=\d))?)*\S+\s+'
-    r'|systemd-run\s+(?:-\S+(?:\s+\w+=\S+)?\s+)*'
-    r'|(?:ba|z|da)?sh\s+(?:-\S+\s+)*-\w*c\s+[\'"]\s*)*)'
+    TEST_START
+    + r'(?P<prefix>' + RUN_WRAPPERS + r'(?:' + SHELL + r'-\w*c\s+[\'"]\s*' + RUN_WRAPPERS + r')?)'
     r'(?:uv\s+run\s+' + FLAGS + r')?'
     r'(?:bunx\s+|bun\s+x\s+|npx\s+|python3?\s+-m\s+)?'
     r'(?:[\w./~-]*/)?'
@@ -63,8 +65,10 @@ TEST_RUN = re.compile(
     r'|cargo\s+(?:\+\S+\s+)?' + FLAGS + r'test)'
     r'(?=[\s;&|)\'"`]|$)')
 MEMORY_CAP = re.compile(r'\bsystemd-run\s(?:.*\s)?(?:-p\s*|--property[=\s])MemoryMax=\d')
-TIME_CAP = re.compile(r'(?:^|\s)timeout\s+(?:-\S+\s+(?:\d\S*\s+(?=\d))?)*(?!0+(?:\.0*)?[smhd]?\s)\d')
-SHELL_BEFORE = re.compile(r'(?:^|[\s;&|(`])(?:[\w./~-]*/)?(?:ba|z|da)?sh\s+(?:-\S+\s+)*$')
+TIME_CAP = re.compile(r'(?:^|\s)timeout\s+(?:-\S+\s+(?:[\d.]\S*\s+(?=[\d.]))?)*'
+                      r'(?!0*\.?0*[smhd]?\s)(?:\d|\.\d)')
+# A shell at the start of a command, so `echo bash -c 'pytest'` stays text.
+SHELL_BEFORE = re.compile(TEST_START + RUN_WRAPPERS + SHELL + r'$')
 DEFAULT_TEST_MEMORY = '40G'
 # Heredoc bodies and quoted text are data (messages, prompts), except a script after `-c`.
 HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re.S | re.M)
