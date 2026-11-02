@@ -85,7 +85,7 @@ bun run board revoke <裝置 ID>   # 撤銷一台裝置，它會回到登入畫�
 
 要改位址或連接埠，改已複製的 `~/.config/systemd/user/lat-board.service` 裡的 `HOST`、`PORT`（改專案裡的範例檔不會生效）；其他設定用同樣方式加一行 `Environment=`，改完 `systemctl --user daemon-reload && systemctl --user restart lat-board`。
 
-用背景服務時，主機上的 `password`、`devices`、`revoke` 仍照「登入」一節手動執行。若你改了狀態目錄（`LAT_BOARD_STATE_DIR`）或其他設定，這些指令要用相同的環境變數，否則改到另一份資料。
+用背景服務時，主機上的 `password`、`devices`、`revoke`、`inbox` 仍照「登入」一節手動執行。若你改了狀態目錄（`LAT_BOARD_STATE_DIR`）或其他設定，這些指令要用相同的環境變數，否則改到另一份資料。
 
 ## 待辦與已處理
 

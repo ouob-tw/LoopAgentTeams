@@ -31,7 +31,7 @@ function inbox() {
 			LAT_BOARD_ASKS_DIR: join(dir, 'asks'),
 			LAT_HCOM_PAUSED_DIR: join(dir, 'paused'),
 			LAT_BOARD_HELPER_COMMAND: JSON.stringify(['node', join(ROOT, 'tests/fake-helper.mjs'), dir]),
-			LAT_BOARD_HCOM_COMMAND: JSON.stringify(['node', '-e', 'console.log("[]")'])
+			LAT_BOARD_HCOM_COMMAND: JSON.stringify(['node', join(ROOT, 'tests/fake-hcom.mjs'), dir])
 		},
 		encoding: 'utf8'
 	});
@@ -54,6 +54,8 @@ beforeAll(() => {
 	const report = { time: hoursAgo(24 * 8), session_id: 's-2', tag: 'DONE', hcom_name: 'nova', client: 'claude', workspace: '/work/alpha', round: 1, summary: 'Old result', message: '', final: true };
 	writeFileSync(join(dir, 'reports', 's-2.jsonl'), JSON.stringify(report) + '\n');
 	plan([]);
+	// The controller the later tests bind: still running, so its questions count.
+	writeFileSync(join(dir, 'hcom-running.json'), JSON.stringify([{ name: 'luna', session_id: 's-3', status: 'listening' }]));
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -81,4 +83,39 @@ test('data that cannot be read is named and fails the command', () => {
 	expect(result.status).toBe(1);
 	expect(result.stdout).toContain('讀不到：');
 	plan([]);
+});
+
+const controller = (extra: object) => ({ session_id: 's-3', hcom_name: 'luna', workspace: '/work/beta', questions_path: join(dir, 'q.json'), questions: [], ...extra });
+
+test.each([
+	['an ask', 'asks', 'broken.json'],
+	['a pause record', 'paused', 'broken.json']
+])('%s that cannot be read is named and fails the command', (_label, folder, name) => {
+	writeFileSync(join(dir, folder, name), '{');
+	const result = inbox();
+	rmSync(join(dir, folder, name));
+	expect(result.status).toBe(1);
+	expect(result.stdout).toContain(`讀不到：`);
+	expect(result.stdout).toContain(`${name} 讀不出來`);
+});
+
+test('a bound controller whose question file cannot be read is named and fails the command', () => {
+	plan([controller({ error: 'bad file' })]);
+	const result = inbox();
+	plan([]);
+	expect(result.status).toBe(1);
+	expect(result.stdout).toContain('問題檔讀不出來：bad file');
+});
+
+test('a question the answered list already has recorded is not in 待辦, as on the page', () => {
+	const question = { id: 'q1', revision: 1, status: 'pending', title: 'Recorded meanwhile?' };
+	const output = { controllers: [controller({ questions: [question] })] };
+	plan(output.controllers);
+	expect(inbox().stdout).toContain('Recorded meanwhile?');
+	const answered = { output: { files: [{ questions_path: join(dir, 'q.json'), questions: [{ ...question, status: 'recorded', answer: 'yes' }], error: null }] } };
+	writeFileSync(join(dir, 'helper.json'), JSON.stringify({ output, answered }));
+	const result = inbox();
+	plan([]);
+	expect(result.status).toBe(0);
+	expect(result.stdout).not.toContain('Recorded meanwhile?');
 });

@@ -1,6 +1,7 @@
 // What the inbox holds now, for `board inbox`: the page's own rules applied to the real data, but
 // with nothing written. The running board does the settling, pruning and archiving; here an archive
 // that is due only counts in memory.
+import { readdirSync } from 'node:fs';
 import { askNote, askRows, askTitle, ASK_KIND_TEXT } from '../board/ask-inbox.ts';
 import { BOARD_ASK_STATE_TEXT, type BoardAskState } from '../board/board-asks.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
@@ -11,7 +12,7 @@ import type { BoardConfig } from './config.ts';
 import { listAgents } from './hcom.ts';
 import { listControllers, readAnswered } from './helper.ts';
 import { loadInboxState, type InboxState } from './inbox-state.ts';
-import { answeredSources, archiveDue, buildSnapshot, type Sources } from './model.ts';
+import { answeredSources, archiveDue, buildSnapshot, withRecorded, type Sources } from './model.ts';
 import { linkedAgain, readPauses } from './paused.ts';
 import { createReportReader } from './reports.ts';
 
@@ -28,10 +29,26 @@ export interface InboxStatus {
 
 const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 80);
 
+/** What the folder's readers silently leave out: every record file not among those they returned. A
+ *  folder that does not exist holds none. */
+function unreadable(label: string, dir: string, read: Iterable<string>): string[] {
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : [`${label}資料夾讀不出來：${(error as Error).message}`];
+	}
+	const readable = new Set(read);
+	return names
+		.filter((name) => !name.startsWith('.') && name.endsWith('.json') && name.split('.').length === 2 && !readable.has(name.slice(0, -'.json'.length)))
+		.map((name) => `${label} ${name} 讀不出來`);
+}
+
 export async function readInboxStatus(config: BoardConfig): Promise<InboxStatus> {
 	const [helper, reports, listed] = await Promise.all([listControllers(config), createReportReader(config.reportsDir)(), listAgents(config)]);
 	const active = helper.ok ? helper.controllers : [];
 	const answered = await readAnswered(config, answeredSources(active, reports.files));
+	const pauses = readPauses(config.pausedDir);
 	const now = config.now();
 	const problems: string[] = [];
 	let state: InboxState | null = null;
@@ -41,13 +58,13 @@ export async function readInboxStatus(config: BoardConfig): Promise<InboxStatus>
 		problems.push(`已讀與封存紀錄讀不出來：${(error as Error).message}`);
 	}
 	const sources: Sources = {
-		active,
+		active: answered.ok ? withRecorded(active, answered.files) : active,
 		helperError: helper.ok ? null : helper.reason,
 		reportFiles: reports.files,
 		duties: reports.duties,
 		reportsError: reports.error,
 		running: listed.ok ? new Set(listed.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : []))) : null,
-		paused: new Set([...readPauses(config.pausedDir).keys()].filter((id) => !(listed.ok && linkedAgain(listed.agents, id)))),
+		paused: new Set([...pauses.keys()].filter((id) => !(listed.ok && linkedAgain(listed.agents, id)))),
 		hcomError: listed.ok ? null : listed.reason,
 		agents: [],
 		herdrError: null,
@@ -61,9 +78,15 @@ export async function readInboxStatus(config: BoardConfig): Promise<InboxStatus>
 	};
 	if (state) archiveDue(sources, state, now);
 	const snapshot = buildSnapshot(sources, state, now);
-	problems.push(...snapshot.errors);
+	const asks = readAsks(config.asksDir, { now, executionWaitMs: config.askExecutionWaitMs });
+	problems.push(
+		...snapshot.errors,
+		...snapshot.controllers.flatMap((controller) => (controller.error ? [`${controller.hcomName}：${controller.error}`] : [])),
+		...unreadable('提問', config.asksDir, asks.map((ask) => ask.id)),
+		...unreadable('暫停紀錄', config.pausedDir, pauses.keys())
+	);
 
-	const rows = askRows(readAsks(config.asksDir, { now, executionWaitMs: config.askExecutionWaitMs }), []);
+	const rows = askRows(asks, []);
 	const ended = rows.filter((row) => !row.open);
 	const endedAsks = new Map<BoardAskState, number>();
 	for (const { ask } of ended) endedAsks.set(ask.state, (endedAsks.get(ask.state) ?? 0) + 1);

@@ -118,7 +118,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 
 使用說明：[更新](../docs/lat-board.md#更新)。
 
-`scripts/deploy.sh` 把已提交的 `HEAD` 部署到常駐看板：`git worktree add --detach` 開臨時資料夾、連結 `node_modules`、以 `LAT_BOARD_BUILD_DIR=<看板目錄>/build-new`（絕對路徑）建置，成功且有 `build-new/index.js` 才換：`build` → `build-prev`、`build-new` → `build`，再重啟並輪詢登入頁，成功後印出 `board inbox` 的結果（讀不全只提示，不算部署失敗）。換之前的任何失敗都只清掉臨時資料夾與 `build-new`；兩次改名之間失敗或被中斷會把 `build-prev` 放回 `build`；換之後重啟失敗或登入頁不回 200，則放回 `build-prev`、重啟並再確認一次登入頁，通過才說「previous build restored and running」，否則提示檢查服務，兩種情況結束碼都是 1。腳本會把 `~/.bun/bin` 與服務單元的 PATH 補進自己的 PATH，Agent 的 shell 找不到 bun 也能跑。用 `trash` 刪除（沒有 `trash` 指令的主機要先裝）。設定（環境變數）：
+`scripts/deploy.sh` 把已提交的 `HEAD` 部署到常駐看板：`git worktree add --detach` 開臨時資料夾、連結 `node_modules`、以 `LAT_BOARD_BUILD_DIR=<看板目錄>/build-new`（絕對路徑）建置，成功且有 `build-new/index.js` 才換：`build` → `build-prev`、`build-new` → `build`，再重啟並輪詢登入頁，成功後用 `HEAD` 的程式印出 `board inbox` 的結果（讀不全或超過等待秒數只提示，不算部署失敗）。換之前的任何失敗都只清掉臨時資料夾與 `build-new`；兩次改名之間失敗或被中斷會把 `build-prev` 放回 `build`；換之後重啟失敗或登入頁不回 200，則放回 `build-prev`、重啟並再確認一次登入頁，通過才說「previous build restored and running」，否則提示檢查服務，兩種情況結束碼都是 1。腳本會把 `~/.bun/bin` 與服務單元的 PATH 補進自己的 PATH，Agent 的 shell 找不到 bun 也能跑。用 `trash` 刪除（沒有 `trash` 指令的主機要先裝）。設定（環境變數）：
 
 | 變數 | 用途 | 預設 |
 | --- | --- | --- |
@@ -127,7 +127,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_DEPLOY_RESTART` | 重啟指令（交給 `sh -c`） | `systemctl --user restart <服務名稱>` |
 | `LAT_DEPLOY_BUILD` | 在臨時資料夾的看板目錄執行的建置指令 | `bun run build` |
 | `PORT` | 確認登入頁用的連接埠（位址固定 127.0.0.1） | `7100` |
-| `LAT_DEPLOY_WAIT` | 等登入頁回 200 的秒數 | `60` |
+| `LAT_DEPLOY_WAIT` | 等登入頁回 200、等 `inbox` 印完各自的秒數 | `60` |
 
 測試在 `tests/unit/deploy-script.test.ts`：用暫存的 git 倉庫與看板目錄、複製檔案當建置、寫紀錄當重啟、測試內的假伺服器當登入頁，不碰正在跑的服務與 7100。
 
