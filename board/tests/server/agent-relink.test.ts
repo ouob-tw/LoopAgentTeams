@@ -43,6 +43,7 @@ afterAll(async () => {
 });
 
 const SESSION = 's-plain';
+const CODEX = '01a08f3c-cbc8-7bb2-91a5-1573e2050d2d';
 const PANE = 'wA:p1';
 const SHELL = 4242;
 
@@ -117,6 +118,8 @@ beforeEach(async () => {
 	rmSync(pausedDir, { recursive: true, force: true });
 	rmSync(transcripts(), { recursive: true, force: true });
 	conversation();
+	// hcom's own record of a listed one: empty for one `hcom start` registered.
+	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ [SESSION]: [], [CODEX]: [] }));
 	fixture.list([]);
 	setHerdr();
 	fixture.setHcom(hcomPlan());
@@ -194,6 +197,14 @@ for (const [what, arrange, says] of refusals) {
 	});
 }
 
+test('a listed one whose own launch arguments cannot be read is refused untouched', async () => {
+	rmSync(join(fixture.dir, 'launch-args.json'));
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }] }));
+	const result = await act('relink');
+	expect(result.status).toBe(409);
+	expect(hcomCalls()).toEqual([]);
+});
+
 test('finished background subagents do not hold it back', async () => {
 	conversation(SESSION, [turnEnd(2), turnEnd()]);
 	expect((await act('relink')).body.ok).toBe(true);
@@ -247,6 +258,15 @@ test('a stored option seen before the stop leaves the link alone too', async () 
 	expect(result.body.reason).toContain('--allowedTools');
 	expect(hcomCalls()).toEqual([]);
 	expect(prompts()).toEqual([]);
+});
+
+test('a listed one\'s own launch arguments are seen before the stop', async () => {
+	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ [SESSION]: ['--allowedTools', 'Bash(*)'] }));
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }] }));
+	const result = await act('relink');
+	expect(result.status).toBe(409);
+	expect(result.body.reason).toContain('--allowedTools');
+	expect(hcomCalls()).toEqual([]);
 });
 
 test('resuming a paused one whose process cannot be checked is refused, nothing typed', async () => {
@@ -365,7 +385,6 @@ test('no pause and no resume by `hcom start` for one with no hooks', async () =>
 	expect(hasRecord()).toBe(false);
 });
 
-const CODEX = '01a08f3c-cbc8-7bb2-91a5-1573e2050d2d';
 const codexArgv = ['node', '/home/u/.bun/bin/codex', '--profile', 'slim', 'resume', CODEX];
 const codexScreen = (box: string) => `  left.\n\n${box}\n\n  GPT-6-Astra low · ~/obsidian`;
 function codex(permission: object | null, stored?: string[], box = '› Ask Codex to do anything') {

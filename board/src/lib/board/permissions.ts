@@ -68,10 +68,13 @@ export function inputBoxEmpty(client: string, screen: string): boolean {
 	const lines = screen.split('\n');
 	if (client === 'claude') {
 		const bottom = claudeInputBottom(lines);
-		return bottom >= 0 && lines[bottom - 1].trim() === '❯';
+		// One line, between its two rules: a `❯` line lower in a longer draft is not the box's first.
+		return bottom >= 0 && lines[bottom - 1].trim() === '❯' && RULE.test(lines[bottom - 2]);
 	}
-	const box = lines.findLast((line) => line.trimStart().startsWith('›'));
-	return client === 'codex' && box !== undefined && CODEX_EMPTY_INPUT.test(box);
+	if (client !== 'codex') return false;
+	const box = lines.findLastIndex((line) => line.trimStart().startsWith('›'));
+	// A blank line under it: a draft that starts with a new line shows its text there.
+	return box >= 0 && CODEX_EMPTY_INPUT.test(lines[box]) && !lines[box + 1]?.trim();
 }
 
 /**

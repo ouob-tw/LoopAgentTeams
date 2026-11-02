@@ -154,11 +154,15 @@ test('an input box is empty only when it shows what an empty one shows', () => {
 	expect(inputBoxEmpty('claude', claude('❯ a draft'))).toBe(false);
 	// A draft of two lines: the rule's upper neighbour is no longer the `❯` line.
 	expect(inputBoxEmpty('claude', claude('❯ one\n  two'))).toBe(false);
+	// A longer draft whose last line happens to be the marker.
+	expect(inputBoxEmpty('claude', claude('text\n❯'))).toBe(false);
 	expect(inputBoxEmpty('claude', 'no box here')).toBe(false);
 	const codex = (box: string) => `› an earlier message\n\n${box}\n\n  GPT-6 low · ~/x`;
 	expect(inputBoxEmpty('codex', codex('› Ask Codex to do anything'))).toBe(true);
 	expect(inputBoxEmpty('codex', codex('›'))).toBe(true);
 	expect(inputBoxEmpty('codex', codex('› a draft'))).toBe(false);
+	// A draft that starts with a new line.
+	expect(inputBoxEmpty('codex', codex('›\n  two'))).toBe(false);
 	expect(inputBoxEmpty('codex', 'no box here')).toBe(false);
 	expect(inputBoxEmpty('gemini', '❯')).toBe(false);
 });

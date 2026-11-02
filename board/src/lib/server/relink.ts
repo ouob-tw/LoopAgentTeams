@@ -14,7 +14,7 @@ import { AGENT_OWN_PANE_RELINK_REASON, type AgentAction } from '../board/agent-a
 import type { Agent } from '../board/types.ts';
 import { attempt, ONE_AGENT_NAME } from './agent-control.ts';
 import type { Board } from './board.ts';
-import { readTranscript } from './helper.ts';
+import { readLaunchArgs, readTranscript } from './helper.ts';
 import { hasHoldTerminal, listAgents, resumeAgent, stopAgent, storedLaunchArgs } from './hcom.ts';
 import { agentCommand, listHerdrAgents, paneProcess, readScreen, type PaneProcess } from './herdr.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause } from './paused.ts';
@@ -169,11 +169,12 @@ async function prepare(board: Board, agent: Agent & { id: string }): Promise<{ r
 	if (!read.ok) return { refuse: read.missing ? '它還沒有對話紀錄，重新啟動也接不回這段對話，沒有重新啟動。' : `讀不到它的對話紀錄，沒有重新啟動：${read.reason}` };
 	const keep = agent.client === 'claude' ? await claudeKeep(board, agent, read, info) : codexKeep(board, read.page.usage?.permission, info);
 	if ('refuse' in keep) return keep;
-	// What hcom holds now: a stop can only replace it, so what would be refused is refused untouched.
-	// Read again after the stop for what the stop itself records.
+	// What hcom could repeat: its last stop's arguments, and a listed one's own, which a stop would
+	// record. What would be refused is refused untouched; read again after the stop all the same.
 	const stored = await storedLaunchArgs(config, agent.id);
-	if (stored === null) return { refuse: '讀不到 hcom 記著的啟動參數，不確定重新啟動後權限會不會變，沒有重新啟動。' };
-	const kept = keep(stored);
+	const own = entry ? await readLaunchArgs(config, agent.id) : { ok: true as const, args: [] };
+	if (stored === null || !own.ok) return { refuse: '讀不到 hcom 記著的啟動參數，不確定重新啟動後權限會不會變，沒有重新啟動。' };
+	const kept = keep([...stored, ...own.args]);
 	if ('refuse' in kept) return { refuse: `${kept.refuse}它的程序沒有動。` };
 	const draft = await whyNotEmpty(board, agent.client, pane);
 	if (draft) return { refuse: `${draft}，沒有重新啟動。它的程序和連線都沒有動；清空輸入框再按。` };
