@@ -1,11 +1,11 @@
 ---
 name: host-guard
-description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench), searching for files across the whole filesystem, or deleting a path built from a variable on a host shared with other agents. Covers how to pin load to a few cores, how to search narrowly, how to write heredocs that stay literal, how to delete safely, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
+description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench), running tests without a memory limit, searching for files across the whole filesystem, or deleting a path built from a variable on a host shared with other agents. Covers how to pin load to a few cores, how to cap test memory, how to search narrowly, how to write heredocs that stay literal, how to delete safely, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
 ---
 
 # 共用主機保護（host-guard）
 
-多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下五類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
+多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下六類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
 
 ## 從根目錄搜尋整個磁碟
 
@@ -25,6 +25,20 @@ systemd-run --user --scope -p AllowedCPUs=0-3 stress-ng --cpu 4 -t 60
 ```
 
 `taskset -c` 指定的核心數超過上限也會擋。要模擬「主機很忙」，在限制的核心上製造負載，並把被測程式放在同一組核心上跑。
+
+## 沒有上限的測試
+
+`bun test`、`bun run test`、`pytest`、`vitest`、`cargo test` 沒有同時設記憶體上限與時間上限時擋下，包含前面接 `uv run`、`bunx`、`python -m` 或 `nice` 的寫法。2026-11-02 一個無限迴圈的測試兩次用到 90 GB 以上，主機的其他工作也被迫停下。
+
+```bash
+systemd-run --user --scope -q -p MemoryMax=40G -p MemorySwapMax=0 -p OOMPolicy=continue timeout 600 bun test tests/unit
+```
+
+超過上限時只有這個測試被結束，結束碼是 137。真的需要更多記憶體時調高 `MemoryMax`。
+
+上限要直接包住測試指令。`bash -c 'cd a && pytest'` 裡接在 `&&` 後面的測試看不到外層的上限，要寫在 `&&` 後面，或先 `cd` 再包。
+
+這條規則只看指令文字：經測試閘門跑的整套測試、腳本檔與 `make test` 裡的測試都不會被擋，也沒有這個上限。主機沒有 `systemd-run` 或使用者層的 systemd 時不檢查。
 
 ## 會執行指令的 heredoc
 
@@ -62,11 +76,12 @@ uv run --no-project python <repo>/scripts/install-skills.py [--skill NAME ...]
 `$XDG_CONFIG_HOME/host-guard/config.json`（預設 `~/.config/host-guard/config.json`，環境變數 `HOST_GUARD_CONFIG` 可改位置）：
 
 ```json
-{"extra_scan_roots": ["/mnt/raid"], "max_load_cores": 4}
+{"extra_scan_roots": ["/mnt/raid"], "max_load_cores": 4, "test_memory_limit": "40G"}
 ```
 
 - `extra_scan_roots`：再加上要保護的路徑，例如大型或慢速磁碟的掛載點。
 - `max_load_cores`：壓力測試最多可用的核心數。
+- `test_memory_limit`：被擋時建議的測試記憶體上限，預設 `40G`。
 
 檔案不存在或讀不懂時用預設值。
 

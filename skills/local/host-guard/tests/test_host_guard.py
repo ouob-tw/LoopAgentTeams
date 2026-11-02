@@ -128,6 +128,99 @@ class LoadTests(HookCase):
         self.assert_allowed(self.bash('bash loadcmp.sh'))
 
 
+class TestRunTests(HookCase):
+    """Runners need a memory limit and a timeout, on hosts where the limit can be applied."""
+
+    LIMITED = ('systemd-run --user --scope -q -p MemoryMax=40G -p MemorySwapMax=0 '
+               '-p OOMPolicy=continue timeout 600 ')
+
+    def setUp(self):
+        super().setUp()
+        runtime = self.tmp / 'runtime/systemd'
+        runtime.mkdir(parents=True)
+        (runtime / 'private').touch()
+        bin_dir = self.tmp / 'bin'
+        bin_dir.mkdir()
+        tool = bin_dir / 'systemd-run'
+        tool.touch()
+        tool.chmod(0o755)
+        self.env = {'XDG_RUNTIME_DIR': str(self.tmp / 'runtime'), 'PATH': str(bin_dir)}
+
+    def run_hook(self, command, env=None):
+        full = dict(os.environ, HOST_GUARD_CONFIG=str(self.config), **(env or self.env))
+        payload = {'tool_name': 'Bash', 'cwd': str(self.tmp), 'tool_input': {'command': command}}
+        return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
+                              env=full, capture_output=True, text=True)
+
+    def test_unlimited_runners_are_blocked(self):
+        for command in ['bun test tests/unit/panel.test.js', 'nice bun run test',
+                        'nice -n 5 bun run test:unit', 'pytest -q', 'uv run pytest tests/a.py',
+                        'uv run --no-sync pytest -q', 'uv run --with x pytest -q',
+                        'python3 -m pytest', '.venv/bin/pytest -q', 'bunx vitest run',
+                        'bun x vitest', 'npx vitest', 'cargo test --locked', 'cargo +nightly test',
+                        'cd app && bun test', 'FOO=1 pytest', 'bash -c "cargo test"',
+                        'timeout 90 bun test', 'x=1; pytest',
+                        'systemd-run --user --scope -p MemoryMax=40G bun test',
+                        'systemd-run --user --scope -p CPUQuota=50% timeout 90 pytest',
+                        'bun --cwd app test', 'bun --cwd app run test',
+                        'cargo --manifest-path app/Cargo.toml test', 'time pytest -q',
+                        'time -p bun test', 'MemoryMax=40G timeout 600 pytest -q',
+                        'systemd-run --user --scope -p MemoryMax=infinity timeout 600 pytest',
+                        'systemd-run --user --scope -p MemoryMax=8G timeout 0 pytest -q',
+                        "bash -c 'pytest -q'", "/bin/bash -c 'pytest -q'",
+                        'timeout -k 5 600 pytest -q',
+                        'systemd-run --user --scope -p MemoryMax=8G timeout .0 pytest',
+                        'systemd-run --user --scope -p MemoryMax=8G timeout 0s pytest']:
+            with self.subTest(command):
+                result = self.run_hook(command)
+                self.assert_blocked(result, 'memory limit')
+                self.assertIn('MemoryMax=40G', result.stderr)
+
+    def test_limited_runners_pass(self):
+        for runner in ['bun test tests/unit', 'uv run --no-sync pytest -q', 'cargo test',
+                       'bun run test', 'bunx vitest run']:
+            with self.subTest(runner):
+                self.assert_allowed(self.run_hook(self.LIMITED + runner))
+        self.assert_allowed(self.run_hook(
+            'timeout 600 systemd-run --user --scope -p MemoryMax=8G bun test'))
+        self.assert_allowed(self.run_hook(self.LIMITED + "bash -c 'pytest -q'"))
+        self.assert_allowed(self.run_hook(self.LIMITED + "/bin/bash -c 'pytest -q'"))
+        self.assert_allowed(self.run_hook(self.LIMITED + "bash -c \"bash -c 'pytest -q'\""))
+        self.assert_allowed(self.run_hook(
+            'systemd-run --user --scope -p MemoryMax=8G timeout .5 pytest -q'))
+        self.assert_allowed(self.run_hook(
+            'systemd-run --user --scope --property=MemoryMax=8G timeout 10m cargo test'))
+        self.assert_allowed(self.run_hook(
+            'systemd-run --user --scope -p MemoryMax=8G timeout -k 5 600 pytest -q'))
+
+    def test_each_runner_in_a_command_is_checked(self):
+        self.assert_blocked(self.run_hook(self.LIMITED + 'pytest -q && bun test'), 'memory limit')
+
+    def test_mentions_are_not_test_runs(self):
+        for command in ['grep pytest pyproject.toml', 'uv pip install pytest', 'which pytest',
+                        'echo "bun test failed"', "pkill -f 'bun test tests/unit'",
+                        'cargo testing', 'bun install', 'cargo build', 'ls pytest.ini',
+                        'git log --grep pytest', 'cat <<\'EOF\'\nbun test\nEOF',
+                        "suite-gate.py run -- 'uv run pytest -q'",
+                        "grep -c 'pytest' pyproject.toml", "rg -c 'bun test' README.md",
+                        'bun test.js', 'cargo test-helper', "echo bash -c 'pytest'",
+                        "printf '%s\\n' bash -c 'pytest'"]:
+            with self.subTest(command):
+                self.assert_allowed(self.run_hook(command))
+
+    def test_skipped_where_the_limit_cannot_be_applied(self):
+        no_tool = dict(self.env, PATH=str(self.tmp))
+        self.assert_allowed(self.run_hook('bun test', env=no_tool))
+        no_manager = dict(self.env, XDG_RUNTIME_DIR=str(self.tmp / 'nowhere'))
+        self.assert_allowed(self.run_hook('bun test', env=no_manager))
+
+    def test_limit_comes_from_the_config_and_a_bad_value_falls_back(self):
+        self.config.write_text(json.dumps({'test_memory_limit': '12G'}))
+        self.assertIn('MemoryMax=12G', self.run_hook('pytest').stderr)
+        self.config.write_text(json.dumps({'test_memory_limit': '1 G; rm'}))
+        self.assertIn('MemoryMax=40G', self.run_hook('pytest').stderr)
+
+
 class HeredocTests(HookCase):
 
     def test_an_unquoted_heredoc_that_substitutes_a_command_is_blocked(self):

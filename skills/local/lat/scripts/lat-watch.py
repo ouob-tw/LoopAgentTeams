@@ -3545,7 +3545,7 @@ def declare_wait(args):
     else:
         agent = full_hcom_name(agents, agent, '--agent')
     # A comma list waits for every entry; the first one still unanswered is the current target.
-    target, *also = (part.strip() for part in args.target.split(','))
+    target, *also = (part.strip() for value in args.target for part in value.split(','))
     names = [valid_name(target), *(valid_name(name) for name in also if name)]
     declaration = {
         'agent': agent,
@@ -3835,8 +3835,9 @@ def main():
     waiting = commands.add_parser('wait', help='Declare an agent wait condition')
     waiting.add_argument('--workspace', type=Path, required=True)
     waiting.add_argument('--agent', required=True)
-    waiting.add_argument('--for', dest='target', required=True,
-                         help='a decision ID or agent name; a comma list waits for every entry')
+    waiting.add_argument('--for', dest='target', required=True, action='append',
+                         help='a decision ID or agent name; a comma list or a repeated '
+                              '--for waits for every entry')
     waiting.add_argument('--reason', required=True)
     waiting.add_argument('--minutes', type=int, choices=range(1, 721),
                          metavar='1..720', help=f'Agent wait deadline (default: {WAIT_DEFAULT_MINUTES} minutes)')
