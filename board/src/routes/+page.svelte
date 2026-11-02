@@ -225,6 +225,12 @@
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
 	/** The open agent of the Herdr 分頁; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
+	/** The item the agent's page has open, as the board's data has it now, so an answer or a read
+	 *  shows on it too; as it was opened once the data no longer has it. */
+	const agentItem = $derived.by(() => {
+		const key = view?.kind === 'agent' ? view.item : undefined;
+		return key === undefined ? null : (known.find((candidate) => candidate.key === key) ?? kept.get(key) ?? null);
+	});
 	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
 	/** The open agent's board asks, oldest first: still shown once it left Herdr's list, so a timed-out
 	 *  one can be answered there and read Agent 已不在 after. */
@@ -306,8 +312,18 @@
 		// Kept on the list from now: the read state may reach the page before the item is shown.
 		if (listedInbox.some((entry) => entry.key === next.key)) lingering = next.key;
 		navigation.go({ kind: 'item', key: next.key }, fromList);
-		// Opening an inbox report reads it. Only opening does: a report marked unread stays unread
-		// while it is still open. An archived report keeps the read state it had.
+		readOnOpening(next);
+	}
+	/** An item opened from the page of a controller's agent stays on that page, shown in place. */
+	function openInAgent(next: InboxItem) {
+		if (agentId === null) return;
+		kept.set(next.key, next);
+		navigation.go({ kind: 'agent', id: agentId, item: next.key });
+		readOnOpening(next);
+	}
+	/** Opening an inbox report reads it. Only opening does: a report marked unread stays unread
+	 *  while it is still open. An archived report keeps the read state it had. */
+	function readOnOpening(next: InboxItem) {
 		const listed = inbox.find((entry) => entry.key === next.key);
 		if (listed?.kind === 'report' && listed.readAt === null) {
 			board.mark(listed.key, true).catch(() => toasts.readFailed('沒有標為已讀，請重新點開再試一次。'));
@@ -564,7 +580,7 @@
 					{/if}
 				{:else if view.kind === 'agent'}
 					{#if agent && agentController}
-						<ControllerPage {board} controller={agentController} {agent} {known} {openKey} {listed} onopen={openItem} oncontroller={openController} />
+						<ControllerPage {board} controller={agentController} {agent} {agentItem} opens={navigation.opens} {known} {openKey} {listed} onopen={openInAgent} oncontroller={openController} />
 					{:else if agent}
 						<AgentInfo {agent} asks={agentAsks} />
 					{:else}

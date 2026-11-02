@@ -196,7 +196,7 @@ export class Navigation {
 	}
 
 	async #present(next: View): Promise<void> {
-		if (next?.kind === 'item') this.opens++;
+		if (next?.kind === 'item' || (next?.kind === 'agent' && next.item)) this.opens++;
 		this.#host.showing?.(next);
 		if (this.view === null) this.#listScroll = this.#host.browser.scrollY();
 		this.view = next;

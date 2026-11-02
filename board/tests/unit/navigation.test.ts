@@ -368,6 +368,47 @@ test('an item picked in the list sits on the list, whichever screen is open besi
 	}
 });
 
+test("an item in place on an agent's page goes back to the page, then the list, and survives the address", () => {
+	const inPlace: Place = { kind: 'agent', id: 's-a', item: 'report:s:1' };
+	const search = searchOf(inPlace);
+	expect(placeIn(new URLSearchParams(search))).toEqual(inPlace);
+	expect(tabIn(new URLSearchParams(search))).toBe('agents');
+	expect(samePlace(inPlace, A)).toBe(false);
+
+	const history = new BrowserHistory();
+	const screen = boardOn(history);
+	screen.open(A);
+	screen.open(inPlace);
+	expect(history.depth).toBe(2);
+	// Another one takes its entry; another page goes to the list.
+	screen.open({ kind: 'agent', id: 's-a', item: 'report:s:2' });
+	expect(history.depth).toBe(2);
+	const reloaded = boardOn(history);
+	reloaded.back();
+	expect(history.place).toEqual(A);
+	reloaded.back();
+	expect(history.place).toBeNull();
+
+	screen.open(A);
+	screen.open(inPlace);
+	screen.open(B);
+	expect(history.depth).toBe(1);
+	screen.back();
+	expect(history.place).toBeNull();
+});
+
+test("an address of an item in place on an agent's page opened from elsewhere goes back to the page, then the list", () => {
+	const inPlace: Place = { kind: 'agent', id: 's-a', item: 'report:s:1' };
+	const history = new BrowserHistory(searchOf(inPlace));
+	const screen = boardOn(history);
+	expect(history.place).toEqual(inPlace);
+	screen.back();
+	expect(history.place).toEqual(A);
+	screen.back();
+	expect(history.place).toBeNull();
+	expect(history.left).toBe(false);
+});
+
 test('an entry left ahead cannot put an old screen back on top', () => {
 	const history = new BrowserHistory();
 	const screen = boardOn(history);
