@@ -20,9 +20,6 @@
 	--inherit-bg: #4a4f57;
 	--inherit-text: #fff;
 	--disabled-opacity: 0.4;
-	/* The blank of the roster folds or unfolds it: the browser's own arrows, which follow the system's cursor size. */
-	--cursor-expand: e-resize;
-	--cursor-collapse: w-resize;
 	--radius: 8px;
 	--radius-pill: 99px;
 	--mono: ui-monospace, 'JetBrains Mono', 'Cascadia Code', monospace;
