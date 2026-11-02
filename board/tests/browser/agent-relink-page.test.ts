@@ -138,6 +138,19 @@ test.skipIf(!CHROME)('whatever hcom lists for it, neither the header nor the ros
 	await shot('desktop-6-listed-no-hooks');
 }, 30_000);
 
+test.skipIf(!CHROME)('a bound controller with no hooks gets the restart, not a closed page', async () => {
+	fixture.list([fixture.bound('lat', 'modi', { session_id: SESSION })]);
+	await fixture.refresh(cookie);
+	try {
+		await visit(1280);
+		await tab.until(has('relink'), 'the restart button');
+		expect(await tab.eval(has('pause'))).toBe(false);
+		await shot('desktop-7-controller-no-hooks');
+	} finally {
+		fixture.list([]);
+	}
+}, 30_000);
+
 test.skipIf(!CHROME)('a paused one offers the restart, not the resume', async () => {
 	mkdirSync(join(fixture.dir, 'hcom-paused'), { recursive: true });
 	writeFileSync(join(fixture.dir, 'hcom-paused', `${SESSION}.json`), JSON.stringify({ session_id: SESSION, hcom_name: 'modi', client: 'claude', pane: PANE, paused_at: new Date(Date.now() - 60_000).toISOString() }));

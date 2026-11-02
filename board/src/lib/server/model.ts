@@ -77,6 +77,9 @@ export function withRecorded(controllers: HelperController[], answered: Answered
 	});
 }
 
+/** Whether Herdr runs this session in a process with no hcom hooks: hcom's list cannot tell that it is running. */
+export const runsWithoutHooks = (sources: Pick<Sources, 'agents'>, sessionId: string): boolean => sources.agents.some((agent) => agent.id === sessionId && agent.noHooks);
+
 /** Whether this controller was bound at the last read and its client is gone from hcom's list.
  *  Without any list read yet nothing is closed, nor is a controller bound since the last read. */
 export function isClosed(sources: Sources, sessionId: string): boolean {
@@ -84,6 +87,7 @@ export function isClosed(sources: Sources, sessionId: string): boolean {
 		sources.running !== null &&
 		!sources.running.has(sessionId) &&
 		!sources.paused.has(sessionId) &&
+		!runsWithoutHooks(sources, sessionId) &&
 		sources.active.some((binding) => binding.session_id === sessionId)
 	);
 }
@@ -367,18 +371,19 @@ function closedController(binding: HelperController, file: ReportFile | undefine
 
 /** A controller whose LAT round is no longer bound: 閒置 while its conversation is in hcom's list
  *  or paused, or before any list was read; 已關閉 once it is gone from it. */
-function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'paused' | 'ledgers' | 'ledgersError'>, duty: RecordedDuty | undefined): Controller {
+function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'paused' | 'agents' | 'ledgers' | 'ledgersError'>, duty: RecordedDuty | undefined): Controller {
 	const latest = file.reports.at(-1)!;
 	const running = sources.running;
 	const paused = isPaused(sources, file.sessionId);
+	const noHooks = runsWithoutHooks(sources, file.sessionId);
 	return {
 		id: file.sessionId,
 		hcomName: latest.hcom_name,
 		project: basename(latest.workspace),
 		workspace: latest.workspace,
 		client: latest.client,
-		status: running === null || running.has(file.sessionId) || paused ? 'idle' : 'closed',
-		running: (running?.has(file.sessionId) ?? false) || paused,
+		status: running === null || running.has(file.sessionId) || paused || noHooks ? 'idle' : 'closed',
+		running: (running?.has(file.sessionId) ?? false) || paused || noHooks,
 		paused,
 		phase: latest.summary,
 		pendingCount: 0,

@@ -296,6 +296,24 @@ test('a controller with no hooks is typed into through Herdr, not hcom', async (
 	expect(prompts()).toEqual([['agent', 'prompt', PANE, 'hi']]);
 });
 
+test('a bound controller that hcom does not list but Herdr runs with no hooks is not closed, and a wake refuses', async () => {
+	const lead = fixture.bound('alpha', 'modi', { session_id: SESSION });
+	fixture.list([lead]);
+	fixture.setHcom(hcomPlan());
+	const snapshot = await fixture.refresh(cookie);
+	const controller = snapshot.controllers.find((candidate: { id: string }) => candidate.id === SESSION);
+	expect(controller!.status).not.toBe('closed');
+	const wake = await fixture.fetch('/api/wake', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ controllerId: SESSION, text: 'hi', model: null, effort: null }), cookie });
+	const body = await wake.json();
+	expect(wake.status).toBe(409);
+	expect(body.reason).toContain('重新啟動並接回 HCOM');
+	expect(hcomCalls().some((call: string[]) => call[0] === 'r')).toBe(false);
+	// Its send goes through Herdr rather than being refused as closed.
+	const send = await fixture.fetch('/api/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ controllerId: SESSION, text: 'hi' }), cookie });
+	expect(await send.json()).toMatchObject({ ok: true, reason: null });
+	expect(prompts()).toEqual([['agent', 'prompt', PANE, 'hi']]);
+});
+
 test('a listed one\'s own launch arguments are seen before the stop', async () => {
 	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ [SESSION]: ['--allowedTools', 'Bash(*)'] }));
 	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }] }));

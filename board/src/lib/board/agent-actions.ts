@@ -92,6 +92,7 @@ export const AGENT_OWN_PANE_RELINK_REASON = '這個 Agent 所在的 Herdr 窗格
 export const AGENT_NO_HOOKS_TEXT = '它沒有經 hcom 啟動，要重新啟動才能接回 HCOM。對話、HCOM 名稱和所在分頁都會保留。';
 export const RELINKING_TEXT = '正在重新啟動並接回 HCOM，舊程序結束後它會暫時不在 Herdr 的清單上⋯';
 export const AGENT_NO_HOOKS_PAUSE_REASON = '它沒有經 hcom 啟動，暫停後接不回來，沒有暫停通訊；要接 HCOM 請按「重新啟動並接回 HCOM」。';
+export const AGENT_NO_HOOKS_WAKE_REASON = '它還在執行，只是沒有經 hcom 啟動，接回會多開一個程序，沒有接回；請按「重新啟動並接回 HCOM」。';
 export const AGENT_NO_HOOKS_UNPAUSE_REASON = '它沒有經 hcom 啟動，打接回指令也連不上，沒有送出；請按「重新啟動並接回 HCOM」。';
 
 /** What pausing the HCOM link does, in the info beside the pause and resume. */
