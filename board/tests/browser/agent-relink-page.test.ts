@@ -127,6 +127,17 @@ for (const [width, label] of [[1280, 'desktop'], [390, 'phone']] as const) {
 	}, 30_000);
 }
 
+test.skipIf(!CHROME)('whatever hcom lists for it, neither the header nor the roster shows it linked', async () => {
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'launching', tool: 'adhoc', process_bound: false, launch_context: { pane_id: PANE } }] }));
+	await fixture.refresh(cookie);
+	await visit(1280);
+	await tab.until(has('relink'), 'the restart button');
+	expect(await tab.eval(`document.querySelector('.detail .profile').innerText`)).not.toContain('HCOM\n');
+	expect(await tab.eval(`[...document.querySelectorAll('.profile .chip')].some((chip) => chip.innerText.includes('HCOM'))`)).toBe(false);
+	expect(await tab.eval(`[...document.querySelectorAll('button.agent')].some((row) => row.innerText.includes('HCOM'))`)).toBe(false);
+	await shot('desktop-6-listed-no-hooks');
+}, 30_000);
+
 test.skipIf(!CHROME)('a paused one offers the restart, not the resume', async () => {
 	mkdirSync(join(fixture.dir, 'hcom-paused'), { recursive: true });
 	writeFileSync(join(fixture.dir, 'hcom-paused', `${SESSION}.json`), JSON.stringify({ session_id: SESSION, hcom_name: 'modi', client: 'claude', pane: PANE, paused_at: new Date(Date.now() - 60_000).toISOString() }));

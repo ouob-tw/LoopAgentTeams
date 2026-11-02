@@ -130,7 +130,10 @@ test('by its process: no hcom in its environment means no hooks, whatever hcom l
 	expect(await listed()).toMatchObject({ noHooks: true, hcom: 'none' });
 	// `hcom start` listed it, and it listens by hand: its process still has no hooks.
 	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'listening', tool: 'adhoc', process_bound: false }] }));
-	expect(await listed()).toMatchObject({ noHooks: true, hcom: 'linked' });
+	expect(await listed()).toMatchObject({ noHooks: true, hcom: 'none', hcomName: null, statusSource: 'herdr' });
+	// Listed as still starting, or paused and listening by hand: still not on a link.
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'launching', tool: 'adhoc', process_bound: false }] }));
+	expect(await listed()).toMatchObject({ noHooks: true, hcom: 'none', hcomName: null });
 	// hcom's list has nothing, and its process carries hcom's environment: stopped, not outside hcom.
 	setHerdr({ processes: { [PANE]: clientProcess(hooked) } });
 	fixture.setHcom(hcomPlan());
@@ -258,6 +261,24 @@ test('a stored option seen before the stop leaves the link alone too', async () 
 	expect(result.body.reason).toContain('--allowedTools');
 	expect(hcomCalls()).toEqual([]);
 	expect(prompts()).toEqual([]);
+});
+
+const ADHOC = { name: 'modi', session_id: SESSION, status: 'listening', tool: 'adhoc', process_bound: false, launch_context: { pane_id: PANE } };
+
+test('paused and listening by hand it stays paused, not linked', async () => {
+	pauseRecord('modi');
+	fixture.setHcom(hcomPlan({ agents: [ADHOC] }));
+	expect(await listed()).toMatchObject({ noHooks: true, hcom: 'paused', hcomName: 'modi' });
+});
+
+test('what hcom lists for it does not route to hcom: a send goes through Herdr, a close too', async () => {
+	fixture.setHcom(hcomPlan({ agents: [ADHOC] }));
+	const send = await fixture.fetch('/api/agents/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: SESSION, text: 'hi' }), cookie });
+	expect(await send.json()).toMatchObject({ ok: true, entry: { route: 'herdr' } });
+	expect(prompts()).toEqual([['agent', 'prompt', PANE, 'hi']]);
+	const close = await fixture.fetch('/api/agents/close', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: SESSION }), cookie });
+	expect(await close.json()).toMatchObject({ ok: true, entry: { route: 'herdr' } });
+	expect(hcomCalls()).toEqual([]);
 });
 
 test('a listed one\'s own launch arguments are seen before the stop', async () => {
