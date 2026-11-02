@@ -42,6 +42,14 @@ export function judgeHooks(info: PaneProcess, client: string): ProcessHooks {
 	return told.some(({ running, env }) => env === false && isClient(running.argv, client)) ? 'none' : 'unknown';
 }
 
+/** Whether the pane is seen not to run this client: closed, or with something else in front. A
+ *  pane that cannot be read, or a foreground that says nothing, is not seen to. */
+export async function clientGone(config: BoardConfig, pane: string, client: string): Promise<boolean> {
+	const info = await paneProcess(config, pane);
+	if ('reason' in info) return info.missing === true;
+	return info.foreground.length > 0 && !info.foreground.some((running) => isClient(running.argv, client));
+}
+
 export function createHookWatch() {
 	let hookless = new Set<string>();
 	return {

@@ -317,7 +317,8 @@ test('a bound controller that hcom does not list but Herdr runs with no hooks is
 test('a controller Herdr runs and hcom does not list is not woken, even when its process cannot be judged', async () => {
 	fixture.list([fixture.bound('alpha', 'modi', { session_id: SESSION })]);
 	fixture.setHcom(hcomPlan());
-	setHerdr({ processes: {} });
+	// The client is in front, its environment cannot be read: no process has this PID.
+	setHerdr({ processes: { [PANE]: clientProcess(2 ** 30) } });
 	await fixture.refresh(cookie);
 	const wake = await fixture.fetch('/api/wake', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ controllerId: SESSION, text: 'hi', model: null, effort: null }), cookie });
 	expect(wake.status).toBe(409);

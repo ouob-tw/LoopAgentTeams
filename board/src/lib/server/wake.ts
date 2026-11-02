@@ -41,6 +41,7 @@ import { forClient, inject, queued, typedText } from './send.ts';
 import { modelLock, readCurrent } from './helper.ts';
 import { appendSent, readLines, type ResumeMark, type ResumeResult, type SentLog } from './sent-log.ts';
 import { runsWithoutHooks } from './model.ts';
+import { clientGone } from './process-hooks.ts';
 import { openResume, openResumes, openSwitch, unplacedResumes } from './sent-views.ts';
 import { keepPermission } from './permission.ts';
 
@@ -106,8 +107,10 @@ async function deliver(board: Board, controller: Controller | undefined, request
 	await board.refresh();
 	const { agents } = await board.sources();
 	if (runsWithoutHooks({ agents }, controller.id)) return refuse(AGENT_NO_HOOKS_WAKE_REASON);
-	// Also when its process cannot be judged: whatever hcom's list says, Herdr runs it.
-	if (!plan.agent && agents.some((agent) => agent.id === controller.id && agent.inHerdr)) return refuse(AGENT_RUNNING_WAKE_REASON);
+	// Herdr may go on listing a closed session in its old pane, so its list alone does not say it
+	// runs. Asked of that pane now; one that cannot be told is taken to run.
+	const listed = plan.agent ? undefined : agents.find((agent) => agent.id === controller.id && agent.inHerdr);
+	if (listed && !(await clientGone(board.config, listed.herdr.pane, listed.client))) return refuse(AGENT_RUNNING_WAKE_REASON);
 	if (!plan.agent) {
 		// A model switch that stopped this client without seeing it gone may have left it running:
 		// resuming now could make a second copy, so 繼續切換 has to settle it first.
