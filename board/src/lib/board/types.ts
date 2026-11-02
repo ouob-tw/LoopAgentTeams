@@ -228,7 +228,7 @@ export interface BoardSnapshot {
 }
 
 /** The controllers of the roster, then those off it. */
-export const everyController = (snapshot: BoardSnapshot): Controller[] => [...snapshot.controllers, ...snapshot.offRoster];
+export const everyController = (snapshot: Pick<BoardSnapshot, 'controllers' | 'offRoster'>): Controller[] => [...snapshot.controllers, ...snapshot.offRoster];
 
 /** One Herdr workspace, as `herdr workspace list` gives it. */
 export interface HerdrWorkspace {

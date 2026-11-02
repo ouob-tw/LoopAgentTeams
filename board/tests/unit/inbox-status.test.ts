@@ -89,6 +89,7 @@ const controller = (extra: object) => ({ session_id: 's-3', hcom_name: 'luna', w
 
 test.each([
 	['an ask', 'asks', 'broken.json'],
+	['the result beside an ask', 'asks', 'broken.result.json'],
 	['a pause record', 'paused', 'broken.json']
 ])('%s that cannot be read is named and fails the command', (_label, folder, name) => {
 	writeFileSync(join(dir, folder, name), '{');
@@ -105,6 +106,16 @@ test('a bound controller whose question file cannot be read is named and fails t
 	plan([]);
 	expect(result.status).toBe(1);
 	expect(result.stdout).toContain('問題檔讀不出來：bad file');
+});
+
+test('a closed controller whose report file is damaged is named and fails the command', () => {
+	plan([controller({ session_id: 's-4' })]);
+	writeFileSync(join(dir, 'reports', 's-4.jsonl'), 'not json\n');
+	const result = inbox();
+	rmSync(join(dir, 'reports', 's-4.jsonl'));
+	plan([]);
+	expect(result.status).toBe(1);
+	expect(result.stdout).toContain('回報紀錄有 1 行格式不完整');
 });
 
 test('a question the answered list already has recorded is not in 待辦, as on the page', () => {

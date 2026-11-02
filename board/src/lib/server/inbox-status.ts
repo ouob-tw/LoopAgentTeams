@@ -1,13 +1,14 @@
 // What the inbox holds now, for `board inbox`: the page's own rules applied to the real data, but
 // with nothing written. The running board does the settling, pruning and archiving; here an archive
 // that is due only counts in memory.
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { askNote, askRows, askTitle, ASK_KIND_TEXT } from '../board/ask-inbox.ts';
 import { BOARD_ASK_STATE_TEXT, type BoardAskState } from '../board/board-asks.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { sortEntries } from '../board/inbox.ts';
-import { itemLabel } from '../board/types.ts';
-import { readAsks } from './board-asks.ts';
+import { everyController, itemLabel } from '../board/types.ts';
+import { isAskFile, readAsks } from './board-asks.ts';
 import type { BoardConfig } from './config.ts';
 import { listAgents } from './hcom.ts';
 import { listControllers, readAnswered } from './helper.ts';
@@ -29,8 +30,8 @@ export interface InboxStatus {
 
 const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 80);
 
-/** What the folder's readers silently leave out: every record file not among those they returned. A
- *  folder that does not exist holds none. */
+/** What the folder's readers silently leave out: a record file not among those they returned, or any
+ *  file beside one that is not JSON. A folder that does not exist holds none. */
 function unreadable(label: string, dir: string, read: Iterable<string>): string[] {
 	let names: string[];
 	try {
@@ -39,8 +40,16 @@ function unreadable(label: string, dir: string, read: Iterable<string>): string[
 		return (error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : [`${label}資料夾讀不出來：${(error as Error).message}`];
 	}
 	const readable = new Set(read);
+	const damaged = (name: string) => {
+		try {
+			JSON.parse(readFileSync(join(dir, name), 'utf8'));
+			return false;
+		} catch {
+			return true;
+		}
+	};
 	return names
-		.filter((name) => !name.startsWith('.') && name.endsWith('.json') && name.split('.').length === 2 && !readable.has(name.slice(0, -'.json'.length)))
+		.filter((name) => isAskFile(name) && (damaged(name) || (name.split('.').length === 2 && !readable.has(name.slice(0, -'.json'.length)))))
 		.map((name) => `${label} ${name} 讀不出來`);
 }
 
@@ -81,7 +90,8 @@ export async function readInboxStatus(config: BoardConfig): Promise<InboxStatus>
 	const asks = readAsks(config.asksDir, { now, executionWaitMs: config.askExecutionWaitMs });
 	problems.push(
 		...snapshot.errors,
-		...snapshot.controllers.flatMap((controller) => (controller.error ? [`${controller.hcomName}：${controller.error}`] : [])),
+		// Without the helper every controller repeats that failure, already in the errors.
+		...(helper.ok ? everyController(snapshot) : []).flatMap((controller) => (controller.error ? [`${controller.hcomName}：${controller.error}`] : [])),
 		...unreadable('提問', config.asksDir, asks.map((ask) => ask.id)),
 		...unreadable('暫停紀錄', config.pausedDir, pauses.keys())
 	);
