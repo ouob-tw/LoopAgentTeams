@@ -15,6 +15,9 @@ export type ProcessHooks = 'hcom' | 'none' | 'unknown';
 /** The clients whose hooks only an hcom launch loads, of those the board can restart. */
 export const relinkable = (client: string) => client === 'claude' || client === 'codex';
 
+/** Sessions being restarted (`relink.ts`): off Herdr's list for a moment, and neither closed nor to be woken. */
+export const relinking = new Set<string>();
+
 /** Whether this process runs with hcom's environment; null when that cannot be read. */
 function hasHcomEnv(pid: number): boolean | null {
 	try {

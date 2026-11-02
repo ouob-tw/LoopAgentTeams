@@ -19,16 +19,13 @@ import { hasHoldTerminal, listAgents, resumeAgent, stopAgent, storedLaunchArgs }
 import { agentCommand, listHerdrAgents, paneProcess, readScreen, type PaneProcess } from './herdr.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause } from './paused.ts';
 import { codexKeepArgs, permissionArgs } from './permission.ts';
-import { isClient, isIdleShell, judgeHooks, relinkable } from './process-hooks.ts';
+import { isClient, isIdleShell, judgeHooks, relinkable, relinking } from './process-hooks.ts';
 import { queued } from './send.ts';
 
 const EXIT_WAIT_MS = 15_000;
 const POLL_MS = 500;
 /** How much of a session log is read at a time, from its end, for its last finished turn. */
 const LOG_CHUNK = 4 * 1024 * 1024;
-
-/** Sessions being restarted: off Herdr's list for a moment, and not closed. */
-export const relinking = new Set<string>();
 
 /** Stored Claude options that give more than the mode does; `hcom r` would repeat them. */
 const WIDENING_CLAUDE = ['--allowedTools', '--allowed-tools', '--allow-dangerously-skip-permissions'];

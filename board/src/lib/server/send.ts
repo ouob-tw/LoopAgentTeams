@@ -9,7 +9,7 @@ import type { BoardConfig } from './config.ts';
 import { runCommand } from './external.ts';
 import { listControllers } from './helper.ts';
 import { agentCommand } from './herdr.ts';
-import { isClosed, isPaused } from './model.ts';
+import { isClosed, isPaused, runsWithoutHooks } from './model.ts';
 import { appendSent } from './sent-log.ts';
 
 /**
@@ -122,7 +122,7 @@ async function attempt(board: Board, controllerId: string, rawText: string) {
 	} else if (await closedNow(board, controllerId)) {
 		// Its client is gone from hcom's list: there is no input box to type into; the page wakes it.
 		reason = CLOSED_REASON;
-	} else if (isPaused(await board.sources(), controllerId) || (await board.sources()).agents.some((agent) => agent.id === controllerId && agent.noHooks)) {
+	} else if (isPaused(await board.sources(), controllerId) || runsWithoutHooks(await board.sources(), controllerId)) {
 		// hcom's input does not reach it: paused, or its process has no hooks.
 		const sources = await board.sources();
 		const listed = sources.agents.find((agent) => agent.id === controllerId);

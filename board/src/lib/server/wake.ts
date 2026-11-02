@@ -19,7 +19,7 @@ import {
 	type SwitchState
 } from '../board/models.ts';
 import { UNKNOWN_CONTROLLER_REASON } from '../board/messages.ts';
-import { AGENT_NO_HOOKS_WAKE_REASON } from '../board/agent-actions.ts';
+import { AGENT_NO_HOOKS_WAKE_REASON, AGENT_RUNNING_WAKE_REASON } from '../board/agent-actions.ts';
 import { everyController, type Controller } from '../board/types.ts';
 import {
 	RESUME_BUSY_REASON,
@@ -104,7 +104,10 @@ async function deliver(board: Board, controller: Controller | undefined, request
 	if ('refuse' in plan) return refuse(plan.refuse, plan.abandon);
 	// hcom's list cannot tell that it runs, so a resume would make a second process, and its input does not reach it.
 	await board.refresh();
-	if (runsWithoutHooks(await board.sources(), controller.id)) return refuse(AGENT_NO_HOOKS_WAKE_REASON);
+	const { agents } = await board.sources();
+	if (runsWithoutHooks({ agents }, controller.id)) return refuse(AGENT_NO_HOOKS_WAKE_REASON);
+	// Also when its process cannot be judged: whatever hcom's list says, Herdr runs it.
+	if (!plan.agent && agents.some((agent) => agent.id === controller.id && agent.inHerdr)) return refuse(AGENT_RUNNING_WAKE_REASON);
 	if (!plan.agent) {
 		// A model switch that stopped this client without seeing it gone may have left it running:
 		// resuming now could make a second copy, so 繼續切換 has to settle it first.

@@ -22,6 +22,7 @@ import { askingReport } from '../board/question-message.ts';
 import { reportedAt } from '../board/roster.ts';
 import type { ClosedAgent, ClosedList } from '../board/closed-agents.ts';
 import type { LedgerView } from '../board/ledger.ts';
+import { relinking } from './process-hooks.ts';
 import type { AnsweredFile, AnsweredSources } from './helper.ts';
 import type { InboxState } from './inbox-state.ts';
 import type { RecordedDuty, ReportFile } from './reports.ts';
@@ -88,6 +89,7 @@ export function isClosed(sources: Sources, sessionId: string): boolean {
 		!sources.running.has(sessionId) &&
 		!sources.paused.has(sessionId) &&
 		!runsWithoutHooks(sources, sessionId) &&
+		!relinking.has(sessionId) &&
 		sources.active.some((binding) => binding.session_id === sessionId)
 	);
 }
@@ -375,7 +377,7 @@ function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'p
 	const latest = file.reports.at(-1)!;
 	const running = sources.running;
 	const paused = isPaused(sources, file.sessionId);
-	const noHooks = runsWithoutHooks(sources, file.sessionId);
+	const noHooks = runsWithoutHooks(sources, file.sessionId) || relinking.has(file.sessionId);
 	return {
 		id: file.sessionId,
 		hcomName: latest.hcom_name,

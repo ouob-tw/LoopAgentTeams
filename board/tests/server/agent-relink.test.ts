@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import type { AgentActionResponse } from '../../src/lib/board/agent-actions.ts';
 import type { Agent } from '../../src/lib/board/types.ts';
-import { startFixture, type Fixture } from '../harness.ts';
+import { sleep, startFixture, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -314,6 +314,28 @@ test('a bound controller that hcom does not list but Herdr runs with no hooks is
 	expect(prompts()).toEqual([['agent', 'prompt', PANE, 'hi']]);
 });
 
+test('a controller Herdr runs and hcom does not list is not woken, even when its process cannot be judged', async () => {
+	fixture.list([fixture.bound('alpha', 'modi', { session_id: SESSION })]);
+	fixture.setHcom(hcomPlan());
+	setHerdr({ processes: {} });
+	await fixture.refresh(cookie);
+	const wake = await fixture.fetch('/api/wake', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ controllerId: SESSION, text: 'hi', model: null, effort: null }), cookie });
+	expect(wake.status).toBe(409);
+	expect((await wake.json()).reason).toContain('多開一個程序');
+	expect(hcomCalls().some((call: string[]) => call[0] === 'r')).toBe(false);
+});
+
+test('a controller being restarted does not read as closed while it is off Herdr\'s list', async () => {
+	fixture.list([fixture.bound('alpha', 'modi', { session_id: SESSION })]);
+	fixture.setHcom(hcomPlan({ resumeDelayMs: 2_000 }));
+	await fixture.refresh(cookie);
+	const restart = act('relink');
+	await sleep(1_000);
+	const during = await fixture.refresh(cookie);
+	expect(during.controllers.find((candidate: { id: string }) => candidate.id === SESSION)!.status).not.toBe('closed');
+	expect((await restart).body.ok).toBe(true);
+});
+
 test('a listed one\'s own launch arguments are seen before the stop', async () => {
 	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ [SESSION]: ['--allowedTools', 'Bash(*)'] }));
 	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }] }));
@@ -388,7 +410,7 @@ test('a shell nested in the pane is enough: the new client starts in that pane',
 });
 
 test('gone but with something other than a waiting shell in front, nothing is typed and it says so', async () => {
-	setHerdr({ exitOnPrompt: { [PANE]: { foreground: [{ pid: 5151, name: 'bash', argv: ['bash', '/tmp/job.sh'] }] } } });
+	setHerdr({ exitOnPrompt: { [PANE]: { foreground: [{ pid: 5151, name: 'bash', argv: ['bash', 'job.sh'] }] } } });
 	const result = await act('relink');
 	expect(result.status).toBe(502);
 	expect(result.body.reason).toContain('它已經結束');
