@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import io
 import json
@@ -312,6 +313,53 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertIn('model: launch command unknown, screen shows Opus 5.5', text)
         self.assertIn('permission: expected bypass permissions on, screen shows auto mode on', text)
         self.assertNotIn('expected claude-sonnet-5-5', text)
+
+    def test_unreadable_command_line_with_the_right_permission_is_only_logged(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.run_watch(fake, launched={'kilo': None})
+        self.assertEqual(fake.sent, [])
+        self.assertIn('vare-review-kilo (claude): its command line could not be read',
+                      stderr.getvalue())
+        self.assertIn('model: launch command unknown, screen shows Sonnet 5.5', stderr.getvalue())
+
+    def real_lookup_watch(self, fake, launched):
+        """Run with the real hcom-list lookup, so a bad row reaches find_batch."""
+        self.watch.hcom, self.watch.clock, self.watch.sleep = fake, fake.clock, fake.sleep
+        self.watch.launched_with = lambda tool, process_id: launched.get(process_id)
+        self.watch.main(['--spawner', 'vare', '--tool', 'claude', '--model', 'claude-sonnet-5-5',
+                         '--effort', 'low', '--after-id', '99'])
+
+    def test_a_joined_agent_without_process_id_does_not_hide_the_launch_command(self):
+        # `hcom start` in a session hcom did not launch lists launch_context {}.
+        for index, joined in enumerate(({'launch_context': {}}, {'launch_context': None}, {})):
+            with self.subTest(joined=joined):
+                fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+                fake.batch['data']['batch_id'] = f'joined{index}'
+                fake.agents = [{'base_name': 'tufe', 'name': 'tufe', **joined}, agent_row('kilo')]
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    self.real_lookup_watch(fake, {'kilo': ('claude-sonnet-5-5', 'low')})
+                self.assertEqual(fake.sent, [])
+                self.assertNotIn('could not be read', stderr.getvalue())
+
+    def test_real_mismatch_is_still_told_when_a_joined_agent_is_listed(self):
+        for index, (screen, wrong) in enumerate((
+                (CLAUDE_START[:2] + CLAUDE_AUTO[2:], 'permission: expected bypass permissions on'),
+                (['▝▜██████▀  Opus 5.5 with low effort · Claude Pro', *CLAUDE_START[1:]],
+                 'model: expected claude-sonnet-5-5'),
+                (['▝▜██████▀  Sonnet 5.5 with high effort · Claude Pro', *CLAUDE_START[1:2],
+                  '  ⏵⏵ bypass permissions on (shift+tab to cycle)'], 'effort: expected low'))):
+            with self.subTest(wrong=wrong):
+                fake = FakeHcom(screens=[screen], stop_after=50)
+                fake.batch['data']['batch_id'] = f'mismatch{index}'
+                fake.agents = [{'base_name': 'tufe', 'name': 'tufe', 'launch_context': {}},
+                               agent_row('kilo')]
+                self.real_lookup_watch(fake, {'kilo': ('claude-sonnet-5-5', 'low')})
+                self.assertEqual(len(fake.sent), 1)
+                self.assertIn('does not match its launch command', fake.sent[0][-1])
+                self.assertIn(wrong, fake.sent[0][-1])
 
     def test_batch_no_watch_claims_is_taken_unattributed_at_the_end(self):
         fake = FakeHcom(screens=[CLAUDE_START], stop_after=500)
