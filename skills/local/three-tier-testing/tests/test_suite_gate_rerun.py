@@ -168,6 +168,46 @@ class BunRerunTests(RerunCase):
         self.assertEqual((record['kind'], record['exit_code']), ('affected', 0))
         self.assertEqual(len(record['flaky']), 2)
 
+    BOARD_TEMPLATE = ("if printf '%s\\n' {tests} | grep -qv '^tests/unit/'; then bun run build:test "
+                      "|| exit; fi; bun test --timeout 30000 $(printf './%s\\n' {tests})")
+
+    def board_affected(self, build):
+        """Run affected in a project shaped like the board: the template builds first (a
+        package.json script that runs build), then runs the selected files."""
+        self.project({'web': self.BOARD_TEMPLATE}, dict.fromkeys(self.BUN_FILES, '') | {
+            'web/package.json': json.dumps({'scripts': {'build:test': build}})})
+        reg = json.loads((self.repo / '.suite-gate.json').read_text())
+        reg['affected']['map'] = [{'paths': ['web/src/**'], 'tests': ['web/tests/**']}]
+        (self.repo / '.suite-gate.json').write_text(json.dumps(reg))
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'map web')
+        git(self.repo, 'checkout', '-qb', 'feature')
+        (self.repo / 'web/src').mkdir()
+        (self.repo / 'web/src/page.ts').write_text('changed\n')
+        return self.gate('affected', '--base', 'main')
+
+    def test_a_board_style_affected_template_reruns_its_flaky_files(self):
+        self.plan('bun', ('bun-fail.txt', 1), ('bun-pass.txt', 0))
+        result = self.board_affected('LAT_BOARD_BUILD_DIR=${LAT_BOARD_BUILD_DIR:-build-test} true')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.only_record()
+        self.assertEqual((record['kind'], record['exit_code']), ('affected', 0))
+        self.assertEqual([f['file'] for f in record['flaky']],
+                         ['web/tests/a.test.ts', 'web/tests/sub/b.test.ts'])
+        self.assertEqual(self.calls()[1][2][-2:], ['./tests/a.test.ts', './tests/sub/b.test.ts'])
+
+    def test_a_board_style_affected_template_whose_build_fails_is_not_rerun(self):
+        self.assert_not_rerun(self.board_affected('false'), 'no complete bun test summary line',
+                              calls=0)
+
+    def test_a_test_script_chained_before_the_tests_needs_its_own_summary(self):
+        self.project({'web': 'bun test {tests}'}, dict.fromkeys(self.BUN_FILES, '') | {
+            'web/package.json': json.dumps({'scripts': {
+                'test:all': 'bun run smoke && bun test ./tests', 'smoke': 'bun test ./smoke'}})})
+        self.plan('bun', ('bun-fail.txt', 1))
+        self.assert_not_rerun(self.run_suite('bun run test:all', cwd='web'),
+                              'no complete bun test summary line')
+
     def test_output_without_a_summary_line_is_not_rerun(self):
         self.project({'web': 'bun test {tests}'}, ['web/tests/f1.test.ts'])
         self.plan('bun', ('bun-killed.txt', 124))

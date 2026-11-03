@@ -1517,8 +1517,9 @@ def admission(config, running, candidate, host):
 # ---------------------------------------------------------------- run
 
 class Gate:
-    def __init__(self, argv, cwd, rerun, config, extra=None):
+    def __init__(self, argv, cwd, rerun, config, extra=None, template=False):
         self.argv = argv
+        self.template = template  # built by the gate from an affected.commands template
         self.cwd = cwd
         self.rerun = rerun
         self.config = config
@@ -1883,7 +1884,8 @@ class Gate:
         except ValueError as exc:
             return f'the affected-test map cannot be read ({exc})'
         text = self.argv[0] if len(self.argv) == 1 else shlex.join(self.argv)
-        plan = rerun_plan(scan, test_runs(text, self.cwd), self.cwd, root, commands)
+        runs = template_runs(text, self.cwd) if self.template else test_runs(text, self.cwd)
+        plan = rerun_plan(scan, runs, self.cwd, root, commands)
         return plan if isinstance(plan, str) else (root, commands, *plan)
 
     def rerun_failed(self, root, commands, groups, first_code):
@@ -2007,6 +2009,7 @@ SCAN_MAX_LINE = 65536     # bytes of an unfinished line kept while it streams
 # The runners whose output the rerun reads, by the name it reports them under.
 RERUN_TOOLS = {'bun-test': 'bun test', 'unittest': 'unittest',
                'unittest-discover': 'unittest', 'pytest': 'pytest'}
+SHELL_KEYWORDS = {'if', 'then', 'else', 'elif', 'fi', '!', '{', '}'}
 # Options that run a command in another directory (uv run, the test runners, package managers).
 CWD_OPTIONS = {'-C', '--chdir', '--cwd', '--directory', '--project', '--prefix', '--dir',
                '--workspace', '-w'}
@@ -2191,6 +2194,12 @@ def test_runs(command, cwd, depth=0):
         return ('the rerun trusts only a single test command (bun test, bun run <script>, '
                 'pytest, python -m unittest or pytest, optionally after uv run), and this '
                 'command is more than that')
+    runs = []
+    for words, *_ in found[:-1]:
+        inner = script_test_runs(_bun_script(words), cwd, depth)
+        if isinstance(inner, str):
+            return inner
+        runs += inner
     words = found[-1][0]
     script = _bun_script(_strip_assignments(words))
     if script is None:
@@ -2199,12 +2208,108 @@ def test_runs(command, cwd, depth=0):
             return (f'`{shlex.join(words)}` is not a test command the rerun trusts (bun '
                     'test, bun run <script>, pytest, python -m unittest or pytest, '
                     'optionally after uv run), or it changes directory')
-        return [run]
+        return runs + [run]
+    inner = script_test_runs(script, cwd, depth)
+    if isinstance(inner, str):
+        return inner
+    if not inner:
+        return f'the package.json script `{script[0]}` runs no test the rerun trusts'
+    return runs + inner
+
+
+def script_test_runs(script, cwd, depth):
+    """Every test run `bun run <script> [args]` can reach: its pre<script>, then its body
+    with the arguments appended; [] when neither can start a test runner at all (a build).
+    Why not when one is there that the gate cannot list, or a post<script> runs after."""
     name, extra = script
-    body = (package_scripts(cwd) or {}).get(name)
+    scripts = package_scripts(cwd) or {}
+    body = scripts.get(name)
     if depth >= 5 or not isinstance(body, str):
         return f'cannot read the package.json script `{name}`'
-    return test_runs(' '.join([body, *map(shlex.quote, extra)]), cwd, depth + 1)
+    if f'post{name}' in scripts:
+        return f'the package.json script `post{name}` runs after `{name}`'
+    runs = []
+    if f'pre{name}' in scripts:
+        runs = script_test_runs((f'pre{name}', []), cwd, depth + 1)
+        if isinstance(runs, str):
+            return runs
+    text = ' '.join([body, *map(shlex.quote, extra)])
+    inner = test_runs(text, cwd, depth + 1)
+    if isinstance(inner, str):
+        if may_run_tests(text, cwd, depth + 1):
+            return (f'the package.json script `{name}` may run tests the gate cannot list '
+                    f'({inner})')
+        inner = []
+    return runs + inner
+
+
+def _plain_words(words):
+    """words without leading shell keywords, assignments and launchers."""
+    while words and words[0] in SHELL_KEYWORDS:
+        words = words[1:]
+    words = _strip_assignments(words)
+    while words and (inner := _strip_launcher(words)) is not None:
+        words = inner
+    return words
+
+
+def may_run_tests(text, cwd, depth):
+    """Whether text could start a test runner: any runner the gate knows of, a package
+    manager doing anything but `bun run` of scripts that cannot (checked alike, with their
+    pre and post scripts), or a command that cannot be read."""
+    if depth > 5:
+        return True
+    try:
+        commands = split_commands(text)
+    except UnreadableShellInput:
+        return True
+    scripts = package_scripts(cwd) or {}
+    for words in map(_plain_words, commands):
+        if not words:
+            continue
+        if _unwrap(words):
+            return True
+        if os.path.basename(words[0]) in ('npm', 'pnpm', 'yarn', 'bun', 'npx', 'bunx', 'pnpx'):
+            script = _bun_script(words)
+            if script is None or not isinstance(scripts.get(script[0]), str):
+                return True
+            name, extra = script
+            bodies = [scripts.get(n) for n in (f'pre{name}', f'post{name}') if n in scripts]
+            if any(not isinstance(b, str) or may_run_tests(b, cwd, depth + 1) for b in bodies) \
+                    or may_run_tests(' '.join([scripts[name], *map(shlex.quote, extra)]),
+                                     cwd, depth + 1):
+                return True
+    return False
+
+
+def template_runs(command, cwd):
+    """Every test run an affected.commands template the gate filled in can reach. The
+    project registered it and the gate runs it in its own directory, so its shell shape is
+    trusted; each `bun run <script>` in it is listed like a script of `run`. Why not when a
+    runner there is one whose output the gate cannot read, or a test run cannot be listed."""
+    try:
+        commands = split_commands(command)
+    except UnreadableShellInput:
+        return 'the command cannot be read'
+    runs = []
+    for words in map(_plain_words, commands):
+        if not words:
+            continue
+        script = _bun_script(words)
+        if script:
+            inner = script_test_runs(script, cwd, 0)
+            if isinstance(inner, str):
+                return inner
+            runs += inner
+            continue
+        run = _unwrap(words)
+        if run and run[0] not in RERUN_TOOLS:
+            return f'the gate cannot read the output of {run[0]}'
+        if run:
+            runs.append(run)
+        elif may_run_tests(shlex.join(words), cwd, 1):
+            return f'`{shlex.join(words)}` may run tests the gate cannot list'
+    return runs or 'the command runs no bun test, unittest or pytest'
 
 
 def _short_flags(word, values):
@@ -3121,7 +3226,8 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
         warn(f'running in {directory}: {text}')
         gate = Gate([text], cwd, None, load_config(), dict(
             extra, kind='affected', reusable=False, selected_tests=tests,
-            why={t: selected[t] for t in tests}, **({'via': via} if via else {})))
+            why={t: selected[t] for t in tests}, **({'via': via} if via else {})),
+            template=True)
         info = fingerprint(cwd, [text])
         result = _drive(gate, lambda: gate.execute(info))
         if result:
