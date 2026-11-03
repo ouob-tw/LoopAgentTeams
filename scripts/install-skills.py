@@ -94,7 +94,7 @@ def main(argv=None):
             why = 'the latest run of this content failed' if result == 'failed' \
                 else 'no run of this content'
             print(f"  {name}: {suite['cwd']}: {suite['command']} ({why})", file=sys.stderr)
-            run = gate.gate_command(suite['command'], ('--purpose', 'post-merge'))
+            run = gate.gate_command(suite['command'], ('--purpose', 'release'))
             command = f"cd {shlex.quote(str(ROOT / suite['cwd']))} && {run}"
             if command not in commands:
                 commands.append(command)

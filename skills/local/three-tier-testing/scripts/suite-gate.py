@@ -8,7 +8,9 @@ affected-test map it needs a purpose. After each full suite that ran it checks w
 project is due for a test cleanup and opens or updates a cleanup ticket; `cleanup-done
 [--command <cmd> [--baseline <s>]]` starts a new cleanup window. `affected [--base <rev>]`
 runs only the tests the map selects for this change, or the registered full suites through
-the gate when the change leaves the map. A suite or affected run that fails only in a few
+the gate when the change leaves the map; with `--purpose post-merge` (after a batch is
+merged, which then replaces the post-merge full suite) every record of the run shares a
+run_id and a final `affected-summary` record says whether the whole run passed. A suite or affected run that fails only in a few
 test files (bun test, unittest, pytest) reruns those files once with the map's command
 templates and records a pass with the flaky tests when the rerun passes. `status` lists running and queued suites, why the
 queue waits, recent records and cleanup state. `is_full_suite()`
@@ -1534,6 +1536,8 @@ class Gate:
         self.measured = None  # ((profile_history, ledger version), reservation) for self.key
         self.scopes = None  # whether an empty user scope started, probed once before queueing
         self.ran = None  # a full suite that ran, for the cleanup check
+        self.record = None  # the record this gate wrote: a run's or a reuse note
+        self.reused = None  # the earlier pass this gate reused instead of running
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
                    'start': proc_stat(os.getpid())[2], 'sid': None, 'cgroup': None,
                    'agent': agent_name(), 'command': self.command, 'cwd': str(cwd),
@@ -1722,14 +1726,16 @@ class Gate:
         The note keeps the fingerprint as `reused_fingerprint`, so a reader that ignores
         `kind` (an older gate) still finds the pass as the latest record for it."""
         print_reuse(record, self.command)
+        self.reused = record
         if self.extra.get('purpose'):
-            append_record({
+            self.record = {
                 'kind': 'reuse', 'reused_fingerprint': info['fingerprint'], 'tree': info['tree'],
                 'repo': info['repo'], 'command': self.command, 'cwd': str(self.cwd),
                 'rel_cwd': info['rel_cwd'], 'exit_code': 0, 'agent': self.me['agent'],
                 'time': now_iso(), 'reusable': False, 'reused_time': record.get('time'),
                 'reused_agent': record.get('agent'), 'purpose': None, 'purpose_reason': None,
-                **self.extra})
+                **self.extra}
+            append_record(self.record)
         return 0
 
     def _scope_ready(self):
@@ -1954,6 +1960,7 @@ class Gate:
             record.update(rerun=rerun, flaky=flaky or [])
         record.update(self.extra)
         append_record(record)
+        self.record = record
         if info is not None and not record.get('kind'):
             self.ran = {'info': info, 'seconds': seconds, 'sample': record['reusable']}
         if changed:
@@ -2530,8 +2537,23 @@ def _guarded(body):
         return 2
 
 
-PURPOSE_CHOICES = ('--purpose post-merge (after a batch is merged), --purpose release (before '
-                   'a release), or --reason "<why the full suite is needed>"')
+PURPOSE_CHOICES = ('--purpose release (before a release), --purpose post-merge (after a batch '
+                   'is merged, only in a project without an affected-test map), or --reason '
+                   '"<why the full suite is needed>"')
+
+
+def post_merge_command():
+    return affected_command() + ' --base <commit the batch started from> --purpose post-merge'
+
+
+def post_merge_refused():
+    """Refuse a full suite run for post-merge in a project with an affected-test map."""
+    warn('this project has an affected-test map, so after a batch is merged the gate runs the '
+         'tests the batch affects instead of the full suite:\n'
+         f'  {post_merge_command()}\n'
+         'It writes one summary record of the whole run. When a full suite is really needed, '
+         'run it with --reason "<why the full suite is needed>" instead of --purpose post-merge.')
+    return 2
 
 
 def run_args_error(rerun, purpose, reason):
@@ -2589,12 +2611,17 @@ def cmd_run(rerun, purpose, reason, argv):
     flags = purpose_flags(purpose, reason)
     if reason:
         purpose = 'reason'
-    if purpose is None and is_mapped(load_registry(Path.cwd()) or {}):
+    mapped = is_mapped(load_registry(Path.cwd()) or {})
+    if purpose is None and mapped:
         warn('this project has an affected-test map, so a full suite needs a purpose. '
              'For the tests this change affects, run instead:\n'
              f'  {affected_command()}\n'
-             f'For a full suite, add one after `run`: {PURPOSE_CHOICES}')
+             f'After a batch is merged: {post_merge_command()}\n'
+             'For a full suite, add one after `run`: --purpose release (before a release) or '
+             '--reason "<why the full suite is needed>"')
         return 2
+    if purpose == 'post-merge' and mapped:
+        return post_merge_refused()
     suite = registered_form(Path.cwd(), argv)
     if suite:
         warn('this is the registered full suite written in another form, so its result will '
@@ -2762,6 +2789,8 @@ def cmd_run_registered(names, rerun, purpose, reason):
     if not purpose and not reason:
         warn(f'run --registered needs a purpose: add {PURPOSE_CHOICES}')
         return 2
+    if purpose == 'post-merge' and is_mapped(load_registry(Path.cwd()) or {}):
+        return post_merge_refused()
     root = repo_root(Path.cwd())
     if root is None:
         warn('run --registered: not in a Git work tree')
@@ -3132,7 +3161,40 @@ def command_dir(test, commands):
     return max(found, key=len) if found else None
 
 
-def cmd_affected(base):
+def head_commit(root):
+    """The full commit HEAD points at, or None before the first commit."""
+    result = git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], root)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def write_summary(root, run_id, base, changed, start, results, nothing_selected,
+                  interrupted, started_at):
+    """Write the post-merge summary of one affected run (`kind: affected-summary`): it
+    passed only when every group exited 0 (a pass after the rerun of failed files counts),
+    nothing was interrupted and the content (HEAD and the work tree) did not change."""
+    end = (head_commit(root), content_tree(root))
+    changed_content = end != start or any(r['content_changed'] for r in results)
+    passed = (not interrupted and not changed_content
+              and all(r['exit_code'] == 0 for r in results))
+    record = {
+        'kind': 'affected-summary', 'purpose': 'post-merge', 'run_id': run_id,
+        'repo': str(root), 'base': base, 'commit': start[0], 'tree': start[1],
+        'changed_files': changed, 'groups': results, 'nothing_selected': nothing_selected,
+        'interrupted': interrupted, 'content_changed': changed_content, 'passed': passed,
+        'exit_code': 0 if passed else 1, 'reusable': False, 'agent': agent_name(),
+        'time': started_at, 'finished': now_iso()}
+    append_record(record)
+    if nothing_selected:
+        warn('post-merge summary: no tests were selected for this change; it counts as passed')
+    if changed_content:
+        warn('post-merge summary: the content changed during the run, so it counts as failed; '
+             'run it again on unchanged content')
+    warn(f"post-merge summary {run_id[:12]}: {'passed' if passed else 'FAILED'} "
+         f'({len(results)} group(s), base {base[:12]}, commit {(start[0] or "-")[:12]})')
+    return record
+
+
+def cmd_affected(base, purpose=None):
     def body():
         root = repo_root(Path.cwd())
         registry = load_registry(Path.cwd()) if root else None
@@ -3145,7 +3207,13 @@ def cmd_affected(base):
         except ValueError as exc:
             warn(f'{root / REGISTRY_NAME}: {exc}')
             return 2
+        if purpose and base is None:
+            warn('affected --purpose post-merge needs --base <commit>: the commit this batch '
+                 'of work started from')
+            return 2
         commit, origin = change_base(root, base, amap['branch'])
+        start = (head_commit(root), content_tree(root)) if purpose else None
+        started_at = now_iso()
         changed = changed_files(root, commit)
         warn(f'change against {origin} ({commit[:12]}): {len(changed)} file(s)')
         for path in changed:
@@ -3159,8 +3227,26 @@ def cmd_affected(base):
             warn(f'add rules in {MAP_DIR}/<topic>.json that map the files they test to them, '
                  'then run affected again; nothing ran')
             return 2
-        code = run_selected(root, amap, selected, fallback, {'base': commit,
-                                                             'changed_files': changed})[0]
+        extra = {'base': commit, 'changed_files': changed}
+        if not purpose:
+            code = run_selected(root, amap, selected, fallback, extra)[0]
+        else:
+            run_id = uuid.uuid4().hex
+            warn(f'post-merge run {run_id[:12]}: every record of this run carries this run_id')
+            results = []
+            try:
+                code = run_selected(root, amap, selected, fallback,
+                                    dict(extra, run_id=run_id), results=results)[0]
+            except Interrupted:
+                write_summary(root, run_id, commit, changed, start, results, False, True,
+                              started_at)
+                raise
+            summary = write_summary(root, run_id, commit, changed, start, results,
+                                    code is None, False, started_at)
+            if code is None:
+                warn('no tests selected for this change; nothing to run')
+                return 0
+            return code or summary['exit_code']
         if code is None:
             warn('no tests selected for this change; nothing to run')
             warn('hint: on an integration branch the base must be given with --base <commit> '
@@ -3170,11 +3256,29 @@ def cmd_affected(base):
     return _guarded(body)
 
 
-def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
+def group_result(kind, directory, command, code, gate=None, tests=None, not_run=None):
+    """One group of an affected run, as the post-merge summary lists it."""
+    record = gate.record if gate else None
+    reused = gate.reused if gate else None
+    return {
+        'kind': kind, 'dir': directory, 'command': command, 'tests': tests,
+        'exit_code': code,
+        'fingerprint': (gate.me['fingerprint'] if gate else None),
+        'flaky': bool(record and record.get('flaky')),
+        'content_changed': bool(record and record.get('content_changed')),
+        'reused': None if reused is None else {
+            'time': reused.get('time'), 'agent': reused.get('agent'),
+            'purpose': reused.get('purpose'), 'fingerprint': reused.get('fingerprint')},
+        'not_run': not_run}
+
+
+def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, results=None):
     """Run the selected tests per affected.commands directory, and the full suites a fallback
     needs, through the gate. (exit code, [(directory, command, tests) that failed]); the code
     is None when nothing was selected. prepare(cwd) installs a directory's dependencies first
-    and returns what failed, or None; via is recorded as what started the run."""
+    and returns what failed, or None; via is recorded as what started the run. Each group
+    (a check, a directory's tests or a full suite) is appended to results as group_result()."""
+    results = [] if results is None else results
     groups = {}
     for test in sorted(selected):
         directory = command_dir(test, amap['commands'])
@@ -3193,7 +3297,8 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
 
     if fallback:
         suites = fallback_suites(amap['suites'], [path for path, _ in fallback])
-        code, failed = run_fallback(root, suites, fallback, prepared, via)
+        code, failed = run_fallback(root, suites, fallback, prepared, via, extra.get('run_id'),
+                                    results)
         # The full suites run the tests in their directories; the rest still run here.
         groups = {d: kept for d, tests in groups.items()
                   if (kept := [t for t in tests if not any(
@@ -3211,12 +3316,15 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
         if not prepared(cwd, check['cwd']):
             code = code or 2
             failed.append((check['cwd'], check['command'], ['check']))
+            results.append(group_result('check', check['cwd'], check['command'], 2,
+                                        not_run='preparing the directory failed'))
             continue
         warn(f"checking in {check['cwd']}: {check['command']}")
         gate = Gate([check['command']], cwd, None, load_config(), dict(
             extra, kind='affected', reusable=False, selected_tests=[], why={},
             **({'via': via} if via else {})))
         result = _drive(gate, lambda: gate.execute(fingerprint(cwd, [check['command']])))
+        results.append(group_result('check', check['cwd'], check['command'], result, gate))
         if result:
             failed.append((check['cwd'], check['command'], ['check']))
         code = code or result
@@ -3225,6 +3333,8 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
         if not prepared(cwd, directory):
             code = code or 2
             failed.append((directory, text, tests))
+            results.append(group_result('affected', directory, text, 2, tests=tests,
+                                        not_run='preparing the directory failed'))
             continue
         warn(f'running in {directory}: {text}')
         gate = Gate([text], cwd, None, load_config(), dict(
@@ -3233,6 +3343,7 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
             template=True)
         info = fingerprint(cwd, [text])
         result = _drive(gate, lambda: gate.execute(info))
+        results.append(group_result('affected', directory, text, result, gate, tests))
         if result:
             failed.append((directory, text, tests))
         code = code or result
@@ -3252,10 +3363,12 @@ def fallback_suites(suites, triggers):
     return [s for i, s in enumerate(suites) if i in chosen]
 
 
-def run_fallback(root, suites, fallback, prepared=None, via=None):
+def run_fallback(root, suites, fallback, prepared=None, via=None, run_id=None, results=None):
     """Run (or reuse) the given full suites through the gate: (exit code, [(directory,
     command, None) that failed]). prepared(cwd, what) is False when a suite's directory
-    could not be prepared; via is recorded as what started the run."""
+    could not be prepared; via and run_id are recorded with each suite, and each suite is
+    appended to results as group_result()."""
+    results = [] if results is None else results
     warn('this change needs the full suite (map fallback):')
     for path, why in fallback:
         warn(f'  {path}: {why}')
@@ -3266,11 +3379,16 @@ def run_fallback(root, suites, fallback, prepared=None, via=None):
         cwd = suite_cwd(root, suite)
         if prepared and not prepared(cwd, suite['cwd']):
             result = 2
+            results.append(group_result('full-suite', suite['cwd'], suite['command'], 2,
+                                        not_run='preparing the directory failed'))
         else:
             gate = Gate([suite['command']], cwd, None, load_config(),
                         {'purpose': 'map-fallback', 'trigger_files': triggers,
-                         **({'via': via} if via else {})})
+                         **({'via': via} if via else {}),
+                         **({'run_id': run_id} if run_id else {})})
             result = _drive(gate, gate.run)
+            results.append(group_result('full-suite', suite['cwd'], suite['command'], result,
+                                        gate))
         if result:
             failed.append((suite['cwd'], suite['command'], None))
         code = code or result
@@ -3619,6 +3737,9 @@ def cmd_status(as_json, fp_prefix, limit):
         print('  none')
     print(f'Recent records ({len(records)}):')
     for r in records:
+        if r.get('kind') == 'affected-summary':
+            print_summary(r)
+            continue
         if r.get('reusable'):
             result = 'PASS'
         elif r.get('exit_code') == 0:
@@ -3663,6 +3784,27 @@ def cmd_status(as_json, fp_prefix, limit):
         for line in cleanup_numbers(unit)[2:] + [f'- Due: {why}' for why in unit['due']]:
             print(f'    {line[2:]}')
     return 0
+
+
+def print_summary(r):
+    """status lines for a post-merge summary record."""
+    notes = [why for why, on in (('nothing selected', r.get('nothing_selected')),
+                                 ('interrupted', r.get('interrupted')),
+                                 ('content changed', r.get('content_changed'))) if on]
+    print(f"  {r.get('time')}  {'PASS' if r.get('passed') else 'FAIL'} (post-merge summary"
+          f"{': ' + ', '.join(notes) if notes else ''})  run {(r.get('run_id') or '-')[:12]}  "
+          f"{r.get('agent')}  {r.get('repo')}  base {(r.get('base') or '-')[:12]}  "
+          f"commit {(r.get('commit') or '-')[:12]}  tree {(r.get('tree') or '-')[:12]}  "
+          f"{len(r.get('changed_files') or [])} changed file(s)")
+    for g in r.get('groups') or []:
+        if g.get('not_run'):
+            outcome = f"not run ({g['not_run']})"
+        elif g.get('reused'):
+            outcome = f"REUSED pass of {g['reused'].get('time')}"
+        else:
+            outcome = 'PASS' if g.get('exit_code') == 0 else f"FAIL exit {g.get('exit_code')}"
+            outcome += ' after rerun' if g.get('flaky') and g.get('exit_code') == 0 else ''
+        print(f"    {g.get('kind')} in {g.get('dir')}: {outcome}  {g.get('command')}")
 
 
 def reclaim_due(holder, config, now):
@@ -3806,8 +3948,10 @@ def cmd_hook():
               'full suites through the gate when a change is not covered by the map.\n'
               'When a full suite is really needed, run it through the gate with a purpose:\n'
               f'  {full}\n'
-              'Replace --reason \'<...>\' with --purpose post-merge after a batch is merged, '
-              'or --purpose release before a release. The purpose is recorded with the result.'
+              'Replace --reason \'<...>\' with --purpose release before a release. After a batch '
+              'is merged, run the affected tests of the whole batch instead:\n'
+              f'  {post_merge_command()}\n'
+              'The purpose is recorded with the result.'
               + _variable_gate_hint(text), file=sys.stderr)
         return 2
     print('Blocked: this runs a full test suite outside the suite gate. Run this instead; '
@@ -4351,9 +4495,13 @@ def main(argv=None):
                           'or command) in their registered form, in a temporary clean '
                           'checkout of HEAD; needs a purpose')
     affected = sub.add_parser('affected', help='run the tests the affected-test map selects '
-                                               'for this change: affected [--base <rev>]')
+                                               'for this change: affected [--base <rev>] '
+                                               '[--purpose post-merge]')
     affected.add_argument('--base', metavar='REV', help='measure the change from this commit '
                           'instead of the merge-base of HEAD and the integration branch')
+    affected.add_argument('--purpose', choices=('post-merge',),
+                          help='post-merge: after a batch is merged; needs --base (where the '
+                               'batch started) and writes a summary record of the whole run')
     status = sub.add_parser('status', help='show running and queued suites and recent records')
     status.add_argument('--json', action='store_true')
     status.add_argument('--fingerprint', metavar='PREFIX', help='only records for this fingerprint')
@@ -4398,7 +4546,7 @@ def main(argv=None):
     if args.action == 'hook':
         return cmd_hook()
     if args.action == 'affected':
-        return cmd_affected(args.base)
+        return cmd_affected(args.base, args.purpose)
     if args.action == 'cleanup-done':
         return cmd_cleanup_done(args.command, args.baseline)
     if args.action == 'pre-push':

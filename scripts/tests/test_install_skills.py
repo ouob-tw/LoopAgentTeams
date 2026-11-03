@@ -105,7 +105,7 @@ class InstallSkillsTests(unittest.TestCase):
         self.assertIn(f'  alpha: skills/local/alpha: {SUITE} ({why})', result.stderr)
         self.assertIn(f"cd {self.repo / 'skills/local/alpha'} && uv run --no-project python ",
                       result.stderr)
-        self.assertIn(f"suite-gate.py run --purpose post-merge -- '{SUITE}'", result.stderr)
+        self.assertIn(f"suite-gate.py run --purpose release -- '{SUITE}'", result.stderr)
 
     def test_a_passing_record_for_the_current_content_installs(self):
         self.record()
@@ -123,7 +123,7 @@ class InstallSkillsTests(unittest.TestCase):
 
     def test_a_pass_recorded_by_the_real_gate_installs(self):
         cwd = self.repo / 'skills/local/alpha'
-        run = subprocess.run([sys.executable, str(GATE), 'run', '--purpose', 'post-merge', '--',
+        run = subprocess.run([sys.executable, str(GATE), 'run', '--purpose', 'release', '--',
                               SUITE], cwd=cwd, env=self.env, capture_output=True, text=True)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assert_installed(self.install('--skill', 'alpha'), ['alpha'])

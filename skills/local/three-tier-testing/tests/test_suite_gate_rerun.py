@@ -7,6 +7,8 @@ import sys
 import unittest
 from pathlib import Path
 
+# Run by file path (the affected template) as well as by discover.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_suite_gate import GateCase, git
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures/rerun'
