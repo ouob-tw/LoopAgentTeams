@@ -424,9 +424,28 @@ def main_checkouts(doc, item):
     """Where a row's commit can still be when its repo is gone: the checkout noted at closing,
     the one holding the gone path (a task worktree under <checkout>/.worktrees, and rows closed
     before the note existed or after the removal), then the ledger's workspace."""
-    existing = next((p for p in Path(item['repo']).parents if p.is_dir()), None)
-    places = [item.get('main_checkout'), owning_checkout(existing), doc['workspace']]
+    places = [doc['workspace']]
+    if item.get('repo'):
+        existing = next((p for p in Path(item['repo']).parents if p.is_dir()), None)
+        places[:0] = [item.get('main_checkout'), owning_checkout(item['repo']),
+                      owning_checkout(existing)]
     return list(dict.fromkeys(place for place in places if place))
+
+
+def point_at_merge_target(doc, item, branch):
+    """The row's changes once its work is on `branch`, named by the orchestrator: from here on
+    the row is checked there, whatever happens to its worktree and task branch. Refused unless
+    every commit on the row has reached it, in a main checkout that has it."""
+    commits, looked = item['evidence'].get('commit', []), []
+    for place in main_checkouts(doc, item):
+        if not branch_exists(place, f'refs/heads/{branch}'):
+            looked.append(f'{place}: no branch {branch}')
+            continue
+        missing = [sha for sha in commits if not reachable(place, sha, [branch])]
+        if not missing:
+            return {'branch': branch, **({'repo': place} if item.get('repo') else {})}
+        looked.append(f'{place}: {", ".join(missing)} is not reachable from {branch}')
+    raise Failure(f'item {item["id"]} not on {branch}; checked ' + '; '.join(looked))
 
 
 def verify_commit_after_removal(doc, item, value):
@@ -680,9 +699,9 @@ def cmd_update(args):
     if (args.eta or args.deadline or args.depends is not None) and not reason:
         raise Failure('--reason is required when changing --eta, --deadline or --depends')
     if not any((args.eta, args.deadline, args.progress, args.card, args.branch, args.repo,
-                args.depends is not None)):
+                args.merged_into, args.depends is not None)):
         raise Failure('nothing to update; give --eta, --deadline, --progress, --card, --branch, '
-                      '--repo or --depends')
+                      '--repo, --merged-into or --depends')
     with transaction(args, 'update', args.id, reason) as doc:
         item = find(doc, args.id)
         if args.eta or args.deadline or args.progress:
@@ -710,6 +729,8 @@ def cmd_update(args):
             changes['repo'], problem = check_repo(args.repo)
             if problem:
                 raise Failure(problem)
+        if args.merged_into:
+            changes.update(point_at_merge_target(doc, item, args.merged_into))
         if args.depends is not None:
             deps = item_ids(args.depends)
             known = {other['id'] for other in doc['items']}
@@ -1017,6 +1038,8 @@ def build_parser():
     sub.add_argument('--card')
     sub.add_argument('--branch', help='branch the commit evidence must reach')
     sub.add_argument('--repo', help='absolute path of the git repo the commit evidence lives in')
+    sub.add_argument('--merged-into', help="local long-lived branch that holds the row's commits; "
+                     'refused unless it does. The row is checked there from then on')
     sub.add_argument('--depends', help='replace dependencies; empty string clears them')
     sub.add_argument('--reason')
     sub = command('block', 'Mark an item blocked')
