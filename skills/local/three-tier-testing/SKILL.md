@@ -146,7 +146,9 @@ docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --
 
 沒有對照表的專案維持舊規則：每張票在該票審查都通過後的最終版本，經閘門跑一次整套。
 
-測試越積越多、整套越跑越慢時，依 [references/cleanup.md](references/cleanup.md) 定期整理。
+閘門跑整套時會記下每個測試檔的耗時（支援 bun 與帶 `--durations=0` 的 pytest；不含 unittest，也不含在 AI 代理人內執行的 bun，因為那時通過的測試不會顯示）；整理票會列出最慢的測試檔和時好時壞的測試。
+
+測試越積越多、整套越跑越慢時，依 [references/cleanup.md](references/cleanup.md) 定期整理，耗時資料的來源與限制也在該文件。
 
 ## 測試歸屬判斷
 
