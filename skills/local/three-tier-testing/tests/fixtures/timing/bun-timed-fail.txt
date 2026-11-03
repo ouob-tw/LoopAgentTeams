@@ -1,0 +1,30 @@
+bun test v1.3.14 (0d9b296a)
+
+tests/a.test.ts:
+(pass) adds [30.74ms]
+(pass) quick [0.07ms]
+(skip) skipped
+(todo) later
+
+tests/c.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("waits then breaks", async () => { await Bun.sleep(20); expect(1).toBe(2); });
+                                                                           ^
+error: expect(received).toBe(expected)
+
+Expected: 2
+Received: 1
+
+      at <anonymous> (/home/user/project/tests/c.test.ts:2:72)
+(fail) waits then breaks [20.93ms]
+(pass) fine [0.07ms]
+
+tests/sub/b.test.ts:
+(pass) group > inner [12.64ms]
+
+ 4 pass
+ 1 skip
+ 1 todo
+ 1 fail
+ 4 expect() calls
+Ran 7 tests across 3 files. [89.00ms]
