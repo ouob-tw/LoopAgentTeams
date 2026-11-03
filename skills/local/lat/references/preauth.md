@@ -62,7 +62,7 @@ p report --controller-workspace <A>
 | 全域 | `$XDG_CONFIG_HOME/lat/preauth.toml`（預設 `~/.config/lat/`） |
 
 - 逐段落、逐鍵由窄到寬取第一個有寫的值：專案 > 全域。整段沒寫就往上一層找；兩層都沒寫 `allow` 就是 `ask`。專案層可放寬也可收緊。
-- 例外：`target` 只取專案層，`[advisor]` 只取全域層；寫在另一層不生效，但仍會檢查格式。
+- 例外：`target`、`rollback` 只取專案層，`[advisor]` 只取全域層；寫在另一層不生效，但仍會檢查格式。
 - 想只放寬一段時間，就改設定檔，做完再改回來。
 - 任一層讀不出、TOML 格式錯、未知鍵、未知動作、值的型別錯、時段或時區有誤，或寫了永遠要問的類別，每個 `check` 都回 `ask` 並列出錯誤，不會因錯誤而放寬。
 
@@ -85,6 +85,7 @@ timezone = "Asia/Taipei"
 
 [actions.deploy-test]
 target = "<測試環境說明或位置>"
+rollback = "<退回上一版的方法：一句說明或指令>"
 
 [advisor]
 extended = true
@@ -94,7 +95,7 @@ source = "<待決紀錄 ID>"
 ```
 
 - 最上層的鍵：`version`（只能是 1）、`integration_branch`（整合分支名稱；本輪工作總表沒寫整合分支時才用，哪一層都可寫，專案層優先）。
-- 動作段 `[actions.<動作>]` 的鍵：`allow`（true／false）、`branches`（字串清單）、`target`（字串，只取專案層，全域層寫了不生效）、`source`（字串）、`hours` 與 `timezone`（見「時段」）。`[advisor]` 只取全域層，鍵：`extended`、`may_settle`、`must_ask`、`source`。`source` 是出處，不參與判斷，`show` 與 `check` 附在該層的值旁。
+- 動作段 `[actions.<動作>]` 的鍵：`allow`（true／false）、`branches`（字串清單）、`target`（字串，只取專案層，全域層寫了不生效）、`rollback`（字串，退回上一版的方法，只取專案層；只有 `deploy-test`、`deploy-prod` 會用到，見「固定條件」）、`source`（字串）、`hours` 與 `timezone`（見「時段」）。`[advisor]` 只取全域層，鍵：`extended`、`may_settle`、`must_ask`、`source`。`source` 是出處，不參與判斷，`show` 與 `check` 附在該層的值旁。
 - 動作固定五種：`merge`（合併到整合分支）、`push`（推送到遠端）、`deploy-test`、`deploy-prod`、`install-host`（更新主機上安裝的 Skills 與 hooks）。
 - 修改或縮減已確認驗收（`change-acceptance`）、花錢或動帳號額度（`spend`）、刪使用者資料或 shred（`delete-user-data`）、開新票擴大工作量（`new-ticket`）永遠要問：查詢一律 `ask`，寫進設定算錯誤。這只限制 `check`；參謀能否定案改驗收與開新票，依 `[advisor]` 段判斷，見 [參謀](advisors.md#參謀結論)。
 
@@ -117,6 +118,12 @@ source = "<待決紀錄 ID>"
   - 整套測試閘門：僅推送 `main` 時查，見下方。
 - `deploy-test`、`deploy-prod`、`install-host`：在主工作區執行，且 HEAD 等於整合分支的最新版本；給了 `--commit` 時必須就是 HEAD。整合分支取本輪工作總表的 `integration_branch`，總表沒寫（例如 `activate` 建立的總表）才取設定的 `integration_branch`，兩者都沒有就 `ask`。`deploy-test` 另要求專案層寫了 `target`。
 - 整套測試閘門（推送 `main`、`deploy-test`、`deploy-prod`、`install-host`；推送 `main` 以外的分支如 `dev` 不查這一項，只查上面的分支清單與提交票號）：沿用 three-tier-testing 閘門推送前檢查的同一段程式，依該版本的內容、每一套整套命令與執行目錄算出指紋，登記檔 `full_suites` 的每一套都要有可沿用的通過紀錄。沒有紀錄、只有失敗紀錄、或版本內容變了使舊紀錄不適用，都 `ask` 並寫出缺的那一套；登記檔沒列整套也 `ask`。只讀閘門紀錄，不跑測試。
+  - `deploy-test`、`deploy-prod` 例外：專案層該動作段寫了 `rollback` 時，以下全部成立就不必有整套通過紀錄（`basis` 寫出 `rollback` 與採用的總結紀錄）；任一項不成立就照上面要求整套，`ask` 的原因同時寫出為什麼受影響測試不夠：
+    - 部署歷史（見下一項）裡有「上一次成功部署」：同一動作、同一部署目標（設定的 `target` 原文；`deploy-prod` 沒寫時兩邊都是空）最近一筆 `result` 為 `succeeded` 的紀錄。沒有歷史檔、找不到成功紀錄、只有別的目標成功過（部署目標改了）都要整套。`deploy-test` 的紀錄不算 `deploy-prod` 的上一次部署，反之亦然。
+    - 那筆成功之後，同動作同目標沒有失敗的部署；有的話線上版本不明（換上新版才失敗，或退回也失敗），要整套。失敗之後又成功一次，就以那次新的成功為準。
+    - 它的提交在這個 repo 找得到，而且是要部署版本本身或祖先（退版或分歧都要整套）。
+    - three-tier-testing 閘門有一筆 `post-merge` 的合併後受影響測試總結紀錄（`kind: affected-summary`）整體通過（`passed: true`），它的 `tree` 等於要部署版本的 tree，起點 `base` 是上一次成功部署的提交本身或它的祖先。只讀閘門紀錄，不跑測試。
+  - 部署歷史：被部署專案主工作區的 `.lat/deploy-history.jsonl`，每行一筆：`at`（時間）、`action`、`target`（當時設定的部署目標原文，沒寫為 `null`）、`commit`（完整提交）、`result`、`approval`（`preauth` 依預先授權、`manual` 人工核准），人工核准另有 `question`（待決題號）。由 `record` 寫入，見「記錄：record」。
   - `install-host` 例外：只看 `skills/` 下各技能資料夾（有 `SKILL.md` 的資料夾，略過點開頭的目錄）裡登記的整套，與安裝腳本共用閘門的同一段判斷：該套最近一次「這個資料夾內容與現在相同」的執行通過才算數，資料夾外的改動（例如看板）不影響。缺的那一套寫在原因裡，並註明所在技能資料夾與「沒有這份內容的執行」或「最近一次執行失敗」。專案沒有任何技能資料夾時，照上面的規則看全部整套。
 
 ## 看板寫入
@@ -145,12 +152,16 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" grant --layer globa
 # 依預先授權執行
 uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --action <動作> [--branch <分支>] --commit <版本> --basis '<check 印的那行>' --result succeeded|failed \
   [--started <now 印的時間> --notice-before <HCOM 事件編號> --notice-after <HCOM 事件編號>]
+# 經使用者答覆才做的部署，補記到部署歷史
+uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind manual --action deploy-test|deploy-prod --commit <版本> --result succeeded|failed --question <待決題號>
 # 免確認開短流程 bug 票
 uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-intake --issue <票> --source '<使用者原訊息位置>' \
   --self-reported '<…>' --clear-expected '<…>' --single-ticket '<…>' --restores-stated '<…>' --no-existing-guard '<查過哪些測試與文件>'
 ```
 
 - `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區，用 `now` 取得）與前後兩則 HCOM 通知的事件編號（取自 `notice` 印出的編號）。工具以 `hcom events` 核對：兩則都由本主控送出（發送者等於工作階段紀錄的 HCOM 名稱，或 `hcom list --json` 給它的基本名；有 tag 的主控，HCOM 記的是基本名）、以 `@名稱` 指定對象（不是廣播）、依 `--started` 提供的小數秒位數比較（未提供小數就比較整秒）：前一則可早於或等於開始時間，後一則必須晚於開始時間，且原始時間也必須晚於前一則。只到秒的舊寫法仍接受，例如 `--started 2026-10-29T12:00:00+08:00` 接受前一則在 `12:00:00.4`，拒絕 `12:00:01.2`；後一則在 `12:00:00.9` 仍不合格；不符就拒絕。`--notice-*` 也可給 `notice` 印的 `none-<n>`：工具核對它是本輪由本主控的 `notice` 寫下的無人可通知紀錄，時間順序規則相同，兩則可一真一無；工具另核對該紀錄裡記錄的其他主控確實都不在線；`report` 顯示「無人可通知（none-1，未發訊息）」。HCOM 的 agent 清單格式異常時 `notice` 拒絕，不當作無人在線。事件的 `delivered_to` 為空（沒送到任何人）一律拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
+- `deploy-test`、`deploy-prod` 的 `record`（成功或失敗）寫入預先授權紀錄後，另在被部署專案（`--workspace`，[跨 repo](#主控與動作不在同一個-repo) 時是 B）主工作區的部署歷史追加一筆（見「固定條件」），所以不論從哪個主控部署，下一次 `check` 都讀得到。`--commit` 可給縮寫，歷史記完整提交；在該 repo 找不到就拒絕，兩邊都不寫。
+- `--kind manual`：經使用者答覆才做的部署（`check` 是 `ask`），做完一樣要補記，否則下一次部署會因為找不到上一次部署而要整套。只接受 `deploy-test`、`deploy-prod`，要 `--commit`、`--result`、`--question`；待決紀錄要在本主控的待決目錄、狀態為 `answered` 或 `approved`。只寫部署歷史（`approval: manual`、`question`），不寫預先授權紀錄，也不需通知。跨 repo 同樣加 `--workspace <B> --controller-workspace <A>`。
 - `bug-intake` 的五項依據都要寫。
 
 ## 免確認開短流程 bug 票
