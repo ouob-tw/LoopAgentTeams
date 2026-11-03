@@ -63,6 +63,7 @@ STOP_NOTICE = {
               'references/troubleshooting.md, which checks the account before any switch.'),
 }
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
+UNREADABLE_ARGS = 'its command line could not be read'
 
 clock, sleep = time.monotonic, time.sleep
 PROC = Path('/proc')
@@ -128,12 +129,15 @@ def claim(batch_id):
 
 
 def process_ids():
-    """hcom process id of each running agent, by base name."""
+    """hcom process id of each running agent, by base name.
+
+    An agent that joined with `hcom start` lists no process id and is left out.
+    """
     _, out = hcom('list', '--json')
     try:
-        return {agent['base_name']: agent['launch_context']['process_id']
-                for agent in json.loads(out)}
-    except (ValueError, KeyError, TypeError):
+        return {agent['base_name']: process_id for agent in json.loads(out)
+                if (process_id := (agent.get('launch_context') or {}).get('process_id'))}
+    except (ValueError, KeyError, TypeError, AttributeError):
         return {}
 
 
@@ -282,7 +286,7 @@ def find_batch(spawner, tool, tag, after_id, model, effort, watched):
             if args == (model, effort.lower()):
                 why = None
             elif args is None and clock() - first_seen.setdefault(batch_id, clock()) >= ARGS_WAIT:
-                why = 'its command line could not be read'
+                why = UNREADABLE_ARGS
             elif last and args is not None:
                 why = f'it was started with model {args[0]}, effort {args[1]}'
             else:
@@ -412,20 +416,25 @@ def matches(tool, item, expected, actual):
 
 
 def report(tool, full, expected, seen, reason, unattributed=None):
-    """Message text for the spawner, or None when everything matched.
+    """Message text for the spawner, or None when there is nothing to tell.
 
-    Unattributed agents have no expected model or effort: those are listed as seen.
+    Unattributed agents have no expected model or effort: those are listed as seen. With an
+    unreadable command line that alone is no finding, so it only goes to watch.log.
     """
-    problems = []
+    unknown, problems = [], []
     for item in ITEMS:
         if expected[item] is None:
             value, source = seen.get(item, ('nothing', 'screen'))
-            problems.append(f'{item}: launch command unknown, {source} shows {value}')
+            unknown.append(f'{item}: launch command unknown, {source} shows {value}')
         elif item not in seen:
             problems.append(f'{item}: expected {expected[item]}, could not confirm ({reason})')
         elif not matches(tool, item, expected[item], seen[item][0]):
             value, source = seen[item]
             problems.append(f'{item}: expected {expected[item]}, {source} shows {value}')
+    if unattributed == UNREADABLE_ARGS and not problems:
+        log(f"{full} ({tool}): {unattributed}. {'; '.join(unknown)}")
+        return None
+    problems = unknown + problems
     if not problems:
         return None
     if unattributed:

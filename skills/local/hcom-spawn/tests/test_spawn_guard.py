@@ -150,6 +150,27 @@ class SpawnGuardTests(unittest.TestCase):
             '--spawner', 'meru', '--tool', 'codex', '--model', 'gpt-6.1-sol', '--effort', 'low',
             '--after-id', '55', '--tag', 't'])
 
+    def test_multi_line_launch_with_dir_reads_the_same_as_one_line(self):
+        for client, flags, model, effort in (
+                ('claude', '--model claude-opus-5-5 --effort medium '
+                           '--dangerously-skip-permissions', 'claude-opus-5-5', 'medium'),
+                ('codex', "--model gpt-6.1-sol -c 'model_reasoning_effort=\"low\"' --yolo",
+                 'gpt-6.1-sol', 'low')):
+            with self.subTest(client=client):
+                guard = load()
+                command = (f'hcom 1 {client} --tag t --go --name vare \\\n'
+                           f'  --dir /tmp/some-dir \\\n  {flags}')
+                payload = json.dumps({'tool_input': {'command': command}})
+                with tempfile.TemporaryDirectory() as state, \
+                        mock.patch.dict(os.environ, {'XDG_STATE_HOME': state}), \
+                        mock.patch.object(guard, 'latest_event_id', return_value=55), \
+                        mock.patch.object(guard.sys, 'stdin', io.StringIO(payload)), \
+                        mock.patch.object(guard.subprocess, 'Popen') as popen:
+                    self.assertEqual(guard.main(), 0)
+                self.assertEqual(popen.call_args.args[0][2:], [
+                    '--spawner', 'vare', '--tool', client, '--model', model, '--effort', effort,
+                    '--after-id', '55', '--tag', 't'])
+
     def test_previews_start_no_watch(self):
         guard = load()
         command = '; '.join([CLAUDE.replace(' --go', ''), CODEX,
