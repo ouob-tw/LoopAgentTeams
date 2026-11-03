@@ -46,19 +46,34 @@ elif args[:2] == ['issue', 'list']:
     print((d / 'open.json').read_text() if (d / 'open.json').exists() else '[]')
 elif args[:2] == ['issue', 'view']:
     view = d / 'view.json'
+    listed = json.loads((d / 'open.json').read_text()) if (d / 'open.json').exists() else []
+    titles = dict((str(i['number']), i['title']) for i in listed)
+    if (d / 'created').exists():
+        titles.setdefault('7', (d / 'created').read_text())
     print(view.read_text() if view.exists() else json.dumps(
-        {{'state': 'OPEN', 'url': 'https://github.com/o/r/issues/' + args[2]}}))
+        {{'state': 'OPEN', 'title': titles.get(args[2]),
+          'url': 'https://github.com/o/r/issues/' + args[2]}}))
 elif args[:2] == ['issue', 'create']:
+    if '--title' not in args or '--body' not in args:
+        sys.exit('must provide `--title` and `--body` when not running interactively')
     if '--label' in args and not (d / 'label').exists():
         sys.exit("could not add label: 'suite-failure' not found")
+    (d / 'created').write_text(args[args.index('--title') + 1])
     print('https://github.com/o/r/issues/7')
 """)
         systemctl = fake.parent / 'systemctl'
         self.systemctl_log = self.tmp / 'systemctl.jsonl'
+        units = self.tmp / 'xdg-config/systemd/user'
         systemctl.write_text(f"""#!{sys.executable}
 import json, sys
+from pathlib import Path
+args = sys.argv[1:]
 with open({str(self.systemctl_log)!r}, 'a') as log:
-    log.write(json.dumps(sys.argv[1:]) + '\\n')
+    log.write(json.dumps(args) + '\\n')
+if args[:1] != ['--user']:
+    sys.exit('only --user units here')
+if args[1:2] in (['enable'], ['disable']) and not (Path({str(units)!r}) / args[-1]).is_file():
+    sys.exit(f'Failed to {{args[1]}} unit: Unit file {{args[-1]}} does not exist.')
 """)
         systemctl.chmod(0o755)
 
@@ -207,6 +222,18 @@ class BackgroundRunTests(BackgroundCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(self.full_runs(), ['root', 'web'])
 
+    def test_each_suite_runs_on_the_commit_whatever_an_earlier_suite_changed(self):
+        self.registry['full_suites'][0]['command'] = (
+            f'{self.full("root")}; echo dirty > web/src/page.ts; echo new > web/stray.txt')
+        self.registry['full_suites'][1]['command'] = (
+            f'{self.full("web")}; test ! -s src/page.ts && test ! -e stray.txt')
+        self.commit_registry()
+        result = self.background()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        [root, web] = self.background_records()
+        self.assertTrue(root['content_changed'])
+        self.assertEqual((web['exit_code'], web['reusable']), (0, True))
+
     def test_push_reuses_the_background_pass_of_the_same_content(self):
         self.assertEqual(self.install().returncode, 0)
         self.assertEqual(self.background().returncode, 0)
@@ -260,6 +287,25 @@ class BackgroundTicketTests(BackgroundCase):
         self.background()
         self.assertEqual([c[:3] for c in self.issue_calls()[5:]],
                          [['issue', 'view', '12'], ['issue', 'comment', '12']])
+
+    def test_a_ticket_remembered_in_another_tracker_is_not_used(self):
+        self.fail_root()
+        self.assertEqual(self.background().returncode, 3)
+        self.registry['cleanup'] = {'github_repo': 'o/other'}
+        self.commit_registry()
+        self.assertEqual(self.background().returncode, 3)
+        calls = [c for c in self.issue_calls() if c[-1] == 'o/other']
+        self.assertEqual([c[:2] for c in calls], [['issue', 'list'], ['issue', 'create']])
+
+    def test_a_remembered_ticket_with_another_title_is_not_used(self):
+        self.fail_root()
+        self.assertEqual(self.background().returncode, 3)
+        (self.gh_dir / 'view.json').write_text(json.dumps(
+            {'state': 'OPEN', 'title': 'Something else', 'url': 'u7'}))
+        self.change_main('src/app.py')
+        self.assertEqual(self.background().returncode, 3)
+        self.assertEqual([c[:2] for c in self.issue_calls()[2:]],
+                         [['issue', 'view'], ['issue', 'list'], ['issue', 'create']])
 
     def test_without_the_label_the_ticket_opens_unlabelled(self):
         (self.gh_dir / 'label').unlink()

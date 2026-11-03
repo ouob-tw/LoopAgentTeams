@@ -4591,21 +4591,22 @@ def failure_ticket(root, suite, commit, fp, code, gate):
 
 
 def post_failure(tracker, title, body, comment, opened):
-    """Comment on the open ticket of this suite, or open one; returns (what was done, the
-    number of the ticket). opened is the ticket this gate opened last for the suite, asked
-    first; then open tickets are matched by title, labelled or not."""
+    """Comment on the open ticket of this suite, or open one; returns (what was done, its
+    URL, its number). opened is the ticket this gate last used for the suite in this
+    tracker, asked first; then open tickets are matched by title, labelled or not."""
     if opened is not None:
-        issue = json.loads(gh(['issue', 'view', str(opened), '--json', 'state,url'], tracker))
-        if issue['state'] == 'OPEN':
+        issue = json.loads(gh(['issue', 'view', str(opened), '--json', 'state,title,url'],
+                              tracker))
+        if issue['state'] == 'OPEN' and issue.get('title') == title:
             gh(['issue', 'comment', str(opened), '--body', comment], tracker)
-            return f"commented on {issue['url']}", opened
+            return 'commented on', issue['url'], opened
     found = json.loads(gh(['issue', 'list', '--state', 'open', '--search',
                            f'"{FAILURE_TITLE}" in:title', '--json', 'number,title,url',
                            '--limit', '100'], tracker))
     same = [i for i in found if i.get('title') == title]
     if same:
         gh(['issue', 'comment', str(same[0]['number']), '--body', comment], tracker)
-        return f"commented on {same[0]['url']}", same[0]['number']
+        return 'commented on', same[0]['url'], same[0]['number']
     create = ['issue', 'create', '--title', title, '--body', body]
     try:
         url = gh([*create, '--label', FAILURE_LABEL], tracker).strip()
@@ -4614,7 +4615,7 @@ def post_failure(tracker, title, body, comment, opened):
              'without a label, found again by its title')
         url = gh(create, tracker).strip()
     number = re.search(r'/issues/(\d+)$', url)
-    return f'opened {url}', int(number.group(1)) if number else None
+    return 'opened', url, int(number.group(1)) if number else None
 
 
 def report_failure(root, registry, suite, key, commit, fp, code, gate):
@@ -4626,24 +4627,30 @@ def report_failure(root, registry, suite, key, commit, fp, code, gate):
              'in the gate state and `suite-gate.py status` lists it')
         return None
     title, body, comment = failure_ticket(root, suite, commit, fp, code, gate)
-    opened = with_state(lambda state: state.get('background_issues', {}).get(key))
+    issue_key = json.dumps([tracker['repo'], key])
+    opened = with_state(lambda state: state.get('background_issues', {}).get(issue_key))
     try:
-        done, number = post_failure(tracker, title, body, comment, opened)
+        done, url, number = post_failure(tracker, title, body, comment, opened)
     except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         warn(f"the tracker {tracker['repo']} could not be updated ({exc}); "
              '`suite-gate.py status` lists the failure')
         return None
     if number is not None:
         def remember(state):
-            state.setdefault('background_issues', {})[key] = number
+            state.setdefault('background_issues', {})[issue_key] = number
         with_state(remember)
-    warn(f'suite failure ticket: {done}')
-    return done.split(' ', 2)[-1]
+    warn(f'suite failure ticket: {done} {url}')
+    return url
 
 
 def run_background_suite(root, checkout, registry, suite, commit, fp, prepared):
     """Run one suite through the gate in the checkout (purpose background) and store the
-    attempt; the exit code."""
+    attempt under the fingerprint it ran on; the exit code. Files an earlier suite changed
+    or added in the checkout are reset to the commit first."""
+    for step in (['reset', '-q', '--hard'], ['clean', '-fdq']):
+        result = git(step, checkout)
+        if result.returncode != 0:
+            raise RuntimeError(f'git {step[0]} in the checkout failed: {result.stderr.strip()}')
     cwd = suite_cwd(checkout, suite)
     if cwd not in prepared:
         prepared[cwd] = prepare_dependencies(cwd)
@@ -4658,6 +4665,10 @@ def run_background_suite(root, checkout, registry, suite, commit, fp, prepared):
             warn('the tests changed tracked files, so this pass is not reusable; counted as '
                  'a failure')
             code = 1
+        if gate.me['fingerprint'] and gate.me['fingerprint'] != fp:
+            warn('the suite ran on other content than planned (an ignored file changed); '
+                 'the attempt is kept for the content it ran on')
+            fp = gate.me['fingerprint']
     key = json.dumps(suite_key(root, suite), sort_keys=True)
     attempt = {'project': str(project_root(root)), 'rel_cwd': suite['cwd'],
                'command': suite['command'], 'commit': commit, 'fingerprint': fp,
@@ -4783,15 +4794,12 @@ def ensure_failure_label(registry):
         gh(['label', 'create', FAILURE_LABEL, '--color', 'B60205', '--description',
             'A background full suite failed'], tracker)
         print(f"Created the {FAILURE_LABEL} label in {tracker['repo']}")
-    except RuntimeError as exc:
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         if 'already exists' in str(exc):
             print(f"The {FAILURE_LABEL} label already exists in {tracker['repo']}")
         else:
             warn(f'could not create the {FAILURE_LABEL} label ({exc}); failure tickets are '
                  'then opened without it and found by title')
-    except (OSError, subprocess.SubprocessError) as exc:
-        warn(f'could not create the {FAILURE_LABEL} label ({exc}); failure tickets are then '
-             'opened without it and found by title')
 
 
 def cmd_background_configure(action, repo, preview):
@@ -4840,6 +4848,7 @@ def cmd_background_configure(action, repo, preview):
             if after is None:
                 path.unlink(missing_ok=True)
             else:
+                # Not write_file: its backup would sit among the user's unit files.
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(after)
         systemctl('daemon-reload')

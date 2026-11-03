@@ -369,11 +369,11 @@ uv run --no-project python <skill>/scripts/suite-gate.py uninstall-pre-commit --
 4. 剩下的套只跑距**這套上次可沿用通過**（任何內容、任何用途；以 `profile_key` 比對，也就是同一 repo、同一執行目錄與指令）**超過 24 小時**的；從沒通過過的視為超過。例如剛有人跑過整套、隨即又合併新改動時，這次不跑。
 5. 同一 repo 同時只有一個背景執行（狀態目錄 `background/` 下的檔案鎖），已有在跑就印一行後以 0 結束。
 
-要跑的套在狀態目錄下的暫時乾淨檢出依序執行，照 [`run --registered`](#照登記寫法跑run---registered) 的方式複製 `fingerprint_include` 的被忽略檔、有 `bun.lock` 的目錄先裝依賴；每套照常經閘門排隊、寫紀錄（用途 `background`）、套用[失敗重跑](#失敗重跑)。執行中測試改了已追蹤的檔案時，通過也不可沿用，這裡算失敗。目錄依賴裝不起來也算失敗（票上註明沒跑）。結束碼是第一個失敗的套的結束碼。
+要跑的套在狀態目錄下的暫時乾淨檢出依序執行（每套開始前把檢出還原成該提交，前一套改動或新增的檔案不留到下一套），照 [`run --registered`](#照登記寫法跑run---registered) 的方式複製 `fingerprint_include` 的被忽略檔、有 `bun.lock` 的目錄先裝依賴；每套照常經閘門排隊、寫紀錄（用途 `background`）、套用[失敗重跑](#失敗重跑)。執行中測試改了已追蹤的檔案時，通過也不可沿用，這裡算失敗。目錄依賴裝不起來也算失敗（票上註明沒跑）。結束碼是第一個失敗的套的結束碼。
 
 **失敗**（失敗重跑後仍失敗）時：
 
-- 登記檔有 `cleanup.github_repo` 時開票：先問閘門上次為這套開的票（`gh issue view`），還開著就留言；否則用 `gh issue list --state open --search '"Background full suite failed" in:title'` 找標題完全相同的開著的票留言；都沒有就 `gh issue create --label suite-failure`，標籤不存在而失敗時改為不帶標籤再開一次，之後以標題辨認。標題是 `Background full suite failed: <專案目錄名> (<執行目錄>) <整套指令>`；內文與留言列出提交、指紋、結束碼與輸出結尾。
+- 登記檔有 `cleanup.github_repo` 時開票：先問閘門上次在同一個 tracker 為這套開的票（`gh issue view`），還開著且標題相同就留言；否則用 `gh issue list --state open --search '"Background full suite failed" in:title'` 找標題完全相同的開著的票留言；都沒有就 `gh issue create --label suite-failure`，標籤不存在而失敗時改為不帶標籤再開一次，之後以標題辨認。標題是 `Background full suite failed: <專案目錄名> (<執行目錄>) <整套指令>`；內文與留言列出提交、指紋、結束碼與輸出結尾。
 - 沒設 tracker，或 `gh` 失敗時，失敗只存在閘門狀態；`status` 列出未處理的背景失敗，直到這套之後有可沿用的通過（任何用途）。
 
 ### 安裝與移除
