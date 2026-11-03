@@ -405,7 +405,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py uninstall-background --
 
   觸發時先查閘門上次開的整理票（`gh issue view <編號>`，剛開的票可能還沒出現在標籤清單），還開著就留言；否則用 `gh issue list --state open --label <標籤>` 找開著的整理票：有就 `gh issue comment` 更新數字，沒有就 `gh issue create`（標題 `Test cleanup: <專案目錄名>`，內文列出觸發原因、上次整理日、基準、目前中位數、最慢的測試檔與視窗內時好時壞的測試，並指向本技能的 `references/cleanup.md` 與 `cleanup-done`）。每個單位每天最多一次開票或留言，同一天再觸發只印一行提醒。
 - **最慢的測試檔**：視窗內最近一次記到每檔耗時（`file_seconds`，見[紀錄與設定位置](#紀錄與設定位置)）的通過，取耗時最長的前 10 個檔案與那次的開始時間；之後的通過沒記到每檔耗時時保留前一次的。視窗內沒有這種通過時，整理票寫明沒有資料。
-- **時好時壞的測試**：視窗內每次失敗重跑後通過的執行，把 `flaky` 的每個測試（檔案＋測試名稱）累計次數與最後一次的時間，整理票依次數多到少列出。
+- **時好時壞的測試**：視窗內每次失敗重跑後通過的執行，把 `flaky` 的每個測試（檔案＋測試名稱）累計次數與最後一次的時間，整理票依次數多到少列出。受影響測試的執行也算，計入同專案每個已有視窗的單位；專案還沒有任何整套跑過閘門時不計。
 - 開始新視窗（`cleanup-done`）時，最慢的測試檔與時好時壞的測試一併清空。
 - **不影響測試結果**：檢查在測試結束、紀錄寫入、名額釋放之後才做，每次 `gh` 呼叫最多等 10 秒。沒設 tracker、`gh` 失敗或逾時，只在 stderr 印出提醒與應開票的標題和內文，測試輸出與結束碼不變；失敗不算當天已處理，下次執行會再試。
 - 只支援 GitHub；其他 tracker 不設 `cleanup`，照 stderr 的內容手動開票。
@@ -448,10 +448,10 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 
 失敗過的執行另有 `rerun`：重跑時是 `first_exit_code`（第一次的結束碼）、`exit_code`、`duration_s` 與 `runs`（每組的 `dir`、`command`、`tests`、`exit_code`、`duration_s`、`output_tail`）；沒重跑時只有 `skipped`（原因）。同時有 `flaky`：重跑通過時是第一次失敗的每個檔案（`file`，repo 相對路徑）與其失敗的測試名稱（`tests`），否則是空清單。頂層的 `duration_s` 與 `output_tail` 是第一次執行的。
 
-整套實際執行時，輸出拿得到每個測試檔的耗時就另記 `file_seconds`（`{檔案: 秒數}`，由慢到快；檔案在 repo 內時是 repo 相對路徑，否則照輸出原樣）；拿不到時沒有這個欄位。失敗重跑後通過時，取第一次執行的輸出。依測試工具：
+整套實際執行時（受影響測試不記），輸出拿得到每個測試檔的耗時就另記 `file_seconds`（`{檔案: 秒數}`，由慢到快；檔案在 repo 內時是 repo 相對路徑，否則照輸出原樣）；拿不到時沒有這個欄位。失敗重跑後通過時，取第一次執行的輸出。依測試工具：
 
 - `bun test`：每個檔案標題（`<檔案>:`）下各測試 `(pass)`／`(fail)` 行的 `[…ms]` 加總為該檔耗時。只有輸出列出每一個通過與失敗的測試時才記（帶時間的行數等於總結行 `N pass` 加 `N fail`）；由 AI agent 執行時（例如 `CLAUDECODE=1`）bun 只印失敗的測試，這時不記。
-- `pytest`：只在登記指令帶 `--durations=0` 時記：從「slowest durations」段落（只有 `--durations=0` 印這個標題；`--durations=N` 印的是 `slowest N durations`，不記）把每一行的 setup／call／teardown 秒數依檔案（node id 的 `::` 之前，相對於 rootdir）加總。沒加 `-vv` 時 pytest 隱藏 0.005 秒以下的項目，加總會略少。
+- `pytest`：只在登記指令帶 `--durations=0`（寫在指令文字，或寫在它執行的 package.json script 傳給 pytest 的參數）時記；只寫在 pytest 設定（例如 `addopts`）時不記。從「slowest durations」段落（`--durations=N` 印的是 `slowest N durations`，不記）把每一行的 setup／call／teardown 秒數依檔案（node id 的 `::` 之前，相對於 rootdir）加總。沒加 `-vv` 時 pytest 隱藏 0.005 秒以下的項目，加總會略少。
 - `unittest`：預設輸出沒有逐案耗時，不記，只有整套的 `duration_s`。
 
 對照表退回整套另有 `trigger_files`。受影響測試的紀錄標 `kind: "affected"`，另有 `base`、`changed_files`、`selected_tests` 與 `why`（每個測試被選的原因），一律不可沿用。帶用途的執行沿用上次結果時的沿用紀錄標 `kind: "reuse"`，另有 `reused_fingerprint`（沒有 `fingerprint`）、`reused_time`、`reused_agent`。合併後受影響測試的總結紀錄標 `kind: "affected-summary"`，欄位見[合併後受影響測試](#合併後受影響測試--purpose-post-merge)。

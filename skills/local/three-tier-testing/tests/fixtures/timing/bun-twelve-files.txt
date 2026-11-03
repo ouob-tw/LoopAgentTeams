@@ -1,0 +1,41 @@
+bun test v1.3.14 (0d9b296a)
+
+tests/t05.test.ts:
+(pass) waits t05 [15.20ms]
+
+tests/t04.test.ts:
+(pass) waits t04 [12.78ms]
+
+tests/t07.test.ts:
+(pass) waits t07 [21.48ms]
+
+tests/t02.test.ts:
+(pass) waits t02 [6.11ms]
+
+tests/t12.test.ts:
+(pass) waits t12 [36.46ms]
+
+tests/t09.test.ts:
+(pass) waits t09 [27.48ms]
+
+tests/t08.test.ts:
+(pass) waits t08 [24.46ms]
+
+tests/t10.test.ts:
+(pass) waits t10 [30.43ms]
+
+tests/t06.test.ts:
+(pass) waits t06 [18.50ms]
+
+tests/t11.test.ts:
+(pass) waits t11 [33.33ms]
+
+tests/t01.test.ts:
+(pass) waits t01 [3.43ms]
+
+tests/t03.test.ts:
+(pass) waits t03 [9.10ms]
+
+ 12 pass
+ 0 fail
+Ran 12 tests across 12 files. [269.00ms]
