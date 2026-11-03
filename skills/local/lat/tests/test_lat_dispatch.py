@@ -905,6 +905,107 @@ class PreauthBriefTests(DispatchCase):
         self.assertIn("--preauth must be ACTION or ACTION:BRANCH, not 'Merge dev'", result.stderr)
 
 
+class CardCloseMergedTests(LedgerCase):
+    """ouob-tw/LoopAgentTeams-work#436: normal close-out on a ledger with no integration branch,
+    where the integration branch is not the repo's default branch."""
+
+    def setUp(self):
+        super().setUp()
+        self.ledger = self.ledger.with_name('round-2.json')
+        self.run_ledger('init', '--workspace', str(self.workspace), '--orchestrator', 'nanu')
+        git(self.workspace, 'branch', 'main', self.sha)
+
+    def closed_row(self, repo=None):
+        """A row closed from a task worktree of `repo`; returns (card, worktree, commit)."""
+        repo = repo or self.workspace
+        worktree = repo / '.worktrees' / 'task'
+        git(repo, 'worktree', 'add', '-q', '-b', 'task', str(worktree))
+        (worktree / 't.txt').write_text('t\n')
+        git(worktree, 'add', 't.txt')
+        git(worktree, 'commit', '-q', '-m', 'task work')
+        commit = git(worktree, 'rev-parse', 'HEAD')
+        card = self.ledger_card('--repo', str(worktree))
+        self.run_ledger('update', '1', '--by', 'nanu', '--branch', 'task')
+        self.run_ledger('start', '1', '--by', 'nanu-impl123-fida', '--eta', '+1h')
+        self.run_ledger('done', '1', '--by', 'nanu-impl123-fida', '--commit', commit)
+        return card, worktree, commit
+
+    def clean_up(self, repo, worktree, merge=True):
+        if merge:
+            git(repo, 'merge', '-q', '--no-ff', '-m', 'merge task', 'task')
+        git(repo, 'worktree', 'remove', str(worktree))
+        git(repo, 'branch', '-q', '-D', 'task')
+
+    def close(self, card, *extra, status='merged'):
+        return self.run_script('card', 'close', '--card', str(card), '--status', status,
+                               '--deliverable', 'abc', '--by', 'nanu', *extra)
+
+    def check(self):
+        return subprocess.run([sys.executable, str(LEDGER), 'check', '--ledger', str(self.ledger)],
+                              capture_output=True, text=True, env=self.ledger_env, timeout=60)
+
+    def assert_refused(self, card, result, message):
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(message, result.stderr)
+        self.assertTrue(card.exists())
+        self.assertFalse((self.tasks / 'done' / card.name).exists())
+        self.assertEqual(self.items()[0]['card'], str(card))
+
+    def test_close_out_passes_check_with_the_commit_only_on_dev(self):
+        card, worktree, _ = self.closed_row()
+        self.clean_up(self.workspace, worktree)
+        result = self.close(card, '--merged-into', 'dev')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.check().returncode, 0, self.check().stdout)
+        row = self.items()[0]
+        self.assertEqual((row['repo'], row['branch']), (str(self.workspace), 'dev'))
+        self.assertEqual(row['card'], str(self.tasks / 'done' / card.name))
+
+    def test_close_out_of_a_worktree_of_another_repo(self):
+        other = self.root / 'other'
+        other.mkdir()
+        git(other, 'init', '-q', '-b', 'dev')
+        git(other, 'config', 'user.email', 't@example.com')
+        git(other, 'config', 'user.name', 'T')
+        (other / 'o.txt').write_text('o\n')
+        git(other, 'add', 'o.txt')
+        git(other, 'commit', '-q', '-m', 'first')
+        card, worktree, _ = self.closed_row(other)
+        self.clean_up(other, worktree)
+        result = self.close(card, '--merged-into', 'dev')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.check().returncode, 0, self.check().stdout)
+        self.assertEqual(self.items()[0]['repo'], str(other))
+
+    def test_an_unmerged_commit_is_refused_and_check_still_fails(self):
+        card, worktree, commit = self.closed_row()
+        self.clean_up(self.workspace, worktree, merge=False)
+        result = self.close(card, '--merged-into', 'dev')
+        self.assert_refused(card, result, f'{self.workspace}: {commit} is not reachable from dev')
+        self.assertEqual(self.check().returncode, 1)
+
+    def test_a_commit_dropped_from_the_branch_later_fails_check(self):
+        card, worktree, _ = self.closed_row()
+        self.clean_up(self.workspace, worktree)
+        self.assertEqual(self.close(card, '--merged-into', 'dev').returncode, 0)
+        git(self.workspace, 'reset', '-q', '--hard', self.sha)
+        self.assertEqual(self.check().returncode, 1)
+
+    def test_merged_into_must_name_a_local_branch(self):
+        card, worktree, _ = self.closed_row()
+        self.clean_up(self.workspace, worktree)
+        self.assert_refused(card, self.close(card, '--merged-into', 'HEAD'), 'no branch HEAD')
+
+    def test_merged_with_a_ledger_row_needs_the_branch(self):
+        card, _, _ = self.closed_row()
+        self.assert_refused(card, self.close(card), '--merged-into')
+
+    def test_merged_into_needs_status_merged(self):
+        card, _, _ = self.closed_row()
+        self.assert_refused(card, self.close(card, '--merged-into', 'dev', status='committed'),
+                            '--status merged')
+
+
 class CardCloseTests(LedgerCase):
     EVIDENCE = '無（證據為 issue #5 留言 a/b\\c & $x）'
 

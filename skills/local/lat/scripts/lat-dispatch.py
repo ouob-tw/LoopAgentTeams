@@ -5,7 +5,9 @@
 orchestrator's full names come from `hcom list --json`. With --native, the card is for a Claude
 built-in agent: its name comes from --agent as given and the card is marked `native agent：是`.
 `card close` ends a card: sets its status and deliverable commit, moves it to done/ and points its
-ledger row at the new path, all or nothing.
+ledger row at the new path, all or nothing. `--status merged` on a card with a ledger row also
+names the long-lived branch that holds the work (--merged-into), so `check` still finds it once the
+worktree and task branch are gone.
 `brief` turns a four-section Markdown file plus that card into a ready-to-send task brief and
 prints the `hcom send` command; its `--name` values are the base names HCOM records for tagged
 senders. It never launches agents and never sends anything. Hand-written cards and briefs stay
@@ -524,6 +526,11 @@ def close_card(args):
             lines[index] = f'- {key}：{values.pop(key)}{ending}'
     if values:
         raise Failure(f'task card lacks the {" and ".join(values)} field; nothing changed')
+    if args.merged_into and args.status != 'merged':
+        raise Failure('--merged-into needs --status merged; nothing changed')
+    if row and args.status == 'merged' and not args.merged_into:
+        raise Failure('--status merged on a card with a ledger row needs --merged-into <long-lived '
+                      'branch holding the work>; nothing changed')
     if not os.access(path.parent, os.W_OK):
         raise Failure(f'{path.parent} is not writable; nothing changed')
     by = ['--by', args.by] if args.by else []
@@ -531,6 +538,11 @@ def close_card(args):
     def point_ledger_at(card):
         number, ledger = row.groups()
         run_ledger(args, 'update', number, '--ledger', ledger, *by, '--card', str(card))
+
+    def close_ledger_row(card):
+        number, ledger = row.groups()
+        merged = ['--merged-into', args.merged_into] if args.merged_into else []
+        run_ledger(args, 'update', number, '--ledger', ledger, *by, '--card', str(card), *merged)
 
     def ledger_points_to():
         number, ledger = row.groups()
@@ -564,7 +576,7 @@ def close_card(args):
         raise Failure(f'card not closed: {error}') from error
     try:
         if row:
-            point_ledger_at(target)
+            close_ledger_row(target)
     except Failure as error:
         put_ledger_back(str(error))
         target.unlink(missing_ok=True)
@@ -623,6 +635,8 @@ def build_parser():
     close.add_argument('--card', type=Path, required=True)
     close.add_argument('--status', required=True, choices=CLOSE_STATUSES)
     close.add_argument('--deliverable', required=True, help='commit or evidence text, written to the card as given')
+    close.add_argument('--merged-into', help='with --status merged: the long-lived branch holding '
+                       'the work (e.g. dev); refused if the row\'s commits are not on it')
     close.add_argument('--by', help='actor recorded in the ledger (default: lat-ledger.py\'s own default)')
     close.add_argument('--lat-dir', type=Path, default=LAT_DIR,
                        help='LAT skill directory holding scripts/lat-ledger.py')

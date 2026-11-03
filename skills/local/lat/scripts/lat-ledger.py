@@ -400,17 +400,90 @@ def default_branches(repo):
     return []
 
 
+def reachable(repo, sha, branches):
+    for branch in branches:
+        try:
+            run_cli(['git', '-C', repo, 'merge-base', '--is-ancestor', sha, branch], timeout=30)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def owning_checkout(path):
+    """The main checkout of the repo `path` is in (a bare repo stands for itself), or None."""
+    try:
+        common = Path(run_cli(['git', '-C', str(path), 'rev-parse', '--path-format=absolute',
+                               '--git-common-dir'], timeout=30).strip())
+    except ValueError:
+        return None
+    return str(common.parent if common.name == '.git' else common)
+
+
+def main_checkouts(doc, item):
+    """Where a row's commit can still be when its repo is gone: the checkout noted at closing,
+    the one holding the gone path (a task worktree under <checkout>/.worktrees, and rows closed
+    before the note existed or after the removal), then the ledger's workspace."""
+    places = [doc['workspace']]
+    if item.get('repo'):
+        existing = next((p for p in Path(item['repo']).parents if p.is_dir()), None)
+        places[:0] = [item.get('main_checkout'), owning_checkout(item['repo']),
+                      owning_checkout(existing)]
+    return list(dict.fromkeys(place for place in places if place))
+
+
+def point_at_merge_target(doc, item, branch):
+    """The row's changes once its work is on `branch`, named by the orchestrator: from here on
+    the row is checked there, whatever happens to its worktree and task branch. Refused unless
+    every commit on the row has reached it, in a main checkout that has it."""
+    commits, looked = item['evidence'].get('commit', []), []
+    for place in main_checkouts(doc, item):
+        if not branch_exists(place, f'refs/heads/{branch}'):
+            looked.append(f'{place}: no branch {branch}')
+            continue
+        missing = [sha for sha in commits if not reachable(place, sha, [branch])]
+        if not missing:
+            return {'branch': branch, **({'repo': place} if item.get('repo') else {})}
+        looked.append(f'{place}: {", ".join(missing)} is not reachable from {branch}')
+    raise Failure(f'item {item["id"]} not on {branch}; checked ' + '; '.join(looked))
+
+
+def verify_commit_after_removal(doc, item, value):
+    """The row's repo is gone: only the integration branch of a main checkout can vouch for the
+    commit, or that checkout's default branch where the name is unrecorded or not there. A
+    surviving task branch does not count, since the work has not landed."""
+    sha, looked = None, []
+    for place in main_checkouts(doc, item):
+        try:
+            sha = run_cli(['git', '-C', place, 'rev-parse', '--verify', '--quiet',
+                           f'{value}^{{commit}}'], timeout=30).strip()
+        except ValueError:
+            looked.append(f'{place}: commit {value} not found')
+            continue
+        integration = doc.get('integration_branch')
+        branches = ([integration] if integration and branch_exists(place, integration)
+                    else default_branches(place))
+        if not branches:
+            looked.append(f'{place}: no integration or default branch')
+        elif reachable(place, sha, branches):
+            return sha, None
+        else:
+            looked.append(f'{place}: commit {value} is not reachable from {" or ".join(branches)}')
+    return sha, (f'repo {item["repo"]} no longer exists; checked ' + '; '.join(looked) +
+                 f'; if the commit reached another branch, name it with `update {item["id"]} '
+                 '--repo <main checkout> --branch <branch>`')
+
+
 def verify_commit(doc, item, value):
     """Return (full sha, problem); the commit must reach the item or integration branch.
 
-    A row with its own repo is checked there. The branches are only enforced where they exist
-    in that repo, since the integration branch name belongs to the workspace. A deleted task
-    branch with no integration branch recorded leaves the repo's default branch to check."""
+    A row with its own repo is checked there (once gone, see verify_commit_after_removal). The
+    branches are only enforced where they exist in that repo, since the integration branch name
+    belongs to the workspace. A deleted task branch with no integration branch to check leaves
+    the repo's default branch."""
     workspace = item.get('repo') or doc['workspace']
-    if item.get('repo'):
-        _, problem = check_repo(workspace)
-        if problem:
-            return None, f'commit {value}: {problem}'
+    if item.get('repo') and check_repo(workspace)[1]:
+        return verify_commit_after_removal(doc, item, value)
     try:
         sha = run_cli(['git', '-C', workspace, 'rev-parse', '--verify', '--quiet',
                        f'{value}^{{commit}}'], timeout=30).strip()
@@ -419,24 +492,20 @@ def verify_commit(doc, item, value):
     branches = [b for b in (item.get('branch'), doc.get('integration_branch')) if b]
     if item.get('repo'):
         branches = [b for b in branches if branch_exists(workspace, b)]
-        if not branches:
+        if not branches and not item.get('branch'):
             return sha, None
-    if not branches:
+    elif not branches:
         return sha, f'commit {value}: no branch to check reachability (set --branch on the item)'
     hint = ''
-    if not doc.get('integration_branch') and not branch_exists(workspace, item['branch']):
+    if not branches or (not doc.get('integration_branch')
+                        and not branch_exists(workspace, item['branch'])):
         hint = (f'; task branch {item["branch"]} no longer exists, name the branch the commit '
                 f'reached with `update {item["id"]} --branch <branch>`')
         branches = default_branches(workspace)
         if not branches:
             return sha, f'commit {value}: no default branch found in {workspace}{hint}'
-    for branch in branches:
-        try:
-            run_cli(['git', '-C', workspace, 'merge-base', '--is-ancestor', sha, branch],
-                    timeout=30)
-            return sha, None
-        except ValueError:
-            continue
+    if reachable(workspace, sha, branches):
+        return sha, None
     return sha, f'commit {value} is not reachable from {" or ".join(branches)} in {workspace}{hint}'
 
 
@@ -629,10 +698,10 @@ def cmd_update(args):
     reason = args.reason.strip() if args.reason else None
     if (args.eta or args.deadline or args.depends is not None) and not reason:
         raise Failure('--reason is required when changing --eta, --deadline or --depends')
-    if not any((args.eta, args.deadline, args.progress, args.card, args.branch,
-                args.depends is not None)):
-        raise Failure('nothing to update; give --eta, --deadline, --progress, --card, --branch '
-                      'or --depends')
+    if not any((args.eta, args.deadline, args.progress, args.card, args.branch, args.repo,
+                args.merged_into, args.depends is not None)):
+        raise Failure('nothing to update; give --eta, --deadline, --progress, --card, --branch, '
+                      '--repo, --merged-into or --depends')
     with transaction(args, 'update', args.id, reason) as doc:
         item = find(doc, args.id)
         if args.eta or args.deadline or args.progress:
@@ -656,6 +725,12 @@ def cmd_update(args):
             changes['card'] = args.card
         if args.branch:
             changes['branch'] = args.branch
+        if args.repo:
+            changes['repo'], problem = check_repo(args.repo)
+            if problem:
+                raise Failure(problem)
+        if args.merged_into:
+            changes.update(point_at_merge_target(doc, item, args.merged_into))
         if args.depends is not None:
             deps = item_ids(args.depends)
             known = {other['id'] for other in doc['items']}
@@ -710,6 +785,9 @@ def cmd_done(args):
             raise Failure(f'item {item["id"]} not closed:\n' +
                           '\n'.join(f'  - {problem}' for problem in problems))
         changes['evidence'] = resolved
+        repo = changes.get('repo') or item.get('repo')
+        if repo:
+            changes['main_checkout'] = owning_checkout(repo)
         record(args, item, 'done', changes)
     update_card(item, resolved)
     print(f'item {item["id"]} closed')
@@ -959,6 +1037,9 @@ def build_parser():
     sub.add_argument('--progress')
     sub.add_argument('--card')
     sub.add_argument('--branch', help='branch the commit evidence must reach')
+    sub.add_argument('--repo', help='absolute path of the git repo the commit evidence lives in')
+    sub.add_argument('--merged-into', help="local long-lived branch that holds the row's commits; "
+                     'refused unless it does. The row is checked there from then on')
     sub.add_argument('--depends', help='replace dependencies; empty string clears them')
     sub.add_argument('--reason')
     sub = command('block', 'Mark an item blocked')
@@ -970,7 +1051,9 @@ def build_parser():
     sub.add_argument('--repo', help='git repo to verify --commit in (absolute; replaces the '
                      "row's repo). Refused when it is not a git repo or lacks the commit; the "
                      "row's branch and the integration branch must contain the commit where "
-                     'they exist in that repo, otherwise only its existence is checked')
+                     "they exist in that repo; a named branch that is gone falls back to the "
+                     "repo's default branch, and with no branch named only the commit's "
+                     'existence is checked')
     sub.add_argument('--gate', action='append', help='suite-gate record fingerprint')
     sub.add_argument('--file', action='append', help='absolute path of a report or checklist')
     sub = command('amend', 'Note a later change on a closed item; evidence given replaces '
