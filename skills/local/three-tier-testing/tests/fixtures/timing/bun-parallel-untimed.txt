@@ -1,0 +1,44 @@
+bun test v1.3.14 (0d9b296a) 6x PARALLEL
+
+tests/browser/agents-page.test.ts:
+{"ts":"2026-11-03T13:19:08.407Z","level":"ERROR","logger":"board.http","layer":"lat-board","message":"http_error","method":"POST","path":"/api/agents/model","status":502,"reason":"hcom 接回失敗：resume refused"}
+(pass) 繼續切換 asks first and resumes an unfinished switch; a busy agent, or one not linked, says why it cannot switch [1736.96ms]
+
+tests/server/closed-agents.test.ts:
+Listening on http://127.0.0.1:43953
+(pass) a 接回 that fails keeps the row with why, and logs it [1017.74ms]
+
+tests/unit/question-message.test.ts:
+(pass) the DECIDE message that asked it [0.40ms]
+(pass) a revised question whose new message is missing is not matched by the earlier one
+(pass) another controller's message
+(pass) a message at asked_at itself [0.03ms]
+(pass) several matches: the latest by time
+(pass) the questions one message asked come together in its order; others of the inbox do not [0.22ms]
+
+tests/server/model.test.ts:
+(pass) a resume on wake carries the chosen model and effort: Claude --model and --effort last, Codex -c only [810.34ms]
+
+tests/browser/pd-notify-throws.test.ts:
+Listening on http://127.0.0.1:43877
+error: timed out waiting for the panel folded; the page shows "(1) LAT 看板"
+(fail) a throwing Notification constructor does not break the page; the new request still opens the panel [11308.32ms]
+
+tests/server/closed-agents.test.ts:
+Listening on http://127.0.0.1:43953
+(pass) a listed one's conversation is read, a page at a time and live, by the client it was closed with [592.96ms]
+
+tests/browser/agents-page.test.ts:
+(pass) a Herdr list that cannot be read is reported while the last one stays listed, and the next one read replaces it [881.64ms]
+
+tests/server/closed-agents.test.ts:
+Listening on http://127.0.0.1:43953
+(pass) a session neither Herdr nor the 已關閉 section lists has no conversation to read [448.38ms]
+
+1 tests failed:
+(fail) a throwing Notification constructor does not break the page; the new request still opens the panel [11308.32ms]
+
+ 12 pass
+ 1 fail
+ 23 expect() calls
+Ran 13 tests across 5 files. [12.65s]
