@@ -7,11 +7,15 @@ is read from the narrowest layer that sets it: project > global. `target` comes 
 layer alone and [advisor] from the global layer alone. `check` answers allow or ask for one action
 after the action's time window, read against the current time, and the fixed conditions the tool
 enforces (branch list, the full-suite gate's passing records,
-which tickets the unpushed commits belong to, main checkout at the integration branch's tip).
+which tickets the unpushed commits belong to, main checkout at the integration branch's tip). A
+deploy whose project layer states a `rollback` method may stand on a passing post-merge
+affected-test summary that covers every change since the last successful deploy to the same
+target, read from the deploy history in the deployed project's main checkout.
 `show` prints the effective settings and where each value came from. Any unreadable or unknown
 setting makes every check ask. `grant` writes one rule that a human-answered decision record
-names; `record` logs what was done under pre-authorization and `report` lists this round's log for
-the delivery report; `now` prints the time to give `record --started`. `notice`, `record` and `report`
+names; `record` logs what was done under pre-authorization (a deploy also goes to the deploy
+history, and `record --kind manual` adds a deploy the user approved) and `report` lists this round's
+log for the delivery report; `now` prints the time to give `record --started`. `notice`, `record` and `report`
 take the controller's identity from the session record in --controller-workspace when the action is
 in another repo, which --workspace names. The board reads and writes settings through `board_settings` and `board_write`,
 which the panel helper's `board preauth-read` and `board preauth-write` commands call. The tool never
@@ -54,13 +58,16 @@ REASON_KINDS = {'allow-false': 'a layer sets allow=false',
                 'always-ask': 'no setting can pre-authorize it',
                 'error': 'the check could not judge it'}
 USER_ONLY_KINDS = ('allow-false', 'condition')
-ACTION_KEYS = {'allow': bool, 'branches': list, 'target': str, 'source': str, 'hours': str,
-               'timezone': str}
+ACTION_KEYS = {'allow': bool, 'branches': list, 'target': str, 'rollback': str, 'source': str,
+               'hours': str, 'timezone': str}
+# Only the project knows its environments and how to roll them back.
+PROJECT_ONLY_KEYS = ('target', 'rollback')
 ADVISOR_KEYS = {'extended': bool, 'may_settle': list, 'must_ask': list, 'source': str}
 TOP_KEYS = {'version', 'actions', 'advisor', 'integration_branch'}
 VERSION = 1
 BRANCH_ACTIONS = ('merge', 'push')
-MAIN_CHECKOUT_ACTIONS = ('deploy-test', 'deploy-prod', 'install-host')
+DEPLOY_ACTIONS = ('deploy-test', 'deploy-prod')
+MAIN_CHECKOUT_ACTIONS = (*DEPLOY_ACTIONS, 'install-host')
 GATE_ACTIONS = ('push', *MAIN_CHECKOUT_ACTIONS)
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
 ISSUE_REF = re.compile(r'(?<![\w&/])(?:([\w.-]+/[\w.-]+))?#(\d+)\b')
@@ -77,12 +84,14 @@ SETTLEABLE_WORDS = ('change-acceptance', 'new-ticket', 'scope-expansion')
 DECISION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
 GRANT_KEYS = ('allow', 'branches')
 RESULTS = ('succeeded', 'failed')
-REPORT_GROUPS = ((('auto',), '依預先授權自動執行'), (('bug-intake',), '免確認開工'),
-                 (('grant', 'board'), '設定寫入'))
+REPORT_GROUPS = ((('auto',), '依預先授權自動執行'), (('manual',), '人工核准的部署補記'),
+                 (('bug-intake',), '免確認開工'), (('grant', 'board'), '設定寫入'))
 HOURS = re.compile(r'((?:[01]\d|2[0-3]):[0-5]\d)-((?:[01]\d|2[0-3]):[0-5]\d)')
 # Long free text: written one item per line.
 ADVISOR_LISTS = ('may_settle', 'must_ask')
 BOARD_WRITES = 'preauth-writes.jsonl'
+# Every deploy of a project, in that project's main checkout .lat, whichever controller did it.
+DEPLOY_HISTORY = 'deploy-history.jsonl'
 
 
 @dataclass
@@ -250,13 +259,14 @@ def resolve(layers, path, keys):
 
 
 def action_settings(layers, action):
-    """Effective keys of one action. Only the project knows what its test environment is,
-    so `target` comes from the project layer alone."""
+    """Effective keys of one action. Only the project knows what its environments are and how
+    to roll them back, so `target` and `rollback` come from the project layer alone."""
     effective = resolve(layers, ('actions', action), ACTION_KEYS)
-    effective.pop('target', None)
     project = section(layers[0], ('actions', action)) if layers[0].present else None
-    if project and 'target' in project:
-        effective['target'] = (project['target'], 'project', project.get('source'))
+    for key in PROJECT_ONLY_KEYS:
+        effective.pop(key, None)
+        if project and key in project:
+            effective[key] = (project[key], 'project', project.get('source'))
     return effective
 
 
@@ -444,6 +454,99 @@ def resolve_version(top, ref):
     return git(top, 'rev-parse', '--verify', '--quiet', f'{ref}^{{commit}}') if top else None
 
 
+def is_ancestor(top, older, newer):
+    """Whether `older` is `newer` or one of its ancestors; False when either is unknown."""
+    return git(top, 'merge-base', '--is-ancestor', older, newer) is not None
+
+
+def deploy_target(effective):
+    """The deploy target the history keys on: the project's `target` text, None when unset."""
+    return effective.get('target', (None,))[0]
+
+
+def deploy_history_path(top):
+    return shared_lat_dir(top) / DEPLOY_HISTORY
+
+
+def read_deploy_history(top):
+    """The deploy history's entries, oldest first. FileNotFoundError when there is none;
+    ValueError names a line that is not a JSON object."""
+    path = deploy_history_path(top)
+    entries = []
+    for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            entry = None
+        if not isinstance(entry, dict):
+            raise ValueError(f'{path} line {number} is not a JSON object')
+        entries.append(entry)
+    return entries
+
+
+def last_deploy(top, action, target):
+    """(the last successful deploy of `action` to `target`, None) or (None, why there is no
+    usable one). A failed deploy after it leaves what runs there unknown."""
+    try:
+        entries = [entry for entry in read_deploy_history(top) if entry.get('action') == action]
+    except FileNotFoundError:
+        return None, f'no deploy history ({deploy_history_path(top)})'
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        return None, f'deploy history unreadable ({error})'
+    same = [entry for entry in entries if entry.get('target') == target]
+    found = next((index for index in range(len(same) - 1, -1, -1)
+                  if same[index].get('result') == 'succeeded'), None)
+    if found is None:
+        other = next((entry for entry in reversed(entries)
+                      if entry.get('result') == 'succeeded'), None)
+        if other:
+            return None, (f'the deploy target changed since the last successful {action} '
+                          f'(then {json.dumps(other.get("target"), ensure_ascii=False)}, now '
+                          f'{json.dumps(target, ensure_ascii=False)})')
+        return None, f'no successful {action} in the deploy history'
+    failed = [entry for entry in same[found + 1:] if entry.get('result') != 'succeeded']
+    if failed:
+        return None, (f'a {action} failed at {failed[-1].get("at")} after the last successful one '
+                      f'({same[found].get("at")}), so what runs there is unknown')
+    return same[found], None
+
+
+def affected_deploy_problems(top, version, action, target):
+    """(reasons, basis). A passing post-merge affected summary stands in for the full suite when
+    it tested this version's content from the last successful deploy's commit or an ancestor."""
+    last, why = last_deploy(top, action, target)
+    if why:
+        return [why], None
+    commit = last.get('commit')
+    if not isinstance(commit, str) or not resolve_version(top, commit):
+        return [f'the last successful {action} commit `{commit}` is not in this repository'], None
+    if not is_ancestor(top, commit, version):
+        return [f'the last successful {action} commit {commit[:12]} is not an ancestor of '
+                f'{version[:12]}'], None
+    tree = git(top, 'rev-parse', f'{version}^{{tree}}')
+    try:
+        summaries = [record for record in load_suite_gate().read_records()
+                     if record.get('kind') == 'affected-summary'
+                     and record.get('purpose') == 'post-merge' and record.get('tree') == tree]
+    except (OSError, RuntimeError, ValueError) as error:
+        return [f'post-merge summary lookup failed: {error}'], None
+    if not summaries:
+        return [f'no post-merge affected summary for the content of {version[:12]}'], None
+    passed = [record for record in summaries if record.get('passed') is True]
+    if not passed:
+        return [f'the post-merge affected summary for {version[:12]} did not pass'], None
+    covering = [record for record in passed if isinstance(record.get('base'), str)
+                and is_ancestor(top, record['base'], commit)]
+    if not covering:
+        bases = ', '.join(sorted({str(record.get('base'))[:12] for record in passed}))
+        return [f'the passing post-merge affected summary for {version[:12]} starts at {bases}, '
+                f'not at the last successful {action} commit {commit[:12]} or an ancestor'], None
+    record = max(covering, key=lambda item: str(item.get('time', '')))
+    return [], (f'post-merge affected summary {str(record.get("run_id"))[:12]} passed for '
+                f'{version[:12]} from base {record["base"][:12]}, covering the last successful '
+                f'{action} {commit[:12]} ({last.get("at")})')
+
+
 def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
     """The check's verdict as a dict: verdict, action, target, basis lines, reasons, and
     reason_kinds giving each reason's kind (REASON_KINDS) in the same order."""
@@ -537,10 +640,21 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
         elif not problems:
             result['basis'].append(f'every registered full suite passed for {version[:12]}')
     elif action in GATE_ACTIONS and version and (action != 'push' or branch == 'main'):
-        problems = gate_problems(top, version)
-        ask_each(problems)
-        if not problems:
-            result['basis'].append(f'every registered full suite passed for {version[:12]}')
+        rollback = effective.get('rollback') if action in DEPLOY_ACTIONS else None
+        affected = None
+        if rollback and rollback[0].strip():  # blank text states no method
+            affected, basis = affected_deploy_problems(top, version, action,
+                                                       deploy_target(effective))
+            if not affected:
+                result['basis'] += [describe('rollback', *rollback, label), basis]
+        if affected is None or affected:
+            problems = gate_problems(top, version)
+            if problems and affected:
+                ask_each(('condition', 'rollback is set, but the post-merge affected tests do '
+                                       f'not cover this deploy: {reason}') for reason in affected)
+            ask_each(problems)
+            if not problems:
+                result['basis'].append(f'every registered full suite passed for {version[:12]}')
     if not result['reasons']:
         result['verdict'] = 'allow'
     return result
@@ -1264,8 +1378,16 @@ def cmd_record(args):
 
 def record_locked(args, top, session):
     _, record, _, round_number = current_round(top, session)
-    if args.kind == 'auto':
-        entry = auto_entry(args, record, top, session, round_number)
+    deploy = None
+    if args.kind in ('auto', 'manual'):
+        if args.kind == 'manual':
+            deploy = manual_deploy(args, top, record)
+            entry = dict(kind='manual', action=args.action, commit=deploy[1]['commit'],
+                         result=args.result, question=args.question)
+        else:
+            entry = auto_entry(args, record, top, session, round_number)
+            if args.action in DEPLOY_ACTIONS:
+                deploy = deploy_entry(args, approval='preauth')
         repo = action_repo(args)
         if repo:
             entry['action_repo'] = str(repo)
@@ -1281,7 +1403,62 @@ def record_locked(args, top, session):
         entry = dict(kind='bug-intake', issue=args.issue, source=args.source, **conditions)
     path = append_record(top, session, round_number, entry)
     print(f'recorded {args.kind} → {path}')
+    if deploy:
+        try:
+            history = append_deploy(*deploy)
+        except (OSError, ValueError) as error:
+            raise ValueError(f'the deploy is in {path} but not in the deploy history ({error}); '
+                             'the next deploy check will want the full suite') from None
+        print(f'recorded deploy history → {history}')
     return 0
+
+
+def deploy_entry(args, **extra):
+    """(the deployed project's top, its deploy history entry): the action, the target the
+    project layer sets now, the full commit and the result."""
+    workspace = Path(args.workspace or Path.cwd())
+    top = git(workspace, 'rev-parse', '--show-toplevel')
+    if not top:
+        raise Refused(f'{workspace} is not in a Git repository')
+    top = Path(top)
+    commit = resolve_version(top, args.commit)
+    if not commit:
+        raise Refused(f'commit `{args.commit}` is not in {top}')
+    target = deploy_target(action_settings(load_layers(top)[0], args.action))
+    return top, dict(action=args.action, target=target, commit=commit, result=args.result,
+                     **extra)
+
+
+def append_deploy(top, entry):
+    path = deploy_history_path(top)
+    with locked(path.with_name(f'.{path.name}.lock')):
+        try:
+            original = path.read_bytes()
+        except FileNotFoundError:
+            original = None
+        entry = dict(at=datetime.now(timezone.utc).isoformat(timespec='seconds'), **entry)
+        write_text_atomic(path, (original or b'').decode('utf-8')
+                          + json.dumps(entry, ensure_ascii=False) + '\n', expected=original)
+    return path
+
+
+def manual_deploy(args, top, record):
+    """A deploy the user approved in a decision record, for the deploy history only."""
+    if args.action not in DEPLOY_ACTIONS:
+        raise Refused(f'a manual record is for {" or ".join(DEPLOY_ACTIONS)}, not '
+                      f'`{args.action}`')
+    missing = [flag for flag, value in (('--commit', args.commit), ('--result', args.result),
+                                         ('--question', args.question)) if not value]
+    if missing:
+        raise Refused(f'a manual record needs {", ".join(missing)}')
+    path = decision_path(top, record, args.question)
+    if not path.is_file():
+        raise Refused(f'decision record {path} not found')
+    status = read_decision_status(path)
+    if status.error or status.status not in HUMAN_ANSWERED:
+        raise Refused(f'{args.question} status is {status.status or status.error}, not '
+                      f'{" or ".join(HUMAN_ANSWERED)}')
+    return deploy_entry(args, approval='manual', question=args.question)
 
 
 def auto_entry(args, record, top, session, round_number):
@@ -1347,6 +1524,10 @@ def report_line(entry):
                    f'{report_notice(entry["notice_after"])}'
                    if 'notice_before' in entry else '')
         return f'- {head}：{entry.get("result")}；依據：{entry.get("basis")}{notices}'
+    if kind == 'manual':
+        where = f'（動作在 {entry["action_repo"]}）' if 'action_repo' in entry else ''
+        return (f'- {entry.get("action")} {entry.get("commit")}{where}：{entry.get("result")}；'
+                f'人工核准，待決 {entry.get("question")}')
     if kind == 'bug-intake':
         # Records written before this condition existed have no such field.
         guard = (f'；查過沒有既有保護：{entry["no_existing_guard"]}'
@@ -1645,14 +1826,17 @@ def build_parser():
     sub.add_argument('--source', required=True, help='decision record ID with the answer')
     sub = commands.add_parser('record', parents=[common, across],
                               help='log one thing done under pre-authorization')
-    sub.add_argument('--kind', choices=('auto', 'bug-intake'), default='auto',
+    sub.add_argument('--kind', choices=('auto', 'bug-intake', 'manual'), default='auto',
                      help='auto: an action done under pre-authorization (default); bug-intake: a '
-                          'short-flow bug ticket started without confirmation')
-    sub.add_argument('--action', help='auto: ' + ', '.join(ACTIONS))
+                          'short-flow bug ticket started without confirmation; manual: a deploy '
+                          'the user approved, added to the deploy history')
+    sub.add_argument('--action', help='auto: ' + ', '.join(ACTIONS) + '; manual: '
+                                      + ', '.join(DEPLOY_ACTIONS))
     sub.add_argument('--branch', help='auto: target branch')
-    sub.add_argument('--commit', help='auto: commit the action used')
+    sub.add_argument('--commit', help='auto, manual: commit the action used')
     sub.add_argument('--basis', help='auto: the check line')
-    sub.add_argument('--result', choices=RESULTS, help='auto: how the action ended')
+    sub.add_argument('--result', choices=RESULTS, help='auto, manual: how the action ended')
+    sub.add_argument('--question', help='manual: ID of the decision record the user answered')
     sub.add_argument('--started', help='auto deploy/install: time the action started, from `now`')
     sub.add_argument('--notice-before', type=notice_id, help='auto deploy/install: HCOM event ID '
                                                              'of the notice sent before '

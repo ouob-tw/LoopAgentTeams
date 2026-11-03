@@ -1597,7 +1597,8 @@ class RecordTests(WriteCase):
         out = result.stdout
         self.assertIn(f'session {SESSION} 第 2 輪', out)
         self.assertNotIn('OLDROUND', out)
-        auto, bug, grants = out.split('### ')[1:]
+        auto, manual, bug, grants = out.split('### ')[1:]
+        self.assertEqual(manual, '人工核准的部署補記\n- 無\n\n')
         self.assertIn('依預先授權自動執行\n- push dev abc123：succeeded；依據：allow push dev', auto)
         self.assertIn('免確認開工\n- #9；原訊息：chat 12:00；本人回報：user typed it', bug)
         self.assertIn('查過沒有既有保護：tests/x.py, docs/y.md', bug)
@@ -1605,6 +1606,281 @@ class RecordTests(WriteCase):
         self.assertNotIn('舊答覆', out)
         self.session(status='ended', history=1)
         self.assertIn('abc123', self.run_tool('report').stdout)
+
+
+class DeployAffectedTests(WriteCase):
+    """A deploy with a stated rollback method may stand on a passing post-merge affected
+    summary covering every change since the last successful deploy to the same target."""
+    TARGET = 'staging on :9000'
+
+    def setUp(self):
+        super().setUp()
+        self.write(self.global_file, '[actions.deploy-test]\nallow = true\n'
+                                     '[actions.deploy-prod]\nallow = true\n')
+        self.settings(rollback='git revert, then deploy again')
+        self.history_file = self.repo / '.lat' / 'deploy-history.jsonl'
+        self.deployed = git(self.repo, 'rev-parse', 'HEAD')
+        self.head = self.commit('after the deploy')
+        bin_dir = self.root / 'bin'
+        # record asks only `hcom list --json`; anything else is a wrong call.
+        self.write(bin_dir / 'hcom', '#!/bin/sh\n[ "$1 $2" = "list --json" ] && { echo "[]"; '
+                                     'exit 0; }\necho "unexpected hcom $*" >&2\nexit 1\n')
+        (bin_dir / 'hcom').chmod(0o755)
+        self.path = f'{bin_dir}:{os.environ["PATH"]}'
+
+    def settings(self, rollback=None, target=TARGET):
+        text = f'[actions.deploy-test]\ntarget = "{target}"\n'
+        if rollback:
+            text += f'rollback = "{rollback}"\n[actions.deploy-prod]\nrollback = "{rollback}"\n'
+        self.write(self.project_file, text)
+
+    def history(self, *rows):
+        """Rows are (action, commit, result) or (action, commit, result, target)."""
+        self.write(self.history_file, ''.join(json.dumps(dict(
+            at=f'2026-11-0{index}T10:00:00+00:00', action=row[0],
+            target=row[3] if len(row) > 3 else (self.TARGET if row[0] == 'deploy-test' else None),
+            commit=row[1], result=row[2], approval='preauth')) + '\n'
+            for index, row in enumerate(rows, 1)))
+
+    def summary(self, base, ref='HEAD', passed=True):
+        self.gate_state.mkdir(exist_ok=True)
+        with open(self.gate_state / 'ledger.jsonl', 'a') as ledger:
+            ledger.write(json.dumps({
+                'kind': 'affected-summary', 'purpose': 'post-merge', 'run_id': 'a' * 32,
+                'repo': str(self.repo), 'base': git(self.repo, 'rev-parse', base),
+                'commit': git(self.repo, 'rev-parse', ref),
+                'tree': git(self.repo, 'rev-parse', f'{ref}^{{tree}}'), 'passed': passed,
+                'exit_code': 0 if passed else 1, 'reusable': False,
+                'time': '2026-11-03T10:00:00+00:00'}) + '\n')
+
+    def assert_full_suite(self, action, reason):
+        verdict = self.check(action)
+        self.assertEqual(verdict['verdict'], 'ask')
+        joined = ' | '.join(verdict['reasons'])
+        self.assertIn(reason, joined)
+        self.assertIn('rollback is set, but the post-merge affected tests do not cover', joined)
+        self.assertIn(f'no passing full-suite record for {self.head[:12]}', joined)
+        self.assertEqual(set(verdict['reason_kinds']), {'condition'})
+
+    def test_a_summary_covering_the_last_deploy_allows_without_the_full_suite(self):
+        for action in ('deploy-test', 'deploy-prod'):
+            with self.subTest(action=action):
+                self.history((action, self.deployed, 'succeeded'))
+                self.summary(self.deployed)
+                verdict = self.check(action)
+                self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+                self.assertIn('rollback="git revert, then deploy again" from project '
+                              f'[actions.{action}]', verdict['basis'])
+                self.assertIn(f'post-merge affected summary {"a" * 12} passed for '
+                              f'{self.head[:12]} from base {self.deployed[:12]}, covering the '
+                              f'last successful {action} {self.deployed[:12]}',
+                              ' '.join(verdict['basis']))
+                self.assertIn('next_steps', verdict)
+
+    def test_a_summary_from_an_ancestor_of_the_last_deploy_also_covers_it(self):
+        older = self.deployed
+        self.deployed = self.head
+        self.head = self.commit('later still')
+        self.history(('deploy-prod', self.deployed, 'succeeded'))
+        self.summary(older)
+        self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
+
+    def test_without_a_rollback_method_the_full_suite_is_still_needed(self):
+        self.history(('deploy-prod', self.deployed, 'succeeded'))
+        self.summary(self.deployed)
+        for label, rollback in (('not set', None), ('blank', '  ')):
+            with self.subTest(label):
+                self.settings()
+                if rollback:
+                    self.write(self.project_file, self.project_file.read_text()
+                               + f'[actions.deploy-prod]\nrollback = "{rollback}"\n')
+                self.assertEqual(self.check('deploy-prod')['reasons'], [
+                    f'no passing full-suite record for {self.head[:12]}: {suite["command"]} '
+                    f'(in {suite["cwd"]})' for suite in SUITES])
+
+    def test_a_summary_that_does_not_cover_this_deploy_needs_the_full_suite(self):
+        self.history(('deploy-prod', self.deployed, 'succeeded'))
+        with self.subTest('no summary'):
+            self.assert_full_suite('deploy-prod', 'no post-merge affected summary for the content')
+        with self.subTest('the summary failed'):
+            self.summary(self.deployed, passed=False)
+            self.assert_full_suite('deploy-prod', 'did not pass')
+        with self.subTest('the summary starts after the last deploy'):
+            later = self.commit('one more')
+            self.head = self.commit('and the version to deploy')
+            self.summary(later)
+            self.assert_full_suite('deploy-prod', f'starts at {later[:12]}, not at the last '
+                                                  f'successful deploy-prod commit '
+                                                  f'{self.deployed[:12]}')
+        with self.subTest('a full-suite pass still allows'):
+            self.gate_record()
+            verdict = self.check('deploy-prod')
+            self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+            self.assertIn(f'every registered full suite passed for {self.head[:12]}',
+                          verdict['basis'])
+
+    def test_the_summary_must_test_the_version_to_deploy(self):
+        self.history(('deploy-prod', self.deployed, 'succeeded'))
+        self.summary(self.deployed, ref=self.deployed)
+        self.assert_full_suite('deploy-prod', 'no post-merge affected summary for the content')
+
+    def test_without_a_usable_last_deploy_the_full_suite_is_needed(self):
+        self.summary(self.deployed)
+        with self.subTest('no history'):
+            self.assert_full_suite('deploy-prod', 'no deploy history')
+        cases = (
+            ('only a failed deploy', [('deploy-prod', self.deployed, 'failed')],
+             'no successful deploy-prod in the deploy history'),
+            ('a deploy-test does not count for deploy-prod',
+             [('deploy-test', self.deployed, 'succeeded')],
+             'no successful deploy-prod in the deploy history'),
+            ('the commit is not in the repository', [('deploy-prod', 'f' * 40, 'succeeded')],
+             f'commit `{"f" * 40}` is not in this repository'),
+            ('a later failure, as when the new version went in and then failed',
+             [('deploy-prod', self.deployed, 'succeeded'), ('deploy-prod', self.head, 'failed')],
+             'a deploy-prod failed at 2026-11-02T10:00:00+00:00 after the last successful one'),
+            ('a failure and a failed rollback after it',
+             [('deploy-prod', self.deployed, 'succeeded'), ('deploy-prod', self.head, 'failed'),
+              ('deploy-prod', self.deployed, 'failed')],
+             'a deploy-prod failed at 2026-11-03T10:00:00+00:00 after the last successful one'))
+        for label, rows, reason in cases:
+            with self.subTest(label):
+                self.history(*rows)
+                self.assert_full_suite('deploy-prod', reason)
+
+    def test_the_last_deploy_must_be_an_ancestor_of_the_version(self):
+        git(self.repo, 'switch', '-q', '-c', 'side', self.deployed)
+        side = self.commit('elsewhere', 'side.txt')
+        git(self.repo, 'switch', '-q', 'dev')
+        self.history(('deploy-prod', side, 'succeeded'))
+        self.summary(self.deployed)
+        self.assert_full_suite('deploy-prod', f'the last successful deploy-prod commit '
+                                              f'{side[:12]} is not an ancestor of {self.head[:12]}')
+        with self.subTest('rolling back to an older version'):
+            self.history(('deploy-prod', self.head, 'succeeded'))
+            git(self.repo, 'reset', '-q', '--hard', self.deployed)
+            self.head = self.deployed
+            self.assert_full_suite('deploy-prod', 'is not an ancestor of')
+
+    def test_a_changed_target_needs_the_full_suite(self):
+        self.history(('deploy-test', self.deployed, 'succeeded', 'old staging'))
+        self.summary(self.deployed)
+        self.assert_full_suite('deploy-test', 'the deploy target changed since the last '
+                                              'successful deploy-test (then "old staging", now '
+                                              f'"{self.TARGET}")')
+
+    def test_a_success_after_a_failure_is_the_new_last_deploy(self):
+        middle = self.head
+        self.head = self.commit('version to deploy')
+        self.history(('deploy-prod', self.deployed, 'succeeded'),
+                     ('deploy-prod', middle, 'failed'), ('deploy-prod', middle, 'succeeded'))
+        # A summary starting at the newer success only covers the deploy if that success counts.
+        self.summary(middle)
+        verdict = self.check('deploy-prod')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+        self.assertIn(f'covering the last successful deploy-prod {middle[:12]}',
+                      ' '.join(verdict['basis']))
+
+    def record(self, *args, **kwargs):
+        return self.run_tool('record', *args, path=self.path, **kwargs)
+
+    def deploy_flow(self, action, commit, result='succeeded', *flags, lat=None):
+        """Record a deploy done under pre-authorization, with no one to notify."""
+        lat = lat or self.repo / '.lat'
+        self.write(lat / 'preauth-records' / f'{SESSION}-r1-no-recipient.jsonl',
+                   ''.join(json.dumps(dict(id=name, sender='orch', recorded=[], not_live=[],
+                                           self_names=[], at=at)) + '\n'
+                           for name, at in (('none-1', '2026-11-03T10:00:00+00:00'),
+                                            ('none-2', '2026-11-03T10:10:00+00:00'))))
+        return self.record('--action', action, '--commit', commit, '--basis', f'allow {action}',
+                           '--result', result, '--started', '2026-11-03T10:05:00+00:00',
+                           '--notice-before', 'none-1', '--notice-after', 'none-2', *flags)
+
+    def history_rows(self, path=None):
+        path = path or self.history_file
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_a_recorded_deploy_is_the_next_check_s_last_deploy(self):
+        result = self.deploy_flow('deploy-test', self.deployed[:10])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [row] = self.history_rows()
+        self.assertEqual({key: row[key] for key in ('action', 'target', 'commit', 'result',
+                                                    'approval')},
+                         dict(action='deploy-test', target=self.TARGET, commit=self.deployed,
+                              result='succeeded', approval='preauth'))
+        self.assertTrue(row['at'])
+        self.assertEqual(len(self.records()), 1)
+        self.summary(self.deployed)
+        self.assertEqual(self.check('deploy-test')['verdict'], 'allow')
+        self.assertEqual(self.deploy_flow('deploy-test', self.head, 'failed').returncode, 0)
+        self.assert_full_suite('deploy-test', 'a deploy-test failed')
+
+    def test_an_unknown_commit_is_refused_before_anything_is_written(self):
+        result = self.deploy_flow('deploy-prod', 'f' * 40)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('is not in', result.stderr)
+        self.assertEqual(self.records(), [])
+        self.assertFalse(self.history_file.exists())
+
+    def test_merge_push_and_install_records_write_no_deploy_history(self):
+        self.assertEqual(self.record('--action', 'merge', '--branch', 'dev', '--commit',
+                                     self.head, '--basis', 'x', '--result',
+                                     'succeeded').returncode, 0)
+        self.assertFalse(self.history_file.exists())
+
+    def test_a_manual_deploy_is_recorded_and_found_by_the_next_check(self):
+        self.decision('DEP-1')
+        result = self.record('--kind', 'manual', '--action', 'deploy-prod', '--commit',
+                             self.deployed, '--result', 'succeeded', '--question', 'DEP-1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [row] = self.history_rows()
+        self.assertEqual((row['approval'], row['question'], row['commit'], row['target']),
+                         ('manual', 'DEP-1', self.deployed, None))
+        self.assertEqual([(entry['kind'], entry['question'], entry['commit'])
+                          for entry in self.records()], [('manual', 'DEP-1', self.deployed)])
+        self.assertIn(f'人工核准的部署補記\n- deploy-prod {self.deployed}：succeeded；人工核准，'
+                      '待決 DEP-1', self.run_tool('report').stdout)
+        self.summary(self.deployed)
+        self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
+
+    def test_a_manual_record_needs_an_answered_decision_and_a_deploy(self):
+        self.decision('DEP-2', status='pending', answer=False)
+        for label, args, reason in (
+                ('pending decision', ('--action', 'deploy-prod', '--question', 'DEP-2'),
+                 'DEP-2 status is pending'),
+                ('missing decision', ('--action', 'deploy-prod', '--question', 'DEP-9'),
+                 'not found'),
+                ('no question', ('--action', 'deploy-prod'), 'needs --question'),
+                ('not a deploy', ('--action', 'install-host', '--question', 'DEP-2'),
+                 'not `install-host`')):
+            with self.subTest(label):
+                result = self.record('--kind', 'manual', '--commit', self.deployed, '--result',
+                                     'succeeded', *args)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(reason, result.stderr)
+                self.assertFalse(self.history_file.exists())
+
+    def test_a_deploy_from_another_repo_s_controller_lands_in_the_deployed_repo(self):
+        controller = self.root / 'controller'
+        controller.mkdir()
+        git(controller, 'init', '-q', '-b', 'dev')
+        git(controller, 'config', 'user.email', 't@example.com')
+        git(controller, 'config', 'user.name', 'T')
+        git(controller, 'commit', '-q', '--allow-empty', '-m', 'first')
+        (controller / '.lat').mkdir()
+        (self.repo / '.lat' / 'sessions').rename(controller / '.lat' / 'sessions')
+        self.write(self.project_file, 'integration_branch = "dev"\n'
+                   + self.project_file.read_text())
+        flags = ('--workspace', str(self.repo), '--controller-workspace', str(controller))
+        result = self.deploy_flow('deploy-prod', self.deployed, 'succeeded', *flags,
+                                  lat=controller / '.lat')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((controller / '.lat' / 'deploy-history.jsonl').exists())
+        [row] = self.history_rows()
+        self.assertEqual(row['commit'], self.deployed)
+        self.summary(self.deployed)
+        verdict = self.check('deploy-prod', '--workspace', str(self.repo), cwd=controller)
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
 
 
 GLOBAL_FILE = """# my notes
