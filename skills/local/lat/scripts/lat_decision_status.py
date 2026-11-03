@@ -88,6 +88,15 @@ def read_exempt_basis(path):
     return None
 
 
+def read_tried(path):
+    """The first `- tried:` value, or None when empty or absent."""
+    for line in Path(path).read_text(encoding='utf-8').splitlines():
+        match = re.match(r'^- tried:(.*)$', line, re.IGNORECASE)
+        if match:
+            return match.group(1).strip() or None
+    return None
+
+
 def read_spec_consensus_error(path, message):
     """Check the receipt and message only for the first spec-confirmation advisor line."""
     lines = Path(path).read_text(encoding='utf-8').splitlines()

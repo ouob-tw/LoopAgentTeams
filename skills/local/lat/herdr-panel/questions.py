@@ -1373,7 +1373,7 @@ def _decision_fields(text):
 
 def new_decision_record(question_id, incoming, *, advisor, session_id, question=None,
                         authority_gap=None, blocked_work=None, help_question=False,
-                        exempt_basis=None):
+                        exempt_basis=None, tried=None):
     """The text of a new pending decision record for ``question ask``, at r1.
 
     Unset fields default from the question: its title and its option letters and labels.
@@ -1390,6 +1390,8 @@ def new_decision_record(question_id, incoming, *, advisor, session_id, question=
         lines.append(f"- exempt-basis: {exempt_basis}")
     if help_question:
         lines.append("- kind: help")
+    if tried:
+        lines.append(f"- tried: {tried}")
     if session_id:
         lines.append(f"- session: {session_id}")
     lines += [

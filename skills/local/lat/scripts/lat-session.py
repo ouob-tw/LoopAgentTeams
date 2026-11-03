@@ -21,9 +21,9 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import (exempt_basis_category, read_advisor_error, read_advisor_words,
-                                 read_decision_action, read_exempt_basis,
+                                 read_decision_action, read_decision_session, read_exempt_basis,
                                  read_decision_kind, read_decision_status,
-                                 read_spec_consensus_error)
+                                 read_spec_consensus_error, read_tried)
 from _lat_common import (full_hcom_name, reports_directory, run_cli, shared_lat_dir,
                          watcher_process_matches, write_json_atomic)
 
@@ -1200,6 +1200,14 @@ def exempt_basis_stop_check(record, message):
     return reason, notes
 
 
+def owes_tried(path, record, already_asked):
+    """Whether a cited help record owes a `- tried:` line. Not held, so older records stay
+    usable: a version this session already asked, and a record naming another session."""
+    if read_decision_kind(path) != 'help' or read_tried(path):
+        return False
+    return not already_asked and read_decision_session(path) in (None, record['session_id'])
+
+
 def stop_check(record, payload):
     """Why this DECIDE/HELP Stop should be held, or None when it passes."""
     message = payload['last_assistant_message']
@@ -1223,6 +1231,7 @@ def stop_check(record, payload):
         if status.error and (path.stem not in foreign
                              or any(path.stem == identifier for identifier, _ in identifiers)):
             problems.append(f'{path.name}：讀不出狀態（{status.error}）')
+    announced = announced_questions(record)
     for identifier, revision in sorted(identifiers):
         status = statuses.get(identifier)
         if status is None:
@@ -1232,6 +1241,11 @@ def stop_check(record, payload):
         if status is not None and tag == 'HELP' and read_decision_kind(
                 decisions / f'{identifier}.md') != 'help':
             problems.append(f'{identifier} r{revision}：HELP 題的紀錄沒有 `- kind: help`')
+        if status is not None and owes_tried(decisions / f'{identifier}.md', record,
+                                             (identifier, revision) in announced):
+            problems.append(f'{identifier} r{revision}：求助題的紀錄缺 `- tried:` 行或值為空；'
+                            '先用手上的遠端能力試過，寫明試過什麼與結果'
+                            '（答案只在使用者帳號或裝置時寫明理由）')
         if status is not None:
             advisor_error = read_advisor_error(decisions / f'{identifier}.md')
             if advisor_error:
@@ -1257,7 +1271,7 @@ def stop_check(record, payload):
     if not problems:
         # The tag line decides; headings count only when the tag line names no question.
         listed = set(listed_questions(message))
-        if listed <= announced_questions(record):
+        if listed <= announced:
             names = '、'.join(f'{identifier} r{revision}'
                               for identifier, revision in sorted(listed))
             return (

@@ -14,7 +14,7 @@
   | `requirement-discussion` | Spec 或短流程確認前的需求討論題。 |
   | `account-quota` | 沒有可用訂閱帳號、Claude 額度用完等規則明定由使用者決定的事（Claude 後端實作任務依 /hcom-spawn 自動改派 GPT，不屬此類）。參謀本身缺一家時依「模型與降級」自動處理，不屬此例外。 |
   | `preauth-ask` | 有 `- action:` 行的授權題，當下重跑 [預先授權](preauth.md) `check` 為 `ask`，且每個原因的類別都是 `allow-false`（某層明寫 `allow = false`）或 `condition`（固定條件不成立，例如分支不在清單、HEAD 不是整合分支最新版本、整套測試沒有通過紀錄、提交未引用本輪票號）。只要有一個原因是 `unset`（例如沒有任何層寫 `allow`）或 `always-ask`，參謀仍可能依其他授權來源定案，照常諮詢。 |
-  | `user-account` | 只限求助題（紀錄有 `- kind: help`）：答案或動作只存在使用者自己的帳號或裝置，例如密碼庫項目名稱、passkey／2FA 核准、登入。代理人查得到的事不適用。非求助紀錄寫此類別會被攔下。 |
+  | `user-account` | 只限求助題（紀錄有 `- kind: help`）：答案或動作只存在使用者自己的帳號或裝置，例如密碼庫項目名稱、passkey／2FA 核准、登入。代理人查得到的事不適用。紀錄的 `- tried:` 行寫明這個理由。非求助紀錄寫此類別會被攔下。 |
   | `prior-promise` | 這題只是在兌現已記錄的真人條件，例如先前答覆寫明「再失敗先問使用者」。依據寫 `<待決 ID> r<版本>`，該版本要有真人答覆段落。主控沒寫進待決紀錄的口頭承諾不算。 |
   | `must-ask` | 這題只落在一定要問的類別。依據寫全域 `[advisor].must_ask` 其中一項的原文，或 `spend`、`delete-user-data`。`change-acceptance`、`new-ticket`、`scope-expansion` 只有全域 `may_settle` 是空的才接受；不是空的就照常諮詢，因為參謀可能定案。 |
 
@@ -34,13 +34,13 @@
 | `answered` | 使用者已在面板或看板送出，程式已記下答覆原文與來源；主控判斷意思、寫核准範圍後改為 `approved`（求助題 `resolved`），見 [待答問題面板](question-panel.md#收到-lat-panel-通知)。不是 `pending`。 | 沿用 `pending` 時的參謀行 |
 
 - 參謀行讀法比照狀態行：取第一行以 `- advisor:` 開頭的行，鍵名與值都不分大小寫；第一個字決定結論，`exempt`、`late` 的第二個字決定類別或結論，其後可接註記。同家降級時在結論後加 `same-family-degraded`，例如 `- advisor: needs-human same-family-degraded`。依據行同樣只取第一行，值去除前後空白後比對原文。
-- 結束回合的 DECIDE／HELP 檢查要求每個寫出的題號都有 `needs-human`、`exempt <spec-confirmation｜ticket-confirmation｜requirement-discussion｜account-quota｜preauth-ask｜user-account｜prior-promise｜must-ask>` 或 `late <needs-human｜resolved｜self-check>` 參謀行；缺少或寫錯就攔下，補做順序見 [主控恢復程序](recovery.md) 的「回合結束檢查」。`exempt preauth-ask` 另依當下設定重跑 `check` 核對上表條件，不符就逐題攔下；設定讀不出等 `check` 無法判斷的原因（類別 `error`）只警告。`exempt prior-promise`、`exempt must-ask` 另核對依據行，不符就逐題攔下，只有全域設定讀不出時才警告；`question ask` 也做同樣的核對，不符就拒絕寫題。
+- 結束回合的 DECIDE／HELP 檢查要求每個寫出的題號都有 `needs-human`、`exempt <spec-confirmation｜ticket-confirmation｜requirement-discussion｜account-quota｜preauth-ask｜user-account｜prior-promise｜must-ask>` 或 `late <needs-human｜resolved｜self-check>` 參謀行；缺少或寫錯就攔下，補做順序見 [主控恢復程序](recovery.md) 的「回合結束檢查」。`exempt preauth-ask` 另依當下設定重跑 `check` 核對上表條件，不符就逐題攔下；設定讀不出等 `check` 無法判斷的原因（類別 `error`）只警告。`exempt prior-promise`、`exempt must-ask` 另核對依據行，不符就逐題攔下，只有全域設定讀不出時才警告；`question ask` 也做同樣的核對，不符就拒絕寫題。求助題另須有 `- tried:` 行，規則見 [主控恢復程序](recovery.md) 的「回合結束檢查」。
 
 `## 參謀意見` 每位參謀一行：`<HCOM 名稱>（<client> <模型>）：<結論>；<理由與引用>`；再議時另起一行寫第二輪。`advisor-resolved` 紀錄另寫 `- authority:` 行，列出引用的授權來源。
 
 ## 諮詢流程
 
-1. **記錄**：建立或更新待決紀錄，狀態 `advising`，寫明問題、選項、授權缺口與受阻工作。
+1. **記錄**：建立或更新待決紀錄，狀態 `advising`，寫明問題、選項、授權缺口與受阻工作；求助題另寫 `- kind: help` 與 `- tried: <試過的方法與結果>`。
 2. **開參謀**：兩位參謀不在時依下方「生命週期」開啟。
 3. **送出**：同一份諮詢訊息分別傳給兩位參謀；兩位各自回覆，不先看對方意見。
 4. **等待**：其他工作做完後，以 `lat-watch wait --for <參謀甲>,<參謀乙>` 聲明等待。參謀以 `inform` 回覆，不會使聲明失效；兩位都回覆後直接合併。
@@ -54,6 +54,7 @@
 - 題號與版本：<ID> r<版本>（待決紀錄：<決策目錄絕對路徑>/<ID>.md）
 - 問題與選項：<問題>；`- A. …`、`- B. …`（照題目原文）
 - 授權缺口：<為什麼主控認為可能超出授權，或缺什麼資訊>
+- 已試過（求助題）：<紀錄 `- tried:` 行原文>；主控手上的遠端能力（ssh、截圖、桌面操作、瀏覽器）做得到卻沒試，或這行空白、沒有實際內容時，回 `self-check` 並寫明去哪裡、怎麼試
 - 受阻工作：<哪些 Ticket／步驟在等>
 - Spec／tracker：<Spec 位置>；<tracker 設定位置>
 - 待決目錄：<決策目錄絕對路徑>（含先前參謀的結論與真人答覆）
@@ -71,7 +72,7 @@
 - **`resolved`（定案）**：選某個選項或明確做法，並引用授權來源：已確認 Spec 的具體段落，或含真人答覆證據的待決紀錄 ID 與版本，或預先授權設定（實驗，見 [預先授權](preauth.md)）。引用不到就不能定案，只能判 `needs-human`。
   預先授權的 `- authority:` 寫 `預先授權 <層>：<段落>`，內容是 `show` 印出的設定。全域設定的 `[advisor]` 段取代使用者私人全域說明檔裡的參謀擴權實驗文字作為授權來源：`may_settle` 列參謀可定案的範圍，`must_ask` 列仍要問的範圍；引用時寫明為何屬於可定案範圍。專案層的 `[advisor]` 不生效，不能引用。動作段（如 `[actions.merge]`）只在 `check` 結果為 `allow` 時才能引用。
 - **`needs-human`（需要真人）**：寫明超出授權之處，或為何只有使用者能提供。花錢、動帳號額度、刪使用者資料一律屬此；改需求、擴大範圍（含改驗收、開新票）也屬此，除非落在全域預先授權 `[advisor]` 段的 `may_settle` 內且不屬 `must_ask`，這時可以定案。這與動作查詢是兩回事：`check --action change-acceptance`、`check --action new-ticket` 仍一律回 `ask`，也不能寫成動作設定。
-- **`self-check`（可以自己查，主要針對 HELP）**：寫明去哪裡查。
+- **`self-check`（可以自己查，主要針對 HELP）**：寫明去哪裡查。求助題核對 `- tried:` 行：主控用手上的遠端能力做得到卻沒試，就回這個結論。
 
 ## 意見合併
 

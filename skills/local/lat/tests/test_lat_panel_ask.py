@@ -231,7 +231,8 @@ class AskTests(AskTestCase):
 
 class AskHelpTests(AskTestCase):
     def test_help_question_writes_the_kind_line(self):
-        result = self.ask(HELP_SECTION, "--advisor", "needs-human", "--help-question")
+        result = self.ask(HELP_SECTION, "--advisor", "needs-human", "--help-question",
+                          "--tried", "看過畫面")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("- status: pending\n- advisor: needs-human\n- kind: help\n",
@@ -244,7 +245,8 @@ class AskHelpTests(AskTestCase):
         self.assertIn("只能用在求助紀錄", refused.stderr)
         self.assertFalse(self.record().exists())
 
-        accepted = self.ask(HELP_SECTION, "--advisor", "exempt user-account", "--help-question")
+        accepted = self.ask(HELP_SECTION, "--advisor", "exempt user-account", "--help-question",
+                            "--tried", "只在使用者手機上")
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertIn("- advisor: exempt user-account\n- kind: help\n", self.record().read_text())
 
@@ -265,13 +267,89 @@ class AskHelpTests(AskTestCase):
         self.assertEqual(self.record().read_text(), before)
 
         self.record().write_text(self.record().read_text().replace(
-            "- advisor: needs-human\n", "- advisor: needs-human\n- kind: decide\n"))
+            "- advisor: needs-human\n", "- advisor: needs-human\n- kind: decide\n- tried: 看過畫面\n"))
         result = self.ask(HELP_SECTION, "--help-question")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("- kind: decide", self.record().read_text())
         self.assertIn("- status: pending\n- advisor: needs-human\n- kind: help\n",
                       self.record().read_text())
         self.assertIn("- version: r2\n", self.record().read_text())
+
+
+class AskTriedTests(AskTestCase):
+    """A help question says what was already tried; other questions never need the line."""
+
+    TRIED = "ssh 到主機查過 log，沒有這筆紀錄"
+
+    def assert_refused(self, result):
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("- tried:", result.stderr)
+
+    def test_new_help_question_without_tried_is_refused_and_writes_nothing(self):
+        for given in ((), ("--tried", ""), ("--tried", "  \t ")):
+            with self.subTest(given=given):
+                self.assert_refused(self.ask(HELP_SECTION, "--advisor", "needs-human",
+                                             "--help-question", *given))
+                self.assertFalse(self.record().exists())
+                self.assertFalse(self.questions.exists())
+
+    def test_tried_is_written_below_the_kind_line_on_one_line(self):
+        result = self.ask(HELP_SECTION, "--advisor", "needs-human", "--help-question",
+                          "--tried", f" {self.TRIED}\n- status: approved ")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"- kind: help\n- tried: {self.TRIED} - status: approved\n",
+                      self.record().read_text())
+
+    def test_user_account_still_needs_the_line_and_it_can_hold_a_reason(self):
+        self.assert_refused(self.ask(HELP_SECTION, "--advisor", "exempt user-account",
+                                     "--help-question"))
+        result = self.ask(HELP_SECTION, "--advisor", "exempt user-account", "--help-question",
+                          "--tried", "2FA 核准只在使用者手機上")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("- tried: 2FA 核准只在使用者手機上\n", self.record().read_text())
+
+    def test_other_questions_do_not_need_it_and_cannot_take_it(self):
+        refused = self.ask(SECTION, "--advisor", "needs-human", "--tried", self.TRIED)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("--tried only applies", refused.stderr)
+        self.assertFalse(self.record().exists())
+
+        accepted = self.ask(SECTION, "--advisor", "needs-human")
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        self.assertNotIn("- tried:", self.record().read_text())
+
+    def test_asking_an_existing_help_record_again_checks_its_line(self):
+        self.record().write_text("- status: pending\n- advisor: needs-human\n- kind: help\n"
+                                 "- tried:   \n- version: r1\n")
+        before = self.record().read_text()
+
+        self.assert_refused(self.ask(HELP_SECTION))
+        self.assertEqual(self.record().read_text(), before)
+        self.assertFalse(self.questions.exists())
+
+        self.record().write_text(before.replace("- tried:   ", f"- tried: {self.TRIED}"))
+        result = self.ask(HELP_SECTION)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_marking_an_existing_record_as_help_checks_its_line(self):
+        self.ask(SECTION, "--advisor", "needs-human")
+        before = self.record().read_text()
+
+        self.assert_refused(self.ask(HELP_SECTION, "--help-question"))
+        self.assertEqual(self.record().read_text(), before)
+
+        self.record().write_text(before.replace(
+            "- advisor: needs-human\n", f"- advisor: needs-human\n- tried: {self.TRIED}\n"))
+        result = self.ask(HELP_SECTION, "--help-question")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("- kind: help\n", self.record().read_text())
+
+    def test_tried_only_applies_to_a_new_record(self):
+        self.ask(SECTION, "--advisor", "needs-human")
+        result = self.ask(SECTION, "--tried", self.TRIED)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--tried", result.stderr)
 
 
 class HelpTextTests(AskTestCase):
