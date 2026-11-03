@@ -1883,7 +1883,7 @@ class Gate:
         except ValueError as exc:
             return f'the affected-test map cannot be read ({exc})'
         text = self.argv[0] if len(self.argv) == 1 else shlex.join(self.argv)
-        plan = rerun_plan(scan, test_steps(text, self.cwd), self.cwd, root, commands)
+        plan = rerun_plan(scan, test_runs(text, self.cwd), self.cwd, root, commands)
         return plan if isinstance(plan, str) else (root, commands, *plan)
 
     def rerun_failed(self, root, commands, groups, first_code):
@@ -2007,10 +2007,9 @@ SCAN_MAX_LINE = 65536     # bytes of an unfinished line kept while it streams
 # The runners whose output the rerun reads, by the name it reports them under.
 RERUN_TOOLS = {'bun-test': 'bun test', 'unittest': 'unittest',
                'unittest-discover': 'unittest', 'pytest': 'pytest'}
-SHELL_KEYWORDS = {'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', '!',
-                  '{', '}', 'esac'}
-# Commands that may come after the last test run: text output, not a step that can fail.
-AFTER_TESTS = {'printf', 'echo', 'tee', 'cat', 'true', ':', 'exit'}
+LOOP_WORDS = {'while', 'until', 'for', 'do', 'done', 'case', 'esac', 'select', 'function'}
+# Options that run a command in another directory (uv, bun, env).
+CWD_OPTIONS = {'--cwd', '--chdir', '--directory', '--project'}
 PYTEST_CONFIGS = ('pytest.ini', '.pytest.ini', 'pyproject.toml', 'setup.cfg', 'tox.ini')
 PYTEST_STOP = re.compile(r'(?<![\w-])(?:-[a-wyzA-Z]*x\w*|--exitfirst|--maxfail|--sw|'
                          r'--stepwise\S*|--sw-skip)(?![\w-])')
@@ -2141,54 +2140,120 @@ def package_scripts(cwd):
     return scripts if isinstance(scripts, dict) else None
 
 
-def script_name(words, scripts):
-    """The package.json script a package-manager command runs: '' when it runs none, None
-    when it runs one the gate cannot name."""
+def script_call(words, scripts):
+    """(script name, forwarded arguments) of a package-manager command that runs a
+    package.json script; ('', []) when it runs none, (None, []) when the gate cannot name
+    it. The arguments after the name (a leading `--` dropped) are appended to the script,
+    as npm, pnpm, yarn and bun run do."""
     head = os.path.basename(words[0])
     if head not in ('npm', 'pnpm', 'yarn', 'bun'):
-        return ''
-    rest = words[_skip_options(words, 1, RUNNERS['script']['value']):]
+        return '', []
+    i = _skip_options(words, 1, RUNNERS['script']['value'])
+    rest = words[i:]
     if not rest:
-        return ''
+        return '', []
     if rest[0] in ('run', 'run-script'):
-        return rest[1] if len(rest) > 1 else None
-    if rest[0] in ('test', 't') and head != 'bun':
-        return 'test'
-    if head != 'npm' and scripts and rest[0] in scripts and rest[0] != 'test':
-        return rest[0]
-    return ''
+        name, extra = (rest[1], rest[2:]) if len(rest) > 1 else (None, [])
+    elif rest[0] in ('test', 't') and head != 'bun':
+        name, extra = 'test', rest[1:]
+    elif head != 'npm' and scripts and rest[0] in scripts and rest[0] != 'test':
+        name, extra = rest[0], rest[1:]
+    else:
+        return '', []
+    return name, extra[1:] if extra[:1] == ['--'] else extra
 
 
-def test_steps(command, cwd, depth=0):
-    """The simple commands a shell string runs in cwd, in order, with the package.json
-    scripts it runs opened up: [(runner, args, words)], runner None for a command that is no
-    test runner. None when a script it runs cannot be read."""
+def _shell_steps(text, cwd, depth=0):
+    """[[words, sep, role]] for each simple command text runs in cwd, package.json scripts
+    opened up with their forwarded arguments; sep is the operator after it and role
+    'cond' (an `if` condition), 'subst' (inside `$(...)`), 'or-exit' (the `exit` of
+    `|| exit`) or 'cmd'. A str saying why when the shell shape is beyond what the rerun can
+    vouch for: loops, subshells, heredocs, backticks or a script that cannot be read."""
+    if '`' in text or depth > 5:
+        return 'the command uses backticks or nests package.json scripts too deeply'
     try:
-        commands = split_commands(command)
-    except UnreadableShellInput:
-        return None
-    scripts, steps = package_scripts(cwd), []
-    for words in commands:
-        while words and words[0] in SHELL_KEYWORDS:
+        found = _simple_commands(text)
+    except ValueError:
+        return 'the command cannot be read'
+    scripts, steps, cond, subst = package_scripts(cwd), [], False, []
+    for words, _, heredocs, sep, level in found:
+        while subst and level < subst[-1]:
+            subst.pop()
+        if heredocs:
+            return 'the command feeds a heredoc to a program'
+        if level > len(subst):
+            return 'the command runs a subshell'
+        if words[0] in ('if', 'elif'):
+            cond, words = True, words[1:]
+        elif words[0] in ('then', 'else'):
+            cond, words = False, words[1:]
+        while words and words[0] in ('!', '{', '}', 'fi'):
             words = words[1:]
+        if words and words[0] in LOOP_WORDS:
+            return f'the command has a `{words[0]}` block'
+        if sep == '(':
+            if not words or words[-1] != '$':
+                return 'the command runs a subshell'
+            words = words[:-1]
+            subst.append(level + 1)
+        role = ('subst' if level else 'cond' if cond else
+                'or-exit' if words[:1] == ['exit'] and words[1:] in ([], ['$?'])
+                and steps and steps[-1][1] == '||' else 'cmd')
         words = _strip_assignments(words)
         while words and (inner := _strip_launcher(words)) is not None:
             words = inner
         if not words:
+            if steps and role == 'cmd':
+                steps[-1][1] = sep  # `fi` or `}` carries the operator on
             continue
-        name = script_name(words, scripts)
-        if name is None or name and (depth >= 5 or not isinstance((scripts or {}).get(name),
-                                                                   str)):
-            return None
+        name, extra = script_call(words, scripts)
+        if name is None or name and not isinstance((scripts or {}).get(name), str):
+            return f'cannot read the package.json script `{shlex.join(words)}` runs'
         if name:
-            inner = test_steps(scripts[name], cwd, depth + 1)
-            if inner is None:
-                return None
-            steps += inner
+            inner = _shell_steps(' '.join(filter(None, (scripts[name], shlex.join(extra)))),
+                                 cwd, depth + 1)
+            if isinstance(inner, str):
+                return inner
+            if inner:
+                inner[-1][1] = sep
+            steps += [[w, s, role if role != 'cmd' else r] for w, s, r in inner]
             continue
-        found = _unwrap(words)
-        steps.append((found[0], found[1], words) if found else (None, [], words))
+        steps.append([words, sep, role])
     return steps
+
+
+def test_runs(command, cwd):
+    """[(runner, args)] of the test runs a shell string makes in cwd, when its shape lets the
+    rerun vouch that a failed test is the only failed step: every other command is an `if`
+    condition, runs inside `$(...)`, or comes before the tests chained so that its failure
+    stops them (`&&` up to the next test run, or `|| exit`); nothing runs after the last
+    test run, and nothing changes directory or starts another shell. Otherwise why not."""
+    steps = _shell_steps(command, cwd)
+    if isinstance(steps, str):
+        return steps
+    found = [_unwrap(words) for words, _, _ in steps]
+    for words, _, _ in steps:
+        head = os.path.basename(words[0])
+        if head in ('cd', 'pushd', 'popd') or head == 'env' and '-C' in words \
+                or any(w.split('=', 1)[0] in CWD_OPTIONS for w in words):
+            return 'the command changes directory, so the files its output names cannot be placed'
+        if head in SHELLS or head == 'eval':
+            return f'the command starts `{head}`, whose commands the gate cannot follow'
+    runs = [i for i, run in enumerate(found) if run]
+    if not runs:
+        return 'the command runs no bun test, unittest or pytest'
+    for i, (words, sep, role) in enumerate(steps):
+        if found[i] or role != 'cmd':
+            continue
+        shown = shlex.join(words)
+        if i > runs[-1]:
+            return f'`{shown}` runs after the tests, and its failure is no test failure'
+        nxt = next(r for r in runs if r > i)
+        chained = all(steps[k][1] == '&&' for k in range(i, nxt))
+        if not chained and not (sep == '||' and steps[i + 1][2] == 'or-exit'):
+            return (f'`{shown}` runs before the tests without stopping them when it fails, '
+                    'so its failure could be hidden')
+    return [found[i] for i in runs]
 
 
 def _short_flags(word, values):
@@ -2229,11 +2294,11 @@ def fail_fast(runner, args, cwd):
     return False
 
 
-def unittest_bases(steps, cwd):
+def unittest_bases(runs, cwd):
     """The directories unittest test ids are relative to: the top-level (or start)
     directory of `discover`, cwd otherwise."""
     bases = []
-    for runner, args, _ in steps:
+    for runner, args in runs:
         if runner == 'unittest':
             bases.append(Path(cwd))
         elif runner == 'unittest-discover':
@@ -2256,41 +2321,33 @@ def unittest_bases(steps, cwd):
     return bases
 
 
-def failure_file(tool, where, scan, steps, cwd):
+def failure_file(tool, where, scan, runs, cwd):
     """The file a failure names, as an existing path, or None."""
     if where is None:
         return None
     if tool == 'unittest':
         parts = where.split('.')
         candidates = [Path(base, *parts[:k - 1], parts[k - 1] + '.py')
-                      for base in unittest_bases(steps, cwd) for k in range(len(parts), 0, -1)]
-    elif tool == 'pytest':
-        candidates = [Path(cwd, root, where) for root in scan.roots] + [Path(cwd) / where]
+                      for base in unittest_bases(runs, cwd) for k in range(len(parts), 0, -1)]
+    elif tool == 'pytest':  # node ids are relative to the rootdir pytest printed
+        candidates = [Path(cwd, root, where) for root in scan.roots] or [Path(cwd) / where]
     else:
         candidates = [Path(cwd) / where]
     return next((p for p in candidates if p.is_file()), None)
 
 
-def rerun_plan(scan, steps, cwd, root, commands):
+def rerun_plan(scan, tools, cwd, root, commands):
     """How to rerun the failed test files once: ({affected.commands directory: [repo
-    paths]}, {repo path: [failed test names]}), or why they are not rerun."""
-    if steps is None:
-        return ('a package.json script the command runs cannot be read, so an option that '
-                'stops at the first failure cannot be ruled out')
-    tools = [(runner, args) for runner, args, _ in steps if runner]
-    if not tools:
-        return 'the command runs no bun test, unittest or pytest'
+    paths]}, {repo path: [failed test names]}), or why they are not rerun. tools is what
+    test_runs() returned for the command."""
+    if isinstance(tools, str):
+        return tools
     other = sorted({runner for runner, _ in tools if runner not in RERUN_TOOLS})
     if other:
         return f"the gate cannot read the output of {', '.join(other)}"
     stopper = next((runner for runner, args in tools if fail_fast(runner, args, cwd)), None)
     if stopper:
         return f'{RERUN_TOOLS[stopper]} is set to stop at the first failure'
-    last = max(i for i, (runner, _, _) in enumerate(steps) if runner)
-    after = next((words for _, _, words in steps[last + 1:]
-                  if os.path.basename(words[0]) not in AFTER_TESTS), None)
-    if after:
-        return f'`{shlex.join(after)}` runs after the tests, and its failure is no test failure'
     if scan.problems:
         return scan.problems[0]
     used = {RERUN_TOOLS[runner] for runner, _ in tools}
@@ -2309,7 +2366,7 @@ def rerun_plan(scan, steps, cwd, root, commands):
         return 'no test failed, so a step other than the tests failed'
     real_root, names = os.path.realpath(root), {}
     for tool, where, name in scan.failures:
-        path = failure_file(tool, where, scan, steps, cwd)
+        path = failure_file(tool, where, scan, tools, cwd)
         rel = path and os.path.relpath(os.path.realpath(path), real_root)
         if rel is None or rel.startswith('..'):
             return f'the failure of {name} cannot be traced to a test file in the repository'

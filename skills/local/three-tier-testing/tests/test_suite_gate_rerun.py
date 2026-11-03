@@ -15,8 +15,10 @@ PY = shlex.quote(sys.executable)
 
 class RerunCase(GateCase):
     """A mapped project with fake bun and pytest on PATH. Each fake call takes the next step
-    of plan/<tool>.json: print the fixture `out` (bun to stderr, pytest to stdout), touch
-    `touch` if given, exit `code`. `bun run <script>` runs the package.json script."""
+    of plan/<tool>.json: print the fixture `out` (bun to stderr, pytest to stdout; its
+    capture directory read as the current one), touch
+    `touch` if given, exit `code`. `bun run <script> [-- args]` runs the package.json script
+    with the arguments appended, as bun does."""
 
     def setUp(self):
         super().setUp()
@@ -27,11 +29,13 @@ class RerunCase(GateCase):
         for tool in ('bun', 'pytest'):
             path = fake_bin / tool
             path.write_text(f"""#!{sys.executable}
-import json, os, subprocess, sys
+import json, os, shlex, subprocess, sys
 from pathlib import Path
 if {tool!r} == 'bun' and sys.argv[1:2] == ['run']:
     script = json.loads(Path('package.json').read_text())['scripts'][sys.argv[2]]
-    sys.exit(subprocess.run(['/bin/sh', '-c', script]).returncode)
+    extra = sys.argv[3:][1:] if sys.argv[3:4] == ['--'] else sys.argv[3:]
+    sys.exit(subprocess.run(['/bin/sh', '-c', ' '.join([script, *map(shlex.quote, extra)])]
+                            ).returncode)
 plans = Path({str(self.plans)!r})
 with open(plans / 'calls.jsonl', 'a') as log:
     log.write(json.dumps([{tool!r}, os.getcwd(), sys.argv[1:]]) + '\\n')
@@ -39,7 +43,9 @@ plan = json.loads((plans / {tool!r}).with_suffix('.json').read_text())
 step = plan.pop(0)
 (plans / {tool!r}).with_suffix('.json').write_text(json.dumps(plan))
 out = sys.stderr if {tool!r} == 'bun' else sys.stdout
-out.write((Path({str(FIXTURES)!r}) / step['out']).read_text())
+# The fixtures name the directory they were captured in as /home/user/project.
+out.write((Path({str(FIXTURES)!r}) / step['out']).read_text().replace(
+    '/home/user/project', os.getcwd()))
 if step.get('touch'):
     Path(step['touch']).write_text('changed by the test\\n')
 sys.exit(step['code'])
@@ -185,15 +191,37 @@ class BunRerunTests(RerunCase):
         self.project({'web': 'bun test {tests}'}, dict.fromkeys(self.BUN_FILES, '') | {
             'web/package.json': json.dumps({'scripts': {
                 'test:all': 'bun run build:test && bun test ./tests',
-                'build:test': 'echo "error: build failed" >&2; exit 1'}})})
+                'build:test': 'false'}})})
         self.assert_not_rerun(self.run_suite('bun run test:all', cwd='web'),
                               'no complete bun test summary line', calls=0)
+
+    def test_a_build_chained_before_the_tests_still_lets_them_rerun(self):
+        self.project({'web': 'bun test {tests}'}, dict.fromkeys(self.BUN_FILES, '') | {
+            'web/package.json': json.dumps({'scripts': {
+                'test:all': 'bun run build:test && bun test ./tests', 'build:test': 'true'}})})
+        self.plan('bun', ('bun-fail.txt', 1), ('bun-pass.txt', 0))
+        result = self.run_suite('bun run test:all', cwd='web')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.only_record()['flaky']), 2)
 
     def test_a_step_after_the_tests_is_not_rerun(self):
         self.project({'web': 'bun test {tests}'}, self.BUN_FILES)
         self.plan('bun', ('bun-fail.txt', 1))
-        self.assert_not_rerun(self.run_suite('bun test ./tests; false', cwd='web'),
-                              'runs after the tests')
+        self.assert_not_rerun(self.run_suite('bun test ./tests; exit 7', cwd='web'),
+                              '`exit 7` runs after the tests')
+
+    def test_a_step_before_the_tests_whose_failure_does_not_stop_them_is_not_rerun(self):
+        self.project({'web': 'bun test {tests}'}, self.BUN_FILES)
+        self.plan('bun', ('bun-fail.txt', 1))
+        self.assert_not_rerun(self.run_suite('false; bun test ./tests', cwd='web'),
+                              '`false` runs before the tests without stopping them')
+
+    def test_a_command_that_changes_directory_is_not_rerun(self):
+        self.project({'web': 'bun test {tests}'},
+                     self.BUN_FILES + ('tests/a.test.ts', 'tests/sub/b.test.ts'))
+        self.plan('bun', ('bun-fail.txt', 1))
+        self.assert_not_rerun(self.run_suite('cd web && bun test ./tests'),
+                              'the command changes directory')
 
     def test_more_than_ten_failed_files_are_not_rerun(self):
         self.project({'web': 'bun test {tests}'},
@@ -283,6 +311,14 @@ class UnittestRerunTests(RerunCase):
     def test_failfast_with_a_normal_summary_line_is_not_rerun(self):
         self.project({'.': f'{PY} -m unittest {{tests}}'}, self.two_packages())
         result = self.run_suite(f'{PY} -m unittest discover -f -s .')
+        self.assertIn('Ran 1 test in', result.stderr)
+        self.assert_not_rerun(result, 'unittest is set to stop at the first failure', calls=0)
+
+    def test_failfast_forwarded_to_a_package_json_script_is_not_rerun(self):
+        files = self.two_packages() | {'package.json': json.dumps(
+            {'scripts': {'test:all': f'{PY} -m unittest discover -s .'}})}
+        self.project({'.': f'{PY} -m unittest {{tests}}'}, files)
+        result = self.run_suite('bun run test:all -- -f')
         self.assertIn('Ran 1 test in', result.stderr)
         self.assert_not_rerun(result, 'unittest is set to stop at the first failure', calls=0)
 
