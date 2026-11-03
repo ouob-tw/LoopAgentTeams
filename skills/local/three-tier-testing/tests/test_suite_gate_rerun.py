@@ -210,7 +210,8 @@ class BunRerunTests(RerunCase):
 
     def test_a_script_chained_before_the_tests_that_hides_its_runner_is_not_rerun(self):
         scripts = {'test:all': 'bun run smoke && bun test ./tests', 'inner': 'bun test ./smoke'}
-        for smoke in ('sh smoke.sh', 'uv run --no-project bun run inner', 'RUNNER=bun $RUNNER'):
+        for smoke in ('sh smoke.sh', 'uv run --no-project bun run inner', 'RUNNER=bun $RUNNER',
+                      'echo "$(bun test ./smoke)"; false'):
             with self.subTest(smoke=smoke):
                 self.forget_runs()
                 self.project({'web': 'bun test {tests}'}, dict.fromkeys(self.BUN_FILES, '') | {

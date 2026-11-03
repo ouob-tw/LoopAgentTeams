@@ -2261,8 +2261,9 @@ def may_run_tests(text, cwd, depth):
     """Whether text could start a test runner. It cannot only when every command it runs is
     one of NO_TEST_COMMANDS (after assignments and launchers) or `bun run` of scripts that
     cannot either (with their pre and post scripts); anything else, including a wrapper,
-    an expansion or text that cannot be read, may."""
-    if depth > 5:
+    a command or process substitution anywhere in the text (a `${VAR:-value}` expansion is
+    fine) or text that cannot be read, may."""
+    if depth > 5 or any(s in text for s in ('$(', '`', '<(', '>(')):
         return True
     try:
         commands = split_commands(text)
