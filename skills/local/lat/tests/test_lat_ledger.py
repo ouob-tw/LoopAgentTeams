@@ -773,6 +773,159 @@ class DeletedBranchWithoutIntegrationTests(LedgerCase):
         self.assertIn('is not reachable from other', error)
 
 
+class RemovedWorktreeCase(LedgerCase):
+    """ouob-tw/LoopAgentTeams-work#436: task cleanup removes the row's worktree and branch."""
+
+    def new_repo(self, name, branch='main'):
+        repo = self.root / name
+        repo.mkdir()
+        git(repo, 'init', '-q', '-b', branch)
+        git(repo, 'config', 'user.email', 't@example.com')
+        git(repo, 'config', 'user.name', 'T')
+        (repo / 'o.txt').write_text('o\n')
+        git(repo, 'add', 'o.txt')
+        git(repo, 'commit', '-q', '-m', 'first')
+        return repo
+
+    def task_worktree(self, repo):
+        """A task worktree of `repo` with one commit; returns (worktree, commit)."""
+        worktree = repo / '.worktrees' / 'task'
+        git(repo, 'worktree', 'add', '-q', '-b', 'task', str(worktree))
+        (worktree / 't.txt').write_text('t\n')
+        git(worktree, 'add', 't.txt')
+        git(worktree, 'commit', '-q', '-m', 'task work')
+        return worktree, git(worktree, 'rev-parse', 'HEAD')
+
+    def closed_in_worktree(self, repo=None):
+        """A row closed from a task worktree of `repo`; returns (row, worktree, commit)."""
+        worktree, commit = self.task_worktree(repo or self.workspace)
+        item = self.started('--repo', str(worktree), '--branch', 'task')
+        self.ok('done', str(item), '--commit', commit, by='impl')
+        return item, worktree, commit
+
+    def clean_up(self, repo, worktree, merge=True, drop_branch=True):
+        if merge:
+            git(repo, 'merge', '-q', '--no-ff', '-m', 'merge task', 'task')
+        git(repo, 'worktree', 'remove', str(worktree))
+        if drop_branch:
+            git(repo, 'branch', '-q', '-D', 'task')
+
+    def check_fails(self):
+        result = self.run_ledger('check')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        return result.stdout
+
+
+class RemovedWorktreeTests(RemovedWorktreeCase):
+    def setUp(self):
+        super().setUp()
+        self.init()
+
+    def test_passes_when_the_commit_reached_the_integration_branch(self):
+        _, worktree, _ = self.closed_in_worktree()
+        self.clean_up(self.workspace, worktree)
+        self.assertIn('ledger check: OK', self.ok('check'))
+
+    def test_fails_when_the_commit_never_reached_the_integration_branch(self):
+        _, worktree, commit = self.closed_in_worktree()
+        self.clean_up(self.workspace, worktree, merge=False)
+        output = self.check_fails()
+        self.assertIn(f'repo {worktree} no longer exists', output)
+        self.assertIn(f'{self.workspace}: commit {commit} is not reachable from dev', output)
+
+    def test_a_surviving_task_branch_does_not_count_once_the_worktree_is_gone(self):
+        _, worktree, _ = self.closed_in_worktree()
+        self.clean_up(self.workspace, worktree, merge=False, drop_branch=False)
+        self.assertIn('is not reachable from dev', self.check_fails())
+
+    def test_fails_naming_where_it_looked_when_the_commit_no_longer_exists(self):
+        _, worktree, commit = self.closed_in_worktree()
+        self.clean_up(self.workspace, worktree, merge=False)
+        git(self.workspace, 'reflog', 'expire', '--expire=now', '--all')
+        git(self.workspace, 'gc', '-q', '--prune=now')
+        output = self.check_fails()
+        self.assertIn(f'repo {worktree} no longer exists', output)
+        self.assertIn(f'{self.workspace}: commit {commit} not found', output)
+
+    def test_a_worktree_of_another_repo_is_looked_up_in_that_repo(self):
+        other = self.new_repo('other')
+        _, worktree, _ = self.closed_in_worktree(other)
+        self.clean_up(other, worktree)
+        self.ok('check')
+
+    def test_another_repo_that_is_gone_too_fails_naming_the_workspace(self):
+        other = self.new_repo('other')
+        _, worktree, commit = self.closed_in_worktree(other)
+        self.clean_up(other, worktree)
+        shutil.rmtree(other)
+        self.assertIn(f'{self.workspace}: commit {commit} not found', self.check_fails())
+
+    def test_done_closes_a_merged_row_after_the_worktree_is_gone(self):
+        worktree, commit = self.task_worktree(self.workspace)
+        item = self.started('--repo', str(worktree), '--branch', 'task')
+        self.clean_up(self.workspace, worktree)
+        self.ok('done', str(item), '--commit', commit, by='impl')
+
+    def test_deleted_branch_in_a_surviving_repo_is_held_to_the_integration_branch(self):
+        item = self.started('--branch', 'side', '--repo', str(self.workspace))
+        self.ok('done', str(item), '--commit', self.side, by='impl')
+        git(self.workspace, 'branch', '-q', '-D', 'side')
+        self.assertIn('is not reachable from dev', self.check_fails())
+
+
+class RemovedWorktreeWithoutIntegrationTests(RemovedWorktreeCase):
+    """With no integration branch recorded, the repo's default branch stands in for it."""
+
+    def setUp(self):
+        super().setUp()
+        self.ok('init', '--workspace', str(self.workspace), '--orchestrator', 'orch')
+
+    def test_passes_when_the_commit_reached_the_default_branch(self):
+        repo = self.new_repo('other')
+        _, worktree, _ = self.closed_in_worktree(repo)
+        self.clean_up(repo, worktree)
+        self.ok('check')
+
+    def test_fails_with_the_way_out_when_it_only_reached_another_branch(self):
+        repo = self.new_repo('other')
+        git(repo, 'switch', '-q', '-c', 'dev')
+        item, worktree, commit = self.closed_in_worktree(repo)
+        self.clean_up(repo, worktree)
+        output = self.check_fails()
+        self.assertIn(f'{repo}: commit {commit} is not reachable from main', output)
+        self.assertIn(f'update {item} --repo <main checkout> --branch <branch>', output)
+        self.ok('update', str(item), '--repo', str(repo), '--branch', 'dev')
+        self.ok('check')
+
+    def test_fails_when_no_default_branch_exists(self):
+        repo = self.new_repo('other', branch='dev')
+        _, worktree, _ = self.closed_in_worktree(repo)
+        self.clean_up(repo, worktree)
+        self.assertIn(f'{repo}: no integration or default branch', self.check_fails())
+
+    def test_deleted_branch_in_a_surviving_repo_is_held_to_the_default_branch(self):
+        repo = self.new_repo('other')
+        git(repo, 'switch', '-q', '-c', 'task')
+        (repo / 't.txt').write_text('t\n')
+        git(repo, 'add', 't.txt')
+        git(repo, 'commit', '-q', '-m', 'task work')
+        commit = git(repo, 'rev-parse', 'HEAD')
+        item = self.started('--repo', str(repo), '--branch', 'task')
+        self.ok('done', str(item), '--commit', commit, by='impl')
+        git(repo, 'switch', '-q', 'main')
+        git(repo, 'branch', '-q', '-D', 'task')
+        self.assertIn('is not reachable from main', self.check_fails())
+        git(repo, 'merge', '-q', '--no-ff', '-m', 'merge', commit)
+        self.ok('check')
+
+    def test_update_repo_refuses_a_path_that_is_not_a_git_repository(self):
+        item = self.started()
+        plain = self.root / 'plain'
+        plain.mkdir()
+        self.assertIn('not a git repository',
+                      self.fails('update', str(item), '--repo', str(plain)))
+
+
 class ShowTests(LedgerCase):
     def setUp(self):
         super().setUp()

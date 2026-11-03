@@ -81,6 +81,8 @@ Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 的 DECIDE�
 
 最後一行以 `DONE:` 開頭且紀錄有 `ledger_path` 時，另執行總表 `check`；有未結案或缺證據的列、或總表讀不出時，同樣首次攔下並列出，`stop_hook_active` 時只警告放行。沒有 `ledger_path` 的舊紀錄不做這項檢查。
 
+任務收尾照規定移除 worktree 與分支後，總表 `check` 照常能過：該列的 repo 已不存在時，改到該路徑所在的主工作區與總表工作區找提交，提交要可從整合分支到達，這時留著的任務分支不算數。總表沒記整合分支（或名稱不在該 repo）時改看該 repo 的預設分支（`origin/HEAD`，否則 `main`、`master`），也沒有就算失敗。失敗訊息列出查過的位置；提交其實進了別的分支時，用 `update <列編號> --repo <主工作區> --branch <分支>` 指過去。
+
 **題目代送**：已綁定面板時，檢查通過或只警告放行（含上述 `stop_hook_active` 與工具錯誤）後，依最後一行列出的題號與版本（沒列時改看標題行）的順序，從自己的問題檔讀出同版本待答題目，套成純文字放進 `systemMessage`，格式見 [聊天提問格式](question-panel.md#聊天提問格式)。同一次 Stop 只輸出一個 JSON 物件：題目在前，警告接在後面。首次攔下時不代送；未綁定、主控已停用時也不代送。讀不到綁定或問題檔、綁定與紀錄不符、題目不在問題檔或套版出錯時，只附一行「LAT 題目代送失敗」警告，不改變檢查結果。回報紀錄只存模型寫的訊息，不含代送的題目。
 
 **啟用檢查**：工作區沒有本 session 的 `.lat/sessions/<session-id>.json` 時，Stop hook 改查對話紀錄。紀錄裡有叫出 LAT 技能就擋下並要求依本程序 activate：Claude 是使用者訊息含 `<command-name>/lat</command-name>`，或主控用 Skill 工具叫出 `lat`／`<命名空間>:lat`；Codex 是使用者打 `$lat` 時注入、`<name>lat</name>` 的 `<skill>` 區塊。用讀檔或指令看 SKILL.md 不算，所以 Codex 自行讀技能檔不會被擋。只是閱讀或審查技能而被擋時，在回覆說明原因即可結束。
