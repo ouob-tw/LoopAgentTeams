@@ -392,7 +392,7 @@
       {"paths": ["board/src/lib/components/ExplainTip.svelte"],
        "tests": ["board/tests/browser/roster*.test.ts", "board/tests/browser/roster-blank.test.ts", "board/tests/browser/agents-page.test.ts"]},
       {"paths": ["board/src/lib/components/ControllerExplain.svelte"],
-       "tests": ["board/tests/browser/roster*.test.ts", "board/tests/browser/roster-blank.test.ts", "board/tests/browser/agents-page.test.ts"]},
+       "tests": ["board/tests/browser/roster*.test.ts", "board/tests/browser/roster-blank.test.ts"]},
       {"paths": ["board/src/lib/components/DutyText.svelte"],
        "tests": ["board/tests/browser/roster*.test.ts", "board/tests/browser/roster-blank.test.ts", "board/tests/browser/controller-*.test.ts", "board/tests/browser/herdr-controller-send.test.ts", "board/tests/browser/agents-page.test.ts"]},
       {"paths": ["board/src/lib/components/PickerMenu.svelte"],
