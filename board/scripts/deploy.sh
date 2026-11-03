@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# Deploy the board from the committed HEAD, never from the working folder's uncommitted edits:
+# Deploy the board from a committed state (HEAD, or the commit named in LAT_DEPLOY_COMMIT), never from the working folder's uncommitted edits:
 # build in a temporary detached git worktree, swap the result in as build/, restart the service
 # and wait for the login page, then print the inbox. Before the swap a failure leaves the live
 # build/ untouched; after it a failed restart or login check puts the previous build/ back and restarts once more.
 #
-#   bash board/scripts/deploy.sh
+#   bash board/scripts/deploy.sh                          # deploy HEAD
+#   LAT_DEPLOY_COMMIT=<commit> bash board/scripts/deploy.sh   # deploy (or roll back to) that commit
+#
+# A named commit is built in its own temporary worktree; the main workspace's branch and files are
+# not touched. A commit that does not exist stops the script before anything is changed.
 #
 # Settings (environment):
+#   LAT_DEPLOY_COMMIT     commit to deploy: any hash, tag or branch name git knows (default: HEAD)
 #   LAT_DEPLOY_BOARD_DIR  board directory to deploy (default: the one holding this script)
 #   LAT_DEPLOY_UNIT       systemd user unit to restart (default: lat-board)
 #   LAT_DEPLOY_RESTART    restart command, run with sh -c (default: systemctl --user restart <unit>)
@@ -62,14 +67,16 @@ wait_for_login() {
 [ -d "$board/node_modules" ] || die "$board/node_modules is missing; run bun install there first"
 repo=$(git -C "$board" rev-parse --show-toplevel) || die "$board is not inside a git repository"
 prefix=$(git -C "$board" rev-parse --show-prefix)
-head=$(git -C "$board" rev-parse --short HEAD) || die "cannot read HEAD"
+target=${LAT_DEPLOY_COMMIT:-HEAD}
+full=$(git -C "$board" rev-parse --verify --quiet "$target^{commit}") || die "commit not found: $target; build/ is untouched"
+sha=$(git -C "$board" rev-parse --short "$full")
 
 [ -e "$board/build-new" ] && trash "$board/build-new"
 [ -e "$board/build-prev" ] && { say "removing the old build-prev"; trash "$board/build-prev"; }
 
 worktree=$(mktemp -d "${TMPDIR:-/tmp}/lat-board-deploy-XXXXXX") || die "cannot make a temporary folder"
-git -C "$repo" worktree add --detach "$worktree" HEAD >/dev/null 2>&1 || die "cannot make a worktree at HEAD"
-say "building $head from a clean worktree"
+git -C "$repo" worktree add --detach "$worktree" "$full" >/dev/null 2>&1 || die "cannot make a worktree at $sha"
+say "building $sha from a clean worktree"
 ln -s "$board/node_modules" "$worktree/${prefix}node_modules"
 (cd "$worktree/$prefix" && LAT_BOARD_BUILD_DIR="$board/build-new" sh -c "$build_cmd" >&2) \
 	|| die "the build failed; build/ is untouched"
@@ -82,12 +89,12 @@ fi
 mv -T "$board/build-new" "$board/build" || die "could not move build-new into place; build/ is untouched"
 moving=
 swapped=1
-say "swapped in $head; restarting"
+say "swapped in $sha; restarting"
 
 if sh -c "$restart" >&2 && wait_for_login; then
 	say "login page answers 200 on port $port"
 	[ -d "$board/build-prev" ] && trash "$board/build-prev"
-	say "deployed $head"
+	say "deployed $sha"
 	# The login page says the service is up; this says what the deployed HEAD makes of the real data.
 	(cd "$worktree/$prefix" && timeout "$wait_seconds" bun run --silent board inbox) >&2 || say "the inbox could not be read in full; run: bun run board inbox"
 	exit 0

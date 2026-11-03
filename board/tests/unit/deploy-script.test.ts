@@ -222,3 +222,34 @@ test('the default restart command restarts the named systemd user unit', async (
 	expect(readFileSync(log, 'utf8').split('\n')).toContain('--user restart lat-board-test');
 	rmSync(stub);
 });
+
+test('LAT_DEPLOY_COMMIT builds that commit, not HEAD, and leaves the main workspace alone', async () => {
+	fresh();
+	const first = git('rev-parse', 'HEAD').trim();
+	writeFileSync(join(board, 'source.txt'), 'second');
+	git('add', '-A');
+	git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'second');
+	writeFileSync(join(board, 'source.txt'), 'uncommitted edit');
+	const headBefore = git('rev-parse', 'HEAD');
+	const branchBefore = git('branch', '--show-current');
+	const r = await deploy({ LAT_DEPLOY_COMMIT: first });
+	expect(r.status).toBe(0);
+	expect(readFileSync(join(board, 'build/index.js'), 'utf8')).toBe('committed');
+	expect(r.stderr).toContain(`deployed ${first.slice(0, 7)}`);
+	expect(git('rev-parse', 'HEAD')).toBe(headBefore);
+	expect(git('branch', '--show-current')).toBe(branchBefore);
+	expect(readFileSync(join(board, 'source.txt'), 'utf8')).toBe('uncommitted edit');
+	expect(leftovers()).toEqual([]);
+	expect(worktrees()).toBe(1);
+});
+
+test('a commit that does not exist stops before touching build/ or restarting', async () => {
+	fresh();
+	const r = await deploy({ LAT_DEPLOY_COMMIT: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' });
+	expect(r.status).toBe(1);
+	expect(r.stderr).toContain('commit not found');
+	expect(readFileSync(join(board, 'build/index.js'), 'utf8')).toBe('old');
+	expect(restarts()).toBe(0);
+	expect(leftovers()).toEqual([]);
+	expect(worktrees()).toBe(1);
+});
