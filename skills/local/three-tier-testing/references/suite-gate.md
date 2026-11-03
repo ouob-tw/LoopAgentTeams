@@ -121,7 +121,7 @@ CPU 與記憶體都不足時兩句以 `; ` 連接。訊息中的 GB 都是 GiB�
   - 指令（含它執行的 package.json 腳本，以及傳給腳本的參數，例如 `npm run test -- -f`）有遇錯即停的選項：`bun test --bail`（或 `bunfig.toml` 設了 `bail`）、`pytest -x`／`--exitfirst`／`--maxfail`／`--stepwise`（含 `PYTEST_ADDOPTS` 與設定檔的 `addopts`）、`unittest -f`／`--failfast`；讀不到它執行的腳本時也算有。
   - 指令跑了閘門讀不了輸出的測試工具（例如 jest、vitest、playwright）。
   - 測試以外的步驟可能失敗而被蓋過：測試之後還有任何步驟（含 `| tee`、`exit`）；或測試之前的步驟不是以 `&&` 一路接到測試、也不是 `|| exit`（`if` 的條件與 `$(...)` 裡的指令不算）。
-  - 指令換目錄（`cd`、`pushd`、`env -C`、`--cwd`、`--directory`、`--project`），或閘門看不清它的結構：子 shell、迴圈或 `case`、heredoc、反引號、另開 `sh`／`bash`／`eval`。
+  - 指令換目錄（`cd`、`pushd`、`env -C`／`--chdir`、`--cwd`、`--directory`、`--project`、套件管理工具的 `--prefix`／`-C`／`--dir`／`--workspace`），或閘門看不清它的結構：子 shell、迴圈或 `case`、heredoc、反引號、另開 `sh`／`bash`／`eval`。
   - 少了該工具完整的總結行（中途停止或逾時被終止），或輸出顯示提早停止（bun 的 `Bailed out`、pytest 的 `!!!` 中斷行）。
   - 有載入或收集錯誤：unittest 的 `_FailedTest`、pytest 的 `ERROR collecting` 或沒有測試名稱的 `ERROR <檔案>`、bun 的 `Unhandled error between tests` 或總結的 `N error`。
   - 總結行的失敗數與指出的失敗數對不上，或有失敗歸不到 repo 裡的測試檔；總結沒有失敗（測試以外的步驟失敗）。

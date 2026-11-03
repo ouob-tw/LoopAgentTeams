@@ -2008,8 +2008,9 @@ SCAN_MAX_LINE = 65536     # bytes of an unfinished line kept while it streams
 RERUN_TOOLS = {'bun-test': 'bun test', 'unittest': 'unittest',
                'unittest-discover': 'unittest', 'pytest': 'pytest'}
 LOOP_WORDS = {'while', 'until', 'for', 'do', 'done', 'case', 'esac', 'select', 'function'}
-# Options that run a command in another directory (uv, bun, env).
-CWD_OPTIONS = {'--cwd', '--chdir', '--directory', '--project'}
+# Options that run a command in another directory (env, uv, bun, npm, pnpm, yarn).
+CWD_OPTIONS = {'-C', '--chdir', '--cwd', '--directory', '--project', '--prefix', '--dir',
+               '--workspace', '-w'}
 PYTEST_CONFIGS = ('pytest.ini', '.pytest.ini', 'pyproject.toml', 'setup.cfg', 'tox.ini')
 PYTEST_STOP = re.compile(r'(?<![\w-])(?:-[a-wyzA-Z]*x\w*|--exitfirst|--maxfail|--sw|'
                          r'--stepwise\S*|--sw-skip)(?![\w-])')
@@ -2199,6 +2200,10 @@ def _shell_steps(text, cwd, depth=0):
         role = ('subst' if level else 'cond' if cond else
                 'or-exit' if words[:1] == ['exit'] and words[1:] in ([], ['$?'])
                 and steps and steps[-1][1] == '||' else 'cmd')
+        # Before launchers (`env -C`) and package-manager options (`--prefix`) are dropped.
+        if words and os.path.basename(words[0]) in ('cd', 'pushd', 'popd') \
+                or any(w.split('=', 1)[0] in CWD_OPTIONS for w in words):
+            return 'the command changes directory, so the files its output names cannot be placed'
         words = _strip_assignments(words)
         while words and (inner := _strip_launcher(words)) is not None:
             words = inner
@@ -2234,9 +2239,6 @@ def test_runs(command, cwd):
     found = [_unwrap(words) for words, _, _ in steps]
     for words, _, _ in steps:
         head = os.path.basename(words[0])
-        if head in ('cd', 'pushd', 'popd') or head == 'env' and '-C' in words \
-                or any(w.split('=', 1)[0] in CWD_OPTIONS for w in words):
-            return 'the command changes directory, so the files its output names cannot be placed'
         if head in SHELLS or head == 'eval':
             return f'the command starts `{head}`, whose commands the gate cannot follow'
     runs = [i for i, run in enumerate(found) if run]

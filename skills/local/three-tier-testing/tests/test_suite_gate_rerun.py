@@ -220,8 +220,13 @@ class BunRerunTests(RerunCase):
         self.project({'web': 'bun test {tests}'},
                      self.BUN_FILES + ('tests/a.test.ts', 'tests/sub/b.test.ts'))
         self.plan('bun', ('bun-fail.txt', 1))
-        self.assert_not_rerun(self.run_suite('cd web && bun test ./tests'),
-                              'the command changes directory')
+        for command in ('cd web && bun test ./tests', 'env -C web bun test ./tests',
+                        'env --chdir=web bun test ./tests'):
+            with self.subTest(command=command):
+                self.assert_not_rerun(self.run_suite(command), 'the command changes directory')
+                self.plan('bun', ('bun-fail.txt', 1))
+                (self.state / 'ledger.jsonl').unlink()
+                (self.plans / 'calls.jsonl').unlink(missing_ok=True)
 
     def test_more_than_ten_failed_files_are_not_rerun(self):
         self.project({'web': 'bun test {tests}'},
