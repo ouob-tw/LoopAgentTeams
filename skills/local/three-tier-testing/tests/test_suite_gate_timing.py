@@ -78,6 +78,16 @@ class BunTimingTests(TimingCase):
         self.assertIn('Flaky tests in this window (failed first, passed on the rerun):\n'
                       '- `web/tests/c.test.ts`: waits then breaks (2 time(s), last ', body)
 
+    def test_the_closing_failed_list_of_a_parallel_run_adds_no_time(self):
+        self.project({'web': 'bun test {tests}'}, self.PARALLEL_FILES)
+        self.plan('bun', ('rerun/bun-parallel-fail.txt', 1), ('rerun/bun-pass.txt', 0))
+        self.run_on('2026-01-01')
+        self.assertEqual(self.records()[-1]['file_seconds'], {
+            'web/tests/browser/pd-notify-throws.test.ts': 11.308,
+            'web/tests/browser/agents-page.test.ts': 2.619,
+            'web/tests/server/closed-agents.test.ts': 2.059,
+            'web/tests/server/model.test.ts': 0.81})
+
     def test_hidden_passes_record_no_times_and_cleanup_done_clears_the_window(self):
         self.bun_project()
         self.plan('bun', ('timing/bun-timed-pass.txt', 0), ('rerun/bun-fail.txt', 1),

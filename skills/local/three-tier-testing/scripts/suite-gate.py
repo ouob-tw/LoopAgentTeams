@@ -2049,6 +2049,7 @@ BUN_HEADER = re.compile(r'(\S+\.[cm]?[jt]sx?):')
 BUN_FAIL = re.compile(r'\(fail\) (.+?)(?: \[([\d.]+)(m?s)\])?')
 BUN_PASS = re.compile(r'\(pass\) .+? \[([\d.]+)(m?s)\]')
 BUN_COUNT = re.compile(r' (\d+) (pass|fail|errors?)')
+BUN_FAILED_LIST = re.compile(r'\d+ tests? failed:')  # the closing list of failures
 BUN_DONE = re.compile(r'Ran \d+ tests? across \d+ files?\. \[.*\]')
 UT_FAIL = re.compile(r'(FAIL|ERROR): (\S+) \(([^()\s]+)\)(?: .*)?')
 UT_RAN = re.compile(r'Ran \d+ tests? in [\d.]+s')
@@ -2078,6 +2079,7 @@ class TestScan:
         self.lock = threading.Lock()  # the stdout and stderr pumps feed it from two threads
         self.partial = {}
         self.bun_file = {}
+        self.bun_list = {}  # in bun's closing list of the failures already shown
         self.ut_ran = {}
         self.failures = []
         self.overflow = False
@@ -2162,12 +2164,21 @@ class TestScan:
                 self.pt_durations[key] = False
         if m := BUN_HEADER.fullmatch(line):
             self.bun_file[key] = m[1]
+            self.bun_list[key] = False
+        elif BUN_FAILED_LIST.fullmatch(line):
+            self.bun_list[key] = True
+        elif self.bun_list.get(key) and (m := BUN_FAIL.fullmatch(line)):
+            # A repeat of a failure shown under its file: only one never shown is kept,
+            # with no file, so the rerun is not trusted with it.
+            if not any(f[0] == 'bun test' and f[2] == m[1] for f in self.failures):
+                self._fail('bun test', None, m[1])
         elif m := BUN_PASS.fullmatch(line):
             self._bun_time(key, m[1], m[2])
         elif m := BUN_FAIL.fullmatch(line):
             self._fail('bun test', self.bun_file.get(key), m[1])
             self._bun_time(key, m[2], m[3])
         elif m := BUN_COUNT.fullmatch(line):
+            self.bun_list[key] = False
             if m[2] in ('pass', 'fail'):
                 self.bun_counted += int(m[1])
             if m[2] == 'fail':
@@ -2177,6 +2188,7 @@ class TestScan:
         elif BUN_DONE.fullmatch(line):
             self.summaries['bun test'] += 1
             self.bun_file[key] = None
+            self.bun_list[key] = False
         elif line.startswith('Bailed out after'):
             self._problem('bun test stopped at the first failure (--bail)')
         elif line == '# Unhandled error between tests':

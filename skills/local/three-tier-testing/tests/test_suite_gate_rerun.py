@@ -115,6 +115,10 @@ class {cls}(unittest.TestCase):
 """}
 
     BUN_FILES = ('web/tests/a.test.ts', 'web/tests/sub/b.test.ts', 'web/tests/c.test.ts')
+    # The files of fixtures/rerun/bun-parallel-fail.txt.
+    PARALLEL_FILES = ('web/tests/browser/agents-page.test.ts', 'web/tests/server/model.test.ts',
+                      'web/tests/server/closed-agents.test.ts',
+                      'web/tests/browser/pd-notify-throws.test.ts')
 
 
 class BunRerunTests(RerunCase):
@@ -152,6 +156,20 @@ class BunRerunTests(RerunCase):
         self.assertEqual((record['exit_code'], record['reusable'], record['flaky']), (1, False, []))
         self.assertEqual(record['rerun']['exit_code'], 1)
         self.assertIn('the rerun failed too', result.stderr)
+
+    def test_a_parallel_run_reruns_its_failed_file_once_despite_the_closing_failed_list(self):
+        # Trimmed from a real `bun test --parallel=6` run: the closing `1 tests failed:`
+        # list repeats the failure after another file's header.
+        self.project({'web': 'bun test {tests}'}, self.PARALLEL_FILES)
+        self.plan('bun', ('bun-parallel-fail.txt', 1), ('bun-pass.txt', 0))
+        result = self.run_suite('bun test ./tests', cwd='web')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.only_record()
+        self.assertEqual(record['flaky'], [{
+            'file': 'web/tests/browser/pd-notify-throws.test.ts',
+            'tests': ['a throwing Notification constructor does not break the page; '
+                      'the new request still opens the panel']}])
+        self.assertEqual(self.calls()[1][2], ['test', 'tests/browser/pd-notify-throws.test.ts'])
 
     def test_affected_tests_rerun_their_failed_files_too(self):
         self.project({'web': 'bun test {tests}'}, self.BUN_FILES)
