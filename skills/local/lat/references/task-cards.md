@@ -25,7 +25,7 @@ HCOM Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自�
 - preflight：無（有現場動作時寫動手前的核對事項）
 - 視覺驗收：無（填法見 [視覺驗收](visual-acceptance.md)）
 - 預計檢查數：無（派 QA 時寫預計的檢查數量級，如約 10 項）
-- 整套測試：無（派實作與 QA 時必填：由誰、何時經閘門跑一次；有對照表的專案寫「受影響測試，依 three-tier-testing」，整批合併後的整套寫明指定的人與 `post-merge` 用途，QA 寫「不跑；合併前查實作者回報的受影響測試結果，整批合併後查 `post-merge` 閘門紀錄」；沒有對照表的專案照 three-tier-testing 的舊規則，QA 查該票的閘門紀錄）
+- 整套測試：無（派實作與 QA 時必填：由誰、何時經閘門跑一次；有對照表的專案寫「受影響測試，依 three-tier-testing」，整批合併後寫明由誰跑 `post-merge` 受影響測試（不跑整套），QA 寫「不跑；合併前查實作者回報的結果，合併後查 `post-merge` 總結紀錄」；沒有對照表的專案照 three-tier-testing 的舊規則，QA 查該票的閘門紀錄）
 - runs：主工作區 `.lat/runs/` 下該票資料夾的絕對路徑（見「票資料位置」）；沒有自己票號的卡（Spec 審查、參謀）寫上層票的資料夾，都沒有寫「無」
 - temp paths：逐項列路徑；含機密者標記 `secret → shred -u`，不記錄機密內容；隔離 client 家目錄必列（見「隔離 client 家目錄」）
 - done so far：

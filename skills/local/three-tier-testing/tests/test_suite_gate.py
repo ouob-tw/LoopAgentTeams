@@ -1500,11 +1500,11 @@ class MapFallbackTests(AffectedCase):
         self.gate('affected')
         self.assertEqual(self.full_runs(), ['root', 'web'], 'reuse notes never block reuse')
 
-    def test_a_fallback_reusing_a_post_merge_pass_records_the_fallback(self):
+    def test_a_fallback_reusing_a_release_pass_records_the_fallback(self):
         self.touch('README.md')
         for suite in self.registry['full_suites']:
             cwd = self.repo / suite['cwd']
-            result = self.gate('run', '--purpose', 'post-merge', '--', suite['command'], cwd=cwd)
+            result = self.gate('run', '--purpose', 'release', '--', suite['command'], cwd=cwd)
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.gate('affected').returncode, 0)
         self.assertEqual(self.full_runs(), ['root', 'web'])
@@ -1735,22 +1735,22 @@ class PurposeTests(AffectedCase):
         self.assertEqual(rerun.returncode, 2)
 
     def test_purposes_are_recorded_outside_the_fingerprint(self):
-        merged = self.gate('run', '--purpose', 'post-merge', '--', self.full('root'))
+        merged = self.gate('run', '--purpose', 'release', '--', self.full('root'))
         self.assertEqual(merged.returncode, 0, merged.stderr)
         record = self.records()[-1]
-        self.assertEqual((record['purpose'], record['purpose_reason']), ('post-merge', None))
+        self.assertEqual((record['purpose'], record['purpose_reason']), ('release', None))
         merged_fp = record['fingerprint']
-        release = self.gate('run', '--purpose', 'release', '--', self.full('root'))
+        release = self.gate('run', '--reason', 'check again', '--', self.full('root'))
         self.assertEqual(release.returncode, 0, release.stderr)
         self.assertIn('already passed', release.stdout)
-        self.assertIn('purpose:     post-merge', release.stdout)
+        self.assertIn('purpose:     release', release.stdout)
         self.assertEqual(self.full_runs(), ['root'])
         note = self.records()[-1]
-        self.assertEqual((note['kind'], note['purpose']), ('reuse', 'release'))
+        self.assertEqual((note['kind'], note['purpose']), ('reuse', 'reason'))
         # A reader that ignores `kind` (an older gate) takes the latest record for this
         # content; the note must not hide the pass from it.
         latest = [r for r in self.records() if r.get('fingerprint') == merged_fp][-1]
-        self.assertEqual((latest['purpose'], latest['reusable']), ('post-merge', True))
+        self.assertEqual((latest['purpose'], latest['reusable']), ('release', True))
         self.assertNotIn('fingerprint', note)
         self.assertEqual(note['reused_fingerprint'], merged_fp)
         self.assertIn(f'REUSED pass of {latest["time"]}  fp {merged_fp[:12]}',
@@ -3017,10 +3017,10 @@ class PrePushTests(PrePushCase):
         self.assertEqual(self.push(':refs/tags/v2').returncode, 0, 'deletions are not checked')
         for cwd in (self.repo, self.repo / 'web'):
             suite = self.full('root' if cwd == self.repo else 'web')
-            result = self.gate('run', '--purpose', 'post-merge', '--', suite, cwd=cwd)
+            result = self.gate('run', '--purpose', 'release', '--', suite, cwd=cwd)
             self.assertEqual(result.returncode, 0, result.stderr)
         runs = len(self.full_runs())
-        self.assertEqual(self.push('v2').returncode, 0, 'a post-merge pass counts')
+        self.assertEqual(self.push('v2').returncode, 0, 'a release pass counts')
         self.assertEqual(len(self.full_runs()), runs)
 
     def test_fingerprint_include_files_come_from_the_work_tree(self):
@@ -3088,8 +3088,8 @@ class RegisteredFormTests(PrePushCase):
             return gate.lacking_full_suites(self.repo, head(self.repo), self.registry)
 
     def test_another_form_of_a_registered_suite_warns_with_the_registered_form(self):
-        registered = gate.gate_command(self.full('root'), ('--purpose', 'post-merge'))
-        split = self.gate('run', '--purpose', 'post-merge', '--', *shlex.split(self.full('root')))
+        registered = gate.gate_command(self.full('root'), ('--purpose', 'release'))
+        split = self.gate('run', '--purpose', 'release', '--', *shlex.split(self.full('root')))
         self.assertEqual(split.returncode, 0, split.stderr)
         self.assertIn('not be accepted by the push and install checks', split.stderr)
         self.assertIn(registered, split.stderr)
@@ -3103,7 +3103,7 @@ class RegisteredFormTests(PrePushCase):
                           (shlex.split(self.full('root')), self.repo / 'web'),
                           (['echo', 'other'], self.repo)):
             with self.subTest(args=args, cwd=cwd):
-                result = self.gate('run', '--purpose', 'post-merge', '--', *args, cwd=cwd)
+                result = self.gate('run', '--purpose', 'release', '--', *args, cwd=cwd)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertNotIn('not be accepted', result.stderr)
 
@@ -3131,7 +3131,7 @@ class RegisteredFormTests(PrePushCase):
         self.assertIn('suite-gate: web: passed', result.stderr)
 
     def test_run_registered_runs_the_named_suites(self):
-        result = self.gate('run', '--registered', 'web', '--purpose', 'post-merge')
+        result = self.gate('run', '--registered', 'web', '--purpose', 'release')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.full_runs(), ['web'])
         self.assertEqual(self.lacking(), self.registry['full_suites'][:1])
@@ -3185,7 +3185,7 @@ class RegisteredCheckoutTests(PrePushCase):
         return [p.name for p in parent.iterdir()] if parent.exists() else [], entries[1:]
 
     def test_suites_run_in_a_checkout_of_head_that_is_removed_after(self):
-        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 0, result.stderr)
         ran_in = Path(self.where.read_text().strip())
         self.assertEqual(ran_in.parent.parent, self.state / 'checkouts')
@@ -3195,7 +3195,7 @@ class RegisteredCheckoutTests(PrePushCase):
         self.assertNotIn('uncommitted changes', result.stderr)
         self.assertEqual(self.checkouts_left(), ([], []))
         self.assertEqual(self.lacking(), [], 'the pass counts for the original tree')
-        again = self.gate('run', '--purpose', 'post-merge', '--',
+        again = self.gate('run', '--purpose', 'release', '--',
                           self.registry['full_suites'][0]['command'], cwd=self.repo / 'web')
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(self.full_runs(), ['web'], 'a run in the tree itself reuses it')
@@ -3204,7 +3204,7 @@ class RegisteredCheckoutTests(PrePushCase):
         self.registry['full_suites'][0]['command'] += '; exit 3'
         self.write_registry()
         git(self.repo, 'commit', '-qam', 'registry')
-        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertEqual(self.full_runs(), ['web'])
         self.assertEqual(self.checkouts_left(), ([], []))
@@ -3215,7 +3215,7 @@ class RegisteredCheckoutTests(PrePushCase):
             f'touch {started}; while [ ! -f {release} ]; do sleep 0.05; done')
         self.write_registry()
         git(self.repo, 'commit', '-qam', 'registry')
-        proc = self.start('run', '--registered', '--purpose', 'post-merge')
+        proc = self.start('run', '--registered', '--purpose', 'release')
         self.wait_until(started.exists, message='the suite to start')
         self.assertEqual(len(self.checkouts_left()[0]), 1)
         proc.send_signal(signal.SIGINT)
@@ -3231,7 +3231,7 @@ class RegisteredCheckoutTests(PrePushCase):
         self.write_registry()
         git(self.repo, 'commit', '-qam', 'registry')
         tested = head(self.repo)
-        proc = self.start('run', '--registered', '--purpose', 'post-merge')
+        proc = self.start('run', '--registered', '--purpose', 'release')
         self.wait_until(self.where.exists, message='the suite to start')
         self.touch('src/app.py', 'merged = True\n')
         git(self.repo, 'add', '-A')
@@ -3247,7 +3247,7 @@ class RegisteredCheckoutTests(PrePushCase):
 
     def test_a_dirty_tree_is_named_and_left_out(self):
         self.touch('app.py', 'uncommitted\n')
-        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('has uncommitted changes; they are not tested', result.stderr)
         self.assertIn('x = 1', result.stdout, 'the suite saw the committed app.py')
@@ -3262,7 +3262,7 @@ class RegisteredCheckoutTests(PrePushCase):
         self.commit(self.repo, 'include')
         self.touch('.env.example', 'dirty\n')
         self.touch('.env.test', 'ignored\n')
-        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, 'committed\nignored\n')
 
@@ -3283,7 +3283,7 @@ class RegisteredCheckoutTests(PrePushCase):
         # after the trap is set.
         self.fake_bun(0, f"sh -c 'trap \"\" TERM; echo $$ > {child}.tmp; mv {child}.tmp {child}; "
                          "exec sleep 300' & wait")
-        proc = self.start('run', '--registered', '--purpose', 'post-merge')
+        proc = self.start('run', '--registered', '--purpose', 'release')
         self.wait_until(child.exists, message='the preparation to start')
         pid = int(child.read_text())
         proc.send_signal(signal.SIGINT)
@@ -3303,14 +3303,14 @@ class RegisteredCheckoutTests(PrePushCase):
         git(self.repo, 'add', '-A')
         self.commit(self.repo, 'web dependencies')
         self.fake_bun(0)
-        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 0, result.stderr)
         ran_in = self.where.read_text().strip()
         self.assertEqual((self.tmp / 'bun.log').read_text(), f'{ran_in} install --frozen-lockfile\n')
         self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
         self.fake_bun(1)
         self.counter.unlink()
-        rerun = self.gate('run', '--registered', '--rerun', 'deps', '--purpose', 'post-merge')
+        rerun = self.gate('run', '--registered', '--rerun', 'deps', '--purpose', 'release')
         self.assertEqual(rerun.returncode, 2, rerun.stderr)
         self.assertIn('not run: preparing web failed (bun install --frozen-lockfile exited 1); '
                       'this is not a test result', rerun.stderr)
@@ -3335,7 +3335,7 @@ class ScopedFingerprintTests(PrePushCase):
         self.passed()
 
     def passed(self):
-        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.lacking(), [])
 
@@ -3352,7 +3352,7 @@ class ScopedFingerprintTests(PrePushCase):
     def test_a_change_outside_a_declared_scope_keeps_the_pass(self):
         self.change('README.md')
         self.assertEqual(self.lacking(), ['docs'], 'only the suite without a declaration')
-        reused = self.gate('run', '--purpose', 'post-merge', '--', self.full('web'),
+        reused = self.gate('run', '--purpose', 'release', '--', self.full('web'),
                            cwd=self.repo / 'web')
         self.assertEqual(reused.returncode, 0, reused.stderr)
         self.assertEqual(sorted(self.full_runs()), ['docs', 'tests', 'web'],
@@ -3406,7 +3406,7 @@ class ConcurrentRegisteredTests(PrePushCase):
                                  f'while [ ! -f {self.tmp}/started-{other[name]} ]; do '
                                  'sleep 0.05; i=$((i+1)); [ $i -gt 400 ] && exit 9; done; '
                                  f'echo {name}-done')
-        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('[.] root-done\n', result.stdout)
         self.assertIn('[web] web-done\n', result.stdout)
@@ -3418,7 +3418,7 @@ class ConcurrentRegisteredTests(PrePushCase):
         log = self.tmp / 'times'
         self.suites(lambda name: f'echo "{name} $(date +%s%N) start" >> {log}; sleep 0.3; '
                                  f'echo "{name} $(date +%s%N) end" >> {log}')
-        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 0, result.stderr)
         events = [line.split() for line in log.read_text().splitlines()]
         self.assertEqual([e[2] for e in sorted(events, key=lambda e: int(e[1]))],
@@ -3427,7 +3427,7 @@ class ConcurrentRegisteredTests(PrePushCase):
     def test_an_interrupt_ends_every_running_suite(self):
         self.suites(lambda name: f'echo $$ > {self.tmp}/{name}.pid; '
                                  'while true; do sleep 0.05; done')
-        proc = self.start('run', '--registered', '--purpose', 'post-merge')
+        proc = self.start('run', '--registered', '--purpose', 'release')
         pids = [self.tmp / f'{name}.pid' for name in ('root', 'web')]
         self.wait_until(lambda: all(p.exists() and p.read_text().strip() for p in pids),
                         message='both suites to start')
@@ -3445,7 +3445,7 @@ class ConcurrentRegisteredTests(PrePushCase):
                                         {'command': self.full('web'), 'cwd': 'web'}]
         self.write_registry()
         git(self.repo, 'commit', '-qam', 'suites')
-        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn('not run: no-such-dir could not start', result.stderr)
         self.assertIn('suite-gate: no-such-dir: not run', result.stderr)
