@@ -118,10 +118,8 @@ CPU 與記憶體都不足時兩句以 `; ` 連接。訊息中的 GB 都是 GiB�
 - **重跑指令**：每個失敗檔案換成 repo 相對路徑，照 `affected` 的規則取包含它、最長的 `affected.commands` 目錄的樣板，`{tests}` 填該目錄下的相對路徑，在該目錄、同一份內容上執行。失敗檔案分屬幾個目錄就各用自己的樣板依序跑。重跑沿用原本這次執行占的名額，不另外排隊。
 - **不重跑、照原結果記失敗**的情況（任一成立）：
   - 專案沒有對照表，或任一失敗檔案找不到樣板目錄。
-  - 指令（含它執行的 package.json 腳本，以及傳給腳本的參數，例如 `npm run test -- -f`）有遇錯即停的選項：`bun test --bail`（或 `bunfig.toml` 設了 `bail`）、`pytest -x`／`--exitfirst`／`--maxfail`／`--stepwise`（含 `PYTEST_ADDOPTS` 與設定檔的 `addopts`）、`unittest -f`／`--failfast`；讀不到它執行的腳本時也算有。
-  - 指令跑了閘門讀不了輸出的測試工具（例如 jest、vitest、playwright）。
-  - 測試以外的步驟可能失敗而被蓋過：測試之後還有任何步驟（含 `| tee`、`exit`）；或測試之前的步驟不是以 `&&` 一路接到測試、也不是 `|| exit`（`if` 的條件與 `$(...)` 裡的指令不算）。
-  - 指令換目錄（`cd`、`pushd`、`env -C`／`--chdir`、`--cwd`、`--directory`、`--project`、套件管理工具的 `--prefix`／`-C`／`--dir`／`--workspace`），或閘門看不清它的結構：子 shell、迴圈或 `case`、heredoc、反引號、另開 `sh`／`bash`／`eval`。
+  - 指令（含它執行的 package.json 腳本，以及傳給腳本的參數，例如 `bun run test -- -f`）有遇錯即停的選項：`bun test --bail`（或 `bunfig.toml` 設了 `bail`）、`pytest -x`／`--exitfirst`／`--maxfail`／`--stepwise`（含 `PYTEST_ADDOPTS` 與設定檔的 `addopts`）、`unittest -f`／`--failfast`；讀不到它執行的腳本時也算有。
+  - 指令不是閘門信得過的單一測試指令。信得過的只有：前面可加 `VAR=值`、`uv run <不換目錄的選項>` 的 `bun test ...`、`pytest ...`、`python -m unittest|pytest ...`；或 `bun run <腳本> [-- 參數]`，其 package.json 腳本本身也是這樣的指令，前面可以有幾個 `bun run <腳本> &&`（各自在獨立程序跑，失敗就不會跑到測試）。有其他 shell 運算子（`;`、`||`、`|`、`&`、子 shell）、變數或 `$(...)`、heredoc、換目錄（`cd`、`env -C`、`--cwd`、`--directory`、`--project` 等）、`env`／`command`／`exec`／`timeout` 之類包裝時都不重跑。
   - 少了該工具完整的總結行（中途停止或逾時被終止），或輸出顯示提早停止（bun 的 `Bailed out`、pytest 的 `!!!` 中斷行）。
   - 有載入或收集錯誤：unittest 的 `_FailedTest`、pytest 的 `ERROR collecting` 或沒有測試名稱的 `ERROR <檔案>`、bun 的 `Unhandled error between tests` 或總結的 `N error`。
   - 總結行的失敗數與指出的失敗數對不上，或有失敗歸不到 repo 裡的測試檔；總結沒有失敗（測試以外的步驟失敗）。

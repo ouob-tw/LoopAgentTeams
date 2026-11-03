@@ -2007,8 +2007,7 @@ SCAN_MAX_LINE = 65536     # bytes of an unfinished line kept while it streams
 # The runners whose output the rerun reads, by the name it reports them under.
 RERUN_TOOLS = {'bun-test': 'bun test', 'unittest': 'unittest',
                'unittest-discover': 'unittest', 'pytest': 'pytest'}
-LOOP_WORDS = {'while', 'until', 'for', 'do', 'done', 'case', 'esac', 'select', 'function'}
-# Options that run a command in another directory (env, uv, bun, npm, pnpm, yarn).
+# Options that run a command in another directory (uv run, the test runners, package managers).
 CWD_OPTIONS = {'-C', '--chdir', '--cwd', '--directory', '--project', '--prefix', '--dir',
                '--workspace', '-w'}
 PYTEST_CONFIGS = ('pytest.ini', '.pytest.ini', 'pyproject.toml', 'setup.cfg', 'tox.ini')
@@ -2141,121 +2140,71 @@ def package_scripts(cwd):
     return scripts if isinstance(scripts, dict) else None
 
 
-def script_call(words, scripts):
-    """(script name, forwarded arguments) of a package-manager command that runs a
-    package.json script; ('', []) when it runs none, (None, []) when the gate cannot name
-    it. The arguments after the name (a leading `--` dropped) are appended to the script,
-    as npm, pnpm, yarn and bun run do."""
+def _runner_form(words):
+    """(runner, args) when words, after `VAR=value` assignments, are a test run the rerun
+    trusts: `bun test ...`, `pytest ...` or `python -m unittest|pytest ...`, optionally
+    after `uv run <options>` that keep the directory; None otherwise."""
+    words = _strip_assignments(words)
+    if words[:2] == ['uv', 'run']:
+        i = _skip_options(words, 2, UV_VALUE)
+        if any(w.split('=', 1)[0] in CWD_OPTIONS for w in words[2:i]):
+            return None
+        words = words[i:]
+    if not words or any(w.split('=', 1)[0] in CWD_OPTIONS for w in words):
+        return None
     head = os.path.basename(words[0])
-    if head not in ('npm', 'pnpm', 'yarn', 'bun'):
-        return '', []
-    i = _skip_options(words, 1, RUNNERS['script']['value'])
-    rest = words[i:]
-    if not rest:
-        return '', []
-    if rest[0] in ('run', 'run-script'):
-        name, extra = (rest[1], rest[2:]) if len(rest) > 1 else (None, [])
-    elif rest[0] in ('test', 't') and head != 'bun':
-        name, extra = 'test', rest[1:]
-    elif head != 'npm' and scripts and rest[0] in scripts and rest[0] != 'test':
-        name, extra = rest[0], rest[1:]
-    else:
-        return '', []
-    return name, extra[1:] if extra[:1] == ['--'] else extra
+    if not (head == 'bun' and words[1:2] == ['test'] or head == 'pytest'
+            or head.startswith('python') and words[1:2] == ['-m']
+            and words[2:3] in (['unittest'], ['pytest'])):
+        return None
+    return _unwrap(words)
 
 
-def _shell_steps(text, cwd, depth=0):
-    """[[words, sep, role]] for each simple command text runs in cwd, package.json scripts
-    opened up with their forwarded arguments; sep is the operator after it and role
-    'cond' (an `if` condition), 'subst' (inside `$(...)`), 'or-exit' (the `exit` of
-    `|| exit`) or 'cmd'. A str saying why when the shell shape is beyond what the rerun can
-    vouch for: loops, subshells, heredocs, backticks or a script that cannot be read."""
-    if '`' in text or depth > 5:
-        return 'the command uses backticks or nests package.json scripts too deeply'
+def _bun_script(words):
+    """(script name, forwarded arguments) of `bun run <script> [--] [args]`, or None."""
+    if words[:2] != ['bun', 'run'] or len(words) < 3 or words[2].startswith('-'):
+        return None
+    extra = words[3:]
+    return words[2], extra[1:] if extra[:1] == ['--'] else extra
+
+
+def test_runs(command, cwd, depth=0):
+    """[(runner, args)] of the test run a shell string makes in cwd, when the rerun can
+    vouch that a failed test is its only failure; otherwise why not. Trusted is a single
+    command with no shell operators, variables or substitutions (see _runner_form), or
+    `bun run <script>` whose package.json script is such a command, optionally after
+    `bun run <script> &&` steps: each of those runs in its own process, and its failure
+    stops the tests. Arguments after the script name are appended to it, as bun does."""
+    if any(c in command for c in '$`'):
+        return 'the command expands variables or substitutions, which the gate cannot follow'
     try:
-        found = _simple_commands(text)
+        found = _simple_commands(command)
     except ValueError:
         return 'the command cannot be read'
-    scripts, steps, cond, subst = package_scripts(cwd), [], False, []
-    for words, _, heredocs, sep, level in found:
-        while subst and level < subst[-1]:
-            subst.pop()
-        if heredocs:
-            return 'the command feeds a heredoc to a program'
-        if level > len(subst):
-            return 'the command runs a subshell'
-        if words[0] in ('if', 'elif'):
-            cond, words = True, words[1:]
-        elif words[0] in ('then', 'else'):
-            cond, words = False, words[1:]
-        while words and words[0] in ('!', '{', '}', 'fi'):
-            words = words[1:]
-        if words and words[0] in LOOP_WORDS:
-            return f'the command has a `{words[0]}` block'
-        if sep == '(':
-            if not words or words[-1] != '$':
-                return 'the command runs a subshell'
-            words = words[:-1]
-            subst.append(level + 1)
-        role = ('subst' if level else 'cond' if cond else
-                'or-exit' if words[:1] == ['exit'] and words[1:] in ([], ['$?'])
-                and steps and steps[-1][1] == '||' else 'cmd')
-        # Before launchers (`env -C`) and package-manager options (`--prefix`) are dropped.
-        if words and os.path.basename(words[0]) in ('cd', 'pushd', 'popd') \
-                or any(w.split('=', 1)[0] in CWD_OPTIONS for w in words):
-            return 'the command changes directory, so the files its output names cannot be placed'
-        words = _strip_assignments(words)
-        while words and (inner := _strip_launcher(words)) is not None:
-            words = inner
-        if not words:
-            if steps and role == 'cmd':
-                steps[-1][1] = sep  # `fi` or `}` carries the operator on
-            continue
-        name, extra = script_call(words, scripts)
-        if name is None or name and not isinstance((scripts or {}).get(name), str):
-            return f'cannot read the package.json script `{shlex.join(words)}` runs'
-        if name:
-            inner = _shell_steps(' '.join(filter(None, (scripts[name], shlex.join(extra)))),
-                                 cwd, depth + 1)
-            if isinstance(inner, str):
-                return inner
-            if inner:
-                inner[-1][1] = sep
-            steps += [[w, s, role if role != 'cmd' else r] for w, s, r in inner]
-            continue
-        steps.append([words, sep, role])
-    return steps
-
-
-def test_runs(command, cwd):
-    """[(runner, args)] of the test runs a shell string makes in cwd, when its shape lets the
-    rerun vouch that a failed test is the only failed step: every other command is an `if`
-    condition, runs inside `$(...)`, or comes before the tests chained so that its failure
-    stops them (`&&` up to the next test run, or `|| exit`); nothing runs after the last
-    test run, and nothing changes directory or starts another shell. Otherwise why not."""
-    steps = _shell_steps(command, cwd)
-    if isinstance(steps, str):
-        return steps
-    found = [_unwrap(words) for words, _, _ in steps]
-    for words, _, _ in steps:
-        head = os.path.basename(words[0])
-        if head in SHELLS or head == 'eval':
-            return f'the command starts `{head}`, whose commands the gate cannot follow'
-    runs = [i for i, run in enumerate(found) if run]
-    if not runs:
-        return 'the command runs no bun test, unittest or pytest'
-    for i, (words, sep, role) in enumerate(steps):
-        if found[i] or role != 'cmd':
-            continue
-        shown = shlex.join(words)
-        if i > runs[-1]:
-            return f'`{shown}` runs after the tests, and its failure is no test failure'
-        nxt = next(r for r in runs if r > i)
-        chained = all(steps[k][1] == '&&' for k in range(i, nxt))
-        if not chained and not (sep == '||' and steps[i + 1][2] == 'or-exit'):
-            return (f'`{shown}` runs before the tests without stopping them when it fails, '
-                    'so its failure could be hidden')
-    return [found[i] for i in runs]
+    if not found:
+        return 'the command runs nothing'
+    if any(heredocs or level for _, _, heredocs, _, level in found) \
+            or any(sep != '&&' for *_, sep, _ in found[:-1]) \
+            or found[-1][3] not in ('\n', ';') \
+            or depth == 0 and len(found) > 1 \
+            or any(_bun_script(words) is None for words, *_ in found[:-1]):
+        return ('the rerun trusts only a single test command (bun test, bun run <script>, '
+                'pytest, python -m unittest or pytest, optionally after uv run), and this '
+                'command is more than that')
+    words = found[-1][0]
+    script = _bun_script(_strip_assignments(words))
+    if script is None:
+        run = _runner_form(words)
+        if run is None:
+            return (f'`{shlex.join(words)}` is not a test command the rerun trusts (bun '
+                    'test, bun run <script>, pytest, python -m unittest or pytest, '
+                    'optionally after uv run), or it changes directory')
+        return [run]
+    name, extra = script
+    body = (package_scripts(cwd) or {}).get(name)
+    if depth >= 5 or not isinstance(body, str):
+        return f'cannot read the package.json script `{name}`'
+    return test_runs(' '.join([body, *map(shlex.quote, extra)]), cwd, depth + 1)
 
 
 def _short_flags(word, values):
@@ -2344,9 +2293,6 @@ def rerun_plan(scan, tools, cwd, root, commands):
     test_runs() returned for the command."""
     if isinstance(tools, str):
         return tools
-    other = sorted({runner for runner, _ in tools if runner not in RERUN_TOOLS})
-    if other:
-        return f"the gate cannot read the output of {', '.join(other)}"
     stopper = next((runner for runner, args in tools if fail_fast(runner, args, cwd)), None)
     if stopper:
         return f'{RERUN_TOOLS[stopper]} is set to stop at the first failure'

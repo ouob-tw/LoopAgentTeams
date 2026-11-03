@@ -208,22 +208,23 @@ class BunRerunTests(RerunCase):
         self.project({'web': 'bun test {tests}'}, self.BUN_FILES)
         self.plan('bun', ('bun-fail.txt', 1))
         self.assert_not_rerun(self.run_suite('bun test ./tests; exit 7', cwd='web'),
-                              '`exit 7` runs after the tests')
+                              'the rerun trusts only a single test command')
 
     def test_a_step_before_the_tests_whose_failure_does_not_stop_them_is_not_rerun(self):
         self.project({'web': 'bun test {tests}'}, self.BUN_FILES)
         self.plan('bun', ('bun-fail.txt', 1))
         self.assert_not_rerun(self.run_suite('false; bun test ./tests', cwd='web'),
-                              '`false` runs before the tests without stopping them')
+                              'the rerun trusts only a single test command')
 
     def test_a_command_that_changes_directory_is_not_rerun(self):
         self.project({'web': 'bun test {tests}'},
                      self.BUN_FILES + ('tests/a.test.ts', 'tests/sub/b.test.ts'))
         self.plan('bun', ('bun-fail.txt', 1))
         for command in ('cd web && bun test ./tests', 'env -C web bun test ./tests',
-                        'env --chdir=web bun test ./tests'):
+                        'env --chdir=web bun test ./tests', 'command cd web && bun test ./tests',
+                        'MARK=1 cd web && bun test ./tests', 'bun test --cwd=web ./tests'):
             with self.subTest(command=command):
-                self.assert_not_rerun(self.run_suite(command), 'the command changes directory')
+                self.assert_not_rerun(self.run_suite(command), 'the rerun trusts')
                 self.plan('bun', ('bun-fail.txt', 1))
                 (self.state / 'ledger.jsonl').unlink()
                 (self.plans / 'calls.jsonl').unlink(missing_ok=True)
@@ -300,6 +301,12 @@ class UnittestRerunTests(RerunCase):
                           ('pkg_b', f'{PY} -m unittest -v test_two.py', 0)])
         self.assertEqual(record['flaky'], [{'file': 'pkg_a/test_one.py', 'tests': ['test_once']},
                                            {'file': 'pkg_b/test_two.py', 'tests': ['test_once']}])
+
+    def test_unittest_through_uv_run_reruns(self):
+        self.project({'.': f'{PY} -m unittest {{tests}}'}, self.two_packages())
+        result = self.run_suite(f'uv run --no-project {PY} -m unittest discover -s .')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.only_record()['flaky']), 2)
 
     def test_unittest_failures_that_fail_again_are_a_failure(self):
         self.project({'.': f'{PY} -m unittest {{tests}}'}, self.two_packages(always=True))
