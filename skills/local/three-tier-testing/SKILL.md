@@ -140,6 +140,7 @@ docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --
 - **對照表維護**：新增程式檔或測試檔時，實作者順手補進對照表；新規則放進 `.suite-gate.d/<主題>.json`，不改 `.suite-gate.json` 既有的行，平行的票合併時才不會衝突（格式見 [suite-gate](references/suite-gate.md)）。這次改動新增的測試檔（符合對照表的測試樣式，或與同目錄已登記的測試同樣命名）沒被對照表選到時，`affected` 列出這些檔案、提示到 `.suite-gate.d/` 補規則並以結束碼 2 停止，什麼都不跑也不寫紀錄。審查者核對對照表的變更是否涵蓋新增的檔案。
 - **整批合併後**：全部票合併後，由主控指定一人在合併後的工作區以 `affected --base <這批工作的起點> --purpose post-merge` 跑這批改動的受影響測試，不跑整套。改到共用檔或對照表沒列的檔案時，指令照樣退回整套（同內容已有通過紀錄就沿用）。閘門最後寫一筆總結紀錄（`kind: affected-summary`）：每一組都通過（失敗重跑後通過也算）且內容沒變才算整體通過，只過一部分算失敗；沒選出測試也寫總結並算通過。主控與 QA 核對這筆總結（`status` 可看到），不自己重跑。這時 `run --purpose post-merge` 跑整套會被擋下並提示這條指令；確有需要時用 `--reason` 寫明原因。總結紀錄的欄位見 [references/suite-gate.md](references/suite-gate.md#合併後受影響測試--purpose-post-merge)。
 - **發布前**：推送 main 或版本標籤前，每一套登記的整套測試須有通過紀錄（`--purpose release`，或沿用同內容已有的整套通過紀錄）；合併後受影響測試的總結不算整套通過。推送前檢查的做法見 [references/suite-gate.md](references/suite-gate.md)。
+- **背景整套**：裝了背景計時器的專案，每小時對本機整合分支最新內容補跑缺通過紀錄、且距該套上次通過超過一天的整套（用途 `background`），不擋任何人；推送 main 時直接沿用同內容的通過紀錄。真的失敗時在 tracker 開 `suite-failure` 票（同一套只開一張，之後留言）；沒設 tracker 時由 `status` 列出。詳見 [references/suite-gate.md](references/suite-gate.md#背景整套background)。
 - **票內確有必要跑整套**（環境改變、查偶發失敗等）：用 `run --reason "<原因>"` 放行，原因會記進紀錄。
 - **失敗重跑**：經閘門的整套與受影響測試失敗時，閘門能確定只是幾個測試檔失敗（指令是單一測試指令、不超過 10 個檔案、沒有遇錯即停選項、輸出完整、沒有載入或建置錯誤）就自動用對照表的樣板只重跑那些檔案一次；通過就記為通過，並在紀錄的 `flaky` 與 `status` 列出這些時好時壞的測試，留待整理，不要當成已修好。不重跑時照原結果算失敗，原因印在輸出與紀錄。詳見 [references/suite-gate.md](references/suite-gate.md#失敗重跑)。
 
