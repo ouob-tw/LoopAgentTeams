@@ -123,6 +123,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | 變數 | 用途 | 預設 |
 | --- | --- | --- |
 | `LAT_DEPLOY_BOARD_DIR` | 要部署的看板目錄 | 腳本所在的看板目錄 |
+| `LAT_DEPLOY_COMMIT` | 要部署（或退回到）的提交，hash、tag、分支名都行；不存在就在動任何東西之前以結束碼 1 停下；主工作區的分支與檔案不變 | `HEAD` |
 | `LAT_DEPLOY_UNIT` | 重啟的 systemd 使用者服務名稱 | `lat-board` |
 | `LAT_DEPLOY_RESTART` | 重啟指令（交給 `sh -c`） | `systemctl --user restart <服務名稱>` |
 | `LAT_DEPLOY_BUILD` | 在臨時資料夾的看板目錄執行的建置指令 | `bun run build` |
