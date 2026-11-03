@@ -199,7 +199,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批
 - **整體通過**（`passed: true`）只在以下全部成立時：每一組結束碼都是 0（失敗重跑後通過也算 0）、沒有被中斷、整次執行前後內容沒變（`HEAD` 與工作區的 tree 都沒變，且沒有任何一組紀錄標為內容改變）。任一組失敗、被中斷（Ctrl-C 或 `kill`，總結照寫，閘門以 128＋訊號編號結束）或內容改變都算失敗。
 - 沒有選出任何測試（例如只改文件）時，仍寫總結，整體算通過，`nothing_selected` 為 `true`。
 - 退回整套的那幾套，同內容已有通過紀錄時照常沿用，總結的該組記下被沿用的紀錄（`reused`）。
-- 結束碼：有一組失敗時取第一個失敗組的結束碼；各組都是 0 但內容改變時為 1。
+- 結束碼：有一組失敗時取第一個失敗組的結束碼；各組都是 0（或沒有選出測試）但內容改變時為 1。
 
 總結紀錄的欄位（給讀紀錄的程式，例如預先授權的部署檢查）：
 
@@ -213,7 +213,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批
 | `commit` | 開跑時 `HEAD` 的完整提交（目標提交） |
 | `tree` | 開跑時工作區內容的 tree（追蹤檔加上沒被忽略的新檔，等同 `git add -A` 後的 tree）。工作區乾淨時等於 `git rev-parse <commit>^{tree}`；要確認測的就是某個提交，比對這兩者 |
 | `changed_files` | 起點到工作區的改動檔（repo 相對路徑，排序） |
-| `groups` | 每一組，依執行順序：`kind`（`check`、`affected` 或 `full-suite`）、`dir`（執行目錄，repo 相對，根目錄為 `.`）、`command`、`tests`（`affected` 組選出的測試，repo 相對；其餘為 `null`）、`exit_code`（失敗重跑後的結果）、`fingerprint`（該組的指紋）、`flaky`（是否靠失敗重跑才通過）、`content_changed`、`reused`（沿用時是被沿用那筆的 `time`、`agent`、`purpose`、`fingerprint`，否則 `null`）、`not_run`（準備目錄失敗而沒跑時的原因，否則 `null`） |
+| `groups` | 每一組，依執行順序：`kind`（`check`、`affected` 或 `full-suite`）、`dir`（執行目錄，repo 相對，根目錄為 `.`）、`command`、`tests`（`affected` 組選出的測試，repo 相對；其餘為 `null`）、`exit_code`（失敗重跑後的結果）、`fingerprint`（該組的指紋）、`flaky`（是否靠失敗重跑才通過）、`content_changed`、`reused`（沿用時是被沿用那筆的 `time`、`agent`、`purpose`、`fingerprint`，否則 `null`）、`not_run`（準備目錄失敗而沒跑時的原因，否則 `null`）、`interrupted`（這組執行中被中斷時為 `true`，`exit_code` 為 `null`）。被中斷後還沒開始的組不列出 |
 | `nothing_selected` | 沒有選出任何測試時為 `true` |
 | `interrupted` | 被中斷時為 `true` |
 | `content_changed` | 執行中內容改變時為 `true` |

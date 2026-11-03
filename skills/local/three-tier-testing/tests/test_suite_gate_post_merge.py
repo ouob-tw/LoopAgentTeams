@@ -116,6 +116,24 @@ class PostMergeTests(AffectedCase):
         self.assertEqual(summary['groups'][0]['exit_code'], 0)
         self.assertIn('content changed', self.gate('status').stdout)
 
+    def test_content_changing_when_nothing_is_selected_fails_with_a_nonzero_exit(self):
+        self.merge('docs/guide.md')
+        # Another writer changes the work tree while the gate finds nothing to run.
+        hook = self.tmp / 'gitwrap'
+        hook.mkdir()
+        real = subprocess.run(['which', 'git'], capture_output=True, text=True).stdout.strip()
+        (hook / 'git').write_text(
+            f'#!/bin/sh\ncase "$*" in *ls-tree*) echo late >> {self.repo}/README.md;; esac\n'
+            f'exec {real} "$@"\n')
+        (hook / 'git').chmod(0o755)
+        self.env['PATH'] = f"{hook}:{self.env['PATH']}"
+        result = self.post_merge()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        summary = self.summary()
+        self.assertEqual((summary['nothing_selected'], summary['content_changed'],
+                          summary['passed']), (True, True, False))
+        self.assertNotIn('counts as passed', result.stderr)
+
     def test_an_interrupted_run_writes_a_failing_summary(self):
         self.registry['affected']['commands']['.'] = (
             f'echo "$PWD {{tests}}" >> {self.log}; sleep 30')
@@ -128,6 +146,9 @@ class PostMergeTests(AffectedCase):
         self.assertEqual(code, 128 + signal.SIGTERM, err)
         summary = self.summary()
         self.assertEqual((summary['passed'], summary['interrupted']), (False, True))
+        self.assertEqual([(g['dir'], g['exit_code'], g['interrupted']) for g in summary['groups']],
+                         [('.', None, True)], 'the interrupted group is listed')
+        self.assertIn('affected in .: interrupted', self.gate('status').stdout)
 
     def test_post_merge_needs_a_base(self):
         self.merge('src/app.py')
