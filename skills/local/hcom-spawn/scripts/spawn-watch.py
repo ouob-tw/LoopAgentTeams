@@ -416,7 +416,7 @@ def matches(tool, item, expected, actual):
 
 
 def report(tool, full, expected, seen, reason, unattributed=None):
-    """Message text for the spawner, or None when everything matched.
+    """Message text for the spawner, or None when there is nothing to tell.
 
     Unattributed agents have no expected model or effort: those are listed as seen. With an
     unreadable command line that alone is no finding, so it only goes to watch.log.
