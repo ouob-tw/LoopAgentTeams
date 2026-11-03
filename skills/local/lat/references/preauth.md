@@ -95,7 +95,7 @@ source = "<待決紀錄 ID>"
 ```
 
 - 最上層的鍵：`version`（只能是 1）、`integration_branch`（整合分支名稱；本輪工作總表沒寫整合分支時才用，哪一層都可寫，專案層優先）。
-- 動作段 `[actions.<動作>]` 的鍵：`allow`（true／false）、`branches`（字串清單）、`target`（字串，只取專案層，全域層寫了不生效）、`rollback`（字串，退回上一版的方法，只取專案層；只有 `deploy-test`、`deploy-prod` 會用到，見「固定條件」）、`source`（字串）、`hours` 與 `timezone`（見「時段」）。`[advisor]` 只取全域層，鍵：`extended`、`may_settle`、`must_ask`、`source`。`source` 是出處，不參與判斷，`show` 與 `check` 附在該層的值旁。
+- 動作段 `[actions.<動作>]` 的鍵：`allow`（true／false）、`branches`（字串清單）、`target`（字串，只取專案層，全域層寫了不生效）、`rollback`（字串，退回上一版的方法，只取專案層，空白算沒寫；只有 `deploy-test`、`deploy-prod` 會用到，見「固定條件」）、`source`（字串）、`hours` 與 `timezone`（見「時段」）。`[advisor]` 只取全域層，鍵：`extended`、`may_settle`、`must_ask`、`source`。`source` 是出處，不參與判斷，`show` 與 `check` 附在該層的值旁。
 - 動作固定五種：`merge`（合併到整合分支）、`push`（推送到遠端）、`deploy-test`、`deploy-prod`、`install-host`（更新主機上安裝的 Skills 與 hooks）。
 - 修改或縮減已確認驗收（`change-acceptance`）、花錢或動帳號額度（`spend`）、刪使用者資料或 shred（`delete-user-data`）、開新票擴大工作量（`new-ticket`）永遠要問：查詢一律 `ask`，寫進設定算錯誤。這只限制 `check`；參謀能否定案改驗收與開新票，依 `[advisor]` 段判斷，見 [參謀](advisors.md#參謀結論)。
 
@@ -161,7 +161,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-i
 
 - `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區，用 `now` 取得）與前後兩則 HCOM 通知的事件編號（取自 `notice` 印出的編號）。工具以 `hcom events` 核對：兩則都由本主控送出（發送者等於工作階段紀錄的 HCOM 名稱，或 `hcom list --json` 給它的基本名；有 tag 的主控，HCOM 記的是基本名）、以 `@名稱` 指定對象（不是廣播）、依 `--started` 提供的小數秒位數比較（未提供小數就比較整秒）：前一則可早於或等於開始時間，後一則必須晚於開始時間，且原始時間也必須晚於前一則。只到秒的舊寫法仍接受，例如 `--started 2026-10-29T12:00:00+08:00` 接受前一則在 `12:00:00.4`，拒絕 `12:00:01.2`；後一則在 `12:00:00.9` 仍不合格；不符就拒絕。`--notice-*` 也可給 `notice` 印的 `none-<n>`：工具核對它是本輪由本主控的 `notice` 寫下的無人可通知紀錄，時間順序規則相同，兩則可一真一無；工具另核對該紀錄裡記錄的其他主控確實都不在線；`report` 顯示「無人可通知（none-1，未發訊息）」。HCOM 的 agent 清單格式異常時 `notice` 拒絕，不當作無人在線。事件的 `delivered_to` 為空（沒送到任何人）一律拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
 - `deploy-test`、`deploy-prod` 的 `record`（成功或失敗）寫入預先授權紀錄後，另在被部署專案（`--workspace`，[跨 repo](#主控與動作不在同一個-repo) 時是 B）主工作區的部署歷史追加一筆（見「固定條件」），所以不論從哪個主控部署，下一次 `check` 都讀得到。`--commit` 可給縮寫，歷史記完整提交；在該 repo 找不到就拒絕，兩邊都不寫。
-- `--kind manual`：經使用者答覆才做的部署（`check` 是 `ask`），做完一樣要補記，否則下一次部署會因為找不到上一次部署而要整套。只接受 `deploy-test`、`deploy-prod`，要 `--commit`、`--result`、`--question`；待決紀錄要在本主控的待決目錄、狀態為 `answered` 或 `approved`。只寫部署歷史（`approval: manual`、`question`），不寫預先授權紀錄，也不需通知。跨 repo 同樣加 `--workspace <B> --controller-workspace <A>`。
+- `--kind manual`：經使用者答覆才做的部署（`check` 是 `ask`），做完一樣要補記，否則下一次部署會因為找不到上一次部署而要整套。只接受 `deploy-test`、`deploy-prod`，要 `--commit`、`--result`、`--question`；待決紀錄要在本主控的待決目錄、狀態為 `answered` 或 `approved`。部署歷史記 `approval: manual` 與 `question`；預先授權紀錄記一筆 `kind: manual`，`report` 列在「人工核准的部署補記」。不需通知。跨 repo 同樣加 `--workspace <B> --controller-workspace <A>`。
 - `bug-intake` 的五項依據都要寫。
 
 ## 免確認開短流程 bug 票
@@ -182,7 +182,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-i
 uv run --no-project python "$lat_dir/scripts/lat-preauth.py" report
 ```
 
-只列本 session 本輪的紀錄，分三組：依預先授權自動執行、免確認開工、設定寫入（本輪的 `grant`，加上本輪開始以來對本專案層與全域層的看板寫入）；沒有的組印「- 無」。交付回報把整段輸出原樣貼在「參謀定案清單」旁，讓使用者事後檢查或推翻；本輪停用後仍可執行。
+只列本 session 本輪的紀錄，分四組：依預先授權自動執行、人工核准的部署補記、免確認開工、設定寫入（本輪的 `grant`，加上本輪開始以來對本專案層與全域層的看板寫入）；沒有的組印「- 無」。交付回報把整段輸出原樣貼在「參謀定案清單」旁，讓使用者事後檢查或推翻；本輪停用後仍可執行。
 
 ## 接上提問
 

@@ -84,8 +84,8 @@ SETTLEABLE_WORDS = ('change-acceptance', 'new-ticket', 'scope-expansion')
 DECISION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
 GRANT_KEYS = ('allow', 'branches')
 RESULTS = ('succeeded', 'failed')
-REPORT_GROUPS = ((('auto',), '依預先授權自動執行'), (('bug-intake',), '免確認開工'),
-                 (('grant', 'board'), '設定寫入'))
+REPORT_GROUPS = ((('auto',), '依預先授權自動執行'), (('manual',), '人工核准的部署補記'),
+                 (('bug-intake',), '免確認開工'), (('grant', 'board'), '設定寫入'))
 HOURS = re.compile(r'((?:[01]\d|2[0-3]):[0-5]\d)-((?:[01]\d|2[0-3]):[0-5]\d)')
 # Long free text: written one item per line.
 ADVISOR_LISTS = ('may_settle', 'must_ask')
@@ -459,6 +459,11 @@ def is_ancestor(top, older, newer):
     return git(top, 'merge-base', '--is-ancestor', older, newer) is not None
 
 
+def deploy_target(effective):
+    """The deploy target the history keys on: the project's `target` text, None when unset."""
+    return effective.get('target', (None,))[0]
+
+
 def deploy_history_path(top):
     return shared_lat_dir(top) / DEPLOY_HISTORY
 
@@ -637,9 +642,9 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
     elif action in GATE_ACTIONS and version and (action != 'push' or branch == 'main'):
         rollback = effective.get('rollback') if action in DEPLOY_ACTIONS else None
         affected = None
-        if rollback:
-            target_value = effective.get('target', (None,))[0]
-            affected, basis = affected_deploy_problems(top, version, action, target_value)
+        if rollback and rollback[0].strip():  # blank text states no method
+            affected, basis = affected_deploy_problems(top, version, action,
+                                                       deploy_target(effective))
             if not affected:
                 result['basis'] += [describe('rollback', *rollback, label), basis]
         if affected is None or affected:
@@ -1374,17 +1379,18 @@ def cmd_record(args):
 def record_locked(args, top, session):
     _, record, _, round_number = current_round(top, session)
     deploy = None
-    if args.kind == 'manual':
-        deploy = manual_deploy(args, top, record)
-        print(f'recorded manual {args.action} → {append_deploy(*deploy)}')
-        return 0
-    if args.kind == 'auto':
-        entry = auto_entry(args, record, top, session, round_number)
+    if args.kind in ('auto', 'manual'):
+        if args.kind == 'manual':
+            deploy = manual_deploy(args, top, record)
+            entry = dict(kind='manual', action=args.action, commit=deploy[1]['commit'],
+                         result=args.result, question=args.question)
+        else:
+            entry = auto_entry(args, record, top, session, round_number)
+            if args.action in DEPLOY_ACTIONS:
+                deploy = deploy_entry(args, approval='preauth')
         repo = action_repo(args)
         if repo:
             entry['action_repo'] = str(repo)
-        if args.action in DEPLOY_ACTIONS:
-            deploy = deploy_entry(args, approval='preauth')
     else:
         conditions = dict(self_reported=args.self_reported, clear_expected=args.clear_expected,
                           single_ticket=args.single_ticket, restores_stated=args.restores_stated,
@@ -1418,7 +1424,7 @@ def deploy_entry(args, **extra):
     commit = resolve_version(top, args.commit)
     if not commit:
         raise Refused(f'commit `{args.commit}` is not in {top}')
-    target = action_settings(load_layers(top)[0], args.action).get('target', (None,))[0]
+    target = deploy_target(action_settings(load_layers(top)[0], args.action))
     return top, dict(action=args.action, target=target, commit=commit, result=args.result,
                      **extra)
 
@@ -1518,6 +1524,10 @@ def report_line(entry):
                    f'{report_notice(entry["notice_after"])}'
                    if 'notice_before' in entry else '')
         return f'- {head}：{entry.get("result")}；依據：{entry.get("basis")}{notices}'
+    if kind == 'manual':
+        where = f'（動作在 {entry["action_repo"]}）' if 'action_repo' in entry else ''
+        return (f'- {entry.get("action")} {entry.get("commit")}{where}：{entry.get("result")}；'
+                f'人工核准，待決 {entry.get("question")}')
     if kind == 'bug-intake':
         # Records written before this condition existed have no such field.
         guard = (f'；查過沒有既有保護：{entry["no_existing_guard"]}'

@@ -1597,7 +1597,8 @@ class RecordTests(WriteCase):
         out = result.stdout
         self.assertIn(f'session {SESSION} 第 2 輪', out)
         self.assertNotIn('OLDROUND', out)
-        auto, bug, grants = out.split('### ')[1:]
+        auto, manual, bug, grants = out.split('### ')[1:]
+        self.assertEqual(manual, '人工核准的部署補記\n- 無\n\n')
         self.assertIn('依預先授權自動執行\n- push dev abc123：succeeded；依據：allow push dev', auto)
         self.assertIn('免確認開工\n- #9；原訊息：chat 12:00；本人回報：user typed it', bug)
         self.assertIn('查過沒有既有保護：tests/x.py, docs/y.md', bug)
@@ -1621,7 +1622,9 @@ class DeployAffectedTests(WriteCase):
         self.deployed = git(self.repo, 'rev-parse', 'HEAD')
         self.head = self.commit('after the deploy')
         bin_dir = self.root / 'bin'
-        self.write(bin_dir / 'hcom', '#!/bin/sh\necho "[]"\n')
+        # record asks only `hcom list --json`; anything else is a wrong call.
+        self.write(bin_dir / 'hcom', '#!/bin/sh\n[ "$1 $2" = "list --json" ] && { echo "[]"; '
+                                     'exit 0; }\necho "unexpected hcom $*" >&2\nexit 1\n')
         (bin_dir / 'hcom').chmod(0o755)
         self.path = f'{bin_dir}:{os.environ["PATH"]}'
 
@@ -1683,13 +1686,17 @@ class DeployAffectedTests(WriteCase):
         self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
 
     def test_without_a_rollback_method_the_full_suite_is_still_needed(self):
-        self.settings()
         self.history(('deploy-prod', self.deployed, 'succeeded'))
         self.summary(self.deployed)
-        self.assertEqual(self.check('deploy-prod')['reasons'], [
-            f'no passing full-suite record for {self.head[:12]}: {suite["command"]} '
-            f'(in {suite["cwd"]})' for suite in SUITES])
-        self.assertNotIn('rollback', self.run_tool('show').stdout)
+        for label, rollback in (('not set', None), ('blank', '  ')):
+            with self.subTest(label):
+                self.settings()
+                if rollback:
+                    self.write(self.project_file, self.project_file.read_text()
+                               + f'[actions.deploy-prod]\nrollback = "{rollback}"\n')
+                self.assertEqual(self.check('deploy-prod')['reasons'], [
+                    f'no passing full-suite record for {self.head[:12]}: {suite["command"]} '
+                    f'(in {suite["cwd"]})' for suite in SUITES])
 
     def test_a_summary_that_does_not_cover_this_deploy_needs_the_full_suite(self):
         self.history(('deploy-prod', self.deployed, 'succeeded'))
@@ -1829,7 +1836,10 @@ class DeployAffectedTests(WriteCase):
         [row] = self.history_rows()
         self.assertEqual((row['approval'], row['question'], row['commit'], row['target']),
                          ('manual', 'DEP-1', self.deployed, None))
-        self.assertEqual(self.records(), [])
+        self.assertEqual([(entry['kind'], entry['question'], entry['commit'])
+                          for entry in self.records()], [('manual', 'DEP-1', self.deployed)])
+        self.assertIn(f'人工核准的部署補記\n- deploy-prod {self.deployed}：succeeded；人工核准，'
+                      '待決 DEP-1', self.run_tool('report').stdout)
         self.summary(self.deployed)
         self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
 
