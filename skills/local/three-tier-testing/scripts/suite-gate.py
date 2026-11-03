@@ -2040,6 +2040,7 @@ class TestScan:
     are reasons the output shows the run is not just some failed tests."""
 
     def __init__(self):
+        self.lock = threading.Lock()  # the stdout and stderr pumps feed it from two threads
         self.partial = {}
         self.bun_file = {}
         self.ut_ran = {}
@@ -2053,8 +2054,9 @@ class TestScan:
     def add(self, key, chunk):
         *lines, rest = (self.partial.get(key, b'') + chunk).split(b'\n')
         self.partial[key] = rest[-SCAN_MAX_LINE:]
-        for line in lines:
-            self._line(key, line)
+        with self.lock:
+            for line in lines:
+                self._line(key, line)
 
     def finish(self):
         for key, rest in list(self.partial.items()):
