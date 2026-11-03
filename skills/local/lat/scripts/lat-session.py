@@ -1200,13 +1200,12 @@ def exempt_basis_stop_check(record, message):
     return reason, notes
 
 
-def missing_tried(path, identifier, revision, record, announced):
-    """Whether a cited help record owes a `- tried:` line. A question this session already
-    asked at this version, or a record another session wrote, predates the rule for this ask."""
+def owes_tried(path, record, already_asked):
+    """Whether a cited help record owes a `- tried:` line. Not held, so older records stay
+    usable: a version this session already asked, and a record naming another session."""
     if read_decision_kind(path) != 'help' or read_tried(path):
         return False
-    return ((identifier, revision) not in announced
-            and read_decision_session(path) in (None, record['session_id']))
+    return not already_asked and read_decision_session(path) in (None, record['session_id'])
 
 
 def stop_check(record, payload):
@@ -1242,8 +1241,8 @@ def stop_check(record, payload):
         if status is not None and tag == 'HELP' and read_decision_kind(
                 decisions / f'{identifier}.md') != 'help':
             problems.append(f'{identifier} r{revision}：HELP 題的紀錄沒有 `- kind: help`')
-        if status is not None and missing_tried(decisions / f'{identifier}.md', identifier,
-                                                revision, record, announced):
+        if status is not None and owes_tried(decisions / f'{identifier}.md', record,
+                                             (identifier, revision) in announced):
             problems.append(f'{identifier} r{revision}：求助題的紀錄缺 `- tried:` 行或值為空；'
                             '先用手上的遠端能力試過，寫明試過什麼與結果'
                             '（答案只在使用者帳號或裝置時寫明理由）')

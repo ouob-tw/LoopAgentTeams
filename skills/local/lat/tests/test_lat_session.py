@@ -2952,30 +2952,28 @@ class SessionTests(unittest.TestCase):
 
     def test_stop_tried_leaves_other_questions_and_old_records_alone(self):
         self.activate_as('claude')
+        help_record = '- status: pending\n- advisor: needs-human\n- kind: help\n'
+        own = help_record + f'- session: {SESSION}\n'
+        tried = own + '- tried: 看過畫面\n'
+
+        def write(name, text):
+            self.decisions.joinpath(f'{name}.md').write_text(text)
+
         # Not a help question.
-        self.decisions.joinpath('LAT-D.md').write_text('- status: pending\n- advisor: needs-human\n')
+        write('LAT-D', '- status: pending\n- advisor: needs-human\n')
         self.assert_silent(self.stop_hook('請選\nDECIDE: LAT-D r1', 'claude'))
-        # Asked by an earlier session: the line is not required of it.
-        self.decisions.joinpath('LAT-O.md').write_text(
-            '- status: pending\n- advisor: needs-human\n- kind: help\n- session: older-session\n')
+        # Written by another session: the line is not required of it.
+        write('LAT-O', help_record + '- session: older-session\n')
         self.assert_silent(self.stop_hook('請登入\nHELP: LAT-O r1', 'claude'))
         # Pending and not cited: never looked at.
-        self.decisions.joinpath('LAT-P.md').write_text(
-            '- status: pending\n- advisor: needs-human\n- kind: help\n')
-        self.decisions.joinpath('LAT-Q.md').write_text(
-            f'- status: pending\n- advisor: needs-human\n- kind: help\n- session: {SESSION}\n'
-            '- tried: 看過畫面\n')
+        write('LAT-P', help_record)
+        write('LAT-Q', tried)
         self.assert_silent(self.stop_hook('請登入\nHELP: LAT-Q r1', 'claude'))
-        # Already asked at this version before the rule: passes beside a new question ...
-        self.decisions.joinpath('LAT-R.md').write_text(
-            f'- status: pending\n- advisor: needs-human\n- kind: help\n- session: {SESSION}\n'
-            '- tried: 看過畫面\n')
+        # Already asked at this version: passes beside a new question ...
+        write('LAT-R', tried)
         self.assert_silent(self.stop_hook('請登入\nHELP: LAT-R r1', 'claude'))
-        self.decisions.joinpath('LAT-R.md').write_text(
-            f'- status: pending\n- advisor: needs-human\n- kind: help\n- session: {SESSION}\n')
-        self.decisions.joinpath('LAT-S.md').write_text(
-            f'- status: pending\n- advisor: needs-human\n- kind: help\n- session: {SESSION}\n'
-            '- tried: 看過畫面\n')
+        write('LAT-R', own)
+        write('LAT-S', tried)
         self.assert_silent(self.stop_hook('請登入\nHELP: LAT-R r1, LAT-S r1', 'claude'))
         # ... but a new version of it is a new ask and needs the line.
         self.assert_stop_block(self.stop_hook('HELP: LAT-R r2', 'claude'), '- tried:')
