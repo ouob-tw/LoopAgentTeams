@@ -88,6 +88,19 @@ class BunTimingTests(TimingCase):
             'web/tests/server/closed-agents.test.ts': 2.059,
             'web/tests/server/model.test.ts': 0.81})
 
+    def test_result_lines_bun_prints_without_a_time_add_none_but_still_count(self):
+        # From a real board suite (bun 1.3.14 --parallel=6): very fast tests get no time.
+        self.project({'web': 'bun test {tests}'},
+                     (*self.PARALLEL_FILES, 'web/tests/unit/question-message.test.ts'))
+        self.plan('bun', ('timing/bun-parallel-untimed.txt', 1), ('rerun/bun-pass.txt', 0))
+        self.run_on('2026-01-01')
+        self.assertEqual(self.records()[-1]['file_seconds'], {
+            'web/tests/browser/pd-notify-throws.test.ts': 11.308,
+            'web/tests/browser/agents-page.test.ts': 2.619,
+            'web/tests/server/closed-agents.test.ts': 2.059,
+            'web/tests/server/model.test.ts': 0.81,
+            'web/tests/unit/question-message.test.ts': 0.001})
+
     def test_hidden_passes_record_no_times_and_cleanup_done_clears_the_window(self):
         self.bun_project()
         self.plan('bun', ('timing/bun-timed-pass.txt', 0), ('rerun/bun-fail.txt', 1),

@@ -2047,7 +2047,7 @@ PYTEST_STOP = re.compile(r'(?<![\w-])(?:-[a-wyzA-Z]*x\w*|--exitfirst|--maxfail|-
 ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 BUN_HEADER = re.compile(r'(\S+\.[cm]?[jt]sx?):')
 BUN_FAIL = re.compile(r'\(fail\) (.+?)(?: \[([\d.]+)(m?s)\])?')
-BUN_PASS = re.compile(r'\(pass\) .+? \[([\d.]+)(m?s)\]')
+BUN_PASS = re.compile(r'\(pass\) .+?(?: \[([\d.]+)(m?s)\])?')  # a very fast test has no time
 BUN_COUNT = re.compile(r' (\d+) (pass|fail|errors?)')
 BUN_FAILED_LIST = re.compile(r'\d+ tests? failed:')  # the closing list of failures
 BUN_DONE = re.compile(r'Ran \d+ tests? across \d+ files?\. \[.*\]')
@@ -2088,7 +2088,7 @@ class TestScan:
         self.problems = []
         self.roots = []
         self.bun_seconds = {}
-        self.bun_timed = self.bun_counted = 0  # timed test lines, pass + fail in the summaries
+        self.bun_results = self.bun_counted = 0  # result lines under a file, summaries pass + fail
         self.pt_durations = {}
         self.pt_seconds = {}
 
@@ -2116,7 +2116,7 @@ class TestScan:
         output listed every passed and failed test: run by an AI agent (CLAUDECODE=1) bun
         prints only the failed ones."""
         parts = [('pytest', self.pt_seconds)] if pytest else []
-        if self.bun_timed and self.bun_timed == self.bun_counted:
+        if self.bun_results and self.bun_results == self.bun_counted:
             parts.append(('bun test', self.bun_seconds))
         real_root = root and os.path.realpath(root)
         times = {}
@@ -2130,11 +2130,13 @@ class TestScan:
                 for path, seconds in sorted(times.items(), key=lambda item: -item[1])}
 
     def _bun_time(self, key, value, unit):
-        if value is None:
-            return
-        self.bun_timed += 1
+        """A pass or fail line under a file counts toward the summaries' pass + fail, timed
+        or not: bun prints no time for a very fast test, which adds none."""
         path = self.bun_file.get(key)
-        if path:
+        if not path:
+            return
+        self.bun_results += 1
+        if value is not None:
             seconds = float(value) / (1000 if unit == 'ms' else 1)
             self.bun_seconds[path] = self.bun_seconds.get(path, 0) + seconds
 
