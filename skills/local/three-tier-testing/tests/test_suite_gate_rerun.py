@@ -208,6 +208,23 @@ class BunRerunTests(RerunCase):
         self.assert_not_rerun(self.run_suite('bun run test:all', cwd='web'),
                               'no complete bun test summary line')
 
+    def test_a_script_chained_before_the_tests_that_hides_its_runner_is_not_rerun(self):
+        scripts = {'test:all': 'bun run smoke && bun test ./tests', 'inner': 'bun test ./smoke'}
+        for smoke in ('sh smoke.sh', 'uv run --no-project bun run inner', 'RUNNER=bun $RUNNER'):
+            with self.subTest(smoke=smoke):
+                self.forget_runs()
+                self.project({'web': 'bun test {tests}'}, dict.fromkeys(self.BUN_FILES, '') | {
+                    'web/smoke.sh': 'bun test ./smoke\n', 'web/package.json': json.dumps(
+                        {'scripts': scripts | {'smoke': smoke}})})
+                self.plan('bun', ('bun-fail.txt', 1))
+                self.assert_not_rerun(self.run_suite('bun run test:all', cwd='web'),
+                                      'may run tests the gate cannot list')
+
+    def forget_runs(self):
+        """Forget earlier records and fake calls, for one more case in the same test."""
+        for path in (self.state / 'ledger.jsonl', self.plans / 'calls.jsonl'):
+            path.unlink(missing_ok=True)
+
     def test_output_without_a_summary_line_is_not_rerun(self):
         self.project({'web': 'bun test {tests}'}, ['web/tests/f1.test.ts'])
         self.plan('bun', ('bun-killed.txt', 124))

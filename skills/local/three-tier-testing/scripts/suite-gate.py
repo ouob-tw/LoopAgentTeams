@@ -2010,6 +2010,10 @@ SCAN_MAX_LINE = 65536     # bytes of an unfinished line kept while it streams
 RERUN_TOOLS = {'bun-test': 'bun test', 'unittest': 'unittest',
                'unittest-discover': 'unittest', 'pytest': 'pytest'}
 SHELL_KEYWORDS = {'if', 'then', 'else', 'elif', 'fi', '!', '{', '}'}
+# Commands known not to start a test runner: build tools, text and file commands.
+NO_TEST_COMMANDS = {'vite', 'svelte-kit', 'svelte-check', 'tsc', 'printf', 'echo', 'grep',
+                    'true', 'false', ':', 'exit', 'test', '[', 'mkdir', 'rm', 'cp', 'mv',
+                    'touch', 'cat'}
 # Options that run a command in another directory (uv run, the test runners, package managers).
 CWD_OPTIONS = {'-C', '--chdir', '--cwd', '--directory', '--project', '--prefix', '--dir',
                '--workspace', '-w'}
@@ -2254,9 +2258,10 @@ def _plain_words(words):
 
 
 def may_run_tests(text, cwd, depth):
-    """Whether text could start a test runner: any runner the gate knows of, a package
-    manager doing anything but `bun run` of scripts that cannot (checked alike, with their
-    pre and post scripts), or a command that cannot be read."""
+    """Whether text could start a test runner. It cannot only when every command it runs is
+    one of NO_TEST_COMMANDS (after assignments and launchers) or `bun run` of scripts that
+    cannot either (with their pre and post scripts); anything else, including a wrapper,
+    an expansion or text that cannot be read, may."""
     if depth > 5:
         return True
     try:
@@ -2265,20 +2270,17 @@ def may_run_tests(text, cwd, depth):
         return True
     scripts = package_scripts(cwd) or {}
     for words in map(_plain_words, commands):
-        if not words:
+        if not words or words[0] in NO_TEST_COMMANDS:
             continue
-        if _unwrap(words):
+        script = _bun_script(words)
+        if script is None or not isinstance(scripts.get(script[0]), str):
             return True
-        if os.path.basename(words[0]) in ('npm', 'pnpm', 'yarn', 'bun', 'npx', 'bunx', 'pnpx'):
-            script = _bun_script(words)
-            if script is None or not isinstance(scripts.get(script[0]), str):
-                return True
-            name, extra = script
-            bodies = [scripts.get(n) for n in (f'pre{name}', f'post{name}') if n in scripts]
-            if any(not isinstance(b, str) or may_run_tests(b, cwd, depth + 1) for b in bodies) \
-                    or may_run_tests(' '.join([scripts[name], *map(shlex.quote, extra)]),
-                                     cwd, depth + 1):
-                return True
+        name, extra = script
+        bodies = [scripts.get(n) for n in (f'pre{name}', f'post{name}') if n in scripts]
+        if any(not isinstance(b, str) or may_run_tests(b, cwd, depth + 1) for b in bodies) \
+                or may_run_tests(' '.join([scripts[name], *map(shlex.quote, extra)]),
+                                 cwd, depth + 1):
+            return True
     return False
 
 

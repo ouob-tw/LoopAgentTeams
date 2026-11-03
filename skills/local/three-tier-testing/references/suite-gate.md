@@ -120,7 +120,7 @@ CPU 與記憶體都不足時兩句以 `; ` 連接。訊息中的 GB 都是 GiB�
   - 專案沒有對照表，或任一失敗檔案找不到樣板目錄。
   - 指令（含它執行的 package.json 腳本，以及傳給腳本的參數，例如 `bun run test -- -f`）有遇錯即停的選項：`bun test --bail`（或 `bunfig.toml` 設了 `bail`）、`pytest -x`／`--exitfirst`／`--maxfail`／`--stepwise`（含 `PYTEST_ADDOPTS` 與設定檔的 `addopts`）、`unittest -f`／`--failfast`；讀不到它執行的腳本時也算有。
   - 指令不是閘門信得過的單一測試指令。信得過的只有：前面可加 `VAR=值`、`uv run <不換目錄的選項>` 的 `bun test ...`、`pytest ...`、`python -m unittest|pytest ...`；或 `bun run <腳本> [-- 參數]`，其 package.json 腳本本身也是這樣的指令，前面可以有幾個 `bun run <腳本> &&`（各自在獨立程序跑，失敗就不會跑到測試）。有其他 shell 運算子（`;`、`||`、`|`、`&`、子 shell）、變數或 `$(...)`、heredoc、換目錄（`cd`、`env -C`、`--cwd`、`--directory`、`--project` 等）、`env`／`command`／`exec`／`timeout` 之類包裝時都不重跑。閘門自己用 `affected.commands` 樣板組出的指令（`affected`、提交前檢查）是專案登記的、在樣板目錄執行，不受這條限制。
-  - 列不出指令能跑到的每一次測試執行：閘門逐一展開 `bun run` 的腳本（含 `pre<腳本>`；有 `post<腳本>` 就不重跑），每一次測試執行都要有自己完整的總結行；只做建置、找不到任何測試工具的腳本不算。腳本裡可能跑測試、但形狀閘門信不過時不重跑。
+  - 列不出指令能跑到的每一次測試執行：閘門逐一展開 `bun run` 的腳本（含 `pre<腳本>`；有 `post<腳本>` 就不重跑），每一次測試執行都要有自己完整的總結行；只用到已知不會跑測試的指令（`vite`、`svelte-kit`、`svelte-check`、`tsc`、`printf`、`echo`、`grep`、`true`、`false`、`exit`、`test`、`mkdir`、`rm`、`cp`、`mv`、`touch`、`cat`，或同樣只用到這些的 `bun run` 腳本）的建置步驟不算。用到其他程式（含 `sh x.sh`、`uv run`、`$變數`）的腳本可能跑測試，閘門列不出來就不重跑。
   - 少了該工具完整的總結行（中途停止或逾時被終止），或輸出顯示提早停止（bun 的 `Bailed out`、pytest 的 `!!!` 中斷行）。
   - 有載入或收集錯誤：unittest 的 `_FailedTest`、pytest 的 `ERROR collecting` 或沒有測試名稱的 `ERROR <檔案>`、bun 的 `Unhandled error between tests` 或總結的 `N error`。
   - 總結行的失敗數與指出的失敗數對不上，或有失敗歸不到 repo 裡的測試檔；總結沒有失敗（測試以外的步驟失敗）。
