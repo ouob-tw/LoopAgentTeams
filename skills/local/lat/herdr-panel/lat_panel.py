@@ -58,7 +58,8 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
       [--visual [LETTER|][LABEL|]URL]...
   question ask --questions PATH --decisions DIR --id ID --file section.md \
       [--advisor TEXT] [--help-question] [--session-id ID] [--question TEXT] \
-      [--authority-gap TEXT] [--blocked-work TEXT] [--exempt-basis TEXT] [--visual [LETTER|][LABEL|]URL]...
+      [--authority-gap TEXT] [--blocked-work TEXT] [--exempt-basis TEXT] [--tried TEXT] \
+      [--visual [LETTER|][LABEL|]URL]...
   question record-chat --questions PATH --decisions DIR --id ID --text TEXT \
       --source TEXT
   question section-hash --questions PATH --id ID
@@ -108,7 +109,8 @@ import argparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from lat_decision_status import (advisor_error, exempt_basis_category, read_advisor_words,
-                                 read_decision_kind, read_decision_status, read_exempt_basis)
+                                 read_decision_kind, read_decision_status, read_exempt_basis,
+                                 read_tried)
 from _lat_common import plugin_directory, run_cli, write_text_atomic as _replace_locked
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import questions
@@ -397,7 +399,9 @@ def _run_board(args):
 HELP_QUESTION_NOTE = (
     "A help question (--help-question, or `- kind: help` in the record) needs a\n"
     "single-choice option for done, written as:\n"
-    "  - A. 已完成"
+    "  - A. 已完成\n"
+    "It also needs a `- tried:` line saying what was already tried and the result\n"
+    "(--tried on a new record), or why only the user's account or device has the answer."
 )
 
 
@@ -611,7 +615,7 @@ def preauthorized_questions(questions, question_ids):
 
 # Fields only a new record takes; --session-id defaults from the binding or the client.
 ASK_RECORD_FIELDS = ("--advisor", "--session-id", "--question", "--authority-gap",
-                     "--blocked-work", "--exempt-basis")
+                     "--blocked-work", "--exempt-basis", "--tried")
 
 
 def _upsert(questions, decisions, question_id, text, first_revision=1):
@@ -693,6 +697,11 @@ def _ask(args):
         _check_exempt_basis(advisor_words, args.exempt_basis, args.decisions)
         session = args.session_id or _ask_session(args.questions)
         help_question = args.help_question
+        if args.tried is not None:
+            # One line, so a pasted value cannot add other record fields.
+            args.tried = " ".join(args.tried.split())
+            if not help_question:
+                raise ValueError("--tried only applies to a help question")
     else:
         if given:
             raise ValueError(f"{path} exists; {' '.join(given)} only apply to a new record")
@@ -706,6 +715,11 @@ def _ask(args):
         first_revision = max(1, known + (status.status != "pending"))
     if help_question:
         check_done_option(args.id, incoming)
+        if not (args.tried if created else read_tried(path)):
+            raise ValueError(
+                f"help question {args.id} needs a `- tried:` line (--tried on a new record): "
+                "what was already tried and the result, or why only the user's account "
+                "or device has the answer")
     if created:
         with _path_lock(path):
             if path.exists():
@@ -714,7 +728,7 @@ def _ask(args):
                 args.id, incoming, advisor=args.advisor, session_id=session,
                 question=args.question, authority_gap=args.authority_gap,
                 blocked_work=args.blocked_work, help_question=help_question,
-                exempt_basis=args.exempt_basis))
+                exempt_basis=args.exempt_basis, tried=args.tried))
     code = 1
     try:
         code, revision, written = _upsert(args.questions, args.decisions, args.id, text,

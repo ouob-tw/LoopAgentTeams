@@ -76,14 +76,15 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
    ```bash
    uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question ask \
      --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md \
-     --advisor "<參謀結論>" [--exempt-basis "<依據>"] [--help-question] \
+     --advisor "<參謀結論>" [--exempt-basis "<依據>"] [--help-question] [--tried "<試過的方法與結果>"] \
      [--question "<問題>"] [--authority-gap "<授權缺口>"] [--blocked-work "<受阻工作>"] \
      [--visual "[<選項字母>|][<標題>|]<示意網址>"]
    ```
 
    - 紀錄不存在時建立 `.lat/decisions/<ID>.md`：`pending` 狀態、參謀行、session、版本、問題、選項、授權缺口與受阻工作。`--advisor` 必填，寫法見 [參謀](advisors.md#待決紀錄的狀態與參謀行)；session 取問題檔綁定的 session，沒有綁定時取 client 的 session 環境變數，可用 `--session-id` 指定。`exempt prior-promise`、`exempt must-ask` 要加 `--exempt-basis`，依據不符就拒絕，不改任何檔，寫法見 [參謀](advisors.md#適用範圍)；其他結論不接受這個參數。問題預設為標題、選項取自題目；授權缺口預設「需使用者決定」、受阻工作預設「未指定」，只適合簡單題，有實際缺口或受阻工作時明確給。
    - `--help-question` 標成求助題：紀錄寫 `- kind: help`，題目沒有單選「已完成」選項時拒絕，不改任何檔。
-   - 紀錄已存在時就是改版：只接受 `--help-question`（把紀錄的 `- kind:` 改成或補上 `help`），其他紀錄欄位參數一律拒絕。紀錄的參謀行是 `exempt prior-promise`、`exempt must-ask` 時，同樣核對紀錄內的依據行。寫入後紀錄的版本行改為面板版本。紀錄已非 `pending`（例如答覆含糊要重問）時，題目內容須有改變，寫入後狀態改回 `pending`，舊答覆保留；內容相同則拒絕，除非上次已寫入面板、但紀錄還停在較舊版本（同步中斷），這時重跑同一指令會補完。題目已從問題檔歸檔時，從紀錄版本的下一版開始。
+   - `--tried` 寫明發問前已實際試過什麼與結果，存成 `- tried:` 行（換行會併成一行），只接受求助題。求助題缺值或值空白時拒絕，不改任何檔；`exempt user-account` 也要這行，值寫明為何答案只在使用者帳號或裝置。程式只查有沒有寫，不判斷是否真的試過。
+   - 紀錄已存在時就是改版：只接受 `--help-question`（把紀錄的 `- kind:` 改成或補上 `help`），其他紀錄欄位參數一律拒絕。求助題的紀錄沒有非空的 `- tried:` 行時拒絕，先在紀錄加上這行再重跑（舊紀錄改版重問也適用）。紀錄的參謀行是 `exempt prior-promise`、`exempt must-ask` 時，同樣核對紀錄內的依據行。寫入後紀錄的版本行改為面板版本。紀錄已非 `pending`（例如答覆含糊要重問）時，題目內容須有改變，寫入後狀態改回 `pending`，舊答覆保留；內容相同則拒絕，除非上次已寫入面板、但紀錄還停在較舊版本（同步中斷），這時重跑同一指令會補完。題目已從問題檔歸檔時，從紀錄版本的下一版開始。
    - 寫題的其餘行為與下方 `question upsert` 相同（清理、印 `<ID> r<版本>`、確認題職責提醒、預先授權重查、側欄）；寫入失敗時剛建立的紀錄會移除。最後執行與「待決題目檢查」相同的檢查（帶綁定的 session），有問題時以非零結束，依該節表格處理。
    - `--visual`（可重複，`question upsert` 也接受）寫入示意連結，只接受 http／https，其他一律拒絕寫題，不改任何檔。
      - 有多個連結時，每個都標明它對應什麼：`--visual 'A|新版|https://…'`（選項 A，標題「新版」）、`--visual 'A|https://…'`（只標選項）、`--visual '整體比較|https://…'`（只寫標題）。只給網址仍可用，舊題照常顯示。字母是大寫單一字母，題目沒有這個選項（含「其他」列）時拒絕寫題；標題裡不能有 `|`。
@@ -97,7 +98,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 
 舊步驟仍可用：
 
-1. 依「使用者待決事項」建立 `.lat/decisions/<ID>.md`。求助題（HELP）在紀錄加 `- kind: help`。
+1. 依「使用者待決事項」建立 `.lat/decisions/<ID>.md`。求助題（HELP）在紀錄加 `- kind: help` 與 `- tried: <試過的方法與結果>`；`question upsert` 不查這行，回合結束檢查會查。
 2. 寫入問題檔。一律用這個指令（與面板共用檔案鎖），不手動編輯 `$questions`：
 
    ```bash
@@ -119,7 +120,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 - **選項字母**：面板與聊天使用相同字母。單選題用題目檔的字母，複選題依順序標 `A.`、`B.`…，最後一列「其他（自己輸入）」接續下一個字母。使用者按字母鍵 A–I（不分大小寫）選擇；游標在「其他」列或輸入框中時，字母照常當文字輸入。
 - 每題盡量不超過九個選項（A–I），使用者才能直接按字母選；超過的選項仍可用方向鍵選。字母只到 Z：複選題第 27 項起與之後的「其他」列不標字母。
 - 工具自動加入題號、版本、`待答`、空白作答區與 `- [ ] 送出`；既有題的答覆與勾選狀態不會被覆寫。
-- **求助題**：紀錄有 `- kind: help` 時，題目須是單選題且有一個選項文字是 `已完成`（可加「（建議）」），寫法 `- A. 已完成`，否則 `question upsert` 拒絕寫入；使用者做不到或改變主意時寫在自動加入的「其他」。一題只問一項檢查，多件事拆成多題，「已完成」才對得上每一件。有紀錄能看出動作是否發生時，結案前要對紀錄，見「求助題結案」。
+- **求助題**：發問前先用手上的遠端能力（ssh、截圖、桌面操作、瀏覽器）自己試，把試過什麼與結果寫進紀錄的 `- tried:` 行。紀錄有 `- kind: help` 時，題目須是單選題且有一個選項文字是 `已完成`（可加「（建議）」），寫法 `- A. 已完成`，否則 `question upsert` 拒絕寫入；使用者做不到或改變主意時寫在自動加入的「其他」。一題只問一項檢查，多件事拆成多題，「已完成」才對得上每一件。有紀錄能看出動作是否發生時，結案前要對紀錄，見「求助題結案」。
 
 ### 聊天提問格式
 

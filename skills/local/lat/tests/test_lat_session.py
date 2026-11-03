@@ -363,7 +363,7 @@ class SessionTests(unittest.TestCase):
                 self.decisions.joinpath('LAT-A.md').write_text(
                     '- status: pending\n- advisor: exempt requirement-discussion\n')
                 self.decisions.joinpath('LAT-H.md').write_text(
-                    '- status: pending\n- advisor: needs-human\n- kind: help\n')
+                    '- status: pending\n- advisor: needs-human\n- kind: help\n- tried: 看過畫面\n')
                 messages = [('DECIDE', 'LAT-A r1'), ('HELP', 'LAT-H r1 need assistance'),
                             ('DONE', 'delivered'), ('NO REPLY', 'waiting'), ('', '')]
                 for tag, summary in messages:
@@ -780,7 +780,7 @@ class SessionTests(unittest.TestCase):
             path = self.decisions / 'LAT-H.md'
             for message in ('HELP: LAT-H r1', 'DECIDE: LAT-H r1'):
                 with self.subTest(client=client, message=message):
-                    path.write_text('- status: pending\n- advisor: exempt user-account\n- kind: help\n')
+                    path.write_text('- status: pending\n- advisor: exempt user-account\n- kind: help\n- tried: 看過畫面\n')
                     self.assert_stop_pass(self.stop_hook(message, client), 'LAT-H r1 - Question')
             for kind in ('', '- kind: decide\n'):
                 with self.subTest(client=client, kind=kind):
@@ -973,7 +973,7 @@ class SessionTests(unittest.TestCase):
 
         ask('LAT-A', '## 要合併嗎？\n\n背景。\n\n- A. 合併\n- B. 不合併\n', '--advisor', 'needs-human')
         ask('LAT-H', '## 請登入\n\n背景。\n\n- A. 已完成\n', '--advisor', 'needs-human',
-            '--help-question')
+            '--help-question', '--tried', '看過畫面')
         assert_pass('DECIDE: LAT-A r1', 'LAT-A r1 - 要合併嗎？')
         assert_pass('HELP: LAT-H r1', 'LAT-H r1 - 請登入')
         ask('LAT-A', '## 要合併嗎？\n\n背景改了。\n\n- A. 合併\n- B. 不合併\n')
@@ -982,7 +982,7 @@ class SessionTests(unittest.TestCase):
     def test_stop_omission_check_skips_other_controllers_records(self):
         self.write_legacy_record()
         self.decisions.joinpath('LAT-A.md').write_text(
-            f'- status: pending\n- advisor: needs-human\n- kind: help\n- session: {SESSION}\n')
+            f'- status: pending\n- advisor: needs-human\n- kind: help\n- tried: 看過畫面\n- session: {SESSION}\n')
         questions = self.bind_stop_panel()
         questions.write_text('## Question\nLAT-A · r1 · 待答\n')
         other = self.bind_stop_panel(session=OTHER, name='other')
@@ -1069,7 +1069,7 @@ class SessionTests(unittest.TestCase):
                     self.SHOWN_B + SEPARATOR + self.SHOWN_A)
                 # HELP is shown the same way.
                 self.decisions.joinpath('LAT-A.md').write_text(
-                    '- status: pending\n- advisor: needs-human\n- kind: help\n')
+                    '- status: pending\n- advisor: needs-human\n- kind: help\n- tried: 看過畫面\n')
                 self.assertEqual(self.shown(ask('HELP: LAT-A r1')), self.SHOWN_A)
                 # Unbound: nothing shown and no chat copy compared, as before.
                 (self.root / 'plugin-config/bindings.json').write_text(
@@ -2897,7 +2897,7 @@ class SessionTests(unittest.TestCase):
         for client in ('codex', 'claude'):
             with self.subTest(client=client):
                 self.activate_as(client)
-                for name, kind in (('LAT-A', ''), ('LAT-B', ''), ('LAT-H', '- kind: help\n')):
+                for name, kind in (('LAT-A', ''), ('LAT-B', ''), ('LAT-H', '- kind: help\n- tried: 看過畫面\n')):
                     self.decisions.joinpath(f'{name}.md').write_text(
                         f'- status: pending\n- advisor: needs-human\n{kind}')
                 self.assert_silent(self.stop_hook('❓ **LAT-A r1** 標題\nDECIDE: LAT-A r1 請選', client))
@@ -2930,6 +2930,56 @@ class SessionTests(unittest.TestCase):
                 self.record.unlink()
                 (self.root / 'reports' / f'{SESSION}.jsonl').unlink()
 
+    def test_stop_holds_a_help_record_without_tried(self):
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                self.activate_as(client)
+                path = self.decisions / 'LAT-H.md'
+                base = '- status: pending\n- advisor: needs-human\n- kind: help\n'
+                for missing in ('', '- tried:   \n', '- tried:\n- tried: 晚來的一行\n'):
+                    with self.subTest(missing=missing):
+                        path.write_text(base + missing)
+                        self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '- tried:')
+                        # The kind line decides, not the tag.
+                        self.assert_stop_block(self.stop_hook('DECIDE: LAT-H r1', client), '- tried:')
+                path.write_text('- status: pending\n- advisor: exempt user-account\n- kind: help\n')
+                self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '- tried:')
+                path.write_text('- status: pending\n- advisor: exempt user-account\n- kind: help\n'
+                                '- tried: 2FA 核准只在使用者手機上\n')
+                self.assert_silent(self.stop_hook('請核准\nHELP: LAT-H r1', client))
+                self.record.unlink()
+                (self.root / 'reports' / f'{SESSION}.jsonl').unlink()
+
+    def test_stop_tried_leaves_other_questions_and_old_records_alone(self):
+        self.activate_as('claude')
+        # Not a help question.
+        self.decisions.joinpath('LAT-D.md').write_text('- status: pending\n- advisor: needs-human\n')
+        self.assert_silent(self.stop_hook('請選\nDECIDE: LAT-D r1', 'claude'))
+        # Asked by an earlier session: the line is not required of it.
+        self.decisions.joinpath('LAT-O.md').write_text(
+            '- status: pending\n- advisor: needs-human\n- kind: help\n- session: older-session\n')
+        self.assert_silent(self.stop_hook('請登入\nHELP: LAT-O r1', 'claude'))
+        # Pending and not cited: never looked at.
+        self.decisions.joinpath('LAT-P.md').write_text(
+            '- status: pending\n- advisor: needs-human\n- kind: help\n')
+        self.decisions.joinpath('LAT-Q.md').write_text(
+            f'- status: pending\n- advisor: needs-human\n- kind: help\n- session: {SESSION}\n'
+            '- tried: 看過畫面\n')
+        self.assert_silent(self.stop_hook('請登入\nHELP: LAT-Q r1', 'claude'))
+        # Already asked at this version before the rule: passes beside a new question ...
+        self.decisions.joinpath('LAT-R.md').write_text(
+            f'- status: pending\n- advisor: needs-human\n- kind: help\n- session: {SESSION}\n'
+            '- tried: 看過畫面\n')
+        self.assert_silent(self.stop_hook('請登入\nHELP: LAT-R r1', 'claude'))
+        self.decisions.joinpath('LAT-R.md').write_text(
+            f'- status: pending\n- advisor: needs-human\n- kind: help\n- session: {SESSION}\n')
+        self.decisions.joinpath('LAT-S.md').write_text(
+            f'- status: pending\n- advisor: needs-human\n- kind: help\n- session: {SESSION}\n'
+            '- tried: 看過畫面\n')
+        self.assert_silent(self.stop_hook('請登入\nHELP: LAT-R r1, LAT-S r1', 'claude'))
+        # ... but a new version of it is a new ask and needs the line.
+        self.assert_stop_block(self.stop_hook('HELP: LAT-R r2', 'claude'), '- tried:')
+
     def test_stop_help_gets_the_same_id_status_and_panel_checks(self):
         for client in ('codex', 'claude'):
             with self.subTest(client=client):
@@ -2939,11 +2989,11 @@ class SessionTests(unittest.TestCase):
                 self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '沒有待決紀錄')
                 path.write_text('- status: pending\n- advisor: needs-human\n')
                 self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '- kind: help')
-                path.write_text('- status: answered\n- advisor: needs-human\n- kind: help\n')
+                path.write_text('- status: answered\n- advisor: needs-human\n- kind: help\n- tried: 看過畫面\n')
                 self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '不是 pending')
-                path.write_text('- status: pending\n- kind: help\n')
+                path.write_text('- status: pending\n- kind: help\n- tried: 看過畫面\n')
                 self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '沒有參謀行')
-                path.write_text('- status: pending\n- advisor: needs-human\n- Kind: Help\n')
+                path.write_text('- status: pending\n- advisor: needs-human\n- Kind: Help\n- tried: 看過畫面\n')
                 self.assert_silent(self.stop_hook('請登入\nHELP: LAT-H r1', client))
                 self.assertIn('LAT HELP 檢查未通過',
                               json.loads(self.stop_hook('HELP: X r1', client).stdout)['reason'])
