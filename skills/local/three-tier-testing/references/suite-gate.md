@@ -6,6 +6,8 @@
 
 推送到 main 或推送標籤前，可以用 Git pre-push 檢查確認這份內容已有每一套整套的通過紀錄（見[推送前把關](#推送前把關pre-push)）。
 
+本機整合分支最新內容缺整套通過紀錄、且距該套上次通過超過一天時，每小時的背景執行會補跑那幾套，不擋任何人；推送前檢查直接沿用它同內容的通過紀錄（見[背景整套](#背景整套background)）。
+
 直接在整合分支上提交時，可以用 Git pre-commit 檢查先跑這次暫存改動影響到的測試（見[提交前把關](#提交前把關pre-commit)）。
 
 整套跑完後，距上次整理太久或整套明顯變慢時，閘門會開整理票或提醒（見[定期整理觸發](#定期整理觸發)）。
@@ -142,7 +144,8 @@ uv run --no-project python <skill>/scripts/suite-gate.py status --fingerprint <�
 - 最近一次收回（`Latest reclaim`）：時間、停掉幾個程序、原持有者的執行者、目錄與指令，以及每個程序的 PID 與指令。
 - 每個排隊者：卡住的原因與預約量。
 - 最近紀錄中失敗後經過失敗重跑的：重跑的結果、耗時、第一次的結束碼與每組的指令；沒重跑的寫出原因。之後列出這些紀錄中的時好時壞測試（`flaky`）：時間、檔案與測試名稱。
-- `--json`：`min_slots`（有效下限）、`max_slots`、`config`（實際套用的設定）、`host`（`cores`、`cpu_idle`、`cpu_free_cores`、`mem_available_bytes`、`unused_reservation`、`mem_reserve_bytes`、`cpu_left_cores`、`mem_left_bytes`、`pressure`、`brake`、`unreadable`）、`running`（每筆另有 `usage` 與 `reservation`）、`waiting`（每筆另有 `reason` 與 `reservation`）、`locks`、`records`、`cleanup`（見[定期整理觸發](#定期整理觸發)）、`reclaims`（收回紀錄，舊到新；每筆有 `time`、`agent`、`command`、`cwd`、`fingerprint`、`cgroup`、`sid`、是否佔名額 `slot`、佔的指紋鎖 `lock`、`leftover_since`、`grace_seconds`、`process_count` 與 `processes`（`pid`、`command`））。
+- 沒設 tracker 時未處理的背景整套失敗（見[背景整套](#背景整套background)）：時間、結束碼、專案與目錄、指令、提交與指紋。
+- `--json`：`min_slots`（有效下限）、`max_slots`、`config`（實際套用的設定）、`host`（`cores`、`cpu_idle`、`cpu_free_cores`、`mem_available_bytes`、`unused_reservation`、`mem_reserve_bytes`、`cpu_left_cores`、`mem_left_bytes`、`pressure`、`brake`、`unreadable`）、`running`（每筆另有 `usage` 與 `reservation`）、`waiting`（每筆另有 `reason` 與 `reservation`）、`locks`、`records`、`cleanup`（見[定期整理觸發](#定期整理觸發)）、`background_failures`（未處理的背景整套失敗）、`reclaims`（收回紀錄，舊到新；每筆有 `time`、`agent`、`command`、`cwd`、`fingerprint`、`cgroup`、`sid`、是否佔名額 `slot`、佔的指紋鎖 `lock`、`leftover_since`、`grace_seconds`、`process_count` 與 `processes`（`pid`、`command`））。
 
 ## 專案登記檔
 
@@ -356,6 +359,37 @@ uv run --no-project python <skill>/scripts/suite-gate.py install-pre-commit --re
 uv run --no-project python <skill>/scripts/suite-gate.py uninstall-pre-commit --repo <repo>
 ```
 
+## 背景整套（background）
+
+`background --repo <repo>` 由每小時一次的 systemd 使用者計時器觸發，補跑本機整合分支最新內容缺少的整套。不擋提交、推送與部署；推送前檢查本來就沿用任何用途的同內容通過紀錄，背景跑過的內容推送 main 時不必再跑。每次觸發：
+
+1. 取本機 `integration_branch`（讀工作區的登記檔）的最新提交，**不 fetch**；之後的登記檔（`full_suites`、`fingerprint_include`、`cleanup`）都讀那個提交的版本。
+2. 每一套照[推送前把關](#推送前把關pre-push)的方式算該提交的指紋（宣告 `depends_on` 的只取它的範圍）。已有可沿用通過紀錄（任何用途）的套不跑。
+3. 閘門狀態（`state.json` 的 `background`）存每套最近一次背景嘗試的提交、指紋、時間、結果與票。同一指紋最近一次背景嘗試失敗的套不跑，等內容改變。
+4. 剩下的套只跑距**這套上次可沿用通過**（任何內容、任何用途；以 `profile_key` 比對，也就是同一 repo、同一執行目錄與指令）**超過 24 小時**的；從沒通過過的視為超過。例如剛有人跑過整套、隨即又合併新改動時，這次不跑。
+5. 同一 repo 同時只有一個背景執行（狀態目錄 `background/` 下的檔案鎖），已有在跑就印一行後以 0 結束。
+
+要跑的套在狀態目錄下的暫時乾淨檢出依序執行（每套開始前把檢出還原成該提交，前一套改動或新增的檔案不留到下一套），照 [`run --registered`](#照登記寫法跑run---registered) 的方式複製 `fingerprint_include` 的被忽略檔、有 `bun.lock` 的目錄先裝依賴；每套照常經閘門排隊、寫紀錄（用途 `background`）、套用[失敗重跑](#失敗重跑)。執行中測試改了已追蹤的檔案時，通過也不可沿用，這裡算失敗。目錄依賴裝不起來也算失敗（票上註明沒跑）。結束碼是第一個失敗的套的結束碼。
+
+**失敗**（失敗重跑後仍失敗）時：
+
+- 登記檔有 `cleanup.github_repo` 時開票：先問閘門上次在同一個 tracker 為這套開的票（`gh issue view`），還開著且標題相同就留言；否則用 `gh issue list --state open --search '"Background full suite failed" in:title'` 找標題完全相同的開著的票留言；都沒有就 `gh issue create --label suite-failure`，標籤不存在而失敗時改為不帶標籤再開一次，之後以標題辨認。標題是 `Background full suite failed: <專案目錄名> (<執行目錄>) <整套指令>`；內文與留言列出提交、指紋、結束碼與輸出結尾。
+- 沒設 tracker，或 `gh` 失敗時，失敗只存在閘門狀態；`status` 列出未處理的背景失敗，直到這套之後有可沿用的通過（任何用途）。
+
+### 安裝與移除
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py install-background --repo <repo> --preview
+uv run --no-project python <skill>/scripts/suite-gate.py install-background --repo <repo>
+uv run --no-project python <skill>/scripts/suite-gate.py uninstall-background --repo <repo>
+```
+
+- 只裝在命令列指定的 repo；repo 根要有登記檔、`full_suites` 正確並寫明 `integration_branch`，`PATH` 上要有 `uv`，否則拒絕。
+- 寫入 `$XDG_CONFIG_HOME/systemd/user/`（預設 `~/.config/systemd/user/`）的 `suite-gate-background-<repo 目錄名>-<路徑雜湊>.service` 與 `.timer`（`OnCalendar=hourly`、`Persistent=true`），service 以 `uv run --no-project python <skill>/scripts/suite-gate.py background --repo <repo>` 執行，`PATH` 用安裝當下的，讓測試找得到同樣的工具。之後執行 `systemctl --user daemon-reload` 與 `systemctl --user enable --now <timer>`。`--preview` 只印差異與要執行的指令。
+- 有 tracker 時以 `gh label create suite-failure` 建標籤，已存在就略過；建不起來只提醒，開票時會改為不帶標籤。
+- 重跑不重複；技能搬了位置，重跑會就地更新。`uninstall-background` 先 `systemctl --user disable --now`，再刪兩個檔並 `daemon-reload`。同名檔案不是 suite-gate 建的（沒有標記行）時，安裝與移除都拒絕、不改檔案。
+- 在專案裝計時器屬主機安裝，由主控依授權處理。
+
 ## 定期整理觸發
 
 每次整套實際跑完（經 `run` 或對照表退回整套），閘門檢查這個專案是否該整理測試；達門檻時在專案 tracker 開整理票，或在已開著的整理票留言更新數字。整理的做法見 [cleanup.md](cleanup.md)。受影響測試（`kind: "affected"`）與沿用上次結果的執行都不檢查。
@@ -395,7 +429,7 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 | 紀錄、名額、鎖與整理狀態 | `$XDG_STATE_HOME/suite-gate/`（預設 `~/.local/state/suite-gate/`） | 環境變數 `SUITE_GATE_STATE_DIR` |
 | 設定 | `$XDG_CONFIG_HOME/suite-gate/config.json`（預設 `~/.config/suite-gate/config.json`） | 環境變數 `SUITE_GATE_CONFIG` |
 
-整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用、用途（`purpose`：`post-merge`、`release`、`map-fallback`、`reason` 或 `null`）與自填原因（`purpose_reason`）、合併後受影響測試的執行編號（`run_id`，只有那次執行的紀錄才有）、預約量的鍵 `profile_key`（`repo`、`rel_cwd`、`command`，不在 Git 工作區時為 `null`），以及這次的用量 `profile`：
+整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用、用途（`purpose`：`post-merge`、`release`、`map-fallback`、`reason`、`background` 或 `null`）與自填原因（`purpose_reason`）、合併後受影響測試的執行編號（`run_id`，只有那次執行的紀錄才有）、預約量的鍵 `profile_key`（`repo`、`rel_cwd`、`command`，不在 Git 工作區時為 `null`），以及這次的用量 `profile`：
 
 | 欄位 | 意思 |
 | ---- | ---- |

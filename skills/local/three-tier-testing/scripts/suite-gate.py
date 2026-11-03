@@ -20,6 +20,11 @@ the gate (with an affected-test map it points at `affected` instead), and `insta
 `uninstall --client claude|codex` add or remove it. `pre-push` is the Git pre-push check
 that refuses pushing main or a tag without a passing record of every registered full
 suite; `install-pre-push` / `uninstall-pre-push --repo <dir>` add or remove it.
+`background --repo <dir>` (run hourly by the systemd user timer that `install-background` /
+`uninstall-background --repo <dir>` add or remove) runs, in a clean checkout of the local
+integration branch, the registered full suites whose content has no pass and whose last pass
+is over a day old; a failure opens or comments on a `suite-failure` ticket, or is listed by
+`status` without a tracker.
 
 Linux only: each suite runs in its own systemd user scope (cgroup v2), and slot and lock
 holders stay counted while that group has processes. Without a user scope the suite runs
@@ -3701,11 +3706,13 @@ def cmd_status(as_json, fp_prefix, limit):
                                                  'source': source}))
     cleanup = [dict(unit, median=cleanup_median(unit), due=cleanup_due(unit))
                for unit in state.get('cleanup', {}).values()]
+    background = unhandled_background(state, read_records())
     if as_json:
         shown = [{k: v for k, v in h.items() if k != 'unused'} for h in running]
         print(json.dumps({'min_slots': floor, 'max_slots': cap, 'config': config,
                           'host': host, 'running': shown, 'waiting': waiting,
                           'locks': state['locks'], 'records': records, 'cleanup': cleanup,
+                          'background_failures': background,
                           'reclaims': state.get('reclaims') or []},
                          ensure_ascii=False, indent=1))
         return 0
@@ -3799,6 +3806,10 @@ def cmd_status(as_json, fp_prefix, limit):
         # The first two lines name the project and suite, already on the heading line.
         for line in cleanup_numbers(unit)[2:] + [f'- Due: {why}' for why in unit['due']]:
             print(f'    {line[2:]}')
+    print(f'Background full-suite failures without a ticket ({len(background)}):')
+    for a in background:
+        print(f"  {a['time']}  exit {a['exit_code']}  {a['project']}/{a['rel_cwd']}  "
+              f"{a['command']}  commit {a['commit'][:12]}  fp {a['fingerprint'][:12]}")
     return 0
 
 
@@ -4486,13 +4497,377 @@ def cmd_pre_commit():
     return _guarded(body)
 
 
+# ---------------------------------------------------------------- background full suites
+
+BACKGROUND_STALE_SECONDS = 24 * 3600  # a suite runs when its last pass is older than this
+FAILURE_LABEL = 'suite-failure'
+FAILURE_TITLE = 'Background full suite failed'
+UNIT_CREATED = '# suite-gate created this file; uninstall-background removes it.\n'
+
+
+def suite_key(root, suite):
+    """What a registered suite's runs are filed under in every worktree and checkout of its
+    repository: the same key as its measured usage."""
+    return profile_key(root, suite['cwd'], suite['command'])
+
+
+def parse_time(text):
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def last_pass(records, key):
+    """When the latest reusable pass of the suite filed under key ended (any content, any
+    purpose), as a timestamp; None when it never passed."""
+    times = [parse_time(r.get('finished') or r.get('time')) for r in records
+             if not r.get('kind') and r.get('reusable') and r.get('profile_key') == key]
+    return max((t for t in times if t is not None), default=None)
+
+
+def background_lock(root):
+    """An exclusive lock on this repository's background run, or None when one holds it."""
+    directory = state_dir() / 'background'
+    directory.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(profile_key(root, '.', '')['repo'].encode()).hexdigest()[:16]
+    lock = open(directory / f'{name}.lock', 'a')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        return None
+    return lock
+
+
+def background_plan(root, registry, commit):
+    """[(suite, fingerprint, why not run or None)] for the registered full suites on
+    commit's content, by the background steps 2 to 4."""
+    records = read_records()
+    attempts = with_state(lambda state: copy.deepcopy(state.get('background', {})))
+    plan = []
+    for suite in read_full_suites(registry):
+        fp = suite_fingerprint(root, registry, suite, commit)
+        key = suite_key(root, suite)
+        attempt = attempts.get(json.dumps(key, sort_keys=True)) or {}
+        passed = last_pass(records, key)
+        if reusable_record(fp):
+            why = 'this content already passed'
+        elif attempt.get('fingerprint') == fp and attempt.get('result') == 'failed':
+            why = f"the background run on this content failed at {attempt.get('time')}"
+        elif passed is not None and time.time() - passed <= BACKGROUND_STALE_SECONDS:
+            why = (f'it passed {fmt_seconds(time.time() - passed)} ago, within '
+                   f'{BACKGROUND_STALE_SECONDS // 3600} hours')
+        else:
+            why = None
+        plan.append((suite, fp, why))
+    return plan
+
+
+def failure_ticket(root, suite, commit, fp, code, gate):
+    """(title, body, comment) for the ticket of a failed background suite."""
+    project = project_root(root).name
+    title = f"{FAILURE_TITLE}: {project} ({suite['cwd']}) {suite['command']}"[:250]
+    record = gate.record if gate else None
+    facts = [f"- Project: {project}", f"- Directory: {suite['cwd']}",
+             f"- Command: `{suite['command']}`", f'- Commit: {commit}',
+             f'- Fingerprint: {fp}', f'- Exit code: {code}',
+             f"- Time: {now_iso()}"]
+    if record and record.get('content_changed'):
+        facts.append('- The tests changed tracked files during the run, so it does not count '
+                     'as a pass')
+    tail = (record or {}).get('output_tail')
+    if tail:
+        facts += ['', 'Output tail:', '', '```', tail.rstrip(), '```']
+    elif gate is None:
+        facts.append('- The suite did not run: preparing its directory failed')
+    look = f'`suite-gate.py status --fingerprint {fp[:12]}` on the host has the record.'
+    body = '\n'.join(['The hourly background full suite failed on the integration branch, '
+                      'after rerunning the failed tests once.', '', *facts, '', look,
+                      'Close this ticket when the suite passes again.'])
+    comment = '\n'.join(['The background full suite failed again on new content.', '',
+                         *facts, '', look])
+    return title, body, comment
+
+
+def post_failure(tracker, title, body, comment, opened):
+    """Comment on the open ticket of this suite, or open one; returns (what was done, its
+    URL, its number). opened is the ticket this gate last used for the suite in this
+    tracker, asked first; then open tickets are matched by title, labelled or not."""
+    if opened is not None:
+        issue = json.loads(gh(['issue', 'view', str(opened), '--json', 'state,title,url'],
+                              tracker))
+        if issue['state'] == 'OPEN' and issue.get('title') == title:
+            gh(['issue', 'comment', str(opened), '--body', comment], tracker)
+            return 'commented on', issue['url'], opened
+    found = json.loads(gh(['issue', 'list', '--state', 'open', '--search',
+                           f'"{FAILURE_TITLE}" in:title', '--json', 'number,title,url',
+                           '--limit', '100'], tracker))
+    same = [i for i in found if i.get('title') == title]
+    if same:
+        gh(['issue', 'comment', str(same[0]['number']), '--body', comment], tracker)
+        return 'commented on', same[0]['url'], same[0]['number']
+    create = ['issue', 'create', '--title', title, '--body', body]
+    try:
+        url = gh([*create, '--label', FAILURE_LABEL], tracker).strip()
+    except RuntimeError as exc:
+        warn(f'opening the ticket with the {FAILURE_LABEL} label failed ({exc}); opening it '
+             'without a label, found again by its title')
+        url = gh(create, tracker).strip()
+    number = re.search(r'/issues/(\d+)$', url)
+    return 'opened', url, int(number.group(1)) if number else None
+
+
+def report_failure(root, registry, suite, key, commit, fp, code, gate):
+    """Open or update the suite's failure ticket; the ticket URL, or None when the failure
+    stays unhandled (no tracker, or the tracker could not be updated)."""
+    tracker = read_tracker(registry)
+    if tracker is None:
+        warn(f'no tracker (`cleanup.github_repo` in {REGISTRY_NAME}): the failure is kept '
+             'in the gate state and `suite-gate.py status` lists it')
+        return None
+    title, body, comment = failure_ticket(root, suite, commit, fp, code, gate)
+    issue_key = json.dumps([tracker['repo'], key])
+    opened = with_state(lambda state: state.get('background_issues', {}).get(issue_key))
+    try:
+        done, url, number = post_failure(tracker, title, body, comment, opened)
+    except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        warn(f"the tracker {tracker['repo']} could not be updated ({exc}); "
+             '`suite-gate.py status` lists the failure')
+        return None
+    if number is not None:
+        def remember(state):
+            state.setdefault('background_issues', {})[issue_key] = number
+        with_state(remember)
+    warn(f'suite failure ticket: {done} {url}')
+    return url
+
+
+def run_background_suite(root, checkout, registry, suite, commit, fp, prepared):
+    """Run one suite through the gate in the checkout (purpose background) and store the
+    attempt under the fingerprint it ran on; the exit code. Files an earlier suite changed
+    or added in the checkout are reset to the commit first."""
+    for step in (['reset', '-q', '--hard'], ['clean', '-fdq']):
+        result = git(step, checkout)
+        if result.returncode != 0:
+            raise RuntimeError(f'git {step[0]} in the checkout failed: {result.stderr.strip()}')
+    cwd = suite_cwd(checkout, suite)
+    if cwd not in prepared:
+        prepared[cwd] = prepare_dependencies(cwd)
+    gate = None
+    if prepared[cwd]:
+        warn(f"not run: preparing {suite['cwd']} failed ({prepared[cwd]})")
+        code = 2
+    else:
+        gate = Gate([suite['command']], cwd, None, load_config(), {'purpose': 'background'})
+        code = _drive(gate, gate.run)
+        if code == 0 and gate.record and gate.record.get('content_changed'):
+            warn('the tests changed tracked files, so this pass is not reusable; counted as '
+                 'a failure')
+            code = 1
+        if gate.me['fingerprint'] and gate.me['fingerprint'] != fp:
+            warn('the suite ran on other content than planned (an ignored file changed); '
+                 'the attempt is kept for the content it ran on')
+            fp = gate.me['fingerprint']
+    key = json.dumps(suite_key(root, suite), sort_keys=True)
+    attempt = {'project': str(project_root(root)), 'rel_cwd': suite['cwd'],
+               'command': suite['command'], 'commit': commit, 'fingerprint': fp,
+               'time': now_iso(), 'result': 'failed' if code else 'passed',
+               'exit_code': code, 'ticket': None}
+    if code:
+        attempt['ticket'] = report_failure(root, registry, suite, key, commit, fp, code, gate)
+
+    def store(state):
+        state.setdefault('background', {})[key] = attempt
+    with_state(store)
+    return code
+
+
+def cmd_background(repo):
+    """Fill in missing full-suite passes on the local integration branch: the steps in
+    references/suite-gate.md (Background full suites)."""
+    root = repo_root(Path(repo))
+    if root is None:
+        warn(f'background: {repo} is not a Git work tree')
+        return 2
+    branch = (load_registry(root) or {}).get('integration_branch')
+    if not isinstance(branch, str) or not branch:
+        warn(f'background: {root / REGISTRY_NAME} names no integration_branch')
+        return 2
+    lock = background_lock(root)
+    if lock is None:
+        print(f'suite-gate background: another background run of {root} is going; done')
+        return 0
+    with lock:
+        result = git(['rev-parse', '--verify', '--quiet', f'refs/heads/{branch}^{{commit}}'],
+                     root)
+        if result.returncode != 0:
+            warn(f'background: no local branch {branch}')
+            return 2
+        commit = result.stdout.strip()
+        registry = base_registry(root, commit)
+        try:
+            plan = background_plan(root, registry or {}, commit)
+        except (RuntimeError, ValueError) as exc:
+            warn(f'background: {branch} at {commit[:12]}: {exc}')
+            return 2
+        warn(f'background: {branch} at {commit[:12]}')
+        for suite, _fp, why in plan:
+            warn(f"  {suite['cwd']}: {suite['command']}: "
+                 + (f'not run, {why}' if why else 'runs'))
+        due = [(suite, fp) for suite, fp, why in plan if why is None]
+        if not due:
+            return 0
+
+        def body():
+            with clean_checkout(root, commit) as checkout:
+                copy_included(root, checkout, registry)
+                prepared, code = {}, 0
+                for suite, fp in due:
+                    result = run_background_suite(root, checkout, registry, suite, commit,
+                                                  fp, prepared)
+                    code = code or result
+                return code
+        return _guarded(body)
+
+
+def unhandled_background(state, records):
+    """The stored background failures with no ticket and no later pass of the suite."""
+    out = []
+    for key, attempt in (state.get('background') or {}).items():
+        if attempt.get('result') != 'failed' or attempt.get('ticket'):
+            continue
+        passed = last_pass(records, json.loads(key))
+        failed = parse_time(attempt.get('time'))
+        if passed is None or failed is None or passed < failed:
+            out.append(attempt)
+    return out
+
+
+def unit_paths(root):
+    """The service and timer files of root's background timer, in the user's systemd dir."""
+    base = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'systemd/user'
+    slug = re.sub(r'[^A-Za-z0-9]+', '-', root.name).strip('-') or 'repo'
+    name = f"suite-gate-background-{slug}-{hashlib.sha256(str(root).encode()).hexdigest()[:8]}"
+    return base / f'{name}.service', base / f'{name}.timer'
+
+
+def systemd_word(word):
+    """word as one ExecStart= argument: quoted, with systemd's % and $ escaped."""
+    escaped = word.replace('\\', '\\\\').replace('"', '\\"')
+    return '"' + escaped.replace('%', '%%').replace('$', '$$') + '"'
+
+
+def unit_texts(root, uv):
+    """(service, timer) text for root's hourly background run; PATH is the installer's, so
+    the suites find the same tools."""
+    command = ' '.join(systemd_word(w) for w in [uv, 'run', '--no-project', 'python',
+                                                  str(SCRIPT), 'background', '--repo',
+                                                  str(root)])
+    path = os.environ.get('PATH', '').replace('%', '%%').replace('\\', '\\\\') \
+        .replace('"', '\\"')
+    head = (UNIT_CREATED + '# Added by suite-gate.py install-background.\n[Unit]\n'
+            f'Description=suite-gate background full suites of {root}\n')
+    service = (head + '\n[Service]\nType=oneshot\nNice=10\n'
+               f'Environment="PATH={path}"\nExecStart={command}\n')
+    timer = (head + '\n[Timer]\nOnCalendar=hourly\nPersistent=true\n\n'
+             '[Install]\nWantedBy=timers.target\n')
+    return service, timer
+
+
+def systemctl(*args):
+    result = subprocess.run(['systemctl', '--user', *args], capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"systemctl --user {' '.join(args)} failed: "
+                           f"{result.stderr.strip() or f'exit {result.returncode}'}")
+
+
+def ensure_failure_label(registry):
+    """Create the suite-failure label in the registry's tracker; skipped when it exists."""
+    tracker = read_tracker(registry)
+    if tracker is None:
+        print(f'No tracker (`cleanup.github_repo` in {REGISTRY_NAME}): no label created; '
+              '`suite-gate.py status` lists background failures')
+        return
+    try:
+        gh(['label', 'create', FAILURE_LABEL, '--color', 'B60205', '--description',
+            'A background full suite failed'], tracker)
+        print(f"Created the {FAILURE_LABEL} label in {tracker['repo']}")
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        if 'already exists' in str(exc):
+            print(f"The {FAILURE_LABEL} label already exists in {tracker['repo']}")
+        else:
+            warn(f'could not create the {FAILURE_LABEL} label ({exc}); failure tickets are '
+                 'then opened without it and found by title')
+
+
+def cmd_background_configure(action, repo, preview):
+    """Install or remove root's hourly background timer (a systemd user timer)."""
+    root = repo_root(Path(repo))
+    if root is None:
+        raise ValueError(f'{repo} is not a Git work tree')
+    root = root.resolve()
+    registry = None
+    if action == 'install':
+        registry = load_registry(root)
+        if registry is None:
+            raise ValueError(f'no {REGISTRY_NAME} at {root}: the background run is only for '
+                             'repos with a registry')
+        read_full_suites(registry)
+        if not isinstance(registry.get('integration_branch'), str) \
+                or not registry['integration_branch']:
+            raise ValueError(f'{root / REGISTRY_NAME} names no integration_branch; the '
+                             'background run tests that branch')
+        uv = shutil.which('uv')
+        if uv is None:
+            raise ValueError('uv is not on PATH; the timer runs the gate with it')
+        texts = unit_texts(root, uv)
+    paths = unit_paths(root)
+    befores = [p.read_text() if p.exists() else None for p in paths]
+    for path, before in zip(paths, befores):
+        if before is not None and UNIT_CREATED not in before:
+            raise ValueError(f'{path} exists and suite-gate did not create it; it was left '
+                             'unchanged')
+    afters = texts if action == 'install' else (None, None)
+    timer = paths[1].name
+    if afters == tuple(befores):
+        print(f'No changes: {paths[0]}, {paths[1]}')
+    else:
+        for path, before, after in zip(paths, befores, afters):
+            print(''.join(difflib.unified_diff((before or '').splitlines(True),
+                                               (after or '').splitlines(True),
+                                               fromfile=str(path), tofile=str(path))), end='')
+        if preview:
+            print(f'Would run: systemctl --user daemon-reload; systemctl --user '
+                  f"{'enable --now' if action == 'install' else 'disable --now'} {timer}")
+            return 0
+        if action == 'uninstall' and befores[1] is not None:
+            systemctl('disable', '--now', timer)
+        for path, after in zip(paths, afters):
+            if after is None:
+                path.unlink(missing_ok=True)
+            else:
+                # Not write_file: its backup would sit among the user's unit files.
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(after)
+        systemctl('daemon-reload')
+        if action == 'install':
+            systemctl('enable', '--now', timer)
+        print(f"{'Installed' if action == 'install' else 'Removed'} {timer}")
+    if action == 'install' and not preview:
+        ensure_failure_label(registry)
+    return 0
+
+
 # ---------------------------------------------------------------- entry
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     # A hook that exits 2 would block every command, so only run and status check this.
-    if not sys.platform.startswith('linux') and argv[:1] in (['run'], ['status'], ['affected'],
-                                                             ['cleanup-done'], ['pre-commit']):
+    if not sys.platform.startswith('linux') and argv[:1] in (
+            ['run'], ['status'], ['affected'], ['cleanup-done'], ['pre-commit'], ['background'],
+            ['install-background']):
         warn('only Linux is supported')
         return 2
     command = []
@@ -4537,6 +4912,15 @@ def main(argv=None):
     pre_push.add_argument('remote', nargs='*', help='remote name and URL, as Git passes them')
     sub.add_parser('pre-commit', help='Git pre-commit hook: on the integration branch, run '
                    'the tests the affected-test map selects on the staged content')
+    background = sub.add_parser('background', help='run the registered full suites the local '
+                                'integration branch lacks a recent pass of (the hourly timer '
+                                'runs this)')
+    background.add_argument('--repo', required=True, help='the repo (work tree) to test')
+    for action in ('install-background', 'uninstall-background'):
+        config = sub.add_parser(action, help=f"{action.split('-')[0]} the hourly systemd user "
+                                'timer that runs `background` for a repo with a registry')
+        config.add_argument('--repo', required=True, help='the repo (work tree) to change')
+        config.add_argument('--preview', action='store_true', help='show the diff, write nothing')
     for action in (f'{a}-{h}' for h in HOOKS for a in ('install', 'uninstall')):
         config = sub.add_parser(action, help=f'{action.split("-")[0]} the '
                                 f'{action.split("-", 1)[1]} check in a repo with a registry')
@@ -4571,6 +4955,14 @@ def main(argv=None):
         return cmd_pre_push()
     if args.action == 'pre-commit':
         return cmd_pre_commit()
+    if args.action == 'background':
+        return cmd_background(args.repo)
+    if args.action in ('install-background', 'uninstall-background'):
+        try:
+            return cmd_background_configure(args.action.split('-')[0], args.repo, args.preview)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+            warn(str(exc))
+            return 1
     if args.action.split('-', 1)[-1] in HOOKS:
         try:
             action, hook = args.action.split('-', 1)
