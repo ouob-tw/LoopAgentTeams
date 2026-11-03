@@ -1,6 +1,8 @@
 {"map": [
-  {"paths": ["board/src/lib/board/ledger.ts", "board/src/lib/components/LedgerBlock.svelte"],
+  {"paths": ["board/src/lib/board/ledger.ts"],
    "tests": ["board/tests/unit/ledger.test.ts", "board/tests/browser/ledger-page.test.ts"]},
+  {"paths": ["board/src/lib/components/LedgerBlock.svelte"],
+   "tests": ["board/tests/browser/ledger-page.test.ts"]},
   {"paths": ["board/src/lib/components/ControllerInfo.svelte"],
    "tests": ["board/tests/browser/ledger-page.test.ts", "board/tests/browser/controller-page.test.ts"]},
   {"paths": ["board/src/lib/server/helper.ts", "board/src/lib/server/model.ts", "board/src/lib/server/board.ts", "board/tests/fake-helper.mjs"],
