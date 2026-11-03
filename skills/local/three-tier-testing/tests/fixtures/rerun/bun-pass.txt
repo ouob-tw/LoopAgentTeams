@@ -1,0 +1,5 @@
+bun test v1.3.14 (0d9b296a)
+
+ 1 pass
+ 0 fail
+Ran 1 test across 1 file. [30.00ms]

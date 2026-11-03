@@ -1,0 +1,8 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.3, pytest-8.3.4, pluggy-1.7.0
+rootdir: /home/user/project
+collected 1 item
+
+tests/test_beta.py .                                                     [100%]
+
+============================== 1 passed in 0.01s ===============================

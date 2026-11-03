@@ -1,0 +1,13 @@
+bun test v1.3.14 (0d9b296a)
+
+tests/f1.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f1", () => { expect(1).toBe(0); });
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 1
+
+      at <anonymous> (/home/user/project/tests/f1.test.ts:2:30)
+(fail) f1 [0.11ms]

@@ -8,7 +8,9 @@ affected-test map it needs a purpose. After each full suite that ran it checks w
 project is due for a test cleanup and opens or updates a cleanup ticket; `cleanup-done
 [--command <cmd> [--baseline <s>]]` starts a new cleanup window. `affected [--base <rev>]`
 runs only the tests the map selects for this change, or the registered full suites through
-the gate when the change leaves the map. `status` lists running and queued suites, why the
+the gate when the change leaves the map. A suite or affected run that fails only in a few
+test files (bun test, unittest, pytest) reruns those files once with the map's command
+templates and records a pass with the flaky tests when the rerun passes. `status` lists running and queued suites, why the
 queue waits, recent records and cleanup state. `is_full_suite()`
 decides whether a shell command is a full suite run (project registry first, then the
 default runner rules). `hook` is the PreToolUse hook that blocks full suites run outside
@@ -1515,8 +1517,9 @@ def admission(config, running, candidate, host):
 # ---------------------------------------------------------------- run
 
 class Gate:
-    def __init__(self, argv, cwd, rerun, config, extra=None):
+    def __init__(self, argv, cwd, rerun, config, extra=None, template=False):
         self.argv = argv
+        self.template = template  # built by the gate from an affected.commands template
         self.cwd = cwd
         self.rerun = rerun
         self.config = config
@@ -1739,8 +1742,8 @@ class Gate:
             return True
         return False
 
-    def _start(self, argv, scoped):
-        """Start the suite held on fd 3 until its session (and group) is recorded.
+    def _start(self, argv, scoped, cwd):
+        """Start the suite in cwd held on fd 3 until its session (and group) is recorded.
 
         In a scope, also sets self.group, self.sampler, self.keeper and self.keeper_pid. Returns the
         child, or None when the scope could not be set up; the suite has not run then.
@@ -1762,7 +1765,7 @@ class Gate:
         old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
         try:
             try:
-                child = subprocess.Popen(launch, cwd=self.cwd, stdout=subprocess.PIPE,
+                child = subprocess.Popen(launch, cwd=cwd, stdout=subprocess.PIPE,
                                          stderr=subprocess.PIPE, start_new_session=True,
                                          pass_fds=tuple(fds), preexec_fn=_child_setup(fds))
             except OSError as exc:
@@ -1841,36 +1844,102 @@ class Gate:
         else:
             end_session(self.child.pid, self.child)
 
-    def execute(self, info):
-        started, start_iso = time.monotonic(), now_iso()
+    def _run_command(self, argv, cwd, scan=None):
+        """Run argv in cwd as this gate's suite, its output passed through (and fed to scan),
+        and wait for it: (exit code, output tail, profile, seconds, start, end), the start
+        and end as UTC datetimes. OSError when it cannot start."""
+        self.child = self.group = self.sampler = self.keeper = self.keeper_pid = None
+        self.finished = False
+        started = time.monotonic()
         # The reaper logs whole seconds; a kill in the run's first second must still count.
         started_at = datetime.now(timezone.utc).replace(microsecond=0)
-        try:
-            argv = shell_argv(self.argv[0]) if len(self.argv) == 1 else self.argv
-            child = self._start(argv, True) if self._scope_ready() else None
-            child = child or self._start(argv, False)
-        except OSError as exc:
-            warn(f'could not start the command: {exc}')
-            return 127
+        child = self._start(argv, True, cwd) if self._scope_ready() else None
+        child = child or self._start(argv, False, cwd)
         tail = Tail()
-        pumps = [threading.Thread(target=pump, args=(stream, out, tail), daemon=True)
-                 for stream, out in ((child.stdout, sys.stdout.buffer),
-                                     (child.stderr, sys.stderr.buffer))]
+        pumps = [threading.Thread(target=pump, args=(stream, out, tail, scan, key), daemon=True)
+                 for key, stream, out in (('out', child.stdout, sys.stdout.buffer),
+                                          ('err', child.stderr, sys.stderr.buffer))]
         for thread in pumps:
             thread.start()
         code = child.wait()
         self.finished = True
         ended_at = datetime.now(timezone.utc)
-        reaped = (reaped_during(self.cwd, started_at, ended_at) if code == 0
-                  else reaped_after_failure(self.cwd, started_at, ended_at))
         for thread in pumps:
             thread.join(timeout=2)
+        if scan:
+            scan.finish()
         profile = self.measure(time.monotonic() - started)
-        code = 128 - code if code < 0 else code
-        seconds = time.monotonic() - started
+        return (128 - code if code < 0 else code, tail, profile, time.monotonic() - started,
+                started_at, ended_at)
+
+    def plan_rerun(self, scan):
+        """rerun_plan() for this run's output, with the project's affected.commands; why not
+        when the project has no affected-test map."""
+        root = repo_root(self.cwd)
+        registry = load_registry(self.cwd) if root else None
+        if not is_mapped(registry or {}):
+            return 'this project has no affected-test map to rerun single test files with'
+        try:
+            commands = read_map(registry)['commands']
+        except ValueError as exc:
+            return f'the affected-test map cannot be read ({exc})'
+        text = self.argv[0] if len(self.argv) == 1 else shlex.join(self.argv)
+        runs = template_runs(text, self.cwd) if self.template else test_runs(text, self.cwd)
+        plan = rerun_plan(scan, runs, self.cwd, root, commands)
+        return plan if isinstance(plan, str) else (root, commands, *plan)
+
+    def rerun_failed(self, root, commands, groups, first_code):
+        """Run the failed test files of each affected.commands directory once with its
+        template: the record's `rerun` entry, its exit_code the first failing one's."""
+        runs, started = [], time.monotonic()
+        for directory, tests in groups.items():
+            text, cwd = affected_text(root, commands, directory, tests)
+            warn(f'rerunning {len(tests)} failed test file(s) once in {directory}: {text}')
+            try:
+                code, tail, _, seconds, _, _ = self._run_command(shell_argv(text), cwd)
+            except OSError as exc:
+                warn(f'could not start the rerun: {exc}')
+                code, tail, seconds = first_code, None, 0.0
+            runs.append({'dir': directory, 'command': text, 'tests': tests, 'exit_code': code,
+                         'duration_s': round(seconds, 1),
+                         'output_tail': tail.text() if tail else ''})
+        return {'exit_code': next((r['exit_code'] for r in runs if r['exit_code']), 0),
+                'first_exit_code': first_code,
+                'duration_s': round(time.monotonic() - started, 1), 'runs': runs}
+
+    def execute(self, info):
+        start_iso = now_iso()
+        scan = TestScan()
+        try:
+            argv = shell_argv(self.argv[0]) if len(self.argv) == 1 else self.argv
+            code, tail, profile, seconds, started_at, ended_at = self._run_command(
+                argv, self.cwd, scan)
+        except OSError as exc:
+            warn(f'could not start the command: {exc}')
+            return 127
+        reaped = (reaped_during(self.cwd, started_at, ended_at) if code == 0
+                  else reaped_after_failure(self.cwd, started_at, ended_at))
         duration = round(seconds, 1)
         after = fingerprint(self.cwd, self.argv) if info else None
         changed = info is not None and after['fingerprint'] != info['fingerprint']
+        rerun = flaky = None
+        if code and info is not None:
+            plan = 'the content changed during the run' if changed else self.plan_rerun(scan)
+            if isinstance(plan, str):
+                rerun = {'skipped': plan}
+                warn(f'failed tests not rerun: {plan}')
+            else:
+                root, commands, groups, names = plan
+                rerun = self.rerun_failed(root, commands, groups, code)
+                code = rerun['exit_code']
+                changed = fingerprint(self.cwd, self.argv)['fingerprint'] != info['fingerprint']
+                if code == 0:
+                    flaky = [{'file': path, 'tests': tests} for path, tests in names.items()]
+                    warn('the rerun passed, so the run counts as passed; these tests failed '
+                         'first and passed on the rerun (flaky): ' + '; '.join(
+                             f"{f['file']} ({', '.join(f['tests'])})" for f in flaky))
+                else:
+                    warn(f'the rerun failed too (exit {code}): the run counts as failed')
         record = {
             'fingerprint': info and info['fingerprint'], 'tree': info and info['tree'],
             'repo': info and info['repo'], 'command': self.command, 'cwd': str(self.cwd),
@@ -1881,6 +1950,8 @@ class Gate:
             'purpose': None, 'purpose_reason': None, 'profile': profile,
             'profile_key': info and info['profile_key'], 'reaped': reaped,
         }
+        if rerun is not None:
+            record.update(rerun=rerun, flaky=flaky or [])
         record.update(self.extra)
         append_record(record)
         if info is not None and not record.get('kind'):
@@ -1917,15 +1988,464 @@ class Tail:
         return '\n'.join(lines[-TAIL_LINES:])
 
 
-def pump(stream, out, tail):
+def pump(stream, out, tail, scan=None, key=None):
     fd = stream.fileno()
     while True:
         chunk = os.read(fd, 65536)
         if not chunk:
             return
         tail.add(chunk)
+        if scan:
+            scan.add(key, chunk)
         out.write(chunk)
         out.flush()
+
+
+# ---------------------------------------------------------------- failed-test rerun
+
+RERUN_MAX_FILES = 10      # more failed test files than this are not rerun
+SCAN_MAX_FAILURES = 1000  # failures kept from one output; more could never be rerun
+SCAN_MAX_LINE = 65536     # bytes of an unfinished line kept while it streams
+# The runners whose output the rerun reads, by the name it reports them under.
+RERUN_TOOLS = {'bun-test': 'bun test', 'unittest': 'unittest',
+               'unittest-discover': 'unittest', 'pytest': 'pytest'}
+SHELL_KEYWORDS = {'if', 'then', 'else', 'elif', 'fi', '!', '{', '}'}
+# Commands known not to start a test runner: build tools, text and file commands.
+NO_TEST_COMMANDS = {'vite', 'svelte-kit', 'svelte-check', 'tsc', 'printf', 'echo', 'grep',
+                    'true', 'false', ':', 'exit', 'test', '[', 'mkdir', 'rm', 'cp', 'mv',
+                    'touch', 'cat'}
+# Options that run a command in another directory (uv run, the test runners, package managers).
+CWD_OPTIONS = {'-C', '--chdir', '--cwd', '--directory', '--project', '--prefix', '--dir',
+               '--workspace', '-w'}
+PYTEST_CONFIGS = ('pytest.ini', '.pytest.ini', 'pyproject.toml', 'setup.cfg', 'tox.ini')
+PYTEST_STOP = re.compile(r'(?<![\w-])(?:-[a-wyzA-Z]*x\w*|--exitfirst|--maxfail|--sw|'
+                         r'--stepwise\S*|--sw-skip)(?![\w-])')
+ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+BUN_HEADER = re.compile(r'(\S+\.[cm]?[jt]sx?):')
+BUN_FAIL = re.compile(r'\(fail\) (.+?)(?: \[[\d.]+m?s\])?')
+BUN_COUNT = re.compile(r' (\d+) (pass|fail|errors?)')
+BUN_DONE = re.compile(r'Ran \d+ tests? across \d+ files?\. \[.*\]')
+UT_FAIL = re.compile(r'(FAIL|ERROR): (\S+) \(([^()\s]+)\)(?: .*)?')
+UT_RAN = re.compile(r'Ran \d+ tests? in [\d.]+s')
+UT_END = re.compile(r'(?:OK|FAILED)(?: \((.*)\))?')
+PT_ROOT = re.compile(r'rootdir: (.+?)(?:, (?:configfile|inifile|testpaths|plugins): .*)?')
+PT_FAILED = re.compile(r'FAILED (\S+?)::(.+?)(?: - .*)?')
+PT_ERROR = re.compile(r'ERROR (\S+?)(?:::(.+?))?(?: - .*)?')
+PT_COLLECT = re.compile(r'_+ ERROR collecting .* _+')
+PT_STATS = re.compile(r'(?:=+ )?(\d+ \w+(?:, \d+ \w+)*) in [\d.]+s(?: \([^)]*\))?(?: =+)?')
+PT_WORDS = {'failed', 'passed', 'error', 'errors', 'skipped', 'xfailed', 'xpassed',
+            'deselected', 'warning', 'warnings', 'rerun'}
+
+
+class TestScan:
+    """What the failed-test rerun needs from a run's output, read line by line while it
+    streams, per output stream (bun and unittest write to stderr, pytest to stdout).
+    failures are (tool, where, name): where is the file (bun, pytest) or test id (unittest)
+    the failure names, None when it names none; counted is how many failures the summary
+    lines report and summaries how many complete summary lines each tool printed; problems
+    are reasons the output shows the run is not just some failed tests."""
+
+    def __init__(self):
+        self.lock = threading.Lock()  # the stdout and stderr pumps feed it from two threads
+        self.partial = {}
+        self.bun_file = {}
+        self.ut_ran = {}
+        self.failures = []
+        self.overflow = False
+        self.summaries = dict.fromkeys(('bun test', 'unittest', 'pytest'), 0)
+        self.counted = dict.fromkeys(('bun test', 'unittest', 'pytest'), 0)
+        self.problems = []
+        self.roots = []
+
+    def add(self, key, chunk):
+        *lines, rest = (self.partial.get(key, b'') + chunk).split(b'\n')
+        self.partial[key] = rest[-SCAN_MAX_LINE:]
+        with self.lock:
+            for line in lines:
+                self._line(key, line)
+
+    def finish(self):
+        for key, rest in list(self.partial.items()):
+            if rest:
+                self._line(key, rest)
+        self.partial = {}
+
+    def _problem(self, why):
+        if why not in self.problems:
+            self.problems.append(why)
+
+    def _fail(self, tool, where, name):
+        if len(self.failures) < SCAN_MAX_FAILURES:
+            self.failures.append((tool, where, name))
+        else:
+            self.overflow = True
+
+    def _line(self, key, raw):
+        line = ANSI.sub('', raw.decode(errors='replace')).rstrip('\r')
+        if self.ut_ran.get(key) and line.strip():
+            self.ut_ran[key] = False
+            if m := UT_END.fullmatch(line):
+                self.summaries['unittest'] += 1
+                counts = dict(part.strip().rsplit('=', 1) for part in (m[1] or '').split(',')
+                              if '=' in part)
+                self.counted['unittest'] += sum(
+                    int(counts.get(k, 0)) for k in ('failures', 'errors', 'unexpected successes'))
+                return
+        if m := BUN_HEADER.fullmatch(line):
+            self.bun_file[key] = m[1]
+        elif m := BUN_FAIL.fullmatch(line):
+            self._fail('bun test', self.bun_file.get(key), m[1])
+        elif m := BUN_COUNT.fullmatch(line):
+            if m[2] == 'fail':
+                self.counted['bun test'] += int(m[1])
+            elif m[2] != 'pass' and int(m[1]):
+                self._problem('bun test reported an error outside the tests')
+        elif BUN_DONE.fullmatch(line):
+            self.summaries['bun test'] += 1
+            self.bun_file[key] = None
+        elif line.startswith('Bailed out after'):
+            self._problem('bun test stopped at the first failure (--bail)')
+        elif line == '# Unhandled error between tests':
+            self._problem('bun test reported an error outside a test, such as a test file '
+                          'that failed to load')
+        elif m := UT_FAIL.fullmatch(line):
+            if m[3].startswith('unittest.'):
+                self._problem(f'unittest could not load {m[2]}')
+            else:
+                self._fail('unittest', m[3], m[2])
+        elif UT_RAN.fullmatch(line):
+            self.ut_ran[key] = True
+        elif m := PT_ROOT.fullmatch(line):
+            self.roots.append(m[1])
+        elif PT_COLLECT.fullmatch(line):
+            self._problem('pytest could not collect every test file')
+        elif line.startswith('!!!'):  # pytest's banner when a run stops early
+            self._problem('pytest stopped after the first failures' if 'stopping after' in line
+                          else f"pytest was interrupted ({line.strip('! ')})")
+        elif m := PT_FAILED.fullmatch(line):
+            self._fail('pytest', m[1], m[2])
+        elif m := PT_ERROR.fullmatch(line):
+            if m[2] is None:
+                self._problem(f'pytest could not collect {m[1]}')
+            else:
+                self._fail('pytest', m[1], m[2])
+        elif (m := PT_STATS.fullmatch(line)) and all(
+                part.split()[1] in PT_WORDS for part in m[1].split(', ')):
+            self.summaries['pytest'] += 1
+            for part in m[1].split(', '):
+                count, word = part.split()
+                if word in ('failed', 'error', 'errors'):
+                    self.counted['pytest'] += int(count)
+
+
+def package_scripts(cwd):
+    """The scripts of cwd's package.json, or None when it has none that can be read."""
+    try:
+        scripts = json.loads((Path(cwd) / 'package.json').read_text()).get('scripts')
+    except (OSError, ValueError, AttributeError):
+        return None
+    return scripts if isinstance(scripts, dict) else None
+
+
+def _runner_form(words):
+    """(runner, args) when words, after `VAR=value` assignments, are a test run the rerun
+    trusts: `bun test ...`, `pytest ...` or `python -m unittest|pytest ...`, optionally
+    after `uv run <options>` that keep the directory; None otherwise."""
+    words = _strip_assignments(words)
+    if words[:2] == ['uv', 'run']:
+        i = _skip_options(words, 2, UV_VALUE)
+        if any(w.split('=', 1)[0] in CWD_OPTIONS for w in words[2:i]):
+            return None
+        words = words[i:]
+    if not words or any(w.split('=', 1)[0] in CWD_OPTIONS for w in words):
+        return None
+    head = os.path.basename(words[0])
+    if not (head == 'bun' and words[1:2] == ['test'] or head == 'pytest'
+            or head.startswith('python') and words[1:2] == ['-m']
+            and words[2:3] in (['unittest'], ['pytest'])):
+        return None
+    return _unwrap(words)
+
+
+def _bun_script(words):
+    """(script name, forwarded arguments) of `bun run <script> [--] [args]`, or None."""
+    if words[:2] != ['bun', 'run'] or len(words) < 3 or words[2].startswith('-'):
+        return None
+    extra = words[3:]
+    return words[2], extra[1:] if extra[:1] == ['--'] else extra
+
+
+def test_runs(command, cwd, depth=0):
+    """[(runner, args)] of the test run a shell string makes in cwd, when the rerun can
+    vouch that a failed test is its only failure; otherwise why not. Trusted is a single
+    command with no shell operators, variables or substitutions (see _runner_form), or
+    `bun run <script>` whose package.json script is such a command, optionally after
+    `bun run <script> &&` steps: each of those runs in its own process, and its failure
+    stops the tests. Arguments after the script name are appended to it, as bun does."""
+    if any(c in command for c in '$`'):
+        return 'the command expands variables or substitutions, which the gate cannot follow'
+    try:
+        found = _simple_commands(command)
+    except ValueError:
+        return 'the command cannot be read'
+    if not found:
+        return 'the command runs nothing'
+    if any(heredocs or level for _, _, heredocs, _, level in found) \
+            or any(sep != '&&' for *_, sep, _ in found[:-1]) \
+            or found[-1][3] not in ('\n', ';') \
+            or depth == 0 and len(found) > 1 \
+            or any(_bun_script(words) is None for words, *_ in found[:-1]):
+        return ('the rerun trusts only a single test command (bun test, bun run <script>, '
+                'pytest, python -m unittest or pytest, optionally after uv run), and this '
+                'command is more than that')
+    runs = []
+    for words, *_ in found[:-1]:
+        inner = script_test_runs(_bun_script(words), cwd, depth)
+        if isinstance(inner, str):
+            return inner
+        runs += inner
+    words = found[-1][0]
+    script = _bun_script(_strip_assignments(words))
+    if script is None:
+        run = _runner_form(words)
+        if run is None:
+            return (f'`{shlex.join(words)}` is not a test command the rerun trusts (bun '
+                    'test, bun run <script>, pytest, python -m unittest or pytest, '
+                    'optionally after uv run), or it changes directory')
+        return runs + [run]
+    inner = script_test_runs(script, cwd, depth)
+    if isinstance(inner, str):
+        return inner
+    if not inner:
+        return f'the package.json script `{script[0]}` runs no test the rerun trusts'
+    return runs + inner
+
+
+def script_test_runs(script, cwd, depth):
+    """Every test run `bun run <script> [args]` can reach: its pre<script>, then its body
+    with the arguments appended; [] when neither can start a test runner at all (a build).
+    Why not when one is there that the gate cannot list, or a post<script> runs after."""
+    name, extra = script
+    scripts = package_scripts(cwd) or {}
+    body = scripts.get(name)
+    if depth >= 5 or not isinstance(body, str):
+        return f'cannot read the package.json script `{name}`'
+    if f'post{name}' in scripts:
+        return f'the package.json script `post{name}` runs after `{name}`'
+    runs = []
+    if f'pre{name}' in scripts:
+        runs = script_test_runs((f'pre{name}', []), cwd, depth + 1)
+        if isinstance(runs, str):
+            return runs
+    text = ' '.join([body, *map(shlex.quote, extra)])
+    inner = test_runs(text, cwd, depth + 1)
+    if isinstance(inner, str):
+        if may_run_tests(text, cwd, depth + 1):
+            return (f'the package.json script `{name}` may run tests the gate cannot list '
+                    f'({inner})')
+        inner = []
+    return runs + inner
+
+
+def _plain_words(words):
+    """words without leading shell keywords, assignments and launchers."""
+    while words and words[0] in SHELL_KEYWORDS:
+        words = words[1:]
+    words = _strip_assignments(words)
+    while words and (inner := _strip_launcher(words)) is not None:
+        words = inner
+    return words
+
+
+def may_run_tests(text, cwd, depth):
+    """Whether text could start a test runner. It cannot only when every command it runs is
+    one of NO_TEST_COMMANDS (after assignments and launchers) or `bun run` of scripts that
+    cannot either (with their pre and post scripts); anything else, including a wrapper,
+    a command or process substitution anywhere in the text (a `${VAR:-value}` expansion is
+    fine) or text that cannot be read, may."""
+    if depth > 5 or any(s in text for s in ('$(', '`', '<(', '>(')):
+        return True
+    try:
+        commands = split_commands(text)
+    except UnreadableShellInput:
+        return True
+    scripts = package_scripts(cwd) or {}
+    for words in map(_plain_words, commands):
+        if not words or words[0] in NO_TEST_COMMANDS:
+            continue
+        script = _bun_script(words)
+        if script is None or not isinstance(scripts.get(script[0]), str):
+            return True
+        name, extra = script
+        bodies = [scripts.get(n) for n in (f'pre{name}', f'post{name}') if n in scripts]
+        if any(not isinstance(b, str) or may_run_tests(b, cwd, depth + 1) for b in bodies) \
+                or may_run_tests(' '.join([scripts[name], *map(shlex.quote, extra)]),
+                                 cwd, depth + 1):
+            return True
+    return False
+
+
+def template_runs(command, cwd):
+    """Every test run an affected.commands template the gate filled in can reach. The
+    project registered it and the gate runs it in its own directory, so its shell shape is
+    trusted; each `bun run <script>` in it is listed like a script of `run`. Why not when a
+    runner there is one whose output the gate cannot read, or a test run cannot be listed."""
+    try:
+        commands = split_commands(command)
+    except UnreadableShellInput:
+        return 'the command cannot be read'
+    runs = []
+    for words in map(_plain_words, commands):
+        if not words:
+            continue
+        script = _bun_script(words)
+        if script:
+            inner = script_test_runs(script, cwd, 0)
+            if isinstance(inner, str):
+                return inner
+            runs += inner
+            continue
+        run = _unwrap(words)
+        if run and run[0] not in RERUN_TOOLS:
+            return f'the gate cannot read the output of {run[0]}'
+        if run:
+            runs.append(run)
+        elif may_run_tests(shlex.join(words), cwd, 1):
+            return f'`{shlex.join(words)}` may run tests the gate cannot list'
+    return runs or 'the command runs no bun test, unittest or pytest'
+
+
+def _short_flags(word, values):
+    """The one-letter options a word such as `-vx` sets, up to one that takes a value."""
+    if not word.startswith('-') or word.startswith('--') or not word[1:].isalpha():
+        return ''
+    flags = word[1:]
+    cut = next((i for i, c in enumerate(flags) if c in values), None)
+    return flags if cut is None else flags[:cut]
+
+
+def fail_fast(runner, args, cwd):
+    """True when this test run stops at its first failure, by an option or a config file."""
+    names = [w.split('=', 1)[0] for w in args]
+    if runner == 'bun-test':
+        try:
+            bunfig = (Path(cwd) / 'bunfig.toml').read_text()
+        except OSError:
+            bunfig = ''
+        return '--bail' in names or re.search(r'(?m)^\s*bail\s*=', bunfig) is not None
+    if runner in ('unittest', 'unittest-discover'):
+        return '--failfast' in names or any('f' in _short_flags(w, 'kpst') for w in args)
+    if any(n in ('--exitfirst', '--maxfail', '--sw', '--stepwise', '--sw-skip',
+                 '--stepwise-skip') for n in names) \
+            or any('x' in _short_flags(w, 'rkmpconW') for w in args) \
+            or PYTEST_STOP.search(os.environ.get('PYTEST_ADDOPTS', '')):
+        return True
+    for directory in (Path(cwd), *Path(cwd).parents):
+        for name in PYTEST_CONFIGS:
+            try:
+                text = (directory / name).read_text()
+            except OSError:
+                continue
+            if 'addopts' in text and PYTEST_STOP.search(text):
+                return True
+        if (directory / '.git').exists():
+            break
+    return False
+
+
+def unittest_bases(runs, cwd):
+    """The directories unittest test ids are relative to: the top-level (or start)
+    directory of `discover`, cwd otherwise."""
+    bases = []
+    for runner, args in runs:
+        if runner == 'unittest':
+            bases.append(Path(cwd))
+        elif runner == 'unittest-discover':
+            found, positional, i = {}, [], 0
+            while i < len(args):
+                word = args[i]
+                name, _, value = word.partition('=')
+                if name in ('-s', '--start-directory', '-t', '--top-level-directory', '-p',
+                            '--pattern', '-k'):
+                    if not value and i + 1 < len(args):
+                        i += 1
+                        value = args[i]
+                    found[name.lstrip('-')[0]] = value
+                elif not word.startswith('-'):
+                    positional.append(word)
+                i += 1
+            start = found.get('s') or (positional[0] if positional else '.')
+            top = found.get('t') or (positional[2] if len(positional) > 2 else None)
+            bases.append(Path(cwd) / (top or start))
+    return bases
+
+
+def failure_file(tool, where, scan, runs, cwd):
+    """The file a failure names, as an existing path, or None."""
+    if where is None:
+        return None
+    if tool == 'unittest':
+        parts = where.split('.')
+        candidates = [Path(base, *parts[:k - 1], parts[k - 1] + '.py')
+                      for base in unittest_bases(runs, cwd) for k in range(len(parts), 0, -1)]
+    elif tool == 'pytest':  # node ids are relative to the rootdir pytest printed
+        candidates = [Path(cwd, root, where) for root in scan.roots] or [Path(cwd) / where]
+    else:
+        candidates = [Path(cwd) / where]
+    return next((p for p in candidates if p.is_file()), None)
+
+
+def rerun_plan(scan, tools, cwd, root, commands):
+    """How to rerun the failed test files once: ({affected.commands directory: [repo
+    paths]}, {repo path: [failed test names]}), or why they are not rerun. tools is what
+    test_runs() returned for the command."""
+    if isinstance(tools, str):
+        return tools
+    stopper = next((runner for runner, args in tools if fail_fast(runner, args, cwd)), None)
+    if stopper:
+        return f'{RERUN_TOOLS[stopper]} is set to stop at the first failure'
+    if scan.problems:
+        return scan.problems[0]
+    used = {RERUN_TOOLS[runner] for runner, _ in tools}
+    for tool in sorted(used):
+        needed = sum(1 for runner, _ in tools if RERUN_TOOLS[runner] == tool)
+        if scan.summaries[tool] < needed:
+            return f'no complete {tool} summary line, so the tests did not all finish'
+    if scan.overflow:
+        return f'more than {SCAN_MAX_FAILURES} tests failed'
+    for tool in sorted(used):
+        named = sum(1 for t, _, _ in scan.failures if t == tool)
+        if named != scan.counted[tool]:
+            return (f'{tool} counted {scan.counted[tool]} failure(s) but named {named}, so not '
+                    'every failure is traced to a test')
+    if not scan.failures:
+        return 'no test failed, so a step other than the tests failed'
+    real_root, names = os.path.realpath(root), {}
+    for tool, where, name in scan.failures:
+        path = failure_file(tool, where, scan, tools, cwd)
+        rel = path and os.path.relpath(os.path.realpath(path), real_root)
+        if rel is None or rel.startswith('..'):
+            return f'the failure of {name} cannot be traced to a test file in the repository'
+        names.setdefault(rel, [])
+        if name not in names[rel]:
+            names[rel].append(name)
+    if len(names) > RERUN_MAX_FILES:
+        return f'{len(names)} test files failed, more than {RERUN_MAX_FILES}'
+    groups = {}
+    for path in names:
+        directory = command_dir(path, commands)
+        if directory is None:
+            return f'no affected.commands directory holds {path}'
+        groups.setdefault(directory, []).append(path)
+    return groups, names
+
+
+def affected_text(root, commands, directory, tests):
+    """(command, cwd) that runs tests (repo paths) with directory's affected.commands
+    template."""
+    rel = [t if directory == '.' else t[len(directory) + 1:] for t in tests]
+    text = commands[directory].replace('{tests}', ' '.join(map(shlex.quote, rel)))
+    return text, root if directory == '.' else root / directory
 
 
 def fmt_seconds(seconds):
@@ -2701,9 +3221,7 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
             failed.append((check['cwd'], check['command'], ['check']))
         code = code or result
     for directory, tests in groups.items():
-        rel = [t if directory == '.' else t[len(directory) + 1:] for t in tests]
-        text = amap['commands'][directory].replace('{tests}', ' '.join(map(shlex.quote, rel)))
-        cwd = root if directory == '.' else root / directory
+        text, cwd = affected_text(root, amap['commands'], directory, tests)
         if not prepared(cwd, directory):
             code = code or 2
             failed.append((directory, text, tests))
@@ -2711,7 +3229,8 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
         warn(f'running in {directory}: {text}')
         gate = Gate([text], cwd, None, load_config(), dict(
             extra, kind='affected', reusable=False, selected_tests=tests,
-            why={t: selected[t] for t in tests}, **({'via': via} if via else {})))
+            why={t: selected[t] for t in tests}, **({'via': via} if via else {})),
+            template=True)
         info = fingerprint(cwd, [text])
         result = _drive(gate, lambda: gate.execute(info))
         if result:
@@ -3117,6 +3636,19 @@ def cmd_status(as_json, fp_prefix, limit):
         print(f"  {r.get('time')}  {result}  fp {(record_fingerprint(r) or '-')[:12]}  "
               f"{r.get('agent')}  {r.get('duration_s')}s  {r.get('cwd')}  "
               f"{r.get('command')}{rerun}{purpose}")
+        retry = r.get('rerun')
+        if isinstance(retry, dict) and retry.get('skipped'):
+            print(f"    failed tests not rerun: {retry['skipped']}")
+        elif isinstance(retry, dict):
+            print(f"    failed tests rerun once (first run exit {retry.get('first_exit_code')}): "
+                  f"exit {retry.get('exit_code')} in {retry.get('duration_s')}s")
+            for run in retry.get('runs') or []:
+                print(f"      {run.get('dir')}: exit {run.get('exit_code')} in "
+                      f"{run.get('duration_s')}s  {run.get('command')}")
+    flaky = [(r, f) for r in records for f in r.get('flaky') or []]
+    print(f'Flaky tests in these records (failed first, passed on the rerun): {len(flaky)}')
+    for r, f in flaky:
+        print(f"  {r.get('time')}  {f.get('file')}: {', '.join(f.get('tests') or [])}")
     reclaim = (state.get('reclaims') or [None])[-1]
     if reclaim:
         print(f"Latest reclaim: {reclaim['time']} stopped {reclaim['process_count']} "

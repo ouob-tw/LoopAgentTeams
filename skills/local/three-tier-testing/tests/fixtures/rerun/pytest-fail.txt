@@ -1,0 +1,63 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.3, pytest-8.3.4, pluggy-1.7.0
+rootdir: /home/user/project
+collected 7 items
+
+tests/sub/test_gamma.py F                                                [ 14%]
+tests/test_alpha.py FF.F                                                 [ 71%]
+tests/test_beta.py .                                                     [ 85%]
+tests/test_classerr.py E                                                 [100%]
+
+==================================== ERRORS ====================================
+_____________________ ERROR at setup of SetupTests.test_a ______________________
+
+cls = <class 'test_classerr.SetupTests'>
+
+    @classmethod
+>   def setUpClass(cls): raise RuntimeError('class setup')
+E   RuntimeError: class setup
+
+tests/test_classerr.py:4: RuntimeError
+=================================== FAILURES ===================================
+______________________________ GammaTests.test_g _______________________________
+
+self = <sub.test_gamma.GammaTests testMethod=test_g>
+
+>   def test_g(self): self.fail('nope')
+E   AssertionError: nope
+
+tests/sub/test_gamma.py:3: AssertionError
+_____________________________ AlphaTests.test_bad ______________________________
+
+self = <test_alpha.AlphaTests testMethod=test_bad>
+
+>   def test_bad(self): self.assertEqual(1, 2)
+E   AssertionError: 1 != 2
+
+tests/test_alpha.py:4: AssertionError
+_____________________________ AlphaTests.test_err ______________________________
+
+self = <test_alpha.AlphaTests testMethod=test_err>
+
+>   def test_err(self): raise RuntimeError('boom')
+E   RuntimeError: boom
+
+tests/test_alpha.py:5: RuntimeError
+_____________________________ AlphaTests.test_sub ______________________________
+
+self = <test_alpha.AlphaTests testMethod=test_sub>
+
+    def test_sub(self):
+        for i in range(2):
+            with self.subTest(i=i):
+>               self.assertEqual(i, 5)
+E               AssertionError: 0 != 5
+
+tests/test_alpha.py:9: AssertionError
+=========================== short test summary info ============================
+FAILED tests/sub/test_gamma.py::GammaTests::test_g - AssertionError: nope
+FAILED tests/test_alpha.py::AlphaTests::test_bad - AssertionError: 1 != 2
+FAILED tests/test_alpha.py::AlphaTests::test_err - RuntimeError: boom
+FAILED tests/test_alpha.py::AlphaTests::test_sub - AssertionError: 0 != 5
+ERROR tests/test_classerr.py::SetupTests::test_a - RuntimeError: class setup
+===================== 4 failed, 2 passed, 1 error in 0.02s =====================
