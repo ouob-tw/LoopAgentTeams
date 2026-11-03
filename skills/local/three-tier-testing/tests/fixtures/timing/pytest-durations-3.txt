@@ -1,0 +1,13 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/project
+collected 5 items
+
+tests/sub/test_beta.py .                                                 [ 20%]
+tests/test_alpha.py ....                                                 [100%]
+
+============================= slowest 3 durations ==============================
+0.05s call     tests/sub/test_beta.py::TestGroup::test_sleepy
+0.03s call     tests/test_alpha.py::test_with_fixture
+0.02s setup    tests/test_alpha.py::test_with_fixture
+============================== 5 passed in 0.13s ===============================

@@ -1,0 +1,17 @@
+bun test v1.3.14 (0d9b296a)
+
+tests/a.test.ts:
+(pass) adds [30.64ms]
+(pass) quick [0.05ms]
+(skip) skipped
+(todo) later
+
+tests/sub/b.test.ts:
+(pass) group > inner [12.42ms]
+
+ 3 pass
+ 1 skip
+ 1 todo
+ 0 fail
+ 2 expect() calls
+Ran 5 tests across 2 files. [67.00ms]

@@ -12,7 +12,10 @@ the gate when the change leaves the map; with `--purpose post-merge` (after a ba
 merged, which then replaces the post-merge full suite) every record of the run shares a
 run_id and a final `affected-summary` record says whether the whole run passed. A suite or affected run that fails only in a few
 test files (bun test, unittest, pytest) reruns those files once with the map's command
-templates and records a pass with the flaky tests when the rerun passes. `status` lists running and queued suites, why the
+templates and records a pass with the flaky tests when the rerun passes. A full suite that
+ran records each test file's time when the output gives it (bun test listing every test,
+pytest with --durations=0), and the cleanup ticket lists the slowest files and the window's
+flaky tests. `status` lists running and queued suites, why the
 queue waits, recent records and cleanup state. `is_full_suite()`
 decides whether a shell command is a full suite run (project registry first, then the
 default runner rules). `hook` is the PreToolUse hook that blocks full suites run outside
@@ -1963,11 +1966,20 @@ class Gate:
         }
         if rerun is not None:
             record.update(rerun=rerun, flaky=flaky or [])
+        full = not self.extra.get('kind')
+        files = full and scan.file_seconds(self.cwd, info and info['repo'],
+                                           pytest=pytest_durations_0(self.argv, self.cwd))
+        if files:
+            record['file_seconds'] = files
         record.update(self.extra)
         append_record(record)
         self.record = record
-        if info is not None and not record.get('kind'):
-            self.ran = {'info': info, 'seconds': seconds, 'sample': record['reusable']}
+        if info is not None and full:
+            self.ran = {'info': info, 'seconds': seconds, 'sample': record['reusable'],
+                        'time': start_iso, 'files': files if code == 0 else {},
+                        'flaky': flaky or []}
+        elif info is not None and flaky:
+            count_flaky_in_project(info, flaky, start_iso)
         if changed:
             warn('content changed during the run: this result is recorded but will not be '
                  'reused; do not edit files while the suite runs, and git-ignore files the '
@@ -2034,7 +2046,8 @@ PYTEST_STOP = re.compile(r'(?<![\w-])(?:-[a-wyzA-Z]*x\w*|--exitfirst|--maxfail|-
                          r'--stepwise\S*|--sw-skip)(?![\w-])')
 ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 BUN_HEADER = re.compile(r'(\S+\.[cm]?[jt]sx?):')
-BUN_FAIL = re.compile(r'\(fail\) (.+?)(?: \[[\d.]+m?s\])?')
+BUN_FAIL = re.compile(r'\(fail\) (.+?)(?: \[([\d.]+)(m?s)\])?')
+BUN_PASS = re.compile(r'\(pass\) .+? \[([\d.]+)(m?s)\]')
 BUN_COUNT = re.compile(r' (\d+) (pass|fail|errors?)')
 BUN_DONE = re.compile(r'Ran \d+ tests? across \d+ files?\. \[.*\]')
 UT_FAIL = re.compile(r'(FAIL|ERROR): (\S+) \(([^()\s]+)\)(?: .*)?')
@@ -2045,6 +2058,8 @@ PT_FAILED = re.compile(r'FAILED (\S+?)::(.+?)(?: - .*)?')
 PT_ERROR = re.compile(r'ERROR (\S+?)(?:::(.+?))?(?: - .*)?')
 PT_COLLECT = re.compile(r'_+ ERROR collecting .* _+')
 PT_STATS = re.compile(r'(?:=+ )?(\d+ \w+(?:, \d+ \w+)*) in [\d.]+s(?: \([^)]*\))?(?: =+)?')
+PT_DURATIONS = re.compile(r'=+ slowest durations =+')  # the header of --durations=0 only
+PT_DURATION = re.compile(r'([\d.]+)s (?:setup|call|teardown) +(\S.*)')
 PT_WORDS = {'failed', 'passed', 'error', 'errors', 'skipped', 'xfailed', 'xpassed',
             'deselected', 'warning', 'warnings', 'rerun'}
 
@@ -2055,7 +2070,9 @@ class TestScan:
     failures are (tool, where, name): where is the file (bun, pytest) or test id (unittest)
     the failure names, None when it names none; counted is how many failures the summary
     lines report and summaries how many complete summary lines each tool printed; problems
-    are reasons the output shows the run is not just some failed tests."""
+    are reasons the output shows the run is not just some failed tests. It also adds up
+    each test file's time from bun's per-test times and pytest's `slowest durations`
+    section (file_seconds())."""
 
     def __init__(self):
         self.lock = threading.Lock()  # the stdout and stderr pumps feed it from two threads
@@ -2068,6 +2085,10 @@ class TestScan:
         self.counted = dict.fromkeys(('bun test', 'unittest', 'pytest'), 0)
         self.problems = []
         self.roots = []
+        self.bun_seconds = {}
+        self.bun_timed = self.bun_counted = 0  # timed test lines, pass + fail in the summaries
+        self.pt_durations = {}
+        self.pt_seconds = {}
 
     def add(self, key, chunk):
         *lines, rest = (self.partial.get(key, b'') + chunk).split(b'\n')
@@ -2086,6 +2107,35 @@ class TestScan:
         if why not in self.problems:
             self.problems.append(why)
 
+    def file_seconds(self, cwd, root=None, pytest=False):
+        """{test file: seconds}, slowest first; a file found in the repository at root is
+        named by its repository path, as the flaky tests are. pytest's times count only
+        when pytest is true (the command passes it --durations=0); bun's only when the
+        output listed every passed and failed test: run by an AI agent (CLAUDECODE=1) bun
+        prints only the failed ones."""
+        parts = [('pytest', self.pt_seconds)] if pytest else []
+        if self.bun_timed and self.bun_timed == self.bun_counted:
+            parts.append(('bun test', self.bun_seconds))
+        real_root = root and os.path.realpath(root)
+        times = {}
+        for tool, by_file in parts:
+            for where, seconds in by_file.items():
+                path = real_root and failure_file(tool, where, self, None, cwd)
+                rel = path and os.path.relpath(os.path.realpath(path), real_root)
+                name = rel if rel and not rel.startswith('..') else where
+                times[name] = times.get(name, 0) + seconds
+        return {path: round(seconds, 3)
+                for path, seconds in sorted(times.items(), key=lambda item: -item[1])}
+
+    def _bun_time(self, key, value, unit):
+        if value is None:
+            return
+        self.bun_timed += 1
+        path = self.bun_file.get(key)
+        if path:
+            seconds = float(value) / (1000 if unit == 'ms' else 1)
+            self.bun_seconds[path] = self.bun_seconds.get(path, 0) + seconds
+
     def _fail(self, tool, where, name):
         if len(self.failures) < SCAN_MAX_FAILURES:
             self.failures.append((tool, where, name))
@@ -2103,11 +2153,23 @@ class TestScan:
                 self.counted['unittest'] += sum(
                     int(counts.get(k, 0)) for k in ('failures', 'errors', 'unexpected successes'))
                 return
+        if self.pt_durations.get(key):
+            if m := PT_DURATION.fullmatch(line):
+                path = m[2].split('::')[0]
+                self.pt_seconds[path] = self.pt_seconds.get(path, 0) + float(m[1])
+                return
+            if line.startswith('='):
+                self.pt_durations[key] = False
         if m := BUN_HEADER.fullmatch(line):
             self.bun_file[key] = m[1]
+        elif m := BUN_PASS.fullmatch(line):
+            self._bun_time(key, m[1], m[2])
         elif m := BUN_FAIL.fullmatch(line):
             self._fail('bun test', self.bun_file.get(key), m[1])
+            self._bun_time(key, m[2], m[3])
         elif m := BUN_COUNT.fullmatch(line):
+            if m[2] in ('pass', 'fail'):
+                self.bun_counted += int(m[1])
             if m[2] == 'fail':
                 self.counted['bun test'] += int(m[1])
             elif m[2] != 'pass' and int(m[1]):
@@ -2127,6 +2189,8 @@ class TestScan:
                 self._fail('unittest', m[3], m[2])
         elif UT_RAN.fullmatch(line):
             self.ut_ran[key] = True
+        elif PT_DURATIONS.fullmatch(line):
+            self.pt_durations[key] = True
         elif m := PT_ROOT.fullmatch(line):
             self.roots.append(m[1])
         elif PT_COLLECT.fullmatch(line):
@@ -2148,6 +2212,20 @@ class TestScan:
                 count, word = part.split()
                 if word in ('failed', 'error', 'errors'):
                     self.counted['pytest'] += int(count)
+
+
+DURATIONS_0 = re.compile(r'(?<!\S)--durations(?:=|\s+)0(?!\S)')
+
+
+def pytest_durations_0(argv, cwd):
+    """Whether the command passes --durations=0: in its own words, or to pytest in the
+    package.json script it runs."""
+    text = argv[0] if len(argv) == 1 else shlex.join(argv)
+    if DURATIONS_0.search(text):
+        return True
+    runs = test_runs(text, cwd)
+    return not isinstance(runs, str) and any(
+        runner == 'pytest' and DURATIONS_0.search(shlex.join(args)) for runner, args in runs)
 
 
 def package_scripts(cwd):
@@ -3423,6 +3501,7 @@ CLEANUP_GROWTH = 1.3     # due when the median of later passes reaches baseline 
 CLEANUP_MIN_SAMPLES = 3  # later passes needed before the speed is judged
 CLEANUP_LATEST = 5       # the median is taken over at most this many latest passes
 CLEANUP_LABEL = 'test-cleanup'
+CLEANUP_SLOWEST = 10     # test files listed on the cleanup ticket
 TRACKER_TIMEOUT = 10
 
 
@@ -3446,7 +3525,8 @@ def new_window(unit, baseline=None):
     """Start a cleanup window today: the baseline is given or the next pass. The day of
     the last tracker action stays, so a reset never allows a second action that day."""
     unit.update(last_cleanup=today().isoformat(), window_start=now_iso(), baseline=baseline,
-                baseline_source='given' if baseline else None, samples=[], sample_count=0)
+                baseline_source='given' if baseline else None, samples=[], sample_count=0,
+                slowest=None, flaky={})
     return unit
 
 
@@ -3466,6 +3546,42 @@ def add_sample(unit, seconds):
     else:
         unit['samples'] = (unit['samples'] + [seconds])[-CLEANUP_LATEST:]
         unit['sample_count'] += 1
+
+
+def add_flaky(unit, flaky, time):
+    """Count a run's flaky tests (failed first, passed on the rerun) in the unit's window."""
+    counted = unit.setdefault('flaky', {})
+    for entry in flaky:
+        for test in entry['tests']:
+            seen = counted.setdefault(f"{entry['file']}::{test}",
+                                      {'file': entry['file'], 'test': test, 'count': 0})
+            seen.update(count=seen['count'] + 1, last=time)
+
+
+def add_run_details(unit, finished):
+    """Keep the slowest test files of the latest pass that recorded per-file times, and count
+    the run's flaky tests in the window."""
+    if finished['files']:
+        unit['slowest'] = {'time': finished['time'],
+                           'files': list(finished['files'].items())[:CLEANUP_SLOWEST]}
+    add_flaky(unit, finished['flaky'], finished['time'])
+
+
+def count_flaky_in_project(info, flaky, time):
+    """Count an affected run's flaky tests in the window of each full suite of its project
+    the gate has seen; never changes the run's output or exit."""
+    try:
+        project = str(project_root(Path(info['repo'])))
+
+        def update(state):
+            for unit in state.get('cleanup', {}).values():
+                if unit['project'] == project:
+                    add_flaky(unit, flaky, time)
+        with_state(update)
+    except Interrupted:
+        raise
+    except Exception as exc:  # the cleanup state must never fail the run
+        warn(f'flaky tests not counted for the test cleanup: {exc}')
 
 
 def cleanup_median(unit):
@@ -3510,9 +3626,31 @@ def cleanup_numbers(unit):
             f'- Current: {speed}']
 
 
+def cleanup_leads(unit):
+    """Markdown lines with the slowest test files and the window's flaky tests."""
+    slowest = unit.get('slowest')
+    if slowest:
+        lines = [f"Slowest test files (the pass of {slowest['time']}):",
+                 *(f'- `{path}` {secs(seconds)}' for path, seconds in slowest['files'])]
+    else:
+        lines = ['Slowest test files: no pass in this window recorded per-file times '
+                 '(bun test lists them unless run by an AI agent; pytest only with '
+                 '`--durations=0`; unittest never).']
+    flaky = sorted((unit.get('flaky') or {}).values(), key=lambda f: (-f['count'], f['file']))
+    lines.append('')
+    if flaky:
+        lines += ['Flaky tests in this window (failed first, passed on the rerun):',
+                  *(f"- `{f['file']}`: {f['test']} ({f['count']} time(s), last {f['last']})"
+                    for f in flaky)]
+    else:
+        lines.append('Flaky tests in this window: none.')
+    return lines
+
+
 def cleanup_ticket(unit, reasons):
     """(title, body, comment) for a cleanup ticket of this unit's project."""
-    numbers = [f'- Due ({today().isoformat()}): ' + '; '.join(reasons), *cleanup_numbers(unit)]
+    numbers = [f'- Due ({today().isoformat()}): ' + '; '.join(reasons), *cleanup_numbers(unit),
+               '', *cleanup_leads(unit)]
     title = f"Test cleanup: {Path(unit['project']).name}"
     body = '\n'.join([
         'The suite gate found this project due for a test cleanup.', '', *numbers, '',
@@ -3591,6 +3729,7 @@ def _check_cleanup(finished, command, cwd):
             key, new_unit(project, info['rel_cwd'], command))
         if finished['sample']:
             add_sample(unit, finished['seconds'])
+        add_run_details(unit, finished)
         reasons = cleanup_due(unit)
         previous = unit['acted']
         claimed = bool(reasons) and tracker is not None and previous != day
