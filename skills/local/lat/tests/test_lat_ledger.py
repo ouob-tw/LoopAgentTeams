@@ -853,6 +853,22 @@ class RemovedWorktreeTests(RemovedWorktreeCase):
         self.clean_up(other, worktree)
         self.ok('check')
 
+    def test_a_worktree_outside_its_repo_is_looked_up_in_the_repo_noted_at_closing(self):
+        other = self.new_repo('other')
+        worktree = self.root / 'task-worktree'
+        git(other, 'worktree', 'add', '-q', '-b', 'task', str(worktree))
+        (worktree / 't.txt').write_text('t\n')
+        git(worktree, 'add', 't.txt')
+        git(worktree, 'commit', '-q', '-m', 'task work')
+        commit = git(worktree, 'rev-parse', 'HEAD')
+        item = self.started('--repo', str(worktree), '--branch', 'task')
+        self.ok('done', str(item), '--commit', commit, by='impl')
+        self.assertEqual(self.item(item)['main_checkout'], str(other))
+        self.clean_up(other, worktree, merge=False)
+        self.assertIn(f'{other}: commit {commit} is not reachable from main', self.check_fails())
+        git(other, 'merge', '-q', '--no-ff', '-m', 'merge task', commit)
+        self.ok('check')
+
     def test_another_repo_that_is_gone_too_fails_naming_the_workspace(self):
         other = self.new_repo('other')
         _, worktree, commit = self.closed_in_worktree(other)

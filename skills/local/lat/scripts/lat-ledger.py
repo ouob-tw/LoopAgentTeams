@@ -410,17 +410,23 @@ def reachable(repo, sha, branches):
     return False
 
 
-def main_checkouts(doc, item):
-    """Where a row's commit can still be when its repo is gone: the checkout holding the gone
-    path (a task worktree under <checkout>/.worktrees), then the ledger's workspace."""
-    places = [doc['workspace']]
-    existing = next((p for p in Path(item['repo']).parents if p.is_dir()), None)
+def owning_checkout(path):
+    """The main checkout of the repo `path` is in (a bare repo stands for itself), or None."""
     try:
-        places.insert(0, run_cli(['git', '-C', str(existing), 'rev-parse', '--show-toplevel'],
-                                 timeout=30).strip())
+        common = Path(run_cli(['git', '-C', str(path), 'rev-parse', '--path-format=absolute',
+                               '--git-common-dir'], timeout=30).strip())
     except ValueError:
-        pass
-    return list(dict.fromkeys(places))
+        return None
+    return str(common.parent if common.name == '.git' else common)
+
+
+def main_checkouts(doc, item):
+    """Where a row's commit can still be when its repo is gone: the checkout noted at closing,
+    the one holding the gone path (a task worktree under <checkout>/.worktrees, and rows closed
+    before the note existed or after the removal), then the ledger's workspace."""
+    existing = next((p for p in Path(item['repo']).parents if p.is_dir()), None)
+    places = [item.get('main_checkout'), owning_checkout(existing), doc['workspace']]
+    return list(dict.fromkeys(place for place in places if place))
 
 
 def verify_commit_after_removal(doc, item, value):
@@ -758,6 +764,9 @@ def cmd_done(args):
             raise Failure(f'item {item["id"]} not closed:\n' +
                           '\n'.join(f'  - {problem}' for problem in problems))
         changes['evidence'] = resolved
+        repo = changes.get('repo') or item.get('repo')
+        if repo:
+            changes['main_checkout'] = owning_checkout(repo)
         record(args, item, 'done', changes)
     update_card(item, resolved)
     print(f'item {item["id"]} closed')
