@@ -1,0 +1,20 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.3, pytest-8.3.4, pluggy-1.7.0
+rootdir: /home/user/project
+collected 7 items
+
+tests/sub/test_gamma.py F
+
+=================================== FAILURES ===================================
+______________________________ GammaTests.test_g _______________________________
+
+self = <sub.test_gamma.GammaTests testMethod=test_g>
+
+>   def test_g(self): self.fail('nope')
+E   AssertionError: nope
+
+tests/sub/test_gamma.py:3: AssertionError
+=========================== short test summary info ============================
+FAILED tests/sub/test_gamma.py::GammaTests::test_g - AssertionError: nope
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+============================== 1 failed in 0.02s ===============================

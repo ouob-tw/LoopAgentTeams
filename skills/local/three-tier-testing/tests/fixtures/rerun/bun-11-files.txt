@@ -1,0 +1,138 @@
+bun test v1.3.14 (0d9b296a)
+
+tests/f10.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f10", () => { expect(10).toBe(0); });
+                                   ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 10
+
+      at <anonymous> (/home/user/project/tests/f10.test.ts:2:32)
+(fail) f10 [0.11ms]
+
+tests/f11.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f11", () => { expect(11).toBe(0); });
+                                   ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 11
+
+      at <anonymous> (/home/user/project/tests/f11.test.ts:2:32)
+(fail) f11 [0.04ms]
+
+tests/f1.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f1", () => { expect(1).toBe(0); });
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 1
+
+      at <anonymous> (/home/user/project/tests/f1.test.ts:2:30)
+(fail) f1 [0.03ms]
+
+tests/f2.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f2", () => { expect(2).toBe(0); });
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 2
+
+      at <anonymous> (/home/user/project/tests/f2.test.ts:2:30)
+(fail) f2 [0.04ms]
+
+tests/f3.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f3", () => { expect(3).toBe(0); });
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 3
+
+      at <anonymous> (/home/user/project/tests/f3.test.ts:2:30)
+(fail) f3 [0.03ms]
+
+tests/f4.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f4", () => { expect(4).toBe(0); });
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 4
+
+      at <anonymous> (/home/user/project/tests/f4.test.ts:2:30)
+(fail) f4 [0.04ms]
+
+tests/f5.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f5", () => { expect(5).toBe(0); });
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 5
+
+      at <anonymous> (/home/user/project/tests/f5.test.ts:2:30)
+(fail) f5 [0.03ms]
+
+tests/f6.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f6", () => { expect(6).toBe(0); });
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 6
+
+      at <anonymous> (/home/user/project/tests/f6.test.ts:2:30)
+(fail) f6 [0.03ms]
+
+tests/f7.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f7", () => { expect(7).toBe(0); });
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 7
+
+      at <anonymous> (/home/user/project/tests/f7.test.ts:2:30)
+(fail) f7 [0.03ms]
+
+tests/f8.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f8", () => { expect(8).toBe(0); });
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 8
+
+      at <anonymous> (/home/user/project/tests/f8.test.ts:2:30)
+(fail) f8 [0.02ms]
+
+tests/f9.test.ts:
+1 | import { test, expect } from "bun:test";
+2 | test("f9", () => { expect(9).toBe(0); });
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 9
+
+      at <anonymous> (/home/user/project/tests/f9.test.ts:2:30)
+(fail) f9 [0.03ms]
+
+ 0 pass
+ 11 fail
+ 11 expect() calls
+Ran 11 tests across 11 files. [33.00ms]

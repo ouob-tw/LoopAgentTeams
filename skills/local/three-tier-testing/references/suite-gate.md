@@ -110,6 +110,22 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --registered web --
 
 CPU 與記憶體都不足時兩句以 `; ` 連接。訊息中的 GB 都是 GiB（1024³ 位元組）；「available」是已扣掉未用預約（記憶體另扣保留量）後的值。
 
+## 失敗重跑
+
+經閘門執行的整套（`run`、`run --registered`、對照表退回的整套）與受影響測試失敗時，閘門在能確定只是某幾個測試檔失敗的情況下，自動只重跑那些檔案一次：
+
+- **辨認失敗**：閘門邊執行邊讀完整輸出（不只保留的結尾），認得 `bun test`（檔案標題行下的 `(fail)` 行與結尾的 pass／fail 總數）、Python `unittest`（`FAIL:`／`ERROR:` 行的測試 id，以 `discover` 的起始目錄或 `-t` 頂層目錄換成檔案；不是 `discover` 時以執行目錄為準；結尾 `Ran N tests` 與 `OK`／`FAILED (...)`）與 `pytest`（結尾短摘要的 `FAILED <檔案>::<測試>`、`ERROR <檔案>::<測試>` 與統計行）。
+- **重跑指令**：每個失敗檔案換成 repo 相對路徑，照 `affected` 的規則取包含它、最長的 `affected.commands` 目錄的樣板，`{tests}` 填該目錄下的相對路徑，在該目錄、同一份內容上執行。失敗檔案分屬幾個目錄就各用自己的樣板依序跑。重跑沿用原本這次執行占的名額，不另外排隊。
+- **不重跑、照原結果記失敗**的情況（任一成立）：
+  - 專案沒有對照表，或任一失敗檔案找不到樣板目錄。
+  - 指令（含它執行的 package.json 腳本）有遇錯即停的選項：`bun test --bail`（或 `bunfig.toml` 設了 `bail`）、`pytest -x`／`--exitfirst`／`--maxfail`／`--stepwise`（含 `PYTEST_ADDOPTS` 與設定檔的 `addopts`）、`unittest -f`／`--failfast`；讀不到它執行的腳本時也算有。
+  - 指令跑了閘門讀不了輸出的測試工具（例如 jest、vitest、playwright），或測試之後還有其他步驟（`echo`、`printf`、`tee`、`cat` 之類輸出文字的除外）。
+  - 少了該工具完整的總結行（中途停止或逾時被終止），或輸出顯示提早停止（bun 的 `Bailed out`、pytest 的 `!!!` 中斷行）。
+  - 有載入或收集錯誤：unittest 的 `_FailedTest`、pytest 的 `ERROR collecting` 或沒有測試名稱的 `ERROR <檔案>`、bun 的 `Unhandled error between tests` 或總結的 `N error`。
+  - 總結行的失敗數與指出的失敗數對不上，或有失敗歸不到 repo 裡的測試檔；總結沒有失敗（測試以外的步驟失敗）。
+  - 失敗的測試檔超過 10 個，或第一次執行前後內容改變。
+- **紀錄**：一次執行只寫一筆，在重跑結束後寫入。結束碼取重跑的結果（有幾組時取第一個失敗的）。另記 `rerun` 與 `flaky`（見[紀錄與設定位置](#紀錄與設定位置)）。重跑通過的紀錄與一般通過一樣可沿用；重跑期間內容改變時標為內容改變、不可沿用。不重跑時 `rerun` 只有 `skipped`（不重跑的原因），閘門也印出 `failed tests not rerun: <原因>`。
+
 ## 查狀態與紀錄
 
 ```bash
@@ -123,6 +139,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py status --fingerprint <�
 - 每套執行中測試：預約量（`measured` 實測或 `default` 預設）、目前用量；閘門已不在的另註明還有多久會被收回。
 - 最近一次收回（`Latest reclaim`）：時間、停掉幾個程序、原持有者的執行者、目錄與指令，以及每個程序的 PID 與指令。
 - 每個排隊者：卡住的原因與預約量。
+- 最近紀錄中失敗後經過失敗重跑的：重跑的結果、耗時、第一次的結束碼與每組的指令；沒重跑的寫出原因。之後列出這些紀錄中的時好時壞測試（`flaky`）：時間、檔案與測試名稱。
 - `--json`：`min_slots`（有效下限）、`max_slots`、`config`（實際套用的設定）、`host`（`cores`、`cpu_idle`、`cpu_free_cores`、`mem_available_bytes`、`unused_reservation`、`mem_reserve_bytes`、`cpu_left_cores`、`mem_left_bytes`、`pressure`、`brake`、`unreadable`）、`running`（每筆另有 `usage` 與 `reservation`）、`waiting`（每筆另有 `reason` 與 `reservation`）、`locks`、`records`、`cleanup`（見[定期整理觸發](#定期整理觸發)）、`reclaims`（收回紀錄，舊到新；每筆有 `time`、`agent`、`command`、`cwd`、`fingerprint`、`cgroup`、`sid`、是否佔名額 `slot`、佔的指紋鎖 `lock`、`leftover_since`、`grace_seconds`、`process_count` 與 `processes`（`pid`、`command`））。
 
 ## 專案登記檔
@@ -350,6 +367,8 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 | `leftover_processes` | 正常結束後群組內遺留的程序數 |
 
 讀不到的值記為 `null`，不記 0。
+
+失敗過的執行另有 `rerun`：重跑時是 `first_exit_code`（第一次的結束碼）、`exit_code`、`duration_s` 與 `runs`（每組的 `dir`、`command`、`tests`、`exit_code`、`duration_s`、`output_tail`）；沒重跑時只有 `skipped`（原因）。同時有 `flaky`：重跑通過時是第一次失敗的每個檔案（`file`，repo 相對路徑）與其失敗的測試名稱（`tests`），否則是空清單。頂層的 `duration_s` 與 `output_tail` 是第一次執行的。
 
 對照表退回整套另有 `trigger_files`。受影響測試的紀錄標 `kind: "affected"`，另有 `base`、`changed_files`、`selected_tests` 與 `why`（每個測試被選的原因），一律不可沿用。帶用途的執行沿用上次結果時的沿用紀錄標 `kind: "reuse"`，另有 `reused_fingerprint`（沒有 `fingerprint`）、`reused_time`、`reused_agent`。
 

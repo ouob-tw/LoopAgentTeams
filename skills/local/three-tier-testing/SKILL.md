@@ -141,6 +141,7 @@ docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --
 - **整批合併後**：全部票合併後，由主控指定一人以 `run --purpose post-merge` 跑一次整套；內容相同時閘門沿用，視同完成。
 - **發布前**：推送 main 或版本標籤前，每一套登記的整套測試須有通過紀錄（`--purpose release`，或沿用合併後的紀錄）；推送前檢查的做法見 [references/suite-gate.md](references/suite-gate.md)。
 - **票內確有必要跑整套**（環境改變、查偶發失敗等）：用 `run --reason "<原因>"` 放行，原因會記進紀錄。
+- **失敗重跑**：經閘門的整套與受影響測試失敗時，閘門能確定只是幾個測試檔失敗（不超過 10 個、沒有遇錯即停選項、輸出完整、沒有載入或建置錯誤）就自動用對照表的樣板只重跑那些檔案一次；通過就記為通過，並在紀錄的 `flaky` 與 `status` 列出這些時好時壞的測試，留待整理，不要當成已修好。不重跑時照原結果算失敗，原因印在輸出與紀錄。詳見 [references/suite-gate.md](references/suite-gate.md#失敗重跑)。
 
 沒有對照表的專案維持舊規則：每張票在該票審查都通過後的最終版本，經閘門跑一次整套。
 
