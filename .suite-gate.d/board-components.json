@@ -1,0 +1,10 @@
+{"map": [
+  {"paths": ["board/src/lib/board/ask-inbox.ts"],
+   "tests": ["board/tests/unit/ask-inbox.test.ts", "board/tests/unit/notice-time.test.ts"]},
+  {"paths": ["board/src/lib/components/AgentPermissionModes.svelte"],
+   "tests": ["board/tests/browser/agents-page.test.ts", "board/tests/browser/herdr-controller-page.test.ts", "board/tests/browser/herdr-controller-send.test.ts"]},
+  {"paths": ["board/src/lib/components/CopyButton.svelte"],
+   "tests": ["board/tests/browser/back-navigation.test.ts", "board/tests/browser/transcript-attachments.test.ts"]},
+  {"paths": ["board/src/lib/components/VisualLinks.svelte"],
+   "tests": ["board/tests/browser/visual-links.test.ts"]}
+]}
