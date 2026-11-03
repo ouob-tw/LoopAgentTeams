@@ -1,4 +1,6 @@
 {"map": [
+  {"paths": ["board/src/lib/board/ask-inbox.ts"],
+   "tests": ["board/tests/unit/ask-inbox.test.ts", "board/tests/unit/notice-time.test.ts"]},
   {"paths": ["board/src/lib/components/AgentPermissionModes.svelte"],
    "tests": ["board/tests/browser/agents-page.test.ts", "board/tests/browser/herdr-controller-page.test.ts", "board/tests/browser/herdr-controller-send.test.ts"]},
   {"paths": ["board/src/lib/components/CopyButton.svelte"],
