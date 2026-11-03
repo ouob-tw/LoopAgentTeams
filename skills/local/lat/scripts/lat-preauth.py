@@ -536,7 +536,7 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
                                    f'passed for {version[:12]}')
         elif not problems:
             result['basis'].append(f'every registered full suite passed for {version[:12]}')
-    elif action in GATE_ACTIONS and version:
+    elif action in GATE_ACTIONS and version and (action != 'push' or branch == 'main'):
         problems = gate_problems(top, version)
         ask_each(problems)
         if not problems:

@@ -997,11 +997,12 @@ class InstallHostGateTests(PreauthCase):
         self.assertIn(f'every full suite in the 2 skill folders passed for {head[:12]}',
                       verdict['basis'])
         self.assertEqual(self.install().returncode, 0)
-        with self.subTest('push still needs every registered suite'):
+        with self.subTest('a main push still needs every registered suite'):
+            git(self.repo, "branch", "-q", "main")
             self.write(self.global_file, self.global_file.read_text() +
-                       '[actions.push]\nallow = true\nbranches = ["dev"]\n')
+                       '[actions.push]\nallow = true\nbranches = ["main"]\n')
             self.assertIn(f'no passing full-suite record for {head[:12]}: bun test (in board)',
-                          self.check('push', '--branch', 'dev')['reasons'])
+                          self.check('push', '--branch', 'main')['reasons'])
 
     def test_a_skill_suite_without_a_pass_asks_and_names_it(self):
         head = git(self.repo, 'rev-parse', 'HEAD')
@@ -1038,18 +1039,44 @@ class PushTests(PreauthCase):
         git(self.root, 'init', '-q', '--bare', str(remote))
         git(self.repo, 'remote', 'add', 'origin', str(remote))
         git(self.repo, 'push', '-q', 'origin', 'dev')
-        self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["dev"]\n')
+        git(self.repo, 'switch', '-q', '-c', 'main')
+        git(self.repo, 'push', '-q', 'origin', 'main')
+        self.write(self.global_file,
+                   '[actions.push]\nallow = true\nbranches = ["dev", "main"]\n')
         self.session(tickets=('313', 'ouob-tw/LoopAgentTeams-work#314'))
+
+    def test_only_main_needs_the_full_suite_gate(self):
+        sha = self.commit('feat(lat): one (#313)')
+        with self.subTest('main without any record asks and names each missing suite'):
+            missing = f'no passing full-suite record for {sha[:12]}: '
+            self.assertEqual(self.check('push', '--branch', 'main')['reasons'], [
+                missing + 'uv run pytest (in .)', missing + 'bun test (in web)'])
+        git(self.repo, 'switch', '-q', 'dev')
+        git(self.repo, 'merge', '-q', '--ff-only', 'main')
+        with self.subTest('dev without any record allows and shows no suite basis'):
+            result = self.check('push', '--branch', 'dev')
+            self.assertEqual(result['verdict'], 'allow', result['reasons'])
+            self.assertFalse(any('full suite' in line for line in result['basis']))
+            self.assertTrue(any('references only tickets' in line for line in result['basis']))
+        with self.subTest('dev still asks for a ticket-less commit'):
+            self.commit('chore: no ticket', 'c.txt')
+            reasons = self.check('push', '--branch', 'dev')['reasons']
+            self.assertEqual(len(reasons), 1, reasons)
+            self.assertIn('(no ticket)', reasons[0])
+        with self.subTest('dev still asks when it is not in branches'):
+            self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["main"]\n')
+            self.assertIn('branch `dev` is not in',
+                          ' '.join(self.check('push', '--branch', 'dev')['reasons']))
 
     def test_listed_branch_passing_gate_and_round_commits_allow(self):
         self.commit('feat(lat): gate check (#313)')
         sha = self.commit('fix(lat): edge (ouob-tw/LoopAgentTeams-work#314)', 'c.txt')
         self.gate_record()
-        result = self.run_tool('check', '--action', 'push', '--branch', 'dev')
+        result = self.run_tool('check', '--action', 'push', '--branch', 'main')
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn('allow push dev — basis: ', result.stdout)
+        self.assertIn('allow push main — basis: ', result.stdout)
         self.assertEqual(len(result.stdout.splitlines()), 1)
-        self.assertNotIn('next_steps', self.check('push', '--branch', 'dev'))
+        self.assertNotIn('next_steps', self.check('push', '--branch', 'main'))
         self.assertIn(f'every unpushed commit of {sha[:12]} references only tickets of the '
                       'round ledger', result.stdout)
         self.assertIn(f'every registered full suite passed for {sha[:12]}', result.stdout)
@@ -1058,23 +1085,23 @@ class PushTests(PreauthCase):
         first = self.commit('feat(lat): one (#313)')
         missing = f'no passing full-suite record for {first[:12]}: '
         with self.subTest('no record'):
-            self.assertEqual(self.check('push', '--branch', 'dev')['reasons'], [
+            self.assertEqual(self.check('push', '--branch', 'main')['reasons'], [
                 missing + 'uv run pytest (in .)', missing + 'bun test (in web)'])
         with self.subTest('one suite missing'):
             self.gate_record(suites=SUITES[:1])
-            self.assertEqual(self.check('push', '--branch', 'dev')['reasons'],
+            self.assertEqual(self.check('push', '--branch', 'main')['reasons'],
                              [missing + 'bun test (in web)'])
         with self.subTest('only a failed record'):
             self.gate_record(suites=SUITES[1:], passed=False)
-            self.assertEqual(self.check('push', '--branch', 'dev')['reasons'],
+            self.assertEqual(self.check('push', '--branch', 'main')['reasons'],
                              [missing + 'bun test (in web)'])
         with self.subTest('content changed after the records'):
             self.gate_record(suites=SUITES[1:])
-            self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+            self.assertEqual(self.check('push', '--branch', 'main')['verdict'], 'allow')
             second = self.commit('feat(lat): two (#313)', 'c.txt')
-            self.assertEqual(len(self.check('push', '--branch', 'dev')['reasons']), 2)
+            self.assertEqual(len(self.check('push', '--branch', 'main')['reasons']), 2)
             self.assertIn(f'no passing full-suite record for {second[:12]}: uv run pytest',
-                          self.check('push', '--branch', 'dev')['reasons'][0])
+                          self.check('push', '--branch', 'main')['reasons'][0])
 
     def test_a_scoped_suite_pass_counts_for_a_push_until_its_paths_change(self):
         suites = [{'command': 'bun test', 'cwd': 'web', 'depends_on': []}]
@@ -1084,9 +1111,9 @@ class PushTests(PreauthCase):
         self.commit('feat(web): scoped (#313)', 'web/a.txt')
         self.gate_record(suites=suites)
         self.commit('docs: elsewhere (#313)', 'c.txt')
-        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+        self.assertEqual(self.check('push', '--branch', 'main')['verdict'], 'allow')
         web = self.commit('fix(web): change (#313)', 'web/a.txt')
-        self.assertEqual(self.check('push', '--branch', 'dev')['reasons'],
+        self.assertEqual(self.check('push', '--branch', 'main')['reasons'],
                          [f'no passing full-suite record for {web[:12]}: bun test (in web)'])
 
     def test_commits_outside_the_round_ask_and_are_listed(self):
@@ -1095,7 +1122,7 @@ class PushTests(PreauthCase):
         other = self.commit('feat: theirs (#999)', 'd.txt')
         mixed = self.commit('fix: both #313 and other/repo#42', 'e.txt')
         self.gate_record()
-        reasons = self.check('push', '--branch', 'dev')['reasons']
+        reasons = self.check('push', '--branch', 'main')['reasons']
         self.assertEqual(len(reasons), 1, reasons)
         self.assertTrue(reasons[0].startswith(
             "unpushed commits outside this round's tickets (#313, ouob-tw/loopagentteams-work#314): "),
@@ -1113,7 +1140,7 @@ class PushTests(PreauthCase):
         other = self.commit('feat: theirs (someone/else#313)', 'd.txt')
         loose = self.commit('feat: theirs too (someone/else#314)', 'e.txt')
         self.gate_record()
-        reasons = self.check('push', '--branch', 'dev')['reasons']
+        reasons = self.check('push', '--branch', 'main')['reasons']
         self.assertEqual(len(reasons), 1, reasons)
         self.assertIn(f'{other[:12]} "feat: theirs (someone/else#313)" (someone/else#313)',
                       reasons[0])
@@ -1145,7 +1172,7 @@ class PushTests(PreauthCase):
                     tracker.unlink(missing_ok=True)
                 else:
                     self.write(tracker, text)
-                reasons = self.check('push', '--branch', 'dev')['reasons']
+                reasons = self.check('push', '--branch', 'main')['reasons']
                 self.assertEqual(len(reasons), 1, reasons)
                 self.assertIn(f'{other[:12]} "fix: theirs (ouob-tw/other-repo#370)"', reasons[0])
                 if case == 'tracker doc names the repo':
@@ -1156,31 +1183,31 @@ class PushTests(PreauthCase):
 
     def test_commits_the_remote_has_are_not_listed(self):
         self.commit('chore: no ticket but pushed')
-        git(self.repo, 'push', '-q', 'origin', 'dev')
+        git(self.repo, 'push', '-q', 'origin', 'main')
         self.commit('feat(lat): mine (#313)', 'c.txt')
         self.gate_record()
-        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+        self.assertEqual(self.check('push', '--branch', 'main')['verdict'], 'allow')
 
     def test_without_a_round_ledger_push_asks(self):
         self.commit('feat(lat): mine (#313)')
         self.gate_record()
         self.session(status='ended')
         self.assertIn('no active round ledger to tell whose tickets the unpushed commits '
-                      'belong to', self.check('push', '--branch', 'dev')['reasons'])
+                      'belong to', self.check('push', '--branch', 'main')['reasons'])
 
     def test_unresolvable_version_and_missing_registry_ask(self):
         self.assertIn('cannot resolve the version to push (`nope`)',
-                      self.check('push', '--branch', 'dev', '--commit', 'nope')['reasons'])
+                      self.check('push', '--branch', 'main', '--commit', 'nope')['reasons'])
         with self.subTest('non-object gate record lines are skipped'):
             self.commit('feat(lat): mine (#313)')
             self.gate_state.mkdir(exist_ok=True)
             (self.gate_state / 'ledger.jsonl').write_text('null\n[1]\n')
-            self.assertEqual(len(self.check('push', '--branch', 'dev')['reasons']), 2)
+            self.assertEqual(len(self.check('push', '--branch', 'main')['reasons']), 2)
             self.gate_record()
-            self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+            self.assertEqual(self.check('push', '--branch', 'main')['verdict'], 'allow')
         (self.repo / '.suite-gate.json').unlink()
         self.assertIn('full-suite gate check failed: full_suites must list',
-                      ' '.join(self.check('push', '--branch', 'dev')['reasons']))
+                      ' '.join(self.check('push', '--branch', 'main')['reasons']))
 
 
 ANSWER = ('## 答覆（r1，面板，{time}）\n\n- 題目：{id} r1\n- 答覆：A. 可以\n'
