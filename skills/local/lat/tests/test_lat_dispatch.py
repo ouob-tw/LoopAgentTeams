@@ -678,6 +678,37 @@ class LedgerBriefTests(LedgerCase):
                           command)
             self.assertIn(str(LEDGER), command)
 
+    def test_report_goes_to_a_file_in_the_runs_folder_named_after_the_agent(self):
+        text, _ = self.brief_commands(self.ledger_card())
+        path = self.workspace / '.lat/runs/issue-123/report-nanu-impl123-fida.md'
+        self.assertIn(f'Write the full report to {path} first', text)
+        self.assertNotIn('send the full report in the message', text)
+
+    def test_card_without_a_runs_folder_keeps_the_report_in_the_message(self):
+        text, _ = self.brief_commands(self.ledger_card('--runs', '無'))
+        self.assertIn('send the full report in the message', text)
+        self.assertNotIn('report-nanu', text)
+
+    def test_qa_draft_row_asks_for_spec_coverage(self):
+        card = self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
+                              'qa-draft', '--evidence', 'file', '--deadline', '+2h')
+        text, _ = self.brief_commands(card)
+        self.assertIn('## Spec coverage', text)
+        self.assertIn('Put the entries no ticket covers at the top of your report', text)
+
+    def test_other_stages_carry_no_spec_coverage(self):
+        text, _ = self.brief_commands(self.ledger_card())
+        self.assertNotIn('## Spec coverage', text)
+
+    def test_unreadable_ledger_skips_spec_coverage_with_a_warning(self):
+        card = self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
+                              'qa-draft', '--evidence', 'file', '--deadline', '+2h')
+        self.ledger.write_text('not json')
+        result = self.run_script('brief', '--card', str(card), '--input', str(self.write_brief()))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('no spec coverage section', result.stderr)
+        self.assertNotIn('## Spec coverage', (self.root / 'brief.brief.md').read_text())
+
     def test_ledger_path_with_spaces_is_quoted(self):
         spaced = self.workspace / '.lat' / 'my ledgers' / 'round.json'
         spaced.parent.mkdir()
