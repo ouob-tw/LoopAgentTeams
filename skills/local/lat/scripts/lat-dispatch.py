@@ -63,7 +63,7 @@ FIXED = '''## Fixed fields
 - Working directory: {workdir}
 - Report to: {orchestrator}
 - Language: all agent-to-agent communication (hcom messages, hand-offs, reports) is in English.
-- On completion report: where the results are, test results (for a full suite, attach the suite-gate record: the fingerprint, or the entry `suite-gate.py status` shows; do not rerun just to report), and anything unfinished.
+- On completion report: where the results are, test results (for a full suite, attach the suite-gate record: the fingerprint, or the entry `suite-gate.py status` shows; do not rerun just to report), and anything unfinished. {report_rule}
 - Stuck rule: if the same acceptance target fails 3 rounds of fix -> verify (fix -> deploy -> verify when there is a deploy step), report to {orchestrator} immediately with the failure evidence and your next hypothesis. Reset the count when the target passes or changes.
 - Report only results, blockers, live-action quota hits and questions outside the Spec; never send a start or progress ack.
 - Report with: `hcom send @{orchestrator} --name {agent_name}`. If you forget the syntax, run `hcom <command> --help`; do not guess.
@@ -101,6 +101,15 @@ These held when the brief was made; the conditions behind them (branch list, ful
 {notices}'''
 PREAUTH_NOTICES = '''
 Deploying and installing ({actions}) also need two HCOM notices that {orchestrator} itself sends to the other controllers. After the recheck, ask {orchestrator} for the before notice and start only after it confirms it was sent; note the start time in ISO form with a time zone. When done, succeeded or failed, report the start time and the result to {orchestrator} so it sends the after notice and logs the action.
+'''
+REPORT_FILE = ('Write the full report to {path} first (later reports to the same file '
+               'replace it), then send the path and a few-line summary.')
+REPORT_IN_MESSAGE = 'The card names no runs folder, so send the full report in the message.'
+SPEC_COVERAGE = '''
+## Spec coverage
+
+- Before drafting scenarios, map every consensus item and every Implementation Decisions entry of the parent spec to the ticket whose acceptance criteria cover it.
+- Put the entries no ticket covers at the top of your report, so {orchestrator} can add them to a ticket before implementers are dispatched.
 '''
 LEDGER_MISSING = '''
 ## Work ledger
@@ -467,11 +476,15 @@ def make_brief(args):
     preauth = preauth_part(args, workspace, card['orchestrator'])
     if preauth:
         parts.append(preauth)
+    runs = card.get('runs') or NONE
+    report_rule = (REPORT_FILE.format(path=Path(runs) / f'report-{card["agent"]}.md')
+                   if runs.startswith('/') else REPORT_IN_MESSAGE)
     fixed = FIXED.format(
         workdir=workdir, orchestrator=card['orchestrator'], agent=card['agent'],
+        report_rule=report_rule,
         agent_name=hcom_send_name(card['agent'], agents),
         card=card_path, card_rule=CARD_RULE_READ_ONLY if args.read_only else CARD_RULE,
-        runs=card.get('runs') or NONE, workspace=shlex.quote(str(workspace)),
+        runs=runs, workspace=shlex.quote(str(workspace)),
         decisions=workspace / '.lat' / 'decisions',
         lat_script=shlex.quote(str(args.lat_dir.resolve() / 'scripts' / 'lat-watch.py')))
     if card['ledger row']:
@@ -480,6 +493,8 @@ def make_brief(args):
             row=row, ledger=ledger, ledger_arg=shlex.quote(ledger), agent=card['agent'],
             cmd='uv run --no-project python ' + shlex.quote(
                 str(args.lat_dir.resolve() / 'scripts' / 'lat-ledger.py')))
+        if row_stage(ledger, row) == 'qa-draft':
+            fixed += SPEC_COVERAGE.format(orchestrator=card['orchestrator'])
     else:
         print(f'lat-dispatch: warning: card {card_path} has no ledger row; the brief carries '
               'no ledger commands', file=sys.stderr)
@@ -491,6 +506,17 @@ def make_brief(args):
     # background work still running; the stall watch covers a card agent that really stops.
     print('hcom send @{} --name {} --file {}'.format(
         card['agent'], hcom_send_name(card['orchestrator'], agents), shlex.quote(str(output))))
+
+
+def row_stage(ledger, row):
+    """The stage of ledger row `row`, or None (with a warning) when the ledger cannot be read."""
+    try:
+        items = json.loads(Path(ledger).read_text(encoding='utf-8'))['items']
+        return next(item['stage'] for item in items if str(item['id']) == str(row))
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError, StopIteration) as error:
+        print(f'lat-dispatch: warning: cannot read the stage of ledger row {row} in {ledger} '
+              f'({error!r}); the brief carries no spec coverage section', file=sys.stderr)
+        return None
 
 
 def close_card(args):
