@@ -96,12 +96,15 @@ function wide(code: number): boolean {
 }
 
 /** How many columns one character as shown (a grapheme: a base with its combining marks, or an
- *  emoji sequence) takes: none for marks and format characters alone, two for an emoji or an East
- *  Asian wide character, else one. */
+ *  emoji sequence) takes, as terminals count it: none for marks and format characters alone; two
+ *  for an emoji shown as one (emoji presentation by default, or asked for with VS16 U+FE0F), a flag
+ *  (two regional indicators) or an East Asian wide character; else one, so a symbol such as © that
+ *  shows as text by default takes one. */
 export function graphemeWidth(grapheme: string): number {
 	const base = grapheme.replace(/[\p{M}\p{Cf}]/gu, '');
 	if (!base) return 0;
-	if (/\p{Extended_Pictographic}/u.test(base)) return 2;
+	if ([...base].length > 1 && /^\p{Regional_Indicator}+$/u.test(base)) return 2;
+	if (/\p{Emoji_Presentation}/u.test(base) || (grapheme.includes('\ufe0f') && /\p{Extended_Pictographic}/u.test(base))) return 2;
 	return wide(base.codePointAt(0)!) ? 2 : 1;
 }
 

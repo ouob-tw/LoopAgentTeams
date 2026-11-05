@@ -100,6 +100,10 @@ test('a wide character in a masked value takes two marks, a combining mark none,
 	expect(maskScreen('password=\u05d0\u05b0abc next')).toBe(`password=${masked(4)} next`);
 	// An emoji sequence joined into one takes two columns, so two marks.
 	expect(maskScreen('password=ab\u{1f469}\u200d\u{1f4bb}cd next')).toBe(`password=${masked(6)} next`);
+	// A flag is two columns; a symbol shown as text by default, one; the same asked as emoji, two.
+	expect(maskScreen('password=\u{1f1f9}\u{1f1fc}abc next')).toBe(`password=${masked(5)} next`);
+	expect(maskScreen('password=\u00a9abc next')).toBe(`password=${masked(4)} next`);
+	expect(maskScreen('password=\u00a9\ufe0fabc next')).toBe(`password=${masked(5)} next`);
 });
 
 test('a screen with only colour codes and box lines is left alone', () => {
