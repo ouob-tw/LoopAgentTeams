@@ -19,6 +19,7 @@ description: "Use when the user will look at something: before asking them to ch
 
 1. 把畫面寫成一個資料夾，裡面有 `index.html`（單一檔案也行）。只要內容片段就好，開頭不是 `<!DOCTYPE` 或 `<html` 時，會自動套共用外框：深淺色、手機寬度、`.card`、`.option`（放在 `.options` 裡會並排）。要比較多個版本，每版包成 `<section data-variant="a" data-title="直排">`，外框會加切換列。完整 HTML 則原樣顯示。
    展示內容的文字至少 18px（外框預設就是 18px，示意畫面內的字也一樣）。不要用縮小來把畫面塞進視窗，放不下就讓它左右滑動。每個版本的說明只寫一句話，詳細比較放在題目裡。
+   展示頁跟隨系統的深淺主題（示意畫面用 `prefers-color-scheme` 切換，配色取自被示意的真實畫面）；只有這頁就是要比較或測試某個特定主題時才固定。
 2. 發布：
 
    ```bash
