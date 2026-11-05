@@ -114,6 +114,7 @@ LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址�
 | --- | --- |
 | [LAT](skills/local/lat/SKILL.md) | 完整交付流程：角色分工、階段轉換、派工、整合與驗收 |
 | [hcom-spawn](skills/local/hcom-spawn/SKILL.md) | 透過 HCOM 召喚跨 client 的 Agent：模型與 effort 選擇、啟動核對、任務交代與收尾 |
+| [analyst](skills/local/analyst/SKILL.md) | 疑難雜症時召喚的分析師：只分析不改程式，交回證據、方案取捨與建議 |
 | [three-tier-testing](skills/local/three-tier-testing/SKILL.md) | 依外部依賴將測試分為單元、整合與 E2E 三層，分開執行，區分模擬與真實服務的驗證 |
 | [ui-copy](skills/local/ui-copy/SKILL.md) | 寫需求、實作與審查介面文字時控制說明句：何時才加、怎麼寫、審查何時算缺陷 |
 | [ui-choice-demo](skills/local/ui-choice-demo/SKILL.md) | 請使用者選介面前先備好能打開的畫面：示意頁或測試伺服器，題目放直達連結 |
@@ -136,7 +137,7 @@ LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址�
 
 ```bash
 bunx skills add ouob-tw/LoopAgentTeams \
-  --skill lat hcom-spawn three-tier-testing host-guard to-spec to-tickets implement grill-with-docs wayfinder handoff \
+  --skill lat hcom-spawn analyst three-tier-testing host-guard to-spec to-tickets implement grill-with-docs wayfinder handoff \
   --skill setup-matt-pocock-skills triage to-questionnaire \
   --global --agent claude-code codex
 ```
@@ -230,7 +231,7 @@ Codex 重啟後在 `/hooks` 信任 command 結尾為 `host-guard.py hook` 的項
 
 ## 本地開發
 
-技能原始檔依來源分成 `skills/local/`（LAT、hcom-spawn、three-tier-testing、host-guard）與 `skills/matt/`（Matt skills 副本）。
+技能原始檔依來源分成 `skills/local/`（LAT、hcom-spawn、analyst、three-tier-testing、host-guard）與 `skills/matt/`（Matt skills 副本）。
 
 本 repo 收錄的九個 Matt skills 副本，移除了 `disable-model-invocation` 並啟用 Codex 的 `allow_implicit_invocation`，讓 LAT 能自動呼叫各階段技能，因此不能直接換成上游原版。副本來源為上游 main `d81f3a1`（內容等同待發布的 v1.3.0）；更新時優先採用正式發布版，正式版落後時採用已準備發布的版本並記錄 commit。
 
