@@ -180,31 +180,34 @@ for (const width of [1280, 390]) {
 for (const width of [1280, 390]) {
 	for (const anchoring of [true, false]) {
 		test.skipIf(!CHROME)(`${width}px, a long conversation, recorded at once${anchoring ? '' : ', without scroll anchoring'}: the next card, chosen while the first is still on its way, stays put`, async () => {
-			const key = await open(`next-${width}-${anchoring}`, width, { older: 30, records: true, height: 1000, anchoring });
-			// Q-1's top just above the screen, so what the page keeps in place by itself may be in
-			// it; its second option and both send buttons on screen.
-			await scrollTo(width, key('Q-1'), () => -30);
-			// Q-1's answer is held on its way until the next card is chosen, then a moment to think
-			// before sending that one.
+			await open(`next-${width}-${anchoring}`, width, { older: 30, records: true, height: 1000, anchoring });
+			// The card on top is answered first and the one below it is the next: whichever of
+			// Q-1 and Q-2 the page shows on top.
+			const [first, next] = await evaluate<[string, string]>(`[...document.querySelectorAll('.history .asking [data-content]')].map((card) => card.dataset.content)`);
+			// The first card's top just above the screen, so what the page keeps in place by itself
+			// may be in it; its second option and both send buttons on screen.
+			await scrollTo(width, first, () => -30);
+			// The first card's answer is held on its way until the next card is chosen, then a
+			// moment to think before sending that one.
 			const tab = browser!.tab;
 			tab.paused = [];
 			await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/answers*' }] });
 			try {
-				await sendAnswer(key('Q-1'), 1);
-				await tab.until(`!!document.querySelector('.history [data-content="${key('Q-1')}"] button.primary:disabled')`);
+				await sendAnswer(first, 1);
+				await tab.until(`!!document.querySelector('.history [data-content="${first}"] button.primary:disabled')`);
 				while (!tab.paused.length) await sleep(20);
-				await watch(key('Q-2'), true);
-				await click(`${cardOf(key('Q-2'))}.querySelector('input[type=radio]')`);
+				await watch(next, true);
+				await click(`${cardOf(next)}.querySelector('input[type=radio]')`);
 			} finally {
 				await send('Fetch.disable');
 				for (const requestId of tab.paused) await send('Fetch.continueRequest', { requestId }).catch(() => {});
 			}
-			await tab.until(`!${cardOf(key('Q-1'))}?.querySelector('form.answer')`);
+			await tab.until(`!${cardOf(first)}?.querySelector('form.answer')`);
 			await sleep(1500);
-			await sendAnswer(key('Q-2'));
-			const held = await settled(key('Q-2'));
+			await sendAnswer(next);
+			const held = await settled(next);
 			expectStayed(held);
-			for (const id of ['Q-1', 'Q-2']) expect(await evaluate<string>(`${cardOf(key(id))}.innerText`)).toContain('✓');
+			for (const card of [first, next]) expect(await evaluate<string>(`${cardOf(card)}.innerText`)).toContain('✓');
 		}, 60_000);
 	}
 
