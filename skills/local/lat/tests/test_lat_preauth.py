@@ -2220,8 +2220,8 @@ class HoldTests(WriteCase):
     def hold(self, *args, **kwargs):
         return self.run_tool('hold', *args, **kwargs)
 
-    def add(self, commit=None, decision='HOLD-1', **kwargs):
-        result = self.hold('add', '--commit', commit or self.held, '--decision', decision,
+    def add(self, *commits, decision='HOLD-1', **kwargs):
+        result = self.hold('add', '--commit', *(commits or [self.held]), '--decision', decision,
                            '--by', 'orch', **kwargs)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
@@ -2255,6 +2255,13 @@ class HoldTests(WriteCase):
         self.assertEqual((released['decision'], released['by']), ('PUSH-1', 'orch'))
         self.assertTrue(released['at'])
         self.assertIn('released (decision PUSH-1', self.hold('list').stdout)
+
+    def test_two_names_of_one_commit_are_one_hold_that_one_release_lifts(self):
+        self.add(self.held, 'HEAD')
+        self.assertEqual(len(self.listed()), 1)
+        self.decision('PUSH-1')
+        self.assertEqual(self.release('PUSH-1').returncode, 0)
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
 
     def test_holds_live_in_the_main_checkout_lat_shared_by_worktrees(self):
         linked = self.root / 'linked'
@@ -2309,10 +2316,35 @@ class HoldTests(WriteCase):
         self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
 
     def test_an_unreadable_hold_file_makes_the_check_ask(self):
-        self.write(self.holds_file, '{broken')
-        verdict = self.check('push', '--branch', 'dev')
-        self.assertEqual(verdict['reason_kinds'], ['error'])
-        self.assertIn('preauth-holds.json', verdict['reasons'][0])
+        row = dict(commit=self.held, decision='HOLD-1', by='orch', at='t', released=None)
+        for label, text in (
+                ('not JSON', '{broken'),
+                ('a release without who, why and when',
+                 json.dumps({'holds': [dict(row, released='pending')]})),
+                ('no released key', json.dumps({'holds': [{k: v for k, v in row.items()
+                                                           if k != 'released'}]})),
+                ('a short commit ID', json.dumps({'holds': [dict(row, commit=self.held[:12])]}))):
+            with self.subTest(label):
+                self.write(self.holds_file, text)
+                verdict = self.check('push', '--branch', 'dev')
+                self.assertEqual(verdict['reason_kinds'], ['error'])
+                self.assertIn('preauth-holds.json', verdict['reasons'][0])
+
+    def test_a_held_commit_the_repo_no_longer_has_holds_nothing_back(self):
+        row = dict(commit='f' * 40, decision='HOLD-1', by='orch', at='t', released=None)
+        self.write(self.holds_file, json.dumps({'holds': [row]}))
+        self.gate_record()
+        self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
+
+    def test_the_docs_say_when_to_hold_and_that_push_and_deploy_questions_list_holds(self):
+        skill = (SCRIPT.parents[1] / 'SKILL.md').read_text()
+        pending = skill.split('### 使用者待決事項', 1)[1].split('\n## ', 1)[0]
+        guide = (SCRIPT.parents[1] / 'references/preauth.md').read_text()
+        holds = guide.split('## 保留不推送的提交', 1)[1].split('\n## ', 1)[0]
+        for text in (pending, holds):
+            self.assertIn('合併但不推送', text)
+            self.assertIn('hold add', text)
+            self.assertIn('推送題和部署題', text)
 
     def global_hook(self):
         """The global pre-push hook from hook-setup.md, reaching this checkout's script through

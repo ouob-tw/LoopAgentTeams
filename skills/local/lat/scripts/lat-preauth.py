@@ -97,6 +97,7 @@ DEPLOY_HISTORY = 'deploy-history.jsonl'
 # Commits the user chose to merge but not push, in the main checkout .lat.
 HOLDS = 'preauth-holds.json'
 ZERO_SHA = re.compile(r'0+')
+FULL_SHA = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
 
 
 @dataclass
@@ -566,17 +567,42 @@ def read_holds(top):
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise ValueError(f'unreadable hold file {path} ({error})') from None
     holds = data.get('holds') if isinstance(data, dict) else None
-    if not isinstance(holds, list) or not all(
-            isinstance(hold, dict) and isinstance(hold.get('commit'), str) for hold in holds):
-        raise ValueError(f'hold file {path} is not an object with a list `holds` of commits')
+    if not isinstance(holds, list) or not all(map(valid_hold, holds)):
+        raise ValueError(f'hold file {path} is not an object with a list `holds`, each a full '
+                         'commit ID with decision, by and at, and `released` null or the '
+                         'same three fields')
     return holds
+
+
+def valid_hold(hold):
+    """A row a check can trust; anything else must not count as held or as released."""
+    def signed(row):
+        return isinstance(row, dict) and all(
+            isinstance(row.get(key), str) and row[key] for key in ('decision', 'by', 'at'))
+    return (signed(hold) and isinstance(hold.get('commit'), str)
+            and FULL_SHA.fullmatch(hold['commit']) is not None
+            and ('released' in hold and hold['released'] is None or signed(hold.get('released'))))
+
+
+def contains_strictly(top, older, newer):
+    """Whether `older` is `newer` or its ancestor; raises when Git cannot tell, so a hold
+    never stops counting because an object is unreadable. A held commit this repo no longer
+    has (rewritten, then pruned) is in no version."""
+    if git(top, 'cat-file', '-e', f'{older}^{{commit}}') is None:
+        return False
+    result = subprocess.run(['git', '-C', str(top), 'merge-base', '--is-ancestor', older, newer],
+                            capture_output=True, text=True, timeout=30)
+    if result.returncode not in (0, 1):
+        raise ValueError(f'cannot tell whether {newer[:12]} contains held commit {older[:12]} '
+                         f'({result.stderr.strip()})')
+    return result.returncode == 0
 
 
 def held_problems(top, contains):
     """A condition naming every unreleased hold whose commit `contains(full SHA)` accepts, as
     a list of (kind, reason) pairs; an unreadable hold file is an error."""
     try:
-        holds = [hold for hold in read_holds(top) if not hold.get('released')]
+        holds = [hold for hold in read_holds(top) if hold['released'] is None]
         found = [f'{hold["commit"][:12]} (decision {hold.get("decision")})'
                  for hold in holds if contains(hold['commit'])]
     except ValueError as error:
@@ -663,7 +689,7 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
         if commit and resolve_version(top, commit) != version:
             ask('condition', f'commit `{commit}` is not HEAD')
         if action == 'deploy-prod' and version:
-            ask_each(held_problems(top, lambda held: is_ancestor(top, held, version)))
+            ask_each(held_problems(top, lambda held: contains_strictly(top, held, version)))
     if action == 'deploy-test':
         found = effective.get('target')
         if found is None:
@@ -1881,7 +1907,8 @@ def cmd_hold(args):
         sha = resolve_version(top, ref)
         if sha is None:
             raise Refused(f'unknown commit `{ref}`')
-        commits.append(sha)
+        if sha not in commits:  # two names of one commit are one hold
+            commits.append(sha)
     path = holds_path(top)
     with locked(path.with_name(f'.{path.name}.lock')):
         try:
@@ -1889,7 +1916,7 @@ def cmd_hold(args):
         except FileNotFoundError:
             original = None
         holds = read_holds(top)
-        active = {hold['commit']: hold for hold in holds if not hold.get('released')}
+        active = {hold['commit']: hold for hold in holds if hold['released'] is None}
         now = datetime.now(timezone.utc).isoformat(timespec='seconds')
         if args.hold_command == 'add':
             again = [sha[:12] for sha in commits if sha in active]
@@ -1941,8 +1968,8 @@ def cmd_pre_push(args):
             continue
         local, old = parts[1], parts[3]
         known = not ZERO_SHA.fullmatch(old) and resolve_version(top, old)
-        found += held_problems(top, lambda held: is_ancestor(top, held, local) and not (
-            known and is_ancestor(top, held, old)))
+        found += held_problems(top, lambda held: contains_strictly(top, held, local) and not (
+            known and contains_strictly(top, held, old)))
     if not found:
         return 0
     print(f'lat-preauth pre-push: push refused ({args.remote}): ' +
