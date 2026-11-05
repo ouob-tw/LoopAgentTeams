@@ -72,7 +72,10 @@ def settings():
     if not port:
         raise SystemExit('demo: no port; set DEMO_PORT or "port" in ~/.agents/demo.json (see ~/.agents/lat-private.md)')
     data = Path(pick('DEMO_DATA', 'data', Path.home() / '.local/share/demo-publish'))
-    return {'port': int(port), 'host': pick('DEMO_HOST', 'host', 'localhost'),
+    host = pick('DEMO_HOST', 'host')
+    if not host:
+        raise SystemExit('demo: no host; set DEMO_HOST or "host" in ~/.agents/demo.json (see ~/.agents/lat-private.md)')
+    return {'port': int(port), 'host': host,
             'bind': pick('DEMO_BIND', 'bind', '0.0.0.0'), 'data': data}
 
 
@@ -80,8 +83,9 @@ def get_key(data):
     data.mkdir(parents=True, exist_ok=True)
     kf = data / '.key'
     if not kf.exists():
-        kf.write_text(secrets.token_urlsafe(18))
-        kf.chmod(0o600)
+        fd = os.open(kf, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(secrets.token_urlsafe(18))
     return kf.read_text().strip()
 
 
@@ -128,6 +132,7 @@ class Handler(SimpleHTTPRequestHandler):
         if getattr(self, '_set_cookie', False):
             self.send_header('Set-Cookie', f'demo_key={self.key}; Path=/; HttpOnly; SameSite=Lax; Max-Age=1209600')
         self.send_header('Cache-Control', 'no-store')
+        self.send_header('Referrer-Policy', 'no-referrer')
         super().end_headers()
 
     def list_directory(self, path):
@@ -157,7 +162,7 @@ def serve():
 
 
 def build_index(text, title):
-    if FULL_DOC.match(text):
+    if FULL_DOC.match(text.lstrip('\ufeff')):
         return text
     return FRAME.replace('__TITLE__', title).replace('__BODY__', text)
 
@@ -175,15 +180,15 @@ def publish(src, name):
     tmp = Path(tempfile.mkdtemp(dir=conf['data'], prefix='.new-'))
     try:
         if src.is_dir():
-            shutil.copytree(src, tmp, dirs_exist_ok=True)
+            shutil.copytree(src, tmp, dirs_exist_ok=True, ignore_dangling_symlinks=True)
         else:
             shutil.copy2(src, tmp / 'index.html')
         index = tmp / 'index.html'
         if not index.is_file():
             raise SystemExit('demo: no index.html in the published folder')
-        index.write_text(build_index(index.read_text(), name))
+        index.write_text(build_index(index.read_text(encoding='utf-8'), name), encoding='utf-8')
         dest = site / name
-        old = site / f'.old-{name}-{os.getpid()}'
+        old = conf['data'] / f'.old-{name}-{os.getpid()}'
         if dest.exists():
             dest.rename(old)
         tmp.rename(dest)
@@ -194,9 +199,8 @@ def publish(src, name):
             shutil.rmtree(tmp, ignore_errors=True)
     os.utime(dest)
     url = f'http://{conf["host"]}:{conf["port"]}/{name}/?k={key}'
-    probe = f'http://127.0.0.1:{conf["port"]}/{name}/?k={key}'
     try:
-        with urllib.request.urlopen(probe, timeout=5) as r:
+        with urllib.request.urlopen(url, timeout=5) as r:
             if r.status != 200:
                 raise SystemExit(f'demo: published but the URL answered {r.status}')
     except (urllib.error.URLError, OSError) as e:

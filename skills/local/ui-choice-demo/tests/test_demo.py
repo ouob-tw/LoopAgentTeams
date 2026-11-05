@@ -26,7 +26,7 @@ class DemoTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.env = {**os.environ, 'HOME': self.temp.name, 'DEMO_PORT': str(PORT), 'DEMO_BIND': '127.0.0.1',
-                    'DEMO_HOST': 'demo.test', 'DEMO_DATA': str(self.root / 'data')}
+                    'DEMO_HOST': '127.0.0.1', 'DEMO_DATA': str(self.root / 'data')}
         self.server = subprocess.Popen([sys.executable, str(SCRIPT), 'serve'], env=self.env)
         self.addCleanup(self.server.wait)
         self.addCleanup(self.server.terminate)
@@ -58,10 +58,17 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         url = r.stdout.strip()
         self.assertEqual(len(r.stdout.strip().splitlines()), 1)
-        self.assertRegex(url, r'^http://demo\.test:7161/d1/\?k=\S+$')
-        status, body, _ = self.get(url.split('demo.test:7161')[1])
+        self.assertRegex(url, r'^http://127\.0\.0\.1:7161/d1/\?k=\S+$')
+        status, body, _ = self.get(url.split('127.0.0.1:7161')[1])
         self.assertEqual(status, 200)
         self.assertIn('hi', body)
+
+    def test_no_stash_dirs_are_served_and_key_file_is_private(self):
+        self.publish(self.make('<p>a</p>'))
+        self.publish(self.make('<p>b</p>'))
+        data = self.root / 'data'
+        self.assertEqual([p.name for p in (data / 'site').iterdir()], ['d1'])
+        self.assertEqual((data / '.key').stat().st_mode & 0o777, 0o600)
 
     def test_publish_fails_when_server_down(self):
         self.server.terminate()
@@ -71,13 +78,13 @@ class DemoTests(unittest.TestCase):
         self.assertIn('cannot be opened', r.stderr)
 
     def test_overwrite_shows_new_version_at_same_url(self):
-        url = self.publish(self.make('<p>OLDTEXT</p>')).stdout.strip().split('demo.test:7161')[1]
+        url = self.publish(self.make('<p>OLDTEXT</p>')).stdout.strip().split('127.0.0.1:7161')[1]
         self.publish(self.make('<p>NEWTEXT</p>'))
         self.assertIn('NEWTEXT', self.get(url)[1])
         self.assertNotIn('OLDTEXT', self.get(url)[1])
 
     def test_key_rejection_and_cookie(self):
-        url = self.publish(self.make('<p>hi</p>')).stdout.strip().split('demo.test:7161')[1]
+        url = self.publish(self.make('<p>hi</p>')).stdout.strip().split('127.0.0.1:7161')[1]
         key = url.split('k=')[1]
         self.assertEqual(self.get('/d1/')[0], 403)
         self.assertEqual(self.get('/d1/?k=wrong')[0], 403)
@@ -91,28 +98,28 @@ class DemoTests(unittest.TestCase):
     def test_cookie_covers_files_in_the_page(self):
         d = self.make('<p>hi</p>')
         (d / 'a.css').write_text('b{}')
-        url = self.publish(d).stdout.strip().split('demo.test:7161')[1]
+        url = self.publish(d).stdout.strip().split('127.0.0.1:7161')[1]
         cookie = f'demo_key={url.split("k=")[1]}'
         self.assertEqual(self.get('/d1/a.css', {'Cookie': cookie})[0], 200)
         self.assertEqual(self.get('/d1/a.css')[0], 403)
 
     def test_no_traversal_or_listing(self):
-        url = self.publish(self.make('<p>hi</p>')).stdout.strip().split('demo.test:7161')[1]
+        url = self.publish(self.make('<p>hi</p>')).stdout.strip().split('127.0.0.1:7161')[1]
         cookie = {'Cookie': f'demo_key={url.split("k=")[1]}'}
         self.assertEqual(self.get('/', cookie)[0], 404)
         self.assertNotEqual(self.get('/../../.key', cookie)[0], 200)
         self.assertNotIn('data', self.get('/.key', cookie)[1])
 
     def test_fragment_gets_frame_full_document_stays(self):
-        u1 = self.publish(self.make('<h1>frag</h1>', 'a'), 'frag').stdout.strip().split('demo.test:7161')[1]
+        u1 = self.publish(self.make('<h1>frag</h1>', 'a'), 'frag').stdout.strip().split('127.0.0.1:7161')[1]
         body = self.get(u1)[1]
         self.assertIn('<h1>frag</h1>', body)
         self.assertIn('viewport', body)
         self.assertIn('prefers-color-scheme', body)
         full = '<!doctype html><html><body>own</body></html>'
-        u2 = self.publish(self.make(full, 'b'), 'full').stdout.strip().split('demo.test:7161')[1]
+        u2 = self.publish(self.make(full, 'b'), 'full').stdout.strip().split('127.0.0.1:7161')[1]
         self.assertEqual(self.get(u2)[1], full)
-        u3 = self.publish(self.make('  <HTML><body>own</body></HTML>', 'c'), 'full2').stdout.strip().split('demo.test:7161')[1]
+        u3 = self.publish(self.make('  <HTML><body>own</body></HTML>', 'c'), 'full2').stdout.strip().split('127.0.0.1:7161')[1]
         self.assertNotIn('viewport', self.get(u3)[1])
 
     def test_single_file_and_bad_name(self):

@@ -35,16 +35,16 @@ description: Use when the user will look at something: before asking them to cho
 指令回報連不上，代表常駐服務還沒裝。埠號與網域不寫進 repo：先看專案 `CLAUDE.md` 指向的主機私人設定檔，把展示用的埠號與網域寫進 `~/.agents/demo.json`：
 
 ```json
-{"port": 7111, "host": "your.domain"}
+{"port": <展示用埠號>, "host": "<網域>"}
 ```
 
-再建立 `~/.config/systemd/user/demo-publish.service`，把 `<…>` 換成實際路徑後啟用：
+再建立 `~/.config/systemd/user/demo-publish.service`，把 `<…>` 換成實際值後啟用（服務的 PATH 很短，所以 uv 要寫完整路徑）：
 
 ```ini
 [Unit]
 Description=Demo static server
 [Service]
-ExecStart=/usr/bin/env uv run --no-project python <本技能目錄>/scripts/demo.py serve
+ExecStart=<uv 的完整路徑，用 command -v uv 查> run --no-project python <本技能目錄>/scripts/demo.py serve
 Restart=on-failure
 [Install]
 WantedBy=default.target
