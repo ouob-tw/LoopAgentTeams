@@ -33,7 +33,7 @@ Stop 在主控訊息顯示後才執行；未通過 DECIDE／HELP 檢查會要求
 
 UserPromptSubmit 在主控收到使用者訊息時列出自己仍待答的題目，提示撤回或改版；只附加內容、不擋訊息，見 [撤回過時題目](question-panel.md#撤回過時題目)。新增此事件後，已安裝的使用者須重跑 install，Codex 另到 `/hooks` 信任新項目，Claude 與 Codex 主控重開後才生效。
 
-PreToolUse 只對啟用中的主控生效：要執行 `gh issue close` 時先用 `gh issue view` 讀票的內文，還有未勾選的 `- [ ]` 項目就擋下並列出。關閉留言（`-c`／`--comment`）引用 `<待決 ID> r<版本>`、且該紀錄有這版的真人答覆（`## 答覆` 段落與 `- 來源：` 行）時放行；引用的紀錄沒有真人答覆仍擋。讀不到票或指令無法解析時只警告、不擋。新增此事件後須重跑 install，Codex 另到 `/hooks` 信任。
+PreToolUse 只對啟用中的主控生效：要執行 `gh issue close` 時先用 `gh issue view` 讀票的內文，還有未勾選的 `- [ ]` 項目就擋下並列出。關閉留言（`-c`／`--comment`）引用 `<待決 ID> r<版本>`、且該紀錄有這版的真人答覆（`## 答覆` 段落與 `- 來源：` 行）時放行；引用的紀錄沒有真人答覆仍擋。讀不到票時只警告、不擋；指令無法解析時擋下，請把 `gh issue close` 單獨執行。新增此事件後須重跑 install，Codex 另到 `/hooks` 信任。
 
 ## 提交訊息票號檢查
 

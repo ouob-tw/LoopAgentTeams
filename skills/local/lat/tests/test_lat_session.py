@@ -3231,6 +3231,22 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn('LAT-DROP 沒有 r1 的真人答覆', result.stderr)
 
+    def test_close_check_reads_flag_orders_and_line_breaks(self):
+        self.activate()
+        self.write_answered('LAT-DROP')
+        body = '- [ ] x\n'
+        for command in ('gh issue -R o/r close 5', 'gh issue --repo=o/r close 5 -cdone',
+                        'gh issue close 5\ngh issue close 6 -c "LAT-DROP r1"',
+                        "gh issue comment 5 --body-file - <<EOF\nit's done\nEOF\ngh issue close 5"):
+            with self.subTest(command=command):
+                result = self.close_hook(command, body)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        result = self.close_hook('gh issue -R o/r close 5 -c"per LAT-DROP r1"', body)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertIn('issue view 5 --json body -q .body -R o/r', (self.root / 'gh.log').read_text())
+        result = self.close_hook('gh issue close 5', '```\n- [ ] example\n```\n- [x] done\n')
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+
     def test_close_check_allows_checked_items_or_a_cited_human_answer(self):
         self.activate()
         result = self.close_hook('gh issue close 458', '- [x] a\n- [X] b\n')

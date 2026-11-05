@@ -56,7 +56,7 @@ HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit', 'PreToolUse')
 # Events whose LAT group runs only for these matchers; the others take no matcher.
 MATCHERS = dict(SessionStart=MATCHER, PreToolUse='Bash')
 # An unchecked Markdown checkbox: the close check reads acceptance items this way.
-UNCHECKED_ITEM = re.compile(r'^\s*(?:[-*+]|[0-9]+[.)])\s+\[ \]\s*(.*)$', re.MULTILINE)
+UNCHECKED_ITEM = re.compile(r'^[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+\[ \][ \t]*(.*)$', re.MULTILINE)
 # `<decision ID> r<N>` cited in a close comment.
 CITED_DECISION = re.compile(r'(?<![0-9A-Za-z_.-])([A-Za-z0-9][A-Za-z0-9._-]*) r([1-9][0-9]*)'
                             r'(?![0-9A-Za-z_-])')
@@ -1080,31 +1080,52 @@ def preauth_module():
     return module
 
 
+def unquoted_newlines_end_commands(command):
+    """The text with each newline outside quotes turned into `;`, so a line ends a command."""
+    out, quote, escaped = [], None, False
+    for c in command:
+        if escaped:
+            escaped = False
+        elif c == '\\' and quote != "'":
+            escaped = True
+        elif quote and c == quote:
+            quote = None
+        elif not quote and c in '\'"':
+            quote = c
+        elif not quote and c == '\n':
+            c = ';'
+        out.append(c)
+    return ''.join(out)
+
+
 def issue_closes(command):
     """`(issue, repo, comment)` for each `gh issue close` in the shell text; ValueError when
     the text cannot be split."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer = shlex.shlex(unquoted_newlines_end_commands(command), posix=True,
+                        punctuation_chars=True)
     lexer.whitespace_split = True
     words, found = list(lexer), []
-    for index in range(len(words) - 2):
-        if (Path(words[index]).name, words[index + 1], words[index + 2]) != ('gh', 'issue', 'close'):
+    for index, word in enumerate(words):
+        if Path(word).name != 'gh':
             continue
-        issue = repo = comment = None
-        rest = words[index + 3:]
+        positionals, repo, comment = [], None, ''
+        rest = words[index + 1:]
         while rest and not set(rest[0]) <= SHELL_OPERATORS:
             word, rest = rest[0], rest[1:]
             name, joined, value = word.partition('=')
-            if name in ('-c', '--comment', '-R', '--repo', '-r', '--reason', '--duplicate-of'):
+            if name in ('-c', '--comment', '-R', '--repo', '-r', '--reason'):
                 if not joined:
                     value, rest = (rest[0], rest[1:]) if rest else ('', rest)
-                if name in ('-c', '--comment'):
-                    comment = value
-                elif name in ('-R', '--repo'):
-                    repo = value
-            elif not word.startswith('-') and issue is None:
-                issue = word
-        if issue:
-            found.append((issue, repo, comment or ''))
+            elif word[:2] in ('-c', '-R', '-r') and len(word) > 2:
+                name, value = word[:2], word[2:]
+            elif not word.startswith('-'):
+                positionals.append(word)
+            if name in ('-c', '--comment'):
+                comment = value
+            elif name in ('-R', '--repo'):
+                repo = value
+        if positionals[:2] == ['issue', 'close'] and positionals[2:]:
+            found.append((positionals[2], repo, comment))
     return found
 
 
@@ -1126,6 +1147,7 @@ def issue_body(issue, repo, cwd):
 def close_problem(record, issue, body, comment):
     """Why closing is refused, or None. Unchecked items pass only when the comment cites a
     decision record holding a human answer for that revision."""
+    body = re.sub(r'^[ \t]*```.*?^[ \t]*```', '', body, flags=re.MULTILINE | re.DOTALL)
     unchecked = [item.strip() or '(blank)' for item in UNCHECKED_ITEM.findall(body)]
     if not unchecked:
         return None
@@ -1150,15 +1172,19 @@ def close_check(record, payload):
     """PreToolUse: refuse `gh issue close` while the issue has unchecked acceptance items."""
     command = payload.get('tool_input', {}).get('command', '')
     if isinstance(command, list):
-        command = shlex.join(map(str, command))
-    if not isinstance(command, str) or 'close' not in command:
+        # A list runs as is; a shell given `-c <script>` runs its last word.
+        command = (str(command[-1]) if command and Path(str(command[0])).name in
+                   ('sh', 'bash', 'zsh', 'dash') else shlex.join(map(str, command)))
+    if not isinstance(command, str):
         return 0
     try:
         closes = issue_closes(command)
     except ValueError as error:
-        if re.search(r'\bgh\b.*\bissue\b.*\bclose\b', command, re.DOTALL):
-            close_warning(f'無法解析指令（{error}）')
-        return 0
+        if not re.search(r'\bgh\b.*\bissue\b.*\bclose\b', command, re.DOTALL):
+            return 0
+        print(f'Blocked: the close check cannot read this command ({error}). Run '
+              '`gh issue close` as its own command so the check can see it.', file=sys.stderr)
+        return 2
     for issue, repo, comment in closes:
         body, error = issue_body(issue, repo, payload['cwd'])
         if body is None:
