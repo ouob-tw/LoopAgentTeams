@@ -97,6 +97,9 @@ test('ordinary long strings stay as they are', () => {
 test('a wide character in a masked value takes two marks, a combining mark none, so the line keeps its width', () => {
 	expect(maskScreen('password=密碼abc1')).toBe(`password=${masked(8)}`);
 	expect(maskScreen('password=e\u0301abc next')).toBe(`password=${masked(4)} next`);
+	expect(maskScreen('password=\u05d0\u05b0abc next')).toBe(`password=${masked(4)} next`);
+	// An emoji sequence joined into one takes two columns, so two marks.
+	expect(maskScreen('password=ab\u{1f469}\u200d\u{1f4bb}cd next')).toBe(`password=${masked(6)} next`);
 });
 
 test('a screen with only colour codes and box lines is left alone', () => {

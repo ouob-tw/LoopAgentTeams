@@ -17,9 +17,11 @@ import { maskScreen, wrapMatters } from './screen-mask.ts';
 
 /** How often an open screen is read. */
 export const SCREEN_MS = 1_000;
-/** How long a failure waits for its 恢復畫面, and a recovered one stays listed, for a page that
- *  joins or comes back later. */
-const RECOVERY_KEEP_MS = 10 * 60_000;
+/** How long a recovered failure stays listed, for a page that joins or comes back later. A failure
+ *  waiting for its 恢復畫面 is kept until a read recovers it, however long Herdr cannot be read; only
+ *  the newest `WAITING_MAX` per agent are kept. */
+const RECOVERED_KEEP_MS = 10 * 60_000;
+const WAITING_MAX = 100;
 
 /** One agent's failures: those waiting for a read started after them, and those a read recovered,
  *  each with when. */
@@ -46,13 +48,17 @@ function perBoard<T>(store: WeakMap<Board, Map<string, T>>, board: Board): Map<s
 	return shared;
 }
 
-/** The agent's failures, those older than `RECOVERY_KEEP_MS` dropped. */
+/** The agent's failures, recovered ones older than `RECOVERED_KEEP_MS` dropped, for every agent:
+ *  an agent whose tab is never opened again does not keep them. */
 function recoveryOf(board: Board, agentId: string): Recovery {
 	const shared = perBoard(recoveries, board);
+	const now = Date.now();
+	for (const [id, recovery] of shared) {
+		for (const [failure, at] of recovery.recovered) if (now - at > RECOVERED_KEEP_MS) recovery.recovered.delete(failure);
+		if (!recovery.waiting.size && !recovery.recovered.size && id !== agentId) shared.delete(id);
+	}
 	let recovery = shared.get(agentId);
 	if (!recovery) shared.set(agentId, (recovery = { waiting: new Map(), recovered: new Map() }));
-	const now = Date.now();
-	for (const kept of [recovery.waiting, recovery.recovered]) for (const [id, at] of kept) if (now - at > RECOVERY_KEEP_MS) kept.delete(id);
 	return recovery;
 }
 
@@ -80,7 +86,12 @@ export function followScreen(board: Board, agentId: string, push: (update: Scree
 /** Have the agent's screen read again at once for this failure; its pages get the 恢復畫面 once a
  *  read succeeds. While no page has the tab open, the failure waits for the next one that does. */
 export function recover(board: Board, agentId: string, id: string): void {
-	recoveryOf(board, agentId).waiting.set(id, Date.now());
+	const { waiting } = recoveryOf(board, agentId);
+	waiting.set(id, Date.now());
+	for (const oldest of waiting.keys()) {
+		if (waiting.size <= WAITING_MAX) break;
+		waiting.delete(oldest);
+	}
 	perBoard(followers, board).get(agentId)?.readSoon();
 }
 

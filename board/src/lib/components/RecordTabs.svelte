@@ -101,7 +101,7 @@
 		display: flex;
 		flex: 1;
 		min-width: 0;
-		gap: 0.2rem;
+		gap: 0.1rem;
 		margin-bottom: -1px;
 		overflow-x: auto;
 		scrollbar-width: thin;
@@ -112,7 +112,8 @@
 		align-items: center;
 		gap: 0.35rem;
 		white-space: nowrap;
-		padding: 0.4rem 0.65rem;
+		/* Narrow enough that a controller's seven tabs fit the content column of a 1280px window. */
+		padding: 0.4rem 0.45rem;
 		border: 0;
 		border-bottom: 2px solid transparent;
 		border-radius: 0;

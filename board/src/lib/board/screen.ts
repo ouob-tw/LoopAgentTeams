@@ -80,21 +80,10 @@ export function countsText(counts: KeyCounts): string {
 	return counts.map(({ kind, count }) => (kind === TEXT_KIND ? `${kind} ${count} 字` : count > 1 ? `${kind} ×${count}` : kind)).join('、');
 }
 
-/** How many columns a character takes: none for combining marks and zero-width characters, which
- *  join the one before; two for East Asian wide and full-width ones; else one. */
-export function charWidth(code: number): number {
-	if (
-		(code >= 0x0300 && code <= 0x036f) ||
-		(code >= 0x1ab0 && code <= 0x1aff) ||
-		(code >= 0x1dc0 && code <= 0x1dff) ||
-		(code >= 0x200b && code <= 0x200f) ||
-		(code >= 0x20d0 && code <= 0x20ff) ||
-		(code >= 0xfe00 && code <= 0xfe0f) ||
-		(code >= 0xfe20 && code <= 0xfe2f) ||
-		(code >= 0xe0100 && code <= 0xe01ef)
-	)
-		return 0;
-	return (code >= 0x1100 && code <= 0x115f) ||
+/** Whether a code point takes two columns: East Asian wide and full-width characters. */
+function wide(code: number): boolean {
+	return (
+		(code >= 0x1100 && code <= 0x115f) ||
 		(code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
 		(code >= 0xac00 && code <= 0xd7a3) ||
 		(code >= 0xf900 && code <= 0xfaff) ||
@@ -103,8 +92,24 @@ export function charWidth(code: number): number {
 		(code >= 0xffe0 && code <= 0xffe6) ||
 		(code >= 0x1f300 && code <= 0x1faff) ||
 		(code >= 0x20000 && code <= 0x3fffd)
-		? 2
-		: 1;
+	);
+}
+
+/** How many columns one character as shown (a grapheme: a base with its combining marks, or an
+ *  emoji sequence) takes: none for marks and format characters alone, two for an emoji or an East
+ *  Asian wide character, else one. */
+export function graphemeWidth(grapheme: string): number {
+	const base = grapheme.replace(/[\p{M}\p{Cf}]/gu, '');
+	if (!base) return 0;
+	if (/\p{Extended_Pictographic}/u.test(base)) return 2;
+	return wide(base.codePointAt(0)!) ? 2 : 1;
+}
+
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/** The text cut into graphemes. */
+export function graphemes(text: string): string[] {
+	return Array.from(GRAPHEMES.segment(text), (part) => part.segment);
 }
 
 /** One run of a line in one style. */

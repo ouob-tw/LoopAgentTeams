@@ -11,7 +11,7 @@
 // hides more. A key broken by hand, or with other characters or box lines between its pieces, is not
 // recognised.
 
-import { charWidth } from '../board/screen.ts';
+import { graphemes, graphemeWidth } from '../board/screen.ts';
 
 export const MASK = '*';
 
@@ -39,7 +39,7 @@ const KEY_BODY = /^[A-Za-z0-9+/=]{16,}$/;
  *  two-character escapes; a carriage return too. */
 const CONTROL = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]|\r/y;
 
-/** One character shown, where it is in the line's raw text, and its width. */
+/** One character shown (a grapheme), where it is in the line's raw text, and its width. */
 interface Shown {
 	char: string;
 	start: number;
@@ -49,19 +49,27 @@ interface Shown {
 
 function shownOf(raw: string): Shown[] {
 	const shown: Shown[] = [];
-	let at = 0;
-	while (at < raw.length) {
+	/** Where the text since the last control sequence starts. */
+	let from = 0;
+	const text = (to: number) => {
+		let start = from;
+		for (const char of graphemes(raw.slice(from, to))) {
+			shown.push({ char, start, end: start + char.length, width: graphemeWidth(char) });
+			start += char.length;
+		}
+	};
+	for (let at = 0; at < raw.length; ) {
 		CONTROL.lastIndex = at;
 		const control = CONTROL.exec(raw);
-		if (control) {
-			at += control[0].length;
+		if (!control) {
+			at++;
 			continue;
 		}
-		const code = raw.codePointAt(at)!;
-		const char = String.fromCodePoint(code);
-		shown.push({ char, start: at, end: at + char.length, width: charWidth(code) });
-		at += char.length;
+		text(at);
+		at += control[0].length;
+		from = at;
 	}
+	text(raw.length);
 	return shown;
 }
 
