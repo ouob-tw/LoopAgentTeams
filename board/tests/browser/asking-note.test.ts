@@ -1,5 +1,5 @@
 // What a controller's asking message says above its DECIDE/HELP tag line, in the conversation: its
-// cards take the message's place, and those words are folded in the first card as 主控的說明, closed
+// cards take the message's place, and those words are folded in the top card (the last one named) as 主控的說明, closed
 // until clicked, shown as a reply is and translated as one with 中文 on. A message that is only the
 // tag line, and the other cards of a message that asked several, have no such row. In a real
 // browser: headless Chrome over its DevTools protocol, on the built board with fake data and a
@@ -16,7 +16,7 @@ const ROOT = join(import.meta.dir, '../..');
 const codexDir = mkdtempSync(join(tmpdir(), 'lat-board-codex-'));
 const ASKED_AT = '2026-10-20T01:00:00.000Z';
 const NOTE = 'I compared both layouts.\n\n- The **cards** stay where the message was';
-const TOGETHER = `${NOTE}\n\nDECIDE: Q-1 r1, Q-2 r1 · two questions`;
+const TOGETHER = `${NOTE}\n\nDECIDE: Q-2 r1, Q-1 r1 · two questions`;
 const ALONE = 'HELP: Q-3 r1 · stuck';
 
 let fixture: Fixture;
