@@ -22,7 +22,7 @@ import type { ExternalResult } from './external.ts';
 import { killAgent, listAgents, stopAgent } from './hcom.ts';
 import { countKeys, type KeyCounts, type KeyInput, type KeyResult, type KeysResponse } from '../board/screen.ts';
 import { agentCommand, closePane, HERDR_CLOSES, keepWorkspaceOpen, listHerdrAgents, paneExists, paneProcess, sendPaneInput, type HerdrAct } from './herdr.ts';
-import { recover, screenTouched } from './screen.ts';
+import { recover, readScreenSoon } from './screen.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause, type PauseRecord } from './paused.ts';
 import { judgeHooks, relinkable } from './process-hooks.ts';
 import { inject, queued, typedText } from './send.ts';
@@ -214,7 +214,7 @@ export async function sendKeysToAgent(board: Board, agentId: string, inputs: Key
 		})
 	);
 	if (!done.body.ok) recover(board, agentId, recovery);
-	else screenTouched(board, agentId);
+	else readScreenSoon(board, agentId);
 	return { status: done.status, body: { ...done.body, results } };
 }
 

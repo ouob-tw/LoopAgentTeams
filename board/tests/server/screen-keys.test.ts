@@ -261,6 +261,22 @@ test('which lines the pane wrapped is asked of Herdr only when it changes what i
 	expect(reads().some((args) => args.includes('recent-unwrapped'))).toBe(false);
 });
 
+test('the same screen text is masked again when the lines Herdr wrapped change', async () => {
+	const width = 24;
+	const wrapped = `key ${KEY}`;
+	const rows = ['$ ls', wrapped.slice(0, width), wrapped.slice(width), '$ '];
+	// At first Herdr says the two rows are lines of their own: the start of the key alone is not one.
+	setHerdr({ screens: { [PANE]: [rows.join('\r\n')] }, unwrapped: { [PANE]: rows.join('\r\n') } });
+	const page = follow('s-plain');
+	const first = await until(() => page.updates[0], 5_000, 'the first screen');
+	expect(first.ok && first.text).toContain(wrapped.slice(0, width));
+	// The same text, now one wrapped line: the key on both rows is masked.
+	changeHerdr((plan) => (plan.unwrapped[PANE] = ['$ ls', wrapped, '$ '].join('\r\n')));
+	const masked = await until(() => page.updates.find((update) => update.ok && update.text.includes(`key ${'*'.repeat(width - 4)}`)), 5_000, 'the key masked');
+	await page.close();
+	expect(masked.ok && masked.text).not.toContain(KEY.slice(0, 10));
+});
+
 test('a pane that cannot be read says why', async () => {
 	setHerdr({ screens: {} });
 	const page = follow('s-plain');

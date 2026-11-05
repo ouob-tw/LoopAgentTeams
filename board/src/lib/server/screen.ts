@@ -84,7 +84,7 @@ export function followScreen(board: Board, agentId: string, push: (update: Scree
 }
 
 /** Have the agent's screen read again at once: keys were typed into it. */
-export function screenTouched(board: Board, agentId: string): void {
+export function readScreenSoon(board: Board, agentId: string): void {
 	perBoard(followers, board).get(agentId)?.readSoon();
 }
 
@@ -116,21 +116,22 @@ interface Masked {
 
 /** The screen of the pane Herdr lists the agent in now, its secrets masked. Which lines it wrapped
  *  is asked of Herdr only when that changes what is masked; when Herdr cannot tell, the lines are
- *  masked both as they stand and with every line that may have been wrapped joined, and the next
- *  read masks again. A screen the same as `last` is not masked again. */
+ *  masked both as they stand and with every line that may have been wrapped joined. A screen the
+ *  same as `last` is not masked again; only one whose wrapping changes nothing is kept as `last`,
+ *  since the same text may come with other lines wrapped. */
 async function readMasked(board: Board, agentId: string, last: Masked | null): Promise<{ masked: Masked | null; text: string } | { reason: string }> {
 	const agent = (await board.current()).agents.find((candidate) => candidate.id === agentId);
 	if (!agent?.inHerdr) return { reason: '這個 Agent 已不在 Herdr 的清單上' };
 	const read = await readPaneScreen(board.config, agent.herdr.pane);
 	if (!('text' in read)) return read;
 	if (last?.raw === read.text) return { masked: last, text: last.text };
-	if (!wrapMatters(read.text)) return keep(read.text, maskScreen(read.text, 'none'));
+	if (!wrapMatters(read.text)) {
+		const text = maskScreen(read.text, 'none');
+		return { masked: { raw: read.text, text }, text };
+	}
 	const unwrapped = await readUnwrapped(board.config, agent.herdr.pane, read.rows);
-	if (!('text' in unwrapped)) return { masked: null, text: maskScreen(read.text, 'all') };
-	return keep(read.text, maskScreen(read.text, { unwrapped: unwrapped.text }));
+	return { masked: null, text: maskScreen(read.text, 'text' in unwrapped ? { unwrapped: unwrapped.text } : 'all') };
 }
-
-const keep = (raw: string, text: string) => ({ masked: { raw, text }, text });
 
 function startFollower(board: Board, agentId: string): Follower {
 	let closed = false;
@@ -139,7 +140,7 @@ function startFollower(board: Board, agentId: string): Follower {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let last = '';
 	let masked: Masked | null = null;
-	let changedBefore = false;
+	let changedLastRead = false;
 	const follower: Follower = {
 		subscribers: new Set(),
 		sent: null,
@@ -184,8 +185,8 @@ function startFollower(board: Board, agentId: string): Follower {
 			for (const push of [...follower.subscribers]) if (follower.subscribers.has(push)) deliver(push, update, agentId);
 		}
 		// A pane that prints on and on is read half as often: each push costs a masking.
-		const busy = changed && changedBefore;
-		changedBefore = changed;
+		const busy = changed && changedLastRead;
+		changedLastRead = changed;
 		if (again) {
 			again = false;
 			void read();

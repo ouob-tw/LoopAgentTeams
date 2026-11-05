@@ -36,6 +36,11 @@ export async function answerHerdrList(dir: string, request: { id: string; method
 	const params = request.params as { pane_id?: string; source?: string; format?: string; lines?: number } | undefined;
 	// A screen read is logged as the CLI's words for it, and answered with the text the CLI prints.
 	const readArgs = () => ['pane', 'read', params?.pane_id ?? '', '--source', (params?.source ?? '').replace('_', '-'), ...(params?.lines === undefined ? [] : ['--lines', String(params.lines)]), ...(params?.format === 'ansi' ? ['--format', 'ansi'] : [])];
+	// As Herdr's socket: a pane is named, and a read names its source and a known format.
+	const badRead = request.method === 'pane.read' && (!['visible', 'recent', 'recent_unwrapped', 'detection'].includes(params?.source ?? '') || !['ansi', 'text'].includes(params?.format ?? ''));
+	if ((request.method === 'pane.read' || request.method === 'pane.get') && (!params?.pane_id || badRead)) {
+		return JSON.stringify({ id: request.id, error: { code: 'invalid_request', message: `unexpected herdr request: ${JSON.stringify(request)}` } }) + '\n';
+	}
 	if (request.method === 'pane.read' || request.method === 'pane.get') {
 		const run = await runHerdr(dir, request.method === 'pane.read' ? readArgs() : ['pane', 'get', params?.pane_id ?? ''], 'socket');
 		// Herdr's socket answers a refusal with the error the CLI prints as JSON on standard error.
