@@ -49,6 +49,9 @@ export const INFO_DETAILS_KEY = 'lat-board-info-details';
  *  board's setting for every device now; the old value is only cleared. */
 export const LEGACY_TRANSLATE_KEY = 'lat-board-translate';
 
+/** '1' while a phone's 按鍵選單 is open on the 畫面分頁. */
+export const KEY_MENU_KEY = 'lat-board-key-menu';
+
 /** Column widths of the wide layout in px. The defaults live in the page's styles. */
 export const WIDTHS = {
 	roster: { key: 'lat-board-roster-width', min: 170, max: 440 },

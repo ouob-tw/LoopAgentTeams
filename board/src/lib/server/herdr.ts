@@ -363,22 +363,18 @@ export async function readScreen(config: BoardConfig, pane: string, source: Scre
 	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout };
 }
 
+/** How many of a pane's last lines the 畫面分頁 gets: more than the tallest box shows, so a box taller
+ *  than the pane fills up with earlier lines. A full-screen program has only its own screen to give. */
+const SCREEN_LINES = 120;
+
 /**
- * The bottom screenful of the pane with its colour codes, however far the user scrolled it up in
- * Herdr, without moving it: `pane get` tells how many rows it shows and how far up it is; at the
- * bottom `pane read --source visible` is what it shows, scrolled up `--source recent --lines <rows>`
- * is its last rows (blank rows at its bottom are not counted there, so a few earlier ones may show).
+ * The pane's last lines with their colour codes, however far the user scrolled it up in Herdr, without
+ * moving it: `pane read --source recent` ends at the pane's bottom row that shows anything. `rows` is
+ * how many were asked for.
  */
 export async function readPaneScreen(config: BoardConfig, pane: string): Promise<{ text: string; rows: number } | { reason: string }> {
-	const got = await herdr(config, ['pane', 'get', pane]);
-	if ('reason' in got) return { reason: `讀不到它的 Herdr 窗格：${got.reason}` };
-	const scroll = (got.result.pane as { scroll?: { viewport_rows?: unknown; offset_from_bottom?: unknown } } | undefined)?.scroll;
-	const rows = scroll?.viewport_rows;
-	const offset = scroll?.offset_from_bottom;
-	if (typeof rows !== 'number' || typeof offset !== 'number') return { reason: '讀不到它的 Herdr 窗格：輸出不是預期的格式' };
-	const source = offset === 0 ? ['--source', 'visible'] : ['--source', 'recent', '--lines', String(rows)];
-	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, ...source, '--format', 'ansi'], { timeoutMs: config.herdrTimeoutMs });
-	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout, rows };
+	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, '--source', 'recent', '--lines', String(SCREEN_LINES), '--format', 'ansi'], { timeoutMs: config.herdrTimeoutMs });
+	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout, rows: SCREEN_LINES };
 }
 
 /** The pane's last `lines` lines as plain text with the lines it wrapped joined back (`pane read

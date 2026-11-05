@@ -31,7 +31,6 @@
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerPage from '#lib/components/ControllerPage.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
-	import KeyRow from '#lib/components/KeyRow.svelte';
 	import { screenView } from '#lib/board/screen-view.svelte.ts';
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
@@ -433,7 +432,7 @@
 	></div>
 {/snippet}
 
-<div class="page" style:--dock-h="{dockHeight}px">
+<div class="page" class:screen-open={screenView.agentId !== null} style:--dock-h="{dockHeight}px" style:--keyboard="{keyboard}px">
 	<div class="shell" class:viewing={view !== null}>
 		<nav class="roster">
 			<div class="folded">
@@ -661,12 +660,10 @@
 		<!-- Above 760px the command line is the grid's bottom row under the inbox and the content, the
 		     roster running the full height beside it; on a phone it is fixed to the bottom, above the
 		     on-screen keyboard. The notices float just above it, however tall its box has grown. -->
-		<div class="dock" bind:clientHeight={dockHeight} style:--keyboard="{keyboard}px">
+		<div class="dock" bind:clientHeight={dockHeight}>
 			<Toasts
 				standing={board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))}
 			/>
-			<!-- A phone's 按鍵列, while a 畫面分頁 is shown. -->
-			{#if screenView.agentId && screenView.phone}<KeyRow />{/if}
 			<!-- A controller's page on the Herdr tab is written to as on its information page. -->
 			<CommandLine
 				controllers={herdrControllers}
@@ -914,6 +911,21 @@
 	}
 	.detail:focus {
 		outline: none;
+	}
+	/* A 畫面分頁 shown: its panel takes all the column's height down to the command line and all its
+	   width. A status card opened above it scrolls the column, the panel keeping a usable height. */
+	.screen-open .detail {
+		gap: 0.35rem;
+		padding: 0.5rem 0.5rem 0;
+	}
+	.screen-open .detail > :global(*) {
+		max-width: none;
+	}
+	.screen-open .detail > :global(.tabpanel:not([hidden])) {
+		display: flex;
+		flex: 1 0 0;
+		flex-direction: column;
+		min-height: 12rem;
 	}
 	/* Over the content column only, laid out like it: the card sits where the transcript's
 	   scroll puts the real one, a scroll margin below the column's top. A scrollbar gutter like
@@ -1163,6 +1175,32 @@
 		}
 		.viewing .detail {
 			display: flex;
+		}
+		/* A 畫面分頁 shown: the page is as tall as what shows above the on-screen keyboard, so the panel
+		   ends at the command line and the page itself does not scroll. */
+		.page.screen-open {
+			display: flex;
+			flex-direction: column;
+			height: calc(100dvh - var(--keyboard, 0px));
+		}
+		.screen-open .shell {
+			display: flex;
+			flex: 1;
+			flex-direction: column;
+			min-height: 0;
+		}
+		.screen-open .detail {
+			flex: 1;
+			min-height: 0;
+			overflow-y: auto;
+			padding: 0 3px;
+		}
+		/* A sticky bar keeps below the padding of a column that scrolls: none there, so none to reach over. */
+		.screen-open .topbar {
+			margin-top: 0;
+		}
+		.screen-open .detail > :global(.tabpanel:not([hidden])) {
+			padding: 0;
 		}
 		/* Below the bar, which stays on top. */
 		.placeholder {

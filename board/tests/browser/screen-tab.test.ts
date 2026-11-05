@@ -1,5 +1,5 @@
 // The 畫面分頁 in a real browser: headless Chrome on the built board with fake Herdr and hcom. Where
-// the tab sits, the screen with its colours, the 按鍵列 on a phone (touch emulated, not just a narrow
+// the tab sits, the screen with its colours, the 按鍵選單 on a phone (touch emulated, not just a narrow
 // window) and never on a computer, keys sent in order, a failed press emptying the queue and
 // disabling the keys until the 恢復畫面, a screen that cannot be read, and a closed agent's tab.
 // `SCREEN_TAB_SHOTS` names a folder to save each step's screenshot in.
@@ -105,11 +105,18 @@ const openScreen = async () => {
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
 	await tab.until(`!!document.querySelector('.screen-panel pre')`, 'the screen');
 };
-const KEYS = `[...document.querySelectorAll('.dock .keyrow button')]`;
+const MENU = `document.querySelector('.screen-panel [role=toolbar]')`;
+const KEYS = `[...document.querySelectorAll('.screen-panel [role=toolbar] .groups button')]`;
+const ROUND = `document.querySelector('.screen-panel .round')`;
+const openMenu = async () => {
+	await tab.until(`!!${ROUND}`, 'the round button');
+	await tab.eval(`${ROUND}.click()`);
+	await tab.until(`${KEYS}.length === 13`, 'the 按鍵選單');
+};
 const press = (label: string) => tab.eval(`${KEYS}.find((button) => button.innerText === ${JSON.stringify(label)}).click()`);
 const keysEnabled = () => tab.eval<boolean>(`${KEYS}.length > 0 && ${KEYS}.every((button) => !button.disabled)`);
 
-test('computer: the tab comes after the conversation, shows the screen in colour at the usual size, and no 按鍵列 even in a narrow window', async () => {
+test("computer: the tab comes after the conversation, shows the screen in colour at the board's size, and no 按鍵選單 even in a narrow window", async () => {
 	await visit({ width: 1280, height: 800, phone: false });
 	await tab.until(`${TABS}.length === 3`, 'the tabs');
 	expect(await tab.eval(TABS)).toEqual([
@@ -118,67 +125,46 @@ test('computer: the tab comes after the conversation, shows the screen in colour
 		['操作紀錄', 'false']
 	]);
 	await openScreen();
-	const look = await tab.eval<{ text: string; colours: string[]; fontSize: string; status: string }>(`(() => {
-		const pre = document.querySelector('.screen-panel pre:not(.measure pre)');
-		return { text: pre.innerText, colours: [...pre.querySelectorAll('span[style]')].map((span) => getComputedStyle(span).color), fontSize: getComputedStyle(pre).fontSize, status: document.querySelector('.screen-panel .state').innerText };
+	const look = await tab.eval<{ text: string; colours: string[]; fontSize: string; status: boolean }>(`(() => {
+		const pre = document.querySelector('.screen-panel pre');
+		return { text: pre.innerText, colours: [...pre.querySelectorAll('span[style]')].map((span) => getComputedStyle(span).color), fontSize: getComputedStyle(pre).fontSize, status: !!document.querySelector('.screen-panel .state') };
 	})()`);
 	expect(look.text).toContain('❯ 1. Yes');
 	expect(look.text).toContain('3. No, and tell Claude');
 	// 256-colour 4 is xterm's blue; 33 its yellow.
 	expect(look.colours).toContain('rgb(36, 114, 200)');
 	expect(look.colours).toContain('rgb(229, 229, 16)');
-	expect(look.fontSize).toBe('13px');
-	expect(look.status).toContain('即時');
-	expect(await tab.eval(`document.querySelectorAll('.keyrow').length`)).toBe(0);
+	expect(look.fontSize).toBe('16px');
+	// All is well: nothing is said about it.
+	expect(look.status).toBe(false);
+	expect(await tab.eval(`document.querySelector('.detail').innerText.includes('即時')`)).toBe(false);
+	expect(await tab.eval(`document.querySelectorAll('.screen-panel .round, .screen-panel [role=toolbar]').length`)).toBe(0);
 	// Text can be selected.
 	expect(await tab.eval(`getComputedStyle(document.querySelector('.screen-panel pre')).userSelect`)).not.toBe('none');
 	await shot('desktop-screen-tab');
 
-	// A narrow window on a computer is still a computer: no 按鍵列, the screen scrolls inside its box.
+	// A narrow window on a computer is still a computer: no 按鍵選單, the screen scrolls inside its box.
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 420, height: 800, deviceScaleFactor: 1, mobile: false });
 	await sleep(300);
-	expect(await tab.eval(`document.querySelectorAll('.keyrow').length`)).toBe(0);
-	const box = await tab.eval<{ scroll: number; client: number; page: number; viewport: number }>(`(() => { const box = document.querySelector('.screen-panel .box'); return { scroll: box.scrollWidth, client: box.clientWidth, page: document.documentElement.scrollWidth, viewport: innerWidth }; })()`);
+	expect(await tab.eval(`document.querySelectorAll('.screen-panel .round, .screen-panel [role=toolbar]').length`)).toBe(0);
+	const box = await tab.eval<{ scroll: number; client: number; page: number; viewport: number }>(`(() => { const box = document.querySelector('.screen-panel .scroller'); return { scroll: box.scrollWidth, client: box.clientWidth, page: document.documentElement.scrollWidth, viewport: innerWidth }; })()`);
 	expect(box.scroll).toBeGreaterThan(box.client);
 	expect(box.page).toBeLessThanOrEqual(box.viewport);
-	await shot('desktop-narrow-no-keyrow');
+	await shot('desktop-narrow-no-menu');
 });
 
-test('phone: one line of keys above the command line only on the 畫面 tab, sliding sideways; the screen fits the width; taps go in order', async () => {
+test('phone: a round button only on the 畫面 tab opens every key; taps go in order and the panel stays open, opened or not as this device left it', async () => {
 	await visit({ width: 390, height: 844, phone: true });
 	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].length === 3`, 'the tabs');
-	expect(await tab.eval(`document.querySelectorAll('.keyrow').length`)).toBe(0);
+	expect(await tab.eval(`!!document.querySelector('.screen-panel .round')?.checkVisibility()`)).toBe(false);
 	await openScreen();
-	await tab.until(`${KEYS}.length === 13`, 'the 按鍵列');
+	await tab.until(`!!${ROUND}`, 'the round button');
+	expect(await tab.eval(`${MENU} === null`)).toBe(true);
+	await shot('phone-screen-tab-round');
+	await openMenu();
 	await tab.until(`${KEYS}.every((button) => !button.disabled)`, 'the keys enabled');
-	const row = await tab.eval<{ labels: string[]; tops: number[]; scroll: number; client: number; below: boolean; fits: boolean; used: number; page: number; viewport: number }>(`(() => {
-		const row = document.querySelector('.dock .keyrow');
-		const buttons = [...row.querySelectorAll('button')];
-		const box = document.querySelector('.screen-panel .box');
-		const pre = box.querySelector('pre:not(.measure pre)');
-		return {
-			labels: buttons.map((button) => button.innerText),
-			tops: [...new Set(buttons.map((button) => Math.round(button.getBoundingClientRect().top)))],
-			scroll: row.scrollWidth,
-			client: row.clientWidth,
-			below: row.getBoundingClientRect().bottom <= document.querySelector('.dock .cmd').getBoundingClientRect().top + 1,
-			fits: pre.scrollWidth <= box.clientWidth + 1 && box.scrollHeight <= box.clientHeight + 1,
-			// The widest text line, the box line, fills most of the width: blanks do not shrink it.
-			used: (() => { const range = document.createRange(); const border = [...pre.childNodes].find((node) => node.textContent.includes('╭')); range.selectNode(border); return range.getBoundingClientRect().width / box.clientWidth; })(),
-			page: document.documentElement.scrollWidth,
-			viewport: innerWidth
-		};
-	})()`);
-	expect(row.labels).toEqual(['Enter', 'Esc', '↑', '↓', '←', '→', 'Tab', 'Shift+Tab', 'Ctrl+C', '1', '2', '3', '4']);
-	expect(row.tops).toHaveLength(1);
-	expect(row.scroll).toBeGreaterThan(row.client);
-	expect(row.below).toBe(true);
-	expect(row.fits).toBe(true);
-	expect(row.used).toBeGreaterThan(0.8);
-	expect(row.page).toBeLessThanOrEqual(row.viewport);
-	await shot('phone-screen-tab-keyrow');
-	await tab.eval(`document.querySelector('.dock .keyrow').scrollLeft = 120`);
-	await shot('phone-keyrow-scrolled-middle');
+	expect(await tab.eval<string[]>(`${KEYS}.map((button) => button.innerText)`)).toEqual(['Enter', 'Esc', 'Tab', 'Ctrl+C', 'Shift+Tab', '↑', '←', '↓', '→', '1', '2', '3', '4']);
+	await shot('phone-screen-tab-menu');
 
 	await press('↓');
 	await press('2');
@@ -190,23 +176,42 @@ test('phone: one line of keys above the command line only on the 畫面 tab, sli
 		['pane', 'send-text', PANE, '2'],
 		['pane', 'send-keys', PANE, 'enter']
 	]);
+	expect(await tab.eval(`${MENU} !== null`)).toBe(true);
 
-	// Another tab: the 按鍵列 goes.
-	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '對話紀錄').click()`);
-	await tab.until(`document.querySelectorAll('.keyrow').length === 0`, 'the 按鍵列 gone');
-	// Landscape keeps it.
-	await tab.send('Emulation.setDeviceMetricsOverride', { width: 844, height: 390, deviceScaleFactor: 1, mobile: true });
+	// This device remembers it open; closed, it remembers that too.
+	await tab.eval(`location.reload()`);
+	await sleep(500);
+	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board again');
 	await openScreen();
-	await tab.until(`${KEYS}.length === 13`, 'the 按鍵列 in landscape');
-	await shot('phone-landscape-keyrow');
+	await tab.until(`${KEYS}.length === 13`, 'the panel still open');
+	await tab.eval(`document.querySelector('.screen-panel .close').click()`);
+	await tab.until(`!!${ROUND}`, 'the round button again');
+	await tab.eval(`location.reload()`);
+	await sleep(500);
+	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board again');
+	await openScreen();
+	await tab.until(`!!${ROUND}`, 'the round button after a reload');
+	expect(await tab.eval(`${MENU} === null`)).toBe(true);
+
+	// Another tab: the menu goes.
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '對話紀錄').click()`);
+	await tab.until(`!document.querySelector('.screen-panel .round')?.checkVisibility()`, 'the menu gone');
+	// A phone on its side keeps it, and all of it is in the box.
+	await tab.send('Emulation.setDeviceMetricsOverride', { width: 844, height: 390, deviceScaleFactor: 1, mobile: true });
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
+	await openMenu();
+	const landscape = await tab.eval<{ top: number; boxTop: number }>(`(() => { const panel = ${MENU}.getBoundingClientRect(); return { top: panel.top, boxTop: document.querySelector('.screen-panel .box').getBoundingClientRect().top }; })()`);
+	expect(landscape.top).toBeGreaterThanOrEqual(landscape.boxTop);
+	await shot('phone-landscape-menu');
 });
 
 test('phone: a press that fails empties the queue and disables the keys until the screen is read again; nothing is sent again', async () => {
 	await visit({ width: 390, height: 844, phone: true });
 	await openScreen();
-	await tab.until(`${KEYS}.length === 13 && ${KEYS}.every((button) => !button.disabled)`, 'the keys enabled');
+	await openMenu();
+	await tab.until(`${KEYS}.every((button) => !button.disabled)`, 'the keys enabled');
 	// The key fails, and Herdr cannot be read for a while: the keys stay disabled.
-	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: JSON.stringify({ error: { code: 'x', message: 'pane is busy' } }) }, 'pane get': { exit: 1, stderr: 'herdr is down' } } });
+	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: JSON.stringify({ error: { code: 'x', message: 'pane is busy' } }) }, 'pane read': { exit: 1, stderr: 'herdr is down' } } });
 	await press('Esc');
 	await tab.until(`document.querySelector('.dock')?.innerText.includes('按鍵可能沒送到，請看畫面確認')`, 'the notice');
 	await tab.until(`${KEYS}.every((button) => button.disabled)`, 'the keys disabled');
@@ -224,19 +229,13 @@ test('phone: a press that fails empties the queue and disables the keys until th
 	await shot('phone-key-recovered');
 });
 
-test('phone: a very wide screen still fits the width', async () => {
-	setHerdr({ screens: { [PANE]: [['x'.repeat(300), '$ '].join('\r\n')] } });
-	await visit({ width: 390, height: 844, phone: true });
-	await openScreen();
-	await tab.until(`(() => { const box = document.querySelector('.screen-panel .box'); const pre = box.querySelector('pre:not(.measure pre)'); return !!pre.style.fontSize && pre.scrollWidth <= box.clientWidth + 1; })()`, 'the wide line to fit');
-});
-
 test('a screen that cannot be read says why, and the keys stay disabled', async () => {
 	setHerdr({ screens: {} });
 	await visit({ width: 390, height: 844, phone: true });
 	await openScreen().catch(() => {});
-	await tab.until(`document.querySelector('.screen-panel .state')?.innerText.includes('讀不到它的 Herdr 窗格')`, 'the reason');
-	await tab.until(`${KEYS}.length === 13 && ${KEYS}.every((button) => button.disabled)`, 'the keys disabled');
+	await tab.until(`document.querySelector('.screen-panel .state')?.innerText.includes('讀不到它的 Herdr 畫面')`, 'the reason');
+	await openMenu();
+	await tab.until(`${KEYS}.every((button) => button.disabled)`, 'the keys disabled');
 	await shot('phone-screen-unreadable');
 });
 
@@ -266,7 +265,8 @@ test('after the connection drops and comes back, the tab shows the latest screen
 test('phone: a press made offline stays refused after the connection comes back, until the server takes its recovery request and reads the screen again', async () => {
 	await visit({ width: 390, height: 844, phone: true });
 	await openScreen();
-	await tab.until(`${KEYS}.length === 13 && ${KEYS}.every((button) => !button.disabled)`, 'the keys enabled');
+	await openMenu();
+	await tab.until(`${KEYS}.every((button) => !button.disabled)`, 'the keys enabled');
 	const offline = (on: boolean) => tab.send('Network.emulateNetworkConditions', { offline: on, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 	await offline(true);
 	await press('Esc');

@@ -5,7 +5,9 @@
 import { maskScreen, wrapMatters } from '../../src/lib/server/screen-mask.ts';
 
 const ESC = '\x1b';
-const screen = (unit: string, columns = 300, rows = 80) => {
+/** By default as many rows as a read of the pane gets (`SCREEN_LINES` in herdr.ts), of a wide pane; the larger
+ *  screens below take more, so the bound holds with room to spare. */
+const screen = (unit: string, columns = 300, rows = 120) => {
 	const line = unit.repeat(Math.ceil(columns / unit.length)).slice(0, columns);
 	return Array.from({ length: rows }, () => line).join('\r\n');
 };

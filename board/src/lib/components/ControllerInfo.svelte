@@ -13,10 +13,11 @@
 	import { untrack, type Snippet } from 'svelte';
 	import type { BoardAsk } from '#lib/board/board-asks.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
+	import { agentWarnings, lastSegment } from '#lib/board/agents.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import { withAnswered } from '#lib/board/question-message.ts';
-	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
+	import { STATUS_LABEL, type Controller, type InboxItem, type InboxQuestion, type InboxReport, type KnownAgent } from '#lib/board/types.ts';
 	import type { Translation } from '#lib/board/translate.ts';
 	import type { PlacedTarget } from '#lib/board/transcript.ts';
 	import type { Usage } from '#lib/board/usage.ts';
@@ -28,6 +29,7 @@
 	import PendingQuestions from './PendingQuestions.svelte';
 	import RecordTabs from './RecordTabs.svelte';
 	import ReportList from './ReportList.svelte';
+	import ScreenBar from './ScreenBar.svelte';
 	import ScreenPanel from './ScreenPanel.svelte';
 	import { SCREEN_CLOSED_TEXT, SCREEN_NOT_LISTED_TEXT } from '#lib/board/screen.ts';
 	import SentLog from './SentLog.svelte';
@@ -96,6 +98,17 @@
 
 	type Tab = 'transcript' | 'screen' | 'reports' | 'ledger' | 'sent' | 'preauth' | 'log';
 	let tab = $state<Tab>('transcript');
+	/** On a 畫面分頁 with a screen, the status card, its buttons and its questions fold into one line. */
+	const folded = $derived(tab === 'screen' && !!paneAgent?.inHerdr);
+	let unfolded = $state(false);
+	$effect(() => {
+		if (!folded) unfolded = false;
+	});
+	const warnings = $derived([
+		...(controller.error ? ['出錯'] : []),
+		...(questions.length ? [`${questions.length} 題待決`] : []),
+		...(paneAgent ? agentWarnings(paneAgent) : [])
+	]);
 	const tabs = $derived([
 		{ id: 'transcript', label: '對話紀錄', count: null },
 		{ id: 'screen', label: '畫面', count: null },
@@ -122,6 +135,10 @@
 	});
 </script>
 
+{#if folded}
+	<ScreenBar status={controller.status} text={STATUS_LABEL[controller.status]} name={lastSegment(controller.hcomName)} {warnings} bind:unfolded />
+{/if}
+{#if !folded || unfolded}
 <ControllerHeader {controller} {tabMoves} usage={shown} />
 
 <!-- An ended controller (idle, or at work again with LAT off): no pane of LAT's own. Opened from the
@@ -141,6 +158,7 @@
 
 {#if agent}
 	<AgentClose {agent} />
+{/if}
 {/if}
 
 <RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄" translateTab="transcript">

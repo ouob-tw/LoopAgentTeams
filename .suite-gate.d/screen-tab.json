@@ -20,7 +20,8 @@
         "board/tests/unit/screen-lines.test.ts",
         "board/tests/browser/screen-tab.test.ts",
         "board/tests/unit/key-press.test.ts",
-        "board/tests/browser/screen-direct.test.ts"
+        "board/tests/browser/screen-direct.test.ts",
+        "board/tests/browser/screen-layout.test.ts"
       ]
     },
     {
@@ -28,20 +29,24 @@
         "board/src/lib/board/key-sender.ts",
         "board/src/lib/board/screen-view.svelte.ts",
         "board/src/lib/components/ScreenPanel.svelte",
-        "board/src/lib/components/KeyRow.svelte",
         "board/src/lib/components/AgentInfo.svelte",
         "board/src/lib/components/ControllerInfo.svelte",
         "board/src/lib/components/ClosedAgentInfo.svelte",
         "board/src/lib/components/AgentLog.svelte",
         "board/src/routes/+page.svelte",
         "board/src/lib/components/CommandLine.svelte",
-        "board/src/lib/components/ComboKeys.svelte"
+        "board/src/lib/components/ComboKeys.svelte",
+        "board/src/lib/components/KeyMenu.svelte",
+        "board/src/lib/components/ScreenBar.svelte",
+        "board/src/lib/board/agents.ts",
+        "board/src/lib/board/prefs.ts"
       ],
       "tests": [
         "board/tests/unit/key-sender.test.ts",
         "board/tests/unit/screen-lines.test.ts",
         "board/tests/browser/screen-tab.test.ts",
-        "board/tests/browser/screen-direct.test.ts"
+        "board/tests/browser/screen-direct.test.ts",
+        "board/tests/browser/screen-layout.test.ts"
       ]
     },
     {

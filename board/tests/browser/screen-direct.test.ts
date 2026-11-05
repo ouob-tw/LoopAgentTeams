@@ -78,7 +78,7 @@ async function visit({ phone = false, width = 1280, height = 800 }: { phone?: bo
 	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
 	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].length === 3`, 'the tabs');
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
-	await tab.until(`document.querySelector('.screen-panel .state')?.innerText.includes('即時')`, 'the screen');
+	await tab.until(`!!document.querySelector('.screen-panel pre')`, 'the screen');
 	// Whether the page let each key press do what the browser does with it.
 	await tab.eval(`window.prevented = []; addEventListener('keydown', (event) => prevented.push([event.key, event.defaultPrevented]))`);
 }
@@ -116,7 +116,7 @@ test('computer: a click frames the screen and keys go into the pane in order, Es
 	expect(during.box).toEqual(before.box);
 	expect(during.pre).toEqual(before.pre);
 	// The frame is the accent colour, drawn inside the border.
-	expect(await tab.eval<string>(`getComputedStyle(document.querySelector('.screen-panel .box')).boxShadow`)).toContain('inset');
+	expect(await tab.eval<string>(`getComputedStyle(document.querySelector('.screen-panel .box'), '::after').boxShadow`)).toContain('inset');
 	await shot('desktop-direct-during');
 
 	await key('a', { code: 'KeyA', vk: 65, text: 'a' });
@@ -172,7 +172,7 @@ test('computer: a click frames the screen and keys go into the pane in order, Es
 	await shot('desktop-direct-unsupported');
 
 	// A click elsewhere leaves; keys then go nowhere.
-	await tab.pointerClick('.screen-panel .state');
+	await tab.pointerClick('.detail .bar b');
 	await tab.until(`!document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation left');
 	const after = await look();
 	expect(after.box).toEqual(before.box);
@@ -231,7 +231,7 @@ test('computer: a key that fails stops the keys typed after it until the screen 
 	await visit();
 	await tab.pointerClick('.screen-panel .box pre');
 	await tab.until(`document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation');
-	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: JSON.stringify({ error: { code: 'x', message: 'pane is busy' } }) }, 'pane get': { exit: 1, stderr: 'herdr is down' } } });
+	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: JSON.stringify({ error: { code: 'x', message: 'pane is busy' } }) }, 'pane read': { exit: 1, stderr: 'herdr is down' } } });
 	await key('Escape', { code: 'Escape', vk: 27 });
 	await tab.until(`document.querySelector('.dock')?.innerText.includes('按鍵可能沒送到，請看畫面確認')`, 'the notice');
 	await key('q', { code: 'KeyQ', vk: 81, text: 'q' });
@@ -276,7 +276,9 @@ test('computer: the ⋯ menu has 組合鍵 that go to the pane on screen, also w
 		['pane', 'send-keys', PANE, 'ctrl+w'],
 		['pane', 'send-keys', PANE, 'ctrl+n']
 	]);
-	// Direct operation still works beside the command line.
+	// Direct operation still works beside the command line; the menu, over the screen's lower part, closed first.
+	await tab.pointerClick('.dock button.options');
+	await tab.until(`!document.querySelector('.popup')`, 'the menu closed');
 	await tab.pointerClick('.screen-panel .box pre');
 	await tab.until(`document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation');
 	await key('1', { code: 'Digit1', vk: 49, text: '1' });

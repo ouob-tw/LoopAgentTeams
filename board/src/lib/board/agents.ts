@@ -1,5 +1,5 @@
 // The Herdr 分頁's list as the page shows it: grouped by Herdr workspace, in the server's order.
-import type { Agent, AgentStatus, ControllerStatus, HerdrWorkspace } from './types.ts';
+import type { Agent, AgentStatus, ControllerStatus, HerdrWorkspace, KnownAgent } from './types.ts';
 
 export interface AgentGroup {
 	workspace: string;
@@ -63,6 +63,13 @@ export function lastSegment(hcomName: string): string {
 /** The last part of a folder path, as a project name. */
 export function folderName(path: string): string {
 	return path.replace(/\/+$/, '').split('/').at(-1) || path;
+}
+
+/** What the page's status card warns of about the agent, each in a word or two, for a line that holds
+ *  only a mark for each (the 畫面分頁's). */
+export function agentWarnings(agent: Pick<KnownAgent, 'switch' | 'hcom' | 'noHooks'>): string[] {
+	if (agent.switch) return ['切換未完成'];
+	return [...(agent.hcom === 'unknown' ? ['HCOM 不明'] : []), ...(agent.noHooks ? ['未接 HCOM'] : [])];
 }
 
 /** The roster's shape for an agent's status, so both lists read alike: ▲ needs the user, ■ done,

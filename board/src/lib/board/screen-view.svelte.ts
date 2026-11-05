@@ -1,4 +1,4 @@
-// The 畫面分頁 open on this page, shared by its panel and the 按鍵列 above the command line: whose
+// The 畫面分頁 open on this page, shared by its panel, the 按鍵選單 and the command line: whose
 // screen it shows, the latest update, whether keys may be sent now, and whether this is a phone.
 // A phone, or a tablet, is a device whose main pointer is not a fine one that can hover, whatever
 // the width of its screen. Each agent keeps its sender while the page is open, so a press waiting for

@@ -204,11 +204,11 @@ test('an open tab gets the bottom screen with its colours and the key masked, ag
 	expect(first.text).toContain(`${ESC}[1;34m❯ 1. Yes${ESC}[0m`);
 	expect(first.text).toContain(`token ${'*'.repeat(KEY.length)}`);
 	expect(page.raw.join('\n')).not.toContain(KEY.slice(4, 20));
-	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'visible', '--format', 'ansi']);
-	// Read again and again, about every second (each time `pane get` and `pane read`), pushed only
-	// when it changed: two more rounds come within a loose bound, and no push with them.
+	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'recent', '--lines', '120', '--format', 'ansi']);
+	// Read again and again, about every second, pushed only when it changed: two more reads come
+	// within a loose bound, and no push with them.
 	const readsBefore = reads().length;
-	await until(() => reads().length - readsBefore >= 2 * 2, 8_000, 'two more rounds of reads');
+	await until(() => reads().length - readsBefore >= 2, 8_000, 'two more reads');
 	expect(page.updates).toHaveLength(1);
 	changeHerdr((plan) => (plan.screens[PANE] = ['$ done']));
 	await until(() => page.updates.length === 2, 5_000, 'the changed screen');
@@ -229,14 +229,14 @@ test('an open tab gets the bottom screen with its colours and the key masked, ag
 	}
 });
 
-test('a pane scrolled up in Herdr shows its last screenful, without scrolling it', async () => {
-	const lines = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join('\r\n');
-	setHerdr({ paneScroll: { [PANE]: { viewport_rows: 3, offset_from_bottom: 5 } }, recent: { [PANE]: lines } });
+test('a page gets the last 120 lines, more than the pane shows, masked too, without scrolling it', async () => {
+	const lines = [`token ${KEY}`, ...Array.from({ length: 119 }, (_, index) => `line ${index + 2}`)];
+	setHerdr({ paneScroll: { [PANE]: { viewport_rows: 3, offset_from_bottom: 5 } }, recent: { [PANE]: ['line off the read', ...lines].join('\r\n') } });
 	const page = follow('s-plain');
 	const first = await until(() => page.updates[0], 5_000, 'the first screen');
 	await page.close();
-	expect(first).toMatchObject({ ok: true, text: 'line 8\r\nline 9\r\nline 10' });
-	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'recent', '--lines', '3', '--format', 'ansi']);
+	expect(first).toMatchObject({ ok: true, text: [`token ${'*'.repeat(KEY.length)}`, ...lines.slice(1)].join('\r\n') });
+	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'recent', '--lines', '120', '--format', 'ansi']);
 	expect(jsonLines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((args: string[]) => args.join(' ').includes('scroll'))).toEqual([]);
 	expect(herdrCalls()).toEqual([]);
 });
@@ -250,7 +250,7 @@ test('which lines the pane wrapped is asked of Herdr only when it changes what i
 	const first = await until(() => page.updates[0], 5_000, 'the first screen');
 	await page.close();
 	expect(first).toMatchObject({ ok: true, text: ['password=**********', '$ ls', `key ${'*'.repeat(width - 4)}`, '*'.repeat(wrapped.length - width), '$ '].join('\r\n') });
-	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'recent-unwrapped', '--lines', '24']);
+	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'recent-unwrapped', '--lines', '120']);
 
 	// Nothing wrapped would change it: not asked.
 	rmSync(join(fixture.dir, 'herdr-list-calls.jsonl'), { force: true });
@@ -275,7 +275,7 @@ test('after a failed press the screen is read again and pushed as its 恢復畫�
 	const page = follow('s-plain');
 	await until(() => page.updates[0], 5_000, 'the first screen');
 	const before = page.updates[0];
-	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: 'boom' }, 'pane get': { exit: 1, stderr: 'herdr is down' } } });
+	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: 'boom' }, 'pane read': { exit: 1, stderr: 'herdr is down' } } });
 	const failed = await keys({ session: 's-plain', keys: [{ key: 'enter' }], recovery: 'rec-1' });
 	expect(failed.body.ok).toBe(false);
 	// The read again fails: pushed as such, the request not yet recovered.
@@ -305,7 +305,7 @@ test('after a failed press the screen is read again and pushed as its 恢復畫�
 test('a failure whose page lost its connection, or that came while no page had the tab open, is recovered when one opens it again', async () => {
 	const page = follow('s-plain');
 	await until(() => page.updates[0], 5_000, 'the first screen');
-	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: 'boom' }, 'pane get': { exit: 1, stderr: 'herdr is down' } } });
+	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: 'boom' }, 'pane read': { exit: 1, stderr: 'herdr is down' } } });
 	await keys({ session: 's-plain', keys: [{ key: 'enter' }], recovery: 'gone-1' });
 	await until(() => page.updates.find((update) => !update.ok), 5_000, 'the failed read');
 	// The only page drops off before any read succeeds.
