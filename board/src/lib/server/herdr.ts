@@ -3,6 +3,7 @@
 // agent Herdr detects, and shows Herdr's state for those hcom does not reach (ADR 0003).
 import { createConnection } from 'node:net';
 import { basename } from 'node:path';
+import type { WorkspaceContents } from '../board/agent-actions.ts';
 import type { HerdrPlace } from '../board/format.ts';
 import type { HerdrWorkspace } from '../board/types.ts';
 import type { BoardConfig } from './config.ts';
@@ -372,6 +373,73 @@ export async function scrollToBottom(config: BoardConfig, pane: string): Promise
 /** Closes a pane and what runs in it: `herdr pane close <pane>`. */
 export function closePane(config: BoardConfig, pane: string): Promise<HerdrAct> {
 	return herdrAct(config, ['pane', 'close', pane]);
+}
+
+/** The label of the tab the board opens so a workspace outlives its last agent. */
+export const KEEP_TAB_LABEL = 'CMD';
+
+/** The workspace of the pane with this ID and how many panes it has, plain terminals the board
+ *  does not show included; null when Herdr does not list the pane; or why that cannot be told. */
+async function paneWorkspace(config: BoardConfig, paneId: string): Promise<{ workspace: string; panes: number } | null | { reason: string }> {
+	const panes = await herdr(config, ['pane', 'list']);
+	if ('reason' in panes) return { reason: `讀不到 Herdr 的窗格清單：${panes.reason}` };
+	const paneList = panes.result.panes;
+	if (!Array.isArray(paneList) || !paneList.every((pane) => typeof pane?.pane_id === 'string' && typeof pane?.workspace_id === 'string')) {
+		return { reason: '讀不到 Herdr 的窗格清單：輸出不是預期的格式' };
+	}
+	const pane = paneList.find((candidate) => candidate.pane_id === paneId);
+	if (!pane) return null;
+	return { workspace: pane.workspace_id, panes: paneList.filter((candidate) => candidate.workspace_id === pane.workspace_id).length };
+}
+
+/**
+ * Herdr closes a workspace with its last pane. Before that pane closes, open a plain terminal tab
+ * labelled `CMD` in `cwd` there, without taking the focus, so the workspace keeps its name and
+ * place. Nothing is opened while other panes stay, or for a pane Herdr does not list. Returns why
+ * the workspace may not be kept, or null.
+ */
+export async function keepWorkspaceOpen(config: BoardConfig, paneId: string, cwd: string): Promise<string | null> {
+	const place = await paneWorkspace(config, paneId);
+	if (place === null) return null;
+	if ('reason' in place) return `${place.reason}，無法確認它是不是工作區最後一個窗格`;
+	if (place.panes > 1) return null;
+	const created = await herdrAct(config, ['tab', 'create', '--workspace', place.workspace, '--cwd', cwd, '--label', KEEP_TAB_LABEL, '--no-focus']);
+	return created.ok ? null : `開 ${KEEP_TAB_LABEL} 分頁${created.timedOut ? created.reason : `失敗：${created.reason}`}`;
+}
+
+/** What closing a workspace takes with it: its label, how many agents Herdr detects in it and how
+ *  many tabs it has (plain terminal tabs included), and whether the board's own pane is in it. Null
+ *  when Herdr no longer lists it; or why that cannot be told. */
+export async function workspaceContents(
+	config: BoardConfig,
+	workspaceId: string
+): Promise<WorkspaceContents | null | { reason: string }> {
+	const [label, tabs, agents, own] = await Promise.all([
+		workspaceLabel(config, workspaceId),
+		workspaceTabs(config, workspaceId),
+		herdr(config, ['agent', 'list']),
+		config.ownPane === null ? null : paneWorkspace(config, config.ownPane)
+	]);
+	if ('reason' in label) return label;
+	if (label.label === null) return null;
+	if ('reason' in tabs) return tabs;
+	if ('reason' in agents) return { reason: `讀不到 Herdr 的 Agent 清單：${agents.reason}` };
+	const agentList = agents.result.agents;
+	if (!Array.isArray(agentList) || !agentList.every((agent) => typeof agent?.workspace_id === 'string')) {
+		return { reason: '讀不到 Herdr 的 Agent 清單：輸出不是預期的格式' };
+	}
+	if (own !== null && 'reason' in own) return own;
+	return {
+		label: label.label,
+		agents: agentList.filter((agent) => agent.workspace_id === workspaceId).length,
+		tabs: tabs.tabs.length,
+		own: own?.workspace === workspaceId
+	};
+}
+
+/** Closes a workspace and everything in it: `herdr workspace close <workspace>`. */
+export function closeWorkspace(config: BoardConfig, workspaceId: string): Promise<HerdrAct> {
+	return herdrAct(config, ['workspace', 'close', workspaceId]);
 }
 
 /**

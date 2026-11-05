@@ -19,7 +19,7 @@ import type { Agent } from '../board/types.ts';
 import type { Board } from './board.ts';
 import type { ExternalResult } from './external.ts';
 import { killAgent, listAgents, stopAgent } from './hcom.ts';
-import { agentCommand, closePane, paneExists, paneProcess, type HerdrAct } from './herdr.ts';
+import { agentCommand, closePane, keepWorkspaceOpen, paneExists, paneProcess, type HerdrAct } from './herdr.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause, type PauseRecord } from './paused.ts';
 import { judgeHooks, relinkable } from './process-hooks.ts';
 import { inject, queued, typedText } from './send.ts';
@@ -51,7 +51,7 @@ export async function listedNow(board: Board, agentId: string): Promise<{ agent:
 }
 
 /** Why a Herdr command did not act, as the page shows it. */
-function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<AgentActionKind, 'move' | 'rename' | 'resume' | 'pause' | 'relink' | 'board-ask' | 'permission'>): string {
+function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<AgentActionKind, 'move' | 'rename' | 'resume' | 'pause' | 'relink' | 'board-ask' | 'permission' | 'close-workspace'>): string {
 	if (act.timedOut) {
 		if (action === 'close') return `Herdr 的關閉指令${act.reason}，結果不明；請到 Herdr 查看。`;
 		if (action === 'unpause') return `Herdr 的傳話指令${act.reason}，接回指令可能已經送進去；暫停紀錄保留，重按前請先看它的畫面。`;
@@ -188,10 +188,14 @@ export function closeAgent(board: Board, agentId: string) {
 				const target = list.agents.find((candidate) => candidate.name === name);
 				if (!target) return { route: null, reason: `hcom 的 Agent 清單裡已經沒有 @${name}，沒有關閉。` };
 				if (target.pane === board.config.ownPane) return { route: null, reason: AGENT_OWN_PANE_REASON };
+				const kept = await keepWorkspaceOpen(board.config, target.pane ?? pane, agent.folder);
+				if (kept) return { route: null, reason: `${kept}，沒有關閉，以免工作區跟著關掉。` };
 				const run = await killAgent(board.config, name);
 				if (run.timedOut) return { route, reason: `hcom kill ${run.failure}，結果不明；請到 Herdr 查看。` };
 				if (run.failure) return { route, reason: `hcom kill 失敗：${run.failure}` };
 			} else {
+				const kept = await keepWorkspaceOpen(board.config, pane, agent.folder);
+				if (kept) return { route: null, reason: `${kept}，沒有關閉，以免工作區跟著關掉。` };
 				route = 'herdr';
 				const act = await closePane(board.config, pane);
 				if (!act.ok) return { route, reason: herdrReason(act, 'close') };

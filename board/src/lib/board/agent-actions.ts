@@ -3,8 +3,9 @@ import type { Agent, Controller } from './types.ts';
 
 /** What was done: text typed into the agent's input box, its turn interrupted, it closed, its
  *  Herdr tab moved or renamed, it brought back from the 已關閉 section, its HCOM link paused or
- *  resumed, it restarted to link it to HCOM, its board ask answered, or its Claude permission mode switched with Shift+Tab. */
-export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume' | 'pause' | 'unpause' | 'relink' | 'board-ask' | 'permission';
+ *  resumed, it restarted to link it to HCOM, its board ask answered, its Claude permission mode switched with Shift+Tab, or
+ *  a whole Herdr workspace closed from its heading. */
+export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume' | 'pause' | 'unpause' | 'relink' | 'board-ask' | 'permission' | 'close-workspace';
 
 /** A Claude permission switch: the mode its screen showed first (null when it could not be read),
  *  the one asked for, the one it was left in (null when not known), how many times Shift+Tab was
@@ -63,7 +64,8 @@ export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {
 	unpause: '恢復通訊',
 	relink: '重新啟動並接回 HCOM',
 	'board-ask': '看板提問',
-	permission: '切換權限模式'
+	permission: '切換權限模式',
+	'close-workspace': '關閉工作區'
 };
 
 /** Whether the controller's turn can be interrupted from its page: its own agent entry (same session
@@ -83,6 +85,21 @@ export const AGENT_HCOM_UNKNOWN_CLOSE_REASON =
 	'HCOM 連線無法確認：hcom 的清單讀不到，不知道該用 hcom 還是 Herdr 關閉這個 Agent，沒有關閉；讀到清單後就能關閉。';
 
 export const AGENT_OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，關閉會連看板一起關掉，沒有關閉。';
+
+export const WORKSPACE_OWN_REASON = '看板自己所在的窗格就在這個工作區裡，關閉會連看板一起關掉，不提供關閉。';
+
+/** What closing a workspace takes with it, as the user confirms it. */
+export interface WorkspaceContents {
+	label: string;
+	agents: number;
+	tabs: number;
+	/** The board's own pane is in it, so it is not closed. */
+	own: boolean;
+}
+
+export function workspaceCloseConfirmText(contents: Pick<WorkspaceContents, 'label' | 'agents' | 'tabs'>): string {
+	return `關閉工作區「${contents.label}」？裡面的 ${contents.agents} 個 Agent 和 ${contents.tabs} 個分頁（含終端機分頁）會一起關掉。`;
+}
 
 export const AGENT_OWN_PANE_PAUSE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，沒有暫停通訊。';
 

@@ -4,10 +4,14 @@
 // the panes, workspaces, agents and tabs `pane list`, `workspace list`, `agent list` and `tab list`
 // print, the ID `workspace create` answers with (`created`; null leaves it out), and per command
 // ("pane list", "workspace list", "agent list", "tab list", "workspace create", "agent prompt",
-// "agent send-keys", "pane close", "pane split", "tab rename") a failure to act out, `fail: { exit, stderr }`, or output to
+// "agent send-keys", "pane close", "pane split", "tab rename", "tab create", "workspace close") a failure to act out, `fail: { exit, stderr }`, or output to
 // print instead, `raw: <text>`. `agent prompt` and `agent send-keys` succeed otherwise, without
-// checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed;
-// `tab rename <tab> <label>` gives the listed tab that label; `pane split <pane>` adds a pane
+// checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed,
+// and, as Herdr does, its tab and workspace once no pane is left in them (`closePanes`);
+// `tab rename <tab> <label>` gives the listed tab that label; `tab create --workspace <w> --cwd <dir>
+// --label <label>` adds a tab `<w>:t-new<n>` with that label and one pane `<w>:p-new<n>` in that
+// workspace; `workspace close <w>` takes the workspace and its tabs, panes and agents out, and fails
+// for one it does not list; `pane split <pane>` adds a pane
 // `<pane>-split` in that pane's tab and workspace, and fails for a pane it does not list. `reconnect: { <pane>: <agent> }` has an
 // `agent prompt` to that pane add the agent to the fake hcom's list (<dir>/hcom-added.json), the way
 // typing `hcom start --as` brings one back.
@@ -31,6 +35,20 @@ import { pathToFileURL } from 'node:url';
 function write(/** @type {string} */ file, /** @type {string} */ text) {
 	writeFileSync(`${file}.${process.pid}`, text);
 	renameSync(`${file}.${process.pid}`, file);
+}
+
+/** Take these panes and their agents out of a plan, and, as Herdr does, each tab and workspace a
+ *  closed pane was in once no pane is left in it. */
+export function closePanes(/** @type {any} */ plan, /** @type {string[]} */ ids) {
+	const closed = (plan.panes ?? []).filter((/** @type {any} */ pane) => ids.includes(pane.pane_id));
+	plan.panes = (plan.panes ?? []).filter((/** @type {any} */ pane) => !ids.includes(pane.pane_id));
+	plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => !ids.includes(agent.pane_id));
+	const emptied = (/** @type {string} */ field) =>
+		closed.map((/** @type {any} */ pane) => pane[field]).filter((/** @type {any} */ id) => id && !plan.panes.some((/** @type {any} */ pane) => pane[field] === id));
+	const tabs = emptied('tab_id');
+	const workspaces = emptied('workspace_id');
+	if (plan.tabs) plan.tabs = plan.tabs.filter((/** @type {any} */ tab) => !tabs.includes(tab.tab_id));
+	if (plan.workspaces) plan.workspaces = plan.workspaces.filter((/** @type {any} */ workspace) => !workspaces.includes(workspace.workspace_id));
 }
 
 export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} */ args, transport = 'cli') {
@@ -65,8 +83,7 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		const workspace = id === null ? {} : { workspace_id: id };
 		stdout += JSON.stringify({ id: 'cli:workspace:create', result: { workspace, tab: { tab_id: `${id}:t1` }, root_pane: { pane_id: `${id}:p1` } } });
 	} else if (command === 'pane close') {
-		plan.panes = (plan.panes ?? []).filter((/** @type {any} */ pane) => pane.pane_id !== args[2]);
-		plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.pane_id !== args[2]);
+		closePanes(plan, [args[2]]);
 		write(planFile, JSON.stringify(plan));
 		stdout += JSON.stringify({ id: 'cli:pane:close', result: { type: 'ok' } });
 	} else if (command === 'pane split') {
@@ -95,6 +112,30 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		plan.tabs = (plan.tabs ?? []).map((/** @type {any} */ tab) => (tab.tab_id === args[2] ? { ...tab, label: args.slice(3).join(' ') } : tab));
 		write(planFile, JSON.stringify(plan));
 		stdout += JSON.stringify({ id: 'cli:tab:rename', result: { type: 'ok' } });
+	} else if (command === 'tab create') {
+		const option = (/** @type {string} */ name) => args[args.indexOf(name) + 1];
+		const workspace = option('--workspace');
+		const n = (plan.tabs ?? []).length + 1;
+		const tab = { tab_id: `${workspace}:t-new${n}`, workspace_id: workspace, label: option('--label') ?? String(n) };
+		const pane = { pane_id: `${workspace}:p-new${n}`, workspace_id: workspace, tab_id: tab.tab_id, cwd: option('--cwd') };
+		plan.tabs = [...(plan.tabs ?? []), tab];
+		plan.panes = [...(plan.panes ?? []), pane];
+		write(planFile, JSON.stringify(plan));
+		stdout += JSON.stringify({ id: 'cli:tab:create', result: { type: 'tab_created', tab, root_pane: pane } });
+	} else if (command === 'workspace close') {
+		const id = args[2];
+		if ((plan.workspaces ?? []).some((/** @type {any} */ workspace) => workspace.workspace_id === id)) {
+			const other = (/** @type {any} */ item) => item.workspace_id !== id;
+			plan.workspaces = plan.workspaces.filter(other);
+			plan.tabs = (plan.tabs ?? []).filter(other);
+			plan.panes = (plan.panes ?? []).filter(other);
+			plan.agents = (plan.agents ?? []).filter(other);
+			write(planFile, JSON.stringify(plan));
+			stdout += JSON.stringify({ id: 'cli:workspace:close', result: { type: 'ok' } });
+		} else {
+			stderr += JSON.stringify({ error: { code: 'workspace_not_found', message: `workspace ${id} not found` }, id: 'cli:workspace:close' });
+			code = 1;
+		}
 	} else if (command === 'pane read') {
 		const screens = plan.screens?.[args[2]];
 		const source = args.slice(3).join(' ');

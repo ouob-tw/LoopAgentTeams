@@ -29,7 +29,8 @@
 // test fixture keeps every controller it ever bound there, so none is closed unless a test says so.
 // `kill <name>` is logged to hcom-calls.jsonl like a launch and follows `kill`: `exit`, `stderr`,
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
-// Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it, and a
+// Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it (its tab and
+// workspace with it once they have no pane left, as Herdr does), and a
 // `stopped` event by `cli` is added for it, with the agent's `launch_args` when it has them.
 // `stop.herdrScreen` replaces the fake Herdr's `screens`, and `stop.herdrStatus` makes the fake Herdr list every agent in that status from then on, and
 // `stop.launchArgs` adds a `stopped` event for the session with those arguments, as a stop records them.
@@ -48,6 +49,7 @@
 // { exit, stderr }` acts out a failure; `eventsRaw` is printed instead of the events.
 import { appendFileSync, chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { closePanes } from './fake-herdr.mjs';
 
 /** Write a file whole, so a fake run alongside (the board reads the lists while a switch is
  *  followed) never reads it half written. */
@@ -185,8 +187,7 @@ if (args[0] === 'stop') {
 			const panes = gone.map((/** @type {any} */ agent) => agent.launch_context?.pane_id).filter(Boolean);
 			if (existsSync(herdrFile) && panes.length) {
 				const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
-				herdr.panes = (herdr.panes ?? []).filter((/** @type {any} */ pane) => !panes.includes(pane.pane_id));
-				herdr.agents = (herdr.agents ?? []).filter((/** @type {any} */ agent) => !panes.includes(agent.pane_id));
+				closePanes(herdr, panes);
 				write(herdrFile, JSON.stringify(herdr));
 			}
 		}

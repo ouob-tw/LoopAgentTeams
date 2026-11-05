@@ -1,6 +1,6 @@
 // Closing an agent on the 所有 Agent tab. Herdr and hcom are fakes: `hcom kill` and `herdr pane
 // close` take the agent and its pane out of the fake Herdr's lists; nothing real is closed.
-import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Agent } from '../../src/lib/board/types.ts';
@@ -45,7 +45,7 @@ function setHerdr(sessions: string[], extra: object = {}) {
 		join(fixture.dir, 'herdr.json'),
 		JSON.stringify({
 			agents: sessions.map(herdrAgent),
-			panes: sessions.map((session) => ({ pane_id: pane(session) })),
+			panes: sessions.map((session) => ({ pane_id: pane(session), workspace_id: 'wA', tab_id: `wA:t-${session}` })),
 			workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
 			tabs: sessions.map((session) => ({ tab_id: `wA:t-${session}`, workspace_id: 'wA', label: 'tab' })),
 			...extra
@@ -218,7 +218,10 @@ test('a linked agent is not closed when hcom\'s list read again right before the
 });
 
 test('a close whose pane cannot be looked for afterwards is reported as not known, and is not run again', async () => {
-	setHerdr(['s-linked', 's-plain', 's-board'], { fail: { 'pane list': { exit: 1, stderr: 'herdr socket gone' } } });
+	// The first pane list tells whether it is the workspace's last pane; the ones after it fail.
+	const failing = { exit: 1, stderr: 'herdr socket gone' };
+	const afterwards = { failSeries: { 'pane list': [null, ...Array(5).fill(failing)] } };
+	setHerdr(['s-linked', 's-plain', 's-board'], afterwards);
 	const plain = await close('s-plain');
 	expect(plain.status).toBe(502);
 	expect(plain.body.entry).toMatchObject({ route: 'herdr', ok: false });
@@ -227,6 +230,7 @@ test('a close whose pane cannot be looked for afterwards is reported as not know
 	expect(plain.body.reason).toContain('herdr socket gone');
 	expect(herdrCalls()).toEqual([['pane', 'close', 'wA:p-s-plain']]);
 
+	setHerdr(['s-linked', 's-plain', 's-board'], afterwards);
 	const linked = await close('s-linked');
 	expect(linked.status).toBe(502);
 	expect(linked.body.entry).toMatchObject({ route: 'hcom', ok: false });
@@ -241,4 +245,73 @@ test('requests that are not a close are refused, and closing needs a logged-in d
 	expect((await close('s-plain', '')).status).toBe(401);
 	expect(herdrCalls()).toEqual([]);
 	expect(hcomCalls()).toEqual([]);
+});
+
+describe('the last agent of a workspace', () => {
+	const herdrPlan = () => JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8'));
+	/** One agent alone in workspace wB, beside wA's. */
+	function alone(session: string, extra: object = {}) {
+		setHerdr(['s-board'], extra);
+		const plan = herdrPlan();
+		plan.workspaces.push({ workspace_id: 'wB', number: 2, label: 'Beta' });
+		plan.agents.push({ ...herdrAgent(session), pane_id: `wB:p-${session}`, tab_id: `wB:t-${session}`, workspace_id: 'wB' });
+		plan.panes.push({ pane_id: `wB:p-${session}`, workspace_id: 'wB', tab_id: `wB:t-${session}` });
+		plan.tabs.push({ tab_id: `wB:t-${session}`, workspace_id: 'wB', label: 'tab' });
+		writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify(plan));
+	}
+	const wB = () => {
+		const plan = herdrPlan();
+		return { workspace: plan.workspaces.find((workspace: { workspace_id: string }) => workspace.workspace_id === 'wB'), tabs: plan.tabs.filter((tab: { workspace_id: string }) => tab.workspace_id === 'wB') };
+	};
+
+	test('closed with Herdr, it leaves a CMD terminal tab first, so the workspace stays', async () => {
+		alone('s-plain');
+		await fixture.refresh(cookie);
+		const closed = await close('s-plain');
+		expect(closed.status).toBe(200);
+		expect(herdrCalls()).toEqual([
+			['tab', 'create', '--workspace', 'wB', '--cwd', '/projects/s-plain', '--label', 'CMD', '--no-focus'],
+			['pane', 'close', 'wB:p-s-plain']
+		]);
+		expect(wB()).toEqual({ workspace: { workspace_id: 'wB', number: 2, label: 'Beta' }, tabs: [{ tab_id: 'wB:t-new3', workspace_id: 'wB', label: 'CMD' }] });
+	});
+
+	test('closed with hcom kill, the CMD tab is opened in the workspace of the pane hcom closes', async () => {
+		alone('s-linked');
+		fixture.setHcom({ agents: [{ ...hcomAgent('lino', 's-linked'), launch_context: { pane_id: 'wB:p-s-linked' } }] });
+		await fixture.refresh(cookie);
+		const closed = await close('s-linked');
+		expect(closed.status).toBe(200);
+		expect(hcomCalls()).toEqual([['kill', 'lino']]);
+		expect(herdrCalls()).toEqual([['tab', 'create', '--workspace', 'wB', '--cwd', '/projects/s-linked', '--label', 'CMD', '--no-focus']]);
+		expect(wB().tabs.map((tab: { label: string }) => tab.label)).toEqual(['CMD']);
+	});
+
+	test('a plain terminal pane left in the workspace counts: no CMD tab is opened', async () => {
+		alone('s-plain');
+		const plan = herdrPlan();
+		plan.panes.push({ pane_id: 'wB:p-shell', workspace_id: 'wB', tab_id: 'wB:t-shell' });
+		plan.tabs.push({ tab_id: 'wB:t-shell', workspace_id: 'wB', label: 'shell' });
+		writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify(plan));
+		await fixture.refresh(cookie);
+		expect((await close('s-plain')).status).toBe(200);
+		expect(herdrCalls()).toEqual([['pane', 'close', 'wB:p-s-plain']]);
+		expect(wB().tabs.map((tab: { label: string }) => tab.label)).toEqual(['shell']);
+	});
+
+	test('when the CMD tab cannot be opened, or the panes cannot be read, the agent is not closed', async () => {
+		alone('s-plain', { fail: { 'tab create': { exit: 1, stderr: JSON.stringify({ error: { code: 'workspace_not_found', message: 'workspace wB not found' } }) } } });
+		await fixture.refresh(cookie);
+		const refused = await close('s-plain');
+		expect(refused.status).toBe(409);
+		expect(refused.body).toMatchObject({ ok: false, entry: { action: 'close', route: null, ok: false } });
+		expect(refused.body.reason).toBe('開 CMD 分頁失敗：workspace wB not found，沒有關閉，以免工作區跟著關掉。');
+
+		alone('s-plain', { fail: { 'pane list': { exit: 1, stderr: 'herdr socket gone' } } });
+		const unread = await close('s-plain');
+		expect(unread.status).toBe(409);
+		expect(unread.body.reason).toContain('無法確認它是不是工作區最後一個窗格');
+		expect(herdrCalls()).toEqual([['tab', 'create', '--workspace', 'wB', '--cwd', '/projects/s-plain', '--label', 'CMD', '--no-focus']]);
+		expect(await listed()).toContain('s-plain');
+	});
 });

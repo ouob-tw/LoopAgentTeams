@@ -1,12 +1,12 @@
-// Moving and renaming a Herdr tab from an agent's card on the Herdr tab, and moving a workspace from
-// its heading. Each request reads the workspace's tab list, or the workspace list, again and acts
+// Moving and renaming a Herdr tab from an agent's card on the Herdr tab, and moving or closing a
+// workspace from its heading. Each request reads the workspace's tab list, or the workspace list, again and acts
 // only on what it still lists there, never on what the page last saw. The board's own tab is treated like any other: moving or renaming it leaves the
 // board running. One attempt each, no retry, logged in the sent log either way; the list is read
 // again afterwards either way, so the page shows the order and names Herdr really has.
 import { randomUUID } from 'node:crypto';
-import type { AgentAction, AgentActionResponse } from '../board/agent-actions.ts';
+import { WORKSPACE_OWN_REASON, type AgentAction, type AgentActionResponse } from '../board/agent-actions.ts';
 import type { Board } from './board.ts';
-import { moveTab, moveWorkspace, renameTab, workspacesInOrder, workspaceTabs } from './herdr.ts';
+import { closeWorkspace, moveTab, moveWorkspace, renameTab, workspaceContents, workspacesInOrder, workspaceTabs } from './herdr.ts';
 import { queued } from './send.ts';
 import { appendSent } from './sent-log.ts';
 
@@ -36,7 +36,7 @@ async function attempt(
 }
 
 /** Read the list again, write the attempt in the sent log, and answer with both. */
-async function finish(board: Board, session: string | null, action: 'move' | 'rename', outcome: Outcome): Promise<{ status: number; body: AgentActionResponse }> {
+async function finish(board: Board, session: string | null, action: 'move' | 'rename' | 'close-workspace', outcome: Outcome): Promise<{ status: number; body: AgentActionResponse }> {
 	await board.refresh();
 	const agent = session === null ? undefined : (await board.current()).agents.find((candidate) => candidate.id === session);
 	const entry: AgentAction = {
@@ -118,4 +118,33 @@ export function renameAgentTab(board: Board, target: TabTarget, label: string) {
 			return { text, reason, acted: true };
 		})
 	);
+}
+
+const WORKSPACE_GONE_REASON = '工作區已不在 Herdr 的清單上，沒有關閉。';
+
+/**
+ * Close a Herdr workspace with every agent and tab in it, after the user confirmed how many agents
+ * and tabs it has. Read again first: refused for the workspace the board's own pane is in, and when
+ * it now has other counts than the ones confirmed. Queued with the workspace moves.
+ */
+export function closeHerdrWorkspace(board: Board, workspace: string, confirmed: { agents: number; tabs: number }) {
+	return queued('workspaces', async () => {
+		const contents = await workspaceContents(board.config, workspace);
+		let outcome: Outcome;
+		if (contents === null) outcome = { text: null, reason: WORKSPACE_GONE_REASON, acted: false };
+		else if ('reason' in contents) outcome = { text: null, reason: `${contents.reason}，沒有關閉。`, acted: false };
+		else {
+			const text = `工作區「${contents.label}」（${contents.agents} 個 Agent、${contents.tabs} 個分頁）`;
+			if (contents.own) outcome = { text, reason: WORKSPACE_OWN_REASON, acted: false };
+			else if (contents.agents !== confirmed.agents || contents.tabs !== confirmed.tabs) {
+				const reason = `工作區裡現在有 ${contents.agents} 個 Agent、${contents.tabs} 個分頁，和確認時的 ${confirmed.agents} 個 Agent、${confirmed.tabs} 個分頁不同，沒有關閉；請重新確認。`;
+				outcome = { text, reason, acted: false };
+			} else {
+				const act = await closeWorkspace(board.config, workspace);
+				const reason = act.ok ? null : act.timedOut ? `Herdr 的關閉指令${act.reason}，結果不明；請到 Herdr 查看。` : `Herdr 沒有關閉工作區：${act.reason}`;
+				outcome = { text, reason, acted: true };
+			}
+		}
+		return finish(board, null, 'close-workspace', outcome);
+	});
 }
