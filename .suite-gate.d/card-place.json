@@ -4,6 +4,7 @@
       "paths": [
         "board/src/lib/board/question-message.ts",
         "board/src/lib/board/transcript.ts",
+        "board/src/lib/components/ControllerPage.svelte",
         "board/src/lib/components/Transcript.svelte",
         "board/tests/browser/card-stays-at-asking-message.test.ts",
         "board/tests/fixtures/question-message-match.json",

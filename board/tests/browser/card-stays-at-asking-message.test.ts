@@ -134,3 +134,14 @@ test.skipIf(!CHROME)('with its asking message in an earlier page, the card is no
 	await until(`!!${cardOf(key('Q-1'))}`, 'the card');
 	expect(await seqOf(key('Q-1'))).toBe('1');
 }, 30_000);
+
+test.skipIf(!CHROME)('a question not found in a long conversation goes to its asking message once that comes', async () => {
+	const lines = [said('之前的話。', -5), ...Array.from({ length: 60 }, (_, index) => said(`中間的話 ${index}。`, 2))];
+	const { key, add } = await controllerWith('lost', ['Q-1'], lines);
+	await open(`/?item=${encodeURIComponent(key('Q-1'))}`);
+	await until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found note');
+	await add({ ...asks('Q-1'), time: minute(30) });
+	await until(`!!${cardOf(key('Q-1'))}?.closest('[data-seq]')`, 'the card at the message');
+	expect(await seqOf(key('Q-1'))).toBe('61');
+	expect(await evaluate<string>(`document.querySelector('.detail').innerText`)).not.toContain('找不到提出這題的原訊息');
+}, 30_000);

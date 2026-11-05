@@ -209,9 +209,15 @@ export function askingInView(view: TranscriptView, questions: InboxQuestion[]): 
 	);
 }
 
+/** Whether a text loaded asked the question, whether or not an earlier page may hold the first. */
+export function askedInLoaded(view: TranscriptView, question: InboxQuestion): boolean {
+	return askingTexts(assistantTexts(view), [question]).size > 0;
+}
+
 /**
  * Where an opened question is in the conversation, as the `seq` of the first text that asked it
- * (see `askingTexts`); never a near guess. Failing that, 'pending' while the turn that asked it
+ * (see `askingTexts`), once the pages loaded reach back to when it was asked; undefined until then;
+ * never a near guess. With no text loaded that asked it, 'pending' while the turn that asked it
  * has not ended, as the controller has no report since the question was asked: its message is
  * still to come, after everything loaded. Otherwise undefined while the pages loaded do not reach
  * back to when it was asked (or to its asking report's time, or to the start when neither is
