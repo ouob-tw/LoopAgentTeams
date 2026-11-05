@@ -44,7 +44,7 @@ LOG_ROTATE_BYTES = 1024 * 1024
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 KEEPALIVE_SECONDS = 10 * 60
 IDLE_GAP_SECONDS = 5 * 60
-KEEPALIVE_DECISION_SECONDS = 3 * 60 * 60
+KEEPALIVE_LIMIT_SECONDS = 3 * 60 * 60
 KEEPALIVE_QUIET_HOURS = (1, 9)
 PROMPT_UNREADABLE_SECONDS = 15 * 60
 LEDGER_START_SECONDS = 10 * 60
@@ -1718,12 +1718,11 @@ def keepalive_blocker(declaration, observation, now, busy=False):
     if not idle_prompt(observation):
         return 'prompt-not-empty'
     kind = declaration.get('kind')
-    if kind in ('decision', 'alarm'):
-        if now - declaration['declared_at'] >= KEEPALIVE_DECISION_SECONDS:
-            return f'{kind}-over-3h'
-        start, end = KEEPALIVE_QUIET_HOURS
-        if start <= time.localtime(now).tm_hour < end:
-            return f'{kind}-quiet-hours'
+    if now - declaration['declared_at'] >= KEEPALIVE_LIMIT_SECONDS:
+        return f'{kind}-over-3h'
+    start, end = KEEPALIVE_QUIET_HOURS
+    if start <= time.localtime(now).tm_hour < end:
+        return f'{kind}-quiet-hours'
     return None
 
 
@@ -3346,7 +3345,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                          'actions': [], 'error': f'{type(error).__name__}: {error}'})
     LEDGER_DELIVERIES[str(path)] = ledger_state
     own = states.setdefault(orchestrator, {})
-    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5,
+    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 6,
                                'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1,
                                'capacity_continue': 1, 'wait_targets': 1}
     if ledger_state:
