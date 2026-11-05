@@ -128,7 +128,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 
 `--workspace` 填主控路徑，`--agent` 可用唯一短名，與 `wait` 的解析相同。工作區必須有 active 主控監控這位 Agent（主控本人或未 merged 的任務卡 Agent），且該主控的監控程序正在執行、狀態有 `feature_versions.alarm=1`；否則指令以非零結束碼拒絕，說明請主控依下一節重啟監控。安裝新程式本身不會換掉舊監控。
 
-鬧鐘以 `kind=alarm` 存入等待聲明；每位 Agent 只保留最後一筆，新 `wait` 或 `alarm` 取代舊聲明。有效期間視為正常等待，收到其他訊息仍保留。計時保存 `due_at`；檔案與程序保存 `timeout_at`，第一次觀察到條件成立時保存 `due_at`，若未成立而逾時則以原 `timeout_at` 作為 `due_at`。條件已成立後不再重算時間或結果。
+鬧鐘以 `kind=alarm` 存入等待聲明；每位 Agent 一次只有一份聲明，新 `wait` 或 `alarm` 取代舊聲明，取代還沒響的鬧鐘時 stderr 會印出它的原因與預定時間。有效期間視為正常等待，收到其他訊息仍保留。要同時等兩件事：多個 Agent 或決策用逗號列在同一個 `--for`；等 Agent 又要定時醒，用 `wait --minutes`；等時間、檔案或程序又在等 Agent 回覆，只登記鬧鐘，對方訊息照樣會送達叫醒你。計時保存 `due_at`；檔案與程序保存 `timeout_at`，第一次觀察到條件成立時保存 `due_at`，若未成立而逾時則以原 `timeout_at` 作為 `due_at`。條件已成立後不再重算時間或結果。
 
 監控每分鐘檢查，該響後在空輸入框輸入 `[lat-watch] ` 開頭的英文，包含 `alarm`、`condition met` 或 `timed out` 與登記原因。視窗忙碌或輸入失敗時下輪再試，成功才標為已響。
 

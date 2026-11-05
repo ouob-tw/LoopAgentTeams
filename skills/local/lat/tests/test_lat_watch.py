@@ -2109,6 +2109,35 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         row = next(r for r in json.loads(status.stdout)['targets'] if r['agent'] == 'worker-open')
         self.assertEqual(row['wait'], saved)
 
+    def test_replacing_an_unrung_alarm_warns_with_its_reason_and_time(self):
+        self.alarm_monitor()
+        first = self.alarm_cli('--after', 30)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stderr, '')
+        due = json.loads(first.stdout)['due_at']
+        when = datetime.fromtimestamp(due).astimezone().isoformat(timespec='minutes')
+        # A new alarm over the pending one says what it replaced.
+        second = self.alarm_cli('--file', self.root / 'result')
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn('replaced your alarm that had not rung yet', second.stderr)
+        self.assertIn(f'reason: resume result check; due {when}', second.stderr)
+        # A wait over a pending file alarm names its timeout instead.
+        timeout = json.loads(second.stdout)['timeout_at']
+        wait = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                        '--for', 'reviewer', '--reason', 'review round')
+        self.assertEqual(wait.returncode, 0, wait.stderr)
+        self.assertIn('times out ' + datetime.fromtimestamp(timeout).astimezone()
+                      .isoformat(timespec='minutes'), wait.stderr)
+        # Replacing a wait or a rung alarm prints nothing extra.
+        again = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                         '--for', 'reviewer', '--reason', 'review round')
+        self.assertEqual(again.stderr, '')
+        path = load_watch().wait_path(self.work, 'worker-open')
+        rung = dict(json.loads(self.alarm_cli('--after', 5).stdout), active=False,
+                    released_reason='rang')
+        path.write_text(json.dumps(rung))
+        self.assertEqual(self.alarm_cli('--after', 5).stderr, '')
+
     def test_legacy_baseline_then_rule_change_notifies_once_and_survives_restart(self):
         skill, record = self.rule_session()
         self.run_cycles(load_watch(), 0)

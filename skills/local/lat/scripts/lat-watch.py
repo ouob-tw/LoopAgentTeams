@@ -3516,6 +3516,19 @@ def alarm_watcher_running(workspace, record):
     return watcher_process_matches(pid, expected)
 
 
+def replaced_alarm_warning(previous):
+    """The stderr line for a wait or alarm that replaces an alarm not yet rung, else None."""
+    if not previous or previous.get('kind') != 'alarm' or not previous.get('active', True):
+        return None
+    due = previous.get('due_at')
+    at = due if due is not None else previous.get('timeout_at')
+    when = (datetime.fromtimestamp(at).astimezone().isoformat(timespec='minutes')
+            if isinstance(at, (int, float)) else 'unknown')
+    return (f"LAT watch warning: replaced your alarm that had not rung yet "
+            f"(reason: {previous.get('reason')}; {'due' if due is not None else 'times out'} "
+            f"{when}). Each agent keeps one wait or alarm; register it again if still needed.")
+
+
 def declare_alarm(args):
     workspace = args.workspace.resolve(strict=True)
     agent = full_hcom_name(list_hcom(valid_name(args.agent)), args.agent, '--agent')
@@ -3565,8 +3578,10 @@ def declare_alarm(args):
     if args.after is None:
         declaration['timeout_at'] = now + (args.timeout or 60) * 60
     with wait_lock(wait_path(workspace, agent)):
-        _, original = read_wait(wait_path(workspace, agent))
+        previous, original = read_wait(wait_path(workspace, agent))
         write_object(wait_path(workspace, agent), declaration, expected=original)
+    if warning := replaced_alarm_warning(previous):
+        print(warning, file=sys.stderr)
     append_log(state_path(workspace, record['hcom_name']).with_name('watch.jsonl'),
                {'at': now, 'agent': agent, 'decision': 'alarm-registered', 'wait': declaration})
     print(json.dumps(declaration, ensure_ascii=False))
@@ -3676,6 +3691,8 @@ def declare_wait(args):
               and not previous['expiry_notice']['delivered']):
             declaration['expiry_notice'] = previous['expiry_notice']
         write_object(path, declaration, expected=wait_original)
+    if warning := replaced_alarm_warning(previous):
+        print(warning, file=sys.stderr)
     print(json.dumps(declaration, ensure_ascii=False))
 
 
