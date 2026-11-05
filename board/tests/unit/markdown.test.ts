@@ -50,3 +50,9 @@ test('table columns get a width for about three lines, at least five characters'
 	expect(html).toContain('<td style="--col:12em">');
 	expect(html).toContain('<td style="--col:5em">a</td>');
 });
+
+test('table cell width counts the text inside links, bold and italics too', () => {
+	const words = '長'.repeat(30);
+	const html = renderMarkdown(`| 甲 |\n|---|\n| **${words}** |\n\n| 乙 |\n|---|\n| [${words}](https://example.com) |\n\n| 丙 |\n|---|\n| *${words.slice(0, 15)}*${words.slice(0, 15)} |`);
+	expect(html.match(/<td style="--col:12em">/g)).toHaveLength(3);
+});
