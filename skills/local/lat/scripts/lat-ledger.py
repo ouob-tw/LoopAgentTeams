@@ -865,24 +865,36 @@ def cmd_next(args):
     return 0
 
 
-def ticket_numbers(text):
-    """The #N references in a ticket field (it may list several); the whole text if none."""
-    found = set(re.findall(r'#\d+', text))
-    return found or {text.strip()}
+def ticket_refs(text):
+    """The ticket references in a ticket field (it may list several), as (repo, number);
+    repo is None for a bare #N. Text with no #N or number counts as one reference of its own."""
+    found = {(repo or None, number) for repo, number in
+             re.findall(r'(?:([\w.-]+/[\w.-]+))?(#\d+)', text)}
+    if not found and text.strip().isdigit():
+        found = {(None, '#' + text.strip())}  # a bare number is the same ticket as #N
+    return found or {(None, text.strip())}
+
+
+def covers(qa_ref, impl_ref):
+    """Same number, and the same repo unless one side is a bare #N."""
+    return qa_ref[1] == impl_ref[1] and (
+        qa_ref[0] == impl_ref[0] or None in (qa_ref[0], impl_ref[0]))
 
 
 def tickets_without_qa(doc):
-    """Tickets with an impl row but no qa-draft/qa row (a cancelled one is a recorded exemption)."""
-    covered = set()
+    """Tickets with an impl row but no qa-draft/qa row (a cancelled one is a recorded exemption).
+    A cancelled impl row never delivered anything, so it needs no QA."""
+    qa_refs = set()
     for item in doc['items']:
         if item['stage'] in ('qa-draft', 'qa'):
-            covered |= ticket_numbers(item['ticket'])
+            qa_refs |= ticket_refs(item['ticket'])
     missing = {}
     for item in doc['items']:
-        if item['stage'] != 'impl':
+        if item['stage'] != 'impl' or item['status'] == 'cancelled':
             continue
-        for number in sorted(ticket_numbers(item['ticket']) - covered):
-            missing.setdefault(number, []).append(item['id'])
+        for ref in sorted(ticket_refs(item['ticket']), key=str):
+            if not any(covers(qa, ref) for qa in qa_refs):
+                missing.setdefault(f'{ref[0] or ""}{ref[1]}', []).append(item['id'])
     return missing
 
 

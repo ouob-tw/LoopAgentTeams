@@ -758,6 +758,38 @@ class QaCoverageTests(LedgerCase):
         self.assertIn('ticket #2', result.stdout)
         self.assertNotIn('ticket #1', result.stdout)
 
+    def test_qa_for_the_same_number_in_another_repo_does_not_cover_it(self):
+        impl = self.started(ticket='alpha/project#2')
+        self.ok('done', str(impl), '--commit', self.merged)
+        self.exempt_qa('#1')
+        self.exempt_qa('beta/project#2')
+        result = self.run_ledger('check')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('ticket alpha/project#2', result.stdout)
+        self.exempt_qa('alpha/project#2')
+        self.ok('check')
+
+    def test_a_bare_number_and_a_qualified_one_match_each_other(self):
+        impl = self.started(ticket='org/repo#2')
+        self.ok('done', str(impl), '--commit', self.merged)
+        self.exempt_qa('#1')
+        self.exempt_qa('#2')
+        self.ok('check')
+
+    def test_a_bare_number_is_the_same_ticket_as_hash_number(self):
+        impl = self.started(ticket='480')
+        self.ok('done', str(impl), '--commit', self.merged)
+        self.exempt_qa('#1')
+        self.assertEqual(self.run_ledger('check').returncode, 1)
+        self.exempt_qa('ouob-tw/LoopAgentTeams-work#480')
+        self.ok('check')
+
+    def test_a_cancelled_impl_row_needs_no_qa(self):
+        self.exempt_qa()
+        gone = self.add(ticket='#7')
+        self.ok('cancel', str(gone), '--reason', 'dropped')
+        self.ok('check')
+
     def test_ledgers_without_impl_rows_are_unaffected(self):
         self.ledger.unlink(); self.seal.unlink(); self.journal.unlink()
         self.init()
