@@ -60,7 +60,7 @@ function setHerdr(sessions: string[], extra: object = {}, status: Record<string,
 		join(fixture.dir, 'herdr.json'),
 		JSON.stringify({
 			agents: sessions.map((session) => herdrAgent(session, status[session])),
-			panes: sessions.map((session) => ({ pane_id: pane(session) })),
+			panes: sessions.map((session) => ({ pane_id: pane(session), workspace_id: 'wA', tab_id: `wA:t-${session}` })),
 			workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
 			tabs: sessions.map((session) => ({ tab_id: `wA:t-${session}`, workspace_id: 'wA', label: 'tab' })),
 			processes: Object.fromEntries(sessions.map((session) => [pane(session), started.info])),

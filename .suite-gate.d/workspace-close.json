@@ -1,0 +1,12 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/lib/server/herdr.ts", "board/src/lib/server/tab-control.ts", "board/src/lib/server/agent-control.ts", "board/src/routes/api/agents/workspace/close/+server.ts", "board/tests/fake-herdr.mjs", "board/tests/fake-hcom.mjs"],
+      "tests": ["board/tests/server/workspace-close.test.ts", "board/tests/browser/workspace-close-page.test.ts"]
+    },
+    {
+      "paths": ["board/src/lib/components/AgentList.svelte", "board/src/lib/board/agent-control.svelte.ts", "board/src/lib/board/agent-actions.ts"],
+      "tests": ["board/tests/browser/workspace-close-page.test.ts"]
+    }
+  ]
+}
