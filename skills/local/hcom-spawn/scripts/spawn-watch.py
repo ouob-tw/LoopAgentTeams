@@ -64,6 +64,8 @@ STOP_NOTICE = {
 }
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 UNREADABLE_ARGS = 'its command line could not be read'
+# Shell expansions the guard sees unexpanded in a --tag value: $var, ${var}, $(cmd), `cmd`.
+EXPANSION = re.compile(r'\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z0-9_@*#?!$-]+|`[^`]*`')
 
 clock, sleep = time.monotonic, time.sleep
 PROC = Path('/proc')
@@ -163,6 +165,14 @@ def launched_with(tool, process_id):
             if launch and launch['model']:
                 return launch['model'], launch['effort'].lower()
     return None
+
+
+def tag_matches(tag, actual):
+    """True when a batch's tag fits the --tag the guard read; any part the shell expands
+    (EXPANSION) matches any text. No tag matches every batch."""
+    if not EXPANSION.search(tag):
+        return not tag or actual == tag
+    return bool(re.fullmatch('.*'.join(map(re.escape, EXPANSION.split(tag))), actual))
 
 
 def full_name(data, name):
@@ -274,7 +284,7 @@ def find_batch(spawner, tool, tag, after_id, model, effort, watched):
                                        f"OR '{spawner}' LIKE '%-' || life_by)")
                           if event.get('data', {}).get('tool') == tool
                           and event['data'].get('instances')
-                          and (not tag or event['data'].get('tag') == tag)),
+                          and tag_matches(tag, event['data'].get('tag') or '')),
                          key=lambda event: event['id'])
         processes = process_ids() if batches else {}
         for event in batches:
@@ -743,6 +753,29 @@ def notify(spawner, text):
     return hcom('send', f'@{spawner}', '--intent', 'inform', '--from', SENDER, '--', text)[0]
 
 
+def hand_on(args):
+    """Start the next watch of a launch loop; it looks for the batch after this one."""
+    try:
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), '--spawner', args.spawner,
+             '--tool', args.tool, '--model', args.model, '--effort', args.effort,
+             '--after-id', str(args.after_id)] + (['--tag', args.tag] if args.tag else [])
+            + ['--repeat', '--found', str(args.found + 1)],
+            stdin=subprocess.DEVNULL, start_new_session=True)
+    except OSError as error:
+        log(f'launch loop: next watch not started, later launches go unchecked: {error}')
+
+
+def not_found(args):
+    tag = f' with tag {args.tag}' if args.tag else ''
+    if args.found:
+        log(f"launch loop: {args.found} launch{'es' if args.found > 1 else ''} found; no "
+            f'further {args.tool} launch by {args.spawner}{tag} within {BATCH_WAIT}s')
+    else:
+        log(f'no {args.tool} launch by {args.spawner}{tag} after event {args.after_id} '
+            f'within {BATCH_WAIT}s: tab not renamed, model and permission not checked')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--spawner', required=True)
@@ -751,6 +784,10 @@ def main(argv=None):
     parser.add_argument('--effort', required=True)
     parser.add_argument('--after-id', required=True, type=int)
     parser.add_argument('--tag', default='')
+    parser.add_argument('--repeat', action='store_true',
+                        help='the launch runs in a loop: hand on to a watch for the next batch')
+    parser.add_argument('--found', type=int, default=0,
+                        help='batches earlier watches of the same loop already took')
     args = parser.parse_args(argv)
     if not NAME.match(args.spawner):
         return 1
@@ -758,6 +795,10 @@ def main(argv=None):
     watched = {}
     batch, unattributed = find_batch(args.spawner, args.tool, args.tag, args.after_id,
                                      args.model, args.effort, watched)
+    if not batch:
+        not_found(args)
+    elif args.repeat:
+        hand_on(args)
     if batch:
         start = clock()
         data, launch_id = batch['data'], batch['id']
