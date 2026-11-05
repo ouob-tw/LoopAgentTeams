@@ -101,6 +101,7 @@ QA 逐項記錄 `PASS`（證據支持）、`FAIL`（結果不符）、`UNPROVEN`
 
 - **Prototype**：需要具體素材驗證設計問題時，委派 /prototype，成果依 [視覺驗收](references/visual-acceptance.md) 看過後，連同結論交回 Designer。
 - **Wayfinder**：工作太大、關鍵決策尚未釐清時，委派 /wayfinder 建立與推進決策地圖，結果交回 Designer；需要使用者參與的決策仍由使用者回答。
+- **分析師**：同一問題多次嘗試仍卡住、原因不明，或有多個方案要權衡時，委派 /analyst 分析並交回方案與建議；參謀判斷授權，分析師分析方案，兩者不互相取代。
 - **Agent 機制**：內建 Agent 能套用 /hcom-spawn 選定的設定時優先使用，否則透過 HCOM 啟動；內建 Agent 用原生訊息管道協調，外部 Agent 用 HCOM 訊息協調。
 - **工作區**：平行實作或需要保留現有工作區時，使用獨立 Git worktree 與分支，預設放在專案的 `.worktrees/<task-id>/`，不放 Temp；建立前確認 `.worktrees/` 已被 Git 忽略。單一實作且工作區乾淨時，可直接開發。
 - **共用狀態**：更動共用 Docker images／networks／預設名稱容器、共用資料庫等全域資源前，透過上述通訊管道公告影響範圍，與使用該資源的 Agents 協調；整合分支亦依整合步驟先公告再合併。公告不取代既有授權。
