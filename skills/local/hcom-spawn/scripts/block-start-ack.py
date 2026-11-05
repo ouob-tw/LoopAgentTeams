@@ -25,9 +25,9 @@ ACK = re.compile(r'^\W*((ack(nowledged)?|received|got it|ok(ay)?|noted|understoo
 # ... and nothing follows it, or what follows opens like a start or plan notice.
 START = re.compile(r"""^\W*(
     accepted | on\ it | will\ do
-  | start(ing|ed)? | begin(ning)? | began | continuing | resum(ing|ed) | proceeding | working
-  | (i\ )?will | i'll | i\ am | i'm
-  | re-?(review|check|verif)\w* | reviewing | checking | verifying
+  | start(ing|ed)? | begin(ning)? | began | continuing | resum(ing|ed) | proceeding
+  | (i\ )?will | i'll | (i\ am|i'm)\ (applying|drafting|reading|reviewing|freezing|restoring)
+  | re-?(review|check|verif)\w* | reviewing
   | review\ (started|underway|in\ progress)
 )\b | ^\W*開始""", re.I | re.X)
 # Rule 2: any word that hints at a result, a blocker or a question lets the message through.
@@ -36,10 +36,11 @@ SIGNAL = re.compile(r"""(
    | blocked | blocker | blocking | stuck | halt(ed)? | paused | waiting | cannot | can't
    | unable | error | broken | found | identified | confirm(s|ed) | reproduced | committed
    | frozen | question | decide | decision | needs? | please | unproven | incident
-   | no\ (findings|issues|problems|regressions) | concerns? | remains? | preliminary | never)\b
-  | \? | 完成 | 卡住 | 失敗 | 問題 | 請
+   | no\ (findings|issues|problems|regressions) | concerns? | remains? | preliminary | never
+   | stop(ping)? | quota | unsure | not\ sure | hand(ing)?\ over | handover | start(ing)?\ over
+   | regressions? | red | green | clean | attach(ed|ing)? | wiped | lost | missing)\b
+  | \? | 完成 | 卡住 | 失敗 | 問題 | 請 | 壞 | 確認 | 嗎
 )""", re.I | re.X)
-SEND_VALUE_OPTIONS = shell.VALUE_OPTIONS
 
 
 def only_acknowledges(text):
@@ -62,14 +63,12 @@ def addressed_to(name, launcher):
 
 def start_ack(words, launcher):
     """True when this simple command is `hcom send` of an acknowledgement to the launcher."""
-    if BYPASS in words:
-        return False
     words = shell.executable(words)
     if words[0].rsplit('/', 1)[-1] != 'hcom':
         return False
     rest = words[1:]
     while rest[:1] and rest[0].startswith('-'):  # global options before `send`
-        rest = rest[2:] if rest[0] in SEND_VALUE_OPTIONS else rest[1:]
+        rest = rest[2:] if rest[0] in shell.VALUE_OPTIONS else rest[1:]
     if rest[:1] != ['send']:
         return False
     rest, recipients, index = rest[1:], [], 0
@@ -77,11 +76,12 @@ def start_ack(words, launcher):
         word = rest[index]
         if word in ('--file', '--base64', '--thread') or word.startswith('--thread='):
             return False  # text the check does not read, or a thread
-        if word == '--intent' and rest[index + 1:index + 2] == ['request']:
+        if word == '--intent=request' or (word == '--intent'
+                                         and rest[index + 1:index + 2] == ['request']):
             return False
         if word.startswith('@'):
             recipients.append(word[1:])
-        index += 2 if word in SEND_VALUE_OPTIONS else 1
+        index += 2 if word in shell.VALUE_OPTIONS else 1
     text = ' '.join(rest[index + 1:])
     return (bool(recipients) and all(addressed_to(r, launcher) for r in recipients)
             and only_acknowledges(text))
@@ -93,7 +93,7 @@ def main():
         return 0
     try:
         command = json.load(sys.stdin).get('tool_input', {}).get('command', '')
-        if not isinstance(command, str):
+        if not isinstance(command, str) or BYPASS in command:
             return 0
         blocked = any(start_ack(words, launcher) for words in shell.commands(command))
     except Exception:  # unreadable payload or command: let it through

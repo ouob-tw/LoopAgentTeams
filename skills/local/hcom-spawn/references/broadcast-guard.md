@@ -35,9 +35,9 @@ Claude Code（`~/.claude/settings.json` 的 `hooks`）與 Codex（`$CODEX_HOME/h
 - 收件人只有召喚者本人（`@<名稱>` 或其短名）；發給別人、群組、討論串或多個收件人都放行。
 - 訊息文字寫在 `--` 後面；用 `--file`、`--base64` 或 stdin 送的不檢查。
 - `--intent` 不是 `request`。`ack` 不算擋下理由，因為不少成果回報也用 `ack` 送。
-- 文字只有確認詞（`Received`、`ok`、`收到`），或以開工、計畫的說法開頭（`Starting`、`I will`、`Accepted`、`Re-reviewing`、`開始`），且全文沒有成果、卡住或提問的字眼（`PASS`、`FAIL`、`done`、`blocked`、`found`、`no findings`、`?`、`完成`、`卡住` 等）。完整清單在腳本開頭。
+- 文字只有確認詞（`Received`、`ok`、`收到`），或以開工、計畫的說法開頭（`Starting`、`I will`、`Accepted`、`Re-reviewing`、`開始`），且全文沒有成果、卡住或提問的字眼（`PASS`、`FAIL`、`done`、`blocked`、`found`、`no findings`、`quota`、`?`、`完成`、`卡住`、`確認` 等）。完整清單在腳本開頭。
 
-判斷時寧可放行：讀不懂的指令、包在 `bash -c` 裡的指令、腳本出錯，一律放行。被誤擋時，在指令前加 `ACK_GUARD=off` 重送即可，例如 `ACK_GUARD=off hcom send @<主控> --name <自身名稱> -- '<訊息>'`。
+判斷時寧可放行：讀不懂的指令、包在 `bash -c` 裡的指令、腳本出錯，一律放行。指令文字任何地方有 `ACK_GUARD=off` 就放行，所以被誤擋時，在指令前加 `ACK_GUARD=off` 重送即可，例如 `ACK_GUARD=off hcom send @<主控> --name <自身名稱> -- '<訊息>'`。
 
 安裝方式同上，`PreToolUse` 再加一組 `matcher` 為 `Bash`、command 為 `uv run --no-project python <skill_dir>/scripts/block-start-ack.py` 的 group。
 

@@ -32,6 +32,7 @@ class BlockStartAckTests(unittest.TestCase):
             "hcom send @vude --name bape -- '收到，開始做'",
             "cd /repo && hcom send @vude --name bape -- 'I will review the pinned diff.'",
             "hcom --name bape send @vude -- 'Starting the review.'",
+            "hcom send @vude --name bape -- 'I am applying the LAT QA workflow; drafting four scenarios.'",
         ):
             with self.subTest(command=command):
                 result = run_hook(command)
@@ -62,6 +63,14 @@ class BlockStartAckTests(unittest.TestCase):
             "ACK_GUARD=off hcom send @vude --name bape -- 'Starting now.'",
             "echo 'hcom send @vude -- Starting now.'",
             "hcom send @vude --name bape -- 'Starting now.",
+            "hcom send @vude --intent=request --name bape -- 'Starting now.'",
+            "ACK_GUARD=off; hcom send @vude --name bape -- 'Starting now.'",
+            "hcom send @vude --name bape -- 'I am not sure which port to use.'",
+            "hcom send @vude --name bape -- 'I will stop here, context is almost full.'",
+            "hcom send @vude --name bape -- 'Working tree is clean; all 42 tests green.'",
+            "hcom send @vude --name bape -- 'Checking: tests show 3 regressions.'",
+            "hcom send @vude --name bape -- 'Starting over: the worktree was wiped.'",
+            "hcom send @vude --name bape -- '開始前想確認一下用哪個 port'",
         ):
             with self.subTest(command=command):
                 result = run_hook(command)
