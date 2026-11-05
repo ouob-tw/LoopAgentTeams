@@ -117,12 +117,17 @@ def hcom_launch(args):
     return None
 
 
+def starts_loop(words):
+    """True when a simple command opens a for/while/until/select loop."""
+    return next((word for word in words if word not in shell.KEYWORDS - LOOPS), '') in LOOPS
+
+
 def text_launches(text):
     """Launches in shell text; each is marked `repeat` when the text has a loop, since one
     launch command may then start several batches."""
     found, loop = [], False
     for words in shell.commands(text):
-        loop |= next((word for word in words if word not in shell.KEYWORDS - LOOPS), '') in LOOPS
+        loop |= starts_loop(words)
         found += launches(words)
     for launch in found:
         launch['repeat'] |= loop

@@ -64,8 +64,8 @@ STOP_NOTICE = {
 }
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 UNREADABLE_ARGS = 'its command line could not be read'
-# Shell expansions the guard sees unexpanded in a --tag value: $var, ${var}, $(cmd), `cmd`.
-EXPANSION = re.compile(r'\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z0-9_@*#?!$-]+|`[^`]*`')
+PATTERN_GRACE = 5      # seconds a watch with a --tag pattern leaves a batch to exact-tag watches
+VARIABLE = re.compile(r'\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?!$-]|\{[^}]*\})')
 
 clock, sleep = time.monotonic, time.sleep
 PROC = Path('/proc')
@@ -167,12 +167,36 @@ def launched_with(tool, process_id):
     return None
 
 
+def tag_pattern(tag):
+    """Regex for a --tag the guard read unexpanded, or None when the shell expands nothing in
+    it. $var, ${var}, $(cmd), $((expr)) and `cmd` each match any text."""
+    parts, index, expanded = [], 0, False
+    while index < len(tag):
+        if match := VARIABLE.match(tag, index):
+            end = match.end()
+        elif tag.startswith('$(', index):
+            end, depth = index + 2, 1
+            while end < len(tag) and depth:
+                depth += {'(': 1, ')': -1}.get(tag[end], 0)
+                end += 1
+        elif tag[index] == '`':
+            end = tag.find('`', index + 1) + 1 or len(tag)
+        else:
+            parts.append(re.escape(tag[index]))
+            index += 1
+            continue
+        parts.append('.*')
+        index, expanded = end, True
+    return ''.join(parts) if expanded else None
+
+
 def tag_matches(tag, actual):
-    """True when a batch's tag fits the --tag the guard read; any part the shell expands
-    (EXPANSION) matches any text. No tag matches every batch."""
-    if not EXPANSION.search(tag):
+    """True when a batch's tag fits the --tag the guard read (see tag_pattern). No tag
+    matches every batch."""
+    pattern = tag_pattern(tag)
+    if pattern is None:
         return not tag or actual == tag
-    return bool(re.fullmatch('.*'.join(map(re.escape, EXPANSION.split(tag))), actual))
+    return bool(re.fullmatch(pattern, actual))
 
 
 def full_name(data, name):
@@ -272,10 +296,13 @@ def find_batch(spawner, tool, tag, after_id, model, effort, watched):
     seconds, or that no watcher has taken by the end of BATCH_WAIT, is taken unattributed:
     its approval prompts and permission are still checked, but its model and effort are
     not compared with this command's.
+    A watch whose tag has shell expansions (tag_pattern) leaves each batch PATTERN_GRACE
+    seconds to an exact-tag watch of another command first.
 
     hcom records the spawner by base name, so `--name <tag>-<base>` matches `by: <base>`.
     """
-    start, first_seen, last = clock(), {}, False
+    start, first_seen, seen_at, last = clock(), {}, {}, False
+    pattern = tag_pattern(tag) is not None
     while not last:
         last = clock() - start >= BATCH_WAIT
         batches = sorted((event for event in events(
@@ -300,6 +327,9 @@ def find_batch(spawner, tool, tag, after_id, model, effort, watched):
             elif last and args is not None:
                 why = f'it was started with model {args[0]}, effort {args[1]}'
             else:
+                continue
+            # an exact-tag watch of a separate command may own it: give that one time first
+            if pattern and clock() - seen_at.setdefault(batch_id, clock()) < PATTERN_GRACE:
                 continue
             if claim(batch_id):
                 return event, why
@@ -797,9 +827,9 @@ def main(argv=None):
                                      args.model, args.effort, watched)
     if not batch:
         not_found(args)
-    elif args.repeat:
-        hand_on(args)
-    if batch:
+    else:
+        if args.repeat:
+            hand_on(args)
         start = clock()
         data, launch_id = batch['data'], batch['id']
         spawner = data.get('by') or args.spawner

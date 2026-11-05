@@ -439,10 +439,34 @@ class SpawnWatchTests(unittest.TestCase):
         for tag in ('vare-t$n', 'vare-t${n}', 'vare-t$(echo 3)', 'vare-t`echo 3`', '$TAG'):
             with self.subTest(tag=tag):
                 self.assertTrue(self.watch.tag_matches(tag, 'vare-t3'))
+        for tag in ('vare-t$((n+1))', 'vare-t$(printf %s $(echo 3))', 'vare-t$1'):
+            with self.subTest(tag=tag):
+                self.assertTrue(self.watch.tag_matches(tag, 'vare-t3'))
         self.assertFalse(self.watch.tag_matches('vare-t$n', 'mefa-t3'))
+        self.assertTrue(self.watch.tag_matches('vare-$n-review', 'vare-3-review'))
+        self.assertFalse(self.watch.tag_matches('vare-$n-review', 'vare-3-docs'))
+        self.assertFalse(self.watch.tag_matches('vare-$1x', 'vare-3'))
         self.assertTrue(self.watch.tag_matches('vare-review', 'vare-review'))
         self.assertFalse(self.watch.tag_matches('vare-review', 'vare-review2'))
         self.assertTrue(self.watch.tag_matches('', 'anything'))
+
+    def test_a_tag_pattern_leaves_a_batch_to_an_exact_tag_watch_first(self):
+        fake = FakeHcom()
+        fake.batch['data']['tag'] = 'vare-t3'
+        self.watch.hcom, self.watch.clock = fake, fake.clock
+        self.watch.process_ids = lambda: {'kilo': 'kilo'}
+        self.watch.launched_with = lambda tool, process_id: ('claude-sonnet-5-5', 'low')
+        polls = []
+
+        def sleep(seconds):
+            fake.sleep(seconds)
+            polls.append(seconds)
+            if len(polls) == 3:  # the `--tag vare-t3` watch claims it within the grace
+                self.assertTrue(self.watch.claim('b1'))
+        self.watch.sleep = sleep
+        found, _ = self.watch.find_batch('vare', 'claude', 'vare-t$n', 99, 'claude-sonnet-5-5',
+                                         'low', {})
+        self.assertIsNone(found)
 
     def test_no_launch_found_is_logged_with_the_reason(self):
         fake = FakeHcom()
