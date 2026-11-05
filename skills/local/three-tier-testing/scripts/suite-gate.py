@@ -9,8 +9,9 @@ project is due for a test cleanup and opens or updates a cleanup ticket; `cleanu
 [--command <cmd> [--baseline <s>]]` starts a new cleanup window. `affected [--base <rev>]`
 runs only the tests the map selects for this change, or the registered full suites through
 the gate when the change leaves the map; with `--purpose post-merge` (after a batch is
-merged, which then replaces the post-merge full suite) every record of the run shares a
-run_id and a final `affected-summary` record says whether the whole run passed. A suite or affected run that fails only in a few
+merged, which then replaces the post-merge full suite) it runs in a temporary clean
+checkout of HEAD, every record of the run shares a run_id and a final `affected-summary`
+record says whether the whole run passed. A suite or affected run that fails only in a few
 test files (bun test, unittest, pytest) reruns those files once with the map's command
 templates and records a pass with the flaky tests when the rerun passes. A full suite that
 ran records each test file's time when the output gives it (bun test listing every test,
@@ -3268,12 +3269,13 @@ def head_commit(root):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def write_summary(root, run_id, base, changed, start, results, *, nothing_selected,
+def write_summary(root, checkout, run_id, base, changed, start, results, *, nothing_selected,
                   interrupted, started_at):
-    """Write the post-merge summary of one affected run (`kind: affected-summary`): it
-    passed only when every group exited 0 (a pass after the rerun of failed files counts),
-    nothing was interrupted and the content (HEAD and the work tree) did not change."""
-    end = (head_commit(root), content_tree(root))
+    """Write the post-merge summary of one affected run (`kind: affected-summary`) for the
+    repo at root, run in checkout: it passed only when every group exited 0 (a pass after
+    the rerun of failed files counts), nothing was interrupted and the checkout's content
+    (HEAD and its tree) did not change."""
+    end = (head_commit(checkout), content_tree(checkout))
     changed_content = end != start or any(r['content_changed'] for r in results)
     passed = (not interrupted and not changed_content
               and all(r['exit_code'] == 0 for r in results))
@@ -3297,6 +3299,76 @@ def write_summary(root, run_id, base, changed, start, results, *, nothing_select
 
 
 def cmd_affected(base, purpose=None):
+    def select(root, amap, commit, origin):
+        """(changed, selected, fallback) against commit, or None after naming new test files
+        the map does not select."""
+        changed = changed_files(root, commit)
+        warn(f'change against {origin} ({commit[:12]}): {len(changed)} file(s)')
+        for path in changed:
+            warn(f'  {path}')
+        selected, fallback = select_tests(root, changed, amap, commit)
+        missing = unselected_new_tests(root, commit, changed, amap, selected)
+        if missing:
+            warn('the affected-test map selects none of these new test files:')
+            for path in missing:
+                warn(f'  {path}')
+            warn(f'add rules in {MAP_DIR}/<topic>.json that map the files they test to them, '
+                 'then run affected again; nothing ran')
+            return None
+        return changed, selected, fallback
+
+    def post_merge(root, commit, origin):
+        """Run the batch's affected tests in a temporary clean checkout of HEAD, so a merge
+        into root during the run does not change what is tested; the summary names root."""
+        head = head_commit(root)
+        if head is None:
+            warn('affected --purpose post-merge: HEAD is not a commit yet')
+            return 2
+        warn(f'testing HEAD {head[:12]} in a temporary clean checkout; later changes to '
+             f'{root} do not affect the run')
+        if git(['status', '--porcelain'], root).stdout.strip():
+            warn(f'{root} has uncommitted changes; they are not tested. Commit them first '
+                 'to include them.')
+        with clean_checkout(root, head) as checkout:
+            warn(f'temporary checkout: {checkout} (removed when the run ends)')
+            registry = load_registry(checkout) or {}
+            if not is_mapped(registry):
+                warn(f'the {REGISTRY_NAME} committed at HEAD {head[:12]} has no affected-test '
+                     'map; commit the map first')
+                return 2
+            try:
+                amap = read_map(registry)
+            except ValueError as exc:
+                warn(f'{REGISTRY_NAME} at HEAD {head[:12]}: {exc}')
+                return 2
+            copy_included(root, checkout, registry)
+            start = (head, content_tree(checkout))
+            started_at = now_iso()
+            chosen = select(checkout, amap, commit, origin)
+            if chosen is None:
+                return 2
+            changed, selected, fallback = chosen
+            run_id = uuid.uuid4().hex
+            warn(f'post-merge run {run_id[:12]}: every record of this run carries this run_id')
+            prepared, results = {}, []
+
+            def prepare(cwd):
+                if cwd not in prepared:
+                    prepared[cwd] = prepare_dependencies(cwd)
+                return prepared[cwd]
+            try:
+                code = run_selected(checkout, amap, selected, fallback,
+                                    {'base': commit, 'changed_files': changed,
+                                     'run_id': run_id}, prepare, results=results)[0]
+            except Interrupted:
+                write_summary(root, checkout, run_id, commit, changed, start, results,
+                              nothing_selected=False, interrupted=True, started_at=started_at)
+                raise
+            summary = write_summary(root, checkout, run_id, commit, changed, start, results,
+                                    nothing_selected=code is None, interrupted=False,
+                                    started_at=started_at)
+            return code or summary['exit_code']
+
     def body():
         root = repo_root(Path.cwd())
         registry = load_registry(Path.cwd()) if root else None
@@ -3314,39 +3386,14 @@ def cmd_affected(base, purpose=None):
                  'of work started from')
             return 2
         commit, origin = change_base(root, base, amap['branch'])
-        start = (head_commit(root), content_tree(root)) if purpose else None
-        started_at = now_iso()
-        changed = changed_files(root, commit)
-        warn(f'change against {origin} ({commit[:12]}): {len(changed)} file(s)')
-        for path in changed:
-            warn(f'  {path}')
-        selected, fallback = select_tests(root, changed, amap, commit)
-        missing = unselected_new_tests(root, commit, changed, amap, selected)
-        if missing:
-            warn('the affected-test map selects none of these new test files:')
-            for path in missing:
-                warn(f'  {path}')
-            warn(f'add rules in {MAP_DIR}/<topic>.json that map the files they test to them, '
-                 'then run affected again; nothing ran')
+        if purpose:
+            return post_merge(root, commit, origin)
+        chosen = select(root, amap, commit, origin)
+        if chosen is None:
             return 2
-        extra = {'base': commit, 'changed_files': changed}
-        if not purpose:
-            code = run_selected(root, amap, selected, fallback, extra)[0]
-        else:
-            run_id = uuid.uuid4().hex
-            warn(f'post-merge run {run_id[:12]}: every record of this run carries this run_id')
-            results = []
-            try:
-                code = run_selected(root, amap, selected, fallback,
-                                    dict(extra, run_id=run_id), results=results)[0]
-            except Interrupted:
-                write_summary(root, run_id, commit, changed, start, results,
-                              nothing_selected=False, interrupted=True, started_at=started_at)
-                raise
-            summary = write_summary(root, run_id, commit, changed, start, results,
-                                    nothing_selected=code is None, interrupted=False,
-                                    started_at=started_at)
-            return code or summary['exit_code']
+        changed, selected, fallback = chosen
+        code = run_selected(root, amap, selected, fallback,
+                            {'base': commit, 'changed_files': changed})[0]
         if code is None:
             warn('no tests selected for this change; nothing to run')
             warn('hint: on an integration branch the base must be given with --base <commit> '
