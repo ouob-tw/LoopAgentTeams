@@ -1,9 +1,10 @@
 // The 畫面分頁's live screen: one follower per agent, shared by every page that has its tab open,
-// reading the bottom screenful of the pane Herdr lists it in now (another one after a model switch)
-// over Herdr's socket every `screenMs` (a tenth of a second; twice that while it changes on every
-// read), and at once after keys are typed into it, and pushing it, secrets masked, only when it changed. Herdr 0.9.5 has no event for a pane's
-// output changing, so the screen is read rather than waited for. A screen read the same as the last
-// one is not masked again. Nothing is read while no page has the tab open.
+// reading the last lines of the pane Herdr lists it in now (another one after a model switch) over
+// Herdr's socket every `screenMs` (a tenth of a second; three times that while it changes on every
+// read), and at once after keys are typed into it, and pushing it, secrets masked, only when it
+// changed. Herdr 0.9.5 has no event for a pane's output changing, so the screen is read rather than
+// waited for. A screen read the same as the last one is not masked again. Nothing is read while no
+// page has the tab open.
 //
 // After a key press that failed or may not have arrived, the page waits for a 恢復畫面: a read that
 // started after the failure. `recover` asks for one; a read that succeeds lists the failure's ID in
@@ -189,13 +190,13 @@ function startFollower(board: Board, agentId: string): Follower {
 			follower.sent = update;
 			for (const push of [...follower.subscribers]) if (follower.subscribers.has(push)) deliver(push, update, agentId);
 		}
-		// A pane that prints on and on is read half as often: each changed screen costs a masking.
+		// A pane that prints on and on is read a third as often: each changed screen costs a masking.
 		const busy = changed && changedLastRead;
 		changedLastRead = changed;
 		if (again) {
 			again = false;
 			void read();
-		} else timer = setTimeout(() => void read(), busy ? 2 * board.config.screenMs : board.config.screenMs);
+		} else timer = setTimeout(() => void read(), busy ? 3 * board.config.screenMs : board.config.screenMs);
 	}
 	void read();
 	return follower;
