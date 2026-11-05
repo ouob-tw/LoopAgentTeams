@@ -3249,7 +3249,7 @@ esac
         both = wait('--for', 'reviewer,worker-two', '--for-pending', '--for-my-agents', '--json')
         self.assertEqual(both.returncode, 0, both.stderr)
         self.assertEqual([entry['target'] for entry in json.loads(both.stdout)['targets']],
-                         ['reviewer', 'worker-two', 'A-1', 'worker-open'])
+                         ['reviewer', 'worker-two', 'worker-open', 'A-1'])
 
         saved = path.read_bytes()
         refused = wait('--for', 'DONE', '--for-my-agents')

@@ -3670,12 +3670,13 @@ def declare_wait(args):
         owners.append((owner, decisions))
         if owner == agent:
             own_record = True
-            if args.for_pending:
-                names += [name for name in own_pending_decisions(decisions, record.get('session_id'))
-                          if name not in names]
+            # Agents first: the first entry is the main target, and only agents have deadlines.
             if args.for_my_agents and Path(record['tasks_path']).is_dir():
                 cards, _ = monitored_task_cards(Path(record['tasks_path']), owner)
                 names += [name for name in hcom_card_agents(cards) if name not in names]
+            if args.for_pending:
+                names += [name for name in own_pending_decisions(decisions, record.get('session_id'))
+                          if name not in names]
         for name in names:
             decision = None if is_hcom_agent(agents, name) else pending_decision(decisions, name)
             if decision is not None:
