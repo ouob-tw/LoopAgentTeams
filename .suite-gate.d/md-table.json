@@ -1,0 +1,16 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/app.css",
+        "board/src/lib/board/markdown.ts",
+        "board/tests/browser/md-table.test.ts",
+        "board/tests/unit/markdown.test.ts"
+      ],
+      "tests": [
+        "board/tests/browser/md-table.test.ts",
+        "board/tests/unit/markdown.test.ts"
+      ]
+    }
+  ]
+}
