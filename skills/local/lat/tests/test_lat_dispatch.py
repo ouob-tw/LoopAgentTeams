@@ -368,7 +368,8 @@ class BriefTests(DispatchCase):
         text = (self.root / 'brief.brief.md').read_text()
         self.assertIn(f'- 視覺驗收：{VISUAL}\n', text)
         for rule in ('someone other than the implementer', 'mid-motion and transition frames',
-                     'matching a prototype', 'raise it', 'fails on the defective version'):
+                     'matching a prototype', 'raise it', 'fails on the defective version',
+                     'Use the `ui-copy` skill', 'explanatory text read to be understood'):
             self.assertIn(rule, text)
 
     def test_visual_acceptance_of_none_carries_the_field_without_the_rules(self):
@@ -376,6 +377,7 @@ class BriefTests(DispatchCase):
         text = (self.root / 'brief.brief.md').read_text()
         self.assertIn('- 視覺驗收：無\n', text)
         self.assertNotIn('mid-motion and transition frames', text)
+        self.assertNotIn('ui-copy', text)
 
     def test_section_text_cannot_replace_the_card_fields(self):
         text = BRIEF.replace('依任務卡；補充說明。', '無現場動作，不必填卡片。')
