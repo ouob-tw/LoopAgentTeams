@@ -44,6 +44,7 @@
 		stamp,
 		onopen,
 		onagent,
+		onfolderfocus,
 		target = null
 	}: {
 		controllers: Controller[];
@@ -56,6 +57,8 @@
 		onopen: (controllerId: string) => void;
 		/** Opens an agent's page on the board. */
 		onagent: (agentId: string) => void;
+		/** Whether the focus is in the folder box; the form going away ends it too. */
+		onfolderfocus: (focused: boolean) => void;
 		/** The Herdr workspace whose + opened the new-agent form, with the folders its agents work in, the
 		 *  most used first; null for a new controller. */
 		target?: { workspace: string; label: string; folders: string[] } | null;
@@ -132,11 +135,12 @@
 		const git = project ? (project.exists ? project.git : null) : (form.gitOf[path] ?? null);
 		return { path, git, inWorkspace: target?.folders.includes(path) ?? false, project };
 	};
+	const hasTyped = $derived(form.folderEdited && form.folder.trim() !== '');
 	/** Before anything is typed, the most recent folders; then the known folders matching what is
 	 *  typed, and the folders under the typed level, each once. */
 	const rows = $derived.by<Row[]>(() => {
 		const all = [...(target?.folders ?? []), ...projects.map((project) => project.path)];
-		if (!form.folderEdited || form.folder.trim() === '') return suggestedFolders(target?.folders ?? [], projects.map((project) => project.path)).map(known);
+		if (!hasTyped) return suggestedFolders(target?.folders ?? [], projects.map((project) => project.path)).map(known);
 		const home = form.list?.home ?? '';
 		const entries = found?.entries ?? [];
 		// A folder found under the typed level says whether it is in Git, a known one included.
@@ -159,10 +163,26 @@
 		return facts.join('・');
 	}
 
+	// Until the answer for the text now in the box comes, the list stays as the last answer left it.
+	const searching = $derived(hasTyped && !found && !searchFailed && (form.folderPath !== null || (!form.list && !form.loadFailed)));
+	let lastList: { rows: Row[]; emptyNote: string | null } = { rows: [], emptyNote: null };
+	const folderList = $derived.by(() => {
+		if (searching) return lastList;
+		const unread = searchFailed || (form.loadFailed && !form.list);
+		lastList = { rows, emptyNote: hasTyped && rows.length === 0 ? (unread ? '讀不到資料夾清單' : '沒有符合的資料夾') : null };
+		return lastList;
+	});
+
 	let listOpen = $state(false);
 	/** The row the arrow keys are on; -1 for none. */
 	let active = $state(-1);
-	const shownRows = $derived(listOpen ? rows : []);
+	// Read while closed too, so an old list is not what comes back the next time it opens.
+	const shownRows = $derived.by(() => {
+		const { rows: current } = folderList;
+		return listOpen ? current : [];
+	});
+	const emptyNote = $derived(listOpen ? folderList.emptyNote : null);
+	$effect(() => () => onfolderfocus(false));
 	// A folder the projects do not know, such as one a workspace's agent works in, is asked about.
 	$effect(() => {
 		for (const row of shownRows) if (row.git === null && !row.project && !(row.path in form.gitOf)) void form.checkGit(row.path);
@@ -227,9 +247,10 @@
 	}
 
 	/** Arrows move along the list, Tab takes the folder and goes on into it, Enter takes it, Esc
-	 *  closes the list (`listKey`). Enter never sends the form from here. */
+	 *  closes the list (`listKey`). Enter never sends the form from here. Rows held during a search
+	 *  are only to look at: what a key would take is not known until the answer comes. */
 	function keydown(event: KeyboardEvent) {
-		const done = listKey(event.key, event.shiftKey, { open: listOpen, active, count: shownRows.length });
+		const done = listKey(event.key, event.shiftKey, { open: listOpen, active, count: searching ? 0 : shownRows.length });
 		if (!done.handled) return;
 		event.preventDefault();
 		const rowsNow = shownRows;
@@ -370,22 +391,26 @@
 					autocomplete="off"
 					spellcheck="false"
 					aria-autocomplete="list"
-					aria-expanded={shownRows.length > 0}
+					aria-expanded={shownRows.length > 0 || emptyNote !== null}
 					aria-controls="folder-list"
 					aria-activedescendant={active >= 0 && active < shownRows.length ? `folder-row-${active}` : undefined}
 					placeholder="~/專案資料夾"
 					bind:value={form.folder}
 					oninput={typing}
-					onfocus={() => (listOpen = true)}
+					onfocus={() => {
+						listOpen = true;
+						onfolderfocus(true);
+					}}
 					onblur={() => {
 						listOpen = false;
 						active = -1;
+						onfolderfocus(false);
 					}}
 					onkeydown={keydown}
 				/>
-				{#if shownRows.length}
+				{#if shownRows.length || emptyNote}
 					<!-- Pressing a row keeps the focus in the box, so the list is not closed before the click. -->
-					<ul id="folder-list" role="listbox" aria-label="符合的資料夾" onmousedown={(event) => event.preventDefault()}>
+					<ul id="folder-list" role="listbox" aria-label="符合的資料夾" class:in-flow={emptyNote} onmousedown={(event) => event.preventDefault()}>
 						{#each shownRows as row, index (row.path)}
 							<li id={`folder-row-${index}`} role="option" aria-selected={index === active} class:active={index === active}>
 								<button type="button" tabindex="-1" onclick={() => choose(row)}>
@@ -395,6 +420,9 @@
 								</button>
 							</li>
 						{/each}
+						{#if emptyNote}
+							<li class="none" role="option" aria-selected="false" aria-disabled="true">{emptyNote}</li>
+						{/if}
 					</ul>
 				{/if}
 			</div>
@@ -620,6 +648,14 @@
 		color: inherit;
 		text-align: left;
 		overflow-wrap: anywhere;
+	}
+	/* A line alone covers nothing: what is said about the typed folder stays readable under it. */
+	.combo ul.in-flow {
+		position: static;
+		margin-top: 2px;
+	}
+	.combo li.none {
+		padding: 0.4rem 0.6rem;
 	}
 	.combo li.active button,
 	.combo li button:hover {

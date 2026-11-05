@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/lib/components/NewController.svelte", "board/src/lib/components/CommandLine.svelte", "board/src/routes/+page.svelte", "board/src/lib/board/folder-search.ts"],
+      "tests": ["board/tests/browser/folder-list.test.ts"]
+    }
+  ]
+}

@@ -53,7 +53,8 @@
 		agent,
 		closed,
 		agents,
-		adopt
+		adopt,
+		away = false
 	}: {
 		controllers: Controller[];
 		target: Controller | undefined;
@@ -65,6 +66,8 @@
 		/** The controller whose page is open on the Herdr tab: what was typed to it as an agent, before
 		 *  the board wrote to it as a controller, is moved into the controllers' draft, once. */
 		adopt?: string;
+		/** Out of the way for now, on any screen: the draft stays, and so does `hidden`. */
+		away?: boolean;
 	} = $props();
 
 	/** The controllers' draft. */
@@ -306,6 +309,7 @@
 	bind:this={form}
 	class="cmd"
 	class:hidden
+	class:away
 	onsubmit={(event) => {
 		event.preventDefault();
 		void submit();
@@ -424,7 +428,7 @@
 		</div>
 	{/if}
 </form>
-{#if hidden}
+{#if hidden && !away}
 	<button
 		type="button"
 		class="reopen"
@@ -580,6 +584,9 @@
 		border-color: var(--danger);
 		background: var(--danger);
 		color: var(--bg);
+	}
+	.cmd.away {
+		display: none;
 	}
 	/* Only a phone puts the line away behind a floating button. */
 	.hide,
