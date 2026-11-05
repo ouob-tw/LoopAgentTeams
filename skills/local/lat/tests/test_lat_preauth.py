@@ -2299,11 +2299,11 @@ class DoTests(NoticeCase):
         self.assertEqual([(i['notice_before'], i['notice_after']) for i in self.records()],
                          [('none-1', 'none-2')])
 
-    def test_a_refused_after_notice_says_the_command_ran_and_nothing_was_recorded(self):
+    def test_a_refused_after_notice_says_the_command_ran_and_the_record_may_be_missing(self):
         result = self.do(['sh', '-c', f'touch {self.marker}; printf fail > {self.mode}'])
         self.assertEqual(result.returncode, 2)
         self.assertTrue(self.marker.exists())
-        self.assertIn('the command ran and succeeded, but nothing was recorded', result.stderr)
+        self.assertIn('the command ran and succeeded, but the after-notice or record step failed', result.stderr)
         self.assertEqual(self.records(), [])
 
     def test_a_command_that_cannot_start_is_recorded_as_failed(self):

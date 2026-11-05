@@ -21,11 +21,12 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" show
 要發通知的動作用 `do` 一次跑完核對、前通知、動作、後通知與記錄，任何一步失敗就停下，不跑後面的步驟：
 
 ```bash
-uv run --no-project python "$lat_dir/scripts/lat-preauth.py" do --action install-host --commit <版本> [--to <名稱>…] -- <動作指令>
+p() { uv run --no-project python "$lat_dir/scripts/lat-preauth.py" "$@"; }
+p do --action install-host --commit <版本> [--to <名稱>…] -- <動作指令>
 ```
 
 - 核對不是 `allow` 或前通知失敗時，不執行指令，以非 0 結束並說明。動作失敗仍發後通知並記 `failed`，結束碼為動作的結束碼。
-- 記錄內容同手動串接；`--to` 指定的對象不在線照舊拒絕。後通知或記錄失敗時，動作已經做了，訊息會寫明沒有記錄。
+- 記錄內容同手動串接；`--to` 指定的對象不在線照舊拒絕。後通知或記錄失敗時，動作已經做了，記錄可能缺漏，訊息會寫明。
 
 `merge`、`push` 不必發通知，以 `&&` 把 `check` 接在動作之前，做完再 `record`。
 

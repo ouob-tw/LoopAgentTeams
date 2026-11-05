@@ -1681,8 +1681,10 @@ def cmd_do(args):
                 checked.splitlines()[0], '--result', result, '--started', started,
                 '--notice-before', before, '--notice-after', after, *across)
     except DO_ERRORS as error:
-        print(f'lat-preauth: the command ran and {result}, but nothing was recorded for it '
-              f'(started {started}, before-notice {before}): {error}', file=sys.stderr)
+        print(f'lat-preauth: the command ran and {result}, but the after-notice or record step '
+              f'failed, so the record may be missing or partial (started {started}, '
+              f'before-notice {before}); run `report` and record by hand if needed: {error}',
+              file=sys.stderr)
         return 2
     return 0 if status == 0 else (status if status > 0 else 1)
 
