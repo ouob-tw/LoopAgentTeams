@@ -21,8 +21,8 @@ import type { Board } from './board.ts';
 import type { ExternalResult } from './external.ts';
 import { killAgent, listAgents, stopAgent } from './hcom.ts';
 import { countKeys, type KeyCounts, type KeyInput, type KeyResult, type KeysResponse } from '../board/screen.ts';
-import { agentCommand, closePane, HERDR_CLOSES, keepWorkspaceOpen, paneExists, paneProcess, sendPaneInput, type HerdrAct } from './herdr.ts';
-import { recover } from './screen.ts';
+import { agentCommand, closePane, HERDR_CLOSES, keepWorkspaceOpen, listHerdrAgents, paneExists, paneProcess, sendPaneInput, type HerdrAct } from './herdr.ts';
+import { recover, screenTouched } from './screen.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause, type PauseRecord } from './paused.ts';
 import { judgeHooks, relinkable } from './process-hooks.ts';
 import { inject, queued, typedText } from './send.ts';
@@ -53,6 +53,18 @@ export async function listedNow(board: Board, agentId: string): Promise<{ agent:
 	return agent?.inHerdr ? { agent } : { agent, reason: AGENT_GONE_REASON };
 }
 
+/** The agent as the board's last read lists it, in the pane Herdr's agent list read now has it in;
+ *  or why that cannot be relied on. Herdr's list alone, over its socket, is read now: a key press
+ *  waits for no other source. Whether its model switch is open is the last read's. */
+async function inHerdrNow(board: Board, agentId: string): Promise<{ agent: Agent } | { agent?: Agent; reason: string }> {
+	const [snapshot, herdr] = await Promise.all([board.current(), listHerdrAgents(board.config)]);
+	const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
+	if (!herdr.ok) return { agent, reason: `無法確認這個 Agent 仍在 Herdr 的清單上，沒有執行：${herdr.reason}` };
+	const listed = herdr.agents.find((candidate) => candidate.sessionId === agentId);
+	if (!agent?.inHerdr || !listed) return { agent, reason: AGENT_GONE_REASON };
+	return { agent: { ...agent, herdr: { ...agent.herdr, workspace: listed.workspace, tab: listed.tab, pane: listed.pane } } };
+}
+
 /** Why a Herdr command did not act, as the page shows it. */
 function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<AgentActionKind, 'move' | 'rename' | 'resume' | 'pause' | 'relink' | 'board-ask' | 'permission' | 'close-workspace' | 'keys'>): string {
 	if (act.timedOut) {
@@ -67,7 +79,8 @@ function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<Agen
 }
 
 /** One action on an agent listed in Herdr's list as read now, logged in the sent log either way.
- *  Refused while the agent has a model switch open. */
+ *  Refused while the agent has a model switch open. Every source is read again first (`listedNow`),
+ *  but for `keys`, which reads only Herdr's agent list (`inHerdrNow`): presses come fast, one after another. */
 export async function attempt(
 	board: Board,
 	agentId: string,
@@ -75,7 +88,7 @@ export async function attempt(
 	text: string | null,
 	act: (agent: Agent) => Promise<{ route: AgentAction['route']; reason: string | null; text?: string; permission?: PermissionSwitch; keys?: KeyCounts }>
 ): Promise<{ status: number; body: AgentActionResponse; gone: boolean }> {
-	const listed = await listedNow(board, agentId);
+	const listed = await (action === 'keys' ? inHerdrNow : listedNow)(board, agentId);
 	let status = 409;
 	let route: AgentAction['route'] = null;
 	let reason: string | null;
@@ -172,8 +185,8 @@ export function interruptAgent(board: Board, agentId: string) {
  * a named key through `pane send-keys`, text through `pane send-text`. The first that fails or may
  * not have arrived (Herdr did not answer in time) stops the rest, and nothing is tried again. Refused
  * for the board's own pane. Queued like a send, and logged with how many of each kind were typed in,
- * never the text. Whenever not all were typed in, the pane's screen is read again at once for the
- * pages that show it, and the read that succeeds recovers `recovery` (see `recover`).
+ * never the text. The pane's screen is read again at once for the pages that show it; whenever not
+ * all were typed in, the read that succeeds recovers `recovery` (see `recover`).
  */
 export async function sendKeysToAgent(board: Board, agentId: string, inputs: KeyInput[], recovery: string): Promise<{ status: number; body: KeysResponse }> {
 	const results: KeyResult[] = inputs.map(() => 'skipped');
@@ -201,6 +214,7 @@ export async function sendKeysToAgent(board: Board, agentId: string, inputs: Key
 		})
 	);
 	if (!done.body.ok) recover(board, agentId, recovery);
+	else screenTouched(board, agentId);
 	return { status: done.status, body: { ...done.body, results } };
 }
 

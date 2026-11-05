@@ -32,7 +32,29 @@ export function hcomStartedProcess(pane: string) {
 
 /** Answer list and scroll requests from the exact same plan and failure controls as the fake CLI. */
 export async function answerHerdrList(dir: string, request: { id: string; method: string; params?: { tab_id?: string; insert_index?: number; pane_id?: string; offset_from_bottom?: number } }, moves = false): Promise<string | null> {
-	if (!['agent.list', 'workspace.list', 'tab.list', 'pane.scroll', 'pane.process_info', ...(moves ? ['tab.move'] : [])].includes(request.method)) return null;
+	if (!['agent.list', 'workspace.list', 'tab.list', 'pane.scroll', 'pane.process_info', 'pane.get', 'pane.read', ...(moves ? ['tab.move'] : [])].includes(request.method)) return null;
+	const params = request.params as { pane_id?: string; source?: string; format?: string; lines?: number } | undefined;
+	// A screen read is logged as the CLI's words for it, and answered with the text the CLI prints.
+	const readArgs = () => ['pane', 'read', params?.pane_id ?? '', '--source', (params?.source ?? '').replace('_', '-'), ...(params?.lines === undefined ? [] : ['--lines', String(params.lines)]), ...(params?.format === 'ansi' ? ['--format', 'ansi'] : [])];
+	if (request.method === 'pane.read' || request.method === 'pane.get') {
+		const run = await runHerdr(dir, request.method === 'pane.read' ? readArgs() : ['pane', 'get', params?.pane_id ?? ''], 'socket');
+		// Herdr's socket answers a refusal with the error the CLI prints as JSON on standard error.
+		if (run.code) {
+			let error = { message: run.stderr.trim() };
+			try {
+				error = JSON.parse(run.stderr).error ?? error;
+			} catch {
+				// Not Herdr's own words: the text is the message.
+			}
+			return JSON.stringify({ id: request.id, error }) + '\n';
+		}
+		if (request.method === 'pane.read') return JSON.stringify({ id: request.id, result: { type: 'pane_read', read: { text: run.stdout } } }) + '\n';
+		try {
+			return JSON.stringify({ id: request.id, result: JSON.parse(run.stdout).result }) + '\n';
+		} catch {
+			return run.stdout + '\n';
+		}
+	}
 	const args =
 		request.method === 'tab.move' ? ['tab', 'move', request.params?.tab_id ?? '', String(request.params?.insert_index ?? 0)]
 		: request.method === 'pane.scroll' ? ['pane', 'scroll', request.params?.pane_id ?? '', String(request.params?.offset_from_bottom)]

@@ -248,7 +248,7 @@ test("a closed agent's 畫面 tab says it must be brought back first", async () 
 	]);
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
 	await tab.until(`document.querySelector('.detail [role=tabpanel]:not([hidden])')?.innerText.includes('已關閉，先接回才能看畫面')`, 'the closed text');
-	expect(jsonLines(join(fixture.dir, 'herdr-list-calls.jsonl')).some((args: string[]) => args[1] === 'get' && args[2] === 'wA:p-s-gone')).toBe(false);
+	expect(jsonLines(join(fixture.dir, 'herdr-socket-calls.jsonl')).some((args: string[]) => args[1] === 'get' && args[2] === 'wA:p-s-gone')).toBe(false);
 	await shot('desktop-closed-agent-screen');
 });
 

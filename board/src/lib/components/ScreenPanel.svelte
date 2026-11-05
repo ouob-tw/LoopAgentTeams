@@ -1,6 +1,6 @@
 <script lang="ts">
 	// The 畫面分頁: the last lines of the agent's Herdr pane with its colours, secrets masked by the
-	// server, followed about once a second while the tab is shown and not at all otherwise. The box
+	// server, followed as it changes while the tab is shown and not at all otherwise. The box
 	// takes the page's height down to the command line; its bottom line stays at the box's bottom, and
 	// lines too long for it, or more than fit, slide inside it. An update leaves it where it was slid to.
 	// In the light theme the box is the dark screen inverted, hues kept, as its programs choose colours

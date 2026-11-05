@@ -1,7 +1,9 @@
 // The 畫面分頁's live screen: one follower per agent, shared by every page that has its tab open,
 // reading the bottom screenful of the pane Herdr lists it in now (another one after a model switch)
-// about once a second and pushing it, secrets masked, only when it changed. Nothing is read while no
-// page has the tab open.
+// over Herdr's socket every `screenMs` (a tenth of a second; twice that while it changes on every
+// read), and at once after keys are typed into it, and pushing it, secrets masked, only when it changed. Herdr 0.9.5 has no event for a pane's
+// output changing, so the screen is read rather than waited for. A screen read the same as the last
+// one is not masked again. Nothing is read while no page has the tab open.
 //
 // After a key press that failed or may not have arrived, the page waits for a 恢復畫面: a read that
 // started after the failure. `recover` asks for one; a read that succeeds lists the failure's ID in
@@ -81,6 +83,11 @@ export function followScreen(board: Board, agentId: string, push: (update: Scree
 	};
 }
 
+/** Have the agent's screen read again at once: keys were typed into it. */
+export function screenTouched(board: Board, agentId: string): void {
+	perBoard(followers, board).get(agentId)?.readSoon();
+}
+
 /** Have the agent's screen read again at once for this failure; its pages get the 恢復畫面 once a
  *  read succeeds. While no page has the tab open, the failure waits for the next one that does. */
 export function recover(board: Board, agentId: string, id: string): void {
@@ -101,18 +108,29 @@ function deliver(push: (update: ScreenUpdate) => void, update: ScreenUpdate, age
 	}
 }
 
+/** The screen last read and masked: the text Herdr gave, and the text it was masked to. */
+interface Masked {
+	raw: string;
+	text: string;
+}
+
 /** The screen of the pane Herdr lists the agent in now, its secrets masked. Which lines it wrapped
  *  is asked of Herdr only when that changes what is masked; when Herdr cannot tell, the lines are
- *  masked both as they stand and with every line that may have been wrapped joined. */
-async function readMasked(board: Board, agentId: string): Promise<{ text: string } | { reason: string }> {
+ *  masked both as they stand and with every line that may have been wrapped joined, and the next
+ *  read masks again. A screen the same as `last` is not masked again. */
+async function readMasked(board: Board, agentId: string, last: Masked | null): Promise<{ masked: Masked | null; text: string } | { reason: string }> {
 	const agent = (await board.current()).agents.find((candidate) => candidate.id === agentId);
 	if (!agent?.inHerdr) return { reason: '這個 Agent 已不在 Herdr 的清單上' };
 	const read = await readPaneScreen(board.config, agent.herdr.pane);
 	if (!('text' in read)) return read;
-	if (!wrapMatters(read.text)) return { text: maskScreen(read.text, 'none') };
+	if (last?.raw === read.text) return { masked: last, text: last.text };
+	if (!wrapMatters(read.text)) return keep(read.text, maskScreen(read.text, 'none'));
 	const unwrapped = await readUnwrapped(board.config, agent.herdr.pane, read.rows);
-	return { text: maskScreen(read.text, 'text' in unwrapped ? { unwrapped: unwrapped.text } : 'all') };
+	if (!('text' in unwrapped)) return { masked: null, text: maskScreen(read.text, 'all') };
+	return keep(read.text, maskScreen(read.text, { unwrapped: unwrapped.text }));
 }
+
+const keep = (raw: string, text: string) => ({ masked: { raw, text }, text });
 
 function startFollower(board: Board, agentId: string): Follower {
 	let closed = false;
@@ -120,6 +138,8 @@ function startFollower(board: Board, agentId: string): Follower {
 	let again = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let last = '';
+	let masked: Masked | null = null;
+	let changedBefore = false;
 	const follower: Follower = {
 		subscribers: new Set(),
 		sent: null,
@@ -138,7 +158,9 @@ function startFollower(board: Board, agentId: string): Follower {
 		const taking = [...recoveryOf(board, agentId).waiting.keys()];
 		let result: { text: string } | { reason: string };
 		try {
-			result = await readMasked(board, agentId);
+			const read = await readMasked(board, agentId, masked);
+			masked = 'masked' in read ? read.masked : null;
+			result = read;
 		} catch (error) {
 			result = { reason: `讀不到它的 Herdr 畫面：${(error as Error).message}` };
 		}
@@ -155,15 +177,19 @@ function startFollower(board: Board, agentId: string): Follower {
 		const recovered = [...recovery.recovered.keys()];
 		const update: ScreenUpdate = 'text' in result ? { ok: true, text: result.text, recovered } : { ok: false, reason: result.reason, recovered };
 		const json = JSON.stringify(update);
-		if (json !== last) {
+		const changed = json !== last;
+		if (changed) {
 			last = json;
 			follower.sent = update;
 			for (const push of [...follower.subscribers]) if (follower.subscribers.has(push)) deliver(push, update, agentId);
 		}
+		// A pane that prints on and on is read half as often: each push costs a masking.
+		const busy = changed && changedBefore;
+		changedBefore = changed;
 		if (again) {
 			again = false;
 			void read();
-		} else timer = setTimeout(() => void read(), board.config.screenMs);
+		} else timer = setTimeout(() => void read(), busy ? 2 * board.config.screenMs : board.config.screenMs);
 	}
 	void read();
 	return follower;
