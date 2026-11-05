@@ -128,8 +128,11 @@ class CleanupTests(unittest.TestCase):
                     '--questions', str(self.questions)]
             if command == 'upsert':
                 args += ['--id', 'NEW', '--file', str(source)]
-            missing = subprocess.run(args, text=True, capture_output=True)
-            self.assertEqual(missing.returncode, 2)
+            # cleanup looks the directory up in the session record; there is no session here.
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ('CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID')}
+            missing = subprocess.run(args, text=True, capture_output=True, env=env)
+            self.assertEqual(missing.returncode, 2 if command == 'upsert' else 1)
             self.assertIn('--decisions', missing.stderr)
             invalid = subprocess.run(args + ['--decisions', str(self.root / 'absent')],
                                      text=True, capture_output=True)

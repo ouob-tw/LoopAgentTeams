@@ -52,27 +52,30 @@ Public API used by the Textual panel and LAT controller:
   controller report files whose newest record is past the board's retention,
   under the same lock the turn-end hook appends with.
 
-Controller CLI (run from the project root unless ``--questions`` is supplied)::
+Controller CLI (run from the project root unless ``--questions`` is supplied). Where
+``--questions`` or ``--decisions`` is optional, an omitted one comes from the client session's
+LAT record; ``ask`` reads the section from standard input without ``--file``::
 
   question upsert --questions PATH --decisions DIR --id ID --file section.md \
       [--visual [LETTER|][LABEL|]URL]...
-  question ask --questions PATH --decisions DIR --id ID --file section.md \
+  question ask [--questions PATH] [--decisions DIR] --id ID [--file section.md] \
       [--advisor TEXT] [--help-question] [--session-id ID] [--question TEXT] \
       [--authority-gap TEXT] [--blocked-work TEXT] [--exempt-basis TEXT] [--tried TEXT] \
       [--visual [LETTER|][LABEL|]URL]...
-  question record-chat --questions PATH --decisions DIR --id ID --text TEXT \
+  question approve [--decisions DIR] --id ID --scope TEXT
+  question record-chat [--questions PATH] [--decisions DIR] --id ID --text TEXT \
       --source TEXT
   question section-hash --questions PATH --id ID
   question provenance --questions SNAPSHOT --source-questions PATH --id ID \
       --journal panel-journal.jsonl
   question set-status --questions PATH --id ID --revision N --status recorded \
       --expected-section-sha256 HASH
-  question cleanup --questions PATH --decisions DIR
+  question cleanup [--questions PATH] [--decisions DIR]
   question archive-recorded --questions PATH --older-than 300
-  question check-pending --questions PATH --decisions DIR [--session-id ID]
-  question resolve-help --questions PATH --decisions DIR --id ID \
+  question check-pending [--questions PATH] [--decisions DIR] [--session-id ID]
+  question resolve-help [--questions PATH] [--decisions DIR] --id ID \
       --evidence TEXT --location TEXT
-  question withdraw --questions PATH --decisions DIR --id ID \
+  question withdraw [--questions PATH] [--decisions DIR] --id ID \
       --reason TEXT --source TEXT
   bind --hcom-name NAME --client CLIENT --session-id ID --workspace ROOT \
        [--herdr-workspace ID] [--herdr-tab ID] [--herdr-pane ID]
@@ -211,6 +214,7 @@ from questions import (
     record_chat_answer,
     remove_empty_questions,
     render_answer_area,
+    approve_answer,
     resolve_help,
     save_panel_edit,
     set_decision_preauth,
@@ -421,17 +425,21 @@ def _build_parser():
     ask = question_commands.add_parser(
         "ask", epilog=HELP_QUESTION_NOTE, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ask.add_argument("--questions", required=True, type=Path)
-    ask.add_argument("--decisions", required=True, type=Path)
+    ask.add_argument("--questions", type=Path)
+    ask.add_argument("--decisions", type=Path)
     ask.add_argument("--id", required=True)
-    ask.add_argument("--file", required=True, type=Path)
+    ask.add_argument("--file", type=Path)
     ask.add_argument("--help-question", action="store_true")
     ask.add_argument("--visual", action="append", default=[], metavar="[LETTER|][LABEL|]URL")
     for field in ASK_RECORD_FIELDS:
         ask.add_argument(field)
+    approve = question_commands.add_parser("approve")
+    approve.add_argument("--decisions", type=Path)
+    approve.add_argument("--id", required=True)
+    approve.add_argument("--scope", required=True)
     record_chat = question_commands.add_parser("record-chat")
-    record_chat.add_argument("--questions", required=True, type=Path)
-    record_chat.add_argument("--decisions", required=True, type=Path)
+    record_chat.add_argument("--questions", type=Path)
+    record_chat.add_argument("--decisions", type=Path)
     record_chat.add_argument("--id", required=True)
     record_chat.add_argument("--text", required=True)
     record_chat.add_argument("--source", required=True)
@@ -457,23 +465,23 @@ def _build_parser():
     )
     archive_recorded.add_argument("--older-than", type=float, default=300)
     cleanup = question_commands.add_parser("cleanup")
-    cleanup.add_argument("--questions", required=True, type=Path)
-    cleanup.add_argument("--decisions", required=True, type=Path)
+    cleanup.add_argument("--questions", type=Path)
+    cleanup.add_argument("--decisions", type=Path)
     resolve_help_parser = question_commands.add_parser("resolve-help")
-    resolve_help_parser.add_argument("--questions", required=True, type=Path)
-    resolve_help_parser.add_argument("--decisions", required=True, type=Path)
+    resolve_help_parser.add_argument("--questions", type=Path)
+    resolve_help_parser.add_argument("--decisions", type=Path)
     resolve_help_parser.add_argument("--id", required=True)
     resolve_help_parser.add_argument("--evidence", required=True)
     resolve_help_parser.add_argument("--location", required=True)
     withdraw = question_commands.add_parser("withdraw")
-    withdraw.add_argument("--questions", required=True, type=Path)
-    withdraw.add_argument("--decisions", required=True, type=Path)
+    withdraw.add_argument("--questions", type=Path)
+    withdraw.add_argument("--decisions", type=Path)
     withdraw.add_argument("--id", required=True)
     withdraw.add_argument("--reason", required=True)
     withdraw.add_argument("--source", required=True)
     check_pending = question_commands.add_parser("check-pending")
-    check_pending.add_argument("--questions", required=True, type=Path)
-    check_pending.add_argument("--decisions", required=True, type=Path)
+    check_pending.add_argument("--questions", type=Path)
+    check_pending.add_argument("--decisions", type=Path)
     check_pending.add_argument("--session-id")
     bind = commands.add_parser("bind")
     bind.add_argument("--hcom-name", required=True)
@@ -618,8 +626,11 @@ ASK_RECORD_FIELDS = ("--advisor", "--session-id", "--question", "--authority-gap
                      "--blocked-work", "--exempt-basis", "--tried")
 
 
-def _upsert(questions, decisions, question_id, text, first_revision=1):
-    """``question upsert`` with its rechecks and reminders: ``(code, revision, written)``."""
+def _upsert(questions, decisions, question_id, text, first_revision=1, notes=None):
+    """``question upsert`` with its rechecks and reminders: ``(code, revision, written)``.
+
+    ``notes`` takes the reminders printed after ``<ID> r<N>``; standard output by default.
+    """
     preauth = _preauth_recheck(questions, decisions, question_id)
     if preauth is not None and preauth[0] == "allow" and not preauth[2]:
         print(f"lat-panel: refused, nothing written: {question_id} is pre-authorized under "
@@ -637,10 +648,11 @@ def _upsert(questions, decisions, question_id, text, first_revision=1):
             # The question is written; the line is only for reading.
             print(f"lat-panel: - preauth: line not written: {error}", file=sys.stderr)
         if preauth[0] == "allow":
-            print(f"提醒：{question_id} 此題目前已預先授權，可由使用者決定撤回（{preauth[1]}）")
+            print(f"提醒：{question_id} 此題目前已預先授權，可由使用者決定撤回（{preauth[1]}）",
+                  file=notes)
     reminder = _duty_reminder(decisions, question_id)
     if reminder:
-        print(reminder)
+        print(reminder, file=notes)
     _warn_display(refresh_status_display(questions, notify=written))
     return 0, revision, written
 
@@ -657,7 +669,33 @@ def _ask_session(questions):
 
 
 def _input_section(args):
-    return add_visual_links(args.file.read_text(encoding="utf-8"), args.visual)
+    text = sys.stdin.read() if args.file is None else args.file.read_text(encoding="utf-8")
+    return add_visual_links(text, args.visual)
+
+
+def _session_paths(args):
+    """Fill an omitted --questions or --decisions from this client session's LAT record."""
+    if getattr(args, "questions", False) is not None and args.decisions is not None:
+        return
+    module = _lat_session()
+    session = next((os.environ[key] for key in module.SESSION_ENV.values()
+                    if os.environ.get(key)), None)
+    if session is None:
+        raise ValueError("no client session ID to find the LAT session record; "
+                         "give --questions and --decisions")
+    binding = next((item for item in list_bindings() if item.get("session_id") == session), None)
+    try:
+        workspace = binding["workspace"] if binding else module.workspace_root(Path.cwd())
+        record_path = module.session_path(workspace, session)
+        record = module.read_json(record_path)
+        if args.decisions is None:
+            args.decisions = Path(record["decisions_path"])
+        if getattr(args, "questions", False) is None:
+            args.questions = (Path(binding["questions_path"]) if binding else
+                              controller_questions_path(record["workspace"], record["hcom_name"]))
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"no LAT session record for session {session} to fill --questions "
+                         f"and --decisions ({error}); give them explicitly") from error
 
 
 def _check_exempt_basis(advisor_words, basis, decisions):
@@ -695,6 +733,9 @@ def _ask(args):
             if exempt_basis_category(advisor_words) is None:
                 raise ValueError("--exempt-basis only applies to exempt prior-promise or must-ask")
         _check_exempt_basis(advisor_words, args.exempt_basis, args.decisions)
+        if "needs-human" in advisor_words[:2] and not (
+                (args.authority_gap or "").strip() and (args.blocked_work or "").strip()):
+            raise ValueError("--advisor needs-human needs --authority-gap and --blocked-work")
         session = args.session_id or _ask_session(args.questions)
         help_question = args.help_question
         if args.tried is not None:
@@ -732,7 +773,7 @@ def _ask(args):
     code = 1
     try:
         code, revision, written = _upsert(args.questions, args.decisions, args.id, text,
-                                          1 if created else first_revision)
+                                          1 if created else first_revision, sys.stderr)
     finally:
         # No question was written, so the new record would be a pending decision with no question.
         if created and code:
@@ -742,7 +783,6 @@ def _ask(args):
     if created:
         # The panel may already hold this ID at a later revision; the record follows it.
         sync_decision_record(path, revision)
-        print(f"已建立待決紀錄：{path}")
     else:
         reopen = status.status != "pending"
         # An earlier ask that wrote the panel but failed to sync may be rerun to finish.
@@ -751,17 +791,21 @@ def _ask(args):
                              "change the question to ask again")
         sync_decision_record(path, revision, reopen=reopen,
                              help_question=args.help_question)
-    return _report_pending(args.questions, args.decisions, _ask_session(args.questions))
+    return _report_pending(args.questions, args.decisions, _ask_session(args.questions),
+                           quiet=True)
 
 
-def _report_pending(questions, decisions, session_id):
-    """Print the pending check; 1 when anything needs fixing."""
+def _report_pending(questions, decisions, session_id, quiet=False):
+    """Print the pending check; 1 when anything needs fixing. ``quiet`` prints only a failure."""
     if not panel_enabled():
-        print("面板未啟用，略過檢查")
+        if not quiet:
+            print("面板未啟用，略過檢查")
         return 0
     present, missing, inconsistent, unreadable, reverse = pending_question_gaps(
         questions, decisions, session_id=session_id
     )
+    if quiet and not (missing or inconsistent or unreadable or reverse):
+        return 0
     if present:
         print("已找到待答題目：")
         for identifier, path in present:
@@ -798,11 +842,17 @@ def main(argv=None):
     if args.command == "board":
         return _run_board(args)
     try:
+        if args.command == "question" and hasattr(args, "decisions"):
+            _session_paths(args)
         if args.command == "question" and args.question_command == "upsert":
             return _upsert(args.questions, args.decisions, args.id,
                            _input_section(args))[0]
         if args.command == "question" and args.question_command == "ask":
             return _ask(args)
+        if args.command == "question" and args.question_command == "approve":
+            approve_answer(args.decisions, args.id, args.scope)
+            print(f"{args.id} approved")
+            return 0
         if args.command == "question" and args.question_command == "record-chat":
             result = record_chat_answer(args.questions, args.decisions, args.id,
                                         args.text, args.source)

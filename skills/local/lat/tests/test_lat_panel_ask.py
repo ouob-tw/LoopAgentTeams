@@ -23,6 +23,8 @@ def load_module():
     return module
 
 
+# needs-human records say what they need and what waits on them.
+HUMAN = ("--advisor", "needs-human", "--authority-gap", "合併要真人核准", "--blocked-work", "交付")
 HELP_SECTION = "## 請登入看板\n\n要先登入才能驗收。\n\n- A. 已完成\n- B. 做不到\n"
 
 
@@ -79,8 +81,7 @@ class AskTests(AskTestCase):
         result = self.ask(SECTION, "--advisor", "exempt requirement-discussion")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.splitlines()[0], "Q1 r1")
-        self.assertTrue(result.stdout.rstrip().endswith("沒有遺漏"), result.stdout)
+        self.assertEqual(result.stdout, "Q1 r1\n")
         self.assertEqual(self.record().read_text(), (
             "# Q1 要合併到 dev 嗎？\n\n"
             "- status: pending\n"
@@ -107,7 +108,7 @@ class AskTests(AskTestCase):
             self.assertIn(line, text)
 
     def test_revision_follows_the_panel_and_unchanged_content_keeps_it(self):
-        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION, *HUMAN)
         unchanged = self.record().read_text()
 
         again = self.ask(SECTION)
@@ -123,7 +124,7 @@ class AskTests(AskTestCase):
         self.assertIn("Q1 · r2 · 待答", self.questions.read_text())
 
     def test_revising_an_answered_record_reopens_it_and_keeps_the_old_answer(self):
-        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION, *HUMAN)
         self.record().write_text(self.record().read_text().replace(
             "- status: pending", "- status: answered") + "\n## 答覆（r1，聊天）\n\n- 答覆：好\n")
 
@@ -136,7 +137,7 @@ class AskTests(AskTestCase):
         self.assertIn("- 答覆：好\n", text)
 
     def test_reasking_after_the_question_was_archived_continues_the_record_version(self):
-        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION, *HUMAN)
         self.record().write_text(self.record().read_text().replace(
             "- status: pending", "- status: answered"))
         cleanup = self.cli("question", "cleanup", "--questions", self.questions,
@@ -153,11 +154,11 @@ class AskTests(AskTestCase):
         self.assertIn("Q1 · r2 · 待答", self.questions.read_text())
 
     def test_a_new_record_follows_a_question_already_in_the_panel(self):
-        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION, *HUMAN)
         self.ask(SECTION.replace("驗收都過了。", "改了一次。"))
         self.record().unlink()
 
-        result = self.ask(SECTION.replace("驗收都過了。", "又改了一次。"), "--advisor", "needs-human")
+        result = self.ask(SECTION.replace("驗收都過了。", "又改了一次。"), *HUMAN)
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout.splitlines()[0], "Q1 r3")
@@ -165,7 +166,7 @@ class AskTests(AskTestCase):
         self.assertNotIn("- version: r1", self.record().read_text())
 
     def test_unchanged_question_on_a_closed_record_is_refused_without_changes(self):
-        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION, *HUMAN)
         self.record().write_text(self.record().read_text().replace(
             "- status: pending", "- status: approved"))
         record, questions = self.record().read_text(), self.questions.read_text()
@@ -187,7 +188,7 @@ class AskTests(AskTestCase):
                 self.assertFalse(self.questions.exists())
 
     def test_record_fields_are_refused_for_an_existing_record(self):
-        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION, *HUMAN)
         before = self.record().read_text()
 
         result = self.ask(SECTION, "--blocked-work", "交付")
@@ -200,14 +201,14 @@ class AskTests(AskTestCase):
         # The section parses, so the record is written; the broken panel copy fails the upsert.
         self.questions.write_text("## 要合併到 dev 嗎？\nQ1 · r1 · 待答\n\n沒有作答區\n")
 
-        result = self.ask(SECTION, "--advisor", "needs-human")
+        result = self.ask(SECTION, *HUMAN)
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("missing answer or submit marker", result.stderr)
         self.assertFalse(self.record().exists())
 
     def test_rerun_finishes_a_reopen_whose_record_sync_failed(self):
-        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION, *HUMAN)
         self.ask(SECTION.replace("驗收都過了。", "改過一次。"))
         # As if the panel was written at r2 but the record stayed approved at r1.
         self.record().write_text(self.record().read_text().replace(
@@ -222,7 +223,7 @@ class AskTests(AskTestCase):
     def test_gaps_found_after_writing_fail_the_command(self):
         self.record("OTHER").write_text("# OTHER\n\n- status: pending\n- advisor: needs-human\n")
 
-        result = self.ask(SECTION, "--advisor", "needs-human")
+        result = self.ask(SECTION, *HUMAN)
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("遺漏待答題目：\n- OTHER", result.stdout)
@@ -231,7 +232,7 @@ class AskTests(AskTestCase):
 
 class AskHelpTests(AskTestCase):
     def test_help_question_writes_the_kind_line(self):
-        result = self.ask(HELP_SECTION, "--advisor", "needs-human", "--help-question",
+        result = self.ask(HELP_SECTION, *HUMAN, "--help-question",
                           "--tried", "看過畫面")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -251,7 +252,7 @@ class AskHelpTests(AskTestCase):
         self.assertIn("- advisor: exempt user-account\n- kind: help\n", self.record().read_text())
 
     def test_help_question_without_a_done_option_is_refused(self):
-        result = self.ask(SECTION, "--advisor", "needs-human", "--help-question")
+        result = self.ask(SECTION, *HUMAN, "--help-question")
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("已完成", result.stderr)
@@ -259,7 +260,7 @@ class AskHelpTests(AskTestCase):
         self.assertFalse(self.questions.exists())
 
     def test_marking_an_existing_record_as_help_checks_the_options_first(self):
-        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION, *HUMAN)
         before = self.record().read_text()
 
         refused = self.ask(SECTION, "--help-question")
@@ -288,13 +289,13 @@ class AskTriedTests(AskTestCase):
     def test_new_help_question_without_tried_is_refused_and_writes_nothing(self):
         for given in ((), ("--tried", ""), ("--tried", "  \t ")):
             with self.subTest(given=given):
-                self.assert_refused(self.ask(HELP_SECTION, "--advisor", "needs-human",
+                self.assert_refused(self.ask(HELP_SECTION, *HUMAN,
                                              "--help-question", *given))
                 self.assertFalse(self.record().exists())
                 self.assertFalse(self.questions.exists())
 
     def test_tried_is_written_below_the_kind_line_on_one_line(self):
-        result = self.ask(HELP_SECTION, "--advisor", "needs-human", "--help-question",
+        result = self.ask(HELP_SECTION, *HUMAN, "--help-question",
                           "--tried", f" {self.TRIED}\n- status: approved ")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -310,12 +311,12 @@ class AskTriedTests(AskTestCase):
         self.assertIn("- tried: 2FA 核准只在使用者手機上\n", self.record().read_text())
 
     def test_other_questions_do_not_need_it_and_cannot_take_it(self):
-        refused = self.ask(SECTION, "--advisor", "needs-human", "--tried", self.TRIED)
+        refused = self.ask(SECTION, *HUMAN, "--tried", self.TRIED)
         self.assertEqual(refused.returncode, 1)
         self.assertIn("--tried only applies", refused.stderr)
         self.assertFalse(self.record().exists())
 
-        accepted = self.ask(SECTION, "--advisor", "needs-human")
+        accepted = self.ask(SECTION, *HUMAN)
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertNotIn("- tried:", self.record().read_text())
 
@@ -333,7 +334,7 @@ class AskTriedTests(AskTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_marking_an_existing_record_as_help_checks_its_line(self):
-        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION, *HUMAN)
         before = self.record().read_text()
 
         self.assert_refused(self.ask(HELP_SECTION, "--help-question"))
@@ -346,10 +347,118 @@ class AskTriedTests(AskTestCase):
         self.assertIn("- kind: help\n", self.record().read_text())
 
     def test_tried_only_applies_to_a_new_record(self):
-        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION, *HUMAN)
         result = self.ask(SECTION, "--tried", self.TRIED)
         self.assertEqual(result.returncode, 1)
         self.assertIn("--tried", result.stderr)
+
+
+class AskShortFormTests(AskTestCase):
+    """The short command: paths from the session record, the section from standard input."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / ".git").mkdir()
+        sessions = self.root / ".lat/sessions"
+        sessions.mkdir()
+        (sessions / f"{SESSION}.json").write_text(json.dumps({
+            "session_id": SESSION, "workspace": str(self.root), "hcom_name": "orch",
+            "decisions_path": str(self.decisions)}))
+
+    def short_ask(self, *extra, text=SECTION):
+        return subprocess.run(
+            [sys.executable, str(MODULE), "question", "ask", "--id", "Q1", *extra],
+            input=text, text=True, capture_output=True, env=self.env, cwd=self.root)
+
+    def test_paths_come_from_the_session_record_and_the_section_from_stdin(self):
+        result = self.short_ask("--advisor", "exempt requirement-discussion")
+
+        self.assertEqual((result.returncode, result.stdout), (0, "Q1 r1\n"), result.stderr)
+        self.assertIn("- question: 要合併到 dev 嗎？\n", self.record().read_text())
+        self.assertIn("Q1 · r1 · 待答", self.questions.read_text())
+
+    def test_given_paths_win_over_the_session_record(self):
+        other = self.root / "other-decisions"
+        other.mkdir()
+        result = self.short_ask("--advisor", "exempt requirement-discussion",
+                                "--decisions", other)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((other / "Q1.md").exists())
+        self.assertFalse(self.record().exists())
+
+    def test_no_session_record_is_refused_and_writes_nothing(self):
+        (self.root / f".lat/sessions/{SESSION}.json").unlink()
+        result = self.short_ask("--advisor", "exempt requirement-discussion")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("give them explicitly", result.stderr)
+        self.assertFalse(self.record().exists())
+        self.assertFalse(self.questions.exists())
+
+    def test_needs_human_still_needs_the_gap_and_the_blocked_work(self):
+        for given in ((), ("--authority-gap", "要真人核准"), ("--blocked-work", "交付"),
+                      ("--authority-gap", " ", "--blocked-work", "交付")):
+            with self.subTest(given=given):
+                result = self.short_ask("--advisor", "needs-human", *given)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("--authority-gap and --blocked-work", result.stderr)
+                self.assertFalse(self.record().exists())
+                self.assertFalse(self.questions.exists())
+
+
+class ApproveTests(AskTestCase):
+    def approve(self, scope="合併到 dev，不推送", question_id="Q1"):
+        return self.cli("question", "approve", "--decisions", self.decisions,
+                        "--id", question_id, "--scope", scope)
+
+    def answer(self):
+        self.assertEqual(self.ask(SECTION, *HUMAN).returncode, 0)
+        result = self.cli("question", "record-chat", "--questions", self.questions,
+                          "--decisions", self.decisions, "--id", "Q1",
+                          "--text", "A", "--source", "session s-1 第 3 則")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_an_answered_record_gets_the_scope_and_turns_approved(self):
+        self.answer()
+        before = self.record().read_text()
+
+        result = self.approve("合併到 dev\n- status: pending")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.record().read_text(), before.replace(
+            "- status: answered", "- status: approved")
+            + "- 核准：合併到 dev\n  - status: pending\n")
+
+    def test_refusals_change_nothing(self):
+        self.assertEqual(self.ask(SECTION, *HUMAN).returncode, 0)
+        pending = self.record().read_text()
+        self.assertIn("not answered", self.approve().stderr)
+        self.assertEqual(self.record().read_text(), pending)
+
+        self.answer_help()
+        help_record = self.record("H1").read_text()
+        self.assertIn("help record", self.approve(question_id="H1").stderr)
+        self.assertEqual(self.record("H1").read_text(), help_record)
+
+        for scope in ("", "  "):
+            self.assertIn("--scope", self.approve(scope).stderr)
+        self.assertIn("not found", self.approve(question_id="NONE").stderr)
+
+        self.answer_approved()
+        approved = self.record().read_text()
+        self.assertEqual(self.approve().returncode, 1)
+        self.assertEqual(self.record().read_text(), approved)
+
+    def answer_help(self):
+        self.assertEqual(self.ask(HELP_SECTION, *HUMAN, "--help-question", "--tried", "看過畫面",
+                                  question_id="H1").returncode, 0)
+        self.record("H1").write_text(self.record("H1").read_text().replace(
+            "- status: pending", "- status: answered"))
+
+    def answer_approved(self):
+        self.record().write_text(self.record().read_text().replace(
+            "- status: pending", "- status: approved"))
 
 
 class HelpTextTests(AskTestCase):
@@ -364,7 +473,7 @@ class HelpTextTests(AskTestCase):
 class RecordChatTests(AskTestCase):
     def setUp(self):
         super().setUp()
-        self.assertEqual(self.ask(SECTION, "--advisor", "needs-human").returncode, 0)
+        self.assertEqual(self.ask(SECTION, *HUMAN).returncode, 0)
 
     def record_chat(self, *extra, text="A，先不推送", source="session s-1 第 3 則"):
         return self.cli("question", "record-chat", "--questions", self.questions,

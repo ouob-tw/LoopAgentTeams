@@ -1007,15 +1007,17 @@ class SessionTests(unittest.TestCase):
                 text=True, capture_output=True,
                 env=self.cli_environment(extra_env=self.panel_env()), cwd=self.work)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('沒有遺漏', result.stdout)
+            self.assertRegex(result.stdout, rf'\A{identifier} r[0-9]+\n\Z')
 
         def assert_pass(message, heading):
             output = json.loads(self.stop_hook(message).stdout)
             self.assertEqual(set(output), {'systemMessage'})
             self.assertTrue(output['systemMessage'].startswith(f'❓ {heading}\n'))
 
-        ask('LAT-A', '## 要合併嗎？\n\n背景。\n\n- A. 合併\n- B. 不合併\n', '--advisor', 'needs-human')
+        ask('LAT-A', '## 要合併嗎？\n\n背景。\n\n- A. 合併\n- B. 不合併\n', '--advisor', 'needs-human',
+            '--authority-gap', '合併要真人核准', '--blocked-work', '交付')
         ask('LAT-H', '## 請登入\n\n背景。\n\n- A. 已完成\n', '--advisor', 'needs-human',
+            '--authority-gap', '要使用者登入', '--blocked-work', '驗收',
             '--help-question', '--tried', '看過畫面')
         assert_pass('DECIDE: LAT-A r1', 'LAT-A r1 - 要合併嗎？')
         assert_pass('HELP: LAT-H r1', 'LAT-H r1 - 請登入')
