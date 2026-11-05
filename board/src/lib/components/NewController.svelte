@@ -202,17 +202,26 @@
 	});
 
 	// Another workspace's form starts over from its own folder and tab name; the message is kept.
-	// Before the lists are read, a workspace without agents gets the most recent folder once they are.
+	// The folder is the one the workspace's last agent was started in, while it is still there;
+	// else the one its agents use most, else the most recent one. Once the lists are read, a folder
+	// the board filled in by itself follows them; one typed or chosen stays.
 	$effect(() => {
 		if (!target) return;
-		const fallback = target.folders[0] ?? recentFolder;
+		const fallback = agentLaunching.list?.workspaceFolders[target.workspace] ?? target.folders[0] ?? recentFolder;
 		untrack(() => {
 			if (agentLaunching.workspace !== target.workspace) {
 				agentLaunching.workspace = target.workspace;
 				agentLaunching.workspaceOption = defaultWorkspaceOption(target.workspace);
 				agentLaunching.tabName = '';
-				pick(fallback);
-			} else if (agentLaunching.folder === '' && !agentLaunching.folderEdited && fallback) pick(fallback);
+				pick(fallback, true);
+			} else if (
+				fallback &&
+				!agentLaunching.folderEdited &&
+				agentLaunching.folder !== fallback &&
+				(agentLaunching.folder === '' || agentLaunching.folder === agentLaunching.folderDefault)
+			) {
+				pick(fallback, true);
+			}
 		});
 	});
 	// The workspace field starts where the button that opened the form says, each time it is opened.
@@ -226,9 +235,11 @@
 		});
 	});
 
-	function pick(path: string) {
+	/** Fill the folder box in: as the default (`byDefault`), or as chosen. */
+	function pick(path: string, byDefault = false) {
 		form.folder = path;
 		form.folderEdited = false;
+		form.folderDefault = byDefault ? path : null;
 		// Consent to `git init` is for one folder only.
 		form.gitInit = false;
 	}

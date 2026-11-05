@@ -1,0 +1,12 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/lib/components/NewController.svelte", "board/src/lib/board/launching.svelte.ts", "board/src/lib/board/launch.ts", "board/src/lib/server/launch.ts"],
+      "tests": ["board/tests/browser/workspace-folder-page.test.ts", "board/tests/browser/workspace-picker-page.test.ts"]
+    },
+    {
+      "paths": ["board/src/lib/server/launch.ts"],
+      "tests": ["board/tests/unit/workspace-folders.test.ts", "board/tests/server/agent-launch.test.ts"]
+    }
+  ]
+}

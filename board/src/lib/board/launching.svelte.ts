@@ -37,6 +37,8 @@ class Launching {
 	folder = $state('');
 	/** Whether the folder box was typed in since it was last filled in. */
 	folderEdited = $state(false);
+	/** What the board last filled the folder box in with by itself; null once a folder was chosen. */
+	folderDefault = $state<string | null>(null);
 	text = $state('');
 	gitInit = $state(false);
 	/** '' starts the client with its own default. */

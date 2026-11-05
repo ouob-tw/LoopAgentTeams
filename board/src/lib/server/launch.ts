@@ -20,6 +20,7 @@ import {
 	type LaunchList,
 	type LaunchRequest,
 	type LaunchResponse,
+	type LaunchView,
 	type Project,
 	type SentLaunch,
 	type WorkspacePick
@@ -52,6 +53,14 @@ import { boundOf, readLaunches } from './sent-views.ts';
 /** How many launches the new-controller page lists, and the new-agent form too. */
 const LISTED_LAUNCHES = 20;
 
+const isFolder = (path: string): boolean => {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+};
+
 /** The folders controllers have run in, each once, the most recently reported first. */
 async function listProjects(board: Board): Promise<Project[]> {
 	const latest = new Map<string, string>();
@@ -64,14 +73,23 @@ async function listProjects(board: Board): Promise<Project[]> {
 	return [...latest]
 		.sort(([, a], [, b]) => Date.parse(b) - Date.parse(a))
 		.map(([path, lastUsedAt]) => {
-			let exists = false;
-			try {
-				exists = statSync(path).isDirectory();
-			} catch {
-				// Moved or deleted since; starting there says so.
-			}
+			// One moved or deleted since says so when started there.
+			const exists = isFolder(path);
 			return { path, lastUsedAt, exists, git: exists && gitRoot(path) !== null };
 		});
+}
+
+/** Each Herdr workspace's folder its latest plain agent was started in, from `launches` newest
+ *  first; a failed launch does not count, and a folder no longer there is left out. */
+export function workspaceFolders(launches: readonly LaunchView[], folderThere: (path: string) => boolean = isFolder): Record<string, string> {
+	const latest: Record<string, string> = {};
+	for (const launch of launches) {
+		const workspace = launch.herdrWorkspace;
+		if (launch.role !== 'agent' || launch.state === 'failed' || workspace === null || workspace in latest) continue;
+		latest[workspace] = launch.folder;
+	}
+	for (const [workspace, folder] of Object.entries(latest)) if (!folderThere(folder)) delete latest[workspace];
+	return latest;
 }
 
 export async function listLaunches(board: Board): Promise<LaunchList> {
@@ -90,9 +108,9 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 		const launches = [...all.filter((launch) => launch.role !== 'agent').slice(0, LISTED_LAUNCHES), ...all.filter((launch) => launch.role === 'agent').slice(0, LISTED_LAUNCHES)];
 		const deadlines = launches.filter((launch) => launch.state === 'starting').map((launch) => Date.parse(launch.time) + launchWaitMs);
 		const refreshAfterMs = deadlines.length ? Math.max(0, Math.min(...deadlines) - board.config.now()) : null;
-		return { refreshAfterMs, projects, projectsError, launches, logError: null, modelOptions: board.config.modelOptions, home: homedir() };
+		return { refreshAfterMs, projects, projectsError, launches, workspaceFolders: workspaceFolders(all), logError: null, modelOptions: board.config.modelOptions, home: homedir() };
 	} catch (error) {
-		return { refreshAfterMs: null, projects, projectsError, launches: [], logError: (error as Error).message, modelOptions: board.config.modelOptions, home: homedir() };
+		return { refreshAfterMs: null, projects, projectsError, launches: [], workspaceFolders: {}, logError: (error as Error).message, modelOptions: board.config.modelOptions, home: homedir() };
 	}
 }
 
