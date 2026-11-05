@@ -24,12 +24,14 @@ which the panel helper's `board preauth-read` and `board preauth-write` commands
 runs the action itself.
 """
 import argparse
+import contextlib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -1629,6 +1631,64 @@ def cmd_now(args):
     return 0
 
 
+DO_ERRORS = (Refused, OSError, ValueError, subprocess.SubprocessError)
+
+
+def do_step(*argv):
+    """Run one of this tool's own commands in-process; return its exit code and its stdout."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = COMMANDS[argv[0]](build_parser().parse_args(list(argv)))
+    return code, out.getvalue().strip()
+
+
+def do_must(*argv):
+    code, out = do_step(*argv)
+    if code:
+        raise Refused(f'{argv[0]} failed: {out}')
+    return out
+
+
+def cmd_do(args):
+    """check -> before-notice -> command -> after-notice -> record, stopping at the first
+    failing step. Once the command has run, a failed command is still noticed and recorded."""
+    command = args.run[1:] if args.run[:1] == ['--'] else args.run
+    if not command:
+        raise Refused('give the command after `--`')
+    if args.action not in MAIN_CHECKOUT_ACTIONS:
+        raise Refused(f'`do` is for {", ".join(MAIN_CHECKOUT_ACTIONS)}; {args.action} sends no '
+                      'notices, so run check, the action and record yourself')
+    scope = (['--workspace', args.workspace] if args.workspace else []) \
+        + (['--session-id', args.session_id] if args.session_id else [])
+    across = scope + (['--controller-workspace', args.controller_workspace]
+                      if args.controller_workspace else [])
+    recipients = ['--to', *args.to] if args.to else []
+    code, checked = do_step('check', '--action', args.action, '--commit', args.commit, *scope)
+    if code:
+        raise Refused(f'check did not allow {args.action}, so the command was not run: {checked}')
+    before = do_must('notice', '--text', f'開始 {args.action}（{args.commit}）', *recipients, *across)
+    started = do_must('now')
+    try:
+        status = subprocess.run(command).returncode
+    except OSError as error:
+        print(f'lat-preauth: could not run {command[0]}: {error}', file=sys.stderr)
+        status = 127
+    result = 'succeeded' if status == 0 else 'failed'
+    try:
+        after = do_must('notice', '--text', f'{args.action}：{result}（{args.commit}）',
+                        *recipients, *across)
+        do_must('record', '--action', args.action, '--commit', args.commit, '--basis',
+                checked.splitlines()[0], '--result', result, '--started', started,
+                '--notice-before', before, '--notice-after', after, *across)
+    except DO_ERRORS as error:
+        print(f'lat-preauth: the command ran and {result}, but the after-notice or record step '
+              f'failed, so the record may be missing or partial (started {started}, '
+              f'before-notice {before}); run `report` and record by hand if needed: {error}',
+              file=sys.stderr)
+        return 2
+    return 0 if status == 0 else (status if status > 0 else 1)
+
+
 def cmd_report(args):
     top, session = round_owner(args)
     _, record, _, round_number = current_round(top, session, active=False)
@@ -1981,6 +2041,9 @@ def cmd_pre_push(args):
     return 1
 
 
+COMMANDS = {}
+
+
 def build_parser():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--workspace', help='Git worktree to check from; default the current '
@@ -2059,6 +2122,13 @@ def build_parser():
         sub.add_argument('--by', required=True, help='who registers it (HCOM name)')
     sub = holds.add_parser('list', parents=[common], help='every hold, released ones included')
     sub.add_argument('--json', action='store_true')
+    sub = commands.add_parser('do', parents=[common, across],
+                              help='check, notify, run a command, notify, record: stops at the '
+                                   'first step that fails')
+    sub.add_argument('--action', required=True, help=', '.join(MAIN_CHECKOUT_ACTIONS))
+    sub.add_argument('--commit', required=True, help='commit the action uses')
+    sub.add_argument('--to', nargs='+', metavar='NAME', help='notice recipients, as for notice')
+    sub.add_argument('run', nargs=argparse.REMAINDER, metavar='command', help='after --: the command to run')
     sub = commands.add_parser('pre-push', help='Git pre-push hook: refuse pushing held commits '
                                                '(reads the refs on stdin)')
     sub.add_argument('remote')
@@ -2066,13 +2136,15 @@ def build_parser():
     return parser
 
 
+COMMANDS.update(check=cmd_check, show=cmd_show, grant=cmd_grant, notice=cmd_notice,
+                record=cmd_record, report=cmd_report, now=cmd_now, do=cmd_do, hold=cmd_hold,
+                **{'pre-push': cmd_pre_push})
+
+
 def main():
     args = build_parser().parse_args()
-    commands = {'check': cmd_check, 'show': cmd_show, 'grant': cmd_grant, 'notice': cmd_notice,
-                'record': cmd_record, 'report': cmd_report, 'now': cmd_now,
-                'hold': cmd_hold, 'pre-push': cmd_pre_push}
     try:
-        return commands[args.command](args)
+        return COMMANDS[args.command](args)
     except Refused as error:
         print(f'lat-preauth: refused, nothing changed: {error}', file=sys.stderr)
         return 1
