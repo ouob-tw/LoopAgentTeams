@@ -165,7 +165,10 @@
 				class="scroller"
 				bind:this={scroller}
 				ontouchstart={() => (sliding = true)}
-				ontouchend={slideEnded}
+				ontouchend={(event) => {
+					// Another finger still down slides on.
+					if (!event.touches.length) slideEnded();
+				}}
 				ontouchcancel={slideEnded}
 				onpointerdown={(event) => {
 					// The mouse may be let go outside the box, dragging its scroll bar.
