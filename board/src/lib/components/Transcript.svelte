@@ -15,7 +15,7 @@
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import { EarlierReads, transcriptUrl, type TranscriptFeed } from '#lib/board/earlier.ts';
-	import { askingNote, askingTexts } from '#lib/board/question-message.ts';
+	import { askingNote } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { splitAttachments } from '#lib/board/attachments.ts';
 	import { answering } from '#lib/board/answering.svelte.ts';
@@ -27,6 +27,7 @@
 		askPlaces,
 		isQuestion,
 		pdRunPlace,
+		askingInView,
 		questionPlace,
 		reportPlace,
 		segments,
@@ -37,7 +38,6 @@
 		withLatest,
 		type PlacedTarget,
 		type Segment,
-		type TranscriptText,
 		type TranscriptUpdate,
 		type TranscriptView
 	} from '#lib/board/transcript.ts';
@@ -217,8 +217,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	const asking = $derived.by(() => {
 		if (!view || !questionCards) return new Map<number, InboxQuestion[]>();
 		const opened = openedQuestion;
-		const texts = view.items.filter((item): item is TranscriptText => item.kind === 'assistant');
-		return askingTexts(texts, opened ? [opened, ...questionList.filter((question) => question.key !== opened.key)] : questionList);
+		return askingInView(view, opened ? [opened, ...questionList.filter((question) => question.key !== opened.key)] : questionList);
 	});
 	/** What each text that asked questions says above its tag line, by `seq`; left out when nothing. */
 	const askingNotes = $derived.by(() => {

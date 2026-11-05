@@ -24,8 +24,8 @@ function asks(message: string, tag: string, id: string, revision: number): boole
 /**
  * The report that asked this revision of the question: of the controller's own session, tagged
  * DECIDE or HELP, its last line starting with that tag and naming the question, and not earlier
- * than the question was asked (when that is known). The latest when several are; null when none
- * is, never a near guess.
+ * than the question was asked (when that is known). The earliest when several are, as a controller's
+ * later reports may name it again while it waits; null when none is, never a near guess.
  */
 export function askingReport<R extends { session_id: string; tag: string; time: string; message: string }>(
 	sessionId: string,
@@ -37,7 +37,7 @@ export function askingReport<R extends { session_id: string; tag: string; time: 
 	for (const report of reports) {
 		if (report.session_id !== sessionId || (report.tag !== 'DECIDE' && report.tag !== 'HELP')) continue;
 		if (Date.parse(report.time) < asked || !asks(report.message, report.tag, question.id, question.revision)) continue;
-		if (!found || Date.parse(report.time) >= Date.parse(found.time)) found = report;
+		if (!found || Date.parse(report.time) < Date.parse(found.time)) found = report;
 	}
 	return found;
 }
@@ -100,7 +100,8 @@ function inNamedOrder(message: string, questions: InboxQuestion[]): InboxQuestio
  * The questions each of the controller's own texts (oldest first) asked, by the text's `seq`, in the order it
  * names them: a text asks one as a report does for `askingReport`, its tag read from its own last
  * line, and not earlier than the question was asked (when both times are known). A question goes
- * to the latest text that asked it; a text that asked none is left out.
+ * to the first text that asked it, whatever later ones name it again; a text that asked none is
+ * left out.
  */
 export function askingTexts(
 	texts: { seq: number; time: string | null; text: string }[],
@@ -110,7 +111,7 @@ export function askingTexts(
 	for (const question of questions) {
 		const asked = question.time ? Date.parse(question.time) : NaN;
 		const { id, revision } = question.question;
-		const text = texts.findLast(
+		const text = texts.find(
 			(text) =>
 				!(text.time && Date.parse(text.time) < asked) &&
 				(asks(text.text, 'DECIDE', id, revision) || asks(text.text, 'HELP', id, revision))

@@ -1,6 +1,6 @@
 // Where an opened report sits in its controller's conversation.
 import { expect, test } from 'bun:test';
-import { questionPlace, reportPlace, type TranscriptItem, type TranscriptView } from '../../src/lib/board/transcript.ts';
+import { askingInView, questionPlace, reportPlace, type TranscriptItem, type TranscriptView } from '../../src/lib/board/transcript.ts';
 import type { InboxQuestion } from '../../src/lib/board/types.ts';
 
 const text = (seq: number, time: string | null, body: string, kind: 'user' | 'assistant' = 'assistant'): TranscriptItem => ({ seq, kind, time, text: body });
@@ -38,13 +38,26 @@ const question = (time: string | null, askedIn: { time: string; message: string 
 	({ kind: 'question', key: 'q', time, question: { id: 'X-1', revision: 2 }, askedIn }) as unknown as InboxQuestion;
 const asking = (seq: number, time: string, revision = 2) => text(seq, time, `說明。\n\nDECIDE: X-1 r${revision} · 標題`);
 
-test('a question is at the latest text that asked its revision, never a near one', () => {
+test('a question is at the first text that asked its revision, never a near one', () => {
 	const asked = question('2026-10-17T10:00:00Z');
 	const ended = '2026-10-17T10:05:00Z';
-	expect(questionPlace(view([asking(1, '2026-10-17T10:01:00Z'), asking(3, '2026-10-17T10:03:00Z')]), asked, ended)).toBe(3);
+	expect(questionPlace(view([asking(1, '2026-10-17T10:01:00Z'), asking(3, '2026-10-17T10:03:00Z')]), asked, ended)).toBe(1);
 	// The r1 message, or one just before, is not it.
 	const others = [asking(1, '2026-10-17T09:59:00Z', 1), text(2, '2026-10-17T10:01:00Z', '別的話')];
 	expect(questionPlace(view(others), asked, ended)).toBeNull();
+});
+
+test('a later text naming the question again does not place it while earlier pages may hold the first', () => {
+	const asked = question('2026-10-17T10:00:00Z');
+	const ended = '2026-10-17T10:05:00Z';
+	const later = asking(9, '2026-10-17T10:30:00Z');
+	expect(questionPlace(view([later], 8), asked, ended)).toBeUndefined();
+	expect(questionPlace(view([asking(5, '2026-10-17T10:01:00Z'), later], 4), asked, ended)).toBeUndefined();
+	expect(questionPlace(view([text(2, '2026-10-17T09:59:00Z', '更早'), asking(5, '2026-10-17T10:01:00Z'), later], 1), asked, ended)).toBe(5);
+	expect(askingInView(view([later], 8), [asked]).size).toBe(0);
+	expect([...askingInView(view([asking(5, '2026-10-17T10:01:00Z'), later]), [asked]).keys()]).toEqual([5]);
+	// Not known when it was asked: at the first text loaded, as nothing says to wait.
+	expect([...askingInView(view([later], 8), [question(null)]).keys()]).toEqual([9]);
 });
 
 test('a question not found is pending until the turn that asked it ends, then searched back to when it was asked', () => {
