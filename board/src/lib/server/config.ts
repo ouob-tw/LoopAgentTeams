@@ -99,7 +99,7 @@ export interface BoardConfig {
 	statusPollTimeoutMs: number;
 	/** How soon after a send or an interrupt from the board the statuses are read once more. */
 	statusAfterActionMs: number;
-	/** The current time in milliseconds. Read state and archiving use this, never `Date.now()`. */
+	/** The current time in milliseconds. Read state, archiving and the 畫面分頁's recovery bookkeeping use this, never `Date.now()`. */
 	now(): number;
 }
 
