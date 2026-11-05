@@ -7,8 +7,8 @@
 // still one string. Two lines the pane wrapped at its edge are matched as one, so a key wrapped there
 // is hidden on both: which lines were wrapped is told by the pane's text with wrapped lines joined
 // (Herdr's `recent-unwrapped`), read only when joining would change what is hidden (`wrapMatters`);
-// without it, every line that ends and every next line that starts with a non-space are joined, which
-// hides more. A key broken by hand, or with other characters or box lines between its pieces, is not
+// without it, the lines are matched both as they stand and with every line that ends and every next
+// line that starts with a non-space joined, which hides more than either. A key broken by hand, or with other characters or box lines between its pieces, is not
 // recognised.
 
 import { graphemes, graphemeWidth } from '../board/screen.ts';
@@ -80,9 +80,25 @@ function shownOf(raw: string): Shown[] {
 	return shown;
 }
 
-/** More of the pane's text than this is not searched for wrapped lines: every line that may have been
- *  is taken as wrapped, which hides more. Searching a line of megabytes takes seconds. */
-const UNWRAPPED_MAX = 65_536;
+/** More of the pane's text than this is not searched for wrapped lines, as if the pane could not tell. */
+const UNWRAPPED_MAX = 262_144;
+
+/** Whether `text` holds `part`, in time in line with their lengths whatever they hold (Knuth-Morris-Pratt):
+ *  `includes` on a text that nearly holds it over and over takes their product. */
+function holds(text: string, part: string): boolean {
+	const back = new Int32Array(part.length);
+	for (let at = 1, matched = 0; at < part.length; at++) {
+		while (matched > 0 && part.charCodeAt(at) !== part.charCodeAt(matched)) matched = back[matched - 1];
+		if (part.charCodeAt(at) === part.charCodeAt(matched)) matched++;
+		back[at] = matched;
+	}
+	for (let at = 0, matched = 0; at < text.length; at++) {
+		while (matched > 0 && text.charCodeAt(at) !== part.charCodeAt(matched)) matched = back[matched - 1];
+		if (text.charCodeAt(at) === part.charCodeAt(matched)) matched++;
+		if (matched === part.length) return true;
+	}
+	return false;
+}
 
 /** Which of the screen's lines were wrapped into the next: `none`; `all` that may have been (each
  *  ending and the next starting with a non-space); or the pane's text with wrapped lines joined,
@@ -100,58 +116,63 @@ export function maskScreen(screen: string, wrapped: Wrapped = 'all'): string {
 	const lines = parts.filter((_, index) => index % 2 === 0);
 	const shown = lines.map(shownOf);
 	const texts = shown.map((line) => line.map((each) => each.char).join(''));
-	const joinedLines = typeof wrapped === 'object' && wrapped.unwrapped.length <= UNWRAPPED_MAX ? wrapped.unwrapped.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/) : null;
+	const told = typeof wrapped === 'object' && wrapped.unwrapped.length <= UNWRAPPED_MAX ? wrapped.unwrapped.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '') : null;
 	const wraps = (row: number) => {
 		if (wrapped === 'none' || !/\S$/.test(texts[row - 1]) || !/^\S/.test(texts[row])) return false;
-		const pair = texts[row - 1] + texts[row];
-		return joinedLines === null || joinedLines.some((line) => line.includes(pair));
+		return told === null || holds(told, texts[row - 1] + texts[row]);
 	};
 	/** Masked characters, by line and place in the line. */
 	const hidden = shown.map((line) => new Array<boolean>(line.length).fill(false));
 
-	// The screen as one text, wrapped lines joined back; each of its characters' line and place.
-	let joined = '';
-	const at: [number, number][] = [];
-	shown.forEach((line, row) => {
-		if (row > 0 && !wraps(row)) {
-			joined += '\n';
-			at.push([-1, -1]);
-		}
-		line.forEach((each, place) => {
-			// One entry per UTF-16 unit, so regex indexes find it.
-			for (let unit = 0; unit < each.char.length; unit++) at.push([row, place]);
-			joined += each.char;
+	/** Hide what looks like a secret in the screen as one text, with the lines `joins` says joined. */
+	const hideSecrets = (joins: (row: number) => boolean) => {
+		let joined = '';
+		/** Each of the text's characters' line and place. */
+		const at: [number, number][] = [];
+		shown.forEach((line, row) => {
+			if (row > 0 && !joins(row)) {
+				joined += '\n';
+				at.push([-1, -1]);
+			}
+			line.forEach((each, place) => {
+				// One entry per UTF-16 unit, so regex indexes find it.
+				for (let unit = 0; unit < each.char.length; unit++) at.push([row, place]);
+				joined += each.char;
+			});
 		});
-	});
-	const hide = (from: number, to: number) => {
-		for (let index = from; index < to; index++) {
-			const [row, place] = at[index];
-			if (row >= 0) hidden[row][place] = true;
+		const hide = (from: number, to: number) => {
+			for (let index = from; index < to; index++) {
+				const [row, place] = at[index];
+				if (row >= 0) hidden[row][place] = true;
+			}
+		};
+		for (const shape of KEY_SHAPES) for (const match of joined.matchAll(shape)) hide(match.index, match.index + match[0].length);
+		JWT_RUN.lastIndex = 0;
+		for (let run = JWT_RUN.exec(joined); run; run = JWT_RUN.exec(joined)) {
+			JWT_REST.lastIndex = JWT_RUN.lastIndex;
+			if (!JWT_REST.test(joined)) continue;
+			const start = JWT_START.exec(run[0]);
+			if (!start) continue;
+			hide(run.index + start.index, JWT_REST.lastIndex);
+			JWT_RUN.lastIndex = JWT_REST.lastIndex;
+		}
+		NAME.lastIndex = 0;
+		for (let name = NAME.exec(joined); name; name = NAME.exec(joined)) {
+			if (!SECRET_WORD.test(name[0])) continue;
+			NAMED_VALUE.lastIndex = NAME.lastIndex;
+			const value = NAMED_VALUE.exec(joined);
+			if (!value) continue;
+			NAME.lastIndex = NAMED_VALUE.lastIndex;
+			hide(NAMED_VALUE.lastIndex - value[1].length, NAMED_VALUE.lastIndex);
+		}
+		for (const match of joined.matchAll(BEARER_VALUE)) {
+			const end = match.index + match[0].length;
+			hide(end - match[2].length, end);
 		}
 	};
-	for (const shape of KEY_SHAPES) for (const match of joined.matchAll(shape)) hide(match.index, match.index + match[0].length);
-	JWT_RUN.lastIndex = 0;
-	for (let run = JWT_RUN.exec(joined); run; run = JWT_RUN.exec(joined)) {
-		JWT_REST.lastIndex = JWT_RUN.lastIndex;
-		if (!JWT_REST.test(joined)) continue;
-		const start = JWT_START.exec(run[0]);
-		if (!start) continue;
-		hide(run.index + start.index, JWT_REST.lastIndex);
-		JWT_RUN.lastIndex = JWT_REST.lastIndex;
-	}
-	NAME.lastIndex = 0;
-	for (let name = NAME.exec(joined); name; name = NAME.exec(joined)) {
-		if (!SECRET_WORD.test(name[0])) continue;
-		NAMED_VALUE.lastIndex = NAME.lastIndex;
-		const value = NAMED_VALUE.exec(joined);
-		if (!value) continue;
-		NAME.lastIndex = NAMED_VALUE.lastIndex;
-		hide(NAMED_VALUE.lastIndex - value[1].length, NAMED_VALUE.lastIndex);
-	}
-	for (const match of joined.matchAll(BEARER_VALUE)) {
-		const end = match.index + match[0].length;
-		hide(end - match[2].length, end);
-	}
+	hideSecrets(wraps);
+	// Lines joined by guess can stop a key looking like one, with the line before it right against it.
+	if (wrapped !== 'none' && told === null) hideSecrets(() => false);
 
 	// A private key block's body: between its markers, or up to the screen's end when its end is not
 	// shown yet, or the lines just above an end marker whose start scrolled off.

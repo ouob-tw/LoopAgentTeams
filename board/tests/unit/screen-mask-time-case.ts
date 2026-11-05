@@ -10,8 +10,8 @@ const screen = (unit: string, columns = 300, rows = 80) => {
 	return Array.from({ length: rows }, () => line).join('\r\n');
 };
 const coloured = (text: string) => text.replace(/[a-z]/g, (char) => `${ESC}[3${char.charCodeAt(0) % 8}m${char}`);
-/** Text that almost holds every pair of the screen's lines of `a`, as long as is still searched. */
-const nearPairs = `${'a'.repeat(599)}b`.repeat(109);
+/** Text as long as is still searched that almost holds every pair of `columns` wide lines of `a`. */
+const nearPairs = (columns: number) => `${'a'.repeat(columns * 2 - 1)}b`.repeat(Math.floor(262_144 / (columns * 2)));
 
 const CASES: [name: string, text: string, unwrapped?: string][] = [
 	['secret words with nothing after them', screen('password')],
@@ -31,8 +31,9 @@ const CASES: [name: string, text: string, unwrapped?: string][] = [
 	['near a JWT, no dots', screen('eyJabcdefghijklmnop')],
 	['Bearer over and over', screen('Bearer ')],
 	['an open OSC over and over', screen(`${ESC}]0;`)],
-	['pane text that almost holds every pair of lines', screen('a'), nearPairs],
-	['pane text of a megabyte', screen('a'), nearPairs.repeat(16)]
+	['pane text that almost holds every pair of lines', screen('a'), nearPairs(300)],
+	['the same on a larger screen', screen('a', 600, 160), nearPairs(600)],
+	['pane text of a megabyte', screen('a'), nearPairs(300).repeat(4)]
 ];
 
 for (const [name, text, unwrapped] of CASES) {

@@ -102,8 +102,8 @@ function deliver(push: (update: ScreenUpdate) => void, update: ScreenUpdate, age
 }
 
 /** The screen of the pane Herdr lists the agent in now, its secrets masked. Which lines it wrapped
- *  is asked of Herdr only when that changes what is masked; when Herdr cannot tell, every line that
- *  may have been is taken as wrapped, which masks more. */
+ *  is asked of Herdr only when that changes what is masked; when Herdr cannot tell, the lines are
+ *  masked both as they stand and with every line that may have been wrapped joined, which masks more. */
 async function readMasked(board: Board, agentId: string): Promise<{ text: string } | { reason: string }> {
 	const agent = (await board.current()).agents.find((candidate) => candidate.id === agentId);
 	if (!agent?.inHerdr) return { reason: '這個 Agent 已不在 Herdr 的清單上' };
