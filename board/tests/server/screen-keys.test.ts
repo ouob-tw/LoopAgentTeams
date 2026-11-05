@@ -326,3 +326,66 @@ test('a page whose key request got no answer asks for the 恢復畫面 itself', 
 	await page.close();
 	expect(herdrCalls()).toEqual([]);
 });
+
+test('a key request may carry up to 200 inputs, text up to 10000 characters and a recovery ID up to 100; one more is refused and nothing is sent', async () => {
+	// Herdr fails the first input, so a request that is taken types one and skips the rest.
+	setHerdr({ fail: { 'pane send-text': { exit: 1, stderr: 'boom' } } });
+	const most = await keys({ session: 's-plain', keys: Array.from({ length: 200 }, () => ({ text: 'x' })), recovery: 'r'.repeat(100) });
+	expect(most.status).toBe(502);
+	expect(most.body.results).toHaveLength(200);
+	const longest = await keys({ session: 's-plain', keys: [{ text: 'y'.repeat(10_000) }], recovery: 'bound-text' });
+	expect(longest.body.results).toEqual(['failed']);
+	expect(herdrCalls().map((call) => [call[1], call[3].length])).toEqual([
+		['send-text', 1],
+		['send-text', 10_000]
+	]);
+	for (const body of [
+		{ session: 's-plain', keys: Array.from({ length: 201 }, () => ({ text: 'x' })), recovery: 'bound-201' },
+		{ session: 's-plain', keys: [{ text: 'y'.repeat(10_001) }], recovery: 'bound-10001' },
+		{ session: 's-plain', keys: [{ key: 'enter' }], recovery: 'r'.repeat(101) }
+	]) {
+		const refused = await keys(body);
+		expect(refused.status).toBe(400);
+		expect(refused.body).toEqual({ error: 'invalid_keys' } as unknown as KeysResponse);
+	}
+	const recover = (recovery: string) => fixture.fetch('/api/agents/screen/recover', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-plain', recovery }), cookie });
+	expect((await recover('q'.repeat(100))).status).toBe(200);
+	const over = await recover('q'.repeat(101));
+	expect(over.status).toBe(400);
+	expect(await over.json()).toEqual({ error: 'invalid_recovery' });
+	expect(herdrCalls()).toHaveLength(2);
+});
+
+test('keys are refused, nothing sent, for an agent Herdr no longer lists and for one whose model switch is unfinished', async () => {
+	setHerdr({ agents: [herdrAgent('s-board', OWN)] });
+	await fixture.refresh(cookie);
+	const gone = await keys({ session: 's-plain', keys: [{ key: 'enter' }], recovery: 'gone-keys' });
+	expect(gone.status).toBe(409);
+	expect(gone.body.reason).toContain('不在 Herdr 的清單上');
+	expect(gone.body.results).toEqual(['skipped']);
+
+	setHerdr();
+	// A switch whose stop failed stays open until it is continued or given up.
+	const open = { id: 'switch-open', kind: 'switch', time: new Date().toISOString(), controllerId: 's-plain', hcomName: '', client: 'claude', from: null, to: { model: null, effort: 'high' }, route: 'restart', state: 'stop-failed', error: 'boom', pane: null };
+	writeFileSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), JSON.stringify(open) + '\n');
+	await fixture.refresh(cookie);
+	const switching = await keys({ session: 's-plain', keys: [{ key: 'enter' }], recovery: 'switch-keys' });
+	expect(switching.status).toBe(409);
+	expect(switching.body.reason).toContain('切換');
+	expect(switching.body.results).toEqual(['skipped']);
+	expect(herdrCalls()).toEqual([]);
+});
+
+test('an agent keeps its newest 100 waiting failures: at 101 the oldest is dropped and never recovered', async () => {
+	for (let n = 1; n <= 101; n++) {
+		const response = await fixture.fetch('/api/agents/screen/recover', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-plain', recovery: `cap-${n}` }), cookie });
+		expect(response.status).toBe(200);
+	}
+	const page = follow('s-plain');
+	const first = await until(() => page.updates.find((update) => update.ok && update.recovered.includes('cap-101')), 5_000, 'the 恢復畫面');
+	await page.close();
+	const mine = first.recovered.filter((id) => id.startsWith('cap-'));
+	expect(mine).toHaveLength(100);
+	expect(mine).not.toContain('cap-1');
+	expect(mine).toContain('cap-2');
+});
