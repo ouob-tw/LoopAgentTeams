@@ -1,42 +1,55 @@
 ---
 name: ui-choice-demo
-description: Use when the user will look at something: before asking them to choose a UI, layout, or interaction, when showing results or a demo, and when a choice is easier to make from a picture. Applies in any conversation and to non-UI questions too. Prefer an openable HTML server over text or screenshots.
+description: Use when the user will look at something: before asking them to choose a UI, layout, or interaction, when showing results or a demo, and when a choice is easier to make from a picture. Applies in any conversation and to non-UI questions too. Publishes static HTML with one command instead of hand-starting servers.
 ---
 
-# 給使用者看的東西，優先給能打開的網址
+# 給使用者看的東西，用指令發布成網址
 
-使用者要看得到才看得懂、選得出來。三種情況都先開 HTML 伺服器，給一個能打開的網址：
+使用者要看得到才看得懂、選得出來。這三種情況都發布成能打開的網址：
 
-- 問介面、版面、互動方式的選擇（不限介面題，看圖比較好選的題目也算）。
+- 問介面、版面、互動方式的選擇（看圖比較好選的題目也算，不限介面題）。
 - 回報成果。
 - 展示 DEMO。
 
 文字和截圖只當補充。網址打不開就先修好再回報。不要用 Claude 的 artifact 工具。
 
-不必開伺服器：只有文字的結果，或使用者要的是檔案或 markdown。只問措辭時用 `ui-copy`。
+不必發布：只有文字的結果，或使用者要的是檔案或 markdown。只問措辭時用 `ui-copy`。要看真實看板的即時畫面，照舊用專案的測試伺服器，不走這裡。
 
-## 1. 備畫面
+## 發布
 
-依現況挑一種：
+1. 把畫面寫成一個資料夾，裡面有 `index.html`（單一檔案也行）。只要內容片段就好，開頭不是 `<!DOCTYPE` 或 `<html` 時，會自動套共用外框：深淺色、手機寬度、`.card`、`.option`（放在 `.options` 裡會並排）。要比較多個版本，每版包成 `<section data-variant="a" data-title="直排">`，外框會加切換列。完整 HTML 則原樣顯示。
+2. 發布：
 
-- **已有可跑的實作**：在測試伺服器上給實際畫面。各選項的差異做成開關或網址參數，同一個網址就能切換。
-- **還沒實作**：用 `/prototype` 的介面分支（它的 `UI.md`）做可切換版本的示意頁，貼著真實頁面做，不做空頁。
-- **問的是流程或區塊關係，版本切換幫不上**：畫一張圖，放在能用網址打開的頁面上。
+   ```bash
+   uv run --no-project python <本技能目錄>/scripts/demo.py publish ./my-demo --name hcom-mailbox
+   ```
 
-## 2. 決定網址
+   名稱用小寫英數與 `.` `_` `-`。同名再發布就覆蓋，原網址重新整理即是新版。指令會自己打開網址確認，成功只印一行網址（含密鑰，直接整行貼給使用者）；失敗會印原因，先修好再繼續。
+3. 滿 14 天沒更新的展示會自動清掉，不必手動關。
+4. 問選擇時，網址放進題目；用 LAT 面板就交給 `question ask` 或 `question upsert` 的 `--visual`（見 `lat` 技能的 `references/question-panel.md`）。作答仍走面板，展示頁不收點選。
 
-開伺服器前先看專案的 `CLAUDE.md` 或 `AGENTS.md` 有沒有指向主機私人設定檔。有的話，埠號與網域照那份寫的用，並照它分開測試伺服器與示意頁。沒有就用專案預設。
+只提供靜態檔案。要先做示意頁時用 `/prototype` 的介面分支（它的 `UI.md`），貼著真實頁面做，不做空頁。
 
-連結要用使用者那一端打得開的位址：使用者不在這台主機時，`localhost` 打不開。
+## 沒有網址時（一次性安裝）
 
-## 3. 確認打得開
+指令回報連不上，代表常駐服務還沒裝。埠號與網域不寫進 repo：先看專案 `CLAUDE.md` 指向的主機私人設定檔，把展示用的埠號與網域寫進 `~/.agents/demo.json`：
 
-逐一打開要放進題目或回報的連結，確認回應成功，而且顯示的是連結指定的版本。有任何一個失敗就先修好，不發問、不回報。
+```json
+{"port": 7111, "host": "your.domain"}
+```
 
-## 4. 發問或回報
+再建立 `~/.config/systemd/user/demo-publish.service`，把 `<…>` 換成實際路徑後啟用：
 
-- 成果與 DEMO 直接在回報裡放網址。
-- 題目裡放可以直接打開的連結，每個選項一條，帶上版本參數指到那個組合，例如 `?variant=b`。多個維度就都帶上，例如 `?layout=rail&density=compact`。
-- 用 LAT 面板問時，連結交給 `question ask` 或 `question upsert` 的 `--visual`，用法在 `lat` 技能的 `references/question-panel.md`。
+```ini
+[Unit]
+Description=Demo static server
+[Service]
+ExecStart=/usr/bin/env uv run --no-project python <本技能目錄>/scripts/demo.py serve
+Restart=on-failure
+[Install]
+WantedBy=default.target
+```
 
-伺服器留著，直到使用者答覆或看完。答覆後示意頁依 `/prototype` 的規則收尾。
+```bash
+systemctl --user enable --now demo-publish
+```
