@@ -1,6 +1,6 @@
 ---
 name: ui-choice-demo
-description: Use when the user will look at something: before asking them to choose a UI, layout, or interaction, when showing results or a demo, and when a choice is easier to make from a picture. Applies in any conversation and to non-UI questions too. Publishes static HTML with one command instead of hand-starting servers.
+description: "Use when the user will look at something: before asking them to choose a UI, layout, or interaction, when showing results or a demo, and when a choice is easier to make from a picture. Applies in any conversation and to non-UI questions too. Publishes static HTML with one command instead of hand-starting servers."
 ---
 
 # 給使用者看的東西，用指令發布成網址
