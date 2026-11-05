@@ -99,6 +99,8 @@ export interface BoardConfig {
 	statusPollTimeoutMs: number;
 	/** How soon after a send or an interrupt from the board the statuses are read once more. */
 	statusAfterActionMs: number;
+	/** How often an open 畫面分頁's screen is read. */
+	screenMs: number;
 	/** The current time in milliseconds. Read state, archiving and the 畫面分頁's recovery bookkeeping use this, never `Date.now()`. */
 	now(): number;
 }
@@ -238,6 +240,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		statusWorkingPollMs: seconds(env.LAT_BOARD_STATUS_WORKING_POLL_SECONDS, 2_000),
 		statusPollTimeoutMs: seconds(env.LAT_BOARD_STATUS_POLL_TIMEOUT_SECONDS, 4_000),
 		statusAfterActionMs: seconds(env.LAT_BOARD_STATUS_AFTER_ACTION_SECONDS, 2_000),
+		screenMs: seconds(env.LAT_BOARD_SCREEN_SECONDS, 1_000),
 		now: clock(env)
 	};
 }

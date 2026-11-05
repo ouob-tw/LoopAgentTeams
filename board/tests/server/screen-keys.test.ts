@@ -41,10 +41,10 @@ beforeEach(async () => {
 function herdrAgent(session: string, pane: string) {
 	return { agent: 'claude', agent_session: { kind: 'id', value: session }, agent_status: 'blocked', cwd: `/projects/${session}`, pane_id: pane, tab_id: `wA:t-${session}`, workspace_id: 'wA' };
 }
-function setHerdr(extra: object = {}) {
+function setHerdr(extra: object = {}, on: Fixture = fixture) {
 	const agents = [herdrAgent('s-plain', PANE), herdrAgent('s-board', OWN)];
 	writeFileSync(
-		join(fixture.dir, 'herdr.json'),
+		join(on.dir, 'herdr.json'),
 		JSON.stringify({
 			agents,
 			workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
@@ -63,8 +63,8 @@ function changeHerdr(change: (plan: Record<string, any>) => void) {
 const herdrCalls = (): string[][] => jsonLines(join(fixture.dir, 'herdr-calls.jsonl'));
 const reads = (): string[][] => jsonLines(join(fixture.dir, 'herdr-list-calls.jsonl')).filter((args: string[]) => args[0] === 'pane' && (args[1] === 'read' || args[1] === 'get'));
 
-async function keys(body: object, as: string | undefined = cookie): Promise<{ status: number; body: KeysResponse }> {
-	const response = await fixture.fetch('/api/agents/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), cookie: as });
+async function keys(body: object, as: string | undefined = cookie, on: Fixture = fixture): Promise<{ status: number; body: KeysResponse }> {
+	const response = await on.fetch('/api/agents/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), cookie: as });
 	return { status: response.status, body: await response.json() };
 }
 
@@ -75,12 +75,12 @@ afterEach(async () => {
 });
 
 /** A page's open 畫面分頁: every screen update its stream carried, as raw data too. */
-function follow(session: string) {
+function follow(session: string, on: Fixture = fixture, as: string = cookie) {
 	const updates: ScreenUpdate[] = [];
 	const raw: string[] = [];
 	const abort = new AbortController();
 	const done = (async () => {
-		const response = await fixture.fetch(`/api/agents/screen/events?session=${encodeURIComponent(session)}`, { cookie, signal: abort.signal });
+		const response = await on.fetch(`/api/agents/screen/events?session=${encodeURIComponent(session)}`, { cookie: as, signal: abort.signal });
 		const reader = response.body!.getReader();
 		const decoder = new TextDecoder();
 		let buffer = '';
@@ -271,8 +271,6 @@ test('a pane that cannot be read says why', async () => {
 	expect(first.reason).toContain('not found');
 });
 
-// That the read after a failure comes at once, before the next one of the 1 s rhythm, is not shown
-// here: under load no bound separates the two.
 test('after a failed press the screen is read again and pushed as its 恢復畫面, unchanged or not; a failed read keeps it waiting', async () => {
 	const page = follow('s-plain');
 	await until(() => page.updates[0], 5_000, 'the first screen');
@@ -429,5 +427,24 @@ test('a recovered failure stays listed for 10 minutes on the board clock, then i
 		expect(dropped.recovered).not.toContain('kept-1');
 	} finally {
 		rmSync(join(fixture.dir, 'clock'), { force: true });
+	}
+});
+
+test('the read after a failed press comes at once, not with the regular rhythm', async () => {
+	// A board that reads an open screen only once a minute: a 恢復畫面 within seconds was read for the failure.
+	const slow = await startFixture({ env: { HERDR_PANE_ID: OWN, LAT_BOARD_HERDR_TIMEOUT_SECONDS: '1', LAT_BOARD_SCREEN_SECONDS: '60' } });
+	try {
+		const as = await slow.login();
+		setHerdr({}, slow);
+		await slow.refresh(as);
+		const page = follow('s-plain', slow, as);
+		await until(() => page.updates[0], 5_000, 'the first screen');
+		setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: 'boom' } } }, slow);
+		const failed = await keys({ session: 's-plain', keys: [{ key: 'esc' }], recovery: 'soon-1' }, as, slow);
+		expect(failed.body.ok).toBe(false);
+		await until(() => page.updates.find((update) => update.recovered.includes('soon-1')), 20_000, 'the 恢復畫面');
+		await page.close();
+	} finally {
+		await slow.cleanup();
 	}
 });

@@ -15,8 +15,6 @@ import { readPaneScreen, readUnwrapped } from './herdr.ts';
 import { exceptionFields, log } from './log.ts';
 import { maskScreen, wrapMatters } from './screen-mask.ts';
 
-/** How often an open screen is read. */
-export const SCREEN_MS = 1_000;
 /** How long a recovered failure stays listed, for a page that joins or comes back later. A failure
  *  waiting for its 恢復畫面 is kept until a read recovers it, however long Herdr cannot be read; only
  *  the newest `WAITING_MAX` per agent are kept. */
@@ -165,7 +163,7 @@ function startFollower(board: Board, agentId: string): Follower {
 		if (again) {
 			again = false;
 			void read();
-		} else timer = setTimeout(() => void read(), SCREEN_MS);
+		} else timer = setTimeout(() => void read(), board.config.screenMs);
 	}
 	void read();
 	return follower;
