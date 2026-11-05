@@ -1,7 +1,7 @@
 // What the page keeps about actions on the Herdr 分頁's agents: the operation record of the
 // agents it has opened, what a model or permission switch may offer them, and one attempt at a
 // time of sending text, interrupting, closing, pausing or resuming its HCOM link, or switching.
-import type { AgentAction, AgentActionResponse } from './agent-actions.ts';
+import type { AgentAction, AgentActionResponse, WorkspaceContents } from './agent-actions.ts';
 import { request } from './api.ts';
 import type { ClosedResumeResponse } from './closed-agents.ts';
 import type { Outcome } from './messaging.svelte.ts';
@@ -114,6 +114,20 @@ class AgentControl {
 	/** Move a Herdr workspace next to the workspace `onto`, the one it was dropped on. */
 	moveWorkspace(workspace: string, onto: string): Promise<Outcome> {
 		return this.#post('/api/agents/workspace/move', null, { workspace, onto });
+	}
+
+	/** What closing the workspace would take with it, read now; or why it cannot be told. */
+	async workspaceContents(workspace: string): Promise<{ ok: true; contents: WorkspaceContents } | { ok: false; reason: string }> {
+		const result = await request<WorkspaceContents>(`/api/agents/workspace/close?workspace=${encodeURIComponent(workspace)}`);
+		if (result.ok) return { ok: true, contents: result.value };
+		const reason = (result.body as { reason?: unknown } | null | undefined)?.reason;
+		return { ok: false, reason: typeof reason === 'string' ? reason : '沒有收到看板伺服器的回應。' };
+	}
+
+	/** Close a Herdr workspace with everything in it, after the user confirmed how many agents and
+	 *  tabs it has. */
+	closeWorkspace(workspace: string, confirmed: Pick<WorkspaceContents, 'agents' | 'tabs'>): Promise<Outcome> {
+		return this.#post('/api/agents/workspace/close', null, { workspace, agents: confirmed.agents, tabs: confirmed.tabs });
 	}
 
 	/** Rename the card's Herdr tab; the label is already trimmed and not empty. */
