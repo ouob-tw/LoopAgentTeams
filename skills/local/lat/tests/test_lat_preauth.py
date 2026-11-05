@@ -2248,7 +2248,15 @@ class HoldTests(WriteCase):
                 result = self.hold('add', '--commit', commit, '--decision', 'HOLD-1', '--by', 'x')
                 self.assertEqual(result.returncode, 1)
             self.assertEqual(len(self.listed()), 1)
+        before = self.holds_file.read_bytes()
         self.decision('PUSH-1')
+        for command in ('add', 'release'):
+            with self.subTest(f'{command} without a name is refused unchanged'):
+                result = self.hold(command, '--commit', self.held, '--decision', 'PUSH-1',
+                                   '--by', ' ')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('--by needs', result.stderr)
+                self.assertEqual(self.holds_file.read_bytes(), before)
         result = self.release('PUSH-1')
         self.assertEqual(result.returncode, 0, result.stderr)
         released = self.listed()[0]['released']
@@ -2335,6 +2343,17 @@ class HoldTests(WriteCase):
         self.write(self.holds_file, json.dumps({'holds': [row]}))
         self.gate_record()
         self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
+
+    def test_a_held_commit_git_cannot_read_still_asks(self):
+        self.commit('fix(lat): later work (#313)', 'c.txt')
+        self.gate_record()
+        self.add()
+        loose = self.repo / '.git' / 'objects' / self.held[:2] / self.held[2:]
+        loose.chmod(0o644)
+        loose.write_bytes(b'corrupt')
+        verdict = self.check('deploy-prod')
+        self.assertIn('error', verdict['reason_kinds'])
+        self.assertIn(f'contains held commit {self.held[:12]}', ' '.join(verdict['reasons']))
 
     def test_the_docs_say_when_to_hold_and_that_push_and_deploy_questions_list_holds(self):
         skill = (SCRIPT.parents[1] / 'SKILL.md').read_text()

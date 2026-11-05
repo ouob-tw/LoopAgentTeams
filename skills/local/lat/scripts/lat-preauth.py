@@ -588,14 +588,15 @@ def contains_strictly(top, older, newer):
     """Whether `older` is `newer` or its ancestor; raises when Git cannot tell, so a hold
     never stops counting because an object is unreadable. A held commit this repo no longer
     has (rewritten, then pruned) is in no version."""
-    if git(top, 'cat-file', '-e', f'{older}^{{commit}}') is None:
-        return False
-    result = subprocess.run(['git', '-C', str(top), 'merge-base', '--is-ancestor', older, newer],
-                            capture_output=True, text=True, timeout=30)
-    if result.returncode not in (0, 1):
-        raise ValueError(f'cannot tell whether {newer[:12]} contains held commit {older[:12]} '
-                         f'({result.stderr.strip()})')
-    return result.returncode == 0
+    def asks(*args):  # exit 0 yes, 1 no, anything else Git could not tell
+        result = subprocess.run(['git', '-C', str(top), *args], capture_output=True, text=True,
+                                timeout=30)
+        if result.returncode not in (0, 1):
+            raise ValueError(f'cannot tell whether {newer[:12]} contains held commit '
+                             f'{older[:12]} ({result.stderr.strip()})')
+        return result.returncode == 0
+    return (asks('rev-parse', '--verify', '--quiet', f'{older}^{{commit}}')
+            and asks('merge-base', '--is-ancestor', older, newer))
 
 
 def held_problems(top, contains):
@@ -1902,6 +1903,8 @@ def cmd_hold(args):
         return 0
     if not DECISION_ID.fullmatch(args.decision):
         raise Refused(f'invalid decision record ID `{args.decision}`')
+    if not args.by.strip():
+        raise Refused('--by needs the name of who registers it')
     commits = []
     for ref in args.commit:
         sha = resolve_version(top, ref)
