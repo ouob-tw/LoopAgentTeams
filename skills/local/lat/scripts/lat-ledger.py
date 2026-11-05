@@ -634,6 +634,7 @@ def cmd_init(args):
         doc = {'version': VERSION, 'workspace': str(workspace),
                'integration_branch': args.integration_branch, 'orchestrator': args.orchestrator,
                'created_at': at, 'updated_at': at, 'next_id': 1, 'items': [],
+               'qa_coverage': True,  # ledgers made before this rule lack it and skip the rule
                'history': [{'at': at, 'by': actor(args), 'action': 'init', 'reason': None}]}
         save(store, doc, None, {'at': at, 'by': actor(args), 'action': 'init', 'item': None,
                                 'reason': None})
@@ -865,9 +866,42 @@ def cmd_next(args):
     return 0
 
 
+def ticket_refs(text):
+    """The ticket references in a ticket field (it may list several, split by commas or
+    spaces), as (repo, "#N"); repo is None for a bare #N or bare number, which matches only
+    another bare one. Text that is no reference counts as one reference of its own."""
+    found = set()
+    for token in re.split(r'[\s,;、]+', text.strip()):
+        match = re.fullmatch(r'(?:([\w.-]+/[\w.-]+))?#?(\d+)', token)
+        if match:
+            found.add((match.group(1), '#' + match.group(2)))
+    return found or {(None, text.strip())}
+
+
+def tickets_without_qa(doc):
+    """Tickets with an impl row but no qa-draft/qa row (a cancelled one is a recorded exemption).
+    A cancelled impl row never delivered anything, so it needs no QA."""
+    qa_refs = set()
+    for item in doc['items']:
+        if item['stage'] in ('qa-draft', 'qa'):
+            qa_refs |= ticket_refs(item['ticket'])
+    missing = {}
+    for item in doc['items']:
+        if item['stage'] != 'impl' or item['status'] == 'cancelled':
+            continue
+        for ref in sorted(ticket_refs(item['ticket']), key=str):
+            if ref not in qa_refs:
+                missing.setdefault(f'{ref[0] or ""}{ref[1]}', []).append(item['id'])
+    return missing
+
+
 def cmd_check(args):
     doc = read_only(args)
     failures, cancelled = [], []
+    for number, ids in tickets_without_qa(doc).items() if doc.get('qa_coverage') else ():
+        failures.append({'id': ids[0], 'label': f'ticket {number} (impl item {", ".join(map(str, ids))})',
+                         'problems': ['no qa-draft or qa item covers it; add one, or cancel one '
+                                      'with --reason to record why not']})
     repos = [{'id': item['id'], 'repo': item['repo']} for item in doc['items']
              if item.get('repo') and item['status'] != 'cancelled']
     for item in doc['items']:
