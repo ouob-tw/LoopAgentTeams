@@ -87,3 +87,32 @@ export function tabDrop(cards: readonly Agent[], dragged: number, over: number):
 	const mark = after ? cards.findLastIndex((card) => card.herdr.tab === tab) : cards.findIndex((card) => card.herdr.tab === tab);
 	return { tab, after, mark };
 }
+
+/** The list with the items `moving` picks taken out and put back together next to the items
+ *  `onto` picks: after the last of them, or before the first. How a dropped tab's cards, or a
+ *  dropped workspace, are shown before Herdr has answered. */
+export function moveBeside<T>(items: readonly T[], moving: (item: T) => boolean, onto: (item: T) => boolean, after: boolean): T[] {
+	const moved = items.filter(moving);
+	const rest = items.filter((item) => !moving(item));
+	const found = after ? rest.findLastIndex(onto) : rest.findIndex(onto);
+	if (found < 0) return [...items];
+	const at = after ? found + 1 : found;
+	return [...rest.slice(0, at), ...moved, ...rest.slice(at)];
+}
+
+/** The items sorted by where their key is in `order`; ones it lacks keep their place after those it has. */
+export function inOrder<T>(items: readonly T[], key: (item: T) => string, order: readonly string[]): T[] {
+	const place = (item: T) => {
+		const at = order.indexOf(key(item));
+		return at < 0 ? order.length : at;
+	};
+	return [...items].sort((a, b) => place(a) - place(b));
+}
+
+/** Whether two lists put the keys both have in the same order. */
+export function sameOrder(a: readonly string[], b: readonly string[]): boolean {
+	const both = (list: readonly string[], other: readonly string[]) => list.filter((key) => other.includes(key));
+	const left = both(a, b);
+	const right = both(b, a);
+	return left.every((key, index) => key === right[index]);
+}
