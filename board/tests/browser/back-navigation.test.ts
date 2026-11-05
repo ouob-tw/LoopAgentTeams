@@ -27,6 +27,15 @@ const click = (scope: string, text: string) =>
 	`[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.innerText.includes(${JSON.stringify(text)})).click()`;
 const ARROW = `document.querySelector('.topbar button').click()`;
 
+/** `ORDER_SHOTS` names a folder to save the frames of the cards of one message in. */
+const SHOTS = process.env.ORDER_SHOTS;
+async function shot(name: string) {
+	if (!SHOTS) return;
+	mkdirSync(SHOTS, { recursive: true });
+	const { data } = (await tab.send('Page.captureScreenshot', { format: 'png' })) as { data: string };
+	writeFileSync(join(SHOTS, `${name}.png`), Buffer.from(data, 'base64'));
+}
+
 let fixture: Fixture;
 let browser: Browser | undefined;
 let tab: Tab;
@@ -41,7 +50,7 @@ const ASKED = {
 	old: '先問第一版。\n\nDECIDE: DQ-1 r1 · 第一版的說法 · 回答面板上的題目',
 	decide: '第二版的完整說明在這裡。\n\nDECIDE: DQ-1 r2 · 要不要走短流程 · 回答面板上的題目',
 	help: '測試機 7110 被舊的預覽程序佔用。\n\nHELP: HQ-1 r1 · 可以結束預覽程序嗎 · 回答面板上的題目',
-	// Two questions in one message, named in the opposite order of the question file.
+	// Two questions in one message, named B then A (the question file lists A first); shown A on top.
 	group: '這兩題一起問。\n\nDECIDE: GQ-B r1, GQ-A r1 · 一起問的兩題 · 回答面板上的題目'
 };
 /** A report taller than the screen, its paragraphs numbered. */
@@ -530,10 +539,11 @@ for (const [width, opened] of [[390, '一起問的甲題'], [1400, '一起問的
 		const card = `document.querySelector('.history .placed [data-opened]')`;
 		await tab.until(`document.querySelector('.placeholder') === null && ${card}?.innerText.includes(${JSON.stringify(opened)})`, `${opened} placed in the conversation`);
 		await tab.until(`(() => { const top = ${card}.getBoundingClientRect().top; return top >= 0 && top < 160; })()`, `${opened} scrolled to`);
-		// In the message's order, at its one place, and each can be answered.
+		// The last named on top, at its one place, and each can be answered.
 		const cards = await tab.eval<string[]>(`[...document.querySelectorAll('.history .placed > .asked')].map((card) => card.innerText)`);
-		expect(cards.map((text) => text.match(/一起問的.題/)?.[0])).toEqual(['一起問的乙題', '一起問的甲題']);
+		expect(cards.map((text) => text.match(/一起問的.題/)?.[0])).toEqual(['一起問的甲題', '一起問的乙題']);
 		for (const text of cards) expect(text).toContain('送出答覆');
+		await shot(`pending-${width}-opened-${opened}`);
 		expect(await tab.eval(`document.querySelectorAll('.history .placed').length`)).toBe(1);
 		expect(await tab.eval(`[...document.querySelectorAll('.history .said')].some((li) => li.innerText.includes('這兩題一起問。'))`)).toBe(false);
 	}, 30_000);
@@ -761,15 +771,15 @@ for (const width of [390, 1400]) {
 		await visit(width, `?controller=${sol.session_id}`);
 		await shows(`?controller=${sol.session_id}`, title);
 		await tab.until(`!!document.querySelector('.history .said')`, 'the conversation');
-		// The messages already in it: one asking two questions is their cards one after another, in
-		// its order; the r1 message of a question now at r2 stays text.
+		// The messages already in it: one asking two questions is their cards one after another, the
+		// last named on top; the r1 message of a question now at r2 stays text.
 		await tab.until(asking('一起問的甲題'), 'the cards of the message asking two questions');
 		const group = await tab.eval<number>(
 			`[...document.querySelectorAll('.history .asking')].find((li) => li.innerText.includes('一起問的甲題')).querySelectorAll('.asked').length`
 		);
 		expect(group).toBe(2);
 		const titles = (await tab.eval<string[]>(ASKING_TITLES)).map((text) => text.match(/一起問的.題/)?.[0]).filter(Boolean);
-		expect(titles).toEqual(['一起問的乙題', '一起問的甲題']);
+		expect(titles).toEqual(['一起問的甲題', '一起問的乙題']);
 		expect(await tab.eval(saidIncludes('這兩題一起問。'))).toBe(false);
 		expect(await tab.eval(saidIncludes('DQ-1 r1'))).toBe(true);
 
@@ -969,3 +979,24 @@ test.skipIf(!CHROME)("a conversation's push of one new text renders only that te
 		await tab.send('Profiler.stopPreciseCoverage');
 	}
 }, 30_000);
+
+for (const width of [390, 1400]) {
+	test.skipIf(!CHROME || !SHOTS)(`${width}px: frames of one message's cards, one answered and one pending`, async () => {
+		const mixed = (status: 'pending' | 'recorded') =>
+			sol.questions.map((entry) =>
+				entry.id === 'GQ-B' ? { ...entry, status, answer: status === 'recorded' ? 'A. 照做' : '', recorded_at: status === 'recorded' ? minutesAgo(1) : null } : entry
+			);
+		fixture.list([luna, { ...sol, questions: mixed('recorded') }]);
+		await fixture.refresh(cookie);
+		try {
+			await visit(width, `?controller=${sol.session_id}`);
+			await tab.until(`!!document.querySelector('.history .asking')`, 'the cards of the message');
+			await tab.eval(`[...document.querySelectorAll('.history .asking')].find((li) => li.innerText.includes('一起問的甲題')).scrollIntoView()`);
+			await sleep(500);
+			await shot(`mixed-${width}`);
+		} finally {
+			fixture.list([luna, sol]);
+			await fixture.refresh(cookie);
+		}
+	}, 30_000);
+}

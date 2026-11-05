@@ -9,7 +9,7 @@ for (const entry of fixture.cases) {
 		const found = askingReport(entry.session_id, entry.question, entry.reports);
 		expect(found).toBe(entry.expected === null ? null : entry.reports[entry.expected]);
 	});
-	// The same message read from the controller's own conversation, in its order, before any report.
+	// The same message read from the controller's own conversation, before any report.
 	test(`conversation: ${entry.name}`, () => {
 		const own = entry.reports
 			.map((report, index) => ({ report, index }))
@@ -27,7 +27,7 @@ const message = { time: '2026-10-18T10:00:00Z', message: '說明。\n\nDECIDE: B
 const asked = (id: string, revision: number, askedIn = message, controllerId = 's1') =>
 	({ kind: 'question', key: `q:${controllerId}:${id}`, controllerId, question: { id, revision }, askedIn }) as unknown as InboxQuestion;
 
-test('the questions one message asked come together in its order; others of the inbox do not', () => {
+test('the questions one message asked come together, the last named on top; others of the inbox do not', () => {
 	const [a, b] = [asked('A-1', 1), asked('B-1', 2)];
 	const inbox: InboxItem[] = [
 		a,
@@ -36,15 +36,15 @@ test('the questions one message asked come together in its order; others of the 
 		b,
 		{ kind: 'report', key: 'r:1' } as InboxItem
 	];
-	expect(askedTogether(a, inbox)).toEqual([b, a]);
-	expect(askedTogether(b, inbox)).toEqual([b, a]);
+	expect(askedTogether(a, inbox)).toEqual([a, b]);
+	expect(askedTogether(b, inbox)).toEqual([a, b]);
 	// Alone in its message, or in none found: only itself.
 	expect(askedTogether(a, [a])).toEqual([a]);
 	const lone = asked('D-1', 1, null as never);
 	expect(askedTogether(lone, [lone, a])).toEqual([lone]);
 });
 
-test("a conversation's texts each show the inbox questions they asked, in the order they name them", () => {
+test("a conversation's texts each show the inbox questions they asked, last named first, as the conversation reads newest on top", () => {
 	const at = (seq: number, text: string, time: string | null = null) => ({ seq, time, text });
 	const [a, b, c] = [asked('A-1', 1), asked('B-1', 2), asked('C-1', 1)];
 	const texts = [
@@ -55,7 +55,7 @@ test("a conversation's texts each show the inbox questions they asked, in the or
 	];
 	// A question goes to the first text that asked it; a question no text asked is in none.
 	expect([...askingTexts(texts, [a, c, b, asked('D-1', 1)])]).toEqual([
-		[1, [b, a]],
+		[1, [a, b]],
 		[2, [c]]
 	]);
 	// Not in the inbox: the text asked nothing that is shown.
@@ -67,7 +67,7 @@ test('a question both in the inbox and answered is listed once, as the inbox has
 	const recorded = { ...asked('A-1', 1), unsent: false } as InboxQuestion;
 	const other = asked('B-1', 2);
 	expect(withAnswered([inbox], [recorded, other])).toEqual([inbox, other]);
-	expect(askedTogether(inbox, withAnswered([inbox], [recorded, other])).map((entry) => entry.key)).toEqual(['q:s1:B-1', 'q:s1:A-1']);
+	expect(askedTogether(inbox, withAnswered([inbox], [recorded, other])).map((entry) => entry.key)).toEqual(['q:s1:A-1', 'q:s1:B-1']);
 });
 
 test('a question that left the inbox as recorded stays, recorded, until the answered list is read again', () => {

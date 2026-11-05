@@ -75,7 +75,7 @@
 		card?: Snippet<[Translation | null]>;
 		/** A box over the page with a copy of the target's card until it is placed; see Transcript. */
 		copy?: HTMLElement | null;
-		/** The cards of the questions one message asked, in its order; see Transcript. */
+		/** The cards of the questions one message asked, the last named on top; see Transcript. */
 		questionCards?: Snippet<[InboxQuestion[], Snippet | undefined]>;
 		/** A DONE report's card, in place of its text; see Transcript. */
 		reportCard?: Snippet<[InboxReport, Translation | null]>;
