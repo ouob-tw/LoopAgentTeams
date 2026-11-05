@@ -2,9 +2,10 @@
 	// The command line at the bottom of the screen: `@name message` goes to that controller, a line
 	// without a name to the controller that is open. The recipient's model and effort sit beside the
 	// send button. An idle or closed controller is woken instead. A pop-up behind the options button
-	// holds the permission switch of the open agent, or of the page's controller as Herdr lists it, and
-	// a wake's other options while waking; a phone shows the button only when it holds something. A
-	// phone can put the line away behind a floating button, to read more of the page; what was typed
+	// holds the permission switch of the open agent, or of the page's controller as Herdr lists it, a
+	// wake's other options while waking, and on a computer while a 畫面分頁 is shown its 組合鍵
+	// (ComboKeys); a phone shows the button only when it holds something. A phone can put the line
+	// away behind a floating button, to read more of the page; what was typed
 	// stays, also across a reload. While an agent's page is open, a line without a name goes to that
 	// agent instead, from a draft of its own, also kept across a reload; while it works, a stop button
 	// sits beside the send button, whether or not anything is typed.
@@ -38,7 +39,9 @@
 	import { needsWake, type Agent, type Controller, type KnownAgent } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import { voice } from '#lib/board/voice.svelte.ts';
+	import { screenView } from '#lib/board/screen-view.svelte.ts';
 	import AttachButton from './AttachButton.svelte';
+	import ComboKeys from './ComboKeys.svelte';
 	import AttachmentTray from './AttachmentTray.svelte';
 	import MessageBox from './MessageBox.svelte';
 	import VoiceButton from './VoiceButton.svelte';
@@ -210,7 +213,9 @@
 	});
 	// A wake's only option left to show is giving up the previous resume.
 	const wakeOptions = $derived(waking && !!abandonable[id]);
-	const hasOptions = $derived(wakeOptions || permissionAgent !== undefined);
+	const combos = $derived(screenView.agentId !== null && !screenView.phone);
+	const hasOptions = $derived(wakeOptions || permissionAgent !== undefined || combos);
+	const optionsTitle = $derived([permissionAgent && '權限', wakeOptions && '放棄前一次接回', combos && '組合鍵'].filter(Boolean).join('、') || '目前沒有可用的選項');
 	const status = $derived(waking ? switching.status[id] : undefined);
 	// A new model and effort only apply when the client is known not to be running: a running one
 	// is typed into and keeps its settings.
@@ -392,7 +397,7 @@
 			class="options"
 			class:idle={!hasOptions}
 			aria-label="選項"
-			title={permissionAgent && wakeOptions ? '權限與放棄接回' : permissionAgent ? '權限' : wakeOptions ? '放棄前一次接回' : '目前沒有可用的選項'}
+			title={optionsTitle}
 			aria-expanded={optionsOpen}
 			disabled={!hasOptions}
 			onclick={() => (optionsOpen = !optionsOpen)}
@@ -425,6 +430,8 @@
 					{/if}
 				</div>
 			{/if}
+			{#if combos && (permissionAgent || wakeOptions)}<hr />{/if}
+			{#if combos}<ComboKeys />{/if}
 		</div>
 	{/if}
 </form>

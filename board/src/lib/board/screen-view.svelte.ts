@@ -1,7 +1,8 @@
 // The 畫面分頁 open on this page, shared by its panel and the 按鍵列 above the command line: whose
 // screen it shows, the latest update, whether keys may be sent now, and whether this is a phone.
 // A phone, or a tablet, is a device whose main pointer is not a fine one that can hover, whatever
-// the width of its screen.
+// the width of its screen. Each agent keeps its sender while the page is open, so a press waiting for
+// its 恢復畫面 still waits when the panel is shown again, after a reconnect for one.
 import { request } from './api.ts';
 import { KeySender, type KeysAnswer } from './key-sender.ts';
 import { KEYS_UNSURE_TEXT, type KeyInput, type KeysResponse, type ScreenUpdate } from './screen.ts';
@@ -19,7 +20,7 @@ class ScreenView {
 	waiting = $state(false);
 	/** Whether this device is a phone or a tablet, as its main pointer tells. */
 	phone = $state(false);
-	#sender: KeySender | null = null;
+	#senders = new Map<string, KeySender>();
 
 	constructor() {
 		if (typeof matchMedia !== 'function') return;
@@ -36,15 +37,27 @@ class ScreenView {
 		return unread;
 	}
 
-	/** The panel shows this agent's screen: a new sender, nothing carried over from another one. */
+	/** The panel shows this agent's screen, with its own sender: nothing carried over from another agent. */
 	open(agentId: string): void {
 		this.agentId = agentId;
 		this.update = null;
-		this.waiting = false;
+		const sender = this.#senders.get(agentId) ?? this.#newSender(agentId);
+		this.#senders.set(agentId, sender);
+		this.waiting = sender.waiting;
+	}
+
+	/** The sender of the agent shown now. */
+	get #sender(): KeySender | undefined {
+		return this.agentId === null ? undefined : this.#senders.get(this.agentId);
+	}
+
+	#newSender(agentId: string): KeySender {
 		const sender: KeySender = new KeySender({
 			post: (inputs, recovery) => postKeys(agentId, inputs, recovery),
+			// Any answer but a server error means the server heard it.
 			askRecovery: async (recovery) => {
-				await request('/api/agents/screen/recover', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: agentId, recovery }) });
+				const result = await request('/api/agents/screen/recover', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: agentId, recovery }) });
+				return result.ok || (result.status !== undefined && result.status < 500);
 			},
 			failed: (reason) => {
 				toasts.show('failed', `${KEYS_UNSURE_TEXT}：${reason ?? '沒有收到看板伺服器的回應。'}`);
@@ -53,7 +66,7 @@ class ScreenView {
 				if (this.#sender === sender) this.waiting = sender.waiting;
 			}
 		});
-		this.#sender = sender;
+		return sender;
 	}
 
 	/** The panel no longer shows it. */
@@ -61,7 +74,6 @@ class ScreenView {
 		if (this.agentId !== agentId) return;
 		this.agentId = null;
 		this.update = null;
-		this.#sender = null;
 	}
 
 	/** An update from the open screen's stream. */

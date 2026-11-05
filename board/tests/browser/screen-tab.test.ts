@@ -262,3 +262,36 @@ test('after the connection drops and comes back, the tab shows the latest screen
 	await tab.until(`document.querySelector('.screen-panel pre')?.innerText.includes('back after the drop')`, 'the latest screen', 20_000);
 	await shot('desktop-after-reconnect');
 }, 40_000);
+
+test('phone: a press made offline stays refused after the connection comes back, until the server takes its recovery request and reads the screen again', async () => {
+	await visit({ width: 390, height: 844, phone: true });
+	await openScreen();
+	await tab.until(`${KEYS}.length === 13 && ${KEYS}.every((button) => !button.disabled)`, 'the keys enabled');
+	const offline = (on: boolean) => tab.send('Network.emulateNetworkConditions', { offline: on, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+	await offline(true);
+	await press('Esc');
+	await tab.until(`document.querySelector('.dock')?.innerText.includes('按鍵可能沒送到，請看畫面確認')`, 'the notice');
+	await tab.until(`${KEYS}.every((button) => button.disabled)`, 'the keys disabled');
+	// The panel goes and comes back, as a reconnect may make it: the press still waits.
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '對話紀錄').click()`);
+	await tab.until(`!document.querySelector('.screen-panel')?.hasAttribute('data-status')`, 'the panel closed');
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
+	// Back online, but the recovery request does not get through yet: the screen comes back, the keys stay refused.
+	await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/agents/screen/recover*' }] });
+	await offline(false);
+	const failing = setInterval(() => {
+		for (const id of tab.paused.splice(0)) void tab.send('Fetch.failRequest', { requestId: id, errorReason: 'ConnectionRefused' }).catch(() => {});
+	}, 50);
+	try {
+		await tab.until(`document.querySelector('.screen-panel .state')?.innerText.includes('按鍵可能沒送到') && !!document.querySelector('.screen-panel pre')`, 'the screen back while waiting', 15_000);
+		await sleep(3_000);
+		expect(await keysEnabled()).toBe(false);
+	} finally {
+		clearInterval(failing);
+	}
+	await tab.send('Fetch.disable');
+	// It gets through now: the server reads the screen again, and that 恢復畫面 lets keys go. Nothing was sent.
+	await tab.until(`${KEYS}.every((button) => !button.disabled)`, 'the keys enabled again', 10_000);
+	expect(herdrCalls()).toEqual([]);
+	await shot('phone-offline-press-recovered');
+}, 40_000);

@@ -2,6 +2,8 @@
 // at a time, presses made meanwhile going together in the next. A request that fails or whose answer
 // does not come back empties the queue and stops sending until the page gets the 恢復畫面 for it:
 // a screen update listing the request's recovery ID, which may come before or after its answer.
+// When no answer came back, the server is asked for that 恢復畫面 again and again until it takes
+// the request, as the connection may be down; until then nothing else lets sending go on.
 import type { KeyInput, ScreenUpdate } from './screen.ts';
 
 /** How a request ended: answered, all typed in or not and why; or no answer came back that can be
@@ -11,8 +13,10 @@ export type KeysAnswer = { kind: 'answered'; ok: boolean; reason: string | null 
 export interface KeySenderHooks {
 	/** Send the inputs, naming the request's recovery ID. */
 	post: (inputs: KeyInput[], recovery: string) => Promise<KeysAnswer>;
-	/** Ask the server for a 恢復畫面 for a request whose answer never came. */
-	askRecovery: (recovery: string) => Promise<void>;
+	/** Ask the server for a 恢復畫面 for a request whose answer never came; true once it took it. */
+	askRecovery: (recovery: string) => Promise<boolean>;
+	/** How long after a try that did not get through to ask again. */
+	retryMs?: number;
 	/** A request failed or may not have arrived; `reason` is the server's, null when none came. */
 	failed: (reason: string | null) => void;
 	/** Something the page shows changed. */
@@ -20,11 +24,17 @@ export interface KeySenderHooks {
 	newId?: () => string;
 }
 
+const RETRY_MS = 2_000;
+
 export class KeySender {
 	#queue: KeyInput[] = [];
 	#sending = false;
 	/** The recovery ID sending waits for; null while it may send. */
 	#waiting: string | null = null;
+	/** The awaited recovery ID the server has not taken yet; null when it has, or none is awaited. */
+	#unasked: string | null = null;
+	#asking = false;
+	#retry: ReturnType<typeof setTimeout> | undefined;
 	/** Every recovery ID screen updates have listed. */
 	#recovered = new Set<string>();
 	#hooks: KeySenderHooks;
@@ -51,8 +61,22 @@ export class KeySender {
 		for (const id of update.recovered) this.#recovered.add(id);
 		if (this.#waiting !== null && this.#recovered.has(this.#waiting)) {
 			this.#waiting = null;
+			this.#unasked = null;
+			clearTimeout(this.#retry);
 			this.#hooks.changed();
 		}
+	}
+
+	async #ask(): Promise<void> {
+		const id = this.#unasked;
+		if (id === null || this.#asking) return;
+		this.#asking = true;
+		const taken = await this.#hooks.askRecovery(id).catch(() => false);
+		this.#asking = false;
+		// Another request failed meanwhile: ask for its 恢復畫面 now.
+		if (this.#unasked !== id) return void this.#ask();
+		if (taken) this.#unasked = null;
+		else this.#retry = setTimeout(() => void this.#ask(), this.#hooks.retryMs ?? RETRY_MS);
 	}
 
 	async #pump(): Promise<void> {
@@ -66,7 +90,10 @@ export class KeySender {
 			this.#queue.length = 0;
 			// Its 恢復畫面 may have come before the answer.
 			if (!this.#recovered.has(id)) this.#waiting = id;
-			if (answer.kind === 'network') void this.#hooks.askRecovery(id);
+			if (answer.kind === 'network' && this.#waiting === id) {
+				this.#unasked = id;
+				void this.#ask();
+			}
 			this.#hooks.failed(answer.kind === 'answered' ? answer.reason : null);
 			this.#hooks.changed();
 		}
