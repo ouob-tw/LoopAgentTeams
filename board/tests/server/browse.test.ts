@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expandHome, latestOnly, listKey, nameMatches, pathMatches, shownSearch, suggestedFolders, typedFolder, typedLevel } from '../../src/lib/board/folder-search.ts';
+import { expandHome, latestOnly, listKey, nameMatches, pathMatches, shownSearch, stillListed, suggestedFolders, typedFolder, typedLevel } from '../../src/lib/board/folder-search.ts';
 import type { FolderSearch } from '../../src/lib/board/launch.ts';
 import { gitRoot } from '../../src/lib/server/git.ts';
 import { startFixture, type Fixture } from '../harness.ts';
@@ -47,6 +47,18 @@ describe('the shared rules', () => {
 		expect(pathMatches('/home/u/work/LoopAgent', 'loop', home)).toBe(true);
 		expect(pathMatches('/home/u/work/LoopAgent', '~/WORK', home)).toBe(true);
 		expect(pathMatches('/home/u/work/LoopAgent', '/srv', home)).toBe(false);
+	});
+	test('a row listed for earlier text is still listed when the new text would list it too', () => {
+		// In the typed level with a matching name; a sibling or a folder one level up is not.
+		expect(stillListed('/home/u/sub-three', false, '~/sub-t', home)).toBe(true);
+		expect(stillListed('/home/u/sub-one', false, '~/sub-t', home)).toBe(false);
+		expect(stillListed('/home/u/sub-one', false, '~/sub-one/', home)).toBe(false);
+		expect(stillListed('/home/u/.config', false, '~/con', home)).toBe(false);
+		expect(stillListed('/top', false, '/to', home)).toBe(true);
+		// A known folder also by its path, as the list matches it.
+		expect(stillListed('/home/u/work/LoopAgent', true, 'loop', home)).toBe(true);
+		expect(stillListed('/home/u/work/LoopAgent', false, 'loop', home)).toBe(false);
+		expect(stillListed('/home/u/work/LoopAgent', true, '~/srv', home)).toBe(false);
 	});
 	test('before typing: the workspace folders first, then recent projects, five at most and each once', () => {
 		expect(suggestedFolders(['/w1', '/p2'], ['/p1', '/p2', '/p3', '/p4', '/p5'])).toEqual(['/w1', '/p2', '/p1', '/p3', '/p4']);

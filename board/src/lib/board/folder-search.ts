@@ -56,6 +56,14 @@ export function pathMatches(path: string, input: string, home: string): boolean 
 	return folderName(path).toLowerCase().includes(text) || path.toLowerCase().includes(text);
 }
 
+/** Whether a row listed for earlier text would be listed for `input` too: a known folder when it
+ *  matches as `pathMatches` says, any other when it is in the typed level and its name matches. */
+export function stillListed(path: string, known: boolean, input: string, home: string): boolean {
+	if (known && pathMatches(path, input, home)) return true;
+	const level = typedLevel(input, home);
+	return level !== null && path.slice(0, path.lastIndexOf('/')) === level.dir.replace(/\/$/, '') && nameMatches(folderName(path), level.part);
+}
+
 /** The folders listed before anything is typed: for a plain agent its workspace's folders, then
  *  the most recent projects, `SUGGESTED` at most and each once. */
 export function suggestedFolders(workspaceFolders: readonly string[], projects: readonly string[]): string[] {

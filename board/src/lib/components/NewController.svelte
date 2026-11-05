@@ -10,7 +10,7 @@
 	// lists, or a new one named after the folder unless renamed, created when the form is sent.
 	// The message box hints the skills of the chosen client in the chosen folder.
 	import { untrack } from 'svelte';
-	import { folderName, listKey, pathMatches, shownSearch, suggestedFolders } from '#lib/board/folder-search.ts';
+	import { folderName, listKey, pathMatches, shownSearch, stillListed, suggestedFolders } from '#lib/board/folder-search.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import {
 		AGENT_LAUNCH_STATE_TEXT,
@@ -258,18 +258,28 @@
 	}
 
 	/** Arrows move along the list, Tab takes the folder and goes on into it, Enter takes it, Esc
-	 *  closes the list (`listKey`). Enter never sends the form from here. Rows held during a search
-	 *  are only to look at: what a key would take is not known until the answer comes. */
+	 *  closes the list (`listKey`). Enter never sends the form from here. A row held during a search
+	 *  is taken only when it would be listed for the text now in the box too; otherwise Tab does
+	 *  nothing and Enter only closes the list, so what is typed stays. */
 	function keydown(event: KeyboardEvent) {
-		const done = listKey(event.key, event.shiftKey, { open: listOpen, active, count: searching ? 0 : shownRows.length });
+		const rowsNow = shownRows;
+		const done = listKey(event.key, event.shiftKey, { open: listOpen, active, count: rowsNow.length });
 		if (!done.handled) return;
 		event.preventDefault();
-		const rowsNow = shownRows;
+		const takes = (index: number | null) => {
+			if (index === null) return null;
+			const row = rowsNow[index]!;
+			const known = row.project !== undefined || row.inWorkspace;
+			return !searching || stillListed(row.path, known, form.folder, form.list?.home ?? '') ? row : null;
+		};
+		const completed = takes(done.complete);
+		if (done.complete !== null && !completed) return;
+		const chosen = takes(done.choose);
 		listOpen = done.open;
 		active = done.active;
-		if (done.choose !== null) choose(rowsNow[done.choose]!);
-		if (done.complete !== null) {
-			form.folder = `${rowsNow[done.complete]!.path.replace(/\/$/, '')}/`;
+		if (chosen) choose(chosen);
+		if (completed) {
+			form.folder = `${completed.path.replace(/\/$/, '')}/`;
 			typing();
 		}
 	}
