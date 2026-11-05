@@ -117,7 +117,7 @@ LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址�
 | [analyst](skills/local/analyst/SKILL.md) | 疑難雜症時召喚的分析師：只分析不改程式，交回證據、方案取捨與建議 |
 | [three-tier-testing](skills/local/three-tier-testing/SKILL.md) | 依外部依賴將測試分為單元、整合與 E2E 三層，分開執行，區分模擬與真實服務的驗證 |
 | [ui-copy](skills/local/ui-copy/SKILL.md) | 寫需求、實作與審查介面文字時控制說明句：何時才加、怎麼寫、審查何時算缺陷 |
-| [ui-choice-demo](skills/local/ui-choice-demo/SKILL.md) | 請使用者選介面前先備好能打開的畫面：示意頁或測試伺服器，題目放直達連結 |
+| [ui-choice-demo](skills/local/ui-choice-demo/SKILL.md) | 給使用者看成果、DEMO 或請其選擇前，用一個指令發布成能打開的網址，覆蓋同名、14 天自動清掉 |
 
 各階段的具體方法沿用 Matt Pocock 的 [Matt skills](https://github.com/mattpocock/skills)（`grill-with-docs`、`to-spec`、`to-tickets`、`implement`、`code-review` 等），LAT 負責階段銜接與角色協調。
 

@@ -67,6 +67,7 @@
     {"cwd": "skills/local/lat-handover", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
     {"cwd": "skills/local/host-guard", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
     {"cwd": "skills/local/retro-log", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
+    {"cwd": "skills/local/ui-choice-demo", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
     {"cwd": "scripts", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": ["skills/local/three-tier-testing/scripts/suite-gate.py"]}
   ],
   "affected": {
@@ -78,6 +79,7 @@
       "skills/local/lat-handover/tests": "uv run --no-project python -m unittest {tests}",
       "skills/local/host-guard/tests": "uv run --no-project python -m unittest {tests}",
       "skills/local/retro-log/tests": "uv run --no-project python -m unittest {tests}",
+      "skills/local/ui-choice-demo/tests": "uv run --no-project python -m unittest {tests}",
       "scripts/tests": "uv run --no-project python -m unittest {tests}"
     },
     "map": [

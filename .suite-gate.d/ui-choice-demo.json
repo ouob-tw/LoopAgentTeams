@@ -1,0 +1,3 @@
+{"map": [
+  {"paths": ["skills/local/ui-choice-demo/scripts/**"], "tests": ["skills/local/ui-choice-demo/tests/test_*.py"]}
+]}
