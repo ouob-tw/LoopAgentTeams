@@ -31,9 +31,13 @@
 
 	/** How soon a stream the browser gave up on is opened again. */
 	const RETRY_MS = 3_000;
+	/** The agent whose screen is followed, null while none is. A value: the parent's props are read
+	 *  again with every list the board reads, and the same agent must not open its stream again,
+	 *  which would leave the page without a screen for a moment. */
+	const following = $derived(active && !unavailable ? agentId : null);
 	$effect(() => {
-		if (!active || unavailable) return;
-		const id = agentId;
+		const id = following;
+		if (id === null) return;
 		screenView.open(id);
 		// EventSource connects again by itself after a drop, and the server sends the latest screen
 		// then. One the browser gave up on (the server answered with an error) is opened again here.
