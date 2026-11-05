@@ -3332,10 +3332,14 @@ def cmd_affected(base, purpose=None):
         with clean_checkout(root, head) as checkout:
             warn(f'temporary checkout: {checkout} (removed when the run ends)')
             registry = load_registry(checkout) or {}
+            if not is_mapped(registry):
+                warn(f'the {REGISTRY_NAME} committed at HEAD {head[:12]} has no affected-test '
+                     'map; commit the map first')
+                return 2
             try:
                 amap = read_map(registry)
             except ValueError as exc:
-                warn(f'{root / REGISTRY_NAME}: {exc}')
+                warn(f'{REGISTRY_NAME} at HEAD {head[:12]}: {exc}')
                 return 2
             copy_included(root, checkout, registry)
             start = (head, content_tree(checkout))

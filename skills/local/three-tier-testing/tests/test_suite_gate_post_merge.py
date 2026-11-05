@@ -182,6 +182,16 @@ class PostMergeTests(AffectedCase):
         self.assertIn('affected in .: interrupted', self.gate('status').stdout)
         self.assertEqual(self.checkouts_left(), ([], []))
 
+    def test_an_uncommitted_map_is_refused_without_running(self):
+        self.merge('src/app.py')
+        git(self.repo, 'rm', '-q', '--cached', '.suite-gate.json')
+        self.commit(self.repo, 'drop the committed map')
+        result = self.post_merge()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('has no affected-test map', result.stderr)
+        self.assertEqual(self.records(), [])
+        self.assertEqual(self.checkouts_left(), ([], []))
+
     def test_post_merge_needs_a_base(self):
         self.merge('src/app.py')
         result = self.gate('affected', '--purpose', 'post-merge')
