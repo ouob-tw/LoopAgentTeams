@@ -29,11 +29,11 @@ class ScreenView {
 		query.addEventListener('change', () => (this.phone = !query.matches));
 	}
 
-	/** Why keys cannot be sent now, or null when they can. */
+	/** Why keys cannot be sent now, or null when they can. Before the first screen comes they can:
+	 *  typing into the pane does not need the page's screen. */
 	get blocked(): string | null {
 		const unread = this.update && !this.update.ok ? this.update.reason : null;
 		if (this.waiting) return unread ? `${KEYS_UNSURE_TEXT}；重新讀畫面失敗：${unread}` : KEYS_UNSURE_TEXT;
-		if (!this.update) return '還沒讀到畫面';
 		return unread;
 	}
 
@@ -83,9 +83,11 @@ class ScreenView {
 		this.#sender?.screen(update);
 	}
 
+	/** Send a press; one that cannot go now says why, never dropped unseen. */
 	press(input: KeyInput): void {
-		if (this.blocked) return;
-		this.#sender?.press(input);
+		const blocked = this.blocked;
+		if (blocked) toasts.show('info', `按鍵沒有送出：${blocked}`);
+		else this.#sender?.press(input);
 	}
 }
 

@@ -67,8 +67,8 @@ afterEach(async () => {
 	browser = undefined;
 });
 
-async function visit({ phone = false, width = 1280, height = 800 }: { phone?: boolean; width?: number; height?: number } = {}) {
-	browser = await launchChrome({ screen: `document.querySelector('.detail')?.innerText ?? ''`, args: phone ? [] : [MOUSE] });
+async function visit({ phone = false, width = 1280, height = 800, screen = true, scripts = [] }: { phone?: boolean; width?: number; height?: number; screen?: boolean; scripts?: string[] } = {}) {
+	browser = await launchChrome({ scripts, screen: `document.querySelector('.detail')?.innerText ?? ''`, args: phone ? [] : [MOUSE] });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
@@ -78,7 +78,7 @@ async function visit({ phone = false, width = 1280, height = 800 }: { phone?: bo
 	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
 	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].length === 3`, 'the tabs');
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
-	await tab.until(`!!document.querySelector('.screen-panel pre')`, 'the screen');
+	await tab.until(screen ? `!!document.querySelector('.screen-panel pre')` : `!!document.querySelector('.screen-panel .box')`, 'the screen');
 	// Whether the page let each key press do what the browser does with it.
 	await tab.eval(`window.prevented = []; addEventListener('keydown', (event) => prevented.push([event.key, event.defaultPrevented]))`);
 }
@@ -245,6 +245,67 @@ test('computer: a key that fails stops the keys typed after it until the screen 
 		['pane', 'send-keys', PANE, 'esc'],
 		['pane', 'send-text', PANE, 'w']
 	]);
+});
+
+/** Count the 畫面分頁 streams a page opens. */
+const COUNT_STREAMS = `(() => {
+	window.screenStreams = 0;
+	const Real = window.EventSource;
+	window.EventSource = class extends Real {
+		constructor(url, options) {
+			super(url, options);
+			if (String(url).includes('/api/agents/screen/events')) window.screenStreams += 1;
+		}
+	};
+})()`;
+
+test('computer: a key pressed before the first screen comes is typed in, not dropped', async () => {
+	// A board of its own that waits 60 s for Herdr, whose first read takes 30 s: the page has no
+	// screen yet while the key is pressed, however slow the host.
+	const shared = { fixture, cookie };
+	fixture = await startFixture({ env: { LAT_BOARD_HERDR_TIMEOUT_SECONDS: '60' } });
+	try {
+		cookie = await fixture.login('screen-direct-slow');
+		mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
+		fixture.setHcom({ agents: [] });
+		setHerdr();
+		await fixture.refresh(cookie);
+		setHerdr({ slowMs: { 'pane read': 30_000 } });
+		await visit({ screen: false });
+		await tab.pointerClick('.screen-panel .box');
+		await tab.until(`document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation');
+		expect(await tab.eval(`document.querySelector('.screen-panel')?.dataset.status`)).toBe('loading');
+		await key('a', { code: 'KeyA', vk: 65, text: 'a' });
+		await callsReach(1);
+		expect(herdrCalls()).toEqual([['pane', 'send-text', PANE, 'a']]);
+	} finally {
+		await browser?.close();
+		browser = undefined;
+		await fixture.cleanup();
+		({ fixture, cookie } = shared);
+	}
+});
+
+test('computer: the screen stream stays open while the board\'s lists change, so no key falls in a gap', async () => {
+	await visit({ scripts: [COUNT_STREAMS] });
+	expect(await tab.eval(`window.screenStreams`)).toBe(1);
+	const before = await tab.eval<string>(`document.querySelector('.detail').innerText`);
+	setHerdr({ agents: [{ agent: 'claude', agent_session: { kind: 'id', value: 's-plain' }, agent_status: 'working', cwd: '/home/someone/projects/s-plain', pane_id: PANE, tab_id: 'wA:t-s-plain', workspace_id: 'wA' }] });
+	await fixture.refresh(cookie);
+	await tab.until(`document.querySelector('.detail').innerText !== ${JSON.stringify(before)}`, 'the new lists on the page');
+	await sleep(300);
+	expect(await tab.eval(`window.screenStreams`)).toBe(1);
+});
+
+test('computer: a key refused while the screen cannot be read says why', async () => {
+	setHerdr({ fail: { 'pane read': { exit: 1, stderr: 'herdr is down' } } });
+	await visit({ screen: false });
+	await tab.until(`document.querySelector('.screen-panel')?.dataset.status === 'failed'`, 'the failed read');
+	await tab.pointerClick('.screen-panel .box');
+	await tab.until(`document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation');
+	await key('a', { code: 'KeyA', vk: 65, text: 'a' });
+	await tab.until(`[...document.querySelectorAll('.toast')].some((toast) => toast.innerText.includes('herdr is down'))`, 'the notice');
+	expect(herdrCalls()).toEqual([]);
 });
 
 test('computer: the ⋯ menu has 組合鍵 that go to the pane on screen, also with another recipient named; it leaves the input box clear', async () => {
