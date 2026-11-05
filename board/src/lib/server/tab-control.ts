@@ -5,9 +5,8 @@
 // again afterwards either way, so the page shows the order and names Herdr really has.
 import { randomUUID } from 'node:crypto';
 import { WORKSPACE_GONE_REASON, WORKSPACE_OWN_REASON, type AgentAction, type AgentActionResponse, type WorkspaceContents } from '../board/agent-actions.ts';
-import { HERDR_CLOSES } from './agent-control.ts';
 import type { Board } from './board.ts';
-import { closeWorkspace, moveTab, moveWorkspace, renameTab, workspaceContents, workspacesInOrder, workspaceTabs } from './herdr.ts';
+import { closeWorkspace, HERDR_CLOSES, moveTab, moveWorkspace, renameTab, workspaceContents, workspacesInOrder, workspaceTabs } from './herdr.ts';
 import { queued } from './send.ts';
 import { appendSent } from './sent-log.ts';
 

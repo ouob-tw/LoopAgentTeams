@@ -248,8 +248,8 @@ test("the resumed tab goes to the front of its workspace once Herdr runs it, tho
 	const moves = () => lines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((call: string[]) => call[0] === 'tab' && call[1] === 'move');
 	await until(() => moves().length > 0 && tabs()[0] === 'wA:t-new', 5000, 'the tab moved');
 	expect(moves()).toEqual([['tab', 'move', 'wA:t-new', '0']]);
-	// The others keep their order; the old tab closed with its pane is still listed by this fake.
-	expect(tabs()).toEqual(['wA:t-new', ...before]);
+	// The others keep their order; the old tab closed with its pane, as Herdr closes a tab with its last pane.
+	expect(tabs()).toEqual(['wA:t-new', ...before.filter((tab: string) => tab !== 'wA:t-s-claude')]);
 	const panes = lines(join(fixture.dir, 'board-state', 'sent-log.jsonl')).filter((line: { kind: string }) => line.kind === 'resume-pane').map((line: { pane: string }) => line.pane);
 	expect(panes).toEqual(['wA:p-new']);
 });

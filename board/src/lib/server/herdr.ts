@@ -375,6 +375,10 @@ export function closePane(config: BoardConfig, pane: string): Promise<HerdrAct> 
 	return herdrAct(config, ['pane', 'close', pane]);
 }
 
+/** The queue every close that may take a workspace's last pane runs in, agents' and whole
+ *  workspaces': two closes at once would each see the other's pane still there. */
+export const HERDR_CLOSES = 'herdr-closes';
+
 /** The label of the tab the board opens so a workspace outlives its last agent. */
 export const KEEP_TAB_LABEL = 'CMD';
 

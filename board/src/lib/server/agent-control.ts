@@ -19,7 +19,7 @@ import type { Agent } from '../board/types.ts';
 import type { Board } from './board.ts';
 import type { ExternalResult } from './external.ts';
 import { killAgent, listAgents, stopAgent } from './hcom.ts';
-import { agentCommand, closePane, keepWorkspaceOpen, paneExists, paneProcess, type HerdrAct } from './herdr.ts';
+import { agentCommand, closePane, HERDR_CLOSES, keepWorkspaceOpen, paneExists, paneProcess, type HerdrAct } from './herdr.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause, type PauseRecord } from './paused.ts';
 import { judgeHooks, relinkable } from './process-hooks.ts';
 import { inject, queued, typedText } from './send.ts';
@@ -162,10 +162,6 @@ export function interruptAgent(board: Board, agentId: string) {
 	);
 }
 
-/** The queue every close that may take a workspace's last pane runs in, agents' and whole
- *  workspaces': two closes at once would each see the other's pane still there. */
-export const HERDR_CLOSES = 'herdr-closes';
-
 /** The pane `hcom kill` would close for this name, as hcom's list read now has it, or why it is
  *  not closed. hcom's pane may not be the one Herdr lists the agent in. */
 async function hcomTarget(board: Board, name: string, pane: string): Promise<{ pane: string } | { reason: string }> {
@@ -193,33 +189,34 @@ export function closeAgent(board: Board, agentId: string) {
 			if (pane === board.config.ownPane) return { route: null, reason: AGENT_OWN_PANE_REASON };
 			if (agent.hcom === 'unknown') return { route: null, reason: AGENT_HCOM_UNKNOWN_CLOSE_REASON };
 			// `hcom kill` reads `all` and `tag:…` as many agents, never one name.
-			const name = agent.hcomName!;
-			if (agent.hcom === 'linked' && (name === 'all' || name.startsWith('tag:'))) {
+			const name = agent.hcom === 'linked' ? agent.hcomName! : null;
+			if (name !== null && (name === 'all' || name.startsWith('tag:'))) {
 				return { route: null, reason: `HCOM 名稱 ${name} 會被 hcom kill 當成多個 Agent，沒有關閉。` };
 			}
 			return queued(HERDR_CLOSES, async () => {
-				const first = agent.hcom === 'linked' ? await hcomTarget(board, name, pane) : { pane };
-				if ('reason' in first) return { route: null, reason: first.reason };
-				const kept = await keepWorkspaceOpen(board.config, first.pane, agent.folder);
+				// The pane that will close: hcom's for a linked one.
+				const closing = name !== null ? await hcomTarget(board, name, pane) : { pane };
+				if ('reason' in closing) return { route: null, reason: closing.reason };
+				const kept = await keepWorkspaceOpen(board.config, closing.pane, agent.folder);
 				if ('reason' in kept) return { route: null, reason: `${kept.reason}，沒有關閉，以免工作區跟著關掉。` };
 				// A failure after the CMD tab was opened leaves it there: say so.
-				const left = kept.opened ? '（已先開好 CMD 分頁，它會留在工作區裡）' : '';
+				const cmdTabNote = kept.opened ? '（已先開好 CMD 分頁，它會留在工作區裡）' : '';
 				let route: AgentAction['route'];
-				if (agent.hcom === 'linked') {
+				if (name !== null) {
 					route = 'hcom';
 					const target = await hcomTarget(board, name, pane);
-					if ('reason' in target) return { route: null, reason: target.reason + left };
-					if (target.pane !== first.pane) return { route: null, reason: `hcom 給 @${name} 的窗格在確認期間變了，沒有關閉。${left}` };
+					if ('reason' in target) return { route: null, reason: target.reason + cmdTabNote };
+					if (target.pane !== closing.pane) return { route: null, reason: `hcom 給 @${name} 的窗格在確認期間變了，沒有關閉。${cmdTabNote}` };
 					const run = await killAgent(board.config, name);
-					if (run.timedOut) return { route, reason: `hcom kill ${run.failure}，結果不明；請到 Herdr 查看。${left}` };
-					if (run.failure) return { route, reason: `hcom kill 失敗：${run.failure}${left}` };
+					if (run.timedOut) return { route, reason: `hcom kill ${run.failure}，結果不明；請到 Herdr 查看。${cmdTabNote}` };
+					if (run.failure) return { route, reason: `hcom kill 失敗：${run.failure}${cmdTabNote}` };
 				} else {
 					route = 'herdr';
 					const act = await closePane(board.config, pane);
-					if (!act.ok) return { route, reason: herdrReason(act, 'close') + left };
+					if (!act.ok) return { route, reason: herdrReason(act, 'close') + cmdTabNote };
 				}
 				const closed = await paneGone(board, pane);
-				if (closed !== true) return { route, reason: `已送出關閉指令，但無法確認已關閉：${closed}；請到 Herdr 查看。${left}` };
+				if (closed !== true) return { route, reason: `已送出關閉指令，但無法確認已關閉：${closed}；請到 Herdr 查看。${cmdTabNote}` };
 				// A paused one is over: nothing is left to resume. One that cannot be removed now goes at a read, its pane gone.
 				try {
 					clearPause(board.config.pausedDir, agentId);

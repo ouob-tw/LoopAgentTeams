@@ -117,15 +117,16 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		const workspace = option('--workspace');
 		if (!(plan.workspaces ?? []).some((/** @type {any} */ listed) => listed.workspace_id === workspace)) {
 			stderr += JSON.stringify({ error: { code: 'workspace_not_found', message: `workspace ${workspace} not found` }, id: 'cli:tab:create' });
-			return { stdout, stderr, code: 1 };
+			code = 1;
+		} else {
+			const n = (plan.tabs ?? []).length + 1;
+			const tab = { tab_id: `${workspace}:t-new${n}`, workspace_id: workspace, label: option('--label') ?? String(n) };
+			const pane = { pane_id: `${workspace}:p-new${n}`, workspace_id: workspace, tab_id: tab.tab_id, cwd: option('--cwd') };
+			plan.tabs = [...(plan.tabs ?? []), tab];
+			plan.panes = [...(plan.panes ?? []), pane];
+			write(planFile, JSON.stringify(plan));
+			stdout += JSON.stringify({ id: 'cli:tab:create', result: { type: 'tab_created', tab, root_pane: pane } });
 		}
-		const n = (plan.tabs ?? []).length + 1;
-		const tab = { tab_id: `${workspace}:t-new${n}`, workspace_id: workspace, label: option('--label') ?? String(n) };
-		const pane = { pane_id: `${workspace}:p-new${n}`, workspace_id: workspace, tab_id: tab.tab_id, cwd: option('--cwd') };
-		plan.tabs = [...(plan.tabs ?? []), tab];
-		plan.panes = [...(plan.panes ?? []), pane];
-		write(planFile, JSON.stringify(plan));
-		stdout += JSON.stringify({ id: 'cli:tab:create', result: { type: 'tab_created', tab, root_pane: pane } });
 	} else if (command === 'workspace close') {
 		const id = args[2];
 		if ((plan.workspaces ?? []).some((/** @type {any} */ workspace) => workspace.workspace_id === id)) {
