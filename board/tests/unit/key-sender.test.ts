@@ -7,7 +7,7 @@ import type { KeyInput, ScreenUpdate } from '../../src/lib/board/screen.ts';
 const screen = (recovered: string[] = [], text = 'same'): ScreenUpdate => ({ ok: true, text, recovered });
 
 /** A sender whose requests wait until the test answers them; asking for a 恢復畫面 gets through
- *  unless `reachable` says the server cannot be reached. */
+ *  unless `link.reachable` is set false. */
 function harness({ retryMs }: { retryMs?: number } = {}) {
 	const posts: { inputs: KeyInput[]; recovery: string; answer: (value: KeysAnswer) => void }[] = [];
 	const failures: (string | null)[] = [];
@@ -103,4 +103,29 @@ test('asking for the 恢復畫面 is tried again until the server takes it, and 
 	sender.screen(screen([posts[0].recovery]));
 	expect(sender.waiting).toBe(false);
 	expect(posts).toHaveLength(1);
+});
+
+test('a failure while the recovery request of an earlier one is still under way is asked for too', async () => {
+	const posts: { recovery: string; answer: (value: KeysAnswer) => void }[] = [];
+	const asks: { recovery: string; answer: (taken: boolean) => void }[] = [];
+	let next = 0;
+	const sender = new KeySender({
+		post: (_inputs, recovery) => new Promise((answer) => posts.push({ recovery, answer })),
+		askRecovery: (recovery) => new Promise((answer) => asks.push({ recovery, answer })),
+		failed: () => {},
+		changed: () => {},
+		newId: () => `r${++next}`
+	});
+	sender.press({ key: 'esc' });
+	posts[0].answer({ kind: 'network' });
+	await tick();
+	expect(asks.map((ask) => ask.recovery)).toEqual(['r1']);
+	// Its 恢復畫面 comes while the request for it has not answered yet; the next press fails too.
+	sender.screen(screen(['r1']));
+	sender.press({ key: 'enter' });
+	posts[1].answer({ kind: 'network' });
+	await tick();
+	asks[0].answer(true);
+	await tick();
+	expect(asks.map((ask) => ask.recovery)).toEqual(['r1', 'r2']);
 });

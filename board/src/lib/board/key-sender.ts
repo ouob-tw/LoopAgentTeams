@@ -73,7 +73,8 @@ export class KeySender {
 		this.#asking = true;
 		const taken = await this.#hooks.askRecovery(id).catch(() => false);
 		this.#asking = false;
-		if (this.#unasked !== id) return;
+		// Another request failed meanwhile: ask for its 恢復畫面 now.
+		if (this.#unasked !== id) return void this.#ask();
 		if (taken) this.#unasked = null;
 		else this.#retry = setTimeout(() => void this.#ask(), this.#hooks.retryMs ?? RETRY_MS);
 	}
