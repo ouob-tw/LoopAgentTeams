@@ -7,6 +7,10 @@ needs a reusable pass in the suite gate's ledger whose run saw the same folder c
 the work tree now; otherwise nothing is installed and the missing suites are listed with
 the gate command that runs them. Skills without a full suite are installed as they are.
 bunx reads a snapshot of the checked content, so a change made meanwhile is not installed.
+A SKILL.md whose frontmatter has an unquoted value holding `: ` is refused before bunx runs,
+since bunx skips such a skill and still exits 0. After bunx, every chosen skill must sit in
+~/.agents/skills (Codex) and the Claude skills folder with the snapshot's exact content;
+otherwise the missing or different skills are listed and the exit code is 1.
 """
 import argparse
 import importlib.util
@@ -50,8 +54,66 @@ def find_bunx():
     return None
 
 
+# Names the skills tool leaves out when it copies a skill folder.
+SKIPPED_FILES = {'metadata.json'}
+SKIPPED_DIRS = {'.git', '__pycache__', '__pypackages__'}
+
+
+def frontmatter_problems(text, label):
+    """'<label>:<line>: ...' for each line of a SKILL.md frontmatter whose plain (unquoted)
+    value holds `: `, which YAML rejects."""
+    if not text.startswith('---\n'):
+        return []
+    problems = []
+    for number, line in enumerate(text[4:].split('\n---', 1)[0].splitlines(), 2):
+        if not line or line[0] in ' \t#':
+            continue
+        key, sep, value = line.partition(':')
+        value = value.strip()
+        if sep and value and value[0] not in '"\'|>[{&*!' and ': ' in value:
+            problems.append(f'{label}:{number}: the value of {key.strip()} holds ": " '
+                            'without quotes; wrap the value in double quotes')
+    return problems
+
+
+def folder_files(folder):
+    """{relative path: bytes} of the files the skills tool copies from folder; None when
+    folder does not exist."""
+    if not folder.is_dir():
+        return None
+    files = {}
+    for top, dirs, names in os.walk(folder, followlinks=True):
+        dirs[:] = [name for name in dirs if name not in SKIPPED_DIRS]
+        for name in names:
+            if name not in SKIPPED_FILES:
+                path = Path(top, name)
+                files[path.relative_to(folder).as_posix()] = path.read_bytes()
+    return files
+
+
+def install_places():
+    """The folders a global install for claude-code and codex writes each skill into."""
+    claude = os.environ.get('CLAUDE_CONFIG_DIR', '').strip() or Path.home() / '.claude'
+    return [Path.home() / '.agents/skills', Path(claude) / 'skills']
+
+
+def not_installed(snapshot, names, folders):
+    """'<skill>: <why> at <path>' for each chosen skill whose installed copy is missing or
+    differs from the snapshot."""
+    problems = []
+    for name, folder in zip(names, folders):
+        expected = folder_files(Path(snapshot, folder))
+        for place in install_places():
+            installed = folder_files(place / name)
+            if installed != expected:
+                why = 'missing' if installed is None else 'different content'
+                problems.append(f'{name}: {why} at {place / name}')
+    return problems
+
+
 def install(tree, names, folders):
-    """Run bunx on a snapshot of the folders as they are in tree."""
+    """Run bunx on a snapshot of the folders as they are in tree, then check that each
+    chosen skill was installed with the snapshot's content; returns the exit code."""
     bunx = find_bunx()
     if not bunx:
         raise RuntimeError(f"bunx not found: not on PATH and not at "
@@ -63,10 +125,25 @@ def install(tree, names, folders):
         if archive.returncode != 0:
             raise RuntimeError(f'git archive failed: {archive.stderr.decode().strip()}')
         subprocess.run(['tar', '-x', '-C', snapshot], input=archive.stdout, check=True)
+        problems = [problem for folder in folders
+                    for problem in frontmatter_problems(
+                        Path(snapshot, folder, 'SKILL.md').read_text(encoding='utf-8'),
+                        f'{folder}/SKILL.md')]
+        if problems:
+            raise RuntimeError('SKILL.md frontmatter that bunx would skip:\n  '
+                               + '\n  '.join(problems))
         command = [bunx, 'skills', 'add', snapshot, '--skill', *names,
                    '--global', '--agent', 'claude-code', 'codex', '--yes']
         print(shlex.join(command), flush=True)
-        return subprocess.run(command).returncode
+        code = subprocess.run(command).returncode
+        if code != 0:
+            return code
+        problems = not_installed(snapshot, names, folders)
+        if problems:
+            print('install-skills: bunx exited 0 but these skills are not installed as '
+                  'checked:\n  ' + '\n  '.join(problems), file=sys.stderr)
+            return 1
+        return 0
 
 
 def main(argv=None):
