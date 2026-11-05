@@ -125,6 +125,8 @@ async function readMasked(board: Board, agentId: string, last: Masked | null): P
 	if (!agent?.inHerdr) return { reason: '這個 Agent 已不在 Herdr 的清單上' };
 	const read = await readPaneScreen(board.config, agent.herdr.pane);
 	if (!('text' in read)) return read;
+	// The same text needs no wrapped lines now if it needed none before.
+	if (last?.raw === read.text && last.unwrapped === null) return { masked: last, text: last.text };
 	let unwrapped: string | null = null;
 	if (wrapMatters(read.text)) {
 		const joined = await readUnwrapped(board.config, agent.herdr.pane, read.rows);
