@@ -468,6 +468,17 @@ class SpawnWatchTests(unittest.TestCase):
                                          'low', {})
         self.assertIsNone(found)
 
+    def test_a_tag_pattern_still_takes_a_batch_with_another_model_at_the_end(self):
+        fake = FakeHcom()
+        fake.batch['data']['tag'] = 'vare-t3'
+        self.watch.hcom, self.watch.clock, self.watch.sleep = fake, fake.clock, fake.sleep
+        self.watch.process_ids = lambda: {'kilo': 'kilo'}
+        self.watch.launched_with = lambda tool, process_id: ('claude-opus-5-5', 'low')
+        found, why = self.watch.find_batch('vare', 'claude', 'vare-t$n', 99,
+                                           'claude-sonnet-5-5', 'low', {})
+        self.assertEqual(found, fake.batch)
+        self.assertIn('claude-opus-5-5', why)
+
     def test_no_launch_found_is_logged_with_the_reason(self):
         fake = FakeHcom()
         fake.batches = []

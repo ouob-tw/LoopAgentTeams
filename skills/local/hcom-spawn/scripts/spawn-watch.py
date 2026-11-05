@@ -296,8 +296,8 @@ def find_batch(spawner, tool, tag, after_id, model, effort, watched):
     seconds, or that no watcher has taken by the end of BATCH_WAIT, is taken unattributed:
     its approval prompts and permission are still checked, but its model and effort are
     not compared with this command's.
-    A watch whose tag has shell expansions (tag_pattern) leaves each batch PATTERN_GRACE
-    seconds to an exact-tag watch of another command first.
+    Before the last pass, a watch whose tag has shell expansions (tag_pattern) leaves each
+    batch PATTERN_GRACE seconds to an exact-tag watch of another command first.
 
     hcom records the spawner by base name, so `--name <tag>-<base>` matches `by: <base>`.
     """
@@ -329,7 +329,8 @@ def find_batch(spawner, tool, tag, after_id, model, effort, watched):
             else:
                 continue
             # an exact-tag watch of a separate command may own it: give that one time first
-            if pattern and clock() - seen_at.setdefault(batch_id, clock()) < PATTERN_GRACE:
+            if (pattern and not last
+                    and clock() - seen_at.setdefault(batch_id, clock()) < PATTERN_GRACE):
                 continue
             if claim(batch_id):
                 return event, why
@@ -800,7 +801,8 @@ def not_found(args):
     tag = f' with tag {args.tag}' if args.tag else ''
     if args.found:
         log(f"launch loop: {args.found} launch{'es' if args.found > 1 else ''} found; no "
-            f'further {args.tool} launch by {args.spawner}{tag} within {BATCH_WAIT}s')
+            f'further {args.tool} launch by {args.spawner}{tag} within {BATCH_WAIT}s; a later '
+            f'one goes unchecked')
     else:
         log(f'no {args.tool} launch by {args.spawner}{tag} after event {args.after_id} '
             f'within {BATCH_WAIT}s: tab not renamed, model and permission not checked')
