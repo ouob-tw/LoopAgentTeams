@@ -240,7 +240,10 @@ select:disabled {
 	border-collapse: collapse;
 }
 .md :is(th, td) {
+	min-width: var(--col, 5em);
 	padding: 0.2em 0.6em;
+	/* `anywhere` would let a column shrink to one character; the cell's own minimum width rules. */
+	overflow-wrap: break-word;
 	border: 1px solid var(--line);
 }
 .md a {
