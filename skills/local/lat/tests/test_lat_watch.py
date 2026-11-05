@@ -1831,7 +1831,7 @@ esac
                 self.assertEqual(saved['outcome'], wording)
                 self.assertEqual(saved['released_reason'], 'rang')
         self.assertTrue(any(r.get('decision') == 'alarm-timeout' for r in self.watch_records()))
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'absent', '--reason', 'new wait')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['kind'], 'agent')
@@ -2131,13 +2131,13 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertIn(f'reason: resume result check; due {when}', second.stderr)
         # A wait over a pending file alarm names its timeout instead.
         timeout = json.loads(second.stdout)['timeout_at']
-        wait = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        wait = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                         '--for', 'reviewer', '--reason', 'review round')
         self.assertEqual(wait.returncode, 0, wait.stderr)
         self.assertIn('times out ' + datetime.fromtimestamp(timeout).astimezone()
                       .isoformat(timespec='minutes'), wait.stderr)
         # Replacing a wait or a rung alarm prints nothing extra.
-        again = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        again = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                          '--for', 'reviewer', '--reason', 'review round')
         self.assertEqual(again.stderr, '')
         path = load_watch().wait_path(self.work, 'worker-open')
@@ -2606,7 +2606,7 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
                          ['orch', 'sora'])
 
     def test_comma_list_waits_for_every_entry(self):
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'absent, reviewer,qa-one,absent,', '--reason', 'review round')
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = json.loads(result.stdout)
@@ -2617,7 +2617,7 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertIn('deadline_at', saved)
 
     def test_repeated_for_waits_for_every_entry(self):
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'absent', '--for', 'reviewer,qa-one', '--reason', 'review round')
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = json.loads(result.stdout)
@@ -2626,7 +2626,7 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
                                             for name in ('absent', 'reviewer', 'qa-one')])
 
     def test_single_target_declaration_has_no_list(self):
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'reviewer,reviewer', '--reason', 'review round')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('targets', json.loads(result.stdout))
@@ -2634,7 +2634,7 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
     def test_comma_list_mixes_decisions_and_agents(self):
         decisions = self.wait_session()
         (decisions / 'HELP.md').write_text('- status: pending\n')
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'HELP,reviewer', '--minutes', '5', '--reason', 'both')
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = json.loads(result.stdout)
@@ -2651,13 +2651,13 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         (decisions / 'DONE.md').write_text('- status: approved\n')
         (decisions / 'OPEN.md').write_text('- status: pending\n')
         path = self.work / '.lat/watch/waits/worker-open.json'
-        self.assertEqual(self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        self.assertEqual(self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                                   '--for', 'OPEN', '--reason', 'old').returncode, 0)
         before = path.read_bytes()
         for targets, text in (('reviewer,DONE', 'Cannot wait on DONE'),
                               ('reviewer,worker-open', 'Cannot wait on yourself')):
             with self.subTest(targets=targets):
-                result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                                   '--for', targets, '--reason', 'x')
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(text, result.stderr)
@@ -2667,11 +2667,11 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         decisions = self.wait_session()
         for name in ('A', 'B'):
             (decisions / f'{name}.md').write_text('- status: pending\n')
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'A,B', '--minutes', '5', '--reason', 'x')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('--minutes is not allowed', result.stderr)
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'A,B', '--reason', 'x')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('deadline_at', json.loads(result.stdout))
@@ -2681,7 +2681,7 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.install_hcom(
             '#!/bin/sh\n'
             'printf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"},{"name":"qa"}]\'\n')
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'orch,qa', '--reason', 'x')
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = json.loads(result.stdout)
@@ -2689,7 +2689,7 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertIn('deadline_at', saved)
 
     def test_comma_list_rejects_an_invalid_extra_name(self):
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'absent,bad name', '--reason', 'review round')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Invalid HCOM name', result.stderr)
@@ -2703,7 +2703,7 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
                                      expiry_notified=True,
                                      expiry_notice=dict(target='absent', declared_at=['old', 'old2'],
                                                         conversation_delivered=True, delivered=True)))
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'absent', '--reason', 'new episode')
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = json.loads(result.stdout)
@@ -2749,7 +2749,7 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         Path(str(self.hcom_log) + '.delivered').unlink()
         new_times = []
         for _ in range(2):
-            result = self.cli('wait', '--workspace', self.work, '--agent', 'orch',
+            result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'orch',
                               '--for', 'absent', '--reason', 'new streak', '--minutes', '1')
             self.assertEqual(result.returncode, 0, result.stderr)
             declaration = json.loads(result.stdout)
@@ -2777,7 +2777,7 @@ esac
                                      declared_at_utc='1970-01-01T00:00:00+00:00', active=False,
                                      released_reason='expired', expiry_count=1,
                                      expiry_declared_at=['1970-01-01T00:00:00+00:00']))
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'absent', '--reason', 'new work')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['expiry_count'], 0)
@@ -2851,7 +2851,7 @@ esac
         self.assertFalse(saved['expiry_nudge_pending'])
         self.assertEqual(saved['expiry_count'], 1)
         self.assertEqual(self.watch_state()['orch']['feature_versions']['wait_deadline'], 2)
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'absent', '--reason', 'again', '--minutes', '1')
         self.assertEqual(result.returncode, 0, result.stderr)
         deadline = json.loads(result.stdout)['deadline_at']
@@ -2870,7 +2870,7 @@ esac
         successful = [r for r in self.watch_records()
                       if r.get('decision') == 'wait-expiry-notified']
         self.assertEqual(len(successful), 1)
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'other', '--reason', 'different')
         self.assertEqual(json.loads(result.stdout)['expiry_count'], 0)
 
@@ -2882,7 +2882,7 @@ esac
         path = self.work / '.lat/watch/waits/worker-open.json'
         for target in ('orch', 'team-orch'):
             with self.subTest(target=target):
-                result = self.cli('wait', '--workspace', self.work, '--agent', 'open',
+                result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'open',
                                   '--for', target, '--reason', 'await assignment')
                 self.assertEqual(result.returncode, 0, result.stderr)
                 declaration = json.loads(result.stdout)
@@ -2890,13 +2890,13 @@ esac
                 self.assertEqual(declaration['kind'], 'agent')
                 self.assertNotIn('deadline_at', declaration)
                 before = path.read_bytes()
-                result = self.cli('wait', '--workspace', self.work, '--agent', 'open',
+                result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'open',
                                   '--for', target, '--reason', 'await assignment', '--minutes', '50')
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('owning orchestrator', result.stderr)
                 self.assertEqual(path.read_bytes(), before)
         # A different orchestrator is an ordinary agent target for this worker.
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'open',
                           '--for', 'other-orch', '--reason', 'review')
         self.assertEqual(result.returncode, 0, result.stderr)
         declaration = json.loads(result.stdout)
@@ -2990,21 +2990,21 @@ esac
         decisions = self.wait_session()
         (decisions / 'HELP.md').write_text('- status: pending\n')
         for minutes in ('0', '721', 'no', '1.5'):
-            result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+            result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                               '--for', 'reviewer', '--reason', 'review',
                               '--minutes', minutes)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((self.work / '.lat/watch/waits').exists())
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'HELP', '--reason', 'decision', '--minutes', '1')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('decision', result.stderr)
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'HELP', '--reason', 'decision')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('deadline_at', json.loads(result.stdout))
         for minutes, seconds in (('1', 60), ('720', 43200)):
-            result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+            result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                               '--for', 'reviewer', '--reason', 'review',
                               '--minutes', minutes)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -3012,7 +3012,7 @@ esac
             self.assertEqual(saved['deadline_at'] - saved['declared_at'], seconds)
 
     def test_wait_default_deadline_and_self_wait_contract(self):
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'reviewer', '--reason', 'review')
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = json.loads(result.stdout)
@@ -3021,14 +3021,14 @@ esac
         path = self.work / '.lat/watch/waits/worker-open.json'
         before = path.read_bytes()
         for target in ('worker-open', 'open'):
-            result = self.cli('wait', '--workspace', self.work, '--agent', 'open',
+            result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'open',
                               '--for', target, '--reason', 'self')
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('alarm', result.stderr)
             self.assertEqual(path.read_bytes(), before)
 
     def test_wait_writes_declaration_and_status_displays_it(self):
-        waited = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        waited = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'reviewer', '--reason', 'waiting for independent review')
         self.assertEqual(waited.returncode, 0, waited.stderr)
         declaration = json.loads(waited.stdout)
@@ -3055,7 +3055,7 @@ esac
             '  printf \'%s\\n\' \'{"ready":true,"prompt_empty":true}\'\n'
             'fi\n'
         )
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'advisor',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'advisor',
                           '--for', 'orch', '--reason', 'standby')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['agent'], 'team-advisor')
@@ -3080,7 +3080,7 @@ esac
                     if previous is not None:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_bytes(previous)
-                    result = self.cli('wait', '--workspace', self.work, '--agent', agent,
+                    result = self.cli('wait', '--json', '--workspace', self.work, '--agent', agent,
                                       '--for', 'orch', '--reason', 'standby')
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(message, result.stderr.lower())
@@ -3097,7 +3097,7 @@ esac
     def test_wait_resolved_name_still_checks_owning_coordinator(self):
         decisions = self.wait_session()
         (decisions / 'HELP.md').write_text('- status: approved\n')
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'open',
                           '--for', 'HELP', '--reason', 'standby')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('no pending decision for orch', result.stderr)
@@ -3105,7 +3105,7 @@ esac
 
     def test_wait_listing_failure_accepts_given_name_with_warning(self):
         self.install_hcom('#!/bin/sh\necho unavailable >&2\nexit 1\n')
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'advisor',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'advisor',
                           '--for', 'orch', '--reason', 'standby')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('hcom list', result.stderr)
@@ -3135,7 +3135,7 @@ esac
                 if previous is not None:
                     declaration.parent.mkdir(parents=True, exist_ok=True)
                     declaration.write_bytes(previous)
-                result = self.cli('wait', '--workspace', self.work,
+                result = self.cli('wait', '--json', '--workspace', self.work,
                                   '--agent', 'worker-open', '--for', 'HELP',
                                   '--reason', 'waiting for manual step')
                 self.assertNotEqual(result.returncode, 0)
@@ -3159,7 +3159,7 @@ esac
             with self.subTest(target=target):
                 for name, content in records:
                     (decisions / name).write_text(content)
-                result = self.cli('wait', '--workspace', self.work,
+                result = self.cli('wait', '--json', '--workspace', self.work,
                                   '--agent', 'worker-open', '--for', target,
                                   '--reason', 'waiting')
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -3181,7 +3181,7 @@ esac
             (other / 'HELP.md').write_text(f'- status: {other_status}\n')
             for agent in ('orch', 'worker-open', 'somebody-else', 'worker-other'):
                 with self.subTest(own_status=own_status, agent=agent):
-                    result = self.cli('wait', '--workspace', self.work,
+                    result = self.cli('wait', '--json', '--workspace', self.work,
                                       '--agent', agent, '--for', 'HELP', '--reason', 'waiting')
                     expected = own_status if agent in ('orch', 'worker-open') else other_status
                     self.assertEqual(result.returncode == 0, expected == 'pending', result.stderr)
@@ -3199,7 +3199,7 @@ esac
             (decisions / f'{name}.md').write_text(text)
 
         def wait(*extra):
-            return self.cli('wait', '--workspace', self.work, '--agent', 'orch',
+            return self.cli('wait', '--json', '--workspace', self.work, '--agent', 'orch',
                             *extra, '--reason', 'waiting')
 
         result = wait('--for', 'worker-open', '--for-pending')
@@ -3220,15 +3220,59 @@ esac
         self.assertIn('--for-pending', none.stderr)
         self.assertNotEqual(wait().returncode, 0)
 
-        worker = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        worker = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'orch', '--for-pending', '--reason', 'waiting')
         self.assertNotEqual(worker.returncode, 0)
         self.assertIn('--for-pending is for a controller', worker.stderr)
 
+    def test_wait_for_my_agents_covers_open_task_cards_and_prints_one_line(self):
+        self.install_hcom('#!/bin/sh\nprintf \'%s\\n\' '
+                          '\'[{"name":"orch"},{"name":"worker-open"},{"name":"worker-two"}]\'\n')
+        decisions = self.wait_session()
+        record = self.work / '.lat/sessions/orch.json'
+        record.write_text(json.dumps(dict(json.loads(record.read_text()), session_id='s-orch')))
+        self.write_card('two.md', 'worker-two')
+        (decisions / 'A-1.md').write_text('- status: pending\n- session: s-orch\n')
+        (decisions / 'DONE.md').write_text('- status: approved\n')
+        path = self.work / '.lat/watch/waits/orch.json'
+
+        def wait(*extra):
+            return self.cli('wait', '--workspace', self.work, '--agent', 'orch',
+                            *extra, '--reason', 'waiting')
+
+        alone = wait('--for-my-agents')
+        self.assertEqual(alone.returncode, 0, alone.stderr)
+        self.assertEqual(alone.stdout, 'Waiting on 2: worker-open (agent), worker-two (agent)\n')
+        self.assertEqual([entry['target'] for entry in json.loads(path.read_text())['targets']],
+                         ['worker-open', 'worker-two'])
+
+        both = wait('--for', 'reviewer,worker-two', '--for-pending', '--for-my-agents', '--json')
+        self.assertEqual(both.returncode, 0, both.stderr)
+        self.assertEqual([entry['target'] for entry in json.loads(both.stdout)['targets']],
+                         ['reviewer', 'worker-two', 'A-1', 'worker-open'])
+
+        saved = path.read_bytes()
+        refused = wait('--for', 'DONE', '--for-my-agents')
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('Cannot wait on DONE', refused.stderr)
+        self.assertEqual(path.read_bytes(), saved)
+
+        for card in ('open.md', 'two.md'):
+            (self.tasks / card).rename(self.tasks / 'done' / card)
+        none = wait('--for-my-agents')
+        self.assertNotEqual(none.returncode, 0)
+        self.assertIn('--for-my-agents: no open task card names an agent', none.stderr)
+        self.assertEqual(path.read_bytes(), saved)
+
+        worker = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for-my-agents', '--reason', 'waiting')
+        self.assertNotEqual(worker.returncode, 0)
+        self.assertIn('--for-my-agents is for a controller', worker.stderr)
+
     def test_wait_accepts_decision_whose_content_cannot_be_decoded(self):
         decisions = self.wait_session()
         (decisions / 'HELP.md').write_bytes(b'- status: \xff\n')
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'HELP', '--reason', 'waiting')
         self.assertEqual(result.returncode, 0, result.stderr)
         stored = json.loads((self.work / '.lat/watch/waits/worker-open.json').read_text())
@@ -3246,7 +3290,7 @@ esac
         for status in ('approved', 'pending'):
             with self.subTest(status=status):
                 (decisions / 'teho-lid-1.md').write_text(f'- status: {status}\n')
-                result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                                   '--for', 'teho', '--reason', 'waiting')
                 self.assertEqual(result.returncode, 0, result.stderr)
                 stored = json.loads(wait.read_text())
@@ -3262,13 +3306,13 @@ esac
             '{"name":"a-teho"},{"name":"b-teho"}]\'\n'
         )
         (decisions / 'teho.md').write_text('- status: pending\n')
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'teho', '--reason', 'waiting')
         self.assertEqual(result.returncode, 0, result.stderr)
         stored = json.loads((self.work / '.lat/watch/waits/worker-open.json').read_text())
         self.assertEqual(stored['kind'], 'decision')
         (decisions / 'teho.md').unlink()
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'teho', '--reason', 'waiting')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Ambiguous', result.stderr)
@@ -3277,19 +3321,19 @@ esac
         decisions = self.wait_session()
         (decisions / 'teho-lid-1.md').write_text('- status: pending\n')
         wait = self.work / '.lat/watch/waits/worker-open.json'
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'teho-lid-1', '--reason', 'waiting')
         self.assertEqual(result.returncode, 0, result.stderr)
         stored = json.loads(wait.read_text())
         self.assertEqual((stored['kind'], stored['match']), ('decision', 'exact'))
         (decisions / 'teho-lid-1.md').write_text('- status: approved\n')
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'teho-lid-1', '--reason', 'waiting')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('no pending decision', result.stderr)
         # Neither a bare prefix of the ID nor an unknown name is a decision.
         (decisions / 'teho-lid-1.md').write_text('- status: pending\n')
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'teho-lid', '--reason', 'waiting')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(wait.read_text())['kind'], 'agent')
@@ -3329,7 +3373,7 @@ esac
         )
         for agent in ('orch', 'worker-open', 'worker-merged', 'worker-done', 'unlisted'):
             with self.subTest(agent=agent):
-                result = self.cli('wait', '--workspace', self.work, '--agent', agent,
+                result = self.cli('wait', '--json', '--workspace', self.work, '--agent', agent,
                                   '--for', 'HELP', '--reason', 'waiting')
                 self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -3339,7 +3383,7 @@ esac
         self.write_card('shared.md', 'worker-open', orchestrator='somebody-else')
         (own / 'HELP.md').write_text('- status: pending\n')
         (other / 'HELP.md').write_text('- status: approved\n')
-        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'HELP', '--reason', 'waiting')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('somebody-else', result.stderr)
@@ -3356,7 +3400,7 @@ esac
             for status in ('pending', 'approved'):
                 with self.subTest(missing=missing, status=status):
                     (decisions / 'HELP.md').write_text(f'- status: {status}\n')
-                    result = self.cli('wait', '--workspace', self.work,
+                    result = self.cli('wait', '--json', '--workspace', self.work,
                                       '--agent', 'worker-open', '--for', 'HELP',
                                       '--reason', 'waiting')
                     if status == 'pending':
@@ -3374,7 +3418,7 @@ esac
             for status in ('pending', 'approved'):
                 with self.subTest(content=content, status=status):
                     (decisions / 'HELP.md').write_text(f'- status: {status}\n')
-                    result = self.cli('wait', '--workspace', self.work,
+                    result = self.cli('wait', '--json', '--workspace', self.work,
                                       '--agent', 'worker-open', '--for', 'HELP',
                                       '--reason', 'waiting')
                     if status == 'pending':
@@ -3864,7 +3908,7 @@ esac
         decisions = self.wait_session()
         (decisions / 'HELP.md').write_text('- status: pending\n')
         for agent in ('orch', 'worker-open'):
-            result = self.cli('wait', '--workspace', self.work, '--agent', agent,
+            result = self.cli('wait', '--json', '--workspace', self.work, '--agent', agent,
                               '--for', 'HELP', '--reason', 'waiting for user')
             self.assertEqual(result.returncode, 0, result.stderr)
         self.run_finished_cycles(load_watch(), 0, 1_200, 1_800, 2_400)
@@ -5991,7 +6035,8 @@ esac
                 with patch.dict(os.environ, self.env):
                     watch.declare_wait(argparse.Namespace(
                         workspace=self.work, agent='worker-open', target=['reviewer'],
-                        reason='review', minutes=None, for_pending=False))
+                        reason='review', minutes=None, for_pending=False,
+                        for_my_agents=False, json=True))
             except Exception as error:  # surfaced through the assertion below
                 errors.append(error)
 

@@ -260,7 +260,7 @@ class SessionTests(unittest.TestCase):
                     self.assertEqual(held['decision'], 'block')
                     self.assertIn('LAT 等待檢查未通過', held['reason'])
                     for part in (f'{SKILL}/scripts/lat-watch.py wait', f'--workspace {self.work}',
-                                 '--agent orch'):
+                                 '--agent orch', '--for-pending --for-my-agents'):
                         self.assertIn(part, held['reason'])
                     self.assertEqual(self.reports(), [])
                     retry = self.stop_hook('Done\nNO REPLY: waiting', client, stop_hook_active=True)

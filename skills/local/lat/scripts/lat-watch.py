@@ -3627,12 +3627,13 @@ def declare_wait(args):
               f'as given: {error}', file=sys.stderr)
     else:
         agent = full_hcom_name(agents, agent, '--agent')
-    # Every entry is waited for (with --for-pending, the controller's own pending decisions too);
-    # the first one still unanswered is the current target.
+    # Every entry is waited for (with --for-pending, the controller's own pending decisions too;
+    # with --for-my-agents, the agents on its open task cards); the first one still unanswered
+    # is the current target.
     names = [valid_name(part.strip()) for value in args.target or ()
              for part in value.split(',') if part.strip()]
-    if not names and not args.for_pending:
-        raise ValueError('give --for or --for-pending')
+    if not names and not args.for_pending and not args.for_my_agents:
+        raise ValueError('give --for, --for-pending or --for-my-agents')
     declaration = {
         'agent': agent,
         'reason': args.reason.strip(),
@@ -3667,10 +3668,14 @@ def declare_wait(args):
                 continue
         decisions = Path(record['decisions_path'])
         owners.append((owner, decisions))
-        if args.for_pending and owner == agent:
+        if owner == agent:
             own_record = True
-            names += [name for name in own_pending_decisions(decisions, record.get('session_id'))
-                      if name not in names]
+            if args.for_pending:
+                names += [name for name in own_pending_decisions(decisions, record.get('session_id'))
+                          if name not in names]
+            if args.for_my_agents and Path(record['tasks_path']).is_dir():
+                cards, _ = monitored_task_cards(Path(record['tasks_path']), owner)
+                names += [name for name in hcom_card_agents(cards) if name not in names]
         for name in names:
             decision = None if is_hcom_agent(agents, name) else pending_decision(decisions, name)
             if decision is not None:
@@ -3683,12 +3688,20 @@ def declare_wait(args):
                     f'Cannot wait on {name}: no pending decision for {owner}; '
                     f'matching records: {statuses}. To wait on the user\'s reply or a '
                     'manual step, record it as a pending decision and wait on that ID.')
-    if args.for_pending and not own_record:
-        raise ValueError(f'--for-pending is for a controller; {agent} has no active controller '
-                         'record in this workspace')
+    for flag, given in (('--for-pending', args.for_pending),
+                        ('--for-my-agents', args.for_my_agents)):
+        if given and not own_record:
+            raise ValueError(f'{flag} is for a controller; {agent} has no active controller '
+                             'record in this workspace')
     if not names:
-        raise ValueError(f'--for-pending: no pending decision names the session of {agent}; '
-                         'nothing to wait for')
+        flags, found = [], []
+        if args.for_pending:
+            flags.append('--for-pending')
+            found.append(f'no pending decision names the session of {agent}')
+        if args.for_my_agents:
+            flags.append('--for-my-agents')
+            found.append('no open task card names an agent')
+        raise ValueError(f"{' and '.join(flags)}: {'; '.join(found)}; nothing to wait for")
     entries = []
     for name in names:
         if name in decision_targets:
@@ -3736,7 +3749,11 @@ def declare_wait(args):
         write_object(path, declaration, expected=wait_original)
     if warning := replaced_alarm_warning(previous):
         print(warning, file=sys.stderr)
-    print(json.dumps(declaration, ensure_ascii=False))
+    if args.json:
+        print(json.dumps(declaration, ensure_ascii=False))
+    else:
+        listed = ', '.join(f"{entry['target']} ({entry['kind']})" for entry in entries)
+        print(f'Waiting on {len(entries)}: {listed}')
 
 
 def cache_status(info, state, now=None):
@@ -3939,6 +3956,10 @@ def main():
                               '--for waits for every entry')
     waiting.add_argument('--for-pending', action='store_true',
                          help="also wait for every pending decision of this controller's session")
+    waiting.add_argument('--for-my-agents', action='store_true',
+                         help="also wait for every agent on this controller's open task cards")
+    waiting.add_argument('--json', action='store_true',
+                         help='print the saved declaration as JSON instead of a one-line summary')
     waiting.add_argument('--reason', required=True)
     waiting.add_argument('--minutes', type=int, choices=range(1, 721),
                          metavar='1..720', help=f'Agent wait deadline (default: {WAIT_DEFAULT_MINUTES} minutes)')
