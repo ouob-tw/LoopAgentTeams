@@ -53,10 +53,10 @@ test("a conversation's texts each show the inbox questions they asked, in the or
 		at(4, '只是提到 C-1 r1。'),
 		at(6, '再問一次。\n\nHELP: C-1 r1 · 一題')
 	];
-	// A question goes to the latest text that asked it; a question no text asked is in none.
+	// A question goes to the first text that asked it; a question no text asked is in none.
 	expect([...askingTexts(texts, [a, c, b, asked('D-1', 1)])]).toEqual([
 		[1, [b, a]],
-		[6, [c]]
+		[2, [c]]
 	]);
 	// Not in the inbox: the text asked nothing that is shown.
 	expect(askingTexts(texts, []).size).toBe(0);

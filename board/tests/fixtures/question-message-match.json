@@ -1,5 +1,5 @@
 {
-	"about": "Which report (chat message) asked a panel question. A report matches when it belongs to the question's controller session, its tag is DECIDE or HELP, its last nonblank line starts with that tag ('DECIDE:' or 'HELP:') and holds the exact bounded '<ID> r<N>' after it, and it is not earlier than the question's asked_at (skipped when null). The latest match wins. 'expected' is the index into 'reports', or null for no match. Shared by the board and the Herdr side panel.",
+	"about": "Which report (chat message) asked a panel question. A report matches when it belongs to the question's controller session, its tag is DECIDE or HELP, its last nonblank line starts with that tag ('DECIDE:' or 'HELP:') and holds the exact bounded '<ID> r<N>' after it, and it is not earlier than the question's asked_at (skipped when null). The earliest match wins: later messages naming it again do not move it. 'expected' is the index into 'reports', or null for no match. Shared by the board and the Herdr side panel.",
 	"cases": [
 		{
 			"name": "the DECIDE message that asked it",
@@ -105,14 +105,14 @@
 			"expected": 0
 		},
 		{
-			"name": "several matches: the latest by time",
+			"name": "several matches: the earliest by time",
 			"session_id": "s1",
 			"question": { "id": "X-1", "revision": 1, "asked_at": null },
 			"reports": [
 				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:30:00Z", "message": "第二次。\nDECIDE: X-1 r1 · 標題" },
 				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:20:00Z", "message": "第一次。\nDECIDE: X-1 r1 · 標題" }
 			],
-			"expected": 0
+			"expected": 1
 		},
 		{
 			"name": "the ID only in the body, not on the last line",

@@ -184,9 +184,40 @@ export function turnEnded(question: InboxQuestion, lastReportAt: string | null):
 	return Number.isNaN(asked) || (!!lastReportAt && Date.parse(lastReportAt) >= asked);
 }
 
+const assistantTexts = (view: TranscriptView) => view.items.filter((item): item is TranscriptText => item.kind === 'assistant');
+
+/** When the question was asked, or its asking report's time; undefined when neither is known. */
+const askedSince = (question: InboxQuestion) => question.time ?? question.askedIn?.time;
+
+/** Whether the pages loaded reach back to when the question was asked, or to the start: only then
+ *  is the first text loaded that asked it the first that did. */
+function reachesAsked(view: TranscriptView, question: InboxQuestion): boolean {
+	const since = askedSince(question);
+	const first = view.items[0]?.time;
+	return view.before === null || !!(since && first && Date.parse(first) <= Date.parse(since));
+}
+
 /**
- * Where an opened question is in the conversation, as the `seq` of the latest text that asked it
- * (see `askingTexts`); never a near guess. Failing that, 'pending' while the turn that asked it
+ * The questions each text loaded asked (see `askingTexts`), by `seq`. A question whose asking
+ * message may be in a page not loaded yet is left out, so a later text naming it again does not
+ * show its card only for the card to go when that page comes.
+ */
+export function askingInView(view: TranscriptView, questions: InboxQuestion[]): Map<number, InboxQuestion[]> {
+	return askingTexts(
+		assistantTexts(view),
+		questions.filter((question) => !askedSince(question) || reachesAsked(view, question))
+	);
+}
+
+/** Whether a text loaded asked the question, whether or not an earlier page may hold the first. */
+export function askedInLoaded(view: TranscriptView, question: InboxQuestion): boolean {
+	return askingTexts(assistantTexts(view), [question]).size > 0;
+}
+
+/**
+ * Where an opened question is in the conversation, as the `seq` of the first text that asked it
+ * (see `askingTexts`), once the pages loaded reach back to when it was asked; undefined until then;
+ * never a near guess. With no text loaded that asked it, 'pending' while the turn that asked it
  * has not ended, as the controller has no report since the question was asked: its message is
  * still to come, after everything loaded. Otherwise undefined while the pages loaded do not reach
  * back to when it was asked (or to its asking report's time, or to the start when neither is
@@ -197,14 +228,11 @@ export function questionPlace(
 	question: InboxQuestion,
 	lastReportAt: string | null
 ): number | 'pending' | null | undefined {
-	const texts = view.items.filter((item): item is TranscriptText => item.kind === 'assistant');
-	const [found] = askingTexts(texts, [question]).keys();
-	if (found !== undefined) return found;
+	const [found] = askingTexts(assistantTexts(view), [question]).keys();
+	const reached = reachesAsked(view, question);
+	if (found !== undefined) return reached ? found : undefined;
 	if (!turnEnded(question, lastReportAt)) return 'pending';
-	const since = question.time ?? question.askedIn?.time;
-	const first = view.items[0]?.time;
-	if (view.before !== null && !(since && first && Date.parse(first) <= Date.parse(since))) return undefined;
-	return null;
+	return reached ? null : undefined;
 }
 
 /** A pd request looked for in its caller's conversation: when it was made and the command it runs. */

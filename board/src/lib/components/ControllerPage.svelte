@@ -6,7 +6,7 @@
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { askedTogether, withAnswered } from '#lib/board/question-message.ts';
 	import type { LiveBoard } from '#lib/board/live.svelte.ts';
-	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
+	import { askedInLoaded, questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
 	import type { Translation } from '#lib/board/translate.ts';
 	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
 	import type { Snippet } from 'svelte';
@@ -92,8 +92,7 @@
 	// which may have come before the revision did.
 	$effect(() => {
 		if (!lostController || item?.kind !== 'question' || !lostSeen) return;
-		const place = questionPlace(lostSeen, item, controller.lastReportAt ?? null);
-		if (typeof place === 'number' || place === 'pending') lost = null;
+		if (askedInLoaded(lostSeen, item) || questionPlace(lostSeen, item, controller.lastReportAt ?? null) === 'pending') lost = null;
 	});
 </script>
 
