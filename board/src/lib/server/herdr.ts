@@ -367,21 +367,28 @@ export async function readScreen(config: BoardConfig, pane: string, source: Scre
  *  than the pane fills up with earlier lines. A full-screen program has only its own screen to give. */
 const SCREEN_LINES = 120;
 
-/**
- * The pane's last lines with their colour codes, however far the user scrolled it up in Herdr, without
- * moving it: `pane read --source recent` ends at the pane's bottom row that shows anything. `rows` is
- * how many were asked for.
- */
-export async function readPaneScreen(config: BoardConfig, pane: string): Promise<{ text: string; rows: number } | { reason: string }> {
-	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, '--source', 'recent', '--lines', String(SCREEN_LINES), '--format', 'ansi'], { timeoutMs: config.herdrTimeoutMs });
-	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout, rows: SCREEN_LINES };
+/** One `pane.read` over Herdr's socket: no process is started, so an open screen can be read often. */
+async function paneRead(config: BoardConfig, pane: string, params: { source: 'visible' | 'recent' | 'recent_unwrapped'; format: 'ansi' | 'text'; lines?: number }): Promise<{ text: string } | { reason: string }> {
+	const read = await socketRequest(config, 'pane.read', { pane_id: pane, ...params });
+	if ('reason' in read) return read;
+	const text = (read.result as { read?: { text?: unknown } } | null)?.read?.text;
+	return typeof text === 'string' ? { text } : { reason: '輸出不是預期的格式' };
 }
 
-/** The pane's last `lines` lines as plain text with the lines it wrapped joined back (`pane read
- *  --source recent-unwrapped`), or why they cannot be read. */
-export async function readUnwrapped(config: BoardConfig, pane: string, lines: number): Promise<{ text: string } | { reason: string }> {
-	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, '--source', 'recent-unwrapped', '--lines', String(lines)], { timeoutMs: config.herdrTimeoutMs });
-	return run.failure ? { reason: run.failure } : { text: run.stdout };
+/**
+ * The pane's last lines with their colour codes, however far the user scrolled it up in Herdr, without
+ * moving it, over Herdr's socket: the `recent` source ends at the pane's bottom row that shows
+ * anything. `rows` is how many were asked for.
+ */
+export async function readPaneScreen(config: BoardConfig, pane: string): Promise<{ text: string; rows: number } | { reason: string }> {
+	const read = await paneRead(config, pane, { source: 'recent', format: 'ansi', lines: SCREEN_LINES });
+	return 'reason' in read ? { reason: `讀不到它的 Herdr 畫面：${read.reason}` } : { text: read.text, rows: SCREEN_LINES };
+}
+
+/** The pane's last `lines` lines as plain text with the lines it wrapped joined back (the
+ *  `recent_unwrapped` source), or why they cannot be read. */
+export function readUnwrapped(config: BoardConfig, pane: string, lines: number): Promise<{ text: string } | { reason: string }> {
+	return paneRead(config, pane, { source: 'recent_unwrapped', format: 'text', lines });
 }
 
 /** Type one key press or piece of text into the pane: a named key through `pane send-keys`, text

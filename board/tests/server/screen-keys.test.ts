@@ -61,7 +61,7 @@ function changeHerdr(change: (plan: Record<string, any>) => void) {
 	writeFileSync(file, JSON.stringify(plan));
 }
 const herdrCalls = (): string[][] => jsonLines(join(fixture.dir, 'herdr-calls.jsonl'));
-const reads = (): string[][] => jsonLines(join(fixture.dir, 'herdr-list-calls.jsonl')).filter((args: string[]) => args[0] === 'pane' && (args[1] === 'read' || args[1] === 'get'));
+const reads = (): string[][] => jsonLines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((args: string[]) => args[0] === 'pane' && (args[1] === 'read' || args[1] === 'get'));
 
 async function keys(body: object, as: string | undefined = cookie, on: Fixture = fixture): Promise<{ status: number; body: KeysResponse }> {
 	const response = await on.fetch('/api/agents/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), cookie: as });
@@ -253,12 +253,28 @@ test('which lines the pane wrapped is asked of Herdr only when it changes what i
 	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'recent-unwrapped', '--lines', '120']);
 
 	// Nothing wrapped would change it: not asked.
-	rmSync(join(fixture.dir, 'herdr-list-calls.jsonl'), { force: true });
+	rmSync(join(fixture.dir, 'herdr-socket-calls.jsonl'), { force: true });
 	setHerdr({ screens: { [PANE]: [['$ cat .env', 'password=hunter2abc'].join('\r\n')] } });
 	const plain = follow('s-plain');
 	await until(() => plain.updates[0], 5_000, 'the plain screen');
 	await plain.close();
 	expect(reads().some((args) => args.includes('recent-unwrapped'))).toBe(false);
+});
+
+test('the same screen text is masked again when the lines Herdr wrapped change', async () => {
+	const width = 24;
+	const wrapped = `key ${KEY}`;
+	const rows = ['$ ls', wrapped.slice(0, width), wrapped.slice(width), '$ '];
+	// At first Herdr says the two rows are lines of their own: the start of the key alone is not one.
+	setHerdr({ screens: { [PANE]: [rows.join('\r\n')] }, unwrapped: { [PANE]: rows.join('\r\n') } });
+	const page = follow('s-plain');
+	const first = await until(() => page.updates[0], 5_000, 'the first screen');
+	expect(first.ok && first.text).toContain(wrapped.slice(0, width));
+	// The same text, now one wrapped line: the key on both rows is masked.
+	changeHerdr((plan) => (plan.unwrapped[PANE] = ['$ ls', wrapped, '$ '].join('\r\n')));
+	const masked = await until(() => page.updates.find((update) => update.ok && update.text.includes(`key ${'*'.repeat(width - 4)}`)), 5_000, 'the key masked');
+	await page.close();
+	expect(masked.ok && masked.text).not.toContain(KEY.slice(0, 10));
 });
 
 test('a pane that cannot be read says why', async () => {
@@ -427,6 +443,42 @@ test('a recovered failure stays listed for 10 minutes on the board clock, then i
 		expect(dropped.recovered).not.toContain('kept-1');
 	} finally {
 		rmSync(join(fixture.dir, 'clock'), { force: true });
+	}
+});
+
+test('keys do not wait for the other sources to be read again: only Herdr\'s agent list is', async () => {
+	// The helper now takes 6 s to list: a full read before the keys would hold their answer that long.
+	fixture.setHelper({ output: { controllers: [] }, sleepMs: 6_000 });
+	try {
+		const listsBefore = jsonLines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((args: string[]) => args.join(' ') === 'agent list').length;
+		const started = Date.now();
+		const sent = await keys({ session: 's-plain', keys: [{ key: 'enter' }], recovery: 'quick-1' });
+		expect(sent.body.ok).toBe(true);
+		expect(Date.now() - started).toBeLessThan(4_000);
+		expect(herdrCalls()).toEqual([['pane', 'send-keys', PANE, 'enter']]);
+		// Herdr's list was read for it.
+		expect(jsonLines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((args: string[]) => args.join(' ') === 'agent list').length).toBeGreaterThan(listsBefore);
+	} finally {
+		fixture.list([]);
+	}
+});
+
+test('the screen is read again at once after keys are typed in, not with the regular rhythm', async () => {
+	// A board that reads an open screen only once a minute: the changed screen within seconds was read for the press.
+	const slow = await startFixture({ env: { HERDR_PANE_ID: OWN, LAT_BOARD_HERDR_TIMEOUT_SECONDS: '1', LAT_BOARD_SCREEN_SECONDS: '60' } });
+	try {
+		const as = await slow.login();
+		setHerdr({}, slow);
+		await slow.refresh(as);
+		const page = follow('s-plain', slow, as);
+		await until(() => page.updates[0], 5_000, 'the first screen');
+		setHerdr({ screens: { [PANE]: ['$ typed'] } }, slow);
+		const sent = await keys({ session: 's-plain', keys: [{ text: 'typed' }], recovery: 'typed-1' }, as, slow);
+		expect(sent.body.ok).toBe(true);
+		await until(() => page.updates.find((update) => update.ok && update.text === '$ typed'), 20_000, 'the screen after the press');
+		await page.close();
+	} finally {
+		await slow.cleanup();
 	}
 });
 
