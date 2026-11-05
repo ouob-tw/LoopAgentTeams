@@ -6,9 +6,12 @@
 	// longer lists them. A card's handle drags its Herdr tab to another place in the same workspace;
 	// its context menu (a long press on a touch screen) renames the tab on the card itself. Hovering
 	// a card explains it, a controller's with the duty it recorded; its menu shows the duty too.
-	// A workspace heading's handle drags the workspace to another place among Herdr's workspaces.
+	// A workspace heading's handle drags the workspace to another place among Herdr's workspaces; its
+	// context menu (a long press on a touch screen) closes the workspace, after a confirmation that
+	// says how many agents and tabs go with it. The workspace the board runs in is not offered.
 	import GripVertical from '@lucide/svelte/icons/grip-vertical';
 	import Plus from '@lucide/svelte/icons/plus';
+	import { workspaceCloseConfirmText, type WorkspaceContents } from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { AGENT_MARK, agentGroups, folderName, inOrder, moveBeside, sameOrder, tabDrop } from '#lib/board/agents.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
@@ -139,8 +142,19 @@
 	/** The workspace whose move is under way. */
 	let movingGroup = $state<string | null>(null);
 	let scrolling: ReturnType<typeof setTimeout> | null = null;
-	/** The card whose menu is open, and where. */
-	let menu = $state<{ agent: Agent; x: number; y: number } | null>(null);
+	/** The card or workspace heading whose menu is open, and where. A workspace's menu shows what
+	 *  closing it takes with it once that is read (null meanwhile), or why it cannot be read. */
+	let menu = $state<
+		| { agent: Agent; x: number; y: number }
+		| { workspace: string; label: string; contents: WorkspaceContents | { reason: string } | null; x: number; y: number }
+		| null
+	>(null);
+	/** Counts the workspace menus opened, so a read that answers late is dropped. */
+	let menuReads = 0;
+	/** The workspace whose close waits for the user's confirmation, with what it takes with it. */
+	let confirming = $state<{ workspace: string; contents: WorkspaceContents } | null>(null);
+	/** The workspace whose close is under way. */
+	let closingGroup = $state<string | null>(null);
 	let menuBox = $state<HTMLElement>();
 	/** The card whose tab name is being edited. */
 	let renaming = $state<string | null>(null);
@@ -386,9 +400,14 @@
 	}
 
 	function pressStart(event: PointerEvent, agent: Agent) {
+		longPress(event, agent.inHerdr && renaming !== keyOf(agent), (x, y) => openMenu(agent, x, y));
+	}
+
+	/** A touch held still opens a menu where it is. */
+	function longPress(event: PointerEvent, allowed: boolean, opens: (x: number, y: number) => void) {
 		pressed = false;
 		cancelPress();
-		if (event.pointerType !== 'touch' || !agent.inHerdr || renaming === keyOf(agent)) return;
+		if (event.pointerType !== 'touch' || !allowed) return;
 		const { clientX: x, clientY: y } = event;
 		press = {
 			x,
@@ -396,9 +415,48 @@
 			timer: setTimeout(() => {
 				press = null;
 				pressed = true;
-				openMenu(agent, x, y);
+				opens(x, y);
 			}, LONG_PRESS_MS)
 		};
+	}
+
+	/** Open the heading's menu below it, so its name stays in view, and read what closing the
+	 *  workspace would take with it. */
+	async function openWorkspaceMenu(workspace: string, label: string, x: number, heading: HTMLElement) {
+		const y = heading.getBoundingClientRect().bottom + 2;
+		renaming = null;
+		explainer.dismiss();
+		const reading = ++menuReads;
+		menu = { workspace, label, contents: null, x, y };
+		const read = await agentControl.workspaceContents(workspace);
+		// Closed, or another menu opened, meanwhile: this read is not the one shown.
+		if (reading !== menuReads || !menu || !('workspace' in menu)) return;
+		menu = { ...menu, contents: read.ok ? read.contents : { reason: read.reason } };
+	}
+
+	function workspaceContextMenu(event: MouseEvent, workspace: string, label: string) {
+		if ((event.target as Element).closest('button, .workspace-grip')) return;
+		event.preventDefault();
+		const heading = event.currentTarget as HTMLElement;
+		// Opened from the keyboard: by the heading, not where the pointer happens to be.
+		const x = event.clientX === 0 && event.clientY === 0 ? heading.getBoundingClientRect().left + 16 : event.clientX;
+		void openWorkspaceMenu(workspace, label, x, heading);
+	}
+
+	function startCloseWorkspace(workspace: string, contents: WorkspaceContents) {
+		menu = null;
+		confirming = { workspace, contents };
+	}
+
+	async function closeWorkspace() {
+		if (!confirming) return;
+		const { workspace, contents } = confirming;
+		confirming = null;
+		closingGroup = workspace;
+		const outcome = await agentControl.closeWorkspace(workspace, contents);
+		closingGroup = null;
+		if (outcome.ok) toasts.show('ok', `已關閉工作區「${contents.label}」${outcome.reason ?? ''}`);
+		else toasts.show('failed', `關閉工作區失敗：${outcome.reason}`);
 	}
 
 	function pressMove(event: PointerEvent) {
@@ -469,11 +527,22 @@
 		class:dragging={groupDrag?.workspace === group.workspace}
 		class:drop-before={groupDrag?.over?.workspace === group.workspace && !groupDrag.over.after}
 		class:drop-after={groupDrag?.over?.workspace === group.workspace && groupDrag.over.after}
-		class:busy={movingGroup === group.workspace}
+		class:busy={movingGroup === group.workspace || closingGroup === group.workspace}
 		data-workspace={group.workspace}
 		style:transform={groupDrag?.workspace === group.workspace ? `translateY(${groupDrag.offset}px)` : null}
 	>
-		<div class="heading">
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="heading"
+			oncontextmenu={(event) => listed && workspaceContextMenu(event, group.workspace, group.label)}
+			onpointerdown={(event) => {
+				const heading = event.currentTarget;
+				longPress(event, listed && !(event.target as Element).closest('button, .workspace-grip'), (x) => openWorkspaceMenu(group.workspace, group.label, x, heading));
+			}}
+			onpointermove={pressMove}
+			onpointerup={cancelPress}
+			onpointercancel={cancelPress}
+		>
 			<h3>{group.label}</h3>
 			<!-- Only a workspace Herdr lists can take a new tab or move. -->
 			{#if listed}
@@ -500,6 +569,15 @@
 				</button>
 			{/if}
 		</div>
+		{#if confirming?.workspace === group.workspace}
+			<div class="confirm" role="group" aria-label="確認關閉工作區">
+				<p class="warn">{workspaceCloseConfirmText(confirming.contents)}</p>
+				<div class="confirm-actions">
+					<button type="button" class="danger" data-action="confirm-close-workspace" onclick={closeWorkspace}>確認關閉</button>
+					<button type="button" onclick={() => (confirming = null)}>取消</button>
+				</div>
+			</div>
+		{/if}
 		{#each group.agents as agent (keyOf(agent))}
 			{@const id = agent.id}
 			{@const key = keyOf(agent)}
@@ -564,7 +642,7 @@
 	<div class="refuse-tip" style:left="{drag.x + 14}px" style:top="{drag.y + 14}px">不能拖到別的工作區</div>
 {/if}
 
-{#if menu}
+{#if menu && 'agent' in menu}
 	{@const target = menu.agent}
 	{@const duty = dutyOf(target)}
 	<div class="menu" bind:this={menuBox}>
@@ -573,6 +651,20 @@
 		{/if}
 		<div role="menu" aria-label="分頁">
 			<button type="button" role="menuitem" onclick={() => startRename(target)}>改分頁名稱</button>
+		</div>
+	</div>
+{:else if menu}
+	{@const { workspace, contents } = menu}
+	<div class="menu" bind:this={menuBox}>
+		<div role="menu" aria-label="工作區 {menu.label}">
+			{#if contents && !('reason' in contents) && !contents.own}
+				<button type="button" role="menuitem" class="danger-text" onclick={() => startCloseWorkspace(workspace, contents)}>關閉工作區</button>
+			{:else}
+				<button type="button" role="menuitem" disabled>關閉工作區</button>
+				<p class="menu-note">
+					{#if contents === null}讀取工作區內容中…{:else if 'reason' in contents}讀不到工作區內容：{contents.reason}{:else}看板就在這個工作區裡，關閉會連看板一起關掉，所以不能從這裡關閉。{/if}
+				</p>
+			{/if}
 		</div>
 	</div>
 {/if}
@@ -641,6 +733,11 @@
 		justify-content: space-between;
 		gap: 0.25rem;
 		margin: 0.9rem 0 0.1rem;
+	}
+	/* No text selection or callout under a long press, which opens the workspace's menu instead. */
+	.heading {
+		-webkit-touch-callout: none;
+		user-select: none;
 	}
 	.group:first-child > .heading {
 		margin-top: 0.2rem;
@@ -827,6 +924,41 @@
 		margin: 0.3rem 0;
 		border: 0;
 		border-top: 1px solid var(--line);
+	}
+	.menu-note {
+		max-width: min(18rem, 70vw);
+		margin: 0;
+		padding: 0.2rem 0.5rem 0.4rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
+		color: var(--muted);
+		overflow-wrap: anywhere;
+	}
+	.menu .danger-text {
+		color: var(--danger);
+	}
+	/* The workspace close, asked for and waiting for the user's word. */
+	.confirm {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		padding: 0.5rem 0.6rem;
+		border: 1px solid var(--danger);
+		border-radius: var(--radius);
+	}
+	.confirm .warn {
+		margin: 0;
+		overflow-wrap: anywhere;
+	}
+	.confirm-actions {
+		display: flex;
+		gap: 0.4rem;
+	}
+	.confirm-actions button {
+		min-height: 2.4rem;
+	}
+	button.danger {
+		color: var(--danger);
+		border-color: var(--danger);
 	}
 	.menu button {
 		display: block;
