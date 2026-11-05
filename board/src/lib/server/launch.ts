@@ -20,6 +20,7 @@ import {
 	type LaunchList,
 	type LaunchRequest,
 	type LaunchResponse,
+	type LaunchView,
 	type Project,
 	type SentLaunch,
 	type WorkspacePick
@@ -74,6 +75,27 @@ async function listProjects(board: Board): Promise<Project[]> {
 		});
 }
 
+const isFolder = (path: string): boolean => {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+};
+
+/** Each Herdr workspace's folder its latest plain agent was started in, from `launches` newest
+ *  first; a failed launch does not count, and a folder no longer there is left out. */
+export function workspaceFolders(launches: readonly LaunchView[], folderThere: (path: string) => boolean = isFolder): Record<string, string> {
+	const latest: Record<string, string> = {};
+	for (const launch of launches) {
+		const workspace = launch.herdrWorkspace;
+		if (launch.role !== 'agent' || launch.state === 'failed' || workspace === null || workspace in latest) continue;
+		latest[workspace] = launch.folder;
+	}
+	for (const [workspace, folder] of Object.entries(latest)) if (!folderThere(folder)) delete latest[workspace];
+	return latest;
+}
+
 export async function listLaunches(board: Board): Promise<LaunchList> {
 	const { stateDir, launchWaitMs } = board.config;
 	let projects: Project[] = [];
@@ -90,9 +112,9 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 		const launches = [...all.filter((launch) => launch.role !== 'agent').slice(0, LISTED_LAUNCHES), ...all.filter((launch) => launch.role === 'agent').slice(0, LISTED_LAUNCHES)];
 		const deadlines = launches.filter((launch) => launch.state === 'starting').map((launch) => Date.parse(launch.time) + launchWaitMs);
 		const refreshAfterMs = deadlines.length ? Math.max(0, Math.min(...deadlines) - board.config.now()) : null;
-		return { refreshAfterMs, projects, projectsError, launches, logError: null, modelOptions: board.config.modelOptions, home: homedir() };
+		return { refreshAfterMs, projects, projectsError, launches, workspaceFolders: workspaceFolders(all), logError: null, modelOptions: board.config.modelOptions, home: homedir() };
 	} catch (error) {
-		return { refreshAfterMs: null, projects, projectsError, launches: [], logError: (error as Error).message, modelOptions: board.config.modelOptions, home: homedir() };
+		return { refreshAfterMs: null, projects, projectsError, launches: [], workspaceFolders: {}, logError: (error as Error).message, modelOptions: board.config.modelOptions, home: homedir() };
 	}
 }
 

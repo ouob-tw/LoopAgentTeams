@@ -488,6 +488,15 @@ test('the list keeps plain agents and controllers apart, and a plain agent never
 	expect(sentLog().some((line) => line.kind === 'launch-bound' && line.launchId === body.entry!.id)).toBe(false);
 });
 
+test("the list remembers each workspace's last plain-agent folder, from the sent log", async () => {
+	herdrPlan();
+	hcomPlan([{ name: 'kept', workspace: 'wA' }]);
+	const kept = folder('kept', false);
+	const { body } = await launch({ folder: kept, workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } });
+	await followed(body.entry!.id);
+	expect((await list()).workspaceFolders.wA).toBe(kept);
+});
+
 // --- A new controller's tab goes first too ---------------------------------------------------------
 
 test('a new controller\'s tab is moved to the front once Herdr lists it, never renamed; it still waits for its binding', async () => {

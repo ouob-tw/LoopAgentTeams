@@ -210,6 +210,9 @@ export interface LaunchList {
 	projectsError: string | null;
 	/** Newest first: the controllers', then the plain agents'. */
 	launches: LaunchView[];
+	/** Each Herdr workspace's folder its latest plain agent was started in, when it is still a
+	 *  folder: where that workspace's new-agent form starts. Empty when the log cannot be read. */
+	workspaceFolders: Record<string, string>;
 	/** Why the sent log could not be read; the list is empty then. */
 	logError: string | null;
 	/** What the model and effort fields offer each client. */
