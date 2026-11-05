@@ -57,14 +57,14 @@ class LedgerCase(unittest.TestCase):
         self.hcom_list.write_text(json.dumps([
             {'name': name, 'base_name': name.rsplit('-', 1)[-1]} for name in names]))
 
-    def run_ledger(self, *args, by='orch', env=None):
+    def run_ledger(self, *args, by='orch', env=None, script=None):
         environment = {**os.environ, 'LAT_LEDGER_NOW': self.now, 'HCOM_INSTANCE_NAME': by,
                        'LAT_LEDGER_HCOM_LIST': str(self.hcom_list),
                        'SUITE_GATE_STATE_DIR': str(self.gate_state),
                        'XDG_CONFIG_HOME': str(self.root / 'config'), **(env or {})}
         environment.pop('SUITE_GATE_CONFIG', None)
         command, *rest = args
-        return subprocess.run([sys.executable, str(SCRIPT), command, '--ledger', str(self.ledger),
+        return subprocess.run([sys.executable, str(script or SCRIPT), command, '--ledger', str(self.ledger),
                                *rest], capture_output=True, text=True, env=environment,
                               timeout=60)
 
@@ -792,6 +792,57 @@ class QaCoverageTests(LedgerCase):
         self.assertEqual(self.run_ledger('check').returncode, 1)
         self.exempt_qa('#480')
         self.ok('check')
+
+    def test_comma_lists_in_any_spelling_cover_the_same_numbers(self):
+        cases = (('480,481', '480,481', True), ('480, 481', '#480,#481', True),
+                 ('#480,#481', '480 481', True), ('480,481', '480', False),
+                 ('org/repo#480,481', 'org/repo#480,#481', True),
+                 ('org/repo#480,481', 'org/repo#480,org/repo#481', False))
+        for impl_ticket, qa_ticket, covered in cases:
+            with self.subTest(impl=impl_ticket, qa=qa_ticket):
+                for path in (self.ledger, self.seal, self.journal):
+                    path.unlink()
+                self.init()
+                self.exempt_qa('#1')  # setUp's #1 impl row is gone with the ledger
+                impl = self.started(ticket=impl_ticket)
+                self.ok('done', str(impl), '--commit', self.merged)
+                self.assertEqual(self.run_ledger('check').returncode, 1)
+                qa = self.add(ticket=qa_ticket, stage='qa', evidence='file')
+                self.ok('cancel', str(qa), '--reason', 'covered')
+                self.assertEqual(self.run_ledger('check').returncode, 0 if covered else 1)
+
+    def test_a_ledger_made_before_the_rule_is_not_held_to_it(self):
+        baseline = self.root / 'baseline'
+        baseline.mkdir()
+        old = baseline / 'lat-ledger.py'
+        old.write_text(git(Path(__file__).resolve().parents[3], 'show',
+                           '2f203072:skills/local/lat/scripts/lat-ledger.py') + '\n')
+        (baseline / '_lat_common.py').write_text((SCRIPT.parent / '_lat_common.py').read_text())
+        for path in (self.ledger, self.seal, self.journal):
+            path.unlink()
+        def old_ok(*args, by='orch'):
+            result = self.run_ledger(*args, by=by, script=old)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+        old_ok('init', '--workspace', str(self.workspace), '--integration-branch', 'dev',
+               '--orchestrator', 'orch')
+        item = old_ok('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'commit').strip()
+        old_ok('assign', item, '--agent', 'impl', '--card', str(self.card()), '--deadline', '+2h')
+        old_ok('start', item, '--eta', '+1h', by='impl')
+        old_ok('done', item, '--commit', self.merged, by='impl')
+        self.assertNotIn('qa_coverage', self.doc())
+        self.ok('check')
+        self.ledger.unlink()
+        self.ok('repair', '--from-journal', '--reason', 'rebuilt')
+        self.assertNotIn('qa_coverage', self.doc())
+        self.ok('check')
+
+    def test_a_new_ledger_carries_the_rule_and_keeps_it_through_repair(self):
+        self.assertTrue(self.doc()['qa_coverage'])
+        self.ledger.unlink()
+        self.ok('repair', '--from-journal', '--reason', 'rebuilt')
+        self.assertTrue(self.doc()['qa_coverage'])
+        self.assertEqual(self.run_ledger('check').returncode, 1)
 
     def test_a_cancelled_impl_row_needs_no_qa(self):
         self.exempt_qa()

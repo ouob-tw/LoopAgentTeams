@@ -634,6 +634,7 @@ def cmd_init(args):
         doc = {'version': VERSION, 'workspace': str(workspace),
                'integration_branch': args.integration_branch, 'orchestrator': args.orchestrator,
                'created_at': at, 'updated_at': at, 'next_id': 1, 'items': [],
+               'qa_coverage': True,  # ledgers made before this rule lack it and skip the rule
                'history': [{'at': at, 'by': actor(args), 'action': 'init', 'reason': None}]}
         save(store, doc, None, {'at': at, 'by': actor(args), 'action': 'init', 'item': None,
                                 'reason': None})
@@ -866,12 +867,14 @@ def cmd_next(args):
 
 
 def ticket_refs(text):
-    """The ticket references in a ticket field (it may list several), as (repo, number);
-    repo is None for a bare #N, which matches only another bare #N. Text with no #N or number counts as one reference of its own."""
-    found = {(repo or None, number) for repo, number in
-             re.findall(r'(?:([\w.-]+/[\w.-]+))?(#\d+)', text)}
-    if not found and text.strip().isdigit():
-        found = {(None, '#' + text.strip())}  # a bare number is the same ticket as #N
+    """The ticket references in a ticket field (it may list several, split by commas or
+    spaces), as (repo, "#N"); repo is None for a bare #N or bare number, which matches only
+    another bare one. Text that is no reference counts as one reference of its own."""
+    found = set()
+    for token in re.split(r'[\s,;、]+', text.strip()):
+        match = re.fullmatch(r'(?:([\w.-]+/[\w.-]+))?#?(\d+)', token)
+        if match:
+            found.add((match.group(1), '#' + match.group(2)))
     return found or {(None, text.strip())}
 
 
@@ -895,7 +898,7 @@ def tickets_without_qa(doc):
 def cmd_check(args):
     doc = read_only(args)
     failures, cancelled = [], []
-    for number, ids in tickets_without_qa(doc).items():
+    for number, ids in tickets_without_qa(doc).items() if doc.get('qa_coverage') else ():
         failures.append({'id': ids[0], 'label': f'ticket {number} (impl item {", ".join(map(str, ids))})',
                          'problems': ['no qa-draft or qa item covers it; add one, or cancel one '
                                       'with --reason to record why not']})
