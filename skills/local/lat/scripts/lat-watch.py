@@ -3627,7 +3627,8 @@ def declare_wait(args):
               f'as given: {error}', file=sys.stderr)
     else:
         agent = full_hcom_name(agents, agent, '--agent')
-    # A comma list waits for every entry; the first one still unanswered is the current target.
+    # Every entry is waited for (with --for-pending, the controller's own pending decisions too);
+    # the first one still unanswered is the current target.
     names = [valid_name(part.strip()) for value in args.target or ()
              for part in value.split(',') if part.strip()]
     if not names and not args.for_pending:
@@ -3643,6 +3644,7 @@ def declare_wait(args):
         raise ValueError('--reason must not be empty')
     decision_targets = set()
     owners = []
+    own_record = False
     for path in sorted((lat_dir(workspace) / 'sessions').glob('*.json')):
         try:
             record = read_object(path, {})
@@ -3666,6 +3668,7 @@ def declare_wait(args):
         decisions = Path(record['decisions_path'])
         owners.append((owner, decisions))
         if args.for_pending and owner == agent:
+            own_record = True
             names += [name for name in own_pending_decisions(decisions, record.get('session_id'))
                       if name not in names]
         for name in names:
@@ -3680,9 +3683,12 @@ def declare_wait(args):
                     f'Cannot wait on {name}: no pending decision for {owner}; '
                     f'matching records: {statuses}. To wait on the user\'s reply or a '
                     'manual step, record it as a pending decision and wait on that ID.')
+    if args.for_pending and not own_record:
+        raise ValueError(f'--for-pending is for a controller; {agent} has no active controller '
+                         'record in this workspace')
     if not names:
-        raise ValueError(f'--for-pending: {agent} has no active controller record with a '
-                         'pending decision of its session; give --for')
+        raise ValueError(f'--for-pending: no pending decision names the session of {agent}; '
+                         'nothing to wait for')
     entries = []
     for name in names:
         if name in decision_targets:

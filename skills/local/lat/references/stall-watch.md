@@ -100,7 +100,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" wait --workspace "$wo
 - `--agent` 填完整 HCOM 名稱（含 tag）。`wait` 使用監控同一個 `hcom list --json` 清單：完整名稱原樣保留，短名解析為唯一以 `-<短名>` 結尾的完整名稱，等待紀錄以完整名稱儲存；撞名或查無名稱時以非零結束碼拒絕，stderr 說明原因，不寫入也不改動原聲明。清單讀取失敗時在 stderr 警告並沿用輸入。
 - `--workspace` 必須是主控 activate 時的工作區；執行 Agent 在自己的 worktree 工作時也填主控的路徑，否則監控讀不到聲明。
 - `--for` 填一個對象：先比對 `hcom list` 清單，是完整名稱或可唯一解析的短名就當 Agent 名稱（即使決策目錄有檔名以它開頭的紀錄）；不是 Agent 才當決策 ID，須與主控 activate 時 `--decisions` 目錄裡某個檔名（去掉 `.md`）完全相同，不比對開頭。每個 Agent 只保留最後一筆聲明。
-- 同時等多個對象時，用逗號分開（如 `--for D62,impl-sofe`）：全部回覆才失效，只回一位時聲明仍有效，`NO REPLY:` 不被攔下。每個對象都照本節規則解析與檢查，任一個不合格就整筆拒絕。主控加 `--for-pending` 另等紀錄 `- session:` 是自己的全部 `pending` 待決，可省略 `--for`。
+- 同時等多個對象時，用逗號分開（如 `--for D62,impl-sofe`）：全部回覆才失效，只回一位時聲明仍有效，`NO REPLY:` 不被攔下。每個對象都照本節規則解析與檢查，任一個不合格就整筆拒絕。主控加 `--for-pending` 另等 `- session:` 是自己的 pending 待決，可省略 `--for`。
 - `wait` 依工作區內 active 主控 session 紀錄，找出負責監控 `--agent` 的主控：主控本人，或其任務卡目錄（不含 `done/`）裡未 `merged` 且列名的 Agent。只查各自的決策目錄，不跨主控合併；找不到負責的主控時照常接受。若任一負責主控的該決策 ID 紀錄已非 `pending`，指令以非零結束碼拒絕，stderr 列出紀錄及狀態，不寫入也不改動原聲明。有任一待決紀錄或讀不出狀態時照常接受。要等使用者回覆或手動操作，先把它記成待決紀錄，再等那個 ID。
 - 聲明在下列情況失效：等待其他執行 Agent 的期限到期（附屬 Agent 等自己的主控除外），或下列條件成立：任何人（含等待對象）傳來 intent 不是 `inform`／`ack` 的訊息（`request` 或沒有 intent）、等待的決策不再是 `pending`、等待的 Agent 成功把非 `inform`／`ack` 的訊息傳給自己。任何人傳來的 `inform`、`ack`（含等待對象的）都不使聲明失效，停住監控也不因此催促重新聲明，留到下一回合再讀。監控以雙方在 `hcom list --json` 的確切 session 歸屬核對傳送成功；該 Agent 傳給其他人、可能撞名的短名或僅嘗試傳送都不算回報。失效後若仍在等，處理完新訊息再重新聲明。
 - 等待對象自己的訊息與回報另看它的 HCOM 狀態：仍是 `active`（還在執行；Codex 回合已結束的不算）時當作進度，不使聲明失效，也不算多對象的回覆；轉為 `listening`、`blocked`、`inactive` 或已不在清單後，它這段期間傳來的任何訊息（含 `inform`）都使聲明失效或算回覆。讀不到狀態（短名撞名、Codex 對話紀錄讀不出）或等的是自己的主控時，照上一條的 intent 規則。

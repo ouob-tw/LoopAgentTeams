@@ -3220,6 +3220,11 @@ esac
         self.assertIn('--for-pending', none.stderr)
         self.assertNotEqual(wait().returncode, 0)
 
+        worker = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'orch', '--for-pending', '--reason', 'waiting')
+        self.assertNotEqual(worker.returncode, 0)
+        self.assertIn('--for-pending is for a controller', worker.stderr)
+
     def test_wait_accepts_decision_whose_content_cannot_be_decoded(self):
         decisions = self.wait_session()
         (decisions / 'HELP.md').write_bytes(b'- status: \xff\n')
@@ -5986,7 +5991,7 @@ esac
                 with patch.dict(os.environ, self.env):
                     watch.declare_wait(argparse.Namespace(
                         workspace=self.work, agent='worker-open', target=['reviewer'],
-                        reason='review', minutes=None))
+                        reason='review', minutes=None, for_pending=False))
             except Exception as error:  # surfaced through the assertion below
                 errors.append(error)
 
