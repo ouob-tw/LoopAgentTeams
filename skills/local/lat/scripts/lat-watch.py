@@ -44,7 +44,7 @@ LOG_ROTATE_BYTES = 1024 * 1024
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 KEEPALIVE_SECONDS = 10 * 60
 IDLE_GAP_SECONDS = 5 * 60
-KEEPALIVE_DECISION_SECONDS = 3 * 60 * 60
+KEEPALIVE_LIMIT_SECONDS = 3 * 60 * 60
 KEEPALIVE_QUIET_HOURS = (1, 9)
 PROMPT_UNREADABLE_SECONDS = 15 * 60
 LEDGER_START_SECONDS = 10 * 60
@@ -1566,17 +1566,55 @@ def message_releases_wait(message):
     return event_value(message, 'intent', 'data') not in ('inform', 'ack')
 
 
+def target_message_answers(message, status):
+    """Whether a waited agent's own message answers the wait, given its HCOM status.
+
+    While it is still active the message is progress; once it stops, any message counts,
+    since completion reports often go out as inform. An unknown status keeps the intent rule.
+    """
+    if status == 'active':
+        return False
+    if status in ('listening', 'blocked', 'inactive'):
+        return True
+    return message_releases_wait(message)
+
+
+def wait_target_status(agents, name):
+    """A waited agent's HCOM status, or None when it cannot be told.
+
+    An agent missing from the list has ended (inactive); an ambiguous short name is unknown.
+    Codex can stay active after its turn, so its transcript decides: an ended turn counts as
+    listening, an unreadable one as unknown.
+    """
+    if name not in agents and all(item.get('base_name') != name for item in agents.values()):
+        return 'inactive'
+    info = agent_info(agents, name)
+    if not info:
+        return None
+    status = info.get('status')
+    if status == 'active' and str(info.get('tool', '')).lower() == 'codex':
+        finished = codex_turn_finished(info.get('transcript_path'))
+        return None if finished is None else 'listening' if finished else 'active'
+    return status
+
+
 def wait_release_reason(declaration, participant_events, target_replied, decision_pending,
-                        messages=None):
+                        messages=None, target_names=frozenset(), target_status=None):
     """Explain why a wait is no longer valid, or return None.
 
     messages are the message events delivered to the waiter; a delivery frees the wait only if
-    one is not an inform/ack, whoever sent it. None or empty releases on any delivery.
+    one is not an inform/ack, whoever sent it. None or empty releases on any delivery. A
+    message from target_names (the waited agent) follows target_message_answers instead.
     """
+    def releases(message):
+        if event_value(message, 'from', 'data') in target_names:
+            return target_message_answers(message, target_status)
+        return message_releases_wait(message)
+
     if target_replied:
         return 'target-replied'
     if any(delivery_sender(event) is not None for event in participant_events):
-        if not messages or any(message_releases_wait(m) for m in messages):
+        if not messages or any(releases(m) for m in messages):
             return 'message-delivered'
     if decision_pending is False:
         return 'decision-resolved'
@@ -1602,10 +1640,12 @@ def target_sender_names(entry, agents):
     return {target, target.rsplit('-', 1)[-1], info.get('name'), info.get('base_name')} - {None}
 
 
-def multi_wait_progress(declaration, participant_events, messages, agents, is_answered):
+def multi_wait_progress(declaration, participant_events, messages, agents, is_answered,
+                        statuses=None):
     """Return (release reason or None, names of the targets answered so far).
 
-    A listed target's message only marks it answered; anyone else's frees the wait as usual.
+    A listed target's message only marks it answered (see target_message_answers); anyone
+    else's frees the wait as usual.
     """
     listed = set().union(*(target_sender_names(entry, agents)
                            for entry in wait_targets(declaration)))
@@ -1614,12 +1654,16 @@ def multi_wait_progress(declaration, participant_events, messages, agents, is_an
                                and event_value(message, 'from', 'data') not in listed
                                for message in messages):
             return 'message-delivered', declaration.get('answered', [])
-    senders = {event_value(message, 'from', 'data') for message in messages
-               if message_releases_wait(message)}
+
+    def replied(entry):
+        names = target_sender_names(entry, agents)
+        status = (statuses or {}).get(entry['target'])
+        return any(event_value(message, 'from', 'data') in names
+                   and target_message_answers(message, status) for message in messages)
+
     answered = [entry['target'] for entry in wait_targets(declaration)
                 if entry['target'] in declaration.get('answered', [])
-                or senders & target_sender_names(entry, agents)
-                or is_answered(entry)]
+                or replied(entry) or is_answered(entry)]
     if len(answered) == len(wait_targets(declaration)):
         return 'targets-answered', answered
     return None, answered
@@ -1718,12 +1762,11 @@ def keepalive_blocker(declaration, observation, now, busy=False):
     if not idle_prompt(observation):
         return 'prompt-not-empty'
     kind = declaration.get('kind')
-    if kind in ('decision', 'alarm'):
-        if now - declaration['declared_at'] >= KEEPALIVE_DECISION_SECONDS:
-            return f'{kind}-over-3h'
-        start, end = KEEPALIVE_QUIET_HOURS
-        if start <= time.localtime(now).tm_hour < end:
-            return f'{kind}-quiet-hours'
+    if now - declaration['declared_at'] >= KEEPALIVE_LIMIT_SECONDS:
+        return f'{kind}-over-3h'
+    start, end = KEEPALIVE_QUIET_HOURS
+    if start <= time.localtime(now).tm_hour < end:
+        return f'{kind}-quiet-hours'
     return None
 
 
@@ -2092,9 +2135,15 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     else:
         decision = entry_pending(declaration)
     waiting_name = waiting_info.get('name') if waiting_info else None
+    # Waiting on one's own orchestrator keeps the intent rule: it is active most of the time.
+    statuses = {entry['target']: None if entry['target'] == orchestrator
+                else wait_target_status(agents, entry['target'])
+                for entry in wait_targets(declaration) if entry.get('kind') == 'agent'}
 
     def agent_replied(name):
         target_info = agent_info(agents, name)
+        if statuses.get(name) == 'active':
+            return False  # still working: its send is progress, judged again once it stops
         transcript = target_info.get('transcript_path') if target_info else None
         return bool(transcript and waiting_name and successful_hcom_send_since(
             transcript, after, waiting_name, skip_inform_ack=True))
@@ -2107,7 +2156,7 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     messages = delivered_messages(orchestrator, waiting_info or {}, participant, after)
     if declaration.get('targets'):
         reason, answered = multi_wait_progress(declaration, participant, messages, agents,
-                                               entry_answered)
+                                               entry_answered, statuses)
         if (not reason and declaration.get('active', True)
                 and answered != declaration.get('answered', [])):
             # The top level follows the first target still unanswered, for every other reader.
@@ -2121,8 +2170,11 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
                 updated['deadline_at'] = time.time() + declaration['wait_seconds']
             write_wait(wait_path(workspace, agent), updated, expected=expected)
     else:
-        reason = wait_release_reason(declaration, participant,
-                                     decision is None and agent_replied(target), decision, messages)
+        reason = wait_release_reason(
+            declaration, participant, decision is None and agent_replied(target), decision,
+            messages, (target_sender_names(declaration, agents)
+                       if declaration.get('kind') == 'agent' else frozenset()),
+            statuses.get(target))
     if reason:
         updated = dict(declaration, active=False, expiry_count=0, expiry_declared_at=[],
                        expiry_notified=False, expiry_nudge_pending=False, released_reason=reason,
@@ -3346,7 +3398,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                          'actions': [], 'error': f'{type(error).__name__}: {error}'})
     LEDGER_DELIVERIES[str(path)] = ledger_state
     own = states.setdefault(orchestrator, {})
-    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5,
+    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 6,
                                'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1,
                                'capacity_continue': 1, 'wait_targets': 1}
     if ledger_state:
@@ -3477,6 +3529,19 @@ def alarm_watcher_running(workspace, record):
     return watcher_process_matches(pid, expected)
 
 
+def replaced_alarm_warning(previous):
+    """The stderr line for a wait or alarm that replaces an alarm not yet rung, else None."""
+    if not previous or previous.get('kind') != 'alarm' or not previous.get('active', True):
+        return None
+    due = previous.get('due_at')
+    at = due if due is not None else previous.get('timeout_at')
+    when = (datetime.fromtimestamp(at).astimezone().isoformat(timespec='minutes')
+            if isinstance(at, (int, float)) else 'unknown')
+    return (f"LAT watch warning: replaced your alarm that had not rung yet "
+            f"(reason: {previous.get('reason')}; {'due' if due is not None else 'times out'} "
+            f"{when}). Each agent keeps one wait or alarm; register it again if still needed.")
+
+
 def declare_alarm(args):
     workspace = args.workspace.resolve(strict=True)
     agent = full_hcom_name(list_hcom(valid_name(args.agent)), args.agent, '--agent')
@@ -3526,8 +3591,10 @@ def declare_alarm(args):
     if args.after is None:
         declaration['timeout_at'] = now + (args.timeout or 60) * 60
     with wait_lock(wait_path(workspace, agent)):
-        _, original = read_wait(wait_path(workspace, agent))
+        previous, original = read_wait(wait_path(workspace, agent))
         write_object(wait_path(workspace, agent), declaration, expected=original)
+    if warning := replaced_alarm_warning(previous):
+        print(warning, file=sys.stderr)
     append_log(state_path(workspace, record['hcom_name']).with_name('watch.jsonl'),
                {'at': now, 'agent': agent, 'decision': 'alarm-registered', 'wait': declaration})
     print(json.dumps(declaration, ensure_ascii=False))
@@ -3637,6 +3704,8 @@ def declare_wait(args):
               and not previous['expiry_notice']['delivered']):
             declaration['expiry_notice'] = previous['expiry_notice']
         write_object(path, declaration, expected=wait_original)
+    if warning := replaced_alarm_warning(previous):
+        print(warning, file=sys.stderr)
     print(json.dumps(declaration, ensure_ascii=False))
 
 

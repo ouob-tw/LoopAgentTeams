@@ -103,6 +103,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" wait --workspace "$wo
 - 同時等多個對象時，用逗號分開（如 `--for D62,impl-sofe`）：全部回覆才失效，只回一位時聲明仍有效，`NO REPLY:` 不被攔下。每個對象都照本節規則解析與檢查，任一個不合格就整筆拒絕。舊用法只等第一個、其餘附在 `--reason` 後面，現在改為全部都等，`--reason` 不再被改寫；單一對象的行為不變。
 - `wait` 依工作區內 active 主控 session 紀錄，找出負責監控 `--agent` 的主控：主控本人，或其任務卡目錄（不含 `done/`）裡未 `merged` 且列名的 Agent。只查各自的決策目錄，不跨主控合併；找不到負責的主控時照常接受。若任一負責主控的該決策 ID 紀錄已非 `pending`，指令以非零結束碼拒絕，stderr 列出紀錄及狀態，不寫入也不改動原聲明。有任一待決紀錄或讀不出狀態時照常接受。要等使用者回覆或手動操作，先把它記成待決紀錄，再等那個 ID。
 - 聲明在下列情況失效：等待其他執行 Agent 的期限到期（附屬 Agent 等自己的主控除外），或下列條件成立：任何人（含等待對象）傳來 intent 不是 `inform`／`ack` 的訊息（`request` 或沒有 intent）、等待的決策不再是 `pending`、等待的 Agent 成功把非 `inform`／`ack` 的訊息傳給自己。任何人傳來的 `inform`、`ack`（含等待對象的）都不使聲明失效，停住監控也不因此催促重新聲明，留到下一回合再讀。監控以雙方在 `hcom list --json` 的確切 session 歸屬核對傳送成功；該 Agent 傳給其他人、可能撞名的短名或僅嘗試傳送都不算回報。失效後若仍在等，處理完新訊息再重新聲明。
+- 等待對象自己的訊息與回報另看它的 HCOM 狀態：仍是 `active`（還在執行；Codex 回合已結束的不算）時當作進度，不使聲明失效，也不算多對象的回覆；轉為 `listening`、`blocked`、`inactive` 或已不在清單後，它這段期間傳來的任何訊息（含 `inform`）都使聲明失效或算回覆。讀不到狀態（短名撞名、Codex 對話紀錄讀不出）或等的是自己的主控時，照上一條的 intent 規則。
 - 多對象聲明的失效條件：每位 Agent 成功傳來非 `inform`／`ack` 的訊息、每個決策不再是 `pending`，全部成立時失效（原因 `targets-answered`）。列名對象的訊息只算它回覆過，同一位再傳也不使聲明失效；未列名者傳來 `request` 或沒有 intent 的訊息仍立刻失效。`inform`／`ack` 不算回覆。失效後重新聲明時只列還沒回覆的對象（紀錄檔的 `answered` 有已回覆者），已回覆的不會再回。
 - 等核准的工具呼叫或背景指令還在跑時，不需要聲明；但 Codex 回合已結束、狀態仍 `active` 時是例外，此時若真的只剩等待，仍須聲明等待。
 - 主控以 `NO REPLY:` 結尾而沒有有效等待或鬧鐘聲明時，回合結束檢查會擋一次並印出可直接執行的 `wait` 指令；同回合再結束照常放行。
@@ -127,7 +128,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 
 `--workspace` 填主控路徑，`--agent` 可用唯一短名，與 `wait` 的解析相同。工作區必須有 active 主控監控這位 Agent（主控本人或未 merged 的任務卡 Agent），且該主控的監控程序正在執行、狀態有 `feature_versions.alarm=1`；否則指令以非零結束碼拒絕，說明請主控依下一節重啟監控。安裝新程式本身不會換掉舊監控。
 
-鬧鐘以 `kind=alarm` 存入等待聲明；每位 Agent 只保留最後一筆，新 `wait` 或 `alarm` 取代舊聲明。有效期間視為正常等待，收到其他訊息仍保留。計時保存 `due_at`；檔案與程序保存 `timeout_at`，第一次觀察到條件成立時保存 `due_at`，若未成立而逾時則以原 `timeout_at` 作為 `due_at`。條件已成立後不再重算時間或結果。
+鬧鐘以 `kind=alarm` 存入等待聲明；每位 Agent 一次只有一份聲明，新 `wait` 或 `alarm` 取代舊聲明，取代還沒響的鬧鐘時 stderr 會印出它的原因與預定時間。有效期間視為正常等待，收到其他訊息仍保留。要同時等兩件事：多個 Agent 或決策用逗號列在同一個 `--for`；等 Agent 又要定時醒，用 `wait --minutes`；等時間、檔案或程序又在等 Agent 回覆，只登記鬧鐘，對方訊息照樣會送達叫醒你。計時保存 `due_at`；檔案與程序保存 `timeout_at`，第一次觀察到條件成立時保存 `due_at`，若未成立而逾時則以原 `timeout_at` 作為 `due_at`。條件已成立後不再重算時間或結果。
 
 監控每分鐘檢查，該響後在空輸入框輸入 `[lat-watch] ` 開頭的英文，包含 `alarm`、`condition met` 或 `timed out` 與登記原因。視窗忙碌或輸入失敗時下輪再試，成功才標為已響。
 
@@ -161,14 +162,14 @@ Claude 的提示快取在最後一次請求後約一小時失效，失效後下�
 - 到期時間讀狀態列記錄器寫的 `<session_id>.json` 的 `prompt_cache.expires_at`（秒）：目錄為 `$LAT_USAGE_DIR`，未設時為 `$XDG_STATE_HOME/lat/usage`，再預設 `~/.local/state/lat/usage`；session 以 `hcom list --json` 的 `session_id` 對應。檔案不存在、讀不出、`warm` 不是 `true` 或已過期時不動作。
 - 為什麼是 10 分鐘：Claude Code 的閒置壓縮（`"idleCompaction"`，預設開啟）約在快取失效前 5 分鐘把對話壓縮成摘要，保溫要比它早送；保溫被跳過時，改由閒置壓縮接手。
 - 條件：主控本人在 HCOM 顯示額度卡住（`inactive`／`rate_limit`）時不送；其餘須有有效等待聲明，與鬧鐘共用「回合已結束、可以輸入」的判斷（Claude 以 HCOM `listening` 為準），快取剩 10 分鐘以內，且這一輪沒有其他催促要送。
-- 主控的等待種類：等 Agent（`kind=agent`）一律保溫；鬧鐘（`kind=alarm`）與等決策（`kind=decision`）從聲明起最多 3 小時，且主機當地時間 01:00–09:00 不保溫（以送出時刻判斷，09:00 起恢復，仍受 3 小時上限）。到期、10 分鐘門檻與 3 小時上限也以送出時刻判斷，不用該輪開始的時間。
+- 上限：不論等 Agent（`kind=agent`）、鬧鐘（`kind=alarm`）或等決策（`kind=decision`），從聲明起最多保溫 3 小時，且主機當地時間 01:00–09:00 不保溫（以送出時刻判斷，09:00 起恢復，仍受 3 小時上限）。到期、10 分鐘門檻與 3 小時上限也以送出時刻判斷，不用該輪開始的時間。
 - 動作：在視窗輸入一句 `[lat-watch] Prompt cache keep-alive.` 開頭的英文，請它讀未讀訊息；沒有新事就保持原等待、不重新聲明，用最短的回覆結束回合。
 - 同一個 `expires_at` 只送一次；送出後快取時間更新，下一次在新的到期前再送。視窗忙碌或輸入失敗時下一輪重試，快取已過期就放棄這一次。
 - 保溫提示與其簡短回覆不算進展，不讓等待聲明失效，不消耗或重設該段停住的催促與上報，也不改等待期限、延長判斷與連續到期計數；鬧鐘照原時間響。回覆中有工具操作、較長文字或傳出訊息時照常算進展。
 - 每次嘗試在 `watch.jsonl` 記 `cache-keepalive`（`agent`、`kind`、`expires_at`、`result` 為 `sent` 或 `failed`，失敗附 `error`）。
-- 有有效等待、快取剩 10 分鐘以內卻沒送時記 `cache-keepalive-skipped`（`agent`、`kind`、`expires_at`、`reason`），同一個 `expires_at` 同一原因只記一次。`reason` 為：`rate-limited`（主控額度卡住）、`status-<HCOM 狀態>`（如 `status-active`、`status-blocked`）、`prompt-not-empty`、`prompt-unreadable`（選單等畫面判不出輸入框）、`screen-working`、`decision-quiet-hours`、`decision-over-3h`、`alarm-quiet-hours`、`alarm-over-3h`、`other-action`（這一輪有其他催促或鬧鐘要送）、`usage-missing`（找不到或讀不出記錄器的檔案，`expires_at` 為 `null`，到檔案恢復前只記一次，不影響其他原因的去重）。快取已冷或已過期不記。
+- 有有效等待、快取剩 10 分鐘以內卻沒送時記 `cache-keepalive-skipped`（`agent`、`kind`、`expires_at`、`reason`），同一個 `expires_at` 同一原因只記一次。`reason` 為：`rate-limited`（主控額度卡住）、`status-<HCOM 狀態>`（如 `status-active`、`status-blocked`）、`prompt-not-empty`、`prompt-unreadable`（選單等畫面判不出輸入框）、`screen-working`、`<kind>-quiet-hours`、`<kind>-over-3h`（`<kind>` 為 `agent`、`decision` 或 `alarm`）、`other-action`（這一輪有其他催促或鬧鐘要送）、`usage-missing`（找不到或讀不出記錄器的檔案，`expires_at` 為 `null`，到檔案恢復前只記一次，不影響其他原因的去重）。快取已冷或已過期不記。
 - Claude 狀態 `listening` 但 `prompt_empty` 不是布林值，且畫面內容連續 15 分鐘完全沒變時，記一筆 `prompt-unreadable`（`since` 與最後 15 行畫面，每行截到 200 字元），並通知主控（本身是主控則通知使用者），內文附同樣的最後 15 行，請人去回應內建選單（例如 Autocompact 詢問）。同一個畫面只記、只通知一次；畫面內容一變就重新計時，新畫面滿 15 分鐘再通知；能判讀或狀態改變後重新計算。通知送不出去時下一輪重送，不重複記錄。
-- 監控狀態以 `feature_versions.cache_keepalive=5` 表示只保主控、額度卡住時跳過，鬧鐘等待與等決策同樣有 3 小時上限與夜間暫停，快取剩 10 分鐘內就保溫，並保留上述紀錄與 HCOM 狀態判斷；依下一節重啟監控後才生效。
+- 監控狀態以 `feature_versions.cache_keepalive=6` 表示只保主控、額度卡住時跳過，三種等待都有 3 小時上限與夜間暫停，快取剩 10 分鐘內就保溫，並保留上述紀錄與 HCOM 狀態判斷；依下一節重啟監控後才生效。
 
 提示內容一變，快取就整段作廢，保溫救不回來：修改 `~/.claude/CLAUDE.md`、記憶檔或技能文字後，正在跑的 Claude 下一回合會整段重寫（2026-10-23 實測只閒置 43 分鐘就重寫）。要改這些檔案時，預期所有在跑的 Claude 都會重寫一次。
 

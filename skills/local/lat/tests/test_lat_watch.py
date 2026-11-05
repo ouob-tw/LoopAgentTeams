@@ -442,6 +442,54 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertEqual(watch.wait_release_reason(
             declaration, [], True, True, []), 'target-replied')
 
+    def test_waited_agent_message_releases_only_once_it_stops_working(self):
+        watch = load_watch()
+        declaration = {'agent': 'worker', 'target': 'reviewer-rev', 'kind': 'agent'}
+        delivered = [{'type': 'status', 'data': {'context': 'deliver:rev', 'position': 9}}]
+        names = {'reviewer-rev', 'rev'}
+
+        def message(sender, intent):
+            return {'type': 'message', 'data': {'from': sender, 'intent': intent}}
+
+        def reason(messages, status):
+            return watch.wait_release_reason(declaration, delivered, False, None, messages,
+                                             names, status)
+
+        for intent in ('inform', 'request', None):
+            with self.subTest(intent=intent):
+                # Progress from a target still at work keeps the wait.
+                self.assertIsNone(reason([message('rev', intent)], 'active'))
+                # Once it is idle or gone, any of its messages releases.
+                for status in ('listening', 'blocked', 'inactive'):
+                    self.assertEqual(reason([message('rev', intent)], status),
+                                     'message-delivered')
+        # Status unknown: the old intent rule.
+        self.assertIsNone(reason([message('rev', 'inform')], None))
+        self.assertEqual(reason([message('rev', 'request')], None), 'message-delivered')
+        # Someone else's request still releases while the target works.
+        self.assertEqual(reason([message('rev', 'inform'), message('lead', 'request')], 'active'),
+                         'message-delivered')
+
+    def test_codex_target_with_a_finished_turn_counts_as_stopped(self):
+        watch = load_watch()
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'codex.jsonl'
+            info = {'name': 'rev-sofe', 'base_name': 'sofe', 'status': 'active', 'tool': 'codex',
+                    'transcript_path': str(transcript)}
+            agents = {'rev-sofe': info}
+            # Unreadable transcript: unknown, so the intent rule applies.
+            self.assertIsNone(watch.wait_target_status(agents, 'rev-sofe'))
+            for kind, expected in (('task_started', 'active'), ('task_complete', 'listening')):
+                transcript.write_text(json.dumps(
+                    {'type': 'event_msg', 'payload': {'type': kind}}) + '\n')
+                self.assertEqual(watch.wait_target_status(agents, 'sofe'), expected)
+            self.assertEqual(watch.wait_target_status(
+                {'rev-sofe': dict(info, tool='claude')}, 'rev-sofe'), 'active')
+        # Gone from the list: ended. Ambiguous short name: unknown.
+        self.assertEqual(watch.wait_target_status(agents, 'rev-gone'), 'inactive')
+        self.assertIsNone(watch.wait_target_status(
+            {'a-sofe': {'base_name': 'sofe'}, 'b-sofe': {'base_name': 'sofe'}}, 'sofe'))
+
     def test_request_watch_notice_keeps_a_wait_but_other_hcom_events_release_it(self):
         watch = load_watch()
         declaration = {'agent': 'worker', 'target': 'reviewer'}
@@ -755,10 +803,11 @@ class WatchDecisionTests(unittest.TestCase):
             self.assertFalse(watch.successful_hcom_send_since(
                 transcript, '2026-10-04T14:01:00+00:00'))
 
-    def release_wait_after_target_send(self, recipient, participant_events=(), intent='request'):
+    def release_wait_after_target_send(self, recipient, participant_events=(), intent='request',
+                                       target_status=None):
         watch = load_watch()
         declaration = {
-            'agent': 'waiting-agent', 'target': 'target-agent',
+            'agent': 'waiting-agent', 'target': 'target-agent', 'kind': 'agent',
             'declared_at_utc': '2026-10-04T14:00:58+00:00', 'active': True,
         }
         record = {
@@ -789,13 +838,15 @@ class WatchDecisionTests(unittest.TestCase):
                     'transcript_path': str(transcript),
                 },
             }
+            if target_status:
+                agents['target-agent']['status'] = target_status
             with patch.object(
                     watch, 'session_events', return_value=list(participant_events)):
                 return watch.release_wait_if_needed(
                     root, decisions, 'orch', declaration, agents=agents)
 
     def release_multi_wait(self, declaration, *, messages=(), replied=(), deliver=True,
-                           decisions_text=None):
+                           decisions_text=None, statuses=None):
         """Run one release check; returns (reason, stored declaration)."""
         watch = load_watch()
         declaration = {'agent': 'waiting-agent', 'target': 'one-sofe', 'kind': 'agent',
@@ -818,6 +869,8 @@ class WatchDecisionTests(unittest.TestCase):
                                 'transcript_path': str(root / name)}
                 if name in replied:
                     (root / name).write_text('')
+                if name in (statuses or {}):
+                    agents[name]['status'] = statuses[name]
             events = [{'type': 'status', 'data': {'context': 'deliver:x', 'position': 9}}]
             with (patch.object(watch, 'session_events', return_value=events if deliver else []),
                   patch.object(watch, 'delivered_messages', return_value=list(messages)),
@@ -840,6 +893,29 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertTrue(stored['active'])
         self.assertEqual(stored['answered'], ['one-sofe'])
         self.assertEqual(stored['target'], 'two-teho')
+
+    def test_multi_wait_target_still_active_is_not_answered_until_it_stops(self):
+        messages = [self.sent('sofe', 'request')]
+        reason, stored = self.release_multi_wait(
+            {}, messages=messages, replied=['one-sofe'], statuses={'one-sofe': 'active'})
+        self.assertIsNone(reason)
+        self.assertEqual(stored.get('answered', []), [])
+        # Once it is listening, even an inform report counts as its answer.
+        reason, stored = self.release_multi_wait(
+            {}, messages=[self.sent('sofe', 'inform')], statuses={'one-sofe': 'listening'})
+        self.assertIsNone(reason)
+        self.assertEqual(stored['answered'], ['one-sofe'])
+        # Unknown status keeps the intent rule: inform is not an answer.
+        reason, stored = self.release_multi_wait({}, messages=[self.sent('sofe', 'inform')])
+        self.assertEqual(stored.get('answered', []), [])
+
+    def test_waited_agent_send_while_active_keeps_the_wait_until_it_stops(self):
+        self.assertIsNone(self.release_wait_after_target_send('waiting-agent',
+                                                              target_status='active'))
+        self.assertEqual(self.release_wait_after_target_send('waiting-agent',
+                                                             target_status='listening'),
+                         'target-replied')
+        self.assertEqual(self.release_wait_after_target_send('waiting-agent'), 'target-replied')
 
     def test_multi_wait_reply_is_read_from_the_targets_transcript_too(self):
         reason, stored = self.release_multi_wait({}, replied=['two-teho'], deliver=False)
@@ -1818,7 +1894,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 6, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -2040,6 +2116,35 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
                           '--tasks', self.tasks)
         row = next(r for r in json.loads(status.stdout)['targets'] if r['agent'] == 'worker-open')
         self.assertEqual(row['wait'], saved)
+
+    def test_replacing_an_unrung_alarm_warns_with_its_reason_and_time(self):
+        self.alarm_monitor()
+        first = self.alarm_cli('--after', 30)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stderr, '')
+        due = json.loads(first.stdout)['due_at']
+        when = datetime.fromtimestamp(due).astimezone().isoformat(timespec='minutes')
+        # A new alarm over the pending one says what it replaced.
+        second = self.alarm_cli('--file', self.root / 'result')
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn('replaced your alarm that had not rung yet', second.stderr)
+        self.assertIn(f'reason: resume result check; due {when}', second.stderr)
+        # A wait over a pending file alarm names its timeout instead.
+        timeout = json.loads(second.stdout)['timeout_at']
+        wait = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                        '--for', 'reviewer', '--reason', 'review round')
+        self.assertEqual(wait.returncode, 0, wait.stderr)
+        self.assertIn('times out ' + datetime.fromtimestamp(timeout).astimezone()
+                      .isoformat(timespec='minutes'), wait.stderr)
+        # Replacing a wait or a rung alarm prints nothing extra.
+        again = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                         '--for', 'reviewer', '--reason', 'review round')
+        self.assertEqual(again.stderr, '')
+        path = load_watch().wait_path(self.work, 'worker-open')
+        rung = dict(json.loads(self.alarm_cli('--after', 5).stdout), active=False,
+                    released_reason='rang')
+        path.write_text(json.dumps(rung))
+        self.assertEqual(self.alarm_cli('--after', 5).stderr, '')
 
     def test_legacy_baseline_then_rule_change_notifies_once_and_survives_restart(self):
         skill, record = self.rule_session()
@@ -5708,7 +5813,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 6, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -5732,7 +5837,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 6, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -6087,13 +6192,11 @@ class KeepaliveDecisionTests(PinnedEnvironment):
         self.write_usage(now + 120)
         alarm = dict(agent='worker', kind='alarm', active=True, declared_at=now - 3600,
                      due_at=now + 1800, condition={'kind': 'time', 'minutes': 90})
-        # Agent waits are not limited by the quiet hours; alarms are (see the alarm tests below).
+        # 03:00 is inside the quiet hours for every wait kind.
         self.assertIsNone(self.due(alarm, now))
         self.write_usage(taipei(10) + 120)
         self.assertEqual(self.due(dict(alarm, declared_at=taipei(10) - 3600), taipei(10)),
                          taipei(10) + 120)
-        self.write_usage(now + 120)
-        self.assertEqual(self.due(self.agent_wait(declared_at=now - 5 * 3600), now), now + 120)
 
     def test_decision_wait_stops_after_three_hours(self):
         declared = taipei(10)
@@ -6416,7 +6519,7 @@ esac
         self.assertEqual(state['worker']['decision'], 'valid-wait')
         self.assertEqual(self.wait_file.read_bytes(), before)
         self.assertEqual(state['worker']['feature_versions'],
-                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1})
+                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 6, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1, 'wait_targets': 1})
         # The wait still expires at its original deadline, counted once, with the real
         # idle time, and the agent is nudged for the expiry rather than as a stall.
         self.cycle(self.start + 3000)
@@ -6572,13 +6675,26 @@ esac
         self.cycle(taipei(9))
         self.assertEqual(len(self.injections()), 2)
 
-    def test_agent_wait_keepalive_ignores_3h_cap_and_quiet_hours(self):
-        self.start = taipei(0, 30)
+    def test_agent_wait_keepalive_skips_quiet_hours_and_stops_after_3h(self):
+        self.start = taipei(3)
         self.declare(kind='agent', deadline_at=self.start + 20 * 3600)
         self.write_usage(taipei(4, 3))
         self.cycle(taipei(4))
+        self.assertEqual(self.injections(), [])
+        self.assertEqual([r['reason'] for r in self.records('cache-keepalive-skipped')],
+                         ['agent-quiet-hours'])
+        self.start = taipei(10)
+        self.declare(kind='agent', deadline_at=self.start + 20 * 3600)
+        self.write_usage(taipei(12, 3))
+        self.cycle(taipei(12))
         self.assertEqual(len(self.injections()), 1)
-        self.assertEqual(self.records('cache-keepalive-skipped'), [])
+        self.reply_to_keepalive()
+        self.write_usage(taipei(13, 3))
+        self.cycle(taipei(13))
+        self.assertEqual(len(self.injections()), 1)
+        self.assertEqual(self.records('cache-keepalive-skipped')[-1]['reason'], 'agent-over-3h')
+        # The skipped keep-alive leaves the wait itself alone: a message still releases it.
+        self.assertTrue(json.loads(self.wait_file.read_text())['active'])
 
     def test_decision_wait_is_skipped_during_quiet_hours(self):
         (self.decisions / 'HELP-1.md').write_text('# Q\n- version: r1\n- status: pending\n')
