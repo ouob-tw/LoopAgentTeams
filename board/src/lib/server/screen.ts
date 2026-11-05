@@ -52,7 +52,7 @@ function perBoard<T>(store: WeakMap<Board, Map<string, T>>, board: Board): Map<s
  *  an agent whose tab is never opened again does not keep them. */
 function recoveryOf(board: Board, agentId: string): Recovery {
 	const shared = perBoard(recoveries, board);
-	const now = Date.now();
+	const now = board.config.now();
 	for (const [id, recovery] of shared) {
 		for (const [failure, at] of recovery.recovered) if (now - at > RECOVERED_KEEP_MS) recovery.recovered.delete(failure);
 		if (!recovery.waiting.size && !recovery.recovered.size && id !== agentId) shared.delete(id);
@@ -87,7 +87,7 @@ export function followScreen(board: Board, agentId: string, push: (update: Scree
  *  read succeeds. While no page has the tab open, the failure waits for the next one that does. */
 export function recover(board: Board, agentId: string, id: string): void {
 	const { waiting } = recoveryOf(board, agentId);
-	waiting.set(id, Date.now());
+	waiting.set(id, board.config.now());
 	for (const oldest of waiting.keys()) {
 		if (waiting.size <= WAITING_MAX) break;
 		waiting.delete(oldest);
@@ -147,7 +147,7 @@ function startFollower(board: Board, agentId: string): Follower {
 		running = false;
 		const recovery = recoveryOf(board, agentId);
 		if ('text' in result) {
-			const now = Date.now();
+			const now = board.config.now();
 			for (const id of taking) {
 				if (!recovery.waiting.delete(id)) continue;
 				recovery.recovered.set(id, now);

@@ -408,3 +408,26 @@ test('an agent keeps its newest 100 waiting failures: at 101 the oldest is dropp
 	expect(mine).not.toContain('cap-1');
 	expect(mine).toContain('cap-2');
 });
+
+test('a recovered failure stays listed for 10 minutes on the board clock, then is dropped', async () => {
+	const start = Date.now();
+	fixture.setClock(start);
+	try {
+		const page = follow('s-plain');
+		await until(() => page.updates[0], 5_000, 'the first screen');
+		const response = await fixture.fetch('/api/agents/screen/recover', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-plain', recovery: 'kept-1' }), cookie });
+		expect(response.status).toBe(200);
+		await until(() => page.updates.find((update) => update.recovered.includes('kept-1')), 5_000, 'the 恢復畫面');
+		// Just under 10 minutes later: still listed, in a push the changed screen makes.
+		fixture.setClock(start + 10 * 60_000 - 1_000);
+		changeHerdr((plan) => (plan.screens[PANE] = ['$ nine minutes on']));
+		const later = await until(() => page.updates.find((update) => update.ok && update.text === '$ nine minutes on'), 5_000, 'the screen 10 minutes on');
+		expect(later.recovered).toContain('kept-1');
+		// Past 10 minutes: the next read drops it, and that change is pushed though the screen is the same.
+		fixture.setClock(start + 10 * 60_000 + 1_000);
+		const dropped = await until(() => page.updates.find((update) => update.ok && update.text === '$ nine minutes on' && !update.recovered.includes('kept-1')), 5_000, 'kept-1 dropped');
+		expect(dropped.recovered).not.toContain('kept-1');
+	} finally {
+		rmSync(join(fixture.dir, 'clock'), { force: true });
+	}
+});
