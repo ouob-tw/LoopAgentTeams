@@ -191,6 +191,10 @@ HCOM 0.7.27 / Codex CLI 0.159.3 實測：未附 effort 接回保留原 low，附
 
 `hcom send` 不帶 `@` 對象會發給主機上所有 Agent，包含其他流程的。自己也只發給個人或 `@<tag>-` 群組。主機裝有攔截 hook 時，這類指令會被擋下並提示改法；安裝方式見 [references/broadcast-guard.md](references/broadcast-guard.md)。
 
+## 不發開工確認
+
+被召喚後不要對主控只回「收到」「開始做」：主控閒置時每則訊息都會叫醒它。完成、卡住或有問題時再回報。主機裝有攔截 hook 時，這類訊息會被擋下；被誤擋時在指令前加 `ACK_GUARD=off` 重送。安裝方式見 [references/broadcast-guard.md](references/broadcast-guard.md) 的「開工確認攔截 hook」。
+
 ## Agent 沉默、卡住或額度耗盡
 
 Agent 久無回應、同一問題反覆失敗（含同一目標連續 3 輪沒通過的卡住回報）、疑似額度用完，或你自己的 HCOM 身分掉線時，讀 [references/troubleshooting.md](references/troubleshooting.md)。
