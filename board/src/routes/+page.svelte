@@ -281,6 +281,8 @@
 
 	/** The command line's height, kept clear at the end of a phone's page. */
 	let dockHeight = $state(0);
+	/** The folder box of a launch form has the focus: the command line keeps out of its way. */
+	let folderFocused = $state(false);
 	/** How far the on-screen keyboard reaches over the page; the phone's command line sits above it. */
 	let keyboard = $state(0);
 	onMount(() => {
@@ -598,10 +600,10 @@
 						</div>
 					{/if}
 				{:else if view.kind === 'launch'}
-					<NewController {controllers} {agents} {workspaces} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} />
+					<NewController {controllers} {agents} {workspaces} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} onfolderfocus={(focused) => (folderFocused = focused)} />
 				{:else if view.kind === 'new-agent'}
 					{#if newTarget}
-						<NewController {controllers} {agents} {workspaces} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} target={newTarget} />
+						<NewController {controllers} {agents} {workspaces} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} onfolderfocus={(focused) => (folderFocused = focused)} target={newTarget} />
 					{:else}
 						<p class="empty">Herdr 裡已經沒有這個工作區。</p>
 					{/if}
@@ -669,6 +671,7 @@
 				closed={view?.kind === 'agent' ? closedAgent : undefined}
 				agents={board.snapshot.agents}
 				adopt={agentController?.id}
+				away={folderFocused}
 			/>
 		</div>
 	</div>

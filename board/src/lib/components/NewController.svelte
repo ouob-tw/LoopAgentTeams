@@ -44,6 +44,7 @@
 		stamp,
 		onopen,
 		onagent,
+		onfolderfocus,
 		target = null
 	}: {
 		controllers: Controller[];
@@ -56,6 +57,8 @@
 		onopen: (controllerId: string) => void;
 		/** Opens an agent's page on the board. */
 		onagent: (agentId: string) => void;
+		/** Whether the focus is in the folder box; the form going away ends it too. */
+		onfolderfocus: (focused: boolean) => void;
 		/** The Herdr workspace whose + opened the new-agent form, with the folders its agents work in, the
 		 *  most used first; null for a new controller. */
 		target?: { workspace: string; label: string; folders: string[] } | null;
@@ -159,10 +162,24 @@
 		return facts.join('・');
 	}
 
+	// Until the answer for the text now in the box comes, the list stays as the last answer left it.
+	const searching = $derived(
+		form.folderEdited && form.folder.trim() !== '' && !found && !searchFailed && (form.folderPath !== null || (!form.list && !form.loadFailed))
+	);
+	let lastList: { rows: Row[]; none: string | null } = { rows: [], none: null };
+	const list = $derived.by(() => {
+		if (searching) return lastList;
+		const none = form.folderEdited && form.folder.trim() !== '' && rows.length === 0 ? (searchFailed ? '讀不到資料夾清單' : '沒有符合的資料夾') : null;
+		lastList = { rows, none };
+		return lastList;
+	});
+
 	let listOpen = $state(false);
 	/** The row the arrow keys are on; -1 for none. */
 	let active = $state(-1);
-	const shownRows = $derived(listOpen ? rows : []);
+	const shownRows = $derived(listOpen ? list.rows : []);
+	const listNone = $derived(listOpen ? list.none : null);
+	$effect(() => () => onfolderfocus(false));
 	// A folder the projects do not know, such as one a workspace's agent works in, is asked about.
 	$effect(() => {
 		for (const row of shownRows) if (row.git === null && !row.project && !(row.path in form.gitOf)) void form.checkGit(row.path);
@@ -370,22 +387,26 @@
 					autocomplete="off"
 					spellcheck="false"
 					aria-autocomplete="list"
-					aria-expanded={shownRows.length > 0}
+					aria-expanded={shownRows.length > 0 || listNone !== null}
 					aria-controls="folder-list"
 					aria-activedescendant={active >= 0 && active < shownRows.length ? `folder-row-${active}` : undefined}
 					placeholder="~/專案資料夾"
 					bind:value={form.folder}
 					oninput={typing}
-					onfocus={() => (listOpen = true)}
+					onfocus={() => {
+						listOpen = true;
+						onfolderfocus(true);
+					}}
 					onblur={() => {
 						listOpen = false;
 						active = -1;
+						onfolderfocus(false);
 					}}
 					onkeydown={keydown}
 				/>
-				{#if shownRows.length}
+				{#if shownRows.length || listNone}
 					<!-- Pressing a row keeps the focus in the box, so the list is not closed before the click. -->
-					<ul id="folder-list" role="listbox" aria-label="符合的資料夾" onmousedown={(event) => event.preventDefault()}>
+					<ul id="folder-list" role="listbox" aria-label="符合的資料夾" class:in-flow={listNone} onmousedown={(event) => event.preventDefault()}>
 						{#each shownRows as row, index (row.path)}
 							<li id={`folder-row-${index}`} role="option" aria-selected={index === active} class:active={index === active}>
 								<button type="button" tabindex="-1" onclick={() => choose(row)}>
@@ -395,6 +416,9 @@
 								</button>
 							</li>
 						{/each}
+						{#if listNone}
+							<li class="none" role="option" aria-selected="false" aria-disabled="true">{listNone}</li>
+						{/if}
 					</ul>
 				{/if}
 			</div>
@@ -620,6 +644,14 @@
 		color: inherit;
 		text-align: left;
 		overflow-wrap: anywhere;
+	}
+	/* A line alone covers nothing: what is said about the typed folder stays readable under it. */
+	.combo ul.in-flow {
+		position: static;
+		margin-top: 2px;
+	}
+	.combo li.none {
+		padding: 0.4rem 0.6rem;
 	}
 	.combo li.active button,
 	.combo li button:hover {
