@@ -2,7 +2,7 @@
 // however slow the search; no match says so with the list still open; an old answer does not cover
 // a newer one. While the box has the focus the command line is put away, on a wide screen and on a
 // phone, and comes back with its draft. Searches are held or slowed in the page, so nothing here
-// depends on how fast the disk is. Skipped when the host has no Chrome.
+// depends on how fast the disk is.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -246,14 +246,35 @@ test.skipIf(!CHROME)('the arrows, Tab, Enter and Esc work the list as before, al
 	await press('ArrowDown');
 	await rowsAre(['sub-one', 'sub-three', 'sub-two']);
 
-	// Tab with a search pending takes the row on screen and looks one level down.
+	// The rows held during a search are only to look at: no key takes one, so what is typed stays.
 	await evaluate(`window.browseDelay = 400`);
 	await type('u');
 	await Bun.sleep(30);
 	await press('ArrowDown');
+	expect(await evaluate(ACTIVE)).toBeNull();
+	await press('Tab');
+	expect(await valueOf()).toBe(`${alpha}/su`);
+	expect(await evaluate(`document.activeElement.id`)).not.toBe('folder-box');
+	await evaluate(`document.querySelector('#folder-box').focus()`);
+	await rowsAre(['sub-one', 'sub-three', 'sub-two']);
+	await type('b');
+	await Bun.sleep(30);
+	await press('Enter');
+	expect(await valueOf()).toBe(`${alpha}/sub`);
+	expect(await evaluate(LIST_TEXT)).toBeNull();
+
+	// Tab takes the row the arrows are on and looks one level down; a second Tab before the answer
+	// does not take a row of the old list.
+	await press('ArrowDown');
+	await rowsAre(['sub-one', 'sub-three', 'sub-two']);
+	await Bun.sleep(700); // the answer for `sub`, the same rows
+	await press('ArrowDown');
 	expect(await evaluate(ACTIVE)).toBe('sub-one');
 	await press('Tab');
 	expect(await valueOf()).toBe(`${alpha}/sub-one/`);
+	await press('Tab');
+	expect(await valueOf()).toBe(`${alpha}/sub-one/`);
+	await evaluate(`document.querySelector('#folder-box').focus()`);
 	await rowsAre(['deep']);
 	await evaluate(`window.browseDelay = 0`);
 
@@ -281,4 +302,20 @@ test.skipIf(!CHROME)('a row taken with the pointer fills the box, with no error 
 	expect(await valueOf()).toBe(`${alpha}/other`);
 	expect(await evaluate(LIST_TEXT)).toBeNull();
 	expect(tab().errors).toEqual([]);
+});
+
+test.skipIf(!CHROME)('with the project list unread, a path that cannot be searched does not say that nothing matches', async () => {
+	await tab().send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
+	const { identifier } = await tab().send('Page.addScriptToEvaluateOnNewDocument', {
+		source: `(() => {
+			const fetch = window.fetch;
+			window.fetch = (input, init) => (new URL(String(input), location.href).pathname === '/api/launches' ? Promise.reject(new TypeError('offline')) : fetch(input, init));
+		})()`
+	}) as { identifier: string };
+	await tab().navigate(`${fixture.url}/?launch`);
+	await until(`document.querySelector('.folder .failed')?.textContent.includes('專案清單讀取失敗')`, 'the failed project list');
+	await evaluate(`document.querySelector('#folder-box').focus()`);
+	await type('~/x');
+	await until(`(${LIST_TEXT}) === '讀不到資料夾清單'`, 'the failure line');
+	await tab().send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
 });
