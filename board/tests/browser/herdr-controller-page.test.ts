@@ -35,8 +35,9 @@ const SAID = {
 	done1: '第一張票交付了。',
 	done2: '第二張票交付了。',
 	noReply: '只是說一聲，不用回。',
-	// Two questions in one message, named in the opposite order of the question file.
-	group: '這兩題一起問。\n\nDECIDE: GQ-B r1, GQ-A r1 · 一起問的兩題 · 回答面板上的題目'
+	// Two questions in one message; the last named is shown on top, so the cards are in the
+	// opposite order of the question file.
+	group: '這兩題一起問。\n\nDECIDE: GQ-A r1, GQ-B r1 · 一起問的兩題 · 回答面板上的題目'
 };
 
 let fixture: Fixture;
@@ -380,7 +381,8 @@ for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: a question opened from its bar is the one of its message scrolled to, and follows the board's data`, async () => {
 		await visit(width, '?agent=s-sol');
 		await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'sun' && document.querySelectorAll('.history li.asking article').length === 2`, 'both cards of the message');
-		// The message names GQ-B first: GQ-A is the second card.
+		// The message names GQ-B last: GQ-B is on top and GQ-A is the second card.
+		expect(await tab.eval<string>(`document.querySelectorAll('.history li.asking article')[1].innerText`)).toContain('一起問的甲題');
 		await tab.eval(click('.detail .questions', '一起問的甲題'));
 		await tab.until(`${OPENED}?.innerText.includes('一起問的甲題')`, 'the second question opened');
 		await tab.until(

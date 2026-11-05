@@ -4,13 +4,15 @@
       "paths": [
         "board/src/lib/board/question-message.ts",
         "board/src/lib/components/Transcript.svelte",
-        "board/src/lib/components/ControllerInfo.svelte"
+        "board/src/lib/components/ControllerInfo.svelte",
+        "board/src/lib/components/ControllerPage.svelte"
       ],
       "tests": [
         "board/tests/browser/answer-in-place.test.ts",
         "board/tests/browser/answer-torn.test.ts",
         "board/tests/browser/question-card-decided.test.ts",
-        "board/tests/browser/back-navigation.test.ts"
+        "board/tests/browser/back-navigation.test.ts",
+        "board/tests/browser/herdr-controller-page.test.ts"
       ]
     }
   ]
