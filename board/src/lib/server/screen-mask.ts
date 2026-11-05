@@ -8,7 +8,7 @@
 // is hidden on both: which lines were wrapped is told by the pane's text with wrapped lines joined
 // (Herdr's `recent-unwrapped`), read only when joining would change what is hidden (`wrapMatters`);
 // without it, the lines are matched both as they stand and with every line that ends and every next
-// line that starts with a non-space joined, which hides more than either. A key broken by hand, or with other characters or box lines between its pieces, is not
+// line that starts with a non-space joined, and what either finds is hidden. A key broken by hand, or with other characters or box lines between its pieces, is not
 // recognised.
 
 import { graphemes, graphemeWidth } from '../board/screen.ts';
@@ -80,7 +80,7 @@ function shownOf(raw: string): Shown[] {
 	return shown;
 }
 
-/** More of the pane's text than this is not searched for wrapped lines, as if the pane could not tell. */
+/** How much of the pane's text is searched for wrapped lines: its end, where the screen's lines are. */
 const UNWRAPPED_MAX = 262_144;
 
 /** Whether `text` holds `part`, in time in line with their lengths whatever they hold (Knuth-Morris-Pratt):
@@ -105,18 +105,24 @@ function holds(text: string, part: string): boolean {
  *  which tells. */
 export type Wrapped = 'none' | 'all' | { unwrapped: string };
 
-/** Whether which lines were wrapped changes what `maskScreen` hides. */
+/** Whether which lines were wrapped changes what `maskScreen` hides: the lines as they stand against
+ *  every line that may have been joined, each alone. Hiding both, as `all` does, would hide the first
+ *  line of a wrapped key and show its other lines without asking. */
 export function wrapMatters(screen: string): boolean {
-	return maskScreen(screen, 'none') !== maskScreen(screen, 'all');
+	return masked(screen, 'none') !== masked(screen, 'joined');
 }
 
 /** The screen with what looks like a password or key replaced by marks; see the file's comment. */
 export function maskScreen(screen: string, wrapped: Wrapped = 'all'): string {
+	return masked(screen, wrapped);
+}
+
+function masked(screen: string, wrapped: Wrapped | 'joined'): string {
 	const parts = screen.split(/(\r?\n)/);
 	const lines = parts.filter((_, index) => index % 2 === 0);
 	const shown = lines.map(shownOf);
 	const texts = shown.map((line) => line.map((each) => each.char).join(''));
-	const told = typeof wrapped === 'object' && wrapped.unwrapped.length <= UNWRAPPED_MAX ? wrapped.unwrapped.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '') : null;
+	const told = typeof wrapped === 'object' ? wrapped.unwrapped.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').slice(-UNWRAPPED_MAX) : null;
 	const wraps = (row: number) => {
 		if (wrapped === 'none' || !/\S$/.test(texts[row - 1]) || !/^\S/.test(texts[row])) return false;
 		return told === null || holds(told, texts[row - 1] + texts[row]);
@@ -172,7 +178,7 @@ export function maskScreen(screen: string, wrapped: Wrapped = 'all'): string {
 	};
 	hideSecrets(wraps);
 	// Lines joined by guess can stop a key looking like one, with the line before it right against it.
-	if (wrapped !== 'none' && told === null) hideSecrets(() => false);
+	if (wrapped === 'all') hideSecrets(() => false);
 
 	// A private key block's body: between its markers, or up to the screen's end when its end is not
 	// shown yet, or the lines just above an end marker whose start scrolled off.

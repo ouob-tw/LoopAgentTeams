@@ -32,7 +32,7 @@ const CASES: [name: string, text: string, unwrapped?: string][] = [
 	['Bearer over and over', screen('Bearer ')],
 	['an open OSC over and over', screen(`${ESC}]0;`)],
 	['pane text that almost holds every pair of lines', screen('a'), nearPairs(300)],
-	['the same on a larger screen', screen('a', 600, 160), nearPairs(600)],
+	['pane text that almost holds every pair of lines of a larger screen', screen('a', 600, 160), nearPairs(600)],
 	['pane text of a megabyte', screen('a'), nearPairs(300).repeat(4)]
 ];
 

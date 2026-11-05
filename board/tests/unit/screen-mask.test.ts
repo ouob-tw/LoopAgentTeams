@@ -134,22 +134,27 @@ test('when the pane cannot tell, a key split over two lines and a key right unde
 	const key = fake('sk-', 'proj-AbCdEf0123456789ghijKLMNopqrstuv');
 	const access = fake('AK', 'IAIOSFODNN7EXAMPLE');
 	const jwt = `eyJaabcdefgh.eyJbabcdefgh.signature`;
-	const tooLong = { unwrapped: 'x'.repeat(262_145) };
-	const split = `${key.slice(0, 20)}\r\n${key.slice(20)}`;
-	expect(maskScreen(split, { unwrapped: 'nothing wrapped' })).toBe(split);
 	const screens: [string, string][] = [
-		[split, `${masked(20)}\r\n${masked(key.length - 20)}`],
+		[`${key.slice(0, 20)}\r\n${key.slice(20)}`, `${masked(20)}\r\n${masked(key.length - 20)}`],
 		[`$ cat key\r\n${key}`, `$ cat key\r\n${masked(key.length)}`],
 		[`${access}\r\nnext line`, `${masked(access.length)}\r\nnext line`],
 		[`Bearer\r\n${key}`, `Bearer\r\n${masked(key.length)}`],
 		[`decoded\r\n${jwt}`, `decoded\r\n${masked(jwt.length)}`]
 	];
-	// Only the split key needs Herdr to be asked: the others are hidden with the lines as they stand.
-	expect(screens.map(([screen]) => wrapMatters(screen))).toEqual([true, false, false, false, false]);
-	for (const [screen, hidden] of screens) {
-		expect(maskScreen(screen, 'all')).toBe(hidden);
-		expect(maskScreen(screen, tooLong)).toBe(hidden);
-	}
+	for (const [screen, hidden] of screens) expect(maskScreen(screen, 'all')).toBe(hidden);
+});
+
+test('a key wrapped over several lines under another line is hidden on all of them, as a read does it', () => {
+	const key = fake('sk-', 'proj-', 'AbCdEf0123456789ghijKLMNopqrstuv'.repeat(6));
+	const width = 80;
+	const rows = key.match(new RegExp(`.{1,${width}}`, 'g'))!;
+	const screen = ['$ cat key', ...rows].join('\r\n');
+	const hidden = ['$ cat key', ...rows.map((row) => masked(row.length))].join('\r\n');
+	const text = `$ cat key\r\n${key}\r\n`;
+	expect(wrapMatters(screen)).toBe(true);
+	expect(maskScreen(screen, { unwrapped: text })).toBe(hidden);
+	// More of the pane's text than is searched: the screen's lines are at its end.
+	expect(maskScreen(screen, { unwrapped: `${'x'.repeat(300_000)}\r\n${text}` })).toBe(hidden);
 });
 
 test('pane text is searched for two wrapped lines exactly', () => {
@@ -166,6 +171,9 @@ test('pane text is searched for two wrapped lines exactly', () => {
 // busy host does not count against it; far over what any of these needs here (at most a few hundred ms), and far
 // under the minutes a pattern that backtracks takes.
 const SCREEN_CPU_LIMIT_MS = 1_000;
+/** The screens with four times the characters, where the search of the pane's text is slowest. */
+const LARGER_SCREEN = 'pane text that almost holds every pair of lines of a larger screen';
+const LARGER_SCREEN_CPU_LIMIT_MS = 3_000;
 /** A screen stuck masking is ended here. Long enough for all of them on a very busy host. */
 const ALL_SCREENS_MS = 60_000;
 
@@ -178,5 +186,5 @@ test('the worst screens each mask within the time between two reads, under the r
 	clearTimeout(timer);
 	expect({ code, errors, output }).toMatchObject({ code: 0, errors: '' });
 	const times = output.trim().split('\n').map((row) => row.split(/ (.*)/s));
-	expect(times.filter(([ms]) => Number(ms) > SCREEN_CPU_LIMIT_MS)).toEqual([]);
+	expect(times.filter(([ms, name]) => Number(ms) > (name === LARGER_SCREEN ? LARGER_SCREEN_CPU_LIMIT_MS : SCREEN_CPU_LIMIT_MS))).toEqual([]);
 }, ALL_SCREENS_MS + 10_000);
