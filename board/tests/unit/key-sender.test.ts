@@ -6,20 +6,23 @@ import type { KeyInput, ScreenUpdate } from '../../src/lib/board/screen.ts';
 
 const screen = (recovered: string[] = [], text = 'same'): ScreenUpdate => ({ ok: true, text, recovered });
 
-/** A sender whose requests wait until the test answers them. */
-function harness() {
+/** A sender whose requests wait until the test answers them; asking for a 恢復畫面 gets through
+ *  unless `reachable` says the server cannot be reached. */
+function harness({ retryMs }: { retryMs?: number } = {}) {
 	const posts: { inputs: KeyInput[]; recovery: string; answer: (value: KeysAnswer) => void }[] = [];
 	const failures: (string | null)[] = [];
 	const asked: string[] = [];
+	const link = { reachable: true };
 	let next = 0;
 	const sender = new KeySender({
 		post: (inputs, recovery) => new Promise((answer) => posts.push({ inputs, recovery, answer })),
-		askRecovery: async (recovery) => void asked.push(recovery),
+		askRecovery: async (recovery) => (asked.push(recovery), link.reachable),
+		retryMs,
 		failed: (reason) => void failures.push(reason),
 		changed: () => {},
 		newId: () => `r${++next}`
 	});
-	return { sender, posts, failures, asked };
+	return { sender, posts, failures, asked, link };
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -76,4 +79,28 @@ test('a request whose answer never comes asks the server for its 恢復畫面 an
 	expect(sender.waiting).toBe(true);
 	sender.screen(screen([posts[0].recovery]));
 	expect(sender.waiting).toBe(false);
+});
+
+test('asking for the 恢復畫面 is tried again until the server takes it, and not after', async () => {
+	const { sender, posts, asked, link } = harness({ retryMs: 20 });
+	link.reachable = false;
+	sender.press({ key: 'esc' });
+	posts[0].answer({ kind: 'network' });
+	await tick();
+	expect(asked).toEqual([posts[0].recovery]);
+	await new Promise((resolve) => setTimeout(resolve, 70));
+	expect(asked.length).toBeGreaterThan(2);
+	expect(sender.waiting).toBe(true);
+	// The connection is back: the next try gets through and the asking stops; the wait goes on until
+	// the 恢復畫面, and an ordinary screen meanwhile does not end it.
+	link.reachable = true;
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	const taken = asked.length;
+	await new Promise((resolve) => setTimeout(resolve, 70));
+	expect(asked).toHaveLength(taken);
+	sender.screen(screen());
+	expect(sender.waiting).toBe(true);
+	sender.screen(screen([posts[0].recovery]));
+	expect(sender.waiting).toBe(false);
+	expect(posts).toHaveLength(1);
 });
