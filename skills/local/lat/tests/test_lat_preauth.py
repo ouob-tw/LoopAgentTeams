@@ -2207,6 +2207,131 @@ class RemovedOptionTests(WriteCase):
         self.assertNotIn('preauth', json.loads((self.sessions / f'{SESSION}.json').read_text()))
 
 
+class DoTests(NoticeCase):
+    """`do` runs check, notice, the command, notice and record in one process. The hcom is a
+    stub and the command touches a marker file, so no notice or deploy is real."""
+
+    def setUp(self):
+        super().setUp()
+        self.other_sessions(('kela', 'active'))
+        self.write(self.global_file, '[actions.install-host]\nallow = true\n'
+                                     '[actions.deploy-test]\nallow = true\n')
+        self.write(self.project_file, '[actions.deploy-test]\ntarget = "staging"\n')
+        self.gate_record()
+        self.marker = self.root / 'ran'
+        self.head = git(self.repo, 'rev-parse', 'HEAD')
+
+    def do(self, command, *extra, action='install-host'):
+        return self.run_tool('do', '--action', action, '--commit', self.head, *extra, '--',
+                             *command, path=f'{self.bin}:{os.environ["PATH"]}')
+
+    def touch(self, code=0):
+        return ['sh', '-c', f'touch {self.marker}; exit {code}']
+
+    def records(self):
+        path = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r1.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def hand_chain(self, result):
+        """The chain the docs used to teach, for comparing the record it leaves."""
+        tool = lambda *args: self.run_tool(*args, path=f'{self.bin}:{os.environ["PATH"]}')
+        checked = tool('check', '--action', 'install-host', '--commit', self.head).stdout
+        before = tool('notice', '--text', 'hand before').stdout.strip()
+        started = tool('now').stdout.strip()
+        after = tool('notice', '--text', 'hand after').stdout.strip()
+        done = tool('record', '--action', 'install-host', '--commit', self.head, '--basis',
+                    checked.splitlines()[0], '--result', result, '--started', started,
+                    '--notice-before', before, '--notice-after', after)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_allow_runs_the_command_and_records_succeeded_like_the_hand_chain(self):
+        result = self.do(self.touch())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.marker.exists())
+        self.assertEqual([item[-1] for item in self.sent()],
+                         [f'開始 install-host（{self.head}）', f'install-host：succeeded（{self.head}）'])
+        self.hand_chain('succeeded')
+        done, by_hand = self.records()
+        self.assertEqual(set(done), set(by_hand))
+        self.assertEqual((done['kind'], done['action'], done['commit'], done['result']),
+                         ('auto', 'install-host', self.head, 'succeeded'))
+        self.assertEqual(done['basis'], by_hand['basis'])
+        self.assertEqual((done['notice_before'], done['notice_after']), (500, 501))
+        self.assertIn('started', done)
+
+    def test_a_failing_command_still_gets_the_after_notice_and_a_failed_record(self):
+        result = self.do(self.touch(3))
+        self.assertEqual(result.returncode, 3)
+        self.assertTrue(self.marker.exists())
+        self.assertEqual(len(self.sent()), 2)
+        self.assertIn('failed', self.sent()[1][-1])
+        self.assertEqual([item['result'] for item in self.records()], ['failed'])
+
+    def test_a_check_that_asks_runs_nothing(self):
+        self.write(self.global_file, '[actions.install-host]\nallow = false\n')
+        result = self.do(self.touch())
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('check did not allow install-host', result.stderr)
+        self.assertIn('ask install-host', result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual((self.sent(), self.records()), ([], []))
+
+    def test_a_refused_before_notice_runs_nothing(self):
+        self.mode.write_text('fail')
+        result = self.do(self.touch())
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('hcom send failed', result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.records(), [])
+
+    def test_a_named_recipient_who_is_offline_is_refused_before_the_command(self):
+        result = self.do(self.touch(), '--to', 'ghost')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('not live on HCOM: ghost', result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.records(), [])
+
+    def test_without_other_controllers_it_records_none_ids(self):
+        (self.sessions / 'kela-session.json').unlink()
+        result = self.do(self.touch())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.sent(), [])
+        self.assertEqual([(i['notice_before'], i['notice_after']) for i in self.records()],
+                         [('none-1', 'none-2')])
+
+    def test_a_refused_after_notice_says_the_command_ran_and_nothing_was_recorded(self):
+        result = self.do(['sh', '-c', f'touch {self.marker}; printf fail > {self.mode}'])
+        self.assertEqual(result.returncode, 2)
+        self.assertTrue(self.marker.exists())
+        self.assertIn('the command ran and succeeded, but nothing was recorded', result.stderr)
+        self.assertEqual(self.records(), [])
+
+    def test_a_command_that_cannot_start_is_recorded_as_failed(self):
+        result = self.do(['/no/such/command'])
+        self.assertEqual(result.returncode, 127)
+        self.assertEqual([item['result'] for item in self.records()], ['failed'])
+
+    def test_deploys_still_write_the_deploy_history(self):
+        result = self.do(self.touch(), action='deploy-test')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        history = [json.loads(line) for line in
+                   (self.repo / '.lat' / 'deploy-history.jsonl').read_text().splitlines()]
+        self.assertEqual([(i['action'], i['target'], i['commit'], i['result'], i['approval'])
+                          for i in history],
+                         [('deploy-test', 'staging', self.head, 'succeeded', 'preauth')])
+
+    def test_actions_without_notices_and_a_missing_command_are_refused(self):
+        for label, args, reason in (
+                ('merge', ('do', '--action', 'merge', '--commit', 'x', '--', 'true'),
+                 'sends no notices'),
+                ('no command', ('do', '--action', 'install-host', '--commit', 'x'),
+                 'give the command after `--`')):
+            with self.subTest(label):
+                result = self.run_tool(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(reason, result.stderr)
+
+
 HOOK_SETUP = Path(__file__).resolve().parents[1] / 'references/hook-setup.md'
 
 
