@@ -146,6 +146,37 @@ for (const [device, size] of [
 	});
 }
 
+test('phone: a narrower update during a held sideways swipe lets the swipe go on to where the line ended; the width is let go once the finger is up', async () => {
+	await visit({ width: 390, height: 844, phone: true });
+	const SCROLLER = `document.querySelector('.screen-panel .scroller')`;
+	const at = () => tab.eval<{ left: number; width: number; client: number }>(`({ left: ${SCROLLER}.scrollLeft, width: ${SCROLLER}.scrollWidth, client: ${SCROLLER}.clientWidth })`);
+	const box = await tab.eval<{ x: number; y: number }>(`(() => { const r = ${SCROLLER}.getBoundingClientRect(); return { x: r.right - 40, y: r.top + r.height / 2 }; })()`);
+	const touch = (type: string, x: number) => tab.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y: box.y }] });
+	await touch('touchStart', box.x);
+	for (let step = 1; step <= 5; step++) {
+		await touch('touchMove', box.x - step * 25);
+		await sleep(30);
+	}
+	const mid = await at();
+	expect(mid.left).toBeGreaterThan(0);
+	// The long line goes while the finger is still down.
+	setHerdr(lines(100, '3. No, changed').replace(LONG, 'short now'));
+	await tab.until(`document.querySelector('.screen-panel pre').innerText.includes('changed')`, 'the update');
+	for (let step = 1; step <= 4; step++) {
+		await touch('touchMove', box.x - 125 - step * 35);
+		await sleep(30);
+	}
+	const after = await at();
+	expect(after.left).toBeGreaterThan(mid.left + 50);
+	await touch('touchEnd', 0);
+	// Once the finger is up the next update keeps only where it was slid to.
+	setHerdr(lines(100, '3. No, again').replace(LONG, 'short now'));
+	await tab.until(`document.querySelector('.screen-panel pre').innerText.includes('again')`, 'the next update');
+	const done = await at();
+	expect(done.left).toBe(after.left);
+	expect(done.width).toBeLessThanOrEqual(done.left + done.client + 1);
+});
+
 test('phone: the on-screen keyboard coming up shortens the box, the command line staying above the keyboard and the page not scrolling', async () => {
 	await visit({ width: 390, height: 844, phone: true });
 	const before = await layout();

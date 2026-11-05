@@ -73,12 +73,24 @@
 	let pre = $state<HTMLElement>();
 	/** How far the 按鍵選單 covers the screen from its bottom. */
 	let covers = $state(0);
+	/** Whether a finger or the mouse is sliding the box now. */
+	let sliding = false;
 	// A narrower update would pull a box slid sideways back to the left: it keeps the width it is at
-	// until slid back.
+	// until slid back. While a slide goes on it keeps the whole width, so the slide is not cut short;
+	// once it ends, only as far as it was slid to.
+	function keepWidth() {
+		if (!scroller || !pre) return;
+		pre.style.minWidth = sliding ? `${pre.offsetWidth}px` : scroller.scrollLeft > 0 ? `${scroller.scrollLeft + scroller.clientWidth}px` : '';
+	}
 	$effect.pre(() => {
 		void lines;
-		if (scroller && pre) pre.style.minWidth = scroller.scrollLeft > 0 ? `${scroller.scrollLeft + scroller.clientWidth}px` : '';
+		keepWidth();
 	});
+	function slideEnded() {
+		if (!sliding) return;
+		sliding = false;
+		keepWidth();
+	}
 	/** Whether keys pressed now go into the pane: on a computer, the hidden text box took the focus,
 	 *  and it stays in the box (a click inside moves it to the box for a moment). */
 	let direct = $state(false);
@@ -149,7 +161,22 @@
 					onpaste={(event) => event.preventDefault()}
 				></textarea>
 			{/if}
-			<div class="scroller" bind:this={scroller}>
+			<div
+				class="scroller"
+				bind:this={scroller}
+				ontouchstart={() => (sliding = true)}
+				ontouchend={(event) => {
+					// Another finger still down slides on.
+					if (!event.touches.length) slideEnded();
+				}}
+				ontouchcancel={slideEnded}
+				onpointerdown={(event) => {
+					// The mouse may be let go outside the box, dragging its scroll bar.
+					if (event.pointerType !== 'mouse') return;
+					sliding = true;
+					addEventListener('pointerup', slideEnded, { once: true });
+				}}
+			>
 				{#if shownText !== null}
 					<pre bind:this={pre} style:padding-bottom={covers ? `${covers}px` : null}>{#each lines as line, row (row)}{#each line as run, index (index)}<span style={run.style || null}>{run.text}</span>{/each}{'\n'}{/each}</pre>
 				{:else if status === 'loading'}
