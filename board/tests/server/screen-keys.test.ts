@@ -1,10 +1,12 @@
 // Failures recovered stay listed for 10 minutes per agent, so an update may list those of earlier
-// tests: each test looks only for its own.
+// tests: each test looks only for its own. Waits are bounded conditions, not counts in a fixed time,
+// so a loaded host only makes them slower; every page a test opened is closed after it, so a test
+// that fails leaves no screen reader behind for the next one.
 // The 畫面分頁 on the server: the pane's screen pushed to the pages that have the tab open, secrets
 // masked first, read only while one has; keys typed into the pane in order, stopped at the first that
 // failed or may not have arrived, and never sent again; the 恢復畫面 after such a request; and the
 // operation record's one entry for presses in a row. Herdr and hcom are fakes.
-import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentAction } from '../../src/lib/board/agent-actions.ts';
@@ -39,10 +41,10 @@ beforeEach(async () => {
 function herdrAgent(session: string, pane: string) {
 	return { agent: 'claude', agent_session: { kind: 'id', value: session }, agent_status: 'blocked', cwd: `/projects/${session}`, pane_id: pane, tab_id: `wA:t-${session}`, workspace_id: 'wA' };
 }
-function setHerdr(extra: object = {}) {
+function setHerdr(extra: object = {}, on: Fixture = fixture) {
 	const agents = [herdrAgent('s-plain', PANE), herdrAgent('s-board', OWN)];
 	writeFileSync(
-		join(fixture.dir, 'herdr.json'),
+		join(on.dir, 'herdr.json'),
 		JSON.stringify({
 			agents,
 			workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
@@ -61,18 +63,24 @@ function changeHerdr(change: (plan: Record<string, any>) => void) {
 const herdrCalls = (): string[][] => jsonLines(join(fixture.dir, 'herdr-calls.jsonl'));
 const reads = (): string[][] => jsonLines(join(fixture.dir, 'herdr-list-calls.jsonl')).filter((args: string[]) => args[0] === 'pane' && (args[1] === 'read' || args[1] === 'get'));
 
-async function keys(body: object, as: string | undefined = cookie): Promise<{ status: number; body: KeysResponse }> {
-	const response = await fixture.fetch('/api/agents/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), cookie: as });
+async function keys(body: object, as: string | undefined = cookie, on: Fixture = fixture): Promise<{ status: number; body: KeysResponse }> {
+	const response = await on.fetch('/api/agents/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), cookie: as });
 	return { status: response.status, body: await response.json() };
 }
 
+/** The pages a test opened and has not closed. */
+const open = new Set<() => Promise<void>>();
+afterEach(async () => {
+	await Promise.all([...open].map((close) => close()));
+});
+
 /** A page's open 畫面分頁: every screen update its stream carried, as raw data too. */
-function follow(session: string) {
+function follow(session: string, on: Fixture = fixture, as: string = cookie) {
 	const updates: ScreenUpdate[] = [];
 	const raw: string[] = [];
 	const abort = new AbortController();
 	const done = (async () => {
-		const response = await fixture.fetch(`/api/agents/screen/events?session=${encodeURIComponent(session)}`, { cookie, signal: abort.signal });
+		const response = await on.fetch(`/api/agents/screen/events?session=${encodeURIComponent(session)}`, { cookie: as, signal: abort.signal });
 		const reader = response.body!.getReader();
 		const decoder = new TextDecoder();
 		let buffer = '';
@@ -93,7 +101,13 @@ function follow(session: string) {
 			// Aborted.
 		}
 	})();
-	return { updates, raw, close: async () => (abort.abort(), await done) };
+	const close = async () => {
+		open.delete(close);
+		abort.abort();
+		await done;
+	};
+	open.add(close);
+	return { updates, raw, close };
 }
 
 test('keys need a logged-in device and a well-formed request', async () => {
@@ -191,25 +205,28 @@ test('an open tab gets the bottom screen with its colours and the key masked, ag
 	expect(first.text).toContain(`token ${'*'.repeat(KEY.length)}`);
 	expect(page.raw.join('\n')).not.toContain(KEY.slice(4, 20));
 	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'visible', '--format', 'ansi']);
-	// Read about every second, pushed only when it changed.
+	// Read again and again, about every second (each time `pane get` and `pane read`), pushed only
+	// when it changed: two more rounds come within a loose bound, and no push with them.
 	const readsBefore = reads().length;
-	await sleep(2_300);
-	expect(reads().length - readsBefore).toBeGreaterThanOrEqual(2 * 2);
+	await until(() => reads().length - readsBefore >= 2 * 2, 8_000, 'two more rounds of reads');
 	expect(page.updates).toHaveLength(1);
 	changeHerdr((plan) => (plan.screens[PANE] = ['$ done']));
-	await until(() => page.updates.length === 2, 3_000, 'the changed screen');
+	await until(() => page.updates.length === 2, 5_000, 'the changed screen');
 	expect(page.updates[1]).toMatchObject({ ok: true, text: '$ done' });
 
 	// A second page on the same pane shares the reads and gets the same screen at once.
 	const other = follow('s-plain');
-	await until(() => other.updates[0], 2_000, "the other page's screen");
+	await until(() => other.updates[0], 5_000, "the other page's screen");
 	expect(other.updates[0]).toEqual(page.updates[1]);
 	await other.close();
 	await page.close();
-	await sleep(1_200);
-	const quiet = reads().length;
-	await sleep(1_500);
-	expect(reads().length).toBe(quiet);
+	// Reads stop: a read already under way may still finish, then none for 1.5 s.
+	const deadline = Date.now() + 10_000;
+	for (let quiet = reads().length; ; quiet = reads().length) {
+		await sleep(1_500);
+		if (reads().length === quiet) break;
+		if (Date.now() > deadline) throw new Error('the screen is still read after the last page closed');
+	}
 });
 
 test('a pane scrolled up in Herdr shows its last screenful, without scrolling it', async () => {
@@ -254,7 +271,7 @@ test('a pane that cannot be read says why', async () => {
 	expect(first.reason).toContain('not found');
 });
 
-test('after a failed press the screen is read again at once and pushed as its 恢復畫面, unchanged or not; a failed read keeps it waiting', async () => {
+test('after a failed press the screen is read again and pushed as its 恢復畫面, unchanged or not; a failed read keeps it waiting', async () => {
 	const page = follow('s-plain');
 	await until(() => page.updates[0], 5_000, 'the first screen');
 	const before = page.updates[0];
@@ -262,20 +279,20 @@ test('after a failed press the screen is read again at once and pushed as its �
 	const failed = await keys({ session: 's-plain', keys: [{ key: 'enter' }], recovery: 'rec-1' });
 	expect(failed.body.ok).toBe(false);
 	// The read again fails: pushed as such, the request not yet recovered.
-	const down = await until(() => page.updates.find((update) => !update.ok), 3_000, 'the failed read');
+	const down = await until(() => page.updates.find((update) => !update.ok), 5_000, 'the failed read');
 	expect(down.recovered).not.toContain('rec-1');
 	await sleep(1_200);
 	expect(page.updates.every((update) => !update.recovered.includes('rec-1'))).toBe(true);
 	// Herdr answers again with the very same screen: that read is the 恢復畫面.
 	setHerdr();
-	const back = await until(() => page.updates.find((update) => update.recovered.includes('rec-1')), 3_000, 'the 恢復畫面');
+	const back = await until(() => page.updates.find((update) => update.recovered.includes('rec-1')), 5_000, 'the 恢復畫面');
 	expect(back.ok && back.text).toBe(before.ok && before.text);
 
-	// With Herdr up, the 恢復畫面 comes right after the failure, though the screen did not change.
+	// With Herdr up, the 恢復畫面 comes after the failure, though the screen did not change.
 	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: 'boom' } } });
 	const count = page.updates.length;
 	await keys({ session: 's-plain', keys: [{ key: 'esc' }], recovery: 'rec-2' });
-	const again = await until(() => page.updates.slice(count).find((update) => update.recovered.includes('rec-2')), 900, 'the second 恢復畫面');
+	const again = await until(() => page.updates.slice(count).find((update) => update.recovered.includes('rec-2')), 5_000, 'the second 恢復畫面');
 	expect(again.ok && again.text).toBe(before.ok && before.text);
 	await page.close();
 	// Nothing was typed again meanwhile.
@@ -290,7 +307,7 @@ test('a failure whose page lost its connection, or that came while no page had t
 	await until(() => page.updates[0], 5_000, 'the first screen');
 	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: 'boom' }, 'pane get': { exit: 1, stderr: 'herdr is down' } } });
 	await keys({ session: 's-plain', keys: [{ key: 'enter' }], recovery: 'gone-1' });
-	await until(() => page.updates.find((update) => !update.ok), 3_000, 'the failed read');
+	await until(() => page.updates.find((update) => !update.ok), 5_000, 'the failed read');
 	// The only page drops off before any read succeeds.
 	await page.close();
 	// Another failure while no page has the tab open.
@@ -322,7 +339,7 @@ test('a page whose key request got no answer asks for the 恢復畫面 itself', 
 	await until(() => page.updates[0], 5_000, 'the first screen');
 	const response = await fixture.fetch('/api/agents/screen/recover', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-plain', recovery: 'lost-1' }), cookie });
 	expect(response.status).toBe(200);
-	await until(() => page.updates.find((update) => update.recovered.includes('lost-1')), 900, 'the 恢復畫面');
+	await until(() => page.updates.find((update) => update.recovered.includes('lost-1')), 5_000, 'the 恢復畫面');
 	await page.close();
 	expect(herdrCalls()).toEqual([]);
 });
@@ -388,4 +405,46 @@ test('an agent keeps its newest 100 waiting failures: at 101 the oldest is dropp
 	expect(mine).toHaveLength(100);
 	expect(mine).not.toContain('cap-1');
 	expect(mine).toContain('cap-2');
+});
+
+test('a recovered failure stays listed for 10 minutes on the board clock, then is dropped', async () => {
+	const start = Date.now();
+	fixture.setClock(start);
+	try {
+		const page = follow('s-plain');
+		await until(() => page.updates[0], 5_000, 'the first screen');
+		const response = await fixture.fetch('/api/agents/screen/recover', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-plain', recovery: 'kept-1' }), cookie });
+		expect(response.status).toBe(200);
+		await until(() => page.updates.find((update) => update.recovered.includes('kept-1')), 5_000, 'the 恢復畫面');
+		// Just under 10 minutes later: still listed, in a push the changed screen makes.
+		fixture.setClock(start + 10 * 60_000 - 1_000);
+		changeHerdr((plan) => (plan.screens[PANE] = ['$ nine minutes on']));
+		const later = await until(() => page.updates.find((update) => update.ok && update.text === '$ nine minutes on'), 5_000, 'the screen 10 minutes on');
+		expect(later.recovered).toContain('kept-1');
+		// Past 10 minutes: the next read drops it, and that change is pushed though the screen is the same.
+		fixture.setClock(start + 10 * 60_000 + 1_000);
+		const dropped = await until(() => page.updates.find((update) => update.ok && update.text === '$ nine minutes on' && !update.recovered.includes('kept-1')), 5_000, 'kept-1 dropped');
+		expect(dropped.recovered).not.toContain('kept-1');
+	} finally {
+		rmSync(join(fixture.dir, 'clock'), { force: true });
+	}
+});
+
+test('the read after a failed press comes at once, not with the regular rhythm', async () => {
+	// A board that reads an open screen only once a minute: a 恢復畫面 within seconds was read for the failure.
+	const slow = await startFixture({ env: { HERDR_PANE_ID: OWN, LAT_BOARD_HERDR_TIMEOUT_SECONDS: '1', LAT_BOARD_SCREEN_SECONDS: '60' } });
+	try {
+		const as = await slow.login();
+		setHerdr({}, slow);
+		await slow.refresh(as);
+		const page = follow('s-plain', slow, as);
+		await until(() => page.updates[0], 5_000, 'the first screen');
+		setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: 'boom' } } }, slow);
+		const failed = await keys({ session: 's-plain', keys: [{ key: 'esc' }], recovery: 'soon-1' }, as, slow);
+		expect(failed.body.ok).toBe(false);
+		await until(() => page.updates.find((update) => update.recovered.includes('soon-1')), 20_000, 'the 恢復畫面');
+		await page.close();
+	} finally {
+		await slow.cleanup();
+	}
 });

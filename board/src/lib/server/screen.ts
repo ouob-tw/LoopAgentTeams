@@ -15,8 +15,6 @@ import { readPaneScreen, readUnwrapped } from './herdr.ts';
 import { exceptionFields, log } from './log.ts';
 import { maskScreen, wrapMatters } from './screen-mask.ts';
 
-/** How often an open screen is read. */
-export const SCREEN_MS = 1_000;
 /** How long a recovered failure stays listed, for a page that joins or comes back later. A failure
  *  waiting for its 恢復畫面 is kept until a read recovers it, however long Herdr cannot be read; only
  *  the newest `WAITING_MAX` per agent are kept. */
@@ -52,7 +50,7 @@ function perBoard<T>(store: WeakMap<Board, Map<string, T>>, board: Board): Map<s
  *  an agent whose tab is never opened again does not keep them. */
 function recoveryOf(board: Board, agentId: string): Recovery {
 	const shared = perBoard(recoveries, board);
-	const now = Date.now();
+	const now = board.config.now();
 	for (const [id, recovery] of shared) {
 		for (const [failure, at] of recovery.recovered) if (now - at > RECOVERED_KEEP_MS) recovery.recovered.delete(failure);
 		if (!recovery.waiting.size && !recovery.recovered.size && id !== agentId) shared.delete(id);
@@ -87,7 +85,7 @@ export function followScreen(board: Board, agentId: string, push: (update: Scree
  *  read succeeds. While no page has the tab open, the failure waits for the next one that does. */
 export function recover(board: Board, agentId: string, id: string): void {
 	const { waiting } = recoveryOf(board, agentId);
-	waiting.set(id, Date.now());
+	waiting.set(id, board.config.now());
 	for (const oldest of waiting.keys()) {
 		if (waiting.size <= WAITING_MAX) break;
 		waiting.delete(oldest);
@@ -104,8 +102,8 @@ function deliver(push: (update: ScreenUpdate) => void, update: ScreenUpdate, age
 }
 
 /** The screen of the pane Herdr lists the agent in now, its secrets masked. Which lines it wrapped
- *  is asked of Herdr only when that changes what is masked; when Herdr cannot tell, every line that
- *  may have been is taken as wrapped, which masks more. */
+ *  is asked of Herdr only when that changes what is masked; when Herdr cannot tell, the lines are
+ *  masked both as they stand and with every line that may have been wrapped joined. */
 async function readMasked(board: Board, agentId: string): Promise<{ text: string } | { reason: string }> {
 	const agent = (await board.current()).agents.find((candidate) => candidate.id === agentId);
 	if (!agent?.inHerdr) return { reason: '這個 Agent 已不在 Herdr 的清單上' };
@@ -147,7 +145,7 @@ function startFollower(board: Board, agentId: string): Follower {
 		running = false;
 		const recovery = recoveryOf(board, agentId);
 		if ('text' in result) {
-			const now = Date.now();
+			const now = board.config.now();
 			for (const id of taking) {
 				if (!recovery.waiting.delete(id)) continue;
 				recovery.recovered.set(id, now);
@@ -165,7 +163,7 @@ function startFollower(board: Board, agentId: string): Follower {
 		if (again) {
 			again = false;
 			void read();
-		} else timer = setTimeout(() => void read(), SCREEN_MS);
+		} else timer = setTimeout(() => void read(), board.config.screenMs);
 	}
 	void read();
 	return follower;
