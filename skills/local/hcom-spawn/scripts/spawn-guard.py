@@ -25,6 +25,7 @@ EXAMPLES = {
 }
 UNREADABLE = re.compile(r'\bhcom\s+(\d+\s+)?(claude|codex)\b')
 SPAWNER = re.compile(r'^[A-Za-z0-9_-]+$')
+LOOPS = {'for', 'while', 'until', 'select'}
 
 
 def option_value(words, index, names):
@@ -116,24 +117,43 @@ def hcom_launch(args):
     return None
 
 
+def starts_loop(words):
+    """True when a simple command opens a for/while/until/select loop."""
+    return next((word for word in words if word not in shell.KEYWORDS - LOOPS), '') in LOOPS
+
+
+def text_launches(text):
+    """Launches in shell text; each is marked `repeat` when the text has a loop, since one
+    launch command may then start several batches."""
+    found, loop = [], False
+    for words in shell.commands(text):
+        loop |= starts_loop(words)
+        found += launches(words)
+    for launch in found:
+        launch['repeat'] |= loop
+    return found
+
+
 def launches(words):
     """Launches in one simple command; behind a wrapper or `bash -c`, look inside it too."""
     words = shell.executable(words)
     if words[0].rsplit('/', 1)[-1] not in shell.WRAPPERS | shell.SHELLS | {'hcom'}:
         return []
-    found, shell_seen = [], False
+    found, shell_seen, xargs = [], False, False
     for index, word in enumerate(words):
         name = word.rsplit('/', 1)[-1]
         following = words[index + 1:]
+        xargs |= name == 'xargs'
         if name == 'hcom':
             launch = hcom_launch(following)
+            if launch:
+                launch['repeat'] = xargs
             return found + ([launch] if launch else [])
         shell_seen = shell_seen or name in shell.SHELLS
         shell_flag = (shell_seen and word.startswith('-') and not word.startswith('--')
                       and 'c' in word)
         if following and (shell_flag or word in ('-S', '--split-string')):
-            found += [launch for inner in shell.commands(following[0])
-                      for launch in launches(inner)]
+            found += text_launches(following[0])
     return found
 
 
@@ -157,7 +177,8 @@ def start_watch(launch, after_id):
             [sys.executable, str(HERE / 'spawn-watch.py'), '--spawner', spawner,
              '--tool', launch['client'], '--model', launch['model'],
              '--effort', launch['effort'], '--after-id', str(after_id)]
-            + (['--tag', launch['tag']] if launch['tag'] else []),
+            + (['--tag', launch['tag']] if launch['tag'] else [])
+            + (['--repeat'] if launch.get('repeat') else []),
             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
 
 
@@ -170,8 +191,7 @@ def main():
         if isinstance(command, list):
             found = launches([str(word) for word in command])
         else:
-            found = [launch for words in (shell.commands(command) if isinstance(command, str)
-                                          else []) for launch in launches(words)]
+            found = text_launches(command) if isinstance(command, str) else []
     except Exception:  # unparseable text or a hook bug must not let a bad launch through
         text = ' '.join(map(str, command)) if isinstance(command, list) else str(command)
         if UNREADABLE.search(text):

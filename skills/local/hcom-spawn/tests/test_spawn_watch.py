@@ -157,7 +157,7 @@ class SpawnWatchTests(unittest.TestCase):
         self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.3, 0.01
 
     def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low', tag=None,
-                  launched=None):
+                  launched=None, extra=()):
         """launched maps agent base name -> (model, effort) on its command line; by default
         every agent was started with this watch's model and effort."""
         self.watch.hcom, self.watch.clock, self.watch.sleep = fake, fake.clock, fake.sleep
@@ -167,7 +167,7 @@ class SpawnWatchTests(unittest.TestCase):
             (launched or {}).get(process_id, (model, effort)))
         return self.watch.main(['--spawner', 'vare', '--tool', tool, '--model', model,
                                 '--effort', effort, '--after-id', '99']
-                               + (['--tag', tag] if tag else []))
+                               + (['--tag', tag] if tag else []) + list(extra))
 
     def add_batch(self, fake, event_id, name):
         batch = json.loads(json.dumps(fake.batch))
@@ -419,6 +419,109 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertTrue((Path(self.state.name) / 'hcom-spawn/claims/b120').exists())
         self.assertIn(('events', 'sub', '--blocked', 'mona', '--for', 'vare'), fake.calls)
         self.assertNotIn(('events', 'sub', '--blocked', 'kilo', '--for', 'vare'), fake.calls)
+
+    def test_tag_with_a_shell_variable_matches_the_tag_it_expanded_to(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.batch['data']['tag'] = 'vare-other'
+        self.add_batch(fake, 120, 'mona')
+        fake.batches[1]['data']['tag'] = 'vare-t3'
+        fake.agents = [agent_row('mona', 'w1:p2', tag='vare-t3')]
+        self.watch.herdr = FakeHerdr(panes={'w1:p2': 'w1:t2'})
+        self.run_watch(fake, tag='vare-t$n')
+        self.assertTrue((Path(self.state.name) / 'hcom-spawn/claims/b120').exists())
+        self.assertFalse((Path(self.state.name) / 'hcom-spawn/claims/b1').exists())
+        renames = [call for call in self.watch.herdr.calls if call[0] == 'tab']
+        self.assertEqual(renames, [('tab', 'rename', 'w1:t2', 'vare-mona')])
+        self.assertTrue(any(call[:2] == ('term', 'vare-t3-mona') for call in fake.calls))
+        self.assertEqual(fake.sent, [])
+
+    def test_tag_patterns_cover_each_shell_expansion(self):
+        for tag in ('vare-t$n', 'vare-t${n}', 'vare-t$(echo 3)', 'vare-t`echo 3`', '$TAG'):
+            with self.subTest(tag=tag):
+                self.assertTrue(self.watch.tag_matches(tag, 'vare-t3'))
+        for tag in ('vare-t$((n+1))', 'vare-t$(printf %s $(echo 3))', 'vare-t$1'):
+            with self.subTest(tag=tag):
+                self.assertTrue(self.watch.tag_matches(tag, 'vare-t3'))
+        self.assertFalse(self.watch.tag_matches('vare-t$n', 'mefa-t3'))
+        self.assertTrue(self.watch.tag_matches('vare-$n-review', 'vare-3-review'))
+        self.assertFalse(self.watch.tag_matches('vare-$n-review', 'vare-3-docs'))
+        self.assertFalse(self.watch.tag_matches('vare-$1x', 'vare-3'))
+        self.assertTrue(self.watch.tag_matches('vare-review', 'vare-review'))
+        self.assertFalse(self.watch.tag_matches('vare-review', 'vare-review2'))
+        self.assertTrue(self.watch.tag_matches('', 'anything'))
+
+    def test_a_tag_pattern_leaves_a_batch_to_an_exact_tag_watch_first(self):
+        fake = FakeHcom()
+        fake.batch['data']['tag'] = 'vare-t3'
+        self.watch.hcom, self.watch.clock = fake, fake.clock
+        self.watch.process_ids = lambda: {'kilo': 'kilo'}
+        self.watch.launched_with = lambda tool, process_id: ('claude-sonnet-5-5', 'low')
+        polls = []
+
+        def sleep(seconds):
+            fake.sleep(seconds)
+            polls.append(seconds)
+            if len(polls) == 3:  # the `--tag vare-t3` watch claims it within the grace
+                self.assertTrue(self.watch.claim('b1'))
+        self.watch.sleep = sleep
+        found, _ = self.watch.find_batch('vare', 'claude', 'vare-t$n', 99, 'claude-sonnet-5-5',
+                                         'low', {})
+        self.assertIsNone(found)
+
+    def test_a_tag_pattern_still_takes_a_batch_with_another_model_at_the_end(self):
+        fake = FakeHcom()
+        fake.batch['data']['tag'] = 'vare-t3'
+        self.watch.hcom, self.watch.clock, self.watch.sleep = fake, fake.clock, fake.sleep
+        self.watch.process_ids = lambda: {'kilo': 'kilo'}
+        self.watch.launched_with = lambda tool, process_id: ('claude-opus-5-5', 'low')
+        found, why = self.watch.find_batch('vare', 'claude', 'vare-t$n', 99,
+                                           'claude-sonnet-5-5', 'low', {})
+        self.assertEqual(found, fake.batch)
+        self.assertIn('claude-opus-5-5', why)
+
+    def test_no_launch_found_is_logged_with_the_reason(self):
+        fake = FakeHcom()
+        fake.batches = []
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.run_watch(fake, tag='vare-t$n')
+        self.assertIn('no claude launch by vare with tag vare-t$n after event 99',
+                      stderr.getvalue())
+        self.assertIn('tab not renamed', stderr.getvalue())
+
+    def test_loop_launch_hands_on_to_a_new_watch_for_the_next_batch(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.batch['data']['tag'] = 'vare-t1'
+        with mock.patch.object(self.watch.subprocess, 'Popen') as popen:
+            self.run_watch(fake, tag='vare-t$n', extra=['--repeat'])
+        argv = popen.call_args.args[0]
+        self.assertTrue(argv[1].endswith('spawn-watch.py'))
+        self.assertEqual(argv[2:], ['--spawner', 'vare', '--tool', 'claude', '--model',
+                                    'claude-sonnet-5-5', '--effort', 'low', '--after-id', '99',
+                                    '--tag', 'vare-t$n', '--repeat', '--found', '1'])
+        self.assertTrue(popen.call_args.kwargs['start_new_session'])
+
+    def test_loop_watches_each_take_their_own_batch(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.batch['data']['tag'] = 'vare-t1'
+        self.add_batch(fake, 120, 'mona')
+        fake.batches[1]['data']['tag'] = 'vare-t2'
+        with mock.patch.object(self.watch.subprocess, 'Popen') as popen:
+            self.run_watch(fake, tag='vare-t$n', extra=['--repeat'])
+            self.run_watch(fake, tag='vare-t$n', extra=['--repeat', '--found', '1'])
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.run_watch(fake, tag='vare-t$n', extra=['--repeat', '--found', '2'])
+        claims = Path(self.state.name) / 'hcom-spawn/claims'
+        self.assertTrue((claims / 'b1').exists() and (claims / 'b120').exists())
+        self.assertEqual(popen.call_count, 2)  # the third watch found nothing to hand on
+        self.assertIn('launch loop: 2 launches found', stderr.getvalue())
+
+    def test_single_launch_hands_on_to_no_one(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        with mock.patch.object(self.watch.subprocess, 'Popen') as popen:
+            self.run_watch(fake, tag='vare-review')
+        popen.assert_not_called()
 
     def test_agent_already_stopped_gets_no_waiting_for_approval_notice(self):
         fake = FakeHcom(screens=[CLAUDE_START], stop_after=0)

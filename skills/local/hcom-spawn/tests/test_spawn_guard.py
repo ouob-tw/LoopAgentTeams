@@ -185,6 +185,40 @@ class SpawnGuardTests(unittest.TestCase):
         started = [(call.args[0][5], call.args[0][-1]) for call in popen.call_args_list]
         self.assertEqual(started, [('codex', 'vare-review'), ('claude', 'vare-docs')])
 
+    def run_main(self, guard, command):
+        payload = json.dumps({'tool_input': {'command': command}})
+        with tempfile.TemporaryDirectory() as state, \
+                mock.patch.dict(os.environ, {'XDG_STATE_HOME': state}), \
+                mock.patch.object(guard, 'latest_event_id', return_value=55), \
+                mock.patch.object(guard.sys, 'stdin', io.StringIO(payload)), \
+                mock.patch.object(guard.subprocess, 'Popen') as popen:
+            self.assertEqual(guard.main(), 0)
+        return [call.args[0][2:] for call in popen.call_args_list]
+
+    def test_variable_tag_is_passed_to_the_watch_unexpanded(self):
+        guard = load()
+        started = self.run_main(guard, CLAUDE.replace('vare-review', 'vare-t$n'))
+        self.assertEqual(started, [['--spawner', 'vare', '--tool', 'claude', '--model',
+                                    'claude-opus-5-5', '--effort', 'medium', '--after-id', '55',
+                                    '--tag', 'vare-t$n']])
+
+    def test_launch_in_a_loop_starts_a_watch_that_keeps_looking(self):
+        guard = load()
+        launch = CLAUDE.replace('vare-review', 'vare-t$n')
+        for command in (f'for n in 1 2 3; do {launch}; done',
+                        f'n=0; while [ $n -lt 3 ]; do n=$((n+1)); {launch}; done',
+                        f"bash -c 'for n in 1 2; do {launch}; done'",
+                        f'seq 3 | xargs -I{{}} {launch}'):
+            with self.subTest(command=command):
+                started = self.run_main(guard, command)
+                self.assertEqual(len(started), 1)
+                self.assertEqual(started[0][-1], '--repeat')
+
+    def test_loop_words_inside_a_prompt_are_not_a_loop(self):
+        guard = load()
+        started = self.run_main(guard, CLAUDE + " --hcom-prompt 'for each file; do review'")
+        self.assertNotIn('--repeat', started[0])
+
     def test_failing_to_start_the_watch_does_not_block_the_launch(self):
         guard = load()
         payload = json.dumps({'tool_input': {'command': CLAUDE}})
