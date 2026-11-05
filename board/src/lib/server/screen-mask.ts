@@ -22,9 +22,13 @@ const KEY_SHAPES = [
 	/\bgithub_pat_[A-Za-z0-9_]{22,}/g,
 	/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
 	/\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
-	/\bAIza[0-9A-Za-z_-]{35}/g,
-	/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g
+	/\bAIza[0-9A-Za-z_-]{35}/g
 ];
+/** A JWT, in steps for the same reason as a named value below: a whole run of its characters, whether
+ *  the rest of a JWT follows, then where in the run it starts. */
+const JWT_RUN = /[A-Za-z0-9_-]+/g;
+const JWT_REST = /\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/y;
+const JWT_START = /\beyJ[A-Za-z0-9_-]{8,}$/;
 /** A value named as a secret, in two steps so the time stays in line with the screen's size: a whole
  *  name, whether it says secret, then what follows it. One pattern for all three backtracks without
  *  end on a long run of such words, and the board answers nobody while it does. */
@@ -76,6 +80,10 @@ function shownOf(raw: string): Shown[] {
 	return shown;
 }
 
+/** More of the pane's text than this is not searched for wrapped lines: every line that may have been
+ *  is taken as wrapped, which hides more. Searching a line of megabytes takes seconds. */
+const UNWRAPPED_MAX = 65_536;
+
 /** Which of the screen's lines were wrapped into the next: `none`; `all` that may have been (each
  *  ending and the next starting with a non-space); or the pane's text with wrapped lines joined,
  *  which tells. */
@@ -92,7 +100,7 @@ export function maskScreen(screen: string, wrapped: Wrapped = 'all'): string {
 	const lines = parts.filter((_, index) => index % 2 === 0);
 	const shown = lines.map(shownOf);
 	const texts = shown.map((line) => line.map((each) => each.char).join(''));
-	const joinedLines = typeof wrapped === 'object' ? wrapped.unwrapped.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/) : null;
+	const joinedLines = typeof wrapped === 'object' && wrapped.unwrapped.length <= UNWRAPPED_MAX ? wrapped.unwrapped.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/) : null;
 	const wraps = (row: number) => {
 		if (wrapped === 'none' || !/\S$/.test(texts[row - 1]) || !/^\S/.test(texts[row])) return false;
 		const pair = texts[row - 1] + texts[row];
@@ -122,6 +130,15 @@ export function maskScreen(screen: string, wrapped: Wrapped = 'all'): string {
 		}
 	};
 	for (const shape of KEY_SHAPES) for (const match of joined.matchAll(shape)) hide(match.index, match.index + match[0].length);
+	JWT_RUN.lastIndex = 0;
+	for (let run = JWT_RUN.exec(joined); run; run = JWT_RUN.exec(joined)) {
+		JWT_REST.lastIndex = JWT_RUN.lastIndex;
+		if (!JWT_REST.test(joined)) continue;
+		const start = JWT_START.exec(run[0]);
+		if (!start) continue;
+		hide(run.index + start.index, JWT_REST.lastIndex);
+		JWT_RUN.lastIndex = JWT_REST.lastIndex;
+	}
 	NAME.lastIndex = 0;
 	for (let name = NAME.exec(joined); name; name = NAME.exec(joined)) {
 		if (!SECRET_WORD.test(name[0])) continue;

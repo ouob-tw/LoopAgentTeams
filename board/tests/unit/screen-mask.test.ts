@@ -121,20 +121,39 @@ test('a name is judged whole, and the value after a name that fails to have one 
 	expect(maskScreen(`passwordpassword nothing=${hunter}`)).toBe(`passwordpassword nothing=${hunter}`);
 });
 
-// Masking runs on the board's only thread at every read of an open 畫面分頁, about once a second: a
-// screen that takes longer than a read's interval leaves the board answering nobody. Up from what any
-// of these takes here (under 200 ms) so that a loaded host passes, and far under the minutes a pattern
-// that backtracks takes.
-const SCREEN_LIMIT_MS = 1_000;
-/** Longer than all the screens at their limit: a screen stuck masking is ended here. */
-const ALL_SCREENS_MS = 30_000;
+test('a JWT starts at its first eyJ with room for its first part, and one that does not go on is left', () => {
+	const part = (name: string) => `eyJ${name}abcdefgh`;
+	const key = `${part('a')}.${part('b')}.signature`;
+	expect(maskScreen(`x-eyJ-${key} done`)).toBe(`x-${masked('eyJ-'.length + key.length)} done`);
+	expect(maskScreen(`x-eyJ-a.${key} done`)).toBe(`x-eyJ-a.${masked(key.length)} done`);
+	expect(maskScreen(`${part('a')}.${part('b')}.short done`)).toBe(`${part('a')}.${part('b')}.short done`);
+	expect(maskScreen(`eyJ-short.${part('b')}.signature done`)).toBe(`eyJ-short.${part('b')}.signature done`);
+});
 
-test('no screen, however it is filled, takes a noticeable time to mask', async () => {
-	const child = Bun.spawn([process.execPath, join(import.meta.dir, 'screen-mask-time-case.ts')], { stdout: 'pipe', stderr: 'pipe' });
+test('pane text too long to search counts as not telling: every line that may be wrapped is joined', () => {
+	const key = fake('sk-', 'proj-AbCdEf0123456789ghijKLMNopqrstuv');
+	const screen = `${key.slice(0, 20)}\r\n${key.slice(20)}`;
+	const hidden = `${masked(20)}\r\n${masked(key.length - 20)}`;
+	expect(maskScreen(screen, { unwrapped: 'nothing wrapped' })).toBe(screen);
+	expect(maskScreen(screen, { unwrapped: 'x'.repeat(65_537) })).toBe(hidden);
+});
+
+// Masking runs on the board's only thread at every read of an open 畫面分頁, about once a second: a
+// screen that needs longer than a read's interval leaves the board answering nobody. CPU time, so a
+// busy host does not count against it; far over what any of these needs here (under 200 ms), and far
+// under the minutes a pattern that backtracks takes.
+const SCREEN_CPU_LIMIT_MS = 1_000;
+/** A screen stuck masking is ended here. Long enough for all of them on a very busy host. */
+const ALL_SCREENS_MS = 60_000;
+
+test('the worst screens each mask within the time between two reads, under the runtime the board uses', async () => {
+	const node = Bun.which('node');
+	if (!node) throw new Error('this test needs node, which runs the board');
+	const child = Bun.spawn([node, '--experimental-strip-types', '--no-warnings', join(import.meta.dir, 'screen-mask-time-case.ts')], { stdout: 'pipe', stderr: 'pipe' });
 	const timer = setTimeout(() => child.kill('SIGKILL'), ALL_SCREENS_MS);
 	const [code, output, errors] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
 	clearTimeout(timer);
 	expect({ code, errors, output }).toMatchObject({ code: 0, errors: '' });
 	const times = output.trim().split('\n').map((row) => row.split(/ (.*)/s));
-	expect(times.filter(([ms]) => Number(ms) > SCREEN_LIMIT_MS)).toEqual([]);
+	expect(times.filter(([ms]) => Number(ms) > SCREEN_CPU_LIMIT_MS)).toEqual([]);
 }, ALL_SCREENS_MS + 10_000);
