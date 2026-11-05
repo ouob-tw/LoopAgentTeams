@@ -1836,6 +1836,8 @@ def approve_answer(decisions_path, question_id, scope):
             raise ValueError(f"{question_id} is a help record; check the evidence and mark it "
                              "resolved instead")
         text = _read_text_exact(path)
+        if not re.search(r"^## 答覆.*\n(?:(?!## ).*\n)*?- 來源：", text, re.MULTILINE):
+            raise ValueError(f"{question_id} has no recorded answer (## 答覆 with - 來源：)")
         status_line = re.search(r"^- status:.*$", text, re.MULTILINE | re.IGNORECASE)
         updated = (
             text[:status_line.start()] + "- status: approved" + text[status_line.end():]

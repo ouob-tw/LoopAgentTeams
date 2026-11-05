@@ -445,9 +445,13 @@ class ApproveTests(AskTestCase):
             self.assertIn("--scope", self.approve(scope).stderr)
         self.assertIn("not found", self.approve(question_id="NONE").stderr)
 
-        self.answer_approved()
+        self.record().write_text(pending.replace("- status: pending", "- status: answered"))
+        self.assertIn("no recorded answer", self.approve().stderr)
+        self.assertIn("- status: answered", self.record().read_text())
+
+        self.record().write_text(pending.replace("- status: pending", "- status: approved"))
         approved = self.record().read_text()
-        self.assertEqual(self.approve().returncode, 1)
+        self.assertIn("not answered", self.approve().stderr)
         self.assertEqual(self.record().read_text(), approved)
 
     def answer_help(self):
@@ -455,10 +459,6 @@ class ApproveTests(AskTestCase):
                                   question_id="H1").returncode, 0)
         self.record("H1").write_text(self.record("H1").read_text().replace(
             "- status: pending", "- status: answered"))
-
-    def answer_approved(self):
-        self.record().write_text(self.record().read_text().replace(
-            "- status: pending", "- status: approved"))
 
 
 class HelpTextTests(AskTestCase):

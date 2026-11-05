@@ -119,6 +119,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import questions
 from questions import (
     add_visual_links,
+    approve_answer,
     ANSWERED_STATUS,
     AnswerFormatError,
     QuestionAnswer,
@@ -214,7 +215,6 @@ from questions import (
     record_chat_answer,
     remove_empty_questions,
     render_answer_area,
-    approve_answer,
     resolve_help,
     save_panel_edit,
     set_decision_preauth,
@@ -581,9 +581,7 @@ def _preauth_recheck(questions, decisions, question_id):
         if binding is not None:
             session, workspace = binding["session_id"], binding["workspace"]
         else:
-            session = next((os.environ[key] for key in module.SESSION_ENV.values()
-                            if os.environ.get(key)), None)
-            workspace = None
+            session, workspace = _client_session(), None
         return module.question_preauth(path, workspace=workspace, session_id=session,
                                        questions_paths=[questions])
     except Exception as error:  # noqa: BLE001 - asking the user stays the safe side
@@ -664,6 +662,11 @@ def _ask_session(questions):
                     if Path(item["questions_path"]).resolve() == target), None)
     if binding is not None:
         return binding["session_id"]
+    return _client_session()
+
+
+def _client_session():
+    """The client's own session ID from its environment, or None."""
     return next((os.environ[key] for key in _lat_session().SESSION_ENV.values()
                  if os.environ.get(key)), None)
 
@@ -675,11 +678,12 @@ def _input_section(args):
 
 def _session_paths(args):
     """Fill an omitted --questions or --decisions from this client session's LAT record."""
-    if getattr(args, "questions", False) is not None and args.decisions is not None:
+    omitted = [name for name in ("questions", "decisions")
+               if hasattr(args, name) and getattr(args, name) is None]
+    if not omitted:
         return
     module = _lat_session()
-    session = next((os.environ[key] for key in module.SESSION_ENV.values()
-                    if os.environ.get(key)), None)
+    session = _client_session()
     if session is None:
         raise ValueError("no client session ID to find the LAT session record; "
                          "give --questions and --decisions")
@@ -688,9 +692,9 @@ def _session_paths(args):
         workspace = binding["workspace"] if binding else module.workspace_root(Path.cwd())
         record_path = module.session_path(workspace, session)
         record = module.read_json(record_path)
-        if args.decisions is None:
+        if "decisions" in omitted:
             args.decisions = Path(record["decisions_path"])
-        if getattr(args, "questions", False) is None:
+        if "questions" in omitted:
             args.questions = (Path(binding["questions_path"]) if binding else
                               controller_questions_path(record["workspace"], record["hcom_name"]))
     except (OSError, KeyError, TypeError, ValueError) as error:
