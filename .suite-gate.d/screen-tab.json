@@ -1,0 +1,51 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/screen.ts",
+        "board/src/lib/server/screen-mask.ts",
+        "board/src/lib/server/herdr.ts",
+        "board/src/lib/server/transcript-stream.ts",
+        "board/src/lib/server/sent-views.ts",
+        "board/src/lib/server/agent-control.ts",
+        "board/src/lib/board/screen.ts",
+        "board/src/lib/board/agent-actions.ts",
+        "board/src/routes/api/agents/keys/**",
+        "board/src/routes/api/agents/screen/**",
+        "board/tests/fake-herdr.mjs"
+      ],
+      "tests": [
+        "board/tests/server/screen-keys.test.ts",
+        "board/tests/unit/screen-mask.test.ts",
+        "board/tests/unit/screen-lines.test.ts",
+        "board/tests/browser/screen-tab.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/board/key-sender.ts",
+        "board/src/lib/board/screen-view.svelte.ts",
+        "board/src/lib/components/ScreenPanel.svelte",
+        "board/src/lib/components/KeyRow.svelte",
+        "board/src/lib/components/AgentInfo.svelte",
+        "board/src/lib/components/ControllerInfo.svelte",
+        "board/src/lib/components/ClosedAgentInfo.svelte",
+        "board/src/lib/components/AgentLog.svelte",
+        "board/src/routes/+page.svelte"
+      ],
+      "tests": [
+        "board/tests/unit/key-sender.test.ts",
+        "board/tests/unit/screen-lines.test.ts",
+        "board/tests/browser/screen-tab.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/sent-views.ts"
+      ],
+      "tests": [
+        "board/tests/unit/sent-views.test.ts"
+      ]
+    }
+  ]
+}
