@@ -10,7 +10,7 @@
 	import GripVertical from '@lucide/svelte/icons/grip-vertical';
 	import Plus from '@lucide/svelte/icons/plus';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
-	import { AGENT_MARK, agentGroups, folderName, tabDrop } from '#lib/board/agents.ts';
+	import { AGENT_MARK, agentGroups, folderName, inOrder, moveBeside, sameOrder, tabDrop } from '#lib/board/agents.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { AGENT_HCOM_LABEL, AGENT_STATUS_LABEL, type Agent, type Controller, type HerdrWorkspace } from '#lib/board/types.ts';
@@ -41,10 +41,35 @@
 		onnew: (workspace: string) => void;
 	} = $props();
 
-	const groups = $derived(agentGroups(agents, workspaces));
 	/** A card's key: its Herdr pane, since one session can be open in two panes; its session when
 	 *  it is listed only from its switch and has no pane. */
 	const keyOf = (agent: Agent) => (agent.inHerdr || !agent.id ? agent.herdr.pane : agent.id);
+	/** The order a drop shows until Herdr's list agrees or the move fails, so a dropped card or
+	 *  workspace stays where it was let go: a workspace's cards by key, and the workspaces.
+	 *  Kept raw, so a drop can tell its own order from a later drop's. */
+	let shownCards = $state.raw<Record<string, string[]>>({});
+	let shownWorkspaces = $state.raw<string[] | null>(null);
+	/** Drop a workspace's shown order: only if it is still `shown`, or whichever it is when null. */
+	const forgetCards = (workspace: string, shown: string[] | null) => {
+		if (!shownCards[workspace] || (shown && shownCards[workspace] !== shown)) return;
+		const { [workspace]: _, ...rest } = shownCards;
+		shownCards = rest;
+	};
+	const listedGroups = $derived(agentGroups(agents, workspaces));
+	const groups = $derived.by(() => {
+		const shown = shownWorkspaces ? inOrder(listedGroups, (group) => group.workspace, shownWorkspaces) : listedGroups;
+		return shown.map((group) => (shownCards[group.workspace] ? { ...group, agents: inOrder(group.agents, keyOf, shownCards[group.workspace]) } : group));
+	});
+	// Herdr's list has caught up with a drop: it is shown as Herdr has it from then on.
+	$effect(() => {
+		for (const group of listedGroups) {
+			const shown = shownCards[group.workspace];
+			if (shown && sameOrder(shown, group.agents.map(keyOf))) forgetCards(group.workspace, shown);
+		}
+		if (shownWorkspaces && sameOrder(shownWorkspaces, listedGroups.map((group) => group.workspace))) shownWorkspaces = null;
+	});
+	/** How long a done move's order is kept for a list that does not catch up, such as one another move changed meanwhile. */
+	const SHOWN_KEEP_MS = 10_000;
 	const dutyOf = (agent: Agent) => (agent.controller ? (controllers.find((controller) => controller.id === agent.id)?.duty ?? null) : null);
 
 	/** A touch's long press opens the card's menu instead, so only hovering and focus explain a card. */
@@ -208,7 +233,8 @@
 		const scroller = scrollerOf(group);
 		const box = group.getBoundingClientRect();
 		const top = box.top - scrollBox(scroller).top + scroller.scrollTop;
-		const ids = workspaces.map((listed) => listed.id);
+		// In the order shown, which a drop not yet in Herdr's list may have changed.
+		const ids = groups.filter((shown) => workspaces.some((listed) => listed.id === shown.workspace)).map((shown) => shown.workspace);
 		groupFrame = {
 			ids,
 			index: ids.indexOf(workspace),
@@ -250,10 +276,26 @@
 		stopScrolling();
 		if (event.type !== 'pointerup' || !over) return;
 		movingGroup = workspace;
+		const shown = moveBeside(
+			groups.map((group) => group.workspace),
+			(id) => id === workspace,
+			(id) => id === over.workspace,
+			over.after
+		);
+		shownWorkspaces = shown;
 		const outcome = await agentControl.moveWorkspace(workspace, over.workspace);
 		movingGroup = null;
-		if (outcome.ok) toasts.show('ok', `已調整工作區順序${outcome.reason ?? ''}`);
-		else toasts.show('failed', `排序失敗：${outcome.reason}`);
+		// Failed: Herdr's own order again. Done: kept until Herdr's list agrees, or for a while.
+		const forget = () => {
+			if (shownWorkspaces === shown) shownWorkspaces = null;
+		};
+		if (outcome.ok) {
+			setTimeout(forget, SHOWN_KEEP_MS);
+			toasts.show('ok', `已調整工作區順序${outcome.reason ?? ''}`);
+		} else {
+			forget();
+			toasts.show('failed', `排序失敗：${outcome.reason}`);
+		}
 	}
 
 	/** How far to scroll this frame: toward the edge the pointer is within SCROLL_EDGE_PX of, more the nearer. */
@@ -291,12 +333,32 @@
 		stopScrolling();
 		if (event.type !== 'pointerup') return;
 		if (refused) toasts.show('info', '不能拖到別的工作區，已放回原位。');
-		else if (over) void act(agent, () => agentControl.moveTab(agent.id, place(agent), over.tab), '已調整分頁順序', '排序失敗');
+		else if (over) void moveTab(agent, over);
+	}
+
+	/** Show the tab's cards where they were dropped, then ask Herdr to move it there. */
+	async function moveTab(agent: Agent, over: { tab: string; after: boolean }) {
+		const { workspace, tab } = agent.herdr;
+		// A card listed only from its switch has no tab to land next to; Herdr will refuse it.
+		if (!over.tab) return void act(agent, () => agentControl.moveTab(agent.id, place(agent), over.tab), '已調整分頁順序', '排序失敗');
+		const cards = groups.find((group) => group.workspace === workspace)?.agents ?? [];
+		const shown = moveBeside(
+			cards,
+			(card) => card.herdr.tab === tab,
+			(card) => card.herdr.tab === over.tab,
+			over.after
+		).map(keyOf);
+		shownCards = { ...shownCards, [workspace]: shown };
+		const ok = await act(agent, () => agentControl.moveTab(agent.id, place(agent), over.tab), '已調整分頁順序', '排序失敗');
+		// Done: kept until Herdr's list agrees, or for a while. Failed: Herdr's own order again, even
+		// over a later drop's order, which counted this move as made.
+		if (ok) setTimeout(() => forgetCards(workspace, shown), SHOWN_KEEP_MS);
+		else forgetCards(workspace, null);
 	}
 
 	const place = (agent: Agent) => ({ workspace: agent.herdr.workspace, tab: agent.herdr.tab });
 
-	/** One move or rename at a time per card; the list the server reads again afterwards shows the outcome. */
+	/** One move or rename at a time per card; the list the server reads again afterwards shows the outcome. Whether it was done. */
 	async function act(agent: Agent, call: () => ReturnType<typeof agentControl.moveTab>, done: string, failed: string) {
 		const key = keyOf(agent);
 		busy[key] = true;
@@ -304,6 +366,7 @@
 		delete busy[key];
 		if (outcome.ok) toasts.show('ok', `${done}${outcome.reason ?? ''}`);
 		else toasts.show('failed', `${failed}：${outcome.reason}`);
+		return outcome.ok;
 	}
 
 	function openMenu(agent: Agent, x: number, y: number) {

@@ -27,6 +27,8 @@ const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-inject-'));
 const socketPath = join(injectDir, 'herdr.sock');
 let socket: Server;
 let moveFails: string | null = null;
+/** How long the fake Herdr takes to answer a move, as a slow Herdr would. */
+let moveDelay = 0;
 let browser: Browser | undefined;
 let tab: Tab;
 
@@ -81,6 +83,7 @@ beforeAll(async () => {
 			const listing = await answerHerdrList(fixture.dir, request);
 			if (listing !== null) return connection.write(listing);
 			appendFileSync(join(fixture.dir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
+			if (moveDelay) await sleep(moveDelay);
 			if (moveFails) return connection.write(JSON.stringify({ id: request.id, error: { message: moveFails } }) + '\n');
 			const planFile = join(fixture.dir, 'herdr.json');
 			if (request.method === 'workspace.move') {
@@ -1178,8 +1181,27 @@ async function openMenu(touch: boolean, id: string) {
 async function freshTabs() {
 	for (const file of ['herdr-calls.jsonl', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
 	moveFails = null;
+	moveDelay = 0;
 	setHerdr(AGENTS);
 	await fixture.refresh(cookie);
+}
+
+/** Write down, every frame from now on, the order `listed` gives and whether a drag is still on. */
+const recordFrames = async (listed: string) => {
+	await tab.eval(`(() => {
+		window.frames_ = [];
+		const note = () => {
+			window.frames_.push({ dragging: !!document.querySelector('.inbox .dragging'), order: JSON.stringify(${listed}) });
+			window.framing_ = requestAnimationFrame(note);
+		};
+		note();
+	})()`);
+};
+/** The orders shown in the frames since the drag was let go, the same order in a row once. */
+async function framesAfterDrop(): Promise<string[]> {
+	const frames = await tab.eval<{ dragging: boolean; order: string }[]>(`(cancelAnimationFrame(window.framing_), window.frames_)`);
+	const after = frames.slice(frames.findIndex((frame) => frame.dragging)).filter((frame, index, all) => !frame.dragging && all.slice(0, index).some((seen) => seen.dragging));
+	return after.map((frame) => frame.order).filter((order, index, all) => order !== all[index - 1]);
 }
 
 test.skipIf(!CHROME)('dragging a workspace to the top edge of a long list scrolls it, and the drop counts the scroll', async () => {
@@ -1195,7 +1217,8 @@ test.skipIf(!CHROME)('dragging a workspace to the top edge of a long list scroll
 	const from = await point(SPACE_GRIP);
 	const edge = await tab.eval<number>(`document.querySelector('.inbox').getBoundingClientRect().top + 4`);
 	await drag(false, from, { x: from.x, y: edge }, () => tab.until(`document.querySelector('.inbox').scrollTop === 0`, 'the list scrolled to its top'));
-	await tab.until(`document.querySelector('.inbox [data-workspace]').dataset.workspace === 'wB'`, 'the workspace moved first');
+	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已調整工作區順序')`, 'the move');
+	expect(await tab.eval(`document.querySelector('.inbox [data-workspace]').dataset.workspace`)).toBe('wB');
 	expect(herdrCalls() as unknown[][]).toEqual([['socket', 'workspace.move', { workspace_id: 'wB', insert_index: 0 }]]);
 }, 30_000);
 
@@ -1215,7 +1238,8 @@ for (const width of [1280, 390]) {
 			expect(await hasClass(CARD('s-plain'), 'dragging')).toBe(true);
 			expect(await hasClass(CARD('s-lead'), 'drop-before')).toBe(true);
 		});
-		await tab.until(`JSON.stringify([...document.querySelectorAll('.inbox [data-workspace="wA"] [data-card]')].map((card) => card.dataset.card)) === '["wA:p-s-plain","wA:p-s-lead"]'`, 'Herdr’s new order');
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已調整分頁順序')`, 'the move');
+		expect(await cardsOf('wA')).toEqual(['s-plain', 's-lead']);
 		expect(herdrCalls() as unknown[][]).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-s-plain', insert_index: 0 }]]);
 		// Dragging by the handle does not open the agent.
 		expect((await screen()).search).not.toContain('agent=');
@@ -1239,6 +1263,49 @@ for (const width of [1280, 390]) {
 		expect(await tab.eval(FITS)).toBe(true);
 	}, 30_000);
 
+	test.skipIf(!CHROME)(`${width}px: with Herdr slow to answer, a dropped card and a dropped workspace stay where they were dropped; a refusal puts back Herdr's order`, async () => {
+		await freshTabs();
+		moveDelay = 1500;
+		await visit(width);
+		if (touch) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+		await openTab();
+		await tab.until(`!!document.querySelector(${JSON.stringify(GRIP('s-plain'))})`, 'the handles');
+		const CARDS = `[...document.querySelectorAll('.inbox [data-workspace="wA"] [data-card]')].map((card) => card.dataset.card.replace(/^.*:p-/, ''))`;
+		const SPACES = `[...document.querySelectorAll('.inbox [data-workspace]')].map((group) => group.dataset.workspace)`;
+		const HEAD = (id: string) => `.inbox [data-workspace="${id}"]`;
+
+		// A card: from the frame it is let go in, it is shown where it was dropped, and stays there.
+		await drag(touch, await point(GRIP('s-plain')), await point(CARD('s-lead')), () => recordFrames(CARDS));
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已調整分頁順序')`, 'the move', 10_000);
+		expect(await framesAfterDrop()).toEqual(['["s-plain","s-lead"]']);
+
+		// A workspace, the same.
+		await drag(touch, await point(`${HEAD('wB')} .workspace-grip`), await point(CARD('s-plain')), () => recordFrames(SPACES));
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已調整工作區順序')`, 'the workspace move', 10_000);
+		expect(await framesAfterDrop()).toEqual(['["wB","wA"]']);
+
+		// Herdr refuses, slowly: shown where it was dropped until then, then back in Herdr's order, with the reason.
+		moveFails = 'tab is busy';
+		// At a phone's width Alpha is now low, where the notices so far cover the screen.
+		await tab.eval(`document.querySelector(${JSON.stringify(HEAD('wA'))}).scrollIntoView({ block: 'center' })`);
+		await drag(touch, await point(GRIP('s-lead')), await point(CARD('s-plain')), () => recordFrames(CARDS));
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('排序失敗：移動分頁失敗：tab is busy')`, 'the failure', 10_000);
+		await sleep(300);
+		expect(await framesAfterDrop()).toEqual(['["s-lead","s-plain"]', '["s-plain","s-lead"]']);
+		moveFails = 'workspace is busy';
+		await tab.eval(`document.querySelector(${JSON.stringify(HEAD('wA'))}).scrollIntoView({ block: 'center' })`);
+		await drag(touch, await point(`${HEAD('wA')} .workspace-grip`), await point(CARD('s-other')), () => recordFrames(SPACES));
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('排序失敗：移動工作區失敗：workspace is busy')`, 'the workspace failure', 10_000);
+		await sleep(300);
+		expect(await framesAfterDrop()).toEqual(['["wA","wB"]', '["wB","wA"]']);
+
+		// The order shown is the one the server now reads from Herdr, not only the one kept from the drops.
+		await tab.eval(`window.beforeReload = true`);
+		await tab.send('Page.reload');
+		await tab.until(`!window.beforeReload && JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.until(`JSON.stringify(${CARDS}) === '["s-plain","s-lead"]' && JSON.stringify(${SPACES}) === '["wB","wA"]'`, 'Herdr’s order after a reload');
+	}, 40_000);
+
 	test.skipIf(!CHROME)(`${width}px: a workspace heading's handle drags the workspace among the others, showing where it lands`, async () => {
 		await freshTabs();
 		await visit(width);
@@ -1255,7 +1322,8 @@ for (const width of [1280, 390]) {
 			expect(await hasClass(HEAD('wB'), 'dragging')).toBe(true);
 			expect(await hasClass(HEAD('wA'), 'drop-before')).toBe(true);
 		});
-		await tab.until(`JSON.stringify([...document.querySelectorAll('.inbox [data-workspace]')].map((group) => group.dataset.workspace)) === '["wB","wA"]'`, 'Herdr’s new order');
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已調整工作區順序')`, 'the move');
+		expect(await order()).toEqual(['wB', 'wA']);
 		expect(herdrCalls() as unknown[][]).toEqual([['socket', 'workspace.move', { workspace_id: 'wB', insert_index: 0 }]]);
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(HEAD('wB'))}).style.transform`)).toBe('');
 		// Dragging by the handle does not open an agent.
@@ -1346,7 +1414,8 @@ for (const width of [1280, 390]) {
 		for (let tries = 0; tries < 50 && herdrCalls().length < 2; tries++) await sleep(100);
 		expect((herdrCalls() as unknown[][])[1]).toEqual(['socket', 'tab.move', { tab_id: `wC:t-${bottomCard}`, insert_index: 0 }]);
 
-		// Letting go stops the scrolling.
+		// Letting go stops the scrolling; a card is taken only once its move is over.
+		await tab.until(`!document.querySelector('.inbox .card.busy')`, 'the move to finish');
 		await tab.eval(`document.scrollingElement.scrollTop = 200; document.querySelector('.inbox').scrollTop = 200`);
 		const hold = await point(GRIP(bottomCard));
 		const before = await scrolled();

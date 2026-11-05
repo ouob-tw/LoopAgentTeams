@@ -1,6 +1,6 @@
 // The 所有 Agent tab's grouping, as the page shows the server's list.
 import { expect, test } from 'bun:test';
-import { agentGroups, cardName, folderName, shortName, tabDrop, tabShown, workspaceFolders } from '../../src/lib/board/agents.ts';
+import { agentGroups, cardName, folderName, inOrder, moveBeside, sameOrder, shortName, tabDrop, tabShown, workspaceFolders } from '../../src/lib/board/agents.ts';
 import type { Agent } from '../../src/lib/board/types.ts';
 
 const agent = (id: string, workspace: string, workspaceLabel: string | null) =>
@@ -78,4 +78,24 @@ test('a card dropped on another card goes where that card’s tab is: after it w
 	expect(tabDrop(cards, 3, 0)).toEqual({ tab: 't1', after: false, mark: 0 });
 	expect(tabDrop(cards, 1, 2)).toBeNull();
 	expect(tabDrop(cards, 2, 1)).toBeNull();
+});
+
+test('a dropped tab\'s cards are shown next to the tab they were dropped on, a dropped workspace next to its neighbour', () => {
+	const tabs = ['a1', 'b1', 'b2', 'c1', 'd1'];
+	const tabOf = (card: string) => card[0];
+	// Towards the front: before the first card of the tab dropped on, all its own cards together.
+	expect(moveBeside(tabs, (card) => tabOf(card) === 'c', (card) => tabOf(card) === 'b', false)).toEqual(['a1', 'c1', 'b1', 'b2', 'd1']);
+	// Towards the end: after the last card of that tab.
+	expect(moveBeside(tabs, (card) => tabOf(card) === 'b', (card) => tabOf(card) === 'c', true)).toEqual(['a1', 'c1', 'b1', 'b2', 'd1']);
+	expect(moveBeside(['wA', 'wB', 'wC'], (id) => id === 'wA', (id) => id === 'wC', true)).toEqual(['wB', 'wC', 'wA']);
+	// Nothing to land next to: left as it is.
+	expect(moveBeside(['wA', 'wB'], (id) => id === 'wA', (id) => id === 'wZ', false)).toEqual(['wA', 'wB']);
+});
+
+test('the shown order holds over the list until the list puts the same keys the same way', () => {
+	expect(inOrder(['x', 'b', 'a'], (key) => key, ['a', 'b'])).toEqual(['a', 'b', 'x']);
+	expect(sameOrder(['a', 'b', 'c'], ['a', 'b', 'c'])).toBe(true);
+	// A card that came or went meanwhile does not count.
+	expect(sameOrder(['a', 'b'], ['a', 'new', 'b'])).toBe(true);
+	expect(sameOrder(['b', 'a'], ['a', 'b'])).toBe(false);
 });
