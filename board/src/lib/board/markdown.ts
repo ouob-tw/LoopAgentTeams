@@ -14,7 +14,7 @@ const links = new MarkdownIt('zero', { linkify: true }).enable('linkify');
 // A table column is as wide as its longest cell needs to fit in about three lines, never under five
 // characters: each cell carries that as `--col`, which the page's CSS turns into a minimum width, and a
 // table wider than its box scrolls sideways. Widths are in em: a wide (CJK) character is 1, others 0.55.
-const MIN_COLUMN = 5;
+const MIN_COLUMN = 5; // em; the same minimum as `--col`'s fallback in app.css
 const LINES = 3;
 // Room for the padding and for lines that end early where a punctuation mark may not start a line.
 const SLACK = 2;
