@@ -744,7 +744,7 @@ class QaCoverageTests(LedgerCase):
     def test_one_row_may_cover_several_tickets(self):
         other = self.started(ticket='#2')
         self.ok('done', str(other), '--commit', self.merged)
-        self.add(ticket='#1, ouob-tw/LoopAgentTeams-work#2', stage='qa', evidence='file')
+        self.add(ticket='#1, #2', stage='qa', evidence='file')
         qa = self.doc()['next_id'] - 1
         self.ok('cancel', str(qa), '--reason', 'covered')
         self.ok('check')
@@ -769,19 +769,28 @@ class QaCoverageTests(LedgerCase):
         self.exempt_qa('alpha/project#2')
         self.ok('check')
 
-    def test_a_bare_number_and_a_qualified_one_match_each_other(self):
+    def test_a_bare_number_and_a_qualified_one_are_not_the_same_ticket(self):
         impl = self.started(ticket='org/repo#2')
         self.ok('done', str(impl), '--commit', self.merged)
         self.exempt_qa('#1')
         self.exempt_qa('#2')
+        self.assertIn('ticket org/repo#2', self.run_ledger('check').stdout)
+        self.exempt_qa('org/repo#2')
         self.ok('check')
+
+    def test_qa_for_a_qualified_number_does_not_cover_a_bare_one(self):
+        self.exempt_qa('#1')
+        impl = self.started(ticket='#2')
+        self.ok('done', str(impl), '--commit', self.merged)
+        self.exempt_qa('org/repo#2')
+        self.assertIn('ticket #2', self.run_ledger('check').stdout)
 
     def test_a_bare_number_is_the_same_ticket_as_hash_number(self):
         impl = self.started(ticket='480')
         self.ok('done', str(impl), '--commit', self.merged)
         self.exempt_qa('#1')
         self.assertEqual(self.run_ledger('check').returncode, 1)
-        self.exempt_qa('ouob-tw/LoopAgentTeams-work#480')
+        self.exempt_qa('#480')
         self.ok('check')
 
     def test_a_cancelled_impl_row_needs_no_qa(self):

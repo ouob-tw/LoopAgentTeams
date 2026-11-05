@@ -867,18 +867,12 @@ def cmd_next(args):
 
 def ticket_refs(text):
     """The ticket references in a ticket field (it may list several), as (repo, number);
-    repo is None for a bare #N. Text with no #N or number counts as one reference of its own."""
+    repo is None for a bare #N, which matches only another bare #N. Text with no #N or number counts as one reference of its own."""
     found = {(repo or None, number) for repo, number in
              re.findall(r'(?:([\w.-]+/[\w.-]+))?(#\d+)', text)}
     if not found and text.strip().isdigit():
         found = {(None, '#' + text.strip())}  # a bare number is the same ticket as #N
     return found or {(None, text.strip())}
-
-
-def covers(qa_ref, impl_ref):
-    """Same number, and the same repo unless one side is a bare #N."""
-    return qa_ref[1] == impl_ref[1] and (
-        qa_ref[0] == impl_ref[0] or None in (qa_ref[0], impl_ref[0]))
 
 
 def tickets_without_qa(doc):
@@ -893,7 +887,7 @@ def tickets_without_qa(doc):
         if item['stage'] != 'impl' or item['status'] == 'cancelled':
             continue
         for ref in sorted(ticket_refs(item['ticket']), key=str):
-            if not any(covers(qa, ref) for qa in qa_refs):
+            if ref not in qa_refs:
                 missing.setdefault(f'{ref[0] or ""}{ref[1]}', []).append(item['id'])
     return missing
 
