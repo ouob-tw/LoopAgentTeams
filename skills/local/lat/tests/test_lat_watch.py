@@ -474,13 +474,21 @@ class WatchDecisionTests(unittest.TestCase):
         watch = load_watch()
         with tempfile.TemporaryDirectory() as temporary:
             transcript = Path(temporary) / 'codex.jsonl'
-            info = {'status': 'active', 'tool': 'codex', 'transcript_path': str(transcript)}
+            info = {'name': 'rev-sofe', 'base_name': 'sofe', 'status': 'active', 'tool': 'codex',
+                    'transcript_path': str(transcript)}
+            agents = {'rev-sofe': info}
+            # Unreadable transcript: unknown, so the intent rule applies.
+            self.assertIsNone(watch.wait_target_status(agents, 'rev-sofe'))
             for kind, expected in (('task_started', 'active'), ('task_complete', 'listening')):
                 transcript.write_text(json.dumps(
                     {'type': 'event_msg', 'payload': {'type': kind}}) + '\n')
-                self.assertEqual(watch.wait_target_status(info), expected)
-            self.assertEqual(watch.wait_target_status(dict(info, tool='claude')), 'active')
-        self.assertIsNone(watch.wait_target_status(None))
+                self.assertEqual(watch.wait_target_status(agents, 'sofe'), expected)
+            self.assertEqual(watch.wait_target_status(
+                {'rev-sofe': dict(info, tool='claude')}, 'rev-sofe'), 'active')
+        # Gone from the list: ended. Ambiguous short name: unknown.
+        self.assertEqual(watch.wait_target_status(agents, 'rev-gone'), 'inactive')
+        self.assertIsNone(watch.wait_target_status(
+            {'a-sofe': {'base_name': 'sofe'}, 'b-sofe': {'base_name': 'sofe'}}, 'sofe'))
 
     def test_request_watch_notice_keeps_a_wait_but_other_hcom_events_release_it(self):
         watch = load_watch()
@@ -799,7 +807,7 @@ class WatchDecisionTests(unittest.TestCase):
                                        target_status=None):
         watch = load_watch()
         declaration = {
-            'agent': 'waiting-agent', 'target': 'target-agent',
+            'agent': 'waiting-agent', 'target': 'target-agent', 'kind': 'agent',
             'declared_at_utc': '2026-10-04T14:00:58+00:00', 'active': True,
         }
         record = {

@@ -1579,14 +1579,22 @@ def target_message_answers(message, status):
     return message_releases_wait(message)
 
 
-def wait_target_status(info):
-    """A waited agent's HCOM status; a Codex whose turn has ended counts as listening."""
+def wait_target_status(agents, name):
+    """A waited agent's HCOM status, or None when it cannot be told.
+
+    An agent missing from the list has ended (inactive); an ambiguous short name is unknown.
+    Codex can stay active after its turn, so its transcript decides: an ended turn counts as
+    listening, an unreadable one as unknown.
+    """
+    if name not in agents and all(item.get('base_name') != name for item in agents.values()):
+        return 'inactive'
+    info = agent_info(agents, name)
     if not info:
         return None
     status = info.get('status')
-    if (status == 'active' and str(info.get('tool', '')).lower() == 'codex'
-            and codex_turn_finished(info.get('transcript_path')) is True):
-        return 'listening'
+    if status == 'active' and str(info.get('tool', '')).lower() == 'codex':
+        finished = codex_turn_finished(info.get('transcript_path'))
+        return None if finished is None else 'listening' if finished else 'active'
     return status
 
 
@@ -1632,7 +1640,8 @@ def target_sender_names(entry, agents):
     return {target, target.rsplit('-', 1)[-1], info.get('name'), info.get('base_name')} - {None}
 
 
-def multi_wait_progress(declaration, participant_events, messages, agents, is_answered):
+def multi_wait_progress(declaration, participant_events, messages, agents, is_answered,
+                        statuses=None):
     """Return (release reason or None, names of the targets answered so far).
 
     A listed target's message only marks it answered (see target_message_answers); anyone
@@ -1648,7 +1657,7 @@ def multi_wait_progress(declaration, participant_events, messages, agents, is_an
 
     def replied(entry):
         names = target_sender_names(entry, agents)
-        status = wait_target_status(agent_info(agents, entry['target']))
+        status = (statuses or {}).get(entry['target'])
         return any(event_value(message, 'from', 'data') in names
                    and target_message_answers(message, status) for message in messages)
 
@@ -2126,10 +2135,14 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     else:
         decision = entry_pending(declaration)
     waiting_name = waiting_info.get('name') if waiting_info else None
+    # Waiting on one's own orchestrator keeps the intent rule: it is active most of the time.
+    statuses = {entry['target']: None if entry['target'] == orchestrator
+                else wait_target_status(agents, entry['target'])
+                for entry in wait_targets(declaration) if entry.get('kind') == 'agent'}
 
     def agent_replied(name):
         target_info = agent_info(agents, name)
-        if wait_target_status(target_info) == 'active':
+        if statuses.get(name) == 'active':
             return False  # still working: its send is progress, judged again once it stops
         transcript = target_info.get('transcript_path') if target_info else None
         return bool(transcript and waiting_name and successful_hcom_send_since(
@@ -2143,7 +2156,7 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     messages = delivered_messages(orchestrator, waiting_info or {}, participant, after)
     if declaration.get('targets'):
         reason, answered = multi_wait_progress(declaration, participant, messages, agents,
-                                               entry_answered)
+                                               entry_answered, statuses)
         if (not reason and declaration.get('active', True)
                 and answered != declaration.get('answered', [])):
             # The top level follows the first target still unanswered, for every other reader.
@@ -2161,7 +2174,7 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
             declaration, participant, decision is None and agent_replied(target), decision,
             messages, (target_sender_names(declaration, agents)
                        if declaration.get('kind') == 'agent' else frozenset()),
-            wait_target_status(agent_info(agents, target)))
+            statuses.get(target))
     if reason:
         updated = dict(declaration, active=False, expiry_count=0, expiry_declared_at=[],
                        expiry_notified=False, expiry_nudge_pending=False, released_reason=reason,
