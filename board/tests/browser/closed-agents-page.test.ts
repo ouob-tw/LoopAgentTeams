@@ -226,7 +226,7 @@ for (const width of [1280, 390]) {
 		expect(card).toMatch(/\d+\/\d+ 12:00/);
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(RESUME)})?.innerText`)).toBe('接回');
 		// The translation button sits at the right end of the 對話紀錄 heading row.
-		expect(await tab.eval(`(() => { const row = document.querySelector('.detail .records'); const b = row.querySelector('button.translate'); return !!b && b.getAttribute('aria-label') === '翻譯成中文' && b.getAttribute('aria-pressed') === 'false' && row.getBoundingClientRect().right - b.getBoundingClientRect().right < 24; })()`)).toBe(true);
+		expect(await tab.eval(`(() => { const row = document.querySelector('.detail .tabbar'); const b = row.querySelector('button.translate'); return !!b && b.getAttribute('aria-label') === '翻譯成中文' && b.getAttribute('aria-pressed') === 'false' && row.getBoundingClientRect().right - b.getBoundingClientRect().right < 24; })()`)).toBe(true);
 		// The newest page of its conversation, and the one before on asking.
 		await tab.until(`(document.querySelector('.detail .history')?.innerText ?? '').includes('回覆 59')`, 'the latest page');
 		const shown = () => tab.eval<number>(`document.querySelectorAll('.detail .history .said').length`);

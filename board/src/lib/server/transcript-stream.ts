@@ -1,16 +1,29 @@
-// The event stream an open page follows a conversation with, for a controller or another agent.
+// The event streams an open page follows: a conversation, for a controller or another agent, and
+// an agent's 畫面分頁.
+import type { ScreenUpdate } from '../board/screen.ts';
 import type { Board } from './board.ts';
 import { findDevice } from './devices.ts';
+import { followScreen } from './screen.ts';
 import { followTranscript } from './transcript.ts';
 
-/** `transcript` carries the latest page of the conversation, or why it cannot be read; `ping` keeps
- *  the connection alive. A device revoked meanwhile gets `unpaired` and the stream ends. */
+/** `transcript` carries the latest page of the conversation, or why it cannot be read; see `eventStream`. */
 export function transcriptEvents(
 	board: Board,
 	source: { client: string; sessionId: string },
 	token: string,
 	signal: AbortSignal
 ): Response {
+	return eventStream(board, token, signal, (send) => followTranscript(board, source, (update) => send('transcript', JSON.stringify(update))));
+}
+
+/** `screen` carries the agent's screen, or why it cannot be read; see `followScreen` and `eventStream`. */
+export function screenEvents(board: Board, agentId: string, token: string, signal: AbortSignal): Response {
+	return eventStream(board, token, signal, (send) => followScreen(board, agentId, (update: ScreenUpdate) => send('screen', JSON.stringify(update))));
+}
+
+/** A stream of what `follow` sends, and `ping` to keep the connection alive. A device revoked
+ *  meanwhile gets `unpaired` and the stream ends. `follow` returns what stops it. */
+function eventStream(board: Board, token: string, signal: AbortSignal, follow: (send: (event: string, data: string) => void) => () => void): Response {
 	const encoder = new TextEncoder();
 	let stop = () => {};
 
@@ -41,8 +54,8 @@ export function transcriptEvents(
 				}
 				return false;
 			};
-			const unfollow = followTranscript(board, source, (update) => {
-				if (paired()) send('transcript', JSON.stringify(update));
+			const unfollow = follow((event, data) => {
+				if (paired()) send(event, data);
 			});
 			const ping = setInterval(() => {
 				if (paired()) send('ping', '{}');

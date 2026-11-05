@@ -1,11 +1,12 @@
 <script lang="ts">
-	// What the user did to this agent from the board, on any logged-in device: text sent to it,
-	// interrupts and closes that did not close it, moves and renames of its Herdr tab, resumes from
+	// What the user did to this agent from the board, on any logged-in device: text sent to it, key
+	// presses from its 畫面分頁 (how many of each kind, never the text), interrupts and closes that did not close it, moves and renames of its Herdr tab, resumes from
 	// the 已關閉 section, each made or refused, and its model switches as they stand now, given up ones included.
 	import { AGENT_ACTION_LABEL, type AgentAction } from '#lib/board/agent-actions.ts';
 	import { AGENT_SWITCH_STATE_TEXT, choiceText, settingsText, type SwitchView } from '#lib/board/models.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { formatTime } from '#lib/board/format.ts';
+	import { countsText } from '#lib/board/screen.ts';
 	import { CLAUDE_MODE_LABEL, type ClaudeScreenMode } from '#lib/board/permissions.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { KnownAgent } from '#lib/board/types.ts';
@@ -24,7 +25,7 @@
 	);
 	/** A switch whose result is good or still on its way is not shown as a failure. */
 	const switchFailed = (entry: SwitchView) => entry.state !== 'done' && entry.state !== 'resuming' && entry.state !== 'abandoned';
-	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉', move: '已移動', rename: '已改名', resume: '已接回', pause: '已暫停通訊', unpause: '已恢復通訊', relink: '已重新啟動並接回', 'board-ask': '已送出答案', permission: '已切換', 'close-workspace': '已關閉' } as const;
+	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉', move: '已移動', rename: '已改名', resume: '已接回', pause: '已暫停通訊', unpause: '已恢復通訊', relink: '已重新啟動並接回', 'board-ask': '已送出答案', permission: '已切換', 'close-workspace': '已關閉', keys: '已送出' } as const;
 	function routeLabel(entry: AgentAction): string {
 		if (entry.route === 'hcom') {
 			const command = { close: '（hcom kill）', resume: '（hcom r）', pause: '（hcom stop）', relink: '（hcom r）' } as Partial<Record<AgentAction['action'], string>>;
@@ -62,6 +63,8 @@
 						{#if entry.permission}
 							{@const path = entry.permission.seen.map((mode) => CLAUDE_MODE_LABEL[mode as ClaudeScreenMode] ?? mode)}
 							<p class="text">{path.length ? path.join(' → ') : '畫面讀不出模式'}{entry.permission.presses ? `（按了 ${entry.permission.presses} 次 Shift+Tab）` : ''}</p>
+						{:else if entry.keys}
+							<p class="text">{countsText(entry.keys)}</p>
 						{:else if entry.text !== null}<SentText text={entry.text} />{/if}
 					</li>
 				{:else}

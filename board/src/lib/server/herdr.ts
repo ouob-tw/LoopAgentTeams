@@ -5,6 +5,7 @@ import { createConnection } from 'node:net';
 import { basename } from 'node:path';
 import type { WorkspaceContents } from '../board/agent-actions.ts';
 import type { HerdrPlace } from '../board/format.ts';
+import type { KeyInput } from '../board/screen.ts';
 import type { HerdrWorkspace } from '../board/types.ts';
 import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand } from './external.ts';
@@ -360,6 +361,37 @@ export type ScreenSource = 'visible' | 'detection';
 export async function readScreen(config: BoardConfig, pane: string, source: ScreenSource): Promise<{ text: string } | { reason: string }> {
 	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, '--source', source], { timeoutMs: config.herdrTimeoutMs });
 	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout };
+}
+
+/**
+ * The bottom screenful of the pane with its colour codes, however far the user scrolled it up in
+ * Herdr, without moving it: `pane get` tells how many rows it shows and how far up it is; at the
+ * bottom `pane read --source visible` is what it shows, scrolled up `--source recent --lines <rows>`
+ * is its last rows (blank rows at its bottom are not counted there, so a few earlier ones may show).
+ */
+export async function readPaneScreen(config: BoardConfig, pane: string): Promise<{ text: string; rows: number } | { reason: string }> {
+	const got = await herdr(config, ['pane', 'get', pane]);
+	if ('reason' in got) return { reason: `讀不到它的 Herdr 窗格：${got.reason}` };
+	const scroll = (got.result.pane as { scroll?: { viewport_rows?: unknown; offset_from_bottom?: unknown } } | undefined)?.scroll;
+	const rows = scroll?.viewport_rows;
+	const offset = scroll?.offset_from_bottom;
+	if (typeof rows !== 'number' || typeof offset !== 'number') return { reason: '讀不到它的 Herdr 窗格：輸出不是預期的格式' };
+	const source = offset === 0 ? ['--source', 'visible'] : ['--source', 'recent', '--lines', String(rows)];
+	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, ...source, '--format', 'ansi'], { timeoutMs: config.herdrTimeoutMs });
+	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout, rows };
+}
+
+/** The pane's last `lines` lines as plain text with the lines it wrapped joined back (`pane read
+ *  --source recent-unwrapped`), or why they cannot be read. */
+export async function readUnwrapped(config: BoardConfig, pane: string, lines: number): Promise<{ text: string } | { reason: string }> {
+	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, '--source', 'recent-unwrapped', '--lines', String(lines)], { timeoutMs: config.herdrTimeoutMs });
+	return run.failure ? { reason: run.failure } : { text: run.stdout };
+}
+
+/** Type one key press or piece of text into the pane: a named key through `pane send-keys`, text
+ *  through `pane send-text` as it is (a terminal escape sequence too). */
+export function sendPaneInput(config: BoardConfig, pane: string, input: KeyInput): Promise<HerdrAct> {
+	return herdrAct(config, 'key' in input ? ['pane', 'send-keys', pane, input.key] : ['pane', 'send-text', pane, input.text]);
 }
 
 /** Scrolls the pane to its bottom over Herdr's socket, so no key reaches what runs in it (Herdr

@@ -2,7 +2,7 @@
 	// A controller's information page, made of blocks: its header, a close for an idle or running one
 	// (its conversation still open in Herdr, as on the Herdr 分頁) with a running one's HCOM pause or
 	// resume beside, a bar for each question waiting
-	// for an answer, then its conversation, its reports not yet archived, its work ledger and what was
+	// for an answer, then its conversation, its Herdr pane's screen, its reports not yet archived, its work ledger and what was
 	// sent to it and its project's pre-authorization, one tab at a time. Its model and effort, and messages and wakes, go through the command line at the
 	// bottom of the screen.
 	// Opened for a report, the conversation shows that report where it is in the history; opened
@@ -26,8 +26,10 @@
 	import ControllerPreauth from './ControllerPreauth.svelte';
 	import LedgerBlock from './LedgerBlock.svelte';
 	import PendingQuestions from './PendingQuestions.svelte';
-		import RecordTabs from './RecordTabs.svelte';
+	import RecordTabs from './RecordTabs.svelte';
 	import ReportList from './ReportList.svelte';
+	import ScreenPanel from './ScreenPanel.svelte';
+	import { SCREEN_CLOSED_TEXT, SCREEN_NOT_LISTED_TEXT } from '#lib/board/screen.ts';
 	import SentLog from './SentLog.svelte';
 	import Transcript from './Transcript.svelte';
 
@@ -85,14 +87,18 @@
 	const questions = $derived(sorted.filter((item): item is InboxQuestion => item.kind === 'question'));
 	const reports = $derived(sorted.filter((item): item is InboxReport => item.kind === 'report'));
 
+	/** The agent whose Herdr pane the 畫面分頁 shows. */
+	const paneAgent = $derived(agent ?? idleAgent);
+
 	/** As the conversation's live feed last told; shown only while the client runs. */
 	let usage = $state<Usage | null>(null);
 	const shown = $derived(usage && controller.running ? usage : null);
 
-	type Tab = 'transcript' | 'reports' | 'ledger' | 'sent' | 'preauth' | 'log';
+	type Tab = 'transcript' | 'screen' | 'reports' | 'ledger' | 'sent' | 'preauth' | 'log';
 	let tab = $state<Tab>('transcript');
 	const tabs = $derived([
 		{ id: 'transcript', label: '對話紀錄', count: null },
+		{ id: 'screen', label: '畫面', count: null },
 		{ id: 'reports', label: '回報', count: reports.length },
 		{ id: 'ledger', label: '工作總表', count: controller.ledger.state === 'ok' ? controller.ledger.items.length : null },
 		{ id: 'sent', label: '送出紀錄', count: messaging.sent[controller.id]?.length ?? null },
@@ -141,6 +147,8 @@
 	{#snippet panel(id)}
 		{#if id === 'transcript'}
 			<Transcript {controller} {asks} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
+		{:else if id === 'screen'}
+			<ScreenPanel agentId={paneAgent?.id ?? controller.id} active={tab === 'screen'} unavailable={paneAgent?.inHerdr ? null : controller.status === 'closed' ? SCREEN_CLOSED_TEXT : SCREEN_NOT_LISTED_TEXT} />
 		{:else if id === 'reports'}
 			<ReportList {reports} {onopen} />
 		{:else if id === 'ledger'}
