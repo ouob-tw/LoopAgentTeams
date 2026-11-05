@@ -1182,8 +1182,9 @@ def close_check(record, payload):
     except ValueError as error:
         if not re.search(r'\bgh\b.*\bissue\b.*\bclose\b', command, re.DOTALL):
             return 0
-        print(f'Blocked: the close check cannot read this command ({error}). Run '
-              '`gh issue close` as its own command so the check can see it.', file=sys.stderr)
+        print(f'Blocked: this command mentions `gh issue close` but the close check cannot '
+              f'read it ({error}). Run `gh issue close` as its own command; for other text '
+              'that only mentions it, pass the text from a file or with -m.', file=sys.stderr)
         return 2
     for issue, repo, comment in closes:
         body, error = issue_body(issue, repo, payload['cwd'])
