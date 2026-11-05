@@ -18,7 +18,9 @@
         "board/tests/server/screen-keys.test.ts",
         "board/tests/unit/screen-mask.test.ts",
         "board/tests/unit/screen-lines.test.ts",
-        "board/tests/browser/screen-tab.test.ts"
+        "board/tests/browser/screen-tab.test.ts",
+        "board/tests/unit/key-press.test.ts",
+        "board/tests/browser/screen-direct.test.ts"
       ]
     },
     {
@@ -31,12 +33,14 @@
         "board/src/lib/components/ControllerInfo.svelte",
         "board/src/lib/components/ClosedAgentInfo.svelte",
         "board/src/lib/components/AgentLog.svelte",
-        "board/src/routes/+page.svelte"
+        "board/src/routes/+page.svelte",
+        "board/src/lib/components/CommandLine.svelte"
       ],
       "tests": [
         "board/tests/unit/key-sender.test.ts",
         "board/tests/unit/screen-lines.test.ts",
-        "board/tests/browser/screen-tab.test.ts"
+        "board/tests/browser/screen-tab.test.ts",
+        "board/tests/browser/screen-direct.test.ts"
       ]
     },
     {

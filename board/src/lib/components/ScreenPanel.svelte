@@ -4,8 +4,13 @@
 	// a phone the text shrinks so the widest line fits, and pinching zooms the page; on a computer it
 	// shows at the usual size and scrolls sideways inside its box. The text can be selected and copied.
 	// Keys go through the 按鍵列 on a phone (KeyRow); why they cannot now shows above the screen.
+	// On a computer a click on the screen starts direct operation: a frame shows round it, and keys
+	// pressed go into the pane (`pressInput`), Esc too, until a click elsewhere takes the focus away.
+	// The focus goes to a hidden text box, so an input method composes in it; only the text it ends
+	// with is sent. A click that leaves text selected keeps the selection and still starts it.
 	import { screenView } from '#lib/board/screen-view.svelte.ts';
-	import { KEYS_UNSURE_TEXT, screenLines, trimmedLines, type ScreenUpdate } from '#lib/board/screen.ts';
+	import { KEY_UNSUPPORTED_TEXT, KEYS_UNSURE_TEXT, pressInput, screenLines, trimmedLines, type ScreenUpdate } from '#lib/board/screen.ts';
+	import { toasts } from '#lib/board/toasts.svelte.ts';
 
 	let {
 		agentId,
@@ -72,6 +77,30 @@
 		const natural = measure.scrollWidth;
 		fitPx = natural ? Math.min(NORMAL_PX, Math.floor(((boxWidth - 4) / natural) * NORMAL_PX * 10) / 10) : null;
 	});
+	/** Whether keys pressed now go into the pane: the focus is in the box, on a computer. */
+	let direct = $state(false);
+	let box = $state<HTMLElement>();
+	let catcher = $state<HTMLTextAreaElement>();
+	const directable = $derived(!screenView.phone);
+
+	function enter() {
+		if (!directable) return;
+		// Focusing the text box would drop text the click left selected; the box itself takes the keys then.
+		if (getSelection()?.isCollapsed ?? true) catcher?.focus({ preventScroll: true });
+	}
+	function keydown(event: KeyboardEvent) {
+		if (!directable || event.isComposing || event.keyCode === 229) return;
+		const input = pressInput(event);
+		if (input === null) return;
+		event.preventDefault();
+		if (input === 'unsupported') toasts.show('info', KEY_UNSUPPORTED_TEXT);
+		else screenView.press(input);
+	}
+	function composed(event: CompositionEvent) {
+		if (event.data) screenView.press({ text: event.data });
+		if (catcher) catcher.value = '';
+	}
+
 	const status = $derived(screenView.agentId !== agentId ? null : screenView.waiting ? 'waiting' : !update ? 'loading' : update.ok ? 'live' : 'failed');
 </script>
 
@@ -90,7 +119,37 @@
 				<span class="muted">讀取畫面中…</span>
 			{/if}
 		</p>
-		<div class="box" class:fit={screenView.phone} bind:clientWidth={boxWidth}>
+		{#if directable}
+			<p class="hint" class:on={direct}>{direct ? '直接操作中：按的鍵會送給 Agent，點畫面以外的地方離開' : '點畫面可以直接用鍵盤操作'}</p>
+		{/if}
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+		<div
+			class="box"
+			class:fit={screenView.phone}
+			class:direct
+			bind:this={box}
+			bind:clientWidth={boxWidth}
+			tabindex={directable ? -1 : undefined}
+			onclick={enter}
+			onkeydown={keydown}
+			onfocusin={() => (direct = directable)}
+			onfocusout={(event) => (direct = directable && !!box && box.contains(event.relatedTarget as Node | null))}
+		>
+			{#if directable}
+				<textarea
+					class="catcher"
+					bind:this={catcher}
+					aria-label="直接操作：按的鍵會送給 Agent"
+					autocomplete="off"
+					autocapitalize="off"
+					spellcheck="false"
+					oncompositionend={composed}
+					oninput={(event) => {
+						if (!(event instanceof InputEvent && event.isComposing)) event.currentTarget.value = '';
+					}}
+					onpaste={(event) => event.preventDefault()}
+				></textarea>
+			{/if}
 			{#if shownText !== null}
 				{#if screenView.phone}
 					<!-- The same text at the usual size, out of sight, to measure its width. -->
@@ -112,6 +171,19 @@
 	.state {
 		margin: 0.3rem 0 0;
 		font-size: max(0.8rem, var(--min-font, 0px));
+	}
+	/* One line whatever it says, so starting or leaving direct operation moves nothing. */
+	.hint {
+		margin: 0;
+		font-size: max(0.8rem, var(--min-font, 0px));
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		color: var(--muted);
+	}
+	.hint.on {
+		color: var(--accent);
+		font-weight: 600;
 	}
 	.live {
 		color: var(--ok);
@@ -136,6 +208,28 @@
 	}
 	.box.fit {
 		overflow-x: hidden;
+	}
+	/* Drawn inside the border, so the frame takes no room and the text does not move. */
+	.box.direct {
+		border-color: var(--accent);
+		box-shadow: inset 0 0 0 2px var(--accent);
+	}
+	.box:focus {
+		outline: none;
+	}
+	/* Takes the keys, out of sight and taking no room. */
+	.catcher {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		border: 0;
+		opacity: 0;
+		resize: none;
+		overflow: hidden;
+		pointer-events: none;
 	}
 	/* Latin monospace fonts first: under the page's zh-Hant, the generic monospace may be a CJK font
 	   that draws box lines and arrows twice as wide, which breaks the terminal's columns. */

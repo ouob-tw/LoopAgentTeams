@@ -3,7 +3,9 @@
 	// without a name to the controller that is open. The recipient's model and effort sit beside the
 	// send button. An idle or closed controller is woken instead. A pop-up behind the options button
 	// holds the permission switch of the open agent, or of the page's controller as Herdr lists it, and
-	// a wake's other options while waking; a phone shows the button only when it holds something. A
+	// a wake's other options while waking, and on a computer while a 畫面分頁 is shown, the 組合鍵 the
+	// browser keeps for itself, sent into the pane on that screen whoever the line is for; a phone
+	// shows the button only when it holds something. A
 	// phone can put the line away behind a floating button, to read more of the page; what was typed
 	// stays, also across a reload. While an agent's page is open, a line without a name goes to that
 	// agent instead, from a draft of its own, also kept across a reload; while it works, a stop button
@@ -38,6 +40,8 @@
 	import { needsWake, type Agent, type Controller, type KnownAgent } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import { voice } from '#lib/board/voice.svelte.ts';
+	import { screenView } from '#lib/board/screen-view.svelte.ts';
+	import { COMBO_KEYS } from '#lib/board/screen.ts';
 	import AttachButton from './AttachButton.svelte';
 	import AttachmentTray from './AttachmentTray.svelte';
 	import MessageBox from './MessageBox.svelte';
@@ -210,7 +214,9 @@
 	});
 	// A wake's only option left to show is giving up the previous resume.
 	const wakeOptions = $derived(waking && !!abandonable[id]);
-	const hasOptions = $derived(wakeOptions || permissionAgent !== undefined);
+	const combos = $derived(screenView.agentId !== null && !screenView.phone);
+	const hasOptions = $derived(wakeOptions || permissionAgent !== undefined || combos);
+	const optionsTitle = $derived([permissionAgent && '權限', wakeOptions && '放棄前一次接回', combos && '組合鍵'].filter(Boolean).join('、') || '目前沒有可用的選項');
 	const status = $derived(waking ? switching.status[id] : undefined);
 	// A new model and effort only apply when the client is known not to be running: a running one
 	// is typed into and keeps its settings.
@@ -392,7 +398,7 @@
 			class="options"
 			class:idle={!hasOptions}
 			aria-label="選項"
-			title={permissionAgent && wakeOptions ? '權限與放棄接回' : permissionAgent ? '權限' : wakeOptions ? '放棄前一次接回' : '目前沒有可用的選項'}
+			title={optionsTitle}
 			aria-expanded={optionsOpen}
 			disabled={!hasOptions}
 			onclick={() => (optionsOpen = !optionsOpen)}
@@ -423,6 +429,17 @@
 					{:else}
 						<button type="button" onclick={() => (confirming[id] = true)}>放棄前一次接回</button>
 					{/if}
+				</div>
+			{/if}
+			{#if combos && (permissionAgent || wakeOptions)}<hr />{/if}
+			{#if combos}
+				<div class="combos" role="group" aria-label="組合鍵">
+					<span class="combos-label">組合鍵</span>
+					<div class="actions">
+						{#each COMBO_KEYS as combo (combo.label)}
+							<button type="button" disabled={screenView.blocked !== null} title={screenView.blocked ?? `把 ${combo.label} 送進畫面上的窗格`} onclick={() => screenView.press(combo.input)}>{combo.label}</button>
+						{/each}
+					</div>
 				</div>
 			{/if}
 		</div>
@@ -512,6 +529,18 @@
 		flex-direction: column;
 		gap: 0.5rem;
 		align-items: flex-start;
+	}
+	.combos {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.combos-label {
+		font-size: max(0.8rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
+	.combos button {
+		font-family: var(--mono);
 	}
 	.popup hr {
 		align-self: stretch;

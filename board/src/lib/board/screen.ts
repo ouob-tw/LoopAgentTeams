@@ -46,13 +46,62 @@ export const KEY_ROW: { label: string; input: KeyInput }[] = [
 	{ label: '4', input: { text: '4' } }
 ];
 
+/** Keys Herdr's `send-keys` has no name for, typed as the terminal's escape sequences instead, by
+ *  the browser's name for the key. */
+export const ESCAPE_KEYS: Record<string, string> = {
+	Home: '\x1b[H',
+	End: '\x1b[F',
+	Insert: '\x1b[2~',
+	Delete: '\x1b[3~',
+	PageUp: '\x1b[5~',
+	PageDown: '\x1b[6~'
+};
+
+/** The ⋯ menu's 組合鍵: keys the browser keeps for itself, so a page never gets them pressed. */
+export const COMBO_KEYS: { label: string; input: KeyInput }[] = [
+	{ label: 'Ctrl+W', input: { key: 'ctrl+w' } },
+	{ label: 'Ctrl+T', input: { key: 'ctrl+t' } },
+	{ label: 'Ctrl+N', input: { key: 'ctrl+n' } }
+];
+
+/** What a computer's direct operation shows for a key it cannot send. */
+export const KEY_UNSUPPORTED_TEXT = '這個鍵目前送不出';
+
+/** The parts of a browser key press that say which key it was. */
+export type KeyPress = Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>;
+
+const NAMED_PRESS: Record<string, string> = { Enter: 'enter', Escape: 'esc', Backspace: 'backspace', ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Tab: 'tab' };
+/** Pressed alone, these say nothing: the key pressed with them does. */
+const MODIFIER = /^(?:Shift|Control|Alt|AltGraph|Meta|OS|Super|Hyper|Fn|FnLock|CapsLock|NumLock|ScrollLock|Symbol|SymbolLock)$/;
+
+/** What a key pressed in direct operation sends: `null` for a press left to the browser (a modifier
+ *  alone, a ⌘ shortcut, a key an input method is composing with), `unsupported` for one that has no
+ *  input. A letter with Ctrl or Alt is read from the key's place on the keyboard, so another
+ *  layout or Option's own characters still give the letter. Ctrl and Alt together with a character
+ *  is AltGr typing it. */
+export function pressInput(press: KeyPress): KeyInput | 'unsupported' | null {
+	const { key, code, ctrlKey, altKey, shiftKey, metaKey } = press;
+	if (metaKey || MODIFIER.test(key) || key === 'Dead' || key === 'Process' || key === 'Unidentified') return null;
+	const character = [...key].length === 1;
+	if (character && (ctrlKey === altKey)) return { text: key };
+	const letter = /^Key([A-Z])$/.exec(code)?.[1].toLowerCase();
+	if (ctrlKey !== altKey) return letter && !shiftKey ? { key: `${ctrlKey ? 'ctrl' : 'alt'}+${letter}` } : 'unsupported';
+	if (key === 'Tab' && shiftKey) return { key: 'shift+tab' };
+	if (shiftKey) return 'unsupported';
+	if (key in NAMED_PRESS) return { key: NAMED_PRESS[key] };
+	if (key in ESCAPE_KEYS) return { text: ESCAPE_KEYS[key] };
+	return 'unsupported';
+}
+
 const KEY_LABEL: Record<string, string> = { enter: 'Enter', esc: 'Esc', up: '↑', down: '↓', left: '←', right: '→', tab: 'Tab', 'shift+tab': 'Shift+Tab', backspace: 'Backspace', space: 'Space' };
 /** Text in the operation record: only that it was text and how many characters, never the text. */
 export const TEXT_KIND = '文字';
 
-/** How the operation record names a key; any text is `TEXT_KIND`. */
+const ESCAPE_NAME = new Map(Object.entries(ESCAPE_KEYS).map(([name, sequence]) => [sequence, name]));
+
+/** How the operation record names a key; text is `TEXT_KIND`, unless it is one of `ESCAPE_KEYS`. */
 export function keyKind(input: KeyInput): string {
-	if ('text' in input) return TEXT_KIND;
+	if ('text' in input) return ESCAPE_NAME.get(input.text) ?? TEXT_KIND;
 	const modified = /^(ctrl|alt)\+([a-z])$/.exec(input.key);
 	if (modified) return `${modified[1] === 'ctrl' ? 'Ctrl' : 'Alt'}+${modified[2].toUpperCase()}`;
 	return KEY_LABEL[input.key] ?? input.key;
@@ -62,7 +111,7 @@ export function keyKind(input: KeyInput): string {
 export type KeyCounts = { kind: string; count: number }[];
 
 export function countKeys(inputs: KeyInput[]): KeyCounts {
-	return addCounts([], inputs.map((input) => ({ kind: keyKind(input), count: 'text' in input ? [...input.text].length : 1 })));
+	return addCounts([], inputs.map((input) => ({ kind: keyKind(input), count: 'text' in input && !ESCAPE_NAME.has(input.text) ? [...input.text].length : 1 })));
 }
 
 /** Both counts together, kinds in the order first seen. */
