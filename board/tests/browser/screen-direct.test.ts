@@ -96,31 +96,27 @@ async function key(name: string, { code = '', vk = 0, text, modifiers = [] }: { 
 	await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code, windowsVirtualKeyCode: vk, modifiers: bits });
 }
 const look = () =>
-	tab.eval<{ direct: boolean; hint: string; box: number[]; pre: number[]; focus: string }>(`(() => {
+	tab.eval<{ direct: boolean; box: number[]; pre: number[]; focus: string }>(`(() => {
 		const box = document.querySelector('.screen-panel .box');
 		const rect = (el) => { const r = el.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round); };
-		return { direct: box.classList.contains('direct'), hint: document.querySelector('.screen-panel .hint').innerText, box: rect(box), pre: rect(box.querySelector('pre')), focus: document.activeElement?.className ?? '' };
+		return { direct: box.classList.contains('direct'), box: rect(box), pre: rect(box.querySelector('pre')), focus: document.activeElement?.className ?? '' };
 	})()`);
 
 test('computer: a click frames the screen and keys go into the pane in order, Esc and Tab staying in it; a click elsewhere leaves', async () => {
 	await visit();
 	const before = await look();
 	expect(before.direct).toBe(false);
-	expect(before.hint).toBe('點畫面可以直接用鍵盤操作');
 	await shot('desktop-direct-before');
 
 	await tab.pointerClick('.screen-panel .box pre');
 	await tab.until(`document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation');
 	const during = await look();
-	expect(during.hint).toContain('直接操作中');
 	expect(during.focus).toContain('catcher');
 	// The frame moves nothing: the box and its text stay where they were.
 	expect(during.box).toEqual(before.box);
 	expect(during.pre).toEqual(before.pre);
 	// The frame is the accent colour, drawn inside the border.
-	const frame = await tab.eval<{ border: string; shadow: string; accent: string }>(`(() => { const style = getComputedStyle(document.querySelector('.screen-panel .box')); return { border: style.borderTopColor, shadow: style.boxShadow, accent: getComputedStyle(document.body).getPropertyValue('--accent') }; })()`);
-	expect(frame.shadow).toContain('inset');
-	expect(frame.shadow).not.toBe('none');
+	expect(await tab.eval<string>(`getComputedStyle(document.querySelector('.screen-panel .box')).boxShadow`)).toContain('inset');
 	await shot('desktop-direct-during');
 
 	await key('a', { code: 'KeyA', vk: 65, text: 'a' });
@@ -179,7 +175,6 @@ test('computer: a click frames the screen and keys go into the pane in order, Es
 	await tab.pointerClick('.screen-panel .state');
 	await tab.until(`!document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation left');
 	const after = await look();
-	expect(after.hint).toBe('點畫面可以直接用鍵盤操作');
 	expect(after.box).toEqual(before.box);
 	await key('z', { code: 'KeyZ', vk: 90, text: 'z' });
 	await sleep(300);
@@ -206,6 +201,30 @@ test('computer: an input method composes without sending; only the text it ends 
 	await callsReach(1);
 	await sleep(300);
 	expect(herdrCalls()).toEqual([['pane', 'send-text', PANE, '你']]);
+});
+
+test('computer: dragging over the text selects it without starting direct operation, and ends one under way', async () => {
+	await visit();
+	const drag = async () => {
+		const { x, y, right } = await tab.eval<{ x: number; y: number; right: number }>(`(() => { const r = document.createRange(); r.selectNodeContents([...document.querySelectorAll('.screen-panel pre span')].find((span) => span.textContent.includes('edit this line'))); const box = r.getBoundingClientRect(); getSelection().removeAllRanges(); return { x: box.x + 2, y: box.y + box.height / 2, right: box.right - 2 }; })()`);
+		await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+		await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: right, y, button: 'left', buttons: 1 });
+		await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: right, y, button: 'left', clickCount: 1 });
+	};
+	const state = () => tab.eval<{ direct: boolean; selected: string }>(`({ direct: document.querySelector('.screen-panel .box').classList.contains('direct'), selected: getSelection().toString() })`);
+	await drag();
+	await sleep(200);
+	expect(await state()).toEqual({ direct: false, selected: expect.stringContaining('edit this line') });
+	await key('a', { code: 'KeyA', vk: 65, text: 'a' });
+	// In direct operation, a drag ends it and leaves the text selected.
+	await tab.pointerClick('.screen-panel .box pre');
+	await tab.until(`document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation');
+	await drag();
+	await sleep(200);
+	expect(await state()).toEqual({ direct: false, selected: expect.stringContaining('edit this line') });
+	await key('b', { code: 'KeyB', vk: 66, text: 'b' });
+	await sleep(300);
+	expect(herdrCalls()).toEqual([]);
 });
 
 test('computer: a key that fails stops the keys typed after it until the screen is read again; nothing is sent again', async () => {
@@ -270,7 +289,7 @@ test('phone: a tap on the screen starts no direct operation, and the ⋯ menu ha
 	await visit({ phone: true, width: 390, height: 844 });
 	await tab.pointerClick('.screen-panel .box pre');
 	await sleep(300);
-	expect(await tab.eval(`document.querySelectorAll('.screen-panel .box.direct, .screen-panel .catcher, .screen-panel .hint').length`)).toBe(0);
+	expect(await tab.eval(`document.querySelectorAll('.screen-panel .box.direct, .screen-panel .catcher').length`)).toBe(0);
 	await tab.pointerClick('.dock button.options');
 	await tab.until(`!!document.querySelector('.popup')`, 'the menu');
 	expect(await tab.eval(`document.querySelectorAll('.popup [aria-label=組合鍵]').length`)).toBe(0);

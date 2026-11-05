@@ -111,7 +111,10 @@ export function keyKind(input: KeyInput): string {
 export type KeyCounts = { kind: string; count: number }[];
 
 export function countKeys(inputs: KeyInput[]): KeyCounts {
-	return addCounts([], inputs.map((input) => ({ kind: keyKind(input), count: 'text' in input && !ESCAPE_NAME.has(input.text) ? [...input.text].length : 1 })));
+	return addCounts([], inputs.map((input) => {
+		const kind = keyKind(input);
+		return { kind, count: kind === TEXT_KIND && 'text' in input ? [...input.text].length : 1 };
+	}));
 }
 
 /** Both counts together, kinds in the order first seen. */

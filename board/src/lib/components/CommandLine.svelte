@@ -2,11 +2,10 @@
 	// The command line at the bottom of the screen: `@name message` goes to that controller, a line
 	// without a name to the controller that is open. The recipient's model and effort sit beside the
 	// send button. An idle or closed controller is woken instead. A pop-up behind the options button
-	// holds the permission switch of the open agent, or of the page's controller as Herdr lists it, and
-	// a wake's other options while waking, and on a computer while a 畫面分頁 is shown, the 組合鍵 the
-	// browser keeps for itself, sent into the pane on that screen whoever the line is for; a phone
-	// shows the button only when it holds something. A
-	// phone can put the line away behind a floating button, to read more of the page; what was typed
+	// holds the permission switch of the open agent, or of the page's controller as Herdr lists it, a
+	// wake's other options while waking, and on a computer while a 畫面分頁 is shown its 組合鍵
+	// (ComboKeys); a phone shows the button only when it holds something. A phone can put the line
+	// away behind a floating button, to read more of the page; what was typed
 	// stays, also across a reload. While an agent's page is open, a line without a name goes to that
 	// agent instead, from a draft of its own, also kept across a reload; while it works, a stop button
 	// sits beside the send button, whether or not anything is typed.
@@ -41,8 +40,8 @@
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import { voice } from '#lib/board/voice.svelte.ts';
 	import { screenView } from '#lib/board/screen-view.svelte.ts';
-	import { COMBO_KEYS } from '#lib/board/screen.ts';
 	import AttachButton from './AttachButton.svelte';
+	import ComboKeys from './ComboKeys.svelte';
 	import AttachmentTray from './AttachmentTray.svelte';
 	import MessageBox from './MessageBox.svelte';
 	import VoiceButton from './VoiceButton.svelte';
@@ -432,16 +431,7 @@
 				</div>
 			{/if}
 			{#if combos && (permissionAgent || wakeOptions)}<hr />{/if}
-			{#if combos}
-				<div class="combos" role="group" aria-label="組合鍵">
-					<span class="combos-label">組合鍵</span>
-					<div class="actions">
-						{#each COMBO_KEYS as combo (combo.label)}
-							<button type="button" disabled={screenView.blocked !== null} title={screenView.blocked ?? `把 ${combo.label} 送進畫面上的窗格`} onclick={() => screenView.press(combo.input)}>{combo.label}</button>
-						{/each}
-					</div>
-				</div>
-			{/if}
+			{#if combos}<ComboKeys />{/if}
 		</div>
 	{/if}
 </form>
@@ -529,18 +519,6 @@
 		flex-direction: column;
 		gap: 0.5rem;
 		align-items: flex-start;
-	}
-	.combos {
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-	}
-	.combos-label {
-		font-size: max(0.8rem, var(--min-font, 0px));
-		color: var(--muted);
-	}
-	.combos button {
-		font-family: var(--mono);
 	}
 	.popup hr {
 		align-self: stretch;

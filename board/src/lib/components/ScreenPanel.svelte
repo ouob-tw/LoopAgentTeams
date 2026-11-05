@@ -7,7 +7,7 @@
 	// On a computer a click on the screen starts direct operation: a frame shows round it, and keys
 	// pressed go into the pane (`pressInput`), Esc too, until a click elsewhere takes the focus away.
 	// The focus goes to a hidden text box, so an input method composes in it; only the text it ends
-	// with is sent. A click that leaves text selected keeps the selection and still starts it.
+	// with is sent. A click that leaves text selected ends it instead, so the text can be copied.
 	import { screenView } from '#lib/board/screen-view.svelte.ts';
 	import { KEY_UNSUPPORTED_TEXT, KEYS_UNSURE_TEXT, pressInput, screenLines, trimmedLines, type ScreenUpdate } from '#lib/board/screen.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -77,7 +77,8 @@
 		const natural = measure.scrollWidth;
 		fitPx = natural ? Math.min(NORMAL_PX, Math.floor(((boxWidth - 4) / natural) * NORMAL_PX * 10) / 10) : null;
 	});
-	/** Whether keys pressed now go into the pane: the focus is in the box, on a computer. */
+	/** Whether keys pressed now go into the pane: on a computer, the hidden text box took the focus,
+	 *  and it stays in the box (a click inside moves it to the box for a moment). */
 	let direct = $state(false);
 	let box = $state<HTMLElement>();
 	let catcher = $state<HTMLTextAreaElement>();
@@ -85,11 +86,12 @@
 
 	function enter() {
 		if (!directable) return;
-		// Focusing the text box would drop text the click left selected; the box itself takes the keys then.
+		// Focusing the text box would drop text the click left selected.
 		if (getSelection()?.isCollapsed ?? true) catcher?.focus({ preventScroll: true });
+		else direct = false;
 	}
 	function keydown(event: KeyboardEvent) {
-		if (!directable || event.isComposing || event.keyCode === 229) return;
+		if (!direct || event.isComposing || event.keyCode === 229) return;
 		const input = pressInput(event);
 		if (input === null) return;
 		event.preventDefault();
@@ -119,9 +121,6 @@
 				<span class="muted">讀取畫面中…</span>
 			{/if}
 		</p>
-		{#if directable}
-			<p class="hint" class:on={direct}>{direct ? '直接操作中：按的鍵會送給 Agent，點畫面以外的地方離開' : '點畫面可以直接用鍵盤操作'}</p>
-		{/if}
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 		<div
 			class="box"
@@ -132,14 +131,16 @@
 			tabindex={directable ? -1 : undefined}
 			onclick={enter}
 			onkeydown={keydown}
-			onfocusin={() => (direct = directable)}
+			onfocusin={(event) => {
+				if (event.target === catcher) direct = directable;
+			}}
 			onfocusout={(event) => (direct = directable && !!box && box.contains(event.relatedTarget as Node | null))}
 		>
 			{#if directable}
 				<textarea
 					class="catcher"
 					bind:this={catcher}
-					aria-label="直接操作：按的鍵會送給 Agent"
+					aria-label="直接操作"
 					autocomplete="off"
 					autocapitalize="off"
 					spellcheck="false"
@@ -171,19 +172,6 @@
 	.state {
 		margin: 0.3rem 0 0;
 		font-size: max(0.8rem, var(--min-font, 0px));
-	}
-	/* One line whatever it says, so starting or leaving direct operation moves nothing. */
-	.hint {
-		margin: 0;
-		font-size: max(0.8rem, var(--min-font, 0px));
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		color: var(--muted);
-	}
-	.hint.on {
-		color: var(--accent);
-		font-weight: 600;
 	}
 	.live {
 		color: var(--ok);

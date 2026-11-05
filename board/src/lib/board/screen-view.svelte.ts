@@ -20,7 +20,6 @@ class ScreenView {
 	waiting = $state(false);
 	/** Whether this device is a phone or a tablet, as its main pointer tells. */
 	phone = $state(false);
-	#sender: KeySender | null = null;
 	#senders = new Map<string, KeySender>();
 
 	constructor() {
@@ -44,8 +43,12 @@ class ScreenView {
 		this.update = null;
 		const sender = this.#senders.get(agentId) ?? this.#newSender(agentId);
 		this.#senders.set(agentId, sender);
-		this.#sender = sender;
 		this.waiting = sender.waiting;
+	}
+
+	/** The sender of the agent shown now. */
+	get #sender(): KeySender | undefined {
+		return this.agentId === null ? undefined : this.#senders.get(this.agentId);
 	}
 
 	#newSender(agentId: string): KeySender {
@@ -71,7 +74,6 @@ class ScreenView {
 		if (this.agentId !== agentId) return;
 		this.agentId = null;
 		this.update = null;
-		this.#sender = null;
 	}
 
 	/** An update from the open screen's stream. */
