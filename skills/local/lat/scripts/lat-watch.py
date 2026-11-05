@@ -1566,17 +1566,47 @@ def message_releases_wait(message):
     return event_value(message, 'intent', 'data') not in ('inform', 'ack')
 
 
+def target_message_answers(message, status):
+    """Whether a waited agent's own message answers the wait, given its HCOM status.
+
+    While it is still active the message is progress; once it stops, any message counts,
+    since completion reports often go out as inform. An unknown status keeps the intent rule.
+    """
+    if status == 'active':
+        return False
+    if status in ('listening', 'blocked', 'inactive'):
+        return True
+    return message_releases_wait(message)
+
+
+def wait_target_status(info):
+    """A waited agent's HCOM status; a Codex whose turn has ended counts as listening."""
+    if not info:
+        return None
+    status = info.get('status')
+    if (status == 'active' and str(info.get('tool', '')).lower() == 'codex'
+            and codex_turn_finished(info.get('transcript_path')) is True):
+        return 'listening'
+    return status
+
+
 def wait_release_reason(declaration, participant_events, target_replied, decision_pending,
-                        messages=None):
+                        messages=None, target_names=frozenset(), target_status=None):
     """Explain why a wait is no longer valid, or return None.
 
     messages are the message events delivered to the waiter; a delivery frees the wait only if
-    one is not an inform/ack, whoever sent it. None or empty releases on any delivery.
+    one is not an inform/ack, whoever sent it. None or empty releases on any delivery. A
+    message from target_names (the waited agent) follows target_message_answers instead.
     """
+    def releases(message):
+        if event_value(message, 'from', 'data') in target_names:
+            return target_message_answers(message, target_status)
+        return message_releases_wait(message)
+
     if target_replied:
         return 'target-replied'
     if any(delivery_sender(event) is not None for event in participant_events):
-        if not messages or any(message_releases_wait(m) for m in messages):
+        if not messages or any(releases(m) for m in messages):
             return 'message-delivered'
     if decision_pending is False:
         return 'decision-resolved'
@@ -1605,7 +1635,8 @@ def target_sender_names(entry, agents):
 def multi_wait_progress(declaration, participant_events, messages, agents, is_answered):
     """Return (release reason or None, names of the targets answered so far).
 
-    A listed target's message only marks it answered; anyone else's frees the wait as usual.
+    A listed target's message only marks it answered (see target_message_answers); anyone
+    else's frees the wait as usual.
     """
     listed = set().union(*(target_sender_names(entry, agents)
                            for entry in wait_targets(declaration)))
@@ -1614,12 +1645,16 @@ def multi_wait_progress(declaration, participant_events, messages, agents, is_an
                                and event_value(message, 'from', 'data') not in listed
                                for message in messages):
             return 'message-delivered', declaration.get('answered', [])
-    senders = {event_value(message, 'from', 'data') for message in messages
-               if message_releases_wait(message)}
+
+    def replied(entry):
+        names = target_sender_names(entry, agents)
+        status = wait_target_status(agent_info(agents, entry['target']))
+        return any(event_value(message, 'from', 'data') in names
+                   and target_message_answers(message, status) for message in messages)
+
     answered = [entry['target'] for entry in wait_targets(declaration)
                 if entry['target'] in declaration.get('answered', [])
-                or senders & target_sender_names(entry, agents)
-                or is_answered(entry)]
+                or replied(entry) or is_answered(entry)]
     if len(answered) == len(wait_targets(declaration)):
         return 'targets-answered', answered
     return None, answered
@@ -2094,6 +2129,8 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
 
     def agent_replied(name):
         target_info = agent_info(agents, name)
+        if wait_target_status(target_info) == 'active':
+            return False  # still working: its send is progress, judged again once it stops
         transcript = target_info.get('transcript_path') if target_info else None
         return bool(transcript and waiting_name and successful_hcom_send_since(
             transcript, after, waiting_name, skip_inform_ack=True))
@@ -2120,8 +2157,11 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
                 updated['deadline_at'] = time.time() + declaration['wait_seconds']
             write_wait(wait_path(workspace, agent), updated, expected=expected)
     else:
-        reason = wait_release_reason(declaration, participant,
-                                     decision is None and agent_replied(target), decision, messages)
+        reason = wait_release_reason(
+            declaration, participant, decision is None and agent_replied(target), decision,
+            messages, (target_sender_names(declaration, agents)
+                       if declaration.get('kind') == 'agent' else frozenset()),
+            wait_target_status(agent_info(agents, target)))
     if reason:
         updated = dict(declaration, active=False, expiry_count=0, expiry_declared_at=[],
                        expiry_notified=False, expiry_nudge_pending=False, released_reason=reason,

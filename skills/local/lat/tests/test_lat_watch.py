@@ -442,6 +442,46 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertEqual(watch.wait_release_reason(
             declaration, [], True, True, []), 'target-replied')
 
+    def test_waited_agent_message_releases_only_once_it_stops_working(self):
+        watch = load_watch()
+        declaration = {'agent': 'worker', 'target': 'reviewer-rev', 'kind': 'agent'}
+        delivered = [{'type': 'status', 'data': {'context': 'deliver:rev', 'position': 9}}]
+        names = {'reviewer-rev', 'rev'}
+
+        def message(sender, intent):
+            return {'type': 'message', 'data': {'from': sender, 'intent': intent}}
+
+        def reason(messages, status):
+            return watch.wait_release_reason(declaration, delivered, False, None, messages,
+                                             names, status)
+
+        for intent in ('inform', 'request', None):
+            with self.subTest(intent=intent):
+                # Progress from a target still at work keeps the wait.
+                self.assertIsNone(reason([message('rev', intent)], 'active'))
+                # Once it is idle or gone, any of its messages releases.
+                for status in ('listening', 'blocked', 'inactive'):
+                    self.assertEqual(reason([message('rev', intent)], status),
+                                     'message-delivered')
+        # Status unknown: the old intent rule.
+        self.assertIsNone(reason([message('rev', 'inform')], None))
+        self.assertEqual(reason([message('rev', 'request')], None), 'message-delivered')
+        # Someone else's request still releases while the target works.
+        self.assertEqual(reason([message('rev', 'inform'), message('lead', 'request')], 'active'),
+                         'message-delivered')
+
+    def test_codex_target_with_a_finished_turn_counts_as_stopped(self):
+        watch = load_watch()
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'codex.jsonl'
+            info = {'status': 'active', 'tool': 'codex', 'transcript_path': str(transcript)}
+            for kind, expected in (('task_started', 'active'), ('task_complete', 'listening')):
+                transcript.write_text(json.dumps(
+                    {'type': 'event_msg', 'payload': {'type': kind}}) + '\n')
+                self.assertEqual(watch.wait_target_status(info), expected)
+            self.assertEqual(watch.wait_target_status(dict(info, tool='claude')), 'active')
+        self.assertIsNone(watch.wait_target_status(None))
+
     def test_request_watch_notice_keeps_a_wait_but_other_hcom_events_release_it(self):
         watch = load_watch()
         declaration = {'agent': 'worker', 'target': 'reviewer'}
@@ -755,7 +795,8 @@ class WatchDecisionTests(unittest.TestCase):
             self.assertFalse(watch.successful_hcom_send_since(
                 transcript, '2026-10-04T14:01:00+00:00'))
 
-    def release_wait_after_target_send(self, recipient, participant_events=(), intent='request'):
+    def release_wait_after_target_send(self, recipient, participant_events=(), intent='request',
+                                       target_status=None):
         watch = load_watch()
         declaration = {
             'agent': 'waiting-agent', 'target': 'target-agent',
@@ -789,13 +830,15 @@ class WatchDecisionTests(unittest.TestCase):
                     'transcript_path': str(transcript),
                 },
             }
+            if target_status:
+                agents['target-agent']['status'] = target_status
             with patch.object(
                     watch, 'session_events', return_value=list(participant_events)):
                 return watch.release_wait_if_needed(
                     root, decisions, 'orch', declaration, agents=agents)
 
     def release_multi_wait(self, declaration, *, messages=(), replied=(), deliver=True,
-                           decisions_text=None):
+                           decisions_text=None, statuses=None):
         """Run one release check; returns (reason, stored declaration)."""
         watch = load_watch()
         declaration = {'agent': 'waiting-agent', 'target': 'one-sofe', 'kind': 'agent',
@@ -818,6 +861,8 @@ class WatchDecisionTests(unittest.TestCase):
                                 'transcript_path': str(root / name)}
                 if name in replied:
                     (root / name).write_text('')
+                if name in (statuses or {}):
+                    agents[name]['status'] = statuses[name]
             events = [{'type': 'status', 'data': {'context': 'deliver:x', 'position': 9}}]
             with (patch.object(watch, 'session_events', return_value=events if deliver else []),
                   patch.object(watch, 'delivered_messages', return_value=list(messages)),
@@ -840,6 +885,29 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertTrue(stored['active'])
         self.assertEqual(stored['answered'], ['one-sofe'])
         self.assertEqual(stored['target'], 'two-teho')
+
+    def test_multi_wait_target_still_active_is_not_answered_until_it_stops(self):
+        messages = [self.sent('sofe', 'request')]
+        reason, stored = self.release_multi_wait(
+            {}, messages=messages, replied=['one-sofe'], statuses={'one-sofe': 'active'})
+        self.assertIsNone(reason)
+        self.assertEqual(stored.get('answered', []), [])
+        # Once it is listening, even an inform report counts as its answer.
+        reason, stored = self.release_multi_wait(
+            {}, messages=[self.sent('sofe', 'inform')], statuses={'one-sofe': 'listening'})
+        self.assertIsNone(reason)
+        self.assertEqual(stored['answered'], ['one-sofe'])
+        # Unknown status keeps the intent rule: inform is not an answer.
+        reason, stored = self.release_multi_wait({}, messages=[self.sent('sofe', 'inform')])
+        self.assertEqual(stored.get('answered', []), [])
+
+    def test_waited_agent_send_while_active_keeps_the_wait_until_it_stops(self):
+        self.assertIsNone(self.release_wait_after_target_send('waiting-agent',
+                                                              target_status='active'))
+        self.assertEqual(self.release_wait_after_target_send('waiting-agent',
+                                                             target_status='listening'),
+                         'target-replied')
+        self.assertEqual(self.release_wait_after_target_send('waiting-agent'), 'target-replied')
 
     def test_multi_wait_reply_is_read_from_the_targets_transcript_too(self):
         reason, stored = self.release_multi_wait({}, replied=['two-teho'], deliver=False)
