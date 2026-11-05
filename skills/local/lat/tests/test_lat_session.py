@@ -3348,6 +3348,10 @@ class SessionTests(unittest.TestCase):
         self.ledger('assign', item, '--agent', 'worker', '--card', self.tasks / 'card.md')
         return item
 
+    def exempt_qa(self, ticket='#1'):
+        qa = self.ledger('add', '--ticket', ticket, '--stage', 'qa', '--evidence', 'file').strip()
+        self.ledger('cancel', qa, '--reason', 'no QA needed')
+
     def close_item(self, item):
         report = self.root / f'report-{item}.md'
         report.write_text('done\n')
@@ -3452,6 +3456,7 @@ class SessionTests(unittest.TestCase):
     def test_done_stop_checks_the_ledger_once_per_turn(self):
         self.activate()
         item = self.open_item('#5')
+        self.exempt_qa('#5')
         # Only a DONE last line runs the check.
         self.declare_wait()
         self.assert_silent(self.stop_hook('NO REPLY: working'))
@@ -3516,6 +3521,7 @@ class SessionTests(unittest.TestCase):
     def test_deactivate_passes_a_closed_ledger_without_force_fields(self):
         self.activate()
         self.close_item(self.open_item())
+        self.exempt_qa()
         result = self.deactivate()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('force_unfinished_reason', json.loads(self.record.read_text()))

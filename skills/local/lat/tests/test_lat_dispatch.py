@@ -971,6 +971,11 @@ class CardCloseMergedTests(LedgerCase):
         return self.run_script('card', 'close', '--card', str(card), '--status', status,
                                '--deliverable', 'abc', '--by', 'nanu', *extra)
 
+    def exempt_qa(self):
+        qa = self.run_ledger('add', '--ticket', '#123', '--stage', 'qa', '--evidence', 'file',
+                             '--by', 'nanu').strip()
+        self.run_ledger('cancel', qa, '--by', 'nanu', '--reason', 'no QA needed')
+
     def check(self):
         return subprocess.run([sys.executable, str(LEDGER), 'check', '--ledger', str(self.ledger)],
                               capture_output=True, text=True, env=self.ledger_env, timeout=60)
@@ -985,6 +990,7 @@ class CardCloseMergedTests(LedgerCase):
     def test_close_out_passes_check_with_the_commit_only_on_dev(self):
         card, worktree, _ = self.closed_row()
         self.clean_up(self.workspace, worktree)
+        self.exempt_qa()
         result = self.close(card, '--merged-into', 'dev')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.check().returncode, 0, self.check().stdout)
@@ -1003,6 +1009,7 @@ class CardCloseMergedTests(LedgerCase):
         git(other, 'commit', '-q', '-m', 'first')
         card, worktree, _ = self.closed_row(other)
         self.clean_up(other, worktree)
+        self.exempt_qa()
         result = self.close(card, '--merged-into', 'dev')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.check().returncode, 0, self.check().stdout)
