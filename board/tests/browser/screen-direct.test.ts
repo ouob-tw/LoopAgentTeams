@@ -260,15 +260,30 @@ const COUNT_STREAMS = `(() => {
 })()`;
 
 test('computer: a key pressed before the first screen comes is typed in, not dropped', async () => {
-	// The first read takes 4 s: the page has no screen yet while the key is pressed.
-	setHerdr({ slowMs: { 'pane read': 4_000 } });
-	await visit({ screen: false });
-	await tab.pointerClick('.screen-panel .box');
-	await tab.until(`document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation');
-	expect(await tab.eval(`document.querySelector('.screen-panel')?.dataset.status`)).toBe('loading');
-	await key('a', { code: 'KeyA', vk: 65, text: 'a' });
-	await callsReach(1);
-	expect(herdrCalls()).toEqual([['pane', 'send-text', PANE, 'a']]);
+	// A board of its own that waits 60 s for Herdr, whose first read takes 30 s: the page has no
+	// screen yet while the key is pressed, however slow the host.
+	const shared = { fixture, cookie };
+	fixture = await startFixture({ env: { LAT_BOARD_HERDR_TIMEOUT_SECONDS: '60' } });
+	try {
+		cookie = await fixture.login('screen-direct-slow');
+		mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
+		fixture.setHcom({ agents: [] });
+		setHerdr();
+		await fixture.refresh(cookie);
+		setHerdr({ slowMs: { 'pane read': 30_000 } });
+		await visit({ screen: false });
+		await tab.pointerClick('.screen-panel .box');
+		await tab.until(`document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation');
+		expect(await tab.eval(`document.querySelector('.screen-panel')?.dataset.status`)).toBe('loading');
+		await key('a', { code: 'KeyA', vk: 65, text: 'a' });
+		await callsReach(1);
+		expect(herdrCalls()).toEqual([['pane', 'send-text', PANE, 'a']]);
+	} finally {
+		await browser?.close();
+		browser = undefined;
+		await fixture.cleanup();
+		({ fixture, cookie } = shared);
+	}
 });
 
 test('computer: the screen stream stays open while the board\'s lists change, so no key falls in a gap', async () => {

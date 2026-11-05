@@ -86,8 +86,8 @@ class ScreenView {
 	/** Send a press; one that cannot go now says why, never dropped unseen. */
 	press(input: KeyInput): void {
 		const blocked = this.blocked;
-		if (blocked) return toasts.show('info', `按鍵沒有送出：${blocked}`);
-		this.#sender?.press(input);
+		if (blocked) toasts.show('info', `按鍵沒有送出：${blocked}`);
+		else this.#sender?.press(input);
 	}
 }
 
