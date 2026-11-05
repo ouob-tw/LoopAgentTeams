@@ -317,7 +317,8 @@ def activate(args):
     args.hcom_name = watch.resolve_agent_name(agents, args.hcom_name, required=False)
     if args.hcom_name not in agents:
         raise ValueError(f'Unknown HCOM agent: {args.hcom_name}; '
-                         f'HCOM lists: {", ".join(sorted(agents)) or "no agents"}')
+                         f'HCOM lists: {", ".join(sorted(agents)) or "no agents"}. '
+                         f'If this is your own dropped name: {reclaim_hint(args.hcom_name)}')
     duty = None
     if (args.duty_text is None) != (args.duty_expected is None):
         raise ValueError('--duty-text and --duty-expected go together; nothing activated')
@@ -436,6 +437,43 @@ def activate(args):
     if ensure_watcher(record, path) is None:
         raise ValueError('Session was deactivated while starting its watcher')
     start_autoclean(workspace)
+
+
+def reclaim_hint(name):
+    """The commands that take back a dropped HCOM name. `hcom start --as` refuses any directory
+    but the one the name last used, which hcom's last `stopped` event for it records."""
+    base = name.rsplit('-', 1)[-1]
+    directory = stopped = None
+    try:
+        lines = run_cli(['hcom', 'events', '--type', 'life', '--agent', base,
+                         '--action', 'stopped', '--full', '--last', '1'],
+                        timeout=30).splitlines()
+        event = json.loads(lines[-1]) if lines else {}
+        directory = event['data']['snapshot']['directory']
+        stopped = event['ts']
+    except (ValueError, KeyError, TypeError, IndexError):
+        pass
+    start = f'hcom start --as {base}'
+    if not isinstance(directory, str):
+        return (f'run `{start}` from the directory this session started in '
+                '(hcom has no record of the last one); then read the messages you missed '
+                f'with `hcom events --type message --participant {base} --last 200`.')
+    missed = f'hcom events --type message --after {stopped} --participant {base} --last 200'
+    return (f'run `cd {shlex.quote(directory)} && {start}` (hcom only accepts the directory '
+            f'the name last used), then read the messages you missed: `{missed}`.')
+
+
+def identity_notice(record):
+    """'' when the controller's HCOM name is listed; otherwise how to reclaim it."""
+    name = record.get('hcom_name')
+    if not name:
+        return ''
+    try:
+        if name in watch_module().list_hcom():
+            return ''
+    except ValueError as exc:
+        return f'HCOM identity check failed: {exc}\n\n'
+    return f'HCOM identity {name} is gone; {reclaim_hint(name)}\n\n'
 
 
 def ledger_module():
@@ -1773,9 +1811,10 @@ def hook(client):
                     f'Legacy session upgrade: {legacy_upgrade_command(record)}')
             return
         dependencies(record)
+        identity = identity_notice(record)
         if ensure_watcher(record, path, rebind=True) is None:
             return
-        context(ledger_context(record, pointer(path, record)))
+        context(ledger_context(record, identity + pointer(path, record)))
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         if event == 'UserPromptSubmit':
             warn_reminder(exc)

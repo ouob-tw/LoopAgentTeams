@@ -71,9 +71,14 @@ class SessionTests(unittest.TestCase):
         hcom = self.binary / 'hcom'
         hcom.write_text(
             '#!/bin/sh\n'
-            'case "$*" in "list --json"|"list --json --name "*) ;; *) exit 2;; esac\n'
+            'case "$*" in "list --json"|"list --json --name "*) ;;\n'
+            '  "events --type life --agent "*" --action stopped --full --last 1")\n'
+            '    printf \'%s\\n\' "$*" >> "$FAKE_HCOM_EVENTS.args"\n'
+            '    [ -f "$FAKE_HCOM_EVENTS" ] && cat "$FAKE_HCOM_EVENTS"; exit 0;;\n'
+            '  *) exit 2;; esac\n'
             'while IFS= read -r line; do printf \'%s\\n\' "$line"; done < "$FAKE_HCOM_LIST"\n'
         )
+        self.hcom_events = self.root / 'hcom-events.jsonl'
         hcom.chmod(0o755)
 
     def set_hcom_agents(self, *names):
@@ -101,6 +106,7 @@ class SessionTests(unittest.TestCase):
         env['HERDR_PLUGIN_CONFIG_DIR'] = str(self.root / 'plugin-config')
         env['FAKE_UV_LOG'] = str(self.fake_uv_log)
         env['FAKE_HCOM_LIST'] = str(self.hcom_list)
+        env['FAKE_HCOM_EVENTS'] = str(self.hcom_events)
         env['LAT_REPORTS_DIR'] = str(self.root / 'reports')
         env['PATH'] = f'{self.binary}:{env["PATH"]}'
         # The activation check for unregistered sessions has its own tests.
@@ -328,6 +334,43 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn(message, result.stderr)
                 self.assertFalse(self.record.exists())
+
+    def record_stop(self, base, directory, ts='2026-11-04T10:00:00+00:00'):
+        self.hcom_events.write_text(json.dumps(dict(
+            type='life', instance=base, ts=ts,
+            data=dict(action='stopped', snapshot=dict(directory=directory)))) + '\n')
+
+    def test_activate_with_a_dropped_name_gives_the_reclaim_command(self):
+        self.record_stop('futa', '/home/me/proj')
+        result = self.activate_named('team-futa', 'a-kela')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Unknown HCOM agent: team-futa', result.stderr)
+        self.assertIn("cd /home/me/proj && hcom start --as futa", result.stderr)
+        self.assertIn('hcom events --type message --after 2026-11-04T10:00:00+00:00 --participant futa --last 200',
+                      result.stderr)
+        self.assertIn('--agent futa', (self.root / 'hcom-events.jsonl.args').read_text())
+
+    def test_recovery_checks_the_controller_identity_first(self):
+        self.activate()
+        present = self.recovery_context()
+        self.assertTrue(present.startswith('LAT recovery record:'), present)
+        self.assertNotIn('hcom start --as', present)
+        self.assertFalse((self.root / 'hcom-events.jsonl.args').exists())
+        self.record_stop('orch', '/home/me/other dir')
+        self.set_hcom_agents('a-kela')
+        dropped = self.recovery_context()
+        self.assertTrue(dropped.startswith('HCOM identity orch is gone'), dropped)
+        self.assertIn("cd '/home/me/other dir' && hcom start --as orch", dropped)
+        self.assertIn('--after 2026-11-04T10:00:00+00:00', dropped)
+        self.assertIn(str(self.record), dropped)
+
+    def test_reclaim_without_a_recorded_stop_names_no_directory(self):
+        self.activate()
+        self.set_hcom_agents('a-kela')
+        context = self.recovery_context()
+        self.assertIn('hcom start --as orch', context)
+        self.assertNotIn('cd ', context.split('\n')[0])
+        self.assertIn('directory', context.split('\n')[0])
 
     def test_no_reply_with_active_wait_or_alarm_is_not_held(self):
         self.activate()
