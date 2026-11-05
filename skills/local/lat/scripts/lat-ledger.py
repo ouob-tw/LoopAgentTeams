@@ -865,9 +865,34 @@ def cmd_next(args):
     return 0
 
 
+def ticket_numbers(text):
+    """The #N references in a ticket field (it may list several); the whole text if none."""
+    found = set(re.findall(r'#\d+', text))
+    return found or {text.strip()}
+
+
+def tickets_without_qa(doc):
+    """Tickets with an impl row but no qa-draft/qa row (a cancelled one is a recorded exemption)."""
+    covered = set()
+    for item in doc['items']:
+        if item['stage'] in ('qa-draft', 'qa'):
+            covered |= ticket_numbers(item['ticket'])
+    missing = {}
+    for item in doc['items']:
+        if item['stage'] != 'impl':
+            continue
+        for number in sorted(ticket_numbers(item['ticket']) - covered):
+            missing.setdefault(number, []).append(item['id'])
+    return missing
+
+
 def cmd_check(args):
     doc = read_only(args)
     failures, cancelled = [], []
+    for number, ids in tickets_without_qa(doc).items():
+        failures.append({'id': ids[0], 'label': f'ticket {number} (impl item {", ".join(map(str, ids))})',
+                         'problems': ['no qa-draft or qa item covers it; add one, or cancel one '
+                                      'with --reason to record why not']})
     repos = [{'id': item['id'], 'repo': item['repo']} for item in doc['items']
              if item.get('repo') and item['status'] != 'cancelled']
     for item in doc['items']:

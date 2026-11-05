@@ -92,12 +92,17 @@ class LedgerCase(unittest.TestCase):
         return int(self.ok('add', '--ticket', ticket, '--stage', stage, '--evidence', evidence,
                            *extra).strip())
 
-    def started(self, *extra, evidence='commit', card=None):
-        item = self.add(*extra, evidence=evidence)
+    def started(self, *extra, evidence='commit', card=None, ticket='#1'):
+        item = self.add(*extra, evidence=evidence, ticket=ticket)
         self.ok('assign', str(item), '--agent', 'impl', '--card',
                 str(card or self.card(f'card-{item}.md')), '--deadline', '+2h')
         self.ok('start', str(item), '--eta', '+1h', by='impl')
         return item
+
+    def exempt_qa(self, ticket='#1'):
+        """Record that this ticket needs no QA row: a cancelled one, with its reason."""
+        qa = self.add(ticket=ticket, stage='qa', evidence='file')
+        self.ok('cancel', str(qa), '--reason', 'tool ticket, no QA needed')
 
     def doc(self):
         return json.loads(self.ledger.read_text())
@@ -197,6 +202,7 @@ class StorageTests(LedgerCase):
     def test_unjournaled_write_is_refused_until_repair(self):
         self.init()
         item = self.started(evidence='file')
+        self.exempt_qa()
         report = self.root / 'r.md'
         report.write_text('ok\n')
         lines = self.journal_lines()
@@ -213,6 +219,7 @@ class StorageTests(LedgerCase):
     def test_partial_journal_append_is_repaired_and_history_kept(self):
         self.init()
         item = self.started(evidence='file')
+        self.exempt_qa()
         report = self.root / 'r.md'
         report.write_text('ok\n')
         lines = self.journal_lines()
@@ -428,6 +435,7 @@ class DoneTests(LedgerCase):
         self.assertEqual(row['history'][-1]['action'], 'amend')
         self.assertEqual(row['history'][-1]['reason'], 'QA re-judged Q5: PASS')
         self.assertIn('補記：QA re-judged Q5: PASS', self.ok('show'))
+        self.exempt_qa()
         self.ok('check')
 
     def test_amend_replaces_evidence_and_only_the_cards_deliverable(self):
@@ -440,6 +448,7 @@ class DoneTests(LedgerCase):
         text = card.read_text()
         self.assertIn('- status：merged\n', text)
         self.assertIn(f'- deliverable commit：{self.side}\n', text)
+        self.exempt_qa()
         self.ok('check')
 
     def test_amend_with_bad_or_undeclared_evidence_changes_nothing(self):
@@ -555,6 +564,7 @@ class RepoTests(LedgerCase):
         self.assertIn(f'repo：{self.other}', self.ok('show'))
         self.assertEqual(json.loads(self.ok('show', '--json'))['items'][0]['repo'],
                          str(self.other))
+        self.exempt_qa()
         checked = self.ok('check')
         self.assertIn('ledger check: OK', checked)
         self.assertIn(f'item {item} repo: {self.other}', checked)
@@ -643,6 +653,7 @@ class NextAndCheckTests(LedgerCase):
         self.assertIn(f'item {first} (#1 impl): not closed: in_progress', result.stdout)
         self.assertIn(f'cancelled item {second} (#1 impl): out of scope', result.stdout)
         self.ok('done', str(first), '--commit', self.merged)
+        self.exempt_qa()
         out = self.ok('check')
         self.assertIn('ledger check: OK', out)
         self.assertIn('out of scope', out)
@@ -652,6 +663,7 @@ class NextAndCheckTests(LedgerCase):
         report.write_text('PASS\n')
         item = self.started(evidence='file')
         self.ok('done', str(item), '--file', str(report))
+        self.exempt_qa()
         self.ok('check')
         report.rename(self.root / 'elsewhere.md')
         result = self.run_ledger('check', '--json')
@@ -674,6 +686,7 @@ class NextAndCheckTests(LedgerCase):
         self.ok('done', str(item), '--commit', self.side)
         git(self.workspace, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
         git(self.workspace, 'branch', '-q', '-D', 'side')
+        self.exempt_qa()
         self.ok('check')
 
     def test_check_fails_for_a_surviving_commit_outside_the_integration_branch(self):
@@ -693,6 +706,64 @@ class NextAndCheckTests(LedgerCase):
         result = self.run_ledger('check')
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'commit {self.side}: not found', result.stdout)
+
+
+class QaCoverageTests(LedgerCase):
+    """ouob-tw/LoopAgentTeams-work#480: every ticket with an impl row needs a QA row."""
+
+    def setUp(self):
+        super().setUp()
+        self.init()
+        self.impl = self.started()
+        self.ok('done', str(self.impl), '--commit', self.merged)
+
+    def test_check_fails_naming_a_ticket_with_no_qa_row(self):
+        result = self.run_ledger('check', '--json')
+        self.assertEqual(result.returncode, 1)
+        failure = json.loads(result.stdout)['failures'][0]
+        self.assertIn('ticket #1', failure['label'])
+        self.assertIn('no qa-draft or qa item', failure['problems'][0])
+        self.assertIn('ticket #1', self.run_ledger('check').stdout)
+
+    def test_a_qa_draft_or_qa_row_covers_the_ticket(self):
+        for stage in ('qa-draft', 'qa'):
+            with self.subTest(stage=stage):
+                self.add(ticket='#1', stage=stage, evidence='file')
+                self.assertEqual(self.run_ledger('check').returncode, 1)  # still open
+                self.ok('cancel', str(self.doc()['next_id'] - 1), '--reason', 'x')
+                self.ok('check')
+                self.exempt_qa('#9')  # unrelated row does not matter
+                self.ok('check')
+
+    def test_a_cancelled_qa_row_with_its_reason_is_a_recorded_exemption(self):
+        self.exempt_qa()
+        out = self.ok('check')
+        self.assertIn('ledger check: OK', out)
+        self.assertIn('tool ticket, no QA needed', out)
+
+    def test_one_row_may_cover_several_tickets(self):
+        other = self.started(ticket='#2')
+        self.ok('done', str(other), '--commit', self.merged)
+        self.add(ticket='#1, ouob-tw/LoopAgentTeams-work#2', stage='qa', evidence='file')
+        qa = self.doc()['next_id'] - 1
+        self.ok('cancel', str(qa), '--reason', 'covered')
+        self.ok('check')
+
+    def test_a_row_covering_only_some_tickets_leaves_the_rest_unfinished(self):
+        other = self.started(ticket='#2')
+        self.ok('done', str(other), '--commit', self.merged)
+        self.exempt_qa('#1 #3')
+        result = self.run_ledger('check')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('ticket #2', result.stdout)
+        self.assertNotIn('ticket #1', result.stdout)
+
+    def test_ledgers_without_impl_rows_are_unaffected(self):
+        self.ledger.unlink(); self.seal.unlink(); self.journal.unlink()
+        self.init()
+        qa = self.add(stage='qa', evidence='file')
+        self.ok('cancel', str(qa), '--reason', 'nothing to test')
+        self.ok('check')
 
 
 class DeletedBranchWithoutIntegrationTests(LedgerCase):
@@ -715,6 +786,7 @@ class DeletedBranchWithoutIntegrationTests(LedgerCase):
         self.closed_on_side()
         self.merge_side_into_main()
         git(self.workspace, 'branch', '-q', '-D', 'side')
+        self.exempt_qa()
         self.ok('check')
 
     def test_done_accepts_a_commit_merged_before_the_branch_was_deleted(self):
@@ -737,6 +809,7 @@ class DeletedBranchWithoutIntegrationTests(LedgerCase):
         item = self.closed_on_side()
         git(self.workspace, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
         git(self.workspace, 'branch', '-q', '-D', 'side')
+        self.exempt_qa()
         result = self.run_ledger('check')
         self.assertEqual(result.returncode, 1)
         self.assertIn('no default branch found', result.stdout)
@@ -752,6 +825,7 @@ class DeletedBranchWithoutIntegrationTests(LedgerCase):
         git(self.workspace, 'update-ref', 'refs/remotes/origin/trunk', self.merged)
         git(self.workspace, 'symbolic-ref', 'refs/remotes/origin/HEAD',
             'refs/remotes/origin/trunk')
+        self.exempt_qa()
         result = self.run_ledger('check')
         self.assertEqual(result.returncode, 1)
         self.assertIn('is not reachable from origin/trunk', result.stdout)
@@ -763,6 +837,7 @@ class DeletedBranchWithoutIntegrationTests(LedgerCase):
         self.merge_side_into_main()
         git(self.workspace, 'branch', '-q', '-D', 'side')
         git(self.workspace, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/gone')
+        self.exempt_qa()
         self.ok('check')
 
     def test_a_surviving_task_branch_is_still_the_only_branch_checked(self):
@@ -824,6 +899,7 @@ class RemovedWorktreeTests(RemovedWorktreeCase):
     def test_passes_when_the_commit_reached_the_integration_branch(self):
         _, worktree, _ = self.closed_in_worktree()
         self.clean_up(self.workspace, worktree)
+        self.exempt_qa()
         self.assertIn('ledger check: OK', self.ok('check'))
 
     def test_fails_when_the_commit_never_reached_the_integration_branch(self):
@@ -851,6 +927,7 @@ class RemovedWorktreeTests(RemovedWorktreeCase):
         other = self.new_repo('other')
         _, worktree, _ = self.closed_in_worktree(other)
         self.clean_up(other, worktree)
+        self.exempt_qa()
         self.ok('check')
 
     def test_a_worktree_outside_its_repo_is_looked_up_in_the_repo_noted_at_closing(self):
@@ -867,6 +944,7 @@ class RemovedWorktreeTests(RemovedWorktreeCase):
         self.clean_up(other, worktree, merge=False)
         self.assertIn(f'{other}: commit {commit} is not reachable from main', self.check_fails())
         git(other, 'merge', '-q', '--no-ff', '-m', 'merge task', commit)
+        self.exempt_qa()
         self.ok('check')
 
     def test_another_repo_that_is_gone_too_fails_naming_the_workspace(self):
@@ -900,6 +978,7 @@ class RemovedWorktreeWithoutIntegrationTests(RemovedWorktreeCase):
         repo = self.new_repo('other')
         _, worktree, _ = self.closed_in_worktree(repo)
         self.clean_up(repo, worktree)
+        self.exempt_qa()
         self.ok('check')
 
     def test_fails_with_the_way_out_when_it_only_reached_another_branch(self):
@@ -911,6 +990,7 @@ class RemovedWorktreeWithoutIntegrationTests(RemovedWorktreeCase):
         self.assertIn(f'{repo}: commit {commit} is not reachable from main', output)
         self.assertIn(f'update {item} --repo <main checkout> --branch <branch>', output)
         self.ok('update', str(item), '--repo', str(repo), '--branch', 'dev')
+        self.exempt_qa()
         self.ok('check')
 
     def test_fails_when_no_default_branch_exists(self):
@@ -932,6 +1012,7 @@ class RemovedWorktreeWithoutIntegrationTests(RemovedWorktreeCase):
         git(repo, 'branch', '-q', '-D', 'task')
         self.assertIn('is not reachable from main', self.check_fails())
         git(repo, 'merge', '-q', '--no-ff', '-m', 'merge', commit)
+        self.exempt_qa()
         self.ok('check')
 
     def test_update_repo_refuses_a_path_that_is_not_a_git_repository(self):
