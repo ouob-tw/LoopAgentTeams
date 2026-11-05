@@ -2,6 +2,7 @@
 import http.client
 import importlib.util
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -123,7 +124,6 @@ class DemoTests(unittest.TestCase):
         self.assertNotIn('viewport', self.get(u3)[1])
 
     def test_frame_nav_sits_above_content_and_text_is_18px(self):
-        import re
         frame = load().FRAME
         nav = re.search(r'#variants\{([^}]*)\}', frame).group(1)
         self.assertIn('position:sticky', nav)
