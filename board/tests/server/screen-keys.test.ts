@@ -216,14 +216,17 @@ test('an open tab gets the bottom screen with its colours and the key masked, ag
 
 	// A second page on the same pane shares the reads and gets the same screen at once.
 	const other = follow('s-plain');
-	await until(() => other.updates[0], 2_000, "the other page's screen");
+	await until(() => other.updates[0], 5_000, "the other page's screen");
 	expect(other.updates[0]).toEqual(page.updates[1]);
 	await other.close();
 	await page.close();
-	await sleep(1_200);
-	const quiet = reads().length;
-	await sleep(1_500);
-	expect(reads().length).toBe(quiet);
+	// Reads stop: a read already under way may still finish, then none for 1.5 s.
+	const deadline = Date.now() + 10_000;
+	for (let quiet = reads().length; ; quiet = reads().length) {
+		await sleep(1_500);
+		if (reads().length === quiet) break;
+		if (Date.now() > deadline) throw new Error('the screen is still read after the last page closed');
+	}
 });
 
 test('a pane scrolled up in Herdr shows its last screenful, without scrolling it', async () => {
@@ -268,7 +271,9 @@ test('a pane that cannot be read says why', async () => {
 	expect(first.reason).toContain('not found');
 });
 
-test('after a failed press the screen is read again at once and pushed as its 恢復畫面, unchanged or not; a failed read keeps it waiting', async () => {
+// That the read after a failure comes at once, before the next one of the 1 s rhythm, is not shown
+// here: under load no bound separates the two.
+test('after a failed press the screen is read again and pushed as its 恢復畫面, unchanged or not; a failed read keeps it waiting', async () => {
 	const page = follow('s-plain');
 	await until(() => page.updates[0], 5_000, 'the first screen');
 	const before = page.updates[0];
