@@ -38,6 +38,7 @@ FRAME = '''<!DOCTYPE html>
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Noto Sans TC",sans-serif}
 main{max-width:1280px;margin:0 auto;padding:16px}
+main>:is(p,h1,h2,h3,h4,ul,ol,blockquote){max-width:860px}
 img,video,table,pre{max-width:100%}pre,table{overflow-x:auto;display:block}
 .card,.option{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:12px 0}
 .options{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))}
