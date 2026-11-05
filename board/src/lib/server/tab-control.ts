@@ -4,7 +4,8 @@
 // board running. One attempt each, no retry, logged in the sent log either way; the list is read
 // again afterwards either way, so the page shows the order and names Herdr really has.
 import { randomUUID } from 'node:crypto';
-import { WORKSPACE_OWN_REASON, type AgentAction, type AgentActionResponse } from '../board/agent-actions.ts';
+import { WORKSPACE_GONE_REASON, WORKSPACE_OWN_REASON, type AgentAction, type AgentActionResponse, type WorkspaceContents } from '../board/agent-actions.ts';
+import { HERDR_CLOSES } from './agent-control.ts';
 import type { Board } from './board.ts';
 import { closeWorkspace, moveTab, moveWorkspace, renameTab, workspaceContents, workspacesInOrder, workspaceTabs } from './herdr.ts';
 import { queued } from './send.ts';
@@ -120,18 +121,17 @@ export function renameAgentTab(board: Board, target: TabTarget, label: string) {
 	);
 }
 
-const WORKSPACE_GONE_REASON = '工作區已不在 Herdr 的清單上，沒有關閉。';
-
 /**
  * Close a Herdr workspace with every agent and tab in it, after the user confirmed how many agents
  * and tabs it has. Read again first: refused for the workspace the board's own pane is in, and when
- * it now has other counts than the ones confirmed. Queued with the workspace moves.
+ * it now has other counts than the ones confirmed. Queued with the workspace moves, and with every
+ * other close that may take a workspace's last pane.
  */
-export function closeHerdrWorkspace(board: Board, workspace: string, confirmed: { agents: number; tabs: number }) {
-	return queued('workspaces', async () => {
+export function closeHerdrWorkspace(board: Board, workspace: string, confirmed: Pick<WorkspaceContents, 'agents' | 'tabs'>) {
+	return queued('workspaces', () => queued(HERDR_CLOSES, async () => {
 		const contents = await workspaceContents(board.config, workspace);
 		let outcome: Outcome;
-		if (contents === null) outcome = { text: null, reason: WORKSPACE_GONE_REASON, acted: false };
+		if (contents === null) outcome = { text: null, reason: `${WORKSPACE_GONE_REASON}，沒有關閉。`, acted: false };
 		else if ('reason' in contents) outcome = { text: null, reason: `${contents.reason}，沒有關閉。`, acted: false };
 		else {
 			const text = `工作區「${contents.label}」（${contents.agents} 個 Agent、${contents.tabs} 個分頁）`;
@@ -146,5 +146,5 @@ export function closeHerdrWorkspace(board: Board, workspace: string, confirmed: 
 			}
 		}
 		return finish(board, null, 'close-workspace', outcome);
-	});
+	}));
 }

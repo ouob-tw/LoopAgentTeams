@@ -394,17 +394,17 @@ async function paneWorkspace(config: BoardConfig, paneId: string): Promise<{ wor
 
 /**
  * Herdr closes a workspace with its last pane. Before that pane closes, open a plain terminal tab
- * labelled `CMD` in `cwd` there, without taking the focus, so the workspace keeps its name and
- * place. Nothing is opened while other panes stay, or for a pane Herdr does not list. Returns why
- * the workspace may not be kept, or null.
+ * labelled `CMD` in `cwd` there (Herdr uses the home folder when `cwd` is gone), without taking the
+ * focus, so the workspace keeps its name and place. Nothing is opened while other panes stay, or
+ * for a pane Herdr does not list. Returns whether it opened one, or why the workspace may not be kept.
  */
-export async function keepWorkspaceOpen(config: BoardConfig, paneId: string, cwd: string): Promise<string | null> {
+export async function keepWorkspaceOpen(config: BoardConfig, paneId: string, cwd: string): Promise<{ opened: boolean } | { reason: string }> {
 	const place = await paneWorkspace(config, paneId);
-	if (place === null) return null;
-	if ('reason' in place) return `${place.reason}，無法確認它是不是工作區最後一個窗格`;
-	if (place.panes > 1) return null;
+	if (place === null) return { opened: false };
+	if ('reason' in place) return { reason: `${place.reason}，無法確認它是不是工作區最後一個窗格` };
+	if (place.panes > 1) return { opened: false };
 	const created = await herdrAct(config, ['tab', 'create', '--workspace', place.workspace, '--cwd', cwd, '--label', KEEP_TAB_LABEL, '--no-focus']);
-	return created.ok ? null : `開 ${KEEP_TAB_LABEL} 分頁${created.timedOut ? created.reason : `失敗：${created.reason}`}`;
+	return created.ok ? { opened: true } : { reason: `開 ${KEEP_TAB_LABEL} 分頁${created.timedOut ? created.reason : `失敗：${created.reason}`}` };
 }
 
 /** What closing a workspace takes with it: its label, how many agents Herdr detects in it and how

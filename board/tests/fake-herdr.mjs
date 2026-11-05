@@ -10,7 +10,7 @@
 // and, as Herdr does, its tab and workspace once no pane is left in them (`closePanes`);
 // `tab rename <tab> <label>` gives the listed tab that label; `tab create --workspace <w> --cwd <dir>
 // --label <label>` adds a tab `<w>:t-new<n>` with that label and one pane `<w>:p-new<n>` in that
-// workspace; `workspace close <w>` takes the workspace and its tabs, panes and agents out, and fails
+// workspace, and fails, as Herdr does, for a workspace it does not list; `workspace close <w>` takes the workspace and its tabs, panes and agents out, and fails
 // for one it does not list; `pane split <pane>` adds a pane
 // `<pane>-split` in that pane's tab and workspace, and fails for a pane it does not list. `reconnect: { <pane>: <agent> }` has an
 // `agent prompt` to that pane add the agent to the fake hcom's list (<dir>/hcom-added.json), the way
@@ -115,6 +115,10 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 	} else if (command === 'tab create') {
 		const option = (/** @type {string} */ name) => args[args.indexOf(name) + 1];
 		const workspace = option('--workspace');
+		if (!(plan.workspaces ?? []).some((/** @type {any} */ listed) => listed.workspace_id === workspace)) {
+			stderr += JSON.stringify({ error: { code: 'workspace_not_found', message: `workspace ${workspace} not found` }, id: 'cli:tab:create' });
+			return { stdout, stderr, code: 1 };
+		}
 		const n = (plan.tabs ?? []).length + 1;
 		const tab = { tab_id: `${workspace}:t-new${n}`, workspace_id: workspace, label: option('--label') ?? String(n) };
 		const pane = { pane_id: `${workspace}:p-new${n}`, workspace_id: workspace, tab_id: tab.tab_id, cwd: option('--cwd') };

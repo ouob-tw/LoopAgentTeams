@@ -87,6 +87,7 @@ export const AGENT_HCOM_UNKNOWN_CLOSE_REASON =
 export const AGENT_OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，關閉會連看板一起關掉，沒有關閉。';
 
 export const WORKSPACE_OWN_REASON = '看板自己所在的窗格就在這個工作區裡，關閉會連看板一起關掉，不提供關閉。';
+export const WORKSPACE_GONE_REASON = '工作區已不在 Herdr 的清單上';
 
 /** What closing a workspace takes with it, as the user confirms it. */
 export interface WorkspaceContents {

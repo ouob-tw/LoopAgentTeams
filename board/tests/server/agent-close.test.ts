@@ -299,6 +299,29 @@ describe('the last agent of a workspace', () => {
 		expect(wB().tabs.map((tab: { label: string }) => tab.label)).toEqual(['shell']);
 	});
 
+	test('two closes at once of a workspace\'s only two agents still leave it one CMD tab', async () => {
+		alone('s-plain');
+		const plan = herdrPlan();
+		plan.agents.push({ ...herdrAgent('s-new'), pane_id: 'wB:p-s-new', tab_id: 'wB:t-s-new', workspace_id: 'wB' });
+		plan.panes.push({ pane_id: 'wB:p-s-new', workspace_id: 'wB', tab_id: 'wB:t-s-new' });
+		plan.tabs.push({ tab_id: 'wB:t-s-new', workspace_id: 'wB', label: 'tab' });
+		writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify(plan));
+		await fixture.refresh(cookie);
+		const both = await Promise.all([close('s-plain'), close('s-new')]);
+		expect(both.map((answer) => answer.status)).toEqual([200, 200]);
+		expect(wB().workspace).toEqual({ workspace_id: 'wB', number: 2, label: 'Beta' });
+		expect(wB().tabs.map((tab: { label: string }) => tab.label)).toEqual(['CMD']);
+	});
+
+	test('a close that fails after the CMD tab was opened says the tab is left there', async () => {
+		alone('s-plain', { fail: { 'pane close': { exit: 1, stderr: JSON.stringify({ error: { code: 'x', message: 'refused' } }) } } });
+		await fixture.refresh(cookie);
+		const failed = await close('s-plain');
+		expect(failed.status).toBe(502);
+		expect(failed.body.reason).toBe('Herdr 沒有關閉：refused（已先開好 CMD 分頁，它會留在工作區裡）');
+		expect(wB().tabs.map((tab: { label: string }) => tab.label)).toEqual(['tab', 'CMD']);
+	});
+
 	test('when the CMD tab cannot be opened, or the panes cannot be read, the agent is not closed', async () => {
 		alone('s-plain', { fail: { 'tab create': { exit: 1, stderr: JSON.stringify({ error: { code: 'workspace_not_found', message: 'workspace wB not found' } }) } } });
 		await fixture.refresh(cookie);

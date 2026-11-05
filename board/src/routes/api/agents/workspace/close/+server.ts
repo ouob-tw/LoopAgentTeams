@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { WORKSPACE_GONE_REASON } from '#lib/board/agent-actions.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { workspaceContents } from '#lib/server/herdr.ts';
 import { closeHerdrWorkspace } from '#lib/server/tab-control.ts';
@@ -9,7 +10,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	const workspace = url.searchParams.get('workspace');
 	if (!workspace) return json({ error: 'invalid_workspace' }, { status: 400 });
 	const contents = await workspaceContents(getBoard().config, workspace);
-	if (contents === null) return json({ reason: '工作區已不在 Herdr 的清單上。' }, { status: 404 });
+	if (contents === null) return json({ reason: `${WORKSPACE_GONE_REASON}。` }, { status: 404 });
 	if ('reason' in contents) return json({ reason: contents.reason }, { status: 502 });
 	return json(contents);
 };

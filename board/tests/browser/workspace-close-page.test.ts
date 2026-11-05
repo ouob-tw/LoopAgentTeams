@@ -120,7 +120,7 @@ for (const [width, touch, kind] of [[1280, false, 'desktop'], [390, true, 'phone
 		// The board's own workspace: the item is there but off, and says why.
 		await openMenu(touch, 'wA');
 		expect(await tab.eval(`document.querySelector('.menu button').disabled`)).toBe(true);
-		expect(await tab.eval<string>(`document.querySelector('.menu').innerText`)).toContain('看板就在這個工作區裡');
+		expect(await tab.eval<string>(`document.querySelector('.menu').innerText`)).toContain('看板自己所在的窗格就在這個工作區裡');
 		await shot(`${kind}-2-own-menu`);
 		await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
 		await tab.until(`!document.querySelector('.menu')`, 'the menu closed');

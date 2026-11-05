@@ -11,7 +11,7 @@
 	// says how many agents and tabs go with it. The workspace the board runs in is not offered.
 	import GripVertical from '@lucide/svelte/icons/grip-vertical';
 	import Plus from '@lucide/svelte/icons/plus';
-	import { workspaceCloseConfirmText, type WorkspaceContents } from '#lib/board/agent-actions.ts';
+	import { WORKSPACE_OWN_REASON, workspaceCloseConfirmText, type WorkspaceContents } from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { AGENT_MARK, agentGroups, folderName, inOrder, moveBeside, sameOrder, tabDrop } from '#lib/board/agents.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
@@ -662,7 +662,7 @@
 			{:else}
 				<button type="button" role="menuitem" disabled>關閉工作區</button>
 				<p class="menu-note">
-					{#if contents === null}讀取工作區內容中…{:else if 'reason' in contents}讀不到工作區內容：{contents.reason}{:else}看板就在這個工作區裡，關閉會連看板一起關掉，所以不能從這裡關閉。{/if}
+					{#if contents === null}讀取工作區內容中…{:else if 'reason' in contents}讀不到工作區內容：{contents.reason}{:else}{WORKSPACE_OWN_REASON}{/if}
 				</p>
 			{/if}
 		</div>
