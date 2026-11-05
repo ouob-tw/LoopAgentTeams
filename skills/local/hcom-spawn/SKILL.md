@@ -189,7 +189,7 @@ HCOM 0.7.27 / Codex CLI 0.159.3 實測：未附 effort 接回保留原 low，附
 
 ## 禁止全員廣播
 
-`hcom send` 不帶 `@` 對象會發給主機上所有 Agent，包含其他流程的。自己也只發給個人或 `@<tag>-` 群組。主機裝有攔截 hook 時，這類指令會被擋下並提示改法；安裝方式見 [references/broadcast-guard.md](references/broadcast-guard.md)。
+`hcom send` 不帶 `@` 對象會發給主機上所有 Agent，包含其他流程的。自己也只發給個人或 `@<tag>-` 群組。主機裝有攔截 hook 時，這類指令會被擋下並提示改法；安裝方式見 [references/broadcast-guard.md](references/broadcast-guard.md)。同一份說明也涵蓋開工確認攔截：被召喚的 Agent 對主控只發「收到、開始做」會被擋下，確實要送時在指令前加 `ACK_GUARD=off`。
 
 ## Agent 沉默、卡住或額度耗盡
 
