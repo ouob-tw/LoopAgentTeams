@@ -369,7 +369,7 @@ export async function readScreen(config: BoardConfig, pane: string, source: Scre
  * is its last rows (blank rows at its bottom are not counted there, so a few earlier ones may show).
  * `missing` when Herdr says the pane is not there.
  */
-export async function readPaneScreen(config: BoardConfig, pane: string): Promise<{ text: string } | { reason: string; missing?: boolean }> {
+export async function readPaneScreen(config: BoardConfig, pane: string): Promise<{ text: string; rows: number } | { reason: string; missing?: boolean }> {
 	const got = await herdr(config, ['pane', 'get', pane]);
 	if ('reason' in got) return { reason: `讀不到它的 Herdr 窗格：${got.reason}`, ...(/\bnot found\b/.test(got.reason) && { missing: true }) };
 	const scroll = (got.result.pane as { scroll?: { viewport_rows?: unknown; offset_from_bottom?: unknown } } | undefined)?.scroll;
@@ -378,7 +378,14 @@ export async function readPaneScreen(config: BoardConfig, pane: string): Promise
 	if (typeof rows !== 'number' || typeof offset !== 'number') return { reason: '讀不到它的 Herdr 窗格：輸出不是預期的格式' };
 	const source = offset === 0 ? ['--source', 'visible'] : ['--source', 'recent', '--lines', String(rows)];
 	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, ...source, '--format', 'ansi'], { timeoutMs: config.herdrTimeoutMs });
-	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout };
+	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout, rows };
+}
+
+/** The pane's last `lines` lines as plain text with the lines it wrapped joined back (`pane read
+ *  --source recent-unwrapped`), or why they cannot be read. */
+export async function readUnwrapped(config: BoardConfig, pane: string, lines: number): Promise<{ text: string } | { reason: string }> {
+	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, '--source', 'recent-unwrapped', '--lines', String(lines)], { timeoutMs: config.herdrTimeoutMs });
+	return run.failure ? { reason: run.failure } : { text: run.stdout };
 }
 
 /** One key press or a piece of text for a pane: a named key goes through `pane send-keys`, text

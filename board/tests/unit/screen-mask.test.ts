@@ -1,7 +1,7 @@
 // What the 畫面分頁 hides before a pane's screen leaves the server: strings that look like passwords
 // and keys, replaced with marks as wide as they were, colour codes and the layout left as they are.
 import { expect, test } from 'bun:test';
-import { MASK, maskScreen } from '../../src/lib/server/screen-mask.ts';
+import { MASK, maskScreen, wrapMatters } from '../../src/lib/server/screen-mask.ts';
 
 const ESC = '\x1b';
 /** The screen as it shows, without colour codes. */
@@ -46,13 +46,25 @@ test('a key cut into pieces by colour codes is hidden, and the codes stay where 
 test('a key the pane wrapped at its edge is hidden on both lines', () => {
 	const key = fake('sk-', 'proj-AbCdEf0123456789ghijKLMNopqrstuvWXYZ');
 	const width = 30;
-	// The line that wraps is as wide as the pane; the screen's other lines are narrower.
 	const first = `key ${key}`.slice(0, width);
 	const rest = `key ${key}`.slice(width);
 	const screen = ['$ cat .env', first, `${rest} end`, '$ '].join('\r\n');
-	const out = maskScreen(screen);
-	expect(out).toBe(['$ cat .env', `key ${masked(width - 4)}`, `${masked(rest.length)} end`, '$ '].join('\r\n'));
+	const expected = ['$ cat .env', `key ${masked(width - 4)}`, `${masked(rest.length)} end`, '$ '].join('\r\n');
+	expect(wrapMatters(screen)).toBe(true);
+	// Herdr's text with the wrapped lines joined tells they were one.
+	const unwrapped = ['$ cat .env', `key ${key} end`, '$ '].join('\r\n');
+	const out = maskScreen(screen, { unwrapped });
+	expect(out).toBe(expected);
 	expect(plain(out)).not.toContain(key.slice(-8));
+	// Without it, every line that may have been wrapped is taken as wrapped.
+	expect(maskScreen(screen, 'all')).toBe(expected);
+});
+
+test('a line after a named value is not taken as part of it when the pane did not wrap it', () => {
+	const screen = ['token=abc123secretvalue', 'swy@host:/tmp$ '].join('\r\n');
+	const unwrapped = screen;
+	expect(maskScreen(screen, { unwrapped })).toBe([`token=${masked(17)}`, 'swy@host:/tmp$ '].join('\r\n'));
+	expect(maskScreen(screen, 'none')).toBe(maskScreen(screen, { unwrapped }));
 });
 
 test('a private key block is hidden from its first line of body to its last, its markers stay', () => {

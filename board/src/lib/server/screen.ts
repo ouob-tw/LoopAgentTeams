@@ -8,9 +8,9 @@
 // read that fails keeps the ID waiting for the next one.
 import type { ScreenUpdate } from '../board/screen.ts';
 import type { Board } from './board.ts';
-import { readPaneScreen } from './herdr.ts';
+import { readPaneScreen, readUnwrapped } from './herdr.ts';
 import { exceptionFields, log } from './log.ts';
-import { maskScreen } from './screen-mask.ts';
+import { maskScreen, wrapMatters } from './screen-mask.ts';
 
 /** How often an open screen is read. */
 export const SCREEN_MS = 1_000;
@@ -75,6 +75,17 @@ function deliver(push: (update: ScreenUpdate) => void, update: ScreenUpdate, pan
 	}
 }
 
+/** The pane's screen with its secrets masked. Which lines it wrapped is asked of Herdr only when
+ *  that changes what is masked; when Herdr cannot tell, every line that may have been is taken as
+ *  wrapped, which masks more. */
+async function readMasked(board: Board, pane: string): Promise<{ text: string } | { reason: string }> {
+	const read = await readPaneScreen(board.config, pane);
+	if (!('text' in read)) return read;
+	if (!wrapMatters(read.text)) return { text: maskScreen(read.text, 'none') };
+	const unwrapped = await readUnwrapped(board.config, pane, read.rows);
+	return { text: maskScreen(read.text, 'text' in unwrapped ? { unwrapped: unwrapped.text } : 'all') };
+}
+
 function startFollower(board: Board, pane: string): Follower {
 	let closed = false;
 	let running = false;
@@ -99,9 +110,9 @@ function startFollower(board: Board, pane: string): Follower {
 		clearTimeout(timer);
 		// Only the failures waiting before this read started are recovered by it.
 		const taking = follower.waiting.splice(0);
-		let result: Awaited<ReturnType<typeof readPaneScreen>>;
+		let result: { text: string } | { reason: string };
 		try {
-			result = await readPaneScreen(board.config, pane);
+			result = await readMasked(board, pane);
 		} catch (error) {
 			result = { reason: (error as Error).message };
 		}
@@ -112,7 +123,7 @@ function startFollower(board: Board, pane: string): Follower {
 		else follower.waiting.unshift(...taking);
 		for (const [id, at] of follower.recovered) if (now - at > RECOVERED_KEEP_MS) follower.recovered.delete(id);
 		const recovered = [...follower.recovered.keys()];
-		const update: ScreenUpdate = 'text' in result ? { ok: true, text: maskScreen(result.text), recovered } : { ok: false, reason: result.reason, recovered };
+		const update: ScreenUpdate = 'text' in result ? { ok: true, text: result.text, recovered } : { ok: false, reason: result.reason, recovered };
 		const json = JSON.stringify(update);
 		if (json !== last) {
 			last = json;

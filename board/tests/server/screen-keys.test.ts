@@ -222,6 +222,26 @@ test('a pane scrolled up in Herdr shows its last screenful, without scrolling it
 	expect(herdrCalls()).toEqual([]);
 });
 
+test('which lines the pane wrapped is asked of Herdr only when it changes what is masked', async () => {
+	const width = 24;
+	const wrapped = `key ${KEY}`;
+	const screen = ['password=hunter2abc', '$ ls', wrapped.slice(0, width), wrapped.slice(width), '$ '].join('\r\n');
+	setHerdr({ screens: { [PANE]: [screen] }, unwrapped: { [PANE]: ['password=hunter2abc', '$ ls', wrapped, '$ '].join('\r\n') } });
+	const page = follow('s-plain');
+	const first = await until(() => page.updates[0], 5_000, 'the first screen');
+	await page.close();
+	expect(first).toEqual({ ok: true, text: ['password=**********', '$ ls', `key ${'*'.repeat(width - 4)}`, '*'.repeat(wrapped.length - width), '$ '].join('\r\n'), recovered: [] });
+	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'recent-unwrapped', '--lines', '24']);
+
+	// Nothing wrapped would change it: not asked.
+	rmSync(join(fixture.dir, 'herdr-list-calls.jsonl'), { force: true });
+	setHerdr({ screens: { [PANE]: [['$ cat .env', 'password=hunter2abc'].join('\r\n')] } });
+	const plain = follow('s-plain');
+	await until(() => plain.updates[0], 5_000, 'the plain screen');
+	await plain.close();
+	expect(reads().some((args) => args.includes('recent-unwrapped'))).toBe(false);
+});
+
 test('a pane that cannot be read says why', async () => {
 	setHerdr({ screens: {} });
 	const page = follow('s-plain');

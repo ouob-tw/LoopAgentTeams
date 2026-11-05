@@ -4,10 +4,12 @@
 // looks like ordinary text is missed, and an ordinary string that looks like a key is hidden.
 //
 // Matched on the text the screen shows, colour codes left out, so a key the codes cut into pieces is
-// still one string. A line as wide as the screen's widest that ends in a non-space, followed by one
-// that starts with a non-space, is read as one line the pane wrapped at its edge: a key wrapped
-// there is hidden on both lines. A key broken by hand, or with other characters or box lines
-// between its pieces, is not recognised.
+// still one string. Two lines the pane wrapped at its edge are matched as one, so a key wrapped there
+// is hidden on both: which lines were wrapped is told by the pane's text with wrapped lines joined
+// (Herdr's `recent-unwrapped`), read only when joining would change what is hidden (`wrapMatters`);
+// without it, every line that ends and every next line that starts with a non-space are joined, which
+// hides more. A key broken by hand, or with other characters or box lines between its pieces, is not
+// recognised.
 
 import { charWidth } from '../board/screen.ts';
 
@@ -63,14 +65,28 @@ function shownOf(raw: string): Shown[] {
 	return shown;
 }
 
+/** Which of the screen's lines were wrapped into the next: `none`; `all` that may have been (each
+ *  ending and the next starting with a non-space); or the pane's text with wrapped lines joined,
+ *  which tells. */
+export type Wrapped = 'none' | 'all' | { unwrapped: string };
+
+/** Whether which lines were wrapped changes what `maskScreen` hides. */
+export function wrapMatters(screen: string): boolean {
+	return maskScreen(screen, 'none') !== maskScreen(screen, 'all');
+}
+
 /** The screen with what looks like a password or key replaced by marks; see the file's comment. */
-export function maskScreen(screen: string): string {
+export function maskScreen(screen: string, wrapped: Wrapped = 'all'): string {
 	const parts = screen.split(/(\r?\n)/);
 	const lines = parts.filter((_, index) => index % 2 === 0);
 	const shown = lines.map(shownOf);
 	const texts = shown.map((line) => line.map((each) => each.char).join(''));
-	const widths = shown.map((line) => line.reduce((sum, each) => sum + each.width, 0));
-	const widest = Math.max(0, ...widths);
+	const joinedLines = typeof wrapped === 'object' ? wrapped.unwrapped.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/) : null;
+	const wraps = (row: number) => {
+		if (wrapped === 'none' || !/\S$/.test(texts[row - 1]) || !/^\S/.test(texts[row])) return false;
+		const pair = texts[row - 1] + texts[row];
+		return joinedLines === null || joinedLines.some((line) => line.includes(pair));
+	};
 	/** Masked characters, by line and place in the line. */
 	const hidden = shown.map((line) => new Array<boolean>(line.length).fill(false));
 
@@ -78,12 +94,9 @@ export function maskScreen(screen: string): string {
 	let joined = '';
 	const at: [number, number][] = [];
 	shown.forEach((line, row) => {
-		if (row > 0) {
-			const wrapped = widths[row - 1] === widest && widest > 0 && /\S$/.test(texts[row - 1]) && /^\S/.test(texts[row]);
-			if (!wrapped) {
-				joined += '\n';
-				at.push([-1, -1]);
-			}
+		if (row > 0 && !wraps(row)) {
+			joined += '\n';
+			at.push([-1, -1]);
 		}
 		line.forEach((each, place) => {
 			// One entry per UTF-16 unit, so regex indexes find it.

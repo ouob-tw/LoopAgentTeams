@@ -95,17 +95,6 @@ export function charWidth(code: number): number {
 		: 1;
 }
 
-/** How many columns the widest line of a screen takes. */
-export function screenColumns(lines: Run[][]): number {
-	let widest = 0;
-	for (const line of lines) {
-		let width = 0;
-		for (const run of line) for (const char of run.text) width += charWidth(char.codePointAt(0)!);
-		widest = Math.max(widest, width);
-	}
-	return widest;
-}
-
 /** One run of a line in one style. */
 export interface Run {
 	text: string;
@@ -188,6 +177,23 @@ function styleOf(pen: Pen): string {
 	if (pen.italic) parts.push('font-style:italic');
 	if (pen.underline) parts.push('text-decoration:underline');
 	return parts.join(';');
+}
+
+/** The lines without the blanks at their ends that show nothing (no background colour): a program
+ *  may pad a line with them far past its text, which would only widen the screen. */
+export function trimmedLines(lines: Run[][]): Run[][] {
+	return lines.map((line) => {
+		const runs = [...line];
+		while (runs.length && !runs.at(-1)!.style.includes('background')) {
+			const text = runs.at(-1)!.text.replace(/\s+$/u, '');
+			if (text) {
+				runs[runs.length - 1] = { ...runs.at(-1)!, text };
+				break;
+			}
+			runs.pop();
+		}
+		return runs;
+	});
 }
 
 const SEQUENCE = /\x1b\[([0-?]*)[ -/]*([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]|\r/g;

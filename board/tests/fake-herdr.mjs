@@ -20,7 +20,8 @@
 // `scrolled: { <pane>: <text> }` is what `pane read <pane> --source visible` prints while the pane
 // is scrolled up, until `pane.scroll` brings it to the bottom; `--source detection` always reads the bottom.
 // `--format ansi` prints the same text. `recent: { <pane>: <text> }` is the pane's last lines, of which
-// `--source recent --lines <n>` prints the last n. `pane get <pane>` answers for a pane in `screens` or
+// `--source recent --lines <n>` prints the last n; `unwrapped: { <pane>: <text> }` is what
+// `--source recent-unwrapped` prints, else the current screen as for `visible`. `pane get <pane>` answers for a pane in `screens` or
 // `paneScroll`, its `scroll` being `{ viewport_rows: 24, offset_from_bottom: 0 }` with `paneScroll[<pane>]`
 // over it. `pane send-keys` and `pane send-text` succeed, logged as acting calls.
 // `processes: { <pane>: <process_info> }` is what `pane process-info --pane <pane>` and the socket's
@@ -154,13 +155,14 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		const valid =
 			options.length % 2 === 0 &&
 			options.every((word, index) => index % 2 === 1 || known.includes(word)) &&
-			['visible', 'detection', 'recent'].includes(source ?? '') &&
+			['visible', 'detection', 'recent', 'recent-unwrapped'].includes(source ?? '') &&
 			[undefined, 'ansi'].includes(option('--format')) &&
-			(source === 'recent') === (option('--lines') !== undefined);
+			source?.startsWith('recent') === (option('--lines') !== undefined);
 		if (!valid) {
 			stderr += `unexpected herdr command: ${args.join(' ')}\n`;
 			code = 2;
 		} else if (source === 'visible' && plan.scrolled?.[args[2]] !== undefined) stdout += plan.scrolled[args[2]];
+		else if (source === 'recent-unwrapped' && plan.unwrapped?.[args[2]] !== undefined) stdout += plan.unwrapped[args[2]];
 		else if (source === 'recent' && plan.recent?.[args[2]] !== undefined) stdout += plan.recent[args[2]].split('\n').slice(-Number(option('--lines'))).join('\n');
 		else if (screens) stdout += screens[(plan.screenAt?.[args[2]] ?? 0) % screens.length];
 		else {

@@ -193,7 +193,7 @@ export async function sendKeysToAgent(board: Board, agentId: string, inputs: Key
 				const why = act.timedOut ? `Herdr 的按鍵指令${act.reason}，這一個可能已經送進去` : `Herdr 沒有送出這一個：${act.reason}`;
 				return {
 					route: 'herdr',
-					reason: `第 ${index + 1} 個按鍵沒有確定送到（${why}）${left ? `，後面 ${left} 個沒有送` : ''}；不會自動重送，請看畫面確認。`,
+					reason: `第 ${index + 1} 個按鍵沒有確定送到（${why}）${left ? `，後面 ${left} 個沒有送` : ''}，不會自動重送。`,
 					...(typed.length && { keys: countKeys(typed) })
 				};
 			}
