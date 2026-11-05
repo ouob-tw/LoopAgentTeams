@@ -23,7 +23,9 @@
 // `--source recent --lines <n>` prints the last n; `unwrapped: { <pane>: <text> }` is what
 // `--source recent-unwrapped` prints, else the current screen as for `visible`. `pane get <pane>` answers for a pane in `screens` or
 // `paneScroll`, its `scroll` being `{ viewport_rows: 24, offset_from_bottom: 0 }` with `paneScroll[<pane>]`
-// over it. `pane send-keys` and `pane send-text` succeed, logged as acting calls.
+// over it. `pane send-keys <pane> <key>` and `pane send-text <pane> <text>` are logged as acting calls
+// and succeed for a pane `pane get` answers for; another pane fails `pane_not_found`, and a key name
+// Herdr does not know fails `invalid_key`.
 // `processes: { <pane>: <process_info> }` is what `pane process-info --pane <pane>` and the socket's
 // `pane.process_info` answer, as Herdr prints them; a pane not in it fails. `exitOnPrompt: { <pane>: true }`
 // has `agent prompt <pane> /exit` end the client: its agent leaves the list and only its shell is left,
@@ -171,7 +173,10 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		}
 	} else if (command === 'pane get') {
 		const scroll = plan.paneScroll?.[args[2]];
-		if (plan.screens?.[args[2]] || scroll) {
+		if (args.length !== 3) {
+			stderr += `unexpected herdr command: ${args.join(' ')}\n`;
+			code = 2;
+		} else if (plan.screens?.[args[2]] || scroll) {
 			const pane = { pane_id: args[2], scroll: { viewport_rows: 24, offset_from_bottom: 0, max_offset_from_bottom: 0, ...scroll } };
 			stdout += JSON.stringify({ id: 'cli:pane:get', result: { type: 'pane_info', pane } });
 		} else {
@@ -179,7 +184,17 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 			code = 1;
 		}
 	} else if (command === 'pane send-keys' || command === 'pane send-text') {
-		stdout += JSON.stringify({ id: `cli:pane:${args[1]}`, result: { type: 'ok' } });
+		// As Herdr 0.9.5: one key or one text after the pane, the pane must exist, an unknown key name is refused.
+		if (args.length !== 4) {
+			stderr += `unexpected herdr command: ${args.join(' ')}\n`;
+			code = 2;
+		} else if (!plan.screens?.[args[2]] && !plan.paneScroll?.[args[2]]) {
+			stderr += JSON.stringify({ error: { code: 'pane_not_found', message: `pane ${args[2]} not found` }, id: `cli:pane:${args[1]}` });
+			code = 1;
+		} else if (command === 'pane send-keys' && !/^(?:enter|esc|escape|up|down|left|right|tab|shift\+tab|backspace|space|(?:ctrl|alt)\+[a-z])$/.test(args[3])) {
+			stderr += JSON.stringify({ error: { code: 'invalid_key', message: `unsupported key ${args[3]}` }, id: 'cli:request' });
+			code = 1;
+		} else stdout += JSON.stringify({ id: `cli:pane:${args[1]}`, result: { type: 'ok' } });
 	} else if (command === 'pane scroll') {
 		if (!plan.screens?.[args[2]]) {
 			stderr += JSON.stringify({ error: { code: 'pane_not_found', message: `pane ${args[2]} not found` } });

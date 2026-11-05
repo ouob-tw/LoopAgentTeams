@@ -16,9 +16,9 @@ export function transcriptEvents(
 	return eventStream(board, token, signal, (send) => followTranscript(board, source, (update) => send('transcript', JSON.stringify(update))));
 }
 
-/** `screen` carries the pane's screen, or why it cannot be read; see `followScreen` and `eventStream`. */
-export function screenEvents(board: Board, pane: string, token: string, signal: AbortSignal): Response {
-	return eventStream(board, token, signal, (send) => followScreen(board, pane, (update: ScreenUpdate) => send('screen', JSON.stringify(update))));
+/** `screen` carries the agent's screen, or why it cannot be read; see `followScreen` and `eventStream`. */
+export function screenEvents(board: Board, agentId: string, token: string, signal: AbortSignal): Response {
+	return eventStream(board, token, signal, (send) => followScreen(board, agentId, (update: ScreenUpdate) => send('screen', JSON.stringify(update))));
 }
 
 /** A stream of what `follow` sends, and `ping` to keep the connection alive. A device revoked

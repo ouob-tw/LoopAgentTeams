@@ -80,8 +80,20 @@ export function countsText(counts: KeyCounts): string {
 	return counts.map(({ kind, count }) => (kind === TEXT_KIND ? `${kind} ${count} 字` : count > 1 ? `${kind} ×${count}` : kind)).join('、');
 }
 
-/** How many columns a character takes: two for East Asian wide and full-width ones, else one. */
+/** How many columns a character takes: none for combining marks and zero-width characters, which
+ *  join the one before; two for East Asian wide and full-width ones; else one. */
 export function charWidth(code: number): number {
+	if (
+		(code >= 0x0300 && code <= 0x036f) ||
+		(code >= 0x1ab0 && code <= 0x1aff) ||
+		(code >= 0x1dc0 && code <= 0x1dff) ||
+		(code >= 0x200b && code <= 0x200f) ||
+		(code >= 0x20d0 && code <= 0x20ff) ||
+		(code >= 0xfe00 && code <= 0xfe0f) ||
+		(code >= 0xfe20 && code <= 0xfe2f) ||
+		(code >= 0xe0100 && code <= 0xe01ef)
+	)
+		return 0;
 	return (code >= 0x1100 && code <= 0x115f) ||
 		(code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
 		(code >= 0xac00 && code <= 0xd7a3) ||

@@ -159,17 +159,16 @@ export const KEYS_MERGE_MS = 5_000;
  *  agent between, show as one entry at the time of the last, with the kinds and counts added up. */
 export function readAgentActions(lines: readonly Line[], agentId: string): AgentAction[] {
 	const actions: AgentAction[] = [];
+	const merges = (entry: AgentAction | undefined): entry is AgentAction & { keys: KeyCounts } => entry?.action === 'keys' && entry.ok && !!entry.keys;
 	for (const line of lines) {
 		if (line.kind !== 'agent-action' || line.agentId !== agentId) continue;
 		const last = actions.at(-1);
-		const merges = (entry: AgentAction | undefined): entry is AgentAction & { keys: KeyCounts } => entry?.action === 'keys' && entry.ok && !!entry.keys;
 		if (merges(last) && merges(line) && Date.parse(line.time) - Date.parse(last.time) <= KEYS_MERGE_MS) {
 			actions[actions.length - 1] = { ...line, id: last.id, keys: addCounts(last.keys, line.keys) };
 		} else actions.push(line);
 	}
 	return actions.reverse();
 }
-
 
 /** A controller stands by its binding; a plain agent, which never binds, by its follow-through. */
 function launchState(launch: SentLaunch, controllerId: string | undefined, follow: LaunchFollow | undefined, now: number, waitMs: number): LaunchState {

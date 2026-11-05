@@ -190,18 +190,17 @@ export async function sendKeysToAgent(board: Board, agentId: string, inputs: Key
 				results[index] = act.timedOut ? 'uncertain' : 'failed';
 				const typed = inputs.slice(0, index);
 				const left = inputs.length - index - 1;
-				const why = act.timedOut ? `Herdr 的按鍵指令${act.reason}，這一個可能已經送進去` : `Herdr 沒有送出這一個：${act.reason}`;
+				const why = act.timedOut ? `Herdr 的按鍵指令${act.reason}，可能已經送進去` : `Herdr 沒有送出：${act.reason}`;
 				return {
 					route: 'herdr',
-					reason: `第 ${index + 1} 個按鍵沒有確定送到（${why}）${left ? `，後面 ${left} 個沒有送` : ''}，不會自動重送。`,
+					reason: `第 ${index + 1} 個按鍵${why}${left ? `；後面 ${left} 個沒有送` : ''}。`,
 					...(typed.length && { keys: countKeys(typed) })
 				};
 			}
 			return { route: 'herdr', reason: null, keys: countKeys(inputs) };
 		})
 	);
-	// The pane as the request found it; one never listed has no screen open either.
-	if (!done.body.ok && done.body.entry.pane) recover(board, done.body.entry.pane, recovery);
+	if (!done.body.ok) recover(board, agentId, recovery);
 	return { status: done.status, body: { ...done.body, results } };
 }
 

@@ -12,8 +12,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'invalid_recovery' }, { status: 400 });
 	}
 	const board = getBoard();
-	const agent = (await board.current()).agents.find((candidate) => candidate.id === session);
-	if (!agent?.inHerdr) return json({ error: 'unknown_agent' }, { status: 404 });
-	recover(board, agent.herdr.pane, recovery);
+	if (!(await board.current()).agents.some((candidate) => candidate.id === session)) return json({ error: 'unknown_agent' }, { status: 404 });
+	recover(board, session, recovery);
 	return json({ ok: true });
 };

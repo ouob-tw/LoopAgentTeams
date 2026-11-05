@@ -30,10 +30,10 @@ class ScreenView {
 
 	/** Why keys cannot be sent now, or null when they can. */
 	get blocked(): string | null {
-		if (this.waiting) return KEYS_UNSURE_TEXT;
+		const unread = this.update && !this.update.ok ? this.update.reason : null;
+		if (this.waiting) return unread ? `${KEYS_UNSURE_TEXT}；重新讀畫面失敗：${unread}` : KEYS_UNSURE_TEXT;
 		if (!this.update) return '還沒讀到畫面';
-		if (!this.update.ok) return `讀不到畫面：${this.update.reason}`;
-		return null;
+		return unread;
 	}
 
 	/** The panel shows this agent's screen: a new sender, nothing carried over from another one. */
@@ -47,7 +47,7 @@ class ScreenView {
 				await request('/api/agents/screen/recover', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: agentId, recovery }) });
 			},
 			failed: (reason) => {
-				toasts.show('failed', reason ? `${KEYS_UNSURE_TEXT}。${reason}` : `${KEYS_UNSURE_TEXT}（沒有收到看板伺服器的回應）`);
+				toasts.show('failed', `${KEYS_UNSURE_TEXT}：${reason ?? '沒有收到看板伺服器的回應。'}`);
 			},
 			changed: () => {
 				if (this.#sender === sender) this.waiting = sender.waiting;
@@ -86,7 +86,8 @@ async function postKeys(agentId: string, inputs: KeyInput[], recovery: string): 
 	void agentControl.load(agentId);
 	if (!result.ok && result.kind === 'network') return { kind: 'network' };
 	const answer = (result.ok ? result.value : result.body) as Partial<KeysResponse> | null | undefined;
-	if (typeof answer?.ok !== 'boolean') return { kind: 'answered', ok: false, reason: '看板伺服器的回應讀不懂。' };
+	// An answer that cannot be read says nothing of what was typed: as if none came back.
+	if (typeof answer?.ok !== 'boolean') return { kind: 'network' };
 	return { kind: 'answered', ok: answer.ok, reason: answer.reason ?? null };
 }
 

@@ -213,7 +213,10 @@ test('phone: a press that fails empties the queue and disables the keys until th
 	await shot('phone-key-failed-disabled');
 	await sleep(1_500);
 	expect(await keysEnabled()).toBe(false);
-	expect(await tab.eval<string>(`document.querySelector('.screen-panel .state').innerText`)).toContain('按鍵可能沒送到');
+	// Why reading the screen again fails is shown too.
+	const state = await tab.eval<string>(`document.querySelector('.screen-panel .state').innerText`);
+	expect(state).toContain('按鍵可能沒送到');
+	expect(state).toContain('herdr is down');
 	// Herdr answers again with the same screen: the 恢復畫面 lets keys go again.
 	setHerdr();
 	await tab.until(`${KEYS}.every((button) => !button.disabled)`, 'the keys enabled again');
@@ -221,11 +224,18 @@ test('phone: a press that fails empties the queue and disables the keys until th
 	await shot('phone-key-recovered');
 });
 
+test('phone: a very wide screen still fits the width', async () => {
+	setHerdr({ screens: { [PANE]: [['x'.repeat(300), '$ '].join('\r\n')] } });
+	await visit({ width: 390, height: 844, phone: true });
+	await openScreen();
+	await tab.until(`(() => { const box = document.querySelector('.screen-panel .box'); const pre = box.querySelector('pre:not(.measure pre)'); return !!pre.style.fontSize && pre.scrollWidth <= box.clientWidth + 1; })()`, 'the wide line to fit');
+});
+
 test('a screen that cannot be read says why, and the keys stay disabled', async () => {
 	setHerdr({ screens: {} });
 	await visit({ width: 390, height: 844, phone: true });
 	await openScreen().catch(() => {});
-	await tab.until(`document.querySelector('.screen-panel .state')?.innerText.includes('讀不到畫面')`, 'the reason');
+	await tab.until(`document.querySelector('.screen-panel .state')?.innerText.includes('讀不到它的 Herdr 窗格')`, 'the reason');
 	await tab.until(`${KEYS}.length === 13 && ${KEYS}.every((button) => button.disabled)`, 'the keys disabled');
 	await shot('phone-screen-unreadable');
 });

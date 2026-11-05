@@ -20,14 +20,28 @@
 		unavailable?: string | null;
 	} = $props();
 
+	/** How soon a stream the browser gave up on is opened again. */
+	const RETRY_MS = 3_000;
 	$effect(() => {
 		if (!active || unavailable) return;
 		const id = agentId;
 		screenView.open(id);
-		// EventSource connects again by itself after a drop, and the server sends the latest screen then.
-		const source = new EventSource(`/api/agents/screen/events?session=${encodeURIComponent(id)}`);
-		source.addEventListener('screen', (event) => screenView.received(id, JSON.parse((event as MessageEvent).data) as ScreenUpdate));
+		// EventSource connects again by itself after a drop, and the server sends the latest screen
+		// then. One the browser gave up on (the server answered with an error) is opened again here.
+		let source: EventSource;
+		let retry: ReturnType<typeof setTimeout> | undefined;
+		const connect = () => {
+			source = new EventSource(`/api/agents/screen/events?session=${encodeURIComponent(id)}`);
+			source.addEventListener('screen', (event) => screenView.received(id, JSON.parse((event as MessageEvent).data) as ScreenUpdate));
+			source.addEventListener('error', () => {
+				if (source.readyState !== EventSource.CLOSED) return;
+				screenView.received(id, { ok: false, reason: '和看板伺服器的連線中斷，稍後自動重連', recovered: [] });
+				retry = setTimeout(connect, RETRY_MS);
+			});
+		};
+		connect();
 		return () => {
+			clearTimeout(retry);
 			source.close();
 			screenView.close(id);
 		};
@@ -56,7 +70,7 @@
 			return;
 		}
 		const natural = measure.scrollWidth;
-		fitPx = natural ? Math.min(NORMAL_PX, Math.max(4, Math.floor(((boxWidth - 4) / natural) * NORMAL_PX * 10) / 10)) : null;
+		fitPx = natural ? Math.min(NORMAL_PX, Math.floor(((boxWidth - 4) / natural) * NORMAL_PX * 10) / 10) : null;
 	});
 	const status = $derived(screenView.agentId !== agentId ? null : screenView.waiting ? 'waiting' : !update ? 'loading' : update.ok ? 'live' : 'failed');
 </script>
@@ -67,9 +81,9 @@
 	<div class="screen-panel" data-status={status}>
 		<p class="state" role="status">
 			{#if status === 'waiting'}
-				<span class="warn">{KEYS_UNSURE_TEXT}；重新讀到畫面後才能再按</span>
+				<span class="warn">{KEYS_UNSURE_TEXT}；重新讀到畫面後才能再按{#if update && !update.ok}。重新讀畫面失敗：{update.reason}{/if}</span>
 			{:else if status === 'failed' && update && !update.ok}
-				<span class="warn">讀不到畫面：{update.reason}</span>
+				<span class="warn">{update.reason}</span>
 			{:else if status === 'live'}
 				<span class="live">● 即時，約每秒更新</span>
 			{:else}

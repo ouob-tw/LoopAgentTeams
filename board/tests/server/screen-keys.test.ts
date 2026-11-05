@@ -1,3 +1,5 @@
+// Failures recovered stay listed for 10 minutes per agent, so an update may list those of earlier
+// tests: each test looks only for its own.
 // The 畫面分頁 on the server: the pane's screen pushed to the pages that have the tab open, secrets
 // masked first, read only while one has; keys typed into the pane in order, stopped at the first that
 // failed or may not have arrived, and never sent again; the 恢復畫面 after such a request; and the
@@ -183,7 +185,7 @@ test("the board's own pane takes no keys", async () => {
 test('an open tab gets the bottom screen with its colours and the key masked, again only when it changes; none open, none read', async () => {
 	const page = follow('s-plain');
 	const first = await until(() => page.updates[0], 5_000, 'the first screen');
-	expect(first).toMatchObject({ ok: true, recovered: [] });
+	expect(first.ok).toBe(true);
 	if (!first.ok) throw new Error('unreadable');
 	expect(first.text).toContain(`${ESC}[1;34m❯ 1. Yes${ESC}[0m`);
 	expect(first.text).toContain(`token ${'*'.repeat(KEY.length)}`);
@@ -196,7 +198,7 @@ test('an open tab gets the bottom screen with its colours and the key masked, ag
 	expect(page.updates).toHaveLength(1);
 	changeHerdr((plan) => (plan.screens[PANE] = ['$ done']));
 	await until(() => page.updates.length === 2, 3_000, 'the changed screen');
-	expect(page.updates[1]).toEqual({ ok: true, text: '$ done', recovered: [] });
+	expect(page.updates[1]).toMatchObject({ ok: true, text: '$ done' });
 
 	// A second page on the same pane shares the reads and gets the same screen at once.
 	const other = follow('s-plain');
@@ -216,7 +218,7 @@ test('a pane scrolled up in Herdr shows its last screenful, without scrolling it
 	const page = follow('s-plain');
 	const first = await until(() => page.updates[0], 5_000, 'the first screen');
 	await page.close();
-	expect(first).toEqual({ ok: true, text: 'line 8\r\nline 9\r\nline 10', recovered: [] });
+	expect(first).toMatchObject({ ok: true, text: 'line 8\r\nline 9\r\nline 10' });
 	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'recent', '--lines', '3', '--format', 'ansi']);
 	expect(jsonLines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((args: string[]) => args.join(' ').includes('scroll'))).toEqual([]);
 	expect(herdrCalls()).toEqual([]);
@@ -230,7 +232,7 @@ test('which lines the pane wrapped is asked of Herdr only when it changes what i
 	const page = follow('s-plain');
 	const first = await until(() => page.updates[0], 5_000, 'the first screen');
 	await page.close();
-	expect(first).toEqual({ ok: true, text: ['password=**********', '$ ls', `key ${'*'.repeat(width - 4)}`, '*'.repeat(wrapped.length - width), '$ '].join('\r\n'), recovered: [] });
+	expect(first).toMatchObject({ ok: true, text: ['password=**********', '$ ls', `key ${'*'.repeat(width - 4)}`, '*'.repeat(wrapped.length - width), '$ '].join('\r\n') });
 	expect(reads()).toContainEqual(['pane', 'read', PANE, '--source', 'recent-unwrapped', '--lines', '24']);
 
 	// Nothing wrapped would change it: not asked.
@@ -261,13 +263,13 @@ test('after a failed press the screen is read again at once and pushed as its �
 	expect(failed.body.ok).toBe(false);
 	// The read again fails: pushed as such, the request not yet recovered.
 	const down = await until(() => page.updates.find((update) => !update.ok), 3_000, 'the failed read');
-	expect(down.recovered).toEqual([]);
+	expect(down.recovered).not.toContain('rec-1');
 	await sleep(1_200);
 	expect(page.updates.every((update) => !update.recovered.includes('rec-1'))).toBe(true);
 	// Herdr answers again with the very same screen: that read is the 恢復畫面.
 	setHerdr();
 	const back = await until(() => page.updates.find((update) => update.recovered.includes('rec-1')), 3_000, 'the 恢復畫面');
-	expect(back).toEqual({ ...before, recovered: ['rec-1'] });
+	expect(back.ok && back.text).toBe(before.ok && before.text);
 
 	// With Herdr up, the 恢復畫面 comes right after the failure, though the screen did not change.
 	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: 'boom' } } });
@@ -281,6 +283,38 @@ test('after a failed press the screen is read again at once and pushed as its �
 		['pane', 'send-keys', PANE, 'enter'],
 		['pane', 'send-keys', PANE, 'esc']
 	]);
+});
+
+test('a failure whose page lost its connection, or that came while no page had the tab open, is recovered when one opens it again', async () => {
+	const page = follow('s-plain');
+	await until(() => page.updates[0], 5_000, 'the first screen');
+	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: 'boom' }, 'pane get': { exit: 1, stderr: 'herdr is down' } } });
+	await keys({ session: 's-plain', keys: [{ key: 'enter' }], recovery: 'gone-1' });
+	await until(() => page.updates.find((update) => !update.ok), 3_000, 'the failed read');
+	// The only page drops off before any read succeeds.
+	await page.close();
+	// Another failure while no page has the tab open.
+	await keys({ session: 's-plain', keys: [{ key: 'esc' }], recovery: 'gone-2' });
+	setHerdr();
+	const back = follow('s-plain');
+	const first = await until(() => back.updates.find((update) => update.ok && update.recovered.includes('gone-1') && update.recovered.includes('gone-2')), 5_000, 'both 恢復畫面');
+	await back.close();
+	expect(first.ok).toBe(true);
+});
+
+test('after the agent moves to another pane (a model switch), the open tab follows the pane Herdr lists it in now', async () => {
+	const page = follow('s-plain');
+	await until(() => page.updates[0], 5_000, 'the first screen');
+	changeHerdr((plan) => {
+		plan.agents = plan.agents.map((agent: { pane_id: string }) => (agent.pane_id === PANE ? { ...agent, pane_id: 'wA:p-moved' } : agent));
+		plan.screens['wA:p-moved'] = ['$ the new pane'];
+	});
+	await fixture.refresh(cookie);
+	await until(() => page.updates.find((update) => update.ok && update.text === '$ the new pane'), 5_000, "the new pane's screen");
+	await page.close();
+	const sent = await keys({ session: 's-plain', keys: [{ key: 'enter' }], recovery: 'moved' });
+	expect(sent.body.ok).toBe(true);
+	expect(herdrCalls()).toEqual([['pane', 'send-keys', 'wA:p-moved', 'enter']]);
 });
 
 test('a page whose key request got no answer asks for the 恢復畫面 itself', async () => {

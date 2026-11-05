@@ -94,8 +94,9 @@ test('ordinary long strings stay as they are', () => {
 	for (const screen of screens) expect(maskScreen(screen)).toBe(screen);
 });
 
-test('a wide character in a masked value takes two marks, so the line keeps its width', () => {
+test('a wide character in a masked value takes two marks, a combining mark none, so the line keeps its width', () => {
 	expect(maskScreen('password=密碼abc1')).toBe(`password=${masked(8)}`);
+	expect(maskScreen('password=e\u0301abc next')).toBe(`password=${masked(4)} next`);
 });
 
 test('a screen with only colour codes and box lines is left alone', () => {

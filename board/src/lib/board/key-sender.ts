@@ -4,7 +4,8 @@
 // a screen update listing the request's recovery ID, which may come before or after its answer.
 import type { KeyInput, ScreenUpdate } from './screen.ts';
 
-/** How a request ended: answered, all typed in or not and why; or no answer came back. */
+/** How a request ended: answered, all typed in or not and why; or no answer came back that can be
+ *  read (`network`), so the server may not know it should read the screen again. */
 export type KeysAnswer = { kind: 'answered'; ok: boolean; reason: string | null } | { kind: 'network' };
 
 export interface KeySenderHooks {

@@ -5,6 +5,7 @@ import { createConnection } from 'node:net';
 import { basename } from 'node:path';
 import type { WorkspaceContents } from '../board/agent-actions.ts';
 import type { HerdrPlace } from '../board/format.ts';
+import type { KeyInput } from '../board/screen.ts';
 import type { HerdrWorkspace } from '../board/types.ts';
 import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand } from './external.ts';
@@ -367,11 +368,10 @@ export async function readScreen(config: BoardConfig, pane: string, source: Scre
  * Herdr, without moving it: `pane get` tells how many rows it shows and how far up it is; at the
  * bottom `pane read --source visible` is what it shows, scrolled up `--source recent --lines <rows>`
  * is its last rows (blank rows at its bottom are not counted there, so a few earlier ones may show).
- * `missing` when Herdr says the pane is not there.
  */
-export async function readPaneScreen(config: BoardConfig, pane: string): Promise<{ text: string; rows: number } | { reason: string; missing?: boolean }> {
+export async function readPaneScreen(config: BoardConfig, pane: string): Promise<{ text: string; rows: number } | { reason: string }> {
 	const got = await herdr(config, ['pane', 'get', pane]);
-	if ('reason' in got) return { reason: `讀不到它的 Herdr 窗格：${got.reason}`, ...(/\bnot found\b/.test(got.reason) && { missing: true }) };
+	if ('reason' in got) return { reason: `讀不到它的 Herdr 窗格：${got.reason}` };
 	const scroll = (got.result.pane as { scroll?: { viewport_rows?: unknown; offset_from_bottom?: unknown } } | undefined)?.scroll;
 	const rows = scroll?.viewport_rows;
 	const offset = scroll?.offset_from_bottom;
@@ -388,12 +388,9 @@ export async function readUnwrapped(config: BoardConfig, pane: string, lines: nu
 	return run.failure ? { reason: run.failure } : { text: run.stdout };
 }
 
-/** One key press or a piece of text for a pane: a named key goes through `pane send-keys`, text
+/** Type one key press or piece of text into the pane: a named key through `pane send-keys`, text
  *  through `pane send-text` as it is (a terminal escape sequence too). */
-export type PaneInput = { key: string } | { text: string };
-
-/** Type one key press or piece of text into the pane. */
-export function sendPaneInput(config: BoardConfig, pane: string, input: PaneInput): Promise<HerdrAct> {
+export function sendPaneInput(config: BoardConfig, pane: string, input: KeyInput): Promise<HerdrAct> {
 	return herdrAct(config, 'key' in input ? ['pane', 'send-keys', pane, input.key] : ['pane', 'send-text', pane, input.text]);
 }
 
