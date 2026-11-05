@@ -80,7 +80,9 @@ function shownOf(raw: string): Shown[] {
 	return shown;
 }
 
-/** How much of the pane's text is searched for wrapped lines: its end, where the screen's lines are. */
+/** How much of the pane's text is searched for wrapped lines: its end, where the screen's lines are,
+ *  at most twice the screen's own text (as much again for what Herdr shows otherwise), and never more
+ *  than this. Each of the screen's lines searches it once. */
 const UNWRAPPED_MAX = 262_144;
 
 /** Whether `text` holds `part`, in time in line with their lengths whatever they hold (Knuth-Morris-Pratt):
@@ -122,7 +124,8 @@ function masked(screen: string, wrapped: Wrapped | 'joined'): string {
 	const lines = parts.filter((_, index) => index % 2 === 0);
 	const shown = lines.map(shownOf);
 	const texts = shown.map((line) => line.map((each) => each.char).join(''));
-	const told = typeof wrapped === 'object' ? wrapped.unwrapped.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').slice(-UNWRAPPED_MAX) : null;
+	const searched = Math.min(UNWRAPPED_MAX, 2 * texts.reduce((sum, text) => sum + text.length + 1, 0));
+	const told = typeof wrapped === 'object' ? wrapped.unwrapped.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').slice(-searched) : null;
 	const wraps = (row: number) => {
 		if (wrapped === 'none' || !/\S$/.test(texts[row - 1]) || !/^\S/.test(texts[row])) return false;
 		return told === null || holds(told, texts[row - 1] + texts[row]);

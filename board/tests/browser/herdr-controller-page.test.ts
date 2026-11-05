@@ -247,6 +247,19 @@ for (const width of [1280, 390]) {
 	}, 60_000);
 }
 
+test.skipIf(!CHROME)('on the 畫面 tab the header, its close and its questions fold into one line with a mark for the questions; 展開 shows them, another tab brings them back', async () => {
+	await visit(390, '?agent=s-lead');
+	await tab.until(leadPage, "the controller's header");
+	await tab.eval(click('.detail [role="tablist"]', '畫面'));
+	await tab.until(`!!document.querySelector('.detail .bar') && !document.querySelector('.detail .profile, .detail .questions, .detail [data-action="close"]')`, 'the folded line');
+	expect(await tab.eval<string>(`document.querySelector('.detail .bar').innerText`)).toContain('2 題待決');
+	await tab.eval(click('.detail .bar', '展開'));
+	await tab.until(`!!document.querySelector('.detail .profile') && !!document.querySelector('.detail .questions') && !!document.querySelector('.detail [data-action="close"]')`, 'the card unfolded');
+	await tab.eval(click('.detail [role="tablist"]', '回報'));
+	await tab.until(`!document.querySelector('.detail .bar') && !!document.querySelector('.detail .profile')`, 'the card back');
+	expect(await tab.eval(FITS)).toBe(true);
+}, 60_000);
+
 test.skipIf(!CHROME)("a question's bar shows its card in the conversation, without leaving the Herdr tab", async () => {
 	await visit(1280, '?agent=s-lead');
 	await tab.until(`${leadPage} && ${CARDS_IN}`, 'the cards');

@@ -1,5 +1,5 @@
 // The Herdr 分頁's list as the page shows it: grouped by Herdr workspace, in the server's order.
-import type { Agent, AgentStatus, ControllerStatus, HerdrWorkspace } from './types.ts';
+import type { Agent, AgentStatus, ControllerStatus, HerdrWorkspace, KnownAgent } from './types.ts';
 
 export interface AgentGroup {
 	workspace: string;
@@ -67,6 +67,13 @@ export function folderName(path: string): string {
 
 /** The roster's shape for an agent's status, so both lists read alike: ▲ needs the user, ■ done,
  *  ● working, ○ idle, □ unknown. */
+/** What the page's status card warns of about the agent, each in a word or two, for a line that holds
+ *  only a mark for each (the 畫面分頁's). */
+export function agentWarnings(agent: Pick<KnownAgent, 'inHerdr' | 'switch' | 'hcom' | 'noHooks'>): string[] {
+	if (!agent.inHerdr || agent.switch) return ['切換未完成'];
+	return [...(agent.hcom === 'unknown' ? ['HCOM 不明'] : []), ...(agent.noHooks ? ['未接 HCOM'] : [])];
+}
+
 export const AGENT_MARK: Record<AgentStatus, ControllerStatus | 'unknown'> = {
 	blocked: 'waiting',
 	done: 'delivered',

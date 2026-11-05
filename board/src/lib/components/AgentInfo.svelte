@@ -2,19 +2,20 @@
 	// An agent's page on the Herdr 分頁, laid out like a controller's information page: one line
 	// of who and where it stands, the details of where it runs, its close, then its conversation, its
 	// Herdr pane's screen and what was done to it, one tab at a time. Text, an interrupt and a model switch are sent to it
-	// from the command line; keys from its 畫面分頁's 按鍵列 on a phone. The status is hcom's when hcom reaches it and Herdr's otherwise (ADR
+	// from the command line; keys from its 畫面分頁's 按鍵選單 on a phone. The status is hcom's when hcom reaches it and Herdr's otherwise (ADR
 	// 0003), or 等你回答 while a board ask of its waits; its board asks show in its conversation,
 	// where they were asked.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount } from 'svelte';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
-	import { AGENT_MARK, folderName, shortName, tabShown } from '#lib/board/agents.ts';
+	import { AGENT_MARK, agentWarnings, folderName, shortName, tabShown } from '#lib/board/agents.ts';
 	import { placeText } from '#lib/board/format.ts';
 	import { INFO_DETAILS_KEY, remember, remembered } from '#lib/board/prefs.ts';
 	import { AGENT_STATUS_LABEL, type KnownAgent } from '#lib/board/types.ts';
 	import AgentClose from './AgentClose.svelte';
 	import AgentLog from './AgentLog.svelte';
 	import HcomBadge from './HcomBadge.svelte';
+	import ScreenBar from './ScreenBar.svelte';
 	import ScreenPanel from './ScreenPanel.svelte';
 	import { SCREEN_NOT_LISTED_TEXT } from '#lib/board/screen.ts';
 	import StatusMark from './StatusMark.svelte';
@@ -50,6 +51,13 @@
 	type Tab = (typeof TABS)[number]['id'];
 	let tab = $state<Tab>('transcript');
 	const logCount = $derived(agentControl.logCount(agent.id));
+	/** On a 畫面分頁 with a screen, the status card and its buttons fold into one line. */
+	const folded = $derived(tab === 'screen' && agent.inHerdr);
+	let unfolded = $state(false);
+	$effect(() => {
+		if (!folded) unfolded = false;
+	});
+	const statusText = $derived(agent.asking ? ASKING_STATUS_TEXT : AGENT_STATUS_LABEL[agent.status]);
 
 	function tabKeys(event: KeyboardEvent) {
 		const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
@@ -101,9 +109,13 @@
 	});
 </script>
 
+{#if folded}
+	<ScreenBar status={AGENT_MARK[agent.status]} text={statusText} name={shortName(agent)} warnings={agentWarnings(agent)} bind:unfolded />
+{/if}
+{#if !folded || unfolded}
 <article class="profile" data-agent={agent.id}>
 	<header>
-		<span class="status"><StatusMark status={AGENT_MARK[agent.status]} decorative />{agent.asking ? ASKING_STATUS_TEXT : AGENT_STATUS_LABEL[agent.status]}</span>
+		<span class="status"><StatusMark status={AGENT_MARK[agent.status]} decorative />{statusText}</span>
 		<h2 title={agent.name}>{shortName(agent)}</h2>
 		{#if tabShown(agent)}<span class="handle"><span class="dot" aria-hidden="true">·</span>{tabShown(agent)}</span>{/if}
 		<!-- Not linked shows no badge, as on the list. -->
@@ -135,6 +147,7 @@
 </article>
 
 <AgentClose {agent} />
+{/if}
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
 <div class="tabbar">

@@ -1,14 +1,18 @@
 <script lang="ts">
-	// The 畫面分頁: the bottom screenful of the agent's Herdr pane with its colours, secrets masked
-	// by the server, followed about once a second while the tab is shown and not at all otherwise. On
-	// a phone the text shrinks so the widest line fits, and pinching zooms the page; on a computer it
-	// shows at the usual size and scrolls sideways inside its box. The text can be selected and copied.
-	// Keys go through the 按鍵列 on a phone (KeyRow); why they cannot now shows above the screen.
+	// The 畫面分頁: the last lines of the agent's Herdr pane with its colours, secrets masked by the
+	// server, followed about once a second while the tab is shown and not at all otherwise. The box
+	// takes the page's height down to the command line; its bottom line stays at the box's bottom, and
+	// lines too long for it, or more than fit, slide inside it. An update leaves it where it was slid to.
+	// In the light theme the box is the dark screen inverted, hues kept, as its programs choose colours
+	// for a dark screen whatever the board's theme. The text can be selected and copied.
+	// Keys go through the 按鍵選單 on a phone (KeyMenu), which moves the content up while open; why keys
+	// cannot go now shows above the screen; nothing does while all is well.
 	// On a computer a click on the screen starts direct operation: a frame shows round it, and keys
 	// pressed go into the pane (`pressInput`), Esc too, until a click elsewhere takes the focus away.
 	// The focus goes to a hidden text box, so an input method composes in it; only the text it ends
 	// with is sent. A click that leaves text selected ends it instead, so the text can be copied.
 	import { screenView } from '#lib/board/screen-view.svelte.ts';
+	import KeyMenu from './KeyMenu.svelte';
 	import { KEY_UNSUPPORTED_TEXT, KEYS_UNSURE_TEXT, pressInput, screenLines, trimmedLines, type ScreenUpdate } from '#lib/board/screen.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
@@ -61,21 +65,15 @@
 	const shownText = $derived(kept?.agentId === agentId ? kept.text : null);
 	const lines = $derived(shownText === null ? [] : trimmedLines(screenLines(shownText)));
 
-	// A phone fits the widest line into the box's width: the text as wide as it shows at the usual
-	// size, measured and scaled down to the box. Measured, not counted, since a font may draw some
-	// characters wider than others.
-	let boxWidth = $state(0);
-	let measure = $state<HTMLElement>();
-	const NORMAL_PX = 13;
-	let fitPx = $state<number | null>(null);
-	$effect(() => {
+	let scroller = $state<HTMLElement>();
+	let pre = $state<HTMLElement>();
+	/** How far the 按鍵選單 covers the screen from its bottom. */
+	let covers = $state(0);
+	// A narrower update would pull a box slid sideways back to the left: it keeps the width it is at
+	// until slid back.
+	$effect.pre(() => {
 		void lines;
-		if (!screenView.phone || !measure || !boxWidth) {
-			fitPx = null;
-			return;
-		}
-		const natural = measure.scrollWidth;
-		fitPx = natural ? Math.min(NORMAL_PX, Math.floor(((boxWidth - 4) / natural) * NORMAL_PX * 10) / 10) : null;
+		if (scroller && pre) pre.style.minWidth = scroller.scrollLeft > 0 ? `${scroller.scrollLeft + scroller.clientWidth}px` : '';
 	});
 	/** Whether keys pressed now go into the pane: on a computer, the hidden text box took the focus,
 	 *  and it stays in the box (a click inside moves it to the box for a moment). */
@@ -110,24 +108,20 @@
 	<p class="empty">{unavailable}</p>
 {:else}
 	<div class="screen-panel" data-status={status}>
-		<p class="state" role="status">
-			{#if status === 'waiting'}
-				<span class="warn">{KEYS_UNSURE_TEXT}；重新讀到畫面後才能再按{#if update && !update.ok}。重新讀畫面失敗：{update.reason}{/if}</span>
-			{:else if status === 'failed' && update && !update.ok}
-				<span class="warn">{update.reason}</span>
-			{:else if status === 'live'}
-				<span class="live">● 即時，約每秒更新</span>
-			{:else}
-				<span class="muted">讀取畫面中…</span>
-			{/if}
-		</p>
+		{#if status === 'waiting' || status === 'failed'}
+			<p class="state" role="status">
+				{#if status === 'waiting'}
+					{KEYS_UNSURE_TEXT}；重新讀到畫面後才能再按{#if update && !update.ok}。重新讀畫面失敗：{update.reason}{/if}
+				{:else if update && !update.ok}
+					{update.reason}
+				{/if}
+			</p>
+		{/if}
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 		<div
 			class="box"
-			class:fit={screenView.phone}
 			class:direct
 			bind:this={box}
-			bind:clientWidth={boxWidth}
 			tabindex={directable ? -1 : undefined}
 			onclick={enter}
 			onkeydown={keydown}
@@ -151,13 +145,14 @@
 					onpaste={(event) => event.preventDefault()}
 				></textarea>
 			{/if}
-			{#if shownText !== null}
-				{#if screenView.phone}
-					<!-- The same text at the usual size, out of sight, to measure its width. -->
-					<div class="measure" aria-hidden="true"><pre bind:this={measure}>{#each lines as line, row (row)}{#each line as run, index (index)}<span style={run.style || null}>{run.text}</span>{/each}{'\n'}{/each}</pre></div>
+			<div class="scroller" bind:this={scroller}>
+				{#if shownText !== null}
+					<pre bind:this={pre} style:padding-bottom={covers ? `${covers + 4}px` : null}>{#each lines as line, row (row)}{#each line as run, index (index)}<span style={run.style || null}>{run.text}</span>{/each}{'\n'}{/each}</pre>
+				{:else if status === 'loading'}
+					<p class="loading">讀取畫面中…</p>
 				{/if}
-				<pre style:font-size={fitPx === null ? null : `${fitPx}px`}>{#each lines as line, row (row)}{#each line as run, index (index)}<span style={run.style || null}>{run.text}</span>{/each}{'\n'}{/each}</pre>
-			{/if}
+			</div>
+			{#if screenView.phone}<KeyMenu bind:covers />{/if}
 		</div>
 	</div>
 {/if}
@@ -165,45 +160,58 @@
 <style>
 	.screen-panel {
 		display: flex;
+		flex: 1;
 		flex-direction: column;
 		gap: 0.35rem;
 		min-width: 0;
+		min-height: 0;
 	}
 	.state {
-		margin: 0.3rem 0 0;
+		margin: 0;
+		color: var(--warn);
 		font-size: max(0.8rem, var(--min-font, 0px));
 	}
-	.live {
-		color: var(--ok);
-	}
-	.warn {
-		color: var(--warn);
-	}
-	.muted {
-		color: var(--muted);
-	}
-	/* The terminal's own colours, dark in either theme: its programs pick colours for a dark screen. */
 	.box {
-		--screen-bg: #0b0c0e;
-		--screen-fg: #d4d4d4;
 		position: relative;
+		flex: 1;
 		min-width: 0;
-		overflow-x: auto;
+		min-height: 0;
+		overflow: hidden;
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
-		background: var(--screen-bg);
-		color: var(--screen-fg);
 	}
-	.box.fit {
-		overflow-x: hidden;
-	}
-	/* Drawn inside the border, so the frame takes no room and the text does not move. */
+	/* Drawn over the screen, so the frame takes no room and the text does not move. */
 	.box.direct {
 		border-color: var(--accent);
+	}
+	.box.direct::after {
+		position: absolute;
+		inset: 0;
 		box-shadow: inset 0 0 0 2px var(--accent);
+		content: '';
+		pointer-events: none;
 	}
 	.box:focus {
 		outline: none;
+	}
+	/* The terminal's own colours, dark inside whatever the theme: see the file's comment. Reversed, so the
+	   bottom line stays at the bottom however tall the box, and where it was slid up to holds as lines
+	   change. Sliding it does not go on to the page. */
+	.scroller {
+		--screen-bg: #0b0c0e;
+		--screen-fg: #d4d4d4;
+		display: flex;
+		flex-direction: column-reverse;
+		align-items: flex-start;
+		height: 100%;
+		overflow: auto;
+		overscroll-behavior: contain;
+		scrollbar-width: thin;
+		background: var(--screen-bg);
+		color: var(--screen-fg);
+	}
+	:global(:root[data-theme='light']) .scroller {
+		filter: invert(1) hue-rotate(180deg);
 	}
 	/* Takes the keys, out of sight and taking no room. */
 	.catcher {
@@ -220,32 +228,23 @@
 		pointer-events: none;
 	}
 	/* Latin monospace fonts first: under the page's zh-Hant, the generic monospace may be a CJK font
-	   that draws box lines and arrows twice as wide, which breaks the terminal's columns. */
+	   that draws box lines and arrows twice as wide, which breaks the terminal's columns. Lines closer
+	   than the board's text, so box lines join. */
 	pre {
+		flex: none;
 		margin: 0;
 		padding: 0.4rem 0.5rem;
 		font-family: ui-monospace, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Roboto Mono', 'Droid Sans Mono', monospace;
-		font-size: 13px;
+		font-size: max(1rem, var(--min-font, 0px));
 		line-height: 1.2;
 		white-space: pre;
 		width: max-content;
 		min-width: 100%;
 		user-select: text;
 	}
-	.fit pre {
-		padding: 0.3rem 1px;
-	}
-	/* Takes no room, so the box neither grows nor scrolls for it. */
-	.measure {
-		position: absolute;
-		width: 0;
-		height: 0;
-		overflow: hidden;
-		visibility: hidden;
-	}
-	.measure pre {
-		padding: 0;
-		min-width: 0;
+	.loading {
+		margin: 0.4rem 0.5rem;
+		color: #8b919a;
 	}
 	.empty {
 		margin: 0.6rem 0;

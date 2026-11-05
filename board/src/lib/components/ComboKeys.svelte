@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The 組合鍵 of the command line's options pop-up, on a computer while a 畫面分頁 is shown: keys
 	// the browser keeps for itself, sent into the pane on that screen whoever the line is for.
-	// Disabled while the 按鍵列 would be; the button's title says why.
+	// Disabled while the 按鍵選單's keys would be; the button's title says why.
 	import { screenView } from '#lib/board/screen-view.svelte.ts';
 	import { COMBO_KEYS } from '#lib/board/screen.ts';
 

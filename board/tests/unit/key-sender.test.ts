@@ -1,4 +1,4 @@
-// The 按鍵列's sending on one page: order kept, presses during a request sent together next, and after
+// The 按鍵選單's sending on one page: order kept, presses during a request sent together next, and after
 // a failure nothing sent until the 恢復畫面 for that request, whichever of it and the answer comes first.
 import { expect, test } from 'bun:test';
 import { KeySender, type KeysAnswer } from '../../src/lib/board/key-sender.ts';
