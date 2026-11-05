@@ -969,7 +969,14 @@ class InstallHostGateTests(PreauthCase):
         self.write(self.global_file, '[actions.install-host]\nallow = true\n')
         self.session()
         bunx = self.root / 'bin' / 'bunx'
-        self.write(bunx, '#!/bin/sh\nexit 0\n')
+        # Installs each chosen skill into the fake home the way the skills tool does, so the
+        # installer's after-install check passes: args are skills add <snapshot> --skill ...
+        self.write(bunx, '#!/bin/sh\nsnapshot=$3\nshift 4\nfor name; do\n'
+                         '  [ "$name" = --global ] && break\n'
+                         '  mkdir -p "$HOME/.agents/skills" "$HOME/.claude/skills"\n'
+                         '  cp -r "$snapshot"/skills/*/"$name" "$HOME/.agents/skills/"\n'
+                         '  ln -s "$HOME/.agents/skills/$name" "$HOME/.claude/skills/$name"\n'
+                         'done\n')
         bunx.chmod(0o755)
 
     def folder_record(self, suite, passed=True):
@@ -983,8 +990,10 @@ class InstallHostGateTests(PreauthCase):
                                      'reusable': passed, 'content_changed': False}) + '\n')
 
     def install(self):
-        environment = dict(GIT_ENV, SUITE_GATE_STATE_DIR=str(self.gate_state),
+        home = Path(tempfile.mkdtemp(dir=self.root, prefix='home-'))
+        environment = dict(GIT_ENV, SUITE_GATE_STATE_DIR=str(self.gate_state), HOME=str(home),
                            PATH=f"{self.root / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        environment.pop('CLAUDE_CONFIG_DIR', None)
         return subprocess.run([sys.executable, str(self.repo / 'scripts/install-skills.py')],
                               cwd=self.repo, env=environment, capture_output=True, text=True,
                               timeout=60)

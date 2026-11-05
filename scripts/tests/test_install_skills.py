@@ -43,16 +43,47 @@ class InstallSkillsTests(unittest.TestCase):
         bin_dir = self.tmp / 'bin'
         bin_dir.mkdir()
         bunx = bin_dir / 'bunx'
-        # Records its arguments and the alpha SKILL.md it was given, after an optional
-        # change to the repo's copy (a merge landing while bunx starts).
-        bunx.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {self.bunx_log}\n'
-                        f'[ -n "$RACE" ] && echo "$RACE" > {self.repo / "skills/local/alpha"}'
-                        '/SKILL.md\n'
-                        f'cat "$3/skills/local/alpha/SKILL.md" > {self.tmp}/seen 2>/dev/null\n'
-                        f'(cd "$3" && find . -type f | sort) > {self.tmp}/files\n')
+        self.home = self.tmp / 'home'
+        self.home.mkdir()
+        # Records its arguments, the alpha SKILL.md it was given (after an optional change to
+        # the repo's copy: a merge landing while bunx starts) and the snapshot's files, then
+        # installs each chosen skill the way the skills tool does: a copy in
+        # ~/.agents/skills and a link in ~/.claude/skills. SKIP leaves one skill out and
+        # ALTER installs one with changed content, both still exiting 0.
+        bunx.write_text(f'''#!{sys.executable}
+import os, shutil, subprocess, sys
+from pathlib import Path
+args = sys.argv[1:]
+Path({str(self.bunx_log)!r}).write_text(''.join(arg + '\\n' for arg in args))
+if os.environ.get('RACE'):
+    Path({str(self.repo / 'skills/local/alpha/SKILL.md')!r}).write_text(os.environ['RACE'] + '\\n')
+snapshot = Path(args[2])
+seen = snapshot / 'skills/local/alpha/SKILL.md'
+if seen.exists():
+    Path({str(self.tmp / 'seen')!r}).write_text(seen.read_text())
+Path({str(self.tmp / 'files')!r}).write_text(''.join(
+    './' + path.relative_to(snapshot).as_posix() + '\\n'
+    for path in sorted(snapshot.rglob('*')) if path.is_file()))
+home = Path(os.environ['HOME'])
+for name in args[args.index('--skill') + 1:args.index('--global')]:
+    if name == os.environ.get('SKIP'):
+        print('Skipped', name)
+        continue
+    canonical = home / '.agents/skills' / name
+    shutil.rmtree(canonical, ignore_errors=True)
+    shutil.copytree(next(snapshot.glob('skills/*/' + name)), canonical)
+    if name == os.environ.get('ALTER'):
+        (canonical / 'SKILL.md').write_text('changed\\n')
+    link = home / '.claude/skills' / name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if not link.is_symlink():
+        link.symlink_to(canonical)
+''')
         bunx.chmod(0o755)
         self.env = dict(GIT_ENV, SUITE_GATE_STATE_DIR=str(self.state),
-                        PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+                        PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                        HOME=str(self.home))
+        self.env.pop('CLAUDE_CONFIG_DIR', None)
         self.write('scripts/install-skills.py', SCRIPT.read_text())
         self.write('skills/local/three-tier-testing/scripts/suite-gate.py', GATE.read_text())
         self.write('skills/local/alpha/SKILL.md', '---\nname: alpha\ndescription: x\n---\n')
@@ -65,7 +96,10 @@ class InstallSkillsTests(unittest.TestCase):
         self.write('.suite-gate.json', json.dumps(
             {'full_suites': [{'cwd': 'skills/local/alpha', 'command': SUITE}]}))
         for args in (['init', '-q', '-b', 'dev'], ['add', '-A'], ['commit', '-qm', 'init']):
-            subprocess.run(['git', *args], cwd=self.repo, env=self.env, check=True)
+            self.git(*args)
+
+    def git(self, *args):
+        subprocess.run(['git', *args], cwd=self.repo, env=self.env, check=True)
 
     def write(self, rel, text):
         path = self.repo / rel
@@ -99,6 +133,13 @@ class InstallSkillsTests(unittest.TestCase):
         self.assertIn('lat-skills-', args[2])
         self.assertFalse(Path(args[2]).exists())  # the snapshot is removed afterwards
 
+    def assert_installed_as_in_repo(self, *skills):
+        for name, folder in skills:
+            source = self.repo / folder / 'SKILL.md'
+            for place in ('.agents/skills', '.claude/skills'):
+                self.assertEqual((self.home / place / name / 'SKILL.md').read_text(),
+                                 source.read_text())
+
     def assert_refused(self, result, why):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIsNone(self.bunx_args())
@@ -110,6 +151,54 @@ class InstallSkillsTests(unittest.TestCase):
     def test_a_passing_record_for_the_current_content_installs(self):
         self.record()
         self.assert_installed(self.install(), ['alpha', 'beta'])
+
+    def test_every_chosen_skill_installed_with_the_snapshot_content_succeeds(self):
+        self.record()
+        self.assert_installed(self.install(), ['alpha', 'beta'])
+        self.assert_installed_as_in_repo(('alpha', 'skills/local/alpha'),
+                                         ('beta', 'skills/matt/beta'))
+
+    def test_a_skill_bunx_left_out_fails_and_is_named(self):
+        self.record()
+        self.env['SKIP'] = 'beta'
+        result = self.install()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('not installed as checked', result.stderr)
+        self.assertIn(f"beta: missing at {self.home / '.agents/skills/beta'}", result.stderr)
+        self.assertIn(f"beta: missing at {self.home / '.claude/skills/beta'}", result.stderr)
+        self.assertNotIn('alpha:', result.stderr)
+
+    def test_a_skill_installed_with_other_content_fails_and_is_named(self):
+        self.record()
+        self.env['ALTER'] = 'alpha'
+        result = self.install()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"alpha: different content at {self.home / '.agents/skills/alpha'}",
+                      result.stderr)
+        self.assertNotIn('beta:', result.stderr)
+
+    def test_the_claude_folder_follows_claude_config_dir(self):
+        self.env['CLAUDE_CONFIG_DIR'] = str(self.tmp / 'claude-config')
+        result = self.install('--skill', 'beta')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"beta: missing at {self.tmp / 'claude-config/skills/beta'}",
+                      result.stderr)
+
+    def test_an_unquoted_value_holding_colon_space_is_refused_before_bunx(self):
+        self.write('skills/matt/beta/SKILL.md',
+                   '---\nname: beta\ndescription: Use when: the user asks\n---\n')
+        self.git('commit', '-qam', 'colon')
+        result = self.install('--skill', 'beta')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIsNone(self.bunx_args())
+        self.assertIn('skills/matt/beta/SKILL.md:3: the value of description holds ": "',
+                      result.stderr)
+
+    def test_quoted_folded_and_colon_free_values_pass_the_frontmatter_check(self):
+        self.write('skills/matt/beta/SKILL.md',
+                   '---\nname: beta\ndescription: "Use when: asked"\nmetadata:\n'
+                   '  note: a\nother: >\n  x: y\nurl: http://x\n---\nbody: text\n')
+        self.assert_installed(self.install('--skill', 'beta'), ['beta'])
 
     def test_bunx_reads_the_checked_content_of_the_chosen_skills_only(self):
         self.record()
@@ -166,15 +255,13 @@ class InstallSkillsTests(unittest.TestCase):
         self.assertIsNone(self.bunx_args())
 
     def without_bunx_on_path(self):
-        """PATH holding only git, tar and the fake bunx's helpers, and a fake HOME; the host's own bunx stays out."""
+        """PATH holding only git and tar; the host's own bunx stays out."""
         tools = self.tmp / 'tools'
         tools.mkdir()
-        for tool in ('git', 'tar', 'find', 'sort', 'cat'):
+        for tool in ('git', 'tar'):
             (tools / tool).symlink_to(shutil.which(tool))
-        home = self.tmp / 'home'
-        home.mkdir()
-        self.env.update(PATH=str(tools), HOME=str(home))
-        return home
+        self.env.update(PATH=str(tools))
+        return self.home
 
     def test_bunx_on_path_is_used(self):
         result = self.install('--skill', 'beta')
