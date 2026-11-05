@@ -37,7 +37,7 @@ FRAME = '''<!DOCTYPE html>
 @media(prefers-color-scheme:dark){:root{--bg:#161618;--fg:#ececf0;--card:#222226;--line:#3a3a40;--accent:#7aa2ff}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Noto Sans TC",sans-serif}
-main{max-width:860px;margin:0 auto;padding:16px}
+main{max-width:1280px;margin:0 auto;padding:16px}
 img,video,table,pre{max-width:100%}pre,table{overflow-x:auto;display:block}
 .card,.option{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:12px 0}
 .options{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))}
