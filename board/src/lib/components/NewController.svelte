@@ -269,8 +269,8 @@
 		const takes = (index: number | null) => {
 			if (index === null) return null;
 			const row = rowsNow[index]!;
-			const known = row.project !== undefined || row.inWorkspace;
-			return !searching || stillListed(row.path, known, form.folder, form.list?.home ?? '') ? row : null;
+			const from = { known: row.project !== undefined || row.inWorkspace, onDisk: row.project?.exists !== false };
+			return !searching || stillListed(row.path, from, form.folder, form.list?.home ?? '') ? row : null;
 		};
 		const completed = takes(done.complete);
 		if (done.complete !== null && !completed) return;

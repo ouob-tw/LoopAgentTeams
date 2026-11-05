@@ -57,11 +57,13 @@ export function pathMatches(path: string, input: string, home: string): boolean 
 }
 
 /** Whether a row listed for earlier text would be listed for `input` too: a known folder when it
- *  matches as `pathMatches` says, any other when it is in the typed level and its name matches. */
-export function stillListed(path: string, known: boolean, input: string, home: string): boolean {
-	if (known && pathMatches(path, input, home)) return true;
+ *  matches as `pathMatches` says, one on disk when it is in the typed level and its name matches.
+ *  With the home folder not known yet (`home` empty) no text starting with `~` lists it. */
+export function stillListed(path: string, from: { known: boolean; onDisk: boolean }, input: string, home: string): boolean {
+	if (!home && input.trim().startsWith('~')) return false;
+	if (from.known && pathMatches(path, input, home)) return true;
 	const level = typedLevel(input, home);
-	return level !== null && path.slice(0, path.lastIndexOf('/')) === level.dir.replace(/\/$/, '') && nameMatches(folderName(path), level.part);
+	return from.onDisk && level !== null && path.slice(0, path.lastIndexOf('/')) === level.dir.replace(/\/$/, '') && nameMatches(folderName(path), level.part);
 }
 
 /** The folders listed before anything is typed: for a plain agent its workspace's folders, then

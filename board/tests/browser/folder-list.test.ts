@@ -312,7 +312,7 @@ test.skipIf(!CHROME)('the arrows, Tab, Enter and Esc work the list as before, al
 	expect(await valueOf()).toBe(`${alpha}/sub-one/`);
 	await press('Tab');
 	expect(await valueOf()).toBe(`${alpha}/sub-one/`);
-	await evaluate(`document.querySelector('#folder-box').focus()`);
+	expect(await evaluate(FOCUSED)).toBe('folder-box');
 	await rowsAre(['deep']);
 	await evaluate(`window.browseDelay = 0`);
 
