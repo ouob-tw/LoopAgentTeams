@@ -64,7 +64,7 @@
 	/** The controller's board asks: its permission requests, answered on every page that shows it. */
 	const asks = $derived(board.snapshot.asks.filter((ask) => ask.sessionId === controller.id));
 
-	/** The cards shown at the asking message: every question of the inbox it asked, in its order. */
+	/** The cards shown at the asking message: every question of the inbox it asked, the last named on top. */
 	const together = $derived(item?.kind === 'question' ? askedTogether(item, withAnswered(inbox, answered)) : item ? [item] : []);
 	function lose(key: string) {
 		lost = key;

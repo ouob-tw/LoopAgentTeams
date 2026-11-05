@@ -81,7 +81,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		/** This controller's questions in the inbox and its answered ones: a message that asked some
 		 *  shows their cards. */
 		questions?: InboxQuestion[];
-		/** The cards of the questions one message asked, in its order, and what the message says
+		/** The cards of the questions one message asked, the last named on top, and what the message says
 		 *  above its tag line, to show folded in the first card; none when it says nothing more. */
 		questionCards?: Snippet<[InboxQuestion[], Snippet | undefined]>;
 		/** A DONE report's card, shown in place of the text it carries. */
@@ -255,7 +255,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	});
 	$effect(() => () => translations.stop());
 
-	/** The cards at an opened question's place: every question its message asked, in its order. */
+	/** The cards at an opened question's place: every question its message asked, the last named on top. */
 	const placedQuestions = $derived(
 		target && isQuestion(target) ? ((typeof place === 'number' && asking.get(place)) || [target]) : []
 	);

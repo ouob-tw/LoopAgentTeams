@@ -71,8 +71,9 @@ export function justRecorded(
 }
 
 /**
- * The question and the others of the inbox its asking message asked too, in the order the message
- * names them; only the question itself when it was asked alone, or in no message found.
+ * The question and the others of the inbox its asking message asked too, the last one the message
+ * names on top (the conversation shows its newest first); only the question itself when it was
+ * asked alone, or in no message found.
  */
 export function askedTogether(question: InboxQuestion, inbox: InboxItem[]): InboxQuestion[] {
 	const message = question.askedIn;
@@ -88,17 +89,17 @@ export function askedTogether(question: InboxQuestion, inbox: InboxItem[]): Inbo
 	return inNamedOrder(message.message, [question, ...others]);
 }
 
-/** The questions in the order the message's tag line names them. */
+/** The questions in the reverse of the order the message's tag line names them: the last named first. */
 function inNamedOrder(message: string, questions: InboxQuestion[]): InboxQuestion[] {
 	const order = named(message);
 	const position = (entry: InboxQuestion) =>
 		order.findIndex((pair) => pair.id === entry.question.id && pair.revision === entry.question.revision);
-	return questions.toSorted((a, b) => position(a) - position(b));
+	return questions.toSorted((a, b) => position(b) - position(a));
 }
 
 /**
- * The questions each of the controller's own texts (oldest first) asked, by the text's `seq`, in the order it
- * names them: a text asks one as a report does for `askingReport`, its tag read from its own last
+ * The questions each of the controller's own texts (oldest first) asked, by the text's `seq`, the last one it
+ * names first: a text asks one as a report does for `askingReport`, its tag read from its own last
  * line, and not earlier than the question was asked (when both times are known). A question goes
  * to the first text that asked it, whatever later ones name it again; a text that asked none is
  * left out.
