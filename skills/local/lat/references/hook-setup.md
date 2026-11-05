@@ -43,3 +43,29 @@ uv run --no-project python "$lat_dir/scripts/lat-commit-ref.py" install --repo /
 ```
 
 寫入該 repo 共用的 `hooks/commit-msg`（Git worktree 共用同一份），已有的 sh hook 內容保留，區塊以標記包住，重跑不重複；`uninstall` 移除。若全域 `core.hooksPath` 指向別的目錄，Git 不會讀 repo 自己的 hooks，安裝指令會印出要在該目錄放的 `commit-msg` 轉交檔（與 pre-commit、pre-push 的轉交寫法相同）。
+
+## 全域推送前 hook
+
+主機以全域 `core.hooksPath`（例如 `~/.config/git/hooks`）共用 hook 時，Git 不會讀 repo 自己的 `pre-push`，所以由共用目錄的 `pre-push` 先擋[保留中的提交](preauth.md#保留不推送的提交)，再轉交 repo 自己的 hook。內容如下，寫到 `"$(git config --global core.hooksPath)/pre-push"` 並 `chmod +x`；已有的 `pre-push` 先看內容，只是轉交 repo hook 的那三行就整個換掉，有其他內容時把轉交段換成下面的寫法並保留其他部分：
+
+<!-- global-pre-push -->
+```sh
+#!/bin/sh
+# 推送含保留提交時拒絕；接著執行版本庫自己的推送前鉤子（如果有），沒有就放行
+lat_preauth="$HOME/.agents/skills/lat/scripts/lat-preauth.py"
+refs=$(cat)
+feed() { if [ -n "$refs" ]; then printf '%s\n' "$refs"; fi; }
+if [ -f "$lat_preauth" ]; then
+  feed | uv run --no-project python "$lat_preauth" pre-push "$@" || exit 1
+fi
+local_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"
+if [ -x "$local_hook" ]; then
+  feed | "$local_hook" "$@"
+  exit $?
+fi
+exit 0
+```
+
+- 擋的範圍：每個被推送的參照，從要推的版本可達、但遠端那個參照原本的版本不可達的提交（新分支就是要推版本的全部歷史）；其中有未解除的保留就以非 0 結束，列出提交與決策編號，repo 自己的 hook 不再執行。
+- repo 沒有主工作區 `.lat/preauth-holds.json`、或主機沒裝 LAT 技能時不檢查，行為和原本的轉交一樣。保留檔讀不出時拒絕推送，修好再推。
+- `git push --no-verify` 會略過整個 hook；主控不可用它繞過保留。

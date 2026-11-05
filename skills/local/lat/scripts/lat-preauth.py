@@ -17,7 +17,9 @@ names; `record` logs what was done under pre-authorization (a deploy also goes t
 history, and `record --kind manual` adds a deploy the user approved) and `report` lists this round's
 log for the delivery report; `now` prints the time to give `record --started`. `notice`, `record` and `report`
 take the controller's identity from the session record in --controller-workspace when the action is
-in another repo, which --workspace names. The board reads and writes settings through `board_settings` and `board_write`,
+in another repo, which --workspace names. `hold` registers commits the user chose to merge but not
+push, which make push and deploy-prod checks ask until a human-answered decision releases them;
+`pre-push` is the global Git hook's check for them. The board reads and writes settings through `board_settings` and `board_write`,
 which the panel helper's `board preauth-read` and `board preauth-write` commands call. The tool never
 runs the action itself.
 """
@@ -92,6 +94,9 @@ ADVISOR_LISTS = ('may_settle', 'must_ask')
 BOARD_WRITES = 'preauth-writes.jsonl'
 # Every deploy of a project, in that project's main checkout .lat, whichever controller did it.
 DEPLOY_HISTORY = 'deploy-history.jsonl'
+# Commits the user chose to merge but not push, in the main checkout .lat.
+HOLDS = 'preauth-holds.json'
+ZERO_SHA = re.compile(r'0+')
 
 
 @dataclass
@@ -547,6 +552,48 @@ def affected_deploy_problems(top, version, action, target):
                 f'{action} {commit[:12]} ({last.get("at")})')
 
 
+def holds_path(top):
+    return shared_lat_dir(top) / HOLDS
+
+
+def read_holds(top):
+    """Every hold ever placed in this repo, oldest first; a missing file holds none."""
+    path = holds_path(top)
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return []
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        raise ValueError(f'unreadable hold file {path} ({error})') from None
+    holds = data.get('holds') if isinstance(data, dict) else None
+    if not isinstance(holds, list) or not all(
+            isinstance(hold, dict) and isinstance(hold.get('commit'), str) for hold in holds):
+        raise ValueError(f'hold file {path} is not an object with a list `holds` of commits')
+    return holds
+
+
+def held_problems(top, contains):
+    """A condition naming every unreleased hold whose commit `contains(full SHA)` accepts, as
+    a list of (kind, reason) pairs; an unreadable hold file is an error."""
+    try:
+        holds = [hold for hold in read_holds(top) if not hold.get('released')]
+        found = [f'{hold["commit"][:12]} (decision {hold.get("decision")})'
+                 for hold in holds if contains(hold['commit'])]
+    except ValueError as error:
+        return [('error', str(error))]
+    return [('condition', 'held commits the user chose not to push or deploy; only a '
+                          'human-answered decision releases them: ' + ', '.join(found))
+            ] if found else []
+
+
+def unpushed(top, version):
+    """Whether a commit is in `version` and on no remote: the push check's range."""
+    listed = git(top, 'rev-list', version, '--not', '--remotes')
+    if listed is None:
+        raise ValueError(f'cannot list the commits the remotes lack for {version[:12]}')
+    return set(listed.split()).__contains__
+
+
 def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
     """The check's verdict as a dict: verdict, action, target, basis lines, reasons, and
     reason_kinds giving each reason's kind (REASON_KINDS) in the same order."""
@@ -615,6 +662,8 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
         version = resolve_version(top, 'HEAD')
         if commit and resolve_version(top, commit) != version:
             ask('condition', f'commit `{commit}` is not HEAD')
+        if action == 'deploy-prod' and version:
+            ask_each(held_problems(top, lambda held: is_ancestor(top, held, version)))
     if action == 'deploy-test':
         found = effective.get('target')
         if found is None:
@@ -628,6 +677,10 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
         else:
             problems = unpushed_commit_problems(top, version, ledger)
             ask_each(problems)
+            try:
+                ask_each(held_problems(top, unpushed(top, version)))
+            except ValueError as error:
+                ask('error', str(error))
             if not problems:
                 result['basis'].append(f'every unpushed commit of {version[:12]} references '
                                        'only tickets of the round ledger')
@@ -1792,6 +1845,112 @@ def board_write_locked(layer, target, expected_sha256, changes):
     return dict(status='ok', changes=listed)
 
 
+def repo_top(workspace):
+    top = git(Path(workspace or Path.cwd()), 'rev-parse', '--show-toplevel')
+    if not top:
+        raise Refused(f'{workspace or Path.cwd()} is not in a Git work tree')
+    return Path(top)
+
+
+def write_holds(top, holds, original):
+    write_text_atomic(holds_path(top), json.dumps({'holds': holds}, ensure_ascii=False,
+                                                  indent=2) + '\n', expected=original)
+
+
+def cmd_hold(args):
+    top = repo_top(args.workspace)
+    if args.hold_command == 'list':
+        holds = read_holds(top)
+        if args.json:
+            print(json.dumps(holds, ensure_ascii=False, indent=2))
+            return 0
+        for hold in holds:
+            line = (f'{hold["commit"][:12]} held (decision {hold.get("decision")}, by '
+                    f'{hold.get("by")}, {hold.get("at")})')
+            released = hold.get('released')
+            if released:
+                line += (f'; released (decision {released.get("decision")}, by '
+                         f'{released.get("by")}, {released.get("at")})')
+            print(line)
+        print(f'{len(holds)} hold(s) in {holds_path(top)}' if holds else 'no holds')
+        return 0
+    if not DECISION_ID.fullmatch(args.decision):
+        raise Refused(f'invalid decision record ID `{args.decision}`')
+    commits = []
+    for ref in args.commit:
+        sha = resolve_version(top, ref)
+        if sha is None:
+            raise Refused(f'unknown commit `{ref}`')
+        commits.append(sha)
+    path = holds_path(top)
+    with locked(path.with_name(f'.{path.name}.lock')):
+        try:
+            original = path.read_bytes()
+        except FileNotFoundError:
+            original = None
+        holds = read_holds(top)
+        active = {hold['commit']: hold for hold in holds if not hold.get('released')}
+        now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        if args.hold_command == 'add':
+            again = [sha[:12] for sha in commits if sha in active]
+            if again:
+                raise Refused(f'already held: {", ".join(again)}')
+            holds += [dict(commit=sha, decision=args.decision, by=args.by, at=now, released=None)
+                      for sha in commits]
+        else:
+            release_problems(top, args, commits, active)
+            for sha in commits:
+                active[sha]['released'] = dict(decision=args.decision, by=args.by, at=now)
+        write_holds(top, holds, original)
+    verb = 'held' if args.hold_command == 'add' else 'released'
+    print(f'{verb} {", ".join(sha[:12] for sha in commits)} (decision {args.decision}) → {path}')
+    return 0
+
+
+def release_problems(top, args, commits, active):
+    """Refuse a release unless every commit is held and the decision cited is another one,
+    holding a human answer."""
+    loose = [sha[:12] for sha in commits if sha not in active]
+    if loose:
+        raise Refused(f'not held: {", ".join(loose)}')
+    own = [sha[:12] for sha in commits if active[sha].get('decision') == args.decision]
+    if own:
+        raise Refused(f'{args.decision} is the decision that placed the hold on '
+                      f'{", ".join(own)}; cite the human answer that lets them go')
+    session = session_of(args)
+    try:
+        record = json.loads((shared_lat_dir(top) / 'sessions' / f'{session}.json').read_text())
+    except (OSError, ValueError, TypeError):
+        record = {}
+    problems, _ = human_answer_problems(
+        decision_path(top, record if isinstance(record, dict) else {}, args.decision))
+    if problems:
+        raise Refused('; '.join(problems))
+
+
+def cmd_pre_push(args):
+    """Git pre-push: refuse when a pushed ref brings a held commit the remote ref lacks."""
+    top = git(Path.cwd(), 'rev-parse', '--show-toplevel')
+    if not top or not holds_path(Path(top)).exists():
+        return 0
+    top = Path(top)
+    found = []
+    for line in sys.stdin.read().splitlines():
+        parts = line.split()
+        if len(parts) != 4 or ZERO_SHA.fullmatch(parts[1]):
+            continue
+        local, old = parts[1], parts[3]
+        known = not ZERO_SHA.fullmatch(old) and resolve_version(top, old)
+        found += held_problems(top, lambda held: is_ancestor(top, held, local) and not (
+            known and is_ancestor(top, held, old)))
+    if not found:
+        return 0
+    print(f'lat-preauth pre-push: push refused ({args.remote}): ' +
+          '; '.join(reason for _, reason in found) +
+          '. Release with `lat-preauth.py hold release`.', file=sys.stderr)
+    return 1
+
+
 def build_parser():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--workspace', help='Git worktree to check from; default the current '
@@ -1858,13 +2017,30 @@ def build_parser():
                         help="this round's records, grouped for the delivery report")
     commands.add_parser('now', help='the current time for record --started, with microseconds '
                                     'and a time zone')
+    hold = commands.add_parser('hold', help='commits the user chose to merge but not push: '
+                                            'push and deploy-prod checks ask while they stay held')
+    holds = hold.add_subparsers(dest='hold_command', required=True)
+    for name, text in (('add', 'hold commits under the decision the user answered'),
+                       ('release', 'release held commits under a later human-answered '
+                                   'decision')):
+        sub = holds.add_parser(name, parents=[common], help=text)
+        sub.add_argument('--commit', nargs='+', required=True, help='commits (any Git name)')
+        sub.add_argument('--decision', required=True, help='decision record ID')
+        sub.add_argument('--by', required=True, help='who registers it (HCOM name)')
+    sub = holds.add_parser('list', parents=[common], help='every hold, released ones included')
+    sub.add_argument('--json', action='store_true')
+    sub = commands.add_parser('pre-push', help='Git pre-push hook: refuse pushing held commits '
+                                               '(reads the refs on stdin)')
+    sub.add_argument('remote')
+    sub.add_argument('url', nargs='?')
     return parser
 
 
 def main():
     args = build_parser().parse_args()
     commands = {'check': cmd_check, 'show': cmd_show, 'grant': cmd_grant, 'notice': cmd_notice,
-                'record': cmd_record, 'report': cmd_report, 'now': cmd_now}
+                'record': cmd_record, 'report': cmd_report, 'now': cmd_now,
+                'hold': cmd_hold, 'pre-push': cmd_pre_push}
     try:
         return commands[args.command](args)
     except Refused as error:
