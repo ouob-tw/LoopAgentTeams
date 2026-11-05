@@ -3186,6 +3186,45 @@ esac
                     expected = own_status if agent in ('orch', 'worker-open') else other_status
                     self.assertEqual(result.returncode == 0, expected == 'pending', result.stderr)
 
+    def test_wait_for_pending_covers_the_controllers_own_pending_decisions(self):
+        self.install_hcom('#!/bin/sh\nprintf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"}]\'\n')
+        decisions = self.wait_session()
+        record = self.work / '.lat/sessions/orch.json'
+        record.write_text(json.dumps(dict(json.loads(record.read_text()), session_id='s-orch')))
+        for name, text in (('A-1', '- status: pending\n- session: s-orch\n'),
+                           ('A-2', '- status: pending\n- session: s-orch\n'),
+                           ('DONE', '- status: approved\n- session: s-orch\n'),
+                           ('OTHER', '- status: pending\n- session: s-other\n'),
+                           ('OLD', '- status: pending\n')):
+            (decisions / f'{name}.md').write_text(text)
+
+        def wait(*extra):
+            return self.cli('wait', '--workspace', self.work, '--agent', 'orch',
+                            *extra, '--reason', 'waiting')
+
+        result = wait('--for', 'worker-open', '--for-pending')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([(entry['target'], entry['kind'])
+                          for entry in json.loads(result.stdout)['targets']],
+                         [('worker-open', 'agent'), ('A-1', 'decision'), ('A-2', 'decision')])
+
+        alone = wait('--for-pending')
+        self.assertEqual(alone.returncode, 0, alone.stderr)
+        self.assertEqual([entry['target'] for entry in json.loads(alone.stdout)['targets']],
+                         ['A-1', 'A-2'])
+
+        for name in ('A-1', 'A-2'):
+            (decisions / f'{name}.md').write_text('- status: approved\n- session: s-orch\n')
+        none = wait('--for-pending')
+        self.assertNotEqual(none.returncode, 0)
+        self.assertIn('--for-pending', none.stderr)
+        self.assertNotEqual(wait().returncode, 0)
+
+        worker = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'orch', '--for-pending', '--reason', 'waiting')
+        self.assertNotEqual(worker.returncode, 0)
+        self.assertIn('--for-pending is for a controller', worker.stderr)
+
     def test_wait_accepts_decision_whose_content_cannot_be_decoded(self):
         decisions = self.wait_session()
         (decisions / 'HELP.md').write_bytes(b'- status: \xff\n')
@@ -5952,7 +5991,7 @@ esac
                 with patch.dict(os.environ, self.env):
                     watch.declare_wait(argparse.Namespace(
                         workspace=self.work, agent='worker-open', target=['reviewer'],
-                        reason='review', minutes=None))
+                        reason='review', minutes=None, for_pending=False))
             except Exception as error:  # surfaced through the assertion below
                 errors.append(error)
 

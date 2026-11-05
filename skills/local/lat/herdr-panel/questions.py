@@ -1818,6 +1818,33 @@ def resolve_help(decisions_path, question_id, evidence, location, *, now=None):
         _replace_locked(path, updated)
 
 
+def approve_answer(decisions_path, question_id, scope):
+    """Mark an answered record approved, with the scope the controller read in the answer."""
+    path = Path(decisions_path) / f"{question_id}.md"
+    if not scope.strip():
+        raise ValueError("--scope must not be empty")
+    if not path.is_file():
+        raise ValueError(f"decision record not found: {path}")
+    with _path_lock(path):
+        status = read_decision_status(path)
+        if status.error or status.status != ANSWERED_STATUS:
+            raise ValueError(
+                f"{question_id} is not answered (status: {status.status or status.error}); "
+                "only a record with a recorded human answer can be approved"
+            )
+        if read_decision_kind(path) == "help":
+            raise ValueError(f"{question_id} is a help record; check the evidence and mark it "
+                             "resolved instead")
+        text = _read_text_exact(path)
+        if not re.search(r"^## 答覆.*\n(?:(?!## ).*\n)*?- 來源：", text, re.MULTILINE):
+            raise ValueError(f"{question_id} has no recorded answer (## 答覆 with - 來源：)")
+        status_line = re.search(r"^- status:.*$", text, re.MULTILINE | re.IGNORECASE)
+        updated = (
+            text[:status_line.start()] + "- status: approved" + text[status_line.end():]
+        ).rstrip("\n") + f"\n- 核准：{_indented(scope.strip())}\n"
+        _replace_locked(path, updated)
+
+
 def withdraw_question(decisions_path, question_id, reason, source, *, now=None):
     """Withdraw a pending record whose question no longer applies, keeping why and on what."""
     path = Path(decisions_path) / f"{question_id}.md"

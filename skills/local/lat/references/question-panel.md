@@ -28,7 +28,7 @@ questions=<activate 或 bind 輸出的 questions_path>
 - 本輪開始時就綁定舊檔的主控，到本輪 deactivate 前都沿用（恢復時重綁也一樣）。
 - 同一名稱的舊檔仍有「待答」題目（含已送出、還沒記錄的），新一輪仍綁定舊檔，直到那些題目處理完。
 
-任何指令都沒有預設問題檔，`--questions` 一律明確給。
+`question` 指令省略 `--questions`、`--decisions` 時取自己 session 紀錄的路徑，查不到就報錯；明確給的優先。`provenance`、`section-hash`、`set-status`、`archive-recorded` 仍要明確給。
 
 ## 綁定
 
@@ -48,71 +48,45 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 
 ## 寫題
 
-1. 依下方「題目格式」把這一題寫成暫存檔，只放標題與內文：
+一個指令建立待決紀錄、寫入問題檔並做遺漏檢查；題號就是決策紀錄 ID，題目依下方「題目格式」從標準輸入讀（或 `--file`）：
 
-   ```markdown
-   ## 正式版要怎麼併入？
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question ask \
+  --id "<ID>" --advisor "<參謀結論>" [--authority-gap "<授權缺口>" --blocked-work "<受阻工作>"] <<'Q'
+## 正式版要怎麼併入？
 
-   審查和驗收都通過了，本機也已經裝好，現在只差要不要把它併進 dev。
+審查和驗收都通過了，現在只差要不要併進 dev。
 
-   - A. 合併到 dev，不推送（建議）
-     本機安裝內容會與 dev 一致，但 GitHub 不會改變。
-   - B. 合併到 dev，並推送到 GitHub
-     本機與遠端都會更新。
+- A. 合併到 dev，不推送（建議）
+  本機安裝內容會與 dev 一致。
+- B. 先不合併
 
-     - 推送前會再跑一次完整測試。
-   - C. 先不合併
-     繼續保留在目前分支。
+➡️ A：先讓本機版本一致。
+Q
+```
 
-   ➡️ A：先讓本機版本一致，確認使用情況後再決定是否推送。
+成功時只印 `<ID> r<版本>`；失敗才印原因與檢查明細，以非零結束，依「待決題目檢查」表格處理。
 
-   【詳細資訊】
-   dev 是本機安裝所依據的分支；推送會讓 GitHub 上的 dev 一起更新。
-   【詳細資訊結束】
-   ```
+- 紀錄不存在時建立 `.lat/decisions/<ID>.md`：`pending` 狀態、參謀行、session、版本、問題、選項、授權缺口與受阻工作。`--advisor` 必填，寫法見 [參謀](advisors.md#待決紀錄的狀態與參謀行)；`needs-human` 須給 `--authority-gap`、`--blocked-work`，其餘結論可省略（預設「需使用者決定」「未指定」）。問題預設為標題（`--question` 可改）、選項取自題目；session 取問題檔綁定的 session，沒有時取 client 的 session 環境變數，可用 `--session-id` 指定。`exempt prior-promise`、`exempt must-ask` 要加 `--exempt-basis`，依據不符就拒絕，不改任何檔，寫法見 [參謀](advisors.md#適用範圍)；其他結論不接受這個參數。
+- `--help-question` 標成求助題：紀錄寫 `- kind: help`，題目沒有單選「已完成」選項時拒絕，不改任何檔。
+- `--tried` 寫明發問前已實際試過什麼與結果，存成 `- tried:` 行（換行會併成一行），只接受求助題。求助題缺值或值空白時拒絕，不改任何檔；`exempt user-account` 也要這行，值寫明為何答案只在使用者帳號或裝置。程式只查有沒有寫，不判斷是否真的試過。
+- 紀錄已存在時就是改版：只接受 `--help-question`（把紀錄的 `- kind:` 改成或補上 `help`），其他紀錄欄位參數一律拒絕。求助題的紀錄沒有非空的 `- tried:` 行時拒絕，先在紀錄加上這行再重跑（舊紀錄改版重問也適用）。紀錄的參謀行是 `exempt prior-promise`、`exempt must-ask` 時，同樣核對紀錄內的依據行。寫入後紀錄的版本行改為面板版本。紀錄已非 `pending`（例如答覆含糊要重問）時，題目內容須有改變，寫入後狀態改回 `pending`，舊答覆保留；內容相同則拒絕，除非上次已寫入面板、但紀錄還停在較舊版本（同步中斷），這時重跑同一指令會補完。題目已從問題檔歸檔時，從紀錄版本的下一版開始。
+- 寫入前先清理同一份問題檔（見「清理題目」），正在寫的題號保留。新題或升版時在 `panel-journal.jsonl` 寫一筆 `upsert`（題號、版本、時間）並更新側欄；寫入失敗時剛建立的紀錄會移除。確認題（參謀行為 `exempt ticket-confirmation` 或 `exempt spec-confirmation`）在標準錯誤多印一行目前職責與覆蓋指令，任務改變就照著覆蓋。紀錄有 `- action:` 的授權題，寫入前依當下設定重查預先授權：尚未送出且可直接做時拒絕寫入；已送出的照常寫入並提醒，見 [預先授權](preauth.md#接上提問)。
+- `--visual`（可重複）寫入示意連結，只接受 http／https，其他一律拒絕寫題，不改任何檔。
+  - 有多個連結時，每個都標明它對應什麼：`--visual 'A|新版|https://…'`（選項 A，標題「新版」）、`--visual 'A|https://…'`（只標選項）、`--visual '整體比較|https://…'`（只寫標題）。只給網址仍可用，舊題照常顯示。字母是大寫單一字母，題目沒有這個選項（含「其他」列）時拒絕寫題；標題裡不能有 `|`。
+  - 連結存成題目內文最後的 `【示意】<同上寫法>` 行，所以換連結或標題算改題、會升版；同一題重寫時要再帶一次，沒帶就是拿掉。
+  - 面板在背景句之後顯示 `[看示意 A. 新版] <網址>`，點擊或按 Enter 開啟；沒有 `DISPLAY`／`WAYLAND_DISPLAY` 或找不到開啟工具時，改為複製到剪貼簿（OSC 52，要使用者的終端機接受）並在狀態列顯示網址。看板的待決題卡片與主控頁的待決題列顯示「看示意 A. 新版」按鈕，在新分頁開啟；沒有標題的連結顯示「看示意」，同題有多個連結時顯示「看示意 2」。聊天顯示的題目列出 `看示意 A. 新版：<網址>`，沒有標題時是 `看示意：<網址>`。
+- Spec 確認題寫題後另跑共識檢查工具寫入共識行，見 [Spec 共識](consensus.md)。
+- 不手動編輯 `$questions`。
 
-2. 一個指令建立待決紀錄、寫入問題檔並做遺漏檢查；題號就是決策紀錄 ID：
+檢查通過後依「聊天提問格式」提問；使用者可在面板或聊天作答。
 
-   ```bash
-   uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question ask \
-     --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md \
-     --advisor "<參謀結論>" [--exempt-basis "<依據>"] [--help-question] [--tried "<試過的方法與結果>"] \
-     [--question "<問題>"] [--authority-gap "<授權缺口>"] [--blocked-work "<受阻工作>"] \
-     [--visual "[<選項字母>|][<標題>|]<示意網址>"]
-   ```
-
-   - 紀錄不存在時建立 `.lat/decisions/<ID>.md`：`pending` 狀態、參謀行、session、版本、問題、選項、授權缺口與受阻工作。`--advisor` 必填，寫法見 [參謀](advisors.md#待決紀錄的狀態與參謀行)；session 取問題檔綁定的 session，沒有綁定時取 client 的 session 環境變數，可用 `--session-id` 指定。`exempt prior-promise`、`exempt must-ask` 要加 `--exempt-basis`，依據不符就拒絕，不改任何檔，寫法見 [參謀](advisors.md#適用範圍)；其他結論不接受這個參數。問題預設為標題、選項取自題目；授權缺口預設「需使用者決定」、受阻工作預設「未指定」，只適合簡單題，有實際缺口或受阻工作時明確給。
-   - `--help-question` 標成求助題：紀錄寫 `- kind: help`，題目沒有單選「已完成」選項時拒絕，不改任何檔。
-   - `--tried` 寫明發問前已實際試過什麼與結果，存成 `- tried:` 行（換行會併成一行），只接受求助題。求助題缺值或值空白時拒絕，不改任何檔；`exempt user-account` 也要這行，值寫明為何答案只在使用者帳號或裝置。程式只查有沒有寫，不判斷是否真的試過。
-   - 紀錄已存在時就是改版：只接受 `--help-question`（把紀錄的 `- kind:` 改成或補上 `help`），其他紀錄欄位參數一律拒絕。求助題的紀錄沒有非空的 `- tried:` 行時拒絕，先在紀錄加上這行再重跑（舊紀錄改版重問也適用）。紀錄的參謀行是 `exempt prior-promise`、`exempt must-ask` 時，同樣核對紀錄內的依據行。寫入後紀錄的版本行改為面板版本。紀錄已非 `pending`（例如答覆含糊要重問）時，題目內容須有改變，寫入後狀態改回 `pending`，舊答覆保留；內容相同則拒絕，除非上次已寫入面板、但紀錄還停在較舊版本（同步中斷），這時重跑同一指令會補完。題目已從問題檔歸檔時，從紀錄版本的下一版開始。
-   - 寫題的其餘行為與下方 `question upsert` 相同（清理、印 `<ID> r<版本>`、確認題職責提醒、預先授權重查、側欄）；寫入失敗時剛建立的紀錄會移除。最後執行與「待決題目檢查」相同的檢查（帶綁定的 session），有問題時以非零結束，依該節表格處理。
-   - `--visual`（可重複，`question upsert` 也接受）寫入示意連結，只接受 http／https，其他一律拒絕寫題，不改任何檔。
-     - 有多個連結時，每個都標明它對應什麼：`--visual 'A|新版|https://…'`（選項 A，標題「新版」）、`--visual 'A|https://…'`（只標選項）、`--visual '整體比較|https://…'`（只寫標題）。只給網址仍可用，舊題照常顯示。字母是大寫單一字母，題目沒有這個選項（含「其他」列）時拒絕寫題；標題裡不能有 `|`。
-     - 連結存成題目內文最後的 `【示意】<同上寫法>` 行，所以換連結或標題算改題、會升版；同一題重寫時要再帶一次，沒帶就是拿掉。
-     - 面板在背景句之後顯示 `[看示意 A. 新版] <網址>`，點擊或按 Enter 開啟；沒有 `DISPLAY`／`WAYLAND_DISPLAY` 或找不到開啟工具時，改為複製到剪貼簿（OSC 52，要使用者的終端機接受）並在狀態列顯示網址。看板的待決題卡片與主控頁的待決題列顯示「看示意 A. 新版」按鈕，在新分頁開啟；沒有標題的連結顯示「看示意」，同題有多個連結時顯示「看示意 2」。聊天顯示的題目列出 `看示意 A. 新版：<網址>`，沒有標題時是 `看示意：<網址>`。
-   - Spec 確認題寫題後另跑共識檢查工具寫入共識行，見 [Spec 共識](consensus.md)。
-
-3. 檢查通過後依「聊天提問格式」提問；使用者可在面板或聊天作答。
-
-### 手動寫題
-
-舊步驟仍可用：
-
-1. 依「使用者待決事項」建立 `.lat/decisions/<ID>.md`。求助題（HELP）在紀錄加 `- kind: help` 與 `- tried: <試過的方法與結果>`；`question upsert` 不查這行，回合結束檢查會查。
-2. 寫入問題檔。一律用這個指令（與面板共用檔案鎖），不手動編輯 `$questions`：
-
-   ```bash
-   uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question upsert \
-     --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md
-   ```
-
-3. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。確認題（參謀行為 `exempt ticket-confirmation` 或 `exempt spec-confirmation`）會多印一行目前職責與覆蓋指令；任務改變就照著覆蓋。實際寫入新題或升版時，另在 `panel-journal.jsonl` 寫一筆 `upsert`，記錄題號、版本與時間；內容相同而沒有寫入時不寫。升版規則見下方「版本」。紀錄有 `- action:` 的授權題，寫入前會依當下設定重查預先授權：尚未送出且可直接做時拒絕寫入；已送出的照常寫入並提醒，見 [預先授權](preauth.md#接上提問)。
-4. 發出 `DECIDE:`／`HELP:` 前完成下方「待決題目檢查」，通過後依「聊天提問格式」提問。
+等答覆時題目不必逐一列出：`lat-watch.py wait … --for <Agent> --for-pending`（見 [停住監控](stall-watch.md#結束回合前)）。
 
 ### 題目格式
 
 - 標題直接寫問題本身；內文先用一句話交代背景。不使用「問題／選項／建議／影響／批註」等欄位名稱。
-- **詳細資訊**（選填）：背景句講不完的來由、方法、解釋，寫在題末 `➡️` 段落之後，用各自獨占一行的 `【詳細資訊】` 與 `【詳細資訊結束】` 包住；區塊內可寫多段，裡面的選項寫法或 `➡️` 開頭的行不算選項或推薦段落。面板與看板把原文直接顯示在題目最後（`➡️` 段落之後），不折疊。舊題把區塊寫在背景句之後、選項之前的，讀法相同，同樣顯示在最後。每題最多一個區塊；標記不成對、順序顛倒、出現兩組或區塊沒有內容時，`question upsert` 拒絕寫入。和這題有關的說明都放進題目，不寫在題目外面。
+- **詳細資訊**（選填）：背景句講不完的來由、方法、解釋，寫在題末 `➡️` 段落之後，用各自獨占一行的 `【詳細資訊】` 與 `【詳細資訊結束】` 包住；區塊內可寫多段，裡面的選項寫法或 `➡️` 開頭的行不算選項或推薦段落。面板與看板把原文直接顯示在題目最後（`➡️` 段落之後），不折疊。舊題把區塊寫在背景句之後、選項之前的，讀法相同，同樣顯示在最後。每題最多一個區塊；標記不成對、順序顛倒、出現兩組或區塊沒有內容時拒絕寫入。和這題有關的說明都放進題目，不寫在題目外面。
 - 單選題的每個選項寫成一行 Markdown 清單項目 `- A. 選項`、`- B. 選項`；複選題用未勾選的 `- [ ] 選項`。兩種不可混用，混用或沒有選項時面板改成純文字輸入。
 - 選項底下縮排兩格的內容都屬於這個選項，照 Markdown 自由寫：可分段、加子清單、粗體、程式碼框，空行後仍縮排的內容也算在內；下一個沒有縮排的行就結束這個選項。題目其他部分（背景、詳細資訊、`➡️` 段落）照一般 Markdown 寫。
 - 舊寫法 `A. 選項` 加縮排影響說明仍可讀取，新題不用。
@@ -120,7 +94,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 - **選項字母**：面板與聊天使用相同字母。單選題用題目檔的字母，複選題依順序標 `A.`、`B.`…，最後一列「其他（自己輸入）」接續下一個字母。使用者按字母鍵 A–I（不分大小寫）選擇；游標在「其他」列或輸入框中時，字母照常當文字輸入。
 - 每題盡量不超過九個選項（A–I），使用者才能直接按字母選；超過的選項仍可用方向鍵選。字母只到 Z：複選題第 27 項起與之後的「其他」列不標字母。
 - 工具自動加入題號、版本、`待答`、空白作答區與 `- [ ] 送出`；既有題的答覆與勾選狀態不會被覆寫。
-- **求助題**：發問前先用手上的遠端能力（ssh、截圖、桌面操作、瀏覽器）自己試，把試過什麼與結果寫進紀錄的 `- tried:` 行。紀錄有 `- kind: help` 時，題目須是單選題且有一個選項文字是 `已完成`（可加「（建議）」），寫法 `- A. 已完成`，否則 `question upsert` 拒絕寫入；使用者做不到或改變主意時寫在自動加入的「其他」。一題只問一項檢查，多件事拆成多題，「已完成」才對得上每一件。有紀錄能看出動作是否發生時，結案前要對紀錄，見「求助題結案」。
+- **求助題**：發問前先用手上的遠端能力（ssh、截圖、桌面操作、瀏覽器）自己試，把試過什麼與結果寫進紀錄的 `- tried:` 行。紀錄有 `- kind: help` 時，題目須是單選題且有一個選項文字是 `已完成`（可加「（建議）」），寫法 `- A. 已完成`，否則拒絕寫入；使用者做不到或改變主意時寫在自動加入的「其他」。一題只問一項檢查，多件事拆成多題，「已完成」才對得上每一件。有紀錄能看出動作是否發生時，結案前要對紀錄，見「求助題結案」。
 
 ### 聊天提問格式
 
@@ -178,8 +152,7 @@ B. <選項>
 ### 待決題目檢查
 
 ```bash
-uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pending \
-  --questions "$questions" --decisions "$decisions" --session-id "$session_id"
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pending --session-id "$session_id"
 ```
 
 帶 `--session-id` 時略過確定屬於其他主控的決策紀錄：題號不在 `--questions` 指定的問題檔或它的歸檔檔，且紀錄的 `- session:` 是別的 session ID，或題號出現在其他主控的問題檔或歸檔檔。`- session:` 等於這個 session ID、題號在自己的問題檔，或看不出屬於誰的紀錄都照常檢查。不帶時檢查目錄內全部紀錄。檢查會搜尋 `.lat` 根目錄的 `questions-*.md`（舊位置）與 `.lat/questions/*.md`（新位置），以及兩處的 `-archive.md` 歸檔檔；在 Git 專案中另含各 worktree 自己 `.lat` 根目錄的舊問題檔，確認 pending 決策都有待答題；反向檢查只看 `--questions` 指定的問題檔，列出待答題的決策已非 pending 或找不到決策紀錄。回合結束的 DECIDE／HELP 檢查沿用帶自己 session ID 的結果。有問題時以非零結束，不印「沒有遺漏」；依輸出處理後重跑：
@@ -203,10 +176,10 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
 
 ## 側欄與通知
 
-`question upsert`、`set-status`、`cleanup`、`resolve-help`、`withdraw`，以及 activate、恢復時重綁與 deactivate，都會自動更新綁定窗格在 Herdr 側欄的名稱，主控不需另外執行：
+`question ask`、`set-status`、`cleanup`、`resolve-help`、`withdraw`，以及 activate、恢復時重綁與 deactivate，都會自動更新綁定窗格在 Herdr 側欄的名稱，主控不需另外執行：
 
 - 有待答時顯示 `<短名> ⚠待答{n}求助{n}`，短名是 HCOM 名稱最後一個連字號後的部分（與分頁名稱 `lat-<短名>` 相同，沒有連字號時用全名）；數字是自己問題檔中狀態為「待答」、決策紀錄仍未結案的題目，依 `- kind: help` 分成求助與其他，數字為 0 的那一項不顯示（例：`tene ⚠待答1`、`tene ⚠求助2`）；兩者都是 0 或 deactivate 後恢復原名。
-- `question upsert` 寫入新題或升版時，另發一則同樣文字的 Herdr 內建通知；Herdr 因發太快或忙碌沒顯示時不重試。
+- `question ask` 寫入新題或升版時，另發一則同樣文字的 Herdr 內建通知；Herdr 因發太快或忙碌沒顯示時不重試。
 - 問題檔沒有綁定，或 shell 不在 Herdr workspace、`lat.panel` 未啟用時略過；改綁到新窗格時，舊窗格先恢復原名；Herdr 呼叫失敗只在標準錯誤留一行 `lat-panel: sidebar not updated: …`，題目照常寫入。
 
 ## 求助題結案
@@ -216,8 +189,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
 主控能自行確認使用者已完成（例如檢查檔案、試連線）時，執行：
 
 ```bash
-uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question resolve-help \
-  --questions "$questions" --decisions "$decisions" --id "<ID>" \
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question resolve-help --id "<ID>" \
   --evidence "<查到的內容>" --location "<查證的檔案、指令或網址>"
 ```
 
@@ -228,8 +200,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question resolve-
 使用者表示某題不用答了，或需求改變使題目前提不成立時，執行：
 
 ```bash
-uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question withdraw \
-  --questions "$questions" --decisions "$decisions" --id "<ID>" \
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question withdraw --id "<ID>" \
   --reason "<為何不再需要>" --source "<可查證的依據>"
 ```
 
@@ -260,7 +231,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question withdraw
 面板或看板送出答覆時，程式已對每一題做來源核對（與下方 `question provenance` 相同），通過的題目：答覆與備註原文、`<ID> r<版本>` 與來源（面板紀錄路徑、行號、`time`、`section_sha256`）已附在 `.lat/decisions/<ID>.md` 末尾的 `## 答覆（r<版本>，面板，…）`，狀態行改為 `- status: answered`，題目標為 `已記錄`。通知逐題列出題號、版本與答覆，分成已記錄與未記錄兩組；通知本身不是核准證據。
 
 1. **已記錄的題目**：只讀待決紀錄裡記下的答覆，判斷意思：
-   - 指向明確：在該答覆段落補一行 `- 核准：<依答覆核准的方案與範圍>`，狀態改為 `approved`（求助題依「求助題結案」對過紀錄後改為 `resolved`）。
+   - 指向明確：執行 `question approve --id "<ID>" --scope "<依答覆核准的方案與範圍>"`，在紀錄末尾補 `- 核准：` 行、狀態從 `answered` 改為 `approved`；不是 `answered` 或是求助題時拒絕，不改任何檔（求助題依「求助題結案」對過紀錄後改為 `resolved`）。
    - 看不懂、含糊，或一段答覆含糊涵蓋多題：依「版本」改版重問，紀錄保留舊答覆、狀態改回 `pending`、版本行改為新版本，並在聊天說明原因。
 2. **未記錄的題目**（通知寫明原因，例如找不到待決紀錄、紀錄不是 `pending`、紀錄版本與題目不同、核對失敗）：題目維持已送出；依原因修正後，照下方「手動記錄」處理。
 3. **沒有列出答覆**：只更新理解，結束回合等待。
@@ -306,12 +277,11 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question withdraw
 使用者在聊天回答 `<ID> r<版本>：…` 時，執行：
 
 ```bash
-uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question record-chat \
-  --questions "$questions" --decisions "$decisions" --id "<ID>" \
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question record-chat --id "<ID>" \
   --text "<聊天答覆原文>" --source "<session ID 與可定位的訊息來源>"
 ```
 
-工具在問題檔鎖內讀一次這題的目前版本（快照），核對待決紀錄仍是 `pending` 且版本相同，把原文逐字附在紀錄末尾的 `## 答覆（r<版本>，聊天，…）`，欄位與面板送出相同，來源寫 `聊天，<--source>，section_sha256 <雜湊>`；狀態改為 `answered`，再把題目標為已記錄。標記失敗時紀錄還原並以非零結束。紀錄不是 `pending`、版本不同、題目已記錄，或 `--text`、`--source` 只有空白時拒絕，不改任何檔。成功時輸出 `id`、`revision`、`status` 與 `section_sha256`。之後照「收到 `lat-panel` 通知」的已記錄題目判斷意思並寫核准。使用者答的不是目前版本時不執行，依「版本」改版重問。
+工具在問題檔鎖內讀一次這題的目前版本（快照），核對待決紀錄仍是 `pending` 且版本相同，把原文逐字附在紀錄末尾的 `## 答覆（r<版本>，聊天，…）`，欄位與面板送出相同，來源寫 `聊天，<--source>，section_sha256 <雜湊>`；狀態改為 `answered`，再把題目標為已記錄。標記失敗時紀錄還原並以非零結束。紀錄不是 `pending`、版本不同、題目已記錄，或 `--text`、`--source` 只有空白時拒絕，不改任何檔。成功時輸出 `id`、`revision`、`status` 與 `section_sha256`。之後照「收到 `lat-panel` 通知」的已記錄題目判斷意思並核准。使用者答的不是目前版本時不執行，依「版本」改版重問。
 
 手動做法仍可用：依「手動記錄」的步驟 1 建立快照，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，把輸出的 `section_sha256` 傳給上述 `set-status`。
 
@@ -319,13 +289,12 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question record-c
 
 ## 清理題目
 
-`question upsert` 每次寫題前只清理 `--questions` 指定的檔案：已記錄且有時間與相符 `set-status` 雜湊的題目立即歸檔；待答題則只在同名決策紀錄可讀且狀態不是 `pending` 時歸檔，但已送出答覆、還沒記錄的題目保留；決策狀態為 `withdrawn` 的題目例外，即使已送出答覆也歸檔。歸檔保留題目原文，不以時間讓未答題過期。每次清理都在 `panel-journal.jsonl` 寫一筆 `cleanup`，記錄搬走的題號與原因。
+`question ask` 每次寫題前只清理自己的問題檔：已記錄且有時間與相符 `set-status` 雜湊的題目立即歸檔；待答題則只在同名決策紀錄可讀且狀態不是 `pending` 時歸檔，但已送出答覆、還沒記錄的題目保留；決策狀態為 `withdrawn` 的題目例外，即使已送出答覆也歸檔。歸檔保留題目原文，不以時間讓未答題過期。每次清理都在 `panel-journal.jsonl` 寫一筆 `cleanup`，記錄搬走的題號與原因。
 
 不寫新題時可單獨清理：
 
 ```bash
-uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question cleanup \
-  --questions "$questions" --decisions "$decisions"
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question cleanup
 ```
 
 輸出 JSON 的 `archived`、`kept` 各列出 `id` 與 `reason`：
@@ -397,7 +366,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board list
 | `options` | 依題目順序；每項有 `letter`（依「題目格式」的選項字母，複選第 27 項起為空字串）、`label`（不含「（建議）」）、`impact`、`recommended`。 |
 | `recommendation` | 題末 `➡️` 推薦段落原文，沒有時為空字串。 |
 | `answer`、`note` | 目前答覆區的答覆與備註（含未送出的草稿），沒有時為空字串。 |
-| `asked_at` | 目前版本由 `question upsert` 寫入的時間（UTC，ISO 8601），取自面板紀錄的 `upsert`；面板紀錄沒有對應項目（較早寫入的題目）、不存在或讀不出來時為 `null`。作答、送出與記錄都不會改變它。 |
+| `asked_at` | 目前版本由 `question ask` 寫入的時間（UTC，ISO 8601），取自面板紀錄的 `upsert`；面板紀錄沒有對應項目（較早寫入的題目）、不存在或讀不出來時為 `null`。作答、送出與記錄都不會改變它。 |
 | `recorded_at` | 標為已記錄的時間，未記錄時為 `null`。 |
 | `section_sha256` | 作答時要帶回的區段雜湊。 |
 

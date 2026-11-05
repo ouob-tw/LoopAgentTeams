@@ -21,7 +21,7 @@ import time
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import DecisionStatus, read_decision_status
+from lat_decision_status import DecisionStatus, read_decision_session, read_decision_status
 from _lat_common import (full_hcom_name, process_starttime, resolve_agent_name, run_cli,
                          same_controller, shared_lat_dir, watcher_process_matches,
                          write_json_atomic, read_hcom_pauses)
@@ -3600,6 +3600,22 @@ def declare_alarm(args):
     print(json.dumps(declaration, ensure_ascii=False))
 
 
+def own_pending_decisions(decisions, session):
+    """IDs of the pending decision records that name this controller session, sorted."""
+    if not session:
+        return []
+    found = []
+    for path in sorted(Path(decisions).glob('*.md')):
+        try:
+            status = read_decision_status(path)
+            if (status.error is None and status.status == 'pending'
+                    and read_decision_session(path) == session):
+                found.append(path.stem)
+        except (OSError, UnicodeDecodeError):
+            continue
+    return found
+
+
 def declare_wait(args):
     workspace = args.workspace.resolve(strict=True)
     agent = valid_name(args.agent)
@@ -3611,9 +3627,12 @@ def declare_wait(args):
               f'as given: {error}', file=sys.stderr)
     else:
         agent = full_hcom_name(agents, agent, '--agent')
-    # A comma list waits for every entry; the first one still unanswered is the current target.
-    target, *also = (part.strip() for value in args.target for part in value.split(','))
-    names = [valid_name(target), *(valid_name(name) for name in also if name)]
+    # Every entry is waited for (with --for-pending, the controller's own pending decisions too);
+    # the first one still unanswered is the current target.
+    names = [valid_name(part.strip()) for value in args.target or ()
+             for part in value.split(',') if part.strip()]
+    if not names and not args.for_pending:
+        raise ValueError('give --for or --for-pending')
     declaration = {
         'agent': agent,
         'reason': args.reason.strip(),
@@ -3625,6 +3644,7 @@ def declare_wait(args):
         raise ValueError('--reason must not be empty')
     decision_targets = set()
     owners = []
+    own_record = False
     for path in sorted((lat_dir(workspace) / 'sessions').glob('*.json')):
         try:
             record = read_object(path, {})
@@ -3647,6 +3667,10 @@ def declare_wait(args):
                 continue
         decisions = Path(record['decisions_path'])
         owners.append((owner, decisions))
+        if args.for_pending and owner == agent:
+            own_record = True
+            names += [name for name in own_pending_decisions(decisions, record.get('session_id'))
+                      if name not in names]
         for name in names:
             decision = None if is_hcom_agent(agents, name) else pending_decision(decisions, name)
             if decision is not None:
@@ -3659,6 +3683,12 @@ def declare_wait(args):
                     f'Cannot wait on {name}: no pending decision for {owner}; '
                     f'matching records: {statuses}. To wait on the user\'s reply or a '
                     'manual step, record it as a pending decision and wait on that ID.')
+    if args.for_pending and not own_record:
+        raise ValueError(f'--for-pending is for a controller; {agent} has no active controller '
+                         'record in this workspace')
+    if not names:
+        raise ValueError(f'--for-pending: no pending decision names the session of {agent}; '
+                         'nothing to wait for')
     entries = []
     for name in names:
         if name in decision_targets:
@@ -3904,9 +3934,11 @@ def main():
     waiting = commands.add_parser('wait', help='Declare an agent wait condition')
     waiting.add_argument('--workspace', type=Path, required=True)
     waiting.add_argument('--agent', required=True)
-    waiting.add_argument('--for', dest='target', required=True, action='append',
+    waiting.add_argument('--for', dest='target', action='append',
                          help='a decision ID or agent name; a comma list or a repeated '
                               '--for waits for every entry')
+    waiting.add_argument('--for-pending', action='store_true',
+                         help="also wait for every pending decision of this controller's session")
     waiting.add_argument('--reason', required=True)
     waiting.add_argument('--minutes', type=int, choices=range(1, 721),
                          metavar='1..720', help=f'Agent wait deadline (default: {WAIT_DEFAULT_MINUTES} minutes)')

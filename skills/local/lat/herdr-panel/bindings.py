@@ -709,8 +709,8 @@ def _notification_message(questions_key, owed, delivered):
     if recorded:
         parts.append(
             "Recorded at submit, decision record status answered: " + "; ".join(recorded)
-            + ". Read the answer in .lat/decisions/<ID>.md, judge what it means and write the "
-            "approved scope; re-ask with a new revision if it is unclear."
+            + ". Read the answer in .lat/decisions/<ID>.md, judge what it means and run "
+            "question approve --id <ID> --scope; re-ask with a new revision if it is unclear."
         )
     if unrecorded:
         parts.append(
