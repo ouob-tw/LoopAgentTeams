@@ -147,7 +147,7 @@
 			{/if}
 			<div class="scroller" bind:this={scroller}>
 				{#if shownText !== null}
-					<pre bind:this={pre} style:padding-bottom={covers ? `${covers + 4}px` : null}>{#each lines as line, row (row)}{#each line as run, index (index)}<span style={run.style || null}>{run.text}</span>{/each}{'\n'}{/each}</pre>
+					<pre bind:this={pre} style:padding-bottom={covers ? `${covers}px` : null}>{#each lines as line, row (row)}{#each line as run, index (index)}<span style={run.style || null}>{run.text}</span>{/each}{'\n'}{/each}</pre>
 				{:else if status === 'loading'}
 					<p class="loading">讀取畫面中…</p>
 				{/if}
@@ -242,6 +242,7 @@
 		min-width: 100%;
 		user-select: text;
 	}
+	/* Inside the screen's own colours, so a literal like theirs: inverted with them in the light theme. */
 	.loading {
 		margin: 0.4rem 0.5rem;
 		color: #8b919a;

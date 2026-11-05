@@ -65,15 +65,15 @@ export function folderName(path: string): string {
 	return path.replace(/\/+$/, '').split('/').at(-1) || path;
 }
 
-/** The roster's shape for an agent's status, so both lists read alike: ▲ needs the user, ■ done,
- *  ● working, ○ idle, □ unknown. */
 /** What the page's status card warns of about the agent, each in a word or two, for a line that holds
  *  only a mark for each (the 畫面分頁's). */
-export function agentWarnings(agent: Pick<KnownAgent, 'inHerdr' | 'switch' | 'hcom' | 'noHooks'>): string[] {
-	if (!agent.inHerdr || agent.switch) return ['切換未完成'];
+export function agentWarnings(agent: Pick<KnownAgent, 'switch' | 'hcom' | 'noHooks'>): string[] {
+	if (agent.switch) return ['切換未完成'];
 	return [...(agent.hcom === 'unknown' ? ['HCOM 不明'] : []), ...(agent.noHooks ? ['未接 HCOM'] : [])];
 }
 
+/** The roster's shape for an agent's status, so both lists read alike: ▲ needs the user, ■ done,
+ *  ● working, ○ idle, □ unknown. */
 export const AGENT_MARK: Record<AgentStatus, ControllerStatus | 'unknown'> = {
 	blocked: 'waiting',
 	done: 'delivered',

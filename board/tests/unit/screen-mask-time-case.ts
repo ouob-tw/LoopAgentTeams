@@ -27,13 +27,13 @@ const CASES: [name: string, text: string, unwrapped?: string][] = [
 	['near a sk- key', screen('sk-')],
 	['near an xox key', screen('xoxb-')],
 	// On a larger screen: a pattern quadratic in the run shows only there.
-	['near a JWT, cut by dashes', screen('eyJ-', 600, 120)],
-	['near a JWT, two parts over and over', screen('eyJabcdefgh.', 600, 120)],
+	['near a JWT, cut by dashes', screen('eyJ-', 600, 160)],
+	['near a JWT, two parts over and over', screen('eyJabcdefgh.', 600, 160)],
 	['near a JWT, no dots', screen('eyJabcdefghijklmnop')],
 	['Bearer over and over', screen('Bearer ')],
 	['an open OSC over and over', screen(`${ESC}]0;`)],
 	['pane text that almost holds every pair of lines', screen('a'), nearPairs(300)],
-	['pane text that almost holds every pair of lines of a larger screen', screen('a', 600, 120), nearPairs(600)],
+	['pane text that almost holds every pair of lines of a larger screen', screen('a', 600, 160), nearPairs(600)],
 	['pane text of a megabyte', screen('a'), nearPairs(300).repeat(4)]
 ];
 

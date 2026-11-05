@@ -77,7 +77,7 @@ const openTab = (label: string) => tab.eval(`[...document.querySelectorAll('.det
 const ROWS = `(() => { const range = document.createRange(); range.selectNodeContents(document.querySelector('.screen-panel pre')); return [...range.getClientRects()]; })()`;
 /** Where the box lies against the tabs, the command line and its text. */
 const layout = () =>
-	tab.eval<{ boxTop: number; boxBottom: number; tabsBottom: number; dockTop: number; lastBottom: number; firstTop: number; fontSize: string; lineHeight: number; scrollerBottom: number; pageWide: number; viewport: number; pageTall: number; viewHeight: number }>(`(() => {
+	tab.eval<{ boxTop: number; boxBottom: number; tabsBottom: number; dockTop: number; lastBottom: number; firstTop: number; fontSize: string; lineHeight: number; scrollerBottom: number; dockBottom: number; pageWide: number; viewport: number; pageTall: number; viewHeight: number }>(`(() => {
 		const box = document.querySelector('.screen-panel .box').getBoundingClientRect();
 		const pre = document.querySelector('.screen-panel pre');
 		const rows = ${ROWS};
@@ -88,6 +88,7 @@ const layout = () =>
 			scrollerBottom: (() => { const scroller = document.querySelector('.screen-panel .scroller'); return scroller.getBoundingClientRect().top + scroller.clientHeight; })(),
 			tabsBottom: document.querySelector('.detail [role=tablist]').getBoundingClientRect().bottom,
 			dockTop: document.querySelector('.dock').getBoundingClientRect().top,
+			dockBottom: document.querySelector('.dock').getBoundingClientRect().bottom,
 			lastBottom: Math.max(...rows.map((row) => row.bottom)),
 			firstTop: Math.min(...rows.map((row) => row.top)),
 			fontSize: getComputedStyle(pre).fontSize,
@@ -145,6 +146,24 @@ for (const [device, size] of [
 	});
 }
 
+test('phone: the on-screen keyboard coming up shortens the box, the command line staying above the keyboard and the page not scrolling', async () => {
+	await visit({ width: 390, height: 844, phone: true });
+	const before = await layout();
+	// Chrome shows no on-screen keyboard here: the visual viewport is made to shrink as a keyboard 300px tall shrinks it.
+	await tab.eval(`(() => {
+		Object.defineProperty(VisualViewport.prototype, 'height', { configurable: true, get: () => innerHeight - 300 });
+		visualViewport.dispatchEvent(new Event('resize'));
+	})()`);
+	await sleep(200);
+	const at = await layout();
+	expect(Math.round(at.viewHeight - at.dockBottom)).toBe(300);
+	expect(Math.abs(at.dockTop - at.boxBottom)).toBeLessThan(2);
+	expect(at.boxBottom).toBeLessThan(before.boxBottom - 250);
+	expect(at.scrollerBottom - at.lastBottom).toBeLessThan(at.lineHeight);
+	expect(at.pageTall).toBeLessThanOrEqual(at.viewHeight);
+	expect(at.boxTop).toBe(before.boxTop);
+	await shot('phone-keyboard-up');
+});
 test('a screen shorter than the box has its bottom line at the bottom and blank above', async () => {
 	setHerdr(lines(4));
 	await visit({ width: 1280, height: 800, phone: false });

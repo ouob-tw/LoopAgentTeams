@@ -21,11 +21,12 @@
 		remember(KEY_MENU_KEY, value ? '1' : '0');
 	}
 
-	/** The gap under the panel, in rem: `bottom` below. */
-	const GAP_REM = 0.5;
+	let panel = $state<HTMLElement>();
 	let panelHeight = $state(0);
+	// From the panel's top to the box's bottom, the gap under it included, as laid out.
 	$effect(() => {
-		covers = open ? panelHeight + GAP_REM * parseFloat(getComputedStyle(document.documentElement).fontSize) : 0;
+		void panelHeight;
+		covers = open && panel?.offsetParent ? panel.offsetParent.clientHeight - panel.offsetTop : 0;
 	});
 
 	const blocked = $derived(screenView.blocked);
@@ -39,7 +40,7 @@
 {/snippet}
 
 {#if open}
-	<div class="panel" role="toolbar" aria-label="按鍵選單" title={blocked ?? undefined} bind:offsetHeight={panelHeight}>
+	<div class="panel" role="toolbar" aria-label="按鍵選單" title={blocked ?? undefined} bind:this={panel} bind:offsetHeight={panelHeight}>
 		<div class="head">按鍵<button type="button" class="close" aria-label="收起按鍵選單" onpointerdown={keep} onclick={() => setOpen(false)}>✕</button></div>
 		<div class="groups">
 			<div class="named">{@render keys(KEY_MENU.named)}</div>
