@@ -2,6 +2,7 @@
 import http.client
 import importlib.util
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -121,6 +122,15 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(self.get(u2)[1], full)
         u3 = self.publish(self.make('  <HTML><body>own</body></HTML>', 'c'), 'full2').stdout.strip().split('127.0.0.1:7161')[1]
         self.assertNotIn('viewport', self.get(u3)[1])
+
+    def test_frame_nav_sits_above_content_and_text_is_18px(self):
+        frame = load().FRAME
+        nav = re.search(r'#variants\{([^}]*)\}', frame).group(1)
+        self.assertIn('position:sticky', nav)
+        self.assertRegex(nav, r'z-index:\s*[1-9]\d*')  # content with opacity/transform paints above a sticky bar without it
+        self.assertRegex(re.search(r'body\{([^}]*)\}', frame).group(1), r'font:\s*18px')
+        button = re.search(r'#variants button\{([^}]*)\}', frame).group(1)
+        self.assertIn('font:inherit', button)  # the buttons follow the 18px body
 
     def test_single_file_and_bad_name(self):
         f = self.root / 'one.html'
