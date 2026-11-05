@@ -2198,5 +2198,223 @@ class RemovedOptionTests(WriteCase):
         self.assertNotIn('preauth', json.loads((self.sessions / f'{SESSION}.json').read_text()))
 
 
+HOOK_SETUP = Path(__file__).resolve().parents[1] / 'references/hook-setup.md'
+
+
+class HoldTests(WriteCase):
+    """Commits the user chose to merge but not push stay held until a human-answered decision
+    releases them: push and deploy-prod checks ask, the global pre-push hook refuses."""
+
+    def setUp(self):
+        super().setUp()
+        self.remote = self.root / 'remote.git'
+        git(self.root, 'init', '-q', '--bare', str(self.remote))
+        git(self.repo, 'remote', 'add', 'origin', str(self.remote))
+        git(self.repo, 'push', '-q', 'origin', 'dev')
+        self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["dev"]\n'
+                                     '[actions.deploy-prod]\nallow = true\n')
+        self.held = self.commit('feat(lat): not to push (#313)')
+        self.decision('HOLD-1')  # the answer "merge, but do not push"
+        self.holds_file = self.repo / '.lat' / 'preauth-holds.json'
+
+    def hold(self, *args, **kwargs):
+        return self.run_tool('hold', *args, **kwargs)
+
+    def add(self, *commits, decision='HOLD-1', **kwargs):
+        result = self.hold('add', '--commit', *(commits or [self.held]), '--decision', decision,
+                           '--by', 'orch', **kwargs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def release(self, decision):
+        return self.hold('release', '--commit', self.held, '--decision', decision,
+                         '--by', 'orch')
+
+    def listed(self):
+        result = self.hold('list', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_add_list_and_release_keep_who_when_and_why(self):
+        self.add(self.held[:8])
+        [entry] = self.listed()
+        self.assertEqual((entry['commit'], entry['decision'], entry['by'], entry['released']),
+                         (self.held, 'HOLD-1', 'orch', None))
+        self.assertTrue(entry['at'])
+        self.assertIn(f'{self.held[:12]} held (decision HOLD-1, by orch',
+                      self.hold('list').stdout)
+        with self.subTest('an unknown commit and a second hold of the same commit are refused'):
+            for commit in ('nope', self.held):
+                result = self.hold('add', '--commit', commit, '--decision', 'HOLD-1', '--by', 'x')
+                self.assertEqual(result.returncode, 1)
+            self.assertEqual(len(self.listed()), 1)
+        before = self.holds_file.read_bytes()
+        self.decision('PUSH-1')
+        for command in ('add', 'release'):
+            with self.subTest(f'{command} without a name is refused unchanged'):
+                result = self.hold(command, '--commit', self.held, '--decision', 'PUSH-1',
+                                   '--by', ' ')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('--by needs', result.stderr)
+                self.assertEqual(self.holds_file.read_bytes(), before)
+        result = self.release('PUSH-1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        released = self.listed()[0]['released']
+        self.assertEqual((released['decision'], released['by']), ('PUSH-1', 'orch'))
+        self.assertTrue(released['at'])
+        self.assertIn('released (decision PUSH-1', self.hold('list').stdout)
+
+    def test_two_names_of_one_commit_are_one_hold_that_one_release_lifts(self):
+        self.add(self.held, 'HEAD')
+        self.assertEqual(len(self.listed()), 1)
+        self.decision('PUSH-1')
+        self.assertEqual(self.release('PUSH-1').returncode, 0)
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+
+    def test_holds_live_in_the_main_checkout_lat_shared_by_worktrees(self):
+        linked = self.root / 'linked'
+        git(self.repo, 'worktree', 'add', '-q', '-b', 'side', str(linked))
+        self.add(cwd=linked)
+        self.assertTrue(self.holds_file.exists())
+        self.assertFalse((linked / '.lat').exists())
+        self.assertEqual(self.listed()[0]['commit'], self.held)
+
+    def test_a_push_whose_range_holds_a_commit_asks_and_names_it(self):
+        self.commit('fix(lat): later work (#313)', 'c.txt')
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+        self.add()
+        verdict = self.check('push', '--branch', 'dev')
+        self.assertEqual(verdict['verdict'], 'ask')
+        [reason] = verdict['reasons']
+        self.assertIn('held commits', reason)
+        self.assertIn(f'{self.held[:12]} (decision HOLD-1)', reason)
+        self.assertEqual(verdict['reason_kinds'], ['condition'])
+
+    def test_a_held_commit_the_remote_already_has_is_not_in_the_range(self):
+        self.add()
+        git(self.repo, 'push', '-q', 'origin', 'dev')
+        self.commit('fix(lat): later work (#313)', 'c.txt')
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+
+    def test_a_deploy_prod_version_containing_a_held_commit_asks(self):
+        self.commit('fix(lat): later work (#313)', 'c.txt')
+        self.gate_record()
+        self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
+        self.add()
+        verdict = self.check('deploy-prod')
+        self.assertEqual(verdict['verdict'], 'ask')
+        self.assertIn(f'{self.held[:12]} (decision HOLD-1)', ' '.join(verdict['reasons']))
+        self.assertEqual(verdict['reason_kinds'], ['condition'])
+
+    def test_release_needs_another_human_answered_decision(self):
+        self.add()
+        self.decision('PUSH-2', status='pending', answer=False)
+        for decision, reason in (('PUSH-2', 'PUSH-2 status is pending'),
+                                 ('PUSH-9', 'not found'),
+                                 ('HOLD-1', 'the decision that placed the hold')):
+            with self.subTest(decision):
+                result = self.release(decision)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(reason, result.stderr)
+                self.assertIsNone(self.listed()[0]['released'])
+        self.decision('PUSH-1')
+        self.assertEqual(self.release('PUSH-1').returncode, 0)
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+        self.gate_record()
+        self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
+
+    def test_an_unreadable_hold_file_makes_the_check_ask(self):
+        row = dict(commit=self.held, decision='HOLD-1', by='orch', at='t', released=None)
+        for label, text in (
+                ('not JSON', '{broken'),
+                ('a release without who, why and when',
+                 json.dumps({'holds': [dict(row, released='pending')]})),
+                ('no released key', json.dumps({'holds': [{k: v for k, v in row.items()
+                                                           if k != 'released'}]})),
+                ('a short commit ID', json.dumps({'holds': [dict(row, commit=self.held[:12])]}))):
+            with self.subTest(label):
+                self.write(self.holds_file, text)
+                verdict = self.check('push', '--branch', 'dev')
+                self.assertEqual(verdict['reason_kinds'], ['error'])
+                self.assertIn('preauth-holds.json', verdict['reasons'][0])
+
+    def test_a_held_commit_the_repo_no_longer_has_holds_nothing_back(self):
+        row = dict(commit='f' * 40, decision='HOLD-1', by='orch', at='t', released=None)
+        self.write(self.holds_file, json.dumps({'holds': [row]}))
+        self.gate_record()
+        self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
+
+    def test_a_held_commit_git_cannot_read_still_asks(self):
+        self.commit('fix(lat): later work (#313)', 'c.txt')
+        self.gate_record()
+        self.add()
+        loose = self.repo / '.git' / 'objects' / self.held[:2] / self.held[2:]
+        loose.chmod(0o644)
+        loose.write_bytes(b'corrupt')
+        verdict = self.check('deploy-prod')
+        self.assertIn('error', verdict['reason_kinds'])
+        self.assertIn(f'contains held commit {self.held[:12]}', ' '.join(verdict['reasons']))
+
+    def test_the_docs_say_when_to_hold_and_that_push_and_deploy_questions_list_holds(self):
+        skill = (SCRIPT.parents[1] / 'SKILL.md').read_text()
+        pending = skill.split('### 使用者待決事項', 1)[1].split('\n## ', 1)[0]
+        guide = (SCRIPT.parents[1] / 'references/preauth.md').read_text()
+        holds = guide.split('## 保留不推送的提交', 1)[1].split('\n## ', 1)[0]
+        for text in (pending, holds):
+            self.assertIn('合併但不推送', text)
+            self.assertIn('hold add', text)
+            self.assertIn('推送題和部署題', text)
+
+    def global_hook(self):
+        """The global pre-push hook from hook-setup.md, reaching this checkout's script through
+        a temp HOME laid out like a host install."""
+        body = HOOK_SETUP.read_text().split('<!-- global-pre-push -->', 1)[1]
+        hooks = self.root / 'global-hooks'
+        self.write(hooks / 'pre-push', body.split('```sh\n', 1)[1].split('```', 1)[0])
+        (hooks / 'pre-push').chmod(0o755)
+        skill = self.root / 'home' / '.agents' / 'skills' / 'lat'
+        skill.mkdir(parents=True)
+        (skill / 'scripts').symlink_to(SCRIPT.parent)
+        return hooks
+
+    def repo_hook(self, text):
+        own = Path(git(self.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+        self.write(own / 'hooks' / 'pre-push', text)
+        (own / 'hooks' / 'pre-push').chmod(0o755)
+        return own / 'hooks' / 'pre-push'
+
+    def push(self, hooks):
+        environment = dict(GIT_ENV, HOME=str(self.root / 'home'), UV_PYTHON=sys.executable)
+        return subprocess.run(['git', '-c', f'core.hooksPath={hooks}', '-C', str(self.repo),
+                               'push', 'origin', 'dev'], capture_output=True, text=True,
+                              env=environment, timeout=120)
+
+    def test_the_global_pre_push_hook_refuses_held_commits_and_still_runs_the_repo_hook(self):
+        hooks = self.global_hook()
+        stdin_copy = self.root / 'repo-hook-stdin'
+        self.repo_hook(f'#!/bin/sh\ncat > {stdin_copy}\nexit 0\n')
+        self.add()
+        result = self.push(hooks)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'{self.held[:12]} (decision HOLD-1)', result.stderr)
+        self.assertFalse(stdin_copy.exists())
+        self.assertNotEqual(git(self.remote, 'rev-parse', 'dev'), self.held)
+        self.decision('PUSH-1')
+        self.assertEqual(self.release('PUSH-1').returncode, 0)
+        result = self.push(hooks)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(git(self.remote, 'rev-parse', 'dev'), self.held)
+        self.assertIn(f'refs/heads/dev {self.held} refs/heads/dev', stdin_copy.read_text())
+
+    def test_without_holds_the_global_hook_keeps_the_repo_hook_s_verdict(self):
+        hooks = self.global_hook()
+        hook = self.repo_hook('#!/bin/sh\necho repo hook says no >&2\nexit 3\n')
+        result = self.push(hooks)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('repo hook says no', result.stderr)
+        hook.unlink()
+        self.assertEqual(self.push(hooks).returncode, 0)
+
+
 if __name__ == '__main__':
     unittest.main()

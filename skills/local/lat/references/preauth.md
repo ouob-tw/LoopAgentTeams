@@ -116,7 +116,9 @@ source = "<待決紀錄 ID>"
 - `push` 另核對兩件事，要推的版本是 `--commit`，沒給就是該分支的本地最新版本：
   - 遠端沒有的提交（`git log <版本> --not --remotes`，不會先 fetch）每一個的提交訊息都要引用票號（`#313` 或 `owner/repo#313`），而且引用的票號全部是本輪工作總表上的票。票號相同才算同一張票；兩邊都寫了 repo 時 repo 也要相同，總表只寫數字的票代表本專案自己的 tracker（`docs/agents/issue-tracker.md` 裡 `gh issue` 指令帶的那一個 `-R owner/repo`，`gh pr` 指令的不算；檔案不在、沒寫或寫了不只一個就當認不出），帶 repo 的引用接受本專案 tracker 與總表其他票寫過的 repo（總表全是數字就只比數字）。沒有票號、或引用了總表以外的票時 `ask`，原因列出全部那些提交；找不到本輪工作總表也 `ask`。
   - 整套測試閘門：僅推送 `main` 時查，見下方。
+  - 範圍內（同上，遠端沒有的提交）有[保留中的提交](#保留不推送的提交)就 `ask`。
 - `deploy-test`、`deploy-prod`、`install-host`：在主工作區執行，且 HEAD 等於整合分支的最新版本；給了 `--commit` 時必須就是 HEAD。整合分支取本輪工作總表的 `integration_branch`，總表沒寫（例如 `activate` 建立的總表）才取設定的 `integration_branch`，兩者都沒有就 `ask`。`deploy-test` 另要求專案層寫了 `target`。
+- `deploy-prod` 另核對：要部署的版本含有（本身或祖先）未解除的[保留中的提交](#保留不推送的提交)就 `ask`。
 - 整套測試閘門（推送 `main`、`deploy-test`、`deploy-prod`、`install-host`；推送 `main` 以外的分支如 `dev` 不查這一項，只查上面的分支清單與提交票號）：沿用 three-tier-testing 閘門推送前檢查的同一段程式，依該版本的內容、每一套整套命令與執行目錄算出指紋，登記檔 `full_suites` 的每一套都要有可沿用的通過紀錄。沒有紀錄、只有失敗紀錄、或版本內容變了使舊紀錄不適用，都 `ask` 並寫出缺的那一套；登記檔沒列整套也 `ask`。只讀閘門紀錄，不跑測試。
   - `deploy-test`、`deploy-prod` 例外：專案層該動作段寫了 `rollback` 時，以下全部成立就不必有整套通過紀錄（`basis` 寫出 `rollback` 與採用的總結紀錄）；任一項不成立就照上面要求整套，`ask` 的原因同時寫出為什麼受影響測試不夠：
     - 部署歷史（見下一項）裡有「上一次成功部署」：同一動作、同一部署目標（設定的 `target` 原文；`deploy-prod` 沒寫時兩邊都是空）最近一筆 `result` 為 `succeeded` 的紀錄。沒有歷史檔、找不到成功紀錄、只有別的目標成功過（部署目標改了）都要整套。`deploy-test` 的紀錄不算 `deploy-prod` 的上一次部署，反之亦然。
@@ -125,6 +127,23 @@ source = "<待決紀錄 ID>"
     - three-tier-testing 閘門有一筆 `post-merge` 的合併後受影響測試總結紀錄（`kind: affected-summary`）整體通過（`passed: true`），它的 `tree` 等於要部署版本的 tree，起點 `base` 是上一次成功部署的提交本身或它的祖先。只讀閘門紀錄，不跑測試。
   - 部署歷史：被部署專案主工作區的 `.lat/deploy-history.jsonl`，每行一筆：`at`（時間）、`action`、`target`（當時設定的部署目標原文，沒寫為 `null`）、`commit`（完整提交）、`result`、`approval`（`preauth` 依預先授權、`manual` 人工核准），人工核准另有 `question`（待決題號）。由 `record` 寫入，見「記錄：record」。
   - `install-host` 例外：只看 `skills/` 下各技能資料夾（有 `SKILL.md` 的資料夾，略過點開頭的目錄）裡登記的整套，與安裝腳本共用閘門的同一段判斷：該套最近一次「這個資料夾內容與現在相同」的執行通過才算數，資料夾外的改動（例如看板）不影響。缺的那一套寫在原因裡，並註明所在技能資料夾與「沒有這份內容的執行」或「最近一次執行失敗」。專案沒有任何技能資料夾時，照上面的規則看全部整套。
+
+## 保留不推送的提交
+
+使用者對合併題選「合併但不推送」（或其他「先不要推上去」的答覆）時，主控合併完立刻登記保留，之後別張票的推送、正式部署與全域 `pre-push` hook 都會擋下這些提交。工具不從決策紀錄自己推斷，沒登記就不擋。
+
+```bash
+p hold add --commit <提交>… --decision <該題的待決紀錄 ID> --by <主控 HCOM 名稱>
+p hold list [--json]
+p hold release --commit <提交>… --decision <允許推送的待決紀錄 ID> --by <主控 HCOM 名稱>
+```
+
+- 登記哪個提交：合併後整合分支上的那個提交（合併提交；快轉合併時是票的最後一個提交）。只要推送或部署的範圍含有它就擋。
+- 紀錄在主工作區 `.lat/preauth-holds.json`，所有 worktree 與主控共用；每筆記提交（完整編號）、決策編號、登記者、時間，解除後另記解除的決策編號、解除者與時間，舊紀錄保留。同一提交已在保留中時再登記會拒絕；同一次給的多個名稱指向同一提交只記一筆。這個 repo 已找不到的保留提交（改寫歷史後被清掉）不在任何版本裡，不會擋。
+- `push` 的 `check` 範圍（遠端沒有的提交）、`deploy-prod` 要部署的版本含有未解除的保留時回 `ask`，類別沿用 `condition`，原因以 `held commits` 開頭並列出 `<提交前 12 碼> (decision <ID>)`，參謀不能定案。保留檔讀不出或格式不對（缺欄位、提交不是完整編號、`released` 不是 null 也不是完整的解除紀錄），或 Git 判斷不出版本是否含保留提交（例如提交物件損壞）時，類別為 `error`。
+- 解除只憑真人答覆：引用的待決紀錄要在本主控的待決目錄（沒有 session 紀錄時是主工作區 `.lat/decisions`），狀態為 `answered` 或 `approved` 且答覆段有 `- 來源：` 行，而且不能是登記保留的那一題。不成立就拒絕、不改檔。解除後的提交不再擋。
+- 推送題和部署題要寫出範圍內被保留的提交與原決策編號（`hold list` 或 `check` 的原因），讓使用者知道這次會一起帶上它們；使用者同意帶上後才 `hold release`，再推送或部署。
+- 全域 `pre-push` hook 也呼叫這份紀錄，見 [全域推送前 hook](hook-setup.md#全域推送前-hook)。
 
 ## 看板寫入
 
