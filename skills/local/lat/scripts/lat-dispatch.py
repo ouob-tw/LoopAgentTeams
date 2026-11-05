@@ -56,6 +56,8 @@ LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does 
 - The 現場動作額度 section above only supplements these two card fields; it never replaces them.'''
 VISUAL_RULES = '''- This work changes something visible, so it is accepted only after someone other than the implementer (the orchestrator or an independent viewer) has looked at it and said whether it looks right against what the user wants. Passing tests or matching a prototype does not count.
 - Implementing: deliver frame sheets covering each changed look, including mid-motion and transition frames, and report their paths. Open web pages in a real browser, try every control and check the console first.
+- Use the `ui-copy` skill when building the screen or writing its requirements.
+- A screen that needs its explanatory text read to be understood counts as wrong.
 - If a prototype or reference itself looks wrong, raise it to the orchestrator; do not copy the defect.
 - Turn each defect found by eye into a testable bound where possible, and show the test fails on the defective version (example: water surface height limit 5%, defective version 86.9%).'''
 FIXED = '''## Fixed fields
