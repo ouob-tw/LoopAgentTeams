@@ -25,11 +25,14 @@ const KEY_SHAPES = [
 	/\bAIza[0-9A-Za-z_-]{35}/g,
 	/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g
 ];
-/** A value named as a secret: only the value (the last group) is hidden. */
-const NAMED_VALUES = [
-	/([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_.-]*\s*[=:]\s*["']?)([^\s"'`,;]{4,})/gi,
-	/(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})/g
-];
+/** A value named as a secret, in two steps so the time stays in line with the screen's size: a whole
+ *  name, whether it says secret, then what follows it. One pattern for all three backtracks without
+ *  end on a long run of such words, and the board answers nobody while it does. */
+const NAME = /[A-Za-z0-9_.-]+/g;
+const SECRET_WORD = /password|passwd|secret|token|api[_-]?key|access[_-]?key/i;
+/** After a secret's name: only the value (the group) is hidden. */
+const NAMED_VALUE = /\s*[=:]\s*["']?([^\s"'`,;]{4,})/y;
+const BEARER_VALUE = /(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})/g;
 const BEGIN_KEY = /^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----$/;
 const END_KEY = /^-----END [A-Z0-9 ]*PRIVATE KEY-----$/;
 /** A line of a key block's body. */
@@ -119,12 +122,18 @@ export function maskScreen(screen: string, wrapped: Wrapped = 'all'): string {
 		}
 	};
 	for (const shape of KEY_SHAPES) for (const match of joined.matchAll(shape)) hide(match.index, match.index + match[0].length);
-	for (const named of NAMED_VALUES) {
-		for (const match of joined.matchAll(named)) {
-			const value = match[match.length - 1];
-			const end = match.index + match[0].length;
-			hide(end - value.length, end);
-		}
+	NAME.lastIndex = 0;
+	for (let name = NAME.exec(joined); name; name = NAME.exec(joined)) {
+		if (!SECRET_WORD.test(name[0])) continue;
+		NAMED_VALUE.lastIndex = NAME.lastIndex;
+		const value = NAMED_VALUE.exec(joined);
+		if (!value) continue;
+		NAME.lastIndex = NAMED_VALUE.lastIndex;
+		hide(NAMED_VALUE.lastIndex - value[1].length, NAMED_VALUE.lastIndex);
+	}
+	for (const match of joined.matchAll(BEARER_VALUE)) {
+		const end = match.index + match[0].length;
+		hide(end - match[2].length, end);
 	}
 
 	// A private key block's body: between its markers, or up to the screen's end when its end is not

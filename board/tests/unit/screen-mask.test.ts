@@ -1,5 +1,6 @@
 // What the 畫面分頁 hides before a pane's screen leaves the server: strings that look like passwords
 // and keys, replaced with marks as wide as they were, colour codes and the layout left as they are.
+import { join } from 'node:path';
 import { expect, test } from 'bun:test';
 import { MASK, maskScreen, wrapMatters } from '../../src/lib/server/screen-mask.ts';
 
@@ -110,3 +111,30 @@ test('a screen with only colour codes and box lines is left alone', () => {
 	const screen = `${ESC}[38;5;4m╭────╮${ESC}[0m\r\n${ESC}[7m│ ok │${ESC}[0m`;
 	expect(maskScreen(screen)).toBe(screen);
 });
+
+test('a name is judged whole, and the value after a name that fails to have one is still looked for', () => {
+	const hunter = fake('hun', 'ter22');
+	expect(maskScreen(`my.TOKEN_x = "${hunter}" done`)).toBe(`my.TOKEN_x = "${masked(hunter.length)}" done`);
+	expect(maskScreen(`note=password=${hunter} done`)).toBe(`note=password=${masked(hunter.length)} done`);
+	expect(maskScreen(`token=ab password=${hunter} done`)).toBe(`token=ab password=${masked(hunter.length)} done`);
+	expect(maskScreen(`password=${hunter}=token=${hunter}`)).toBe(`password=${masked(hunter.length * 2 + 7)}`);
+	expect(maskScreen(`passwordpassword nothing=${hunter}`)).toBe(`passwordpassword nothing=${hunter}`);
+});
+
+// Masking runs on the board's only thread at every read of an open 畫面分頁, about once a second: a
+// screen that takes longer than a read's interval leaves the board answering nobody. Up from what any
+// of these takes here (under 200 ms) so that a loaded host passes, and far under the minutes a pattern
+// that backtracks takes.
+const SCREEN_LIMIT_MS = 1_000;
+/** Longer than all the screens at their limit: a screen stuck masking is ended here. */
+const ALL_SCREENS_MS = 30_000;
+
+test('no screen, however it is filled, takes a noticeable time to mask', async () => {
+	const child = Bun.spawn([process.execPath, join(import.meta.dir, 'screen-mask-time-case.ts')], { stdout: 'pipe', stderr: 'pipe' });
+	const timer = setTimeout(() => child.kill('SIGKILL'), ALL_SCREENS_MS);
+	const [code, output, errors] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+	clearTimeout(timer);
+	expect({ code, errors, output }).toMatchObject({ code: 0, errors: '' });
+	const times = output.trim().split('\n').map((row) => row.split(/ (.*)/s));
+	expect(times.filter(([ms]) => Number(ms) > SCREEN_LIMIT_MS)).toEqual([]);
+}, ALL_SCREENS_MS + 10_000);
