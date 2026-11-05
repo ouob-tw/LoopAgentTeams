@@ -3236,6 +3236,93 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
                 self.assertEqual(json.loads(path.read_text())['hooks']['UserPromptSubmit'], [other])
 
+    # ---- close check (#458) ------------------------------------------------------------
+
+    def close_hook(self, command, body='- [x] done\n', gh_exit=0):
+        """Run the PreToolUse hook on a Bash command against a fake gh serving `body`."""
+        (self.root / 'issue-body.md').write_text(body)
+        gh = self.binary / 'gh'
+        gh.write_text('#!/bin/sh\n'
+                      'printf \'%s\\n\' "$*" >> "$FAKE_GH_LOG"\n'
+                      f'[ {gh_exit} = 0 ] || {{ echo "HTTP 404" >&2; exit {gh_exit}; }}\n'
+                      'while IFS= read -r line; do printf \'%s\\n\' "$line"; done < "$FAKE_GH_BODY"\n')
+        gh.chmod(0o755)
+        payload = dict(hook_event_name='PreToolUse', cwd=str(self.work), session_id=SESSION,
+                       tool_name='Bash', tool_input=dict(command=command))
+        return self.cli('hook', payload=payload, session=OTHER,
+                        extra_env=dict(FAKE_GH_BODY=str(self.root / 'issue-body.md'),
+                                       FAKE_GH_LOG=str(self.root / 'gh.log')))
+
+    def write_answered(self, identifier, answered=True):
+        answer = '## 答覆\n- 答覆：A\n- 來源：聊天\n' if answered else ''
+        self.decisions.joinpath(f'{identifier}.md').write_text(
+            f'- status: {"answered" if answered else "pending"}\n- version: r1\n'
+            f'- advisor: needs-human\n\n{answer}')
+
+    def test_close_check_blocks_unchecked_items_without_a_cited_human_answer(self):
+        self.activate()
+        body = '## 驗收條件\n- [x] 第一項\n- [ ] 第二項還沒測\n'
+        result = self.close_hook('cd /x && gh issue close 458 -R o/r --comment "done"', body)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('issue 458 still has unchecked acceptance items', result.stderr)
+        self.assertIn('- [ ] 第二項還沒測', result.stderr)
+        self.assertNotIn('第一項', result.stderr)
+        self.assertIn('issue view 458 --json body -q .body -R o/r',
+                      (self.root / 'gh.log').read_text())
+        self.write_answered('LAT-DROP', answered=False)
+        result = self.close_hook('gh issue close 458 -c "dropped per LAT-DROP r1"', body)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('LAT-DROP 沒有 r1 的真人答覆', result.stderr)
+
+    def test_close_check_reads_flag_orders_and_line_breaks(self):
+        self.activate()
+        self.write_answered('LAT-DROP')
+        body = '- [ ] x\n'
+        for command in ('gh issue -R o/r close 5', 'gh issue --repo=o/r close 5 -cdone',
+                        'gh issue close 5\ngh issue close 6 -c "LAT-DROP r1"',
+                        "gh issue comment 5 --body-file - <<EOF\nit's done\nEOF\ngh issue close 5"):
+            with self.subTest(command=command):
+                result = self.close_hook(command, body)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        result = self.close_hook('gh issue -R o/r close 5 -c"per LAT-DROP r1"', body)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertIn('issue view 5 --json body -q .body -R o/r', (self.root / 'gh.log').read_text())
+        result = self.close_hook('gh issue close 5', '```\n- [ ] example\n```\n- [x] done\n')
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+
+    def test_close_check_allows_checked_items_or_a_cited_human_answer(self):
+        self.activate()
+        result = self.close_hook('gh issue close 458', '- [x] a\n- [X] b\n')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        self.write_answered('LAT-DROP')
+        result = self.close_hook('gh issue close 458 --comment="user agreed: LAT-DROP r1"',
+                                 '- [ ] dropped item\n')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+
+    def test_close_check_warns_without_blocking_when_the_issue_cannot_be_read(self):
+        self.activate()
+        result = self.close_hook('gh issue close 458', '- [ ] x\n', gh_exit=1)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertIn('讀不到票 458 的內容（HTTP 404）', json.loads(result.stdout)['systemMessage'])
+
+    def test_close_check_skips_other_commands_and_non_controller_sessions(self):
+        result = self.close_hook('gh issue close 458', '- [ ] x\n')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        self.activate()
+        result = self.close_hook('gh issue view 458 && echo close', '- [ ] x\n')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        self.assertFalse((self.root / 'gh.log').exists())
+
+    def test_install_adds_pre_tool_use_with_bash_matcher(self):
+        settings = self.root / 'settings.json'
+        flags = ('--client', 'claude', '--claude-settings', settings)
+        self.assertEqual(self.cli('install', *flags).returncode, 0)
+        group, = json.loads(settings.read_text())['hooks']['PreToolUse']
+        self.assertEqual(group['matcher'], 'Bash')
+        self.assertTrue(group['hooks'][0]['command'].endswith('hook --client claude'))
+        self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
+        self.assertNotIn('PreToolUse', json.loads(settings.read_text())['hooks'])
+
     # ---- work ledger (#299) ------------------------------------------------------------
 
     def ledger_path(self, round_number=1):

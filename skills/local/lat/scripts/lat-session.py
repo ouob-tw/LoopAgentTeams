@@ -52,7 +52,16 @@ QUESTION_TAGS = ('DECIDE:', 'HELP:')
 DUTY_TAGS = QUESTION_TAGS + ('DONE:',)
 DUTY_LIMIT = 40
 REAP_TIMEOUT_SECONDS = 60
-HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit')
+HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit', 'PreToolUse')
+# Events whose LAT group runs only for these matchers; the others take no matcher.
+MATCHERS = dict(SessionStart=MATCHER, PreToolUse='Bash')
+# An unchecked Markdown checkbox: the close check reads acceptance items this way.
+UNCHECKED_ITEM = re.compile(r'^[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+\[ \][ \t]*(.*)$', re.MULTILINE)
+# `<decision ID> r<N>` cited in a close comment.
+CITED_DECISION = re.compile(r'(?<![0-9A-Za-z_.-])([A-Za-z0-9][A-Za-z0-9._-]*) r([1-9][0-9]*)'
+                            r'(?![0-9A-Za-z_-])')
+SHELL_OPERATORS = set(';&|()<>')
+GH_TIMEOUT_SECONDS = 20
 INLINE_REFERENCES = ('references/agents.md', 'references/task-cards.md')
 QUESTION_HEADING = re.compile(r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', re.MULTILINE)
 # Between questions the Stop hook shows; Claude Code drops blank lines, so a visible line.
@@ -946,16 +955,16 @@ def configure(args):
                     lat_handlers[0].update(handler)
                 else:
                     handlers.append(handler)
-                if event == 'SessionStart':
-                    group['matcher'] = MATCHER
+                if event in MATCHERS:
+                    group['matcher'] = MATCHERS[event]
                 else:
                     group.pop('matcher', None)
             else:
                 group = dict(hooks=[handler])
                 if args.client == 'codex':
                     group['name'] = GROUP_NAME
-                if event == 'SessionStart':
-                    group['matcher'] = MATCHER
+                if event in MATCHERS:
+                    group['matcher'] = MATCHERS[event]
                 groups.append(group)
         else:
             for group in owned:
@@ -1107,6 +1116,129 @@ def preauth_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def unquoted_newlines_end_commands(command):
+    """The text with each newline outside quotes turned into `;`, so a line ends a command."""
+    out, quote, escaped = [], None, False
+    for c in command:
+        if escaped:
+            escaped = False
+        elif c == '\\' and quote != "'":
+            escaped = True
+        elif quote and c == quote:
+            quote = None
+        elif not quote and c in '\'"':
+            quote = c
+        elif not quote and c == '\n':
+            c = ';'
+        out.append(c)
+    return ''.join(out)
+
+
+def issue_closes(command):
+    """`(issue, repo, comment)` for each `gh issue close` in the shell text; ValueError when
+    the text cannot be split."""
+    lexer = shlex.shlex(unquoted_newlines_end_commands(command), posix=True,
+                        punctuation_chars=True)
+    lexer.whitespace_split = True
+    words, found = list(lexer), []
+    for index, word in enumerate(words):
+        if Path(word).name != 'gh':
+            continue
+        positionals, repo, comment = [], None, ''
+        rest = words[index + 1:]
+        while rest and not set(rest[0]) <= SHELL_OPERATORS:
+            word, rest = rest[0], rest[1:]
+            name, joined, value = word.partition('=')
+            if name in ('-c', '--comment', '-R', '--repo', '-r', '--reason'):
+                if not joined:
+                    value, rest = (rest[0], rest[1:]) if rest else ('', rest)
+            elif word[:2] in ('-c', '-R', '-r') and len(word) > 2:
+                name, value = word[:2], word[2:]
+            elif not word.startswith('-'):
+                positionals.append(word)
+            if name in ('-c', '--comment'):
+                comment = value
+            elif name in ('-R', '--repo'):
+                repo = value
+        if positionals[:2] == ['issue', 'close'] and positionals[2:]:
+            found.append((positionals[2], repo, comment))
+    return found
+
+
+def issue_body(issue, repo, cwd):
+    """The issue body from gh, or `(None, reason)` when it cannot be read."""
+    command = ['gh', 'issue', 'view', issue, '--json', 'body', '-q', '.body']
+    if repo:
+        command += ['-R', repo]
+    try:
+        result = subprocess.run(command, cwd=cwd, text=True, capture_output=True,
+                                timeout=GH_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, str(error)
+    if result.returncode != 0:
+        return None, result.stderr.strip() or f'gh exited {result.returncode}'
+    return result.stdout, None
+
+
+def close_problem(record, issue, body, comment):
+    """Why closing is refused, or None. Unchecked items pass only when the comment cites a
+    decision record holding a human answer for that revision."""
+    body = re.sub(r'^[ \t]*```.*?^[ \t]*```', '', body, flags=re.MULTILINE | re.DOTALL)
+    unchecked = [item.strip() or '(blank)' for item in UNCHECKED_ITEM.findall(body)]
+    if not unchecked:
+        return None
+    decisions = Path(record['decisions_path'])
+    cited = [f'{name} r{revision}' for name, revision in CITED_DECISION.findall(comment)
+             if (decisions / f'{name}.md').is_file()]
+    problems = []
+    for basis in cited:
+        problem = preauth_module().prior_promise_problem(basis, decisions)
+        if problem is None:
+            return None
+        problems.append(problem)
+    items = '\n'.join(f'  - [ ] {item}' for item in unchecked)
+    why = ('；'.join(problems) if problems else
+           'the close comment (-c/--comment) cites no decision record as `<ID> r<N>`')
+    return (f'Blocked: issue {issue} still has unchecked acceptance items:\n{items}\n'
+            f'Check them off once they have evidence, or close with a comment that cites the '
+            f'decision record where the user agreed to drop them ({why}).')
+
+
+def close_check(record, payload):
+    """PreToolUse: refuse `gh issue close` while the issue has unchecked acceptance items."""
+    command = payload.get('tool_input', {}).get('command', '')
+    if isinstance(command, list):
+        # A list runs as is; a shell given `-c <script>` runs its last word.
+        command = (str(command[-1]) if command and Path(str(command[0])).name in
+                   ('sh', 'bash', 'zsh', 'dash') else shlex.join(map(str, command)))
+    if not isinstance(command, str):
+        return 0
+    try:
+        closes = issue_closes(command)
+    except ValueError as error:
+        if not re.search(r'\bgh\b.*\bissue\b.*\bclose\b', command, re.DOTALL):
+            return 0
+        print(f'Blocked: this command mentions `gh issue close` but the close check cannot '
+              f'read it ({error}). Run `gh issue close` as its own command; for other text '
+              'that only mentions it, pass the text from a file or with -m.', file=sys.stderr)
+        return 2
+    for issue, repo, comment in closes:
+        body, error = issue_body(issue, repo, payload['cwd'])
+        if body is None:
+            close_warning(f'讀不到票 {issue} 的內容（{error}）')
+            continue
+        problem = close_problem(record, issue, body, comment)
+        if problem:
+            print(problem, file=sys.stderr)
+            return 2
+    return 0
+
+
+def close_warning(detail):
+    print(json.dumps({'systemMessage': f'LAT 關票檢查未執行，未攔下：{detail}'},
+                     ensure_ascii=False))
 
 
 def question_sent(session_id, questions_paths, identifier):
@@ -1767,6 +1899,9 @@ def hook(client):
         elif event == 'SessionStart':
             if payload.get('source') not in ('compact', 'resume'):
                 return
+        elif event == 'PreToolUse':
+            if 'close' not in str(payload.get('tool_input')):
+                return 0
         elif event != 'UserPromptSubmit':
             return
         sid = session_id(payload.get('session_id'))
@@ -1794,6 +1929,14 @@ def hook(client):
                 except Exception as exc:  # noqa: BLE001 - never block the user's message
                     warn_reminder(exc)
             return
+        if event == 'PreToolUse':
+            if not all(record.get(key) == value for key, value in expected.items()):
+                return 0
+            try:
+                return close_check(record, payload)
+            except Exception as exc:  # noqa: BLE001 - a hook bug only warns
+                close_warning(exc)
+                return 0
         # Reject known mismatches before checking broken dependencies.
         if any(key in record and record[key] != value for key, value in expected.items()):
             return
@@ -1819,6 +1962,9 @@ def hook(client):
         if event == 'UserPromptSubmit':
             warn_reminder(exc)
             return
+        if event == 'PreToolUse':
+            close_warning(exc)
+            return 0
         if event == 'Stop':
             tag = question_tag(message)
             if tag:
@@ -1861,7 +2007,7 @@ def main():
     listing.add_argument('--active', action='store_true', required=True,
                          help='List active records; mark those whose agent hcom no longer has')
     listing.add_argument('--workspace', type=Path, required=True)
-    sub.add_parser('hook', help='Read SessionStart, Stop or UserPromptSubmit payload on stdin')
+    sub.add_parser('hook', help='Read SessionStart, Stop, UserPromptSubmit or PreToolUse payload on stdin')
     for action in ('install', 'uninstall'):
         config = sub.add_parser(action, help=f'{action.title()} the independent LAT hook group')
         config.add_argument('--codex-home', type=Path,
@@ -1882,7 +2028,7 @@ def main():
         elif args.action == 'list':
             list_active(args)
         elif args.action == 'hook':
-            hook(args.client)
+            return hook(args.client) or 0
         else:
             configure(args)
     except (OSError, ValueError, TypeError, KeyError) as exc:
