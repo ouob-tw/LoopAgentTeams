@@ -53,6 +53,14 @@ import { boundOf, readLaunches } from './sent-views.ts';
 /** How many launches the new-controller page lists, and the new-agent form too. */
 const LISTED_LAUNCHES = 20;
 
+const isFolder = (path: string): boolean => {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+};
+
 /** The folders controllers have run in, each once, the most recently reported first. */
 async function listProjects(board: Board): Promise<Project[]> {
 	const latest = new Map<string, string>();
@@ -65,23 +73,11 @@ async function listProjects(board: Board): Promise<Project[]> {
 	return [...latest]
 		.sort(([, a], [, b]) => Date.parse(b) - Date.parse(a))
 		.map(([path, lastUsedAt]) => {
-			let exists = false;
-			try {
-				exists = statSync(path).isDirectory();
-			} catch {
-				// Moved or deleted since; starting there says so.
-			}
+			// One moved or deleted since says so when started there.
+			const exists = isFolder(path);
 			return { path, lastUsedAt, exists, git: exists && gitRoot(path) !== null };
 		});
 }
-
-const isFolder = (path: string): boolean => {
-	try {
-		return statSync(path).isDirectory();
-	} catch {
-		return false;
-	}
-};
 
 /** Each Herdr workspace's folder its latest plain agent was started in, from `launches` newest
  *  first; a failed launch does not count, and a folder no longer there is left out. */
