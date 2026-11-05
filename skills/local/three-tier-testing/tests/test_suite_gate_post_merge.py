@@ -9,7 +9,7 @@ from pathlib import Path
 
 # Run by file path (the affected template) as well as by discover.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_suite_gate import AffectedCase, git
+from test_suite_gate import GIT_ENV, AffectedCase, git
 from test_suite_gate_rerun import RerunCase
 
 
@@ -32,6 +32,36 @@ class PostMergeTests(AffectedCase):
             self.touch(name)
         git(self.repo, 'add', '-A')
         self.commit(self.repo, 'batch')
+
+    def checkouts_left(self):
+        """Temporary checkout directories and extra worktree entries still present."""
+        listed = subprocess.run(['git', 'worktree', 'list', '--porcelain'], cwd=self.repo,
+                                capture_output=True, text=True, env=GIT_ENV).stdout
+        entries = [line for line in listed.splitlines() if line.startswith('worktree ')]
+        parent = self.state / 'checkouts'
+        return [p.name for p in parent.iterdir()] if parent.exists() else [], entries[1:]
+
+    def test_it_runs_in_a_clean_checkout_unaffected_by_a_merge_into_the_work_tree(self):
+        # The test command merges another commit into the work tree while it runs.
+        self.registry['affected']['commands']['.'] = (
+            f'echo "$PWD {{tests}}" >> {self.log}; echo more >> {self.repo}/README.md; '
+            f'git -C {self.repo} commit -qam other')
+        self.write_registry()
+        self.merge('src/app.py')
+        head, tree = rev(self.repo, 'HEAD'), rev(self.repo, 'HEAD^{tree}')
+        self.touch('scratch.txt', 'untracked in the work tree\n')
+        result = self.post_merge()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(rev(self.repo, 'HEAD'), head, 'the work tree moved on')
+        summary = self.summary()
+        self.assertEqual((summary['passed'], summary['content_changed']), (True, False))
+        self.assertEqual((summary['repo'], summary['commit'], summary['tree']),
+                         (str(self.repo), head, tree))
+        self.assertEqual(summary['changed_files'], ['.suite-gate.json', 'src/app.py'])
+        ran_in = Path(self.log.read_text().split()[0])
+        self.assertEqual(ran_in.parent, self.state / 'checkouts')
+        self.assertIn('uncommitted changes; they are not tested', result.stderr)
+        self.assertEqual(self.checkouts_left(), ([], []))
 
     def test_all_groups_passing_is_an_overall_pass_sharing_one_run_id(self):
         self.registry['affected']['checks'] = [
@@ -72,6 +102,7 @@ class PostMergeTests(AffectedCase):
         self.assertEqual(summary['exit_code'], 1)
         self.assertEqual([(g['dir'], g['exit_code']) for g in summary['groups']],
                          [('.', 0), ('web', 3)])
+        self.assertEqual(self.checkouts_left(), ([], []))
 
     def test_a_fallback_reusing_a_pass_counts_and_records_the_reuse(self):
         self.merge('README.md', 'src/app.py')
@@ -118,12 +149,12 @@ class PostMergeTests(AffectedCase):
 
     def test_content_changing_when_nothing_is_selected_fails_with_a_nonzero_exit(self):
         self.merge('docs/guide.md')
-        # Another writer changes the work tree while the gate finds nothing to run.
+        # Something changes the checkout's content while the gate finds nothing to run.
         hook = self.tmp / 'gitwrap'
         hook.mkdir()
         real = subprocess.run(['which', 'git'], capture_output=True, text=True).stdout.strip()
         (hook / 'git').write_text(
-            f'#!/bin/sh\ncase "$*" in *ls-tree*) echo late >> {self.repo}/README.md;; esac\n'
+            '#!/bin/sh\ncase "$PWD $*" in */checkouts/*ls-tree*) echo late >> README.md;; esac\n'
             f'exec {real} "$@"\n')
         (hook / 'git').chmod(0o755)
         self.env['PATH'] = f"{hook}:{self.env['PATH']}"
@@ -149,6 +180,7 @@ class PostMergeTests(AffectedCase):
         self.assertEqual([(g['dir'], g['exit_code'], g['interrupted']) for g in summary['groups']],
                          [('.', None, True)], 'the interrupted group is listed')
         self.assertIn('affected in .: interrupted', self.gate('status').stdout)
+        self.assertEqual(self.checkouts_left(), ([], []))
 
     def test_post_merge_needs_a_base(self):
         self.merge('src/app.py')
@@ -205,6 +237,8 @@ class PostMergeRerunTests(RerunCase):
         git(self.repo, 'checkout', '-qb', 'feature')
         (self.repo / 'web/src').mkdir()
         (self.repo / 'web/src/page.ts').write_text('changed\n')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'batch')
         self.plan('bun', ('bun-fail.txt', 1), ('bun-pass.txt', 0))
         result = self.gate('affected', '--base', 'main', '--purpose', 'post-merge')
         self.assertEqual(result.returncode, 0, result.stderr)

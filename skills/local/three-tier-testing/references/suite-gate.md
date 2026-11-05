@@ -56,7 +56,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --registered web --
 - 某套啟動不了（例如執行目錄不存在）時同樣印出「not run」、以 2 結束，其餘套件照跑。
 - Ctrl-C 或 `kill` 會轉給每一套還在跑的 `run`，等它們都停掉測試後才結束，不寫紀錄；其他原因提早結束時也先停掉已開始的套件，再移除暫時目錄。
 - 跑完（通過、失敗或 Ctrl-C）都會移除暫時目錄並清掉 worktree 登記；移除失敗時印出位置，請手動刪除後執行 `git worktree prune`。閘門被強制殺掉時會留下，同樣手動清。
-- 單獨的 `run -- <指令>` 與 `affected`（包括退回整套）仍在目前工作區執行。
+- 單獨的 `run -- <指令>` 與沒帶 `--purpose post-merge` 的 `affected`（包括退回整套）仍在目前工作區執行。
 
 ### 怎樣算「同一份內容」
 
@@ -196,10 +196,11 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批工作的起點> --purpose post-merge
 ```
 
+- 測的是目前 `HEAD` 那個提交：照 [`run --registered`](#照登記寫法跑run---registered) 的方式在暫時乾淨檢出裡挑選並執行（複製 `fingerprint_include` 的被忽略檔、有 `bun.lock` 的目錄先裝依賴、跑完或中途失敗都移除檢出），所以執行中工作區再合併或改檔都不影響結果；沒提交的改動不會被測到。各組紀錄的執行目錄是那個已移除的檢出，總結的 `repo` 仍記原工作區。
 - 挑選與執行和一般 `affected` 完全相同（含檢查清單、退回整套、失敗重跑）；`--base` 必填，少了就以結束碼 2 停止、不寫紀錄。這次改動新增的測試檔沒被選到、對照表讀不懂等執行前就停止的情況，也不寫總結。
 - 開跑時產生一個執行編號（`run_id`，32 個十六進位字元），這次的每一筆紀錄都帶著它：各目錄的受影響測試、檢查清單、退回的整套，以及退回整套沿用時的沿用紀錄。
 - 全部結束後另寫一筆總結紀錄（`kind: "affected-summary"`），`status` 會列出它（一行結果，下面每組一行）。
-- **整體通過**（`passed: true`）只在以下全部成立時：每一組結束碼都是 0（失敗重跑後通過也算 0）、沒有被中斷、整次執行前後內容沒變（`HEAD` 與工作區的 tree 都沒變，且沒有任何一組紀錄標為內容改變）。任一組失敗、被中斷（Ctrl-C 或 `kill`，總結照寫，閘門以 128＋訊號編號結束）或內容改變都算失敗。
+- **整體通過**（`passed: true`）只在以下全部成立時：每一組結束碼都是 0（失敗重跑後通過也算 0）、沒有被中斷、整次執行前後檢出的內容沒變（檢出的 `HEAD` 與 tree 都沒變，且沒有任何一組紀錄標為內容改變）。任一組失敗、被中斷（Ctrl-C 或 `kill`，總結照寫，閘門以 128＋訊號編號結束）或內容改變都算失敗。
 - 沒有選出任何測試（例如只改文件）時，仍寫總結，整體算通過，`nothing_selected` 為 `true`。
 - 退回整套的那幾套，同內容已有通過紀錄時照常沿用，總結的該組記下被沿用的紀錄（`reused`）。
 - 結束碼：有一組失敗時取第一個失敗組的結束碼；各組都是 0（或沒有選出測試）但內容改變時為 1。
@@ -211,11 +212,11 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批
 | `kind` | 固定 `"affected-summary"` |
 | `purpose` | 固定 `"post-merge"` |
 | `run_id` | 執行編號，與這次各組紀錄的 `run_id` 相同 |
-| `repo` | 執行時的 repo 根目錄（工作區的絕對路徑） |
+| `repo` | 執行指令時的 repo 根目錄（原工作區的絕對路徑，不是暫時檢出） |
 | `base` | 起點的完整提交（`--base` 解析後的 40 碼） |
 | `commit` | 開跑時 `HEAD` 的完整提交（目標提交） |
-| `tree` | 開跑時工作區內容的 tree（追蹤檔加上沒被忽略的新檔，等同 `git add -A` 後的 tree）。工作區乾淨時等於 `git rev-parse <commit>^{tree}`；要確認測的就是某個提交，比對這兩者 |
-| `changed_files` | 起點到工作區的改動檔（repo 相對路徑，排序） |
+| `tree` | 暫時檢出開跑時的 tree，等於 `git rev-parse <commit>^{tree}`；要確認測的就是某個提交，比對這兩者 |
+| `changed_files` | 起點到 `commit` 的改動檔（repo 相對路徑，排序） |
 | `groups` | 每一組，依執行順序：`kind`（`check`、`affected` 或 `full-suite`）、`dir`（執行目錄，repo 相對，根目錄為 `.`）、`command`、`tests`（`affected` 組選出的測試，repo 相對；其餘為 `null`）、`exit_code`（失敗重跑後的結果）、`fingerprint`（該組的指紋）、`flaky`（是否靠失敗重跑才通過）、`content_changed`、`reused`（沿用時是被沿用那筆的 `time`、`agent`、`purpose`、`fingerprint`，否則 `null`）、`not_run`（準備目錄失敗而沒跑時的原因，否則 `null`）、`interrupted`（這組執行中被中斷時為 `true`，`exit_code` 為 `null`）。被中斷後還沒開始的組不列出 |
 | `nothing_selected` | 沒有選出任何測試時為 `true` |
 | `interrupted` | 被中斷時為 `true` |
