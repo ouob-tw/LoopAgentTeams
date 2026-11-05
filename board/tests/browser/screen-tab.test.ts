@@ -242,3 +242,13 @@ test("a closed agent's 畫面 tab says it must be brought back first", async () 
 	expect(jsonLines(join(fixture.dir, 'herdr-list-calls.jsonl')).some((args: string[]) => args[1] === 'get' && args[2] === 'wA:p-s-gone')).toBe(false);
 	await shot('desktop-closed-agent-screen');
 });
+
+test('after the connection drops and comes back, the tab shows the latest screen by itself', async () => {
+	await visit({ width: 1280, height: 800, phone: false });
+	await openScreen();
+	await fixture.stop();
+	setHerdr({ screens: { [PANE]: ['$ back after the drop'] } });
+	await fixture.start();
+	await tab.until(`document.querySelector('.screen-panel pre')?.innerText.includes('back after the drop')`, 'the latest screen', 20_000);
+	await shot('desktop-after-reconnect');
+}, 40_000);
