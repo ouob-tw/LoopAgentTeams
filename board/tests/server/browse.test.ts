@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expandHome, latestOnly, listKey, nameMatches, pathMatches, shownSearch, suggestedFolders, typedFolder, typedLevel } from '../../src/lib/board/folder-search.ts';
+import { expandHome, latestOnly, listKey, nameMatches, pathMatches, shownSearch, stillListed, suggestedFolders, typedFolder, typedLevel } from '../../src/lib/board/folder-search.ts';
 import type { FolderSearch } from '../../src/lib/board/launch.ts';
 import { gitRoot } from '../../src/lib/server/git.ts';
 import { startFixture, type Fixture } from '../harness.ts';
@@ -47,6 +47,25 @@ describe('the shared rules', () => {
 		expect(pathMatches('/home/u/work/LoopAgent', 'loop', home)).toBe(true);
 		expect(pathMatches('/home/u/work/LoopAgent', '~/WORK', home)).toBe(true);
 		expect(pathMatches('/home/u/work/LoopAgent', '/srv', home)).toBe(false);
+	});
+	test('a row listed for earlier text is still listed when the new text would list it too', () => {
+		const disk = { known: false, onDisk: true };
+		const known = { known: true, onDisk: true };
+		// In the typed level with a matching name; a sibling or a folder one level up is not.
+		expect(stillListed('/home/u/sub-three', disk, '~/sub-t', home)).toBe(true);
+		expect(stillListed('/home/u/sub-one', disk, '~/sub-t', home)).toBe(false);
+		expect(stillListed('/home/u/sub-one', disk, '~/sub-one/', home)).toBe(false);
+		expect(stillListed('/home/u/sub-one/deep', disk, '~/sub-one/', home)).toBe(true);
+		expect(stillListed('/home/u', disk, '~', home)).toBe(true);
+		expect(stillListed('/home/u/.config', disk, '~/con', home)).toBe(false);
+		expect(stillListed('/top', disk, '/to', home)).toBe(true);
+		// A known folder also by its path, as the list matches it; a gone one only that way.
+		expect(stillListed('/home/u/work/LoopAgent', known, 'loop', home)).toBe(true);
+		expect(stillListed('/home/u/work/LoopAgent', disk, 'loop', home)).toBe(false);
+		expect(stillListed('/home/u/work/LoopAgent', known, '~/srv', home)).toBe(false);
+		expect(stillListed('/home/u/xsub', { known: true, onDisk: false }, '~/sub', home)).toBe(false);
+		// With the home folder not known yet, `~` lists nothing.
+		expect(stillListed('/srv/sub', known, '~/su', '')).toBe(false);
 	});
 	test('before typing: the workspace folders first, then recent projects, five at most and each once', () => {
 		expect(suggestedFolders(['/w1', '/p2'], ['/p1', '/p2', '/p3', '/p4', '/p5'])).toEqual(['/w1', '/p2', '/p1', '/p3', '/p4']);

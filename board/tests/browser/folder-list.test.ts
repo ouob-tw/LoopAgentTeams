@@ -246,22 +246,60 @@ test.skipIf(!CHROME)('the arrows, Tab, Enter and Esc work the list as before, al
 	await press('ArrowDown');
 	await rowsAre(['sub-one', 'sub-three', 'sub-two']);
 
-	// The rows held during a search are only to look at: no key takes one, so what is typed stays.
-	await evaluate(`window.browseDelay = 400`);
-	await type('u');
-	await Bun.sleep(30);
+	// Rows held during a search work as fresh ones, but Tab and Enter take a held row only when it
+	// would still be listed for the text now in the box, so what is typed is never overwritten.
+	const hold = async (text: string) => {
+		await evaluate(`window.hold(${JSON.stringify(text)})`);
+		await type(text.slice(-1));
+		await until(`!!window.waiting[${JSON.stringify(text)}]`, `the search for ${text} to begin`);
+	};
+	const release = (text: string) => evaluate(`window.release(${JSON.stringify(text)})`);
+	const FOCUSED = `document.activeElement.id`;
+	await hold(`${alpha}/su`);
 	await press('ArrowDown');
-	expect(await evaluate(ACTIVE)).toBeNull();
+	expect(await evaluate(ACTIVE)).toBe('sub-one');
+	await press('ArrowDown');
+	expect(await evaluate(ACTIVE)).toBe('sub-three');
+	await press('ArrowUp');
+	expect(await evaluate(ACTIVE)).toBe('sub-one');
+	await press('ArrowUp');
+	expect(await evaluate(ACTIVE)).toBe('sub-two');
 	await press('Tab');
-	expect(await valueOf()).toBe(`${alpha}/su`);
-	expect(await evaluate(`document.activeElement.id`)).not.toBe('folder-box');
-	await evaluate(`document.querySelector('#folder-box').focus()`);
+	expect(await valueOf()).toBe(`${alpha}/sub-two/`);
+	expect(await evaluate(FOCUSED)).toBe('folder-box');
+	await release(`${alpha}/su`);
+	await retype(`${alpha}/s`);
 	await rowsAre(['sub-one', 'sub-three', 'sub-two']);
-	await type('b');
-	await Bun.sleep(30);
+	await evaluate(`document.querySelector('#folder-box').setSelectionRange(1e9, 1e9)`);
+	for (const letter of 'ub-') await type(letter);
+	await rowsAre(['sub-one', 'sub-three', 'sub-two']);
+	// `sub-one` is not listed for `sub-t`: Tab and Enter leave the text as typed, Tab keeps the focus.
+	await hold(`${alpha}/sub-t`);
+	await press('Tab');
+	expect(await valueOf()).toBe(`${alpha}/sub-t`);
+	expect(await evaluate(FOCUSED)).toBe('folder-box');
+	await press('ArrowDown');
+	expect(await evaluate(ACTIVE)).toBe('sub-one');
+	await press('Tab');
+	expect(await valueOf()).toBe(`${alpha}/sub-t`);
+	expect(await evaluate(FOCUSED)).toBe('folder-box');
+	expect(await evaluate(ACTIVE)).toBe('sub-one');
 	await press('Enter');
-	expect(await valueOf()).toBe(`${alpha}/sub`);
+	expect(await valueOf()).toBe(`${alpha}/sub-t`);
 	expect(await evaluate(LIST_TEXT)).toBeNull();
+	// `sub-three` is: Enter takes it.
+	await press('ArrowDown');
+	await rowsAre(['sub-one', 'sub-three', 'sub-two']);
+	await press('ArrowDown');
+	await press('ArrowDown');
+	expect(await evaluate(ACTIVE)).toBe('sub-three');
+	await press('Enter');
+	expect(await valueOf()).toBe(`${alpha}/sub-three`);
+	expect(await evaluate(LIST_TEXT)).toBeNull();
+	await release(`${alpha}/sub-t`);
+	await retype(`${alpha}/sub`);
+	await press('Escape');
+	await evaluate(`window.browseDelay = 400`);
 
 	// Tab takes the row the arrows are on and looks one level down; a second Tab before the answer
 	// does not take a row of the old list.
@@ -274,7 +312,7 @@ test.skipIf(!CHROME)('the arrows, Tab, Enter and Esc work the list as before, al
 	expect(await valueOf()).toBe(`${alpha}/sub-one/`);
 	await press('Tab');
 	expect(await valueOf()).toBe(`${alpha}/sub-one/`);
-	await evaluate(`document.querySelector('#folder-box').focus()`);
+	expect(await evaluate(FOCUSED)).toBe('folder-box');
 	await rowsAre(['deep']);
 	await evaluate(`window.browseDelay = 0`);
 
