@@ -1,14 +1,16 @@
 <script lang="ts">
 	// A closed agent's page, opened from the 已關閉 section, laid out like a running agent's: who it
 	// was and where it ran, its 接回 where a running agent's 關閉 sits, then its conversation up to the
-	// stop. Nothing is sent to it from the command line until it is back.
+	// stop, and a 畫面分頁 that says it has no screen until it is back. Nothing is sent to it from the command line until it is back.
 	import { folderName, lastSegment } from '#lib/board/agents.ts';
 	import { stoppedText, type ClosedAgent } from '#lib/board/closed-agents.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import ClosedResume from './ClosedResume.svelte';
 	import StatusMark from './StatusMark.svelte';
-	import TranslateToggle from './TranslateToggle.svelte';
+	import RecordTabs from './RecordTabs.svelte';
+	import ScreenPanel from './ScreenPanel.svelte';
 	import Transcript from './Transcript.svelte';
+	import { SCREEN_CLOSED_TEXT } from '#lib/board/screen.ts';
 
 	let {
 		agent,
@@ -24,6 +26,11 @@
 
 	const name = $derived(agent.tab ?? `@${lastSegment(agent.hcomName)}`);
 	const speaker = $derived({ id: agent.id, hcomName: agent.hcomName, lastReportAt: null });
+	const TABS = [
+		{ id: 'transcript', label: '對話紀錄', count: null },
+		{ id: 'screen', label: '畫面', count: null }
+	] as const;
+	let tab = $state<(typeof TABS)[number]['id']>('transcript');
 </script>
 
 <article class="profile" data-closed-agent={agent.id}>
@@ -50,11 +57,15 @@
 
 <ClosedResume {agent} {controllers} />
 
-<div class="records">
-	<h3>對話紀錄</h3>
-	<TranslateToggle />
-</div>
-<Transcript controller={speaker} feed="agent" />
+<RecordTabs tabs={TABS} bind:tab ariaLabel="Agent 的紀錄" translateTab="transcript">
+	{#snippet panel(id)}
+		{#if id === 'transcript'}
+			<Transcript controller={speaker} feed="agent" />
+		{:else}
+			<ScreenPanel agentId={agent.id} active={false} unavailable={SCREEN_CLOSED_TEXT} />
+		{/if}
+	{/snippet}
+</RecordTabs>
 
 <style>
 	.profile {
@@ -125,17 +136,5 @@
 	}
 	.mono {
 		font-family: var(--mono);
-	}
-	/* Drawn like the running agent's open 對話紀錄 tab. */
-	.records {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		border-bottom: 1px solid var(--line);
-	}
-	.records h3 {
-		margin: 0;
-		padding: 0.4rem 0.8rem;
-		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 </style>

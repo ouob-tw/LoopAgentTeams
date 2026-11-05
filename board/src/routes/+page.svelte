@@ -31,6 +31,8 @@
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerPage from '#lib/components/ControllerPage.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
+	import KeyRow from '#lib/components/KeyRow.svelte';
+	import { screenView } from '#lib/board/screen-view.svelte.ts';
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
 	import PdPending from '#lib/components/PdPending.svelte';
@@ -663,6 +665,8 @@
 			<Toasts
 				standing={board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))}
 			/>
+			<!-- A phone's 按鍵列, while a 畫面分頁 is shown. -->
+			{#if screenView.agentId && screenView.phone}<KeyRow />{/if}
 			<!-- A controller's page on the Herdr tab is written to as on its information page. -->
 			<CommandLine
 				controllers={herdrControllers}

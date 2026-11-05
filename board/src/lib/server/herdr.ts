@@ -362,6 +362,34 @@ export async function readScreen(config: BoardConfig, pane: string, source: Scre
 	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout };
 }
 
+/**
+ * The bottom screenful of the pane with its colour codes, however far the user scrolled it up in
+ * Herdr, without moving it: `pane get` tells how many rows it shows and how far up it is; at the
+ * bottom `pane read --source visible` is what it shows, scrolled up `--source recent --lines <rows>`
+ * is its last rows (blank rows at its bottom are not counted there, so a few earlier ones may show).
+ * `missing` when Herdr says the pane is not there.
+ */
+export async function readPaneScreen(config: BoardConfig, pane: string): Promise<{ text: string } | { reason: string; missing?: boolean }> {
+	const got = await herdr(config, ['pane', 'get', pane]);
+	if ('reason' in got) return { reason: `讀不到它的 Herdr 窗格：${got.reason}`, ...(/\bnot found\b/.test(got.reason) && { missing: true }) };
+	const scroll = (got.result.pane as { scroll?: { viewport_rows?: unknown; offset_from_bottom?: unknown } } | undefined)?.scroll;
+	const rows = scroll?.viewport_rows;
+	const offset = scroll?.offset_from_bottom;
+	if (typeof rows !== 'number' || typeof offset !== 'number') return { reason: '讀不到它的 Herdr 窗格：輸出不是預期的格式' };
+	const source = offset === 0 ? ['--source', 'visible'] : ['--source', 'recent', '--lines', String(rows)];
+	const run = await runCommand(config.herdrCommand, ['pane', 'read', pane, ...source, '--format', 'ansi'], { timeoutMs: config.herdrTimeoutMs });
+	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout };
+}
+
+/** One key press or a piece of text for a pane: a named key goes through `pane send-keys`, text
+ *  through `pane send-text` as it is (a terminal escape sequence too). */
+export type PaneInput = { key: string } | { text: string };
+
+/** Type one key press or piece of text into the pane. */
+export function sendPaneInput(config: BoardConfig, pane: string, input: PaneInput): Promise<HerdrAct> {
+	return herdrAct(config, 'key' in input ? ['pane', 'send-keys', pane, input.key] : ['pane', 'send-text', pane, input.text]);
+}
+
 /** Scrolls the pane to its bottom over Herdr's socket, so no key reaches what runs in it (Herdr
  *  0.9.5: `send-keys` has no key for it, and the keys it does send leave the pane scrolled). Returns
  *  why it did not, or null. */

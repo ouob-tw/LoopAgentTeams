@@ -1,10 +1,10 @@
 // Stands in for the Herdr CLI, so tests never open or create anything in a real Herdr. Each call
 // is logged to <dir>/herdr-calls.jsonl, except the lists every board read makes (`agent list`,
-// `workspace list`, `tab list`) and screen reads (`pane read`), which go to <dir>/herdr-list-calls.jsonl. <dir>/herdr.json holds
+// `workspace list`, `tab list`) and screen reads (`pane read`, `pane get`), which go to <dir>/herdr-list-calls.jsonl. <dir>/herdr.json holds
 // the panes, workspaces, agents and tabs `pane list`, `workspace list`, `agent list` and `tab list`
 // print, the ID `workspace create` answers with (`created`; null leaves it out), and per command
 // ("pane list", "workspace list", "agent list", "tab list", "workspace create", "agent prompt",
-// "agent send-keys", "pane close", "pane split", "tab rename", "tab create", "workspace close") a failure to act out, `fail: { exit, stderr }`, or output to
+// "agent send-keys", "pane send-keys", "pane send-text", "pane get", "pane read", "pane close", "pane split", "tab rename", "tab create", "workspace close") a failure to act out, `fail: { exit, stderr }`, or output to
 // print instead, `raw: <text>`. `agent prompt` and `agent send-keys` succeed otherwise, without
 // checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed,
 // and, as Herdr does, its tab and workspace once no pane is left in them (`closePanes`);
@@ -19,6 +19,10 @@
 // (0 at first) names; `agent send-keys <pane> shift+tab` moves it on by one, round to the first.
 // `scrolled: { <pane>: <text> }` is what `pane read <pane> --source visible` prints while the pane
 // is scrolled up, until `pane.scroll` brings it to the bottom; `--source detection` always reads the bottom.
+// `--format ansi` prints the same text. `recent: { <pane>: <text> }` is the pane's last lines, of which
+// `--source recent --lines <n>` prints the last n. `pane get <pane>` answers for a pane in `screens` or
+// `paneScroll`, its `scroll` being `{ viewport_rows: 24, offset_from_bottom: 0 }` with `paneScroll[<pane>]`
+// over it. `pane send-keys` and `pane send-text` succeed, logged as acting calls.
 // `processes: { <pane>: <process_info> }` is what `pane process-info --pane <pane>` and the socket's
 // `pane.process_info` answer, as Herdr prints them; a pane not in it fails. `exitOnPrompt: { <pane>: true }`
 // has `agent prompt <pane> /exit` end the client: its agent leaves the list and only its shell is left,
@@ -54,7 +58,7 @@ export function closePanes(/** @type {any} */ plan, /** @type {string[]} */ ids)
 export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} */ args, transport = 'cli') {
 	let stdout = '', stderr = '', code = 0;
 	const command = args.slice(0, 2).join(' ');
-	const listing = ['agent list', 'workspace list', 'tab list', 'pane read'].includes(command);
+	const listing = ['agent list', 'workspace list', 'tab list', 'pane read', 'pane get'].includes(command);
 	appendFileSync(join(dir, transport === 'socket' ? 'herdr-socket-calls.jsonl' : listing ? 'herdr-list-calls.jsonl' : 'herdr-calls.jsonl'), JSON.stringify(args) + '\n');
 	const planFile = join(dir, 'herdr.json');
 	const plan = existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) : {};
@@ -143,16 +147,37 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		}
 	} else if (command === 'pane read') {
 		const screens = plan.screens?.[args[2]];
-		const source = args.slice(3).join(' ');
-		if (source !== '--source visible' && source !== '--source detection') {
+		const options = args.slice(3);
+		const option = (/** @type {string} */ name) => (options.includes(name) ? options[options.indexOf(name) + 1] : undefined);
+		const source = option('--source');
+		const known = ['--source', '--format', '--lines'];
+		const valid =
+			options.length % 2 === 0 &&
+			options.every((word, index) => index % 2 === 1 || known.includes(word)) &&
+			['visible', 'detection', 'recent'].includes(source ?? '') &&
+			[undefined, 'ansi'].includes(option('--format')) &&
+			(source === 'recent') === (option('--lines') !== undefined);
+		if (!valid) {
 			stderr += `unexpected herdr command: ${args.join(' ')}\n`;
 			code = 2;
-		} else if (source === '--source visible' && plan.scrolled?.[args[2]] !== undefined) stdout += plan.scrolled[args[2]];
+		} else if (source === 'visible' && plan.scrolled?.[args[2]] !== undefined) stdout += plan.scrolled[args[2]];
+		else if (source === 'recent' && plan.recent?.[args[2]] !== undefined) stdout += plan.recent[args[2]].split('\n').slice(-Number(option('--lines'))).join('\n');
 		else if (screens) stdout += screens[(plan.screenAt?.[args[2]] ?? 0) % screens.length];
 		else {
 			stderr += JSON.stringify({ error: { code: 'pane_not_found', message: `pane ${args[2]} not found` } });
 			code = 1;
 		}
+	} else if (command === 'pane get') {
+		const scroll = plan.paneScroll?.[args[2]];
+		if (plan.screens?.[args[2]] || scroll) {
+			const pane = { pane_id: args[2], scroll: { viewport_rows: 24, offset_from_bottom: 0, max_offset_from_bottom: 0, ...scroll } };
+			stdout += JSON.stringify({ id: 'cli:pane:get', result: { type: 'pane_info', pane } });
+		} else {
+			stderr += JSON.stringify({ error: { code: 'pane_not_found', message: `pane ${args[2]} not found` }, id: 'cli:pane:get' });
+			code = 1;
+		}
+	} else if (command === 'pane send-keys' || command === 'pane send-text') {
+		stdout += JSON.stringify({ id: `cli:pane:${args[1]}`, result: { type: 'ok' } });
 	} else if (command === 'pane scroll') {
 		if (!plan.screens?.[args[2]]) {
 			stderr += JSON.stringify({ error: { code: 'pane_not_found', message: `pane ${args[2]} not found` } });

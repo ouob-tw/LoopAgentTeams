@@ -1,8 +1,8 @@
 <script lang="ts">
 	// An agent's page on the Herdr 分頁, laid out like a controller's information page: one line
-	// of who and where it stands, the details of where it runs, its close, then its conversation and
-	// what was done to it, one tab at a time. Text, an interrupt and a model switch are sent to it
-	// from the command line. The status is hcom's when hcom reaches it and Herdr's otherwise (ADR
+	// of who and where it stands, the details of where it runs, its close, then its conversation, its
+	// Herdr pane's screen and what was done to it, one tab at a time. Text, an interrupt and a model switch are sent to it
+	// from the command line; keys from its 畫面分頁's 按鍵列 on a phone. The status is hcom's when hcom reaches it and Herdr's otherwise (ADR
 	// 0003), or 等你回答 while a board ask of its waits; its board asks show in its conversation,
 	// where they were asked.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -15,6 +15,8 @@
 	import AgentClose from './AgentClose.svelte';
 	import AgentLog from './AgentLog.svelte';
 	import HcomBadge from './HcomBadge.svelte';
+	import ScreenPanel from './ScreenPanel.svelte';
+	import { SCREEN_NOT_LISTED_TEXT } from '#lib/board/screen.ts';
 	import StatusMark from './StatusMark.svelte';
 	import TranslateToggle from './TranslateToggle.svelte';
 	import Transcript from './Transcript.svelte';
@@ -42,6 +44,7 @@
 
 	const TABS = [
 		{ id: 'transcript', label: '對話紀錄' },
+		{ id: 'screen', label: '畫面' },
 		{ id: 'log', label: '操作紀錄' }
 	] as const;
 	type Tab = (typeof TABS)[number]['id'];
@@ -154,9 +157,12 @@
 {#if tab === 'transcript'}<TranslateToggle />{/if}
 </div>
 
-<!-- Both stay mounted, so the conversation keeps its place and its live feed. -->
+<!-- All stay mounted, so the conversation keeps its place and its live feed. -->
 <div class="tabpanel" role="tabpanel" id="agent-panel-transcript" aria-labelledby="agent-tab-transcript" hidden={tab !== 'transcript'}>
 	<Transcript controller={speaker} feed="agent" {asks} bind:usage />
+</div>
+<div class="tabpanel" role="tabpanel" id="agent-panel-screen" aria-labelledby="agent-tab-screen" hidden={tab !== 'screen'}>
+	<ScreenPanel agentId={agent.id} active={tab === 'screen'} unavailable={agent.inHerdr ? null : SCREEN_NOT_LISTED_TEXT} />
 </div>
 <div class="tabpanel" role="tabpanel" id="agent-panel-log" aria-labelledby="agent-tab-log" hidden={tab !== 'log'}>
 	<AgentLog {agent} />

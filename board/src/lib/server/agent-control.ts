@@ -8,6 +8,7 @@ import {
 	AGENT_HCOM_UNKNOWN_REASON,
 	AGENT_NO_HOOKS_PAUSE_REASON,
 	AGENT_NO_HOOKS_UNPAUSE_REASON,
+	AGENT_OWN_PANE_KEYS_REASON,
 	AGENT_OWN_PANE_PAUSE_REASON,
 	AGENT_OWN_PANE_REASON,
 	type AgentAction,
@@ -19,7 +20,9 @@ import type { Agent } from '../board/types.ts';
 import type { Board } from './board.ts';
 import type { ExternalResult } from './external.ts';
 import { killAgent, listAgents, stopAgent } from './hcom.ts';
-import { agentCommand, closePane, HERDR_CLOSES, keepWorkspaceOpen, paneExists, paneProcess, type HerdrAct } from './herdr.ts';
+import { countKeys, type KeyCounts, type KeyInput, type KeyResult, type KeysResponse } from '../board/screen.ts';
+import { agentCommand, closePane, HERDR_CLOSES, keepWorkspaceOpen, paneExists, paneProcess, sendPaneInput, type HerdrAct } from './herdr.ts';
+import { recover } from './screen.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause, type PauseRecord } from './paused.ts';
 import { judgeHooks, relinkable } from './process-hooks.ts';
 import { inject, queued, typedText } from './send.ts';
@@ -51,7 +54,7 @@ export async function listedNow(board: Board, agentId: string): Promise<{ agent:
 }
 
 /** Why a Herdr command did not act, as the page shows it. */
-function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<AgentActionKind, 'move' | 'rename' | 'resume' | 'pause' | 'relink' | 'board-ask' | 'permission' | 'close-workspace'>): string {
+function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<AgentActionKind, 'move' | 'rename' | 'resume' | 'pause' | 'relink' | 'board-ask' | 'permission' | 'close-workspace' | 'keys'>): string {
 	if (act.timedOut) {
 		if (action === 'close') return `Herdr 的關閉指令${act.reason}，結果不明；請到 Herdr 查看。`;
 		if (action === 'unpause') return `Herdr 的傳話指令${act.reason}，接回指令可能已經送進去；暫停紀錄保留，重按前請先看它的畫面。`;
@@ -70,19 +73,20 @@ export async function attempt(
 	agentId: string,
 	action: AgentActionKind,
 	text: string | null,
-	act: (agent: Agent) => Promise<{ route: AgentAction['route']; reason: string | null; text?: string; permission?: PermissionSwitch }>
+	act: (agent: Agent) => Promise<{ route: AgentAction['route']; reason: string | null; text?: string; permission?: PermissionSwitch; keys?: KeyCounts }>
 ): Promise<{ status: number; body: AgentActionResponse; gone: boolean }> {
 	const listed = await listedNow(board, agentId);
 	let status = 409;
 	let route: AgentAction['route'] = null;
 	let reason: string | null;
 	let permission: PermissionSwitch | undefined;
+	let keys: KeyCounts | undefined;
 	if ('reason' in listed) reason = listed.reason;
 	// Its open model switch comes first: only continued or given up until it is over.
 	else if (listed.agent.switch) reason = AGENT_SWITCH_UNFINISHED_REASON;
 	else {
 		const done = await act(listed.agent);
-		({ route, reason, permission } = done);
+		({ route, reason, permission, keys } = done);
 		// What was typed, when the action itself decided it.
 		text = done.text ?? text;
 		if (route) status = reason ? 502 : 200;
@@ -99,7 +103,8 @@ export async function attempt(
 		text,
 		ok: reason === null,
 		error: reason,
-		...(permission && { permission })
+		...(permission && { permission }),
+		...(keys && { keys })
 	};
 	let logError: string | null = null;
 	try {
@@ -160,6 +165,44 @@ export function interruptAgent(board: Board, agentId: string) {
 			return { route: 'herdr', reason: act.ok ? null : herdrReason(act, 'interrupt') };
 		})
 	);
+}
+
+/**
+ * Type key presses and text from the 畫面分頁 into the agent's pane, one by one in the order given:
+ * a named key through `pane send-keys`, text through `pane send-text`. The first that fails or may
+ * not have arrived (Herdr did not answer in time) stops the rest, and nothing is tried again. Refused
+ * for the board's own pane. Queued like a send, and logged with how many of each kind were typed in,
+ * never the text. Whenever not all were typed in, the pane's screen is read again at once for the
+ * pages that show it, and the read that succeeds recovers `recovery` (see `recover`).
+ */
+export async function sendKeysToAgent(board: Board, agentId: string, inputs: KeyInput[], recovery: string): Promise<{ status: number; body: KeysResponse }> {
+	const results: KeyResult[] = inputs.map(() => 'skipped');
+	const done = await queued(agentId, () =>
+		attempt(board, agentId, 'keys', null, async (agent) => {
+			const pane = agent.herdr.pane;
+			if (pane === board.config.ownPane) return { route: null, reason: AGENT_OWN_PANE_KEYS_REASON };
+			for (const [index, input] of inputs.entries()) {
+				const act = await sendPaneInput(board.config, pane, input);
+				if (act.ok) {
+					results[index] = 'sent';
+					continue;
+				}
+				results[index] = act.timedOut ? 'uncertain' : 'failed';
+				const typed = inputs.slice(0, index);
+				const left = inputs.length - index - 1;
+				const why = act.timedOut ? `Herdr 的按鍵指令${act.reason}，這一個可能已經送進去` : `Herdr 沒有送出這一個：${act.reason}`;
+				return {
+					route: 'herdr',
+					reason: `第 ${index + 1} 個按鍵沒有確定送到（${why}）${left ? `，後面 ${left} 個沒有送` : ''}；不會自動重送，請看畫面確認。`,
+					...(typed.length && { keys: countKeys(typed) })
+				};
+			}
+			return { route: 'herdr', reason: null, keys: countKeys(inputs) };
+		})
+	);
+	// The pane as the request found it; one never listed has no screen open either.
+	if (!done.body.ok && done.body.entry.pane) recover(board, done.body.entry.pane, recovery);
+	return { status: done.status, body: { ...done.body, results } };
 }
 
 /** The pane `hcom kill` would close for this name, as hcom's list read now has it, or why it is

@@ -2,6 +2,7 @@
 // out from lines read once (`readLines`), the board's clock and the launch wait. Nothing here reads
 // a file or runs a program, so the views can be checked against lines written by hand.
 import type { AgentAction } from '../board/agent-actions.ts';
+import { addCounts, type KeyCounts } from '../board/screen.ts';
 import type { SentEntry } from '../board/answers.ts';
 import type { LaunchFollow, LaunchState, LaunchView, SentLaunch } from '../board/launch.ts';
 import type { SwitchView } from '../board/models.ts';
@@ -150,10 +151,25 @@ export function readSent(lines: readonly Line[], controllerId: string, now: numb
 	return entries.reverse();
 }
 
-/** What was done to one agent of the Herdr 分頁, newest first. */
+/** How far apart key presses from the 畫面分頁 may be and still show as one entry. */
+export const KEYS_MERGE_MS = 5_000;
+
+/** What was done to one agent of the Herdr 分頁, newest first. Key presses from the 畫面分頁 that
+ *  were all typed in, each within `KEYS_MERGE_MS` of the one before with nothing else done to the
+ *  agent between, show as one entry at the time of the last, with the kinds and counts added up. */
 export function readAgentActions(lines: readonly Line[], agentId: string): AgentAction[] {
-	return lines.filter((line): line is AgentAction => line.kind === 'agent-action' && line.agentId === agentId).reverse();
+	const actions: AgentAction[] = [];
+	for (const line of lines) {
+		if (line.kind !== 'agent-action' || line.agentId !== agentId) continue;
+		const last = actions.at(-1);
+		const merges = (entry: AgentAction | undefined): entry is AgentAction & { keys: KeyCounts } => entry?.action === 'keys' && entry.ok && !!entry.keys;
+		if (merges(last) && merges(line) && Date.parse(line.time) - Date.parse(last.time) <= KEYS_MERGE_MS) {
+			actions[actions.length - 1] = { ...line, id: last.id, keys: addCounts(last.keys, line.keys) };
+		} else actions.push(line);
+	}
+	return actions.reverse();
 }
+
 
 /** A controller stands by its binding; a plain agent, which never binds, by its follow-through. */
 function launchState(launch: SentLaunch, controllerId: string | undefined, follow: LaunchFollow | undefined, now: number, waitMs: number): LaunchState {
