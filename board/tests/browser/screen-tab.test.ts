@@ -297,3 +297,28 @@ test('phone: a press made offline stays refused after the connection comes back,
 	expect(herdrCalls()).toEqual([]);
 	await shot('phone-offline-press-recovered');
 }, 40_000);
+
+test('phone on its side (844x390, touch): every one of the 13 keys is whole inside the screen and tappable, the page does not scroll and the screen box is still above the dock', async () => {
+	await visit({ width: 844, height: 390, phone: true });
+	await openScreen();
+	await openMenu();
+	await sleep(300);
+	const at = await tab.eval<{ hidden: string[]; outside: string[]; tall: number; inner: number; boxBottom: number; dockTop: number; boxHeight: number }>(`(() => {
+		const keys = ${KEYS};
+		const outside = keys.filter((key) => { const r = key.getBoundingClientRect(); return r.top < 0 || r.bottom > innerHeight || r.left < 0 || r.right > innerWidth; }).map((key) => key.innerText);
+		const hidden = keys.filter((key) => { const r = key.getBoundingClientRect(); return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) !== key; }).map((key) => key.innerText);
+		const box = document.querySelector('.screen-panel .box').getBoundingClientRect();
+		return { hidden, outside, tall: document.documentElement.scrollHeight, inner: innerHeight, boxBottom: box.bottom, dockTop: document.querySelector('.dock').getBoundingClientRect().top, boxHeight: box.height };
+	})()`);
+	expect(at.outside).toEqual([]);
+	expect(at.hidden).toEqual([]);
+	expect(at.tall).toBeLessThanOrEqual(at.inner);
+	expect(at.boxBottom).toBeLessThanOrEqual(at.dockTop + 2);
+	expect(at.boxHeight).toBeGreaterThan(120);
+	await shot('phone-landscape-keys-whole');
+	// A tap on one of the second row's keys goes through.
+	await press('Enter');
+	const deadline = Date.now() + 5_000;
+	while (herdrCalls().length < 1 && Date.now() < deadline) await sleep(50);
+	expect(herdrCalls().at(-1)).toEqual(['pane', 'send-keys', PANE, 'enter']);
+});

@@ -181,6 +181,9 @@
 		justify-content: normal;
 		/* Its height is the command line's, whatever that is: the keys fill it, never grow the dock. */
 		contain: size;
+		/* Two rows of keys at their least, however short the line is (the wide layout's is one row): the dock
+		   grows to hold them rather than cutting the second row off. */
+		min-height: calc(2 * 2.2rem + 0.4rem + 1rem + 1px + env(safe-area-inset-bottom, 0px));
 		gap: 0.4rem;
 		box-sizing: border-box;
 		/* As the command line's own padding: the row of keys sits where the line's box does. */
