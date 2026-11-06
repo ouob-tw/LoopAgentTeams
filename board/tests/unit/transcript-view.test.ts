@@ -130,3 +130,21 @@ test('a pd request is found at the `pd run` that made it: its command first, the
 	expect(pdRunPlace({ items: [items[3]], before: 40, skipped: 0 }, look)).toBeUndefined();
 	expect(pdRunPlace({ items: [tool(0, -1000, 'ls'), items[3]], before: 40, skipped: 0 }, look)).toBeNull();
 });
+
+test('a pd request made inside a command the transcript hides is found at the nearest hidden command', () => {
+	// The helper shows a command with `;`, `&&` or a pipe only as its program: the main controller's
+	// `cd /repo; pd delete --item x` reaches the board as `cd …`.
+	const at = Date.parse('2026-11-06T13:11:14Z');
+	const time = (seconds: number) => new Date(at + seconds * 1000).toISOString();
+	const tool = (seq: number, seconds: number, detail: string, name = 'Bash') => ({ seq, kind: 'tool' as const, time: time(seconds), name, label: '執行指令', detail, error: false });
+	const items = [tool(1, -70, 'cd …'), tool(2, -2, 'cd …'), tool(3, -1, 'ls /home/u'), tool(4, 0, '', 'Read')];
+	const look = { at, command: [] };
+	// The nearest hidden command, not the nearer one shown in full as something else, nor another tool.
+	expect(pdRunPlace({ items, before: null, skipped: 0 }, look)).toBe(2);
+	// A Codex agent's shell tool the same.
+	expect(pdRunPlace({ items: [tool(7, -3, 'cd …', 'exec')], before: null, skipped: 0 }, look)).toBe(7);
+	// A `pd` shown in full still wins over a hidden command.
+	expect(pdRunPlace({ items: [tool(8, -30, 'pd run -- ls'), tool(9, -1, 'cd …')], before: null, skipped: 0 }, look)).toBe(8);
+	// Nothing hidden or pd near: none.
+	expect(pdRunPlace({ items: [tool(10, -1, 'ls /home/u'), tool(11, -900, 'cd …')], before: null, skipped: 0 }, look)).toBeNull();
+});

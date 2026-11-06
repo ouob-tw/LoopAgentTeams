@@ -25,6 +25,7 @@
 	import type { BoardAsk } from '#lib/board/board-asks.ts';
 	import {
 		askPlaces,
+		PD_NEAR_MS,
 		isQuestion,
 		pdRunPlace,
 		askingInView,
@@ -479,15 +480,18 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		if (!pdTarget || !pdView) return;
 		const seq = pdFound === undefined && earlierFailed ? null : pdFound;
 		if (seq === undefined) return;
-		const unsure = pdTarget.unsure;
+		const { unsure } = pdTarget;
+		const unreadable = earlierFailed;
 		pdLooking.done();
-		untrack(() => void showPdRun(seq, unsure));
+		untrack(() => void showPdRun(seq, unsure, unreadable));
 	});
-	async function showPdRun(seq: number | null, unsure: boolean) {
+	async function showPdRun(seq: number | null, unsure: boolean, unreadable: string | null) {
 		if (seq === null) {
 			pdHit = null;
 			list?.scrollIntoView({ block: 'start' });
-			toasts.show('failed', '對話裡找不到這次 pd 請求的那一步，先顯示最新的部分。');
+			// Why: the earlier part could not be read, else nothing in the conversation ran pd near the request.
+			const why = unreadable ? `更早的對話讀不到（${unreadable}）` : `這份對話在請求送出前後 ${PD_NEAR_MS / 60_000} 分鐘內沒有執行 pd 的步驟`;
+			toasts.show('failed', `找不到這次 pd 請求的那一步：${why}${unsure ? '；pd 也沒查證呼叫者，可能開錯了對話' : ''}。先顯示最新的部分。`);
 			return;
 		}
 		const group = shown.find((row) => row.kind === 'tools' && row.items.some((tool) => tool.seq === seq));
