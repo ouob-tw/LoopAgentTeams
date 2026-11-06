@@ -458,7 +458,7 @@
 	></div>
 {/snippet}
 
-<div class="page" class:testing={testDevice.view !== null} class:screen-open={screenView.agentId !== null} class:screen-phone={screenView.phone} style:--dock-h="{dockHeight}px" style:--keyboard="{keyboard}px">
+<div class="page" class:testing={testDevice.view !== null} class:screen-open={screenView.agentId !== null} class:screen-phone={screenView.phone} class:screen-direct={screenView.direct} style:--dock-h="{dockHeight}px" style:--keyboard="{keyboard}px">
 	{#if testDevice.view}
 		<div class="test-band" role="status" title={TEST_DEVICE_RULE}>
 			<span class="test-pill"><FlaskConical size="1.05em" aria-hidden="true" /><strong>測試裝置</strong><span class="test-label">{testDevice.view.label}</span><span class="test-until">{testUntil} 到期</span></span>
@@ -996,8 +996,14 @@
 	/* A 終端分頁 shown: its panel takes all the column's height down to the command line and all its
 	   width. A status card opened above it scrolls the column, the panel keeping a usable height. */
 	.screen-open .detail {
+		--edge-x: 0.5rem;
+		--edge-top: 0.35rem;
 		gap: 0.35rem;
-		padding: 0.5rem 0.5rem 0;
+		padding: 0.5rem var(--edge-x) 0;
+	}
+	/* Direct operation on a computer: the open 終端 tab takes the accent colour, as the line along the screen's top does. */
+	.screen-direct :global(.tabs button[data-tab='screen'][aria-selected='true']) {
+		color: var(--accent);
 	}
 	.screen-open .detail > :global(*) {
 		max-width: none;
@@ -1279,7 +1285,8 @@
 			flex: 1;
 			min-height: 0;
 			overflow-y: auto;
-			padding: 0 3px;
+			--edge-x: 3px;
+			padding: 0 var(--edge-x);
 		}
 		/* A sticky bar keeps below the padding of a column that scrolls: none there, so none to reach over. */
 		.screen-open .topbar {

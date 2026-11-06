@@ -21,6 +21,8 @@ class ScreenView {
 	waiting = $state(false);
 	/** Whether this device is a phone or a tablet, as its main pointer tells. */
 	phone = $state(false);
+	/** Whether keys pressed now go straight into the pane (a computer's direct operation). */
+	direct = $state(false);
 	#senders = new Map<string, KeySender>();
 
 	constructor() {
