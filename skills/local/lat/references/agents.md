@@ -19,7 +19,7 @@ hcom-spawn 的「自身名稱」是發起委派的那一方：主控派工時是
 - 第一則任務訊息須帶上任務卡 `runs` 欄的絕對路徑（主工作區 `.lat/runs/issue-<N>/`，見 [任務卡](task-cards.md#票資料位置)），QA 草稿、清單與證據都放那裡；需要隔離 client 家目錄時放 `.lat` 以外的暫存位置，規則見 [任務卡](task-cards.md#隔離-client-家目錄)。
 - 第一則任務訊息須帶上任務卡必填三欄的完整內容（沒有也寫「無」），以及額度內的做法與回報時機；見 [任務卡](task-cards.md#現場動作額度)。
 - 派實作的首則任務訊息寫明覆蓋 /implement 的做法：修正與審查時只跑受影響測試；測試依 three-tier-testing 與任務卡`整套測試`欄；複查只看修正差異；外部 API 附「測試可信度」假物件規則。
-- 派 /code-review 審查者前（實作者再委派時亦同）先跑 `uv run --no-project python <lat_dir>/scripts/review-size.py <審查基準>` 取得建議，由主控決定：小改動、只改測試或文件派一位 Standards 審查者，其他派兩面向；門檻見腳本說明。Standards 面向照 /hcom-spawn 預設選模型；派兩位時 Spec 面向一律派 `gpt-6-astra`、effort `medium`。使用者另行指定時照其指定。
+- 派 /code-review 審查者前（實作者再委派時亦同）先跑 `uv run --no-project python <lat_dir>/scripts/review-size.py <審查基準>` 取得建議，由主控決定：小改動、只改測試或文件派一位 Standards 審查者，其他派兩面向；門檻見腳本說明。Standards 面向照 /hcom-spawn 預設選模型；派兩位時 Spec 面向一律派 `gpt-6-astra`、effort `medium`。使用者另行指定時照其指定。審查者每項發現須標甲乙丙級。
 - 派 Designer 寫 Spec 與拆票（/to-spec、/to-tickets）時寫明：「現有測試全部通過」只寫在 Spec 層級，全部合併後由一人做一次合併後驗證，不寫進各票驗收條件。
 - [Spec 文件審查](spec-review.md) 派給全新、與 Designer 不同家模型的 Agent：Designer 是 Claude 時派 Codex `gpt-6-astra`、effort `medium`；是 Codex 時派 Claude，模型依 /hcom-spawn 預設。它在確認前審 Spec 本身，與實作後審程式的 Spec 面向不同，不互相取代。
 - 不同家模型不可用時，先依 /hcom-spawn 的額度與恢復程序處理（如 Codex 換帳號）；仍不可用，依 SKILL.md「使用者待決事項」問使用者要等待還是改用同家全新 Agent。答覆前不改用同家模型、不略過審查，也不發 Spec 確認題。
