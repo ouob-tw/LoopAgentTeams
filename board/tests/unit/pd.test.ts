@@ -308,4 +308,8 @@ test('the card and the notification name the action', () => {
 	expect(notificationText(request())).toEqual({ title: 'pd 請求 #7（讀取）等你核准', body: 'GitHub token：gh api user' });
 	expect(secretText({ field: 'p', source: 'generate', length: 20 })).toBe('自動產生，20 字元');
 	expect(secretText({ field: 'k', source: 'output', command: ['gh', 'auth', 'token'], cwd: '/work' })).toBe('指令輸出：gh auth token（/work）');
+	// Two commands a short form would show alike stay apart: the decision to approve depends on them.
+	const long = (tool: string, tenant: string) => secretText({ field: 'k', source: 'output', command: [tool, 'fetch', '--tenant', tenant], cwd: '/work' });
+	expect(long('/trusted/bin/token', 'production')).toBe('指令輸出：/trusted/bin/token fetch --tenant production（/work）');
+	expect(long('/trusted/bin/token', 'production')).not.toBe(long('/other/bin/token', 'other-account'));
 });

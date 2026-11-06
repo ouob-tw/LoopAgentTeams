@@ -120,7 +120,7 @@ export function summaryText(request: PdRequest): string {
 
 /** Where a secret comes from, without its value. */
 export function secretText(secret: PdSecret): string {
-	return secret.source === 'generate' ? `自動產生，${secret.length} 字元` : `指令輸出：${shortCommand(secret.command)}（${secret.cwd}）`;
+	return secret.source === 'generate' ? `自動產生，${secret.length} 字元` : `指令輸出：${secret.command.join(' ')}（${secret.cwd}）`;
 }
 
 /** The browser notification for a new request, naming the action. */
