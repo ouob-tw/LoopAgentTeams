@@ -34,9 +34,9 @@ Claude Code（`~/.claude/settings.json` 的 `hooks`）與 Codex（`$CODEX_HOME/h
 - 只接 `tail`、`head` 或 `wc`，或接到輸出導向 `/dev/null` 的指令：`hcom listen 2 | tail -1`、`hcom listen 2 | cat >/dev/null`。
 - 包在 `$( )` 或反引號裡卻沒用到結果：當 `:`、`true` 的參數，或存進之後沒展開的變數。
 
-輸出完整顯示、存到檔案或只丟 stderr（`2>/dev/null`）的 listen 照常放行；包在 `bash -c` 裡的不檢查。被擋時，要等訊息就直接跑 `hcom listen N` 並讀完輸出，要固定延遲就用 `sleep N`。不需另外安裝，裝了上面的 hook 就生效。
+輸出完整顯示、存到檔案或只丟 stderr（`2>/dev/null`）的 listen 照常放行；包在 `bash -c` 裡的不檢查。被擋時，要等訊息就直接跑 `hcom listen N` 並讀完輸出，要固定延遲就用 `timeout N tail -f /dev/null || true`。不需另外安裝，裝了上面的 hook 就生效。
 
-驗證：在 Agent 內執行 `hcom listen 1 --name <自身名稱> >/dev/null`，應被擋下並提示 `sleep N`。
+驗證：在 Agent 內執行 `hcom listen 1 --name <自身名稱> >/dev/null`，應被擋下並提示 `timeout N tail -f /dev/null`。
 
 ## 開工確認攔截 hook
 
