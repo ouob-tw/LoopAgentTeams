@@ -113,7 +113,7 @@ export function pdNotice(snapshot: PdSnapshot): string | null {
 export const ACTION_LABEL: Record<PdAction, string> = { read: '讀取', add: '新增', edit: '修改', delete: '刪除' };
 /** An action from a newer pd shows as given, never as a read. */
 export const actionLabel = (action: string): string => (Object.hasOwn(ACTION_LABEL, action) ? ACTION_LABEL[action as PdAction] : action || '未知動作');
-export const TYPE_LABEL: Record<string, string> = { login: '登入', note: '備註', card: '卡片', identity: '身分', sshKey: 'SSH 金鑰', unknown: '未知類型' };
+export const TYPE_LABEL: Record<string, string> = { login: '登入資料', note: '備註', card: '卡片', identity: '身分', sshKey: 'SSH 金鑰', unknown: '未知類型' };
 /** A type from a newer pd shows as given rather than disappearing. */
 export const typeLabel = (type: string): string => (Object.hasOwn(TYPE_LABEL, type) ? TYPE_LABEL[type] : type);
 

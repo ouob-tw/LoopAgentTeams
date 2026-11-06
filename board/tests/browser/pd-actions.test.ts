@@ -90,9 +90,9 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 
 		// 新增 and 修改 open on their type, values and secret sources.
 		const added = await tab.eval<string>(`${card(2)}.innerText`);
-		for (const text of ['登入', 'username', 'alice@example.com', 'https://service.example.com/a/very/long/path', 'line one\nline two', '自動產生，20 字元', '指令輸出：gh auth token（/home/u/work）']) expect(added).toContain(text);
+		for (const text of ['類型\n登入資料', 'username', 'alice@example.com', 'https://service.example.com/a/very/long/path', 'line one\nline two', '自動產生，20 字元', '指令輸出：gh auth token（/home/u/work）']) expect(added).toContain(text);
 		const edited = await tab.eval<string>(`${card(3)}.innerText`);
-		for (const text of ['登入', 'bob', '自動產生，32 字元']) expect(edited).toContain(text);
+		for (const text of ['類型\n登入資料', 'bob', '自動產生，32 字元']) expect(edited).toContain(text);
 		// No command or folder rows on a write.
 		for (const text of ['工作目錄', '指令\n']) expect(added).not.toContain(text);
 
@@ -148,7 +148,7 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 		expect([await chip(4), await chip(5), await chip(6), await chip(1)]).toEqual(['刪除', '刪除', 'purge', '讀取']);
 		const rows = (id: number) => tab.eval<string[]>(`[...${card(id)}.querySelectorAll('dt')].map((dt) => dt.innerText + '=' + dt.nextElementSibling.innerText)`);
 		expect(await tab.eval<string>(`${card(4)}.querySelector('.item').innerText`)).toBe(remove.item);
-		expect(await rows(4)).toContain('類型=登入');
+		expect(await rows(4)).toContain('類型=登入資料');
 		expect(await rows(5)).toContain('類型=備註');
 		// Open, with no empty command line and no field rows.
 		expect(await tab.eval(`${card(4)}.querySelector('details').open && !${card(4)}.querySelector('summary code')`)).toBe(true);
