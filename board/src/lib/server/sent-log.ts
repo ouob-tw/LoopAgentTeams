@@ -17,6 +17,7 @@ import type { LaunchFollow, SentLaunch } from '../board/launch.ts';
 import type { SentMessage } from '../board/messages.ts';
 import type { ModelChoice, SentSwitch, SwitchState } from '../board/models.ts';
 import type { ResumeClose, SentWake } from '../board/wake.ts';
+import { actingTestDevice } from './acting.ts';
 
 const SENT_LOG_FILE = 'sent-log.jsonl';
 
@@ -195,7 +196,9 @@ export function appendSent(stateDir: string, entry: Line): void {
 	try {
 		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 		const path = join(stateDir, SENT_LOG_FILE);
-		const raw = JSON.stringify(entry);
+		// A test device's action says so, with its login's label (`board test-login`).
+		const by = actingTestDevice();
+		const raw = JSON.stringify(by ? { ...entry, testDevice: { id: by.id, label: by.test!.label } } : entry);
 		const cached = cache.get(stateDir);
 		// Kept only while the file is as the board left it: someone else's write is read whole next time.
 		const keep = unchanged(cached, stamp(path)) && cached!.whole;

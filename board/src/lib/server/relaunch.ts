@@ -6,11 +6,12 @@
 // session, which takes the first turn the launch sends.
 // The wait runs in the background of the request that launched it; a relaunch no board process
 // waits for (the board restarted meanwhile) is settled by the board's reads.
+import { carryOwnership } from './devices.ts';
 import { isLaunchClient } from '../board/launch.ts';
 import { modelArgs, type SwitchResponse, type SwitchView } from '../board/models.ts';
 import { codexFirstTurnText } from '../board/permissions.ts';
 import type { Board } from './board.ts';
-import { runningIn, waitToAppear, type Wanted } from './appear.ts';
+import { runningIn, waitToAppear, type Wanted, sessionOf } from './appear.ts';
 import { launchAgent, listAgents } from './hcom.ts';
 import { chooseWorkspace, listHerdrAgents, moveTab, renameTab, type HerdrAgent } from './herdr.ts';
 import { queued } from './send.ts';
@@ -155,6 +156,11 @@ async function finishRelaunch(board: Board, view: SwitchView, found: HerdrAgent)
 	const { config } = board;
 	const relaunch = view.relaunch!;
 	const problems: string[] = [];
+	// A fresh launch runs under a new session: a test device that started the agent keeps it, once
+	// Herdr knows that session (not waited for here: the switch's queue goes on meanwhile).
+	void sessionOf(config, found, config.now() + config.launchWaitMs).then((session) => {
+		if (session && session !== view.controllerId) carryOwnership(config.stateDir, view.controllerId, session);
+	}).catch((error) => console.error(`重新啟動的 Agent 記不進測試裝置：${(error as Error).message}`));
 	if (found.pane === view.holdPane) return step(board, view.id, { state: 'done', error: null });
 	if (relaunch.tabLabel) {
 		const renamed = await renameTab(config, found.tab, relaunch.tabLabel);

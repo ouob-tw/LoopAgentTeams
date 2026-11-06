@@ -13,6 +13,8 @@
 	// back to it. With nothing waiting it stays hidden while healthy; vault outages and an
 	// unreachable daemon keep a visible notice here, on every screen, which 稍後 folds to the badge
 	// (or a phone's strip) that goes on saying it.
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import TestDenied from './TestDenied.svelte';
 	import { onMount, tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import {
@@ -261,6 +263,7 @@
 				<button type="button" class="later" onclick={() => void show(false)}>稍後</button>
 			</header>
 			{#if notice}<p class="pd-unavailable" role="status">{notice}</p>{/if}
+			<div class="denied"><TestDenied /></div>
 			<ul class="cards">
 				{#each requests as item (item.id)}
 					{@const time = timeText(item, now - pd.at)}
@@ -306,10 +309,10 @@
 							</dl>
 						</details>
 						<p class="actions">
-							<button type="button" class="approve" aria-describedby={passkeyHere ? undefined : 'pd-no-passkey'} disabled={approving.includes(item.id)} onclick={() => void approve(item)}
+							<button type="button" class="approve" aria-describedby={passkeyHere ? undefined : 'pd-no-passkey'} disabled={approving.includes(item.id) || testDevice.view !== null} onclick={() => void approve(item)}
 								>{approving.includes(item.id) ? '核准中…' : '核准'}</button
 							>
-							<button type="button" class="deny" disabled={denying.includes(item.id)} onclick={() => void deny(item)}
+							<button type="button" class="deny" disabled={denying.includes(item.id) || testDevice.view !== null} onclick={() => void deny(item)}
 								>{denying.includes(item.id) ? '拒絕中…' : '拒絕'}</button
 							>
 							{#if lookable?.(item)}
@@ -686,5 +689,8 @@
 		.actions > button:not(.look) {
 			flex: 1;
 		}
+	}
+	.denied {
+		padding: 0 0.75rem;
 	}
 </style>

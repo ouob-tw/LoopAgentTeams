@@ -179,7 +179,7 @@ function createBoard(): Board {
 		for (const stream of streams) {
 			let paired = true;
 			try {
-				paired = findDevice(config.stateDir, stream.token) !== null;
+				paired = findDevice(config.stateDir, stream.token, config.now()) !== null;
 			} catch {
 				// An unreadable device list must not disconnect everyone; requests still check it.
 			}

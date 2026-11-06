@@ -2,6 +2,7 @@
 	// What the user did to this agent from the board, on any logged-in device: text sent to it, key
 	// presses from its 終端分頁 (how many of each kind, never the text), interrupts and closes that did not close it, moves and renames of its Herdr tab, resumes from
 	// the 已關閉 section, each made or refused, and its model switches as they stand now, given up ones included.
+	import FlaskConical from '@lucide/svelte/icons/flask-conical';
 	import { AGENT_ACTION_LABEL, type AgentAction } from '#lib/board/agent-actions.ts';
 	import { AGENT_SWITCH_STATE_TEXT, choiceText, settingsText, type SwitchView } from '#lib/board/models.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -54,6 +55,7 @@
 						<p class="meta">
 							<time datetime={entry.time}>{formatTime(entry.time)}</time>
 							<span>{AGENT_ACTION_LABEL[entry.action]}{routeLabel(entry)}</span>
+							{#if entry.testDevice}<span class="by" title="測試裝置"><FlaskConical size="1em" aria-hidden="true" />{entry.testDevice.label}</span>{/if}
 							{#if entry.ok}
 								<span>✓ {DONE_LABEL[entry.action]}</span>
 							{:else}
@@ -135,5 +137,11 @@
 	.empty {
 		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
+	}
+	.by {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.2em;
+		color: var(--warn);
 	}
 </style>

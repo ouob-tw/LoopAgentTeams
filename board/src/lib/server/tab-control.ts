@@ -9,6 +9,7 @@ import type { Board } from './board.ts';
 import { closeWorkspace, HERDR_CLOSES, moveTab, moveWorkspace, renameTab, workspaceContents, workspacesInOrder, workspaceTabs } from './herdr.ts';
 import { queued } from './send.ts';
 import { appendSent } from './sent-log.ts';
+import { queuedTabRefusal } from './test-device.ts';
 
 /** What a tab request names: the workspace and tab of the card it was made on, and the agent on
  *  that card (null when Herdr has no session for it yet), for the record. */
@@ -18,7 +19,7 @@ export interface TabTarget {
 	tab: string;
 }
 
-type Outcome = { text: string | null; reason: string | null; acted: boolean };
+type Outcome = { text: string | null; reason: string | null; acted: boolean; forbidden?: boolean };
 
 async function attempt(
 	board: Board,
@@ -31,7 +32,11 @@ async function attempt(
 	if ('reason' in listed) outcome = { text: null, reason: `${listed.reason}，沒有執行。`, acted: false };
 	else if (!listed.tabs.some((tab) => tab.id === target.tab)) {
 		outcome = { text: null, reason: '這個分頁已不在 Herdr 的這個工作區裡，沒有執行。', acted: false };
-	} else outcome = await act(listed.tabs);
+	} else {
+		// Right before the change: a test device's tab may have changed hands while this waited.
+		const refused = await queuedTabRefusal(board.config, target);
+		outcome = refused ? { text: null, reason: refused, acted: false, forbidden: true } : await act(listed.tabs);
+	}
 	return finish(board, target.session, action, outcome);
 }
 
@@ -60,7 +65,7 @@ async function finish(board: Board, session: string | null, action: 'move' | 're
 		logError = (error as Error).message;
 	}
 	if (session !== null) board.agentActed(session);
-	const status = outcome.reason === null ? 200 : outcome.acted ? 502 : 409;
+	const status = outcome.reason === null ? 200 : outcome.acted ? 502 : outcome.forbidden ? 403 : 409;
 	return { status, body: { ok: entry.ok, reason: outcome.reason, entry, logError } };
 }
 

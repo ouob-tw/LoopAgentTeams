@@ -44,8 +44,15 @@
 	import Settings from '#lib/components/Settings.svelte';
 	import Toasts from '#lib/components/Toasts.svelte';
 	import DockSwipe from '#lib/components/DockSwipe.svelte';
+	import FlaskConical from '@lucide/svelte/icons/flask-conical';
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import { TEST_DEVICE_RULE } from '#lib/board/test-device.ts';
 
 	let { data } = $props();
+
+	// Set before anything below reads it, on the server too (each render sets its own).
+	// svelte-ignore state_referenced_locally
+	testDevice.set(data.testDevice);
 
 	// svelte-ignore state_referenced_locally
 	const board = new LiveBoard(data.snapshot, data.pd);
@@ -60,6 +67,17 @@
 		void board.refresh();
 		return close;
 	});
+
+	// A launch of a test device makes it the owner of the agent once that runs: each new snapshot
+	// may bring one.
+	$effect(() => {
+		void board.snapshot.revision;
+		if (untrack(() => testDevice.view)) void testDevice.reload();
+	});
+	const testUntil = $derived(
+		testDevice.view &&
+			new Date(testDevice.view.expiresAt).toLocaleTimeString('zh-TW', { timeZone: clock.timeZone, hour: '2-digit', minute: '2-digit', hour12: false })
+	);
 
 	const SORT_KEY = 'lat-board-inbox-sort';
 	let sort = $state<InboxSort>('time');
@@ -334,7 +352,8 @@
 	 *  while it is still open. An archived report keeps the read state it had. */
 	function readOnOpening(next: InboxItem) {
 		const listed = inbox.find((entry) => entry.key === next.key);
-		if (listed?.kind === 'report' && listed.readAt === null) {
+		// A test device leaves read marks to the user.
+		if (listed?.kind === 'report' && listed.readAt === null && !testDevice.view) {
 			board.mark(listed.key, true).catch(() => toasts.readFailed('沒有標為已讀，請重新點開再試一次。'));
 		}
 	}
@@ -436,7 +455,12 @@
 	></div>
 {/snippet}
 
-<div class="page" class:screen-open={screenView.agentId !== null} class:screen-phone={screenView.phone} style:--dock-h="{dockHeight}px" style:--keyboard="{keyboard}px">
+<div class="page" class:testing={testDevice.view !== null} class:screen-open={screenView.agentId !== null} class:screen-phone={screenView.phone} style:--dock-h="{dockHeight}px" style:--keyboard="{keyboard}px">
+	{#if testDevice.view}
+		<div class="test-band" role="status" title={TEST_DEVICE_RULE}>
+			<span class="test-pill"><FlaskConical size="1.05em" aria-hidden="true" /><strong>測試裝置</strong><span class="test-label">{testDevice.view.label}</span><span class="test-until">{testUntil} 到期</span></span>
+		</div>
+	{/if}
 	<div class="shell" class:viewing={view !== null}>
 		<nav class="roster">
 			<div class="folded">
@@ -697,6 +721,49 @@
 		flex-direction: column;
 		height: 100dvh;
 	}
+	/* A test device: a band across the top and a frame round the whole window, on every screen. */
+	.test-band {
+		--band-h: 1.9rem;
+		position: sticky;
+		top: 0;
+		z-index: 40;
+		flex: none;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.45rem;
+		height: var(--band-h);
+		padding: 0 0.75rem;
+		background: repeating-linear-gradient(-45deg, var(--warn) 0 14px, color-mix(in srgb, var(--warn) 78%, var(--bg)) 14px 28px);
+		color: var(--bg);
+		font-size: max(0.85rem, var(--min-font, 0px));
+		white-space: nowrap;
+		overflow: hidden;
+	}
+	.test-pill {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		min-width: 0;
+		padding: 0.05rem 0.7rem;
+		border-radius: var(--radius-pill);
+		background: var(--warn);
+	}
+	.test-band .test-label {
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.test-band .test-until {
+		flex: none;
+	}
+	.testing::after {
+		content: '';
+		position: fixed;
+		inset: 0;
+		z-index: 1000;
+		border: 3px solid var(--warn);
+		pointer-events: none;
+	}
 	.shell {
 		/* `--roster-w` and `--inbox-w` are this device's dragged widths, set on the root element.
 		   The vw caps keep the content column usable in a narrower window. */
@@ -768,6 +835,11 @@
 		left: calc(var(--col-roster) + 0.5rem);
 		width: max(360px, calc(var(--col-inbox) - 1rem));
 		z-index: 25;
+	}
+	@media (min-width: 761px) {
+		.testing .inbox > :global(.pd) {
+			top: 2.4rem;
+		}
 	}
 	.pd-off {
 		margin: 0 0 0.4rem;
@@ -1252,6 +1324,10 @@
 		/* Room under the bar for the strip that hangs from it. */
 		.topbar:has(.pd-banner) {
 			margin-bottom: var(--pd-banner-h);
+		}
+		/* Under the test device's band, which stays on top. */
+		.testing .topbar {
+			top: 1.9rem;
 		}
 		.topbar {
 			display: flex;

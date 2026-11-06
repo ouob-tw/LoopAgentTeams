@@ -1,0 +1,82 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/test-device.ts",
+        "board/src/lib/server/acting.ts",
+        "board/src/lib/server/devices.ts",
+        "board/src/lib/server/auth.ts",
+        "board/src/hooks.server.ts",
+        "board/src/cli.ts",
+        "board/src/routes/api/device/**",
+        "board/src/routes/api/login/test/**",
+        "board/src/routes/login/test/**"
+      ],
+      "tests": [
+        "board/tests/server/test-login.test.ts",
+        "board/tests/server/login.test.ts",
+        "board/tests/server/cookie-name.test.ts",
+        "board/tests/browser/test-device-page.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/hooks.server.ts"
+      ],
+      "tests": [
+        "board/tests/server/server-log.test.ts",
+        "board/tests/server/isolation.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/sent-log.ts"
+      ],
+      "tests": [
+        "board/tests/server/test-login.test.ts",
+        "board/tests/unit/sent-log-cache.test.ts",
+        "board/tests/unit/sent-log-retention.test.ts",
+        "board/tests/unit/sent-views.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/launch.ts"
+      ],
+      "tests": [
+        "board/tests/server/test-login.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/board/test-device.ts",
+        "board/src/lib/board/test-device.svelte.ts",
+        "board/src/lib/components/TestDenied.svelte",
+        "board/src/lib/components/AgentClose.svelte"
+      ],
+      "tests": [
+        "board/tests/browser/test-device-page.test.ts",
+        "board/tests/server/test-login.test.ts",
+        "board/tests/browser/agents-page.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/components/AgentClose.svelte"
+      ],
+      "tests": [
+        "board/tests/server/agent-close.test.ts",
+        "board/tests/browser/herdr-controller-page.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/tab-control.ts",
+        "board/src/lib/server/relaunch.ts"
+      ],
+      "tests": [
+        "board/tests/server/test-login.test.ts"
+      ]
+    }
+  ]
+}

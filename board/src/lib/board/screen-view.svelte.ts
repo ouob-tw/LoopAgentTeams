@@ -3,6 +3,7 @@
 // A phone, or a tablet, is a device whose main pointer is not a fine one that can hover, whatever
 // the width of its screen. Each agent keeps its sender while the page is open, so a press waiting for
 // its 恢復畫面 still waits when the panel is shown again, after a reconnect for one.
+import { testDevice } from './test-device.svelte.ts';
 import { request } from './api.ts';
 import { KeySender, type KeysAnswer } from './key-sender.ts';
 import { KEYS_UNSURE_TEXT, type KeyInput, type KeysResponse, type ScreenUpdate } from './screen.ts';
@@ -32,6 +33,8 @@ class ScreenView {
 	/** Why keys cannot be sent now, or null when they can. Before the first screen comes they can:
 	 *  typing into the pane does not need the page's screen. */
 	get blocked(): string | null {
+		const locked = testDevice.lockedReason(this.agentId);
+		if (locked) return locked;
 		const unread = this.update && !this.update.ok ? this.update.reason : null;
 		if (this.waiting) return unread ? `${KEYS_UNSURE_TEXT}；重新讀畫面失敗：${unread}` : KEYS_UNSURE_TEXT;
 		return unread;
