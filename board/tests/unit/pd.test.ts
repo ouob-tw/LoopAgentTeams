@@ -2,7 +2,7 @@
 // fields the panel shows and the answers the deny and passkey relay routes give, and how the
 // panel words a request's time and shortens its command, and where its window may lie. Test values only.
 import { expect, test } from 'bun:test';
-import { ACTION_LABEL, callerNote, notificationText, secretText, summaryText, callerText, clampBox, readBox, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
+import { ACTION_LABEL, callerNote, notificationText, secretText, summaryText, callerText, clampBox, readBox, shortCommand, timeText, typeLabel, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
 import { approveReply, challengeReply, checkAssertion, createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
 
@@ -282,6 +282,17 @@ test('an add or edit request keeps its type, non-secret values and where each se
 		},
 		{ id: 3, action: 'edit' }
 	]);
+});
+
+test('an edit request keeps every item type pd prints, and one a newer pd adds', () => {
+	const types = ['login', 'note', 'card', 'identity', 'sshKey', 'unknown', 'passkey2'];
+	const parsed = parsePdPending(exited(0, JSON.stringify(types.map((type, i) => ({ ...added, id: i + 1, action: 'edit', type })))));
+	expect(parsed.ok && parsed.requests.map((request) => request.type)).toEqual(types);
+	expect(['card', 'sshKey', 'passkey2'].map(typeLabel)).toEqual(['卡片', 'SSH 金鑰', 'passkey2']);
+	for (const type of [undefined, '', 5]) {
+		const none = parsePdPending(exited(0, JSON.stringify([{ ...added, type }])));
+		expect(none.ok && none.requests[0].type).toBeNull();
+	}
 });
 
 const SECRET_NAME = 'pass' + 'word';

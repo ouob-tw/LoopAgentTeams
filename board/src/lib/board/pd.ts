@@ -28,8 +28,8 @@ export interface PdRequest {
 	id: number;
 	/** A pd that does not say reads as `read`. */
 	action: PdAction;
-	/** The item type of an add or edit: `login` or `note`; null for a read. */
-	type: 'login' | 'note' | null;
+	/** The item type pd printed for an add or edit (login, note, card, identity, sshKey, unknown, or a newer one); null for a read. */
+	type: string | null;
 	/** The non-secret values an add or edit writes, in pd's order. */
 	values: { field: string; value: string }[];
 	/** The secret fields an add or edit writes, and where each comes from. */
@@ -111,7 +111,9 @@ export function pdNotice(snapshot: PdSnapshot): string | null {
 }
 
 export const ACTION_LABEL: Record<PdAction, string> = { read: '讀取', add: '新增', edit: '修改' };
-export const TYPE_LABEL = { login: '登入', note: '筆記' } as const;
+export const TYPE_LABEL: Record<string, string> = { login: '登入', note: '備註', card: '卡片', identity: '身分', sshKey: 'SSH 金鑰', unknown: '未知類型' };
+/** A type from a newer pd shows as given rather than disappearing. */
+export const typeLabel = (type: string): string => (Object.hasOwn(TYPE_LABEL, type) ? TYPE_LABEL[type] : type);
 
 /** The line under the caller: a read's shortened command, a write's field names. */
 export function summaryText(request: PdRequest): string {

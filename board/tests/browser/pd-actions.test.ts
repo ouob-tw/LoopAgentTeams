@@ -108,6 +108,26 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 	}, 30_000);
 }
 
+for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['desktop', 1280, 900, false]] as const) {
+	test.skipIf(!CHROME)(`${label}: an edit card shows the item type, even card, identity, SSH key and one pd adds later`, async () => {
+		const types = [['card', '卡片'], ['identity', '身分'], ['sshKey', 'SSH 金鑰'], ['unknown', '未知類型'], ['vehicle', 'vehicle'], ['note', '備註']] as const;
+		setPd(types.map(([type], i) => ({ ...edit, id: 20 + i, item: `existing-${type}`, type, fields: ['notes'], values: { notes: 'Public edit note' }, secrets: [] })));
+		browser = await launchChrome({ screen: SCREEN });
+		const tab = browser.tab;
+		const [name, value] = cookie.split('=');
+		await tab.send('Network.setCookie', { name, value, url: fixture.url });
+		await tab.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile });
+		await tab.navigate(`${fixture.url}/`);
+		await tab.until(`document.querySelectorAll('.inbox .pd .card').length === ${types.length} && ${SETTLED}`, 'the edit cards');
+		for (const [i, [, shown]] of types.entries()) {
+			expect(await tab.eval<string[]>(`[...${card(20 + i)}.querySelectorAll('dt')].map((dt) => dt.innerText + '=' + dt.nextElementSibling.innerText)`)).toContain(`類型=${shown}`);
+		}
+		expect(await tab.eval(FITS)).toBe(true);
+		await shot(tab, `q17-${label}-edit-types`);
+		expect(tab.errors).toEqual([]);
+	}, 30_000);
+}
+
 test.skipIf(!CHROME)('a new add request’s notification names the action; 拒絕 denies a write request', async () => {
 	setPd([read]);
 	browser = await launchChrome({ screen: SCREEN, scripts: [NOTIFICATIONS] });
