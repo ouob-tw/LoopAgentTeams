@@ -18,6 +18,7 @@
 	import { onMount, tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import {
+		ACTION_LABEL,
 		assertionJson,
 		callerNote,
 		callerParts,
@@ -27,8 +28,11 @@
 		pdNotice,
 		readBox,
 		requestOptions,
-		shortCommand,
+		notificationText,
+		secretText,
+		summaryText,
 		timeText,
+		TYPE_LABEL,
 		type PdBox,
 		type PdChallenge,
 		type PdRequest,
@@ -167,7 +171,8 @@
 		if (!notifications || Notification.permission !== 'granted') return;
 		// Android Chrome has Notification but its constructor throws; a failed notice must not break the page.
 		try {
-			const shown = new Notification(`pd 請求 #${item.id} 等你核准`, { body: `${item.item}：${item.command.join(' ')}`, tag: `pd-${item.id}` });
+			const { title, body } = notificationText(item);
+			const shown = new Notification(title, { body, tag: `pd-${item.id}` });
 			shown.onclick = () => {
 				window.focus();
 				shown.close();
@@ -270,11 +275,12 @@
 					{@const caller = callerParts(item)}
 					<li class="card" data-pd-request={item.id}>
 						<p class="head">
+							<span class="action {item.action}">{ACTION_LABEL[item.action]}</span>
 							<span class="item">{item.item}</span>
 							<span class="number">#{item.id}</span>
 							<span class="time" class:soon={time.soon} class:low={time.low} role="timer">{time.text}</span>
 						</p>
-						<details>
+						<details open={item.action !== 'read'}>
 							<summary
 								aria-describedby="pd-caller-{item.id}"
 								onfocus={(event) => explainer.focus(event, item.id)}
@@ -294,16 +300,31 @@
 									onpointerup={explainer.release}
 									onpointercancel={explainer.release}
 									oncontextmenu={(event) => event.preventDefault()}><span class="who">{caller.who}</span><span class="mark">{caller.mark}</span></span
-								> <code>{shortCommand(item.command)}</code>
+								> <code>{summaryText(item)}</code>
 								<span id="pd-caller-{item.id}" hidden>{callerNote(item)}</span>
 							</summary>
 							<dl>
-								<dt>欄位</dt>
-								<dd>{item.fields.join('、')}</dd>
-								<dt>指令</dt>
-								<dd><code>{item.command.join(' ')}</code></dd>
-								<dt>工作目錄</dt>
-								<dd><code>{item.cwd}</code></dd>
+								{#if item.action === 'read'}
+									<dt>欄位</dt>
+									<dd>{item.fields.join('、')}</dd>
+									<dt>指令</dt>
+									<dd><code>{item.command.join(' ')}</code></dd>
+									<dt>工作目錄</dt>
+									<dd><code>{item.cwd}</code></dd>
+								{:else}
+									{#if item.type}
+										<dt>類型</dt>
+										<dd>{TYPE_LABEL[item.type]}</dd>
+									{/if}
+									{#each item.values as shown (shown.field)}
+										<dt>{shown.field}</dt>
+										<dd class="value">{shown.value}</dd>
+									{/each}
+									{#each item.writes as secret (secret.field)}
+										<dt>{secret.field}</dt>
+										<dd class="hidden-value">{secretText(secret)}</dd>
+									{/each}
+								{/if}
 								<dt>呼叫者</dt>
 								<dd>{callerText(item)}</dd>
 							</dl>
@@ -509,6 +530,28 @@
 	.item {
 		font-weight: 600;
 		overflow-wrap: anywhere;
+	}
+	/* The action as a chip: a read keeps the quiet look, a write is marked so it is not taken for one. */
+	.action {
+		padding: 0 0.5rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-pill);
+		font-size: max(0.75rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
+	.action.add,
+	.action.edit {
+		border-color: var(--warn);
+		color: var(--warn);
+		font-weight: 600;
+	}
+	.value {
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.hidden-value {
+		overflow-wrap: anywhere;
+		color: var(--muted);
 	}
 	.number,
 	.time {
