@@ -210,9 +210,9 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 		for (let round = 1; round <= 3; round++) {
 			setPd([{ ...read, item: `GitHub token r${round}` }, { ...add, item: `fresh-service r${round}` }]);
 			await tab.until(`${card(1)}.querySelector('.item').innerText === 'GitHub token r${round}' && ${card(2)}.querySelector('.item').innerText === 'fresh-service r${round}'`, `re-read ${round}`);
+			await shot(tab, `504-${label}-after-reread-${round}`);
 			expect([await isOpen(1), await isOpen(2)]).toEqual([true, false]);
 		}
-		await shot(tab, `504-${label}-after-reread`);
 
 		// A card that appears later still starts by its action.
 		setPd([{ ...read, item: 'GitHub token r3' }, { ...add, item: 'fresh-service r3' }, { ...read, id: 7, item: 'another read' }, { ...edit, id: 8 }]);
