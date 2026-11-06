@@ -18,7 +18,7 @@
 	import { onMount, tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import {
-		ACTION_LABEL,
+		actionLabel,
 		assertionJson,
 		callerNote,
 		callerParts,
@@ -275,7 +275,7 @@
 					{@const caller = callerParts(item)}
 					<li class="card" data-pd-request={item.id}>
 						<p class="head">
-							<span class="action {item.action}">{ACTION_LABEL[item.action]}</span>
+							<span class="action" class:write={item.action !== 'read'} class:delete={item.action === 'delete'}>{actionLabel(item.action)}</span>
 							<span class="item">{item.item}</span>
 							<span class="number">#{item.id}</span>
 							<span class="time" class:soon={time.soon} class:low={time.low} role="timer">{time.text}</span>
@@ -300,7 +300,7 @@
 									onpointerup={explainer.release}
 									onpointercancel={explainer.release}
 									oncontextmenu={(event) => event.preventDefault()}><span class="who">{caller.who}</span><span class="mark">{caller.mark}</span></span
-								> <code>{summaryText(item)}</code>
+								>{#if summaryText(item)} <code>{summaryText(item)}</code>{/if}
 								<span id="pd-caller-{item.id}" hidden>{callerNote(item)}</span>
 							</summary>
 							<dl>
@@ -539,11 +539,14 @@
 		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
-	.action.add,
-	.action.edit {
+	.action.write {
 		border-color: var(--warn);
 		color: var(--warn);
 		font-weight: 600;
+	}
+	.action.delete {
+		border-color: var(--danger);
+		color: var(--danger);
 	}
 	.value {
 		white-space: pre-wrap;

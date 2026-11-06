@@ -2,7 +2,7 @@
 // fields the panel shows and the answers the deny and passkey relay routes give, and how the
 // panel words a request's time and shortens its command, and where its window may lie. Test values only.
 import { expect, test } from 'bun:test';
-import { ACTION_LABEL, callerNote, notificationText, secretText, summaryText, callerText, clampBox, readBox, shortCommand, timeText, typeLabel, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
+import { ACTION_LABEL, actionLabel, callerNote, notificationText, secretText, summaryText, callerText, clampBox, readBox, shortCommand, timeText, typeLabel, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
 import { approveReply, challengeReply, checkAssertion, createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
 
@@ -303,15 +303,27 @@ test('a value under any key but username, uri and notes never reaches the page',
 	expect(parsed.ok && parsed.requests[0].writes).toEqual([]);
 });
 
-test('a request without an action, or with one the board does not know, reads as a read', () => {
-	for (const action of [undefined, 'sync', 5]) {
+test('only a request without an action reads as a read; one the board does not know shows as given', () => {
+	const read = parsePdPending(exited(0, JSON.stringify([{ ...listed, action: undefined }])));
+	expect(read.ok && read.requests[0]).toMatchObject({ action: 'read', type: null, values: [], writes: [] });
+	for (const [action, kept, label] of [['sync', 'sync', 'sync'], [5, '', '未知動作'], ['', '', '未知動作']] as const) {
 		const parsed = parsePdPending(exited(0, JSON.stringify([{ ...listed, action }])));
-		expect(parsed.ok && parsed.requests[0]).toMatchObject({ action: 'read', type: null, values: [], writes: [] });
+		expect(parsed.ok && parsed.requests[0].action).toBe(kept);
+		expect(actionLabel(kept)).toBe(label);
 	}
 });
 
+test('a delete keeps its item, ID and type and shows no fields', () => {
+	const parsed = parsePdPending(exited(0, JSON.stringify([{ ...listed, action: 'delete', item: 'old token', item_id: 'item-1', type: 'login', fields: [], values: {}, secrets: [], argv: undefined, cwd: undefined }])));
+	expect(parsed.ok && parsed.requests[0]).toMatchObject({ action: 'delete', item: 'old token', type: 'login', fields: [], values: [], writes: [] });
+	const deleted = request({ id: 3, action: 'delete', item: 'old token', type: 'login', fields: [], command: [], cwd: '' });
+	expect(actionLabel('delete')).toBe('刪除');
+	expect(summaryText(deleted)).toBe('');
+	expect(notificationText(deleted)).toEqual({ title: 'pd 請求 #3（刪除）等你核准', body: 'old token（登入）' });
+});
+
 test('the card and the notification name the action', () => {
-	expect(ACTION_LABEL).toEqual({ read: '讀取', add: '新增', edit: '修改' });
+	expect(ACTION_LABEL).toEqual({ read: '讀取', add: '新增', edit: '修改', delete: '刪除' });
 	const write = request({ id: 2, action: 'add', item: 'fresh', fields: ['username', 'password'], command: [], cwd: '' });
 	expect(summaryText(write)).toBe('username、password');
 	expect(summaryText(request())).toBe('gh api user');
