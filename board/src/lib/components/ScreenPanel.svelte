@@ -13,7 +13,10 @@
 	// The focus goes to a hidden text box, so an input method composes in it; only the text it ends
 	// with is sent. A click that leaves text selected ends it instead, so the text can be copied.
 	import { page } from '$app/state';
+	import Lock from '@lucide/svelte/icons/lock';
+	import { TEST_DEVICE_NOT_OWNED } from '#lib/board/test-device.ts';
 	import { screenView } from '#lib/board/screen-view.svelte.ts';
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import { BASIC, KEY_UNSUPPORTED_TEXT, KEYS_UNSURE_TEXT, pressInput, screenLines, trimmedLines, type ScreenUpdate } from '#lib/board/screen.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
@@ -105,7 +108,7 @@
 	let direct = $state(false);
 	let box = $state<HTMLElement>();
 	let catcher = $state<HTMLTextAreaElement>();
-	const directable = $derived(!screenView.phone);
+	const directable = $derived(!screenView.phone && !testDevice.locks(agentId));
 
 	function enter() {
 		if (!directable) return;
@@ -133,7 +136,9 @@
 	<p class="empty">{unavailable}</p>
 {:else}
 	<div class="screen-panel" data-status={status}>
-		{#if status === 'waiting' || status === 'failed'}
+		{#if testDevice.locks(agentId)}
+			<p class="state locked" role="status" data-note="test-device"><Lock size="1em" aria-hidden="true" />{TEST_DEVICE_NOT_OWNED}</p>
+		{:else if status === 'waiting' || status === 'failed'}
 			<p class="state" role="status">
 				{#if status === 'waiting'}
 					{KEYS_UNSURE_TEXT}；重新讀到畫面後才能再按{#if update && !update.ok}。重新讀畫面失敗：{update.reason}{/if}
@@ -205,6 +210,11 @@
 		gap: 0.35rem;
 		min-width: 0;
 		min-height: 0;
+	}
+	.state.locked {
+		display: flex;
+		align-items: center;
+		gap: 0.35em;
 	}
 	.state {
 		margin: 0;

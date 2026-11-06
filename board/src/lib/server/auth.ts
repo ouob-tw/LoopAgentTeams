@@ -4,13 +4,14 @@ import type { Cookies } from '@sveltejs/kit';
 // demo) would overwrite each other's login under one name. A board that must stay apart sets its own.
 export const DEVICE_COOKIE = process.env.LAT_BOARD_COOKIE_NAME || 'lat_board_device';
 
-export function setDeviceCookie(cookies: Cookies, token: string): void {
+/** Set the login cookie: 400 days, or `maxAgeSeconds` for a test login that ends sooner. */
+export function setDeviceCookie(cookies: Cookies, token: string, maxAgeSeconds = 400 * 24 * 60 * 60): void {
 	cookies.set(DEVICE_COOKIE, token, {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'strict',
 		// The board has no HTTPS of its own; it is meant for a private network.
 		secure: false,
-		maxAge: 400 * 24 * 60 * 60
+		maxAge: maxAgeSeconds
 	});
 }

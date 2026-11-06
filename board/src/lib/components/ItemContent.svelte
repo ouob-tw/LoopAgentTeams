@@ -1,6 +1,8 @@
 <script lang="ts">
 	// The full content of one inbox item. A question that is still waiting can be answered here; one
 	// that is answered is read-only, its choice marked among its options and the note under them.
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import TestDenied from './TestDenied.svelte';
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { ANSWER_STATE_TEXT, chosenIn } from '#lib/board/answers.ts';
 	import { answering, complete } from '#lib/board/answering.svelte.ts';
@@ -286,8 +288,9 @@
 						bind:value={() => draft.note, (note) => answering.edit(item, { note })}
 					></textarea>
 				</label>
+				<TestDenied />
 				<div class="actions">
-					<button class="primary" disabled={sending || !complete(question, draft)}>{sending ? '送出中…' : '送出答覆'}</button>
+					<button class="primary" disabled={sending || !complete(question, draft) || testDevice.view !== null}>{sending ? '送出中…' : '送出答覆'}</button>
 				</div>
 			</form>
 		{:else if listed && !isAnswered(item)}
@@ -302,7 +305,7 @@
 			{/if}
 			{#if item.notifyFailed || submitted?.notifyFailed || notice}
 				<div class="actions">
-					<button onclick={notify} disabled={notifying}>{notifying ? '通知中…' : '重新通知'}</button>
+					<button onclick={notify} disabled={notifying || testDevice.view !== null}>{notifying ? '通知中…' : '重新通知'}</button>
 				</div>
 			{/if}
 		{/if}
@@ -323,10 +326,10 @@
 				<span class="state">已封存{item.readAt ? `，${noticeTime(item.readAt, clock.now, clock.timeZone)} 標為已讀` : ''}</span>
 			{:else if item.readAt}
 				<span class="state">已讀（{noticeTime(item.readAt, clock.now, clock.timeZone)}）</span>
-				<button onclick={() => mark(onunread)} disabled={marking}>標為未讀</button>
+				<button onclick={() => mark(onunread)} disabled={marking || testDevice.view !== null}>標為未讀</button>
 			{:else}
 				<span class="state">未讀</span>
-				{#if onread}<button onclick={() => mark(onread)} disabled={marking}>標為已讀</button>{/if}
+				{#if onread}<button onclick={() => mark(onread)} disabled={marking || testDevice.view !== null}>標為已讀</button>{/if}
 			{/if}
 		</footer>
 	{/if}

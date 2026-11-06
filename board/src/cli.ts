@@ -2,18 +2,32 @@
 // logged-in devices, print what the inbox holds. Runs under Bun, or under Node 22.18+ (22.17 with --experimental-strip-types).
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './lib/server/config.ts';
-import { listDevices, revokeDevice } from './lib/server/devices.ts';
+import {
+	expired,
+	issueTestLogin,
+	listDevices,
+	revokeDevice,
+	TEST_LOGIN_DEFAULT_HOURS,
+	TEST_LOGIN_MAX_HOURS,
+	type ListedDevice
+} from './lib/server/devices.ts';
+import { listHerdrAgents } from './lib/server/herdr.ts';
+import type { BoardConfig } from './lib/server/config.ts';
 import { formatInboxStatus, readInboxStatus } from './lib/server/inbox-status.ts';
 import { hasPassword, setPassword } from './lib/server/password.ts';
 
 const USAGE = `用法：
   start [--host <位址>] [--port <連接埠>]   啟動看板（需先 build）
   password                                  設定或變更登入密碼（輸入兩次）
-  devices                                   列出已登入的裝置
+  devices                                   列出已登入的裝置（含測試裝置）
   revoke <裝置 ID>                          撤銷一台裝置
+  test-login [--hours <時數>] [--label <名稱>] [--url <看板網址>]
+                                            發一組測試用登入，印出只能用一次的登入網址
+                                            （預設 4 小時、上限 24 小時）
   inbox                                     列出待辦與已處理的現況（只讀，不需登入）`;
 
 const DEFAULT_PORT = '7100';
@@ -71,6 +85,28 @@ function passwordReader(): (prompt: string) => Promise<string> {
 	};
 }
 
+/** A test device's column in `devices`: its label, when it ends, and whether it is used or over. */
+function testColumn(device: ListedDevice, now: number): string {
+	const test = device.test!;
+	const state = expired(device, now) ? '（已到期）' : device.unused ? '（網址尚未使用）' : '';
+	return `測試裝置「${test.label}」到期 ${test.expiresAt}${state}`;
+}
+
+/** The agents a test device started that Herdr still runs, one line each, for the host to decide
+ *  whether to close them; the board never closes them itself. */
+async function runningOwned(config: BoardConfig, device: ListedDevice): Promise<string[]> {
+	const owned = device.test?.owned ?? [];
+	if (!owned.length) return [];
+	const listed = await listHerdrAgents(config);
+	if (!listed.ok) return [`  讀不到 Herdr 的清單，無法確認它建立的 ${owned.length} 個 Agent 是否還在執行：${listed.reason}`];
+	const running = listed.agents.filter((agent) => agent.sessionId !== null && owned.includes(agent.sessionId));
+	if (!running.length) return [];
+	return [
+		`  它建立的 Agent 仍在執行 ${running.length} 個，看板不會自動關閉，請自行決定是否關閉：`,
+		...running.map((agent) => `  ${agent.sessionId}\t${agent.client}\t${agent.workspaceLabel ?? agent.workspace}／${agent.tabPlace?.label ?? agent.title ?? agent.tab}\t${agent.cwd}`)
+	];
+}
+
 async function main(argv: string[]): Promise<number> {
 	const [command, ...args] = argv;
 	const config = loadConfig();
@@ -124,17 +160,39 @@ async function main(argv: string[]): Promise<number> {
 
 	if (command === 'devices') {
 		const devices = listDevices(config.stateDir);
+		const now = config.now();
 		if (!devices.length) console.log('沒有已登入的裝置。');
-		for (const device of devices) console.log(`${device.id}\t${device.pairedAt}\t${device.label}`);
+		for (const device of devices) {
+			console.log([device.id, device.pairedAt, device.label, ...(device.test ? [testColumn(device, now)] : [])].join('\t'));
+			if (device.test && expired(device, now)) for (const line of await runningOwned(config, device)) console.log(line);
+		}
 		return 0;
 	}
 
 	if (command === 'revoke' && args[0]) {
-		if (!revokeDevice(config.stateDir, args[0])) {
+		const device = listDevices(config.stateDir).find((candidate) => candidate.id === args[0]);
+		if (!device || !revokeDevice(config.stateDir, args[0])) {
 			console.error(`找不到裝置 ${args[0]}。`);
 			return 1;
 		}
 		console.log(`已撤銷裝置 ${args[0]}。`);
+		for (const line of await runningOwned(config, device)) console.log(line);
+		return 0;
+	}
+
+	if (command === 'test-login') {
+		const hours = Number(option(args, '--hours') ?? TEST_LOGIN_DEFAULT_HOURS);
+		if (!(hours > 0 && hours <= TEST_LOGIN_MAX_HOURS)) {
+			console.error(`--hours 要大於 0、最多 ${TEST_LOGIN_MAX_HOURS}。`);
+			return 2;
+		}
+		const label = (option(args, '--label') ?? '').trim() || '測試';
+		const base = (option(args, '--url') ?? `http://${hostname()}:${process.env.PORT ?? DEFAULT_PORT}`).replace(/\/+$/, '');
+		const issued = issueTestLogin(config.stateDir, { label, hours, now: config.now() });
+		console.log(`已發出測試登入「${label}」（裝置 ${issued.id}），到期 ${issued.expiresAt}。`);
+		console.log('用瀏覽器打開下面的網址登入；網址只能用一次，到期後自動登出。');
+		console.log(`${base}/login/test#${issued.code}`);
+		console.log(`提早收回：bun run board revoke ${issued.id}`);
 		return 0;
 	}
 

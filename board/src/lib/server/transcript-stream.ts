@@ -40,7 +40,7 @@ function eventStream(board: Board, token: string, signal: AbortSignal, follow: (
 			const paired = () => {
 				let found = true;
 				try {
-					found = findDevice(board.config.stateDir, token) !== null;
+					found = findDevice(board.config.stateDir, token, board.config.now()) !== null;
 				} catch {
 					// An unreadable device list must not end the stream; requests still check it.
 				}

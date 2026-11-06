@@ -7,6 +7,8 @@
 	import { PREAUTH_ACTIONS, outcomeOf, valueOf, type PreauthOrigin } from '#lib/board/preauth.ts';
 	import { openSettings } from '#lib/board/settings-link.ts';
 	import PreauthAllow from './PreauthAllow.svelte';
+	import TestDenied from './TestDenied.svelte';
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import PreauthChips from './PreauthChips.svelte';
 	import PreauthNotices from './PreauthNotices.svelte';
 
@@ -67,8 +69,9 @@
 		<p class="note">找不到這個主控所在的 Git 專案，沒有專案設定。</p>
 	{/if}
 
+	<TestDenied />
 	{#if settings && (editable || !editor.layer)}
-		<table>
+		<table inert={testDevice.view !== null}>
 			<thead><tr><th>動作</th><th>專案</th><th>結果</th></tr></thead>
 			<tbody>
 				{#each PREAUTH_ACTIONS as action (action.name)}

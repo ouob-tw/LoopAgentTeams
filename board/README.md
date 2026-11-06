@@ -79,7 +79,18 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 密碼以 scrypt（N=2^15、r=8、p=1，16 位元組隨機鹽）雜湊後存在狀態目錄的 `password.json`，權限 600，不存明文。伺服器每次登入都重讀這個檔，所以變更立即生效。
 - 登入成功就在 `devices.json` 登記一台裝置，瀏覽器拿到 400 天的 HttpOnly cookie；配對碼版本留下的裝置格式相同，升級後照常有效。
 - 連續輸錯的計數依 `getClientAddress()` 的來源位址，只存在記憶體，重啟看板就清除。
-- 登入畫面與 `/api/login` 之外的路徑都要登入；`/api/*` 與事件串流未登入時回 401，其他頁面轉到 `/login`。
+- 登入畫面（`/login`、`/login/test`）與 `/api/login`、`/api/login/test` 之外的路徑都要登入；`/api/*` 與事件串流未登入時回 401，其他頁面轉到 `/login`。
+
+## 測試用登入
+
+怎麼發、測試裝置能做什麼，見[使用說明](../docs/lat-board.md#測試用登入)。實作上：
+
+- `test-login` 在 `devices.json` 先登記一台沒有 token 的裝置，帶 `test`（標籤、到期時間、`owned`、一次性登入碼的雜湊）。登入碼放在網址的 `#` 後面，瀏覽器不會把它送到伺服器的紀錄或連結預覽；`/login/test` 頁面按下按鈕才 POST 到 `/api/login/test`，換到 token 並清掉登入碼的雜湊，所以只能用一次。cookie 的期限是剩下的時間。
+- `findDevice` 依看板時鐘判斷到期：過期的測試裝置等同沒登入（401、頁面轉到登入畫面），事件串流在下一次心跳時收到 `unpaired`。頁面也在到期時間自己重新載入。
+- 權限在 `hooks.server.ts` 檢查，路由還沒執行就擋下：測試裝置的每個非讀取請求都要在 `src/lib/server/test-device.ts` 的 `TEST_DEVICE_RULES` 裡有分類（`open`、`deny`、body 的 `session`／`controllerId` 要是自己的、`tab` 要整個分頁都是自己的 Agent）；沒列到的一律 403。`tests/server/test-login.test.ts` 掃描 `src/routes` 所有 POST／PUT／PATCH／DELETE，和這份清單不一致就失敗，並逐一對別人的 Agent 發請求確認是 403。
+- 「自己的」以 session ID 判斷，記在裝置的 `owned`：測試裝置發起的啟動（新建主控或開新 Agent），在 Agent 出現在 Herdr 後把它的 session ID 加進去（Herdr 還不知道 session 時，在等候期限內再讀那個新開的窗格）。分頁名稱、窗格位置、HCOM 名稱都不算數；沒記到 session 的 Agent 就不能操作。
+- 送出紀錄：測試裝置的請求執行時（`acting.ts`），寫入的每一行都帶 `testDevice: { id, label }`；Agent 的操作紀錄分頁在那一行顯示標籤。
+- 頁面從 `/api/device` 讀 `owned`（每次新快照後重讀），只用來停用按鈕；真正的判斷在伺服器。
 
 ## 待辦
 

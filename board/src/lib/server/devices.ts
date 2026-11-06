@@ -9,11 +9,34 @@ export interface Device {
 	label: string;
 	/** When the device logged in; devices from before password login keep their pairing time. */
 	pairedAt: string;
+	/** A test login's terms; null for a device logged in with the password. */
+	test: TestTerms | null;
 }
 
-interface StoredDevice extends Device {
-	tokenHash: string;
+/** A time-limited test login (`board test-login`): it reads everything and acts only on the
+ *  agents it started itself, `owned` by their session IDs. */
+export interface TestTerms {
+	label: string;
+	expiresAt: string;
+	/** Session IDs of the agents and controllers this device started from the board. */
+	owned: string[];
 }
+
+interface StoredDevice {
+	id: string;
+	label: string;
+	pairedAt: string;
+	/** Empty while a test login's one-time code has not been used. */
+	tokenHash: string;
+	test?: TestTerms & {
+		/** The one-time code's hash, until it is used. */
+		codeHash?: string;
+	};
+}
+
+/** How long a test login lasts by default, and at most. */
+export const TEST_LOGIN_DEFAULT_HOURS = 4;
+export const TEST_LOGIN_MAX_HOURS = 24;
 
 export const DEVICES_FILE = 'devices.json';
 const STALE_LOCK_MS = 5_000;
@@ -73,25 +96,47 @@ export function registerDevice(stateDir: string, label: string): { token: string
 		const device: Device = {
 			id: randomBytes(4).toString('hex'),
 			label: label.slice(0, 200),
-			pairedAt: new Date().toISOString()
+			pairedAt: new Date().toISOString(),
+			test: null
 		};
-		writeJson(path, [...devices, { ...device, tokenHash: sha256(token) }]);
+		const { test: _, ...stored } = device;
+		writeJson(path, [...devices, { ...stored, tokenHash: sha256(token) }]);
 		return { token, device };
 	});
 }
 
-const publicDevice = ({ id, label, pairedAt }: StoredDevice): Device => ({ id, label, pairedAt });
+const publicDevice = ({ id, label, pairedAt, test }: StoredDevice): Device => ({
+	id,
+	label,
+	pairedAt,
+	test: test ? { label: test.label, expiresAt: test.expiresAt, owned: [...test.owned] } : null
+});
 
-export function listDevices(stateDir: string): Device[] {
-	return readJson<StoredDevice>(join(stateDir, DEVICES_FILE)).map(publicDevice);
+/** Whether a test login is past its time. */
+export const expired = (device: Pick<Device, 'test'>, now: number): boolean => device.test !== null && Date.parse(device.test.expiresAt) <= now;
+
+/** Whether the device's test login code was never used. */
+const unused = (device: StoredDevice) => !device.tokenHash;
+
+export interface ListedDevice extends Device {
+	/** A test login whose one-time link has not been opened yet. */
+	unused: boolean;
 }
 
-export function findDevice(stateDir: string, token: string): Device | null {
+export function listDevices(stateDir: string): ListedDevice[] {
+	return readJson<StoredDevice>(join(stateDir, DEVICES_FILE)).map((device) => ({ ...publicDevice(device), unused: unused(device) }));
+}
+
+/** The logged-in device the token belongs to; null for none, and for a test login past its time. */
+export function findDevice(stateDir: string, token: string, now: number = Date.now()): Device | null {
+	if (!token) return null;
 	const tokenHash = sha256(token);
 	const match = readJson<StoredDevice>(join(stateDir, DEVICES_FILE)).find(
-		(device) => device.tokenHash === tokenHash
+		(device) => !unused(device) && device.tokenHash === tokenHash
 	);
-	return match ? publicDevice(match) : null;
+	if (!match) return null;
+	const device = publicDevice(match);
+	return expired(device, now) ? null : device;
 }
 
 export function revokeDevice(stateDir: string, id: string): boolean {
@@ -102,5 +147,54 @@ export function revokeDevice(stateDir: string, id: string): boolean {
 		if (kept.length === devices.length) return false;
 		writeJson(path, kept);
 		return true;
+	});
+}
+
+/** Issue a test login: its device waits, logged out, for the one-time `code` the login link carries. */
+export function issueTestLogin(stateDir: string, terms: { label: string; hours: number; now: number }): { id: string; code: string; expiresAt: string } {
+	return withLock(stateDir, () => {
+		const path = join(stateDir, DEVICES_FILE);
+		const devices = readJson<StoredDevice>(path);
+		const code = randomBytes(32).toString('base64url');
+		const id = randomBytes(4).toString('hex');
+		const expiresAt = new Date(terms.now + terms.hours * 60 * 60 * 1000).toISOString();
+		const device: StoredDevice = {
+			id,
+			label: '',
+			pairedAt: new Date(terms.now).toISOString(),
+			tokenHash: '',
+			test: { label: terms.label.slice(0, 200), expiresAt, owned: [], codeHash: sha256(code) }
+		};
+		writeJson(path, [...devices, device]);
+		return { id, code, expiresAt };
+	});
+}
+
+/** Log a browser in with a test login's one-time code: only once, and only before it expires. */
+export function redeemTestLogin(stateDir: string, code: string, userAgent: string, now: number): { token: string; device: Device } | null {
+	if (!code) return null;
+	return withLock(stateDir, () => {
+		const path = join(stateDir, DEVICES_FILE);
+		const devices = readJson<StoredDevice>(path);
+		const codeHash = sha256(code);
+		const match = devices.find((device) => device.test?.codeHash === codeHash);
+		if (!match?.test || !unused(match) || Date.parse(match.test.expiresAt) <= now) return null;
+		const token = randomBytes(32).toString('base64url');
+		const { codeHash: _, ...test } = match.test;
+		const redeemed: StoredDevice = { ...match, label: userAgent.slice(0, 200), pairedAt: new Date(now).toISOString(), tokenHash: sha256(token), test };
+		writeJson(path, devices.map((device) => (device === match ? redeemed : device)));
+		return { token, device: publicDevice(redeemed) };
+	});
+}
+
+/** Note that a test device started the agent with this session ID: from now on it may act on it. */
+export function addOwned(stateDir: string, deviceId: string, sessionId: string): void {
+	withLock(stateDir, () => {
+		const path = join(stateDir, DEVICES_FILE);
+		const devices = readJson<StoredDevice>(path);
+		const device = devices.find((candidate) => candidate.id === deviceId);
+		if (!device?.test || device.test.owned.includes(sessionId)) return;
+		device.test.owned = [...device.test.owned, sessionId];
+		writeJson(path, devices);
 	});
 }

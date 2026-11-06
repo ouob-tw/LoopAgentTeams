@@ -2,6 +2,8 @@
 	// Three groups: this device's settings (theme, overall size, smallest text size), the board's, which every
 	// device shares (how the usage line reads, whether conversations open translated), and the global
 	// pre-authorization file.
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import TestDenied from './TestDenied.svelte';
 	import { onMount } from 'svelte';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { MIN_FONT, SCALE, SCREEN_FONT } from '#lib/board/prefs.ts';
@@ -114,14 +116,15 @@
 		<section class="group">
 			<h3>全局設置</h3>
 			<p class="note">所有已登入的裝置共用</p>
+			<TestDenied />
 
 			<section>
 				<h4>用量列</h4>
 				<div class="choices" role="group" aria-label="用量列">
-					<button aria-pressed={appearance.usageStyle === 'detailed'} onclick={() => onusagestyle('detailed')}>
+					<button aria-pressed={appearance.usageStyle === 'detailed'} disabled={testDevice.view !== null} onclick={() => onusagestyle('detailed')}>
 						詳細
 					</button>
-					<button aria-pressed={appearance.usageStyle === 'compact'} onclick={() => onusagestyle('compact')}>
+					<button aria-pressed={appearance.usageStyle === 'compact'} disabled={testDevice.view !== null} onclick={() => onusagestyle('compact')}>
 						精簡
 					</button>
 				</div>
@@ -131,14 +134,15 @@
 			<section>
 				<h4>對話翻譯</h4>
 				<div class="choices" role="group" aria-label="對話翻譯">
-					<button aria-pressed={translatePref.mode === 'auto'} onclick={() => ontranslatemode('auto')}>自動翻譯</button>
-					<button aria-pressed={translatePref.mode === 'manual'} onclick={() => ontranslatemode('manual')}>手動切換</button>
+					<button aria-pressed={translatePref.mode === 'auto'} disabled={testDevice.view !== null} onclick={() => ontranslatemode('auto')}>自動翻譯</button>
+					<button aria-pressed={translatePref.mode === 'manual'} disabled={testDevice.view !== null} onclick={() => ontranslatemode('manual')}>手動切換</button>
 				</div>
 				<p class="note">手動切換時，按分頁列的翻譯圖示才翻，只影響目前對話。</p>
 			</section>
 		</section>
 
-		<PreauthSettings bind:this={preauth} />
+		<TestDenied />
+		<div inert={testDevice.view !== null}><PreauthSettings bind:this={preauth} /></div>
 	</div>
 </dialog>
 

@@ -11,6 +11,9 @@
 	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { KnownAgent } from '#lib/board/types.ts';
+	import Lock from '@lucide/svelte/icons/lock';
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import { TEST_DEVICE_NOT_OWNED } from '#lib/board/test-device.ts';
 
 	let { agent, label = '關閉 Agent' }: { agent: KnownAgent; label?: string } = $props();
 
@@ -20,7 +23,8 @@
 	let busy = $state<Record<string, boolean>>({});
 	// Whether hcom reaches it decides which command closes it; until that is known it is not done
 	// (the server refuses it too).
-	const closable = $derived(agent.hcom !== 'unknown');
+	const locked = $derived(testDevice.locks(agent.id));
+	const closable = $derived(agent.hcom !== 'unknown' && !locked);
 
 	const linkable = $derived(!agent.noHooks && (agent.hcom === 'linked' || agent.hcom === 'paused'));
 	// What a pause does shows after a tap on the icon, until a tap on it again or anywhere else; only
@@ -82,7 +86,9 @@
 	{:else if agent.switch}
 		<p class="note">{AGENT_SWITCH_UNFINISHED_TEXT}：按下方輸入列模型旁的 ⚠ 處理。</p>
 	{:else}
-		{#if !closable}
+		{#if locked}
+			<p class="note locked" data-note="test-device"><Lock size="1em" aria-hidden="true" />{TEST_DEVICE_NOT_OWNED}</p>
+		{:else if !closable}
 			<p class="note">{AGENT_HCOM_UNKNOWN_REASON}</p>
 		{/if}
 		{#if agent.noHooks}
@@ -104,7 +110,7 @@
 				{/if}
 				{#if linkable}
 					{@const action = agent.hcom === 'linked' ? 'pause' : 'unpause'}
-					<button type="button" data-action={action} disabled={busy[agent.id]} onclick={() => link(action)}
+					<button type="button" data-action={action} disabled={busy[agent.id] || locked} onclick={() => link(action)}
 						>{busy[agent.id] ? '處理中…' : action === 'pause' ? '暫停通訊' : '恢復通訊'}</button
 					>
 					<button
@@ -134,6 +140,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.4rem;
+	}
+	.locked {
+		display: flex;
+		align-items: center;
+		gap: 0.35em;
 	}
 	.note {
 		margin: 0;

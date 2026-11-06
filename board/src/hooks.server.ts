@@ -4,7 +4,9 @@ import type { Handle, HandleServerError, ServerInit } from '@sveltejs/kit/hooks'
 import { randomUUID } from 'node:crypto';
 import { DEVICE_COOKIE } from '#lib/server/auth.ts';
 import { getBoard } from '#lib/server/board.ts';
+import { actingAs } from '#lib/server/acting.ts';
 import { findDevice } from '#lib/server/devices.ts';
+import { testDeviceRefusal } from '#lib/server/test-device.ts';
 import { exceptionFields, log, withRequestId } from '#lib/server/log.ts';
 import { redact, secretsOf } from '#lib/server/redact.ts';
 
@@ -15,8 +17,8 @@ export const init: ServerInit = () => {
 	for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => board.close());
 };
 
-// Everything except the login screen and its one endpoint needs a logged-in device.
-const OPEN_PATHS = new Set(['/login', '/api/login']);
+// Everything except the login screens and their endpoints needs a logged-in device.
+const OPEN_PATHS = new Set(['/login', '/api/login', '/login/test', '/api/login/test']);
 
 // The user's own stylesheet: the last thing in the head, so it comes after every built-in style and
 // nothing is painted without it. It is not part of the page's own markup: browser extensions add
@@ -73,7 +75,8 @@ export const handle: Handle = ({ event, resolve }) => {
 		let response: Response;
 		try {
 			const token = event.cookies.get(DEVICE_COOKIE);
-			const device = token ? findDevice(getBoard().config.stateDir, token) : null;
+			const board = getBoard();
+			const device = token ? findDevice(board.config.stateDir, token, board.config.now()) : null;
 			event.locals.device = device;
 
 			const path = event.url.pathname;
@@ -82,10 +85,15 @@ export const handle: Handle = ({ event, resolve }) => {
 				redirect(303, '/login');
 			}
 			if (device && path === '/login') redirect(303, '/');
+			// A test device's change is checked against what it may do before any route runs.
+			const refusal = device && (await testDeviceRefusal(device, event.request.method, event.route.id, event.request, async () => (await board.current()).agents));
+			if (refusal) return refusal;
 			// Only a logged-in device can fetch the stylesheet, so only its pages refer to it.
-			response = await resolve(event, {
-				transformPageChunk: ({ html }) => html.replace('%lat.user-style%', device ? USER_STYLE : '')
-			});
+			response = await actingAs(device, () =>
+				resolve(event, {
+					transformPageChunk: ({ html }) => html.replace('%lat.user-style%', device ? USER_STYLE : '')
+				})
+			);
 		} catch (error) {
 			// Thrown here, before or around resolving: SvelteKit answers with a 500 (or the error's own
 			// status) after this, where nothing else sees it.

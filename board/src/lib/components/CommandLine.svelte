@@ -44,6 +44,7 @@
 	import ComboKeys from './ComboKeys.svelte';
 	import AttachmentTray from './AttachmentTray.svelte';
 	import MessageBox from './MessageBox.svelte';
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import VoiceButton from './VoiceButton.svelte';
 	import AgentModelPicker from './AgentModelPicker.svelte';
 	import AgentPermissionModes from './AgentPermissionModes.svelte';
@@ -174,8 +175,13 @@
 	/** A line for the closed agent whose page is open, without a name or naming it (a closed
 	 *  controller): not sent; it is brought back from its page. */
 	const toClosed = $derived(closed !== undefined && (!named || (command.ok && command.controller.id === closed.id)));
-	const boxDisabled = $derived((toAgent && agentBlocked !== null) || toClosed);
 	const recipient = $derived(toClosed ? undefined : command.ok ? command.controller : named || toAgent ? undefined : target);
+	/** Why a test device may not send to whom the line is for: an agent or controller it did not start. */
+	const testLocked = $derived.by(() => {
+		const id = toAgent && agent ? agent.id : (recipient?.id ?? (named ? undefined : (target?.id ?? closed?.id)));
+		return id === undefined ? null : testDevice.lockedReason(id);
+	});
+	const boxDisabled = $derived((toAgent && agentBlocked !== null) || toClosed || testLocked !== null);
 	/** Whose turn the stop button interrupts, as the notice names it: the page's own agent or
 	 *  controller, never the one a typed `@name` picks; null when it is not in a turn. */
 	const stopping = $derived(
@@ -336,7 +342,9 @@
 					bind:this={messageBox}
 					bind:value={() => draft, (value) => write(owner, value)}
 					label={toAgent && agent ? `指令列：傳話給 ${agentName}` : toClosed && closed ? `指令列：@${lastSegment(closed.hcomName)} 已關閉` : recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${lastSegment(recipient.hcomName)}` : '指令列'}
-					placeholder={toAgent && agentBlocked
+					placeholder={testLocked
+						? testLocked
+						: toAgent && agentBlocked
 						? agentBlocked
 						: toClosed
 							? CLOSED_SEND_TEXT
@@ -357,7 +365,7 @@
 							aria-label="中斷這一回合"
 							title="中斷這一回合（等同在它的終端機按 Esc）"
 							data-action="interrupt"
-							disabled={interrupting[stopping.id]}
+							disabled={interrupting[stopping.id] || testDevice.locks(stopping.id)}
 							onclick={() => ((optionsOpen = false), interrupt())}
 						>
 							<Square size="1em" fill="currentColor" />
@@ -377,11 +385,11 @@
 	</div>
 	<!-- An agent has no wake; a closed one is brought back from its page. -->
 	{#if toAgent && agent}
-		<div class="pill-slot">
+		<div class="pill-slot" inert={testLocked !== null}>
 			<AgentModelPicker {agent} />
 		</div>
 	{:else if !toClosed}
-		<div class="pill-slot">
+		<div class="pill-slot" inert={testLocked !== null}>
 			<ModelPicker
 				controller={recipient}
 				chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }}
@@ -399,7 +407,7 @@
 			aria-label="選項"
 			title={optionsTitle}
 			aria-expanded={optionsOpen}
-			disabled={!hasOptions}
+			disabled={!hasOptions || testLocked !== null}
 			onclick={() => (optionsOpen = !optionsOpen)}
 		>
 			<SlidersHorizontal size="1.1em" />
@@ -473,6 +481,9 @@
 		color: var(--muted);
 	}
 	/* As tall as a one-line box, so the label stays level with its last line as it grows. */
+	.pill-slot[inert] {
+		opacity: 0.5;
+	}
 	.pill-slot {
 		display: flex;
 		align-items: center;

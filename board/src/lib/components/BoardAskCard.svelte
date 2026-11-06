@@ -17,6 +17,8 @@
 	// picked marked among the options. Once the hook stopped waiting it still takes an answer, sent
 	// to the agent as a message; one the board may not have sent (結果不明) can be sent again.
 	// A permission request has its own card.
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import TestDenied from './TestDenied.svelte';
 	import { ASK_TAKEN_REASON, askAnswerable, BOARD_ASK_STATE_TEXT, EMPTY_PICK, RESEND_NOTE, pickComplete, type AskAnswerResponse, type AskQuestion, type BoardAsk } from '#lib/board/board-asks.ts';
 	import { request } from '#lib/board/api.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
@@ -167,7 +169,8 @@
 				submit();
 			}}
 		>
-			<button class="primary" disabled={sending || !complete}>{sending ? '送出中…' : '送出答案'}</button>
+			<TestDenied />
+			<button class="primary" disabled={sending || !complete || testDevice.view !== null}>{sending ? '送出中…' : '送出答案'}</button>
 			{#if ask.state === 'waiting'}
 				<span class="state" role="timer">剩 {leftText}{ask.questions.length > 1 && !complete ? '・每一題都要作答' : ''}</span>
 			{:else}
@@ -176,7 +179,7 @@
 		</form>
 	{:else if ask.state === 'relay_unknown' && !takenHere[ask.id]}
 		<div class="actions">
-			<button class="primary" disabled={sending} onclick={() => submit(true)}>{sending ? '送出中…' : '再送一次'}</button>
+			<button class="primary" disabled={sending || testDevice.view !== null} onclick={() => submit(true)}>{sending ? '送出中…' : '再送一次'}</button>
 			<span class="state" role="status">{BOARD_ASK_STATE_TEXT.relay_unknown}・{RESEND_NOTE}</span>
 		</div>
 	{:else}

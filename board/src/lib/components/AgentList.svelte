@@ -10,6 +10,9 @@
 	// context menu (a long press on a touch screen) closes the workspace, after a confirmation that
 	// says how many agents and tabs go with it. The workspace the board runs in is not offered.
 	import GripVertical from '@lucide/svelte/icons/grip-vertical';
+	import Lock from '@lucide/svelte/icons/lock';
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import { TEST_DEVICE_DENIED, TEST_DEVICE_NOT_OWNED } from '#lib/board/test-device.ts';
 	import Plus from '@lucide/svelte/icons/plus';
 	import { WORKSPACE_OWN_REASON, workspaceCloseConfirmText, type WorkspaceContents } from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -545,7 +548,19 @@
 		>
 			<h3>{group.label}</h3>
 			<!-- Only a workspace Herdr lists can take a new tab or move. -->
-			{#if listed}
+			{#if listed && testDevice.view}
+				<span class="workspace-grip locked" title={TEST_DEVICE_DENIED} aria-hidden="true"><Lock size="1em" /></span>
+				<button
+					type="button"
+					class="new"
+					class:current={newIn === group.workspace}
+					aria-label="在 {group.label} 開新 Agent"
+					title="在 {group.label} 開新 Agent"
+					onclick={() => onnew(group.workspace)}
+				>
+					<Plus size="1.1em" />
+				</button>
+			{:else if listed}
 				<span
 					class="workspace-grip"
 					title="拖曳調整工作區順序"
@@ -616,7 +631,9 @@
 					</div>
 				{/if}
 				<!-- Only a tab Herdr lists now can be moved; one listed for its open switch alone is not. -->
-				{#if agent.inHerdr}
+				{#if agent.inHerdr && testDevice.locks(id)}
+					<span class="grip locked" title={TEST_DEVICE_NOT_OWNED} aria-hidden="true"><Lock size="1em" /></span>
+				{:else if agent.inHerdr}
 					<span
 						class="grip"
 						title="拖曳調整分頁順序"
@@ -650,14 +667,22 @@
 			<div class="duty"><DutyText {duty} /></div>
 		{/if}
 		<div role="menu" aria-label="分頁">
-			<button type="button" role="menuitem" onclick={() => startRename(target)}>改分頁名稱</button>
+			{#if testDevice.locks(target.id)}
+				<button type="button" role="menuitem" disabled>改分頁名稱</button>
+				<p class="menu-note">{TEST_DEVICE_NOT_OWNED}</p>
+			{:else}
+				<button type="button" role="menuitem" onclick={() => startRename(target)}>改分頁名稱</button>
+			{/if}
 		</div>
 	</div>
 {:else if menu}
 	{@const { workspace, contents } = menu}
 	<div class="menu" bind:this={menuBox}>
 		<div role="menu" aria-label="工作區 {menu.label}">
-			{#if contents && !('reason' in contents) && !contents.own}
+			{#if testDevice.view}
+				<button type="button" role="menuitem" disabled>關閉工作區</button>
+				<p class="menu-note">{TEST_DEVICE_DENIED}</p>
+			{:else if contents && !('reason' in contents) && !contents.own}
 				<button type="button" role="menuitem" class="danger-text" onclick={() => startCloseWorkspace(workspace, contents)}>關閉工作區</button>
 			{:else}
 				<button type="button" role="menuitem" disabled>關閉工作區</button>
@@ -702,6 +727,9 @@
 		{/if}
 		{#if agent.controller}
 			<span class="tag" title="LAT 主控">主控</span>
+		{/if}
+		{#if testDevice.view && !testDevice.locks(agent.id)}
+			<span class="tag mine" title="這台測試裝置建立的，可以操作">自己建立</span>
 		{/if}
 		{#if agent.switch}
 			<span class="tag unfinished" title={agent.inHerdr ? '模型切換未完成' : '模型切換未完成，已不在 Herdr 的清單上'}>切換未完成</span>
@@ -989,6 +1017,14 @@
 		border-radius: var(--radius-pill);
 		color: var(--accent);
 		font-size: max(0.7rem, var(--min-font, 0px));
+	}
+	.tag.mine {
+		border-color: var(--ok);
+		color: var(--ok);
+	}
+	.grip.locked,
+	.workspace-grip.locked {
+		cursor: not-allowed;
 	}
 	.tag.unfinished {
 		border-color: var(--warn);

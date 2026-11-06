@@ -36,6 +36,7 @@ import { launchAgent, listAgents } from './hcom.ts';
 import {
 	chooseWorkspace,
 	createWorkspace,
+	listHerdrAgents,
 	moveTab,
 	paneTab,
 	renameTab,
@@ -48,6 +49,8 @@ import { queued, typedText } from './send.ts';
 import { launchDefaults } from './client-settings.ts';
 import type { ReportFile } from './reports.ts';
 import { appendSent, readLines, type LaunchFollowed, type SentLog } from './sent-log.ts';
+import { actingTestDevice } from './acting.ts';
+import { addOwned } from './devices.ts';
 import { boundOf, readLaunches } from './sent-views.ts';
 
 /** How many launches the new-controller page lists, and the new-agent form too. */
@@ -205,16 +208,19 @@ export async function frontWhileLaunching(
 	}
 }
 
+/** Start a launch. A test device's request makes it the owner of the agent once it runs. */
 export function startLaunch(board: Board, request: LaunchRequest): Promise<{ status: number; body: LaunchResponse }> {
+	const owner = actingTestDevice()?.id ?? null;
 	return inLaunchQueue(async () => {
-		const made = await attempt(board, request);
+		const made = await attempt(board, request, owner);
 		return { value: { status: made.status, body: made.body }, follow: made.follow };
 	});
 }
 
 async function attempt(
 	board: Board,
-	request: LaunchRequest
+	request: LaunchRequest,
+	owner: string | null
 ): Promise<{ status: number; body: LaunchResponse; follow?: Promise<void> }> {
 	const config = board.config;
 	const agent = request.agent ?? null;
@@ -295,7 +301,7 @@ async function attempt(
 		status: ok ? 200 : 502,
 		body: { ok, reason: ok ? null : entry.error, entry: { ...entry, state, controllerId: null, follow: null }, logError },
 		// Without a name nothing in Herdr's list can be told to be this agent.
-		follow: ok && entry.hcomName ? early.then(() => followAgent(board, entry, entry.hcomName!, agent?.tabName ?? '', front!)) : undefined
+		follow: ok && entry.hcomName ? early.then(() => followAgent(board, entry, entry.hcomName!, agent?.tabName ?? '', front!, owner)) : undefined
 	};
 }
 
@@ -306,7 +312,7 @@ async function attempt(
  * to the front if it is not there yet. Either step failing leaves the agent started; the log says
  * which one failed.
  */
-async function followAgent(board: Board, entry: SentLaunch, hcomName: string, tabName: string, front: ReturnType<typeof frontTab>): Promise<void> {
+async function followAgent(board: Board, entry: SentLaunch, hcomName: string, tabName: string, front: ReturnType<typeof frontTab>, owner: string | null): Promise<void> {
 	const config = board.config;
 	let found: HerdrAgent | null = null;
 	let notFound = '';
@@ -319,6 +325,7 @@ async function followAgent(board: Board, entry: SentLaunch, hcomName: string, ta
 		found = appeared.found;
 		if (!appeared.found) notFound = appeared.reason;
 		else {
+			if (owner) await own(config, owner, appeared.found, Date.parse(entry.time) + config.launchWaitMs);
 			if (tabName) {
 				const renamed = await renameTab(config, appeared.found.tab, tabName);
 				if (!renamed.ok) renameError = `改分頁名稱失敗：${renamed.reason}`;
@@ -351,6 +358,30 @@ async function followAgent(board: Board, entry: SentLaunch, hcomName: string, ta
 	}
 	// Herdr's order changed, and the record with it: every page reads both again.
 	void board.refresh();
+}
+
+/** How often Herdr is asked for the session of a new agent it lists without one yet. */
+const SESSION_POLL_MS = 1_000;
+
+/**
+ * Make the test device `owner` the owner of the agent its launch started: by the session ID Herdr
+ * has for it, waited for until `deadline` while Herdr does not know it yet. The pane is the one
+ * the launch just opened, so whatever session shows up in it is this agent's. Without a session
+ * the device cannot act on the agent: nothing else may name it.
+ */
+async function own(config: BoardConfig, owner: string, found: HerdrAgent, deadline: number): Promise<void> {
+	let sessionId = found.sessionId;
+	while (!sessionId && config.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, SESSION_POLL_MS));
+		const listed = await listHerdrAgents(config);
+		if (listed.ok) sessionId = listed.agents.find((agent) => agent.pane === found.pane)?.sessionId ?? null;
+	}
+	if (!sessionId) return;
+	try {
+		addOwned(config.stateDir, owner, sessionId);
+	} catch (error) {
+		console.error(`測試裝置建立的 Agent 記不進裝置清單：${(error as Error).message}`);
+	}
 }
 
 /** Whether anything is at this path, following links; a dangling link is not. */

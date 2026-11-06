@@ -3,6 +3,8 @@
 	// agent is resumed in a new Herdr tab; a controller's opens the wake's options first (model,
 	// effort, a first message, giving up a stuck resume) and is woken like one. How it
 	// goes shows under the button until the agent is back in Herdr and its page becomes the agent's.
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import TestDenied from './TestDenied.svelte';
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import type { ClosedAgent } from '#lib/board/closed-agents.ts';
@@ -82,11 +84,12 @@
 	{:else if agent.resume?.state === 'resuming'}
 		<p class="progress">接回中，等它出現在 Herdr…</p>
 	{/if}
+	<TestDenied />
 	<div class="actions">
 		<button
 			type="button"
 			data-action="resume"
-			disabled={busy}
+			disabled={busy || testDevice.view !== null}
 			aria-expanded={agent.controller ? !!waking[id] : undefined}
 			title={agent.controller ? '以主控喚醒接回，先選喚醒選項' : '接回同一段對話，開在原工作區的新分頁'}
 			onclick={() => (agent.controller ? toggleWake() : void resume(agent))}>{busy ? '接回中…' : '接回'}</button

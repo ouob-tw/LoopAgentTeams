@@ -43,6 +43,8 @@ export interface AgentAction {
 	error: string | null;
 	/** Set on a permission switch. */
 	permission?: PermissionSwitch;
+	/** The test device that did it (`board test-login`); absent for a password device. */
+	testDevice?: { id: string; label: string };
 	/** Set on key presses from the 終端分頁: the kinds typed in and how many, never the text. */
 	keys?: KeyCounts;
 }
