@@ -74,7 +74,7 @@
 	// theme's own, and in the light theme the Herdr light theme's (the server reads it from Herdr's
 	// settings). `--ansi-N` are the basic colours the runs name.
 	const colours = $derived.by(() => {
-		const light = (page.data as { screenTheme?: { background: string; foreground: string; basic: string[] } }).screenTheme ?? { background: '#eff1f5', foreground: '#4c4f69', basic: BASIC };
+		const light = (page.data as { screenTheme: { background: string; foreground: string; basic: string[] } }).screenTheme;
 		// light-dark() takes the light colour first.
 		const pair = (dark: string, bright: string) => `light-dark(${bright}, ${dark})`;
 		return [`--screen-bg:${pair('#0b0c0e', light.background)}`, `--screen-fg:${pair('#d4d4d4', light.foreground)}`, ...BASIC.map((dark, index) => `--ansi-${index}:${pair(dark, light.basic[index])}`)].join(';');

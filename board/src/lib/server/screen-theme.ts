@@ -69,6 +69,9 @@ export function screenTheme(name: LightThemeName): ScreenTheme {
 		name,
 		background: theme.background,
 		foreground: theme.text,
+		// 0 black: the text colour; 1-6 red, green, yellow, blue, magenta (mauve), cyan (teal); 7 white: overlay1;
+		// 8 bright black: subtext0, a step lighter than black and darker than white; 9-14 the same hues as 1-6;
+		// 15 bright white: surface1, the lightest grey the theme has apart from its background.
 		basic: [theme.text, red, green, yellow, blue, mauve, teal, theme.overlay1, theme.subtext0, red, green, yellow, blue, mauve, teal, theme.surface1]
 	};
 }
