@@ -3,7 +3,7 @@
 	// server, followed as it changes while the tab is shown and not at all otherwise. The box
 	// takes the page's height down to the command line; its bottom line stays at the box's bottom, and
 	// lines too long for it, or more than fit, slide inside it. An update leaves it where it was slid to.
-	// In the light theme the box takes the Herdr light theme's background, text and basic colours, with
+	// In the light theme the box takes the board's white background and the Herdr light theme's text and basic colours, with
 	// no filter, and colours a program names itself (256, true colour) as it sent them. The text can be
 	// selected and copied.
 	// Keys go through the 按鍵面板 on a phone (DockSwipe), which takes the command line's place; why keys
