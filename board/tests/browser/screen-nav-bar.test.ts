@@ -116,10 +116,10 @@ for (const theme of ['dark', 'light'] as const) {
 test('phone: a notice sits at the very top and covers neither "←" nor "展開"', async () => {
 	await visit({ width: 390, height: 844, phone: true, theme: 'dark' });
 	await openScreen();
-	await tab.eval(`document.querySelector('.screen-panel .round').click()`);
-	await tab.until(`!!document.querySelector('.screen-panel [role=toolbar]')`, 'the panel');
+	await tab.swipeOn('.dock textarea', -200);
+	await tab.until(`document.querySelector('.dock .keys-pane').getBoundingClientRect().left < 2`, 'the key panel');
 	setHerdr({ fail: { 'pane send-keys': { exit: 1, stderr: JSON.stringify({ error: { code: 'x', message: 'pane is busy' } }) } } });
-	await tab.eval(`document.querySelector('.screen-panel [role=toolbar] .groups button').click()`);
+	await tab.eval(`document.querySelector('.dock .keys-pane button.key').click()`);
 	await tab.until(`!!document.querySelector('.toasts .toast')`, 'a notice');
 	const toast = await tab.eval<Box>(rect('.toasts .toast'));
 	const back = await tab.eval<Box>(rect('.detail .bar .back'));
@@ -141,7 +141,7 @@ test('computer: the top bar stays on the 畫面 tab and the card has no "←"', 
 	expect(await tab.eval(`!!document.querySelector('.detail .bar .back')`)).toBe(false);
 }, 30_000);
 
-test('phone: with the command line put away the box runs down to the bottom, the keys sit above its round button, and it all returns when reopened', async () => {
+test('phone: with the command line put away the box runs down to the bottom, no swipe brings the keys, and it all returns when reopened', async () => {
 	await visit({ width: 390, height: 844, phone: true, theme: 'dark' });
 	await openScreen();
 	const edge = () => tab.eval<{ boxBottom: number; dockTop: number; inner: number; tall: number }>(`({ boxBottom: document.querySelector('.screen-panel .box').getBoundingClientRect().bottom, dockTop: document.querySelector('.dock').getBoundingClientRect().top, inner: innerHeight, tall: document.documentElement.scrollHeight })`);
@@ -151,23 +151,17 @@ test('phone: with the command line put away the box runs down to the bottom, the
 	await tab.until(`!!document.querySelector('.dock .reopen')`, 'the round button');
 	await tab.until(`Math.abs(document.querySelector('.screen-panel .box').getBoundingClientRect().bottom - innerHeight) < 2`, 'the box at the bottom');
 	expect((await edge()).tall).toBeLessThanOrEqual(open.inner);
-	const reopen = await tab.eval<Box>(rect('.dock .reopen'));
-	const round = await tab.eval<Box>(rect('.screen-panel .round'));
-	expect(round.bottom).toBeLessThanOrEqual(reopen.top);
 	await shot('phone-dark-bar-away');
-	// The opened key panel is above it too, and the lines stay above the panel.
-	await tab.eval(`document.querySelector('.screen-panel .round').click()`);
-	await tab.until(`!!document.querySelector('.screen-panel [role=toolbar]')`, 'the panel');
-	await new Promise((resolve) => setTimeout(resolve, 150));
-	expect((await tab.eval<Box>(rect('.screen-panel [role=toolbar]'))).bottom).toBeLessThanOrEqual(reopen.top);
-	await shot('phone-dark-bar-away-menu');
-	await tab.eval(`document.querySelector('.screen-panel .close').click()`);
+	// With only the round button there, a swipe along the dock brings no key panel.
+	await tab.swipe(60, 800, -250);
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	expect(await tab.eval(`document.querySelector('.dock .keys-pane').getBoundingClientRect().left >= document.querySelector('.dock').getBoundingClientRect().right - 2`)).toBe(true);
 	await tab.eval(`document.querySelector('.dock .reopen').click()`);
 	await tab.until(`!document.querySelector('.dock .reopen')`, 'the command line back');
 	await tab.until(`Math.abs(document.querySelector('.screen-panel .box').getBoundingClientRect().bottom - document.querySelector('.dock').getBoundingClientRect().top) < 2`, 'the box above it');
 }, 30_000);
 
-test('tablet (touch, wider than 760px): a command line remembered as put away does not lift the key button or change the box', async () => {
+test('tablet (touch, wider than 760px): a command line remembered as put away leaves the box above the dock', async () => {
 	await visit({ width: 1000, height: 800, phone: true, theme: 'dark' });
 	await tab.eval(`localStorage.setItem('lat-board-command-hidden', '1')`);
 	await tab.send('Page.reload');
@@ -175,9 +169,6 @@ test('tablet (touch, wider than 760px): a command line remembered as put away do
 	// The page takes touches only once it has started: wait for that before clicking a tab.
 	await tab.until(`document.body.dataset.hydrated !== undefined || performance.now() > 3000`, 'the page to start');
 	await openScreen();
-	// Its round button stays in the box's corner, not lifted to clear a button that is not shown.
-	const lift = await tab.eval<number>(`document.querySelector('.screen-panel .box').getBoundingClientRect().bottom - document.querySelector('.screen-panel .round').getBoundingClientRect().bottom`);
-	expect(lift).toBeLessThan(16);
 	const gap = await tab.eval<number>(`Math.abs(document.querySelector('.screen-panel .box').getBoundingClientRect().bottom - document.querySelector('.dock').getBoundingClientRect().top)`);
 	expect(gap).toBeLessThan(2);
 }, 30_000);

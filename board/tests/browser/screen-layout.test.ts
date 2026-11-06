@@ -1,7 +1,7 @@
 // How the 畫面分頁 is laid out, in a real browser with fake Herdr and hcom: text at the board's size,
 // the box from the tabs to the command line, its bottom line at its bottom, long lines sliding inside
-// it and staying slid through updates, the status card folded into one line, the 按鍵選單 moving the
-// content up, and the light theme. `SCREEN_TAB_SHOTS` names a folder to save each step's screenshot in.
+// it and staying slid through updates, the status card folded into one line, the 按鍵面板 taking the
+// command line's place, and the light theme. `SCREEN_TAB_SHOTS` names a folder to save each step's screenshot in.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
@@ -228,48 +228,40 @@ test('the status card folds into one line on the 畫面 tab, shows and folds aga
 	await tab.until(`!!document.querySelector('.detail .bar') && !document.querySelector('.detail article.profile')`, 'folded on returning');
 });
 
-test('phone: the open 按鍵選單 moves the content up so the options stay above it, and back when it closes', async () => {
+test('phone: the key panel takes the command line\'s place and height without moving or covering the screen box', async () => {
 	await visit({ width: 390, height: 844, phone: true });
-	await tab.until(`!!document.querySelector('.screen-panel .round')`, 'the round button');
-	await shot('phone-round-dark');
-	const place = () => tab.eval<{ options: number; panel: number | null }>(`(() => {
-		const walker = document.createTreeWalker(document.querySelector('.screen-panel pre'), NodeFilter.SHOW_TEXT);
-		let option = null;
-		while (walker.nextNode()) if (walker.currentNode.textContent.includes('3. No')) option = walker.currentNode;
-		const range = document.createRange();
-		range.selectNodeContents(option);
-		return { options: range.getBoundingClientRect().bottom, panel: document.querySelector('.screen-panel [role=toolbar]')?.getBoundingClientRect().top ?? null };
+	await tab.until(`!!document.querySelector('.dock .keys-pane')`, 'the key panel');
+	const place = () => tab.eval<{ boxTop: number; boxBottom: number; dockTop: number; dockBottom: number; barTop: number; barBottom: number; keysTop: number; keysBottom: number; tall: number; inner: number }>(`(() => {
+		const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+		return { boxTop: rect('.screen-panel .box').top, boxBottom: rect('.screen-panel .box').bottom, dockTop: rect('.dock').top, dockBottom: rect('.dock').bottom, barTop: rect('.dock .cmd').top, barBottom: rect('.dock .cmd').bottom, keysTop: rect('.dock .keys-pane').top, keysBottom: rect('.dock .keys-pane').bottom, tall: document.documentElement.scrollHeight, inner: innerHeight };
 	})()`);
-	const before = await place();
-	expect(before.panel).toBeNull();
-	await tab.eval(`document.querySelector('.screen-panel .round').click()`);
-	await tab.until(`!!document.querySelector('.screen-panel [role=toolbar]')`, 'the panel');
+	const line = await place();
+	// The keys wait beside the line, as tall as it, so the box above neither moves nor is covered.
+	expect(Math.abs(line.keysTop - line.barTop)).toBeLessThan(2);
+	expect(Math.abs(line.keysBottom - line.barBottom)).toBeLessThan(2);
+	expect(Math.abs(line.boxBottom - line.dockTop)).toBeLessThan(2);
+	await shot('phone-line-dark');
+	await tab.swipeOn('.dock textarea', -200);
+	await tab.until(`document.querySelector('.dock .keys-pane').getBoundingClientRect().left < 2`, 'the keys');
 	await sleep(100);
-	const open = await place();
-	expect(open.options).toBeLessThanOrEqual(open.panel!);
-	expect(open.options).toBeGreaterThan(open.panel! - 60);
-	await shot('phone-menu-open-dark');
-	// A press leaves the panel open and the content where it is.
-	await tab.eval(`document.querySelector('.screen-panel [role=toolbar] .groups button').click()`);
-	await sleep(200);
-	expect(await tab.eval(`!!document.querySelector('.screen-panel [role=toolbar]')`)).toBe(true);
-	expect((await place()).options).toBe(open.options);
-	await tab.eval(`document.querySelector('.screen-panel .close').click()`);
-	await tab.until(`!!document.querySelector('.screen-panel .round')`, 'the round button');
-	await sleep(100);
-	expect((await place()).options).toBe(before.options);
+	const keys = await place();
+	expect(keys.boxTop).toBe(line.boxTop);
+	expect(keys.boxBottom).toBe(line.boxBottom);
+	expect(keys.dockTop).toBe(line.dockTop);
+	expect(keys.tall).toBeLessThanOrEqual(keys.inner);
+	await shot('phone-keys-dark');
 });
 
-test('the light theme turns the screen light keeping its hues, at once when the theme changes; the menu stays in the theme', async () => {
+test('the light theme turns the screen light keeping its hues, at once when the theme changes; the key panel stays in the theme', async () => {
 	await visit({ width: 390, height: 844, phone: true, theme: 'light' });
-	await tab.until(`!!document.querySelector('.screen-panel .round')`, 'the round button');
-	const look = () => tab.eval<{ filter: string; theme: string; menu: string }>(`({ filter: getComputedStyle(document.querySelector('.screen-panel .scroller')).filter, theme: document.documentElement.dataset.theme, menu: getComputedStyle(document.querySelector('.screen-panel .round')).filter })`);
+	await tab.until(`!!document.querySelector('.dock .keys-pane')`, 'the key panel');
+	const look = () => tab.eval<{ filter: string; theme: string; menu: string }>(`({ filter: getComputedStyle(document.querySelector('.screen-panel .scroller')).filter, theme: document.documentElement.dataset.theme, menu: getComputedStyle(document.querySelector('.dock .keys-pane')).filter })`);
 	expect(await look()).toEqual({ filter: 'invert(1) hue-rotate(180deg)', theme: 'light', menu: 'none' });
-	await shot('phone-round-light');
+	await shot('phone-line-light');
 	await tab.eval(`document.documentElement.dataset.theme = 'dark'`);
 	expect((await look()).filter).toBe('none');
 	await tab.eval(`document.documentElement.dataset.theme = 'light'`);
-	await tab.eval(`document.querySelector('.screen-panel .round').click()`);
-	await tab.until(`!!document.querySelector('.screen-panel [role=toolbar]')`, 'the panel');
-	await shot('phone-menu-open-light');
+	await tab.swipeOn('.dock textarea', -200);
+	await tab.until(`document.querySelector('.dock .keys-pane').getBoundingClientRect().left < 2`, 'the keys');
+	await shot('phone-keys-light');
 });

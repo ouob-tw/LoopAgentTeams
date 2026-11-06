@@ -1,5 +1,5 @@
 // The 畫面分頁: what the server pushes of a pane's screen, the key presses a page sends into the
-// pane and how each fared, the 按鍵選單's keys, and the screen's colour codes read into styled runs.
+// pane and how each fared, the 按鍵面板's keys, and the screen's colour codes read into styled runs.
 import type { AgentActionResponse } from './agent-actions.ts';
 
 /** One push of a pane's screen: its bottom screenful with colour codes, secrets masked, or why it
@@ -29,27 +29,24 @@ export const SCREEN_NOT_LISTED_TEXT = 'Herdr 的清單上找不到它的窗格�
 /** What a closed agent's 畫面分頁 shows. */
 export const SCREEN_CLOSED_TEXT = '已關閉，先接回才能看畫面';
 
-/** The 按鍵選單's keys, by the group each shows in: named keys, the four arrows as a cross, numbers. */
-export const KEY_MENU: Record<'named' | 'arrows' | 'numbers', { label: string; input: KeyInput }[]> = {
-	named: [
-		{ label: 'Enter', input: { key: 'enter' } },
-		{ label: 'Esc', input: { key: 'esc' } },
-		{ label: 'Tab', input: { key: 'tab' } },
-		{ label: 'Ctrl+C', input: { key: 'ctrl+c' } },
-		{ label: 'Shift+Tab', input: { key: 'shift+tab' } }
+/** The 按鍵面板's keys: two rows at the left, the four arrows as a cross at the right. */
+export const KEY_PANEL: { rows: { label: string; input: KeyInput; wide?: boolean; narrow?: boolean }[][]; arrows: { up: KeyInput; left: KeyInput; down: KeyInput; right: KeyInput } } = {
+	rows: [
+		[
+			{ label: 'Esc', input: { key: 'esc' } },
+			{ label: 'Tab', input: { key: 'tab' } },
+			{ label: '⇧Tab', input: { key: 'shift+tab' }, wide: true },
+			{ label: '1', input: { text: '1' }, narrow: true },
+			{ label: '2', input: { text: '2' }, narrow: true }
+		],
+		[
+			{ label: 'Enter', input: { key: 'enter' }, wide: true },
+			{ label: 'Ctrl+C', input: { key: 'ctrl+c' }, wide: true },
+			{ label: '3', input: { text: '3' }, narrow: true },
+			{ label: '4', input: { text: '4' }, narrow: true }
+		]
 	],
-	arrows: [
-		{ label: '↑', input: { key: 'up' } },
-		{ label: '←', input: { key: 'left' } },
-		{ label: '↓', input: { key: 'down' } },
-		{ label: '→', input: { key: 'right' } }
-	],
-	numbers: [
-		{ label: '1', input: { text: '1' } },
-		{ label: '2', input: { text: '2' } },
-		{ label: '3', input: { text: '3' } },
-		{ label: '4', input: { text: '4' } }
-	]
+	arrows: { up: { key: 'up' }, left: { key: 'left' }, down: { key: 'down' }, right: { key: 'right' } }
 };
 
 /** Keys Herdr's `send-keys` has no name for, typed as the terminal's escape sequences instead, by

@@ -43,6 +43,7 @@
 	import RosterRail from '#lib/components/RosterRail.svelte';
 	import Settings from '#lib/components/Settings.svelte';
 	import Toasts from '#lib/components/Toasts.svelte';
+	import DockSwipe from '#lib/components/DockSwipe.svelte';
 
 	let { data } = $props();
 
@@ -668,15 +669,17 @@
 				standing={board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))}
 			/>
 			<!-- A controller's page on the Herdr tab is written to as on its information page. -->
-			<CommandLine
-				controllers={herdrControllers}
-				target={controller ?? agentController}
-				agent={view?.kind === 'agent' && !agentController ? agent : undefined}
-				closed={view?.kind === 'agent' ? closedAgent : undefined}
-				agents={board.snapshot.agents}
-				adopt={agentController?.id}
-				away={folderFocused}
-			/>
+			<DockSwipe>
+				<CommandLine
+					controllers={herdrControllers}
+					target={controller ?? agentController}
+					agent={view?.kind === 'agent' && !agentController ? agent : undefined}
+					closed={view?.kind === 'agent' ? closedAgent : undefined}
+					agents={board.snapshot.agents}
+					adopt={agentController?.id}
+					away={folderFocused}
+				/>
+			</DockSwipe>
 		</div>
 	</div>
 </div>

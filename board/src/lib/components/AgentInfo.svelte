@@ -2,7 +2,7 @@
 	// An agent's page on the Herdr 分頁, laid out like a controller's information page: one line
 	// of who and where it stands, the details of where it runs, its close, then its conversation, its
 	// Herdr pane's screen and what was done to it, one tab at a time. Text, an interrupt and a model switch are sent to it
-	// from the command line; keys from its 畫面分頁's 按鍵選單 on a phone. The status is hcom's when hcom reaches it and Herdr's otherwise (ADR
+	// from the command line; keys from the 按鍵面板 of its dock on a phone. The status is hcom's when hcom reaches it and Herdr's otherwise (ADR
 	// 0003), or 等你回答 while a board ask of its waits; its board asks show in its conversation,
 	// where they were asked.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
