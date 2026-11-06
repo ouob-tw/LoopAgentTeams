@@ -13,7 +13,12 @@
         "board/src/routes/api/agents/keys/**",
         "board/src/routes/api/agents/screen/**",
         "board/tests/fake-herdr.mjs",
-        "board/tests/browser/screen-nav-bar.test.ts"
+        "board/tests/browser/screen-nav-bar.test.ts",
+        "board/src/lib/board/appearance.svelte.ts",
+        "board/src/lib/components/Settings.svelte",
+        "board/src/lib/board/prefs.ts",
+        "board/src/app.html",
+        "board/tests/browser/screen-font.test.ts"
       ],
       "tests": [
         "board/tests/server/screen-keys.test.ts",
@@ -23,7 +28,8 @@
         "board/tests/unit/key-press.test.ts",
         "board/tests/browser/screen-direct.test.ts",
         "board/tests/browser/screen-layout.test.ts",
-        "board/tests/browser/screen-nav-bar.test.ts"
+        "board/tests/browser/screen-nav-bar.test.ts",
+        "board/tests/browser/screen-font.test.ts"
       ]
     },
     {

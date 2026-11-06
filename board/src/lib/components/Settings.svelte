@@ -4,7 +4,7 @@
 	// pre-authorization file.
 	import { onMount } from 'svelte';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
-	import { MIN_FONT, SCALE } from '#lib/board/prefs.ts';
+	import { MIN_FONT, SCALE, SCREEN_FONT } from '#lib/board/prefs.ts';
 	import { registerSettings } from '#lib/board/settings-link.ts';
 	import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	import PreauthSettings from './PreauthSettings.svelte';
@@ -89,6 +89,25 @@
 					<button disabled={appearance.minFont === null} onclick={() => appearance.resetMinFont()}>不限</button>
 				</div>
 				<p class="note">比這更小的字會放大到這個大小。</p>
+			</section>
+
+			<section>
+				<h4>畫面字體</h4>
+				<div class="choices" role="group" aria-label="畫面字體">
+					<button
+						aria-label="畫面字調小"
+						disabled={appearance.screenFont <= SCREEN_FONT.min}
+						onclick={() => appearance.setScreenFont(appearance.screenFont - SCREEN_FONT.step)}>－</button
+					>
+					<output aria-live="polite">{appearance.screenFont}px</output>
+					<button
+						aria-label="畫面字調大"
+						disabled={appearance.screenFont >= SCREEN_FONT.max}
+						onclick={() => appearance.setScreenFont(appearance.screenFont + SCREEN_FONT.step)}>＋</button
+					>
+					<button disabled={appearance.screenFont === SCREEN_FONT.base} onclick={() => appearance.resetScreenFont()}>還原預設</button>
+				</div>
+				<p class="note">只影響畫面分頁，不受整體大小與最小字體影響。</p>
 			</section>
 		</section>
 

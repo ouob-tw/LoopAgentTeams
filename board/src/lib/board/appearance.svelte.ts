@@ -1,4 +1,4 @@
-// This device's appearance: theme, overall size, smallest text size, whether the roster is folded and the two
+// This device's appearance: theme, overall size, smallest text size, the 畫面分頁 text size, whether the roster is folded and the two
 // column widths. Each is a variable or attribute on the root element, which the styles read, and is remembered
 // in the browser; the startup script in `src/app.html` puts it back before first paint. Only what the settings
 // dialog shows is also kept as state here. How the usage line reads is not this device's: the board keeps it for
@@ -15,6 +15,7 @@ import {
 	rememberedNumber,
 	resolveTheme,
 	SCALE,
+	SCREEN_FONT,
 	THEME_KEY,
 	THEMES,
 	WIDTHS,
@@ -46,6 +47,8 @@ class Appearance {
 	scale = $state<number>(SCALE.base);
 	/** Smallest text size in px; null when there is no floor. */
 	minFont = $state<number | null>(null);
+	/** The 畫面分頁's text size in px. */
+	screenFont = $state<number>(SCREEN_FONT.base);
 	/** As the board last said; 詳細 until it does. */
 	usageStyle = $state<UsageStyle>('detailed');
 
@@ -62,6 +65,7 @@ class Appearance {
 		});
 		this.scale = rememberedNumber(SCALE.key, SCALE.min, SCALE.max) ?? SCALE.base;
 		this.minFont = rememberedNumber(MIN_FONT.key, MIN_FONT.min, MIN_FONT.max);
+		this.screenFont = rememberedNumber(SCREEN_FONT.key, SCREEN_FONT.min, SCREEN_FONT.max) ?? SCREEN_FONT.base;
 		forget(LEGACY_USAGE_STYLE_KEY);
 		forget(LEGACY_TRANSLATE_KEY);
 	}
@@ -101,6 +105,18 @@ class Appearance {
 		this.minFont = null;
 		document.documentElement.style.removeProperty('--min-font');
 		forget(MIN_FONT.key);
+	}
+
+	setScreenFont(px: number): void {
+		this.screenFont = clamp(px, SCREEN_FONT.min, SCREEN_FONT.max);
+		document.documentElement.style.setProperty('--screen-font', `${this.screenFont}px`);
+		remember(SCREEN_FONT.key, String(this.screenFont));
+	}
+
+	resetScreenFont(): void {
+		this.screenFont = SCREEN_FONT.base;
+		document.documentElement.style.removeProperty('--screen-font');
+		forget(SCREEN_FONT.key);
 	}
 
 	setFolded(folded: boolean): void {

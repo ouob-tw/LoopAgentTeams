@@ -27,6 +27,9 @@ export const SCALE = { key: 'lat-board-scale', min: 80, max: 150, step: 10, base
 /** The smallest text size in px; nothing saved means no floor. */
 export const MIN_FONT = { key: 'lat-board-min-font', min: 10, max: 24, step: 1, start: 12 } as const;
 
+/** The 畫面分頁's text size in px; nothing saved means the default. It ignores 整體大小 and 最小字體. */
+export const SCREEN_FONT = { key: 'lat-board-screen-font', min: 10, max: 28, step: 1, base: 16 } as const;
+
 /** '1' while the wide layout's roster is folded into the rail. */
 export const FOLDED_KEY = 'lat-board-roster-folded';
 
