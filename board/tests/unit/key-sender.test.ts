@@ -129,3 +129,64 @@ test('a failure while the recovery request of an earlier one is still under way 
 	await tick();
 	expect(asks.map((ask) => ask.recovery)).toEqual(['r1', 'r2']);
 });
+
+test('with crypto.randomUUID removed (a plain-http page) a press still goes out', async () => {
+	const original = crypto.randomUUID;
+	// @ts-expect-error a plain-http page has no randomUUID
+	delete crypto.randomUUID;
+	try {
+		const posts: string[] = [];
+		const sender = new KeySender({ post: async (_inputs, recovery) => (posts.push(recovery), { kind: 'answered', ok: true, reason: null }), askRecovery: async () => true, failed: () => {}, changed: () => {} });
+		sender.press({ key: 'esc' });
+		await tick();
+		expect(posts).toHaveLength(1);
+		expect(posts[0].length).toBeGreaterThan(10);
+	} finally {
+		crypto.randomUUID = original;
+	}
+});
+
+test('an ID that cannot be made says so, and later presses are not stuck behind it', async () => {
+	const failures: (string | null)[] = [];
+	const posts: KeyInput[][] = [];
+	let broken = true;
+	const sender = new KeySender({
+		post: async (inputs) => (posts.push(inputs), { kind: 'answered', ok: true, reason: null }),
+		askRecovery: async () => true,
+		failed: (reason) => void failures.push(reason),
+		changed: () => {},
+		newId: () => {
+			if (broken) throw new Error('no ids');
+			return 'r1';
+		}
+	});
+	sender.press({ key: 'esc' });
+	await tick();
+	expect(failures).toHaveLength(1);
+	expect(failures[0]).toContain('no ids');
+	expect(posts).toEqual([]);
+	broken = false;
+	sender.press({ key: 'down' });
+	await tick();
+	expect(posts).toEqual([[{ key: 'down' }]]);
+});
+
+test('a request that throws is treated as unanswered and does not leave sending stuck', async () => {
+	const failures: (string | null)[] = [];
+	const asked: string[] = [];
+	const sender = new KeySender({
+		post: async () => {
+			throw new Error('boom');
+		},
+		askRecovery: async (recovery) => (asked.push(recovery), true),
+		failed: (reason) => void failures.push(reason),
+		changed: () => {},
+		newId: () => 'r1'
+	});
+	sender.press({ key: 'esc' });
+	await tick();
+	expect(failures).toEqual([null]);
+	expect(asked).toEqual(['r1']);
+	sender.screen({ ok: true, text: 'x', recovered: ['r1'] });
+	expect(sender.waiting).toBe(false);
+});

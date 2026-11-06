@@ -4,6 +4,7 @@
 // a screen update listing the request's recovery ID, which may come before or after its answer.
 // When no answer came back, the server is asked for that 恢復畫面 again and again until it takes
 // the request, as the connection may be down; until then nothing else lets sending go on.
+import { newId } from './new-id.ts';
 import type { KeyInput, ScreenUpdate } from './screen.ts';
 
 /** How a request ended: answered, all typed in or not and why; or no answer came back that can be
@@ -82,21 +83,44 @@ export class KeySender {
 	async #pump(): Promise<void> {
 		if (this.#sending) return;
 		this.#sending = true;
-		while (this.#queue.length && this.#waiting === null) {
-			const batch = this.#queue.splice(0);
-			const id = this.#hooks.newId?.() ?? crypto.randomUUID();
-			const answer = await this.#hooks.post(batch, id);
-			if (answer.kind === 'answered' && answer.ok) continue;
-			this.#queue.length = 0;
-			// Its 恢復畫面 may have come before the answer.
-			if (!this.#recovered.has(id)) this.#waiting = id;
-			if (answer.kind === 'network' && this.#waiting === id) {
-				this.#unasked = id;
-				void this.#ask();
+		try {
+			while (this.#queue.length && this.#waiting === null) {
+				const batch = this.#queue.splice(0);
+				let id: string;
+				try {
+					id = (this.#hooks.newId ?? newId)();
+				} catch (error) {
+					// Nothing was sent: say so, and let the next press try again.
+					this.#fail(error);
+					continue;
+				}
+				let answer: KeysAnswer;
+				try {
+					answer = await this.#hooks.post(batch, id);
+				} catch {
+					// As if no answer came back: the server may or may not have the request.
+					answer = { kind: 'network' };
+				}
+				if (answer.kind === 'answered' && answer.ok) continue;
+				this.#queue.length = 0;
+				// Its 恢復畫面 may have come before the answer.
+				if (!this.#recovered.has(id)) this.#waiting = id;
+				if (answer.kind === 'network' && this.#waiting === id) {
+					this.#unasked = id;
+					void this.#ask();
+				}
+				this.#hooks.failed(answer.kind === 'answered' ? answer.reason : null);
+				this.#hooks.changed();
 			}
-			this.#hooks.failed(answer.kind === 'answered' ? answer.reason : null);
-			this.#hooks.changed();
+		} finally {
+			this.#sending = false;
 		}
-		this.#sending = false;
+	}
+
+	/** The request was never made, so there is no 恢復畫面 to wait for: the queue goes and the next press tries again. */
+	#fail(error: unknown): void {
+		this.#queue.length = 0;
+		this.#hooks.failed(`按鍵沒有送出（${error instanceof Error ? error.message : String(error)}）`);
+		this.#hooks.changed();
 	}
 }
