@@ -10,7 +10,9 @@ hcom term inject <名稱> $'\e' --name <自身名稱>        # Esc
 ```
 
 - 每按一步就用 `hcom term <名稱>` 看畫面，確認游標或選項真的移到目標再按 Enter。選單會改設定（例如 `/model`）而畫面確認不了時，按 Esc 離開，不要盲按 Enter。
-- 按鍵之間用 `hcom listen 2` 等畫面更新，不用 `sleep`。
+- 按鍵之間用 `sleep 2` 等畫面更新，不用 `hcom listen`：listen 一收到訊息就返回並把訊息標為已讀，畫面可能還沒更新，輸出沒讀就等於漏收訊息。
 - 只按任務需要的鍵；替 Agent 選選項等於替它做決定，任務訊息沒授權的選擇先問使用者。
+
+HCOM 0.7.31 實測 `sleep`：Codex CLI 0.164.0 跑 `sleep 40` 正常；Claude Code 2.1.319 跑 `sleep 3`、`sleep 15` 正常，`sleep 40; echo` 被 Claude Code 擋下；兩邊在 sleep 期間送來的 HCOM 訊息都在指令結束後收到。
 
 HCOM 0.7.26 實測：Claude Code 2.1.284 文字帶 `--enter` 一次送出可用；Codex CLI 0.158.0 文字與 Enter 分兩次送可用，一次送出未測。Codex `/model` 選單送 `\e[B` 游標下移一項，送 `\e` 離開且模型未變。
