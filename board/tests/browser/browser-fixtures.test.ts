@@ -2,7 +2,7 @@
 // failed test started does not outlive it.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { createServer, type Server } from 'node:net';
+import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, test } from 'bun:test';
@@ -41,7 +41,12 @@ test('a fixture and a Chrome start while ports 7110–7201 are taken', async () 
 	const held: Server[] = [];
 	cleanups.push(() => closeAll(held));
 	for (let port = 7110; port <= 7201; port++) {
-		const server = createServer();
+		const server = createServer((socket) => {
+			// Another test's client on this shared host may connect to a port it thinks is its own.
+			sockets.add(socket);
+			socket.once('close', () => sockets.delete(socket));
+			socket.on('error', () => {});
+		});
 		// A port somebody else already holds stays theirs.
 		const bound = await new Promise<boolean>((resolve) => {
 			server.once('error', () => resolve(false));
@@ -59,7 +64,14 @@ test('a fixture and a Chrome start while ports 7110–7201 are taken', async () 
 	}
 }, 60_000);
 
-const closeAll = (servers: Server[]) => Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+/** Connections strangers made to a held port: `close` waits for them, so they are dropped. */
+const sockets = new Set<Socket>();
+const closeAll = (servers: Server[]) => {
+	// Closing first stops new connections at once; then the ones made are dropped.
+	const closed = Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+	for (const socket of sockets) socket.destroy();
+	return closed;
+};
 
 test.skipIf(!CHROME)('a browser test whose beforeAll fails leaves no Chrome behind', async () => {
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-leak-'));

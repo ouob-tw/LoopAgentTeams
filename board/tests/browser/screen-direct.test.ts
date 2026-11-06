@@ -1,5 +1,5 @@
 // A computer's direct operation on the 終端分頁 in a real browser: headless Chrome with a mouse that
-// can hover on the built board with fake Herdr and hcom. A click on the screen frames it and keys
+// can hover on the built board with fake Herdr and hcom. A click on the screen draws a line along its top and keys
 // pressed go into the pane in order (the six escape-sequence keys as text), Esc staying in it; a
 // click elsewhere leaves. The ⋯ menu's 組合鍵 send to the pane on screen; a phone has none.
 // `SCREEN_TAB_SHOTS` names a folder to save each step's screenshot in.
@@ -102,22 +102,41 @@ const look = () =>
 		return { direct: box.classList.contains('direct'), box: rect(box), pre: rect(box.querySelector('pre')), focus: document.activeElement?.className ?? '' };
 	})()`);
 
-test('computer: a click frames the screen and keys go into the pane in order, Esc and Tab staying in it; a click elsewhere leaves', async () => {
+test('computer: a click draws the top line and colours the tab, and keys go into the pane in order, Esc and Tab staying in it; a click elsewhere leaves', async () => {
 	await visit();
 	const before = await look();
 	expect(before.direct).toBe(false);
+	const tabLook = () => tab.eval<string>(`(() => { const b = document.querySelector('[data-tab=screen]'); const r = b.getBoundingClientRect(); return [getComputedStyle(b).color, ...[r.x, r.y, r.width, r.height].map(Math.round)].join(); })()`);
+	const tabBefore = await tabLook();
 	await shot('desktop-direct-before');
 
 	await tab.pointerClick('.screen-panel .box pre');
 	await tab.until(`document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation');
 	const during = await look();
 	expect(during.focus).toContain('catcher');
-	// The frame moves nothing: the box and its text stay where they were.
+	// The line moves nothing: the box and its text stay where they were.
 	expect(during.box).toEqual(before.box);
 	expect(during.pre).toEqual(before.pre);
-	// The frame is the accent colour, drawn inside the border.
-	expect(await tab.eval<string>(`getComputedStyle(document.querySelector('.screen-panel .box'), '::after').boxShadow`)).toContain('inset');
+	// A thin line along the top in the accent colour, and the 終端 tab in it too; nothing around the screen.
+	const line = await tab.eval<{ height: string; background: string; accent: string; label: string; border: string }>(`(() => {
+		const after = getComputedStyle(document.querySelector('.screen-panel .box'), '::after');
+		const probe = document.createElement('i'); probe.style.color = 'var(--accent)'; document.body.append(probe);
+		const accent = getComputedStyle(probe).color; probe.remove();
+		return { height: after.height, background: after.backgroundColor, accent, label: getComputedStyle(document.querySelector('[data-tab=screen]')).color, border: getComputedStyle(document.querySelector('.screen-panel .box')).borderTopWidth };
+	})()`);
+	expect(line.height).toBe('2px');
+	expect(line.background).toBe(line.accent);
+	expect(line.label).toBe(line.accent);
+	expect(line.border).toBe('0px');
+	expect(await tab.eval(`!!document.querySelector('.page.screen-direct')`)).toBe(true);
+	// The tab changes colour only: it does not move.
+	expect((await tabLook()).split(',').slice(-4)).toEqual(tabBefore.split(',').slice(-4));
 	await shot('desktop-direct-during');
+	if (SHOTS) {
+		await tab.eval(`document.documentElement.dataset.theme = 'light'`);
+		await shot('desktop-direct-during-light');
+		await tab.eval(`document.documentElement.dataset.theme = 'dark'`);
+	}
 
 	await key('a', { code: 'KeyA', vk: 65, text: 'a' });
 	await key(' ', { code: 'Space', vk: 32, text: ' ' });
@@ -174,6 +193,8 @@ test('computer: a click frames the screen and keys go into the pane in order, Es
 	// A click elsewhere leaves; keys then go nowhere.
 	await tab.pointerClick('.detail .bar b');
 	await tab.until(`!document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation left');
+	expect(await tabLook()).toBe(tabBefore);
+	expect(await tab.eval(`!!document.querySelector('.page.screen-direct')`)).toBe(false);
 	const after = await look();
 	expect(after.box).toEqual(before.box);
 	await key('z', { code: 'KeyZ', vk: 90, text: 'z' });

@@ -1,14 +1,17 @@
 <script lang="ts">
 	// The 終端分頁: the last lines of the agent's Herdr pane with its colours, secrets masked by the
-	// server, followed as it changes while the tab is shown and not at all otherwise. The box
-	// takes the page's height down to the command line; its bottom line stays at the box's bottom, and
+	// server, followed as it changes while the tab is shown and not at all otherwise. The box has no
+	// frame, rounding or margin of its own: it bleeds out over the page's padding, so the screen lies
+	// flat from the tab strip to the command line and edge to edge, with half a character's room
+	// either side of the text. Its bottom line stays at the box's bottom, and
 	// lines too long for it, or more than fit, slide inside it. An update leaves it where it was slid to.
 	// In the light theme the box takes the board's white background and the Herdr light theme's text and basic colours, with
 	// no filter, and colours a program names itself (256, true colour) as it sent them. The text can be
 	// selected and copied.
 	// Keys go through the 按鍵面板 on a phone (DockSwipe), which takes the command line's place; why keys
 	// cannot go now shows above the screen; nothing does while all is well.
-	// On a computer a click on the screen starts direct operation: a frame shows round it, and keys
+	// On a computer a click on the screen starts direct operation: a thin line shows along the top and
+	// the 終端 tab takes the accent colour (the page reads `screenView.direct`), and keys
 	// pressed go into the pane (`pressInput`), Esc too, until a click elsewhere takes the focus away.
 	// The focus goes to a hidden text box, so an input method composes in it; only the text it ends
 	// with is sent. A click that leaves text selected ends it instead, so the text can be copied.
@@ -106,6 +109,10 @@
 	/** Whether keys pressed now go into the pane: on a computer, the hidden text box took the focus,
 	 *  and it stays in the box (a click inside moves it to the box for a moment). */
 	let direct = $state(false);
+	$effect(() => {
+		screenView.direct = direct && active;
+		return () => (screenView.direct = false);
+	});
 	let box = $state<HTMLElement>();
 	let catcher = $state<HTMLTextAreaElement>();
 	const directable = $derived(!screenView.phone && !testDevice.locks(agentId));
@@ -210,6 +217,8 @@
 		gap: 0.35rem;
 		min-width: 0;
 		min-height: 0;
+		/* Over the page's padding, which the page names (`--edge-x`, `--edge-top`; without them, no bleed): the screen touches the strip above and both edges. */
+		margin: calc(-1 * var(--edge-top, 0px)) calc(-1 * var(--edge-x, 0px)) 0;
 	}
 	.state.locked {
 		display: flex;
@@ -227,17 +236,13 @@
 		min-width: 0;
 		min-height: 0;
 		overflow: hidden;
-		border: 1px solid var(--line);
-		border-radius: var(--radius);
 	}
-	/* Drawn over the screen, so the frame takes no room and the text does not move. */
-	.box.direct {
-		border-color: var(--accent);
-	}
+	/* Drawn over the screen, so the line takes no room and the text does not move. */
 	.box.direct::after {
 		position: absolute;
-		inset: 0;
-		box-shadow: inset 0 0 0 2px var(--accent);
+		inset: 0 0 auto;
+		height: 2px;
+		background: var(--accent);
 		content: '';
 		pointer-events: none;
 	}
@@ -278,7 +283,7 @@
 	pre {
 		flex: none;
 		margin: 0;
-		padding: 0.4rem 0.5rem;
+		padding: 0.4rem 0.5ch;
 		font-family: ui-monospace, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Roboto Mono', 'Droid Sans Mono', monospace;
 		font-size: var(--screen-font, 16px);
 		line-height: 1.2;
@@ -289,7 +294,7 @@
 	}
 	/* Between the screen's own text and background, whichever theme. */
 	.loading {
-		margin: 0.4rem 0.5rem;
+		margin: 0.4rem 0.5ch;
 		color: color-mix(in srgb, var(--screen-fg) 60%, var(--screen-bg));
 	}
 	.empty {

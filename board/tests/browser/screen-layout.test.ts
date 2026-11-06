@@ -77,12 +77,26 @@ const openTab = (label: string) => tab.eval(`[...document.querySelectorAll('.det
 const ROWS = `(() => { const range = document.createRange(); range.selectNodeContents(document.querySelector('.screen-panel pre')); return [...range.getClientRects()]; })()`;
 /** Where the box lies against the tabs, the command line and its text. */
 const layout = () =>
-	tab.eval<{ boxTop: number; boxBottom: number; tabsBottom: number; dockTop: number; lastBottom: number; firstTop: number; fontSize: string; lineHeight: number; scrollerBottom: number; dockBottom: number; pageWide: number; viewport: number; pageTall: number; viewHeight: number }>(`(() => {
+	tab.eval<{ boxTop: number; boxBottom: number; tabsBottom: number; dockTop: number; lastBottom: number; firstTop: number; fontSize: string; lineHeight: number; scrollerBottom: number; dockBottom: number; pageWide: number; viewport: number; pageTall: number; viewHeight: number; boxLeft: number; boxRight: number; detailLeft: number; detailRight: number; border: string; radius: string; padLeft: number; charWidth: number }>(`(() => {
 		const box = document.querySelector('.screen-panel .box').getBoundingClientRect();
+		const detail = document.querySelector('.detail');
+		const probe = document.createElement('span');
+		probe.textContent = '0'.repeat(100);
+		document.querySelector('.screen-panel pre').append(probe);
+		const charWidth = probe.getBoundingClientRect().width / 100;
+		probe.remove();
 		const pre = document.querySelector('.screen-panel pre');
 		const rows = ${ROWS};
 		return {
 			boxTop: box.top,
+			boxLeft: box.left,
+			boxRight: box.right,
+			detailLeft: detail.getBoundingClientRect().left,
+			detailRight: detail.getBoundingClientRect().left + detail.clientWidth,
+			border: getComputedStyle(document.querySelector('.screen-panel .box')).borderTopWidth,
+			radius: getComputedStyle(document.querySelector('.screen-panel .box')).borderTopLeftRadius,
+			padLeft: parseFloat(getComputedStyle(pre).paddingLeft),
+			charWidth,
 			boxBottom: box.bottom,
 			// Above the scrollbar, where the text can reach.
 			scrollerBottom: (() => { const scroller = document.querySelector('.screen-panel .scroller'); return scroller.getBoundingClientRect().top + scroller.clientHeight; })(),
@@ -108,7 +122,14 @@ for (const [device, size] of [
 		await visit(size);
 		const at = await layout();
 		expect(at.fontSize).toBe('16px');
-		expect(at.boxTop - at.tabsBottom).toBeLessThan(10);
+		// No frame, rounding or margin: the screen joins the tab strip, and lies edge to edge of the content area.
+		expect(Math.abs(at.boxTop - at.tabsBottom)).toBeLessThan(2);
+		expect(at.border).toBe('0px');
+		expect(at.radius).toBe('0px');
+		expect(Math.abs(at.boxLeft - at.detailLeft)).toBeLessThan(1);
+		expect(Math.abs(at.boxRight - at.detailRight)).toBeLessThan(1);
+		// Half a character's room either side of the text.
+		expect(Math.abs(at.padLeft - at.charWidth / 2)).toBeLessThan(1);
 		expect(Math.abs(at.dockTop - at.boxBottom)).toBeLessThan(2);
 		expect(at.scrollerBottom - at.lastBottom).toBeLessThan(at.lineHeight);
 		// More lines than fit: the top is cut, not blank.
@@ -117,6 +138,10 @@ for (const [device, size] of [
 		expect(at.pageTall).toBeLessThanOrEqual(at.viewHeight);
 		expect(at.lineHeight).toBeCloseTo(19.2, 1);
 		await shot(`${device}-fills-dark`);
+		if (SHOTS) {
+			await tab.eval(`document.documentElement.dataset.theme = 'light'`);
+			await shot(`${device}-fills-light`);
+		}
 	});
 
 	test(`${device}: a smaller window moves the box with it and the bottom line stays at its bottom`, async () => {
