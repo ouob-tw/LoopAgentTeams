@@ -69,10 +69,13 @@
 	});
 
 	// A launch of a test device makes it the owner of the agent once that runs: each new snapshot
-	// may bring one.
+	// may bring one. Only the revision is followed: reload reads and replaces the view, which must
+	// not start it again.
 	$effect(() => {
 		void board.snapshot.revision;
-		if (untrack(() => testDevice.view)) void testDevice.reload();
+		untrack(() => {
+			if (testDevice.view) void testDevice.reload();
+		});
 	});
 	const testUntil = $derived(
 		testDevice.view &&
