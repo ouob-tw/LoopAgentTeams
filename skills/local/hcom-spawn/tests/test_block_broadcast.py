@@ -123,7 +123,7 @@ class BlockBroadcastTests(unittest.TestCase):
             with self.subTest(command=command):
                 result = run_hook(command)
                 self.assertEqual(result.returncode, 2)
-                self.assertIn('sleep N', result.stderr)
+                self.assertIn('timeout N tail -f /dev/null', result.stderr)
 
     def test_listen_with_visible_output_passes(self):
         for command in (

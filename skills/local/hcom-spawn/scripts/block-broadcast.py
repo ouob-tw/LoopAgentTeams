@@ -11,8 +11,8 @@ REASON = ('Blocked: `hcom send` without a recipient broadcasts to every agent. '
 LISTEN_REASON = ('Blocked: this `hcom listen` throws its output away. listen marks the '
                  'messages it returns as read, so they are lost. To wait for a message, '
                  'run `hcom listen N` and read all of its output. For a fixed delay (for '
-                 'example before a GUI screenshot), run `sleep N`; it does not touch HCOM '
-                 'messages.')
+                 'example before a GUI screenshot), run `timeout N tail -f /dev/null || true`; '
+                 'it does not touch HCOM messages.')
 TRUNCATORS = {'tail', 'head', 'wc'}
 OPERATORS = ('<<<', '<<-', '&&', '||', ';;', '|&', '&>', '>>', '>&', '<&', '<<',
              ';', '|', '&', '(', ')', '\n', '<', '>')
