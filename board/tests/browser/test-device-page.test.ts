@@ -124,5 +124,8 @@ test.skipIf(!CHROME)('an idle test device reads its terms once per new snapshot,
 	await tab.until(`!!document.querySelector('.test-band')`, 'the test device mark');
 	await new Promise((resolve) => setTimeout(resolve, 3_000));
 	// Nothing changes on this board: the first snapshot's read and perhaps one more.
-	expect(await tab.eval<number>('window.deviceReads')).toBeLessThanOrEqual(3);
+	const reads = await tab.eval<number>('window.deviceReads');
+	// Read at least once: the page learns of agents its launches start from these reads.
+	expect(reads).toBeGreaterThanOrEqual(1);
+	expect(reads).toBeLessThanOrEqual(3);
 }, 60_000);
