@@ -110,7 +110,7 @@
 	 *  and it stays in the box (a click inside moves it to the box for a moment). */
 	let direct = $state(false);
 	$effect(() => {
-		screenView.direct = direct;
+		screenView.direct = direct && active;
 		return () => (screenView.direct = false);
 	});
 	let box = $state<HTMLElement>();
@@ -217,7 +217,7 @@
 		gap: 0.35rem;
 		min-width: 0;
 		min-height: 0;
-		/* Over the page's padding, which the page names: the screen touches the strip above and both edges. */
+		/* Over the page's padding, which the page names (`--edge-x`, `--edge-top`; without them, no bleed): the screen touches the strip above and both edges. */
 		margin: calc(-1 * var(--edge-top, 0px)) calc(-1 * var(--edge-x, 0px)) 0;
 	}
 	.state.locked {

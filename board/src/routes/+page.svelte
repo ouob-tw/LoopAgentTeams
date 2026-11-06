@@ -998,7 +998,7 @@
 	.screen-open .detail {
 		--edge-x: 0.5rem;
 		--edge-top: 0.35rem;
-		gap: 0.35rem;
+		gap: var(--edge-top);
 		padding: 0.5rem var(--edge-x) 0;
 	}
 	/* Direct operation on a computer: the open 終端 tab takes the accent colour, as the line along the screen's top does. */
