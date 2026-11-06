@@ -247,21 +247,35 @@ export interface PdLook {
 }
 
 /** How far from the request's time its `pd run` may be. */
-const PD_NEAR_MS = 5 * 60_000;
+export const PD_NEAR_MS = 5 * 60_000;
+
+/** The shell tools of the two clients: Claude's `Bash`, Codex's `exec`. */
+const SHELL_TOOLS = ['Bash', 'exec'];
+
+const showsPd = (item: TranscriptTool) => /^pd( |$)/.test(item.detail);
+
+/** A shell command shown only as its program, like `cd …`: the helper hides what a command with
+ *  `;`, `&&`, a pipe or quotes writes, so a `pd` inside it cannot be told apart. */
+const hidden = (item: TranscriptTool) => SHELL_TOOLS.includes(item.name) && (item.detail === '' || item.detail.endsWith(' …'));
 
 /**
  * Where the `pd run` that made a request is in the conversation, as the operation's `seq`: an
  * operation running pd within a few minutes of the request, one whose shown command has every word
  * of the request's command first (a long or quoted command shows only as `pd …`), then the nearest
- * in time. Undefined while the pages loaded do not reach that far back; null once they do and
- * nothing fits.
+ * in time. A shell command whose text is hidden (`cd /repo; pd run …` shows as `cd …`) may be that
+ * `pd run` too, after every one shown as pd. Undefined while the pages loaded do not reach that
+ * far back; null once they do and nothing fits.
  */
 export function pdRunPlace(view: TranscriptView, look: Pick<PdLook, 'at' | 'command'>): number | null | undefined {
 	const near = view.items.filter(
-		(item): item is TranscriptTool => item.kind === 'tool' && /^pd( |$)/.test(item.detail) && !!item.time && Math.abs(Date.parse(item.time) - look.at) <= PD_NEAR_MS
+		(item): item is TranscriptTool =>
+			item.kind === 'tool' && (showsPd(item) || hidden(item)) && !!item.time && Math.abs(Date.parse(item.time) - look.at) <= PD_NEAR_MS
 	);
 	const words = look.command.map((word) => word.split('/').pop() || word);
-	const score = (item: TranscriptTool) => [words.every((word) => item.detail.includes(word)) ? 0 : 1, Math.abs(Date.parse(item.time!) - look.at)];
+	const score = (item: TranscriptTool) => [
+		showsPd(item) ? (words.every((word) => item.detail.includes(word)) ? 0 : 1) : 2,
+		Math.abs(Date.parse(item.time!) - look.at)
+	];
 	const best = near.reduce<TranscriptTool | null>((best, item) => {
 		if (!best) return item;
 		const [a, b] = [score(item), score(best)];

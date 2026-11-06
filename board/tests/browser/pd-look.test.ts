@@ -1,8 +1,8 @@
 // 查看對話 on a pd request's card, in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with a fake pd (tests/fake-pd.mjs) and conversations the fake
 // helper pages through. The caller's conversation opens at the `pd run` that made the request,
-// marked, and marked 可能不準 too when pd did not vouch for the caller; with no such step near the
-// request's time it opens at the newest part and says so; a caller the board does not know has no
+// marked (also when the conversation shows its command only as `cd …`), and marked 可能不準 too
+// when pd did not vouch for the caller; with no such step near the request's time it opens at the newest part and says so; a caller the board does not know has no
 // button. Skipped when the host has no Chrome.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -41,7 +41,7 @@ beforeAll(async () => {
 		tool(90, 'Bash', 'pd run --item npm-s1 -- python3 /home/u/tools/npm_login.py'),
 		{ kind: 'assistant', text: '等你核准 pd 請求。', time: iso(30) }
 	]);
-	talk('s-rana', [{ kind: 'user', text: '查一下帳號', time: iso(300) }, tool(60, 'exec', 'pd …'), { kind: 'assistant', text: '等核准。', time: iso(20) }]);
+	talk('s-rana', [{ kind: 'user', text: '查一下帳號', time: iso(300) }, tool(60, 'exec', 'cd …'), { kind: 'assistant', text: '等核准。', time: iso(20) }]);
 	cookie = await fixture.login();
 }, 30_000);
 afterAll(async () => {
@@ -70,13 +70,13 @@ test.skipIf(!CHROME)('查看對話 opens the caller\'s conversation at its pd ru
 
 	await tab.pointerClick(look(4));
 	await tab.until(`!!document.querySelector('section.detail [data-pd-hit] .unsure')`, 'rana\'s pd run marked 可能不準');
-	expect(await tab.eval<{ text: string }>(HIT)).toMatchObject({ text: expect.stringContaining('pd …可能不準'), inView: true });
+	expect(await tab.eval<{ text: string }>(HIT)).toMatchObject({ text: expect.stringContaining('cd …可能不準'), inView: true });
 
 	// Made long before any pd run in the conversation: the newest part, and a word why.
 	setPd([request(6, 3000, 'luna', { caller_info: checked('luna', 'claude', true) })]);
 	await tab.until(`!!document.querySelector('${look(6)}')`, 'the card for #6');
 	await tab.pointerClick(look(6));
-	await tab.until(`[...document.querySelectorAll('.toast')].some((toast) => toast.innerText.includes('對話裡找不到這次 pd 請求的那一步，先顯示最新的部分。'))`, 'the notice');
+	await tab.until(`[...document.querySelectorAll('.toast')].some((toast) => toast.innerText.includes('找不到這次 pd 請求的那一步：這份對話在請求送出前後 5 分鐘內沒有執行 pd 的步驟。先顯示最新的部分。'))`, 'the notice');
 	expect(await tab.eval(`!!document.querySelector('section.detail [data-pd-hit]')`)).toBe(false);
 	expect(tab.errors).toEqual([]);
 }, 30_000);
