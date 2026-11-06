@@ -266,7 +266,7 @@
 		margin: 0;
 		padding: 0.4rem 0.5rem;
 		font-family: ui-monospace, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Roboto Mono', 'Droid Sans Mono', monospace;
-		font-size: max(1rem, var(--min-font, 0px));
+		font-size: var(--screen-font, 16px);
 		line-height: 1.2;
 		white-space: pre;
 		width: max-content;

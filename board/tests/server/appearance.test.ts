@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { FOLDED_KEY, MIN_FONT, oppositeTheme, resolveTheme, SCALE, THEME_KEY, WIDTHS } from '../../src/lib/board/prefs.ts';
+import { FOLDED_KEY, MIN_FONT, oppositeTheme, resolveTheme, SCALE, SCREEN_FONT, THEME_KEY, WIDTHS } from '../../src/lib/board/prefs.ts';
 import { question, startFixture, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
@@ -252,4 +252,17 @@ test('the page offers the settings entry, the fold control and both column handl
 	for (const text of ['自動', 'aria-label="縮小"', 'aria-label="放大"', '還原預設']) expect(html).toContain(text);
 	// And a floor for the text size, off until it is raised.
 	for (const text of ['最小字體', 'aria-label="調小"', 'aria-label="調大"']) expect(html).toContain(text);
+});
+
+test('the startup script puts back the screen text size within its limits and ignores the rest', async () => {
+	expect((await startUp({ [SCREEN_FONT.key]: String(SCREEN_FONT.min) })).style).toEqual({ '--screen-font': `${SCREEN_FONT.min}px` });
+	expect((await startUp({ [SCREEN_FONT.key]: String(SCREEN_FONT.max) })).style).toEqual({ '--screen-font': `${SCREEN_FONT.max}px` });
+	for (const saved of [String(SCREEN_FONT.min - 1), String(SCREEN_FONT.max + 1), '', 'big']) {
+		expect((await startUp({ [SCREEN_FONT.key]: saved })).style).toEqual({});
+	}
+});
+
+test('the settings dialog offers the screen text size with a way back to the default', async () => {
+	const html = await page();
+	for (const text of ['畫面字體', 'aria-label="畫面字調小"', 'aria-label="畫面字調大"']) expect(html).toContain(text);
 });
