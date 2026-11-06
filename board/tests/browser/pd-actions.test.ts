@@ -188,3 +188,36 @@ test.skipIf(!CHROME)('a new add request’s notification names the action; 拒�
 	await tab.until(`!${card(2)}`, 'the add card denied');
 	expect(await tab.eval(`!!${card(1)}`)).toBe(true);
 }, 30_000);
+
+for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['desktop', 1280, 900, false]] as const) {
+	test.skipIf(!CHROME)(`${label}: a card keeps the open or folded state the user gave it through list re-reads`, async () => {
+		setPd([read, add]);
+		browser = await launchChrome({ screen: SCREEN });
+		const tab = browser.tab;
+		const [name, value] = cookie.split('=');
+		await tab.send('Network.setCookie', { name, value, url: fixture.url });
+		await tab.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile });
+		await tab.navigate(`${fixture.url}/`);
+		await tab.until(`document.querySelectorAll('.inbox .pd .card').length === 2 && ${SETTLED}`, 'two cards');
+		const isOpen = (id: number) => tab.eval<boolean>(`${card(id)}.querySelector('details').open`);
+		expect([await isOpen(1), await isOpen(2)]).toEqual([false, true]);
+		await shot(tab, `504-${label}-before-open`);
+
+		// The user opens the read card and folds the write card.
+		await tab.eval(`${card(1)}.querySelector('details').open = true; ${card(2)}.querySelector('details').open = false`);
+
+		// The list is read again (new objects for the same cards) several times; each shows in the page.
+		for (let round = 1; round <= 3; round++) {
+			setPd([{ ...read, item: `GitHub token r${round}` }, { ...add, item: `fresh-service r${round}` }]);
+			await tab.until(`${card(1)}.querySelector('.item').innerText === 'GitHub token r${round}' && ${card(2)}.querySelector('.item').innerText === 'fresh-service r${round}'`, `re-read ${round}`);
+			expect([await isOpen(1), await isOpen(2)]).toEqual([true, false]);
+		}
+		await shot(tab, `504-${label}-after-reread`);
+
+		// A card that appears later still starts by its action.
+		setPd([{ ...read, item: 'GitHub token r3' }, { ...add, item: 'fresh-service r3' }, { ...read, id: 7, item: 'another read' }, { ...edit, id: 8 }]);
+		await tab.until(`!!${card(7)} && !!${card(8)}`, 'new cards');
+		expect([await isOpen(7), await isOpen(8), await isOpen(1), await isOpen(2)]).toEqual([false, true, true, false]);
+		expect(tab.errors).toEqual([]);
+	}, 40_000);
+}
