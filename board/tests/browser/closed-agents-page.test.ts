@@ -249,6 +249,52 @@ for (const width of [1280, 390]) {
 	}, 30_000);
 }
 
+test.skipIf(!CHROME)("a touch phone: a closed agent's 畫面 tab hides the top bar, the folded card's ← goes back, and the bar returns on 對話紀錄; a computer keeps the bar", async () => {
+	const openScreen = () => tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
+	const barShown = () => tab.eval<boolean>(`getComputedStyle(document.querySelector('.detail .topbar')).display !== 'none'`);
+	browser = await launchChrome({ screen: SCREEN });
+	tab = browser.tab;
+	const [name, value] = cookie.split('=');
+	await tab.send('Network.setCookie', { name, value, url: fixture.url });
+	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: true });
+	await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-week` });
+	await tab.until(`!!document.querySelector('.detail [data-closed-agent]')`, 'the closed agent');
+	await sleep(500);
+	expect(await barShown()).toBe(true);
+	await openScreen();
+	await tab.until(`!!document.querySelector('.detail .bar .back')`, 'the folded card');
+	expect(await barShown()).toBe(false);
+	expect(await tab.eval<string>(`document.querySelector('.detail .bar').innerText`)).toContain('已關閉');
+	// 展開 shows the card and the 接回 again; the screen tab says there is no screen.
+	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
+	await tab.until(`!!document.querySelector('.detail [data-closed-agent]') && !!document.querySelector(${JSON.stringify(RESUME)})`, 'the card and 接回');
+	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
+	await tab.until(`!document.querySelector('.detail [data-closed-agent]')`, 'folded again');
+	await tab.eval(`document.querySelector('.detail .bar .back').click()`);
+	await tab.until(`location.search === '?tab=agents' || location.search === ''`, 'the list');
+	// Back on the page, the 對話紀錄 tab brings the bar and the card back.
+	await tab.eval(`history.forward()`);
+	await tab.until(`!!document.querySelector('.detail [role=tab]')`, 'the page again');
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '對話紀錄').click()`);
+	await tab.until(`!document.querySelector('.detail .bar') && !!document.querySelector('.detail [data-closed-agent]')`, 'the card back');
+	expect(await barShown()).toBe(true);
+	await browser.close();
+	browser = undefined;
+	// A computer, at a phone's width too (a mouse): the bar stays and the card has no ←.
+	browser = await launchChrome({ screen: SCREEN, args: ['--blink-settings=primaryPointerType=4,primaryHoverType=2,availablePointerTypes=4,availableHoverTypes=2'] });
+	tab = browser.tab;
+	await tab.send('Network.setCookie', { name, value, url: fixture.url });
+	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: false });
+	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-week` });
+	await tab.until(`!!document.querySelector('.detail [data-closed-agent]')`, 'the closed agent');
+	await sleep(500);
+	await openScreen();
+	await tab.until(`!!document.querySelector('.detail .bar')`, 'the folded card');
+	expect(await barShown()).toBe(true);
+	expect(await tab.eval(`!!document.querySelector('.detail .bar .back')`)).toBe(false);
+}, 60_000);
+
 test.skipIf(!CHROME)("390px: a closed agent's address opens its page, with the list behind it", async () => {
 	await visit(390, '?agent=s-week');
 	await tab.until(`(document.querySelector('.detail .history')?.innerText ?? '').includes('回覆 1')`, 'its conversation');
