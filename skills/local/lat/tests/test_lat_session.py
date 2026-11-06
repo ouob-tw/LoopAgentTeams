@@ -2052,6 +2052,58 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(json.loads(record_path.read_text())['status'], 'ended')
         self.assertFalse((worktree / '.lat').exists())
 
+    def work_with_linked_worktree(self):
+        """Make self.work a real repository and add a linked worktree of it."""
+        worktree = self.root / 'wt'
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid']
+        subprocess.run([*git, 'init', '-q', str(self.work)], check=True)
+        subprocess.run([*git, '-C', str(self.work), 'commit', '-q', '--allow-empty', '-m', 'init'],
+                       check=True)
+        subprocess.run([*git, '-C', str(self.work), 'worktree', 'add', '-q', str(worktree)],
+                       check=True)
+        return worktree
+
+    def test_stop_checks_run_from_a_linked_worktree_of_the_controller_workspace(self):
+        worktree = self.work_with_linked_worktree()
+        self.activate()
+        self.assert_stop_block(self.stop_hook('Question\nDECIDE: check-pending', cwd=str(worktree)),
+                               '沒有寫出題號與版本')
+        count = len(self.reports())
+        self.assert_silent(self.stop_hook('DONE: finished', cwd=str(worktree)))
+        self.assertEqual(len(self.reports()), count + 1)
+        self.assertEqual((self.reports()[-1]['tag'], self.reports()[-1]['summary']),
+                         ('DONE', 'finished'))
+
+    def test_prompt_reminder_and_close_check_run_from_a_linked_worktree(self):
+        worktree = self.work_with_linked_worktree()
+        self.activate()
+        self.ask('LAT-A', '要合併嗎？')
+        text = self.prompt_context(self.prompt_hook(cwd=str(worktree)))
+        self.assertIn('LAT-A r1「要合併嗎？」', text)
+        result = self.close_hook('gh issue close 458', '- [ ] 還沒測\n', cwd=worktree)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('issue 458 still has unchecked acceptance items', result.stderr)
+
+    def test_stop_checks_run_from_the_main_checkout_for_a_worktree_controller(self):
+        worktree = self.work_with_linked_worktree()
+        self.activate()
+        record = json.loads(self.record.read_text())
+        self.record.write_text(json.dumps(dict(record, workspace=str(worktree))))
+        self.assert_stop_block(self.stop_hook('Question\nDECIDE: check-pending'),
+                               '沒有寫出題號與版本')
+
+    def test_another_repository_with_the_record_is_still_skipped(self):
+        self.work_with_linked_worktree()
+        self.activate()
+        other = self.root / 'other'
+        subprocess.run(['git', 'init', '-q', str(other)], check=True)
+        copy = other / '.lat/sessions' / f'{SESSION}.json'
+        copy.parent.mkdir(parents=True)
+        copy.write_text(self.record.read_text())
+        count = len(self.reports())
+        self.assert_silent(self.stop_hook('Question\nDECIDE: check-pending', cwd=str(other)))
+        self.assertEqual(len(self.reports()), count)
+
     def test_older_record_in_a_worktree_lat_recovers_self_stops_and_ends_in_place(self):
         main, worktree = self.linked_worktree()
         legacy = worktree / '.lat/sessions' / f'{SESSION}.json'
@@ -3240,7 +3292,7 @@ class SessionTests(unittest.TestCase):
 
     # ---- close check (#458) ------------------------------------------------------------
 
-    def close_hook(self, command, body='- [x] done\n', gh_exit=0):
+    def close_hook(self, command, body='- [x] done\n', gh_exit=0, cwd=None):
         """Run the PreToolUse hook on a Bash command against a fake gh serving `body`."""
         (self.root / 'issue-body.md').write_text(body)
         gh = self.binary / 'gh'
@@ -3249,8 +3301,8 @@ class SessionTests(unittest.TestCase):
                       f'[ {gh_exit} = 0 ] || {{ echo "HTTP 404" >&2; exit {gh_exit}; }}\n'
                       'while IFS= read -r line; do printf \'%s\\n\' "$line"; done < "$FAKE_GH_BODY"\n')
         gh.chmod(0o755)
-        payload = dict(hook_event_name='PreToolUse', cwd=str(self.work), session_id=SESSION,
-                       tool_name='Bash', tool_input=dict(command=command))
+        payload = dict(hook_event_name='PreToolUse', cwd=str(cwd or self.work),
+                       session_id=SESSION, tool_name='Bash', tool_input=dict(command=command))
         return self.cli('hook', payload=payload, session=OTHER,
                         extra_env=dict(FAKE_GH_BODY=str(self.root / 'issue-body.md'),
                                        FAKE_GH_LOG=str(self.root / 'gh.log')))

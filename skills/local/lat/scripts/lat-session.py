@@ -113,6 +113,19 @@ def workspace_root(cwd):
     raise ValueError('A Git worktree is required')
 
 
+def hook_workspace(record, root):
+    """The record's workspace when it is the same repository as the hook's checkout (a main
+    checkout and its linked worktrees share one .lat), else the checkout itself."""
+    recorded = record.get('workspace')
+    if recorded == str(root) or not isinstance(recorded, str):
+        return str(root)
+    try:
+        same = shared_lat_dir(recorded) == shared_lat_dir(root)
+    except (OSError, ValueError):
+        same = False
+    return recorded if same else str(root)
+
+
 def read_json(path):
     value = json.loads(path.read_text())
     if not isinstance(value, dict):
@@ -1919,7 +1932,7 @@ def hook(client):
     try:
         record = read_json(path)
         expected = dict(client=client, session_id=sid, role='orchestrator',
-                        workspace=str(root))
+                        workspace=hook_workspace(record, root))
         if event != 'Stop':
             expected['status'] = 'active'
         if event == 'UserPromptSubmit':
