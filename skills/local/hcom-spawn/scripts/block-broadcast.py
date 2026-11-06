@@ -80,10 +80,12 @@ def substitutions(text):
 
 
 class Command(list):
-    """A simple command's words, its redirects as (fd, operator, target) and the
-    command whose output is piped into it."""
+    """A simple command's words, its redirects as (fd, operator, target), the
+    command whose output is piped into it, and the indexes of words that capture
+    `hcom listen` output through $(...) or `...`."""
     redirects = ()
     upstream = None
+    captures = frozenset()
 
 
 def commands(text):
@@ -92,11 +94,18 @@ def commands(text):
     word, quoted, quote = None, False, None
     drop_next, heredoc_next, heredocs = False, None, []
     herestring_next, herestrings, line_shell = False, [], False  # per physical line
-    piped_from = None
+    piped_from, captures, captured = None, set(), False
     i = 0
 
+    def substitute(inner):
+        nonlocal captured
+        run = commands(inner)
+        captured = captured or any(
+            listens(c) and stdout_target(c) is None for c in run)
+        return run
+
     def finish_word():
-        nonlocal word, quoted, drop_next, heredoc_next, herestring_next
+        nonlocal word, quoted, drop_next, heredoc_next, herestring_next, captured
         if word is None:
             return
         if heredoc_next is not None:
@@ -106,21 +115,24 @@ def commands(text):
         elif drop_next:
             redirects.append(drop_next + (word,))
         else:
+            if captured:
+                captures.add(len(words))
             words.append(word)
         word, quoted, drop_next, heredoc_next = None, False, False, None
-        herestring_next = False
+        herestring_next, captured = False, False
 
     def finish_command(pipe=False):
-        nonlocal words, drop_next, line_shell, redirects, piped_from
+        nonlocal words, drop_next, line_shell, redirects, piped_from, captures
         finish_word()
         drop_next = False
         if words:
             command = Command(words)
             command.redirects, command.upstream = redirects, piped_from
+            command.captures = frozenset(captures)
             found.append(command)
             line_shell = line_shell or runs_shell(words)
             piped_from = command if pipe else None
-            redirects = []
+            redirects, captures = [], set()
         words = []
 
     def finish_line():
@@ -146,12 +158,12 @@ def commands(text):
             i += 2
         elif text.startswith('$(', i):
             end = substitution_end(text, i + 2)
-            found += commands(text[i + 2:end])
+            found += substitute(text[i + 2:end])
             word = (word or '') + text[i:end + 1]
             i = end + 1
         elif c == '`':
             end = backtick_end(text, i + 1)
-            found += commands(text[i + 1:end])
+            found += substitute(text[i + 1:end])
             word = (word or '') + text[i:end + 1]
             i = end + 1
         elif quote == '"':
@@ -258,28 +270,34 @@ def listens(words):
     return False
 
 
-def runs_listen(word):
-    """True when the word holds a $(...) or `...` that runs `hcom listen`."""
-    return any(listens(command) for command in substitutions(word))
+def stdout_target(command):
+    """Where the last stdout redirect sends the command's output, or None."""
+    target = None
+    for fd, op, word in command.redirects:
+        if op == '&>' or (op in ('>', '>>', '>&') and fd in ('', '1')):
+            target = word
+    return target
 
 
 def drops_listen_output(command, text):
-    """True when `hcom listen` output goes to /dev/null, into tail/head/wc, or into
-    a $(...) whose result nothing reads."""
+    """True when `hcom listen` output goes to /dev/null, into tail/head/wc or a
+    command writing to /dev/null, or into a $(...) whose result nothing reads."""
     if listens(command):
-        return any(target == '/dev/null' and (op == '&>' or (
-            op in ('>', '>>', '>&') and fd in ('', '1')))
-            for fd, op, target in command.redirects)
-    if command.upstream is not None and listens(command.upstream):
-        return executable(command)[0].rsplit('/', 1)[-1] in TRUNCATORS
-    words = executable(command)
-    if words[0] in (':', 'true'):
-        return any(runs_listen(word) for word in words[1:])
-    if words == ['']:  # only assignments: the result is unused when never expanded
-        for word in command:
-            name, _, value = word.partition('=')
-            if runs_listen(value) and not re.search(
-                    r'\$\{?' + re.escape(name) + r'(?![A-Za-z0-9_])', text):
+        return stdout_target(command) == '/dev/null'
+    upstream = command.upstream
+    if upstream is not None and listens(upstream) and stdout_target(upstream) is None:
+        words = executable(command)
+        whole = any(word.endswith('+1') for word in words[1:])  # tail -n +1
+        return stdout_target(command) == '/dev/null' or (
+            words[0].rsplit('/', 1)[-1] in TRUNCATORS and not whole)
+    rest = executable(command)
+    start = len(command) - (0 if rest == [''] else len(rest))
+    if command[start:start + 1] in ([':'], ['true']):
+        return any(index > start for index in command.captures)
+    if start == len(command):  # only assignments: the result is unused when never expanded
+        for index in command.captures:
+            name = command[index].partition('=')[0]
+            if not re.search(r'\$\{?' + re.escape(name) + r'(?![A-Za-z0-9_])', text):
                 return True
     return False
 

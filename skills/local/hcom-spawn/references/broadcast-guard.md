@@ -31,7 +31,7 @@ Claude Code（`~/.claude/settings.json` 的 `hooks`）與 Codex（`$CODEX_HOME/h
 同一支 `scripts/block-broadcast.py` 也擋下輸出被丟掉的 `hcom listen`：listen 一收到訊息就返回並把訊息標為已讀，輸出沒被讀到，訊息就消失了。被擋的寫法：
 
 - stdout 導向 `/dev/null`：`hcom listen 2 >/dev/null`、`hcom listen 2 > /dev/null 2>&1`、`&>/dev/null`。
-- 只接 `tail`、`head` 或 `wc`：`hcom listen 2 | tail -1`。
+- 只接 `tail`、`head` 或 `wc`，或接到輸出導向 `/dev/null` 的指令：`hcom listen 2 | tail -1`、`hcom listen 2 | cat >/dev/null`。
 - 包在 `$( )` 或反引號裡卻沒用到結果：當 `:`、`true` 的參數，或存進之後沒展開的變數。
 
 輸出完整顯示、存到檔案或只丟 stderr（`2>/dev/null`）的 listen 照常放行；包在 `bash -c` 裡的不檢查。被擋時，要等訊息就直接跑 `hcom listen N` 並讀完輸出，要固定延遲就用 `sleep N`。不需另外安裝，裝了上面的 hook 就生效。

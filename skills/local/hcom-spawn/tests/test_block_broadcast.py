@@ -114,6 +114,8 @@ class BlockBroadcastTests(unittest.TestCase):
             'cd /tmp && hcom listen 2 >/dev/null; hcom term luna',
             ': "$(hcom listen 2)"',
             'out=$(hcom listen 2)\nhcom term luna',
+            'hcom listen 2 > /tmp/listen.log >/dev/null',
+            'hcom listen 2 | cat >/dev/null',
         ):
             with self.subTest(command=command):
                 result = run_hook(command)
@@ -128,6 +130,13 @@ class BlockBroadcastTests(unittest.TestCase):
             'hcom listen 2 2>&1 | tee /tmp/listen.log',
             'hcom listen 2 > /tmp/listen.log',
             'out=$(hcom listen 2); echo "$out"',
+            'hcom listen 2 >/dev/null 1>&2',
+            'hcom listen 2 >/dev/null > /tmp/listen.log',
+            'hcom listen 2 > /tmp/listen.log | tail -1',
+            'hcom listen 2 | tail -n +1',
+            ": '$(hcom listen 2)'",
+            "out='$(hcom listen 2)'",
+            'out=$(hcom listen 2 > /tmp/listen.log)',
             'hcom list >/dev/null',
             'sleep 2 >/dev/null',
             ['hcom', 'listen', '2'],
