@@ -88,5 +88,14 @@
 			top: 4rem;
 			bottom: auto;
 		}
+		/* With the bar hidden on a phone's 畫面分頁 they sit at the very top, the folded card's "←" and
+		   "展開" at its two ends kept clear. */
+		:global(.screen-phone:has(.screen-bar)) .toasts {
+			top: 0.3rem;
+			/* The folded card's text size: "←" and "展開" at its ends grow with it. */
+			left: calc(3.7 * max(0.875rem, var(--min-font, 0px)));
+			right: calc(7.4 * max(0.875rem, var(--min-font, 0px)));
+			width: auto;
+		}
 	}
 </style>

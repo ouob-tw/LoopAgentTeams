@@ -2,7 +2,7 @@
 	// Wide: roster, inbox and content side by side, the roster foldable into a rail and both
 	// column borders draggable. Narrow: the roster strip above the inbox, and one content screen
 	// at a time once something is opened.
-	import { onMount, tick, untrack } from 'svelte';
+	import { onMount, setContext, tick, untrack } from 'svelte';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
@@ -32,6 +32,7 @@
 	import ControllerPage from '#lib/components/ControllerPage.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
 	import { screenView } from '#lib/board/screen-view.svelte.ts';
+	import { BACK_CONTEXT } from '#lib/board/back-context.ts';
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
 	import PdPending from '#lib/components/PdPending.svelte';
@@ -171,6 +172,8 @@
 			middle: tabIn(page.url.searchParams) ?? 'inbox'
 		}
 	);
+	// The folded status card's "←" on a phone does what the top bar's does.
+	setContext(BACK_CONTEXT, () => navigation.back());
 	onMount(() => navigation.restoreMiddle());
 	afterNavigate(({ type }) => {
 		if (type === 'enter') navigation.enter();
@@ -432,7 +435,7 @@
 	></div>
 {/snippet}
 
-<div class="page" class:screen-open={screenView.agentId !== null} style:--dock-h="{dockHeight}px" style:--keyboard="{keyboard}px">
+<div class="page" class:screen-open={screenView.agentId !== null} class:screen-phone={screenView.agentId !== null && screenView.phone} style:--dock-h="{dockHeight}px" style:--keyboard="{keyboard}px">
 	<div class="shell" class:viewing={view !== null}>
 		<nav class="roster">
 			<div class="folded">
@@ -1183,6 +1186,11 @@
 			flex-direction: column;
 			height: calc(100dvh - var(--keyboard, 0px));
 		}
+		/* The command line put away leaves only its round button, floating over the box's lower right corner:
+		   the box runs down to the bottom of the screen. */
+		.screen-open:has(.dock :global(.reopen)) {
+			padding-bottom: 0;
+		}
 		.screen-open .shell {
 			display: flex;
 			flex: 1;
@@ -1198,6 +1206,14 @@
 		/* A sticky bar keeps below the padding of a column that scrolls: none there, so none to reach over. */
 		.screen-open .topbar {
 			margin-top: 0;
+		}
+		/* A phone's 畫面分頁 with its status card folded: the bar goes, the folded card's "←" goes back in
+		   its place and the panel takes the height. Without that card (not on Herdr's list) the bar stays. */
+		.screen-phone:has(:global(.screen-bar)) .topbar {
+			display: none;
+		}
+		.screen-phone:has(:global(.screen-bar)) .detail {
+			padding-top: calc(3px + env(safe-area-inset-top, 0px));
 		}
 		.screen-open .detail > :global(.tabpanel:not([hidden])) {
 			padding: 0;

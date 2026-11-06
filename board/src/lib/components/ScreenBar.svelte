@@ -1,7 +1,10 @@
 <script lang="ts">
 	// The one line a page's status card folds into while its 畫面分頁 is shown: the status, the name, a
 	// mark for each thing the card warns of, and 展開, which shows the card and its buttons below it.
+	import { getContext } from 'svelte';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import { BACK_CONTEXT } from '#lib/board/back-context.ts';
+	import { screenView } from '#lib/board/screen-view.svelte.ts';
 	import type { ControllerStatus } from '#lib/board/types.ts';
 	import StatusMark from './StatusMark.svelte';
 
@@ -20,9 +23,11 @@
 		/** Whether the card shows below. */
 		unfolded: boolean;
 	} = $props();
+	const back = getContext<(() => void) | undefined>(BACK_CONTEXT);
 </script>
 
-<div class="bar">
+<div class="bar screen-bar">
+	{#if screenView.phone}<button type="button" class="back" aria-label="返回" onclick={() => back?.()}>←</button>{/if}
 	<span class="status"><StatusMark {status} decorative />{text}</span>
 	<b title={name}>{name}</b>
 	{#each warnings as warning (warning)}<span class="warning">⚠ {warning}</span>{/each}
@@ -43,6 +48,21 @@
 		background: var(--surface);
 		font-size: max(0.875rem, var(--min-font, 0px));
 		white-space: nowrap;
+	}
+	/* Where the top bar's "←" was, on a phone that hides the bar here. */
+	.back {
+		display: none;
+		margin: 0 0.1rem 0 -0.2rem;
+		align-items: center;
+		min-height: 2rem;
+		padding: 0 0.5rem;
+		font-size: 1.15em;
+		line-height: 1;
+	}
+	@media (max-width: 760px) {
+		.back {
+			display: inline-flex;
+		}
 	}
 	.status {
 		display: inline-flex;

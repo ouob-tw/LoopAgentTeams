@@ -24,9 +24,18 @@
 	let panel = $state<HTMLElement>();
 	let panelHeight = $state(0);
 	// From the panel's top to the box's bottom, the gap under it included, as laid out.
+	const measure = () => (open && panel?.offsetParent ? panel.offsetParent.clientHeight - panel.offsetTop : 0);
 	$effect(() => {
 		void panelHeight;
-		covers = open && panel?.offsetParent ? panel.offsetParent.clientHeight - panel.offsetTop : 0;
+		covers = measure();
+	});
+	// The box grows or shrinks when the command line goes away or comes back, moving the panel with it.
+	$effect(() => {
+		const box = panel?.offsetParent;
+		if (!box) return;
+		const watch = new ResizeObserver(() => (covers = measure()));
+		watch.observe(box);
+		return () => watch.disconnect();
 	});
 
 	const blocked = $derived(screenView.blocked);
@@ -157,5 +166,13 @@
 		width: 1.625rem;
 		height: 1.625rem;
 		background: none;
+	}
+	/* A phone with the command line put away has its round button floating at the box's bottom right:
+	   the keys sit above it. Not above 760px, where that button is never shown. */
+	@media (max-width: 760px) {
+		:global(.screen-open:has(.dock .reopen)) .round,
+		:global(.screen-open:has(.dock .reopen)) .panel {
+			bottom: calc(44px + 0.8rem + env(safe-area-inset-bottom, 0px) + 0.4rem);
+		}
 	}
 </style>
