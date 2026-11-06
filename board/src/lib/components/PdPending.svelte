@@ -32,7 +32,7 @@
 		secretText,
 		summaryText,
 		timeText,
-		TYPE_LABEL,
+		typeLabel,
 		type PdBox,
 		type PdChallenge,
 		type PdRequest,
@@ -314,7 +314,7 @@
 								{:else}
 									{#if item.type}
 										<dt>類型</dt>
-										<dd>{TYPE_LABEL[item.type]}</dd>
+										<dd>{typeLabel(item.type)}</dd>
 									{/if}
 									{#each item.values as shown (shown.field)}
 										<dt>{shown.field}</dt>

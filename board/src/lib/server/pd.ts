@@ -101,7 +101,7 @@ export function parsePdPending(run: ExternalResult): PdSnapshot {
 				{
 					id: row.id as number,
 					action: row.action === 'add' || row.action === 'edit' ? row.action : 'read',
-					type: row.type === 'login' || row.type === 'note' ? row.type : null,
+					type: typeof row.type === 'string' && row.type ? row.type : null,
 					values: writeValues(row.values),
 					writes: writeSecrets(row.secrets),
 					caller: text(row.caller),
