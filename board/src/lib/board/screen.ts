@@ -30,20 +30,20 @@ export const SCREEN_NOT_LISTED_TEXT = 'Herdr 的清單上找不到它的窗格�
 export const SCREEN_CLOSED_TEXT = '已關閉，先接回才能看畫面';
 
 /** The 按鍵面板's keys: two rows at the left, the four arrows as a cross at the right. */
-export const KEY_PANEL: { rows: { label: string; input: KeyInput; wide?: boolean; narrow?: boolean }[][]; arrows: { up: KeyInput; left: KeyInput; down: KeyInput; right: KeyInput } } = {
+export const KEY_PANEL: { rows: { label: string; input: KeyInput; size?: 'wide' | 'narrow' }[][]; arrows: { up: KeyInput; left: KeyInput; down: KeyInput; right: KeyInput } } = {
 	rows: [
 		[
 			{ label: 'Esc', input: { key: 'esc' } },
 			{ label: 'Tab', input: { key: 'tab' } },
-			{ label: '⇧Tab', input: { key: 'shift+tab' }, wide: true },
-			{ label: '1', input: { text: '1' }, narrow: true },
-			{ label: '2', input: { text: '2' }, narrow: true }
+			{ label: '⇧Tab', input: { key: 'shift+tab' }, size: 'wide' },
+			{ label: '1', input: { text: '1' }, size: 'narrow' },
+			{ label: '2', input: { text: '2' }, size: 'narrow' }
 		],
 		[
-			{ label: 'Enter', input: { key: 'enter' }, wide: true },
-			{ label: 'Ctrl+C', input: { key: 'ctrl+c' }, wide: true },
-			{ label: '3', input: { text: '3' }, narrow: true },
-			{ label: '4', input: { text: '4' }, narrow: true }
+			{ label: 'Enter', input: { key: 'enter' }, size: 'wide' },
+			{ label: 'Ctrl+C', input: { key: 'ctrl+c' }, size: 'wide' },
+			{ label: '3', input: { text: '3' }, size: 'narrow' },
+			{ label: '4', input: { text: '4' }, size: 'narrow' }
 		]
 	],
 	arrows: { up: { key: 'up' }, left: { key: 'left' }, down: { key: 'down' }, right: { key: 'right' } }

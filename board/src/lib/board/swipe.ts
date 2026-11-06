@@ -27,10 +27,8 @@ export function swipeDirection(dx: number, dy: number): 'horizontal' | 'vertical
  *  (left is negative) over a dock `width` wide, at `speed` px/ms (left negative). The command line
  *  gives way to the keys by going left, the keys to the command line by going right. */
 export function settledPane(from: Pane, dx: number, width: number, speed: number): Pane {
-	const toKeys = from === 'bar' ? dx <= -SWIPE.commitFraction * width || speed <= -SWIPE.flingSpeed : false;
-	const toBar = from === 'keys' ? dx >= SWIPE.commitFraction * width || speed >= SWIPE.flingSpeed : false;
-	if (from === 'bar') return toKeys ? 'keys' : 'bar';
-	return toBar ? 'bar' : 'keys';
+	if (from === 'bar') return dx <= -SWIPE.commitFraction * width || speed <= -SWIPE.flingSpeed ? 'keys' : 'bar';
+	return dx >= SWIPE.commitFraction * width || speed >= SWIPE.flingSpeed ? 'bar' : 'keys';
 }
 
 /** How far across the keys are, 0 for the command line to 1 for the keys, for a swipe that began on `from`

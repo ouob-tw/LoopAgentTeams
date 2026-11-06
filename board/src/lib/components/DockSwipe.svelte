@@ -12,13 +12,19 @@
 	import { SWIPE, settledPane, swipeDirection, swipeProgress, type Pane } from '#lib/board/swipe.ts';
 	import type { KeyInput } from '#lib/board/screen.ts';
 
+	/** How long after a swipe a click is taken for its end. */
+	const CLICK_AFTER_SWIPE_MS = 50;
+
 	let { children }: { children: Snippet } = $props();
 
 	/** A touch device with a 畫面分頁 open; the layout's phone width is the page's own business. */
 	const active = $derived(screenView.agentId !== null && screenView.phone);
 	let showing = $state<Pane>('bar');
 	$effect(() => {
-		if (!active) showing = 'bar';
+		if (active) return;
+		showing = 'bar';
+		gesture = null;
+		dragging = null;
 	});
 
 	let root = $state<HTMLElement>();
@@ -30,7 +36,9 @@
 	const progress = $derived(dragging ?? (showing === 'keys' ? 1 : 0));
 
 	function pressed(event: PointerEvent) {
-		if (!active || !root || event.button > 0) return;
+		// A second finger does not start another swipe over one that is moving the panel.
+		if (!active || !root || event.button > 0 || gesture?.mode === 'drag') return;
+		suppressClick = false;
 		// With the command line put away there is only its round button.
 		if (root.querySelector('.reopen')) return;
 		const target = event.target as Element;
@@ -69,8 +77,9 @@
 		const done = gesture;
 		gesture = null;
 		if (done.mode !== 'drag') return;
+		// The click that ends the swipe, which comes at once, is not a press; a touch after it is.
 		suppressClick = true;
-		setTimeout(() => (suppressClick = false), 50);
+		setTimeout(() => (suppressClick = false), CLICK_AFTER_SWIPE_MS);
 		const next = event.type === 'pointercancel' ? done.from : settledPane(done.from, done.dx, root.clientWidth, speedOf(done.samples));
 		dragging = null;
 		showing = next;
@@ -116,7 +125,7 @@
 					{#each KEY_PANEL.rows as row, index (index)}
 						<div class="row">
 							{#each row as entry (entry.label)}
-								{@render key(entry.label, entry.input, entry.wide ? 'wide' : entry.narrow ? 'narrow' : '')}
+								{@render key(entry.label, entry.input, entry.size ?? '')}
 							{/each}
 						</div>
 					{/each}
