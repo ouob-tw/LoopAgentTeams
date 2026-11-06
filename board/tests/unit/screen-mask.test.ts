@@ -1,4 +1,4 @@
-// What the 畫面分頁 hides before a pane's screen leaves the server: strings that look like passwords
+// What the 終端分頁 hides before a pane's screen leaves the server: strings that look like passwords
 // and keys, replaced with marks as wide as they were, colour codes and the layout left as they are.
 import { join } from 'node:path';
 import { expect, test } from 'bun:test';
@@ -166,7 +166,7 @@ test('pane text is searched for two wrapped lines exactly', () => {
 	expect(maskScreen(screen, { unwrapped: `${key.slice(0, -1)}!` })).toBe(screen);
 });
 
-// Masking runs on the board's only thread at every read of an open 畫面分頁, about once a second: a
+// Masking runs on the board's only thread at every read of an open 終端分頁, about once a second: a
 // screen that needs longer than a read's interval leaves the board answering nobody. CPU time, so a
 // busy host does not count against it; far over what any of these needs here (at most a few hundred ms), and far
 // under the minutes a pattern that backtracks takes.

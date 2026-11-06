@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The 畫面分頁: the last lines of the agent's Herdr pane with its colours, secrets masked by the
+	// The 終端分頁: the last lines of the agent's Herdr pane with its colours, secrets masked by the
 	// server, followed as it changes while the tab is shown and not at all otherwise. The box
 	// takes the page's height down to the command line; its bottom line stays at the box's bottom, and
 	// lines too long for it, or more than fit, slide inside it. An update leaves it where it was slid to.

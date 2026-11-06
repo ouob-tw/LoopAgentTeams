@@ -151,10 +151,10 @@ export function readSent(lines: readonly Line[], controllerId: string, now: numb
 	return entries.reverse();
 }
 
-/** How far apart key presses from the 畫面分頁 may be and still show as one entry. */
+/** How far apart key presses from the 終端分頁 may be and still show as one entry. */
 export const KEYS_MERGE_MS = 5_000;
 
-/** What was done to one agent of the Herdr 分頁, newest first. Key presses from the 畫面分頁 that
+/** What was done to one agent of the Herdr 分頁, newest first. Key presses from the 終端分頁 that
  *  were all typed in, each within `KEYS_MERGE_MS` of the one before with nothing else done to the
  *  agent between, show as one entry at the time of the last, with the kinds and counts added up. */
 export function readAgentActions(lines: readonly Line[], agentId: string): AgentAction[] {

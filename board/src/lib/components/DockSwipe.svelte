@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The phone's dock while a 畫面分頁 is open: the command line and the 按鍵面板 side by side, the
+	// The phone's dock while a 終端分頁 is open: the command line and the 按鍵面板 side by side, the
 	// panel to its right, and a swipe sideways moves between them. Left shows the keys, right the command
 	// line again; the panel follows the finger one to one, and lets go to the nearer one, or to the
 	// one the finger was heading for when it was quick (`swipe.ts` has the numbers). Typing is left
@@ -17,7 +17,7 @@
 
 	let { children }: { children: Snippet } = $props();
 
-	/** A touch device with a 畫面分頁 open; the layout's phone width is the page's own business. */
+	/** A touch device with a 終端分頁 open; the layout's phone width is the page's own business. */
 	const active = $derived(screenView.agentId !== null && screenView.phone);
 	let showing = $state<Pane>('bar');
 	$effect(() => {

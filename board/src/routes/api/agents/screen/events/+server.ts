@@ -4,7 +4,7 @@ import { getBoard } from '#lib/server/board.ts';
 import { screenEvents } from '#lib/server/transcript-stream.ts';
 import type { RequestHandler } from './$types';
 
-/** Event stream for an agent's open 畫面分頁: the screen of the Herdr pane it is in; see
+/** Event stream for an agent's open 終端分頁: the screen of the Herdr pane it is in; see
  *  `screenEvents`. Only for an agent Herdr lists now. */
 export const GET: RequestHandler = async ({ url, cookies, request }) => {
 	const sessionId = url.searchParams.get('session');

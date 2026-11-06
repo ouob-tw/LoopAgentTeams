@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The one line a page's status card folds into while its 畫面分頁 is shown: the status, the name, a
+	// The one line a page's status card folds into while its 終端分頁 is shown: the status, the name, a
 	// mark for each thing the card warns of, and 展開, which shows the card and its buttons below it.
 	import { getContext } from 'svelte';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';

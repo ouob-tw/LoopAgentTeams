@@ -92,22 +92,22 @@
 			</section>
 
 			<section>
-				<h4>畫面字體</h4>
-				<div class="choices" role="group" aria-label="畫面字體">
+				<h4>終端字體</h4>
+				<div class="choices" role="group" aria-label="終端字體">
 					<button
-						aria-label="畫面字調小"
+						aria-label="終端字調小"
 						disabled={appearance.screenFont <= SCREEN_FONT.min}
 						onclick={() => appearance.setScreenFont(appearance.screenFont - SCREEN_FONT.step)}>－</button
 					>
 					<output aria-live="polite">{appearance.screenFont}px</output>
 					<button
-						aria-label="畫面字調大"
+						aria-label="終端字調大"
 						disabled={appearance.screenFont >= SCREEN_FONT.max}
 						onclick={() => appearance.setScreenFont(appearance.screenFont + SCREEN_FONT.step)}>＋</button
 					>
 					<button disabled={appearance.screenFont === SCREEN_FONT.base} onclick={() => appearance.resetScreenFont()}>還原預設</button>
 				</div>
-				<p class="note">只影響畫面分頁，不受整體大小與最小字體影響。</p>
+				<p class="note">只影響終端分頁，不受整體大小與最小字體影響。</p>
 			</section>
 		</section>
 

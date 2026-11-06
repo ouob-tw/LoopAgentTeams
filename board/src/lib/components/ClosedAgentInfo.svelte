@@ -1,7 +1,7 @@
 <script lang="ts">
 	// A closed agent's page, opened from the 已關閉 section, laid out like a running agent's: who it
 	// was and where it ran, its 接回 where a running agent's 關閉 sits, then its conversation up to the
-	// stop, and a 畫面分頁 that says it has no screen until it is back. Nothing is sent to it from the command line until it is back.
+	// stop, and a 終端分頁 that says it has no screen until it is back. Nothing is sent to it from the command line until it is back.
 	import { folderName, lastSegment } from '#lib/board/agents.ts';
 	import { stoppedText, type ClosedAgent } from '#lib/board/closed-agents.ts';
 	import type { Controller } from '#lib/board/types.ts';
@@ -29,10 +29,10 @@
 	const speaker = $derived({ id: agent.id, hcomName: agent.hcomName, lastReportAt: null });
 	const TABS = [
 		{ id: 'transcript', label: '對話紀錄', count: null },
-		{ id: 'screen', label: '畫面', count: null }
+		{ id: 'screen', label: '終端', count: null }
 	] as const;
 	let tab = $state<(typeof TABS)[number]['id']>('transcript');
-	/** On the 畫面 tab, which has no screen to show, the card and the 接回 below it fold into one line like a running agent's. */
+	/** On the 終端 tab, which has no screen to show, the card and the 接回 below it fold into one line like a running agent's. */
 	const folded = $derived(tab === 'screen');
 	let unfolded = $state(false);
 	$effect(() => {

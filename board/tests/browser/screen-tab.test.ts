@@ -1,4 +1,4 @@
-// The 畫面分頁 in a real browser: headless Chrome on the built board with fake Herdr and hcom. Where
+// The 終端分頁 in a real browser: headless Chrome on the built board with fake Herdr and hcom. Where
 // the tab sits, the screen with its colours, the 按鍵面板 on a phone (touch emulated, not just a narrow
 // window), reached by swiping the command line, and never on a computer, keys sent in order, a failed press emptying the queue and
 // disabling the keys until the 恢復畫面, a screen that cannot be read, and a closed agent's tab.
@@ -102,7 +102,7 @@ async function shot(name: string) {
 /** Each tab's label, its count left out, and whether it is open. */
 const TABS = `[...document.querySelectorAll('.detail [role=tab]')].map((tab) => [tab.firstChild.textContent.trim(), tab.getAttribute('aria-selected')])`;
 const openScreen = async () => {
-	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端').click()`);
 	await tab.until(`!!document.querySelector('.screen-panel pre')`, 'the screen');
 };
 const MENU = `document.querySelector('.dock .keys-pane')`;
@@ -124,7 +124,7 @@ test("computer: the tab comes after the conversation, shows the screen in colour
 	await tab.until(`${TABS}.length === 3`, 'the tabs');
 	expect(await tab.eval(TABS)).toEqual([
 		['對話紀錄', 'true'],
-		['畫面', 'false'],
+		['終端', 'false'],
 		['操作紀錄', 'false']
 	]);
 	await openScreen();
@@ -156,7 +156,7 @@ test("computer: the tab comes after the conversation, shows the screen in colour
 	await shot('desktop-narrow-no-menu');
 });
 
-test('phone: a swipe left on the command line, only on the 畫面 tab, shows every key in its place; taps go in order and the panel stays; another tab gives the line back', async () => {
+test('phone: a swipe left on the command line, only on the 終端 tab, shows every key in its place; taps go in order and the panel stays; another tab gives the line back', async () => {
 	await visit({ width: 390, height: 844, phone: true });
 	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].length === 3`, 'the tabs');
 	// Not on the conversation tab: no key panel, and a swipe on the line does nothing.
@@ -195,7 +195,7 @@ test('phone: a swipe left on the command line, only on the 畫面 tab, shows eve
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '對話紀錄').click()`);
 	await tab.until(`${MENU} === null`, 'the key panel gone');
 	expect(await tab.eval(`document.querySelector('.dock textarea').getBoundingClientRect().left >= 0`)).toBe(true);
-	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端').click()`);
 	await tab.until(`!!${MENU} && ${BESIDE}`, 'the line again on returning');
 	// A phone on its side has it too, all of it inside the screen's width.
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 844, height: 390, deviceScaleFactor: 1, mobile: true });
@@ -241,14 +241,14 @@ test('a screen that cannot be read says why, and the keys stay disabled', async 
 	await shot('phone-screen-unreadable');
 });
 
-test("a closed agent's 畫面 tab says it must be brought back first", async () => {
+test("a closed agent's 終端 tab says it must be brought back first", async () => {
 	await visit({ width: 1280, height: 800, phone: false, agent: 's-gone' });
 	await tab.until(`!!document.querySelector('.detail [data-closed-agent]')`, "the closed agent's page");
 	expect(await tab.eval(TABS)).toEqual([
 		['對話紀錄', 'true'],
-		['畫面', 'false']
+		['終端', 'false']
 	]);
-	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端').click()`);
 	await tab.until(`document.querySelector('.detail [role=tabpanel]:not([hidden])')?.innerText.includes('已關閉，先接回才能看畫面')`, 'the closed text');
 	expect(jsonLines(join(fixture.dir, 'herdr-socket-calls.jsonl')).some((args: string[]) => args[1] === 'get' && args[2] === 'wA:p-s-gone')).toBe(false);
 	await shot('desktop-closed-agent-screen');
@@ -277,7 +277,7 @@ test('phone: a press made offline stays refused after the connection comes back,
 	// The panel goes and comes back, as a reconnect may make it: the press still waits.
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '對話紀錄').click()`);
 	await tab.until(`!document.querySelector('.screen-panel')?.hasAttribute('data-status')`, 'the panel closed');
-	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端').click()`);
 	// Back online, but the recovery request does not get through yet: the screen comes back, the keys stay refused.
 	await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/agents/screen/recover*' }] });
 	await offline(false);

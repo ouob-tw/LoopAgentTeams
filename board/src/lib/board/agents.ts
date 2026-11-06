@@ -66,7 +66,7 @@ export function folderName(path: string): string {
 }
 
 /** What the page's status card warns of about the agent, each in a word or two, for a line that holds
- *  only a mark for each (the 畫面分頁's). */
+ *  only a mark for each (the 終端分頁's). */
 export function agentWarnings(agent: Pick<KnownAgent, 'switch' | 'hcom' | 'noHooks'>): string[] {
 	if (agent.switch) return ['切換未完成'];
 	return [...(agent.hcom === 'unknown' ? ['HCOM 不明'] : []), ...(agent.noHooks ? ['未接 HCOM'] : [])];

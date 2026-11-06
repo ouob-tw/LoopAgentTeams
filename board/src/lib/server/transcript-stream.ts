@@ -1,5 +1,5 @@
 // The event streams an open page follows: a conversation, for a controller or another agent, and
-// an agent's 畫面分頁.
+// an agent's 終端分頁.
 import type { ScreenUpdate } from '../board/screen.ts';
 import type { Board } from './board.ts';
 import { findDevice } from './devices.ts';

@@ -1,4 +1,4 @@
-// A computer's direct operation on the 畫面分頁 in a real browser: headless Chrome with a mouse that
+// A computer's direct operation on the 終端分頁 in a real browser: headless Chrome with a mouse that
 // can hover on the built board with fake Herdr and hcom. A click on the screen frames it and keys
 // pressed go into the pane in order (the six escape-sequence keys as text), Esc staying in it; a
 // click elsewhere leaves. The ⋯ menu's 組合鍵 send to the pane on screen; a phone has none.
@@ -77,7 +77,7 @@ async function visit({ phone = false, width = 1280, height = 800, screen = true,
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-plain` });
 	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
 	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].length === 3`, 'the tabs');
-	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端').click()`);
 	await tab.until(screen ? `!!document.querySelector('.screen-panel pre')` : `!!document.querySelector('.screen-panel .box')`, 'the screen');
 	// Whether the page let each key press do what the browser does with it.
 	await tab.eval(`window.prevented = []; addEventListener('keydown', (event) => prevented.push([event.key, event.defaultPrevented]))`);
@@ -247,7 +247,7 @@ test('computer: a key that fails stops the keys typed after it until the screen 
 	]);
 });
 
-/** Count the 畫面分頁 streams a page opens. */
+/** Count the 終端分頁 streams a page opens. */
 const COUNT_STREAMS = `(() => {
 	window.screenStreams = 0;
 	const Real = window.EventSource;

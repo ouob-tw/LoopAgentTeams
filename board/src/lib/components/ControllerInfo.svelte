@@ -89,7 +89,7 @@
 	const questions = $derived(sorted.filter((item): item is InboxQuestion => item.kind === 'question'));
 	const reports = $derived(sorted.filter((item): item is InboxReport => item.kind === 'report'));
 
-	/** The agent whose Herdr pane the 畫面分頁 shows. */
+	/** The agent whose Herdr pane the 終端分頁 shows. */
 	const paneAgent = $derived(agent ?? idleAgent);
 
 	/** As the conversation's live feed last told; shown only while the client runs. */
@@ -98,7 +98,7 @@
 
 	type Tab = 'transcript' | 'screen' | 'reports' | 'ledger' | 'sent' | 'preauth' | 'log';
 	let tab = $state<Tab>('transcript');
-	/** On a 畫面分頁 with a screen, the status card, its buttons and its questions fold into one line. */
+	/** On a 終端分頁 with a screen, the status card, its buttons and its questions fold into one line. */
 	const folded = $derived(tab === 'screen' && !!paneAgent?.inHerdr);
 	let unfolded = $state(false);
 	$effect(() => {
@@ -111,7 +111,7 @@
 	]);
 	const tabs = $derived([
 		{ id: 'transcript', label: '對話紀錄', count: null },
-		{ id: 'screen', label: '畫面', count: null },
+		{ id: 'screen', label: '終端', count: null },
 		{ id: 'reports', label: '回報', count: reports.length },
 		{ id: 'ledger', label: '工作總表', count: controller.ledger.state === 'ok' ? controller.ledger.items.length : null },
 		{ id: 'sent', label: '送出紀錄', count: messaging.sent[controller.id]?.length ?? null },

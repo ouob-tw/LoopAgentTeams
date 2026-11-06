@@ -249,8 +249,8 @@ for (const width of [1280, 390]) {
 	}, 30_000);
 }
 
-test.skipIf(!CHROME)("a touch phone: a closed agent's 畫面 tab hides the top bar, the folded card's ← goes back, and the bar returns on 對話紀錄; a computer keeps the bar", async () => {
-	const openScreen = () => tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
+test.skipIf(!CHROME)("a touch phone: a closed agent's 終端 tab hides the top bar, the folded card's ← goes back, and the bar returns on 對話紀錄; a computer keeps the bar", async () => {
+	const openScreen = () => tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端').click()`);
 	const barShown = () => tab.eval<boolean>(`getComputedStyle(document.querySelector('.detail .topbar')).display !== 'none'`);
 	browser = await launchChrome({ screen: SCREEN });
 	tab = browser.tab;

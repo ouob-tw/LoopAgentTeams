@@ -181,7 +181,7 @@ export function interruptAgent(board: Board, agentId: string) {
 }
 
 /**
- * Type key presses and text from the 畫面分頁 into the agent's pane, one by one in the order given:
+ * Type key presses and text from the 終端分頁 into the agent's pane, one by one in the order given:
  * a named key through `pane send-keys`, text through `pane send-text`. The first that fails or may
  * not have arrived (Herdr did not answer in time) stops the rest, and nothing is tried again. Refused
  * for the board's own pane. Queued like a send, and logged with how many of each kind were typed in,

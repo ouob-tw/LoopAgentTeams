@@ -1,4 +1,4 @@
-// The 畫面分頁's live screen: one follower per agent, shared by every page that has its tab open,
+// The 終端分頁's live screen: one follower per agent, shared by every page that has its tab open,
 // reading the last lines of the pane Herdr lists it in now (another one after a model switch) over
 // Herdr's socket every `screenMs` (a tenth of a second; three times that while it changes on every
 // read), and at once after keys are typed into it, and pushing it, secrets masked, only when it

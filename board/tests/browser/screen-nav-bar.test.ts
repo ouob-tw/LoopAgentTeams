@@ -1,4 +1,4 @@
-// A phone's 畫面分頁 hides the top bar: the panel takes its height, the folded status card carries the
+// A phone's 終端分頁 hides the top bar: the panel takes its height, the folded status card carries the
 // "←", a notice sits at the very top clear of "←" and "展開", and another tab brings the bar back. A
 // computer keeps the bar and has no "←" in the card. `SCREEN_TAB_SHOTS` names a folder for screenshots.
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -68,7 +68,7 @@ async function shot(name: string) {
 }
 const openTab = (label: string) => tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '${label}').click()`);
 const openScreen = async () => {
-	await openTab('畫面');
+	await openTab('終端');
 	await tab.until(`!!document.querySelector('.screen-panel pre') && !!document.querySelector('.detail .bar')`, 'the screen');
 };
 const topbarShown = () => tab.eval<boolean>(`(() => { const bar = document.querySelector('.detail .topbar'); return !!bar && getComputedStyle(bar).display !== 'none'; })()`);
@@ -76,7 +76,7 @@ const rect = (selector: string) => `(() => { const r = document.querySelector('$
 type Box = { left: number; right: number; top: number; bottom: number };
 
 for (const theme of ['dark', 'light'] as const) {
-	test(`phone, ${theme}: the top bar is gone on the 畫面 tab, the box reaches the top, "←" is the card's first thing and goes back`, async () => {
+	test(`phone, ${theme}: the top bar is gone on the 終端 tab, the box reaches the top, "←" is the card's first thing and goes back`, async () => {
 		await visit({ width: 390, height: 844, phone: true, theme });
 		expect(await topbarShown()).toBe(true);
 		const withBar = (await tab.eval<Box>(rect('.detail [role=tablist]'))).top;
@@ -99,7 +99,7 @@ for (const theme of ['dark', 'light'] as const) {
 		expect(await tab.eval(`getComputedStyle(document.querySelector('.detail')).display`)).toBe('none');
 	}, 30_000);
 
-	test(`phone, ${theme}: the bar comes back on the 對話紀錄 tab and goes again on returning to 畫面`, async () => {
+	test(`phone, ${theme}: the bar comes back on the 對話紀錄 tab and goes again on returning to 終端`, async () => {
 		await visit({ width: 390, height: 844, phone: true, theme });
 		await openScreen();
 		expect(await topbarShown()).toBe(false);
@@ -130,7 +130,7 @@ test('phone: a notice sits at the very top and covers neither "←" nor "展開"
 	await shot('phone-dark-notice');
 }, 30_000);
 
-test('computer: the top bar stays on the 畫面 tab and the card has no "←"', async () => {
+test('computer: the top bar stays on the 終端 tab and the card has no "←"', async () => {
 	await visit({ width: 1280, height: 800, phone: false, theme: 'dark' });
 	await openScreen();
 	expect(await tab.eval(`!!document.querySelector('.detail .bar .back')`)).toBe(false);
@@ -165,7 +165,7 @@ test('tablet (touch, wider than 760px): a command line remembered as put away le
 	await visit({ width: 1000, height: 800, phone: true, theme: 'dark' });
 	await tab.eval(`localStorage.setItem('lat-board-command-hidden', '1')`);
 	await tab.send('Page.reload');
-	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].some((tab) => tab.firstChild.textContent.trim() === '畫面')`, 'the board again');
+	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].some((tab) => tab.firstChild.textContent.trim() === '終端')`, 'the board again');
 	// The page takes touches only once it has started: wait for that before clicking a tab.
 	await tab.until(`document.body.dataset.hydrated !== undefined || performance.now() > 3000`, 'the page to start');
 	await openScreen();

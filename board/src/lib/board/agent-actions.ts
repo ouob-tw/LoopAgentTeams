@@ -43,7 +43,7 @@ export interface AgentAction {
 	error: string | null;
 	/** Set on a permission switch. */
 	permission?: PermissionSwitch;
-	/** Set on key presses from the 畫面分頁: the kinds typed in and how many, never the text. */
+	/** Set on key presses from the 終端分頁: the kinds typed in and how many, never the text. */
 	keys?: KeyCounts;
 }
 
@@ -69,7 +69,7 @@ export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {
 	'board-ask': '看板提問',
 	permission: '切換權限模式',
 	'close-workspace': '關閉工作區',
-	keys: '畫面按鍵'
+	keys: '終端按鍵'
 };
 
 /** Whether the controller's turn can be interrupted from its page: its own agent entry (same session
@@ -90,7 +90,7 @@ export const AGENT_HCOM_UNKNOWN_CLOSE_REASON =
 
 export const AGENT_OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，關閉會連看板一起關掉，沒有關閉。';
 
-export const AGENT_OWN_PANE_KEYS_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，不從畫面分頁送按鍵。';
+export const AGENT_OWN_PANE_KEYS_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，不從終端分頁送按鍵。';
 
 export const WORKSPACE_OWN_REASON = '看板自己所在的窗格就在這個工作區裡，關閉會連看板一起關掉，不提供關閉。';
 export const WORKSPACE_GONE_REASON = '工作區已不在 Herdr 的清單上';

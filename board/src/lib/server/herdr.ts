@@ -363,7 +363,7 @@ export async function readScreen(config: BoardConfig, pane: string, source: Scre
 	return run.failure ? { reason: `讀不到它的 Herdr 畫面：${run.failure}` } : { text: run.stdout };
 }
 
-/** How many of a pane's last lines the 畫面分頁 gets: more than the tallest box shows, so a box taller
+/** How many of a pane's last lines the 終端分頁 gets: more than the tallest box shows, so a box taller
  *  than the pane fills up with earlier lines. A full-screen program has only its own screen to give. */
 const SCREEN_LINES = 120;
 
