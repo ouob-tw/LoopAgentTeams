@@ -26,6 +26,18 @@ Claude Code（`~/.claude/settings.json` 的 `hooks`）與 Codex（`$CODEX_HOME/h
 
 驗證：在 Agent 內執行 `hcom send --name <自身名稱> -- test`，應被擋下且沒有訊息送出。
 
+## 丟掉 listen 輸出的攔截
+
+同一支 `scripts/block-broadcast.py` 也擋下輸出被丟掉的 `hcom listen`：listen 一收到訊息就返回並把訊息標為已讀，輸出沒被讀到，訊息就消失了。被擋的寫法：
+
+- stdout 導向 `/dev/null`：`hcom listen 2 >/dev/null`、`hcom listen 2 > /dev/null 2>&1`、`&>/dev/null`。
+- 只接 `tail`、`head` 或 `wc`，或接到輸出導向 `/dev/null` 的指令：`hcom listen 2 | tail -1`、`hcom listen 2 | cat >/dev/null`。
+- 包在 `$( )` 或反引號裡卻沒用到結果：當 `:`、`true` 的參數，或存進之後沒展開的變數。
+
+輸出完整顯示、存到檔案或只丟 stderr（`2>/dev/null`）的 listen 照常放行；包在 `bash -c` 裡的不檢查。被擋時，要等訊息就直接跑 `hcom listen N` 並讀完輸出，要固定延遲就用 `timeout N tail -f /dev/null || true`。不需另外安裝，裝了上面的 hook 就生效。
+
+驗證：在 Agent 內執行 `hcom listen 1 --name <自身名稱> >/dev/null`，應被擋下並提示 `timeout N tail -f /dev/null`。
+
 ## 開工確認攔截 hook
 
 `scripts/block-start-ack.py` 也是 PreToolUse hook：被召喚的 Agent 對召喚它的主控（環境變數 `HCOM_LAUNCHED_BY`）發「收到」「開始做」這類只確認、沒有內容的訊息時擋下，並提示完成、卡住或有問題時再回報。主控閒置時每則訊息都會叫醒它，這類確認只會白花一輪。

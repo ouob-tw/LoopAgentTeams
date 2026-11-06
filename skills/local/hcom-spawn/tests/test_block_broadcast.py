@@ -102,6 +102,52 @@ class BlockBroadcastTests(unittest.TestCase):
                 result = run_hook(command)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_listen_with_discarded_output_is_blocked_with_the_fixed_wait(self):
+        for command in (
+            'hcom listen 2 >/dev/null',
+            'hcom listen 2 > /dev/null 2>&1',
+            'hcom listen 2 | tail -1',
+            'hcom listen 2 --name vare &>/dev/null',
+            'hcom listen 2 1>>/dev/null',
+            'hcom --name vare listen 5 | head -3',
+            'timeout 9 hcom listen 5 |& wc -l',
+            'cd /tmp && hcom listen 2 >/dev/null; hcom term luna',
+            ': "$(hcom listen 2)"',
+            'out=$(hcom listen 2)\nhcom term luna',
+            'hcom listen 2 > /tmp/listen.log >/dev/null',
+            'hcom listen 2 | cat >/dev/null',
+            'hcom listen 2 | head -n +1',
+            'hcom listen 2 >/dev/null 1>&1',
+            'hcom listen 2 >/dev/null 2>&1 1>&2',
+        ):
+            with self.subTest(command=command):
+                result = run_hook(command)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('timeout N tail -f /dev/null', result.stderr)
+
+    def test_listen_with_visible_output_passes(self):
+        for command in (
+            'hcom listen 2',
+            'hcom listen 2 --name x',
+            'hcom listen 2 2>/dev/null',
+            'hcom listen 2 2>&1 | tee /tmp/listen.log',
+            'hcom listen 2 > /tmp/listen.log',
+            'out=$(hcom listen 2); echo "$out"',
+            'hcom listen 2 >/dev/null 1>&2',
+            'hcom listen 2 >/dev/null > /tmp/listen.log',
+            'hcom listen 2 > /tmp/listen.log | tail -1',
+            'hcom listen 2 | tail -n +1',
+            ": '$(hcom listen 2)'",
+            "out='$(hcom listen 2)'",
+            'out=$(hcom listen 2 > /tmp/listen.log)',
+            'hcom list >/dev/null',
+            'sleep 2 >/dev/null',
+            ['hcom', 'listen', '2'],
+        ):
+            with self.subTest(command=command):
+                result = run_hook(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_unreadable_payload_never_blocks(self):
         result = subprocess.run([sys.executable, str(SCRIPT)], input='not json',
                                 text=True, capture_output=True)

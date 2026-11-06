@@ -4,7 +4,7 @@
 
 每張派工建立 `.lat/tasks/YYYY-MM-DD-<tag>.md`，日期為派發日期。外部 Agent 的 tag 用 /hcom-spawn 的 HCOM `--tag`；內建 Agent 由 Orchestrator 指派唯一任務 tag。同日同 tag 重派依序加 `-2`、`-3`，第一行註明接續的任務卡。
 
-HCOM Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（見 [Agent 設定](agents.md#派工)），手寫亦可。
+HCOM Agent 啟動後用 `scripts/lat-dispatch.py card` 依 tag 建卡（見 [Agent 設定](agents.md#派工)），禁止手寫。
 
 ## 欄位模板
 
@@ -70,7 +70,7 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 - 動手前逐項核對 `preflight`；任一項不成立就先回報主控。
 - 額度內的現場動作自己做，不逐步請核准。
-- 有現場動作的 QA 至少留一次額度給最終候選版本，實作者說版本定了才開始用。
+- 有現場動作的 QA 等實作者宣布定版後才開始用額度。
 - 只在下列情況回報主控：
   1. 即將超過或已超過任一額度。
   2. 觸發停止條件。
