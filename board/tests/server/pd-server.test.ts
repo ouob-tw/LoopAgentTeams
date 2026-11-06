@@ -46,6 +46,10 @@ test('waiting requests reach the page, and 拒絕 denies one through pd deny', a
 	const listed = await until(() => watch.pds.findLast((pd) => pd.ok && pd.requests.length === 2), 10_000, 'both requests listed');
 	expect(listed.ok && listed.requests[0]).toEqual({
 		id: 7,
+		action: 'read',
+		type: null,
+		values: [],
+		writes: [],
 		caller: 'claude',
 		callerInfo: null,
 		item: 'GitHub token',

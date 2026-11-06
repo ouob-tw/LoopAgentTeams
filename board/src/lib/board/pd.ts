@@ -17,8 +17,23 @@ export interface PdCaller {
 	notice: string;
 }
 
+/** What a request asks pd to do: read an item's secret to run a command, add an item, or edit one. */
+export type PdAction = 'read' | 'add' | 'edit';
+/** Where a secret to be written comes from; pd never lists the value itself. */
+export type PdSecret =
+	| { field: string; source: 'generate'; length: number }
+	| { field: string; source: 'output'; command: string[]; cwd: string };
+
 export interface PdRequest {
 	id: number;
+	/** A pd that does not say reads as `read`. */
+	action: PdAction;
+	/** The item type of an add or edit: `login` or `note`; null for a read. */
+	type: 'login' | 'note' | null;
+	/** The non-secret values an add or edit writes, in pd's order. */
+	values: { field: string; value: string }[];
+	/** The secret fields an add or edit writes, and where each comes from. */
+	writes: PdSecret[];
 	/** Who asked, as the requester declared it: not verified. */
 	caller: string;
 	/** The daemon's check of the caller; null from a pd that does not give one. */
@@ -93,6 +108,25 @@ export type PdSnapshot = { ok: true; requests: PdRequest[]; vault?: 'locked' | '
 export function pdNotice(snapshot: PdSnapshot): string | null {
 	if (!snapshot.ok || snapshot.vault === 'unavailable') return 'pd 服務不可用';
 	return snapshot.vault === 'locked' ? 'pd 已鎖定' : null;
+}
+
+export const ACTION_LABEL: Record<PdAction, string> = { read: '讀取', add: '新增', edit: '修改' };
+export const TYPE_LABEL = { login: '登入', note: '筆記' } as const;
+
+/** The line under the caller: a read's shortened command, a write's field names. */
+export function summaryText(request: PdRequest): string {
+	return request.action === 'read' ? shortCommand(request.command) : request.fields.join('、');
+}
+
+/** Where a secret comes from, without its value. */
+export function secretText(secret: PdSecret): string {
+	return secret.source === 'generate' ? `自動產生，${secret.length} 字元` : `指令輸出：${shortCommand(secret.command)}（${secret.cwd}）`;
+}
+
+/** The browser notification for a new request, naming the action. */
+export function notificationText(request: PdRequest): { title: string; body: string } {
+	const title = `pd 請求 #${request.id}（${ACTION_LABEL[request.action]}）等你核准`;
+	return { title, body: `${request.item}：${request.action === 'read' ? request.command.join(' ') : request.fields.join('、')}` };
 }
 
 const clockText = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;

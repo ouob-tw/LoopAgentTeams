@@ -2,7 +2,7 @@
 // fields the panel shows and the answers the deny and passkey relay routes give, and how the
 // panel words a request's time and shortens its command, and where its window may lie. Test values only.
 import { expect, test } from 'bun:test';
-import { callerNote, callerText, clampBox, readBox, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
+import { ACTION_LABEL, callerNote, notificationText, secretText, summaryText, callerText, clampBox, readBox, shortCommand, timeText, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
 import { approveReply, challengeReply, checkAssertion, createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
 
@@ -34,6 +34,10 @@ const listed = {
 
 const request = (overrides: Partial<PdRequest> = {}): PdRequest => ({
 	id: 7,
+	action: 'read',
+	type: null,
+	values: [],
+	writes: [],
 	caller: 'claude',
 	callerInfo: null,
 	item: 'GitHub token',
@@ -53,6 +57,10 @@ test('a pending list keeps only the fields the panel shows', () => {
 		requests: [
 			{
 				id: 7,
+				action: 'read',
+				type: null,
+				values: [],
+				writes: [],
 				caller: 'dahe',
 				// Not the process number, start time or program.
 				callerInfo: { name: 'dahe', client: 'claude', group: null, orchestrator: true, source: 'auto', verified: true, notice: '程序樹查證，非防竄改' },
@@ -232,4 +240,72 @@ test('fake pd status rejects extra arguments just like the real CLI', async () =
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+const added = {
+	id: 2,
+	waiting: 3,
+	remaining: 896,
+	action: 'add',
+	caller: 'dahe',
+	item: 'fresh',
+	item_id: null,
+	type: 'login',
+	fields: ['username', 'notes', 'password', 'api_key'],
+	values: { username: 'alice', notes: 'line one\nline two' },
+	secrets: [
+		{ field: 'password', source: 'generate', length: 20 },
+		{ field: 'api_key', source: 'output', argv: ['gh', 'auth', 'token'], cwd: '/work' }
+	],
+	approval_url: 'https://pd.example.net/?request=2',
+	daemon: 'start-1'
+};
+
+test('an add or edit request keeps its type, non-secret values and where each secret comes from', () => {
+	const parsed = parsePdPending(exited(0, JSON.stringify([added, { ...added, id: 3, action: 'edit', item_id: 'uuid' }])));
+	expect(parsed.ok && parsed.requests).toMatchObject([
+		{
+			id: 2,
+			action: 'add',
+			type: 'login',
+			fields: ['username', 'notes', 'password', 'api_key'],
+			values: [
+				{ field: 'username', value: 'alice' },
+				{ field: 'notes', value: 'line one\nline two' }
+			],
+			writes: [
+				{ field: 'password', source: 'generate', length: 20 },
+				{ field: 'api_key', source: 'output', command: ['gh', 'auth', 'token'], cwd: '/work' }
+			],
+			command: [],
+			cwd: ''
+		},
+		{ id: 3, action: 'edit' }
+	]);
+});
+
+const SECRET_NAME = 'pass' + 'word';
+test('a value under any key but username, uri and notes never reaches the page', () => {
+	const parsed = parsePdPending(exited(0, JSON.stringify([{ ...added, values: { username: 'a', [SECRET_NAME]: 'hunter2', totp: 'x' }, secrets: [{ field: SECRET_NAME, source: 'plain', value: 'hunter2' }] }])));
+	expect(JSON.stringify(parsed)).not.toContain('hunter2');
+	expect(parsed.ok && parsed.requests[0].values).toEqual([{ field: 'username', value: 'a' }]);
+	expect(parsed.ok && parsed.requests[0].writes).toEqual([]);
+});
+
+test('a request without an action, or with one the board does not know, reads as a read', () => {
+	for (const action of [undefined, 'sync', 5]) {
+		const parsed = parsePdPending(exited(0, JSON.stringify([{ ...listed, action }])));
+		expect(parsed.ok && parsed.requests[0]).toMatchObject({ action: 'read', type: null, values: [], writes: [] });
+	}
+});
+
+test('the card and the notification name the action', () => {
+	expect(ACTION_LABEL).toEqual({ read: '讀取', add: '新增', edit: '修改' });
+	const write = request({ id: 2, action: 'add', item: 'fresh', fields: ['username', 'password'], command: [], cwd: '' });
+	expect(summaryText(write)).toBe('username、password');
+	expect(summaryText(request())).toBe('gh api user');
+	expect(notificationText(write)).toEqual({ title: 'pd 請求 #2（新增）等你核准', body: 'fresh：username、password' });
+	expect(notificationText(request())).toEqual({ title: 'pd 請求 #7（讀取）等你核准', body: 'GitHub token：gh api user' });
+	expect(secretText({ field: 'p', source: 'generate', length: 20 })).toBe('自動產生，20 字元');
+	expect(secretText({ field: 'k', source: 'output', command: ['gh', 'auth', 'token'], cwd: '/work' })).toBe('指令輸出：gh auth token（/work）');
 });

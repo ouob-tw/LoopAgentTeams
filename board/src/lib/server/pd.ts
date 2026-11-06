@@ -5,7 +5,7 @@
 // approve without the user's passkey. It never asks for or handles pd's confirmation code.
 // pd lists no secret values; only the fields of board/pd.ts are kept, and a reason never repeats
 // pd's own words, which reach every page.
-import type { PdAssertion, PdCaller, PdChallenge, PdRequest, PdSnapshot } from '../board/pd.ts';
+import type { PdAssertion, PdCaller, PdChallenge, PdRequest, PdSecret, PdSnapshot } from '../board/pd.ts';
 import { runCommand, type ExternalResult } from './external.ts';
 
 type Json = Record<string, unknown>;
@@ -59,6 +59,27 @@ function callerInfo(value: unknown): PdCaller | null {
 	};
 }
 
+/** The only keys a write's `values` may show: pd lists no secret there, and anything else is left
+ *  out so a secret under another name could not reach a page. */
+const SHOWN_VALUES = ['username', 'uri', 'notes'];
+
+function writeValues(value: unknown): PdRequest['values'] {
+	if (!isRecord(value)) return [];
+	return Object.entries(value).flatMap(([field, shown]) => (SHOWN_VALUES.includes(field) && typeof shown === 'string' ? [{ field, value: shown }] : []));
+}
+
+/** Where each secret comes from; a source the board does not know is left out, its field name
+ *  still being in `fields`. */
+function writeSecrets(value: unknown): PdSecret[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((row): PdSecret[] => {
+		if (!isRecord(row) || typeof row.field !== 'string') return [];
+		if (row.source === 'generate' && Number.isInteger(row.length)) return [{ field: row.field, source: 'generate', length: row.length as number }];
+		if (row.source === 'output') return [{ field: row.field, source: 'output', command: words(row.argv), cwd: text(row.cwd) }];
+		return [];
+	});
+}
+
 /** What `pd pending --json` answered. A request without its number is left out: it could not be
  *  denied or opened. */
 export function parsePdPending(run: ExternalResult): PdSnapshot {
@@ -79,6 +100,10 @@ export function parsePdPending(run: ExternalResult): PdSnapshot {
 			return [
 				{
 					id: row.id as number,
+					action: row.action === 'add' || row.action === 'edit' ? row.action : 'read',
+					type: row.type === 'login' || row.type === 'note' ? row.type : null,
+					values: writeValues(row.values),
+					writes: writeSecrets(row.secrets),
 					caller: text(row.caller),
 					callerInfo: callerInfo(row.caller_info),
 					item: text(row.item),
