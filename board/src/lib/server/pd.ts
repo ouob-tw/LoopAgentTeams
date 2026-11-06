@@ -100,7 +100,7 @@ export function parsePdPending(run: ExternalResult): PdSnapshot {
 			return [
 				{
 					id: row.id as number,
-					action: row.action === 'add' || row.action === 'edit' ? row.action : 'read',
+					action: row.action === undefined ? 'read' : text(row.action),
 					type: typeof row.type === 'string' && row.type ? row.type : null,
 					values: writeValues(row.values),
 					writes: writeSecrets(row.secrets),

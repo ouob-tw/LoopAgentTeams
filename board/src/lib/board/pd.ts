@@ -17,8 +17,8 @@ export interface PdCaller {
 	notice: string;
 }
 
-/** What a request asks pd to do: read an item's secret to run a command, add an item, or edit one. */
-export type PdAction = 'read' | 'add' | 'edit';
+/** What a request asks pd to do: read an item's secret to run a command, add, edit or delete an item. */
+export type PdAction = 'read' | 'add' | 'edit' | 'delete';
 /** Where a secret to be written comes from; pd never lists the value itself. */
 export type PdSecret =
 	| { field: string; source: 'generate'; length: number }
@@ -26,9 +26,9 @@ export type PdSecret =
 
 export interface PdRequest {
 	id: number;
-	/** A pd that does not say reads as `read`. */
-	action: PdAction;
-	/** The item type pd printed for an add or edit (login, note, card, identity, sshKey, unknown, or a newer one); null for a read. */
+	/** A PdAction, or the word a newer pd gave ('' when it gave no word); a pd that does not say reads as `read`. */
+	action: string;
+	/** The item type pd printed for a write (login, note, card, identity, sshKey, unknown, or a newer one); null for a read. */
 	type: string | null;
 	/** The non-secret values an add or edit writes, in pd's order. */
 	values: { field: string; value: string }[];
@@ -110,12 +110,14 @@ export function pdNotice(snapshot: PdSnapshot): string | null {
 	return snapshot.vault === 'locked' ? 'pd 已鎖定' : null;
 }
 
-export const ACTION_LABEL: Record<PdAction, string> = { read: '讀取', add: '新增', edit: '修改' };
+export const ACTION_LABEL: Record<PdAction, string> = { read: '讀取', add: '新增', edit: '修改', delete: '刪除' };
+/** An action from a newer pd shows as given, never as a read. */
+export const actionLabel = (action: string): string => (Object.hasOwn(ACTION_LABEL, action) ? ACTION_LABEL[action as PdAction] : action || '未知動作');
 export const TYPE_LABEL: Record<string, string> = { login: '登入', note: '備註', card: '卡片', identity: '身分', sshKey: 'SSH 金鑰', unknown: '未知類型' };
 /** A type from a newer pd shows as given rather than disappearing. */
 export const typeLabel = (type: string): string => (Object.hasOwn(TYPE_LABEL, type) ? TYPE_LABEL[type] : type);
 
-/** The line under the caller: a read's shortened command, a write's field names. */
+/** The line under the caller: a read's shortened command, a write's field names (none for a delete). */
 export function summaryText(request: PdRequest): string {
 	return request.action === 'read' ? shortCommand(request.command) : request.fields.join('、');
 }
@@ -127,7 +129,8 @@ export function secretText(secret: PdSecret): string {
 
 /** The browser notification for a new request, naming the action. */
 export function notificationText(request: PdRequest): { title: string; body: string } {
-	const title = `pd 請求 #${request.id}（${ACTION_LABEL[request.action]}）等你核准`;
+	const title = `pd 請求 #${request.id}（${actionLabel(request.action)}）等你核准`;
+	if (request.action !== 'read' && !request.fields.length) return { title, body: request.type ? `${request.item}（${typeLabel(request.type)}）` : request.item };
 	return { title, body: `${request.item}：${request.action === 'read' ? request.command.join(' ') : request.fields.join('、')}` };
 }
 

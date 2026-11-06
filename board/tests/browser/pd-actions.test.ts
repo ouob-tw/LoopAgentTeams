@@ -1,6 +1,7 @@
-// The pd 待核准 cards for the three actions in a real browser, on the built board with a fake pd
+// The pd 待核准 cards for each action in a real browser, on the built board with a fake pd
 // (tests/fake-pd.mjs): 讀取 as it always was, 新增 and 修改 with their type, non-secret values and
-// where each secret comes from, never a secret value. At a phone's and a desktop's width nothing
+// where each secret comes from, never a secret value; 刪除 with the item name and type; an action
+// the board does not know as pd gave it, never as 讀取. At a phone's and a desktop's width nothing
 // overflows. A new write request's browser notification names the action. 拒絕 works on a write.
 // Set PD_SHOTS_DIR to also save screenshots there. Skipped when the host has no Chrome.
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -124,6 +125,42 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 		}
 		expect(await tab.eval(FITS)).toBe(true);
 		await shot(tab, `q17-${label}-edit-types`);
+		expect(tab.errors).toEqual([]);
+	}, 30_000);
+}
+
+const remove = { ...base, id: 4, action: 'delete', item: 'old-deploy-token-for-the-staging-cluster-that-is-no-longer-used', item_id: 'u4', type: 'login', fields: [], values: {}, secrets: [] };
+const removeNote = { ...remove, id: 5, item: 'memo', item_id: 'u5', type: 'note' };
+const future = { ...base, id: 6, action: 'purge', item: 'something', item_id: 'u6', type: 'login', fields: [], values: {}, secrets: [] };
+
+for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['desktop', 1280, 900, false]] as const) {
+	test.skipIf(!CHROME)(`${label}: a delete card says 刪除 with the item name and type; an action pd adds later is never shown as 讀取`, async () => {
+		setPd([remove, removeNote, future, read]);
+		browser = await launchChrome({ screen: SCREEN });
+		const tab = browser.tab;
+		const [name, value] = cookie.split('=');
+		await tab.send('Network.setCookie', { name, value, url: fixture.url });
+		await tab.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile });
+		await tab.navigate(`${fixture.url}/`);
+		await tab.until(`document.querySelectorAll('.inbox .pd .card').length === 4 && ${SETTLED}`, 'four cards');
+
+		const chip = (id: number) => tab.eval<string>(`${card(id)}.querySelector('.action').innerText`);
+		expect([await chip(4), await chip(5), await chip(6), await chip(1)]).toEqual(['刪除', '刪除', 'purge', '讀取']);
+		const rows = (id: number) => tab.eval<string[]>(`[...${card(id)}.querySelectorAll('dt')].map((dt) => dt.innerText + '=' + dt.nextElementSibling.innerText)`);
+		expect(await tab.eval<string>(`${card(4)}.querySelector('.item').innerText`)).toBe(remove.item);
+		expect(await rows(4)).toContain('類型=登入');
+		expect(await rows(5)).toContain('類型=備註');
+		// Open, with no empty command line and no field rows.
+		expect(await tab.eval(`${card(4)}.querySelector('details').open && !${card(4)}.querySelector('summary code')`)).toBe(true);
+		expect((await rows(4)).map((row) => row.split('=')[0])).toEqual(['類型', '呼叫者']);
+		// A delete is marked apart from a read and from add / edit; an unknown action is marked as a write.
+		const look = (id: number) => tab.eval<string>(`getComputedStyle(${card(id)}.querySelector('.action')).color`);
+		expect(await look(4)).not.toBe(await look(1));
+		expect(await look(6)).not.toBe(await look(1));
+		expect(await tab.eval(`${card(6)}.querySelector('details').open`)).toBe(true);
+
+		expect(await tab.eval(FITS)).toBe(true);
+		await shot(tab, `${label}-delete-cards`);
 		expect(tab.errors).toEqual([]);
 	}, 30_000);
 }
