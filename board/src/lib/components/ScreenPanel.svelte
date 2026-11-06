@@ -3,16 +3,18 @@
 	// server, followed as it changes while the tab is shown and not at all otherwise. The box
 	// takes the page's height down to the command line; its bottom line stays at the box's bottom, and
 	// lines too long for it, or more than fit, slide inside it. An update leaves it where it was slid to.
-	// In the light theme the box is the dark screen inverted, hues kept, as its programs choose colours
-	// for a dark screen whatever the board's theme. The text can be selected and copied.
+	// In the light theme the box takes the Herdr light theme's background, text and basic colours, with
+	// no filter, and colours a program names itself (256, true colour) as it sent them. The text can be
+	// selected and copied.
 	// Keys go through the 按鍵面板 on a phone (DockSwipe), which takes the command line's place; why keys
 	// cannot go now shows above the screen; nothing does while all is well.
 	// On a computer a click on the screen starts direct operation: a frame shows round it, and keys
 	// pressed go into the pane (`pressInput`), Esc too, until a click elsewhere takes the focus away.
 	// The focus goes to a hidden text box, so an input method composes in it; only the text it ends
 	// with is sent. A click that leaves text selected ends it instead, so the text can be copied.
+	import { page } from '$app/state';
 	import { screenView } from '#lib/board/screen-view.svelte.ts';
-	import { KEY_UNSUPPORTED_TEXT, KEYS_UNSURE_TEXT, pressInput, screenLines, trimmedLines, type ScreenUpdate } from '#lib/board/screen.ts';
+	import { BASIC, KEY_UNSUPPORTED_TEXT, KEYS_UNSURE_TEXT, pressInput, screenLines, trimmedLines, type ScreenUpdate } from '#lib/board/screen.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
 	let {
@@ -67,6 +69,16 @@
 	});
 	const shownText = $derived(kept?.agentId === agentId ? kept.text : null);
 	const lines = $derived(shownText === null ? [] : trimmedLines(screenLines(shownText)));
+
+	// The screen's colours by theme, as `light-dark(light, dark)` so a change of theme shows at once: the dark
+	// theme's own, and in the light theme the Herdr light theme's (the server reads it from Herdr's
+	// settings). `--ansi-N` are the basic colours the runs name.
+	const colours = $derived.by(() => {
+		const light = (page.data as { screenTheme: { background: string; foreground: string; basic: string[] } }).screenTheme;
+		// light-dark() takes the light colour first.
+		const pair = (dark: string, bright: string) => `light-dark(${bright}, ${dark})`;
+		return [`--screen-bg:${pair('#0b0c0e', light.background)}`, `--screen-fg:${pair('#d4d4d4', light.foreground)}`, ...BASIC.map((dark, index) => `--ansi-${index}:${pair(dark, light.basic[index])}`)].join(';');
+	});
 
 	let scroller = $state<HTMLElement>();
 	let pre = $state<HTMLElement>();
@@ -160,6 +172,7 @@
 			{/if}
 			<div
 				class="scroller"
+				style={colours}
 				bind:this={scroller}
 				ontouchstart={() => (sliding = true)}
 				ontouchend={(event) => {
@@ -225,8 +238,6 @@
 	   bottom line stays at the bottom however tall the box, and where it was slid up to holds as lines
 	   change. Sliding it does not go on to the page. */
 	.scroller {
-		--screen-bg: #0b0c0e;
-		--screen-fg: #d4d4d4;
 		display: flex;
 		flex-direction: column-reverse;
 		align-items: flex-start;
@@ -236,9 +247,6 @@
 		scrollbar-width: thin;
 		background: var(--screen-bg);
 		color: var(--screen-fg);
-	}
-	:global(:root[data-theme='light']) .scroller {
-		filter: invert(1) hue-rotate(180deg);
 	}
 	/* Takes the keys, out of sight and taking no room. */
 	.catcher {
@@ -269,10 +277,10 @@
 		min-width: 100%;
 		user-select: text;
 	}
-	/* Inside the screen's own colours, so a literal like theirs: inverted with them in the light theme. */
+	/* Between the screen's own text and background, whichever theme. */
 	.loading {
 		margin: 0.4rem 0.5rem;
-		color: #8b919a;
+		color: color-mix(in srgb, var(--screen-fg) 60%, var(--screen-bg));
 	}
 	.empty {
 		margin: 0.6rem 0;

@@ -2,7 +2,7 @@
 // the box from the tabs to the command line, its bottom line at its bottom, long lines sliding inside
 // it and staying slid through updates, the status card folded into one line, the 按鍵面板 taking the
 // command line's place, and the light theme. `SCREEN_TAB_SHOTS` names a folder to save each step's screenshot in.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
@@ -252,14 +252,41 @@ test('phone: the key panel takes the command line\'s place and height without mo
 	await shot('phone-keys-dark');
 });
 
-test('the light theme turns the screen light keeping its hues, at once when the theme changes; the key panel stays in the theme', async () => {
+test('the light theme takes the colours of the Herdr light theme named in Herdr\'s settings, and falls back to catppuccin-latte when it cannot', async () => {
+	const config = join(fixture.dir, 'home', '.config', 'herdr', 'config.toml');
+	mkdirSync(join(fixture.dir, 'home', '.config', 'herdr'), { recursive: true });
+	const backgroundFor = async (text: string) => {
+		writeFileSync(config, text);
+		await visit({ width: 390, height: 844, phone: true, theme: 'light' });
+		const background = await tab.eval<string>(`getComputedStyle(document.querySelector('.screen-panel .scroller')).backgroundColor`);
+		await browser?.close();
+		browser = undefined;
+		return background;
+	};
+	try {
+		expect(await backgroundFor('[theme]\nname = "gruvbox-light"\n')).toBe('rgb(251, 241, 199)');
+		expect(await backgroundFor('[theme]\nname = "one-light"\n')).toBe('rgb(250, 250, 250)');
+		// A dark theme named in Herdr: the light screen still has a light theme's colours.
+		expect(await backgroundFor('[theme]\nname = "dracula"\n')).toBe('rgb(239, 241, 245)');
+	} finally {
+		rmSync(config, { force: true });
+	}
+});
+
+test('the light theme draws the screen in the Herdr light theme\'s colours with no filter, at once when the theme changes; the key panel stays in the theme', async () => {
 	await visit({ width: 390, height: 844, phone: true, theme: 'light' });
 	await tab.until(`!!document.querySelector('.dock .keys-pane')`, 'the key panel');
-	const look = () => tab.eval<{ filter: string; theme: string; menu: string }>(`({ filter: getComputedStyle(document.querySelector('.screen-panel .scroller')).filter, theme: document.documentElement.dataset.theme, menu: getComputedStyle(document.querySelector('.dock .keys-pane')).filter })`);
-	expect(await look()).toEqual({ filter: 'invert(1) hue-rotate(180deg)', theme: 'light', menu: 'none' });
+	const look = () => tab.eval<{ filter: string; theme: string; background: string; color: string; green: string; menu: string }>(`(() => {
+		const scroller = document.querySelector('.screen-panel .scroller');
+		const style = getComputedStyle(scroller);
+		const green = [...scroller.querySelectorAll('span')].find((span) => span.textContent.startsWith('row'));
+		return { filter: style.filter, theme: document.documentElement.dataset.theme, background: style.backgroundColor, color: style.color, green: green ? getComputedStyle(green).color : '', menu: getComputedStyle(document.querySelector('.dock .keys-pane')).filter };
+	})()`);
+	// The Herdr theme in this test's settings is the default, catppuccin-latte: #eff1f5 and #4c4f69, green #40a02b.
+	expect(await look()).toEqual({ filter: 'none', theme: 'light', background: 'rgb(239, 241, 245)', color: 'rgb(76, 79, 105)', green: 'rgb(64, 160, 43)', menu: 'none' });
 	await shot('phone-line-light');
 	await tab.eval(`document.documentElement.dataset.theme = 'dark'`);
-	expect((await look()).filter).toBe('none');
+	expect(await look()).toMatchObject({ filter: 'none', background: 'rgb(11, 12, 14)', color: 'rgb(212, 212, 212)', green: 'rgb(13, 188, 121)' });
 	await tab.eval(`document.documentElement.dataset.theme = 'light'`);
 	await tab.swipeOn('.dock textarea', -200);
 	await tab.until(`document.querySelector('.dock .keys-pane').getBoundingClientRect().left < 2`, 'the keys');

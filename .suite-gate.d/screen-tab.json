@@ -53,7 +53,10 @@
         "board/src/lib/components/DockSwipe.svelte",
         "board/src/lib/board/swipe.ts",
         "board/tests/unit/swipe.test.ts",
-        "board/tests/browser/dock-swipe.test.ts"
+        "board/tests/browser/dock-swipe.test.ts",
+        "board/src/lib/server/screen-theme.ts",
+        "board/src/routes/+page.server.ts",
+        "board/tests/unit/screen-theme.test.ts"
       ],
       "tests": [
         "board/tests/unit/key-sender.test.ts",
@@ -63,7 +66,8 @@
         "board/tests/browser/screen-layout.test.ts",
         "board/tests/browser/screen-nav-bar.test.ts",
         "board/tests/unit/swipe.test.ts",
-        "board/tests/browser/dock-swipe.test.ts"
+        "board/tests/browser/dock-swipe.test.ts",
+        "board/tests/unit/screen-theme.test.ts"
       ]
     },
     {
