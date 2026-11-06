@@ -22,9 +22,9 @@ const withConfig = (text: string | null) => {
 	return currentScreenTheme();
 };
 
-test("catppuccin-latte: the background is #eff1f5, the text #4c4f69 and the basic colours are the theme's named ones", () => {
+test("catppuccin-latte: the background is the board's #ffffff, the text #4c4f69 and the basic colours are the theme's named ones", () => {
 	const theme = screenTheme('catppuccin-latte');
-	expect(theme.background).toBe('#eff1f5');
+	expect(theme.background).toBe('#ffffff');
 	expect(theme.foreground).toBe('#4c4f69');
 	expect(theme.basic).toHaveLength(16);
 	// red, green, yellow, blue, magenta, cyan.
@@ -33,10 +33,10 @@ test("catppuccin-latte: the background is #eff1f5, the text #4c4f69 and the basi
 	expect(theme.basic.slice(9, 15)).toEqual(theme.basic.slice(1, 7));
 });
 
-test('each light theme Herdr ships has its own background and text, and Herdr\'s other spellings of a name are the same theme', () => {
-	expect(screenTheme('gruvbox-light')).toMatchObject({ background: '#fbf1c7', foreground: '#3c3836' });
-	expect(screenTheme('one-light')).toMatchObject({ background: '#fafafa', foreground: '#383a42' });
-	expect(screenTheme('solarized-light')).toMatchObject({ background: '#fdf6e3', foreground: '#657b83' });
+test('each light theme Herdr ships has its own text colour, all on the board white, and Herdr\'s other spellings of a name are the same theme', () => {
+	expect(screenTheme('gruvbox-light')).toMatchObject({ background: '#ffffff', foreground: '#3c3836' });
+	expect(screenTheme('one-light')).toMatchObject({ background: '#ffffff', foreground: '#383a42' });
+	expect(screenTheme('solarized-light')).toMatchObject({ background: '#ffffff', foreground: '#657b83' });
 	expect(lightThemeName('Latte')).toBe('catppuccin-latte');
 	expect(lightThemeName('light')).toBe('catppuccin-latte');
 	expect(lightThemeName('one_light')).toBe('one-light');
@@ -49,6 +49,6 @@ test('the theme named in the file is used; anything else, a missing or broken fi
 	// A dark theme, an unknown one, none named, a missing file and one that is not TOML.
 	for (const text of ['[theme]\nname = "dracula"\n', '[theme]\nname = "nonesuch"\n', '[other]\nx = 1\n', null, 'this is = = not toml [[[']) {
 		expect(withConfig(text).name).toBe('catppuccin-latte');
-		expect(withConfig(text).background).toBe('#eff1f5');
+		expect(withConfig(text).background).toBe('#ffffff');
 	}
 });

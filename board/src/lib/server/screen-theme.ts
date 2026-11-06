@@ -1,4 +1,4 @@
-// The colours the 終端分頁 uses in the light theme: the background and text colour of the Herdr theme
+// The colours the 終端分頁 uses in the light theme: the board's white background, the text colour of the Herdr theme
 // named in Herdr's own settings file, and the sixteen basic colours taken from that theme's named
 // colours, so a program that draws for a light terminal looks as it does in Herdr. Only the light
 // themes Herdr ships are known; a file that cannot be read, or names another theme, gives
@@ -23,7 +23,6 @@ export type LightThemeName = 'catppuccin-latte' | 'gruvbox-light' | 'one-light' 
 
 /** The named colours of a Herdr theme that make up the screen's. */
 interface Named {
-	background: string;
 	text: string;
 	red: string;
 	green: string;
@@ -37,11 +36,14 @@ interface Named {
 }
 
 const THEMES: Record<LightThemeName, Named> = {
-	'catppuccin-latte': { background: '#eff1f5', text: '#4c4f69', red: '#d20f39', green: '#40a02b', yellow: '#df8e1d', blue: '#1e66f5', mauve: '#8839ef', teal: '#179299', subtext0: '#6c6f85', overlay1: '#8c8fa1', surface1: '#bcc0cc' },
-	'gruvbox-light': { background: '#fbf1c7', text: '#3c3836', red: '#9d0006', green: '#79740e', yellow: '#b57614', blue: '#076678', mauve: '#8f3f71', teal: '#427b58', subtext0: '#504945', overlay1: '#7c6f64', surface1: '#d5c4a1' },
-	'one-light': { background: '#fafafa', text: '#383a42', red: '#e45649', green: '#50a14f', yellow: '#c18401', blue: '#4078f2', mauve: '#a626a4', teal: '#0184bc', subtext0: '#686b77', overlay1: '#686b77', surface1: '#e5e5e6' },
-	'solarized-light': { background: '#fdf6e3', text: '#657b83', red: '#dc322f', green: '#859900', yellow: '#b58900', blue: '#268bd2', mauve: '#d33682', teal: '#2aa198', subtext0: '#839496', overlay1: '#586e75', surface1: '#93a1a1' }
+	'catppuccin-latte': { text: '#4c4f69', red: '#d20f39', green: '#40a02b', yellow: '#df8e1d', blue: '#1e66f5', mauve: '#8839ef', teal: '#179299', subtext0: '#6c6f85', overlay1: '#8c8fa1', surface1: '#bcc0cc' },
+	'gruvbox-light': { text: '#3c3836', red: '#9d0006', green: '#79740e', yellow: '#b57614', blue: '#076678', mauve: '#8f3f71', teal: '#427b58', subtext0: '#504945', overlay1: '#7c6f64', surface1: '#d5c4a1' },
+	'one-light': { text: '#383a42', red: '#e45649', green: '#50a14f', yellow: '#c18401', blue: '#4078f2', mauve: '#a626a4', teal: '#0184bc', subtext0: '#686b77', overlay1: '#686b77', surface1: '#e5e5e6' },
+	'solarized-light': { text: '#657b83', red: '#dc322f', green: '#859900', yellow: '#b58900', blue: '#268bd2', mauve: '#d33682', teal: '#2aa198', subtext0: '#839496', overlay1: '#586e75', surface1: '#93a1a1' }
 };
+
+/** The board's own light background (`--bg` in app.css), so the box matches the page whichever Herdr theme. */
+const LIGHT_BACKGROUND = '#ffffff';
 
 export const DEFAULT_LIGHT_THEME: LightThemeName = 'catppuccin-latte';
 
@@ -67,7 +69,7 @@ export function screenTheme(name: LightThemeName): ScreenTheme {
 	const { red, green, yellow, blue, mauve, teal } = theme;
 	return {
 		name,
-		background: theme.background,
+		background: LIGHT_BACKGROUND,
 		foreground: theme.text,
 		// 0 black: the text colour; 1-6 red, green, yellow, blue, magenta (mauve), cyan (teal); 7 white: overlay1;
 		// 8 bright black: subtext0, a step lighter than black and darker than white; 9-14 the same hues as 1-6;

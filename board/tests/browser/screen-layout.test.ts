@@ -252,7 +252,7 @@ test('phone: the key panel takes the command line\'s place and height without mo
 	await shot('phone-keys-dark');
 });
 
-test('the light theme takes the colours of the Herdr light theme named in Herdr\'s settings, and falls back to catppuccin-latte when it cannot', async () => {
+test('the light theme has the board\'s white background whichever Herdr theme is named, or when none can be read', async () => {
 	const config = join(fixture.dir, 'home', '.config', 'herdr', 'config.toml');
 	mkdirSync(join(fixture.dir, 'home', '.config', 'herdr'), { recursive: true });
 	const backgroundFor = async (text: string) => {
@@ -264,10 +264,10 @@ test('the light theme takes the colours of the Herdr light theme named in Herdr\
 		return background;
 	};
 	try {
-		expect(await backgroundFor('[theme]\nname = "gruvbox-light"\n')).toBe('rgb(251, 241, 199)');
-		expect(await backgroundFor('[theme]\nname = "one-light"\n')).toBe('rgb(250, 250, 250)');
+		expect(await backgroundFor('[theme]\nname = "gruvbox-light"\n')).toBe('rgb(255, 255, 255)');
+		expect(await backgroundFor('[theme]\nname = "one-light"\n')).toBe('rgb(255, 255, 255)');
 		// A dark theme named in Herdr: the light screen still has a light theme's colours.
-		expect(await backgroundFor('[theme]\nname = "dracula"\n')).toBe('rgb(239, 241, 245)');
+		expect(await backgroundFor('[theme]\nname = "dracula"\n')).toBe('rgb(255, 255, 255)');
 	} finally {
 		rmSync(config, { force: true });
 	}
@@ -282,8 +282,8 @@ test('the light theme draws the screen in the Herdr light theme\'s colours with 
 		const green = [...scroller.querySelectorAll('span')].find((span) => span.textContent.startsWith('row'));
 		return { filter: style.filter, theme: document.documentElement.dataset.theme, background: style.backgroundColor, color: style.color, green: green ? getComputedStyle(green).color : '', menu: getComputedStyle(document.querySelector('.dock .keys-pane')).filter };
 	})()`);
-	// The Herdr theme in this test's settings is the default, catppuccin-latte: #eff1f5 and #4c4f69, green #40a02b.
-	expect(await look()).toEqual({ filter: 'none', theme: 'light', background: 'rgb(239, 241, 245)', color: 'rgb(76, 79, 105)', green: 'rgb(64, 160, 43)', menu: 'none' });
+	// The Herdr theme in this test's settings is the default, catppuccin-latte: #ffffff and #4c4f69, green #40a02b.
+	expect(await look()).toEqual({ filter: 'none', theme: 'light', background: 'rgb(255, 255, 255)', color: 'rgb(76, 79, 105)', green: 'rgb(64, 160, 43)', menu: 'none' });
 	await shot('phone-line-light');
 	await tab.eval(`document.documentElement.dataset.theme = 'dark'`);
 	expect(await look()).toMatchObject({ filter: 'none', background: 'rgb(11, 12, 14)', color: 'rgb(212, 212, 212)', green: 'rgb(13, 188, 121)' });
