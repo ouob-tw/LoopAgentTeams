@@ -31,12 +31,11 @@ import type { BoardConfig } from './config.ts';
 import { cannotCreate, createFolder } from './browse.ts';
 import { gitInit, gitRoot } from './git.ts';
 import { listControllers } from './helper.ts';
-import { runningIn, waitToAppear, type Wanted } from './appear.ts';
+import { runningIn, sessionOf, waitToAppear, type Wanted } from './appear.ts';
 import { launchAgent, listAgents } from './hcom.ts';
 import {
 	chooseWorkspace,
 	createWorkspace,
-	listHerdrAgents,
 	moveTab,
 	paneTab,
 	renameTab,
@@ -360,9 +359,6 @@ async function followAgent(board: Board, entry: SentLaunch, hcomName: string, ta
 	void board.refresh();
 }
 
-/** How often Herdr is asked for the session of a new agent it lists without one yet. */
-const SESSION_POLL_MS = 1_000;
-
 /**
  * Make the test device `owner` the owner of the agent its launch started: by the session ID Herdr
  * has for it, waited for until `deadline` while Herdr does not know it yet. The pane is the one
@@ -370,12 +366,7 @@ const SESSION_POLL_MS = 1_000;
  * the device cannot act on the agent: nothing else may name it.
  */
 async function own(config: BoardConfig, owner: string, found: HerdrAgent, deadline: number): Promise<void> {
-	let sessionId = found.sessionId;
-	while (!sessionId && config.now() < deadline) {
-		await new Promise((resolve) => setTimeout(resolve, SESSION_POLL_MS));
-		const listed = await listHerdrAgents(config);
-		if (listed.ok) sessionId = listed.agents.find((agent) => agent.pane === found.pane)?.sessionId ?? null;
-	}
+	const sessionId = await sessionOf(config, found, deadline);
 	if (!sessionId) return;
 	try {
 		addOwned(config.stateDir, owner, sessionId);

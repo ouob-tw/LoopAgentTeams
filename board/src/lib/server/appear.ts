@@ -34,6 +34,22 @@ export function runningIn(wanted: Wanted, hcom: HcomAgent[], herdr: HerdrAgent[]
 	return { hcom: listed, herdr: seen };
 }
 
+/** How often Herdr is asked for the session of a new agent it lists without one yet. */
+const SESSION_POLL_MS = 1_000;
+
+/** The session of the agent just found in its pane: as found, or once Herdr knows it, read again
+ *  until `deadline` (board clock); null when it never did. The pane was opened for this client, so
+ *  the session that shows up in it is the client's. */
+export async function sessionOf(config: BoardConfig, found: HerdrAgent, deadline: number): Promise<string | null> {
+	let sessionId = found.sessionId;
+	while (!sessionId && config.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, SESSION_POLL_MS));
+		const listed = await listHerdrAgents(config);
+		if (listed.ok) sessionId = listed.agents.find((agent) => agent.pane === found.pane)?.sessionId ?? null;
+	}
+	return sessionId;
+}
+
 export type Appearance = { found: HerdrAgent } | { found: null; reason: string };
 
 /** What a wait does on the way: `onPane` gets each pane hcom lists for the client before it runs,

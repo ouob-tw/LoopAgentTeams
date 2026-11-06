@@ -19,7 +19,7 @@ export interface TabTarget {
 	tab: string;
 }
 
-type Outcome = { text: string | null; reason: string | null; acted: boolean };
+type Outcome = { text: string | null; reason: string | null; acted: boolean; forbidden?: boolean };
 
 async function attempt(
 	board: Board,
@@ -35,7 +35,7 @@ async function attempt(
 	} else {
 		// Right before the change: a test device's tab may have changed hands while this waited.
 		const refused = await queuedTabRefusal(board.config, target);
-		outcome = refused ? { text: null, reason: refused, acted: false } : await act(listed.tabs);
+		outcome = refused ? { text: null, reason: refused, acted: false, forbidden: true } : await act(listed.tabs);
 	}
 	return finish(board, target.session, action, outcome);
 }
@@ -65,7 +65,7 @@ async function finish(board: Board, session: string | null, action: 'move' | 're
 		logError = (error as Error).message;
 	}
 	if (session !== null) board.agentActed(session);
-	const status = outcome.reason === null ? 200 : outcome.acted ? 502 : 409;
+	const status = outcome.reason === null ? 200 : outcome.acted ? 502 : outcome.forbidden ? 403 : 409;
 	return { status, body: { ok: entry.ok, reason: outcome.reason, entry, logError } };
 }
 

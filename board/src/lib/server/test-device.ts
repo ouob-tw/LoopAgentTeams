@@ -90,11 +90,19 @@ async function tabRefusal(config: BoardConfig, owned: Set<string>, workspace: un
 export async function testDeviceRefusal(config: BoardConfig, device: Device, method: string, routeId: string | null, request: Request): Promise<Response | null> {
 	if (!device.test || READ_METHODS.has(method)) return null;
 	const rule = routeId === null ? undefined : TEST_DEVICE_RULES[`${method} ${routeId}`];
-	if (rule === 'open') return null;
 	if (rule === undefined || rule === 'deny') return refuse(TEST_DEVICE_DENIED);
-	const body = (await request.clone().json().catch(() => null)) as Record<string, unknown> | null;
+	// The whole body first, for every change: one that ends after a revoke or the login's end acts
+	// no more, a launch included.
+	const text = await request.clone().text().catch(() => null);
 	const now = findDeviceById(config.stateDir, device.id, config.now());
 	if (!now?.test) return json({ error: 'unpaired' }, { status: 401 });
+	if (rule === 'open') return null;
+	let body: Record<string, unknown> | null = null;
+	try {
+		body = text === null ? null : JSON.parse(text);
+	} catch {
+		// Not JSON: names nothing the device started.
+	}
 	const owned = new Set(now.test.owned);
 	if (rule === 'tab') {
 		const reason = await tabRefusal(config, owned, body?.workspace, body?.tab, body?.session ?? null);

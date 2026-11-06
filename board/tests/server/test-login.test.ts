@@ -310,6 +310,25 @@ test('a request whose body is still arriving when the login is revoked does noth
 	finish();
 	expect((await sent).status).toBe(401);
 	expect(lines(join(commandDir, 'herdr-calls.jsonl'))).toEqual([]);
+
+	// A launch, which any test device may make, as well.
+	const launcher = await testDevice('slow-launch');
+	let done!: () => void;
+	const launchBody = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(encoder.encode('{"client":"claude",'));
+			done = () => {
+				controller.enqueue(encoder.encode(`"folder":${JSON.stringify(fixture.dir)},"text":"","gitInit":false,"model":null,"effort":null,"workspace":{"kind":"existing","id":"wA"},"agent":{"tabName":""}}`));
+				controller.close();
+			};
+		}
+	});
+	const launching = fetch(`${fixture.url}/api/launches`, { method: 'POST', headers: { ...json, cookie: launcher.cookie }, body: launchBody, duplex: 'half' } as RequestInit);
+	await sleep(300);
+	expect(fixture.cli('revoke', launcher.id).code).toBe(0);
+	done();
+	expect((await launching).status).toBe(401);
+	expect(lines(join(commandDir, 'hcom-calls.jsonl'))).toEqual([]);
 });
 
 test('a model switch that relaunches its own agent under a new session keeps it its own', async () => {
