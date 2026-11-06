@@ -96,7 +96,7 @@ hcom send @<agent> --intent request --name <自身名稱> --file <訊息檔路�
 完成時回報：成果位置、測試結果（整套測試附閘門紀錄：指紋或 `suite-gate.py status` 查得到的那筆，回報前不再重跑）、未完成事項
 回報對象：<自身名稱>
 溝通語言：Agent 之間的所有溝通（hcom 訊息、交接、回報）一律使用英文
-等待：只有要收訊息時才用 `hcom listen N`，輸出一律完整讀，不導向 `/dev/null`、不只接 `tail`／`head`；listen 回傳的訊息會被標為已讀，丟掉輸出就等於漏收。固定延遲（例如 GUI 截圖前等畫面更新）用 `sleep N`，這條優先於 HCOM 注入說明裡的「不用 sleep」
+等待：只有要收訊息時才用 `hcom listen N`，輸出一律完整讀，不導向 `/dev/null`、不只接 `tail`／`head`；listen 回傳的訊息會被標為已讀，丟掉輸出就等於漏收。固定延遲（例如 GUI 截圖前等畫面更新）用 `sleep N`，N 只取幾秒，這條優先於 HCOM 注入說明裡的「不用 sleep」
 卡住回報：同一個驗收目標連續 3 輪「修正 → 部署 → 驗證」（沒有部署步驟就「修正 → 驗證」）都沒通過，第 3 輪失敗時立刻回報我，附失敗證據與下一個待驗證假設；目標通過或改變就歸零重算
 <僅限實作者與 QA 直接互相協作時，否則刪掉這行：協作收尾：只由 QA <名稱> 回報我。全部通過或觸發卡住回報時，附測過的 commit、實作者的整套測試閘門紀錄與 QA 證據；實作者不另外回報結果>
 <僅限操作使用者已登入瀏覽器的任務，否則刪掉這行：貼上下節「瀏覽器任務的真人驗證」的規則>
@@ -185,7 +185,7 @@ HCOM 0.7.27 / Codex CLI 0.159.3 實測：未附 effort 接回保留原 low，附
 
 - 新啟動（`hcom N <client>`）和帶 client 參數的 `r`／`f` 預設只印 `LAUNCH PREVIEW`，不加 `--go` 什麼都不會發生。不帶參數的 `hcom r <名稱>` 和 `hcom kill` 直接執行，不需要 `--go`。
 - 所有 hcom 指令都要帶 `--name <自身名稱>`，否則身分對不上。
-- `hcom listen` 不是計時器：它回傳的訊息會被標為已讀，輸出要完整讀。固定延遲用 `sleep N`，即使 HCOM 注入的說明寫「不用 sleep」。主機裝有攔截 hook 時，丟掉 listen 輸出的指令會被擋下，見 [references/broadcast-guard.md](references/broadcast-guard.md) 的「丟掉 listen 輸出的攔截」。
+- `hcom listen` 不是計時器：它回傳的訊息會被標為已讀，輸出要完整讀。固定延遲用 `sleep N`，即使 HCOM 注入的說明寫「不用 sleep」。N 只取幾秒：Claude Code 會擋長的 sleep（`sleep 40; echo` 被擋，`sleep 15` 可跑），更長的等待用 `lat-watch.py alarm`。主機裝有攔截 hook 時，丟掉 listen 輸出的指令會被擋下，見 [references/broadcast-guard.md](references/broadcast-guard.md) 的「丟掉 listen 輸出的攔截」。
 - `--dir` 只設程序的工作目錄，不會選 HERDR workspace。
 - 忘記語法先跑 `hcom <指令> --help`，不要猜參數。
 
