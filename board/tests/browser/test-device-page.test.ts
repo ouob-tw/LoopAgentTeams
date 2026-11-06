@@ -55,8 +55,11 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
+/** Counts the page's reads of its own test login terms. */
+const COUNT_DEVICE_READS = `(() => { const fetch = window.fetch; window.deviceReads = 0; window.fetch = (input, init) => { if (String(input) === '/api/device') window.deviceReads++; return fetch(input, init); }; })()`;
+
 async function visit(cookie: string, width: number, search = '') {
-	browser = await launchChrome();
+	browser = await launchChrome({ scripts: [COUNT_DEVICE_READS] });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
@@ -114,4 +117,15 @@ test.skipIf(!CHROME)('a password device shows no mark and keeps every button', a
 	await tab.until(`!!document.querySelector('.detail [data-action="close"]')`, 'the agent page');
 	expect(await tab.eval(MARK)).toBeNull();
 	expect(await tab.eval(AGENT_PAGE)).toMatchObject({ close: false, box: false, note: [] });
+}, 60_000);
+
+test.skipIf(!CHROME)('an idle test device reads its terms once per new snapshot, not in a loop', async () => {
+	await visit(testCookie, 1280);
+	await tab.until(`!!document.querySelector('.test-band')`, 'the test device mark');
+	await new Promise((resolve) => setTimeout(resolve, 3_000));
+	// Nothing changes on this board: the first snapshot's read and perhaps one more.
+	const reads = await tab.eval<number>('window.deviceReads');
+	// Read at least once: the page learns of agents its launches start from these reads.
+	expect(reads).toBeGreaterThanOrEqual(1);
+	expect(reads).toBeLessThanOrEqual(3);
 }, 60_000);
