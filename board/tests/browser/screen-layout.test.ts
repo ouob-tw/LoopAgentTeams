@@ -213,14 +213,14 @@ test('the status card folds into one line on the 畫面 tab, shows and folds aga
 	expect(folded.bar).toContain('展開');
 	expect(folded.height).toBeLessThan(44);
 	const closedBox = (await layout()).boxTop;
-	await tab.eval(`document.querySelector('.detail .bar button').click()`);
+	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
 	await tab.until(`!!document.querySelector('.detail article.profile') && !!document.querySelector('.detail .controls')`, 'the card');
 	expect((await shown()).bar).toContain('收回');
 	await shot('phone-status-unfolded');
-	await tab.eval(`document.querySelector('.detail .bar button').click()`);
+	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
 	await tab.until(`!document.querySelector('.detail article.profile')`, 'folded again');
 	expect((await layout()).boxTop).toBe(closedBox);
-	await tab.eval(`document.querySelector('.detail .bar button').click()`);
+	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
 	await openTab('對話紀錄');
 	await tab.until(`!document.querySelector('.detail .bar') && !!document.querySelector('.detail article.profile')`, 'the card back');
 	// Back on the 畫面 tab it is folded again, not left unfolded.

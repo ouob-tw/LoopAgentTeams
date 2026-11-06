@@ -28,6 +28,14 @@
 		void panelHeight;
 		covers = open && panel?.offsetParent ? panel.offsetParent.clientHeight - panel.offsetTop : 0;
 	});
+	// The box grows or shrinks when the command line goes away or comes back, moving the panel with it.
+	$effect(() => {
+		const box = panel?.offsetParent;
+		if (!box) return;
+		const watch = new ResizeObserver(() => (covers = panel?.offsetParent ? panel.offsetParent.clientHeight - panel.offsetTop : 0));
+		watch.observe(box);
+		return () => watch.disconnect();
+	});
 
 	const blocked = $derived(screenView.blocked);
 	const keep = (event: Event) => event.preventDefault();
@@ -69,6 +77,11 @@
 		font-size: max(1rem, var(--min-font, 0px));
 		font-weight: 700;
 		touch-action: manipulation;
+	}
+	/* With the command line put away, its round button floats at the box's bottom right: the keys sit above it. */
+	:global(.screen-open:has(.dock .reopen)) .round,
+	:global(.screen-open:has(.dock .reopen)) .panel {
+		bottom: calc(44px + 0.8rem + env(safe-area-inset-bottom, 0px) + 0.4rem);
 	}
 	.panel {
 		position: absolute;
