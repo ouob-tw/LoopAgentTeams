@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: refuse `hcom send` calls that would broadcast to every agent."""
+"""PreToolUse hook: refuse `hcom send` calls that would broadcast to every agent,
+and `hcom listen` calls whose output is thrown away."""
 import json
+import re
 import sys
 
 REASON = ('Blocked: `hcom send` without a recipient broadcasts to every agent. '
           'Name who it is for: `hcom send @<name> ...` for one agent, or '
           '`hcom send @<tag>- ...` for one group.')
+LISTEN_REASON = ('Blocked: this `hcom listen` throws its output away. listen marks the '
+                 'messages it returns as read, so they are lost. To wait for a message, '
+                 'run `hcom listen N` and read all of its output. For a fixed delay (for '
+                 'example before a GUI screenshot), run `sleep N`; it does not touch HCOM '
+                 'messages.')
+TRUNCATORS = {'tail', 'head', 'wc'}
 OPERATORS = ('<<<', '<<-', '&&', '||', ';;', '|&', '&>', '>>', '>&', '<&', '<<',
              ';', '|', '&', '(', ')', '\n', '<', '>')
 REDIRECTS = {'<<<', '&>', '>>', '>&', '<&', '<', '>'}
@@ -71,12 +79,20 @@ def substitutions(text):
     return found
 
 
+class Command(list):
+    """A simple command's words, its redirects as (fd, operator, target) and the
+    command whose output is piped into it."""
+    redirects = ()
+    upstream = None
+
+
 def commands(text):
     """Split shell text into simple commands, including ones run by substitutions."""
-    found, words = [], []
+    found, words, redirects = [], [], []
     word, quoted, quote = None, False, None
     drop_next, heredoc_next, heredocs = False, None, []
     herestring_next, herestrings, line_shell = False, [], False  # per physical line
+    piped_from = None
     i = 0
 
     def finish_word():
@@ -87,18 +103,24 @@ def commands(text):
             heredocs.append((word, quoted, heredoc_next))
         elif herestring_next:
             herestrings.append(word)
-        elif not drop_next:
+        elif drop_next:
+            redirects.append(drop_next + (word,))
+        else:
             words.append(word)
         word, quoted, drop_next, heredoc_next = None, False, False, None
         herestring_next = False
 
-    def finish_command():
-        nonlocal words, drop_next, line_shell
+    def finish_command(pipe=False):
+        nonlocal words, drop_next, line_shell, redirects, piped_from
         finish_word()
         drop_next = False
         if words:
-            found.append(words)
+            command = Command(words)
+            command.redirects, command.upstream = redirects, piped_from
+            found.append(command)
             line_shell = line_shell or runs_shell(words)
+            piped_from = command if pipe else None
+            redirects = []
         words = []
 
     def finish_line():
@@ -152,9 +174,10 @@ def commands(text):
                 word = (word or '') + c
                 i += 1
                 continue
+            fd = ''
             if op in REDIRECTS or op in ('<<', '<<-'):
                 if word is not None and word.isdigit() and not quoted:
-                    word = None
+                    word, fd = None, word
             finish_word()
             i += len(op)
             if op in ('<<', '<<-'):
@@ -162,9 +185,9 @@ def commands(text):
             elif op == '<<<':
                 herestring_next = True
             elif op in REDIRECTS:
-                drop_next = True
+                drop_next = (fd, op)
             else:
-                finish_command()
+                finish_command(pipe=op in ('|', '|&'))
             if op == '\n':
                 finish_line()
                 for delimiter, literal, kind in heredocs:
@@ -212,6 +235,55 @@ def nested_broadcasts(text):
         return 'hcom' in text and 'send' in text
 
 
+def hcom_command(following):
+    """The hcom subcommand and its arguments past global options, and whether
+    --thread was among those options."""
+    command, thread = following, False
+    while command[:1] and command[0].startswith('-'):
+        thread = thread or command[0].split('=', 1)[0] == '--thread'
+        takes_value = '=' not in command[0] and (command[0] in VALUE_OPTIONS or (
+            command[1:2] and command[1] != 'send' and not command[1].startswith('-')))
+        command = command[2:] if takes_value else command[1:]
+    return command, thread
+
+
+def listens(words):
+    """True when the command runs `hcom listen`, directly or behind a wrapper."""
+    words = executable(words)
+    if words[0].rsplit('/', 1)[-1] not in WRAPPERS | {'hcom'}:
+        return False
+    for index, word in enumerate(words):
+        if word.rsplit('/', 1)[-1] == 'hcom':
+            return hcom_command(words[index + 1:])[0][:1] == ['listen']
+    return False
+
+
+def runs_listen(word):
+    """True when the word holds a $(...) or `...` that runs `hcom listen`."""
+    return any(listens(command) for command in substitutions(word))
+
+
+def drops_listen_output(command, text):
+    """True when `hcom listen` output goes to /dev/null, into tail/head/wc, or into
+    a $(...) whose result nothing reads."""
+    if listens(command):
+        return any(target == '/dev/null' and (op == '&>' or (
+            op in ('>', '>>', '>&') and fd in ('', '1')))
+            for fd, op, target in command.redirects)
+    if command.upstream is not None and listens(command.upstream):
+        return executable(command)[0].rsplit('/', 1)[-1] in TRUNCATORS
+    words = executable(command)
+    if words[0] in (':', 'true'):
+        return any(runs_listen(word) for word in words[1:])
+    if words == ['']:  # only assignments: the result is unused when never expanded
+        for word in command:
+            name, _, value = word.partition('=')
+            if runs_listen(value) and not re.search(
+                    r'\$\{?' + re.escape(name) + r'(?![A-Za-z0-9_])', text):
+                return True
+    return False
+
+
 def send_broadcasts(options):
     index = 0
     while index < len(options):
@@ -235,12 +307,7 @@ def broadcasts(words):
     for index, word in enumerate(words):
         name = word.rsplit('/', 1)[-1]
         following = words[index + 1:]
-        command, thread = (following if name == 'hcom' else []), False
-        while command[:1] and command[0].startswith('-'):  # global options before `send`
-            thread = thread or command[0].split('=', 1)[0] == '--thread'
-            takes_value = '=' not in command[0] and (command[0] in VALUE_OPTIONS or (
-                command[1:2] and command[1] != 'send' and not command[1].startswith('-')))
-            command = command[2:] if takes_value else command[1:]
+        command, thread = hcom_command(following) if name == 'hcom' else ([], False)
         if command[:1] == ['send']:
             # The rest of the line is this send's options and message text.
             return not thread and send_broadcasts(command[1:])
@@ -258,17 +325,22 @@ def main():
         command = json.load(sys.stdin).get('tool_input', {}).get('command', '')
     except (ValueError, AttributeError):
         return 0
+    discarded = False
     try:
         if isinstance(command, list):
             found = [[str(word) for word in command]]
         else:
             found = commands(command) if isinstance(command, str) else []
+            discarded = any(drops_listen_output(words, command) for words in found)
         blocked = any(broadcasts(words) for words in found)
     except Exception:  # unparseable text or a hook bug must not let a send through
         text = ' '.join(map(str, command)) if isinstance(command, list) else str(command)
         blocked = 'hcom' in text and 'send' in text
     if blocked:
         print(REASON, file=sys.stderr)
+        return 2
+    if discarded:
+        print(LISTEN_REASON, file=sys.stderr)
         return 2
     return 0
 
