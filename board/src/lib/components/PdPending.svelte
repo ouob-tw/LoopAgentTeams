@@ -300,7 +300,7 @@
 									onpointerup={explainer.release}
 									onpointercancel={explainer.release}
 									oncontextmenu={(event) => event.preventDefault()}><span class="who">{caller.who}</span><span class="mark">{caller.mark}</span></span
-								>{#if summaryText(item)} <code>{summaryText(item)}</code>{/if}
+								>{#if summaryText(item)}{' '}<code>{summaryText(item)}</code>{/if}
 								<span id="pd-caller-{item.id}" hidden>{callerNote(item)}</span>
 							</summary>
 							<dl>
