@@ -435,7 +435,7 @@
 	></div>
 {/snippet}
 
-<div class="page" class:screen-open={screenView.agentId !== null} class:screen-phone={screenView.agentId !== null && screenView.phone} style:--dock-h="{dockHeight}px" style:--keyboard="{keyboard}px">
+<div class="page" class:screen-open={screenView.agentId !== null} class:screen-phone={screenView.phone} style:--dock-h="{dockHeight}px" style:--keyboard="{keyboard}px">
 	<div class="shell" class:viewing={view !== null}>
 		<nav class="roster">
 			<div class="folded">

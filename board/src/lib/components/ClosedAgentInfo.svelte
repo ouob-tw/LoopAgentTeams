@@ -6,6 +6,7 @@
 	import { stoppedText, type ClosedAgent } from '#lib/board/closed-agents.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import ClosedResume from './ClosedResume.svelte';
+	import ScreenBar from './ScreenBar.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import RecordTabs from './RecordTabs.svelte';
 	import ScreenPanel from './ScreenPanel.svelte';
@@ -31,8 +32,18 @@
 		{ id: 'screen', label: '畫面', count: null }
 	] as const;
 	let tab = $state<(typeof TABS)[number]['id']>('transcript');
+	/** On the 畫面 tab, which has no screen to show, the card and the 接回 below it fold into one line like a running agent's. */
+	const folded = $derived(tab === 'screen');
+	let unfolded = $state(false);
+	$effect(() => {
+		if (!folded) unfolded = false;
+	});
 </script>
 
+{#if folded}
+	<ScreenBar status="closed" text="已關閉" {name} warnings={[]} bind:unfolded />
+{/if}
+{#if !folded || unfolded}
 <article class="profile" data-closed-agent={agent.id}>
 	<header>
 		<span class="status"><StatusMark status="closed" decorative />已關閉</span>
@@ -56,6 +67,7 @@
 </article>
 
 <ClosedResume {agent} {controllers} />
+{/if}
 
 <RecordTabs tabs={TABS} bind:tab ariaLabel="Agent 的紀錄" translateTab="transcript">
 	{#snippet panel(id)}
