@@ -64,11 +64,13 @@ test('a fixture and a Chrome start while ports 7110–7201 are taken', async () 
 	}
 }, 60_000);
 
-/** Connections strangers made to a held port: `close` waits for them, so they are dropped first. */
+/** Connections strangers made to a held port: `close` waits for them, so they are dropped. */
 const sockets = new Set<Socket>();
 const closeAll = (servers: Server[]) => {
+	// Closing first stops new connections at once; then the ones made are dropped.
+	const closed = Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
 	for (const socket of sockets) socket.destroy();
-	return Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+	return closed;
 };
 
 test.skipIf(!CHROME)('a browser test whose beforeAll fails leaves no Chrome behind', async () => {
