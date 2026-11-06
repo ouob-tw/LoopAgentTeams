@@ -5,7 +5,7 @@
 // Set PD_SHOTS_DIR to also save screenshots there. Skipped when the host has no Chrome.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
 
@@ -61,8 +61,11 @@ beforeAll(async () => {
 	fixture = await startFixture({ env: { LAT_BOARD_PD_SECONDS: '1' } });
 	cookie = await fixture.login();
 }, 30_000);
-afterAll(async () => {
+afterEach(async () => {
 	await browser?.close();
+	browser = undefined;
+});
+afterAll(async () => {
 	await fixture?.cleanup();
 });
 
