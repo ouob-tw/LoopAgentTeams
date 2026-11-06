@@ -1,4 +1,4 @@
-// The colours the 畫面分頁 uses in the light theme: the background and text colour of the Herdr theme
+// The colours the 終端分頁 uses in the light theme: the background and text colour of the Herdr theme
 // named in Herdr's own settings file, and the sixteen basic colours taken from that theme's named
 // colours, so a program that draws for a light terminal looks as it does in Herdr. Only the light
 // themes Herdr ships are known; a file that cannot be read, or names another theme, gives

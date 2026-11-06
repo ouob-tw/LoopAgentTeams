@@ -183,7 +183,7 @@ for (const width of [1280, 390]) {
 		await openAgent('s-lead');
 		await tab.until(leadPage, "the controller's header");
 		expect(await tab.eval(`document.querySelector('[data-middle="agents"]').getAttribute('aria-pressed')`)).toBe('true');
-		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '畫面', '回報', '工作總表', '送出紀錄', '預先授權', '操作紀錄']);
+		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '終端', '回報', '工作總表', '送出紀錄', '預先授權', '操作紀錄']);
 		const detail = await tab.eval<string>(`document.querySelector('.detail').innerText`);
 		// Its phase, its questions' bars and its close.
 		expect(detail).toContain(SAID.noReply);
@@ -215,13 +215,13 @@ for (const width of [1280, 390]) {
 		await openAgent('s-luna');
 		await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'moon'`, "the idle controller's header");
 		expect(await tab.eval<string>(`document.querySelector('.detail .profile').innerText`)).toContain('閒置');
-		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '畫面', '回報', '工作總表', '送出紀錄', '預先授權', '操作紀錄']);
+		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '終端', '回報', '工作總表', '送出紀錄', '預先授權', '操作紀錄']);
 		await tab.until(`document.querySelectorAll('.history li.report article').length === 1`, 'its report card');
 
 		// An ordinary agent's page is as it was.
 		await openAgent('s-plain');
 		await tab.until(`document.querySelector('#agent-panel-transcript')?.innerText.includes('測試都過了。')`, "the agent's conversation");
-		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '畫面', '操作紀錄']);
+		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '終端', '操作紀錄']);
 		// The translation button ends the tab row on 對話紀錄 only.
 		expect(await tab.eval(`document.querySelector('.detail .tabbar > button.translate')?.getAttribute('aria-pressed')`)).toBe('false');
 		await tab.eval(`document.querySelector('#agent-tab-log').click()`);
@@ -247,10 +247,10 @@ for (const width of [1280, 390]) {
 	}, 60_000);
 }
 
-test.skipIf(!CHROME)('on the 畫面 tab the header, its close and its questions fold into one line with a mark for the questions; 展開 shows them, another tab brings them back', async () => {
+test.skipIf(!CHROME)('on the 終端 tab the header, its close and its questions fold into one line with a mark for the questions; 展開 shows them, another tab brings them back', async () => {
 	await visit(390, '?agent=s-lead');
 	await tab.until(leadPage, "the controller's header");
-	await tab.eval(click('.detail [role="tablist"]', '畫面'));
+	await tab.eval(click('.detail [role="tablist"]', '終端'));
 	await tab.until(`!!document.querySelector('.detail .bar') && !document.querySelector('.detail .profile, .detail .questions, .detail [data-action="close"]')`, 'the folded line');
 	expect(await tab.eval<string>(`document.querySelector('.detail .bar').innerText`)).toContain('2 題待決');
 	await tab.eval(click('.detail .bar', '展開'));
@@ -463,7 +463,7 @@ for (const width of [1280, 390]) {
 test.skipIf(!CHROME)("the controller's information page is as it was: no operation record, reports as marked text", async () => {
 	await visit(1280, '?controller=s-lead');
 	await tab.until(`${leadPage} && document.querySelectorAll('.history li.asking article').length === 2`, 'the information page');
-	expect(await tab.eval(TABS)).toEqual(['對話紀錄', '畫面', '回報', '工作總表', '送出紀錄', '預先授權']);
+	expect(await tab.eval(TABS)).toEqual(['對話紀錄', '終端', '回報', '工作總表', '送出紀錄', '預先授權']);
 	expect(await tab.eval(`!!document.querySelector('.history li.report')`)).toBe(false);
 	expect(await tab.eval(`document.querySelectorAll('.history li.said.reported').length`)).toBe(2);
 	expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`)).toBe(false);
@@ -570,7 +570,7 @@ test.skipIf(!CHROME)('a controller whose model switch is unfinished stays in the
 	await tab.until(`${card('s-clio')}?.innerText.includes('切換未完成')`, 'the unfinished switch in the list');
 	await tab.eval(`${card('s-clio')}.click()`);
 	await tab.until(`document.querySelector('.detail')?.innerText.includes('繼續切換或放棄切換')`, 'only continue or give up');
-	expect(await tab.eval(TABS)).toEqual(['對話紀錄', '畫面', '操作紀錄']);
+	expect(await tab.eval(TABS)).toEqual(['對話紀錄', '終端', '操作紀錄']);
 	expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .detail .questions')`)).toBe(false);
 	await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`, "the agent's model picker with its continue and give up");
 }, 60_000);

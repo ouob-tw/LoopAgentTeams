@@ -2,7 +2,7 @@
 // tests: each test looks only for its own. Waits are bounded conditions, not counts in a fixed time,
 // so a loaded host only makes them slower; every page a test opened is closed after it, so a test
 // that fails leaves no screen reader behind for the next one.
-// The 畫面分頁 on the server: the pane's screen pushed to the pages that have the tab open, secrets
+// The 終端分頁 on the server: the pane's screen pushed to the pages that have the tab open, secrets
 // masked first, read only while one has; keys typed into the pane in order, stopped at the first that
 // failed or may not have arrived, and never sent again; the 恢復畫面 after such a request; and the
 // operation record's one entry for presses in a row. Herdr and hcom are fakes.
@@ -74,7 +74,7 @@ afterEach(async () => {
 	await Promise.all([...open].map((close) => close()));
 });
 
-/** A page's open 畫面分頁: every screen update its stream carried, as raw data too. */
+/** A page's open 終端分頁: every screen update its stream carried, as raw data too. */
 function follow(session: string, on: Fixture = fixture, as: string = cookie) {
 	const updates: ScreenUpdate[] = [];
 	const raw: string[] = [];

@@ -1,4 +1,4 @@
-// The 畫面字體 setting: the 畫面分頁's text takes the chosen size (10 to 28px, 16px by default) whatever
+// The 終端字體 setting: the 終端分頁's text takes the chosen size (10 to 28px, 16px by default) whatever
 // 整體大小 and 最小字體 say, at once, kept on the device across a reload, and it lines up still. On a
 // phone it is set from another tab and holds on coming back. `SCREEN_TAB_SHOTS` names a folder for screenshots.
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -54,7 +54,7 @@ async function visit({ width, height, phone, scripts = [] }: { width: number; he
 	if (phone) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 	for (const source of scripts) await tab.send('Page.addScriptToEvaluateOnNewDocument', { source });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-plain` });
-	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].some((tab) => tab.firstChild.textContent.trim() === '畫面')`, 'the page');
+	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].some((tab) => tab.firstChild.textContent.trim() === '終端')`, 'the page');
 	await sleep(500);
 }
 async function shot(name: string) {
@@ -64,7 +64,7 @@ async function shot(name: string) {
 }
 const openTab = (label: string) => tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '${label}').click()`);
 const openScreen = async () => {
-	await openTab('畫面');
+	await openTab('終端');
 	await tab.until(`!!document.querySelector('.screen-panel pre')`, 'the screen');
 };
 const font = () => tab.eval<number>(`parseFloat(getComputedStyle(document.querySelector('.screen-panel pre')).fontSize)`);
@@ -72,8 +72,8 @@ const font = () => tab.eval<number>(`parseFloat(getComputedStyle(document.queryS
 const otherFont = () => tab.eval<number>(`parseFloat(getComputedStyle(document.querySelector('.detail [role=tab]')).fontSize)`);
 const settings = (action: string) => tab.eval(`(() => { const dialog = document.querySelector('dialog'); if (!dialog.open) document.querySelector('[aria-label="設定"]').click(); ${action} })()`);
 const press = (label: string, times = 1) => settings(`for (let i = 0; i < ${times}; i++) dialog.querySelector('[aria-label="${label}"]').click();`);
-const reset = () => settings(`[...dialog.querySelectorAll('[aria-label="畫面字體"] button')].find((button) => button.textContent.trim() === '還原預設').click();`);
-const shown = () => tab.eval<string>(`document.querySelector('dialog [aria-label="畫面字體"] output').textContent`);
+const reset = () => settings(`[...dialog.querySelectorAll('[aria-label="終端字體"] button')].find((button) => button.textContent.trim() === '還原預設').click();`);
+const shown = () => tab.eval<string>(`document.querySelector('dialog [aria-label="終端字體"] output').textContent`);
 const closeSettings = () => tab.eval(`document.querySelector('dialog').close()`);
 
 /** Rows still line up: each row is one line tall, 1.2 × the size. */
@@ -94,7 +94,7 @@ test('computer: 10, 16 and 28px apply at once beside 整體大小 and 最小字�
 	expect(await otherFont()).toBeGreaterThanOrEqual(24);
 	await settings('');
 	expect(await shown()).toBe('16px');
-	await press('畫面字調小', 6);
+	await press('終端字調小', 6);
 	await sleep(100);
 	expect(await shown()).toBe('10px');
 	expect(await font()).toBe(10);
@@ -104,20 +104,20 @@ test('computer: 10, 16 and 28px apply at once beside 整體大小 and 最小字�
 	await reset();
 	await sleep(100);
 	expect(await font()).toBe(16);
-	await press('畫面字調大', 12);
+	await press('終端字調大', 12);
 	await sleep(100);
 	expect(await shown()).toBe('28px');
 	expect(await font()).toBe(28);
 	expect((await lines()).pitch).toBeCloseTo(33.6, 0);
 	// At the end of its range the button stops.
-	expect(await tab.eval<boolean>(`document.querySelector('dialog [aria-label="畫面字調大"]').disabled`)).toBe(true);
+	expect(await tab.eval<boolean>(`document.querySelector('dialog [aria-label="終端字調大"]').disabled`)).toBe(true);
 	await closeSettings();
 	await shot('computer-font-28');
 	// The other text kept its own size.
 	expect(await otherFont()).toBeGreaterThanOrEqual(24);
 	// Kept on this device across a reload.
 	await tab.send('Page.reload');
-	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].some((tab) => tab.firstChild.textContent.trim() === '畫面')`, 'the page');
+	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].some((tab) => tab.firstChild.textContent.trim() === '終端')`, 'the page');
 	await sleep(500);
 	await openScreen();
 	expect(await font()).toBe(28);
@@ -143,7 +143,7 @@ test('computer: the box still fills the height, slides sideways and the bottom r
 	expect(at.pageWide).toBeLessThanOrEqual(at.viewport);
 }, 30_000);
 
-test('phone: set from the 對話紀錄 tab, it holds on coming back to the 畫面 tab, whose top bar is gone', async () => {
+test('phone: set from the 對話紀錄 tab, it holds on coming back to the 終端 tab, whose top bar is gone', async () => {
 	await visit({ width: 390, height: 844, phone: true });
 	await openScreen();
 	expect(await font()).toBe(16);
@@ -151,7 +151,7 @@ test('phone: set from the 對話紀錄 tab, it holds on coming back to the 畫�
 	await openTab('對話紀錄');
 	await tab.until(`!!document.querySelector('.detail .topbar') && getComputedStyle(document.querySelector('.detail .topbar')).display !== 'none'`, 'the top bar');
 	await settings('');
-	await press('畫面字調大', 4);
+	await press('終端字調大', 4);
 	expect(await shown()).toBe('20px');
 	await closeSettings();
 	await openScreen();

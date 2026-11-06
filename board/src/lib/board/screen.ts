@@ -1,4 +1,4 @@
-// The 畫面分頁: what the server pushes of a pane's screen, the key presses a page sends into the
+// The 終端分頁: what the server pushes of a pane's screen, the key presses a page sends into the
 // pane and how each fared, the 按鍵面板's keys, and the screen's colour codes read into styled runs.
 import type { AgentActionResponse } from './agent-actions.ts';
 
@@ -24,9 +24,9 @@ export interface KeysResponse extends AgentActionResponse {
 
 /** What a page shows when a press failed or may not have arrived. */
 export const KEYS_UNSURE_TEXT = '按鍵可能沒送到，請看畫面確認';
-/** What the 畫面分頁 shows for an agent Herdr does not list. */
+/** What the 終端分頁 shows for an agent Herdr does not list. */
 export const SCREEN_NOT_LISTED_TEXT = 'Herdr 的清單上找不到它的窗格，看不到畫面。';
-/** What a closed agent's 畫面分頁 shows. */
+/** What a closed agent's 終端分頁 shows. */
 export const SCREEN_CLOSED_TEXT = '已關閉，先接回才能看畫面';
 
 /** The 按鍵面板's keys: two rows at the left, the four arrows as a cross at the right. */
@@ -178,7 +178,7 @@ export interface Run {
 }
 
 /** xterm's 16 colours: the dark theme's, and what the light theme's stand in for when it names none. The
- *  screen draws them as `var(--ansi-N)`, so the theme decides them (the 畫面分頁's styles). */
+ *  screen draws them as `var(--ansi-N)`, so the theme decides them (the 終端分頁's styles). */
 export const BASIC = ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'];
 const basic = (n: number) => `var(--ansi-${n})`;
 

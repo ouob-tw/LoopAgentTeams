@@ -1,4 +1,4 @@
-// The light colours the 畫面分頁 takes from the Herdr theme named in Herdr's settings file.
+// The light colours the 終端分頁 takes from the Herdr theme named in Herdr's settings file.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -99,9 +99,9 @@ export interface BoardConfig {
 	statusPollTimeoutMs: number;
 	/** How soon after a send or an interrupt from the board the statuses are read once more. */
 	statusAfterActionMs: number;
-	/** How often an open 畫面分頁's screen is read. */
+	/** How often an open 終端分頁's screen is read. */
 	screenMs: number;
-	/** The current time in milliseconds. Read state, archiving and the 畫面分頁's recovery bookkeeping use this, never `Date.now()`. */
+	/** The current time in milliseconds. Read state, archiving and the 終端分頁's recovery bookkeeping use this, never `Date.now()`. */
 	now(): number;
 }
 

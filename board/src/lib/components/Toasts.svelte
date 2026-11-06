@@ -88,7 +88,7 @@
 			top: 4rem;
 			bottom: auto;
 		}
-		/* With the bar hidden on a phone's 畫面分頁 they sit at the very top, the folded card's "←" and
+		/* With the bar hidden on a phone's 終端分頁 they sit at the very top, the folded card's "←" and
 		   "展開" at its two ends kept clear. */
 		:global(.screen-phone:has(.screen-bar)) .toasts {
 			top: 0.3rem;

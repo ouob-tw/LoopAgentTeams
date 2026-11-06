@@ -3,7 +3,7 @@
 	// without a name to the controller that is open. The recipient's model and effort sit beside the
 	// send button. An idle or closed controller is woken instead. A pop-up behind the options button
 	// holds the permission switch of the open agent, or of the page's controller as Herdr lists it, a
-	// wake's other options while waking, and on a computer while a 畫面分頁 is shown its 組合鍵
+	// wake's other options while waking, and on a computer while a 終端分頁 is shown its 組合鍵
 	// (ComboKeys); a phone shows the button only when it holds something. A phone can put the line
 	// away behind a floating button, to read more of the page; what was typed
 	// stays, also across a reload. While an agent's page is open, a line without a name goes to that

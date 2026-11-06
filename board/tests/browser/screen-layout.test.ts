@@ -1,4 +1,4 @@
-// How the 畫面分頁 is laid out, in a real browser with fake Herdr and hcom: text at the board's size,
+// How the 終端分頁 is laid out, in a real browser with fake Herdr and hcom: text at the board's size,
 // the box from the tabs to the command line, its bottom line at its bottom, long lines sliding inside
 // it and staying slid through updates, the status card folded into one line, the 按鍵面板 taking the
 // command line's place, and the light theme. `SCREEN_TAB_SHOTS` names a folder to save each step's screenshot in.
@@ -64,7 +64,7 @@ async function visit({ width, height, phone, theme }: { width: number; height: n
 	if (theme) await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('lat-board-theme', '${theme}')` });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-plain` });
 	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
-	await openTab('畫面');
+	await openTab('終端');
 	await tab.until(`!!document.querySelector('.screen-panel pre')`, 'the screen');
 }
 async function shot(name: string) {
@@ -204,7 +204,7 @@ test('a screen shorter than the box has its bottom line at the bottom and blank 
 	await shot('computer-short-screen');
 });
 
-test('the status card folds into one line on the 畫面 tab, shows and folds again on 展開, and is back on another tab', async () => {
+test('the status card folds into one line on the 終端 tab, shows and folds again on 展開, and is back on another tab', async () => {
 	await visit({ width: 390, height: 844, phone: true });
 	const shown = () => tab.eval<{ card: boolean; controls: boolean; bar: string; height: number }>(`(() => { const bar = document.querySelector('.detail .bar'); return { card: !!document.querySelector('.detail article.profile'), controls: !!document.querySelector('.detail .controls'), bar: bar?.innerText ?? '', height: bar?.getBoundingClientRect().height ?? 0 }; })()`);
 	const folded = await shown();
@@ -223,8 +223,8 @@ test('the status card folds into one line on the 畫面 tab, shows and folds aga
 	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
 	await openTab('對話紀錄');
 	await tab.until(`!document.querySelector('.detail .bar') && !!document.querySelector('.detail article.profile')`, 'the card back');
-	// Back on the 畫面 tab it is folded again, not left unfolded.
-	await openTab('畫面');
+	// Back on the 終端 tab it is folded again, not left unfolded.
+	await openTab('終端');
 	await tab.until(`!!document.querySelector('.detail .bar') && !document.querySelector('.detail article.profile')`, 'folded on returning');
 });
 

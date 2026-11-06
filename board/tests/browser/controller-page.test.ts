@@ -99,7 +99,7 @@ test.skipIf(!CHROME)('the header names the controller and its phase; the details
 test.skipIf(!CHROME)('the tabs: conversation first, report count, switched by click and by the arrow keys, wrapping round', async () => {
 	await visit(1280);
 	const tabs = await tab.eval<{ text: string; selected: boolean }[]>(TABS);
-	expect(tabs.map((entry) => entry.text.replace(/ \d+$/, ''))).toEqual(['對話紀錄', '畫面', '回報', '工作總表', '送出紀錄', '預先授權']);
+	expect(tabs.map((entry) => entry.text.replace(/ \d+$/, ''))).toEqual(['對話紀錄', '終端', '回報', '工作總表', '送出紀錄', '預先授權']);
 	expect(tabs[2].text).toBe('回報 2');
 	expect(tabs.map((entry) => entry.selected)).toEqual([true, false, false, false, false, false]);
 	expect(await tab.eval(SHOWN)).toEqual(['panel-transcript']);

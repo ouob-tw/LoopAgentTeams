@@ -15,7 +15,7 @@ const isInput = (value: unknown): value is KeyInput => {
 	return typeof input.text === 'string' && input.text.length > 0 && input.text.length <= MAX_TEXT;
 };
 
-/** Type key presses and text from the 畫面分頁 into an agent's pane, in order; `recovery` names
+/** Type key presses and text from the 終端分頁 into an agent's pane, in order; `recovery` names
  *  this request's 恢復畫面 should not all be typed in. Answers how each fared, with its operation
  *  record entry. */
 export const POST: RequestHandler = async ({ request }) => {

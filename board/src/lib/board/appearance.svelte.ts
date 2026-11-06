@@ -1,4 +1,4 @@
-// This device's appearance: theme, overall size, smallest text size, the 畫面分頁 text size, whether the roster is folded and the two
+// This device's appearance: theme, overall size, smallest text size, the 終端分頁 text size, whether the roster is folded and the two
 // column widths. Each is a variable or attribute on the root element, which the styles read, and is remembered
 // in the browser; the startup script in `src/app.html` puts it back before first paint. Only what the settings
 // dialog shows is also kept as state here. How the usage line reads is not this device's: the board keeps it for
@@ -47,7 +47,7 @@ class Appearance {
 	scale = $state<number>(SCALE.base);
 	/** Smallest text size in px; null when there is no floor. */
 	minFont = $state<number | null>(null);
-	/** The 畫面分頁's text size in px. */
+	/** The 終端分頁's text size in px. */
 	screenFont = $state<number>(SCREEN_FONT.base);
 	/** As the board last said; 詳細 until it does. */
 	usageStyle = $state<UsageStyle>('detailed');

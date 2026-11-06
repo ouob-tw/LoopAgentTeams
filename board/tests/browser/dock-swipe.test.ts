@@ -1,4 +1,4 @@
-// The phone's dock while a 畫面分頁 is open: a swipe left on the command line brings the 按鍵面板 in
+// The phone's dock while a 終端分頁 is open: a swipe left on the command line brings the 按鍵面板 in
 // its place, a swipe right brings the line back. In a real browser with touch emulated, finger moves
 // sent as touch events: the panel follows one to one, goes past a quarter of the width or a quick
 // flick (the ticket's numbers, also pinned in unit/swipe), a mostly vertical drag does nothing, the box while it has the
@@ -58,9 +58,9 @@ async function visit() {
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
 	await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-plain` });
-	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].some((tab) => tab.firstChild.textContent.trim() === '畫面')`, 'the page');
+	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].some((tab) => tab.firstChild.textContent.trim() === '終端')`, 'the page');
 	await sleep(500);
-	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '畫面').click()`);
+	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端').click()`);
 	await tab.until(`!!document.querySelector('.screen-panel pre') && !!document.querySelector('.dock .keys-pane')`, 'the screen');
 }
 async function shot(name: string) {

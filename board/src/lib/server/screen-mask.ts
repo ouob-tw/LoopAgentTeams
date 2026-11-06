@@ -1,4 +1,4 @@
-// What the 畫面分頁 hides of a pane's screen before it leaves the server: strings that look like
+// What the 終端分頁 hides of a pane's screen before it leaves the server: strings that look like
 // passwords and keys, each character replaced with marks as wide as it shows, so the colour codes
 // and every line's width stay as they were. Judged by how the strings look alone: a password that
 // looks like ordinary text is missed, and an ordinary string that looks like a key is hidden.

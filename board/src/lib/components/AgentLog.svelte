@@ -1,6 +1,6 @@
 <script lang="ts">
 	// What the user did to this agent from the board, on any logged-in device: text sent to it, key
-	// presses from its 畫面分頁 (how many of each kind, never the text), interrupts and closes that did not close it, moves and renames of its Herdr tab, resumes from
+	// presses from its 終端分頁 (how many of each kind, never the text), interrupts and closes that did not close it, moves and renames of its Herdr tab, resumes from
 	// the 已關閉 section, each made or refused, and its model switches as they stand now, given up ones included.
 	import { AGENT_ACTION_LABEL, type AgentAction } from '#lib/board/agent-actions.ts';
 	import { AGENT_SWITCH_STATE_TEXT, choiceText, settingsText, type SwitchView } from '#lib/board/models.ts';

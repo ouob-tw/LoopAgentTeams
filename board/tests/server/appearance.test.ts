@@ -264,5 +264,5 @@ test('the startup script puts back the screen text size within its limits and ig
 
 test('the settings dialog offers the screen text size with a way back to the default', async () => {
 	const html = await page();
-	for (const text of ['畫面字體', 'aria-label="畫面字調小"', 'aria-label="畫面字調大"']) expect(html).toContain(text);
+	for (const text of ['終端字體', 'aria-label="終端字調小"', 'aria-label="終端字調大"']) expect(html).toContain(text);
 });

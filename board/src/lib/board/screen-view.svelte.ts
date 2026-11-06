@@ -1,4 +1,4 @@
-// The 畫面分頁 open on this page, shared by its panel, the 按鍵面板 and the command line: whose
+// The 終端分頁 open on this page, shared by its panel, the 按鍵面板 and the command line: whose
 // screen it shows, the latest update, whether keys may be sent now, and whether this is a phone.
 // A phone, or a tablet, is a device whose main pointer is not a fine one that can hover, whatever
 // the width of its screen. Each agent keeps its sender while the page is open, so a press waiting for
@@ -12,7 +12,7 @@ import { agentControl } from './agent-control.svelte.ts';
 const DESKTOP = '(pointer: fine) and (hover: hover)';
 
 class ScreenView {
-	/** The agent whose 畫面分頁 is shown now; null while none is. */
+	/** The agent whose 終端分頁 is shown now; null while none is. */
 	agentId = $state<string | null>(null);
 	/** Its latest update; null until the first comes. */
 	update = $state.raw<ScreenUpdate | null>(null);

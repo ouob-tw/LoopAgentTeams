@@ -918,7 +918,7 @@
 	.detail:focus {
 		outline: none;
 	}
-	/* A 畫面分頁 shown: its panel takes all the column's height down to the command line and all its
+	/* A 終端分頁 shown: its panel takes all the column's height down to the command line and all its
 	   width. A status card opened above it scrolls the column, the panel keeping a usable height. */
 	.screen-open .detail {
 		gap: 0.35rem;
@@ -1182,7 +1182,7 @@
 		.viewing .detail {
 			display: flex;
 		}
-		/* A 畫面分頁 shown: the page is as tall as what shows above the on-screen keyboard, so the panel
+		/* A 終端分頁 shown: the page is as tall as what shows above the on-screen keyboard, so the panel
 		   ends at the command line and the page itself does not scroll. */
 		.page.screen-open {
 			display: flex;
@@ -1210,7 +1210,7 @@
 		.screen-open .topbar {
 			margin-top: 0;
 		}
-		/* A phone's 畫面分頁 with its status card folded: the bar goes, the folded card's "←" goes back in
+		/* A phone's 終端分頁 with its status card folded: the bar goes, the folded card's "←" goes back in
 		   its place and the panel takes the height. Without that card (not on Herdr's list) the bar stays. */
 		.screen-phone:has(:global(.screen-bar)) .topbar {
 			display: none;

@@ -45,13 +45,13 @@
 
 	const TABS = [
 		{ id: 'transcript', label: '對話紀錄' },
-		{ id: 'screen', label: '畫面' },
+		{ id: 'screen', label: '終端' },
 		{ id: 'log', label: '操作紀錄' }
 	] as const;
 	type Tab = (typeof TABS)[number]['id'];
 	let tab = $state<Tab>('transcript');
 	const logCount = $derived(agentControl.logCount(agent.id));
-	/** On a 畫面分頁 with a screen, the status card and its buttons fold into one line. */
+	/** On a 終端分頁 with a screen, the status card and its buttons fold into one line. */
 	const folded = $derived(tab === 'screen' && agent.inHerdr);
 	let unfolded = $state(false);
 	$effect(() => {
