@@ -86,7 +86,7 @@ export const handle: Handle = ({ event, resolve }) => {
 			}
 			if (device && path === '/login') redirect(303, '/');
 			// A test device's change is checked against what it may do before any route runs.
-			const refusal = device && (await testDeviceRefusal(device, event.request.method, event.route.id, event.request, async () => (await board.current()).agents));
+			const refusal = device && (await testDeviceRefusal(board.config, device, event.request.method, event.route.id, event.request));
 			if (refusal) return refusal;
 			// Only a logged-in device can fetch the stylesheet, so only its pages refer to it.
 			response = await actingAs(device, () =>

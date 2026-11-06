@@ -139,6 +139,29 @@ export function findDevice(stateDir: string, token: string, now: number = Date.n
 	return expired(device, now) ? null : device;
 }
 
+/** A logged-in device by its ID; null for none, and for a test login past its time. */
+export function findDeviceById(stateDir: string, id: string, now: number): Device | null {
+	const match = readJson<StoredDevice>(join(stateDir, DEVICES_FILE)).find((device) => device.id === id && !unused(device));
+	if (!match) return null;
+	const device = publicDevice(match);
+	return expired(device, now) ? null : device;
+}
+
+/** A relaunch gave the agent a new session: every test device that owned the old one owns the new one. */
+export function carryOwnership(stateDir: string, from: string, to: string): void {
+	withLock(stateDir, () => {
+		const path = join(stateDir, DEVICES_FILE);
+		const devices = readJson<StoredDevice>(path);
+		let changed = false;
+		for (const device of devices) {
+			if (!device.test?.owned.includes(from) || device.test.owned.includes(to)) continue;
+			device.test.owned = [...device.test.owned, to];
+			changed = true;
+		}
+		if (changed) writeJson(path, devices);
+	});
+}
+
 export function revokeDevice(stateDir: string, id: string): boolean {
 	return withLock(stateDir, () => {
 		const path = join(stateDir, DEVICES_FILE);

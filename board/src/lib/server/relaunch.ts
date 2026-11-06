@@ -6,6 +6,7 @@
 // session, which takes the first turn the launch sends.
 // The wait runs in the background of the request that launched it; a relaunch no board process
 // waits for (the board restarted meanwhile) is settled by the board's reads.
+import { carryOwnership } from './devices.ts';
 import { isLaunchClient } from '../board/launch.ts';
 import { modelArgs, type SwitchResponse, type SwitchView } from '../board/models.ts';
 import { codexFirstTurnText } from '../board/permissions.ts';
@@ -155,6 +156,8 @@ async function finishRelaunch(board: Board, view: SwitchView, found: HerdrAgent)
 	const { config } = board;
 	const relaunch = view.relaunch!;
 	const problems: string[] = [];
+	// A fresh launch runs under a new session: a test device that started the agent keeps it.
+	if (found.sessionId && found.sessionId !== view.controllerId) carryOwnership(config.stateDir, view.controllerId, found.sessionId);
 	if (found.pane === view.holdPane) return step(board, view.id, { state: 'done', error: null });
 	if (relaunch.tabLabel) {
 		const renamed = await renameTab(config, found.tab, relaunch.tabLabel);

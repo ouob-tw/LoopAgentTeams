@@ -9,6 +9,7 @@ import { join, relative } from 'node:path';
 import type { LaunchList } from '../../src/lib/board/launch.ts';
 import { TEST_DEVICE_DENIED, TEST_DEVICE_NOT_OWNED } from '../../src/lib/board/test-device.ts';
 import { TEST_DEVICE_RULES } from '../../src/lib/server/test-device.ts';
+import { addOwned, carryOwnership } from '../../src/lib/server/devices.ts';
 import { answerHerdrList, NODE, sleep, startFixture, until, type Fixture } from '../harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-test-login-'));
@@ -141,6 +142,8 @@ test('the hours can be set up to 24, and no more', () => {
 
 test('a test device reads everything a password device does, and is told it is one', async () => {
 	const { cookie } = await testDevice();
+	// Herdr's list as this test's plan has it.
+	await fixture.refresh(password);
 	for (const path of ['/api/board', '/api/agents', '/api/launches', '/api/archive', '/api/agents/log?session=s-two']) {
 		expect([path, (await fixture.fetch(path, { cookie })).status]).toEqual([path, 200]);
 	}
@@ -241,8 +244,16 @@ test('a test device acts on the agent it started, by its session, but not on a t
 	expect((await device(cookie)).owned).toEqual(['s-nova']);
 	expect(((await (await fixture.fetch('/api/launches', { cookie })).json()) as LaunchList).launches[0].hcomName).toBe('nova');
 
-	// Its own agent, by session ID and by its tab.
-	expect((await post(cookie, '/api/agents/interrupt', { session: 's-nova' })).status).not.toBe(403);
+	// Its own agent, by session ID: every action keyed by it gets past the check (close is left for
+	// the end of its life, and it is the same check).
+	for (const route of Object.keys(TEST_DEVICE_RULES).filter((key) => ['session', 'controllerId'].includes(TEST_DEVICE_RULES[key]) && key !== 'POST /api/agents/close')) {
+		const response = await post(cookie, route.split(' ')[1], { session: 's-nova', controllerId: 's-nova', text: 'hi', keys: [{ key: 'Enter' }], recovery: 'r1', model: null, effort: null });
+		expect([route, response.status]).not.toEqual([route, 403]);
+	}
+	// Another test device may not act on it.
+	const other = await testDevice('other-qa');
+	expect((await post(other.cookie, '/api/agents/interrupt', { session: 's-nova' })).status).toBe(403);
+	// And by its tab.
 	expect((await post(cookie, '/api/agents/tab/rename', { session: 's-nova', workspace: 'wA', tab: 'wA:t-nova', label: 'renamed' })).status).not.toBe(403);
 	// Naming its own agent with another's tab, or another's agent with its own tab, is refused.
 	expect((await post(cookie, '/api/agents/tab/rename', { session: 's-nova', workspace: 'wA', tab: 'wA:t1', label: 'x' })).status).toBe(403);
@@ -252,7 +263,7 @@ test('a test device acts on the agent it started, by its session, but not on a t
 	const plan = JSON.parse(readFileSync(herdrFile, 'utf8'));
 	plan.agents.find((agent: { agent_session: { value: string } }) => agent.agent_session.value === 's-two').tab_id = 'wA:t-nova';
 	writeFileSync(herdrFile, JSON.stringify(plan));
-	await fixture.refresh(password);
+	// Checked against Herdr's list now, not the board's last snapshot: no refresh in between.
 	expect((await post(cookie, '/api/agents/tab/move', { session: 's-nova', workspace: 'wA', tab: 'wA:t-nova', onto: 'wA:t1' })).status).toBe(403);
 
 	// The sent log names the test device on what it did.
@@ -276,4 +287,37 @@ test('a password device keeps every action, and its log lines carry no test devi
 	expect(response.status).not.toBe(403);
 	await sleep(50);
 	expect(sentLog().filter((line) => line.testDevice && line.kind === 'agent-action' && (line as { text?: string }).text === 'hello')).toEqual([]);
+});
+
+test('a request whose body is still arriving when the login is revoked does nothing', async () => {
+	const { id, cookie } = await testDevice('slow-body');
+	// One it may act on until the revoke.
+	addOwned(join(fixture.dir, 'board-state'), id, 's-two');
+	const encoder = new TextEncoder();
+	let finish!: () => void;
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(encoder.encode('{"session":'));
+			finish = () => {
+				controller.enqueue(encoder.encode('"s-two"}'));
+				controller.close();
+			};
+		}
+	});
+	const sent = fetch(`${fixture.url}/api/agents/interrupt`, { method: 'POST', headers: { ...json, cookie }, body, duplex: 'half' } as RequestInit);
+	await sleep(300);
+	expect(fixture.cli('revoke', id).code).toBe(0);
+	finish();
+	expect((await sent).status).toBe(401);
+	expect(lines(join(commandDir, 'herdr-calls.jsonl'))).toEqual([]);
+});
+
+test('a model switch that relaunches its own agent under a new session keeps it its own', async () => {
+	const { id, cookie } = await testDevice('relaunch');
+	const stateDir = join(fixture.dir, 'board-state');
+	// As the device's launch and then the relaunch's finish record them (launch.ts, relaunch.ts).
+	addOwned(stateDir, id, 's-old');
+	carryOwnership(stateDir, 's-old', 's-new');
+	carryOwnership(stateDir, 's-two', 's-stolen');
+	expect((await device(cookie)).owned).toEqual(['s-old', 's-new']);
 });
