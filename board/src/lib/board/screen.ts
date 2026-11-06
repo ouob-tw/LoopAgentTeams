@@ -177,11 +177,13 @@ export interface Run {
 	style: string;
 }
 
-/** xterm's 16 colours. */
-const BASIC = ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'];
+/** xterm's 16 colours: the dark theme's, and what the light theme's stand in for when it names none. The
+ *  screen draws them as `var(--ansi-N)`, so the theme decides them (the 畫面分頁's styles). */
+export const BASIC = ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff'];
+const basic = (n: number) => `var(--ansi-${n})`;
 
 function color256(n: number): string {
-	if (n < 16) return BASIC[n];
+	if (n < 16) return basic(n);
 	if (n < 232) {
 		const level = (value: number) => (value ? 55 + value * 40 : 0);
 		const index = n - 16;
@@ -224,11 +226,11 @@ function apply(pen: Pen, params: number[]): Pen {
 		else if (code === 23) next.italic = false;
 		else if (code === 24) next.underline = false;
 		else if (code === 27) next.inverse = false;
-		else if (code >= 30 && code <= 37) next.fg = BASIC[code - 30];
-		else if (code >= 90 && code <= 97) next.fg = BASIC[code - 90 + 8];
+		else if (code >= 30 && code <= 37) next.fg = basic(code - 30);
+		else if (code >= 90 && code <= 97) next.fg = basic(code - 90 + 8);
 		else if (code === 39) next.fg = null;
-		else if (code >= 40 && code <= 47) next.bg = BASIC[code - 40];
-		else if (code >= 100 && code <= 107) next.bg = BASIC[code - 100 + 8];
+		else if (code >= 40 && code <= 47) next.bg = basic(code - 40);
+		else if (code >= 100 && code <= 107) next.bg = basic(code - 100 + 8);
 		else if (code === 49) next.bg = null;
 		else if (code === 38 || code === 48) {
 			const [value, used] = extended(params, at);
