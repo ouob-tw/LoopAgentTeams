@@ -76,14 +76,14 @@ const reset = () => settings(`[...dialog.querySelectorAll('[aria-label="畫面�
 const shown = () => tab.eval<string>(`document.querySelector('dialog [aria-label="畫面字體"] output').textContent`);
 const closeSettings = () => tab.eval(`document.querySelector('dialog').close()`);
 
-/** Rows still line up: each row is one line tall (1.2 × the size) and the box lines are as wide as their text. */
+/** Rows still line up: each row is one line tall, 1.2 × the size. */
 const lines = () =>
-	tab.eval<{ pitch: number; boxes: number }>(`(() => {
+	tab.eval<{ pitch: number }>(`(() => {
 		const pre = document.querySelector('.screen-panel pre');
 		const range = document.createRange(); range.selectNodeContents(pre);
 		const rows = [...range.getClientRects()].filter((rect) => rect.width > 0).map((rect) => rect.top);
 		const gaps = rows.slice(1).map((top, index) => top - rows[index]).filter((gap) => gap > 1);
-		return { pitch: Math.min(...gaps), boxes: pre.scrollWidth };
+		return { pitch: Math.min(...gaps) };
 	})()`);
 
 test('computer: 10, 16 and 28px apply at once beside 整體大小 and 最小字體, and 還原預設 goes back to 16px', async () => {
