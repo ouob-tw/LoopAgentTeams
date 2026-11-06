@@ -301,8 +301,13 @@ test('phone: a press made offline stays refused after the connection comes back,
 test('phone on its side (844x390, touch): every one of the 13 keys is whole inside the screen and tappable, the page does not scroll and the screen box is still above the dock', async () => {
 	await visit({ width: 844, height: 390, phone: true });
 	await openScreen();
+	await tab.until(`!!${MENU}`, 'the key panel');
+	const lineHeight = await tab.eval<number>(`document.querySelector('.dock').getBoundingClientRect().height`);
+	await shot('phone-landscape-line');
 	await openMenu();
 	await sleep(300);
+	// The dock does not change height between the line and the keys.
+	expect(await tab.eval<number>(`document.querySelector('.dock').getBoundingClientRect().height`)).toBe(lineHeight);
 	const at = await tab.eval<{ hidden: string[]; outside: string[]; tall: number; inner: number; boxBottom: number; dockTop: number; boxHeight: number }>(`(() => {
 		const keys = ${KEYS};
 		const outside = keys.filter((key) => { const r = key.getBoundingClientRect(); return r.top < 0 || r.bottom > innerHeight || r.left < 0 || r.right > innerWidth; }).map((key) => key.innerText);
