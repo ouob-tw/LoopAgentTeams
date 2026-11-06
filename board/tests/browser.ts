@@ -171,6 +171,26 @@ export class Tab {
 			await this.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
 		}
 	}
+	/** A finger put down at (x, y) and moved by (dx, dy) in `steps` moves over `ms` ms, then lifted;
+	 *  touch emulation must be on. `hold` leaves it down at the end instead of lifting. */
+	async swipe(x: number, y: number, dx: number, { dy = 0, ms = 200, steps = 10, hold = false } = {}) {
+		await this.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+		for (let step = 1; step <= steps; step++) {
+			await sleep(ms / steps);
+			await this.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x + (dx * step) / steps, y: y + (dy * step) / steps }] });
+		}
+		if (!hold) await this.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	}
+	/** As `swipe`, starting at the centre of the first element matching `selector`. */
+	async swipeOn(selector: string, dx: number, options: { dy?: number; ms?: number; steps?: number; hold?: boolean } = {}) {
+		const { x, y } = await this.eval<{ x: number; y: number }>(
+			`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`
+		);
+		await this.swipe(x, y, dx, options);
+	}
+	async liftFinger() {
+		await this.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	}
 	/** Load a new document and wait until it has loaded. A load that lost a request to a change in the
 	 *  host's network loads again, up to NAVIGATE_TRIES times: nothing in the page caused it, and a page
 	 *  without one of its modules never starts. Only that error does; any other failure stays. */

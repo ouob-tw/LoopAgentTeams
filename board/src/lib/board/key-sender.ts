@@ -1,4 +1,4 @@
-// Sending the 按鍵選單's presses from one page into one agent's pane: in the order pressed, one request
+// Sending the 按鍵面板's presses from one page into one agent's pane: in the order pressed, one request
 // at a time, presses made meanwhile going together in the next. A request that fails or whose answer
 // does not come back empties the queue and stops sending until the page gets the 恢復畫面 for it:
 // a screen update listing the request's recovery ID, which may come before or after its answer.

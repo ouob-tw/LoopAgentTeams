@@ -5,14 +5,13 @@
 	// lines too long for it, or more than fit, slide inside it. An update leaves it where it was slid to.
 	// In the light theme the box is the dark screen inverted, hues kept, as its programs choose colours
 	// for a dark screen whatever the board's theme. The text can be selected and copied.
-	// Keys go through the 按鍵選單 on a phone (KeyMenu), which moves the content up while open; why keys
+	// Keys go through the 按鍵面板 on a phone (DockSwipe), which takes the command line's place; why keys
 	// cannot go now shows above the screen; nothing does while all is well.
 	// On a computer a click on the screen starts direct operation: a frame shows round it, and keys
 	// pressed go into the pane (`pressInput`), Esc too, until a click elsewhere takes the focus away.
 	// The focus goes to a hidden text box, so an input method composes in it; only the text it ends
 	// with is sent. A click that leaves text selected ends it instead, so the text can be copied.
 	import { screenView } from '#lib/board/screen-view.svelte.ts';
-	import KeyMenu from './KeyMenu.svelte';
 	import { KEY_UNSUPPORTED_TEXT, KEYS_UNSURE_TEXT, pressInput, screenLines, trimmedLines, type ScreenUpdate } from '#lib/board/screen.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
@@ -71,8 +70,6 @@
 
 	let scroller = $state<HTMLElement>();
 	let pre = $state<HTMLElement>();
-	/** How far the 按鍵選單 covers the screen from its bottom. */
-	let covers = $state(0);
 	/** Whether a finger or the mouse is sliding the box now. */
 	let sliding = false;
 	// A narrower update would pull a box slid sideways back to the left: it keeps the width it is at
@@ -178,12 +175,11 @@
 				}}
 			>
 				{#if shownText !== null}
-					<pre bind:this={pre} style:padding-bottom={covers ? `${covers}px` : null}>{#each lines as line, row (row)}{#each line as run, index (index)}<span style={run.style || null}>{run.text}</span>{/each}{'\n'}{/each}</pre>
+					<pre bind:this={pre}>{#each lines as line, row (row)}{#each line as run, index (index)}<span style={run.style || null}>{run.text}</span>{/each}{'\n'}{/each}</pre>
 				{:else if status === 'loading'}
 					<p class="loading">讀取畫面中…</p>
 				{/if}
 			</div>
-			{#if screenView.phone}<KeyMenu bind:covers />{/if}
 		</div>
 	</div>
 {/if}
