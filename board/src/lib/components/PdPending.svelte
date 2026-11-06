@@ -43,6 +43,12 @@
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import ExplainTip from './ExplainTip.svelte';
 
+	/** A card's details start open or folded by its action when the card first appears, and after
+	 *  that are the user's: a re-read of the list gives the same card new data, never a new state. */
+	function openFirst(node: HTMLDetailsElement, open: boolean) {
+		node.open = open;
+	}
+
 	/** `open`: whether it is open rather than folded to its badge. `onaway` takes the focus when
 	 *  folding leaves no badge on screen: a phone hides the middle column, badge and all, while it
 	 *  shows a content screen. `onlook` opens a request's caller's conversation at its `pd run`
@@ -280,7 +286,7 @@
 							<span class="number">#{item.id}</span>
 							<span class="time" class:soon={time.soon} class:low={time.low} role="timer">{time.text}</span>
 						</p>
-						<details open={item.action !== 'read'}>
+						<details use:openFirst={item.action !== 'read'}>
 							<summary
 								aria-describedby="pd-caller-{item.id}"
 								onfocus={(event) => explainer.focus(event, item.id)}

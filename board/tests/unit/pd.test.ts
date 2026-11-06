@@ -288,7 +288,7 @@ test('an edit request keeps every item type pd prints, and one a newer pd adds',
 	const types = ['login', 'note', 'card', 'identity', 'sshKey', 'unknown', 'passkey2'];
 	const parsed = parsePdPending(exited(0, JSON.stringify(types.map((type, i) => ({ ...added, id: i + 1, action: 'edit', type })))));
 	expect(parsed.ok && parsed.requests.map((request) => request.type)).toEqual(types);
-	expect(['card', 'sshKey', 'passkey2'].map(typeLabel)).toEqual(['卡片', 'SSH 金鑰', 'passkey2']);
+	expect(['login', 'card', 'sshKey', 'passkey2'].map(typeLabel)).toEqual(['登入資料', '卡片', 'SSH 金鑰', 'passkey2']);
 	for (const type of [undefined, '', 5]) {
 		const none = parsePdPending(exited(0, JSON.stringify([{ ...added, type }])));
 		expect(none.ok && none.requests[0].type).toBeNull();
@@ -319,7 +319,7 @@ test('a delete keeps its item, ID and type and shows no fields', () => {
 	const deleted = request({ id: 3, action: 'delete', item: 'old token', type: 'login', fields: [], command: [], cwd: '' });
 	expect(actionLabel('delete')).toBe('刪除');
 	expect(summaryText(deleted)).toBe('');
-	expect(notificationText(deleted)).toEqual({ title: 'pd 請求 #3（刪除）等你核准', body: 'old token（登入）' });
+	expect(notificationText(deleted)).toEqual({ title: 'pd 請求 #3（刪除）等你核准', body: 'old token（登入資料）' });
 });
 
 test('the card and the notification name the action', () => {

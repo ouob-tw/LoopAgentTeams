@@ -90,9 +90,9 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 
 		// 新增 and 修改 open on their type, values and secret sources.
 		const added = await tab.eval<string>(`${card(2)}.innerText`);
-		for (const text of ['登入', 'username', 'alice@example.com', 'https://service.example.com/a/very/long/path', 'line one\nline two', '自動產生，20 字元', '指令輸出：gh auth token（/home/u/work）']) expect(added).toContain(text);
+		for (const text of ['類型\n登入資料', 'username', 'alice@example.com', 'https://service.example.com/a/very/long/path', 'line one\nline two', '自動產生，20 字元', '指令輸出：gh auth token（/home/u/work）']) expect(added).toContain(text);
 		const edited = await tab.eval<string>(`${card(3)}.innerText`);
-		for (const text of ['登入', 'bob', '自動產生，32 字元']) expect(edited).toContain(text);
+		for (const text of ['類型\n登入資料', 'bob', '自動產生，32 字元']) expect(edited).toContain(text);
 		// No command or folder rows on a write.
 		for (const text of ['工作目錄', '指令\n']) expect(added).not.toContain(text);
 
@@ -148,7 +148,7 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 		expect([await chip(4), await chip(5), await chip(6), await chip(1)]).toEqual(['刪除', '刪除', 'purge', '讀取']);
 		const rows = (id: number) => tab.eval<string[]>(`[...${card(id)}.querySelectorAll('dt')].map((dt) => dt.innerText + '=' + dt.nextElementSibling.innerText)`);
 		expect(await tab.eval<string>(`${card(4)}.querySelector('.item').innerText`)).toBe(remove.item);
-		expect(await rows(4)).toContain('類型=登入');
+		expect(await rows(4)).toContain('類型=登入資料');
 		expect(await rows(5)).toContain('類型=備註');
 		// Open, with no empty command line and no field rows.
 		expect(await tab.eval(`${card(4)}.querySelector('details').open && !${card(4)}.querySelector('summary code')`)).toBe(true);
@@ -188,3 +188,36 @@ test.skipIf(!CHROME)('a new add request’s notification names the action; 拒�
 	await tab.until(`!${card(2)}`, 'the add card denied');
 	expect(await tab.eval(`!!${card(1)}`)).toBe(true);
 }, 30_000);
+
+for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['desktop', 1280, 900, false]] as const) {
+	test.skipIf(!CHROME)(`${label}: a card keeps the open or folded state the user gave it through list re-reads`, async () => {
+		setPd([read, add]);
+		browser = await launchChrome({ screen: SCREEN });
+		const tab = browser.tab;
+		const [name, value] = cookie.split('=');
+		await tab.send('Network.setCookie', { name, value, url: fixture.url });
+		await tab.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile });
+		await tab.navigate(`${fixture.url}/`);
+		await tab.until(`document.querySelectorAll('.inbox .pd .card').length === 2 && ${SETTLED}`, 'two cards');
+		const isOpen = (id: number) => tab.eval<boolean>(`${card(id)}.querySelector('details').open`);
+		expect([await isOpen(1), await isOpen(2)]).toEqual([false, true]);
+		await shot(tab, `504-${label}-before-open`);
+
+		// The user opens the read card and folds the write card.
+		await tab.eval(`${card(1)}.querySelector('details').open = true; ${card(2)}.querySelector('details').open = false`);
+
+		// The list is read again (new objects for the same cards) several times; each shows in the page.
+		for (let round = 1; round <= 3; round++) {
+			setPd([{ ...read, item: `GitHub token r${round}` }, { ...add, item: `fresh-service r${round}` }]);
+			await tab.until(`${card(1)}.querySelector('.item').innerText === 'GitHub token r${round}' && ${card(2)}.querySelector('.item').innerText === 'fresh-service r${round}'`, `re-read ${round}`);
+			await shot(tab, `504-${label}-after-reread-${round}`);
+			expect([await isOpen(1), await isOpen(2)]).toEqual([true, false]);
+		}
+
+		// A card that appears later still starts by its action.
+		setPd([{ ...read, item: 'GitHub token r3' }, { ...add, item: 'fresh-service r3' }, { ...read, id: 7, item: 'another read' }, { ...edit, id: 8 }]);
+		await tab.until(`!!${card(7)} && !!${card(8)}`, 'new cards');
+		expect([await isOpen(7), await isOpen(8), await isOpen(1), await isOpen(2)]).toEqual([false, true, true, false]);
+		expect(tab.errors).toEqual([]);
+	}, 40_000);
+}
