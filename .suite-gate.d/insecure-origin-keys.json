@@ -1,0 +1,5 @@
+{"map": [
+  {"paths": ["board/src/lib/board/new-id.ts", "board/src/lib/board/key-sender.ts"], "tests": ["board/tests/unit/new-id.test.ts", "board/tests/unit/key-sender.test.ts", "board/tests/browser/insecure-origin-keys.test.ts"]},
+  {"paths": ["board/tests/unit/new-id.test.ts"], "tests": ["board/tests/unit/new-id.test.ts"]},
+  {"paths": ["board/tests/browser/insecure-origin-keys.test.ts"], "tests": ["board/tests/browser/insecure-origin-keys.test.ts"]}
+]}
