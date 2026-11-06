@@ -115,12 +115,15 @@ def workspace_root(cwd):
 
 def hook_workspace(record, root):
     """The record's workspace when it is the same repository as the hook's checkout (a main
-    checkout and its linked worktrees share one .lat), else the checkout itself."""
+    checkout and its linked worktrees share one git common dir), else the checkout itself."""
     recorded = record.get('workspace')
     if recorded == str(root) or not isinstance(recorded, str):
         return str(root)
+    def common(path):
+        return Path(run_cli(['git', '-C', str(path), 'rev-parse', '--path-format=absolute',
+                             '--git-common-dir'], timeout=10).strip()).resolve()
     try:
-        same = shared_lat_dir(recorded) == shared_lat_dir(root)
+        same = common(recorded) == common(root)
     except (OSError, ValueError):
         same = False
     return recorded if same else str(root)

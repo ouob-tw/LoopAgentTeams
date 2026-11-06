@@ -2104,6 +2104,23 @@ class SessionTests(unittest.TestCase):
         self.assert_silent(self.stop_hook('Question\nDECIDE: check-pending', cwd=str(other)))
         self.assertEqual(len(self.reports()), count)
 
+    def test_a_sibling_submodule_sharing_the_lat_folder_is_still_skipped(self):
+        # Sibling submodules keep their git dirs side by side, so their .lat folder is shared.
+        modules = self.root / 'super/.git/modules'
+        first, second = self.root / 'a', self.root / 'b'
+        modules.mkdir(parents=True)
+        for checkout in (first, second):
+            subprocess.run(['git', 'init', '-q', '--separate-git-dir',
+                            str(modules / checkout.name), str(checkout)], check=True)
+        record = self.write_legacy_record(workspace=str(first), hcom_name='orch',
+                                          tasks_path=str(self.tasks))
+        shared = modules / '.lat/sessions' / f'{SESSION}.json'
+        shared.parent.mkdir(parents=True)
+        shared.write_text(json.dumps(record))
+        self.assert_silent(self.stop_hook('Question\nDECIDE: check-pending', cwd=str(second)))
+        self.assert_stop_block(self.stop_hook('Question\nDECIDE: check-pending', cwd=str(first)),
+                               '沒有寫出題號與版本')
+
     def test_older_record_in_a_worktree_lat_recovers_self_stops_and_ends_in_place(self):
         main, worktree = self.linked_worktree()
         legacy = worktree / '.lat/sessions' / f'{SESSION}.json'
