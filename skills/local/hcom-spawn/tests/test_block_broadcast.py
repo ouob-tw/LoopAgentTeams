@@ -116,6 +116,9 @@ class BlockBroadcastTests(unittest.TestCase):
             'out=$(hcom listen 2)\nhcom term luna',
             'hcom listen 2 > /tmp/listen.log >/dev/null',
             'hcom listen 2 | cat >/dev/null',
+            'hcom listen 2 | head -n +1',
+            'hcom listen 2 >/dev/null 1>&1',
+            'hcom listen 2 >/dev/null 2>&1 1>&2',
         ):
             with self.subTest(command=command):
                 result = run_hook(command)

@@ -271,12 +271,16 @@ def listens(words):
 
 
 def stdout_target(command):
-    """Where the last stdout redirect sends the command's output, or None."""
-    target = None
+    """Where the redirects, applied in order, send stdout; None when unchanged."""
+    fds = {'1': None, '2': 'stderr'}
     for fd, op, word in command.redirects:
-        if op == '&>' or (op in ('>', '>>', '>&') and fd in ('', '1')):
-            target = word
-    return target
+        if op == '&>' or (op == '>&' and not fd and not word.isdigit()):
+            fds['1'] = fds['2'] = word
+        elif op == '>&':
+            fds[fd or '1'] = fds.get(word, word)
+        elif op in ('>', '>>'):
+            fds[fd or '1'] = word
+    return fds['1']
 
 
 def drops_listen_output(command, text):
@@ -287,9 +291,9 @@ def drops_listen_output(command, text):
     upstream = command.upstream
     if upstream is not None and listens(upstream) and stdout_target(upstream) is None:
         words = executable(command)
-        whole = any(word.endswith('+1') for word in words[1:])  # tail -n +1
-        return stdout_target(command) == '/dev/null' or (
-            words[0].rsplit('/', 1)[-1] in TRUNCATORS and not whole)
+        name = words[0].rsplit('/', 1)[-1]
+        whole = name == 'tail' and any(word.endswith('+1') for word in words[1:])
+        return stdout_target(command) == '/dev/null' or (name in TRUNCATORS and not whole)
     rest = executable(command)
     start = len(command) - (0 if rest == [''] else len(rest))
     if command[start:start + 1] in ([':'], ['true']):
