@@ -12,7 +12,8 @@
         "board/src/lib/board/agent-actions.ts",
         "board/src/routes/api/agents/keys/**",
         "board/src/routes/api/agents/screen/**",
-        "board/tests/fake-herdr.mjs"
+        "board/tests/fake-herdr.mjs",
+        "board/tests/browser/screen-nav-bar.test.ts"
       ],
       "tests": [
         "board/tests/server/screen-keys.test.ts",
@@ -21,7 +22,8 @@
         "board/tests/browser/screen-tab.test.ts",
         "board/tests/unit/key-press.test.ts",
         "board/tests/browser/screen-direct.test.ts",
-        "board/tests/browser/screen-layout.test.ts"
+        "board/tests/browser/screen-layout.test.ts",
+        "board/tests/browser/screen-nav-bar.test.ts"
       ]
     },
     {
@@ -39,14 +41,18 @@
         "board/src/lib/components/KeyMenu.svelte",
         "board/src/lib/components/ScreenBar.svelte",
         "board/src/lib/board/agents.ts",
-        "board/src/lib/board/prefs.ts"
+        "board/src/lib/board/prefs.ts",
+        "board/src/lib/board/back-context.ts",
+        "board/src/lib/components/Toasts.svelte",
+        "board/tests/browser/screen-nav-bar.test.ts"
       ],
       "tests": [
         "board/tests/unit/key-sender.test.ts",
         "board/tests/unit/screen-lines.test.ts",
         "board/tests/browser/screen-tab.test.ts",
         "board/tests/browser/screen-direct.test.ts",
-        "board/tests/browser/screen-layout.test.ts"
+        "board/tests/browser/screen-layout.test.ts",
+        "board/tests/browser/screen-nav-bar.test.ts"
       ]
     },
     {
