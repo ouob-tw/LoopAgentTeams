@@ -1213,7 +1213,7 @@
 			display: none;
 		}
 		.screen-phone:has(:global(.screen-bar)) .detail {
-			padding-top: 3px;
+			padding-top: calc(3px + env(safe-area-inset-top, 0px));
 		}
 		.screen-open .detail > :global(.tabpanel:not([hidden])) {
 			padding: 0;
