@@ -1,0 +1,5 @@
+interface:
+  display_name: "Retro"
+  short_description: "使用者或流程規則要求時，回顧 session 並列出環境改善建議"
+policy:
+  allow_implicit_invocation: true

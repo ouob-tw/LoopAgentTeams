@@ -15,7 +15,7 @@ description: "把一次 session 的 retro 反饋分流到專案 issue 或全域�
 
 ## 記錄一次 retro
 
-1. **找反饋來源**：本對話已有 /retro 結果就用它。使用者指定其他 session（補匯入）時，讀那個 session 的紀錄（Claude：`~/.claude/projects/*/<session>.jsonl`；Codex：`~/.codex/sessions/**/rollout-*-<session>.jsonl`）中的 /retro 結果。還是沒有結果，就讀本技能目錄旁的 `../retro/SKILL.md`，照它分析指定的 session（沒指定就是本對話），列出建議後接著做第 2 步。讀不到這份檔案就停下告訴使用者，分析只照它做。
+1. **找反饋來源**：本對話已有 /retro 結果就用它。使用者指定其他 session（補匯入）時，讀那個 session 的紀錄（Claude：`~/.claude/projects/*/<session>.jsonl`；Codex：`~/.codex/sessions/**/rollout-*-<session>.jsonl`）中的 /retro 結果。還是沒有結果，就呼叫 retro 技能分析指定的 session（沒指定就是本對話），列出建議後接著做第 2 步。沒有 retro 技能就停下告訴使用者，分析只照它做。
 2. **逐條分類**：依下方「記錄範圍」與「去向」，定出每條建議的類型與去向。一次性的建議到此結束，列入摘要的略過。
 3. **選出要處理的**：
    - 流程模式：範圍內的建議全部處理。
