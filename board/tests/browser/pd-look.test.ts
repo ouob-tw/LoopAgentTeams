@@ -1,8 +1,8 @@
 // 查看對話 on a pd request's card, in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with a fake pd (tests/fake-pd.mjs) and conversations the fake
 // helper pages through. The caller's conversation opens at the `pd run` that made the request,
-// marked (also when the conversation shows its command only as `cd …`), and marked 可能不準 too when pd did not vouch for the caller; with no such step near the
-// request's time it opens at the newest part and says so; a caller the board does not know has no
+// marked (also when the conversation shows its command only as `cd …`), and marked 可能不準 too
+// when pd did not vouch for the caller; with no such step near the request's time it opens at the newest part and says so; a caller the board does not know has no
 // button. Skipped when the host has no Chrome.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

@@ -481,16 +481,16 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const seq = pdFound === undefined && earlierFailed ? null : pdFound;
 		if (seq === undefined) return;
 		const { unsure } = pdTarget;
-		const unreadable = earlierFailed;
+		const unreadable = pdFound === undefined ? earlierFailed : null;
 		pdLooking.done();
-		untrack(() => void showPdRun(seq, unsure, unreadable));
+		untrack(() => void showPdRun(seq, unsure, unreadable !== null));
 	});
-	async function showPdRun(seq: number | null, unsure: boolean, unreadable: string | null) {
+	async function showPdRun(seq: number | null, unsure: boolean, unreadable: boolean) {
 		if (seq === null) {
 			pdHit = null;
 			list?.scrollIntoView({ block: 'start' });
 			// Why: the earlier part could not be read, else nothing in the conversation ran pd near the request.
-			const why = unreadable ? `更早的對話讀不到（${unreadable}）` : `這份對話在請求送出前後 ${PD_NEAR_MS / 60_000} 分鐘內沒有執行 pd 的步驟`;
+			const why = unreadable ? '更早的對話讀不到' : `這份對話在請求送出前後 ${PD_NEAR_MS / 60_000} 分鐘內沒有執行 pd 的步驟`;
 			toasts.show('failed', `找不到這次 pd 請求的那一步：${why}${unsure ? '；pd 也沒查證呼叫者，可能開錯了對話' : ''}。先顯示最新的部分。`);
 			return;
 		}
