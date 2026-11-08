@@ -381,7 +381,9 @@ test('attachment cards are named by what they do, and destructive ones carry a w
 	expect(attachmentWarning(request())).toBeNull();
 	expect(destroysAttachment(attach({ size: 1 }))).toBe(true);
 	expect(destroysAttachment(attach(null))).toBe(false);
-	expect(sizeText(null)).toBe('執行後才知道大小，上限 1 MB');
+	expect(sizeText(null)).toBe('大小不明');
+	expect(attachmentRows({ name: 'd', size: null, source: { kind: 'output', command: ['x'], cwd: '/' }, replaces: null })[1].value).toBe('執行後才知道大小，上限 1 MB');
+	expect(attachmentRows({ name: 'd', size: null, source: null, replaces: null })[1].value).toBe('大小不明');
 	expect([0, 1023, 1024, 1536, 1048575, 1048576].map(sizeText)).toEqual(['0 位元組', '1023 位元組', '1 KB', '1.5 KB', '1024 KB', '1 MB']);
 	expect(attachmentRows({ name: 'd', size: null, source: { kind: 'output', command: ['pg_dump', 'app'], cwd: '/srv' }, replaces: null }).map((row) => row.label)).toEqual(['附件', '大小', '指令', '工作目錄']);
 	const bell = notificationText(attach({ size: 5 }));

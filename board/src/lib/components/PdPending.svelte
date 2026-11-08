@@ -321,7 +321,7 @@
 										<dt>欄位</dt>
 										<dd>{item.fields.join('、')}</dd>
 									{/if}
-									{#each item.files as file (file.name)}
+									{#each item.files as file, i (i)}
 										<dt>附件</dt>
 										<dd>{file.name}（{sizeText(file.size)}）</dd>
 									{/each}

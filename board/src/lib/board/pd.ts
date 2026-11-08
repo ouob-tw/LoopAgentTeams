@@ -132,9 +132,9 @@ export const requestLabel = (request: PdRequest): string => (request.action === 
 /** Whether the request destroys something that cannot come back: removing an attachment, or replacing one. */
 export const destroysAttachment = (request: PdRequest): boolean => request.action === 'detach' || (request.action === 'attach' && !!request.attachment?.replaces);
 
-/** A size as a person reads it: bytes below 1 KB, then KB, then MB. Null is a command's output, not yet run. */
+/** A size as a person reads it: bytes below 1 KB, then KB, then MB. Null is a size pd did not give. */
 export function sizeText(size: number | null): string {
-	if (size === null) return '執行後才知道大小，上限 1 MB';
+	if (size === null) return '大小不明';
 	const trim = (value: number) => String(Math.round(value * 10) / 10);
 	if (size < 1024) return `${size} 位元組`;
 	return size < 1024 * 1024 ? `${trim(size / 1024)} KB` : `${trim(size / 1024 / 1024)} MB`;
@@ -149,7 +149,7 @@ export function attachmentWarning(request: PdRequest): string | null {
 
 /** The rows an attachment adds to a card's details: name, size and where an upload comes from. */
 export function attachmentRows(attachment: PdAttachment): { label: string; value: string; code?: boolean }[] {
-	const rows: { label: string; value: string; code?: boolean }[] = [{ label: '附件', value: attachment.name }, { label: '大小', value: sizeText(attachment.size) }];
+	const rows: { label: string; value: string; code?: boolean }[] = [{ label: '附件', value: attachment.name }, { label: '大小', value: attachment.size === null && attachment.source?.kind === 'output' ? '執行後才知道大小，上限 1 MB' : sizeText(attachment.size) }];
 	if (attachment.source?.kind === 'file') rows.push({ label: '檔案', value: attachment.source.path, code: true });
 	if (attachment.source?.kind === 'output') rows.push({ label: '指令', value: attachment.source.command.join(' '), code: true }, { label: '工作目錄', value: attachment.source.cwd, code: true });
 	return rows;
