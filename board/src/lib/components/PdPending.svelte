@@ -18,18 +18,22 @@
 	import { onMount, tick } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import {
-		actionLabel,
 		assertionJson,
+		attachmentRows,
+		attachmentWarning,
 		callerNote,
 		callerParts,
 		callerText,
 		clampBox,
+		destroysAttachment,
 		PD_WINDOW_KEY,
 		pdNotice,
 		readBox,
+		requestLabel,
 		requestOptions,
 		notificationText,
 		secretText,
+		sizeText,
 		summaryText,
 		timeText,
 		typeLabel,
@@ -279,13 +283,15 @@
 				{#each requests as item (item.id)}
 					{@const time = timeText(item, now - pd.at)}
 					{@const caller = callerParts(item)}
+					{@const warning = attachmentWarning(item)}
 					<li class="card" data-pd-request={item.id}>
 						<p class="head">
-							<span class="action" class:write={item.action !== 'read'} class:delete={item.action === 'delete'}>{actionLabel(item.action)}</span>
+							<span class="action" class:write={item.action !== 'read'} class:delete={item.action === 'delete' || destroysAttachment(item)}>{requestLabel(item)}</span>
 							<span class="item">{item.item}</span>
 							<span class="number">#{item.id}</span>
 							<span class="time" class:soon={time.soon} class:low={time.low} role="timer">{time.text}</span>
 						</p>
+						{#if warning}<p class="warning" role="note">{warning}</p>{/if}
 						<details use:openFirst={item.action !== 'read'}>
 							<summary
 								aria-describedby="pd-caller-{item.id}"
@@ -311,8 +317,14 @@
 							</summary>
 							<dl>
 								{#if item.action === 'read'}
-									<dt>欄位</dt>
-									<dd>{item.fields.join('、')}</dd>
+									{#if item.fields.length}
+										<dt>欄位</dt>
+										<dd>{item.fields.join('、')}</dd>
+									{/if}
+									{#each item.files as file (file.name)}
+										<dt>附件</dt>
+										<dd>{file.name}（{sizeText(file.size)}）</dd>
+									{/each}
 									<dt>指令</dt>
 									<dd><code>{item.command.join(' ')}</code></dd>
 									<dt>工作目錄</dt>
@@ -330,6 +342,12 @@
 										<dt>{secret.field}</dt>
 										<dd class="hidden-value">{secretText(secret)}</dd>
 									{/each}
+									{#if item.attachment}
+										{#each attachmentRows(item.attachment) as row (row.label)}
+											<dt>{row.label}</dt>
+											<dd>{#if row.code}<code>{row.value}</code>{:else}{row.value}{/if}</dd>
+										{/each}
+									{/if}
 								{/if}
 								<dt>呼叫者</dt>
 								<dd>{callerText(item)}</dd>
@@ -553,6 +571,17 @@
 	.action.delete {
 		border-color: var(--danger);
 		color: var(--danger);
+	}
+	/* What cannot be undone, in words that stay on the card when its details are folded. */
+	.warning {
+		margin: 0;
+		padding: 0.3rem 0.6rem;
+		border-left: 4px solid var(--danger);
+		background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+		color: var(--danger);
+		font-weight: 700;
+		font-size: max(0.85rem, var(--min-font, 0px));
+		overflow-wrap: anywhere;
 	}
 	.value {
 		white-space: pre-wrap;

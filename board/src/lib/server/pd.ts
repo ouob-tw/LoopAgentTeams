@@ -5,7 +5,7 @@
 // approve without the user's passkey. It never asks for or handles pd's confirmation code.
 // pd lists no secret values; only the fields of board/pd.ts are kept, and a reason never repeats
 // pd's own words, which reach every page.
-import type { PdAssertion, PdCaller, PdChallenge, PdRequest, PdSecret, PdSnapshot } from '../board/pd.ts';
+import type { PdAssertion, PdAttachment, PdCaller, PdChallenge, PdRequest, PdSecret, PdSnapshot } from '../board/pd.ts';
 import { runCommand, type ExternalResult } from './external.ts';
 
 type Json = Record<string, unknown>;
@@ -80,6 +80,30 @@ function writeSecrets(value: unknown): PdSecret[] {
 	});
 }
 
+function size(value: unknown): number | null {
+	return Number.isInteger(value) && (value as number) >= 0 ? (value as number) : null;
+}
+
+/** The attachments a read asks for; a row without a name is left out. */
+function readFiles(value: unknown): PdRequest['files'] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((row) => (isRecord(row) && typeof row.name === 'string' && row.name ? [{ name: row.name, size: size(row.size) }] : []));
+}
+
+/** The attachment of an attach, detach or attaching add. Only its name, size, source and what it
+ *  replaces are kept (not its Bitwarden id); one without a name is left out. */
+function writeAttachment(value: unknown): PdAttachment | null {
+	if (!isRecord(value) || typeof value.name !== 'string' || !value.name) return null;
+	const source = isRecord(value.source)
+		? value.source.kind === 'file'
+			? ({ kind: 'file', path: text(value.source.path) } as const)
+			: value.source.kind === 'output'
+				? ({ kind: 'output', command: words(value.source.argv), cwd: text(value.source.cwd) } as const)
+				: null
+		: null;
+	return { name: value.name, size: size(value.size), source, replaces: isRecord(value.replaces) ? { size: size(value.replaces.size) } : null };
+}
+
 /** What `pd pending --json` answered. A request without its number is left out: it could not be
  *  denied or opened. */
 export function parsePdPending(run: ExternalResult): PdSnapshot {
@@ -108,6 +132,8 @@ export function parsePdPending(run: ExternalResult): PdSnapshot {
 					callerInfo: callerInfo(row.caller_info),
 					item: text(row.item),
 					fields: words(row.fields),
+					files: readFiles(row.files),
+					attachment: writeAttachment(row.attachment),
 					command: words(row.argv),
 					cwd: text(row.cwd),
 					waiting: wholeSeconds(row.waiting) ?? 0,

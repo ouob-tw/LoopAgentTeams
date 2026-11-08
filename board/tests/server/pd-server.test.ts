@@ -54,6 +54,8 @@ test('waiting requests reach the page, and 拒絕 denies one through pd deny', a
 		callerInfo: null,
 		item: 'GitHub token',
 		fields: ['password'],
+		files: [],
+		attachment: null,
 		command: ['gh', 'api', 'user'],
 		cwd: '/home/u/work',
 		waiting: 3,

@@ -2,7 +2,7 @@
 // fields the panel shows and the answers the deny and passkey relay routes give, and how the
 // panel words a request's time and shortens its command, and where its window may lie. Test values only.
 import { expect, test } from 'bun:test';
-import { ACTION_LABEL, actionLabel, callerNote, notificationText, secretText, summaryText, callerText, clampBox, readBox, shortCommand, timeText, typeLabel, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
+import { ACTION_LABEL, actionLabel, attachmentRows, attachmentWarning, destroysAttachment, requestLabel, sizeText, callerNote, notificationText, secretText, summaryText, callerText, clampBox, readBox, shortCommand, timeText, typeLabel, type PdRequest, type PdSnapshot } from '../../src/lib/board/pd.ts';
 import type { ExternalResult } from '../../src/lib/server/external.ts';
 import { approveReply, challengeReply, checkAssertion, createPdPoller, denyReply, parsePdPending } from '../../src/lib/server/pd.ts';
 
@@ -42,6 +42,8 @@ const request = (overrides: Partial<PdRequest> = {}): PdRequest => ({
 	callerInfo: null,
 	item: 'GitHub token',
 	fields: ['password'],
+	files: [],
+	attachment: null,
 	command: ['gh', 'api', 'user'],
 	cwd: '/home/u/work',
 	waiting: 12,
@@ -66,6 +68,8 @@ test('a pending list keeps only the fields the panel shows', () => {
 				callerInfo: { name: 'dahe', client: 'claude', group: null, orchestrator: true, source: 'auto', verified: true, notice: '程序樹查證，非防竄改' },
 				item: 'GitHub token',
 				fields: ['password'],
+				files: [],
+				attachment: null,
 				command: ['gh', 'api', 'user', '***'],
 				cwd: '/home/u/work',
 				waiting: 12,
@@ -323,7 +327,7 @@ test('a delete keeps its item, ID and type and shows no fields', () => {
 });
 
 test('the card and the notification name the action', () => {
-	expect(ACTION_LABEL).toEqual({ read: '讀取', add: '新增', edit: '修改', delete: '刪除' });
+	expect(ACTION_LABEL).toEqual({ read: '讀取', add: '新增', edit: '修改', delete: '刪除', attach: '上傳附件', detach: '刪除附件' });
 	const write = request({ id: 2, action: 'add', item: 'fresh', fields: ['username', 'password'], command: [], cwd: '' });
 	expect(summaryText(write)).toBe('username、password');
 	expect(summaryText(request())).toBe('gh api user');
@@ -335,4 +339,51 @@ test('the card and the notification name the action', () => {
 	const long = (tool: string, tenant: string) => secretText({ field: 'k', source: 'output', command: [tool, 'fetch', '--tenant', tenant], cwd: '/work' });
 	expect(long('/trusted/bin/token', 'production')).toBe('指令輸出：/trusted/bin/token fetch --tenant production（/work）');
 	expect(long('/trusted/bin/token', 'production')).not.toBe(long('/other/bin/token', 'other-account'));
+});
+
+test('attachment requests keep only the name, size, source and what an upload replaces', () => {
+	const file = { name: 'key.pem', size: 2048, source: { kind: 'file', path: '/home/u/key.pem' }, replaces: { id: 'att-9', size: 512 } };
+	const output = { name: 'dump.sql', size: null, source: { kind: 'output', argv: ['pg_dump', 'app'], cwd: '/srv' }, replaces: null };
+	const parsed = parsePdPending(
+		exited(
+			0,
+			JSON.stringify([
+				{ ...listed, id: 1, action: 'attach', fields: [], attachment: file },
+				{ ...listed, id: 2, action: 'attach', fields: [], attachment: output },
+				{ ...listed, id: 3, action: 'detach', fields: [], attachment: { name: 'old.txt', size: 9, id: 'att-1' } },
+				{ ...listed, id: 4, action: 'add', type: 'login', attachment: { name: 'a.txt', size: 3, source: { kind: 'file', path: '/a.txt' }, replaces: null } },
+				{ ...listed, id: 5, files: [{ name: 'cert.pem', size: 1024 }, { name: '', size: 1 }, { size: 2 }, { name: 'x', size: 'big' }] },
+				{ ...listed, id: 6, action: 'attach', attachment: { size: 1 } }
+			])
+		)
+	);
+	if (!parsed.ok) throw new Error('not ok');
+	const [a, b, c, d, e, f] = parsed.requests;
+	expect(a.attachment).toEqual({ name: 'key.pem', size: 2048, source: { kind: 'file', path: '/home/u/key.pem' }, replaces: { size: 512 } });
+	expect(b.attachment).toEqual({ name: 'dump.sql', size: null, source: { kind: 'output', command: ['pg_dump', 'app'], cwd: '/srv' }, replaces: null });
+	expect(c.attachment).toEqual({ name: 'old.txt', size: 9, source: null, replaces: null });
+	expect(d.attachment?.source).toEqual({ kind: 'file', path: '/a.txt' });
+	expect(e.files).toEqual([{ name: 'cert.pem', size: 1024 }, { name: 'x', size: null }]);
+	expect(f.attachment).toBeNull();
+	expect(JSON.stringify(parsed)).not.toContain('att-');
+});
+
+test('attachment cards are named by what they do, and destructive ones carry a warning', () => {
+	const attach = (replaces: { size: number | null } | null, size: number | null = 2048) =>
+		request({ action: 'attach', fields: [], attachment: { name: 'key.pem', size, source: { kind: 'file', path: '/k' }, replaces } });
+	expect(requestLabel(attach(null))).toBe('上傳附件');
+	expect(requestLabel(attach({ size: 512 }))).toBe('取代附件');
+	expect(requestLabel(request({ action: 'detach', attachment: { name: 'a', size: 1, source: null, replaces: null } }))).toBe('刪除附件');
+	expect(requestLabel(request({ action: 'purge' }))).toBe('purge');
+	expect(attachmentWarning(attach(null))).toBeNull();
+	expect(attachmentWarning(attach({ size: 512 }))).toBe('會取代既有附件（大小 512 位元組），舊檔永久消失');
+	expect(attachmentWarning(request({ action: 'detach' }))).toBe('永久刪除，無法復原');
+	expect(attachmentWarning(request())).toBeNull();
+	expect(destroysAttachment(attach({ size: 1 }))).toBe(true);
+	expect(destroysAttachment(attach(null))).toBe(false);
+	expect(sizeText(null)).toBe('執行後才知道大小，上限 1 MB');
+	expect([0, 1023, 1024, 1536, 1048575, 1048576].map(sizeText)).toEqual(['0 位元組', '1023 位元組', '1 KB', '1.5 KB', '1024 KB', '1 MB']);
+	expect(attachmentRows({ name: 'd', size: null, source: { kind: 'output', command: ['pg_dump', 'app'], cwd: '/srv' }, replaces: null }).map((row) => row.label)).toEqual(['附件', '大小', '指令', '工作目錄']);
+	const bell = notificationText(attach({ size: 5 }));
+	expect(bell).toEqual({ title: 'pd 請求 #7（取代附件）等你核准', body: 'GitHub token：key.pem' });
 });
