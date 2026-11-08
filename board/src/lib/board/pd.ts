@@ -18,7 +18,17 @@ export interface PdCaller {
 }
 
 /** What a request asks pd to do: read an item's secret to run a command, add, edit or delete an item. */
-export type PdAction = 'read' | 'add' | 'edit' | 'delete';
+export type PdAction = 'read' | 'add' | 'edit' | 'delete' | 'attach' | 'detach';
+/** An attachment a request names: an upload (`attach`, or an `add` that brings a file) or a removal
+ *  (`detach`). `size` is null for a command's output, which has no size until it has run. `source`
+ *  is where an upload's bytes come from (null for a removal); `replaces` is the same-named
+ *  attachment an upload would overwrite, null when it adds a new one. */
+export interface PdAttachment {
+	name: string;
+	size: number | null;
+	source: { kind: 'file'; path: string } | { kind: 'output'; command: string[]; cwd: string } | null;
+	replaces: { size: number | null } | null;
+}
 /** Where a secret to be written comes from; pd never lists the value itself. */
 export type PdSecret =
 	| { field: string; source: 'generate'; length: number }
@@ -40,6 +50,10 @@ export interface PdRequest {
 	callerInfo: PdCaller | null;
 	item: string;
 	fields: string[];
+	/** The attachments a read asks to have as files, name and size; empty when it asks for none. */
+	files: { name: string; size: number | null }[];
+	/** The attachment an `attach`, `detach` or attaching `add` is about; null otherwise. */
+	attachment: PdAttachment | null;
 	/** The command the request would run, word by word, with any value pd recognised masked. */
 	command: string[];
 	cwd: string;
@@ -110,16 +124,45 @@ export function pdNotice(snapshot: PdSnapshot): string | null {
 	return snapshot.vault === 'locked' ? 'pd 已鎖定' : null;
 }
 
-export const ACTION_LABEL: Record<PdAction, string> = { read: '讀取', add: '新增', edit: '修改', delete: '刪除' };
+export const ACTION_LABEL: Record<PdAction, string> = { read: '讀取', add: '新增', edit: '修改', delete: '刪除', attach: '上傳附件', detach: '刪除附件' };
 /** An action from a newer pd shows as given, never as a read. */
 export const actionLabel = (action: string): string => (Object.hasOwn(ACTION_LABEL, action) ? ACTION_LABEL[action as PdAction] : action || '未知動作');
+/** What the request's chip says: an upload over an attachment of the same name is 取代附件, not 上傳附件. */
+export const requestLabel = (request: PdRequest): string => (request.action === 'attach' && request.attachment?.replaces ? '取代附件' : actionLabel(request.action));
+/** Whether the request destroys something that cannot come back: removing an attachment, or replacing one. */
+export const destroysAttachment = (request: PdRequest): boolean => request.action === 'detach' || (request.action === 'attach' && !!request.attachment?.replaces);
+
+/** A size as a person reads it: bytes below 1 KB, then KB, then MB. Null is a size pd did not give. */
+export function sizeText(size: number | null): string {
+	if (size === null) return '大小不明';
+	const trim = (value: number) => String(Math.round(value * 10) / 10);
+	if (size < 1024) return `${size} 位元組`;
+	return size < 1024 * 1024 ? `${trim(size / 1024)} KB` : `${trim(size / 1024 / 1024)} MB`;
+}
+
+/** The sentence under a destructive attachment card; null for any other request. */
+export function attachmentWarning(request: PdRequest): string | null {
+	if (request.action === 'detach') return '永久刪除，無法復原';
+	const replaces = request.action === 'attach' ? request.attachment?.replaces : null;
+	return replaces ? `會取代既有附件${replaces.size === null ? '' : `（大小 ${sizeText(replaces.size)}）`}，舊檔永久消失` : null;
+}
+
+/** The rows an attachment adds to a card's details: name, size and where an upload comes from. */
+export function attachmentRows(attachment: PdAttachment): { label: string; value: string; code?: boolean }[] {
+	const rows: { label: string; value: string; code?: boolean }[] = [{ label: '附件', value: attachment.name }, { label: '大小', value: attachment.size === null && attachment.source?.kind === 'output' ? '執行後才知道大小，上限 1 MB' : sizeText(attachment.size) }];
+	if (attachment.source?.kind === 'file') rows.push({ label: '檔案', value: attachment.source.path, code: true });
+	if (attachment.source?.kind === 'output') rows.push({ label: '指令', value: attachment.source.command.join(' '), code: true }, { label: '工作目錄', value: attachment.source.cwd, code: true });
+	return rows;
+}
 export const TYPE_LABEL: Record<string, string> = { login: '登入資料', note: '備註', card: '卡片', identity: '身分', sshKey: 'SSH 金鑰', unknown: '未知類型' };
 /** A type from a newer pd shows as given rather than disappearing. */
 export const typeLabel = (type: string): string => (Object.hasOwn(TYPE_LABEL, type) ? TYPE_LABEL[type] : type);
 
 /** The line under the caller: a read's shortened command, a write's field names (none for a delete). */
 export function summaryText(request: PdRequest): string {
-	return request.action === 'read' ? shortCommand(request.command) : request.fields.join('、');
+	if (request.action === 'read') return shortCommand(request.command);
+	const attached = request.attachment ? [`附件 ${request.attachment.name}`] : [];
+	return [...request.fields, ...attached].join('、');
 }
 
 /** Where a secret comes from, without its value. */
@@ -129,9 +172,10 @@ export function secretText(secret: PdSecret): string {
 
 /** The browser notification for a new request, naming the action. */
 export function notificationText(request: PdRequest): { title: string; body: string } {
-	const title = `pd 請求 #${request.id}（${actionLabel(request.action)}）等你核准`;
+	const title = `pd 請求 #${request.id}（${requestLabel(request)}）等你核准`;
+	if (request.attachment && !request.fields.length) return { title, body: `${request.item}：${request.attachment.name}` };
 	if (request.action !== 'read' && !request.fields.length) return { title, body: request.type ? `${request.item}（${typeLabel(request.type)}）` : request.item };
-	return { title, body: `${request.item}：${request.action === 'read' ? request.command.join(' ') : request.fields.join('、')}` };
+	return { title, body: `${request.item}：${request.action === 'read' ? request.command.join(' ') : summaryText(request)}` };
 }
 
 const clockText = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
