@@ -646,26 +646,37 @@ def _split_multi_answer(answer_text, labels):
     longest first; only text naming no option is cut at the next ``；``.
     """
     known = sorted(
-        {text for label in labels for text in (label, _answer_label(label)) if text},
-        key=len, reverse=True,
+        {
+            (index, text)
+            for index, label in enumerate(labels)
+            for text in (label, _answer_label(label))
+            if text
+        },
+        key=lambda item: len(item[1]), reverse=True,
     )
+    used = set()
     selections = []
     at = 0
     while at <= len(answer_text):
-        at = len(answer_text) - len(answer_text[at:].lstrip())
+        # 其他 counts only right after a separator, as it was written.
         if answer_text.startswith("其他：", at):
             return tuple(selections), answer_text[at + len("其他："):]
-        part = next(
+        at = len(answer_text) - len(answer_text[at:].lstrip())
+        whole = next(
             (
-                text for text in known
-                if answer_text.startswith(text, at)
+                (index, text) for index, text in known
+                if index not in used
+                and answer_text.startswith(text, at)
                 and _SEPARATOR_AHEAD.match(answer_text, at + len(text))
             ),
             None,
         )
-        if part is None:
+        if whole is None:
             end = answer_text.find("；", at)
             part = answer_text[at:] if end < 0 else answer_text[at:end]
+        else:
+            used.add(whole[0])
+            part = whole[1]
         if part.strip():
             selections.append(part.strip())
         separator = answer_text.find("；", at + len(part))

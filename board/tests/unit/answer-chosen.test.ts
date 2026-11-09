@@ -41,3 +41,19 @@ test('what answerText writes is what chosenIn reads back', () => {
 		expect(chosenIn(semi, withOther)).toEqual({ select, other: '想法；更多', unknown: [] });
 	}
 });
+
+test('an option that reads as two others joined is not read twice when all three were ticked', () => {
+	const joined = { kind: 'multi' as const, options: ['甲；乙', '甲', '乙'].map(option) };
+	const text = answerText(joined, [1, 2, 3], '');
+	expect(chosenIn(joined, text)).toEqual({ select: [1, 2, 3], other: '', unknown: [] });
+});
+
+test('a recommended option written with its 建議 mark is still one item', () => {
+	const marked = { kind: 'multi' as const, options: [{ ...option('做法一；含分號'), recommended: true }, option('做法二')] };
+	expect(chosenIn(marked, '做法一；含分號（建議）；做法二')).toEqual({ select: [1, 2], other: '', unknown: [] });
+});
+
+test('其他 after a space beside the separator is still read as written before (a part to match)', () => {
+	const odd = { kind: 'multi' as const, options: ['甲', '其他：乙'].map(option) };
+	expect(chosenIn(odd, '甲； 其他：乙')).toEqual({ select: [1, 2], other: '', unknown: [] });
+});

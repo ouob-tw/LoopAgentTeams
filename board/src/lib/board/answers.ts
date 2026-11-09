@@ -118,13 +118,17 @@ export function chosenIn(
 		return { select, other: '', unknown };
 	}
 	// An option's own text may hold the separator, so a not-yet-chosen option is taken whole
-	// (longest first); only text naming no option is cut at the next separator.
-	const byLength = question.options.map((option, at) => ({ at, text: label(option) })).sort((a, b) => b.text.length - a.text.length);
+	// (longest first); only text naming no option is cut at the next separator. A recommended
+	// option may also be written with its 建議 mark.
+	const candidates = question.options
+		.flatMap((option, at) => [label(option), ...(option.recommended ? [`${label(option)}（建議）`] : [])].map((text) => ({ at, text })))
+		.sort((a, b) => b.text.length - a.text.length);
 	let at = 0;
 	while (at <= answer.length) {
-		at += answer.length - at - answer.slice(at).trimStart().length;
+		// 其他 counts only right after a separator, as it was written.
 		if (answer.startsWith('其他：', at)) return { select, other: answer.slice(at + '其他：'.length), unknown };
-		const whole = byLength.find(
+		at += answer.length - at - answer.slice(at).trimStart().length;
+		const whole = candidates.find(
 			({ at: position, text }) =>
 				text && !select.includes(position + 1) && answer.startsWith(text, at) && /^\s*(；|$)/.test(answer.slice(at + text.length))
 		);
