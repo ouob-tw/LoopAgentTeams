@@ -23,7 +23,7 @@ function micFailure(error: unknown): string {
 /** Recordings by the box they are for, while some mic holds them. */
 const recordings = new Map<unknown, Recording>();
 
-export class Recording {
+class Recording {
 	phase = $state<Phase>('idle');
 	/** Whole seconds left of the recording, shown on the button. */
 	left = $state(0);

@@ -18,15 +18,22 @@
 
 	let { disabled = false, key, oninsert }: { disabled?: boolean; key?: string; oninsert: (text: string) => void } = $props();
 
-	// The box a mic is for does not change while it is shown.
-	// svelte-ignore state_referenced_locally
-	const recording = recordingFor(key ?? {});
-	$effect(() => recording.hold((text) => oninsert(text)));
-	const phase = $derived(recording.phase);
-	const left = $derived(recording.left);
+	let button = $state<HTMLButtonElement>();
+	let recording = $state<ReturnType<typeof recordingFor>>();
+	// A copy drawn inert over the page (a card shown where it will be while the page scrolls to it)
+	// takes no part in the box's recording.
+	$effect(() => {
+		if (button!.closest('[inert]')) return;
+		const mine = recordingFor(key ?? {});
+		recording = mine;
+		return mine.hold((text) => oninsert(text));
+	});
+	const phase = $derived(recording?.phase ?? 'idle');
+	const left = $derived(recording?.left ?? 0);
 </script>
 
 <button
+	bind:this={button}
 	type="button"
 	class="mic"
 	data-voice={phase}
@@ -34,7 +41,7 @@
 	title={LABELS[phase].title}
 	aria-pressed={phase === 'recording'}
 	disabled={(disabled && phase === 'idle') || phase === 'starting' || phase === 'processing'}
-	onclick={() => (phase === 'recording' ? recording.stop() : void recording.start())}
+	onclick={() => (phase === 'recording' ? recording?.stop() : void recording?.start())}
 >
 	{#if phase === 'recording'}
 		<span class="left">{Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}</span>

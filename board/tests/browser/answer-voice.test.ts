@@ -93,3 +93,26 @@ test('voice input on: each box has a mic that puts what was said at the cursor; 
 	await tab().eval(`release()`);
 	expect(tab().errors).toEqual([]);
 }, 30_000);
+
+test('a question opened from the inbox while recording into it: the copy shown while the page scrolls to it never shows a recording mic', async () => {
+	await tab().navigate(`${fixture.url}/?controller=s-voice`);
+	await tab().until(`!!document.querySelector('${card('Q-2')} form.answer')`, 'the second card');
+	await tab().eval(`[...document.querySelectorAll('${card('Q-2')} label')].find((label) => label.innerText.trim().startsWith('其他')).querySelector('input').click()`);
+	await tab().eval(fakeMic('語音'));
+	const mic = micOf(BOXES.其他);
+	await tab().until(`${mic} && !${mic}.disabled`, 'the mic of 其他');
+	await tab().eval(`${mic}.click()`);
+	await tab().until(`${mic}.dataset.voice === 'recording'`, 'recording');
+	// Every change to the page while the card is located: how many mics show a recording, in all and
+	// in the copy.
+	await tab().eval(`(() => {
+		window.observed = [];
+		new MutationObserver(() => observed.push({ recording: document.querySelectorAll('button.mic[data-voice="recording"]').length, copy: document.querySelector('.placeholder')?.querySelectorAll('button.mic').length ?? null, inCopy: document.querySelectorAll('.placeholder button.mic[data-voice="recording"]').length })).observe(document.body, { subtree: true, childList: true, attributes: true });
+		document.querySelector('.row[data-item="q:s-voice:Q-2"] .main').click();
+	})()`);
+	await tab().until(`location.search.includes('item=') && !document.querySelector('.placeholder')`, 'the card located');
+	expect(await tab().eval(`observed.some((seen) => seen.copy > 0)`)).toBe(true);
+	expect(await tab().eval<number>(`Math.max(...observed.map((seen) => seen.inCopy))`)).toBe(0);
+	expect(await tab().eval<number>(`Math.max(...observed.map((seen) => seen.recording))`)).toBe(1);
+	expect(tab().errors).toEqual([]);
+}, 30_000);
