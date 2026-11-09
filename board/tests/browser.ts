@@ -354,14 +354,17 @@ export const fakeMic = (text: string) => `(() => {
 /** The mic beside a text box that is not a MessageBox. */
 export const micOf = (box: string) => `document.querySelector(${JSON.stringify(box)})?.parentElement.querySelector(':scope > button.mic')`;
 
-/** Speak into a box through its mic (after `fakeMic`): pressed to record, pressed again to stop, and
- *  waited for until the mic is ready again. */
+/** Speak into a box through its mic (after `fakeMic`): pressed with the pointer to record, again to
+ *  stop, and waited for until the mic is ready again. */
 export async function speak(tab: Tab, box: string) {
 	await tab.until(`${micOf(box)}?.dataset.voice === 'idle' && !${micOf(box)}.disabled`, `the mic beside ${box}`);
-	await tab.eval(`${micOf(box)}.click()`);
+	await tab.eval(`(${micOf(box)}).dataset.speaking = ''`);
+	await tab.eval(`${micOf(box)}.scrollIntoView({ block: 'center' })`);
+	await tab.pointerClick('button.mic[data-speaking]');
 	await tab.until(`${micOf(box)}.dataset.voice === 'recording'`, `recording into ${box}`);
-	await tab.eval(`${micOf(box)}.click()`);
+	await tab.pointerClick('button.mic[data-speaking]');
 	await tab.until(`${micOf(box)}.dataset.voice === 'idle'`, `the speech put into ${box}`);
+	await tab.eval(`delete (${micOf(box)}).dataset.speaking`);
 }
 
 /** Run in a loaded page: requests to a path containing `path` wait until `release()` is called in

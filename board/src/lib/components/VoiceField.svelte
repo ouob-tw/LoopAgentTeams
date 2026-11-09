@@ -10,6 +10,8 @@
 	let { disabled = false, children }: { disabled?: boolean; children: Snippet } = $props();
 
 	let field = $state<HTMLDivElement>();
+	/** What wakes the on-screen keyboard again after spoken text went in. */
+	const WAKE_EVENTS = ['pointerdown', 'keydown', 'blur'] as const;
 
 	async function insert(text: string) {
 		const box = field?.querySelector('textarea');
@@ -22,9 +24,9 @@
 		box.inputMode = 'none';
 		const wake = () => {
 			box.removeAttribute('inputmode');
-			for (const type of ['pointerdown', 'keydown', 'blur']) box.removeEventListener(type, wake);
+			for (const type of WAKE_EVENTS) box.removeEventListener(type, wake);
 		};
-		for (const type of ['pointerdown', 'keydown', 'blur']) box.addEventListener(type, wake);
+		for (const type of WAKE_EVENTS) box.addEventListener(type, wake);
 		await tick();
 		box.focus();
 		box.setSelectionRange(placed.caret, placed.caret);

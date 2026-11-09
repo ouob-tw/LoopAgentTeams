@@ -340,6 +340,25 @@ test.skipIf(!CHROME)('on a phone with the keyboard up, the list opens above a bo
 	await until(`(() => { const list = document.querySelector('[role="listbox"][aria-label="Skill"]').getBoundingClientRect(); return list.top >= document.querySelector(${JSON.stringify(FIRST)}).getBoundingClientRect().bottom; })()`, 'the list back under the box');
 	await press('Escape');
 
+	// What can be seen scrolled down the page (iOS moves the visual viewport instead of the page):
+	// the list keeps inside it, from its top.
+	await keyboard(Math.round(844 - boxBottom - 40));
+	await evaluate(`(() => {
+		window.realTop ??= Object.getOwnPropertyDescriptor(VisualViewport.prototype, 'offsetTop');
+		Object.defineProperty(VisualViewport.prototype, 'offsetTop', { configurable: true, get: () => 120 });
+		visualViewport.dispatchEvent(new Event('scroll'));
+	})()`);
+	await clear(FIRST);
+	await type('請 /');
+	await shows(three);
+	at = await placed(FIRST);
+	expect(at.seenTop).toBe(120);
+	expect(at.top).toBeGreaterThanOrEqual(at.seenTop);
+	expect(at.bottom).toBeLessThanOrEqual(at.seenBottom);
+	await press('Escape');
+	await evaluate(`(() => { Object.defineProperty(VisualViewport.prototype, 'offsetTop', window.realTop); visualViewport.dispatchEvent(new Event('scroll')); })()`);
+	await keyboard(0);
+
 	// The command line above a keyboard: its list opens above it, inside what can be seen.
 	await keyboard(340);
 	await clear(LINE);

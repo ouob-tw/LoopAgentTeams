@@ -125,7 +125,8 @@ test.skipIf(!CHROME)('with voice input on, the reason box has a mic that puts wh
 	putAsk('p-voice', 's-ask');
 	const tab = await open('', { voice: true });
 	await openAgent(tab, 's-ask');
-	const box = '.detail [data-ask="p-voice"] textarea';
+	// Once placed in the conversation: placing it draws it anew, which would drop a recording under way.
+	const box = '.detail li.ask [data-ask="p-voice"] textarea';
 	await tab.until(`document.querySelector('${box}')`, 'the card');
 	await tab.eval(fakeMic('還沒'));
 	await tab.eval(`(() => { const box = document.querySelector('${box}'); box.value = '建檔'; box.dispatchEvent(new Event('input', { bubbles: true })); box.setSelectionRange(0, 0); })()`);

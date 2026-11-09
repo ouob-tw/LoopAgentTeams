@@ -147,14 +147,15 @@
 		observer.observe(box);
 		window.addEventListener('resize', fitList);
 		document.addEventListener('scroll', fitList, true);
-		window.visualViewport?.addEventListener('resize', fitList);
-		window.visualViewport?.addEventListener('scroll', fitList);
+		const view = window.visualViewport;
+		view?.addEventListener('resize', fitList);
+		view?.addEventListener('scroll', fitList);
 		return () => {
 			observer.disconnect();
 			window.removeEventListener('resize', fitList);
 			document.removeEventListener('scroll', fitList, true);
-			window.visualViewport?.removeEventListener('resize', fitList);
-			window.visualViewport?.removeEventListener('scroll', fitList);
+			view?.removeEventListener('resize', fitList);
+			view?.removeEventListener('scroll', fitList);
 		};
 	});
 	// The highlighted one stays in sight.

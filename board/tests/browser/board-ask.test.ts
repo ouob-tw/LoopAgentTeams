@@ -153,8 +153,9 @@ test('with voice input on, the 其他 box has a mic that puts what was said at t
 	await tab.until(`document.querySelector('[data-agent="s-ask"]').innerText.includes('等你回答')`, 'the list to say 等你回答');
 	await tab.eval(`document.querySelector('[data-agent="s-ask"]').click()`);
 	await tab.until(`document.querySelector('${card}')`, 'the card');
-	// The card still waiting: the earlier test's answered one is on the page too.
-	const mine = `${card}[data-state="waiting"]`;
+	// The card still waiting (the earlier test's answered one is on the page too), once placed in
+	// the conversation: placing it draws it anew, which would drop a recording under way.
+	const mine = `.detail li.ask [data-ask][data-state="waiting"]`;
 	await tab.until(`document.querySelector('${mine}')`, 'the waiting card');
 	await tab.eval(`[...document.querySelectorAll('${mine} [data-question="0"] label')].find((entry) => entry.innerText.split('\\n')[0] === '其他').querySelector('input').click()`);
 	const box = `${mine} [data-question="0"] textarea`;
