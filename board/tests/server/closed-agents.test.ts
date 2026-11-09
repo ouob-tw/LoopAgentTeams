@@ -77,9 +77,11 @@ const sentLog = () => {
 	const file = join(fixture.dir, 'board-state', 'sent-log.jsonl');
 	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
 };
+/** The fake hcom's calls so far. It may be writing one while this reads: its file can be empty or end
+ *  in part of a line, so only whole lines count. */
 const hcomCalls = (): { args: string[]; workspace: string | null; tag: string | null }[] => {
 	const file = join(fixture.dir, 'hcom-calls.jsonl');
-	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
+	return existsSync(file) ? readFileSync(file, 'utf8').split('\n').slice(0, -1).map((line) => JSON.parse(line)) : [];
 };
 const resume = (session: string, wake: object = {}) =>
 	fixture.fetch('/api/agents/closed/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session, ...wake }), cookie });
@@ -104,6 +106,8 @@ afterAll(async () => {
 	socket?.close();
 	rmSync(socketDir, { recursive: true, force: true });
 });
+// Restarts take any free port: nothing here keeps a page open on the old one, and the old one may
+// be taken by another process by then.
 beforeEach(async () => {
 	await fixture.stop();
 	for (const name of ['hcom.json', 'herdr.json', 'hcom-added.json', 'hcom-events.jsonl', 'hcom-calls.jsonl', 'herdr-calls.jsonl', 'transcripts']) {
@@ -114,13 +118,13 @@ beforeEach(async () => {
 	rmSync(join(fixture.dir, 'clock'), { force: true });
 	fixture.list([]);
 	fixture.setHcom({ agents: [] });
-	await fixture.start();
+	await fixture.start({ anyPort: true });
 });
 
 test('one closed in its Herdr pane is listed with what the board saw of it and its stop', async () => {
 	// Restarted for a clean memory of who was seen; the seen file is removed before each test.
 	await fixture.stop();
-	await fixture.start();
+	await fixture.start({ anyPort: true });
 	record('s-a');
 	await seeThenGone('s-a');
 	stopEvent('s-a', 'pty', { name: 'aaaa', reason: 'closed', ts: '2026-10-20T05:46:07' });
@@ -192,7 +196,7 @@ test('what the board saw is kept in its state directory across a restart, and dr
 	stopEvent('s-kept', 'session', { reason: 'exit:prompt_input_exit', ts: new Date(stoppedAt).toISOString() });
 	expect(await ids()).toEqual(['s-kept']);
 	await fixture.stop();
-	await fixture.start();
+	await fixture.start({ anyPort: true });
 	expect(await ids()).toEqual(['s-kept']);
 	const seenFile = join(fixture.dir, 'board-state', 'seen-agents.json');
 	// The other tests' agents are in it too: the board's memory of them outlives their files.
@@ -361,7 +365,7 @@ test('接回 is refused while hcom, Herdr or the stop list cannot be read now, w
 
 test('an agent seen while the stop list cannot be read is still recorded, and listed after a restart', async () => {
 	await fixture.stop();
-	await fixture.start();
+	await fixture.start({ anyPort: true });
 	fixture.setHcom({ agents: [], eventsFail: { exit: 1, stderr: 'events down' } });
 	record('s-early');
 	setHerdr([herdrAgent('s-early')]);
@@ -371,7 +375,7 @@ test('an agent seen while the stop list cannot be read is still recorded, and li
 	fixture.setHcom({ agents: [] });
 	stopEvent('s-early', 'pty', { reason: 'closed' });
 	await fixture.stop();
-	await fixture.start();
+	await fixture.start({ anyPort: true });
 	expect(await ids()).toEqual(['s-early']);
 });
 

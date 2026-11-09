@@ -44,6 +44,9 @@ test.skipIf(!CHROME)('a throwing Notification constructor does not break the pag
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.navigate(`${fixture.url}/`);
 	await tab.until(`document.querySelectorAll('.inbox .pd .card').length === 1`, 'the first card');
+	// The server draws the card, so it is there before the page hydrates, and a click before then
+	// does nothing. Once the panel has mounted it knows this page cannot use the passkey.
+	await tab.until(`document.querySelector('.pd .approve')?.getAttribute('aria-describedby') === 'pd-no-passkey'`, 'the panel mounted');
 	await tab.pointerClick('.pd button.later');
 	await tab.until(`!document.querySelector('.inbox .pd') && !!document.querySelector('.pd-badge')`, 'the panel folded');
 

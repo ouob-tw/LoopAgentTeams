@@ -1,0 +1,12 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/wake.ts"
+      ],
+      "tests": [
+        "board/tests/unit/settle-resumes.test.ts"
+      ]
+    }
+  ]
+}
