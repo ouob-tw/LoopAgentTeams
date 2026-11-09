@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, uvPython, type Fixture } from '../harness.ts';
-import { CHROME, fakeMic, launchChrome, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
+import { CHROME, fakeMic, launchChrome, micIconOff, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
 
 const SECTION = `document.querySelector('dialog section[aria-label="預先授權（全域）"]')`;
 const FILE_TEXT = `# my notes
@@ -111,6 +111,7 @@ test.skipIf(!CHROME)('with voice input on, each rule has a mic that puts what wa
 	const box = 'textarea[aria-label="可自行定案第 1 條"]';
 	await tab.until(`${SECTION}.querySelector('${box}')?.value === '先有的一條'`, 'the rule');
 	await tab.eval(fakeMic('還有'));
+	expect(await tab.eval<number>(micIconOff(box))).toBeLessThanOrEqual(1);
 	await tab.eval(`(() => { const box = document.querySelector('${box}'); box.focus(); box.setSelectionRange(2, 2); })()`);
 	await speak(tab, box);
 	await tab.until(`document.querySelector('${box}').value === '先有還有的一條'`, 'the speech at the cursor');

@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, fakeMic, holdRequests, launchChrome, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
+import { CHROME, fakeMic, holdRequests, launchChrome, micIconOff, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
 
 const HOOK = join(import.meta.dir, '../../hooks/board-ask.py');
 const SCREEN = `({ search: location.search, detail: document.querySelector('.detail')?.innerText ?? '', notices: document.querySelector('.dock .toasts')?.innerText ?? '' })`;
@@ -129,6 +129,7 @@ test.skipIf(!CHROME)('with voice input on, the reason box has a mic that puts wh
 	const box = '.detail li.ask [data-ask="p-voice"] textarea';
 	await tab.until(`document.querySelector('${box}')`, 'the card');
 	await tab.eval(fakeMic('還沒'));
+	expect(await tab.eval<number>(micIconOff(box))).toBeLessThanOrEqual(1);
 	await tab.eval(`(() => { const box = document.querySelector('${box}'); box.value = '建檔'; box.dispatchEvent(new Event('input', { bubbles: true })); box.setSelectionRange(0, 0); })()`);
 	await speak(tab, box);
 	await tab.until(`document.querySelector('${box}').value === '還沒建檔'`, 'the speech at the cursor');

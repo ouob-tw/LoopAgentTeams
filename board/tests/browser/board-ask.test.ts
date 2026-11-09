@@ -1,4 +1,4 @@
-import { fakeMic, holdRequests, launchChrome, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
+import { fakeMic, holdRequests, launchChrome, micIconOff, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
 // A board ask from end to end in a real browser: the real hook asks (as Claude would run it) into
 // the test board's shared folder, the agent's page shows the card, the answer goes back through the
 // hook. Two browsers answering at once: one answer counts, the other is told someone answered.
@@ -161,6 +161,7 @@ test('with voice input on, the 其他 box has a mic that puts what was said at t
 	const box = `${mine} [data-question="0"] textarea`;
 	await tab.until(`document.querySelector('${box}')`, 'the 其他 box');
 	await tab.eval(fakeMic('紫色'));
+	expect(await tab.eval<number>(micIconOff(box))).toBeLessThanOrEqual(1);
 	// The box stays on its own row under 其他, as without the mic.
 	expect(await tab.eval<number>(`document.querySelector('${box}').getBoundingClientRect().top - [...document.querySelectorAll('${mine} [data-question="0"] label')].find((entry) => entry.innerText.startsWith('其他')).getBoundingClientRect().bottom`)).toBeGreaterThanOrEqual(0);
 	await tab.eval(`(() => { const box = document.querySelector('${box}'); box.value = '要的'; box.dispatchEvent(new Event('input', { bubbles: true })); box.setSelectionRange(1, 1); })()`);

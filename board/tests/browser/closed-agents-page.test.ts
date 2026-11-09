@@ -1,5 +1,5 @@
 import { answerHerdrList } from '../harness.ts';
-import { CHROME, fakeMic, launchChrome, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
+import { CHROME, fakeMic, launchChrome, micIconOff, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
 // The Herdr tab's 已關閉 section in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with fake hcom, Herdr and helper, wide and at a phone's width. The
 // board runs in Taipei time, so its calendar days are not the test host's. Skipped when the host
@@ -396,6 +396,7 @@ test.skipIf(!CHROME)("390px, voice input on: the wake's first message has a mic 
 	const box = '.detail [data-wake="s-lead"] textarea';
 	await tab.until(`!!document.querySelector('${box}')`, "the wake's options");
 	await tab.eval(fakeMic('繼續'));
+	expect(await tab.eval<number>(micIconOff(box))).toBeLessThanOrEqual(1);
 	await tab.eval(`(() => { const box = document.querySelector('${box}'); box.value = '/lat '; box.dispatchEvent(new Event('input', { bubbles: true })); box.setSelectionRange(5, 5); })()`);
 	await speak(tab, box);
 	await tab.until(`document.querySelector('${box}').value === '/lat 繼續'`, 'the speech at the cursor');

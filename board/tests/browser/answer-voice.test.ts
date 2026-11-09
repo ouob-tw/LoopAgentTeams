@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { question, startFixture, type Fixture } from '../harness.ts';
-import { fakeMic, holdRequests, launchChrome, micOf, shot, speak, type Browser } from '../browser.ts';
+import { fakeMic, holdRequests, launchChrome, micIconOff, micOf, shot, speak, type Browser } from '../browser.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -75,6 +75,7 @@ test('voice input on: each box has a mic that puts what was said at the cursor; 
 	const looks = (mic: string) => `(() => { const style = getComputedStyle(${mic}); return [style.color, style.borderTopColor, style.backgroundColor].join(' '); })()`;
 	const line = await tab().eval<string>(looks(`document.querySelector('.cmd .voice-slot button')`));
 	for (const box of Object.values(BOXES)) expect(await tab().eval<string>(looks(micOf(box)))).toBe(line);
+	for (const box of Object.values(BOXES)) expect(await tab().eval<number>(micIconOff(box))).toBeLessThanOrEqual(1);
 	const below = await tab().eval<number>(`document.querySelector('${BOXES.其他}').getBoundingClientRect().top - [...document.querySelectorAll('${card('Q-2')} label')].find((label) => label.innerText.trim().startsWith('其他')).getBoundingClientRect().bottom`);
 	expect(below).toBeGreaterThanOrEqual(0);
 	for (const [name, box] of Object.entries(BOXES)) {

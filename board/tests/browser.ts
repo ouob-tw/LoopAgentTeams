@@ -354,6 +354,15 @@ export const fakeMic = (text: string) => `(() => {
 /** The mic beside a text box that is not a MessageBox. */
 export const micOf = (box: string) => `document.querySelector(${JSON.stringify(box)})?.parentElement.querySelector(':scope > button.mic')`;
 
+/** How much the icon of the mic beside `box` differs in size from the command line's mic icon, in
+ *  CSS pixels: the larger of the width and height differences. */
+export const micIconOff = (box: string) => `(() => {
+	const size = (mic) => mic.querySelector('svg').getBoundingClientRect();
+	const mine = size(${micOf(box)});
+	const line = size(document.querySelector('.cmd .voice-slot button'));
+	return Math.max(Math.abs(mine.width - line.width), Math.abs(mine.height - line.height));
+})()`;
+
 /** Speak into a box through its mic (after `fakeMic`): pressed with the pointer to record, again to
  *  stop, and waited for until the mic is ready again. */
 export async function speak(tab: Tab, box: string) {

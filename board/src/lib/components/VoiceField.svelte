@@ -52,6 +52,10 @@
 		width: 100%;
 		color: var(--text);
 	}
+	/* The page's text size, as the command line's mic has: a smaller label's would shrink the icon. */
+	.voice-field > :global(.mic) {
+		font-size: max(1rem, var(--min-font, 0px));
+	}
 	.voice-field > :global(textarea) {
 		flex: 1;
 		min-width: 0;
