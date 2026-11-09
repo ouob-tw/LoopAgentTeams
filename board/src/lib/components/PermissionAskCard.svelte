@@ -13,6 +13,7 @@
 	// handed back to its terminal, or one answered in Claude's terminal, is read-only and says why.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import TestDenied from './TestDenied.svelte';
+	import VoiceField from './VoiceField.svelte';
 	import { request } from '#lib/board/api.ts';
 	import {
 		ASK_TAKEN_REASON,
@@ -113,7 +114,9 @@
 	{/if}
 
 	{#if answerable}
-		<textarea rows="2" aria-label="拒絕理由" placeholder="拒絕理由（選填，拒絕時會告訴它）" disabled={sending || testDevice.view !== null} bind:value={() => reasons[ask.id] ?? '', (text) => (reasons[ask.id] = text)}></textarea>
+		<VoiceField disabled={sending || testDevice.view !== null}>
+			<textarea rows="2" aria-label="拒絕理由" placeholder="拒絕理由（選填，拒絕時會告訴它）" disabled={sending || testDevice.view !== null} bind:value={() => reasons[ask.id] ?? '', (text) => (reasons[ask.id] = text)}></textarea>
+		</VoiceField>
 		<TestDenied />
 		<div class="actions">
 			<button class="primary" disabled={sending || testDevice.view !== null} onclick={() => submit('allow')}>允許</button>

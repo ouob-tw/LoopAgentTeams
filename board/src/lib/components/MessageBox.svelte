@@ -122,9 +122,11 @@
 	let place = $state({ below: false, room: LIST_MAX_PX });
 	function fitList() {
 		const frame = box.getBoundingClientRect();
-		// What can be seen: the window, less whatever an ancestor that scrolls or clips cuts off.
-		let top = 0;
-		let bottom = window.innerHeight;
+		// What can be seen: the window, less whatever an ancestor that scrolls or clips cuts off. On a
+		// phone the on-screen keyboard shrinks only the visual viewport, so that bounds the window.
+		const view = window.visualViewport;
+		let top = view ? view.offsetTop : 0;
+		let bottom = view ? view.offsetTop + view.height : window.innerHeight;
 		for (let parent = box.parentElement; parent; parent = parent.parentElement) {
 			if (getComputedStyle(parent).overflowY === 'visible') continue;
 			const rect = parent.getBoundingClientRect();
@@ -136,7 +138,8 @@
 		const below = above < LIST_MAX_PX && under > above;
 		place = { below, room: Math.max(0, below ? under : above) };
 	}
-	// Fitted when it opens, and again while it is open as the window, a scrolled ancestor or the box changes.
+	// Fitted when it opens, and again while it is open as the window, the visible part of it (an
+	// on-screen keyboard coming or going), a scrolled ancestor or the box changes.
 	$effect(() => {
 		if (!hinting) return;
 		fitList();
@@ -144,10 +147,14 @@
 		observer.observe(box);
 		window.addEventListener('resize', fitList);
 		document.addEventListener('scroll', fitList, true);
+		window.visualViewport?.addEventListener('resize', fitList);
+		window.visualViewport?.addEventListener('scroll', fitList);
 		return () => {
 			observer.disconnect();
 			window.removeEventListener('resize', fitList);
 			document.removeEventListener('scroll', fitList, true);
+			window.visualViewport?.removeEventListener('resize', fitList);
+			window.visualViewport?.removeEventListener('scroll', fitList);
 		};
 	});
 	// The highlighted one stays in sight.

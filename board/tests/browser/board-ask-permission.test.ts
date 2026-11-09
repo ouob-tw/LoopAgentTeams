@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, fakeMic, holdRequests, launchChrome, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
 
 const HOOK = join(import.meta.dir, '../../hooks/board-ask.py');
 const SCREEN = `({ search: location.search, detail: document.querySelector('.detail')?.innerText ?? '', notices: document.querySelector('.dock .toasts')?.innerText ?? '' })`;
@@ -68,8 +68,8 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-async function open(search = ''): Promise<Tab> {
-	const browser = await launchChrome({ screen: SCREEN });
+async function open(search = '', { voice = false } = {}): Promise<Tab> {
+	const browser = await launchChrome({ screen: SCREEN, scripts: voice ? [`localStorage.setItem('lat-board-voice', '1')`] : [] });
 	browsers.push(browser);
 	const { tab } = browser;
 	const [name, value] = cookie.split('=');
@@ -105,6 +105,9 @@ test.skipIf(!CHROME)('Claude\'s permission request shows its tool and command; a
 	expect(await tab.eval(`getComputedStyle(${card(id)}.querySelector('pre')).fontFamily`)).toContain('monospace');
 	expect(await tab.eval(`${card(id)}.querySelector('[role="timer"]').innerText`)).toMatch(/^剩 [01]:\d\d/);
 
+	// Voice input is off on this browser: no mic beside the reason.
+	expect(await tab.eval(`!${micOf(`.detail [data-ask="${id}"] textarea`)}`)).toBe(true);
+	await shot(tab, 'deny-reason-voice-off', { phone: true, box: `.detail [data-ask="${id}"] textarea`, back: { width: 1280, height: 900 } });
 	await tab.eval(`(() => { const box = ${card(id)}.querySelector('textarea'); box.value = '先不要建檔'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 	await tab.eval(press(id, '拒絕'));
 	const [code, stdout] = await decided;
@@ -116,6 +119,25 @@ test.skipIf(!CHROME)('Claude\'s permission request shows its tool and command; a
 	expect(await tab.eval(`${card(id)}.querySelectorAll('button').length`)).toBe(0);
 	const log = await (await fixture.fetch('/api/agents/log?session=s-ask', { cookie })).json();
 	expect(log.entries.find((entry: { action: string; ok: boolean }) => entry.action === 'board-ask' && entry.ok).text).toBe('拒絕：Bash touch perm-probe.txt\n理由：先不要建檔');
+});
+
+test.skipIf(!CHROME)('with voice input on, the reason box has a mic that puts what was said at the cursor, and it cannot be pressed while the answer is sending', async () => {
+	putAsk('p-voice', 's-ask');
+	const tab = await open('', { voice: true });
+	await openAgent(tab, 's-ask');
+	const box = '.detail [data-ask="p-voice"] textarea';
+	await tab.until(`document.querySelector('${box}')`, 'the card');
+	await tab.eval(fakeMic('還沒'));
+	await tab.eval(`(() => { const box = document.querySelector('${box}'); box.value = '建檔'; box.dispatchEvent(new Event('input', { bubbles: true })); box.setSelectionRange(0, 0); })()`);
+	await speak(tab, box);
+	await tab.until(`document.querySelector('${box}').value === '還沒建檔'`, 'the speech at the cursor');
+	await shot(tab, 'deny-reason-voice-on', { phone: true, box, back: { width: 1280, height: 900 } });
+	await tab.eval(holdRequests('/api/asks/answer'));
+	await tab.eval(press('p-voice', '拒絕'));
+	await tab.until(`document.querySelector('${box}').disabled`, 'the box disabled while sending');
+	expect(await tab.eval(`${micOf(box)}.disabled`)).toBe(true);
+	await tab.eval(`release()`);
+	await tab.until(`!document.querySelector('${box}')`, 'the answer taken');
 });
 
 test.skipIf(!CHROME)('Codex\'s MCP request with its turn ended says so and folds a long input; the cards that take no answer say why', async () => {

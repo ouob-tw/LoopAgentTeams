@@ -1,4 +1,4 @@
-import { launchChrome, type Browser, type Tab } from '../browser.ts';
+import { fakeMic, holdRequests, launchChrome, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
 // A board ask from end to end in a real browser: the real hook asks (as Claude would run it) into
 // the test board's shared folder, the agent's page shows the card, the answer goes back through the
 // hook. Two browsers answering at once: one answer counts, the other is told someone answered.
@@ -55,8 +55,8 @@ afterAll(async () => {
 });
 
 /** A new Chrome on the board's Herdr 分頁 with the asking agent's page open. */
-async function open(): Promise<Tab> {
-	const browser = await launchChrome({ screen: SCREEN });
+async function open({ voice = false } = {}): Promise<Tab> {
+	const browser = await launchChrome({ screen: SCREEN, scripts: voice ? [`localStorage.setItem('lat-board-voice', '1')`] : [] });
 	browsers.push(browser);
 	const { tab } = browser;
 	const [name, value] = cookie.split('=');
@@ -108,6 +108,9 @@ test('the question shows on its agent\'s page, is answered there and goes back t
 	await choose(tab, 1, 'Cherry, sour');
 	await choose(tab, 1, '其他');
 	await tab.until(`document.querySelector('${card} [data-question="1"] textarea')`, 'the 其他 box');
+	// Voice input is off on this browser: no mic beside the box.
+	expect(await tab.eval(`!${micOf(`${card} [data-question="1"] textarea`)}`)).toBe(true);
+	await shot(tab, 'ask-other-voice-off', { phone: true, box: `${card} [data-question="1"] textarea`, back: { width: 1280, height: 900 } });
 	await tab.eval(`(() => { const box = document.querySelector('${card} [data-question="1"] textarea'); box.value = 'Mango'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 	await tab.eval(`document.querySelector('${sendButton}').click()`);
 
@@ -141,6 +144,35 @@ test('the question shows on its agent\'s page, is answered there and goes back t
 	await tab.eval(`document.querySelector('.detail [data-tab="log"]').click()`);
 	await tab.until(`document.querySelector('.detail [data-action="board-ask"]')`, 'the operation record entry');
 	expect(await tab.eval(`document.querySelector('.detail [data-action="board-ask"]').innerText`)).toMatch(/看板提問[\s\S]*已送出答案[\s\S]*Pick a color\? → Blue\nPick fruits\? → Apple, Cherry, sour, Mango/);
+	expect(tab.errors).toEqual([]);
+}, 60_000);
+
+test('with voice input on, the 其他 box has a mic that puts what was said at the cursor, and it cannot be pressed while the answer is sending', async () => {
+	const answered = ask([QUESTIONS[0]]);
+	const tab = await open({ voice: true });
+	await tab.until(`document.querySelector('[data-agent="s-ask"]').innerText.includes('等你回答')`, 'the list to say 等你回答');
+	await tab.eval(`document.querySelector('[data-agent="s-ask"]').click()`);
+	await tab.until(`document.querySelector('${card}')`, 'the card');
+	// The card still waiting: the earlier test's answered one is on the page too.
+	const mine = `${card}[data-state="waiting"]`;
+	await tab.until(`document.querySelector('${mine}')`, 'the waiting card');
+	await tab.eval(`[...document.querySelectorAll('${mine} [data-question="0"] label')].find((entry) => entry.innerText.split('\\n')[0] === '其他').querySelector('input').click()`);
+	const box = `${mine} [data-question="0"] textarea`;
+	await tab.until(`document.querySelector('${box}')`, 'the 其他 box');
+	await tab.eval(fakeMic('紫色'));
+	// The box stays on its own row under 其他, as without the mic.
+	expect(await tab.eval<number>(`document.querySelector('${box}').getBoundingClientRect().top - [...document.querySelectorAll('${mine} [data-question="0"] label')].find((entry) => entry.innerText.startsWith('其他')).getBoundingClientRect().bottom`)).toBeGreaterThanOrEqual(0);
+	await tab.eval(`(() => { const box = document.querySelector('${box}'); box.value = '要的'; box.dispatchEvent(new Event('input', { bubbles: true })); box.setSelectionRange(1, 1); })()`);
+	await speak(tab, box);
+	await tab.until(`document.querySelector('${box}').value === '要紫色的'`, 'the speech at the cursor');
+	await shot(tab, 'ask-other-voice-on', { phone: true, box, back: { width: 1280, height: 900 } });
+	await tab.eval(holdRequests('/api/asks/answer'));
+	await tab.eval(`document.querySelector('${mine} form button').click()`);
+	await tab.until(`document.querySelector('${box}').disabled`, 'the box disabled while sending');
+	expect(await tab.eval(`${micOf(box)}.disabled`)).toBe(true);
+	await tab.eval(`release()`);
+	const { stdout } = await answered;
+	expect(JSON.parse(stdout).hookSpecificOutput.updatedInput.answers).toEqual({ 'Pick a color?': '要紫色的' });
 	expect(tab.errors).toEqual([]);
 }, 60_000);
 
