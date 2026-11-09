@@ -235,7 +235,7 @@
 							<span class="option">其他</span>
 						</label>
 						{#if draft.other}
-							<VoiceField disabled={sending}>
+							<VoiceField disabled={sending} key="answer-{item.key}-other">
 								<textarea
 									rows="2"
 									aria-label="其他的內容"
@@ -278,7 +278,7 @@
 				{#if !choice}
 					<label class="field" for="{fieldId}-text">
 						<span>答覆</span>
-						<VoiceField disabled={sending}>
+						<VoiceField disabled={sending} key="answer-{item.key}-text">
 							<textarea
 								id="{fieldId}-text"
 								rows="3"
@@ -290,7 +290,7 @@
 				{/if}
 				<label class="field" for="{fieldId}-note">
 					<span>備註（可不填）</span>
-					<VoiceField disabled={sending}>
+					<VoiceField disabled={sending} key="answer-{item.key}-note">
 						<textarea
 							id="{fieldId}-note"
 							rows="2"

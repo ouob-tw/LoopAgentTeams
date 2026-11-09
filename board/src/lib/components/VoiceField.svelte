@@ -7,7 +7,8 @@
 	import { insertAt } from '#lib/board/voice.ts';
 	import VoiceButton from './VoiceButton.svelte';
 
-	let { disabled = false, children }: { disabled?: boolean; children: Snippet } = $props();
+	/** `key` names the box, so a recording goes on when the field is drawn again (see VoiceButton). */
+	let { disabled = false, key, children }: { disabled?: boolean; key?: string; children: Snippet } = $props();
 
 	let field = $state<HTMLDivElement>();
 	/** What wakes the on-screen keyboard again after spoken text went in. */
@@ -35,7 +36,7 @@
 
 {#if voice.unlocked}
 	<div class="voice-field" bind:this={field}>
-		<VoiceButton {disabled} oninsert={insert} />
+		<VoiceButton {disabled} {key} oninsert={insert} />
 		{@render children()}
 	</div>
 {:else}

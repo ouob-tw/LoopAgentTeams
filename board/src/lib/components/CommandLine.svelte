@@ -206,8 +206,8 @@
 	let confirming = $state<Record<string, boolean>>({});
 
 	/** A phone's width: the controls under the box go into one row of their own that scrolls sideways.
-	 *  Crossing it rebuilds those controls (a recording in progress stops); the server renders the wide
-	 *  form, so a phone rebuilds them once on load too. */
+	 *  Crossing it rebuilds those controls (an open menu closes; a recording goes on, see VoiceButton);
+	 *  the server renders the wide form, so a phone rebuilds them once on load too. */
 	const narrow = new MediaQuery('(max-width: 760px)', false);
 
 	const id = $derived(recipient?.id ?? '');
@@ -323,7 +323,7 @@
 {#snippet attachAndVoice()}
 	<span class="attach-slot"><AttachButton owner={attachOwner} disabled={boxDisabled} /></span>
 	{#if voice.unlocked}
-		<span class="voice-slot"><VoiceButton disabled={boxDisabled} oninsert={(text) => messageBox?.insert(text)} /></span>
+		<span class="voice-slot"><VoiceButton disabled={boxDisabled} key="command-line" oninsert={(text) => messageBox?.insert(text)} /></span>
 	{/if}
 {/snippet}
 

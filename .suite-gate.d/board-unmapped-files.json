@@ -5,9 +5,10 @@
       "tests": ["board/tests/browser/*.test.ts", "board/tests/unit/build-dir.test.ts"]
     },
     {
-      "paths": ["board/src/lib/components/VoiceField.svelte", "board/src/lib/components/VoiceButton.svelte"],
+      "paths": ["board/src/lib/components/VoiceField.svelte", "board/src/lib/components/VoiceButton.svelte", "board/src/lib/board/voice-recording.svelte.ts"],
       "tests": [
         "board/tests/browser/answer-voice.test.ts",
+        "board/tests/browser/voice-remount.test.ts",
         "board/tests/browser/board-ask.test.ts",
         "board/tests/browser/board-ask-permission.test.ts",
         "board/tests/browser/closed-agents-page.test.ts",
