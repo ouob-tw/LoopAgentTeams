@@ -393,23 +393,33 @@ def is_round_ticket(ref, tickets, own=None):
 
 def unpushed_commit_problems(top, version, ledger):
     """Commits the remotes lack must each reference only tickets of this round's ledger.
+    A ticket-less merge passes as a sync merge when each parent is on a remote or an unpushed
+    commit that passed, and at least one parent is such an unpushed commit.
     Each problem is a (kind, reason) pair."""
     if ledger is None:
         return [('error',
                  'no active round ledger to tell whose tickets the unpushed commits belong to')]
     tickets, own = round_tickets(ledger), own_tracker(top)
-    log = git(top, 'log', '--format=%H%x1f%s%x1f%B%x1e', version, '--not', '--remotes')
+    log = git(top, 'log', '--reverse', '--topo-order', '--format=%H%x1f%P%x1f%s%x1f%B%x1e',
+              version, '--not', '--remotes')
     if log is None:
         return [('error', f'cannot list the commits the remotes lack for {version[:12]}')]
-    foreign = []
-    for entry in filter(None, (part.strip('\n') for part in log.split('\x1e'))):
-        sha, subject, body = entry.split('\x1f', 2)
+    entries = [entry.split('\x1f', 3)
+               for entry in filter(None, (part.strip('\n') for part in log.split('\x1e')))]
+    unpushed_shas = {sha for sha, *_ in entries}
+    foreign, passed = [], set()
+    for sha, parents, subject, body in entries:  # parents before children
         refs = {(repo.lower(), number) for repo, number in ISSUE_REF.findall(body)}
         others = sorted(ticket_name(ref) for ref in refs if not is_round_ticket(ref, tickets, own))
-        if not refs:
-            foreign.append(f'{sha[:12]} "{subject}" (no ticket)')
-        elif others:
+        parents = parents.split()
+        sync_merge = (len(parents) > 1 and any(p in passed for p in parents)
+                      and all(p in passed or p not in unpushed_shas for p in parents))
+        if others:
             foreign.append(f'{sha[:12]} "{subject}" ({", ".join(others)})')
+        elif not refs and not sync_merge:
+            foreign.append(f'{sha[:12]} "{subject}" (no ticket)')
+        else:
+            passed.add(sha)
     if not foreign:
         return []
     names = ', '.join(sorted(ticket_name(ticket) for ticket in tickets)) or 'none'
