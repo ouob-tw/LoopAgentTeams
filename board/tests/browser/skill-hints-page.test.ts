@@ -360,9 +360,11 @@ test.skipIf(!CHROME)('on a phone with the keyboard up, the list opens above a bo
 	await evaluate(`(() => { Object.defineProperty(VisualViewport.prototype, 'offsetTop', window.realTop); visualViewport.dispatchEvent(new Event('scroll')); })()`);
 	await keyboard(0);
 
-	// The command line above a keyboard: its list opens above it, inside what can be seen.
-	await keyboard(340);
+	// The command line above a keyboard: its list opens above it, inside what can be seen. The line is
+	// focused first, as a tap on it brings the keyboard up; while the form's box has the focus with the
+	// keyboard up the line is put away (#512).
 	await clear(LINE);
+	await keyboard(340);
 	await type('@luna /');
 	await shows(three);
 	at = await placed(LINE);

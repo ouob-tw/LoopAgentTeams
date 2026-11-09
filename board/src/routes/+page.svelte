@@ -318,10 +318,13 @@
 	const phone = new MediaQuery('(max-width: 760px)', false);
 	let typingElsewhere = $state(false);
 	onMount(() => {
-		const follow = (event: FocusEvent) => {
-			const at = event.type === 'focusin' ? event.target : event.relatedTarget;
-			typingElsewhere = at instanceof HTMLElement && at.closest('.dock') === null && typesText(at);
-		};
+		// Read once the focus has settled: a focused element removed while the page updates moves the
+		// focus away in the middle of that update, where no state may change.
+		const follow = () =>
+			queueMicrotask(() => {
+				const at = document.activeElement;
+				typingElsewhere = at instanceof HTMLElement && at.closest('.dock') === null && typesText(at);
+			});
 		document.addEventListener('focusin', follow);
 		document.addEventListener('focusout', follow);
 		return () => {
