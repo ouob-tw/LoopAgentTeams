@@ -313,7 +313,9 @@ export interface Fixture {
 	/** One page of the archive as the server sends it: the newest, or the one after `before`. */
 	archivePage(cookie: string, before?: string | null): Promise<Response>;
 	watch(cookie: string): Watch;
-	start(): Promise<void>;
+	/** Start the server. A restart asks for the port it had, which a page open on it needs; with
+	 *  `anyPort`, for any free one, as another process may take that port while the server is down. */
+	start(options?: { anyPort?: boolean }): Promise<void>;
 	stop(): Promise<void>;
 	cleanup(): Promise<void>;
 	/** Everything the server has written to its standard output and error so far. */
@@ -573,8 +575,8 @@ export async function startFixture(
 			watches.push(watch);
 			return watch;
 		},
-		async start() {
-			server = spawn(options.runtime ?? NODE, [BUILD], { env: { ...env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+		async start({ anyPort = false } = {}) {
+			server = spawn(options.runtime ?? NODE, [BUILD], { env: { ...env, PORT: String(anyPort ? 0 : port) }, stdio: ['ignore', 'pipe', 'pipe'] });
 			const child = server;
 			let heard = '';
 			child.stderr!.on('data', (chunk) => ((output += chunk), process.stderr.write(chunk)));
