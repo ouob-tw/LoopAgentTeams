@@ -104,7 +104,7 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 - 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者（含隔離 client 家目錄）先用 `shred -u`，再移除所在 worktree。核對 `temp paths` 的位置都已不存在、`.lat` 無家目錄副本。
 - 以 `git worktree remove` 移除該任務的獨立 worktree，在整合分支的工作區執行 `git branch -d` 刪除任務分支（`-d` 檢查是否已合入該工作區的 `HEAD`，有上游分支則檢查上游）；`-D` 僅限使用者確認放棄。
-- **先**結案任務卡，**再**關閉 Agent：`uv run --no-project python <lat_dir>/scripts/lat-dispatch.py card close --card <卡片> --status committed|merged|completed --deliverable <commit 或證據>`（`merged` 加 `--merged-into <整合分支>`）。一次改欄位、移到 `.lat/tasks/done/`、更新總表，失敗全部還原。移走後停住監控不再盯該 Agent；卡片仍在而 Agent 消失視為意外並通知主控。
+- **先**結案任務卡（該列須先 `done`，否則失敗），**再**關閉 Agent：`uv run --no-project python <lat_dir>/scripts/lat-dispatch.py card close --card <卡片> --status committed|merged|completed --deliverable <commit 或證據>`（`merged` 加 `--merged-into <整合分支>`）。改欄位、移到 done/、更新總表，失敗全還原。移走後停止監控；卡片仍在而 Agent 消失視為意外並通知主控。
 - `hcom kill` 關閉 Agent 並核對已停止後，立即執行 `uv run --no-project python <lat_dir>/scripts/lat-reap.py reap --agent <Agent 名稱>` 收掉它留下的服務。
 
 任務卡明列待完成後續工作時可暫留，完成後立即收尾。

@@ -594,7 +594,9 @@ def card_mismatch(item):
 def update_card(item, resolved):
     """Mirror a close into the task card."""
     commits = resolved.get('commit')
-    values = {'status': 'committed' if commits else 'completed'}
+    values = {}
+    if card_status(item.get('card'))[0] not in CARD_CLOSED:  # a closed card (e.g. merged) keeps its status
+        values['status'] = 'committed' if commits else 'completed'
     if commits:
         values['deliverable commit'] = ', '.join(commits)
     write_card_fields(item, values)

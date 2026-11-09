@@ -562,6 +562,20 @@ def close_card(args):
     if not os.access(path.parent, os.W_OK):
         raise Failure(f'{path.parent} is not writable; nothing changed')
     by = ['--by', args.by] if args.by else []
+    if row:
+        number, ledger = row.groups()
+        try:
+            shown = json.loads(run_ledger(args, 'show', '--ledger', ledger, '--json'))
+            state = next(item['status'] for item in shown['items'] if str(item['id']) == number)
+        except (Failure, ValueError, KeyError, TypeError, StopIteration) as error:
+            raise Failure(f'cannot read ledger row {number} in {ledger} ({error}); '
+                          'nothing changed') from None
+        if state not in ('done', 'cancelled'):
+            raise Failure(
+                f'ledger row {number} is still {state}; close it first so the row and the card '
+                f'agree: the implementer runs `lat-ledger.py done {number} --ledger {ledger} '
+                f'--by <agent> --commit … --gate …`, or the orchestrator runs it with '
+                f'`--by <orchestrator>`; nothing changed')
 
     def point_ledger_at(card):
         number, ledger = row.groups()
