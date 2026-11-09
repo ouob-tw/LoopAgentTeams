@@ -1053,8 +1053,40 @@ class CardCloseTests(LedgerCase):
         return self.run_script('card', 'close', '--card', str(card), '--status', status,
                                '--deliverable', deliverable, '--by', 'nanu', *extra)
 
-    def test_close_sets_fields_moves_the_card_and_repoints_the_ledger_row(self):
+    def done_ledger_card(self):
+        """A ledger-row card whose row is already done (the order card close requires)."""
+        card = self.ledger_card(evidence='file')
+        report = self.root / 'report.md'
+        report.write_text('checked\n')
+        self.run_ledger('start', '1', '--by', 'nanu-impl123-fida', '--eta', '+1h')
+        self.run_ledger('done', '1', '--by', 'nanu-impl123-fida', '--file', str(report))
+        return card
+
+    def test_open_row_refuses_every_status_and_changes_nothing(self):
         card = self.ledger_card()
+        for state in ('assigned', 'in_progress'):
+            if state == 'in_progress':
+                self.run_ledger('start', '1', '--by', 'nanu-impl123-fida', '--eta', '+1h')
+            for status in ('committed', 'merged', 'completed'):
+                with self.subTest(state=state, status=status):
+                    before, stored = card.read_text(), self.ledger.read_text()
+                    extra = ('--merged-into', 'main') if status == 'merged' else ()
+                    result = self.close(card, *extra, status=status)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f'ledger row 1 is still {state}', result.stderr)
+                    self.assertIn('lat-ledger.py done 1', result.stderr)
+                    self.assertEqual(card.read_text(), before)
+                    self.assertEqual(self.ledger.read_text(), stored)
+                    self.assertFalse((self.tasks / 'done' / card.name).exists())
+
+    def test_cancelled_row_closes_the_card(self):
+        card = self.ledger_card()
+        self.run_ledger('cancel', '1', '--by', 'nanu', '--reason', 'dropped')
+        result = self.close(card)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_close_sets_fields_moves_the_card_and_repoints_the_ledger_row(self):
+        card = self.done_ledger_card()
         result = self.close(card)
         self.assertEqual(result.returncode, 0, result.stderr)
         done = self.tasks / 'done' / card.name
@@ -1086,7 +1118,7 @@ class CardCloseTests(LedgerCase):
         self.assertEqual(self.items(), items)
 
     def test_unwritable_done_directory_leaves_card_and_ledger_untouched(self):
-        card = self.ledger_card()
+        card = self.done_ledger_card()
         (self.tasks / 'done').write_text('a file where the done/ directory should be')
         before, stored = card.read_text(), self.ledger.read_text()
         result = self.close(card)
@@ -1102,7 +1134,7 @@ class CardCloseTests(LedgerCase):
         args = module.build_parser().parse_args(
             ['card-close', '--card', str(card), '--status', 'completed', '--deliverable', 'x',
              '--by', 'nanu'])
-        original, run = Path.unlink, module.run_ledger
+        original, run, updated = Path.unlink, module.run_ledger, []
         self.listing.write_text(json.dumps(self.agents))
 
         def unlink(path, *a, **k):
@@ -1111,9 +1143,11 @@ class CardCloseTests(LedgerCase):
             return original(path, *a, **k)
 
         def ledger(args, command, *rest):
-            if fail_show and command == 'show':
+            if fail_show and command == 'show' and updated:
                 raise module.Failure('lat-ledger show timed out')
             result = run(args, command, *rest)
+            if command == 'update':
+                updated.append(1)
             if wrap_ledger and command == 'update':
                 raise module.Failure('lat-ledger update timed out')
             return result
@@ -1131,21 +1165,21 @@ class CardCloseTests(LedgerCase):
         self.assertFalse((self.tasks / 'done' / card.name).exists())
 
     def test_failing_to_remove_the_original_card_puts_card_and_ledger_row_back(self):
-        card = self.ledger_card()
+        card = self.done_ledger_card()
         before = card.read_text()
         message = self.close_in_process(card, fail_unlink=card)
         self.assertIn('injected', message)
         self.assert_back_in_place(card, before)
 
     def test_ledger_update_that_committed_before_failing_is_compensated(self):
-        card = self.ledger_card()
+        card = self.done_ledger_card()
         before = card.read_text()
         message = self.close_in_process(card, wrap_ledger=True)
         self.assertIn('timed out', message)
         self.assert_back_in_place(card, before)
 
     def test_unreadable_row_after_a_failed_update_names_the_fix_command(self):
-        card = self.ledger_card()
+        card = self.done_ledger_card()
         message = self.close_in_process(card, wrap_ledger=True, fail_show=True)
         self.assertIn('could not be put back', message)
         self.assertIn(f'lat-ledger.py update 1 --ledger {self.ledger} --card {card}', message)

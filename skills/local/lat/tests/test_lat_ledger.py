@@ -451,6 +451,15 @@ class DoneTests(LedgerCase):
         self.exempt_qa()
         self.ok('check')
 
+    def test_done_keeps_a_merged_card_merged_and_fills_the_commit(self):
+        git(self.workspace, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
+        card = self.card(status='merged')
+        item = self.started(card=card)
+        self.ok('done', str(item), '--commit', self.side, by='impl')
+        text = card.read_text()
+        self.assertIn('- status：merged\n', text)
+        self.assertIn(f'- deliverable commit：{self.side}\n', text)
+
     def test_amend_with_bad_or_undeclared_evidence_changes_nothing(self):
         item = self.closed()
         before = self.item(item)
