@@ -292,6 +292,62 @@ class AnswerFormatTests(unittest.TestCase):
             "next line form",
         )
 
+    def test_multi_answer_keeps_option_text_containing_the_separator_whole(self):
+        panel = load_module()
+        long_label = "常駐通知上加「新增筆記」按鈕（建議；代價小，不需新權限）"
+        body = f"- [ ] {long_label}\n  Impact\n- [ ] 桌面小工具\n  Impact\n- [ ] 桌面\n  Impact"
+
+        def read(answer):
+            section = question(body)
+            raw = section["raw"].replace(section["answer_block"], f"答覆：{answer}\n\n- [ ] 送出")
+            return panel.parse_question_answer(panel.parse_questions(raw)[0])
+
+        cases = {
+            long_label: ((long_label,), ""),
+            f"桌面小工具；{long_label}": (("桌面小工具", long_label), ""),
+            f"{long_label}；其他：自己寫；還有": ((long_label,), "自己寫；還有"),
+            "桌面；桌面小工具": (("桌面", "桌面小工具"), ""),
+            "其他：只寫這個": ((), "只寫這個"),
+            "不在選項；桌面": (("不在選項", "桌面"), ""),
+            "代價小，不需新權限）；桌面": (("代價小，不需新權限）", "桌面"), ""),
+            f"桌面；{long_label}；": (("桌面", long_label), ""),
+            f"桌面 ； {long_label} ": (("桌面", long_label), ""),
+        }
+        for answer, (selections, other) in cases.items():
+            with self.subTest(answer=answer):
+                self.assertEqual(
+                    read(answer), panel.QuestionAnswer("multi", selections, other, "")
+                )
+
+    def test_multi_answer_of_an_option_that_reads_as_two_others_joined(self):
+        panel = load_module()
+        section = question("- [ ] 甲；乙\n  Impact\n- [ ] 甲\n  Impact\n- [ ] 乙\n  Impact")
+        raw = section["raw"].replace(section["answer_block"], "答覆：甲；乙；甲；乙\n\n- [ ] 送出")
+        answer = panel.parse_question_answer(panel.parse_questions(raw)[0])
+        self.assertEqual(answer.selections, ("甲；乙", "甲", "乙"))
+
+    def test_multi_answer_equal_length_texts_are_tried_in_option_order(self):
+        panel = load_module()
+        section = question("- [ ] 甲；乙（建議）\n  Impact\n- [ ] 甲；乙\n  Impact")
+        raw = section["raw"].replace(section["answer_block"], "答覆：甲；乙；甲；乙（建議）\n\n- [ ] 送出")
+        answer = panel.parse_question_answer(panel.parse_questions(raw)[0])
+        self.assertEqual(answer.selections, ("甲；乙", "甲", "乙（建議）"))
+
+    def test_multi_answer_space_before_other_marker_is_a_part_not_other_text(self):
+        panel = load_module()
+        section = question("- [ ] 甲\n  Impact\n- [ ] 其他：乙\n  Impact")
+        raw = section["raw"].replace(section["answer_block"], "答覆：甲； 其他：乙\n\n- [ ] 送出")
+        answer = panel.parse_question_answer(panel.parse_questions(raw)[0])
+        self.assertEqual((answer.selections, answer.other), (("甲", "其他：乙"), ""))
+
+    def test_multi_answer_matches_a_recommended_label_written_without_the_mark(self):
+        panel = load_module()
+        body = "- [ ] 做法一；含分號（建議）\n  Impact\n- [ ] 做法二\n  Impact"
+        section = question(body)
+        raw = section["raw"].replace(section["answer_block"], "答覆：做法一；含分號；做法二\n\n- [ ] 送出")
+        answer = panel.parse_question_answer(panel.parse_questions(raw)[0])
+        self.assertEqual(answer.selections, ("做法一；含分號", "做法二"))
+
     def test_input_only_text_is_not_reinterpreted_as_an_option(self):
         panel = load_module()
         section = question("Free-form question.")

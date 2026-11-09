@@ -579,6 +579,11 @@
 		font-weight: 700;
 		color: var(--accent);
 	}
+	/* A long label stays beside its ✓ instead of wrapping to a line below it. */
+	.options li.picked > div {
+		flex: 1;
+		min-width: 0;
+	}
 	.options .option.text {
 		flex: 1;
 		min-width: 0;
