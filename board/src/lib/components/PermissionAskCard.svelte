@@ -114,7 +114,7 @@
 	{/if}
 
 	{#if answerable}
-		<VoiceField disabled={sending || testDevice.view !== null}>
+		<VoiceField disabled={sending || testDevice.view !== null} key="permission-{ask.id}">
 			<textarea rows="2" aria-label="拒絕理由" placeholder="拒絕理由（選填，拒絕時會告訴它）" disabled={sending || testDevice.view !== null} bind:value={() => reasons[ask.id] ?? '', (text) => (reasons[ask.id] = text)}></textarea>
 		</VoiceField>
 		<TestDenied />

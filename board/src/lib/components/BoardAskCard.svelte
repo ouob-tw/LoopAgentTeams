@@ -143,7 +143,7 @@
 							<span class="option">其他</span>
 						</label>
 						{#if pick.other}
-							<VoiceField disabled={sending}>
+							<VoiceField disabled={sending} key="ask-{ask.id}-{index}-other">
 								<textarea
 									rows="2"
 									aria-label="其他的內容"
