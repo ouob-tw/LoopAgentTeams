@@ -36,6 +36,10 @@ const SINGLE: HelperQuestion['options'] = [
 ];
 const MULTI: HelperQuestion['options'] = ['甲', '乙', '丙'].map((label) => ({ letter: '', label, impact: '', recommended: false }));
 
+// The multi-choice question of the 2026-11-09 screenshot: one option's own text holds 「；」.
+const SEMICOLON_LABEL = '常駐通知上加「新增筆記」按鈕（建議；代價小，不需新權限）';
+const SEMICOLON: HelperQuestion['options'] = [SEMICOLON_LABEL, '桌面小工具', '分享選單'].map((label) => ({ letter: '', label, impact: '', recommended: false }));
+
 const processed = () => fixture.archive(cookie);
 const byKey = (items: InboxItem[], key: string) => items.find((item) => item.key === key);
 const questionKey = (session: string, id: string) => `q:${session}:${id}`;
@@ -255,7 +259,8 @@ beforeAll(async () => {
 				details: '詳細說明在最後',
 				asked_at: ago(31 * 60_000)
 			}),
-			answered({ id: 'AQ-2', title: '複選答過的題目', kind: 'multi', options: MULTI, answer: '甲；其他：自己寫的', note: '', asked_at: ago(31 * 60_000) })
+			answered({ id: 'AQ-2', title: '複選答過的題目', kind: 'multi', options: MULTI, answer: '甲；其他：自己寫的', note: '', asked_at: ago(31 * 60_000) }),
+			answered({ id: 'AQ-3', title: '選項含分號的複選題', kind: 'multi', options: SEMICOLON, answer: `${SEMICOLON_LABEL}；其他：自己寫的`, note: '', asked_at: ago(31 * 60_000) })
 		]
 	});
 	const report = (tag: 'DONE' | 'HELP', summary: string, minutes: number) => {
@@ -263,7 +268,7 @@ beforeAll(async () => {
 		fixture.report(mira.session_id, { tag, summary, message, time: ago(minutes * 60_000), hcom_name: 'mira', workspace: mira.workspace });
 		return { kind: 'assistant', time: ago(minutes * 60_000), text: message };
 	};
-	const asking = { kind: 'assistant', time: ago(30 * 60_000), text: '要決定兩件事。\n\nDECIDE: AQ-1 r1 · AQ-2 r1' };
+	const asking = { kind: 'assistant', time: ago(30 * 60_000), text: '要決定兩件事。\n\nDECIDE: AQ-1 r1 · AQ-2 r1 · AQ-3 r1' };
 	const gone = { kind: 'assistant', time: ago(2 * HOUR), text: '很久以前的題目。\n\nDECIDE: GONE-1 r1' };
 	const lines = [gone, { kind: 'user', time: ago(HOUR), text: '開始' }, asking, report('DONE', REPORT, 10), report('HELP', OTHER, 5)];
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
@@ -363,6 +368,11 @@ for (const width of [1200, 390]) {
 		expect(multi.picked).toEqual(['✓ 甲', '✓ 其他：自己寫的']);
 		expect(multi.options).toBe(4);
 		expect(multi.note).toBeNull();
+
+		// An option whose own text holds 「；」 is one ticked row, not two rows that match nothing.
+		const semicolon = await evaluate<Card>(card('.detail .placed', questionKey(mira.session_id, 'AQ-3')));
+		expect(semicolon.picked).toEqual([`✓ ${SEMICOLON_LABEL}`, '✓ 其他：自己寫的']);
+		expect(semicolon.options).toBe(4);
 	}, 30_000);
 }
 

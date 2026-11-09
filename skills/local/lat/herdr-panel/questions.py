@@ -635,6 +635,44 @@ def _answer_text_and_note(text):
     return answer_text, note.strip("\n")
 
 
+_SEPARATOR_AHEAD = re.compile(r"\s*(?:；|\Z)")
+
+
+def _split_multi_answer(answer_text, labels):
+    """Split a multi answer into (selections, other) without cutting inside a label.
+
+    Option text may itself contain the ``；`` separator, so a known label (or its
+    label without the display-only 建議 mark) is taken whole at each position,
+    longest first; only text naming no option is cut at the next ``；``.
+    """
+    known = sorted(
+        {text for label in labels for text in (label, _answer_label(label)) if text},
+        key=len, reverse=True,
+    )
+    selections = []
+    at = 0
+    while at <= len(answer_text):
+        at = len(answer_text) - len(answer_text[at:].lstrip())
+        if answer_text.startswith("其他：", at):
+            return tuple(selections), answer_text[at + len("其他："):]
+        part = next(
+            (
+                text for text in known
+                if answer_text.startswith(text, at)
+                and _SEPARATOR_AHEAD.match(answer_text, at + len(text))
+            ),
+            None,
+        )
+        if part is None:
+            end = answer_text.find("；", at)
+            part = answer_text[at:] if end < 0 else answer_text[at:end]
+        if part.strip():
+            selections.append(part.strip())
+        separator = answer_text.find("；", at + len(part))
+        at = len(answer_text) + 1 if separator < 0 else separator + 1
+    return tuple(selections), ""
+
+
 def parse_question_answer(question):
     """Parse a current answer area into a ``QuestionAnswer`` or ``None``.
 
@@ -651,19 +689,8 @@ def parse_question_answer(question):
     if option_kind is None:
         return QuestionAnswer("text", (), answer_text, note)
     if option_kind == "multi":
-        if answer_text.startswith("其他："):
-            selections = ()
-            other = answer_text.removeprefix("其他：")
-        elif "；其他：" in answer_text:
-            selection_text, other = answer_text.split("；其他：", 1)
-            selections = tuple(
-                part.strip() for part in selection_text.split("；") if part.strip()
-            )
-        else:
-            selections = tuple(
-                part.strip() for part in answer_text.split("；") if part.strip()
-            )
-            other = ""
+        labels = [option.label for option in parse_question_options(question).options]
+        selections, other = _split_multi_answer(answer_text, labels)
         return QuestionAnswer("multi", selections, other, note)
     if answer_text.startswith("其他："):
         return QuestionAnswer("other", (), answer_text.removeprefix("其他："), note)

@@ -105,26 +105,36 @@ export function chosenIn(
 	answer: string
 ): { select: number[]; other: string; unknown: string[] } {
 	if (question.kind === 'text') return { select: [], other: answer, unknown: [] };
-	let named: string[];
-	let other = '';
-	if (answer.startsWith('其他：')) {
-		named = [];
-		other = answer.slice('其他：'.length);
-	} else if (question.kind === 'multi' && answer.includes('；其他：')) {
-		const at = answer.indexOf('；其他：');
-		named = answer.slice(0, at).split('；');
-		other = answer.slice(at + '；其他：'.length);
-	} else {
-		named = question.kind === 'multi' ? answer.split('；') : [answer];
-	}
+	const label = (option: { letter: string; label: string }) =>
+		question.kind === 'single' ? `${option.letter}. ${option.label}` : option.label;
 	const select: number[] = [];
 	const unknown: string[] = [];
-	for (const part of named.map((part) => part.trim()).filter(Boolean)) {
-		const index = question.options.findIndex(
-			(option, at) => !select.includes(at + 1) && (question.kind === 'single' ? `${option.letter}. ${option.label}` : option.label) === part
-		);
-		if (index < 0) unknown.push(part);
-		else select.push(index + 1);
+	if (question.kind !== 'multi') {
+		if (answer.startsWith('其他：')) return { select, other: answer.slice('其他：'.length), unknown };
+		const part = answer.trim();
+		const index = question.options.findIndex((option) => label(option) === part);
+		if (index >= 0) select.push(index + 1);
+		else if (part) unknown.push(part);
+		return { select, other: '', unknown };
 	}
-	return { select, other, unknown };
+	// An option's own text may hold the separator, so a not-yet-chosen option is taken whole
+	// (longest first); only text naming no option is cut at the next separator.
+	const byLength = question.options.map((option, at) => ({ at, text: label(option) })).sort((a, b) => b.text.length - a.text.length);
+	let at = 0;
+	while (at <= answer.length) {
+		at += answer.length - at - answer.slice(at).trimStart().length;
+		if (answer.startsWith('其他：', at)) return { select, other: answer.slice(at + '其他：'.length), unknown };
+		const whole = byLength.find(
+			({ at: position, text }) =>
+				text && !select.includes(position + 1) && answer.startsWith(text, at) && /^\s*(；|$)/.test(answer.slice(at + text.length))
+		);
+		let end = whole ? at + whole.text.length : answer.indexOf('；', at);
+		if (end < 0) end = answer.length;
+		const part = answer.slice(at, end).trim();
+		if (whole) select.push(whole.at + 1);
+		else if (part) unknown.push(part);
+		const separator = answer.indexOf('；', end);
+		at = separator < 0 ? answer.length + 1 : separator + 1;
+	}
+	return { select, other: '', unknown };
 }
