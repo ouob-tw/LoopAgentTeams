@@ -3345,6 +3345,22 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn('LAT-DROP 沒有 r1 的真人答覆', result.stderr)
 
+    def test_close_check_explains_an_edit_in_the_same_command_only_when_there_is_one(self):
+        self.activate()
+        body = '- [ ] 還沒勾\n'
+        for command in ('gh issue edit 458 --body-file b.md && gh issue close 458',
+                        'gh issue edit 458 -R o/r --body x\ngh issue close 458 -R o/r'):
+            with self.subTest(command=command):
+                result = self.close_hook(command, body)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('also edits the issue', result.stderr)
+                self.assertIn('as its own command', result.stderr)
+        for command in ('gh issue close 458', 'gh issue edit 7 --body x && gh issue close 458'):
+            with self.subTest(command=command):
+                result = self.close_hook(command, body)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn('also edits the issue', result.stderr)
+
     def test_close_check_reads_flag_orders_and_line_breaks(self):
         self.activate()
         self.write_answered('LAT-DROP')

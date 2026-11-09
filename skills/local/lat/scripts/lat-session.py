@@ -1152,9 +1152,9 @@ def unquoted_newlines_end_commands(command):
     return ''.join(out)
 
 
-def issue_closes(command):
-    """`(issue, repo, comment)` for each `gh issue close` in the shell text; ValueError when
-    the text cannot be split."""
+def gh_issue_commands(command):
+    """`(positionals, repo, comment)` for each `gh` command in the shell text; ValueError
+    when the text cannot be split."""
     lexer = shlex.shlex(unquoted_newlines_end_commands(command), posix=True,
                         punctuation_chars=True)
     lexer.whitespace_split = True
@@ -1178,9 +1178,21 @@ def issue_closes(command):
                 comment = value
             elif name in ('-R', '--repo'):
                 repo = value
-        if positionals[:2] == ['issue', 'close'] and positionals[2:]:
-            found.append((positionals[2], repo, comment))
+        found.append((positionals, repo, comment))
     return found
+
+
+def issue_closes(command):
+    """`(issue, repo, comment)` for each `gh issue close` in the shell text."""
+    return [(positionals[2], repo, comment)
+            for positionals, repo, comment in gh_issue_commands(command)
+            if positionals[:2] == ['issue', 'close'] and positionals[2:]]
+
+
+def issue_edits(command):
+    """The issue numbers some `gh issue edit` in the shell text changes."""
+    return {positionals[2] for positionals, _, _ in gh_issue_commands(command)
+            if positionals[:2] == ['issue', 'edit'] and positionals[2:]}
 
 
 def issue_body(issue, repo, cwd):
@@ -1198,7 +1210,7 @@ def issue_body(issue, repo, cwd):
     return result.stdout, None
 
 
-def close_problem(record, issue, body, comment):
+def close_problem(record, issue, body, comment, edited=False):
     """Why closing is refused, or None. Unchecked items pass only when the comment cites a
     decision record holding a human answer for that revision."""
     body = re.sub(r'^[ \t]*```.*?^[ \t]*```', '', body, flags=re.MULTILINE | re.DOTALL)
@@ -1217,9 +1229,12 @@ def close_problem(record, issue, body, comment):
     items = '\n'.join(f'  - [ ] {item}' for item in unchecked)
     why = ('；'.join(problems) if problems else
            'the close comment (-c/--comment) cites no decision record as `<ID> r<N>`')
+    note = ('\nThis command also edits the issue, but the check runs before the command, so '
+            'that edit has not taken effect yet. Run the check-off edit as its own command, '
+            'confirm it, then close in a separate command.' if edited else '')
     return (f'Blocked: issue {issue} still has unchecked acceptance items:\n{items}\n'
             f'Check them off once they have evidence, or close with a comment that cites the '
-            f'decision record where the user agreed to drop them ({why}).')
+            f'decision record where the user agreed to drop them ({why}).{note}')
 
 
 def close_check(record, payload):
@@ -1232,7 +1247,7 @@ def close_check(record, payload):
     if not isinstance(command, str):
         return 0
     try:
-        closes = issue_closes(command)
+        closes, edits = issue_closes(command), issue_edits(command)
     except ValueError as error:
         if not re.search(r'\bgh\b.*\bissue\b.*\bclose\b', command, re.DOTALL):
             return 0
@@ -1245,7 +1260,7 @@ def close_check(record, payload):
         if body is None:
             close_warning(f'讀不到票 {issue} 的內容（{error}）')
             continue
-        problem = close_problem(record, issue, body, comment)
+        problem = close_problem(record, issue, body, comment, issue in edits)
         if problem:
             print(problem, file=sys.stderr)
             return 2
