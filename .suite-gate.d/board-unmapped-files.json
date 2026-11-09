@@ -2,7 +2,7 @@
   "map": [
     {
       "paths": ["board/tests/browser.ts"],
-      "tests": ["board/tests/browser/*.test.ts"]
+      "tests": ["board/tests/browser/*.test.ts", "board/tests/unit/build-dir.test.ts"]
     },
     {
       "paths": ["board/src/lib/components/VoiceField.svelte", "board/src/lib/components/VoiceButton.svelte"],
