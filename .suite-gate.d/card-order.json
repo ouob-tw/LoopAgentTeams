@@ -5,10 +5,16 @@
         "board/src/lib/board/question-message.ts",
         "board/src/lib/components/Transcript.svelte",
         "board/src/lib/components/ControllerInfo.svelte",
-        "board/src/lib/components/ControllerPage.svelte"
+        "board/src/lib/components/ControllerPage.svelte",
+        "board/tests/browser/answer-in-place-case.ts"
       ],
       "tests": [
-        "board/tests/browser/answer-in-place.test.ts",
+        "board/tests/browser/answer-in-place-cards-1280-plain.test.ts",
+        "board/tests/browser/answer-in-place-cards-1280-recorded.test.ts",
+        "board/tests/browser/answer-in-place-cards-390-plain.test.ts",
+        "board/tests/browser/answer-in-place-cards-390-recorded.test.ts",
+        "board/tests/browser/answer-in-place-next-opened.test.ts",
+        "board/tests/browser/answer-in-place-keys-top.test.ts",
         "board/tests/browser/answer-torn.test.ts",
         "board/tests/browser/question-card-decided.test.ts",
         "board/tests/browser/back-navigation.test.ts",
