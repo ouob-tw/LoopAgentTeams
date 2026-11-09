@@ -286,7 +286,8 @@ def watch_blocked(event, watched):
 
 
 def find_batch(spawner, tool, tag, after_id, model, effort, watched):
-    """The batch this command launched, and why it could not be attributed (None if it was).
+    """The batch this command launched, why it could not be attributed (None if it was), and
+    the model and effort its agent was started with (None when unreadable).
 
     Every candidate seen also gets its approval-prompt subscription (watch_blocked).
 
@@ -294,8 +295,8 @@ def find_batch(spawner, tool, tag, after_id, model, effort, watched):
     after_id that no other watcher has taken. One whose agent was started with this model
     and effort is ours. One whose agent's command line stays unreadable for ARGS_WAIT
     seconds, or that no watcher has taken by the end of BATCH_WAIT, is taken unattributed:
-    its approval prompts and permission are still checked, but its model and effort are
-    not compared with this command's.
+    its approval prompts and permission are still checked, and its model and effort are
+    compared with the ones it was started with, when readable, instead of this command's.
     Before the last pass, a watch whose tag has shell expansions (tag_pattern) leaves each
     batch PATTERN_GRACE seconds to an exact-tag watch of another command first.
 
@@ -333,11 +334,11 @@ def find_batch(spawner, tool, tag, after_id, model, effort, watched):
                     and clock() - seen_at.setdefault(batch_id, clock()) < PATTERN_GRACE):
                 continue
             if claim(batch_id):
-                return event, why
+                return event, why, args
         check_capacity(watched)
         if not last:
             sleep(POLL)
-    return None, None
+    return None, None, None
 
 
 def stopped_since(name, after_id):
@@ -459,8 +460,9 @@ def matches(tool, item, expected, actual):
 def report(tool, full, expected, seen, reason, unattributed=None):
     """Message text for the spawner, or None when there is nothing to tell.
 
-    Unattributed agents have no expected model or effort: those are listed as seen. With an
-    unreadable command line that alone is no finding, so it only goes to watch.log.
+    Unattributed agents expect the model and effort they were started with, or, with an
+    unreadable command line, none: those are listed as seen. Being unattributed alone is no
+    finding, so without problems it only goes to watch.log.
     """
     unknown, problems = [], []
     for item in ITEMS:
@@ -472,8 +474,8 @@ def report(tool, full, expected, seen, reason, unattributed=None):
         elif not matches(tool, item, expected[item], seen[item][0]):
             value, source = seen[item]
             problems.append(f'{item}: expected {expected[item]}, {source} shows {value}')
-    if unattributed == UNREADABLE_ARGS and not problems:
-        log(f"{full} ({tool}): {unattributed}. {'; '.join(unknown)}")
+    if unattributed and not problems:
+        log(f'{full} ({tool}): {unattributed}.' + (f" {'; '.join(unknown)}" if unknown else ''))
         return None
     problems = unknown + problems
     if not problems:
@@ -825,8 +827,8 @@ def main(argv=None):
         return 1
     sweep()
     watched = {}
-    batch, unattributed = find_batch(args.spawner, args.tool, args.tag, args.after_id,
-                                     args.model, args.effort, watched)
+    batch, unattributed, started = find_batch(args.spawner, args.tool, args.tag, args.after_id,
+                                              args.model, args.effort, watched)
     if not batch:
         not_found(args)
     else:
@@ -837,8 +839,9 @@ def main(argv=None):
         spawner = data.get('by') or args.spawner
         agents = {name: full_name(data, name) for name in data['instances'] if NAME.match(name)}
         labels = start_labels(spawner, agents)
-        expected = {'model': None if unattributed else args.model,
-                    'effort': None if unattributed else args.effort,
+        model, effort = (started if unattributed and started else
+                         (None, None) if unattributed else (args.model, args.effort))
+        expected = {'model': model, 'effort': effort,
                     'permission': EXPECTED_PERMISSION[args.tool]}
         for text in check(args.tool, agents, expected, watched, launch_id, start,
                           unattributed).values():
