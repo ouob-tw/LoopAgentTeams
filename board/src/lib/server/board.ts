@@ -103,10 +103,10 @@ export interface Board {
 
 /** Close the resumes whose session hcom's list of this read holds; a list that could not be read
  *  leaves them open until a later read. */
-async function settleWakes(config: BoardConfig, log: SentLog, list: AgentList, herdr: HerdrAgentList, listedAt: number, moved: () => void): Promise<string | null> {
+async function settleWakes(config: BoardConfig, log: SentLog, list: AgentList, herdr: HerdrAgentList, listsAskedAt: number, moved: () => void): Promise<string | null> {
 	// A resume's pane found only now: its new tab is moved to the front like one found at once.
 	const onPane = (pane: string) => void tabToFront(config, pane).then((reason) => reason === null && moved());
-	return list.ok ? settleResumes(log, list.agents, herdr.ok ? herdr.agents : null, config.now(), config.launchWaitMs, listedAt, onPane) : null;
+	return list.ok ? settleResumes(log, list.agents, herdr.ok ? herdr.agents : null, config.now(), config.launchWaitMs, listsAskedAt, onPane) : null;
 }
 
 /** The sent log as one read of the sources works from: read once, and kept up with until the read

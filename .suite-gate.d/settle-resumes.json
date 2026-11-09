@@ -2,8 +2,7 @@
   "map": [
     {
       "paths": [
-        "board/src/lib/server/wake.ts",
-        "board/src/lib/server/board.ts"
+        "board/src/lib/server/wake.ts"
       ],
       "tests": [
         "board/tests/unit/settle-resumes.test.ts"

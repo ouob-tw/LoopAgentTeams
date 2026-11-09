@@ -26,10 +26,10 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(stateDir, { recursive: true, force: true }));
 
-function settle(listedAt: number) {
+function settle(listsAskedAt: number) {
 	const log = openLog(stateDir, NOW + 1_000);
 	try {
-		expect(settleResumes(log, listed, null, NOW + 1_000, WAIT_MS, listedAt)).toBeNull();
+		expect(settleResumes(log, listed, null, NOW + 1_000, WAIT_MS, listsAskedAt)).toBeNull();
 	} finally {
 		log.close();
 	}
