@@ -268,8 +268,8 @@ class SpawnWatchTests(unittest.TestCase):
                 self.assertTrue(self.watch.claim('b1'))
         self.watch.sleep = sleep
         watched = {}
-        found, _ = self.watch.find_batch('vare', 'claude', '', 99, 'claude-opus-5-5', 'low',
-                                         watched)
+        found, *_ = self.watch.find_batch('vare', 'claude', '', 99, 'claude-opus-5-5', 'low',
+                                          watched)
         self.assertIsNone(found)
         self.assertGreater(len(polls), 20)
         self.assertEqual(list(watched), ['mona'])  # approval prompts watched all along
@@ -371,6 +371,67 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertNotIn('expected claude-opus-5-5', text)
         self.assertNotIn('permission', text.split('): ')[1].split('. ')[1])
 
+    def run_variable_model_watch(self, screen, log=None):
+        """A launch loop's `--model "$2"`: the agent was started with Opus 5.5, medium."""
+        fake = FakeHcom(screens=[screen], log=log, stop_after=500)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.run_watch(fake, model='$2', effort='medium',
+                           launched={'kilo': ('claude-opus-5-5', 'medium')})
+        return fake, stderr.getvalue()
+
+    def test_variable_model_matching_its_started_arguments_is_only_logged(self):
+        fake, logged = self.run_variable_model_watch(
+            ['▝▜██████▀  Opus 5.5 with medium effort · Claude Pro', *CLAUDE_START[1:]])
+        self.assertEqual(fake.sent, [])
+        self.assertIn('vare-review-kilo (claude): it was started with model claude-opus-5-5, '
+                      'effort medium.', logged)
+        self.assertNotIn('launch command unknown', logged)
+
+    def test_variable_model_differing_from_its_started_arguments_in_the_log_is_told(self):
+        for found, wrong in (
+                ({'model': 'claude-sonnet-5-5'}, 'model: expected claude-opus-5-5, session log '
+                                                 'shows claude-sonnet-5-5'),
+                ({'effort': 'low'}, 'effort: expected medium, session log shows low')):
+            with self.subTest(wrong=wrong):
+                self.watch = load()
+                self.watch.herdr = FakeHerdr()
+                entry = {'model': 'claude-opus-5-5', 'effort': 'medium', **found}
+                log = self.write_log([
+                    {'type': 'permission-mode', 'permissionMode': 'bypassPermissions'},
+                    {'type': 'assistant', 'message': {'model': entry['model']},
+                     'effort': entry['effort']}])
+                (Path(self.state.name) / 'hcom-spawn/claims/b1').unlink(missing_ok=True)
+                fake, _ = self.run_variable_model_watch(['❯', '  ⏵⏵ bypass permissions on'],
+                                                        log)
+                self.assertEqual(len(fake.sent), 1)
+                self.assertIn(wrong, fake.sent[0][-1])
+
+    def test_variable_model_with_the_wrong_permission_is_told(self):
+        fake, _ = self.run_variable_model_watch(
+            ['▝▜██████▀  Opus 5.5 with medium effort · Claude Pro', *CLAUDE_AUTO[1:]])
+        self.assertEqual(len(fake.sent), 1)
+        text = fake.sent[0][-1]
+        self.assertIn('permission: expected bypass permissions on, screen shows auto mode on', text)
+        self.assertNotIn('model:', text)
+
+    def test_variable_model_keeps_the_hard_coded_effort_as_expected(self):
+        fake = FakeHcom(screens=[['▝▜██████▀  Opus 5.5 with high effort · Claude Pro',
+                                  *CLAUDE_START[1:]]], stop_after=500)
+        self.run_watch(fake, model='$2', effort='medium',
+                       launched={'kilo': ('claude-opus-5-5', 'high')})
+        self.assertEqual(len(fake.sent), 1)
+        self.assertIn('effort: expected medium, screen shows high', fake.sent[0][-1])
+        self.assertNotIn('model:', fake.sent[0][-1])
+
+    def test_hard_coded_model_unmatched_by_any_batch_is_told_even_if_the_screen_agrees(self):
+        fake = FakeHcom(screens=[['▝▜██████▀  Haiku 5.5 with low effort · Claude Pro',
+                                  *CLAUDE_START[1:]]], stop_after=500)
+        self.run_watch(fake, model='claude-opus-5-5',
+                       launched={'kilo': ('claude-haiku-5-5', 'low')})
+        self.assertEqual(len(fake.sent), 1)
+        self.assertIn('model: launch command unknown, screen shows Haiku 5.5', fake.sent[0][-1])
+
     def test_agent_process_is_found_by_its_hcom_process_id(self):
         proc = Path(self.state.name) / 'proc'
         for pid, env, argv in (
@@ -464,8 +525,8 @@ class SpawnWatchTests(unittest.TestCase):
             if len(polls) == 3:  # the `--tag vare-t3` watch claims it within the grace
                 self.assertTrue(self.watch.claim('b1'))
         self.watch.sleep = sleep
-        found, _ = self.watch.find_batch('vare', 'claude', 'vare-t$n', 99, 'claude-sonnet-5-5',
-                                         'low', {})
+        found, *_ = self.watch.find_batch('vare', 'claude', 'vare-t$n', 99, 'claude-sonnet-5-5',
+                                          'low', {})
         self.assertIsNone(found)
 
     def test_a_tag_pattern_still_takes_a_batch_with_another_model_at_the_end(self):
@@ -474,8 +535,8 @@ class SpawnWatchTests(unittest.TestCase):
         self.watch.hcom, self.watch.clock, self.watch.sleep = fake, fake.clock, fake.sleep
         self.watch.process_ids = lambda: {'kilo': 'kilo'}
         self.watch.launched_with = lambda tool, process_id: ('claude-opus-5-5', 'low')
-        found, why = self.watch.find_batch('vare', 'claude', 'vare-t$n', 99,
-                                           'claude-sonnet-5-5', 'low', {})
+        found, why, _ = self.watch.find_batch('vare', 'claude', 'vare-t$n', 99,
+                                              'claude-sonnet-5-5', 'low', {})
         self.assertEqual(found, fake.batch)
         self.assertIn('claude-opus-5-5', why)
 
