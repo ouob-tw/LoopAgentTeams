@@ -485,7 +485,6 @@
       "board/tsconfig.json",
       "board/vite.config.ts",
       "board/tests/harness.ts",
-      "board/tests/browser.ts",
       "board/tests/fake-cswap.mjs",
       "board/tests/fake-hcom.mjs",
       "board/tests/fake-helper.mjs",

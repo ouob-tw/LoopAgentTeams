@@ -1,0 +1,32 @@
+{
+  "map": [
+    {
+      "paths": ["board/tests/browser.ts"],
+      "tests": ["board/tests/browser/*.test.ts", "board/tests/unit/build-dir.test.ts"]
+    },
+    {
+      "paths": ["board/src/lib/components/VoiceField.svelte", "board/src/lib/components/VoiceButton.svelte"],
+      "tests": [
+        "board/tests/browser/answer-voice.test.ts",
+        "board/tests/browser/board-ask.test.ts",
+        "board/tests/browser/board-ask-permission.test.ts",
+        "board/tests/browser/closed-agents-page.test.ts",
+        "board/tests/browser/preauth-settings-page.test.ts",
+        "board/tests/browser/command-line-layout.test.ts",
+        "board/tests/browser/picker-shape.test.ts"
+      ]
+    },
+    {
+      "paths": ["board/src/lib/board/pd-look.svelte.ts"],
+      "tests": ["board/tests/browser/pd-look.test.ts"]
+    },
+    {
+      "paths": ["board/src/routes/api/agents/workspace/move/**"],
+      "tests": ["board/tests/server/tab-control.test.ts"]
+    },
+    {
+      "paths": ["board/tests/unit/suite-gate-map-coverage.test.ts"],
+      "tests": ["board/tests/unit/suite-gate-map-coverage.test.ts"]
+    }
+  ]
+}
