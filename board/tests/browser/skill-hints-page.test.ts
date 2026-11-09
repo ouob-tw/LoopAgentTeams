@@ -340,20 +340,21 @@ test.skipIf(!CHROME)('on a phone with the keyboard up, the list opens above a bo
 	await until(`(() => { const list = document.querySelector('[role="listbox"][aria-label="Skill"]').getBoundingClientRect(); return list.top >= document.querySelector(${JSON.stringify(FIRST)}).getBoundingClientRect().bottom; })()`, 'the list back under the box');
 	await press('Escape');
 
-	// What can be seen scrolled down the page (iOS moves the visual viewport instead of the page):
-	// the list keeps inside it, from its top.
+	// What can be seen scrolls down the page while the list is open (iOS moves the visual viewport
+	// instead of the page): the list fits it again, inside it.
 	await keyboard(Math.round(844 - boxBottom - 40));
+	await clear(FIRST);
+	await type('請 /');
+	await shows(three);
+	expect((await placed(FIRST)).top).toBeLessThan(120);
 	await evaluate(`(() => {
 		window.realTop ??= Object.getOwnPropertyDescriptor(VisualViewport.prototype, 'offsetTop');
 		Object.defineProperty(VisualViewport.prototype, 'offsetTop', { configurable: true, get: () => 120 });
 		visualViewport.dispatchEvent(new Event('scroll'));
 	})()`);
-	await clear(FIRST);
-	await type('請 /');
-	await shows(three);
+	await until(`document.querySelector('[role="listbox"][aria-label="Skill"]').getBoundingClientRect().top >= 120`, 'the open list fitted to the scrolled view');
 	at = await placed(FIRST);
 	expect(at.seenTop).toBe(120);
-	expect(at.top).toBeGreaterThanOrEqual(at.seenTop);
 	expect(at.bottom).toBeLessThanOrEqual(at.seenBottom);
 	await press('Escape');
 	await evaluate(`(() => { Object.defineProperty(VisualViewport.prototype, 'offsetTop', window.realTop); visualViewport.dispatchEvent(new Event('scroll')); })()`);
