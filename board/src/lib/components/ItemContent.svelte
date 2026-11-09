@@ -11,6 +11,7 @@
 	import { renderLinks, renderMarkdown } from '#lib/board/markdown.ts';
 	import CopyButton from './CopyButton.svelte';
 	import VisualLinks from './VisualLinks.svelte';
+	import VoiceField from './VoiceField.svelte';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { Translation } from '#lib/board/translate.ts';
 	import type { Snippet } from 'svelte';
@@ -42,6 +43,8 @@
 		/** Given where opening the report does not read it: an unread report offers to be marked read. */
 		onread?: (key: string) => Promise<void>;
 	} = $props();
+	// The labels name their boxes by id: the mic inside a label would otherwise take its name.
+	const fieldId = $props.id();
 
 	let showOriginal = $state(false);
 
@@ -232,13 +235,15 @@
 							<span class="option">其他</span>
 						</label>
 						{#if draft.other}
-							<textarea
-								rows="2"
-								aria-label="其他的內容"
-								placeholder="其他：請寫下你的答覆"
-								disabled={sending}
-								bind:value={() => draft.text, (text) => answering.edit(item, { text })}
-							></textarea>
+							<VoiceField disabled={sending}>
+								<textarea
+									rows="2"
+									aria-label="其他的內容"
+									placeholder="其他：請寫下你的答覆"
+									disabled={sending}
+									bind:value={() => draft.text, (text) => answering.edit(item, { text })}
+								></textarea>
+							</VoiceField>
 						{/if}
 					</li>
 				{/if}
@@ -271,22 +276,28 @@
 				}}
 			>
 				{#if !choice}
-					<label class="field">
+					<label class="field" for="{fieldId}-text">
 						<span>答覆</span>
-						<textarea
-							rows="3"
-							disabled={sending}
-							bind:value={() => draft.text, (text) => answering.edit(item, { text })}
-						></textarea>
+						<VoiceField disabled={sending}>
+							<textarea
+								id="{fieldId}-text"
+								rows="3"
+								disabled={sending}
+								bind:value={() => draft.text, (text) => answering.edit(item, { text })}
+							></textarea>
+						</VoiceField>
 					</label>
 				{/if}
-				<label class="field">
+				<label class="field" for="{fieldId}-note">
 					<span>備註（可不填）</span>
-					<textarea
-						rows="2"
-						disabled={sending}
-						bind:value={() => draft.note, (note) => answering.edit(item, { note })}
-					></textarea>
+					<VoiceField disabled={sending}>
+						<textarea
+							id="{fieldId}-note"
+							rows="2"
+							disabled={sending}
+							bind:value={() => draft.note, (note) => answering.edit(item, { note })}
+						></textarea>
+					</VoiceField>
 				</label>
 				<TestDenied />
 				<div class="actions">

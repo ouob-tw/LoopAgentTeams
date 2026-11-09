@@ -1,5 +1,5 @@
 import { answerHerdrList } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, fakeMic, launchChrome, micIconOff, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
 // The Herdr tab's 已關閉 section in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with fake hcom, Herdr and helper, wide and at a phone's width. The
 // board runs in Taipei time, so its calendar days are not the test host's. Skipped when the host
@@ -150,8 +150,8 @@ afterAll(async () => {
 });
 
 /** A new Chrome on the board's Herdr tab in a window `width` wide. */
-async function visit(width: number, search = '?tab=agents') {
-	browser = await launchChrome({ screen: SCREEN });
+async function visit(width: number, search = '?tab=agents', { voice = false } = {}) {
+	browser = await launchChrome({ screen: SCREEN, scripts: voice ? [`localStorage.setItem('lat-board-voice', '1')`] : [] });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
@@ -388,6 +388,22 @@ test.skipIf(!CHROME)("390px: 接回 from the page brings the agent back to its w
 	expect(await tab.eval(`document.querySelector('.dock textarea').disabled`)).toBe(false);
 }, 30_000);
 
+test.skipIf(!CHROME)("390px, voice input on: the wake's first message has a mic that puts what was said at the cursor", async () => {
+	await visit(390, '?tab=agents', { voice: true });
+	await unfold();
+	await openClosed('s-lead');
+	await tab.eval(`document.querySelector(${JSON.stringify(RESUME)}).click()`);
+	const box = '.detail [data-wake="s-lead"] textarea';
+	await tab.until(`!!document.querySelector('${box}')`, "the wake's options");
+	await tab.eval(fakeMic('繼續'));
+	expect(await tab.eval<number>(micIconOff(box))).toBeLessThanOrEqual(1);
+	await tab.eval(`(() => { const box = document.querySelector('${box}'); box.value = '/lat '; box.dispatchEvent(new Event('input', { bubbles: true })); box.setSelectionRange(5, 5); })()`);
+	await speak(tab, box);
+	await tab.until(`document.querySelector('${box}').value === '/lat 繼續'`, 'the speech at the cursor');
+	await shot(tab, 'wake-first-message-voice-on', { phone: true, box, back: { width: 390, height: 800, mobile: true } });
+	expect(tab.errors).toEqual([]);
+}, 30_000);
+
 test.skipIf(!CHROME)("390px: a closed controller's page shows its conversation, and its 接回 opens the wake's options and wakes it with them", async () => {
 	fixture.setHcom({ agents: [], resumed: { name: 'lead', session_id: 's-lead', status: 'listening', launch_context: { pane_id: 'ws-lat:p-back' } } });
 	await visit(390);
@@ -405,6 +421,9 @@ test.skipIf(!CHROME)("390px: a closed controller's page shows its conversation, 
 	expect(await tab.eval(`!!document.querySelector('${WAKE} input[type="checkbox"]')`)).toBe(false);
 	expect(await tab.eval(`document.querySelectorAll('${WAKE} .pills button').length`)).toBeGreaterThan(0);
 	expect(await tab.eval(FITS)).toBe(true);
+	// Voice input is off on this browser: no mic beside the first message.
+	expect(await tab.eval(`!${micOf(`${WAKE} textarea`)}`)).toBe(true);
+	await shot(tab, 'wake-first-message-voice-off', { phone: true, box: `${WAKE} textarea`, back: { width: 390, height: 800, mobile: true } });
 	await tab.eval(`(() => { const box = document.querySelector('${WAKE} textarea'); box.value = '/lat 繼續'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 	await tab.eval(`document.querySelector('${WAKE} [data-action="wake"]').click()`);
 	await tab.until(`!document.querySelector('.detail [data-closed-agent]')`, 'the page to change');

@@ -25,6 +25,7 @@
 	import { noticeTime } from '#lib/board/format.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import PermissionAskCard from './PermissionAskCard.svelte';
+	import VoiceField from './VoiceField.svelte';
 
 	let { ask }: { ask: BoardAsk } = $props();
 
@@ -142,13 +143,15 @@
 							<span class="option">其他</span>
 						</label>
 						{#if pick.other}
-							<textarea
-								rows="2"
-								aria-label="其他的內容"
-								placeholder="其他：請寫下你的答案"
-								disabled={sending}
-								bind:value={() => pick.text, (text) => edit(index, { text })}
-							></textarea>
+							<VoiceField disabled={sending}>
+								<textarea
+									rows="2"
+									aria-label="其他的內容"
+									placeholder="其他：請寫下你的答案"
+									disabled={sending}
+									bind:value={() => pick.text, (text) => edit(index, { text })}
+								></textarea>
+							</VoiceField>
 						{/if}
 					</li>
 				{:else if marked?.other}

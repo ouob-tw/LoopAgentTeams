@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { NODE, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser } from '../browser.ts';
+import { CHROME, launchChrome, shot, type Browser } from '../browser.ts';
 
 const ROOT = join(import.meta.dir, '../..');
 const codexDir = mkdtempSync(join(tmpdir(), 'lat-board-skill-hints-'));
@@ -278,5 +278,99 @@ test.skipIf(!CHROME)('on a phone the list fits the screen, above the line and in
 	await closed('the list closed by the tap');
 	expect(await valueOf(FIRST)).toBe('$tdd ');
 	await evaluate(`document.querySelector('input[type=radio][value="claude"]').click()`);
+	await tab().send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
+}, 30_000);
+
+/** The phone's on-screen keyboard, `px` tall, as the visual viewport shows it (Chrome shows none
+ *  here); 0 takes it away. */
+async function keyboard(px: number) {
+	await evaluate(`(() => {
+		window.realHeight ??= Object.getOwnPropertyDescriptor(VisualViewport.prototype, 'height');
+		if (${px}) Object.defineProperty(VisualViewport.prototype, 'height', { configurable: true, get: () => innerHeight - ${px} });
+		else Object.defineProperty(VisualViewport.prototype, 'height', window.realHeight);
+		visualViewport.dispatchEvent(new Event('resize'));
+		// Drawn where the keyboard would be, for the screenshots; taps go through it.
+		document.getElementById('fake-keyboard')?.remove();
+		if (${px}) document.body.append(Object.assign(document.createElement('div'), { id: 'fake-keyboard', style: 'position:fixed;left:0;right:0;bottom:0;height:${px}px;z-index:2147483647;pointer-events:none;background:repeating-linear-gradient(45deg,#888a 0 12px,#5558 12px 24px)' }));
+	})()`);
+}
+/** The open list and its box, and the part of the window that can be seen. */
+const placed = (box: string) =>
+	evaluate<{ top: number; bottom: number; boxTop: number; boxBottom: number; seenTop: number; seenBottom: number }>(`(() => {
+		const list = document.querySelector('[role="listbox"][aria-label="Skill"]').getBoundingClientRect();
+		const box = document.querySelector(${JSON.stringify(box)}).getBoundingClientRect();
+		return { top: list.top, bottom: list.bottom, boxTop: box.top, boxBottom: box.bottom, seenTop: visualViewport.offsetTop, seenBottom: visualViewport.offsetTop + visualViewport.height };
+	})()`);
+
+test.skipIf(!CHROME)('on a phone with the keyboard up, the list opens above a box in the lower half of what can be seen, inside it', async () => {
+	await tab().send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+	await tab().navigate(`${fixture.url}/?launch`);
+	await until(`!!document.querySelector('#folder-box')?.value`, 'the page hydrated');
+	await evaluate(`(() => {
+		const box = document.querySelector('#folder-box');
+		box.value = ${JSON.stringify(project)};
+		box.dispatchEvent(new Event('input', { bubbles: true }));
+		document.querySelector('input[type=radio][value="claude"]').click();
+	})()`);
+	const three = ['/project-one', '/user-one', '/zz-a-very-long-skill-name-that-the-list-still-shows-in-full'];
+
+	// No keyboard: the new form's box near the top has no room above, so the list opens under it (#264).
+	await clear(FIRST);
+	await type('請 /');
+	await shows(three);
+	let at = await placed(FIRST);
+	await shot(tab(), 'skills-top-form-no-keyboard');
+	expect(at.top).toBeGreaterThanOrEqual(at.boxBottom);
+	expect(at.bottom).toBeLessThanOrEqual(at.seenBottom);
+	await press('Escape');
+
+	// A keyboard that leaves the same box in the lower half of what can be seen: the list goes above it.
+	const boxBottom = await evaluate<number>(`document.querySelector(${JSON.stringify(FIRST)}).getBoundingClientRect().bottom`);
+	await keyboard(Math.round(844 - boxBottom - 40));
+	await clear(FIRST);
+	await type('請 /');
+	await shows(three);
+	at = await placed(FIRST);
+	await shot(tab(), 'skills-top-form-keyboard-up');
+	expect(at.boxTop).toBeGreaterThan((at.seenTop + at.seenBottom) / 2);
+	expect(at.bottom).toBeLessThanOrEqual(at.boxTop);
+	expect(at.top).toBeGreaterThanOrEqual(at.seenTop);
+	// The keyboard going away while the list is open: it fits again, under the box.
+	await keyboard(0);
+	await until(`(() => { const list = document.querySelector('[role="listbox"][aria-label="Skill"]').getBoundingClientRect(); return list.top >= document.querySelector(${JSON.stringify(FIRST)}).getBoundingClientRect().bottom; })()`, 'the list back under the box');
+	await press('Escape');
+
+	// What can be seen scrolls down the page while the list is open (iOS moves the visual viewport
+	// instead of the page): the list fits it again, inside it.
+	await keyboard(Math.round(844 - boxBottom - 40));
+	await clear(FIRST);
+	await type('請 /');
+	await shows(three);
+	expect((await placed(FIRST)).top).toBeLessThan(120);
+	await evaluate(`(() => {
+		window.realTop ??= Object.getOwnPropertyDescriptor(VisualViewport.prototype, 'offsetTop');
+		Object.defineProperty(VisualViewport.prototype, 'offsetTop', { configurable: true, get: () => 120 });
+		visualViewport.dispatchEvent(new Event('scroll'));
+	})()`);
+	await until(`document.querySelector('[role="listbox"][aria-label="Skill"]').getBoundingClientRect().top >= 120`, 'the open list fitted to the scrolled view');
+	at = await placed(FIRST);
+	expect(at.seenTop).toBe(120);
+	expect(at.bottom).toBeLessThanOrEqual(at.seenBottom);
+	await press('Escape');
+	await evaluate(`(() => { Object.defineProperty(VisualViewport.prototype, 'offsetTop', window.realTop); visualViewport.dispatchEvent(new Event('scroll')); })()`);
+	await keyboard(0);
+
+	// The command line above a keyboard: its list opens above it, inside what can be seen.
+	await keyboard(340);
+	await clear(LINE);
+	await type('@luna /');
+	await shows(three);
+	at = await placed(LINE);
+	await shot(tab(), 'skills-command-line-keyboard-up');
+	expect(at.bottom).toBeLessThanOrEqual(at.boxTop);
+	expect(at.top).toBeGreaterThanOrEqual(at.seenTop);
+	expect(at.boxBottom).toBeLessThanOrEqual(at.seenBottom + 1);
+	await press('Escape');
+	await keyboard(0);
 	await tab().send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
 }, 30_000);

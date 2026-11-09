@@ -6,6 +6,7 @@
 	import PreauthAllow from './PreauthAllow.svelte';
 	import PreauthChips from './PreauthChips.svelte';
 	import PreauthNotices from './PreauthNotices.svelte';
+	import VoiceField from './VoiceField.svelte';
 
 	const HIGHLIGHT_MS = 1_800;
 
@@ -45,7 +46,9 @@
 	<ul aria-label={name}>
 		{#each items as _, index (index)}
 			<li>
-				<textarea rows="3" aria-label={`${name}第 ${index + 1} 條`} bind:value={items[index]} onblur={() => editor.save()} onkeydown={saveOnEnter}></textarea>
+				<VoiceField>
+					<textarea rows="3" aria-label={`${name}第 ${index + 1} 條`} bind:value={items[index]} onblur={() => editor.save()} onkeydown={saveOnEnter}></textarea>
+				</VoiceField>
 				<button
 					aria-label={`刪除${name}第 ${index + 1} 條`}
 					onclick={() => {
@@ -148,7 +151,8 @@
 		gap: 0.4rem;
 		align-items: flex-start;
 	}
-	li textarea {
+	li textarea,
+	li :global(.voice-field) {
 		flex: 1;
 		min-width: 0;
 	}

@@ -1,7 +1,7 @@
 // What every browser test shares: finding Chrome, starting one on a port the system picks, and
 // speaking to its tab over the DevTools protocol. Nothing here reads or writes the real profile.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -330,4 +330,73 @@ async function debuggingPort(profile: string, chrome: ChildProcess): Promise<num
 		if (Date.now() > deadline) throw new Error('timed out waiting for Chrome to say which port it listens on');
 		await sleep(50);
 	}
+}
+
+/** Voice input that works without a microphone or the speech service: run in a loaded page, a
+ *  recording is a few bytes and the board answers every one with `text`. */
+export const fakeMic = (text: string) => `(() => {
+	Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async () => ({ getTracks: () => [] }) } });
+	window.MediaRecorder = class {
+		mimeType = 'audio/webm';
+		start() {}
+		stop() {
+			this.ondataavailable?.({ data: new Blob(['x']) });
+			this.onstop?.();
+		}
+	};
+	const fetch = window.fetch;
+	window.fetch = (input, init) =>
+		String(input).includes('/api/voice')
+			? Promise.resolve(new Response(JSON.stringify({ text: ${JSON.stringify(text)} }), { headers: { 'content-type': 'application/json' } }))
+			: fetch(input, init);
+})()`;
+
+/** The mic beside a text box that is not a MessageBox. */
+export const micOf = (box: string) => `document.querySelector(${JSON.stringify(box)})?.parentElement.querySelector(':scope > button.mic')`;
+
+/** How much the icon of the mic beside `box` differs in size from the command line's mic icon, in
+ *  CSS pixels: the larger of the width and height differences. */
+export const micIconOff = (box: string) => `(() => {
+	const size = (mic) => mic.querySelector('svg').getBoundingClientRect();
+	const mine = size(${micOf(box)});
+	const line = size(document.querySelector('.cmd .voice-slot button'));
+	return Math.max(Math.abs(mine.width - line.width), Math.abs(mine.height - line.height));
+})()`;
+
+/** Speak into a box through its mic (after `fakeMic`): pressed with the pointer to record, again to
+ *  stop, and waited for until the mic is ready again. */
+export async function speak(tab: Tab, box: string) {
+	await tab.until(`${micOf(box)}?.dataset.voice === 'idle' && !${micOf(box)}.disabled`, `the mic beside ${box}`);
+	await tab.eval(`(${micOf(box)}).dataset.speaking = ''`);
+	await tab.eval(`${micOf(box)}.scrollIntoView({ block: 'center' })`);
+	await tab.pointerClick('button.mic[data-speaking]');
+	await tab.until(`${micOf(box)}.dataset.voice === 'recording'`, `recording into ${box}`);
+	await tab.pointerClick('button.mic[data-speaking]');
+	await tab.until(`${micOf(box)}.dataset.voice === 'idle'`, `the speech put into ${box}`);
+	await tab.eval(`delete (${micOf(box)}).dataset.speaking`);
+}
+
+/** Run in a loaded page: requests to a path containing `path` wait until `release()` is called in
+ *  the page, then go on as usual. */
+export const holdRequests = (path: string) => `(() => {
+	let go;
+	const held = new Promise((resolve) => (go = resolve));
+	window.release = () => go();
+	const fetch = window.fetch;
+	window.fetch = (input, init) => (String(input).includes(${JSON.stringify(path)}) ? held.then(() => fetch(input, init)) : fetch(input, init));
+})()`;
+
+/** A screenshot saved as `<name>.png` in the folder `LAT_BOARD_SHOTS` names; nothing without it.
+ *  With `phone`, taken in a 390×844 phone window, `box` scrolled to the middle first, and the
+ *  window put back to `back` after. */
+export async function shot(tab: Tab, name: string, { phone = false, box, back }: { phone?: boolean; box?: string; back?: { width: number; height: number; mobile?: boolean } } = {}) {
+	const folder = process.env.LAT_BOARD_SHOTS;
+	if (!folder) return;
+	if (phone) await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+	if (box) await tab.eval(`document.querySelector(${JSON.stringify(box)})?.scrollIntoView({ block: 'center' })`);
+	await sleep(300);
+	const { data } = (await tab.send('Page.captureScreenshot', { format: 'png' })) as { data: string };
+	mkdirSync(folder, { recursive: true });
+	writeFileSync(join(folder, `${name}.png`), Buffer.from(data, 'base64'));
+	if (back) await tab.send('Emulation.setDeviceMetricsOverride', { width: back.width, height: back.height, deviceScaleFactor: 1, mobile: back.mobile ?? false });
 }

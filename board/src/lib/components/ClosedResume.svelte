@@ -15,6 +15,7 @@
 	import type { Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import ModelPicker from './ModelPicker.svelte';
+	import VoiceField from './VoiceField.svelte';
 
 	let {
 		agent,
@@ -100,12 +101,14 @@
 			<div class="pills">
 				<ModelPicker {controller} chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }} onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)} />
 			</div>
-			<textarea
-				aria-label="接回後的第一則訊息"
-				placeholder="接回後的第一則訊息（可以留空）"
-				rows="2"
-				bind:value={() => text[id] ?? '', (value) => (text[id] = value)}
-			></textarea>
+			<VoiceField>
+				<textarea
+					aria-label="接回後的第一則訊息"
+					placeholder="接回後的第一則訊息（可以留空）"
+					rows="2"
+					bind:value={() => text[id] ?? '', (value) => (text[id] = value)}
+				></textarea>
+			</VoiceField>
 			{#if abandonable[id]}
 				<p class="failed">{ABANDON_CONFIRM_TEXT}</p>
 				<button type="button" data-action="abandon" onclick={() => void abandon(agent)}>放棄前一次接回</button>

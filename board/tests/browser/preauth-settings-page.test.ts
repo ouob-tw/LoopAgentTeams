@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, uvPython, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, fakeMic, launchChrome, micIconOff, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
 
 const SECTION = `document.querySelector('dialog section[aria-label="預先授權（全域）"]')`;
 const FILE_TEXT = `# my notes
@@ -49,8 +49,8 @@ afterAll(async () => {
 });
 
 /** A new Chrome, logged in, with the settings dialog open and the section loaded. */
-async function browse(): Promise<Tab> {
-	const browser = await launchChrome();
+async function browse({ voice = false } = {}): Promise<Tab> {
+	const browser = await launchChrome({ scripts: voice ? [`localStorage.setItem('lat-board-voice', '1')`] : [] });
 	browsers.push(browser);
 	const tab = browser.tab;
 	const [name, value] = cookie.split('=');
@@ -89,6 +89,9 @@ test.skipIf(!CHROME)('each change saves at once, one after another; only the off
 	await tab.until(`[...${group('合併分支')}.querySelectorAll('.chip')].length === 1`, 'the chip');
 	await tab.eval(`${button(SECTION, '新增可自行定案')}.click()`);
 	await tab.until(`document.activeElement?.getAttribute('aria-label') === '可自行定案第 2 條'`, 'the new row, focused');
+	// Voice input is off on this browser: no mic beside the rule.
+	expect(await tab.eval(`!${micOf('textarea[aria-label="可自行定案第 2 條"]')}`)).toBe(true);
+	await shot(tab, 'preauth-rule-voice-off', { phone: true, box: 'textarea[aria-label="可自行定案第 2 條"]' });
 	await tab.eval(type('textarea[aria-label="可自行定案第 2 條"]', '新的一條'));
 	await tab.until(`!!${SECTION}.querySelector('textarea[aria-label="可自行定案第 2 條"]')`, 'the row');
 	const saved = async () => readFileSync(file, 'utf8');
@@ -98,6 +101,26 @@ test.skipIf(!CHROME)('each change saves at once, one after another; only the off
 	expect(text).toContain('[actions.merge]\nallow = true');
 	expect(text).toContain('branches = ["rel"]');
 	expect(text).toContain('"新的一條"');
+	expect(await tab.eval(alertText)).toBe('');
+}, 60_000);
+
+test.skipIf(!CHROME)('with voice input on, each rule has a mic that puts what was said at the cursor, saved like typing', async () => {
+	writeFileSync(file, FILE_TEXT);
+	const tab = await browse({ voice: true });
+	await loaded(tab);
+	const box = 'textarea[aria-label="可自行定案第 1 條"]';
+	await tab.until(`${SECTION}.querySelector('${box}')?.value === '先有的一條'`, 'the rule');
+	await tab.eval(fakeMic('還有'));
+	expect(await tab.eval<number>(micIconOff(box))).toBeLessThanOrEqual(1);
+	await tab.eval(`(() => { const box = document.querySelector('${box}'); box.focus(); box.setSelectionRange(2, 2); })()`);
+	await speak(tab, box);
+	await tab.until(`document.querySelector('${box}').value === '先有還有的一條'`, 'the speech at the cursor');
+	await shot(tab, 'preauth-rule-voice-on', { phone: true, box });
+	await tab.until(`document.activeElement === document.querySelector('${box}')`, 'the focus back in the box');
+	// Enter saves, as leaving the box does (a headless page that has no focus sends no blur).
+	await tab.eval(`document.querySelector('${box}').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`);
+	for (let i = 0; i < 50 && !readFileSync(file, 'utf8').includes('先有還有的一條'); i++) await Bun.sleep(100);
+	expect(readFileSync(file, 'utf8')).toContain('"先有還有的一條"');
 	expect(await tab.eval(alertText)).toBe('');
 }, 60_000);
 
