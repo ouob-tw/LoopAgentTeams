@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/routes/+page.svelte", "board/src/lib/components/CommandLine.svelte"],
+      "tests": ["board/tests/browser/keyboard-cover.test.ts"]
+    }
+  ]
+}

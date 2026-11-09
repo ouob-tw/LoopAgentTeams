@@ -3,6 +3,7 @@
 	// column borders draggable. Narrow: the roster strip above the inbox, and one content screen
 	// at a time once something is opened.
 	import { onMount, setContext, tick, untrack } from 'svelte';
+	import { MediaQuery } from 'svelte/reactivity';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
@@ -311,6 +312,30 @@
 	let folderFocused = $state(false);
 	/** How far the on-screen keyboard reaches over the page; the phone's command line sits above it. */
 	let keyboard = $state(0);
+	/** A phone's command line, fixed above the keyboard, would cover a box being typed in elsewhere on
+	 *  the page: while one has the focus with the keyboard up the line steps aside, and comes back when
+	 *  the focus leaves the box or the keyboard goes down. */
+	const phone = new MediaQuery('(max-width: 760px)', false);
+	let typingElsewhere = $state(false);
+	onMount(() => {
+		const follow = (event: FocusEvent) => {
+			const at = event.type === 'focusin' ? event.target : event.relatedTarget;
+			typingElsewhere = at instanceof HTMLElement && at.closest('.dock') === null && typesText(at);
+		};
+		document.addEventListener('focusin', follow);
+		document.addEventListener('focusout', follow);
+		return () => {
+			document.removeEventListener('focusin', follow);
+			document.removeEventListener('focusout', follow);
+		};
+	});
+	/** Inputs a phone opens no keyboard for. */
+	const NO_KEYBOARD = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit']);
+	/** Whether the focus in this element brings up the on-screen keyboard. */
+	function typesText(element: HTMLElement) {
+		if (element instanceof HTMLInputElement) return !NO_KEYBOARD.has(element.type);
+		return element instanceof HTMLTextAreaElement || element.isContentEditable;
+	}
 	onMount(() => {
 		const viewport = window.visualViewport;
 		if (!viewport) return;
@@ -704,7 +729,7 @@
 					closed={view?.kind === 'agent' ? closedAgent : undefined}
 					agents={board.snapshot.agents}
 					adopt={agentController?.id}
-					away={folderFocused}
+					away={folderFocused || (phone.current && typingElsewhere && keyboard > 0)}
 				/>
 			</DockSwipe>
 		</div>
