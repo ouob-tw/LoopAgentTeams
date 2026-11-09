@@ -205,7 +205,9 @@
 	/** Controllers whose abandon confirmation is open. */
 	let confirming = $state<Record<string, boolean>>({});
 
-	/** A phone's width: the controls under the box go into one row of their own that scrolls sideways. */
+	/** A phone's width: the controls under the box go into one row of their own that scrolls sideways.
+	 *  Crossing it rebuilds those controls (a recording in progress stops); the server renders the wide
+	 *  form, so a phone rebuilds them once on load too. */
 	const narrow = new MediaQuery('(max-width: 760px)', false);
 
 	const id = $derived(recipient?.id ?? '');
@@ -710,6 +712,9 @@
 			align-items: center;
 			gap: 0.5rem;
 			min-width: 0;
+			/* Room inside the scroll box for the buttons' focus rings, which it would otherwise cut. */
+			padding: 4px;
+			margin: -4px;
 			overflow-x: auto;
 			scrollbar-width: none;
 		}
