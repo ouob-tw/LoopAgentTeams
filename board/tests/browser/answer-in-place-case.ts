@@ -1,6 +1,11 @@
+// Answering a question card in a controller's conversation: the card gets shorter, and once its
+// controller records the answer it moves from the inbox to the answered list. Neither moves the
+// card on screen: it stays where it was when the answer was sent, at the top of the screen or
+// low on it, in a long conversation or one too short to scroll back over. The pages in a real
+// browser: headless Chrome driven over its DevTools protocol, on the built board with fake data.
 // Shared by the answer-in-place-*.test.ts files, not run by `bun test` itself: the fixture, the
-// browser and the helpers for answering a question card in a controller's conversation. Each test
-// file calls `useAnswerInPlace()` for a fixture and a browser of its own, so the files run in parallel.
+// browser and the helpers. Each test file calls `useAnswerInPlace()` for a fixture and a browser
+// of its own, so the files run in parallel.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect } from 'bun:test';
@@ -15,21 +20,21 @@ export const evaluate = <T>(expression: string) => browser!.tab.eval<T>(expressi
 
 /** Register the fixture and the browser of the calling test file. */
 export function useAnswerInPlace() {
-beforeAll(async () => {
-	fixture = await startFixture();
-	// The questions were asked at a fixed time: answered ones are listed for 30 days after.
-	fixture.setClock(Date.parse('2026-10-20T02:00:00.000Z'));
-	cookie = await fixture.login('answer-in-place');
-	if (!CHROME) return;
-	browser = await launchChrome();
-	const [name, value] = cookie.split('=');
-	await send('Network.setCookie', { name, value, url: fixture.url });
-}, 30_000);
+	beforeAll(async () => {
+		fixture = await startFixture();
+		// The questions were asked at a fixed time: answered ones are listed for 30 days after.
+		fixture.setClock(Date.parse('2026-10-20T02:00:00.000Z'));
+		cookie = await fixture.login('answer-in-place');
+		if (!CHROME) return;
+		browser = await launchChrome();
+		const [name, value] = cookie.split('=');
+		await send('Network.setCookie', { name, value, url: fixture.url });
+	}, 30_000);
 
-afterAll(async () => {
-	await browser?.close();
-	await fixture?.cleanup();
-});
+	afterAll(async () => {
+		await browser?.close();
+		await fixture?.cleanup();
+	});
 }
 
 const options = (labels: string[]) => labels.map((label, index) => ({ letter: 'ABC'[index]!, label, impact: '', recommended: index === 0 }));

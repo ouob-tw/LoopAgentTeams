@@ -2,7 +2,7 @@
 // Shares its fixture and helpers with the other answer-in-place-*.test.ts files (answer-in-place-case.ts).
 import { expect, test } from 'bun:test';
 import { CHROME } from '../browser.ts';
-import { answer, browser, cardOf, evaluate, expectStayed, HIGH, LOW, open, useAnswerInPlace } from './answer-in-place-case.ts';
+import { answer, cardOf, evaluate, expectStayed, HIGH, LOW, open, useAnswerInPlace } from './answer-in-place-case.ts';
 
 useAnswerInPlace();
 
