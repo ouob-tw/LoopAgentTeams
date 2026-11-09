@@ -1084,6 +1084,7 @@ class CardCloseTests(LedgerCase):
         self.run_ledger('cancel', '1', '--by', 'nanu', '--reason', 'dropped')
         result = self.close(card)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.tasks / 'done' / card.name).exists())
 
     def test_close_sets_fields_moves_the_card_and_repoints_the_ledger_row(self):
         card = self.done_ledger_card()

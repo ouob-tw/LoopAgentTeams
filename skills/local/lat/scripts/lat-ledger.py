@@ -594,24 +594,12 @@ def card_mismatch(item):
 def update_card(item, resolved):
     """Mirror a close into the task card."""
     commits = resolved.get('commit')
-    values = {'status': 'committed' if commits else 'completed'}
-    if card_status_text(item) in CARD_CLOSED:
-        del values['status']  # a closed card (e.g. merged) keeps its status
+    values = {}
+    if card_status(item.get('card'))[0] not in CARD_CLOSED:  # a closed card (e.g. merged) keeps its status
+        values['status'] = 'committed' if commits else 'completed'
     if commits:
         values['deliverable commit'] = ', '.join(commits)
     write_card_fields(item, values)
-
-
-def card_status_text(item):
-    """The task card's current status text, or None when unreadable or absent."""
-    try:
-        for line in Path(item['card']).read_text(encoding='utf-8').splitlines():
-            match = CARD_FIELD.fullmatch(line.strip())
-            if match and match.group(1).strip().lower() == 'status':
-                return match.group(2).strip()
-    except (KeyError, TypeError, OSError, UnicodeError):
-        pass
-    return None
 
 
 def write_card_fields(item, values):
