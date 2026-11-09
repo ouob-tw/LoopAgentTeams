@@ -645,13 +645,14 @@ def _split_multi_answer(answer_text, labels):
     label without the display-only 建議 mark) is taken whole at each position,
     longest first; only text naming no option is cut at the next ``；``.
     """
+    # Option order first, so equal-length texts are tried in the order the options are listed.
     known = sorted(
-        {
+        [
             (index, text)
             for index, label in enumerate(labels)
-            for text in (label, _answer_label(label))
+            for text in dict.fromkeys((label, _answer_label(label)))
             if text
-        },
+        ],
         key=lambda item: len(item[1]), reverse=True,
     )
     used = set()

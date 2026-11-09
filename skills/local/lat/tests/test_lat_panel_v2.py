@@ -326,6 +326,13 @@ class AnswerFormatTests(unittest.TestCase):
         answer = panel.parse_question_answer(panel.parse_questions(raw)[0])
         self.assertEqual(answer.selections, ("甲；乙", "甲", "乙"))
 
+    def test_multi_answer_equal_length_texts_are_tried_in_option_order(self):
+        panel = load_module()
+        section = question("- [ ] 甲；乙（建議）\n  Impact\n- [ ] 甲；乙\n  Impact")
+        raw = section["raw"].replace(section["answer_block"], "答覆：甲；乙；甲；乙（建議）\n\n- [ ] 送出")
+        answer = panel.parse_question_answer(panel.parse_questions(raw)[0])
+        self.assertEqual(answer.selections, ("甲；乙", "甲", "乙（建議）"))
+
     def test_multi_answer_space_before_other_marker_is_a_part_not_other_text(self):
         panel = load_module()
         section = question("- [ ] 甲\n  Impact\n- [ ] 其他：乙\n  Impact")
