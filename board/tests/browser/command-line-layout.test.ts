@@ -2,8 +2,10 @@
 // voice input unlocked so every control is there. A wide screen keeps one row; a phone gives the box
 // a row of its own and puts the controls on the row under it, the model picker first and the button
 // that puts the line away at the far right. Skipped when the host has no Chrome.
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { startFixture, type Fixture } from '../harness.ts';
+import { sleep, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser } from '../browser.ts';
 
 let fixture: Fixture;
@@ -103,6 +105,67 @@ for (const width of [360, 390]) {
 		await tab().until(`!${shown('.cmd')} && ${shown('.reopen')}`, 'the line put away');
 		await tab().eval(`document.querySelector('.reopen').click()`);
 		await tab().until(shown('.cmd textarea'), 'the line back');
+	});
+}
+
+// More than fits: a long model name and the options button showing. The row stays one line and
+// scrolls sideways, the put-away button stays at the far right, and an open menu is not cut off.
+const SCROLLER = `(() => {
+	let s = document.querySelector('.cmd .pill-slot .picker .part').parentElement;
+	while (s && s !== document.body && s.scrollWidth <= s.clientWidth) s = s.parentElement;
+	return s && s.closest('.cmd') ? s : null;
+})()`;
+for (const width of [360, 390]) {
+	test.skipIf(!CHROME)(`${width}px: too much for the row stays one line, scrolls, keeps put away at the right, menus whole`, async () => {
+		// A controller that is not running: its model picker lists the models to wake it with.
+		fixture.setHcom({ agents: [] });
+		await fixture.refresh(cookie);
+		await visit(width);
+		// Let hydration finish so it does not rebuild the line under the check.
+		await sleep(400);
+		await tab().eval(`(() => {
+			document.querySelector('.cmd .pill-slot .picker .part').textContent = 'claude-opus-4-7-with-a-very-long-model-name';
+			document.querySelector('.cmd .options').classList.remove('idle');
+		})()`);
+		const sample = () => tab().eval<Places & { scrolls: boolean; menu: Box }>(`(() => {
+			const base = ${PLACES};
+			const menu = document.querySelector('.cmd .picker .menu');
+			let menuBox = null;
+			if (menu) {
+				const r = menu.getBoundingClientRect();
+				const at = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+				menuBox = { left: r.left, right: r.right, top: r.top, bottom: r.bottom, hit: menu.contains(at) };
+			}
+			return { ...base, scrolls: ${SCROLLER} !== null, menu: menuBox };
+		})()`);
+		const start = await sample();
+		const row = [start.pill, start.attach, start.voice, start.options, start.hide] as NonNullable<Box>[];
+		for (const box of row) expect(box).not.toBeNull();
+		// One line under the box, even though it cannot all be seen at once.
+		expect(Math.max(...row.map((box) => box.top))).toBeLessThan(Math.min(...row.map((box) => box.bottom)));
+		expect(Math.min(...row.map((box) => box.top))).toBeGreaterThanOrEqual(start.box!.bottom);
+		expect(start.hide!.right).toBeGreaterThan(width - 24);
+		expect(start.hide!.hit).toBe(true);
+		expect(start.scrolls).toBe(true);
+		expect(start.fits).toBe(true);
+		// Scrolled to the end: the rest can be tapped, put away has not moved.
+		await tab().eval(`(() => { const s = ${SCROLLER}; s.scrollLeft = s.scrollWidth; })()`);
+		const end = await sample();
+		expect(end.options!.hit).toBe(true);
+		expect(end.options!.right).toBeLessThanOrEqual(end.hide!.left);
+		expect(end.hide!.left).toBe(start.hide!.left);
+		expect(end.hide!.hit).toBe(true);
+		// The model menu, opened from the row, is drawn whole and can be reached.
+		await tab().eval(`(() => { const s = ${SCROLLER}; s.scrollLeft = 0; })()`);
+		await tab().until(`!!document.querySelector('.cmd .picker .menu') || (document.querySelector('.cmd .pill-slot .picker .part').click(), false)`, 'the model menu');
+		const open = await sample();
+		expect(open.menu!.left).toBeGreaterThanOrEqual(0);
+		expect(open.menu!.right).toBeLessThanOrEqual(width);
+		expect(open.menu!.top).toBeGreaterThanOrEqual(0);
+		expect(open.menu!.bottom).toBeLessThanOrEqual(open.pill!.top);
+		expect(open.menu!.hit).toBe(true);
+		rmSync(join(fixture.dir, 'hcom.json'), { force: true });
+		await fixture.refresh(cookie);
 	});
 }
 

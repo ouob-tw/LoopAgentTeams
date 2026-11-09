@@ -20,6 +20,7 @@
 	import MessageSquare from '@lucide/svelte/icons/message-square';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
 	import Square from '@lucide/svelte/icons/square';
+	import { MediaQuery } from 'svelte/reactivity';
 	import { onMount, tick, untrack } from 'svelte';
 	import {
 		AGENT_HCOM_UNKNOWN_REASON,
@@ -204,6 +205,9 @@
 	/** Controllers whose abandon confirmation is open. */
 	let confirming = $state<Record<string, boolean>>({});
 
+	/** A phone's width: the controls under the box go into one row of their own that scrolls sideways. */
+	const narrow = new MediaQuery('(max-width: 760px)', false);
+
 	const id = $derived(recipient?.id ?? '');
 	/** The page's own controller as Herdr lists it now, not another one an `@name` line names: its permission
 	 *  mode is switched as an agent's. */
@@ -314,6 +318,48 @@
 	}
 </script>
 
+{#snippet attachAndVoice()}
+	<span class="attach-slot"><AttachButton owner={attachOwner} disabled={boxDisabled} /></span>
+	{#if voice.unlocked}
+		<span class="voice-slot"><VoiceButton disabled={boxDisabled} oninsert={(text) => messageBox?.insert(text)} /></span>
+	{/if}
+{/snippet}
+
+{#snippet picker()}
+{#if toAgent && agent}
+	<div class="pill-slot" inert={testLocked !== null}>
+		<AgentModelPicker {agent} />
+	</div>
+{:else if !toClosed}
+	<div class="pill-slot" inert={testLocked !== null}>
+		<ModelPicker
+			controller={recipient}
+			chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }}
+			onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)}
+		/>
+	</div>
+{/if}
+{/snippet}
+
+{#snippet optionsButton()}
+<!-- Always there on a wide screen, so the box keeps its width whoever it is for; a phone shows
+     it only when it holds something. -->
+{#if !toClosed}
+	<button
+		type="button"
+		class="options"
+		class:idle={!hasOptions}
+		aria-label="選項"
+		title={optionsTitle}
+		aria-expanded={optionsOpen}
+		disabled={!hasOptions || testLocked !== null}
+		onclick={() => (optionsOpen = !optionsOpen)}
+	>
+		<SlidersHorizontal size="1.1em" />
+	</button>
+{/if}
+{/snippet}
+
 {#snippet sendIcon()}<ArrowUp size="1.2em" />{/snippet}
 
 <form
@@ -333,10 +379,7 @@
 	<div class="field">
 		<div class="tray-slot"><AttachmentTray owner={attachOwner} /></div>
 		<div class="field-row">
-			<span class="attach-slot"><AttachButton owner={attachOwner} disabled={boxDisabled} /></span>
-			{#if voice.unlocked}
-				<span class="voice-slot"><VoiceButton disabled={boxDisabled} oninsert={(text) => messageBox?.insert(text)} /></span>
-			{/if}
+			{#if !narrow.current}{@render attachAndVoice()}{/if}
 			<div class="box" style:--send-w="{sendWidth}px">
 				<MessageBox
 					bind:this={messageBox}
@@ -383,35 +426,17 @@
 			</div>
 		</div>
 	</div>
-	<!-- An agent has no wake; a closed one is brought back from its page. -->
-	{#if toAgent && agent}
-		<div class="pill-slot" inert={testLocked !== null}>
-			<AgentModelPicker {agent} />
+	{#if narrow.current}
+		<!-- One line that scrolls sideways when the controls do not fit; the button that puts the line away
+		     stays outside it, at the right. Its menus are placed against the line, so it does not cut them. -->
+		<div class="controls">
+			{@render picker()}
+			{@render attachAndVoice()}
+			{@render optionsButton()}
 		</div>
-	{:else if !toClosed}
-		<div class="pill-slot" inert={testLocked !== null}>
-			<ModelPicker
-				controller={recipient}
-				chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }}
-				onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)}
-			/>
-		</div>
-	{/if}
-	<!-- Always there on a wide screen, so the box keeps its width whoever it is for; a phone shows
-	     it only when it holds something. -->
-	{#if !toClosed}
-		<button
-			type="button"
-			class="options"
-			class:idle={!hasOptions}
-			aria-label="選項"
-			title={optionsTitle}
-			aria-expanded={optionsOpen}
-			disabled={!hasOptions || testLocked !== null}
-			onclick={() => (optionsOpen = !optionsOpen)}
-		>
-			<SlidersHorizontal size="1.1em" />
-		</button>
+	{:else}
+		{@render picker()}
+		{@render optionsButton()}
 	{/if}
 	<button type="button" class="hide" aria-label="收起輸入列" title="收起輸入列" onclick={() => setHidden(true)}>
 		<ChevronDown size="1.1em" />
@@ -612,7 +637,8 @@
 		display: none;
 	}
 	/* A phone: the box takes its own row, the controls the row under it: the model and effort, the
-	   paperclip, the mic, the rest, and the button that puts the line away at the far right. */
+	   paperclip, the mic and the rest in one line that scrolls sideways, and the button that puts the
+	   line away, fixed at the far right. */
 	@media (max-width: 760px) {
 		.cmd.hidden {
 			display: none;
@@ -676,11 +702,19 @@
 			order: -1;
 			flex-basis: 100%;
 		}
-		.pill-slot {
-			order: 1;
+		/* Everything under the box but the put-away button: one line, scrolling sideways when it is too
+		   much. Not positioned, so the pickers' menus (placed against the line) are not cut by it. */
+		.controls {
+			display: flex;
+			flex: 1;
+			align-items: center;
+			gap: 0.5rem;
+			min-width: 0;
+			overflow-x: auto;
+			scrollbar-width: none;
 		}
-		.attach-slot {
-			order: 2;
+		.controls > :global(*) {
+			flex: none;
 		}
 		/* Near the left edge now, its menus float above the whole line from its left instead. */
 		.pill-slot :global(.picker) {
@@ -690,14 +724,8 @@
 			left: 0.6rem;
 			right: auto;
 		}
-		.voice-slot {
-			order: 3;
-		}
-		.options {
-			order: 4;
-		}
 		.hide {
-			order: 5;
+			flex: none;
 			margin-left: auto;
 		}
 		/* The top bar already names the open controller; the line names its recipient only when it
