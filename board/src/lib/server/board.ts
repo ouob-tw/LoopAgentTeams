@@ -103,10 +103,10 @@ export interface Board {
 
 /** Close the resumes whose session hcom's list of this read holds; a list that could not be read
  *  leaves them open until a later read. */
-async function settleWakes(config: BoardConfig, log: SentLog, list: AgentList, herdr: HerdrAgentList, moved: () => void): Promise<string | null> {
+async function settleWakes(config: BoardConfig, log: SentLog, list: AgentList, herdr: HerdrAgentList, listedAt: number, moved: () => void): Promise<string | null> {
 	// A resume's pane found only now: its new tab is moved to the front like one found at once.
 	const onPane = (pane: string) => void tabToFront(config, pane).then((reason) => reason === null && moved());
-	return list.ok ? settleResumes(log, list.agents, herdr.ok ? herdr.agents : null, config.now(), config.launchWaitMs, onPane) : null;
+	return list.ok ? settleResumes(log, list.agents, herdr.ok ? herdr.agents : null, config.now(), config.launchWaitMs, listedAt, onPane) : null;
 }
 
 /** The sent log as one read of the sources works from: read once, and kept up with until the read
@@ -323,6 +323,8 @@ function createBoard(): Board {
 	async function readWith(reading: Reading): Promise<BoardSnapshot> {
 		// Real clock: pause records carry the real time they were written.
 		const listedAt = Date.now();
+		// The board's clock, which the sent log's times are in.
+		const listedNow = config.now();
 		const [[helper, reports, answered, settled, log, ledgers], listedAgents, listedHerdr, stops] = await Promise.all([
 			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
 				// Read after the list: the files are those of the controllers bound now, and of the
@@ -362,7 +364,7 @@ function createBoard(): Board {
 				if (settled instanceof Error) throw settled;
 				const answersError = settled;
 				const launchesError = settleLaunches(log, helper.controllers, reports.files, config.now());
-				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, log, agents, herdrAgents, tabMoved));
+				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, log, agents, herdrAgents, listedNow, tabMoved));
 			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 				sentLogError = (error as Error).message;

@@ -409,6 +409,8 @@ export function closeResume(stateDir: string, wakeId: string, result: ResumeClos
  * not read): hcom lists a resumed client for a while that has already exited. One that has not
  * run by the end of the wait failed; the switch is then open to continue or give up.
  *
+ * `listedAt`: when the lists were asked for, by the board's clock.
+ *
  * Returns why the log could not be brought up to date, or null.
  */
 export function settleResumes(
@@ -417,9 +419,13 @@ export function settleResumes(
 	herdr: HerdrAgent[] | null,
 	now: number,
 	waitMs: number,
+	listedAt: number,
 	onPane: (pane: string) => void = () => {}
 ): string | null {
-	for (const wake of openResumes(log.lines, now, waitMs)) {
+	// Lists asked for before a resume was logged show the session as it was before it: its old
+	// pane, or still running. Such a resume waits for a later read.
+	const since = (wake: { time: string }) => Date.parse(wake.time) <= listedAt;
+	for (const wake of openResumes(log.lines, now, waitMs).filter(since)) {
 		const verdict = wake.switchId ? switchResumeVerdict(wake, agents, herdr, now, waitMs) : null;
 		const running = verdict ? verdict === 'succeeded' : agents.find((agent) => agent.sessionId === wake.controllerId);
 		// The pane Herdr runs the resumed session in, else hcom's; never hcom's for a model switch:
@@ -440,7 +446,7 @@ export function settleResumes(
 	}
 	// One closed before Herdr ran its session (by a board restarted meanwhile, say): its pane and
 	// tab once Herdr does, within the wait.
-	for (const wake of unplacedResumes(log.lines, now, waitMs)) {
+	for (const wake of unplacedResumes(log.lines, now, waitMs).filter(since)) {
 		const pane = herdr && resumedIn(wake, herdr)?.pane;
 		if (!pane) continue;
 		try {
