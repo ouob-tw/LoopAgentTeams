@@ -269,7 +269,7 @@ class SpawnWatchTests(unittest.TestCase):
         self.watch.sleep = sleep
         watched = {}
         found, *_ = self.watch.find_batch('vare', 'claude', '', 99, 'claude-opus-5-5', 'low',
-                                         watched)
+                                          watched)
         self.assertIsNone(found)
         self.assertGreater(len(polls), 20)
         self.assertEqual(list(watched), ['mona'])  # approval prompts watched all along
@@ -415,6 +415,23 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertIn('permission: expected bypass permissions on, screen shows auto mode on', text)
         self.assertNotIn('model:', text)
 
+    def test_variable_model_keeps_the_hard_coded_effort_as_expected(self):
+        fake = FakeHcom(screens=[['▝▜██████▀  Opus 5.5 with high effort · Claude Pro',
+                                  *CLAUDE_START[1:]]], stop_after=500)
+        self.run_watch(fake, model='$2', effort='medium',
+                       launched={'kilo': ('claude-opus-5-5', 'high')})
+        self.assertEqual(len(fake.sent), 1)
+        self.assertIn('effort: expected medium, screen shows high', fake.sent[0][-1])
+        self.assertNotIn('model:', fake.sent[0][-1])
+
+    def test_hard_coded_model_unmatched_by_any_batch_is_told_even_if_the_screen_agrees(self):
+        fake = FakeHcom(screens=[['▝▜██████▀  Haiku 5.5 with low effort · Claude Pro',
+                                  *CLAUDE_START[1:]]], stop_after=500)
+        self.run_watch(fake, model='claude-opus-5-5',
+                       launched={'kilo': ('claude-haiku-5-5', 'low')})
+        self.assertEqual(len(fake.sent), 1)
+        self.assertIn('model: launch command unknown, screen shows Haiku 5.5', fake.sent[0][-1])
+
     def test_agent_process_is_found_by_its_hcom_process_id(self):
         proc = Path(self.state.name) / 'proc'
         for pid, env, argv in (
@@ -509,7 +526,7 @@ class SpawnWatchTests(unittest.TestCase):
                 self.assertTrue(self.watch.claim('b1'))
         self.watch.sleep = sleep
         found, *_ = self.watch.find_batch('vare', 'claude', 'vare-t$n', 99, 'claude-sonnet-5-5',
-                                         'low', {})
+                                          'low', {})
         self.assertIsNone(found)
 
     def test_a_tag_pattern_still_takes_a_batch_with_another_model_at_the_end(self):
@@ -519,7 +536,7 @@ class SpawnWatchTests(unittest.TestCase):
         self.watch.process_ids = lambda: {'kilo': 'kilo'}
         self.watch.launched_with = lambda tool, process_id: ('claude-opus-5-5', 'low')
         found, why, _ = self.watch.find_batch('vare', 'claude', 'vare-t$n', 99,
-                                           'claude-sonnet-5-5', 'low', {})
+                                              'claude-sonnet-5-5', 'low', {})
         self.assertEqual(found, fake.batch)
         self.assertIn('claude-opus-5-5', why)
 

@@ -295,8 +295,9 @@ def find_batch(spawner, tool, tag, after_id, model, effort, watched):
     after_id that no other watcher has taken. One whose agent was started with this model
     and effort is ours. One whose agent's command line stays unreadable for ARGS_WAIT
     seconds, or that no watcher has taken by the end of BATCH_WAIT, is taken unattributed:
-    its approval prompts and permission are still checked, and its model and effort are
-    compared with the ones it was started with, when readable, instead of this command's.
+    its approval prompts and permission are still checked, but its model and effort are
+    not compared with this command's (main compares them with the readable started ones
+    when this command's model or effort is a shell variable).
     Before the last pass, a watch whose tag has shell expansions (tag_pattern) leaves each
     batch PATTERN_GRACE seconds to an exact-tag watch of another command first.
 
@@ -460,9 +461,10 @@ def matches(tool, item, expected, actual):
 def report(tool, full, expected, seen, reason, unattributed=None):
     """Message text for the spawner, or None when there is nothing to tell.
 
-    Unattributed agents expect the model and effort they were started with, or, with an
-    unreadable command line, none: those are listed as seen. Being unattributed alone is no
-    finding, so without problems it only goes to watch.log.
+    Unattributed agents expect no model or effort (listed as seen, a finding when the
+    command line was readable), or, for a command with a shell variable in them, the ones
+    they were started with. Being unattributed alone is no finding, so without problems it
+    only goes to watch.log.
     """
     unknown, problems = [], []
     for item in ITEMS:
@@ -474,7 +476,7 @@ def report(tool, full, expected, seen, reason, unattributed=None):
         elif not matches(tool, item, expected[item], seen[item][0]):
             value, source = seen[item]
             problems.append(f'{item}: expected {expected[item]}, {source} shows {value}')
-    if unattributed and not problems:
+    if unattributed and not problems and (unattributed == UNREADABLE_ARGS or not unknown):
         log(f'{full} ({tool}): {unattributed}.' + (f" {'; '.join(unknown)}" if unknown else ''))
         return None
     problems = unknown + problems
@@ -839,8 +841,17 @@ def main(argv=None):
         spawner = data.get('by') or args.spawner
         agents = {name: full_name(data, name) for name in data['instances'] if NAME.match(name)}
         labels = start_labels(spawner, agents)
-        model, effort = (started if unattributed and started else
-                         (None, None) if unattributed else (args.model, args.effort))
+        model, effort = args.model, args.effort
+        if unattributed:
+            # a shell variable in the command's model or effort is checked against what the
+            # agent was started with; otherwise an unattributed agent has nothing to expect
+            model_varies, effort_varies = (tag_pattern(value) is not None
+                                           for value in (model, effort))
+            if started and (model_varies or effort_varies):
+                model = started[0] if model_varies else model
+                effort = started[1] if effort_varies else effort
+            else:
+                model, effort = None, None
         expected = {'model': model, 'effort': effort,
                     'permission': EXPECTED_PERMISSION[args.tool]}
         for text in check(args.tool, agents, expected, watched, launch_id, start,
