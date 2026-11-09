@@ -1190,6 +1190,56 @@ class PushTests(PreauthCase):
                     self.assertIn(f'{own[:12]} "fix: mine (ouob-tw/LoopAgentTeams-work#370)"',
                                   reasons[0])
 
+    def merge(self, branch, *message):
+        git(self.repo, 'merge', '-q', '--no-ff', '--no-edit', branch, *message)
+        return git(self.repo, 'rev-parse', 'HEAD')
+
+    def side(self, message, *, pushed):
+        """A commit on branch `side` off main, then back on main."""
+        git(self.repo, 'switch', '-q', '-c', 'side')
+        sha = self.commit(message, 'side.txt')
+        if pushed:
+            git(self.repo, 'push', '-q', 'origin', 'side')
+        git(self.repo, 'switch', '-q', 'main')
+        return sha
+
+    def test_a_ticketless_sync_merge_of_checked_parents_allows(self):
+        self.side('chore: on the remote already', pushed=True)
+        self.commit('feat(lat): mine (#313)')
+        self.merge('side')
+        self.gate_record()
+        result = self.check('push', '--branch', 'main')
+        self.assertEqual(result['verdict'], 'allow', result['reasons'])
+
+    def test_a_merge_with_an_unchecked_or_no_unpushed_parent_is_still_listed(self):
+        with self.subTest('the merged-in branch is neither on the remote nor checked'):
+            outside = self.side('chore: unchecked', pushed=False)
+            self.commit('feat(lat): mine (#313)')
+            merge = self.merge('side')
+            self.gate_record()
+            reasons = self.check('push', '--branch', 'main')['reasons']
+            self.assertEqual(len(reasons), 1, reasons)
+            self.assertIn(f'{outside[:12]} "chore: unchecked" (no ticket)', reasons[0])
+            self.assertIn(f'{merge[:12]} "Merge branch \'side\'" (no ticket)', reasons[0])
+        git(self.repo, 'reset', '-q', '--hard', 'origin/main')
+        git(self.repo, 'branch', '-q', '-D', 'side')
+        with self.subTest('both parents are already on the remote'):
+            self.side('chore: on the remote already', pushed=True)
+            merge = self.merge('side')
+            self.gate_record()
+            reasons = self.check('push', '--branch', 'main')['reasons']
+            self.assertEqual(len(reasons), 1, reasons)
+            self.assertIn(f'{merge[:12]} "Merge branch \'side\'" (no ticket)', reasons[0])
+
+    def test_a_merge_naming_another_ticket_is_listed_with_it(self):
+        self.side('chore: on the remote already', pushed=True)
+        self.commit('feat(lat): mine (#313)')
+        merge = self.merge('side', '-m', 'merge: sync for #999')
+        self.gate_record()
+        reasons = self.check('push', '--branch', 'main')['reasons']
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertIn(f'{merge[:12]} "merge: sync for #999" (#999)', reasons[0])
+
     def test_commits_the_remote_has_are_not_listed(self):
         self.commit('chore: no ticket but pushed')
         git(self.repo, 'push', '-q', 'origin', 'main')
