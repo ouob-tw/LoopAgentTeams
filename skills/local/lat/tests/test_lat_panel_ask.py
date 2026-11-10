@@ -304,6 +304,17 @@ class AskRevisionSyncTests(AskTestCase):
         self.assertEqual(self.ask(SECTION, "--question", "新的文字").returncode, 0)
         self.assertEqual(self.record().read_text(), before)
 
+    def test_a_missing_header_line_is_added_not_taken_from_an_answer(self):
+        self.ask(SECTION, *HUMAN)
+        answer = "\n## 答覆（r1，聊天）\n\n- question: 答覆裡的原文\n- options: 答覆裡的選項\n"
+        lines = [line for line in self.record().read_text().splitlines(keepends=True)
+                 if not line.startswith(("- question:", "- options:"))]
+        self.record().write_text("".join(lines) + answer)
+        self.assertEqual(self.ask(NEW_SECTION).returncode, 0)
+        text = self.record().read_text()
+        self.assertTrue(text.endswith(answer), text)
+        self.assertIn("- version: r2\n- question: 改問要不要推送？\n", text)
+
     def test_missing_lines_are_added_instead_of_failing(self):
         self.ask(SECTION, *HUMAN)
         lines = [line for line in self.record().read_text().splitlines(keepends=True)

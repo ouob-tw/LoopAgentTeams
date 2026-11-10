@@ -1491,13 +1491,16 @@ def sync_decision_record(decision_path, revision, *, reopen=False, help_question
         if incoming is not None and _record_revision(text) != revision:
             heading, question_line, options_line = _record_question_lines(
                 question_id, incoming, question)
-            heading_match = re.search(r"^# .*$", text, re.MULTILINE)
+            # Only the record's own header counts; answer sections below it stay untouched.
+            header_end = text.find("\n## ")
+            header_end = len(text) if header_end < 0 else header_end
+            heading_match = re.search(r"^# .*$", text[:header_end], re.MULTILINE)
             if heading_match:
                 edits.append((heading_match.start(), heading_match.end(), heading))
             else:
                 edits.append((0, 0, heading + "\n\n"))
             for key, line in (("question", question_line), ("options", options_line)):
-                if key in fields:
+                if key in fields and fields[key][0] < header_end:
                     edits.append((*fields[key], line))
                 else:
                     extra += "\n" + line
