@@ -39,7 +39,7 @@ p do --action merge|push --branch <分支> --commit <版本> [--question <待決
 - 不發通知。`check` 為 `allow` 就執行指令，記一筆 `kind: auto`，依據是工具自己印的 `check` 那一行。
 - `check` 為 `ask`：給了 `--question`，且該題有真人答覆（在本主控的待決目錄、狀態 `answered` 或 `approved`、答覆段有 `- 來源：` 行），才執行指令並記一筆 `kind: manual` 與題號；否則不執行、不記錄，以非 0 結束並說明。
 - 指令失敗照記 `failed`，結束碼為指令的結束碼。本輪 session 不是進行中時什麼都不執行；指令跑完但記錄寫不進去時以 2 結束並說明。
-- `do` 在指令的環境變數 `LAT_PREAUTH_DO` 記下動作、分支與完整版本。推送前 hook 比對 Git 實際推送的分支與版本，跟 `do --action push` 查過的不同就擋下，所以 `--commit` 要寫這次推送的版本；`do --action merge` 不涵蓋推送。見 [全域推送前 hook](hook-setup.md#全域推送前-hook)。
+- `do` 在指令的環境變數 `LAT_PREAUTH_DO` 記下動作、分支與完整版本。`push` 的 `--commit` 只解析一次，查詢、記號與紀錄都用同一個完整版本。推送前 hook 比對 Git 實際推送的分支與版本，跟 `do --action push` 查過的不同就擋下，所以 `--commit` 要寫這次推送的版本；`do --action merge` 不涵蓋推送。見 [全域推送前 hook](hook-setup.md#全域推送前-hook)。
 
 ## 主控與動作不在同一個 repo
 

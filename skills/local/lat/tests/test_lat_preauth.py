@@ -2531,6 +2531,16 @@ class BranchDoTests(BranchCase):
         self.assertEqual(json.loads(seen.read_text()),
                          dict(action='push', branch='dev', commit=self.sha))
 
+    def test_a_branch_name_is_resolved_once_for_check_marker_and_record(self):
+        seen = self.root / 'marker.json'
+        result = self.do('push', commit='dev',
+                         command=['sh', '-c', f'printf %s "$LAT_PREAUTH_DO" > {seen}'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(seen.read_text())['commit'], self.sha)
+        [entry] = self.records()
+        self.assertEqual(entry['commit'], self.sha)
+        self.assertTrue(entry['basis'].startswith(f'allow push dev {self.sha}'))
+
     def test_nothing_runs_without_an_active_round_to_record_in(self):
         for label, change in (('ended', lambda: self.session(status='ended')),
                               ('no session record',
@@ -2750,6 +2760,28 @@ class ControllerPushHookTests(BranchCase):
                 self.assertIn(why, result.stderr)
                 self.assertNotEqual(self.remote_dev(), self.sha)
                 self.assertEqual(self.records()[-1]['result'], 'failed')
+
+    def test_tags_and_deletions_pass_when_they_bring_no_unchecked_commit(self):
+        sessions = dict(CLAUDE_CODE_SESSION_ID=SESSION)
+        git(self.repo, 'tag', 'v-old', self.before)
+        git(self.repo, 'tag', 'v-new', self.sha)
+        git(self.repo, 'push', '-q', 'origin', f'{self.before}:refs/heads/old-topic')
+        cases = (('a tag on a commit the remote has', ('v-old',), 0, None),
+                 ('a tag on an unpushed commit', ('v-new',), 1,
+                  'refs/tags/v-new brings 1 commit(s) no remote has'),
+                 ('a remote branch deletion', (':old-topic',), 0, None))
+        for label, spec, code, why in cases:
+            with self.subTest(label):
+                result = subprocess.run(self.git_push(self.hooks, *spec), capture_output=True,
+                                        text=True, cwd=self.repo, env=self.env(**sessions),
+                                        timeout=120)
+                self.assertEqual(result.returncode != 0, bool(code), result.stderr)
+                if why:
+                    self.assertIn(why, result.stderr)
+        with self.subTest('the unpushed tag rides along with the `do` push that checked it'):
+            result = self.do('push', command=self.git_push(self.hooks, 'dev', 'v-new'))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(git(self.remote, 'rev-parse', 'v-new^{commit}'), self.sha)
 
     def test_its_own_errors_let_the_push_through_with_a_warning(self):
         self.write(self.sessions / f'{SESSION}.json', '{broken')

@@ -1806,9 +1806,17 @@ def do_branch_action(args, command):
     repo = action_repo(args)
     scope = (['--workspace', args.workspace] if args.workspace else []) \
         + (['--session-id', args.session_id] if args.session_id else [])
+    commit = args.commit
+    if args.action == 'push':
+        # Resolve once: the check, the marker the hook compares with and the record all name
+        # the same commit even if the branch moves meanwhile.
+        where = repo_top(args.workspace)
+        commit = resolve_version(where, args.commit)
+        if not commit:
+            raise Refused(f'commit `{args.commit}` is not in {where}')
     code, checked = do_step('check', '--action', args.action, '--branch', args.branch,
-                            '--commit', args.commit, *scope)
-    entry = dict(kind='auto', action=args.action, target=args.branch, commit=args.commit)
+                            '--commit', commit, *scope)
+    entry = dict(kind='auto', action=args.action, target=args.branch, commit=commit)
     if code == 0:
         entry['basis'] = checked.splitlines()[0]
     elif not args.question:
@@ -1819,13 +1827,7 @@ def do_branch_action(args, command):
             _, record, _, _ = current_round(top, session)
             require_human_answer(top, record, args.question)
         entry.update(kind='manual', question=args.question)
-    marker = dict(action=args.action, branch=args.branch, commit=args.commit)
-    if args.action == 'push':  # the hook compares it with the commit Git pushes
-        where = repo_top(args.workspace)
-        marker['commit'] = resolve_version(where, args.commit)
-        if not marker['commit']:
-            raise Refused(f'commit `{args.commit}` is not in {where}')
-    status = run_marked(command, marker)
+    status = run_marked(command, dict(action=args.action, branch=args.branch, commit=commit))
     entry['result'] = 'succeeded' if status == 0 else 'failed'
     if repo:
         entry['action_repo'] = str(repo)
@@ -2206,7 +2208,7 @@ def active_controller(top):
 
 
 def do_command(remote, local_ref, local, remote_ref):
-    """The `do` command a controller should have used for one pushed ref."""
+    """The `do` command a controller should have used for one pushed branch."""
     branch = remote_ref.removeprefix('refs/heads/')
     spec = branch if local_ref == f'refs/heads/{branch}' else f'{local[:12]}:{remote_ref}'
     return (f'uv run --no-project python {Path(__file__).resolve()} do --action push --branch '
@@ -2214,9 +2216,20 @@ def do_command(remote, local_ref, local, remote_ref):
             f'{spec}')
 
 
+def unchecked_commits(top, local, marker):
+    """Commits `local` brings that no remote has and that the `do` push marker did not check."""
+    checked = [marker['commit']] if marker.get('action') == 'push' and isinstance(
+        marker.get('commit'), str) and FULL_SHA.fullmatch(marker['commit']) else []
+    listed = git(top, 'rev-list', local, '--not', '--remotes', *checked)
+    if listed is None:
+        raise ValueError(f'cannot list the commits {local[:12]} brings')
+    return listed.split()
+
+
 def controller_push_problems(top, refs, remote):
-    """Why an active controller of this repo may not make this push: only `do --action push`
-    for the same branch and commit marks a push as checked."""
+    """Why an active controller of this repo may not make this push. A branch update needs
+    `do --action push` for the same branch and commit. A deletion, and any other ref such as a
+    tag, passes when it brings no commit that no remote has and `do` did not check."""
     session = active_controller(top)
     if session is None:
         return []
@@ -2229,6 +2242,17 @@ def controller_push_problems(top, refs, remote):
         return []  # a deploy or install `do` already checked
     problems = []
     for local_ref, local, remote_ref, _ in refs:
+        if ZERO_SHA.fullmatch(local):
+            continue  # a deletion sends no commit
+        head = f'session {session} is an active LAT controller of this repo'
+        if not remote_ref.startswith('refs/heads/'):
+            unchecked = unchecked_commits(top, local, marker)
+            if unchecked:
+                problems.append(
+                    f'{head} and {remote_ref} brings {len(unchecked)} commit(s) no remote has '
+                    f'(newest {unchecked[0][:12]}); push the branch holding them with `do '
+                    f'--action push` first, or name that branch and commit in the same `do`')
+            continue
         if marker.get('action') == 'push' and remote_ref == f'refs/heads/{marker.get("branch")}' \
                 and local == marker.get('commit'):
             continue
@@ -2239,8 +2263,8 @@ def controller_push_problems(top, refs, remote):
             why = '`do --action merge` does not cover a push'
         else:
             why = 'it was not started by `do`'
-        problems.append(f'session {session} is an active LAT controller of this repo and {why}; '
-                        f'push with: {do_command(remote, local_ref, local, remote_ref)}')
+        problems.append(f'{head} and {why}; push with: '
+                        f'{do_command(remote, local_ref, local, remote_ref)}')
     return problems
 
 
