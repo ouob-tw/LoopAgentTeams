@@ -16,7 +16,7 @@ description: "遇到疑難雜症時召喚分析師：同一問題多次嘗試仍
 
 ## 模型
 
-預設 `claude-fable-5-1`。只有 Fable 不可用時，才換 `gpt-6-astra`。啟動方式見 /hcom-spawn。
+預設 `claude-fable-5-2`。只有 Fable 不可用時，才換 `gpt-6-astra`。啟動方式見 /hcom-spawn。
 
 ## 做法
 

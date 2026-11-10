@@ -15,18 +15,19 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 | 任務 | 模型 | 起始 effort | 卡住時依序升級 |
 | --- | --- | --- | --- |
-| 前端，複雜以外 | `claude-sonnet-5-5` | `medium` | 換 `claude-opus-5-5` `medium` → `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
-| 前端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
-| 後端實作，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
+| 前端，複雜以外 | `claude-sonnet-5-5` | `medium` | 換 `claude-opus-5-5` `medium` → `high` → `xhigh` → 換 `claude-fable-5-2` `medium` |
+| 前端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-2` `medium` |
+| 後端實作，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-2` `medium` |
 | 後端實作，複雜以外 | `claude-sonnet-5-5` | `medium` | 同「前端，複雜以外」 |
-| 後端審查與 QA | `gpt-6.1-sol` | `medium` | `high` → 換 `gpt-6-astra` `medium` |
-| 分析師（/analyst） | `claude-fable-5-1` | `medium` | `high` → `xhigh`；Fable 不可用才換 `gpt-6-astra` `medium` |
+| 後端審查 | `gpt-6.1-sol` | `medium` | `high` → 換 `gpt-6-astra` `medium` |
+| QA | `gpt-6.1-terra` | `medium` | 結束時仍有無法證實的項目（證據不足）或卡住，改召喚 `gpt-6.1-sol` `medium` 的 QA 接手那些項目；再卡住照「後端審查」列升級 |
+| 分析師（/analyst） | `claude-fable-5-2` | `medium` | `high` → `xhigh`；Fable 不可用才換 `gpt-6-astra` `medium` |
 | 其他或混合 | 依任務內容選上面一列 | | |
 | 使用者或呼叫的技能指定的模型 | 照指定 | 照指定，沒說就 `medium` | 不換模型，沿 `low` → `medium` → `high` → `xhigh` 一次升一級 |
 
 **複雜任務**：跨檔案實作、除錯、設計、審查、需自行權衡方案。其餘都不算複雜。
 
-`claude-fable-5-1` 除分析師外只當升級終點，其他任務沒有預設用它。
+`claude-fable-5-2` 除分析師外只當升級終點，其他任務沒有預設用它。
 
 只用該模型支援的 effort。升級到最後一格、該模型最高可用級別或使用者給的上限仍卡住，就回報使用者。怎樣算卡住、升級與換模型的操作步驟，見 [references/troubleshooting.md](references/troubleshooting.md) 的「卡住時升級 effort」。
 
