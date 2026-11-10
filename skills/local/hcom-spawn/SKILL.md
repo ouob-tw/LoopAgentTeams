@@ -19,13 +19,20 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 | 前端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-2` `medium` |
 | 後端實作，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-2` `medium` |
 | 後端實作，複雜以外 | `claude-sonnet-5-5` | `medium` | 同「前端，複雜以外」 |
+| 機械性工作 | `claude-sonnet-5-5` | `low` | `medium` → 接「前端，複雜以外」從換 `claude-opus-5-5` `medium` 起的步驟 |
+| 資安相關實作 | `claude-opus-5-5` | `high` | `xhigh` → 換 `claude-fable-5-2` `medium` |
 | 後端審查 | `gpt-6.1-sol` | `medium` | `high` → 換 `gpt-6-astra` `medium` |
 | QA | `gpt-6.1-terra` | `medium` | 結束時仍有無法證實的項目（證據不足）或卡住，改召喚 `gpt-6.1-sol` `medium` 的 QA 接手那些項目；再卡住照「後端審查」列升級 |
 | 分析師（/analyst） | `claude-fable-5-2` | `medium` | `high` → `xhigh`；Fable 不可用才換 `gpt-6-astra` `medium` |
 | 其他或混合 | 依任務內容選上面一列 | | |
 | 使用者或呼叫的技能指定的模型 | 照指定 | 照指定，沒說就 `medium` | 不換模型，沿 `low` → `medium` → `high` → `xhigh` 一次升一級 |
 
-**複雜任務**：跨檔案實作、除錯、設計、審查、需自行權衡方案。其餘都不算複雜。
+**怎麼歸類**（拿不準就選較高的一級）：
+
+- 機械性：照明確的 Spec 做、沒有設計決定。例：依清單改名或改文字、同一種改法套到多個檔案、照既有風格補測試、更新文件或技能文字、修明顯的測試失敗（拼字、漏 import）。做到一半發現 Spec 不完整或需要判斷，就停下回報，由召喚者改派高一級。
+- 複雜以外：範圍清楚、原因已知。例：加欄位、調整單一 API 的回傳格式、用既有元件做新按鈕、修原因已知的 bug。
+- 複雜：跨檔案或跨模組的功能、原因不明的 bug、設計資料結構或介面、審查、需自行權衡多個方案。
+- 資安相關實作：改動碰到登入／權限、密碼／金鑰、加密、輸入驗證，不論大小一律走這列。
 
 `claude-fable-5-2` 除分析師外只當升級終點，其他任務沒有預設用它。
 
