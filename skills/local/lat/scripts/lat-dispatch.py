@@ -2,16 +2,21 @@
 """Dispatch helper for the LAT orchestrator (stdlib only).
 
 `card` creates the task card for an HCOM tag that was just launched; the agent's and the
-orchestrator's full names come from `hcom list --json`. With --native, the card is for a Claude
-built-in agent: its name comes from --agent as given and the card is marked `native agent：是`.
+orchestrator's full names come from `hcom list --json`. With --before-launch the card is made
+before the agent exists, so its brief can go into the launch itself (`hcom … --hcom-prompt`):
+the agent field reads 待綁定 and the agent's first step is `card bind`, which writes its full
+name from $HCOM_INSTANCE_NAME (checked against the card's tag) and assigns its ledger row.
+With --native, the card is for a Claude built-in agent: its name comes from --agent as given and
+the card is marked `native agent：是`.
 `card close` ends a card: sets its status and deliverable commit, moves it to done/ and points its
 ledger row at the new path, all or nothing. `--status merged` on a card with a ledger row also
 names the long-lived branch that holds the work (--merged-into), so `check` still finds it once the
 worktree and task branch are gone.
 `brief` turns a four-section Markdown file plus that card into a ready-to-send task brief and
 prints the `hcom send` command; its `--name` values are the base names HCOM records for tagged
-senders. It never launches agents and never sends anything. Hand-written cards and briefs stay
-allowed.
+senders. For a card still waiting for `card bind` the brief names the agent as
+"$HCOM_INSTANCE_NAME", opens with the bind step and prints the `--hcom-prompt` launch argument.
+It never launches agents and never sends anything. Hand-written cards and briefs stay allowed.
 
 With --ledger, `card` also opens and assigns a row in the LAT work ledger (lat-ledger.py) and
 writes the row into the card; `brief` then carries the row and the start/update/done commands.
@@ -20,6 +25,7 @@ that are pre-authorized right now.
 """
 import argparse
 from datetime import date
+import fcntl
 import importlib.util
 import json
 import os
@@ -40,14 +46,18 @@ TAG = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*')
 CARD_FIELD = re.compile(r'-\s+([^：\n]+)：\s*(.*)')
 CARD_AGENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?=$|[\s(（])')
 NONE = '無'
+PENDING = '待綁定'
 STAGE_ALIASES = {'implement': 'impl'}
 CLOSE_STATUSES = ('committed', 'merged', 'completed')
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
 LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo')
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
+BIND_SCOPE_NOTE = 'Write restrictions in this section do not apply to the bind step at the top.'
 SCOPE_NOTE = ('Write restrictions in this section do not apply to updating the task card '
               'or running work-ledger commands.')
 CARD_RULE_READ_ONLY = 'The orchestrator maintains the task card; do not edit it.'
+CARD_RULE_READ_ONLY_BIND = ('Apart from the bind step at the top, the orchestrator maintains '
+                            'the task card; do not edit it.')
 LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does not hold, report to the orchestrator first and do not act.
 - Do live actions inside the `live actions` quota yourself; do not ask the orchestrator to approve each step.
 - QA with live actions keeps at least one use of the quota for the final candidate version and starts spending the quota only after the implementer says the version is final.
@@ -106,6 +116,14 @@ Deploying and installing ({actions}) also need two HCOM notices that {orchestrat
 '''
 REPORT_FILE = ('Write the full report to {path} first (later reports to the same file '
                'replace it), then send the path and a few-line summary.')
+BIND_STEP = '''Before anything else, bind this task card to yourself:
+`uv run --no-project python {script} card bind --card {card}`
+It writes your HCOM name into the card and assigns your ledger row. If it fails, report the
+error to {orchestrator} and wait.
+'''
+LAUNCH_PROMPT = 'Your task from {orchestrator} is in {brief}. Read that file and follow it.'
+# The agent's own HCOM base name, expanded by its shell; the LAT tools resolve it to the full name.
+AGENT_ENV = '"$HCOM_INSTANCE_NAME"'
 REPORT_IN_MESSAGE = 'The card names no runs folder, so send the full report in the message.'
 SPEC_COVERAGE = '''
 ## Spec coverage
@@ -176,10 +194,14 @@ def make_card(args):
     if not tasks.is_dir():
         raise Failure(f'task-card directory does not exist: {tasks}')
     ledger = ledger_request(args)
+    if args.before_launch and (args.agent or args.native):
+        raise Failure('--before-launch makes the card before the agent exists; '
+                      'it takes no --agent or --native')
     if args.native and (not args.agent or not CARD_AGENT.fullmatch(args.agent)):
         raise Failure('--native needs --agent with the name the orchestrator gave the agent')
     items = read_hcom_list()
-    agent = args.agent if args.native else agent_for_tag(items, tag, args.agent)
+    agent = (PENDING if args.before_launch else args.agent if args.native
+             else agent_for_tag(items, tag, args.agent))
     orchestrator = full_hcom_name(
         {item['name'] for item in items if isinstance(item.get('name'), str)},
         single_line('--orchestrator', args.orchestrator), '--orchestrator')
@@ -194,7 +216,8 @@ def make_card(args):
     }
     values = {name: single_line(name, value) for name, value in options.items()}
     fields = [
-        ('agent', agent), ('orchestrator', orchestrator),
+        ('agent', agent), *([('tag', tag)] if args.before_launch else []),
+        ('orchestrator', orchestrator),
         *([('native agent', '是')] if args.native else []),
         ('model', values['model']), ('branch', values['branch']),
         ('worktree', values['worktree']), ('base commit', values['base commit']),
@@ -216,7 +239,8 @@ def make_card(args):
         previous = done if done.exists() and not path.exists() else path
         number += 1
     if ledger:
-        row = open_ledger_row(args, ledger, fields[1][1], agent, path)
+        row = open_ledger_row(args, ledger, orchestrator, None if args.before_launch else agent,
+                              path)
         fields.insert([name for name, _ in fields].index('status') + 1,
                       ('ledger row', f'{row} ({ledger["path"]})'))
     try:
@@ -226,7 +250,8 @@ def make_card(args):
         where = f' (ledger row {row} is already assigned to it)' if ledger else ''
         raise Failure(f'task card appeared meanwhile: {path}{where}; rerun') from error
     print(path)
-    print(f'agent: {agent}')
+    print(f'agent: {agent}' + (' (the agent binds itself with `card bind`)'
+                                if args.before_launch else ''))
     if ledger:
         print(f'ledger row: {row}')
 
@@ -277,12 +302,76 @@ def open_ledger_row(args, ledger, orchestrator, agent, card):
     row = run_ledger(args, 'add', *base, *add)
     if not row.isdigit():
         raise Failure(f'lat-ledger add printed an unexpected row number: {row!r}')
+    if agent is None:  # --before-launch: `card bind` assigns the row
+        return row
     try:
         run_ledger(args, 'assign', row, *base, '--agent', agent, '--card', str(card),
                    *(['--native'] if args.native else []))
     except Failure as error:
         raise Failure(f'{error}; ledger row {row} was added but not assigned, no card made') from error
     return row
+
+
+def bind_card(args):
+    """Write the launched agent's full HCOM name into a --before-launch card and assign its
+    ledger row. The agent runs it with its own $HCOM_INSTANCE_NAME and $HCOM_TAG; the
+    orchestrator can pass --agent instead. Binds of cards in one directory run one at a time,
+    so a second bind of the same card sees it bound; a failed assignment puts the card back."""
+    path = Path(args.card).resolve()
+    try:
+        lock = os.open(path.parent, os.O_RDONLY)
+    except OSError as error:
+        raise Failure(f'task card unreadable: {error}') from error
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        bind_locked(args, path)
+    finally:
+        os.close(lock)
+
+
+def bind_locked(args, path):
+    try:
+        original = path.read_bytes()
+        text = original.decode('utf-8')
+    except (OSError, UnicodeError) as error:
+        raise Failure(f'task card unreadable: {error}') from error
+    fields, index = {}, None
+    lines = text.splitlines(keepends=True)
+    for number, line in enumerate(lines):
+        match = CARD_FIELD.fullmatch(line.strip())
+        if match and match.group(1).strip() not in fields:
+            fields[match.group(1).strip()] = match.group(2).strip()
+            index = number if match.group(1).strip() == 'agent' else index
+    if fields.get('agent') != PENDING:
+        raise Failure(f'task card {path} is already bound to {fields.get("agent")}; nothing changed'
+                      if fields.get('agent') else f'task card {path} lacks the agent field')
+    tag = fields.get('tag', '')
+    if not TAG.fullmatch(tag):
+        raise Failure(f'task card {path} lacks a valid tag field')
+    name = args.agent
+    if not name:
+        name, own_tag = os.environ.get('HCOM_INSTANCE_NAME'), os.environ.get('HCOM_TAG')
+        if not name:
+            raise Failure('HCOM_INSTANCE_NAME is not set: run this as the launched agent, '
+                          'or pass --agent <name>')
+        if own_tag != tag:
+            raise Failure(f'this agent carries tag {own_tag!r}, but the card is for tag {tag!r}; '
+                          'nothing changed')
+    agent = agent_for_tag(read_hcom_list(), tag, name)
+    ending = '\n' if lines[index].endswith('\n') else ''
+    lines[index] = f'- agent：{agent}{ending}'
+    # The expected bytes keep an edit made outside the bind lock from being overwritten.
+    written = write_text_atomic(path, ''.join(lines), expected=original)
+    row = LEDGER_ROW.fullmatch(fields.get('ledger row', ''))
+    if row:
+        number, ledger = row.groups()
+        try:
+            run_ledger(args, 'assign', number, '--ledger', ledger, '--agent', agent,
+                       '--card', str(path))
+        except Failure:
+            write_text_atomic(path, text, expected=written)
+            raise
+    print(f'agent: {agent}')
 
 
 def read_card(path):
@@ -304,10 +393,16 @@ def read_card(path):
     for name in ('agent', 'orchestrator'):
         if not fields.get(name):
             raise Failure(f'task card {path} lacks the {name} field')
-    match = CARD_AGENT.match(fields['agent'])
-    if not match:
-        raise Failure(f'task card agent field must start with an HCOM name: {fields["agent"]!r}')
-    fields['agent'] = match.group(0)
+    if fields['agent'] == PENDING:  # --before-launch card: the agent runs `card bind` first
+        if not TAG.fullmatch(fields.get('tag', '')):
+            raise Failure(f'task card {path} waits for `card bind` but lacks a valid tag field')
+        fields['agent'] = None
+    else:
+        match = CARD_AGENT.match(fields['agent'])
+        if not match:
+            raise Failure(f'task card agent field must start with an HCOM name: '
+                          f'{fields["agent"]!r}')
+        fields['agent'] = match.group(0)
     row = LEDGER_ROW.fullmatch(fields.get('ledger row', ''))
     fields['ledger row'] = row.groups() if row else None
     return fields
@@ -462,9 +557,16 @@ def make_brief(args):
         except (OSError, UnicodeError) as error:
             raise Failure(f'--include unreadable: {error}') from error
     warn_former_controllers('\n'.join([text, extra or '']), workspace, card['orchestrator'])
-    parts = [f'# Task brief for {card["agent"]}\n']
+    pending = card['agent'] is None
+    if pending:
+        parts = [f'# Task brief for the agent tagged {card["tag"]}\n', BIND_STEP.format(
+            script=shlex.quote(str(args.lat_dir.resolve() / 'scripts' / 'lat-dispatch.py')),
+            card=shlex.quote(str(card_path)), orchestrator=card['orchestrator'])]
+    else:
+        parts = [f'# Task brief for {card["agent"]}\n']
     for title in SECTIONS:
-        note = f'\n{SCOPE_NOTE}\n' if title == SECTIONS[1] and not args.read_only else ''
+        note = (f'\n{BIND_SCOPE_NOTE if args.read_only else SCOPE_NOTE}\n'
+                if title == SECTIONS[1] and (pending or not args.read_only) else '')
         parts.append(f'## {title}\n\n{bodies[title]}\n{note}')
     if extra:
         parts.append(extra + '\n')
@@ -479,20 +581,23 @@ def make_brief(args):
     if preauth:
         parts.append(preauth)
     runs = card.get('runs') or NONE
-    report_rule = (REPORT_FILE.format(path=Path(runs) / f'report-{card["agent"]}.md')
+    agent = AGENT_ENV if pending else card['agent']
+    report_rule = (REPORT_FILE.format(
+                       path=Path(runs) / f'report-{card_path.stem if pending else agent}.md')
                    if runs.startswith('/') else REPORT_IN_MESSAGE)
     fixed = FIXED.format(
-        workdir=workdir, orchestrator=card['orchestrator'], agent=card['agent'],
+        workdir=workdir, orchestrator=card['orchestrator'], agent=agent,
         report_rule=report_rule,
-        agent_name=hcom_send_name(card['agent'], agents),
-        card=card_path, card_rule=CARD_RULE_READ_ONLY if args.read_only else CARD_RULE,
+        agent_name=AGENT_ENV if pending else hcom_send_name(agent, agents),
+        card=card_path, card_rule=(CARD_RULE if not args.read_only else
+                                   CARD_RULE_READ_ONLY_BIND if pending else CARD_RULE_READ_ONLY),
         runs=runs, workspace=shlex.quote(str(workspace)),
         decisions=workspace / '.lat' / 'decisions',
         lat_script=shlex.quote(str(args.lat_dir.resolve() / 'scripts' / 'lat-watch.py')))
     if card['ledger row']:
         row, ledger = card['ledger row']
         fixed += LEDGER_FIXED.format(
-            row=row, ledger=ledger, ledger_arg=shlex.quote(ledger), agent=card['agent'],
+            row=row, ledger=ledger, ledger_arg=shlex.quote(ledger), agent=agent,
             cmd='uv run --no-project python ' + shlex.quote(
                 str(args.lat_dir.resolve() / 'scripts' / 'lat-ledger.py')))
         if row_stage(ledger, row) == 'qa-draft':
@@ -504,6 +609,10 @@ def make_brief(args):
     parts.append(fixed)
     write_text_atomic(output, '\n'.join(parts), mode=0o644)
     print(f'brief: {output}')
+    if pending:  # the launch carries the brief: `hcom 1 <client> … --go --hcom-prompt …`
+        print('--hcom-prompt ' + shlex.quote(LAUNCH_PROMPT.format(
+            orchestrator=card['orchestrator'], brief=output)))
+        return
     # --intent request makes HCOM notify the sender at the agent's next turn end, even with
     # background work still running; the stall watch covers a card agent that really stops.
     print('hcom send @{} --name {} --file {}'.format(
@@ -641,6 +750,9 @@ def build_parser():
     card.add_argument('--tag', required=True)
     card.add_argument('--agent', help='HCOM name (full or base); picks one agent when the tag '
                       'matches several')
+    card.add_argument('--before-launch', action='store_true',
+                      help='make the card before the agent is launched; the agent field reads '
+                           f'{PENDING} until the agent runs `card bind` (see card bind --help)')
     card.add_argument('--native', action='store_true',
                       help='Claude built-in agent without an HCOM name: --agent is its name, '
                            'kept as given')
@@ -682,6 +794,13 @@ def build_parser():
     close.add_argument('--by', help='actor recorded in the ledger (default: lat-ledger.py\'s own default)')
     close.add_argument('--lat-dir', type=Path, default=LAT_DIR,
                        help='LAT skill directory holding scripts/lat-ledger.py')
+    bind = commands.add_parser('card-bind', prog='lat-dispatch.py card bind',
+                               help='Bind a --before-launch card to the launched agent')
+    bind.add_argument('--card', type=Path, required=True)
+    bind.add_argument('--agent', help='HCOM name of the agent carrying the card\'s tag; default '
+                                      '$HCOM_INSTANCE_NAME, which must carry that tag ($HCOM_TAG)')
+    bind.add_argument('--lat-dir', type=Path, default=LAT_DIR,
+                      help='LAT skill directory holding scripts/lat-ledger.py')
     brief = commands.add_parser('brief', help='Build the task brief from four sections + a card')
     brief.add_argument('--card', type=Path)
     brief.add_argument('--input', type=Path, required=True)
@@ -704,11 +823,12 @@ def build_parser():
 
 def main():
     argv = sys.argv[1:]
-    if argv[:2] == ['card', 'close']:  # `card` itself has required options; close has its own set
-        argv = ['card-close', *argv[2:]]
+    if argv[:2] in (['card', 'close'], ['card', 'bind']):  # `card` itself has required options
+        argv = [f'card-{argv[1]}', *argv[2:]]
     args = build_parser().parse_args(argv)
     try:
-        {'card': make_card, 'card-close': close_card, 'brief': make_brief}[args.command](args)
+        {'card': make_card, 'card-close': close_card, 'card-bind': bind_card,
+         'brief': make_brief}[args.command](args)
     except (Failure, ValueError, OSError) as error:
         print(f'lat-dispatch: {error}', file=sys.stderr)
         return 1

@@ -116,6 +116,26 @@ class SpawnGuardTests(unittest.TestCase):
                 result = run_hook(command)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_launch_carrying_its_task_is_checked_like_any_launch(self):
+        prompt = (" --hcom-prompt 'Your task from vare is in /ws/a b.brief.md. Read that file "
+                  "and follow it.'")
+        for command, expected in (
+                (CLAUDE + prompt, ['claude', '--model', 'claude-opus-5-5', '--effort', 'medium']),
+                (CODEX + prompt, ['codex', '--model', 'gpt-6.1-sol', '--effort', 'medium']),
+                (CLAUDE + ' --hcom-prompt "$(cat /ws/b.md)"',
+                 ['claude', '--model', 'claude-opus-5-5', '--effort', 'medium'])):
+            with self.subTest(command=command):
+                self.assertEqual(run_hook(command).returncode, 0)
+                started, = self.run_main(load(), command)
+                self.assertEqual(started[:8], ['--spawner', 'vare', '--tool', *expected])
+        # Flags named inside the prompt text are not launch flags.
+        bare = 'hcom 1 claude --tag vare-review --go --name vare --hcom-prompt '
+        result = run_hook(bare + "'Start with --model claude-opus-5-5 --effort medium "
+                                 "--dangerously-skip-permissions'")
+        self.assertEqual(result.returncode, 2)
+        for gap in ('--dangerously-skip-permissions', '--model <id>', '--effort <level>'):
+            self.assertIn(gap, result.stderr)
+
     def test_unreadable_payload_never_blocks(self):
         result = subprocess.run([sys.executable, str(SCRIPT)], input='not json',
                                 text=True, capture_output=True)
