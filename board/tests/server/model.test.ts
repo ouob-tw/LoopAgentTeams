@@ -170,7 +170,7 @@ test('a Codex controller started with an explicit model is offered effort only; 
 		launchArgs(target.id, stored);
 		const status = await offer(target.id);
 		expect(status).toMatchObject({ client: 'codex', running: true, status: 'listening', lock });
-		expect(status.options?.models).toEqual(['gpt-6.1-sol', 'gpt-6-astra']);
+		expect(status.options?.models).toEqual(['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra']);
 		if (lock === 'unknown') expect(status.lockReason).toContain('讀不出來');
 	}
 });

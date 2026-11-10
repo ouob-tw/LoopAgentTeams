@@ -254,8 +254,8 @@ test('a launch logged before the defaults were kept reads as it did', () => {
 test('the lists are offered with the launches, and a value they do not offer is rejected without running anything', async () => {
 	const repo = folder('unlisted', true);
 	const { modelOptions } = await list();
-	expect(modelOptions.claude.models).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1']);
-	expect(modelOptions.codex).toEqual({ models: ['gpt-6.1-sol', 'gpt-6-astra'], efforts: ['low', 'medium', 'high', 'xhigh'] });
+	expect(modelOptions.claude.models).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2']);
+	expect(modelOptions.codex).toEqual({ models: ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra'], efforts: ['low', 'medium', 'high', 'xhigh'] });
 
 	for (const body of [
 		{ client: 'claude', model: 'gpt-6-astra' },

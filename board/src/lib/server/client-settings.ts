@@ -12,7 +12,7 @@ const CLAUDE_ALIASES: Record<string, string> = {
 	opus: 'claude-opus-5-5',
 	sonnet: 'claude-sonnet-5-5',
 	haiku: 'claude-haiku-5-5',
-	fable: 'claude-fable-5-1'
+	fable: 'claude-fable-5-2'
 };
 
 /** A model as Claude names it, an alias as the model it stands for: `opus` and `opus[1m]` as

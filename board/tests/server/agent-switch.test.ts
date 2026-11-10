@@ -267,7 +267,7 @@ test('a Codex started with --model, -m or --oss cannot change its model, only it
 	for (const fixed of [['--model', 'gpt-6.1-sol'], ['-m', 'gpt-6.1-sol'], ['--oss']]) {
 		launchArgs('s-codex', fixed);
 		const status: AgentModelStatus = await (await fixture.fetch('/api/agents/model?session=s-codex', { cookie })).json();
-		expect(status).toMatchObject({ lock: 'fixed', options: { models: ['gpt-6.1-sol', 'gpt-6-astra'] } });
+		expect(status).toMatchObject({ lock: 'fixed', options: { models: ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra'] } });
 		const refused = await change('s-codex', 'gpt-6-astra', null);
 		expect(refused.status).toBe(409);
 		expect(refused.body.reason).toBe(AGENT_FIXED_MODEL_REASON);

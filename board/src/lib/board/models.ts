@@ -16,11 +16,11 @@ export type ModelOptions = Record<LaunchClient, ClientOptions>;
  *  the board never checks that a model is really available. */
 export const DEFAULT_MODEL_OPTIONS: ModelOptions = {
 	claude: {
-		models: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
+		models: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2'],
 		efforts: ['low', 'medium', 'high', 'xhigh']
 	},
 	codex: {
-		models: ['gpt-6.1-sol', 'gpt-6-astra'],
+		models: ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra'],
 		efforts: ['low', 'medium', 'high', 'xhigh']
 	}
 };

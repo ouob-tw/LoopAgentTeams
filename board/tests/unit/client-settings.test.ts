@@ -26,7 +26,7 @@ test('aliases stand for the full model ID; a full ID or an unknown name stays as
 	expect(claudeModel('opus')).toBe('claude-opus-5-5');
 	expect(claudeModel('sonnet')).toBe('claude-sonnet-5-5');
 	expect(claudeModel('haiku')).toBe('claude-haiku-5-5');
-	expect(claudeModel('fable')).toBe('claude-fable-5-1');
+	expect(claudeModel('fable')).toBe('claude-fable-5-2');
 	expect(claudeModel('opus[1m]')).toBe('claude-opus-5-5[1m]');
 	expect(claudeModel('claude-sonnet-5-5')).toBe('claude-sonnet-5-5');
 	expect(claudeModel('opusplan')).toBe('opusplan');
@@ -46,7 +46,7 @@ test("Claude: the user's settings, with the alias as its full ID and modelSettin
 	expect(defaultEffort(defaults, null)).toBe('medium');
 	expect(defaultEffort(defaults, 'claude-sonnet-5-5')).toBe('low');
 	expect(defaultEffort(defaults, 'claude-haiku-5-5')).toBe('high');
-	expect(defaultEffort(defaults, 'claude-fable-5-1')).toBe('medium');
+	expect(defaultEffort(defaults, 'claude-fable-5-2')).toBe('medium');
 });
 
 test("Claude: modelSettings for the default model beats the effortLevel", () => {
