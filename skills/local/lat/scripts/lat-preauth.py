@@ -14,14 +14,16 @@ target, read from the deploy history in the deployed project's main checkout.
 `show` prints the effective settings and where each value came from. Any unreadable or unknown
 setting makes every check ask. `grant` writes one rule that a human-answered decision record
 names; `record` logs what was done under pre-authorization (a deploy also goes to the deploy
-history, and `record --kind manual` adds a deploy the user approved) and `report` lists this round's
-log for the delivery report; `now` prints the time to give `record --started`. `notice`, `record` and `report`
+history, `record --kind manual` adds an action the user approved and `record --kind correction`
+appends a correction to an earlier record) and `report` lists this round's log for the delivery
+report; `now` prints the time to give `record --started`. `notice`, `record` and `report`
 take the controller's identity from the session record in --controller-workspace when the action is
 in another repo, which --workspace names. `hold` registers commits the user chose to merge but not
 push, which make push and deploy-prod checks ask until a human-answered decision releases them;
-`pre-push` is the global Git hook's check for them. The board reads and writes settings through `board_settings` and `board_write`,
-which the panel helper's `board preauth-read` and `board preauth-write` commands call. The tool never
-runs the action itself.
+`pre-push` is the global Git hook's check for them, and also refuses a push by an active
+controller of the repo that `do` did not start. The board reads and writes settings through `board_settings` and `board_write`,
+which the panel helper's `board preauth-read` and `board preauth-write` commands call. The tool runs the action
+itself only in `do`.
 """
 import argparse
 import contextlib
@@ -88,7 +90,7 @@ SETTLEABLE_WORDS = ('change-acceptance', 'new-ticket', 'scope-expansion')
 DECISION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
 GRANT_KEYS = ('allow', 'branches')
 RESULTS = ('succeeded', 'failed')
-REPORT_GROUPS = ((('auto',), '依預先授權自動執行'), (('manual',), '人工核准的部署補記'),
+REPORT_GROUPS = ((('auto',), '依預先授權自動執行'), (('manual',), '人工核准（合併、推送、部署）'),
                  (('bug-intake',), '免確認開工'), (('grant', 'board'), '設定寫入'))
 HOURS = re.compile(r'((?:[01]\d|2[0-3]):[0-5]\d)-((?:[01]\d|2[0-3]):[0-5]\d)')
 # Long free text: written one item per line.
@@ -100,6 +102,10 @@ DEPLOY_HISTORY = 'deploy-history.jsonl'
 HOLDS = 'preauth-holds.json'
 ZERO_SHA = re.compile(r'0+')
 FULL_SHA = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
+# `do` sets this in the command's environment; the pre-push hook lets an active controller push
+# only under a push marker whose branch and commit match what is pushed.
+DO_MARKER = 'LAT_PREAUTH_DO'
+SHORTEST_COMMIT = 7
 
 
 @dataclass
@@ -1503,10 +1509,15 @@ def cmd_record(args):
 
 
 def record_locked(args, top, session):
-    _, record, _, round_number = current_round(top, session)
+    # A correction may go to an ended round: the wrong record is usually found afterwards.
+    _, record, _, round_number = current_round(top, session, active=args.kind != 'correction')
     deploy = None
-    if args.kind in ('auto', 'manual'):
-        if args.kind == 'manual':
+    if args.kind == 'correction':
+        entry = correction_entry(args, top, session, record, round_number)
+    elif args.kind in ('auto', 'manual'):
+        if args.kind == 'manual' and args.action in BRANCH_ACTIONS:
+            entry = manual_branch_entry(args, top, record)
+        elif args.kind == 'manual':
             deploy = manual_deploy(args, top, record)
             entry = dict(kind='manual', action=args.action, commit=deploy[1]['commit'],
                          result=args.result, question=args.question)
@@ -1568,11 +1579,70 @@ def append_deploy(top, entry):
     return path
 
 
+def require_human_answer(top, record, question):
+    """Refuse unless `question` is in this controller's decisions directory, answered or
+    approved, with an answer section that has a `- 來源：` line."""
+    problems, _ = human_answer_problems(decision_path(top, record, question))
+    if problems:
+        raise Refused('; '.join(problems))
+
+
+def manual_branch_entry(args, top, record):
+    """A merge or push the user approved in a decision record; no deploy history."""
+    missing = [flag for flag, value in (('--branch', args.branch), ('--commit', args.commit),
+                                         ('--result', args.result),
+                                         ('--question', args.question)) if not value]
+    if missing:
+        raise Refused(f'a manual record needs {", ".join(missing)}')
+    require_human_answer(top, record, args.question)
+    return dict(kind='manual', action=args.action, target=args.branch, commit=args.commit,
+                result=args.result, question=args.question)
+
+
+def same_commit(recorded, given):
+    """Whether two commit names agree: one starts with the other, both at least 7 characters."""
+    if not isinstance(recorded, str) or not isinstance(given, str):
+        return False
+    shorter, longer = sorted((recorded.lower(), given.lower()), key=len)
+    return len(shorter) >= SHORTEST_COMMIT and longer.startswith(shorter)
+
+
+def corrects(correction, entry):
+    """Whether a correction record names `entry`: same commit, and same action when it names
+    one."""
+    return (entry.get('kind') != 'correction'
+            and same_commit(entry.get('commit'), correction.get('commit'))
+            and correction.get('action') in (None, entry.get('action')))
+
+
+def correction_entry(args, top, session, record, round_number):
+    """A note on an earlier record of the round; the record itself is never rewritten."""
+    note = (args.note or '').strip()
+    missing = [flag for flag, value in (('--commit', args.commit), ('--note', note))
+               if not value]
+    if missing:
+        raise Refused(f'a correction needs {", ".join(missing)}')
+    if len(args.commit) < SHORTEST_COMMIT:
+        raise Refused(f'--commit needs at least {SHORTEST_COMMIT} characters')
+    entry = dict(kind='correction', commit=args.commit, note=note)
+    if args.action:
+        entry['action'] = args.action
+    if args.question:
+        require_human_answer(top, record, args.question)
+        entry['question'] = args.question
+    path = records_path(top, session, round_number)
+    if not any(corrects(entry, old) for old in read_records(path)):
+        what = f'{args.action} record' if args.action else 'record'
+        raise Refused(f'round {round_number} of session {session} has no {what} of commit '
+                      f'{args.commit} ({path})')
+    return entry
+
+
 def manual_deploy(args, top, record):
     """A deploy the user approved in a decision record, for the deploy history only."""
     if args.action not in DEPLOY_ACTIONS:
-        raise Refused(f'a manual record is for {" or ".join(DEPLOY_ACTIONS)}, not '
-                      f'`{args.action}`')
+        raise Refused(f'a manual record is for {", ".join((*BRANCH_ACTIONS, *DEPLOY_ACTIONS))}, '
+                      f'not `{args.action}`')
     missing = [flag for flag, value in (('--commit', args.commit), ('--result', args.result),
                                          ('--question', args.question)) if not value]
     if missing:
@@ -1591,6 +1661,12 @@ def auto_entry(args, record, top, session, round_number):
     if args.action not in ACTIONS:
         raise Refused(f'`{args.action}` is not a pre-authorizable action; known: '
                       f'{", ".join(ACTIONS)}')
+    if args.action in BRANCH_ACTIONS:
+        # A hand-typed basis was once recorded as allow when the check had said ask.
+        raise Refused(f'{args.action} is recorded by `do`, which runs the check itself: '
+                      f'lat-preauth.py do --action {args.action} --branch <branch> --commit '
+                      '<commit> [--question <decision ID>] -- <command>; one the user approved '
+                      'and you already ran: record --kind manual')
     missing = [flag for flag, value in (('--commit', args.commit), ('--basis', args.basis),
                                          ('--result', args.result)) if not value]
     if missing:
@@ -1651,8 +1727,10 @@ def report_line(entry):
                    if 'notice_before' in entry else '')
         return f'- {head}：{entry.get("result")}；依據：{entry.get("basis")}{notices}'
     if kind == 'manual':
+        head = ' '.join(str(part) for part in (entry.get('action'), entry.get('target'),
+                                               entry.get('commit')) if part)
         where = f'（動作在 {entry["action_repo"]}）' if 'action_repo' in entry else ''
-        return (f'- {entry.get("action")} {entry.get("commit")}{where}：{entry.get("result")}；'
+        return (f'- {head}{where}：{entry.get("result")}；'
                 f'人工核准，待決 {entry.get("question")}')
     if kind == 'bug-intake':
         # Records written before this condition existed have no such field.
@@ -1693,15 +1771,35 @@ def do_must(*argv):
     return out
 
 
+def run_marked(command, marker):
+    """Run the command with the `do` marker in its environment; its exit status, 127 when it
+    cannot start."""
+    try:
+        return subprocess.run(command, env=dict(os.environ, **{DO_MARKER: json.dumps(marker)})
+                              ).returncode
+    except OSError as error:
+        print(f'lat-preauth: could not run {command[0]}: {error}', file=sys.stderr)
+        return 127
+
+
+def exit_status(status):
+    return 0 if status == 0 else (status if status > 0 else 1)
+
+
 def cmd_do(args):
     """check -> before-notice -> command -> after-notice -> record, stopping at the first
-    failing step. Once the command has run, a failed command is still noticed and recorded."""
+    failing step. Once the command has run, a failed command is still noticed and recorded.
+    Merge and push send no notices (do_branch_action)."""
     command = args.run[1:] if args.run[:1] == ['--'] else args.run
     if not command:
         raise Refused('give the command after `--`')
+    if args.action in BRANCH_ACTIONS:
+        return do_branch_action(args, command)
     if args.action not in MAIN_CHECKOUT_ACTIONS:
-        raise Refused(f'`do` is for {", ".join(MAIN_CHECKOUT_ACTIONS)}; {args.action} sends no '
-                      'notices, so run check, the action and record yourself')
+        raise Refused(f'`do` is for {", ".join((*BRANCH_ACTIONS, *MAIN_CHECKOUT_ACTIONS))}, '
+                      f'not `{args.action}`')
+    if args.branch or args.question:
+        raise Refused('--branch and --question are for merge and push')
     scope = (['--workspace', args.workspace] if args.workspace else []) \
         + (['--session-id', args.session_id] if args.session_id else [])
     across = scope + (['--controller-workspace', args.controller_workspace]
@@ -1712,11 +1810,7 @@ def cmd_do(args):
         raise Refused(f'check did not allow {args.action}, so the command was not run: {checked}')
     before = do_must('notice', '--text', f'開始 {args.action}（{args.commit}）', *recipients, *across)
     started = do_must('now')
-    try:
-        status = subprocess.run(command).returncode
-    except OSError as error:
-        print(f'lat-preauth: could not run {command[0]}: {error}', file=sys.stderr)
-        status = 127
+    status = run_marked(command, dict(action=args.action, commit=args.commit))
     result = 'succeeded' if status == 0 else 'failed'
     try:
         after = do_must('notice', '--text', f'{args.action}：{result}（{args.commit}）',
@@ -1730,29 +1824,98 @@ def cmd_do(args):
               f'before-notice {before}); run `report` and record by hand if needed: {error}',
               file=sys.stderr)
         return 2
-    return 0 if status == 0 else (status if status > 0 else 1)
+    return exit_status(status)
+
+
+def do_branch_action(args, command):
+    """check -> command -> record for merge and push. An ask runs the command only with a
+    --question the user answered, recorded as manual instead of auto."""
+    if not args.branch:
+        raise Refused(f'{args.action} needs --branch')
+    if args.to:
+        raise Refused(f'{args.action} sends no notices; drop --to')
+    top, session = round_owner(args)
+    with locked(session_lock(top, session)):
+        current_round(top, session)  # refuse before anything runs if nothing can be recorded
+    repo = action_repo(args)
+    scope = (['--workspace', args.workspace] if args.workspace else []) \
+        + (['--session-id', args.session_id] if args.session_id else [])
+    commit = args.commit
+    if args.action == 'push':
+        # Resolve once: the check, the marker the hook compares with and the record all name
+        # the same commit even if the branch moves meanwhile.
+        where = repo_top(args.workspace)
+        commit = resolve_version(where, args.commit)
+        if not commit:
+            raise Refused(f'commit `{args.commit}` is not in {where}')
+    code, checked = do_step('check', '--action', args.action, '--branch', args.branch,
+                            '--commit', commit, *scope)
+    entry = dict(kind='auto', action=args.action, target=args.branch, commit=commit)
+    if code == 0:
+        entry['basis'] = checked.splitlines()[0]
+    elif not args.question:
+        raise Refused(f'check did not allow {args.action}, so the command was not run: {checked}'
+                      '. If the user approved it in a decision record, add --question <its ID>')
+    else:
+        with locked(session_lock(top, session)):
+            _, record, _, _ = current_round(top, session)
+            require_human_answer(top, record, args.question)
+        entry.update(kind='manual', question=args.question)
+    status = run_marked(command, dict(action=args.action, branch=args.branch, commit=commit))
+    entry['result'] = 'succeeded' if status == 0 else 'failed'
+    if repo:
+        entry['action_repo'] = str(repo)
+    try:
+        with locked(session_lock(top, session)):
+            _, _, _, round_number = current_round(top, session)
+            path = append_record(top, session, round_number, entry)
+    except DO_ERRORS as error:
+        print(f'lat-preauth: the command ran and {entry["result"]}, but the record step failed, '
+              f'so this {args.action} is not recorded; record it by hand with record --kind '
+              f'manual if the user approved it, otherwise tell the user: {error}',
+              file=sys.stderr)
+        return 2
+    print(f'recorded {entry["kind"]} → {path}')
+    return exit_status(status)
+
+
+def read_records(path):
+    """The records in one round's log, oldest first; a missing log has none."""
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except FileNotFoundError:
+        return []
+    entries = []
+    for number, line in enumerate(lines, 1):
+        try:
+            entries.append(json.loads(line))
+        except ValueError:
+            raise Refused(f'{path} line {number} is not JSON') from None
+    return entries
+
+
+def corrected_line(entry, corrections):
+    """The report line, with the note of every correction that names the record."""
+    line = report_line(entry)
+    for correction in corrections:
+        if corrects(correction, entry):
+            question = (f'；待決 {correction["question"]}' if correction.get('question')
+                        else '')
+            line += f'（已更正：{correction.get("note")}{question}，{correction.get("at")}）'
+    return line
 
 
 def cmd_report(args):
     top, session = round_owner(args)
     _, record, _, round_number = current_round(top, session, active=False)
-    path = records_path(top, session, round_number)
-    entries = []
-    try:
-        lines = path.read_text(encoding='utf-8').splitlines()
-    except FileNotFoundError:
-        lines = []
-    for number, line in enumerate(lines, 1):
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            raise Refused(f'{path} line {number} is not JSON') from None
-        entries.append(entry)
+    entries = read_records(records_path(top, session, round_number))
+    corrections = [entry for entry in entries if entry.get('kind') == 'correction']
     entries += board_writes_since(top, record)
     out = [f'預先授權紀錄（session {session} 第 {round_number} 輪）']
     for kinds, title in REPORT_GROUPS:
         out += ['', f'### {title}']
-        out += [report_line(entry) for entry in entries if entry.get('kind') in kinds] or ['- 無']
+        out += [corrected_line(entry, corrections) for entry in entries
+                if entry.get('kind') in kinds] or ['- 無']
     print('\n'.join(out))
     return 0
 
@@ -2062,27 +2225,114 @@ def release_problems(top, args, commits, active):
         raise Refused('; '.join(problems))
 
 
+def active_controller(top):
+    """The session ID in the environment that is an active controller of this repo (its main
+    checkout's .lat, shared by its worktrees), or None."""
+    for session in dict.fromkeys(os.environ.get(key) for key in SESSION_ENVS):
+        if not session or not DECISION_ID.fullmatch(session):
+            continue
+        path = shared_lat_dir(top) / 'sessions' / f'{session}.json'
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            continue
+        if isinstance(record, dict) and record.get('status') == 'active':
+            return session
+    return None
+
+
+def do_command(remote, local_ref, local, remote_ref):
+    """The `do` command a controller should have used for one pushed branch."""
+    branch = remote_ref.removeprefix('refs/heads/')
+    spec = branch if local_ref == f'refs/heads/{branch}' else f'{local[:12]}:{remote_ref}'
+    return (f'uv run --no-project python {Path(__file__).resolve()} do --action push --branch '
+            f'{branch} --commit {local[:12]} [--question <decision ID>] -- git push {remote} '
+            f'{spec}')
+
+
+def unchecked_commits(top, local, marker):
+    """Commits `local` brings that no remote has and that the `do` push marker did not check."""
+    checked = [marker['commit']] if marker.get('action') == 'push' and isinstance(
+        marker.get('commit'), str) and FULL_SHA.fullmatch(marker['commit']) else []
+    listed = git(top, 'rev-list', local, '--not', '--remotes', *checked)
+    if listed is None:
+        raise ValueError(f'cannot list the commits {local[:12]} brings')
+    return listed.split()
+
+
+def controller_push_problems(top, refs, remote):
+    """Why an active controller of this repo may not make this push. A branch update needs
+    `do --action push` for the same branch and commit. A deletion, and any other ref such as a
+    tag, passes when it brings no commit that no remote has and `do` did not check."""
+    session = active_controller(top)
+    if session is None:
+        return []
+    try:
+        marker = json.loads(os.environ.get(DO_MARKER) or 'null')
+    except ValueError:
+        marker = None
+    marker = marker if isinstance(marker, dict) else {}
+    if marker.get('action') in MAIN_CHECKOUT_ACTIONS:
+        return []  # a deploy or install `do` already checked
+    problems = []
+    for local_ref, local, remote_ref, _ in refs:
+        if ZERO_SHA.fullmatch(local):
+            continue  # a deletion sends no commit
+        head = f'session {session} is an active LAT controller of this repo'
+        if not remote_ref.startswith('refs/heads/'):
+            unchecked = unchecked_commits(top, local, marker)
+            if unchecked:
+                problems.append(
+                    f'{head} and {remote_ref} brings {len(unchecked)} commit(s) no remote has '
+                    f'(newest {unchecked[0][:12]}); push the branch holding them with `do '
+                    f'--action push` first, or name that branch and commit in the same `do`')
+            continue
+        if marker.get('action') == 'push' and remote_ref == f'refs/heads/{marker.get("branch")}' \
+                and local == marker.get('commit'):
+            continue
+        if marker.get('action') == 'push':
+            why = (f'`do` checked push {marker.get("branch")} {str(marker.get("commit"))[:12]}, '
+                   f'but this pushes {local[:12]} to {remote_ref}')
+        elif marker.get('action') == 'merge':
+            why = '`do --action merge` does not cover a push'
+        else:
+            why = 'it was not started by `do`'
+        problems.append(f'{head} and {why}; push with: '
+                        f'{do_command(remote, local_ref, local, remote_ref)}')
+    return problems
+
+
 def cmd_pre_push(args):
-    """Git pre-push: refuse when a pushed ref brings a held commit the remote ref lacks."""
+    """Git pre-push: refuse a push by an active controller of this repo that `do` did not
+    start, and one whose pushed ref brings a held commit the remote ref lacks."""
+    refs = [parts for parts in (line.split() for line in sys.stdin.read().splitlines())
+            if len(parts) == 4]
     top = git(Path.cwd(), 'rev-parse', '--show-toplevel')
-    if not top or not holds_path(Path(top)).exists():
+    if not top:
         return 0
     top = Path(top)
-    found = []
-    for line in sys.stdin.read().splitlines():
-        parts = line.split()
-        if len(parts) != 4 or ZERO_SHA.fullmatch(parts[1]):
-            continue
-        local, old = parts[1], parts[3]
-        known = not ZERO_SHA.fullmatch(old) and resolve_version(top, old)
-        found += held_problems(top, lambda held: contains_strictly(top, held, local) and not (
-            known and contains_strictly(top, held, old)))
-    if not found:
-        return 0
-    print(f'lat-preauth pre-push: push refused ({args.remote}): ' +
-          '; '.join(reason for _, reason in found) +
-          '. Release with `lat-preauth.py hold release`.', file=sys.stderr)
-    return 1
+    try:
+        found = controller_push_problems(top, refs, args.remote)
+    except Exception as error:  # noqa: BLE001 - this check fails open; the held check does not
+        print(f'lat-preauth pre-push: warning: could not tell whether an active LAT controller '
+              f'is pushing, so that check was skipped: {type(error).__name__}: {error}',
+              file=sys.stderr)
+        found = []
+    for reason in found:
+        print(f'lat-preauth pre-push: push refused ({args.remote}): {reason}', file=sys.stderr)
+    held = []
+    if holds_path(top).exists():
+        for _, local, _, old in refs:
+            if ZERO_SHA.fullmatch(local):
+                continue
+            known = not ZERO_SHA.fullmatch(old) and resolve_version(top, old)
+            held += held_problems(top, lambda commit: contains_strictly(top, commit, local) and not (
+                known and contains_strictly(top, commit, old)))
+    if held:
+        print(f'lat-preauth pre-push: push refused ({args.remote}): ' +
+              '; '.join(reason for _, reason in held) +
+              '. Release with `lat-preauth.py hold release`.', file=sys.stderr)
+    return 1 if found or held else 0
 
 
 COMMANDS = {}
@@ -2122,17 +2372,24 @@ def build_parser():
     sub.add_argument('--source', required=True, help='decision record ID with the answer')
     sub = commands.add_parser('record', parents=[common, across],
                               help='log one thing done under pre-authorization')
-    sub.add_argument('--kind', choices=('auto', 'bug-intake', 'manual'), default='auto',
-                     help='auto: an action done under pre-authorization (default); bug-intake: a '
-                          'short-flow bug ticket started without confirmation; manual: a deploy '
-                          'the user approved, added to the deploy history')
-    sub.add_argument('--action', help='auto: ' + ', '.join(ACTIONS) + '; manual: '
-                                      + ', '.join(DEPLOY_ACTIONS))
-    sub.add_argument('--branch', help='auto: target branch')
-    sub.add_argument('--commit', help='auto, manual: commit the action used')
+    sub.add_argument('--kind', choices=('auto', 'bug-intake', 'manual', 'correction'),
+                     default='auto',
+                     help='auto: a deploy or install done under pre-authorization (default; merge '
+                          'and push go through `do`); bug-intake: a short-flow bug ticket started '
+                          'without confirmation; manual: an action the user approved (a deploy '
+                          'also goes to the deploy history); correction: a note on an earlier '
+                          'record of the round, which may have ended (--session-id)')
+    sub.add_argument('--action', help='auto: ' + ', '.join(MAIN_CHECKOUT_ACTIONS) + '; manual: '
+                                      + ', '.join((*BRANCH_ACTIONS, *DEPLOY_ACTIONS))
+                                      + '; correction: only records of this action')
+    sub.add_argument('--branch', help='manual merge or push: target branch')
+    sub.add_argument('--commit', help='auto, manual: commit the action used; correction: commit '
+                                      'of the record to correct')
     sub.add_argument('--basis', help='auto: the check line')
     sub.add_argument('--result', choices=RESULTS, help='auto, manual: how the action ended')
-    sub.add_argument('--question', help='manual: ID of the decision record the user answered')
+    sub.add_argument('--question', help='manual: ID of the decision record the user answered; '
+                                         'correction: the one that shows what really happened')
+    sub.add_argument('--note', help='correction: what really happened')
     sub.add_argument('--started', help='auto deploy/install: time the action started, from `now`')
     sub.add_argument('--notice-before', type=notice_id, help='auto deploy/install: HCOM event ID '
                                                              'of the notice sent before '
@@ -2168,13 +2425,18 @@ def build_parser():
     sub.add_argument('--json', action='store_true')
     sub = commands.add_parser('do', parents=[common, across],
                               help='check, notify, run a command, notify, record: stops at the '
-                                   'first step that fails')
-    sub.add_argument('--action', required=True, help=', '.join(MAIN_CHECKOUT_ACTIONS))
+                                   'first step that fails; merge and push send no notices')
+    sub.add_argument('--action', required=True,
+                     help=', '.join((*BRANCH_ACTIONS, *MAIN_CHECKOUT_ACTIONS)))
+    sub.add_argument('--branch', help='merge, push: target branch')
     sub.add_argument('--commit', required=True, help='commit the action uses')
+    sub.add_argument('--question', help='merge, push: when the check asks, ID of the decision '
+                                        'record where the user approved it')
     sub.add_argument('--to', nargs='+', metavar='NAME', help='notice recipients, as for notice')
     sub.add_argument('run', nargs=argparse.REMAINDER, metavar='command', help='after --: the command to run')
-    sub = commands.add_parser('pre-push', help='Git pre-push hook: refuse pushing held commits '
-                                               '(reads the refs on stdin)')
+    sub = commands.add_parser('pre-push', help='Git pre-push hook: refuse pushing held commits, '
+                                               'and a push by an active controller that `do` '
+                                               'did not start (reads the refs on stdin)')
     sub.add_argument('remote')
     sub.add_argument('url', nargs='?')
     return parser

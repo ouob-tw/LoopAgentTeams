@@ -122,7 +122,7 @@ class UpsertTests(PreauthQuestionTests):
         self.assertEqual(result.returncode, 1)
         self.assertIn('refused, nothing written: LAT-P is pre-authorized', result.stderr)
         self.assertIn('allow merge dev', result.stderr)
-        self.assertIn('lat-preauth.py record', result.stderr)
+        self.assertIn('lat-preauth.py do', result.stderr)
         self.assertFalse(self.questions.exists())
         self.assertEqual(self.decision.read_text(), RECORD)
 
@@ -204,7 +204,7 @@ class StopTests(PreauthQuestionTests):
                 output = self.stop('問題全文\nDECIDE: LAT-P r1', client)
                 self.assertEqual(output['decision'], 'block')
                 self.assertIn(self.HELD, output['reason'])
-                self.assertIn('lat-preauth.py record', output['reason'])
+                self.assertIn('lat-preauth.py do', output['reason'])
                 warning = self.stop('問題全文\nDECIDE: LAT-P r1', client, active=True)
                 self.assertEqual(set(warning), {'systemMessage'})
                 self.assertIn(self.HELD, warning['systemMessage'])
