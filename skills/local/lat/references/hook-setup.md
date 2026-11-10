@@ -48,7 +48,7 @@ uv run --no-project python "$lat_dir/scripts/lat-commit-ref.py" install --repo /
 
 ## 全域推送前 hook
 
-主機以全域 `core.hooksPath`（例如 `~/.config/git/hooks`）共用 hook 時，Git 不會讀 repo 自己的 `pre-push`，所以由共用目錄的 `pre-push` 先擋[保留中的提交](preauth.md#保留不推送的提交)，再轉交 repo 自己的 hook。內容如下，寫到 `"$(git config --global core.hooksPath)/pre-push"` 並 `chmod +x`；已有的 `pre-push` 先看內容，只是轉交 repo hook 的那三行就整個換掉，有其他內容時把轉交段換成下面的寫法並保留其他部分：
+主機以全域 `core.hooksPath`（例如 `~/.config/git/hooks`）共用 hook 時，Git 不會讀 repo 自己的 `pre-push`，所以由共用目錄的 `pre-push` 先擋[保留中的提交](preauth.md#保留不推送的提交)與沒經 `do` 的主控推送，再轉交 repo 自己的 hook。內容如下，寫到 `"$(git config --global core.hooksPath)/pre-push"` 並 `chmod +x`；已有的 `pre-push` 先看內容，只是轉交 repo hook 的那三行就整個換掉，有其他內容時把轉交段換成下面的寫法並保留其他部分：
 
 <!-- global-pre-push -->
 ```sh
@@ -70,4 +70,8 @@ exit 0
 
 - 擋的範圍：每個被推送的參照，從要推的版本可達、但遠端那個參照原本的版本不可達的提交（新分支就是要推版本的全部歷史）；其中有未解除的保留就以非 0 結束，列出提交與決策編號，repo 自己的 hook 不再執行。
 - repo 沒有主工作區 `.lat/preauth-holds.json`、或主機沒裝 LAT 技能時不檢查，行為和原本的轉交一樣。保留檔讀不出時拒絕推送，修好再推。
-- `git push --no-verify` 會略過整個 hook；主控不可用它繞過保留。
+- 主控推送：環境裡的 session 編號（`CLAUDE_CODE_SESSION_ID` 或 `CODEX_THREAD_ID`）是這個 repo 主工作區 `.lat/sessions` 裡進行中的主控時，只接受 `do --action push` 發起、且推送的分支與版本就是 `do` 查過的那一個；其他推送都拒絕並印出該用的 `do` 指令（見 [合併、推送一律用 `do`](preauth.md#合併推送一律用-do)）。worktree 共用主工作區的 `.lat`，在 worktree 推送同樣檢查。部署與更新主機技能的 `do` 指令裡的推送照常通過。
+- 照常通過：沒有 session 環境變數、session 不是這個 repo 的主控（使用者自己、實作者）、主控已停用。
+- 這項主控檢查自己出錯（例如 session 紀錄讀不出）時，只在 stderr 警告並照常推送；保留提交的檢查照舊不放行。
+- 已知限制：主控的 session 紀錄在別的 repo（跨 repo 推送）時不擋。`do` 的記號可以偽造：這項檢查防的是手滑，不防蓄意繞過。
+- `git push --no-verify` 會略過整個 hook；主控一律不用 `--no-verify`。

@@ -1327,8 +1327,8 @@ def preauth_stop_check(record, message):
         else:
             held.append(f'{identifier}（{found[1]}）')
     reason = ('LAT 預先授權檢查未通過：' + '；'.join(held)
-              + ' 尚未送出，依當下設定可以不問直接做。不要提問：直接執行，做完以 '
-              '`lat-preauth.py record` 記一筆，並在待決紀錄寫明改依預先授權處理。') if held else None
+              + ' 尚未送出，依當下設定可以不問直接做。不要提問：直接以 '
+              '`lat-preauth.py do` 執行（它會記一筆），並在待決紀錄寫明改依預先授權處理。') if held else None
     return reason, notes
 
 

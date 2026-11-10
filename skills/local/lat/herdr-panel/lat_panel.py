@@ -632,8 +632,8 @@ def _upsert(questions, decisions, question_id, text, first_revision=1, notes=Non
     preauth = _preauth_recheck(questions, decisions, question_id)
     if preauth is not None and preauth[0] == "allow" and not preauth[2]:
         print(f"lat-panel: refused, nothing written: {question_id} is pre-authorized under "
-              f"the current settings ({preauth[1]}). Do not ask: do it, then log it "
-              "with lat-preauth.py record.", file=sys.stderr)
+              f"the current settings ({preauth[1]}). Do not ask: do it with "
+              "lat-preauth.py do, which logs it.", file=sys.stderr)
         return 1, None, False
     revision, written = upsert_question_written(
         questions, question_id, text, decisions_path=decisions, first_revision=first_revision

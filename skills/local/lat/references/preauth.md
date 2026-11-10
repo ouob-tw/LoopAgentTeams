@@ -1,6 +1,6 @@
 # 預先授權
 
-使用者事先寫好、程式查得到的常設授權（實驗）。主控做合併、推送、部署、更新主機技能前，先以 `check` 查詢：結果 `allow` 才可不問直接做，做完以 `record` 記一筆；`ask` 就照「使用者待決事項」提問。工具只回答能不能做，不執行動作本身。
+使用者事先寫好、程式查得到的常設授權（實驗）。主控做合併、推送、部署、更新主機技能時，用 `do` 一次做完查詢、執行與記錄：查詢結果 `allow` 才可不問直接做；`ask` 就照「使用者待決事項」提問。`check` 只回答能不能做，不執行動作。
 
 ## 查詢
 
@@ -28,25 +28,36 @@ p do --action install-host --commit <版本> [--to <名稱>…] -- <動作指令
 - 核對不是 `allow` 或前通知失敗時，不執行指令，以非 0 結束並說明。動作失敗仍發後通知並記 `failed`，結束碼為動作的結束碼。
 - 記錄內容同手動串接；`--to` 指定的對象不在線照舊拒絕。後通知或記錄失敗時，動作已經做了，記錄可能缺漏，訊息會寫明。
 
-`merge`、`push` 不必發通知，以 `&&` 把 `check` 接在動作之前，做完再 `record`。
+## 合併、推送一律用 `do`
+
+合併、推送一律用 `do`，不自己串 `check` 與 `git merge`／`git push`：用 `;` 串接，或把 `check` 接進管線（`| cut`、`| tail`），`check` 的結束碼就不見了，印 `ask` 也照樣推送。
+
+```bash
+p do --action merge|push --branch <分支> --commit <版本> [--question <待決 ID>] -- <指令>
+```
+
+- 不發通知。`check` 為 `allow` 就執行指令，記一筆 `kind: auto`，依據是工具自己印的 `check` 那一行。
+- `check` 為 `ask`：給了 `--question`，且該題有真人答覆（在本主控的待決目錄、狀態 `answered` 或 `approved`、答覆段有 `- 來源：` 行），才執行指令並記一筆 `kind: manual` 與題號；否則不執行、不記錄，以非 0 結束並說明。
+- 指令失敗照記 `failed`，結束碼為指令的結束碼。本輪 session 不是進行中時什麼都不執行；指令跑完但記錄寫不進去時以 2 結束並說明。
+- `do` 在指令的環境變數 `LAT_PREAUTH_DO` 記下動作、分支與完整版本。推送前 hook 比對 Git 實際推送的分支與版本，跟 `do --action push` 查過的不同就擋下，所以 `--commit` 要寫這次推送的版本；`do --action merge` 不涵蓋推送。見 [全域推送前 hook](hook-setup.md#全域推送前-hook)。
 
 ## 主控與動作不在同一個 repo
 
-主控的 session 紀錄在 A repo、動作在 B repo 時，`--workspace` 一律寫 B；`notice`、`record`、`report` 另加 `--controller-workspace <A>`。
+主控的 session 紀錄在 A repo、動作在 B repo 時，`--workspace` 一律寫 B；`do`、`notice`、`record`、`report` 另加 `--controller-workspace <A>`。
 
 ```bash
 p check --action merge --branch dev --workspace <B>
+p do --action merge --branch dev --commit <版本> --workspace <B> --controller-workspace <A> -- <指令>
 p notice --text '<內容>' --workspace <B> --controller-workspace <A>
-p record --action merge --branch dev --commit <版本> --basis '<check 印的那行>' --result succeeded --workspace <B> --controller-workspace <A>
 p report --controller-workspace <A>
 ```
 
 - 主控身分、本輪輪數與紀錄檔都來自 A 的 `.lat`，B 的 `.lat` 不會多出任何紀錄。沒給 `--controller-workspace` 時拒絕，訊息會提示這個選項。B 不在 Git 專案裡也拒絕，且不發訊息、不寫紀錄。
-- `record` 把 B 的主工作區路徑寫進 `action_repo`，`report` 顯示在動作後面：`merge dev abc123（動作在 <B>）`。同一 repo（含它的 worktree）不寫這個欄位，舊紀錄照常讀取。
+- `do` 與 `record` 把 B 的主工作區路徑寫進 `action_repo`，`report` 顯示在動作後面：`merge dev abc123（動作在 <B>）`。同一 repo（含它的 worktree）不寫這個欄位，舊紀錄照常讀取。
 - `notice` 的預設收件人是 A 與 B 其他進行中的主控：動作影響 B，A 的主控也需要知道主控在做什麼。
 - `check` 沒有這個選項，只看 B：
   - 設定取 B 的專案層與全域層。
-  - 本輪工作總表在 A，`check` 找不到，所以 `push` 一律 `ask`（`no active round ledger`），要照「使用者待決事項」提問；部署與 `install-host` 的整合分支只取設定的 `integration_branch`。
+  - 本輪工作總表在 A，`check` 找不到，所以 `push` 一律 `ask`（`no active round ledger`），要照「使用者待決事項」提問，答覆後以 `do --question <待決 ID>` 推送；部署與 `install-host` 的整合分支只取設定的 `integration_branch`。
 - 待決紀錄的 `- action:` 重查（見 [接上提問](#接上提問)）在主控工作區 A 執行，結果可能與 `check --workspace <B>` 不同；B 的動作以 `check --workspace <B>` 為準，不要只憑重查的結論動手。
 
 ## 兩層與合併
@@ -163,19 +174,27 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" grant --layer globa
 依預先授權做完一件事（含失敗）就記一筆；紀錄存主工作區 `.lat/preauth-records/<session>-r<輪數>.jsonl`。
 
 ```bash
-# 依預先授權執行
-uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --action <動作> [--branch <分支>] --commit <版本> --basis '<check 印的那行>' --result succeeded|failed \
-  [--started <now 印的時間> --notice-before <HCOM 事件編號> --notice-after <HCOM 事件編號>]
+# 依預先授權執行的部署與更新主機技能（`do` 會自己記；這是手動串接的寫法）
+uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --action <動作> --commit <版本> --basis '<check 印的那行>' --result succeeded|failed \
+  --started <now 印的時間> --notice-before <HCOM 事件編號> --notice-after <HCOM 事件編號>
 # 經使用者答覆才做的部署，補記到部署歷史
 uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind manual --action deploy-test|deploy-prod --commit <版本> --result succeeded|failed --question <待決題號>
+# 經使用者答覆、沒經 `do` 就做了的合併或推送
+uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind manual --action push|merge --branch <分支> --commit <版本> --result succeeded|failed --question <待決題號>
+# 更正本輪（或已結束那一輪）的一筆紀錄
+uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind correction --commit <版本> --note '<實際情況>' [--action <動作>] [--question <待決題號>] [--session-id <那個主控的 session>]
 # 免確認開短流程 bug 票
 uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-intake --issue <票> --source '<使用者原訊息位置>' \
   --self-reported '<…>' --clear-expected '<…>' --single-ticket '<…>' --restores-stated '<…>' --no-existing-guard '<查過哪些測試與文件>'
 ```
 
+- `merge`、`push` 不收 `--kind auto`：拒絕、不寫檔，訊息指向 `do`。
 - `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區，用 `now` 取得）與前後兩則 HCOM 通知的事件編號（取自 `notice` 印出的編號）。工具以 `hcom events` 核對：兩則都由本主控送出（發送者等於工作階段紀錄的 HCOM 名稱，或 `hcom list --json` 給它的基本名；有 tag 的主控，HCOM 記的是基本名）、以 `@名稱` 指定對象（不是廣播）、依 `--started` 提供的小數秒位數比較（未提供小數就比較整秒）：前一則可早於或等於開始時間，後一則必須晚於開始時間，且原始時間也必須晚於前一則。只到秒的舊寫法仍接受，例如 `--started 2026-10-29T12:00:00+08:00` 接受前一則在 `12:00:00.4`，拒絕 `12:00:01.2`；後一則在 `12:00:00.9` 仍不合格；不符就拒絕。`--notice-*` 也可給 `notice` 印的 `none-<n>`：工具核對它是本輪由本主控的 `notice` 寫下的無人可通知紀錄，時間順序規則相同，兩則可一真一無；工具另核對該紀錄裡記錄的其他主控確實都不在線；`report` 顯示「無人可通知（none-1，未發訊息）」。HCOM 的 agent 清單格式異常時 `notice` 拒絕，不當作無人在線。事件的 `delivered_to` 為空（沒送到任何人）一律拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
 - `deploy-test`、`deploy-prod` 的 `record`（成功或失敗）寫入預先授權紀錄後，另在被部署專案（`--workspace`，[跨 repo](#主控與動作不在同一個-repo) 時是 B）主工作區的部署歷史追加一筆（見「固定條件」），所以不論從哪個主控部署，下一次 `check` 都讀得到。`--commit` 可給縮寫，歷史記完整提交；在該 repo 找不到就拒絕，兩邊都不寫。
-- `--kind manual`：經使用者答覆才做的部署（`check` 是 `ask`），做完一樣要補記，否則下一次部署會因為找不到上一次部署而要整套。只接受 `deploy-test`、`deploy-prod`，要 `--commit`、`--result`、`--question`；待決紀錄要在本主控的待決目錄、狀態為 `answered` 或 `approved`。部署歷史記 `approval: manual` 與 `question`；預先授權紀錄記一筆 `kind: manual`，`report` 列在「人工核准的部署補記」。不需通知。跨 repo 同樣加 `--workspace <B> --controller-workspace <A>`。
+- `--kind manual`：經使用者答覆才做的動作（`check` 是 `ask`），做完一樣要補記。要 `--commit`、`--result`、`--question`；預先授權紀錄記一筆 `kind: manual`，`report` 列在「人工核准（合併、推送、部署）」。不需通知。跨 repo 同樣加 `--workspace <B> --controller-workspace <A>`。
+  - `deploy-test`、`deploy-prod`：待決紀錄要在本主控的待決目錄、狀態為 `answered` 或 `approved`。另在部署歷史記 `approval: manual` 與 `question`，否則下一次部署會因為找不到上一次部署而要整套。
+  - `push`、`merge`：另要 `--branch`；待決紀錄同 `do --question` 要有真人答覆（含 `- 來源：` 行）。不寫部署歷史。
+- `--kind correction`：只追加一筆更正，不改舊行。要 `--commit`（至少 7 碼，與紀錄裡的版本前段相同就算同一個）與 `--note`；`--action` 只更正那個動作的紀錄（同一版本有推送也有部署時用）；`--question` 的題要有真人答覆。該輪找不到這個版本的紀錄就拒絕。`--session-id` 可寫到已結束主控那一輪（它最後一輪），其他種類只能寫進行中的一輪。`report` 在被更正的那筆後面加「（已更正：<說明>；待決 <題號>，<時間>）」。
 - `bug-intake` 的五項依據都要寫。
 
 ## 免確認開短流程 bug 票
@@ -196,7 +215,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-i
 uv run --no-project python "$lat_dir/scripts/lat-preauth.py" report
 ```
 
-只列本 session 本輪的紀錄，分四組：依預先授權自動執行、人工核准的部署補記、免確認開工、設定寫入（本輪的 `grant`，加上本輪開始以來對本專案層與全域層的看板寫入）；沒有的組印「- 無」。交付回報把整段輸出原樣貼在「參謀定案清單」旁，讓使用者事後檢查或推翻；本輪停用後仍可執行。
+只列本 session 本輪的紀錄，分四組：依預先授權自動執行、人工核准（合併、推送、部署）、免確認開工、設定寫入（本輪的 `grant`，加上本輪開始以來對本專案層與全域層的看板寫入）；沒有的組印「- 無」。交付回報把整段輸出原樣貼在「參謀定案清單」旁，讓使用者事後檢查或推翻；本輪停用後仍可執行。
 
 ## 接上提問
 
@@ -205,7 +224,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" report
 面板寫題（`question ask`）與回合結束的 DECIDE／HELP 檢查遇到有 `- action:` 的紀錄，一律依當下設定與當下時間重跑 `check`，不採用紀錄裡先前寫的結論：
 
 - **已送出**：題號曾在主控自己的問題檔或其歸檔出現，或曾出現在本 session 主控回報紀錄的 `DECIDE:`／`HELP:` 訊息（聊天提問）；任一成立即算，不論版本。
-- **未送出且 `allow`**：`question ask` 拒絕寫入（結束碼 1，不改任何檔）；回合結束檢查首次擋下，同回合第二次只警告。不要提問：直接做，做完以 `record` 記一筆，並在待決紀錄寫明改依預先授權處理。
+- **未送出且 `allow`**：`question ask` 拒絕寫入（結束碼 1，不改任何檔）；回合結束檢查首次擋下，同回合第二次只警告。不要提問：直接用 `do` 做，並在待決紀錄寫明改依預先授權處理。
 - **已送出且 `allow`**：照常寫入與放行，只附一行提醒「此題目前已預先授權，可由使用者決定撤回」；送到使用者面前的題目仍只由真人解除。
 - **`ask`**：照常寫入與放行。
 - `question ask` 每次寫入都把當下結論寫成紀錄的 `- preauth: <check 印的那行>（重查於 <時間>）`，取代舊的那行，沒有時放在 `- action:` 下一行。這行只給人與參謀閱讀，工具不讀。

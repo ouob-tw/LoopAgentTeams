@@ -775,6 +775,9 @@ class CrossRepoTests(NoticeCase):
         self.other_records = self.other / '.lat' / 'preauth-records'
         self.cross = ('--workspace', str(self.other), '--controller-workspace', str(self.repo))
         self.records_file = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r1.jsonl'
+        self.write(self.repo / '.lat' / 'decisions' / 'D-1.md',
+                   '# Q\n- status: answered\n\n'
+                   + ANSWER.format(time='2026-10-25T00:30:34+08:00', id='D-1'))
 
     def tool(self, *args, **kwargs):
         return self.run_tool(*args, path=f'{self.bin}:{os.environ["PATH"]}', **kwargs)
@@ -783,9 +786,10 @@ class CrossRepoTests(NoticeCase):
         self.write(self.other / '.lat' / 'sessions' / f'{stem or name + "-session"}.json',
                    json.dumps(dict(status=status, hcom_name=name)))
 
-    def record_merge(self, *extra):
-        return self.tool('record', '--action', 'merge', '--branch', 'dev', '--commit', 'abc123',
-                         '--basis', 'allow merge dev', '--result', 'succeeded', *extra)
+    def record_merge(self, *extra, **kwargs):
+        return self.tool('record', '--kind', 'manual', '--action', 'merge', '--branch', 'dev',
+                         '--commit', 'abc123', '--question', 'D-1', '--result', 'succeeded',
+                         *extra, **kwargs)
 
     def install_flow(self, *flags, **kwargs):
         """Before-notice, `now`, after-notice, record: the steps of a sub-second action."""
@@ -863,9 +867,7 @@ class CrossRepoTests(NoticeCase):
         self.assertEqual(self.entries()[0]['action_repo'], str(self.other))
 
     def test_the_action_repo_defaults_to_the_current_directory(self):
-        result = self.tool('record', '--action', 'merge', '--branch', 'dev', '--commit', 'abc123',
-                           '--basis', 'x', '--result', 'succeeded', '--controller-workspace',
-                           str(self.repo), cwd=self.other)
+        result = self.record_merge('--controller-workspace', str(self.repo), cwd=self.other)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.entries()[0]['action_repo'], str(self.other))
 
@@ -895,7 +897,7 @@ class CrossRepoTests(NoticeCase):
                 result = self.record_merge(*flags)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(set(self.entries()[0]),
-                                 {'at', 'kind', 'action', 'target', 'commit', 'basis', 'result'})
+                                 {'at', 'kind', 'action', 'target', 'commit', 'question', 'result'})
                 self.assertNotIn('動作在', self.tool('report').stdout)
 
     def test_an_action_in_a_worktree_of_the_other_repo_records_its_main_checkout(self):
@@ -1608,13 +1610,10 @@ class RecordTests(WriteCase):
         self.assertEqual((entry['kind'], entry['action'], entry['result'], entry['notice_before'],
                           entry['notice_after']), ('auto', 'install-host', 'failed', 1, 2))
 
-    def test_merge_needs_no_notices_and_bug_intake_needs_its_five_conditions(self):
-        self.assertEqual(self.record('--action', 'merge', '--branch', 'dev', '--commit', 'abc',
-                                     '--basis', 'allow merge dev', '--result',
-                                     'succeeded').returncode, 0)
+    def test_bug_intake_needs_its_five_conditions(self):
         result = self.record('--kind', 'bug-intake', '--issue', '#9', '--source', 'chat 12:00')
         self.assertIn('--self-reported', result.stderr)
-        self.assertEqual([entry['kind'] for entry in self.records()], ['auto'])
+        self.assertEqual(self.records(), [])
 
     def test_bug_intake_without_a_no_existing_guard_writes_nothing(self):
         conditions = ('--kind', 'bug-intake', '--issue', '#9', '--source', 'chat 12:00',
@@ -1643,9 +1642,9 @@ class RecordTests(WriteCase):
         self.write(old, json.dumps(dict(kind='auto', action='push', commit='OLDROUND',
                                         basis='b', result='succeeded')) + '\n')
         self.session(history=1)
-        self.assertEqual(self.record('--action', 'push', '--branch', 'dev', '--commit',
-                                     'abc123', '--basis', 'allow push dev', '--result',
-                                     'succeeded').returncode, 0)
+        self.write(old.with_name(f'{SESSION}-r2.jsonl'), json.dumps(dict(  # as `do` writes it
+            kind='auto', action='push', target='dev', commit='abc123', basis='allow push dev',
+            result='succeeded')) + '\n')
         self.assertEqual(self.record('--kind', 'bug-intake', '--issue', '#9', '--source',
                                      'chat 12:00', '--self-reported', 'user typed it',
                                      '--clear-expected', 'says X should be Y', '--single-ticket',
@@ -1657,7 +1656,7 @@ class RecordTests(WriteCase):
         self.assertIn(f'session {SESSION} 第 2 輪', out)
         self.assertNotIn('OLDROUND', out)
         auto, manual, bug, grants = out.split('### ')[1:]
-        self.assertEqual(manual, '人工核准的部署補記\n- 無\n\n')
+        self.assertEqual(manual, '人工核准（合併、推送、部署）\n- 無\n\n')
         self.assertIn('依預先授權自動執行\n- push dev abc123：succeeded；依據：allow push dev', auto)
         self.assertIn('免確認開工\n- #9；原訊息：chat 12:00；本人回報：user typed it', bug)
         self.assertIn('查過沒有既有保護：tests/x.py, docs/y.md', bug)
@@ -1881,10 +1880,14 @@ class DeployAffectedTests(WriteCase):
         self.assertEqual(self.records(), [])
         self.assertFalse(self.history_file.exists())
 
-    def test_merge_push_and_install_records_write_no_deploy_history(self):
-        self.assertEqual(self.record('--action', 'merge', '--branch', 'dev', '--commit',
-                                     self.head, '--basis', 'x', '--result',
-                                     'succeeded').returncode, 0)
+    def test_merge_and_push_records_write_no_deploy_history(self):
+        self.decision('DEP-1')
+        for action in ('merge', 'push'):
+            with self.subTest(action):
+                self.assertEqual(self.record('--kind', 'manual', '--action', action, '--branch',
+                                             'dev', '--commit', self.head, '--question', 'DEP-1',
+                                             '--result', 'succeeded').returncode, 0)
+        self.assertEqual(len(self.records()), 2)
         self.assertFalse(self.history_file.exists())
 
     def test_a_manual_deploy_is_recorded_and_found_by_the_next_check(self):
@@ -1897,7 +1900,7 @@ class DeployAffectedTests(WriteCase):
                          ('manual', 'DEP-1', self.deployed, None))
         self.assertEqual([(entry['kind'], entry['question'], entry['commit'])
                           for entry in self.records()], [('manual', 'DEP-1', self.deployed)])
-        self.assertIn(f'人工核准的部署補記\n- deploy-prod {self.deployed}：succeeded；人工核准，'
+        self.assertIn(f'人工核准（合併、推送、部署）\n- deploy-prod {self.deployed}：succeeded；人工核准，'
                       '待決 DEP-1', self.run_tool('report').stdout)
         self.summary(self.deployed)
         self.assertEqual(self.check('deploy-prod')['verdict'], 'allow')
@@ -2372,8 +2375,12 @@ class DoTests(NoticeCase):
 
     def test_actions_without_notices_and_a_missing_command_are_refused(self):
         for label, args, reason in (
-                ('merge', ('do', '--action', 'merge', '--commit', 'x', '--', 'true'),
-                 'sends no notices'),
+                ('merge without a branch',
+                 ('do', '--action', 'merge', '--commit', 'x', '--', 'true'),
+                 'merge needs --branch'),
+                ('a branch for a deploy',
+                 ('do', '--action', 'install-host', '--branch', 'dev', '--commit', 'x', '--',
+                  'true'), '--branch and --question are for merge and push'),
                 ('no command', ('do', '--action', 'install-host', '--commit', 'x'),
                  'give the command after `--`')):
             with self.subTest(label):
@@ -2383,6 +2390,397 @@ class DoTests(NoticeCase):
 
 
 HOOK_SETUP = Path(__file__).resolve().parents[1] / 'references/hook-setup.md'
+
+
+class BranchCase(WriteCase):
+    """A dev branch with a bare remote, merge and push of dev allowed, and an hcom that fails on
+    any call: merge and push send no notices."""
+
+    def setUp(self):
+        super().setUp()
+        self.remote = self.root / 'remote.git'
+        git(self.root, 'init', '-q', '--bare', str(self.remote))
+        git(self.repo, 'remote', 'add', 'origin', str(self.remote))
+        git(self.repo, 'push', '-q', 'origin', 'dev')
+        self.before = self.remote_dev()
+        self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["dev"]\n'
+                                     '[actions.merge]\nallow = true\nbranches = ["dev"]\n')
+        self.bin = self.root / 'bin'
+        self.hcom_calls = self.root / 'hcom-calls'
+        self.write(self.bin / 'hcom', f'#!/bin/sh\necho "$*" >> {self.hcom_calls}\nexit 1\n')
+        (self.bin / 'hcom').chmod(0o755)
+        self.sha = self.commit('feat(lat): ready (#313)')
+        self.marker = self.root / 'ran'
+
+    def env(self, **sessions):
+        """The tool's environment; the session variables are only the ones given."""
+        environment = {key: value for key, value in os.environ.items() if key not in (
+            'CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'LAT_PREAUTH_DO', 'SUITE_GATE_CONFIG')}
+        environment.update(HOME=str(self.root / 'home'), XDG_CONFIG_HOME=str(self.config),
+                           GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                           XDG_STATE_HOME=str(self.root / 'state'),
+                           SUITE_GATE_STATE_DIR=str(self.gate_state), UV_PYTHON=sys.executable,
+                           PATH=f'{self.bin}:{os.environ["PATH"]}', **sessions)
+        return environment
+
+    def do(self, action, *extra, command, cwd=None, sessions=None, branch='dev', commit=None):
+        sessions = {'CLAUDE_CODE_SESSION_ID': SESSION} if sessions is None else sessions
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), 'do', '--action', action, '--branch', branch,
+             '--commit', commit or self.sha, *extra, '--', *command], capture_output=True,
+            text=True, cwd=cwd or self.repo, env=self.env(**sessions), timeout=120)
+
+    def git_push(self, hooks=os.devnull, *spec):
+        return ['git', '-c', f'core.hooksPath={hooks}', 'push', '-q', 'origin', *(spec or ['dev'])]
+
+    def touch(self, code=0):
+        return ['sh', '-c', f'touch {self.marker}; exit {code}']
+
+    def remote_dev(self):
+        return git(self.remote, 'rev-parse', 'dev')
+
+
+class BranchDoTests(BranchCase):
+    """`do` for merge and push: check, run, record, with no notices."""
+
+    def test_an_allowed_push_runs_and_records_auto_with_the_tool_s_own_check_line(self):
+        checked = self.run_tool('check', '--action', 'push', '--branch', 'dev', '--commit',
+                                self.sha).stdout.splitlines()[0]
+        result = self.do('push', command=self.git_push())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.remote_dev(), self.sha)
+        self.assertEqual(self.records(), [dict(
+            self.records()[0], kind='auto', action='push', target='dev', commit=self.sha,
+            basis=checked, result='succeeded')])
+        self.assertTrue(checked.startswith(f'allow push dev {self.sha}'))
+        self.assertFalse(self.hcom_calls.exists())
+
+    def test_an_allowed_merge_runs_and_records_auto(self):
+        result = self.do('merge', command=self.touch())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.marker.exists())
+        [entry] = self.records()
+        self.assertEqual((entry['kind'], entry['action'], entry['target'], entry['result']),
+                         ('auto', 'merge', 'dev', 'succeeded'))
+        self.assertTrue(entry['basis'].startswith('allow merge dev'))
+        self.assertFalse(self.hcom_calls.exists())
+
+    def test_an_ask_without_a_human_answered_question_runs_and_records_nothing(self):
+        self.sha = self.commit('chore: no ticket', 'c.txt')
+        self.decision('PENDING', status='pending', answer=False)
+        self.decision('NO-SOURCE', answer=False)
+        for label, extra, reason in (
+                ('no --question', (), 'add --question'),
+                ('pending decision', ('--question', 'PENDING'), 'PENDING status is pending'),
+                ('answered without a 來源 line', ('--question', 'NO-SOURCE'),
+                 'NO-SOURCE has no answer section'),
+                ('no such decision', ('--question', 'NOPE'), 'not found')):
+            with self.subTest(label):
+                result = self.do('push', *extra, command=self.touch())
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(reason, result.stderr)
+                self.assertFalse(self.marker.exists())
+                self.assertEqual(self.records(), [])
+        self.assertIn('ask push dev', self.do('push', command=self.touch()).stderr)
+
+    def test_a_pipe_or_semicolon_after_do_cannot_run_an_asked_push(self):
+        """The incident: `check … | cut` hid the ask and `;` ran the push anyway."""
+        self.sha = self.commit('chore: no ticket', 'c.txt')
+        do = (f'{sys.executable} {SCRIPT} do --action push --branch dev --commit {self.sha} -- '
+              f'{" ".join(self.git_push())}')
+        for line in (f'{do} | cut -c1-25', f'{do}; true', f'{do} 2>&1 | tail -1'):
+            with self.subTest(line):
+                result = subprocess.run(['sh', '-c', line], capture_output=True, text=True,
+                                        cwd=self.repo, env=self.env(CLAUDE_CODE_SESSION_ID=SESSION),
+                                        timeout=120)
+                self.assertEqual(result.returncode, 0)  # the shell hides the refusal …
+                self.assertNotEqual(self.remote_dev(), self.sha)  # … but nothing was pushed
+        self.assertEqual(self.records(), [])
+
+    def test_an_ask_with_a_human_answered_question_runs_and_records_manual(self):
+        self.sha = self.commit('chore: no ticket', 'c.txt')
+        self.decision('PUSH-1')
+        result = self.do('push', '--question', 'PUSH-1', command=self.git_push())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.remote_dev(), self.sha)
+        [entry] = self.records()
+        self.assertEqual({key: entry[key] for key in entry if key != 'at'}, dict(
+            kind='manual', action='push', target='dev', commit=self.sha, question='PUSH-1',
+            result='succeeded'))
+        report = self.run_tool('report').stdout
+        self.assertIn(f'人工核准（合併、推送、部署）\n- push dev {self.sha}：succeeded；人工核准，待決 '
+                      'PUSH-1', report)
+        self.assertIn('依預先授權自動執行\n- 無', report)
+        self.assertFalse(self.hcom_calls.exists())
+
+    def test_a_failing_command_is_recorded_failed_with_its_exit_code(self):
+        for action in ('merge', 'push'):
+            with self.subTest(action):
+                result = self.do(action, command=self.touch(3))
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertEqual(self.records()[-1]['result'], 'failed')
+        result = self.do('merge', command=['/no/such/command'])
+        self.assertEqual(result.returncode, 127)
+        self.assertEqual(self.records()[-1]['result'], 'failed')
+
+    def test_the_command_gets_the_do_marker(self):
+        seen = self.root / 'marker.json'
+        result = self.do('push', commit=self.sha[:8],  # the marker carries the full commit
+                         command=['sh', '-c', f'printf %s "$LAT_PREAUTH_DO" > {seen}'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(seen.read_text()),
+                         dict(action='push', branch='dev', commit=self.sha))
+
+    def test_nothing_runs_without_an_active_round_to_record_in(self):
+        for label, change in (('ended', lambda: self.session(status='ended')),
+                              ('no session record',
+                               lambda: (self.sessions / f'{SESSION}.json').unlink())):
+            with self.subTest(label):
+                change()
+                result = self.do('merge', command=self.touch())
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertFalse(self.marker.exists())
+
+    def test_notices_options_are_refused(self):
+        result = self.do('merge', '--to', 'kela', command=self.touch())
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('merge sends no notices', result.stderr)
+        self.assertFalse(self.marker.exists())
+
+    def test_a_merge_in_another_repo_records_in_the_controller_s_round(self):
+        other = self.root / 'other'
+        other.mkdir()
+        git(other, 'init', '-q', '-b', 'dev')
+        git(other, 'commit', '-q', '--allow-empty', '-m', 'first')
+        result = self.do('merge', '--workspace', str(other), '--controller-workspace',
+                         str(self.repo), command=self.touch(), cwd=other)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [entry] = self.records()
+        self.assertEqual((entry['kind'], entry['action_repo']), ('auto', str(other)))
+        self.assertFalse((other / '.lat' / 'preauth-records').exists())
+
+
+class BranchRecordTests(WriteCase):
+    """Hand-typed auto records for merge and push are gone; manual ones need a human answer."""
+
+    def record(self, *args, **kwargs):
+        return self.run_tool('record', *args, **kwargs)
+
+    def test_an_auto_merge_or_push_record_is_refused_and_points_to_do(self):
+        for action in ('merge', 'push'):
+            with self.subTest(action):
+                result = self.record('--action', action, '--branch', 'dev', '--commit',
+                                     'abc1234', '--basis', 'allow=true global',
+                                     '--result', 'succeeded')
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f'do --action {action} --branch', result.stderr)
+        self.assertFalse((self.repo / '.lat' / 'preauth-records').exists())
+
+    def test_a_manual_merge_or_push_needs_a_human_answer_and_writes_no_deploy_history(self):
+        self.decision('PUSH-1')
+        self.decision('PENDING', status='pending', answer=False)
+        self.decision('NO-SOURCE', answer=False)
+        base = ('--kind', 'manual', '--commit', 'abc1234', '--result', 'succeeded')
+        for label, extra, reason in (
+                ('pending', ('--action', 'push', '--branch', 'dev', '--question', 'PENDING'),
+                 'PENDING status is pending'),
+                ('no 來源 line', ('--action', 'merge', '--branch', 'dev', '--question',
+                                 'NO-SOURCE'), 'has no answer section'),
+                ('no branch', ('--action', 'push', '--question', 'PUSH-1'), 'needs --branch')):
+            with self.subTest(label):
+                result = self.record(*base, *extra)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(reason, result.stderr)
+                self.assertEqual(self.records(), [])
+        for action in ('push', 'merge'):
+            result = self.record(*base, '--action', action, '--branch', 'dev', '--question',
+                                 'PUSH-1')
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([(entry['kind'], entry['action'], entry['target'], entry['question'])
+                          for entry in self.records()],
+                         [('manual', 'push', 'dev', 'PUSH-1'), ('manual', 'merge', 'dev', 'PUSH-1')])
+        self.assertFalse((self.repo / '.lat' / 'deploy-history.jsonl').exists())
+        self.assertIn('- merge dev abc1234：succeeded；人工核准，待決 PUSH-1',
+                      self.run_tool('report').stdout)
+
+
+class CorrectionTests(WriteCase):
+    """`record --kind correction` appends a note to an earlier record; nothing is rewritten."""
+    ENDED = '22222222-2222-4222-8222-222222222222'
+
+    def setUp(self):
+        super().setUp()
+        self.log = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r1.jsonl'
+        self.write(self.log, ''.join(json.dumps(entry) + '\n' for entry in (
+            dict(kind='auto', action='push', target='dev', commit='ec58a7a7',
+                 basis='allow=true global', result='succeeded'),
+            dict(kind='auto', action='push', target='dev', commit='2684d51f',
+                 basis='preauth check = ask', result='succeeded'),
+            dict(kind='manual', action='deploy-prod', commit='2684d51f' + '0' * 32,
+                 result='succeeded', question='DEP-1'))))
+
+    def correct(self, *args):
+        return self.run_tool('record', '--kind', 'correction', *args)
+
+    def test_the_report_marks_the_corrected_record_and_keeps_the_original(self):
+        before = self.log.read_text()
+        self.decision('PUSH-032')
+        result = self.correct('--commit', 'ec58a7a7', '--note', 'check said ask; pushed anyway')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.correct('--commit', '2684d51f', '--action', 'push', '--note',
+                              'user approved it', '--question', 'PUSH-032')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.log.read_text().startswith(before))
+        lines = self.run_tool('report').stdout.splitlines()
+        [first] = [line for line in lines if 'ec58a7a7' in line]
+        self.assertIn('（已更正：check said ask; pushed anyway，', first)
+        [push] = [line for line in lines if line.startswith('- push dev 2684d51f')]
+        self.assertIn('（已更正：user approved it；待決 PUSH-032，', push)
+        [deploy] = [line for line in lines if line.startswith('- deploy-prod')]
+        self.assertNotIn('已更正', deploy)
+
+    def test_a_correction_needs_a_record_of_the_commit_in_that_round(self):
+        self.decision('PENDING', status='pending', answer=False)
+        for label, args, reason in (
+                ('unknown commit', ('--commit', 'deadbeef', '--note', 'x'),
+                 'has no record of commit deadbeef'),
+                ('another action', ('--commit', 'ec58a7a7', '--action', 'merge', '--note', 'x'),
+                 'has no merge record of commit ec58a7a7'),
+                ('too short', ('--commit', 'ec58a', '--note', 'x'), 'at least 7'),
+                ('no note', ('--commit', 'ec58a7a7', '--note', ' '), 'needs --note'),
+                ('unanswered question', ('--commit', 'ec58a7a7', '--note', 'x', '--question',
+                                         'PENDING'), 'PENDING status is pending')):
+            with self.subTest(label):
+                before = self.log.read_text()
+                result = self.correct(*args)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(reason, result.stderr)
+                self.assertEqual(self.log.read_text(), before)
+
+    def test_session_id_reaches_an_ended_controller_s_round(self):
+        self.write(self.sessions / f'{self.ENDED}.json', json.dumps(dict(
+            status='ended', history=[{}], hcom_name='pegu',
+            decisions_path=str(self.decisions))))
+        log = self.log.with_name(f'{self.ENDED}-r2.jsonl')
+        self.write(log, json.dumps(dict(kind='auto', action='push', target='dev',
+                                        commit='ec58a7a7', basis='b', result='succeeded')) + '\n')
+        result = self.correct('--commit', 'ec58a7a7', '--note', 'not pre-authorized',
+                              '--session-id', self.ENDED)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([entry['kind'] for entry in map(json.loads, log.read_text().splitlines())],
+                         ['auto', 'correction'])
+        self.assertIn('（已更正：not pre-authorized，',
+                      self.run_tool('report', '--session-id', self.ENDED).stdout)
+        result = self.run_tool('record', '--kind', 'bug-intake', '--session-id', self.ENDED)
+        self.assertIn(f'session {self.ENDED} is ended', result.stderr)
+
+
+class ControllerPushHookTests(BranchCase):
+    """The global pre-push hook, through real `git push` to a temp bare remote: an active
+    controller of this repo pushes only through `do --action push`."""
+
+    def setUp(self):
+        super().setUp()
+        body = HOOK_SETUP.read_text().split('<!-- global-pre-push -->', 1)[1]
+        self.hooks = self.root / 'global-hooks'
+        self.write(self.hooks / 'pre-push', body.split('```sh\n', 1)[1].split('```', 1)[0])
+        (self.hooks / 'pre-push').chmod(0o755)
+        skill = self.root / 'home' / '.agents' / 'skills' / 'lat'
+        skill.mkdir(parents=True)
+        (skill / 'scripts').symlink_to(SCRIPT.parent)
+
+    def push(self, cwd=None, **sessions):
+        return subprocess.run(self.git_push(self.hooks), capture_output=True, text=True,
+                              cwd=cwd or self.repo, env=self.env(**sessions), timeout=120)
+
+    def test_a_controller_s_plain_push_is_refused_with_the_do_command(self):
+        for label, sessions in (('Claude', dict(CLAUDE_CODE_SESSION_ID=SESSION)),
+                                ('Codex', dict(CODEX_THREAD_ID=SESSION)),
+                                ('Codex inside a non-controller Claude',
+                                 dict(CLAUDE_CODE_SESSION_ID='someone-else',
+                                      CODEX_THREAD_ID=SESSION))):
+            with self.subTest(label):
+                result = self.push(**sessions)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f'session {SESSION} is an active LAT controller', result.stderr)
+                self.assertIn(f'do --action push --branch dev --commit {self.sha[:12]} '
+                              '[--question <decision ID>] -- git push origin dev', result.stderr)
+                self.assertNotEqual(self.remote_dev(), self.sha)
+
+    def test_the_same_controller_pushes_through_do(self):
+        result = self.do('push', command=self.git_push(self.hooks))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.remote_dev(), self.sha)
+        self.assertEqual(self.records()[0]['kind'], 'auto')
+
+    def test_a_controller_in_a_linked_worktree_is_refused_too(self):
+        linked = self.root / 'linked'
+        git(self.repo, 'worktree', 'add', '-q', '-b', 'side', str(linked))
+        result = self.push(cwd=linked, CLAUDE_CODE_SESSION_ID=SESSION)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('is an active LAT controller', result.stderr)
+
+    def test_others_push_as_before(self):
+        cases = (('no session variable', {}, None),
+                 ('a session that is not a controller here',
+                  dict(CLAUDE_CODE_SESSION_ID='33333333-3333-4333-8333-333333333333'), None),
+                 ('an ended controller', dict(CLAUDE_CODE_SESSION_ID=SESSION), 'ended'))
+        for label, sessions, status in cases:
+            with self.subTest(label):
+                git(self.remote, 'update-ref', 'refs/heads/dev', self.before)
+                if status:
+                    self.session(status=status)
+                result = self.push(**sessions)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.remote_dev(), self.sha)
+                self.assertEqual(result.stderr, '')
+
+    def test_do_covers_only_the_branch_and_commit_it_checked(self):
+        older = git(self.repo, 'rev-parse', 'HEAD~1')
+        for label, action, commit, spec, why in (
+                ('another branch', 'push', self.sha, ('dev:main',),
+                 f'but this pushes {self.sha[:12]} to refs/heads/main'),
+                ('a newer commit than checked', 'push', older, ('dev',),
+                 f'but this pushes {self.sha[:12]} to refs/heads/dev'),
+                ('a merge', 'merge', self.sha, ('dev',),
+                 '`do --action merge` does not cover a push')):
+            with self.subTest(label):
+                result = self.do(action, commit=commit, command=self.git_push(self.hooks, *spec))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(why, result.stderr)
+                self.assertNotEqual(self.remote_dev(), self.sha)
+                self.assertEqual(self.records()[-1]['result'], 'failed')
+
+    def test_its_own_errors_let_the_push_through_with_a_warning(self):
+        self.write(self.sessions / f'{SESSION}.json', '{broken')
+        result = self.push(CLAUDE_CODE_SESSION_ID=SESSION)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.remote_dev(), self.sha)
+        self.assertIn('warning: could not tell whether an active LAT controller is pushing',
+                      result.stderr)
+
+    def test_held_commits_are_still_refused_for_anyone(self):
+        self.decision('HOLD-1')
+        self.assertEqual(self.run_tool('hold', 'add', '--commit', self.sha, '--decision',
+                                       'HOLD-1', '--by', 'orch').returncode, 0)
+        result = self.push()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'{self.sha[:12]} (decision HOLD-1)', result.stderr)
+
+
+class BranchDoDocsTests(unittest.TestCase):
+    def test_the_docs_send_merge_and_push_through_do(self):
+        guide = (SCRIPT.parents[1] / 'references/preauth.md').read_text()
+        hooks = HOOK_SETUP.read_text().split('## 全域推送前 hook', 1)[1]
+        skill = (SCRIPT.parents[1] / 'SKILL.md').read_text()
+        self.assertNotIn('以 `&&` 把 `check` 接在動作之前', guide)
+        for text in (guide, skill):
+            self.assertIn('合併、推送一律用 `do`', text)
+        self.assertIn('record --kind correction', guide)
+        self.assertIn('--kind manual --action push', guide)
+        for words in ('do --action push', '--no-verify', '跨 repo'):
+            self.assertIn(words, hooks)
+
 
 
 class HoldTests(WriteCase):
