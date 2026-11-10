@@ -2600,5 +2600,37 @@ class HoldTests(WriteCase):
         self.assertEqual(self.push(hooks).returncode, 0)
 
 
+class EarlierRoundHintTests(PreauthCase):
+    """Push asks for tickets not on the round ledger; ones on the same session's earlier round
+    ledger get that ledger named."""
+
+    def setUp(self):
+        super().setUp()
+        remote = self.root / 'remote.git'
+        git(self.root, 'init', '-q', '--bare', str(remote))
+        git(self.repo, 'remote', 'add', 'origin', str(remote))
+        git(self.repo, 'push', '-q', 'origin', 'dev')
+        self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["dev"]\n')
+        self.earlier = self.repo / '.lat' / 'ledgers' / 'earlier.json'
+        self.write(self.earlier, json.dumps({'items': [{'ticket': '#500'}]}))
+        self.session(history=0)
+        record = json.loads((self.sessions / f'{SESSION}.json').read_text())
+        record['history'] = [{'status': 'finished', 'ledger_path': str(self.earlier)}]
+        self.write(self.sessions / f'{SESSION}.json', json.dumps(record))
+
+    def test_ticket_on_the_earlier_round_ledger_names_that_ledger(self):
+        sha = self.commit('feat: carried over (#500)')
+        self.assertEqual(self.check('push', '--branch', 'dev')['reasons'], [
+            f"unpushed commits outside this round's tickets (#313): {sha[:12]} "
+            f'"feat: carried over (#500)" (#500); on the same session\'s earlier round ledger '
+            f'{self.earlier}: #500'])
+
+    def test_ticket_on_neither_ledger_keeps_the_reason(self):
+        sha = self.commit('feat: elsewhere (#999)')
+        self.assertEqual(self.check('push', '--branch', 'dev')['reasons'], [
+            f"unpushed commits outside this round's tickets (#313): {sha[:12]} "
+            '"feat: elsewhere (#999)" (#999)'])
+
+
 if __name__ == '__main__':
     unittest.main()

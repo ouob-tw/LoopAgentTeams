@@ -1226,5 +1226,69 @@ class NameTests(LedgerCase):
         self.assertEqual(self.item(item)['status'], 'cancelled')
 
 
+class RoundTests(LedgerCase):
+    """`add` refuses an earlier round's `<session>-r<N>.json` when the session record names
+    another ledger; other commands and other ledgers are untouched."""
+
+    def setUp(self):
+        super().setUp()
+        ledgers = self.ledger.parent
+        self.r1, self.r2 = ledgers / 'sid-r1.json', ledgers / 'sid-r2.json'
+        for path in (self.r1, self.r2):
+            self.ledger = path
+            self.init()
+        self.ledger = self.r1
+        self.session = self.workspace / '.lat' / 'sessions' / 'sid.json'
+
+    def record(self, ledger_path):
+        self.session.parent.mkdir(exist_ok=True)
+        self.session.write_text(json.dumps({'status': 'active', 'ledger_path': str(ledger_path)}))
+
+    def snapshot(self):
+        return [path.read_bytes() for path in (self.r1, self.r1.with_name('sid-r1.json.seal'),
+                                               self.r1.with_name('sid-r1.json.journal.jsonl'))]
+
+    def test_add_to_an_earlier_round_is_refused_and_writes_nothing(self):
+        self.record(self.r2)
+        before = self.snapshot()
+        error = self.fails('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'commit')
+        self.assertIn(str(self.r2), error)
+        self.assertIn('--old-round', error)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_old_round_adds_to_the_earlier_round(self):
+        self.record(self.r2)
+        self.assertEqual(self.add('--old-round'), 1)
+        self.assertEqual(self.item(1)['ticket'], '#1')
+
+    def test_current_round_other_names_and_missing_records_add_as_before(self):
+        self.record(self.r2)
+        self.ledger = self.r2
+        self.assertEqual(self.add(), 1)
+        self.ledger = self.r1.with_name('round-1.json')
+        self.init()
+        self.assertEqual(self.add(), 1)
+        self.ledger = self.r1
+        self.session.unlink()
+        self.assertEqual(self.add(), 1)
+        self.record('')
+        self.assertEqual(self.add(), 2)
+
+    def test_rows_already_on_an_earlier_round_keep_working(self):
+        item = self.add(evidence='file')
+        self.exempt_qa()
+        self.record(self.r2)
+        self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.card()),
+                '--deadline', '+2h')
+        self.ok('start', str(item), '--eta', '+1h', by='impl')
+        self.ok('update', str(item), '--progress', 'half', by='impl')
+        report = self.root / 'report.md'
+        report.write_text('done\n')
+        self.ok('done', str(item), '--file', str(report), by='impl')
+        self.ok('amend', str(item), '--reason', 'rechecked', '--file', str(report), by='impl')
+        self.ok('check')
+        self.assertEqual(self.item(item)['status'], 'done')
+
+
 if __name__ == '__main__':
     unittest.main()
