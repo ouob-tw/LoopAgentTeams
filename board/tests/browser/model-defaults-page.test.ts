@@ -95,7 +95,7 @@ test.skipIf(!CHROME)("the new-controller form names each client's defaults, the 
 	// Only the model chosen: the effort it gets is what modelSettings gives that model.
 	await pickModel('claude-sonnet-5-5');
 	await shows('Opus 5.5（claude-opus-5-5）', 'low');
-	await pickModel('claude-fable-5-1');
+	await pickModel('claude-fable-5-2');
 	await shows('Opus 5.5（claude-opus-5-5）', 'medium');
 	await choose('codex');
 	await shows('GPT-6.1 Sol（gpt-6.1-sol）', 'medium');

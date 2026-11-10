@@ -214,7 +214,7 @@ bun run board test-login --hours 4 --label qa-498 --url http://<主機>:7100
 
 底部指令列送出按鈕旁的標籤顯示對象主控上一回合使用的模型與思考強度，以縮寫表示（例如「Opus 5.5・M」，強度 L／M／H／XH／MX；滑鼠停留看完整名稱），是從主控自己的對話紀錄讀出來的；讀不到時顯示「模型」「強度」。
 
-- **選項**：Claude 有 `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5`、`claude-fable-5-1`，Codex 有 `gpt-6.1-sol`、`gpt-6-astra`，思考強度都是 `low`、`medium`、`high`、`xhigh`。清單可用環境變數 `LAT_BOARD_MODEL_OPTIONS` 改（見開發者說明）；看板只照清單顯示選項，不檢查模型是否真的能用。
+- **選項**：Claude 有 `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5`、`claude-fable-5-2`，Codex 有 `gpt-6.1-sol`、`gpt-6.1-terra`、`gpt-6-astra`，思考強度都是 `low`、`medium`、`high`、`xhigh`。清單可用環境變數 `LAT_BOARD_MODEL_OPTIONS` 改（見開發者說明）；看板只照清單顯示選項，不檢查模型是否真的能用。
 - **修改**：點標籤的模型或思考強度選新值，改過的部分變成強調色，再按 ✓ 一次套用（模型與強度一起改只會重開一次），✕ 取消。只改你選的那一項，不能選「回到 client 預設」。
 - **怎麼換**：Claude 與 Codex 主控都一樣：看板會停掉它（`hcom kill`，原本的 Herdr 分頁會被關掉），確認停掉後再用新設定把同一段對話在新分頁接回來（Claude 用 `--model`、`--effort`，Codex 用 `-c`），和傳話排在同一個隊伍。只有 hcom 顯示它在等待（`listening`）時才會動手，正在工作、等你處理或狀態不明時，看板會請你等這回合結束再改。
 - **不在對話裡打指令**：看板不會在 Claude 對話裡打 `/model` 或 `/effort`，因為 Claude Code 會把這兩個指令的選擇存成你之後新對話的預設，還可能跳出確認框。用接回時的參數換，只影響這一個主控，不會改你的設定檔。

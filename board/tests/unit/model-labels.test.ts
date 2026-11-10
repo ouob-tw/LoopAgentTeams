@@ -5,7 +5,7 @@ import { effortShort, modelShort, shownSettings } from '../../src/lib/board/mode
 
 test('models are shortened like the status line; other ids stay as they are', () => {
 	expect(modelShort('claude-opus-5-5')).toBe('Opus 5.5');
-	expect(modelShort('claude-fable-5-1')).toBe('Fable 5.1');
+	expect(modelShort('claude-fable-5-2')).toBe('Fable 5.2');
 	expect(modelShort('claude-opus-5-5[1m]')).toBe('Opus 5.5');
 	expect(modelShort('claude-sonnet-4-5-20250929')).toBe('Sonnet 4.5');
 	expect(modelShort('gpt-6.1-sol')).toBe('GPT-6.1 Sol');
