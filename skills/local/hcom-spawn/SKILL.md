@@ -40,7 +40,7 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 使用者的指定優先於上表：
 
-- 只說「Codex」時用 `gpt-6.1-sol` `medium`；只說「Claude」時，複雜任務用 `claude-opus-5-5` `medium`，其餘用 `claude-sonnet-5-5` `medium`；資安相關實作與機械性工作照表中該列。不論任務是前端或後端，升級都照該模型在表中的那一列。
+- 只說「Codex」時用 `gpt-6.1-sol` `medium`；只說「Claude」時，複雜任務用 `claude-opus-5-5` `medium`，其餘用 `claude-sonnet-5-5` `medium`。不論任務是前端或後端，升級都照該模型在表中的那一列。
 - 指定了 effort 上限時，升級不超過它。
 - 指定表外模型時，先用工具查該 client 的可用模型，必要時查官方文件，確認正確 ID、可用性與支援的 effort。能唯一對應就用；有歧義或無法使用才詢問，不擅自換模型。不支援 `medium` 時用已查證的可用級別並說明。
 - Claude CLI 啟動時不驗證模型 ID，打錯的 ID 照樣啟動並顯示在畫面上，所以啟動成功不代表 ID 正確。
