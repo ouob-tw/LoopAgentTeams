@@ -41,6 +41,14 @@ UNSUPPORTED_MODEL_SCREEN = [
     'model is not supported when using Codex with a ChatGPT',
     'account.","code":"model_not_found"}}', '', '', '› Ask Codex to do anything', '',
     '  gpt-6-fake low · /tmp · Context …  ⚠ 1 warning · f2 to view']
+# A launch carrying its task (--hcom-prompt): the agent works at once, so the first screen read
+# may already show the prompt and work, with Claude's opening banner scrolled away.
+PROMPT = 'Your task from vare is in /ws/brief.md. Read that file and follow it.'
+CLAUDE_PROMPTED = [f'❯ {PROMPT}', '● Read(/ws/brief.md)', '  ⎿  Read 120 lines',
+                   '✻ Working… (6s · esc to interrupt)', '❯',
+                   '  ⏵⏵ bypass permissions on (shift+tab to cycle)', '      ○ low · /effort']
+CODEX_PROMPTED = [f'› {PROMPT}', '', '• Ran cat /ws/brief.md', '  └ # Task brief',
+                  'Working (5s • esc to interrupt)', '', *CODEX_SCREEN]
 REPLY = {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'OK'}}
 ECHO = {'type': 'event_msg', 'payload': {'type': 'user_message', 'message': 'Continue'}}
 
@@ -431,6 +439,44 @@ class SpawnWatchTests(unittest.TestCase):
                        launched={'kilo': ('claude-haiku-5-5', 'low')})
         self.assertEqual(len(fake.sent), 1)
         self.assertIn('model: launch command unknown, screen shows Haiku 5.5', fake.sent[0][-1])
+
+    def test_prompted_claude_agent_already_working_is_checked_without_a_notice(self):
+        log = self.write_log([
+            {'type': 'permission-mode', 'permissionMode': 'bypassPermissions'},
+            {'type': 'user', 'message': {'content': PROMPT}},
+            {'type': 'assistant', 'message': {'model': 'claude-sonnet-5-5'}, 'effort': 'low'}])
+        fake = FakeHcom(screens=[CLAUDE_PROMPTED], log=log, stop_after=60)
+        self.run_watch(fake)
+        self.assertEqual(fake.sent, [])
+        self.assertEqual(fake.subs, {})
+
+    def test_prompted_codex_agent_already_working_is_checked_without_a_notice(self):
+        log = self.write_log([{'type': 'turn_context', 'payload': {
+            'model': 'gpt-6.1-sol', 'effort': 'low', 'approval_policy': 'never',
+            'sandbox_policy': {'type': 'danger-full-access'}}}])
+        fake = FakeHcom(tool='codex', screens=[CODEX_PROMPTED], log=log, stop_after=60)
+        self.run_watch(fake, tool='codex', model='gpt-6.1-sol')
+        self.assertEqual(fake.sent, [])
+        self.assertEqual(fake.injected, [])
+
+    def test_prompted_agent_with_the_wrong_effort_is_still_told(self):
+        log = self.write_log([{'type': 'turn_context', 'payload': {
+            'model': 'gpt-6.1-sol', 'effort': 'low', 'approval_policy': 'never',
+            'sandbox_policy': {'type': 'danger-full-access'}}}])
+        fake = FakeHcom(tool='codex', screens=[CODEX_PROMPTED], log=log, stop_after=60)
+        self.run_watch(fake, tool='codex', model='gpt-6.1-sol', effort='medium')
+        self.assertEqual(len(fake.sent), 1)
+        self.assertIn('effort: expected medium, screen shows low', fake.sent[0][-1])
+
+    def test_prompt_on_the_agent_command_line_does_not_hide_its_model(self):
+        proc = Path(self.state.name) / 'proc'
+        (proc / '11').mkdir(parents=True)
+        (proc / '11' / 'environ').write_bytes(b'HCOM_PROCESS_ID=p1\0')
+        argv = [b'claude', b'--dangerously-skip-permissions', b'--model', b'claude-sonnet-5-5',
+                b'--effort', b'low', b'--', b'Use --model claude-opus-5-5 --effort high\nthen go']
+        (proc / '11' / 'cmdline').write_bytes(b'\0'.join(argv) + b'\0')
+        self.watch.PROC = proc
+        self.assertEqual(self.watch.launched_with('claude', 'p1'), ('claude-sonnet-5-5', 'low'))
 
     def test_agent_process_is_found_by_its_hcom_process_id(self):
         proc = Path(self.state.name) / 'proc'
@@ -992,6 +1038,12 @@ class CapacityTests(unittest.TestCase):
         for seconds in (120, 300, 600):
             self.step_at(seconds)
         self.assertEqual((len(self.fake.injected), self.fake.sent), (1, []))
+
+    def test_capacity_after_the_launch_prompt_gets_continue(self):
+        self.fake.screen = [f'› {PROMPT}', '', CAPACITY, '', *CODEX_SCREEN]
+        self.step_at(0)
+        self.assertEqual(self.fake.injected,
+                         [('term', 'inject', 'vare-review-kilo', 'Continue', '--enter')])
 
     def test_screen_without_a_current_capacity_error_gets_nothing(self):
         for screen in (CODEX_SCREEN, RECOVERED_SCREEN,

@@ -12,9 +12,14 @@ hcom-spawn 的「自身名稱」是發起委派的那一方：主控派工時是
 
 ## 派工
 
-- 工具：Agent 啟動後，`scripts/lat-dispatch.py card --tag <tag> --tasks <主工作區 .lat/tasks> --orchestrator <主控名稱> --live-actions … --preflight … --visual-acceptance …` 依 tag 查完整名稱建任務卡；`brief --card <卡片> --input <小檔>` 把 `##` 四段小檔（「目標與完成條件」「範圍與不能碰」「其他 Agent 與分工」「現場動作額度」）接上下列固定項目、原樣帶入卡片必填三欄，並在最後一行只印 `hcom send … --file` 指令，其中 `--name` 用 HCOM 基本名。兩位共用 tag（如參謀）用 `card --agent <完整名稱>`；唯讀任務用 `brief --read-only`，共用文字用 `brief --include <檔案>`。任務要合併、推送、部署或安裝時加 `brief --preauth <動作>[:<分支>]`，只帶入查得 `allow` 的動作。任務卡一律用 `card`，不得手寫、複製舊卡；內建加 `--native`。
+- 工具，新 Agent 一次啟動就帶任務：
+  1. 啟動前 `scripts/lat-dispatch.py card --before-launch --tag <tag> --tasks <主工作區 .lat/tasks> --orchestrator <主控名稱> --live-actions … --preflight … --visual-acceptance …` 建卡，`agent` 欄先寫 `待綁定` 並記下 tag。
+  2. `brief --card <卡片> --input <小檔>` 把 `##` 四段小檔（「目標與完成條件」「範圍與不能碰」「其他 Agent 與分工」「現場動作額度」）接上下列固定項目、原樣帶入卡片必填三欄。Agent 名稱此時還不存在，簡報裡的總表、`lat-watch` 與回報指令用 `"$HCOM_INSTANCE_NAME"`（HCOM 放進 Agent 環境的基本名，工具會換成完整名稱），回報檔名用 tag，開頭要 Agent 先跑 `card bind`。最後一行印 `--hcom-prompt '<指向簡報檔的一句話>'`。
+  3. 照 /hcom-spawn 啟動，tag 與建卡時相同，把上一步那行原樣接在啟動指令後面。
+  4. Agent 開工第一步跑 `card bind --card <卡片>`：以自己的 `$HCOM_INSTANCE_NAME` 與 `$HCOM_TAG` 核對 tag，把完整名稱寫進卡片並指派總表列。啟動後照 /hcom-spawn 核對畫面時，順便確認卡片 `agent` 欄已換成完整名稱；仍是 `待綁定`（未綁定的卡停住監控看不到）就問 Agent，或自己跑 `card bind --card <卡片> --agent <名稱>`。
+- 交新任務給已在執行的 Agent 時，`card --tag <tag> …` 依 tag 查完整名稱建卡，`brief` 最後一行改印 `hcom send … --file` 指令，其中 `--name` 用 HCOM 基本名。兩位共用 tag（如參謀）用 `card --agent <完整名稱>`；唯讀任務用 `brief --read-only`，共用文字用 `brief --include <檔案>`。任務要合併、推送、部署或安裝時加 `brief --preauth <動作>[:<分支>]`，只帶入查得 `allow` 的動作。任務卡一律用 `card`，不得手寫、複製舊卡；內建加 `--native`。
 - 傳給任務卡 Agent 的訊息（含追問）不加 `--intent request`，見 [停住監控](stall-watch.md#沒回覆通知)。
-- 工作總表：`card` 加 `--ledger <主工作區總表絕對路徑> --ticket --stage --evidence --deadline [--depends] [--repo]` 會同時開列並指派，任務卡多一行 `ledger row`。`--evidence` 只收 commit、gate、file（可逗號分隔），`--repo` 填本機工作區絕對路徑，不是 `owner/repo`。`brief` 讀到該行就帶上列編號與 `start`、`update`、`done`、`amend` 四道指令；沒有該行時印警告，簡報不含總表指令。
+- 工作總表：`card` 加 `--ledger <主工作區總表絕對路徑> --ticket --stage --evidence --deadline [--depends] [--repo]` 會同時開列並指派（`--before-launch` 時開列，`card bind` 才指派），任務卡多一行 `ledger row`。`--evidence` 只收 commit、gate、file（可逗號分隔），`--repo` 填本機工作區絕對路徑，不是 `owner/repo`。`brief` 讀到該行就帶上列編號與 `start`、`update`、`done`、`amend` 四道指令；沒有該行時印警告，簡報不含總表指令。
 - 外部 Agent 的第一則任務訊息照 /hcom-spawn 的固定欄位寫，再補上 SKILL.md「交接」要求的項目，以及「做完才收工」規則和填好主控 `$lat_dir`、`$workspace` 絕對路徑的 `lat-watch wait` 與 `lat-watch alarm` 指令（格式見 [wait](stall-watch.md#結束回合前)、[alarm](stall-watch.md#鬧鐘等時間檔案或程序)），並寫明不要用背景程式傳訊息給自己（HCOM 會拒收）。
 - 第一則任務訊息須帶上任務卡 `runs` 欄的絕對路徑（主工作區 `.lat/runs/issue-<N>/`，見 [任務卡](task-cards.md#票資料位置)），QA 草稿、清單與證據都放那裡；需要隔離 client 家目錄時放 `.lat` 以外的暫存位置，規則見 [任務卡](task-cards.md#隔離-client-家目錄)。
 - 第一則任務訊息須帶上任務卡必填三欄的完整內容（沒有也寫「無」），以及額度內的做法與回報時機；見 [任務卡](task-cards.md#現場動作額度)。

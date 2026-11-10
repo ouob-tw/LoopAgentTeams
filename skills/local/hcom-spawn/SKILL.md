@@ -53,19 +53,23 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 ## 啟動
 
+啟動一次完成：先照下節「第一則任務訊息」把任務寫成檔案，啟動指令用 `--hcom-prompt` 帶上指向它的一句話，Agent 一開就收到任務。
+
 tag 用 `<自身名稱>-<主題>`，主題一兩個英文小寫單字（`review`、`docs`、`api-probe`）。HCOM 會把 Agent 名稱變成 `<tag>-xxxx`，所以同一位召喚者開的每組都認得出來，也能用 `@<tag>-` 一次傳給整組；它只比對完全相同的 tag，要傳給多組就逐組指定或列出名稱（`@<自身名稱>-` 傳不到 `<自身名稱>-<主題>` 的各組）。
 
 ```bash
 hcom 1 codex --tag <自身名稱>-<主題> --go --name <自身名稱> \
-  --model gpt-6.1-sol -c 'model_reasoning_effort="medium"' --yolo
+  --model gpt-6.1-sol -c 'model_reasoning_effort="medium"' --yolo \
+  --hcom-prompt 'Your task from <自身名稱> is in <任務檔絕對路徑>. Read that file and follow it.'
 ```
 
 ```bash
 hcom 1 claude --tag <自身名稱>-<主題> --go --name <自身名稱> \
-  --model claude-opus-5-5 --effort medium --dangerously-skip-permissions
+  --model claude-opus-5-5 --effort medium --dangerously-skip-permissions \
+  --hcom-prompt 'Your task from <自身名稱> is in <任務檔絕對路徑>. Read that file and follow it.'
 ```
 
-Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在第一則訊息裡。主機裝有派工把關 hook 時，缺這些參數的派工指令會被擋下，放行的派工會在背景自動核對，不符或 Agent 停在確認畫面時通知你；Codex 停在模型滿載時背景會先送一次 `Continue`，5 分鐘沒恢復再通知你；停在其他 API 錯誤或額度用完時直接通知你並附上錯誤內容，不自動換帳號；安裝方式見 [references/spawn-guard.md](references/spawn-guard.md)。
+Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在任務檔裡。主機裝有派工把關 hook 時，缺這些參數的派工指令會被擋下，放行的派工會在背景自動核對，不符或 Agent 停在確認畫面時通知你；Codex 停在模型滿載時背景會先送一次 `Continue`，5 分鐘沒恢復再通知你；停在其他 API 錯誤或額度用完時直接通知你並附上錯誤內容，不自動換帳號；安裝方式見 [references/spawn-guard.md](references/spawn-guard.md)。
 
 本次還沒確認帳號跑得了這個 Codex 模型時（例如換帳號或額度重置後第一次啟動它），啟動前先做 [troubleshooting 的帳號探測](references/troubleshooting.md#codex-額度與換帳號)。
 
@@ -82,17 +86,15 @@ Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，�
 | Codex | 底部狀態列 `<模型名> <effort>`（如 `GPT-6.1-Sol medium`） | 開場 `permissions: YOLO mode` |
 | Claude Code | 開場 `Opus 5.5 with <effort> effort`、底部 `Opus 5.5 <effort>` | 底部 `⏵⏵ bypass permissions on` |
 
-Claude 列的模型名與 effort 是傳 `claude-opus-5-5` 加 `medium` 時的樣子。畫面要對得上你實際傳的那一組，不是表上寫的值。
+Claude 列的模型名與 effort 是傳 `claude-opus-5-5` 加 `medium` 時的樣子。畫面要對得上你實際傳的那一組，不是表上寫的值。帶任務啟動的 Agent 立刻開工，開場那幾行常已捲走：改看底部，畫面上找不到的項目照「接回已關閉的 Agent」末段讀 session 紀錄核對。
 
 `hcom list --json` 的 `tag`、`directory`、`tool` 欄位核對 tag 與工作目錄。從回傳或畫面確認不到的設定，回報時標為未確認，不宣稱已生效。
 
 ## 第一則任務訊息
 
-訊息含 backtick、換行或程式碼時用 `--file`，純文字用 `--`：
+寫成 Markdown 任務檔，放在被召喚的 Agent 讀得到的絕對路徑（有 runs 或成果目錄就放那裡），啟動時照上節用 `--hcom-prompt` 帶上指向它的那一句。只放這一句、不把整份內容塞進 prompt：Agent 畫面上只多一行，背景核對讀畫面時不會被任務內文裡的字樣誤判；內容含 backtick、換行也不必處理 shell 引號；任務檔也留作紀錄。
 
-```bash
-hcom send @<agent> --intent request --name <自身名稱> --file <訊息檔路徑>
-```
+之後的追問、補充與改派才用 `hcom send @<agent> --name <自身名稱>`，內容含 backtick、換行或程式碼時用 `--file <訊息檔路徑>`，純文字用 `--`。
 
 固定欄位，缺一項被召喚的 Agent 就得猜：
 

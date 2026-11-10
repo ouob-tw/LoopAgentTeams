@@ -1215,5 +1215,148 @@ class CardCloseTests(LedgerCase):
         self.assertEqual(list(done.iterdir()), [])
 
 
+class BeforeLaunchTests(LedgerCase):
+    """`card --before-launch`, `brief` for that card, and the agent's own `card bind`."""
+
+    def setUp(self):
+        super().setUp()
+        self.agents = [ORCH]  # the agent is launched only after its card and brief exist
+
+    def launch(self):
+        self.agents.append({'name': 'nanu-impl123-fida', 'base_name': 'fida',
+                            'tag': 'nanu-impl123'})
+
+    def pending_card(self, *extra):
+        return self.card_with('--before-launch', *extra)
+
+    def pending_ledger_card(self):
+        return self.pending_card('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
+                                 'impl', '--evidence', 'commit', '--deadline', '+2h')
+
+    def agent_env(self, base='fida', tag='nanu-impl123'):
+        return {'HCOM_INSTANCE_NAME': base, 'HCOM_TAG': tag}
+
+    def bind(self, card, *extra, env=None):
+        return self.run_script('card', 'bind', '--card', str(card), *extra,
+                               env=self.agent_env() if env is None else env)
+
+    def test_card_needs_no_launched_agent_and_waits_for_binding(self):
+        card = self.pending_card()
+        text = card.read_text()
+        self.assertIn('- agent：待綁定\n', text)
+        self.assertIn('- tag：nanu-impl123\n', text)
+        self.assertIn('- status：dispatched\n', text)
+
+    def test_ledger_row_is_added_but_assigned_only_at_binding(self):
+        card = self.pending_ledger_card()
+        row, = self.items()
+        self.assertEqual((row['status'], row['agent']), ('unassigned', None))
+        self.assertIn(f'- ledger row：1 ({self.ledger})\n', card.read_text())
+        self.launch()
+        result = self.bind(card)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'agent: nanu-impl123-fida')
+        self.assertIn('- agent：nanu-impl123-fida\n', card.read_text())
+        row, = self.items()
+        self.assertEqual((row['status'], row['agent'], row['card']),
+                         ('assigned', 'nanu-impl123-fida', str(card)))
+
+    def test_before_launch_refuses_agent_and_native(self):
+        for extra in (('--agent', 'fida'), ('--native', '--agent', 'fida')):
+            with self.subTest(extra=extra):
+                result = self.run_script(*self.card_args('--before-launch', *extra))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('--before-launch', result.stderr)
+                self.assertEqual(list(self.tasks.glob('*.md')), [])
+
+    def test_bind_refuses_another_tag_a_bound_card_and_an_unlaunched_agent(self):
+        card = self.pending_card()
+        result = self.bind(card)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no HCOM agent carries tag', result.stderr)
+        self.launch()
+        result = self.bind(card, env=self.agent_env(tag='nanu-other'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("tag 'nanu-other'", result.stderr)
+        self.assertIn('- agent：待綁定\n', card.read_text())
+        self.assertEqual(self.bind(card).returncode, 0)
+        result = self.bind(card)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('already bound to nanu-impl123-fida', result.stderr)
+
+    def test_orchestrator_can_bind_with_the_agent_option(self):
+        card = self.pending_ledger_card()
+        self.launch()
+        result = self.bind(card, '--agent', 'fida', env={'HCOM_INSTANCE_NAME': 'nanu'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('- agent：nanu-impl123-fida\n', card.read_text())
+        self.assertEqual(self.items()[0]['history'][-1]['by'], 'nanu')
+
+    def test_failed_ledger_assignment_leaves_the_card_unbound(self):
+        card = self.pending_ledger_card()
+        self.launch()
+        self.run_ledger('assign', '1', '--agent', 'fida', '--card', str(card))
+        result = self.bind(card)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('- agent：待綁定\n', card.read_text())
+
+    def test_brief_names_the_agent_through_its_environment_and_prints_the_launch_prompt(self):
+        card = self.pending_ledger_card()
+        source = self.write_brief()
+        result = self.run_script('brief', '--card', str(card), '--input', str(source))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = self.root / 'brief.brief.md'
+        text = output.read_text()
+        self.assertIn('# Task brief for the agent tagged nanu-impl123\n', text)
+        bind = re.search(r'`(uv run [^`]*lat-dispatch\.py card bind --card [^`]*)`', text)
+        self.assertIsNotNone(bind, text)
+        self.assertLess(text.index('card bind'), text.index('## 目標與完成條件'))
+        self.assertIn('`hcom send @nanu --name "$HCOM_INSTANCE_NAME"`', text)
+        self.assertIn('--agent "$HCOM_INSTANCE_NAME" --for', text)
+        self.assertIn('--by "$HCOM_INSTANCE_NAME"', text)
+        self.assertIn(str(self.workspace / '.lat/runs/issue-123/report-nanu-impl123.md'), text)
+        self.assertNotIn('待綁定', text)
+        last = result.stdout.splitlines()[-1]
+        self.assertTrue(last.startswith('--hcom-prompt '), result.stdout)
+        prompt, = shlex.split(last)[1:]
+        self.assertIn(str(output), prompt)
+        self.assertNotIn('\n', prompt)
+        self.assertNotIn('hcom send', result.stdout)
+
+    def test_agent_binds_then_runs_the_ledger_commands_from_its_brief(self):
+        card = self.pending_ledger_card()
+        _, (start, update, done, _) = self.brief_commands(card)
+        text = (self.root / 'brief.brief.md').read_text()
+        bind = re.search(r'`(uv run [^`]*lat-dispatch\.py card bind --card [^`]*)`', text).group(1)
+        self.launch()
+        self.listing.write_text(json.dumps(self.agents))
+        env = {**self.ledger_env, **self.agent_env(),
+               'LAT_DISPATCH_HCOM_LIST': str(self.listing)}
+        for command in (bind, start.replace('+<N>m', '+30m'),
+                        update.replace('<one sentence>', 'half way'),
+                        done.replace('<sha>', self.sha)
+                            .replace('--gate <fingerprint> --file <absolute path>', '')):
+            # The agent's shell expands "$HCOM_INSTANCE_NAME"; uv is replaced by this Python.
+            command = command.replace('uv run --no-project python', shlex.quote(sys.executable))
+            result = subprocess.run(['bash', '-c', command], capture_output=True, text=True,
+                                    env=env, timeout=60)
+            self.assertEqual(result.returncode, 0, f'{command}\n{result.stderr}')
+        row, = self.items()
+        self.assertEqual((row['status'], row['agent']), ('done', 'nanu-impl123-fida'))
+        self.assertIn('- status：committed\n', card.read_text())
+
+    def test_pending_card_is_skipped_by_the_watch_until_bound(self):
+        card = self.pending_card()
+        watch = WatchCompatibilityTests.load_watch()
+        cards, skipped = watch.monitored_task_cards(self.tasks, 'nanu', {})
+        self.assertEqual(cards, {})
+        self.assertIn(card.name, skipped)
+        self.launch()
+        self.assertEqual(self.bind(card).returncode, 0)
+        cards, skipped = watch.monitored_task_cards(self.tasks, 'nanu', {})
+        self.assertEqual(skipped, {})
+        self.assertIn('nanu-impl123-fida', cards)
+
+
 if __name__ == '__main__':
     unittest.main()
