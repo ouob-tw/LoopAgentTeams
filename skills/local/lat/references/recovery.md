@@ -29,6 +29,8 @@ activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；C
 
    同一對話在上一輪停用後，可在同一工作區用上方 activate 指令與本輪的路徑、HCOM 名稱開始新一輪。上一輪的狀態、結束時間、技能目錄、恢復路徑、HCOM 名稱與技能文字指紋依序保存在紀錄的 `history` 清單；目前欄位換成本輪內容（不帶結束時間），重新計算指紋，照常綁定面板、啟動監控與設定分頁名稱。deactivate、恢復 hook 與回合結束檢查只讀目前欄位；不清除或搬移共用的待決紀錄、任務卡、監控狀態與等待聲明。其他狀態或無法辨識的紀錄仍拒絕；不要刪除或手動重建 session 紀錄。
 
+   新一輪開始後，加列與開任務卡一律改用 activate 印出的新總表路徑，不要沿用記憶中上一輪的路徑。`lat-ledger.py add` 與 `lat-dispatch.py card --ledger` 收到同一 session 舊一輪的總表時會拒絕、不改任何檔，並印出本輪總表路徑；確實要在舊一輪補列時才加 `--old-round`。舊總表上既有的列照常 `start`／`update`／`done`／`amend`。推送檢查因票號不在本輪總表而要問時，若這些票在同一 session 前一輪的總表上，原因會寫出那份總表路徑。
+
    舊版 activate 建立的 active 紀錄沒有 `tasks_path` 與 `hcom_name`。恢復 hook 會照常提示讀取紀錄，但不會啟動停住監控；請將上方同一條 activate 指令的 `--tasks "$tasks" --hcom-name "$hcom_name"` 換成真實值後重跑。指令會在原紀錄補上這兩個欄位，保留其餘內容，然後啟動監控；不要刪除或重建 session 紀錄。舊紀錄在升級前維持原有待決檢查，不寫主控回報；升級後才開始記錄，不推測 HCOM 名稱。
 
    activate 會偵測 Herdr 的 `lat.panel`：已啟用時自動綁定並印出問題檔路徑；未啟用時印出「面板未啟用，略過綁定」。外掛查詢失敗時修復 Herdr 後重跑。自動綁定失敗時 session 紀錄保持 active，但停住監控尚未啟動：依錯誤補齊 Herdr 環境變數後重跑同一個 activate，確認綁定成功且 `.lat/watch/<session-id>.pid` 存在。

@@ -657,6 +657,25 @@ class LedgerCardTests(LedgerCase):
         self.assertEqual(list(self.tasks.iterdir()), [])
         self.assertEqual(self.items(), [])
 
+    def test_earlier_round_ledger_is_refused_unless_old_round(self):
+        self.ledger = self.ledger.with_name('sid-r1.json')
+        self.run_ledger('init', '--workspace', str(self.workspace), '--integration-branch', 'dev',
+                        '--orchestrator', 'nanu')
+        current = self.ledger.with_name('sid-r2.json')
+        sessions = self.workspace / '.lat' / 'sessions'
+        sessions.mkdir()
+        (sessions / 'sid.json').write_text(json.dumps({'ledger_path': str(current)}))
+        args = ('--ledger', str(self.ledger), '--ticket', '#1', '--stage', 'impl',
+                '--evidence', 'commit', '--deadline', '+1h')
+        result = self.run_script(*self.card_args(*args))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(current), result.stderr)
+        self.assertEqual(list(self.tasks.iterdir()), [])
+        self.assertEqual(self.items(), [])
+        card = self.card_with(*args, '--old-round')
+        self.assertIn(f'- ledger row：1 ({self.ledger})\n', card.read_text())
+        self.assertEqual(self.items()[0]['agent'], 'nanu-impl123-fida')
+
     def test_untagged_agent_is_refused_before_the_ledger_is_touched(self):
         result = self.run_script(*self.card_args(
             '--ledger', str(self.ledger), '--ticket', '#1', '--stage', 'impl',

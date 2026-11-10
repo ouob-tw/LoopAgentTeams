@@ -50,7 +50,7 @@ PENDING = '待綁定'
 STAGE_ALIASES = {'implement': 'impl'}
 CLOSE_STATUSES = ('committed', 'merged', 'completed')
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
-LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo')
+LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo', 'old_round')
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
 BIND_SCOPE_NOTE = 'Write restrictions in this section do not apply to the bind step at the top.'
 SCOPE_NOTE = ('Write restrictions in this section do not apply to updating the task card '
@@ -261,7 +261,8 @@ def ledger_request(args):
     given = [name for name in LEDGER_OPTIONS if getattr(args, name)]
     if not args.ledger:
         if given:
-            raise Failure('--ticket, --stage, --evidence, --deadline, --depends and --repo need --ledger')
+            raise Failure('--ticket, --stage, --evidence, --deadline, --depends, --repo and --old-round '
+                          'need --ledger')
         return None
     missing = [f'--{name}' for name in ('ticket', 'stage', 'evidence', 'deadline')
                if not getattr(args, name)]
@@ -297,6 +298,8 @@ def open_ledger_row(args, ledger, orchestrator, agent, card):
         add += ['--depends', args.depends]
     if args.repo:
         add += ['--repo', args.repo]
+    if args.old_round:
+        add.append('--old-round')
     if args.branch != NONE:
         add += ['--branch', args.branch.strip()]
     row = run_ledger(args, 'add', *base, *add)
@@ -782,6 +785,9 @@ def build_parser():
     card.add_argument('--depends', help='ledger row: comma-separated item numbers it waits for')
     card.add_argument('--repo', help='ledger row: absolute path of the local git checkout the commit evidence lives '
                       'in (not owner/repo)')
+    card.add_argument('--old-round', action='store_true',
+                      help="ledger row: add it to an earlier round's ledger on purpose "
+                      '(lat-ledger.py add --old-round)')
     card.add_argument('--lat-dir', type=Path, default=LAT_DIR,
                       help='LAT skill directory holding scripts/lat-ledger.py')
     close = commands.add_parser('card-close', prog='lat-dispatch.py card close',
