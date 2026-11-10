@@ -42,6 +42,7 @@ DEP_CANCELLED = '依賴已取消'
 CARD_FIELD = re.compile(r'-\s+([^：:\n]+)[：:]\s*(.*)')
 CARD_CLOSED = ('committed', 'merged', 'completed')
 RELATIVE = re.compile(r'\+(\d+)([mhd])')
+ROUND_LEDGER = re.compile(r'(.+)-r\d+\.json')
 
 
 class Failure(Exception):
@@ -643,7 +644,29 @@ def cmd_init(args):
     print(store.path)
 
 
+def check_round(path):
+    """Refuse a `<session>-r<N>.json` ledger that is not the round ledger its session record
+    (`.lat/sessions/<session>.json` beside `.lat/ledgers/`) names."""
+    path = Path(path)
+    name = ROUND_LEDGER.fullmatch(path.name)
+    if not name:
+        return
+    try:
+        record = json.loads((path.parent.parent / 'sessions' / f'{name[1]}.json').read_text())
+        current = record['ledger_path']
+        if not isinstance(current, str) or not current:
+            return
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    if Path(current).resolve() != path.resolve():
+        raise Failure(f'{path} is not this round\'s ledger; the session record names {current}. '
+                      'Add the row there, or pass --old-round to add it to this older round '
+                      'on purpose')
+
+
 def cmd_add(args):
+    if not args.old_round:
+        check_round(args.ledger)
     kinds = kinds_of(args.evidence)
     ticket = required_text('--ticket', args.ticket)
     repo = None
@@ -1059,6 +1082,10 @@ def build_parser():
     sub.add_argument('--deadline', help='ISO 8601 or +N[m|h|d]')
     sub.add_argument('--branch', help='branch the commit evidence must reach')
     sub.add_argument('--repo', help='absolute path of the git repo the commit evidence lives in')
+    sub.add_argument('--old-round', action='store_true',
+                     help="add to an earlier round's ledger <session>-r<N>.json on purpose; "
+                     "without it such a ledger is refused when its session record names "
+                     'another ledger')
     sub = command('assign', 'Give an item to an agent')
     sub.add_argument('--agent', required=True, help='HCOM name, stored as the full name')
     sub.add_argument('--native', action='store_true',
