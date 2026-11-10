@@ -25,6 +25,7 @@ that are pre-authorized right now.
 """
 import argparse
 from datetime import date
+import fcntl
 import importlib.util
 import json
 import os
@@ -51,9 +52,12 @@ CLOSE_STATUSES = ('committed', 'merged', 'completed')
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
 LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo')
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
+BIND_SCOPE_NOTE = 'Write restrictions in this section do not apply to the bind step at the top.'
 SCOPE_NOTE = ('Write restrictions in this section do not apply to updating the task card '
               'or running work-ledger commands.')
 CARD_RULE_READ_ONLY = 'The orchestrator maintains the task card; do not edit it.'
+CARD_RULE_READ_ONLY_BIND = ('Apart from the bind step at the top, the orchestrator maintains '
+                            'the task card; do not edit it.')
 LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does not hold, report to the orchestrator first and do not act.
 - Do live actions inside the `live actions` quota yourself; do not ask the orchestrator to approve each step.
 - QA with live actions keeps at least one use of the quota for the final candidate version and starts spending the quota only after the implementer says the version is final.
@@ -311,10 +315,24 @@ def open_ledger_row(args, ledger, orchestrator, agent, card):
 def bind_card(args):
     """Write the launched agent's full HCOM name into a --before-launch card and assign its
     ledger row. The agent runs it with its own $HCOM_INSTANCE_NAME and $HCOM_TAG; the
-    orchestrator can pass --agent instead. A failed assignment puts the card back."""
+    orchestrator can pass --agent instead. Binds of cards in one directory run one at a time,
+    so a second bind of the same card sees it bound; a failed assignment puts the card back."""
     path = Path(args.card).resolve()
     try:
-        text = path.read_text(encoding='utf-8')
+        lock = os.open(path.parent, os.O_RDONLY)
+    except OSError as error:
+        raise Failure(f'task card unreadable: {error}') from error
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        bind_locked(args, path)
+    finally:
+        os.close(lock)
+
+
+def bind_locked(args, path):
+    try:
+        original = path.read_bytes()
+        text = original.decode('utf-8')
     except (OSError, UnicodeError) as error:
         raise Failure(f'task card unreadable: {error}') from error
     fields, index = {}, None
@@ -342,7 +360,8 @@ def bind_card(args):
     agent = agent_for_tag(read_hcom_list(), tag, name)
     ending = '\n' if lines[index].endswith('\n') else ''
     lines[index] = f'- agent：{agent}{ending}'
-    write_text_atomic(path, ''.join(lines))
+    # The expected bytes keep an edit made outside the bind lock from being overwritten.
+    written = write_text_atomic(path, ''.join(lines), expected=original)
     row = LEDGER_ROW.fullmatch(fields.get('ledger row', ''))
     if row:
         number, ledger = row.groups()
@@ -350,7 +369,7 @@ def bind_card(args):
             run_ledger(args, 'assign', number, '--ledger', ledger, '--agent', agent,
                        '--card', str(path))
         except Failure:
-            write_text_atomic(path, text)
+            write_text_atomic(path, text, expected=written)
             raise
     print(f'agent: {agent}')
 
@@ -546,7 +565,8 @@ def make_brief(args):
     else:
         parts = [f'# Task brief for {card["agent"]}\n']
     for title in SECTIONS:
-        note = f'\n{SCOPE_NOTE}\n' if title == SECTIONS[1] and not args.read_only else ''
+        note = (f'\n{BIND_SCOPE_NOTE if args.read_only else SCOPE_NOTE}\n'
+                if title == SECTIONS[1] and (pending or not args.read_only) else '')
         parts.append(f'## {title}\n\n{bodies[title]}\n{note}')
     if extra:
         parts.append(extra + '\n')
@@ -563,13 +583,14 @@ def make_brief(args):
     runs = card.get('runs') or NONE
     agent = AGENT_ENV if pending else card['agent']
     report_rule = (REPORT_FILE.format(
-                       path=Path(runs) / f'report-{card["tag"] if pending else agent}.md')
+                       path=Path(runs) / f'report-{card_path.stem if pending else agent}.md')
                    if runs.startswith('/') else REPORT_IN_MESSAGE)
     fixed = FIXED.format(
         workdir=workdir, orchestrator=card['orchestrator'], agent=agent,
         report_rule=report_rule,
         agent_name=AGENT_ENV if pending else hcom_send_name(agent, agents),
-        card=card_path, card_rule=CARD_RULE_READ_ONLY if args.read_only else CARD_RULE,
+        card=card_path, card_rule=(CARD_RULE if not args.read_only else
+                                   CARD_RULE_READ_ONLY_BIND if pending else CARD_RULE_READ_ONLY),
         runs=runs, workspace=shlex.quote(str(workspace)),
         decisions=workspace / '.lat' / 'decisions',
         lat_script=shlex.quote(str(args.lat_dir.resolve() / 'scripts' / 'lat-watch.py')))
