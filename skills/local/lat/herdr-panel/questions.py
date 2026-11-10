@@ -1410,6 +1410,18 @@ def _decision_fields(text):
     return fields
 
 
+def _record_question_lines(question_id, incoming, question=None):
+    """The record's heading, ``- question:`` and ``- options:`` lines for a question."""
+    options = parse_question_options({"body": incoming["body"]})
+    listed = " / ".join(
+        f"{letter} {option.label}".strip()
+        for letter, option in zip(_option_letters(options), options.options)
+    ) if options.kind else "自由作答"
+    return (f"# {question_id} {incoming['title']}",
+            f"- question: {question or incoming['title']}",
+            f"- options: {listed}")
+
+
 def new_decision_record(question_id, incoming, *, advisor, session_id, question=None,
                         authority_gap=None, blocked_work=None, help_question=False,
                         exempt_basis=None, tried=None):
@@ -1417,13 +1429,9 @@ def new_decision_record(question_id, incoming, *, advisor, session_id, question=
 
     Unset fields default from the question: its title and its option letters and labels.
     """
-    options = parse_question_options({"body": incoming["body"]})
-    listed = " / ".join(
-        f"{letter} {option.label}".strip()
-        for letter, option in zip(_option_letters(options), options.options)
-    ) if options.kind else "自由作答"
+    heading, question_line, options_line = _record_question_lines(question_id, incoming, question)
     # The advisor line sits right below the status line (references/advisors.md).
-    lines = [f"# {question_id} {incoming['title']}", "", "- status: pending",
+    lines = [heading, "", "- status: pending",
              f"- advisor: {advisor}"]
     if exempt_basis:
         lines.append(f"- exempt-basis: {exempt_basis}")
@@ -1435,8 +1443,8 @@ def new_decision_record(question_id, incoming, *, advisor, session_id, question=
         lines.append(f"- session: {session_id}")
     lines += [
         "- version: r1",
-        f"- question: {question or incoming['title']}",
-        f"- options: {listed}",
+        question_line,
+        options_line,
         f"- authority gap: {authority_gap or '需使用者決定'}",
         f"- blocked work: {blocked_work or '未指定'}",
     ]
@@ -1453,11 +1461,15 @@ def decision_revision(decision_path):
     return _record_revision(_read_text_exact(decision_path))
 
 
-def sync_decision_record(decision_path, revision, *, reopen=False, help_question=False):
+def sync_decision_record(decision_path, revision, *, reopen=False, help_question=False,
+                         question_id=None, incoming=None, question=None):
     """Set the record's version line to the panel revision; optionally reopen it or mark help.
 
     ``reopen`` sets the status back to pending; ``help_question`` makes the kind line
     ``- kind: help``, adding it after the advisor line (else the status line).
+    With ``question_id`` and ``incoming`` and a record version other than ``revision``, the
+    heading, ``- question:`` and ``- options:`` lines are replaced in the same write
+    (a missing line is added); the answer sections and other fields stay as they are.
     """
     decision_path = Path(decision_path)
     with _path_lock(decision_path):
@@ -1475,10 +1487,27 @@ def sync_decision_record(decision_path, revision, *, reopen=False, help_question
             after = fields.get("advisor", status)[1]
             edits.append((after, after, "\n- kind: help"))
         version = fields.get("version")
+        extra = ""
+        if incoming is not None and _record_revision(text) != revision:
+            heading, question_line, options_line = _record_question_lines(
+                question_id, incoming, question)
+            # Only the record's own header counts; answer sections below it stay untouched.
+            header_end = text.find("\n## ")
+            header_end = len(text) if header_end < 0 else header_end
+            heading_match = re.search(r"^# .*$", text[:header_end], re.MULTILINE)
+            if heading_match:
+                edits.append((heading_match.start(), heading_match.end(), heading))
+            else:
+                edits.append((0, 0, heading + "\n\n"))
+            for key, line in (("question", question_line), ("options", options_line)):
+                if key in fields and fields[key][0] < header_end:
+                    edits.append((*fields[key], line))
+                else:
+                    extra += "\n" + line
         if version is None:
-            edits.append((status[1], status[1], f"\n- version: r{revision}"))
+            edits.append((status[1], status[1], f"\n- version: r{revision}{extra}"))
         else:
-            edits.append((*version, f"- version: r{revision}"))
+            edits.append((*version, f"- version: r{revision}{extra}"))
         for start, end, replacement in sorted(edits, key=lambda edit: edit[:2], reverse=True):
             text = text[:start] + replacement + text[end:]
         _replace_locked(decision_path, text)

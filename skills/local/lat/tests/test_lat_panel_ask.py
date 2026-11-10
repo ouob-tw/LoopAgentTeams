@@ -230,6 +230,103 @@ class AskTests(AskTestCase):
         self.assertTrue(self.record().exists())
 
 
+NEW_SECTION = (
+    "## 改問要不要推送？\n\n背景變了。\n\n- A. 推送\n- B. 暫緩（建議）\n\n➡️ B：先等。\n"
+)
+FREE_SECTION = "## 請描述狀況\n\n請自由回答。\n"
+
+
+class AskRevisionSyncTests(AskTestCase):
+    def test_revision_replaces_heading_question_and_options(self):
+        self.ask(SECTION, *HUMAN)
+        result = self.ask(NEW_SECTION)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        text = self.record().read_text()
+        self.assertIn("# Q1 改問要不要推送？\n", text)
+        self.assertIn("- question: 改問要不要推送？\n", text)
+        self.assertIn("- options: A 推送 / B 暫緩（建議）\n", text)
+        self.assertIn("- version: r2\n", text)
+        for old in ("要合併到 dev 嗎？", "A 合併", "r1"):
+            self.assertNotIn(old, text)
+        self.assertEqual(text.count("# Q1"), 1)
+
+    def test_answered_record_reopened_gets_the_new_question(self):
+        self.ask(SECTION, *HUMAN)
+        self.record().write_text(self.record().read_text().replace(
+            "- status: pending", "- status: answered"))
+        result = self.ask(NEW_SECTION)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        text = self.record().read_text()
+        self.assertIn("# Q1 改問要不要推送？\n", text)
+        self.assertIn("- options: A 推送 / B 暫緩（建議）\n", text)
+        self.assertIn("- status: pending\n- ", text)
+        self.assertIn("- version: r2\n", text)
+
+    def test_question_flag_on_a_revision_sets_the_question_line(self):
+        self.ask(SECTION, *HUMAN)
+        result = self.ask(NEW_SECTION, "--question", "改問的說明文字")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        text = self.record().read_text()
+        self.assertIn("- question: 改問的說明文字\n", text)
+        self.assertIn("# Q1 改問要不要推送？\n", text)
+
+    def test_other_record_fields_are_still_refused_on_an_existing_record(self):
+        self.ask(SECTION, *HUMAN)
+        before = self.record().read_text()
+        result = self.ask(NEW_SECTION, "--blocked-work", "別的")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--blocked-work only apply to a new record", result.stderr)
+        self.assertEqual(self.record().read_text(), before)
+
+    def test_free_text_revision_writes_the_free_answer_options(self):
+        self.ask(SECTION, *HUMAN)
+        result = self.ask(FREE_SECTION)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        text = self.record().read_text()
+        self.assertIn("- options: 自由作答\n", text)
+        self.assertIn("# Q1 請描述狀況\n", text)
+
+    def test_earlier_answer_bytes_stay_and_unchanged_rerun_changes_nothing(self):
+        self.ask(SECTION, *HUMAN)
+        answer = "\n## 答覆（r1，聊天）\n\n- 答覆：好\n\n- question: 答覆裡的原文不動\n"
+        self.record().write_text(self.record().read_text().replace(
+            "- status: pending", "- status: answered") + answer)
+        self.assertEqual(self.ask(NEW_SECTION).returncode, 0)
+        revised = self.record().read_text()
+        self.assertTrue(revised.endswith(answer), revised)
+        again = self.ask(NEW_SECTION)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(self.record().read_text(), revised)
+
+    def test_unchanged_question_with_question_flag_changes_nothing(self):
+        self.ask(SECTION, *HUMAN)
+        before = self.record().read_text()
+        self.assertEqual(self.ask(SECTION, "--question", "新的文字").returncode, 0)
+        self.assertEqual(self.record().read_text(), before)
+
+    def test_a_missing_header_line_is_added_not_taken_from_an_answer(self):
+        self.ask(SECTION, *HUMAN)
+        answer = "\n## 答覆（r1，聊天）\n\n- question: 答覆裡的原文\n- options: 答覆裡的選項\n"
+        lines = [line for line in self.record().read_text().splitlines(keepends=True)
+                 if not line.startswith(("- question:", "- options:"))]
+        self.record().write_text("".join(lines) + answer)
+        self.assertEqual(self.ask(NEW_SECTION).returncode, 0)
+        text = self.record().read_text()
+        self.assertTrue(text.endswith(answer), text)
+        self.assertIn("- version: r2\n- question: 改問要不要推送？\n", text)
+
+    def test_missing_lines_are_added_instead_of_failing(self):
+        self.ask(SECTION, *HUMAN)
+        lines = [line for line in self.record().read_text().splitlines(keepends=True)
+                 if not line.startswith(("# ", "- question:", "- options:"))]
+        self.record().write_text("".join(lines))
+        result = self.ask(NEW_SECTION)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        text = self.record().read_text()
+        self.assertTrue(text.startswith("# Q1 改問要不要推送？\n\n"), text)
+        self.assertIn("- version: r2\n- question: 改問要不要推送？\n"
+                      "- options: A 推送 / B 暫緩（建議）\n", text)
+
 class AskHelpTests(AskTestCase):
     def test_help_question_writes_the_kind_line(self):
         result = self.ask(HELP_SECTION, *HUMAN, "--help-question",

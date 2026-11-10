@@ -722,8 +722,8 @@ def _ask(args):
     path = Path(args.decisions) / f"{args.id}.md"
     if not Path(args.decisions).is_dir():
         raise ValueError(f"decisions directory does not exist: {args.decisions}")
-    given = [field for field in ASK_RECORD_FIELDS
-             if getattr(args, field[2:].replace("-", "_")) is not None]
+    given = [field for field in ASK_RECORD_FIELDS if field != "--question"
+             and getattr(args, field[2:].replace("-", "_")) is not None]
     created = not path.exists()
     if created:
         if args.advisor is None:
@@ -794,7 +794,8 @@ def _ask(args):
             raise ValueError(f"{args.id} is {status.status} and the question is unchanged; "
                              "change the question to ask again")
         sync_decision_record(path, revision, reopen=reopen,
-                             help_question=args.help_question)
+                             help_question=args.help_question,
+                             question_id=args.id, incoming=incoming, question=args.question)
     return _report_pending(args.questions, args.decisions, _ask_session(args.questions),
                            quiet=True)
 
