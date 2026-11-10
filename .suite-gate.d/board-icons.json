@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/static/**", "board/src/app.html", "board/icon-source.png"],
+      "tests": ["board/tests/server/icons.test.ts"]
+    }
+  ]
+}
