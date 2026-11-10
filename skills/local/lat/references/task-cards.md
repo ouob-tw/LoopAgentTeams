@@ -2,9 +2,9 @@
 
 派工前，Orchestrator 確認 `.gitignore` 包含 `.lat/`。任務卡是本機恢復狀態，不提交 Git；所有 worktree／Agents 共用同一個 `.lat/tasks/` 絕對路徑，派工時提供。
 
-每張派工建立 `.lat/tasks/YYYY-MM-DD-<tag>.md`，日期為派發日期。外部 Agent 的 tag 用 /hcom-spawn 的 HCOM `--tag`；內建 Agent 由 Orchestrator 指派唯一任務 tag。同日同 tag 重派依序加 `-2`、`-3`，第一行註明接續的任務卡。
+每張派工一張 `.lat/tasks/YYYY-MM-DD-<tag>.md`（派發日期；同日同 tag 重派加 `-2`、`-3`，第一行註明接續的卡）。外部 Agent 的 tag 用 /hcom-spawn 的 HCOM `--tag`；內建 Agent 由 Orchestrator 指派唯一任務 tag。
 
-HCOM Agent 的卡用 `scripts/lat-dispatch.py card` 建：新 Agent 在啟動前加 `--before-launch` 建卡，Agent 開工第一步自己 `card bind` 填入名稱；已在執行的 Agent 依 tag 建卡（見 [Agent 設定](agents.md#派工)）。禁止手寫。
+HCOM Agent 的卡用 `scripts/lat-dispatch.py card` 建（新 Agent 啟動前加 `--before-launch`，見 [Agent 設定](agents.md#派工)），禁止手寫。
 
 ## 欄位模板
 
@@ -60,8 +60,8 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 範例：
 
 ```markdown
-- live actions：重建 staging 最多 2 次；對外請求最多 60 個；最長 45 分鐘；出現登入頁、429 或連續 3 次相同錯誤即停
-- preflight：測試帳號 qa-01 已登入（主控已核對）；間隔 10 秒以上；限流門檻每分鐘 30 個；重建失敗時切回上一個映像（動手前由執行 Agent 核對映像仍在）
+- live actions：重建 staging 最多 2 次；請求最多 60 個；最長 45 分鐘；出現登入頁或 429 即停
+- preflight：測試帳號 qa-01 已登入（主控已核對）；限流每分鐘 30 個；重建失敗切回上一個映像（動手前由執行 Agent 核對映像仍在）
 ```
 
 額度不擴大授權：只能在使用者已確認的 Spec 或驗收條件內訂。花錢、動帳號或額度、刪資料、對外發布等要問使用者的事，寫進額度也仍要先問。
@@ -71,12 +71,7 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 - 動手前逐項核對 `preflight`；任一項不成立就先回報主控。
 - 額度內的現場動作自己做，不逐步請核准。
 - 有現場動作的 QA 等實作者宣布定版後才開始用額度。
-- 只在下列情況回報主控：
-  1. 即將超過或已超過任一額度。
-  2. 觸發停止條件。
-  3. 出現登入、真人驗證或風控等風險訊號。
-  4. 遇到規格外的決定。
-  5. 得到最終結果。
+- 只在下列情況回報主控：(1) 即將超過或已超過任一額度；(2) 觸發停止條件；(3) 出現登入、真人驗證或風控等風險訊號；(4) 遇到規格外的決定；(5) 得到最終結果。
 - 每用掉一次額度就在任務卡 `done so far` 加一行（第幾次、結果），逐次保留，不受「不累加日誌」限制。
 - 額度用完但目標未達成時，不再多試一次，立刻停手回報，等主控依「追加額度」決定。
 
