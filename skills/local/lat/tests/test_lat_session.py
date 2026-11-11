@@ -3588,6 +3588,20 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('acme/work#5 已關閉但仍掛 ready-for-agent', result.stdout)
 
+    def test_tracker_warning_shows_beside_a_failing_ledger_check_at_done_and_deactivate(self):
+        self.activate()
+        self.open_item('#5')
+        self.exempt_qa('#5')
+        self.tracker_issue.write_text('{"state": "open", "labels": []}')
+        held = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertEqual(held['decision'], 'block')
+        self.assertIn('not closed: assigned', held['reason'])
+        self.assertIn('acme/work#5 仍開著', held['reason'])
+        refused = self.deactivate()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn('工作總表核對未通過', refused.stderr)
+        self.assertIn('acme/work#5 仍開著', refused.stderr)
+
     def test_tracker_read_failure_is_one_line_and_does_not_block_done_or_deactivate(self):
         self.activate()
         self.close_item(self.open_item('#5'))

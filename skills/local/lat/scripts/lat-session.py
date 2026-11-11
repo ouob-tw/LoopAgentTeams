@@ -789,7 +789,11 @@ def deactivate(args):
         forced = None
         was_active = record['status'] == 'active'
         if record['status'] == 'active' and record.get('ledger_path'):
-            forced = ledger_gate(record, args)
+            try:
+                forced = ledger_gate(record, args)
+            except ValueError as refusal:
+                tracker = tracker_warning(record)
+                raise ValueError(f'{refusal}\n\n{tracker}' if tracker else str(refusal)) from refusal
         _stop_watcher_locked(record)
         if record.get('hcom_name'):
             release_own_wait(workspace, record['hcom_name'])
@@ -1611,12 +1615,11 @@ def report_stop(record, payload):
             if duty:
                 reasons.append(duty)
         ledger = ledger_stop_check(record, message)
+        tracker = tracker_warning(record) if done_stop(record, message) else ''
         if ledger:
-            reasons.append(ledger)
-        if done_stop(record, message):
-            tracker = tracker_warning(record)
-            if tracker:
-                notes.append(tracker)
+            reasons.append(ledger + ('\n\n' + tracker if tracker else ''))
+        elif tracker:
+            notes.append(tracker)
         try:
             undeclared = undeclared_wait_check(record, message)
         except Exception as exc:  # noqa: BLE001 - a broken wait check never holds the Stop
