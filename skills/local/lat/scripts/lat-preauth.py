@@ -659,10 +659,16 @@ def tiny_merge_problems(top, version, ledger, orchestrator=None):
     carries (a row's branch points at it, or a commit the integration branch lacks names the
     ticket): the tiny check's hard limits from the ticket card's base commit, an impl row the
     orchestrator owns, and the reviewer's four-limit confirmation, which must cover every hint
-    the check shows now. Each refusal tells the orchestrator to return to the normal flow."""
+    the check shows now, on the same content. Rows are grouped by ticket the way the ledger
+    does (a bare number is the project's own tracker). Each refusal tells the orchestrator to
+    return to the normal flow."""
     items = [item for item in (ledger or {}).get('items') or [] if isinstance(item, dict)]
-    tickets = list(dict.fromkeys(str(item.get('ticket', '')).strip() for item in items
-                                 if item.get('tiny')))
+    own = own_tracker(top) or ''
+
+    def keys(item):
+        return {((repo or own).lower(), number) for repo, number in re.findall(
+            r'(?<![\w&/])(?:([\w.-]+/[\w.-]+))?#?(\d+)\b', str(item.get('ticket', '')))}
+    tickets = list(dict.fromkeys(key for item in items if item.get('tiny') for key in keys(item)))
     if not tickets:
         return []
     try:
@@ -674,14 +680,13 @@ def tiny_merge_problems(top, version, ledger, orchestrator=None):
                 if integration else None) or ''
     reviews = [review for review in ledger.get('reviews') or [] if isinstance(review, dict)]
     problems = []
-    for ticket in tickets:
-        rows = [item for item in items if str(item.get('ticket', '')).strip() == ticket]
-        number = re.search(r'(\d+)$', ticket)
+    for key in tickets:
+        rows = [item for item in items if key in keys(item)]
         if not (any(row.get('branch') and git(top, 'rev-parse', f'refs/heads/{row["branch"]}')
                     == version for row in rows)
-                or number and re.search(rf'#{number[1]}\b', messages)):
+                or re.search(rf'#{key[1]}\b', messages)):
             continue
-        label = f'tiny-lane ticket {ticket}'
+        label = f'tiny-lane ticket {ticket_name(key)}'
         impl = next((row for row in rows if row.get('stage') == 'impl' and row.get('card')), None)
         try:
             if impl is None:
@@ -713,6 +718,14 @@ def tiny_merge_problems(top, version, ledger, orchestrator=None):
                 f'{size.TINY_CODE_LINES} added code lines, no new feature, no data or storage '
                 f'format change){shown}. The reviewer confirms with {record}; otherwise '
                 f'{size.NORMAL_FLOW}')))
+            continue
+        if confirmed[-1].get('content') != check['content']:
+            problems.append(('condition', (
+                f'{label}: the change differs from what the reviewer confirmed (content '
+                f'{str(confirmed[-1].get("content"))[:12]} at commit '
+                f'{str(confirmed[-1].get("commit"))[:12]}, now {check["content"][:12]} at '
+                f'{version[:12]}){shown}. The reviewer looks at the new change and confirms '
+                f'again with {record}; otherwise {size.NORMAL_FLOW}')))
             continue
         missing = [hint for hint in check['hints'] if hint not in confirmed[-1].get('hints', [])]
         if missing:
@@ -882,6 +895,12 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
                 result['basis'].append(f'every unpushed commit of {version[:12]} references '
                                        'only tickets of the round ledger')
     merged = resolve_version(top, commit) if action == 'merge' and commit else None
+    if action == 'merge' and not merged and any(
+            isinstance(item, dict) and item.get('tiny')
+            for item in (round_ledger(top, session) or {}).get('items') or []):
+        ask('condition', 'the round ledger has tiny-lane tickets, so the tiny check needs the '
+                         'version to merge: give --commit with a commit of '
+                         f'{top}' + (f' (`{commit}` is not one)' if commit else ''))
     if merged:  # merge never required --commit to resolve; without it there is nothing to look up
         ledger = round_ledger(top, session)
         ask_each(rerun_only_merge_problems(top, merged, ledger))

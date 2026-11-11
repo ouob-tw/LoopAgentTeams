@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-preauth.py'
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
+REVIEW_SIZE = Path(__file__).resolve().parents[1] / 'scripts/review-size.py'
 INSTALLER = Path(__file__).resolve().parents[4] / 'scripts/install-skills.py'
 PANEL = Path(__file__).resolve().parents[1] / 'herdr-panel/lat_panel.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
@@ -22,7 +23,11 @@ SUITES = [{'command': 'uv run pytest', 'cwd': '.'}, {'command': 'bun test', 'cwd
 
 
 def load_suite_gate():
-    spec = importlib.util.spec_from_file_location('suite_gate_for_tests', SUITE_GATE)
+    return load_script(SUITE_GATE)
+
+
+def load_script(path):
+    spec = importlib.util.spec_from_file_location(f'{path.stem}_for_tests', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -3152,19 +3157,24 @@ class TinyMergeTests(PreauthCase):
         git(self.repo, 'commit', '-q', '-m', message)
         return git(self.repo, 'rev-parse', 'HEAD')
 
-    def ledger(self, confirmed=None, agent='impl'):
+    def ledger(self, confirmed=None, agent='impl', extra=()):
         """The round ledger: one tiny impl row for #7, plus a review with `confirmed` as its
-        four-limit confirmation (a list of the hints it addressed) when given."""
+        four-limit confirmation (a list of the hints it addressed) of fix/7 as it is now."""
         self.session()
+        size = load_script(REVIEW_SIZE)
+        content = size.tiny_check(self.repo, self.base, 'fix/7', 'dev')['content']
         reviews = ([{'id': 1, 'row': 1, 'result': 'clean',
                      'tiny': {'limits': ['one-ticket', 'code-lines', 'no-feature',
-                                         'no-format-change'], 'hints': confirmed}}]
+                                         'no-format-change'], 'hints': confirmed,
+                              'content': content}}]
                    if confirmed is not None else [])
+        tiny = {'declared': ['no-feature', 'no-format-change']}
         self.write(self.ledger_file, json.dumps({
             'integration_branch': 'dev', 'orchestrator': 'orch', 'reviews': reviews,
             'items': [{'id': 1, 'ticket': '7', 'stage': 'impl', 'agent': agent,
-                       'branch': 'fix/7', 'card': str(self.card),
-                       'tiny': {'declared': ['no-feature', 'no-format-change']}}]}))
+                       'branch': 'fix/7', 'card': str(self.card), 'tiny': tiny},
+                      *({'id': 2 + n, 'ticket': ticket, 'stage': stage, 'tiny': tiny}
+                        for n, (ticket, stage) in enumerate(extra))]}))
 
     def merge(self):
         return self.check('merge', '--branch', 'dev', '--commit', 'fix/7')
@@ -3172,7 +3182,7 @@ class TinyMergeTests(PreauthCase):
     def assert_refused(self, *words):
         verdict = self.merge()
         self.assertEqual((verdict['verdict'], verdict['reason_kinds']), ('ask', ['condition']))
-        for text in (*words, 'tiny-lane ticket 7', 'return to the normal flow',
+        for text in (*words, 'tiny-lane ticket #7', 'return to the normal flow', 'tiny-off',
                      're-dispatch the ticket as an ordinary one, with QA'):
             self.assertIn(text, verdict['reasons'][0])
         return verdict['reasons'][0]
@@ -3220,6 +3230,26 @@ class TinyMergeTests(PreauthCase):
         self.change('tests/test_x.py', 300, 'test: cover (#7)')
         self.ledger(confirmed=[])
         self.assertEqual(self.merge()['verdict'], 'allow')
+
+    def test_a_change_after_the_confirmation_needs_a_new_one(self):
+        self.change('src/fix.py', 4, 'fix: small (#7)')
+        self.ledger(confirmed=[])
+        self.assertEqual(self.merge()['verdict'], 'allow')
+        self.change('src/fix.py', 5, 'fix: one more line (#7)')
+        self.assert_refused('the change differs from what the reviewer confirmed')
+
+    def test_rows_naming_the_ticket_differently_are_one_ticket(self):
+        self.change('src/fix.py', 2, 'fix: small (#7)')
+        self.ledger(confirmed=[], extra=[('#7', 'qa-draft'), (' 7 ', 'qa')])
+        verdict = self.merge()
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+
+    def test_a_merge_check_without_a_resolvable_version_asks(self):
+        self.ledger()
+        for extra in (('--commit', 'no-such-ref'), ()):
+            verdict = self.check('merge', '--branch', 'dev', *extra)
+            self.assertEqual((verdict['verdict'], verdict['reason_kinds']), ('ask', ['condition']))
+            self.assertIn('give --commit', verdict['reasons'][0])
 
     def test_a_merge_not_carrying_the_tiny_ticket_is_not_held(self):
         self.ledger()

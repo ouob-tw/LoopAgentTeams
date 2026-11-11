@@ -1238,7 +1238,8 @@ def tiny_confirmation(args, doc):
                       'was checked with --tiny-hints: ' + '; '.join(check['hints'])
                       + '; nothing written')
     return {'limits': ['one-ticket', 'code-lines', *TINY_DECLARED], 'base': check['base'],
-            'commit': check['head'], 'code_added': check['code_added'],
+            'commit': check['head'], 'content': check['content'],
+            'code_added': check['code_added'],
             'hints': check['hints'], 'hints_note': note}
 
 
@@ -1253,6 +1254,27 @@ def cmd_cancel(args):
         for other in doc['items']:
             if item['id'] in other['depends_on']:
                 block_for_cancelled_dependency(args, other, f'item {item["id"]} was cancelled')
+
+
+def cmd_tiny_off(args):
+    """Take a ticket off the tiny lane (orchestrator only): the mark leaves every row of the
+    item's ticket, each with a history entry, so later rows of it are ordinary again."""
+    reason = required_text('--reason', args.reason)
+    with transaction(args, 'tiny-off', args.id, reason) as doc:
+        if doc.get('orchestrator') and not same_controller(doc['orchestrator'], actor(args)):
+            raise Failure(f'only the orchestrator {doc["orchestrator"]} may take a ticket off '
+                          'the tiny lane')
+        item = find(doc, args.id)
+        default_repo = tracker_repo(doc['workspace'])
+        keys = ticket_keys(item['ticket'], default_repo)
+        rows = [row for row in doc['items'] if row.get('tiny')
+                and ticket_keys(row['ticket'], default_repo) == keys]
+        if not rows:
+            raise Failure(f'item {item["id"]}: its ticket is not on the tiny lane')
+        for row in rows:
+            record(args, row, 'tiny-off', {'tiny': None}, reason)
+            del row['tiny']
+    print(f'{", ".join(keys)} is off the tiny lane: rows {", ".join(str(r["id"]) for r in rows)}')
 
 
 def cmd_reassign(args):
@@ -1888,6 +1910,8 @@ def build_parser():
     sub.add_argument('--tiny-hints', metavar='TEXT',
                      help='with --tiny-confirm: how each hint the tiny check showed was checked; '
                      'required when it shows any')
+    sub = command('tiny-off', "Take the item's ticket off the tiny lane (orchestrator only)")
+    sub.add_argument('--reason', required=True)
     sub = command('cancel', 'Cancel an item (orchestrator only)')
     sub.add_argument('--reason', required=True)
     sub = command('reassign', 'Hand an open item to another agent')
@@ -1913,7 +1937,7 @@ def main():
     handlers = {'init': cmd_init, 'add': cmd_add, 'assign': cmd_assign, 'start': cmd_start,
                 'update': cmd_update, 'block': cmd_block, 'unblock': cmd_unblock,
                 'done': cmd_done, 'amend': cmd_amend, 'cancel': cmd_cancel,
-                'reassign': cmd_reassign, 'review-result': cmd_review_result,
+                'tiny-off': cmd_tiny_off, 'reassign': cmd_reassign, 'review-result': cmd_review_result,
                 'next': cmd_next, 'check': cmd_check, 'show': cmd_show,
                 'repair': cmd_repair}
     try:

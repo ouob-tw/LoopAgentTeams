@@ -27,7 +27,9 @@ TINY_CODE_LINES = 30
 # .suite-gate.json replaces these.
 DEFAULT_FORMAT_PATTERNS = ('*migrations/*', '*migration/*', '*schema*', '*.sql')
 FEAT = re.compile(r'feat(\([^)]*\))?!?:')
-NORMAL_FLOW = 'return to the normal flow: re-dispatch the ticket as an ordinary one, with QA'
+NORMAL_FLOW = ('return to the normal flow: the orchestrator takes the ticket off the tiny lane '
+               '(`lat-ledger.py tiny-off <row> --reason "<why>"`) and re-dispatch the ticket as '
+               'an ordinary one, with QA')
 
 
 def kind(path):
@@ -123,12 +125,20 @@ def tiny_check(repo, base, head='HEAD', integration=None):
         sha, _, subject = line.partition(' ')
         if FEAT.match(subject):
             hints.append(f'feat commit {sha[:12]} {subject}')
+    diff = subprocess.run(['git', '-C', str(repo), 'diff', '--no-color', '-M', f'{base}...{head}'],
+                          capture_output=True)
+    patch = subprocess.run(['git', '-C', str(repo), 'patch-id', '--stable'], input=diff.stdout,
+                           capture_output=True)
+    if diff.returncode or patch.returncode:
+        raise ValueError('git patch-id failed')
     problems = []
     if code_added > TINY_CODE_LINES:
         problems.append(f'{code_added} added code lines (tests and docs excluded) exceed the '
                         f'tiny-lane limit of {TINY_CODE_LINES}')
+    # Identifies the work's own change, so a confirmation names what the reviewer saw.
+    content = patch.stdout.decode().split()[0] if patch.stdout.strip() else 'empty'
     return {'base': base, 'head': head, 'code_added': code_added, 'files': files,
-            'problems': problems, 'hints': hints}
+            'problems': problems, 'hints': hints, 'content': content}
 
 
 def card_fields(path):
@@ -164,7 +174,8 @@ def orchestrator_problems(rows, *orchestrators):
 
 def tiny_text(check):
     scope = 'code-touching' if check['files']['code'] else 'docs/skill-text/test-only'
-    lines = [f'tiny check {check["base"][:12]}...{check["head"][:12]}: {scope}, '
+    lines = [f'tiny check {check["base"][:12]}...{check["head"][:12]} (content '
+             f'{check["content"][:12]}): {scope}, '
              f'{check["code_added"]} added code lines (limit {TINY_CODE_LINES}; code '
              f'{check["files"]["code"]}, test {check["files"]["test"]}, doc '
              f'{check["files"]["doc"]} files)']

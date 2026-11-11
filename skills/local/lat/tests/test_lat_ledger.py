@@ -1872,6 +1872,18 @@ class TinyLaneTests(LedgerCase):
         self.assertEqual({t['key']: t['tiny'] for t in shown['tickets']}, {'#1': True, '#2': False})
         self.assertIn('（小改動）', self.ok('show'))
 
+    def test_tiny_off_returns_the_ticket_to_the_normal_flow(self):
+        tiny = self.add(*self.TINY)
+        self.ok('cancel', str(tiny), '--reason', 'over the limit')
+        self.assertIn('only the orchestrator', self.fails('tiny-off', str(tiny), '--reason', 'x',
+                                                          by='impl'))
+        self.assertIn('rows 1', self.ok('tiny-off', str(tiny), '--reason', 'over the limit'))
+        self.assertNotIn('tiny', self.item(tiny))
+        self.assertEqual(self.item(tiny)['history'][-1]['action'], 'tiny-off')
+        again = self.add()
+        self.assertNotIn('tiny', self.item(again), 'the ordinary re-dispatch has no mark')
+        self.assertIn('not on the tiny lane', self.fails('tiny-off', str(again), '--reason', 'x'))
+
     def test_confirmation_runs_the_check_and_must_answer_its_hints(self):
         item = self.tiny_row()
         self.change('db/schema.sql', 2, 'fix: keep the column')
@@ -1889,6 +1901,7 @@ class TinyLaneTests(LedgerCase):
                           git(self.workspace, 'rev-parse', 'HEAD'), 2,
                           'schema.sql only reorders comments'))
         self.assertEqual(tiny['hints'], ['data/format file db/schema.sql (pattern *schema*)'])
+        self.assertRegex(tiny['content'], r'^[0-9a-f]{40}$')
 
     def test_confirmation_refusals_write_nothing(self):
         plain = self.add(ticket='#2')
