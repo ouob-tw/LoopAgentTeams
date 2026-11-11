@@ -2035,12 +2035,16 @@ class ComputedFigureTests(LedgerCase):
             {**run, 'kind': 'affected', 'run_id': 'r1', 'time': inside, 'duration_s': 30.0,
              'rerun': {'exit_code': 0, 'first_exit_code': 1, 'duration_s': 9.0}},
             {**run, 'run_id': 'r1', 'time': inside, 'duration_s': 10.0},
-            {**run, 'kind': 'affected-summary', 'run_id': 'r1', 'time': inside},
-            # A second run that executed one directory and reused another.
+            {**run, 'kind': 'affected-summary', 'run_id': 'r1', 'time': inside,
+             'groups': [{'exit_code': 0, 'reused': None}]},
+            # A second run that executed one directory and reused another: one run, one reuse.
             {**run, 'kind': 'affected', 'run_id': 'r2', 'time': inside, 'duration_s': 20.0},
             {**run, 'kind': 'reuse', 'run_id': 'r2', 'time': inside},
             # A run that only reused, and a plain run record without a run id.
             {**run, 'kind': 'reuse', 'run_id': 'r3', 'time': inside},
+            # An affected run that reused every group: suite-gate notes it only in the summary.
+            {**run, 'kind': 'affected-summary', 'run_id': 'r4', 'time': inside,
+             'groups': [{'exit_code': 0, 'reused': {'fingerprint': FP, 'agent': 'impl'}}]},
             {**run, 'time': '2026-10-24T10:20:00Z', 'duration_s': 5.5},
             # Outside the row: another agent, before the start, after done.
             {'agent': 'other', 'run_id': 'x1', 'time': inside, 'duration_s': 99.0},
@@ -2048,11 +2052,11 @@ class ComputedFigureTests(LedgerCase):
             {**run, 'run_id': 'x3', 'time': '2026-10-24T11:00:01Z', 'duration_s': 99.0})
         self.now = '2026-10-24T11:00:00Z'
         self.ok('done', str(item), '--commit', self.merged, by='impl')
-        self.assertEqual(self.item(item)['tests'], {'seconds': 65.5, 'runs': 3, 'reuses': 1,
+        self.assertEqual(self.item(item)['tests'], {'seconds': 65.5, 'runs': 3, 'reuses': 3,
                                                     'queue_seconds': None})
         row = self.view()['items'][0]
         self.assertEqual(row['tests_text'],
-                         '測試執行時間 1 分 5 秒（3 次）、沿用先前結果 1 次，排隊時間沒有紀錄')
+                         '測試執行時間 1 分 5 秒（3 次）、沿用先前結果 3 次，排隊時間沒有紀錄')
         self.assertIn('測試執行時間 1 分 5 秒（3 次）', self.ok('show', '--rows'))
         # No card base commit: the change size stays empty, not an error.
         self.assertIsNone(self.item(item).get('change_size'))

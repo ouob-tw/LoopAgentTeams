@@ -1147,8 +1147,8 @@ def cmd_amend(args):
 #                 commit. None without a commit, a card base commit, or a diff git can make.
 #   tests         the row agent's suite-gate records started between the row's start and done:
 #                 execution seconds (`duration_s`) and runs (one gate invocation, its in-run
-#                 rerun included, counts once), plus reuses (invocations that only reused an
-#                 earlier result: no seconds). Time spent waiting for a slot is not recorded by
+#                 rerun included, counts once), plus reuses (invocations that reused an
+#                 earlier result for some tests: no seconds). Time spent waiting for a slot is not recorded by
 #                 suite-gate, so it is not counted. None when the records cannot be read.
 # Rework rounds are counted when read (amends plus follow-on rows), so later ones show at once.
 
@@ -1226,13 +1226,18 @@ def test_figures(item, end):
         if record.get('agent') != item['agent'] or not at or not start <= at <= end:
             continue
         run = record.get('run_id') or f'record {index}'
-        if record.get('kind') == 'reuse':
+        if record.get('kind') == 'reuse' or (
+                record.get('kind') == 'affected-summary'
+                and any(isinstance(group, dict) and group.get('reused')
+                        for group in record.get('groups') or [])):
+            # `affected` keeps the groups it reused only in its summary; other paths write a
+            # `reuse` record. One invocation counts once either way.
             reused.add(run)
         elif record.get('kind') in EXECUTED_KINDS and isinstance(record.get('duration_s'),
                                                                  (int, float)):
             runs.add(run)
             seconds += record['duration_s']
-    return {'seconds': round(seconds, 1), 'runs': len(runs), 'reuses': len(reused - runs),
+    return {'seconds': round(seconds, 1), 'runs': len(runs), 'reuses': len(reused),
             'queue_seconds': None}
 
 
