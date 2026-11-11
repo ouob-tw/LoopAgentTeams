@@ -20,9 +20,12 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import full_hcom_name, read_hcom_list, run_cli, same_controller, write_text_atomic
+from _lat_common import (full_hcom_name, read_hcom_list, run_cli, same_controller,
+                         shared_lat_dir, write_text_atomic)
+from _lat_tracker import read_issue, tracker_repo
 
 LAT_DIR = Path(__file__).resolve().parents[1]
 # Overrides for tests: a fixed clock, another suite-gate script and a file for `hcom list --json`.
@@ -45,6 +48,21 @@ RELATIVE = re.compile(r'\+(\d+)([mhd])')
 ROUND_LEDGER = re.compile(r'(.+)-r\d+\.json')
 # The tool keeps each row's deadline at its estimate plus this; it only drives stall alarms.
 DEADLINE_AFTER_ESTIMATE = timedelta(hours=1)
+# The ticket layer `show` builds from the rows. Each progress step but merged and deployed is
+# made of the rows of these stages; the deployed step exists only where the project has a
+# successful production deploy in its deploy history.
+STEPS = {'draft': '草稿', 'impl': '實作', 'review': '審查', 'qa': '驗收', 'merged': '合併',
+         'deployed': '上線'}
+STEP_STAGES = {'draft': ('qa-draft',), 'impl': ('impl',), 'review': ('review',), 'qa': ('qa',)}
+STEP_MARKS = {'done': '✓', 'active': '●', 'pending': '○', 'skipped': '—'}
+# A ticket's state, by precedence: any open row decides it, else how far its delivery went.
+TICKET_STATES = {'in_progress': '進行中', 'blocked': '受阻', 'assigned': '已派',
+                 'unassigned': '未派', 'deployed': '已上線', 'merged': '已合併',
+                 'done': '已結案', 'cancelled': '已取消'}
+DEPLOY_ACTION = 'deploy-prod'
+TITLE_TIMEOUT_SECONDS = 10
+TITLE_BUDGET_SECONDS = 20
+QUALIFIED_TICKET = re.compile(r'([\w.-]+/[\w.-]+)#(\d+)')
 
 
 class Failure(Exception):
@@ -172,6 +190,9 @@ def validate(doc):
             raise ValueError(f'{key} must be a string')
     if not isinstance(doc.get('history'), list) or not isinstance(doc.get('next_id'), int):
         raise ValueError('history must be a list and next_id a number')
+    titles = doc.get('titles', {})  # ledgers made before ticket titles have none
+    if not isinstance(titles, dict) or not all(isinstance(v, str) for v in titles.values()):
+        raise ValueError('titles must map tickets to text')
     items = doc.get('items')
     if not isinstance(items, list):
         raise ValueError('items must be a list')
@@ -683,13 +704,25 @@ def cmd_add(args):
         check_round(args.ledger)
     kinds = kinds_of(args.evidence)
     ticket = required_text('--ticket', args.ticket)
+    title = args.title.strip() if args.title and args.title.strip() else None
     ignore_deadline(args)
     repo = None
     if args.repo:
         repo, problem = check_repo(args.repo)
         if problem:
             raise Failure(problem)
+    # The tracker is read outside the lock, and only for tickets never asked before.
+    before = read_only(args)
+    keys = ticket_keys(ticket, tracker_repo(before['workspace']))
+    fetched = {} if title else fetch_titles(
+        [key for key in keys if key not in before.get('titles', {})])
     with transaction(args, 'add') as doc:
+        titles = doc.setdefault('titles', {})
+        for key in keys:
+            if title:
+                titles[key] = title
+            elif key in fetched and key not in titles:
+                titles[key] = fetched[key]
         known = {item['id'] for item in doc['items']}
         deps = item_ids(args.depends) if args.depends else []
         missing = [d for d in deps + ([args.follows] if args.follows else []) if d not in known]
@@ -917,6 +950,261 @@ def ticket_refs(text):
     return found or {(None, text.strip())}
 
 
+# ---- ticket layer ---------------------------------------------------------------------
+
+def ticket_keys(text, default_repo):
+    """The canonical tickets a ticket field names, in a stable order: `owner/repo#N`, where a
+    bare number belongs to `default_repo` (this project's tracker; it stays `#N` without
+    one), and a text item is its own ticket keyed by its text."""
+    keys = set()
+    for repo, ref in ticket_refs(text):
+        if not ref.startswith('#'):
+            keys.add(ref)
+        else:
+            keys.add(f'{repo or default_repo or ""}{ref}')
+    return sorted(keys)
+
+
+def fetch_titles(keys):
+    """{key: issue title} for the `owner/repo#N` keys; a key the tracker could not answer
+    maps to '' so it is not asked again. All reads share one time budget (kept well under
+    lat-dispatch's limit for `add`); keys left when it runs out are skipped and asked by a
+    later add. A failure only warns: a missing title never stops a row from being added."""
+    titles, deadline = {}, time.monotonic() + TITLE_BUDGET_SECONDS
+    for key in keys:
+        match = QUALIFIED_TICKET.fullmatch(key)
+        if not match:
+            continue
+        left = deadline - time.monotonic()
+        if left < 1:
+            print(f'lat-ledger: warning: no time left to read the title of {key}; '
+                  'a later add tries again', file=sys.stderr)
+            continue
+        try:
+            title = read_issue(match[1], int(match[2]),
+                               timeout=min(TITLE_TIMEOUT_SECONDS, left)).get('title')
+            if not isinstance(title, str) or not title.strip():
+                raise ValueError('the issue has no title')
+        except ValueError as error:
+            detail = ' '.join(str(error).split())
+            print(f'lat-ledger: warning: no title for {key} ({detail}); it stays empty',
+                  file=sys.stderr)
+            title = ''
+        titles[key] = title.strip()
+    return titles
+
+
+def closed_at(item):
+    """When the row was last closed (done or cancelled), from its history; None if open."""
+    if item['status'] not in ('done', 'cancelled'):
+        return None
+    action = 'done' if item['status'] == 'done' else 'cancel'
+    return next((entry['at'] for entry in reversed(item['history'])
+                 if entry.get('action') == action), None)
+
+
+def first_assigned(item):
+    """When the row was first given to an agent (a reassign rewrites assigned_at)."""
+    return next((entry['at'] for entry in item['history'] if entry.get('action') == 'assign'),
+                item.get('assigned_at') or item.get('started_at'))
+
+
+def last_deploy_commit(workspace):
+    """(whether the project of this checkout has a successful production deploy, the
+    latest one's commit)."""
+    try:
+        path = shared_lat_dir(workspace) / 'deploy-history.jsonl'
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except (OSError, UnicodeError, ValueError):
+        return False, None
+    commit = None
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if (isinstance(entry, dict) and entry.get('action') == DEPLOY_ACTION
+                and entry.get('result') == 'succeeded'):
+            commit = entry.get('commit') or commit
+    return commit is not None, commit
+
+
+class Lookups:
+    """Git and deploy-history answers for one `show`, each worked out once: a row shared by
+    several tickets, or many rows on one branch, cost one lookup. Never kept between runs,
+    so merges and deploys show up at the next `show`."""
+
+    def __init__(self, doc):
+        self.doc = doc
+        self.answers = {}
+
+    def once(self, key, compute):
+        if key not in self.answers:
+            self.answers[key] = compute()
+        return self.answers[key]
+
+    def places(self, item):
+        """Checkouts that may hold the row's commits, its own project's main checkout first."""
+        return self.once(('places', item['id']), lambda: main_checkouts(self.doc, item))
+
+    def branches(self, place):
+        integration = self.doc.get('integration_branch')
+        return self.once(('branches', place), lambda: (
+            [integration] if integration and branch_exists(place, integration)
+            else default_branches(place)))
+
+    def reachable(self, place, sha, branches):
+        return self.once(('reach', place, sha, tuple(branches)),
+                         lambda: reachable(place, sha, branches))
+
+    def merged_at(self, item):
+        """The checkout whose integration branch (else default branch) holds every commit of
+        the closed row, or None: the reachability check `check` uses."""
+        commits = item['evidence'].get('commit') or []
+        def find():
+            for place in self.places(item):
+                branches = self.branches(place)
+                if branches and all(self.reachable(place, sha, branches) for sha in commits):
+                    return place
+            return None
+        return self.once(('merged', item['id']), find)
+
+    def deploy(self, place):
+        """(whether that project has a successful production deploy, the latest commit)."""
+        return self.once(('deploy', place), lambda: last_deploy_commit(place))
+
+
+def rows_step(rows):
+    """A row-made step: active while a row is open, pending while one waits to be assigned,
+    done once one is done, skipped when every row was cancelled; None without rows."""
+    statuses = {row['status'] for row in rows}
+    if not statuses:
+        return None
+    if statuses & set(OPEN):
+        return 'active'
+    if 'unassigned' in statuses:
+        return 'pending'
+    return 'done' if 'done' in statuses else 'skipped'
+
+
+def ticket_steps(lookups, rows):
+    """{step: state} for one ticket. Merge and deploy are checked in each row's own project
+    (a row with --repo belongs to that repo's main checkout, others to the workspace)."""
+    steps = {step: rows_step([r for r in rows if r['stage'] in stages])
+             for step, stages in STEP_STAGES.items()}
+    if steps['review'] is None and steps['impl'] is not None:
+        # Reviewers have no rows; an implementer closes only after review.
+        steps['review'] = 'done' if steps['impl'] == 'done' else 'pending'
+    impl = [r for r in rows if r['stage'] == 'impl' and r['status'] != 'cancelled']
+    delivered = [r for r in impl if r['status'] == 'done' and r['evidence'].get('commit')]
+    merged = [lookups.merged_at(r) for r in delivered]
+    if not delivered:
+        # Nothing to merge yet, or a delivery without commits (nothing to merge at all).
+        finished = impl and all(r['status'] == 'done' for r in impl)
+        steps['merged'] = ('skipped' if finished else 'pending') if impl else None
+    elif len(delivered) < len(impl) or None in merged:
+        steps['merged'] = 'pending'
+    else:
+        steps['merged'] = 'done'
+    projects = {lookups.places(r)[0] for r in rows} | {place for place in merged if place}
+    if any(lookups.deploy(place)[0] for place in projects):
+        steps['deployed'] = {None: None, 'skipped': 'skipped'}.get(steps['merged'],
+                                                                   'pending')
+        if steps['merged'] == 'done' and all(
+                lookups.deploy(place)[0] and all(
+                    lookups.reachable(place, sha, [lookups.deploy(place)[1]])
+                    for sha in row['evidence']['commit'])
+                for row, place in zip(delivered, merged)):
+            steps['deployed'] = 'done'
+    # A step no row reached is skipped once a later step has moved, or when no step ever
+    # moved (a ticket of research or spec rows only); otherwise it is still to come.
+    order = list(steps)
+    moved = any(state in ('done', 'active') for state in steps.values())
+    for index, step in enumerate(order):
+        if steps[step] is None:
+            later = any(steps[after] in ('done', 'active') for after in order[index + 1:])
+            steps[step] = 'skipped' if later or not moved else 'pending'
+    return steps
+
+
+def ticket_state(rows, steps):
+    statuses = {row['status'] for row in rows} - {'cancelled'}
+    if not statuses:
+        return 'cancelled'
+    for status in ('in_progress', 'blocked', 'assigned', 'unassigned'):
+        if status in statuses:
+            return status
+    if steps.get('deployed') == 'done':
+        return 'deployed'
+    return 'merged' if steps['merged'] == 'done' else 'done'
+
+
+def minutes_text(minutes):
+    hours, rest = divmod(int(minutes), 60)
+    return f'{hours} 小時 {rest} 分' if hours else f'{rest} 分'
+
+
+def ticket_now(rows, state, steps, at):
+    """What the ticket is doing: each open row's stage, agent, latest progress sentence,
+    blocked reason and minutes past its estimate; else what is waiting, or the outcome."""
+    parts = []
+    for row in rows:
+        if row['status'] not in OPEN:
+            continue
+        late = lateness(row, at).get('estimate')
+        parts.append('・'.join(text for text in (
+            f'{STAGES[row["stage"]]}{STATUSES[row["status"]]}', row['agent'],
+            row['progress'] and f'「{row["progress"]}」',
+            row['blocked_reason'] and f'受阻：{row["blocked_reason"]}',
+            late and f'超過預計 {late} 分') if text))
+    if parts:
+        return '／'.join(parts)
+    waiting = [STAGES[row['stage']] for row in rows if row['status'] == 'unassigned']
+    if waiting:
+        return '待派：' + '、'.join(dict.fromkeys(waiting))
+    if state == 'cancelled':
+        reasons = [row['cancel_reason'] for row in rows if row['cancel_reason']]
+        return '已取消' + (f'：{reasons[-1]}' if reasons else '')
+    finished = [step for step, value in steps.items() if value == 'done']
+    if state == 'done' and finished:
+        return f'{STEPS[finished[-1]]}完成'  # e.g. only the QA draft so far
+    return TICKET_STATES[state]
+
+
+def build_tickets(doc, at):
+    """The ticket layer: one entry per canonical ticket, in the order tickets first appear. A
+    row naming several tickets belongs to each of them."""
+    default_repo = tracker_repo(doc['workspace'])
+    titles = doc.get('titles', {})
+    groups = {}
+    for item in doc['items']:
+        for key in ticket_keys(item['ticket'], default_repo):
+            groups.setdefault(key, []).append(item)
+    lookups = Lookups(doc)
+    tickets = []
+    for key, rows in groups.items():
+        steps = ticket_steps(lookups, rows)
+        state = ticket_state(rows, steps)
+        starts = [time for time in map(first_assigned, rows) if time]
+        running = state not in ('deployed', 'merged', 'done', 'cancelled')
+        ends = [time for time in map(closed_at, rows) if time]
+        end = at if running else (max(map(loads_time, ends)) if ends else None)
+        minutes = (int((end - min(map(loads_time, starts))).total_seconds() // 60)
+                   if starts and end else None)
+        match = QUALIFIED_TICKET.fullmatch(key) or re.fullmatch(r'()#(\d+)', key)
+        tickets.append({
+            'key': key, 'repo': (match[1] or None) if match else None,
+            'number': int(match[2]) if match else None,
+            'title': titles.get(key, '' if match else key),
+            'state': state, 'state_label': TICKET_STATES[state],
+            'steps': [{'key': step, 'label': STEPS[step], 'state': value}
+                      for step, value in steps.items()],
+            'now': ticket_now(rows, state, steps, at), 'items': [row['id'] for row in rows],
+            'started_at': stamp(min(map(loads_time, starts))) if starts else None,
+            'total_minutes': minutes, 'running': running})
+    return tickets
+
+
 def tickets_without_qa(doc):
     """Tickets with an impl row but no qa-draft/qa row (a cancelled one is a recorded exemption).
     A cancelled impl row never delivered anything, so it needs no QA."""
@@ -995,6 +1283,7 @@ def cell(value):
 def cmd_show(args):
     doc = read_only(args)
     at = now()
+    default_repo = tracker_repo(doc['workspace'])
     rows = []
     for item in doc['items']:
         view = dict(item)
@@ -1002,14 +1291,51 @@ def cmd_show(args):
         view['card_mismatch'] = card_mismatch(item)
         view['stage_label'] = STAGES[item['stage']]
         view['status_label'] = STATUSES[item['status']]
+        view['ticket_keys'] = ticket_keys(item['ticket'], default_repo)
         rows.append(view)
+    if getattr(args, 'rows', False) and not args.json:
+        print(f'工作總表 {args.ledger}（更新於 {doc["updated_at"]}）\n')
+        show_rows(rows)
+        return 0
+    tickets = build_tickets(doc, at)
+    counts = {}
+    for ticket in tickets:
+        counts[ticket['state']] = counts.get(ticket['state'], 0) + 1
     if args.json:
         print(json.dumps({'ledger': str(Path(args.ledger)), 'now': stamp(at),
                           'workspace': doc['workspace'], 'created_at': doc['created_at'],
-                          'updated_at': doc['updated_at'], 'items': rows},
+                          'updated_at': doc['updated_at'], 'items': rows,
+                          'tickets': tickets, 'ticket_counts': counts,
+                          'deploy_step': any(step['key'] == 'deployed' for ticket in tickets
+                                             for step in ticket['steps'])},
                          ensure_ascii=False, indent=1))
         return 0
     print(f'工作總表 {args.ledger}（更新於 {doc["updated_at"]}）\n')
+    show_tickets(tickets, counts, default_repo)
+    return 0
+
+
+def show_tickets(tickets, counts, default_repo):
+    summary = '、'.join(f'{counts[state]} 張{label}' for state, label in TICKET_STATES.items()
+                       if counts.get(state))
+    print(f'{len(tickets)} 張票：{summary}' if tickets else '沒有票')
+    print('\n| 票 | 標題 | 進度 | 現在 | 用時 | 列 |')
+    print('|---|---|---|---|---|---|')
+    for ticket in tickets:
+        ref = ticket['key']
+        if default_repo and ref.startswith(f'{default_repo}#'):
+            ref = ref[len(default_repo):]
+        progress = ' '.join(f'{step["label"]}{STEP_MARKS[step["state"]]}'
+                            for step in ticket['steps'])
+        took = ''
+        if ticket['total_minutes'] is not None:
+            took = ('已 ' if ticket['running'] else '') + minutes_text(ticket['total_minutes'])
+        print('| ' + ' | '.join(cell(value) for value in (
+            ref, ticket['title'], progress, ticket['now'], took,
+            ','.join(map(str, ticket['items'])))) + ' |')
+
+
+def show_rows(rows):
     print('| # | 票號 | 階段 | 負責 | 狀態 | 依賴 | 預計完成 | 備註 |')
     print('|---|---|---|---|---|---|---|---|')
     for row in rows:
@@ -1020,13 +1346,11 @@ def cmd_show(args):
             row['blocked_reason'] and f'受阻：{row["blocked_reason"]}',
             row['cancel_reason'] and f'取消：{row["cancel_reason"]}',
             row['follows'] and f'接續自 {row["follows"]}',
-            row.get('repo') and f'repo：{row["repo"]}',
             row['card_mismatch'] and f'任務卡不一致：{row["card_mismatch"]}',
             row['progress'] and f'進度：{row["progress"]}') if text]
         print('| ' + ' | '.join(cell(value) for value in (
             row['id'], row['ticket'], row['stage_label'], row['agent'], status,
             ','.join(map(str, row['depends_on'])), row['estimate'], '；'.join(notes))) + ' |')
-    return 0
 
 
 def cmd_repair(args):
@@ -1058,7 +1382,7 @@ def cmd_repair(args):
         load(store)  # report failure rather than success when the repair did not take
     print(f'ledger repaired ({entry["action"]}): {store.path}')
     if args.from_journal:
-        cmd_show(argparse.Namespace(ledger=args.ledger, json=False))
+        cmd_show(argparse.Namespace(ledger=args.ledger, json=False, rows=True))
 
 
 # ---- CLI ------------------------------------------------------------------------------
@@ -1084,6 +1408,9 @@ def build_parser():
                      'full name')
     sub = command('add', 'Add an item', item=False)
     sub.add_argument('--ticket', required=True)
+    sub.add_argument('--title', help="what the ticket solves, for each ticket the row names; "
+                     "without it a numbered ticket's tracker title is read once (a failure "
+                     'leaves it empty)')
     sub.add_argument('--stage', required=True, choices=sorted(STAGES))
     sub.add_argument('--evidence', required=True, action='append',
                      help='commit, gate and/or file; comma-separated or repeated')
@@ -1144,9 +1471,12 @@ def build_parser():
                      help='Claude built-in agent without an HCOM name: --agent is kept as given')
     sub.add_argument('--card')
     sub.add_argument('--reason', required=True)
-    for name, text in (('next', 'Items ready to dispatch'), ('check', 'Verify every item'),
-                       ('show', 'Print the ledger')):
+    for name, text in (('next', 'Items ready to dispatch'), ('check', 'Verify every item')):
         command(name, text, item=False).add_argument('--json', action='store_true')
+    sub = command('show', 'Print the ledger grouped by ticket', item=False)
+    sub.add_argument('--json', action='store_true',
+                     help="every row as today, plus a tickets section (the ticket table's data)")
+    sub.add_argument('--rows', action='store_true', help='one line per row instead of per ticket')
     sub = command('repair', 'Accept a hand edit or rebuild from the journal', item=False)
     sub.add_argument('--reason', required=True)
     sub.add_argument('--from-journal', action='store_true')

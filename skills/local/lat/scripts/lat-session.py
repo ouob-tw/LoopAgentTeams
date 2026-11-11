@@ -629,9 +629,10 @@ def ledger_context(record, text):
     path = record.get('ledger_path')
     if not path:
         return text
-    command = ledger_command('show', path)
+    # The per-row table: recovery acts on row numbers, status and evidence.
+    command = ledger_command('show', path, '--rows')
     try:
-        result = ledger_cli('show', '--ledger', path)
+        result = ledger_cli('show', '--ledger', path, '--rows')
     except (OSError, subprocess.SubprocessError) as exc:
         result = SimpleNamespace(returncode=1, stdout='', stderr=str(exc))
     limit = CONTEXT_LIMITS[record['client']]

@@ -211,6 +211,60 @@ class PostMergeTests(AffectedCase):
         self.assertIn(summary, self.status()['records'])
 
 
+class PostMergeLargeSelectionTests(AffectedCase):
+    """A large selection's substituted full suite inside a post-merge run. Changing
+    web/src/page.ts selects web's only test file, over the share of 0.5."""
+    post_merge = PostMergeTests.post_merge
+    summary = PostMergeTests.summary
+    merge = PostMergeTests.merge
+    checkouts_left = PostMergeTests.checkouts_left
+
+    def setUp(self):
+        super().setUp()
+        self.registry['affected']['full_suite_share'] = 0.5
+        self.write_registry()
+
+    def test_a_failed_preparation_is_a_not_run_group_and_fails_the_summary(self):
+        # Mapped to no tests, so the lockfile itself does not fall back to the full suite.
+        self.registry['affected']['map'].append({'paths': ['web/bun.lock'], 'tests': []})
+        self.write_registry()
+        (self.repo / 'web/bun.lock').write_text('{}\n')
+        fake = self.tmp / 'fake-bun/bun'
+        fake.parent.mkdir()
+        fake.write_text('#!/bin/sh\nexit 1\n')
+        fake.chmod(0o755)
+        self.env['PATH'] = f"{fake.parent}:{self.env['PATH']}"
+        self.merge('web/src/page.ts')
+        result = self.post_merge()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('the selection covers 1 of 1 test files in web', result.stderr)
+        self.assertIn('not run: preparing web failed (bun install --frozen-lockfile exited 1)',
+                      result.stderr)
+        self.assertEqual((self.full_runs(), self.ran()), ([], []))
+        summary = self.summary()
+        self.assertFalse(summary['passed'])
+        self.assertEqual([(g['kind'], g['dir'], g['exit_code'], g['not_run'])
+                          for g in summary['groups']],
+                         [('full-suite', 'web', 2, 'preparing the directory failed')])
+        self.assertEqual(self.checkouts_left(), ([], []))
+
+    def test_a_failing_substituted_full_suite_fails_the_run_its_record_and_the_summary(self):
+        self.registry['full_suites'][1]['command'] = f'{self.full("web")}; exit 3'
+        self.write_registry()
+        self.merge('web/src/page.ts')
+        result = self.post_merge()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual((self.full_runs(), self.ran()), (['web'], []))
+        (record,) = [r for r in self.records() if r.get('purpose') == 'large-selection']
+        self.assertEqual((record['exit_code'], record['selected_tests']),
+                         (3, ['web/tests/page.test.ts']))
+        summary = self.summary()
+        self.assertEqual((summary['passed'], summary['exit_code']), (False, 1))
+        self.assertEqual([(g['kind'], g['dir'], g['exit_code'], g['tests'])
+                          for g in summary['groups']],
+                         [('full-suite', 'web', 3, ['web/tests/page.test.ts'])])
+
+
 class PostMergeRunTests(AffectedCase):
     def test_a_post_merge_full_suite_is_refused_with_the_new_command(self):
         for args in (['run', '--purpose', 'post-merge', '--', self.full('root')],
