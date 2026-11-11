@@ -50,7 +50,7 @@ PENDING = '待綁定'
 STAGE_ALIASES = {'implement': 'impl'}
 CLOSE_STATUSES = ('committed', 'merged', 'completed')
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
-LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends', 'repo', 'old_round')
+LEDGER_OPTIONS = ('ticket', 'title', 'stage', 'evidence', 'deadline', 'depends', 'repo', 'old_round')
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
 BIND_SCOPE_NOTE = 'Write restrictions in this section do not apply to the bind step at the top.'
 SCOPE_NOTE = ('Write restrictions in this section do not apply to updating the task card '
@@ -261,7 +261,7 @@ def ledger_request(args):
     given = [name for name in LEDGER_OPTIONS if getattr(args, name)]
     if not args.ledger:
         if given:
-            raise Failure('--ticket, --stage, --evidence, --deadline, --depends, --repo and --old-round '
+            raise Failure('--ticket, --title, --stage, --evidence, --deadline, --depends, --repo and --old-round '
                           'need --ledger')
         return None
     missing = [f'--{name}' for name in ('ticket', 'stage', 'evidence')
@@ -295,6 +295,8 @@ def open_ledger_row(args, ledger, orchestrator, agent, card):
     base = ['--ledger', ledger['path'], '--by', orchestrator]
     stage = STAGE_ALIASES.get(args.stage, args.stage)
     add = ['--ticket', args.ticket, '--stage', stage]
+    if args.title:
+        add += ['--title', args.title]
     for evidence in args.evidence:
         add += ['--evidence', evidence]
     if args.depends:
@@ -779,6 +781,8 @@ def build_parser():
                       help='absolute path of the work ledger; adds and assigns a row for this card. '
                            'Needs --ticket, --stage and --evidence together')
     card.add_argument('--ticket', help='ledger row: ticket')
+    card.add_argument('--title', help="ledger row: what the ticket solves; without it a "
+                      "numbered ticket's tracker title is read once")
     stages = ', '.join(load_script('lat-ledger').STAGES)
     card.add_argument('--stage', help=f'ledger row: stage, one of {stages} (implement is accepted '
                                       'as impl)')
