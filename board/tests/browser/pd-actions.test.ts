@@ -8,7 +8,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, fakeNotifications, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { fakeNotifications } from './pd-notifications.ts';
 
 const SCREEN = `({ pd: document.querySelector('.inbox .pd')?.innerText ?? '' })`;
 // Every part of the window fits its box, but the caller and summary lines, which end in an ellipsis.

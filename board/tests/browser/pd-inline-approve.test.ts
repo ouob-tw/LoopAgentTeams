@@ -10,7 +10,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, until, type Fixture } from '../harness.ts';
-import { CHROME, fakeNotifications, launchChrome, type Browser } from '../browser.ts';
+import { CHROME, launchChrome, type Browser } from '../browser.ts';
+import { fakeNotifications } from './pd-notifications.ts';
 
 const SCREEN = `({ badge: document.querySelector('.pd-badge')?.innerText ?? null, pd: document.querySelector('.inbox .pd')?.innerText ?? '' })`;
 // The panel open with the request's card on it.
