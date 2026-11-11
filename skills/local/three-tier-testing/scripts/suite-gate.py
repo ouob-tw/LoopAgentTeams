@@ -3481,9 +3481,9 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
             result, more = run_large(root, large, amap['share'], prepared, via,
                                      extra.get('run_id'), results)
             code, failed = code or result, failed + more
-            ran = [suite for suite, _, _ in large]
+            covered = {t for _, selected, _ in large for t in selected}
             groups = {d: kept for d, tests in groups.items()
-                      if (kept := [t for t in tests if not any(suite_holds(s, t) for s in ran)])}
+                      if (kept := [t for t in tests if t not in covered])}
             if not groups and not checks:
                 return code, failed
     if groups:
@@ -3529,10 +3529,12 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
     return code, failed
 
 
-def suite_holds(suite, path):
-    """True when path (a repo path) lies in the suite's directory; a suite run from `.`
-    holds nothing, as for a fallback."""
-    return suite['cwd'] != '.' and (path == suite['cwd'] or path.startswith(suite['cwd'] + '/'))
+def owning_dir(suites, path):
+    """The most specific full-suite directory holding path (a repo path), `.` included, or
+    None."""
+    found = [s['cwd'] for s in suites
+             if s['cwd'] == '.' or path == s['cwd'] or path.startswith(s['cwd'] + '/')]
+    return max(found, key=len) if found else None
 
 
 # File names test runners pick up by default (pytest/unittest, Go, bun/jest/vitest).
@@ -3541,23 +3543,26 @@ TEST_NAME = re.compile(r'test_.+\.py|.+_test\.(?:py|go)|.+\.(?:test|spec)\.[cm]?
 
 def large_selections(root, amap, groups):
     """[(suite, selected, known)] for each full suite whose directory holds more than
-    amap['share'] of its test files among the selected tests: selected are the selected
-    tests in it, known how many test files it holds (existing files named like tests or
-    matching the map's test patterns, plus the selected ones)."""
+    amap['share'] of its test files among the selected tests. A file belongs to the most
+    specific suite directory holding it (`.` holds what no other suite directory does), so
+    nested suites are not counted twice. selected are the selected tests it holds, known how
+    many test files it holds (existing files named like tests or matching the map's test
+    patterns, plus the selected ones)."""
     patterns = [p for rule in amap['rules'] for p in rule['tests']]
     files = [p for p in _git_paths(['ls-files', '-co', '--exclude-standard'], root)
              if (TEST_NAME.fullmatch(os.path.basename(p))
                  or any(glob_match(p, pattern) for pattern in patterns))
              and (root / p).is_file()]
+    suites = amap['suites']
     tests = [t for d, chosen in groups.items() for t in chosen]
     large = []
-    for suite in amap['suites']:
-        selected = [t for t in tests if suite_holds(suite, t)]
+    for cwd in dict.fromkeys(s['cwd'] for s in suites):
+        selected = [t for t in tests if owning_dir(suites, t) == cwd]
         if not selected:
             continue
-        known = set(selected) | {f for f in files if suite_holds(suite, f)}
+        known = set(selected) | {f for f in files if owning_dir(suites, f) == cwd}
         if len(selected) > amap['share'] * len(known):
-            large.append((suite, selected, len(known)))
+            large += [(s, selected, len(known)) for s in suites if s['cwd'] == cwd]
     return large
 
 
