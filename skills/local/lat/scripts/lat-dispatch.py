@@ -99,7 +99,7 @@ LEDGER_FIXED = '''
 
 - Your ledger row is {row} in {ledger}. Register with these commands (the ledger is in the main workspace; always use this absolute path, even from a worktree):
   - Start, with your own estimate of the finish time: `{cmd} start {row} --ledger {ledger_arg} --by {agent} --eta +<N>m`
-  - At each checkpoint: `{cmd} update {row} --ledger {ledger_arg} --by {agent} --progress '<one sentence>'`; when the estimate or deadline moves, add `--eta` or `--deadline` and `--reason`.
+  - At each checkpoint: `{cmd} update {row} --ledger {ledger_arg} --by {agent} --progress '<one sentence>'`; when the estimate moves, add `--eta` and `--reason` (the tool keeps the deadline at the estimate + 1h).
   - Close, with the evidence the row declares (a commit, a suite-gate fingerprint and/or a report file; the tool checks it exists): `{cmd} done {row} --ledger {ledger_arg} --by {agent} --commit <sha> --gate <fingerprint> --file <absolute path>` (pass only the kinds the row declares).
   - After closing, if your verdict or the delivered version changes: `{cmd} amend {row} --ledger {ledger_arg} --by {agent} --reason '<what changed>'`; add `--commit`, `--gate` or `--file` to replace that evidence.
 - `done` writes `status` and `deliverable commit` into the task card; do not fill them by hand.
@@ -264,7 +264,7 @@ def ledger_request(args):
             raise Failure('--ticket, --stage, --evidence, --deadline, --depends, --repo and --old-round '
                           'need --ledger')
         return None
-    missing = [f'--{name}' for name in ('ticket', 'stage', 'evidence', 'deadline')
+    missing = [f'--{name}' for name in ('ticket', 'stage', 'evidence')
                if not getattr(args, name)]
     if missing:
         raise Failure(f'--ledger also needs {", ".join(missing)}')
@@ -276,6 +276,9 @@ def ledger_request(args):
         raise Failure(f'--ledger must be an absolute path: {path}')
     if not path.is_file():
         raise Failure(f'ledger does not exist: {path}; create it with lat-ledger.py init first')
+    if args.deadline:
+        print('lat-dispatch: --deadline ignored; the ledger keeps the deadline at the estimate '
+              '+ 1h', file=sys.stderr)
     return {'path': str(path)}
 
 
@@ -291,7 +294,7 @@ def run_ledger(args, command, *rest):
 def open_ledger_row(args, ledger, orchestrator, agent, card):
     base = ['--ledger', ledger['path'], '--by', orchestrator]
     stage = STAGE_ALIASES.get(args.stage, args.stage)
-    add = ['--ticket', args.ticket, '--stage', stage, '--deadline', args.deadline]
+    add = ['--ticket', args.ticket, '--stage', stage]
     for evidence in args.evidence:
         add += ['--evidence', evidence]
     if args.depends:
@@ -774,14 +777,15 @@ def build_parser():
         card.add_argument(f'--{option}', default=NONE)
     card.add_argument('--ledger', type=Path,
                       help='absolute path of the work ledger; adds and assigns a row for this card. '
-                           'Needs --ticket, --stage, --evidence and --deadline together')
+                           'Needs --ticket, --stage and --evidence together')
     card.add_argument('--ticket', help='ledger row: ticket')
     stages = ', '.join(load_script('lat-ledger').STAGES)
     card.add_argument('--stage', help=f'ledger row: stage, one of {stages} (implement is accepted '
                                       'as impl)')
     card.add_argument('--evidence', action='append',
                       help='ledger row: evidence kinds (commit, gate, file); comma-separated or repeated')
-    card.add_argument('--deadline', help='ledger row: latest finish, ISO 8601 or +N[m|h|d]')
+    card.add_argument('--deadline', help='ignored (kept for older callers): the ledger keeps '
+                      'the deadline at the estimate + 1h')
     card.add_argument('--depends', help='ledger row: comma-separated item numbers it waits for')
     card.add_argument('--repo', help='ledger row: absolute path of the local git checkout the commit evidence lives '
                       'in (not owner/repo)')

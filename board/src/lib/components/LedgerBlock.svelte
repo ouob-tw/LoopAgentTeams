@@ -1,7 +1,7 @@
 <script lang="ts">
-	// A controller's work ledger: one row per item with its status and how late it is first, so a
-	// phone shows them without scrolling, then its stage, agent and times; a late row marked. No
-	// ledger, or one that cannot be read, says so here only.
+	// A controller's work ledger: one row per item with its status first, how far past its
+	// estimate it is beside the status, so a phone shows them without scrolling, then its stage,
+	// agent and times; a late row marked. No ledger, or one that cannot be read, says so here only.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
 	import { lateText, type LedgerView } from '#lib/board/ledger.ts';
@@ -25,7 +25,7 @@
 		<div class="scroll">
 			<table>
 				<thead>
-					<tr><th>#</th><th>票號</th><th>狀態</th><th>遲到</th><th>階段</th><th>負責</th><th>預計完成</th><th>最晚期限</th><th>最後更新</th></tr>
+					<tr><th>#</th><th>票號</th><th>狀態</th><th>階段</th><th>負責</th><th>預計完成</th><th>最後更新</th></tr>
 				</thead>
 				<tbody>
 					{#each ledger.items as row (row.id)}
@@ -33,12 +33,10 @@
 						<tr class:late={late !== ''}>
 							<td>{row.id}</td>
 							<td>{row.ticket}</td>
-							<td>{row.status}</td>
-							<td class="lateness">{#if late}<b>遲到</b> {late}{:else}—{/if}</td>
+							<td>{row.status}{#if late}<span class="lateness">（{late}）</span>{/if}</td>
 							<td>{row.stage}</td>
 							<td>{row.agent ?? '未派'}</td>
 							<td>{time(row.estimate)}</td>
-							<td>{time(row.deadline)}</td>
 							<td>{time(row.updatedAt)}</td>
 						</tr>
 					{/each}

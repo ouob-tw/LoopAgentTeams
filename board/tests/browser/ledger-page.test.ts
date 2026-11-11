@@ -1,9 +1,10 @@
 // A controller's work ledger on its page in a real browser, at a phone's width: a late item marked
-// and saying how late, the table inside the page's width, and a controller without a ledger saying
-// so. Skipped when the host has no Chrome.
+// and saying beside its status how far past its estimate it is, no deadline or lateness column, the
+// table inside the page's width, and a controller without a ledger saying so. Skipped when the
+// host has no Chrome.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser } from '../browser.ts';
+import { CHROME, launchChrome, shot, type Browser } from '../browser.ts';
 
 let fixture: Fixture;
 let browser: Browser | undefined;
@@ -37,7 +38,7 @@ afterAll(async () => {
 
 const ROWS = `[...document.querySelectorAll('.detail .ledger tbody tr')].map((tr) => ({ text: tr.innerText.replace(/\\s+/g, ' '), late: tr.classList.contains('late'), background: getComputedStyle(tr.cells[0]).backgroundColor }))`;
 
-test.skipIf(!CHROME)('a late item is marked with how late it is, inside the page at a phone width; no ledger says so', async () => {
+test.skipIf(!CHROME)('a late item is marked with how far past its estimate it is, inside the page at a phone width; no ledger says so', async () => {
 	const tab = browser!.tab;
 	const [luna, nova] = fixture.listed();
 	await tab.navigate(`${fixture.url}/?controller=${luna.session_id}`);
@@ -49,9 +50,22 @@ test.skipIf(!CHROME)('a late item is marked with how late it is, inside the page
 	const [onTime, late] = await tab.eval<{ text: string; late: boolean; background: string }[]>(ROWS);
 	expect(onTime.late).toBe(false);
 	expect(late.late).toBe(true);
-	expect(late.text).toContain('遲到 超過期限 1h05m；超過預計 2h05m');
+	expect(late.text).toContain('進行中（超過預計 125 分）');
+	expect(late.text).not.toContain('期限');
+	expect(await tab.eval(`[...document.querySelectorAll('.detail .ledger tbody tr')].map((tr) => tr.cells.length)`)).toEqual([7, 7]);
+	expect(await tab.eval(`[...document.querySelectorAll('.detail .ledger thead th')].map((th) => th.innerText)`)).toEqual(['#', '票號', '狀態', '階段', '負責', '預計完成', '最後更新']);
 	expect(late.background).not.toBe(onTime.background);
 	expect(await tab.eval(`document.documentElement.scrollWidth <= window.innerWidth`)).toBe(true);
+	if (process.env.LAT_BOARD_SHOTS) {
+		// The visible ledger tab at each width, for the eye check against the earlier look.
+		const openLedger = `[...document.querySelectorAll('[data-tab="ledger"]')].forEach((tab) => tab.click())`;
+		await tab.eval(openLedger);
+		await shot(tab, 'ledger-phone', { box: '.ledger table' });
+		await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+		await tab.eval(openLedger);
+		await shot(tab, 'ledger-desktop', { box: '.ledger table' });
+		await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: true });
+	}
 
 	await tab.navigate(`${fixture.url}/?controller=${nova.session_id}`);
 	await tab.until(`document.querySelector('.detail .ledger')?.innerText.includes('尚無總表')`, 'no ledger');

@@ -550,7 +550,7 @@ class LedgerCase(DispatchCase):
     def ledger_card(self, *extra, evidence='commit'):
         return self.card_with(
             '--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'impl',
-            '--evidence', evidence, '--deadline', '+2h', *extra)
+            '--evidence', evidence, *extra)
 
     def card_with(self, *extra):
         result = self.run_script(*self.card_args(*extra))
@@ -576,7 +576,7 @@ class LedgerCardTests(LedgerCase):
                          (1, '#123', 'impl', 'assigned'))
         self.assertEqual((row['agent'], row['card']), ('nanu-impl123-fida', str(card)))
         self.assertEqual(row['evidence_kinds'], ['commit'])
-        self.assertIsNotNone(row['deadline'])
+        self.assertIsNone(row['deadline'])  # set by start --eta, not by the orchestrator
         text = card.read_text()
         self.assertIn(f'- ledger row：1 ({self.ledger})\n', text)
         self.assertIn('- status：dispatched\n', text)
@@ -591,7 +591,7 @@ class LedgerCardTests(LedgerCase):
         self.ledger_card()
         self.agents.append({'name': 'nanu-qa123-kora', 'tag': 'nanu-qa123'})
         second = self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'qa',
-                                '--evidence', 'file', '--deadline', '+3h', '--depends', '1')
+                                '--evidence', 'file', '--depends', '1')
         self.assertIn('- ledger row：2 (', second.read_text())
         self.assertEqual(self.items()[1]['depends_on'], [1])
 
@@ -604,11 +604,19 @@ class LedgerCardTests(LedgerCase):
 
     def test_card_help_says_what_ledger_needs(self):
         text = ' '.join(self.run_script('card', '--help').stdout.split())
-        self.assertIn('Needs --ticket, --stage, --evidence and --deadline together', text)
+        self.assertIn('Needs --ticket, --stage and --evidence together', text)
+
+    def test_a_passed_deadline_is_ignored_with_a_notice(self):
+        result = self.run_script(*self.card_args(
+            '--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'impl',
+            '--evidence', 'commit', '--deadline', '+2h'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--deadline ignored', result.stderr)
+        self.assertIsNone(self.items()[0]['deadline'])
 
     def test_stage_implement_is_recorded_as_impl_and_help_lists_the_stages(self):
         self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'implement',
-                       '--evidence', 'commit', '--deadline', '+2h')
+                       '--evidence', 'commit')
         self.assertEqual(self.items()[0]['stage'], 'impl')
         text = self.run_script('card', '--help').stdout
         for stage in ('impl', 'qa-draft', 'spec-review', 'implement'):
@@ -618,7 +626,7 @@ class LedgerCardTests(LedgerCase):
     def test_repo_given_as_owner_name_is_refused_with_the_absolute_path_hint(self):
         result = self.run_script(*self.card_args(
             '--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'impl',
-            '--evidence', 'commit', '--deadline', '+2h', '--repo', 'owner/name'))
+            '--evidence', 'commit', '--repo', 'owner/name'))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('absolute path of the local git checkout', result.stderr)
         self.assertEqual(list(self.tasks.iterdir()), [])
@@ -635,15 +643,15 @@ class LedgerCardTests(LedgerCase):
         self.assertIn('need --ledger', stray.stderr)
         partial = self.run_script(*self.card_args('--ledger', str(self.ledger), '--ticket', '#1'))
         self.assertNotEqual(partial.returncode, 0)
-        for name in ('--stage', '--evidence', '--deadline'):
+        for name in ('--stage', '--evidence'):
             self.assertIn(name, partial.stderr)
+        self.assertNotIn('--deadline', partial.stderr)
         relative = self.run_script(*self.card_args(
-            '--ledger', 'ledger.json', '--ticket', '#1', '--stage', 'impl', '--evidence', 'commit',
-            '--deadline', '+1h'))
+            '--ledger', 'ledger.json', '--ticket', '#1', '--stage', 'impl', '--evidence', 'commit'))
         self.assertIn('absolute', relative.stderr)
         missing = self.run_script(*self.card_args(
             '--ledger', str(self.root / 'none.json'), '--ticket', '#1', '--stage', 'impl',
-            '--evidence', 'commit', '--deadline', '+1h'))
+            '--evidence', 'commit'))
         self.assertIn('does not exist', missing.stderr)
         self.assertEqual(list(self.tasks.iterdir()), [])
         self.assertEqual(self.items(), [])
@@ -651,7 +659,7 @@ class LedgerCardTests(LedgerCase):
     def test_ledger_refusal_leaves_no_card(self):
         result = self.run_script(*self.card_args(
             '--ledger', str(self.ledger), '--ticket', '#1', '--stage', 'impl',
-            '--evidence', 'commit', '--deadline', '+1h', '--depends', '9'))
+            '--evidence', 'commit', '--depends', '9'))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('unknown item', result.stderr)
         self.assertEqual(list(self.tasks.iterdir()), [])
@@ -666,7 +674,7 @@ class LedgerCardTests(LedgerCase):
         sessions.mkdir()
         (sessions / 'sid.json').write_text(json.dumps({'ledger_path': str(current)}))
         args = ('--ledger', str(self.ledger), '--ticket', '#1', '--stage', 'impl',
-                '--evidence', 'commit', '--deadline', '+1h')
+                '--evidence', 'commit')
         result = self.run_script(*self.card_args(*args))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(str(current), result.stderr)
@@ -679,7 +687,7 @@ class LedgerCardTests(LedgerCase):
     def test_untagged_agent_is_refused_before_the_ledger_is_touched(self):
         result = self.run_script(*self.card_args(
             '--ledger', str(self.ledger), '--ticket', '#1', '--stage', 'impl',
-            '--evidence', 'commit', '--deadline', '+1h'), agents=[])
+            '--evidence', 'commit'), agents=[])
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.items(), [])
 
@@ -713,7 +721,7 @@ class LedgerBriefTests(LedgerCase):
 
     def test_qa_draft_row_asks_for_spec_coverage(self):
         card = self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
-                              'qa-draft', '--evidence', 'file', '--deadline', '+2h')
+                              'qa-draft', '--evidence', 'file')
         text, _ = self.brief_commands(card)
         self.assertIn('## Spec coverage', text)
         self.assertIn('Put the entries no ticket covers at the top of your report', text)
@@ -724,7 +732,7 @@ class LedgerBriefTests(LedgerCase):
 
     def test_unreadable_ledger_skips_spec_coverage_with_a_warning(self):
         card = self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
-                              'qa-draft', '--evidence', 'file', '--deadline', '+2h')
+                              'qa-draft', '--evidence', 'file')
         self.ledger.write_text('not json')
         result = self.run_script('brief', '--card', str(card), '--input', str(self.write_brief()))
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1251,7 +1259,7 @@ class BeforeLaunchTests(LedgerCase):
 
     def pending_ledger_card(self):
         return self.pending_card('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
-                                 'impl', '--evidence', 'commit', '--deadline', '+2h')
+                                 'impl', '--evidence', 'commit')
 
     def agent_env(self, base='fida', tag='nanu-impl123'):
         return {'HCOM_INSTANCE_NAME': base, 'HCOM_TAG': tag}

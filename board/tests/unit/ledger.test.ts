@@ -1,7 +1,7 @@
 // A controller's work ledger as the page shows it, from one entry of the helper's `board ledger`,
 // and how late an item is written.
 import { expect, test } from 'bun:test';
-import { duration, lateText, ledgerFrom } from '../../src/lib/board/ledger.ts';
+import { lateText, ledgerFrom } from '../../src/lib/board/ledger.ts';
 
 /** One item as `lat-ledger show --json` prints it. */
 const item = (overrides: Record<string, unknown> = {}) => ({
@@ -33,8 +33,7 @@ test('a read ledger keeps each row the page shows, with its latest change and la
 				status: '進行中',
 				agent: 'tevu-impl302-zaga',
 				estimate: '2026-10-24T12:00:00Z',
-				deadline: '2026-10-24T13:00:00Z',
-				late: { estimate: 125, deadline: 65 },
+				late: { estimate: 125 },
 				updatedAt: '2026-10-24T11:00:00Z'
 			}
 		]
@@ -55,10 +54,9 @@ test('no ledger, a failed read and output not in shape each say so', () => {
 	expect(ledgerFrom({ status: 'ok' })).toEqual({ state: 'error', reason: '總表的輸出不是預期的格式' });
 });
 
-test('lateness reads as lat-ledger prints it, the deadline first', () => {
-	expect(duration(45)).toBe('45m');
-	expect(duration(65)).toBe('1h05m');
-	expect(lateText({ estimate: 10, deadline: 125 })).toBe('超過期限 2h05m；超過預計 10m');
-	expect(lateText({ estimate: 10 })).toBe('超過預計 10m');
+test('only the minutes past the estimate show, as lat-ledger writes them; the deadline never', () => {
+	expect(lateText({ estimate: 125 })).toBe('超過預計 125 分');
 	expect(lateText({})).toBe('');
+	const [row] = (ledgerFrom({ status: 'ok', ledger: { items: [item({ late_minutes: { deadline: 65 } })] } }) as { items: { late: object }[] }).items;
+	expect(row.late).toEqual({});
 });

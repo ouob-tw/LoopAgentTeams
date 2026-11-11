@@ -7601,9 +7601,17 @@ esac
             env=dict(self.env, LAT_LEDGER_NOW=when, LAT_LEDGER_HCOM_LIST=str(listing)))
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def assign(self, deadline='+2h'):
-        self.ledger('assign', 1, '--agent', 'worker', '--card', self.tasks / 'worker.md',
-                    '--deadline', deadline)
+    def assign(self):
+        self.ledger('assign', 1, '--agent', 'worker', '--card', self.tasks / 'worker.md')
+
+    def iso(self, offset):
+        return datetime.fromtimestamp(self.START + offset, timezone.utc).isoformat()
+
+    def started(self, deadline, at=0):
+        """Assign and start row 1 so lat-ledger puts its deadline `deadline` seconds in: the
+        estimate is an hour before that, which may already have passed."""
+        self.assign()
+        self.ledger('start', 1, '--eta', self.iso(deadline - 3600), at=at)
 
     def flag(self, name, present=True):
         path = Path(f'{self.hcom_log}.{name}')
@@ -7670,9 +7678,19 @@ esac
         self.assertEqual([r['due'] for r in self.records('ledger-estimate-passed')],
                          ['2026-10-24T00:06:00Z', '2026-10-24T00:31:40Z'])
 
+    def test_deadline_is_the_estimate_plus_an_hour(self):
+        self.assign()
+        self.ledger('start', 1, '--eta', '+5m', at=60)
+        watch = self.cycles(400, 3959)
+        self.assertEqual(len(self.injects('passed your estimate')), 1)
+        self.assertEqual(self.notices('Check the agent'), [])
+        self.cycles(3960, watch=watch)
+        [notice] = self.notices('Check the agent')
+        self.assertIn('passed its deadline 2026-10-24T01:06:00Z', notice)
+        self.assertIn('move its estimate with update --eta', notice)
+
     def test_deadline_notifies_orchestrator_then_user_ten_minutes_after_delivery(self):
-        self.assign(deadline='+30m')
-        self.ledger('start', 1, '--eta', '+3h', at=60)
+        self.started(1800, at=60)
         self.flag('fail')
         watch = self.cycles(1799, 1800)
         # The fake hcom logs the failed attempt too.
@@ -7699,7 +7717,7 @@ esac
         self.assertEqual((user_record['at'], user_record['result']), (self.START + 2460, 'sent'))
 
     def test_owner_change_after_deadline_notice_keeps_the_user_out(self):
-        self.assign(deadline='+30m')
+        self.started(1800)
         watch = self.cycles(1800)
         self.ledger('reassign', 1, '--agent', 'worker2', '--reason', 'worker left', at=1900)
         self.cycles(2400, 3000, watch=watch)
@@ -7707,7 +7725,7 @@ esac
         self.assertEqual(self.records('ledger-user-notified'), [])
 
     def test_block_and_unblock_between_polls_counts_as_handling(self):
-        self.assign(deadline='+30m')
+        self.started(1800)
         watch = self.cycles(1800)
         self.ledger('block', 1, '--reason', 'waits for TEVU-1', at=1810)
         self.ledger('unblock', 1, '--reason', 'answered', at=1820)
@@ -7715,8 +7733,9 @@ esac
         self.assertEqual(self.records('ledger-user-notified'), [])
 
     def test_a_change_just_before_the_notice_still_lets_the_user_be_notified(self):
-        self.assign(deadline='+30m')
+        self.started(1800)
         self.ledger('block', 1, '--reason', 'waits for TEVU-1', at=1800)
+        self.ledger('unblock', 1, at=1800)
         self.cycles(1800.5, 2401, 2460)
         self.assertEqual(len(self.records('ledger-user-notified')), 1)
 
@@ -7731,23 +7750,31 @@ esac
         self.assertEqual(len(self.injects('passed your estimate')), 1)
 
     def test_a_new_round_ledger_starts_with_no_deliveries(self):
-        self.assign(deadline='+30m')
+        self.started(1800)
         watch = self.cycles(1800)
         self.ledger_path = self.work / '.lat/ledgers/next.json'
         self.ledger('init', '--workspace', self.work)
         self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file')
-        self.assign(deadline='+30m')
+        self.started(1800)
         self.cycles(1860, watch=watch)
         self.assertEqual(len(self.notices('Check the agent')), 2)
 
-    def test_blocked_item_is_not_nudged_but_its_deadline_is_reported_once(self):
-        self.assign(deadline='+30m')
+    def test_blocked_item_gets_no_nudge_or_deadline_and_unblock_follows_the_estimate(self):
+        self.assign()
         self.ledger('start', 1, '--eta', '+5m', at=60)
         self.ledger('block', 1, '--reason', 'waits for TEVU-1', at=120)
-        self.cycles(700, 1800, 1860)
+        watch = self.cycles(700, 3960, 7200)
         self.assertEqual(self.injects('Ledger item'), [])
+        self.assertEqual(self.notices('Check the agent'), [])
+        self.assertEqual(self.records('ledger-deadline-passed'), [])
+        # Unblocked with a new estimate: the deadline is that estimate + 1h.
+        self.ledger('unblock', 1, at=7300)
+        self.ledger('update', 1, '--eta', '+10m', '--reason', 'answered', at=7300)
+        self.cycles(7300, 7900, 11499, watch=watch)
+        self.assertEqual(self.notices('Check the agent'), [])
+        self.cycles(11500, watch=watch)
         [notice] = self.notices('Check the agent')
-        self.assertIn('is blocked', notice)
+        self.assertIn('is in_progress and passed its deadline 2026-10-24T03:11:40Z', notice)
 
     def test_input_text_send_failure_and_missing_window_retry_until_delivered(self):
         self.assign()
@@ -7789,16 +7816,19 @@ esac
         self.interrupted(600)
         self.cycles(660, 720)
         self.assertEqual(len(self.injects('was assigned to you')), 2)
-        self.ledger('update', 1, '--deadline', '+1m', '--reason', 'tight', at=730)
+        self.ledger('start', 1, '--eta', self.iso(790 - 3600), at=730)
         self.interrupted(800)
         self.interrupted(860)
         self.cycles(920, 980)
         self.assertEqual(len(self.notices('Check the agent')), 3)
 
     def test_normal_operation_never_repeats_a_delivery(self):
-        self.assign(deadline='+15m')
-        self.cycles(*range(0, 3600, 60))
+        self.assign()
+        watch = self.cycles(*range(0, 720, 60))
+        self.ledger('start', 1, '--eta', self.iso(900 - 3600), at=700)
+        self.cycles(*range(720, 3600, 60), watch=watch)
         self.assertEqual(len(self.injects('was assigned to you')), 1)
+        self.assertEqual(len(self.injects('passed your estimate')), 1)
         self.assertEqual(len(self.notices('Check the agent')), 1)
         self.assertEqual(len(self.notices('The orchestrator was notified')), 1)
 

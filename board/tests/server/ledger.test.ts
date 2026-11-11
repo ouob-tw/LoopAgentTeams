@@ -29,12 +29,12 @@ test('each controller shows its own ledger, no ledger or the reason it could not
 	const vega = fixture.bound('gamma', 'vega');
 	fixture.setHelper({
 		output: { controllers: [luna, nova, vega] },
-		ledgers: { [luna.session_id]: shown('#302', { deadline: 65 }), [vega.session_id]: { status: 'error', reason: 'ledger was modified outside lat-ledger' } }
+		ledgers: { [luna.session_id]: shown('#302', { estimate: 65, deadline: 5 }), [vega.session_id]: { status: 'error', reason: 'ledger was modified outside lat-ledger' } }
 	});
 
 	const snapshot = await fixture.refresh(cookie);
 
-	expect(named(snapshot, 'luna')!.ledger).toMatchObject({ state: 'ok', items: [{ ticket: '#302', late: { deadline: 65 } }] });
+	expect(named(snapshot, 'luna')!.ledger).toMatchObject({ state: 'ok', items: [{ ticket: '#302', late: { estimate: 65 } }] });
 	expect(named(snapshot, 'nova')!.ledger).toEqual({ state: 'none' });
 	expect(named(snapshot, 'vega')!.ledger).toEqual({ state: 'error', reason: 'ledger was modified outside lat-ledger' });
 	// The rest of the page is read as before.

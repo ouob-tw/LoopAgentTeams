@@ -3461,8 +3461,7 @@ class SessionTests(unittest.TestCase):
 
     def open_item(self, ticket='#1'):
         """Add one item with file evidence, assigned but not closed; returns its number."""
-        item = self.ledger('add', '--ticket', ticket, '--stage', 'impl', '--evidence', 'file',
-                           '--deadline', '+1d').strip()
+        item = self.ledger('add', '--ticket', ticket, '--stage', 'impl', '--evidence', 'file').strip()
         self.ledger('assign', item, '--agent', 'worker', '--card', self.tasks / 'card.md')
         return item
 
