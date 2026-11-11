@@ -3472,6 +3472,8 @@ class SessionTests(unittest.TestCase):
     def close_item(self, item):
         report = self.root / f'report-{item}.md'
         report.write_text('done\n')
+        # An impl row closes only after a review result of its round (#549).
+        self.ledger('review-result', '--row', item, '--reviewer', 'auto-reviewer', '--clean')
         self.ledger('done', item, '--file', report)
 
     def deactivate(self, *extra):

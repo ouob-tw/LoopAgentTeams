@@ -536,7 +536,19 @@ class LedgerCase(DispatchCase):
         self.run_ledger('init', '--workspace', str(self.workspace), '--integration-branch', 'dev',
                         '--orchestrator', 'nanu')
 
+    def review_before_done(self, row):
+        """An impl row closes only after a review result (#549); tests about other things
+        record a clean one first."""
+        doc = json.loads(self.run_ledger('show', '--json'))
+        item = next((i for i in doc['items'] if i['id'] == int(row)), None)
+        if item and item['stage'] == 'impl' and not any(r['row'] == item['id']
+                                                        for r in doc['reviews']):
+            self.run_ledger('review-result', '--row', str(row), '--reviewer', 'auto-reviewer',
+                            '--clean')
+
     def run_ledger(self, *args):
+        if args[0] == 'done':
+            self.review_before_done(args[1])
         self.listing.write_text(json.dumps(self.agents))
         result = subprocess.run(
             [sys.executable, str(LEDGER), args[0], '--ledger', str(self.ledger), *args[1:]],
@@ -564,9 +576,15 @@ class LedgerCase(DispatchCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         text = (self.root / 'brief.brief.md').read_text()
         commands = [command for command in re.findall(r'`(uv run [^`]*lat-ledger\.py[^`]*)`', text)
-                    if ' review-result ' not in command]
+                    if not re.search(r' (review-result|problem|problem-update) ', command)]
         self.assertEqual(len(commands), 4, text)
         return text, commands
+
+    @staticmethod
+    def clean_review(text):
+        """The brief's command recording a clean review of the row (impl rows only)."""
+        return re.search(r'`(uv run [^`]*lat-ledger\.py review-result [^`]*--clean)`',
+                         text).group(1)
 
 
 class LedgerCardTests(LedgerCase):
@@ -736,9 +754,16 @@ class LedgerBriefTests(LedgerCase):
     def test_only_impl_rows_are_told_to_record_review_results(self):
         text, _ = self.brief_commands(self.ledger_card())
         self.assertIn('lat-ledger.py review-result --row 1 --ledger', text)
+        self.assertIn("--finding '<甲|乙|丙>:<one line>'", text)
+        self.assertIn('lat-ledger.py problem-update <id> --ledger', text)
+        self.assertNotIn('--no-findings', text)
         card = self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
                               'qa', '--evidence', 'file')
-        self.assertNotIn('review-result', self.brief_commands(card)[0])
+        qa = self.brief_commands(card)[0]
+        self.assertNotIn('review-result', qa)
+        self.assertIn('lat-ledger.py problem --row 2 --ledger', qa)
+        self.assertIn('--stage qa --level <甲|乙|丙>', qa)
+        self.assertIn('add `--no-findings` to `done`', qa)
 
     def test_other_stages_carry_no_spec_coverage(self):
         text, _ = self.brief_commands(self.ledger_card())
@@ -835,16 +860,20 @@ class LedgerLifecycleTests(LedgerCase):
         for key, value in fill.items():
             command = command.replace(f'<{key}>', value)
         command = command.replace('+<N>m', '+30m')
+        done = re.search(r'lat-ledger\.py done (\d+) ', command)
+        if done:
+            self.review_before_done(done.group(1))
         result = subprocess.run(shlex.split(command), capture_output=True, text=True,
                                 env=self.ledger_env, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_agent_runs_the_brief_commands_and_done_updates_the_card(self):
         card = self.ledger_card()
-        _, (start, update, done, amend) = self.brief_commands(card)
+        text, (start, update, done, amend) = self.brief_commands(card)
         self.run_command(start)
         self.run_command(update, **{'one sentence': 'half way'})
         self.assertEqual(self.items()[0]['progress'], 'half way')
+        self.run_command(self.clean_review(text), **{'HCOM name': 'rev'})
         done = done.replace('--gate <fingerprint> --file <absolute path>', '')
         self.run_command(done.replace('<sha>', self.sha))
         text = card.read_text()
@@ -1393,6 +1422,7 @@ class BeforeLaunchTests(LedgerCase):
                'LAT_DISPATCH_HCOM_LIST': str(self.listing)}
         for command in (bind, start.replace('+<N>m', '+30m'),
                         update.replace('<one sentence>', 'half way'),
+                        self.clean_review(text).replace('<HCOM name>', 'rev'),
                         done.replace('<sha>', self.sha)
                             .replace('--gate <fingerprint> --file <absolute path>', '')):
             # The agent's shell expands "$HCOM_INSTANCE_NAME"; uv is replaced by this Python.

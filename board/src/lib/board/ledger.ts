@@ -68,6 +68,37 @@ export interface LedgerTicket {
 	/** Rounds of rework once lat-ledger counts them (#550); 0 when none or not counted. */
 	reworkRounds: number;
 	rows: number[];
+	/** Problems found per stage, as lat-ledger counts them: every stage with one, and 0 for a
+	 *  stage whose step is done. `severe` when a 甲 or 乙 is among them. */
+	findings: FindingCount[];
+	/** The ids of this ticket's problems, in the order they were recorded. */
+	problems: string[];
+}
+
+export type Level = '甲' | '乙' | '丙';
+export const LEVELS: Level[] = ['甲', '乙', '丙'];
+
+export interface FindingCount {
+	stage: string;
+	label: string;
+	count: number;
+	levels: Record<Level, number>;
+	/** How many a test caught. */
+	caught: number;
+	severe: boolean;
+}
+
+/** One problem of the project's problem log, in its current state. */
+export interface LedgerProblem {
+	id: string;
+	ticket: string;
+	stage: string;
+	finder: string;
+	level: Level;
+	text: string;
+	caught: boolean;
+	/** What became of it, as lat-ledger writes it (已修 <commit>, 列為已知限制…); empty while open. */
+	resolution: string;
 }
 
 export type LedgerView =
@@ -84,6 +115,12 @@ export type LedgerView =
 			tickets: LedgerTicket[];
 			/** Ticket counts per state, in lat-ledger's order, only states with tickets. */
 			counts: { state: string; label: string; count: number }[];
+			/** This ledger's problems (its tickets', and those of unknown cause recorded here). */
+			problems: LedgerProblem[];
+			/** "Which stage found how many problems": one entry per stage, each problem once. */
+			summary: FindingCount[];
+			/** The project's problem log, watched with the ledger; null from a lat-ledger before it. */
+			problemsPath: string | null;
 	  };
 
 /** lat-ledger's ticket states in the order it lists them. */
@@ -94,6 +131,39 @@ const text = (value: unknown) => (typeof value === 'string' && value ? value : n
 const minutes = (value: unknown) => (typeof value === 'number' && value > 0 ? value : undefined);
 const strings = (value: unknown) => (Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string' && entry !== '') : []);
 const record = (value: unknown) => (typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {});
+const count = (value: unknown) => (typeof value === 'number' && value > 0 ? value : 0);
+const isLevel = (value: unknown): value is Level => LEVELS.includes(value as Level);
+
+/** Per-stage counts as lat-ledger gives them; entries not in that shape are left out. A
+ *  lat-ledger before the problem log gives none. */
+function findingCounts(value: unknown): FindingCount[] {
+	return (Array.isArray(value) ? value : []).map(record).flatMap((entry) => {
+		const stage = text(entry.stage);
+		const label = text(entry.label);
+		if (!stage || !label) return [];
+		const levels = record(entry.levels);
+		return [{ stage, label, count: count(entry.count), levels: { 甲: count(levels.甲), 乙: count(levels.乙), 丙: count(levels.丙) }, caught: count(entry.caught), severe: entry.severe === true }];
+	});
+}
+
+function problemFrom(value: unknown): LedgerProblem[] {
+	const problem = record(value);
+	const id = text(problem.id);
+	const ticket = text(problem.ticket);
+	if (!id || !ticket || !isLevel(problem.level)) return [];
+	return [
+		{
+			id,
+			ticket,
+			stage: text(problem.stage_label) ?? text(problem.stage) ?? '',
+			finder: text(problem.finder) ?? '',
+			level: problem.level,
+			text: text(problem.text) ?? '',
+			caught: problem.caught === true,
+			resolution: text(problem.resolution_text) ?? ''
+		}
+	];
+}
 
 function rowFrom(value: unknown): LedgerRow | null {
 	if (typeof value !== 'object' || value === null) return null;
@@ -162,7 +232,9 @@ function ticketFrom(value: unknown, shortRefs: boolean): LedgerTicket | null {
 		minutes: typeof ticket.total_minutes === 'number' ? ticket.total_minutes : null,
 		running: ticket.running === true,
 		reworkRounds: minutes(ticket.rework_rounds) ?? 0,
-		rows: ticket.items.filter((id): id is number => typeof id === 'number')
+		rows: ticket.items.filter((id): id is number => typeof id === 'number'),
+		findings: findingCounts(record(ticket.findings).stages),
+		problems: strings(record(ticket.findings).problems)
 	};
 }
 
@@ -194,7 +266,10 @@ export function ledgerFrom(entry: { status?: unknown; reason?: unknown; ledger?:
 		counts: states.flatMap((state) => {
 			const count = counted[state];
 			return typeof count === 'number' && count > 0 ? [{ state, label: labels.get(state) ?? state, count }] : [];
-		})
+		}),
+		problems: (Array.isArray(ledger.problems) ? ledger.problems : []).flatMap(problemFrom),
+		summary: findingCounts(ledger.finding_summary),
+		problemsPath: text(ledger.problems_path)
 	};
 }
 
@@ -229,4 +304,10 @@ export function rowMinutes(row: Pick<LedgerRow, 'startedAt' | 'closedAt' | 'stat
 /** The "N 張票：…" summary line lat-ledger prints, from the counts. */
 export function countsText(view: { tickets: unknown[]; counts: { label: string; count: number }[] }): string {
 	return `${view.tickets.length} 張票：${view.counts.map((entry) => `${entry.count} 張${entry.label}`).join('、')}`;
+}
+
+/** A stage's count as the ticket line writes it: `審查 2（乙 1）`, naming 甲 and 乙 only. */
+export function findingText(entry: FindingCount): string {
+	const severe = (['甲', '乙'] as const).filter((level) => entry.levels[level]).map((level) => `${level} ${entry.levels[level]}`);
+	return `${entry.label} ${entry.count}` + (severe.length ? `（${severe.join('、')}）` : '');
 }

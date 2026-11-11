@@ -1,7 +1,8 @@
 // A controller's work ledger on its page in a real browser: one line per ticket with its link,
 // title, progress strip, now cell, models and time; a line opens to its rows with their reasons
 // and evidence, which open; a project without deploy history has five steps; at a phone's width
-// each line is a card inside the page. Skipped when the host has no Chrome. With LAT_BOARD_SHOTS
+// each line is a card inside the page. Each line counts the problems found per stage, an opened
+// one lists them, and the bottom sums them per stage. Skipped when the host has no Chrome. With LAT_BOARD_SHOTS
 // set, the ledger is captured at desktop and phone width, closed and opened.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
@@ -143,11 +144,58 @@ test.skipIf(!CHROME)('each ticket is one line with its link, title, steps, now, 
 	expect(await tab.eval(`document.documentElement.scrollWidth <= window.innerWidth`)).toBe(true);
 }, 60_000);
 
+test.skipIf(!CHROME)('each line counts problems per stage, 甲 and 乙 standing out; an opened line lists them; the bottom sums each stage', async () => {
+	const tab = browser!.tab;
+	const [luna] = fixture.listed();
+	await openLedger(tab, luna.session_id, DESKTOP);
+	const counts = (ref: string) => tab.eval<string[]>(`[...${lineOf(ref)}.querySelectorAll('.finding')].map((entry) => entry.innerText.trim() + (entry.classList.contains('severe') ? ' !' : '') + (entry.classList.contains('none') ? ' 0' : ''))`);
+	expect(await counts('#533')).toEqual(['自動測試 1', '審查 1', '驗收 1（甲 1） !']);
+	// Done stages show 0, muted, so "looked and found nothing" differs from "not looked yet".
+	expect(await counts('#534')).toEqual(['審查 1（乙 1） !', '驗收 0 0', '上線後 0 0']);
+	expect(await counts('#541')).toEqual(['審查 0 0']);
+	expect(await tab.eval(`${lineOf('#535')}.querySelector('.findings')`)).toBe(null);
+	// 甲/乙 stand out by colour, weight and a box, not colour alone.
+	const look = (selector: string) => `(() => { const style = getComputedStyle(document.querySelector('.detail .ledger ${selector}')); return [style.color, style.fontWeight, style.borderTopStyle].join('|'); })()`;
+	const [severe, plain, none] = await Promise.all(['.finding.severe', '.finding:not(.severe):not(.none)', '.finding.none'].map((selector) => tab.eval<string>(look(selector))));
+	expect(new Set([severe, plain, none]).size).toBe(3);
+	expect(severe.split('|').slice(1)).toEqual(['700', 'solid']);
+	// In the board's panel: the counts sit under the models, beside the strip.
+	const top = (part: string) => `${lineOf('#533')}.querySelector('${part}').getBoundingClientRect()`;
+	expect(await tab.eval(`${top('.findings')}.top >= ${top('.models')}.bottom && ${top('.findings')}.left === ${top('.models')}.left`)).toBe(true);
+
+	// An opened line lists its problems: level, line, stage, finder, a test catching it, outcome.
+	await toggle(tab, '#533');
+	expect(await tab.eval(`[...${lineOf('#533')}.querySelectorAll('.problem')].map((li) => li.innerText.replace(/\\s+/g, ' ').trim())`)).toEqual([
+		'丙 長標題換行的測試失敗 自動測試・suite-gate・測試抓到',
+		'丙 函式命名與既有的不一致 審查・zapi-t533-rev・列為已知限制',
+		'甲 手機上職責連結被截斷，點不到 驗收・zapi-t533-qa'
+	]);
+	await toggle(tab, '#534');
+	expect(await tab.eval(flat(`${lineOf('#534')}.querySelector('.problem')`))).toBe('乙 每次推送都重畫所有已送出的標題 審查・zapi-t534-rev・已修 42f5bed0c0ff');
+
+	// The bottom: one row per stage, each problem once (the shared row's, the unknown cause's).
+	const table = `document.querySelector('.detail .ledger .stage-summary')`;
+	expect(await tab.eval(flat(`${table}.querySelector('caption')`))).toBe('哪個階段找出多少問題');
+	expect(await tab.eval(`[...${table}.rows].map((row) => [...row.cells].map((cell) => cell.innerText.trim()).join(' '))`)).toEqual([
+		'發現階段 甲 乙 丙 合計 測試抓到',
+		'自動測試 0 0 1 1 1',
+		'審查 0 1 2 3 0',
+		'驗收 1 0 0 1 0',
+		'上線後 0 1 0 1 0'
+	]);
+	// Its 甲 and 乙 cells with problems stand out like the line's counts.
+	expect(await tab.eval(`[...${table}.querySelectorAll('td.hit')].map((cell) => cell.dataset.level + getComputedStyle(cell).fontWeight)`)).toEqual(['丙400', '乙700', '丙400', '甲700', '乙700']);
+	expect(await tab.eval(`${table}.getBoundingClientRect().top > ${LINES}.at(-1).getBoundingClientRect().bottom - 1`)).toBe(true);
+	await capture(tab, 'ledger-findings-desktop');
+	expect(await tab.eval(`document.documentElement.scrollWidth <= window.innerWidth`)).toBe(true);
+}, 60_000);
+
 test.skipIf(!CHROME)('at a phone width each ticket is a card inside the page, its text wrapped, not cut', async () => {
 	const tab = browser!.tab;
 	const [luna] = fixture.listed();
 	await openLedger(tab, luna.session_id, PHONE);
 	await capture(tab, 'ledger-phone-closed');
+	await toggle(tab, '#533');
 	await toggle(tab, '#534');
 	await toggle(tab, '#535');
 
@@ -160,12 +208,16 @@ test.skipIf(!CHROME)('at a phone width each ticket is a card inside the page, it
 	);
 	expect(outside).toEqual([]);
 	// The cells stack: the strip sits below the ticket, now below the strip.
-	const tops = await tab.eval<number[]>(`['.ref', '.steps', '.now', '.models', '.time'].map((part) => ${lineOf('#533')}.querySelector(part).getBoundingClientRect().top)`);
+	const tops = await tab.eval<number[]>(`['.ref', '.steps', '.now', '.models', '.findings', '.time'].map((part) => ${lineOf('#533')}.querySelector(part).getBoundingClientRect().top)`);
 	expect(tops).toEqual([...tops].sort((a, b) => a - b));
-	expect(new Set(tops).size).toBe(5);
+	expect(new Set(tops).size).toBe(6);
+	// A count is never split across lines: each stays one line high.
+	expect(await tab.eval(`[...document.querySelectorAll('.detail .ledger .finding')].every((entry) => entry.getClientRects().length === 1)`)).toBe(true);
 	// An opened row's labels sit beside their values.
 	expect(await tab.eval(`(() => { const dt = ${lineOf('#535')}.querySelector('.row dt:nth-of-type(5)'); return dt.getBoundingClientRect().top === dt.nextElementSibling.getBoundingClientRect().top; })()`)).toBe(true);
 	await capture(tab, 'ledger-phone-open');
+	// The bottom summary fits the phone's width with every column.
+	expect(await tab.eval(`(() => { const r = document.querySelector('.detail .ledger .stage-summary').getBoundingClientRect(); return r.left >= 0 && r.right <= ${PHONE.width}; })()`)).toBe(true);
 }, 60_000);
 
 test.skipIf(!CHROME)('a project without deploy history shows five steps', async () => {
