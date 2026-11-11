@@ -2,7 +2,7 @@
 
 整套測試一律透過 `scripts/suite-gate.py` 執行。同一份程式內容用同一個指令跑過且通過時直接回報上次結果；相同請求同時送出只跑一次；排隊中的整套測試依主機剩餘的 CPU 與記憶體放行（至少同時 2 套、最多 8 套，可在設定檔調整），主機壓力過高時暫停放行。只跑單一檔案或指定範圍的測試不必經過閘門。
 
-專案登記檔有對照表時，每張票改用 `affected` 只跑這次改動影響到的測試，內容相同且已通過的測試直接沿用；整批合併後也只跑這批改動的受影響測試，並寫一筆總結紀錄（見[合併後受影響測試](#合併後受影響測試--purpose-post-merge)）。整套只在發布前或寫明原因時跑，並且要標明用途（見[受影響測試與對照表](#受影響測試與對照表)）。
+專案登記檔有對照表時，分支合併前對最終版本用 `affected --purpose pre-merge` 只跑這次改動影響到的測試，內容相同且已通過的測試直接沿用；整批合併後也只跑這批改動的受影響測試，並寫一筆總結紀錄（見[合併後受影響測試](#合併後受影響測試--purpose-post-merge)）。整套只在發布前或寫明原因時跑，並且要標明用途（見[受影響測試與對照表](#受影響測試與對照表)）。沒有對照表的專案，同樣兩條指令改跑每一套登記的整套各一次，同內容沿用（見[沒有對照表的專案](#沒有對照表的專案)）。
 
 推送到 main 或推送標籤前，可以用 Git pre-push 檢查確認這份內容已有每一套整套的通過紀錄（見[推送前把關](#推送前把關pre-push)）。
 
@@ -34,7 +34,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
   uv run --no-project python <skill>/scripts/suite-gate.py run --reason "<為什麼需要整套>" -- '<整套測試指令>'
   ```
 
-  有對照表的專案，`run --purpose post-merge`（含 `run --registered --purpose post-merge`）不執行、以結束碼 2 回覆 `affected --base <起點> --purpose post-merge`：整批合併後改跑受影響測試（見[合併後受影響測試](#合併後受影響測試--purpose-post-merge)）。確實需要整套時改用 `--reason` 寫明原因放行。沒有對照表的專案照舊可以用 `--purpose post-merge` 跑整套。
+  有對照表的專案，`run --purpose post-merge`（含 `run --registered --purpose post-merge`）不執行、以結束碼 2 回覆 `affected --base <起點> --purpose post-merge`：整批合併後改跑受影響測試（見[合併後受影響測試](#合併後受影響測試--purpose-post-merge)）。確實需要整套時改用 `--reason` 寫明原因放行。沒有對照表的專案照舊可以用 `--purpose post-merge` 跑整套，也可以改用 `affected --base <起點> --purpose post-merge`（見[沒有對照表的專案](#沒有對照表的專案)）。
 
   用途與原因寫進紀錄，不進指紋：同內容已有的通過紀錄（不論用途），發布前可以直接沿用。帶用途的執行沿用了上次結果時，另寫一筆沿用紀錄（`kind: "reuse"`，含用途、被沿用那筆的時間與執行者），本身不能再被沿用；指紋記在 `reused_fingerprint`，不寫 `fingerprint`，所以不看 `kind` 的讀者（例如舊版閘門）找同一指紋的最新紀錄時仍是那筆通過紀錄。`--rerun` 只管「要不要沿用」，不能代替用途。沒有對照表的專案不需要用途，可以照舊帶。
 
@@ -205,6 +205,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --purpose pre-
 
 - 在目前工作區挑選並執行，挑法、沿用與一般 `affected` 相同；`--base` 可省略（預設同上）。有沒提交的改動時照樣測並提醒先提交，因為合併進去的內容不會包含它們。
 - 和合併後一樣產生執行編號並寫一筆總結紀錄（`purpose: "pre-merge"`，欄位同下表），各組受影響測試的紀錄 `purpose` 也是 `pre-merge`。合併後的執行靠內容指紋找到這些紀錄並沿用內容沒變的組。
+- 修改期間（含審查後的修正）只跑自己挑的測試檔；這條指令在最終版本跑一次就好，同內容再跑會直接沿用。
 
 ### 合併後受影響測試（`--purpose post-merge`）
 
@@ -247,6 +248,15 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批
 | `agent`、`time`、`finished` | 執行者、開始與結束時間（UTC ISO 8601） |
 
 總結沒有 `fingerprint` 欄位。找某次合併後驗證時，以 `kind`、`repo`（或 `commit`、`tree`）與 `time` 篩選，取最新一筆。
+
+### 沒有對照表的專案
+
+登記檔沒有 `affected.map`（或沒有登記檔）時，`affected` 不挑測試：
+
+- 帶 `--purpose pre-merge` 或 `--purpose post-merge` 時，改跑 `full_suites` 的每一套各一次，每套照 `run` 的規則經閘門執行（排隊、佔名額、同內容沿用任何用途的通過紀錄），一套失敗其餘照跑。各套紀錄的 `purpose` 是那個用途，並帶這次的 `run_id`；最後照樣寫總結紀錄，每套一組（`kind: "full-suite"`），沿用時 `reused` 指向被沿用的那筆。
+- 合併前（`pre-merge`）在目前工作區跑；合併後（`post-merge`，`--base` 必填）照上面的方式在暫時乾淨檢出裡跑；同內容已有通過紀錄的套直接沿用，不先裝依賴。內容沒變時，合併後的執行沿用合併前的通過，不再跑一次。
+- 基準點同上：`--base`，或登記檔的 `integration_branch` 與 HEAD 的共同祖先；兩者都沒有就停止。沒有登記的整套時以結束碼 2 停止，什麼都不跑也不寫紀錄。
+- 不帶 `--purpose` 時不執行，以結束碼 2 提示：修改期間跑自己挑的測試檔，合併前跑 `affected --purpose pre-merge`（登記檔沒有 `integration_branch` 時提示的指令帶 `--base <起點>`，hook 的回覆也是）。
 
 ### 對照表欄位
 
@@ -308,6 +318,7 @@ LoopAgentTeams 風格的例子：
 
 - 指令裡有整套測試（照上面的判斷，以 hook 輸入的 `cwd` 找專案登記檔）且不是透過 `suite-gate.py run` 執行時擋下（結束碼 2），在 stderr 回覆可直接執行的改寫指令：只把整套測試那一個指令原地換成閘門指令，其餘（`cd`、`export`、管線、轉向、之後的 `echo`）照原樣保留，例如 `cd board && bun test 2>&1 | tail -30` 改寫為 `cd board && uv run --no-project python <skill>/scripts/suite-gate.py run -- 'bun test' 2>&1 | tail -30`。這樣紀錄的結束碼是測試自己的，不會被 `| tail` 或之後的 `echo` 蓋掉。包在 `bash -c '...'` 裡的整套測試，只改寫 `-c` 後面那段內容，外層 shell 與它前面的變數設定、選項照舊；交給 shell 執行的 heredoc（`bash <<EOF`）只改寫 heredoc 內文。包進閘門的那段以 `/bin/sh` 執行，只看得到已 export 的變數。只有登記檔的樣式要整串指令才對得上時，整串包進去。
 - 有對照表的專案（登記檔的 `affected.map` 非空）：同樣擋下，但回覆的可直接執行指令是把整套測試那一個指令原地換成 `suite-gate.py affected`，其餘照原樣保留，例如 `cd board && bun test 2>&1 | tail -30` 改為 `cd board && uv run --no-project python <skill>/scripts/suite-gate.py affected 2>&1 | tail -30`。回覆另附整套的寫法：同樣原地改寫成 `run --reason '<why the full suite is needed>' -- '<整套指令>'`，並說明發布前可改用 `--purpose release`，整批合併後改跑 `affected --base <起點> --purpose post-merge`。
+- 兩種回覆的最後都附上測試時點：修改期間跑自己挑的測試檔（不會被擋），合併進整合分支前對最終版本跑一次 `affected --purpose pre-merge`（有對照表時跑受影響測試，沒有時跑登記的整套），會留下紀錄，合併後同內容沿用。沒有對照表又沒有登記整套的專案不附，因為那條指令在那裡不能用。
 - 只看真正會執行的指令：指令開頭、管線與 `&&`／`;` 之後的指令、`sh -c`／`bash -c` 的字串、交給 shell stdin 執行的文字（`bash <<EOF`、`bash /dev/stdin <<EOF`、`cat <<EOF | bash`、`echo '...' | sh`、`printf '%s\n' '...' | sh`；多個 heredoc 時只看最後一個送到 stdin 的，之後另有 `<` 轉向時 heredoc 不算 stdin）。不會執行參數的指令（`echo`、`printf`、`gh`、`hcom send`、`grep`／`egrep`／`fgrep`、`rg`、`ag`、`cat`、`head`、`tail`、`wc`、`less`、`jq`、`tee`、`git commit`／`log`／`grep`／`show`），參數裡提到整套測試不擋；不在清單上的指令照舊判斷，因為它可能是真正執行測試的啟動器（如 `nohup`、`sudo`）。交給 shell 以外指令的 heredoc（`cat > f <<EOF`）是文字。以下兩種保守擋下（blocked conservatively），寧可偶爾多擋也不漏放：結束標記沒加引號的 heredoc，shell 寫檔前會先執行內文的 `$(...)` 與反引號（不論外面有沒有引號），所以照樣判斷裡面的指令，替換裡含引號或反斜線時看不出它在哪裡結束，直接當成整套測試擋下；交給 shell 的 `printf`／`echo` 文字只照 `%s`、`%%`、`\n` 還原，用到其他格式（`%b`、`%.0s`、`%d`）或其他跳脫字元（`\x20`、`\164`）時看不出 shell 收到什麼，直接當成整套測試擋下，整串送進閘門。登記檔樣式以開頭萬用字元（`*bun run test:all`）對上這些文字時不算；樣式本身以該指令開頭（如 `echo smoke`）時照算，明確登記的整套不會因此失去把關。
 - 認得閘門呼叫：完整或相對路徑的 `suite-gate.py run`；或同一串指令裡先賦值為 `suite-gate.py` 路徑的變數（`G=/path/suite-gate.py; uv run --no-project python "$G" run …`、`G=…; $G run …`）。在子 shell、管線或背景（`(G=…)`、`G=… |`、`… | G=…`、`G=… &`）裡的賦值不算。變數來自外部或無法解析時看不出是閘門，其餘部分是整套測試就照樣擋下，回覆附註改用完整路徑。
 - 放行：透過 `suite-gate.py run` 的指令（含 `--rerun`、`--purpose`、`--reason`）、指定檔案或篩選範圍的測試、非測試指令。同一串指令裡另有沒包裝的整套測試時仍擋下。有對照表的專案中沒帶用途的 `run` 也會被 hook 放行，由 `run` 自己拒絕並回覆 `affected` 指令。

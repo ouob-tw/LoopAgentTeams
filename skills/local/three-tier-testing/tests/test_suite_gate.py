@@ -2955,6 +2955,24 @@ class HookTests(GateCase):
         self.assertEqual(run_hook('pytest', self.repo / 'sub', self.env).returncode, 0)
         self.assertEqual(run_hook('make check', self.tmp, self.env).returncode, 0)
 
+    def test_the_reply_states_when_to_test_once_full_suites_are_registered(self):
+        note = 'When to test: while editing, run the test files you choose'
+        self.assertNotIn(note, run_hook('pytest', self.repo, self.env).stderr)
+        (self.repo / '.suite-gate.json').write_text(json.dumps(
+            {'full_suites': [{'command': 'pytest', 'cwd': '.'}]}))
+        result = run_hook('pytest 2>&1 | tail', self.repo, self.env)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(rewrite_of(result.stderr), gate.gate_command('pytest') + ' 2>&1 | tail')
+        self.assertIn(note, result.stderr)
+        self.assertIn('run the registered full suites through the gate:\n'
+                      f"  {cli('affected')} --base <commit this branch started from> "
+                      '--purpose pre-merge\n', result.stderr)
+        self.assertIn('a pass on the same content is reused after the merge', result.stderr)
+        (self.repo / '.suite-gate.json').write_text(json.dumps(
+            {'integration_branch': 'main', 'full_suites': [{'command': 'pytest', 'cwd': '.'}]}))
+        self.assertIn(f"  {cli('affected')} --purpose pre-merge\n",
+                      run_hook('pytest', self.repo, self.env).stderr)
+
     def test_the_rewrite_runs_passes_the_hook_and_is_reused_next_time(self):
         suite = self.suite()
         (self.repo / '.suite-gate.json').write_text(json.dumps({'suites': [suite]}))
@@ -3033,6 +3051,10 @@ class MappedHookTests(AffectedCase):
                     self.assertEqual(mapped_reply(result.stderr), expected)
                     self.assertIn('--purpose post-merge', result.stderr)
                     self.assertIn('--purpose release', result.stderr)
+                    self.assertIn('While editing, run the test files you choose'.lower(),
+                                  result.stderr.lower())
+                    self.assertIn('run the tests it affects through the gate:\n'
+                                  f'  {AFFECTED} --purpose pre-merge\n', result.stderr)
 
     def test_the_affected_reply_passes_the_hook_and_runs_the_selected_tests(self):
         self.touch('src/app.py')
@@ -3092,7 +3114,9 @@ class MappedHookTests(AffectedCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(rewrite_of(result.stderr),
                          f"cd web && {cli('run', '--', 'bun test')} 2>&1 | tail -30")
-        self.assertNotIn(AFFECTED, result.stderr)
+        # affected appears only as the pre-merge run of the registered full suites
+        self.assertEqual(result.stderr.count(AFFECTED),
+                         result.stderr.count(f'{AFFECTED} --purpose pre-merge'))
 
 
 def head(cwd, rev='HEAD'):
