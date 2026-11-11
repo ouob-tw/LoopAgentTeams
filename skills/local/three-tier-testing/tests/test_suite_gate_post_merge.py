@@ -236,6 +236,79 @@ class PostMergeRunTests(AffectedCase):
         self.assertEqual(self.full_runs(), ['root'])
 
 
+class NoMapTests(AffectedCase):
+    """Without an affected-test map, affected with a purpose runs the registered full suites
+    once and writes a summary; a pass on the same content is reused at the next step."""
+
+    def setUp(self):
+        super().setUp()
+        del self.registry['affected']
+        self.write_registry()
+        self.touch('src/app.py')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'feature work')
+
+    def summaries(self):
+        return [r for r in self.records() if r.get('kind') == 'affected-summary']
+
+    def test_pre_merge_runs_every_full_suite_once_and_the_next_steps_reuse_it(self):
+        start = rev(self.repo, 'main')
+        first = self.gate('affected', '--purpose', 'pre-merge')
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn('runs every registered full suite once', first.stderr)
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
+        summary = self.summaries()[-1]
+        self.assertEqual((summary['purpose'], summary['passed'], summary['base']),
+                         ('pre-merge', True, start))
+        self.assertEqual(summary['changed_files'], ['.suite-gate.json', 'src/app.py'])
+        self.assertEqual([(g['kind'], g['dir'], g['reused']) for g in summary['groups']],
+                         [('full-suite', '.', None), ('full-suite', 'web', None)])
+        ran = [r for r in self.records() if not r.get('kind')]
+        self.assertEqual({(r['purpose'], r['run_id']) for r in ran},
+                         {('pre-merge', summary['run_id'])})
+
+        again = self.gate('affected', '--purpose', 'pre-merge')
+        self.assertEqual(again.returncode, 0, again.stderr)
+        git(self.repo, 'checkout', '-q', 'main')
+        git(self.repo, 'merge', '-q', '--ff-only', 'feature')
+        after = self.gate('affected', '--base', start, '--purpose', 'post-merge')
+        self.assertEqual(after.returncode, 0, after.stderr)
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'], 'nothing ran again')
+        for summary, purpose in zip(self.summaries()[1:], ('pre-merge', 'post-merge')):
+            with self.subTest(purpose=purpose):
+                self.assertEqual((summary['purpose'], summary['passed']), (purpose, True))
+                self.assertEqual([g['reused']['run_id'] for g in summary['groups']],
+                                 [self.summaries()[0]['run_id']] * 2)
+
+    def test_changed_content_runs_again_and_a_failing_suite_fails_the_summary(self):
+        self.assertEqual(self.gate('affected', '--purpose', 'pre-merge').returncode, 0)
+        self.registry['full_suites'][1]['command'] = 'exit 3'
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'fix after review')
+        result = self.gate('affected', '--purpose', 'pre-merge')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(sorted(self.full_runs()), ['root', 'root', 'web'])
+        summary = self.summaries()[-1]
+        self.assertFalse(summary['passed'])
+        self.assertEqual([g['exit_code'] for g in summary['groups']], [0, 3])
+
+    def test_without_a_purpose_it_points_at_the_pre_merge_run(self):
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('no affected-test map', result.stderr)
+        self.assertIn('While editing, run the test files you choose', result.stderr)
+        self.assertIn('affected --purpose pre-merge', result.stderr)
+        self.assertEqual((self.full_runs(), self.records()), ([], []))
+
+    def test_without_registered_full_suites_nothing_runs(self):
+        del self.registry['full_suites']
+        self.write_registry()
+        result = self.gate('affected', '--purpose', 'pre-merge')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('full_suites must list', result.stderr)
+        self.assertEqual(self.records(), [])
+
 class PostMergeRerunTests(RerunCase):
     def test_a_group_that_passes_on_the_rerun_counts_as_passed(self):
         self.project({'web': 'bun test {tests}'}, self.BUN_FILES)
