@@ -187,6 +187,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 - 輸出（stderr）列出基準點、改動檔、選出的測試與原因、每組執行的指令；測試輸出與結束碼原樣轉出，多組時回傳第一個非 0 的結束碼。
 - 受影響測試不佔整套名額、不排隊、不沿用；每組寫一筆紀錄（`kind: "affected"`），含基準 commit、改動檔、該組選出的測試與原因。沒有選出任何測試時不執行、不寫紀錄（帶 `--purpose post-merge` 時仍寫總結紀錄）。
 - **改跑整套**（對照表退回整套）：列出觸發的檔案與原因，再對要跑的整套照 `run` 的規則經閘門執行——同樣排隊、佔名額、同內容沿用。觸發的檔案都落在某幾套的 `cwd` 目錄內（例如 `board/`）時只跑那幾套；有任一觸發檔不在任何套件目錄內（例如根目錄的 `.gitignore`；`cwd` 是 `.` 的套件不算）時跑 `full_suites` 的每一套。選出的測試不在要跑的整套目錄內時，照上面的方式另外執行；結束碼取第一個非 0 的。紀錄的用途是 `map-fallback`，並記下觸發的檔案（`trigger_files`）；沿用上次結果時寫在沿用紀錄裡。被觸發時把缺的檔案補進對照表；審查者核對對照表的變更。
+- **選太多就跑整套**（設了 `affected.full_suite_share` 才有）：某套整套（`cwd` 不是 `.`）目錄內選出的測試檔，超過該目錄測試檔數乘上這個比例時，不跑那些測試，改經閘門跑（或沿用）那一套整套，輸出寫明選了幾個、目錄共有幾個與比例。目錄的測試檔數是對照表 `tests` 樣式對到的該目錄檔案（加上選出的）。紀錄的用途是 `large-selection`，另記 `selected_tests`、`suite_tests`（目錄測試檔數）與 `share`。已因退回整套而跑的目錄不再判斷；沒設時照舊只跑選出的測試。
 
 ### 合併後受影響測試（`--purpose post-merge`）
 
@@ -241,6 +242,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批
 | `affected.map` | 對應規則清單：`paths`（程式路徑樣式）→ `tests`（測試檔或測試路徑樣式，任一層都可以）。`tests` 只能對到可以直接執行的測試檔，不要對到共用的輔助檔。 |
 | `affected.checks` | 檢查清單，每項有 `paths`（樣式）、`cwd`（執行目錄，預設 `.`）、`command`（例如型別檢查）。改動檔符合 `paths` 時，`affected` 與 git pre-commit 在該目錄執行 `command`，失敗就算失敗（pre-commit 因此拒絕提交並顯示指令輸出）；沒符合就不跑，與選出的測試無關。每次寫一筆 `kind: "affected"` 的紀錄。 |
 | `affected.shared` | 改到就改跑整套的路徑樣式，例如依賴鎖定檔、測試共用設定、建置設定。 |
+| `affected.full_suite_share` | 選填，大於 0、最多 1 的比例，例如 `0.5`。某套整套目錄內選出的測試檔超過這個比例時改跑那一套整套（見上面「選太多就跑整套」）；沒設就不換。 |
 
 `affected.map` 的規則也可以分放在 repo 根的 `.suite-gate.d/*.json`，每個檔案是 `{"map": [...]}`，依檔名順序接在 `.suite-gate.json` 的規則後面。同一路徑可以出現在多條規則，選到的測試會合併，所以要替既有路徑多對一個測試時，新增一條規則就好，不必改既有那一行。平行進行的工作各自新增檔案（例如 `.suite-gate.d/skill-hints.json`），合併時就不會在同一行衝突。只新增或修改一個片段時，`affected` 只跑該片段對到的測試，不退回整套；`.suite-gate.json` 本身的改動照上面第 2 項判斷。任一檔案讀不懂時，`affected` 寫出檔名後停止。
 
@@ -258,8 +260,9 @@ LoopAgentTeams 風格的例子：
     {"cwd": ".", "command": "uv run --no-project python -m unittest discover -s skills/local/three-tier-testing/tests"}
   ],
   "affected": {
+    "full_suite_share": 0.5,
     "commands": {
-      "board": "if printf '%s\\n' {tests} | grep -qv '^tests/unit/'; then bun run build:test || exit; fi; bun test $(printf './%s\\n' {tests})",
+      "board": "if printf '%s\\n' {tests} | grep -qv '^tests/unit/'; then bun run build:test || exit; fi; bun test --parallel=6 $(printf './%s\\n' {tests})",
       "skills/local/lat": "uv run --no-project python -m unittest {tests}",
       "skills/local/three-tier-testing": "uv run --no-project python -m unittest {tests}"
     },
@@ -276,7 +279,7 @@ LoopAgentTeams 風格的例子：
 }
 ```
 
-這裡的 board 只有 `tests/unit/` 不需要建置；`suites` 只列跑伺服器或瀏覽器測試的整套指令，單跑 `bun test`（只有單元測試）不算整套。樣板因此只在選到 `tests/unit/` 以外的測試時先建置，建置失敗就停下並回傳它的結束碼。board 的 `bunfig.toml` 把測試根目錄設在 `tests/unit`，`bun test` 會把不以 `./` 開頭的參數當成篩選字串、只在單元測試裡找，所以樣板替每個路徑加上 `./`（路徑不能含空白）。
+這裡的 board 只有 `tests/unit/` 不需要建置；`suites` 只列跑伺服器或瀏覽器測試的整套指令，單跑 `bun test`（只有單元測試）不算整套。樣板因此只在選到 `tests/unit/` 以外的測試時先建置，建置失敗就停下並回傳它的結束碼。board 的 `bunfig.toml` 把測試根目錄設在 `tests/unit`，`bun test` 會把不以 `./` 開頭的參數當成篩選字串、只在單元測試裡找，所以樣板替每個路徑加上 `./`（路徑不能含空白）。樣板的 `--parallel=6` 讓選出的檔案和 board 整套一樣分 6 路同時跑；選到 board 一半以上的測試檔時，`full_suite_share` 讓閘門直接跑（或沿用）board 整套。
 
 改到 `skills/local/lat/scripts/lat-watch.py` 時，在 `skills/local/lat` 執行 `uv run --no-project python -m unittest tests/test_lat_watch.py`；改到 `board/bun.lock` 時，經閘門只跑（或沿用）board 那一套整套；改到根目錄沒列在表上的檔案時，三套都跑。
 
@@ -433,7 +436,7 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 | 紀錄、名額、鎖與整理狀態 | `$XDG_STATE_HOME/suite-gate/`（預設 `~/.local/state/suite-gate/`） | 環境變數 `SUITE_GATE_STATE_DIR` |
 | 設定 | `$XDG_CONFIG_HOME/suite-gate/config.json`（預設 `~/.config/suite-gate/config.json`） | 環境變數 `SUITE_GATE_CONFIG` |
 
-整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用、用途（`purpose`：`post-merge`、`release`、`map-fallback`、`reason`、`background` 或 `null`）與自填原因（`purpose_reason`）、合併後受影響測試的執行編號（`run_id`，只有那次執行的紀錄才有）、預約量的鍵 `profile_key`（`repo`、`rel_cwd`、`command`，不在 Git 工作區時為 `null`），以及這次的用量 `profile`：
+整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用、用途（`purpose`：`post-merge`、`release`、`map-fallback`、`large-selection`、`reason`、`background` 或 `null`）與自填原因（`purpose_reason`）、合併後受影響測試的執行編號（`run_id`，只有那次執行的紀錄才有）、預約量的鍵 `profile_key`（`repo`、`rel_cwd`、`command`，不在 Git 工作區時為 `null`），以及這次的用量 `profile`：
 
 | 欄位 | 意思 |
 | ---- | ---- |

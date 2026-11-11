@@ -1561,6 +1561,77 @@ class MapFallbackTests(AffectedCase):
         self.assertEqual(self.full_runs(), ['root'])
 
 
+class LargeSelectionTests(AffectedCase):
+    """With affected.full_suite_share, a selection over that share of a suite directory's test
+    files runs the directory's full suite instead. Changes are measured from HEAD."""
+
+    def setUp(self):
+        super().setUp()
+        for name in ('a', 'b', 'c'):
+            self.touch(f'web/tests/{name}.test.ts', '')
+        git(self.repo, 'add', '-A')
+        git(self.repo, 'commit', '-qm', 'more web tests')
+
+    def share(self, value):
+        self.registry['affected']['full_suite_share'] = value
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'share set')
+
+    def test_a_selection_over_the_share_runs_the_directory_full_suite_and_records_why(self):
+        self.share(0.5)
+        for name in ('a', 'b', 'c'):
+            self.touch(f'web/tests/{name}.test.ts')
+        self.touch('src/app.py')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('the selection covers 3 of 4 test files in web, over the share of 0.5 '
+                      'set in affected.full_suite_share; running its full suite instead',
+                      result.stderr)
+        self.assertEqual(self.full_runs(), ['web'])
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py'])])
+        web = next(r for r in self.records() if r.get('rel_cwd') == 'web')
+        self.assertEqual((web['purpose'], web['selected_tests'], web['suite_tests'], web['share']),
+                         ('large-selection', ['web/tests/a.test.ts', 'web/tests/b.test.ts',
+                                              'web/tests/c.test.ts'], 4, 0.5))
+        self.assertTrue(web['reusable'])
+        self.assertIn('purpose: large selection, 3 of 4 test files', self.gate('status').stdout)
+
+    def test_a_selection_at_or_under_the_share_runs_only_the_selected_tests(self):
+        self.share(0.5)
+        self.touch('web/tests/a.test.ts')
+        self.touch('web/tests/b.test.ts')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), [])
+        self.assertEqual(self.ran(), [('web', ['tests/a.test.ts', 'tests/b.test.ts'])])
+        self.assertNotIn('full_suite_share', result.stderr)
+
+    def test_without_the_setting_a_large_selection_runs_only_the_selected_tests(self):
+        self.touch('web/src/page.ts')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), [])
+        self.assertEqual(self.ran(), [('web', ['tests/a.test.ts', 'tests/b.test.ts',
+                                               'tests/c.test.ts', 'tests/page.test.ts'])])
+
+    def test_a_suite_run_from_the_repo_root_is_never_chosen_for_a_large_selection(self):
+        self.share(0.5)
+        self.touch('src/util.py')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), [])
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py', 'tests/test_util.py'])])
+
+    def test_a_bad_share_stops_affected_and_names_the_field(self):
+        self.share(1.5)
+        self.touch('web/tests/a.test.ts')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('affected.full_suite_share must be a number above 0 and at most 1',
+                      result.stderr)
+        self.assertEqual((self.full_runs(), self.ran()), ([], []))
+
+
 class FallbackScopeTests(AffectedCase):
     """A fallback runs only the full suites whose directory holds the trigger files."""
 

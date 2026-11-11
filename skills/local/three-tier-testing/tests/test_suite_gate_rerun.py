@@ -171,6 +171,29 @@ class BunRerunTests(RerunCase):
                       'the new request still opens the panel']}])
         self.assertEqual(self.calls()[1][2], ['test', 'tests/browser/pd-notify-throws.test.ts'])
 
+    def test_a_parallel_affected_command_names_the_failed_file_and_reruns_it_in_parallel(self):
+        # The board template runs the selected files in parallel workers (--parallel=6).
+        self.project({'web': 'bun test --parallel=6 {tests}'}, self.PARALLEL_FILES)
+        reg = json.loads((self.repo / '.suite-gate.json').read_text())
+        reg['affected']['map'] = [{'paths': ['web/src/**'], 'tests': ['web/tests/**']}]
+        (self.repo / '.suite-gate.json').write_text(json.dumps(reg))
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'map web')
+        git(self.repo, 'checkout', '-qb', 'feature')
+        (self.repo / 'web/src').mkdir()
+        (self.repo / 'web/src/page.ts').write_text('changed\n')
+        self.plan('bun', ('bun-parallel-fail.txt', 1), ('bun-pass.txt', 0))
+        result = self.gate('affected', '--base', 'main')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first, again = (call[2] for call in self.calls())
+        self.assertEqual(first[:2], ['test', '--parallel=6'])
+        self.assertEqual(sorted(first[2:]), sorted(f[len('web/'):] for f in self.PARALLEL_FILES))
+        self.assertEqual(again, ['test', '--parallel=6', 'tests/browser/pd-notify-throws.test.ts'])
+        record = self.only_record()
+        self.assertEqual((record['kind'], record['exit_code']), ('affected', 0))
+        self.assertEqual([f['file'] for f in record['flaky']],
+                         ['web/tests/browser/pd-notify-throws.test.ts'])
+
     def test_affected_tests_rerun_their_failed_files_too(self):
         self.project({'web': 'bun test {tests}'}, self.BUN_FILES)
         reg = json.loads((self.repo / '.suite-gate.json').read_text())

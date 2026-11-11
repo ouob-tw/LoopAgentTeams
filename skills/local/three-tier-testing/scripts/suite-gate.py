@@ -2598,6 +2598,9 @@ def describe_purpose(record):
         return f"reason: {record.get('purpose_reason')}"
     if purpose == 'map-fallback':
         return 'map fallback, triggered by ' + ', '.join(record.get('trigger_files') or [])
+    if purpose == 'large-selection':
+        return (f"large selection, {len(record.get('selected_tests') or [])} of "
+                f"{record.get('suite_tests')} test files")
     return purpose
 
 
@@ -3023,12 +3026,16 @@ def read_map(registry):
                          '"cwd": "<dir>"} entries')
     for i, check in enumerate(checks):
         _strings(check.get('paths'), f'affected.checks[{i}].paths', allow_empty=False)
+    share = affected.get('full_suite_share')
+    if share is not None and (isinstance(share, bool) or not isinstance(share, (int, float))
+                              or not 0 < share <= 1):
+        raise ValueError('affected.full_suite_share must be a number above 0 and at most 1')
     suites = read_full_suites(registry)
     branch = registry.get('integration_branch')
     if branch is not None and (not isinstance(branch, str) or not branch):
         raise ValueError('integration_branch must be a branch name')
     return {'commands': {_dir_key(k): v for k, v in commands.items()}, 'rules': rules,
-            'shared': shared, 'branch': branch, 'suites': suites,
+            'shared': shared, 'branch': branch, 'suites': suites, 'share': share,
             'checks': [dict(c, cwd=_dir_key(c.get('cwd', '.'))) for c in checks]}
 
 
@@ -3468,6 +3475,17 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
             return code, failed
     elif not groups and not checks:
         return None, []
+    if amap.get('share') is not None:
+        large = large_selections(root, amap, groups)
+        if large:
+            result, more = run_large(root, large, amap['share'], prepared, via,
+                                     extra.get('run_id'), results)
+            code, failed = code or result, failed + more
+            ran = [suite for suite, _, _ in large]
+            groups = {d: kept for d, tests in groups.items()
+                      if (kept := [t for t in tests if not any(suite_holds(s, t) for s in ran)])}
+            if not groups and not checks:
+                return code, failed
     if groups:
         warn('selected tests:')
     for test in sorted(t for tests in groups.values() for t in tests):
@@ -3507,6 +3525,59 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
                              lambda: gate.execute(info), tests)
         if result:
             failed.append((directory, text, tests))
+        code = code or result
+    return code, failed
+
+
+def suite_holds(suite, path):
+    """True when path (a repo path) lies in the suite's directory; a suite run from `.`
+    holds nothing, as for a fallback."""
+    return suite['cwd'] != '.' and (path == suite['cwd'] or path.startswith(suite['cwd'] + '/'))
+
+
+def large_selections(root, amap, groups):
+    """[(suite, selected, known)] for each full suite whose directory holds more than
+    amap['share'] of its test files among the selected tests: selected and known are the
+    selected tests and the map's test files (files its test patterns match) in it."""
+    patterns = [p for rule in amap['rules'] for p in rule['tests']]
+    files = [p for p in _git_paths(['ls-files', '-co', '--exclude-standard'], root)
+             if any(glob_match(p, pattern) for pattern in patterns)]
+    tests = [t for d, chosen in groups.items() for t in chosen]
+    large = []
+    for suite in amap['suites']:
+        selected = [t for t in tests if suite_holds(suite, t)]
+        if not selected:
+            continue
+        known = set(selected) | {f for f in files if suite_holds(suite, f)}
+        if len(selected) > amap['share'] * len(known):
+            large.append((suite, selected, len(known)))
+    return large
+
+
+def run_large(root, large, share, prepared, via=None, run_id=None, results=None):
+    """Run (or reuse) the full suite of each large selection through the gate instead of
+    its selected tests: (exit code, [(directory, command, None) that failed])."""
+    code, failed = 0, []
+    for suite, selected, known in large:
+        warn(f"the selection covers {len(selected)} of {known} test files in {suite['cwd']}, "
+             f'over the share of {share:g} set in affected.full_suite_share; running its full '
+             'suite instead:')
+        warn(f"full suite in {suite['cwd']}: {suite['command']}")
+        cwd = suite_cwd(root, suite)
+        if not prepared(cwd, suite['cwd']):
+            result = 2
+            results.append(group_result('full-suite', suite['cwd'], suite['command'], 2,
+                                        not_run='preparing the directory failed'))
+        else:
+            gate = Gate([suite['command']], cwd, None, load_config(),
+                        {'purpose': 'large-selection', 'selected_tests': selected,
+                         'suite_tests': known, 'share': share,
+                         **({'via': via} if via else {}),
+                         **({'run_id': run_id} if run_id else {})})
+            result = drive_group(results, 'full-suite', suite['cwd'], suite['command'], gate,
+                                 gate.run, selected)
+        if result:
+            failed.append((suite['cwd'], suite['command'], None))
         code = code or result
     return code, failed
 
