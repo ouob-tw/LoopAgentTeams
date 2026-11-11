@@ -89,8 +89,10 @@ class SessionTests(unittest.TestCase):
         gh = self.binary / 'gh'
         gh.write_text(
             '#!/bin/sh\n'
-            'case "$*" in "api repos/acme/work/issues/"[0-9]*) cat "$FAKE_TRACKER_ISSUE";;\n'
-            '  *) echo "unknown gh invocation: $*" >&2; exit 1;; esac\n')
+            '[ $# = 2 ] && [ "$1" = api ] || { echo "unknown gh invocation: $*" >&2; exit 1; }\n'
+            'case "$2" in "repos/acme/work/issues/"*[!0-9]*|"repos/acme/work/issues/") ;;\n'
+            '  "repos/acme/work/issues/"*) cat "$FAKE_TRACKER_ISSUE"; exit 0;; esac\n'
+            'echo "unknown gh invocation: $*" >&2; exit 1\n')
         gh.chmod(0o755)
 
     def set_hcom_agents(self, *names):

@@ -32,31 +32,33 @@ def read_issue(repo, number):
         raise ValueError(result.stderr.strip() or result.stdout.strip() or f'gh exit {result.returncode}')
     try:
         issue = json.loads(result.stdout)
-        issue['state'], issue['labels']
-    except (ValueError, KeyError, TypeError) as error:
-        raise ValueError(f'gh 回傳無法解讀：{error!r}') from error
+        if not (isinstance(issue, dict) and isinstance(issue.get('state'), str)
+                and isinstance(issue.get('labels'), list)):
+            raise ValueError('缺 state 或 labels')
+    except ValueError as error:
+        raise ValueError(f'gh 回傳無法解讀：{error}') from error
     return issue
 
 
 def ledger_tickets(ledger, path, default_repo):
     """Each ledger ticket once, as (repo, number); text that is no ticket number is skipped."""
-    seen = []
+    seen = {}
     doc = ledger.read_only(type('Args', (), {'ledger': path})())
     for item in doc['items']:
         for repo, ref in sorted(ledger.ticket_refs(item['ticket']), key=str):
-            if ref[1:].isdigit() and (repo or default_repo, int(ref[1:])) not in seen:
-                seen.append((repo or default_repo, int(ref[1:])))
-    return seen
+            if ref[1:].isdigit():
+                seen[(repo or default_repo, int(ref[1:]))] = None
+    return list(seen)
 
 
 def tracker_warnings(ledger, path, workspace):
     """Warning lines for the ledger's tickets, [] when all is in order. A read failure is one line."""
+    lines = []
     try:
         default_repo = tracker_repo(workspace)
         if not default_repo:
             return ['tracker 檢查略過：docs/agents/issue-tracker.md 沒有指明 GitHub repo']
         tickets = ledger_tickets(ledger, path, default_repo)
-        lines = []
         for repo, number in tickets:
             issue = read_issue(repo, number)
             names = [label.get('name') for label in issue['labels'] if isinstance(label, dict)]
@@ -72,5 +74,8 @@ def tracker_warnings(ledger, path, workspace):
                         part for name in stale for part in ('--remove-label', name)])
                     lines.append(f'- {repo}#{number} 已關閉但仍掛 {", ".join(stale)}；移除：`{command}`')
     except Exception as error:  # noqa: BLE001 - a tracker problem only ever costs one line
-        return [f'tracker 檢查略過：讀不到 tracker（{str(error).splitlines()[0] if str(error) else error!r}）']
+        detail = " ".join(str(error).split()) or repr(error)
+        if not lines:
+            return [f'tracker 檢查略過：讀不到 tracker（{detail}）']
+        lines.append(f'tracker 檢查中斷：讀不到 tracker（{detail}）；上面只列出中斷前讀到的票')
     return (['LAT tracker 警告（只提醒，不擋；不會自動關票或改標籤）：'] + lines) if lines else []

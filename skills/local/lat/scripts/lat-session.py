@@ -1501,10 +1501,15 @@ def stop_check(record, payload):
         '。Spec 確認題先更新 Spec 共識 → 跑檢查工具 → 確認題寫明共識版本。補做順序：寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重新提問。')
 
 
+def done_stop(record, message):
+    """Whether this Stop is a DONE: turn end of a controller with a work ledger."""
+    lines = [line for line in message.splitlines() if line.strip()]
+    return bool(record.get('ledger_path') and lines and lines[-1].startswith('DONE:'))
+
+
 def ledger_stop_check(record, message):
     """Why a DONE Stop should be held for an unfinished ledger, or None."""
-    lines = [line for line in message.splitlines() if line.strip()]
-    if not record.get('ledger_path') or not lines or not lines[-1].startswith('DONE:'):
+    if not done_stop(record, message):
         return None
     state, text = ledger_check(record['ledger_path'])
     if state == 'ok':
@@ -1608,8 +1613,7 @@ def report_stop(record, payload):
         ledger = ledger_stop_check(record, message)
         if ledger:
             reasons.append(ledger)
-        lines = [line for line in message.splitlines() if line.strip()]
-        if record.get('ledger_path') and lines and lines[-1].startswith('DONE:'):
+        if done_stop(record, message):
             tracker = tracker_warning(record)
             if tracker:
                 notes.append(tracker)
