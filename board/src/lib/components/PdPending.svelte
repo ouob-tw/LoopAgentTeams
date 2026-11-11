@@ -9,8 +9,8 @@
 	// the middle column at first; its heading drags it and its corner resizes it, and that place is
 	// kept in this browser. 稍後 folds it to a one-line badge above the column's tabs,
 	// which opens it again; a request that appears opens it too and, once the user allowed it (the
-	// 開啟通知 button, never asked for unprompted), raises a browser notification whose click comes
-	// back to it. With nothing waiting it stays hidden while healthy; vault outages and an
+	// 開啟通知 button, never asked for unprompted) and while the board is in the background, raises a
+	// notification through the board's service worker whose click comes back to it. With nothing waiting it stays hidden while healthy; vault outages and an
 	// unreachable daemon keep a visible notice here, on every screen, which 稍後 folds to the badge
 	// (or a phone's strip) that goes on saying it.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
@@ -177,19 +177,42 @@
 	const notifications = typeof Notification === 'function';
 	let permission = $state<NotificationPermission>(notifications ? Notification.permission : 'denied');
 
-	function notify(item: PdRequest) {
-		if (!notifications || Notification.permission !== 'granted') return;
-		// Android Chrome has Notification but its constructor throws; a failed notice must not break the page.
+	/** The board's service worker once active (static/pd-sw.js), or null where it cannot be had:
+	 *  notifications go through it, the one way Android Chrome allows. A click on one comes back as
+	 *  a `pd-open` message. */
+	let worker: Promise<ServiceWorkerRegistration | null> = Promise.resolve(null);
+	onMount(() => {
+		const container = notifications ? navigator.serviceWorker : undefined;
+		if (!container) return;
+		const opened = (event: MessageEvent) => {
+			if (event.data?.type === 'pd-open') void show(true);
+		};
 		try {
-			const { title, body } = notificationText(item);
-			const shown = new Notification(title, { body, tag: `pd-${item.id}` });
-			shown.onclick = () => {
-				window.focus();
-				shown.close();
-				void show(true);
-			};
+			container.addEventListener('message', opened);
+			container.startMessages();
+			worker = container
+				.register('/pd-sw.js')
+				.then(() => container.ready)
+				.catch(() => null);
 		} catch {
-			// No notice on this browser; the panel is already open.
+			// No service worker here: no notifications, the panel works as before.
+		}
+		return () => container.removeEventListener('message', opened);
+	});
+
+	/** In front of the user: the tab shown and its window focused. The panel opens by itself then,
+	 *  so only a board in the background notifies. */
+	const inFront = () => document.visibilityState === 'visible' && document.hasFocus();
+
+	async function notify(item: PdRequest) {
+		if (!notifications || Notification.permission !== 'granted' || inFront()) return;
+		// A failed notice must not break the page: the panel is already open.
+		try {
+			const registration = await worker;
+			const { title, body } = notificationText(item);
+			await registration?.showNotification(title, { body, tag: `pd-${item.id}` });
+		} catch {
+			// No notice on this browser.
 		}
 	}
 
@@ -204,7 +227,7 @@
 		if (before === null) return;
 		const fresh = requests.filter((item) => !before.has(key(item)));
 		if (fresh.length) open = true;
-		for (const item of fresh) notify(item);
+		for (const item of fresh) void notify(item);
 	});
 
 	async function allowNotifications() {
