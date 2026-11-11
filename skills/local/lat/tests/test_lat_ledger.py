@@ -84,6 +84,27 @@ class LedgerCase(unittest.TestCase):
         self.hcom_list.write_text(json.dumps([
             {'name': name, 'base_name': name.rsplit('-', 1)[-1]} for name in names]))
 
+    # Tests about other things close impl and qa rows without caring about findings: before such
+    # a `done`, a clean review is recorded (impl) or --no-findings added (qa). The done-gate
+    # tests turn this off.
+    auto_findings = True
+
+    def satisfy_done_gate(self, args, by, env, script):
+        if script or not self.ledger.exists() or '--no-findings' in args:
+            return args
+        doc = self.doc()
+        row = next((i for i in doc['items'] if str(i['id']) == args[1]), None)
+        if not doc.get('problem_gates') or not row or row['status'] not in ('assigned',
+                                                                            'in_progress'):
+            return args
+        if row['stage'] == 'qa':
+            return (*args, '--no-findings')
+        if row['stage'] == 'impl' and not any(r['row'] == row['id']
+                                              for r in doc.get('reviews', [])):
+            self.ok('review-result', '--row', args[1], '--reviewer', 'auto-reviewer',
+                            '--clean', by=by, env=env)
+        return args
+
     def run_ledger(self, *args, by='orch', env=None, script=None):
         environment = {**os.environ, 'LAT_LEDGER_NOW': self.now, 'HCOM_INSTANCE_NAME': by,
                        'LAT_LEDGER_HCOM_LIST': str(self.hcom_list),
@@ -97,6 +118,9 @@ class LedgerCase(unittest.TestCase):
                               timeout=60)
 
     def ok(self, *args, **kwargs):
+        if args[0] == 'done' and self.auto_findings:
+            args = self.satisfy_done_gate(args, kwargs.get('by', 'orch'), kwargs.get('env'),
+                                          kwargs.get('script'))
         result = self.run_ledger(*args, **kwargs)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
@@ -1595,7 +1619,8 @@ class ActualSettingsTests(LedgerCase):
         history = self.item(item)['history'][-1]
         self.assertEqual((history['action'], history['changes']),
                          ('settings', {'effort': ['low', 'high']}))
-        self.assertEqual(self.stage_texts(self.ticket()), {'impl': 'claude-opus-5-5・low→high'})
+        self.assertEqual(self.stage_texts(self.ticket()),
+                         {'impl': 'claude-opus-5-5・low→high', 'review': '未查證'})
         self.assertIn('| impl | claude-opus-5-5・low→high |', self.ok('show', '--rows'))
         self.assertIn('實作 claude-opus-5-5・low→high', self.ok('show'))
 
@@ -1631,7 +1656,8 @@ class ActualSettingsTests(LedgerCase):
                          ('gpt-6.1-sol', 'medium', False, {'model': 'hcom', 'effort': 'card'}))
         self.assertEqual(self.item(item)['history'][-1]['changes']['model'],
                          ['gpt-6-astra', 'gpt-6.1-sol'])
-        self.assertEqual(self.stage_texts(self.ticket()), {'impl': 'gpt-6.1-sol・medium（未查證）'})
+        self.assertEqual(self.stage_texts(self.ticket()),
+                         {'impl': 'gpt-6.1-sol・medium（未查證）', 'review': '未查證'})
 
     def test_native_agent_is_never_looked_up(self):
         self.launch('helper', 'claude', 'claude-opus-5-5', [('claude-opus-5-5', 'high')])
@@ -1644,7 +1670,8 @@ class ActualSettingsTests(LedgerCase):
         for reading in actual.values():
             self.assertEqual((reading['model'], reading['effort'], reading['verified'],
                               reading['native']), ('claude-sonnet-5-5', None, False, True))
-        self.assertEqual(self.stage_texts(self.ticket()), {'impl': 'claude-sonnet-5-5・?（未查證）'})
+        self.assertEqual(self.stage_texts(self.ticket()),
+                         {'impl': 'claude-sonnet-5-5・?（未查證）', 'review': '未查證'})
 
     def test_review_result_records_each_reviewer_and_feeds_the_review_stage(self):
         self.launch('impl', 'claude', 'claude-opus-5-5', [('claude-opus-5-5', 'medium')])
@@ -1680,8 +1707,8 @@ class ActualSettingsTests(LedgerCase):
     def test_review_result_refusals_write_nothing(self):
         item = self.add()
         before = self.ledger.read_bytes()
-        self.assertIn('give --clean', self.fails('review-result', '--row', str(item),
-                                                 '--reviewer', 'rev'))
+        self.assertIn('give either --clean or at least one --finding', self.fails(
+            'review-result', '--row', str(item), '--reviewer', 'rev'))
         self.assertIn('no item 9', self.fails('review-result', '--row', '9', '--reviewer', 'rev',
                                               '--clean'))
         self.assertIn('--reviewer', self.fails('review-result', '--row', str(item), '--clean'))
@@ -1704,7 +1731,238 @@ class ActualSettingsTests(LedgerCase):
         self.ok('done', str(item), '--file', self.report(), by='impl')
         actual = self.item(item)['actual']
         self.assertEqual((list(actual), actual['done']['effort']), (['done'], 'max'))
-        self.assertEqual(self.stage_texts(self.ticket()), {'impl': 'claude-opus-5-5・max'})
+        self.assertEqual(self.stage_texts(self.ticket()),
+                         {'impl': 'claude-opus-5-5・max', 'review': '未查證'})
+
+
+class ProblemLogTests(LedgerCase):
+    """The problem log (#549): stable ids, resolutions and corrections by id, done gates scoped
+    to the row's own agent and current round, per-stage counts and the stage summary."""
+    auto_findings = False
+
+    def setUp(self):
+        super().setUp()
+        self.set_hcom('orch', 'impl', 'impl2', 'qa', 'qa2', 'rev')
+        self.init()
+        self.log = self.workspace / '.lat' / 'problems.jsonl'
+
+    def at(self, minute):
+        self.now = f'2026-10-24T10:{minute:02d}:00Z'
+
+    def report(self):
+        path = self.root / 'report.md'
+        path.write_text('report\n')
+        return str(path)
+
+    def started_row(self, stage, agent, ticket='#1', evidence='commit'):
+        row = self.add(ticket=ticket, stage=stage, evidence=evidence)
+        self.ok('assign', str(row), '--agent', agent, '--card', str(self.card(f'card-{row}.md')))
+        self.ok('start', str(row), '--eta', '+1h', by=agent)
+        return row
+
+    def problems(self, *extra):
+        return json.loads(self.ok('problems', '--json', *extra))
+
+    def view(self):
+        return json.loads(self.ok('show', '--json'))
+
+    def test_a_problem_resolved_with_a_fix_commit_counts_once_with_history(self):
+        impl = self.started_row('impl', 'impl')
+        self.assertEqual(self.ok('review-result', '--row', str(impl), '--reviewer', 'rev',
+                                 '--finding', '乙:empty list crashes', by='impl').split()[-1],
+                         'P1')
+        self.at(5)
+        self.ok('problem-update', 'P1', '--fixed', self.merged[:10], by='impl')
+        first = self.view()
+        problems = self.problems()
+        self.assertEqual(len(problems), 1)
+        problem = problems[0]
+        self.assertEqual((problem['id'], problem['stage'], problem['finder'], problem['level'],
+                          problem['text'], problem['ticket'], problem['row'], problem['caught']),
+                         ('P1', 'review', 'rev', '乙', 'empty list crashes', '#1', impl, False))
+        self.assertEqual(problem['resolution'], {'kind': 'fixed', 'commit': self.merged})
+        self.assertEqual([line['op'] for line in problem['history']], ['record', 'update'])
+        self.assertEqual(problem['candidate'], 1)
+        self.assertEqual(first['finding_summary'], [{
+            'stage': 'review', 'label': '審查', 'count': 1,
+            'levels': {'甲': 0, '乙': 1, '丙': 0}, 'caught': 0, 'severe': True}])
+        self.assertEqual(first['tickets'][0]['findings']['text'], '審查 1（乙 1）')
+        self.assertEqual(self.view(), first, 'rereading gives the same state')
+        self.assertEqual(self.problems(), problems)
+        self.assertEqual(len(self.log.read_text().splitlines()), 2)
+        self.assertEqual(self.doc()['reviews'][0]['problems'], ['P1'])
+        self.assertIn('| P1 | #1 | 審查 | rev | 乙 | empty list crashes | 否 | 已修 ',
+                      self.ok('problems'))
+
+    def test_qa_done_needs_its_own_finding_of_this_round_or_no_findings(self):
+        qa = self.started_row('qa', 'qa', evidence='file')
+        # Another agent's acceptance finding on the same ticket does not count.
+        self.ok('problem', '--ticket', '#1', '--stage', 'qa', '--level', '丙', '--text',
+                'seen by someone else', by='qa2')
+        error = self.fails('done', str(qa), '--file', self.report(), by='qa')
+        self.assertIn(f'`problem --row {qa} --stage qa', error)
+        self.assertIn('--no-findings', error)
+        self.ok('problem', '--row', str(qa), '--stage', 'qa', '--level', '甲', '--text',
+                'breaks on phone', by='qa')
+        # Moved to another ticket by a correction, it no longer counts for this row.
+        self.add(ticket='#2', stage='qa', evidence='file')
+        problem = self.problems('--ticket', '#1')[-1]['id']
+        self.ok('problem-update', problem, '--ticket', '#2', '--reason', 'other ticket', by='qa')
+        self.assertIn('record what this acceptance found', self.fails(
+            'done', str(qa), '--file', self.report(), by='qa'))
+        self.ok('problem-update', problem, '--ticket', '#1', '--reason', 'back', by='qa')
+        self.assertIn('drop --no-findings', self.fails(
+            'done', str(qa), '--file', self.report(), '--no-findings', by='qa'))
+        self.ok('done', str(qa), '--file', self.report(), by='qa')
+        # The same agent's finding recorded on another row of the ticket does not count.
+        other = self.started_row('qa', 'qa', evidence='file')
+        mine = self.started_row('qa', 'qa', evidence='file')
+        self.ok('problem', '--row', str(other), '--stage', 'qa', '--level', '丙', '--text',
+                'found on the other row', by='qa')
+        self.assertIn('record what this acceptance found', self.fails(
+            'done', str(mine), '--file', self.report(), by='qa'))
+        # Nor does one recorded through another ledger of the project, which shares the log.
+        first = self.ledger
+        self.ledger = first.with_name('round-2.json')
+        self.init()
+        self.add(ticket='#1', stage='qa', evidence='file')
+        self.ok('problem', '--ticket', '#1', '--stage', 'qa', '--level', '丙', '--text',
+                'found in another round', by='qa')
+        self.ledger = first
+        self.assertIn('record what this acceptance found', self.fails(
+            'done', str(mine), '--file', self.report(), by='qa'))
+        self.ok('done', str(mine), '--file', self.report(), '--no-findings', by='qa')
+        self.ok('cancel', str(other), '--reason', 'test row')
+        # A reassigned row starts a new round: what the earlier round recorded no longer counts.
+        again = self.started_row('qa', 'qa', evidence='file')
+        self.at(10)
+        self.ok('reassign', str(again), '--agent', 'qa', '--reason', 'relaunched')
+        self.ok('start', str(again), '--eta', '+1h', by='qa')
+        self.assertIn('record what this acceptance found', self.fails(
+            'done', str(again), '--file', self.report(), by='qa'))
+        self.ok('done', str(again), '--file', self.report(), '--no-findings', by='qa')
+        self.assertTrue(self.item(again)['no_findings'])
+
+    def test_impl_done_needs_a_review_result_of_its_current_round(self):
+        impl = self.started_row('impl', 'impl')
+        self.ok('review-result', '--row', str(impl), '--reviewer', 'rev', '--clean', by='impl')
+        other = self.started_row('impl', 'impl2', ticket='#2')
+        self.assertIn(f'review-result --row {other}', self.fails(
+            'done', str(other), '--commit', self.merged, by='impl2'),
+            "another row's review does not count")
+        self.at(10)
+        self.ok('reassign', str(impl), '--agent', 'impl2', '--reason', 'relaunched')
+        self.ok('start', str(impl), '--eta', '+1h', by='impl2')
+        error = self.fails('done', str(impl), '--commit', self.merged, by='impl2')
+        self.assertIn("before the row's latest start does not count", error)
+        self.assertEqual(self.item(impl)['status'], 'in_progress')
+        self.assertIn('for acceptance (qa) rows', self.fails(
+            'done', str(impl), '--commit', self.merged, '--no-findings', by='impl2'))
+        self.ok('review-result', '--row', str(impl), '--reviewer', 'rev', '--finding',
+                '丙:naming', by='impl2')
+        self.ok('done', str(impl), '--commit', self.merged, by='impl2')
+
+    def test_problems_after_merge_name_the_causing_ticket_or_unknown_and_count_after_deploy(self):
+        impl = self.started_row('impl', 'impl')
+        self.ok('review-result', '--row', str(impl), '--reviewer', 'rev', '--clean', by='impl')
+        self.ok('done', str(impl), '--commit', self.merged, by='impl')
+        self.assertIn('recorded by the orchestrator', self.fails(
+            'problem', '--ticket', '#1', '--stage', 'post-deploy', '--level', '乙', '--text',
+            'x', by='impl'))
+        self.assertIn('only for problems found after merging', self.fails(
+            'problem', '--ticket', '不明', '--stage', 'qa', '--level', '乙', '--text', 'x'))
+        self.assertIn('no row of this ledger covers', self.fails(
+            'problem', '--ticket', '#9', '--stage', 'qa', '--level', '乙', '--text', 'x'))
+        self.ok('problem', '--ticket', '#1', '--stage', 'post-deploy-user', '--level', '乙',
+                '--text', 'blank page after deploy', '--finder', 'user')
+        # A ticket of an earlier round of the project is taken after merging.
+        self.ok('problem', '--ticket', '#40', '--stage', 'post-deploy', '--level', '丙',
+                '--text', 'old ticket broke', '--finder', 'user')
+        self.ok('problem', '--ticket', '不明', '--stage', 'post-deploy-user', '--level', '甲',
+                '--text', 'cause unknown', '--finder', 'user', '--caught', FP[:12])
+        view = self.view()
+        # The old ticket's problem was recorded through this ledger, so it counts here too.
+        self.assertEqual([p['id'] for p in view['problems']], ['P1', 'P2', 'P3'])
+        self.assertEqual(view['finding_summary'], [{
+            'stage': 'review', 'label': '審查', 'count': 0,
+            'levels': {'甲': 0, '乙': 0, '丙': 0}, 'caught': 0, 'severe': False}, {
+            'stage': 'post-deploy-user', 'label': '上線後（使用者）', 'count': 2,
+            'levels': {'甲': 1, '乙': 1, '丙': 0}, 'caught': 1, 'severe': True}, {
+            'stage': 'post-deploy', 'label': '上線後（其他）', 'count': 1,
+            'levels': {'甲': 0, '乙': 0, '丙': 1}, 'caught': 0, 'severe': False}])
+        self.assertEqual(view['problems'][2]['gate'], FP)
+        self.assertEqual([p['ticket'] for p in self.problems('--ticket', '不明')], ['不明'])
+        self.assertIn('| 上線後（使用者） | 1 | 1 | 0 | 2 | 1 |', self.ok('show'))
+
+    def test_ticket_lines_show_zero_for_done_stages_and_the_summary_counts_each_id_once(self):
+        shared = self.started_row('impl', 'impl', ticket='#1,#2')
+        self.assertIn('say which ticket', self.fails(
+            'review-result', '--row', str(shared), '--reviewer', 'rev', '--finding', '乙:x',
+            by='impl'))
+        self.ok('review-result', '--row', str(shared), '--reviewer', 'rev', '--ticket', '#2',
+                '--finding', '甲:wrong total', '--finding', '丙:typo', by='impl')
+        self.ok('done', str(shared), '--commit', self.merged, by='impl')
+        qa = self.started_row('qa', 'qa', ticket='#1', evidence='file')
+        self.ok('done', str(qa), '--file', self.report(), '--no-findings', by='qa')
+        view = self.view()
+        lines = {t['key']: t['findings'] for t in view['tickets']}
+        self.assertEqual(lines['#1']['text'], '審查 0・驗收 0')
+        self.assertFalse(lines['#1']['severe'])
+        self.assertEqual(lines['#2']['text'], '審查 2（甲 1）')
+        self.assertTrue(lines['#2']['severe'])
+        self.assertEqual([(e['stage'], e['count']) for e in view['finding_summary']],
+                         [('review', 2), ('qa', 0)])
+        self.assertEqual(len(view['problems']), 2)
+
+    def test_corrections_need_a_reason_and_review_findings_stay_review_findings(self):
+        qa = self.started_row('qa', 'qa', evidence='file')
+        self.ok('problem', '--row', str(qa), '--stage', 'qa', '--level', '丙', '--text',
+                'slow', by='qa')
+        self.assertIn('needs --reason', self.fails('problem-update', 'P1', '--level', '乙',
+                                                   by='qa'))
+        self.assertIn('nothing to record', self.fails('problem-update', 'P1', by='qa'))
+        self.assertIn('no problem P7', self.fails('problem-update', 'P7', '--known-limit'))
+        self.assertIn('review-result', self.fails(
+            'problem', '--ticket', '#1', '--stage', 'review', '--level', '乙', '--text', 'x'))
+        self.ok('problem-update', '1', '--level', '乙', '--reason', 'it blocks the page',
+                by='qa')
+        self.ok('problem-update', 'P1', '--known-limit', by='qa')
+        self.add(ticket='#2', stage='qa', evidence='file')
+        self.assertIn('needs --reason', self.fails('problem-update', 'P1', '--ticket', '#2',
+                                                   by='qa'))
+        self.ok('problem-update', 'P1', '--ticket', '#2', '--reason', 'wrong ticket', by='qa')
+        self.assertEqual(self.problems()[0]['ticket'], '#2')
+        self.ok('problem-update', 'P1', '--ticket', '#1', '--reason', 'it was #1', by='qa')
+        [problem] = self.problems()
+        self.assertEqual((problem['level'], problem['resolution']),
+                         ('乙', {'kind': 'known-limit'}))
+        self.assertEqual(problem['history'][1]['changes'], {'level': '乙'})
+        self.assertEqual(problem['resolution_text'], '列為已知限制')
+
+    def test_candidate_counts_deliveries_of_the_tickets_impl_rows(self):
+        impl = self.started_row('impl', 'impl')
+        self.ok('review-result', '--row', str(impl), '--reviewer', 'rev', '--clean', by='impl')
+        self.ok('done', str(impl), '--commit', self.merged, by='impl')
+        qa = self.started_row('qa', 'qa', evidence='file')
+        self.ok('problem', '--row', str(qa), '--stage', 'qa', '--level', '乙', '--text', 'a',
+                by='qa')
+        (self.workspace / 'fix.txt').write_text('fix\n')
+        git(self.workspace, 'add', 'fix.txt')
+        git(self.workspace, 'commit', '-q', '-m', 'fix')
+        self.ok('amend', str(impl), '--commit', git(self.workspace, 'rev-parse', 'HEAD'),
+                '--reason', 'fix', by='impl')
+        self.ok('problem', '--row', str(qa), '--stage', 'qa', '--level', '丙', '--text', 'b',
+                by='qa')
+        self.assertEqual([p['candidate'] for p in self.problems()], [1, 2])
+
+    def test_a_ledger_made_before_the_gates_closes_without_findings(self):
+        doc = self.doc()
+        del doc['problem_gates']
+        self.ledger.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + '\n')
+        self.ok('repair', '--reason', 'stands in for a ledger made before #549')
+        impl = self.started_row('impl', 'impl')
+        self.ok('done', str(impl), '--commit', self.merged, by='impl')
+        self.assertEqual(self.view()['problems'], [])
 
 
 class NameTests(LedgerCase):

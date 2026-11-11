@@ -38,7 +38,7 @@ GATE_ENV = 'LAT_LEDGER_SUITE_GATE'
 HCOM_LIST_ENV = 'LAT_LEDGER_HCOM_LIST'
 # ... and a JSON file {name: object} standing in for `hcom list <name> --json`.
 HCOM_AGENTS_ENV = 'LAT_LEDGER_HCOM_AGENTS'
-READ_ONLY = ('next', 'check', 'show')
+READ_ONLY = ('next', 'check', 'show', 'problems')
 VERSION = 1
 STAGES = {'impl': '實作', 'review': '審查', 'qa-draft': 'QA 草稿', 'qa': '驗收',
           'merge': '整合', 'spec-review': 'Spec 審查', 'research': '研究', 'advisor': '參謀',
@@ -74,6 +74,18 @@ QUALIFIED_TICKET = re.compile(r'([\w.-]+/[\w.-]+)#(\d+)')
 EFFORTS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
 TRANSCRIPT_TAIL_BYTES = 4 << 20
 UNVERIFIED = '未查證'
+# The problem log: one file per project in the shared .lat, the fixed stages a problem can be
+# found in (in the order work reaches them), and the levels. Problems found after merging are
+# recorded by the orchestrator and may name 不明 instead of the ticket that caused them.
+PROBLEMS_FILE = 'problems.jsonl'
+PROBLEM_STAGES = {'self': '自查', 'test': '自動測試', 'review': '審查', 'qa': '驗收',
+                  'post-merge': '合併後測試', 'suite': '背景整套',
+                  'post-deploy-user': '上線後（使用者）', 'post-deploy': '上線後（其他）'}
+LATE_STAGES = ('post-merge', 'suite', 'post-deploy-user', 'post-deploy')
+LEVELS = ('甲', '乙', '丙')
+UNKNOWN_TICKET = '不明'
+# A ticket line shows a stage's count even at 0 once this progress step is done.
+ZERO_SHOWN = {'review': 'review', 'qa': 'qa', 'post-deploy-user': 'deployed'}
 
 
 class Failure(Exception):
@@ -861,6 +873,7 @@ def cmd_init(args):
                'integration_branch': args.integration_branch, 'orchestrator': args.orchestrator,
                'created_at': at, 'updated_at': at, 'next_id': 1, 'items': [],
                'qa_coverage': True,  # ledgers made before this rule lack it and skip the rule
+               'problem_gates': True,  # likewise: done needs findings or a review (#549)
                'history': [{'at': at, 'by': actor(args), 'action': 'init', 'reason': None}]}
         save(store, doc, None, {'at': at, 'by': actor(args), 'action': 'init', 'item': None,
                                 'reason': None})
@@ -1048,6 +1061,13 @@ def cmd_done(args):
         resolved, failed = verify(doc, {**item, **changes}, {kind: given[kind]
                                                               for kind in item['evidence_kinds']})
         problems += failed
+        if doc.get('problem_gates') or args.no_findings:
+            gate = done_gate_problem(doc, item, args.no_findings, read_problems(doc),
+                                     str(Path(args.ledger)))
+            if gate:
+                problems.append(gate)
+        if args.no_findings:
+            changes['no_findings'] = True
         if problems:
             raise Failure(f'item {item["id"]} not closed:\n' +
                           '\n'.join(f'  - {problem}' for problem in problems))
@@ -1108,9 +1128,12 @@ def cmd_amend(args):
 def cmd_review_result(args):
     """Record one review of a row and a participant entry per reviewer with what that reviewer
     runs on, read now. A name HCOM does not list (a native sub-agent) is kept as given and its
-    setting is unverified. Findings come with the problem log; until then a result is --clean."""
-    if not args.clean:
-        raise Failure('give --clean: recording findings is not available yet')
+    setting is unverified. A review either is --clean or names its findings, each of which
+    becomes a review-stage problem in the project's problem log, found by the reviewers."""
+    findings = [parse_finding(text) for text in args.finding or []]
+    if args.clean == bool(findings):
+        raise Failure('give either --clean or at least one --finding "<甲|乙|丙>:<one line>"; '
+                      'nothing written')
     note = args.note.strip() if args.note and args.note.strip() else None
     acks = [required_text('--rerun-ack', ack).lower() for ack in args.rerun_ack or []]
     bad = [ack for ack in acks if not re.fullmatch(r'[0-9a-f]{12,64}', ack)]
@@ -1145,11 +1168,20 @@ def cmd_review_result(args):
         item = find(doc, args.row)
         if item['status'] == 'cancelled':
             raise Failure(f'item {item["id"]} is cancelled; no review to record')
+        ticket = finding_ticket(doc, item, args.ticket) if findings else None
         reviews = doc.setdefault('reviews', [])
         review = {'id': len(reviews) + 1, 'row': item['id'], 'at': stamp(now()),
-                  'by': actor(args), 'result': 'clean', 'reviewers': reviewers, 'note': note}
+                  'by': actor(args), 'result': 'findings' if findings else 'clean',
+                  'reviewers': reviewers, 'note': note}
         if acks:
             review['rerun_acks'] = list(dict.fromkeys(acks))
+        if findings:
+            # Written before the ledger is saved: a failed save leaves problems without their
+            # review, never a review naming problems that are not there.
+            review['problems'] = append_problems(doc, args, [
+                {'ticket': ticket, 'stage': 'review', 'finder': ','.join(reviewers),
+                 'level': level, 'text': text, 'caught': False, 'gate': None,
+                 'row': item['id'], 'review': review['id']} for level, text in findings])
         reviews.append(review)
         for name in reviewers:
             reading = readings[name]
@@ -1160,7 +1192,358 @@ def cmd_review_result(args):
                 **({'problem': reading['problem']} if 'problem' in reading else {})})
     print(f'review {review["id"]} of item {item["id"]} recorded: '
           + '; '.join(f'{p["name"]} {settings_text(p)}' for p in doc['participants']
-                      if p['review'] == review['id']))
+                      if p['review'] == review['id'])
+          + (f'; problems {", ".join(review["problems"])}' if findings else ''))
+
+
+# ---- problem log ----------------------------------------------------------------------
+# One append-only file per project (beside the ledgers in the shared .lat), written only here.
+# A `record` line gives a problem its id; later `update` lines add a resolution or correct
+# fields by that id. Reads collapse the lines by id, keeping each line as history, so every
+# count is by problem id.
+
+def problems_path(doc):
+    return shared_lat_dir(doc['workspace']) / PROBLEMS_FILE
+
+
+def parse_finding(text):
+    level, sep, line = (text or '').partition(':')
+    if not sep:
+        level, sep, line = text.partition('：')
+    if level.strip() not in LEVELS or not line.strip():
+        raise Failure(f'--finding {text!r}: write it as "<甲|乙|丙>:<one line>"; nothing written')
+    return level.strip(), one_line('--finding', line)
+
+
+def one_line(label, text):
+    text = required_text(label, text)
+    if '\n' in text:
+        raise Failure(f'{label} must be one line')
+    return text
+
+
+def read_problem_lines(path):
+    try:
+        raw = path.read_bytes().splitlines()
+    except FileNotFoundError:
+        return []
+    lines = []
+    for number, line in enumerate(raw, 1):
+        try:
+            entry = json.loads(line)
+            if not isinstance(entry, dict) or not isinstance(entry.get('id'), str):
+                raise ValueError('not a problem line')
+            lines.append(entry)
+        except (ValueError, UnicodeError):
+            print(f'lat-ledger: warning: skipped unreadable line {number} of {path}',
+                  file=sys.stderr)
+    return lines
+
+
+def collapse_problems(lines):
+    """{id: problem} in recording order: the record line's fields with each update applied,
+    the resolution of the latest update that gave one, and every line as history."""
+    problems = {}
+    for line in lines:
+        if line.get('op') == 'record':
+            if line['id'] in problems:
+                continue  # an id is given once; a repeat would be a hand edit
+            problem = {key: value for key, value in line.items() if key != 'op'}
+            problem.update(resolution=None, history=[line])
+            problems[line['id']] = problem
+        elif line.get('op') == 'update' and line['id'] in problems:
+            problem = problems[line['id']]
+            problem.update(line.get('changes') or {})
+            if line.get('resolution'):
+                problem['resolution'] = line['resolution']
+            problem['history'].append(line)
+    return problems
+
+
+@contextmanager
+def problem_log(doc, exclusive):
+    path = problems_path(doc)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + '.lock'), 'a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield path
+
+
+def read_problems(doc):
+    """The project's problems, collapsed; empty when its log does not exist yet."""
+    if not problems_path(doc).exists():
+        return {}
+    with problem_log(doc, exclusive=False) as path:
+        return collapse_problems(read_problem_lines(path))
+
+
+def write_problem_lines(path, lines):
+    data = ''.join(json.dumps(line, ensure_ascii=False) + '\n' for line in lines)
+    with open(path, 'a+b') as stream:
+        if stream.tell():
+            stream.seek(-1, os.SEEK_END)
+            if stream.read(1) != b'\n':
+                data = '\n' + data  # an interrupted append left a partial line; end it
+        stream.write(data.encode('utf-8'))
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def candidate_number(doc, ticket):
+    """Which candidate of the ticket a problem is found on: one per delivery of its impl rows
+    (a done, or an amend that replaced the commit), plus the one an open impl row is making.
+    None when the ticket has no impl row in this ledger."""
+    default_repo = tracker_repo(doc['workspace'])
+    rows = [item for item in doc['items'] if item['stage'] == 'impl'
+            and ticket in ticket_keys(item['ticket'], default_repo)]
+    if not rows:
+        return None
+    deliveries = sum(1 for row in rows for entry in row['history']
+                     if entry.get('action') == 'done' or (
+                         entry.get('action') == 'amend'
+                         and 'commit' in ((entry.get('changes') or {}).get('evidence') or
+                                          [{}, {}])[1]
+                         and (entry['changes']['evidence'][0] or {}).get('commit')
+                         != entry['changes']['evidence'][1].get('commit')))
+    return max(1, deliveries + any(row['status'] in OPEN for row in rows))
+
+
+def append_problems(doc, args, entries):
+    """Give each entry the next id and append it as a record line; returns the ids."""
+    at = stamp(now())
+    with problem_log(doc, exclusive=True) as path:
+        known = {line['id'] for line in read_problem_lines(path) if line.get('op') == 'record'}
+        number = max((int(key[1:]) for key in known if re.fullmatch(r'P\d+', key)), default=0)
+        lines = []
+        for entry in entries:
+            number += 1
+            lines.append({'op': 'record', 'id': f'P{number}', 'at': at, 'by': actor(args),
+                          'ledger': str(Path(args.ledger)), **entry,
+                          'candidate': candidate_number(doc, entry['ticket'])})
+        write_problem_lines(path, lines)
+    return [line['id'] for line in lines]
+
+
+def finding_ticket(doc, item, given):
+    """The one canonical ticket a problem found on this row belongs to."""
+    keys = ticket_keys(item['ticket'], tracker_repo(doc['workspace']))
+    if given:
+        wanted = ticket_keys(given, tracker_repo(doc['workspace']))
+        if len(wanted) != 1 or wanted[0] not in keys:
+            raise Failure(f'--ticket {given}: item {item["id"]} covers {", ".join(keys)}; '
+                          'name one of them')
+        return wanted[0]
+    if len(keys) > 1:
+        raise Failure(f'item {item["id"]} covers {", ".join(keys)}; say which ticket the '
+                      'problem belongs to with --ticket')
+    return keys[0]
+
+
+def ledger_tickets(doc):
+    default_repo = tracker_repo(doc['workspace'])
+    return {key for item in doc['items'] for key in ticket_keys(item['ticket'], default_repo)}
+
+
+def problem_ticket(doc, given, stage, row):
+    """The canonical ticket for `problem`: the row's (one of them with --ticket); else a ticket
+    of this ledger, or for a problem found after merging any ticket of the project or 不明."""
+    if row is not None:
+        return finding_ticket(doc, row, given)
+    given = required_text('--ticket', given)
+    if given == UNKNOWN_TICKET:
+        if stage not in LATE_STAGES:
+            raise Failure(f'--ticket {UNKNOWN_TICKET} is only for problems found after merging '
+                          f'({", ".join(LATE_STAGES)})')
+        return given
+    keys = ticket_keys(given, tracker_repo(doc['workspace']))
+    if len(keys) != 1:
+        raise Failure(f'--ticket {given}: name exactly one ticket')
+    if stage not in LATE_STAGES and keys[0] not in ledger_tickets(doc):
+        raise Failure(f'--ticket {given}: no row of this ledger covers {keys[0]}')
+    return keys[0]
+
+
+def caught_gate(doc, value):
+    """(True, full fingerprint) for --caught, (False, None) without it."""
+    if value is None:
+        return False, None
+    full, problem = verify_gate(doc, required_text('--caught', value), acks=[value])
+    if problem:
+        raise Failure(f'--caught: {problem}; nothing written')
+    return True, full
+
+
+def cmd_problem(args):
+    """Record one problem: which ticket, the stage it was found in, who found it, its level and
+    one line; with --caught, the gate record of the test run that caught it."""
+    doc = read_only(args)
+    if args.stage == 'review':
+        raise Failure('review findings are recorded with review-result --row <impl row> '
+                      '--reviewer <name> --finding "<level>:<one line>"; nothing written')
+    if args.stage in LATE_STAGES and doc.get('orchestrator') and not same_controller(
+            doc['orchestrator'], actor(args)):
+        raise Failure(f'problems found after merging are recorded by the orchestrator '
+                      f'{doc["orchestrator"]}; nothing written')
+    row = find(doc, args.row) if args.row is not None else None
+    ticket = problem_ticket(doc, args.ticket, args.stage, row)
+    caught, gate = caught_gate(doc, args.caught)
+    entry = {'ticket': ticket, 'stage': args.stage,
+             'finder': one_line('--finder', args.finder) if args.finder else actor(args),
+             'level': args.level, 'text': one_line('--text', args.text), 'caught': caught,
+             'gate': gate, 'row': row['id'] if row else None, 'review': None}
+    [problem_id] = append_problems(doc, args, [entry])
+    print(problem_id)
+
+
+def resolution_of(args, doc):
+    if args.fixed:
+        repo = args.repo or doc['workspace']
+        try:
+            sha = run_cli(['git', '-C', repo, 'rev-parse', '--verify', '--quiet',
+                           f'{args.fixed}^{{commit}}'], timeout=30).strip()
+        except ValueError:
+            raise Failure(f'--fixed {args.fixed}: no such commit in {repo}; give the repo it '
+                          'is in with --repo') from None
+        return {'kind': 'fixed', 'commit': sha}
+    if args.known_limit:
+        return {'kind': 'known-limit'}
+    if args.wontfix:
+        return {'kind': 'wontfix', 'reason': one_line('--wontfix', args.wontfix)}
+    if args.new_ticket:
+        keys = ticket_keys(args.new_ticket, tracker_repo(doc['workspace']))
+        if len(keys) != 1 or not keys[0].rpartition('#')[2].isdigit():
+            raise Failure(f'--new-ticket {args.new_ticket}: name one numbered ticket')
+        return {'kind': 'new-ticket', 'ticket': keys[0]}
+    return None
+
+
+def cmd_problem_update(args):
+    """Add a resolution to a problem, or correct its fields (with --reason), by its id."""
+    doc = read_only(args)
+    problem_id = args.problem if args.problem.startswith('P') else f'P{args.problem}'
+    resolution = resolution_of(args, doc)
+    changes = {}
+    if args.level:
+        changes['level'] = args.level
+    if args.text:
+        changes['text'] = one_line('--text', args.text)
+    if args.finder:
+        changes['finder'] = one_line('--finder', args.finder)
+    if args.stage:
+        changes['stage'] = args.stage
+    if args.caught:
+        changes['caught'], changes['gate'] = caught_gate(doc, args.caught)
+    if not resolution and not changes and not args.ticket:
+        raise Failure('nothing to record; give a resolution (--fixed, --known-limit, '
+                      '--wontfix, --new-ticket) or a correction (--level, --text, --finder, '
+                      '--stage, --ticket, --caught)')
+    reason = args.reason.strip() if args.reason and args.reason.strip() else None
+    with problem_log(doc, exclusive=True) as path:
+        problems = collapse_problems(read_problem_lines(path))
+        if problem_id not in problems:
+            raise Failure(f'no problem {problem_id} in {path}')
+        problem = problems[problem_id]
+        if args.ticket:
+            changes['ticket'] = problem_ticket(doc, args.ticket, changes.get('stage',
+                                                                             problem['stage']),
+                                               None)
+        if changes and not reason:
+            raise Failure('a correction needs --reason saying what was wrong; nothing written')
+        stage = changes.get('stage', problem['stage'])
+        if (stage == 'review') != (problem['stage'] == 'review'):
+            raise Failure('review findings stay review findings: they belong to a review '
+                          'result; nothing written')
+        if stage in LATE_STAGES and changes.get('stage') and doc.get('orchestrator') and \
+                not same_controller(doc['orchestrator'], actor(args)):
+            raise Failure(f'problems found after merging are recorded by the orchestrator '
+                          f'{doc["orchestrator"]}; nothing written')
+        if changes.get('ticket', problem['ticket']) == UNKNOWN_TICKET and stage not in LATE_STAGES:
+            raise Failure(f'{UNKNOWN_TICKET} is only for problems found after merging')
+        line = {'op': 'update', 'id': problem_id, 'at': stamp(now()), 'by': actor(args),
+                'resolution': resolution, 'changes': changes, 'reason': reason}
+        write_problem_lines(path, [line])
+    print(f'problem {problem_id} updated')
+
+
+def problem_view(problem):
+    """A problem as `problems` and `show --json` give it, with labels for display."""
+    resolution = problem.get('resolution') or {}
+    return {**problem, 'stage_label': PROBLEM_STAGES.get(problem['stage'], problem['stage']),
+            'resolution_text': resolution_text(resolution)}
+
+
+def resolution_text(resolution):
+    kind = resolution.get('kind')
+    if kind == 'fixed':
+        return f'已修 {resolution["commit"][:12]}'
+    if kind == 'known-limit':
+        return '列為已知限制'
+    if kind == 'wontfix':
+        return f'不處理：{resolution.get("reason", "")}'
+    if kind == 'new-ticket':
+        return f'另開票 {resolution.get("ticket", "")}'
+    return ''
+
+
+def cmd_problems(args):
+    """The project's problems, or one ticket's, collapsed to their current state."""
+    doc = read_only(args)
+    problems = [problem_view(p) for p in read_problems(doc).values()]
+    if args.ticket:
+        wanted = (args.ticket if args.ticket == UNKNOWN_TICKET
+                  else ticket_keys(args.ticket, tracker_repo(doc['workspace'])))
+        problems = [p for p in problems if p['ticket'] in wanted]
+    if args.json:
+        print(json.dumps(problems, ensure_ascii=False, indent=1))
+        return 0
+    if not problems:
+        print('沒有記下的問題')
+        return 0
+    print('| 編號 | 票 | 發現階段 | 發現者 | 級別 | 內容 | 測試抓到 | 處理 | 候選 |')
+    print('|---|---|---|---|---|---|---|---|---|')
+    for p in problems:
+        print('| ' + ' | '.join(cell(value) for value in (
+            p['id'], p['ticket'], p['stage_label'], p['finder'], p['level'], p['text'],
+            ('是 ' + p['gate'][:12]) if p['caught'] else '否', p['resolution_text'],
+            p.get('candidate'))) + ' |')
+    return 0
+
+
+def done_gate_problem(doc, item, no_findings, problems, ledger):
+    """Why a row of this ledger may not close yet for want of findings, or None. Only what was
+    recorded in the row's current round counts: since its latest start (a reassign or a
+    follow-on row starts a new one)."""
+    since = item.get('started_at') or item.get('assigned_at')
+    if item['stage'] == 'qa':
+        keys = ticket_keys(item['ticket'], tracker_repo(doc['workspace']))
+        # Recorded through this ledger on one of the row's tickets (as it reads now, after any
+        # correction), and with --row on this row.
+        own = [p['id'] for p in problems.values() if p['stage'] == 'qa'
+               and p.get('ledger') == ledger and p['ticket'] in keys
+               and p.get('row') in (None, item['id'])
+               and same_controller(item['agent'] or '', p['by'])
+               and (not since or p['at'] >= since)]
+        if own and no_findings:
+            return (f'--no-findings, but you recorded {", ".join(own)} for this round; drop '
+                    '--no-findings')
+        if own or no_findings:
+            return None
+        return ('record what this acceptance found, or say it found nothing: '
+                f'`problem --row {item["id"]} --stage qa --level <甲|乙|丙> --text '
+                '"<one line>"` for each problem (add --caught <gate fingerprint> when a test '
+                'caught it), or close with --no-findings. Only problems this row\'s own agent '
+                'recorded since its latest start count')
+    if no_findings:
+        return ('--no-findings is for acceptance (qa) rows; an implementation row needs a '
+                'review result')
+    if item['stage'] == 'impl' and not any(
+            review.get('row') == item['id'] and (not since or review.get('at', '') >= since)
+            for review in doc.get('reviews', [])):
+        return ('record the review of this round first: `review-result --row '
+                f'{item["id"]} --reviewer <name> --clean`, or with one --finding '
+                '"<甲|乙|丙>:<one line>" per finding instead of --clean. A review recorded '
+                'before the row\'s latest start does not count')
+    return None
 
 
 def cmd_cancel(args):
@@ -1478,9 +1861,40 @@ def ticket_settings(rows, participants):
     return stages
 
 
-def build_tickets(doc, at):
+def stage_counts(problems, stages):
+    """One entry per problem stage in `stages` (in stage order): how many problems, by level,
+    and how many a test caught. Counted by problem id."""
+    entries = []
+    for stage, label in PROBLEM_STAGES.items():
+        if stage not in stages:
+            continue
+        found = [p for p in problems if p['stage'] == stage]
+        levels = {level: sum(1 for p in found if p['level'] == level) for level in LEVELS}
+        entries.append({'stage': stage, 'label': label, 'count': len(found), 'levels': levels,
+                        'caught': sum(1 for p in found if p.get('caught')),
+                        'severe': bool(levels['甲'] or levels['乙'])})
+    return entries
+
+
+def ticket_findings(problems, steps):
+    """A ticket's problems per stage found: every stage with one, and 0 for review, acceptance
+    and after deploy once that step is done (so 0 reads as looked and found nothing)."""
+    stages = {p['stage'] for p in problems} | {
+        stage for stage, step in ZERO_SHOWN.items() if steps.get(step) == 'done'}
+    entries = stage_counts(problems, stages)
+    for entry in entries:
+        severe = '、'.join(f'{level} {entry["levels"][level]}' for level in ('甲', '乙')
+                          if entry['levels'][level])
+        entry['text'] = f'{entry["label"]} {entry["count"]}' + (f'（{severe}）' if severe else '')
+    return {'stages': entries, 'text': '・'.join(entry['text'] for entry in entries),
+            'severe': any(entry['severe'] for entry in entries),
+            'problems': [problem['id'] for problem in problems]}
+
+
+def build_tickets(doc, at, problems=None):
     """The ticket layer: one entry per canonical ticket, in the order tickets first appear. A
-    row naming several tickets belongs to each of them."""
+    row naming several tickets belongs to each of them. `problems` (collapsed, from the
+    project's log) gives each ticket its findings per stage."""
     default_repo = tracker_repo(doc['workspace'])
     titles = doc.get('titles', {})
     groups = {}
@@ -1510,6 +1924,8 @@ def build_tickets(doc, at):
                       for step, value in steps.items()],
             'now': ticket_now(rows, state, steps, at), 'items': [row['id'] for row in rows],
             'settings': ticket_settings(rows, participants),
+            'findings': ticket_findings([p for p in (problems or {}).values()
+                                         if p['ticket'] == key], steps),
             'started_at': stamp(min(map(loads_time, starts))) if starts else None,
             'total_minutes': minutes, 'running': running})
     return tickets
@@ -1608,10 +2024,18 @@ def cmd_show(args):
         print(f'工作總表 {args.ledger}（更新於 {doc["updated_at"]}）\n')
         show_rows(rows)
         return 0
-    tickets = build_tickets(doc, at)
+    problems = read_problems(doc)
+    tickets = build_tickets(doc, at, problems)
     counts = {}
     for ticket in tickets:
         counts[ticket['state']] = counts.get(ticket['state'], 0) + 1
+    # This ledger's problems: its tickets', and every one recorded through it (an escaped
+    # problem names the ticket that caused it, often of an earlier round, or 不明); each id once.
+    keys = {ticket['key'] for ticket in tickets}
+    mine = [problem for problem in problems.values() if problem['ticket'] in keys
+            or problem.get('ledger') == str(Path(args.ledger))]
+    summary = stage_counts(mine, {p['stage'] for p in mine} | {
+        entry['stage'] for ticket in tickets for entry in ticket['findings']['stages']})
     if args.json:
         print(json.dumps({'ledger': str(Path(args.ledger)), 'now': stamp(at),
                           'workspace': doc['workspace'], 'created_at': doc['created_at'],
@@ -1619,12 +2043,16 @@ def cmd_show(args):
                           'tickets': tickets, 'ticket_counts': counts,
                           'reviews': doc.get('reviews', []),
                           'participants': doc.get('participants', []),
+                          'problems': [problem_view(p) for p in mine],
+                          'finding_summary': summary,
+                          'problems_path': str(problems_path(doc)),
                           'deploy_step': any(step['key'] == 'deployed' for ticket in tickets
                                              for step in ticket['steps'])},
                          ensure_ascii=False, indent=1))
         return 0
     print(f'工作總表 {args.ledger}（更新於 {doc["updated_at"]}）\n')
     show_tickets(tickets, counts, default_repo)
+    show_summary(summary)
     return 0
 
 
@@ -1632,8 +2060,8 @@ def show_tickets(tickets, counts, default_repo):
     summary = '、'.join(f'{counts[state]} 張{label}' for state, label in TICKET_STATES.items()
                        if counts.get(state))
     print(f'{len(tickets)} 張票：{summary}' if tickets else '沒有票')
-    print('\n| 票 | 標題 | 進度 | 現在 | 模型 | 用時 | 列 |')
-    print('|---|---|---|---|---|---|---|')
+    print('\n| 票 | 標題 | 進度 | 現在 | 模型 | 問題 | 用時 | 列 |')
+    print('|---|---|---|---|---|---|---|---|')
     for ticket in tickets:
         ref = ticket['key']
         if default_repo and ref.startswith(f'{default_repo}#'):
@@ -1645,8 +2073,21 @@ def show_tickets(tickets, counts, default_repo):
             took = ('已 ' if ticket['running'] else '') + minutes_text(ticket['total_minutes'])
         models = '；'.join(f'{stage["label"]} {stage["text"]}' for stage in ticket['settings'])
         print('| ' + ' | '.join(cell(value) for value in (
-            ref, ticket['title'], progress, ticket['now'], models, took,
+            ref, ticket['title'], progress, ticket['now'], models,
+            ticket['findings']['text'], took,
             ','.join(map(str, ticket['items'])))) + ' |')
+
+
+def show_summary(summary):
+    print('\n哪個階段找出多少問題')
+    if not summary:
+        print('還沒有記下的問題')
+        return
+    print('| 發現階段 | 甲 | 乙 | 丙 | 合計 | 其中測試抓到 |')
+    print('|---|---|---|---|---|---|')
+    for entry in summary:
+        print('| ' + ' | '.join(str(value) for value in (
+            entry['label'], *entry['levels'].values(), entry['count'], entry['caught'])) + ' |')
 
 
 def show_rows(rows):
@@ -1772,6 +2213,10 @@ def build_parser():
                      'existence is checked')
     sub.add_argument('--gate', action='append', help='suite-gate record fingerprint')
     sub.add_argument('--file', action='append', help='absolute path of a report or checklist')
+    sub.add_argument('--no-findings', action='store_true',
+                     help='a qa row found no problem. Otherwise a qa row closes only after its '
+                     'own agent recorded a qa-stage problem since its latest start, and an impl '
+                     'row only after a review result for it since then')
     sub = command('amend', 'Note a later change on a closed item; evidence given replaces '
                   'that kind')
     sub.add_argument('--reason', required=True, help='what changed after the close')
@@ -1786,11 +2231,59 @@ def build_parser():
                      'such as a native sub-agent, is kept as given and marked unverified')
     sub.add_argument('--clean', action='store_true', help='the review found nothing')
     sub.add_argument('--note', help='free text kept with the result')
+    sub.add_argument('--finding', action='append', metavar='LEVEL:TEXT',
+                     help='one problem the review found, as "<甲|乙|丙>:<one line>" (repeat for '
+                     'each; instead of --clean). Each becomes a review-stage problem in the '
+                     "project's problem log, found by the reviewers named; record one review "
+                     'per reviewer to keep finders apart')
+    sub.add_argument('--ticket', help='with --finding on a row covering several tickets: the '
+                     'one the findings belong to')
     sub.add_argument('--rerun-ack', action='append', metavar='FINGERPRINT',
                      help='a gate record (12+ characters of its fingerprint) that passed only on '
                      'the automatic rerun and that the reviewers looked at; needs --note saying '
                      'what the first failures were. Until then the ledger and the merge check do '
                      'not take that record as evidence')
+    stages = ', '.join(f'{key} ({label})' for key, label in PROBLEM_STAGES.items())
+    sub = command('problem', "Record a problem in the project's problem log; prints its id",
+                  item=False)
+    sub.add_argument('--stage', required=True, choices=list(PROBLEM_STAGES),
+                     help=f'where it was found: {stages}. Review findings go through '
+                     'review-result; post-merge, suite and both post-deploy ones are recorded '
+                     'by the '
+                     'orchestrator')
+    sub.add_argument('--level', required=True, choices=LEVELS)
+    sub.add_argument('--text', required=True, help='the problem in one line')
+    sub.add_argument('--row', type=int, help='the ledger row it was found on (a qa row records '
+                     'its own findings with it); its ticket is the problem\'s')
+    sub.add_argument('--ticket', help='the ticket whose change caused it (one); without --row '
+                     f'it must be a ticket of this ledger, except after merging, where any '
+                     f'ticket of the project or {UNKNOWN_TICKET} is taken')
+    sub.add_argument('--finder', help='who found it: an agent, user or suite-gate (default: '
+                     'whoever records it)')
+    sub.add_argument('--caught', metavar='FINGERPRINT',
+                     help='a test caught it: the gate record of that run')
+    sub = command('problem-update', 'Add a resolution to a problem, or correct it, by its id',
+                  item=False)
+    sub.add_argument('problem', help='problem id, e.g. P3')
+    group = sub.add_mutually_exclusive_group()
+    group.add_argument('--fixed', metavar='COMMIT', help='fixed by this commit')
+    group.add_argument('--known-limit', action='store_true', help='kept as a known limitation')
+    group.add_argument('--wontfix', metavar='REASON', help='not handled, and why')
+    group.add_argument('--new-ticket', metavar='TICKET', help='moved to this ticket')
+    sub.add_argument('--repo', help='with --fixed: the git repo holding the commit (default: '
+                     "the ledger's workspace)")
+    sub.add_argument('--level', choices=LEVELS, help='correct the level')
+    sub.add_argument('--text', help='correct the line')
+    sub.add_argument('--finder', help='correct who found it')
+    sub.add_argument('--stage', choices=[s for s in PROBLEM_STAGES if s != 'review'],
+                     help='correct the stage')
+    sub.add_argument('--ticket', help='correct the ticket')
+    sub.add_argument('--caught', metavar='FINGERPRINT', help='a test caught it after all')
+    sub.add_argument('--reason', help='what was wrong; required with a correction')
+    sub = command('problems', "List the project's problems, current state with history",
+                  item=False)
+    sub.add_argument('--ticket', help=f'only this ticket\'s (or {UNKNOWN_TICKET})')
+    sub.add_argument('--json', action='store_true')
     sub = command('cancel', 'Cancel an item (orchestrator only)')
     sub.add_argument('--reason', required=True)
     sub = command('reassign', 'Hand an open item to another agent')
@@ -1817,6 +2310,8 @@ def main():
                 'update': cmd_update, 'block': cmd_block, 'unblock': cmd_unblock,
                 'done': cmd_done, 'amend': cmd_amend, 'cancel': cmd_cancel,
                 'reassign': cmd_reassign, 'review-result': cmd_review_result,
+                'problem': cmd_problem, 'problem-update': cmd_problem_update,
+                'problems': cmd_problems,
                 'next': cmd_next, 'check': cmd_check, 'show': cmd_show,
                 'repair': cmd_repair}
     try:
