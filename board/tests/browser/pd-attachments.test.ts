@@ -9,18 +9,10 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { fakeNotifications } from './pd-notifications.ts';
 
 const SCREEN = `({ pd: document.querySelector('.inbox .pd')?.innerText ?? '' })`;
 const FITS = `document.documentElement.scrollWidth <= window.innerWidth && [...document.querySelectorAll('.inbox .pd, .inbox .pd *')].every((node) => node.closest('summary') || node.scrollWidth <= node.clientWidth + 1)`;
-const NOTIFICATIONS = `(() => {
-	window.__notes = [];
-	window.Notification = class {
-		static get permission() { return 'granted'; }
-		static async requestPermission() { return 'granted'; }
-		constructor(title, options) { this.title = title; this.body = options?.body; window.__notes.push(this); }
-		close() {}
-	};
-})()`;
 
 let fixture: Fixture;
 let cookie: string;
@@ -144,7 +136,7 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 
 test.skipIf(!CHROME)('a new attachment request’s notification uses the Chinese action name', async () => {
 	setPd([readFiles]);
-	browser = await launchChrome({ screen: SCREEN, scripts: [NOTIFICATIONS] });
+	browser = await launchChrome({ screen: SCREEN, scripts: [fakeNotifications()] });
 	const tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });

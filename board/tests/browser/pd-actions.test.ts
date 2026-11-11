@@ -9,20 +9,11 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { fakeNotifications } from './pd-notifications.ts';
 
 const SCREEN = `({ pd: document.querySelector('.inbox .pd')?.innerText ?? '' })`;
 // Every part of the window fits its box, but the caller and summary lines, which end in an ellipsis.
 const FITS = `document.documentElement.scrollWidth <= window.innerWidth && [...document.querySelectorAll('.inbox .pd, .inbox .pd *')].every((node) => node.closest('summary') || node.scrollWidth <= node.clientWidth + 1)`;
-const NOTIFICATIONS = `(() => {
-	let permission = 'granted';
-	window.__notes = [];
-	window.Notification = class {
-		static get permission() { return permission; }
-		static async requestPermission() { return permission; }
-		constructor(title, options) { this.title = title; this.body = options?.body; window.__notes.push(this); }
-		close() {}
-	};
-})()`;
 
 let fixture: Fixture;
 let cookie: string;
@@ -167,7 +158,7 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 
 test.skipIf(!CHROME)('a new add request’s notification names the action; 拒絕 denies a write request', async () => {
 	setPd([read]);
-	browser = await launchChrome({ screen: SCREEN, scripts: [NOTIFICATIONS] });
+	browser = await launchChrome({ screen: SCREEN, scripts: [fakeNotifications()] });
 	const tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
