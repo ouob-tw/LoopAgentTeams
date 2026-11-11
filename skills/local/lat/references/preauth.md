@@ -231,3 +231,10 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" report
 - **`ask`**：照常寫入與放行。
 - `question ask` 每次寫入都把當下結論寫成紀錄的 `- preauth: <check 印的那行>（重查於 <時間>）`，取代舊的那行，沒有時放在 `- action:` 下一行。這行只給人與參謀閱讀，工具不讀。
 - 沒有 `- action:` 的紀錄不重查，行為不變；漏寫由參謀把關。重查本身出錯時照常寫入或放行，只印警告。
+
+## 小改動通道
+
+- 派工：只有一張票時，`card --ledger …` 加 `--tiny --no-feature --no-format-change`（後兩個是主控的聲明：不新增功能、不改資料或存檔格式），該票各列都帶上標記；票欄列出多張票時工具拒絕。
+- 審查：先跑 `review-size.py <卡片 base commit> --tiny --integration <整合分支>` 看程式新增行數（不含測試與文件，上限 30）與提示（專案設定的資料／格式檔案樣式、`feat` 提交）。通過後以 `lat-ledger.py review-result --row <實作列> --reviewer <名稱> --clean --tiny-confirm` 記下四項界線的確認，有提示時加 `--tiny-hints "<每項提示怎麼查的>"`；確認後內容又變了要重新確認。
+- 合併：`merge` 的 `--commit` 帶有這種票（列的分支指向它，或整合分支沒有的提交提到該票）時，`check` 從該票任務卡的 base commit 重跑檢查：超過 30 行、實作列是主控本人、沒有確認、確認後內容變了或確認沒涵蓋現在的提示，都 `ask`。本輪有小改動票時，沒給 `--commit` 或給的版本不在這個 repo 也 `ask`。
+- 改走原流程：主控先跑 `lat-ledger.py tiny-off <列> --reason "<原因>"` 拿掉該票標記，再當一般票（含 QA）重新派工。

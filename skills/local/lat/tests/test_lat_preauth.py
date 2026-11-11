@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-preauth.py'
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
+REVIEW_SIZE = Path(__file__).resolve().parents[1] / 'scripts/review-size.py'
 INSTALLER = Path(__file__).resolve().parents[4] / 'scripts/install-skills.py'
 PANEL = Path(__file__).resolve().parents[1] / 'herdr-panel/lat_panel.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
@@ -22,7 +23,11 @@ SUITES = [{'command': 'uv run pytest', 'cwd': '.'}, {'command': 'bun test', 'cwd
 
 
 def load_suite_gate():
-    spec = importlib.util.spec_from_file_location('suite_gate_for_tests', SUITE_GATE)
+    return load_script(SUITE_GATE)
+
+
+def load_script(path):
+    spec = importlib.util.spec_from_file_location(f'{path.stem}_for_tests', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -3128,6 +3133,134 @@ class EarlierRoundHintTests(PreauthCase):
         self.assertEqual(self.check('push', '--branch', 'dev')['reasons'], [
             f"unpushed commits outside this round's tickets (#313): {sha[:12]} "
             '"feat: elsewhere (#999)" (#999)'])
+
+
+
+class TinyMergeTests(PreauthCase):
+    """The merge evidence check of a tiny-lane ticket: hard limits from the card's base commit,
+    the dispatched implementer, and the reviewer's four-limit confirmation covering the hints."""
+
+    def setUp(self):
+        super().setUp()
+        self.write(self.global_file, '[actions.merge]\nallow = true\nbranches = ["dev"]\n')
+        self.base = git(self.repo, 'rev-parse', 'HEAD')
+        git(self.repo, 'switch', '-q', '-c', 'fix/7')
+        self.card = self.root / 'card.md'
+        self.card.write_text(f'- agent：impl\n- base commit：{self.base[:8]}\n')
+        self.ledger_file = self.repo / '.lat' / 'ledgers' / 'round.json'
+
+    def change(self, path, lines, message):
+        target = self.repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(''.join(f'line {n}\n' for n in range(lines)))
+        git(self.repo, 'add', path)
+        git(self.repo, 'commit', '-q', '-m', message)
+        return git(self.repo, 'rev-parse', 'HEAD')
+
+    def ledger(self, confirmed=None, agent='impl', extra=()):
+        """The round ledger: one tiny impl row for #7, plus a review with `confirmed` as its
+        four-limit confirmation (a list of the hints it addressed) of fix/7 as it is now."""
+        self.session()
+        size = load_script(REVIEW_SIZE)
+        content = size.tiny_check(self.repo, self.base, 'fix/7', 'dev')['content']
+        reviews = ([{'id': 1, 'row': 1, 'result': 'clean',
+                     'tiny': {'limits': ['one-ticket', 'code-lines', 'no-feature',
+                                         'no-format-change'], 'hints': confirmed,
+                              'content': content}}]
+                   if confirmed is not None else [])
+        tiny = {'declared': ['no-feature', 'no-format-change']}
+        self.write(self.ledger_file, json.dumps({
+            'integration_branch': 'dev', 'orchestrator': 'orch', 'reviews': reviews,
+            'items': [{'id': 1, 'ticket': '7', 'stage': 'impl', 'agent': agent,
+                       'branch': 'fix/7', 'card': str(self.card), 'tiny': tiny},
+                      *({'id': 2 + n, 'ticket': ticket, 'stage': stage, 'tiny': tiny}
+                        for n, (ticket, stage) in enumerate(extra))]}))
+
+    def merge(self):
+        return self.check('merge', '--branch', 'dev', '--commit', 'fix/7')
+
+    def assert_refused(self, *words):
+        verdict = self.merge()
+        self.assertEqual((verdict['verdict'], verdict['reason_kinds']), ('ask', ['condition']))
+        for text in (*words, 'tiny-lane ticket #7', 'return to the normal flow', 'tiny-off',
+                     're-dispatch the ticket as an ordinary one, with QA'):
+            self.assertIn(text, verdict['reasons'][0])
+        return verdict['reasons'][0]
+
+    def test_format_change_in_an_ordinary_code_file_needs_the_confirmation(self):
+        self.change('src/store.py', 4, 'fix: write records as lines (#7)')
+        self.ledger()
+        reason = self.assert_refused('no reviewer confirmation of the four limits')
+        self.assertIn('review-result --row 1 --reviewer <name> --clean --tiny-confirm`', reason)
+        self.assertNotIn('hints the confirmation must address', reason, 'no pattern hit')
+        self.ledger(confirmed=[])
+        self.assertEqual(self.merge()['verdict'], 'allow')
+
+    def test_feature_under_a_fix_commit_needs_the_confirmation(self):
+        self.change('src/export.py', 12, 'fix: add an export button (#7)')
+        self.ledger()
+        self.assert_refused('no reviewer confirmation of the four limits')
+        self.ledger(confirmed=[])
+        self.assertEqual(self.merge()['verdict'], 'allow')
+
+    def test_shown_hints_must_be_covered_by_the_confirmation(self):
+        sha = self.change('db/migrations/0002.sql', 2, 'feat: add a column (#7)')
+        self.ledger()
+        reason = self.assert_refused(
+            'hints the confirmation must address: data/format file db/migrations/0002.sql',
+            f'feat commit {sha[:12]} feat: add a column (#7)', '--tiny-hints')
+        self.ledger(confirmed=['data/format file db/migrations/0002.sql (pattern *migrations/*)'])
+        self.assert_refused('does not cover these hints: feat commit')
+        self.ledger(confirmed=['data/format file db/migrations/0002.sql (pattern *migrations/*)',
+                               f'feat commit {sha[:12]} feat: add a column (#7)'])
+        self.assertEqual(self.merge()['verdict'], 'allow')
+
+    def test_hard_limits_refuse_even_a_confirmed_ticket(self):
+        self.change('src/fix.py', 30, 'fix: thirty (#7)')
+        self.ledger(confirmed=[])
+        self.assertEqual(self.merge()['verdict'], 'allow')
+        self.change('src/more.py', 1, 'fix: one more (#7)')
+        self.assert_refused('31 added code lines (tests and docs excluded) exceed')
+        git(self.repo, 'reset', '-q', '--hard', 'HEAD~1')
+        self.ledger(confirmed=[], agent='orch')
+        self.assert_refused('ledger row 1 implements the ticket under the orchestrator orch')
+
+    def test_docs_and_tests_only_pass_with_the_confirmation(self):
+        self.change('skills/x/SKILL.md', 200, 'docs: rewrite (#7)')
+        self.change('tests/test_x.py', 300, 'test: cover (#7)')
+        self.ledger(confirmed=[])
+        self.assertEqual(self.merge()['verdict'], 'allow')
+
+    def test_a_change_after_the_confirmation_needs_a_new_one(self):
+        self.change('src/fix.py', 4, 'fix: small (#7)')
+        self.ledger(confirmed=[])
+        self.assertEqual(self.merge()['verdict'], 'allow')
+        (self.repo / 'src/fix.py').write_text('line 0\nline 1\nline 2\nline  3\n')
+        git(self.repo, 'commit', '-q', '-am', 'fix: only whitespace (#7)')
+        self.assert_refused('the change differs from what the reviewer confirmed')
+        self.ledger(confirmed=[])
+        self.change('src/fix.py', 5, 'fix: one more line (#7)')
+        self.assert_refused('the change differs from what the reviewer confirmed')
+
+    def test_rows_naming_the_ticket_differently_are_one_ticket(self):
+        self.change('src/fix.py', 2, 'fix: small (#7)')
+        self.ledger(confirmed=[], extra=[('#7', 'qa-draft'), (' 7 ', 'qa')])
+        verdict = self.merge()
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+
+    def test_a_merge_check_without_a_resolvable_version_asks(self):
+        self.ledger()
+        for extra in (('--commit', 'no-such-ref'), ()):
+            verdict = self.check('merge', '--branch', 'dev', *extra)
+            self.assertEqual((verdict['verdict'], verdict['reason_kinds']), ('ask', ['condition']))
+            self.assertIn('give --commit', verdict['reasons'][0])
+
+    def test_a_merge_not_carrying_the_tiny_ticket_is_not_held(self):
+        self.ledger()
+        git(self.repo, 'switch', '-q', '-c', 'fix/8', 'dev')
+        self.change('src/other.py', 50, 'fix: other ticket (#8)')
+        verdict = self.check('merge', '--branch', 'dev', '--commit', 'fix/8')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
 
 
 if __name__ == '__main__':

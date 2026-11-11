@@ -19,7 +19,9 @@ senders. For a card still waiting for `card bind` the brief names the agent as
 It never launches agents and never sends anything. Hand-written cards and briefs stay allowed.
 
 With --ledger, `card` also opens and assigns a row in the LAT work ledger (lat-ledger.py) and
-writes the row into the card; `brief` then carries the row and the start/update/done commands.
+writes the row into the card; `--tiny` with both declarations puts the ticket on the tiny-change
+lane (the ledger marks its rows and refuses a card naming several tickets); `brief` then
+carries the row and the start/update/done commands.
 With --preauth, `brief` runs lat-preauth's check for each named action and carries the ones
 that are pre-authorized right now.
 """
@@ -50,7 +52,9 @@ PENDING = '待綁定'
 STAGE_ALIASES = {'implement': 'impl'}
 CLOSE_STATUSES = ('committed', 'merged', 'completed')
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
-LEDGER_OPTIONS = ('ticket', 'title', 'stage', 'evidence', 'deadline', 'depends', 'repo', 'old_round')
+LEDGER_OPTIONS = ('ticket', 'title', 'stage', 'evidence', 'deadline', 'depends', 'repo',
+                  'old_round', 'tiny', 'no_feature', 'no_format_change')
+TINY_FIELD = '是；主控聲明不新增功能、不改資料或存檔格式'
 CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
 BIND_SCOPE_NOTE = 'Write restrictions in this section do not apply to the bind step at the top.'
 SCOPE_NOTE = ('Write restrictions in this section do not apply to updating the task card '
@@ -231,6 +235,7 @@ def make_card(args):
         ('視覺驗收', values['視覺驗收']),
         ('預計檢查數', values['預計檢查數']), ('整套測試', values['整套測試']),
         ('runs', values['runs']), ('temp paths', values['temp paths']),
+        *([('tiny lane', TINY_FIELD)] if args.tiny else []),
         ('done so far', ''), ('next step', values['next step']),
         ('deliverable commit', '待 Orchestrator 從 Git 查證後填入'),
     ]
@@ -266,8 +271,8 @@ def ledger_request(args):
     given = [name for name in LEDGER_OPTIONS if getattr(args, name)]
     if not args.ledger:
         if given:
-            raise Failure('--ticket, --title, --stage, --evidence, --deadline, --depends, --repo and --old-round '
-                          'need --ledger')
+            raise Failure('--ticket, --title, --stage, --evidence, --deadline, --depends, --repo, '
+                          '--old-round, --tiny, --no-feature and --no-format-change need --ledger')
         return None
     missing = [f'--{name}' for name in ('ticket', 'stage', 'evidence')
                if not getattr(args, name)]
@@ -310,6 +315,8 @@ def open_ledger_row(args, ledger, orchestrator, agent, card):
         add += ['--repo', args.repo]
     if args.old_round:
         add.append('--old-round')
+    add += [f'--{name}' for name in ('tiny', 'no-feature', 'no-format-change')
+            if getattr(args, name.replace('-', '_'))]
     if args.branch != NONE:
         add += ['--branch', args.branch.strip()]
     row = run_ledger(args, 'add', *base, *add)
@@ -803,6 +810,13 @@ def build_parser():
     card.add_argument('--depends', help='ledger row: comma-separated item numbers it waits for')
     card.add_argument('--repo', help='ledger row: absolute path of the local git checkout the commit evidence lives '
                       'in (not owner/repo)')
+    card.add_argument('--tiny', action='store_true',
+                      help='ledger row: put the ticket on the tiny-change lane; needs both '
+                      "--no-feature and --no-format-change, the orchestrator's declarations")
+    card.add_argument('--no-feature', action='store_true',
+                      help='with --tiny: declare the change adds no feature')
+    card.add_argument('--no-format-change', action='store_true',
+                      help='with --tiny: declare the change keeps every data and storage format')
     card.add_argument('--old-round', action='store_true',
                       help="ledger row: add it to an earlier round's ledger on purpose "
                       '(lat-ledger.py add --old-round)')
