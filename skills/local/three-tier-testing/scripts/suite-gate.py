@@ -3436,7 +3436,10 @@ def cmd_affected(base, purpose=None):
             for suite in suites:
                 warn(f"full suite in {suite['cwd']}: {suite['command']}")
                 cwd = suite_cwd(checkout, suite)
-                reason = prepare(cwd) if prepare else None
+                # A suite whose content already passed is reused, so it needs no preparing.
+                info = fingerprint(cwd, [suite['command']]) if prepare else None
+                passed = info is not None and reusable_record(info['fingerprint'])
+                reason = prepare(cwd) if prepare and not passed else None
                 if reason:
                     warn(f"not run: preparing {suite['cwd']} failed ({reason}); this is not a "
                          'test result')
@@ -3466,7 +3469,7 @@ def cmd_affected(base, purpose=None):
             warn('no affected-test map in this project (`affected.map` in '
                  f'{REGISTRY_NAME}). While editing, run the test files you choose. Before '
                  'merging, run the registered full suites once on the final version:\n'
-                 f'  {affected_command()} --purpose pre-merge\n'
+                 f'  {pre_merge_command(registry)}\n'
                  f'or one full suite through `suite-gate.py run -- <cmd>`')
             return 2
         commit, origin = change_base(root, base, (registry or {}).get('integration_branch'))
@@ -4504,12 +4507,19 @@ def _variable_gate_hint(text):
     return ''
 
 
-def timing_note(final):
+def pre_merge_command(registry):
+    """The pre-merge run; it names --base when the registry gives no integration_branch."""
+    base = '' if (registry or {}).get('integration_branch') else \
+        ' --base <commit this branch started from>'
+    return f'{affected_command()}{base} --purpose pre-merge'
+
+
+def timing_note(final, registry):
     """When to run what, for the hook's reply; final names what the pre-merge run tests."""
     return ('When to test: while editing, run the test files you choose (naming them is not '
             'blocked). Once, on the final version before merging to the integration branch, '
             f'run {final} through the gate:\n'
-            f'  {affected_command()} --purpose pre-merge\n'
+            f'  {pre_merge_command(registry)}\n'
             'It is recorded, and a pass on the same content is reused after the merge.')
 
 
@@ -4550,7 +4560,7 @@ def cmd_hook():
               'is merged, run the affected tests of the whole batch instead:\n'
               f'  {post_merge_command()}\n'
               'The purpose is recorded with the result.\n'
-              + timing_note('the tests it affects')
+              + timing_note('the tests it affects', load_registry(cwd))
               + _variable_gate_hint(text), file=sys.stderr)
         return 2
     print('Blocked: this runs a full test suite outside the suite gate. Run this instead; '
@@ -4563,7 +4573,7 @@ def cmd_hook():
           'Add --rerun "<reason>" after `run` only when the gate reports an earlier pass and '
           'you have a concrete reason to run again. To run only some tests, name the files '
           'or a filter.'
-          + (('\n' + timing_note('the registered full suites'))
+          + (('\n' + timing_note('the registered full suites', load_registry(cwd)))
              if registered_suites(cwd) else '')
           + _variable_gate_hint(text),
           file=sys.stderr)

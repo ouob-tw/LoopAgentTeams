@@ -1,6 +1,7 @@
 """After a batch is merged, `affected --base <start> --purpose post-merge` runs the affected
 tests of the whole batch and writes one summary record, through the CLI."""
 import json
+import shlex
 import signal
 import subprocess
 import sys
@@ -300,6 +301,37 @@ class NoMapTests(AffectedCase):
         self.assertIn('While editing, run the test files you choose', result.stderr)
         self.assertIn('affected --purpose pre-merge', result.stderr)
         self.assertEqual((self.full_runs(), self.records()), ([], []))
+
+    def test_post_merge_reuses_a_pass_without_preparing_its_directory(self):
+        self.touch('bun.lock', '{}\n')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'lockfile')
+        fake = self.tmp / 'fake-bin'
+        fake.mkdir()
+        (fake / 'bun').write_text(f'#!/bin/sh\necho "$@" >> {self.tmp}/bun.log\nexit 42\n')
+        (fake / 'bun').chmod(0o755)
+        self.env['PATH'] = f"{fake}:{self.env['PATH']}"
+        start = rev(self.repo, 'main')
+        self.assertEqual(self.gate('affected', '--purpose', 'pre-merge').returncode, 0)
+        git(self.repo, 'checkout', '-q', 'main')
+        git(self.repo, 'merge', '-q', '--ff-only', 'feature')
+        after = self.gate('affected', '--base', start, '--purpose', 'post-merge')
+        self.assertEqual(after.returncode, 0, after.stderr)
+        self.assertFalse((self.tmp / 'bun.log').exists(), 'bun install ran')
+        self.assertTrue(all(g['reused'] for g in self.summaries()[-1]['groups']))
+
+    def test_guidance_names_a_base_when_the_registry_has_no_integration_branch(self):
+        del self.registry['integration_branch']
+        self.write_registry()
+        guidance = self.gate('affected').stderr
+        command = guidance.split('\n  ', 1)[1].split('\n', 1)[0]
+        self.assertTrue(command.endswith(' affected --base <commit this branch started from> '
+                                         '--purpose pre-merge'), command)
+        start = rev(self.repo, 'main')
+        result = self.gate(*shlex.split(command.replace(
+            '<commit this branch started from>', start))[5:])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
 
     def test_without_registered_full_suites_nothing_runs(self):
         del self.registry['full_suites']

@@ -252,9 +252,9 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批
 登記檔沒有 `affected.map`（或沒有登記檔）時，`affected` 不挑測試：
 
 - 帶 `--purpose pre-merge` 或 `--purpose post-merge` 時，改跑 `full_suites` 的每一套各一次，每套照 `run` 的規則經閘門執行（排隊、佔名額、同內容沿用任何用途的通過紀錄），一套失敗其餘照跑。各套紀錄的 `purpose` 是那個用途，並帶這次的 `run_id`；最後照樣寫總結紀錄，每套一組（`kind: "full-suite"`），沿用時 `reused` 指向被沿用的那筆。
-- 合併前（`pre-merge`）在目前工作區跑；合併後（`post-merge`，`--base` 必填）照上面的方式在暫時乾淨檢出裡跑。內容沒變時，合併後的執行沿用合併前的通過，不再跑一次。
+- 合併前（`pre-merge`）在目前工作區跑；合併後（`post-merge`，`--base` 必填）照上面的方式在暫時乾淨檢出裡跑；同內容已有通過紀錄的套直接沿用，不先裝依賴。內容沒變時，合併後的執行沿用合併前的通過，不再跑一次。
 - 基準點同上：`--base`，或登記檔的 `integration_branch` 與 HEAD 的共同祖先；兩者都沒有就停止。沒有登記的整套時以結束碼 2 停止，什麼都不跑也不寫紀錄。
-- 不帶 `--purpose` 時不執行，以結束碼 2 提示：修改期間跑自己挑的測試檔，合併前跑 `affected --purpose pre-merge`。
+- 不帶 `--purpose` 時不執行，以結束碼 2 提示：修改期間跑自己挑的測試檔，合併前跑 `affected --purpose pre-merge`（登記檔沒有 `integration_branch` 時提示的指令帶 `--base <起點>`，hook 的回覆也是）。
 
 ### 對照表欄位
 

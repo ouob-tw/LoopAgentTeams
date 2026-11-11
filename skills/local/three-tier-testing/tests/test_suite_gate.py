@@ -2963,8 +2963,13 @@ class HookTests(GateCase):
         self.assertEqual(rewrite_of(result.stderr), gate.gate_command('pytest') + ' 2>&1 | tail')
         self.assertIn(note, result.stderr)
         self.assertIn('run the registered full suites through the gate:\n'
-                      f"  {cli('affected')} --purpose pre-merge\n", result.stderr)
+                      f"  {cli('affected')} --base <commit this branch started from> "
+                      '--purpose pre-merge\n', result.stderr)
         self.assertIn('a pass on the same content is reused after the merge', result.stderr)
+        (self.repo / '.suite-gate.json').write_text(json.dumps(
+            {'integration_branch': 'main', 'full_suites': [{'command': 'pytest', 'cwd': '.'}]}))
+        self.assertIn(f"  {cli('affected')} --purpose pre-merge\n",
+                      run_hook('pytest', self.repo, self.env).stderr)
 
     def test_the_rewrite_runs_passes_the_hook_and_is_reused_next_time(self):
         suite = self.suite()
