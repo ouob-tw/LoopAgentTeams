@@ -559,6 +559,18 @@ def ledger_check(path):
     return 'unreadable', result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
 
 
+def tracker_warning(record):
+    """The tracker warning text for the round's ledger tickets, or '' (never raises)."""
+    try:
+        spec = importlib.util.spec_from_file_location('lat_tracker', SKILL_DIR / 'scripts/_lat_tracker.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return '\n'.join(module.tracker_warnings(ledger_module(), record['ledger_path'],
+                                                 record['workspace']))
+    except Exception as exc:  # noqa: BLE001 - a warning never blocks
+        return f'tracker 檢查略過：{exc}'
+
+
 def ledger_repair(path):
     """The repair that would make an unreadable ledger readable again, or None when none can.
 
@@ -775,6 +787,7 @@ def deactivate(args):
         if any(record.get(key) != value for key, value in expected.items()):
             raise ValueError('Controller identity does not match; record unchanged')
         forced = None
+        was_active = record['status'] == 'active'
         if record['status'] == 'active' and record.get('ledger_path'):
             forced = ledger_gate(record, args)
         _stop_watcher_locked(record)
@@ -806,6 +819,10 @@ def deactivate(args):
     if forced:
         print(f'已強制停用，未結案原因寫入{"工作總表歷史" if forced["saved_in"] == "ledger" else "session 紀錄"}：'
               f'{forced["reason"]}')
+    if record.get('ledger_path') and was_active:
+        tracker = tracker_warning(record)
+        if tracker:
+            print(tracker)
     reap_on_deactivate(record)
     start_autoclean(workspace)
 
@@ -1591,6 +1608,11 @@ def report_stop(record, payload):
         ledger = ledger_stop_check(record, message)
         if ledger:
             reasons.append(ledger)
+        lines = [line for line in message.splitlines() if line.strip()]
+        if record.get('ledger_path') and lines and lines[-1].startswith('DONE:'):
+            tracker = tracker_warning(record)
+            if tracker:
+                notes.append(tracker)
         try:
             undeclared = undeclared_wait_check(record, message)
         except Exception as exc:  # noqa: BLE001 - a broken wait check never holds the Stop
