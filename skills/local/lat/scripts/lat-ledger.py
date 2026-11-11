@@ -23,15 +23,19 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import (full_hcom_name, read_hcom_list, run_cli, same_controller,
-                         shared_lat_dir, write_text_atomic)
+sys.path.insert(1, str(Path(__file__).resolve().parents[1] / 'herdr-panel'))
+from _lat_common import (full_hcom_name, read_hcom_list, resolve_agent_name, run_cli,
+                         same_controller, shared_lat_dir, write_text_atomic)
 from _lat_tracker import read_issue, tracker_repo
+from transcript import current_settings
 
 LAT_DIR = Path(__file__).resolve().parents[1]
 # Overrides for tests: a fixed clock, another suite-gate script and a file for `hcom list --json`.
 NOW_ENV = 'LAT_LEDGER_NOW'
 GATE_ENV = 'LAT_LEDGER_SUITE_GATE'
 HCOM_LIST_ENV = 'LAT_LEDGER_HCOM_LIST'
+# ... and a JSON file {name: object} standing in for `hcom list <name> --json`.
+HCOM_AGENTS_ENV = 'LAT_LEDGER_HCOM_AGENTS'
 READ_ONLY = ('next', 'check', 'show')
 VERSION = 1
 STAGES = {'impl': '實作', 'review': '審查', 'qa-draft': 'QA 草稿', 'qa': '驗收',
@@ -63,6 +67,11 @@ DEPLOY_ACTION = 'deploy-prod'
 TITLE_TIMEOUT_SECONDS = 10
 TITLE_BUDGET_SECONDS = 20
 QUALIFIED_TICKET = re.compile(r'([\w.-]+/[\w.-]+)#(\d+)')
+# Reading what an agent really runs on: the effort words a task card's model field may end
+# with, and how much of a transcript's end is searched for the latest turn's settings.
+EFFORTS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
+TRANSCRIPT_TAIL_BYTES = 4 << 20
+UNVERIFIED = '未查證'
 
 
 class Failure(Exception):
@@ -193,6 +202,10 @@ def validate(doc):
     titles = doc.get('titles', {})  # ledgers made before ticket titles have none
     if not isinstance(titles, dict) or not all(isinstance(v, str) for v in titles.values()):
         raise ValueError('titles must map tickets to text')
+    for key in ('reviews', 'participants'):  # ledgers made before review results have none
+        entries = doc.get(key, [])
+        if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+            raise ValueError(f'{key} must be a list of objects')
     items = doc.get('items')
     if not isinstance(items, list):
         raise ValueError('items must be a list')
@@ -657,6 +670,148 @@ def write_card_fields(item, values):
         print(f'lat-ledger: warning: task card not updated: {error}', file=sys.stderr)
 
 
+# ---- actual model and effort ------------------------------------------------------------
+#
+# What an agent really runs on is read when its row is assigned (`card bind` assigns it),
+# again at `done`, and for each reviewer when a review result is recorded:
+#   1. `hcom list <name> --json` (supported command): the client (`tool`), the model of the
+#      latest reply (`usage.model`) and the session's `transcript_path`. HCOM keeps no effort.
+#   2. That transcript's latest turn: the effort, and the model when HCOM has none yet. Only
+#      the end of the file is read (TRANSCRIPT_TAIL_BYTES).
+#   3. Whatever is still missing comes from the task card's model field (what the orchestrator
+#      meant to use), and the reading is marked unverified. A native sub-agent has no HCOM name
+#      to look up, so its reading is always unverified.
+
+def card_setting(path):
+    """(model, effort) from a task card's `model` field, e.g. "gpt-6-astra medium"; the effort
+    is its last word when that is an effort level. (None, None) without a card or field."""
+    if not path:
+        return None, None
+    try:
+        text = Path(path).read_text(encoding='utf-8')
+    except (OSError, UnicodeError):
+        return None, None
+    for line in text.splitlines():
+        match = CARD_FIELD.fullmatch(line.strip())
+        if match and match.group(1).strip().lower() == 'model':
+            words = match.group(2).split()
+            if words and words[-1].lower() in EFFORTS:
+                return ' '.join(words[:-1]) or None, words[-1].lower()
+            return ' '.join(words) or None, None
+    return None, None
+
+
+def hcom_agent(name):
+    """`hcom list <name> --json` as a dict; ValueError when HCOM cannot answer for `name`. In
+    tests the HCOM_AGENTS_ENV file stands in, and a test that stands in only for the agent list
+    gets no live HCOM answer either."""
+    fake = os.environ.get(HCOM_AGENTS_ENV)
+    if fake:
+        try:
+            details = json.loads(Path(fake).read_text()).get(name)
+        except (OSError, ValueError, AttributeError) as error:
+            raise ValueError(f'hcom agent details unreadable: {error}') from error
+    elif os.environ.get(HCOM_LIST_ENV):
+        raise ValueError('hcom agent details have no stand-in in this test')
+    else:
+        details = json.loads(run_cli(['hcom', 'list', name, '--json'], timeout=30,
+                                     failure='hcom list failed'))
+    if not isinstance(details, dict):
+        raise ValueError(f'hcom has no agent {name}')
+    return details
+
+
+def transcript_settings(client, path):
+    """{model, effort} of the latest turn in the end of a Claude or Codex transcript; None when
+    it has none or cannot be read."""
+    if client not in ('claude', 'codex') or not isinstance(path, str) or not path:
+        return None
+    try:
+        with open(path, 'rb') as stream:
+            size = stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
+            lines = stream.read().split(b'\n')
+    except OSError:
+        return None
+    if size > TRANSCRIPT_TAIL_BYTES:
+        lines = lines[1:]  # starts inside a line
+    records = []
+    for line in lines[:-1]:  # the last line may still be being written
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return current_settings(client, records)
+
+
+def read_settings(name, card=None, native=False):
+    """One reading of what agent `name` runs on: client, model, effort, where each came from,
+    whether it is verified (model and effort both read live) and why not."""
+    live, problem = {}, None
+    if native:
+        problem = 'native sub-agent without an HCOM name'
+    else:
+        try:
+            details = hcom_agent(name)
+            client = details.get('tool') if isinstance(details.get('tool'), str) else None
+            usage = details.get('usage') if isinstance(details.get('usage'), dict) else {}
+            latest = transcript_settings(client, details.get('transcript_path')) or {}
+            live = {'client': client,
+                    'model': (('hcom', usage['model']) if isinstance(usage.get('model'), str)
+                              and usage['model'] else ('transcript', latest.get('model'))),
+                    'effort': ('transcript', latest.get('effort'))}
+        except ValueError as error:
+            problem = ' '.join(str(error).split())
+    intended = dict(zip(('model', 'effort'), card_setting(card)))
+    reading = {'client': live.get('client'), 'native': native, 'at': stamp(now())}
+    sources = {}
+    for field in ('model', 'effort'):
+        source, value = live.get(field, (None, None))
+        if not value:
+            source, value = ('card', intended[field]) if intended[field] else (None, None)
+        reading[field], sources[field] = value, source
+    reading['sources'] = sources
+    reading['verified'] = all(sources[field] in ('hcom', 'transcript')
+                              for field in ('model', 'effort'))
+    if not reading['verified']:
+        reading['problem'] = problem or 'HCOM and the transcript lack ' + ' and '.join(
+            field for field in ('model', 'effort') if sources[field] not in ('hcom', 'transcript'))
+    return reading
+
+
+def settings_text(first, last=None):
+    """"model・effort", "model・low→high" when two verified readings differ, with 未查證 when
+    the latest reading is not verified."""
+    first, last = first or last, last or first
+    if not last:
+        return ''
+    parts = []
+    for field in ('model', 'effort'):
+        value = last.get(field) or '?'
+        if (first is not last and first.get('verified') and last.get('verified')
+                and first.get(field) != last.get(field)):
+            value = f'{first.get(field) or "?"}→{value}'
+        parts.append(value)
+    text = '・'.join(parts) if any(last.get(field) for field in ('model', 'effort')) else ''
+    if not last.get('verified'):
+        text = f'{text}（{UNVERIFIED}）' if text else UNVERIFIED
+    return text
+
+
+def row_settings_text(item):
+    actual = item.get('actual') or {}
+    return settings_text(actual.get('bind'), actual.get('done')) if actual else ''
+
+
+def settings_changes(first, last):
+    """{field: [at bind, at done]} for the fields that differ between two readings."""
+    return {field: [first.get(field), last.get(field)]
+            for field in ('client', 'model', 'effort', 'verified')
+            if first.get(field) != last.get(field)}
+
+
 # ---- commands -------------------------------------------------------------------------
 
 def cmd_init(args):
@@ -753,6 +908,7 @@ def cmd_assign(args):
         require_status(item, ('unassigned',), 'assign')
         record(args, item, 'assign', {'status': 'assigned', 'agent': agent, 'card': card,
                                       'assigned_at': stamp(now())})
+        item['actual'] = {'bind': read_settings(agent, card, args.native)}
 
 
 def cmd_start(args):
@@ -862,8 +1018,24 @@ def cmd_done(args):
         if repo:
             changes['main_checkout'] = owning_checkout(repo)
         record(args, item, 'done', changes)
+        record_done_settings(args, item)
     update_card(item, resolved)
     print(f'item {item["id"]} closed')
+
+
+def record_done_settings(args, item):
+    """Read the row's agent again at done; a difference from the bind reading goes into the
+    row's history. Rows assigned before readings existed get only the done reading."""
+    actual = item.get('actual') or {}
+    bind = actual.get('bind')
+    native = bool(bind and bind.get('native'))
+    actual['done'] = read_settings(item['agent'], item.get('card'), native)
+    item['actual'] = actual
+    changes = settings_changes(bind, actual['done']) if bind else {}
+    if changes:
+        item['history'].append({'at': actual['done']['at'], 'by': actor(args),
+                                'action': 'settings', 'changes': changes,
+                                'reason': 'actual settings at done differ from those at bind'})
 
 
 def cmd_amend(args):
@@ -885,6 +1057,52 @@ def cmd_amend(args):
         # Only the version changed: a card already marked merged stays merged.
         write_card_fields(item, {'deliverable commit': ', '.join(resolved['commit'])})
     print(f'item {item["id"]} amended')
+
+
+def cmd_review_result(args):
+    """Record one review of a row and a participant entry per reviewer with what that reviewer
+    runs on, read now. A name HCOM does not list (a native sub-agent) is kept as given and its
+    setting is unverified. Findings come with the problem log; until then a result is --clean."""
+    if not args.clean:
+        raise Failure('give --clean: recording findings is not available yet')
+    note = args.note.strip() if args.note and args.note.strip() else None
+    try:
+        agents = {item['name'] for item in read_hcom_list(HCOM_LIST_ENV)
+                  if isinstance(item.get('name'), str)}
+    except ValueError as error:
+        print(f'lat-ledger: warning: {error}; reviewers are kept as given, {UNVERIFIED}',
+              file=sys.stderr)
+        agents = set()
+    reviewers = []
+    for given in args.reviewer:
+        given = required_text('--reviewer', given)
+        try:
+            name = resolve_agent_name(agents, given, required=False)
+        except ValueError as error:
+            raise Failure(f'--reviewer: {error}; nothing written') from None
+        if name not in agents and agents:
+            print(f'lat-ledger: warning: HCOM lists no agent {given}; kept as given, '
+                  f'{UNVERIFIED}', file=sys.stderr)
+        if name not in reviewers:
+            reviewers.append(name)
+    with transaction(args, 'review-result', args.row) as doc:
+        item = find(doc, args.row)
+        if item['status'] == 'cancelled':
+            raise Failure(f'item {item["id"]} is cancelled; no review to record')
+        reviews = doc.setdefault('reviews', [])
+        review = {'id': len(reviews) + 1, 'row': item['id'], 'at': stamp(now()),
+                  'by': actor(args), 'result': 'clean', 'reviewers': reviewers, 'note': note}
+        reviews.append(review)
+        for name in reviewers:
+            reading = read_settings(name, native=name not in agents)
+            doc.setdefault('participants', []).append({
+                'stage': 'review', 'name': name, 'row': item['id'], 'review': review['id'],
+                **{key: reading[key] for key in ('client', 'model', 'effort', 'verified',
+                                                 'sources', 'at')},
+                **({'problem': reading['problem']} if 'problem' in reading else {})})
+    print(f'review {review["id"]} of item {item["id"]} recorded: '
+          + '; '.join(f'{p["name"]} {settings_text(p)}' for p in doc['participants']
+                      if p['review'] == review['id']))
 
 
 def cmd_cancel(args):
@@ -917,6 +1135,7 @@ def cmd_reassign(args):
         else:
             changes['status'] = 'assigned'
         record(args, item, 'reassign', changes, reason)
+        item['actual'] = {'bind': read_settings(agent, item['card'], args.native)}
 
 
 def ready(doc):
@@ -1087,14 +1306,19 @@ def rows_step(rows):
     return 'done' if 'done' in statuses else 'skipped'
 
 
-def ticket_steps(lookups, rows):
-    """{step: state} for one ticket. Merge and deploy are checked in each row's own project
-    (a row with --repo belongs to that repo's main checkout, others to the workspace)."""
+def ticket_steps(lookups, rows, reviewed):
+    """{step: state} for one ticket; `reviewed` holds the rows with a recorded review. Merge
+    and deploy are checked in each row's own project (a row with --repo belongs to that repo's
+    main checkout, others to the workspace)."""
     steps = {step: rows_step([r for r in rows if r['stage'] in stages])
              for step, stages in STEP_STAGES.items()}
     if steps['review'] is None and steps['impl'] is not None:
-        # Reviewers have no rows; an implementer closes only after review.
-        steps['review'] = 'done' if steps['impl'] == 'done' else 'pending'
+        # Reviewers have no rows: a recorded review result counts, else an implementer
+        # closes only after review.
+        if any(r['id'] in reviewed for r in rows if r['stage'] == 'impl'):
+            steps['review'] = 'done'
+        else:
+            steps['review'] = 'done' if steps['impl'] == 'done' else 'pending'
     impl = [r for r in rows if r['stage'] == 'impl' and r['status'] != 'cancelled']
     delivered = [r for r in impl if r['status'] == 'done' and r['evidence'].get('commit')]
     merged = [lookups.merged_at(r) for r in delivered]
@@ -1171,6 +1395,29 @@ def ticket_now(rows, state, steps, at):
     return TICKET_STATES[state]
 
 
+def ticket_settings(rows, participants):
+    """What each stage of a ticket ran on: the readings of its rows and, for review, its
+    reviewers' participant entries (never the implementer's reading)."""
+    ids = {row['id'] for row in rows}
+    stages = []
+    for step, row_stages in STEP_STAGES.items():
+        entries = [{'name': row['agent'], 'row': row['id'], 'source': 'row',
+                    **{key: (row['actual'].get('done') or row['actual']['bind']).get(key)
+                       for key in ('client', 'model', 'effort', 'verified')},
+                    'text': row_settings_text(row)}
+                   for row in rows if row['stage'] in row_stages and row.get('actual')]
+        if step == 'review':
+            entries += [{'name': entry['name'], 'row': entry['row'], 'source': 'review',
+                         **{key: entry.get(key) for key in ('client', 'model', 'effort',
+                                                            'verified')},
+                         'text': settings_text(entry)}
+                        for entry in participants if entry.get('row') in ids]
+        if entries:
+            stages.append({'step': step, 'label': STEPS[step], 'entries': entries,
+                           'text': '、'.join(dict.fromkeys(e['text'] for e in entries))})
+    return stages
+
+
 def build_tickets(doc, at):
     """The ticket layer: one entry per canonical ticket, in the order tickets first appear. A
     row naming several tickets belongs to each of them."""
@@ -1181,9 +1428,11 @@ def build_tickets(doc, at):
         for key in ticket_keys(item['ticket'], default_repo):
             groups.setdefault(key, []).append(item)
     lookups = Lookups(doc)
+    reviewed = {review.get('row') for review in doc.get('reviews', [])}
+    participants = doc.get('participants', [])
     tickets = []
     for key, rows in groups.items():
-        steps = ticket_steps(lookups, rows)
+        steps = ticket_steps(lookups, rows, reviewed)
         state = ticket_state(rows, steps)
         starts = [time for time in map(first_assigned, rows) if time]
         running = state not in ('deployed', 'merged', 'done', 'cancelled')
@@ -1200,6 +1449,7 @@ def build_tickets(doc, at):
             'steps': [{'key': step, 'label': STEPS[step], 'state': value}
                       for step, value in steps.items()],
             'now': ticket_now(rows, state, steps, at), 'items': [row['id'] for row in rows],
+            'settings': ticket_settings(rows, participants),
             'started_at': stamp(min(map(loads_time, starts))) if starts else None,
             'total_minutes': minutes, 'running': running})
     return tickets
@@ -1292,6 +1542,7 @@ def cmd_show(args):
         view['stage_label'] = STAGES[item['stage']]
         view['status_label'] = STATUSES[item['status']]
         view['ticket_keys'] = ticket_keys(item['ticket'], default_repo)
+        view['settings_text'] = row_settings_text(item)
         rows.append(view)
     if getattr(args, 'rows', False) and not args.json:
         print(f'工作總表 {args.ledger}（更新於 {doc["updated_at"]}）\n')
@@ -1306,6 +1557,8 @@ def cmd_show(args):
                           'workspace': doc['workspace'], 'created_at': doc['created_at'],
                           'updated_at': doc['updated_at'], 'items': rows,
                           'tickets': tickets, 'ticket_counts': counts,
+                          'reviews': doc.get('reviews', []),
+                          'participants': doc.get('participants', []),
                           'deploy_step': any(step['key'] == 'deployed' for ticket in tickets
                                              for step in ticket['steps'])},
                          ensure_ascii=False, indent=1))
@@ -1319,8 +1572,8 @@ def show_tickets(tickets, counts, default_repo):
     summary = '、'.join(f'{counts[state]} 張{label}' for state, label in TICKET_STATES.items()
                        if counts.get(state))
     print(f'{len(tickets)} 張票：{summary}' if tickets else '沒有票')
-    print('\n| 票 | 標題 | 進度 | 現在 | 用時 | 列 |')
-    print('|---|---|---|---|---|---|')
+    print('\n| 票 | 標題 | 進度 | 現在 | 模型 | 用時 | 列 |')
+    print('|---|---|---|---|---|---|---|')
     for ticket in tickets:
         ref = ticket['key']
         if default_repo and ref.startswith(f'{default_repo}#'):
@@ -1330,14 +1583,15 @@ def show_tickets(tickets, counts, default_repo):
         took = ''
         if ticket['total_minutes'] is not None:
             took = ('已 ' if ticket['running'] else '') + minutes_text(ticket['total_minutes'])
+        models = '；'.join(f'{stage["label"]} {stage["text"]}' for stage in ticket['settings'])
         print('| ' + ' | '.join(cell(value) for value in (
-            ref, ticket['title'], progress, ticket['now'], took,
+            ref, ticket['title'], progress, ticket['now'], models, took,
             ','.join(map(str, ticket['items'])))) + ' |')
 
 
 def show_rows(rows):
-    print('| # | 票號 | 階段 | 負責 | 狀態 | 依賴 | 預計完成 | 備註 |')
-    print('|---|---|---|---|---|---|---|---|')
+    print('| # | 票號 | 階段 | 負責 | 模型 | 狀態 | 依賴 | 預計完成 | 備註 |')
+    print('|---|---|---|---|---|---|---|---|---|')
     for row in rows:
         status = row['status_label']
         if 'estimate' in row['late_minutes']:
@@ -1349,7 +1603,8 @@ def show_rows(rows):
             row['card_mismatch'] and f'任務卡不一致：{row["card_mismatch"]}',
             row['progress'] and f'進度：{row["progress"]}') if text]
         print('| ' + ' | '.join(cell(value) for value in (
-            row['id'], row['ticket'], row['stage_label'], row['agent'], status,
+            row['id'], row['ticket'], row['stage_label'], row['agent'], row['settings_text'],
+            status,
             ','.join(map(str, row['depends_on'])), row['estimate'], '；'.join(notes))) + ' |')
 
 
@@ -1463,6 +1718,14 @@ def build_parser():
     sub.add_argument('--commit', action='append')
     sub.add_argument('--gate', action='append', help='suite-gate record fingerprint')
     sub.add_argument('--file', action='append', help='absolute path of a report or checklist')
+    sub = command('review-result', "Record a review of a row with each reviewer's actual "
+                  'model and effort', item=False)
+    sub.add_argument('--row', type=int, required=True, help='the ledger row the review covers')
+    sub.add_argument('--reviewer', action='append', required=True,
+                     help='HCOM name of a reviewer (repeat for each); a name HCOM does not list, '
+                     'such as a native sub-agent, is kept as given and marked unverified')
+    sub.add_argument('--clean', action='store_true', help='the review found nothing')
+    sub.add_argument('--note', help='free text kept with the result')
     sub = command('cancel', 'Cancel an item (orchestrator only)')
     sub.add_argument('--reason', required=True)
     sub = command('reassign', 'Hand an open item to another agent')
@@ -1488,7 +1751,8 @@ def main():
     handlers = {'init': cmd_init, 'add': cmd_add, 'assign': cmd_assign, 'start': cmd_start,
                 'update': cmd_update, 'block': cmd_block, 'unblock': cmd_unblock,
                 'done': cmd_done, 'amend': cmd_amend, 'cancel': cmd_cancel,
-                'reassign': cmd_reassign, 'next': cmd_next, 'check': cmd_check, 'show': cmd_show,
+                'reassign': cmd_reassign, 'review-result': cmd_review_result,
+                'next': cmd_next, 'check': cmd_check, 'show': cmd_show,
                 'repair': cmd_repair}
     try:
         if args.command not in READ_ONLY:
