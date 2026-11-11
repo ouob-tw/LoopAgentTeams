@@ -1560,7 +1560,7 @@ class ActualSettingsTests(LedgerCase):
         self.assertEqual({k: actual['bind'][k] for k in ('client', 'model', 'effort', 'verified')},
                          {'client': 'claude', 'model': 'claude-opus-5-5', 'effort': 'low',
                           'verified': True})
-        self.assertEqual(actual['bind']['sources'], {'model': 'hcom', 'effort': 'transcript'})
+        self.assertEqual(actual['bind']['sources'], {'model': 'transcript', 'effort': 'transcript'})
         self.assertEqual((actual['done']['effort'], actual['done']['verified']), ('high', True))
         history = self.item(item)['history'][-1]
         self.assertEqual((history['action'], history['changes']),
@@ -1569,8 +1569,10 @@ class ActualSettingsTests(LedgerCase):
         self.assertIn('| impl | claude-opus-5-5・low→high |', self.ok('show', '--rows'))
         self.assertIn('實作 claude-opus-5-5・low→high', self.ok('show'))
 
-    def test_codex_model_from_the_transcript_when_hcom_has_none_yet(self):
-        self.launch('impl', 'codex', None, [('gpt-6.1-terra', 'medium')])
+    def test_codex_model_and_effort_come_from_the_same_latest_turn(self):
+        # HCOM still names the model before a switch; the latest turn has the new one.
+        self.launch('impl', 'codex', 'gpt-6.1-sol', [('gpt-6.1-sol', 'low'),
+                                                      ('gpt-6.1-terra', 'medium')])
         item = self.add()
         self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.model_card('x')))
         bind = self.item(item)['actual']['bind']

@@ -674,10 +674,10 @@ def write_card_fields(item, values):
 #
 # What an agent really runs on is read when its row is assigned (`card bind` assigns it),
 # again at `done`, and for each reviewer when a review result is recorded:
-#   1. `hcom list <name> --json` (supported command): the client (`tool`), the model of the
-#      latest reply (`usage.model`) and the session's `transcript_path`. HCOM keeps no effort.
-#   2. That transcript's latest turn: the effort, and the model when HCOM has none yet. Only
-#      the end of the file is read (TRANSCRIPT_TAIL_BYTES).
+#   1. `hcom list <name> --json` (supported command): the client (`tool`), the session's
+#      `transcript_path` and the model of the latest reply (`usage.model`). HCOM keeps no effort.
+#   2. That transcript's latest turn: the model and effort it ran with (HCOM's model only when
+#      the transcript has no turn yet). Only the end of the file is read (TRANSCRIPT_TAIL_BYTES).
 #   3. Whatever is still missing comes from the task card's model field (what the orchestrator
 #      meant to use), and the reading is marked unverified. A native sub-agent has no HCOM name
 #      to look up, so its reading is always unverified.
@@ -759,8 +759,11 @@ def read_settings(name, card=None, native=False):
             usage = details.get('usage') if isinstance(details.get('usage'), dict) else {}
             latest = transcript_settings(client, details.get('transcript_path')) or {}
             live = {'client': client,
-                    'model': (('hcom', usage['model']) if isinstance(usage.get('model'), str)
-                              and usage['model'] else ('transcript', latest.get('model'))),
+                    # The latest turn's model goes with its effort; HCOM's may still name
+                    # the reply before a model switch, so it only fills a gap.
+                    'model': (('transcript', latest['model']) if latest.get('model') else
+                              ('hcom', usage.get('model') if isinstance(usage.get('model'), str)
+                               else None)),
                     'effort': ('transcript', latest.get('effort'))}
         except ValueError as error:
             problem = ' '.join(str(error).split())
@@ -903,12 +906,13 @@ def cmd_assign(args):
     agent = required_text('--agent', args.agent)
     card = required_text('--card', args.card)
     ignore_deadline(args)
+    reading = read_settings(agent, card, args.native)  # HCOM is asked outside the lock
     with transaction(args, 'assign', args.id) as doc:
         item = find(doc, args.id)
         require_status(item, ('unassigned',), 'assign')
         record(args, item, 'assign', {'status': 'assigned', 'agent': agent, 'card': card,
                                       'assigned_at': stamp(now())})
-        item['actual'] = {'bind': read_settings(agent, card, args.native)}
+        item['actual'] = {'bind': reading}
 
 
 def cmd_start(args):
@@ -994,9 +998,13 @@ def cmd_unblock(args):
 
 def cmd_done(args):
     given = {'commit': args.commit or [], 'gate': args.gate or [], 'file': args.file or []}
+    before = find(read_only(args), args.id)
+    reading = done_reading(before)  # HCOM is asked outside the lock
     with transaction(args, 'done', args.id) as doc:
         item = find(doc, args.id)
         require_status(item, ('assigned', 'in_progress'), 'done')
+        if (item['agent'], item.get('card')) != (before['agent'], before.get('card')):
+            raise Failure(f'item {item["id"]} was reassigned meanwhile; rerun done')
         changes = {'status': 'done'}
         if args.repo:
             repo, problem = check_repo(args.repo)
@@ -1018,18 +1026,26 @@ def cmd_done(args):
         if repo:
             changes['main_checkout'] = owning_checkout(repo)
         record(args, item, 'done', changes)
-        record_done_settings(args, item)
+        record_done_settings(args, item, reading)
     update_card(item, resolved)
     print(f'item {item["id"]} closed')
 
 
-def record_done_settings(args, item):
-    """Read the row's agent again at done; a difference from the bind reading goes into the
-    row's history. Rows assigned before readings existed get only the done reading."""
+def done_reading(item):
+    """The row's agent read again for done (a native agent stays native); None when the row
+    has no agent, which done refuses anyway."""
+    if not item.get('agent'):
+        return None
+    bind = (item.get('actual') or {}).get('bind')
+    return read_settings(item['agent'], item.get('card'), bool(bind and bind.get('native')))
+
+
+def record_done_settings(args, item, reading):
+    """Store the done reading; a difference from the bind reading goes into the row's
+    history. Rows assigned before readings existed get only the done reading."""
     actual = item.get('actual') or {}
     bind = actual.get('bind')
-    native = bool(bind and bind.get('native'))
-    actual['done'] = read_settings(item['agent'], item.get('card'), native)
+    actual['done'] = reading
     item['actual'] = actual
     changes = settings_changes(bind, actual['done']) if bind else {}
     if changes:
@@ -1085,6 +1101,8 @@ def cmd_review_result(args):
                   f'{UNVERIFIED}', file=sys.stderr)
         if name not in reviewers:
             reviewers.append(name)
+    readings = {name: read_settings(name, native=name not in agents)  # outside the lock
+                for name in reviewers}
     with transaction(args, 'review-result', args.row) as doc:
         item = find(doc, args.row)
         if item['status'] == 'cancelled':
@@ -1094,7 +1112,7 @@ def cmd_review_result(args):
                   'by': actor(args), 'result': 'clean', 'reviewers': reviewers, 'note': note}
         reviews.append(review)
         for name in reviewers:
-            reading = read_settings(name, native=name not in agents)
+            reading = readings[name]
             doc.setdefault('participants', []).append({
                 'stage': 'review', 'name': name, 'row': item['id'], 'review': review['id'],
                 **{key: reading[key] for key in ('client', 'model', 'effort', 'verified',
@@ -1121,6 +1139,8 @@ def cmd_cancel(args):
 def cmd_reassign(args):
     agent = required_text('--agent', args.agent)
     reason = required_text('--reason', args.reason)
+    reading = read_settings(agent, args.card or find(read_only(args), args.id)['card'],
+                            args.native)  # HCOM is asked outside the lock
     with transaction(args, 'reassign', args.id, reason) as doc:
         item = find(doc, args.id)
         require_status(item, OPEN, 'reassign')
@@ -1135,7 +1155,7 @@ def cmd_reassign(args):
         else:
             changes['status'] = 'assigned'
         record(args, item, 'reassign', changes, reason)
-        item['actual'] = {'bind': read_settings(agent, item['card'], args.native)}
+        item['actual'] = {'bind': reading}
 
 
 def ready(doc):
