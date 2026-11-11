@@ -94,3 +94,14 @@ test.skipIf(!CHROME)('the information page header shows the duty and expected re
 	expect(await tab.eval(`document.querySelector('.detail .profile dd.duty b')`)).toBeNull();
 	await shot(tab, 'duty-links-header');
 }, 60_000);
+
+test.skipIf(!CHROME)('once delivered, the header shows the delivered result with its link', async () => {
+	fixture.report(luna.session_id, { tag: 'DONE', summary: `交付 [#533](${A}) 完成`, hcom_name: 'luna', workspace: luna.workspace });
+	await fixture.refresh(cookie);
+	await visit(`/?controller=${luna.session_id}`);
+	await tab.until(`!!document.querySelector('.detail .more')`, 'the details button');
+	await tab.eval(`document.querySelector('.detail .more').click()`);
+	await tab.until(`!!document.querySelector('.detail .profile dd.duty')`, 'the duty');
+	expect(await text('.detail .profile dd.duty')).toContain('已交付結果');
+	expect(await links('.detail .profile dd.duty')).toEqual([LINKS[0], { text: '#533', href: A, target: '_blank' }]);
+}, 60_000);

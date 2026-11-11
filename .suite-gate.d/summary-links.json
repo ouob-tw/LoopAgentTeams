@@ -16,7 +16,8 @@
         "board/tests/browser/summary-links.test.ts",
         "board/tests/browser/controller-page.test.ts",
         "board/tests/browser/pd-page.test.ts",
-        "board/tests/browser/duty-links.test.ts"
+        "board/tests/browser/duty-links.test.ts",
+        "board/tests/browser/agents-page.test.ts"
       ]
     }
   ]
