@@ -1822,5 +1822,89 @@ class RoundTests(LedgerCase):
         self.assertEqual(self.item(item)['status'], 'done')
 
 
+
+class TinyLaneTests(LedgerCase):
+    """The tiny-change lane mark on `add` and the reviewer's four-limit confirmation."""
+    TINY = ('--tiny', '--no-feature', '--no-format-change')
+
+    def setUp(self):
+        super().setUp()
+        self.init()
+
+    def tiny_row(self, agent='impl'):
+        git(self.workspace, 'switch', '-q', '-c', 'work')  # dev is the integration branch
+        item = self.add(*self.TINY)
+        card = self.tasks / f'tiny-{item}.md'
+        card.write_text(f'接續：無\n\n- agent：{agent}\n- base commit：{self.merged[:8]}\n'
+                        f'- worktree：{self.workspace}\n- status：dispatched\n')
+        self.ok('assign', str(item), '--agent', agent, '--card', str(card))
+        return item
+
+    def change(self, path, lines, message):
+        target = self.workspace / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(''.join(f'line {n}\n' for n in range(lines)))
+        git(self.workspace, 'add', path)
+        git(self.workspace, 'commit', '-q', '-m', message)
+
+    def confirm(self, item, *extra):
+        return self.run_ledger('review-result', '--row', str(item), '--reviewer', 'a', '--clean',
+                               '--tiny-confirm', *extra, by='impl')
+
+    def test_the_mark_reaches_every_row_of_the_ticket_and_only_one_ticket(self):
+        first = self.add(ticket='#1', stage='qa-draft', evidence='file')
+        tiny = self.add(*self.TINY)
+        later = self.add(ticket='#1', stage='qa', evidence='file')
+        other = self.add(ticket='#2')
+        marks = {item: self.item(item).get('tiny') for item in (first, tiny, later, other)}
+        self.assertEqual(marks[tiny]['declared'], ['no-feature', 'no-format-change'])
+        self.assertEqual((marks[first], marks[later], marks[other]),
+                         (marks[tiny], marks[tiny], None))
+        self.assertEqual(self.item(first)['history'][-1]['action'], 'tiny')
+        before = self.ledger.read_bytes()
+        self.assertIn('exactly one numbered ticket',
+                      self.fails('add', '--ticket', '#1, #3', '--stage', 'impl',
+                                 '--evidence', 'commit', *self.TINY))
+        self.assertIn('both declarations', self.fails('add', '--ticket', '#3', '--stage', 'impl',
+                                                      '--evidence', 'commit', '--tiny'))
+        self.assertEqual(self.ledger.read_bytes(), before)
+        shown = json.loads(self.ok('show', '--json'))
+        self.assertEqual({t['key']: t['tiny'] for t in shown['tickets']}, {'#1': True, '#2': False})
+        self.assertIn('（小改動）', self.ok('show'))
+
+    def test_confirmation_runs_the_check_and_must_answer_its_hints(self):
+        item = self.tiny_row()
+        self.change('db/schema.sql', 2, 'fix: keep the column')
+        before = self.ledger.read_bytes()
+        result = self.confirm(item)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--tiny-hints: data/format file db/schema.sql (pattern *schema*)',
+                      result.stderr)
+        self.assertEqual(self.ledger.read_bytes(), before)
+        result = self.confirm(item, '--tiny-hints', 'schema.sql only reorders comments')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tiny = self.doc()['reviews'][-1]['tiny']
+        self.assertEqual((tiny['limits'], tiny['commit'], tiny['code_added'], tiny['hints_note']),
+                         (['one-ticket', 'code-lines', 'no-feature', 'no-format-change'],
+                          git(self.workspace, 'rev-parse', 'HEAD'), 2,
+                          'schema.sql only reorders comments'))
+        self.assertEqual(tiny['hints'], ['data/format file db/schema.sql (pattern *schema*)'])
+
+    def test_confirmation_refusals_write_nothing(self):
+        plain = self.add(ticket='#2')
+        item = self.tiny_row(agent='orch')
+        before = self.ledger.read_bytes()
+        self.assertIn('not on the tiny lane', self.confirm(plain).stderr)
+        self.assertIn('goes with --tiny-confirm', self.run_ledger(
+            'review-result', '--row', str(item), '--reviewer', 'a', '--clean',
+            '--tiny-hints', 'x').stderr)
+        self.assertIn('under the orchestrator orch itself', self.confirm(item).stderr)
+        self.change('src/big.py', 31, 'fix: big')
+        refused = self.confirm(item).stderr
+        self.assertIn('31 added code lines', refused)
+        self.assertIn('return to the normal flow', refused)
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+
 if __name__ == '__main__':
     unittest.main()

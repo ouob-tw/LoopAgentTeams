@@ -11,6 +11,8 @@ which tickets the unpushed commits belong to, main checkout at the integration b
 deploy whose project layer states a `rollback` method may stand on a passing post-merge
 affected-test summary that covers every change since the last successful deploy to the same
 target, read from the deploy history in the deployed project's main checkout.
+A merge of a tiny-lane ticket also needs the tiny check's hard limits and the reviewer's
+four-limit confirmation recorded on the round ledger (see review-size.py and lat-ledger.py).
 `show` prints the effective settings and where each value came from. Any unreadable or unknown
 setting makes every check ask. `grant` writes one rule that a human-answered decision record
 names; `record` logs what was done under pre-authorization (a deploy also goes to the deploy
@@ -76,6 +78,7 @@ DEPLOY_ACTIONS = ('deploy-test', 'deploy-prod')
 MAIN_CHECKOUT_ACTIONS = (*DEPLOY_ACTIONS, 'install-host')
 GATE_ACTIONS = ('push', *MAIN_CHECKOUT_ACTIONS)
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
+REVIEW_SIZE = Path(__file__).resolve().parent / 'review-size.py'
 ISSUE_REF = re.compile(r'(?<![\w&/])(?:([\w.-]+/[\w.-]+))?#(\d+)\b')
 TRACKER_DOC = 'docs/agents/issue-tracker.md'
 TRACKER_REPO = re.compile(r'gh issue\b[^`\n]*?(?<!\S)-R\s+([\w.-]+/[\w.-]+)')
@@ -344,6 +347,15 @@ def round_ledger(top, session):
     return ledger if isinstance(ledger, dict) else None
 
 
+def session_name(top, session):
+    """The active session record's HCOM name, or None."""
+    try:
+        record = json.loads((shared_lat_dir(top) / 'sessions' / f'{session}.json').read_text())
+        return record.get('hcom_name') if record.get('status') == 'active' else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
 def integration_branch(ledger, layers):
     """(branch, where it came from) or None: the round ledger's value when it names one,
     otherwise the narrowest layer's top-level `integration_branch`."""
@@ -468,7 +480,11 @@ def unpushed_commit_problems(top, version, ledger, session=None):
 
 
 def load_suite_gate():
-    spec = importlib.util.spec_from_file_location('suite_gate', SUITE_GATE)
+    return load_script('suite_gate', SUITE_GATE)
+
+
+def load_script(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -638,6 +654,75 @@ def rerun_only_merge_problems(top, version, ledger):
     return problems
 
 
+def tiny_merge_problems(top, version, ledger, orchestrator=None):
+    """Conditions for each tiny-lane ticket of the round ledger that the merged version
+    carries (a row's branch points at it, or a commit the integration branch lacks names the
+    ticket): the tiny check's hard limits from the ticket card's base commit, an impl row the
+    orchestrator owns, and the reviewer's four-limit confirmation, which must cover every hint
+    the check shows now. Each refusal tells the orchestrator to return to the normal flow."""
+    items = [item for item in (ledger or {}).get('items') or [] if isinstance(item, dict)]
+    tickets = list(dict.fromkeys(str(item.get('ticket', '')).strip() for item in items
+                                 if item.get('tiny')))
+    if not tickets:
+        return []
+    try:
+        size = load_script('review_size', REVIEW_SIZE)
+    except (OSError, SyntaxError, ImportError) as error:
+        return [('error', f'tiny check unavailable: {error}')]
+    integration = ledger.get('integration_branch')
+    messages = (git(top, 'log', '--format=%B', version, '--not', f'refs/heads/{integration}')
+                if integration else None) or ''
+    reviews = [review for review in ledger.get('reviews') or [] if isinstance(review, dict)]
+    problems = []
+    for ticket in tickets:
+        rows = [item for item in items if str(item.get('ticket', '')).strip() == ticket]
+        number = re.search(r'(\d+)$', ticket)
+        if not (any(row.get('branch') and git(top, 'rev-parse', f'refs/heads/{row["branch"]}')
+                    == version for row in rows)
+                or number and re.search(rf'#{number[1]}\b', messages)):
+            continue
+        label = f'tiny-lane ticket {ticket}'
+        impl = next((row for row in rows if row.get('stage') == 'impl' and row.get('card')), None)
+        try:
+            if impl is None:
+                raise ValueError('no impl row with a task card')
+            card = impl['card']
+            check = size.tiny_check(top, size.card_base(size.card_fields(card), card), version,
+                                    integration)
+        except ValueError as error:
+            problems.append(('condition', f'{label}: the tiny check cannot run ({error}); '
+                                          f'{size.NORMAL_FLOW}'))
+            continue
+        refused = check['problems'] + size.orchestrator_problems(
+            rows, ledger.get('orchestrator'), orchestrator)
+        problems += [('condition', f'{label}: {reason}; {size.NORMAL_FLOW}')
+                     for reason in refused]
+        if refused:
+            continue
+        ids = {row.get('id') for row in rows}
+        confirmed = [review['tiny'] for review in reviews
+                     if review.get('row') in ids and isinstance(review.get('tiny'), dict)]
+        shown = ('; hints the confirmation must address: ' + '; '.join(check['hints'])
+                 if check['hints'] else '')
+        record = (f'`lat-ledger.py review-result --row {impl.get("id")} --reviewer <name> '
+                  '--clean --tiny-confirm' + (' --tiny-hints "<how each hint was checked>"'
+                                              if check['hints'] else '') + '`')
+        if not confirmed:
+            problems.append(('condition', (
+                f'{label} has no reviewer confirmation of the four limits (one ticket, at most '
+                f'{size.TINY_CODE_LINES} added code lines, no new feature, no data or storage '
+                f'format change){shown}. The reviewer confirms with {record}; otherwise '
+                f'{size.NORMAL_FLOW}')))
+            continue
+        missing = [hint for hint in check['hints'] if hint not in confirmed[-1].get('hints', [])]
+        if missing:
+            problems.append(('condition', (
+                f'{label}: the reviewer confirmation does not cover these hints: '
+                f'{"; ".join(missing)}. The reviewer confirms again with {record}; otherwise '
+                f'{size.NORMAL_FLOW}')))
+    return problems
+
+
 def holds_path(top):
     return shared_lat_dir(top) / HOLDS
 
@@ -798,7 +883,9 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
                                        'only tickets of the round ledger')
     merged = resolve_version(top, commit) if action == 'merge' and commit else None
     if merged:  # merge never required --commit to resolve; without it there is nothing to look up
-        ask_each(rerun_only_merge_problems(top, merged, round_ledger(top, session)))
+        ledger = round_ledger(top, session)
+        ask_each(rerun_only_merge_problems(top, merged, ledger))
+        ask_each(tiny_merge_problems(top, merged, ledger, session_name(top, session)))
     if action == 'install-host' and version:
         problems, folders = install_gate_problems(top, version)
         ask_each(problems)
