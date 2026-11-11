@@ -445,6 +445,8 @@
        "tests": ["skills/local/lat/tests/test_lat_clean.py"]},
       {"paths": ["skills/local/lat/scripts/_lat_cleanup.py"],
        "tests": ["skills/local/lat/tests/test_lat_clean.py", "skills/local/lat/tests/test_lat_autoclean.py"]},
+      {"paths": ["skills/local/lat/scripts/_lat_tracker.py"],
+       "tests": ["skills/local/lat/tests/test_lat_tracker.py", "skills/local/lat/tests/test_lat_session.py"]},
       {"paths": ["skills/local/lat/scripts/lat-autoclean.py"],
        "tests": ["skills/local/lat/tests/test_lat_autoclean.py"]},
       {"paths": ["skills/local/three-tier-testing/scripts/**"],

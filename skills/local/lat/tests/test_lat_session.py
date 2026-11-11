@@ -80,6 +80,20 @@ class SessionTests(unittest.TestCase):
         )
         self.hcom_events = self.root / 'hcom-events.jsonl'
         hcom.chmod(0o755)
+        # The delivery tracker check reads each ledger ticket with `gh api`; by default every
+        # ticket is closed and clean. Like the real gh it refuses any other call shape.
+        (self.work / 'docs/agents').mkdir(parents=True)
+        (self.work / 'docs/agents/issue-tracker.md').write_text('always pass `-R acme/work`\n')
+        self.tracker_issue = self.root / 'tracker-issue.json'
+        self.tracker_issue.write_text('{"state": "closed", "labels": []}')
+        gh = self.binary / 'gh'
+        gh.write_text(
+            '#!/bin/sh\n'
+            '[ $# = 2 ] && [ "$1" = api ] || { echo "unknown gh invocation: $*" >&2; exit 1; }\n'
+            'case "$2" in "repos/acme/work/issues/"*[!0-9]*|"repos/acme/work/issues/") ;;\n'
+            '  "repos/acme/work/issues/"*) cat "$FAKE_TRACKER_ISSUE"; exit 0;; esac\n'
+            'echo "unknown gh invocation: $*" >&2; exit 1\n')
+        gh.chmod(0o755)
 
     def set_hcom_agents(self, *names):
         self.hcom_list.write_text(json.dumps([dict(name=name) for name in names]) + '\n')
@@ -106,6 +120,7 @@ class SessionTests(unittest.TestCase):
         env['HERDR_PLUGIN_CONFIG_DIR'] = str(self.root / 'plugin-config')
         env['FAKE_UV_LOG'] = str(self.fake_uv_log)
         env['FAKE_HCOM_LIST'] = str(self.hcom_list)
+        env['FAKE_TRACKER_ISSUE'] = str(self.tracker_issue)
         env['FAKE_HCOM_EVENTS'] = str(self.hcom_events)
         env['LAT_REPORTS_DIR'] = str(self.root / 'reports')
         env['PATH'] = f'{self.binary}:{env["PATH"]}'
@@ -3558,6 +3573,47 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.reports()[-1]['tag'], 'DONE')
         self.close_item(item)
         self.assert_silent(self.stop_hook('DONE: delivered'))
+
+    def test_done_stop_and_deactivate_warn_about_tracker_drift_without_blocking(self):
+        self.activate()
+        self.close_item(self.open_item('#5'))
+        self.exempt_qa('#5')
+        self.tracker_issue.write_text(
+            '{"state": "closed", "labels": [{"name": "ready-for-agent"}]}')
+        output = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertNotIn('decision', output)
+        self.assertIn('gh issue edit 5 -R acme/work --remove-label ready-for-agent',
+                      output['systemMessage'])
+        result = self.deactivate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('acme/work#5 已關閉但仍掛 ready-for-agent', result.stdout)
+
+    def test_tracker_warning_shows_beside_a_failing_ledger_check_at_done_and_deactivate(self):
+        self.activate()
+        self.open_item('#5')
+        self.exempt_qa('#5')
+        self.tracker_issue.write_text('{"state": "open", "labels": []}')
+        held = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertEqual(held['decision'], 'block')
+        self.assertIn('not closed: assigned', held['reason'])
+        self.assertIn('acme/work#5 仍開著', held['reason'])
+        refused = self.deactivate()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn('工作總表核對未通過', refused.stderr)
+        self.assertIn('acme/work#5 仍開著', refused.stderr)
+
+    def test_tracker_read_failure_is_one_line_and_does_not_block_done_or_deactivate(self):
+        self.activate()
+        self.close_item(self.open_item('#5'))
+        self.exempt_qa('#5')
+        (self.binary / 'gh').write_text('#!/bin/sh\necho "gh auth login" >&2\nexit 4\n')
+        output = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertNotIn('decision', output)
+        self.assertEqual(output['systemMessage'].count('\n'), 0)
+        self.assertIn('tracker 檢查略過', output['systemMessage'])
+        result = self.deactivate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('tracker 檢查略過', result.stdout)
 
     def test_done_stop_holds_an_unreadable_ledger_and_skips_records_without_one(self):
         self.activate()
