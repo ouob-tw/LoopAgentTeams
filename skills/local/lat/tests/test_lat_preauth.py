@@ -3235,6 +3235,10 @@ class TinyMergeTests(PreauthCase):
         self.change('src/fix.py', 4, 'fix: small (#7)')
         self.ledger(confirmed=[])
         self.assertEqual(self.merge()['verdict'], 'allow')
+        (self.repo / 'src/fix.py').write_text('line 0\nline 1\nline 2\nline  3\n')
+        git(self.repo, 'commit', '-q', '-am', 'fix: only whitespace (#7)')
+        self.assert_refused('the change differs from what the reviewer confirmed')
+        self.ledger(confirmed=[])
         self.change('src/fix.py', 5, 'fix: one more line (#7)')
         self.assert_refused('the change differs from what the reviewer confirmed')
 

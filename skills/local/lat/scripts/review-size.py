@@ -13,6 +13,7 @@ review-result and lat-preauth's merge check load this file for the same check.
 """
 import argparse
 from fnmatch import fnmatch
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -28,8 +29,8 @@ TINY_CODE_LINES = 30
 DEFAULT_FORMAT_PATTERNS = ('*migrations/*', '*migration/*', '*schema*', '*.sql')
 FEAT = re.compile(r'feat(\([^)]*\))?!?:')
 NORMAL_FLOW = ('return to the normal flow: the orchestrator takes the ticket off the tiny lane '
-               '(`lat-ledger.py tiny-off <row> --reason "<why>"`) and re-dispatch the ticket as '
-               'an ordinary one, with QA')
+               '(`lat-ledger.py tiny-off <row> --reason "<why>"`), then re-dispatch the ticket '
+               'as an ordinary one, with QA')
 
 
 def kind(path):
@@ -125,18 +126,19 @@ def tiny_check(repo, base, head='HEAD', integration=None):
         sha, _, subject = line.partition(' ')
         if FEAT.match(subject):
             hints.append(f'feat commit {sha[:12]} {subject}')
-    diff = subprocess.run(['git', '-C', str(repo), 'diff', '--no-color', '-M', f'{base}...{head}'],
+    # The change byte for byte, without context or line numbers, so integration changes merged
+    # in elsewhere do not alter it but any edit of the work's own lines does.
+    diff = subprocess.run(['git', '-C', str(repo), 'diff', '--no-color', '--no-ext-diff',
+                           '--full-index', '--binary', '-U0', '-M', f'{base}...{head}'],
                           capture_output=True)
-    patch = subprocess.run(['git', '-C', str(repo), 'patch-id', '--stable'], input=diff.stdout,
-                           capture_output=True)
-    if diff.returncode or patch.returncode:
-        raise ValueError('git patch-id failed')
+    if diff.returncode:
+        raise ValueError(f'git diff failed: {diff.stderr.decode(errors="replace").strip()}')
+    own = re.sub(rb'(?m)^@@ [^@]* @@', b'@@', diff.stdout)
     problems = []
     if code_added > TINY_CODE_LINES:
         problems.append(f'{code_added} added code lines (tests and docs excluded) exceed the '
                         f'tiny-lane limit of {TINY_CODE_LINES}')
-    # Identifies the work's own change, so a confirmation names what the reviewer saw.
-    content = patch.stdout.decode().split()[0] if patch.stdout.strip() else 'empty'
+    content = hashlib.sha256(own).hexdigest()
     return {'base': base, 'head': head, 'code_added': code_added, 'files': files,
             'problems': problems, 'hints': hints, 'content': content}
 

@@ -1,5 +1,6 @@
 """review-size suggestion contracts through the command entry point."""
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -139,16 +140,19 @@ class TinyCheckTests(RepoCase):
         self.git('switch', '-q', '-c', 'work')
         self.write('src/own.py', 5)
         self.commit('fix: own')
+        before = re.search(r'\(content (\w+)\)', self.tiny().stdout)[1]
         self.git('switch', '-q', 'main')
+        self.write('app.py', 3)  # the integration branch also edits a file near the work
         self.write('src/other.py', 100)
         self.commit('feat: other ticket')
         self.git('switch', '-q', 'work')
         self.git('merge', '-q', '--no-edit', 'main')
-        self.assertIn('refused: 105', self.tiny().stdout)
+        self.assertIn('refused: 107', self.tiny().stdout)
         result = self.tiny('--integration', 'main')
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn('5 added code lines', result.stdout)
         self.assertNotIn('feat commit', result.stdout)
+        self.assertIn(f'(content {before})', result.stdout, 'the own change is the same')
 
 
 if __name__ == '__main__':

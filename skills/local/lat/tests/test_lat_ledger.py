@@ -1901,7 +1901,7 @@ class TinyLaneTests(LedgerCase):
                           git(self.workspace, 'rev-parse', 'HEAD'), 2,
                           'schema.sql only reorders comments'))
         self.assertEqual(tiny['hints'], ['data/format file db/schema.sql (pattern *schema*)'])
-        self.assertRegex(tiny['content'], r'^[0-9a-f]{40}$')
+        self.assertRegex(tiny['content'], r'^[0-9a-f]{64}$')
 
     def test_confirmation_refusals_write_nothing(self):
         plain = self.add(ticket='#2')
