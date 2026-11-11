@@ -605,6 +605,44 @@ def affected_deploy_problems(top, version, action, target):
                 f'{action} {commit[:12]} ({last.get("at")})')
 
 
+def rerun_only_merge_problems(top, version, ledger):
+    """Each group of the newest pre-merge affected summary for the version that passed only on
+    the automatic rerun, as a condition, unless a review result on the round ledger (an item's
+    `rerun_acks`, see lat-ledger.py --rerun-ack) names that group's record."""
+    tree = git(top, 'rev-parse', f'{version}^{{tree}}')
+    try:
+        summaries = [record for record in load_suite_gate().read_records()
+                     if record.get('kind') == 'affected-summary'
+                     and record.get('purpose') == 'pre-merge'
+                     and (record.get('commit') == version or record.get('tree') == tree)]
+    except (OSError, RuntimeError, ValueError) as error:
+        return [('error', f'pre-merge summary lookup failed: {error}')]
+    if not summaries:
+        return []
+    texts = []
+    items = [item for item in (ledger or {}).get('items') or [] if isinstance(item, dict)]
+    for path in [path for item in items for path in item.get('rerun_acks') or []]:
+        try:
+            texts.append(Path(path).read_text(encoding='utf-8', errors='replace'))
+        except (OSError, TypeError):
+            continue
+    summary = summaries[-1]
+    problems = []
+    for group in summary.get('rerun_only') or []:
+        fingerprint = str(group.get('fingerprint') or '')
+        if fingerprint and any(fingerprint[:12] in text for text in texts):
+            continue
+        problems.append(('condition', (
+            f"the pre-merge affected run {str(summary.get('run_id'))[:12]} for {version[:12]}: "
+            f"{group.get('kind')} in {group.get('dir')} PASSED ONLY ON RERUN (failed first: "
+            f"{', '.join(map(str, group.get('failed_first') or []))}; record "
+            f"{fingerprint[:12] or 'unknown'}). A reviewer must look at those failures and name "
+            'the record in the review result; close the implementation row with `lat-ledger.py '
+            f'done <row> --gate {fingerprint[:12] or "<fingerprint>"} --rerun-ack <review '
+            'result>`, then check again')))
+    return problems
+
+
 def holds_path(top):
     return shared_lat_dir(top) / HOLDS
 
@@ -763,6 +801,9 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
             if not problems:
                 result['basis'].append(f'every unpushed commit of {version[:12]} references '
                                        'only tickets of the round ledger')
+    merged = resolve_version(top, commit) if action == 'merge' and commit else None
+    if merged:  # merge never required --commit to resolve; without it there is nothing to look up
+        ask_each(rerun_only_merge_problems(top, merged, round_ledger(top, session)))
     if action == 'install-host' and version:
         problems, folders = install_gate_problems(top, version)
         ask_each(problems)

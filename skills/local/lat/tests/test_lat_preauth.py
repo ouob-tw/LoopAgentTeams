@@ -257,6 +257,44 @@ class ErrorTests(PreauthCase):
 
 
 class ConditionTests(PreauthCase):
+    def test_merge_asks_for_a_rerun_only_pre_merge_run_until_a_review_result_names_it(self):
+        self.write(self.global_file, '[actions.merge]\nallow = true\nbranches = ["dev"]\n')
+        self.session()
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        fingerprint = 'abad1dea' * 8
+        self.gate_state.mkdir(exist_ok=True)
+        with open(self.gate_state / 'ledger.jsonl', 'a') as records:
+            records.write(json.dumps({
+                'kind': 'affected-summary', 'purpose': 'pre-merge', 'run_id': 'b' * 32,
+                'commit': head, 'tree': git(self.repo, 'rev-parse', 'HEAD^{tree}'),
+                'passed': True, 'exit_code': 0, 'reusable': False, 'rerun_only': [
+                    {'kind': 'affected', 'dir': 'web', 'fingerprint': fingerprint,
+                     'failed_first': ['web/tests/a.test.ts']}]}) + '\n')
+        verdict = self.check('merge', '--branch', 'dev', '--commit', 'HEAD')
+        self.assertEqual((verdict['verdict'], verdict['reason_kinds']), ('ask', ['condition']))
+        self.assertIn('PASSED ONLY ON RERUN (failed first: web/tests/a.test.ts; record '
+                      f'{fingerprint[:12]})', verdict['reasons'][0])
+        self.assertIn('--rerun-ack <review result>', verdict['reasons'][0])
+        self.assertEqual(self.check('merge', '--branch', 'dev')['verdict'], 'allow',
+                         'without --commit there is no version to look up')
+        review = self.root / 'review.md'
+        review.write_text(f'Looked at rerun-only record {fingerprint[:12]}: a test race.\n')
+        ledger = self.repo / '.lat' / 'ledgers' / 'round.json'
+        self.write(ledger, json.dumps({'integration_branch': 'dev', 'items': [
+            {'ticket': '313', 'rerun_acks': [str(review)]}]}))
+        self.assertEqual(self.check('merge', '--branch', 'dev', '--commit', 'HEAD')['verdict'],
+                         'allow')
+
+    def test_merge_of_a_first_try_pre_merge_run_is_not_held(self):
+        self.write(self.global_file, '[actions.merge]\nallow = true\nbranches = ["dev"]\n')
+        self.gate_state.mkdir(exist_ok=True)
+        (self.gate_state / 'ledger.jsonl').write_text(json.dumps({
+            'kind': 'affected-summary', 'purpose': 'pre-merge', 'run_id': 'c' * 32,
+            'commit': git(self.repo, 'rev-parse', 'HEAD'), 'passed': True, 'exit_code': 0,
+            'reusable': False, 'rerun_only': []}) + '\n')
+        self.assertEqual(self.check('merge', '--branch', 'dev', '--commit', 'HEAD')['verdict'],
+                         'allow')
+
     def test_merge_branch_must_be_listed(self):
         self.write(self.global_file, '[actions.merge]\nallow = true\nbranches = ["dev"]\n')
         verdict = self.check('merge', '--branch', 'main')

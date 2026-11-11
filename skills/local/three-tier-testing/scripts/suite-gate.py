@@ -1756,7 +1756,7 @@ class Gate:
                 'rel_cwd': info['rel_cwd'], 'exit_code': 0, 'agent': self.me['agent'],
                 'time': now_iso(), 'reusable': False, 'reused_time': record.get('time'),
                 'reused_agent': record.get('agent'), 'purpose': None, 'purpose_reason': None,
-                **self.extra}
+                'reused_failed_first': failed_first(record), **self.extra}
             append_record(self.record)
         return 0
 
@@ -2593,6 +2593,9 @@ def print_reuse(record, command):
     print(f"  cwd:         {record.get('cwd')}")
     if record.get('purpose'):
         print(f"  purpose:     {describe_purpose(record)}")
+    if failed_first(record):
+        print(f"  result:      {rerun_only_text(failed_first(record))}; a reviewer must look "
+              'at it before the merge')
     if record.get('rerun_reason'):
         print(f"  rerun reason: {record['rerun_reason']}")
     if record.get('output_tail'):
@@ -3474,15 +3477,15 @@ def group_result(kind, directory, command, code, gate=None, tests=None, not_run=
     passing affected record reused instead of running it."""
     record = gate.record if gate else None
     reused = gate.reused if gate else earlier
+    ran = reused or record  # a reused pass keeps the mark of the record it reuses
     return {
         'kind': kind, 'dir': directory, 'command': command, 'tests': tests,
         'exit_code': code,
         'fingerprint': (gate.me['fingerprint'] if gate
                         else earlier.get('fingerprint') if earlier else None),
         'flaky': bool(record and record.get('flaky')),
-        'rerun_only': ({'fingerprint': record.get('fingerprint'),
-                        'failed_first': failed_first(record)}
-                       if record and failed_first(record) else None),
+        'rerun_only': ({'fingerprint': ran.get('fingerprint'), 'failed_first': failed_first(ran)}
+                       if ran and failed_first(ran) else None),
         'content_changed': bool(record and record.get('content_changed')),
         'reused': None if reused is None else {
             'time': reused.get('time'), 'agent': reused.get('agent'),
@@ -4263,8 +4266,9 @@ def cmd_status(as_json, fp_prefix, limit):
         elif r.get('kind') == 'affected':
             result = ('PASS' if r.get('exit_code') == 0 else f"FAIL exit {r.get('exit_code')}") \
                 + ' (affected tests)'
-        if r.get('kind') != 'reuse' and failed_first(r):
-            result += ' ' + rerun_only_text(failed_first(r))
+        files = r.get('reused_failed_first') if r.get('kind') == 'reuse' else failed_first(r)
+        if files:
+            result += ' ' + rerun_only_text(files)
         rerun = f"  rerun: {r['rerun_reason']}" if r.get('rerun_reason') else ''
         purpose = f"  purpose: {describe_purpose(r)}" if r.get('purpose') else ''
         print(f"  {r.get('time')}  {result}  fp {(record_fingerprint(r) or '-')[:12]}  "
@@ -4325,6 +4329,9 @@ def print_affected_summary(r):
             run = g['reused'].get('run_id')
             outcome = (f"REUSED pass of {g['reused'].get('time')} by {g['reused'].get('agent')}"
                        + (f" (run {run[:12]})" if run else ''))
+            if g.get('rerun_only'):
+                outcome += (f" {rerun_only_text(g['rerun_only']['failed_first'])}  "
+                            f"fp {(g['rerun_only']['fingerprint'] or '-')[:12]}")
         else:
             outcome = 'PASS' if g.get('exit_code') == 0 else f"FAIL exit {g.get('exit_code')}"
             if g.get('rerun_only'):
