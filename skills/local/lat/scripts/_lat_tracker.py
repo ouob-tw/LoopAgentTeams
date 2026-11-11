@@ -21,11 +21,11 @@ def tracker_repo(workspace):
     return found.group(1) if found else None
 
 
-def read_issue(repo, number):
+def read_issue(repo, number, timeout=GH_TIMEOUT_SECONDS):
     """The issue as `gh api` returns it; raises ValueError when gh fails or answers oddly."""
     command = ['gh', 'api', f'repos/{repo}/issues/{number}']
     try:
-        result = subprocess.run(command, text=True, capture_output=True, timeout=GH_TIMEOUT_SECONDS)
+        result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as error:
         raise ValueError(f'gh 無法執行：{error}') from error
     if result.returncode:

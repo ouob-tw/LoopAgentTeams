@@ -595,6 +595,12 @@ class LedgerCardTests(LedgerCase):
         self.assertIn('- ledger row：2 (', second.read_text())
         self.assertEqual(self.items()[1]['depends_on'], [1])
 
+    def test_title_option_names_the_ticket_in_the_ledger(self):
+        self.ledger_card('--title', 'Show the ticket title')
+        tickets = json.loads(self.run_ledger('show', '--json'))['tickets']
+        self.assertEqual([(t['key'], t['title']) for t in tickets],
+                         [('#123', 'Show the ticket title')])
+
     def test_repo_option_is_passed_to_the_ledger_row(self):
         repo = self.root / 'other'
         repo.mkdir()

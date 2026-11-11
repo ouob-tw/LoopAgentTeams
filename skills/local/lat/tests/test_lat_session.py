@@ -3546,7 +3546,7 @@ class SessionTests(unittest.TestCase):
         self.activate()
         self.open_item('#77')
         context = self.recovery_context()
-        self.assertIn(f'show --ledger {self.ledger_path()}', context)
+        self.assertIn(f'show --ledger {self.ledger_path()} --rows', context)
         self.assertIn(f'工作總表 {self.ledger_path()}', context)
         self.assertIn('| 1 | #77 | 實作 | worker | 已派 |', context)
         self.assertNotIn('more lines not shown', context)
@@ -3560,7 +3560,7 @@ class SessionTests(unittest.TestCase):
                 context = self.recovery_context(client)
                 self.assertLessEqual(len(context), limit)
                 self.assertIn('cut to fit the hook limit', context)
-                self.assertIn(f'show --ledger {self.ledger_path()}', context)
+                self.assertIn(f'show --ledger {self.ledger_path()} --rows', context)
                 self.assertRegex(context, r'… [0-9]+ more lines not shown$')
 
     def test_recovery_prompt_reports_an_unreadable_ledger(self):
