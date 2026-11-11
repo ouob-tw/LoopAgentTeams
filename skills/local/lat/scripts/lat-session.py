@@ -844,14 +844,20 @@ def duty_command(record):
     ])
 
 
+DUTY_LINK = re.compile(r'\[([^\[\]]+)\]\(https?://[^\s()/?#][^\s()]*\)')
+
+
 def checked_duty(text, expected, flags=('--text', '--expected')):
-    """The stripped duty fields, or ValueError naming ``flags`` when they are unusable."""
+    """The stripped duty fields, or ValueError naming ``flags`` when they are unusable.
+
+    The limit counts what the board shows: ``[text](http/https url)`` counts as ``text``."""
     text, expected = text.strip(), expected.strip()
     if not text or not expected:
         raise ValueError(f'{flags[0]} and {flags[1]} must not be empty; duty unchanged')
-    if '\n' in text or len(text) > DUTY_LIMIT:
+    shown = len(DUTY_LINK.sub(r'\1', text))
+    if '\n' in text or shown > DUTY_LIMIT:
         raise ValueError(f'{flags[0]} must be one line of at most {DUTY_LIMIT} characters '
-                         f'(got {len(text)}); duty unchanged')
+                         f'(got {shown}); duty unchanged')
     return text, expected
 
 

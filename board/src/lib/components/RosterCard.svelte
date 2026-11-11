@@ -3,6 +3,7 @@
 	// duty it recorded, each cut to one line with an ellipsis. Hovering the card, or pressing and
 	// holding it on a touch screen, explains it with all of them.
 	import { lastSegment } from '#lib/board/agents.ts';
+	import { summaryPlain } from '#lib/board/summary-links.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
 	import { phaseText, type Controller } from '#lib/board/types.ts';
 	import ControllerExplain from './ControllerExplain.svelte';
@@ -47,7 +48,7 @@
 	</span>
 	<span class="phase">{phaseText(controller)}</span>
 	{#if controller.duty}
-		<span class="duty">{controller.duty.text}</span>
+		<span class="duty">{summaryPlain(controller.duty.text)}</span>
 	{/if}
 </button>
 

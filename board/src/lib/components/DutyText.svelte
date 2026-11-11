@@ -1,13 +1,14 @@
 <script lang="ts">
 	// A controller's duty, under it the result it expects, or once it delivered, what it delivered.
 	// Two lines of whatever box holds them; the box lays them out.
+	import SummaryText from './SummaryText.svelte';
 	import type { Duty } from '#lib/board/types.ts';
 
 	let { duty }: { duty: Duty } = $props();
 </script>
 
-<span class="duty">{duty.text}</span>
-<span><span class="label">{duty.delivered === null ? '預期結果' : '已交付結果'}</span>{duty.delivered ?? duty.expected}</span>
+<span class="duty"><SummaryText text={duty.text} /></span>
+<span><span class="label">{duty.delivered === null ? '預期結果' : '已交付結果'}</span><SummaryText text={duty.delivered ?? duty.expected} /></span>
 
 <style>
 	.duty {
