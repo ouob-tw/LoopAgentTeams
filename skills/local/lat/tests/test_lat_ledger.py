@@ -1,5 +1,8 @@
 """CLI contract tests for lat-ledger.py: subprocess, a real temp Git repo, fake gate records."""
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -1358,6 +1361,42 @@ class TicketTests(LedgerCase):
                          {'acme/work#5': 'Fix the thing', 'acme/work#6': '',
                           'acme/work#7': 'Given title'})
         self.assertEqual(len(self.doc()['items']), 4)
+
+    def test_a_failed_title_is_not_read_again_and_reads_stop_when_time_runs_out(self):
+        self.add(ticket='#8')
+        self.add(ticket='#8', stage='qa', evidence='file')
+        self.assertEqual(self.gh_log.read_text().splitlines(), ['api repos/acme/work/issues/8'])
+        self.add('--title', 'Named later', ticket='#8', stage='review', evidence='file')
+        self.assertEqual(self.tickets()['acme/work#8']['title'], 'Named later')
+        spec = importlib.util.spec_from_file_location('ledger_titles', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.TITLE_BUDGET_SECONDS = 0
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(module.fetch_titles(['acme/work#9', 'acme/work#10']), {})
+        self.assertEqual(err.getvalue().count('no time left'), 2)
+
+    def test_merge_and_deploy_are_checked_in_the_row_s_own_project(self):
+        other = self.root / 'other'
+        other.mkdir()
+        git(other, 'init', '-q', '-b', 'dev')
+        git(other, 'config', 'user.email', 't@example.com')
+        git(other, 'config', 'user.name', 'T')
+        (other / 'o.txt').write_text('o\n')
+        git(other, 'add', 'o.txt')
+        git(other, 'commit', '-q', '-m', 'other work')
+        commit = git(other, 'rev-parse', 'HEAD')
+        row = self.started('--repo', str(other), ticket='other/work#1')
+        self.ok('done', str(row), '--commit', commit, by='impl')
+        (other / '.lat').mkdir()
+        (other / '.lat' / 'deploy-history.jsonl').write_text(json.dumps(
+            {'action': 'deploy-prod', 'commit': commit, 'result': 'succeeded'}) + '\n')
+        view = json.loads(self.ok('show', '--json'))
+        ticket, = view['tickets']
+        self.assertEqual(self.steps(ticket)['merged'], 'done')
+        self.assertEqual(self.steps(ticket)['deployed'], 'done')
+        self.assertEqual(ticket['state'], 'deployed')
+        self.assertTrue(view['deploy_step'])
 
     def test_progress_steps_follow_rows_merge_and_deploy_history(self):
         draft = self.add(ticket='#20', stage='qa-draft', evidence='file')

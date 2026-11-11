@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _lat_common import (full_hcom_name, read_hcom_list, run_cli, same_controller,
@@ -60,6 +61,7 @@ TICKET_STATES = {'in_progress': '進行中', 'blocked': '受阻', 'assigned': '�
                  'done': '已結案', 'cancelled': '已取消'}
 DEPLOY_ACTION = 'deploy-prod'
 TITLE_TIMEOUT_SECONDS = 10
+TITLE_BUDGET_SECONDS = 20
 QUALIFIED_TICKET = re.compile(r'([\w.-]+/[\w.-]+)#(\d+)')
 
 
@@ -709,7 +711,7 @@ def cmd_add(args):
         repo, problem = check_repo(args.repo)
         if problem:
             raise Failure(problem)
-    # The tracker is read outside the lock, and only for tickets that have no title yet.
+    # The tracker is read outside the lock, and only for tickets never asked before.
     before = read_only(args)
     keys = ticket_keys(ticket, tracker_repo(before['workspace']))
     fetched = {} if title else fetch_titles(
@@ -964,22 +966,31 @@ def ticket_keys(text, default_repo):
 
 
 def fetch_titles(keys):
-    """{key: issue title} for the `owner/repo#N` keys the tracker answers; a failure only
-    warns, since a missing title never stops a row from being added."""
-    titles = {}
+    """{key: issue title} for the `owner/repo#N` keys; a key the tracker could not answer
+    maps to '' so it is not asked again. All reads share one time budget (kept well under
+    lat-dispatch's limit for `add`); keys left when it runs out are skipped and asked by a
+    later add. A failure only warns: a missing title never stops a row from being added."""
+    titles, deadline = {}, time.monotonic() + TITLE_BUDGET_SECONDS
     for key in keys:
         match = QUALIFIED_TICKET.fullmatch(key)
         if not match:
             continue
+        left = deadline - time.monotonic()
+        if left < 1:
+            print(f'lat-ledger: warning: no time left to read the title of {key}; '
+                  'a later add tries again', file=sys.stderr)
+            continue
         try:
-            title = read_issue(match[1], int(match[2]), timeout=TITLE_TIMEOUT_SECONDS).get('title')
+            title = read_issue(match[1], int(match[2]),
+                               timeout=min(TITLE_TIMEOUT_SECONDS, left)).get('title')
+            if not isinstance(title, str) or not title.strip():
+                raise ValueError('the issue has no title')
         except ValueError as error:
             detail = ' '.join(str(error).split())
             print(f'lat-ledger: warning: no title for {key} ({detail}); it stays empty',
                   file=sys.stderr)
-            continue
-        if isinstance(title, str) and title.strip():
-            titles[key] = title.strip()
+            title = ''
+        titles[key] = title.strip()
     return titles
 
 
@@ -999,7 +1010,8 @@ def first_assigned(item):
 
 
 def last_deploy_commit(workspace):
-    """(whether the project has a successful production deploy, the latest one's commit)."""
+    """(whether the project of this checkout has a successful production deploy, the
+    latest one's commit)."""
     try:
         path = shared_lat_dir(workspace) / 'deploy-history.jsonl'
         lines = path.read_text(encoding='utf-8').splitlines()
@@ -1017,17 +1029,49 @@ def last_deploy_commit(workspace):
     return commit is not None, commit
 
 
-def on_integration(doc, item):
-    """Whether every commit of a closed row is on the integration branch (or, without one,
-    the default branch) of a checkout that has it: the reachability check `check` uses."""
-    commits = item['evidence'].get('commit') or []
-    for place in main_checkouts(doc, item):
-        integration = doc.get('integration_branch')
-        branches = ([integration] if integration and branch_exists(place, integration)
-                    else default_branches(place))
-        if branches and all(reachable(place, sha, branches) for sha in commits):
-            return True
-    return False
+class Lookups:
+    """Git and deploy-history answers for one `show`, each worked out once: a row shared by
+    several tickets, or many rows on one branch, cost one lookup. Never kept between runs,
+    so merges and deploys show up at the next `show`."""
+
+    def __init__(self, doc):
+        self.doc = doc
+        self.answers = {}
+
+    def once(self, key, compute):
+        if key not in self.answers:
+            self.answers[key] = compute()
+        return self.answers[key]
+
+    def places(self, item):
+        """Checkouts that may hold the row's commits, its own project's main checkout first."""
+        return self.once(('places', item['id']), lambda: main_checkouts(self.doc, item))
+
+    def branches(self, place):
+        integration = self.doc.get('integration_branch')
+        return self.once(('branches', place), lambda: (
+            [integration] if integration and branch_exists(place, integration)
+            else default_branches(place)))
+
+    def reachable(self, place, sha, branches):
+        return self.once(('reach', place, sha, tuple(branches)),
+                         lambda: reachable(place, sha, branches))
+
+    def merged_at(self, item):
+        """The checkout whose integration branch (else default branch) holds every commit of
+        the closed row, or None: the reachability check `check` uses."""
+        commits = item['evidence'].get('commit') or []
+        def find():
+            for place in self.places(item):
+                branches = self.branches(place)
+                if branches and all(self.reachable(place, sha, branches) for sha in commits):
+                    return place
+            return None
+        return self.once(('merged', item['id']), find)
+
+    def deploy(self, place):
+        """(whether that project has a successful production deploy, the latest commit)."""
+        return self.once(('deploy', place), lambda: last_deploy_commit(place))
 
 
 def rows_step(rows):
@@ -1043,8 +1087,9 @@ def rows_step(rows):
     return 'done' if 'done' in statuses else 'skipped'
 
 
-def ticket_steps(doc, rows, deploy):
-    """{step: state} for one ticket; `deploy` is (has history, latest deployed commit)."""
+def ticket_steps(lookups, rows):
+    """{step: state} for one ticket. Merge and deploy are checked in each row's own project
+    (a row with --repo belongs to that repo's main checkout, others to the workspace)."""
     steps = {step: rows_step([r for r in rows if r['stage'] in stages])
              for step, stages in STEP_STAGES.items()}
     if steps['review'] is None and steps['impl'] is not None:
@@ -1052,21 +1097,24 @@ def ticket_steps(doc, rows, deploy):
         steps['review'] = 'done' if steps['impl'] == 'done' else 'pending'
     impl = [r for r in rows if r['stage'] == 'impl' and r['status'] != 'cancelled']
     delivered = [r for r in impl if r['status'] == 'done' and r['evidence'].get('commit')]
+    merged = [lookups.merged_at(r) for r in delivered]
     if not delivered:
         # Nothing to merge yet, or a delivery without commits (nothing to merge at all).
         finished = impl and all(r['status'] == 'done' for r in impl)
         steps['merged'] = ('skipped' if finished else 'pending') if impl else None
-    elif len(delivered) < len(impl) or not all(on_integration(doc, r) for r in delivered):
+    elif len(delivered) < len(impl) or None in merged:
         steps['merged'] = 'pending'
     else:
         steps['merged'] = 'done'
-    has_deploy, commit = deploy
-    if has_deploy:
+    projects = {lookups.places(r)[0] for r in rows} | {place for place in merged if place}
+    if any(lookups.deploy(place)[0] for place in projects):
         steps['deployed'] = {None: None, 'skipped': 'skipped'}.get(steps['merged'],
                                                                    'pending')
         if steps['merged'] == 'done' and all(
-                reachable(doc['workspace'], sha, [commit])
-                for row in delivered for sha in row['evidence']['commit']):
+                lookups.deploy(place)[0] and all(
+                    lookups.reachable(place, sha, [lookups.deploy(place)[1]])
+                    for sha in row['evidence']['commit'])
+                for row, place in zip(delivered, merged)):
             steps['deployed'] = 'done'
     # A step no row reached is skipped once a later step has moved, or when no step ever
     # moved (a ticket of research or spec rows only); otherwise it is still to come.
@@ -1132,10 +1180,10 @@ def build_tickets(doc, at):
     for item in doc['items']:
         for key in ticket_keys(item['ticket'], default_repo):
             groups.setdefault(key, []).append(item)
-    deploy = last_deploy_commit(doc['workspace']) if groups else (False, None)
+    lookups = Lookups(doc)
     tickets = []
     for key, rows in groups.items():
-        steps = ticket_steps(doc, rows, deploy)
+        steps = ticket_steps(lookups, rows)
         state = ticket_state(rows, steps)
         starts = [time for time in map(first_assigned, rows) if time]
         running = state not in ('deployed', 'merged', 'done', 'cancelled')
@@ -1154,7 +1202,7 @@ def build_tickets(doc, at):
             'now': ticket_now(rows, state, steps, at), 'items': [row['id'] for row in rows],
             'started_at': stamp(min(map(loads_time, starts))) if starts else None,
             'total_minutes': minutes, 'running': running})
-    return tickets, deploy[0]
+    return tickets
 
 
 def tickets_without_qa(doc):
@@ -1245,7 +1293,11 @@ def cmd_show(args):
         view['status_label'] = STATUSES[item['status']]
         view['ticket_keys'] = ticket_keys(item['ticket'], default_repo)
         rows.append(view)
-    tickets, deploy_step = build_tickets(doc, at)
+    if getattr(args, 'rows', False) and not args.json:
+        print(f'工作總表 {args.ledger}（更新於 {doc["updated_at"]}）\n')
+        show_rows(rows)
+        return 0
+    tickets = build_tickets(doc, at)
     counts = {}
     for ticket in tickets:
         counts[ticket['state']] = counts.get(ticket['state'], 0) + 1
@@ -1254,14 +1306,12 @@ def cmd_show(args):
                           'workspace': doc['workspace'], 'created_at': doc['created_at'],
                           'updated_at': doc['updated_at'], 'items': rows,
                           'tickets': tickets, 'ticket_counts': counts,
-                          'deploy_step': deploy_step},
+                          'deploy_step': any(step['key'] == 'deployed' for ticket in tickets
+                                             for step in ticket['steps'])},
                          ensure_ascii=False, indent=1))
         return 0
     print(f'工作總表 {args.ledger}（更新於 {doc["updated_at"]}）\n')
-    if getattr(args, 'rows', False):
-        show_rows(rows)
-    else:
-        show_tickets(tickets, counts, default_repo)
+    show_tickets(tickets, counts, default_repo)
     return 0
 
 
