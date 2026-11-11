@@ -33,8 +33,6 @@ HCOM Agent 的卡用 `scripts/lat-dispatch.py card` 建（新 Agent 啟動前加
 - deliverable commit：待 Orchestrator 從 Git 查證後填入
 ```
 
-小改動票（`card --ledger … --tiny`）的 QA 與證據規則見 [預先授權](preauth.md#小改動通道)。
-
 agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括號；orchestrator 填派工主控的 HCOM 名稱。[停住監控](stall-watch.md) 靠這兩欄找每位主控要盯的 Agent；缺 agent、orchestrator、status 任一欄，或 agent 欄空白、名稱後接其他符號的卡片無法辨識，監控會跳過並記錄。不適用的欄位填「無」，不可省略資源歸屬或虛構 commit。status 使用 `dispatched / in progress / committed / merged`，沒有 commit 者以 `completed` 結束；受阻原因與恢復條件寫在 next step。
 
 ## 票資料位置
