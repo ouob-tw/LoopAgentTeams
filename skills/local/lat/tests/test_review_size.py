@@ -137,12 +137,17 @@ class TinyCheckTests(RepoCase):
         self.assertNotIn('schema.sql', result.stdout)
 
     def test_changes_the_integration_branch_brought_in_do_not_count(self):
+        (self.repo / 'app.py').write_text('line 0\n' + 'x\n' * 10)
+        self.commit('base')
+        self.base = self.git('rev-parse', 'HEAD').strip()
         self.git('switch', '-q', '-c', 'work')
         self.write('src/own.py', 5)
+        (self.repo / 'app.py').write_text('own start\nline 0\n' + 'x\n' * 10)
         self.commit('fix: own')
         before = re.search(r'\(content (\w+)\)', self.tiny().stdout)[1]
         self.git('switch', '-q', 'main')
-        self.write('app.py', 3)  # the integration branch also edits a file near the work
+        # The integration branch also edits a file the work changed, far from its lines.
+        (self.repo / 'app.py').write_text('line 0\n' + 'x\n' * 10 + 'main end\n')
         self.write('src/other.py', 100)
         self.commit('feat: other ticket')
         self.git('switch', '-q', 'work')
@@ -150,7 +155,7 @@ class TinyCheckTests(RepoCase):
         self.assertIn('refused: 107', self.tiny().stdout)
         result = self.tiny('--integration', 'main')
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn('5 added code lines', result.stdout)
+        self.assertIn('6 added code lines', result.stdout)
         self.assertNotIn('feat commit', result.stdout)
         self.assertIn(f'(content {before})', result.stdout, 'the own change is the same')
 

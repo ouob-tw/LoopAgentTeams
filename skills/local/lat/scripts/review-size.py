@@ -126,14 +126,16 @@ def tiny_check(repo, base, head='HEAD', integration=None):
         sha, _, subject = line.partition(' ')
         if FEAT.match(subject):
             hints.append(f'feat commit {sha[:12]} {subject}')
-    # The change byte for byte, without context or line numbers, so integration changes merged
-    # in elsewhere do not alter it but any edit of the work's own lines does.
+    # The change byte for byte, without context, line numbers or blob IDs, so integration
+    # changes merged in elsewhere (even in the same file) do not alter it but any edit of the
+    # work's own lines does.
     diff = subprocess.run(['git', '-C', str(repo), 'diff', '--no-color', '--no-ext-diff',
                            '--full-index', '--binary', '-U0', '-M', f'{base}...{head}'],
                           capture_output=True)
     if diff.returncode:
         raise ValueError(f'git diff failed: {diff.stderr.decode(errors="replace").strip()}')
-    own = re.sub(rb'(?m)^@@ [^@]* @@', b'@@', diff.stdout)
+    own = re.sub(rb'(?m)^index [0-9a-f]+\.\.[0-9a-f]+', b'index',  # blob IDs cover the whole file
+                 re.sub(rb'(?m)^@@ [^@]* @@', b'@@', diff.stdout))
     problems = []
     if code_added > TINY_CODE_LINES:
         problems.append(f'{code_added} added code lines (tests and docs excluded) exceed the '
