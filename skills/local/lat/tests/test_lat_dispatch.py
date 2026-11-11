@@ -563,7 +563,8 @@ class LedgerCase(DispatchCase):
         result = self.run_script('brief', '--card', str(card), '--input', str(source))
         self.assertEqual(result.returncode, 0, result.stderr)
         text = (self.root / 'brief.brief.md').read_text()
-        commands = re.findall(r'`(uv run [^`]*lat-ledger\.py[^`]*)`', text)
+        commands = [command for command in re.findall(r'`(uv run [^`]*lat-ledger\.py[^`]*)`', text)
+                    if ' review-result ' not in command]
         self.assertEqual(len(commands), 4, text)
         return text, commands
 
@@ -731,6 +732,13 @@ class LedgerBriefTests(LedgerCase):
         text, _ = self.brief_commands(card)
         self.assertIn('## Spec coverage', text)
         self.assertIn('Put the entries no ticket covers at the top of your report', text)
+
+    def test_only_impl_rows_are_told_to_record_review_results(self):
+        text, _ = self.brief_commands(self.ledger_card())
+        self.assertIn('lat-ledger.py review-result --row 1 --ledger', text)
+        card = self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
+                              'qa', '--evidence', 'file')
+        self.assertNotIn('review-result', self.brief_commands(card)[0])
 
     def test_other_stages_carry_no_spec_coverage(self):
         text, _ = self.brief_commands(self.ledger_card())
@@ -1263,9 +1271,9 @@ class BeforeLaunchTests(LedgerCase):
     def pending_card(self, *extra):
         return self.card_with('--before-launch', *extra)
 
-    def pending_ledger_card(self):
+    def pending_ledger_card(self, *extra):
         return self.pending_card('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
-                                 'impl', '--evidence', 'commit')
+                                 'impl', '--evidence', 'commit', *extra)
 
     def agent_env(self, base='fida', tag='nanu-impl123'):
         return {'HCOM_INSTANCE_NAME': base, 'HCOM_TAG': tag}
@@ -1294,6 +1302,23 @@ class BeforeLaunchTests(LedgerCase):
         row, = self.items()
         self.assertEqual((row['status'], row['agent'], row['card']),
                          ('assigned', 'nanu-impl123-fida', str(card)))
+
+    def test_binding_records_what_the_agent_really_runs_on(self):
+        card = self.pending_ledger_card('--model', 'claude-sonnet-5-5 high')
+        self.launch()
+        transcript = self.root / 'fida.jsonl'
+        transcript.write_text(json.dumps({'type': 'assistant', 'effort': 'low',
+                                          'message': {'model': 'claude-opus-5-5'}}) + '\n')
+        details = self.root / 'hcom-agents.json'
+        details.write_text(json.dumps({'nanu-impl123-fida': {
+            'tool': 'claude', 'usage': {'model': 'claude-opus-5-5'},
+            'transcript_path': str(transcript)}}))
+        result = self.bind(card, env={**self.agent_env(),
+                                      'LAT_LEDGER_HCOM_AGENTS': str(details)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        bind = self.items()[0]['actual']['bind']
+        self.assertEqual((bind['client'], bind['model'], bind['effort'], bind['verified']),
+                         ('claude', 'claude-opus-5-5', 'low', True))
 
     def test_before_launch_refuses_agent_and_native(self):
         for extra in (('--agent', 'fida'), ('--native', '--agent', 'fida')):
