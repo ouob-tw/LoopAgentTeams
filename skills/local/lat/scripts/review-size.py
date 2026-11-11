@@ -40,8 +40,9 @@ def parse_numstat(raw):
         yield added, deleted, path
 
 
-def suggest(numstat):
-    """Return (reviewers, reason) for `git diff --numstat -z` output."""
+def measure(numstat):
+    """({kind: changed files}, {kind: changed lines}) for `git diff --numstat -z` output, kinds
+    code, test and doc; lat-ledger stores these as a row's change size."""
     lines = {'code': 0, 'test': 0, 'doc': 0}
     files = {'code': 0, 'test': 0, 'doc': 0}
     for added, deleted, path in parse_numstat(numstat):
@@ -49,6 +50,12 @@ def suggest(numstat):
         files[k] += 1
         # Binary files report "-"; count them as files only.
         lines[k] += sum(int(n) for n in (added, deleted) if n != '-')
+    return files, lines
+
+
+def suggest(numstat):
+    """Return (reviewers, reason) for `git diff --numstat -z` output."""
+    files, lines = measure(numstat)
     summary = '，'.join(f'{label} {files[k]} 檔 {lines[k]} 行'
                        for k, label in (('code', '程式'), ('test', '測試'), ('doc', '文件')))
     if not any(files.values()):

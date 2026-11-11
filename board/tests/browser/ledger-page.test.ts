@@ -131,9 +131,16 @@ test.skipIf(!CHROME)('each ticket is one line with its link, title, steps, now, 
 	await toggle(tab, '#536');
 	expect(await tab.eval(flat(`${lineOf('#536')}.querySelector('[data-label="狀態"]')`))).toBe('已取消：併入 #536 的下一版');
 
-	// The deployed ticket's evidence: the commit on GitHub, the report served, the gate as text.
+	// The deployed ticket's impl row: when it closed, how much it changed, how long its tests ran
+	// (execution only, said so), beside its rework rounds on the line.
 	await toggle(tab, '#534');
 	await toggle(tab, '#535');
+	expect(await tab.eval(flat(`${lineOf('#534')}.querySelector('.time')`))).toBe('58 分・修 1 輪');
+	const figures = await tab.eval<[string, string][]>(`[...${lineOf('#534')}.querySelector('.row').querySelectorAll('dt')].filter((dt) => ['結案時間', '改動大小', '測試執行時間'].includes(dt.innerText)).map((dt) => [dt.innerText, dt.nextElementSibling.innerText.replace(/\\s+/g, ' ').trim()])`);
+	expect(figures).toEqual([['結案時間', '17:51:00'], ['改動大小', '程式 3 檔 120 行、測試 2 檔 84 行、文件 1 檔 6 行'], ['測試執行時間', '3 分 20 秒・2 次・沿用先前結果 1 次 排隊時間沒有紀錄，不算在內']]);
+	// Its acceptance row closed before the figures existed: no such lines.
+	expect(await tab.eval(`[...${lineOf('#534')}.querySelectorAll('.row')][1].innerText.includes('測試執行時間')`)).toBe(false);
+	// The deployed ticket's evidence: the commit on GitHub, the report served, the gate as text.
 	const evidence = `${lineOf('#534')}.querySelector('.row .evidence')`;
 	expect(await tab.eval(`[...${evidence}.querySelectorAll('a')].map((a) => a.innerText)`)).toEqual(['42f5bed0', 'report-2026-11-12-zapi-t534-board-title-link-final-candidate.md']);
 	const [commit, report] = await tab.eval<string[]>(`[...${evidence}.querySelectorAll('a')].map((a) => a.href)`);
@@ -216,6 +223,8 @@ test.skipIf(!CHROME)('at a phone width each ticket is a card inside the page, it
 	// An opened row's labels sit beside their values.
 	expect(await tab.eval(`(() => { const dt = ${lineOf('#535')}.querySelector('.row dt:nth-of-type(5)'); return dt.getBoundingClientRect().top === dt.nextElementSibling.getBoundingClientRect().top; })()`)).toBe(true);
 	await capture(tab, 'ledger-phone-open');
+	// The row's figures wrap between parts, never inside one (程式 3 檔 120 行 stays together).
+	expect(await tab.eval(`[...${lineOf('#534')}.querySelectorAll('.figure')].map((part) => part.getClientRects().length)`)).toEqual([1, 1, 1, 1, 1, 1]);
 	// The bottom summary fits the phone's width with every column.
 	expect(await tab.eval(`(() => { const r = document.querySelector('.detail .ledger .stage-summary').getBoundingClientRect(); return r.left >= 0 && r.right <= ${PHONE.width}; })()`)).toBe(true);
 }, 60_000);

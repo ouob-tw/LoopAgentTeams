@@ -24,6 +24,10 @@ interface ItemOptions {
 	settings?: string;
 	evidence?: Record<string, string[]>;
 	repo?: string | null;
+	/** The figures lat-ledger stores at done (#550). */
+	doneAt?: string;
+	changeSize?: string;
+	tests?: { seconds: number; runs: number; reuses: number };
 }
 
 export function item(id: number, ticket: string, options: ItemOptions = {}) {
@@ -50,6 +54,9 @@ export function item(id: number, ticket: string, options: ItemOptions = {}) {
 		cancel_reason: options.cancel ?? null,
 		late_minutes: options.late ? { estimate: options.late } : {},
 		settings_text: options.settings ?? '',
+		...(options.doneAt ? { done_at: options.doneAt } : {}),
+		change_size_text: options.changeSize ?? '',
+		...(options.tests ? { tests: { ...options.tests, queue_seconds: null } } : {}),
 		history
 	};
 }
@@ -108,14 +115,15 @@ const REPO = 'ouob-tw/LoopAgentTeams-work';
 
 /** A ledger in `workspace` of a project with deploy history: in progress past its estimate,
  *  blocked, deployed with rework, a row covering two tickets, cancelled, and a text item. The
- *  deployed ticket's evidence names a commit and `reportPath`. Problems: #533 has one a test
+ *  deployed ticket's evidence names a commit and `reportPath`, and its impl row has the figures
+ *  stored at done (finish time, change size, test execution). Problems: #533 has one a test
  *  caught, one from review and a 甲 from acceptance; #534 a fixed 乙 from review and 0 for its
  *  other done stages; one of the shared row's tickets has one; one after deploy has no known
  *  cause. */
 export function ticketLedger(workspace: string, reportPath = `${workspace}/.lat/runs/issue-534/report.md`) {
 	const items = [
 		item(1, '533', { stage: 'qa', status: 'in_progress', late: 12, progress: '第三次長度修正仍失敗', settings: 'gpt-6.1-terra・medium', started: '2026-11-12T09:12:00Z' }),
-		item(2, '534', { status: 'done', closed: '2026-11-12T09:51:00Z', settings: 'opus-5.5・medium', evidence: { commit: ['42f5bed0c0ffee12345678901234567890abcdef'], file: [reportPath], gate: ['e52bc2cab9bcd01cb8fa06eccfb0618d'] } }),
+		item(2, '534', { status: 'done', closed: '2026-11-12T09:51:00Z', settings: 'opus-5.5・medium', evidence: { commit: ['42f5bed0c0ffee12345678901234567890abcdef'], file: [reportPath], gate: ['e52bc2cab9bcd01cb8fa06eccfb0618d'] }, doneAt: '2026-11-12T09:51:00Z', changeSize: '程式 3 檔 120 行、測試 2 檔 84 行、文件 1 檔 6 行', tests: { seconds: 200.4, runs: 2, reuses: 1 } }),
 		item(3, '534', { stage: 'qa', status: 'done', closed: '2026-11-12T09:58:00Z', settings: 'gpt-6.1-terra・low→high' }),
 		item(4, '535', { status: 'blocked', blocked: '等使用者決定 ZAPI-524-3', progress: '前兩項已完成', settings: 'opus-5.5・high', estimate: null }),
 		item(5, '540,541', { status: 'done', closed: '2026-11-12T09:40:00Z', settings: '未查證' }),

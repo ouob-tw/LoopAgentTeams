@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 import fcntl
 import getpass
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,11 @@ from _lat_common import (full_hcom_name, read_hcom_list, resolve_agent_name, run
                          same_controller, shared_lat_dir, write_text_atomic)
 from _lat_tracker import read_issue, tracker_repo
 from transcript import current_settings
+
+_spec = importlib.util.spec_from_file_location('review_size',
+                                               Path(__file__).resolve().parent / 'review-size.py')
+review_size = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(review_size)
 
 LAT_DIR = Path(__file__).resolve().parents[1]
 # Overrides for tests: a fixed clock, another suite-gate script and a file for `hcom list --json`.
@@ -1042,7 +1048,9 @@ def cmd_unblock(args):
 def cmd_done(args):
     given = {'commit': args.commit or [], 'gate': args.gate or [], 'file': args.file or []}
     before = find(read_only(args), args.id)
-    reading = done_reading(before)  # HCOM is asked outside the lock
+    reading = done_reading(before)  # HCOM and suite-gate are asked outside the lock
+    done_at = now()
+    tests = test_figures(before, done_at)
     with transaction(args, 'done', args.id) as doc:
         item = find(doc, args.id)
         require_status(item, ('assigned', 'in_progress'), 'done')
@@ -1075,6 +1083,9 @@ def cmd_done(args):
         repo = changes.get('repo') or item.get('repo')
         if repo:
             changes['main_checkout'] = owning_checkout(repo)
+        changes['done_at'] = stamp(done_at)
+        changes['change_size'] = change_size(doc, {**item, **changes}, resolved.get('commit'))
+        changes['tests'] = tests
         record(args, item, 'done', changes)
         record_done_settings(args, item, reading)
     update_card(item, resolved)
@@ -1117,12 +1128,147 @@ def cmd_amend(args):
         if problems:
             raise Failure(f'item {item["id"]} not amended:\n' +
                           '\n'.join(f'  - {problem}' for problem in problems))
-        record(args, item, 'amend', {'progress': f'補記：{reason}',
-                                     'evidence': {**item['evidence'], **resolved}}, reason)
+        changes = {'progress': f'補記：{reason}', 'evidence': {**item['evidence'], **resolved}}
+        if resolved.get('commit'):
+            changes['change_size'] = change_size(doc, item, resolved['commit'])
+        record(args, item, 'amend', changes, reason)
     if resolved.get('commit'):
         # Only the version changed: a card already marked merged stays merged.
         write_card_fields(item, {'deliverable commit': ', '.join(resolved['commit'])})
     print(f'item {item["id"]} amended')
+
+
+# ---- computed figures ---------------------------------------------------------------------
+#
+# Stored at `done` so nobody rebuilds them from git and the gate records later:
+#   done_at       when the row was closed.
+#   change_size   changed files and lines by kind (code, test, doc, the review-size.py split) of
+#                 `<card base commit>...<last commit>`; recomputed when `amend` replaces the
+#                 commit. None without a commit, a card base commit, or a diff git can make.
+#   tests         the row agent's suite-gate records started between the row's start and done:
+#                 execution seconds (`duration_s`) and runs (one gate invocation, its in-run
+#                 rerun included, counts once), plus reuses (invocations that only reused an
+#                 earlier result: no seconds). Time spent waiting for a slot is not recorded by
+#                 suite-gate, so it is not counted. None when the records cannot be read.
+# Rework rounds are counted when read (amends plus follow-on rows), so later ones show at once.
+
+EXECUTED_KINDS = (None, 'affected')  # a record without a kind is a plain `suite-gate run`
+
+
+def card_value(path, key):
+    """A task card field's value (its first word), or None when missing, empty or 無."""
+    if not path:
+        return None
+    try:
+        text = Path(path).read_text(encoding='utf-8')
+    except (OSError, UnicodeError):
+        return None
+    for line in text.splitlines():
+        match = CARD_FIELD.fullmatch(line.strip())
+        if match and match.group(1).strip().lower() == key:
+            words = match.group(2).split()
+            return words[0] if words and words[0] != '無' else None
+    return None
+
+
+def change_size(doc, item, commits):
+    """The row's change size against its card's base commit (see above), or None."""
+    base = card_value(item.get('card'), 'base commit')
+    if not commits or not base:
+        return None
+    commit = commits[-1]
+    places = [item.get('repo') or doc['workspace'], *main_checkouts(doc, item)]
+    for place in dict.fromkeys(places):
+        try:
+            raw = run_cli(['git', '-C', place, 'diff', '--numstat', '-z', '-M',
+                           f'{base}...{commit}'], timeout=30)
+        except ValueError:
+            continue
+        files, lines = review_size.measure(raw)
+        return {'base': base, 'commit': commit,
+                **{kind: {'files': files[kind], 'lines': lines[kind]} for kind in files}}
+    print(f'lat-ledger: warning: no change size for item {item["id"]} (git diff {base}...'
+          f'{commit[:12]} failed); it stays empty', file=sys.stderr)
+    return None
+
+
+def gate_records():
+    """Every suite-gate record, read through `suite-gate.py status --json`."""
+    output = run_cli([sys.executable, str(gate_script()), 'status', '--json', '--limit',
+                      '100000000'], timeout=60, failure='suite-gate status failed')
+    records = json.loads(output)['records']
+    return [record for record in records if isinstance(record, dict)]
+
+
+def record_time(record):
+    try:
+        value = datetime.fromisoformat(str(record.get('time')).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return value.astimezone(timezone.utc) if value.tzinfo else None
+
+
+def test_figures(item, end):
+    """The row agent's test execution between the row's start and `end` (see above), or None
+    without an agent or start, or when the records cannot be read."""
+    start = item.get('started_at') or item.get('assigned_at')
+    if not item.get('agent') or not start:
+        return None
+    try:
+        records = gate_records()
+    except (ValueError, KeyError, TypeError) as error:
+        print(f'lat-ledger: warning: no test figures for item {item["id"]} ({error}); '
+              'they stay empty', file=sys.stderr)
+        return None
+    start, runs, reused, seconds = loads_time(start), set(), set(), 0.0
+    for index, record in enumerate(records):
+        at = record_time(record)
+        if record.get('agent') != item['agent'] or not at or not start <= at <= end:
+            continue
+        run = record.get('run_id') or f'record {index}'
+        if record.get('kind') == 'reuse':
+            reused.add(run)
+        elif record.get('kind') in EXECUTED_KINDS and isinstance(record.get('duration_s'),
+                                                                 (int, float)):
+            runs.add(run)
+            seconds += record['duration_s']
+    return {'seconds': round(seconds, 1), 'runs': len(runs), 'reuses': len(reused - runs),
+            'queue_seconds': None}
+
+
+def rework_rounds(rows):
+    """Amends of these rows plus the rows that follow on from another."""
+    return sum(1 for row in rows for entry in row['history'] if entry.get('action') == 'amend') \
+        + sum(1 for row in rows if row.get('follows'))
+
+
+def seconds_text(total):
+    total = int(total)
+    if total < 60:
+        return f'{total} 秒'
+    if total < 3600:
+        return f'{total // 60} 分 {total % 60} 秒'
+    return minutes_text(total // 60)
+
+
+def size_text(size):
+    """`程式 3 檔 120 行、測試 1 檔 40 行`: the kinds with changes; empty without a size."""
+    if not size:
+        return ''
+    parts = [f'{label} {size[kind]["files"]} 檔 {size[kind]["lines"]} 行'
+             for kind, label in (('code', '程式'), ('test', '測試'), ('doc', '文件'))
+             if size.get(kind, {}).get('files')]
+    return '、'.join(parts) or '沒有差異'
+
+
+def tests_text(tests):
+    """`測試執行時間 3 分 20 秒（2 次）、沿用先前結果 1 次，排隊時間沒有紀錄`; empty without."""
+    if not tests:
+        return ''
+    text = f'測試執行時間 {seconds_text(tests["seconds"])}（{tests["runs"]} 次）'
+    if tests.get('reuses'):
+        text += f'、沿用先前結果 {tests["reuses"]} 次'
+    return text + '，排隊時間沒有紀錄'
 
 
 def cmd_review_result(args):
@@ -1927,8 +2073,15 @@ def build_tickets(doc, at, problems=None):
             'findings': ticket_findings([p for p in (problems or {}).values()
                                          if p['ticket'] == key], steps),
             'started_at': stamp(min(map(loads_time, starts))) if starts else None,
-            'total_minutes': minutes, 'running': running})
+            'total_minutes': minutes, 'running': running,
+            'rework_rounds': rework_rounds(rows), 'change_size': latest_size(rows)})
     return tickets
+
+
+def latest_size(rows):
+    """The change size of the ticket's latest closed row that has one, or None."""
+    sized = [row for row in rows if row.get('change_size') and row.get('done_at')]
+    return max(sized, key=lambda row: row['done_at'])['change_size'] if sized else None
 
 
 def tickets_without_qa(doc):
@@ -2019,6 +2172,8 @@ def cmd_show(args):
         view['status_label'] = STATUSES[item['status']]
         view['ticket_keys'] = ticket_keys(item['ticket'], default_repo)
         view['settings_text'] = row_settings_text(item)
+        view['change_size_text'] = size_text(item.get('change_size'))
+        view['tests_text'] = tests_text(item.get('tests'))
         rows.append(view)
     if getattr(args, 'rows', False) and not args.json:
         print(f'工作總表 {args.ledger}（更新於 {doc["updated_at"]}）\n')
@@ -2060,8 +2215,8 @@ def show_tickets(tickets, counts, default_repo):
     summary = '、'.join(f'{counts[state]} 張{label}' for state, label in TICKET_STATES.items()
                        if counts.get(state))
     print(f'{len(tickets)} 張票：{summary}' if tickets else '沒有票')
-    print('\n| 票 | 標題 | 進度 | 現在 | 模型 | 問題 | 用時 | 列 |')
-    print('|---|---|---|---|---|---|---|---|')
+    print('\n| 票 | 標題 | 進度 | 現在 | 模型 | 問題 | 用時 | 改動 | 列 |')
+    print('|---|---|---|---|---|---|---|---|---|')
     for ticket in tickets:
         ref = ticket['key']
         if default_repo and ref.startswith(f'{default_repo}#'):
@@ -2071,10 +2226,12 @@ def show_tickets(tickets, counts, default_repo):
         took = ''
         if ticket['total_minutes'] is not None:
             took = ('已 ' if ticket['running'] else '') + minutes_text(ticket['total_minutes'])
+        if ticket['rework_rounds']:
+            took = '・'.join(filter(None, (took, f'修 {ticket["rework_rounds"]} 輪')))
         models = '；'.join(f'{stage["label"]} {stage["text"]}' for stage in ticket['settings'])
         print('| ' + ' | '.join(cell(value) for value in (
             ref, ticket['title'], progress, ticket['now'], models,
-            ticket['findings']['text'], took,
+            ticket['findings']['text'], took, size_text(ticket['change_size']),
             ','.join(map(str, ticket['items'])))) + ' |')
 
 
@@ -2102,7 +2259,10 @@ def show_rows(rows):
             row['cancel_reason'] and f'取消：{row["cancel_reason"]}',
             row['follows'] and f'接續自 {row["follows"]}',
             row['card_mismatch'] and f'任務卡不一致：{row["card_mismatch"]}',
-            row['progress'] and f'進度：{row["progress"]}') if text]
+            row['progress'] and f'進度：{row["progress"]}',
+            row.get('done_at') and f'結案：{row["done_at"]}',
+            row['change_size_text'] and f'改動：{row["change_size_text"]}',
+            row['tests_text']) if text]
         print('| ' + ' | '.join(cell(value) for value in (
             row['id'], row['ticket'], row['stage_label'], row['agent'], row['settings_text'],
             status,
