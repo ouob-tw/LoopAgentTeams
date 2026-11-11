@@ -32,3 +32,10 @@ export function summaryParts(text: string): SummaryPart[] {
 	if (plain) parts.push({ text: plain });
 	return parts;
 }
+
+// The same text without the link markup, for a place where a link cannot be clicked.
+export function summaryPlain(text: string): string {
+	return summaryParts(text)
+		.map((part) => part.text)
+		.join('');
+}

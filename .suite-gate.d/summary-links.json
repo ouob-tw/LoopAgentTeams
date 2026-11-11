@@ -7,13 +7,17 @@
         "board/src/lib/components/SummaryText.svelte",
         "board/src/lib/components/ExplainTip.svelte",
         "board/src/lib/components/ControllerExplain.svelte",
-        "board/src/lib/components/ControllerHeader.svelte"
+        "board/src/lib/components/ControllerHeader.svelte",
+        "board/src/lib/components/DutyText.svelte",
+        "board/src/lib/components/RosterCard.svelte"
       ],
       "tests": [
         "board/tests/unit/summary-links.test.ts",
         "board/tests/browser/summary-links.test.ts",
         "board/tests/browser/controller-page.test.ts",
-        "board/tests/browser/pd-page.test.ts"
+        "board/tests/browser/pd-page.test.ts",
+        "board/tests/browser/duty-links.test.ts",
+        "board/tests/browser/agents-page.test.ts"
       ]
     }
   ]

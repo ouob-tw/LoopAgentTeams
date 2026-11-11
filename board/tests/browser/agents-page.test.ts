@@ -1585,6 +1585,26 @@ for (const width of [1280, 390]) {
 	}, 30_000);
 }
 
+test.skipIf(!CHROME)("a controller's duty links show as new-tab links in the agent list's hover explanation and menu", async () => {
+	const duty = join(fixture.reportsDir, 's-lead.duty.json');
+	const url = 'https://github.com/ouob-tw/LoopAgentTeams-work/issues/533';
+	writeFileSync(duty, JSON.stringify({ text: `修 [#533](${url})`, expected: `看 [#533](${url})`, time: new Date().toISOString() }));
+	const linksIn = (box: string) => `[...document.querySelectorAll(${JSON.stringify(box + ' a')})].map((a) => a.innerText + '|' + a.href + '|' + a.target)`;
+	try {
+		await freshTabs();
+		await visit(1280);
+		await openTab();
+		await tab.until(`!!document.querySelector(${JSON.stringify(CARD('s-lead'))})`, 'the list');
+		await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...(await point(CARD('s-lead'), 40)) });
+		await tab.until(`document.querySelector('#agent-tip')?.innerText.includes('預期結果')`, "the controller's explanation");
+		expect(await tab.eval(linksIn('#agent-tip'))).toEqual([`#533|${url}|_blank`, `#533|${url}|_blank`]);
+		await openMenu(false, 's-lead');
+		expect(await tab.eval(linksIn('.menu'))).toEqual([`#533|${url}|_blank`, `#533|${url}|_blank`]);
+	} finally {
+		rmSync(duty, { force: true });
+	}
+}, 30_000);
+
 test.skipIf(!CHROME)('the pause of the HCOM link shows for a linked agent, its resume for a paused one, neither for one not linked; pausing marks the controller paused', async () => {
 	const pausedDir = join(fixture.dir, 'hcom-paused');
 	rmSync(join(fixture.dir, 'hcom-calls.jsonl'), { force: true });

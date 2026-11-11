@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { summaryParts } from '../../src/lib/board/summary-links.ts';
+import { summaryParts, summaryPlain } from '../../src/lib/board/summary-links.ts';
 
 const ISSUE = 'https://github.com/ouob-tw/LoopAgentTeams-work/issues/426';
 
@@ -28,4 +28,9 @@ test('a link to another scheme, or with no address, stays plain text', () => {
 
 test('link text that holds markup is returned as text for the page to escape', () => {
 	expect(summaryParts(`[<img src=x onerror=1>](${ISSUE})`)).toEqual([{ text: '<img src=x onerror=1>', href: ISSUE }]);
+});
+
+test('summaryPlain keeps only the link text; other schemes and markup stay as written', () => {
+	expect(summaryPlain(`看 [#426](${ISSUE}) 完成`)).toBe('看 #426 完成');
+	expect(summaryPlain('[x](javascript:alert) <b>')).toBe('[x](javascript:alert) <b>');
 });

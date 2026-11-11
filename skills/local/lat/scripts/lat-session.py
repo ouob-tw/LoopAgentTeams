@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import fcntl
 import importlib
 import importlib.util
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -844,14 +846,79 @@ def duty_command(record):
     ])
 
 
+DUTY_LINK = re.compile(r'\[([^\[\]]+)\]\(([^\s()]+)\)')
+_DUTY_HOST = re.compile(r'[^\s\x00-\x1f\x7f#%/?<>\\^|\[\]@:]+')
+
+
+def _ipv4_number(part):
+    if re.fullmatch(r'0[xX][0-9a-fA-F]*', part):
+        return int(part[2:] or '0', 16)
+    if re.fullmatch(r'0[0-7]+', part):
+        return int(part, 8)
+    if re.fullmatch(r'0[0-9]+', part):
+        return -1  # numeric but not valid octal: never an address
+    if re.fullmatch(r'[0-9]+', part):
+        return int(part)
+    return None
+
+
+def _valid_ipv4_like(host):
+    """A host whose last label is numeric must be a valid IPv4 address, as the board's parser demands."""
+    labels = host.rstrip('.').split('.') if host.rstrip('.') else ['']
+    if _ipv4_number(labels[-1]) is None and not re.fullmatch(r'0[xX]', labels[-1]):
+        return True
+    if len(labels) > 4:
+        return False
+    numbers = [_ipv4_number(label) if label else None for label in labels]
+    if any(n is None for n in numbers):
+        return False
+    return all(0 <= n < 256 for n in numbers[:-1]) and 0 <= numbers[-1] < 256 ** (5 - len(numbers))
+
+
+def _web_link(url):
+    """Whether the board makes ``url`` a link: an http/https address its URL parser accepts."""
+    match = re.match(r'(?i)(https?):[/\\]*(.+)', url)
+    if not match:
+        return False
+    try:
+        parts = urlsplit(f'{match.group(1)}://{match.group(2)}')
+        parts.port
+    except ValueError:
+        return False
+    host = parts.hostname
+    if host and ':' in host:
+        try:
+            ipaddress.IPv6Address(host.split('%')[0])
+        except ValueError:
+            return False
+        return '%' not in host
+    if not (host and _DUTY_HOST.fullmatch(host) and _valid_ipv4_like(host)):
+        return False
+    try:
+        for label in host.split('.'):
+            if label and (not label.isascii() or label.lower().startswith('xn--')):
+                label.encode('idna').decode('idna')
+    except (UnicodeError, ValueError):
+        return False
+    return True
+
+
+def shown_duty(text):
+    """``text`` as the board shows it: a web link ``[a](url)`` is just ``a``."""
+    return DUTY_LINK.sub(lambda m: m.group(1) if _web_link(m.group(2)) else m.group(0), text)
+
+
 def checked_duty(text, expected, flags=('--text', '--expected')):
-    """The stripped duty fields, or ValueError naming ``flags`` when they are unusable."""
+    """The stripped duty fields, or ValueError naming ``flags`` when they are unusable.
+
+    The limit counts what the board shows: ``[text](http/https url)`` counts as ``text``."""
     text, expected = text.strip(), expected.strip()
     if not text or not expected:
         raise ValueError(f'{flags[0]} and {flags[1]} must not be empty; duty unchanged')
-    if '\n' in text or len(text) > DUTY_LIMIT:
+    shown = len(shown_duty(text))
+    if '\n' in text or shown > DUTY_LIMIT:
         raise ValueError(f'{flags[0]} must be one line of at most {DUTY_LIMIT} characters '
-                         f'(got {len(text)}); duty unchanged')
+                         f'(got {shown}); duty unchanged')
     return text, expected
 
 
@@ -2047,7 +2114,7 @@ def main():
     start.add_argument('--tasks', type=Path, required=True)
     start.add_argument('--hcom-name')
     start.add_argument('--duty-text', help=f'Register the duty too: what it is responsible for, '
-                       f'<= {DUTY_LIMIT} chars')
+                       f'<= {DUTY_LIMIT} shown chars; [text](http url) counts as text')
     start.add_argument('--duty-expected', help='With --duty-text: what the user will see when done')
     stop = sub.add_parser('deactivate', help='End a controller, retaining its record')
     stop.add_argument('--workspace', type=Path, required=True)
@@ -2061,7 +2128,7 @@ def main():
     stop.add_argument('--reason', help='Why unfinished work is left; kept in the ledger history')
     duty = sub.add_parser('duty', help="Record this controller's duty for the board")
     duty.add_argument('--workspace', type=Path, required=True)
-    duty.add_argument('--text', required=True, help=f'What it is responsible for, <= {DUTY_LIMIT} chars')
+    duty.add_argument('--text', required=True, help=f'What it is responsible for, <= {DUTY_LIMIT} shown chars; [text](http url) counts as text')
     duty.add_argument('--expected', required=True, help='What the user will see when it is done')
     listing = sub.add_parser('list', help='List controller records and check them against hcom')
     listing.add_argument('--active', action='store_true', required=True,
