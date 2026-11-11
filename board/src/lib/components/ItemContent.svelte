@@ -8,7 +8,7 @@
 	import { answering, complete } from '#lib/board/answering.svelte.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
-	import { renderLinks, renderMarkdown } from '#lib/board/markdown.ts';
+	import { renderMarkdown, renderTitle } from '#lib/board/markdown.ts';
 	import CopyButton from './CopyButton.svelte';
 	import VisualLinks from './VisualLinks.svelte';
 	import VoiceField from './VoiceField.svelte';
@@ -175,7 +175,7 @@
 		{#if handle}<span class="handle" title="@{handle}">@{lastSegment(handle)}</span>{/if}
 		<time datetime={item.time}>{noticeTime(item.time, clock.now, clock.timeZone)}</time>
 	</header>
-	<h2>{@html item.title ? renderLinks(item.title) : '（沒有標題）'}</h2>
+	<h2>{@html item.title ? renderTitle(item.title) : '（沒有標題）'}</h2>
 
 	{#if item.kind === 'question'}
 		{@const question = item.question}

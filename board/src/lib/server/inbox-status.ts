@@ -7,6 +7,7 @@ import { askNote, askRows, askTitle, ASK_KIND_TEXT } from '../board/ask-inbox.ts
 import { BOARD_ASK_STATE_TEXT, type BoardAskState } from '../board/board-asks.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { sortEntries } from '../board/inbox.ts';
+import { summaryPlain } from '../board/summary-links.ts';
 import { everyController, itemLabel } from '../board/types.ts';
 import { isAskFile, readAsks } from './board-asks.ts';
 import type { BoardConfig } from './config.ts';
@@ -103,7 +104,7 @@ export async function readInboxStatus(config: BoardConfig): Promise<InboxStatus>
 	const items = snapshot.inbox.filter((item) => item.kind === 'question' || item.readAt === null);
 	const open = sortEntries(items, rows.filter((row) => row.open)).map((entry) =>
 		entry.kind === 'item'
-			? [itemLabel(entry.item), entry.item.project, oneLine(entry.item.title)].join('\t')
+			? [itemLabel(entry.item), entry.item.project, oneLine(summaryPlain(entry.item.title))].join('\t')
 			: [ASK_KIND_TEXT[entry.row.ask.kind], entry.row.project, oneLine(askTitle(entry.row)), askNote(entry.row, now)].join('\t')
 	);
 	return { open, processedCount: snapshot.processedCount + ended.length, endedAsks, problems };

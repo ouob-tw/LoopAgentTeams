@@ -2,6 +2,7 @@
 // scheme is not safe are dropped by markdown-it's own check. Single line breaks stay line breaks.
 import MarkdownIt from 'markdown-it';
 import cjkFriendly from 'markdown-it-cjk-friendly';
+import { summaryParts } from './summary-links.ts';
 
 // Emphasis next to CJK punctuation or text (`**目前行為：**頁面`) closes as the writer meant.
 // Images are off: text from a controller must not make the browser fetch other hosts.
@@ -92,5 +93,13 @@ export function codeBlockLines(text: string): [number, number][] {
 		.map((token) => token.map as [number, number]);
 }
 
-/** One line of plain text as HTML, its web addresses as links. */
-export const renderLinks = (text: string) => links.renderInline(text);
+/** A title where it can hold links: its Markdown links to web addresses as links with their text,
+ *  its bare web addresses as links, everything else as text. */
+export const renderTitle = (text: string) =>
+	summaryParts(text)
+		.map((part) =>
+			part.href
+				? `<a href="${md.utils.escapeHtml(part.href)}" target="_blank" rel="noopener noreferrer">${md.utils.escapeHtml(part.text)}</a>`
+				: links.renderInline(part.text)
+		)
+		.join('');
