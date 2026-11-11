@@ -1663,6 +1663,25 @@ class LargeSelectionTests(AffectedCase):
         self.assertEqual(self.full_runs(), ['web'])
         self.assertEqual(self.ran(), [('.', ['tests/test_app.py'])])
 
+    def test_a_one_letter_suite_directory_owns_its_files_in_either_registration_order(self):
+        # "." and "w" are both one character long; "w" is still the more specific one.
+        self.touch('w/tests/a.test.ts', '')
+        self.touch('w/tests/b.test.ts', '')
+        self.registry['affected']['map'].append({'paths': ['w/src/**'],
+                                                 'tests': ['w/tests/*.test.ts']})
+        self.registry['full_suites'][1]['cwd'] = 'w'
+        git(self.repo, 'add', '-A')
+        for order in (1, -1):
+            with self.subTest(order=order):
+                self.registry['full_suites'] = self.registry['full_suites'][::order]
+                self.share(0.5)
+                self.touch('w/src/x.ts')
+                result = self.gate('affected', '--base', 'HEAD')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('the selection covers 2 of 2 test files in w', result.stderr)
+                self.assertEqual(self.full_runs(), ['web'])
+                self.counter.unlink()
+
     def test_in_a_root_only_project_the_root_suite_counts_every_test_file(self):
         del self.registry['full_suites'][1]
         self.share(0.5)

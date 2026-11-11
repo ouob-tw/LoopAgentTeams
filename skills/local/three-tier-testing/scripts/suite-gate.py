@@ -3534,7 +3534,7 @@ def owning_dir(suites, path):
     None."""
     found = [s['cwd'] for s in suites
              if s['cwd'] == '.' or path == s['cwd'] or path.startswith(s['cwd'] + '/')]
-    return max(found, key=len) if found else None
+    return max(found, key=lambda cwd: -1 if cwd == '.' else len(cwd)) if found else None
 
 
 # File names test runners pick up by default (pytest/unittest, Go, bun/jest/vitest).
