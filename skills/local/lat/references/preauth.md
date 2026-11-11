@@ -40,7 +40,6 @@ p do --action merge|push --branch <分支> --commit <版本> [--question <待決
 - `check` 為 `ask`：給了 `--question`，且該題有真人答覆（在本主控的待決目錄、狀態 `answered` 或 `approved`、答覆段有 `- 來源：` 行），才執行指令並記一筆 `kind: manual` 與題號；否則不執行、不記錄，以非 0 結束並說明。
 - 指令失敗照記 `failed`，結束碼為指令的結束碼。本輪 session 不是進行中時什麼都不執行；指令跑完但記錄寫不進去時以 2 結束並說明。
 - `merge` 的 `--commit` 有一筆合併前受影響測試總結（`affected --purpose pre-merge`，同一提交或同一份內容）時，取最新那筆：其中重跑才通過（`PASSED ONLY ON RERUN`）的組，要本輪工作總表有一筆審查紀錄確認看過該組紀錄（`lat-ledger.py review-result --row <列> --reviewer <名稱> --clean --rerun-ack <指紋至少 12 碼> --note "<第一次失敗的原因>"`），否則 `ask` 並說明怎麼補。工作總表在另一個 repo 時 `check` 讀不到，這種情況一律 `ask`。
-- `merge` 的 `--commit` 帶有本輪工作總表標為小改動的票（列的分支指向它，或整合分支沒有的提交提到該票）時，從該票任務卡的 base commit 跑小改動檢查：程式新增超過 30 行（不含測試與文件）、實作列是主控本人，或審查紀錄沒有四項界線的確認（`review-result --tiny-confirm`）、確認後內容又變了、確認沒涵蓋現在的提示，都 `ask`，並說明改走原流程（`lat-ledger.py tiny-off` 拿掉標記，當一般票重新派工，含 QA）。本輪有小改動票時，沒給 `--commit` 或給的版本不在這個 repo 也一律 `ask`。
 - `do` 在指令的環境變數 `LAT_PREAUTH_DO` 記下動作、分支與完整版本。`push` 的 `--commit` 只解析一次，查詢、記號與紀錄都用同一個完整版本。推送前 hook 比對 Git 實際推送的分支與版本，跟 `do --action push` 查過的不同就擋下，所以 `--commit` 要寫這次推送的版本；`do --action merge` 不涵蓋推送。見 [全域推送前 hook](hook-setup.md#全域推送前-hook)。
 
 ## 主控與動作不在同一個 repo
@@ -232,3 +231,10 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" report
 - **`ask`**：照常寫入與放行。
 - `question ask` 每次寫入都把當下結論寫成紀錄的 `- preauth: <check 印的那行>（重查於 <時間>）`，取代舊的那行，沒有時放在 `- action:` 下一行。這行只給人與參謀閱讀，工具不讀。
 - 沒有 `- action:` 的紀錄不重查，行為不變；漏寫由參謀把關。重查本身出錯時照常寫入或放行，只印警告。
+
+## 小改動通道
+
+- 派工：只有一張票時，`card --ledger …` 加 `--tiny --no-feature --no-format-change`（後兩個是主控的聲明：不新增功能、不改資料或存檔格式），該票各列都帶上標記；票欄列出多張票時工具拒絕。
+- 審查：先跑 `review-size.py <卡片 base commit> --tiny --integration <整合分支>` 看程式新增行數（不含測試與文件，上限 30）與提示（專案設定的資料／格式檔案樣式、`feat` 提交）。通過後以 `lat-ledger.py review-result --row <實作列> --reviewer <名稱> --clean --tiny-confirm` 記下四項界線的確認，有提示時加 `--tiny-hints "<每項提示怎麼查的>"`；確認後內容又變了要重新確認。
+- 合併：`merge` 的 `--commit` 帶有這種票（列的分支指向它，或整合分支沒有的提交提到該票）時，`check` 從該票任務卡的 base commit 重跑檢查：超過 30 行、實作列是主控本人、沒有確認、確認後內容變了或確認沒涵蓋現在的提示，都 `ask`。本輪有小改動票時，沒給 `--commit` 或給的版本不在這個 repo 也 `ask`。
+- 改走原流程：主控先跑 `lat-ledger.py tiny-off <列> --reason "<原因>"` 拿掉該票標記，再當一般票（含 QA）重新派工。
