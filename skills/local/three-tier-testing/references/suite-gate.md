@@ -2,7 +2,7 @@
 
 整套測試一律透過 `scripts/suite-gate.py` 執行。同一份程式內容用同一個指令跑過且通過時直接回報上次結果；相同請求同時送出只跑一次；排隊中的整套測試依主機剩餘的 CPU 與記憶體放行（至少同時 2 套、最多 8 套，可在設定檔調整），主機壓力過高時暫停放行。只跑單一檔案或指定範圍的測試不必經過閘門。
 
-專案登記檔有對照表時，每張票改用 `affected` 只跑這次改動影響到的測試；整批合併後也只跑這批改動的受影響測試，並寫一筆總結紀錄（見[合併後受影響測試](#合併後受影響測試--purpose-post-merge)）。整套只在發布前或寫明原因時跑，並且要標明用途（見[受影響測試與對照表](#受影響測試與對照表)）。
+專案登記檔有對照表時，每張票改用 `affected` 只跑這次改動影響到的測試，內容相同且已通過的測試直接沿用；整批合併後也只跑這批改動的受影響測試，並寫一筆總結紀錄（見[合併後受影響測試](#合併後受影響測試--purpose-post-merge)）。整套只在發布前或寫明原因時跑，並且要標明用途（見[受影響測試與對照表](#受影響測試與對照表)）。
 
 推送到 main 或推送標籤前，可以用 Git pre-push 檢查確認這份內容已有每一套整套的通過紀錄（見[推送前把關](#推送前把關pre-push)）。
 
@@ -185,9 +185,24 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
   6. 以上都不符合：沒列在表上，改跑整套。
 - 選出的測試依所在目錄分組（取 `affected.commands` 中最長的符合目錄），把相對該目錄的路徑代入 `{tests}`，在該目錄以 `/bin/sh` 執行。沒有目錄涵蓋的測試，改跑整套。
 - 輸出（stderr）列出基準點、改動檔、選出的測試與原因、每組執行的指令；測試輸出與結束碼原樣轉出，多組時回傳第一個非 0 的結束碼。
-- 受影響測試不佔整套名額、不排隊、不沿用；每組寫一筆紀錄（`kind: "affected"`），含基準 commit、改動檔、該組選出的測試與原因。沒有選出任何測試時不執行、不寫紀錄（帶 `--purpose post-merge` 時仍寫總結紀錄）。
+- 受影響測試不佔整套名額、不排隊；每組寫一筆紀錄（`kind: "affected"`），含基準 commit、改動檔、該組選出的測試與原因，以及每個測試的內容指紋（`test_fingerprints`；檢查清單是 `check_fingerprint`）。沒有選出任何測試時不執行、不寫紀錄（帶 `--purpose` 時仍寫總結紀錄）。
+- **同內容沿用**：某組選出的測試裡，有一筆較早的受影響測試紀錄第一次就通過（不是靠失敗重跑才過）、內容沒在執行中改變，而且它跑過的每個測試現在的內容指紋都相同，就沿用那筆、不再跑那些測試，只跑剩下的；輸出寫明沿用了哪筆（時間、執行者、指紋、執行編號與用途）。檢查清單同樣以 `check_fingerprint` 比對。
+  - 測試的內容指紋涵蓋：該目錄的指令樣板、`tests` 含這個測試的對照表規則，以及這個測試可能依賴的檔案——測試檔本身、`shared` 的檔案、對照表沒列的檔案，與那些規則 `paths` 對到的檔案。對照表只綁給其他測試的檔案不算，所以同一批裡別張票改它們不影響沿用；`.suite-gate.json` 與 `.suite-gate.d/` 本身也不算（它們決定的樣板與規則已在指紋裡）。
+  - 檢查清單的內容指紋涵蓋它的指令、目錄、`paths`，以及 `paths` 與 `shared` 對到的檔案。
+  - 任一選出的檔案或被測的程式不同，指紋就不同，一律重跑。
 - **改跑整套**（對照表退回整套）：列出觸發的檔案與原因，再對要跑的整套照 `run` 的規則經閘門執行——同樣排隊、佔名額、同內容沿用。觸發的檔案都落在某幾套的 `cwd` 目錄內（例如 `board/`）時只跑那幾套；有任一觸發檔不在任何套件目錄內（例如根目錄的 `.gitignore`；`cwd` 是 `.` 的套件不算）時跑 `full_suites` 的每一套。選出的測試不在要跑的整套目錄內時，照上面的方式另外執行；結束碼取第一個非 0 的。紀錄的用途是 `map-fallback`，並記下觸發的檔案（`trigger_files`）；沿用上次結果時寫在沿用紀錄裡。被觸發時把缺的檔案補進對照表；審查者核對對照表的變更。
 - **選太多就跑整套**（設了 `affected.full_suite_share` 才有）：某套整套（`cwd` 不是 `.`）目錄內選出的測試檔，超過該目錄測試檔數乘上這個比例時，不跑那些測試，改經閘門跑（或沿用）那一套整套，輸出寫明選了幾個、目錄共有幾個與比例。目錄的測試檔數是該目錄現存的測試檔：檔名像測試（`test_*.py`、`*_test.py`、`*_test.go`、`*.test.ts`／`*.spec.js` 這類）或符合對照表 `tests` 樣式的檔案，再加上選出的。紀錄的用途是 `large-selection`，另記 `selected_tests`、`suite_tests`（目錄測試檔數）與 `share`。已因退回整套而跑的目錄不再判斷；沒設時照舊只跑選出的測試。
+
+### 合併前受影響測試（`--purpose pre-merge`）
+
+分支要合併進整合分支前，對最終版本跑一次：
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py affected --purpose pre-merge
+```
+
+- 在目前工作區挑選並執行，挑法、沿用與一般 `affected` 相同；`--base` 可省略（預設同上）。有沒提交的改動時照樣測並提醒先提交，因為合併進去的內容不會包含它們。
+- 和合併後一樣產生執行編號並寫一筆總結紀錄（`purpose: "pre-merge"`，欄位同下表），各組受影響測試的紀錄 `purpose` 也是 `pre-merge`。合併後的執行靠內容指紋找到這些紀錄並沿用內容沒變的組。
 
 ### 合併後受影響測試（`--purpose post-merge`）
 
@@ -204,6 +219,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批
 - **整體通過**（`passed: true`）只在以下全部成立時：每一組結束碼都是 0（失敗重跑後通過也算 0）、沒有被中斷、整次執行前後檢出的內容沒變（檢出的 `HEAD` 與 tree 都沒變，且沒有任何一組紀錄標為內容改變）。任一組失敗、被中斷（Ctrl-C 或 `kill`，總結照寫，閘門以 128＋訊號編號結束）或內容改變都算失敗。
 - 沒有選出任何測試（例如只改文件）時，仍寫總結，整體算通過，`nothing_selected` 為 `true`。
 - 退回整套的那幾套，同內容已有通過紀錄時照常沿用，總結的該組記下被沿用的紀錄（`reused`）。
+- 受影響測試與檢查清單照上面的同內容沿用：合併前紀錄（或更早的受影響紀錄）內容指紋相同的組直接沿用，只跑其餘的；總結裡被沿用的每筆紀錄各列一組，`reused` 指向它。全部沿用時仍寫總結，整體算通過。
 - 結束碼：有一組失敗時取第一個失敗組的結束碼；各組都是 0（或沒有選出測試）但內容改變時為 1。
 
 總結紀錄的欄位（給讀紀錄的程式，例如預先授權的部署檢查）：
@@ -211,14 +227,14 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批
 | 欄位 | 內容 |
 | ---- | ---- |
 | `kind` | 固定 `"affected-summary"` |
-| `purpose` | 固定 `"post-merge"` |
+| `purpose` | `"post-merge"` 或 `"pre-merge"` |
 | `run_id` | 執行編號，與這次各組紀錄的 `run_id` 相同 |
 | `repo` | 執行指令時的 repo 根目錄（原工作區的絕對路徑，不是暫時檢出） |
 | `base` | 起點的完整提交（`--base` 解析後的 40 碼） |
 | `commit` | 開跑時 `HEAD` 的完整提交（目標提交） |
 | `tree` | 暫時檢出開跑時的 tree，通常等於 `git rev-parse <commit>^{tree}`；要確認測的就是某個提交，比對這兩者 |
 | `changed_files` | 起點到 `commit` 的改動檔（repo 相對路徑，排序） |
-| `groups` | 每一組，依執行順序：`kind`（`check`、`affected` 或 `full-suite`）、`dir`（執行目錄，repo 相對，根目錄為 `.`）、`command`、`tests`（`affected` 組選出的測試，repo 相對；其餘為 `null`）、`exit_code`（失敗重跑後的結果）、`fingerprint`（該組的指紋）、`flaky`（是否靠失敗重跑才通過）、`content_changed`、`reused`（沿用時是被沿用那筆的 `time`、`agent`、`purpose`、`fingerprint`，否則 `null`）、`not_run`（準備目錄失敗而沒跑時的原因，否則 `null`）、`interrupted`（這組執行中被中斷時為 `true`，`exit_code` 為 `null`）。被中斷後還沒開始的組不列出 |
+| `groups` | 每一組，依執行順序：`kind`（`check`、`affected` 或 `full-suite`）、`dir`（執行目錄，repo 相對，根目錄為 `.`）、`command`、`tests`（`affected` 組選出的測試，repo 相對；其餘為 `null`）、`exit_code`（失敗重跑後的結果）、`fingerprint`（該組的指紋）、`flaky`（是否靠失敗重跑才通過）、`content_changed`、`reused`（沿用時是被沿用那筆的 `time`、`agent`、`purpose`、`fingerprint`、`run_id`，否則 `null`）、`not_run`（準備目錄失敗而沒跑時的原因，否則 `null`）、`interrupted`（這組執行中被中斷時為 `true`，`exit_code` 為 `null`）。被中斷後還沒開始的組不列出 |
 | `nothing_selected` | 沒有選出任何測試時為 `true` |
 | `interrupted` | 被中斷時為 `true` |
 | `content_changed` | 執行中內容改變時為 `true` |
@@ -436,7 +452,7 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 | 紀錄、名額、鎖與整理狀態 | `$XDG_STATE_HOME/suite-gate/`（預設 `~/.local/state/suite-gate/`） | 環境變數 `SUITE_GATE_STATE_DIR` |
 | 設定 | `$XDG_CONFIG_HOME/suite-gate/config.json`（預設 `~/.config/suite-gate/config.json`） | 環境變數 `SUITE_GATE_CONFIG` |
 
-整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用、用途（`purpose`：`post-merge`、`release`、`map-fallback`、`large-selection`、`reason`、`background` 或 `null`）與自填原因（`purpose_reason`）、合併後受影響測試的執行編號（`run_id`，只有那次執行的紀錄才有）、預約量的鍵 `profile_key`（`repo`、`rel_cwd`、`command`，不在 Git 工作區時為 `null`），以及這次的用量 `profile`：
+整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用、用途（`purpose`：`pre-merge`、`post-merge`、`release`、`map-fallback`、`large-selection`、`reason`、`background` 或 `null`）與自填原因（`purpose_reason`）、帶用途的受影響測試的執行編號（`run_id`，只有那次執行的紀錄才有）、預約量的鍵 `profile_key`（`repo`、`rel_cwd`、`command`，不在 Git 工作區時為 `null`），以及這次的用量 `profile`：
 
 | 欄位 | 意思 |
 | ---- | ---- |
@@ -458,7 +474,7 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 - `pytest`：只在登記指令帶 `--durations=0`（寫在指令文字，或寫在它執行的 package.json script 傳給 pytest 的參數）時記；只寫在 pytest 設定（例如 `addopts`）時不記。從「slowest durations」段落（`--durations=N` 印的是 `slowest N durations`，不記）把每一行的 setup／call／teardown 秒數依檔案（node id 的 `::` 之前，相對於 rootdir）加總。沒加 `-vv` 時 pytest 隱藏 0.005 秒以下的項目，加總會略少。
 - `unittest`：預設輸出沒有逐案耗時，不記，只有整套的 `duration_s`。
 
-對照表退回整套另有 `trigger_files`。受影響測試的紀錄標 `kind: "affected"`，另有 `base`、`changed_files`、`selected_tests` 與 `why`（每個測試被選的原因），一律不可沿用。帶用途的執行沿用上次結果時的沿用紀錄標 `kind: "reuse"`，另有 `reused_fingerprint`（沒有 `fingerprint`）、`reused_time`、`reused_agent`。合併後受影響測試的總結紀錄標 `kind: "affected-summary"`，欄位見[合併後受影響測試](#合併後受影響測試--purpose-post-merge)。
+對照表退回整套另有 `trigger_files`。受影響測試的紀錄標 `kind: "affected"`，另有 `base`、`changed_files`、`selected_tests`、`why`（每個測試被選的原因）與 `test_fingerprints`（檢查清單為 `check_fingerprint`），不會被當成整套的通過紀錄，只依[同內容沿用](#受影響測試與對照表)給之後的受影響測試沿用。帶用途的執行沿用上次結果時的沿用紀錄標 `kind: "reuse"`，另有 `reused_fingerprint`（沒有 `fingerprint`）、`reused_time`、`reused_agent`。合併後受影響測試的總結紀錄標 `kind: "affected-summary"`，欄位見[合併後受影響測試](#合併後受影響測試--purpose-post-merge)。
 
 執行中的測試，`status` 顯示目前的 CPU 核數與記憶體，`status --json` 在 `running` 每一筆的 `usage`（`cpu_cores`、`mem_bytes`）。CPU 核數取自閘門最近一次取樣，閘門不在時為空；記憶體讀群組當下的值。名額持有者紀錄有資源群組路徑 `cgroup` 與測試主工作階段 `sid`。
 

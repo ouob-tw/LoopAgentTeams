@@ -1330,15 +1330,16 @@ class AffectedTests(AffectedCase):
         self.assertIn('--purpose post-merge', result.stderr)
         self.assertEqual(self.full_runs(), [])
 
-    def test_affected_runs_do_not_take_or_wait_for_a_host_slot_and_are_never_reused(self):
+    def test_affected_runs_do_not_take_or_wait_for_a_host_slot_nor_count_as_suite_passes(self):
         self.set_config(max_slots=1)
         hold, release = self.blocker('hold')
         self.wait_until(lambda: len(self.status()['running']) == 1, message='blocker running')
-        self.touch('src/app.py')
-        for _ in range(2):
+        for text in ('one\n', 'two\n'):
+            self.touch('src/app.py', text)
             result = self.gate('affected')
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(self.ran()), 2)
+        self.assertFalse(any(r['reusable'] for r in self.records() if r.get('kind')))
         release.touch()
         self.finish(hold)
 
