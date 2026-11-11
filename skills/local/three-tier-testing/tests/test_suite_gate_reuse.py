@@ -111,6 +111,43 @@ class ReuseTests(AffectedCase):
         self.assertEqual(self.gate('affected').returncode, 0)
         self.assertEqual(self.ran(), [('.', ['tests/test_app.py'])] * 2)
 
+    def large(self):
+        """Root-only full suite over six test files, with affected.full_suite_share 0.5."""
+        for name in ('a', 'b', 'c'):
+            self.touch(f'web/tests/{name}.test.ts', '')
+        del self.registry['full_suites'][1]
+        self.registry['affected']['full_suite_share'] = 0.5
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'six tests, share 0.5')
+
+    def test_reused_tests_do_not_count_toward_the_share_and_the_rest_over_it_runs_the_suite(self):
+        self.large()
+        self.touch('src/util.py')
+        self.assertEqual(self.gate('affected', '--base', 'HEAD').returncode, 0)
+        self.touch('web/src/page.ts')
+        result = self.gate('affected', '--base', 'HEAD', '--purpose', 'pre-merge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('the selection covers 4 of 6 test files in .', result.stderr)
+        self.assertEqual(self.full_runs(), ['root'])
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py', 'tests/test_util.py'])])
+        [summary] = self.summaries('pre-merge')
+        self.assertEqual([(g['kind'], bool(g['reused'])) for g in summary['groups']],
+                         [('affected', True), ('full-suite', False)])
+
+    def test_reused_tests_leave_a_rest_under_the_share_that_runs_alone(self):
+        self.large()
+        self.touch('web/tests/a.test.ts')
+        self.touch('web/tests/b.test.ts')
+        self.assertEqual(self.gate('affected', '--base', 'HEAD').returncode, 0)
+        self.touch('src/util.py')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('the selection covers', result.stderr)
+        self.assertEqual(self.full_runs(), [])
+        self.assertEqual(self.ran(), [('web', ['tests/a.test.ts', 'tests/b.test.ts']),
+                                      ('.', ['tests/test_app.py', 'tests/test_util.py'])])
+
     def batch(self):
         """The feature branch commits src/util.py and passes `affected --purpose pre-merge`;
         main is the start of the batch. (start commit, pre-merge summary)"""
