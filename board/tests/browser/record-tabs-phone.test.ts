@@ -35,11 +35,12 @@ beforeAll(async () => {
 	// A controller in a Herdr tab, so its page has all seven tabs, with a report to open; and an agent.
 	const lead = fixture.bound('lat', 'lead', { session_id: 's-lead' });
 	fixture.report('s-lead', { tag: 'DONE', summary: '交付第一張票', hcom_name: 'lead', workspace: lead.workspace });
-	// A ledger of one item, so its tab shows a count like the others.
+	// A ledger of one ticket, so its tab shows a count like the others.
 	const item = { id: 1, ticket: '#301', stage_label: '實作', status_label: '進行中', agent: 'lead-impl', estimate: null, deadline: null, late_minutes: {}, history: [{ at: '2026-10-24T08:00:00Z' }] };
+	const ticket = { key: 'o/r#301', number: 301, repo: 'o/r', title: '', state: 'in_progress', steps: [], now: '', items: [1] };
 	fixture.setHelper({
 		output: { controllers: [lead] },
-		ledgers: { 's-lead': { status: 'ok', ledger: { updated_at: '2026-10-24T08:00:00Z', items: [item] } } }
+		ledgers: { 's-lead': { status: 'ok', ledger: { updated_at: '2026-10-24T08:00:00Z', items: [item], tickets: [ticket] } } }
 	});
 	fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'listening', launch_context: { pane_id: 'wA:p-s-lead' } }] });
 	const agents = [herdrAgent('s-lead'), herdrAgent('s-plain')];

@@ -1,62 +1,106 @@
-// A controller's work ledger as the page shows it, from one entry of the helper's `board ledger`,
-// and how late an item is written.
+// A controller's work ledger as the page shows it, from one entry of the helper's `board ledger`:
+// its ticket lines, the rows each opens to, and how times and lateness are written.
 import { expect, test } from 'bun:test';
-import { lateText, ledgerFrom } from '../../src/lib/board/ledger.ts';
+import { countsText, lateText, ledgerFrom, minutesText, rowMinutes, ticketHref, ticketTime, type LedgerView } from '../../src/lib/board/ledger.ts';
+import { item, ticketLedger, fiveStepLedger } from '../fixtures/ledger-tickets.ts';
 
-/** One item as `lat-ledger show --json` prints it. */
-const item = (overrides: Record<string, unknown> = {}) => ({
-	id: 1,
-	ticket: '#302',
-	stage: 'impl',
-	stage_label: '實作',
-	status: 'in_progress',
-	status_label: '進行中',
-	agent: 'tevu-impl302-zaga',
-	estimate: '2026-10-24T12:00:00Z',
-	deadline: '2026-10-24T13:00:00Z',
-	late_minutes: { estimate: 125, deadline: 65 },
-	history: [{ at: '2026-10-24T10:00:00Z' }, { at: '2026-10-24T11:00:00Z' }],
-	...overrides
-});
+const ok = (ledger: unknown) => {
+	const view = ledgerFrom({ status: 'ok', ledger });
+	if (view.state !== 'ok') throw new Error(`not read: ${JSON.stringify(view)}`);
+	return view as Extract<LedgerView, { state: 'ok' }>;
+};
 
-test('a read ledger keeps each row the page shows, with its latest change and lateness', () => {
-	const view = ledgerFrom({ status: 'ok', ledger: { updated_at: '2026-10-24T11:00:00Z', now: '2026-10-24T14:05:00Z', items: [item()] } });
+test('each ticket becomes one line with its link, title, steps, now, settings and time', () => {
+	const view = ok(ticketLedger('/w'));
 
-	expect(view).toEqual({
-		state: 'ok',
-		updatedAt: '2026-10-24T11:00:00Z',
-		items: [
-			{
-				id: 1,
-				ticket: '#302',
-				stage: '實作',
-				status: '進行中',
-				agent: 'tevu-impl302-zaga',
-				estimate: '2026-10-24T12:00:00Z',
-				late: { estimate: 125 },
-				updatedAt: '2026-10-24T11:00:00Z'
-			}
-		]
+	expect(view.tickets.map((ticket) => ticket.ref)).toEqual(['#533', '#534', '#535', '#540', '#541', '#536', 'ledger-fields']);
+	const [inProgress, deployed] = view.tickets;
+	expect(inProgress).toMatchObject({
+		href: 'https://github.com/ouob-tw/LoopAgentTeams-work/issues/533',
+		title: '主控職責文字顯示連結',
+		state: 'in_progress',
+		now: '驗收進行中・zapi-t533-qa・「第三次長度修正仍失敗」・超過預計 12 分',
+		settings: [{ label: '實作', text: 'opus-5.5・medium' }, { label: '驗收', text: 'gpt-6.1-terra・medium' }],
+		minutes: 48,
+		running: true,
+		reworkRounds: 3,
+		rows: [1]
 	});
+	expect(inProgress.steps.map((step) => step.state)).toEqual(['done', 'done', 'done', 'active', 'pending', 'pending']);
+	expect(deployed.rows).toEqual([2, 3]);
+	// A text item is its own line, its text the reference, no link.
+	expect(view.tickets.at(-1)).toMatchObject({ ref: 'ledger-fields', href: null, title: '' });
 });
 
-test('an item not late, unassigned or with no history has nothing made up', () => {
-	const view = ledgerFrom({ status: 'ok', ledger: { items: [item({ agent: null, estimate: null, late_minutes: {}, history: [] })] } });
+test('the summary counts tickets per state in lat-ledger order', () => {
+	const view = ok(ticketLedger('/w'));
 
-	expect(view).toMatchObject({ state: 'ok', updatedAt: null, items: [{ agent: null, estimate: null, late: {}, updatedAt: null }] });
+	expect(countsText(view)).toBe('7 張票：1 張進行中、1 張受阻、1 張已上線、2 張已合併、1 張已結案、1 張已取消');
 });
 
-test('no ledger, a failed read and output not in shape each say so', () => {
+test('a project without deploy history has five steps', () => {
+	expect(ok(fiveStepLedger('/w')).tickets[0].steps.map((step) => step.label)).toEqual(['草稿', '實作', '審查', '驗收', '合併']);
+});
+
+test('numbers alone in one repository; the repository name too when two could share a number', () => {
+	const ledger = ticketLedger('/w');
+	ledger.tickets[1] = { ...ledger.tickets[1], key: 'ouob-tw/other#534', repo: 'ouob-tw/other' };
+
+	expect(ok(ledger).tickets.slice(0, 2).map((ticket) => ticket.ref)).toEqual(['LoopAgentTeams-work#533', 'other#534']);
+});
+
+test('a row keeps its reasons, progress, settings, times and evidence', () => {
+	const view = ok(ticketLedger('/w', '/w/.lat/runs/r.md'));
+	const rows = new Map(view.items.map((row) => [row.id, row]));
+
+	expect(rows.get(4)).toMatchObject({ status: '受阻', statusKey: 'blocked', blockedReason: '等使用者決定 ZAPI-524-3', progress: '前兩項已完成', settings: 'opus-5.5・high', closedAt: null });
+	expect(rows.get(6)).toMatchObject({ statusKey: 'cancelled', cancelReason: '併入 #536 的下一版', closedAt: '2026-11-12T09:20:00Z' });
+	expect(rows.get(2)!.evidence).toEqual({
+		commits: [{ text: '42f5bed0c0ffee12345678901234567890abcdef', href: null }],
+		files: [{ text: '/w/.lat/runs/r.md', href: null }],
+		gates: ['e52bc2cab9bcd01cb8fa06eccfb0618d']
+	});
+	expect(rows.get(1)!.late).toEqual({ estimate: 12 });
+});
+
+test('an old row without the newer fields reads with blanks', () => {
+	const view = ok({ items: [{ id: 1, ticket: '#302', stage_label: '實作', status_label: '進行中', late_minutes: { deadline: 65 }, history: [] }], tickets: [] });
+
+	expect(view.items[0]).toMatchObject({ agent: null, settings: '', progress: null, startedAt: null, closedAt: null, late: {}, updatedAt: null, evidence: { commits: [], files: [], gates: [] } });
+	expect(view.counts).toEqual([]);
+});
+
+test('no ledger, a failed read, output not in shape and a lat-ledger without tickets each say so', () => {
 	expect(ledgerFrom({ status: 'none' })).toEqual({ state: 'none' });
 	expect(ledgerFrom({ status: 'error', reason: 'seal mismatch' })).toEqual({ state: 'error', reason: 'seal mismatch' });
 	expect(ledgerFrom({ status: 'error' })).toEqual({ state: 'error', reason: '輔助工具的輸出不是預期的格式' });
-	expect(ledgerFrom({ status: 'ok', ledger: { items: [{ id: 'one' }] } })).toEqual({ state: 'error', reason: '總表的輸出不是預期的格式' });
+	expect(ledgerFrom({ status: 'ok', ledger: { items: [{ id: 'one' }], tickets: [] } })).toEqual({ state: 'error', reason: '總表的輸出不是預期的格式' });
 	expect(ledgerFrom({ status: 'ok' })).toEqual({ state: 'error', reason: '總表的輸出不是預期的格式' });
+	expect(ledgerFrom({ status: 'ok', ledger: { items: [] } })).toMatchObject({ state: 'error', reason: expect.stringContaining('更新 LAT') });
+	expect(ledgerFrom({ status: 'ok', ledger: { items: [], tickets: [{ key: '#1', steps: [{ key: 'impl', state: 'odd' }], items: [] }] } })).toMatchObject({ state: 'error' });
 });
 
-test('only the minutes past the estimate show, as lat-ledger writes them; the deadline never', () => {
+test('times as lat-ledger writes them; rework only past zero; lateness by the estimate only', () => {
+	expect(minutesText(48)).toBe('48 分');
+	expect(minutesText(125)).toBe('2 小時 5 分');
+	expect(ticketTime({ minutes: 48, running: true, reworkRounds: 3 })).toBe('已 48 分・修 3 輪');
+	expect(ticketTime({ minutes: 58, running: false, reworkRounds: 0 })).toBe('58 分');
+	expect(ticketTime({ minutes: null, running: false, reworkRounds: 0 })).toBe('');
 	expect(lateText({ estimate: 125 })).toBe('超過預計 125 分');
 	expect(lateText({})).toBe('');
-	const [row] = (ledgerFrom({ status: 'ok', ledger: { items: [item({ late_minutes: { deadline: 65 } })] } }) as { items: { late: object }[] }).items;
-	expect(row.late).toEqual({});
+});
+
+test('a row has taken from its start to its close, or to now while open', () => {
+	const now = Date.parse('2026-11-12T10:00:00Z');
+	const [open, closed] = ok({ items: [item(1, '1'), item(2, '2', { status: 'done', closed: '2026-11-12T09:51:00Z' })], tickets: [] }).items;
+
+	expect(rowMinutes(open, now)).toBe(60);
+	expect(rowMinutes(closed, now)).toBe(51);
+	expect(rowMinutes({ ...open, startedAt: null }, now)).toBeNull();
+});
+
+test('only owner/repo#N tickets link to their tracker page', () => {
+	expect(ticketHref('o/r#5')).toBe('https://github.com/o/r/issues/5');
+	expect(ticketHref('#5')).toBeNull();
+	expect(ticketHref('ledger-fields')).toBeNull();
 });

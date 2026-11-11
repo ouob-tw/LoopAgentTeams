@@ -1,8 +1,10 @@
 // A controller's work ledger on its page: read through the helper's `board ledger` (which runs
 // `lat-ledger show --json`), never from the file; no ledger and a failed read each say so on that
-// controller alone, and a write to the ledger file reads it in again.
+// controller alone, a write to the ledger file reads it in again, and a report file the ledger
+// names is served to a signed-in page only.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { ticketLedger } from '../fixtures/ledger-tickets.ts';
 import { join } from 'node:path';
 import { named, startFixture, until, type Fixture } from '../harness.ts';
 
@@ -19,7 +21,8 @@ const shown = (ticket: string, late: Record<string, number>) => ({
 	status: 'ok',
 	ledger: {
 		updated_at: '2026-10-24T11:00:00Z',
-		items: [{ id: 1, ticket, stage_label: '實作', status_label: '進行中', agent: 'a', estimate: null, deadline: '2026-10-24T10:00:00Z', late_minutes: late, history: [] }]
+		items: [{ id: 1, ticket, stage_label: '實作', status_label: '進行中', agent: 'a', estimate: null, deadline: '2026-10-24T10:00:00Z', late_minutes: late, history: [] }],
+		tickets: []
 	}
 });
 
@@ -87,4 +90,25 @@ test('a write to the ledger file is read in without a manual refresh', async () 
 	} finally {
 		watch.close();
 	}
+});
+
+test('a report file the ledger names opens from the page, for a signed-in page only', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	const report = join(luna.workspace, '.lat/runs/issue-534/report.md');
+	mkdirSync(join(luna.workspace, '.lat/runs/issue-534'), { recursive: true });
+	writeFileSync(report, '# report\n');
+	writeFileSync(join(luna.workspace, 'secret.md'), 'not evidence');
+	fixture.setHelper({ output: { controllers: [luna] }, ledgers: { [luna.session_id]: { status: 'ok', ledger: ticketLedger(luna.workspace, report) } } });
+
+	const snapshot = await fixture.refresh(cookie);
+
+	const ledger = named(snapshot, 'luna')!.ledger;
+	const href = ledger.state === 'ok' ? ledger.items.find((row) => row.id === 2)!.evidence.files[0].href : null;
+	expect(href).toBe(`/api/ledger/evidence?path=${encodeURIComponent(report)}`);
+	const opened = await fixture.fetch(href!, { cookie });
+	expect(opened.status).toBe(200);
+	expect(await opened.text()).toBe('# report\n');
+	expect((await fixture.fetch(href!)).status).not.toBe(200);
+	const other = await fixture.fetch(`/api/ledger/evidence?path=${encodeURIComponent(join(luna.workspace, 'secret.md'))}`, { cookie });
+	expect(other.status).toBe(404);
 });

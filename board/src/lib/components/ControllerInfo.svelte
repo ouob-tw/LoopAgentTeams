@@ -113,7 +113,7 @@
 		{ id: 'transcript', label: '對話紀錄', count: null },
 		{ id: 'screen', label: '終端', count: null },
 		{ id: 'reports', label: '回報', count: reports.length },
-		{ id: 'ledger', label: '工作總表', count: controller.ledger.state === 'ok' ? controller.ledger.items.length : null },
+		{ id: 'ledger', label: '工作總表', count: controller.ledger.state === 'ok' ? controller.ledger.tickets.length : null },
 		{ id: 'sent', label: '送出紀錄', count: messaging.sent[controller.id]?.length ?? null },
 		{ id: 'preauth', label: '預先授權', count: null },
 		...(agent ? [{ id: 'log', label: '操作紀錄', count: agentControl.logCount(agent.id) } as const] : [])
