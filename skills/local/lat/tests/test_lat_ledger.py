@@ -585,6 +585,33 @@ class DoneTests(LedgerCase):
         self.assertEqual(self.item(item)['evidence'], {'gate': [FP], 'file': [str(report)]})
         self.assertIn('- status：completed\n', card.read_text())
 
+    def test_a_rerun_only_gate_record_needs_a_review_result_that_names_it(self):
+        rerun_fp = 'abad1dea' * 8
+        with (self.gate_state / 'ledger.jsonl').open('a') as records:
+            records.write(json.dumps({'fingerprint': FP, 'exit_code': 0, 'reusable': True}) + '\n')
+            records.write(json.dumps({
+                'fingerprint': rerun_fp, 'exit_code': 0, 'reusable': True, 'rerun_only': True,
+                'flaky': [{'file': 'web/tests/a.test.ts', 'tests': ['breaks']}]}) + '\n')
+        first_try = self.started(evidence='gate')
+        self.ok('done', str(first_try), '--gate', FP, by='impl')
+        self.assertNotIn('rerun_acks', self.item(first_try))
+        item = self.started(evidence='gate')
+        error = self.fails('done', str(item), '--gate', rerun_fp, by='impl')
+        self.assertIn(f'gate record {rerun_fp[:12]} PASSED ONLY ON RERUN (failed first: '
+                      'web/tests/a.test.ts)', error)
+        self.assertIn('--rerun-ack <review result>', error)
+        review = self.root / 'review.md'
+        review.write_text('Review: looked at the failures, a real timing race in the test.\n')
+        self.assertIn('PASSED ONLY ON RERUN', self.fails(
+            'done', str(item), '--gate', rerun_fp, '--rerun-ack', str(review), by='impl'))
+        review.write_text(f'Rerun-only record {rerun_fp[:12]}: looked at it, test race only.\n')
+        self.ok('done', str(item), '--gate', rerun_fp, '--rerun-ack', str(review), by='impl')
+        self.assertEqual(self.item(item)['rerun_acks'], [str(review)])
+        self.exempt_qa()
+        self.ok('check')
+        review.write_text('rewritten without the record\n')
+        self.assertIn('PASSED ONLY ON RERUN', self.run_ledger('check').stdout)
+
     def test_blocked_item_cannot_close(self):
         item = self.started()
         self.ok('block', str(item), '--reason', 'x')

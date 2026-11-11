@@ -256,7 +256,14 @@ class PostMergeRerunTests(RerunCase):
         self.assertEqual((group['exit_code'], group['rerun']['first_exit_code']), (0, 1))
         self.assertTrue(summary['passed'])
         self.assertEqual([(g['exit_code'], g['flaky']) for g in summary['groups']], [(0, True)])
-        self.assertIn('affected in web: PASS after rerun', self.gate('status').stdout)
+        status = self.gate('status').stdout
+        self.assertIn('affected in web: PASS PASSED ONLY ON RERUN (failed first: '
+                      'web/tests/a.test.ts, web/tests/sub/b.test.ts)', status)
+        self.assertIn('(post-merge summary: 1 group(s) PASSED ONLY ON RERUN)', status)
+        self.assertIn('PASS (affected tests) PASSED ONLY ON RERUN', status)
+        self.assertEqual(summary['rerun_only'], [{
+            'kind': 'affected', 'dir': 'web', 'fingerprint': group['fingerprint'],
+            'failed_first': ['web/tests/a.test.ts', 'web/tests/sub/b.test.ts']}])
 
 
 if __name__ == '__main__':

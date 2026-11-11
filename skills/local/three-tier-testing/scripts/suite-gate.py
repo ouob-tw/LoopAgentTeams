@@ -1963,8 +1963,9 @@ class Gate:
                 changed = fingerprint(self.cwd, self.argv)['fingerprint'] != info['fingerprint']
                 if code == 0:
                     flaky = [{'file': path, 'tests': tests} for path, tests in names.items()]
-                    warn('the rerun passed, so the run counts as passed; these tests failed '
-                         'first and passed on the rerun (flaky): ' + '; '.join(
+                    warn('PASSED ONLY ON RERUN: the rerun passed, so the run counts as passed '
+                         'but is marked rerun-only for a reviewer to look at; these tests '
+                         'failed first: ' + '; '.join(
                              f"{f['file']} ({', '.join(f['tests'])})" for f in flaky))
                 else:
                     warn(f'the rerun failed too (exit {code}): the run counts as failed')
@@ -1979,7 +1980,7 @@ class Gate:
             'profile_key': info and info['profile_key'], 'reaped': reaped,
         }
         if rerun is not None:
-            record.update(rerun=rerun, flaky=flaky or [])
+            record.update(rerun=rerun, flaky=flaky or [], rerun_only=bool(flaky))
         full = not self.extra.get('kind')
         files = full and scan.file_seconds(self.cwd, info and info['repo'],
                                            pytest=pytest_durations_0(self.argv, self.cwd))
@@ -3304,6 +3305,8 @@ def write_summary(root, checkout, run_id, base, changed, start, results, *, noth
         'repo': str(root), 'base': base, 'commit': start[0], 'tree': start[1],
         'changed_files': changed, 'groups': results, 'nothing_selected': nothing_selected,
         'interrupted': interrupted, 'content_changed': changed_content, 'passed': passed,
+        'rerun_only': [{'kind': r['kind'], 'dir': r['dir'], **r['rerun_only']}
+                       for r in results if r.get('rerun_only')],
         'exit_code': 0 if passed else 1, 'reusable': False, 'agent': agent_name(),
         'time': started_at, 'finished': now_iso()}
     append_record(record)
@@ -3317,6 +3320,10 @@ def write_summary(root, checkout, run_id, base, changed, start, results, *, noth
     warn(f"{purpose} summary {run_id[:12]}: {'passed' if passed else 'FAILED'} "
          f'({len(results)} group(s), {reused} reused, base {base[:12]}, '
          f'commit {(start[0] or "-")[:12]})')
+    for group in record['rerun_only']:
+        warn(f"{purpose} summary: {group['kind']} in {group['dir']} "
+             f"{rerun_only_text(group['failed_first'])}, fingerprint {group['fingerprint']}; "
+             'a reviewer must look at it before the merge')
     return record
 
 
@@ -3473,12 +3480,27 @@ def group_result(kind, directory, command, code, gate=None, tests=None, not_run=
         'fingerprint': (gate.me['fingerprint'] if gate
                         else earlier.get('fingerprint') if earlier else None),
         'flaky': bool(record and record.get('flaky')),
+        'rerun_only': ({'fingerprint': record.get('fingerprint'),
+                        'failed_first': failed_first(record)}
+                       if record and failed_first(record) else None),
         'content_changed': bool(record and record.get('content_changed')),
         'reused': None if reused is None else {
             'time': reused.get('time'), 'agent': reused.get('agent'),
             'purpose': reused.get('purpose'), 'fingerprint': reused.get('fingerprint'),
             'run_id': reused.get('run_id')},
         'not_run': not_run, 'interrupted': interrupted}
+
+
+def failed_first(record):
+    """The test files of a pass only on the automatic rerun (`rerun_only`; older records
+    carry only `flaky`), which failed at the first try; [] for any other record."""
+    if record.get('exit_code') != 0 or not (record.get('rerun_only') or record.get('flaky')):
+        return []
+    return [f.get('file') for f in record.get('flaky') or []]
+
+
+def rerun_only_text(files):
+    return f"PASSED ONLY ON RERUN (failed first: {', '.join(files)})"
 
 
 def is_gate_config(path):
@@ -4241,6 +4263,8 @@ def cmd_status(as_json, fp_prefix, limit):
         elif r.get('kind') == 'affected':
             result = ('PASS' if r.get('exit_code') == 0 else f"FAIL exit {r.get('exit_code')}") \
                 + ' (affected tests)'
+        if r.get('kind') != 'reuse' and failed_first(r):
+            result += ' ' + rerun_only_text(failed_first(r))
         rerun = f"  rerun: {r['rerun_reason']}" if r.get('rerun_reason') else ''
         purpose = f"  purpose: {describe_purpose(r)}" if r.get('purpose') else ''
         print(f"  {r.get('time')}  {result}  fp {(record_fingerprint(r) or '-')[:12]}  "
@@ -4284,6 +4308,9 @@ def print_affected_summary(r):
     notes = [why for why, on in (('nothing selected', r.get('nothing_selected')),
                                  ('interrupted', r.get('interrupted')),
                                  ('content changed', r.get('content_changed'))) if on]
+    rerun_only = r.get('rerun_only') or []
+    if rerun_only:
+        notes.append(f'{len(rerun_only)} group(s) PASSED ONLY ON RERUN')
     print(f"  {r.get('time')}  {'PASS' if r.get('passed') else 'FAIL'} ({r.get('purpose')} summary"
           f"{': ' + ', '.join(notes) if notes else ''})  run {(r.get('run_id') or '-')[:12]}  "
           f"{r.get('agent')}  {r.get('repo')}  base {(r.get('base') or '-')[:12]}  "
@@ -4300,7 +4327,11 @@ def print_affected_summary(r):
                        + (f" (run {run[:12]})" if run else ''))
         else:
             outcome = 'PASS' if g.get('exit_code') == 0 else f"FAIL exit {g.get('exit_code')}"
-            outcome += ' after rerun' if g.get('flaky') and g.get('exit_code') == 0 else ''
+            if g.get('rerun_only'):
+                outcome += (f" {rerun_only_text(g['rerun_only']['failed_first'])}  "
+                            f"fp {(g['rerun_only']['fingerprint'] or '-')[:12]}")
+            elif g.get('flaky') and g.get('exit_code') == 0:
+                outcome += ' after rerun'  # summaries written before rerun_only
         print(f"    {g.get('kind')} in {g.get('dir')}: {outcome}  {g.get('command')}")
 
 

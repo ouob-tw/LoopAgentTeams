@@ -143,7 +143,7 @@ docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --
 - **發布前**：推送 main 或版本標籤前，每一套登記的整套測試須有通過紀錄（`--purpose release`，或沿用同內容已有的整套通過紀錄）；合併後受影響測試的總結不算整套通過。推送前檢查的做法見 [references/suite-gate.md](references/suite-gate.md)。
 - **背景整套**：裝了背景計時器的專案，每小時對本機整合分支最新內容補跑缺通過紀錄、且距該套上次通過超過一天的整套（用途 `background`），不擋任何人；推送 main 時直接沿用同內容的通過紀錄。真的失敗時在 tracker 開 `suite-failure` 票（同一套只開一張，之後留言）；沒設 tracker 時由 `status` 列出。詳見 [references/suite-gate.md](references/suite-gate.md#背景整套background)。
 - **票內確有必要跑整套**（環境改變、查偶發失敗等）：用 `run --reason "<原因>"` 放行，原因會記進紀錄。
-- **失敗重跑**：經閘門的整套與受影響測試失敗時，閘門能確定只是幾個測試檔失敗（指令是單一測試指令、不超過 10 個檔案、沒有遇錯即停選項、輸出完整、沒有載入或建置錯誤）就自動用對照表的樣板只重跑那些檔案一次；通過就記為通過，並在紀錄的 `flaky` 與 `status` 列出這些時好時壞的測試，留待整理，不要當成已修好。不重跑時照原結果算失敗，原因印在輸出與紀錄。詳見 [references/suite-gate.md](references/suite-gate.md#失敗重跑)。
+- **失敗重跑**：經閘門的整套與受影響測試失敗時，閘門能確定只是幾個測試檔失敗（指令是單一測試指令、不超過 10 個檔案、沒有遇錯即停選項、輸出完整、沒有載入或建置錯誤）就自動用對照表的樣板只重跑那些檔案一次；通過就記為通過，但標為重跑才通過（`rerun_only`，輸出與 `status` 寫 `PASSED ONLY ON RERUN` 和第一次失敗的檔案），可能是真的退步，審查者看過才能合併；紀錄的 `flaky` 與 `status` 也列出這些時好時壞的測試，留待整理，不要當成已修好。不重跑時照原結果算失敗，原因印在輸出與紀錄。詳見 [references/suite-gate.md](references/suite-gate.md#失敗重跑)。
 
 沒有對照表的專案維持舊規則：每張票在該票審查都通過後的最終版本，經閘門跑一次整套。
 
