@@ -2,10 +2,12 @@
 	// A controller's work ledger: one line per ticket (its link and title, the progress strip,
 	// what it is doing now, what each stage ran on, its time), opened to show the rows that make
 	// it up with their evidence. In a narrow panel each line becomes a card read top to bottom.
-	// No ledger, or one that cannot be read, says so here only.
+	// Each line counts the problems found per stage, 甲 and 乙 standing out; an opened line lists
+	// them, and the bottom says which stage found how many. No ledger, or one that cannot be read,
+	// says so here only.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
-	import { countsText, lateText, minutesText, rowMinutes, ticketTime, type LedgerRow, type LedgerView } from '#lib/board/ledger.ts';
+	import { LEVELS, countsText, findingText, lateText, minutesText, rowMinutes, ticketTime, type LedgerProblem, type LedgerRow, type LedgerView } from '#lib/board/ledger.ts';
 
 	let { ledger }: { ledger: LedgerView } = $props();
 
@@ -15,6 +17,7 @@
 	const MARKS: Record<string, string> = { done: '✓', active: '●', pending: '○', skipped: '—' };
 
 	const rows = $derived(ledger.state === 'ok' ? new Map(ledger.items.map((row) => [row.id, row])) : new Map<number, LedgerRow>());
+	const problems = $derived(ledger.state === 'ok' ? new Map(ledger.problems.map((problem) => [problem.id, problem])) : new Map<string, LedgerProblem>());
 	const fileName = (path: string) => path.slice(path.lastIndexOf('/') + 1);
 	const rowTime = (row: LedgerRow) => {
 		// Counted to the read, as lat-ledger counts the ticket's time.
@@ -42,6 +45,7 @@
 				{#each ledger.tickets as ticket (ticket.key)}
 					{@const ticketRows = ticket.rows.flatMap((id) => rows.get(id) ?? [])}
 					{@const late = ticketRows.some((row) => row.late.estimate !== undefined)}
+					{@const ticketProblems = ticket.problems.flatMap((id) => problems.get(id) ?? [])}
 					<li class="ticket" data-state={ticket.state} class:late>
 						<details>
 							<summary>
@@ -58,7 +62,11 @@
 								<span class="models">
 									{#each ticket.settings as stage (stage.label)}<span class="model"><span class="stage">{stage.label}</span> {stage.text}</span>{/each}
 								</span>
-								<!-- #549 adds the findings per stage as a cell here. -->
+								{#if ticket.findings.length}
+									<span class="findings" aria-label="找到的問題">
+										{#each ticket.findings as entry (entry.stage)}<span class="finding" class:severe={entry.severe} class:none={entry.count === 0}>{findingText(entry)}</span>{/each}
+									</span>
+								{/if}
 								<span class="time">{ticketTime(ticket)}</span>
 							</summary>
 							<ul class="rows">
@@ -98,10 +106,37 @@
 									</li>
 								{/each}
 							</ul>
+							{#if ticketProblems.length}
+								<ul class="problems" aria-label="這張票的問題">
+									{#each ticketProblems as problem (problem.id)}
+										<li class="problem" data-level={problem.level}>
+											<span class="level">{problem.level}</span>
+											<span class="what">{problem.text}</span>
+											<span class="meta">{problem.stage}・{problem.finder}{#if problem.candidate}・第 {problem.candidate} 版{/if}{#if problem.at}・{time(problem.at)}{/if}{#if problem.caught}・測試抓到{/if}{#if problem.resolution}・{problem.resolution}{/if}</span>
+										</li>
+									{/each}
+								</ul>
+							{/if}
 						</details>
 					</li>
 				{/each}
 			</ul>
+		{/if}
+		{#if ledger.summary.length}
+			<table class="stage-summary">
+				<caption>哪個階段找出多少問題</caption>
+				<thead><tr><th scope="col">發現階段</th>{#each LEVELS as level (level)}<th scope="col">{level}</th>{/each}<th scope="col">合計</th><th scope="col">測試抓到</th></tr></thead>
+				<tbody>
+					{#each ledger.summary as entry (entry.stage)}
+						<tr class:severe={entry.severe}>
+							<th scope="row">{entry.label}</th>
+							{#each LEVELS as level (level)}<td data-level={level} class:hit={entry.levels[level] > 0}>{entry.levels[level]}</td>{/each}
+							<td>{entry.count}</td>
+							<td>{entry.caught}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 		{/if}
 	{/if}
 </section>
@@ -141,7 +176,7 @@
 	summary {
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr) auto;
-		grid-template-areas: 'ref ref time' 'steps now now' 'steps models models';
+		grid-template-areas: 'ref ref time' 'steps now now' 'steps models models' 'steps findings findings';
 		gap: 0.25rem 0.75rem;
 		align-items: start;
 		padding: 0.35rem 0.5rem 0.35rem 1.4rem;
@@ -157,6 +192,9 @@
 	}
 	.models {
 		grid-area: models;
+	}
+	.findings {
+		grid-area: findings;
 	}
 	.time {
 		grid-area: time;
@@ -308,11 +346,91 @@
 		border-color: var(--danger);
 	}
 
+	/* Problems found per stage: 0 muted, a stage with a 甲 or 乙 boxed and bold in the danger colour. */
+	.findings {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.15rem 0.6rem;
+		min-width: 0;
+	}
+	.finding {
+		white-space: nowrap;
+	}
+	.finding.none {
+		color: var(--muted);
+	}
+	.finding.severe {
+		color: var(--danger);
+		font-weight: bold;
+		border: 1px solid var(--danger);
+		padding: 0 0.3rem;
+	}
+	.problems {
+		list-style: none;
+		margin: 0 0.5rem 0.5rem 1.4rem;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+	}
+	.problem {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		gap: 0 0.5rem;
+	}
+	.problem .level {
+		grid-row: span 2;
+		font-weight: bold;
+	}
+	.problem[data-level='甲'] .level,
+	.problem[data-level='乙'] .level {
+		color: var(--danger);
+	}
+	.problem .what,
+	.problem .meta {
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.problem .meta {
+		color: var(--muted);
+	}
+
+	/* The bottom summary: one row per stage, a level with problems in it stands out. */
+	.stage-summary {
+		border-collapse: collapse;
+		margin-top: 0.4rem;
+		width: max-content;
+		max-width: 100%;
+	}
+	.stage-summary caption {
+		text-align: left;
+		font-weight: bold;
+		padding-bottom: 0.2rem;
+	}
+	.stage-summary th,
+	.stage-summary td {
+		border: 1px solid var(--line);
+		padding: 0.1rem 0.5rem;
+		text-align: right;
+	}
+	.stage-summary th[scope='row'],
+	.stage-summary thead th:first-child {
+		text-align: left;
+	}
+	.stage-summary td:not(.hit) {
+		color: var(--muted);
+	}
+	.stage-summary td.hit[data-level='甲'],
+	.stage-summary td.hit[data-level='乙'] {
+		color: var(--danger);
+		font-weight: bold;
+	}
+
 	/* Narrow: each ticket a card read top to bottom. */
 	@container (max-width: 519px) {
 		summary {
 			grid-template-columns: minmax(0, 1fr);
-			grid-template-areas: 'ref' 'steps' 'now' 'models' 'time';
+			grid-template-areas: 'ref' 'steps' 'now' 'models' 'findings' 'time';
 			gap: 0.3rem;
 		}
 		.time {

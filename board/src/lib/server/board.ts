@@ -354,7 +354,9 @@ function createBoard(): Board {
 		if (herdrAgents.ok) herdrPlaces = herdrAgents;
 		herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
 		if (answered.ok) lastAnswered = answered.files;
-		if (ledgers.ok) ledgerPaths = [...ledgers.ledgers.values()].flatMap((read) => (read.path ? [read.path] : []));
+		// The problem log beside them too: recording a problem changes the counts without a ledger write.
+		if (ledgers.ok)
+			ledgerPaths = [...ledgers.ledgers.values()].flatMap((read) => [read.path, read.view.state === 'ok' ? read.view.problemsPath : null].filter((path): path is string => path !== null));
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {

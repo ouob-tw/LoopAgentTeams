@@ -129,7 +129,10 @@ LAUNCH_PROMPT = 'Your task from {orchestrator} is in {brief}. Read that file and
 # The agent's own HCOM base name, expanded by its shell; the LAT tools resolve it to the full name.
 AGENT_ENV = '"$HCOM_INSTANCE_NAME"'
 REPORT_IN_MESSAGE = 'The card names no runs folder, so send the full report in the message.'
-REVIEW_RESULT = '''- When a review passes, and before you close its reviewers, record it so the tool reads what each reviewer runs on: `{cmd} review-result --row {row} --ledger {ledger_arg} --by {agent} --reviewer <HCOM name> --clean` (repeat `--reviewer` for each reviewer; a native sub-agent goes by the name you gave it).
+REVIEW_RESULT = '''- Record each review round's result before you close its reviewers; `done` is refused until this row has one recorded since its latest start. A clean review: `{cmd} review-result --row {row} --ledger {ledger_arg} --by {agent} --reviewer <HCOM name> --clean`; a review with findings: the same with one `--finding '<甲|乙|丙>:<one line>'` per finding instead of `--clean`, which prints the problem ids. Record one result per reviewer; a native sub-agent goes by the name you gave it.
+- When a finding is settled: `{cmd} problem-update <id> --ledger {ledger_arg} --by {agent} --fixed <commit>` (or `--known-limit`, `--wontfix '<why>'`, `--new-ticket <#N>`).
+'''
+QA_FINDINGS = '''- Record each problem you find when you find it: `{cmd} problem --row {row} --ledger {ledger_arg} --by {agent} --stage qa --level <甲|乙|丙> --text '<one line>'` (add `--caught <gate fingerprint>` when an automatic test caught it). `done` is refused until you recorded one in this round; when you found none, add `--no-findings` to `done`.
 '''
 SPEC_COVERAGE = '''
 ## Spec coverage
@@ -620,6 +623,8 @@ def make_brief(args):
         stage = row_stage(ledger, row)
         if stage == 'impl':
             fixed += REVIEW_RESULT.format(**commands)
+        if stage == 'qa':
+            fixed += QA_FINDINGS.format(**commands)
         if stage == 'qa-draft':
             fixed += SPEC_COVERAGE.format(orchestrator=card['orchestrator'])
     else:
