@@ -2385,13 +2385,16 @@ class TinyLaneTests(LedgerCase):
         code = self.docs_row(path='src/a.py')
         self.confirm(code)
         self.close(code, '--gate', FP)
+        after_code = git(self.workspace, 'rev-parse', 'HEAD')[:8]
         docs = self.add(*self.TINY, '--branch', 'work', evidence='commit,gate')
         card = self.tasks / f'tiny-{docs}.md'
-        card.write_text(f'接續：無\n\n- agent：impl\n- base commit：{self.merged[:8]}\n'
+        card.write_text(f'接續：無\n\n- agent：impl\n- base commit：{after_code}\n'
                         f'- worktree：{self.workspace}\n- status：dispatched\n')
         self.ok('assign', str(docs), '--agent', 'impl', '--card', str(card))
         self.change('docs/b.md', 2, 'docs: b')
         self.confirm(docs)
+        self.assertEqual(self.doc()['reviews'][-1]['tiny']['files']['code'], 0)
+        self.close(docs, '--gate', FP)
         out = self.run_ledger('check').stdout
         self.assertIn('no qa-draft or qa item covers it', out)
         self.assertIn('code touched', out)
