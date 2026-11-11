@@ -562,8 +562,8 @@ def verify_commit(doc, item, value):
 
 def verify_gate(doc, value, acks=()):
     """Return (full fingerprint, problem). A record whose newest run passed only on the
-    automatic rerun of failed test files is not clean evidence until a review result in acks
-    names it."""
+    automatic rerun of failed test files is not clean evidence until a recorded review
+    acknowledges it (acks: the fingerprints review results named, see rerun_acks())."""
     script = gate_script()
     try:
         output = run_cli([sys.executable, str(script), 'status', '--json', '--fingerprint',
@@ -585,22 +585,26 @@ def verify_gate(doc, value, acks=()):
 
 
 def rerun_only_problem(fingerprint, record, acks):
-    """Why a record that passed only on the rerun is refused, or None when it did not, or a
-    review result in acks names it (its first 12 characters or more)."""
+    """Why a record that passed only on the rerun is refused, or None when it did not, or an
+    acknowledged fingerprint in acks is a prefix of it."""
     if record.get('exit_code') != 0 or not (record.get('rerun_only') or record.get('flaky')):
         return None
-    for ack in acks:
-        try:
-            if fingerprint[:12] in Path(ack).read_text(encoding='utf-8', errors='replace'):
-                return None
-        except OSError:
-            continue
+    if any(fingerprint.startswith(ack) for ack in acks):
+        return None
     files = ', '.join(str(f.get('file')) for f in record.get('flaky') or []) or 'not recorded'
     return (f'gate record {fingerprint[:12]} PASSED ONLY ON RERUN (failed first: {files}), so '
-            'it is not clean evidence: a reviewer must look at those failures and say so in '
-            f'the review result, naming this record (fingerprint {fingerprint[:12]}); then '
-            'pass that file with --rerun-ack <review result>. Or fix the failing test so the '
-            'gate passes at the first try')
+            'it is not clean evidence: a reviewer must look at those failures, then record it '
+            'on this row with `review-result --row <row> '
+            f'--reviewer <name> --clean --rerun-ack {fingerprint[:12]} --note "<what the '
+            'failures were>"`. Or fix the failing test so the gate passes at the first try')
+
+
+def rerun_acks(doc, row=None):
+    """The gate fingerprints (12+ characters) the recorded reviews acknowledge as looked-at
+    rerun-only passes; only the reviews of that row when row is given."""
+    return [ack for review in doc.get('reviews') or [] if isinstance(review, dict)
+            and (row is None or review.get('row') == row)
+            for ack in review.get('rerun_acks') or [] if isinstance(ack, str) and len(ack) >= 12]
 
 
 def verify_file(value):
@@ -617,23 +621,9 @@ def verify_file(value):
     return str(path), None
 
 
-def verify_acks(values):
-    """(absolute paths, problems) of the --rerun-ack review results: existing, non-empty
-    files."""
-    acks, problems = [], []
-    for value in values or []:
-        path, problem = verify_file(value)
-        if problem:
-            problems.append(f'--rerun-ack {problem}')
-        else:
-            acks.append(path)
-    return acks, problems
-
-
-def verify(doc, item, evidence, acks=None):
-    """Check every value; return (resolved evidence, problems). acks are the review results
-    that acknowledge rerun-only gate records (the item's stored ones by default)."""
-    acks = (item.get('rerun_acks') or []) if acks is None else acks
+def verify(doc, item, evidence):
+    """Check every value; return (resolved evidence, problems)."""
+    acks = rerun_acks(doc, item['id'])
     resolved, problems = {}, []
     for kind in KINDS:
         for value in evidence.get(kind, []):
@@ -1055,18 +1045,13 @@ def cmd_done(args):
                     item['evidence_kinds'] if not given[kind]]
         problems += [f'{kind} evidence was not declared for this item' for kind in KINDS
                      if given[kind] and kind not in item['evidence_kinds']]
-        acks, failed = verify_acks(args.rerun_ack)
-        problems += failed
         resolved, failed = verify(doc, {**item, **changes}, {kind: given[kind]
-                                                              for kind in item['evidence_kinds']},
-                                  acks)
+                                                              for kind in item['evidence_kinds']})
         problems += failed
         if problems:
             raise Failure(f'item {item["id"]} not closed:\n' +
                           '\n'.join(f'  - {problem}' for problem in problems))
         changes['evidence'] = resolved
-        if acks:
-            changes['rerun_acks'] = acks
         repo = changes.get('repo') or item.get('repo')
         if repo:
             changes['main_checkout'] = owning_checkout(repo)
@@ -1107,18 +1092,13 @@ def cmd_amend(args):
         require_status(item, ('done',), 'amend')
         problems = [f'{kind} evidence was not declared for this item' for kind in KINDS
                     if given[kind] and kind not in item['evidence_kinds']]
-        acks, failed = verify_acks(args.rerun_ack)
-        problems += failed
-        acks = list(dict.fromkeys((item.get('rerun_acks') or []) + acks))
-        resolved, failed = verify(doc, item, given, acks)
+        resolved, failed = verify(doc, item, given)
         problems += failed
         if problems:
             raise Failure(f'item {item["id"]} not amended:\n' +
                           '\n'.join(f'  - {problem}' for problem in problems))
-        changes = {'progress': f'補記：{reason}', 'evidence': {**item['evidence'], **resolved}}
-        if acks:
-            changes['rerun_acks'] = acks
-        record(args, item, 'amend', changes, reason)
+        record(args, item, 'amend', {'progress': f'補記：{reason}',
+                                     'evidence': {**item['evidence'], **resolved}}, reason)
     if resolved.get('commit'):
         # Only the version changed: a card already marked merged stays merged.
         write_card_fields(item, {'deliverable commit': ', '.join(resolved['commit'])})
@@ -1132,6 +1112,14 @@ def cmd_review_result(args):
     if not args.clean:
         raise Failure('give --clean: recording findings is not available yet')
     note = args.note.strip() if args.note and args.note.strip() else None
+    acks = [required_text('--rerun-ack', ack).lower() for ack in args.rerun_ack or []]
+    bad = [ack for ack in acks if not re.fullmatch(r'[0-9a-f]{12,64}', ack)]
+    if bad:
+        raise Failure(f'--rerun-ack {bad[0]}: give 12 to 64 hex characters of the gate record '
+                      'fingerprint; nothing written')
+    if acks and not note:
+        raise Failure('--rerun-ack needs --note saying what the first failures were; nothing '
+                      'written')
     try:
         agents = {item['name'] for item in read_hcom_list(HCOM_LIST_ENV)
                   if isinstance(item.get('name'), str)}
@@ -1160,6 +1148,8 @@ def cmd_review_result(args):
         reviews = doc.setdefault('reviews', [])
         review = {'id': len(reviews) + 1, 'row': item['id'], 'at': stamp(now()),
                   'by': actor(args), 'result': 'clean', 'reviewers': reviewers, 'note': note}
+        if acks:
+            review['rerun_acks'] = list(dict.fromkeys(acks))
         reviews.append(review)
         for name in reviewers:
             reading = readings[name]
@@ -1782,22 +1772,12 @@ def build_parser():
                      'existence is checked')
     sub.add_argument('--gate', action='append', help='suite-gate record fingerprint')
     sub.add_argument('--file', action='append', help='absolute path of a report or checklist')
-    sub.add_argument('--rerun-ack', action='append', metavar='REVIEW_RESULT',
-                     help='absolute path of the review result that names a gate record which '
-                     'passed only on the automatic rerun (its fingerprint, 12+ characters) and '
-                     'says the reviewer looked at the failures; required before such a record '
-                     'counts as evidence')
     sub = command('amend', 'Note a later change on a closed item; evidence given replaces '
                   'that kind')
     sub.add_argument('--reason', required=True, help='what changed after the close')
     sub.add_argument('--commit', action='append')
     sub.add_argument('--gate', action='append', help='suite-gate record fingerprint')
     sub.add_argument('--file', action='append', help='absolute path of a report or checklist')
-    sub.add_argument('--rerun-ack', action='append', metavar='REVIEW_RESULT',
-                     help='absolute path of the review result that names a gate record which '
-                     'passed only on the automatic rerun (its fingerprint, 12+ characters) and '
-                     'says the reviewer looked at the failures; required before such a record '
-                     'counts as evidence')
     sub = command('review-result', "Record a review of a row with each reviewer's actual "
                   'model and effort', item=False)
     sub.add_argument('--row', type=int, required=True, help='the ledger row the review covers')
@@ -1806,6 +1786,11 @@ def build_parser():
                      'such as a native sub-agent, is kept as given and marked unverified')
     sub.add_argument('--clean', action='store_true', help='the review found nothing')
     sub.add_argument('--note', help='free text kept with the result')
+    sub.add_argument('--rerun-ack', action='append', metavar='FINGERPRINT',
+                     help='a gate record (12+ characters of its fingerprint) that passed only on '
+                     'the automatic rerun and that the reviewers looked at; needs --note saying '
+                     'what the first failures were. Until then the ledger and the merge check do '
+                     'not take that record as evidence')
     sub = command('cancel', 'Cancel an item (orchestrator only)')
     sub.add_argument('--reason', required=True)
     sub = command('reassign', 'Hand an open item to another agent')

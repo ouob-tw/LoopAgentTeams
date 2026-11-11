@@ -274,14 +274,16 @@ class ConditionTests(PreauthCase):
         self.assertEqual((verdict['verdict'], verdict['reason_kinds']), ('ask', ['condition']))
         self.assertIn('PASSED ONLY ON RERUN (failed first: web/tests/a.test.ts; record '
                       f'{fingerprint[:12]})', verdict['reasons'][0])
-        self.assertIn('--rerun-ack <review result>', verdict['reasons'][0])
+        self.assertIn(f'--rerun-ack {fingerprint[:12]} --note', verdict['reasons'][0])
         self.assertEqual(self.check('merge', '--branch', 'dev')['verdict'], 'allow',
                          'without --commit there is no version to look up')
-        review = self.root / 'review.md'
-        review.write_text(f'Looked at rerun-only record {fingerprint[:12]}: a test race.\n')
         ledger = self.repo / '.lat' / 'ledgers' / 'round.json'
-        self.write(ledger, json.dumps({'integration_branch': 'dev', 'items': [
-            {'ticket': '313', 'rerun_acks': [str(review)]}]}))
+        self.write(ledger, json.dumps({'integration_branch': 'dev', 'items': [{'ticket': '313'}],
+                                       'reviews': [{'row': 1, 'rerun_acks': ['abad1dea0000']}]}))
+        self.assertEqual(self.check('merge', '--branch', 'dev', '--commit', 'HEAD')['verdict'],
+                         'ask', 'another fingerprint does not count')
+        self.write(ledger, json.dumps({'integration_branch': 'dev', 'items': [{'ticket': '313'}],
+                                       'reviews': [{'row': 1, 'rerun_acks': [fingerprint[:12]]}]}))
         self.assertEqual(self.check('merge', '--branch', 'dev', '--commit', 'HEAD')['verdict'],
                          'allow')
 

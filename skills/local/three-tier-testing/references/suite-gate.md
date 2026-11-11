@@ -128,7 +128,7 @@ CPU 與記憶體都不足時兩句以 `; ` 連接。訊息中的 GB 都是 GiB�
   - 有載入或收集錯誤：unittest 的 `_FailedTest`、pytest 的 `ERROR collecting` 或沒有測試名稱的 `ERROR <檔案>`、bun 的 `Unhandled error between tests` 或總結的 `N error`。
   - 總結行的失敗數與指出的失敗數對不上，或有失敗歸不到 repo 裡的測試檔；總結沒有失敗（測試以外的步驟失敗）。
   - 失敗的測試檔超過 10 個，或第一次執行前後內容改變。
-- **紀錄**：一次執行只寫一筆，在重跑結束後寫入。結束碼取重跑的結果（有幾組時取第一個失敗的）。另記 `rerun` 與 `flaky`（見[紀錄與設定位置](#紀錄與設定位置)）。重跑才通過的紀錄另標 `rerun_only: true`，輸出與 `status` 在結果後寫 `PASSED ONLY ON RERUN (failed first: <檔案>)`：這可能是真的退步，審查者要看過才能合併（LAT 工作總表的 `done`、`check` 與合併的預先授權檢查要審查結果以 `--rerun-ack` 指名該紀錄才放行）。重跑通過的整套紀錄與一般通過一樣可沿用；重跑期間內容改變時標為內容改變、不可沿用。不重跑時 `rerun` 只有 `skipped`（不重跑的原因），閘門也印出 `failed tests not rerun: <原因>`。
+- **紀錄**：一次執行只寫一筆，在重跑結束後寫入。結束碼取重跑的結果（有幾組時取第一個失敗的）。另記 `rerun` 與 `flaky`（見[紀錄與設定位置](#紀錄與設定位置)）。重跑才通過的紀錄另標 `rerun_only: true`，輸出與 `status` 在結果後寫 `PASSED ONLY ON RERUN (failed first: <檔案>)`：這可能是真的退步，審查者要看過才能合併（LAT 工作總表的 `done`、`check` 與合併的預先授權檢查要審查者看過後以 `lat-ledger.py review-result ... --rerun-ack <指紋>` 記下才放行）。重跑通過的整套紀錄與一般通過一樣可沿用；重跑期間內容改變時標為內容改變、不可沿用。不重跑時 `rerun` 只有 `skipped`（不重跑的原因），閘門也印出 `failed tests not rerun: <原因>`。
 
 ## 查狀態與紀錄
 

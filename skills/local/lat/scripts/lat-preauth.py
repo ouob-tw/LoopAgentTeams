@@ -607,8 +607,8 @@ def affected_deploy_problems(top, version, action, target):
 
 def rerun_only_merge_problems(top, version, ledger):
     """Each group of the newest pre-merge affected summary for the version that passed only on
-    the automatic rerun, as a condition, unless a review result on the round ledger (an item's
-    `rerun_acks`, see lat-ledger.py --rerun-ack) names that group's record."""
+    the automatic rerun, as a condition, unless a review recorded on the round ledger
+    (`lat-ledger.py review-result --rerun-ack`) acknowledges that group's record."""
     tree = git(top, 'rev-parse', f'{version}^{{tree}}')
     try:
         summaries = [record for record in load_suite_gate().read_records()
@@ -619,27 +619,22 @@ def rerun_only_merge_problems(top, version, ledger):
         return [('error', f'pre-merge summary lookup failed: {error}')]
     if not summaries:
         return []
-    texts = []
-    items = [item for item in (ledger or {}).get('items') or [] if isinstance(item, dict)]
-    for path in [path for item in items for path in item.get('rerun_acks') or []]:
-        try:
-            texts.append(Path(path).read_text(encoding='utf-8', errors='replace'))
-        except (OSError, TypeError):
-            continue
+    acks = [ack for review in (ledger or {}).get('reviews') or [] if isinstance(review, dict)
+            for ack in review.get('rerun_acks') or [] if isinstance(ack, str) and len(ack) >= 12]
     summary = summaries[-1]
     problems = []
     for group in summary.get('rerun_only') or []:
         fingerprint = str(group.get('fingerprint') or '')
-        if fingerprint and any(fingerprint[:12] in text for text in texts):
+        if fingerprint and any(fingerprint.startswith(ack) for ack in acks):
             continue
         problems.append(('condition', (
             f"the pre-merge affected run {str(summary.get('run_id'))[:12]} for {version[:12]}: "
             f"{group.get('kind')} in {group.get('dir')} PASSED ONLY ON RERUN (failed first: "
             f"{', '.join(map(str, group.get('failed_first') or []))}; record "
-            f"{fingerprint[:12] or 'unknown'}). A reviewer must look at those failures and name "
-            'the record in the review result; close the implementation row with `lat-ledger.py '
-            f'done <row> --gate {fingerprint[:12] or "<fingerprint>"} --rerun-ack <review '
-            'result>`, then check again')))
+            f"{fingerprint[:12] or 'unknown'}). A reviewer must look at those failures; record "
+            'it on the round ledger with `lat-ledger.py review-result --row <row> --reviewer '
+            f'<name> --clean --rerun-ack {fingerprint[:12] or "<fingerprint>"} --note "<what the '
+            'failures were>"`, then check again')))
     return problems
 
 
