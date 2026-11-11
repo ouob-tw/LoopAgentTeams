@@ -847,7 +847,32 @@ def duty_command(record):
 
 
 DUTY_LINK = re.compile(r'\[([^\[\]]+)\]\(([^\s()]+)\)')
-_DUTY_HOST = re.compile(r'[^\s#%/?<>\\^|\[\]@:]+')
+_DUTY_HOST = re.compile(r'[^\s\x00-\x1f\x7f#%/?<>\\^|\[\]@:]+')
+
+
+def _ipv4_number(part):
+    if re.fullmatch(r'0[xX][0-9a-fA-F]*', part):
+        return int(part[2:] or '0', 16)
+    if re.fullmatch(r'0[0-7]+', part):
+        return int(part, 8)
+    if re.fullmatch(r'0[0-9]+', part):
+        return -1  # numeric but not valid octal: never an address
+    if re.fullmatch(r'[0-9]+', part):
+        return int(part)
+    return None
+
+
+def _valid_ipv4_like(host):
+    """A host whose last label is numeric must be a valid IPv4 address, as the board's parser demands."""
+    labels = host.rstrip('.').split('.') if host.rstrip('.') else ['']
+    if _ipv4_number(labels[-1]) is None and not re.fullmatch(r'0[xX]', labels[-1]):
+        return True
+    if len(labels) > 4:
+        return False
+    numbers = [_ipv4_number(label) if label else None for label in labels]
+    if any(n is None for n in numbers):
+        return False
+    return all(0 <= n < 256 for n in numbers[:-1]) and 0 <= numbers[-1] < 256 ** (5 - len(numbers))
 
 
 def _web_link(url):
@@ -867,7 +892,15 @@ def _web_link(url):
         except ValueError:
             return False
         return '%' not in host
-    return bool(host and _DUTY_HOST.fullmatch(host))
+    if not (host and _DUTY_HOST.fullmatch(host) and _valid_ipv4_like(host)):
+        return False
+    try:
+        for label in host.split('.'):
+            if label and (not label.isascii() or label.lower().startswith('xn--')):
+                label.encode('idna').decode('idna')
+    except (UnicodeError, ValueError):
+        return False
+    return True
 
 
 def shown_duty(text):

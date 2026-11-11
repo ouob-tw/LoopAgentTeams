@@ -508,7 +508,8 @@ class SessionTests(unittest.TestCase):
         before = self.duty_file().read_bytes()
         for text in (f'[{"職" * 41}]({url})', f'[#1]({url}) ' + '職' * 38,
                      'x' * 41 + f' [a]({url})', '[x](https://a:b) ' + '職' * 38,
-                     '[x](https://) ' + '職' * 38, '[x](javascript:alert(1)) ' + '職' * 20):
+                     '[x](https://) ' + '職' * 38, '[x](https://127.0.0.999) ' + '職' * 38,
+                     '[x](http://09) ' + '職' * 38, '[x](http://1.2.3.256) ' + '職' * 38, '[x](javascript:alert(1)) ' + '職' * 20):
             with self.subTest(text=text):
                 result = self.record_duty(text, '結果')
                 self.assertEqual(result.returncode, 1)
