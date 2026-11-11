@@ -11,7 +11,9 @@ runs only the tests the map selects for this change, or the registered full suit
 the gate when the change leaves the map; with `--purpose post-merge` (after a batch is
 merged, which then replaces the post-merge full suite) it runs in a temporary clean
 checkout of HEAD, every record of the run shares a run_id and a final `affected-summary`
-record says whether the whole run passed. A suite or affected run that fails only in a few
+record says whether the whole run passed; `--purpose pre-merge` does the same in the work
+tree for a branch's final version. An affected test or check whose content (as the map
+sees it) already passed is reused instead of run again. A suite or affected run that fails only in a few
 test files (bun test, unittest, pytest) reruns those files once with the map's command
 templates and records a pass with the flaky tests when the rerun passes. A full suite that
 ran records each test file's time when the output gives it (bun test listing every test,
@@ -851,31 +853,10 @@ def content_tree(root, include=(), commit=None, scope=None):
     the `include` paths from the work tree, via a throwaway index so the real one is
     untouched. With scope (path globs), only the files matching one of them count."""
     with tempfile.TemporaryDirectory(prefix='suite-gate-') as tmp:
-        index = Path(tmp) / 'index'
-        env = dict(os.environ, GIT_INDEX_FILE=str(index))
-        if commit:
-            steps = [['read-tree', commit]]
-        else:
-            real = git(['rev-parse', '--git-path', 'index'], root).stdout.strip()
-            if real and (root / real).is_file():
-                # copy2 keeps the index mtime, which Git needs to re-check racily clean entries
-                shutil.copy2(root / real, index)
-            steps = [['add', '-A', '--', '.']]
-        extra = sorted({str(p.relative_to(root)) for pattern in include
-                        for p in root.glob(pattern) if p.is_file()})
-        if extra:
-            steps.append(['add', '-f', '--', *extra])
-        for step in steps:
-            result = git(step, root, env)
-            if result.returncode != 0:
-                raise RuntimeError(f'git {" ".join(step[:2])} failed: {result.stderr.strip()}')
+        env = _fill_index(root, Path(tmp) / 'index', include, commit)
         if scope is not None:
-            listed = git(['ls-files', '--stage', '-z'], root, env)
-            if listed.returncode != 0:
-                raise RuntimeError(f'git ls-files failed: {listed.stderr.strip()}')
-            # Each entry is "<mode> <object> <stage>\t<path>", the form --index-info reads.
-            kept = [e for e in listed.stdout.split('\0') if e
-                    and any(glob_match(e.split('\t', 1)[1], p) for p in scope)]
+            kept = [e for e in _index_entries(root, env)
+                    if any(glob_match(e.split('\t', 1)[1], p) for p in scope)]
             env = dict(env, GIT_INDEX_FILE=str(Path(tmp) / 'scoped'))
             result = subprocess.run(['git', 'update-index', '-z', '--index-info'], cwd=root,
                                     env=env, input=''.join(e + '\0' for e in kept),
@@ -886,6 +867,38 @@ def content_tree(root, include=(), commit=None, scope=None):
         if result.returncode != 0:
             raise RuntimeError(f'git write-tree failed: {result.stderr.strip()}')
         return result.stdout.strip()
+
+
+def _fill_index(root, index, include=(), commit=None):
+    """Fill the throwaway index file with tracked plus unignored new files (or commit's tree)
+    and the `include` paths, as content_tree() counts them: the environment that uses it."""
+    env = dict(os.environ, GIT_INDEX_FILE=str(index))
+    if commit:
+        steps = [['read-tree', commit]]
+    else:
+        real = git(['rev-parse', '--git-path', 'index'], root).stdout.strip()
+        if real and (root / real).is_file():
+            # copy2 keeps the index mtime, which Git needs to re-check racily clean entries
+            shutil.copy2(root / real, index)
+        steps = [['add', '-A', '--', '.']]
+    extra = sorted({str(p.relative_to(root)) for pattern in include
+                    for p in root.glob(pattern) if p.is_file()})
+    if extra:
+        steps.append(['add', '-f', '--', *extra])
+    for step in steps:
+        result = git(step, root, env)
+        if result.returncode != 0:
+            raise RuntimeError(f'git {" ".join(step[:2])} failed: {result.stderr.strip()}')
+    return env
+
+
+def _index_entries(root, env):
+    """The entries of the index env names, each "<mode> <object> <stage>\t<path>" (the form
+    --index-info reads)."""
+    listed = git(['ls-files', '--stage', '-z'], root, env)
+    if listed.returncode != 0:
+        raise RuntimeError(f'git ls-files failed: {listed.stderr.strip()}')
+    return [e for e in listed.stdout.split('\0') if e]
 
 
 def normalize_command(argv):
@@ -3277,17 +3290,17 @@ def head_commit(root):
 
 
 def write_summary(root, checkout, run_id, base, changed, start, results, *, nothing_selected,
-                  interrupted, started_at):
-    """Write the post-merge summary of one affected run (`kind: affected-summary`) for the
-    repo at root, run in checkout: it passed only when every group exited 0 (a pass after
-    the rerun of failed files counts), nothing was interrupted and the checkout's content
-    (HEAD and its tree) did not change."""
+                  interrupted, started_at, purpose='post-merge'):
+    """Write the summary of one affected run with a purpose (`kind: affected-summary`) for
+    the repo at root, run in checkout: it passed only when every group exited 0 (a pass after
+    the rerun of failed files, or a reused pass, counts), nothing was interrupted and the
+    checkout's content (HEAD and its tree) did not change."""
     end = (head_commit(checkout), content_tree(checkout))
     changed_content = end != start or any(r['content_changed'] for r in results)
     passed = (not interrupted and not changed_content
               and all(r['exit_code'] == 0 for r in results))
     record = {
-        'kind': 'affected-summary', 'purpose': 'post-merge', 'run_id': run_id,
+        'kind': 'affected-summary', 'purpose': purpose, 'run_id': run_id,
         'repo': str(root), 'base': base, 'commit': start[0], 'tree': start[1],
         'changed_files': changed, 'groups': results, 'nothing_selected': nothing_selected,
         'interrupted': interrupted, 'content_changed': changed_content, 'passed': passed,
@@ -3295,13 +3308,15 @@ def write_summary(root, checkout, run_id, base, changed, start, results, *, noth
         'time': started_at, 'finished': now_iso()}
     append_record(record)
     if nothing_selected:
-        warn('post-merge summary: no tests were selected for this change; nothing ran'
+        warn(f'{purpose} summary: no tests were selected for this change; nothing ran'
              + ('; it counts as passed' if passed else ''))
     if changed_content:
-        warn('post-merge summary: the content changed during the run, so it counts as failed; '
+        warn(f'{purpose} summary: the content changed during the run, so it counts as failed; '
              'run it again on unchanged content')
-    warn(f"post-merge summary {run_id[:12]}: {'passed' if passed else 'FAILED'} "
-         f'({len(results)} group(s), base {base[:12]}, commit {(start[0] or "-")[:12]})')
+    reused = sum(1 for r in results if r.get('reused'))
+    warn(f"{purpose} summary {run_id[:12]}: {'passed' if passed else 'FAILED'} "
+         f'({len(results)} group(s), {reused} reused, base {base[:12]}, '
+         f'commit {(start[0] or "-")[:12]})')
     return record
 
 
@@ -3349,32 +3364,53 @@ def cmd_affected(base, purpose=None):
                 warn(f'{REGISTRY_NAME} at HEAD {head[:12]}: {exc}')
                 return 2
             copy_included(root, checkout, registry)
-            start = (head, content_tree(checkout))
-            started_at = now_iso()
-            chosen = select(checkout, amap, commit, origin)
-            if chosen is None:
-                return 2
-            changed, selected, fallback = chosen
-            run_id = uuid.uuid4().hex
-            warn(f'post-merge run {run_id[:12]}: every record of this run carries this run_id')
-            prepared, results = {}, []
+            prepared = {}
 
             def prepare(cwd):
                 if cwd not in prepared:
                     prepared[cwd] = prepare_dependencies(cwd)
                 return prepared[cwd]
-            try:
-                code = run_selected(checkout, amap, selected, fallback,
-                                    {'base': commit, 'changed_files': changed,
-                                     'run_id': run_id}, prepare, results=results)[0]
-            except Interrupted:
-                write_summary(root, checkout, run_id, commit, changed, start, results,
-                              nothing_selected=False, interrupted=True, started_at=started_at)
-                raise
-            summary = write_summary(root, checkout, run_id, commit, changed, start, results,
-                                    nothing_selected=code is None, interrupted=False,
-                                    started_at=started_at)
-            return code or summary['exit_code']
+            return summarized(root, checkout, amap, commit, origin, prepare)
+
+    def pre_merge(root, amap, commit, origin):
+        """Run the change's affected tests in the work tree as the final version before it
+        is merged, under one run_id with a summary, so a later run (the post-merge one)
+        reuses the groups whose content stays the same."""
+        if head_commit(root) is None:
+            warn('affected --purpose pre-merge: HEAD is not a commit yet')
+            return 2
+        if git(['status', '--porcelain'], root).stdout.strip():
+            warn(f'{root} has uncommitted changes; they are tested and recorded with the rest, '
+                 'but the merged content will not match them. Commit them first.')
+        return summarized(root, root, amap, commit, origin)
+
+    def summarized(root, checkout, amap, commit, origin, prepare=None):
+        """Select and run the change's tests in checkout under one run_id and write the
+        summary of the run for root."""
+        start = (head_commit(checkout), content_tree(checkout))
+        started_at = now_iso()
+        chosen = select(checkout, amap, commit, origin)
+        if chosen is None:
+            return 2
+        changed, selected, fallback = chosen
+        run_id = uuid.uuid4().hex
+        warn(f'{purpose} run {run_id[:12]}: every record of this run carries this run_id')
+        results = []
+        extra = {'base': commit, 'changed_files': changed, 'run_id': run_id}
+        if purpose == 'pre-merge':
+            extra['purpose'] = purpose
+        try:
+            code = run_selected(checkout, amap, selected, fallback, extra, prepare,
+                                results=results)[0]
+        except Interrupted:
+            write_summary(root, checkout, run_id, commit, changed, start, results,
+                          nothing_selected=False, interrupted=True, started_at=started_at,
+                          purpose=purpose)
+            raise
+        summary = write_summary(root, checkout, run_id, commit, changed, start, results,
+                                nothing_selected=code is None, interrupted=False,
+                                started_at=started_at, purpose=purpose)
+        return code or summary['exit_code']
 
     def body():
         root = repo_root(Path.cwd())
@@ -3388,11 +3424,13 @@ def cmd_affected(base, purpose=None):
         except ValueError as exc:
             warn(f'{root / REGISTRY_NAME}: {exc}')
             return 2
-        if purpose and base is None:
+        if purpose == 'post-merge' and base is None:
             warn('affected --purpose post-merge needs --base <commit>: the commit this batch '
                  'of work started from')
             return 2
         commit, origin = change_base(root, base, amap['branch'])
+        if purpose == 'pre-merge':
+            return pre_merge(root, amap, commit, origin)
         if purpose:
             return post_merge(root, commit, origin)
         chosen = select(root, amap, commit, origin)
@@ -3424,20 +3462,113 @@ def drive_group(results, kind, directory, command, gate, action, tests=None):
 
 
 def group_result(kind, directory, command, code, gate=None, tests=None, not_run=None,
-                 interrupted=False):
-    """One group of an affected run, as the post-merge summary lists it."""
+                 interrupted=False, earlier=None):
+    """One group of an affected run, as the post-merge summary lists it; earlier is the
+    passing affected record reused instead of running it."""
     record = gate.record if gate else None
-    reused = gate.reused if gate else None
+    reused = gate.reused if gate else earlier
     return {
         'kind': kind, 'dir': directory, 'command': command, 'tests': tests,
         'exit_code': code,
-        'fingerprint': (gate.me['fingerprint'] if gate else None),
+        'fingerprint': (gate.me['fingerprint'] if gate
+                        else earlier.get('fingerprint') if earlier else None),
         'flaky': bool(record and record.get('flaky')),
         'content_changed': bool(record and record.get('content_changed')),
         'reused': None if reused is None else {
             'time': reused.get('time'), 'agent': reused.get('agent'),
-            'purpose': reused.get('purpose'), 'fingerprint': reused.get('fingerprint')},
+            'purpose': reused.get('purpose'), 'fingerprint': reused.get('fingerprint'),
+            'run_id': reused.get('run_id')},
         'not_run': not_run, 'interrupted': interrupted}
+
+
+def is_gate_config(path):
+    return path == REGISTRY_NAME or glob_match(path, f'{MAP_DIR}/**')
+
+
+class MapContent:
+    """The content of root as content_tree() counts it, seen through the affected-test map,
+    for the fingerprints of single tests and checks that let a later run reuse their pass
+    when the merged content differs only in files the map ties to other tests. The registry
+    and map files count for a test only when a rule that selects it names them in `paths`;
+    otherwise what they decide (the template, the rules of a test) is part of the
+    fingerprint instead."""
+
+    def __init__(self, root, amap):
+        self.amap = amap
+        include = include_patterns(load_registry(root) or {})
+        with tempfile.TemporaryDirectory(prefix='suite-gate-') as tmp:
+            entries = _index_entries(root, _fill_index(root, Path(tmp) / 'index', include))
+        patterns = [p for rule in amap['rules'] for p in rule['tests']]
+        self.entries = entries
+        self.files = []  # (entry, path, indexes of the rules whose paths hold it, shared, unmapped)
+        for entry in entries:
+            path = entry.split('\t', 1)[1]
+            hits = frozenset(i for i, rule in enumerate(amap['rules'])
+                             if any(glob_match(path, p) for p in rule['paths']))
+            config = is_gate_config(path)
+            shared = not config and any(glob_match(path, p) for p in amap['shared'])
+            unmapped = not config and not hits and not any(glob_match(path, p)
+                                                           for p in patterns)
+            self.files.append((entry, path, hits, shared, unmapped))
+
+    @staticmethod
+    def _digest(what, kept):
+        return hashlib.sha256(json.dumps([what, sorted(kept)]).encode()).hexdigest()
+
+    def test(self, directory, test):
+        """Fingerprint of test run with directory's template: the template, the map rules
+        whose tests hold it, and the files it may depend on as the map sees them (itself,
+        shared and unmapped files, and the paths of those rules)."""
+        rules = {i for i, rule in enumerate(self.amap['rules'])
+                 if any(glob_match(test, p) for p in rule['tests'])}
+        kept = [entry for entry, path, hits, shared, unmapped in self.files
+                if path == test or shared or unmapped or hits & rules]
+        return self._digest([directory, self.amap['commands'][directory],
+                             [self.amap['rules'][i] for i in sorted(rules)]], kept)
+
+    def check(self, check):
+        """Fingerprint of an affected.checks entry: its command and directory, and all of
+        the content (its paths say when it runs, not everything it reads)."""
+        return self._digest([check['cwd'], check['command']], self.entries)
+
+
+def passed_affected(record):
+    """True for an affected-test record that passed on unchanged content at the first try
+    (a pass only on the rerun of failed files is not reused)."""
+    return (record.get('kind') == 'affected' and record.get('exit_code') == 0
+            and not record.get('content_changed') and not record.get('flaky'))
+
+
+def earlier_test_passes(fps):
+    """([passing affected records to reuse], [tests left to run]) for fps ({test:
+    fingerprint}), newest record first: a record counts when every test it ran is still
+    left and has the same fingerprint now."""
+    left, found = dict(fps), []
+    for record in reversed(read_records()):
+        ran = record.get('test_fingerprints')
+        if not left:
+            break
+        if not isinstance(ran, dict) or not ran or not passed_affected(record):
+            continue
+        if all(left.get(test) == fp for test, fp in ran.items()):
+            found.append(record)
+            for test in ran:
+                del left[test]
+    return found, sorted(left)
+
+
+def earlier_check_pass(fp):
+    """The newest passing record of an affected check with this check fingerprint, or None."""
+    return next((r for r in reversed(read_records())
+                 if r.get('check_fingerprint') == fp and passed_affected(r)), None)
+
+
+def warn_reuse(what, record):
+    run = f", run {record['run_id'][:12]}" if record.get('run_id') else ''
+    purpose = f", purpose {record['purpose']}" if record.get('purpose') else ''
+    warn(f"{what}: same tests and content already passed; reusing the record of "
+         f"{record.get('time')} by {record.get('agent')} (fingerprint "
+         f"{(record.get('fingerprint') or '-')[:12]}{run}{purpose}), not running again")
 
 
 def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, results=None):
@@ -3475,6 +3606,45 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
             return code, failed
     elif not groups and not checks:
         return None, []
+    content = MapContent(root, amap)
+    fps = {d: {t: content.test(d, t) for t in tests} for d, tests in groups.items()}
+    taken = []  # (reused result, fingerprint it was taken for, fingerprint of MapContent now)
+    for directory in list(groups):
+        earlier, left = earlier_test_passes(fps[directory])
+        for record in earlier:
+            warn_reuse(f'{len(record["test_fingerprints"])} test(s) in {directory}', record)
+            results.append(group_result('affected', directory, record.get('command'), 0,
+                                        tests=sorted(record['test_fingerprints']),
+                                        earlier=record))
+            taken.append((results[-1], record['test_fingerprints'],
+                          lambda now, d=directory, ts=list(record['test_fingerprints']):
+                          {t: now.test(d, t) for t in ts}))
+        if left:
+            groups[directory] = left
+        else:
+            del groups[directory]
+    code, failed = _run_left(root, amap, selected, groups, checks, extra, prepared, via,
+                             results, content, taken, code, failed)
+    if taken:
+        # A reuse whose content something run after it changed no longer describes this
+        # content: it counts as content changed and fails the run.
+        now = MapContent(root, amap)
+        for result, was, fp in taken:
+            if fp(now) != was:
+                result['content_changed'] = True
+                code = code or 1
+                failed.append((result['dir'], result['command'], result['tests'] or ['check']))
+                warn(f"the content of the reused {result['kind']} in {result['dir']} changed "
+                     'during the run; it counts as content changed and fails the run')
+    return code, failed
+
+
+def _run_left(root, amap, selected, groups, checks, extra, prepared, via, results, content,
+              taken, code, failed):
+    """The rest of run_selected(): large selections, checks and test groups that were not
+    reused. (exit code, failed)."""
+    if not groups and not checks:
+        return code, failed
     if amap.get('share') is not None:
         large = large_selections(root, amap, groups)
         if large:
@@ -3491,6 +3661,14 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
     for test in sorted(t for tests in groups.values() for t in tests):
         warn(f"  {test}  ({'; '.join(selected[test])})")
     for check in checks:
+        check_fp = content.check(check)
+        earlier = earlier_check_pass(check_fp)
+        if earlier:
+            warn_reuse(f"check in {check['cwd']}", earlier)
+            results.append(group_result('check', check['cwd'], check['command'], 0,
+                                        earlier=earlier))
+            taken.append((results[-1], check_fp, lambda now, c=check: now.check(c)))
+            continue
         cwd = suite_cwd(root, check)
         if not prepared(cwd, check['cwd']):
             code = code or 2
@@ -3501,6 +3679,7 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
         warn(f"checking in {check['cwd']}: {check['command']}")
         gate = Gate([check['command']], cwd, None, load_config(), dict(
             extra, kind='affected', reusable=False, selected_tests=[], why={},
+            check_fingerprint=MapContent(root, amap).check(check),
             **({'via': via} if via else {})))
         result = drive_group(results, 'check', check['cwd'], check['command'], gate,
                              lambda: gate.execute(fingerprint(cwd, [check['command']])))
@@ -3516,10 +3695,14 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
                                         not_run='preparing the directory failed'))
             continue
         warn(f'running in {directory}: {text}')
+        # Taken again right before the run, so the record describes what an earlier group
+        # or check left; a change during the run marks it content_changed (never reused).
+        now = MapContent(root, amap)
         gate = Gate([text], cwd, None, load_config(), dict(
             extra, kind='affected', reusable=False, selected_tests=tests,
-            why={t: selected[t] for t in tests}, **({'via': via} if via else {})),
-            template=True)
+            why={t: selected[t] for t in tests},
+            test_fingerprints={t: now.test(directory, t) for t in tests},
+            **({'via': via} if via else {})), template=True)
         info = fingerprint(cwd, [text])
         result = drive_group(results, 'affected', directory, text, gate,
                              lambda: gate.execute(info), tests)
@@ -4097,11 +4280,11 @@ def cmd_status(as_json, fp_prefix, limit):
 
 
 def print_affected_summary(r):
-    """status lines for a post-merge summary record."""
+    """status lines for an affected summary record."""
     notes = [why for why, on in (('nothing selected', r.get('nothing_selected')),
                                  ('interrupted', r.get('interrupted')),
                                  ('content changed', r.get('content_changed'))) if on]
-    print(f"  {r.get('time')}  {'PASS' if r.get('passed') else 'FAIL'} (post-merge summary"
+    print(f"  {r.get('time')}  {'PASS' if r.get('passed') else 'FAIL'} ({r.get('purpose')} summary"
           f"{': ' + ', '.join(notes) if notes else ''})  run {(r.get('run_id') or '-')[:12]}  "
           f"{r.get('agent')}  {r.get('repo')}  base {(r.get('base') or '-')[:12]}  "
           f"commit {(r.get('commit') or '-')[:12]}  tree {(r.get('tree') or '-')[:12]}  "
@@ -4112,7 +4295,9 @@ def print_affected_summary(r):
         elif g.get('interrupted'):
             outcome = 'interrupted'
         elif g.get('reused'):
-            outcome = f"REUSED pass of {g['reused'].get('time')}"
+            run = g['reused'].get('run_id')
+            outcome = (f"REUSED pass of {g['reused'].get('time')} by {g['reused'].get('agent')}"
+                       + (f" (run {run[:12]})" if run else ''))
         else:
             outcome = 'PASS' if g.get('exit_code') == 0 else f"FAIL exit {g.get('exit_code')}"
             outcome += ' after rerun' if g.get('flaky') and g.get('exit_code') == 0 else ''
@@ -5175,9 +5360,10 @@ def main(argv=None):
                                                '[--purpose post-merge]')
     affected.add_argument('--base', metavar='REV', help='measure the change from this commit '
                           'instead of the merge-base of HEAD and the integration branch')
-    affected.add_argument('--purpose', choices=('post-merge',),
-                          help='post-merge: after a batch is merged; needs --base (where the '
-                               'batch started) and writes a summary record of the whole run')
+    affected.add_argument('--purpose', choices=('pre-merge', 'post-merge'),
+                          help='pre-merge: the final version of a branch before it is merged; '
+                               'post-merge: after a batch is merged, needs --base (where the '
+                               'batch started). Both write a summary record of the whole run')
     status = sub.add_parser('status', help='show running and queued suites and recent records')
     status.add_argument('--json', action='store_true')
     status.add_argument('--fingerprint', metavar='PREFIX', help='only records for this fingerprint')
