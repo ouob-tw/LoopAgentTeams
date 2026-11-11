@@ -504,9 +504,11 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.record_duty(f'修 [#533]({url}) ' + '職' * 30, '結果').returncode, 0)
         self.assertEqual(self.record_duty(f'[{"職" * 40}]({url})', '結果').returncode, 0)
         self.assertEqual(self.record_duty(f'[{"職" * 40}](HTTPS://example.com/a)', '結果').returncode, 0)
+        self.assertEqual(self.record_duty(f'[{"職" * 40}](http://[::1]/a)', '結果').returncode, 0)
         before = self.duty_file().read_bytes()
         for text in (f'[{"職" * 41}]({url})', f'[#1]({url}) ' + '職' * 38,
-                     'x' * 41 + f' [a]({url})', '[x](javascript:alert(1)) ' + '職' * 20):
+                     'x' * 41 + f' [a]({url})', '[x](https://a:b) ' + '職' * 38,
+                     '[x](https://) ' + '職' * 38, '[x](javascript:alert(1)) ' + '職' * 20):
             with self.subTest(text=text):
                 result = self.record_duty(text, '結果')
                 self.assertEqual(result.returncode, 1)

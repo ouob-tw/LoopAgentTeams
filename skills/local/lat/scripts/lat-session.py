@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import fcntl
 import importlib
 import importlib.util
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -844,7 +846,33 @@ def duty_command(record):
     ])
 
 
-DUTY_LINK = re.compile(r'\[([^\[\]]+)\]\(https?://[^\s()/?#][^\s()]*\)', re.I)
+DUTY_LINK = re.compile(r'\[([^\[\]]+)\]\(([^\s()]+)\)')
+_DUTY_HOST = re.compile(r'[^\s#%/?<>\\^|\[\]@:]+')
+
+
+def _web_link(url):
+    """Whether the board makes ``url`` a link: an http/https address its URL parser accepts."""
+    match = re.match(r'(?i)(https?):[/\\]*(.+)', url)
+    if not match:
+        return False
+    try:
+        parts = urlsplit(f'{match.group(1)}://{match.group(2)}')
+        parts.port
+    except ValueError:
+        return False
+    host = parts.hostname
+    if host and ':' in host:
+        try:
+            ipaddress.IPv6Address(host.split('%')[0])
+        except ValueError:
+            return False
+        return '%' not in host
+    return bool(host and _DUTY_HOST.fullmatch(host))
+
+
+def shown_duty(text):
+    """``text`` as the board shows it: a web link ``[a](url)`` is just ``a``."""
+    return DUTY_LINK.sub(lambda m: m.group(1) if _web_link(m.group(2)) else m.group(0), text)
 
 
 def checked_duty(text, expected, flags=('--text', '--expected')):
@@ -854,7 +882,7 @@ def checked_duty(text, expected, flags=('--text', '--expected')):
     text, expected = text.strip(), expected.strip()
     if not text or not expected:
         raise ValueError(f'{flags[0]} and {flags[1]} must not be empty; duty unchanged')
-    shown = len(DUTY_LINK.sub(r'\1', text))
+    shown = len(shown_duty(text))
     if '\n' in text or shown > DUTY_LIMIT:
         raise ValueError(f'{flags[0]} must be one line of at most {DUTY_LIMIT} characters '
                          f'(got {shown}); duty unchanged')
