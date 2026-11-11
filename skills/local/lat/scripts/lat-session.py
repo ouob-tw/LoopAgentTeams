@@ -844,7 +844,7 @@ def duty_command(record):
     ])
 
 
-DUTY_LINK = re.compile(r'\[([^\[\]]+)\]\(https?://[^\s()/?#][^\s()]*\)')
+DUTY_LINK = re.compile(r'\[([^\[\]]+)\]\(https?://[^\s()/?#][^\s()]*\)', re.I)
 
 
 def checked_duty(text, expected, flags=('--text', '--expected')):
@@ -2053,7 +2053,7 @@ def main():
     start.add_argument('--tasks', type=Path, required=True)
     start.add_argument('--hcom-name')
     start.add_argument('--duty-text', help=f'Register the duty too: what it is responsible for, '
-                       f'<= {DUTY_LIMIT} chars')
+                       f'<= {DUTY_LIMIT} shown chars; [text](http url) counts as text')
     start.add_argument('--duty-expected', help='With --duty-text: what the user will see when done')
     stop = sub.add_parser('deactivate', help='End a controller, retaining its record')
     stop.add_argument('--workspace', type=Path, required=True)
@@ -2067,7 +2067,7 @@ def main():
     stop.add_argument('--reason', help='Why unfinished work is left; kept in the ledger history')
     duty = sub.add_parser('duty', help="Record this controller's duty for the board")
     duty.add_argument('--workspace', type=Path, required=True)
-    duty.add_argument('--text', required=True, help=f'What it is responsible for, <= {DUTY_LIMIT} chars')
+    duty.add_argument('--text', required=True, help=f'What it is responsible for, <= {DUTY_LIMIT} shown chars; [text](http url) counts as text')
     duty.add_argument('--expected', required=True, help='What the user will see when it is done')
     listing = sub.add_parser('list', help='List controller records and check them against hcom')
     listing.add_argument('--active', action='store_true', required=True,
