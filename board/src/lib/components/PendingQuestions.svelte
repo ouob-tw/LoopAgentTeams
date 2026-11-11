@@ -1,5 +1,6 @@
 <script lang="ts">
 	// A bar for each of a controller's questions waiting for an answer, each leading to its card.
+	import { summaryPlain } from '#lib/board/summary-links.ts';
 	import { isInactive, STATUS_LABEL, type Controller, type InboxItem, type InboxQuestion } from '#lib/board/types.ts';
 	import VisualLinks from './VisualLinks.svelte';
 
@@ -22,7 +23,7 @@
 		{#each questions as item (item.key)}
 			<div class="row">
 				<button type="button" class="question" onclick={() => onopen(item)}>
-					<span class="title">▲ <b>待決</b>：{item.title || '（沒有標題）'}</span>
+					<span class="title">▲ <b>待決</b>：{summaryPlain(item.title) || '（沒有標題）'}</span>
 					<span class="answer">{inactive || !item.unsent ? '查看' : '作答'} ›</span>
 				</button>
 				<VisualLinks urls={item.question.visuals} labels={item.question.visual_labels} />

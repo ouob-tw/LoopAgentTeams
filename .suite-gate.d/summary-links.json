@@ -9,7 +9,13 @@
         "board/src/lib/components/ControllerExplain.svelte",
         "board/src/lib/components/ControllerHeader.svelte",
         "board/src/lib/components/DutyText.svelte",
-        "board/src/lib/components/RosterCard.svelte"
+        "board/src/lib/components/RosterCard.svelte",
+        "board/src/lib/board/markdown.ts",
+        "board/src/lib/components/ItemContent.svelte",
+        "board/src/lib/components/ItemRow.svelte",
+        "board/src/lib/components/PendingQuestions.svelte",
+        "board/src/lib/components/SentLog.svelte",
+        "board/src/lib/server/inbox-status.ts"
       ],
       "tests": [
         "board/tests/unit/summary-links.test.ts",
@@ -17,7 +23,10 @@
         "board/tests/browser/controller-page.test.ts",
         "board/tests/browser/pd-page.test.ts",
         "board/tests/browser/duty-links.test.ts",
-        "board/tests/browser/agents-page.test.ts"
+        "board/tests/browser/agents-page.test.ts",
+        "board/tests/browser/title-links.test.ts",
+        "board/tests/unit/markdown.test.ts",
+        "board/tests/unit/inbox-status.test.ts"
       ]
     }
   ]

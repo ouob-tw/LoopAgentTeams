@@ -3,6 +3,7 @@
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
+	import { summaryPlain } from '#lib/board/summary-links.ts';
 	import { isAnswered, itemLabel, type InboxItem } from '#lib/board/types.ts';
 
 	let {
@@ -34,7 +35,7 @@
 		     lines show here, the whole title is in the content. -->
 		<span class="clamp">
 			<span class="kind" data-kind={kind}>{itemLabel(item)}</span>
-			<span class="title">{item.title || '（沒有標題）'}</span>
+			<span class="title">{summaryPlain(item.title) || '（沒有標題）'}</span>
 		</span>
 	</button>
 	<div class="under">

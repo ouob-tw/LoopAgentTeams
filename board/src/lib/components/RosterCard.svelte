@@ -46,7 +46,7 @@
 			<span class="error" title={controller.error}>⚠ 錯誤</span>
 		{/if}
 	</span>
-	<span class="phase">{phaseText(controller)}</span>
+	<span class="phase">{summaryPlain(phaseText(controller))}</span>
 	{#if controller.duty}
 		<span class="duty">{summaryPlain(controller.duty.text)}</span>
 	{/if}

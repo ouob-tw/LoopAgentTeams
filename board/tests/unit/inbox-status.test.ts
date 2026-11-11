@@ -130,3 +130,12 @@ test('a question the answered list already has recorded is not in 待辦, as on 
 	expect(result.status).toBe(0);
 	expect(result.stdout).not.toContain('Recorded meanwhile?');
 });
+
+test('a question title shows only the text of its Markdown web links', () => {
+	const title = '見 [#533](https://example.com/issues/533) 與 [壞](javascript:alert(1))';
+	plan([controller({ questions: [{ id: 'q2', revision: 1, status: 'pending', title }] })]);
+	const result = inbox();
+	plan([]);
+	expect(result.stdout).toContain('見 #533 與 [壞](javascript:alert(1))');
+	expect(result.stdout).not.toContain('example.com');
+});

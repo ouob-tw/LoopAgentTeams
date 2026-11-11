@@ -7,6 +7,7 @@
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { CLIENT_LABEL, LAUNCH_STATE_TEXT, latCommand, launchSettingsText } from '#lib/board/launch.ts';
+	import { renderTitle } from '#lib/board/markdown.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { choiceText, settingsText, SWITCH_STATE_TEXT } from '#lib/board/models.ts';
@@ -47,7 +48,7 @@
 								{entry.state === 'recorded' ? '✓ ' : ''}{ANSWER_STATE_TEXT[entry.state]}
 							</span>
 						</p>
-						<p class="title">{entry.title || '（沒有標題）'}</p>
+						<p class="title">{@html entry.title ? renderTitle(entry.title) : '（沒有標題）'}</p>
 						<p class="text">{entry.answer}</p>
 						{#if entry.note}<p class="text note">備註：{entry.note}</p>{/if}
 					{:else if entry.kind === 'launch'}

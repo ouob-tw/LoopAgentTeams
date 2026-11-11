@@ -1,7 +1,7 @@
 // Text from controllers is shown as Markdown, never as live HTML.
 import { expect, test } from 'bun:test';
 import { formatTime } from '../../src/lib/board/format.ts';
-import { renderLinks, renderMarkdown } from '../../src/lib/board/markdown.ts';
+import { renderTitle, renderMarkdown } from '../../src/lib/board/markdown.ts';
 
 test('markdown is rendered, raw HTML is escaped and unsafe links are dropped', () => {
 	expect(renderMarkdown('**粗體**\n第二行')).toBe('<p><strong>粗體</strong><br>\n第二行</p>\n');
@@ -15,11 +15,19 @@ test('times are shown without the year', () => {
 });
 
 test('a title gets links for its web addresses and nothing else', () => {
-	expect(renderLinks('見 http://192.0.2.10:7110/ 看 *粗* _斜_')).toBe(
+	expect(renderTitle('見 http://192.0.2.10:7110/ 看 *粗* _斜_')).toBe(
 		'見 <a href="http://192.0.2.10:7110/" target="_blank" rel="noopener noreferrer">http://192.0.2.10:7110/</a> 看 *粗* _斜_'
 	);
-	expect(renderLinks('<b>x</b> & [a](javascript:alert(1))')).toBe('&lt;b&gt;x&lt;/b&gt; &amp; [a](javascript:alert(1))');
-	expect(renderLinks('javascript:alert(1) file:///etc/passwd')).not.toContain('<a');
+	expect(renderTitle('<b>x</b> & [a](javascript:alert(1))')).toBe('&lt;b&gt;x&lt;/b&gt; &amp; [a](javascript:alert(1))');
+	expect(renderTitle('javascript:alert(1) file:///etc/passwd')).not.toContain('<a');
+});
+
+test('a title shows Markdown web links as links and keeps bare addresses linked', () => {
+	expect(renderTitle('見 [#533](https://example.com/issues/533) 與 http://192.0.2.10:7110/ <b>&')).toBe(
+		'見 <a href="https://example.com/issues/533" target="_blank" rel="noopener noreferrer">#533</a> 與 <a href="http://192.0.2.10:7110/" target="_blank" rel="noopener noreferrer">http://192.0.2.10:7110/</a> &lt;b&gt;&amp;'
+	);
+	expect(renderTitle('[<i>x</i>](https://example.com/?a=1&b="2")')).toContain('>&lt;i&gt;x&lt;/i&gt;</a>');
+	expect(renderTitle('[壞](javascript:alert(1)) *粗*')).toBe('[壞](javascript:alert(1)) *粗*');
 });
 
 test('an option body as the helper gives it renders its paragraphs and nested lists', () => {
