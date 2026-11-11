@@ -71,8 +71,9 @@
     {"cwd": "scripts", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": ["skills/local/three-tier-testing/scripts/suite-gate.py"]}
   ],
   "affected": {
+    "full_suite_share": 0.5,
     "commands": {
-      "board": "if printf '%s\\n' {tests} | grep -qv '^tests/unit/'; then bun run build:test || exit; fi; bun test --timeout 30000 $(printf './%s\\n' {tests})",
+      "board": "if printf '%s\\n' {tests} | grep -qv '^tests/unit/'; then bun run build:test || exit; fi; bun test --timeout 30000 --parallel=6 $(printf './%s\\n' {tests})",
       "skills/local/lat/tests": "uv run --no-project --with textual==8.2.8 python -m unittest {tests}",
       "skills/local/three-tier-testing/tests": "uv run --no-project python -m unittest {tests}",
       "skills/local/hcom-spawn/tests": "uv run --no-project python -m unittest {tests}",
