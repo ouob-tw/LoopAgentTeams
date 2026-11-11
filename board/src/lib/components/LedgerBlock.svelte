@@ -1,13 +1,14 @@
 <script lang="ts">
 	// A controller's work ledger: one line per ticket (its link and title, the progress strip,
-	// what it is doing now, what each stage ran on, its time), opened to show the rows that make
-	// it up with their evidence. In a narrow panel each line becomes a card read top to bottom.
+	// what it is doing now, what each stage ran on, its time and rounds of rework), opened to show
+	// the rows that make it up with their evidence and, once closed, when, how much they changed
+	// and how long their tests ran. In a narrow panel each line becomes a card read top to bottom.
 	// Each line counts the problems found per stage, 甲 and 乙 standing out; an opened line lists
 	// them, and the bottom says which stage found how many. No ledger, or one that cannot be read,
 	// says so here only.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
-	import { LEVELS, countsText, findingText, lateText, minutesText, rowMinutes, ticketTime, type LedgerProblem, type LedgerRow, type LedgerView } from '#lib/board/ledger.ts';
+	import { LEVELS, countsText, findingText, lateText, minutesText, rowMinutes, testsText, ticketTime, type LedgerProblem, type LedgerRow, type LedgerView } from '#lib/board/ledger.ts';
 
 	let { ledger }: { ledger: LedgerView } = $props();
 
@@ -88,6 +89,12 @@
 											{#if spent || (open && row.estimate)}
 												<dt>用時</dt>
 												<dd data-label="用時">{spent}{#if open && row.estimate}<span class="estimate">預計 {time(row.estimate)}</span>{/if}</dd>
+											{/if}
+											{#if row.doneAt}<dt>結案時間</dt><dd data-label="結案時間">{time(row.doneAt)}</dd>{/if}
+											{#if row.changeSize}<dt>改動大小</dt><dd data-label="改動大小">{#each row.changeSize.split('、') as part, index (index)}{index ? '、' : ''}<span class="figure">{part}</span>{/each}</dd>{/if}
+											{#if row.tests}
+												<dt>測試執行時間</dt>
+												<dd data-label="測試執行時間">{#each testsText(row.tests).split('・') as part, index (index)}{index ? '・' : ''}<span class="figure">{part}</span>{/each}<span class="estimate">排隊時間沒有紀錄，不算在內</span></dd>
 											{/if}
 											{#if row.progress}<dt>最新進度</dt><dd data-label="最新進度">{row.progress}</dd>{/if}
 											{#if hasEvidence}
@@ -341,6 +348,10 @@
 	.evidence > .file {
 		white-space: normal;
 		overflow-wrap: anywhere;
+	}
+	/* A figure (程式 1 檔 4 行, 沿用先前結果 1 次) wraps as a whole, never its number apart. */
+	.figure {
+		white-space: nowrap;
 	}
 	.row.late {
 		border-color: var(--danger);

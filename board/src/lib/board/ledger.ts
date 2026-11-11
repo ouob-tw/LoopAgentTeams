@@ -38,6 +38,15 @@ export interface LedgerRow {
 	/** When the row was started (or assigned, if never started), and when it closed. */
 	startedAt: string | null;
 	closedAt: string | null;
+	/** When it was closed with done; null while open and for rows closed before lat-ledger
+	 *  stored it. */
+	doneAt: string | null;
+	/** Changed files and lines by kind as lat-ledger writes it (程式 3 檔 120 行、…); empty
+	 *  when it was not counted. */
+	changeSize: string;
+	/** The agent's test execution while on the row, from suite-gate records; null when not
+	 *  counted. Time waiting for a slot is not recorded, so it is not in the seconds. */
+	tests: { seconds: number; runs: number; reuses: number } | null;
 	/** The local project the row's commits are in; null for the ledger's workspace. */
 	repo: string | null;
 	evidence: LedgerEvidence;
@@ -181,6 +190,7 @@ function rowFrom(value: unknown): LedgerRow | null {
 	const closing = status === 'done' ? 'done' : status === 'cancelled' ? 'cancel' : null;
 	const closedAt = closing ? text(history.findLast((entry) => entry.action === closing)?.at) : null;
 	const evidence = record(item.evidence);
+	const tests = record(item.tests);
 	return {
 		id: item.id,
 		ticket: item.ticket,
@@ -196,6 +206,9 @@ function rowFrom(value: unknown): LedgerRow | null {
 		cancelReason: text(item.cancel_reason),
 		startedAt: text(item.started_at) ?? text(item.assigned_at),
 		closedAt,
+		doneAt: text(item.done_at),
+		changeSize: text(item.change_size_text) ?? '',
+		tests: typeof tests.seconds === 'number' ? { seconds: tests.seconds, runs: count(tests.runs), reuses: count(tests.reuses) } : null,
 		repo: text(item.repo),
 		evidence: {
 			commits: strings(evidence.commit).map((sha) => ({ text: sha, href: null })),
@@ -288,6 +301,19 @@ export function lateText(late: LedgerRow['late']): string {
 export function minutesText(total: number): string {
 	const hours = Math.floor(total / 60);
 	return hours ? `${hours} 小時 ${total % 60} 分` : `${total % 60} 分`;
+}
+
+/** Seconds as lat-ledger writes them: `45 秒`, `3 分 20 秒`, past an hour `1 小時 5 分`. */
+export function secondsText(total: number): string {
+	const seconds = Math.floor(total);
+	if (seconds < 60) return `${seconds} 秒`;
+	if (seconds < 3600) return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+	return minutesText(Math.floor(seconds / 60));
+}
+
+/** A row's test execution: `3 分 20 秒・2 次`, and the runs that only reused an earlier result. */
+export function testsText(tests: NonNullable<LedgerRow['tests']>): string {
+	return `${secondsText(tests.seconds)}・${tests.runs} 次` + (tests.reuses ? `・沿用先前結果 ${tests.reuses} 次` : '');
 }
 
 /** A ticket's time: total once finished, so far while running, with rounds of rework past 0. */

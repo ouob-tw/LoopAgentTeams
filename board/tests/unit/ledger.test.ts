@@ -1,7 +1,7 @@
 // A controller's work ledger as the page shows it, from one entry of the helper's `board ledger`:
 // its ticket lines, the rows each opens to, and how times and lateness are written.
 import { expect, test } from 'bun:test';
-import { countsText, findingText, lateText, ledgerFrom, minutesText, rowMinutes, ticketHref, ticketTime, type LedgerView } from '../../src/lib/board/ledger.ts';
+import { countsText, findingText, lateText, ledgerFrom, minutesText, rowMinutes, secondsText, testsText, ticketHref, ticketTime, type LedgerView } from '../../src/lib/board/ledger.ts';
 import { item, ticketLedger, fiveStepLedger } from '../fixtures/ledger-tickets.ts';
 
 const ok = (ledger: unknown) => {
@@ -61,12 +61,21 @@ test('a row keeps its reasons, progress, settings, times and evidence', () => {
 		gates: ['e52bc2cab9bcd01cb8fa06eccfb0618d']
 	});
 	expect(rows.get(1)!.late).toEqual({ estimate: 12 });
+	// The figures stored at done; an open row and a row without them have none.
+	expect(rows.get(2)).toMatchObject({ doneAt: '2026-11-12T09:51:00Z', changeSize: '程式 3 檔 120 行、測試 2 檔 84 行、文件 1 檔 6 行', tests: { seconds: 200.4, runs: 2, reuses: 1 } });
+	expect(rows.get(1)).toMatchObject({ doneAt: null, changeSize: '', tests: null });
+});
+
+test('test execution as lat-ledger writes it, reuses apart', () => {
+	expect([secondsText(45.9), secondsText(200.4), secondsText(3900)]).toEqual(['45 秒', '3 分 20 秒', '1 小時 5 分']);
+	expect(testsText({ seconds: 200.4, runs: 2, reuses: 1 })).toBe('3 分 20 秒・2 次・沿用先前結果 1 次');
+	expect(testsText({ seconds: 0, runs: 0, reuses: 0 })).toBe('0 秒・0 次');
 });
 
 test('an old row without the newer fields reads with blanks', () => {
 	const view = ok({ items: [{ id: 1, ticket: '#302', stage_label: '實作', status_label: '進行中', late_minutes: { deadline: 65 }, history: [] }], tickets: [] });
 
-	expect(view.items[0]).toMatchObject({ agent: null, settings: '', progress: null, startedAt: null, closedAt: null, late: {}, updatedAt: null, evidence: { commits: [], files: [], gates: [] } });
+	expect(view.items[0]).toMatchObject({ agent: null, settings: '', progress: null, startedAt: null, closedAt: null, doneAt: null, changeSize: '', tests: null, late: {}, updatedAt: null, evidence: { commits: [], files: [], gates: [] } });
 	expect(view.counts).toEqual([]);
 });
 
