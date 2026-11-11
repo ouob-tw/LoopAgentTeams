@@ -2259,6 +2259,21 @@ class TinyLaneTests(LedgerCase):
         self.assertIn('no qa-draft or qa item covers it', out.stdout)
         self.assertNotIn('tiny', out.stdout)
 
+    def test_a_later_docs_row_does_not_exempt_an_earlier_code_row(self):
+        code = self.docs_row(path='src/a.py')
+        self.confirm(code)
+        self.close(code, '--gate', FP)
+        docs = self.add(*self.TINY, '--branch', 'work', evidence='commit,gate')
+        card = self.tasks / f'tiny-{docs}.md'
+        card.write_text(f'接續：無\n\n- agent：impl\n- base commit：{self.merged[:8]}\n'
+                        f'- worktree：{self.workspace}\n- status：dispatched\n')
+        self.ok('assign', str(docs), '--agent', 'impl', '--card', str(card))
+        self.change('docs/b.md', 2, 'docs: b')
+        self.confirm(docs)
+        out = self.run_ledger('check').stdout
+        self.assertIn('no qa-draft or qa item covers it', out)
+        self.assertIn('code touched', out)
+
 
 if __name__ == '__main__':
     unittest.main()

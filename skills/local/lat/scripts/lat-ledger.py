@@ -2070,19 +2070,26 @@ def tiny_tickets(doc):
     result = {}
     for number, rows in found.items():
         ids = [row['id'] for row in rows]
-        confirmed = [r for r in doc.get('reviews') or [] if isinstance(r, dict)
-                     and r.get('row') in ids and r.get('tiny')]
-        tiny = confirmed[-1]['tiny'] if confirmed else None
-        docs_only = bool(tiny) and not (tiny.get('files') or {}).get('code', 1)
+        # Each impl row is judged by its own latest confirmation; one code row makes the
+        # ticket a code ticket.
+        latest = {}
+        for review in doc.get('reviews') or []:
+            if isinstance(review, dict) and review.get('row') in ids and review.get('tiny'):
+                latest[review['row']] = review['tiny']
         problems = []
-        if not tiny:
-            problems.append('no review result with the four-limit confirmation: `review-result '
-                            '--row <impl row> --reviewer <name> --clean --tiny-confirm`')
-        elif docs_only:
+        if len(latest) < len(ids):
+            problems.append('no review result with the four-limit confirmation for impl item '
+                            f'{", ".join(str(i) for i in ids if i not in latest)}: '
+                            '`review-result --row <impl row> --reviewer <name> --clean '
+                            '--tiny-confirm`')
+        code = [t for t in latest.values() if (t.get('files') or {}).get('code', 1)]
+        docs_only = len(latest) == len(ids) and not code
+        if docs_only:
             if not any(row['evidence'].get('gate') for row in rows):
                 problems.append('no test evidence: close the impl row with --gate <suite-gate '
                                 'record fingerprint>')
-        elif not any(verify_file(path)[1] is None for path in tiny.get('handson') or []):
+        elif code and not all(any(verify_file(path)[1] is None for path in t.get('handson') or [])
+                              for t in code):
             problems.append('code touched: the reviewer must attach a hands-on evidence file '
                             '(screenshot or log) with `review-result ... --tiny-confirm '
                             '--handson <absolute path>`, also for a pure refactor')
