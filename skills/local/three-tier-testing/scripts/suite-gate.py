@@ -3489,8 +3489,9 @@ class MapContent:
     """The content of root as content_tree() counts it, seen through the affected-test map,
     for the fingerprints of single tests and checks that let a later run reuse their pass
     when the merged content differs only in files the map ties to other tests. The registry
-    and map files themselves do not count: what they decide (the template, the rules of a
-    test) is part of the fingerprint instead."""
+    and map files count for a test only when a rule that selects it names them in `paths`;
+    otherwise what they decide (the template, the rules of a test) is part of the
+    fingerprint instead."""
 
     def __init__(self, root, amap):
         self.amap = amap
@@ -3498,15 +3499,16 @@ class MapContent:
         with tempfile.TemporaryDirectory(prefix='suite-gate-') as tmp:
             entries = _index_entries(root, _fill_index(root, Path(tmp) / 'index', include))
         patterns = [p for rule in amap['rules'] for p in rule['tests']]
+        self.entries = entries
         self.files = []  # (entry, path, indexes of the rules whose paths hold it, shared, unmapped)
         for entry in entries:
             path = entry.split('\t', 1)[1]
-            if is_gate_config(path):
-                continue
             hits = frozenset(i for i, rule in enumerate(amap['rules'])
                              if any(glob_match(path, p) for p in rule['paths']))
-            shared = any(glob_match(path, p) for p in amap['shared'])
-            unmapped = not hits and not any(glob_match(path, p) for p in patterns)
+            config = is_gate_config(path)
+            shared = not config and any(glob_match(path, p) for p in amap['shared'])
+            unmapped = not config and not hits and not any(glob_match(path, p)
+                                                           for p in patterns)
             self.files.append((entry, path, hits, shared, unmapped))
 
     @staticmethod
@@ -3525,11 +3527,9 @@ class MapContent:
                              [self.amap['rules'][i] for i in sorted(rules)]], kept)
 
     def check(self, check):
-        """Fingerprint of an affected.checks entry: its command, directory and paths, and
-        the files its paths or the shared paths hold."""
-        kept = [entry for entry, path, _, shared, _ in self.files
-                if shared or any(glob_match(path, p) for p in check['paths'])]
-        return self._digest([check['cwd'], check['command'], check['paths']], kept)
+        """Fingerprint of an affected.checks entry: its command and directory, and all of
+        the content (its paths say when it runs, not everything it reads)."""
+        return self._digest([check['cwd'], check['command']], self.entries)
 
 
 def passed_affected(record):
@@ -3608,6 +3608,7 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
         return None, []
     content = MapContent(root, amap)
     fps = {d: {t: content.test(d, t) for t in tests} for d, tests in groups.items()}
+    taken = []  # (reused result, fingerprint it was taken for, fingerprint of MapContent now)
     for directory in list(groups):
         earlier, left = earlier_test_passes(fps[directory])
         for record in earlier:
@@ -3615,10 +3616,31 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
             results.append(group_result('affected', directory, record.get('command'), 0,
                                         tests=sorted(record['test_fingerprints']),
                                         earlier=record))
+            taken.append((results[-1], record['test_fingerprints'],
+                          lambda now, d=directory, ts=list(record['test_fingerprints']):
+                          {t: now.test(d, t) for t in ts}))
         if left:
             groups[directory] = left
         else:
             del groups[directory]
+    code, failed = _run_left(root, amap, selected, groups, checks, extra, prepared, via,
+                             results, content, taken, code, failed)
+    if taken:
+        # A reuse whose content something run after it changed no longer describes this
+        # content, and counts as content changed.
+        now = MapContent(root, amap)
+        for result, was, fp in taken:
+            if fp(now) != was:
+                result['content_changed'] = True
+                warn(f"the content of the reused {result['kind']} in {result['dir']} changed "
+                     'during the run; it counts as content changed')
+    return code, failed
+
+
+def _run_left(root, amap, selected, groups, checks, extra, prepared, via, results, content,
+              taken, code, failed):
+    """The rest of run_selected(): large selections, checks and test groups that were not
+    reused. (exit code, failed)."""
     if not groups and not checks:
         return code, failed
     if amap.get('share') is not None:
@@ -3643,6 +3665,7 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
             warn_reuse(f"check in {check['cwd']}", earlier)
             results.append(group_result('check', check['cwd'], check['command'], 0,
                                         earlier=earlier))
+            taken.append((results[-1], check_fp, lambda now, c=check: now.check(c)))
             continue
         cwd = suite_cwd(root, check)
         if not prepared(cwd, check['cwd']):
@@ -3654,7 +3677,8 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
         warn(f"checking in {check['cwd']}: {check['command']}")
         gate = Gate([check['command']], cwd, None, load_config(), dict(
             extra, kind='affected', reusable=False, selected_tests=[], why={},
-            check_fingerprint=check_fp, **({'via': via} if via else {})))
+            check_fingerprint=MapContent(root, amap).check(check),
+            **({'via': via} if via else {})))
         result = drive_group(results, 'check', check['cwd'], check['command'], gate,
                              lambda: gate.execute(fingerprint(cwd, [check['command']])))
         if result:
@@ -3669,10 +3693,13 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
                                         not_run='preparing the directory failed'))
             continue
         warn(f'running in {directory}: {text}')
+        # Taken again right before the run, so the record describes what an earlier group
+        # or check left; a change during the run marks it content_changed (never reused).
+        now = MapContent(root, amap)
         gate = Gate([text], cwd, None, load_config(), dict(
             extra, kind='affected', reusable=False, selected_tests=tests,
             why={t: selected[t] for t in tests},
-            test_fingerprints={t: fps[directory][t] for t in tests},
+            test_fingerprints={t: now.test(directory, t) for t in tests},
             **({'via': via} if via else {})), template=True)
         info = fingerprint(cwd, [text])
         result = drive_group(results, 'affected', directory, text, gate,

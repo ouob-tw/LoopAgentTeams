@@ -55,6 +55,56 @@ class ReuseTests(AffectedCase):
                                       ('web', ['tests/page.test.ts'])])
         self.assertIn('2 test(s) in .: same tests and content already passed', result.stderr)
 
+    def test_a_group_records_the_content_an_earlier_group_left_not_the_content_at_start(self):
+        self.registry['affected']['commands'] = {
+            '.': f'printf GOOD > {self.repo}/web/src/page.ts; echo "$PWD {{tests}}" >> {self.log}',
+            'web': 'test "$(cat src/page.ts)" = GOOD && : {tests}'}
+        self.write_registry()
+        self.touch('src/util.py')
+        self.touch('web/src/page.ts', 'BAD')
+        self.assertEqual(self.gate('affected').returncode, 0)
+        self.touch('src/util.py', '')  # only web is selected now
+        self.touch('web/src/page.ts', 'BAD')
+        result = self.gate('affected')
+        self.assertNotEqual(result.returncode, 0, 'web never passed on BAD: it runs and fails')
+        self.assertIn('running in web', result.stderr)
+
+    def test_a_reuse_whose_content_a_later_group_changed_counts_as_content_changed(self):
+        self.touch('src/util.py')
+        self.assertEqual(self.gate('affected', '--purpose', 'pre-merge').returncode, 0)
+        self.registry['affected']['commands']['web'] = (
+            f'printf later > {self.repo}/src/util.py; : {{tests}}')
+        self.write_registry()
+        self.touch('web/src/page.ts')
+        result = self.gate('affected', '--purpose', 'pre-merge')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('the content of the reused affected in . changed', result.stderr)
+        last = self.summaries('pre-merge')[-1]
+        self.assertEqual((last['passed'], last['groups'][0]['content_changed']), (False, True))
+
+    def test_a_check_is_run_again_when_a_file_outside_its_paths_changed(self):
+        self.registry['affected']['checks'] = [
+            {'paths': ['src/**'], 'cwd': '.', 'command': 'sh check.sh'}]
+        self.write_registry()
+        self.touch('check.sh', 'exit 0\n')
+        self.touch('src/app.py')
+        self.assertEqual(self.gate('affected').returncode, 0)
+        self.touch('check.sh', 'exit 7\n')
+        self.assertEqual(self.gate('affected').returncode, 7)
+
+    def test_map_files_a_rule_ties_to_the_test_count_in_its_fingerprint(self):
+        self.registry['affected']['map'].append(
+            {'paths': ['.suite-gate.d/**'], 'tests': ['tests/test_app.py']})
+        self.write_registry()
+        self.touch('.suite-gate.d/extra.json', '{"map": []}')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'map file')
+        self.touch('src/app.py')
+        self.assertEqual(self.gate('affected').returncode, 0)
+        self.touch('.suite-gate.d/extra.json', '{"map": [], "note": 1}')
+        self.assertEqual(self.gate('affected').returncode, 0)
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py'])] * 2)
+
     def batch(self):
         """The feature branch commits src/util.py and passes `affected --purpose pre-merge`;
         main is the start of the batch. (start commit, pre-merge summary)"""
