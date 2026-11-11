@@ -125,6 +125,8 @@ LAUNCH_PROMPT = 'Your task from {orchestrator} is in {brief}. Read that file and
 # The agent's own HCOM base name, expanded by its shell; the LAT tools resolve it to the full name.
 AGENT_ENV = '"$HCOM_INSTANCE_NAME"'
 REPORT_IN_MESSAGE = 'The card names no runs folder, so send the full report in the message.'
+REVIEW_RESULT = '''- When a review passes, and before you close its reviewers, record it so the tool reads what each reviewer runs on: `{cmd} review-result --row {row} --ledger {ledger_arg} --by {agent} --reviewer <HCOM name> --clean` (repeat `--reviewer` for each reviewer; a native sub-agent goes by the name you gave it).
+'''
 SPEC_COVERAGE = '''
 ## Spec coverage
 
@@ -604,11 +606,14 @@ def make_brief(args):
         lat_script=shlex.quote(str(args.lat_dir.resolve() / 'scripts' / 'lat-watch.py')))
     if card['ledger row']:
         row, ledger = card['ledger row']
-        fixed += LEDGER_FIXED.format(
-            row=row, ledger=ledger, ledger_arg=shlex.quote(ledger), agent=agent,
-            cmd='uv run --no-project python ' + shlex.quote(
-                str(args.lat_dir.resolve() / 'scripts' / 'lat-ledger.py')))
-        if row_stage(ledger, row) == 'qa-draft':
+        commands = dict(row=row, ledger=ledger, ledger_arg=shlex.quote(ledger), agent=agent,
+                        cmd='uv run --no-project python ' + shlex.quote(
+                            str(args.lat_dir.resolve() / 'scripts' / 'lat-ledger.py')))
+        fixed += LEDGER_FIXED.format(**commands)
+        stage = row_stage(ledger, row)
+        if stage == 'impl':
+            fixed += REVIEW_RESULT.format(**commands)
+        if stage == 'qa-draft':
             fixed += SPEC_COVERAGE.format(orchestrator=card['orchestrator'])
     else:
         print(f'lat-dispatch: warning: card {card_path} has no ledger row; the brief carries '

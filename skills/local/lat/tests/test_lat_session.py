@@ -3548,7 +3548,7 @@ class SessionTests(unittest.TestCase):
         context = self.recovery_context()
         self.assertIn(f'show --ledger {self.ledger_path()} --rows', context)
         self.assertIn(f'工作總表 {self.ledger_path()}', context)
-        self.assertIn('| 1 | #77 | 實作 | worker | 已派 |', context)
+        self.assertIn('| 1 | #77 | 實作 | worker | 未查證 | 已派 |', context)
         self.assertNotIn('more lines not shown', context)
         for number in range(2, 41):
             self.open_item(f'#{number}')

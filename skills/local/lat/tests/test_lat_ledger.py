@@ -1485,7 +1485,7 @@ class TicketTests(LedgerCase):
         self.assertIn('| 已 1 小時 30 分 | 1 |', out)
         self.assertIn('| 45 分 | 3 |', out)
         rows = self.ok('show', '--rows')
-        self.assertIn('| # | 票號 | 階段 | 負責 | 狀態 | 依賴 | 預計完成 | 備註 |', rows)
+        self.assertIn('| # | 票號 | 階段 | 負責 | 模型 | 狀態 | 依賴 | 預計完成 | 備註 |', rows)
         self.assertIn('進度：halfway', rows)
 
     def test_show_json_of_an_old_ledger_is_a_superset_with_blanks(self):
@@ -1518,6 +1518,190 @@ class TicketTests(LedgerCase):
                          [('acme/work#40', ''), ('ledger-fields', 'ledger-fields')])
         self.assertIn('| #40 |  |', self.ok('show'))
         self.assertEqual(self.gh_log.read_text() if self.gh_log.exists() else '', '')
+
+
+class ActualSettingsTests(LedgerCase):
+    """Actual model and effort (#547): read from `hcom list <name> --json` and the transcript
+    it names at assign and done, and for reviewers at review-result; else the card, 未查證."""
+
+    def setUp(self):
+        super().setUp()
+        (self.workspace / 'docs/agents').mkdir(parents=True)
+        (self.workspace / 'docs/agents/issue-tracker.md').write_text('pass `-R acme/work`\n')
+        self.set_hcom('orch', 'impl', 'rev', 'two')
+        self.agents = self.root / 'hcom-agents.json'
+        self.agents.write_text('{}')
+        self.init()
+
+    def run_ledger(self, *args, env=None, **kwargs):
+        return super().run_ledger(*args, env={'LAT_LEDGER_HCOM_AGENTS': str(self.agents),
+                                              **(env or {})}, **kwargs)
+
+    def launch(self, name, tool, model=None, turns=()):
+        """Stand in for one agent's HCOM details and transcript: `turns` are (model, effort)."""
+        transcript = self.root / f'{name}.jsonl'
+        lines = []
+        for turn_model, effort in turns:
+            if tool == 'claude':
+                lines.append({'type': 'assistant', 'effort': effort,
+                              'message': {'model': turn_model, 'content': []}})
+            else:
+                lines.append({'type': 'turn_context',
+                              'payload': {'model': turn_model, 'effort': effort}})
+        transcript.write_text(''.join(json.dumps(line) + '\n' for line in lines))
+        agents = json.loads(self.agents.read_text()) if self.agents.exists() else {}
+        agents[name] = {'name': name, 'tool': tool, 'transcript_path': str(transcript),
+                        'usage': {'model': model}}
+        self.agents.write_text(json.dumps(agents))
+        return transcript
+
+    def model_card(self, model):
+        path = self.tasks / f'card-{len(list(self.tasks.iterdir()))}.md'
+        path.write_text(f'接續：無\n\n- agent：impl\n- model：{model}\n- status：dispatched\n')
+        return path
+
+    def report(self):
+        path = self.root / 'report.md'
+        path.write_text('done\n')
+        return str(path)
+
+    def ticket(self, key='acme/work#1'):
+        return next(t for t in json.loads(self.ok('show', '--json'))['tickets']
+                    if t['key'] == key)
+
+    def stage_texts(self, ticket):
+        return {stage['step']: stage['text'] for stage in ticket['settings']}
+
+    def test_bind_and_done_readings_and_an_upgrade_in_history(self):
+        transcript = self.launch('impl', 'claude', 'claude-opus-5-5',
+                                 [('claude-opus-5-5', 'low')])
+        item = self.add(evidence='file')
+        self.ok('assign', str(item), '--agent', 'impl', '--card',
+                str(self.model_card('claude-sonnet-5-5 high')))
+        self.ok('start', str(item), '--eta', '+1h', by='impl')
+        with transcript.open('a') as stream:
+            stream.write(json.dumps({'type': 'assistant', 'effort': 'high',
+                                     'message': {'model': 'claude-opus-5-5'}}) + '\n')
+        self.ok('done', str(item), '--file', self.report(), by='impl')
+        actual = self.item(item)['actual']
+        self.assertEqual({k: actual['bind'][k] for k in ('client', 'model', 'effort', 'verified')},
+                         {'client': 'claude', 'model': 'claude-opus-5-5', 'effort': 'low',
+                          'verified': True})
+        self.assertEqual(actual['bind']['sources'], {'model': 'transcript', 'effort': 'transcript'})
+        self.assertEqual((actual['done']['effort'], actual['done']['verified']), ('high', True))
+        history = self.item(item)['history'][-1]
+        self.assertEqual((history['action'], history['changes']),
+                         ('settings', {'effort': ['low', 'high']}))
+        self.assertEqual(self.stage_texts(self.ticket()), {'impl': 'claude-opus-5-5・low→high'})
+        self.assertIn('| impl | claude-opus-5-5・low→high |', self.ok('show', '--rows'))
+        self.assertIn('實作 claude-opus-5-5・low→high', self.ok('show'))
+
+    def test_codex_model_and_effort_come_from_the_same_latest_turn(self):
+        # HCOM still names the model before a switch; the latest turn has the new one.
+        self.launch('impl', 'codex', 'gpt-6.1-sol', [('gpt-6.1-sol', 'low'),
+                                                      ('gpt-6.1-terra', 'medium')])
+        item = self.add()
+        self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.model_card('x')))
+        bind = self.item(item)['actual']['bind']
+        self.assertEqual((bind['client'], bind['model'], bind['effort'], bind['verified']),
+                         ('codex', 'gpt-6.1-terra', 'medium', True))
+        self.assertEqual(bind['sources'], {'model': 'transcript', 'effort': 'transcript'})
+
+    def test_unreadable_hcom_falls_back_to_the_card_marked_unverified(self):
+        item = self.add(evidence='file')
+        self.agents.unlink()
+        self.ok('assign', str(item), '--agent', 'impl', '--card',
+                str(self.model_card('gpt-6-astra medium')))
+        bind = self.item(item)['actual']['bind']
+        self.assertEqual((bind['model'], bind['effort'], bind['verified']),
+                         ('gpt-6-astra', 'medium', False))
+        self.assertEqual(bind['sources'], {'model': 'card', 'effort': 'card'})
+        self.assertIn('hcom agent details unreadable', bind['problem'])
+        self.assertEqual(self.stage_texts(self.ticket()), {'impl': 'gpt-6-astra・medium（未查證）'})
+        # HCOM answers but the transcript holds no effort: the card fills it, still unverified,
+        # and an unverified bind reading is no "change" to show with an arrow.
+        self.ok('start', str(item), '--eta', '+1h', by='impl')
+        self.launch('impl', 'codex', 'gpt-6.1-sol')
+        self.ok('done', str(item), '--file', self.report(), by='impl')
+        done = self.item(item)['actual']['done']
+        self.assertEqual((done['model'], done['effort'], done['verified'], done['sources']),
+                         ('gpt-6.1-sol', 'medium', False, {'model': 'hcom', 'effort': 'card'}))
+        self.assertEqual(self.item(item)['history'][-1]['changes']['model'],
+                         ['gpt-6-astra', 'gpt-6.1-sol'])
+        self.assertEqual(self.stage_texts(self.ticket()), {'impl': 'gpt-6.1-sol・medium（未查證）'})
+
+    def test_native_agent_is_never_looked_up(self):
+        self.launch('helper', 'claude', 'claude-opus-5-5', [('claude-opus-5-5', 'high')])
+        item = self.add(evidence='file')
+        self.ok('assign', str(item), '--agent', 'helper', '--native', '--card',
+                str(self.model_card('claude-sonnet-5-5')))
+        self.ok('start', str(item), '--eta', '+1h', by='orch')
+        self.ok('done', str(item), '--file', self.report(), by='orch')
+        actual = self.item(item)['actual']
+        for reading in actual.values():
+            self.assertEqual((reading['model'], reading['effort'], reading['verified'],
+                              reading['native']), ('claude-sonnet-5-5', None, False, True))
+        self.assertEqual(self.stage_texts(self.ticket()), {'impl': 'claude-sonnet-5-5・?（未查證）'})
+
+    def test_review_result_records_each_reviewer_and_feeds_the_review_stage(self):
+        self.launch('impl', 'claude', 'claude-opus-5-5', [('claude-opus-5-5', 'medium')])
+        self.launch('rev', 'codex', 'gpt-6-astra', [('gpt-6-astra', 'medium')])
+        item = self.add(evidence='file')
+        self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.model_card('m')))
+        self.ok('start', str(item), '--eta', '+1h', by='impl')
+        self.assertEqual(self.steps(self.ticket())['review'], 'pending')
+        out = self.ok('review-result', '--row', str(item), '--reviewer', 'rev', '--reviewer',
+                      'impl-sub-agent', '--clean', '--note', 'four limits ok', by='impl')
+        self.assertIn('rev gpt-6-astra・medium', out)
+        doc = self.doc()
+        self.assertEqual([{k: r[k] for k in ('id', 'row', 'by', 'result', 'reviewers', 'note')}
+                          for r in doc['reviews']],
+                         [{'id': 1, 'row': item, 'by': 'impl', 'result': 'clean',
+                           'reviewers': ['rev', 'impl-sub-agent'], 'note': 'four limits ok'}])
+        self.assertEqual([(p['stage'], p['name'], p['row'], p['model'], p['effort'], p['verified'])
+                          for p in doc['participants']],
+                         [('review', 'rev', item, 'gpt-6-astra', 'medium', True),
+                          ('review', 'impl-sub-agent', item, None, None, False)])
+        ticket = self.ticket()
+        self.assertEqual(self.stage_texts(ticket),
+                         {'impl': 'claude-opus-5-5・medium',
+                          'review': 'gpt-6-astra・medium、未查證'})
+        self.assertEqual(self.steps(ticket)['review'], 'done')
+        shown = json.loads(self.ok('show', '--json'))
+        self.assertEqual(len(shown['participants']), 2)
+        self.assertEqual(shown['reviews'][0]['row'], item)
+
+    def steps(self, ticket):
+        return {step['key']: step['state'] for step in ticket['steps']}
+
+    def test_review_result_refusals_write_nothing(self):
+        item = self.add()
+        before = self.ledger.read_bytes()
+        self.assertIn('give --clean', self.fails('review-result', '--row', str(item),
+                                                 '--reviewer', 'rev'))
+        self.assertIn('no item 9', self.fails('review-result', '--row', '9', '--reviewer', 'rev',
+                                              '--clean'))
+        self.assertIn('--reviewer', self.fails('review-result', '--row', str(item), '--clean'))
+        self.set_hcom('orch', 'x-rev', 'y-rev')
+        self.assertIn('Ambiguous HCOM agent rev', self.fails(
+            'review-result', '--row', str(item), '--reviewer', 'rev', '--clean'))
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_old_ledger_without_readings_shows_blanks(self):
+        item = self.add(evidence='file')
+        self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.model_card('m')))
+        doc = self.doc()
+        del doc['items'][0]['actual']
+        text = json.dumps(doc, indent=2, ensure_ascii=False) + '\n'
+        self.ledger.write_text(text)
+        self.ok('repair', '--reason', 'simulate an older ledger')
+        self.assertEqual(self.ticket()['settings'], [])
+        self.assertIn('| impl |  | 已派 |', self.ok('show', '--rows'))
+        self.launch('impl', 'claude', 'claude-opus-5-5', [('claude-opus-5-5', 'max')])
+        self.ok('done', str(item), '--file', self.report(), by='impl')
+        actual = self.item(item)['actual']
+        self.assertEqual((list(actual), actual['done']['effort']), (['done'], 'max'))
+        self.assertEqual(self.stage_texts(self.ticket()), {'impl': 'claude-opus-5-5・max'})
 
 
 class NameTests(LedgerCase):
