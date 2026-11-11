@@ -95,7 +95,7 @@ class LedgerCase(unittest.TestCase):
     def started(self, *extra, evidence='commit', card=None, ticket='#1'):
         item = self.add(*extra, evidence=evidence, ticket=ticket)
         self.ok('assign', str(item), '--agent', 'impl', '--card',
-                str(card or self.card(f'card-{item}.md')), '--deadline', '+2h')
+                str(card or self.card(f'card-{item}.md')))
         self.ok('start', str(item), '--eta', '+1h', by='impl')
         return item
 
@@ -298,25 +298,65 @@ class FieldTests(LedgerCase):
         self.assertEqual(self.item(item)['evidence_kinds'], ['commit', 'file'])
         self.assertEqual(self.item(item)['status'], 'unassigned')
 
-    def test_assign_needs_agent_card_and_a_deadline(self):
+    def test_assign_needs_agent_and_card_but_no_deadline(self):
         item = self.add()
         card = str(self.card())
         self.assertEqual(self.run_ledger('assign', str(item), '--card', card).returncode, 2)
         self.assertEqual(self.run_ledger('assign', str(item), '--agent', 'a').returncode, 2)
-        self.assertIn('--deadline is required',
-                      self.fails('assign', str(item), '--agent', 'a', '--card', card))
-        self.ok('assign', str(item), '--agent', 'a', '--card', card, '--deadline', '+90m')
+        self.ok('assign', str(item), '--agent', 'a', '--card', card)
         row = self.item(item)
         self.assertEqual((row['status'], row['agent'], row['deadline'], row['assigned_at']),
-                         ('assigned', 'a', '2026-10-24T11:30:00Z', NOW))
-        later = self.add('--deadline', '2026-10-24T18:00:00+08:00')
-        self.ok('assign', str(later), '--agent', 'b', '--card', card)
-        self.assertEqual(self.item(later)['deadline'], '2026-10-24T10:00:00Z')
+                         ('assigned', 'a', None, NOW))
+
+    def test_a_passed_deadline_is_ignored_with_a_notice(self):
+        added = self.run_ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence',
+                                'commit', '--deadline', '+5h')
+        self.assertEqual(added.returncode, 0, added.stderr)
+        self.assertIn('--deadline ignored', added.stderr)
+        item = int(added.stdout)
+        self.assertIsNone(self.item(item)['deadline'])
+        assigned = self.run_ledger('assign', str(item), '--agent', 'a', '--card',
+                                   str(self.card()), '--deadline', '+90m')
+        self.assertEqual(assigned.returncode, 0, assigned.stderr)
+        self.assertIn('--deadline ignored', assigned.stderr)
+        self.assertIsNone(self.item(item)['deadline'])
+        self.ok('start', str(item), '--eta', '+30m', by='a')
+        updated = self.run_ledger('update', str(item), '--deadline', '+9h', '--progress', 'x',
+                                  by='a')
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        self.assertIn('--deadline ignored', updated.stderr)
+        self.assertEqual(self.item(item)['deadline'], '2026-10-24T11:30:00Z')
+        self.assertIn('nothing to update', self.fails('update', str(item), '--deadline', '+9h',
+                                                      '--reason', 'r', by='a'))
+
+    def test_the_deadline_is_the_estimate_plus_an_hour_and_follows_it(self):
+        item = self.add()
+        self.ok('assign', str(item), '--agent', 'a', '--card', str(self.card()))
+        self.ok('start', str(item), '--eta', '+45m', by='a')
+        self.assertEqual(self.item(item)['deadline'], '2026-10-24T11:45:00Z')
+        self.ok('update', str(item), '--eta', '2026-10-24T13:00:00Z', '--reason', 'r', by='a')
+        self.assertEqual(self.item(item)['deadline'], '2026-10-24T14:00:00Z')
+        self.ok('reassign', str(item), '--agent', 'b', '--reason', 'r')
+        row = self.item(item)
+        self.assertEqual((row['estimate'], row['deadline']), (None, None))
+
+    def test_unblock_recomputes_the_deadline_from_the_current_estimate(self):
+        item = self.add()
+        self.ok('assign', str(item), '--agent', 'a', '--card', str(self.card()))
+        self.ok('start', str(item), '--eta', '+1h', by='a')
+        self.ok('block', str(item), '--reason', 'waits for #9')
+        self.now = '2026-10-24T12:30:00Z'  # past the deadline while blocked
+        self.assertNotIn('deadline', json.loads(self.ok('show', '--json'))['items'][0]
+                         ['late_minutes'])
+        self.ok('unblock', str(item))
+        row = self.item(item)
+        self.assertEqual((row['status'], row['deadline']), ('in_progress', '2026-10-24T12:00:00Z'))
+        self.ok('update', str(item), '--eta', '+30m', '--reason', 'unblocked', by='a')
+        self.assertEqual(self.item(item)['deadline'], '2026-10-24T14:00:00Z')
 
     def test_start_requires_eta_and_update_eta_requires_reason(self):
         item = self.add()
-        self.ok('assign', str(item), '--agent', 'a', '--card', str(self.card()),
-                '--deadline', '+2h')
+        self.ok('assign', str(item), '--agent', 'a', '--card', str(self.card()))
         self.assertEqual(self.run_ledger('start', str(item)).returncode, 2)
         self.ok('start', str(item), '--eta', '+45m', by='a')
         self.assertEqual(self.item(item)['estimate'], '2026-10-24T10:45:00Z')
@@ -325,7 +365,9 @@ class FieldTests(LedgerCase):
         self.ok('update', str(item), '--eta', '+2h', '--reason', 'flaky fixture', by='a')
         last = self.item(item)['history'][-1]
         self.assertEqual(last['changes'], {'estimate': ['2026-10-24T10:45:00Z',
-                                                        '2026-10-24T12:00:00Z']})
+                                                        '2026-10-24T12:00:00Z'],
+                                           'deadline': ['2026-10-24T11:45:00Z',
+                                                        '2026-10-24T13:00:00Z']})
         self.assertEqual((last['by'], last['reason']), ('a', 'flaky fixture'))
 
     def test_block_and_cancel_require_a_reason(self):
@@ -820,6 +862,30 @@ class QaCoverageTests(LedgerCase):
                 self.ok('cancel', str(qa), '--reason', 'covered')
                 self.assertEqual(self.run_ledger('check').returncode, 0 if covered else 1)
 
+    def test_a_ledger_with_a_hand_set_deadline_still_loads(self):
+        baseline = self.root / 'baseline'
+        baseline.mkdir()
+        old = baseline / 'lat-ledger.py'
+        old.write_text(git(Path(__file__).resolve().parents[3], 'show',
+                           'e8aa8075:skills/local/lat/scripts/lat-ledger.py') + '\n')
+        (baseline / '_lat_common.py').write_text((SCRIPT.parent / '_lat_common.py').read_text())
+        for path in (self.ledger, self.seal, self.journal):
+            path.unlink()
+        def old_ok(*args, by='orch'):
+            result = self.run_ledger(*args, by=by, script=old)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+        old_ok('init', '--workspace', str(self.workspace), '--integration-branch', 'dev',
+               '--orchestrator', 'orch')
+        item = old_ok('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'commit').strip()
+        old_ok('assign', item, '--agent', 'impl', '--card', str(self.card()), '--deadline', '+5h')
+        old_ok('start', item, '--eta', '+1h', by='impl')
+        old_ok('block', item, '--reason', 'waits')
+        self.assertEqual(self.item(int(item))['deadline'], '2026-10-24T15:00:00Z')
+        self.assertIn('| 受阻 |', self.ok('show'))
+        self.ok('unblock', item)
+        self.assertEqual(self.item(int(item))['deadline'], '2026-10-24T12:00:00Z')
+
     def test_a_ledger_made_before_the_rule_is_not_held_to_it(self):
         baseline = self.root / 'baseline'
         baseline.mkdir()
@@ -1139,11 +1205,19 @@ class ShowTests(LedgerCase):
         out = self.ok('show')
         rows = {line.split(' | ')[0].strip('| '): line for line in out.splitlines()
                 if line.startswith('| ') and not line.startswith('| #')}
-        self.assertIn('超過預計 1h30m；超過期限 30m', rows[str(late)])
+        header = next(line for line in out.splitlines() if line.startswith('| #'))
+        self.assertNotIn('最晚期限', header)
+        self.assertNotIn('遲到', header)
+        self.assertIn('| 進行中（超過預計 90 分） |', rows[str(late)])
+        self.assertNotIn('期限', out)
         self.assertIn('任務卡不一致：card says committed, ledger says in_progress', rows[str(wrong)])
-        self.assertIn('超過期限 30m', rows[str(blocked)])
+        self.assertIn('| 受阻 |', rows[str(blocked)])
         self.assertNotIn('超過預計', rows[str(blocked)])
         self.assertIn('受阻：waits for #9', rows[str(blocked)])
+        late_json = {row['id']: row['late_minutes']
+                     for row in json.loads(self.ok('show', '--json'))['items']}
+        self.assertEqual(late_json[late], {'estimate': 90, 'deadline': 30})
+        self.assertEqual(late_json[blocked], {})
 
     def test_show_json_gives_board_fields(self):
         item = self.started()
@@ -1179,8 +1253,7 @@ class NameTests(LedgerCase):
         self.set_hcom('lead-orch', 'team-impl', 'team-impl2')
         self.init()
         item = self.add()
-        self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.card()),
-                '--deadline', '+2h')
+        self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.card()))
         self.ok('start', str(item), '--eta', '+1h', by='impl')
         self.ok('reassign', str(item), '--agent', 'impl2', '--reason', 'impl vanished',
                 '--by', 'orch')
@@ -1196,8 +1269,7 @@ class NameTests(LedgerCase):
         item = self.add()
         before = self.ledger.read_bytes()
         self.set_hcom('orch', 'x-impl', 'y-impl')
-        error = self.fails('assign', str(item), '--agent', 'impl', '--card', str(self.card()),
-                           '--deadline', '+2h')
+        error = self.fails('assign', str(item), '--agent', 'impl', '--card', str(self.card()))
         self.assertIn('--agent: Ambiguous HCOM agent impl: x-impl, y-impl', error)
         error = self.fails('block', str(item), '--reason', 'r', by='ghost')
         self.assertIn('--by: Unknown HCOM agent: ghost; HCOM lists: orch, x-impl, y-impl; '
@@ -1212,7 +1284,7 @@ class NameTests(LedgerCase):
         item = int(self.ok('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file',
                            by='').strip())
         self.ok('assign', str(item), '--agent', 'nanu-research-web', '--native', '--card',
-                str(self.card()), '--deadline', '+2h', by='')
+                str(self.card()), by='')
         self.ok('reassign', str(item), '--agent', 'nanu-research-two', '--native', '--reason',
                 'first one left', by='')
         self.assertEqual(self.item(item)['agent'], 'nanu-research-two')
@@ -1278,8 +1350,7 @@ class RoundTests(LedgerCase):
         item = self.add(evidence='file')
         self.exempt_qa()
         self.record(self.r2)
-        self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.card()),
-                '--deadline', '+2h')
+        self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.card()))
         self.ok('start', str(item), '--eta', '+1h', by='impl')
         self.ok('update', str(item), '--progress', 'half', by='impl')
         report = self.root / 'report.md'

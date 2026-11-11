@@ -11,10 +11,9 @@ export interface LedgerRow {
 	/** The agent's full HCOM name; null while it is not given to anyone. */
 	agent: string | null;
 	estimate: string | null;
-	deadline: string | null;
-	/** Whole minutes past the estimate and past the deadline at the read, each only while it still
-	 *  applies, as lat-ledger counts them. */
-	late: { estimate?: number; deadline?: number };
+	/** Whole minutes past the estimate at the read, while it still applies, as lat-ledger counts
+	 *  them. The deadline lat-ledger keeps only drives stall alarms and is not shown. */
+	late: { estimate?: number };
 	/** When the item last changed; null when its history is empty. */
 	updatedAt: string | null;
 }
@@ -32,6 +31,7 @@ function rowFrom(value: unknown): LedgerRow | null {
 	const item = value as Record<string, unknown>;
 	if (typeof item.id !== 'number' || typeof item.ticket !== 'string') return null;
 	const late = (typeof item.late_minutes === 'object' && item.late_minutes) || {};
+	const pastEstimate = minutes((late as Record<string, unknown>).estimate);
 	const history = Array.isArray(item.history) ? item.history : [];
 	const latest = history.at(-1) as { at?: unknown } | undefined;
 	return {
@@ -41,13 +41,7 @@ function rowFrom(value: unknown): LedgerRow | null {
 		status: text(item.status_label) ?? text(item.status) ?? '',
 		agent: text(item.agent),
 		estimate: text(item.estimate),
-		deadline: text(item.deadline),
-		late: Object.fromEntries(
-			(['estimate', 'deadline'] as const).flatMap((key) => {
-				const value = minutes((late as Record<string, unknown>)[key]);
-				return value === undefined ? [] : [[key, value]];
-			})
-		),
+		late: pastEstimate === undefined ? {} : { estimate: pastEstimate },
 		updatedAt: text(latest?.at)
 	};
 }
@@ -63,19 +57,8 @@ export function ledgerFrom(entry: { status?: unknown; reason?: unknown; ledger?:
 	return { state: 'ok', updatedAt: text(ledger?.updated_at), items: items as LedgerRow[] };
 }
 
-/** Minutes as lat-ledger prints them: `1h05m`, or `45m` under an hour. */
-export function duration(total: number): string {
-	const hours = Math.floor(total / 60);
-	const rest = total % 60;
-	return hours ? `${hours}h${String(rest).padStart(2, '0')}m` : `${rest}m`;
-}
-
-/** How late an item is, e.g. `超過期限 1h05m；超過預計 10m`; empty when it is not late. */
+/** How far past its estimate an item is, as `lat-ledger show` writes it in the status:
+ *  `超過預計 125 分`; empty when it is not past. */
 export function lateText(late: LedgerRow['late']): string {
-	return [
-		late.deadline !== undefined && `超過期限 ${duration(late.deadline)}`,
-		late.estimate !== undefined && `超過預計 ${duration(late.estimate)}`
-	]
-		.filter(Boolean)
-		.join('；');
+	return late.estimate === undefined ? '' : `超過預計 ${late.estimate} 分`;
 }

@@ -1027,12 +1027,13 @@ class LedgerTests(BoardTestCase):
 
     def test_ledger_is_shown_as_the_ledger_tool_prints_it(self):
         self.ledger_tool("init", "--workspace", str(self.workspace))
-        self.ledger_tool("add", "--ticket", "#302", "--stage", "impl", "--evidence", "commit",
-                         "--deadline", "2020-01-01T00:00:00+00:00")
+        self.ledger_tool("add", "--ticket", "#302", "--stage", "impl", "--evidence", "commit")
         card = self.workspace / ".lat/tasks/card.md"
         card.parent.mkdir(parents=True)
         card.write_text("- status：dispatched\n")
         self.ledger_tool("assign", "1", "--agent", "tevu-impl302-zaga", "--card", str(card))
+        # A long-past estimate puts the deadline (estimate + 1h) in the past too.
+        self.ledger_tool("start", "1", "--eta", "2020-01-01T00:00:00+00:00")
         self.record(ledger_path=str(self.ledger))
 
         [result] = self.read()

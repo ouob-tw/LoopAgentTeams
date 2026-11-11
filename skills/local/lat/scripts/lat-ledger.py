@@ -43,6 +43,8 @@ CARD_FIELD = re.compile(r'-\s+([^：:\n]+)[：:]\s*(.*)')
 CARD_CLOSED = ('committed', 'merged', 'completed')
 RELATIVE = re.compile(r'\+(\d+)([mhd])')
 ROUND_LEDGER = re.compile(r'(.+)-r\d+\.json')
+# The tool keeps each row's deadline at its estimate plus this; it only drives stall alarms.
+DEADLINE_AFTER_ESTIMATE = timedelta(hours=1)
 
 
 class Failure(Exception):
@@ -106,6 +108,18 @@ def item_ids(text):
         return sorted({int(part) for part in text.split(',') if part.strip()})
     except ValueError as error:
         raise Failure(f'invalid item list {text!r}: use comma-separated numbers') from error
+
+
+def deadline_for(estimate):
+    """The deadline the tool keeps for an estimate stamp; None without an estimate."""
+    return stamp(loads_time(estimate) + DEADLINE_AFTER_ESTIMATE) if estimate else None
+
+
+def ignore_deadline(args):
+    """--deadline is still accepted from older callers but no longer set by hand."""
+    if getattr(args, 'deadline', None):
+        print('lat-ledger: --deadline ignored; the deadline is now the estimate + 1h, '
+              'set by start/update --eta', file=sys.stderr)
 
 
 def kinds_of(values):
@@ -669,6 +683,7 @@ def cmd_add(args):
         check_round(args.ledger)
     kinds = kinds_of(args.evidence)
     ticket = required_text('--ticket', args.ticket)
+    ignore_deadline(args)
     repo = None
     if args.repo:
         repo, problem = check_repo(args.repo)
@@ -684,8 +699,7 @@ def cmd_add(args):
         item = {'id': doc['next_id'], 'ticket': ticket, 'stage': args.stage, 'agent': None,
                 'card': None, 'branch': args.branch, 'repo': repo, 'status': 'unassigned',
                 'depends_on': deps, 'follows': args.follows, 'assigned_at': None,
-                'started_at': None, 'estimate': None,
-                'deadline': stamp(parse_time(args.deadline, at)) if args.deadline else None,
+                'started_at': None, 'estimate': None, 'deadline': None,
                 'evidence_kinds': kinds, 'evidence': {}, 'progress': None,
                 'blocked_reason': None, 'blocked_from': None, 'cancel_reason': None,
                 'history': []}
@@ -700,15 +714,12 @@ def cmd_add(args):
 def cmd_assign(args):
     agent = required_text('--agent', args.agent)
     card = required_text('--card', args.card)
+    ignore_deadline(args)
     with transaction(args, 'assign', args.id) as doc:
         item = find(doc, args.id)
         require_status(item, ('unassigned',), 'assign')
-        at = now()
-        deadline = stamp(parse_time(args.deadline, at)) if args.deadline else item['deadline']
-        if not deadline:
-            raise Failure('--deadline is required (the item has no deadline yet)')
         record(args, item, 'assign', {'status': 'assigned', 'agent': agent, 'card': card,
-                                      'deadline': deadline, 'assigned_at': stamp(at)})
+                                      'assigned_at': stamp(now())})
 
 
 def cmd_start(args):
@@ -716,21 +727,23 @@ def cmd_start(args):
         item = find(doc, args.id)
         require_status(item, ('assigned',), 'start')
         at = now()
+        estimate = stamp(parse_time(args.eta, at))
         record(args, item, 'start', {'status': 'in_progress', 'started_at': stamp(at),
-                                     'estimate': stamp(parse_time(args.eta, at))})
+                                     'estimate': estimate, 'deadline': deadline_for(estimate)})
 
 
 def cmd_update(args):
     reason = args.reason.strip() if args.reason else None
-    if (args.eta or args.deadline or args.depends is not None) and not reason:
-        raise Failure('--reason is required when changing --eta, --deadline or --depends')
-    if not any((args.eta, args.deadline, args.progress, args.card, args.branch, args.repo,
+    ignore_deadline(args)
+    if (args.eta or args.depends is not None) and not reason:
+        raise Failure('--reason is required when changing --eta or --depends')
+    if not any((args.eta, args.progress, args.card, args.branch, args.repo,
                 args.merged_into, args.depends is not None)):
-        raise Failure('nothing to update; give --eta, --deadline, --progress, --card, --branch, '
+        raise Failure('nothing to update; give --eta, --progress, --card, --branch, '
                       '--repo, --merged-into or --depends')
     with transaction(args, 'update', args.id, reason) as doc:
         item = find(doc, args.id)
-        if args.eta or args.deadline or args.progress:
+        if args.eta or args.progress:
             if item['status'] == 'done':
                 raise Failure(f'item {item["id"]} is done; to note a later change or replace '
                               'its evidence, use amend')
@@ -743,8 +756,7 @@ def cmd_update(args):
             if item['status'] != 'in_progress':
                 raise Failure(f'item {item["id"]} is {item["status"]}; --eta needs in_progress')
             changes['estimate'] = stamp(parse_time(args.eta, at))
-        if args.deadline:
-            changes['deadline'] = stamp(parse_time(args.deadline, at))
+            changes['deadline'] = deadline_for(changes['estimate'])
         if args.progress:
             changes['progress'] = args.progress.strip()
         if args.card:
@@ -785,8 +797,10 @@ def cmd_unblock(args):
         if cancelled:
             raise Failure(f'item {item["id"]} still depends on cancelled item(s) '
                           f'{", ".join(map(str, cancelled))}; change them with update --depends')
+        # The deadline follows the current estimate again (older ledgers stored a hand-set one).
         record(args, item, 'unblock', {'status': item['blocked_from'], 'blocked_from': None,
-                                       'blocked_reason': None}, args.reason)
+                                       'blocked_reason': None,
+                                       'deadline': deadline_for(item['estimate'])}, args.reason)
 
 
 def cmd_done(args):
@@ -862,7 +876,7 @@ def cmd_reassign(args):
         if not item['agent']:
             raise Failure(f'item {item["id"]} was never assigned; use assign')
         changes = {'agent': agent, 'assigned_at': stamp(now()), 'started_at': None,
-                   'estimate': None}
+                   'estimate': None, 'deadline': None}
         if args.card:
             changes['card'] = args.card
         if item['status'] == 'blocked':
@@ -964,18 +978,14 @@ def cmd_check(args):
 
 
 def lateness(item, at):
-    """Minutes past the estimate and the deadline, counted only while they still apply."""
+    """Minutes past the estimate and the deadline, counted only while they still apply; a
+    blocked row has no deadline."""
     late = {}
     if item['status'] == 'in_progress' and item['estimate']:
         late['estimate'] = (at - loads_time(item['estimate'])).total_seconds() // 60
-    if item['status'] in OPEN and item['deadline']:
+    if item['status'] in ('assigned', 'in_progress') and item['deadline']:
         late['deadline'] = (at - loads_time(item['deadline'])).total_seconds() // 60
     return {key: int(value) for key, value in late.items() if value > 0}
-
-
-def duration(minutes):
-    hours, minutes = divmod(minutes, 60)
-    return f'{hours}h{minutes:02d}m' if hours else f'{minutes}m'
 
 
 def cell(value):
@@ -1000,11 +1010,12 @@ def cmd_show(args):
                          ensure_ascii=False, indent=1))
         return 0
     print(f'工作總表 {args.ledger}（更新於 {doc["updated_at"]}）\n')
-    print('| # | 票號 | 階段 | 負責 | 狀態 | 依賴 | 預計完成 | 最晚期限 | 遲到 | 備註 |')
-    print('|---|---|---|---|---|---|---|---|---|---|')
+    print('| # | 票號 | 階段 | 負責 | 狀態 | 依賴 | 預計完成 | 備註 |')
+    print('|---|---|---|---|---|---|---|---|')
     for row in rows:
-        late = '；'.join(f'{"超過預計" if key == "estimate" else "超過期限"} {duration(value)}'
-                        for key, value in row['late_minutes'].items())
+        status = row['status_label']
+        if 'estimate' in row['late_minutes']:
+            status += f'（超過預計 {row["late_minutes"]["estimate"]} 分）'
         notes = [text for text in (
             row['blocked_reason'] and f'受阻：{row["blocked_reason"]}',
             row['cancel_reason'] and f'取消：{row["cancel_reason"]}',
@@ -1013,9 +1024,8 @@ def cmd_show(args):
             row['card_mismatch'] and f'任務卡不一致：{row["card_mismatch"]}',
             row['progress'] and f'進度：{row["progress"]}') if text]
         print('| ' + ' | '.join(cell(value) for value in (
-            row['id'], row['ticket'], row['stage_label'], row['agent'], row['status_label'],
-            ','.join(map(str, row['depends_on'])), row['estimate'], row['deadline'], late,
-            '；'.join(notes))) + ' |')
+            row['id'], row['ticket'], row['stage_label'], row['agent'], status,
+            ','.join(map(str, row['depends_on'])), row['estimate'], '；'.join(notes))) + ' |')
     return 0
 
 
@@ -1079,7 +1089,8 @@ def build_parser():
                      help='commit, gate and/or file; comma-separated or repeated')
     sub.add_argument('--depends', help='comma-separated item numbers')
     sub.add_argument('--follows', type=int, help='item this one continues')
-    sub.add_argument('--deadline', help='ISO 8601 or +N[m|h|d]')
+    sub.add_argument('--deadline', help='ignored (kept for older callers): the deadline is '
+                     'the estimate + 1h')
     sub.add_argument('--branch', help='branch the commit evidence must reach')
     sub.add_argument('--repo', help='absolute path of the git repo the commit evidence lives in')
     sub.add_argument('--old-round', action='store_true',
@@ -1091,12 +1102,12 @@ def build_parser():
     sub.add_argument('--native', action='store_true',
                      help='Claude built-in agent without an HCOM name: --agent is kept as given')
     sub.add_argument('--card', required=True, help='task card path')
-    sub.add_argument('--deadline', help='required unless add set one')
+    sub.add_argument('--deadline', help='ignored (kept for older callers)')
     sub = command('start', 'Agent starts work')
     sub.add_argument('--eta', required=True, help='expected finish: ISO 8601 or +N[m|h|d]')
     sub = command('update', 'Record progress or change times, card or dependencies')
-    sub.add_argument('--eta')
-    sub.add_argument('--deadline')
+    sub.add_argument('--eta', help='new estimate; the deadline moves to it + 1h')
+    sub.add_argument('--deadline', help='ignored (kept for older callers)')
     sub.add_argument('--progress')
     sub.add_argument('--card')
     sub.add_argument('--branch', help='branch the commit evidence must reach')

@@ -2683,7 +2683,8 @@ def ledger_dues(item):
                          item['assigned_at'])
     if status == 'in_progress' and item.get('estimate'):
         dues['estimate'] = (ledger_time(item['estimate']), item['estimate'])
-    if status in ('assigned', 'in_progress', 'blocked') and item.get('deadline'):
+    # The deadline (the estimate + 1h, kept by lat-ledger) does not count while a row is blocked.
+    if status in ('assigned', 'in_progress') and item.get('deadline'):
         dues['deadline'] = (ledger_time(item['deadline']), item['deadline'])
         dues['user'] = dues['deadline']
     return {f'{kind}:{item["id"]}:{text}': (kind, due, text) for kind, (due, text) in dues.items()}
@@ -2709,8 +2710,9 @@ def ledger_message(kind, item, location, now, notified_at=None):
         return (f'LAT stall watcher: ledger item {item["id"]} ({item["ticket"]}, stage '
                 f'{item["stage"]}) owned by {owner} is {item["status"]} and passed its deadline '
                 f'{item["deadline"]} by {late} minutes. Ledger: {location}. Check the agent, '
-                'then reassign, block, cancel or extend the deadline with update --deadline '
-                '--reason. If its status, owner and deadline stay unchanged for 10 minutes, '
+                'then reassign, block, cancel, or move its estimate with update --eta --reason '
+                '(the deadline follows at the estimate + 1h). If its status, owner and '
+                'deadline stay unchanged for 10 minutes, '
                 'the user is notified.')
     return (f'LAT stall watcher: ledger item {item["id"]} ({item["ticket"]}) owned by {owner} '
             f'passed its deadline {item["deadline"]} by {late} minutes. The orchestrator was '
