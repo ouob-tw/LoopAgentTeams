@@ -236,7 +236,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批
 | `commit` | 開跑時 `HEAD` 的完整提交（目標提交） |
 | `tree` | 暫時檢出開跑時的 tree，通常等於 `git rev-parse <commit>^{tree}`；要確認測的就是某個提交，比對這兩者 |
 | `changed_files` | 起點到 `commit` 的改動檔（repo 相對路徑，排序） |
-| `groups` | 每一組，依執行順序：`kind`（`check`、`affected` 或 `full-suite`）、`dir`（執行目錄，repo 相對，根目錄為 `.`）、`command`、`tests`（`affected` 組選出的測試，repo 相對；其餘為 `null`）、`exit_code`（失敗重跑後的結果）、`fingerprint`（該組的指紋）、`flaky`（是否靠失敗重跑才通過）、`rerun_only`（重跑才通過時是該組紀錄的 `fingerprint` 與第一次失敗的檔案 `failed_first`，否則 `null`）、`content_changed`、`reused`（沿用時是被沿用那筆的 `time`、`agent`、`purpose`、`fingerprint`、`run_id`，否則 `null`）、`not_run`（準備目錄失敗而沒跑時的原因，否則 `null`）、`interrupted`（這組執行中被中斷時為 `true`，`exit_code` 為 `null`）。被中斷後還沒開始的組不列出 |
+| `groups` | 每一組，依執行順序：`kind`（`check`、`affected` 或 `full-suite`）、`dir`（執行目錄，repo 相對，根目錄為 `.`）、`command`、`tests`（`affected` 組選出的測試，repo 相對；其餘為 `null`）、`exit_code`（失敗重跑後的結果）、`fingerprint`（該組的指紋）、`flaky`（是否靠失敗重跑才通過；沿用時看被沿用那筆）、`rerun_only`（重跑才通過時是該組紀錄（沿用時是被沿用那筆）的 `fingerprint` 與第一次失敗的檔案 `failed_first`，否則 `null`）、`content_changed`、`reused`（沿用時是被沿用那筆的 `time`、`agent`、`purpose`、`fingerprint`、`run_id`，否則 `null`）、`not_run`（準備目錄失敗而沒跑時的原因，否則 `null`）、`interrupted`（這組執行中被中斷時為 `true`，`exit_code` 為 `null`）。被中斷後還沒開始的組不列出 |
 | `rerun_only` | 重跑才通過的組：`kind`、`dir`、`fingerprint`（該組紀錄的指紋）、`failed_first`；都不是時為空清單 |
 | `nothing_selected` | 沒有選出任何測試時為 `true` |
 | `interrupted` | 被中斷時為 `true` |

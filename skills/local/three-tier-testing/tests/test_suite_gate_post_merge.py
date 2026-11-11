@@ -140,6 +140,7 @@ class PostMergeTests(AffectedCase):
         self.assertIn('result:      PASSED ONLY ON RERUN (failed first: tests/test_app.py)',
                       result.stdout)
         group = next(g for g in self.summary()['groups'] if g['dir'] == suite['cwd'])
+        self.assertTrue(group['flaky'])
         self.assertEqual(group['rerun_only'], {'fingerprint': record['fingerprint'],
                                                'failed_first': ['tests/test_app.py']})
         self.assertEqual(len(self.summary()['rerun_only']), 1)

@@ -3483,7 +3483,7 @@ def group_result(kind, directory, command, code, gate=None, tests=None, not_run=
         'exit_code': code,
         'fingerprint': (gate.me['fingerprint'] if gate
                         else earlier.get('fingerprint') if earlier else None),
-        'flaky': bool(record and record.get('flaky')),
+        'flaky': bool(ran and ran.get('flaky')),
         'rerun_only': ({'fingerprint': ran.get('fingerprint'), 'failed_first': failed_first(ran)}
                        if ran and failed_first(ran) else None),
         'content_changed': bool(record and record.get('content_changed')),
