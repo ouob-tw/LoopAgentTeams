@@ -1633,13 +1633,67 @@ class LargeSelectionTests(AffectedCase):
         self.assertIn('the selection covers 2 of 3 test files in web', result.stderr)
         self.assertEqual(self.full_runs(), ['web'])
 
-    def test_a_suite_run_from_the_repo_root_is_never_chosen_for_a_large_selection(self):
+    def test_the_root_suite_counts_only_test_files_outside_nested_suite_directories(self):
+        # tests/ holds 2 of the root suite's files; web's 4 belong to the web suite only.
+        self.share(0.5)
+        self.touch('src/util.py')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('the selection covers 2 of 2 test files in .', result.stderr)
+        self.assertEqual(self.full_runs(), ['root'])
+        self.assertEqual(self.ran(), [])
+        (record,) = self.records()
+        self.assertEqual((record['purpose'], record['rel_cwd'], record['suite_tests']),
+                         ('large-selection', '.', 2))
+
+    def test_a_root_selection_at_the_share_runs_only_the_selected_tests(self):
+        self.share(0.5)
+        self.touch('src/app.py')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), [])
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py'])])
+
+    def test_a_selection_mostly_in_a_nested_suite_runs_that_suite_not_the_root_one(self):
+        self.share(0.5)
+        self.touch('web/src/page.ts')
+        self.touch('src/app.py')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), ['web'])
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py'])])
+
+    def test_a_one_letter_suite_directory_owns_its_files_in_either_registration_order(self):
+        # "." and "w" are both one character long; "w" is still the more specific one.
+        self.touch('w/tests/a.test.ts', '')
+        self.touch('w/tests/b.test.ts', '')
+        self.registry['affected']['map'].append({'paths': ['w/src/**'],
+                                                 'tests': ['w/tests/*.test.ts']})
+        self.registry['full_suites'][1]['cwd'] = 'w'
+        git(self.repo, 'add', '-A')
+        for order in (1, -1):
+            with self.subTest(order=order):
+                self.registry['full_suites'] = self.registry['full_suites'][::order]
+                self.share(0.5)
+                self.touch('w/src/x.ts')
+                result = self.gate('affected', '--base', 'HEAD')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('the selection covers 2 of 2 test files in w', result.stderr)
+                self.assertEqual(self.full_runs(), ['web'])
+                self.counter.unlink()
+
+    def test_in_a_root_only_project_the_root_suite_counts_every_test_file(self):
+        del self.registry['full_suites'][1]
         self.share(0.5)
         self.touch('src/util.py')
         result = self.gate('affected', '--base', 'HEAD')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.full_runs(), [])
-        self.assertEqual(self.ran(), [('.', ['tests/test_app.py', 'tests/test_util.py'])])
+        self.touch('web/src/page.ts')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('the selection covers 6 of 6 test files in .', result.stderr)
+        self.assertEqual(self.full_runs(), ['root'])
 
     def test_a_bad_share_stops_affected_and_names_the_field(self):
         self.share(1.5)

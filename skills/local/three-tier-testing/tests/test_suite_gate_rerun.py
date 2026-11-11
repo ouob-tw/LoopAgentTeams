@@ -194,6 +194,26 @@ class BunRerunTests(RerunCase):
         self.assertEqual([f['file'] for f in record['flaky']],
                          ['web/tests/browser/pd-notify-throws.test.ts'])
 
+    def test_a_failing_parallel_affected_run_names_the_failed_file_in_its_output(self):
+        self.project({'web': 'bun test --parallel=6 {tests}'}, self.PARALLEL_FILES)
+        reg = json.loads((self.repo / '.suite-gate.json').read_text())
+        reg['affected']['map'] = [{'paths': ['web/src/**'], 'tests': ['web/tests/**']}]
+        (self.repo / '.suite-gate.json').write_text(json.dumps(reg))
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'map web')
+        git(self.repo, 'checkout', '-qb', 'feature')
+        (self.repo / 'web/src').mkdir()
+        (self.repo / 'web/src/page.ts').write_text('changed\n')
+        self.plan('bun', ('bun-parallel-fail.txt', 1), ('bun-parallel-fail.txt', 1))
+        result = self.gate('affected', '--base', 'main')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('tests/browser/pd-notify-throws.test.ts:\nListening on', result.stderr)
+        self.assertIn('(fail) a throwing Notification constructor does not break the page',
+                      result.stderr)
+        self.assertIn('the rerun failed too', result.stderr)
+        self.assertEqual(self.calls()[1][2],
+                         ['test', '--parallel=6', 'tests/browser/pd-notify-throws.test.ts'])
+
     def test_affected_tests_rerun_their_failed_files_too(self):
         self.project({'web': 'bun test {tests}'}, self.BUN_FILES)
         reg = json.loads((self.repo / '.suite-gate.json').read_text())
