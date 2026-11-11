@@ -58,10 +58,13 @@ test('only a report file the ledger names, inside its workspace .lat/, is linked
 	symlinkSync(outside, escape);
 	const binary = join(workspace, '.lat/runs/run.sh');
 	writeFileSync(binary, 'echo');
+	// Names of what every object inherits are no extension it serves.
+	const inherited = [join(workspace, '.lat/runs/a.constructor'), join(workspace, '.lat/runs/a.__proto__')];
+	for (const path of inherited) writeFileSync(path, 'x');
 
-	const [linked] = await linkEvidence([view(workspace, { file: [report, outside, escape, binary, join(workspace, '.lat/runs/missing.md')] })]);
+	const [linked] = await linkEvidence([view(workspace, { file: [report, outside, escape, binary, join(workspace, '.lat/runs/missing.md'), ...inherited] })]);
 
-	expect(evidenceOf(linked)!.files.map((file) => file.href)).toEqual([evidenceUrl(report), null, null, null, null]);
+	expect(evidenceOf(linked)!.files.map((file) => file.href)).toEqual([evidenceUrl(report), null, null, null, null, null, null]);
 	const served = serveEvidence(report);
 	expect(served.status).toBe(200);
 	expect(served.headers.get('content-type')).toBe('text/plain; charset=utf-8');
@@ -69,7 +72,7 @@ test('only a report file the ledger names, inside its workspace .lat/, is linked
 	expect(await served.text()).toContain('<script>');
 	// The same file by a path that walks out and back in is the same file.
 	expect(serveEvidence(join(workspace, '.lat/runs/../runs/report.md')).status).toBe(200);
-	for (const path of [outside, unnamed, escape, binary, join(workspace, '.lat/runs/../../served/notes.md'), '/etc/passwd', `${report}\0`, null]) {
+	for (const path of [outside, unnamed, escape, binary, ...inherited, join(workspace, '.lat/runs/../../served/notes.md'), '/etc/passwd', `${report}\0`, null]) {
 		expect(serveEvidence(path).status).toBe(404);
 	}
 });

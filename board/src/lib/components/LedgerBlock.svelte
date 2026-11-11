@@ -89,7 +89,7 @@
 														{#if commit.href}<a href={commit.href} target="_blank" rel="noopener noreferrer" title={commit.text}>{commit.text.slice(0, 8)}</a>{:else}<code title={commit.text}>{commit.text.slice(0, 8)}</code>{/if}
 													{/each}
 													{#each row.evidence.files as file (file.text)}
-														{#if file.href}<a href={file.href} target="_blank" rel="noopener" title={file.text}>{fileName(file.text)}</a>{:else}<span title={file.text}>{fileName(file.text)}</span>{/if}
+														{#if file.href}<a class="file" href={file.href} target="_blank" rel="noopener" title={file.text}>{fileName(file.text)}</a>{:else}<span class="file" title={file.text}>{fileName(file.text)}</span>{/if}
 													{/each}
 													{#each row.evidence.gates as gate (gate)}<code title="測試紀錄 {gate}">測試 {gate.slice(0, 8)}</code>{/each}
 												</dd>
@@ -298,6 +298,11 @@
 	.evidence > * {
 		margin-right: 0.5rem;
 		white-space: nowrap;
+	}
+	/* A report's name can be longer than a phone's card: it wraps where it must. */
+	.evidence > .file {
+		white-space: normal;
+		overflow-wrap: anywhere;
 	}
 	.row.late {
 		border-color: var(--danger);

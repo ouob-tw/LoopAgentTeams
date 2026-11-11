@@ -33,6 +33,12 @@ function remoteOf(project: string): Promise<string | null> {
 	return found;
 }
 
+/** The type an evidence file is served as, by its extension; null for one not served. */
+const typeOf = (path: string) => {
+	const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+	return Object.hasOwn(EVIDENCE_TYPES, extension) ? EVIDENCE_TYPES[extension] : null;
+};
+
 const real = (path: string) => {
 	try {
 		return realpathSync(path);
@@ -67,7 +73,7 @@ export async function linkEvidence(views: LedgerView[]): Promise<LedgerView[]> {
 							commits: row.evidence.commits.map((commit) => ({ ...commit, href: base && /^[0-9a-f]{7,40}$/i.test(commit.text) ? `${base}/commit/${commit.text}` : null })),
 							files: row.evidence.files.map((file) => {
 								const path = real(file.text);
-								if (!path || !lat || !path.startsWith(lat) || !(path.split('.').pop()!.toLowerCase() in EVIDENCE_TYPES)) return file;
+								if (!path || !lat || !path.startsWith(lat) || !typeOf(path)) return file;
 								files.add(path);
 								return { ...file, href: evidenceUrl(file.text) };
 							})
@@ -88,7 +94,8 @@ export function serveEvidence(path: string | null): Response {
 	const missing = () => new Response('not found', { status: 404 });
 	const resolved = path && !path.includes('\0') ? real(path) : null;
 	if (!resolved || !allowed.has(resolved)) return missing();
-	const type = EVIDENCE_TYPES[resolved.split('.').pop()!.toLowerCase()];
+	const type = typeOf(resolved);
+	if (!type) return missing();
 	let body: Buffer;
 	try {
 		const stat = statSync(resolved);

@@ -25,7 +25,8 @@ beforeAll(async () => {
 	// The ledger's workspace is a GitHub project with the report its deployed ticket names.
 	spawnSync('git', ['init', '-q', luna.workspace]);
 	spawnSync('git', ['-C', luna.workspace, 'remote', 'add', 'origin', 'git@github.com:ouob-tw/LoopAgentTeams.git']);
-	const report = join(luna.workspace, '.lat/runs/issue-534/report.md');
+	// A long report name, as real ones are, which must wrap inside a phone's card.
+	const report = join(luna.workspace, '.lat/runs/issue-534/report-2026-11-12-zapi-t534-board-title-link-final-candidate.md');
 	mkdirSync(join(luna.workspace, '.lat/runs/issue-534'), { recursive: true });
 	writeFileSync(report, '# #534 report\n');
 	fixture.setHelper({
@@ -133,7 +134,7 @@ test.skipIf(!CHROME)('each ticket is one line with its link, title, steps, now, 
 	await toggle(tab, '#534');
 	await toggle(tab, '#535');
 	const evidence = `${lineOf('#534')}.querySelector('.row .evidence')`;
-	expect(await tab.eval(`[...${evidence}.querySelectorAll('a')].map((a) => a.innerText)`)).toEqual(['42f5bed0', 'report.md']);
+	expect(await tab.eval(`[...${evidence}.querySelectorAll('a')].map((a) => a.innerText)`)).toEqual(['42f5bed0', 'report-2026-11-12-zapi-t534-board-title-link-final-candidate.md']);
 	const [commit, report] = await tab.eval<string[]>(`[...${evidence}.querySelectorAll('a')].map((a) => a.href)`);
 	expect(commit).toBe('https://github.com/ouob-tw/LoopAgentTeams/commit/42f5bed0c0ffee12345678901234567890abcdef');
 	expect(await tab.eval(`fetch(${JSON.stringify(report)}).then(async (response) => response.status + ' ' + await response.text())`)).toBe('200 # #534 report\n');
@@ -150,10 +151,12 @@ test.skipIf(!CHROME)('at a phone width each ticket is a card inside the page, it
 	await toggle(tab, '#534');
 	await toggle(tab, '#535');
 
-	expect(await tab.eval(`document.documentElement.scrollWidth <= window.innerWidth`)).toBe(true);
+	// Content wider than a phone widens its layout viewport past the screen, so the bound is the
+	// screen's own width: no horizontal page scroll means the page is exactly that wide.
+	expect(await tab.eval(`[innerWidth, document.documentElement.scrollWidth]`)).toEqual([PHONE.width, PHONE.width]);
 	// Nothing in the block reaches past the screen's edge, nor is cut inside its own box.
 	const outside = await tab.eval<string[]>(
-		`[...document.querySelectorAll('.detail .ledger *')].filter((el) => el.getClientRects().length && (el.getBoundingClientRect().right > innerWidth + 0.5 || el.getBoundingClientRect().left < -0.5 || el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== 'visible')).map((el) => el.className || el.tagName)`
+		`[...document.querySelectorAll('.detail .ledger *')].filter((el) => el.getClientRects().length && (el.getBoundingClientRect().right > ${PHONE.width} + 0.5 || el.getBoundingClientRect().left < -0.5 || el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== 'visible')).map((el) => el.className || el.tagName)`
 	);
 	expect(outside).toEqual([]);
 	// The cells stack: the strip sits below the ticket, now below the strip.
