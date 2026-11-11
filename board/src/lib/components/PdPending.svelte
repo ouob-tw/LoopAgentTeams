@@ -10,9 +10,10 @@
 	// kept in this browser. 稍後 folds it to a one-line badge above the column's tabs,
 	// which opens it again; a request that appears opens it too and, once the user allowed it (the
 	// 開啟通知 button, never asked for unprompted) and while the board is in the background, raises a
-	// notification through the board's service worker whose click comes back to it. With nothing waiting it stays hidden while healthy; vault outages and an
-	// unreachable daemon keep a visible notice here, on every screen, which 稍後 folds to the badge
-	// (or a phone's strip) that goes on saying it.
+	// notification through the board's service worker whose click comes back to it. With nothing
+	// waiting it stays hidden while healthy; vault outages and an unreachable daemon keep a visible
+	// notice here, on every screen, which 稍後 folds to the badge (or a phone's strip) that goes on
+	// saying it.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import TestDenied from './TestDenied.svelte';
 	import { onMount, tick } from 'svelte';

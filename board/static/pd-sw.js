@@ -3,6 +3,8 @@
 // handles no fetches. A click on one brings a board tab to the front and has it open the pd
 // window; with no board tab open it opens one, which opens the window itself for a waiting request.
 self.addEventListener('install', () => self.skipWaiting());
+// Taken over at once, so a click reaches the tab that registered it before it ever reloads.
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
 self.addEventListener('notificationclick', (event) => {
 	event.notification.close();

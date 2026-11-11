@@ -4,7 +4,7 @@
 // A `pd-open` message from the worker (a click on a notification, tests/unit/pd-sw.test.ts) opens
 // the folded panel. Where notifications cannot be shown (Android Chrome's throwing constructor, a
 // failed registration, no service worker, no Notification) the panel still opens and the page
-// keeps working. Skipped when the host has no Chrome.
+// keeps working.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -27,7 +27,7 @@ const STAGE = `(() => {
 })()`;
 /** Ways a browser cannot notify, each run in a page of its own. */
 const BROKEN: Record<string, string> = {
-	'a throwing Notification constructor (Android Chrome)': `window.Notification = class {
+	'a throwing Notification constructor (Android Chrome; the page must not go back to it)': `window.Notification = class {
 		static get permission() { return 'granted'; }
 		static async requestPermission() { return 'granted'; }
 		constructor() { throw new TypeError("Failed to construct 'Notification': Illegal constructor"); }
@@ -118,18 +118,17 @@ test.skipIf(!CHROME)('in front: no notification, the panel opens; in the backgro
 	expect(tab.errors).toEqual([]);
 });
 
-let next = 10;
-for (const [how, script] of Object.entries(BROKEN)) {
+for (const [index, [how, script]] of Object.entries(BROKEN).entries()) {
 	test.skipIf(!CHROME)(`${how} does not break the page: a new request in the background still opens the panel`, async () => {
 		const tab = browser!.tab;
 		const { identifier } = await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { ${script} })()` });
 		try {
-			setPd([waiting(next, 'npm token')]);
+			const id = 20 + 2 * index;
+			setPd([waiting(id - 1, 'npm token')]);
 			await load(tab);
 			await stand(tab, false, false);
 			await fold(tab);
 			tab.errors.length = 0;
-			const id = ++next;
 			add(id, 'GitHub token');
 			await tab.until(shows(id), `the panel open for #${id}`);
 			expect(await tab.eval<string>(`document.querySelector('.pd [data-pd-request="${id}"]').innerText`)).toContain('GitHub token');
@@ -141,7 +140,6 @@ for (const [how, script] of Object.entries(BROKEN)) {
 			expect(tab.errors).toEqual([]);
 		} finally {
 			await tab.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
-			next += 1;
 		}
 	});
 }

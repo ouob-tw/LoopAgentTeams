@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, until, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser } from '../browser.ts';
+import { CHROME, fakeNotifications, launchChrome, type Browser } from '../browser.ts';
 
 const SCREEN = `({ badge: document.querySelector('.pd-badge')?.innerText ?? null, pd: document.querySelector('.inbox .pd')?.innerText ?? '' })`;
 // The panel open with the request's card on it.
@@ -19,19 +19,6 @@ const fold = async (tab: Browser['tab']) => {
 	await tab.pointerClick('.pd button.later');
 	await tab.until(`!document.querySelector('.inbox .pd') && !!document.querySelector('.pd-badge')`, 'the panel folded');
 };
-// The page's Notification, recorded: what it was asked to show, and when permission was requested
-// whether a user gesture was under way. Its permission starts as a fresh profile's does.
-const NOTIFICATIONS = `(() => {
-	let permission = 'default';
-	window.__asked = [];
-	window.__notes = [];
-	window.Notification = class {
-		static get permission() { return permission; }
-		static async requestPermission() { window.__asked.push(navigator.userActivation.isActive); permission = 'granted'; return permission; }
-		constructor(title, options) { this.title = title; this.tag = options?.tag; this.closed = false; window.__notes.push(this); }
-		close() { this.closed = true; }
-	};
-})()`;
 
 let fixture: Fixture;
 let cookie: string;
@@ -75,7 +62,7 @@ test.skipIf(!CHROME)('a new request opens the folded window; 核准 signs pd\'s 
 	await until(() => watch.pds.find((pd) => pd.ok && pd.requests.length === 1), 10_000, '#3 read by the board');
 	browser = await launchChrome({
 		screen: SCREEN,
-		scripts: [NOTIFICATIONS],
+		scripts: [fakeNotifications('default')],
 		args: ['--host-resolver-rules=MAP lat.ouob.net 127.0.0.1', `--unsafely-treat-insecure-origin-as-secure=${origin}`]
 	});
 	const tab = browser.tab;
@@ -115,13 +102,14 @@ test.skipIf(!CHROME)('a new request opens the folded window; 核准 signs pd\'s 
 	// Under ouob.net and secure: the passkey works here, so no note says otherwise.
 	expect(await tab.eval(`!!document.querySelector('.pd .nopasskey')`)).toBe(false);
 	expect(await tab.eval<string>(`document.querySelector('.pd [data-pd-request="4"]').innerText`)).toContain('GitHub token');
+	await tab.until(`window.__notes.length === 1`, 'notification 1');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4']);
 
 	// The notification's click opens it again and puts the focus on it.
 	await fold(tab);
-	await tab.eval(`window.__notes[0].onclick()`);
+	// What the service worker says after a click on it (tests/unit/pd-sw.test.ts).
+	await tab.eval(`navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: { type: 'pd-open' } }))`);
 	await tab.until(`${shows(4)} && document.activeElement === document.querySelector('.inbox .pd')`, 'the window back and focused');
-	expect(await tab.eval(`window.__notes[0].closed`)).toBe(true);
 
 	// Below the panel's fold: scrolled to, as a user would.
 	await tab.eval(`document.querySelector('.pd [data-pd-request="4"] button.approve').scrollIntoView({ block: 'nearest' })`);
@@ -152,12 +140,14 @@ test.skipIf(!CHROME)('a new request opens the folded window; 核准 signs pd\'s 
 	await tab.eval(`document.querySelector('.pd [data-pd-request="5"] button.deny').scrollIntoView({ block: 'nearest' })`);
 	await tab.pointerClick('.pd [data-pd-request="5"] button.deny');
 	await tab.until(`!document.querySelector('[data-pd-request="5"]')`, 'the denied request gone');
+	await tab.until(`window.__notes.length === 2`, 'notification 2');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5']);
 
 	// A number that left and came back is new.
 	await fold(tab);
 	setPd([waiting(5, 'Docker token')]);
 	await tab.until(shows(5), 'the panel open for the reused #5');
+	await tab.until(`window.__notes.length === 3`, 'notification 3');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5', 'pd-5']);
 
 	// pd numbers from 1 again after its daemon restarts: the same number from another start is new,
@@ -172,6 +162,7 @@ test.skipIf(!CHROME)('a new request opens the folded window; 核准 signs pd\'s 
 	await tab.until(`document.querySelector('.inbox .pd-off')?.innerText === 'pd 待核准：連不上 pd 服務'`, 'pd unavailable');
 	setPd([{ ...waiting(5, 'Docker token'), daemon: undefined }]);
 	await tab.until(shows(5), 'the window open for #5 after pd came back');
+	await tab.until(`window.__notes.length === 5`, 'notification 5');
 	expect(await tab.eval(`window.__notes.map((note) => note.tag)`)).toEqual(['pd-4', 'pd-5', 'pd-5', 'pd-5', 'pd-5']);
 	expect(tab.errors).toEqual([]);
 }, 30_000);
