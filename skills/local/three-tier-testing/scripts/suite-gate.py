@@ -12,7 +12,8 @@ the gate when the change leaves the map; with `--purpose post-merge` (after a ba
 merged, which then replaces the post-merge full suite) it runs in a temporary clean
 checkout of HEAD, every record of the run shares a run_id and a final `affected-summary`
 record says whether the whole run passed; `--purpose pre-merge` does the same in the work
-tree for a branch's final version. An affected test or check whose content (as the map
+tree for a branch's final version. In a project without a map, `affected` with a purpose
+runs every registered full suite once that way instead. An affected test or check whose content (as the map
 sees it) already passed is reused instead of run again. A suite or affected run that fails only in a few
 test files (bun test, unittest, pytest) reruns those files once with the map's command
 templates and records a pass with the flaky tests when the rerun passes. A full suite that
@@ -3412,21 +3413,107 @@ def cmd_affected(base, purpose=None):
                                 started_at=started_at, purpose=purpose)
         return code or summary['exit_code']
 
+    def full_suites(root, checkout, commit, origin, prepare=None):
+        """No affected-test map: run every registered full suite of checkout once through
+        the gate (a pass on the same content is reused) under one run_id, and write the
+        summary of the run for root."""
+        start = (head_commit(checkout), content_tree(checkout))
+        started_at = now_iso()
+        try:
+            suites = read_full_suites(load_registry(checkout) or {})
+        except ValueError as exc:
+            warn(f'no affected-test map, so affected --purpose {purpose} runs the registered '
+                 f'full suites, but {REGISTRY_NAME}: {exc}')
+            return 2
+        changed = changed_files(checkout, commit)
+        warn(f'change against {origin} ({commit[:12]}): {len(changed)} file(s)')
+        warn(f'no affected-test map: the {purpose} check runs every registered full suite '
+             'once; a pass on the same content is reused')
+        run_id = uuid.uuid4().hex
+        warn(f'{purpose} run {run_id[:12]}: every record of this run carries this run_id')
+        results, code = [], 0
+        try:
+            for suite in suites:
+                warn(f"full suite in {suite['cwd']}: {suite['command']}")
+                cwd = suite_cwd(checkout, suite)
+                # A suite whose content already passed is reused, so it needs no preparing.
+                info = fingerprint(cwd, [suite['command']]) if prepare else None
+                passed = info is not None and reusable_record(info['fingerprint'])
+                reason = prepare(cwd) if prepare and not passed else None
+                if reason:
+                    warn(f"not run: preparing {suite['cwd']} failed ({reason}); this is not a "
+                         'test result')
+                    results.append(group_result('full-suite', suite['cwd'], suite['command'],
+                                                2, not_run='preparing the directory failed'))
+                    result = 2
+                else:
+                    gate = Gate([suite['command']], cwd, None, load_config(),
+                                {'purpose': purpose, 'run_id': run_id})
+                    result = drive_group(results, 'full-suite', suite['cwd'], suite['command'],
+                                         gate, gate.run)
+                code = code or result
+        except Interrupted:
+            write_summary(root, checkout, run_id, commit, changed, start, results,
+                          nothing_selected=False, interrupted=True, started_at=started_at,
+                          purpose=purpose)
+            raise
+        summary = write_summary(root, checkout, run_id, commit, changed, start, results,
+                                nothing_selected=False, interrupted=False,
+                                started_at=started_at, purpose=purpose)
+        return code or summary['exit_code']
+
+    def unmapped(root, registry):
+        """affected in a project without an affected-test map: with a purpose, the registered
+        full suites once (pre-merge in the work tree, post-merge in a clean checkout)."""
+        if not purpose:
+            warn('no affected-test map in this project (`affected.map` in '
+                 f'{REGISTRY_NAME}). While editing, run the test files you choose. Before '
+                 'merging, run the registered full suites once on the final version:\n'
+                 f'  {pre_merge_command(registry)}\n'
+                 f'or one full suite through `suite-gate.py run -- <cmd>`')
+            return 2
+        commit, origin = change_base(root, base, (registry or {}).get('integration_branch'))
+        if head_commit(root) is None:
+            warn(f'affected --purpose {purpose}: HEAD is not a commit yet')
+            return 2
+        if purpose == 'pre-merge':
+            if git(['status', '--porcelain'], root).stdout.strip():
+                warn(f'{root} has uncommitted changes; they are tested and recorded with the '
+                     'rest, but the merged content will not match them. Commit them first.')
+            return full_suites(root, root, commit, origin)
+        head = head_commit(root)
+        warn(f'testing HEAD {head[:12]} in a temporary clean checkout; later changes to '
+             f'{root} do not affect the run')
+        if git(['status', '--porcelain'], root).stdout.strip():
+            warn(f'{root} has uncommitted changes; they are not tested. Commit them first '
+                 'to include them.')
+        with clean_checkout(root, head) as checkout:
+            warn(f'temporary checkout: {checkout} (removed when the run ends)')
+            copy_included(root, checkout, load_registry(checkout) or {})
+            prepared = {}
+
+            def prepare(cwd):
+                if cwd not in prepared:
+                    prepared[cwd] = prepare_dependencies(cwd)
+                return prepared[cwd]
+            return full_suites(root, checkout, commit, origin, prepare)
+
     def body():
         root = repo_root(Path.cwd())
-        registry = load_registry(Path.cwd()) if root else None
-        if not is_mapped(registry or {}):
-            warn('no affected-test map in this project (`affected.map` in '
-                 f'{REGISTRY_NAME}); run the full suite through `suite-gate.py run`')
+        if root is None:
+            warn('affected: not in a Git work tree')
             return 2
+        registry = load_registry(Path.cwd())
+        if purpose == 'post-merge' and base is None:
+            warn('affected --purpose post-merge needs --base <commit>: the commit this batch '
+                 'of work started from')
+            return 2
+        if not is_mapped(registry or {}):
+            return unmapped(root, registry)
         try:
             amap = read_map(registry)
         except ValueError as exc:
             warn(f'{root / REGISTRY_NAME}: {exc}')
-            return 2
-        if purpose == 'post-merge' and base is None:
-            warn('affected --purpose post-merge needs --base <commit>: the commit this batch '
-                 'of work started from')
             return 2
         commit, origin = change_base(root, base, amap['branch'])
         if purpose == 'pre-merge':
@@ -4420,6 +4507,30 @@ def _variable_gate_hint(text):
     return ''
 
 
+def pre_merge_command(registry):
+    """The pre-merge run; it names --base when the registry gives no integration_branch."""
+    base = '' if (registry or {}).get('integration_branch') else \
+        ' --base <commit this branch started from>'
+    return f'{affected_command()}{base} --purpose pre-merge'
+
+
+def timing_note(final, registry):
+    """When to run what, for the hook's reply; final names what the pre-merge run tests."""
+    return ('When to test: while editing, run the test files you choose (naming them is not '
+            'blocked). Once, on the final version before merging to the integration branch, '
+            f'run {final} through the gate:\n'
+            f'  {pre_merge_command(registry)}\n'
+            'It is recorded, and a pass on the same content is reused after the merge.')
+
+
+def registered_suites(cwd):
+    """True when the registry in cwd lists full suites."""
+    try:
+        return bool(read_full_suites(load_registry(cwd) or {}))
+    except ValueError:
+        return False
+
+
 def cmd_hook():
     """PreToolUse (matcher Bash) for Claude and Codex: exit 2 with the rewrite on stderr.
 
@@ -4438,7 +4549,7 @@ def cmd_hook():
     if is_mapped(load_registry(cwd) or {}):
         affected = gate_rewrite(text, cwd, lambda _suite: affected_command())
         full = gate_rewrite(text, cwd, lambda suite: gate_command(suite, REASON_FLAGS))
-        print('Blocked: this project has an affected-test map, so a ticket runs only the '
+        print('Blocked: this project has an affected-test map, so a branch runs only the '
               'tests its change affects, not the full suite. Run this instead:\n'
               f'  {affected}\n'
               'It runs the tests the map selects for the changed files, or the registered '
@@ -4448,7 +4559,8 @@ def cmd_hook():
               'Replace --reason \'<...>\' with --purpose release before a release. After a batch '
               'is merged, run the affected tests of the whole batch instead:\n'
               f'  {post_merge_command()}\n'
-              'The purpose is recorded with the result.'
+              'The purpose is recorded with the result.\n'
+              + timing_note('the tests it affects', load_registry(cwd))
               + _variable_gate_hint(text), file=sys.stderr)
         return 2
     print('Blocked: this runs a full test suite outside the suite gate. Run this instead; '
@@ -4460,7 +4572,10 @@ def cmd_hook():
           'sees only exported variables. '
           'Add --rerun "<reason>" after `run` only when the gate reports an earlier pass and '
           'you have a concrete reason to run again. To run only some tests, name the files '
-          'or a filter.' + _variable_gate_hint(text),
+          'or a filter.'
+          + (('\n' + timing_note('the registered full suites', load_registry(cwd)))
+             if registered_suites(cwd) else '')
+          + _variable_gate_hint(text),
           file=sys.stderr)
     return 2
 
@@ -5357,13 +5472,15 @@ def main(argv=None):
                           'checkout of HEAD; needs a purpose')
     affected = sub.add_parser('affected', help='run the tests the affected-test map selects '
                                                'for this change: affected [--base <rev>] '
-                                               '[--purpose post-merge]')
+                                               '[--purpose pre-merge|post-merge]')
     affected.add_argument('--base', metavar='REV', help='measure the change from this commit '
                           'instead of the merge-base of HEAD and the integration branch')
     affected.add_argument('--purpose', choices=('pre-merge', 'post-merge'),
                           help='pre-merge: the final version of a branch before it is merged; '
                                'post-merge: after a batch is merged, needs --base (where the '
-                               'batch started). Both write a summary record of the whole run')
+                               'batch started). Both write a summary record of the whole run; '
+                               'without an affected-test map they run every registered full '
+                               'suite once')
     status = sub.add_parser('status', help='show running and queued suites and recent records')
     status.add_argument('--json', action='store_true')
     status.add_argument('--fingerprint', metavar='PREFIX', help='only records for this fingerprint')
