@@ -709,6 +709,30 @@ class LedgerCardTests(LedgerCase):
         self.assertIn(f'- ledger row：1 ({self.ledger})\n', card.read_text())
         self.assertEqual(self.items()[0]['agent'], 'nanu-impl123-fida')
 
+    def test_tiny_card_marks_the_ticket_rows_and_the_card(self):
+        card = self.ledger_card('--tiny', '--no-feature', '--no-format-change')
+        self.assertIn('- tiny lane：是；主控聲明不新增功能、不改資料或存檔格式\n', card.read_text())
+        self.agents.append({'name': 'nanu-qa123-kora', 'tag': 'nanu-qa123'})
+        self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'qa',
+                       '--evidence', 'file', '--tag', 'nanu-qa123')
+        marks = [row.get('tiny') for row in self.items()]
+        self.assertEqual(marks[0]['declared'], ['no-feature', 'no-format-change'])
+        self.assertEqual(marks[1], marks[0], 'a later row of the ticket carries the mark')
+        self.assertIn('小改動', self.run_ledger('show', '--rows'))
+
+    def test_tiny_card_refusals_leave_no_card_and_no_row(self):
+        for extra, words in ((('--ticket', '#123, #124', '--tiny', '--no-feature',
+                               '--no-format-change'), 'exactly one numbered ticket'),
+                             (('--ticket', '#123', '--tiny', '--no-feature'), 'both declarations'),
+                             (('--ticket', '#123', '--no-feature'), 'both declarations')):
+            result = self.run_script(*self.card_args(
+                '--ledger', str(self.ledger), '--stage', 'impl', '--evidence', 'commit', *extra))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(words, result.stderr)
+        self.assertIn('need --ledger', self.run_script(*self.card_args('--tiny')).stderr)
+        self.assertEqual(list(self.tasks.iterdir()), [])
+        self.assertEqual(self.items(), [])
+
     def test_untagged_agent_is_refused_before_the_ledger_is_touched(self):
         result = self.run_script(*self.card_args(
             '--ledger', str(self.ledger), '--ticket', '#1', '--stage', 'impl',

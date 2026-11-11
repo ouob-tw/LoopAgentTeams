@@ -10,6 +10,9 @@ suite-gate record fingerprint, or a non-empty file. The program only checks that
 exists; whether the work passed acceptance stays the orchestrator's call. A gate record that
 passed only on the automatic rerun of failed test files counts only with `--rerun-ack`, a
 review result that names it.
+A row added with `--tiny` (the tiny-change lane, with the orchestrator's two declarations) marks
+every row of its ticket; `review-result --tiny-confirm` records the reviewer's confirmation of
+the four limits after running the tiny check (review-size.py) on the row's work.
 """
 import argparse
 from contextlib import contextmanager
@@ -31,11 +34,6 @@ from _lat_common import (full_hcom_name, read_hcom_list, resolve_agent_name, run
                          same_controller, shared_lat_dir, write_text_atomic)
 from _lat_tracker import read_issue, tracker_repo
 from transcript import current_settings
-
-_spec = importlib.util.spec_from_file_location('review_size',
-                                               Path(__file__).resolve().parent / 'review-size.py')
-review_size = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(review_size)
 
 LAT_DIR = Path(__file__).resolve().parents[1]
 # Overrides for tests: a fixed clock, another suite-gate script and a file for `hcom list --json`.
@@ -80,6 +78,7 @@ QUALIFIED_TICKET = re.compile(r'([\w.-]+/[\w.-]+)#(\d+)')
 EFFORTS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
 TRANSCRIPT_TAIL_BYTES = 4 << 20
 UNVERIFIED = '未查證'
+TINY_DECLARED = ['no-feature', 'no-format-change']
 # The problem log: one file per project in the shared .lat, the fixed stages a problem can be
 # found in (in the order work reaches them), and the levels. Problems found after merging are
 # recorded by the orchestrator and may name 不明 instead of the ticket that caused them.
@@ -911,6 +910,14 @@ def cmd_add(args):
         check_round(args.ledger)
     kinds = kinds_of(args.evidence)
     ticket = required_text('--ticket', args.ticket)
+    if args.tiny or args.no_feature or args.no_format_change:
+        if not (args.tiny and args.no_feature and args.no_format_change):
+            raise Failure('the tiny lane needs --tiny with both declarations, --no-feature and '
+                          '--no-format-change; nothing written')
+        refs = ticket_refs(ticket)
+        if len(refs) != 1 or not next(iter(refs))[1].startswith('#'):
+            raise Failure(f'the tiny lane covers exactly one numbered ticket; --ticket {ticket!r} '
+                          'names another set, so dispatch it in the normal flow; nothing written')
     title = args.title.strip() if args.title and args.title.strip() else None
     ignore_deadline(args)
     repo = None
@@ -943,10 +950,19 @@ def cmd_add(args):
                 'evidence_kinds': kinds, 'evidence': {}, 'progress': None,
                 'blocked_reason': None, 'blocked_from': None, 'cancel_reason': None,
                 'history': []}
+        default_repo = tracker_repo(doc['workspace'])
+        same = [row for row in doc['items']
+                if ticket_keys(row['ticket'], default_repo) == keys]
+        mark = ({'declared': TINY_DECLARED, 'by': actor(args), 'at': stamp(at)} if args.tiny
+                else next((row['tiny'] for row in same if row.get('tiny')), None))
+        if mark:
+            item['tiny'] = mark
         doc['next_id'] += 1
         doc['items'].append(item)
         item['history'].append({'at': stamp(at), 'by': actor(args), 'action': 'add',
                                 'changes': {'status': [None, 'unassigned']}, 'reason': None})
+        for row in same if args.tiny else []:
+            record(args, row, 'tiny', {'tiny': mark}, 'its ticket was marked tiny')
         sync_cancelled_dependencies(args, doc, item, 'depends on a cancelled item')
     print(item['id'])
 
@@ -1184,7 +1200,7 @@ def change_size(doc, item, commits):
                            f'{base}...{commit}'], timeout=30)
         except ValueError:
             continue
-        files, lines = review_size.measure(raw)
+        files, lines = review_size().measure(raw)
         return {'base': base, 'commit': commit,
                 **{kind: {'files': files[kind], 'lines': lines[kind]} for kind in files}}
     print(f'lat-ledger: warning: no change size for item {item["id"]} (git diff {base}...'
@@ -1294,6 +1310,8 @@ def cmd_review_result(args):
     if acks and not note:
         raise Failure('--rerun-ack needs --note saying what the first failures were; nothing '
                       'written')
+    tiny = (tiny_confirmation(args, read_only(args)) if args.tiny_confirm or args.tiny_hints
+            else None)
     try:
         agents = {item['name'] for item in read_hcom_list(HCOM_LIST_ENV)
                   if isinstance(item.get('name'), str)}
@@ -1326,6 +1344,8 @@ def cmd_review_result(args):
                   'reviewers': reviewers, 'note': note}
         if acks:
             review['rerun_acks'] = list(dict.fromkeys(acks))
+        if tiny:
+            review['tiny'] = tiny
         if findings:
             # Written before the ledger is saved: a failed save leaves problems without their
             # review, never a review naming problems that are not there.
@@ -1697,6 +1717,60 @@ def done_gate_problem(doc, item, no_findings, problems, ledger):
     return None
 
 
+def review_size():
+    """review-size.py as a module: the tiny-lane check lives there."""
+    path = Path(__file__).resolve().parent / 'review-size.py'
+    spec = importlib.util.spec_from_file_location('review_size', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def tiny_confirmation(args, doc):
+    """The reviewer's four-limit confirmation for a tiny row, after running the tiny check on
+    the row's work (its card's worktree, else its branch): refused when a hard limit fails, the
+    orchestrator implemented the ticket, or the check shows hints --tiny-hints does not
+    answer."""
+    size = review_size()
+    if not args.tiny_confirm:
+        raise Failure('--tiny-hints goes with --tiny-confirm; nothing written')
+    if not args.clean:
+        raise Failure('--tiny-confirm needs --clean: a review with findings confirms nothing; '
+                      'nothing written')
+    item = find(doc, args.row)
+    if not item.get('tiny'):
+        raise Failure(f'item {item["id"]} is not on the tiny lane; nothing written')
+    try:
+        card = size.card_fields(item.get('card'))
+        base = size.card_base(card, item.get('card'))
+    except ValueError as error:
+        raise Failure(f'{error}; nothing written') from None
+    worktree = card.get('worktree', '')
+    if worktree.startswith('/') and Path(worktree).is_dir():
+        repo, head = worktree, 'HEAD'
+    else:
+        repo, head = item.get('repo') or doc['workspace'], item.get('branch') or card.get('branch')
+    try:
+        check = size.tiny_check(repo, base, head or 'HEAD', doc.get('integration_branch'))
+    except ValueError as error:
+        raise Failure(f'tiny check failed: {error}; nothing written') from None
+    default_repo = tracker_repo(doc['workspace'])
+    keys = ticket_keys(item['ticket'], default_repo)
+    rows = [row for row in doc['items'] if ticket_keys(row['ticket'], default_repo) == keys]
+    problems = check['problems'] + size.orchestrator_problems(rows, doc.get('orchestrator'))
+    if problems:
+        raise Failure('; '.join(problems) + f'; {size.NORMAL_FLOW}; nothing written')
+    note = args.tiny_hints.strip() if args.tiny_hints else None
+    if check['hints'] and not note:
+        raise Failure('the tiny check shows hints the confirmation must address; say how each '
+                      'was checked with --tiny-hints: ' + '; '.join(check['hints'])
+                      + '; nothing written')
+    return {'limits': ['one-ticket', 'code-lines', *TINY_DECLARED], 'base': check['base'],
+            'commit': check['head'], 'content': check['content'],
+            'code_added': check['code_added'],
+            'hints': check['hints'], 'hints_note': note}
+
+
 def cmd_cancel(args):
     reason = required_text('--reason', args.reason)
     with transaction(args, 'cancel', args.id, reason) as doc:
@@ -1708,6 +1782,27 @@ def cmd_cancel(args):
         for other in doc['items']:
             if item['id'] in other['depends_on']:
                 block_for_cancelled_dependency(args, other, f'item {item["id"]} was cancelled')
+
+
+def cmd_tiny_off(args):
+    """Take a ticket off the tiny lane (orchestrator only): the mark leaves every row of the
+    item's ticket, each with a history entry, so later rows of it are ordinary again."""
+    reason = required_text('--reason', args.reason)
+    with transaction(args, 'tiny-off', args.id, reason) as doc:
+        if doc.get('orchestrator') and not same_controller(doc['orchestrator'], actor(args)):
+            raise Failure(f'only the orchestrator {doc["orchestrator"]} may take a ticket off '
+                          'the tiny lane')
+        item = find(doc, args.id)
+        default_repo = tracker_repo(doc['workspace'])
+        keys = ticket_keys(item['ticket'], default_repo)
+        rows = [row for row in doc['items'] if row.get('tiny')
+                and ticket_keys(row['ticket'], default_repo) == keys]
+        if not rows:
+            raise Failure(f'item {item["id"]}: its ticket is not on the tiny lane')
+        for row in rows:
+            record(args, row, 'tiny-off', {'tiny': None}, reason)
+            del row['tiny']
+    print(f'{", ".join(keys)} is off the tiny lane: rows {", ".join(str(r["id"]) for r in rows)}')
 
 
 def cmd_reassign(args):
@@ -2070,6 +2165,7 @@ def build_tickets(doc, at, problems=None):
             'key': key, 'repo': (match[1] or None) if match else None,
             'number': int(match[2]) if match else None,
             'title': titles.get(key, '' if match else key),
+            'tiny': any(row.get('tiny') for row in rows),
             'state': state, 'state_label': TICKET_STATES[state],
             'steps': [{'key': step, 'label': STEPS[step], 'state': value}
                       for step, value in steps.items()],
@@ -2235,8 +2331,9 @@ def show_tickets(tickets, counts, default_repo):
             took = '・'.join(filter(None, (took, f'修 {ticket["rework_rounds"]} 輪')))
         models = '；'.join(f'{stage["label"]} {stage["text"]}' for stage in ticket['settings'])
         print('| ' + ' | '.join(cell(value) for value in (
-            ref, ticket['title'], progress, ticket['now'], models,
-            ticket['findings']['text'], took, size_text(ticket['change_size']),
+            ref, ticket['title'] + ('（小改動）' if ticket['tiny'] else ''), progress,
+            ticket['now'], models, ticket['findings']['text'], took,
+            size_text(ticket['change_size']),
             ','.join(map(str, ticket['items'])))) + ' |')
 
 
@@ -2260,6 +2357,7 @@ def show_rows(rows):
         if 'estimate' in row['late_minutes']:
             status += f'（超過預計 {row["late_minutes"]["estimate"]} 分）'
         notes = [text for text in (
+            row.get('tiny') and '小改動',
             row['blocked_reason'] and f'受阻：{row["blocked_reason"]}',
             row['cancel_reason'] and f'取消：{row["cancel_reason"]}',
             row['follows'] and f'接續自 {row["follows"]}',
@@ -2345,6 +2443,14 @@ def build_parser():
                      help="add to an earlier round's ledger <session>-r<N>.json on purpose; "
                      "without it such a ledger is refused when its session record names "
                      'another ledger')
+    sub.add_argument('--tiny', action='store_true',
+                     help='tiny-change lane for this one ticket; marks every row of the ticket. '
+                     'Needs both declarations below')
+    sub.add_argument('--no-feature', action='store_true',
+                     help='with --tiny: the orchestrator declares the change adds no feature')
+    sub.add_argument('--no-format-change', action='store_true',
+                     help='with --tiny: the orchestrator declares the change keeps every data '
+                     'and storage format')
     sub = command('assign', 'Give an item to an agent')
     sub.add_argument('--agent', required=True, help='HCOM name, stored as the full name')
     sub.add_argument('--native', action='store_true',
@@ -2408,6 +2514,15 @@ def build_parser():
                      'the automatic rerun and that the reviewers looked at; needs --note saying '
                      'what the first failures were. Until then the ledger and the merge check do '
                      'not take that record as evidence')
+    sub.add_argument('--tiny-confirm', action='store_true',
+                     help="for a tiny-lane row, with --clean: the reviewers confirm all four "
+                     'limits (one ticket, at most 30 added code lines, no new feature, no data '
+                     "or storage format change). Runs the tiny check on the row's work first")
+    sub.add_argument('--tiny-hints', metavar='TEXT',
+                     help='with --tiny-confirm: how each hint the tiny check showed was checked; '
+                     'required when it shows any')
+    sub = command('tiny-off', "Take the item's ticket off the tiny lane (orchestrator only)")
+    sub.add_argument('--reason', required=True)
     stages = ', '.join(f'{key} ({label})' for key, label in PROBLEM_STAGES.items())
     sub = command('problem', "Record a problem in the project's problem log; prints its id",
                   item=False)
@@ -2474,7 +2589,8 @@ def main():
     handlers = {'init': cmd_init, 'add': cmd_add, 'assign': cmd_assign, 'start': cmd_start,
                 'update': cmd_update, 'block': cmd_block, 'unblock': cmd_unblock,
                 'done': cmd_done, 'amend': cmd_amend, 'cancel': cmd_cancel,
-                'reassign': cmd_reassign, 'review-result': cmd_review_result,
+                'tiny-off': cmd_tiny_off, 'reassign': cmd_reassign,
+                'review-result': cmd_review_result,
                 'problem': cmd_problem, 'problem-update': cmd_problem_update,
                 'problems': cmd_problems,
                 'next': cmd_next, 'check': cmd_check, 'show': cmd_show,
