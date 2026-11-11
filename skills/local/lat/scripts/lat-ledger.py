@@ -1516,11 +1516,11 @@ def done_gate_problem(doc, item, no_findings, problems, ledger):
     since = item.get('started_at') or item.get('assigned_at')
     if item['stage'] == 'qa':
         keys = ticket_keys(item['ticket'], tracker_repo(doc['workspace']))
-        # Recorded through this ledger: with --row, that row's; without, any of its tickets.
+        # Recorded through this ledger on one of the row's tickets (as it reads now, after any
+        # correction), and with --row on this row.
         own = [p['id'] for p in problems.values() if p['stage'] == 'qa'
-               and p.get('ledger') == ledger
-               and (p.get('row') == item['id'] if p.get('row') is not None
-                    else p['ticket'] in keys)
+               and p.get('ledger') == ledger and p['ticket'] in keys
+               and p.get('row') in (None, item['id'])
                and same_controller(item['agent'] or '', p['by'])
                and (not since or p['at'] >= since)]
         if own and no_findings:

@@ -1804,6 +1804,13 @@ class ProblemLogTests(LedgerCase):
         self.assertIn('--no-findings', error)
         self.ok('problem', '--row', str(qa), '--stage', 'qa', '--level', '甲', '--text',
                 'breaks on phone', by='qa')
+        # Moved to another ticket by a correction, it no longer counts for this row.
+        self.add(ticket='#2', stage='qa', evidence='file')
+        problem = self.problems('--ticket', '#1')[-1]['id']
+        self.ok('problem-update', problem, '--ticket', '#2', '--reason', 'other ticket', by='qa')
+        self.assertIn('record what this acceptance found', self.fails(
+            'done', str(qa), '--file', self.report(), by='qa'))
+        self.ok('problem-update', problem, '--ticket', '#1', '--reason', 'back', by='qa')
         self.assertIn('drop --no-findings', self.fails(
             'done', str(qa), '--file', self.report(), '--no-findings', by='qa'))
         self.ok('done', str(qa), '--file', self.report(), by='qa')
