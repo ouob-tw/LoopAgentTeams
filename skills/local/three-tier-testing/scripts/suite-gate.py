@@ -3535,13 +3535,20 @@ def suite_holds(suite, path):
     return suite['cwd'] != '.' and (path == suite['cwd'] or path.startswith(suite['cwd'] + '/'))
 
 
+# File names test runners pick up by default (pytest/unittest, Go, bun/jest/vitest).
+TEST_NAME = re.compile(r'test_.+\.py|.+_test\.(?:py|go)|.+\.(?:test|spec)\.[cm]?[jt]sx?')
+
+
 def large_selections(root, amap, groups):
     """[(suite, selected, known)] for each full suite whose directory holds more than
-    amap['share'] of its test files among the selected tests: selected and known are the
-    selected tests and the map's test files (files its test patterns match) in it."""
+    amap['share'] of its test files among the selected tests: selected are the selected
+    tests in it, known how many test files it holds (existing files named like tests or
+    matching the map's test patterns, plus the selected ones)."""
     patterns = [p for rule in amap['rules'] for p in rule['tests']]
     files = [p for p in _git_paths(['ls-files', '-co', '--exclude-standard'], root)
-             if any(glob_match(p, pattern) for pattern in patterns)]
+             if (TEST_NAME.fullmatch(os.path.basename(p))
+                 or any(glob_match(p, pattern) for pattern in patterns))
+             and (root / p).is_file()]
     tests = [t for d, chosen in groups.items() for t in chosen]
     large = []
     for suite in amap['suites']:

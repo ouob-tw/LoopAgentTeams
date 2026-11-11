@@ -1614,6 +1614,25 @@ class LargeSelectionTests(AffectedCase):
         self.assertEqual(self.ran(), [('web', ['tests/a.test.ts', 'tests/b.test.ts',
                                                'tests/c.test.ts', 'tests/page.test.ts'])])
 
+    def test_test_files_the_map_does_not_name_still_count_in_the_directory(self):
+        self.registry['affected']['map'][2]['tests'] = ['web/tests/page.test.ts']
+        self.share(0.5)
+        self.touch('web/tests/page.test.ts')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), [])
+        self.assertEqual(self.ran(), [('web', ['tests/page.test.ts'])])
+
+    def test_a_deleted_test_file_does_not_count_in_the_directory(self):
+        self.share(0.5)
+        (self.repo / 'web/tests/c.test.ts').unlink()
+        self.touch('web/tests/a.test.ts')
+        self.touch('web/tests/b.test.ts')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('the selection covers 2 of 3 test files in web', result.stderr)
+        self.assertEqual(self.full_runs(), ['web'])
+
     def test_a_suite_run_from_the_repo_root_is_never_chosen_for_a_large_selection(self):
         self.share(0.5)
         self.touch('src/util.py')
