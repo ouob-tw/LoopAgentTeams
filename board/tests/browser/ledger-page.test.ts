@@ -151,7 +151,7 @@ test.skipIf(!CHROME)('each line counts problems per stage, 甲 and 乙 standing 
 	const counts = (ref: string) => tab.eval<string[]>(`[...${lineOf(ref)}.querySelectorAll('.finding')].map((entry) => entry.innerText.trim() + (entry.classList.contains('severe') ? ' !' : '') + (entry.classList.contains('none') ? ' 0' : ''))`);
 	expect(await counts('#533')).toEqual(['自動測試 1', '審查 1', '驗收 1（甲 1） !']);
 	// Done stages show 0, muted, so "looked and found nothing" differs from "not looked yet".
-	expect(await counts('#534')).toEqual(['審查 1（乙 1） !', '驗收 0 0', '上線後 0 0']);
+	expect(await counts('#534')).toEqual(['審查 1（乙 1） !', '驗收 0 0', '上線後（使用者） 0 0']);
 	expect(await counts('#541')).toEqual(['審查 0 0']);
 	expect(await tab.eval(`${lineOf('#535')}.querySelector('.findings')`)).toBe(null);
 	// 甲/乙 stand out by colour, weight and a box, not colour alone.
@@ -166,12 +166,12 @@ test.skipIf(!CHROME)('each line counts problems per stage, 甲 and 乙 standing 
 	// An opened line lists its problems: level, line, stage, finder, a test catching it, outcome.
 	await toggle(tab, '#533');
 	expect(await tab.eval(`[...${lineOf('#533')}.querySelectorAll('.problem')].map((li) => li.innerText.replace(/\\s+/g, ' ').trim())`)).toEqual([
-		'丙 長標題換行的測試失敗 自動測試・suite-gate・測試抓到',
-		'丙 函式命名與既有的不一致 審查・zapi-t533-rev・列為已知限制',
-		'甲 手機上職責連結被截斷，點不到 驗收・zapi-t533-qa'
+		'丙 長標題換行的測試失敗 自動測試・suite-gate・第 1 版・17:40:00・測試抓到',
+		'丙 函式命名與既有的不一致 審查・zapi-t533-rev・第 1 版・17:40:00・列為已知限制',
+		'甲 手機上職責連結被截斷，點不到 驗收・zapi-t533-qa・第 2 版・17:55:00'
 	]);
 	await toggle(tab, '#534');
-	expect(await tab.eval(flat(`${lineOf('#534')}.querySelector('.problem')`))).toBe('乙 每次推送都重畫所有已送出的標題 審查・zapi-t534-rev・已修 42f5bed0c0ff');
+	expect(await tab.eval(flat(`${lineOf('#534')}.querySelector('.problem')`))).toBe('乙 每次推送都重畫所有已送出的標題 審查・zapi-t534-rev・第 1 版・17:40:00・已修 42f5bed0c0ff');
 
 	// The bottom: one row per stage, each problem once (the shared row's, the unknown cause's).
 	const table = `document.querySelector('.detail .ledger .stage-summary')`;
@@ -181,7 +181,7 @@ test.skipIf(!CHROME)('each line counts problems per stage, 甲 and 乙 standing 
 		'自動測試 0 0 1 1 1',
 		'審查 0 1 2 3 0',
 		'驗收 1 0 0 1 0',
-		'上線後 0 1 0 1 0'
+		'上線後（使用者） 0 1 0 1 0'
 	]);
 	// Its 甲 and 乙 cells with problems stand out like the line's counts.
 	expect(await tab.eval(`[...${table}.querySelectorAll('td.hit')].map((cell) => cell.dataset.level + getComputedStyle(cell).fontWeight)`)).toEqual(['丙400', '乙700', '丙400', '甲700', '乙700']);

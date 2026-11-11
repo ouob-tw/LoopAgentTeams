@@ -112,14 +112,15 @@ test('problems found: per-stage counts on each line, each problem, the stage sum
 	expect(inProgress.findings.map(findingText)).toEqual(['自動測試 1', '審查 1', '驗收 1（甲 1）']);
 	expect(inProgress.findings.map((entry) => entry.severe)).toEqual([false, false, true]);
 	expect(inProgress.problems).toEqual(['P2', 'P4', 'P3']);
-	expect(deployed.findings.map(findingText)).toEqual(['審查 1（乙 1）', '驗收 0', '上線後 0']);
+	expect(deployed.findings.map(findingText)).toEqual(['審查 1（乙 1）', '驗收 0', '上線後（使用者） 0']);
 	expect(blocked.findings).toEqual([]);
-	expect(view.problems.find((problem) => problem.id === 'P2')).toEqual({ id: 'P2', ticket: 'ouob-tw/LoopAgentTeams-work#533', stage: '自動測試', finder: 'suite-gate', level: '丙', text: '長標題換行的測試失敗', caught: true, resolution: '' });
+	expect(view.problems.find((problem) => problem.id === 'P2')).toEqual({ id: 'P2', ticket: 'ouob-tw/LoopAgentTeams-work#533', stage: '自動測試', finder: 'suite-gate', level: '丙', text: '長標題換行的測試失敗', caught: true, resolution: '', at: '2026-11-12T09:40:00Z', candidate: 1 });
+	expect(view.problems.find((problem) => problem.id === 'P6')).toMatchObject({ ticket: '不明', stage: '上線後（使用者）', candidate: null });
 	expect(view.summary.map((entry) => [entry.label, entry.levels.甲, entry.levels.乙, entry.levels.丙, entry.count, entry.caught])).toEqual([
 		['自動測試', 0, 0, 1, 1, 1],
 		['審查', 0, 1, 2, 3, 0],
 		['驗收', 1, 0, 0, 1, 0],
-		['上線後', 0, 1, 0, 1, 0]
+		['上線後（使用者）', 0, 1, 0, 1, 0]
 	]);
 	expect(view.problemsPath).toBe('/w/.lat/problems.jsonl');
 	expect(findingText({ stage: 'qa', label: '驗收', count: 3, levels: { 甲: 1, 乙: 1, 丙: 1 }, caught: 0, severe: true })).toBe('驗收 3（甲 1、乙 1）');

@@ -54,7 +54,7 @@ export function item(id: number, ticket: string, options: ItemOptions = {}) {
 	};
 }
 
-const PROBLEM_STAGES: Record<string, string> = { self: '自查', test: '自動測試', review: '審查', qa: '驗收', 'post-merge': '合併後測試', suite: '背景整套', 'post-deploy': '上線後' };
+const PROBLEM_STAGES: Record<string, string> = { self: '自查', test: '自動測試', review: '審查', qa: '驗收', 'post-merge': '合併後測試', suite: '背景整套', 'post-deploy-user': '上線後（使用者）', 'post-deploy': '上線後（其他）' };
 
 /** One stage's count as lat-ledger gives it: levels are [甲, 乙, 丙]. */
 export function stageCount(stage: string, [a, b, c]: [number, number, number], caught = 0) {
@@ -63,8 +63,8 @@ export function stageCount(stage: string, [a, b, c]: [number, number, number], c
 	return { stage, label, count: a + b + c, levels: { 甲: a, 乙: b, 丙: c }, caught, severe: Boolean(a || b), text: `${label} ${a + b + c}` + (severe ? `（${severe}）` : '') };
 }
 
-export function problem(id: string, ticket: string, stage: string, level: string, text: string, options: { finder?: string; caught?: boolean; resolution?: string } = {}) {
-	return { id, ticket, stage, stage_label: PROBLEM_STAGES[stage], finder: options.finder ?? 'zapi-qa', level, text, caught: options.caught ?? false, gate: options.caught ? 'e52bc2cab9bcd01cb8fa06eccfb0618d' : null, resolution_text: options.resolution ?? '', history: [] };
+export function problem(id: string, ticket: string, stage: string, level: string, text: string, options: { finder?: string; caught?: boolean; resolution?: string; at?: string; candidate?: number | null } = {}) {
+	return { id, ticket, stage, stage_label: PROBLEM_STAGES[stage], finder: options.finder ?? 'zapi-qa', level, text, caught: options.caught ?? false, gate: options.caught ? 'e52bc2cab9bcd01cb8fa06eccfb0618d' : null, resolution_text: options.resolution ?? '', at: options.at ?? '2026-11-12T09:40:00Z', candidate: options.candidate === undefined ? 1 : options.candidate, history: [] };
 }
 
 interface TicketOptions {
@@ -124,7 +124,7 @@ export function ticketLedger(workspace: string, reportPath = `${workspace}/.lat/
 	];
 	const tickets = [
 		ticket(`${REPO}#533`, { title: '主控職責文字顯示連結', state: 'in_progress', label: '進行中', steps: steps('dddapp'), now: '驗收進行中・zapi-t533-qa・「第三次長度修正仍失敗」・超過預計 12 分', items: [1], settings: [['實作', 'opus-5.5・medium'], ['驗收', 'gpt-6.1-terra・medium']], minutes: 48, running: true, rework: 3, findings: [stageCount('test', [0, 0, 1], 1), stageCount('review', [0, 0, 1]), stageCount('qa', [1, 0, 0])], problems: ['P2', 'P4', 'P3'] }),
-		ticket(`${REPO}#534`, { title: '看板標題顯示連結', state: 'deployed', label: '已上線', steps: steps('dddddd'), now: '已上線', items: [2, 3], settings: [['實作', 'opus-5.5・medium'], ['審查', 'gpt-6.1-sol・medium'], ['驗收', 'gpt-6.1-terra・low→high']], minutes: 58, rework: 1, findings: [stageCount('review', [0, 1, 0]), stageCount('qa', [0, 0, 0]), stageCount('post-deploy', [0, 0, 0])], problems: ['P1'] }),
+		ticket(`${REPO}#534`, { title: '看板標題顯示連結', state: 'deployed', label: '已上線', steps: steps('dddddd'), now: '已上線', items: [2, 3], settings: [['實作', 'opus-5.5・medium'], ['審查', 'gpt-6.1-sol・medium'], ['驗收', 'gpt-6.1-terra・low→high']], minutes: 58, rework: 1, findings: [stageCount('review', [0, 1, 0]), stageCount('qa', [0, 0, 0]), stageCount('post-deploy-user', [0, 0, 0])], problems: ['P1'] }),
 		ticket(`${REPO}#535`, { title: '小改動通道', state: 'blocked', label: '受阻', steps: steps('dapppp'), now: '實作受阻・zapi-t535-impl・「前兩項已完成」・受阻：等使用者決定 ZAPI-524-3', items: [4], settings: [['實作', 'opus-5.5・high']], minutes: 75, running: true }),
 		ticket(`${REPO}#540`, { title: '一列兩票之一', state: 'merged', label: '已合併', steps: steps('sddsdp'), now: '已合併', items: [5], settings: [['實作', '未查證']], minutes: 40, rework: 0, findings: [stageCount('review', [0, 0, 1])], problems: ['P5'] }),
 		ticket(`${REPO}#541`, { title: '一列兩票之二', state: 'merged', label: '已合併', steps: steps('sddsdp'), now: '已合併', items: [5], settings: [['實作', '未查證']], minutes: 40, findings: [stageCount('review', [0, 0, 0])] }),
@@ -145,12 +145,12 @@ export function ticketLedger(workspace: string, reportPath = `${workspace}/.lat/
 		problems: [
 			problem('P1', `${REPO}#534`, 'review', '乙', '每次推送都重畫所有已送出的標題', { finder: 'zapi-t534-rev', resolution: '已修 42f5bed0c0ff' }),
 			problem('P2', `${REPO}#533`, 'test', '丙', '長標題換行的測試失敗', { finder: 'suite-gate', caught: true }),
-			problem('P3', `${REPO}#533`, 'qa', '甲', '手機上職責連結被截斷，點不到', { finder: 'zapi-t533-qa' }),
+			problem('P3', `${REPO}#533`, 'qa', '甲', '手機上職責連結被截斷，點不到', { finder: 'zapi-t533-qa', candidate: 2, at: '2026-11-12T09:55:00Z' }),
 			problem('P4', `${REPO}#533`, 'review', '丙', '函式命名與既有的不一致', { finder: 'zapi-t533-rev', resolution: '列為已知限制' }),
 			problem('P5', `${REPO}#540`, 'review', '丙', '說明少一句', { finder: 'zapi-t540-rev' }),
-			problem('P6', '不明', 'post-deploy', '乙', '上線後首頁空白一次', { finder: 'user' })
+			problem('P6', '不明', 'post-deploy-user', '乙', '上線後首頁空白一次', { finder: 'user', candidate: null })
 		],
-		finding_summary: [stageCount('test', [0, 0, 1], 1), stageCount('review', [0, 1, 2]), stageCount('qa', [1, 0, 0]), stageCount('post-deploy', [0, 1, 0])],
+		finding_summary: [stageCount('test', [0, 0, 1], 1), stageCount('review', [0, 1, 2]), stageCount('qa', [1, 0, 0]), stageCount('post-deploy-user', [0, 1, 0])],
 		problems_path: `${workspace}/.lat/problems.jsonl`,
 		deploy_step: true
 	};

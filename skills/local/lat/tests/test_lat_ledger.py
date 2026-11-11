@@ -1807,6 +1807,25 @@ class ProblemLogTests(LedgerCase):
         self.assertIn('drop --no-findings', self.fails(
             'done', str(qa), '--file', self.report(), '--no-findings', by='qa'))
         self.ok('done', str(qa), '--file', self.report(), by='qa')
+        # The same agent's finding recorded on another row of the ticket does not count.
+        other = self.started_row('qa', 'qa', evidence='file')
+        mine = self.started_row('qa', 'qa', evidence='file')
+        self.ok('problem', '--row', str(other), '--stage', 'qa', '--level', '丙', '--text',
+                'found on the other row', by='qa')
+        self.assertIn('record what this acceptance found', self.fails(
+            'done', str(mine), '--file', self.report(), by='qa'))
+        # Nor does one recorded through another ledger of the project, which shares the log.
+        first = self.ledger
+        self.ledger = first.with_name('round-2.json')
+        self.init()
+        self.add(ticket='#1', stage='qa', evidence='file')
+        self.ok('problem', '--ticket', '#1', '--stage', 'qa', '--level', '丙', '--text',
+                'found in another round', by='qa')
+        self.ledger = first
+        self.assertIn('record what this acceptance found', self.fails(
+            'done', str(mine), '--file', self.report(), by='qa'))
+        self.ok('done', str(mine), '--file', self.report(), '--no-findings', by='qa')
+        self.ok('cancel', str(other), '--reason', 'test row')
         # A reassigned row starts a new round: what the earlier round recorded no longer counts.
         again = self.started_row('qa', 'qa', evidence='file')
         self.at(10)
@@ -1847,23 +1866,26 @@ class ProblemLogTests(LedgerCase):
             'problem', '--ticket', '不明', '--stage', 'qa', '--level', '乙', '--text', 'x'))
         self.assertIn('no row of this ledger covers', self.fails(
             'problem', '--ticket', '#9', '--stage', 'qa', '--level', '乙', '--text', 'x'))
-        self.ok('problem', '--ticket', '#1', '--stage', 'post-deploy', '--level', '乙',
+        self.ok('problem', '--ticket', '#1', '--stage', 'post-deploy-user', '--level', '乙',
                 '--text', 'blank page after deploy', '--finder', 'user')
         # A ticket of an earlier round of the project is taken after merging.
         self.ok('problem', '--ticket', '#40', '--stage', 'post-deploy', '--level', '丙',
                 '--text', 'old ticket broke', '--finder', 'user')
-        self.ok('problem', '--ticket', '不明', '--stage', 'post-deploy', '--level', '甲',
+        self.ok('problem', '--ticket', '不明', '--stage', 'post-deploy-user', '--level', '甲',
                 '--text', 'cause unknown', '--finder', 'user', '--caught', FP[:12])
         view = self.view()
-        self.assertEqual([p['id'] for p in view['problems']], ['P1', 'P3'])
+        # The old ticket's problem was recorded through this ledger, so it counts here too.
+        self.assertEqual([p['id'] for p in view['problems']], ['P1', 'P2', 'P3'])
         self.assertEqual(view['finding_summary'], [{
             'stage': 'review', 'label': '審查', 'count': 0,
             'levels': {'甲': 0, '乙': 0, '丙': 0}, 'caught': 0, 'severe': False}, {
-            'stage': 'post-deploy', 'label': '上線後', 'count': 2,
-            'levels': {'甲': 1, '乙': 1, '丙': 0}, 'caught': 1, 'severe': True}])
-        self.assertEqual(view['problems'][1]['gate'], FP)
+            'stage': 'post-deploy-user', 'label': '上線後（使用者）', 'count': 2,
+            'levels': {'甲': 1, '乙': 1, '丙': 0}, 'caught': 1, 'severe': True}, {
+            'stage': 'post-deploy', 'label': '上線後（其他）', 'count': 1,
+            'levels': {'甲': 0, '乙': 0, '丙': 1}, 'caught': 0, 'severe': False}])
+        self.assertEqual(view['problems'][2]['gate'], FP)
         self.assertEqual([p['ticket'] for p in self.problems('--ticket', '不明')], ['不明'])
-        self.assertIn('| 上線後 | 1 | 1 | 0 | 2 | 1 |', self.ok('show'))
+        self.assertIn('| 上線後（使用者） | 1 | 1 | 0 | 2 | 1 |', self.ok('show'))
 
     def test_ticket_lines_show_zero_for_done_stages_and_the_summary_counts_each_id_once(self):
         shared = self.started_row('impl', 'impl', ticket='#1,#2')
@@ -1898,6 +1920,12 @@ class ProblemLogTests(LedgerCase):
         self.ok('problem-update', '1', '--level', '乙', '--reason', 'it blocks the page',
                 by='qa')
         self.ok('problem-update', 'P1', '--known-limit', by='qa')
+        self.add(ticket='#2', stage='qa', evidence='file')
+        self.assertIn('needs --reason', self.fails('problem-update', 'P1', '--ticket', '#2',
+                                                   by='qa'))
+        self.ok('problem-update', 'P1', '--ticket', '#2', '--reason', 'wrong ticket', by='qa')
+        self.assertEqual(self.problems()[0]['ticket'], '#2')
+        self.ok('problem-update', 'P1', '--ticket', '#1', '--reason', 'it was #1', by='qa')
         [problem] = self.problems()
         self.assertEqual((problem['level'], problem['resolution']),
                          ('乙', {'kind': 'known-limit'}))

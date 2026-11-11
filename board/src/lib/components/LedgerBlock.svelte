@@ -112,7 +112,7 @@
 										<li class="problem" data-level={problem.level}>
 											<span class="level">{problem.level}</span>
 											<span class="what">{problem.text}</span>
-											<span class="meta">{problem.stage}・{problem.finder}{#if problem.caught}・測試抓到{/if}{#if problem.resolution}・{problem.resolution}{/if}</span>
+											<span class="meta">{problem.stage}・{problem.finder}{#if problem.candidate}・第 {problem.candidate} 版{/if}{#if problem.at}・{time(problem.at)}{/if}{#if problem.caught}・測試抓到{/if}{#if problem.resolution}・{problem.resolution}{/if}</span>
 										</li>
 									{/each}
 								</ul>

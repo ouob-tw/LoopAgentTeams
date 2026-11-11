@@ -79,12 +79,13 @@ UNVERIFIED = '未查證'
 # recorded by the orchestrator and may name 不明 instead of the ticket that caused them.
 PROBLEMS_FILE = 'problems.jsonl'
 PROBLEM_STAGES = {'self': '自查', 'test': '自動測試', 'review': '審查', 'qa': '驗收',
-                  'post-merge': '合併後測試', 'suite': '背景整套', 'post-deploy': '上線後'}
-LATE_STAGES = ('post-merge', 'suite', 'post-deploy')
+                  'post-merge': '合併後測試', 'suite': '背景整套',
+                  'post-deploy-user': '上線後（使用者）', 'post-deploy': '上線後（其他）'}
+LATE_STAGES = ('post-merge', 'suite', 'post-deploy-user', 'post-deploy')
 LEVELS = ('甲', '乙', '丙')
 UNKNOWN_TICKET = '不明'
 # A ticket line shows a stage's count even at 0 once this progress step is done.
-ZERO_SHOWN = {'review': 'review', 'qa': 'qa', 'post-deploy': 'deployed'}
+ZERO_SHOWN = {'review': 'review', 'qa': 'qa', 'post-deploy-user': 'deployed'}
 
 
 class Failure(Exception):
@@ -1061,7 +1062,8 @@ def cmd_done(args):
                                                               for kind in item['evidence_kinds']})
         problems += failed
         if doc.get('problem_gates') or args.no_findings:
-            gate = done_gate_problem(doc, item, args.no_findings, read_problems(doc))
+            gate = done_gate_problem(doc, item, args.no_findings, read_problems(doc),
+                                     str(Path(args.ledger)))
             if gate:
                 problems.append(gate)
         if args.no_findings:
@@ -1431,7 +1433,7 @@ def cmd_problem_update(args):
         changes['stage'] = args.stage
     if args.caught:
         changes['caught'], changes['gate'] = caught_gate(doc, args.caught)
-    if not resolution and not changes:
+    if not resolution and not changes and not args.ticket:
         raise Failure('nothing to record; give a resolution (--fixed, --known-limit, '
                       '--wontfix, --new-ticket) or a correction (--level, --text, --finder, '
                       '--stage, --ticket, --caught)')
@@ -1507,15 +1509,19 @@ def cmd_problems(args):
     return 0
 
 
-def done_gate_problem(doc, item, no_findings, problems):
+def done_gate_problem(doc, item, no_findings, problems, ledger):
     """Why a row of this ledger may not close yet for want of findings, or None. Only what was
     recorded in the row's current round counts: since its latest start (a reassign or a
     follow-on row starts a new one)."""
     since = item.get('started_at') or item.get('assigned_at')
     if item['stage'] == 'qa':
         keys = ticket_keys(item['ticket'], tracker_repo(doc['workspace']))
+        # Recorded through this ledger: with --row, that row's; without, any of its tickets.
         own = [p['id'] for p in problems.values() if p['stage'] == 'qa'
-               and p['ticket'] in keys and same_controller(item['agent'] or '', p['by'])
+               and p.get('ledger') == ledger
+               and (p.get('row') == item['id'] if p.get('row') is not None
+                    else p['ticket'] in keys)
+               and same_controller(item['agent'] or '', p['by'])
                and (not since or p['at'] >= since)]
         if own and no_findings:
             return (f'--no-findings, but you recorded {", ".join(own)} for this round; drop '
@@ -2023,10 +2029,11 @@ def cmd_show(args):
     counts = {}
     for ticket in tickets:
         counts[ticket['state']] = counts.get(ticket['state'], 0) + 1
-    # This ledger's problems: its tickets', and those recorded here as 不明; each id once.
+    # This ledger's problems: its tickets', and every one recorded through it (an escaped
+    # problem names the ticket that caused it, often of an earlier round, or 不明); each id once.
     keys = {ticket['key'] for ticket in tickets}
-    mine = [problem for problem in problems.values() if problem['ticket'] in keys or (
-        problem['ticket'] == UNKNOWN_TICKET and problem.get('ledger') == str(Path(args.ledger)))]
+    mine = [problem for problem in problems.values() if problem['ticket'] in keys
+            or problem.get('ledger') == str(Path(args.ledger))]
     summary = stage_counts(mine, {p['stage'] for p in mine} | {
         entry['stage'] for ticket in tickets for entry in ticket['findings']['stages']})
     if args.json:
@@ -2241,7 +2248,8 @@ def build_parser():
                   item=False)
     sub.add_argument('--stage', required=True, choices=list(PROBLEM_STAGES),
                      help=f'where it was found: {stages}. Review findings go through '
-                     'review-result; post-merge, suite and post-deploy are recorded by the '
+                     'review-result; post-merge, suite and both post-deploy ones are recorded '
+                     'by the '
                      'orchestrator')
     sub.add_argument('--level', required=True, choices=LEVELS)
     sub.add_argument('--text', required=True, help='the problem in one line')

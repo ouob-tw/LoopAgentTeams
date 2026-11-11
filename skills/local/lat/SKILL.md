@@ -45,7 +45,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
 - [ ] 短流程（適用時）：主控或 Designer 比照 /triage 的 agent brief，把問題、已決定的做法、驗收條件（一律寫成 `- [ ]` 核取方塊，關票檢查才看得到）與「不做」寫進 tracker issue，標分類與 `ready-for-agent`；不跑 /to-spec、Spec 共識、Spec 審查與 /to-tickets。
   - [ ] 使用者確認：以一題確認「改走短流程＋這張 issue 的驗收條件」，附 issue 連結並列出驗收條件要點；待決紀錄寫 `- advisor: exempt ticket-confirmation`，不要求 Spec 共識行。這與 Spec 確認同為正式確認點，真人答覆後才派工，授權範圍以該 issue 的驗收條件為準。
   - 已知這張票要用密碼庫項目時，確認題一併問項目的完整名稱，不留到開工後才問。
-  - 合併後測試、背景整套或上線後發現的問題，主控在開修正票時記入問題紀錄：`lat-ledger.py problem --ledger <本輪總表> --stage post-merge|suite|post-deploy --ticket <造成它的票，查不出填 不明> --level <甲|乙|丙> --text '<一句話>' --finder <user、suite-gate 或發現的 Agent>`（測試抓到的加 `--caught <閘門指紋>`）；處理完用 `problem-update <編號> --fixed <commit>` 等記下結果。
+  - 合併後測試、背景整套或上線後發現的問題，主控在開修正票時記入問題紀錄：`lat-ledger.py problem --ledger <本輪總表> --stage post-merge|suite|post-deploy-user|post-deploy --ticket <造成它的票，查不出填 不明> --level <甲|乙|丙> --text '<一句話>' --finder <user、suite-gate 或發現的 Agent>`（使用者回報的用 `post-deploy-user`）（測試抓到的加 `--caught <閘門指紋>`）；處理完用 `problem-update <編號> --fixed <commit>` 等記下結果。
   - 使用者本人回報、寫清楚哪裡錯與應該怎樣、一張票做得完、修好只回到使用者說的樣子、要改的行為沒有既有測試或文件寫明本來就該這樣的 bug，免確認開工，見 [預先授權](references/preauth.md#免確認開短流程-bug-票)。
   - 實作或驗收中發現需要多張票、改變已確認的驗收條件或新增需求時，停止受影響工作，依「使用者待決事項」交參謀判斷；參謀定案就繼續，否則提問，必要時改走完整 Spec 流程。
 - [ ] 完整流程（未走短流程時）：

@@ -99,6 +99,9 @@ export interface LedgerProblem {
 	caught: boolean;
 	/** What became of it, as lat-ledger writes it (已修 <commit>, 列為已知限制…); empty while open. */
 	resolution: string;
+	/** When it was recorded, and on which candidate of the ticket (null when it has no impl row). */
+	at: string | null;
+	candidate: number | null;
 }
 
 export type LedgerView =
@@ -160,7 +163,9 @@ function problemFrom(value: unknown): LedgerProblem[] {
 			level: problem.level,
 			text: text(problem.text) ?? '',
 			caught: problem.caught === true,
-			resolution: text(problem.resolution_text) ?? ''
+			resolution: text(problem.resolution_text) ?? '',
+			at: text(problem.at),
+			candidate: typeof problem.candidate === 'number' && problem.candidate > 0 ? problem.candidate : null
 		}
 	];
 }
