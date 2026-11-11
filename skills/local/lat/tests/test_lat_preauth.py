@@ -347,7 +347,9 @@ class ConditionTests(PreauthCase):
         head = git(self.repo, 'rev-parse', 'HEAD')
         for action in ('deploy-test', 'deploy-prod', 'install-host'):
             with self.subTest(action=action):
-                self.assertEqual(self.check(action)['reasons'], [
+                self.assertEqual(self.check(action)['reasons'], (
+                    [f'no rollback method is set for {action}; a full suite is required']
+                    if action != 'install-host' else []) + [
                     f'no passing full-suite record for {head[:12]}: bun test (in web)'])
 
     def test_a_suite_with_depends_on_keeps_its_pass_until_its_paths_change(self):
@@ -369,7 +371,9 @@ class ConditionTests(PreauthCase):
                 self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
             with self.subTest(action=action, change='lib'):
                 git(self.repo, 'reset', '-q', '--hard', lib)
-                self.assertEqual(self.check(action)['reasons'], [
+                self.assertEqual(self.check(action)['reasons'], (
+                    [f'no rollback method is set for {action}; a full suite is required']
+                    if action != 'install-host' else []) + [
                     f'no passing full-suite record for {lib[:12]}: bun test (in web)'])
 
     def test_deploy_commit_must_be_head(self):
@@ -1735,6 +1739,29 @@ class DeployAffectedTests(WriteCase):
                               ' '.join(verdict['basis']))
                 self.assertIn('next_steps', verdict)
 
+    def test_the_output_says_whether_a_full_suite_is_needed(self):
+        self.history(('deploy-prod', self.deployed, 'succeeded'))
+        with self.subTest('several tickets merged since the last deploy'):
+            for index in range(3):
+                self.head = self.commit(f'ticket {index}', f'ticket{index}.txt')
+            self.summary(self.deployed)
+            verdict = self.check('deploy-prod')
+            self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+            self.assertIn(f'no full suite needed: post-merge affected summary {"a" * 12} passed',
+                          ' '.join(verdict['basis']))
+        with self.subTest('no rollback'):
+            self.settings()
+            verdict = self.check('deploy-prod')
+            self.assertIn('no rollback method is set for deploy-prod; a full suite is required',
+                          verdict['reasons'])
+            self.assertNotIn('no full suite needed', ' '.join(verdict['reasons']))
+        with self.subTest('a failing condition says a full suite is required'):
+            self.settings(rollback='git revert, then deploy again')
+            self.history(('deploy-prod', self.deployed, 'failed'))
+            reason = self.check('deploy-prod')['reasons'][0]
+            self.assertIn('no successful deploy-prod in the deploy history', reason)
+            self.assertTrue(reason.endswith('a full suite is required'), reason)
+
     def test_a_summary_from_an_ancestor_of_the_last_deploy_also_covers_it(self):
         older = self.deployed
         self.deployed = self.head
@@ -1753,6 +1780,7 @@ class DeployAffectedTests(WriteCase):
                     self.write(self.project_file, self.project_file.read_text()
                                + f'[actions.deploy-prod]\nrollback = "{rollback}"\n')
                 self.assertEqual(self.check('deploy-prod')['reasons'], [
+                    'no rollback method is set for deploy-prod; a full suite is required'] + [
                     f'no passing full-suite record for {self.head[:12]}: {suite["command"]} '
                     f'(in {suite["cwd"]})' for suite in SUITES])
 

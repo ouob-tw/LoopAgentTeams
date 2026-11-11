@@ -131,6 +131,7 @@ source = "<待決紀錄 ID>"
     - 那筆成功之後，同動作同目標沒有失敗的部署；有的話線上版本不明（換上新版才失敗，或退回也失敗），要整套。失敗之後又成功一次，就以那次新的成功為準。
     - 它的提交在這個 repo 找得到，而且是要部署版本本身或祖先（退版或分歧都要整套）。
     - three-tier-testing 閘門有一筆 `post-merge` 的合併後受影響測試總結紀錄（`kind: affected-summary`）整體通過（`passed: true`），它的 `tree` 等於要部署版本的 tree，起點 `base` 是上一次成功部署的提交本身或它的祖先。只讀閘門紀錄，不跑測試。
+    - 輸出明說結果：全部成立時 `basis` 寫「no full suite needed」並指出採用的總結紀錄；不成立時 `ask` 的原因寫出是哪一項不成立，並說明需要整套；沒設 `rollback` 的部署寫「no rollback method is set …; a full suite is required」。
   - 部署歷史：被部署專案主工作區的 `.lat/deploy-history.jsonl`，每行一筆：`at`（時間）、`action`、`target`（當時設定的部署目標原文，沒寫為 `null`）、`commit`（完整提交）、`result`、`approval`（`preauth` 依預先授權、`manual` 人工核准），人工核准另有 `question`（待決題號）。由 `record` 寫入，見「記錄：record」。
   - `install-host` 例外：只看 `skills/` 下各技能資料夾（有 `SKILL.md` 的資料夾，略過點開頭的目錄）裡登記的整套，與安裝腳本共用閘門的同一段判斷：該套最近一次「這個資料夾內容與現在相同」的執行通過才算數，資料夾外的改動（例如看板）不影響。缺的那一套寫在原因裡，並註明所在技能資料夾與「沒有這份內容的執行」或「最近一次執行失敗」。專案沒有任何技能資料夾時，照上面的規則看全部整套。
 

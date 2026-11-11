@@ -778,12 +778,17 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
             affected, basis = affected_deploy_problems(top, version, action,
                                                        deploy_target(effective))
             if not affected:
-                result['basis'] += [describe('rollback', *rollback, label), basis]
+                result['basis'] += [describe('rollback', *rollback, label),
+                                    'no full suite needed: ' + basis]
         if affected is None or affected:
             problems = gate_problems(top, version)
             if problems and affected:
                 ask_each(('condition', 'rollback is set, but the post-merge affected tests do '
-                                       f'not cover this deploy: {reason}') for reason in affected)
+                                       f'not cover this deploy: {reason}; a full suite is '
+                                       'required') for reason in affected)
+            elif problems and action in DEPLOY_ACTIONS:
+                ask('condition', f'no rollback method is set for {action}; a full suite is '
+                                 'required')
             ask_each(problems)
             if not problems:
                 result['basis'].append(f'every registered full suite passed for {version[:12]}')
