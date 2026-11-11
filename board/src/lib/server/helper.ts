@@ -1,6 +1,7 @@
 // The only way the board reads and writes question files, and reads a controller's conversation
 // and work ledger: the LAT panel helper's `board` commands.
 import { ledgerFrom, type LedgerView } from '../board/ledger.ts';
+import { linkEvidence } from './ledger-evidence.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import type { PreauthSettings } from '../board/preauth.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
@@ -321,9 +322,10 @@ export async function readLedgers(config: BoardConfig, controllers: { workspace:
 	if (read.failure || !Array.isArray(entries) || !entries.every(usable)) {
 		return { ok: false, reason: textOrNull(parsed.value?.reason) ?? read.failure ?? '輔助工具的輸出缺少總表' };
 	}
+	const views = await linkEvidence(entries.map(ledgerFrom));
 	return {
 		ok: true,
-		ledgers: new Map(entries.map((entry) => [entry.session_id, { view: ledgerFrom(entry), path: textOrNull(entry.ledger_path) }]))
+		ledgers: new Map(entries.map((entry, index) => [entry.session_id, { view: views[index], path: textOrNull(entry.ledger_path) }]))
 	};
 }
 

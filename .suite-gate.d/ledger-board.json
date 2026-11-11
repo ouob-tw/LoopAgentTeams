@@ -1,6 +1,8 @@
 {"map": [
-  {"paths": ["board/src/lib/board/ledger.ts"],
-   "tests": ["board/tests/unit/ledger.test.ts", "board/tests/browser/ledger-page.test.ts"]},
+  {"paths": ["board/src/lib/board/ledger.ts", "board/tests/fixtures/ledger-tickets.ts"],
+   "tests": ["board/tests/unit/ledger.test.ts", "board/tests/unit/ledger-evidence.test.ts", "board/tests/server/ledger.test.ts", "board/tests/browser/ledger-page.test.ts"]},
+  {"paths": ["board/src/lib/server/ledger-evidence.ts", "board/src/routes/api/ledger/evidence/+server.ts"],
+   "tests": ["board/tests/unit/ledger-evidence.test.ts", "board/tests/server/ledger.test.ts", "board/tests/browser/ledger-page.test.ts"]},
   {"paths": ["board/src/lib/components/LedgerBlock.svelte"],
    "tests": ["board/tests/browser/ledger-page.test.ts"]},
   {"paths": ["board/src/lib/components/ControllerInfo.svelte"],
