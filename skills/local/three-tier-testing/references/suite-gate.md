@@ -128,7 +128,7 @@ CPU 與記憶體都不足時兩句以 `; ` 連接。訊息中的 GB 都是 GiB�
   - 有載入或收集錯誤：unittest 的 `_FailedTest`、pytest 的 `ERROR collecting` 或沒有測試名稱的 `ERROR <檔案>`、bun 的 `Unhandled error between tests` 或總結的 `N error`。
   - 總結行的失敗數與指出的失敗數對不上，或有失敗歸不到 repo 裡的測試檔；總結沒有失敗（測試以外的步驟失敗）。
   - 失敗的測試檔超過 10 個，或第一次執行前後內容改變。
-- **紀錄**：一次執行只寫一筆，在重跑結束後寫入。結束碼取重跑的結果（有幾組時取第一個失敗的）。另記 `rerun` 與 `flaky`（見[紀錄與設定位置](#紀錄與設定位置)）。重跑通過的紀錄與一般通過一樣可沿用；重跑期間內容改變時標為內容改變、不可沿用。不重跑時 `rerun` 只有 `skipped`（不重跑的原因），閘門也印出 `failed tests not rerun: <原因>`。
+- **紀錄**：一次執行只寫一筆，在重跑結束後寫入。結束碼取重跑的結果（有幾組時取第一個失敗的）。另記 `rerun` 與 `flaky`（見[紀錄與設定位置](#紀錄與設定位置)）。重跑才通過的紀錄另標 `rerun_only: true`，輸出與 `status` 在結果後寫 `PASSED ONLY ON RERUN (failed first: <檔案>)`：這可能是真的退步，審查者要看過才能合併（LAT 工作總表的 `done`、`check` 與合併的預先授權檢查要審查者看過後以 `lat-ledger.py review-result ... --rerun-ack <指紋>` 記下才放行）。重跑通過的整套紀錄與一般通過一樣可沿用；重跑期間內容改變時標為內容改變、不可沿用。不重跑時 `rerun` 只有 `skipped`（不重跑的原因），閘門也印出 `failed tests not rerun: <原因>`。
 
 ## 查狀態與紀錄
 
@@ -143,6 +143,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py status --fingerprint <�
 - 每套執行中測試：預約量（`measured` 實測或 `default` 預設）、目前用量；閘門已不在的另註明還有多久會被收回。
 - 最近一次收回（`Latest reclaim`）：時間、停掉幾個程序、原持有者的執行者、目錄與指令，以及每個程序的 PID 與指令。
 - 每個排隊者：卡住的原因與預約量。
+- 最近紀錄中重跑才通過的，結果後加 `PASSED ONLY ON RERUN (failed first: <第一次失敗的檔案>)`；總結紀錄寫出幾組是這樣，各組那行另附該組紀錄的指紋。
 - 最近紀錄中失敗後經過失敗重跑的：重跑的結果、耗時、第一次的結束碼與每組的指令；沒重跑的寫出原因。之後列出這些紀錄中的時好時壞測試（`flaky`）：時間、檔案與測試名稱。
 - 沒設 tracker 時未處理的背景整套失敗（見[背景整套](#背景整套background)）：時間、結束碼、專案與目錄、指令、提交與指紋。
 - `--json`：`min_slots`（有效下限）、`max_slots`、`config`（實際套用的設定）、`host`（`cores`、`cpu_idle`、`cpu_free_cores`、`mem_available_bytes`、`unused_reservation`、`mem_reserve_bytes`、`cpu_left_cores`、`mem_left_bytes`、`pressure`、`brake`、`unreadable`）、`running`（每筆另有 `usage` 與 `reservation`）、`waiting`（每筆另有 `reason` 與 `reservation`）、`locks`、`records`、`cleanup`（見[定期整理觸發](#定期整理觸發)）、`background_failures`（未處理的背景整套失敗）、`reclaims`（收回紀錄，舊到新；每筆有 `time`、`agent`、`command`、`cwd`、`fingerprint`、`cgroup`、`sid`、是否佔名額 `slot`、佔的指紋鎖 `lock`、`leftover_since`、`grace_seconds`、`process_count` 與 `processes`（`pid`、`command`））。
@@ -236,7 +237,8 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <這批
 | `commit` | 開跑時 `HEAD` 的完整提交（目標提交） |
 | `tree` | 暫時檢出開跑時的 tree，通常等於 `git rev-parse <commit>^{tree}`；要確認測的就是某個提交，比對這兩者 |
 | `changed_files` | 起點到 `commit` 的改動檔（repo 相對路徑，排序） |
-| `groups` | 每一組，依執行順序：`kind`（`check`、`affected` 或 `full-suite`）、`dir`（執行目錄，repo 相對，根目錄為 `.`）、`command`、`tests`（`affected` 組選出的測試，repo 相對；其餘為 `null`）、`exit_code`（失敗重跑後的結果）、`fingerprint`（該組的指紋）、`flaky`（是否靠失敗重跑才通過）、`content_changed`、`reused`（沿用時是被沿用那筆的 `time`、`agent`、`purpose`、`fingerprint`、`run_id`，否則 `null`）、`not_run`（準備目錄失敗而沒跑時的原因，否則 `null`）、`interrupted`（這組執行中被中斷時為 `true`，`exit_code` 為 `null`）。被中斷後還沒開始的組不列出 |
+| `groups` | 每一組，依執行順序：`kind`（`check`、`affected` 或 `full-suite`）、`dir`（執行目錄，repo 相對，根目錄為 `.`）、`command`、`tests`（`affected` 組選出的測試，repo 相對；其餘為 `null`）、`exit_code`（失敗重跑後的結果）、`fingerprint`（該組的指紋）、`flaky`（是否靠失敗重跑才通過；沿用時看被沿用那筆）、`rerun_only`（重跑才通過時是該組紀錄（沿用時是被沿用那筆）的 `fingerprint` 與第一次失敗的檔案 `failed_first`，否則 `null`）、`content_changed`、`reused`（沿用時是被沿用那筆的 `time`、`agent`、`purpose`、`fingerprint`、`run_id`，否則 `null`）、`not_run`（準備目錄失敗而沒跑時的原因，否則 `null`）、`interrupted`（這組執行中被中斷時為 `true`，`exit_code` 為 `null`）。被中斷後還沒開始的組不列出 |
+| `rerun_only` | 重跑才通過的組：`kind`、`dir`、`fingerprint`（該組紀錄的指紋）、`failed_first`；都不是時為空清單 |
 | `nothing_selected` | 沒有選出任何測試時為 `true` |
 | `interrupted` | 被中斷時為 `true` |
 | `content_changed` | 執行中內容改變時為 `true` |
@@ -478,7 +480,7 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 
 讀不到的值記為 `null`，不記 0。
 
-失敗過的執行另有 `rerun`：重跑時是 `first_exit_code`（第一次的結束碼）、`exit_code`、`duration_s` 與 `runs`（每組的 `dir`、`command`、`tests`、`exit_code`、`duration_s`、`output_tail`）；沒重跑時只有 `skipped`（原因）。同時有 `flaky`：重跑通過時是第一次失敗的每個檔案（`file`，repo 相對路徑）與其失敗的測試名稱（`tests`），否則是空清單。頂層的 `duration_s` 與 `output_tail` 是第一次執行的。
+失敗過的執行另有 `rerun`：重跑時是 `first_exit_code`（第一次的結束碼）、`exit_code`、`duration_s` 與 `runs`（每組的 `dir`、`command`、`tests`、`exit_code`、`duration_s`、`output_tail`）；沒重跑時只有 `skipped`（原因）。同時有 `flaky`：重跑通過時是第一次失敗的每個檔案（`file`，repo 相對路徑）與其失敗的測試名稱（`tests`），否則是空清單；以及 `rerun_only`：重跑才通過時為 `true`。頂層的 `duration_s` 與 `output_tail` 是第一次執行的。
 
 整套實際執行時（受影響測試不記），輸出拿得到每個測試檔的耗時就另記 `file_seconds`（`{檔案: 秒數}`，由慢到快；檔案在 repo 內時是 repo 相對路徑，否則照輸出原樣）；拿不到時沒有這個欄位。失敗重跑後通過時，取第一次執行的輸出。依測試工具：
 

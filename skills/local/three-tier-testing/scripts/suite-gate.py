@@ -1757,7 +1757,7 @@ class Gate:
                 'rel_cwd': info['rel_cwd'], 'exit_code': 0, 'agent': self.me['agent'],
                 'time': now_iso(), 'reusable': False, 'reused_time': record.get('time'),
                 'reused_agent': record.get('agent'), 'purpose': None, 'purpose_reason': None,
-                **self.extra}
+                'reused_failed_first': failed_first(record), **self.extra}
             append_record(self.record)
         return 0
 
@@ -1964,8 +1964,9 @@ class Gate:
                 changed = fingerprint(self.cwd, self.argv)['fingerprint'] != info['fingerprint']
                 if code == 0:
                     flaky = [{'file': path, 'tests': tests} for path, tests in names.items()]
-                    warn('the rerun passed, so the run counts as passed; these tests failed '
-                         'first and passed on the rerun (flaky): ' + '; '.join(
+                    warn('PASSED ONLY ON RERUN: the rerun passed, so the run counts as passed '
+                         'but is marked rerun-only for a reviewer to look at; these tests '
+                         'failed first: ' + '; '.join(
                              f"{f['file']} ({', '.join(f['tests'])})" for f in flaky))
                 else:
                     warn(f'the rerun failed too (exit {code}): the run counts as failed')
@@ -1980,7 +1981,7 @@ class Gate:
             'profile_key': info and info['profile_key'], 'reaped': reaped,
         }
         if rerun is not None:
-            record.update(rerun=rerun, flaky=flaky or [])
+            record.update(rerun=rerun, flaky=flaky or [], rerun_only=bool(flaky))
         full = not self.extra.get('kind')
         files = full and scan.file_seconds(self.cwd, info and info['repo'],
                                            pytest=pytest_durations_0(self.argv, self.cwd))
@@ -2593,6 +2594,9 @@ def print_reuse(record, command):
     print(f"  cwd:         {record.get('cwd')}")
     if record.get('purpose'):
         print(f"  purpose:     {describe_purpose(record)}")
+    if failed_first(record):
+        print(f"  result:      {rerun_only_text(failed_first(record))}; a reviewer must look "
+              'at it before the merge')
     if record.get('rerun_reason'):
         print(f"  rerun reason: {record['rerun_reason']}")
     if record.get('output_tail'):
@@ -3305,6 +3309,8 @@ def write_summary(root, checkout, run_id, base, changed, start, results, *, noth
         'repo': str(root), 'base': base, 'commit': start[0], 'tree': start[1],
         'changed_files': changed, 'groups': results, 'nothing_selected': nothing_selected,
         'interrupted': interrupted, 'content_changed': changed_content, 'passed': passed,
+        'rerun_only': [{'kind': r['kind'], 'dir': r['dir'], **r['rerun_only']}
+                       for r in results if r.get('rerun_only')],
         'exit_code': 0 if passed else 1, 'reusable': False, 'agent': agent_name(),
         'time': started_at, 'finished': now_iso()}
     append_record(record)
@@ -3318,6 +3324,10 @@ def write_summary(root, checkout, run_id, base, changed, start, results, *, noth
     warn(f"{purpose} summary {run_id[:12]}: {'passed' if passed else 'FAILED'} "
          f'({len(results)} group(s), {reused} reused, base {base[:12]}, '
          f'commit {(start[0] or "-")[:12]})')
+    for group in record['rerun_only']:
+        warn(f"{purpose} summary: {group['kind']} in {group['dir']} "
+             f"{rerun_only_text(group['failed_first'])}, fingerprint {group['fingerprint']}; "
+             'a reviewer must look at it before the merge')
     return record
 
 
@@ -3554,18 +3564,33 @@ def group_result(kind, directory, command, code, gate=None, tests=None, not_run=
     passing affected record reused instead of running it."""
     record = gate.record if gate else None
     reused = gate.reused if gate else earlier
+    ran = reused or record  # a reused pass keeps the mark of the record it reuses
     return {
         'kind': kind, 'dir': directory, 'command': command, 'tests': tests,
         'exit_code': code,
         'fingerprint': (gate.me['fingerprint'] if gate
                         else earlier.get('fingerprint') if earlier else None),
-        'flaky': bool(record and record.get('flaky')),
+        'flaky': bool(ran and ran.get('flaky')),
+        'rerun_only': ({'fingerprint': ran.get('fingerprint'), 'failed_first': failed_first(ran)}
+                       if ran and failed_first(ran) else None),
         'content_changed': bool(record and record.get('content_changed')),
         'reused': None if reused is None else {
             'time': reused.get('time'), 'agent': reused.get('agent'),
             'purpose': reused.get('purpose'), 'fingerprint': reused.get('fingerprint'),
             'run_id': reused.get('run_id')},
         'not_run': not_run, 'interrupted': interrupted}
+
+
+def failed_first(record):
+    """The test files of a pass only on the automatic rerun (`rerun_only`; older records
+    carry only `flaky`), which failed at the first try; [] for any other record."""
+    if record.get('exit_code') != 0 or not (record.get('rerun_only') or record.get('flaky')):
+        return []
+    return [f.get('file') for f in record.get('flaky') or []]
+
+
+def rerun_only_text(files):
+    return f"PASSED ONLY ON RERUN (failed first: {', '.join(files)})"
 
 
 def is_gate_config(path):
@@ -4328,6 +4353,9 @@ def cmd_status(as_json, fp_prefix, limit):
         elif r.get('kind') == 'affected':
             result = ('PASS' if r.get('exit_code') == 0 else f"FAIL exit {r.get('exit_code')}") \
                 + ' (affected tests)'
+        files = r.get('reused_failed_first') if r.get('kind') == 'reuse' else failed_first(r)
+        if files:
+            result += ' ' + rerun_only_text(files)
         rerun = f"  rerun: {r['rerun_reason']}" if r.get('rerun_reason') else ''
         purpose = f"  purpose: {describe_purpose(r)}" if r.get('purpose') else ''
         print(f"  {r.get('time')}  {result}  fp {(record_fingerprint(r) or '-')[:12]}  "
@@ -4371,6 +4399,9 @@ def print_affected_summary(r):
     notes = [why for why, on in (('nothing selected', r.get('nothing_selected')),
                                  ('interrupted', r.get('interrupted')),
                                  ('content changed', r.get('content_changed'))) if on]
+    rerun_only = r.get('rerun_only') or []
+    if rerun_only:
+        notes.append(f'{len(rerun_only)} group(s) PASSED ONLY ON RERUN')
     print(f"  {r.get('time')}  {'PASS' if r.get('passed') else 'FAIL'} ({r.get('purpose')} summary"
           f"{': ' + ', '.join(notes) if notes else ''})  run {(r.get('run_id') or '-')[:12]}  "
           f"{r.get('agent')}  {r.get('repo')}  base {(r.get('base') or '-')[:12]}  "
@@ -4385,9 +4416,16 @@ def print_affected_summary(r):
             run = g['reused'].get('run_id')
             outcome = (f"REUSED pass of {g['reused'].get('time')} by {g['reused'].get('agent')}"
                        + (f" (run {run[:12]})" if run else ''))
+            if g.get('rerun_only'):
+                outcome += (f" {rerun_only_text(g['rerun_only']['failed_first'])}  "
+                            f"fp {(g['rerun_only']['fingerprint'] or '-')[:12]}")
         else:
             outcome = 'PASS' if g.get('exit_code') == 0 else f"FAIL exit {g.get('exit_code')}"
-            outcome += ' after rerun' if g.get('flaky') and g.get('exit_code') == 0 else ''
+            if g.get('rerun_only'):
+                outcome += (f" {rerun_only_text(g['rerun_only']['failed_first'])}  "
+                            f"fp {(g['rerun_only']['fingerprint'] or '-')[:12]}")
+            elif g.get('flaky') and g.get('exit_code') == 0:
+                outcome += ' after rerun'  # summaries written before rerun_only
         print(f"    {g.get('kind')} in {g.get('dir')}: {outcome}  {g.get('command')}")
 
 

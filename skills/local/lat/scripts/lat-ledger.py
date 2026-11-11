@@ -7,7 +7,9 @@ beside it. A read refuses a ledger whose seal does not match (a hand edit, even 
 one) or whose content is malformed; `repair` recovers either case with a stated reason.
 Closing an item needs evidence the program can find: a commit reachable from a branch, a
 suite-gate record fingerprint, or a non-empty file. The program only checks that evidence
-exists; whether the work passed acceptance stays the orchestrator's call.
+exists; whether the work passed acceptance stays the orchestrator's call. A gate record that
+passed only on the automatic rerun of failed test files counts only with `--rerun-ack`, a
+review result that names it.
 """
 import argparse
 from contextlib import contextmanager
@@ -558,7 +560,10 @@ def verify_commit(doc, item, value):
     return sha, f'commit {value} is not reachable from {" or ".join(branches)} in {workspace}{hint}'
 
 
-def verify_gate(doc, value):
+def verify_gate(doc, value, acks=()):
+    """Return (full fingerprint, problem). A record whose newest run passed only on the
+    automatic rerun of failed test files is not clean evidence until a recorded review
+    acknowledges it (acks: the fingerprints review results named, see rerun_acks())."""
     script = gate_script()
     try:
         output = run_cli([sys.executable, str(script), 'status', '--json', '--fingerprint',
@@ -569,13 +574,37 @@ def verify_gate(doc, value):
         return None, f'gate record {value}: lookup failed ({error})'
     found = {r.get('fingerprint') or r.get('reused_fingerprint') for r in records
              if isinstance(r, dict)} - {None}
-    if value in found:
-        return value, None
-    if len(found) == 1:
-        return found.pop(), None
-    if found:
+    if value not in found and len(found) > 1:
         return None, f'gate record {value}: prefix matches several fingerprints; give it in full'
-    return None, f'gate record {value}: no suite-gate record with this fingerprint'
+    if not found:
+        return None, f'gate record {value}: no suite-gate record with this fingerprint'
+    full = value if value in found else found.pop()
+    ran = [r for r in records if isinstance(r, dict) and r.get('fingerprint') == full
+           and r.get('kind') != 'reuse']
+    return full, ran and rerun_only_problem(full, ran[-1], acks)
+
+
+def rerun_only_problem(fingerprint, record, acks):
+    """Why a record that passed only on the rerun is refused, or None when it did not, or an
+    acknowledged fingerprint in acks is a prefix of it."""
+    if record.get('exit_code') != 0 or not (record.get('rerun_only') or record.get('flaky')):
+        return None
+    if any(fingerprint.startswith(ack) for ack in acks):
+        return None
+    files = ', '.join(str(f.get('file')) for f in record.get('flaky') or []) or 'not recorded'
+    return (f'gate record {fingerprint[:12]} PASSED ONLY ON RERUN (failed first: {files}), so '
+            'it is not clean evidence: a reviewer must look at those failures, then record it '
+            'on this row with `review-result --row <row> '
+            f'--reviewer <name> --clean --rerun-ack {fingerprint[:12]} --note "<what the '
+            'failures were>"`. Or fix the failing test so the gate passes at the first try')
+
+
+def rerun_acks(doc, row=None):
+    """The gate fingerprints (12+ characters) the recorded reviews acknowledge as looked-at
+    rerun-only passes; only the reviews of that row when row is given."""
+    return [ack for review in doc.get('reviews') or [] if isinstance(review, dict)
+            and (row is None or review.get('row') == row)
+            for ack in review.get('rerun_acks') or [] if isinstance(ack, str) and len(ack) >= 12]
 
 
 def verify_file(value):
@@ -594,13 +623,14 @@ def verify_file(value):
 
 def verify(doc, item, evidence):
     """Check every value; return (resolved evidence, problems)."""
+    acks = rerun_acks(doc, item['id'])
     resolved, problems = {}, []
     for kind in KINDS:
         for value in evidence.get(kind, []):
             if kind == 'commit':
                 full, problem = verify_commit(doc, item, value)
             elif kind == 'gate':
-                full, problem = verify_gate(doc, value)
+                full, problem = verify_gate(doc, value, acks)
             else:
                 full, problem = verify_file(value)
             if problem:
@@ -1082,6 +1112,14 @@ def cmd_review_result(args):
     if not args.clean:
         raise Failure('give --clean: recording findings is not available yet')
     note = args.note.strip() if args.note and args.note.strip() else None
+    acks = [required_text('--rerun-ack', ack).lower() for ack in args.rerun_ack or []]
+    bad = [ack for ack in acks if not re.fullmatch(r'[0-9a-f]{12,64}', ack)]
+    if bad:
+        raise Failure(f'--rerun-ack {bad[0]}: give 12 to 64 hex characters of the gate record '
+                      'fingerprint; nothing written')
+    if acks and not note:
+        raise Failure('--rerun-ack needs --note saying what the first failures were; nothing '
+                      'written')
     try:
         agents = {item['name'] for item in read_hcom_list(HCOM_LIST_ENV)
                   if isinstance(item.get('name'), str)}
@@ -1110,6 +1148,8 @@ def cmd_review_result(args):
         reviews = doc.setdefault('reviews', [])
         review = {'id': len(reviews) + 1, 'row': item['id'], 'at': stamp(now()),
                   'by': actor(args), 'result': 'clean', 'reviewers': reviewers, 'note': note}
+        if acks:
+            review['rerun_acks'] = list(dict.fromkeys(acks))
         reviews.append(review)
         for name in reviewers:
             reading = readings[name]
@@ -1746,6 +1786,11 @@ def build_parser():
                      'such as a native sub-agent, is kept as given and marked unverified')
     sub.add_argument('--clean', action='store_true', help='the review found nothing')
     sub.add_argument('--note', help='free text kept with the result')
+    sub.add_argument('--rerun-ack', action='append', metavar='FINGERPRINT',
+                     help='a gate record (12+ characters of its fingerprint) that passed only on '
+                     'the automatic rerun and that the reviewers looked at; needs --note saying '
+                     'what the first failures were. Until then the ledger and the merge check do '
+                     'not take that record as evidence')
     sub = command('cancel', 'Cancel an item (orchestrator only)')
     sub.add_argument('--reason', required=True)
     sub = command('reassign', 'Hand an open item to another agent')

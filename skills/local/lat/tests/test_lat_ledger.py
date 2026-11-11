@@ -613,6 +613,36 @@ class DoneTests(LedgerCase):
         self.assertEqual(self.item(item)['evidence'], {'gate': [FP], 'file': [str(report)]})
         self.assertIn('- status：completed\n', card.read_text())
 
+    def test_a_rerun_only_gate_record_needs_a_recorded_review_that_acknowledges_it(self):
+        rerun_fp = 'abad1dea' * 8
+        with (self.gate_state / 'ledger.jsonl').open('a') as records:
+            records.write(json.dumps({'fingerprint': FP, 'exit_code': 0, 'reusable': True}) + '\n')
+            records.write(json.dumps({
+                'fingerprint': rerun_fp, 'exit_code': 0, 'reusable': True, 'rerun_only': True,
+                'flaky': [{'file': 'web/tests/a.test.ts', 'tests': ['breaks']}]}) + '\n')
+        first_try = self.started(evidence='gate')
+        self.ok('done', str(first_try), '--gate', FP, by='impl')
+        item = self.started(evidence='gate')
+        error = self.fails('done', str(item), '--gate', rerun_fp, by='impl')
+        self.assertIn(f'gate record {rerun_fp[:12]} PASSED ONLY ON RERUN (failed first: '
+                      'web/tests/a.test.ts)', error)
+        self.assertIn(f'--rerun-ack {rerun_fp[:12]} --note', error)
+        review = ('review-result', '--reviewer', 'a', '--clean', '--rerun-ack', rerun_fp[:12])
+        self.assertIn('needs --note', self.fails(*review, '--row', str(item), by='impl'))
+        self.assertIn('12 to 64 hex', self.fails(
+            'review-result', '--row', str(item), '--reviewer', 'a', '--clean', '--rerun-ack',
+            rerun_fp[:11], '--note', 'x', by='impl'))
+        note = ('--note', 'first failure was a timing race in the test')
+        self.ok(*review, '--row', str(first_try), *note, by='impl')
+        self.assertIn('PASSED ONLY ON RERUN', self.fails('done', str(item), '--gate', rerun_fp,
+                                                         by='impl'),
+                      'a review of another row does not count')
+        self.ok(*review, '--row', str(item), *note, by='impl')
+        self.assertEqual(self.doc()['reviews'][-1]['rerun_acks'], [rerun_fp[:12]])
+        self.ok('done', str(item), '--gate', rerun_fp, by='impl')
+        self.exempt_qa()
+        self.ok('check')
+
     def test_blocked_item_cannot_close(self):
         item = self.started()
         self.ok('block', str(item), '--reason', 'x')

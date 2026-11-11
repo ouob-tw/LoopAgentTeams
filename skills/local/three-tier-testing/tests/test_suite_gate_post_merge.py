@@ -126,6 +126,32 @@ class PostMergeTests(AffectedCase):
                          [('map-fallback', summary['run_id'])] * 2)
         self.assertIn('REUSED pass of', self.gate('status').stdout)
 
+    def test_a_reused_rerun_only_pass_keeps_its_mark_in_the_summary(self):
+        self.merge('README.md', 'src/app.py')
+        suite = self.registry['full_suites'][0]
+        result = self.gate('run', '--purpose', 'release', '--', suite['command'],
+                           cwd=self.repo / suite['cwd'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path = self.state / 'ledger.jsonl'
+        record = dict(self.records()[0], rerun_only=True,
+                      flaky=[{'file': 'tests/test_app.py', 'tests': ['test_x']}])
+        path.write_text(json.dumps(record) + '\n')
+        result = self.post_merge()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('result:      PASSED ONLY ON RERUN (failed first: tests/test_app.py)',
+                      result.stdout)
+        group = next(g for g in self.summary()['groups'] if g['dir'] == suite['cwd'])
+        self.assertTrue(group['flaky'])
+        self.assertEqual(group['rerun_only'], {'fingerprint': record['fingerprint'],
+                                               'failed_first': ['tests/test_app.py']})
+        self.assertEqual(len(self.summary()['rerun_only']), 1)
+        status = self.gate('status').stdout
+        self.assertIn('REUSED pass of', status)
+        self.assertIn(f"PASSED ONLY ON RERUN (failed first: tests/test_app.py)  "
+                      f"fp {record['fingerprint'][:12]}", status)
+        note = next(r for r in self.records() if r.get('kind') == 'reuse')
+        self.assertEqual(note['reused_failed_first'], ['tests/test_app.py'])
+
     def test_nothing_selected_still_writes_a_passing_summary_that_says_so(self):
         self.merge('docs/guide.md')
         result = self.post_merge()
@@ -415,7 +441,14 @@ class PostMergeRerunTests(RerunCase):
         self.assertEqual((group['exit_code'], group['rerun']['first_exit_code']), (0, 1))
         self.assertTrue(summary['passed'])
         self.assertEqual([(g['exit_code'], g['flaky']) for g in summary['groups']], [(0, True)])
-        self.assertIn('affected in web: PASS after rerun', self.gate('status').stdout)
+        status = self.gate('status').stdout
+        self.assertIn('affected in web: PASS PASSED ONLY ON RERUN (failed first: '
+                      'web/tests/a.test.ts, web/tests/sub/b.test.ts)', status)
+        self.assertIn('(post-merge summary: 1 group(s) PASSED ONLY ON RERUN)', status)
+        self.assertIn('PASS (affected tests) PASSED ONLY ON RERUN', status)
+        self.assertEqual(summary['rerun_only'], [{
+            'kind': 'affected', 'dir': 'web', 'fingerprint': group['fingerprint'],
+            'failed_first': ['web/tests/a.test.ts', 'web/tests/sub/b.test.ts']}])
 
 
 if __name__ == '__main__':

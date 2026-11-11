@@ -144,8 +144,20 @@ class BunRerunTests(RerunCase):
         self.assertIn('failed tests rerun once (first run exit 1): exit 0', status)
         self.assertIn('web/tests/a.test.ts: breaks', status)
         self.assertIn('Flaky tests in these records (failed first, passed on the rerun): 2', status)
+        self.assertTrue(record['rerun_only'])
+        self.assertIn('PASS PASSED ONLY ON RERUN (failed first: web/tests/a.test.ts, '
+                      'web/tests/sub/b.test.ts)', status)
+        self.assertIn('PASSED ONLY ON RERUN', result.stderr)
         self.assertEqual(self.run_suite('bun test ./tests', cwd='web').returncode, 0)
         self.assertEqual(len(self.calls()), 2, 'the rerun pass is reused')
+
+    def test_a_first_try_pass_is_not_marked_rerun_only(self):
+        self.project({'web': 'bun test {tests}'}, self.BUN_FILES)
+        self.plan('bun', ('bun-pass.txt', 0))
+        result = self.run_suite('bun test ./tests', cwd='web')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('rerun_only', self.only_record())
+        self.assertNotIn('ONLY ON RERUN', result.stderr + self.gate('status').stdout)
 
     def test_a_failure_that_fails_again_is_recorded_as_a_failure(self):
         self.project({'web': 'bun test {tests}'}, self.BUN_FILES)
@@ -154,6 +166,8 @@ class BunRerunTests(RerunCase):
         self.assertEqual(result.returncode, 1)
         record = self.only_record()
         self.assertEqual((record['exit_code'], record['reusable'], record['flaky']), (1, False, []))
+        self.assertFalse(record['rerun_only'])
+        self.assertNotIn('PASSED ONLY ON RERUN', self.gate('status').stdout)
         self.assertEqual(record['rerun']['exit_code'], 1)
         self.assertIn('the rerun failed too', result.stderr)
 
