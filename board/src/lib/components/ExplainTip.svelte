@@ -4,9 +4,11 @@
 	// down likewise, so it need not line up with the element's top or bottom. One taller than the
 	// window is cut short (CSS max-height) and its rest clipped.
 	import { untrack, type Snippet } from 'svelte';
-	import type { TipPlace } from '#lib/board/explain.svelte.ts';
+	import type { Explainer, TipPlace } from '#lib/board/explain.svelte.ts';
 
-	let { id, place, children }: { id: string; place: TipPlace; children: Snippet } = $props();
+	// With `explainer` (one made hoverable) the box takes the pointer, so what is in it can be used;
+	// pressing it does not take the focus from its element, whose blur would dismiss it.
+	let { id, place, explainer, children }: { id: string; place: TipPlace; explainer?: Pick<Explainer<unknown>, 'keep' | 'away'>; children: Snippet } = $props();
 
 	let box = $state<HTMLElement>();
 	let shift = $state(0);
@@ -25,11 +27,16 @@
 	});
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
 	{id}
 	class="tip"
 	role="tooltip"
 	bind:this={box}
+	class:hoverable={explainer !== undefined}
+	onpointerenter={explainer?.keep}
+	onpointerleave={explainer?.away}
+	onmousedown={explainer ? (event) => event.preventDefault() : undefined}
 	style:left="{place.left - shift}px"
 	style:transform={lift === 0 ? null : `translateY(${lift}px)`}
 	style:top={place.top === null ? null : `${place.top}px`}
@@ -56,5 +63,8 @@
 		font-size: max(0.8rem, var(--min-font, 0px));
 		overflow-wrap: anywhere;
 		pointer-events: none;
+	}
+	.hoverable {
+		pointer-events: auto;
 	}
 </style>

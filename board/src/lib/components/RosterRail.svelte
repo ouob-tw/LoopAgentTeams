@@ -28,7 +28,7 @@
 		tools: Snippet;
 	} = $props();
 
-	const explainer = new Explainer<string>((id) => onopen(id));
+	const explainer = new Explainer<string>((id) => onopen(id), { hoverable: true });
 	const explained = $derived(controllers.find((controller) => controller.id === explainer.tip?.key));
 	/** Runs of one status with a short line between them; idle and closed ones older than a day are one mark
 	 *  that opens their list. */
@@ -76,7 +76,7 @@
 </div>
 
 {#if explainer.tip && explained}
-	<ExplainTip id="rail-tip" place={explainer.tip}>
+	<ExplainTip id="rail-tip" place={explainer.tip} {explainer}>
 		<ControllerExplain controller={explained} />
 	</ExplainTip>
 {/if}

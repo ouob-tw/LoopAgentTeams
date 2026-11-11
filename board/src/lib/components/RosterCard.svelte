@@ -12,7 +12,7 @@
 
 	let { controller, current, onopen }: { controller: Controller; current: boolean; onopen: (id: string) => void } = $props();
 
-	const explainer = new Explainer<string>((id) => onopen(id));
+	const explainer = new Explainer<string>((id) => onopen(id), { hoverable: true });
 	const tipId = $derived(`roster-tip-${controller.id}`);
 </script>
 
@@ -52,7 +52,7 @@
 </button>
 
 {#if explainer.tip}
-	<ExplainTip id={tipId} place={explainer.tip}>
+	<ExplainTip id={tipId} place={explainer.tip} {explainer}>
 		<ControllerExplain {controller} />
 	</ExplainTip>
 {/if}
