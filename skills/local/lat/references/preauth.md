@@ -237,4 +237,5 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" report
 - 派工：只有一張票時，`card --ledger …` 加 `--tiny --no-feature --no-format-change`（後兩個是主控的聲明：不新增功能、不改資料或存檔格式），該票各列都帶上標記；票欄列出多張票時工具拒絕。
 - 審查：先跑 `review-size.py <卡片 base commit> --tiny --integration <整合分支>` 看程式新增行數（不含測試與文件，上限 30）與提示（專案設定的資料／格式檔案樣式、`feat` 提交）。通過後以 `lat-ledger.py review-result --row <實作列> --reviewer <名稱> --clean --tiny-confirm` 記下四項界線的確認，有提示時加 `--tiny-hints "<每項提示怎麼查的>"`；確認後內容又變了要重新確認。
 - 合併：`merge` 的 `--commit` 帶有這種票（列的分支指向它，或整合分支沒有的提交提到該票）時，`check` 從該票任務卡的 base commit 重跑檢查：超過 30 行、實作列是主控本人、沒有確認、確認後內容變了或確認沒涵蓋現在的提示，都 `ask`。本輪有小改動票時，沒給 `--commit` 或給的版本不在這個 repo 也 `ask`。
+- 驗收覆蓋：`lat-ledger.py check` 依確認時記下的改動種類判斷。只改文件、技能文字或測試：要有四項界線確認，且實作列帶測試紀錄指紋（`--gate`），不需 QA 列。動到程式（含純重構）：審查者要用 `review-result … --tiny-confirm --handson <絕對路徑>` 附上親手操作的截圖或紀錄檔，試行期間仍要 QA 列。缺哪項就列出哪項。
 - 改走原流程：主控先跑 `lat-ledger.py tiny-off <列> --reason "<原因>"` 拿掉該票標記，再當一般票（含 QA）重新派工。

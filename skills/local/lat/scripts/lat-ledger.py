@@ -1310,8 +1310,8 @@ def cmd_review_result(args):
     if acks and not note:
         raise Failure('--rerun-ack needs --note saying what the first failures were; nothing '
                       'written')
-    tiny = (tiny_confirmation(args, read_only(args)) if args.tiny_confirm or args.tiny_hints
-            else None)
+    tiny = (tiny_confirmation(args, read_only(args))
+            if args.tiny_confirm or args.tiny_hints or args.handson else None)
     try:
         agents = {item['name'] for item in read_hcom_list(HCOM_LIST_ENV)
                   if isinstance(item.get('name'), str)}
@@ -1733,7 +1733,7 @@ def tiny_confirmation(args, doc):
     answer."""
     size = review_size()
     if not args.tiny_confirm:
-        raise Failure('--tiny-hints goes with --tiny-confirm; nothing written')
+        raise Failure('--tiny-hints, --handson: each goes with --tiny-confirm; nothing written')
     if not args.clean:
         raise Failure('--tiny-confirm needs --clean: a review with findings confirms nothing; '
                       'nothing written')
@@ -1765,10 +1765,16 @@ def tiny_confirmation(args, doc):
         raise Failure('the tiny check shows hints the confirmation must address; say how each '
                       'was checked with --tiny-hints: ' + '; '.join(check['hints'])
                       + '; nothing written')
+    handson = []
+    for value in args.handson or []:
+        path, problem = verify_file(value)
+        if problem:
+            raise Failure(f'--handson {problem}; nothing written')
+        handson.append(path)
     return {'limits': ['one-ticket', 'code-lines', *TINY_DECLARED], 'base': check['base'],
             'commit': check['head'], 'content': check['content'],
-            'code_added': check['code_added'],
-            'hints': check['hints'], 'hints_note': note}
+            'code_added': check['code_added'], 'files': check['files'],
+            'hints': check['hints'], 'hints_note': note, 'handson': handson}
 
 
 def cmd_cancel(args):
@@ -2202,10 +2208,58 @@ def tickets_without_qa(doc):
     return missing
 
 
+def tiny_tickets(doc):
+    """The tiny tickets with an open or done impl row: {number: (impl row ids, docs_only,
+    problems)}. The latest review of those rows that carries the four-limit confirmation says
+    what the change touched. Docs, skill text and tests only: it needs that confirmation and a
+    gate record on the impl row, and no QA row. Code touched, even a pure refactor: it needs a
+    hands-on file the reviewer attached, and keeps the ordinary QA row (trial period)."""
+    found = {}
+    for item in doc['items']:
+        if item['stage'] == 'impl' and item['status'] != 'cancelled' and item.get('tiny'):
+            for ref in sorted(ticket_refs(item['ticket']), key=str):
+                found.setdefault(f'{ref[0] or ""}{ref[1]}', []).append(item)
+    result = {}
+    for number, rows in found.items():
+        ids = [row['id'] for row in rows]
+        # Each impl row is judged by its own latest confirmation; one code row makes the
+        # ticket a code ticket.
+        latest = {}
+        for review in doc.get('reviews') or []:
+            if isinstance(review, dict) and review.get('row') in ids and review.get('tiny'):
+                latest[review['row']] = review['tiny']
+        problems = []
+        if len(latest) < len(ids):
+            problems.append('no review result with the four-limit confirmation for impl item '
+                            f'{", ".join(str(i) for i in ids if i not in latest)}: '
+                            '`review-result --row <impl row> --reviewer <name> --clean '
+                            '--tiny-confirm`')
+        code = [t for t in latest.values() if (t.get('files') or {}).get('code', 1)]
+        docs_only = len(latest) == len(ids) and not code
+        if docs_only:
+            if not any(row['evidence'].get('gate') for row in rows):
+                problems.append('no test evidence: close the impl row with --gate <suite-gate '
+                                'record fingerprint>')
+        elif code and not all(any(verify_file(path)[1] is None for path in t.get('handson') or [])
+                              for t in code):
+            problems.append('code touched: the reviewer must attach a hands-on evidence file '
+                            '(screenshot or log) with `review-result ... --tiny-confirm '
+                            '--handson <absolute path>`, also for a pure refactor')
+        result[number] = (ids, docs_only, problems)
+    return result
+
+
 def cmd_check(args):
     doc = read_only(args)
     failures, cancelled = [], []
+    tiny = tiny_tickets(doc)
+    for number, (ids, _, problems) in tiny.items():
+        if problems:
+            failures.append({'id': ids[0], 'label': f'tiny ticket {number} (impl item '
+                             f'{", ".join(map(str, ids))})', 'problems': problems})
     for number, ids in tickets_without_qa(doc).items() if doc.get('qa_coverage') else ():
+        if tiny.get(number, (0, False, 0))[1]:
+            continue  # tiny and only docs, skill text or tests: no QA row needed
         failures.append({'id': ids[0], 'label': f'ticket {number} (impl item {", ".join(map(str, ids))})',
                          'problems': ['no qa-draft or qa item covers it; add one, or cancel one '
                                       'with --reason to record why not']})
@@ -2518,6 +2572,10 @@ def build_parser():
                      help="for a tiny-lane row, with --clean: the reviewers confirm all four "
                      'limits (one ticket, at most 30 added code lines, no new feature, no data '
                      "or storage format change). Runs the tiny check on the row's work first")
+    sub.add_argument('--handson', action='append', metavar='FILE',
+                     help="with --tiny-confirm: absolute path of the reviewer's hands-on "
+                     'evidence (screenshot or log); `check` needs it when the change touches '
+                     'code, also for a pure refactor')
     sub.add_argument('--tiny-hints', metavar='TEXT',
                      help='with --tiny-confirm: how each hint the tiny check showed was checked; '
                      'required when it shows any')

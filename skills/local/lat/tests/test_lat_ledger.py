@@ -2298,6 +2298,107 @@ class TinyLaneTests(LedgerCase):
         self.assertIn('return to the normal flow', refused)
         self.assertEqual(self.ledger.read_bytes(), before)
 
+    def docs_row(self, evidence='commit,gate', path='docs/note.md'):
+        """A tiny impl row whose work is one docs file, reviewed and confirmed but not closed."""
+        git(self.workspace, 'switch', '-q', '-c', 'work')
+        item = self.add(*self.TINY, '--branch', 'work', evidence=evidence)
+        card = self.tasks / f'tiny-{item}.md'
+        card.write_text(f'接續：無\n\n- agent：impl\n- base commit：{self.merged[:8]}\n'
+                        f'- worktree：{self.workspace}\n- status：dispatched\n')
+        self.ok('assign', str(item), '--agent', 'impl', '--card', str(card))
+        self.ok('start', str(item), '--eta', '+1h', by='impl')
+        self.change(path, 3, 'docs: note')
+        return item
+
+    def close(self, item, *extra):
+        self.ok('done', str(item), '--commit', git(self.workspace, 'rev-parse', 'HEAD'),
+                *extra, by='impl')
+
+    def test_a_tiny_docs_ticket_passes_with_review_and_gate_and_no_qa_row(self):
+        item = self.docs_row()
+        self.confirm(item)
+        self.close(item, '--gate', FP)
+        self.assertEqual(self.doc()['reviews'][-1]['tiny']['files'],
+                         {'code': 0, 'test': 0, 'doc': 1})
+        self.assertIn('ledger check: OK', self.ok('check'))
+
+    def test_a_tiny_docs_ticket_names_each_missing_piece(self):
+        item = self.docs_row()
+        self.close(item, '--gate', FP)
+        missing = self.run_ledger('check')
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn('no review result with the four-limit confirmation', missing.stdout)
+        self.assertIn('no qa-draft or qa item covers it', missing.stdout)  # not yet known docs-only
+        self.confirm(item)
+        self.assertIn('ledger check: OK', self.ok('check'))
+
+    def test_a_tiny_docs_ticket_without_test_evidence_is_refused(self):
+        item = self.docs_row(evidence='commit')
+        self.confirm(item)
+        self.close(item)
+        out = self.run_ledger('check')
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('no test evidence', out.stdout)
+        self.assertNotIn('no qa-draft', out.stdout)
+
+    def test_a_tiny_code_ticket_needs_a_handson_file_and_still_a_qa_row(self):
+        item = self.docs_row(path='src/refactor.py')  # even a pure refactor is code
+        shot = self.root / 'handson.log'
+        shot.write_text('ran it once\n')
+        self.assertIn('absolute path', self.confirm(item, '--handson', 'handson.log').stderr)
+        self.assertIn('does not exist', self.confirm(item, '--handson', str(self.root / 'no')).stderr)
+        self.confirm(item)
+        self.close(item, '--gate', FP)
+        out = self.run_ledger('check').stdout
+        self.assertIn('code touched: the reviewer must attach a hands-on evidence file', out)
+        self.assertIn('no qa-draft or qa item covers it', out)
+        result = self.confirm(item, '--handson', str(shot))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.doc()['reviews'][-1]['tiny']['handson'], [str(shot)])
+        out = self.run_ledger('check').stdout
+        self.assertNotIn('code touched', out)
+        self.assertIn('no qa-draft or qa item covers it', out)
+        self.exempt_qa()
+        self.assertIn('ledger check: OK', self.ok('check'))
+
+    def test_a_deleted_handson_file_fails_check_again(self):
+        item = self.docs_row(path='src/a.py')
+        shot = self.root / 'handson.log'
+        shot.write_text('x\n')
+        self.confirm(item, '--handson', str(shot))
+        self.close(item, '--gate', FP)
+        self.exempt_qa()
+        self.ok('check')
+        shot.unlink()
+        self.assertIn('code touched', self.run_ledger('check').stdout)
+
+    def test_a_non_tiny_ticket_is_unchanged(self):
+        item = self.started(evidence='commit')
+        self.ok('review-result', '--row', str(item), '--reviewer', 'a', '--clean')
+        self.ok('done', str(item), '--commit', self.merged, by='impl')
+        out = self.run_ledger('check')
+        self.assertEqual(out.returncode, 1)
+        self.assertIn('no qa-draft or qa item covers it', out.stdout)
+        self.assertNotIn('tiny', out.stdout)
+
+    def test_a_later_docs_row_does_not_exempt_an_earlier_code_row(self):
+        code = self.docs_row(path='src/a.py')
+        self.confirm(code)
+        self.close(code, '--gate', FP)
+        after_code = git(self.workspace, 'rev-parse', 'HEAD')[:8]
+        docs = self.add(*self.TINY, '--branch', 'work', evidence='commit,gate')
+        card = self.tasks / f'tiny-{docs}.md'
+        card.write_text(f'接續：無\n\n- agent：impl\n- base commit：{after_code}\n'
+                        f'- worktree：{self.workspace}\n- status：dispatched\n')
+        self.ok('assign', str(docs), '--agent', 'impl', '--card', str(card))
+        self.change('docs/b.md', 2, 'docs: b')
+        self.confirm(docs)
+        self.assertEqual(self.doc()['reviews'][-1]['tiny']['files']['code'], 0)
+        self.close(docs, '--gate', FP)
+        out = self.run_ledger('check').stdout
+        self.assertIn('no qa-draft or qa item covers it', out)
+        self.assertIn('code touched', out)
+
 
 if __name__ == '__main__':
     unittest.main()
