@@ -1509,8 +1509,8 @@ class TicketTests(LedgerCase):
         self.assertEqual(tickets['acme/work#33']['now'], '已取消：not needed')
         self.assertIsNone(tickets['acme/work#33']['total_minutes'])
         out = self.ok('show')
-        self.assertIn('| 已 1 小時 30 分 | 1 |', out)
-        self.assertIn('| 45 分 | 3 |', out)
+        self.assertIn('| 已 1 小時 30 分 |  | 1 |', out)
+        self.assertIn('| 45 分 |  | 3 |', out)
         rows = self.ok('show', '--rows')
         self.assertIn('| # | 票號 | 階段 | 負責 | 模型 | 狀態 | 依賴 | 預計完成 | 備註 |', rows)
         self.assertIn('進度：halfway', rows)
@@ -1963,6 +1963,128 @@ class ProblemLogTests(LedgerCase):
         impl = self.started_row('impl', 'impl')
         self.ok('done', str(impl), '--commit', self.merged, by='impl')
         self.assertEqual(self.view()['problems'], [])
+
+
+class ComputedFigureTests(LedgerCase):
+    """Done time, change size, test execution time and rework rounds (#550)."""
+
+    def setUp(self):
+        super().setUp()
+        self.init()
+
+    def based_card(self, name, base):
+        path = self.tasks / name
+        path.write_text(f'接續：無\n\n- agent：impl\n- base commit：{base}\n- status：dispatched\n'
+                        '- deliverable commit：待 Orchestrator 從 Git 查證後填入\n')
+        return path
+
+    def gate_records(self, *records):
+        with (self.gate_state / 'ledger.jsonl').open('a') as out:
+            for record in records:
+                out.write(json.dumps(record) + '\n')
+
+    def view(self):
+        return json.loads(self.ok('show', '--json'))
+
+    def test_done_amend_and_follow_on_update_size_and_rework_in_show_json(self):
+        item = self.add('--branch', 'side')
+        self.ok('assign', str(item), '--agent', 'impl', '--card',
+                str(self.based_card('c1.md', self.merged[:8])))
+        self.ok('start', str(item), '--eta', '+1h', by='impl')
+        self.now = '2026-10-24T10:30:00Z'
+        self.ok('done', str(item), '--commit', self.side, by='impl')
+        row = self.item(item)
+        self.assertEqual(row['done_at'], '2026-10-24T10:30:00Z')
+        self.assertEqual(row['change_size'], {
+            'base': self.merged[:8], 'commit': self.side, 'code': {'files': 0, 'lines': 0},
+            'test': {'files': 0, 'lines': 0}, 'doc': {'files': 1, 'lines': 1}})  # b.txt
+        ticket = self.view()['tickets'][0]
+        self.assertEqual((ticket['rework_rounds'], ticket['change_size']['doc']['lines']), (0, 1))
+
+        git(self.workspace, 'switch', '-q', 'side')
+        (self.workspace / 'tests').mkdir()
+        (self.workspace / 'tests' / 'test_b.py').write_text('x\ny\n')
+        (self.workspace / 'tool.py').write_text('t\n')
+        git(self.workspace, 'add', 'tests', 'tool.py')
+        git(self.workspace, 'commit', '-q', '-m', 'code and tests')
+        fixed = git(self.workspace, 'rev-parse', 'HEAD')
+        git(self.workspace, 'switch', '-q', 'dev')
+        self.ok('amend', str(item), '--commit', fixed, '--reason', 'fix after review', by='impl')
+        size = self.item(item)['change_size']
+        self.assertEqual((size['commit'], size['code'], size['test'], size['doc']),
+                         (fixed, {'files': 1, 'lines': 1}, {'files': 1, 'lines': 2},
+                          {'files': 1, 'lines': 1}))
+        self.assertEqual(self.view()['tickets'][0]['rework_rounds'], 1)
+
+        self.add('--follows', str(item))
+        view = self.view()
+        self.assertEqual(view['tickets'][0]['rework_rounds'], 2)
+        self.assertEqual(view['tickets'][0]['change_size'], size)
+        text = self.ok('show')
+        self.assertIn('修 2 輪', text)
+        self.assertIn('程式 1 檔 1 行、測試 1 檔 2 行、文件 1 檔 1 行', text)
+        rows = self.ok('show', '--rows')
+        self.assertIn('結案：2026-10-24T10:30:00Z', rows)
+        self.assertIn('改動：程式 1 檔 1 行、測試 1 檔 2 行、文件 1 檔 1 行', rows)
+
+    def test_test_time_counts_execution_once_per_run_and_reuses_apart(self):
+        item = self.started()  # started at 10:00 by impl
+        inside, run = '2026-10-24T18:10:00+08:00', {'agent': 'impl'}
+        self.gate_records(
+            # One affected run over two directories, the first with an in-run rerun.
+            {**run, 'kind': 'affected', 'run_id': 'r1', 'time': inside, 'duration_s': 30.0,
+             'rerun': {'exit_code': 0, 'first_exit_code': 1, 'duration_s': 9.0}},
+            {**run, 'run_id': 'r1', 'time': inside, 'duration_s': 10.0},
+            {**run, 'kind': 'affected-summary', 'run_id': 'r1', 'time': inside,
+             'groups': [{'exit_code': 0, 'reused': None}]},
+            # A second run that executed one directory and reused another: one run, one reuse.
+            {**run, 'kind': 'affected', 'run_id': 'r2', 'time': inside, 'duration_s': 20.0},
+            {**run, 'kind': 'reuse', 'run_id': 'r2', 'time': inside},
+            # A run that only reused, and a plain run record without a run id.
+            {**run, 'kind': 'reuse', 'run_id': 'r3', 'time': inside},
+            # An affected run that reused every group: suite-gate notes it only in the summary.
+            {**run, 'kind': 'affected-summary', 'run_id': 'r4', 'time': inside,
+             'groups': [{'exit_code': 0, 'reused': {'fingerprint': FP, 'agent': 'impl'}}]},
+            {**run, 'time': '2026-10-24T10:20:00Z', 'duration_s': 5.5},
+            # Outside the row: another agent, before the start, after done.
+            {'agent': 'other', 'run_id': 'x1', 'time': inside, 'duration_s': 99.0},
+            {**run, 'run_id': 'x2', 'time': '2026-10-24T09:59:00Z', 'duration_s': 99.0},
+            {**run, 'run_id': 'x3', 'time': '2026-10-24T11:00:01Z', 'duration_s': 99.0})
+        self.now = '2026-10-24T11:00:00Z'
+        self.ok('done', str(item), '--commit', self.merged, by='impl')
+        self.assertEqual(self.item(item)['tests'], {'seconds': 65.5, 'runs': 3, 'reuses': 3,
+                                                    'queue_seconds': None})
+        row = self.view()['items'][0]
+        self.assertEqual(row['tests_text'],
+                         '測試執行時間 1 分 5 秒（3 次）、沿用先前結果 3 次，排隊時間沒有紀錄')
+        self.assertIn('測試執行時間 1 分 5 秒（3 次）', self.ok('show', '--rows'))
+        # No card base commit: the change size stays empty, not an error.
+        self.assertIsNone(self.item(item).get('change_size'))
+
+    def test_unreadable_gate_records_leave_test_figures_empty(self):
+        item = self.started()
+        broken = self.root / 'broken-gate.py'
+        broken.write_text('import sys\nsys.exit(3)\n')
+        self.ok('done', str(item), '--commit', self.merged, by='impl',
+                env={'LAT_LEDGER_SUITE_GATE': str(broken)})
+        self.assertIsNone(self.item(item).get('tests'))
+
+    def test_rows_closed_before_the_figures_show_blanks(self):
+        item = self.started()
+        self.ok('done', str(item), '--commit', self.merged, by='impl')
+        doc = self.doc()
+        for field in ('done_at', 'change_size', 'tests'):
+            doc['items'][0].pop(field, None)
+        self.ledger.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + '\n')
+        self.ok('repair', '--reason', 'stands in for a row closed before #550')
+        view = self.view()
+        self.assertEqual((view['items'][0]['change_size_text'], view['items'][0]['tests_text']),
+                         ('', ''))
+        self.assertNotIn('done_at', view['items'][0])
+        self.assertEqual((view['tickets'][0]['change_size'], view['tickets'][0]['rework_rounds']),
+                         (None, 0))
+        self.assertNotIn('結案：', self.ok('show', '--rows'))
+        self.assertNotIn('測試執行時間', self.ok('show'))
 
 
 class NameTests(LedgerCase):
