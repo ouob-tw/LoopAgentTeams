@@ -13,6 +13,7 @@
 	import HcomBadge from './HcomBadge.svelte';
 	import DutyText from './DutyText.svelte';
 	import StatusMark from './StatusMark.svelte';
+	import SummaryText from './SummaryText.svelte';
 	import UsageLine from './UsageLine.svelte';
 
 	let {
@@ -50,7 +51,7 @@
 			詳細資料<span class="chevron" class:open={details}><ChevronDown size="1em" /></span>
 		</button>
 	</header>
-	<p class="phase">{phaseText(controller)}</p>
+	<p class="phase"><SummaryText text={phaseText(controller)} /></p>
 	<UsageLine {usage} />
 	{#if controller.error}
 		<p class="error" role="alert">⚠ {controller.error}</p>

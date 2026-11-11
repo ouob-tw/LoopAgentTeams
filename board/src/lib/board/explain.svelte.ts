@@ -6,6 +6,8 @@
 const LONG_PRESS_MS = 450;
 /** How long the explanation stays after a long press is released. */
 const LINGER_MS = 1800;
+/** How long a box that can be hovered stays after the pointer leaves its element, to reach it. */
+const REACH_MS = 200;
 
 /** Where an explanation goes: beside its element, growing away from the nearer edge of the window
  *  (ExplainTip then moves it up or down if that leaves it outside). Fixed coordinates, so a
@@ -27,10 +29,23 @@ export class Explainer<K> {
 	/** A long press has shown the explanation, so the click that ends it must not open anything. */
 	#longPressed = false;
 
-	/** `open` is what a click on the element does. */
-	constructor(open: (key: K) => void) {
+	#hoverable: boolean;
+
+	/** `open` is what a click on the element does. With `hoverable`, the pointer may move onto the box
+	 *  (see `keep` and `away`) to use what is in it, such as a link. */
+	constructor(open: (key: K) => void, { hoverable = false } = {}) {
 		this.#open = open;
+		this.#hoverable = hoverable;
 	}
+
+	/** The pointer is on the box. */
+	keep = () => clearTimeout(this.#hideTimer);
+
+	/** The pointer left the box. */
+	away = (event: PointerEvent) => {
+		// A finger's tap on the box still has its click to deliver.
+		this.#hideTimer = setTimeout(this.dismiss, event.pointerType === 'touch' ? LINGER_MS : REACH_MS);
+	};
 
 	explain(element: HTMLElement, key: K) {
 		clearTimeout(this.#hideTimer);
@@ -91,7 +106,9 @@ export class Explainer<K> {
 	};
 
 	leave = (event: PointerEvent) => {
-		if (event.pointerType !== 'touch') this.dismiss();
+		if (event.pointerType === 'touch') return;
+		if (this.#hoverable) this.#hideTimer = setTimeout(this.dismiss, REACH_MS);
+		else this.dismiss();
 	};
 
 	focus = (event: FocusEvent & { currentTarget: HTMLElement }, key: K) => {

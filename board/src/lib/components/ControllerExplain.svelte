@@ -4,13 +4,14 @@
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import DutyText from './DutyText.svelte';
+	import SummaryText from './SummaryText.svelte';
 
 	let { controller }: { controller: Controller } = $props();
 </script>
 
 <strong>{controller.project}</strong>
 <span class="handle" title="@{controller.hcomName}">@{lastSegment(controller.hcomName)}</span>
-<span>{STATUS_LABEL[controller.status]}{controller.paused ? '・暫停通訊' : ''}：{phaseText(controller)}</span>
+<span>{STATUS_LABEL[controller.status]}{controller.paused ? '・暫停通訊' : ''}：<SummaryText text={phaseText(controller)} /></span>
 {#if controller.pendingCount}<span>待決 {controller.pendingCount} 題</span>{/if}
 {#if controller.error}<span class="error">⚠ {controller.error}</span>{/if}
 {#if controller.duty}

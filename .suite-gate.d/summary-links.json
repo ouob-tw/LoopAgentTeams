@@ -1,0 +1,20 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/summary-links.ts",
+        "board/src/lib/board/explain.svelte.ts",
+        "board/src/lib/components/SummaryText.svelte",
+        "board/src/lib/components/ExplainTip.svelte",
+        "board/src/lib/components/ControllerExplain.svelte",
+        "board/src/lib/components/ControllerHeader.svelte"
+      ],
+      "tests": [
+        "board/tests/unit/summary-links.test.ts",
+        "board/tests/browser/summary-links.test.ts",
+        "board/tests/browser/controller-page.test.ts",
+        "board/tests/browser/pd-page.test.ts"
+      ]
+    }
+  ]
+}
