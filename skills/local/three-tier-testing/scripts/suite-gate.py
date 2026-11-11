@@ -3627,13 +3627,15 @@ def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None, 
                              results, content, taken, code, failed)
     if taken:
         # A reuse whose content something run after it changed no longer describes this
-        # content, and counts as content changed.
+        # content: it counts as content changed and fails the run.
         now = MapContent(root, amap)
         for result, was, fp in taken:
             if fp(now) != was:
                 result['content_changed'] = True
+                code = code or 1
+                failed.append((result['dir'], result['command'], result['tests'] or ['check']))
                 warn(f"the content of the reused {result['kind']} in {result['dir']} changed "
-                     'during the run; it counts as content changed')
+                     'during the run; it counts as content changed and fails the run')
     return code, failed
 
 

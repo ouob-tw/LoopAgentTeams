@@ -69,16 +69,22 @@ class ReuseTests(AffectedCase):
         self.assertNotEqual(result.returncode, 0, 'web never passed on BAD: it runs and fails')
         self.assertIn('running in web', result.stderr)
 
-    def test_a_reuse_whose_content_a_later_group_changed_counts_as_content_changed(self):
+    def reuse_then_change(self, *purpose):
         self.touch('src/util.py')
-        self.assertEqual(self.gate('affected', '--purpose', 'pre-merge').returncode, 0)
+        self.assertEqual(self.gate('affected', *purpose).returncode, 0)
         self.registry['affected']['commands']['web'] = (
             f'printf later > {self.repo}/src/util.py; : {{tests}}')
         self.write_registry()
         self.touch('web/src/page.ts')
-        result = self.gate('affected', '--purpose', 'pre-merge')
+        result = self.gate('affected', *purpose)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('the content of the reused affected in . changed', result.stderr)
+
+    def test_a_reuse_whose_content_a_later_group_changed_fails_the_run(self):
+        self.reuse_then_change()
+
+    def test_a_reuse_whose_content_a_later_group_changed_fails_the_summary(self):
+        self.reuse_then_change('--purpose', 'pre-merge')
         last = self.summaries('pre-merge')[-1]
         self.assertEqual((last['passed'], last['groups'][0]['content_changed']), (False, True))
 
