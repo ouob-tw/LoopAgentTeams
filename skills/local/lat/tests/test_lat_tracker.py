@@ -151,6 +151,7 @@ class TrackerWarningTests(unittest.TestCase):
     def test_only_reads_with_the_api_path_form(self):
         self.set_issues({'acme/work#5': self.issue('open')})
         self.ledger_with('#5', '#5')
+        self.log.write_text('')  # adding the rows read the tracker for titles
         self.warnings()
         self.assertEqual(self.log.read_text().splitlines(), ['api repos/acme/work/issues/5'])
 

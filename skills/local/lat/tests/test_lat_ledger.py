@@ -1,5 +1,8 @@
 """CLI contract tests for lat-ledger.py: subprocess, a real temp Git repo, fake gate records."""
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +15,22 @@ import unittest
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-ledger.py'
 NOW = '2026-10-24T10:00:00Z'
 FP = 'f00dfeed' * 8
+
+
+# A fake `gh` for tracker titles: answers `gh api repos/<owner>/<repo>/issues/<n>` from a JSON
+# file of {"owner/repo#n": title}, logs every call, and fails like the real one otherwise.
+FAKE_GH = r'''#!/usr/bin/env python3
+import json, os, re, sys
+args = sys.argv[1:]
+open(os.environ['FAKE_GH_LOG'], 'a').write(' '.join(args) + '\n')
+titles = json.load(open(os.environ['FAKE_GH_DATA']))
+match = len(args) == 2 and args[0] == 'api' and re.fullmatch(
+    r'repos/([\w.-]+/[\w.-]+)/issues/(\d+)', args[1])
+title = match and titles.get(match.group(1) + '#' + match.group(2))
+if not title:
+    sys.stderr.write('gh: Not Found (HTTP 404)\n'); sys.exit(1)
+print(json.dumps({'state': 'open', 'labels': [], 'title': title}))
+'''
 
 
 def git(cwd, *args):
@@ -51,6 +70,14 @@ class LedgerCase(unittest.TestCase):
         self.now = NOW
         self.hcom_list = self.root / 'hcom-list.json'
         self.set_hcom('orch', 'impl', 'impl2', 'a', 'b', 'new')
+        bin_dir = self.root / 'bin'
+        bin_dir.mkdir()
+        (bin_dir / 'gh').write_text(FAKE_GH)
+        (bin_dir / 'gh').chmod(0o755)
+        self.gh_data, self.gh_log = self.root / 'gh.json', self.root / 'gh.log'
+        self.gh_data.write_text('{}')
+        self.gh_env = {'PATH': f'{bin_dir}:{os.environ["PATH"]}',
+                       'FAKE_GH_DATA': str(self.gh_data), 'FAKE_GH_LOG': str(self.gh_log)}
 
     def set_hcom(self, *names):
         """Untagged names are their own full names; `<tag>-<base>` ones carry a tag."""
@@ -61,7 +88,8 @@ class LedgerCase(unittest.TestCase):
         environment = {**os.environ, 'LAT_LEDGER_NOW': self.now, 'HCOM_INSTANCE_NAME': by,
                        'LAT_LEDGER_HCOM_LIST': str(self.hcom_list),
                        'SUITE_GATE_STATE_DIR': str(self.gate_state),
-                       'XDG_CONFIG_HOME': str(self.root / 'config'), **(env or {})}
+                       'XDG_CONFIG_HOME': str(self.root / 'config'), **self.gh_env,
+                       **(env or {})}
         environment.pop('SUITE_GATE_CONFIG', None)
         command, *rest = args
         return subprocess.run([sys.executable, str(script or SCRIPT), command, '--ledger', str(self.ledger),
@@ -476,7 +504,7 @@ class DoneTests(LedgerCase):
         self.assertEqual(row['evidence'], {'commit': [self.merged]})
         self.assertEqual(row['history'][-1]['action'], 'amend')
         self.assertEqual(row['history'][-1]['reason'], 'QA re-judged Q5: PASS')
-        self.assertIn('補記：QA re-judged Q5: PASS', self.ok('show'))
+        self.assertIn('補記：QA re-judged Q5: PASS', self.ok('show', '--rows'))
         self.exempt_qa()
         self.ok('check')
 
@@ -639,7 +667,7 @@ class RepoTests(LedgerCase):
         self.fails('done', str(item), '--commit', self.merged, by='impl')
         self.ok('done', str(item), '--commit', self.foreign[:10], by='impl')
         self.assertEqual(self.item(item)['evidence'], {'commit': [self.foreign]})
-        self.assertIn(f'repo：{self.other}', self.ok('show'))
+        self.assertNotIn(str(self.other), self.ok('show', '--rows'))  # JSON keeps the path
         self.assertEqual(json.loads(self.ok('show', '--json'))['items'][0]['repo'],
                          str(self.other))
         self.exempt_qa()
@@ -909,7 +937,7 @@ class QaCoverageTests(LedgerCase):
         old_ok('start', item, '--eta', '+1h', by='impl')
         old_ok('block', item, '--reason', 'waits')
         self.assertEqual(self.item(int(item))['deadline'], '2026-10-24T15:00:00Z')
-        self.assertIn('| 受阻 |', self.ok('show'))
+        self.assertIn('| 受阻 |', self.ok('show', '--rows'))
         self.ok('unblock', item)
         self.assertEqual(self.item(int(item))['deadline'], '2026-10-24T12:00:00Z')
 
@@ -1229,7 +1257,7 @@ class ShowTests(LedgerCase):
         blocked = self.started()
         self.ok('block', str(blocked), '--reason', 'waits for #9')
         self.now = '2026-10-24T12:30:00Z'
-        out = self.ok('show')
+        out = self.ok('show', '--rows')
         rows = {line.split(' | ')[0].strip('| '): line for line in out.splitlines()
                 if line.startswith('| ') and not line.startswith('| #')}
         header = next(line for line in out.splitlines() if line.startswith('| #'))
@@ -1271,6 +1299,225 @@ class ShowTests(LedgerCase):
                       json.loads(self.ok('show', '--json'))['items'][0]['card_mismatch'])
         self.ok('update', str(item), '--card', str(moved))
         self.assertIsNone(json.loads(self.ok('show', '--json'))['items'][0]['card_mismatch'])
+
+
+class TicketTests(LedgerCase):
+    """The ticket layer of `show` (#546): rows grouped by canonical ticket."""
+
+    def setUp(self):
+        super().setUp()
+        (self.workspace / 'docs/agents').mkdir(parents=True)
+        (self.workspace / 'docs/agents/issue-tracker.md').write_text(
+            'Use `gh` and always pass `-R acme/work`.\n')
+        self.init()
+
+    def tickets(self):
+        return {t['key']: t for t in json.loads(self.ok('show', '--json'))['tickets']}
+
+    def steps(self, ticket):
+        return {step['key']: step['state'] for step in ticket['steps']}
+
+    def report(self, name='report.md'):
+        path = self.root / name
+        path.write_text('done\n')
+        return str(path)
+
+    def test_rows_group_under_each_canonical_ticket(self):
+        shared = self.add(ticket='#348,349')
+        qa = self.add(ticket='348', stage='qa', evidence='file')
+        qualified = self.add(ticket='acme/work#349', stage='qa', evidence='file')
+        elsewhere = self.add(ticket='other/repo#348')
+        named = self.add('--title', 'Ledger fields', ticket='ledger-fields', stage='research',
+                         evidence='file')
+        plain = self.add(ticket='cleanup notes', stage='other', evidence='file')
+        research = self.add(ticket='#350', stage='research', evidence='file')
+        self.ok('assign', str(research), '--agent', 'a', '--card', str(self.card('r.md')))
+        self.ok('done', str(research), '--file', self.report(), by='a')
+        tickets = self.tickets()
+        # A ticket with no row in any step has every step skipped.
+        self.assertEqual(set(self.steps(tickets.pop('acme/work#350')).values()), {'skipped'})
+        self.assertEqual(list(tickets), ['acme/work#348', 'acme/work#349', 'other/repo#348',
+                                         'ledger-fields', 'cleanup notes'])
+        self.assertEqual(tickets['acme/work#348']['items'], [shared, qa])
+        self.assertEqual(tickets['acme/work#349']['items'], [shared, qualified])
+        self.assertEqual(tickets['other/repo#348']['items'], [elsewhere])
+        self.assertEqual((tickets['acme/work#348']['repo'], tickets['acme/work#348']['number']),
+                         ('acme/work', 348))
+        self.assertEqual(tickets['ledger-fields']['items'], [named])
+        self.assertEqual(tickets['ledger-fields']['title'], 'Ledger fields')
+        self.assertEqual(tickets['cleanup notes']['items'], [plain])
+        self.assertEqual(tickets['cleanup notes']['title'], 'cleanup notes')
+        self.assertIsNone(tickets['cleanup notes']['number'])
+        view = json.loads(self.ok('show', '--json'))
+        self.assertEqual(view['ticket_counts'], {'unassigned': 5, 'done': 1})
+        self.assertEqual(view['items'][0]['ticket_keys'], ['acme/work#348', 'acme/work#349'])
+        out = self.ok('show')
+        self.assertIn('6 張票：5 張未派、1 張已結案', out)
+        self.assertIn('| #348 |  |', out)  # this project's tracker is shown as a bare number
+        self.assertIn('| other/repo#348 |', out)
+
+    def test_ticket_counts_count_each_ticket_once_in_its_own_state(self):
+        shared = self.started(ticket='#10,#11')
+        self.ok('done', str(shared), '--commit', self.merged, by='impl')
+        self.add(ticket='#10', stage='qa', evidence='file')  # waits to be assigned
+        self.started(ticket='#11', evidence='file')  # in progress
+        blocked = self.started(ticket='#12')
+        self.ok('block', str(blocked), '--reason', 'waits for #9')
+        finished = self.started(ticket='#13')
+        self.ok('done', str(finished), '--commit', self.merged, by='impl')
+        view = json.loads(self.ok('show', '--json'))
+        self.assertEqual(view['ticket_counts'], {'unassigned': 1, 'in_progress': 1,
+                                                 'blocked': 1, 'merged': 1})
+        states = {t['key']: t['state'] for t in view['tickets']}
+        self.assertEqual(states, {'acme/work#10': 'unassigned', 'acme/work#11': 'in_progress',
+                                  'acme/work#12': 'blocked', 'acme/work#13': 'merged'})
+        self.assertIn('4 張票：1 張進行中、1 張受阻、1 張未派、1 張已合併', self.ok('show'))
+
+    def test_title_comes_from_the_flag_or_the_tracker_once_and_a_failure_still_adds(self):
+        self.gh_data.write_text(json.dumps({'acme/work#5': 'Fix the thing'}))
+        self.add(ticket='#5')
+        self.add(ticket='#5', stage='qa', evidence='file')
+        result = self.run_ledger('add', '--ticket', '#6', '--stage', 'impl', '--evidence', 'commit')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('no title for acme/work#6', result.stderr)
+        self.add('--title', 'Given title', ticket='#7')
+        calls = self.gh_log.read_text().splitlines()
+        self.assertEqual(calls, ['api repos/acme/work/issues/5', 'api repos/acme/work/issues/6'])
+        tickets = self.tickets()
+        self.assertEqual({key: t['title'] for key, t in tickets.items()},
+                         {'acme/work#5': 'Fix the thing', 'acme/work#6': '',
+                          'acme/work#7': 'Given title'})
+        self.assertEqual(len(self.doc()['items']), 4)
+
+    def test_a_failed_title_is_not_read_again_and_reads_stop_when_time_runs_out(self):
+        self.add(ticket='#8')
+        self.add(ticket='#8', stage='qa', evidence='file')
+        self.assertEqual(self.gh_log.read_text().splitlines(), ['api repos/acme/work/issues/8'])
+        self.add('--title', 'Named later', ticket='#8', stage='review', evidence='file')
+        self.assertEqual(self.tickets()['acme/work#8']['title'], 'Named later')
+        spec = importlib.util.spec_from_file_location('ledger_titles', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.TITLE_BUDGET_SECONDS = 0
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(module.fetch_titles(['acme/work#9', 'acme/work#10']), {})
+        self.assertEqual(err.getvalue().count('no time left'), 2)
+
+    def test_merge_and_deploy_are_checked_in_the_row_s_own_project(self):
+        other = self.root / 'other'
+        other.mkdir()
+        git(other, 'init', '-q', '-b', 'dev')
+        git(other, 'config', 'user.email', 't@example.com')
+        git(other, 'config', 'user.name', 'T')
+        (other / 'o.txt').write_text('o\n')
+        git(other, 'add', 'o.txt')
+        git(other, 'commit', '-q', '-m', 'other work')
+        commit = git(other, 'rev-parse', 'HEAD')
+        row = self.started('--repo', str(other), ticket='other/work#1')
+        self.ok('done', str(row), '--commit', commit, by='impl')
+        (other / '.lat').mkdir()
+        (other / '.lat' / 'deploy-history.jsonl').write_text(json.dumps(
+            {'action': 'deploy-prod', 'commit': commit, 'result': 'succeeded'}) + '\n')
+        view = json.loads(self.ok('show', '--json'))
+        ticket, = view['tickets']
+        self.assertEqual(self.steps(ticket)['merged'], 'done')
+        self.assertEqual(self.steps(ticket)['deployed'], 'done')
+        self.assertEqual(ticket['state'], 'deployed')
+        self.assertTrue(view['deploy_step'])
+
+    def test_progress_steps_follow_rows_merge_and_deploy_history(self):
+        draft = self.add(ticket='#20', stage='qa-draft', evidence='file')
+        self.ok('assign', str(draft), '--agent', 'a', '--card', str(self.card('d.md')))
+        self.ok('done', str(draft), '--file', self.report(), by='a')
+        impl = self.started('--branch', 'side', ticket='#20')
+        self.assertEqual(self.steps(self.tickets()['acme/work#20']),
+                         {'draft': 'done', 'impl': 'active', 'review': 'pending',
+                          'qa': 'pending', 'merged': 'pending'})
+        self.ok('done', str(impl), '--commit', self.side, by='impl')
+        ticket = self.tickets()['acme/work#20']
+        self.assertEqual(self.steps(ticket), {'draft': 'done', 'impl': 'done', 'review': 'done',
+                                              'qa': 'pending', 'merged': 'pending'})
+        self.assertEqual((ticket['state'], ticket['now']), ('done', '審查完成'))
+        git(self.workspace, 'merge', '-q', '--no-edit', 'side')
+        history = self.workspace / '.lat' / 'deploy-history.jsonl'
+        history.write_text(json.dumps({'action': 'deploy-test', 'commit': self.side,
+                                       'result': 'succeeded'}) + '\n')
+        ticket = self.tickets()['acme/work#20']
+        self.assertEqual(self.steps(ticket), {'draft': 'done', 'impl': 'done', 'review': 'done',
+                                              'qa': 'skipped', 'merged': 'done'})
+        self.assertEqual(ticket['state'], 'merged')
+        self.assertFalse(json.loads(self.ok('show', '--json'))['deploy_step'])
+        self.assertIn('草稿✓ 實作✓ 審查✓ 驗收— 合併✓ |', self.ok('show'))
+        with history.open('a') as stream:
+            stream.write(json.dumps({'action': 'deploy-prod', 'commit': self.merged,
+                                     'result': 'succeeded'}) + '\n')
+        self.assertEqual(self.steps(self.tickets()['acme/work#20'])['deployed'], 'pending')
+        with history.open('a') as stream:
+            stream.write(json.dumps({'action': 'deploy-prod',
+                                     'commit': git(self.workspace, 'rev-parse', 'HEAD'),
+                                     'result': 'succeeded'}) + '\n')
+        ticket = self.tickets()['acme/work#20']
+        self.assertEqual(self.steps(ticket)['deployed'], 'done')
+        self.assertEqual((ticket['state'], ticket['now']), ('deployed', '已上線'))
+        self.assertIn('合併✓ 上線✓ |', self.ok('show'))
+
+    def test_now_text_and_total_time(self):
+        working = self.started(ticket='#30')
+        self.ok('update', str(working), '--progress', 'halfway', by='impl')
+        blocked = self.started(ticket='#31')
+        self.ok('block', str(blocked), '--reason', 'waits for #9')
+        closed = self.started(ticket='#32')
+        dropped = self.add(ticket='#33')
+        self.ok('cancel', str(dropped), '--reason', 'not needed')
+        self.now = '2026-10-24T10:45:00Z'
+        self.ok('done', str(closed), '--commit', self.merged, by='impl')
+        self.now = '2026-10-24T11:30:00Z'
+        tickets = self.tickets()
+        self.assertEqual(tickets['acme/work#30']['now'], '實作進行中・impl・「halfway」・超過預計 30 分')
+        self.assertEqual((tickets['acme/work#30']['total_minutes'],
+                          tickets['acme/work#30']['running']), (90, True))
+        self.assertEqual(tickets['acme/work#31']['now'], '實作受阻・impl・受阻：waits for #9')
+        self.assertEqual((tickets['acme/work#32']['total_minutes'],
+                          tickets['acme/work#32']['running']), (45, False))
+        self.assertEqual(tickets['acme/work#33']['now'], '已取消：not needed')
+        self.assertIsNone(tickets['acme/work#33']['total_minutes'])
+        out = self.ok('show')
+        self.assertIn('| 已 1 小時 30 分 | 1 |', out)
+        self.assertIn('| 45 分 | 3 |', out)
+        rows = self.ok('show', '--rows')
+        self.assertIn('| # | 票號 | 階段 | 負責 | 狀態 | 依賴 | 預計完成 | 備註 |', rows)
+        self.assertIn('進度：halfway', rows)
+
+    def test_show_json_of_an_old_ledger_is_a_superset_with_blanks(self):
+        baseline = self.root / 'baseline'
+        baseline.mkdir()
+        old = baseline / 'lat-ledger.py'
+        old.write_text(git(Path(__file__).resolve().parents[3], 'show',
+                           '729723b0:skills/local/lat/scripts/lat-ledger.py') + '\n')
+        (baseline / '_lat_common.py').write_text((SCRIPT.parent / '_lat_common.py').read_text())
+        for path in (self.ledger, self.seal, self.journal):
+            path.unlink()
+        def old_ok(*args, by='orch'):
+            result = self.run_ledger(*args, by=by, script=old)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+        old_ok('init', '--workspace', str(self.workspace), '--integration-branch', 'dev',
+               '--orchestrator', 'orch')
+        item = old_ok('add', '--ticket', '#40', '--stage', 'impl', '--evidence', 'commit').strip()
+        old_ok('add', '--ticket', 'ledger-fields', '--stage', 'research', '--evidence', 'file')
+        old_ok('assign', item, '--agent', 'impl', '--card', str(self.card()))
+        old_ok('start', item, '--eta', '+1h', by='impl')
+        before = json.loads(old_ok('show', '--json'))
+        after = json.loads(self.ok('show', '--json'))
+        for key, value in before.items():
+            if key != 'items':
+                self.assertEqual(after[key], value, key)
+        for old_row, new_row in zip(before['items'], after['items'], strict=True):
+            self.assertEqual({key: new_row[key] for key in old_row}, old_row)
+        self.assertEqual([(t['key'], t['title']) for t in after['tickets']],
+                         [('acme/work#40', ''), ('ledger-fields', 'ledger-fields')])
+        self.assertIn('| #40 |  |', self.ok('show'))
+        self.assertEqual(self.gh_log.read_text() if self.gh_log.exists() else '', '')
 
 
 class NameTests(LedgerCase):

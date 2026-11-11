@@ -1693,7 +1693,9 @@ class LargeSelectionTests(AffectedCase):
         self.touch('web/src/page.ts')
         result = self.gate('affected', '--base', 'HEAD')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('the selection covers 6 of 6 test files in .', result.stderr)
+        # The 2 tests that passed above are reused; the share counts the 4 left to run.
+        self.assertIn('2 test(s) in .: same tests and content already passed', result.stderr)
+        self.assertIn('the selection covers 4 of 6 test files in .', result.stderr)
         self.assertEqual(self.full_runs(), ['root'])
 
     def test_a_bad_share_stops_affected_and_names_the_field(self):
