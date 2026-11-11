@@ -11,6 +11,5 @@
 	a {
 		color: var(--accent);
 		text-decoration: underline;
-		pointer-events: auto;
 	}
 </style>

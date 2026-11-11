@@ -3,6 +3,7 @@
 // screen); everything else in it stays text. Headless Chrome on the built board with fake data.
 // Skipped when the host has no Chrome.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { FOLDED_KEY } from '../../src/lib/board/prefs.ts';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 
@@ -90,10 +91,10 @@ test.skipIf(!CHROME)('hovering the roster card shows the link, and the pointer c
 	await sleep(500);
 	expect(await tab.eval(`!!document.querySelector(${JSON.stringify(tipOf())})`)).toBe(true);
 	// A click on it opens the address in a new tab.
-	const opened = tab.eval<string>(`new Promise((resolve) => { window.open = (url, target) => resolve(url + '|' + target); document.querySelector(${JSON.stringify(tipOf() + ' a')}).addEventListener('click', (e) => { e.preventDefault(); resolve(e.target.href + '|' + e.target.target); }); })`);
+	await tab.eval(`window.clicked = null; document.querySelector(${JSON.stringify(tipOf() + ' a')}).addEventListener('click', (e) => { e.preventDefault(); window.clicked = e.target.href + '|' + e.target.target; })`);
 	await mouse('mousePressed', { ...link, button: 'left', clickCount: 1 } as never);
 	await mouse('mouseReleased', { ...link, button: 'left', clickCount: 1 } as never);
-	expect(await opened).toBe(`${ISSUE}|_blank`);
+	await tab.until(`window.clicked === ${JSON.stringify(`${ISSUE}|_blank`)}`, 'the link clicked');
 
 	// Away from both, it goes.
 	await mouse('mouseMoved', { x: 900, y: 700 });
@@ -119,5 +120,26 @@ test.skipIf(!CHROME)("at a phone's width a long press shows the box and its link
 	await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [link] });
 	await tab.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
 	await tab.until(`window.tapped === ${JSON.stringify(ISSUE)}`, 'the link tapped');
+	// Tapping the link is not tapping the card: no controller opens.
+	expect(await tab.eval<string>(`location.search`)).not.toContain('controller=');
 	await shot(tab, 'summary-links-phone');
+}, 60_000);
+
+test.skipIf(!CHROME)('the folded rail mark explains with the same link, and the pointer can reach it', async () => {
+	await visit(1280, '/');
+	await tab.eval(`localStorage.setItem(${JSON.stringify(FOLDED_KEY)}, '1')`);
+	await tab.navigate(`${fixture.url}/`);
+	await tab.until(STARTED, 'the board to start');
+	const MARK = '.rail .entry';
+	await tab.until(`document.querySelector(${JSON.stringify(MARK)})?.getBoundingClientRect().width >= 30`, 'the folded rail');
+	const from = await middle(MARK);
+	await mouse('mouseMoved', from);
+	await tab.until(`!!document.querySelector('#rail-tip a')`, 'the explanation with its link');
+	const link = await middle('#rail-tip a');
+	for (let step = 1; step <= 10; step++) {
+		await mouse('mouseMoved', { x: from.x + ((link.x - from.x) * step) / 10, y: from.y + ((link.y - from.y) * step) / 10 });
+		await sleep(30);
+	}
+	await sleep(500);
+	expect((await links('#rail-tip')).map((l) => l.href)).toEqual([ISSUE]);
 }, 60_000);
