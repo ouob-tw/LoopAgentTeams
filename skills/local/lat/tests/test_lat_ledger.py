@@ -2077,8 +2077,15 @@ class ComputedFigureTests(LedgerCase):
             {**run, 'run_id': 'x3', 'time': '2026-10-24T11:00:01Z', 'duration_s': 99.0})
         self.now = '2026-10-24T11:00:00Z'
         self.ok('done', str(item), '--commit', self.merged, by='impl')
-        self.assertEqual(self.item(item)['tests'], {'seconds': 65.5, 'runs': 3, 'reuses': 3,
-                                                    'queue_seconds': None})
+        self.assertEqual(self.item(item)['tests'], {
+            'seconds': 65.5, 'runs': 3, 'reuses': 3, 'queue_seconds': None,
+            # Where each executed record ran, from its start time and duration (#557).
+            'spans': [['2026-10-24T10:10:00Z', '2026-10-24T10:10:10Z'],
+                      ['2026-10-24T10:10:00Z', '2026-10-24T10:10:20Z'],
+                      ['2026-10-24T10:10:00Z', '2026-10-24T10:10:30Z'],
+                      ['2026-10-24T10:20:00Z', '2026-10-24T10:20:05Z']]})
+        impl = next(s for s in self.view()['tickets'][0]['times'] if s['key'] == 'impl')
+        self.assertEqual((impl['tests_seconds'], len(impl['tests_spans'])), (65.5, 4))
         row = self.view()['items'][0]
         self.assertEqual(row['tests_text'],
                          '測試執行時間 1 分 5 秒（3 次）、沿用先前結果 3 次，排隊時間沒有紀錄')

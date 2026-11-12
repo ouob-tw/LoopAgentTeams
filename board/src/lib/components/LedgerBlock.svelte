@@ -1,13 +1,14 @@
 <script lang="ts">
 	// A controller's work ledger: one line per ticket (its link and title, the progress strip,
 	// what it is doing now, what each stage ran on, its time and rounds of rework), opened to show
-	// the rows that make it up with their evidence and, once closed, when, how much they changed
-	// and how long their tests ran. In a narrow panel each line becomes a card read top to bottom.
+	// where its time went stage by stage (StageTimeline) and the rows that make it up with their
+	// evidence and, once closed, when, how much they changed and how long their tests ran. In a narrow panel each line becomes a card read top to bottom.
 	// Each line counts the problems found per stage, 甲 and 乙 standing out; an opened line lists
 	// them, and the bottom says which stage found how many. No ledger, or one that cannot be read,
 	// says so here only.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
+	import StageTimeline from './StageTimeline.svelte';
 	import { LEVELS, countsText, findingText, lateText, minutesText, rowMinutes, testsText, ticketTime, type LedgerProblem, type LedgerRow, type LedgerView } from '#lib/board/ledger.ts';
 
 	let { ledger }: { ledger: LedgerView } = $props();
@@ -20,9 +21,9 @@
 	const rows = $derived(ledger.state === 'ok' ? new Map(ledger.items.map((row) => [row.id, row])) : new Map<number, LedgerRow>());
 	const problems = $derived(ledger.state === 'ok' ? new Map(ledger.problems.map((problem) => [problem.id, problem])) : new Map<string, LedgerProblem>());
 	const fileName = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+	// Counted to the read, as lat-ledger counts the ticket's time.
+	const read = $derived(ledger.state === 'ok' && ledger.readAt ? Date.parse(ledger.readAt) : clock.now);
 	const rowTime = (row: LedgerRow) => {
-		// Counted to the read, as lat-ledger counts the ticket's time.
-		const read = ledger.state === 'ok' && ledger.readAt ? Date.parse(ledger.readAt) : clock.now;
 		const spent = rowMinutes(row, read);
 		return spent === null ? '' : minutesText(spent);
 	};
@@ -70,6 +71,7 @@
 								{/if}
 								<span class="time">{ticketTime(ticket)}</span>
 							</summary>
+							{#if ticket.times.length}<StageTimeline times={ticket.times} now={read} />{/if}
 							<ul class="rows">
 								{#each ticketRows as row (row.id)}
 									{@const rowLate = lateText(row.late)}

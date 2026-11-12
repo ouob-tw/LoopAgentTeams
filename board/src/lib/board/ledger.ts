@@ -99,6 +99,9 @@ export interface TimeSegment {
 	round: number | null;
 	/** Test execution seconds of that implementation round, when recorded. */
 	testsSeconds: number | null;
+	/** Where each test run of that round ran; null when not recorded (an open round, or one closed
+	 *  before lat-ledger kept them). */
+	testsSpans: { start: string; end: string }[] | null;
 }
 
 export type Level = '甲' | '乙' | '丙';
@@ -280,7 +283,10 @@ function timesFrom(value: unknown): TimeSegment[] {
 		const key = text(segment.key);
 		const label = text(segment.label);
 		if (!key || !label) return [];
-		return [{ key, label, start: text(segment.start), end: text(segment.end), running: segment.running === true, minutes: number(segment.minutes), round: number(segment.round), testsSeconds: number(segment.tests_seconds) }];
+		const spans = Array.isArray(segment.tests_spans)
+			? segment.tests_spans.flatMap((span) => (Array.isArray(span) && text(span[0]) && text(span[1]) ? [{ start: span[0] as string, end: span[1] as string }] : []))
+			: null;
+		return [{ key, label, start: text(segment.start), end: text(segment.end), running: segment.running === true, minutes: number(segment.minutes), round: number(segment.round), testsSeconds: number(segment.tests_seconds), testsSpans: spans }];
 	});
 }
 

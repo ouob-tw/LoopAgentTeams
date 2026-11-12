@@ -1183,7 +1183,8 @@ def cmd_amend(args):
 #                 `<card base commit>...<last commit>`; recomputed when `amend` replaces the
 #                 commit. None without a commit, a card base commit, or a diff git can make.
 #   tests         the row agent's suite-gate records started between the row's start and done:
-#                 execution seconds (`duration_s`) and runs (one gate invocation, its in-run
+#                 execution seconds (`duration_s`), each executed record's [start, end] (`spans`,
+#                 from its start `time` and duration) and runs (one gate invocation, its in-run
 #                 rerun included, counts once), plus reuses (invocations that reused an
 #                 earlier result for some tests: no seconds). Time spent waiting for a slot is not recorded by
 #                 suite-gate, so it is not counted. None when the records cannot be read.
@@ -1257,7 +1258,7 @@ def test_figures(item, end):
         print(f'lat-ledger: warning: no test figures for item {item["id"]} ({error}); '
               'they stay empty', file=sys.stderr)
         return None
-    start, runs, reused, seconds = loads_time(start), set(), set(), 0.0
+    start, runs, reused, seconds, spans = loads_time(start), set(), set(), 0.0, []
     for index, record in enumerate(records):
         at = record_time(record)
         if record.get('agent') != item['agent'] or not at or not start <= at <= end:
@@ -1274,8 +1275,9 @@ def test_figures(item, end):
                                                                  (int, float)):
             runs.add(run)
             seconds += record['duration_s']
+            spans.append([stamp(at), stamp(at + timedelta(seconds=record['duration_s']))])
     return {'seconds': round(seconds, 1), 'runs': len(runs), 'reuses': len(reused),
-            'queue_seconds': None}
+            'queue_seconds': None, 'spans': sorted(spans)}
 
 
 def rework_rounds(rows):
@@ -2327,8 +2329,10 @@ def ticket_times(lookups, key, rows, reviews, participants, at, default_repo):
     for row, start, end, running in spans['qa-draft']:
         segments.append(segment('draft', start, end, running, at, row=row['id']))
     for number, (row, start, end, running) in enumerate(spans['impl'], 1):
+        tests = row.get('tests') or {}
         segments.append(segment('impl', start, end, running, at, row=row['id'], round=number,
-                                tests_seconds=(row.get('tests') or {}).get('seconds')))
+                                tests_seconds=tests.get('seconds'),
+                                tests_spans=tests.get('spans')))
     # A review runs from its reviewers' launch to its recorded result. A reviewer launched
     # before the row started or before the row's previous result (one kept on from an
     # earlier round) did not start this review then: its start stays unknown.

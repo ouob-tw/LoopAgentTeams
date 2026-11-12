@@ -45,6 +45,9 @@ export const AGENT_DRAFTS_KEY = 'lat-board-agent-drafts';
 /** Which list the middle column shows: the inbox, or the Herdr 分頁. */
 export const MIDDLE_TAB_KEY = 'lat-board-middle-tab';
 
+/** How an opened ticket draws its stage times: one line per segment, or three lanes. */
+export const STAGE_VIEW_KEY = 'lat-board-stage-view';
+
 /** '1' while an information page shows its details (path, Herdr place). */
 export const INFO_DETAILS_KEY = 'lat-board-info-details';
 

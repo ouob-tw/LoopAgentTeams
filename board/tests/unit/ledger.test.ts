@@ -147,16 +147,17 @@ test('a lat-ledger before the problem log reads with no counts, problems or summ
 test('stage times as lat-ledger writes them: unknown and running ends kept apart; a lat-ledger without them reads none (#557)', () => {
 	const ledger = ticketLedger('/w');
 	(ledger.tickets[0] as Record<string, unknown>).times = [
-		{ key: 'impl', label: '實作', start: '2026-11-12T09:00:00Z', end: '2026-11-12T09:40:00Z', running: false, minutes: 40, row: 1, round: 1, tests_seconds: 200.4 },
+		{ key: 'impl', label: '實作', start: '2026-11-12T09:00:00Z', end: '2026-11-12T09:40:00Z', running: false, minutes: 40, row: 1, round: 1, tests_seconds: 200.4, tests_spans: [['2026-11-12T09:10:00Z', '2026-11-12T09:13:20Z'], ['bad']] },
 		{ key: 'review', label: '審查', start: null, end: '2026-11-12T09:35:00Z', running: false, minutes: null, row: 1, review: 1 },
 		{ key: 'qa', label: 'QA 實測', start: '2026-11-12T09:40:00Z', end: null, running: true, minutes: 20, row: 2 },
 		{ key: 'broken', start: 'x' }
 	];
-	const [withTimes, without] = ok(ledger).tickets;
+	const { tickets } = ok(ledger);
+	const [withTimes, without] = [tickets[0], tickets.at(-1)!];
 	expect(withTimes.times).toEqual([
-		{ key: 'impl', label: '實作', start: '2026-11-12T09:00:00Z', end: '2026-11-12T09:40:00Z', running: false, minutes: 40, round: 1, testsSeconds: 200.4 },
-		{ key: 'review', label: '審查', start: null, end: '2026-11-12T09:35:00Z', running: false, minutes: null, round: null, testsSeconds: null },
-		{ key: 'qa', label: 'QA 實測', start: '2026-11-12T09:40:00Z', end: null, running: true, minutes: 20, round: null, testsSeconds: null }
+		{ key: 'impl', label: '實作', start: '2026-11-12T09:00:00Z', end: '2026-11-12T09:40:00Z', running: false, minutes: 40, round: 1, testsSeconds: 200.4, testsSpans: [{ start: '2026-11-12T09:10:00Z', end: '2026-11-12T09:13:20Z' }] },
+		{ key: 'review', label: '審查', start: null, end: '2026-11-12T09:35:00Z', running: false, minutes: null, round: null, testsSeconds: null, testsSpans: null },
+		{ key: 'qa', label: 'QA 實測', start: '2026-11-12T09:40:00Z', end: null, running: true, minutes: 20, round: null, testsSeconds: null, testsSpans: null }
 	]);
 	expect(without.times).toEqual([]);
 });
