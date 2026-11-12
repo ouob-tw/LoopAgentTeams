@@ -201,6 +201,8 @@
 		grid-template-columns: max-content minmax(0, 1fr);
 		gap: 0 0.5rem;
 		align-items: center;
+		/* Names kept whole scroll sideways here when the panel is too narrow. */
+		overflow-x: auto;
 	}
 	.axis-gap,
 	.axis,
@@ -346,6 +348,8 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.15rem 0.9rem;
+		/* A line of names kept whole scrolls sideways here when the panel is too narrow. */
+		overflow-x: auto;
 	}
 	.per-stage span,
 	.legend span,
