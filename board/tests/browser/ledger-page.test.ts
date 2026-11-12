@@ -281,7 +281,8 @@ test.skipIf(!CHROME)('the ticket lines are not squeezed at any panel width or te
 						}
 					}
 					const edge = ledger.getBoundingClientRect().right + 0.5;
-					const past = [...ledger.querySelectorAll('*')].filter((el) => el.checkVisibility() && el.getBoundingClientRect().right > edge).map((el) => el.tagName + '.' + el.className.split(' ')[0]); return { past, scrollsSideways: ledger.scrollWidth > ledger.clientWidth || past.length > 0, cells };
+					const held = (el) => { for (let up = el.parentElement; up && up !== ledger; up = up.parentElement) if (['auto', 'scroll'].includes(getComputedStyle(up).overflowX)) return true; return false; };
+					const past = [...ledger.querySelectorAll('*')].filter((el) => el.checkVisibility() && el.getBoundingClientRect().right > edge && !held(el)).map((el) => el.tagName + '.' + el.className.split(' ')[0]); return { past, scrollsSideways: ledger.scrollWidth > ledger.clientWidth || past.length > 0, cells };
 				})()`
 			);
 			if (probe.scrollsSideways) squeezed.push(`${font ?? 'default'}/${width}: scrolls sideways ${probe.past.slice(0, 4)}`);

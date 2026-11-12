@@ -346,6 +346,8 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.15rem 0.9rem;
+		/* A line of names kept whole scrolls sideways here when the panel is too narrow. */
+		overflow-x: auto;
 	}
 	.per-stage span,
 	.legend span,

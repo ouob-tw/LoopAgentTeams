@@ -132,7 +132,7 @@
 			</ul>
 		{/if}
 		{#if ledger.summary.length}
-			<table class="stage-summary">
+			<div class="stage-scroll"><table class="stage-summary">
 				<caption>哪個階段找出多少問題</caption>
 				<thead><tr><th scope="col">發現階段</th>{#each LEVELS as level (level)}<th scope="col">{level}</th>{/each}<th scope="col">合計</th><th scope="col">測試抓到</th></tr></thead>
 				<tbody>
@@ -145,7 +145,7 @@
 						</tr>
 					{/each}
 				</tbody>
-			</table>
+			</table></div>
 		{/if}
 	{/if}
 </section>
@@ -318,13 +318,16 @@
 		flex-direction: column;
 		gap: 0.4rem;
 	}
+	/* What cannot fit a narrow panel (a long hash, a figure kept whole) scrolls sideways inside its
+	   own row, never widening the panel. */
 	.row {
 		border: 1px solid var(--line);
 		padding: 0.25rem 0.5rem;
+		overflow-x: auto;
 	}
 	dl {
 		display: grid;
-		grid-template-columns: auto minmax(0, 1fr);
+		grid-template-columns: auto minmax(8em, 1fr);
 		gap: 0.1rem 0.75rem;
 		margin: 0;
 	}
@@ -411,6 +414,9 @@
 	}
 
 	/* The bottom summary: one row per stage, a level with problems in it stands out. */
+	.stage-scroll {
+		overflow-x: auto;
+	}
 	.stage-summary {
 		border-collapse: collapse;
 		margin-top: 0.4rem;
@@ -427,6 +433,7 @@
 		border: 1px solid var(--line);
 		padding: 0.1rem 0.5rem;
 		text-align: right;
+		white-space: nowrap;
 	}
 	.stage-summary th[scope='row'],
 	.stage-summary thead th:first-child {
