@@ -95,7 +95,8 @@ export function ticksOf(range: { start: number; end: number }, most = 6): number
 		for (let tick = Math.ceil(range.start / step) * step; tick <= range.end; tick += step) ticks.push(tick);
 		return ticks;
 	};
-	const step = STEPS.find((candidate) => at(candidate).length <= most) ?? STEPS.at(-1)!;
+	const day = 1440 * 60_000;
+	const step = STEPS.find((candidate) => at(candidate).length <= most) ?? Math.ceil((range.end - range.start) / (most - 1 || 1) / day) * day;
 	return at(step);
 }
 

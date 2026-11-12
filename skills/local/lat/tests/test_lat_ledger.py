@@ -2537,7 +2537,7 @@ class StageTimeTests(LedgerCase):
                          ('實作', 1, impl))
         self.assertEqual(self.segment('wait_user')['decision'], 'ORCH-1')
         out = self.ok('show', '--times')
-        self.assertIn('| #1 | 實作（第 1 輪） | 1 小時 0 分 | 2026-10-24T09:30:00Z | '
+        self.assertIn('| #1 | 實作 | 1 小時 0 分 | 2026-10-24T09:30:00Z | '  # one round: no number
                       '2026-10-24T10:30:00Z |', out)
         self.assertIn('| #1 | QA 實測 | 30 分 | 2026-10-24T10:30:00Z | 2026-10-24T11:00:00Z |',
                       out)
@@ -2584,7 +2584,8 @@ class StageTimeTests(LedgerCase):
             ('wait_deploy', None, None, None, False),
             ('wait_user', None, None, None, False)])
         out = self.ok('show', '--times')
-        self.assertIn('| #1 | 審查 | 不明 | 不明 | 2026-10-24T09:20:00Z |', out)
+        # Several reviews are numbered by round, as the board numbers them.
+        self.assertIn('| #1 | 審查（第 1 輪） | 不明 | 不明 | 2026-10-24T09:20:00Z |', out)
         self.assertIn('| #1 | 等合併 | 不明 | 2026-10-24T09:30:00Z | 不明 |', out)
         self.assertIn('| #1 | 等使用者 | 不明 | 不明 | 不明 |', out)
 

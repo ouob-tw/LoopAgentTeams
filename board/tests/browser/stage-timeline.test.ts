@@ -57,7 +57,8 @@ async function capture(tab: Tab, ref: string, name: string) {
 	const folder = process.env.LAT_BOARD_SHOTS;
 	if (!folder) return;
 	await tab.eval(`document.head.insertAdjacentHTML('beforeend', '<style id="shot-hide">' + [...document.querySelectorAll('body *')].filter((el) => ['fixed', 'sticky'].includes(getComputedStyle(el).position) && !el.closest('.ledger')).map((el, index) => (el.dataset.shotHide = index, '[data-shot-hide="' + index + '"]')).join(',') + '{visibility:hidden !important} *:has(.detail .ledger){overflow:visible !important;height:auto !important;max-height:none !important}</style>')`);
-	const box = await tab.eval<{ x: number; y: number; width: number; height: number }>(`(() => { const r = ${timeline(ref)}.getBoundingClientRect(); return { x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height }; })()`);
+	// The whole opened ticket, so nothing at the timeline's edge looks cut by the picture.
+	const box = await tab.eval<{ x: number; y: number; width: number; height: number }>(`(() => { const r = ${line(ref)}.getBoundingClientRect(); return { x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height }; })()`);
 	const { data } = (await tab.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: Math.max(0, box.x - 8), y: box.y - 8, width: box.width + 16, height: box.height + 16, scale: 1 } })) as { data: string };
 	mkdirSync(folder, { recursive: true });
 	writeFileSync(join(folder, `${name}.png`), Buffer.from(data, 'base64'));
@@ -78,6 +79,8 @@ async function axisReadable(tab: Tab, box: string) {
 	expect(found.count).toBeGreaterThanOrEqual(2);
 	expect(Math.min(...found.gaps)).toBeGreaterThanOrEqual(2);
 	expect(found.outside).toBe(0);
+	// ... and inside the panel that shows the ledger.
+	expect(await tab.eval(`(() => { const panel = document.querySelector('.detail .ledger').getBoundingClientRect(); return [...${box}.querySelectorAll('.axis span')].every((span) => { const r = span.getBoundingClientRect(); return r.left >= panel.left && r.right <= panel.right; }); })()`)).toBe(true);
 }
 
 test.skipIf(!CHROME)('one line per segment on a shared axis: names and minutes, each kind its own fill, overlaps visible, tap for times', async () => {
@@ -138,6 +141,7 @@ test.skipIf(!CHROME)('a time no source gave reads 不明 and has no bar; a runni
 	const tab = browser!.tab;
 	await open(tab, WIDE, '#533', { 'lat-board-theme': 'light' });
 	const box = timeline('#533');
+	await axisReadable(tab, box);
 	expect(await tab.eval(`[...${box}.querySelectorAll('.lab')].map((lab) => lab.innerText.replace(/\\s+/g, ' ').trim())`)).toEqual(['實作 18 分', '其中跑測試 45 秒', '審查 不明', 'QA 實測 30 分', '等使用者 不明']);
 	const tracks = `[...${box}.querySelectorAll('.track')]`;
 	// Tests without their run times, the review without a start and the user wait without either:
@@ -163,7 +167,10 @@ test.skipIf(!CHROME)('three lanes: overlaps stacked, names on blocks that fit, m
 	const rows = await tab.eval<number[]>(`[...${box}.querySelectorAll('.lane')[0].querySelectorAll('.block')].map((block) => Math.round(block.offsetTop))`);
 	expect(new Set(rows).size).toBeGreaterThan(1);
 	// Wide blocks carry their name and minutes; narrow ones none.
-	expect(await tab.eval(`[...${box}.querySelectorAll('.block span')].map((span) => span.innerText)`)).toContain('等合併 39');
+	expect(await tab.eval(`[...${box}.querySelectorAll('.block span')].map((span) => span.innerText)`)).toEqual(expect.arrayContaining(['等合併 39', '等使用者 38']));
+	// A block carries its text exactly when the text fits: shown ones are not cut, and each
+	// block without text is narrower than its text would be.
+	expect(await tab.eval(`[...${box}.querySelectorAll('.block span')].every((span) => span.getBoundingClientRect().right <= span.parentElement.getBoundingClientRect().right + 0.5)`)).toBe(true);
 	expect(await tab.eval(`[...${box}.querySelectorAll('.block')].some((block) => !block.querySelector('span'))`)).toBe(true);
 	expect(await tab.eval(`${box}.querySelector('.per-stage').innerText.replace(/\\s+/g, ' ').trim()`)).toBe('草稿 6 分 實作 36 分 等實作 18 分 審查 10 分 QA 實測 16 分 等使用者 38 分 等合併 39 分 等上線 9 分');
 	await capture(tab, '#534', 'timeline-lanes-wide-light');

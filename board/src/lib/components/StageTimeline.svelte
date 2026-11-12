@@ -37,7 +37,7 @@
 	const place = (start: number, end: number) => (range ? `left:${percent(range, start)}%;width:${Math.max(percent(range, end) - percent(range, start), 0.6)}%` : '');
 
 	// The axis gets as many clock times as fit its width, and lane blocks carry their name and
-	// minutes when the text fits the block: both measured in the text's own size.
+	// minutes when the text fits the block: both in the section's own text size.
 	let section = $state<HTMLElement>();
 	let chartWidth = $state(0);
 	let laneWidth = $state(0);
@@ -47,10 +47,15 @@
 	});
 	const ticks = $derived(range && chartWidth ? ticksOf(range, Math.max(2, Math.floor(chartWidth / ((longRange ? 7 : 4.5) * fontSize)) + 1)) : []);
 	const blockText = (line: Line) => `${line.label} ${line.seconds !== null ? seconds(line.seconds) : line.minutes ?? '不明'}`.replace(/ 分$/, '');
+	let measure: CanvasRenderingContext2D | null = null;
+	/** Whether `text` on its chip (0.8em of margin and padding) fits the block, measured in the
+	 *  section's own font. */
 	const fits = (text: string, start: number, end: number) => {
-		if (!range) return false;
-		const width = [...text].reduce((sum, char) => sum + (/[\x20-\x7e]/.test(char) ? 0.6 : 1), 0) + 0.6;
-		return ((percent(range, end) - percent(range, start)) / 100) * laneWidth >= width * fontSize;
+		if (!range || !section) return false;
+		measure ??= document.createElement('canvas').getContext('2d');
+		if (!measure) return false;
+		measure.font = getComputedStyle(section).font;
+		return ((percent(range, end) - percent(range, start)) / 100) * laneWidth >= measure.measureText(text).width + 0.8 * fontSize;
 	};
 	/** Minutes per stage name for the lanes' summary, in the order stages first appear. */
 	const perStage = $derived.by(() => {
@@ -61,10 +66,10 @@
 			else entry.minutes += segment.minutes;
 			sums.set(segment.label, entry);
 		}
-		return [...sums].map(([label, entry]) => `${label} ${part(entry)}`);
+		return [...sums].map(([label, entry]) => `${label} ${totalText(entry)}`);
 	});
-	/** Known minutes, with ＋不明 when some of it is unknown (不明 alone when all of it is). */
-	function part(value: { minutes: number; unknown: boolean }) {
+	/** A total's text: known minutes, with ＋不明 when some of it is unknown (不明 alone when all of it is). */
+	function totalText(value: { minutes: number; unknown: boolean }) {
 		return `${value.minutes || !value.unknown ? minutesText(value.minutes) : ''}${value.unknown ? (value.minutes ? '＋不明' : '不明') : ''}`;
 	}
 </script>
@@ -128,8 +133,8 @@
 		{#each kinds as kind (kind)}<span><i class="swatch k-{kind}" aria-hidden="true"></i>{KIND_LABELS[kind]}</span>{/each}
 	</p>
 	<p class="totals">
-		<span>做事 {part(totals.work)}{#if totals.tests !== null}（其中跑測試 {seconds(totals.tests)}）{/if}</span>
-		<span>等待 {part(totals.wait)}{#if totals.user}（等使用者 {part(totals.user)}）{/if}</span>
+		<span>做事 {totalText(totals.work)}{#if totals.tests !== null}（其中跑測試 {seconds(totals.tests)}）{/if}</span>
+		<span>等待 {totalText(totals.wait)}{#if totals.user}（等使用者 {totalText(totals.user)}）{/if}</span>
 	</p>
 </section>
 

@@ -2323,8 +2323,8 @@ def done_times(rows, stage):
 def ticket_times(lookups, key, rows, reviews, participants, at, default_repo):
     """The ticket's segments by start time (one without a start sorts by its end)."""
     segments = []
-    spans = {stage: sorted(((row, *row_span(row)) for row in rows
-                            if row['stage'] == stage and row_span(row)), key=lambda s: s[1])
+    spans = {stage: sorted(((row, *span) for row in rows if row['stage'] == stage
+                            for span in [row_span(row)] if span), key=lambda s: s[1])
              for stage in ('qa-draft', 'impl', 'qa')}
     for row, start, end, running in spans['qa-draft']:
         segments.append(segment('draft', start, end, running, at, row=row['id']))
@@ -2340,9 +2340,9 @@ def ticket_times(lookups, key, rows, reviews, participants, at, default_repo):
     previous = {}
     for review in reviews:
         row = impl_rows.get(review.get('row'))
-        if not row:
+        end = optional_time(review.get('at'))
+        if not row or not end:
             continue
-        end = loads_time(review['at'])
         span = row_span(row)
         floor = max(filter(None, (span and span[0], previous.get(row['id']))), default=None)
         launches = [optional_time(entry.get('launched_at')) for entry in participants
@@ -2401,6 +2401,10 @@ def delivery_segments(lookups, rows, impl_done, at):
     if merged is None or merged >= start:
         found.append(segment('wait_merge', start, merged, False, at))
     if not any(lookups.deploy(place)[0] for place in places):
+        return found
+    if len(set(places)) > 1:
+        # Merged in several projects: no one deploy history tells when all of it went live.
+        found.append(segment('wait_deploy', merged, None, False, at))
         return found
     deployed, running = None, True
     for commit, time in lookups.deploys(places[0]):
@@ -2640,10 +2644,18 @@ def cmd_show(args):
     return 0
 
 
-def segment_name(entry):
-    if entry['key'] == 'impl':
-        return f'{entry["label"]}（第 {entry["round"]} 輪）'
-    return entry['label']
+def segment_names(times):
+    """Each segment's name, with its round when the ticket has several of implementation,
+    review or QA (as the board numbers them)."""
+    counts, seen, names = {}, {}, []
+    for entry in times:
+        counts[entry['key']] = counts.get(entry['key'], 0) + 1
+    for entry in times:
+        seen[entry['key']] = seen.get(entry['key'], 0) + 1
+        number = entry.get('round') or seen[entry['key']]
+        numbered = entry['key'] in ('impl', 'review', 'qa') and counts[entry['key']] > 1
+        names.append(f'{entry["label"]}（第 {number} 輪）' if numbered else entry['label'])
+    return names
 
 
 def show_times(tickets, default_repo):
@@ -2658,7 +2670,7 @@ def show_times(tickets, default_repo):
             ref = ref[len(default_repo):]
         if not ticket['times']:
             print(f'| {cell(ref)} | 沒有紀錄 |  |  |  |')
-        for entry in ticket['times']:
+        for entry, name in zip(ticket['times'], segment_names(ticket['times'])):
             took = (UNKNOWN_TIME if entry['minutes'] is None
                     else minutes_text(entry['minutes']))
             if entry['running']:
@@ -2667,7 +2679,7 @@ def show_times(tickets, default_repo):
                 took += f'，測試 {seconds_text(entry["tests_seconds"])}'
             end = '進行中' if entry['running'] else entry['end'] or UNKNOWN_TIME
             print('| ' + ' | '.join(cell(value) for value in (
-                ref, segment_name(entry), took, entry['start'] or UNKNOWN_TIME, end)) + ' |')
+                ref, name, took, entry['start'] or UNKNOWN_TIME, end)) + ' |')
 
 
 def show_tickets(tickets, counts, default_repo):
