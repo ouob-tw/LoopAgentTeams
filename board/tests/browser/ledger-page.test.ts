@@ -242,7 +242,8 @@ test.skipIf(!CHROME)('a project without deploy history shows five steps', async 
 // A closed ticket line's text cells are never squeezed by the progress strip (#556): at every panel
 // width from a phone's to the widest, in the default and larger text, the block has no sideways
 // scroll, the time stays on one line and no cell is narrower than a few words.
-const WIDTHS = [320, 360, 480, 520, 560, 600, 680, 740, 760, 900];
+/** Panel widths in px, and the text sizes (--min-font in px; null the default) the sweep covers. */
+const WIDTHS = [320, 360, 480, 520, 560, 600, 680, 740, 760, 780, 900];
 const FONTS = [null, 20, 28];
 
 test.skipIf(!CHROME)('the ticket lines are not squeezed at any panel width or text size', async () => {
@@ -254,7 +255,7 @@ test.skipIf(!CHROME)('the ticket lines are not squeezed at any panel width or te
 	await tab.eval(`document.querySelectorAll('.detail .ledger details[open]').forEach((details) => details.removeAttribute('open'))`);
 	for (const font of FONTS) {
 		for (const width of WIDTHS) {
-			const probe = await tab.eval<{ scrollsSideways: boolean; cells: string[]; culprits: string }>(
+			const probe = await tab.eval<{ scrollsSideways: boolean; cells: string[]; past: string[] }>(
 				`(() => {
 					const root = document.documentElement;
 					${font === null ? `root.style.removeProperty('--min-font')` : `root.style.setProperty('--min-font', '${font}px')`};
@@ -265,17 +266,17 @@ test.skipIf(!CHROME)('the ticket lines are not squeezed at any panel width or te
 					for (const li of ${LINES}) {
 						const ref = li.querySelector('.ref').innerText.split(/\\s/)[0];
 						const time = li.querySelector('.time').getBoundingClientRect();
-						if (time.height > em * 2) cells.push('time wraps in ' + ref);
+						if (time.height > em * 2) /* taller than one line */ cells.push('time wraps in ' + ref);
 						for (const part of ['.now', '.models']) {
 							const box = li.querySelector(part).getBoundingClientRect();
-							if (box.height && box.width < 8 * em) cells.push(part + ' in ' + ref + ' is ' + Math.round(box.width) + 'px wide');
+							if (box.height && box.width < 8 * em /* under about eight characters */) cells.push(part + ' in ' + ref + ' is ' + Math.round(box.width) + 'px wide');
 						}
 					}
-					const edge = ledger.getBoundingClientRect().right + 0.5; if (window.__dbg !== undefined) {}
-					const culprits = [...ledger.querySelectorAll('*')].filter((el) => el.checkVisibility() && el.getBoundingClientRect().right > edge).slice(0, 4).map((el) => el.tagName + '.' + el.className + ':' + Math.round(el.getBoundingClientRect().right - edge)).join(','); return { culprits, scrollsSideways: ledger.scrollWidth > ledger.clientWidth || [...ledger.querySelectorAll('*')].some((el) => el.checkVisibility() && el.getBoundingClientRect().right > edge), cells };
+					const edge = ledger.getBoundingClientRect().right + 0.5;
+					const past = [...ledger.querySelectorAll('*')].filter((el) => el.checkVisibility() && el.getBoundingClientRect().right > edge).map((el) => el.tagName + '.' + el.className.split(' ')[0]); return { past, scrollsSideways: ledger.scrollWidth > ledger.clientWidth || past.length > 0, cells };
 				})()`
 			);
-			if (probe.scrollsSideways) squeezed.push(`${font ?? 'default'}/${width}: scrolls sideways ${probe.culprits}`);
+			if (probe.scrollsSideways) squeezed.push(`${font ?? 'default'}/${width}: scrolls sideways ${probe.past.slice(0, 4)}`);
 			for (const cell of probe.cells) squeezed.push(`${font ?? 'default'}/${width}: ${cell}`);
 			if (font === null || font === 28) await capture(tab, `ledger-${font ?? 'default'}-${width}`);
 		}
