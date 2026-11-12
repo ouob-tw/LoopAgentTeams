@@ -5,7 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "vite build",
+		"build": "node scripts/guard-live-build.mjs && vite build",
 		"start": "node build",
 		"board": "bun src/cli.ts",
 		"prepare": "svelte-kit sync || echo ''",
