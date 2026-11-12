@@ -13,6 +13,7 @@ function liveDir() {
 	return v.ActiveState === 'active' ? (v.WorkingDirectory ?? '') : '';
 }
 
+/** @param {string} p */
 const real = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };
 const live = liveDir();
 const out = resolve(real('.'), process.env.LAT_BOARD_BUILD_DIR ?? 'build');
