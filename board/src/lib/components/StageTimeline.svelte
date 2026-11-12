@@ -201,6 +201,8 @@
 		grid-template-columns: max-content minmax(0, 1fr);
 		gap: 0 0.5rem;
 		align-items: center;
+		/* Names kept whole scroll sideways here when the panel is too narrow. */
+		overflow-x: auto;
 	}
 	.axis-gap,
 	.axis,

@@ -370,6 +370,7 @@
 		flex-wrap: wrap;
 		gap: 0.15rem 0.6rem;
 		min-width: 0;
+		overflow-x: auto;
 	}
 	.finding {
 		white-space: nowrap;

@@ -15,7 +15,7 @@ let fixture: Fixture;
 let browser: Browser | undefined;
 
 const DESKTOP = { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false };
-const WIDTHS = [320, 360, 480, 600, 740, 900];
+const WIDTHS = [200, 240, 320, 360, 480, 600, 740, 900];
 const FONTS = [null, 20, 28];
 const LONG_PATH = '/.lat/runs/issue-560/very-long-report-name-that-is-longer-than-any-phone-card-2026-11-12-buzu-t560-final-candidate.md';
 
@@ -92,7 +92,7 @@ test.skipIf(!CHROME)('opened tickets, timelines and the stage table stay inside 
 	// Wide and in the default text, nothing needs its scrolling box: the look is as before.
 	await tab.eval(PROBE(900, null));
 	await tab.eval(`new Promise((done) => setTimeout(done, 150))`);
-	expect(await tab.eval(`[...document.querySelectorAll('.detail .ledger .row, .detail .ledger .stage-scroll, .detail .ledger .per-stage, .detail .ledger .legend, .detail .ledger .totals')].filter((box) => box.scrollWidth > box.clientWidth).map((box) => box.className)`)).toEqual([]);
+	expect(await tab.eval(`[...document.querySelectorAll('.detail .ledger .row, .detail .ledger .stage-scroll, .detail .ledger .per-stage, .detail .ledger .legend, .detail .ledger .totals, .detail .ledger .gantt, .detail .ledger .findings')].filter((box) => box.scrollWidth > box.clientWidth).map((box) => box.className)`)).toEqual([]);
 }, 120_000);
 
 // In the real page (not a width forced on the block): the page itself never scrolls sideways.
@@ -102,8 +102,8 @@ test.skipIf(!CHROME)('the page does not scroll sideways at a phone-to-tablet wid
 	const [luna] = fixture.listed();
 	const wide: string[] = [];
 	for (const font of FONTS) {
-		for (const width of [320, 360, 600, 900]) {
-			await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: true });
+		for (const width of [320, 360, 600, 900, 1280]) {
+			await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 900 });
 			await tab.navigate(`${fixture.url}/?controller=${luna.session_id}`);
 			await tab.until(`document.querySelector('.detail [data-tab="ledger"]')`, 'the ledger tab');
 			await tab.until(
@@ -112,6 +112,10 @@ test.skipIf(!CHROME)('the page does not scroll sideways at a phone-to-tablet wid
 			);
 			await tab.eval(`${font === null ? `document.documentElement.style.removeProperty('--min-font')` : `document.documentElement.style.setProperty('--min-font', '${font}px')`}; document.querySelectorAll('.detail .ledger details').forEach((details) => { details.open = true; }); document.querySelectorAll('.detail .ledger .evidence').forEach((cell) => { const code = document.createElement('code'); code.textContent = ${JSON.stringify('x'.repeat(90))}; cell.append(code); }); new Promise((done) => setTimeout(done, 400))`);
 			const [inner, scroll] = await tab.eval<[number, number]>(`[innerWidth, document.documentElement.scrollWidth]`);
+			// The panel at its natural width (at 900px with big text only about 220px): nothing in it is
+			// drawn past its edge outside a scrolling box.
+			const probe = await tab.eval<{ past: string[]; ledgerScroll: number; panel: number }>(`(() => { const ledger = document.querySelector('.detail .ledger'); const edge = ledger.getBoundingClientRect().right + 0.5; const held = (el) => { for (let up = el.parentElement; up && up !== ledger; up = up.parentElement) if (['auto', 'scroll'].includes(getComputedStyle(up).overflowX)) return true; return false; }; return { panel: Math.round(ledger.clientWidth), ledgerScroll: ledger.scrollWidth - ledger.clientWidth, past: [...new Set([...ledger.querySelectorAll('*')].filter((el) => el.checkVisibility() && el.getBoundingClientRect().right > edge && !held(el)).map((el) => el.tagName.toLowerCase() + '.' + (el.getAttribute('class') ?? '').split(' ')[0]))] }; })()`);
+			if (probe.past.length || probe.ledgerScroll > 0) wide.push(`${font ?? 'default'}/${width}: panel ${probe.panel}px, past ${probe.past.join(' ')}, ledger scroll ${probe.ledgerScroll}`);
 			if (scroll > inner) wide.push(`${font ?? 'default'}/${width}: page ${scroll}px in ${inner}px`);
 			const folder = process.env.LAT_BOARD_SHOTS;
 			if (folder) {
