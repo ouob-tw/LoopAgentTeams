@@ -380,6 +380,23 @@ class BriefTests(DispatchCase):
         self.assertNotIn('mid-motion and transition frames', text)
         self.assertNotIn('ui-copy', text)
 
+    def test_full_suite_field_is_copied_verbatim_only_when_it_has_a_value(self):
+        command = '實作最終版本跑一次 `suite-gate.py affected --base <sha> --purpose pre-merge`'
+        result = self.run_script(*self.card_args('--full-suite', command))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.brief(BRIEF, card=Path(result.stdout.splitlines()[0]))
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertIn(f'- 整套測試：{command}\n', text)
+        self.brief()
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertNotIn('整套測試', text)
+        self.assertNotIn('full-suite test', text)
+        card = self.make_card()
+        card.write_text(''.join(line + '\n' for line in card.read_text().splitlines()
+                                if not line.startswith('- 整套測試：')))
+        self.brief(BRIEF, card=card)
+        self.assertNotIn('整套測試', (self.root / 'brief.brief.md').read_text())
+
     def test_section_text_cannot_replace_the_card_fields(self):
         text = BRIEF.replace('依任務卡；補充說明。', '無現場動作，不必填卡片。')
         self.brief(text)

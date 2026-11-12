@@ -596,6 +596,10 @@ def make_brief(args):
     visual = card['視覺驗收']
     parts.append('## Task card visual acceptance (authoritative; copied from the card)\n\n'
                  f'- 視覺驗收：{visual}\n' + ('' if visual == NONE else f'\n{VISUAL_RULES}\n'))
+    full_suite = card.get('整套測試', NONE)
+    if full_suite != NONE:
+        parts.append('## Task card full-suite test (authoritative; copied from the card)\n\n'
+                     f'- 整套測試：{full_suite}\n')
     agents = read_hcom_list()
     preauth = preauth_part(args, workspace, card['orchestrator'])
     if preauth:
