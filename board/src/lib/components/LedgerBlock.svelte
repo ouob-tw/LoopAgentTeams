@@ -184,7 +184,7 @@
 	   to bottom. */
 	summary {
 		display: grid;
-		grid-template-columns: auto minmax(9em, 1fr) auto;
+		grid-template-columns: max-content minmax(9em, 1fr) auto;
 		grid-template-areas: 'ref ref time' 'steps now now' 'steps models models' 'steps findings findings';
 		gap: 0.25rem 0.75rem;
 		align-items: start;
@@ -447,6 +447,15 @@
 	.stage-summary td.hit[data-level='乙'] {
 		color: var(--danger);
 		font-weight: bold;
+	}
+
+	/* Too narrow for the strip beside the models (the strip is kept whole, one line): the strip takes
+	   its own line under the ticket, then what it is doing now and its models, full width. */
+	@container (max-width: 50em) {
+		summary {
+			grid-template-columns: minmax(0, 1fr) auto;
+			grid-template-areas: 'ref time' 'steps steps' 'now now' 'models models' 'findings findings';
+		}
 	}
 
 	/* Narrow: each ticket a card read top to bottom. Sized in the text's own width, so a larger
