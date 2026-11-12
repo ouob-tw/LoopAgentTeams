@@ -182,7 +182,7 @@
 	   to bottom. */
 	summary {
 		display: grid;
-		grid-template-columns: auto minmax(0, 1fr) auto;
+		grid-template-columns: auto minmax(14em, 1fr) auto;
 		grid-template-areas: 'ref ref time' 'steps now now' 'steps models models' 'steps findings findings';
 		gap: 0.25rem 0.75rem;
 		align-items: start;
@@ -264,14 +264,16 @@
 	.stage {
 		color: var(--muted);
 	}
+	/* The time is short and is read whole: the strip gives way (wraps) before it is squeezed. */
 	.time {
 		color: var(--muted);
+		white-space: nowrap;
 	}
 
 	/* The progress strip: done ticked, active a solid dot, not reached hollow, skipped struck. */
 	.steps {
 		display: flex;
-		flex-wrap: nowrap;
+		flex-wrap: wrap;
 		gap: 0.2rem;
 		margin: 0;
 		padding: 0;
@@ -437,8 +439,9 @@
 		font-weight: bold;
 	}
 
-	/* Narrow: each ticket a card read top to bottom. */
-	@container (max-width: 519px) {
+	/* Narrow: each ticket a card read top to bottom. Sized in the text's own width, so a larger
+	   font turns to cards sooner. */
+	@container (max-width: 38em) {
 		summary {
 			grid-template-columns: minmax(0, 1fr);
 			grid-template-areas: 'ref' 'steps' 'now' 'models' 'findings' 'time';
@@ -446,9 +449,9 @@
 		}
 		.time {
 			text-align: left;
+			white-space: normal;
 		}
 		.steps {
-			flex-wrap: wrap;
 			gap: 0.15rem;
 		}
 		.step {
