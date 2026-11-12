@@ -73,6 +73,8 @@ VISUAL_RULES = '''- This work changes something visible, so it is accepted only 
 - Use the `ui-copy` skill when building the screen or writing its requirements.
 - A screen that needs its explanatory text read to be understood counts as wrong.
 - If a prototype or reference itself looks wrong, raise it to the orchestrator; do not copy the defect.
+- Judging: the card's wrong-look list is only examples, not the full list. Mark FAIL any look the user would call wrong at a glance (wrapping with free space beside it, large blank areas, squeezed or misaligned columns), even when every acceptance condition holds; when the ticket itself asks for that look, hand it to the orchestrator instead of passing it.
+- When the user attached a screenshot, compare before and after side by side at that screenshot's width and font size, and also check the widths the task card lists.
 - Turn each defect found by eye into a testable bound where possible, and show the test fails on the defective version (example: water surface height limit 5%, defective version 86.9%).'''
 FIXED = '''## Fixed fields
 

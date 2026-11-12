@@ -370,7 +370,9 @@ class BriefTests(DispatchCase):
         self.assertIn(f'- 視覺驗收：{VISUAL}\n', text)
         for rule in ('someone other than the implementer', 'mid-motion and transition frames',
                      'matching a prototype', 'raise it', 'fails on the defective version',
-                     'Use the `ui-copy` skill', 'explanatory text read to be understood'):
+                     'Use the `ui-copy` skill', 'explanatory text read to be understood',
+                     'only examples, not the full list', 'hand it to the orchestrator',
+                     "that screenshot's width and font size", 'the widths the task card lists'):
             self.assertIn(rule, text)
 
     def test_visual_acceptance_of_none_carries_the_field_without_the_rules(self):
@@ -379,6 +381,7 @@ class BriefTests(DispatchCase):
         self.assertIn('- 視覺驗收：無\n', text)
         self.assertNotIn('mid-motion and transition frames', text)
         self.assertNotIn('ui-copy', text)
+        self.assertNotIn('only examples, not the full list', text)
 
     def test_full_suite_field_is_copied_verbatim_only_when_it_has_a_value(self):
         command = '實作最終版本跑一次 `suite-gate.py affected --base <sha> --purpose pre-merge`'
