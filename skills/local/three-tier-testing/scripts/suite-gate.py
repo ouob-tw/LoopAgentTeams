@@ -3534,8 +3534,16 @@ def cmd_affected(base, purpose=None):
         if chosen is None:
             return 2
         changed, selected, fallback = chosen
+        prepared = {}
+
+        def prepare(cwd):
+            # Unlike a clean checkout, the work tree may already hold its dependencies.
+            if cwd not in prepared:
+                prepared[cwd] = None if (cwd / 'node_modules').is_dir() \
+                    else prepare_dependencies(cwd)
+            return prepared[cwd]
         code = run_selected(root, amap, selected, fallback,
-                            {'base': commit, 'changed_files': changed})[0]
+                            {'base': commit, 'changed_files': changed}, prepare)[0]
         if code is None:
             warn('no tests selected for this change; nothing to run')
             warn('hint: on an integration branch the base must be given with --base <commit> '

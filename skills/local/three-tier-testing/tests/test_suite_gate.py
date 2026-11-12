@@ -1457,6 +1457,46 @@ class AffectedTests(AffectedCase):
         self.assertIn('tests/test_app.py', result.stdout)
         self.assertEqual(self.records()[-1]['exit_code'], 4)
 
+    def fake_bun(self, code):
+        fake = self.tmp / 'bin/bun'
+        fake.write_text(f'#!/bin/sh\necho "$PWD $*" >> {self.tmp / "bun.log"}\nexit {code}\n')
+        fake.chmod(0o755)
+
+    def lock_web(self):
+        self.registry['affected']['map'].append({'paths': ['web/bun.lock'], 'tests': []})
+        self.write_registry()
+        self.touch('web/bun.lock', '{}\n')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'web lockfile')
+        self.touch('web/src/page.ts')
+
+    def test_plain_affected_installs_missing_dependencies_before_the_suite(self):
+        self.lock_web()
+        self.fake_bun(0)
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.tmp / 'bun.log').read_text(),
+                         f'{self.repo / "web"} install --frozen-lockfile\n')
+        self.assertEqual(self.ran(), [('web', ['tests/page.test.ts'])])
+
+    def test_plain_affected_does_not_install_when_dependencies_are_present(self):
+        self.lock_web()
+        (self.repo / 'web/node_modules').mkdir()
+        self.fake_bun(0)
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.tmp / 'bun.log').exists())
+        self.assertEqual(self.ran(), [('web', ['tests/page.test.ts'])])
+
+    def test_plain_affected_reports_a_failed_install_as_not_run_not_a_test_failure(self):
+        self.lock_web()
+        self.fake_bun(1)
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('not run: preparing web failed (bun install --frozen-lockfile exited 1); '
+                      'this is not a test result', result.stderr)
+        self.assertEqual(self.ran(), [])
+
     def test_no_map_or_a_bad_map_is_refused(self):
         self.registry['affected']['commands'] = {'.': 'echo no placeholder'}
         self.write_registry()
