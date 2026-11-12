@@ -88,6 +88,11 @@ test.skipIf(!CHROME)('opened tickets, timelines and the stage table stay inside 
 		}
 	}
 	expect(found).toEqual([]);
+
+	// Wide and in the default text, nothing needs its scrolling box: the look is as before.
+	await tab.eval(PROBE(900, null));
+	await tab.eval(`new Promise((done) => setTimeout(done, 150))`);
+	expect(await tab.eval(`[...document.querySelectorAll('.detail .ledger .row, .detail .ledger .stage-scroll, .detail .ledger .per-stage, .detail .ledger .legend, .detail .ledger .totals')].filter((box) => box.scrollWidth > box.clientWidth).map((box) => box.className)`)).toEqual([]);
 }, 120_000);
 
 // In the real page (not a width forced on the block): the page itself never scrolls sideways.
