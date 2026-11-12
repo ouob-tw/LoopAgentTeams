@@ -594,11 +594,32 @@ def verify_gate(doc, value, acks=()):
     if value not in found and len(found) > 1:
         return None, f'gate record {value}: prefix matches several fingerprints; give it in full'
     if not found:
-        return None, f'gate record {value}: no suite-gate record with this fingerprint'
+        return None, (f'gate record {value}: ' + (summary_id_problem(script, value)
+                      or 'no suite-gate record with this fingerprint'))
     full = value if value in found else found.pop()
     ran = [r for r in records if isinstance(r, dict) and r.get('fingerprint') == full
            and r.get('kind') != 'reuse']
     return full, ran and rerun_only_problem(full, ran[-1], acks)
+
+
+def summary_id_problem(script, value):
+    """The message for a value that is a post-merge summary's run id (suite-gate prints it as
+    "summary <id>") instead of a fingerprint: it lists the summary's group fingerprints; None
+    when no summary's run id starts with value."""
+    try:
+        output = run_cli([sys.executable, str(script), 'status', '--json', '--limit', '100000'],
+                         timeout=60, failure='suite-gate status failed')
+        records = json.loads(output)['records']
+    except (ValueError, KeyError, TypeError, Failure):
+        return None
+    for r in records:
+        if (isinstance(r, dict) and r.get('kind') == 'affected-summary'
+                and str(r.get('run_id') or '').startswith(value)):
+            groups = ', '.join(f"{g.get('kind')} {g.get('dir')} {g.get('fingerprint') or '-'} "
+                               f"(exit {g.get('exit_code')})" for g in r.get('groups') or [])
+            return (f'{value} is a {r.get("purpose")} summary id, not a fingerprint; give one '
+                    f'of its group fingerprints: {groups or "none (no group ran)"}')
+    return None
 
 
 def rerun_only_problem(fingerprint, record, acks):

@@ -667,6 +667,30 @@ class DoneTests(LedgerCase):
         self.exempt_qa()
         self.ok('check')
 
+    def test_a_post_merge_summary_id_is_refused_with_its_group_fingerprints(self):
+        summary_id = '7c8b754d9da2' + 'f' * 20
+        with (self.gate_state / 'ledger.jsonl').open('a') as records:
+            records.write(json.dumps({
+                'kind': 'affected-summary', 'purpose': 'post-merge', 'run_id': summary_id,
+                'groups': [{'kind': 'bun', 'dir': 'board', 'fingerprint': FP, 'exit_code': 0},
+                           {'kind': 'uv', 'dir': 'lat', 'fingerprint': 'c0ffee' * 10 + 'abcd',
+                            'exit_code': 1}]}) + '\n')
+        item = self.started(evidence='gate')
+        before = self.ledger.read_bytes()
+        error = self.fails('done', str(item), '--gate', summary_id[:12], by='impl')
+        self.assertIn('is a post-merge summary id, not a fingerprint', error)
+        self.assertIn(f'bun board {FP} (exit 0)', error)
+        self.assertIn('uv lat ' + 'c0ffee' * 10 + 'abcd (exit 1)', error)
+        error = self.fails('problem', '--ticket', '不明', '--stage', 'post-deploy-user',
+                           '--level', '甲', '--text', 'x', '--finder', 'user',
+                           '--caught', summary_id[:12])
+        self.assertIn('summary id', error)
+        self.assertIn('nothing written', error)
+        self.assertEqual(self.ledger.read_bytes(), before)
+        self.assertIn('no suite-gate record with this fingerprint', self.fails(
+            'done', str(item), '--gate', 'deadbeef0000', by='impl'))
+        self.ok('done', str(item), '--gate', FP[:12], by='impl')
+
     def test_blocked_item_cannot_close(self):
         item = self.started()
         self.ok('block', str(item), '--reason', 'x')
