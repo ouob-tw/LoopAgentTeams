@@ -182,7 +182,7 @@
 	   to bottom. */
 	summary {
 		display: grid;
-		grid-template-columns: auto minmax(14em, 1fr) auto;
+		grid-template-columns: auto minmax(11em, 1fr) auto;
 		grid-template-areas: 'ref ref time' 'steps now now' 'steps models models' 'steps findings findings';
 		gap: 0.25rem 0.75rem;
 		align-items: start;
