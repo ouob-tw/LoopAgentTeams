@@ -12,7 +12,7 @@ hcom-spawn 的「自身名稱」是發起委派的那一方：主控派工時是
 
 ## 派工
 
-- 工具：啟動前 `scripts/lat-dispatch.py card --before-launch --tag <tag> --tasks <主工作區 .lat/tasks> --orchestrator <主控名稱> …` 建卡；`brief --card <卡片> --input <小檔>` 把 `##` 四段小檔（「目標與完成條件」「範圍與不能碰」「其他 Agent 與分工」「現場動作額度」）接上下列固定項目、原樣帶入卡片必填三欄，末行的 `--hcom-prompt …` 照 /hcom-spawn 以同一 tag 啟動時接上。啟動核對時卡片仍 `待綁定`（未綁定不受監控）就自己跑 `card bind --card <卡片> --agent <名稱>`。
+- 工具：啟動前 `scripts/lat-dispatch.py card --before-launch --tag <tag> --tasks <主工作區 .lat/tasks> --orchestrator <主控名稱> …` 建卡；`brief --card <卡片> --input <小檔>` 把 `##` 四段小檔（「目標與完成條件」「範圍與不能碰」「其他 Agent 與分工」「現場動作額度」）接上下列固定項目、原樣帶入卡片必填三欄與整套測試欄，末行的 `--hcom-prompt …` 照 /hcom-spawn 以同一 tag 啟動時接上。啟動核對時卡片仍 `待綁定`（未綁定不受監控）就自己跑 `card bind --card <卡片> --agent <名稱>`。
 - 交新卡給執行中的 Agent：`card --tag <tag> …`，`brief` 改印 `hcom send … --file`。兩位共用 tag（如參謀）用 `card --agent <完整名稱>`；唯讀任務用 `brief --read-only`，共用文字用 `brief --include <檔案>`。任務要合併、推送、部署或安裝時加 `brief --preauth <動作>[:<分支>]`，只帶入查得 `allow` 的動作。任務卡一律用 `card`，不得手寫、複製舊卡；內建加 `--native`。
 - 傳給任務卡 Agent 的訊息（含追問）不加 `--intent request`，見 [停住監控](stall-watch.md#沒回覆通知)。
 - 工作總表：`card` 加 `--ledger <本輪總表絕對路徑> --ticket [--title] --stage --evidence [--depends] [--repo]` 會同時開列並指派（`--before-launch` 則 `card bind` 時指派），任務卡多一行 `ledger row`；格式見 `--help`。舊輪總表會被拒，補舊列加 `--old-round`。期限由工具設為預計＋1h，`--deadline` 忽略。`brief` 據此帶上列編號與各指令（實作列含 `review-result`，驗收列含 `problem`，不記不能結案）；沒有該行時只印警告。
