@@ -238,3 +238,61 @@ test.skipIf(!CHROME)('a project without deploy history shows five steps', async 
 	await capture(tab, 'ledger-desktop-five-steps');
 }, 60_000);
 
+
+// A closed ticket line's text cells are never squeezed by the progress strip (#556): at every panel
+// width from a phone's to the widest, in the default and larger text, the block has no sideways
+// scroll, the time stays on one line and no cell is narrower than a few words.
+/** Panel widths in px, and the text sizes (--min-font in px; null the default) the sweep covers. */
+const WIDTHS = [320, 360, 480, 510, 517, 518, 519, 520, 530, 540, 544, 546, 558, 560, 580, 600, 620, 640, 680, 740, 760, 780, 900];
+const FONTS = [null, 20, 28];
+
+test.skipIf(!CHROME)('the ticket lines are not squeezed at any panel width or text size', async () => {
+	const tab = browser!.tab;
+	const [luna] = fixture.listed();
+	await openLedger(tab, luna.session_id, { ...DESKTOP, width: 1400 });
+	const squeezed: string[] = [];
+	// The lines closed: what is measured is the ticket list, not the opened rows' details.
+	// The longest time a line shows (14 hours and more), which the fixture's short ones do not reach.
+	await tab.eval(`document.querySelectorAll('.detail .ledger .time').forEach((time) => { time.textContent = '已 14 小時 58 分・修 2 輪'; })`);
+	await tab.eval(`document.querySelectorAll('.detail .ledger details[open]').forEach((details) => details.removeAttribute('open'))`);
+	for (const font of FONTS) {
+		for (const width of WIDTHS) {
+			const probe = await tab.eval<{ scrollsSideways: boolean; cells: string[]; past: string[] }>(
+				`(() => {
+					const root = document.documentElement;
+					${font === null ? `root.style.removeProperty('--min-font')` : `root.style.setProperty('--min-font', '${font}px')`};
+					const ledger = document.querySelector('.detail .ledger');
+					ledger.style.cssText = 'width:${width}px;max-width:none;flex:none';
+					const em = parseFloat(getComputedStyle(ledger).fontSize);
+					const cells = [];
+					for (const li of ${LINES}) {
+						const ref = li.querySelector('.ref').innerText.split(/\\s/)[0];
+						const time = li.querySelector('.time').getBoundingClientRect();
+						const cell = li.querySelector('.time');
+						const kept = cell.style.whiteSpace;
+						cell.style.whiteSpace = 'nowrap';
+						const fits = cell.scrollWidth + 2 <= cell.clientWidth;
+						cell.style.whiteSpace = kept;
+						// Wrapping is only wrong where the whole text would have fitted.
+						if (fits && time.height > em * 2) cells.push('time wraps in ' + ref);
+						for (const part of ['.now', '.models']) {
+							const box = li.querySelector(part).getBoundingClientRect();
+							if (box.height && box.width < 7 * em /* under about eight characters */) cells.push(part + ' in ' + ref + ' is ' + Math.round(box.width) + 'px wide');
+						}
+					}
+					const edge = ledger.getBoundingClientRect().right + 0.5;
+					const past = [...ledger.querySelectorAll('*')].filter((el) => el.checkVisibility() && el.getBoundingClientRect().right > edge).map((el) => el.tagName + '.' + el.className.split(' ')[0]); return { past, scrollsSideways: ledger.scrollWidth > ledger.clientWidth || past.length > 0, cells };
+				})()`
+			);
+			if (probe.scrollsSideways) squeezed.push(`${font ?? 'default'}/${width}: scrolls sideways ${probe.past.slice(0, 4)}`);
+			for (const cell of probe.cells) squeezed.push(`${font ?? 'default'}/${width}: ${cell}`);
+			if (font === null || font === 28) await capture(tab, `ledger-${font ?? 'default'}-${width}`);
+		}
+	}
+	expect(squeezed).toEqual([]);
+
+	// Wide enough in the default text: the strip stays on one row beside now, as before.
+	await tab.eval(`(() => { document.documentElement.style.removeProperty('--min-font'); document.querySelector('.detail .ledger').style.cssText = 'width:740px;max-width:none;flex:none'; })()`);
+	const line = lineOf('#534');
+	expect(await tab.eval(`(() => { const tops = new Set([...${line}.querySelectorAll('.step')].map((step) => step.getBoundingClientRect().top)); const now = ${line}.querySelector('.now').getBoundingClientRect().left; const steps = ${line}.querySelector('.steps').getBoundingClientRect(); return tops.size === 1 && steps.right <= now; })()`)).toBe(true);
+}, 120_000);
