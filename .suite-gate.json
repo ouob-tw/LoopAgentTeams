@@ -324,7 +324,7 @@
        "tests": ["board/tests/*/transcript*.test.ts"]},
       {"paths": ["board/src/routes/api/transcript/**"],
        "tests": ["board/tests/*/transcript*.test.ts"]},
-      {"paths": ["board/src/lib/components/Transcript.svelte"],
+      {"paths": ["board/src/lib/components/Transcript.svelte", "board/src/lib/board/reading-place.ts"],
        "tests": ["board/tests/browser/transcript*.test.ts", "board/tests/browser/agents-page.test.ts", "board/tests/browser/back-navigation.test.ts", "board/tests/browser/closed-agents-page.test.ts", "board/tests/browser/herdr-controller-page.test.ts", "board/tests/browser/processed.test.ts", "board/tests/browser/translate-mode-page.test.ts", "board/tests/browser/translate-page.test.ts"]},
       {"paths": ["board/src/lib/server/translate.ts"],
        "tests": ["board/tests/*/translate*.test.ts", "board/tests/*/voice*.test.ts"]},

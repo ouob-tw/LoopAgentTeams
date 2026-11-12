@@ -7,7 +7,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { NODE, sleep, startFixture, type Fixture } from '../harness.ts';
+import { NODE, question, sleep, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
 
 const ROOT = join(import.meta.dir, '../..');
@@ -57,15 +57,16 @@ afterAll(async () => {
 	rmSync(codexDir, { recursive: true, force: true });
 });
 
-async function visit(width = 1280) {
+/** A new Chrome, logged in, on `path` (luna's conversation) `width` by `height`. */
+async function visit(width = 1280, path = `/?controller=${luna.session_id}`, ready = `!!(${said('閱讀標記 1：')})`, height = 800) {
 	await browser?.close();
 	browser = await launchChrome({ screen: SCREEN });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
-	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
-	await tab.navigate(`${fixture.url}/?controller=${luna.session_id}`);
-	await tab.until(`!!(${said('閱讀標記 1：')})`, "the controller's conversation");
+	await tab.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 761 });
+	await tab.navigate(fixture.url + path);
+	await tab.until(ready, 'the conversation');
 }
 
 /** Scroll with the wheel, as a reader does, until the reply is in the middle of the screen. */
@@ -134,3 +135,42 @@ test.skipIf(!CHROME)('at the top, a pushed message shows at the top', async () =
 	expect(await tab.eval<number>(`${SCROLLER}.scrollTop`)).toBe(0);
 	expect(await tab.eval<string>(`document.querySelector('.detail [data-block="transcript"] li.said').innerText`)).toContain('Newest reply while at the top.');
 }, 30_000);
+
+test.skipIf(!CHROME)("an opened question's card stays where it was placed after the moment it is kept there, as replies under it grow", async () => {
+	const ASKED_AT = '2026-10-21T01:00:00.000Z';
+	const options = [
+		{ letter: 'A', label: '甲', impact: '', recommended: true },
+		{ letter: 'B', label: '乙', impact: '', recommended: false }
+	];
+	const asking = '請決定。\n\nDECIDE: Q-1 r1 · 標題';
+	const rana = fixture.bound('ask', 'rana', { questions: [question({ id: 'Q-1', title: '題目 Q-1', kind: 'single', options, asked_at: ASKED_AT, section_sha256: '0'.repeat(64) })] });
+	// Older English replies under the asking message, newer Chinese ones above it.
+	writeFileSync(
+		join(fixture.dir, 'transcripts', `${rana.session_id}.jsonl`),
+		Array.from({ length: 15 }, (_, index) => line('assistant', english(100 + index))).join('') +
+			line('assistant', asking) +
+			Array.from({ length: 15 }, (_, index) => line('assistant', reading(200 + index))).join('')
+	);
+	fixture.report(rana.session_id, { tag: 'DECIDE', summary: '等你決定', message: asking, hcom_name: 'rana', workspace: rana.workspace, time: ASKED_AT });
+	fixture.setHelper({ output: { controllers: [rana] } });
+	await fixture.refresh(cookie);
+	const key = `q:${rana.session_id}:Q-1`;
+	const card = `document.querySelector('.history [data-content="${key}"]')`;
+	// Tall enough that the middle of the screen is under the card, among the replies that grow.
+	await visit(1280, `/?item=${encodeURIComponent(key)}`, `!!${card}?.closest('[data-seq]')`, 1400);
+	expect(await tab.eval<number>(`${card}.getBoundingClientRect().bottom`)).toBeLessThan(700);
+	// Past the moment the page keeps it in place by itself.
+	await sleep(3_000);
+	const before = await tab.eval<number>(`${card}.getBoundingClientRect().top`);
+	await tab.eval(`(() => {
+		window.moved = 0;
+		new ResizeObserver(() => {
+			window.moved = Math.max(window.moved, Math.abs(${card}.getBoundingClientRect().top - ${before}));
+		}).observe(document.querySelector('.detail [data-block="transcript"]'));
+	})()`);
+	await tab.eval(`${SWITCH}.click()`);
+	await tab.until(`${said('Reply 114 in English')}?.dataset.translation === 'done'`, 'the replies under it translated', 20_000);
+	await tab.until(`!document.querySelector('.detail [data-translation="pending"]')`, 'every translation in', 20_000);
+	await sleep(300);
+	expect(await tab.eval<number>('window.moved')).toBeLessThanOrEqual(STILL);
+}, 60_000);

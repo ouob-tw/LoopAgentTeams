@@ -2,18 +2,23 @@
 // change height: a message pushed at the top, a reply turning into its translation, a picture
 // loading. The browser's own scroll anchoring keeps the first thing at the top of the visible area
 // still, so a card there or between it and the middle growing still pushes the text being read
-// down. Kept instead: what is at the middle of the visible area, down to its innermost element
-// there; when that card's text was replaced, as a translated reply's is, the card after it or the
-// one before. A click or key in the conversation keeps what it was on, until the user scrolls.
-// Nothing is kept while the top of the conversation is in view, so a new message shows at the top
-// as before.
+// down; and its move, told as a scroll, cannot be told from the user's, so the conversation turns
+// it off (overflow-anchor). Kept instead: what is at the middle of the visible area, down to its
+// innermost element there; when that card's text was replaced, as a translated reply's is, the
+// card after it or the one before. A click or key in a card keeps what it was on, until the user
+// scrolls. Nothing is kept while the top of the conversation is in view, so a new message shows at
+// the top as before.
+
+/** How far into the conversation, in CSS pixels, still counts as at its top. */
+const AT_TOP = 4;
 
 /** Elements from a card down to the innermost one kept, each with its top on screen. */
 type Chain = { element: Element; top: number }[];
 
 export interface ReadingPlace {
-	/** Take what is on screen now as the place to keep, after scrolling there on purpose. */
-	retake(): void;
+	/** Take what is on screen now as the place to keep, after scrolling there on purpose: `card`
+	 *  when given, else what is at the middle. */
+	retake(card?: Element | null): void;
 	stop(): void;
 }
 
@@ -22,23 +27,33 @@ export interface ReadingPlace {
 export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement | null, paused: () => boolean): ReadingPlace {
 	/** What may be kept, first choice first. */
 	let chains: Chain[] = [];
+	/** Where this scrolled to last, until its scroll is told: that scroll is no reason to take
+	 *  the place again, and a change that comes before it is told must still be undone. */
+	let scrolledTo: number | null = null;
+	const position = () => scroller()?.scrollTop ?? window.scrollY;
 
-	const port = () => {
+	/** The visible area: its top on screen and its height. */
+	const visibleArea = () => {
 		const box = scroller();
 		return box ? { top: box.getBoundingClientRect().top, height: box.clientHeight } : { top: 0, height: window.innerHeight };
 	};
-	const crosses = (element: Element, line: number) => {
+	/** How far `element` is from `line`: 0 when it crosses it; none when it takes no room. */
+	const distance = (element: Element, line: number) => {
 		const rect = element.getBoundingClientRect();
-		return rect.height > 0 && rect.top <= line && rect.bottom > line;
+		if (rect.height <= 0) return Infinity;
+		return rect.top > line ? rect.top - line : rect.bottom <= line ? line - rect.bottom : 0;
 	};
+	/** Of the elements inside `element`, the one nearest `line`. */
+	const nearest = (element: Element, line: number) =>
+		[...element.children].reduce<Element | undefined>((best, child) => (best && distance(best, line) <= distance(child, line) ? best : child), undefined);
 	/** `card` and the elements inside it down to `inner`, or, without one, to the innermost one
-	 *  that crosses `line`. */
+	 *  at `line`, or nearest it: a card whose text was replaced is told by it. */
 	const chain = (card: Element, line: number, inner?: Element): Chain => {
 		const found: Element[] = [card];
 		if (inner) {
 			for (let at: Element | null = inner; at && at !== card; at = at.parentElement) found.splice(1, 0, at);
 		} else {
-			for (let at: Element | undefined = card; (at = [...at.children].find((child) => crosses(child, line))); ) found.push(at);
+			for (let at: Element | undefined = card; (at = nearest(at, line)) && distance(at, line) < Infinity; ) found.push(at);
 		}
 		return found.map((element) => ({ element, top: element.getBoundingClientRect().top }));
 	};
@@ -47,38 +62,46 @@ export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement 
 	 *  the conversation's top is in view. */
 	function take(inner?: Element) {
 		chains = [];
-		const { top, height } = port();
-		if (list.getBoundingClientRect().top >= top) return;
-		const cards = [...list.querySelectorAll(':scope ol > li')];
-		if (inner) {
-			const card = cards.find((card) => card.contains(inner));
-			if (card) chains = [chain(card, 0, inner)];
+		const { top, height } = visibleArea();
+		// A few pixels into the conversation is still its top.
+		if (list.getBoundingClientRect().top >= top - AT_TOP) return;
+		// The cards only, not the numbered lists inside replies.
+		const cards = [...list.querySelectorAll(':scope > ol > li')];
+		const card = inner && cards.find((card) => card.contains(inner));
+		if (card) {
+			chains = [chain(card, 0, inner)];
 			return;
 		}
 		const line = top + height / 2;
-		const at = cards.findIndex((card) => card.getBoundingClientRect().bottom > line);
-		if (at < 0) return;
-		chains = [chain(cards[at], line)];
-		for (const near of [cards[at + 1], cards[at - 1]]) if (near) chains.push(chain(near, line, near));
+		const index = cards.findIndex((card) => card.getBoundingClientRect().bottom > line);
+		if (index < 0) return;
+		chains = [chain(cards[index], line)];
+		for (const near of [cards[index + 1], cards[index - 1]]) if (near) chains.push(chain(near, line, near));
 	}
 
 	const shown = (element: Element) => element.isConnected && list.contains(element);
 	/** Scroll back by what the kept element moved: the first choice whose elements are all still
 	 *  shown, else the first card still shown. */
-	function hold() {
+	function restore() {
 		if (paused()) return take();
-		const whole = chains.find((chain) => chain.every(({ element }) => shown(element)));
-		const kept = whole?.at(-1) ?? chains.map((chain) => chain[0]).find(({ element }) => shown(element));
+		const intact = chains.find((chain) => chain.every(({ element }) => shown(element)));
+		const kept = intact?.at(-1) ?? chains.map((chain) => chain[0]).find(({ element }) => shown(element));
 		if (kept) {
 			const moved = kept.element.getBoundingClientRect().top - kept.top;
-			if (Math.abs(moved) >= 0.5) (scroller() ?? window).scrollBy(0, moved);
+			if (Math.abs(moved) >= 0.5) {
+				(scroller() ?? window).scrollBy(0, moved);
+				scrolledTo = position();
+			}
 		}
 		take();
 	}
 
 	const scrolled = (event: Event) => {
 		const box = scroller();
-		if (event.target === (box ?? document)) take();
+		if (event.target !== (box ?? document)) return;
+		const own = scrolledTo !== null && Math.abs(position() - scrolledTo) < 1;
+		scrolledTo = null;
+		if (!own) take();
 	};
 	/** A click or key in the conversation keeps what it was on in place: an opened fold opens downwards. */
 	const acted = (event: Event) => {
@@ -88,12 +111,12 @@ export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement 
 	addEventListener('pointerdown', acted, { capture: true, passive: true });
 	addEventListener('keydown', acted, { capture: true, passive: true });
 	// Size changes are told after layout and before the frame is drawn: the move is never seen.
-	const observer = new ResizeObserver(hold);
+	const observer = new ResizeObserver(restore);
 	observer.observe(list);
 	take();
 
 	return {
-		retake: () => take(),
+		retake: (card) => take(card ?? undefined),
 		stop() {
 			observer.disconnect();
 			removeEventListener('scroll', scrolled, true);

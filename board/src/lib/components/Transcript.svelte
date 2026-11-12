@@ -20,7 +20,7 @@
 	import { splitAttachments } from '#lib/board/attachments.ts';
 	import { answering } from '#lib/board/answering.svelte.ts';
 	import { RenderedMarkdown } from '#lib/board/markdown.ts';
-	import { keepReadingPlace } from '#lib/board/reading-place.ts';
+	import { keepReadingPlace, type ReadingPlace } from '#lib/board/reading-place.ts';
 	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
 		import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { BoardAsk } from '#lib/board/board-asks.ts';
@@ -296,7 +296,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 
 	/** Stops keeping the report in place; set while it is kept. */
 	let stopAligning = () => {};
-	/** Whether a card is being kept in place on purpose: the reading place is not kept meanwhile. */
+	/** Whether the report's card, or the answered one, is being kept in place on purpose: the
+	 *  reading place is not kept meanwhile. */
 	let aligning = false;
 	let holding = false;
 	/** Where on screen the report's card was placed: where its copy was, if one was shown. */
@@ -321,6 +322,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const stop = (event?: Event) => {
 			if (event?.target instanceof Node && copy?.contains(event.target)) return;
 			aligning = false;
+			// Kept still from then on as what is read, unless the user took over.
+			if (!event) readingPlace?.retake(placedIn(within));
 			cancelAnimationFrame(frame);
 			for (const type of USER_SCROLL) removeEventListener(type, stop, true);
 			// The user took over before the card was placed: the copy must not stay over the page.
@@ -393,6 +396,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 				return;
 			}
 			holding = false;
+			if (!event) readingPlace?.retake(cardOf(key));
 			cancelAnimationFrame(frame);
 			for (const type of HOLD_ENDS) removeEventListener(type, stop, true);
 		};
@@ -418,11 +422,11 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	$effect(() => () => stopHolding());
 
 	/** Keeps what the user reads in place while the cards around it change height. */
-	let readingPlace: ReturnType<typeof keepReadingPlace> | undefined;
+	let readingPlace: ReadingPlace | undefined;
 	$effect(() => {
 		if (!list) return;
-		const within = list;
-		readingPlace = keepReadingPlace(within, () => scrollerOf(within), () => aligning || holding);
+		const conversation = list;
+		readingPlace = keepReadingPlace(conversation, () => scrollerOf(conversation), () => aligning || holding);
 		return () => readingPlace?.stop();
 	});
 
@@ -751,10 +755,13 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 </section>
 
 <style>
+	/* The reading place is kept by the page (keepReadingPlace), not the browser: its own move
+	   would look like the user scrolling there. */
 	.history {
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
+		overflow-anchor: none;
 	}
 	/* Takes no room until it is given some: the list's gap after it is taken back. */
 	.head {
