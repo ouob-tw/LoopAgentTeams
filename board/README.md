@@ -17,6 +17,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | 變數 | 用途 | 預設 |
 | --- | --- | --- |
 | `HOST`、`PORT` | 監聽位址與連接埠（也可用 `start` 的 `--host`、`--port`） | `0.0.0.0`、`7100` |
+| `LAT_BOARD_ALLOW_LIVE_BUILD` | 設為 `1` 才允許 `bun run build` 輸出到常駐 `lat-board` 服務正在用的 `build/`（手動「建置再重啟」時用：`LAT_BOARD_ALLOW_LIVE_BUILD=1 bun run build && systemctl --user restart lat-board`）。沒設時 `bun run build` 開頭的 `scripts/guard-live-build.mjs` 會在建置前拒絕並提示改用 `bun run build:test` 或 `bash scripts/deploy.sh`；它用 `systemctl --user show lat-board` 找服務的工作目錄，沒有服務或沒有 `systemctl` 就放行，別的資料夾、別的 `LAT_BOARD_BUILD_DIR` 不受影響。測試以 `LAT_BOARD_LIVE_DIR` 代替服務查詢（空字串＝沒有服務），見 `tests/unit/guard-live-build.test.ts` | 未設 |
 | `LAT_BOARD_BUILD_DIR` | 建置輸出到哪個目錄、`start` 啟動哪一份建置（相對看板目錄）；`bun run build:test` 設為 `build-test`，讓測試不改寫常駐看板正在用的 `build/` | `build` |
 | `LAT_BOARD_LAT_DIR` | LAT 技能目錄 | `~/.agents/skills/lat` |
 | `LAT_BOARD_HELPER_COMMAND` | 直接指定輔助工具指令（JSON 字串陣列），看板會在後面加上 `board list` 等參數 | 由技能目錄組出 |
