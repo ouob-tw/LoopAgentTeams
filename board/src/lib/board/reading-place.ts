@@ -11,6 +11,10 @@
 /** How far into the conversation, in CSS pixels, still counts as at its top. */
 const AT_TOP = 4;
 
+/** What the user does that ends keeping a card scrolled to on purpose; a click or key in a card
+ *  keeps what it was on instead. */
+const USER_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+
 /** Elements from a card down to the innermost one kept, each with its top on screen. */
 type Chain = { element: Element; top: number }[];
 
@@ -26,6 +30,9 @@ export interface ReadingPlace {
 export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement | null, paused: () => boolean): ReadingPlace {
 	/** What may be kept, first choice first. */
 	let chains: Chain[] = [];
+	/** The card scrolled to on purpose, kept until the user scrolls or clicks: the scroll that
+	 *  placed it may be told only after. */
+	let pinned: Element | null = null;
 	/** How far the conversation was scrolled when the place was taken. */
 	let takenAt = 0;
 	const position = () => scroller()?.scrollTop ?? window.scrollY;
@@ -66,6 +73,7 @@ export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement 
 		if (list.getBoundingClientRect().top >= top - AT_TOP) return;
 		// The cards only, not the numbered lists inside replies.
 		const cards = [...list.querySelectorAll(':scope > ol > li')];
+		if (!inner && pinned?.isConnected && list.contains(pinned)) inner = pinned;
 		const card = inner && cards.find((card) => card.contains(inner));
 		if (card) {
 			chains = [chain(card, 0, inner)];
@@ -103,26 +111,29 @@ export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement 
 		if (Math.abs(shifted) >= 0.5) restore();
 		else take();
 	};
-	/** A click or key in a card keeps what it was on in place until the next change: an opened
-	 *  fold opens downwards. */
+	/** The user scrolling, clicking or typing ends keeping a card scrolled to on purpose. A click or
+	 *  key in a card keeps what it was on in place until the next change: an opened fold opens
+	 *  downwards. */
 	const acted = (event: Event) => {
+		pinned = null;
 		if (event.target instanceof Element && list.contains(event.target)) take(event.target);
 	};
 	addEventListener('scroll', scrolled, { capture: true, passive: true });
-	addEventListener('pointerdown', acted, { capture: true, passive: true });
-	addEventListener('keydown', acted, { capture: true, passive: true });
+	for (const type of USER_INPUT) addEventListener(type, acted, { capture: true, passive: true });
 	// Size changes are told after layout and before the frame is drawn: the move is never seen.
 	const observer = new ResizeObserver(restore);
 	observer.observe(list);
 	take();
 
 	return {
-		retake: (card) => take(card ?? undefined),
+		retake(card) {
+			pinned = card ?? null;
+			take();
+		},
 		stop() {
 			observer.disconnect();
 			removeEventListener('scroll', scrolled, true);
-			removeEventListener('pointerdown', acted, true);
-			removeEventListener('keydown', acted, true);
+			for (const type of USER_INPUT) removeEventListener(type, acted, true);
 		}
 	};
 }
