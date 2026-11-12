@@ -372,7 +372,7 @@ class BriefTests(DispatchCase):
                      'matching a prototype', 'raise it', 'fails on the defective version',
                      'Use the `ui-copy` skill', 'explanatory text read to be understood',
                      'only examples, not the full list', 'hand it to the orchestrator',
-                     "that screenshot's width and font size", 'width of the card row'):
+                     "that screenshot's width and font size", 'the widths the task card lists'):
             self.assertIn(rule, text)
 
     def test_visual_acceptance_of_none_carries_the_field_without_the_rules(self):
