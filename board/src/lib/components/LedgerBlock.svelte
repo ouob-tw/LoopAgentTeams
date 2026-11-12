@@ -182,7 +182,7 @@
 	   to bottom. */
 	summary {
 		display: grid;
-		grid-template-columns: auto minmax(11em, 1fr) auto;
+		grid-template-columns: auto minmax(9em, 1fr) auto;
 		grid-template-areas: 'ref ref time' 'steps now now' 'steps models models' 'steps findings findings';
 		gap: 0.25rem 0.75rem;
 		align-items: start;
@@ -441,7 +441,7 @@
 
 	/* Narrow: each ticket a card read top to bottom. Sized in the text's own width, so a larger
 	   font turns to cards sooner. */
-	@container (max-width: 38em) {
+	@container (max-width: 40em) {
 		summary {
 			grid-template-columns: minmax(0, 1fr);
 			grid-template-areas: 'ref' 'steps' 'now' 'models' 'findings' 'time';

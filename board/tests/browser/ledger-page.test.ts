@@ -243,7 +243,7 @@ test.skipIf(!CHROME)('a project without deploy history shows five steps', async 
 // width from a phone's to the widest, in the default and larger text, the block has no sideways
 // scroll, the time stays on one line and no cell is narrower than a few words.
 /** Panel widths in px, and the text sizes (--min-font in px; null the default) the sweep covers. */
-const WIDTHS = [320, 360, 480, 517, 519, 520, 540, 558, 560, 580, 600, 620, 640, 680, 740, 760, 780, 900];
+const WIDTHS = [320, 360, 480, 510, 517, 518, 519, 520, 530, 540, 544, 546, 558, 560, 580, 600, 620, 640, 680, 740, 760, 780, 900];
 const FONTS = [null, 20, 28];
 
 test.skipIf(!CHROME)('the ticket lines are not squeezed at any panel width or text size', async () => {
@@ -253,7 +253,7 @@ test.skipIf(!CHROME)('the ticket lines are not squeezed at any panel width or te
 	const squeezed: string[] = [];
 	// The lines closed: what is measured is the ticket list, not the opened rows' details.
 	// The longest time a line shows (14 hours and more), which the fixture's short ones do not reach.
-	await tab.eval(`document.querySelectorAll('.detail .ledger .time').forEach((time) => { time.textContent = '14 小時 58 分・修 2 輪'; })`);
+	await tab.eval(`document.querySelectorAll('.detail .ledger .time').forEach((time) => { time.textContent = '已 14 小時 58 分・修 2 輪'; })`);
 	await tab.eval(`document.querySelectorAll('.detail .ledger details[open]').forEach((details) => details.removeAttribute('open'))`);
 	for (const font of FONTS) {
 		for (const width of WIDTHS) {
@@ -268,7 +268,13 @@ test.skipIf(!CHROME)('the ticket lines are not squeezed at any panel width or te
 					for (const li of ${LINES}) {
 						const ref = li.querySelector('.ref').innerText.split(/\\s/)[0];
 						const time = li.querySelector('.time').getBoundingClientRect();
-						if (time.height > em * 2) /* taller than one line */ cells.push('time wraps in ' + ref);
+						const cell = li.querySelector('.time');
+						const kept = cell.style.whiteSpace;
+						cell.style.whiteSpace = 'nowrap';
+						const fits = cell.scrollWidth + 2 <= cell.clientWidth;
+						cell.style.whiteSpace = kept;
+						// Wrapping is only wrong where the whole text would have fitted.
+						if (fits && time.height > em * 2) cells.push('time wraps in ' + ref);
 						for (const part of ['.now', '.models']) {
 							const box = li.querySelector(part).getBoundingClientRect();
 							if (box.height && box.width < 7 * em /* under about eight characters */) cells.push(part + ' in ' + ref + ' is ' + Math.round(box.width) + 'px wide');
