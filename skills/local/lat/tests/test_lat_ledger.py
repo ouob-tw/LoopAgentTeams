@@ -1,5 +1,6 @@
 """CLI contract tests for lat-ledger.py: subprocess, a real temp Git repo, fake gate records."""
 import contextlib
+from datetime import datetime
 import hashlib
 import importlib.util
 import io
@@ -2422,6 +2423,193 @@ class TinyLaneTests(LedgerCase):
         out = self.run_ledger('check').stdout
         self.assertIn('no qa-draft or qa item covers it', out)
         self.assertIn('code touched', out)
+
+
+class StageTimeTests(LedgerCase):
+    """Each ticket's time per stage (#557): `show --json` tickets[].times and `show --times`,
+    worked out from rows, reviews, git, the deploy history and decision records."""
+
+    def setUp(self):
+        super().setUp()
+        self.init()
+        self.lat = self.workspace / '.lat'
+        self.launched()
+
+    def at(self, clock):
+        self.now = f'2026-10-24T{clock}:00Z'
+
+    def launched(self, **names):
+        """HCOM's agent list, with each named agent's launch time (`created_at`, epoch)."""
+        entries = [{'name': name, 'base_name': name} for name in ('orch', 'impl', 'a', 'q')]
+        for name, clock in names.items():
+            when = datetime.fromisoformat(f'2026-10-24T{clock}:00+00:00').timestamp()
+            entries.append({'name': name, 'base_name': name, 'created_at': when})
+        self.hcom_list.write_text(json.dumps(entries))
+
+    def ticket(self):
+        return {t['key']: t for t in json.loads(self.ok('show', '--json'))['tickets']}['#1']
+
+    def times(self):
+        return [(s['key'], s['start'] and s['start'][11:16], s['end'] and s['end'][11:16],
+                 s['minutes'], s['running']) for s in self.ticket()['times']]
+
+    def segment(self, key, number=1):
+        return [s for s in self.ticket()['times'] if s['key'] == key][number - 1]
+
+    def merge(self, clock, *flags):
+        subprocess.run(['git', '-C', str(self.workspace), 'merge', '-q', '--no-edit', *flags,
+                        'side'], check=True, capture_output=True,
+                       env={**os.environ, 'GIT_COMMITTER_DATE': f'2026-10-24T{clock}:00Z'})
+
+    def impl_row(self, start, *extra):
+        self.at(start)
+        item = self.add('--branch', 'side', *extra)
+        self.ok('assign', str(item), '--agent', 'impl', '--card', str(self.card(f'c{item}.md')))
+        self.ok('start', str(item), '--eta', '+1h', by='impl')
+        return item
+
+    def qa_row(self, start):
+        self.at(start)
+        qa = self.add(stage='qa', evidence='file')
+        self.ok('assign', str(qa), '--agent', 'q', '--card', str(self.card(f'q{qa}.md')))
+        self.ok('start', str(qa), '--eta', '+1h', by='q')
+        return qa
+
+    def report(self):
+        path = self.root / 'report.md'
+        path.write_text('done\n')
+        return str(path)
+
+    def decision(self, name, text):
+        (self.lat / 'decisions').mkdir(exist_ok=True)
+        (self.lat / 'decisions' / f'{name}.md').write_text(f'# {name} q\n\n{text}')
+
+    def test_every_segment_of_a_delivered_and_deployed_ticket(self):
+        self.at('09:00')
+        draft = self.add(stage='qa-draft', evidence='file')
+        self.ok('assign', str(draft), '--agent', 'a', '--card', str(self.card('d.md')))
+        self.ok('start', str(draft), '--eta', '+1h', by='a')
+        self.at('09:20')
+        self.ok('done', str(draft), '--file', self.report(), by='a')
+        impl = self.impl_row('09:30')
+        qa = self.qa_row('09:40')
+        self.launched(rev='10:05')
+        self.at('10:25')
+        self.ok('review-result', '--row', str(impl), '--reviewer', 'rev', '--clean')
+        self.at('10:30')
+        self.ok('done', str(impl), '--commit', self.side, by='impl')
+        self.at('11:00')
+        self.ok('done', str(qa), '--file', self.report(), by='q')
+        self.merge('11:15', '--no-ff')
+        merge = git(self.workspace, 'rev-parse', 'HEAD')
+        (self.lat / 'deploy-history.jsonl').write_text('\n'.join(json.dumps(entry) for entry in (
+            {'action': 'deploy-prod', 'commit': self.merged, 'result': 'succeeded',
+             'at': '2026-10-24T11:20:00+00:00'},
+            {'action': 'deploy-prod', 'commit': merge, 'result': 'failed',
+             'at': '2026-10-24T11:30:00+00:00'},
+            {'action': 'deploy-prod', 'commit': merge, 'result': 'succeeded',
+             'at': '2026-10-24T19:45:00+08:00'})) + '\n')
+        self.decision('ORCH-1', '- status: approved\n- blocked work: #1\n\n'
+                      '## 答覆（r1，面板，2026-10-24T17:50:00+08:00）\n\n- 答覆：A\n')
+        self.decision('ORCH-2', '- status: approved\n- blocked work: #2\n')
+        (self.lat / 'panel-journal.jsonl').write_text(json.dumps(
+            {'time': '2026-10-24T09:35:00.5Z', 'kind': 'upsert', 'upsert_question': 'ORCH-1',
+             'revision': 1}) + '\n')
+        self.at('12:00')
+        self.assertEqual(self.times(), [
+            ('draft', '09:00', '09:20', 20, False),
+            ('impl', '09:30', '10:30', 60, False),
+            ('wait_user', '09:35', '09:50', 14, False),
+            ('wait_impl', '09:40', '10:30', 50, False),
+            ('review', '10:05', '10:25', 20, False),
+            ('qa', '10:30', '11:00', 30, False),
+            ('wait_merge', '11:00', '11:15', 15, False),
+            ('wait_deploy', '11:15', '11:45', 30, False)])
+        impl_segment = self.segment('impl')
+        self.assertEqual((impl_segment['label'], impl_segment['round'], impl_segment['row']),
+                         ('實作', 1, impl))
+        self.assertEqual(self.segment('wait_user')['decision'], 'ORCH-1')
+        out = self.ok('show', '--times')
+        self.assertIn('| #1 | 實作（第 1 輪） | 1 小時 0 分 | 2026-10-24T09:30:00Z | '
+                      '2026-10-24T10:30:00Z |', out)
+        self.assertIn('| #1 | QA 實測 | 30 分 | 2026-10-24T10:30:00Z | 2026-10-24T11:00:00Z |',
+                      out)
+        self.assertIn('| #1 | 等上線 | 30 分 |', out)
+        main = self.ok('show')
+        self.assertNotIn('各段用時', main)
+        self.assertIn('| 2 小時 0 分 |', main)  # the total from the first assignment to the close
+
+    def test_qa_started_after_the_implementation_closed_has_no_wait(self):
+        impl = self.impl_row('09:00')
+        self.at('09:30')
+        self.ok('done', str(impl), '--commit', self.side, by='impl')
+        qa = self.qa_row('09:40')
+        self.at('10:00')
+        self.ok('done', str(qa), '--file', self.report(), by='q')
+        self.assertEqual([s for s in self.times() if s[0] in ('wait_impl', 'qa')],
+                         [('qa', '09:40', '10:00', 20, False)])
+
+    def test_unknown_times_read_unknown_and_are_never_filled_in(self):
+        impl = self.impl_row('09:00')
+        self.launched()  # the reviewer has no launch time in HCOM
+        self.at('09:20')
+        self.ok('review-result', '--row', str(impl), '--reviewer', 'native-one', '--clean')
+        self.launched(rev='08:00')  # launched before the row started: not this review's start
+        self.at('09:25')
+        self.ok('review-result', '--row', str(impl), '--reviewer', 'rev', '--clean')
+        self.launched(rev='09:10')  # kept on from the previous review
+        self.at('09:28')
+        self.ok('review-result', '--row', str(impl), '--reviewer', 'rev', '--clean')
+        self.at('09:30')
+        self.ok('done', str(impl), '--commit', self.side, by='impl')
+        self.exempt_qa()
+        self.merge('09:40')  # a fast-forward: when dev moved is not recorded
+        (self.lat / 'deploy-history.jsonl').write_text(json.dumps(
+            {'action': 'deploy-prod', 'commit': self.side, 'result': 'succeeded'}) + '\n')
+        self.decision('ORCH-3', '- status: approved\n- blocked work: acme/x#5, #1\n\n'
+                      '## 答覆（r1，聊天，2026-10-24）\n')
+        self.at('10:00')
+        self.assertEqual(self.times()[1:], [  # one without a start sorts by its end
+            ('review', None, '09:20', None, False),
+            ('review', None, '09:25', None, False),
+            ('review', None, '09:28', None, False),
+            ('wait_merge', '09:30', None, None, False),
+            ('wait_deploy', None, None, None, False),
+            ('wait_user', None, None, None, False)])
+        out = self.ok('show', '--times')
+        self.assertIn('| #1 | 審查 | 不明 | 不明 | 2026-10-24T09:20:00Z |', out)
+        self.assertIn('| #1 | 等合併 | 不明 | 2026-10-24T09:30:00Z | 不明 |', out)
+        self.assertIn('| #1 | 等使用者 | 不明 | 不明 | 不明 |', out)
+
+    def test_each_rework_round_is_its_own_segment_and_open_segments_run_to_now(self):
+        first = self.impl_row('09:00')
+        self.at('09:30')
+        self.ok('done', str(first), '--commit', self.side, by='impl')
+        qa = self.qa_row('09:35')
+        self.at('09:50')
+        self.ok('done', str(qa), '--file', self.report(), by='q')
+        second = self.impl_row('10:00', '--follows', str(first))
+        self.qa_row('10:05')
+        self.decision('ORCH-4', '- status: pending\n- blocked work: #1\n')
+        (self.lat / 'panel-journal.jsonl').write_text(json.dumps(
+            {'time': '2026-10-24T10:10:00Z', 'kind': 'upsert', 'upsert_question': 'ORCH-4'}))
+        self.at('10:40')
+        self.assertEqual(self.times(), [
+            ('impl', '09:00', '09:30', 30, False),
+            ('review', None, '09:30', None, False),  # the harness's reviewer, no launch time
+            ('qa', '09:35', '09:50', 15, False),
+            ('impl', '10:00', None, 40, True),
+            ('wait_impl', '10:05', None, 35, True),
+            ('wait_user', '10:10', None, 30, True)])
+        self.assertEqual((self.segment('impl', 2)['round'], self.segment('impl', 2)['row']),
+                         (2, second))
+        out = self.ok('show', '--times')
+        self.assertIn('| #1 | 實作（第 2 輪） | 40 分（進行中） | 2026-10-24T10:00:00Z | 進行中 |',
+                      out)
+        self.ok('done', str(second), '--commit', self.side, by='impl')
+        self.at('11:00')
+        self.assertEqual([s for s in self.times() if s[0] in ('wait_impl', 'qa')][1:], [
+            ('wait_impl', '10:05', '10:40', 35, False), ('qa', '10:40', None, 20, True)])
 
 
 if __name__ == '__main__':

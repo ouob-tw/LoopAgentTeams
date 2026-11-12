@@ -1334,12 +1334,16 @@ def cmd_review_result(args):
     tiny = (tiny_confirmation(args, read_only(args))
             if args.tiny_confirm or args.tiny_hints or args.handson else None)
     try:
-        agents = {item['name'] for item in read_hcom_list(HCOM_LIST_ENV)
-                  if isinstance(item.get('name'), str)}
+        listed = [item for item in read_hcom_list(HCOM_LIST_ENV)
+                  if isinstance(item.get('name'), str)]
     except ValueError as error:
         print(f'lat-ledger: warning: {error}; reviewers are kept as given, {UNVERIFIED}',
               file=sys.stderr)
-        agents = set()
+        listed = []
+    agents = {item['name'] for item in listed}
+    # When HCOM launched each reviewer: the start of its review in the stage times.
+    launched = {item['name']: stamp(datetime.fromtimestamp(item['created_at'], timezone.utc))
+                for item in listed if isinstance(item.get('created_at'), (int, float))}
     reviewers = []
     for given in args.reviewer:
         given = required_text('--reviewer', given)
@@ -1381,6 +1385,7 @@ def cmd_review_result(args):
                 'stage': 'review', 'name': name, 'row': item['id'], 'review': review['id'],
                 **{key: reading[key] for key in ('client', 'model', 'effort', 'verified',
                                                  'sources', 'at')},
+                'launched_at': launched.get(name),
                 **({'problem': reading['problem']} if 'problem' in reading else {})})
     print(f'review {review["id"]} of item {item["id"]} recorded: '
           + '; '.join(f'{p["name"]} {settings_text(p)}' for p in doc['participants']
@@ -2008,6 +2013,118 @@ class Lookups:
         """(whether that project has a successful production deploy, the latest commit)."""
         return self.once(('deploy', place), lambda: last_deploy_commit(place))
 
+    def landed_at(self, item):
+        """When every commit of the merged row had entered the branch (the latest), or None
+        when the row is not merged or git cannot tell for one of them."""
+        def find():
+            place = self.merged_at(item)
+            if not place:
+                return None
+            times = [self.once(('landed', place, sha), lambda sha=sha: landing_time(
+                place, sha, self.branches(place))) for sha in item['evidence']['commit']]
+            return max(times) if times and None not in times else None
+        return self.once(('landed', item['id']), find)
+
+    def deploys(self, place):
+        return self.once(('deploys', place), lambda: deploy_entries(place))
+
+    def decisions(self, default_repo):
+        return self.once('decisions', lambda: read_decisions(self.doc['workspace'],
+                                                             default_repo))
+
+
+def landing_time(repo, sha, branches):
+    """When `sha` entered one of `branches`: the committer time of the merge on the branch's
+    first-parent line that brought it in. None when it came in by fast-forward or as a commit
+    made on the branch (its own time is not when the branch moved to it), or git cannot tell."""
+    for branch in branches:
+        try:
+            line = run_cli(['git', '-C', repo, 'rev-list', '--first-parent', f'{sha}..{branch}'],
+                           timeout=30).split()
+            after = set(run_cli(['git', '-C', repo, 'rev-list', '--ancestry-path',
+                                 f'{sha}..{branch}'], timeout=30).split())
+            landing = [commit for commit in line if commit in after]
+            if not landing:
+                continue
+            parent = run_cli(['git', '-C', repo, 'rev-parse', f'{landing[-1]}^1'],
+                             timeout=30).strip()
+            if parent.startswith(sha) or sha.startswith(parent):
+                return None
+            return parse_time(run_cli(['git', '-C', repo, 'show', '-s', '--format=%cI',
+                                       landing[-1]], timeout=30).strip(), None)
+        except (ValueError, Failure):
+            continue
+    return None
+
+
+def deploy_entries(workspace):
+    """The project's successful production deploys in order: (commit, time or None)."""
+    try:
+        lines = (shared_lat_dir(workspace) / 'deploy-history.jsonl').read_text(
+            encoding='utf-8').splitlines()
+    except (OSError, UnicodeError, ValueError):
+        return []
+    found = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if (isinstance(entry, dict) and entry.get('action') == DEPLOY_ACTION
+                and entry.get('result') == 'succeeded' and entry.get('commit')):
+            found.append((entry['commit'], optional_time(entry.get('at'))))
+    return found
+
+
+def optional_time(text):
+    """An aware ISO 8601 time as UTC; None for anything else (never a guess at the zone)."""
+    try:
+        value = datetime.fromisoformat(str(text).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return value.astimezone(timezone.utc) if value.tzinfo else None
+
+
+def read_decisions(workspace, default_repo):
+    """The decision records whose blocked work names a ticket: id, the tickets, when the
+    question was written to the panel (its first upsert in the panel journal; None for a
+    question asked in chat), when the human answered (the time in the first answer heading;
+    None when the heading carries only a date) and whether it is still pending."""
+    lat = shared_lat_dir(workspace)
+    asked = {}
+    try:
+        journal = (lat / 'panel-journal.jsonl').read_text(encoding='utf-8').splitlines()
+    except (OSError, UnicodeError):
+        journal = []
+    for line in journal:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get('kind') == 'upsert' and isinstance(
+                entry.get('upsert_question'), str):
+            asked.setdefault(entry['upsert_question'], optional_time(entry.get('time')))
+    found = []
+    for path in sorted((lat / 'decisions').glob('*.md')):
+        try:
+            text = path.read_text(encoding='utf-8')
+        except (OSError, UnicodeError):
+            continue
+        blocked = re.search(r'^- blocked work:(.*)$', text, re.MULTILINE)
+        status = re.search(r'^- status:\s*(\S*)', text, re.MULTILINE)
+        if not blocked:
+            continue
+        heading = re.search(r'^##\s*答覆（([^）\n]*)）', text, re.MULTILINE)
+        moment = heading and re.search(
+            r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})',
+            heading.group(1))
+        found.append({'id': path.stem, 'tickets': set(ticket_keys(blocked.group(1),
+                                                                 default_repo)),
+                      'asked': asked.get(path.stem),
+                      'answered': optional_time(moment.group(0)) if moment else None,
+                      'pending': bool(status) and status.group(1).lower() == 'pending'})
+    return found
+
 
 def rows_step(rows):
     """A row-made step: active while a row is open, pending while one waits to be assigned,
@@ -2164,6 +2281,133 @@ def ticket_findings(problems, steps):
             'problems': [problem['id'] for problem in problems]}
 
 
+# ---- stage times -----------------------------------------------------------------------------
+# Where each ticket's time went, worked out when read from what is already recorded (agents
+# report nothing new). A segment's start or end that no source gives stays None and reads 不明;
+# it is never filled in from another time. A segment still under way has no end, is marked
+# running and counts its minutes to now.
+
+SEGMENTS = {'draft': '草稿', 'impl': '實作', 'review': '審查', 'wait_impl': '等實作',
+            'qa': 'QA 實測', 'wait_merge': '等合併', 'wait_deploy': '等上線',
+            'wait_user': '等使用者'}
+UNKNOWN_TIME = '不明'
+
+
+def segment(key, start, end, running, at, **extra):
+    minutes = None
+    if start and (end or running):
+        minutes = max(0, int(((end or at) - start).total_seconds() // 60))
+    return {'key': key, 'label': SEGMENTS[key], 'start': start and stamp(start),
+            'end': end and stamp(end), 'running': running, 'minutes': minutes, **extra}
+
+
+def row_span(row):
+    """(start, end, running) of a row's work, from its first start to its close (done or
+    cancel); None for a row never started. A closed row without a close entry has no end."""
+    start = next((entry['at'] for entry in row['history'] if entry.get('action') == 'start'),
+                 None)
+    if not start:
+        return None
+    end = closed_at(row)
+    running = row['status'] not in ('done', 'cancelled')
+    return loads_time(start), end and loads_time(end), running
+
+
+def done_times(rows, stage):
+    return sorted(loads_time(closed_at(row)) for row in rows
+                  if row['stage'] == stage and row['status'] == 'done' and closed_at(row))
+
+
+def ticket_times(lookups, key, rows, reviews, participants, at, default_repo):
+    """The ticket's segments by start time (one without a start sorts by its end)."""
+    segments = []
+    spans = {stage: sorted(((row, *row_span(row)) for row in rows
+                            if row['stage'] == stage and row_span(row)), key=lambda s: s[1])
+             for stage in ('qa-draft', 'impl', 'qa')}
+    for row, start, end, running in spans['qa-draft']:
+        segments.append(segment('draft', start, end, running, at, row=row['id']))
+    for number, (row, start, end, running) in enumerate(spans['impl'], 1):
+        segments.append(segment('impl', start, end, running, at, row=row['id'], round=number,
+                                tests_seconds=(row.get('tests') or {}).get('seconds')))
+    # A review runs from its reviewers' launch to its recorded result. A reviewer launched
+    # before the row started or before the row's previous result (one kept on from an
+    # earlier round) did not start this review then: its start stays unknown.
+    impl_rows = {row['id']: row for row in rows if row['stage'] == 'impl'}
+    previous = {}
+    for review in reviews:
+        row = impl_rows.get(review.get('row'))
+        if not row:
+            continue
+        end = loads_time(review['at'])
+        span = row_span(row)
+        floor = max(filter(None, (span and span[0], previous.get(row['id']))), default=None)
+        launches = [optional_time(entry.get('launched_at')) for entry in participants
+                    if entry.get('review') == review['id'] and entry.get('row') == row['id']]
+        start = None
+        if launches and None not in launches and (floor is None or min(launches) > floor):
+            start = min(launches)
+        segments.append(segment('review', start, end, False, at, row=row['id'],
+                                review=review['id']))
+        previous[row['id']] = end
+    # QA that started while an implementation round given out before it was unfinished waits
+    # for that round; testing counts from its close. A round given out later is not waited for.
+    for row, start, end, running in spans['qa']:
+        waited = []
+        for impl in impl_rows.values():
+            given, closed = first_assigned(impl), closed_at(impl)
+            closed = closed and loads_time(closed)
+            if (impl['status'] == 'cancelled' or not given or loads_time(given) > start
+                    or (closed and closed <= start)):
+                continue
+            if end is None or (impl['status'] == 'done' and closed and closed <= end):
+                waited.append(closed if impl['status'] == 'done' else None)
+        if not waited:
+            segments.append(segment('qa', start, end, running, at, row=row['id']))
+        elif None in waited:
+            segments.append(segment('wait_impl', start, None, True, at, row=row['id']))
+        else:
+            segments.append(segment('wait_impl', start, max(waited), False, at, row=row['id']))
+            segments.append(segment('qa', max(waited), end, running, at, row=row['id']))
+    impl_done = done_times(rows, 'impl')
+    segments += delivery_segments(lookups, rows, impl_done, at)
+    for decision in lookups.decisions(default_repo):
+        if key in decision['tickets']:
+            segments.append(segment('wait_user', decision['asked'], decision['answered'],
+                                    decision['pending'], at, decision=decision['id']))
+    return sorted(segments, key=lambda s: s['start'] or s['end'] or '~')
+
+
+def delivery_segments(lookups, rows, impl_done, at):
+    """Waiting for the merge (from the last QA close, else the last implementation close, to
+    when the delivered commits entered the integration branch) and, where the project deploys
+    to production, for the deploy that first carried them all. Nothing while an implementation
+    or QA row is open; no merge wait when the merge came first."""
+    delivered = [row for row in rows if row['stage'] == 'impl' and row['status'] == 'done'
+                 and row['evidence'].get('commit')]
+    if not delivered or any(row['status'] in OPEN or row['status'] == 'unassigned'
+                            for row in rows if row['stage'] in ('impl', 'qa')):
+        return []
+    start = max(done_times(rows, 'qa') or impl_done)
+    places = [lookups.merged_at(row) for row in delivered]
+    if None in places:
+        return [segment('wait_merge', start, None, True, at)]
+    landed = [lookups.landed_at(row) for row in delivered]
+    merged = max(landed) if None not in landed else None
+    found = []
+    if merged is None or merged >= start:
+        found.append(segment('wait_merge', start, merged, False, at))
+    if not any(lookups.deploy(place)[0] for place in places):
+        return found
+    deployed, running = None, True
+    for commit, time in lookups.deploys(places[0]):
+        if all(lookups.reachable(place, sha, [commit]) for row, place in zip(delivered, places)
+               for sha in row['evidence']['commit']):
+            deployed, running = time, False
+            break
+    found.append(segment('wait_deploy', merged, deployed, running, at))
+    return found
+
+
 def build_tickets(doc, at, problems=None):
     """The ticket layer: one entry per canonical ticket, in the order tickets first appear. A
     row naming several tickets belongs to each of them. `problems` (collapsed, from the
@@ -2202,7 +2446,9 @@ def build_tickets(doc, at, problems=None):
                                          if p['ticket'] == key], steps),
             'started_at': stamp(min(map(loads_time, starts))) if starts else None,
             'total_minutes': minutes, 'running': running,
-            'rework_rounds': rework_rounds(rows), 'change_size': latest_size(rows)})
+            'rework_rounds': rework_rounds(rows), 'change_size': latest_size(rows),
+            'times': ticket_times(lookups, key, rows, doc.get('reviews', []), participants, at,
+                                  default_repo)})
     return tickets
 
 
@@ -2382,9 +2628,42 @@ def cmd_show(args):
                          ensure_ascii=False, indent=1))
         return 0
     print(f'工作總表 {args.ledger}（更新於 {doc["updated_at"]}）\n')
+    if args.times:
+        show_times(tickets, default_repo)
+        return 0
     show_tickets(tickets, counts, default_repo)
     show_summary(summary)
     return 0
+
+
+def segment_name(entry):
+    if entry['key'] == 'impl':
+        return f'{entry["label"]}（第 {entry["round"]} 輪）'
+    return entry['label']
+
+
+def show_times(tickets, default_repo):
+    """Each ticket's segments: minutes (進行中 while under way), start and end, 不明 where no
+    source gives the time."""
+    print('各段用時')
+    print('| 票 | 段 | 分鐘 | 開始 | 結束 |')
+    print('|---|---|---|---|---|')
+    for ticket in tickets:
+        ref = ticket['key']
+        if default_repo and ref.startswith(f'{default_repo}#'):
+            ref = ref[len(default_repo):]
+        if not ticket['times']:
+            print(f'| {cell(ref)} | 沒有紀錄 |  |  |  |')
+        for entry in ticket['times']:
+            took = (UNKNOWN_TIME if entry['minutes'] is None
+                    else minutes_text(entry['minutes']))
+            if entry['running']:
+                took += '（進行中）'
+            if entry.get('tests_seconds'):
+                took += f'，測試 {seconds_text(entry["tests_seconds"])}'
+            end = '進行中' if entry['running'] else entry['end'] or UNKNOWN_TIME
+            print('| ' + ' | '.join(cell(value) for value in (
+                ref, segment_name(entry), took, entry['start'] or UNKNOWN_TIME, end)) + ' |')
 
 
 def show_tickets(tickets, counts, default_repo):
@@ -2657,6 +2936,8 @@ def build_parser():
     sub.add_argument('--json', action='store_true',
                      help="every row as today, plus a tickets section (the ticket table's data)")
     sub.add_argument('--rows', action='store_true', help='one line per row instead of per ticket')
+    sub.add_argument('--times', action='store_true',
+                     help="each ticket's time per stage (minutes, start, end; 不明 where unknown)")
     sub = command('repair', 'Accept a hand edit or rebuild from the journal', item=False)
     sub.add_argument('--reason', required=True)
     sub.add_argument('--from-journal', action='store_true')
