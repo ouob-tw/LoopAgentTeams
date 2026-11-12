@@ -102,9 +102,10 @@ test.skipIf(!CHROME)('each ticket is one line with its link, title, steps, now, 
 	expect(await tab.eval(`[...${line}.querySelectorAll('.model')].map((model) => model.innerText.replace(/\\s+/g, ' '))`)).toEqual(['實作 opus-5.5・medium', '驗收 gpt-6.1-terra・medium']);
 	expect(await tab.eval(flat(`${line}.querySelector('.time')`))).toBe('已 48 分・修 3 輪');
 	expect(await tab.eval(`${line}.classList.contains('late')`)).toBe(true);
-	// In the board's panel at this width: the ticket and its time on one row, the strip beside now.
+	// In the board's panel at this width (about 560px, too narrow for the strip beside the models): the
+	// ticket and its time on one row, the strip on a line of its own, then now (#561).
 	const top = (part: string) => `${line}.querySelector('${part}').getBoundingClientRect().top`;
-	expect(await tab.eval(`${top('.ref')} === ${top('.time')} && ${top('.steps')} === ${top('.now')} && ${top('.steps')} > ${top('.ref')}`)).toBe(true);
+	expect(await tab.eval(`${top('.ref')} === ${top('.time')} && ${top('.steps')} > ${top('.ref')} && ${top('.now')} > ${top('.steps')}`)).toBe(true);
 	// Zero rounds of rework say nothing.
 	expect(await tab.eval(flat(`${lineOf('#540')}.querySelector('.time')`))).toBe('40 分');
 

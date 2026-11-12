@@ -130,3 +130,52 @@ test.skipIf(!CHROME)('the page does not scroll sideways at a phone-to-tablet wid
 	}
 	expect(wide).toEqual([]);
 }, 120_000);
+
+// #561: a ticket line wider than a card keeps its progress strip on one line and its models each on
+// one line (no 「medium」 alone on a line, no strip wrapped beside empty space); when the strip and the
+// models cannot sit side by side, the strip takes its own line instead of being squeezed.
+test.skipIf(!CHROME)('a ticket line keeps the strip and each model on one line from card width up', async () => {
+	const tab = browser!.tab;
+	const [luna] = fixture.listed();
+	// Wide enough that the forced-width block is on screen whole, for the pictures.
+	await tab.send('Emulation.setDeviceMetricsOverride', { ...DESKTOP, width: process.env.LAT_BOARD_SHOTS ? 2600 : DESKTOP.width });
+	await tab.navigate(`${fixture.url}/?controller=${luna.session_id}`);
+	await tab.until(
+		`(() => { const button = document.querySelector('.detail [data-tab="ledger"]'); if (!button) return false; if (button.getAttribute('aria-selected') !== 'true') button.click(); return document.querySelectorAll('.detail .ledger .ticket').length > 0 && document.querySelector('.detail .ledger').checkVisibility(); })()`,
+		'the ticket lines'
+	);
+	// A ticket whose title and time are long, as in the report: they must not take the strip's room.
+	await tab.eval(`document.querySelector('.detail .ledger .ticket .title').textContent = '工作總表票列表在中等寬度時用時、模型欄被擠成一字一行，標題很長很長很長'`);
+	const found: string[] = [];
+	const cases: [number | null, number][] = [[null, 600], [null, 740], [null, 890], [null, 900], [20, 900], [22, 890], [24, 890], [26, 890], [28, 900]];
+	const shots = process.env.LAT_BOARD_SHOTS;
+	if (shots) cases.push([null, 360], [20, 360]);
+	for (const [font, width] of cases) {
+		const wrapped = await tab.eval<string[]>(`(() => {
+			const root = document.documentElement;
+			${font === null ? `root.style.removeProperty('--min-font')` : `root.style.setProperty('--min-font', '${font}px')`};
+			const ledger = document.querySelector('.detail .ledger');
+			ledger.style.cssText = 'width:${width}px;max-width:none;flex:none';
+			return new Promise((done) => setTimeout(() => done([...ledger.querySelectorAll('summary')].flatMap((summary) => {
+				const rows = (list) => { const tops = new Set([...list].map((el) => Math.round(el.getBoundingClientRect().top))); return tops.size; };
+				const out = [];
+				const ref = summary.querySelector('.ref').textContent.trim().slice(0, 12);
+				if (rows(summary.querySelectorAll('.step')) > 1) out.push(ref + ': strip wrapped');
+				summary.querySelectorAll('.model').forEach((model) => { const line = parseFloat(getComputedStyle(model).lineHeight) || model.parentElement.getBoundingClientRect().height; if (model.getBoundingClientRect().height > line * 1.5) out.push(ref + ': model wrapped ' + model.textContent.trim()); });
+				return out;
+			})), 250));
+		})()`);
+		if (shots) {
+			// The composer and the panel's own clipping would cover or cut the forced-width block.
+			await tab.eval(`document.head.insertAdjacentHTML('beforeend', '<style id="shot-hide">' + [...document.querySelectorAll('body *')].filter((el) => ['fixed', 'sticky'].includes(getComputedStyle(el).position) && !el.closest('.ledger')).map((el, index) => (el.dataset.shotHide = index, '[data-shot-hide="' + index + '"]')).join(',') + '{visibility:hidden !important} *:has(.detail .ledger){overflow:visible !important;height:auto !important;max-height:none !important}</style>')`);
+			const box = await tab.eval<{ x: number; y: number; width: number; height: number }>(`(() => { const r = document.querySelector('.detail .ledger .tickets').getBoundingClientRect(); return { x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height }; })()`);
+			const { data } = (await tab.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { ...box, scale: 1 } })) as { data: string };
+			mkdirSync(shots, { recursive: true });
+			writeFileSync(join(shots, `strip-${font ?? 'default'}-${width}.png`), Buffer.from(data, 'base64'));
+			await tab.eval(`document.getElementById('shot-hide')?.remove()`);
+		}
+		// A phone-width card (360px, shown in the pictures only) may wrap its strip.
+		if (width > 400 && wrapped.length) found.push(`${font ?? 'default'}/${width}: ${[...new Set(wrapped)].join('; ')}`);
+	}
+	expect(found).toEqual([]);
+}, 60_000);
