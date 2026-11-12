@@ -13,8 +13,8 @@ function liveDir() {
 
 const real = (/** @type {string} */ p) => { try { return realpathSync(p); } catch { return resolve(p); } };
 const live = liveDir();
-const out = resolve(real('.'), process.env.LAT_BOARD_BUILD_DIR ?? 'build');
-if (live && !process.env.LAT_BOARD_ALLOW_LIVE_BUILD && out === resolve(real(live), 'build')) {
+const out = real(resolve(real('.'), process.env.LAT_BOARD_BUILD_DIR ?? 'build'));
+if (live && !process.env.LAT_BOARD_ALLOW_LIVE_BUILD && out === real(resolve(live, 'build'))) {
 	console.error('Refusing to build over the live lat-board build/ (it would break the page on port 7100 until restart). Use `bun run build:test` or `bash scripts/deploy.sh`, or set LAT_BOARD_ALLOW_LIVE_BUILD=1 to build here on purpose.');
 	process.exit(1);
 }

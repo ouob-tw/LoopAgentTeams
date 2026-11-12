@@ -1,7 +1,7 @@
 // The build guard refuses only a build into the live service's own build/. The live directory is
 // injected (LAT_BOARD_LIVE_DIR), so no real systemd is asked and nothing is built.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,6 +43,12 @@ test('another checkout or another output directory is allowed', () => {
 test('an absolute path to the live build/ is refused; no service is allowed', () => {
 	expect(guard(other, { LAT_BOARD_LIVE_DIR: live, LAT_BOARD_BUILD_DIR: join(live, 'build') }).status).toBe(1);
 	expect(guard(live, { LAT_BOARD_LIVE_DIR: '' }).status).toBe(0);
+});
+
+test('a symlink to the live build/ is refused', () => {
+	mkdirSync(join(live, 'build'));
+	symlinkSync(join(live, 'build'), join(other, 'alias'));
+	expect(guard(other, { LAT_BOARD_LIVE_DIR: live, LAT_BOARD_BUILD_DIR: 'alias' }).status).toBe(1);
 });
 
 test('no systemctl on PATH is allowed', () => {
