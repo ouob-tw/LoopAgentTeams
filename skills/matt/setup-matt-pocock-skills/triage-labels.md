@@ -14,4 +14,4 @@ The skills speak in terms of two category roles and five state triage roles. Thi
 
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
-Edit the right-hand columns to match whatever vocabulary you actually use. Keep the colors fixed so every repo looks the same.
+Edit the "Label in our tracker" column to match whatever vocabulary you actually use. Keep the colors fixed so every repo looks the same.
