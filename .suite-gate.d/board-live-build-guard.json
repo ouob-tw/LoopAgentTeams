@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/scripts/guard-live-build.mjs", "board/tests/unit/guard-live-build.test.ts"],
+      "tests": ["board/tests/unit/guard-live-build.test.ts"]
+    }
+  ]
+}
