@@ -20,6 +20,7 @@
 	import { splitAttachments } from '#lib/board/attachments.ts';
 	import { answering } from '#lib/board/answering.svelte.ts';
 	import { RenderedMarkdown } from '#lib/board/markdown.ts';
+	import { keepReadingPlace } from '#lib/board/reading-place.ts';
 	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
 		import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { BoardAsk } from '#lib/board/board-asks.ts';
@@ -295,6 +296,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 
 	/** Stops keeping the report in place; set while it is kept. */
 	let stopAligning = () => {};
+	/** Whether a card is being kept in place on purpose: the reading place is not kept meanwhile. */
+	let aligning = false;
+	let holding = false;
 	/** Where on screen the report's card was placed: where its copy was, if one was shown. */
 	let keptAt: number | undefined;
 	const USER_SCROLL = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
@@ -316,6 +320,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		keptAt = undefined;
 		const stop = (event?: Event) => {
 			if (event?.target instanceof Node && copy?.contains(event.target)) return;
+			aligning = false;
 			cancelAnimationFrame(frame);
 			for (const type of USER_SCROLL) removeEventListener(type, stop, true);
 			// The user took over before the card was placed: the copy must not stay over the page.
@@ -336,6 +341,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 			else stop();
 		};
 		for (const type of USER_SCROLL) addEventListener(type, stop, { capture: true, passive: true });
+		aligning = true;
 		frame = requestAnimationFrame(step);
 		stopAligning = stop;
 	}
@@ -386,6 +392,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 				at = next.getBoundingClientRect().top;
 				return;
 			}
+			holding = false;
 			cancelAnimationFrame(frame);
 			for (const type of HOLD_ENDS) removeEventListener(type, stop, true);
 		};
@@ -404,10 +411,20 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 			else stop();
 		};
 		for (const type of HOLD_ENDS) addEventListener(type, stop, { capture: true, passive: true });
+		holding = true;
 		frame = requestAnimationFrame(step);
 		stopHolding = stop;
 	}
 	$effect(() => () => stopHolding());
+
+	/** Keeps what the user reads in place while the cards around it change height. */
+	let readingPlace: ReturnType<typeof keepReadingPlace> | undefined;
+	$effect(() => {
+		if (!list) return;
+		const within = list;
+		readingPlace = keepReadingPlace(within, () => scrollerOf(within), () => aligning || holding);
+		return () => readingPlace?.stop();
+	});
 
 	// The space before the conversation goes once it is scrolled out of view above.
 	$effect(() => {
@@ -489,6 +506,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		if (seq === null) {
 			pdHit = null;
 			list?.scrollIntoView({ block: 'start' });
+			readingPlace?.retake();
 			// Why: the earlier part could not be read, else nothing in the conversation ran pd near the request.
 			const why = unreadable ? '更早的對話讀不到' : `這份對話在請求送出前後 ${PD_NEAR_MS / 60_000} 分鐘內沒有執行 pd 的步驟`;
 			toasts.show('failed', `找不到這次 pd 請求的那一步：${why}${unsure ? '；pd 也沒查證呼叫者，可能開錯了對話' : ''}。先顯示最新的部分。`);
@@ -499,6 +517,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		pdHit = { seq, unsure };
 		await tick();
 		list?.querySelector('[data-pd-hit]')?.scrollIntoView({ block: 'center' });
+		readingPlace?.retake();
 	}
 
 	// Earlier parts until the report's text is found or the conversation starts.
