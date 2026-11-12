@@ -2,12 +2,11 @@
 // change height: a message pushed at the top, a reply turning into its translation, a picture
 // loading. The browser's own scroll anchoring keeps the first thing at the top of the visible area
 // still, so a card there or between it and the middle growing still pushes the text being read
-// down; and its move, told as a scroll, cannot be told from the user's, so the conversation turns
-// it off (overflow-anchor). Kept instead: what is at the middle of the visible area, down to its
-// innermost element there; when that card's text was replaced, as a translated reply's is, the
-// card after it or the one before. A click or key in a card keeps what it was on, until the user
-// scrolls. Nothing is kept while the top of the conversation is in view, so a new message shows at
-// the top as before.
+// down. Kept instead: what is at the middle of the visible area, down to its innermost element
+// there; when that card's text was replaced, as a translated reply's is, the card after it or the
+// one before. A click or key in a card keeps what it was on through the change it makes, an opened
+// fold opening downwards. Nothing is kept while the top of the conversation is in view, so a new
+// message shows at the top as before. What changes above the conversation is left to the browser.
 
 /** How far into the conversation, in CSS pixels, still counts as at its top. */
 const AT_TOP = 4;
@@ -27,9 +26,8 @@ export interface ReadingPlace {
 export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement | null, paused: () => boolean): ReadingPlace {
 	/** What may be kept, first choice first. */
 	let chains: Chain[] = [];
-	/** Where this scrolled to last, until its scroll is told: that scroll is no reason to take
-	 *  the place again, and a change that comes before it is told must still be undone. */
-	let scrolledTo: number | null = null;
+	/** How far the conversation was scrolled when the place was taken. */
+	let takenAt = 0;
 	const position = () => scroller()?.scrollTop ?? window.scrollY;
 
 	/** The visible area: its top on screen and its height. */
@@ -62,6 +60,7 @@ export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement 
 	 *  the conversation's top is in view. */
 	function take(inner?: Element) {
 		chains = [];
+		takenAt = position();
 		const { top, height } = visibleArea();
 		// A few pixels into the conversation is still its top.
 		if (list.getBoundingClientRect().top >= top - AT_TOP) return;
@@ -80,30 +79,32 @@ export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement 
 	}
 
 	const shown = (element: Element) => element.isConnected && list.contains(element);
-	/** Scroll back by what the kept element moved: the first choice whose elements are all still
+	/** What is kept: the innermost element of the first choice whose elements are all still
 	 *  shown, else the first card still shown. */
+	const kept = () =>
+		chains.find((chain) => chain.every(({ element }) => shown(element)))?.at(-1) ?? chains.map((chain) => chain[0]).find(({ element }) => shown(element));
+	/** Scroll back by what the kept element moved on screen. */
 	function restore() {
 		if (paused()) return take();
-		const intact = chains.find((chain) => chain.every(({ element }) => shown(element)));
-		const kept = intact?.at(-1) ?? chains.map((chain) => chain[0]).find(({ element }) => shown(element));
-		if (kept) {
-			const moved = kept.element.getBoundingClientRect().top - kept.top;
-			if (Math.abs(moved) >= 0.5) {
-				(scroller() ?? window).scrollBy(0, moved);
-				scrolledTo = position();
-			}
-		}
+		const place = kept();
+		const moved = place ? place.element.getBoundingClientRect().top - place.top : 0;
+		if (Math.abs(moved) >= 0.5) (scroller() ?? window).scrollBy(0, moved);
 		take();
 	}
 
+	/** A scroll by the user is a new place to keep. One told after the page changed, before its
+	 *  size change is (the browser keeping what is at the top in place, or this scrolling back
+	 *  before another change came), is not: the kept element moved within the conversation, and is
+	 *  scrolled back instead. */
 	const scrolled = (event: Event) => {
-		const box = scroller();
-		if (event.target !== (box ?? document)) return;
-		const own = scrolledTo !== null && Math.abs(position() - scrolledTo) < 1;
-		scrolledTo = null;
-		if (!own) take();
+		if (event.target !== (scroller() ?? document)) return;
+		const place = kept();
+		const shifted = place ? place.element.getBoundingClientRect().top + position() - (place.top + takenAt) : 0;
+		if (Math.abs(shifted) >= 0.5) restore();
+		else take();
 	};
-	/** A click or key in the conversation keeps what it was on in place: an opened fold opens downwards. */
+	/** A click or key in a card keeps what it was on in place until the next change: an opened
+	 *  fold opens downwards. */
 	const acted = (event: Event) => {
 		if (event.target instanceof Element && list.contains(event.target)) take(event.target);
 	};

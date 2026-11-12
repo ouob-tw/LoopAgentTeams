@@ -755,13 +755,10 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 </section>
 
 <style>
-	/* The reading place is kept by the page (keepReadingPlace), not the browser: its own move
-	   would look like the user scrolling there. */
 	.history {
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
-		overflow-anchor: none;
 	}
 	/* Takes no room until it is given some: the list's gap after it is taken back. */
 	.head {

@@ -95,6 +95,16 @@ test.skipIf(!CHROME)('a message pushed at the top while the middle is read leave
 	}
 }, 60_000);
 
+test.skipIf(!CHROME)('what is above the conversation getting taller leaves the text being read in place', async () => {
+	await visit();
+	await readAt('閱讀標記 21：');
+	const before = await tab.eval<number>(top('閱讀標記 21：'));
+	// Like a pending question's bar coming in above the tabs.
+	await tab.eval(`document.querySelector('.detail').prepend(Object.assign(document.createElement('div'), { style: 'height: 300px' }))`);
+	await sleep(300);
+	expect(Math.abs((await tab.eval<number>(top('閱讀標記 21：'))) - before)).toBeLessThanOrEqual(STILL);
+}, 30_000);
+
 // At a phone's width the page itself scrolls; the second time, the board has the translations
 // already and they come at once.
 test.skipIf(!CHROME).each([1280, 390])('replies above the one being read growing with their translations leave it in place (%p wide)', async (width) => {
