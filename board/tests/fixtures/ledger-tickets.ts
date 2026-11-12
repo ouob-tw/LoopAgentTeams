@@ -88,6 +88,16 @@ interface TicketOptions {
 	repo?: string;
 	findings?: ReturnType<typeof stageCount>[];
 	problems?: string[];
+	times?: ReturnType<typeof segment>[];
+}
+
+/** One stage-time segment as lat-ledger writes it (#557); clock times are today's UTC, null is
+ *  不明, and an `end` of 'now' is a running segment. */
+export function segment(key: string, label: string, start: string | null, end: string | null, extra: Record<string, unknown> = {}) {
+	const at = (clock: string | null) => (clock === null || clock === 'now' ? null : `2026-11-12T${clock}:00Z`);
+	const minutes = (a: string | null) => (a === null ? null : Math.floor((Date.parse(a) - Date.parse(at(start)!)) / 60_000));
+	const running = end === 'now';
+	return { key, label, start: at(start), end: at(end), running, minutes: start === null || (end === null && !running) ? null : minutes(running ? '2026-11-12T10:00:00Z' : at(end)), ...extra };
 }
 
 export function ticket(key: string, options: TicketOptions) {
@@ -107,11 +117,36 @@ export function ticket(key: string, options: TicketOptions) {
 		total_minutes: options.minutes === undefined ? 60 : options.minutes,
 		running: options.running ?? false,
 		...(options.rework === undefined ? {} : { rework_rounds: options.rework }),
-		findings: { stages: options.findings ?? [], text: (options.findings ?? []).map((entry) => entry.text).join('・'), severe: (options.findings ?? []).some((entry) => entry.severe), problems: options.problems ?? [] }
+		findings: { stages: options.findings ?? [], text: (options.findings ?? []).map((entry) => entry.text).join('・'), severe: (options.findings ?? []).some((entry) => entry.severe), problems: options.problems ?? [] },
+		...(options.times ? { times: options.times } : {})
 	};
 }
 
 const REPO = 'ouob-tw/LoopAgentTeams-work';
+
+const tests = (...spans: [string, string][]) => spans.map(([a, b]) => [`2026-11-12T${a}:00Z`, `2026-11-12T${b}:00Z`]);
+/** A ticket reworked once that waited for the user once, delivered and deployed: the design mock's
+ *  shape (overlaps of review in implementation, QA waiting, the user's wait beside the merge wait). */
+const TIMES_534 = [
+	segment('draft', '草稿', '08:00', '08:06', { row: 3 }),
+	segment('impl', '實作', '08:00', '08:24', { row: 2, round: 1, tests_seconds: 660, tests_spans: tests(['08:10', '08:16'], ['08:17', '08:21']) }),
+	segment('wait_impl', '等實作', '08:06', '08:24', { row: 3 }),
+	segment('review', '審查', '08:16', '08:23', { row: 2, review: 1 }),
+	segment('qa', 'QA 實測', '08:24', '08:35', { row: 3 }),
+	segment('impl', '實作', '08:35', '08:47', { row: 2, round: 2, tests_seconds: 360, tests_spans: tests(['08:39', '08:45']) }),
+	segment('review', '審查', '08:43', '08:46', { row: 2, review: 2 }),
+	segment('qa', 'QA 實測', '08:47', '08:52', { row: 3 }),
+	segment('wait_user', '等使用者', '08:52', '09:30', { decision: 'ZAPI-534-1' }),
+	segment('wait_merge', '等合併', '08:52', '09:31'),
+	segment('wait_deploy', '等上線', '09:31', '09:40')
+];
+/** Still in QA: a review whose start no source gave, and QA running to now. */
+const TIMES_533 = [
+	segment('impl', '實作', '09:12', '09:30', { row: 1, round: 1, tests_seconds: 45, tests_spans: null }),
+	segment('review', '審查', null, '09:28', { row: 1, review: 1 }),
+	segment('qa', 'QA 實測', '09:30', 'now', { row: 1 }),
+	segment('wait_user', '等使用者', null, null, { decision: 'ZAPI-533-1' })
+];
 
 /** A ledger in `workspace` of a project with deploy history: in progress past its estimate,
  *  blocked, deployed with rework, a row covering two tickets, cancelled, and a text item. The
@@ -131,8 +166,8 @@ export function ticketLedger(workspace: string, reportPath = `${workspace}/.lat/
 		item(7, 'ledger-fields', { stage: 'research', status: 'done', closed: '2026-11-12T09:30:00Z', agent: 'zapi-analyst' })
 	];
 	const tickets = [
-		ticket(`${REPO}#533`, { title: '主控職責文字顯示連結', state: 'in_progress', label: '進行中', steps: steps('dddapp'), now: '驗收進行中・zapi-t533-qa・「第三次長度修正仍失敗」・超過預計 12 分', items: [1], settings: [['實作', 'opus-5.5・medium'], ['驗收', 'gpt-6.1-terra・medium']], minutes: 48, running: true, rework: 3, findings: [stageCount('test', [0, 0, 1], 1), stageCount('review', [0, 0, 1]), stageCount('qa', [1, 0, 0])], problems: ['P2', 'P4', 'P3'] }),
-		ticket(`${REPO}#534`, { title: '看板標題顯示連結', state: 'deployed', label: '已上線', steps: steps('dddddd'), now: '已上線', items: [2, 3], settings: [['實作', 'opus-5.5・medium'], ['審查', 'gpt-6.1-sol・medium'], ['驗收', 'gpt-6.1-terra・low→high']], minutes: 58, rework: 1, findings: [stageCount('review', [0, 1, 0]), stageCount('qa', [0, 0, 0]), stageCount('post-deploy-user', [0, 0, 0])], problems: ['P1'] }),
+		ticket(`${REPO}#533`, { title: '主控職責文字顯示連結', state: 'in_progress', label: '進行中', steps: steps('dddapp'), now: '驗收進行中・zapi-t533-qa・「第三次長度修正仍失敗」・超過預計 12 分', items: [1], settings: [['實作', 'opus-5.5・medium'], ['驗收', 'gpt-6.1-terra・medium']], minutes: 48, running: true, rework: 3, findings: [stageCount('test', [0, 0, 1], 1), stageCount('review', [0, 0, 1]), stageCount('qa', [1, 0, 0])], problems: ['P2', 'P4', 'P3'], times: TIMES_533 }),
+		ticket(`${REPO}#534`, { title: '看板標題顯示連結', state: 'deployed', label: '已上線', steps: steps('dddddd'), now: '已上線', items: [2, 3], settings: [['實作', 'opus-5.5・medium'], ['審查', 'gpt-6.1-sol・medium'], ['驗收', 'gpt-6.1-terra・low→high']], minutes: 58, rework: 1, findings: [stageCount('review', [0, 1, 0]), stageCount('qa', [0, 0, 0]), stageCount('post-deploy-user', [0, 0, 0])], problems: ['P1'], times: TIMES_534 }),
 		ticket(`${REPO}#535`, { title: '小改動通道', state: 'blocked', label: '受阻', steps: steps('dapppp'), now: '實作受阻・zapi-t535-impl・「前兩項已完成」・受阻：等使用者決定 ZAPI-524-3', items: [4], settings: [['實作', 'opus-5.5・high']], minutes: 75, running: true }),
 		ticket(`${REPO}#540`, { title: '一列兩票之一', state: 'merged', label: '已合併', steps: steps('sddsdp'), now: '已合併', items: [5], settings: [['實作', '未查證']], minutes: 40, rework: 0, findings: [stageCount('review', [0, 0, 1])], problems: ['P5'] }),
 		ticket(`${REPO}#541`, { title: '一列兩票之二', state: 'merged', label: '已合併', steps: steps('sddsdp'), now: '已合併', items: [5], settings: [['實作', '未查證']], minutes: 40, findings: [stageCount('review', [0, 0, 0])] }),

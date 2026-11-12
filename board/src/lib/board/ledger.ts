@@ -82,6 +82,26 @@ export interface LedgerTicket {
 	findings: FindingCount[];
 	/** The ids of this ticket's problems, in the order they were recorded. */
 	problems: string[];
+	/** Where the ticket's time went, segment by segment, in start order (#557). */
+	times: TimeSegment[];
+}
+
+/** One stretch of a ticket's time as lat-ledger works it out. `start` null is 不明; `end` null is
+ *  進行中 when `running`, else 不明; `minutes` is null when either end is 不明. */
+export interface TimeSegment {
+	key: string;
+	label: string;
+	start: string | null;
+	end: string | null;
+	running: boolean;
+	minutes: number | null;
+	/** The implementation round (1, 2, …); null for other segments. */
+	round: number | null;
+	/** Test execution seconds of that implementation round, when recorded. */
+	testsSeconds: number | null;
+	/** Where each test run of that round ran; null when not recorded (an open round, or one closed
+	 *  before lat-ledger kept them). */
+	testsSpans: { start: string; end: string }[] | null;
 }
 
 export type Level = '甲' | '乙' | '丙';
@@ -252,8 +272,22 @@ function ticketFrom(value: unknown, shortRefs: boolean): LedgerTicket | null {
 		reworkRounds: minutes(ticket.rework_rounds) ?? 0,
 		rows: ticket.items.filter((id): id is number => typeof id === 'number'),
 		findings: findingCounts(record(ticket.findings).stages),
-		problems: strings(record(ticket.findings).problems)
+		problems: strings(record(ticket.findings).problems),
+		times: timesFrom(ticket.times)
 	};
+}
+
+function timesFrom(value: unknown): TimeSegment[] {
+	const number = (entry: unknown) => (typeof entry === 'number' && entry >= 0 ? entry : null);
+	return (Array.isArray(value) ? value : []).map(record).flatMap((segment) => {
+		const key = text(segment.key);
+		const label = text(segment.label);
+		if (!key || !label) return [];
+		const spans = Array.isArray(segment.tests_spans)
+			? segment.tests_spans.flatMap((span) => (Array.isArray(span) && text(span[0]) && text(span[1]) ? [{ start: span[0] as string, end: span[1] as string }] : []))
+			: null;
+		return [{ key, label, start: text(segment.start), end: text(segment.end), running: segment.running === true, minutes: number(segment.minutes), round: number(segment.round), testsSeconds: number(segment.tests_seconds), testsSpans: spans }];
+	});
 }
 
 /** One entry of `board ledger`'s output as the page shows it; anything not in that shape is an
