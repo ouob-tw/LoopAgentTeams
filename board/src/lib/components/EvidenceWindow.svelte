@@ -18,6 +18,7 @@
 	const markdown = $derived(path?.endsWith('.md') ?? false);
 
 	$effect(() => {
+		void evidenceView.opened;
 		const controller = evidenceView.controllerId;
 		const file = evidenceView.path;
 		if (!controller || !file) return;
@@ -40,7 +41,9 @@
 		evidenceView.path = null;
 	});
 
+	// The close event comes after the call that closed the window: a file opened in between keeps it.
 	function closed() {
+		if (dialog.open) return;
 		shown++;
 		evidenceView.controllerId = null;
 		evidenceView.path = null;
