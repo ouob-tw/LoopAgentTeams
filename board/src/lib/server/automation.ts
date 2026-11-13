@@ -479,16 +479,22 @@ export function createAutomation(options: {
 				} catch {
 					return;
 				}
-				const deadline = Date.now() + KILL_GRACE_MS;
-				while (Date.now() < deadline) {
-					await new Promise((wait) => setTimeout(wait, 100));
-					try {
-						process.kill(-child.pid!, 0);
-					} catch {
-						return;
+				// True once nothing in the group is left; a forced stop also takes a moment to land.
+				const goneWithin = async (ms: number) => {
+					const deadline = Date.now() + ms;
+					while (Date.now() < deadline) {
+						await new Promise((wait) => setTimeout(wait, 100));
+						try {
+							process.kill(-child.pid!, 0);
+						} catch {
+							return true;
+						}
 					}
-				}
+					return false;
+				};
+				if (await goneWithin(KILL_GRACE_MS)) return;
 				signal('SIGKILL');
+				await goneWithin(KILL_GRACE_MS);
 			};
 			child.on('close', (code) => {
 				// The command itself has ended: the limit no longer applies to the cleanup after it.
