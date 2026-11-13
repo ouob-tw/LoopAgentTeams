@@ -52,5 +52,5 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 	limit.refund(source);
 	const options = await enrollOptions(site, passkeys);
-	return json({ options, enrollment: startEnrollment(options.challenge, enrollCodeHash(code), config.now()) });
+	return json({ options, enrollment: startEnrollment(options.challenge, { codeHash: enrollCodeHash(code) }, config.now()) });
 };

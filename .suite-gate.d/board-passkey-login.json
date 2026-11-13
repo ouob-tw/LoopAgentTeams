@@ -9,15 +9,33 @@
         "board/src/lib/server/devices.ts",
         "board/src/cli.ts",
         "board/src/routes/api/login/**",
+        "board/src/routes/api/passkeys/**",
         "board/src/routes/login/+page.svelte",
         "board/src/routes/login/+page.server.ts",
+        "board/src/lib/board/passkey-here.ts",
+        "board/src/lib/components/PasskeySettings.svelte",
         "board/tests/soft-passkey.ts",
+        "board/tests/https-proxy.ts",
         "board/tests/server/passkey-login.test.ts",
-        "board/tests/browser/passkey-login-page.test.ts"
+        "board/tests/server/passkey-settings.test.ts",
+        "board/tests/browser/passkey-login-page.test.ts",
+        "board/tests/browser/passkey-settings-page.test.ts"
       ],
       "tests": [
         "board/tests/server/passkey-login.test.ts",
-        "board/tests/browser/passkey-login-page.test.ts"
+        "board/tests/server/passkey-settings.test.ts",
+        "board/tests/browser/passkey-login-page.test.ts",
+        "board/tests/browser/passkey-settings-page.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/board/passkey-name.ts",
+        "board/tests/unit/passkey-name.test.ts"
+      ],
+      "tests": [
+        "board/tests/unit/passkey-name.test.ts",
+        "board/tests/browser/passkey-settings-page.test.ts"
       ]
     }
   ]

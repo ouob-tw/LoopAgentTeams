@@ -17,7 +17,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!token || !response || typeof response !== 'object') return json({ error: 'passkey_failed' }, { status: 400 });
 	const site = config.passkeySite;
 	const enrollment = takeEnrollment(token, config.now());
-	if (!site || !enrollment) return json({ error: 'enroll_expired' }, { status: 401 });
+	// A registration the settings started is finished there, by its device.
+	if (!site || !enrollment?.codeHash) return json({ error: 'enroll_expired' }, { status: 401 });
 
 	const source = locals.clientAddress;
 	const wait = limit.admit(source);
