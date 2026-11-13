@@ -3,7 +3,8 @@
 	// first, each with how it was started, when, how it ended and why, the fixed checks one by one
 	// and the output it left. 立即執行 (停止這次 while it runs), 暫停／恢復 and 編輯 sit at the top;
 	// missed periods above them, with 立即執行 and 這期就算了. An agent run links to its agent's page:
-	// the live screen while it runs, the conversation after.
+	// the live screen while it runs, the conversation after. 刪除任務 sits under the settings: it asks
+	// first, and is off while a run is unfinished.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import {
 		clientName,
@@ -21,24 +22,52 @@
 		type AutomationRun,
 		type AutomationTaskView
 	} from '#lib/board/automation.ts';
-	import { dismissMissed, pauseTask, readOutput, runTask, stopTask } from '#lib/board/automation-actions.ts';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import { deleteTask, dismissMissed, pauseTask, readOutput, runTask, stopTask } from '#lib/board/automation-actions.ts';
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import AutomationAsk from './AutomationAsk.svelte';
 	import AutomationAsks from './AutomationAsks.svelte';
 	import AutomationReview from './AutomationReview.svelte';
 	import AutomationState from './AutomationState.svelte';
+	import TestDenied from './TestDenied.svelte';
 
 	let {
 		view,
 		timeZone,
 		onedit,
 		onchanged,
-		onopenagent
-	}: { view: AutomationTaskView; timeZone: string; onedit: () => void; onchanged: () => void; onopenagent: (sessionId: string) => void } = $props();
+		onopenagent,
+		ondeleted
+	}: {
+		view: AutomationTaskView;
+		timeZone: string;
+		onedit: () => void;
+		onchanged: () => void;
+		onopenagent: (sessionId: string) => void;
+		/** The task was deleted: back to the list. */
+		ondeleted: () => void;
+	} = $props();
 
 	const task = $derived(view.task);
 	const at = $derived(timeFormat(timeZone));
 	const runningRun = $derived(view.runs.find(isOpen));
 	const running = $derived(runningRun !== undefined);
+	/** 刪除任務 was pressed and waits for 確定刪除. */
+	let confirmingDelete = $state(false);
+	let deleting = $state(false);
+	async function remove() {
+		deleting = true;
+		notice = null;
+		const done = await deleteTask(task.id);
+		deleting = false;
+		if (!done.ok) {
+			notice = done.message;
+			confirmingDelete = false;
+			onchanged();
+			return;
+		}
+		ondeleted();
+	}
 	/** The run 停止這次 was pressed for: until its record ends, the button says it is stopping. */
 	let stopping = $state<string | null>(null);
 	async function stop(runId: string) {
@@ -162,6 +191,24 @@
 		</ul>
 	{/if}
 
+	<section class="delete" data-delete>
+		{#if confirmingDelete && !running}
+			<div class="confirm" role="group" aria-label="確認刪除任務">
+				<p><b>要刪除「{task.name}」嗎？</b>它的設定和全部執行紀錄會一起移除，不能復原。</p>
+				<div class="actions">
+					<button type="button" class="remove" disabled={deleting || testDevice.view !== null} onclick={remove}>{deleting ? '刪除中…' : '確定刪除'}</button>
+					<button type="button" disabled={deleting} onclick={() => (confirmingDelete = false)}>取消</button>
+				</div>
+			</div>
+		{:else}
+			<button type="button" class="ask-delete" disabled={running || busy || testDevice.view !== null} onclick={() => (confirmingDelete = true)}><Trash2 size="1.1em" aria-hidden="true" />刪除任務</button>
+			{#if running}
+				<p class="hint">這次還沒跑完，等它結束或按「停止這次」之後才能刪除。</p>
+			{/if}
+			<TestDenied />
+		{/if}
+	</section>
+
 	<h3>執行紀錄</h3>
 	{#if view.runs.length === 0}
 		<p class="hint">還沒跑過。</p>
@@ -262,6 +309,42 @@
 	.actions button.danger:not(:disabled) {
 		color: var(--danger);
 		border-color: var(--danger);
+	}
+	.delete {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.3rem;
+	}
+	.ask-delete {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		min-height: 44px;
+	}
+	/* Off reads as off in every theme: grey and dashed, the reason under it. */
+	.ask-delete:disabled {
+		color: var(--muted);
+		border-style: dashed;
+	}
+	.confirm {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.6rem 0.8rem;
+		border: 2px solid var(--danger);
+		border-radius: var(--radius);
+		background: var(--surface);
+		overflow-wrap: anywhere;
+	}
+	.confirm p {
+		margin: 0;
+	}
+	.actions button.remove {
+		font-weight: 700;
+		background: var(--danger);
+		border-color: var(--danger);
+		color: var(--bg);
 	}
 	.agent-link {
 		align-self: flex-start;
