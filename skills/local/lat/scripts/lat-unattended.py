@@ -819,7 +819,10 @@ def cmd_settings(args):
     layer, problems = preauth.file_layer('global', preauth.global_path())
     projects = {}
     for root in args.project or []:
-        lat = project_lat(root)
+        try:
+            lat = project_lat(root)
+        except Refused:
+            continue  # a listed controller whose workspace was deleted or left Git has no project to edit
         if str(lat.parent) in projects:
             continue
         found, found_problems = preauth.file_layer('project', lat / 'preauth.toml')
