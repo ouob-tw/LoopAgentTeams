@@ -43,9 +43,17 @@ async function restartAt(time: number): Promise<void> {
 	await fixture!.start();
 }
 
+/** A logged-in request; the clock jumps weeks ahead here, past a login's idle limit, so an expired
+ *  login is made again once. */
+async function authed(path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<Response> {
+	const response = await fixture!.fetch(path, { ...init, cookie });
+	if (response.status !== 401) return response;
+	cookie = await fixture!.login();
+	return fixture!.fetch(path, { ...init, cookie });
+}
 const send = (path: string, method: string, body?: unknown) =>
-	fixture!.fetch(path, { method, cookie, headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-const snapshot = async (): Promise<AutomationSnapshot> => (await fixture!.fetch('/api/automation', { cookie })).json();
+	authed(path, { method, headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+const snapshot = async (): Promise<AutomationSnapshot> => (await authed('/api/automation')).json();
 const viewOf = async (id: string): Promise<AutomationTaskView> => (await snapshot()).tasks.find((view) => view.task.id === id)!;
 const autoRuns = async (id: string) => (await viewOf(id)).runs.filter((run) => run.trigger === 'auto');
 
