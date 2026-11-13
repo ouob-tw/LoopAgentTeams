@@ -73,6 +73,9 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_PD_TIMEOUT_SECONDS` | 上一項多久沒結束就放棄 | `5` |
 | `LAT_BOARD_PD_SECONDS` | pd 待核准請求多久讀一次，所有瀏覽器共用 | `5` |
 | `LAT_BOARD_AUTOMATION_TICK_SECONDS` | 「自動化」排程多久檢查一次（到點的任務、結束的期別、執行上限）；測試用較短的值 | `60` |
+| `LAT_BOARD_AUTOMATION_AGENT_POLL_SECONDS` | 執行中的 Agent 任務多久看一次（hcom 清單、最後一則回覆、Codex 畫面）；測試用較短的值 | `10` |
+| `LAT_BOARD_CODEX_MULTI_AUTH_COMMAND` | codex-multi-auth 指令（JSON 字串陣列），Codex 的 Agent 任務查額度與換帳號時在後面加上 `limits --json --refresh` 或 `switch <n>`；看板不會執行其他 codex-multi-auth 指令（不兌換 reset） | `["codex-multi-auth"]` |
+| `LAT_BOARD_CODEX_PROBE_COMMAND` | 換帳號後確認跑得動該模型的 Codex 指令（JSON 字串陣列），後面加上 `exec -m <模型> -c model_reasoning_effort="<強度>" --skip-git-repo-check --ephemeral -s read-only 'Reply with OK only.'` | `["codex"]` |
 
 `XDG_STATE_HOME` 未設定時是 `~/.local/state`，`XDG_CONFIG_HOME` 未設定時是 `~/.config`。
 

@@ -61,7 +61,7 @@ export interface LaunchRequest {
 	workspace?: WorkspacePick;
 	/** Set for a plain agent: its tab's name ('' keeps the name hcom and Herdr give it). No LAT
 	 *  start command, no Git project needed. */
-	agent?: { tabName: string } | null;
+	agent?: { tabName: string; /** The hcom tag, set by the board itself (an automation run), never by the form. */ tag?: string } | null;
 	/** Null: the client's own default, and no argument for it. */
 	model: string | null;
 	effort: string | null;

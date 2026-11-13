@@ -298,8 +298,9 @@ for (const width of [1280, 390]) {
 		await click('.detail .actions .primary');
 		await tab.until(`document.querySelector('.detail .run')?.dataset.status === 'running'`, 'the run to show running');
 		expect(await text('.detail .task header')).toContain('▶ 執行中');
-		expect(await text('.detail .task')).toContain('正在跑，這次結束後才能再按立即執行。');
-		expect(await tab.eval(`document.querySelector('.detail .actions .primary').disabled`)).toBe(true);
+		// While it runs, 停止這次 stands where 立即執行 was.
+		expect(await text('.detail .actions .danger')).toBe('停止這次');
+		expect(await tab.eval(`!document.querySelector('.detail .actions .primary')`)).toBe(true);
 		await frame(width, '8-running');
 		await tab.until(`document.querySelector('.detail .run')?.dataset.status === 'success'`, 'the run to end', 15_000);
 		expect(await text('.detail .run')).toContain('輸出含「跑完了」');

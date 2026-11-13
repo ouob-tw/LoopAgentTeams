@@ -52,3 +52,9 @@ export async function dismissMissed(id: string): Promise<Done> {
 	const result = await request(`/api/automation/${encodeURIComponent(id)}/dismiss-missed`, post('POST', {}));
 	return result.ok ? { ok: true, value: null } : failed(result, '沒有記下來，請再試一次。');
 }
+
+/** 停止這次: the running run ends as stopped. */
+export async function stopTask(id: string): Promise<Done> {
+	const result = await request(`/api/automation/${encodeURIComponent(id)}/stop`, post('POST', {}));
+	return result.ok ? { ok: true, value: null } : failed(result, '沒有停下來，請再試一次。');
+}

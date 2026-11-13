@@ -121,7 +121,7 @@ test('every wrong field is answered by name and nothing is written', async () =>
 	expect(taskFiles()).toEqual(before);
 });
 
-test('an agent task keeps its fields, and 立即執行 says it cannot run yet', async () => {
+test('an agent task keeps its fields', async () => {
 	const task = await create({
 		...commandTask({ name: '客發展覽維護報告', schedule: { type: 'weekly', fromWeekday: 1, toWeekday: 3 }, time: '09:00' }),
 		kind: 'agent',
@@ -133,10 +133,6 @@ test('an agent task keeps its fields, and 立即執行 says it cannot run yet', 
 	expect(task.command).toBeUndefined();
 	// The checking agent defaults to the other client than the task's own.
 	expect(task.review).toEqual({ enabled: true, checklist: ['PDF 中文與圖片正常', '發票已開立'], client: 'claude', model: 'claude-opus-5-5', effort: 'medium' });
-	const refused = await send(`/api/automation/${task.id}/run`, 'POST');
-	expect(refused.status).toBe(409);
-	expect((await refused.json()).message).toContain('Agent 任務');
-	expect((await viewOf(task.id)).runs).toEqual([]);
 });
 
 test('the checking agent\'s client, model and effort are saved as chosen, and checked', async () => {

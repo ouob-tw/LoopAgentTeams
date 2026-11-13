@@ -37,6 +37,7 @@ import { loadUsageStyle, saveUsageStyle } from './usage-style.ts';
 import type { UsageStyle } from '../board/usage.ts';
 import { loadTranslateMode, saveTranslateMode } from './translate-mode.ts';
 import { createAutomation, type Automation } from './automation.ts';
+import { boardAgentHost } from './automation-host.ts';
 import type { TranslateMode } from '../board/translate-mode.ts';
 
 /** The style with its revision: it grows with every save, so a page can tell which of two reports of the style is newer. */
@@ -257,7 +258,9 @@ function createBoard(): Board {
 		notify: (event) => {
 			if (event.type === 'missed')
 				log('WARNING', 'automation', 'automation periods missed', { task_id: event.task.id, periods: event.periods.map((entry) => entry.period), count: event.periods.length });
-		}
+		},
+		// Read once a run needs it, by then the board below exists.
+		agents: boardAgentHost(config, () => board)
 	});
 
 	// Also on its own timer: pd missing or its daemon down leaves the rest of the board alone.

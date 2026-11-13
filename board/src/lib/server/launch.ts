@@ -273,6 +273,7 @@ async function attempt(
 			folder: prepared.startIn,
 			herdrWorkspace: entry.herdrWorkspace!,
 			prompt: agent ? entry.text : latCommand(entry.client, entry.text),
+			...(agent?.tag ? { tag: agent.tag } : {}),
 			// A new Claude starts in bypass-permissions mode. Not in modelArgs: hcom repeats it on resumes (see permission.ts).
 			extraArgs: [...(entry.client === 'claude' ? ['--dangerously-skip-permissions'] : []), ...modelArgs(entry.client, request)],
 			onName: (name) => (named = name)
