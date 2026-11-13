@@ -6,12 +6,17 @@
 	import type { ArchivePage } from '#lib/board/archive.ts';
 	import type { Controller, InboxItem } from '#lib/board/types.ts';
 	import AskItemRow from './AskItemRow.svelte';
+	import AlertItemRow from './AlertItemRow.svelte';
+	import type { AutomationAlert } from '#lib/board/alerts.ts';
 	import ItemRow from './ItemRow.svelte';
 	import StatusMark from './StatusMark.svelte';
 
 	let {
 		items,
 		asks,
+		alerts,
+		currentAlert,
+		onalert,
 		endedAsks,
 		controllers,
 		sort,
@@ -32,6 +37,11 @@
 		items: InboxItem[];
 		/** The board asks that have not ended: each is an entry. */
 		asks: AskRow[];
+		/** The automation red cards not closed, newest first: on top of both orders. */
+		alerts: AutomationAlert[];
+		/** The red card open in the content column. */
+		currentAlert: string | null;
+		onalert: (alert: AutomationAlert) => void;
 		/** The board asks that ended, kept 7 days: among the processed items. */
 		endedAsks: AskRow[];
 		controllers: Controller[];
@@ -104,41 +114,46 @@
 			</button>
 		{/if}
 	{/if}
-{:else if sort === 'time'}
-	{#each sortEntries(items, asks) as entry (entryKey(entry))}
-		{#if entry.kind === 'item'}
-			<ItemRow item={entry.item} current={entry.item.key === currentKey} {onopen} onowner={owner(entry.item)} />
-		{:else}
-			<AskItemRow row={entry.row} onopen={onask} />
-		{/if}
-	{:else}
-		<p class="none">沒有待辦。</p>
-	{/each}
 {:else}
-	{#each groupEntriesByProject(items, asks) as project (project.workspace)}
-		<h3 title={project.workspace}>{project.project}</h3>
-		{#each project.controllers as group (group.controllerId)}
-			<button class="owner" onclick={() => oncontroller(group.controllerId)}>
-				<StatusMark status={byId.get(group.controllerId)?.status ?? 'closed'} />
-				{project.project} · <span title="@{group.hcomName}">@{lastSegment(group.hcomName)}</span>
-			</button>
-			<div class="nest">
-				{#each group.items as item (item.key)}
-					<ItemRow {item} current={item.key === currentKey} showOwner={false} {onopen} />
-				{/each}
-			</div>
-		{/each}
-		{#each project.agents as group (group.agentId)}
-			<span class="agent-label">{project.project} · {group.name}</span>
-			<div class="nest">
-				{#each group.rows as row (row.key)}
-					<AskItemRow {row} showOwner={false} onopen={onask} />
-				{/each}
-			</div>
+	{#each alerts as alert (alert.id)}
+		<AlertItemRow {alert} current={alert.id === currentAlert} onopen={onalert} />
+	{/each}
+	{#if sort === 'time'}
+		{#each sortEntries(items, asks) as entry (entryKey(entry))}
+			{#if entry.kind === 'item'}
+				<ItemRow item={entry.item} current={entry.item.key === currentKey} {onopen} onowner={owner(entry.item)} />
+			{:else}
+				<AskItemRow row={entry.row} onopen={onask} />
+			{/if}
+		{:else}
+			{#if !alerts.length}<p class="none">沒有待辦。</p>{/if}
 		{/each}
 	{:else}
-		<p class="none">沒有待辦。</p>
-	{/each}
+		{#each groupEntriesByProject(items, asks) as project (project.workspace)}
+			<h3 title={project.workspace}>{project.project}</h3>
+			{#each project.controllers as group (group.controllerId)}
+				<button class="owner" onclick={() => oncontroller(group.controllerId)}>
+					<StatusMark status={byId.get(group.controllerId)?.status ?? 'closed'} />
+					{project.project} · <span title="@{group.hcomName}">@{lastSegment(group.hcomName)}</span>
+				</button>
+				<div class="nest">
+					{#each group.items as item (item.key)}
+						<ItemRow {item} current={item.key === currentKey} showOwner={false} {onopen} />
+					{/each}
+				</div>
+			{/each}
+			{#each project.agents as group (group.agentId)}
+				<span class="agent-label">{project.project} · {group.name}</span>
+				<div class="nest">
+					{#each group.rows as row (row.key)}
+						<AskItemRow {row} showOwner={false} onopen={onask} />
+					{/each}
+				</div>
+			{/each}
+		{:else}
+			{#if !alerts.length}<p class="none">沒有待辦。</p>{/if}
+		{/each}
+	{/if}
 {/if}
 
 <style>

@@ -52,6 +52,11 @@ async function openHeld(reads = '*/api/model?controller=*') {
 	await tab().navigate(`${fixture.url}/?controller=s-lead`);
 	await tab().until(`!!${PART}?.getBoundingClientRect().height`, 'the picker');
 	if (reads.includes('/api/model')) await tab().until(`${PART}.title === '讀取中…'`, 'the part reading');
+	// The page shows the read (or sends it) a moment before DevTools says it is held: wait for that,
+	// not for a quiet spell, which a loaded host stretches past.
+	for (const start = Date.now(); tab().paused.length === 0; await sleep(20)) {
+		if (Date.now() - start > 10_000) throw new Error('no status read was held after opening the page');
+	}
 }
 
 /** The held status reads, once the page has sent no more for 300 ms. */
@@ -72,6 +77,7 @@ test.skipIf(!CHROME)('clicks during a slow status read wait for it: no new read,
 	await openHeld();
 	// The page's own reads as it opens (a later one ends an earlier one).
 	const opening = await held();
+	expect(opening).toBe(1);
 	for (let click = 0; click < 5; click++) {
 		await tab().eval(`${PART}.click()`);
 		await sleep(60);

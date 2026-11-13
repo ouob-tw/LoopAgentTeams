@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { PASSWORD, sleep, startFixture, until, type Fixture } from '../harness.ts';
+import { BOARD_DIR, PASSWORD, sleep, startFixture, until, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
 const json = { 'content-type': 'application/json' };
@@ -282,8 +282,11 @@ describe('before a password is set', () => {
 
 	test('the login screen names the command to run, and nothing logs in', async () => {
 		const html = await (await fresh.fetch('/login')).text();
-		expect(html).toContain('bun run board password');
+		expect(html).toContain(`cd ${BOARD_DIR} &amp;&amp; bun run board password`);
 		expect(html).not.toContain('type="password"');
+
+		const testPage = await (await fresh.fetch('/login/test')).text();
+		expect(testPage).toContain(`cd ${BOARD_DIR} &amp;&amp; bun run board test-login`);
 
 		const response = await fresh.tryLogin('anything');
 		expect(response.status).toBe(409);

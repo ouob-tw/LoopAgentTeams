@@ -348,13 +348,15 @@ test('computer: the ⋯ menu has 組合鍵 that go to the pane on screen, also w
 			clear: popup.getBoundingClientRect().bottom <= document.querySelector('.dock textarea').getBoundingClientRect().top
 		};
 	})()`);
-	expect(menu.labels).toEqual(['Ctrl+W', 'Ctrl+T', 'Ctrl+N']);
+	expect(menu.labels).toEqual(['Esc', 'Ctrl+W', 'Ctrl+T', 'Ctrl+N']);
 	expect(menu.clear).toBe(true);
 	await shot('desktop-combo-menu');
+	await tab.eval(`[...document.querySelectorAll('.popup [aria-label=組合鍵] button')].find((button) => button.innerText === 'Esc').click()`);
 	await tab.eval(`[...document.querySelectorAll('.popup [aria-label=組合鍵] button')].find((button) => button.innerText === 'Ctrl+W').click()`);
 	await tab.eval(`[...document.querySelectorAll('.popup [aria-label=組合鍵] button')].find((button) => button.innerText === 'Ctrl+N').click()`);
-	await callsReach(2);
+	await callsReach(3);
 	expect(herdrCalls()).toEqual([
+		['pane', 'send-keys', PANE, 'esc'],
 		['pane', 'send-keys', PANE, 'ctrl+w'],
 		['pane', 'send-keys', PANE, 'ctrl+n']
 	]);
@@ -364,7 +366,7 @@ test('computer: the ⋯ menu has 組合鍵 that go to the pane on screen, also w
 	await tab.pointerClick('.screen-panel .box pre');
 	await tab.until(`document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation');
 	await key('1', { code: 'Digit1', vk: 49, text: '1' });
-	await callsReach(3);
+	await callsReach(4);
 	expect(herdrCalls().at(-1)).toEqual(['pane', 'send-text', PANE, '1']);
 	expect(await tab.eval(`document.querySelector('.dock textarea').value`)).toBe('@someone hello');
 });

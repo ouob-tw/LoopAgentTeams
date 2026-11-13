@@ -7,7 +7,8 @@ import type { BoardAsk } from './board-asks.ts';
 
 /** What the address names: an inbox item, a controller, the new-controller form, an agent of the
  *  Herdr 分頁 or its 已關閉 section by session ID, with the item its page has opened in place if
- *  any, the new-agent form of a Herdr workspace, or the list. */
+ *  any, the new-agent form of a Herdr workspace, a 自動化 task or its form, an automation red card
+ *  (待辦), or the list. */
 export type Place =
 	| { kind: 'item'; key: string }
 	| { kind: 'controller'; id: string }
@@ -16,6 +17,7 @@ export type Place =
 	| { kind: 'new-agent'; workspace: string }
 	| { kind: 'automation'; id: string }
 	| { kind: 'automation-edit'; id: string | null }
+	| { kind: 'alert'; id: string }
 	| null;
 
 /** The screen shown for a place. An item is the copy it had when opened, so it stays up after it
@@ -28,6 +30,7 @@ export type View =
 	| { kind: 'new-agent'; workspace: string }
 	| { kind: 'automation'; id: string }
 	| { kind: 'automation-edit'; id: string | null }
+	| { kind: 'alert'; id: string }
 	| { kind: 'missing'; what: 'item' | 'controller' | 'agent' | 'workspace' }
 	| null;
 
@@ -49,6 +52,8 @@ export function placeIn(search: Pick<URLSearchParams, 'get' | 'has'>): Place {
 	if (edit) return { kind: 'automation-edit', id: edit === NEW_TASK ? null : edit };
 	const task = search.get('automation');
 	if (task) return { kind: 'automation', id: task };
+	const alert = search.get('alert');
+	if (alert) return { kind: 'alert', id: alert };
 	return null;
 }
 
@@ -56,11 +61,13 @@ export function placeIn(search: Pick<URLSearchParams, 'get' | 'has'>): Place {
 export type MiddleTab = 'inbox' | 'agents' | 'automation' | 'quota';
 
 /** The middle tab the address names; null when it names none. An agent, or a workspace's
- *  new-agent form, is on the Herdr tab unless the address says otherwise. */
+ *  new-agent form, is on the Herdr tab and a red card on the inbox unless the address says otherwise. */
 export function tabIn(search: Pick<URLSearchParams, 'get' | 'has'>): MiddleTab | null {
 	const tab = search.get('tab');
 	if (tab === 'agents' || tab === 'inbox' || tab === 'quota' || tab === 'automation') return tab;
 	if (search.has('agent') || search.has('new-agent')) return 'agents';
+	// A red card opened from a push shows beside the 待辦 list it sits in.
+	if (search.has('alert')) return 'inbox';
 	return search.has('automation') || search.has('automation-edit') ? 'automation' : null;
 }
 
@@ -81,6 +88,8 @@ export function searchOf(place: Place, tab?: MiddleTab): string {
 					? { 'new-agent': place.workspace }
 					: place.kind === 'automation'
 						? { automation: place.id }
+						: place.kind === 'alert'
+							? { alert: place.id }
 						: place.kind === 'automation-edit'
 							? { 'automation-edit': place.id ?? NEW_TASK }
 							: place.kind === 'item'
@@ -113,7 +122,7 @@ export function viewOf(
 		workspaces?: readonly HerdrWorkspace[];
 	}
 ): View {
-	if (place === null || place.kind === 'launch' || place.kind === 'automation' || place.kind === 'automation-edit') return place;
+	if (place === null || place.kind === 'launch' || place.kind === 'automation' || place.kind === 'automation-edit' || place.kind === 'alert') return place;
 	if (place.kind === 'new-agent') {
 		return from.workspaces?.some((workspace) => workspace.id === place.workspace) ? place : { kind: 'missing', what: 'workspace' };
 	}

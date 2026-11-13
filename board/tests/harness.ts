@@ -90,6 +90,8 @@ export function moveFakeWorkspace(planFile: string, id: string, index: number) {
 }
 
 const ROOT = join(import.meta.dir, '..');
+/** The directory the test boards run in, which the login page's host commands name. */
+export const BOARD_DIR = ROOT;
 /** The build the test servers run: `bun run build:test` writes it, never the `build/` the running board serves.
  * LAT_BOARD_BUILD_DIR (the variable `build:test` honours) names another one, so runs that overlap each use their own. */
 export const BUILD_DIR = process.env.LAT_BOARD_BUILD_DIR ?? 'build-test';
@@ -630,7 +632,7 @@ export async function startFixture(
 			return watch;
 		},
 		async start({ anyPort = false } = {}) {
-			server = spawn(options.runtime ?? NODE, [BUILD], { env: { ...env, PORT: String(anyPort ? 0 : port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+			server = spawn(options.runtime ?? NODE, [BUILD], { cwd: ROOT, env: { ...env, PORT: String(anyPort ? 0 : port) }, stdio: ['ignore', 'pipe', 'pipe'] });
 			const child = server;
 			let heard = '';
 			child.stderr!.on('data', (chunk) => ((output += chunk), process.stderr.write(chunk)));

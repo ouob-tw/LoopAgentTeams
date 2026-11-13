@@ -249,3 +249,18 @@ test.skipIf(!CHROME)('關掉 on the card turns it back to manual on every page w
 	await save(b, '1280-after-off');
 	expect(JSON.parse(readFileSync(grantFile, 'utf8')).versions.at(-1).end_reason).toBe('off');
 });
+
+test.skipIf(!CHROME)('a failed settings read shows the server\'s reason, and the network wording only when no answer came back', async () => {
+	const tab = await browse();
+	const failRead = (answer: string) =>
+		tab.eval(`(() => { const send = window.fetch; window.fetch = (input, init) => (new URL(String(input), location.href).pathname === '/api/unattended/settings' ? ${answer} : send(input, init)); })()`);
+	const shown = `document.querySelector('${DIALOG} section.unattended [role="alert"] p')?.innerText`;
+	await failRead(`Promise.resolve(new Response(JSON.stringify({ message: '讀不到無人模式設定：workspace is gone' }), { status: 500, headers: { 'content-type': 'application/json' } }))`);
+	await openSettings(tab);
+	await tab.until(`${shown} === '讀不到無人模式設定：workspace is gone'`, 'the reason the server gave');
+	await tab.eval(`document.querySelector('${DIALOG}').close()`);
+	await failRead(`Promise.reject(new TypeError('offline'))`);
+	await openSettings(tab);
+	await tab.until(`${shown} === '讀不到無人模式設定，請檢查網路後再試。'`, 'the network wording');
+	await tab.eval(`document.querySelector('${DIALOG}').close()`);
+}, 60_000);

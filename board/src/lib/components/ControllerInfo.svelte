@@ -29,6 +29,7 @@
 	import PendingQuestions from './PendingQuestions.svelte';
 	import RecordTabs from './RecordTabs.svelte';
 	import ReportList from './ReportList.svelte';
+	import ReviewPanel from './ReviewPanel.svelte';
 	import ScreenBar from './ScreenBar.svelte';
 	import ScreenPanel from './ScreenPanel.svelte';
 	import { SCREEN_CLOSED_TEXT, SCREEN_NOT_LISTED_TEXT } from '#lib/board/screen.ts';
@@ -96,7 +97,7 @@
 	let usage = $state<Usage | null>(null);
 	const shown = $derived(usage && controller.running ? usage : null);
 
-	type Tab = 'transcript' | 'screen' | 'reports' | 'ledger' | 'sent' | 'preauth' | 'log';
+	type Tab = 'transcript' | 'review' | 'screen' | 'reports' | 'ledger' | 'sent' | 'preauth' | 'log';
 	let tab = $state<Tab>('transcript');
 	/** On a 終端分頁 with a screen, the status card, its buttons and its questions fold into one line. */
 	const folded = $derived(tab === 'screen' && !!paneAgent?.inHerdr);
@@ -109,8 +110,12 @@
 		...(questions.length ? [`${questions.length} 題待決`] : []),
 		...(paneAgent ? agentWarnings(paneAgent) : [])
 	]);
+	/** The tab shows only while the latest round has a review file; its count is the parked items. */
+	const reviewSummary = $derived(controller.unattended.state === 'unknown' || controller.unattended.state === 'error' ? null : (controller.unattended.review ?? null));
 	const tabs = $derived([
 		{ id: 'transcript', label: '對話紀錄', count: null },
+		// A failed read keeps the tab, so a slow poll never throws the user off it.
+		...(reviewSummary?.state === 'ok' || reviewSummary?.state === 'error' ? [{ id: 'review', label: '回顧', count: reviewSummary.state === 'ok' ? reviewSummary.parked : null } as const] : []),
 		{ id: 'screen', label: '終端', count: null },
 		{ id: 'reports', label: '回報', count: reports.length },
 		{ id: 'ledger', label: '工作總表', count: controller.ledger.state === 'ok' ? controller.ledger.tickets.length : null },
@@ -118,6 +123,9 @@
 		{ id: 'preauth', label: '預先授權', count: null },
 		...(agent ? [{ id: 'log', label: '操作紀錄', count: agentControl.logCount(agent.id) } as const] : [])
 	] as const satisfies readonly { id: Tab; label: string; count: number | null }[]);
+	$effect(() => {
+		if (!tabs.some((entry) => entry.id === tab)) tab = 'transcript';
+	});
 	// Opening the target, the same one again too, shows it in the conversation. Only by its key:
 	// the board's data refreshing hands over the same target as a new object, which must not pull
 	// the user off the tab they chose.
@@ -165,6 +173,8 @@
 	{#snippet panel(id)}
 		{#if id === 'transcript'}
 			<Transcript {controller} {asks} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
+		{:else if id === 'review'}
+			{#key controller.id}<ReviewPanel {controller} />{/key}
 		{:else if id === 'screen'}
 			<ScreenPanel agentId={paneAgent?.id ?? controller.id} active={tab === 'screen'} unavailable={paneAgent?.inHerdr ? null : controller.status === 'closed' ? SCREEN_CLOSED_TEXT : SCREEN_NOT_LISTED_TEXT} />
 		{:else if id === 'reports'}

@@ -5,14 +5,14 @@ import { join } from 'node:path';
 import type { ArchivePage } from '../board/archive.ts';
 import type { BoardSnapshot, HelperController, InboxQuestion } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
-import { DEVICES_FILE, findDevice } from './devices.ts';
+import { DEVICES_FILE, findDevice, findDeviceById } from './devices.ts';
 import { listControllers, pruneReports, readAnswered, readLedgers, readQuestions, readUnattended, type AnsweredFile } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, ledgerSources, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openLog, type SentLog } from './sent-log.ts';
-import { log } from './log.ts';
+import { exceptionFields, log } from './log.ts';
 import { openSwitches } from './sent-views.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
@@ -38,6 +38,9 @@ import type { UsageStyle } from '../board/usage.ts';
 import { loadTranslateMode, saveTranslateMode } from './translate-mode.ts';
 import { createAutomation, type Automation } from './automation.ts';
 import { boardAgentHost } from './automation-host.ts';
+import { createAlerts, type Alerts } from './alerts.ts';
+import { createPush, type Push } from './push.ts';
+import { pushOf, type AutomationAlert } from '../board/alerts.ts';
 import type { TranslateMode } from '../board/translate-mode.ts';
 
 /** The style with its revision: it grows with every save, so a page can tell which of two reports of the style is newer. */
@@ -93,6 +96,10 @@ export interface Board {
 	pd(): PdSnapshot | null;
 	/** The 自動化 tab's tasks and runs; every change goes to the open pages as an `automation` event. */
 	readonly automation: Automation;
+	/** The automation red cards; every change goes to the open pages as an `alerts` event. */
+	readonly alerts: Alerts;
+	/** The devices' Web Push subscriptions and the board's VAPID key. */
+	readonly push: Push;
 	/** Read pd's waiting requests now, as after a denial; resolves once every open page was told. */
 	refreshPd(): Promise<void>;
 	/** How the usage line reads on every device. */
@@ -247,6 +254,31 @@ function createBoard(): Board {
 		}
 	);
 
+	const alerts = createAlerts({
+		// Beside the automation folder, not in it: every .json there is read as a task.
+		file: join(config.stateDir, 'automation-alerts.json'),
+		now: config.now,
+		publish: (snapshot) => {
+			for (const stream of streams) stream.send('alerts', JSON.stringify(snapshot));
+		}
+	});
+	const push = createPush({
+		dir: join(config.stateDir, 'push'),
+		now: config.now,
+		subject: config.passkeySite?.origin ?? null,
+		// Logged in now, by the same rule as a request: a login past its time gets no pushes either.
+		deviceKnown: (deviceId) => findDeviceById(config.stateDir, deviceId, config.now()) !== null,
+		testOrigin: config.pushTestOrigin
+	});
+	/** A red card made or added to: every subscribed device hears of it; a push that fails leaves the card as it is. */
+	async function pushAlert(alert: AutomationAlert) {
+		try {
+			alerts.pushed(alert.id, await push.send(pushOf(alert)));
+		} catch (error) {
+			log('ERROR', 'board.push', 'push_send_failed', { alert_id: alert.id, ...exceptionFields(error) });
+		}
+	}
+
 	const automation = createAutomation({
 		dir: join(config.stateDir, 'automation'),
 		now: config.now,
@@ -254,10 +286,12 @@ function createBoard(): Board {
 		publish: (snapshot) => {
 			for (const stream of streams) stream.send('automation', JSON.stringify(snapshot));
 		},
-		// Red cards and pushes build on these events; until then a missed period is logged, one line per task.
+		// A run that ended badly, or periods found missed, make a red card and a push.
 		notify: (event) => {
 			if (event.type === 'missed')
 				log('WARNING', 'automation', 'automation periods missed', { task_id: event.task.id, periods: event.periods.map((entry) => entry.period), count: event.periods.length });
+			const alert = alerts.record(event);
+			if (alert) void pushAlert(alert);
 		},
 		// Read once a run needs it, by then the board below exists.
 		agents: boardAgentHost(config, () => board)
@@ -715,6 +749,8 @@ function createBoard(): Board {
 		quota: () => quotaPoller.current(),
 		pd: () => pdPoller.current(),
 		automation,
+		alerts,
+		push,
 		refreshPd: () => pdPoller.refresh(),
 		usageStyle: () => (usageStyle ??= { style: loadUsageStyle(config.stateDir), revision: Date.now() }),
 		setUsageStyle(style) {
