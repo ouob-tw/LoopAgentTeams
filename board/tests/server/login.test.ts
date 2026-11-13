@@ -54,13 +54,15 @@ test('every data endpoint and the event stream refuse a caller that is not logge
 	expect(forged.status).toBe(401);
 });
 
-test('the right password logs the browser in for 400 days', async () => {
+test('the right password logs the browser in for 30 days', async () => {
 	const response = await fixture.tryLogin(PASSWORD);
 
 	expect(response.status).toBe(200);
 	const cookie = response.headers.getSetCookie()[0];
 	expect(cookie).toContain('HttpOnly');
-	expect(cookie).toContain(`Max-Age=${400 * 24 * 60 * 60}`);
+	expect(cookie).toContain(`Max-Age=${30 * 24 * 60 * 60}`);
+	// Plain http on the host itself: the cookie must still go back over it.
+	expect(cookie).not.toContain('Secure');
 	const board = await fixture.board(cookieOf(response));
 	expect(board.controllers.map((controller) => controller.hcomName)).toEqual(['luna']);
 });
@@ -158,15 +160,17 @@ test('the password is nowhere in the state directory, the server output or the c
 	expect((await fixture.tryLogin(PASSWORD)).status).toBe(200);
 });
 
-test('a device paired before the upgrade stays logged in until it is revoked', async () => {
+test('a device paired before the upgrade stays logged in until it is revoked or its 30 days are over', async () => {
 	// What the pairing-code version left in the state directory.
 	const token = 'token-from-the-pairing-version';
+	// It has no last-seen time: the time it paired stands in for it.
+	const pairedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
 	const devicesPath = join(fixture.dir, 'board-state/devices.json');
 	const devices = JSON.parse(readFileSync(devicesPath, 'utf8'));
 	devices.push({
 		id: 'a1b2c3d4',
 		label: 'old-paired-phone',
-		pairedAt: '2026-10-01T00:00:00.000Z',
+		pairedAt,
 		tokenHash: createHash('sha256').update(token).digest('hex')
 	});
 	writeFileSync(devicesPath, JSON.stringify(devices));
@@ -174,7 +178,7 @@ test('a device paired before the upgrade stays logged in until it is revoked', a
 	const cookie = `lat_board_device=${token}`;
 
 	expect((await fixture.fetch('/', { cookie })).status).toBe(200);
-	expect(fixture.cli('devices').stdout).toContain('a1b2c3d4\t2026-10-01T00:00:00.000Z\told-paired-phone');
+	expect(fixture.cli('devices').stdout).toContain(`a1b2c3d4\t${pairedAt}\told-paired-phone`);
 
 	expect(fixture.cli('revoke', 'a1b2c3d4').code).toBe(0);
 	const page = await fixture.fetch('/', { cookie });

@@ -163,7 +163,8 @@ async function main(argv: string[]): Promise<number> {
 		const now = config.now();
 		if (!devices.length) console.log('沒有已登入的裝置。');
 		for (const device of devices) {
-			console.log([device.id, device.pairedAt, device.label, ...(device.test ? [testColumn(device, now)] : [])].join('\t'));
+			const state = device.test ? [testColumn(device, now)] : expired(device, now) ? ['（登入已失效，須重新登入）'] : [];
+			console.log([device.id, device.pairedAt, device.label, ...state].join('\t'));
 			if (device.test && expired(device, now)) for (const line of await runningOwned(config, device)) console.log(line);
 		}
 		return 0;

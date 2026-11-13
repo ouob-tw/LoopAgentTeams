@@ -5,6 +5,7 @@ import { isAbsolute, join } from 'node:path';
 import { parseModelOptions, type ModelOptions } from '../board/models.ts';
 import { ASK_EXECUTION_WAIT_MS } from '../board/board-asks.ts';
 import { codexMultiAuthDir } from './quota.ts';
+import { connectionSettings, type AddressList } from './client-address.ts';
 
 type Env = Record<string, string | undefined>;
 
@@ -57,6 +58,10 @@ export interface BoardConfig {
 	debounceMs: number;
 	/** How long a source address is refused after too many wrong passwords in a row. */
 	loginLockMs: number;
+	/** Who may connect at all, checked before anything else; only the host itself when not set. */
+	allowedSources: AddressList;
+	/** Proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` the board believes; none when not set. */
+	trustedProxies: AddressList;
 	/** The speech recognition service voice input sends its recordings to; null turns voice input off. */
 	asrUrl: string | null;
 	/** The service's access token. It stays on the server: no response to a page carries it. */
@@ -215,6 +220,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		fallbackMs,
 		debounceMs: 200,
 		loginLockMs: seconds(env.LAT_BOARD_LOGIN_LOCK_SECONDS, 60_000),
+		...connectionSettings(env),
 		asrUrl: env.LAT_BOARD_ASR_URL?.replace(/\/+$/, '') || null,
 		asrToken: env.LAT_BOARD_ASR_TOKEN || null,
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),
