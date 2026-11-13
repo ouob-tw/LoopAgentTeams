@@ -31,6 +31,8 @@
 		type WorkspaceOption
 	} from '#lib/board/launch.ts';
 	import { agentLaunching, launching } from '#lib/board/launching.svelte.ts';
+	import { attaching } from '#lib/board/attaching.svelte.ts';
+	import { withAttachments } from '#lib/board/attachments.ts';
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
 	import { DEFAULT_UNREADABLE_TEXT, defaultEffort, modelShort } from '#lib/board/models.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -329,13 +331,16 @@
 		return '自動選擇的工作區';
 	});
 
+	/** Whose attachments the first message holds: each form keeps its own. */
+	const attachOwner = $derived(target ? 'new-agent' : 'new-controller');
+
 	let sending = $state(false);
 	const ready = $derived(
 		!sending &&
 			sendTo !== null &&
 			folderProblem === null &&
 			folderKnown &&
-			(target !== null || (form.text.trim() !== '' && (!needsInit || form.gitInit)))
+			(target !== null || ((form.text.trim() !== '' || attaching.list(attachOwner).length > 0) && (!needsInit || form.gitInit)))
 	);
 
 	// A plain agent's message and tab name stay until it appears in Herdr: a time-out keeps them to send again.
@@ -346,6 +351,7 @@
 		untrack(() => {
 			if (launch.state === 'appeared') {
 				if (agentLaunching.text === pending.text) agentLaunching.text = '';
+				attaching.sent('new-agent', pending.paths);
 				if (agentLaunching.tabName === pending.tabName) agentLaunching.tabName = '';
 			}
 			agentLaunching.sent = null;
@@ -355,12 +361,16 @@
 	async function submit() {
 		if (!ready) return;
 		const sent = form;
+		const owner = attachOwner;
+		const attached = attaching.ready(owner);
+		if (!attached.ok) return toasts.show('failed', `${attached.reason}（表單內容保留著）`);
+		const paths = attached.paths;
 		const sentText = sent.text;
 		const sentTab = sent.tabName;
 		const sentFolder = sent.folder;
 		const sentOption = sent.workspaceOption;
 		sending = true;
-		const result = await sent.start(sendTo!);
+		const result = await sent.start(sendTo!, withAttachments(sentText, paths));
 		sending = false;
 		// A workspace made for this launch, even one that failed after, is not made again by
 		// sending the form once more: the field goes to it.
@@ -372,12 +382,14 @@
 		// The folder may have been created: what the box says about it is read again.
 		if (sent.folder === sentFolder && sent.folderPath !== null) void sent.find(sentFolder);
 		if (target) {
-			if (result.ok && result.launchId) sent.sent = { launchId: result.launchId, text: sentText, tabName: sentTab };
+			if (result.ok && result.launchId) sent.sent = { launchId: result.launchId, text: sentText, tabName: sentTab, paths };
 		} else if (result.ok && sent.text === sentText) {
 			// Only a launch that was made clears the message; anything typed meanwhile stays too.
 			sent.text = '';
 			sent.gitInit = false;
 		}
+		// The files went out with the launch whatever was typed meanwhile.
+		if (!target && result.ok) attaching.sent(owner, paths);
 		const what = target ? '開新 Agent' : '新建';
 		toasts.show(
 			result.ok ? 'ok' : 'failed',
@@ -501,6 +513,7 @@
 			bind:value={form.text}
 			label={target ? '第一則訊息（選填）' : '第一句話'}
 			placeholder={`${target ? '第一則訊息（選填）' : '第一句話'}（${enterMakesNewline.current ? 'Enter 換行，按鈕送出' : 'Enter 送出，Shift+Enter 換行'}）`}
+			attachTo={attachOwner}
 			skillsFor={form.folderPath ? { client: form.client, folder: form.folderPath } : null}
 			onsend={submit}
 		/>

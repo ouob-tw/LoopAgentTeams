@@ -31,7 +31,7 @@ class Launching {
 	tabName = $state('');
 	/** A plain agent's launch whose message and tab name are cleared from the form only once it
 	 *  appears in Herdr, and only if they are still as sent; kept on a time-out. */
-	sent = $state<{ launchId: string; text: string; tabName: string } | null>(null);
+	sent = $state<{ launchId: string; text: string; tabName: string; paths: string[] } | null>(null);
 	client = $state<LaunchClient>('claude');
 	/** The folder box as typed: a full path, `~` for the home folder. */
 	folder = $state('');
@@ -113,14 +113,14 @@ class Launching {
 	}
 
 	/** One attempt with the form as it is, opening in `workspace`; the form is kept when it fails. */
-	async start(workspace: WorkspacePick): Promise<StartResult> {
+	async start(workspace: WorkspacePick, text: string = this.text): Promise<StartResult> {
 		const result = await request<LaunchResponse>('/api/launches', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({
 				client: this.client,
 				folder: this.folderPath ?? this.folder,
-				text: this.text,
+				text,
 				gitInit: this.workspace === null && this.gitInit,
 				model: this.model || null,
 				effort: this.effort || null,
