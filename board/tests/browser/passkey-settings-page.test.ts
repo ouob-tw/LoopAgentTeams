@@ -213,9 +213,10 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			await tab.until(`window.listReads > ${readsBefore} && ${readShown('window.listReads')}`, 'the list read again after the refused delete');
 			expect(await tab.eval(FAILED)).toBe('失敗：看板的 passkey 檔讀不出來，請看主機上看板的紀錄。');
 			expect(await tab.eval(`${ROWS}.length`)).toBe(1);
-			await tab.eval(`window.fetch = window.realFetch`);
 
-			// Deleted after a confirmation; it cannot log in any more.
+			// Deleted after a confirmation; it cannot log in any more. Opened again, unmarked.
+			await openSettings(origin, cookie);
+			await tab.until(`${ROWS}[0]?.startsWith('Linux · Chrome')`, 'the list as it is');
 			const deleteButton = `dialog[open] section.passkeys button[aria-label="刪除 passkey ${id}"]`;
 			await tab.until(`document.querySelector(${JSON.stringify(deleteButton)}) !== null`, 'the delete button');
 			await clickSteady(deleteButton);
