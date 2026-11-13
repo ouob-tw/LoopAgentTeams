@@ -13,6 +13,9 @@ let work: string;
 
 beforeAll(async () => {
 	fixture = await startFixture();
+	// Friday 2026-11-20 01:00 in Taipei: outside every window these tasks have and before the daily
+	// one's time, so the scheduler starts none of them whatever day the tests run on.
+	fixture.setClock(Date.UTC(2026, 10, 19, 17));
 	cookie = await fixture.login();
 	work = join(fixture.dir, 'work');
 	mkdirSync(join(work, 'docs'), { recursive: true });

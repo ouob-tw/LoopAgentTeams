@@ -1,20 +1,23 @@
 <script lang="ts">
 	// One task in the content column: its settings, the checklist, and every run kept, newest
 	// first, each with how it was started, when, how it ended and why, the fixed checks one by one
-	// and the output it left. 立即執行, 暫停／恢復 and 編輯 sit at the top.
+	// and the output it left. 立即執行, 暫停／恢復 and 編輯 sit at the top; missed periods above them,
+	// with 立即執行 and 這期就算了.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import {
 		clientName,
 		EFFORT_TEXT,
 		kindText,
+		MISSED_NAMED,
 		runReason,
 		scheduleText,
 		TRIGGER_TEXT,
 		timeFormat,
+		windowText,
 		type AutomationRun,
 		type AutomationTaskView
 	} from '#lib/board/automation.ts';
-	import { pauseTask, readOutput, runTask } from '#lib/board/automation-actions.ts';
+	import { dismissMissed, pauseTask, readOutput, runTask } from '#lib/board/automation-actions.ts';
 	import AutomationState from './AutomationState.svelte';
 
 	let { view, timeZone, onedit, onchanged }: { view: AutomationTaskView; timeZone: string; onedit: () => void; onchanged: () => void } = $props();
@@ -52,8 +55,24 @@
 		<h2>{task.name}</h2>
 		<AutomationState state={view.state} />
 	</header>
+	{#if view.missed.length}
+		{@const reference = view.missed.at(-1)!.to - 1}
+		<section class="missed" data-missed={view.missed.length}>
+			<b>{task.name}：{view.missed.length === 1 ? '本期錯過' : `錯過 ${view.missed.length} 期`}</b>
+			<p>
+				{#each view.missed.slice(0, MISSED_NAMED) as entry, index (entry.period)}{index ? '、' : ''}<span class="window">{windowText(entry, reference)}</span>{/each}{view.missed.length > MISSED_NAMED ? ` 等共 ${view.missed.length} 期` : ''}
+				看板都沒開，所以沒跑。不會自動補跑。
+			</p>
+			<div class="actions">
+				<button type="button" class="primary" disabled={busy || running || task.kind !== 'command'} onclick={() => act(() => runTask(task.id))}>立即執行</button>
+				<button type="button" disabled={busy} onclick={() => act(() => dismissMissed(task.id))}>這期就算了</button>
+			</div>
+		</section>
+	{/if}
 	<div class="actions">
-		<button type="button" class="primary" disabled={busy || running || task.kind !== 'command'} onclick={() => act(() => runTask(task.id))}>立即執行</button>
+		{#if !view.missed.length}
+			<button type="button" class="primary" disabled={busy || running || task.kind !== 'command'} onclick={() => act(() => runTask(task.id))}>立即執行</button>
+		{/if}
 		<button type="button" disabled={busy} onclick={() => act(() => pauseTask(task.id, !task.paused))}>{task.paused ? '恢復' : '暫停'}</button>
 		<button type="button" onclick={onedit}>編輯</button>
 	</div>
@@ -120,9 +139,9 @@
 	{/if}
 	{#each view.runs as run (run.id)}
 		{@const live = run.status === 'running'}
-		<section class="run" class:bad={!live && run.status !== 'success'} class:live data-run={run.id} data-status={run.status}>
+		<section class="run" class:bad={!live && run.status !== 'success' && run.status !== 'skipped'} class:skip={run.status === 'skipped'} class:live data-run={run.id} data-status={run.status}>
 			<div class="when">
-				<b>{at.full(run.startedAt)}{run.endedAt === undefined ? '' : ` → ${sameDay(run.startedAt, run.endedAt) ? at.clock(run.endedAt) : at.full(run.endedAt)}`}</b>
+				<b>{at.full(run.startedAt)}{run.endedAt === undefined || run.status === 'skipped' || run.trigger === 'carried' ? '' : ` → ${sameDay(run.startedAt, run.endedAt) ? at.clock(run.endedAt) : at.full(run.endedAt)}`}</b>
 				<AutomationState status={run.status} />
 				<span class="trigger">{TRIGGER_TEXT[run.trigger]}</span>
 			</div>
@@ -233,6 +252,25 @@
 	}
 	.run.live {
 		border-left-color: var(--accent);
+	}
+	.run.skip {
+		border-left-color: var(--line);
+	}
+	.missed {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		padding: 0.5rem 0.8rem;
+		border: 2px solid var(--warn);
+		border-radius: var(--radius);
+		background: var(--surface);
+		overflow-wrap: anywhere;
+	}
+	.missed p {
+		margin: 0;
+	}
+	.window {
+		white-space: nowrap;
 	}
 	.run p {
 		margin: 0;

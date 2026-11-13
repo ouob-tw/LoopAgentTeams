@@ -1,8 +1,10 @@
 // The 自動化 tab's tasks on the server: one JSON file per task in the board state directory's
 // `automation` folder, written whole and atomically; one record file per task that only ever grows
 // (a line when a run starts and one when it ends); the output a command printed, cut to its end.
-// A command task's 立即執行 runs here as a child process in the task's folder. The scheduler and agent
-// runs build on `startRun`/`finishRun` and the records' fields.
+// A command task's run is a child process in the task's folder. The scheduler checks every minute, in
+// Asia/Taipei: it starts the day's one automatic try, stops runs past their limit and records the
+// periods whose window passed with no run (missed), and tells `notify` so red cards and pushes can
+// follow. Agent runs build on `start` and the records' fields.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
@@ -13,9 +15,14 @@ import {
 	AGENT_EFFORTS,
 	DEFAULT_REVIEW_MODEL,
 	defaultReviewClient,
+	dueToday,
+	endedWindows,
 	nextAutoAt,
+	openMissed,
 	periodOf,
+	succeeded,
 	taskState,
+	TIME_ZONE,
 	type AgentSpec,
 	type AutomationRun,
 	type AutomationSchedule,
@@ -26,6 +33,7 @@ import {
 	type CheckResult,
 	type CommandSpec,
 	type FixedCheck,
+	type MissedPeriod,
 	type RunTrigger,
 	type Weekday
 } from '../board/automation.ts';
@@ -36,14 +44,18 @@ export const OUTPUT_KEEP_CHARS = 32_000;
 const RUNS_SHOWN = 20;
 /** A command's process group gets this long to end after SIGTERM before SIGKILL. */
 const KILL_GRACE_MS = 5_000;
-/** How often the states and next times are worked out again, as days and periods turn. */
-const TICK_MS = 60_000;
 
 /** Field name → what is wrong with it, worded for the form. */
 export type FieldErrors = Record<string, string>;
 
 export type Saved = { ok: true; task: AutomationTask } | { ok: false; status: number; errors: FieldErrors };
 export type Started = { ok: true; run: AutomationRun } | { ok: false; status: number; message: string };
+
+/** What red cards and pushes are made from: a run that ended, or the periods one check found missed
+ *  for one task (all of them in one event, however many). */
+export type AutomationEvent =
+	| { type: 'run-ended'; task: AutomationTask; run: AutomationRun }
+	| { type: 'missed'; task: AutomationTask; periods: MissedPeriod[] };
 
 export interface Automation {
 	snapshot(): AutomationSnapshot;
@@ -52,6 +64,11 @@ export interface Automation {
 	setPaused(id: string, paused: boolean): AutomationTask | null;
 	/** 立即執行: refused while the same task runs. Resolves once the run has started, not ended. */
 	runNow(id: string): Started;
+	/** 沿用原紀錄: this period counts as done, standing for the project's own done marker. Only the
+	 *  API offers it, never a button. */
+	carry(id: string, marker: unknown): Started;
+	/** 這期就算了: the task's open missed periods are no longer shown; the number dismissed. */
+	dismissMissed(id: string): number | null;
 	/** The kept output of one run; null when there is none. */
 	output(taskId: string, runId: string): string | null;
 	/** Resolves once every run started so far has ended (tests and closing). */
@@ -274,6 +291,27 @@ export function outputCollector(sought: readonly string[]) {
 	};
 }
 
+/** A task's missed periods as their record says now, merged by period; torn lines left out. */
+export function readMissed(file: string): MissedPeriod[] {
+	let raw: string;
+	try {
+		raw = readFileSync(file, 'utf8');
+	} catch {
+		return [];
+	}
+	const found = new Map<string, MissedPeriod>();
+	for (const line of raw.split('\n')) {
+		if (!line.trim()) continue;
+		try {
+			const entry = JSON.parse(line) as MissedPeriod;
+			if (typeof entry.period === 'string') found.set(entry.period, { ...found.get(entry.period), ...entry });
+		} catch {
+			// A torn line.
+		}
+	}
+	return [...found.values()].sort((a, b) => a.from - b.from);
+}
+
 /** Whether the file's last line has no line end: what a crash in the middle of an append leaves. */
 function endsTorn(file: string): boolean {
 	let fd: number;
@@ -310,19 +348,28 @@ export function createAutomation(options: {
 	dir: string;
 	now(): number;
 	home?: string;
+	/** How often the scheduler checks; a minute unless a test wants it faster. */
+	tickMs?: number;
 	/** Every change, and every turn of a state as time passes, goes to the open pages. */
 	publish(snapshot: AutomationSnapshot): void;
+	/** Runs that ended and periods found missed, for red cards and pushes. */
+	notify?(event: AutomationEvent): void;
 }): Automation {
 	const { dir, now } = options;
 	const home = options.home ?? homedir();
 	const runsDir = join(dir, 'runs');
 	const outputDir = join(dir, 'output');
-	mkdirSync(runsDir, { recursive: true, mode: 0o700 });
-	mkdirSync(outputDir, { recursive: true, mode: 0o700 });
+	const missedDir = join(dir, 'missed');
+	/** When the scheduler last checked: periods that ended after it and by now are looked at for missed. */
+	const checkedFile = join(dir, 'checked-at.txt');
+	for (const folder of [runsDir, outputDir, missedDir]) mkdirSync(folder, { recursive: true, mode: 0o700 });
 
 	const tasks = new Map<string, AutomationTask>();
 	let broken: BrokenTask[] = [];
 	const runs = new Map<string, AutomationRun[]>();
+	const missed = new Map<string, MissedPeriod[]>();
+	/** How to stop each run going now, by run: what the scheduler does past the limit. */
+	const stoppers = new Map<string, () => void>();
 	/** Children running now, by task. */
 	const children = new Map<string, Promise<void>>();
 	/** Their process groups: a command ends with the board, as the spec has it. */
@@ -342,6 +389,7 @@ export function createAutomation(options: {
 	let lastSent = '';
 
 	const runsFile = (taskId: string) => join(runsDir, `${taskId}.jsonl`);
+	const missedFile = (taskId: string) => join(missedDir, `${taskId}.jsonl`);
 	const taskFile = (taskId: string) => join(dir, `${taskId}.json`);
 
 	function load(): void {
@@ -359,6 +407,7 @@ export function createAutomation(options: {
 			else {
 				tasks.set(task.id, task);
 				runs.set(task.id, readRuns(runsFile(task.id)));
+				missed.set(task.id, readMissed(missedFile(task.id)));
 			}
 		}
 	}
@@ -377,16 +426,25 @@ export function createAutomation(options: {
 		return merged;
 	}
 
+	/** A missed period's line: a line per change, merged by period, as the run records are. */
+	function recordMissed(taskId: string, entry: MissedPeriod): void {
+		const file = missedFile(taskId);
+		appendFileSync(file, (endsTorn(file) ? '\n' : '') + JSON.stringify(entry) + '\n', { mode: 0o600 });
+		const list = (missed.get(taskId) ?? []).filter((other) => other.period !== entry.period);
+		missed.set(taskId, [...list, entry].sort((a, b) => a.from - b.from));
+	}
+
 	function snapshot(): AutomationSnapshot {
 		const at = now();
 		return {
 			revision,
-			timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+			timeZone: TIME_ZONE,
 			tasks: [...tasks.values()]
 				.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 				.map((task) => {
 					const own = runs.get(task.id) ?? [];
-					return { task, state: taskState(task, own, at), nextAt: nextAutoAt(task, own, at), runs: own.slice(0, RUNS_SHOWN) };
+					const gone = missed.get(task.id) ?? [];
+					return { task, state: taskState(task, own, at, gone), nextAt: nextAutoAt(task, own, at), runs: own.slice(0, RUNS_SHOWN), missed: openMissed(gone, own) };
 				}),
 			broken
 		};
@@ -414,8 +472,6 @@ export function createAutomation(options: {
 		}
 	}
 	lastSent = JSON.stringify({ ...snapshot(), revision: 0 });
-	const ticker = setInterval(() => publish(false), TICK_MS);
-	ticker.unref?.();
 
 	function save(task: AutomationTask): void {
 		writeAtomic(taskFile(task.id), JSON.stringify(task, null, '\t') + '\n');
@@ -440,16 +496,18 @@ export function createAutomation(options: {
 					// Already gone.
 				}
 			};
-			const limit = setTimeout(() => {
+			// Past the limit, counted from the run's start by the scheduler's clock.
+			stoppers.set(run.id, () => {
+				stoppers.delete(run.id);
 				timedOut = true;
 				signal('SIGTERM');
 				setTimeout(() => signal('SIGKILL'), KILL_GRACE_MS).unref?.();
-			}, task.limitMinutes * 60_000);
+			});
 			let ended = false;
 			const end = (code: number | null, error?: Error) => {
 				if (ended) return;
 				ended = true;
-				clearTimeout(limit);
+				stoppers.delete(run.id);
 				const kept = output.end(error ? `\n${error.message}` : '');
 				try {
 					writeAtomic(join(dir, outputName), kept.text);
@@ -458,7 +516,7 @@ export function createAutomation(options: {
 				}
 				const checks = runChecks(spec.checks, folder, kept.has);
 				const status = timedOut ? 'timeout' : code === 0 && checks.every((check) => check.ok) && !error ? 'success' : 'failed';
-				record(run, {
+				const finished = record(run, {
 					endedAt: now(),
 					status,
 					exitCode: code,
@@ -468,6 +526,7 @@ export function createAutomation(options: {
 					...(timedOut ? { reason: `超過上限 ${task.limitMinutes} 分鐘，已停止` } : error ? { reason: `指令沒有啟動：${error.message}` } : {})
 				});
 				publish();
+				options.notify?.({ type: 'run-ended', task, run: finished });
 				done();
 			};
 			child.on('error', (error) => end(null, error));
@@ -498,7 +557,7 @@ export function createAutomation(options: {
 			};
 			child.on('close', (code) => {
 				// The command itself has ended: the limit no longer applies to the cleanup after it.
-				clearTimeout(limit);
+				stoppers.delete(run.id);
 				void endLeftovers().then(() => {
 					groups.delete(child.pid!);
 					end(code);
@@ -510,6 +569,93 @@ export function createAutomation(options: {
 			}
 		});
 	}
+
+	/** Which tasks the board can run yet: agent tasks come with their own runner. Tasks it cannot run
+	 *  are neither started by the schedule nor counted as missed. */
+	const runnable = (task: AutomationTask) => task.kind === 'command' && task.command !== undefined;
+	const busy = (taskId: string) => children.has(taskId) || (runs.get(taskId) ?? []).some((run) => run.status === 'running');
+
+	/** Start a run now and record it; a folder gone since saving is a settings error, not a crash. */
+	function start(task: AutomationTask, trigger: RunTrigger): AutomationRun {
+		const at = now();
+		const base: AutomationRun = { id: `${at.toString(36)}-${newId()}`, taskId: task.id, trigger, period: periodOf(task.schedule, at), startedAt: at, status: 'running' };
+		const spec = task.command!;
+		if (!isDirectory(expandHome(spec.folder, home))) {
+			const run = record(base, { ...base, endedAt: at, status: 'config-error', reason: `找不到工作資料夾：${spec.folder}` });
+			options.notify?.({ type: 'run-ended', task, run });
+			return run;
+		}
+		const run = record(base);
+		const child = execute(task, run, spec).finally(() => children.delete(task.id));
+		children.set(task.id, child);
+		return run;
+	}
+
+	function readChecked(): number | null {
+		try {
+			const time = Date.parse(readFileSync(checkedFile, 'utf8').trim());
+			return Number.isNaN(time) ? null : time;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Record the periods of one task whose window ended after `after` and by `at` with no run at all. */
+	function findMissed(task: AutomationTask, after: number, at: number): MissedPeriod[] {
+		const own = runs.get(task.id) ?? [];
+		const known = new Set((missed.get(task.id) ?? []).map((entry) => entry.period));
+		const found: MissedPeriod[] = [];
+		for (const window of endedWindows(task.schedule, Math.max(after, Date.parse(task.createdAt) || after), at)) {
+			if (known.has(window.period)) continue;
+			// Any run of the period, whatever it ended in, means the board was there for it.
+			if (own.some((run) => run.period === window.period && (run.trigger === 'auto' || run.trigger === 'manual' || succeeded(run)))) continue;
+			const entry: MissedPeriod = { ...window, recordedAt: at };
+			recordMissed(task.id, entry);
+			found.push(entry);
+		}
+		return found;
+	}
+
+	/** One check: stop runs past their limit, record missed periods, start the tries that are due. On
+	 *  the first check after the board started a try due today starts at once, not at the set time. */
+	function check(first: boolean): void {
+		if (closed) return;
+		const at = now();
+		let changed = false;
+		for (const list of runs.values()) {
+			for (const run of list) {
+				const task = tasks.get(run.taskId);
+				if (run.status === 'running' && task && at - run.startedAt >= task.limitMinutes * 60_000) stoppers.get(run.id)?.();
+			}
+		}
+		const checked = readChecked();
+		if (checked !== null && checked < at) {
+			for (const task of tasks.values()) {
+				if (task.paused || !runnable(task)) continue;
+				const found = findMissed(task, checked, at);
+				if (!found.length) continue;
+				changed = true;
+				options.notify?.({ type: 'missed', task, periods: found });
+			}
+		}
+		// Kept even when the clock went back, so periods are never looked at from a time not yet come.
+		if (checked !== at) writeAtomic(checkedFile, new Date(at).toISOString() + '\n');
+		for (const task of tasks.values()) {
+			if (!runnable(task)) continue;
+			const due = dueToday(task, runs.get(task.id) ?? [], at);
+			if (due === null || (!first && at < due)) continue;
+			changed = true;
+			if (busy(task.id)) {
+				record({ id: `${at.toString(36)}-${newId()}`, taskId: task.id, trigger: 'auto', period: periodOf(task.schedule, at), startedAt: at, endedAt: at, status: 'skipped', reason: '上一次還在跑' });
+			} else start(task, 'auto');
+		}
+		publish(changed);
+	}
+
+	const ticker = setInterval(() => check(false), options.tickMs ?? 60_000);
+	ticker.unref?.();
+	// Right after the board starts, once whatever builds on the automation has it.
+	const firstCheck = setTimeout(() => check(true), 0);
 
 	return {
 		snapshot,
@@ -547,24 +693,41 @@ export function createAutomation(options: {
 			if (!task) return { ok: false, status: 404, message: '這個任務已不存在' };
 			const running = (runs.get(id) ?? []).find((run) => run.status === 'running');
 			if (running || children.has(id)) {
-				const since = running ? new Date(running.startedAt).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+				const since = running ? new Date(running.startedAt).toLocaleTimeString('zh-TW', { timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit', hour12: false }) : '';
 				return { ok: false, status: 409, message: `這個任務正在跑${since ? `（${since} 開始）` : ''}，等這次結束再執行` };
 			}
-			if (task.kind !== 'command' || !task.command) return { ok: false, status: 409, message: 'Agent 任務還不能從看板執行' };
-			const at = now();
-			const base: AutomationRun = { id: `${at.toString(36)}-${newId()}`, taskId: id, trigger: 'manual' satisfies RunTrigger, period: periodOf(task.schedule, at), startedAt: at, status: 'running' };
-			const folder = expandHome(task.command.folder, home);
-			if (!isDirectory(folder)) {
-				const run = record(base, { ...base, endedAt: at, status: 'config-error', reason: `找不到工作資料夾：${task.command.folder}` });
-				publish();
-				return { ok: true, run };
-			}
-			const run = record(base);
-			const spec = task.command;
-			const child = execute(task, run, spec).finally(() => children.delete(id));
-			children.set(id, child);
+			if (!runnable(task)) return { ok: false, status: 409, message: 'Agent 任務還不能從看板執行' };
+			const run = start(task, 'manual');
 			publish();
 			return { ok: true, run: (runs.get(id) ?? []).find((entry) => entry.id === run.id) ?? run };
+		},
+		carry(id, marker) {
+			const task = tasks.get(id);
+			if (!task) return { ok: false, status: 404, message: '這個任務已不存在' };
+			const path = text(marker);
+			if (!path) return { ok: false, status: 400, message: '請寫出原本的完成標記路徑（marker）' };
+			const at = now();
+			const run = record({
+				id: `${at.toString(36)}-${newId()}`,
+				taskId: id,
+				trigger: 'carried',
+				period: periodOf(task.schedule, at),
+				startedAt: at,
+				endedAt: at,
+				status: 'success',
+				marker: path,
+				reason: `沿用原紀錄：${path}`
+			});
+			publish();
+			return { ok: true, run };
+		},
+		dismissMissed(id) {
+			if (!tasks.has(id)) return null;
+			const open = openMissed(missed.get(id) ?? [], runs.get(id) ?? []);
+			const at = now();
+			for (const entry of open) recordMissed(id, { ...entry, dismissedAt: at });
+			if (open.length) publish();
+			return open.length;
 		},
 		output(taskId, runId) {
 			if (!ID.test(taskId)) return null;
@@ -582,6 +745,7 @@ export function createAutomation(options: {
 		close() {
 			closed = true;
 			clearInterval(ticker);
+			clearTimeout(firstCheck);
 			process.off('exit', endGroups);
 			endGroups();
 		}

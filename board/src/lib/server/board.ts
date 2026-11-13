@@ -12,6 +12,7 @@ import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, e
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openLog, type SentLog } from './sent-log.ts';
+import { log } from './log.ts';
 import { openSwitches } from './sent-views.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
@@ -248,8 +249,14 @@ function createBoard(): Board {
 	const automation = createAutomation({
 		dir: join(config.stateDir, 'automation'),
 		now: config.now,
+		tickMs: config.automationTickMs,
 		publish: (snapshot) => {
 			for (const stream of streams) stream.send('automation', JSON.stringify(snapshot));
+		},
+		// Red cards and pushes build on these events; until then a missed period is logged, one line per task.
+		notify: (event) => {
+			if (event.type === 'missed')
+				log('WARNING', 'automation', 'automation periods missed', { task_id: event.task.id, periods: event.periods.map((entry) => entry.period), count: event.periods.length });
 		}
 	});
 
