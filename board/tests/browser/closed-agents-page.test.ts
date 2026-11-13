@@ -217,6 +217,7 @@ for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: a row opens the closed agent's page, its conversation paged back like a running one's, and back returns to the list`, async () => {
 		await visit(width);
 		await unfold();
+		const readsBefore = fixture.helperArgs('transcript').length;
 		await openClosed('s-yesterday');
 		expect((await screen()).search).toBe('?agent=s-yesterday');
 		expect(await tab.eval(`document.querySelector('[data-closed="s-yesterday"]').classList.contains('current')`)).toBe(true);
@@ -231,7 +232,9 @@ for (const width of [1280, 390]) {
 		await tab.until(`(document.querySelector('.detail .history')?.innerText ?? '').includes('回覆 59')`, 'the latest page');
 		const shown = () => tab.eval<number>(`document.querySelectorAll('.detail .history .said').length`);
 		expect(await shown()).toBe(50);
-		expect(fixture.helperArgs('transcript').at(-1)).toEqual(['board', 'transcript', '--client=claude', '--session-id=s-yesterday']);
+		// The page asked for the newest part first, without `--before`. Not the last call: the 我的訊息
+		// column, open at this width, reads the older parts of the same conversation at any moment.
+		expect(fixture.helperArgs('transcript').slice(readsBefore).find((args) => args.includes('--session-id=s-yesterday'))).toEqual(['board', 'transcript', '--client=claude', '--session-id=s-yesterday']);
 		await tab.eval(`document.querySelector('.detail .history .earlier')?.click()`);
 		await tab.until(`document.querySelectorAll('.detail .history .said').length === 60`, 'the earlier page');
 		expect(await tab.eval(`document.querySelector('.detail .history').innerText.includes('幫我看一下')`)).toBe(true);
