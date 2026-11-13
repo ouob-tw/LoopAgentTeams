@@ -121,6 +121,8 @@ async function visit(width: number, path = '/?tab=inbox', origin = fixture.url, 
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: origin });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: width < 761 ? 844 : 800, deviceScaleFactor: width < 761 ? 2 : 1, mobile: width < 761 });
+	// A browser away from Taipei: every automation time must still read in Taipei.
+	await tab.send('Emulation.setTimezoneOverride', { timezoneId: 'UTC' });
 	await tab.send('Page.navigate', { url: `${origin}/login` });
 	await tab.until(`document.readyState === 'complete'`, 'a page of the board');
 	await tab.eval(`localStorage.setItem('lat-board-inbox-width', '400')`);
@@ -149,6 +151,9 @@ for (const width of [1280, 390]) {
 		expect(await text(`[data-alert-row="${failedCard.id}"]`)).toContain('客發展覽維護報告：這次執行失敗');
 		expect(await text(`[data-alert-row="${failedCard.id}"]`)).toContain('自動化');
 		expect(await text(`[data-alert-row="${missedCard.id}"]`)).toContain('每天清暫存檔：本期錯過，沒有自動補跑');
+		// Shown in Taipei time (10:41, made at 02:41 UTC), though the server and browser run in UTC.
+		expect(await tab.eval(`Intl.DateTimeFormat().resolvedOptions().timeZone`)).toBe('UTC');
+		expect(await text(`[data-alert-row="${failedCard.id}"] time`)).toBe('10:41:00');
 		expect(await tab.eval<boolean>(FITS)).toBe(true);
 		await bothThemes(`${width}-a1-inbox`);
 

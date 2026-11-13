@@ -1,9 +1,10 @@
 <script lang="ts">
 	// One automation red card in the 待辦 list: a red edge and label, the task with how it ended,
-	// and under it 自動化 and when.
+	// and under it 自動化 and when, in Asia/Taipei like every automation time, whatever the host's zone.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
 	import { ALERT_KIND_TEXT, type AutomationAlert } from '#lib/board/alerts.ts';
+	import { TIME_ZONE } from '#lib/board/automation.ts';
 
 	let { alert, current = false, onopen }: { alert: AutomationAlert; current?: boolean; onopen: (alert: AutomationAlert) => void } = $props();
 
@@ -19,7 +20,7 @@
 	</button>
 	<div class="under">
 		<span>自動化</span>
-		<time datetime={at}>{noticeTime(at, clock.now, clock.timeZone)}</time>
+		<time datetime={at}>{noticeTime(at, clock.now, TIME_ZONE)}</time>
 	</div>
 </div>
 
