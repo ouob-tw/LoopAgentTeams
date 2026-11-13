@@ -6,7 +6,7 @@
 // a card leaves the runs alone; a subscription the service calls gone is removed and the card stays;
 // one device turning pushes off leaves the other; the key and the subscriptions outlive a restart.
 import { createDecipheriv, createECDH, createPublicKey, hkdfSync, verify } from 'node:crypto';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
@@ -269,4 +269,67 @@ test('after a restart the key and the subscriptions still work; one device turni
 	const pushes = pushesSince(from).filter((push) => push.message.alert === card.id);
 	expect(pushes.map((push) => push.path)).toEqual(['/push/phone']);
 	expect(vapidClaims(pushes[0].headers.authorization, key).aud).toBe(ORIGIN);
+});
+
+test('a login past its time gets no pushes, as it gets no pages: its subscription is dropped', async () => {
+	const [phone, laptop] = devices;
+	expect((await send(laptop.cookie, '/api/push/subscription', 'PUT', { endpoint: `${ORIGIN}/push/laptop`, keys: laptop.keys.json })).status).toBe(200);
+	// Eight days on, past a login's idle limit; the phone logs in again and subscribes, the laptop does not come back.
+	fixture.setClock(tpe(2026, 11, 25, 12));
+	expect((await fixture.fetch('/api/push', { cookie: laptop.cookie })).status).toBe(401);
+	phone.cookie = await fixture.login(phone.path);
+	expect((await send(phone.cookie, '/api/push/subscription', 'PUT', { endpoint: `${ORIGIN}/push/phone`, keys: phone.keys.json })).status).toBe(200);
+	const from = received.length;
+	const task = await create(command('過期之後失敗', 'exit 4'));
+	await send(phone.cookie, `/api/automation/${task.id}/run`, 'POST');
+	const card = await eventually(async () => (await alerts()).find((alert) => alert.taskId === task.id && alert.pushed), 'the card pushed');
+	expect(card.pushed!.devices).toBe(1);
+	expect(received.slice(from).map((entry) => entry.path)).toEqual(['/push/phone']);
+});
+
+/** Run a failing task now; the paths its card's push went to. */
+async function failAndPush(name: string): Promise<string[]> {
+	const from = received.length;
+	const task = await create(command(name, 'exit 5'));
+	await send(devices[0].cookie, `/api/automation/${task.id}/run`, 'POST');
+	await eventually(async () => (await alerts()).find((alert) => alert.taskId === task.id && alert.pushed), `the card of ${name} pushed`);
+	return received.slice(from).map((entry) => entry.path).sort();
+}
+
+test('a test login gets pushes only until its time ends, and cannot subscribe itself', async () => {
+	const issued = fixture.cli('test-login', '--url', fixture.url, '--label', 'qa', '--hours', '1');
+	expect(issued.code).toBe(0);
+	const id = issued.stdout.match(/裝置 ([0-9a-f]{8})/)![1];
+	const code = issued.stdout.match(new RegExp(`${fixture.url}/login/test#(\\S+)`))![1];
+	const redeemed = await fixture.fetch('/api/login/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
+	expect(redeemed.status).toBe(200);
+	const qa = redeemed.headers.getSetCookie()[0].split(';')[0];
+	const keys = deviceKeys();
+	expect((await send(qa, '/api/push/subscription', 'PUT', { endpoint: `${ORIGIN}/push/qa`, keys: keys.json })).status).toBe(403);
+	// One kept from before, as if made some other way.
+	await fixture.stop();
+	const file = join(fixture.dir, 'board-state', 'push', 'subscriptions.json');
+	writeFileSync(file, JSON.stringify([...JSON.parse(readFileSync(file, 'utf8')), { deviceId: id, endpoint: `${ORIGIN}/push/qa`, keys: keys.json, createdAt: new Date().toISOString() }]));
+	await fixture.start();
+	devices.push({ cookie: qa, keys, path: '/push/qa' });
+	expect(await failAndPush('測試登入期間內')).toContain('/push/qa');
+	fixture.setClock(tpe(2026, 11, 25, 14));
+	expect(await failAndPush('測試登入過期後')).not.toContain('/push/qa');
+	expect(JSON.parse(readFileSync(file, 'utf8')).some((entry: { deviceId: string }) => entry.deviceId === id)).toBe(false);
+});
+
+test('a login past its 30 days gets no pushes, however often it was used', async () => {
+	const month = { cookie: await fixture.login('/push/month'), keys: deviceKeys(), path: '/push/month' };
+	devices.push(month);
+	expect((await send(month.cookie, '/api/push/subscription', 'PUT', { endpoint: `${ORIGIN}${month.path}`, keys: month.keys.json })).status).toBe(200);
+	// Used every 5 days, never idle for 7: the phone too, which the helpers read with.
+	for (let day = 5; day <= 25; day += 5) {
+		fixture.setClock(tpe(2026, 11, 25, 14) + day * 86_400_000);
+		for (const device of [devices[0], month]) expect((await fixture.fetch('/api/push', { cookie: device.cookie })).status).toBe(200);
+	}
+	expect(await failAndPush('第 25 天')).toContain('/push/month');
+	fixture.setClock(tpe(2026, 11, 25, 14) + 31 * 86_400_000);
+	expect((await fixture.fetch('/api/push', { cookie: month.cookie })).status).toBe(401);
+	devices[0].cookie = await fixture.login(devices[0].path);
+	expect(await failAndPush('第 31 天')).not.toContain('/push/month');
 });

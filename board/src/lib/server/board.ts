@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { ArchivePage } from '../board/archive.ts';
 import type { BoardSnapshot, HelperController, InboxQuestion } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
-import { DEVICES_FILE, findDevice, listDevices } from './devices.ts';
+import { DEVICES_FILE, findDevice, findDeviceById } from './devices.ts';
 import { listControllers, pruneReports, readAnswered, readLedgers, readQuestions, readUnattended, type AnsweredFile } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, ledgerSources, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
@@ -265,7 +265,8 @@ function createBoard(): Board {
 		dir: join(config.stateDir, 'push'),
 		now: config.now,
 		subject: config.passkeySite?.origin ?? null,
-		deviceKnown: (deviceId) => listDevices(config.stateDir).some((device) => device.id === deviceId),
+		// Logged in now, by the same rule as a request: a login past its time gets no pushes either.
+		deviceKnown: (deviceId) => findDeviceById(config.stateDir, deviceId, config.now()) !== null,
 		testOrigin: config.pushTestOrigin
 	});
 	/** A red card made or added to: every subscribed device hears of it; a push that fails leaves the card as it is. */
