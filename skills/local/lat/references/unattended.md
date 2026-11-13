@@ -39,6 +39,16 @@ uv run --no-project python <lat 技能>/scripts/lat-unattended.py check --versio
 - `versions`：本輪每一版的內容與生效期間。
 - `check`：某一版在某個時間是否生效（預設現在、本輪），生效時結束碼 0，否則 1。回合結束檢查用同樣的判斷核對代決紀錄引用的版本。
 
+## 草稿
+
+```bash
+lat-unattended.py draft --goal '<目標>' --done '<條件一>' [--done '<條件二>' …]
+```
+
+主控從使用者的話擬出的目標與做完條件先存成草稿；看板的「開啟無人模式」表單從它預填。草稿不是授權，`status` 的狀態不因它改變，`status --json` 以 `draft` 顯示。再寫一次會取代前一份。
+
+看板的設定頁另用 `settings [--project <資料夾>]…` 讀全域與各專案的 `[unattended]`，用 `settings-write` 寫入；寫入會蓋上 `board:<時間>` 並記進看板寫入紀錄，就是 `settings-default` 引用的那一筆。
+
 ## 建立、修改、關閉
 
 ```bash
@@ -54,7 +64,7 @@ lat-unattended.py close --reason <off|quota|delivered|cancelled|handover>
 - 證據：
   - `chat`：使用者答過的面板題 `<待決 ID> r<版本>`，紀錄須是 answered／approved，且有那一版的 `## 答覆` 段與 `- 來源：` 行。
   - `settings-default`：看板寫入設定的紀錄（`board:<時間>`），須是目前模式所在那層最後一次把 `mode` 寫成 `unattended` 的那筆；只能寫本輪第 1 版，`--scope` 與 `--max-hours` 必須和 `status` 顯示的設定值相同，版本會註明「目標由主控擬出」。模式來自主控層時不能用。
-  - `board-form`、`user-edit`：看板動作紀錄；看板送出前自己核對登入裝置。
+  - `board-form`、`user-edit`：看板動作紀錄 `board-action:<ID>`，指向看板在登入裝置送出表單時寫進 `sent-log.jsonl` 的那一筆；須是同一個主控、同一種動作（建立或修改）、內容與這一版相同、10 分鐘內，而且沒被別的版本引用過，否則拒絕且不寫檔。
 - `board-form` 與 `chat` 建立時把主控層的模式設為無人模式。
 - `update` 產生新版本並立即生效；沒給的欄位沿用目前版本，舊版本保留並記下結束時間。新的時間上限若已經過了就拒絕。
 - `close`：`off` 是使用者關掉，主控層模式同時改回人工確認；`quota` 是額度用完；`delivered`、`cancelled`、`handover` 由 deactivate 依交付、`--force-unfinished`、`--successor` 自動帶入。

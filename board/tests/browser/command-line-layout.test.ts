@@ -172,13 +172,14 @@ for (const width of [360, 390]) {
 	});
 }
 
-// A controller at work that Herdr does not list: no wake and no permission, so nothing to open.
+// A controller at work that Herdr does not list: no wake and no permission, so the options hold
+// only its unattended mode, which is LAT's, not Herdr's.
 for (const width of [1280, 390]) {
-	test.skipIf(!CHROME)(`${width}px: a controller Herdr does not list, not woken, has nothing behind the options button`, async () => {
+	test.skipIf(!CHROME)(`${width}px: a controller Herdr does not list, not woken, has only its unattended mode behind the options button`, async () => {
 		const at = await visit(width);
-		if (width > 760) expect(await tab().eval(`document.querySelector('.cmd .options').disabled`)).toBe(true);
-		else expect(at.options).toBeNull();
+		expect(at.options).not.toBeNull();
+		await tab().until(`!!document.querySelector('.cmd .popup') || (document.querySelector('.cmd .options').click(), false)`, 'the options');
+		expect(await tab().eval(`[...document.querySelectorAll('.cmd .popup > section')].map((part) => part.getAttribute('aria-label')).join()`)).toBe('無人模式');
 		await tab().eval(`document.querySelector('.cmd .options').click()`);
-		expect(await tab().eval(`!!document.querySelector('.cmd .popup')`)).toBe(false);
 	});
 }

@@ -24,6 +24,7 @@ function controller(hcomName: string, status: ControllerStatus, lastReportAt: st
 		lastReportAt,
 		duty: null,
 		ledger: { state: 'none' },
+		unattended: { state: 'unknown' },
 		error: null
 	};
 }

@@ -1,0 +1,8 @@
+{"map": [
+  {"paths": ["skills/local/lat/scripts/lat-unattended.py", "skills/local/lat/herdr-panel/lat_panel.py", "skills/local/lat/herdr-panel/board.py", "board/src/lib/server/helper.ts", "board/tests/fake-helper.mjs"],
+   "tests": ["board/tests/server/unattended.test.ts", "board/tests/browser/unattended-page.test.ts"]},
+  {"paths": ["board/src/lib/board/unattended.ts", "board/src/lib/board/unattended-ui.svelte.ts", "board/src/lib/server/unattended.ts", "board/src/routes/api/unattended/**", "board/src/lib/server/sent-log.ts", "board/src/lib/server/board.ts", "board/src/lib/server/model.ts"],
+   "tests": ["board/tests/server/unattended.test.ts", "board/tests/browser/unattended-page.test.ts"]},
+  {"paths": ["board/src/lib/components/Unattended*.svelte", "board/src/lib/components/Settings.svelte", "board/src/lib/components/CommandLine.svelte", "board/src/lib/components/ControllerHeader.svelte", "board/src/lib/components/RosterCard.svelte"],
+   "tests": ["board/tests/browser/unattended-page.test.ts"]}
+]}

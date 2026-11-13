@@ -131,10 +131,11 @@ LOAD_MESSAGE = ('Blocked: this generates CPU load on every core ({where}). Other
                 'services share this host. Pin the load to at most {cores} cores, for example '
                 '`taskset -c 0-{last} <command>` (child processes inherit the limit, so wrapping '
                 'the script that starts the load is enough), or '
-                '`systemd-run --user --scope -p AllowedCPUs=0-{last} <command>`.')
+                '`systemd-run --user --scope --slice=lat-tests.slice -p CPUQuota={quota}% <command>` '
+                '(AllowedCPUs only works where cpuset is delegated to the user manager; here it does not).')
 TEST_MESSAGE = ('Blocked: this runs tests without a memory limit and a timeout. A runaway test can '
                 'take all the memory of this shared host. Run it as `systemd-run --user --scope -q '
-                '-p MemoryMax={limit} -p MemorySwapMax=0 -p OOMPolicy=continue timeout <seconds> '
+                '--slice=lat-tests.slice -p MemoryMax={limit} -p MemorySwapMax=0 -p OOMPolicy=continue timeout <seconds> '
                 '<test command>`; only the test is killed if it goes over.')
 HEREDOC_MESSAGE = ('Blocked: the heredoc <<{name} is unquoted and its body contains {what}, so the '
                    'shell runs that as a command while writing the text. Quote the delimiter '
@@ -830,7 +831,7 @@ def cmd_hook():
     where = load_problem(command, cwd if os.path.isdir(cwd) else os.getcwd(), config['cores'])
     if where:
         cores = config['cores']
-        print(LOAD_MESSAGE.format(where=where, cores=cores, last=cores - 1), file=sys.stderr)
+        print(LOAD_MESSAGE.format(where=where, cores=cores, last=cores - 1, quota=cores * 100), file=sys.stderr)
         return 2
     return 0
 

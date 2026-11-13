@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import queue
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -52,6 +53,7 @@ from bindings import (
 from _lat_common import run_cli
 
 LEDGER_TOOL = Path(__file__).resolve().parents[1] / "scripts/lat-ledger.py"
+UNATTENDED_TOOL = Path(__file__).resolve().parents[1] / "scripts/lat-unattended.py"
 # A read waits for a ledger's writer, which may hold its lock while checking evidence. Each read
 # and the whole batch stay inside the time the board gives the helper, so one held ledger fails
 # alone instead of taking the others with it.
@@ -273,6 +275,14 @@ def board_ledgers(controllers, seconds=LEDGERS_SECONDS):
     Returns after ``seconds`` at most: a read not done by then is an error. The workers are
     daemon threads, so one still stuck does not keep the helper from exiting.
     """
+    results = _side_by_side(controllers, board_ledger, seconds)
+    return [result or {"session_id": session_id, "status": "error", "reason": _TIME_UP}
+            for result, (_, session_id) in zip(results, controllers)]
+
+
+def _side_by_side(controllers, read, seconds):
+    """``read(workspace, session ID, deadline=…)`` of each controller on up to 8 daemon threads;
+    None for a read not done within ``seconds``, so one stuck read does not keep the helper."""
     deadline = time.monotonic() + seconds
     results = [None] * len(controllers)
     pending = queue.SimpleQueue()
@@ -285,15 +295,50 @@ def board_ledgers(controllers, seconds=LEDGERS_SECONDS):
                 index = pending.get_nowait()
             except queue.Empty:
                 return
-            results[index] = board_ledger(*controllers[index], deadline=deadline)
+            results[index] = read(*controllers[index], deadline=deadline)
 
     workers = [threading.Thread(target=work, daemon=True) for _ in range(min(8, len(controllers)))]
     for worker in workers:
         worker.start()
     for worker in workers:
         worker.join(max(0, deadline - time.monotonic()))
+    return list(results)
+
+
+def unattended_tool(args, *, timeout):
+    """Run ``lat-unattended.py <args> --json``: its one JSON object, also on a refusal; an error
+    it could not print as JSON becomes ``status: error`` with its message."""
+    command = [sys.executable, str(UNATTENDED_TOOL), *args, "--json"]
+    try:
+        result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "reason": f"lat-unattended 逾時（{timeout:.0f} 秒）"}
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("status"), str):
+        return payload
+    reason = result.stderr.strip().splitlines()[-1:] or [f"lat-unattended 結束碼 {result.returncode}"]
+    return {"status": "error", "reason": reason[0]}
+
+
+def board_unattended(controllers, seconds=LEDGERS_SECONDS):
+    """``lat-unattended status`` of each (workspace, session ID), read side by side: its mode, the
+    layer it comes from, the grant in effect, the draft, and the files to watch."""
+    def read(workspace, session_id, *, deadline):
+        left = min(LEDGER_READ_SECONDS, deadline - time.monotonic())
+        if not _SESSION_ID.fullmatch(session_id):
+            return {"session_id": session_id, "status": "error", "reason": f"不是 session ID：{session_id}"}
+        if left <= 0:
+            return {"session_id": session_id, "status": "error", "reason": _TIME_UP}
+        result = unattended_tool(["status", f"--workspace={workspace}", f"--session-id={session_id}"],
+                                 timeout=left)
+        return {**result, "session_id": session_id}
+
+    results = _side_by_side(controllers, read, seconds)
     return [result or {"session_id": session_id, "status": "error", "reason": _TIME_UP}
-            for result, (_, session_id) in zip(list(results), controllers)]
+            for result, (_, session_id) in zip(results, controllers)]
 
 
 def board_ledger(workspace, session_id, *, deadline=None):

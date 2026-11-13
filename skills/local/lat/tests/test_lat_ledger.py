@@ -1,6 +1,6 @@
 """CLI contract tests for lat-ledger.py: subprocess, a real temp Git repo, fake gate records."""
 import contextlib
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import io
@@ -2264,10 +2264,24 @@ class ParkTests(LedgerCase):
                                 env=environment, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def board_request(self):
+        """The line the board writes to its action log when a device sends the grant form;
+        the grant's board-form evidence must match it."""
+        log = self.root / 'board-state' / 'sent-log.jsonl'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        entry = {'kind': 'unattended-request', 'id': 'park-fixture-1', 'op': 'create',
+                 'controllerId': self.SESSION, 'time': datetime.now(timezone.utc).isoformat(),
+                 'goal': 'finish the round', 'done': ['tickets merged'],
+                 'scope': {'ticket_confirmation': True, 'assume_defaults': False,
+                           'prototype_decide': False}, 'maxHours': 6}
+        with log.open('a') as stream:
+            stream.write(json.dumps(entry) + '\n')
+        return 'board-action:park-fixture-1'
+
     def grant(self):
         self.unattended('create', '--goal', 'finish the round', '--done', 'tickets merged',
                         '--scope', 'ticket-confirmation', '--max-hours', '6',
-                        '--source', 'board-form', '--evidence', 'board-action-1')
+                        '--source', 'board-form', '--evidence', self.board_request())
 
     def run_ledger(self, *args, **kwargs):
         env = {'HOME': str(self.root / 'home'), 'XDG_STATE_HOME': str(self.root / 'state'),
@@ -2280,16 +2294,16 @@ class ParkTests(LedgerCase):
     def test_park_needs_a_valid_unattended_grant_and_a_reason(self):
         row = self.started()
         before = self.ledger.read_bytes()
-        error = self.fails('park', str(row), '--reason', 'stuck')
+        error = self.fails('park', str(row), '--cause', 'review-stuck', '--reason', 'stuck')
         self.assertIn('ask the user', error)
         self.grant()
-        self.assertIn('--reason', self.fails('park', str(row), '--reason', ' '))
+        self.assertIn('--reason', self.fails('park', str(row), '--cause', 'review-stuck', '--reason', ' '))
         self.assertEqual(self.ledger.read_bytes(), before)
-        self.ok('park', str(row), '--reason', 'stuck')
+        self.park_stuck(row, 'stuck')
         self.assertEqual(self.item(row)['status'], 'parked')
         self.ok('unpark', str(row), '--reason', 'user replied')
         self.unattended('close', '--reason', 'off')
-        self.assertIn('ask the user', self.fails('park', str(row), '--reason', 'stuck again'))
+        self.assertIn('ask the user', self.fails('park', str(row), '--cause', 'review-stuck', '--reason', 'stuck again'))
         self.assertEqual(self.item(row)['status'], 'in_progress')
 
     def test_a_ledger_that_is_not_this_rounds_cannot_park(self):
@@ -2299,22 +2313,22 @@ class ParkTests(LedgerCase):
             self.ledger = self.ledger.with_name(name)
             self.init()
             self.add()
-            self.assertIn('ask the user', self.fails('park', '1', '--reason', 'stuck'), name)
+            self.assertIn('ask the user', self.fails('park', '1', '--cause', 'review-stuck', '--reason', 'stuck'), name)
         self.assertEqual(self.item(1)['status'], 'unassigned')
         self.assertEqual(row, 1)
 
     def test_only_the_orchestrator_parks_and_unparks(self):
         self.grant()
         row = self.started()
-        self.assertIn('orchestrator', self.fails('park', str(row), '--reason', 'x', by='impl'))
-        self.ok('park', str(row), '--reason', 'x')
+        self.assertIn('orchestrator', self.fails('park', str(row), '--cause', 'review-stuck', '--reason', 'x', by='impl'))
+        self.park_stuck(row, 'x')
         self.assertIn('orchestrator', self.fails('unpark', str(row), '--reason', 'x', by='impl'))
 
     def test_parked_row_shows_reason_keeps_history_and_check_lists_it_without_failing(self):
         self.grant()
         row = self.started()
         self.exempt_qa()
-        self.ok('park', str(row), '--reason', 'reopened twice after the final version')
+        self.park_stuck(row, 'reopened twice after the final version')
         item = self.item(row)
         self.assertEqual((item['status'], item['parked_from'], item['parked_reason']),
                          ('parked', 'in_progress', 'reopened twice after the final version'))
@@ -2341,7 +2355,7 @@ class ParkTests(LedgerCase):
         other = self.started(ticket='#4')
         done_row = self.add('--depends', str(root), evidence='file', ticket='#5')
         self.ok('cancel', str(done_row), '--reason', 'not needed')
-        self.ok('park', str(root), '--reason', 'cannot go on')
+        self.park_stuck(root, 'cannot go on')
         for dependent, cause in ((child, root), (grandchild, child)):
             item = self.item(dependent)
             self.assertEqual((item['status'], item['parked_cause'], item['parked_from']),
@@ -2369,8 +2383,8 @@ class ParkTests(LedgerCase):
         child = self.add('--depends', str(root), ticket='#2')
         blocked = self.started(ticket='#3')
         self.ok('block', str(blocked), '--reason', 'waits', by='impl')
-        self.ok('park', str(blocked), '--reason', 'no way forward')
-        self.ok('park', str(root), '--reason', 'cannot go on')
+        self.park_stuck(blocked, 'no way forward')
+        self.park_stuck(root, 'cannot go on')
         self.assertIn(f'unpark item {root}', self.fails('unpark', str(child), '--reason', 'x'))
         self.unattended('close', '--reason', 'off')  # releasing needs no grant
         self.assertIn('also', self.ok('unpark', str(root), '--reason', 'user decided'))
@@ -2390,8 +2404,8 @@ class ParkTests(LedgerCase):
         self.grant()
         first, second = self.add(ticket='#1'), self.add(ticket='#2')
         shared = self.add('--depends', f'{first},{second}', ticket='#3')
-        self.ok('park', str(first), '--reason', 'a')
-        self.ok('park', str(second), '--reason', 'b')
+        self.park_stuck(first, 'a')
+        self.park_stuck(second, 'b')
         self.ok('unpark', str(first), '--reason', 'user decided')
         self.assertEqual(self.item(shared)['status'], 'parked')
         self.assertEqual(self.item(shared)['parked_cause'], second)
@@ -2405,7 +2419,7 @@ class ParkTests(LedgerCase):
         root = self.add(ticket='#1')
         late, descendant = self.add(ticket='#2'), None
         descendant = self.add('--depends', str(late), ticket='#3')
-        self.ok('park', str(root), '--reason', 'cannot go on')
+        self.park_stuck(root, 'cannot go on')
         self.ok('update', str(late), '--depends', str(root), '--reason', 'now needs #1')
         for row in (late, descendant):
             self.assertEqual((self.item(row)['status'], self.item(row)['parked_cause']),
@@ -2420,7 +2434,7 @@ class ParkTests(LedgerCase):
         stuck = self.started(ticket='#1')
         self.started(ticket='#1')
         self.now = '2026-10-24T10:30:00Z'
-        self.ok('park', str(stuck), '--reason', 'cannot go on')
+        self.park_stuck(stuck, 'cannot go on')
         self.now = '2026-10-24T12:00:00Z'
         ticket = self.shown()['tickets'][0]
         self.assertEqual(ticket['state'], 'parked')
@@ -2429,31 +2443,132 @@ class ParkTests(LedgerCase):
         impl = next(entry for entry in ticket['times'] if entry['key'] == 'impl')
         self.assertEqual((impl['minutes'], impl['running']), (30, False))
 
-    def test_stuck_review_and_third_spec_round_park_without_touching_acceptance(self):
+    def review(self, row, *findings, final=True):
+        flags = ['--final'] if final else []
+        self.ok('review-result', '--row', str(row), '--reviewer', 'rev', *flags,
+                *(['--finding', *sum((['--finding', f] for f in findings[1:]), [findings[0]])]
+                  if findings else ['--clean']))
+
+    def park_cause(self, row, cause, reason='cannot go on'):
+        return ('park', str(row), '--cause', cause, '--reason', reason)
+
+    def test_review_stuck_needs_two_reopens_then_another_blocking_final_review(self):
         self.grant()
-        cases = [('impl', 'reopened twice after the final version, a level 甲 finding again'),
-                 ('spec-review', 'spec review round 3 still has must-fix items')]
-        for number, (stage, reason) in enumerate(cases, start=1):
+        cases = {'one reopen': (('甲:x',), ('甲:x',)),
+                 'two reopens then only 丙': (('甲:x',), ('乙:y',), ('丙:z',)),
+                 'two reopens then clean': (('甲:x',), ('乙:y',), ())}
+        for number, (name, reviews) in enumerate(cases.items(), start=1):
+            with self.subTest(name):
+                row = self.started(ticket=f'#{number}')
+                for found in reviews:
+                    self.review(row, *found)
+                self.assertIn('not review-stuck', self.fails(*self.park_cause(row, 'review-stuck')))
+                self.assertEqual(self.item(row)['status'], 'in_progress')
+        for number, level in enumerate(('甲', '乙'), start=10):
+            with self.subTest(level=level):
+                row = self.started(ticket=f'#{number}')
+                self.review(row, '甲:a', '丙:b')
+                self.review(row, '乙:c')
+                self.review(row, f'{level}:d')
+                self.ok(*self.park_cause(row, 'review-stuck'))
+                self.assertEqual(self.item(row)['parked_basis'], 'review-stuck')
+
+    def test_review_stuck_counts_only_final_reviews_of_that_row(self):
+        self.grant()
+        row = self.started(ticket='#1')
+        other = self.started(ticket='#2')
+        self.review(row, '甲:a')
+        self.review(row, '甲:b', final=False)
+        self.review(other, '甲:c')
+        self.review(row, '甲:d')
+        self.assertIn('not review-stuck', self.fails(*self.park_cause(row, 'review-stuck')))
+        self.review(row, '乙:e')
+        self.ok(*self.park_cause(row, 'review-stuck'))
+
+    def test_another_ledgers_problem_ids_do_not_count(self):
+        self.grant()
+        row = self.started(ticket='#1')
+        for _ in range(3):  # three final reviews whose findings are only 丙
+            self.review(row, '丙:minor')
+        # A 甲 problem of another ledger's review 1..3 sits in the shared log.
+        log = next(self.workspace.glob('.lat/**/problems*.jsonl'), None)
+        self.assertIsNotNone(log)
+        with log.open('a') as handle:
+            for number in range(1, 4):
+                handle.write(json.dumps({'op': 'record', 'id': f'P9{number}', 'ticket': '#1',
+                                         'stage': 'review', 'level': '甲', 'review': number,
+                                         'row': 99, 'ledger': 'elsewhere.json'}) + '\n')
+        self.assertIn('not review-stuck', self.fails(*self.park_cause(row, 'review-stuck')))
+
+    def test_spec_review_limit_needs_three_rounds_with_must_fix_in_the_third(self):
+        self.grant()
+        cases = {'two rounds': (('甲:a',), ('乙:b',)),
+                 'three rounds passing': (('甲:a',), ('乙:b',), ()),
+                 'three rounds, third only 丙': (('甲:a',), ('甲:b',), ('丙:c',))}
+        for number, (name, rounds) in enumerate(cases.items(), start=1):
+            with self.subTest(name):
+                row = self.add(ticket=f'#{number}', stage='spec-review', evidence='file')
+                for found in rounds:
+                    self.review(row, *found, final=False)
+                self.assertIn('Spec review limit',
+                              self.fails(*self.park_cause(row, 'spec-review-limit')))
+        row = self.add(ticket='#9', stage='spec-review', evidence='file')
+        for found in (('甲:a',), (), ('乙:c',)):
+            self.review(row, *found, final=False)
+        self.ok(*self.park_cause(row, 'spec-review-limit'))
+        self.assertEqual(self.item(row)['parked_basis'], 'spec-review-limit')
+
+    def test_a_cause_must_fit_the_row_and_be_one_of_the_two(self):
+        self.grant()
+        impl = self.started(ticket='#1')
+        spec = self.add(ticket='#2', stage='spec-review', evidence='file')
+        for _ in range(3):
+            self.review(impl, '甲:a')
+            self.review(spec, '甲:a', final=False)
+        self.assertIn('implementation row', self.fails(*self.park_cause(spec, 'review-stuck')))
+        self.assertIn('Spec review row', self.fails(*self.park_cause(impl, 'spec-review-limit')))
+        self.assertIn('--cause', self.fails('park', str(impl), '--reason', 'x'))
+        self.assertIn('invalid choice', self.fails(*self.park_cause(impl, 'because')))
+        self.assertIn('--final is for implementation rows',
+                      self.fails('review-result', '--row', str(spec), '--reviewer', 'rev',
+                                 '--final', '--clean'))
+
+    def test_parking_by_cause_leaves_acceptance_fields_unchanged(self):
+        self.grant()
+        for number, stage in enumerate(('impl', 'spec-review'), start=1):
             with self.subTest(stage=stage):
-                ticket = f'#{number}'
-                row = self.add(ticket=ticket, stage=stage, evidence='file')
+                row = self.add(ticket=f'#{number}', stage=stage, evidence='file')
                 follower = self.add('--depends', str(row), ticket=f'#9{number}')
                 independent = self.add(ticket=f'#8{number}', evidence='file')
                 fixed = {key: self.item(row)[key] for key in
                          ('ticket', 'stage', 'evidence_kinds', 'depends_on')}
                 self.ok('assign', str(row), '--agent', 'impl', '--card',
                         str(self.card(f'card-{row}.md')))
-                self.ok('park', str(row), '--reason', reason)
+                reason = f'{stage} cannot go on'
+                self.park_stuck(row, reason)
                 parked = self.item(row)
                 self.assertEqual({key: parked[key] for key in fixed}, fixed)
                 self.assertEqual((parked['status'], parked['parked_from'], parked['parked_reason']),
                                  ('parked', 'assigned', reason))
                 self.assertEqual(self.item(follower)['status'], 'parked')
+                self.assertIsNone(self.item(follower).get('parked_basis'))
                 self.ok('assign', str(independent), '--agent', 'impl', '--card',
                         str(self.card(f'card-{independent}.md')))
                 self.ok('start', str(independent), '--eta', '+1h', by='impl')
                 self.assertEqual(self.item(independent)['status'], 'in_progress')
                 self.assertIn(reason, self.ok('show', '--rows'))
+                self.ok('unpark', str(row), '--reason', 'user decided')
+                self.assertIsNone(self.item(row).get('parked_basis'))
+
+    def park_stuck(self, row, reason):
+        """Record the review evidence the row's stage needs, then park it with its cause."""
+        if self.item(row)['stage'] == 'spec-review':
+            for _ in range(3):
+                self.review(row, '甲:must fix', final=False)
+            return self.ok(*self.park_cause(row, 'spec-review-limit', reason))
+        for _ in range(3):
+            self.review(row, '甲:reopens')
+        return self.ok(*self.park_cause(row, 'review-stuck', reason))
 
 
 class TinyLaneTests(LedgerCase):

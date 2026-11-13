@@ -108,6 +108,25 @@ bun run board test-login --hours 4 --label qa-498 --url http://<主機>:7100
 
 要改位址或連接埠，改已複製的 `~/.config/systemd/user/lat-board.service` 裡的 `HOST`、`PORT`（改專案裡的範例檔不會生效）；其他設定用同樣方式加一行 `Environment=`，改完 `systemctl --user daemon-reload && systemctl --user restart lat-board`。
 
+### CPU 群組：測試不拖垮看板
+
+主機上測試與看板搶同一份 CPU 時，過載會讓看板逾時。`scripts/install-cpu-slices.sh` 做兩件事，可重複執行：
+
+- 建立使用者層的 `lat-tests.slice`（`CPUWeight=30`、`CPUQuota=2000%`，即全部測試加起來最多 20 核心）。`suite-gate.py` 與 host-guard 建議的 `systemd-run` 指令都用 `--slice=lat-tests.slice` 把測試放進去。
+- 替 `lat-board.service` 加 `~/.config/systemd/user/lat-board.service.d/cpu-weight.conf`（`CPUWeight=500`），搶 CPU 時看板優先。
+
+```bash
+scripts/install-cpu-slices.sh      # 第一次執行會寫出設定檔，之後讀它
+systemctl --user show lat-tests.slice -p CPUWeight -p CPUQuotaPerSecUSec
+systemctl --user show lat-board.service -p CPUWeight
+```
+
+**調整數值**：改 `~/.config/lat-cpu/slices.conf` 的 `TESTS_CPU_WEIGHT`、`TESTS_CPU_QUOTA`、`BOARD_CPU_WEIGHT`，再執行一次腳本。權重只在真的搶 CPU 時才生效；`CPUQuota` 設太低，測試會被節流而變慢，用 `cat /sys/fs/cgroup/user.slice/user-$UID.slice/user@$UID.service/lat.slice/lat-tests.slice/cpu.stat` 看 `nr_throttled`。腳本內的 `daemon-reload` 會讓執行中的看板立刻套用新權重，不必重啟（以 `show` 的結果為準）。（單位名稱裡的 `-` 會讓 systemd 把它放在 `lat.slice` 底下，所以路徑多一層。）
+
+**移除**：`scripts/install-cpu-slices.sh --remove` 刪掉 slice 與看板的設定並重新載入（設定檔保留）。沒有 `lat-tests.slice` 時測試照常執行，只是沒有上限。已在跑的測試會留在原來的限制裡直到結束。環境變數 `SUITE_GATE_SLICE` 可改 suite-gate 使用的群組名稱，設成空字串就不放進任何群組。
+
+套用在主機上的 cgroup 限制需要使用者層 systemd 已委派 `cpu`（`systemctl show user@$UID.service -p DelegateControllers`）。這台主機沒有委派 cpuset，所以 `AllowedCPUs` 不會生效，限核心數請用 `taskset` 或 `CPUQuota`。
+
 用背景服務時，主機上的 `password`、`devices`、`revoke` 仍照「登入」一節手動執行。若你改了狀態目錄（`LAT_BOARD_STATE_DIR`）或其他設定，這些指令與 `inbox`（含部署後印出的那次）要用相同的環境變數，否則改到或讀到另一份資料。
 
 ## 待辦與已處理
@@ -460,6 +479,15 @@ Agent 頁與主控頁的分頁列在「對話紀錄」後面有「終端」（�
 - **設定檔有錯**（包括兩層合併後時段或時區只寫了一個）時兩處都顯示錯誤，所有查詢都會要問，直到手動修好並按「重新載入」；有錯的那個檔案不能修改。「設定」對話框不看專案設定，全域只寫了時段或時區時，提醒專案要補上另一個。
 - **別處改過**：讀取後檔案被改過（另一個分頁或手動編輯），這次修改會被拒絕並改回原值，按「重新載入」再改。
 - **紀錄**：每次寫入都會留紀錄，主控交付回報的「設定寫入」會列出本輪開始以來的看板寫入。紀錄寫不進去時設定會還原，畫面顯示失敗並改回原值。
+
+## 無人模式
+
+無人模式下主控照你給的目標自己把這一輪做完，要你決定的事先擱置，不發題問你。所有讀寫都經 LAT 的無人模式工具（`lat-unattended.py`），規則見技能的 `references/unattended.md`。
+
+- **設定**：「設定」對話框「全局設置」最上面是新主控一開始的模式（人工確認或無人模式）、參謀可以替你決定的三件事與時間上限；下面「各專案」列出看板上有主控的每個專案，可選跟全局、人工確認或無人模式。每按一下就寫入，其他開著的頁面會跟著更新。
+- **開啟**：主控輸入框旁的「選項」選單有「無人模式」段，寫著現在的模式與來自哪一層。按「開啟無人模式…」從右邊（手機從下面）滑出表單，預先填好主控從你第一句話擬的目標與做完條件；目標或做完條件空白時不能送出。按「確認開啟」才生效；按「取消」、點表單外面或按 Esc 都會關掉表單，什麼都不寫，打到一半的內容也不留。
+- **狀態卡**：無人模式時主控頁上方顯示「無人模式（來自全域預設／這個專案／這個主控）」、「關掉」與一行目標；點目標展開完整目標、做完條件、何時停、各層設定與「修改」。「修改」打開同一張表單，送出成為新版本並立即生效。預設就是無人模式而主控還沒擬目標時，顯示「等主控擬目標」，這時還沒有生效的授權。名冊上的主控卡標「無人」。
+- **紀錄**：表單送出、修改與關掉都記在那個主控的「操作紀錄」；送出時看板先把表單內容寫進紀錄，工具核對有這一筆才建立授權。測試用登入不能改這些設定，也不能開關。
 
 ## 版面與外觀
 
