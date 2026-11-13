@@ -165,6 +165,7 @@ test('等你回覆: a running run whose last question is unanswered; the state, 
 	// Answered, it is running again; a run that ended waits on nothing, whatever its record holds.
 	const going = run({ status: 'running', asks: [{ ...asked, answer: '2 張', answeredAt: at(2026, 11, 2, 10, 23), source: '看板' }] });
 	expect(openAsk(going)).toBeUndefined();
+	expect(lastRunText({ ...going, startedAt: at(2026, 11, 2, 10) }, zone, now)).toBe('11/02 10:00 開始，10:23 你已回覆，繼續中');
 	expect(taskState(task(), [going], now)).toBe('running');
 	expect(openAsk(run({ status: 'timeout', asks: [asked] }))).toBeUndefined();
 	expect(taskState(task(), [run({ status: 'timeout', asks: [asked] })], now)).toBe('failed');

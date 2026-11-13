@@ -79,7 +79,7 @@
 	{#if notice}
 		<p class="notice" role="alert">{notice}</p>
 	{/if}
-	<p class="hint">還沒回覆前，Agent 開著等你，不算失敗；超過上限（{limitMinutes} 分鐘，<span class="keep">{at.clock(deadline)} 前要回覆</span>）才算失敗並關掉。</p>
+	<p class="hint">還沒回覆前，Agent 開著等你，不算失敗；超過上限（{limitMinutes} 分鐘，<span class="keep">{at.day(deadline) === at.day(ask.askedAt) ? at.clock(deadline) : at.full(deadline)} 前要回覆</span>）才算失敗並關掉。</p>
 </div>
 
 <style>

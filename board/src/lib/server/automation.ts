@@ -1007,8 +1007,9 @@ export function createAutomation(options: {
 			try {
 				const failed = await options.agents.send(run.sessionId, answerText).catch((error: Error) => error.message);
 				if (failed) return { ok: false, status: 502, message: `回覆沒有送到 Agent：${failed}` };
-				// Answered from its terminal while this was sent: the record keeps that one.
-				const answered = answer(task, run, answerText, ASK_SOURCE.board) ?? latest(run);
+				const answered = answer(task, run, answerText, ASK_SOURCE.board);
+				// The run ended (past its limit, 停止這次) while the answer was on its way: nobody reads it.
+				if (!answered) return { ok: false, status: 409, message: '送出時這次執行已經結束，回覆沒有記下' };
 				return { ok: true, run: answered };
 			} finally {
 				replying.delete(run.id);

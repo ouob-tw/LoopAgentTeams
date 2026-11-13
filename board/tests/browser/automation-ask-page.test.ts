@@ -266,6 +266,7 @@ for (const width of [1280, 390]) {
 		expect(after).toMatch(/你回覆（\d\d:\d\d，看板）：\s*2 張，各 NT\$ 15,000/);
 		expect(await text('.detail .task header')).toContain('▶ 執行中');
 		expect(await tab.eval<string[]>(OVERFLOW)).toEqual([]);
+		if (width > 760) expect(await text(`.automation [data-task="${task.id}"]`)).toMatch(/\d\d:\d\d 你已回覆，繼續中/);
 		await shot(tab, `${width}-ask-5-after`);
 		await shot(tab, `${width}-ask-5b-after-record`, { box: '.detail .run' });
 		await send(`/api/automation/${task.id}/stop`, 'POST');

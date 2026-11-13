@@ -105,7 +105,7 @@ export const ASK_PUSH_CHARS = 40;
 export const pushOf = (alert: AutomationAlert): AlertPush => {
 	if (alert.kind !== 'ask') return { title: alert.taskName, body: alert.summary, alert: alert.id };
 	const first = askFirstLine(alert.question ?? alert.summary);
-	const whole = (alert.question ?? '').trim() === first;
+	const whole = (alert.question ?? first).trim() === first;
 	const body = first.length > ASK_PUSH_CHARS ? `${first.slice(0, ASK_PUSH_CHARS)}…` : whole ? first : `${first}…`;
 	return { title: `${alert.taskName} 等你回覆`, body, alert: alert.id };
 };

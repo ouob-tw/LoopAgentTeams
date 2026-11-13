@@ -502,6 +502,8 @@ export function lastRunText(run: AutomationRun | undefined, timeZone: string, no
 	const at = timeFormat(timeZone);
 	const asked = openAsk(run);
 	if (asked) return `${at.full(run.startedAt)} 開始，${at.clock(asked.askedAt)} 起等你回覆`;
+	const replied = run.status === 'running' ? run.asks?.at(-1)?.answeredAt : undefined;
+	if (replied !== undefined) return `${at.full(run.startedAt)} 開始，${at.clock(replied)} 你已回覆，繼續中`;
 	if (run.status === 'running') return `${at.full(run.startedAt)} 開始，${now === undefined ? '執行中' : `已跑 ${Math.max(0, Math.floor((now - run.startedAt) / 60_000))} 分鐘`}`;
 	const when = at.full(run.endedAt ?? run.startedAt);
 	if (run.status === 'success' && run.review && run.review.status !== 'pass') return `${when} 做完，但${run.review.status === 'checking' ? '還在檢查' : reviewText(run.review)}`;
