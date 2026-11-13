@@ -11,6 +11,8 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" show
 
 - `check` 印一行 `allow <動作> <標的> — basis: …`（每個生效值來自哪一層、哪一段與 `source`）或 `ask <動作> <標的> — reasons: …`；結束碼 `allow` 為 0、`ask` 為 1、工具出錯為 2。`--json` 輸出 `verdict`、`action`、`target`、`basis`、`reasons`，以及與 `reasons` 同順序的 `reason_kinds`，每個原因一個類別：`allow-false`（某層明寫 `allow = false`）、`condition`（不在下方「時段」內，或下方「固定條件」不成立，含沒寫 `target` 或整合分支）、`unset`（沒有任何層寫 `allow` 或 `branches`）、`always-ask`（任何設定都不能預先授權）、`error`（設定讀不出、參數缺漏等 `check` 無法判斷）。參謀免諮詢類別 `exempt preauth-ask` 依這個欄位判斷，見 [參謀](advisors.md)。
 - `deploy-test`、`deploy-prod`、`install-host` 得到 `allow` 時另印 `Next steps:`（`--json` 增加 `next_steps`）：用 `notice --text '<內容>'` 發動作前通知並記下它印的事件編號，再以 `now` 取得 `--started`、執行動作、同樣發動作後通知，最後 `record --kind auto … --notice-before <id> --notice-after <id> --started <time>`。`notice` 沒印編號就是沒送出，不可執行動作，步驟的串接見 [動作前後的步驟](#動作前後的步驟)；沒有其他在線主控時它不發訊息，改印 `none-<n>`，可原樣給 `--notice-before`／`--notice-after`。合併、推送與 `ask` 的輸出不變。
+- `deploy-test`、`deploy-prod` 的專案層寫了 `runbook` 時，不論 `allow` 或 `ask`，判定那行之後都印 `Read first: <runbook>`，下一行列出上次成功部署（同「固定條件」的上一次成功部署）到這一版改到的頂層目錄（`git diff --name-only` 每個路徑的第一段）；沒有可用的部署紀錄時改印無法列出與原因。`--json` 增加 `runbook`：`path`、`changed_dirs`（列不出時為 `null`，另有 `changed_dirs_unknown` 寫原因）。寫部署題前先讀這份文件，選項要寫明採用文件中的哪一種做法。
+- 部署因整套測試被 `ask` 時，判定那行之後另印 `Fix: …`（`--json` 增加 `fixes`），寫出不跑整套的下一步，見「固定條件」。
 - `notice --text '<內容>' [--to <名稱>…]` 代主控以 `@名稱` 發 `--intent inform` 通知，成功時只印這則訊息的 HCOM 事件編號。收件人預設是本專案其他進行中的主控（由 session 紀錄查得；[跨 repo](#主控與動作不在同一個-repo) 時再加上動作所在 repo 的主控），或用 `--to` 點名；只發給 `hcom list --json` 目前還在的（紀錄裡已離線的主控略過並提示；`--to` 點名的不在線就整則不送），不能是自己，不廣播。沒有 `--to` 且沒有其他在線主控時，不發訊息、寫入本輪 `.lat/preauth-records/<session>-r<輪數>-no-recipient.jsonl`（發送者、時間、當時記錄的其他主控都已離線），印 `none-<n>` 並以 0 結束，不需隨便點名無關的 Agent。送出後以發送者、內容完全相同、開始發送之後的時間到 `hcom events` 找出這則訊息；`--to` 的收件人都不在線、HCOM 讀不到、發送失敗、找不到訊息或找到多則相同的，都以非 0 結束並說明原因，不印編號。
 - `show` 印兩層位置與是否生效、合併後的有效設定，以及每個值的出處；專案檔寫了 `[advisor]` 時在該段註明「專案層的 [advisor] 不生效」；設定有錯時列出錯誤。
 - 在要動作的工作區執行（或給 `--workspace`）。`check` 以 `--session-id` 或 client 的 session 環境變數（`CLAUDE_CODE_SESSION_ID`、`CODEX_THREAD_ID`）找本輪工作總表。
@@ -69,7 +71,7 @@ p report --controller-workspace <A>
 | 全域 | `$XDG_CONFIG_HOME/lat/preauth.toml`（預設 `~/.config/lat/`） |
 
 - 逐段落、逐鍵由窄到寬取第一個有寫的值：專案 > 全域。整段沒寫就往上一層找；兩層都沒寫 `allow` 就是 `ask`。專案層可放寬也可收緊。
-- 例外：`target`、`rollback` 只取專案層，`[advisor]` 只取全域層；寫在另一層不生效，但仍會檢查格式。
+- 例外：`target`、`rollback`、`runbook` 只取專案層，`[advisor]` 只取全域層；寫在另一層不生效，但仍會檢查格式。
 - 想只放寬一段時間，就改設定檔，做完再改回來。
 - 任一層讀不出、TOML 格式錯、未知鍵、未知動作、值的型別錯、時段或時區有誤，或寫了永遠要問的類別，每個 `check` 都回 `ask` 並列出錯誤，不會因錯誤而放寬。
 
@@ -93,6 +95,7 @@ timezone = "Asia/Taipei"
 [actions.deploy-test]
 target = "<測試環境說明或位置>"
 rollback = "<退回上一版的方法：一句說明或指令>"
+runbook = "<部署文件位置>"
 
 [advisor]
 extended = true
@@ -102,7 +105,7 @@ source = "<待決紀錄 ID>"
 ```
 
 - 最上層的鍵：`version`（只能是 1）、`integration_branch`（整合分支名稱；本輪工作總表沒寫整合分支時才用，哪一層都可寫，專案層優先）。
-- 動作段 `[actions.<動作>]` 的鍵：`allow`（true／false）、`branches`（字串清單）、`target`（字串，只取專案層，全域層寫了不生效）、`rollback`（字串，退回上一版的方法，只取專案層，空白算沒寫；只有 `deploy-test`、`deploy-prod` 會用到，見「固定條件」）、`source`（字串）、`hours` 與 `timezone`（見「時段」）。`[advisor]` 只取全域層，鍵：`extended`、`may_settle`、`must_ask`、`source`。`source` 是出處，不參與判斷，`show` 與 `check` 附在該層的值旁。
+- 動作段 `[actions.<動作>]` 的鍵：`allow`（true／false）、`branches`（字串清單）、`target`（字串，只取專案層，全域層寫了不生效）、`rollback`（字串，退回上一版的方法，只取專案層，空白算沒寫；只有 `deploy-test`、`deploy-prod` 會用到，見「固定條件」）、`runbook`（字串，部署文件位置，只取專案層；只有 `deploy-test`、`deploy-prod` 會用到，見「查詢」）、`source`（字串）、`hours` 與 `timezone`（見「時段」）。`[advisor]` 只取全域層，鍵：`extended`、`may_settle`、`must_ask`、`source`。`source` 是出處，不參與判斷，`show` 與 `check` 附在該層的值旁。
 - 動作固定五種：`merge`（合併到整合分支）、`push`（推送到遠端）、`deploy-test`、`deploy-prod`、`install-host`（更新主機上安裝的 Skills 與 hooks）。
 - `[unattended]` 段是新主控一開始的模式，由 `lat-unattended.py` 讀取，見 [無人模式](unattended.md)；這段寫錯同樣讓查詢一律要問。
 - 修改或縮減已確認驗收（`change-acceptance`）、花錢或動帳號額度（`spend`）、刪使用者資料或 shred（`delete-user-data`）、開新票擴大工作量（`new-ticket`）永遠要問：查詢一律 `ask`，寫進設定算錯誤。這只限制 `check`；參謀能否定案改驗收與開新票，依 `[advisor]` 段判斷，見 [參謀](advisors.md#參謀結論)。
@@ -134,6 +137,7 @@ source = "<待決紀錄 ID>"
     - 它的提交在這個 repo 找得到，而且是要部署版本本身或祖先（退版或分歧都要整套）。
     - three-tier-testing 閘門有一筆 `post-merge` 的合併後受影響測試總結紀錄（`kind: affected-summary`）整體通過（`passed: true`），它的 `tree` 等於要部署版本的 tree，起點 `base` 是上一次成功部署的提交本身或它的祖先。只讀閘門紀錄，不跑測試。
     - 輸出明說結果：全部成立時 `basis` 寫「no full suite needed」並指出採用的總結紀錄；不成立時 `ask` 的原因寫出是哪一項不成立，並說明需要整套；沒設 `rollback` 的部署寫「no rollback method is set …; a full suite is required」。
+    - 被 `ask` 時印出下一步（`Fix:`）：沒設 `rollback` 的，指出在專案層 `.lat/preauth.toml` 的 `[actions.<動作>]` 寫 `rollback = "<退回方法>"`（全域層寫了不算），之後還要一次從上次部署起算的合併後受影響測試；設了 `rollback` 但測試紀錄不夠的，印出可直接執行的 `suite-gate.py affected --purpose post-merge --base <上一次成功部署的提交>`（含執行目錄），沒有可用的上一次成功部署時改說明只能跑整套。
   - 部署歷史：被部署專案主工作區的 `.lat/deploy-history.jsonl`，每行一筆：`at`（時間）、`action`、`target`（當時設定的部署目標原文，沒寫為 `null`）、`commit`（完整提交）、`result`、`approval`（`preauth` 依預先授權、`manual` 人工核准），人工核准另有 `question`（待決題號）。由 `record` 寫入，見「記錄：record」。
   - `install-host` 例外：只看 `skills/` 下各技能資料夾（有 `SKILL.md` 的資料夾，略過點開頭的目錄）裡登記的整套，與安裝腳本共用閘門的同一段判斷：該套最近一次「這個資料夾內容與現在相同」的執行通過才算數，資料夾外的改動（例如看板）不影響。缺的那一套寫在原因裡，並註明所在技能資料夾與「沒有這份內容的執行」或「最近一次執行失敗」。專案沒有任何技能資料夾時，照上面的規則看全部整套。
 
