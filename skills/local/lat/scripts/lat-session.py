@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import (exempt_basis_category, read_advisor_error, read_advisor_words,
+from lat_decision_status import (DELEGATED, delegated_record_problems,
+                                 exempt_basis_category, read_advisor_error, read_advisor_words,
                                  read_decision_action, read_decision_session, read_exempt_basis,
                                  read_decision_kind, read_decision_status,
                                  read_spec_consensus_error, read_tried)
@@ -1411,6 +1412,16 @@ def question_sent(session_id, questions_paths, identifier):
                for name, _ in announced_questions(dict(session_id=session_id)))
 
 
+def sent_question_paths(record):
+    """The controller's question files, where a sent question stays after unbinding."""
+    panel = panel_module()
+    paths = {own_questions_path(panel, record)} - {None}
+    if record.get('hcom_name'):
+        paths |= {panel.new_questions_path(record['workspace'], record['hcom_name']),
+                  panel.legacy_questions_path(record['workspace'], record['hcom_name'])}
+    return paths
+
+
 def question_preauth(decision_path, *, workspace, session_id, questions_paths):
     """`(verdict, check line, sent)` rechecked under the current settings, or None when
     the record has no `- action:` line. An earlier `- preauth:` line is never read."""
@@ -1429,12 +1440,7 @@ def preauth_stop_check(record, message):
     """`(reason, notes)`: hold questions not yet sent that the current settings allow;
     a sent one passes with a reminder, since only the user can release it."""
     decisions = Path(record['decisions_path'])
-    panel = panel_module()
-    # A question stays sent after unbinding: the controller's files outlive the binding.
-    questions_paths = {own_questions_path(panel, record)} - {None}
-    if record.get('hcom_name'):
-        questions_paths |= {panel.new_questions_path(record['workspace'], record['hcom_name']),
-                            panel.legacy_questions_path(record['workspace'], record['hcom_name'])}
+    questions_paths = sent_question_paths(record)
     held, notes = [], []
     for identifier in sorted({name for name, _ in question_identifiers(message)}):
         path = decisions / f'{identifier}.md'
@@ -1608,6 +1614,65 @@ def stop_check(record, payload):
         '。Spec 確認題先更新 Spec 共識 → 跑檢查工具 → 確認題寫明共識版本。補做順序：寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重新提問。')
 
 
+def unattended_lat(record):
+    return session_path(record['workspace'], record['session_id']).parent.parent
+
+
+def unattended_question_check(record):
+    """Why a DECIDE/HELP Stop should be held while this round's unattended grant is in effect."""
+    if unattended_module().snapshot(unattended_lat(record), record['session_id'])['state'] != 'active':
+        return None
+    return ('LAT 無人模式檢查未通過：無人授權有效期間不發 DECIDE／HELP。把要使用者決定的事記成擱置'
+            '（待決紀錄 `- status: parked`，寫明原因，不寫面板、不通知），其他工作照做，回合改以 '
+            '`NO REPLY:` 或 `DONE:` 結尾；擱置項由回顧頁交給使用者。要當場問使用者，先請使用者關掉無人模式。')
+
+
+def delegated_stop_check(record):
+    """Why this Stop should be held for delegated decision records of this session, or None.
+
+    Each record is checked against the grant version it cites, at the time it says it was
+    made, so a record made while its version was in effect keeps passing after the grant ends;
+    another session's records are its own controller's.
+    """
+    decisions = Path(record['decisions_path'])
+    if not decisions.is_dir():
+        return None
+    unattended = sent = None
+    held = []
+    for path in sorted(decisions.glob('*.md')):
+        status = read_decision_status(path).status
+        if status not in DELEGATED or read_decision_session(path) not in (
+                None, record['session_id']):
+            continue
+        if unattended is None:
+            unattended = unattended_module()
+            sent = sent_question_paths(record)
+        problems, grant = delegated_record_problems(path, status)
+        if grant is not None:
+            lat, now = unattended_lat(record), datetime.now(timezone.utc)
+            if grant.decided_at > now:
+                problems.append(f'作成時間 {grant.decided_at.isoformat()} 晚於現在')
+            else:
+                reason, version = unattended.version_problem(
+                    lat, record['session_id'], grant.version, grant.decided_at, grant.round)
+                if version is None:
+                    problems.append(f'引用的授權 r{grant.round} v{grant.version} 不存在')
+                elif reason:
+                    problems.append(f'作成時間不在授權 r{grant.round} v{grant.version} 的生效期間'
+                                    f'（{reason}）')
+                elif not version['scope'][DELEGATED[status][1]]:
+                    label = unattended.SCOPE_LABELS[DELEGATED[status][1]]
+                    problems.append(f'授權 r{grant.round} v{grant.version} 沒有勾選「{label}」')
+        if question_sent(record['session_id'], sent, path.stem):
+            problems.append('這題已問過使用者，只有真人答覆能解除，不能寫成代決')
+        if problems:
+            held.append(f'- {path.stem}（{status}）：' + '；'.join(problems))
+    if not held:
+        return None
+    return ('LAT 代決紀錄檢查未通過：\n' + '\n'.join(held) + '\n依 references/unattended.md '
+            '「代決紀錄」補正；不屬參謀可代決的、或兩位參謀不一致的，改為 `- status: parked`。')
+
+
 def done_stop(record, message):
     """Whether this Stop is a DONE: turn end of a controller with a work ledger."""
     lines = [line for line in message.splitlines() if line.strip()]
@@ -1730,7 +1795,21 @@ def report_stop(record, payload):
         else:
             if undeclared:
                 reasons.append(undeclared)
+        try:
+            delegated = delegated_stop_check(record)
+        except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
+            notes.append(f'LAT 代決紀錄檢查發生錯誤，未攔下：{exc}')
+        else:
+            if delegated:
+                reasons.append(delegated)
         if tag:
+            try:
+                reason = unattended_question_check(record)
+            except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
+                notes.append(f'LAT 無人模式檢查發生錯誤，未攔下：{exc}')
+            else:
+                if reason:
+                    reasons.append(reason)
             try:
                 reason = stop_check(record, payload)
             except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:

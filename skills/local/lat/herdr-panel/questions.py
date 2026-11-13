@@ -15,7 +15,8 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from lat_decision_status import read_decision_kind, read_decision_session, read_decision_status
+from lat_decision_status import (DELEGATED, PARKED, read_decision_kind, read_decision_session,
+                                 read_decision_status)
 from _lat_common import run_cli, write_text_atomic as _replace_locked
 
 
@@ -1206,8 +1207,8 @@ def _indented(text):
 
 
 def _write_decision_answer(decision_path, section, answer, note, *, channel, source,
-                           recorded_by, now=None):
-    """Append one answer to a pending decision record and mark it answered.
+                           recorded_by, now=None, statuses=("pending",)):
+    """Append one answer to a decision record in one of ``statuses`` and mark it answered.
 
     ``channel`` (面板 or 聊天) heads the section and the source line; panel and chat
     answers share every other line. Returns the record's ``(previous, written)``
@@ -1222,8 +1223,9 @@ def _write_decision_answer(decision_path, section, answer, note, *, channel, sou
         status = read_decision_status(decision_path)
         if status.error:
             raise ValueError(f"decision record status unreadable: {status.error}")
-        if status.status != "pending":
-            raise ValueError(f"decision record is not pending (status: {status.status})")
+        if status.status not in statuses:
+            raise ValueError(f"decision record is not {' or '.join(statuses)} "
+                             f"(status: {status.status})")
         version = _record_revision(text)
         if version is not None and version != section["revision"]:
             raise ValueError(
@@ -1364,6 +1366,21 @@ def _record_answer_locked(questions_path, journal_path, question_id, decisions_p
     return outcome
 
 
+# Parked items and delegated decisions reach the user on the review page, never as a panel
+# question, so a reply or override to one is recorded without a question section.
+REVIEW_STATUSES = (PARKED, *DELEGATED)
+
+
+def _record_review_answer(decision_path, question_id, text, source, *, now=None):
+    revision = _record_revision(_read_text_exact(decision_path)) or 1
+    _write_decision_answer(
+        decision_path, {"id": question_id, "revision": revision}, text, "", channel="聊天",
+        source=f"{source}（回顧項目）", recorded_by="由 question record-chat 記錄", now=now,
+        statuses=REVIEW_STATUSES)
+    return {"id": question_id, "revision": revision, "status": ANSWERED_STATUS,
+            "section_sha256": None}
+
+
 def record_chat_answer(questions_path, decisions_path, question_id, text, source, *, now=None):
     """Record a chat answer the way a panel submit is recorded, then mark the question.
 
@@ -1375,8 +1392,10 @@ def record_chat_answer(questions_path, decisions_path, question_id, text, source
         raise ValueError("--text must not be blank")
     if not source.strip():
         raise ValueError("--source must not be blank")
-    questions_path = Path(questions_path)
     decision_path = Path(decisions_path) / f"{question_id}.md"
+    if decision_path.is_file() and read_decision_status(decision_path).status in REVIEW_STATUSES:
+        return _record_review_answer(decision_path, question_id, text, source, now=now)
+    questions_path = Path(questions_path)
     with _path_lock(questions_path):
         document = _read_text_exact(questions_path)
         section = _question_section(document, question_id)

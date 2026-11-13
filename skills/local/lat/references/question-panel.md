@@ -285,6 +285,8 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question record-c
 
 手動做法仍可用：依「手動記錄」的步驟 1 建立快照，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，把輸出的 `section_sha256` 傳給上述 `set-status`。
 
+紀錄是擱置（`parked`）或代決（`proxy-confirmed`、`assumed`、`prototype-decided`）時，這些項目在回顧頁而不在面板：同一指令不讀問題檔，直接把原文附成紀錄目前版本的 `## 答覆`，來源加註「回顧項目」，狀態改為 `answered`，授權已結束也照樣可記。
+
 使用者在面板送出後又於聊天要求改答案時，舊紀錄保持原樣：新增一筆更正，保存聊天原文與來源，並把舊答案標為「已由更正項目取代」；更正只依聊天答覆的授權範圍生效。
 
 ## 清理題目
