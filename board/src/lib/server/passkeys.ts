@@ -1,9 +1,10 @@
 // The board's own passkeys, the default second step of a password login. They are registered and
 // checked by the board itself (WebAuthn, @simplewebauthn/server), apart from pd's passkeys.
 //
-// A passkey is registered only with a one-time code the host command issues (10 minutes, used up
-// by the passkey it registers) on top of the password, so knowing the password is not enough to add
-// one. The file is kept in the board's state directory, readable by its owner only, and every
+// A passkey is registered with a one-time code the host command issues (10 minutes, used up by the
+// passkey it registers) on top of the password, so knowing the password is not enough to add one;
+// or from the settings of a device already logged in. A passkey logs in alone too, without the
+// password. The file is kept in the board's state directory, readable by its owner only, and every
 // change holds the state directory's lock, which the host commands share.
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -103,19 +104,34 @@ const codeWorks = (stored: Stored, codeHash: string, now: number) =>
 /** Whether this registration code can be used now: the latest one issued, not yet used, not over. */
 export const enrollCodeWorks = (stateDir: string, code: string, now: number) => codeWorks(read(stateDir), enrollCodeHash(code), now);
 
-/** Register a passkey with the registration code (by its hash), using the code up. False, and
+type NewPasskey = Pick<Passkey, 'credentialId' | 'publicKey' | 'counter' | 'transports' | 'label'>;
+
+const made = (now: number, passkey: NewPasskey): Passkey => ({
+	id: randomBytes(4).toString('hex'),
+	createdAt: new Date(now).toISOString(),
+	lastUsedAt: null,
+	...passkey,
+	label: passkey.label.slice(0, 200)
+});
+
+/** Register a passkey with the registration code (by its hash), using the code up. Null, and
  *  nothing saved, when the code no longer works: used, replaced or over meanwhile. */
-export function addPasskey(
-	stateDir: string,
-	codeHash: string,
-	now: number,
-	passkey: Pick<Passkey, 'credentialId' | 'publicKey' | 'counter' | 'transports' | 'label'>
-): Passkey | null {
+export function addPasskey(stateDir: string, codeHash: string, now: number, passkey: NewPasskey): Passkey | null {
 	return withLock(stateDir, () => {
 		const stored = read(stateDir);
 		if (!codeWorks(stored, codeHash, now)) return null;
-		const added: Passkey = { id: randomBytes(4).toString('hex'), createdAt: new Date(now).toISOString(), lastUsedAt: null, ...passkey, label: passkey.label.slice(0, 200) };
+		const added = made(now, passkey);
 		write(stateDir, { passkeys: [...stored.passkeys, added] });
+		return added;
+	});
+}
+
+/** Register a passkey from a logged-in device's settings: no code, and an issued code stays. */
+export function addDevicePasskey(stateDir: string, now: number, passkey: NewPasskey): Passkey {
+	return withLock(stateDir, () => {
+		const stored = read(stateDir);
+		const added = made(now, passkey);
+		write(stateDir, { ...stored, passkeys: [...stored.passkeys, added] });
 		return added;
 	});
 }

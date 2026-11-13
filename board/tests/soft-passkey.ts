@@ -70,11 +70,12 @@ export class SoftPasskey {
 		};
 	}
 
-	/** The answer to `navigator.credentials.get` for these options. */
-	answer(options: { challenge: string }, { origin = this.origin, rpId = this.rpId } = {}) {
+	/** The answer to `navigator.credentials.get` for these options; with `verified` false, as an
+	 *  authenticator that did not check who holds it (no PIN or fingerprint). */
+	answer(options: { challenge: string }, { origin = this.origin, rpId = this.rpId, verified = true } = {}) {
 		this.counter++;
 		const clientDataJSON = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: options.challenge, origin, crossOrigin: false }));
-		const authenticatorData = Buffer.concat([sha256(rpId), Buffer.from([USER_PRESENT | USER_VERIFIED]), u32(this.counter)]);
+		const authenticatorData = Buffer.concat([sha256(rpId), Buffer.from([USER_PRESENT | (verified ? USER_VERIFIED : 0)]), u32(this.counter)]);
 		const signature = sign('sha256', Buffer.concat([authenticatorData, sha256(clientDataJSON)]), this.#keys.privateKey);
 		return {
 			id: this.id,

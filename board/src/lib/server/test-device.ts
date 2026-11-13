@@ -11,7 +11,7 @@ import { listHerdrAgents } from './herdr.ts';
 /**
  * - `open`: touches no agent or shared setting (it creates the device's own agents, re-reads, or
  *   computes for its own page).
- * - `deny`: never, whatever it names: answers, shared settings, read marks, pd, Herdr workspaces,
+ * - `deny`: never, whatever it names: answers, shared settings, passkeys, read marks, pd, Herdr workspaces,
  *   and agent actions outside what a test device does to its own agents.
  * - `session` / `controllerId`: only when that body field names an agent the device started.
  * - `tab`: only for a Herdr tab whose every agent the device started.
@@ -62,6 +62,9 @@ export const TEST_DEVICE_RULES: Record<string, TestRule> = {
 	'POST /api/automation/[id]/stop': 'deny',
 	'POST /api/automation/[id]/carried': 'deny',
 	'POST /api/automation/[id]/dismiss-missed': 'deny',
+	'POST /api/passkeys': 'deny',
+	'POST /api/passkeys/options': 'deny',
+	'DELETE /api/passkeys/[id]': 'deny',
 	'POST /api/alerts/[id]/dismiss': 'deny',
 	'PUT /api/push/subscription': 'deny',
 	'DELETE /api/push/subscription': 'deny',
@@ -79,7 +82,9 @@ export const TEST_DEVICE_RULES: Record<string, TestRule> = {
 	'POST /api/login/passkey': 'open',
 	'POST /api/login/passkey/options': 'open',
 	'POST /api/login/enroll': 'open',
-	'POST /api/login/enroll/options': 'open'
+	'POST /api/login/enroll/options': 'open',
+	'POST /api/login/passwordless': 'open',
+	'POST /api/login/passwordless/options': 'open'
 };
 
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
