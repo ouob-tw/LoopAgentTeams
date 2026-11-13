@@ -525,7 +525,7 @@ def cmd_check(args):
 
 
 # Review ---------------------------------------------------------------------------------------
-# The round's review (references/unattended.md「回顧」): Markdown at REVIEW_MD, rebuilt from the
+# The round's review (references/unattended.md「回顧」): Markdown from review_files, rebuilt from the
 # grant, the decision records, the work ledger and the pre-authorization records; the JSON next
 # to it keeps the body hash, the content hash and the cross-check. Created at the first item of
 # a round that had a grant, then rewritten only when the body changes. A content change voids
@@ -670,6 +670,8 @@ def cmd_review_verify(args):
         mismatches = [mismatch_of(text, ids) for text in args.mismatch or []]
         if len({m['id'] for m in mismatches}) != len(mismatches):
             raise Refused('one --mismatch per item')
+        if not ids:
+            raise Refused('the review has no items left; there is nothing to cross-check')
         if args.total != len(ids):
             raise Refused(f'the review has {len(ids)} items, not {args.total}; the checker must '
                           'check every item of the current version')

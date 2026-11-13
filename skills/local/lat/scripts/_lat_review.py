@@ -5,7 +5,8 @@
 and delegated decision records (and those the user has since answered from the review), the
 round's work ledger (parked rows, done rows) and its pre-authorization records (auto actions).
 Every item has an id taken from its source, so it stays the same across updates: the decision
-ID, `row-<ledger row>`, or `auto-<n>` for the n-th auto record of the round.
+ID, `row-<ledger row>`, or `auto-<line>` for the auto record on that line of the round's
+pre-authorization records.
 `render_body` turns the view into the Markdown body; `render_header` adds the verification
 status and the update time, which the body hash leaves out.
 """
@@ -107,6 +108,12 @@ def opinions(lines):
             if match and match[2].lower() == 'agree']
 
 
+def chosen(lines, identifier, question, decision):
+    if decision and question:
+        return f'{question} → {decision}'
+    return decision or question or title_of(lines, identifier)
+
+
 def decision_item(path, lines, kind, answer, workspace):
     identifier = path.stem
     question = field(lines, 'question')
@@ -128,16 +135,12 @@ def decision_item(path, lines, kind, answer, workspace):
         evidence += [row.lstrip('- ') for row in rows]
         revert = '按「推翻」寫明哪條驗收條件不對；這張票只合併到整合分支，推送與部署仍照預先授權'
     elif kind == 'assumed':
-        did = decision or question or title_of(lines, identifier)
-        if decision and question:
-            did = f'{question} → {decision}'
+        did = chosen(lines, identifier, question, decision)
         assume = field(lines, 'assume-class')
         why = (f'固定清單 {assume}；' if assume else '') + why
         revert = f'按「推翻」；可以改成：{field(lines, "revert") or "紀錄沒寫"}'
     else:
-        did = decision or question or title_of(lines, identifier)
-        if decision and question:
-            did = f'{question} → {decision}'
+        did = chosen(lines, identifier, question, decision)
         sample = field(lines, 'sample')
         if sample:
             evidence.append(f'樣品：{sample}')
@@ -268,7 +271,12 @@ def ledger_items(doc, path, workspace):
                     evidence=[f'{relative(path, workspace)} row {row.get("id")}'],
                     revert='按「回覆」寫下你的決定；主控照你的話解除擱置（lat-ledger unpark）',
                     assume_class=None)
-        items.append(with_state(item, answer, PARKED))
+        item = with_state(item, None, PARKED)
+        if answer:
+            # The ledger records that the row was released and why, not who decided.
+            item.update(state='answered', state_label=f'已解除擱置（{answer[0]}）：{answer[1]}',
+                        answered_at=answer[0], answer=answer[1])
+        items.append(item)
     return items, done
 
 
@@ -282,7 +290,7 @@ def same_commit(one, other):
 
 
 def auto_items(path, workspace):
-    """(items, problems): one item per auto record of the round, in the file's order."""
+    """(items, problems): one item per auto record of the round, `auto-<line number>`."""
     try:
         lines = path.read_text(encoding='utf-8').splitlines()
     except FileNotFoundError:
@@ -315,7 +323,7 @@ def auto_items(path, workspace):
         corrections = [(n, e) for n, e in entries if n > number and e.get('kind') == 'correction'
                        and same_commit(commit, e.get('commit'))
                        and e.get('action') in (None, action)]
-        item = dict(id=f'auto-{len(items) + 1}', kind='auto', title=head or f'第 {number} 行',
+        item = dict(id=f'auto-{number}', kind='auto', title=head or f'第 {number} 行',
                     did=f'依預先授權自動執行，結果 {entry.get("result")}', why=f'預先授權：{entry.get("basis")}',
                     evidence=[f'{relative(path, workspace)} 第 {number} 行'], revert=revert,
                     assume_class=None, action=action)

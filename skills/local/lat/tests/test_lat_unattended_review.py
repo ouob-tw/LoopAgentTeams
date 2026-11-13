@@ -146,6 +146,17 @@ class LayoutTests(ReviewCase):
         view = self.review('show')['view']
         self.assertEqual(sorted(item['id'] for item in view['items']), sorted(after))
 
+    def test_an_unreadable_record_line_is_listed_and_leaves_the_other_ids_alone(self):
+        self.grant()
+        path = self.lat / 'preauth-records' / f'{SESSION}-r1.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{broken\n' + json.dumps(dict(kind='auto', action='merge', target='dev',
+                                                         commit='e' * 40, basis='allow',
+                                                         result='succeeded')) + '\n')
+        self.review('update')
+        self.assertEqual(self.item_ids(), ['auto-2'])
+        self.assertIn('## 讀不出的來源', self.md.read_text())
+
     def test_a_reply_or_override_is_marked_with_its_time(self):
         self.grant()
         self.parked()
@@ -164,7 +175,7 @@ class LayoutTests(ReviewCase):
         text = self.md.read_text()
         self.assertRegex(text, r'- 狀態：已由你回覆（20\d\d-')
         self.assertRegex(text, r'- 狀態：已由你推翻（20\d\d-')
-        self.assertIn('- 狀態：已由你回覆（2026-11-13T02:00:00+00:00）', text)
+        self.assertIn('- 狀態：已解除擱置（2026-11-13T02:00:00+00:00）：使用者：照 B 做', text)
         self.assertNotIn('## 最該先看的幾項', text)
 
 

@@ -1700,7 +1700,7 @@ def review_stop_check(record, message):
             '核對，或核對後內容又更新。交付前派另一家模型（你是 Claude 就派 Codex，反之亦然）對照待決紀錄、'
             '工作總表與預先授權紀錄逐項核對回顧檔，再執行 '
             f'`uv run --no-project python {UNATTENDED_SCRIPT} review verify --checker <名稱> '
-            f'--family <claude|gpt> --total {count} --matched <相符項數> '
+            f'--family <claude|gpt|gemini> --total {count} --matched <相符項數> '
             "[--mismatch '<編號>：<不符之處>' …]`，然後照原樣結束回合。")
 
 
