@@ -1,0 +1,16 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/sent-jump.ts",
+        "board/src/lib/components/SentLog.svelte",
+        "board/src/lib/components/ControllerInfo.svelte",
+        "board/src/lib/components/Transcript.svelte"
+      ],
+      "tests": [
+        "board/tests/unit/sent-jump.test.ts",
+        "board/tests/browser/sent-jump.test.ts"
+      ]
+    }
+  ]
+}
