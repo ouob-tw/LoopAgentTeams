@@ -174,6 +174,7 @@ for (const width of [1280, 390]) {
 		expect(agentPage).toContain('Agent · Codex gpt-6.1-sol · 強度中');
 		expect(agentPage).toContain('docs/monthly/exhibit-report.md');
 		expect(agentPage).toContain('發票已開立');
+		expect(agentPage).toContain('開，用 Claude claude-opus-5-5 · 強度中');
 		expect(await tab.eval(`[...document.querySelectorAll('.detail .actions button')].find((b) => b.innerText === '立即執行').disabled`)).toBe(true);
 		expect(await fits()).toBe(true);
 		await frame(width, '3-agent-task');
@@ -243,7 +244,15 @@ for (const width of [1280, 390]) {
 		await click('.detail form [data-kind="agent"]');
 		expect(await tab.eval(`document.querySelector('.detail form [name=review]').checked`)).toBe(true);
 		expect(await tab.eval(`!!document.querySelector('.detail form [name=brief]') && !document.querySelector('.detail form [name=command]')`)).toBe(true);
+		// The checking agent is the other client than the task's, and follows it until chosen by hand.
+		expect(await tab.eval(`document.querySelector('.detail form [data-review-client="codex"]').getAttribute('aria-pressed')`)).toBe('true');
+		expect(await tab.eval(`document.querySelector('.detail form [name=reviewModel]').value`)).toBe('gpt-6.1-sol');
+		await click('.detail form [data-client="codex"]');
+		expect(await tab.eval(`document.querySelector('.detail form [data-review-client="claude"]').getAttribute('aria-pressed')`)).toBe('true');
+		expect(await tab.eval(`document.querySelector('.detail form [name=reviewModel]').value`)).toBe('claude-opus-5-5');
+		expect(await fits()).toBe(true);
 		await frame(width, '7-new-agent');
+		await shot(tab, `${width}-7b-new-agent-checker`, { box: '.detail form [name=reviewModel]' });
 		await click('.detail form [data-kind="command"]');
 		expect(await tab.eval(`document.querySelector('.detail form [name=review]').checked`)).toBe(false);
 		const name = `立即執行測試 ${width}`;

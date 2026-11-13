@@ -4,6 +4,8 @@
 	// and the output it left. 立即執行, 暫停／恢復 and 編輯 sit at the top.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import {
+		clientName,
+		EFFORT_TEXT,
 		kindText,
 		runReason,
 		scheduleText,
@@ -23,7 +25,6 @@
 	/** What the last button pressed here answered, when it was refused. */
 	let notice = $state<string | null>(null);
 	let busy = $state(false);
-	const EFFORT_TEXT = { low: '低', medium: '中', high: '高' } as const;
 
 	async function act(step: () => Promise<{ ok: boolean; message?: string }>) {
 		busy = true;
@@ -68,7 +69,7 @@
 		<dt>種類</dt>
 		<dd>
 			{#if task.kind === 'agent' && task.agent}
-				Agent · {task.agent.client === 'codex' ? 'Codex' : 'Claude'} {task.agent.model} · 強度{EFFORT_TEXT[task.agent.effort]}
+				Agent · {clientName(task.agent.client)} {task.agent.model} · 強度{EFFORT_TEXT[task.agent.effort]}
 			{:else}
 				{kindText(task.kind)}
 			{/if}
@@ -99,7 +100,7 @@
 			<dd class="mono">{task.agent.brief}</dd>
 		{/if}
 		<dt>跑完後請 Agent 檢查</dt>
-		<dd>{task.review.enabled ? '開' : '關'}</dd>
+		<dd>{task.review.enabled ? `開，用 ${clientName(task.review.client)} ${task.review.model} · 強度${EFFORT_TEXT[task.review.effort]}` : '關'}</dd>
 		<dt>最久跑多久</dt>
 		<dd>{task.limitMinutes} 分鐘</dd>
 		<dt>下次</dt>

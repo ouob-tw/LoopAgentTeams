@@ -5,7 +5,18 @@
 	// field by field; each answer shows under its field and nothing is written.
 	import X from '@lucide/svelte/icons/x';
 	import Plus from '@lucide/svelte/icons/plus';
-	import { AGENT_EFFORTS, weekdayName, type AgentEffort, type AutomationTask, type FixedCheck, type ScheduleType } from '#lib/board/automation.ts';
+	import {
+		AGENT_EFFORTS,
+		DEFAULT_REVIEW_MODEL,
+		defaultReviewClient,
+		EFFORT_TEXT,
+		weekdayName,
+		type AgentClient,
+		type AgentEffort,
+		type AutomationTask,
+		type FixedCheck,
+		type ScheduleType
+	} from '#lib/board/automation.ts';
 	import { saveTask, type FieldErrors } from '#lib/board/automation-actions.ts';
 
 	let { task, onsaved, oncancel }: { task: AutomationTask | null; onsaved: (id: string) => void; oncancel: () => void } = $props();
@@ -33,12 +44,27 @@
 	/** Once the switch is set by hand, picking the other kind leaves it alone. */
 	let reviewTouched = $state(from !== null);
 	let checklist = $state(from?.review.checklist.join('\n') ?? '');
+	let reviewClient = $state<AgentClient>(from?.review.client ?? defaultReviewClient('command'));
+	let reviewModel = $state(from?.review.model ?? DEFAULT_REVIEW_MODEL[defaultReviewClient('command')]);
+	let reviewEffort = $state<AgentEffort>(from?.review.effort ?? 'medium');
+	/** Once the checker's client is chosen by hand, the task's own client no longer moves it. */
+	let reviewPicked = $state(from !== null);
+	/** The checker follows the task: the other client than its agent, until chosen by hand. */
+	function followTask() {
+		if (reviewPicked) return;
+		reviewClient = defaultReviewClient(kind, client);
+		reviewModel = DEFAULT_REVIEW_MODEL[reviewClient];
+	}
+	function pickReviewClient(next: AgentClient) {
+		reviewPicked = true;
+		if (next !== reviewClient) reviewModel = DEFAULT_REVIEW_MODEL[next];
+		reviewClient = next;
+	}
 
 	let errors = $state<FieldErrors>({});
 	let failure = $state<string | null>(null);
 	let saving = $state(false);
 
-	const EFFORT_TEXT: Record<AgentEffort, string> = { low: '低', medium: '中', high: '高' };
 	const TYPES: { type: ScheduleType; text: string }[] = [
 		{ type: 'monthly', text: '每月' },
 		{ type: 'weekly', text: '每週' },
@@ -50,6 +76,11 @@
 		kind = next;
 		// An agent task is checked by default, a command task is not.
 		if (!reviewTouched) review = next === 'agent';
+		followTask();
+	}
+	function pickClient(next: AgentClient) {
+		client = next;
+		followTask();
 	}
 
 	async function save(event: SubmitEvent) {
@@ -64,7 +95,7 @@
 			limitMinutes,
 			kind,
 			...(kind === 'command' ? { command: { command, folder, checks } } : { agent: { client, model, effort, folder, brief } }),
-			review: { enabled: review, checklist: checklist.split('\n') }
+			review: { enabled: review, checklist: checklist.split('\n'), client: reviewClient, model: reviewModel, effort: reviewEffort }
 		};
 		const saved = await saveTask(task?.id ?? null, body);
 		saving = false;
@@ -136,8 +167,8 @@
 	{:else}
 		<span class="label" id="automation-client">用哪一家</span>
 		<div class="seg" role="group" aria-labelledby="automation-client">
-			<button type="button" data-client="claude" aria-pressed={client === 'claude'} onclick={() => (client = 'claude')}>Claude</button>
-			<button type="button" data-client="codex" aria-pressed={client === 'codex'} onclick={() => (client = 'codex')}>Codex</button>
+			<button type="button" data-client="claude" aria-pressed={client === 'claude'} onclick={() => pickClient('claude')}>Claude</button>
+			<button type="button" data-client="codex" aria-pressed={client === 'codex'} onclick={() => pickClient('codex')}>Codex</button>
 		</div>
 		{@render error('client')}
 		<label for="automation-model">模型</label>
@@ -188,6 +219,24 @@
 		<input type="checkbox" name="review" bind:checked={review} onchange={() => (reviewTouched = true)} />
 		跑完後請 Agent 檢查
 	</label>
+	{#if review}
+		<span class="label" id="automation-review-client">檢查用哪一家</span>
+		<div class="seg" role="group" aria-labelledby="automation-review-client">
+			<button type="button" data-review-client="claude" aria-pressed={reviewClient === 'claude'} onclick={() => pickReviewClient('claude')}>Claude</button>
+			<button type="button" data-review-client="codex" aria-pressed={reviewClient === 'codex'} onclick={() => pickReviewClient('codex')}>Codex</button>
+		</div>
+		{@render error('reviewClient')}
+		<label for="automation-review-model">檢查用的模型</label>
+		<input id="automation-review-model" name="reviewModel" type="text" bind:value={reviewModel} aria-invalid={!!errors.reviewModel} />
+		{@render error('reviewModel')}
+		<span class="label" id="automation-review-effort">檢查的強度</span>
+		<div class="seg" role="group" aria-labelledby="automation-review-effort">
+			{#each AGENT_EFFORTS as level (level)}
+				<button type="button" data-review-effort={level} aria-pressed={reviewEffort === level} onclick={() => (reviewEffort = level)}>{EFFORT_TEXT[level]}</button>
+			{/each}
+		</div>
+		{@render error('reviewEffort')}
+	{/if}
 	<label for="automation-checklist">驗收清單（一行一條）</label>
 	<textarea id="automation-checklist" name="checklist" bind:value={checklist} aria-invalid={!!errors.checklist}></textarea>
 	{@render error('checklist')}

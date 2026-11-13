@@ -128,11 +128,22 @@ test('an agent task keeps its fields, and 立即執行 says it cannot run yet', 
 	});
 	expect(task.agent).toEqual({ client: 'codex', model: 'gpt-6.1-sol', effort: 'medium', folder: work, brief: 'docs/brief.md' });
 	expect(task.command).toBeUndefined();
-	expect(task.review).toEqual({ enabled: true, checklist: ['PDF 中文與圖片正常', '發票已開立'] });
+	// The checking agent defaults to the other client than the task's own.
+	expect(task.review).toEqual({ enabled: true, checklist: ['PDF 中文與圖片正常', '發票已開立'], client: 'claude', model: 'claude-opus-5-5', effort: 'medium' });
 	const refused = await send(`/api/automation/${task.id}/run`, 'POST');
 	expect(refused.status).toBe(409);
 	expect((await refused.json()).message).toContain('Agent 任務');
 	expect((await viewOf(task.id)).runs).toEqual([]);
+});
+
+test('the checking agent\'s client, model and effort are saved as chosen, and checked', async () => {
+	const task = await create(commandTask({ name: '檢查設定', review: { enabled: true, checklist: ['備份檔存在'], client: 'claude', model: 'claude-sonnet-5-5', effort: 'high' } }));
+	expect(task.review).toEqual({ enabled: true, checklist: ['備份檔存在'], client: 'claude', model: 'claude-sonnet-5-5', effort: 'high' });
+	expect((await viewOf(task.id)).task.review.model).toBe('claude-sonnet-5-5');
+	// A command task's checker is Codex unless chosen.
+	expect((await create(commandTask({ name: '檢查預設' }))).review).toMatchObject({ client: 'codex', model: 'gpt-6.1-sol', effort: 'medium' });
+	const wrong = await send('/api/automation', 'POST', commandTask({ review: { enabled: true, checklist: ['x'], client: 'gemini', model: ' ', effort: 'max' } }));
+	expect(Object.keys((await wrong.json()).errors).sort()).toEqual(['reviewClient', 'reviewEffort', 'reviewModel']);
 });
 
 test('立即執行 records how a command ended: start and end, exit code, output, each check', async () => {
@@ -185,6 +196,33 @@ test('a long output keeps its end only, and says so', async () => {
 	expect(kept.length).toBeLessThan(33_000);
 	expect(kept.startsWith('（前面省略 ')).toBe(true);
 	expect(kept.endsWith('THE-END\n')).toBe(true);
+});
+
+test('an output check finds text printed long before the kept end, and a character split between writes', async () => {
+	const task = await create(
+		commandTask({ name: '早印的字' }, {
+			command: `printf 'BACKUP_OK\\n'; head -c 4200000 /dev/zero | tr '\\0' 'x'; echo; printf '\\345\\256'; sleep 0.3; printf '\\214\\346\\210\\220\\n'`,
+			checks: [{ type: 'output', text: 'BACKUP_OK' }, { type: 'output', text: '完成' }]
+		})
+	);
+	const run = await runToEnd(task.id);
+	expect(run.checks).toEqual([
+		{ label: '輸出含「BACKUP_OK」', ok: true },
+		{ label: '輸出含「完成」', ok: true }
+	]);
+	expect(run.status).toBe('success');
+	const kept = await (await fixture.fetch(`/api/automation/${task.id}/runs/${run.id}/output`, { cookie })).text();
+	expect(kept).not.toContain('BACKUP_OK');
+	expect(kept.endsWith('完成\n')).toBe(true);
+	expect(kept).not.toContain('\uFFFD');
+});
+
+test('what a command leaves running in the background ends with the run', async () => {
+	const task = await create(commandTask({ name: '背景程序' }, { command: 'sleep 600 >/dev/null 2>&1 & echo $! > bg.pid' }));
+	const run = await runToEnd(task.id);
+	expect(run.status).toBe('success');
+	const pid = Number(readFileSync(join(work, 'bg.pid'), 'utf8'));
+	await eventually(async () => !existsSync(`/proc/${pid}`), 10_000, 'the background sleep to end');
 });
 
 test('立即執行 is refused, with the reason, while the same task runs', async () => {
@@ -266,13 +304,34 @@ test('after a restart: a broken file is an error, a half-written temporary is ig
 	await fixture.stop();
 	writeFileSync(join(automationDir(), 'broken1234.json'), '{"id": "broken1234", "name": "壞');
 	writeFileSync(join(automationDir(), 'abcdef0123.json.4242.ab12cd.tmp'), '{"id": "abcdef0123", "na');
+	writeFileSync(join(automationDir(), 'nested0001.json'), JSON.stringify({ ...commandTask({ name: '少欄位' }, { folder: undefined }), id: 'nested0001', paused: false, createdAt: 'x', updatedAt: 'x' }));
 	appendFileSync(join(automationDir(), 'runs', `${task.id}.jsonl`), JSON.stringify({ id: 'cut-1', taskId: task.id, trigger: 'manual', period: '2026-11', startedAt: Date.now(), status: 'running', pid: 999999 }) + '\n' + '{"id":"torn');
 	await fixture.start();
 	const after = await snapshot();
-	expect(after.broken).toEqual([{ file: 'broken1234.json', error: expect.stringContaining('不是完整的 JSON') }]);
+	expect(after.broken).toEqual([
+		{ file: 'broken1234.json', error: expect.stringContaining('不是完整的 JSON') },
+		{ file: 'nested0001.json', error: '欄位不對：folder' }
+	]);
 	expect(after.tasks.some((view) => view.task.id === 'abcdef0123')).toBe(false);
 	const view = after.tasks.find((entry) => entry.task.id === task.id)!;
 	expect(view.task.name).toBe('重啟前');
 	expect(view.runs[0]).toMatchObject({ id: 'cut-1', status: 'failed', reason: '看板重啟中斷' });
 	expect(view.state).toBe('failed');
+
+	// The line cut off by the crash did not swallow the one written after it: the record file has it
+	// on a line of its own, a second restart still reads it, and a new run is recorded whole.
+	const lines = readFileSync(join(automationDir(), 'runs', `${task.id}.jsonl`), 'utf8').split('\n');
+	expect(lines.some((line) => line.startsWith('{') && line.includes('"cut-1"') && line.includes('看板重啟中斷') && !line.includes('torn'))).toBe(true);
+	await fixture.stop();
+	await fixture.start();
+	const again = (await snapshot()).tasks.find((entry) => entry.task.id === task.id)!;
+	expect(again.runs[0]).toMatchObject({ id: 'cut-1', status: 'failed', reason: '看板重啟中斷' });
+	const next = await runToEnd(task.id);
+	expect(next.status).toBe('success');
+	await fixture.stop();
+	await fixture.start();
+	expect((await viewOf(task.id)).runs.map((entry) => [entry.id, entry.status])).toEqual([
+		[next.id, 'success'],
+		['cut-1', 'failed']
+	]);
 });

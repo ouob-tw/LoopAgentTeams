@@ -5,11 +5,14 @@
 // runs build on `startRun`/`finishRun` and the records' fields.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import {
 	AGENT_EFFORTS,
+	DEFAULT_REVIEW_MODEL,
+	defaultReviewClient,
 	nextAutoAt,
 	periodOf,
 	taskState,
@@ -29,8 +32,6 @@ import {
 
 /** How much of a command's output is kept: its last part, which says how it ended. */
 export const OUTPUT_KEEP_CHARS = 32_000;
-/** How much is held while it runs, for the 輸出含某字 checks. */
-const OUTPUT_HOLD_CHARS = 4_000_000;
 /** How many runs each task sends to the pages, newest first. */
 const RUNS_SHOWN = 20;
 /** A command's process group gets this long to end after SIGTERM before SIGKILL. */
@@ -96,7 +97,7 @@ const integer = (value: unknown) => {
 };
 
 /** Check a form's fields; the task as it will be saved, or every field that is wrong. */
-export function validateTask(input: unknown, home = homedir()): { task: AutomationTaskInput } | { errors: FieldErrors } {
+export function validateTask(input: unknown, home = homedir(), { paths = true } = {}): { task: AutomationTaskInput } | { errors: FieldErrors } {
 	const body = (input && typeof input === 'object' ? input : {}) as Record<string, any>;
 	const errors: FieldErrors = {};
 
@@ -132,7 +133,7 @@ export function validateTask(input: unknown, home = homedir()): { task: Automati
 		const full = expandHome(folder, home);
 		if (!folder) errors[key] = '請填工作資料夾';
 		else if (!isAbsolute(full)) errors[key] = '請填完整路徑，以 / 或 ~ 開頭';
-		else if (!isDirectory(full)) errors[key] = `找不到這個資料夾：${folder}`;
+		else if (paths && !isDirectory(full)) errors[key] = `找不到這個資料夾：${folder}`;
 		return { folder, full };
 	};
 
@@ -161,7 +162,7 @@ export function validateTask(input: unknown, home = homedir()): { task: Automati
 		const { folder, full } = folderOf(given.folder, 'folder');
 		const brief = text(given.brief);
 		if (!brief) errors.brief = '請填任務說明檔';
-		else if (!errors.folder && !isFile(resolve(full, expandHome(brief, home)))) errors.brief = `資料夾裡找不到這個檔案：${brief}`;
+		else if (paths && !errors.folder && !isFile(resolve(full, expandHome(brief, home)))) errors.brief = `資料夾裡找不到這個檔案：${brief}`;
 		agent = { client, model, effort, folder, brief };
 	} else errors.kind = '請選這個任務是指令還是 Agent';
 
@@ -169,7 +170,13 @@ export function validateTask(input: unknown, home = homedir()): { task: Automati
 	const checklist = (Array.isArray(reviewGiven.checklist) ? reviewGiven.checklist : String(reviewGiven.checklist ?? '').split('\n'))
 		.map(text)
 		.filter(Boolean);
-	const review = { enabled: reviewGiven.enabled === true, checklist };
+	const reviewClient = reviewGiven.client ?? defaultReviewClient(body.kind, agent?.client);
+	if (reviewClient !== 'claude' && reviewClient !== 'codex') errors.reviewClient = '請選檢查用 Claude 或 Codex';
+	const reviewModel = reviewGiven.model === undefined ? (DEFAULT_REVIEW_MODEL[reviewClient as AgentSpec['client']] ?? '') : text(reviewGiven.model);
+	if (!reviewModel) errors.reviewModel = '請填檢查用的模型';
+	const reviewEffort = reviewGiven.effort ?? 'medium';
+	if (!AGENT_EFFORTS.includes(reviewEffort)) errors.reviewEffort = '請選檢查的強度';
+	const review = { enabled: reviewGiven.enabled === true, checklist, client: reviewClient, model: reviewModel, effort: reviewEffort };
 	if (review.enabled && checklist.length === 0) errors.checklist = '請 Agent 檢查時，驗收清單至少寫一條';
 
 	if (Object.keys(errors).length) return { errors };
@@ -178,8 +185,9 @@ export function validateTask(input: unknown, home = homedir()): { task: Automati
 	};
 }
 
-/** A task file as read back: the fields the board needs, or why it cannot be used. */
-function parseTask(raw: string, file: string): AutomationTask | string {
+/** A task file as read back: every field as a saved task has it, or why it cannot be used. Folders
+ *  and briefs that went missing since are not checked here: that is the run's settings error. */
+function parseTask(raw: string, file: string, home: string): AutomationTask | string {
 	let value: any;
 	try {
 		value = JSON.parse(raw);
@@ -188,11 +196,10 @@ function parseTask(raw: string, file: string): AutomationTask | string {
 	}
 	if (!value || typeof value !== 'object') return '內容不是一個任務';
 	if (value.id !== file.replace(/\.json$/, '')) return '檔名和裡面的任務編號不一致';
-	for (const key of ['name', 'time', 'kind', 'createdAt', 'updatedAt']) if (typeof value[key] !== 'string') return `少了 ${key}`;
-	if (!['monthly', 'weekly', 'daily'].includes(value.schedule?.type)) return '排程類型不對';
-	if (typeof value.limitMinutes !== 'number') return '少了 limitMinutes';
-	if (value.kind === 'command' ? typeof value.command?.command !== 'string' : typeof value.agent?.folder !== 'string') return '種類的欄位不完整';
-	return { ...value, paused: value.paused === true, review: { enabled: value.review?.enabled === true, checklist: value.review?.checklist ?? [] } };
+	for (const key of ['createdAt', 'updatedAt']) if (typeof value[key] !== 'string') return `少了 ${key}`;
+	const checked = validateTask(value, home, { paths: false });
+	if ('errors' in checked) return `欄位不對：${Object.keys(checked.errors).join('、')}`;
+	return { ...checked.task, id: value.id, paused: value.paused === true, createdAt: value.createdAt, updatedAt: value.updatedAt };
 }
 
 /** The runs as the record says now: the lines of a run merged in order. A line that cannot be read
@@ -218,21 +225,71 @@ export function readRuns(file: string): AutomationRun[] {
 	return [...runs.values()].sort((a, b) => b.startedAt - a.startedAt);
 }
 
-/** Keep the end of a long output, saying how much was left out before it. */
-export function keepEnd(output: string): { text: string; truncated: boolean } {
-	if (output.length <= OUTPUT_KEEP_CHARS) return { text: output, truncated: false };
-	const dropped = output.length - OUTPUT_KEEP_CHARS;
-	return { text: `（前面省略 ${dropped} 字）\n${output.slice(dropped)}`, truncated: true };
+/** A command's output as it comes: its end kept for saving, and whether each text the checks look for
+ *  appeared anywhere in it, however long it grew. Bytes are decoded per stream, so a character split
+ *  between two chunks is whole. */
+export function outputCollector(sought: readonly string[]) {
+	const overlap = Math.max(0, ...sought.map((text) => text.length - 1));
+	const found = new Set<string>();
+	let kept = '';
+	let dropped = 0;
+	let tail = '';
+	const take = (text: string) => {
+		if (!text) return;
+		const window = tail + text;
+		for (const wanted of sought) if (!found.has(wanted) && window.includes(wanted)) found.add(wanted);
+		tail = overlap ? window.slice(-overlap) : '';
+		kept += text;
+		if (kept.length > OUTPUT_KEEP_CHARS * 2) {
+			dropped += kept.length - OUTPUT_KEEP_CHARS;
+			kept = kept.slice(kept.length - OUTPUT_KEEP_CHARS);
+		}
+	};
+	const decoders = new Map<string, StringDecoder>();
+	return {
+		add(stream: string, chunk: Buffer) {
+			if (!decoders.has(stream)) decoders.set(stream, new StringDecoder('utf8'));
+			take(decoders.get(stream)!.write(chunk));
+		},
+		/** The end of the output, saying how much was left out before it. */
+		end(extra = ''): { text: string; truncated: boolean; has: (text: string) => boolean } {
+			for (const decoder of decoders.values()) take(decoder.end());
+			take(extra);
+			const over = kept.length - OUTPUT_KEEP_CHARS;
+			const lost = dropped + Math.max(0, over);
+			const text = over > 0 ? kept.slice(over) : kept;
+			return { text: lost ? `（前面省略 ${lost} 字）\n${text}` : text, truncated: lost > 0, has: (wanted) => found.has(wanted) };
+		}
+	};
 }
 
-/** Run the fixed checks on how a command ended. */
-export function runChecks(checks: readonly FixedCheck[], folder: string, output: string): CheckResult[] {
+/** Whether the file's last line has no line end: what a crash in the middle of an append leaves. */
+function endsTorn(file: string): boolean {
+	let fd: number;
+	try {
+		fd = openSync(file, 'r');
+	} catch {
+		return false;
+	}
+	try {
+		const size = fstatSync(fd).size;
+		if (size === 0) return false;
+		const last = Buffer.alloc(1);
+		readSync(fd, last, 0, 1, size - 1);
+		return last[0] !== 0x0a;
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/** Run the fixed checks on how a command ended; `printed` says whether the output held a text. */
+export function runChecks(checks: readonly FixedCheck[], folder: string, printed: (text: string) => boolean): CheckResult[] {
 	return checks.map((check) => {
 		if (check.type === 'file') {
 			const ok = existsSync(resolve(folder, check.path));
 			return { label: `檔案存在：${check.path}`, ok, ...(ok ? {} : { detail: '找不到這個檔案' }) };
 		}
-		const ok = output.includes(check.text);
+		const ok = printed(check.text);
 		return { label: `輸出含「${check.text}」`, ok, ...(ok ? {} : { detail: '輸出裡沒有這段字' }) };
 	});
 }
@@ -286,7 +343,7 @@ export function createAutomation(options: {
 				broken.push({ file, error: (error as Error).message });
 				continue;
 			}
-			const task = parseTask(raw, file);
+			const task = parseTask(raw, file, home);
 			if (typeof task === 'string') broken.push({ file, error: task });
 			else {
 				tasks.set(task.id, task);
@@ -296,7 +353,9 @@ export function createAutomation(options: {
 	}
 
 	function record(run: AutomationRun, fields: Partial<AutomationRun> = run): AutomationRun {
-		appendFileSync(runsFile(run.taskId), JSON.stringify({ id: run.id, ...fields }) + '\n', { mode: 0o600 });
+		const file = runsFile(run.taskId);
+		// A line cut off by a crash is left alone: the new one starts on a line of its own.
+		appendFileSync(file, (endsTorn(file) ? '\n' : '') + JSON.stringify({ id: run.id, ...fields }) + '\n', { mode: 0o600 });
 		const list = runs.get(run.taskId) ?? [];
 		const index = list.findIndex((entry) => entry.id === run.id);
 		const merged = { ...(index >= 0 ? list[index] : run), ...fields } as AutomationRun;
@@ -358,15 +417,11 @@ export function createAutomation(options: {
 		const outputName = join('output', task.id, `${run.id}.txt`);
 		mkdirSync(join(outputDir, task.id), { recursive: true, mode: 0o700 });
 		return new Promise<void>((done) => {
-			let output = '';
+			const output = outputCollector(spec.checks.flatMap((check) => (check.type === 'output' ? [check.text] : [])));
 			let timedOut = false;
 			const child = spawn('bash', ['-c', spec.command], { cwd: folder, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-			const hold = (chunk: Buffer) => {
-				output += chunk.toString();
-				if (output.length > OUTPUT_HOLD_CHARS) output = output.slice(output.length - OUTPUT_HOLD_CHARS);
-			};
-			child.stdout.on('data', hold);
-			child.stderr.on('data', hold);
+			child.stdout.on('data', (chunk: Buffer) => output.add('stdout', chunk));
+			child.stderr.on('data', (chunk: Buffer) => output.add('stderr', chunk));
 			const signal = (name: NodeJS.Signals) => {
 				try {
 					process.kill(-child.pid!, name);
@@ -384,13 +439,13 @@ export function createAutomation(options: {
 				if (ended) return;
 				ended = true;
 				clearTimeout(limit);
-				const kept = keepEnd(error ? `${output}\n${error.message}` : output);
+				const kept = output.end(error ? `\n${error.message}` : '');
 				try {
 					writeAtomic(join(dir, outputName), kept.text);
 				} catch {
 					// The record still says how it ended.
 				}
-				const checks = runChecks(spec.checks, folder, output);
+				const checks = runChecks(spec.checks, folder, kept.has);
 				const status = timedOut ? 'timeout' : code === 0 && checks.every((check) => check.ok) && !error ? 'success' : 'failed';
 				record(run, {
 					endedAt: now(),
@@ -408,7 +463,21 @@ export function createAutomation(options: {
 			child.on('close', (code) => end(code));
 			if (child.pid) {
 				groups.add(child.pid);
-				child.once('close', () => groups.delete(child.pid!));
+				// What the command left running in the background ends with the run: the run is over, and
+				// nothing of it may outlive the limit or overlap the next run.
+				child.once('close', () => {
+					try {
+						process.kill(-child.pid!, 'SIGTERM');
+					} catch {
+						// Nothing was left: the group is gone, and its number may be reused.
+						groups.delete(child.pid!);
+						return;
+					}
+					setTimeout(() => {
+						signal('SIGKILL');
+						groups.delete(child.pid!);
+					}, KILL_GRACE_MS).unref?.();
+				});
 				record(run, { pid: child.pid });
 			}
 		});

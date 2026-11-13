@@ -14,7 +14,7 @@ function task(overrides: Partial<AutomationTask> = {}): AutomationTask {
 		limitMinutes: 60,
 		kind: 'command',
 		command: { command: 'true', folder: '/tmp', checks: [] },
-		review: { enabled: false, checklist: [] },
+		review: { enabled: false, checklist: [], client: 'codex', model: 'gpt-6.1-sol', effort: 'medium' },
 		paused: false,
 		createdAt: '',
 		updatedAt: '',

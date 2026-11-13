@@ -41,7 +41,21 @@ export interface ReviewSpec {
 	enabled: boolean;
 	/** One item per line of the form's box. */
 	checklist: string[];
+	/** The checking agent: by default the other client than the task's own agent. */
+	client: AgentClient;
+	model: string;
+	effort: AgentEffort;
 }
+
+/** The checking agent's client when none is chosen: the other one than the task's agent; a command task's is Codex. */
+export const defaultReviewClient = (kind: 'command' | 'agent', agentClient?: AgentClient): AgentClient =>
+	kind === 'agent' && agentClient === 'codex' ? 'claude' : 'codex';
+
+/** Each client's model a checking agent starts with until one is chosen. */
+export const DEFAULT_REVIEW_MODEL: Record<AgentClient, string> = { claude: 'claude-opus-5-5', codex: 'gpt-6.1-sol' };
+
+export const EFFORT_TEXT: Record<AgentEffort, string> = { low: '低', medium: '中', high: '高' };
+export const clientName = (client: AgentClient) => (client === 'codex' ? 'Codex' : 'Claude');
 
 /** What the form edits. A task that succeeds in a period does not run again that period: fixed, not a field. */
 export interface AutomationTaskInput {
