@@ -55,7 +55,8 @@ UPDATE_SOURCES = ('user-edit', 'chat')
 CLOSE_REASONS = {'off': '使用者關掉', 'quota': '額度用完', 'delivered': '交付',
                  'cancelled': '取消', 'handover': '換班'}
 END_LABELS = dict(CLOSE_REASONS, superseded='被新版本取代', **{'time-limit': '時間上限到期',
-                                                          'mode-manual': '模式改為人工確認'})
+                                                          'mode-manual': '模式改為人工確認',
+                                                          'settings-error': '設定有錯'})
 DRAFTED_NOTE = '目標由主控擬出'
 STATE_LABELS = {'pending-goal': '無人模式，尚待目標',
                 'active': '無人授權有效', 'none': '無有效授權'}
@@ -226,7 +227,7 @@ class Round:
 def load_round(lat, session):
     """Read the round; the caller holds session_lock. In an active round an open version that
     is past its time limit ends at the limit, and one whose mode no longer resolves to
-    unattended ends now; either is saved at once."""
+    unattended ends now (also when a settings error forces manual); either is saved at once."""
     record, record_bytes, number = read_session(lat, session)
     values, problems = resolve_mode(lat, record)
     versions, grant_bytes = read_grant(lat, session, number)
@@ -237,7 +238,7 @@ def load_round(lat, session):
             end_version(current, deadline(versions), 'time-limit')
             found.save(lat, session)
         elif values['mode']['value'] != 'unattended':
-            end_version(current, now(), 'mode-manual')
+            end_version(current, now(), 'settings-error' if problems else 'mode-manual')
             found.save(lat, session)
     return found
 
@@ -604,7 +605,8 @@ def build_parser():
                      help='off: the user turned it off (the controller goes back to manual); '
                           'quota: quota ran out; delivered, cancelled, handover: the round ended')
     sub = commands.add_parser('check', parents=[common],
-                              help='exit 0 when a version was in effect at a moment, else 1')
+                              help='exit 0 when a version was in effect at a moment, else 1; '
+                                   'like status, first ends a version past its limit or mode')
     sub.add_argument('--version', type=int, required=True)
     sub.add_argument('--at', help='ISO time; default now')
     return parser

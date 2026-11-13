@@ -305,6 +305,12 @@ class GrantTests(UnattendedCase):
         self.assertEqual(self.status()['state'], 'none')
         self.assertIsNotNone(json.loads(self.grant.read_text())['versions'][0]['ended_at'])
 
+    def test_a_settings_error_ends_the_open_version_as_such(self):
+        self.create()
+        self.write(self.global_file, '[unattended]\nmode = "sometimes"\n')
+        self.assertEqual(self.status()['last_end']['reason'], 'settings-error')
+        self.assertIn('設定有錯', self.run_tool('status').stdout)
+
     def test_update_refuses_a_time_limit_that_has_already_passed(self):
         self.create()
         data = json.loads(self.grant.read_text())
