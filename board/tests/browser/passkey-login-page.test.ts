@@ -2,16 +2,14 @@
 // WebAuthn authenticator, the built board), wide and at a phone's width. Chrome reaches the board
 // at https://lat.ouob.net (resolved to 127.0.0.1) through a TLS proxy in front of it, as behind the
 // real reverse proxy, with a certificate made for the test that Chrome is told to accept. Each
-// width gets a Chrome of its own, so each registers a passkey of its own and logs in with it; the
-// TOTP code stays one click away. Opened at another address, the page says passkeys do not work
-// there (plain http included) and TOTP still logs in. With LAT_BOARD_SHOTS set, each state is saved as a frame.
+// width gets a Chrome of its own, so each registers a passkey of its own and logs in with it as the
+// second step after the password, one click from the TOTP code (the passkey alone, with no
+// password, is in passkey-settings-page.test.ts). Opened at another address, the page says
+// passkeys do not work there (plain http included) and TOTP still logs in. With LAT_BOARD_SHOTS set, each state is saved as a frame.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { BOARD_DIR, PASSWORD, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
+import { httpsProxy, PROXY_CHROME_ARGS } from '../https-proxy.ts';
 import { SoftPasskey } from '../soft-passkey.ts';
 
 const T0 = Date.parse('2026-11-01T00:00:00.000Z');
@@ -28,44 +26,8 @@ afterEach(async () => {
 	browser = undefined;
 });
 
-/** An HTTPS proxy for lat.ouob.net in front of the board, as the reverse proxy is: it ends TLS and
- *  tells the board, its trusted proxy, that the browser used HTTPS. It listens before the board
- *  starts, so the board's address can name its port; `target` is read at each request. */
-function httpsProxy(target: () => string) {
-	const dir = mkdtempSync(join(tmpdir(), 'lat-board-tls-'));
-	const [key, cert] = [join(dir, 'key.pem'), join(dir, 'cert.pem')];
-	const made = spawnSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=lat.ouob.net', '-addext', 'subjectAltName=DNS:lat.ouob.net']);
-	if (made.status !== 0) throw new Error(`openssl could not make the test certificate: ${made.stderr}`);
-	const server = Bun.serve({
-		hostname: '127.0.0.1',
-		port: 0,
-		tls: { key: Bun.file(key), cert: Bun.file(cert) },
-		// The board's event stream stays open.
-		idleTimeout: 0,
-		async fetch(request) {
-			const url = new URL(request.url);
-			const headers = new Headers(request.headers);
-			headers.set('x-forwarded-proto', 'https');
-			headers.set('x-forwarded-for', '127.0.0.1');
-			// Passed on as it comes: a body fetch unpacked must not keep its content-encoding.
-			headers.set('accept-encoding', 'identity');
-			// Read whole: passed on as a stream next to its own content-length, Node now and then
-			// refused it with a bare 400.
-			const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer();
-			return fetch(`${target()}${url.pathname}${url.search}`, { method: request.method, headers, body, redirect: 'manual' });
-		}
-	});
-	return {
-		origin: `https://lat.ouob.net:${server.port}`,
-		close() {
-			server.stop(true);
-			rmSync(dir, { recursive: true, force: true });
-		}
-	};
-}
-
 async function open(url: string, size: { width: number; height: number }) {
-	browser = await launchChrome({ args: ['--host-resolver-rules=MAP lat.ouob.net 127.0.0.1', '--ignore-certificate-errors'] });
+	browser = await launchChrome({ args: PROXY_CHROME_ARGS });
 	tab = browser.tab;
 	tab.screen = `document.querySelector('main')?.innerText`;
 	await tab.send('Emulation.setDeviceMetricsOverride', { ...size, deviceScaleFactor: 1, mobile: size.width < 761 });
@@ -137,7 +99,7 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 	});
 
 	for (const [index, size] of SIZES.entries()) {
-		test.skipIf(!CHROME)(`a passkey registered with the host's code logs in; the TOTP code is one click away (${size.width})`, async () => {
+		test.skipIf(!CHROME)(`a passkey registered with the host's code is the second step after the password, one click from the TOTP code (${size.width})`, async () => {
 			fixture.setClock((time += STEP_MS));
 			await open(origin, size);
 			await openEnroll(`document.querySelector('#enroll-code') !== null`, 'the registration form');
@@ -161,25 +123,29 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			await tab.until(`document.querySelector('.notice')?.textContent.includes('已登記 passkey')`, 'the passkey registered');
 			expect(fixture.cli('passkey', 'list').stdout.trim().split('\n')).toHaveLength(index + 1);
 			expect(await tab.eval(`document.activeElement?.id`)).toBe('password');
-			expect(await tab.eval(STEPS)).toEqual(['current 1密碼', 'todo 2passkey']);
+			// The passkey now also logs in alone; typing the password instead means the code comes next.
+			expect(await tab.eval(`document.querySelector('[data-action="passkey-alone"]')?.textContent.trim()`)).toBe('用 passkey 登入');
+			expect(await tab.eval(STEPS)).toEqual(['current 1密碼', 'todo 2驗證碼']);
 			expect(await tab.eval(LAYOUT_PROBLEMS)).toEqual([]);
 			await shot(tab, `${size.width}-3-enrolled`);
 
 			await typeInto('#password', PASSWORD);
-			await tab.pointerClick('form button.primary');
+			await tab.pointerClick('form button');
+			await tab.until(`document.querySelector('#code') !== null`, 'the code step');
+			expect(await tab.eval(STEPS)).toEqual(['done 密碼', 'current 2驗證碼']);
+			expect(await tab.eval(`document.activeElement?.id`)).toBe('code');
+			expect(await tab.eval(LAYOUT_PROBLEMS)).toEqual([]);
+			await shot(tab, `${size.width}-4-code-step`);
+
+			await clickText('改用 passkey');
 			await tab.until(`document.querySelector('button.passkey') !== null`, 'the passkey step');
 			expect(await tab.eval(STEPS)).toEqual(['done 密碼', 'current 2passkey']);
 			expect(await tab.eval(`document.activeElement?.classList.contains('passkey')`)).toBe(true);
 			expect(await tab.eval(LAYOUT_PROBLEMS)).toEqual([]);
-			await shot(tab, `${size.width}-4-passkey-step`);
+			await shot(tab, `${size.width}-5-switched-to-passkey`);
 
 			await clickText('改用驗證碼');
-			await tab.until(`document.querySelector('#code') !== null`, 'the code box');
-			expect(await tab.eval(STEPS)).toEqual(['done 密碼', 'current 2驗證碼']);
-			expect(await tab.eval(`document.activeElement?.id`)).toBe('code');
-			expect(await tab.eval(LAYOUT_PROBLEMS)).toEqual([]);
-			await shot(tab, `${size.width}-5-switched-to-totp`);
-
+			await tab.until(`document.querySelector('#code') !== null`, 'the code box again');
 			await clickText('改用 passkey');
 			await tab.until(`document.querySelector('button.passkey') !== null`, 'the passkey step again');
 			await tab.pointerClick('button.passkey');
@@ -200,6 +166,9 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 
 			await tab.until(`document.querySelector('#password') !== null`, 'the password step');
 			expect(await tab.eval(STEPS)).toEqual(['current 1密碼', 'todo 2驗證碼']);
+			// Passkeys are registered, but not usable here: the reason, and nothing to press.
+			expect(await tab.eval(BLOCKED)).toBe(`passkey 只能在 ${origin} 用。`);
+			expect(await tab.eval(`document.querySelector('button.passkey') === null`)).toBe(true);
 			await typeInto('#password', PASSWORD);
 			await tab.pointerClick('form button.primary');
 			await tab.until(`document.querySelector('#code') !== null`, 'the code step');

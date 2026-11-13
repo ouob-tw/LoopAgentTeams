@@ -34,7 +34,7 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
 	}
 	const passkey = passkeys.find((candidate) => candidate.credentialId === response.id);
 	const site = config.passkeySite;
-	const counter = site && challenge && passkey ? await verifyLogin(site, challenge, response, passkey) : null;
+	const counter = site && challenge && passkey ? await verifyLogin(site, challenge, response, passkey, 'second step') : null;
 	let right = false;
 	if (counter !== null) {
 		try {

@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { Check, KeyRound, TriangleAlert } from '@lucide/svelte';
-	import { startAuthentication, startRegistration, WebAuthnError } from '@simplewebauthn/browser';
+	import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
 	import { onMount, tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { hostCommand } from '#lib/host-command.ts';
+	import { passkeyBlocked as blockedHere, passkeyRefusal } from '#lib/board/passkey-here.ts';
 
 	let { data } = $props();
 
@@ -37,18 +38,21 @@
 	let checked = $state(false);
 
 	onMount(() => {
-		if (!data.passkeyOrigin) passkeyBlocked = '看板沒有設定網址（LAT_BOARD_URL），不能用 passkey。';
-		else if (!window.isSecureContext || location.origin !== data.passkeyOrigin) passkeyBlocked = `passkey 只能在 ${data.passkeyOrigin} 用。`;
-		else if (!window.PublicKeyCredential) passkeyBlocked = '這個瀏覽器不能用 passkey。';
+		passkeyBlocked = blockedHere(data.passkeyOrigin);
 		checked = true;
 	});
 
 	let passkeyHere = $derived(checked && !passkeyBlocked);
+	/** A registered passkey can log in from here alone, with no password. */
+	let passwordless = $derived(passkeyHere && data.passkeys === 'set');
 	/** Registered passkeys this page cannot use, and no TOTP to fall back on: no login from here. */
 	let stranded = $derived(checked && !passkeyHere && data.passkeys === 'set' && data.totp !== 'set');
+	/** Whether the password's second step is the passkey: only where one can be used and there is no
+	 *  TOTP code, as typing the password instead of using the passkey alone means it is not at hand. */
+	const passkeyStep = (offeredSteps: string[]) => offeredSteps.includes('passkey') && passkeyHere && !offeredSteps.includes('totp');
 	/** The second step the page expects before the password is in, then the one in use. */
 	let secondLabel = $derived(
-		(step === 'code' ? method === 'passkey' : data.passkeys === 'set' && passkeyHere) ? 'passkey' : '驗證碼'
+		(step === 'code' ? method === 'passkey' : passkeyStep([...(data.passkeys === 'set' ? ['passkey'] : []), ...(data.totp === 'set' ? ['totp'] : [])])) ? 'passkey' : '驗證碼'
 	);
 
 	$effect(() => {
@@ -124,11 +128,7 @@
 		}
 	}
 
-	/** What the browser's own refusal to make or use a passkey means. */
-	function browserRefused(error: unknown): string {
-		if (error instanceof WebAuthnError && error.code === 'ERROR_AUTHENTICATOR_PREVIOUSLY_REGISTERED') return '這個裝置已經登記過看板的 passkey。';
-		return mode === 'enroll' ? '沒有建立 passkey，請再按一次。' : '沒有完成 passkey，請再按一次。';
-	}
+	const browserRefused = (error: unknown) => passkeyRefusal(error, mode === 'enroll');
 
 	async function login(event: SubmitEvent) {
 		event.preventDefault();
@@ -141,7 +141,7 @@
 		if (response?.ok) {
 			const { secondsLeft, secondStep } = await response.json();
 			offered = Array.isArray(secondStep) ? secondStep : ['totp'];
-			method = offered.includes('passkey') && passkeyHere ? 'passkey' : 'totp';
+			method = passkeyStep(offered) ? 'passkey' : 'totp';
 			step = 'code';
 			failure = '';
 			notice = '';
@@ -169,11 +169,14 @@
 		codeInput?.focus();
 	}
 
-	async function usePasskey() {
+	/** Log in with the passkey: as the second step after the password, or `alone`, with no password. */
+	async function usePasskey(alone = false) {
 		if (sending || waitLeft) return;
 		sending = true;
 		failure = '';
-		const options = await send('/api/login/passkey/options', {});
+		notice = '';
+		const path = alone ? '/api/login/passwordless' : '/api/login/passkey';
+		const options = await send(`${path}/options`, {});
 		if (!options?.ok) {
 			if (options) failure = await refused(options);
 			sending = false;
@@ -187,7 +190,7 @@
 			sending = false;
 			return;
 		}
-		const response = await send('/api/login/passkey', { response: answer });
+		const response = await send(path, { response: answer });
 		if (response?.ok) return void (location.href = '/');
 		if (response) failure = await refused(response);
 		sending = false;
@@ -319,6 +322,16 @@
 	{:else if stranded}
 		{@render blockedNote()}
 	{:else}
+		{#if step === 'password'}
+			{#if passwordless}
+				<button class="primary passkey" type="button" data-action="passkey-alone" onclick={() => usePasskey(true)} disabled={sending || waitLeft > 0}>
+					<KeyRound size="1.1em" aria-hidden="true" />用 passkey 登入
+				</button>
+				<p class="or"><span>或</span></p>
+			{:else if data.passkeys === 'set' && passkeyBlocked}
+				{@render blockedNote()}
+			{/if}
+		{/if}
 		<ol class="steps" aria-label="登入步驟">
 			<li class:done={step === 'code'} aria-current={step === 'password' ? 'step' : undefined}>
 				<span class="mark">{#if step === 'code'}<Check size="0.9em" aria-label="已完成" />{:else}1{/if}</span>密碼
@@ -332,10 +345,10 @@
 				{@render passwordBox()}
 				<!-- Not disabled for an empty box: an autofilled password may not have reached `password`
 				     yet, and `required` already stops an empty submit. -->
-				<button class="primary" disabled={sending || waitLeft > 0}>下一步</button>
+				<button class:primary={!passwordless} disabled={sending || waitLeft > 0}>下一步</button>
 			</form>
 		{:else if method === 'passkey'}
-			<button class="primary passkey" type="button" bind:this={passkeyButton} onclick={usePasskey} disabled={sending || waitLeft > 0}>
+			<button class="primary passkey" type="button" bind:this={passkeyButton} onclick={() => usePasskey()} disabled={sending || waitLeft > 0}>
 				<KeyRound size="1.1em" aria-hidden="true" />使用 passkey
 			</button>
 		{:else}
@@ -456,6 +469,20 @@
 		display: inline-flex;
 		gap: 0.5rem;
 		align-items: center;
+	}
+	/* Between the passkey and the password: a rule with 或 in its middle. */
+	.or {
+		display: flex;
+		gap: 0.6rem;
+		align-items: center;
+		margin: 1rem 0;
+		color: var(--muted);
+	}
+	.or::before,
+	.or::after {
+		content: '';
+		flex: 1;
+		border-top: 1px solid var(--line);
 	}
 	.links {
 		display: flex;
