@@ -128,7 +128,7 @@
 		if (targetKey) tab = 'transcript';
 	});
 
-	// A sent-log entry's 跳到對話: the conversation tab, scrolled to the text it typed in. Another
+	// A sent-log entry's 查看對話: the conversation tab, scrolled to the text it typed in. Another
 	// controller's page looks for nothing.
 	let sentLook = $state<SentLook | null>(null);
 	$effect.pre(() => {

@@ -537,6 +537,10 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	// A sent-log entry's text: earlier parts until it is found or lies too far back, then it is
 	// marked as a pick in 「我說過的話」 is; when it is not there, the newest part with a word why.
 	const sentFound = $derived(sentLook && pdView ? sentPlace(pdView, sentLook) : undefined);
+	// A new jump tries the earlier parts again, as a pick in 「我說過的話」 does.
+	$effect.pre(() => {
+		if (sentLook) untrack(() => (earlierFailed = null));
+	});
 	$effect(() => {
 		if (sentLook && pdView && sentFound === undefined && !loadingEarlier && !earlierFailed) untrack(() => void loadEarlier());
 	});

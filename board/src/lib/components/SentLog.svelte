@@ -182,6 +182,9 @@
 		font-size: max(0.85rem, var(--min-font, 0px));
 		white-space: nowrap;
 	}
+	p {
+		margin: 0;
+	}
 	.meta {
 		display: flex;
 		flex-wrap: wrap;

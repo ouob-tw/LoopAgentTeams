@@ -2,7 +2,7 @@
 // board with fake data): an entry that typed text into the conversation has a button at its row's
 // right end that opens the 對話紀錄 tab at that text, marked; one older than the loaded part is
 // loaded for first; one not found opens the tab with a word why and marks nothing. Entries that
-// typed nothing in have no button. Skipped when the host has no Chrome. LAT_BOARD_SHOTS names a
+// typed nothing in have no button. Fails when the host has no Chrome. LAT_BOARD_SHOTS names a
 // folder for frames of every look.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -100,6 +100,8 @@ for (const [width, height] of [
 			{ id: 'old', ...placed }
 		]);
 		expect(await tab.eval(FITS)).toBe(true);
+		// The lines of a row sit close together: no paragraph margins open blank space in them.
+		expect(await tab.eval(`[...document.querySelectorAll('#panel-sent li .meta')].every((p) => getComputedStyle(p).marginTop === '0px' && getComputedStyle(p).marginBottom === '0px')`)).toBe(true);
 		await shot(tab, `sent-jump-${width}-log`);
 		await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
 		await shot(tab, `sent-jump-${width}-log-dark`);
