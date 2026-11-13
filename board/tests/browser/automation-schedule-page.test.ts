@@ -129,6 +129,9 @@ for (const width of [1280, 390]) {
 		// Each card line stays on one line.
 		expect(await tab.eval<boolean>(`[...document.querySelectorAll('.automation .card .ell')].every((line) => line.getBoundingClientRect().height < 2 * parseFloat(getComputedStyle(line).lineHeight || '24'))`)).toBe(true);
 		await shot(tab, `${width}-s1-list`);
+		await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+		await shot(tab, `${width}-s1-list-dark`);
+		await tab.send('Emulation.setEmulatedMedia', { features: [] });
 	});
 
 	test.skipIf(!CHROME)(`${width}px: a missed task's page offers 立即執行 and 這期就算了; a skipped try reads as one; no 沿用原紀錄 button`, async () => {
@@ -145,6 +148,9 @@ for (const width of [1280, 390]) {
 		expect(await overflowing()).toEqual([]);
 		expect(await tab.eval<boolean>(FITS)).toBe(true);
 		await shot(tab, `${width}-s2-missed-task`);
+		await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+		await shot(tab, `${width}-s2-missed-task-dark`);
+		await tab.send('Emulation.setEmulatedMedia', { features: [] });
 		// Last of all, as these change the tasks: 這期就算了 and 立即執行.
 		if (width === 390) {
 			// 這期就算了: the box goes, the state is waiting again, on this page and in the list.

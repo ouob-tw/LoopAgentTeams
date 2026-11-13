@@ -109,7 +109,7 @@
 	}
 	.missed {
 		color: var(--warn);
-		font-weight: 600;
+		font-weight: 700;
 	}
 	.broken {
 		display: flex;
