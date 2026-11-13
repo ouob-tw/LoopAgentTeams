@@ -162,7 +162,7 @@ test.skipIf(!CHROME)('the comment box sends the item ID, title and words to the 
 	await tab.until(`!!document.querySelector('${item('LAT-AU')} textarea')`, 'the comment box');
 	// Nothing to send until something is written.
 	expect(await tab.eval(`document.querySelector('${item('LAT-AU')} button.send').disabled`)).toBe(true);
-	await shot(tab, '1280-review-comment-box');
+	await shot(tab, '1280-review-comment-box', { box: `${item('LAT-AU')} textarea` });
 	await type(tab, `${item('LAT-AU')} textarea`, '改成 7 天');
 	await click(tab, `${item('LAT-AU')} button.send`);
 	await tab.until(`!document.querySelector('${item('LAT-AU')} textarea')`, 'the box closed after sending');
@@ -233,6 +233,10 @@ test.skipIf(!CHROME)('at 390 wide nothing scrolls sideways and the first two ite
 	await tab.until(`document.querySelector('${item('LAT-P1')}')?.getBoundingClientRect().height > 0`, 'the items shown');
 	await sleep(300);
 	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
+	// No item is listed twice, and no two items share a title.
+	const shown = await tab.eval<string[][]>(`[...document.querySelectorAll('${PANEL} [data-item]')].map((entry) => [entry.dataset.item, entry.querySelector('.title').innerText])`);
+	expect(new Set(shown.map(([id]) => id)).size).toBe(shown.length);
+	expect(new Set(shown.map(([, title]) => title)).size).toBe(shown.length);
 	// The page may scroll, but at its start the first two items are whole above the input row.
 	const frame = await tab.eval<{ cmdTop: number; first: number[]; second: number[] }>(`(() => {
 		const [one, two] = [...document.querySelectorAll('${PANEL} [data-item]')].slice(0, 2).map((entry) => entry.getBoundingClientRect());

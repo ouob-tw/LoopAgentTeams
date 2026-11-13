@@ -28,11 +28,11 @@ export function writeRound(workspace: string, session: string, { parkedRecords =
 	for (let n = 1; n <= parkedRecords; n++) {
 		const id = `LAT-P${n}`;
 		parked.push(id);
-		record(decisions, session, id, n === 1 ? '要不要加匯出功能' : '發佈 0.9 版到套件庫', [
+		record(decisions, session, id, n === 1 ? '要不要加匯出功能' : n === 2 ? '發佈 0.9 版到套件庫' : `刪除舊備份第 ${n} 批`, [
 			'- status: parked',
 			'- advisor: exempt spec-confirmation',
 			'- grant: r1 v1',
-			`- question: ${n === 1 ? 'Spec 要不要加匯出' : '要不要對外發佈'}`,
+			`- question: ${n === 1 ? 'Spec 要不要加匯出' : n === 2 ? '要不要對外發佈' : '要不要刪掉舊資料'}`,
 			`- parked-reason: ${n === 1 ? '屬 Spec 確認，一定擱置' : '發佈是對外動作，要你本人同意'}`,
 			`- blocks: ${n === 1 ? '匯出功能那張票' : '發佈那張票'}`
 		], '');
