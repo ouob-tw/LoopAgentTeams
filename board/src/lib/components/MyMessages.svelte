@@ -43,6 +43,8 @@
 	/** How far left a finger must move to bring it up, in px. */
 	const SWIPE_DISTANCE = 40;
 	let open = $state(false);
+	/** The width of the scrollbar at the window's right edge, which the open list leaves free, in px. */
+	let gap = $state(0);
 	let aside = $state<HTMLElement>();
 
 	let messages = $state<MyMessage[] | null>(null);
@@ -96,12 +98,26 @@
 		if (event.key === 'Escape') open = false;
 	}
 	// Open at the very edge; once open, stay open while the mouse is within the list plus a margin
-	// (the list touches the edge, so there is no gap to fall through): nothing flickers.
+	// (the list touches the edge or the scrollbar, so there is no gap to fall through; over the scrollbar is inside too): nothing flickers.
+	/** How wide the scrollbar is at the window's right edge, in the middle of its height: the page's or the scrolling area's under it. */
+	function scrollbar(): number {
+		let element: Element | null = document.elementFromPoint(innerWidth - 1, innerHeight / 2);
+		while (element && element !== document.documentElement) {
+			const width = (element as HTMLElement).offsetWidth - element.clientWidth;
+			if (width > 1 && element.scrollHeight > element.clientHeight) return width;
+			element = element.parentElement;
+		}
+		return innerWidth - document.documentElement.clientWidth;
+	}
 	function moved(event: PointerEvent) {
 		if (event.pointerType !== 'mouse') return;
 		const atEdge = event.clientX >= innerWidth - EDGE;
 		if (!open) {
-			if (atEdge) open = true;
+			// A button held is a drag, of the scrollbar for one: it never brings the list up.
+			if (atEdge && event.buttons === 0) {
+				gap = scrollbar();
+				open = true;
+			}
 			return;
 		}
 		if (atEdge || !aside) return;
@@ -116,6 +132,7 @@
 	}
 	function swiped(event: TouchEvent) {
 		if (swipeFrom !== null && swipeFrom - event.touches[0].clientX > SWIPE_DISTANCE) {
+			gap = scrollbar();
 			open = true;
 			swipeFrom = null;
 		}
@@ -124,7 +141,7 @@
 
 <svelte:window onkeydown={keys} onpointermove={moved} ontouchstart={touched} ontouchmove={swiped} />
 
-<aside class="mine" bind:this={aside} class:open aria-label="我說過的話" data-block="my-messages">
+<aside class="mine" bind:this={aside} class:open style:right="{gap}px" aria-label="我說過的話" data-block="my-messages">
 	{#if open}
 	<h3>我說過的話</h3>
 	{#if jumping !== null}
@@ -185,7 +202,6 @@
 	.mine {
 		position: fixed;
 		top: 50%;
-		right: 0;
 		transform: translateY(-50%);
 		z-index: 40;
 		display: none;

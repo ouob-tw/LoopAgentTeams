@@ -101,6 +101,8 @@ async function openByEdge(width = 1280, height = 800) {
 	await mouse(width - 2, height / 2);
 	await tab.until(SHOWN, 'the list shown');
 }
+/** The width of the vertical scrollbar at the window's right edge, whichever element scrolls there. */
+const scrollbarWidth = () => tab.eval<number>(`(() => { let el = document.elementFromPoint(innerWidth - 1, innerHeight / 2); while (el && el !== document.documentElement) { const w = el.offsetWidth - el.clientWidth; if (w > 1 && el.scrollHeight > el.clientHeight) return w; el = el.parentElement; } return innerWidth - document.documentElement.clientWidth; })()`);
 const boxOf = () => tab.eval<{ left: number; right: number; top: number; bottom: number }>(`(() => { const r = document.querySelector('${BLOCK}').getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; })()`);
 
 const PAGES = [
@@ -129,7 +131,9 @@ for (const [page, path] of PAGES) {
 		expect(cut).toBe(true);
 		// Flush right, centred, at most the window tall, no animation, no overlay; the page still shows.
 		const box = await boxOf();
-		expect(box.right).toBe(1440);
+		// Flush right, or just left of the scrollbar there.
+		const bar = await scrollbarWidth();
+		expect(box.right).toBe(1440 - bar);
 		expect(Math.abs((box.top + box.bottom) / 2 - 450)).toBeLessThanOrEqual(1);
 		expect(box.bottom - box.top).toBeLessThanOrEqual(900);
 		expect(await tab.eval(`getComputedStyle(document.querySelector('${BLOCK}')).animationName === 'none' && getComputedStyle(document.querySelector('${BLOCK}')).transitionDuration === '0s'`)).toBe(true);
@@ -197,6 +201,36 @@ test.skipIf(!CHROME)('1280px: moving around the boundary never makes the list op
 	await openByEdge();
 	await mouse(300, 400);
 	expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
+}, 60_000);
+
+test.skipIf(!CHROME)('1440px: a classic scrollbar stays usable: the list sits left of it and dragging it scrolls', async () => {
+	await visit(1440, undefined, 900);
+	const bar = await scrollbarWidth();
+	expect(bar).toBeGreaterThan(5);
+	// The scrolling area under the edge, scrolled to the top first.
+	const scroller = `(() => { let el = document.elementFromPoint(innerWidth - 1, innerHeight / 2); while (el && !(el.scrollHeight > el.clientHeight && el.offsetWidth - el.clientWidth > 1)) el = el.parentElement; return el; })()`;
+	await tab.eval(`${scroller}.scrollTo(0, 0)`);
+	// A button held while arriving at the edge is a drag: the list stays closed.
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1000, y: 450 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1000, y: 450, button: 'left', buttons: 1, clickCount: 1 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1438, y: 450, button: 'left', buttons: 1 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1438, y: 450, button: 'left', clickCount: 1 });
+	expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
+	// Hovering the scrollbar opens it, left of the scrollbar; the scrollbar is not covered.
+	await openByEdge(1440, 900);
+	const box = await boxOf();
+	expect(box.right).toBe(1440 - bar);
+	expect(await tab.eval(`document.elementFromPoint(1440 - ${bar / 2}, 450)?.closest('${BLOCK}') === null`)).toBe(true);
+	// Dragging the scrollbar thumb scrolls the conversation, and the list does not close or block it.
+	const top = await tab.eval<number>(`${scroller}.scrollTop`);
+	const x = 1440 - bar / 2;
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: 60 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y: 60, button: 'left', buttons: 1, clickCount: 1 });
+	for (let y = 60; y <= 400; y += 40) await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'left', buttons: 1 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y: 400, button: 'left', clickCount: 1 });
+	expect(await tab.eval<number>(`${scroller}.scrollTop`)).toBeGreaterThan(top);
+	expect(await tab.eval(SHOWN)).toBe(true);
+	await shot(tab, 'my-messages-1440-scrollbar-open');
 }, 60_000);
 
 test.skipIf(!CHROME)('1280px: a tall list is as high as the window and scrolls inside; a short one is only as high as its rows', async () => {
