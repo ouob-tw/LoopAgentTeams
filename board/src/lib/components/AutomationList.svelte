@@ -1,10 +1,10 @@
 <script lang="ts">
 	// The 自動化 tab: one card per scheduled task with its state this period, its run window, the
-	// next automatic try and how the latest run ended. A task file the board cannot read is a red
+	// next automatic try and how the latest run ended, or which periods were missed. A task file the board cannot read is a red
 	// card of its own, never left out. Picking a card opens the task in the content column.
 	import Plus from '@lucide/svelte/icons/plus';
 	import { clock } from '#lib/board/clock.svelte.ts';
-	import { kindText, lastRunText, scheduleText, timeFormat, type AutomationSnapshot } from '#lib/board/automation.ts';
+	import { kindText, lastRunText, missedText, scheduleText, timeFormat, type AutomationSnapshot } from '#lib/board/automation.ts';
 	import AutomationState from './AutomationState.svelte';
 
 	let { automation, currentId, onopen, onnew }: { automation: AutomationSnapshot; currentId: string | null; onopen: (id: string) => void; onnew: () => void } = $props();
@@ -34,7 +34,11 @@
 					<span class="state"><AutomationState state={view.state} /></span>
 					<span class="ell muted">{kindText(view.task.kind)} · {scheduleText(view.task.schedule, view.task.time)}</span>
 					<span class="ell next"><span class="muted">下次</span> {view.nextAt === null ? (view.task.paused ? '暫停中不會自動跑' : '—') : `${at.full(view.nextAt)}${view.nextAt <= clock.now ? '（已到時間）' : ''}`}</span>
-					<span class="ell muted last">{lastRunText(view.runs[0], automation.timeZone)}</span>
+					{#if view.missed.length}
+						<span class="ell last missed">{missedText(view.missed)}</span>
+					{:else}
+						<span class="ell muted last">{lastRunText(view.runs.find((run) => run.status !== 'skipped'), automation.timeZone)}</span>
+					{/if}
 				</button>
 			</li>
 		{/each}
@@ -103,6 +107,10 @@
 	}
 	.muted {
 		color: var(--muted);
+	}
+	.missed {
+		color: var(--warn);
+		font-weight: 700;
 	}
 	.broken {
 		display: flex;

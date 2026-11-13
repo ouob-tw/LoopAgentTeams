@@ -1,7 +1,7 @@
 // Starts the built board against a temporary workspace: temporary state, report and registry
 // directories and a fake helper command. Nothing here reads or writes real LAT data.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { runHerdr } from './fake-herdr.mjs';
 import { tmpdir } from 'node:os';
@@ -555,7 +555,11 @@ export async function startFixture(
 		},
 		board: async (cookie) => (await fixture.fetch('/api/board', { cookie })).json(),
 		refresh: async (cookie) => (await fixture.fetch('/api/refresh', { method: 'POST', headers: { 'content-type': 'application/json' }, cookie })).json(),
-		setClock: (time) => writeFileSync(join(dir, 'clock'), new Date(time).toISOString()),
+		// Written whole and renamed in place: a board reading it every 0.1 s never sees half of it.
+		setClock(time) {
+			writeFileSync(join(dir, 'clock.tmp'), new Date(time).toISOString());
+			renameSync(join(dir, 'clock.tmp'), join(dir, 'clock'));
+		},
 		userStyle(css) {
 			const file = join(dir, 'board-config/user.css');
 			if (css === null) return rmSync(file, { force: true });

@@ -72,6 +72,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_PD_COMMAND` | pd 指令（JSON 字串陣列），看板只會在後面加上 `pending --json`（讀待核准請求）、`deny <編號>`（拒絕），或 passkey 轉送的 `passkey challenge <編號>`、`passkey approve <編號>`（簽章從標準輸入給）；不會執行要確認碼的 pd 指令。正式環境指向以 pdclient 群組執行 pd 的包裝指令 | `["pd"]` |
 | `LAT_BOARD_PD_TIMEOUT_SECONDS` | 上一項多久沒結束就放棄 | `5` |
 | `LAT_BOARD_PD_SECONDS` | pd 待核准請求多久讀一次，所有瀏覽器共用 | `5` |
+| `LAT_BOARD_AUTOMATION_TICK_SECONDS` | 「自動化」排程多久檢查一次（到點的任務、結束的期別、執行上限）；測試用較短的值 | `60` |
 
 `XDG_STATE_HOME` 未設定時是 `~/.local/state`，`XDG_CONFIG_HOME` 未設定時是 `~/.config`。
 
