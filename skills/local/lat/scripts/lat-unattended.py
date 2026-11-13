@@ -20,6 +20,7 @@ effect at a moment. `--json` prints one JSON object, for the board helper.
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -27,6 +28,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _lat_common import shared_lat_dir, write_json_atomic, write_text_atomic
+import _lat_review
 
 
 def load_preauth():
@@ -412,6 +414,7 @@ def cmd_create(args):
                 set_controller_mode(lat, session, found, 'unattended')
             except (OSError, ValueError) as error:
                 undo_grant(lat, session, found, before, error)
+        refresh_after_change(lat, session)
     return report(args, dict(status='ok', created=version), f'已建立第 {version["version"]} 版無人授權')
 
 
@@ -450,6 +453,7 @@ def cmd_update(args):
             end_reason=None)
         end_version(current, moment, 'superseded')
         found.save(lat, session, [*versions, version])
+        refresh_after_change(lat, session)
     return report(args, dict(status='ok', created=version),
                   f'已改為第 {version["version"]} 版無人授權，立即生效')
 
@@ -480,6 +484,7 @@ def cmd_close(args):
                 set_controller_mode(lat, session, found, 'manual')
             except (OSError, ValueError) as error:
                 undo_grant(lat, session, found, before, error)
+        refresh_after_change(lat, session)
     text = (f'已結束第 {ended["version"]} 版無人授權（{CLOSE_REASONS[args.reason]}）' if ended
             else '沒有生效中的無人授權')
     return report(args, dict(status='ok', ended=ended), text)
@@ -517,6 +522,170 @@ def cmd_check(args):
     result = dict(status='ok', effective=reason is None, reason=reason, version=found)
     report(args, result, '有效' if reason is None else f'無效：{reason}')
     return 0 if reason is None else 1
+
+
+# Review ---------------------------------------------------------------------------------------
+# The round's review (references/unattended.md「回顧」): Markdown at REVIEW_MD, rebuilt from the
+# grant, the decision records, the work ledger and the pre-authorization records; the JSON next
+# to it keeps the body hash, the content hash and the cross-check. Created at the first item of
+# a round that had a grant, then rewritten only when the body changes. A content change voids
+# the cross-check; the grant ending (delivery, handover) changes the body but not the content.
+
+CLIENT_FAMILY = {'claude': 'claude', 'codex': 'gpt'}
+FAMILIES = ('claude', 'gpt', 'gemini')
+
+
+def review_files(lat, session, round_number):
+    base = lat / 'unattended' / f'{session}-r{round_number}-review'
+    return base.with_suffix('.md'), base.with_suffix('.json')
+
+
+def read_review_state(path):
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return {}
+    except ValueError as error:
+        raise ValueError(f'unreadable review state {path} ({error})') from None
+    return state if isinstance(state, dict) else {}
+
+
+def decisions_dir(record, lat):
+    directory = record.get('decisions_path')
+    return Path(directory) if isinstance(directory, str) else lat / 'decisions'
+
+
+def write_review(md, state_path, view, body, state):
+    """Write the header with the cross-check that still holds, then the body."""
+    verification = state.get('verification')
+    valid = verification if verification and verification.get('content_sha') == \
+        state['content_sha'] else None
+    header = _lat_review.render_header(view, valid, None if valid else verification,
+                                       state['updated_at'])
+    write_text_atomic(md, header + '\n' + body)
+    write_json_atomic(state_path, state)
+
+
+def sha(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def refresh_review_locked(lat, session, found=None):
+    """Rebuild this round's review; the caller holds session_lock. None when the round never had
+    a grant; else dict(path or None, view, verified, verification)."""
+    found = found or load_round(lat, session)
+    if not found.versions:
+        return None
+    view = _lat_review.collect(
+        lat=lat, workspace=lat.parent, session=session, round_number=found.number,
+        versions=found.versions, decisions=decisions_dir(found.record, lat),
+        end_labels=END_LABELS, scope_labels=SCOPE_LABELS)
+    md, state_path = review_files(lat, session, found.number)
+    state = read_review_state(state_path)
+    if not view['items'] and not md.exists():
+        return dict(path=None, view=view, verified=False, verification=None)
+    body = _lat_review.render_body(view)
+    digest, content = sha(body), sha(_lat_review.content_key(view))
+    if state.get('body_sha') != digest or state.get('content_sha') != content or not md.exists():
+        state = dict(state, body_sha=digest, content_sha=content, updated_at=stamp(now()))
+        write_review(md, state_path, view, body, state)
+    verification = state.get('verification')
+    verified = bool(verification and verification.get('content_sha') == content)
+    return dict(path=md, view=view, verified=verified,
+                verification=verification if verified else None)
+
+
+def refresh_review(lat, session):
+    with preauth.locked(session_lock(lat, session)):
+        return refresh_review_locked(lat, session)
+
+
+def refresh_after_change(lat, session):
+    """A grant change updates the review; a failure here never undoes the grant change."""
+    try:
+        refresh_review_locked(lat, session)
+    except (OSError, ValueError, Refused) as error:
+        print(f'lat-unattended: the review was not updated ({error}); the next turn end retries',
+              file=sys.stderr)
+
+
+def review_result(result):
+    if result is None:
+        return dict(status='ok', path=None, reason='no unattended grant this round')
+    return dict(status='ok', path=str(result['path']) if result['path'] else None,
+                verified=result['verified'], verification=result['verification'],
+                view=result['view'])
+
+
+def review_text(result):
+    if result is None:
+        return '這一輪沒有無人授權，沒有回顧'
+    if result['path'] is None:
+        return '還沒有擱置、代決或自動動作，未建立回顧'
+    return f'{result["path"]}（{"已核對" if result["verified"] else "尚未核對"}）'
+
+
+def cmd_review_update(args):
+    lat, session = owner(args)
+    result = refresh_review(lat, session)
+    return report(args, review_result(result), review_text(result))
+
+
+def cmd_review_show(args):
+    lat, session = owner(args)
+    result = refresh_review(lat, session)
+    if args.json or result is None or result['path'] is None:
+        return report(args, review_result(result), review_text(result))
+    print(result['path'].read_text(encoding='utf-8'), end='')
+    return 0
+
+
+def mismatch_of(text, ids):
+    identifier, _, why = text.partition('：')
+    identifier, why = identifier.strip(), why.strip()
+    if identifier not in ids or not why:
+        raise Refused(f'--mismatch `{text}`: write `<item id>：<what does not match>` with an id '
+                      f'from the review ({", ".join(sorted(ids))})')
+    return dict(id=identifier, text=why)
+
+
+def cmd_review_verify(args):
+    checker = (args.checker or '').strip()
+    if not checker:
+        raise Refused('--checker needs the checking agent\'s name')
+    lat, session = owner(args)
+    with preauth.locked(session_lock(lat, session)):
+        found = load_round(lat, session)
+        result = refresh_review_locked(lat, session, found)
+        if result is None or result['path'] is None:
+            raise Refused('this round has no review to cross-check')
+        own = CLIENT_FAMILY.get(found.record.get('client'))
+        if own is None:
+            raise Refused(f'cannot tell the controller\'s model family from client '
+                          f'{found.record.get("client")!r}')
+        if args.family == own:
+            raise Refused(f'the checker is {args.family} like this controller; a cross-check '
+                          'counts only from another model family')
+        ids = {item['id'] for item in result['view']['items']}
+        mismatches = [mismatch_of(text, ids) for text in args.mismatch or []]
+        if len({m['id'] for m in mismatches}) != len(mismatches):
+            raise Refused('one --mismatch per item')
+        if args.total != len(ids):
+            raise Refused(f'the review has {len(ids)} items, not {args.total}; the checker must '
+                          'check every item of the current version')
+        if args.matched + len(mismatches) != args.total:
+            raise Refused(f'{args.matched} matched + {len(mismatches)} mismatched is not '
+                          f'{args.total}; list every item that does not match with --mismatch')
+        md, state_path = review_files(lat, session, found.number)
+        state = read_review_state(state_path)
+        state['verification'] = dict(checker=checker, family=args.family, at=stamp(now()),
+                                     total=args.total, matched=args.matched,
+                                     mismatches=mismatches,
+                                     content_sha=state['content_sha'])
+        body = _lat_review.render_body(result['view'])
+        write_review(md, state_path, result['view'], body, state)
+    return report(args, dict(status='ok', path=str(md), verification=state['verification']),
+                  f'已寫入核對結論：{args.total} 項中 {args.matched} 項相符 → {md}')
 
 
 # Output ---------------------------------------------------------------------------------------
@@ -614,6 +783,22 @@ def build_parser():
     sub.add_argument('--reason', required=True, choices=CLOSE_REASONS,
                      help='off: the user turned it off (the controller goes back to manual); '
                           'quota: quota ran out; delivered, cancelled, handover: the round ended')
+    review = commands.add_parser('review', help="this round's review: update, show, verify")
+    verbs = review.add_subparsers(dest='verb', required=True)
+    verbs.add_parser('update', parents=[common], help='rebuild the review from its sources'
+                     ).set_defaults(run=cmd_review_update)
+    verbs.add_parser('show', parents=[common], help='rebuild, then print the review (--json: '
+                     'the items for the board)').set_defaults(run=cmd_review_show)
+    sub = verbs.add_parser('verify', parents=[common],
+                           help="record another model family's cross-check of the review")
+    sub.set_defaults(run=cmd_review_verify)
+    sub.add_argument('--checker', required=True, help='the checking agent')
+    sub.add_argument('--family', required=True, choices=FAMILIES,
+                     help="the checker's model family; must differ from the controller's")
+    sub.add_argument('--total', type=int, required=True, help='items checked')
+    sub.add_argument('--matched', type=int, required=True, help='items that match the records')
+    sub.add_argument('--mismatch', action='append',
+                     help='`<item id>：<what does not match>`; one per item that does not match')
     sub = commands.add_parser('check', parents=[common],
                               help='exit 0 when a version was in effect at a moment, else 1; '
                                    'like status, first ends a version past its limit or mode')
@@ -631,7 +816,7 @@ def main():
     args = build_parser().parse_args()
     args.controller_workspace = None  # preauth.round_owner reads it
     try:
-        return COMMANDS[args.command](args)
+        return (getattr(args, 'run', None) or COMMANDS[args.command])(args)
     except Refused as error:
         if args.json:
             print(json.dumps(dict(status='refused', reason=str(error)), ensure_ascii=False))

@@ -75,7 +75,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
   - [ ] 使用者介面的驗收條件，須透過真實 UI 按使用者操作方式驗證；直接呼叫 API 可用於準備資料或診斷，不算 UI 驗收通過。
   - [ ] 任務卡 `視覺驗收` 不是「無」的成果，由實作者以外的人依 [視覺驗收](references/visual-acceptance.md) 看逐格圖判讀，並把看出的缺陷轉成可測門檻；測試通過或符合原型都不算看起來對。
   - [ ] 對先前未攔下的缺陷，依證據辨別原因：缺少情境、走錯路徑、斷言不足、未執行／環境不符，或測試替換行為掩蓋缺陷；未知則保留未知。在同一修正與複驗流程補足覆蓋；修產品 bug 時，回歸證據依 three-tier-testing 的「測試可信度」要求處理。
-- [ ] 交付：Orchestrator 核對驗收證據，確認測試資源已依 three-tier-testing 清理或交接，並核對各任務已完成收尾或在任務卡明列待完成後續工作；`DONE:` 與 deactivate 都會執行工作總表 `check`（有實作列的票必須有 QA 草稿或 QA 列涵蓋，小改動票的例外與證據規則見[小改動通道](references/preauth.md#小改動通道)，QA 列以 `cancel --reason` 取消即記為豁免，否則列為未結案），未結案時 deactivate 只能以 `--force-unfinished --reason` 強制並留下原因。兩處也會印 tracker 警告（本輪票仍開著、已關閉卻留 triage 標籤、子票全關的上層票仍開著），只提醒不擋，處理方式由主控決定。回報成果與未完成事項；必要驗證未執行時，不宣告完成。
+- [ ] 交付：Orchestrator 核對驗收證據，確認測試資源已依 three-tier-testing 清理或交接，並核對各任務已完成收尾或在任務卡明列待完成後續工作；`DONE:` 與 deactivate 都會執行工作總表 `check`（有實作列的票必須有 QA 草稿或 QA 列涵蓋，小改動票的例外與證據規則見[小改動通道](references/preauth.md#小改動通道)，QA 列以 `cancel --reason` 取消即記為豁免，否則列為未結案），未結案時 deactivate 只能以 `--force-unfinished --reason` 強制並留下原因。本輪有過無人授權時，`DONE:` 前另依 [交付前核對](references/unattended.md#交付前核對) 派另一家模型核對回顧檔，用 `lat-unattended.py review verify` 寫回結論，沒核對的 `DONE:` 會被攔下。兩處也會印 tracker 警告（本輪票仍開著、已關閉卻留 triage 標籤、子票全關的上層票仍開著），只提醒不擋，處理方式由主控決定。回報成果與未完成事項；必要驗證未執行時，不宣告完成。
   - [ ] 同步 tracker：本輪範圍內、每項驗收條件都有證據通過的 Ticket，留言交付 commit 與驗證證據後，依 tracker 說明關閉；本機檔案 tracker 把 Status 改為完成。驗收條件經使用者同意縮減時，關票留言寫明縮減內容並引用同意的待決紀錄（`<ID> r<版本>`），主控 hook 會檢查（見 [hook 安裝](references/hook-setup.md)）；找不到同意紀錄就不關。部分完成、驗收未過或未驗證的 Ticket 保持開啟，留言寫明已完成與未完成項目。上層 Spec 在子票清單上所有 Ticket 都已關閉、測試清單在改動範圍內沒有 `FAIL`／`UNPROVEN`／`NOT_EXECUTED`，且 QA 未執行的主控項目（如主機安裝、首次實際執行）已有證據時，主控留言附證據後關閉，Spec 所出自的原 issue 一併關閉；不成立就保持開啟。拿不準就不關，列入交付回報的未完成事項。
 
 需要 Prototype／Wayfinder 時，加入對應子任務。後續修改或新證據若使先前驗證失效，重新開啟受影響項目；已關閉的 Ticket 一併重新打開並留言原因。
@@ -114,7 +114,7 @@ QA 逐項記錄 `PASS`（證據支持）、`FAIL`（結果不符）、`UNPROVEN`
 
 - 派發時提供：目標、範圍、授權、Spec／Ticket 位置、驗收條件、工作位置與審查基準。
 - 一併提供下方「確認與自動推進」規則及共用決策目錄的絕對路徑，讓接手 Agent 核對授權與待決事項。
-- 主控交接時寫明面板綁定狀態與問題檔路徑，以及目前參謀的名稱與狀態；接手者以自己的 session 與 HCOM 名稱重新綁定，把前任待答題用 `question upsert` 重新寫入自己的問題檔（從 r1 開始，不帶入答覆、不修改前任檔案），或在聊天說明。
+- 主控交接時寫明面板綁定狀態與問題檔路徑，目前參謀的名稱與狀態，本輪有無人回顧時再寫回顧檔路徑（`lat-unattended.py review update` 印出）；接手者以自己的 session 與 HCOM 名稱重新綁定，把前任待答題用 `question upsert` 重新寫入自己的問題檔（從 r1 開始，不帶入答覆、不修改前任檔案），或在聊天說明。
 - 完成時回報：成果位置與版本、決策證據、測試結果（整套測試附閘門紀錄，不為回報再跑）／審查結果、未完成事項與下一步。Orchestrator 在相依實作開始前，將持久的架構／依賴決策寫入 `docs/adr/`；範圍與 Ticket 層級決策記在 tracker 的 Spec／Ticket。記錄選擇、理由、影響與延後事項，更新受影響 Spec／Ticket，並在交付時核對文件連結。
 - 接手者先讀交接及引用文件；長對話換 session 時可按需使用 /handoff 整理脈絡。
 - 通訊歷程由 client 與 HCOM 保存，不另寫敘事型執行日誌；每批由 Orchestrator 寫一份整合狀態摘要，不逐 Agent 建立報告。
