@@ -71,18 +71,21 @@ function start(config: BoardConfig, client: string, sessionId: string, key: stri
 				}
 				for (const message of myMessages(read.page.items)) job.messages.set(message.seq, message);
 				for (const item of read.page.items) last = Math.max(last, item.seq);
-				const start = read.page.items[0]?.seq ?? read.page.before ?? 0;
-				job.lowest = start;
+				const first = read.page.items[0]?.seq ?? read.page.before ?? 0;
+				job.lowest = first;
 				began();
 				if (read.page.before === null) break;
 				// The page reaches what an earlier read already holds: the rest is the same.
-				if (before && start <= before.last) {
-					for (const [seq, message] of before.messages) if (seq < start) job.messages.set(seq, message);
+				if (before && first <= before.last) {
+					for (const [seq, message] of before.messages) if (seq < first) job.messages.set(seq, message);
 					break;
 				}
 				cursor = read.page.before;
 			}
 			seen.set(key, { messages: job.messages, last });
+		} catch (error) {
+			job.failure = `讀取失敗：${error instanceof Error ? error.message : String(error)}`;
+			if (job.lowest !== Infinity) failures.set(key, job.failure);
 		} finally {
 			job.finished = true;
 			jobs.delete(key);

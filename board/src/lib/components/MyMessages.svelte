@@ -13,6 +13,7 @@
 	import MessageSquareText from '@lucide/svelte/icons/message-square-text';
 	import X from '@lucide/svelte/icons/x';
 	import { MediaQuery } from 'svelte/reactivity';
+	import { untrack } from 'svelte';
 
 	let {
 		feed,
@@ -46,17 +47,14 @@
 
 	let messages = $state<MyMessage[] | null>(null);
 	let problem = $state<string | null>(null);
-	let loading = $state(false);
 	let reads = 0;
 	const request = createRequest();
 
 	async function read(forId: string) {
 		const mine = ++reads;
-		loading = true;
 		const path = feed === 'agent' ? `/api/agents/transcript/mine?session=${encodeURIComponent(forId)}` : `/api/transcript/mine?controller=${encodeURIComponent(forId)}`;
 		const result = await request<MyMessagesUpdate>(path);
 		if (mine !== reads) return;
-		loading = false;
 		if (!result.ok) {
 			if (!result.unpaired) problem = '沒有收到看板伺服器的回應。';
 		} else if (result.value.ok) {
@@ -76,12 +74,16 @@
 		if (!open) return;
 		const forId = id;
 		void version;
-		if (readFor !== forId) {
-			readFor = forId;
-			messages = null;
-			problem = null;
-		}
-		const timer = setTimeout(() => void read(forId), messages === null ? 0 : 300);
+		// Not tracked: the read itself sets them.
+		const first = untrack(() => {
+			if (readFor !== forId) {
+				readFor = forId;
+				messages = null;
+				problem = null;
+			}
+			return messages === null;
+		});
+		const timer = setTimeout(() => void read(forId), first ? 0 : 300);
 		return () => clearTimeout(timer);
 	});
 	$effect(() => () => void reads++);
@@ -159,6 +161,17 @@
 			<div class="body">{@render panel()}</div>
 		{/if}
 	{:else}
+		{#if phone.current && jumping !== null}
+			<!-- The sheet is closed by the pick: where the jump is, and why it stopped, shows by the button. -->
+			<p class="chip" role="status">
+				{#if failure}
+					更早的紀錄載入失敗：{failure}
+					<button type="button" class="retry" onclick={onretry}>重試</button>
+				{:else}
+					<span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>載入中…
+				{/if}
+			</p>
+		{/if}
 		<button type="button" class="opener" aria-label="我說過的話" aria-expanded="false" title="我說過的話" onclick={() => toggle(true)}>
 			<MessageSquareText size="20" />
 		</button>
@@ -317,6 +330,20 @@
 		height: 3rem;
 		border-radius: var(--radius-pill);
 		box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
+		pointer-events: auto;
+	}
+	.chip {
+		position: absolute;
+		right: 4.2rem;
+		bottom: 0.9rem;
+		max-width: calc(100vw - 5.5rem);
+		margin: 0;
+		padding: 0.4rem 0.7rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+		font-size: max(0.85rem, var(--min-font, 0px));
+		overflow-wrap: anywhere;
 		pointer-events: auto;
 	}
 	.backdrop {

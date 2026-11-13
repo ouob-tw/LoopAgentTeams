@@ -257,3 +257,30 @@ for (const [page, path] of [
 		await shot(tab, `my-messages-390-${page.replace(' ', '-')}-picked`);
 	}, 90_000);
 }
+
+test.skipIf(!CHROME)('1280px: an open list does not keep reading the conversation while nothing changes', async () => {
+	await visit(1280);
+	await tab.until(`document.querySelectorAll('${ROWS}').length === 130`, 'the list');
+	await sleep(1_000);
+	const calls = fixture.helperArgs('transcript').length;
+	await sleep(2_500);
+	expect(fixture.helperArgs('transcript').length).toBe(calls);
+}, 30_000);
+
+test.skipIf(!CHROME)('390px: a failed load for a picked message shows its reason and retry by the button, with the sheet closed', async () => {
+	await visit(390);
+	await click(OPENER);
+	await tab.until(`document.querySelectorAll('${ROWS}').length === 130`, 'the list');
+	const fail = join(fixture.dir, 'transcripts', `${luna.session_id}.fail`);
+	writeFileSync(fail, '紀錄暫時讀不到');
+	try {
+		await click(rowOf(seqOf(1)));
+		await tab.until(`!document.querySelector('${ROWS}') && document.querySelector('${BLOCK} .chip')?.innerText.includes('紀錄暫時讀不到')`, 'the reason by the button', 15_000);
+		expect(await tab.eval(FITS)).toBe(true);
+		await shot(tab, 'my-messages-390-failed');
+	} finally {
+		rmSync(fail, { force: true });
+	}
+	await click(`${BLOCK} .chip .retry`);
+	await tab.until(`${said(seqOf(1))}?.classList.contains('flashed')`, 'the message after the retry', 20_000);
+}, 60_000);
