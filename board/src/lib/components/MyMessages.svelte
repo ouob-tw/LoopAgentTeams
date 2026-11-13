@@ -1,18 +1,13 @@
 <script lang="ts">
-	// 「我說過的話」: what the user said in the whole conversation, newest first, beside the
-	// transcript. Wide screens keep it as a column that folds into a small button, remembered on
-	// this device; a phone, or a column too narrow to sit beside the conversation, shows only a floating button that opens it as a sheet from the right,
-	// closed again by a pick. A pick is handed to the conversation, which scrolls to it, loading
-	// earlier parts first when it is not there yet.
+	// 「我說過的話」: what the user said in the whole conversation, newest first. It never shows on
+	// its own: a mouse reaching the window's right edge, or a finger swiping left from that edge,
+	// brings it up flush right and centred, over nothing but the page; it goes away when the mouse
+	// leaves it, or on a pick or a touch outside. A pick is handed to the conversation, which
+	// scrolls to it, loading earlier parts first when it is not there yet.
 	import { createRequest } from '#lib/board/api.ts';
-	import { formatTime } from '#lib/board/format.ts';
 	import type { MyMessage, MyMessagesUpdate } from '#lib/board/my-messages.ts';
-	import { MY_MESSAGES_KEY, remember, remembered } from '#lib/board/prefs.ts';
 	import type { TranscriptFeed } from '#lib/board/earlier.ts';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
-	import MessageSquareText from '@lucide/svelte/icons/message-square-text';
-	import X from '@lucide/svelte/icons/x';
-	import { MediaQuery } from 'svelte/reactivity';
 	import { untrack } from 'svelte';
 
 	let {
@@ -39,26 +34,16 @@
 
 	/** How soon the list asks again while the server is still reading the older part. */
 	const MORE_MS = 600;
-	const phone = new MediaQuery('(max-width: 760px)', false);
-	/** The narrowest the conversation's column may be for the list to sit beside it. */
-	const BESIDE_PX = 540;
+	/** The strip at the window's right edge that brings the list up, in px. */
+	const EDGE = 8;
+	/** How far around the open list the mouse may stray without closing it, in px. */
+	const MARGIN = 24;
+	/** A touch starting this close to the right edge may be a swipe that brings the list up, in px. */
+	const SWIPE_START = 24;
+	/** How far left a finger must move to bring it up, in px. */
+	const SWIPE_DISTANCE = 40;
+	let open = $state(false);
 	let aside = $state<HTMLElement>();
-	/** The conversation column's width; null until measured, while nothing of the list shows. */
-	let frameWidth = $state<number | null>(null);
-	// A narrow column, not only a phone's window, leaves no room beside the conversation.
-	$effect(() => {
-		const frame = aside?.parentElement;
-		if (!frame) return;
-		const watch = new ResizeObserver(() => (frameWidth = frame.clientWidth));
-		watch.observe(frame);
-		return () => watch.disconnect();
-	});
-	/** Whether the list is a floating button and a sheet rather than a column. */
-	const compact = $derived(phone.current || (frameWidth ?? Infinity) < BESIDE_PX);
-	let folded = $state(remembered(MY_MESSAGES_KEY, ['open', 'folded'], 'open') === 'folded');
-	let sheet = $state(false);
-	/** Whether the list shows: the wide layout's column unless folded, a phone's sheet while opened. */
-	const open = $derived(compact ? sheet : !folded);
 
 	let messages = $state<MyMessage[] | null>(null);
 	let problem = $state<string | null>(null);
@@ -86,7 +71,7 @@
 	let readFor: string | undefined;
 	// Read when shown, and again after each change of the conversation, a moment later so a burst is one read.
 	$effect(() => {
-		if (!open || frameWidth === null) return;
+		if (!open) return;
 		const forId = id;
 		void version;
 		// Not tracked: the read itself sets them.
@@ -103,29 +88,45 @@
 	});
 	$effect(() => () => void reads++);
 
-	function toggle(next: boolean) {
-		if (compact) sheet = next;
-		else {
-			folded = !next;
-			remember(MY_MESSAGES_KEY, folded ? 'folded' : 'open');
-		}
-	}
 	function pick(seq: number) {
-		if (compact) sheet = false;
+		open = false;
 		onpick(seq);
 	}
 	function keys(event: KeyboardEvent) {
-		if (event.key === 'Escape' && compact && sheet) sheet = false;
+		if (event.key === 'Escape') open = false;
+	}
+	// Open at the very edge; once open, stay open while the mouse is within the list plus a margin
+	// (the list touches the edge, so there is no gap to fall through): nothing flickers.
+	function moved(event: PointerEvent) {
+		if (event.pointerType !== 'mouse') return;
+		const atEdge = event.clientX >= innerWidth - EDGE;
+		if (!open) {
+			if (atEdge) open = true;
+			return;
+		}
+		if (atEdge || !aside) return;
+		const box = aside.getBoundingClientRect();
+		if (event.clientX < box.left - MARGIN || event.clientY < box.top - MARGIN || event.clientY > box.bottom + MARGIN) open = false;
+	}
+	let swipeFrom: number | null = null;
+	function touched(event: TouchEvent) {
+		const x = event.touches[0].clientX;
+		swipeFrom = x > innerWidth - SWIPE_START ? x : null;
+		if (open && !aside?.contains(event.target as Node)) open = false;
+	}
+	function swiped(event: TouchEvent) {
+		if (swipeFrom !== null && swipeFrom - event.touches[0].clientX > SWIPE_DISTANCE) {
+			open = true;
+			swipeFrom = null;
+		}
 	}
 </script>
 
-<svelte:window onkeydown={keys} />
+<svelte:window onkeydown={keys} onpointermove={moved} ontouchstart={touched} ontouchmove={swiped} />
 
-{#snippet panel()}
-	<div class="head">
-		<h3>我說過的話</h3>
-		<button type="button" class="icon" aria-label="收合我說過的話" onclick={() => toggle(false)}><X size="18" /></button>
-	</div>
+<aside class="mine" bind:this={aside} class:open aria-label="我說過的話" data-block="my-messages">
+	{#if open}
+	<h3>我說過的話</h3>
 	{#if jumping !== null}
 		<p class="status" role="status">
 			{#if failure}
@@ -158,121 +159,81 @@
 			{#each messages as message (message.seq)}
 				<li>
 					<button type="button" class:pending={jumping === message.seq} data-seq={message.seq} onclick={() => pick(message.seq)}>
-						<time datetime={message.time ?? undefined}>{formatTime(message.time)}</time>
 						<span class="line">{message.line}</span>
 					</button>
 				</li>
 			{/each}
 		</ul>
 	{/if}
-{/snippet}
-
-<aside class="mine" bind:this={aside} class:phone={compact} class:open class:unmeasured={frameWidth === null} data-block="my-messages">
-	{#if open}
-		{#if compact}
-			<button type="button" class="backdrop" aria-label="關閉我說過的話" onclick={() => toggle(false)}></button>
-			<div class="body sheet" role="dialog" aria-label="我說過的話">{@render panel()}</div>
-		{:else}
-			<div class="body">{@render panel()}</div>
-		{/if}
-	{:else}
-		{#if compact && jumping !== null}
-			<!-- The sheet is closed by the pick: where the jump is, and why it stopped, shows by the button. -->
-			<p class="chip" role="status">
-				{#if failure}
-					更早的紀錄載入失敗：{failure}
-					<button type="button" class="retry" onclick={onretry}>重試</button>
-				{:else}
-					<span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>載入中…
-				{/if}
-			</p>
-		{/if}
-		<button type="button" class="opener" aria-label="我說過的話" aria-expanded="false" title="我說過的話" onclick={() => toggle(true)}>
-			<MessageSquareText size="20" />
-		</button>
 	{/if}
 </aside>
+{#if !open && jumping !== null}
+	<!-- The list is closed by the pick: where the jump is, and why it stopped, shows at the edge. -->
+	<p class="chip" role="status">
+		{#if failure}
+			更早的紀錄載入失敗：{failure}
+			<button type="button" class="retry" onclick={onretry}>重試</button>
+		{:else}
+			<span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>載入中…
+		{/if}
+	</p>
+{/if}
 
 <style>
-	/* Wide: a column beside the conversation, following the page as it scrolls, never over it. */
+	/* Flush right and centred in the window, as tall as its rows need and no taller than the window;
+	   no overlay, no animation. Shown only while open. */
 	.mine {
-		position: sticky;
-		top: 0;
-		align-self: start;
-		flex: none;
-		width: 15rem;
-		max-height: calc(100vh - 4rem);
-		display: flex;
+		position: fixed;
+		top: 50%;
+		right: 0;
+		transform: translateY(-50%);
+		z-index: 40;
+		display: none;
 		flex-direction: column;
-	}
-	.unmeasured {
-		visibility: hidden;
-	}
-	.mine:not(.open) {
-		width: auto;
-	}
-	.body {
-		display: flex;
-		flex-direction: column;
-		min-height: 0;
-		max-height: inherit;
+		width: min(20rem, calc(100vw - 2rem));
+		max-height: 100dvh;
 		background: var(--surface);
 		border: 1px solid var(--line);
-		border-radius: var(--radius);
+		border-radius: var(--radius) 0 0 var(--radius);
+		box-shadow: 0 8px 28px rgb(0 0 0 / 0.18);
 		overflow: hidden;
+		font-weight: 400;
+		line-height: 1.7;
 	}
-	.head {
+	.mine.open {
 		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.4rem;
-		padding: 0.4rem 0.4rem 0.4rem 0.7rem;
-		border-bottom: 1px solid var(--line);
 	}
 	h3 {
 		margin: 0;
-		font-size: max(0.9rem, var(--min-font, 0px));
+		padding: 0.6rem 0.9rem;
+		border-bottom: 1px solid var(--line);
+		font-size: max(1rem, var(--min-font, 0px));
+		font-weight: 700;
 	}
-	.icon,
-	.opener,
 	.retry {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
+		min-height: 2.75rem;
+		padding: 0 0.8rem;
+		margin-left: 0.4rem;
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		background: var(--surface);
 		color: var(--text);
+		font: inherit;
 		cursor: pointer;
-	}
-	.icon {
-		width: 2.4rem;
-		height: 2.4rem;
-		border: 0;
-	}
-	.opener {
-		width: 2.4rem;
-		height: 2.4rem;
-	}
-	.icon :global(svg),
-	.opener :global(svg) {
-		width: 1.25rem;
-		height: 1.25rem;
-	}
-	.retry {
-		padding: 0.15rem 0.6rem;
-		margin-left: 0.4rem;
 	}
 	.status {
 		margin: 0;
-		padding: 0.5rem 0.7rem;
-		font-size: max(0.85rem, var(--min-font, 0px));
+		padding: 0.5rem 0.9rem;
+		font-size: max(0.9rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
 	ul {
 		margin: 0;
-		padding: 0.2rem;
+		padding: 0.4rem;
 		list-style: none;
 		overflow-y: auto;
 		overscroll-behavior: contain;
@@ -281,32 +242,29 @@
 	li {
 		/* A thousand rows cost nothing until they are on screen. */
 		content-visibility: auto;
-		contain-intrinsic-size: auto 3.2rem;
+		contain-intrinsic-size: auto 2.75rem;
 	}
 	li button {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 0.1rem;
+		display: block;
 		width: 100%;
-		padding: 0.4rem 0.5rem;
+		min-height: 2.75rem;
+		padding: 0.5rem 0.6rem;
 		border: 0;
 		border-radius: var(--radius);
 		background: transparent;
 		color: var(--text);
+		font: inherit;
+		font-size: max(1rem, var(--min-font, 0px));
 		text-align: left;
 		cursor: pointer;
 	}
 	li button:hover,
+	li button:focus-visible,
 	li button.pending {
 		background: color-mix(in srgb, var(--text) 10%, var(--surface));
 	}
-	time {
-		font-size: max(0.75rem, var(--min-font, 0px));
-		color: var(--muted);
-	}
 	.line {
-		max-width: 100%;
+		display: block;
 		overflow: hidden;
 		white-space: nowrap;
 		text-overflow: ellipsis;
@@ -327,69 +285,20 @@
 			animation: none;
 		}
 	}
-
-	/* Phone: a floating button above the command line, and a sheet from the right over the page. */
-	.mine.phone {
-		position: fixed;
-		top: 0;
-		right: 0;
-		left: 0;
-		width: auto;
-		height: calc(100dvh - var(--dock-h, 0px));
-		max-height: none;
-		z-index: 40;
-		pointer-events: none;
-	}
-	.phone .opener {
-		position: absolute;
-		right: 0.75rem;
-		bottom: 0.7rem;
-		width: 3rem;
-		height: 3rem;
-		border-radius: var(--radius-pill);
-		box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
-		pointer-events: auto;
-	}
+	/* While a pick is loading earlier parts, only this note stays at the edge. */
 	.chip {
-		position: absolute;
-		right: 4.2rem;
-		bottom: 0.9rem;
-		max-width: calc(100vw - 5.5rem);
-		margin: 0;
-		padding: 0.4rem 0.7rem;
-		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		background: var(--surface);
-		font-size: max(0.85rem, var(--min-font, 0px));
-		overflow-wrap: anywhere;
-		pointer-events: auto;
-	}
-	.backdrop {
-		position: absolute;
-		inset: 0;
-		border: 0;
-		background: rgb(0 0 0 / 0.4);
-		pointer-events: auto;
-	}
-	.sheet {
-		position: absolute;
-		top: 0;
+		position: fixed;
 		right: 0;
-		bottom: 0;
-		width: min(86vw, 22rem);
-		max-height: none;
+		bottom: calc(var(--dock-h, 0px) + 0.9rem);
+		z-index: 40;
+		max-width: calc(100vw - 2rem);
+		margin: 0;
+		padding: 0.5rem 0.9rem;
+		border: 1px solid var(--line);
 		border-radius: var(--radius) 0 0 var(--radius);
-		pointer-events: auto;
-		animation: slide 0.18s ease-out;
-	}
-	@keyframes slide {
-		from {
-			transform: translateX(100%);
-		}
-	}
-	@media (prefers-reduced-motion: reduce) {
-		.sheet {
-			animation: none;
-		}
+		background: var(--surface);
+		font-size: max(0.9rem, var(--min-font, 0px));
+		line-height: 1.7;
+		overflow-wrap: anywhere;
 	}
 </style>
