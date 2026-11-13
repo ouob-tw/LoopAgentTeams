@@ -2,7 +2,7 @@
 	// 推播通知 in the settings: 允許通知 makes this device's subscription, 關閉通知 removes it; other
 	// devices keep theirs. Where the page cannot take pushes, the reason stands in place of the button.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
-	import { disablePush, enablePush, pushOn, pushSupport, thisPage } from '#lib/board/push-setup.ts';
+	import { disablePush, enablePush, pushState, pushSupport, thisPage } from '#lib/board/push-setup.ts';
 	import TestDenied from './TestDenied.svelte';
 
 	/** null until read. */
@@ -18,7 +18,9 @@
 		reason = support.ok ? null : support.reason;
 		if (!support.ok) return;
 		try {
-			on = await pushOn();
+			const state = await pushState();
+			on = state.on;
+			reason = state.problem;
 		} catch {
 			on = false;
 		}

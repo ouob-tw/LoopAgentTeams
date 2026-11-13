@@ -40,12 +40,22 @@ function keyBytes(text: string): Uint8Array<ArrayBuffer> {
 	return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
-/** Whether this device gets pushes now: the board keeps the subscription this browser has. */
-export async function pushOn(): Promise<boolean> {
-	const server = await request<{ publicKey: string; endpoint: string | null }>('/api/push');
-	if (!server.ok || !server.value.endpoint) return false;
+interface BoardPush {
+	publicKey: string | null;
+	endpoint: string | null;
+	/** Why the board cannot push at all; null when it can. */
+	problem: string | null;
+}
+
+/** Whether this device gets pushes now (the board keeps the subscription this browser has), or why
+ *  the board cannot push at all. */
+export async function pushState(): Promise<{ on: boolean; problem: string | null }> {
+	const server = await request<BoardPush>('/api/push');
+	if (!server.ok) return { on: false, problem: null };
+	if (server.value.problem) return { on: false, problem: server.value.problem };
+	if (!server.value.endpoint) return { on: false, problem: null };
 	const subscription = await (await registration()).pushManager.getSubscription();
-	return subscription?.endpoint === server.value.endpoint;
+	return { on: subscription?.endpoint === server.value.endpoint, problem: null };
 }
 
 /** 允許通知: asks the browser first; the words to show when it did not turn on, else null. */
@@ -53,8 +63,9 @@ export async function enablePush(): Promise<string | null> {
 	const permission = await Notification.requestPermission();
 	if (permission === 'denied') return BLOCKED;
 	if (permission !== 'granted') return '沒有允許通知，推播沒有開啟。';
-	const server = await request<{ publicKey: string }>('/api/push');
+	const server = await request<BoardPush>('/api/push');
 	if (!server.ok) return NO_ANSWER;
+	if (!server.value.publicKey) return server.value.problem ?? NO_ANSWER;
 	const key = keyBytes(server.value.publicKey);
 	let subscription: PushSubscription;
 	try {

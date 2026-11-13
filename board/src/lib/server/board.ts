@@ -264,7 +264,7 @@ function createBoard(): Board {
 	const push = createPush({
 		dir: join(config.stateDir, 'push'),
 		now: config.now,
-		subject: config.passkeySite?.origin ?? 'https://localhost',
+		subject: config.passkeySite?.origin ?? null,
 		deviceKnown: (deviceId) => listDevices(config.stateDir).some((device) => device.id === deviceId),
 		testOrigin: config.pushTestOrigin
 	});

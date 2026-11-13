@@ -116,7 +116,7 @@ const pushesSince = (from: number) =>
 	received.slice(from).map((entry) => ({ ...entry, message: decrypt(entry.body, devices.find((device) => device.path === entry.path)!.keys) as Record<string, string> }));
 
 beforeAll(async () => {
-	fixture = await startFixture({ env: { TZ: 'UTC', LAT_BOARD_AUTOMATION_TICK_SECONDS: '0.1', LAT_BOARD_PUSH_TEST_ORIGIN: ORIGIN } });
+	fixture = await startFixture({ env: { TZ: 'UTC', LAT_BOARD_AUTOMATION_TICK_SECONDS: '0.1', LAT_BOARD_PUSH_TEST_ORIGIN: ORIGIN, LAT_BOARD_URL: 'https://board.example.test' } });
 	fixture.setClock(tpe(2026, 11, 13));
 	await sleep(700);
 	work = join(fixture.dir, 'work');
@@ -177,7 +177,7 @@ test('a failed run: one red card linked to the run, a push to every device with 
 		expect(Number(push.headers.ttl)).toBeGreaterThan(0);
 		const claims = vapidClaims(push.headers.authorization, key);
 		expect(claims.aud).toBe(ORIGIN);
-		expect(claims.sub).toBeString();
+		expect(claims.sub).toBe('https://board.example.test');
 	}
 	expect((await eventually(async () => (await alerts()).find((alert) => alert.id === card.id && alert.pushed), 'the push noted')).pushed!.devices).toBe(2);
 });

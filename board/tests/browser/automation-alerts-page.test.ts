@@ -78,7 +78,7 @@ async function eventually<T>(read: () => Promise<T | undefined | false>, what: s
 }
 
 beforeAll(async () => {
-	fixture = await startFixture({ env: { TZ: 'UTC', LAT_BOARD_AUTOMATION_TICK_SECONDS: '0.2', LAT_BOARD_PUSH_TEST_ORIGIN: PUSH_ORIGIN } });
+	fixture = await startFixture({ env: { TZ: 'UTC', LAT_BOARD_AUTOMATION_TICK_SECONDS: '0.2', LAT_BOARD_PUSH_TEST_ORIGIN: PUSH_ORIGIN, LAT_BOARD_URL: 'https://board.example.test' } });
 	fixture.setClock(tpe(2026, 11, 11, 8));
 	await sleep(1_000);
 	cookie = await fixture.login();

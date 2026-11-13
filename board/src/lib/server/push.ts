@@ -33,8 +33,10 @@ const fromB64u = (text: unknown): Buffer | null => (typeof text === 'string' && 
 export type Subscribed = { ok: true } | { ok: false; error: string };
 
 export interface Push {
-	/** The VAPID public key, base64url, as `applicationServerKey` wants it. */
-	publicKey(): string;
+	/** The VAPID public key, base64url, as `applicationServerKey` wants it; null when pushes cannot work here. */
+	publicKey(): string | null;
+	/** Why pushes cannot work on this board, in words for the settings page; null when they can. */
+	problem(): string | null;
 	/** This device's subscription endpoint; null when it has none. */
 	endpointOf(deviceId: string): string | null;
 	/** Keep this device's subscription, in place of any it had. */
@@ -125,15 +127,25 @@ export function createPush(options: {
 	/** The board state directory's `push` folder. */
 	dir: string;
 	now(): number;
-	/** Who sends, as push services ask: the board's https address. */
-	subject: string;
+	/** Who sends, as push services ask: the board's https address; null when it is not set, which leaves pushes off. */
+	subject: string | null;
 	/** Whether a device is still logged in: pushes go only to those. */
 	deviceKnown(deviceId: string): boolean;
 	/** An origin taken as a push service besides the real ones: the tests' fake service. */
 	testOrigin?: string | null;
 }): Push {
 	mkdirSync(options.dir, { recursive: true, mode: 0o700 });
-	const keys = loadKeys(options.dir);
+	// A key file that cannot be read turns pushes off, not the board; it is left as it is, as the
+	// subscriptions were made for it.
+	let keys: { privateKey: KeyObject; publicKey: string } | null = null;
+	let problem: string | null = null;
+	try {
+		keys = loadKeys(options.dir);
+	} catch (error) {
+		log('ERROR', 'board.push', 'vapid_key_unreadable', { error: (error as Error).message });
+		problem = '看板的推播金鑰檔讀不出來，推播暫停；請查看看板日誌。';
+	}
+	if (options.subject === null) problem ??= '看板沒有設定自己的 https 網址（LAT_BOARD_URL），推播服務不收，所以不能推播。';
 	const file = join(options.dir, 'subscriptions.json');
 	let subscriptions: StoredSubscription[];
 	try {
@@ -155,7 +167,7 @@ export function createPush(options: {
 			const response = await fetch(entry.endpoint, {
 				method: 'POST',
 				headers: {
-					authorization: vapidHeader(entry.endpoint, keys, options.subject, options.now()),
+					authorization: vapidHeader(entry.endpoint, keys!, options.subject!, options.now()),
 					'content-encoding': 'aes128gcm',
 					'content-type': 'application/octet-stream',
 					ttl: String(TTL_SECONDS),
@@ -180,9 +192,11 @@ export function createPush(options: {
 	}
 
 	return {
-		publicKey: () => keys.publicKey,
+		publicKey: () => (problem ? null : keys!.publicKey),
+		problem: () => problem,
 		endpointOf: (deviceId) => subscriptions.find((entry) => entry.deviceId === deviceId)?.endpoint ?? null,
 		subscribe(deviceId, input) {
+			if (problem) return { ok: false, error: problem };
 			const checked = checkSubscription(input, options.testOrigin ?? null);
 			if (typeof checked === 'string') return { ok: false, error: checked };
 			// One per device, and an endpoint belongs to one device only.
@@ -199,7 +213,10 @@ export function createPush(options: {
 			return true;
 		},
 		async send(message) {
-			drop(subscriptions.filter((entry) => !options.deviceKnown(entry.deviceId)));
+			if (problem) return 0;
+			// A device logged out, or an address no longer taken (one saved by hand or while a test
+			// origin was set), is dropped before anything is sent.
+			drop(subscriptions.filter((entry) => !options.deviceKnown(entry.deviceId) || typeof checkSubscription(entry, options.testOrigin ?? null) === 'string'));
 			const body = Buffer.from(JSON.stringify(message));
 			// Topic: a later push for the same card replaces one the phone has not fetched yet.
 			const topic = message.alert.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) || 'alert';

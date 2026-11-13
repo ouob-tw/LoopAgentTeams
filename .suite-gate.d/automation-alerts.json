@@ -20,6 +20,7 @@
       ],
       "tests": [
         "board/tests/unit/alerts.test.ts",
+        "board/tests/unit/push.test.ts",
         "board/tests/server/automation-alerts.test.ts",
         "board/tests/browser/automation-alerts-page.test.ts"
       ]
