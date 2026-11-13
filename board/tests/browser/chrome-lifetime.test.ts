@@ -41,13 +41,21 @@ afterEach(async () => {
 	while (cleanups.length) await Promise.resolve(cleanups.pop()!()).catch(() => {});
 });
 
-type Started = { pid: number; profile: string }[];
-/** A test process running the case, and the Chromes it started once they answer. */
-async function owner(mode: 'hold' | 'exit', count = 1): Promise<{ run: ChildProcess; chromes: Started }> {
-	const run = spawn(process.execPath, [CASE, mode, String(count)], { stdio: ['pipe', 'pipe', 'inherit'] });
+/** A temporary folder of the test's own to stand for the system's: the test processes it starts
+ *  make their profiles in it and sweep only it, so no test here sweeps the real one other agents use. */
+function root(): string {
+	const dir = mkdtempSync(join(tmpdir(), 'lat-board-chrome-root-'));
+	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+	return dir;
+}
+
+type Chromes = { pid: number; profile: string }[];
+/** A test process running the case with `dir` as its temporary folder, and the Chromes it started once they answer. */
+async function owner(dir: string, mode: 'hold' | 'exit', count = 1): Promise<{ run: ChildProcess; chromes: Chromes }> {
+	const run = spawn(process.execPath, [CASE, mode, String(count)], { stdio: ['pipe', 'pipe', 'inherit'], env: { ...process.env, TMPDIR: dir } });
 	cleanups.push(() => run.exitCode === null && run.signalCode === null && run.stdin?.end());
 	let out = '';
-	const chromes = await new Promise<Started>((resolve, reject) => {
+	const chromes = await new Promise<Chromes>((resolve, reject) => {
 		run.stdout!.on('data', (chunk: Buffer) => {
 			out += chunk;
 			if (out.includes('\n')) resolve(JSON.parse(out.split('\n')[0]));
@@ -58,38 +66,41 @@ async function owner(mode: 'hold' | 'exit', count = 1): Promise<{ run: ChildProc
 }
 
 test('a SIGKILLed test process takes all its Chromes with it within 30 s; the next start removes their profiles', async () => {
-	const { run, chromes } = await owner('hold', 2);
+	const dir = root();
+	const { run, chromes } = await owner(dir, 'hold', 2);
 	for (const { pid, profile } of chromes) {
 		expect(groupAlive(pid)).toBe(true);
 		expect(existsSync(profile)).toBe(true);
 	}
 	process.kill(run.pid!, 'SIGKILL');
 	expect(await until(() => chromes.every(({ pid }) => !groupAlive(pid)), 30_000)).toBe(true);
-	await owner('hold');
+	await owner(dir, 'hold');
 	for (const { profile } of chromes) expect(existsSync(profile)).toBe(false);
 }, 90_000);
 
 test('a SIGKILLed `bun test --parallel` takes its workers’ Chromes with it within 30 s', async () => {
-	const dir = mkdtempSync(join(tmpdir(), 'lat-board-parallel-'));
-	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-	const run = spawn(process.execPath, ['test', '--parallel=2', '--timeout', '600000', PARALLEL_CASE, PARALLEL_CASE_B], { stdio: 'ignore', env: { ...process.env, CASE_OUT: dir } });
+	const dir = root();
+	const run = spawn(process.execPath, ['test', '--parallel=2', '--timeout', '600000', PARALLEL_CASE, PARALLEL_CASE_B], { stdio: 'ignore', env: { ...process.env, CASE_OUT: dir, TMPDIR: dir } });
 	cleanups.push(() => run.exitCode === null && run.signalCode === null && process.kill(run.pid!, 'SIGKILL'));
-	expect(await until(() => readdirSync(dir).length === 2 || run.exitCode !== null, 60_000)).toBe(true);
-	const chromes = readdirSync(dir).map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')) as { pid: number; worker: number });
+	expect(await until(() => readdirSync(dir).filter((name) => name.endsWith('.json')).length === 2 || run.exitCode !== null, 60_000)).toBe(true);
+	const chromes = readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')) as { pid: number; worker: number });
 	// The Chromes belong to workers, not to the process that is killed.
-	for (const { worker } of chromes) expect(worker).not.toBe(run.pid);
+	for (const { worker } of chromes) {
+		expect(worker).not.toBe(run.pid);
+		// A worker that outlived its run would wait forever, holding its Chrome.
+		cleanups.push(() => alive(worker) && process.kill(worker, 'SIGKILL'));
+	}
 	process.kill(run.pid!, 'SIGKILL');
-	expect(await until(() => chromes.every(({ pid }) => !groupAlive(pid)), 30_000)).toBe(true);
+	expect(await until(() => chromes.every(({ pid, worker }) => !groupAlive(pid) && !alive(worker)), 30_000)).toBe(true);
 }, 120_000);
 
 test('a test process that exits without closing its Chrome leaves no Chrome behind', async () => {
-	const { chromes } = await owner('exit');
+	const { chromes } = await owner(root(), 'exit');
 	expect(await until(() => !groupAlive(chromes[0].pid), 30_000)).toBe(true);
 }, 60_000);
 
 test('a sweep ends what gone owners left, by the PID and start time their profile records, and nothing else', async () => {
-	const dir = mkdtempSync(join(tmpdir(), 'lat-board-sweep-'));
-	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+	const dir = root();
 	// Stand-ins for Chromes: a process that is no Chrome by name, so only the record can point at it.
 	const standIn = () => {
 		const child = spawn('sleep', ['600'], { stdio: 'ignore', detached: true });
@@ -127,6 +138,8 @@ test('a sweep ends what gone owners left, by the PID and start time their profil
 	const user = spawn('sh', ['-c', 'sleep 600; :', `--user-data-dir=${join(dir, `${PROFILE_PREFIX}legacy-used`)}`], { stdio: 'ignore', detached: true });
 	cleanups.push(() => alive(user.pid!) && process.kill(-user.pid!, 'SIGKILL'));
 	const legacyUsed = legacy('legacy-used', user.pid!);
+	// Started once its command line says so: spawn may return before the shell is in place.
+	expect(await until(() => readFileSync(`/proc/${user.pid}/cmdline`, 'utf8').includes(PROFILE_PREFIX), 5_000)).toBe(true);
 	// The PID is now another process's, which does not name the profile.
 	const legacyReused = legacy('legacy-reused', kept);
 	// The owner's PID now belongs to another process: its start time differs.
@@ -149,9 +162,10 @@ test('a sweep ends what gone owners left, by the PID and start time their profil
 });
 
 test('two test processes running together keep their Chromes through each other’s start', async () => {
-	const [first, second] = await Promise.all([owner('hold'), owner('hold')]);
-	// A third start sweeps first, in the real temporary folder.
-	const third = await owner('hold');
+	const dir = root();
+	const [first, second] = await Promise.all([owner(dir, 'hold'), owner(dir, 'hold')]);
+	// A third start sweeps the folder first.
+	const third = await owner(dir, 'hold');
 	for (const { chromes } of [first, second, third]) {
 		const [{ pid, profile }] = chromes;
 		expect(groupAlive(pid)).toBe(true);
@@ -163,11 +177,28 @@ test('two test processes running together keep their Chromes through each other�
 	}
 }, 90_000);
 
-test('the sweep and the setpriv wrapper add well under a second to a start', () => {
-	const started = performance.now();
-	sweepLeftovers();
-	const { end } = startChrome(['--headless=new', '--no-sandbox']);
-	const took = performance.now() - started;
-	end();
-	expect(took).toBeLessThan(1000);
+test('the sweep and the setpriv wrapper add well under a second to a start, with leftovers to clear', () => {
+	const dir = root();
+	// What a busy host's temporary folder holds: profiles of gone owners and old unmarked ones.
+	const old = Date.now() / 1000 - 3600;
+	for (let i = 0; i < 200; i++) {
+		const path = join(dir, `${PROFILE_PREFIX}${i}`);
+		mkdirSync(join(path, 'Default'), { recursive: true });
+		if (i % 2) writeFileSync(join(path, OWNER_FILE), JSON.stringify({ owner: 1 << 30, ownerStart: '1' }));
+		else utimesSync(path, old, old);
+	}
+	const system = process.env.TMPDIR;
+	process.env.TMPDIR = dir;
+	try {
+		const started = performance.now();
+		sweepLeftovers(dir);
+		const { end } = startChrome(['--headless=new', '--no-sandbox']);
+		const took = performance.now() - started;
+		end();
+		expect(took).toBeLessThan(1000);
+	} finally {
+		if (system === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = system;
+	}
+	expect(readdirSync(dir)).toEqual([]);
 });

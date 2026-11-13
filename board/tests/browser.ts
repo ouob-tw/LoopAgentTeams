@@ -304,7 +304,7 @@ function ownerGone(profile: string): Owner | false | undefined {
 	} catch {
 		return undefined;
 	}
-	return startTime(owner.owner) !== owner.ownerStart && owner;
+	return Number.isInteger(owner.owner) && startTime(owner.owner) !== owner.ownerStart && owner;
 }
 
 /** Whether a profile without `OWNER_FILE` (one an older version of these tests made) is still in
@@ -347,7 +347,9 @@ export function sweepLeftovers(dir = tmpdir()) {
 				continue;
 			}
 			if (Date.now() - made < UNMARKED_MS || inUse(profile)) continue;
-		} else if (owner.chrome && startTime(owner.chrome) === owner.chromeStart) {
+		} else if (Number.isInteger(owner.chrome) && owner.chrome! > 1 && [owner.chromeStart, undefined].includes(startTime(owner.chrome!))) {
+			// A PID above 1 only: a group kill of 0 or -1 would reach far more than one Chrome. A Chrome
+			// whose PID is gone may have left its group running: no other group can take its number while it does.
 			try {
 				process.kill(-owner.chrome, 'SIGKILL');
 			} catch {}
