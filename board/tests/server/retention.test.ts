@@ -200,10 +200,12 @@ test('when the read and archive state cannot be saved first, nothing is deleted'
 	fixture.report('session-unsaved', { tag: 'DONE', summary: '存不了', time: iso(T0), hcom_name: 'vega', workspace });
 	await on(T0 + 10 * DAY);
 	const asked = fixture.helperArgs('prune-reports').length;
-	// Logged in before the state directory turns read-only, which a login writes to.
-	await at(T0 + 31 * DAY);
+	// A login writes to the state directory, so log in before it turns read-only: early enough
+	// that nothing is due yet, late enough that the login is not 7 days idle at day 31.
+	await at(T0 + 25 * DAY);
 	chmodSync(stateDir(), 0o500);
 	try {
+		fixture.setClock(T0 + 31 * DAY);
 		const snapshot = await eventually(
 			(next) => next.errors.some((error) => error.startsWith('超過 30 天的回報紀錄沒有刪除，下次重讀再試：已讀與封存紀錄沒辦法先清掉')),
 			'the save failure to be shown'
