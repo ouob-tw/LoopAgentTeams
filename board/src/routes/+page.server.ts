@@ -10,6 +10,7 @@ export const load = async ({ locals }) => {
 		snapshot: await getBoard().current(),
 		pd: getBoard().pd(),
 		automation: getBoard().automation.snapshot(),
+		alerts: getBoard().alerts.snapshot(),
 		screenTheme: currentScreenTheme(),
 		testDevice: test ? { label: test.label, expiresAt: test.expiresAt, owned: test.owned } : null
 	};

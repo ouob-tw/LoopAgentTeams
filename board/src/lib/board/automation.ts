@@ -117,6 +117,8 @@ export interface AutomationRun {
 	outputTruncated?: boolean;
 	/** 沿用原紀錄: the project's own done marker this record stands for. */
 	marker?: string;
+	/** The checking agent's verdict on a run that succeeded (#575); a fail makes a red card. */
+	review?: { verdict: 'pass' | 'fail'; summary?: string };
 }
 
 /** A period's run window: its first moment and the moment after its last day. */

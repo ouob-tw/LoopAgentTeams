@@ -1,0 +1,28 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/alerts.ts",
+        "board/src/lib/board/alert-actions.ts",
+        "board/src/lib/board/push-setup.ts",
+        "board/src/lib/server/alerts.ts",
+        "board/src/lib/server/push.ts",
+        "board/src/lib/server/automation.ts",
+        "board/src/lib/components/AlertCard.svelte",
+        "board/src/lib/components/AlertItemRow.svelte",
+        "board/src/lib/components/PushSettings.svelte",
+        "board/src/lib/components/Inbox.svelte",
+        "board/src/lib/components/Settings.svelte",
+        "board/src/lib/board/navigation.ts",
+        "board/static/pd-sw.js",
+        "board/src/routes/api/alerts/**",
+        "board/src/routes/api/push/**"
+      ],
+      "tests": [
+        "board/tests/unit/alerts.test.ts",
+        "board/tests/server/automation-alerts.test.ts",
+        "board/tests/browser/automation-alerts-page.test.ts"
+      ]
+    }
+  ]
+}
