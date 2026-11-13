@@ -1,7 +1,7 @@
 // What every browser test shares: finding Chrome, starting one on a port the system picks, and
 // speaking to its tab over the DevTools protocol. Nothing here reads or writes the real profile.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -254,6 +254,8 @@ export interface Browser {
 	debugPort: number;
 	/** The Chrome process's PID. */
 	pid: number;
+	/** Chrome's profile folder, removed when it ends. */
+	profile: string;
 	/** Close the tab, end this Chrome (by its PID) and remove its profile. */
 	close(): Promise<void>;
 }
@@ -266,14 +268,151 @@ export interface Browser {
  */
 export const CHROME_FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', '--password-store=basic', '--use-mock-keychain'];
 
-/** Kill the Chrome and everything it started, by its PID: Chrome leads its own process group. */
-function endProcess(chrome: ChildProcess) {
-	if (chrome.pid === undefined || chrome.exitCode !== null) return;
+/** What every test Chrome's profile folder in the temporary folder is called, before its random end. */
+export const PROFILE_PREFIX = 'lat-board-test-chrome-';
+/** The file in a test Chrome's profile that says whose it is: the PIDs and start times of the test
+ *  process that started it (`owner`) and of the Chrome (`chrome`). A sweep goes by it and by nothing else. */
+export const OWNER_FILE = 'lat-test-owner.json';
+
+/** When the process `pid` started, in clock ticks since boot (field 22 of /proc/<pid>/stat), or
+ *  undefined once it is gone: a PID with the start time it was recorded with is still that process. */
+export function startTime(pid: number): string | undefined {
 	try {
-		process.kill(-chrome.pid, 'SIGKILL');
+		const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+		return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
 	} catch {
-		chrome.kill('SIGKILL');
+		return undefined;
 	}
+}
+
+interface Owner {
+	owner: number;
+	ownerStart: string;
+	chrome?: number;
+	chromeStart?: string;
+}
+
+/** How old a profile without `OWNER_FILE` must be before a sweep judges it: a younger one may be
+ *  one a test just made and is about to mark. */
+const UNMARKED_MS = 10 * 60_000;
+
+/** Whether `profile` holds an `OWNER_FILE` whose owner is gone; undefined when it holds none. */
+function ownerGone(profile: string): Owner | false | undefined {
+	let owner: Owner;
+	try {
+		owner = JSON.parse(readFileSync(join(profile, OWNER_FILE), 'utf8'));
+	} catch {
+		return undefined;
+	}
+	return startTime(owner.owner) !== owner.ownerStart && owner;
+}
+
+/** Whether a profile without `OWNER_FILE` (one an older version of these tests made) is still in
+ *  use: the PID in Chrome's own `SingletonLock` (`<host>-<pid>`) runs a Chrome of this profile. */
+function inUse(profile: string): boolean {
+	let pid: number;
+	try {
+		pid = Number(readlinkSync(join(profile, 'SingletonLock')).split('-').pop());
+	} catch {
+		return false;
+	}
+	try {
+		// Chrome rewrites its command line as one line; the profile path is still in it.
+		return readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes(`--user-data-dir=${profile}`);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * End the test Chromes whose test process is gone and remove their profiles. A profile's
+ * `OWNER_FILE` says whose it is: while that owner runs with its recorded start time, nothing of it
+ * is touched, in any worktree; once it is gone, the Chrome it records is ended by its PID, and only
+ * while that PID still has the recorded start time, and the profile goes. A profile without the
+ * file (an older version's) goes once it is UNMARKED_MS old and no Chrome uses it. Processes are
+ * found only by the PIDs these records name, never by name. Without /proc it does nothing.
+ */
+export function sweepLeftovers(dir = tmpdir()) {
+	if (startTime(process.pid) === undefined) return;
+	for (const name of readdirSync(dir)) {
+		if (!name.startsWith(PROFILE_PREFIX)) continue;
+		const profile = join(dir, name);
+		const owner = ownerGone(profile);
+		if (owner === false) continue;
+		if (owner === undefined) {
+			let made: number;
+			try {
+				made = statSync(profile).mtimeMs;
+			} catch {
+				continue;
+			}
+			if (Date.now() - made < UNMARKED_MS || inUse(profile)) continue;
+		} else if (owner.chrome && startTime(owner.chrome) === owner.chromeStart) {
+			try {
+				process.kill(-owner.chrome, 'SIGKILL');
+			} catch {}
+		}
+		// Another start sweeping at the same time may be removing it too.
+		try {
+			rmSync(profile, { recursive: true, force: true });
+		} catch {}
+	}
+}
+let swept = false;
+
+/** Linux's way to have the kernel kill a process when the one that started it ends (see `startChrome`). */
+const SETPRIV = ['/usr/bin/setpriv', '/bin/setpriv'].find((path) => existsSync(path));
+
+/** A test Chrome as started: the process, its profile, the end of its stderr, and `end`, which
+ *  ends it and everything it started and removes its profile. */
+export interface Started {
+	chrome: ChildProcess;
+	profile: string;
+	tail(): string;
+	end(): void;
+}
+
+/**
+ * Start Chrome with `flags`, a profile of its own and its DevTools on a port it picks. It leads its
+ * own process group, which `end` ends. Where `setpriv` is found it starts with `--pdeathsig KILL`:
+ * the kernel kills it the moment the test process ends, however it ends (a SIGKILL included), and
+ * the rest of its group follows it. Without `dbus` it gets no session bus, so it stays in the test's
+ * own systemd scope instead of asking systemd for one of its own, and a run killed by its scope
+ * takes it too. Its profile records whose it is (`OWNER_FILE`), and the first start in a process
+ * sweeps what gone test processes left (see `sweepLeftovers`).
+ */
+export function startChrome(flags: string[], { dbus = false }: { dbus?: boolean } = {}): Started {
+	if (!swept) {
+		swept = true;
+		sweepLeftovers();
+	}
+	const profile = mkdtempSync(join(tmpdir(), PROFILE_PREFIX));
+	const marker = join(profile, OWNER_FILE);
+	const mark = (record: Owner) => {
+		writeFileSync(`${marker}.new`, JSON.stringify(record));
+		renameSync(`${marker}.new`, marker);
+	};
+	const owner: Owner = { owner: process.pid, ownerStart: startTime(process.pid) ?? '' };
+	mark(owner);
+	const command = [CHROME, ...flags, `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'];
+	if (SETPRIV) command.unshift(SETPRIV, '--pdeathsig', 'KILL');
+	const env = dbus ? process.env : { ...process.env, DBUS_SESSION_BUS_ADDRESS: 'disabled:' };
+	const chrome = spawn(command[0], command.slice(1), { stdio: ['ignore', 'ignore', 'pipe'], detached: true, env });
+	if (chrome.pid !== undefined) mark({ ...owner, chrome: chrome.pid, chromeStart: startTime(chrome.pid) });
+	// The end of what Chrome wrote to stderr, to say why it ended.
+	let stderr = '';
+	chrome.stderr!.on('data', (chunk: Buffer) => (stderr = (stderr + chunk).slice(-2000)));
+	const end = () => {
+		if (chrome.pid !== undefined && chrome.exitCode === null && chrome.signalCode === null) {
+			try {
+				process.kill(-chrome.pid, 'SIGKILL');
+			} catch {
+				chrome.kill('SIGKILL');
+			}
+		}
+		rmSync(profile, { recursive: true, force: true });
+	};
+	return { chrome, profile, tail: () => stderr.trim().split('\n').slice(-5).join('\n'), end };
 }
 
 /**
@@ -283,13 +422,8 @@ function endProcess(chrome: ChildProcess) {
  * `screen` is what `Tab.until` reports when a wait times out; `args` are more Chrome flags.
  */
 export async function launchChrome(options: { scripts?: string[]; screen?: string; args?: string[] } = {}): Promise<Browser> {
-	const profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const chrome = spawn(CHROME, [...CHROME_FLAGS, ...(options.args ?? []), `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+	const { chrome, profile, tail, end } = startChrome([...CHROME_FLAGS, ...(options.args ?? [])]);
 	const exited = new Promise<void>((resolve) => chrome.once('exit', () => resolve()));
-	// The end of what Chrome wrote to stderr, to say why it ended.
-	let stderr = '';
-	chrome.stderr!.on('data', (chunk: Buffer) => (stderr = (stderr + chunk).slice(-2000)));
-	const tail = () => stderr.trim().split('\n').slice(-5).join('\n');
 	const ended = async () => {
 		await Promise.race([exited, sleep(EXIT_MS)]);
 		if (chrome.exitCode === null && chrome.signalCode === null) return 'Chrome is still running';
@@ -298,7 +432,7 @@ export async function launchChrome(options: { scripts?: string[]; screen?: strin
 	let tab: Tab | undefined;
 	const close = async () => {
 		tab?.close();
-		endProcess(chrome);
+		end();
 		if (chrome.exitCode === null && chrome.signalCode === null) await exited;
 		rmSync(profile, { recursive: true, force: true });
 	};
@@ -309,7 +443,7 @@ export async function launchChrome(options: { scripts?: string[]; screen?: strin
 		const timeout = new Promise<never>((_, reject) => (giveUp = setTimeout(() => reject(new Error('timed out opening a Chrome tab')), 20_000)));
 		tab = await Promise.race([Tab.open(debugPort, options.scripts, ended, tail), timeout]).finally(() => clearTimeout(giveUp));
 		tab.screen = options.screen;
-		return { tab, debugPort, pid: chrome.pid!, close };
+		return { tab, debugPort, pid: chrome.pid!, profile, close };
 	} catch (error) {
 		await close();
 		throw error;

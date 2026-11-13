@@ -1,12 +1,10 @@
 // Run by browser-launch.test.ts inside a private session bus whose Secret Service never answers, not by
 // `bun test` itself: a Chrome started without `--password-store=basic` cannot answer its first cookie
 // request (or, in some versions, even to start) until that service does; one started by `launchChrome` answers at once.
-import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from 'bun:test';
-import { CHROME, CHROME_FLAGS, launchChrome, Tab } from '../browser.ts';
+import { CHROME_FLAGS, launchChrome, startChrome, Tab } from '../browser.ts';
 
 const COOKIE = { name: 'lat_board_device', value: 'case', url: 'http://127.0.0.1:9/' };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -21,9 +19,8 @@ test('launchChrome answers the first cookie request without the secret service',
 }, 20_000);
 
 test('without --password-store=basic Chrome waits on the secret service, at start or at the first cookie request', async () => {
-	const profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-case-'));
 	const flags = CHROME_FLAGS.filter((flag) => !flag.startsWith('--password-store') && flag !== '--use-mock-keychain');
-	const chrome = spawn(CHROME, [...flags, `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'], { stdio: 'ignore', detached: true });
+	const { chrome, profile, end } = startChrome(flags, { dbus: true });
 	try {
 		const file = join(profile, 'DevToolsActivePort');
 		const deadline = Date.now() + 10_000;
@@ -48,7 +45,6 @@ test('without --password-store=basic Chrome waits on the secret service, at star
 		expect(await tab.eval('1 + 1')).toBe(2);
 		tab.close();
 	} finally {
-		process.kill(-chrome.pid!, 'SIGKILL');
-		rmSync(profile, { recursive: true, force: true });
+		end();
 	}
 }, 20_000);
