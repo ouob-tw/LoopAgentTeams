@@ -387,6 +387,22 @@ test('an AUTOMATION workspace Herdr already lists is used as it is: nothing crea
 	await ended(task.id, started.id);
 });
 
+test('two runs starting together create AUTOMATION once', async () => {
+	rmSync(join(dir, 'herdr-calls.jsonl'), { force: true });
+	herdrPlan(false, { created: 'wA', createListed: true });
+	const [one, two] = [await create({ name: '並行一' }), await create({ name: '並行二' })];
+	hcomPlan([{ name: 'auto-par1' }, { name: 'auto-par2' }]);
+	const [first, second] = await Promise.all([runNow(one.id), runNow(two.id)]);
+	await Promise.all([launchedRun(one.id, 'auto-par1'), launchedRun(two.id, 'auto-par2')]);
+	expect(workspaceCreates().length).toBe(1);
+	expect(hcomCalls().filter((call) => call.args[0] === 'claude').map((call) => call.workspace)).toEqual(['wA', 'wA']);
+	for (const [name, task, run] of [['auto-par1', one, first], ['auto-par2', two, second]] as const) {
+		reply(name, 'DONE');
+		setStatus(name, 'listening');
+		await ended(task.id, run.id);
+	}
+});
+
 test('a Herdr that cannot list workspaces fails the run with the reason and starts nothing', async () => {
 	herdrPlan(true, { fail: { 'workspace list': { exit: 1, stderr: 'herdr down' } } });
 	const task = await create();
