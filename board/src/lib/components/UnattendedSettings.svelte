@@ -194,7 +194,8 @@
 		margin-top: 0;
 	}
 	/* A finger's width on a phone (ui-baseline). */
-	button {
+	button,
+	.hours input {
 		min-height: 44px;
 	}
 	.choices {
@@ -210,18 +211,19 @@
 	.checks {
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
 	}
+	/* The whole row takes the tap, a finger high (ui-baseline). */
 	label {
 		display: flex;
 		gap: 0.5rem;
-		align-items: flex-start;
+		align-items: center;
+		min-height: 44px;
 	}
 	label input {
 		flex: none;
 		width: 1.2rem;
 		height: 1.2rem;
-		margin: 0.15rem 0 0;
+		margin: 0;
 	}
 	.hours {
 		display: flex;
