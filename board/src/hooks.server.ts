@@ -29,7 +29,17 @@ export const init: ServerInit = () => {
 };
 
 // Everything except the login screens and their endpoints needs a logged-in device.
-const OPEN_PATHS = new Set(['/login', '/api/login', '/api/login/totp', '/login/test', '/api/login/test']);
+const OPEN_PATHS = new Set([
+	'/login',
+	'/api/login',
+	'/api/login/totp',
+	'/api/login/passkey',
+	'/api/login/passkey/options',
+	'/api/login/enroll',
+	'/api/login/enroll/options',
+	'/login/test',
+	'/api/login/test'
+]);
 
 // The user's own stylesheet: the last thing in the head, so it comes after every built-in style and
 // nothing is painted without it. It is not part of the page's own markup: browser extensions add

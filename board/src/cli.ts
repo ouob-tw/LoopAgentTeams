@@ -21,6 +21,7 @@ import { listHerdrAgents } from './lib/server/herdr.ts';
 import type { BoardConfig } from './lib/server/config.ts';
 import { formatInboxStatus, readInboxStatus } from './lib/server/inbox-status.ts';
 import { hasPassword, setPassword } from './lib/server/password.ts';
+import { deletePasskey, ENROLL_CODE_MINUTES, issueEnrollCode, listPasskeys } from './lib/server/passkeys.ts';
 import { clearTotp, hasTotp, matchingStep, newTotpSecret, otpauthUrl, saveTotp } from './lib/server/totp.ts';
 
 const USAGE = `用法：
@@ -28,7 +29,10 @@ const USAGE = `用法：
   password                                  設定或變更登入密碼（輸入兩次）
   totp                                      設定或更換第二道驗證（TOTP）：顯示 QR code，
                                             輸入一次 App 上的六位數字才生效，舊金鑰隨即失效
-  totp clear                                清除 TOTP（清除後無法用密碼登入，直到重新設定）
+  totp clear                                清除 TOTP
+  passkey code                              產生登記 passkey 用的一次性登記碼（10 分鐘內、用一次）
+  passkey list                              列出已登記的 passkey
+  passkey delete <passkey ID>               刪除一把 passkey，它從此不能登入
   devices                                   列出已登入的裝置（含測試裝置）
   revoke <裝置 ID>                          撤銷一台裝置
   test-login [--hours <時數>] [--label <名稱>] [--url <看板網址>]
@@ -220,6 +224,30 @@ async function main(argv: string[]): Promise<number> {
 				? '已清除 TOTP。沒有第二道驗證時無法用密碼登入；重新設定：bun run board totp。已登入的裝置維持登入。'
 				: '沒有設定 TOTP，沒有變更。'
 		);
+		return 0;
+	}
+
+	if (command === 'passkey' && args[0] === 'code' && args.length === 1) {
+		const { code } = issueEnrollCode(config.stateDir, config.now());
+		console.log(`登記碼：${code}`);
+		console.log(`${ENROLL_CODE_MINUTES} 分鐘內在看板登入頁按「登記 passkey」，輸入密碼與這組登記碼；用過一次或產生新的登記碼後就失效。`);
+		if (!config.passkeySite) console.error('注意：看板沒有設定 LAT_BOARD_URL，passkey 目前不能用。');
+		return 0;
+	}
+
+	if (command === 'passkey' && args[0] === 'list' && args.length === 1) {
+		const passkeys = listPasskeys(config.stateDir);
+		if (!passkeys.length) console.log('沒有已登記的 passkey。');
+		for (const passkey of passkeys) console.log([passkey.id, passkey.createdAt, passkey.lastUsedAt ?? '（還沒用過）', passkey.label].join('\t'));
+		return 0;
+	}
+
+	if (command === 'passkey' && args[0] === 'delete' && args[1] && args.length === 2) {
+		if (!deletePasskey(config.stateDir, args[1])) {
+			console.error(`找不到 passkey ${args[1]}。`);
+			return 1;
+		}
+		console.log(`已刪除 passkey ${args[1]}，它不能再登入。用它登入的裝置維持登入；要讓它登出，用 devices 查 ID 再 revoke。`);
 		return 0;
 	}
 
