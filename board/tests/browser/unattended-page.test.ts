@@ -2,7 +2,7 @@
 // settings dialog's global and project settings, the options menu's 無人模式 part, the form drawer
 // (cancel writes nothing, a blank goal cannot be sent, 確認開啟 grants), the status card's badge,
 // goal line, details and 修改, the roster's 無人 mark, and 關掉, each reaching the other browser
-// without a reload. At 1280 and 390 wide nothing scrolls sideways. With LAT_BOARD_SHOTS set, every
+// without a reload. At 1280 and 390 wide nothing scrolls sideways and every button is at least 44px high. With LAT_BOARD_SHOTS set, every
 // look is saved there. Headless Chrome over its DevTools protocol; skipped when the host has no Chrome.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -30,6 +30,8 @@ const MARK = `(document.querySelector('[data-controller="luna"] .unattended')?.i
 const MENU = '.cmd .popup [aria-label="無人模式"]';
 const DRAWER = '[aria-labelledby="unattended-form-title"]';
 const NO_SIDEWAYS = `document.scrollingElement.scrollWidth <= innerWidth`;
+/** The shown buttons under `scope` less than a finger (44px) high, by label and height. */
+const SMALL = (scope: string) => `[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].filter((b) => b.offsetParent !== null && b.getBoundingClientRect().height < 44).map((b) => b.innerText.trim() + ' ' + b.getBoundingClientRect().height)`;
 
 let fixture: Fixture;
 let cookie: string;
@@ -92,6 +94,7 @@ test.skipIf(!CHROME)('the settings dialog sets the global mode, delegations, tim
 	await openSettings(b);
 	await b.until(`${GLOBAL_PRESSED} === '人工確認'`, 'the global mode in the other browser');
 	await save(a, '1280-settings-manual');
+	expect(await a.eval(SMALL(`${DIALOG} .unattended`))).toEqual([]);
 
 	await a.eval(`${button(GLOBAL, '無人模式')}.click()`);
 	await a.until(`${GLOBAL_PRESSED} === '無人模式'`, 'the global mode saved');
@@ -153,6 +156,7 @@ test.skipIf(!CHROME)('the options menu opens the form; cancel writes nothing, a 
 	// From the right edge, the full height.
 	const rect = await a.eval<{ right: number; top: number; bottom: number; width: number }>(`(() => { const r = document.querySelector('${DRAWER}').getBoundingClientRect(); return { right: r.right, top: r.top, bottom: r.bottom, width: r.width }; })()`);
 	expect(rect).toEqual({ right: 1280, top: 0, bottom: 800, width: 520 });
+	expect(await a.eval(SMALL(DRAWER))).toEqual([]);
 	expect(await a.eval(`document.querySelector('${DRAWER} input[type="text"]').value`)).toBe('#577 按鈕字改「儲存」、#578 修錯字，明早 07:30 前做完');
 	expect(await a.eval(`document.querySelector('${DRAWER} textarea').value`)).toBe('#577、#578 都合併進開發分支\n測試全過');
 	// The delegations and time limit from the settings: the first one is off there.
@@ -178,6 +182,7 @@ test.skipIf(!CHROME)('the options menu opens the form; cancel writes nothing, a 
 	expect(JSON.parse(readFileSync(grantFile, 'utf8')).versions[0]).toMatchObject({ goal: '#577 按鈕字改「儲存」、#578 修錯字', source: 'board-form' });
 	expect(await a.eval<string>(`document.querySelector('${CARD} .summary').innerText`)).toContain('條件 2 條');
 	await save(a, '1280-card-collapsed');
+	expect(await a.eval(SMALL(CARD))).toEqual([]);
 }, 60_000);
 
 test.skipIf(!CHROME)('the card opens to the goal, conditions, stop and layers; 修改 makes a new version shown at once', async () => {
@@ -187,6 +192,7 @@ test.skipIf(!CHROME)('the card opens to the goal, conditions, stop and layers; �
 	const details = await a.eval<string>(`document.querySelector('${CARD} .details').innerText`);
 	for (const part of ['做完的條件', '#577、#578 都合併進開發分支', '測試全過', '額度用完，或跑滿 8 小時', '全域預設 人工確認', '這個專案 沒有另外設', '這個主控 無人模式', '生效的是「這個主控」']) expect(details).toContain(part);
 	await save(a, '1280-card-open');
+	expect(await a.eval(SMALL(CARD))).toEqual([]);
 	await a.eval(`${button(CARD, '修改')}.click()`);
 	await a.until(`document.querySelector('${DRAWER} input[type="text"]')?.value === '#577 按鈕字改「儲存」、#578 修錯字'`, 'the form with the version in effect');
 	await a.eval(`(() => { const box = document.querySelector('${DRAWER} textarea'); box.value = '#577、#578 都合併進開發分支'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
@@ -199,14 +205,20 @@ test.skipIf(!CHROME)('the card opens to the goal, conditions, stop and layers; �
 	expect(log.match(/"action":"unattended"/g)?.length).toBe(2);
 });
 
-test.skipIf(!CHROME)('at 390 wide the drawer comes up from the bottom and nothing scrolls sideways', async () => {
+test.skipIf(!CHROME)('at 390 wide the drawer comes up from the bottom and nothing scrolls sideways or is too small to tap', async () => {
 	const c = await browse(PHONE);
 	expect(await c.eval(NO_SIDEWAYS)).toBe(true);
+	expect(await c.eval(SMALL(CARD))).toEqual([]);
+	await openSettings(c);
+	await c.until(`${GLOBAL_PRESSED} !== ''`, 'the settings on a phone');
+	expect(await c.eval(SMALL(`${DIALOG} .unattended`))).toEqual([]);
+	await c.eval(`document.querySelector('${DIALOG}').close()`);
 	await shot(c, '390-card-collapsed');
 	// Clicked again until the page has taken over the button.
 	await c.until(`!!document.querySelector('${CARD} .details') || (document.querySelector('${CARD} .summary').click(), false)`, 'the details');
 	expect(await c.eval(NO_SIDEWAYS)).toBe(true);
 	await shot(c, '390-card-open');
+	expect(await c.eval(SMALL(CARD))).toEqual([]);
 	await c.eval(`document.querySelector('.cmd button[aria-label="選項"]').click()`);
 	await c.until(`!!document.querySelector('${MENU}')`, 'the menu');
 	expect(await c.eval(NO_SIDEWAYS)).toBe(true);
@@ -214,6 +226,7 @@ test.skipIf(!CHROME)('at 390 wide the drawer comes up from the bottom and nothin
 	expect(menu.left).toBeGreaterThanOrEqual(0);
 	expect(menu.right).toBeLessThanOrEqual(390);
 	await shot(c, '390-menu-unattended');
+	expect(await c.eval(SMALL(MENU))).toEqual([]);
 	await c.eval(`document.querySelector('.cmd button[aria-label="選項"]').click()`);
 	await c.eval(`${button(CARD, '修改')}.click()`);
 	await c.until(`!!document.querySelector('${DRAWER}')`, 'the drawer');
@@ -227,6 +240,7 @@ test.skipIf(!CHROME)('at 390 wide the drawer comes up from the bottom and nothin
 	expect(rect.height).toBeLessThanOrEqual(844 * 0.88 + 1);
 	expect(await c.eval(NO_SIDEWAYS)).toBe(true);
 	await shot(c, '390-drawer');
+	expect(await c.eval(SMALL(DRAWER))).toEqual([]);
 	await c.eval(`${button(DRAWER, '取消')}.click()`);
 	// The roster with its mark, on a phone.
 	await c.send('Page.navigate', { url: `${fixture.url}/` });
@@ -235,7 +249,7 @@ test.skipIf(!CHROME)('at 390 wide the drawer comes up from the bottom and nothin
 	await shot(c, '390-roster-mark');
 	await c.send('Page.navigate', { url: `${fixture.url}/?controller=${luna.session_id}` });
 	await c.until(`${BADGE} !== ''`, 'the controller page again');
-});
+}, 30_000);
 
 test.skipIf(!CHROME)('關掉 on the card turns it back to manual on every page within 5 seconds', async () => {
 	const [a, b] = [browsers[0].tab, browsers[1].tab];

@@ -232,4 +232,8 @@
 		display: flex;
 		gap: 0.5rem;
 	}
+	/* A finger's width on a phone (ui-baseline). */
+	button {
+		min-height: 44px;
+	}
 </style>
