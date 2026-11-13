@@ -477,10 +477,10 @@ def unattended_module():
 
 def round_mode_line(lat, sid):
     """Whether this round runs unattended, as the three layers resolve it now."""
-    module = unattended_module()
     try:
+        module = unattended_module()
         result = module.snapshot(lat, sid)
-    except (OSError, ValueError, module.Refused) as error:
+    except Exception as error:  # noqa: BLE001 - a mode line must never stop activate
         return f'本輪模式：讀不出（{error}），視為人工確認'
     mode = result['settings']['mode']
     line = (f'本輪模式：{module.MODE_LABELS[mode["value"]]}'
@@ -829,8 +829,7 @@ def deactivate(args):
                       'cancelled' if args.force_unfinished else 'delivered')
             unattended = unattended_module()
             try:
-                unattended.end_round_grant(path.parent.parent, sid,
-                                           len(record.get('history', [])) + 1, reason)
+                unattended.end_round_grant(path.parent.parent, sid, reason)
             except (OSError, ValueError, unattended.Refused) as error:
                 raise ValueError(f'無人授權無法結束（{error}）；record unchanged') from None
         _stop_watcher_locked(record)

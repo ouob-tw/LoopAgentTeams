@@ -2249,6 +2249,11 @@ class SessionTests(unittest.TestCase):
             stop=dict(quota=True, max_hours=12), source='board-form', evidence='e',
             started_at=datetime.now(timezone.utc).isoformat(), ended_at=None, end_reason=None)
         path.write_text(json.dumps(dict(versions=[version])))
+        # A board-form grant also turns the controller layer unattended.
+        record_path = self.work / '.lat/sessions' / f'{session}.json'
+        record = json.loads(record_path.read_text())
+        record['unattended'] = dict(record.get('unattended') or {}, mode='unattended')
+        record_path.write_text(json.dumps(record))
         return path
 
     def activate_with(self, mode=None, session=SESSION):
@@ -2286,10 +2291,10 @@ class SessionTests(unittest.TestCase):
 
     def test_a_new_round_or_successor_starts_without_the_old_grant(self):
         self.activate_with('unattended')
+        self.open_grant()
         record = json.loads(self.record.read_text())
         record['unattended'] = dict(mode='unattended', prototype_decide=False)
         self.record.write_text(json.dumps(record))
-        self.open_grant()
         self.assertEqual(self.unattended_status()['state'], 'active')
         self.assertEqual(self.cli('deactivate', '--workspace', self.work, '--successor',
                                   'next-orch', extra_env=self.unattended_env()).returncode, 0)

@@ -18,6 +18,7 @@ version; `create`, `update` and `close` change the grant; `check` says whether a
 effect at a moment. `--json` prints one JSON object, for the board helper.
 """
 import argparse
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
@@ -53,7 +54,8 @@ CREATE_SOURCES = ('board-form', 'chat', 'settings-default')
 UPDATE_SOURCES = ('user-edit', 'chat')
 CLOSE_REASONS = {'off': '使用者關掉', 'quota': '額度用完', 'delivered': '交付',
                  'cancelled': '取消', 'handover': '換班'}
-END_LABELS = dict(CLOSE_REASONS, superseded='被新版本取代', **{'time-limit': '時間上限到期'})
+END_LABELS = dict(CLOSE_REASONS, superseded='被新版本取代', **{'time-limit': '時間上限到期',
+                                                          'mode-manual': '模式改為人工確認'})
 DRAFTED_NOTE = '目標由主控擬出'
 STATE_LABELS = {'pending-goal': '無人模式，尚待目標',
                 'active': '無人授權有效', 'none': '無有效授權'}
@@ -115,10 +117,10 @@ def read_grant(lat, session, round_number):
 
 
 def write_grant(lat, session, round_number, versions, original):
-    path = grant_file(lat, session, round_number)
-    write_json_atomic(path, dict(session=session, round=round_number, versions=versions),
-                      expected=original)
-    return path
+    """The bytes written."""
+    return write_json_atomic(grant_file(lat, session, round_number),
+                             dict(session=session, round=round_number, versions=versions),
+                             expected=original)
 
 
 def restore(path, original):
@@ -130,10 +132,18 @@ def restore(path, original):
 
 # Mode resolution ------------------------------------------------------------------------------
 
-def file_problems(layer, problems):
-    """Only problems that touch [unattended] or leave the file unreadable count here."""
-    return [problem for problem in problems
-            if '[unattended]' in problem or 'malformed TOML' in problem or 'unreadable' in problem]
+def layer_problems(layer, problems):
+    """Problems of one file layer that matter here: all of them when the file could not be
+    read at all, else only those of its [unattended] section."""
+    if problems and not layer.data:
+        return problems
+    values = layer.data.get('unattended')
+    if values is None:
+        return []
+    found = preauth.unattended_problems(values, f'{layer.name} layer {layer.location} [unattended]')
+    if layer.name == 'global' and isinstance(values, dict) and values.get('mode') == 'follow-global':
+        found.append(f'global layer {layer.location}: `mode = "follow-global"` is only for a project')
+    return found
 
 
 def without_follow(layer):
@@ -149,11 +159,13 @@ def resolve_mode(lat, record):
     """({key: dict(value, layer, source)}, problems). Problems fall back to manual."""
     controller = record.get('unattended', {}) if isinstance(record, dict) else {}
     problems = preauth.unattended_problems(controller, 'session record `unattended`')
+    if isinstance(controller, dict) and controller.get('mode') == 'follow-global':
+        problems.append('session record `unattended`: `mode = "follow-global"` is only for a project')
     layers = [preauth.Layer('controller', 'session record', {'unattended': controller},
                             isinstance(controller, dict))]
     for name, path in (('project', lat / 'preauth.toml'), ('global', preauth.global_path())):
         layer, found = preauth.file_layer(name, path)
-        problems += file_problems(layer, found)
+        problems += layer_problems(layer, found)
         layers.append(layer)
     found = preauth.resolve([without_follow(layer) for layer in layers], ('unattended',),
                             SETTING_KEYS)
@@ -187,38 +199,69 @@ def end_version(version, moment, reason):
     version['end_reason'] = reason
 
 
-def expire(versions, moment):
-    """End the open version at its deadline when that has passed; whether it did."""
+def is_default(values):
+    return values['mode']['layer'] in ('project', 'global')
+
+
+@dataclass
+class Round:
+    """One round's session record, resolved settings and grant, read under session_lock."""
+    record: dict
+    record_bytes: bytes
+    number: int
+    values: dict
+    problems: list
+    versions: list
+    grant_bytes: bytes | None
+
+    @property
+    def active(self):
+        return self.record.get('status') == 'active'
+
+    def save(self, lat, session, versions=None):
+        self.versions = self.versions if versions is None else versions
+        self.grant_bytes = write_grant(lat, session, self.number, self.versions, self.grant_bytes)
+
+
+def load_round(lat, session):
+    """Read the round; the caller holds session_lock. In an active round an open version that
+    is past its time limit ends at the limit, and one whose mode no longer resolves to
+    unattended ends now; either is saved at once."""
+    record, record_bytes, number = read_session(lat, session)
+    values, problems = resolve_mode(lat, record)
+    versions, grant_bytes = read_grant(lat, session, number)
+    found = Round(record, record_bytes, number, values, problems, versions, grant_bytes)
     current = open_version(versions)
-    if current and moment >= deadline(versions):
-        end_version(current, deadline(versions), 'time-limit')
-        return True
-    return False
+    if found.active and current:
+        if now() >= deadline(versions):
+            end_version(current, deadline(versions), 'time-limit')
+            found.save(lat, session)
+        elif values['mode']['value'] != 'unattended':
+            end_version(current, now(), 'mode-manual')
+            found.save(lat, session)
+    return found
 
 
-def grant_state(record, values, versions):
+def grant_state(found):
     """(state, the open version or None)."""
-    current = open_version(versions)
-    if record.get('status') != 'active' or values['mode']['value'] != 'unattended':
+    current = open_version(found.versions)
+    if not found.active or found.values['mode']['value'] != 'unattended':
         return 'none', None
     if current:
         return 'active', current
-    if not versions and values['mode']['layer'] in ('project', 'global'):
+    if not found.versions and is_default(found.values):
         return 'pending-goal', None
     return 'none', None
 
 
-def snapshot(lat, session, *, persist_expiry=True):
-    """Everything `status` reports. Ends an expired version on disk while holding the lock."""
+def snapshot(lat, session):
+    """Everything `status` reports."""
     with preauth.locked(session_lock(lat, session)):
-        record, _, round_number = read_session(lat, session)
-        values, problems = resolve_mode(lat, record)
-        versions, original = read_grant(lat, session, round_number)
-        if persist_expiry and record.get('status') == 'active' and expire(versions, now()):
-            write_grant(lat, session, round_number, versions, original)
-    state, current = grant_state(record, values, versions)
-    return dict(session=session, round=round_number, round_active=record.get('status') == 'active',
-                settings=values, quota_stop=True, problems=problems, state=state,
+        found = load_round(lat, session)
+    state, current = grant_state(found)
+    versions = found.versions
+    return dict(session=session, round=found.number, round_active=found.active,
+                settings=found.values, quota_stop=True, problems=found.problems, state=state,
                 state_label=STATE_LABELS[state], version=current,
                 ends_at=stamp(deadline(versions)) if current else None,
                 last_end=None if current or not versions else dict(
@@ -244,7 +287,7 @@ def settings_evidence_problem(lat, values, evidence):
     """A settings-default grant cites the board write that set the mode to unattended in the
     layer the mode now comes from, and no later board write changed that key."""
     layer = values['mode']['layer']
-    if layer not in ('project', 'global'):
+    if not is_default(values):
         return (f'the mode comes from the {LAYER_LABELS[layer]} layer, not a project or global '
                 'default')
     target = str(lat / 'preauth.toml' if layer == 'project' else preauth.global_path())
@@ -290,12 +333,39 @@ def owner(args):
     return shared_lat_dir(top), session
 
 
-def set_controller_mode(lat, session, record, original, mode):
-    """Write the controller layer's mode into the session record; (path, bytes before)."""
-    controller = dict(record.get('unattended') or {}, mode=mode)
-    path = session_file(lat, session)
-    write_json_atomic(path, dict(record, unattended=controller), expected=original)
-    return path, original
+def set_controller_mode(lat, session, found, mode):
+    """Write the controller layer's mode into the session record."""
+    controller = dict(found.record.get('unattended') or {}, mode=mode)
+    write_json_atomic(session_file(lat, session), dict(found.record, unattended=controller),
+                      expected=found.record_bytes)
+
+
+def undo_grant(lat, session, found, before, error):
+    """Put the grant file back after the session record could not follow it."""
+    try:
+        restore(grant_file(lat, session, found.number), before)
+    except (OSError, ValueError) as undo:
+        raise ValueError(f'could not set the controller mode ({error}) nor restore '
+                         f'{grant_file(lat, session, found.number)} ({undo}); fix it by hand') \
+            from None
+    raise ValueError(f'could not set the controller mode ({error}); the grant was restored') \
+        from None
+
+
+def settings_default_problem(lat, found, evidence, scope, max_hours):
+    """A default start writes only version 1, with exactly the scope and time limit the
+    settings give, citing the board write that set the mode."""
+    if found.problems:
+        return '; '.join(found.problems)
+    if found.versions:
+        return 'the round already had a grant; a default start only writes version 1'
+    values = found.values
+    wanted = {key: values[key]['value'] for key in SCOPE_KEYS}
+    if scope != wanted or max_hours != values['max_hours']['value']:
+        words = [word for word, key in SCOPE_WORDS.items() if wanted[key]] or ['none']
+        return ('a default start takes the scope and time limit from the settings: '
+                f'--scope {" ".join(words)} --max-hours {values["max_hours"]["value"]}')
+    return settings_evidence_problem(lat, values, evidence)
 
 
 def cmd_create(args):
@@ -314,41 +384,33 @@ def cmd_create(args):
     scope = scope_of(args.scope)
     lat, session = owner(args)
     with preauth.locked(session_lock(lat, session)):
-        record, record_bytes, round_number = read_session(lat, session)
-        if record.get('status') != 'active':
+        found = load_round(lat, session)
+        if not found.active:
             raise Refused(f'session {session} is not active; only an active round has a grant')
-        values, problems = resolve_mode(lat, record)
-        versions, original = read_grant(lat, session, round_number)
-        moment = now()
-        if expire(versions, moment):
-            write_grant(lat, session, round_number, versions, original)
-            original = grant_file(lat, session, round_number).read_bytes()
+        versions = found.versions
         if open_version(versions):
             raise Refused(f'version {versions[-1]["version"]} is in effect; change it with update')
         if args.source == 'chat':
-            problem = chat_evidence_problem(record, lat, evidence)
+            problem = chat_evidence_problem(found.record, lat, evidence)
         elif args.source == 'settings-default':
-            problem = ('; '.join(problems) if problems else
-                       'the round already had a grant; a default start only writes version 1'
-                       if versions else settings_evidence_problem(lat, values, evidence))
+            problem = settings_default_problem(lat, found, evidence, scope, args.max_hours)
         else:
             problem = None  # board-form: the board checks its signed-in device before calling
         if problem:
             raise Refused(problem)
         version = dict(version=len(versions) + 1, goal=goal, done=done, scope=scope,
                        stop=dict(quota=True, max_hours=args.max_hours), source=args.source,
-                       evidence=evidence, started_at=stamp(moment), ended_at=None,
+                       evidence=evidence, started_at=stamp(now()), ended_at=None,
                        end_reason=None)
         if args.source == 'settings-default':
             version['note'] = DRAFTED_NOTE
-        written = write_grant(lat, session, round_number, [*versions, version], original)
-        if args.source != 'settings-default' and values['mode']['value'] != 'unattended':
+        before = found.grant_bytes
+        found.save(lat, session, [*versions, version])
+        if args.source != 'settings-default' and found.values['mode']['value'] != 'unattended':
             try:
-                set_controller_mode(lat, session, record, record_bytes, 'unattended')
+                set_controller_mode(lat, session, found, 'unattended')
             except (OSError, ValueError) as error:
-                restore(written, original)
-                raise ValueError(f'could not set the controller mode ({error}); grant removed') \
-                    from None
+                undo_grant(lat, session, found, before, error)
     return report(args, dict(status='ok', created=version), f'已建立第 {version["version"]} 版無人授權')
 
 
@@ -362,19 +424,20 @@ def cmd_update(args):
         raise Refused('--max-hours must be above 0')
     lat, session = owner(args)
     with preauth.locked(session_lock(lat, session)):
-        record, _, round_number = read_session(lat, session)
-        if record.get('status') != 'active':
+        found = load_round(lat, session)
+        if not found.active:
             raise Refused(f'session {session} is not active')
-        versions, original = read_grant(lat, session, round_number)
-        moment = now()
-        if expire(versions, moment):
-            write_grant(lat, session, round_number, versions, original)
-            raise Refused('the grant reached its time limit and ended; start a new one with create')
+        versions, moment = found.versions, now()
         current = open_version(versions)
         if not current:
             raise Refused('no grant in effect; start one with create')
-        if args.source == 'chat' and (problem := chat_evidence_problem(record, lat, evidence)):
+        if args.source == 'chat' and (
+                problem := chat_evidence_problem(found.record, lat, evidence)):
             raise Refused(problem)
+        if args.max_hours is not None and moment >= parse(versions[0]['started_at']) + timedelta(
+                hours=args.max_hours):
+            raise Refused(f'{args.max_hours} hours since {versions[0]["started_at"]} have already '
+                          'passed; give a longer --max-hours or close the grant')
         version = dict(
             version=current['version'] + 1,
             goal=(args.goal or '').strip() or current['goal'],
@@ -385,33 +448,37 @@ def cmd_update(args):
             source=args.source, evidence=evidence, started_at=stamp(moment), ended_at=None,
             end_reason=None)
         end_version(current, moment, 'superseded')
-        write_grant(lat, session, round_number, [*versions, version], original)
+        found.save(lat, session, [*versions, version])
     return report(args, dict(status='ok', created=version),
                   f'已改為第 {version["version"]} 版無人授權，立即生效')
 
 
-def end_round_grant(lat, session, round_number, reason):
-    """End this round's open version; the caller holds session_lock. The version ended, or None."""
-    versions, original = read_grant(lat, session, round_number)
-    moment = now()
-    if expire(versions, moment):
-        write_grant(lat, session, round_number, versions, original)
-        return None
-    current = open_version(versions)
+def end_grant(lat, session, found, reason):
+    """End the round's open version; the version ended, or None."""
+    current = open_version(found.versions)
     if current:
-        end_version(current, moment, reason)
-        write_grant(lat, session, round_number, versions, original)
+        end_version(current, now(), reason)
+        found.save(lat, session)
     return current
+
+
+def end_round_grant(lat, session, reason):
+    """For deactivate, which already holds session_lock: end this round's open version."""
+    return end_grant(lat, session, load_round(lat, session), reason)
 
 
 def cmd_close(args):
     lat, session = owner(args)
     with preauth.locked(session_lock(lat, session)):
-        record, record_bytes, round_number = read_session(lat, session)
-        ended = end_round_grant(lat, session, round_number, args.reason)
-        if args.reason == 'off' and record.get('status') == 'active':
+        found = load_round(lat, session)
+        before = found.grant_bytes
+        ended = end_grant(lat, session, found, args.reason)
+        if args.reason == 'off' and found.active:
             # The user turned it off: this controller goes back to asking.
-            set_controller_mode(lat, session, record, record_bytes, 'manual')
+            try:
+                set_controller_mode(lat, session, found, 'manual')
+            except (OSError, ValueError) as error:
+                undo_grant(lat, session, found, before, error)
     text = (f'已結束第 {ended["version"]} 版無人授權（{CLOSE_REASONS[args.reason]}）' if ended
             else '沒有生效中的無人授權')
     return report(args, dict(status='ok', ended=ended), text)
@@ -421,10 +488,8 @@ def cmd_check(args):
     """Whether version N was in effect at a moment; delegated decisions cite it."""
     lat, session = owner(args)
     with preauth.locked(session_lock(lat, session)):
-        record, _, round_number = read_session(lat, session)
-        versions, original = read_grant(lat, session, round_number)
-        if record.get('status') == 'active' and expire(versions, now()):
-            write_grant(lat, session, round_number, versions, original)
+        found_round = load_round(lat, session)
+    versions, round_number = found_round.versions, found_round.number
     moment = parse(args.at) if args.at else now()
     found = next((v for v in versions if v['version'] == args.version), None)
     if found is None:
@@ -434,7 +499,7 @@ def cmd_check(args):
     elif found['ended_at'] and moment >= parse(found['ended_at']):
         reason = (f'version {args.version} ended at {found["ended_at"]} '
                   f'({END_LABELS.get(found["end_reason"], found["end_reason"])})')
-    elif found['ended_at'] is None and record.get('status') != 'active':
+    elif found['ended_at'] is None and not found_round.active:
         reason = f'round {round_number} has ended'
     else:
         reason = None
@@ -497,9 +562,9 @@ def cmd_status(args):
 
 def cmd_versions(args):
     lat, session = owner(args)
-    snapshot(lat, session)  # ends an expired version first
-    record, _, round_number = read_session(lat, session)
-    versions, _ = read_grant(lat, session, round_number)
+    with preauth.locked(session_lock(lat, session)):
+        found = load_round(lat, session)
+    versions, round_number = found.versions, found.number
     if args.json:
         return report(args, dict(status='ok', round=round_number, versions=versions), '')
     print('\n'.join(line for version in versions for line in version_lines(version))

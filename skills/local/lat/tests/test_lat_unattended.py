@@ -14,6 +14,7 @@ SESSION = '11111111-1111-4111-8111-111111111111'
 GIT_ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
 FULL = ['--goal', '修好登入頁', '--done', '登入成功跳到首頁', '--done', '錯誤密碼顯示提示',
         '--scope', 'ticket-confirmation', 'assume-defaults', '--max-hours', '6']
+SETTINGS_SCOPE = ('ticket-confirmation', 'assume-defaults', 'prototype')
 
 
 def git(cwd, *args):
@@ -68,6 +69,12 @@ class UnattendedCase(unittest.TestCase):
     def create(self, *extra, source='board-form', evidence='board-action-1', code=0):
         return self.json_of('create', *FULL, '--source', source, '--evidence', evidence, *extra,
                             code=code)
+
+    def default_create(self, evidence, code=0, scope=SETTINGS_SCOPE, hours='12'):
+        """A default start, with the scope and time limit the settings give by default."""
+        return self.json_of('create', '--goal', '修好登入頁', '--done', '登入成功',
+                            '--scope', *scope, '--max-hours', hours,
+                            '--source', 'settings-default', '--evidence', evidence, code=code)
 
     def board_write(self, source, value='unattended', file=None):
         path = self.board_state / 'preauth-writes.jsonl'
@@ -146,11 +153,28 @@ class ResolutionTests(UnattendedCase):
             self.assertIn(line, result.stdout)
 
     def test_a_bad_setting_falls_back_to_manual_and_says_why(self):
-        self.write(self.global_file, '[unattended]\nmode = "sometimes"\n')
+        cases = (('global', '[unattended]\nmode = "sometimes"\n', None, 'mode'),
+                 ('global follow', '[unattended]\nmode = "follow-global"\n', None,
+                  'only for a project'),
+                 ('controller follow', '[unattended]\nmode = "unattended"\n',
+                  dict(mode='follow-global'), 'only for a project'),
+                 ('malformed', '[unattended\nmode = "unattended"\n', None, 'malformed'))
+        for name, text, controller, reason in cases:
+            with self.subTest(name):
+                self.write(self.global_file, text)
+                self.session(**({'unattended': controller} if controller else {}))
+                result = self.status()
+                self.assertEqual(result['settings']['mode']['value'], 'manual')
+                self.assertTrue(any(reason in problem for problem in result['problems']),
+                                result['problems'])
+                self.assertEqual(result['state'], 'none')
+
+    def test_a_bad_preauth_action_does_not_touch_the_mode(self):
+        self.write(self.global_file, '[unattended]\nmode = "unattended"\n'
+                                     '[actions.merge]\nalow = true\n')
         result = self.status()
-        self.assertEqual(result['settings']['mode']['value'], 'manual')
-        self.assertTrue(any('mode' in problem for problem in result['problems']))
-        self.assertEqual(result['state'], 'none')
+        self.assertEqual(result['problems'], [])
+        self.assertEqual(result['settings']['mode']['value'], 'unattended')
 
 
 class GrantTests(UnattendedCase):
@@ -269,6 +293,30 @@ class GrantTests(UnattendedCase):
         self.assertEqual(ended['end_reason'], 'time-limit')
         self.assertIn('時間上限到期', self.run_tool('status').stdout)
 
+    def test_a_mode_turned_manual_ends_the_open_version_for_good(self):
+        self.write(self.global_file, '[unattended]\nmode = "unattended"\n')
+        self.board_write('board:t1')
+        self.default_create('board:t1')
+        self.write(self.project_file, '[unattended]\nmode = "manual"\n')
+        status = self.status()
+        self.assertEqual(status['state'], 'none')
+        self.assertEqual(status['last_end']['reason'], 'mode-manual')
+        self.project_file.unlink()
+        self.assertEqual(self.status()['state'], 'none')
+        self.assertIsNotNone(json.loads(self.grant.read_text())['versions'][0]['ended_at'])
+
+    def test_update_refuses_a_time_limit_that_has_already_passed(self):
+        self.create()
+        data = json.loads(self.grant.read_text())
+        data['versions'][0]['started_at'] = (datetime.now(timezone.utc)
+                                             - timedelta(hours=3)).isoformat()
+        self.grant.write_text(json.dumps(data))
+        refused = self.json_of('update', '--max-hours', '2', '--source', 'user-edit',
+                               '--evidence', 'e', code=1)
+        self.assertIn('already passed', refused['reason'])
+        self.assertEqual(len(json.loads(self.grant.read_text())['versions']), 1)
+        self.assertEqual(self.status()['state'], 'active')
+
     def test_an_ended_round_has_no_grant_in_effect(self):
         self.create()
         self.session(status='ended', unattended=dict(mode='unattended'))
@@ -294,7 +342,7 @@ class DefaultStartTests(UnattendedCase):
                 self.assertIn('無人授權：無人模式，尚待目標', self.run_tool('status').stdout)
                 self.assertFalse(self.json_of('check', '--version', '1', code=1)['effective'])
                 self.board_write('board:t1', file=path)
-                created = self.create(source='settings-default', evidence='board:t1')['created']
+                created = self.default_create('board:t1')['created']
                 self.assertEqual(created['note'], '目標由主控擬出')
                 self.assertEqual(self.status()['state'], 'active')
                 self.assertNotIn('unattended', self.record())
@@ -327,33 +375,42 @@ class EvidenceTests(UnattendedCase):
 
     def test_settings_default_must_cite_the_board_write_that_set_the_mode(self):
         self.write(self.global_file, '[unattended]\nmode = "unattended"\n')
-        refused = self.create(source='settings-default', evidence='board:t1', code=1)
+        refused = self.default_create('board:t1', code=1)
         self.assertIn('board:t1', refused['reason'])
         self.board_write('board:t1')
         self.board_write('board:t2', file=self.project_file)  # another file does not count
-        self.assertEqual(self.create(source='settings-default', evidence='board:t9',
-                                     code=1)['status'], 'refused')
+        self.assertEqual(self.default_create('board:t9', code=1)['status'], 'refused')
         self.board_write('board:t3', value='manual')
-        self.assertIn('manual', self.create(source='settings-default', evidence='board:t3',
-                                            code=1)['reason'])
+        self.assertIn('manual', self.default_create('board:t3', code=1)['reason'])
         self.board_write('board:t4')
-        self.assertEqual(self.create(source='settings-default', evidence='board:t1',
-                                     code=1)['status'], 'refused')
+        self.assertEqual(self.default_create('board:t1', code=1)['status'], 'refused')
         self.assertFalse(self.grant.exists())
-        self.assertEqual(self.create(source='settings-default',
-                                     evidence='board:t4')['created']['version'], 1)
+        self.assertEqual(self.default_create('board:t4')['created']['version'], 1)
 
     def test_settings_default_refused_when_the_mode_is_not_a_default_or_after_version_1(self):
         self.write(self.global_file, '[unattended]\nmode = "unattended"\n')
         self.board_write('board:t1')
         self.session(unattended=dict(mode='unattended'))
-        self.assertIn('主控', self.create(source='settings-default', evidence='board:t1',
-                                          code=1)['reason'])
+        self.assertIn('主控', self.default_create('board:t1', code=1)['reason'])
         self.session()
-        self.create(source='settings-default', evidence='board:t1')
+        self.default_create('board:t1')
         self.json_of('close', '--reason', 'quota')
-        self.assertIn('version 1', self.create(source='settings-default', evidence='board:t1',
-                                               code=1)['reason'])
+        self.assertIn('version 1', self.default_create('board:t1', code=1)['reason'])
+
+    def test_a_default_start_takes_scope_and_time_limit_from_the_settings(self):
+        self.write(self.global_file, '[unattended]\nmode = "unattended"\nmax_hours = 8\n')
+        self.write(self.project_file, '[unattended]\nprototype_decide = false\n')
+        self.board_write('board:t1')
+        for scope, hours in ((SETTINGS_SCOPE, '8'), (SETTINGS_SCOPE[:2], '12'),
+                             (SETTINGS_SCOPE[:2], '100')):
+            with self.subTest(scope=scope, hours=hours):
+                refused = self.default_create('board:t1', scope=scope, hours=hours, code=1)
+                self.assertIn('--scope ticket-confirmation assume-defaults --max-hours 8',
+                              refused['reason'])
+                self.assertFalse(self.grant.exists())
+        created = self.default_create('board:t1', scope=SETTINGS_SCOPE[:2], hours='8')['created']
+        self.assertEqual(created['stop']['max_hours'], 8)
+        self.assertFalse(created['scope']['prototype_decide'])
 
 
 if __name__ == '__main__':
