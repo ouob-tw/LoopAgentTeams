@@ -38,15 +38,15 @@ test('evidence entries naming a file in the workspace become links, others stay 
 	expect(evidenceFile('.lat/decisions/LAT-P1.md')).toEqual({ path: '.lat/decisions/LAT-P1.md', rest: '' });
 	expect(evidenceFile('.lat/preauth-records/s-r1.jsonl 第 2 行（更正）')).toEqual({ path: '.lat/preauth-records/s-r1.jsonl', rest: ' 第 2 行（更正）' });
 	expect(evidenceFile('.lat/ledgers/s-r1.json row 3')?.rest).toBe(' row 3');
-	for (const entry of ['../secret.md', '.lat/../x.md', '/etc/passwd.txt', '樣品：.lat/a.md', '按鈕叫儲存 ← 「x」 session s-1 第 2 則', 'a.md.exe', 'a.md; rm']) expect(evidenceFile(entry)).toBeNull();
-	expect([...evidencePaths({ items: [{ evidence: ['.lat/a.md', '.lat/a.md row 1', '樣品：x'] }, { evidence: ['b.txt'] }] } as never)].sort()).toEqual(['.lat/a.md', 'b.txt']);
-	expect(evidencePieces('合併 #570 於 abc1234f 完成；plain 1234567 不是 deadbeef')).toEqual([
+	// Only the records lat-unattended cites: a row of a record cannot pick another file.
+	for (const entry of ['.env.json', '.codex/auth.json 滿足', 'node_modules/x/package.json', '.lat/sessions/s.json', '.lat/decisions/a/b.md', '.lat/decisions/x.json', '.lat/ledgers/../x.json']) expect(evidenceFile(entry)).toBeNull();
+	for (const entry of ['../secret.md', '.lat/../x.md', '/etc/passwd.txt', '樣品：.lat/decisions/a.md', '按鈕叫儲存 ← 「x」 session s-1 第 2 則', 'a.md.exe', 'a.md; rm']) expect(evidenceFile(entry)).toBeNull();
+	expect([...evidencePaths({ items: [{ evidence: ['.lat/decisions/a.md', '.lat/decisions/a.md row 1', '樣品：x'] }, { evidence: ['b.txt'] }] } as never)].sort()).toEqual(['.lat/decisions/a.md']);
+	expect(evidencePieces('合併 #570 於 abc1234f 完成；plain 12345678 20261114 不是 deadbeef')).toEqual([
 		{ kind: 'text', text: '合併 ' },
 		{ kind: 'issue', text: '#570', href: 'https://github.com/ouob-tw/LoopAgentTeams-work/issues/570' },
 		{ kind: 'text', text: ' 於 ' },
 		{ kind: 'commit', text: 'abc1234f', href: 'https://github.com/ouob-tw/LoopAgentTeams/commit/abc1234f' },
-		{ kind: 'text', text: ' 完成；plain ' },
-		{ kind: 'commit', text: '1234567', href: 'https://github.com/ouob-tw/LoopAgentTeams/commit/1234567' },
-		{ kind: 'text', text: ' 不是 deadbeef' }
+		{ kind: 'text', text: ' 完成；plain 12345678 20261114 不是 deadbeef' }
 	]);
 });

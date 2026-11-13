@@ -147,12 +147,13 @@ export function verificationText(review: Pick<Review, 'verified' | 'verification
 	return `${who} 已核對紀錄：${check.total} 項中 ${check.matched} 項相符，${check.mismatches.length} 項不符`;
 }
 
-/** The folder-relative file an evidence entry opens with (`.lat/decisions/LAT-P1.md`, with or
- *  without `row 3` / `第 3 行` after it), and what follows the path. Null for any other entry. */
+/** The record an evidence entry opens with, one of the three kinds lat-unattended cites
+ *  (`.lat/decisions/<id>.md`, `.lat/ledgers/<name>.json`, `.lat/preauth-records/<name>.jsonl`),
+ *  with or without `row 3` / `第 3 行` after it, and what follows the path. Null for any other
+ *  entry: a record's own text can start with a path, and only these folders are ever shown. */
 export function evidenceFile(entry: string): { path: string; rest: string } | null {
-	const found = /^((?:\.?[\w-][\w.-]*\/)*\.?[\w-][\w.-]*\.(?:md|jsonl|json|txt))(?=\s|$)(.*)$/s.exec(entry);
-	if (!found || found[1].split('/').some((part) => part === '.' || part === '..')) return null;
-	return { path: found[1], rest: found[2] };
+	const found = /^(\.lat\/(?:decisions\/[\w-][\w.-]*\.md|ledgers\/[\w-][\w.-]*\.json|preauth-records\/[\w-][\w.-]*\.jsonl))(?=\s|$)(.*)$/s.exec(entry);
+	return found ? { path: found[1], rest: found[2] } : null;
 }
 
 /** Every file the review's evidence names: the only ones the board will show for it. */
@@ -174,7 +175,7 @@ export type EvidencePiece = { kind: 'text'; text: string } | { kind: 'issue' | '
 export function evidencePieces(text: string): EvidencePiece[] {
 	const pieces: EvidencePiece[] = [];
 	let last = 0;
-	for (const found of text.matchAll(/(?<![\w#/])#(\d+)(?!\w)|(?<![\w-])(?=[0-9a-f]*\d)([0-9a-f]{7,40})(?![\w-])/g)) {
+	for (const found of text.matchAll(/(?<![\w#/])#(\d+)(?!\w)|(?<![\w-])(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)([0-9a-f]{7,40})(?![\w-])/g)) {
 		if (found.index > last) pieces.push({ kind: 'text', text: text.slice(last, found.index) });
 		pieces.push(found[1] ? { kind: 'issue', text: found[0], href: `${ISSUE_REPO}/issues/${found[1]}` } : { kind: 'commit', text: found[0], href: `${CODE_REPO}/commit/${found[2]}` });
 		last = found.index + found[0].length;

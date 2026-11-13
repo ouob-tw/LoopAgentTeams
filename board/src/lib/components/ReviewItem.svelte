@@ -47,7 +47,7 @@
 						{@const file = evidenceFile(evidence)}
 						<li>
 							{#if file}
-								<button type="button" class="link file" data-evidence-file={file.path} onclick={() => openEvidence(controllerId, file.path)}>{file.path}</button>{file.rest}
+								<button type="button" class="link file" data-evidence-file={file.path} onclick={() => openEvidence(controllerId, file.path)}>{file.path}</button>{#each evidencePieces(file.rest) as piece, at (at)}{#if piece.kind === 'text'}{piece.text}{:else}<a class="link" href={piece.href} target="_blank" rel="noopener noreferrer">{piece.text}</a>{/if}{/each}
 							{:else}
 								{#each evidencePieces(evidence) as piece, at (at)}{#if piece.kind === 'text'}{piece.text}{:else}<a class="link" href={piece.href} target="_blank" rel="noopener noreferrer">{piece.text}</a>{/if}{/each}
 							{/if}

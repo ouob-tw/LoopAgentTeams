@@ -3,6 +3,7 @@
 	// lays it out, other text as it is. It shows the first 200KB and says so. Esc, a click around
 	// the window or 關閉 closes it. The file comes from the board, which serves only what the
 	// controller's current review names.
+	import { onDestroy } from 'svelte';
 	import { request } from '#lib/board/api.ts';
 	import { evidenceView } from '#lib/board/evidence-view.svelte.ts';
 	import { renderMarkdown } from '#lib/board/markdown.ts';
@@ -30,6 +31,13 @@
 			if (result.ok) text = result.value;
 			else if (!result.unpaired) failed = (result.kind === 'http' && (result.body as { reason?: string } | null)?.reason) || result.message;
 		})();
+	});
+
+	// A window taken away with its page must not open again with the next one.
+	onDestroy(() => {
+		shown++;
+		evidenceView.controllerId = null;
+		evidenceView.path = null;
 	});
 
 	function closed() {

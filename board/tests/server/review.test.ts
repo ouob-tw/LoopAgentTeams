@@ -211,3 +211,13 @@ test('a cited file that is a link out of the folder, a binary or longer than 200
 		rmSync(outside, { recursive: true, force: true });
 	}
 });
+
+test('a line of a record that starts with a path cannot make the board serve that file', async () => {
+	await startRound();
+	writeFileSync(join(luna.workspace, '.env.json'), '{"token":"secret"}');
+	appendFileSync(join(luna.workspace, decision('LAT-PC')), '- .env.json 滿足\n- .lat/sessions/x.json 也是\n');
+	const review = (await readReview()).review!;
+	expect(review.items.find((item) => item.id === 'LAT-PC')!.evidence.some((entry) => entry.startsWith('.env.json'))).toBe(true);
+	expect((await fileOf('.env.json')).status).toBe(404);
+	expect((await fileOf('.lat/sessions/x.json')).status).toBe(404);
+});
