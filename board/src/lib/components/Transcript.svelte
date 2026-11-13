@@ -24,6 +24,7 @@
 	import { RenderedMarkdown } from '#lib/board/markdown.ts';
 	import { keepReadingPlace, type ReadingPlace } from '#lib/board/reading-place.ts';
 	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
+	import { sentMissText, sentPlace, type SentLook } from '#lib/board/sent-jump.ts';
 		import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { BoardAsk } from '#lib/board/board-asks.ts';
 	import {
@@ -75,6 +76,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		onunplaced,
 		card,
 		copy,
+		sentLook = null,
+		onsentdone,
 		usage = $bindable(null)
 	}: {
 		/** Whose conversation; an agent's is its session ID, its HCOM name or else its tab's title, and no report time. */
@@ -107,6 +110,10 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		 *  the user may scroll meanwhile: the card is placed where its copy is on screen, and
 		 *  scrolling the box does not stop keeping it there. */
 		copy?: HTMLElement | null;
+		/** A sent-log entry's text to scroll to and mark, until `onsentdone` is called. */
+		sentLook?: SentLook | null;
+		/** Called once the sent text is shown, or told why it cannot be. */
+		onsentdone?: () => void;
 		/** Context use, quota and prompt cache, as the live feed last told; null when unknown. */
 		usage?: Usage | null;
 	} = $props();
@@ -526,6 +533,34 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		list?.querySelector('[data-pd-hit]')?.scrollIntoView({ block: 'center' });
 		readingPlace?.retake();
 	}
+
+	// A sent-log entry's text: earlier parts until it is found or lies too far back, then it is
+	// marked as a pick in 「我說過的話」 is; when it is not there, the newest part with a word why.
+	const sentFound = $derived(sentLook && pdView ? sentPlace(pdView, sentLook) : undefined);
+	$effect(() => {
+		if (sentLook && pdView && sentFound === undefined && !loadingEarlier && !earlierFailed) untrack(() => void loadEarlier());
+	});
+	$effect(() => {
+		if (!sentLook) return;
+		let why: string;
+		if (pdView && typeof sentFound === 'number') {
+			const seq = sentFound;
+			untrack(() => {
+				onsentdone?.();
+				void reveal(seq);
+			});
+			return;
+		} else if (pdView && sentFound === null) why = sentMissText(pdView, sentLook);
+		else if (pdView && earlierFailed) why = `更早的對話讀不到（${earlierFailed}）`;
+		else if (!pdView && problem) why = `對話紀錄讀不到（${problem}）`;
+		else return;
+		untrack(() => {
+			onsentdone?.();
+			list?.scrollIntoView({ block: 'start' });
+			readingPlace?.retake();
+			toasts.show('failed', `對話紀錄裡找不到這句話：${why}。`);
+		});
+	});
 
 	// Earlier parts until the report's text is found or the conversation starts.
 	$effect(() => {

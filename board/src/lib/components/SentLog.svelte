@@ -13,9 +13,18 @@
 	import { choiceText, settingsText, SWITCH_STATE_TEXT } from '#lib/board/models.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import { RESUME_CLOSE_TEXT, RESUME_OVERDUE_TEXT, wakeText } from '#lib/board/wake.ts';
+	import { sentLook, type SentLook } from '#lib/board/sent-jump.ts';
+	import MessageSquareShare from '@lucide/svelte/icons/message-square-share';
 	import SentText from './SentText.svelte';
 
-	let { controller }: { controller: Controller } = $props();
+	let {
+		controller,
+		onjump
+	}: {
+		controller: Controller;
+		/** Called with what an entry typed into the conversation, by its 查看對話 button. */
+		onjump?: (look: SentLook) => void;
+	} = $props();
 
 	const entries = $derived(messaging.sent[controller.id]);
 	// Each new board data hands this component a new `controller` object, so the log is read again
@@ -39,7 +48,9 @@
 	{#if entries?.length}
 		<ol>
 			{#each entries as entry (entry.id)}
-				<li data-kind={entry.kind}>
+				{@const look = sentLook(entry)}
+				<li data-kind={entry.kind} data-entry={entry.id}>
+					<div class="body">
 					{#if entry.kind === 'answer'}
 						<p class="meta">
 							<time datetime={entry.time}>{formatTime(entry.time)}</time>
@@ -117,6 +128,12 @@
 						</p>
 						<SentText text={entry.text} />
 					{/if}
+					</div>
+					{#if look}
+						<button class="jump" title="跳到對話紀錄裡的這句話" onclick={() => onjump?.(look)}>
+							<MessageSquareShare size="1.1em" aria-hidden="true" />查看對話
+						</button>
+					{/if}
 				</li>
 			{/each}
 		</ol>
@@ -138,13 +155,32 @@
 		padding: 0;
 		list-style: none;
 	}
+	/* What was sent, then at the right end the jump to it in the conversation. */
 	li {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: start;
+		gap: 0.5rem;
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		padding: 0.5rem 0.7rem;
 	}
-	p {
-		margin: 0;
+	.body {
+		grid-column: 1;
+		min-width: 0;
+	}
+	.jump {
+		grid-column: 2;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.3rem;
+		min-width: 44px;
+		min-height: 44px;
+		padding: 0.3rem 0.6rem;
+		color: var(--accent);
+		font-size: max(0.85rem, var(--min-font, 0px));
+		white-space: nowrap;
 	}
 	.meta {
 		display: flex;
