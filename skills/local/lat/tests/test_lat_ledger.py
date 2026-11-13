@@ -1,6 +1,6 @@
 """CLI contract tests for lat-ledger.py: subprocess, a real temp Git repo, fake gate records."""
 import contextlib
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import io
@@ -2264,10 +2264,24 @@ class ParkTests(LedgerCase):
                                 env=environment, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def board_request(self):
+        """The line the board writes to its action log when a device sends the grant form;
+        the grant's board-form evidence must match it."""
+        log = self.root / 'board-state' / 'sent-log.jsonl'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        entry = {'kind': 'unattended-request', 'id': 'park-fixture-1', 'op': 'create',
+                 'controllerId': self.SESSION, 'time': datetime.now(timezone.utc).isoformat(),
+                 'goal': 'finish the round', 'done': ['tickets merged'],
+                 'scope': {'ticket_confirmation': True, 'assume_defaults': False,
+                           'prototype_decide': False}, 'maxHours': 6}
+        with log.open('a') as stream:
+            stream.write(json.dumps(entry) + '\n')
+        return 'board-action:park-fixture-1'
+
     def grant(self):
         self.unattended('create', '--goal', 'finish the round', '--done', 'tickets merged',
                         '--scope', 'ticket-confirmation', '--max-hours', '6',
-                        '--source', 'board-form', '--evidence', 'board-action-1')
+                        '--source', 'board-form', '--evidence', self.board_request())
 
     def run_ledger(self, *args, **kwargs):
         env = {'HOME': str(self.root / 'home'), 'XDG_STATE_HOME': str(self.root / 'state'),
