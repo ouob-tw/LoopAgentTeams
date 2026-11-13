@@ -2,6 +2,7 @@
 an agent picks, and the hook that sends the registry's `heavy` commands to it."""
 import json
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -69,6 +70,7 @@ class FloorTests(GateCase):
         self.wait_until(lambda: self.waiting_reason() == ['brake on: disk wait 45%, above 40%'],
                         message='b held by the brake')
         self.assertIn('1 start regardless of load, at most 4 run', self.gate('status').stdout)
+        time.sleep(0.3)  # one waiting report
         self.fake_host(io=0)
         self.wait_until(lambda: len(self.status()['running']) == 2, message='b after the brake')
         release_a.touch()
@@ -200,6 +202,13 @@ class LightHookTests(LightCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn('Blocked: this runs a heavy command', result.stderr)
                 self.assertIn(f'\n  {rewrite}\n', result.stderr)
+
+    def test_only_a_single_command_loses_its_systemd_run(self):
+        prefix = gate.light_command('x').rsplit(' ', 1)[0]
+        self.assertEqual(gate.light_command('systemd-run --user --scope -p MemoryMax=1G bun '
+                                            'run build'), f"{prefix} 'bun run build'")
+        compound = 'systemd-run --user --scope bun run build && echo ok'
+        self.assertEqual(gate.light_command(compound), f'{prefix} {gate.shlex.quote(compound)}')
 
     def test_other_commands_gate_calls_and_full_suites_keep_their_paths(self):
         for command in ('bun test ./tests/server/a.test.ts', "echo 'bun run build'",

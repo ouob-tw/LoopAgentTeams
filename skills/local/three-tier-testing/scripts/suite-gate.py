@@ -2130,7 +2130,8 @@ class LightGate(Gate):
 
     def acquire_slot(self):
         def attempt(state):
-            mine = next((w for w in state['waiters'] if w['id'] == self.me['id']), None)
+            mine = next((w for w in state['waiters'] if w['id'] == self.me['id']
+                         and w.get('kind') == 'light'), None)
             if mine is None:
                 state['seq'] += 1
                 mine = self._holder(kind='light', seq=state['seq'],
@@ -4443,19 +4444,13 @@ def cmd_status(as_json, fp_prefix, limit):
 
     def look(state):
         host = host_view(state, config)
-        running = []
-        for holder in state['slots']:
-            cpu, mem, source = reservation_of(holder, config)
-            running.append(dict(holder, usage=holder_usage(holder), unused=unused_reservation(
+        def shown(holder, source=None):
+            cpu, mem, measured = reservation_of(holder, config)
+            return dict(holder, usage=holder_usage(holder), unused=unused_reservation(
                 holder, config), reservation={'cpu_cores': cpu, 'mem_bytes': mem,
-                                              'source': source}))
-        light = []
-        for holder in state['light']:
-            cpu, mem, _ = reservation_of(holder, config)
-            light.append(dict(holder, usage=holder_usage(holder), unused=unused_reservation(
-                holder, config), reservation={'cpu_cores': cpu, 'mem_bytes': mem,
-                                              'source': 'light'}))
-        return copy.deepcopy(state), host, running, light
+                                              'source': source or measured})
+        return (copy.deepcopy(state), host, [shown(h) for h in state['slots']],
+                [shown(h, 'light') for h in state['light']])
 
     state, host, running, light = with_state(look)
     records = read_records()
@@ -4750,16 +4745,15 @@ def gate_rewrite(text, cwd, wrap=gate_command):
 # systemd-run options that take a value; the light path runs the command in its own scope.
 SYSTEMD_RUN_VALUE = {'-p', '--property', '-u', '--unit', '-E', '--setenv', '-H', '--host',
                      '-M', '--machine', '--slice', '--description', '--uid', '--gid',
-                     '--nice', '--working-directory', '-d', '--on-active', '--timer-property',
-                     '--path-property', '--socket-property', '--service-type'}
+                     '--nice', '--working-directory'}
 
 
 def light_command(text):
     """The ready-to-run command that sends text through the light path; a leading
     systemd-run is left out, since its own scope would take the command out of the gate's."""
     try:
-        words = shlex.split(text)
-    except ValueError:
+        words = shlex.split(text) if len(split_commands(text)) == 1 else None
+    except (ValueError, UnreadableShellInput):
         words = None
     if words and os.path.basename(words[0]) == 'systemd-run':
         rest = words[_skip_options(words, 1, SYSTEMD_RUN_VALUE):]
@@ -5759,9 +5753,10 @@ def cmd_background_configure(action, repo, preview):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    # A hook that exits 2 would block every command, so only run and status check this.
+    # A hook that exits 2 would block every command, so the hook does not check this.
     if not sys.platform.startswith('linux') and argv[:1] in (
-            ['run'], ['light'], ['status'], ['affected'], ['cleanup-done'], ['pre-commit'], ['background'],
+            ['run'], ['light'], ['status'], ['affected'], ['cleanup-done'], ['pre-commit'],
+            ['background'],
             ['install-background']):
         warn('only Linux is supported')
         return 2
