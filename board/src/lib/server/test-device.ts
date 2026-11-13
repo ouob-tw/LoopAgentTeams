@@ -55,6 +55,10 @@ export const TEST_DEVICE_RULES: Record<string, TestRule> = {
 	'POST /api/unattended': 'deny',
 	'PUT /api/usage-style': 'deny',
 	'PUT /api/translate-mode': 'deny',
+	'POST /api/automation': 'deny',
+	'PUT /api/automation/[id]': 'deny',
+	'POST /api/automation/[id]/pause': 'deny',
+	'POST /api/automation/[id]/run': 'deny',
 
 	'POST /api/launches': 'open',
 	'POST /api/refresh': 'open',

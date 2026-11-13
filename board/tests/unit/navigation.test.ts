@@ -429,3 +429,35 @@ test('an entry left ahead cannot put an old screen back on top', () => {
 	screen.open(B);
 	expect(history.entries.map((entry) => entry.search)).toEqual(['', searchOf(B)]);
 });
+
+test('a task of the 自動化 tab and its edit form survive the address, on that tab; a new task\'s form too', () => {
+	const places: Place[] = [{ kind: 'automation', id: 'a1b2c3' }, { kind: 'automation-edit', id: 'a1b2c3' }, { kind: 'automation-edit', id: null }];
+	for (const place of places) {
+		const search = new URLSearchParams(searchOf(place, 'automation'));
+		expect(placeIn(search)).toEqual(place);
+		expect(tabIn(search)).toBe('automation');
+		expect(search.has('tab')).toBe(false);
+	}
+	expect(searchOf(null, 'automation')).toBe('?tab=automation');
+	expect(tabIn(new URLSearchParams('?tab=automation'))).toBe('automation');
+});
+
+test("a task's edit form goes back to the task's page, then the list; a saved task's page sits on the list", () => {
+	const TASK: Place = { kind: 'automation', id: 'a1b2c3' };
+	const history = new BrowserHistory();
+	const screen = boardOn(history);
+	screen.open(TASK, true);
+	screen.open({ kind: 'automation-edit', id: 'a1b2c3' });
+	expect(history.depth).toBe(2);
+	screen.back();
+	expect(history.place).toEqual(TASK);
+	screen.back();
+	expect(history.place).toBeNull();
+
+	// Saving opens the task's page in place of the form, right on the list.
+	screen.open({ kind: 'automation-edit', id: null }, true);
+	screen.open(TASK);
+	expect(history.depth).toBe(1);
+	screen.back();
+	expect(history.place).toBeNull();
+});
