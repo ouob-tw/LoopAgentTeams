@@ -267,3 +267,70 @@ test.skipIf(!CHROME)('at 390 wide nothing scrolls sideways and the first two ite
 	await shot(tab, '390-review-goal-open', { box: `${PANEL} .goal` });
 	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
 });
+
+/** Open an item's evidence, press its file link and read the file in the window; Esc closes it. */
+async function evidenceWindow(size: typeof WIDE, name: string) {
+	const tab = await browse(size);
+	await tab.until(`!!document.querySelector('${TAB}')`, 'the 回顧 tab');
+	await tab.until(`(document.querySelector('${TAB}')?.click(), document.querySelector('${TAB}')?.getAttribute('aria-selected') === 'true')`, 'the tab opened');
+	await tab.until(`!!document.querySelector('${item('LAT-P1')} .toggle')`, 'the items');
+	// The page may not have taken its handlers yet: press until the evidence is open.
+	await tab.until(`(() => { const box = document.querySelector('${item('LAT-P1')}'); if (!box.querySelector('.reasons')) box.querySelector('.toggle').click(); return !!box.querySelector('.reasons'); })()`, 'the evidence opened');
+	const link = `${item('LAT-P1')} .reasons button.link`;
+	// The cited record is a link, 44px high, in the evidence list and nowhere as plain text.
+	const shape = await tab.eval<{ label: string; height: number; plain: string[] }>(`(() => {
+		const entry = document.querySelector('${link}');
+		return { label: entry.innerText, height: entry.getBoundingClientRect().height, plain: [...document.querySelectorAll('${item('LAT-P1')} .reasons li')].filter((li) => !li.querySelector('button.link, a')).map((li) => li.innerText) };
+	})()`);
+	expect(shape.label).toBe('.lat/decisions/LAT-P1.md');
+	expect(shape.height).toBeGreaterThanOrEqual(44);
+	expect(shape.plain).toEqual([]);
+	expect(await tab.eval(`!!document.querySelector('dialog.evidence[open]')`)).toBe(false);
+
+	await click(tab, link);
+	await tab.until(`!!document.querySelector('dialog.evidence[open] .md')`, 'the record laid out in the window');
+	const open = await tab.eval<{ title: string; body: string; close: number; fits: boolean }>(`(() => {
+		const dialog = document.querySelector('dialog.evidence');
+		const box = dialog.getBoundingClientRect();
+		return { title: dialog.querySelector('h2').innerText, body: dialog.querySelector('.content').innerText, close: dialog.querySelector('header button').getBoundingClientRect().height, fits: box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight + 1 };
+	})()`);
+	expect(open.title).toBe('.lat/decisions/LAT-P1.md');
+	expect(open.body).toContain('LAT-P1 要不要加匯出功能');
+	expect(open.body).toContain('屬 Spec 確認，一定擱置');
+	expect(open.close).toBeGreaterThanOrEqual(44);
+	expect(open.fits).toBe(true);
+	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
+	await shot(tab, `${name}-review-evidence-window`);
+
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+	await tab.until(`!document.querySelector('dialog.evidence[open]')`, 'the window closed by Esc');
+	// The same file opens again, and 關閉 closes it.
+	await click(tab, link);
+	await tab.until(`!!document.querySelector('dialog.evidence[open] .md')`, 'the window opened again');
+	await click(tab, 'dialog.evidence header button');
+	await tab.until(`!document.querySelector('dialog.evidence[open]')`, 'the window closed by 關閉');
+	await shot(tab, `${name}-review-evidence-list`, { box: `${item('LAT-P1')} .reasons` });
+}
+
+test.skipIf(!CHROME)('at 1280 the cited record opens in a window that reads, from a 44px link', async () => {
+	await evidenceWindow(WIDE, '1280');
+});
+
+test.skipIf(!CHROME)('at 390 the cited record opens in a window that fits the phone', async () => {
+	await evidenceWindow(PHONE, '390');
+});
+
+test.skipIf(!CHROME)('a cited record that is gone says so in the window instead of staying blank', async () => {
+	const tab = await browse();
+	await tab.until(`!!document.querySelector('${TAB}')`, 'the 回顧 tab');
+	await tab.until(`(document.querySelector('${TAB}')?.click(), document.querySelector('${TAB}')?.getAttribute('aria-selected') === 'true')`, 'the tab opened');
+	await tab.until(`!!document.querySelector('${item('LAT-AN')} .toggle')`, 'the items');
+	await tab.until(`(() => { const box = document.querySelector('${item('LAT-AN')}'); if (!box.querySelector('.reasons')) box.querySelector('.toggle').click(); return !!box.querySelector('.reasons'); })()`, 'the evidence opened');
+	// The record is taken away after the page showed it, before it is pressed.
+	rmSync(join(luna.workspace, '.lat/decisions/LAT-AN.md'));
+	await click(tab, `${item('LAT-AN')} .reasons button.link`);
+	await tab.until(`!!document.querySelector('dialog.evidence[open] [role="alert"]')`, 'the reason in the window');
+	expect(await tab.eval<string>(text('dialog.evidence [role="alert"]'))).toContain('打不開');
+	await shot(tab, '1280-review-evidence-gone');
+});

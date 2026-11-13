@@ -4,7 +4,8 @@
 	// overturn it, opened on demand. The comment box sends the item's ID, title and the user's words
 	// to the controller.
 	import { reviewUi } from '#lib/board/review-ui.svelte.ts';
-	import { actionWord, isParked, type ReviewItem } from '#lib/board/review.ts';
+	import { openEvidence } from '#lib/board/evidence-view.svelte.ts';
+	import { actionWord, evidenceFile, evidencePieces, isParked, type ReviewItem } from '#lib/board/review.ts';
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
@@ -42,7 +43,16 @@
 			<dt>證據</dt>
 			<dd>
 				<ul>
-					{#each item.evidence as evidence, index (index)}<li>{evidence}</li>{/each}
+					{#each item.evidence as evidence, index (index)}
+						{@const file = evidenceFile(evidence)}
+						<li>
+							{#if file}
+								<button type="button" class="link file" data-evidence-file={file.path} onclick={() => openEvidence(controllerId, file.path)}>{file.path}</button>{file.rest}
+							{:else}
+								{#each evidencePieces(evidence) as piece, at (at)}{#if piece.kind === 'text'}{piece.text}{:else}<a class="link" href={piece.href} target="_blank" rel="noopener noreferrer">{piece.text}</a>{/if}{/each}
+							{/if}
+						</li>
+					{/each}
 				</ul>
 			</dd>
 			<dt>怎麼推翻</dt>
@@ -147,6 +157,19 @@
 	dd ul {
 		margin: 0;
 		padding-left: 1.2rem;
+	}
+	.link {
+		display: inline-flex;
+		align-items: center;
+		min-height: 44px;
+		padding: 0;
+		border: 0;
+		background: none;
+		color: var(--accent);
+		text-decoration: underline;
+		text-align: left;
+		vertical-align: middle;
+		overflow-wrap: anywhere;
 	}
 	.box {
 		display: flex;

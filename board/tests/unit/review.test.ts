@@ -32,3 +32,21 @@ test("reviewFrom keeps the tool's items in order and refuses what it cannot read
 	// A verification of an older content never counts: the tool prints none then.
 	expect(reviewFrom({ ...payload([item('a', 'parked')]), verified: false, verification: { total: 1 } })!.verified).toBe(false);
 });
+
+test('evidence entries naming a file in the workspace become links, others stay text', async () => {
+	const { evidenceFile, evidencePaths, evidencePieces } = await import('../../src/lib/board/review.ts');
+	expect(evidenceFile('.lat/decisions/LAT-P1.md')).toEqual({ path: '.lat/decisions/LAT-P1.md', rest: '' });
+	expect(evidenceFile('.lat/preauth-records/s-r1.jsonl 第 2 行（更正）')).toEqual({ path: '.lat/preauth-records/s-r1.jsonl', rest: ' 第 2 行（更正）' });
+	expect(evidenceFile('.lat/ledgers/s-r1.json row 3')?.rest).toBe(' row 3');
+	for (const entry of ['../secret.md', '.lat/../x.md', '/etc/passwd.txt', '樣品：.lat/a.md', '按鈕叫儲存 ← 「x」 session s-1 第 2 則', 'a.md.exe', 'a.md; rm']) expect(evidenceFile(entry)).toBeNull();
+	expect([...evidencePaths({ items: [{ evidence: ['.lat/a.md', '.lat/a.md row 1', '樣品：x'] }, { evidence: ['b.txt'] }] } as never)].sort()).toEqual(['.lat/a.md', 'b.txt']);
+	expect(evidencePieces('合併 #570 於 abc1234f 完成；plain 1234567 不是 deadbeef')).toEqual([
+		{ kind: 'text', text: '合併 ' },
+		{ kind: 'issue', text: '#570', href: 'https://github.com/ouob-tw/LoopAgentTeams-work/issues/570' },
+		{ kind: 'text', text: ' 於 ' },
+		{ kind: 'commit', text: 'abc1234f', href: 'https://github.com/ouob-tw/LoopAgentTeams/commit/abc1234f' },
+		{ kind: 'text', text: ' 完成；plain ' },
+		{ kind: 'commit', text: '1234567', href: 'https://github.com/ouob-tw/LoopAgentTeams/commit/1234567' },
+		{ kind: 'text', text: ' 不是 deadbeef' }
+	]);
+});

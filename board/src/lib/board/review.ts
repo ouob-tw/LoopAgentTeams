@@ -146,3 +146,39 @@ export function verificationText(review: Pick<Review, 'verified' | 'verification
 	if (!check.mismatches.length && check.matched === check.total) return `${who} 已核對紀錄：${check.total} 項全相符`;
 	return `${who} 已核對紀錄：${check.total} 項中 ${check.matched} 項相符，${check.mismatches.length} 項不符`;
 }
+
+/** The folder-relative file an evidence entry opens with (`.lat/decisions/LAT-P1.md`, with or
+ *  without `row 3` / `第 3 行` after it), and what follows the path. Null for any other entry. */
+export function evidenceFile(entry: string): { path: string; rest: string } | null {
+	const found = /^((?:\.?[\w-][\w.-]*\/)*\.?[\w-][\w.-]*\.(?:md|jsonl|json|txt))(?=\s|$)(.*)$/s.exec(entry);
+	if (!found || found[1].split('/').some((part) => part === '.' || part === '..')) return null;
+	return { path: found[1], rest: found[2] };
+}
+
+/** Every file the review's evidence names: the only ones the board will show for it. */
+export function evidencePaths(review: Pick<Review, 'items'>): Set<string> {
+	const paths = new Set<string>();
+	for (const item of review.items) for (const entry of item.evidence) {
+		const file = evidenceFile(entry);
+		if (file) paths.add(file.path);
+	}
+	return paths;
+}
+
+export const CODE_REPO = 'https://github.com/ouob-tw/LoopAgentTeams';
+export const ISSUE_REPO = 'https://github.com/ouob-tw/LoopAgentTeams-work';
+
+export type EvidencePiece = { kind: 'text'; text: string } | { kind: 'issue' | 'commit'; text: string; href: string };
+
+/** Text split where it names an issue (`#570`) or a commit (7 to 40 hex digits, one a digit). */
+export function evidencePieces(text: string): EvidencePiece[] {
+	const pieces: EvidencePiece[] = [];
+	let last = 0;
+	for (const found of text.matchAll(/(?<![\w#/])#(\d+)(?!\w)|(?<![\w-])(?=[0-9a-f]*\d)([0-9a-f]{7,40})(?![\w-])/g)) {
+		if (found.index > last) pieces.push({ kind: 'text', text: text.slice(last, found.index) });
+		pieces.push(found[1] ? { kind: 'issue', text: found[0], href: `${ISSUE_REPO}/issues/${found[1]}` } : { kind: 'commit', text: found[0], href: `${CODE_REPO}/commit/${found[2]}` });
+		last = found.index + found[0].length;
+	}
+	if (last < text.length) pieces.push({ kind: 'text', text: text.slice(last) });
+	return pieces;
+}
