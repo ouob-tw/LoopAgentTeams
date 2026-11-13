@@ -63,8 +63,13 @@ async function shot(name: string) {
 	writeFileSync(join(SHOTS, `${name}.png`), Buffer.from(data, 'base64'));
 }
 const openTab = (label: string) => tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '${label}').click()`);
+/** A tap before the page has started does nothing, and under load it may start late: tap 終端 again
+ *  until it is the open tab, then wait for its screen. */
 const openScreen = async () => {
-	await openTab('終端');
+	await tab.until(
+		`(() => { const tab = [...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端'); if (tab.getAttribute('aria-selected') !== 'true') tab.click(); return tab.getAttribute('aria-selected') === 'true'; })()`,
+		'the 終端 tab open'
+	);
 	await tab.until(`!!document.querySelector('.screen-panel pre')`, 'the screen');
 };
 const font = () => tab.eval<number>(`parseFloat(getComputedStyle(document.querySelector('.screen-panel pre')).fontSize)`);
