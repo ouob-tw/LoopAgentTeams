@@ -31,6 +31,8 @@ export interface ConnectionOptions {
 	onAutomation?(automation: AutomationSnapshot): void;
 	/** Whether conversations open translated, the same on every device; sent on connecting and at every change. */
 	onTranslateMode?(mode: TranslateMode): void;
+	/** An unattended setting or grant changed on some device; the settings page reads them again. */
+	onUnattendedSettings?(): void;
 	fetch?: typeof fetch;
 	retryMs?: number;
 }
@@ -122,6 +124,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		else if (event === 'usage-style') hearStyle(JSON.parse(data));
 		else if (event === 'automation') hearAutomation(JSON.parse(data));
 		else if (event === 'translate-mode') hearMode(JSON.parse(data));
+		else if (event === 'unattended-settings') options.onUnattendedSettings?.();
 	}
 
 	async function listen(): Promise<void> {

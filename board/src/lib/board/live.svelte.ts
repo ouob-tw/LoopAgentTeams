@@ -11,6 +11,7 @@ import { EMPTY_AUTOMATION, type AutomationSnapshot } from './automation.ts';
 import { readAutomation } from './automation-actions.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import { translatePref } from './translate-pref.svelte.ts';
+import { unattendedUi } from './unattended-ui.svelte.ts';
 import type { TranslateMode } from './translate-mode.ts';
 import type { UsageStyle } from './usage.ts';
 import { justRecorded } from './question-message.ts';
@@ -97,6 +98,7 @@ export class LiveBoard {
 				if (automation.revision > this.automation.revision) this.automation = automation;
 			},
 			onTranslateMode: (mode) => (translatePref.mode = mode),
+			onUnattendedSettings: () => unattendedUi.settingsChanges++,
 			// Only a record this page has loaded is shown anywhere; others load when opened. A
 			// controller's sent log has the interrupts of its turn.
 			onAgentAction: (agentId) => {
