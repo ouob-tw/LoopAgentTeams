@@ -5,7 +5,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { TranscriptUpdate } from '../../src/lib/board/transcript.ts';
 import type { Agent, BoardSnapshot } from '../../src/lib/board/types.ts';
-import { startFixture, until, type Fixture } from '../harness.ts';
+import { sleep, startFixture, until, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -250,6 +250,24 @@ function record(session: string, texts: string[]): void {
 	const lines = texts.map((text, index) => ({ kind: index % 2 ? 'assistant' : 'user', time: '2026-10-19T09:00:00.000Z', text }));
 	writeFileSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), lines.map((line) => JSON.stringify(line) + '\n').join(''));
 }
+
+test('what the user said to an agent is listed from its whole conversation', async () => {
+	setHerdr([herdrAgent('s-mine', { client: 'codex' })]);
+	await fixture.refresh(cookie);
+	record('s-mine', Array.from({ length: 120 }, (_, index) => `第 ${index} 段`));
+
+	let update: any;
+	for (let tries = 0; tries < 50; tries++) {
+		update = await (await fixture.fetch('/api/agents/transcript/mine?session=s-mine', { cookie })).json();
+		if (!update.ok || update.complete) break;
+		await sleep(50);
+	}
+
+	expect(update.ok).toBe(true);
+	expect(update.messages).toHaveLength(60);
+	expect(update.messages[0].line).toBe('第 118 段');
+	expect(update.messages.at(-1).line).toBe('第 0 段');
+});
 
 test('an agent\'s conversation is read by its client and session ID, a page at a time, live while open', async () => {
 	setHerdr([herdrAgent('s-talk', { client: 'codex' })]);
