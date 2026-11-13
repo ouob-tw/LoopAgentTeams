@@ -986,12 +986,7 @@ def cmd_add(args):
         for row in same if args.tiny else []:
             record(args, row, 'tiny', {'tiny': mark}, 'its ticket was marked tiny')
         sync_cancelled_dependencies(args, doc, item, 'depends on a cancelled item')
-        parked_dep = next((find(doc, d) for d in deps if find(doc, d)['status'] == 'parked'),
-                          None)
-        if parked_dep:
-            park_row(args, item, f'依賴的列 {parked_dep["id"]} 已擱置',
-                     parked_dep.get('parked_cause') or parked_dep['id'],
-                     parked_dep['parked_grant'])
+        sync_parked_dependencies(args, doc)
     print(item['id'])
 
 
@@ -1035,7 +1030,7 @@ def cmd_update(args):
                               'its evidence, use amend')
             require_status(item, OPEN, 'update')
         elif args.depends is not None:
-            require_status(item, ('unassigned',) + OPEN, 'update --depends')
+            require_status(item, ('unassigned', 'parked') + OPEN, 'update --depends')
         at = now()
         changes = {}
         if args.eta:
@@ -1064,6 +1059,7 @@ def cmd_update(args):
         record(args, item, 'update', changes, reason)
         if args.depends is not None:
             sync_cancelled_dependencies(args, doc, item, 'dependencies changed')
+            sync_parked_dependencies(args, doc)
 
 
 def cmd_block(args):
@@ -1846,50 +1842,10 @@ def unattended_grant(ledger):
     return status['version']['version']
 
 
-def dependents_of(doc, item):
-    """Every open or unassigned row that depends on the item, directly or through others."""
-    found, queue = [], [item['id']]
-    while queue:
-        root = queue.pop()
-        for row in doc['items']:
-            if root in row['depends_on'] and row not in found and row['id'] != item['id'] \
-                    and row['status'] in ('unassigned',) + OPEN:
-                found.append(row)
-                queue.append(row['id'])
-    return found
-
-
 def park_row(args, row, reason, cause, grant):
     record(args, row, 'park', {'status': 'parked', 'parked_from': row['status'],
                                'parked_reason': reason, 'parked_cause': cause,
                                'parked_grant': grant}, reason)
-
-
-def park_dependents(args, doc, root, grant):
-    """Park every row that depends on the parked row, each naming it as the cause."""
-    for row in dependents_of(doc, root):
-        park_row(args, row, f'依賴的列 {root["id"]} 已擱置', root['id'], grant)
-
-
-def require_orchestrator(doc, args, what):
-    if doc.get('orchestrator') and not same_controller(doc['orchestrator'], actor(args)):
-        raise Failure(f'only the orchestrator {doc["orchestrator"]} may {what}')
-
-
-def cmd_park(args):
-    """Park a row that cannot go on (unattended mode only); rows depending on it follow."""
-    reason = required_text('--reason', args.reason)
-    grant = unattended_grant(args.ledger)  # lat-unattended is asked outside the lock
-    with transaction(args, 'park', args.id, reason) as doc:
-        require_orchestrator(doc, args, 'park items')
-        item = find(doc, args.id)
-        require_status(item, ('unassigned',) + OPEN, 'park')
-        park_row(args, item, reason, None, grant)
-        park_dependents(args, doc, item, grant)
-        parked = [row['id'] for row in doc['items'] if row.get('parked_cause') == item['id']
-                  and row['status'] == 'parked']
-    print(f'item {item["id"]} parked' + (f'; dependents parked: {", ".join(map(str, parked))}'
-                                         if parked else ''))
 
 
 def release_row(args, doc, row, reason):
@@ -1901,8 +1857,54 @@ def release_row(args, doc, row, reason):
     sync_cancelled_dependencies(args, doc, row, 'dependencies checked after unparking')
 
 
+def sync_parked_dependencies(args, doc, reason='dependencies changed'):
+    """A row follows its dependencies: parked while any of them is parked (it names one as its
+    cause), released once none is. A row parked by itself (no cause) is never released here."""
+    changed = True
+    while changed:
+        changed = False
+        for row in doc['items']:
+            parked_deps = [dep for dep in row['depends_on']
+                           if find(doc, dep)['status'] == 'parked']
+            if row['status'] == 'parked':
+                if row.get('parked_cause') is None:
+                    continue
+                if not parked_deps:
+                    release_row(args, doc, row, reason)
+                    changed = True
+                elif row['parked_cause'] not in parked_deps:
+                    record(args, row, 'park', {'parked_cause': parked_deps[0]}, reason)
+                    changed = True
+            elif parked_deps and row['status'] in ('unassigned',) + OPEN:
+                grant = find(doc, parked_deps[0])['parked_grant']
+                park_row(args, row, f'依賴的列 {parked_deps[0]} 已擱置', parked_deps[0], grant)
+                changed = True
+
+
+def require_orchestrator(doc, args, what):
+    if doc.get('orchestrator') and not same_controller(doc['orchestrator'], actor(args)):
+        raise Failure(f'only the orchestrator {doc["orchestrator"]} may {what}')
+
+
+def cmd_park(args):
+    """Park a row that cannot go on (unattended mode only); rows depending on it follow."""
+    reason = required_text('--reason', args.reason)
+    with transaction(args, 'park', args.id, reason) as doc:
+        require_orchestrator(doc, args, 'park items')
+        item = find(doc, args.id)
+        require_status(item, ('unassigned',) + OPEN, 'park')
+        # Asked inside the lock, right before the write, so a grant that ended meanwhile counts.
+        park_row(args, item, reason, None, unattended_grant(args.ledger))
+        sync_parked_dependencies(args, doc)
+        parked = [row['id'] for row in doc['items'] if row['status'] == 'parked'
+                  and row.get('parked_cause') is not None]
+    print(f'item {item["id"]} parked' + (f'; dependents parked: {", ".join(map(str, parked))}'
+                                         if parked else ''))
+
+
 def cmd_unpark(args):
-    """Return a parked row, and the rows parked because of it, to the state they had."""
+    """Return a parked row to the state it had; rows that followed it return too unless another
+    parked row still holds them."""
     reason = required_text('--reason', args.reason)
     with transaction(args, 'unpark', args.id, reason) as doc:
         require_orchestrator(doc, args, 'unpark items')
@@ -1911,12 +1913,12 @@ def cmd_unpark(args):
         if item.get('parked_cause') is not None:
             raise Failure(f'item {item["id"]} is parked because item {item["parked_cause"]} is; '
                           f'unpark item {item["parked_cause"]}')
-        released = [row for row in doc['items'] if row.get('parked_cause') == item['id']
-                    and row['status'] == 'parked']
+        before = {row['id'] for row in doc['items'] if row['status'] == 'parked'}
         release_row(args, doc, item, reason)
-        for row in released:
-            release_row(args, doc, row, reason)
-    print(f'item {item["id"]} unparked' + (f'; also {", ".join(str(r["id"]) for r in released)}'
+        sync_parked_dependencies(args, doc, reason)
+        released = sorted(before - {row['id'] for row in doc['items']
+                                    if row['status'] == 'parked'} - {item['id']})
+    print(f'item {item["id"]} unparked' + (f'; also {", ".join(map(str, released))}'
                                            if released else ''))
 
 
@@ -2318,11 +2320,10 @@ def ticket_now(rows, state, steps, at):
             row['progress'] and f'「{row["progress"]}」',
             row['blocked_reason'] and f'受阻：{row["blocked_reason"]}',
             late and f'超過預計 {late} 分') if text))
+    parts += [f'{STAGES[row["stage"]]}擱置：{row["parked_reason"]}' for row in rows
+              if row['status'] == 'parked']
     if parts:
         return '／'.join(parts)
-    parked = [row for row in rows if row['status'] == 'parked']
-    if parked:
-        return '／'.join(f'{STAGES[row["stage"]]}擱置：{row["parked_reason"]}' for row in parked)
     waiting = [STAGES[row['stage']] for row in rows if row['status'] == 'unassigned']
     if waiting:
         return '待派：' + '、'.join(dict.fromkeys(waiting))
@@ -2416,6 +2417,9 @@ def row_span(row):
     if not start:
         return None
     end = closed_at(row)
+    if row['status'] == 'parked':  # the work stopped when it was parked
+        end = next(entry['at'] for entry in reversed(row['history'])
+                   if entry.get('action') == 'park' and 'status' in entry['changes'])
     running = row['status'] not in ('done', 'cancelled', 'parked')
     return loads_time(start), end and loads_time(end), running
 

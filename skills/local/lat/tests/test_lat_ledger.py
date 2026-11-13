@@ -2342,10 +2342,10 @@ class ParkTests(LedgerCase):
         done_row = self.add('--depends', str(root), evidence='file', ticket='#5')
         self.ok('cancel', str(done_row), '--reason', 'not needed')
         self.ok('park', str(root), '--reason', 'cannot go on')
-        for dependent in (child, grandchild):
+        for dependent, cause in ((child, root), (grandchild, child)):
             item = self.item(dependent)
             self.assertEqual((item['status'], item['parked_cause'], item['parked_from']),
-                             ('parked', root, 'unassigned'))
+                             ('parked', cause, 'unassigned'))
         self.assertEqual(self.item(done_row)['status'], 'cancelled')
         self.assertEqual(self.item(other)['status'], 'in_progress')
         self.ok('update', str(other), '--progress', 'still going', by='impl')
@@ -2355,7 +2355,7 @@ class ParkTests(LedgerCase):
         self.assertEqual(self.ok('next').strip(), 'nothing ready to dispatch')
         late = self.add('--depends', str(grandchild), ticket='#6')
         self.assertEqual((self.item(late)['status'], self.item(late)['parked_cause']),
-                         ('parked', root))
+                         ('parked', grandchild))
         checked = json.loads(self.run_ledger('check', '--json').stdout)
         self.assertEqual(sorted(entry['id'] for entry in checked['parked']),
                          sorted([root, child, grandchild, late]))
@@ -2385,6 +2385,47 @@ class ParkTests(LedgerCase):
                          ['park', 'unpark'])
         self.ok('update', str(root), '--progress', 'resumed', by='impl')
         self.fails('unpark', str(root), '--reason', 'again')
+
+    def test_a_row_depending_on_two_parked_rows_waits_for_both(self):
+        self.grant()
+        first, second = self.add(ticket='#1'), self.add(ticket='#2')
+        shared = self.add('--depends', f'{first},{second}', ticket='#3')
+        self.ok('park', str(first), '--reason', 'a')
+        self.ok('park', str(second), '--reason', 'b')
+        self.ok('unpark', str(first), '--reason', 'user decided')
+        self.assertEqual(self.item(shared)['status'], 'parked')
+        self.assertEqual(self.item(shared)['parked_cause'], second)
+        self.ok('unpark', str(second), '--reason', 'user decided')
+        self.assertEqual(self.item(shared)['status'], 'unassigned')
+
+    def test_changing_dependencies_follows_parked_rows(self):
+        self.grant()
+        root = self.add(ticket='#1')
+        late, descendant = self.add(ticket='#2'), None
+        descendant = self.add('--depends', str(late), ticket='#3')
+        self.ok('park', str(root), '--reason', 'cannot go on')
+        self.ok('update', str(late), '--depends', str(root), '--reason', 'now needs #1')
+        for row in (late, descendant):
+            self.assertEqual((self.item(row)['status'], self.item(row)['parked_cause']),
+                             ('parked', root if row == late else late))
+        self.assertTrue(json.loads(self.run_ledger('check', '--json').stdout)['ok'])
+        self.ok('update', str(late), '--depends', '', '--reason', 'no longer needs #1')
+        self.assertEqual([self.item(row)['status'] for row in (late, descendant)],
+                         ['unassigned', 'unassigned'])
+
+    def test_show_names_the_parked_reason_beside_an_open_row_and_keeps_the_work_time(self):
+        self.grant()
+        stuck = self.started(ticket='#1')
+        self.started(ticket='#1')
+        self.now = '2026-10-24T10:30:00Z'
+        self.ok('park', str(stuck), '--reason', 'cannot go on')
+        self.now = '2026-10-24T12:00:00Z'
+        ticket = self.shown()['tickets'][0]
+        self.assertEqual(ticket['state'], 'parked')
+        self.assertIn('cannot go on', ticket['now'])
+        self.assertIn('進行中', ticket['now'])
+        impl = next(entry for entry in ticket['times'] if entry['key'] == 'impl')
+        self.assertEqual((impl['minutes'], impl['running']), (30, False))
 
     def test_stuck_review_and_third_spec_round_park_without_touching_acceptance(self):
         self.grant()
