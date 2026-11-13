@@ -125,7 +125,14 @@ const handleAllowed: Handle = ({ event, resolve }) => {
 			const board = getBoard();
 			const now = board.config.now();
 			const device = token ? findDevice(board.config.stateDir, token, now) : null;
-			if (device) markSeen(board.config.stateDir, device, now);
+			if (device) {
+				try {
+					markSeen(board.config.stateDir, device, now);
+				} catch (error) {
+					// The time is kept in memory and written again a minute later; the request goes on.
+					log('ERROR', 'board.devices', 'last_seen_unsaved', exceptionFields(error));
+				}
+			}
 			event.locals.device = device;
 
 			const path = event.url.pathname;
