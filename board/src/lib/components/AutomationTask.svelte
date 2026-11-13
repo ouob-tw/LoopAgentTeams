@@ -8,6 +8,7 @@
 	import {
 		clientName,
 		EFFORT_TEXT,
+		isOpen,
 		kindText,
 		MISSED_NAMED,
 		runReason,
@@ -19,6 +20,7 @@
 		type AutomationTaskView
 	} from '#lib/board/automation.ts';
 	import { dismissMissed, pauseTask, readOutput, runTask, stopTask } from '#lib/board/automation-actions.ts';
+	import AutomationReview from './AutomationReview.svelte';
 	import AutomationState from './AutomationState.svelte';
 
 	let {
@@ -31,7 +33,7 @@
 
 	const task = $derived(view.task);
 	const at = $derived(timeFormat(timeZone));
-	const runningRun = $derived(view.runs.find((run) => run.status === 'running'));
+	const runningRun = $derived(view.runs.find(isOpen));
 	const running = $derived(runningRun !== undefined);
 	/** The run 停止這次 was pressed for: until its record ends, the button says it is stopping. */
 	let stopping = $state<string | null>(null);
@@ -162,10 +164,12 @@
 	{/if}
 	{#each view.runs as run (run.id)}
 		{@const live = run.status === 'running'}
-		<section class="run" class:bad={!live && run.status !== 'success' && run.status !== 'skipped'} class:skip={run.status === 'skipped'} class:live data-run={run.id} data-status={run.status}>
+		{@const checking = run.review?.status === 'checking'}
+		{@const checkBad = run.review?.status === 'fail' || run.review?.status === 'error'}
+		<section class="run" class:bad={checkBad || (!live && run.status !== 'success' && run.status !== 'skipped')} class:skip={run.status === 'skipped'} class:live={live || checking} data-run={run.id} data-status={run.status}>
 			<div class="when">
 				<b>{at.full(run.startedAt)}{run.endedAt === undefined || run.status === 'skipped' || run.trigger === 'carried' ? '' : ` → ${sameDay(run.startedAt, run.endedAt) ? at.clock(run.endedAt) : at.full(run.endedAt)}`}</b>
-				<AutomationState status={run.status} />
+				<AutomationState status={run.status} review={run.review?.status} />
 				<span class="trigger">{TRIGGER_TEXT[run.trigger]}</span>
 			</div>
 			{#if live}
@@ -181,7 +185,7 @@
 			{/if}
 			{#if task.kind === 'agent' && run.trigger !== 'carried' && run.status !== 'skipped' && run.status !== 'config-error'}
 				{#if run.sessionId}
-					<a class="agent-link" href={`?agent=${encodeURIComponent(run.sessionId)}`} onclick={(event) => openAgent(run.sessionId!, event)}>{live ? '打開 Agent 看即時畫面' : '打開 Agent 看對話'} ›</a>
+					<a class="agent-link" href={`?agent=${encodeURIComponent(run.sessionId)}`} onclick={(event) => openAgent(run.sessionId!, event)}>{live ? '打開 Agent 看即時畫面' : run.review ? '打開這次的 Agent 看對話' : '打開 Agent 看對話'} ›</a>
 				{/if}
 				{#if live}
 					<p class="hint">{run.agentName ? `它和一般 Agent 一樣出現在 Herdr 分頁（@${run.agentName}），做完會自動關掉。` : 'Agent 正在開啟…'}</p>
@@ -193,6 +197,9 @@
 						<li class:failed={!check.ok}><b aria-label={check.ok ? '通過' : '沒過'}>{check.ok ? '✓' : '✕'}</b><span>{check.label}{check.detail ? `：${check.detail}` : ''}</span></li>
 					{/each}
 				</ul>
+			{/if}
+			{#if run.review}
+				<AutomationReview review={run.review} now={clock.now} limitMinutes={task.limitMinutes} onopenagent={onopenagent} />
 			{/if}
 			{#if run.output}
 				<details ontoggle={(event) => openOutput(run, event)}>

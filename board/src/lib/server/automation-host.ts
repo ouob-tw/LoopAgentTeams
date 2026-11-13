@@ -108,6 +108,10 @@ export function boardAgentHost(config: BoardConfig, board: () => Board): AgentHo
 			const reply = items.findLast((item) => item.kind === 'assistant');
 			return { ok: true, text: reply && 'text' in reply ? reply.text : null, seq: reply?.seq ?? -1 };
 		},
+		async transcript(client, sessionId) {
+			const read = await readTranscript(config, client, sessionId);
+			return read.ok ? read.path : null;
+		},
 		async screen(pane) {
 			const read = await readScreen(config, pane, 'detection');
 			return 'text' in read ? read.text : null;

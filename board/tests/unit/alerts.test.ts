@@ -11,8 +11,13 @@ import { placeIn, searchOf, tabIn } from '../../src/lib/board/navigation.ts';
 test('failed, timed out, settings error, quota and a failed check make a card; success, stopped and skipped do not', () => {
 	const kinds = (['failed', 'timeout', 'config-error', 'quota', 'success', 'stopped', 'skipped', 'running'] as RunStatus[]).map((status) => runAlertKind({ status }));
 	expect(kinds).toEqual(['failed', 'timeout', 'config-error', 'quota', null, null, null, null]);
-	expect(runAlertKind({ status: 'success', review: { verdict: 'fail', summary: '發票沒開立' } })).toBe('check-failed');
-	expect(runAlertKind({ status: 'success', review: { verdict: 'pass' } })).toBeNull();
+	const review = (status: 'checking' | 'pass' | 'fail' | 'error', more: object = {}) => ({ status, startedAt: 0, client: 'codex' as const, model: 'gpt-6.1-sol', effort: 'medium' as const, ...more });
+	expect(runAlertKind({ status: 'success', review: review('fail') })).toBe('check-failed');
+	// A checker that could not judge (past the limit, gone, no quota) is no pass either; 停止這次 makes no card.
+	expect(runAlertKind({ status: 'success', review: review('error') })).toBe('check-failed');
+	expect(runAlertKind({ status: 'success', review: review('error', { stopped: true }) })).toBeNull();
+	expect(runAlertKind({ status: 'success', review: review('checking') })).toBeNull();
+	expect(runAlertKind({ status: 'success', review: review('pass') })).toBeNull();
 });
 
 test('the sentence is fixed per kind, so a push never carries a run reason, output or path', () => {

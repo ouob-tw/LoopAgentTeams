@@ -3,10 +3,12 @@
 	// heard of it, the run it is about (or the periods missed), and 重跑一次, 打開自動化設定 and
 	// 知道了，關掉紅卡. Closing the card leaves the run records as they are.
 	import { ALERT_KIND_TEXT, type AutomationAlert } from '#lib/board/alerts.ts';
-	import { MISSED_NAMED, missedNames, runReason, TRIGGER_TEXT, timeFormat, type AutomationTaskView } from '#lib/board/automation.ts';
+	import { isOpen, MISSED_NAMED, missedNames, runReason, TRIGGER_TEXT, timeFormat, type AutomationTaskView } from '#lib/board/automation.ts';
 	import { runTask } from '#lib/board/automation-actions.ts';
 	import { dismissAlert } from '#lib/board/alert-actions.ts';
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import { clock } from '#lib/board/clock.svelte.ts';
+	import AutomationReview from './AutomationReview.svelte';
 	import AutomationState from './AutomationState.svelte';
 	import TestDenied from './TestDenied.svelte';
 
@@ -15,7 +17,8 @@
 		task,
 		timeZone,
 		onsettings,
-		onchanged
+		onchanged,
+		onopenagent
 	}: {
 		alert: AutomationAlert;
 		/** The task as the board has it now; undefined once it was deleted. */
@@ -23,11 +26,12 @@
 		timeZone: string;
 		onsettings: (taskId: string) => void;
 		onchanged: () => void;
+		onopenagent: (sessionId: string) => void;
 	} = $props();
 
 	const at = $derived(timeFormat(timeZone));
 	const run = $derived(alert.runId === undefined ? undefined : task?.runs.find((candidate) => candidate.id === alert.runId));
-	const running = $derived(task?.runs.some((candidate) => candidate.status === 'running') ?? false);
+	const running = $derived(task?.runs.some(isOpen) ?? false);
 	const closed = $derived(alert.dismissedAt !== undefined);
 
 	let busy = $state(false);
@@ -78,12 +82,15 @@
 		<section class="record" data-run={run.id}>
 			<div class="when">
 				<b>{at.full(run.startedAt)}{run.endedAt === undefined ? '' : ` → ${at.day(run.startedAt) === at.day(run.endedAt) ? at.clock(run.endedAt) : at.full(run.endedAt)}`}</b>
-				<AutomationState status={run.status} />
+				<AutomationState status={run.status} review={run.review?.status} />
 				<span class="trigger">{TRIGGER_TEXT[run.trigger]}</span>
 			</div>
 			<p>{runReason(run)}</p>
-			{#if run.review?.verdict === 'fail'}
-				<p class="bad">檢查沒過{run.review.summary ? `：${run.review.summary}` : ''}</p>
+			{#if run.sessionId && run.review}
+				<a class="agent-link" href={`?agent=${encodeURIComponent(run.sessionId)}`} onclick={(event) => (event.preventDefault(), onopenagent(run.sessionId!))}>打開這次的 Agent 看對話 ›</a>
+			{/if}
+			{#if run.review}
+				<AutomationReview review={run.review} now={clock.now} limitMinutes={task?.task.limitMinutes ?? 0} onopenagent={onopenagent} />
 			{/if}
 			{#if run.checks?.length}
 				<ul class="checks">
@@ -197,6 +204,14 @@
 	}
 	.muted {
 		color: var(--muted);
+	}
+	.agent-link {
+		align-self: flex-start;
+		min-height: 44px;
+		display: inline-flex;
+		align-items: center;
+		color: var(--accent);
+		font-weight: 700;
 	}
 	.actions {
 		display: flex;

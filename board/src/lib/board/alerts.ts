@@ -3,7 +3,7 @@
 // closes it; closing it never changes the run records. The push sent for a card carries only the
 // task's name and the card's one sentence, never a run's output or a path. Pure, shared by the
 // server and the page.
-import type { AutomationRun, MissedPeriod, RunStatus } from './automation.ts';
+import { reviewFailed, type AutomationRun, type MissedPeriod, type RunStatus } from './automation.ts';
 
 export type AlertKind = 'failed' | 'timeout' | 'check-failed' | 'config-error' | 'quota' | 'missed';
 
@@ -46,8 +46,9 @@ export const ALERT_KIND_TEXT: Record<AlertKind, string> = {
 	missed: '本期錯過'
 };
 
-/** The checker's verdict on a run that succeeded; set by the run-after check (#575). */
-export const isCheckFailed = (run: Pick<AutomationRun, 'status' | 'review'>) => run.status === 'success' && run.review?.verdict === 'fail';
+/** The checking agent did not pass a run that succeeded: it judged FAIL, or ended without a verdict
+ *  other than by 停止這次. */
+export const isCheckFailed = (run: Pick<AutomationRun, 'status' | 'review'>) => reviewFailed(run) && !run.review?.stopped;
 
 const CARDED: Partial<Record<RunStatus, AlertKind>> = { failed: 'failed', timeout: 'timeout', 'config-error': 'config-error', quota: 'quota' };
 
