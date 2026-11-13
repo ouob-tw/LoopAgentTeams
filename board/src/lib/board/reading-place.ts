@@ -48,9 +48,9 @@ export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement 
 		if (rect.height <= 0) return Infinity;
 		return rect.top > line ? rect.top - line : rect.bottom <= line ? line - rect.bottom : 0;
 	};
-	/** Of the elements inside `element`, the one nearest `line`. */
+	/** Of the elements inside `element`, the one nearest `line`; a window over the page is not one. */
 	const nearest = (element: Element, line: number) =>
-		[...element.children].reduce<Element | undefined>((best, child) => (best && distance(best, line) <= distance(child, line) ? best : child), undefined);
+		[...element.children].filter((child) => child.localName !== 'dialog').reduce<Element | undefined>((best, child) => (best && distance(best, line) <= distance(child, line) ? best : child), undefined);
 	/** `card` and the elements inside it down to `inner`, or, without one, to the innermost one
 	 *  at `line`, or nearest it: a card whose text was replaced is told by it. */
 	const chain = (card: Element, line: number, inner?: Element): Chain => {
