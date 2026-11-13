@@ -1,11 +1,12 @@
-import { isHttpError, isRedirect, json, redirect } from '@sveltejs/kit';
+import { isHttpError, isRedirect, json } from '@sveltejs/kit';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { Handle, HandleServerError, ServerInit } from '@sveltejs/kit/hooks';
 import { randomUUID } from 'node:crypto';
 import { DEVICE_COOKIE } from '#lib/server/auth.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { actingAs } from '#lib/server/acting.ts';
-import { findDevice } from '#lib/server/devices.ts';
+import { clientAddress, viaHttps } from '#lib/server/client-address.ts';
+import { findDevice, markSeen } from '#lib/server/devices.ts';
 import { testDeviceRefusal } from '#lib/server/test-device.ts';
 import { exceptionFields, log, withRequestId } from '#lib/server/log.ts';
 import { redact, secretsOf } from '#lib/server/redact.ts';
@@ -68,7 +69,55 @@ async function logFailure(event: RequestEvent, response: Response) {
 	});
 }
 
-export const handle: Handle = ({ event, resolve }) => {
+const seeOther = (location: string) => new Response(null, { status: 303, headers: { location } });
+
+// What every answer carries: no other site may show the board in a frame or have a browser guess
+// a file's type, and links out of the board do not tell other sites the board's addresses. The
+// content policy only adds what the pages never use: frames, plugins and a <base> elsewhere.
+const CONTENT_POLICY = "frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+const SECURITY_HEADERS: [string, string][] = [
+	['x-frame-options', 'DENY'],
+	['x-content-type-options', 'nosniff'],
+	['referrer-policy', 'same-origin']
+];
+/** Over HTTPS only: browsers then refuse plain http to this host name for a year. */
+const HSTS = 'max-age=31536000';
+
+/** The response with the security headers; a policy it already has (an attached file's sandbox) is kept. */
+function secured(response: Response, https: boolean): Response {
+	const apply = (headers: Headers) => {
+		for (const [name, value] of SECURITY_HEADERS) headers.set(name, value);
+		const own = headers.get('content-security-policy');
+		headers.set('content-security-policy', own ? `${own}; ${CONTENT_POLICY}` : CONTENT_POLICY);
+		if (https) headers.set('strict-transport-security', HSTS);
+	};
+	try {
+		apply(response.headers);
+		return response;
+	} catch {
+		// A response whose headers cannot change, such as one passed on from fetch.
+		const copy = new Response(response.body, response);
+		apply(copy.headers);
+		return copy;
+	}
+}
+
+export const handle: Handle = async ({ event, resolve }) => {
+	const { config } = getBoard();
+	// The connection's own address, whatever ADDRESS_HEADER says; `vite dev` has no Node request.
+	const peer = event.platform?.req?.socket.remoteAddress ?? event.getClientAddress();
+	const https = viaHttps(peer, event.request.headers.get('x-forwarded-proto'), config.trustedProxies);
+	// Before any route, the login screen included.
+	if (!config.allowedSources.has(peer)) {
+		log('WARNING', 'board.http', 'source_refused', { ...where(event), peer });
+		return secured(new Response('Forbidden', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } }), https);
+	}
+	event.locals.clientAddress = clientAddress(peer, event.request.headers.get('x-forwarded-for'), config.trustedProxies);
+	event.locals.https = https;
+	return secured(await handleAllowed({ event, resolve }), https);
+};
+
+const handleAllowed: Handle = ({ event, resolve }) => {
 	event.locals.requestId = requestIdOf(event);
 	event.locals.redact = redactorFor(event);
 	return withRequestId(event.locals.requestId, async () => {
@@ -76,15 +125,17 @@ export const handle: Handle = ({ event, resolve }) => {
 		try {
 			const token = event.cookies.get(DEVICE_COOKIE);
 			const board = getBoard();
-			const device = token ? findDevice(board.config.stateDir, token, board.config.now()) : null;
+			const now = board.config.now();
+			const device = token ? findDevice(board.config.stateDir, token, now) : null;
+			if (device) markSeen(board.config.stateDir, device, now);
 			event.locals.device = device;
 
 			const path = event.url.pathname;
 			if (!device && !OPEN_PATHS.has(path)) {
 				if (path.startsWith('/api/')) return json({ error: 'unpaired' }, { status: 401 });
-				redirect(303, '/login');
+				return seeOther('/login');
 			}
-			if (device && path === '/login') redirect(303, '/');
+			if (device && path === '/login') return seeOther('/');
 			// A test device's change is checked against what it may do before any route runs.
 			const refusal = device && (await testDeviceRefusal(board.config, device, event.request.method, event.route.id, event.request));
 			if (refusal) return refusal;
