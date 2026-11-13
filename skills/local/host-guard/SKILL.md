@@ -21,7 +21,8 @@ description: Use when a command was blocked by host-guard, or before running a C
 
 ```bash
 taskset -c 0-3 bash loadcmp.sh          # 子程序繼承限制，包住啟動腳本即可
-systemd-run --user --scope -p AllowedCPUs=0-3 stress-ng --cpu 4 -t 60
+# 這台主機的使用者層沒有委派 cpuset，AllowedCPUs 不會生效；改用 CPUQuota 限核心數
+systemd-run --user --scope --slice=lat-tests.slice -p CPUQuota=400% stress-ng --cpu 4 -t 60
 ```
 
 `taskset -c` 指定的核心數超過上限也會擋。要模擬「主機很忙」，在限制的核心上製造負載，並把被測程式放在同一組核心上跑。
@@ -31,10 +32,10 @@ systemd-run --user --scope -p AllowedCPUs=0-3 stress-ng --cpu 4 -t 60
 `bun test`、`bun run test`、`pytest`、`vitest`、`cargo test` 沒有同時設記憶體上限與時間上限時擋下，包含前面接 `uv run`、`bunx`、`python -m` 或 `nice` 的寫法。2026-11-02 一個無限迴圈的測試兩次用到 90 GB 以上，主機的其他工作也被迫停下。
 
 ```bash
-systemd-run --user --scope -q -p MemoryMax=40G -p MemorySwapMax=0 -p OOMPolicy=continue timeout 600 bun test tests/unit
+systemd-run --user --scope -q --slice=lat-tests.slice -p MemoryMax=40G -p MemorySwapMax=0 -p OOMPolicy=continue timeout 600 bun test tests/unit
 ```
 
-超過上限時只有這個測試被結束，結束碼是 137。真的需要更多記憶體時調高 `MemoryMax`。
+`--slice=lat-tests.slice` 把測試放進測試專用的 CPU 群組，全部測試加起來有 CPU 上限，看板與其他服務不會被拖慢（群組由專案的 `scripts/install-cpu-slices.sh` 建立；沒建立時照常執行，只是沒有上限）。超過上限時只有這個測試被結束，結束碼是 137。真的需要更多記憶體時調高 `MemoryMax`。
 
 上限要直接包住測試指令。`bash -c 'cd a && pytest'` 裡接在 `&&` 後面的測試看不到外層的上限，要寫在 `&&` 後面，或先 `cd` 再包。
 
