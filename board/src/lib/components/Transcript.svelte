@@ -9,7 +9,9 @@
 	// place; a message whose questions the board has no data for stays text. Given a report card, a
 	// DONE report of the inbox shows its card in place of its text. Board asks show where they were
 	// asked. With 中文 picked above it, the English replies shown are translated, each with its
-	// original a click away.
+	// original a click away. Beside it, 「我說過的話」 lists what the user said in the whole
+	// conversation; a pick scrolls to that message and marks it for a moment, loading earlier
+	// parts first when it is not there yet.
 	import { lastSegment } from '#lib/board/agents.ts';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
@@ -52,6 +54,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	import CopyButton from './CopyButton.svelte';
 	import AttachmentList from './AttachmentList.svelte';
 	import BoardAskCard from './BoardAskCard.svelte';
+	import MyMessages from './MyMessages.svelte';
 
 	/** How long a question not found waits for the next page before it is judged without one. */
 	const JUDGE_WITHOUT_PAGE_MS = 5_000;
@@ -574,6 +577,52 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		};
 	});
 
+	/** The message picked in 「我說過的話」 while earlier parts are loaded until it is there. */
+	let jumping = $state<number | null>(null);
+	/** The message just scrolled to, marked for a moment. */
+	let flashed = $state<number | null>(null);
+	let markTimer: ReturnType<typeof setTimeout> | undefined;
+	const MARK_MS = 2_200;
+	// Another conversation: nothing is being looked for.
+	$effect(() => {
+		void id;
+		untrack(() => {
+			jumping = null;
+			flashed = null;
+		});
+	});
+	$effect(() => () => clearTimeout(markTimer));
+	// Earlier parts until the picked message is loaded, then it is shown.
+	$effect(() => {
+		if (jumping === null || !view) return;
+		const first = view.items[0]?.seq;
+		if (first !== undefined && first <= jumping) {
+			const seq = jumping;
+			untrack(() => void reveal(seq));
+		} else if (view.before === null) {
+			jumping = null;
+			untrack(() => toasts.show('failed', '這一則不在對話紀錄裡了。'));
+		} else if (!loadingEarlier && !earlierFailed) untrack(() => void loadEarlier());
+	});
+	async function reveal(seq: number) {
+		jumping = null;
+		await tick();
+		const element = list?.querySelector<HTMLElement>(`[data-seq="${seq}"]`);
+		if (!element) {
+			toasts.show('failed', '這一則不在對話紀錄裡了。');
+			return;
+		}
+		element.scrollIntoView({ block: 'center' });
+		// Parts above it that settle after the jump must not carry it off.
+		requestAnimationFrame(() => element.scrollIntoView({ block: 'center' }));
+		readingPlace?.retake(element);
+		flashed = seq;
+		clearTimeout(markTimer);
+		markTimer = setTimeout(() => (flashed = null), MARK_MS);
+	}
+	/** Changes when the conversation gets a new item, for the list of what the user said. */
+	const latestSeq = $derived(view?.items.at(-1)?.seq ?? -1);
+
 	async function loadEarlier(): Promise<void> {
 		const requested = view?.before;
 		if (requested === null || requested === undefined || loadingEarlier) return;
@@ -636,6 +685,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	</div>
 {/snippet}
 
+<div class="frame">
 <section class="history" data-block="transcript" bind:this={list} onsubmitcapture={hold}>
 	{#if held}<div class="head" bind:this={head} aria-hidden="true"></div>{/if}
 	<!-- Until the conversation is read, where they were asked is not known: newest first, above it. -->
@@ -680,7 +730,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 					{:else if segment.kind === 'text'}
 						{@const marked = reported.get(segment.item.seq)}
 						{@const translation = english.has(segment.item.seq) ? (translated[segment.item.text] ?? { status: 'pending' }) : null}
-						<li class="said" class:reported={!!marked} class:done={marked?.tag === 'DONE'} class:unread={marked?.readAt === null} data-kind={segment.item.kind} data-translation={translation?.status}>
+						<li class="said" class:flashed={flashed === segment.item.seq} data-seq={segment.item.seq} class:reported={!!marked} class:done={marked?.tag === 'DONE'} class:unread={marked?.readAt === null} data-kind={segment.item.kind} data-translation={translation?.status}>
 							<p class="meta">
 								{#if marked}<span class="label">{itemLabel(marked)}</span>{/if}
 								<span title={segment.item.kind === 'user' ? undefined : `@${controller.hcomName}`}>{segment.item.kind === 'user' ? '你' : `@${lastSegment(controller.hcomName)}`}</span>
@@ -753,12 +803,35 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	{/if}
 	{#if target || held}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
 </section>
+<MyMessages {feed} {id} version={latestSeq} {jumping} failure={jumping === null ? null : earlierFailed} onpick={(seq) => { earlierFailed = null; jumping = seq; }} onretry={() => void loadEarlier()} />
+</div>
 
 <style>
+	/* The conversation and, beside it, the list of what the user said. */
+	.frame {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.6rem;
+	}
+	.frame > .history {
+		flex: 1;
+		min-width: 0;
+	}
+	@media (max-width: 760px) {
+		.frame {
+			display: block;
+		}
+	}
 	.history {
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
+	}
+	/* The message just picked in the list: a frame and a tint, so it shows without colour too. */
+	.said.flashed {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+		background: color-mix(in srgb, var(--accent) 18%, transparent);
 	}
 	/* Takes no room until it is given some: the list's gap after it is taken back. */
 	.head {
