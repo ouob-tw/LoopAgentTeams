@@ -101,7 +101,7 @@ class LoadTests(HookCase):
     def test_load_block_suggests_cpu_quota_in_the_tests_slice(self):
         message = self.bash('stress-ng --cpu 30 -t 60').stderr
         self.assertIn('--slice=lat-tests.slice -p CPUQuota=', message)
-        self.assertIn('AllowedCPUs does not take effect', message)
+        self.assertIn('AllowedCPUs only works where', message)
 
     def test_load_on_few_cores_passes(self):
         for command in ["taskset -c 0-3 sh -c 'while :; do :; done' &",

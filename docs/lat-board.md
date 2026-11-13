@@ -123,7 +123,7 @@ systemctl --user show lat-board.service -p CPUWeight
 
 **調整數值**：改 `~/.config/lat-cpu/slices.conf` 的 `TESTS_CPU_WEIGHT`、`TESTS_CPU_QUOTA`、`BOARD_CPU_WEIGHT`，再執行一次腳本。權重只在真的搶 CPU 時才生效；`CPUQuota` 設太低，測試會被節流而變慢，用 `cat /sys/fs/cgroup/user.slice/user-$UID.slice/user@$UID.service/lat.slice/lat-tests.slice/cpu.stat` 看 `nr_throttled`。腳本內的 `daemon-reload` 會讓執行中的看板立刻套用新權重，不必重啟（以 `show` 的結果為準）。（單位名稱裡的 `-` 會讓 systemd 把它放在 `lat.slice` 底下，所以路徑多一層。）
 
-**移除**：`scripts/install-cpu-slices.sh --remove` 刪掉 slice 與看板的設定並重新載入（設定檔保留）。沒有 `lat-tests.slice` 時測試照常執行，只是沒有上限。
+**移除**：`scripts/install-cpu-slices.sh --remove` 刪掉 slice 與看板的設定並重新載入（設定檔保留）。沒有 `lat-tests.slice` 時測試照常執行，只是沒有上限。已在跑的測試會留在原來的限制裡直到結束。環境變數 `SUITE_GATE_SLICE` 可改 suite-gate 使用的群組名稱，設成空字串就不放進任何群組。
 
 套用在主機上的 cgroup 限制需要使用者層 systemd 已委派 `cpu`（`systemctl show user@$UID.service -p DelegateControllers`）。這台主機沒有委派 cpuset，所以 `AllowedCPUs` 不會生效，限核心數請用 `taskset` 或 `CPUQuota`。
 
