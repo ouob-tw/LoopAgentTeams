@@ -114,7 +114,8 @@
 	const reviewSummary = $derived(controller.unattended.state === 'unknown' || controller.unattended.state === 'error' ? null : (controller.unattended.review ?? null));
 	const tabs = $derived([
 		{ id: 'transcript', label: '對話紀錄', count: null },
-		...(reviewSummary?.state === 'ok' ? [{ id: 'review', label: '回顧', count: reviewSummary.parked } as const] : []),
+		// A failed read keeps the tab, so a slow poll never throws the user off it.
+		...(reviewSummary?.state === 'ok' || reviewSummary?.state === 'error' ? [{ id: 'review', label: '回顧', count: reviewSummary.state === 'ok' ? reviewSummary.parked : null } as const] : []),
 		{ id: 'screen', label: '終端', count: null },
 		{ id: 'reports', label: '回報', count: reports.length },
 		{ id: 'ledger', label: '工作總表', count: controller.ledger.state === 'ok' ? controller.ledger.tickets.length : null },

@@ -32,8 +32,8 @@
 			problem = `讀不到回顧：${reason}`;
 			return;
 		}
-		problem = null;
 		review = result.value.review;
+		problem = review ? null : '回顧檔暫時讀不到，稍後會再讀。';
 	}
 	$effect(() => {
 		void written;
