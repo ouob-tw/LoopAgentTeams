@@ -2225,6 +2225,91 @@ class SessionTests(unittest.TestCase):
         self.assertIn('自動清理未啟動', ended.stdout)
         self.assertEqual(json.loads(self.record.read_text())['status'], 'ended')
 
+    def unattended_env(self, mode=None):
+        """A temp global [unattended] setting; never the host's own config."""
+        config = self.root / 'xdg'
+        if mode:
+            (config / 'lat').mkdir(parents=True, exist_ok=True)
+            (config / 'lat/preauth.toml').write_text(f'[unattended]\nmode = "{mode}"\n')
+        return dict(XDG_CONFIG_HOME=str(config), LAT_BOARD_STATE_DIR=str(self.root / 'board'))
+
+    def unattended_status(self, session=SESSION):
+        spec = importlib.util.spec_from_file_location(
+            'lat_unattended_for_tests', SKILL / 'scripts/lat-unattended.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.dict(os.environ, self.unattended_env()):
+            return module.snapshot(self.work / '.lat', session)
+
+    def open_grant(self, round_number=1, session=SESSION):
+        path = self.work / '.lat/unattended' / f'{session}-r{round_number}.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        version = dict(version=1, goal='g', done=['d'], scope=dict(
+            ticket_confirmation=True, assume_defaults=True, prototype_decide=True),
+            stop=dict(quota=True, max_hours=12), source='board-form', evidence='e',
+            started_at=datetime.now(timezone.utc).isoformat(), ended_at=None, end_reason=None)
+        path.write_text(json.dumps(dict(versions=[version])))
+        # A board-form grant also turns the controller layer unattended.
+        record_path = self.work / '.lat/sessions' / f'{session}.json'
+        record = json.loads(record_path.read_text())
+        record['unattended'] = dict(record.get('unattended') or {}, mode='unattended')
+        record_path.write_text(json.dumps(record))
+        return path
+
+    def activate_with(self, mode=None, session=SESSION):
+        result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                          '--decisions', self.decisions, session=session,
+                          extra_env=self.unattended_env(mode))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.record_duty(session=session)
+        return result
+
+    def test_activate_marks_whether_the_round_runs_unattended(self):
+        manual = self.activate_with()
+        self.assertIn('本輪模式：人工確認（來自初始值）', manual.stdout)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        pending = self.activate_with('unattended')
+        self.assertIn('本輪模式：無人模式（來自全域），尚待目標', pending.stdout)
+        self.assertIn('create --source settings-default', pending.stdout)
+        self.assertEqual(self.unattended_status()['state'], 'pending-goal')
+
+    def test_deactivate_ends_the_grant_with_the_way_the_round_ended(self):
+        cases = (((), 'delivered'), (('--successor', 'next-orch'), 'handover'),
+                 (('--force-unfinished', '--reason', 'stop here'), 'cancelled'))
+        for extra, reason in cases:
+            with self.subTest(reason):
+                self.activate_with()
+                round_number = len(json.loads(self.record.read_text()).get('history', [])) + 1
+                grant = self.open_grant(round_number)
+                result = self.cli('deactivate', '--workspace', self.work, *extra,
+                                  extra_env=self.unattended_env())
+                self.assertEqual(result.returncode, 0, result.stderr)
+                version = json.loads(grant.read_text())['versions'][0]
+                self.assertEqual(version['end_reason'], reason)
+                self.assertIsNotNone(version['ended_at'])
+                self.assertEqual(self.unattended_status()['state'], 'none')
+
+    def test_a_new_round_or_successor_starts_without_the_old_grant(self):
+        self.activate_with('unattended')
+        self.open_grant()
+        record = json.loads(self.record.read_text())
+        record['unattended'] = dict(mode='unattended', prototype_decide=False)
+        self.record.write_text(json.dumps(record))
+        self.assertEqual(self.unattended_status()['state'], 'active')
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work, '--successor',
+                                  'next-orch', extra_env=self.unattended_env()).returncode, 0)
+        self.activate_with('unattended')
+        status = self.unattended_status()
+        self.assertEqual(status['round'], 2)
+        self.assertEqual(status['state'], 'pending-goal')
+        self.assertEqual(status['settings']['mode']['layer'], 'global')
+        self.assertEqual(status['settings']['prototype_decide']['layer'], 'default')
+        # The successor is another session: it has its own record and no grant.
+        self.activate_with('manual', session=OTHER)
+        other = self.unattended_status(OTHER)
+        self.assertEqual((other['round'], other['state']), (1, 'none'))
+        self.assertEqual(other['settings']['mode']['value'], 'manual')
+
     def test_hook_recovers_legacy_record_without_starting_watcher(self):
         self.write_legacy_record()
         expected_command = (

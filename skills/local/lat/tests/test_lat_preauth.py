@@ -232,6 +232,17 @@ class ErrorTests(PreauthCase):
     def test_wrong_value_type_asks(self):
         self.assert_asks('[actions.push]\nallow = "yes"\n', '`allow` must be true or false')
 
+    def test_an_unattended_section_is_known_and_its_values_checked(self):
+        self.write(self.global_file, '[unattended]\nmode = "unattended"\nmax_hours = 8\n'
+                                     'ticket_confirmation = false\n')
+        self.assertEqual(self.check('merge', '--branch', 'dev')['verdict'], 'allow')
+        for text, reason in (('[unattended]\nmode = "always"\n', '`mode` must be one of'),
+                             ('[unattended]\nmax_hours = 0\n', '`max_hours` must be'),
+                             ('[unattended]\nmax_hours = "8"\n', '`max_hours` must be a whole'),
+                             ('[unattended]\nquota = false\n', 'unknown key `quota`')):
+            with self.subTest(text):
+                self.assert_asks(text, reason)
+
     def test_unknown_action_in_settings_asks(self):
         self.assert_asks('[actions.rebase]\nallow = true\n', 'unknown action [actions.rebase]')
 
