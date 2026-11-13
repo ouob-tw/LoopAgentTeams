@@ -3376,6 +3376,22 @@ class TinyMergeTests(PreauthCase):
         verdict = self.check('merge', '--branch', 'dev', '--commit', 'fix/8')
         self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
 
+    def test_a_merge_of_dev_naming_a_merged_tiny_ticket_does_not_hold_the_branch(self):
+        self.change('src/fix.py', 4, 'fix: small (#7)')
+        git(self.repo, 'switch', '-q', 'dev')
+        git(self.repo, 'merge', '-q', '--no-ff', '-m', 'merge: small fix (#7)', 'fix/7')
+        git(self.repo, 'switch', '-q', '-c', 'feat/8', self.base)
+        self.change('src/feature.py', 50, 'feat: a feature (#8)')
+        git(self.repo, 'merge', '-q', '--no-ff', '-m', 'merge: dev (#7) into feat/8', 'dev')
+        self.ledger()
+        verdict = self.check('merge', '--branch', 'dev', '--commit', 'feat/8')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+        # A commit of the branch's own still names it: checked, and over the limit.
+        self.change('src/feature.py', 60, 'fix: and #7 too (#7)')
+        reason = self.check('merge', '--branch', 'dev', '--commit', 'feat/8')['reasons'][0]
+        self.assertIn('tiny-lane ticket #7', reason)
+        self.assertIn('exceed', reason)
+
 
 if __name__ == '__main__':
     unittest.main()
