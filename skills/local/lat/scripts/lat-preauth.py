@@ -40,6 +40,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -66,10 +67,10 @@ REASON_KINDS = {'allow-false': 'a layer sets allow=false',
                 'always-ask': 'no setting can pre-authorize it',
                 'error': 'the check could not judge it'}
 USER_ONLY_KINDS = ('allow-false', 'condition')
-ACTION_KEYS = {'allow': bool, 'branches': list, 'target': str, 'rollback': str, 'source': str,
-               'hours': str, 'timezone': str}
-# Only the project knows its environments and how to roll them back.
-PROJECT_ONLY_KEYS = ('target', 'rollback')
+ACTION_KEYS = {'allow': bool, 'branches': list, 'target': str, 'rollback': str, 'runbook': str,
+               'source': str, 'hours': str, 'timezone': str}
+# Only the project knows its environments, how to roll them back and where its deploy doc is.
+PROJECT_ONLY_KEYS = ('target', 'rollback', 'runbook')
 ADVISOR_KEYS = {'extended': bool, 'may_settle': list, 'must_ask': list, 'source': str}
 # [unattended] holds the mode a new controller starts in; lat-unattended.py reads it.
 UNATTENDED_KEYS = {'mode': str, 'ticket_confirmation': bool, 'assume_defaults': bool,
@@ -297,7 +298,8 @@ def resolve(layers, path, keys):
 
 def action_settings(layers, action):
     """Effective keys of one action. Only the project knows what its environments are and how
-    to roll them back, so `target` and `rollback` come from the project layer alone."""
+    to roll them back, so `target`, `rollback` and `runbook` come from the project layer
+    alone."""
     effective = resolve(layers, ('actions', action), ACTION_KEYS)
     project = section(layers[0], ('actions', action)) if layers[0].present else None
     for key in PROJECT_ONLY_KEYS:
@@ -605,18 +607,28 @@ def last_deploy(top, action, target):
     return same[found], None
 
 
+def last_deploy_base(top, version, action, target):
+    """(the last successful deploy, None) when its commit is in this repo and `version` or an
+    ancestor of it, else (None, why not)."""
+    last, why = last_deploy(top, action, target)
+    if why:
+        return None, why
+    commit = last.get('commit')
+    if not isinstance(commit, str) or not resolve_version(top, commit):
+        return None, f'the last successful {action} commit `{commit}` is not in this repository'
+    if not is_ancestor(top, commit, version):
+        return None, (f'the last successful {action} commit {commit[:12]} is not an ancestor of '
+                      f'{version[:12]}')
+    return last, None
+
+
 def affected_deploy_problems(top, version, action, target):
     """(reasons, basis). A passing post-merge affected summary stands in for the full suite when
     it tested this version's content from the last successful deploy's commit or an ancestor."""
-    last, why = last_deploy(top, action, target)
+    last, why = last_deploy_base(top, version, action, target)
     if why:
         return [why], None
-    commit = last.get('commit')
-    if not isinstance(commit, str) or not resolve_version(top, commit):
-        return [f'the last successful {action} commit `{commit}` is not in this repository'], None
-    if not is_ancestor(top, commit, version):
-        return [f'the last successful {action} commit {commit[:12]} is not an ancestor of '
-                f'{version[:12]}'], None
+    commit = last['commit']
     tree = git(top, 'rev-parse', f'{version}^{{tree}}')
     try:
         summaries = [record for record in load_suite_gate().read_records()
@@ -639,6 +651,34 @@ def affected_deploy_problems(top, version, action, target):
     return [], (f'post-merge affected summary {str(record.get("run_id"))[:12]} passed for '
                 f'{version[:12]} from base {record["base"][:12]}, covering the last successful '
                 f'{action} {commit[:12]} ({last.get("at")})')
+
+
+def affected_run_step(top, version, action, target):
+    """The step that lets a deploy with a rollback method skip the full suite: the post-merge
+    affected run from the last successful deploy's commit, or why there is none to run."""
+    last, why = last_deploy_base(top, version, action, target)
+    if why:
+        return (f'no post-merge affected run can cover this deploy ({why}); only a full suite '
+                'can')
+    command = ' '.join(shlex.quote(str(part)) for part in (
+        'uv', 'run', '--no-project', 'python', SUITE_GATE, 'affected', '--purpose', 'post-merge',
+        '--base', last['commit']))
+    return (f'run the post-merge affected tests from the last successful {action} '
+            f'({last.get("at")}) in {top}: {command}; then check again')
+
+
+def changed_paths(top, version, action, target):
+    """(the sorted top-level paths, directories or files, changed from the last successful
+    deploy to `version`, None) or (None, why they cannot be listed). A move lists both ends."""
+    last, why = last_deploy_base(top, version, action, target) if version else (
+        None, 'the version to deploy is unknown')
+    if why:
+        return None, why
+    names = git(top, '-c', 'core.quotepath=false', 'diff', '--no-renames', '--name-only',
+                last['commit'], version)
+    if names is None:
+        return None, f'git diff from {last["commit"][:12]} failed'
+    return sorted({name.split('/', 1)[0] for name in names.splitlines()}), None
 
 
 def rerun_only_merge_problems(top, version, ledger):
@@ -833,6 +873,7 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
     target = ' '.join(part for part in (branch, commit) if part)
     result = dict(verdict='ask', action=action, target=target, basis=[], reasons=[],
                   reason_kinds=[])
+    fixes = []
 
     def ask(kind, *reasons):
         result['reasons'] += reasons
@@ -948,12 +989,26 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
                 ask_each(('condition', 'rollback is set, but the post-merge affected tests do '
                                        f'not cover this deploy: {reason}; a full suite is '
                                        'required') for reason in affected)
+                fixes.append(affected_run_step(top, version, action, deploy_target(effective)))
             elif problems and action in DEPLOY_ACTIONS:
                 ask('condition', f'no rollback method is set for {action}; a full suite is '
                                  'required')
+                fixes += ['to deploy without a full suite, first set `rollback = "<how to roll '
+                          f'back>"` under [actions.{action}] in the project layer '
+                          f'{layers[0].location} (the global layer\'s `rollback` does not '
+                          'count)', affected_run_step(top, version, action,
+                                                      deploy_target(effective))]
             ask_each(problems)
             if not problems:
                 result['basis'].append(f'every registered full suite passed for {version[:12]}')
+    if fixes:
+        result['fixes'] = fixes
+    runbook = effective.get('runbook') if action in DEPLOY_ACTIONS else None
+    if runbook and runbook[0].strip():  # blank text names no doc
+        paths, why = changed_paths(top, version, action, deploy_target(effective))
+        result['runbook'] = dict(path=runbook[0], changed_paths=paths)
+        if why:
+            result['runbook']['changed_paths_unknown'] = why
     if not result['reasons']:
         result['verdict'] = 'allow'
     return result
@@ -965,6 +1020,23 @@ def verdict_line(result):
     if result['verdict'] == 'allow':
         return f'{head} — basis: ' + '; '.join(result['basis'])
     return f'{head} — reasons: ' + '; '.join(result['reasons'])
+
+
+def check_lines(result):
+    """The text check prints after the verdict line: the deploy's runbook with what changed
+    since the last deploy, then how to get past each ask that has a known fix."""
+    lines = []
+    runbook = result.get('runbook')
+    if runbook:
+        lines.append(f'Read first: {runbook["path"]}')
+        if runbook['changed_paths'] is None:
+            lines.append('Changed top-level paths: cannot list them: '
+                         + runbook['changed_paths_unknown'])
+        else:
+            lines.append(f'Changed top-level paths since the last successful '
+                         f'{result["action"]}: ' + (', '.join(runbook['changed_paths']) or 'none'))
+    lines += [f'Fix: {fix}' for fix in result.get('fixes', [])]
+    return lines
 
 
 def other_controllers(workspace, session, action_repo=None):
@@ -1116,6 +1188,8 @@ def cmd_check(args):
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(verdict_line(result))
+        for line in check_lines(result):
+            print(line)
         if 'next_steps' in result:
             print('Next steps: ' + result['next_steps'])
     return 0 if result['verdict'] == 'allow' else 1

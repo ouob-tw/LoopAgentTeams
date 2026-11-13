@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
-import { ticketLedger } from '../fixtures/ledger-tickets.ts';
+import { PINNED_CLOCK, ticketLedger } from '../fixtures/ledger-tickets.ts';
 
 let fixture: Fixture;
 let browser: Browser | undefined;
@@ -31,7 +31,7 @@ beforeAll(async () => {
 	fixture.setHelper({ output: { controllers: [luna] }, ledgers: { [luna.session_id]: { status: 'ok', ledger: ticketLedger(luna.workspace, report) } } });
 	const cookie = await fixture.login('ledger-overflow');
 	await fixture.refresh(cookie);
-	browser = await launchChrome();
+	browser = await launchChrome({ scripts: [PINNED_CLOCK] });
 	const [name, value] = cookie.split('=');
 	await browser.tab.send('Network.setCookie', { name, value, url: fixture.url });
 }, 30_000);

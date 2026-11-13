@@ -1,6 +1,6 @@
 // A ledger as `lat-ledger show --json` prints it, with the ticket layer: one ticket of each kind
-// the page shows. Times are fixed clock times on today's date in the board's time zone (the page formats
-// against the real clock, so a fixed date would turn into "yesterday"); `now` is 10:00:00Z.
+// the page shows. Times are fixed; `now` is 2026-11-12T10:00:00Z. A browser test pins the page's clock to it
+// with `PINNED_CLOCK`, so the page reads these times as today on any real day, midnight included.
 
 const step = (key: string, label: string, state: string) => ({ key, label, state });
 const STEP_LABELS: [string, string][] = [['draft', '草稿'], ['impl', '實作'], ['review', '審查'], ['qa', '驗收'], ['merged', '合併'], ['deployed', '上線']];
@@ -156,7 +156,7 @@ const TIMES_533 = [
  *  caught, one from review and a 甲 from acceptance; #534 a fixed 乙 from review and 0 for its
  *  other done stages; one of the shared row's tickets has one; one after deploy has no known
  *  cause. */
-export function ticketLedgerOn2026(workspace: string, reportPath = `${workspace}/.lat/runs/issue-534/report.md`) {
+export function ticketLedger(workspace: string, reportPath = `${workspace}/.lat/runs/issue-534/report.md`) {
 	const items = [
 		item(1, '533', { stage: 'qa', status: 'in_progress', late: 12, progress: '第三次長度修正仍失敗', settings: 'gpt-6.1-terra・medium', started: '2026-11-12T09:12:00Z' }),
 		item(2, '534', { status: 'done', closed: '2026-11-12T09:51:00Z', settings: 'opus-5.5・medium', evidence: { commit: ['42f5bed0c0ffee12345678901234567890abcdef'], file: [reportPath], gate: ['e52bc2cab9bcd01cb8fa06eccfb0618d'] }, doneAt: '2026-11-12T09:51:00Z', changeSize: '程式 3 檔 120 行、測試 2 檔 84 行、文件 1 檔 6 行', tests: { seconds: 200.4, runs: 2, reuses: 1 } }),
@@ -201,7 +201,7 @@ export function ticketLedgerOn2026(workspace: string, reportPath = `${workspace}
 }
 
 /** A ledger of a project without deploy history: five steps. */
-export function fiveStepLedgerOn2026(workspace: string) {
+export function fiveStepLedger(workspace: string) {
 	return {
 		ledger: `${workspace}/.lat/ledgers/s-r1.json`,
 		now: '2026-11-12T10:00:00Z',
@@ -217,7 +217,12 @@ export function fiveStepLedgerOn2026(workspace: string) {
 	};
 }
 
-/** The fixture's day (written 2026-11-12) moved to today in the board's time zone. */
-const today = <T>(ledger: T): T => JSON.parse(JSON.stringify(ledger).replaceAll('2026-11-12T', `${new Date().toLocaleDateString('en-CA')}T`));
-export const ticketLedger = (...args: Parameters<typeof ticketLedgerOn2026>) => today(ticketLedgerOn2026(...args));
-export const fiveStepLedger = (...args: Parameters<typeof fiveStepLedgerOn2026>) => today(fiveStepLedgerOn2026(...args));
+/** A script for the page: its clock reads 2026-11-12T10:00:00Z when it loads and moves on with real time. */
+export const PINNED_CLOCK = `(() => {
+	const Real = Date, base = Real.parse('2026-11-12T10:00:00Z'), start = Real.now();
+	const now = () => base + (Real.now() - start);
+	globalThis.Date = class extends Real {
+		constructor(...args) { if (args.length) super(...args); else super(now()); }
+		static now() { return now(); }
+	};
+})();`;
