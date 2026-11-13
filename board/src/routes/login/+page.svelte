@@ -328,9 +328,7 @@
 					<KeyRound size="1.1em" aria-hidden="true" />用 passkey 登入
 				</button>
 				<p class="or"><span>或</span></p>
-			{:else if (data.passkeys === 'set' || data.passkeyOrigin) && passkeyBlocked}
-				<!-- Passkeys registered, or that could be: why not from here. A board that never set its
-				     address and has none says nothing of them. -->
+			{:else if passkeyBlocked}
 				{@render blockedNote()}
 			{/if}
 		{/if}

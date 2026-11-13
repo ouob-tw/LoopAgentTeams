@@ -4,7 +4,7 @@
 // device logged in with the password registers a passkey from the settings with no code from the
 // host, logs out, and logs in again with that passkey alone; opened over plain http the settings
 // and the login page say passkeys do not work there and offer nothing to press; the passkey is
-// deleted after a confirmation. With LAT_BOARD_SHOTS set, each state is saved as a frame.
+// deleted after a confirmation; a board without its address says so on both pages. With LAT_BOARD_SHOTS set, each state is saved as a frame.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, holdRequests, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
@@ -171,20 +171,47 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			expect(await tab.eval(layoutProblems('main'))).toEqual([]);
 			await shot(tab, `${size.width}-6-login-http`);
 
-			// A delete the server refuses says so, and the passkey stays listed.
+			// An add or a delete the server refuses says so, still after the list is read again: each
+			// reading of the list comes back marked, and the marker is waited for in the page.
 			await openSettings(origin, cookie);
 			await tab.eval(`(() => {
 				const fetch = window.fetch;
 				window.realFetch = fetch;
-				window.fetch = (input, init) => init?.method === 'DELETE'
-					? Promise.resolve(new Response(JSON.stringify({ error: 'passkeys_unreadable' }), { status: 500, headers: { 'content-type': 'application/json' } }))
-					: fetch(input, init);
+				window.listReads = 0;
+				const refuse = (error, status) => Promise.resolve(new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } }));
+				window.fetch = async (input, init) => {
+					const path = String(input);
+					if (init?.method === 'DELETE') return refuse('passkeys_unreadable', 500);
+					if (path === '/api/passkeys' && init?.method === 'POST') return refuse('passkey_failed', 400);
+					const response = await fetch(input, init);
+					// This authenticator already holds the listed passkey: without the list it makes another.
+					if (path === '/api/passkeys/options') {
+						const started = await response.json();
+						started.options.excludeCredentials = [];
+						return new Response(JSON.stringify(started), { headers: { 'content-type': 'application/json' } });
+					}
+					if (path !== '/api/passkeys' || init?.method) return response;
+					const read = ++window.listReads;
+					const body = await response.json();
+					body.passkeys = body.passkeys.map((passkey) => ({ ...passkey, label: 'read-' + read }));
+					return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+				};
 			})()`);
+			const FAILED = `(${SECTION}.querySelector('.failed')?.textContent.trim() ?? '')`;
+			const readShown = (read: string) => `${SECTION}.querySelector('li code')?.title === 'read-' + ${read}`;
+
+			await clickSteady('dialog[open] section.passkeys button.add');
+			await tab.until(`window.listReads > 0 && ${readShown('window.listReads')}`, 'the list read again after the refused add');
+			expect(await tab.eval(FAILED)).toBe('沒有建立 passkey，請再按一次。');
+			expect(await tab.eval(`${ROWS}.length`)).toBe(1);
+
+			const readsBefore = await tab.eval<number>(`window.listReads`);
 			const refusedButton = `dialog[open] section.passkeys button[aria-label="刪除 passkey ${id}"]`;
 			await clickSteady(refusedButton);
 			await tab.until(`${SECTION}.querySelector('[aria-label="確認刪除"]') !== null`, 'the confirmation');
 			await tab.eval(`[...${SECTION}.querySelectorAll('button')].find((button) => button.textContent.trim() === '確認刪除').click()`);
-			await tab.until(`${SECTION}.querySelector('.failed')?.textContent.trim() === '失敗：看板的 passkey 檔讀不出來，請看主機上看板的紀錄。'`, 'the refusal');
+			await tab.until(`window.listReads > ${readsBefore} && ${readShown('window.listReads')}`, 'the list read again after the refused delete');
+			expect(await tab.eval(FAILED)).toBe('失敗：看板的 passkey 檔讀不出來，請看主機上看板的紀錄。');
 			expect(await tab.eval(`${ROWS}.length`)).toBe(1);
 			await tab.eval(`window.fetch = window.realFetch`);
 
@@ -199,6 +226,33 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			await tab.eval(`[...${SECTION}.querySelectorAll('button')].find((button) => button.textContent.trim() === '確認刪除').click()`);
 			await tab.until(`${SECTION}.querySelector('p.note')?.textContent.trim() === '還沒有登記 passkey。'`, 'the list empty again');
 			expect(fixture.cli('passkey', 'list').stdout).not.toContain(id);
+			expect(tab.errors).toEqual([]);
+		});
+	}
+});
+
+describe('a board whose address is not set', () => {
+	let fixture: Fixture;
+	beforeAll(async () => {
+		fixture = await startFixture();
+	});
+	afterAll(() => fixture?.cleanup());
+
+	for (const size of SIZES) {
+		test.skipIf(!CHROME)(`the login page and the settings say passkeys need the board's address (${size.width})`, async () => {
+			await launch(size);
+			const reason = '看板沒有設定網址（LAT_BOARD_URL），不能用 passkey。';
+			await tab.navigate(`${fixture.url}/login`);
+			await tab.until(`document.querySelector('.blocked') !== null`, 'the reason on the login page');
+			expect(await tab.eval(`document.querySelector('.blocked').textContent.trim()`)).toBe(reason);
+			expect(await tab.eval(`document.querySelector('button.passkey') === null`)).toBe(true);
+			expect(await tab.eval(layoutProblems('main'))).toEqual([]);
+			await shot(tab, `${size.width}-9-login-no-address`);
+
+			await openSettings(fixture.url, await fixture.login(`no-address-${size.width}`));
+			await tab.until(`${SECTION}.querySelector('.blocked') !== null`, 'the reason in the settings');
+			expect(await tab.eval(`${SECTION}.querySelector('.blocked').textContent.trim()`)).toBe(reason);
+			expect(await tab.eval(`${ADD} === null`)).toBe(true);
 			expect(tab.errors).toEqual([]);
 		});
 	}

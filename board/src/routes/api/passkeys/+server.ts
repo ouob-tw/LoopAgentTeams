@@ -23,7 +23,8 @@ export const GET: RequestHandler = () => {
 };
 
 /** The end of registering a passkey from the settings: the browser's new passkey, for the
- *  registration this device started (/api/passkeys/options). A logged-in device needs no code. */
+ *  registration this device started (/api/passkeys/options). A logged-in device needs no code.
+ *  No refusal here is a 401, which the page takes for a device no longer logged in. */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const { config } = getBoard();
 	const body = await request.json().catch(() => null);
@@ -33,9 +34,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const site = config.passkeySite;
 	if (!site || !locals.https) return json({ error: 'passkey_unavailable' }, { status: 409 });
 	const enrollment = takeEnrollment(token, config.now());
-	if (!enrollment || enrollment.deviceId !== locals.device!.id) return json({ error: 'enroll_expired' }, { status: 401 });
+	if (!enrollment || enrollment.deviceId !== locals.device!.id) return json({ error: 'enroll_expired' }, { status: 410 });
 	const created = await verifyEnroll(site, enrollment.challenge, response);
-	if (!created) return json({ error: 'passkey_failed' }, { status: 401 });
+	if (!created) return json({ error: 'passkey_failed' }, { status: 400 });
 	try {
 		const { id } = addDevicePasskey(config.stateDir, config.now(), { ...created, label: request.headers.get('user-agent') ?? '' });
 		return json({ enrolled: id });

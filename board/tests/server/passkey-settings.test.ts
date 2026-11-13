@@ -144,7 +144,11 @@ describe('a board at https://lat.ouob.net', () => {
 		const started = await (await call(fixture, 'POST', '/api/passkeys/options', { cookie })).json();
 		const stranger = new SoftPasskey(ORIGIN, RP_ID);
 		const byOther = await call(fixture, 'POST', '/api/passkeys', { cookie: other, body: { enrollment: started.enrollment, response: stranger.register(started.options) } });
-		expect([byOther.status, await byOther.json()]).toEqual([401, { error: 'enroll_expired' }]);
+		expect([byOther.status, await byOther.json()]).toEqual([410, { error: 'enroll_expired' }]);
+		// Made for another site: refused, and not with 401, which the page takes for a logged-out device.
+		const elsewhere = await (await call(fixture, 'POST', '/api/passkeys/options', { cookie })).json();
+		const wrongSite = await call(fixture, 'POST', '/api/passkeys', { cookie, body: { enrollment: elsewhere.enrollment, response: stranger.register(elsewhere.options, { origin: 'https://evil.example' }) } });
+		expect([wrongSite.status, await wrongSite.json()]).toEqual([400, { error: 'passkey_failed' }]);
 
 		const again = await (await call(fixture, 'POST', '/api/passkeys/options', { cookie })).json();
 		const viaCode = await call(fixture, 'POST', '/api/login/enroll', { body: { enrollment: again.enrollment, response: stranger.register(again.options) } });
