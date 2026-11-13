@@ -53,7 +53,7 @@ test('only the user’s own texts are listed, newest first, each as time and fir
 		line('assistant', '改好了。'),
 		JSON.stringify({ kind: 'tool', time: null, name: 'hcom', label: '收到 HCOM', detail: '通知', error: false }) + '\n',
 		line('user', '\n\n  前面有空行  \n後面', '2026-11-13T02:00:00.000Z'),
-		line('user', `附件：\n/tmp/a.png`, '2026-11-13T03:00:00.000Z')
+		line('user', `附件：\n/home/someone/a.png`, '2026-11-13T03:00:00.000Z')
 	]);
 
 	const messages = messagesOf(await mine(luna.session_id));

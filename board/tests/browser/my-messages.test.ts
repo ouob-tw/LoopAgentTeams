@@ -284,3 +284,17 @@ test.skipIf(!CHROME)('390px: a failed load for a picked message shows its reason
 	await click(`${BLOCK} .chip .retry`);
 	await tab.until(`${said(seqOf(1))}?.classList.contains('flashed')`, 'the message after the retry', 20_000);
 }, 60_000);
+
+// A narrow desktop window leaves the conversation's column too narrow for a list beside it: the
+// conversation keeps the whole column and the list is the floating button.
+test.skipIf(!CHROME).each([800, 1000])('%ipx: the conversation is not squeezed by the list', async (width) => {
+	await visit(width);
+	const box = await tab.eval<{ transcript: number; column: number; list: number }>(
+		`({ transcript: document.querySelector('[data-block="transcript"]').getBoundingClientRect().width, column: document.querySelector('.detail').clientWidth, list: document.querySelector('${BLOCK}').getBoundingClientRect().width })`
+	);
+	expect(box.transcript).toBeGreaterThan(Math.min(300, box.column * 0.6));
+	expect(await tab.eval(`!!document.querySelector('${OPENER}')`)).toBe(true);
+	expect(box.list).toBeGreaterThan(0);
+	expect(await tab.eval(FITS)).toBe(true);
+	await shot(tab, `my-messages-${width}`);
+}, 30_000);

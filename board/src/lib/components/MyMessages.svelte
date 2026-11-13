@@ -1,7 +1,7 @@
 <script lang="ts">
 	// 「我說過的話」: what the user said in the whole conversation, newest first, beside the
 	// transcript. Wide screens keep it as a column that folds into a small button, remembered on
-	// this device; a phone shows only a floating button that opens it as a sheet from the right,
+	// this device; a phone, or a column too narrow to sit beside the conversation, shows only a floating button that opens it as a sheet from the right,
 	// closed again by a pick. A pick is handed to the conversation, which scrolls to it, loading
 	// earlier parts first when it is not there yet.
 	import { createRequest } from '#lib/board/api.ts';
@@ -40,10 +40,24 @@
 	/** How soon the list asks again while the server is still reading the older part. */
 	const MORE_MS = 600;
 	const phone = new MediaQuery('(max-width: 760px)', false);
+	/** The narrowest the conversation's column may be for the list to sit beside it. */
+	const BESIDE_PX = 520;
+	let aside = $state<HTMLElement>();
+	let frameWidth = $state(Infinity);
+	// A narrow column, not only a phone's window, leaves no room beside the conversation.
+	$effect(() => {
+		const frame = aside?.parentElement;
+		if (!frame) return;
+		const watch = new ResizeObserver(() => (frameWidth = frame.clientWidth));
+		watch.observe(frame);
+		return () => watch.disconnect();
+	});
+	/** Whether the list is a floating button and a sheet rather than a column. */
+	const compact = $derived(phone.current || frameWidth < BESIDE_PX);
 	let folded = $state(remembered(MY_MESSAGES_KEY, ['open', 'folded'], 'open') === 'folded');
 	let sheet = $state(false);
 	/** Whether the list shows: the wide layout's column unless folded, a phone's sheet while opened. */
-	const open = $derived(phone.current ? sheet : !folded);
+	const open = $derived(compact ? sheet : !folded);
 
 	let messages = $state<MyMessage[] | null>(null);
 	let problem = $state<string | null>(null);
@@ -89,18 +103,18 @@
 	$effect(() => () => void reads++);
 
 	function toggle(next: boolean) {
-		if (phone.current) sheet = next;
+		if (compact) sheet = next;
 		else {
 			folded = !next;
 			remember(MY_MESSAGES_KEY, folded ? 'folded' : 'open');
 		}
 	}
 	function pick(seq: number) {
-		if (phone.current) sheet = false;
+		if (compact) sheet = false;
 		onpick(seq);
 	}
 	function keys(event: KeyboardEvent) {
-		if (event.key === 'Escape' && phone.current && sheet) sheet = false;
+		if (event.key === 'Escape' && compact && sheet) sheet = false;
 	}
 </script>
 
@@ -152,16 +166,16 @@
 	{/if}
 {/snippet}
 
-<aside class="mine" class:phone={phone.current} class:open data-block="my-messages">
+<aside class="mine" bind:this={aside} class:phone={compact} class:open data-block="my-messages">
 	{#if open}
-		{#if phone.current}
+		{#if compact}
 			<button type="button" class="backdrop" aria-label="關閉我說過的話" onclick={() => toggle(false)}></button>
 			<div class="body sheet" role="dialog" aria-label="我說過的話">{@render panel()}</div>
 		{:else}
 			<div class="body">{@render panel()}</div>
 		{/if}
 	{:else}
-		{#if phone.current && jumping !== null}
+		{#if compact && jumping !== null}
 			<!-- The sheet is closed by the pick: where the jump is, and why it stopped, shows by the button. -->
 			<p class="chip" role="status">
 				{#if failure}
