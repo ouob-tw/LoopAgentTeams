@@ -1,0 +1,34 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/totp.ts",
+        "board/src/lib/server/login-steps.ts",
+        "board/src/lib/server/devices.ts",
+        "board/src/lib/server/login-limit.ts",
+        "board/src/cli.ts",
+        "board/src/routes/api/login/**",
+        "board/src/routes/login/+page.svelte",
+        "board/src/routes/login/+page.server.ts"
+      ],
+      "tests": [
+        "board/tests/unit/totp.test.ts",
+        "board/tests/server/totp-login.test.ts",
+        "board/tests/server/login.test.ts",
+        "board/tests/browser/totp-login-page.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/tests/unit/totp.test.ts",
+        "board/tests/server/totp-login.test.ts",
+        "board/tests/browser/totp-login-page.test.ts"
+      ],
+      "tests": [
+        "board/tests/unit/totp.test.ts",
+        "board/tests/server/totp-login.test.ts",
+        "board/tests/browser/totp-login-page.test.ts"
+      ]
+    }
+  ]
+}

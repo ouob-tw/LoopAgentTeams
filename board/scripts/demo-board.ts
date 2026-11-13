@@ -8,7 +8,9 @@
 // Keeps running until Ctrl-C or SIGTERM, then deletes the temporary folder.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { DAY, PASSWORD, question, startFixture } from '../tests/harness.ts';
+import { renderUnicodeCompact } from 'uqr';
+import { otpauthUrl } from '../src/lib/server/totp.ts';
+import { DAY, PASSWORD, question, startFixture, TOTP_SECRET } from '../tests/harness.ts';
 
 const ROOT = join(import.meta.dir, '..');
 
@@ -206,7 +208,11 @@ async function main() {
 	}
 
 	const port = new URL(fixture.url).port;
-	console.log(`DEMO READY  http://<this host>:${port}/   password: ${PASSWORD}`);
+	// A fixed test secret: an authenticator app that added it once logs in to every demo.
+	const totp = otpauthUrl(TOTP_SECRET, 'demo');
+	console.log(renderUnicodeCompact(totp, { border: 2 }));
+	console.log(`TOTP (test secret, the same for every demo): ${totp}`);
+	console.log(`DEMO READY  http://<this host>:${port}/   password: ${PASSWORD}   TOTP secret: ${TOTP_SECRET}`);
 	console.log(args.css ? `user.css: ${args.css}` : 'user.css: none (default look)');
 	console.log('Open it under a host name you do not use for the live board, or the two logins replace each other (README: 看板示意). Ctrl-C stops it.');
 	setInterval(() => {}, 1 << 30);
