@@ -6,7 +6,7 @@ import { DEVICE_COOKIE } from '#lib/server/auth.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { actingAs } from '#lib/server/acting.ts';
 import { clientAddress, viaHttps } from '#lib/server/client-address.ts';
-import { findDevice, markSeen } from '#lib/server/devices.ts';
+import { findDevice, markSeen, saveSeen } from '#lib/server/devices.ts';
 import { securityHeaders } from '#lib/server/security-headers.ts';
 import { testDeviceRefusal } from '#lib/server/test-device.ts';
 import { exceptionFields, log, withRequestId } from '#lib/server/log.ts';
@@ -15,8 +15,17 @@ import { redact, secretsOf } from '#lib/server/redact.ts';
 export const init: ServerInit = () => {
 	const board = getBoard();
 	void board.refresh();
-	// Open event streams would otherwise hold the server open after a stop signal.
-	for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => board.close());
+	// Open event streams would otherwise hold the server open after a stop signal. The devices' last
+	// requests of the past minute are written down so a restart does not shorten their idle time.
+	for (const signal of ['SIGINT', 'SIGTERM'] as const)
+		process.once(signal, () => {
+			board.close();
+			try {
+				saveSeen(board.config.stateDir);
+			} catch (error) {
+				log('ERROR', 'board.devices', 'last_seen_unsaved', exceptionFields(error));
+			}
+		});
 };
 
 // Everything except the login screens and their endpoints needs a logged-in device.

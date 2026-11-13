@@ -80,7 +80,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - `bun run board password` 在終端機輸入時不回顯；標準輸入不是終端機時，改讀前兩行（測試用這個方式）。
 - 密碼以 scrypt（N=2^15、r=8、p=1，16 位元組隨機鹽）雜湊後存在狀態目錄的 `password.json`，權限 600，不存明文。伺服器每次登入都重讀這個檔，所以變更立即生效。
 - 登入成功就在 `devices.json` 登記一台裝置，瀏覽器拿到 30 天的 HttpOnly cookie；經信任代理的 HTTPS 請求另加 `Secure`。配對碼版本留下的裝置格式相同，沒有 `lastSeenAt` 時以 `pairedAt` 代替。
-- 期限在 `devices.ts` 的 `expired`：密碼登入在 `pairedAt` 起 30 天、或 `lastSeenAt` 起 7 天後失效；測試裝置只看自己的 `expiresAt`。`hooks.server.ts` 每個已登入請求呼叫 `markSeen`：伺服器在記憶體記下確切時間（`findDevice` 取檔案與記憶體較晚者），檔案每台每分鐘最多寫一次，所以只有重啟會讓閒置期限最多早 1 分鐘到。失效的裝置 `findDevice` 回 null，與撤銷相同：API 401、頁面轉 `/login`、事件串流在下一次心跳收到 `unpaired`；`devices` 指令標「登入已失效」，不刪除。
+- 期限在 `devices.ts` 的 `expired`：密碼登入在 `pairedAt` 起 30 天、或 `lastSeenAt` 起 7 天後失效；測試裝置只看自己的 `expiresAt`。`hooks.server.ts` 每個已登入請求呼叫 `markSeen`：伺服器在記憶體記下確切時間（`findDevice` 取檔案與記憶體較晚者），檔案每台每分鐘最多寫一次；收到 SIGTERM／SIGINT 正常停止時 `saveSeen` 把還沒寫的寫進去，所以只有當掉或被強制結束時閒置期限最多早 1 分鐘到。失效的裝置 `findDevice` 回 null，與撤銷相同：API 401、頁面轉 `/login`、事件串流在下一次心跳收到 `unpaired`；`devices` 指令標「登入已失效」，不刪除。
 - 連續輸錯的計數依 `locals.clientAddress`（見「連線來源」），失敗次數與鎖定到期時間存在狀態目錄的 `login-limit.json`（權限 600），重啟後讀回；還在檢查中的嘗試只在記憶體。每次鎖定開始寫一行 `login_locked`（`client_ip`），單次輸錯與成功都不寫。`succeeded` 會清除計數：之後加上第二步驗證時，只在全部通過才呼叫它，只通過密碼那一步用 `refund` 結束該次嘗試。
 - 登入畫面（`/login`、`/login/test`）與 `/api/login`、`/api/login/test` 之外的路徑都要登入；`/api/*` 與事件串流未登入時回 401，其他頁面轉到 `/login`。
 

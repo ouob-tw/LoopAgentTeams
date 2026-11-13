@@ -265,6 +265,21 @@ describe('a board with a proxy on its list', () => {
 		fixture.setClock(start + 50_000 + 7 * DAY - 1_000 + 7 * DAY);
 		expect((await fixture.fetch('/api/board', { cookie })).status).toBe(401);
 	});
+
+	test('a normal stop writes the last requests down, so a restart does not shorten the idle time', async () => {
+		const start = T0 + 200 * DAY;
+		fixture.setClock(start);
+		const cookie = await fixture.login('seen-before-a-restart');
+		fixture.setClock(start + 10_000);
+		expect((await fixture.fetch('/api/board', { cookie })).status).toBe(200);
+		fixture.setClock(start + 50_000);
+		expect((await fixture.fetch('/api/board', { cookie })).status).toBe(200);
+
+		await fixture.stop('SIGTERM');
+		await fixture.start();
+		fixture.setClock(start + 50_000 + 7 * DAY - 1_000);
+		expect((await fixture.fetch('/api/board', { cookie })).status).toBe(200);
+	});
 });
 
 // A non-loopback address of this host: a connection to it comes from it, which is not the host's loopback.

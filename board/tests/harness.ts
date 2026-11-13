@@ -320,7 +320,8 @@ export interface Fixture {
 	/** Start the server. A restart asks for the port it had, which a page open on it needs; with
 	 *  `anyPort`, for any free one, as another process may take that port while the server is down. */
 	start(options?: { anyPort?: boolean }): Promise<void>;
-	stop(): Promise<void>;
+	/** Stop the server: killed at once, or with `SIGTERM` as systemd stops it, waiting for it to exit. */
+	stop(signal?: 'SIGKILL' | 'SIGTERM'): Promise<void>;
 	cleanup(): Promise<void>;
 	/** Everything the server has written to its standard output and error so far. */
 	/** The environment the server runs with: every path in it points into `dir`. Other processes that act for the board take it too. */
@@ -613,10 +614,10 @@ export async function startFixture(
 				}
 			}
 		},
-		async stop() {
+		async stop(signal = 'SIGKILL') {
 			if (!server || server.exitCode !== null) return;
 			const exited = new Promise((resolve) => server!.once('exit', resolve));
-			server.kill('SIGKILL');
+			server.kill(signal);
 			await exited;
 		},
 		serverEnv: () => ({ ...env }),

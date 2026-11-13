@@ -47,7 +47,8 @@ export const LOGIN_DAYS = 30;
 /** ...and ends sooner when the device makes no logged-in request for this long. */
 export const IDLE_DAYS = 7;
 /** The server knows each device's last request exactly; the file has it to within this much, one
- *  write a minute per device at most. Only a restart can lose that minute. */
+ *  write a minute per device at most, and exactly after a normal stop (`saveSeen`). Only a crash can
+ *  lose that minute. */
 const SEEN_EVERY_MS = 60 * 1000;
 /** The last request of each device this process has seen, and when it last wrote one to the file. */
 const seen = new Map<string, number>();
@@ -143,14 +144,28 @@ export function markSeen(stateDir: string, device: Device, now: number): void {
 	if (device.test) return;
 	seen.set(device.id, now);
 	if (now - (written.get(device.id) ?? -Infinity) < SEEN_EVERY_MS) return;
-	written.set(device.id, now);
+	writeSeen(stateDir, new Map([[device.id, now]]));
+}
+
+/** Write down every last request this process knows of and has not written yet: on a stop. */
+export function saveSeen(stateDir: string): void {
+	const unsaved = new Map([...seen].filter(([id, at]) => written.get(id) !== at));
+	if (unsaved.size) writeSeen(stateDir, unsaved);
+}
+
+function writeSeen(stateDir: string, times: Map<string, number>): void {
+	for (const [id, at] of times) written.set(id, at);
 	withLock(stateDir, () => {
 		const path = join(stateDir, DEVICES_FILE);
 		const devices = readJson<StoredDevice>(path);
-		const stored = devices.find((candidate) => candidate.id === device.id);
-		if (!stored) return;
-		stored.lastSeenAt = new Date(now).toISOString();
-		writeJson(path, devices);
+		let changed = false;
+		for (const stored of devices) {
+			const at = times.get(stored.id);
+			if (at === undefined) continue;
+			stored.lastSeenAt = new Date(at).toISOString();
+			changed = true;
+		}
+		if (changed) writeJson(path, devices);
 	});
 }
 
