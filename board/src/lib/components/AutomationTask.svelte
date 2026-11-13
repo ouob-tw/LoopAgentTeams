@@ -29,6 +29,7 @@
 	import AutomationAsks from './AutomationAsks.svelte';
 	import AutomationReview from './AutomationReview.svelte';
 	import AutomationState from './AutomationState.svelte';
+	import TestDenied from './TestDenied.svelte';
 
 	let {
 		view,
@@ -204,6 +205,7 @@
 			{#if running}
 				<p class="hint">這次還沒跑完，等它結束或按「停止這次」之後才能刪除。</p>
 			{/if}
+			<TestDenied />
 		{/if}
 	</section>
 

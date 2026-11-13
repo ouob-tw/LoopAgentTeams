@@ -150,3 +150,18 @@ test.skipIf(!CHROME)('the dark theme: the confirmation stays readable at 1280px 
 		browser = undefined;
 	}
 });
+
+test.skipIf(!CHROME)('deleted right after 編輯 and 儲存, the page goes to the list, not back to the form of a task that is gone', async () => {
+	const task = await create('搬遷預覽：編輯後刪除', 'echo OK');
+	await visit(1280, `.automation [data-task="${task.id}"]`);
+	await tab.until(`!!${button('編輯')}`, 'the task page');
+	await tab.eval(`${button('編輯')}.click()`);
+	await tab.until(`!!document.querySelector('.detail button[type="submit"]')`, 'the form');
+	await tab.eval(`document.querySelector('.detail button[type="submit"]').click()`);
+	await tab.until(`!!${button('刪除任務')}`, 'the task page after saving');
+	await tab.eval(`${button('刪除任務')}.click()`);
+	await tab.until(`!!${button('確定刪除')}`, 'the confirmation');
+	await tab.eval(`${button('確定刪除')}.click()`);
+	await tab.until(`!location.search.includes('automation=') && !location.search.includes('automation-edit') && !document.querySelector('.detail form')`, 'the list, with no form', 10_000);
+	expect(await tab.eval<boolean>(`!!document.querySelector('.automation') && !document.querySelector('.automation [data-task="${task.id}"]')`)).toBe(true);
+});

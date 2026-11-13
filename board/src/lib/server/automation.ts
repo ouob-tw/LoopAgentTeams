@@ -1038,14 +1038,18 @@ export function createAutomation(options: {
 		},
 		remove(id) {
 			if (!tasks.has(id)) return { ok: false, status: 404, message: '這個任務已不存在' };
-			if (children.has(id) || (runs.get(id) ?? []).some(isOpen)) return { ok: false, status: 409, message: '這個任務還有一次沒跑完，等它結束或按停止這次之後再刪除' };
+			if (busy(id)) return { ok: false, status: 409, message: '這個任務還有一次沒跑完，等它結束或按停止這次之後再刪除' };
 			// The task file first: should the rest fail, what is left is never read as a task.
 			rmSync(taskFile(id), { force: true });
 			tasks.delete(id);
 			runs.delete(id);
 			missed.delete(id);
-			for (const path of [runsFile(id), missedFile(id), join(outputDir, id), join(dir, 'review', id)]) rmSync(path, { recursive: true, force: true });
-			publish();
+			try {
+				for (const path of [runsFile(id), missedFile(id), join(outputDir, id), join(dir, 'review', id)]) rmSync(path, { recursive: true, force: true });
+			} finally {
+				// The pages hear the task is gone even when a record of it could not be removed.
+				publish();
+			}
 			return { ok: true };
 		},
 		dismissMissed(id) {
