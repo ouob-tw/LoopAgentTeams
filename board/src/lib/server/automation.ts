@@ -669,7 +669,7 @@ export function createAutomation(options: {
 	const ticker = setInterval(() => check(false), options.tickMs ?? 60_000);
 	ticker.unref?.();
 	// Right after the board starts, once whatever builds on the automation has it.
-	const firstCheck = setTimeout(() => check(true), 0);
+	const firstCheck = setImmediate(() => check(true));
 
 	return {
 		snapshot,
@@ -749,7 +749,7 @@ export function createAutomation(options: {
 		close() {
 			closed = true;
 			clearInterval(ticker);
-			clearTimeout(firstCheck);
+			clearImmediate(firstCheck);
 			process.off('exit', endGroups);
 			endGroups();
 		}
