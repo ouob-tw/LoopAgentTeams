@@ -94,6 +94,34 @@ export async function createWorkspace(config: BoardConfig, cwd: string, label: s
 	return { ok: true, id, label, created: true };
 }
 
+/** The Herdr workspace every automation-launched Agent opens in. */
+export const AUTOMATION_WORKSPACE_LABEL = 'AUTOMATION';
+
+let lastEnsure: Promise<unknown> = Promise.resolve();
+
+/**
+ * The workspace with exactly this label (the lowest numbered one when Herdr lists several), created
+ * with its first tab in `cwd` when none is listed. Calls run one after another, so two launches
+ * that both find none never create two. A list that cannot be read creates nothing.
+ */
+export function ensureWorkspaceByLabel(config: BoardConfig, label: string, cwd: string): Promise<WorkspaceChoice> {
+	const run = lastEnsure.then(async (): Promise<WorkspaceChoice> => {
+		const workspaces = await herdr(config, ['workspace', 'list']);
+		if ('reason' in workspaces) return { ok: false, reason: `讀不到 Herdr 的工作區清單：${workspaces.reason}` };
+		const workspaceList = workspaces.result.workspaces;
+		if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) return { ok: false, reason: '讀不到 Herdr 的工作區清單：輸出不是預期的格式' };
+		const found = workspaceList.filter((workspace) => workspace.label === label).sort((a, b) => a.number - b.number)[0];
+		if (found) return { ok: true, id: found.workspace_id, label, created: false };
+		return createWorkspace(config, cwd, label);
+	});
+	lastEnsure = run.catch(() => undefined);
+	return run;
+}
+
+/** The AUTOMATION workspace (`ensureWorkspaceByLabel`): where an automation task's Agent, and its
+ *  checker Agent, open. `cwd` only holds the first tab of a workspace created now. */
+export const automationWorkspace = (config: BoardConfig, cwd: string): Promise<WorkspaceChoice> => ensureWorkspaceByLabel(config, AUTOMATION_WORKSPACE_LABEL, cwd);
+
 /** The label of the workspace with this ID, null when Herdr no longer lists it; or why that
  *  cannot be told. */
 export async function workspaceLabel(config: BoardConfig, workspaceId: string): Promise<{ label: string | null } | { reason: string }> {
