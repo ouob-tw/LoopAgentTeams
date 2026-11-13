@@ -1,10 +1,12 @@
 // The TOTP second step of a password login (RFC 6238: HMAC-SHA1, 6 digits, 30-second steps), as
 // authenticator apps make it. The secret is kept in the board's state directory, readable by its
 // owner only; the host command sets it, and the server reads the file at every check, so a change
-// or a clear applies at once.
+// or a clear applies at once. Every read that writes back, and every set or clear, holds the state
+// directory's lock: a login that read the old secret cannot write it back over a new one or a clear.
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { withLock } from './devices.ts';
 
 export const TOTP_FILE = 'totp.json';
 const STEP_MS = 30_000;
@@ -95,7 +97,13 @@ function readStored(stateDir: string): StoredTotp | null {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
 		throw error;
 	}
-	const stored = JSON.parse(text) as StoredTotp;
+	let stored: StoredTotp;
+	try {
+		stored = JSON.parse(text);
+	} catch {
+		// Not the parser's own message: it quotes the file, which may hold the secret.
+		throw new Error(`${TOTP_FILE} is not valid JSON`);
+	}
 	if (typeof stored?.secret !== 'string' || !stored.secret) throw new Error(`${TOTP_FILE} has no secret`);
 	base32Decode(stored.secret);
 	return { ...stored, lastStep: Number.isInteger(stored.lastStep) ? stored.lastStep : -1 };
@@ -116,25 +124,29 @@ export const hasTotp = (stateDir: string) => readStored(stateDir) !== null;
 /** Set the secret, replacing any before it: codes from the old one stop working at once. The code
  *  that confirmed it, from `usedStep`, does not log in. */
 export function saveTotp(stateDir: string, secret: string, now: number, usedStep = -1): void {
-	writeStored(stateDir, { secret, setAt: new Date(now).toISOString(), lastStep: usedStep });
+	withLock(stateDir, () => writeStored(stateDir, { secret, setAt: new Date(now).toISOString(), lastStep: usedStep }));
 }
 
 /** Remove the secret, also a damaged file; false when there was none. */
 export function clearTotp(stateDir: string): boolean {
 	const path = join(stateDir, TOTP_FILE);
-	const set = existsSync(path);
-	rmSync(path, { force: true });
-	return set;
+	return withLock(stateDir, () => {
+		const set = existsSync(path);
+		rmSync(path, { force: true });
+		return set;
+	});
 }
 
 /** Check a code and, when it is right, use it up: the same code, or one from an earlier step, does
- *  not work again. null when no secret is set. Synchronous, so two requests in this process cannot
- *  both use one code. */
+ *  not work again. null when no secret is set. Holds the state directory's lock from the read to the
+ *  write, so two logins cannot both use one code and a set or clear cannot slip in between. */
 export function useTotp(stateDir: string, code: string, now: number): boolean | null {
-	const stored = readStored(stateDir);
-	if (!stored) return null;
-	const step = matchingStep(stored.secret, code, now);
-	if (step === null || step <= stored.lastStep) return false;
-	writeStored(stateDir, { ...stored, lastStep: step });
-	return true;
+	return withLock(stateDir, () => {
+		const stored = readStored(stateDir);
+		if (!stored) return null;
+		const step = matchingStep(stored.secret, code, now);
+		if (step === null || step <= stored.lastStep) return false;
+		writeStored(stateDir, { ...stored, lastStep: step });
+		return true;
+	});
 }

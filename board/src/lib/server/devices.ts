@@ -83,7 +83,9 @@ function writeJson(path: string, value: unknown): void {
 	renameSync(temporary, path);
 }
 
-function withLock<T>(stateDir: string, action: () => T): T {
+/** Run `action` holding the state directory's lock, which the server and the host commands share:
+ *  every change to a state file another process may also change goes through it. */
+export function withLock<T>(stateDir: string, action: () => T): T {
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = join(stateDir, 'lock');
 	for (;;) {

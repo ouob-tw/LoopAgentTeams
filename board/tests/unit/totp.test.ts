@@ -1,7 +1,7 @@
 // The TOTP second step: RFC 6238's own test values, the window either side, codes that cannot be
 // used twice, and a secret file only its owner can read.
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -94,11 +94,44 @@ test('a new secret replaces the old one at once, and a clear removes it', () => 
 	expect(useTotp(dir, totpCode(replacement, now + 30_000), now + 30_000)).toBeNull();
 });
 
+/** A login checking `code` in another process, as the server does while the host command runs. */
+function loginElsewhere(code: string, now: number) {
+	const module = join(import.meta.dir, '../../src/lib/server/totp.ts');
+	const script = `const { useTotp } = await import(${JSON.stringify(module)}); console.log(JSON.stringify(useTotp(${JSON.stringify(dir)}, ${JSON.stringify(code)}, ${now})));`;
+	return Bun.spawn(['bun', '-e', script], { stdout: 'pipe', stderr: 'pipe' });
+}
+
+test('a login waits for the host command holding the lock, so it never writes the old secret back', async () => {
+	const now = 1_800_000_000_000;
+	const old = newTotpSecret();
+	const replacement = newTotpSecret();
+	const path = join(dir, TOTP_FILE);
+	for (const change of ['replace', 'clear'] as const) {
+		saveTotp(dir, old, now);
+		// The host command holds the state directory's lock, as `board totp` does while it writes.
+		mkdirSync(join(dir, 'lock'));
+		const login = loginElsewhere(totpCode(old, now), now);
+		await Bun.sleep(700);
+		expect([change, login.exitCode]).toEqual([change, null]);
+		if (change === 'replace') writeFileSync(path, JSON.stringify({ secret: replacement, setAt: new Date(now).toISOString(), lastStep: -1 }), { mode: 0o600 });
+		else rmSync(path);
+		rmdirSync(join(dir, 'lock'));
+
+		expect([change, await login.exited, (await new Response(login.stdout).text()).trim()]).toEqual([change, 0, change === 'replace' ? 'false' : 'null']);
+		if (change === 'replace') expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ secret: replacement, setAt: new Date(now).toISOString(), lastStep: -1 });
+		else expect(existsSync(path)).toBe(false);
+	}
+});
+
+// That the error does not quote the file is checked under Node, whose parser quotes it:
+// tests/server/totp-login.test.ts.
 test('a damaged secret file is an error, not a missing secret', () => {
-	saveTotp(dir, newTotpSecret(), 0);
-	Bun.write(join(dir, TOTP_FILE), '{"secret": ""}');
-	expect(() => hasTotp(dir)).toThrow();
-	expect(readFileSync(join(dir, TOTP_FILE), 'utf8')).toContain('secret');
+	const secret = newTotpSecret();
+	for (const content of ['{"secret": ""}', secret, `{"secret": "${secret}"`]) {
+		writeFileSync(join(dir, TOTP_FILE), content);
+		expect(() => hasTotp(dir)).toThrow();
+		expect(() => useTotp(dir, '123456', 0)).toThrow();
+	}
 });
 
 test('the otpauth link names the board, the secret and the code settings', () => {

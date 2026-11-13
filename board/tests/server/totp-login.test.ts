@@ -2,7 +2,7 @@
 // a full login clears it, the step closes after 5 minutes, a code works once, a board without a
 // second step lets no password login in, and the host command sets, replaces and clears the secret.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { totpCode } from '../../src/lib/server/totp.ts';
 import { PASSWORD, startFixture, type Fixture } from '../harness.ts';
@@ -151,6 +151,28 @@ describe('a board with a TOTP secret', () => {
 		const two = stepCookieOf(await password(fixture, '198.51.100.5'));
 		expect((await code(fixture, '198.51.100.4', one, now)).status).toBe(200);
 		expect((await code(fixture, '198.51.100.5', two, now)).status).toBe(401);
+	});
+
+	test('a damaged secret file refuses every login and its content never reaches the server output', async () => {
+		nextStep();
+		const file = join(fixture.dir, 'board-state/totp.json');
+		const saved = readFileSync(file, 'utf8');
+		const secret = JSON.parse(saved).secret as string;
+		const step = stepCookieOf(await password(fixture, '198.51.100.9'));
+		try {
+			// Node's parser quotes what it cannot read: here the secret itself.
+			writeFileSync(file, secret);
+			const page = await (await fixture.fetch('/login')).text();
+			expect(page).toContain('TOTP 金鑰檔讀不出來');
+			const first = await password(fixture, '198.51.100.9');
+			expect([first.status, await first.json()]).toEqual([500, { error: 'second_step_unreadable' }]);
+			const second = await code(fixture, '198.51.100.9', step, fixture.totpCode());
+			expect([second.status, await second.json()]).toEqual([500, { error: 'second_step_unreadable' }]);
+		} finally {
+			writeFileSync(file, saved);
+		}
+		expect(fixture.serverOutput()).toContain('totp.json is not valid JSON');
+		expect(fixture.serverOutput()).not.toContain(secret.slice(0, 12));
 	});
 
 	test('a device that passed the second step is listed as logged in by the host command', async () => {
