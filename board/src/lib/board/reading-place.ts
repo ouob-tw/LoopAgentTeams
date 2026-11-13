@@ -116,7 +116,9 @@ export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement 
 	 *  downwards. */
 	const acted = (event: Event) => {
 		pinned = null;
-		if (event.target instanceof Element && list.contains(event.target)) take(event.target);
+		// Not inside a window over the page: it is hidden again once closed, and a card kept there
+		// would then be taken for one that moved.
+		if (event.target instanceof Element && list.contains(event.target) && !event.target.closest('dialog')) take(event.target);
 	};
 	addEventListener('scroll', scrolled, { capture: true, passive: true });
 	for (const type of USER_INPUT) addEventListener(type, acted, { capture: true, passive: true });
