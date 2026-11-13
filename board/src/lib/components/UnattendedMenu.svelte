@@ -72,6 +72,10 @@
 		flex-wrap: wrap;
 		gap: 0.5rem;
 	}
+	/* A finger's width on a phone (ui-baseline). */
+	button {
+		min-height: 44px;
+	}
 	button.danger {
 		color: var(--danger);
 		border-color: var(--danger);
