@@ -3,7 +3,6 @@
 // window; a PDF in a tab of its own, in Chrome's viewer; anything else still downloads. Nothing in a
 // file runs, a long text shows its first 200KB only, and the window closes by Esc, a click around it
 // or 關閉, leaving the page where it was.
-import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +10,7 @@ import { deflateSync } from 'node:zlib';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { withAttachments } from '../../src/lib/board/attachments.ts';
 import { NODE, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, Tab, type Browser } from '../browser.ts';
+import { launchChrome, startChrome, Tab, type Browser } from '../browser.ts';
 
 /** A 1×1 PNG. */
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
@@ -425,14 +424,7 @@ test('at 390px the window fills the screen and nothing scrolls sideways', async 
  * started with --no-sandbox, as the other browser tests start it.
  */
 async function sandboxedChrome(): Promise<{ debugPort: number; tab: Tab; close: () => void }> {
-	const profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const chrome = spawn(CHROME, ['--headless=new', '--no-first-run', `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'], { stdio: 'ignore', detached: true });
-	const close = () => {
-		try {
-			process.kill(-chrome.pid!, 'SIGKILL');
-		} catch {}
-		rmSync(profile, { recursive: true, force: true });
-	};
+	const { chrome, profile, end: close } = startChrome(['--headless=new', '--no-first-run']);
 	try {
 		const file = join(profile, 'DevToolsActivePort');
 		const deadline = Date.now() + 10_000;
