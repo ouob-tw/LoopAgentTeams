@@ -92,7 +92,7 @@ function hcomPlan(launches: { name: string; client?: 'claude' | 'codex' }[], ext
 function setStatus(name: string, status: string) {
 	const file = join(dir, 'hcom-added.json');
 	const added = JSON.parse(readFileSync(file, 'utf8'));
-	writeFileSync(file, JSON.stringify(added.map((agent: { name: string }) => (agent.name === name ? { ...agent, status } : agent))));
+	writeFileSync(file, JSON.stringify(added.map((agent: { name: string; base_name?: string }) => (agent.name === name || agent.base_name === name ? { ...agent, status } : agent))));
 }
 
 /** Add to the conversation of `s-<name>`, and end the turn. */
@@ -118,7 +118,9 @@ async function eventually<T>(read: () => Promise<T | undefined | false>, timeout
 
 const hcomCalls = () => jsonLines(join(dir, 'hcom-calls.jsonl')) as { args: string[]; workspace: string | null }[];
 const authCalls = () => jsonLines(join(dir, 'codex-auth-calls.jsonl')) as string[][];
-const listed = (name: string) => existsSync(join(dir, 'hcom-added.json')) && JSON.parse(readFileSync(join(dir, 'hcom-added.json'), 'utf8')).some((agent: { name: string }) => agent.name === name);
+/** Whether hcom lists the agent launched as `name` (listed as `<tag>-<name>`). */
+const listed = (name: string) =>
+	existsSync(join(dir, 'hcom-added.json')) && JSON.parse(readFileSync(join(dir, 'hcom-added.json'), 'utf8')).some((agent: { name: string; base_name?: string }) => agent.name === name || agent.base_name === name);
 
 async function create(overrides: Record<string, unknown> = {}, agent: Record<string, unknown> = {}): Promise<AutomationTask> {
 	const response = await send('/api/automation', 'POST', {
@@ -171,7 +173,6 @@ test('a run opens a plain agent with the fixed first message and its tag, shows 
 	hcomPlan([{ name: 'auto-one' }]);
 	const started = await runNow(task.id);
 	const run = await launchedRun(task.id, 'auto-one');
-	expect(run.agentName).toBe('auto-one');
 
 	const launch = hcomCalls().find((call) => call.args[0] === 'claude')!;
 	const brief = join(work, 'docs/brief.md');
@@ -179,6 +180,8 @@ test('a run opens a plain agent with the fixed first message and its tag, shows 
 	expect(prompt).toBe(`讀取並照做 ${brief}，完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>`);
 	const tag = launch.args[launch.args.indexOf('--tag') + 1];
 	expect(tag).toBe(`auto-${task.id}-${started.id.split('-').at(-1)!.slice(0, 6)}`);
+	// hcom prints the agent's own name and lists it under its tag: the run follows the listed one.
+	expect(run.agentName).toBe(`${tag}-auto-one`);
 	expect(launch.args.slice(launch.args.indexOf('--dir'), launch.args.indexOf('--dir') + 2)).toEqual(['--dir', work]);
 	expect(launch.args).toEqual(expect.arrayContaining(['--model', 'claude-haiku-5-5', '--effort', 'low', '--dangerously-skip-permissions']));
 	expect(launch.workspace).toBe('wW');
@@ -194,7 +197,7 @@ test('a run opens a plain agent with the fixed first message and its tag, shows 
 	setStatus('auto-one', 'listening');
 	const done = await ended(task.id, started.id);
 	expect(done.status).toBe('success');
-	expect(hcomCalls().some((call) => call.args[0] === 'kill' && call.args[1] === 'auto-one')).toBe(true);
+	expect(hcomCalls().some((call) => call.args[0] === 'kill' && call.args[1] === run.agentName)).toBe(true);
 	expect(listed('auto-one')).toBe(false);
 	expect((await snapshot()).tasks.find((view) => view.task.id === task.id)!.state).toBe('done');
 });
@@ -345,12 +348,15 @@ function limitOnScreen(name: string) {
 }
 const accounts = (pinned: number, ...used: number[]) =>
 	writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({ pinned, accounts: used.map((value, index) => ({ index, used: value })) }));
-/** A Codex launch whose resume comes back as the same agent in a new pane. */
 function codexPlan(name: string) {
-	hcomPlan([{ name, client: 'codex' }], {
-		resumed: { name, session_id: `s-${name}`, status: 'active', tool: 'codex', launch_context: { pane_id: `wW:p-${name}-2` } },
-		resumedHerdr: { agent: 'codex', agent_status: 'working', cwd: work, pane_id: `wW:p-${name}-2`, tab_id: `wW:t-${name}-2`, workspace_id: 'wW', agent_session: { value: `s-${name}` } }
-	});
+	hcomPlan([{ name, client: 'codex' }]);
+}
+/** The launched agent's resume comes back under its listed name, in a new pane. */
+function resumesAs(run: AutomationRun, name: string) {
+	const plan = JSON.parse(readFileSync(join(dir, 'hcom.json'), 'utf8'));
+	plan.resumed = { name: run.agentName, base_name: name, session_id: `s-${name}`, status: 'active', tool: 'codex', launch_context: { pane_id: `wW:p-${name}-2` } };
+	plan.resumedHerdr = { agent: 'codex', agent_status: 'working', cwd: work, pane_id: `wW:p-${name}-2`, tab_id: `wW:t-${name}-2`, workspace_id: 'wW', agent_session: { value: `s-${name}` } };
+	writeFileSync(join(dir, 'hcom.json'), JSON.stringify(plan));
 }
 function freshRun() {
 	for (const name of ['hcom-calls.jsonl', 'hcom-added.json', 'codex-auth-pinned.txt', 'codex-auth-calls.jsonl']) rmSync(join(dir, name), { force: true });
@@ -362,7 +368,9 @@ test('a Codex usage limit mid-run is checked live on the agent\'s own account: q
 	accounts(0, 20, 30);
 	codexPlan('auto-back');
 	const started = await runNow(task.id);
-	expect((await launchedRun(task.id, 'auto-back')).codexAccount).toBe(0);
+	const back = await launchedRun(task.id, 'auto-back');
+	expect(back.codexAccount).toBe(0);
+	resumesAs(back, 'auto-back');
 	userSaid('auto-back', '讀取並照做');
 	reply('auto-back', '正在掃描');
 	limitOnScreen('auto-back');
@@ -394,7 +402,7 @@ test('a Codex usage limit mid-run at 0: the agent killed, another account probed
 	accounts(0, 20, 30);
 	codexPlan('auto-limit');
 	const started = await runNow(task.id);
-	await launchedRun(task.id, 'auto-limit');
+	resumesAs(await launchedRun(task.id, 'auto-limit'), 'auto-limit');
 	userSaid('auto-limit', '讀取並照做');
 	reply('auto-limit', '正在掃描，已掃 38 / 64 頁');
 	accounts(0, 100, 30);

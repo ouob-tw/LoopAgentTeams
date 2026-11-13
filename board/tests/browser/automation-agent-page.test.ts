@@ -136,7 +136,7 @@ for (const width of [1280, 390]) {
 		const live = await text('.detail .run[data-status="running"]');
 		expect(live).toContain('已跑 12 分鐘，上限 90 分鐘');
 		expect(live).toContain('打開 Agent 看即時畫面 ›');
-		expect(live).toContain(`它和一般 Agent 一樣出現在 Herdr 分頁（@${name}），做完會自動關掉。`);
+		expect(live).toMatch(new RegExp(`它和一般 Agent 一樣出現在 Herdr 分頁（@auto-${task.id}-\\w+-${name}），做完會自動關掉。`));
 		expect(await tab.eval(`document.querySelector('.detail .run .agent-link').getAttribute('href')`)).toBe(`?agent=s-${name}`);
 		for (const selector of ['.detail .task > .actions .danger', '.detail .run .agent-link']) expect((await box(selector)).height).toBeGreaterThanOrEqual(44);
 		expect(await offType('.detail .task')).toEqual([]);
