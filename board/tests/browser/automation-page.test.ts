@@ -199,6 +199,8 @@ for (const width of [1280, 390]) {
 		// 時間 stays beside its box when the row wraps.
 		const apart = `(() => { const box = document.querySelector('.detail form [name=time]').getBoundingClientRect(); const label = document.querySelector('.detail form .at > span').getBoundingClientRect(); return Math.abs((box.top + box.bottom) / 2 - (label.top + label.bottom) / 2); })()`;
 		expect(await tab.eval<number>(apart)).toBeLessThan(10);
+		// Every box and list is at least 44px tall, a finger's size.
+		expect(await tab.eval<string[]>(`[...document.querySelectorAll('.detail form input[type=text], .detail form select')].filter((box) => box.getBoundingClientRect().height < 44).map((box) => (box.name || box.getAttribute('aria-label')) + ' ' + box.getBoundingClientRect().height)`)).toEqual([]);
 		await frame(width, '5-edit-weekly');
 		await click('.detail form [data-schedule="monthly"]');
 		expect(await fields()).toEqual(['fromDay', 'toDay', 'time']);
