@@ -285,6 +285,9 @@ describe('before a password is set', () => {
 		expect(html).toContain(`cd ${BOARD_DIR} &amp;&amp; bun run board password`);
 		expect(html).not.toContain('type="password"');
 
+		const testPage = await (await fresh.fetch('/login/test')).text();
+		expect(testPage).toContain(`cd ${BOARD_DIR} &amp;&amp; bun run board test-login`);
+
 		const response = await fresh.tryLogin('anything');
 		expect(response.status).toBe(409);
 		expect(response.headers.getSetCookie()).toEqual([]);

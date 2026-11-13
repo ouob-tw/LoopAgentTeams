@@ -111,7 +111,7 @@ const LAYOUT_PROBLEMS = `(() => {
 		if (!r.width) continue;
 		const name = element.tagName + ' ' + (element.textContent || element.id).trim().slice(0, 20);
 		if (r.left < 0 || r.right > width + 0.5 || r.top < 0 || r.bottom > innerHeight) problems.push(name + ' outside the window');
-		if (element.tagName !== 'PRE' && element.tagName !== 'INPUT' && element.scrollWidth > element.clientWidth + 1) problems.push(name + ' cut off');
+		if (element.tagName !== 'INPUT' && element.scrollWidth > element.clientWidth + 1) problems.push(name + ' cut off');
 	}
 	return problems;
 })()`;
