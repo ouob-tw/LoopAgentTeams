@@ -3,6 +3,7 @@
 // from a server that is down.
 import { createRequest, type ApiResult } from './api.ts';
 import type { ArchivePage } from './archive.ts';
+import type { AutomationSnapshot } from './automation.ts';
 import type { PdSnapshot } from './pd.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import type { TranslateMode } from './translate-mode.ts';
@@ -26,6 +27,8 @@ export interface ConnectionOptions {
 	onPd?(pd: PdSnapshot): void;
 	/** How the usage line reads, the same on every device; sent on connecting and at every change. */
 	onUsageStyle?(style: UsageStyle): void;
+	/** The 自動化 tab's tasks, sent on connecting and at every change; only a newer revision is passed on. */
+	onAutomation?(automation: AutomationSnapshot): void;
 	/** Whether conversations open translated, the same on every device; sent on connecting and at every change. */
 	onTranslateMode?(mode: TranslateMode): void;
 	/** An unattended setting or grant changed on some device; the settings page reads them again. */
@@ -66,6 +69,13 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		if (revision <= styleRevision) return;
 		styleRevision = revision;
 		options.onUsageStyle?.(style);
+	}
+
+	let automationRevision = 0;
+	function hearAutomation(automation: AutomationSnapshot): void {
+		if (automation.revision <= automationRevision) return;
+		automationRevision = automation.revision;
+		options.onAutomation?.(automation);
 	}
 
 	/** The same for the translation mode. */
@@ -112,6 +122,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		else if (event === 'quota') options.onQuota?.(JSON.parse(data));
 		else if (event === 'pd') options.onPd?.(JSON.parse(data));
 		else if (event === 'usage-style') hearStyle(JSON.parse(data));
+		else if (event === 'automation') hearAutomation(JSON.parse(data));
 		else if (event === 'translate-mode') hearMode(JSON.parse(data));
 		else if (event === 'unattended-settings') options.onUnattendedSettings?.();
 	}

@@ -14,6 +14,8 @@ export type Place =
 	| { kind: 'launch' }
 	| { kind: 'agent'; id: string; item?: string }
 	| { kind: 'new-agent'; workspace: string }
+	| { kind: 'automation'; id: string }
+	| { kind: 'automation-edit'; id: string | null }
 	| null;
 
 /** The screen shown for a place. An item is the copy it had when opened, so it stays up after it
@@ -24,8 +26,13 @@ export type View =
 	| { kind: 'launch' }
 	| { kind: 'agent'; id: string; item?: string }
 	| { kind: 'new-agent'; workspace: string }
+	| { kind: 'automation'; id: string }
+	| { kind: 'automation-edit'; id: string | null }
 	| { kind: 'missing'; what: 'item' | 'controller' | 'agent' | 'workspace' }
 	| null;
+
+/** The edit form's address for a task not saved yet; task IDs are hex, so never this. */
+const NEW_TASK = 'new';
 
 export function placeIn(search: Pick<URLSearchParams, 'get' | 'has'>): Place {
 	const key = search.get('item');
@@ -38,22 +45,28 @@ export function placeIn(search: Pick<URLSearchParams, 'get' | 'has'>): Place {
 	if (agent) return { kind: 'agent', id: agent };
 	const workspace = search.get('new-agent');
 	if (workspace) return { kind: 'new-agent', workspace };
+	const edit = search.get('automation-edit');
+	if (edit) return { kind: 'automation-edit', id: edit === NEW_TASK ? null : edit };
+	const task = search.get('automation');
+	if (task) return { kind: 'automation', id: task };
 	return null;
 }
 
-/** The middle column's list: the inbox, every agent Herdr lists, or the accounts' quotas. */
-export type MiddleTab = 'inbox' | 'agents' | 'quota';
+/** The middle column's list: the inbox, every agent Herdr lists, the scheduled tasks or the accounts' quotas. */
+export type MiddleTab = 'inbox' | 'agents' | 'automation' | 'quota';
 
 /** The middle tab the address names; null when it names none. An agent, or a workspace's
  *  new-agent form, is on the Herdr tab unless the address says otherwise. */
 export function tabIn(search: Pick<URLSearchParams, 'get' | 'has'>): MiddleTab | null {
 	const tab = search.get('tab');
-	if (tab === 'agents' || tab === 'inbox' || tab === 'quota') return tab;
-	return search.has('agent') || search.has('new-agent') ? 'agents' : null;
+	if (tab === 'agents' || tab === 'inbox' || tab === 'quota' || tab === 'automation') return tab;
+	if (search.has('agent') || search.has('new-agent')) return 'agents';
+	return search.has('automation') || search.has('automation-edit') ? 'automation' : null;
 }
 
-/** Places that belong to the Herdr tab. */
-const onAgentsTab = (place: Place) => place?.kind === 'agent' || place?.kind === 'new-agent';
+/** The tab a place belongs to: an agent's to Herdr, a task's to 自動化, the rest to the inbox. */
+const homeTab = (place: Place): MiddleTab =>
+	place?.kind === 'agent' || place?.kind === 'new-agent' ? 'agents' : place?.kind === 'automation' || place?.kind === 'automation-edit' ? 'automation' : 'inbox';
 
 /** The query that names a place, with the Herdr or 額度 tab when that one is shown (an agent's
  *  place says the Herdr tab already, and so says the inbox when that one is), so a reload draws the
@@ -66,11 +79,15 @@ export function searchOf(place: Place, tab?: MiddleTab): string {
 				? { agent: place.id, ...(place.item ? { item: place.item } : {}) }
 				: place.kind === 'new-agent'
 					? { 'new-agent': place.workspace }
-					: place.kind === 'item'
-						? { item: place.key }
-						: { controller: place.id }
+					: place.kind === 'automation'
+						? { automation: place.id }
+						: place.kind === 'automation-edit'
+							? { 'automation-edit': place.id ?? NEW_TASK }
+							: place.kind === 'item'
+								? { item: place.key }
+								: { controller: place.id }
 	);
-	if (tab && (onAgentsTab(place) ? tab !== 'agents' : tab !== 'inbox')) params.set('tab', tab);
+	if (tab && tab !== homeTab(place)) params.set('tab', tab);
 	const query = `${params}`;
 	if (place?.kind === 'launch') return query ? `?launch&${query}` : '?launch';
 	return query ? `?${query}` : '';
@@ -96,7 +113,7 @@ export function viewOf(
 		workspaces?: readonly HerdrWorkspace[];
 	}
 ): View {
-	if (place === null || place.kind === 'launch') return place;
+	if (place === null || place.kind === 'launch' || place.kind === 'automation' || place.kind === 'automation-edit') return place;
 	if (place.kind === 'new-agent') {
 		return from.workspaces?.some((workspace) => workspace.id === place.workspace) ? place : { kind: 'missing', what: 'workspace' };
 	}
@@ -174,6 +191,11 @@ const isItem = (place: Place) => place?.kind === 'item' || (place?.kind === 'age
  *  also drops the entries ahead, so going forward cannot bring an item of another page back on top. */
 export function advance(next: Place, here: { place: Place; depth: number }, trail: Trail, fromList = false): void {
 	if (samePlace(next, here.place) && !(fromList && here.depth > 1)) return;
+	// A task's edit form opened from its page goes on top of it: going back returns to the page.
+	if (next?.kind === 'automation-edit' && here.place?.kind === 'automation' && next.id === here.place.id) {
+		trail.push(next, here.depth + 1);
+		return;
+	}
 	if (isItem(next) && !fromList && here.place !== null) {
 		if (isItem(here.place)) trail.replace(next, here.depth);
 		else trail.push(next, here.depth + 1);

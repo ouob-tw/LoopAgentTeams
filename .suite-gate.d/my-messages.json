@@ -1,0 +1,28 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/my-messages.ts",
+        "board/src/lib/server/my-messages.ts",
+        "board/src/routes/api/transcript/mine/**",
+        "board/src/routes/api/agents/transcript/mine/**"
+      ],
+      "tests": [
+        "board/tests/server/my-messages.test.ts",
+        "board/tests/browser/my-messages.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/src/lib/components/MyMessages.svelte",
+        "board/src/lib/components/Transcript.svelte",
+        "board/src/lib/board/prefs.ts"
+      ],
+      "tests": [
+        "board/tests/browser/my-messages.test.ts",
+        "board/tests/browser/transcript-reading-place.test.ts",
+        "board/tests/browser/back-navigation.test.ts"
+      ]
+    }
+  ]
+}
