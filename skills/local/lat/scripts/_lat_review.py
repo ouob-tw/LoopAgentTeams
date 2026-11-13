@@ -275,7 +275,8 @@ def ledger_items(doc, path, workspace):
         if answer:
             # The ledger records that the row was released and why, not who decided.
             item.update(state='answered', state_label=f'已解除擱置（{answer[0]}）：{answer[1]}',
-                        answered_at=answer[0], answer=answer[1])
+                        answered_at=answer[0], answer=answer[1],
+                        revert='已解除；要改回擱置或改做法，告訴主控')
         items.append(item)
     return items, done
 

@@ -1693,7 +1693,7 @@ def review_stop_check(record, message):
     result = unattended.refresh_review(unattended_lat(record), record['session_id'])
     lines = [line for line in message.splitlines() if line.strip()]
     if not (lines and lines[-1].startswith('DONE:')) or not result or not result['path'] \
-            or result['verified']:
+            or result['verified'] or not result['view']['items']:
         return None
     count = len(result['view']['items'])
     return (f'LAT 回顧核對未通過：本輪有過無人授權，回顧檔 {result["path"]}（{count} 項）還沒有另一家模型的'

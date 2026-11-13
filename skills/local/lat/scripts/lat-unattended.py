@@ -667,11 +667,11 @@ def cmd_review_verify(args):
             raise Refused(f'the checker is {args.family} like this controller; a cross-check '
                           'counts only from another model family')
         ids = {item['id'] for item in result['view']['items']}
+        if not ids:
+            raise Refused('the review has no items left; there is nothing to cross-check')
         mismatches = [mismatch_of(text, ids) for text in args.mismatch or []]
         if len({m['id'] for m in mismatches}) != len(mismatches):
             raise Refused('one --mismatch per item')
-        if not ids:
-            raise Refused('the review has no items left; there is nothing to cross-check')
         if args.total != len(ids):
             raise Refused(f'the review has {len(ids)} items, not {args.total}; the checker must '
                           'check every item of the current version')
