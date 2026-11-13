@@ -334,11 +334,60 @@ def board_unattended(controllers, seconds=LEDGERS_SECONDS):
             return {"session_id": session_id, "status": "error", "reason": _TIME_UP}
         result = unattended_tool(["status", f"--workspace={workspace}", f"--session-id={session_id}"],
                                  timeout=left)
+        if result.get("status") == "ok" and (result.get("version") or result.get("last_end")):
+            # The round had a grant, so it may have a review: its summary rides with the status, and
+            # its file joins the files to watch, so a change to it reaches the board's pages.
+            summary, path = review_summary(workspace, session_id, deadline - time.monotonic())
+            # Watched even before the file exists: the controller's tool creates it at the first item.
+            files = result.get("files", [])
+            grant = f"/unattended/{session_id}-r{result.get('round')}.json"
+            expected = next((f[:-len(".json")] + "-review.md" for f in files if f.endswith(grant)), None)
+            result = {**result, "review": summary,
+                      "files": [*files, *dict.fromkeys(p for p in (path, expected) if p)]}
         return {**result, "session_id": session_id}
 
     results = _side_by_side(controllers, read, seconds)
     return [result or {"session_id": session_id, "status": "error", "reason": _TIME_UP}
             for result, (_, session_id) in zip(results, controllers)]
+
+
+PARKED_KINDS = ("parked", "parked-row")
+
+
+def review_summary(workspace, session_id, seconds):
+    """(summary, path) of one controller's review: ``{state: none}`` when the round has none yet,
+    ``{state: ok, path, count, parked, verified, stamp}`` when it has one, ``{state: error, reason}``
+    when it could not be read. ``stamp`` changes with every write of the file."""
+    seconds = min(LEDGER_READ_SECONDS, seconds)
+    if seconds <= 0:
+        return {"state": "error", "reason": _TIME_UP}, None
+    result = unattended_tool(["review", "show", f"--workspace={workspace}",
+                              f"--session-id={session_id}"], timeout=seconds)
+    if result.get("status") != "ok":
+        return {"state": "error", "reason": result.get("reason") or "lat-unattended review show"}, None
+    path = result.get("path")
+    view = result.get("view") if isinstance(result.get("view"), dict) else {}
+    if not path:
+        return {"state": "none"}, None
+    items = view.get("items") if isinstance(view.get("items"), list) else []
+    try:
+        stamp = Path(path).stat().st_mtime_ns
+    except OSError:
+        stamp = 0
+    parked = sum(1 for item in items
+                 if item.get("kind") in PARKED_KINDS and item.get("state") == "open")
+    return {"state": "ok", "path": path, "count": len(items), "parked": parked,
+            "verified": bool(result.get("verified")), "stamp": stamp}, path
+
+
+def board_review(workspace, session_id, seconds=LEDGERS_SECONDS):
+    """One controller's whole review as ``lat-unattended review show --json`` prints it: ``path``
+    (null before the first item), ``verified``, ``verification`` and the ``view`` with every item."""
+    if not _SESSION_ID.fullmatch(session_id):
+        return {"session_id": session_id, "status": "error", "reason": f"不是 session ID：{session_id}"}
+    result = unattended_tool(["review", "show", f"--workspace={workspace}",
+                              f"--session-id={session_id}"], timeout=seconds)
+    return {**result, "session_id": session_id}
 
 
 def board_ledger(workspace, session_id, *, deadline=None):

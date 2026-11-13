@@ -94,6 +94,7 @@ LAT record; ``ask`` reads the section from standard input without ``--file``::
   board preauth-read [--workspace ROOT]
   board preauth-write --layer (global|project) [--workspace ROOT] --expected-sha256 HEX --changes JSON
   board unattended [--workspace ROOT --session-id ID]... [--seconds N]
+  board review --workspace ROOT --session-id ID [--seconds N]
   board unattended-settings [--project ROOT]... [--seconds N]
   board unattended-settings-write --layer (global|project) [--project ROOT] \
       --expected-sha256 HEX --changes JSON [--seconds N]
@@ -346,6 +347,7 @@ from board import (
     board_ledger,
     board_ledgers,
     board_questions,
+    board_review,
     board_unattended,
     notify_controller,
     unattended_tool,
@@ -402,6 +404,9 @@ def _run_board(args):
                 raise ValueError("each --workspace needs one --session-id")
             result = {"unattended": board_unattended(list(zip(args.workspace, args.session_id)), args.seconds)}
             code = 0
+        elif args.board_command == "review":
+            result = board_review(args.workspace, args.session_id, args.seconds)
+            code = 0 if result["status"] == "ok" else 1
         elif args.board_command == "unattended-settings":
             result = unattended_tool(["settings", *(f"--project={root}" for root in args.project)],
                                      timeout=args.seconds)
@@ -576,6 +581,10 @@ def _build_parser():
     unattended.add_argument("--workspace", type=Path, action="append", default=[])
     unattended.add_argument("--session-id", action="append", default=[])
     unattended.add_argument("--seconds", type=float, default=LEDGERS_SECONDS)
+    review = board_commands.add_parser("review")
+    review.add_argument("--workspace", required=True, type=Path)
+    review.add_argument("--session-id", required=True)
+    review.add_argument("--seconds", type=float, default=LEDGERS_SECONDS)
     unattended_settings = board_commands.add_parser("unattended-settings")
     unattended_settings.add_argument("--project", type=Path, action="append", default=[])
     unattended_settings.add_argument("--seconds", type=float, default=UNATTENDED_WRITE_SECONDS)
