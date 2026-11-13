@@ -183,7 +183,8 @@ test('a manual run that fails after the period succeeded leaves the period done'
 test('back late on the window’s last day: tried, not missed; a window passed with no run is missed, once per period, one notice per task', async () => {
 	await open(tpe(2026, 11, 7, 12));
 	const late = await create(commandTask({ type: 'monthly', fromDay: 8, toDay: 10 }, 'echo ok', { name: '最後一天晚上', time: '08:00' }));
-	const gone = await create(commandTask({ type: 'monthly', fromDay: 8, toDay: 10 }, 'echo ok', { name: '整段錯過', time: '08:00' }));
+	// Set late in the day, so once resumed at 23:30 no check before midnight finds it due.
+	const gone = await create(commandTask({ type: 'monthly', fromDay: 8, toDay: 10 }, 'echo ok', { name: '整段錯過', time: '23:45' }));
 	const weekly = await create(commandTask({ type: 'weekly', fromWeekday: 1, toWeekday: 1 }, 'echo ok', { name: '每週錯過', time: '08:00' }));
 	const paused = await create(commandTask({ type: 'monthly', fromDay: 8, toDay: 10 }, 'echo ok', { name: '暫停不算錯過', time: '08:00' }));
 	await send(`/api/automation/${paused.id}/pause`, 'POST', { paused: true });
@@ -194,6 +195,8 @@ test('back late on the window’s last day: tried, not missed; a window passed w
 	// The weekly one's Monday (11/9) was passed while down: missed, as soon as the board is back.
 	await eventually(async () => (await viewOf(weekly.id)).state === 'missed', 'the week to be missed');
 	await send(`/api/automation/${gone.id}/pause`, 'POST', { paused: false });
+	await sleep(SETTLE_MS);
+	expect((await viewOf(gone.id)).runs).toEqual([]);
 	// Midnight passes with the board up: the window ended with no run of the resumed one.
 	await at(tpe(2026, 11, 11, 0, 1));
 	expect((await viewOf(late.id)).state).toBe('done');
