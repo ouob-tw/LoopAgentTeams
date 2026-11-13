@@ -104,7 +104,7 @@
 		let element: Element | null = document.elementFromPoint(innerWidth - 1, innerHeight / 2);
 		while (element && element !== document.documentElement) {
 			const width = (element as HTMLElement).offsetWidth - element.clientWidth;
-			if (width > 1 && element.scrollHeight > element.clientHeight) return width;
+			if (width > 4 && element.scrollHeight > element.clientHeight) return width;
 			element = element.parentElement;
 		}
 		return innerWidth - document.documentElement.clientWidth;
@@ -120,7 +120,8 @@
 			}
 			return;
 		}
-		if (atEdge || !aside) return;
+		// The whole scrollbar counts as the edge, not only its outer EDGE px.
+		if (atEdge || event.clientX >= innerWidth - gap || !aside) return;
 		const box = aside.getBoundingClientRect();
 		if (event.clientX < box.left - MARGIN || event.clientY < box.top - MARGIN || event.clientY > box.bottom + MARGIN) open = false;
 	}

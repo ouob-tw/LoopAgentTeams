@@ -102,7 +102,7 @@ async function openByEdge(width = 1280, height = 800) {
 	await tab.until(SHOWN, 'the list shown');
 }
 /** The width of the vertical scrollbar at the window's right edge, whichever element scrolls there. */
-const scrollbarWidth = () => tab.eval<number>(`(() => { let el = document.elementFromPoint(innerWidth - 1, innerHeight / 2); while (el && el !== document.documentElement) { const w = el.offsetWidth - el.clientWidth; if (w > 1 && el.scrollHeight > el.clientHeight) return w; el = el.parentElement; } return innerWidth - document.documentElement.clientWidth; })()`);
+const scrollbarWidth = () => tab.eval<number>(`(() => { let el = document.elementFromPoint(innerWidth - 1, innerHeight / 2); while (el && el !== document.documentElement) { const w = el.offsetWidth - el.clientWidth; if (w > 4 && el.scrollHeight > el.clientHeight) return w; el = el.parentElement; } return innerWidth - document.documentElement.clientWidth; })()`);
 const boxOf = () => tab.eval<{ left: number; right: number; top: number; bottom: number }>(`(() => { const r = document.querySelector('${BLOCK}').getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; })()`);
 
 const PAGES = [
@@ -208,7 +208,7 @@ test.skipIf(!CHROME)('1440px: a classic scrollbar stays usable: the list sits le
 	const bar = await scrollbarWidth();
 	expect(bar).toBeGreaterThan(5);
 	// The scrolling area under the edge, scrolled to the top first.
-	const scroller = `(() => { let el = document.elementFromPoint(innerWidth - 1, innerHeight / 2); while (el && !(el.scrollHeight > el.clientHeight && el.offsetWidth - el.clientWidth > 1)) el = el.parentElement; return el; })()`;
+	const scroller = `(() => { let el = document.elementFromPoint(innerWidth - 1, innerHeight / 2); while (el && !(el.scrollHeight > el.clientHeight && el.offsetWidth - el.clientWidth > 4)) el = el.parentElement; return el; })()`;
 	await tab.eval(`${scroller}.scrollTo(0, 0)`);
 	// A button held while arriving at the edge is a drag: the list stays closed.
 	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1000, y: 450 });
@@ -221,6 +221,9 @@ test.skipIf(!CHROME)('1440px: a classic scrollbar stays usable: the list sits le
 	const box = await boxOf();
 	expect(box.right).toBe(1440 - bar);
 	expect(await tab.eval(`document.elementFromPoint(1440 - ${bar / 2}, 450)?.closest('${BLOCK}') === null`)).toBe(true);
+	// Along the scrollbar's inner strip the list stays open as well.
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1440 - bar + 1, y: 450 });
+	expect(await tab.eval(SHOWN)).toBe(true);
 	// Dragging the scrollbar thumb scrolls the conversation, and the list does not close or block it.
 	const top = await tab.eval<number>(`${scroller}.scrollTop`);
 	const x = 1440 - bar / 2;
