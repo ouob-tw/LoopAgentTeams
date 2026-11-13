@@ -723,8 +723,8 @@ export function createAutomation(options: {
 		const host = options.agents;
 		if (!host || latest(run).review?.status !== 'checking') return;
 		const update = (fields: Partial<RunReview>) => {
-			const now = latest(run);
-			return record(now, { review: { ...now.review!, ...fields } });
+			const current = latest(run);
+			return record(current, { review: { ...current.review!, ...fields } });
 		};
 		const settle = (fields: Partial<RunReview>) => {
 			const finished = update({ endedAt: now(), ...fields });
@@ -735,7 +735,7 @@ export function createAutomation(options: {
 			settle(
 				end.judged
 					? { status: end.judged.verdict, items: end.judged.items, ...(end.judged.reason ? { reason: end.judged.reason } : {}), ...(end.closeError ? { closeError: end.closeError } : {}) }
-					: { status: 'error', reason: `檢查沒有做完：${end.reason ?? '原因不明'}`, ...(end.status === 'stopped' ? { stopped: true } : {}), ...(end.closeError ? { closeError: end.closeError } : {}) }
+					: { status: 'error', reason: `檢查沒有做完：${end.reason ?? '原因不明'}`, ...(end.status === 'stopped' || end.status === 'timeout' || end.status === 'quota' ? { ended: end.status } : {}), ...(end.closeError ? { closeError: end.closeError } : {}) }
 			);
 		let cut: Cut | null = null;
 		stoppers.set(run.id, (why) => (cut ??= why));
@@ -745,26 +745,26 @@ export function createAutomation(options: {
 			const folder = expandHome(spec.folder, home);
 			if (!adopted) {
 				if (!isDirectory(folder)) return settle({ status: 'error', reason: `檢查沒有做完：找不到工作資料夾 ${spec.folder}` });
-				const now = latest(run);
+				const current = latest(run);
 				const briefName = join('review', task.id, `${run.id}.md`);
-				const transcript = task.kind === 'agent' && now.sessionId ? await host.transcript(task.agent!.client, now.sessionId).catch(() => null) : undefined;
+				const transcript = task.kind === 'agent' && current.sessionId ? await host.transcript(task.agent!.client, current.sessionId).catch(() => null) : undefined;
 				mkdirSync(join(dir, 'review', task.id), { recursive: true, mode: 0o700 });
 				const briefPath = join(dir, briefName);
 				writeAtomic(
 					briefPath,
 					reviewBrief({
 						task,
-						run: now,
+						run: current,
 						folder,
 						...(task.agent ? { taskBrief: resolve(folder, expandHome(task.agent.brief, home)) } : {}),
-						...(now.output ? { output: join(dir, now.output) } : {}),
+						...(current.output ? { output: join(dir, current.output) } : {}),
 						transcript
 					})
 				);
 				update({ brief: briefName });
 				if (spec.client === 'codex') {
 					const ready = await codexBeforeLaunch(host.accounts, spec.model, spec.effort).catch((): { ok: true; account?: number; note?: string } => ({ ok: true }));
-					if (!ready.ok) return settle({ status: 'error', reason: `檢查沒有做完：${ready.reason}` });
+					if (!ready.ok) return settle({ status: 'error', ended: 'quota', reason: `檢查沒有做完：${ready.reason}` });
 					update({ ...(ready.account !== undefined ? { codexAccount: ready.account } : {}), ...(ready.note ? { accountSwitches: [ready.note] } : {}) });
 				}
 				if (cut) return settleEnd({ status: cut, reason: cutReason(cut, task.limitMinutes) });
@@ -784,10 +784,10 @@ export function createAutomation(options: {
 			}
 			// The checker is watched as a run of its own: its start, agent and account are the review's.
 			const view = (): AutomationRun => {
-				const now = latest(run);
-				const own = now.review!;
+				const current = latest(run);
+				const own = current.review!;
 				return {
-					...now,
+					...current,
 					startedAt: own.startedAt,
 					agentName: own.agentName,
 					sessionId: own.sessionId,

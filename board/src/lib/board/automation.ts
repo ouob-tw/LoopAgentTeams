@@ -177,8 +177,9 @@ export interface RunReview {
 	items?: ReviewItem[];
 	/** Why it ended without a verdict, or why a PASS was not taken as one. */
 	reason?: string;
-	/** 停止這次 ended it: no red card. */
-	stopped?: boolean;
+	/** How a check with no verdict ended, when it was 停止這次, past the limit or out of quota: its
+	 *  label and card say so as a run's would. */
+	ended?: 'stopped' | 'timeout' | 'quota';
 }
 
 /** A period's run window: its first moment and the moment after its last day. */
@@ -327,8 +328,17 @@ export const sameDay = (a: number, b: number) => startOf(dayOf(a)) === startOf(d
 export const succeeded = (run: AutomationRun) => run.trigger !== 'preview' && run.status === 'success' && (!run.review || run.review.status === 'pass');
 /** The run is still going: running, or its checking agent is still at it. Either way the task is busy. */
 export const isOpen = (run: Pick<AutomationRun, 'status' | 'review'>) => run.status === 'running' || run.review?.status === 'checking';
-/** Its check ended without a pass: failed, or could not judge. */
-export const reviewFailed = (run: Pick<AutomationRun, 'status' | 'review'>) => run.status === 'success' && (run.review?.status === 'fail' || run.review?.status === 'error');
+/** Its check ended without a pass: failed, or could not judge (stopped by the user aside). */
+export const reviewFailed = (run: Pick<AutomationRun, 'status' | 'review'>) =>
+	run.status === 'success' && (run.review?.status === 'fail' || (run.review?.status === 'error' && run.review.ended !== 'stopped'));
+/** What a run's label says: its own status, or how its check ended when that went otherwise than a pass. */
+export function runLabel(run: Pick<AutomationRun, 'status' | 'review'>): { text: string; key: string } {
+	const review = run.status === 'success' ? run.review : undefined;
+	if (!review || review.status === 'pass') return { text: RUN_STATUS_TEXT[run.status], key: run.status };
+	if (review.status === 'checking') return { text: '▶ 檢查中', key: 'running' };
+	if (review.status === 'error' && review.ended) return { text: RUN_STATUS_TEXT[review.ended], key: review.ended };
+	return { text: STATE_TEXT['check-failed'], key: 'check-failed' };
+}
 /** An automatic try made on the day `time` falls in: whatever it ended in, it is the day's one. */
 export const triedOn = (runs: readonly AutomationRun[], time: number) => runs.some((run) => run.trigger === 'auto' && sameDay(run.startedAt, time));
 
@@ -379,6 +389,7 @@ export function taskState(task: AutomationTask, runs: readonly AutomationRun[], 
 	if (own.some(succeeded)) return 'done';
 	if (openMissed(missed, runs).length) return 'missed';
 	const latest = own.reduce<AutomationRun | undefined>((last, run) => (!last || run.startedAt > last.startedAt ? run : last), undefined);
+	if (latest?.review?.status === 'error' && (latest.review.ended === 'quota' || latest.review.ended === 'timeout')) return 'failed';
 	if (latest && reviewFailed(latest)) return 'check-failed';
 	if (latest && FAILED.includes(latest.status)) return 'failed';
 	return 'waiting';

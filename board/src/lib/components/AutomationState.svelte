@@ -1,14 +1,13 @@
 <script lang="ts">
 	// A task's state this period, or one run's result, as an outlined pill coloured by how it went.
-	import { RUN_STATUS_TEXT, STATE_TEXT, type ReviewStatus, type RunStatus, type TaskState } from '#lib/board/automation.ts';
+	import { runLabel, STATE_TEXT, type AutomationRun, type TaskState } from '#lib/board/automation.ts';
 
-	/** A run that succeeded shows how its check went instead, while there is one. */
-	let { state, status, review }: { state?: TaskState; status?: RunStatus; review?: ReviewStatus } = $props();
+	/** A run shows its own status, or how its check went when that was not a pass. */
+	let { state, run }: { state?: TaskState; run?: Pick<AutomationRun, 'status' | 'review'> } = $props();
 
-	const checked = $derived(status === 'success' && review && review !== 'pass' ? review : null);
+	const label = $derived(run ? runLabel(run) : null);
 	const tone = $derived.by(() => {
-		if (checked) return checked === 'checking' ? 'going' : 'bad';
-		const key = state ?? status;
+		const key = state ?? label!.key;
 		if (key === 'done' || key === 'success') return 'ok';
 		if (key === 'running') return 'going';
 		if (key === 'missed') return 'miss';
@@ -17,7 +16,7 @@
 	});
 </script>
 
-<span class="pill {tone}" data-state={state ?? (checked ? `review-${checked}` : status)}>{state ? STATE_TEXT[state] : checked === 'checking' ? '▶ 檢查中' : checked ? STATE_TEXT['check-failed'] : RUN_STATUS_TEXT[status!]}</span>
+<span class="pill {tone}" data-state={state ?? label!.key}>{state ? STATE_TEXT[state] : label!.text}</span>
 
 <style>
 	.pill {

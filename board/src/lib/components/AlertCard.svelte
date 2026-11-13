@@ -82,7 +82,7 @@
 		<section class="record" data-run={run.id}>
 			<div class="when">
 				<b>{at.full(run.startedAt)}{run.endedAt === undefined ? '' : ` → ${at.day(run.startedAt) === at.day(run.endedAt) ? at.clock(run.endedAt) : at.full(run.endedAt)}`}</b>
-				<AutomationState status={run.status} review={run.review?.status} />
+				<AutomationState {run} />
 				<span class="trigger">{TRIGGER_TEXT[run.trigger]}</span>
 			</div>
 			<p>{runReason(run)}</p>

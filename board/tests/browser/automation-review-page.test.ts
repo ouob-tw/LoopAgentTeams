@@ -246,5 +246,5 @@ test.skipIf(!CHROME)('while the checker checks: 檢查中 on the run, how long a
 	}
 	expect((await send(`/api/automation/${task.id}/stop`, 'POST')).status).toBe(202);
 	for (let i = 0; i < 100 && (await runOf())?.review?.status === 'checking'; i++) await Bun.sleep(50);
-	expect((await runOf())?.review).toMatchObject({ status: 'error', stopped: true });
+	expect((await runOf())?.review).toMatchObject({ status: 'error', ended: 'stopped' });
 });

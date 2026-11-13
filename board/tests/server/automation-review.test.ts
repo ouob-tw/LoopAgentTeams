@@ -259,7 +259,7 @@ test('停止這次 and the limit end the checker and close it; after a restart a
 	const first = await doneThenChecking(task, 'auto-s', 'chk-s');
 	expect((await send(`/api/automation/${task.id}/stop`, 'POST')).status).toBe(202);
 	const stopped = await checked(task.id, first.id);
-	expect(stopped.review).toMatchObject({ status: 'error', stopped: true, reason: '檢查沒有做完：使用者按了停止這次' });
+	expect(stopped.review).toMatchObject({ status: 'error', ended: 'stopped', reason: '檢查沒有做完：使用者按了停止這次' });
 	expect(listed('chk-s')).toBe(false);
 	// Stopped by the user: no card.
 	expect((await alerts()).some((alert) => alert.runId === first.id)).toBe(false);
@@ -275,9 +275,10 @@ test('停止這次 and the limit end the checker and close it; after a restart a
 	expect((await runsOf(task.id)).find((run) => run.id === second.id)!.review?.status).toBe('checking');
 	fixture.setClock(START + 15 * 60_000);
 	const late = await checked(task.id, second.id);
-	expect(late.review).toMatchObject({ status: 'error', reason: '檢查沒有做完：超過上限 10 分鐘，已停止' });
+	expect(late.review).toMatchObject({ status: 'error', ended: 'timeout', reason: '檢查沒有做完：超過上限 10 分鐘，已停止' });
 	expect(listed('chk-t')).toBe(false);
-	expect((await alerts()).find((alert) => alert.runId === second.id)?.kind).toBe('check-failed');
+	expect((await alerts()).find((alert) => alert.runId === second.id)?.kind).toBe('timeout');
+	expect((await viewOf(task.id)).state).toBe('failed');
 
 	// A restart while it checks: watched on, its verdict taken.
 	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
@@ -328,7 +329,8 @@ test('a Codex checker on a pinned account at 0 switches to one with quota; none 
 	await runWhen(task.id, second.id, (run) => run.sessionId === 's-auto-n', 'auto-n to be listed');
 	replyAndWait('auto-n', 'DONE');
 	const out = await checked(task.id, second.id);
-	expect(out.review).toMatchObject({ status: 'error', reason: '檢查沒有做完：額度用完：沒有其他還有額度的訂閱帳號' });
+	expect(out.review).toMatchObject({ status: 'error', ended: 'quota', reason: '檢查沒有做完：額度用完：沒有其他還有額度的訂閱帳號' });
+	expect((await alerts()).find((alert) => alert.runId === second.id)?.kind).toBe('quota');
 	expect(hcomCalls().some((call) => call.args[0] === 'codex')).toBe(false);
 	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
 });

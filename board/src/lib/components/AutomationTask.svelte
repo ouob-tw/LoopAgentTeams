@@ -10,6 +10,7 @@
 		EFFORT_TEXT,
 		isOpen,
 		kindText,
+		reviewFailed,
 		MISSED_NAMED,
 		runReason,
 		scheduleText,
@@ -165,11 +166,11 @@
 	{#each view.runs as run (run.id)}
 		{@const live = run.status === 'running'}
 		{@const checking = run.review?.status === 'checking'}
-		{@const checkBad = run.review?.status === 'fail' || run.review?.status === 'error'}
+		{@const checkBad = reviewFailed(run)}
 		<section class="run" class:bad={checkBad || (!live && run.status !== 'success' && run.status !== 'skipped')} class:skip={run.status === 'skipped'} class:live={live || checking} data-run={run.id} data-status={run.status}>
 			<div class="when">
 				<b>{at.full(run.startedAt)}{run.endedAt === undefined || run.status === 'skipped' || run.trigger === 'carried' ? '' : ` → ${sameDay(run.startedAt, run.endedAt) ? at.clock(run.endedAt) : at.full(run.endedAt)}`}</b>
-				<AutomationState status={run.status} review={run.review?.status} />
+				<AutomationState {run} />
 				<span class="trigger">{TRIGGER_TEXT[run.trigger]}</span>
 			</div>
 			{#if live}

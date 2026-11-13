@@ -1,6 +1,6 @@
 // The checking agent's brief and how its reply is read; a check's part in a task's state this period.
 import { expect, test } from 'bun:test';
-import { lastRunText, nextAutoAt, taskState, type AutomationRun, type AutomationTask, type RunReview } from '../../src/lib/board/automation.ts';
+import { lastRunText, nextAutoAt, runLabel, taskState, type AutomationRun, type AutomationTask, type RunReview } from '../../src/lib/board/automation.ts';
 import { judgeReview, reviewBrief } from '../../src/lib/server/automation-review.ts';
 
 const at = (year: number, month: number, day: number, hour = 12, minute = 0) => Date.UTC(year, month - 1, day, hour - 8, minute);
@@ -110,6 +110,12 @@ test('a check decides the period: checking runs, a pass is done, a fail or a che
 	expect(taskState(task(), [run({ review: review('pass') })], now)).toBe('done');
 	expect(taskState(task(), [run({ review: review('fail') })], now)).toBe('check-failed');
 	expect(taskState(task(), [run({ review: review('error') })], now)).toBe('check-failed');
+	// Past its limit or out of quota is a failure as a run's is; stopped by the user is neither.
+	expect(taskState(task(), [run({ review: review('error', { ended: 'quota' }) })], now)).toBe('failed');
+	expect(taskState(task(), [run({ review: review('error', { ended: 'stopped' }) })], now)).toBe('waiting');
+	expect(runLabel(run({ review: review('error', { ended: 'stopped' }) })).text).toBe('■ 已停止');
+	expect(runLabel(run({ review: review('fail') })).text).toBe('✕ 檢查未過');
+	expect(runLabel(run({ review: review('checking') })).text).toBe('▶ 檢查中');
 	expect(nextAutoAt(task(), [run({ review: review('fail') })], at(2026, 11, 3, 8))).toBe(at(2026, 11, 3, 10));
 	expect(nextAutoAt(task(), [run({ review: review('pass') })], at(2026, 11, 3, 8))).toBe(at(2026, 12, 1, 10));
 	const zone = 'Asia/Taipei';

@@ -48,12 +48,15 @@ export const ALERT_KIND_TEXT: Record<AlertKind, string> = {
 
 /** The checking agent did not pass a run that succeeded: it judged FAIL, or ended without a verdict
  *  other than by 停止這次. */
-export const isCheckFailed = (run: Pick<AutomationRun, 'status' | 'review'>) => reviewFailed(run) && !run.review?.stopped;
+export const isCheckFailed = (run: Pick<AutomationRun, 'status' | 'review'>) => reviewFailed(run);
 
 const CARDED: Partial<Record<RunStatus, AlertKind>> = { failed: 'failed', timeout: 'timeout', 'config-error': 'config-error', quota: 'quota' };
 
 /** The card a run that ended makes; null for one that ended well, was stopped by the user or skipped. */
 export function runAlertKind(run: Pick<AutomationRun, 'status' | 'review'>): AlertKind | null {
+	// A check past its limit or out of quota is carded as a run's would be.
+	const ended = run.status === 'success' && run.review?.status === 'error' ? run.review.ended : undefined;
+	if (ended === 'timeout' || ended === 'quota') return ended;
 	if (isCheckFailed(run)) return 'check-failed';
 	return CARDED[run.status] ?? null;
 }
