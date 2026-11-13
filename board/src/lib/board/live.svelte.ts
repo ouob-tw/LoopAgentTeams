@@ -9,6 +9,7 @@ import { reaches, withEarlier, withNewest, type ArchivePage } from './archive.ts
 import type { PdSnapshot } from './pd.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import { translatePref } from './translate-pref.svelte.ts';
+import { unattendedUi } from './unattended-ui.svelte.ts';
 import type { TranslateMode } from './translate-mode.ts';
 import type { UsageStyle } from './usage.ts';
 import { justRecorded } from './question-message.ts';
@@ -89,6 +90,7 @@ export class LiveBoard {
 			onPd: (snapshot) => (this.pd = { snapshot, at: Date.now() }),
 			onUsageStyle: (style) => (appearance.usageStyle = style),
 			onTranslateMode: (mode) => (translatePref.mode = mode),
+			onUnattendedSettings: () => unattendedUi.settingsChanges++,
 			// Only a record this page has loaded is shown anywhere; others load when opened. A
 			// controller's sent log has the interrupts of its turn.
 			onAgentAction: (agentId) => {

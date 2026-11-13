@@ -48,9 +48,9 @@ export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement 
 		if (rect.height <= 0) return Infinity;
 		return rect.top > line ? rect.top - line : rect.bottom <= line ? line - rect.bottom : 0;
 	};
-	/** Of the elements inside `element`, the one nearest `line`. */
+	/** Of the elements inside `element`, the one nearest `line`; a window over the page is not one. */
 	const nearest = (element: Element, line: number) =>
-		[...element.children].reduce<Element | undefined>((best, child) => (best && distance(best, line) <= distance(child, line) ? best : child), undefined);
+		[...element.children].filter((child) => child.localName !== 'dialog').reduce<Element | undefined>((best, child) => (best && distance(best, line) <= distance(child, line) ? best : child), undefined);
 	/** `card` and the elements inside it down to `inner`, or, without one, to the innermost one
 	 *  at `line`, or nearest it: a card whose text was replaced is told by it. */
 	const chain = (card: Element, line: number, inner?: Element): Chain => {
@@ -116,7 +116,9 @@ export function keepReadingPlace(list: HTMLElement, scroller: () => HTMLElement 
 	 *  downwards. */
 	const acted = (event: Event) => {
 		pinned = null;
-		if (event.target instanceof Element && list.contains(event.target)) take(event.target);
+		// Not inside a window over the page: it is hidden again once closed, and a card kept there
+		// would then be taken for one that moved.
+		if (event.target instanceof Element && list.contains(event.target) && !event.target.closest('dialog')) take(event.target);
 	};
 	addEventListener('scroll', scrolled, { capture: true, passive: true });
 	for (const type of USER_INPUT) addEventListener(type, acted, { capture: true, passive: true });

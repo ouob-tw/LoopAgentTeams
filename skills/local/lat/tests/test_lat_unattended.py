@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-unattended.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
@@ -15,6 +16,9 @@ GIT_ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull
 FULL = ['--goal', '修好登入頁', '--done', '登入成功跳到首頁', '--done', '錯誤密碼顯示提示',
         '--scope', 'ticket-confirmation', 'assume-defaults', '--max-hours', '6']
 SETTINGS_SCOPE = ('ticket-confirmation', 'assume-defaults', 'prototype')
+FULL_CONTENT = dict(goal='修好登入頁', done=['登入成功跳到首頁', '錯誤密碼顯示提示'],
+                    scope=dict(ticket_confirmation=True, assume_defaults=True,
+                               prototype_decide=False), max_hours=6)
 
 
 def git(cwd, *args):
@@ -66,9 +70,40 @@ class UnattendedCase(unittest.TestCase):
     def status(self):
         return self.json_of('status')
 
-    def create(self, *extra, source='board-form', evidence='board-action-1', code=0):
+    def board_request(self, op='create', content=FULL_CONTENT, at=None, controller=SESSION):
+        """The line the board writes to its action log when a device sends the form."""
+        identifier = str(uuid.uuid4())
+        path = self.board_state / 'sent-log.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = dict(kind='unattended-request', id=identifier, controllerId=controller, op=op,
+                     time=(at or datetime.now(timezone.utc)).isoformat(),
+                     goal=content['goal'], done=content['done'], scope=content['scope'],
+                     maxHours=content['max_hours'])
+        with path.open('a') as stream:
+            stream.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        return f'board-action:{identifier}'
+
+    def create(self, *extra, source='board-form', evidence=None, code=0):
+        if evidence is None:
+            evidence = self.board_request()
         return self.json_of('create', *FULL, '--source', source, '--evidence', evidence, *extra,
                             code=code)
+
+    def update(self, code=0, **changes):
+        """A user edit from the board: the request holds the whole new content."""
+        current = self.status()['version']
+        content = dict(goal=current['goal'], done=current['done'], scope=current['scope'],
+                       max_hours=current['stop']['max_hours'])
+        content.update(changes)
+        args = []
+        if 'goal' in changes:
+            args += ['--goal', changes['goal']]
+        for item in changes.get('done', []):
+            args += ['--done', item]
+        if 'max_hours' in changes:
+            args += ['--max-hours', str(changes['max_hours'])]
+        return self.json_of('update', *args, '--source', 'user-edit',
+                            '--evidence', self.board_request('update', content), code=code)
 
     def default_create(self, evidence, code=0, scope=SETTINGS_SCOPE, hours='12'):
         """A default start, with the scope and time limit the settings give by default."""
@@ -211,12 +246,10 @@ class GrantTests(UnattendedCase):
 
     def test_update_makes_a_new_version_now_and_keeps_every_old_one(self):
         self.create()
-        updated = self.json_of('update', '--goal', '修好登入頁與註冊頁', '--source', 'user-edit',
-                               '--evidence', 'board-action-2')['created']
+        updated = self.update(goal='修好登入頁與註冊頁')['created']
         self.assertEqual(updated['version'], 2)
         self.assertEqual(updated['done'], ['登入成功跳到首頁', '錯誤密碼顯示提示'])
-        self.json_of('update', '--done', '只要登入成功', '--max-hours', '3', '--source',
-                     'user-edit', '--evidence', 'board-action-3')
+        self.update(done=['只要登入成功'], max_hours=3)
         status = self.status()
         self.assertEqual(status['version']['version'], 3)
         self.assertEqual(status['version']['goal'], '修好登入頁與註冊頁')
@@ -417,6 +450,112 @@ class EvidenceTests(UnattendedCase):
         created = self.default_create('board:t1', scope=SETTINGS_SCOPE[:2], hours='8')['created']
         self.assertEqual(created['stop']['max_hours'], 8)
         self.assertFalse(created['scope']['prototype_decide'])
+
+
+class BoardRequestTests(UnattendedCase):
+    """A board-form or user-edit version needs the board's record of the device's request."""
+
+    def test_create_and_update_need_a_matching_recent_request_for_this_controller(self):
+        other = dict(FULL_CONTENT, goal='別的目標')
+        old = datetime.now(timezone.utc) - timedelta(minutes=30)
+        cases = [('no such request', 'board-action:missing'),
+                 ('not a board action', 'device-1'),
+                 ('another controller', self.board_request(controller='22222222-2222')),
+                 ('an update request', self.board_request(op='update')),
+                 ('other content', self.board_request(content=other)),
+                 ('too old', self.board_request(at=old))]
+        for name, evidence in cases:
+            with self.subTest(name):
+                self.assertEqual(self.create(evidence=evidence, code=1)['status'], 'refused')
+                self.assertFalse(self.grant.exists())
+                self.assertNotIn('unattended', self.record())
+        evidence = self.board_request()
+        self.assertEqual(self.create(evidence=evidence)['created']['evidence'], evidence)
+        # The same request cannot back another version.
+        refused = self.json_of('update', '--goal', FULL_CONTENT['goal'], '--source', 'user-edit',
+                               '--evidence', evidence, code=1)
+        self.assertIn('already cited', refused['reason'])
+        for name, op, content in (('a create request', 'create', FULL_CONTENT),
+                                  ('other content', 'update', other)):
+            with self.subTest(name):
+                evidence = self.board_request(op, content)
+                self.assertEqual(self.json_of('update', '--goal', '另一個', '--source',
+                                              'user-edit', '--evidence', evidence,
+                                              code=1)['status'], 'refused')
+        self.assertEqual(len(self.json_of('versions')['versions']), 1)
+        self.assertEqual(self.update(goal='另一個')['created']['version'], 2)
+
+
+class DraftAndSettingsTests(UnattendedCase):
+    def test_a_draft_is_shown_but_is_no_grant(self):
+        self.assertIsNone(self.status()['draft'])
+        refused = self.json_of('draft', '--goal', '修好登入頁', code=1)
+        self.assertIn('--done', refused['reason'])
+        self.json_of('draft', '--goal', '修好登入頁', '--done', '登入成功', '--done', ' ')
+        status = self.status()
+        self.assertEqual(status['draft']['goal'], '修好登入頁')
+        self.assertEqual(status['draft']['done'], ['登入成功'])
+        self.assertEqual(status['state'], 'none')
+        self.assertFalse(self.grant.exists())
+        # A draft that cannot be read is no draft; the status still answers.
+        self.grant.with_name(f'{SESSION}-r1.draft.json').write_text('{not json')
+        self.assertIsNone(self.status()['draft'])
+        self.session(status='ended')
+        self.assertEqual(self.json_of('draft', '--goal', 'x', '--done', 'y', code=1)['status'],
+                         'refused')
+
+    def test_status_lists_each_layers_own_mode_and_the_files_to_watch(self):
+        self.write(self.global_file, '[unattended]\nmode = "manual"\n')
+        self.write(self.project_file, '[unattended]\nmode = "follow-global"\n')
+        status = self.status()
+        self.assertEqual(status['layer_modes'], dict(controller=None, project='follow-global',
+                                                     **{'global': 'manual'}))
+        self.assertIn(str(self.grant), status['files'])
+        self.assertIn(str(self.global_file), status['files'])
+
+    def test_settings_write_changes_only_the_keys_given_and_logs_the_write(self):
+        self.write(self.global_file, '# mine\n[actions.push]\nallow = true\n')
+        worktree = self.root / 'wt'
+        git(self.repo, 'commit', '-q', '--allow-empty', '-m', 'x')
+        git(self.repo, 'worktree', 'add', '-q', str(worktree))
+        read = self.json_of('settings', '--project', str(self.repo), '--project', str(worktree))
+        self.assertEqual(len(read['projects']), 1)
+        self.assertEqual(read['projects'][0]['name'], 'repo')
+        self.assertEqual(read['global']['values'], {})
+        sha = read['global']['sha256']
+        written = self.json_of('settings-write', '--layer', 'global', '--expected-sha256', sha,
+                               '--changes', json.dumps(dict(mode='unattended', max_hours=8)))
+        self.assertEqual(written['status'], 'ok')
+        text = self.global_file.read_text()
+        self.assertIn('# mine\n[actions.push]\nallow = true\n', text)
+        self.assertIn('mode = "unattended"', text)
+        self.assertEqual(self.status()['settings']['mode']['layer'], 'global')
+        log = (self.board_state / 'preauth-writes.jsonl').read_text().splitlines()
+        self.assertEqual(json.loads(log[-1])['source'], written['source'])
+        # The board write is the evidence a default start cites.
+        self.assertEqual(self.default_create(written['source'], hours='8')['created']['version'], 1)
+        # A stale hash, a bad value or a follow-global global is refused and changes nothing.
+        before = self.global_file.read_text()
+        self.assertEqual(self.json_of('settings-write', '--layer', 'global', '--expected-sha256',
+                                      sha, '--changes', '{"mode": "manual"}')['status'],
+                         'conflict')
+        sha = self.json_of('settings')['global']['sha256']
+        for changes in ({'mode': 'follow-global'}, {'max_hours': 0}, {'mode': 'sometimes'},
+                        {'assume_defaults': 'yes'}, {'other': 1}):
+            with self.subTest(changes):
+                self.assertEqual(self.json_of('settings-write', '--layer', 'global',
+                                              '--expected-sha256', sha, '--changes',
+                                              json.dumps(changes), code=1)['status'], 'refused')
+        self.assertEqual(self.global_file.read_text(), before)
+        # A project, named by its worktree: null takes the key away (follows global again).
+        sha = read['projects'][0]['sha256']
+        self.json_of('settings-write', '--layer', 'project', '--project', str(worktree),
+                     '--expected-sha256', sha, '--changes', '{"mode": "manual"}')
+        self.assertEqual(self.status()['settings']['mode']['layer'], 'project')
+        sha = self.json_of('settings', '--project', str(self.repo))['projects'][0]['sha256']
+        self.json_of('settings-write', '--layer', 'project', '--project', str(self.repo),
+                     '--expected-sha256', sha, '--changes', '{"mode": null}')
+        self.assertEqual(self.status()['settings']['mode']['layer'], 'global')
 
 
 if __name__ == '__main__':

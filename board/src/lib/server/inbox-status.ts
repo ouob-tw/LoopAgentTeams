@@ -84,7 +84,9 @@ export async function readInboxStatus(config: BoardConfig): Promise<InboxStatus>
 		answered: answered.ok ? answered.files : [],
 		answeredError: answered.ok ? null : answered.reason,
 		ledgers: new Map(),
-		ledgersError: null
+		ledgersError: null,
+		unattended: new Map(),
+		unattendedError: null
 	};
 	if (state) archiveDue(sources, state, now);
 	const snapshot = buildSnapshot(sources, state, now);
