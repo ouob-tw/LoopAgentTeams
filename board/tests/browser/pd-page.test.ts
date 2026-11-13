@@ -134,7 +134,7 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	await tab.eval(`${card(3)}.querySelector('button.deny').click()`);
 	await tab.until(`document.querySelectorAll('.inbox .pd .card').length === 1`, 'the denied card gone');
 	expect(JSON.parse(readFileSync(join(fixture.dir, 'pd.json'), 'utf8')).pending.map((request: { id: number }) => request.id)).toEqual([4]);
-	expect(await tab.eval<string>(`document.body.innerText`)).toContain('已拒絕 pd 請求 #3（npm token）');
+	await tab.until(`document.body.innerText.includes('已拒絕 pd 請求 #3（npm token）')`, 'the denied toast');
 
 	// Over a content screen too, which hides the column; the window's title counts the requests.
 	await load(tab, '?controller=gone');
@@ -214,12 +214,12 @@ test.skipIf(!CHROME)('on a desktop the window floats over the middle column on e
 	expect(await tab.eval(RECT)).toEqual(moved);
 	expect(JSON.parse(await tab.eval<string>(`localStorage.getItem('lat-board-pd-window')`))).toEqual(moved);
 	await load(tab);
-	await tab.until(SETTLED, 'the window after a reload');
+	await tab.until(`${SETTLED} && JSON.stringify(${RECT}) === '${JSON.stringify(moved)}'`, 'the window back in its kept place after a reload');
 	expect(await tab.eval(RECT)).toEqual(moved);
 	// A place off screen, or smaller than the window can be, is pulled back on screen at its smallest size.
 	await tab.eval(`localStorage.setItem('lat-board-pd-window', JSON.stringify({ x: 5000, y: -300, w: 100, h: 50 }))`);
 	await load(tab);
-	await tab.until(SETTLED, 'the window after a reload');
+	await tab.until(`${SETTLED} && JSON.stringify(${RECT}) === '${JSON.stringify({ x: 1280 - 360, y: 0, w: 360, h: 200 })}'`, 'the window pulled back on screen after a reload');
 	expect(await tab.eval(RECT)).toEqual({ x: 1280 - 360, y: 0, w: 360, h: 200 });
 
 	// 稍後 folds it to a badge above the tabs, which opens it again.
