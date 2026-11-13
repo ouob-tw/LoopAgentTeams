@@ -99,12 +99,15 @@ test.skipIf(!CHROME)('clicking an inbox row with the mouse never draws a ring in
 		const sample = () => { if (window.__frames.length < 2000) window.__frames.push(${drawn}); requestAnimationFrame(sample); };
 		requestAnimationFrame(sample);
 	})()`);
-	const box = await evaluate<{ x: number; y: number }>(`(() => {
-		const box = document.querySelector('.row[data-item] .title').getBoundingClientRect();
-		return { x: box.left + 5, y: box.top + box.height / 2 };
-	})()`);
-	// A click before the page has hydrated does nothing; click again until the row opens.
+	// A click before the page has hydrated does nothing; click again until the row opens. The row can
+	// still move while the page settles, so where to click is measured again for every try.
+	const aim = () =>
+		evaluate<{ x: number; y: number }>(`(() => {
+			const box = document.querySelector('.row[data-item] .title').getBoundingClientRect();
+			return { x: box.left + 5, y: box.top + box.height / 2 };
+		})()`);
 	for (let tries = 0; tries < 20 && !(await evaluate(`!!document.querySelector('.row[data-item].current')`)); tries++) {
+		const box = await aim();
 		for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
 			await send('Input.dispatchMouseEvent', { type, ...box, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
 		}
