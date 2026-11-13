@@ -1,6 +1,6 @@
 # 整套測試閘門（suite-gate）
 
-整套測試一律透過 `scripts/suite-gate.py` 執行。同一份程式內容用同一個指令跑過且通過時直接回報上次結果；相同請求同時送出只跑一次；排隊中的整套測試依主機剩餘的 CPU 與記憶體放行（至少同時 2 套、最多 8 套，可在設定檔調整），主機壓力過高時暫停放行。只跑單一檔案或指定範圍的測試不必經過閘門。
+整套測試一律透過 `scripts/suite-gate.py` 執行。同一份程式內容用同一個指令跑過且通過時直接回報上次結果；相同請求同時送出只跑一次；排隊中的整套測試依主機剩餘的 CPU 與記憶體放行（只有第 1 套不看主機狀況，最多 8 套，可在設定檔調整），主機壓力過高時暫停放行。只跑單一檔案或指定範圍的測試不必經過閘門；但專案登記為重指令的（瀏覽器測試檔、建置、型別檢查）要走輕量路徑排隊，見[輕量路徑](#輕量路徑light)。
 
 專案登記檔有對照表時，分支合併前對最終版本用 `affected --purpose pre-merge` 只跑這次改動影響到的測試，內容相同且已通過的測試直接沿用；整批合併後也只跑這批改動的受影響測試，並寫一筆總結紀錄（見[合併後受影響測試](#合併後受影響測試--purpose-post-merge)）。整套只在發布前或寫明原因時跑，並且要標明用途（見[受影響測試與對照表](#受影響測試與對照表)）。沒有對照表的專案，同樣兩條指令改跑每一套登記的整套各一次，同內容沿用（見[沒有對照表的專案](#沒有對照表的專案)）。
 
@@ -113,6 +113,25 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --registered web --
 
 CPU 與記憶體都不足時兩句以 `; ` 連接。訊息中的 GB 都是 GiB（1024³ 位元組）；「available」是已扣掉未用預約（記憶體另扣保留量）後的值。
 
+## 輕量路徑（light）
+
+修改期間自己挑的瀏覽器測試檔與建置也會壓垮共用主機，所以專案登記為重指令（登記檔的 `heavy`）的指令改走輕量路徑：
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py light -- '<指令>'
+```
+
+- 只排隊，不算指紋、不沿用、不寫紀錄，所以不能當合併證據。輸出與結束碼原樣轉出，結束時在 stderr 印一行 `light run exited <碼>`。
+- 名額與整套測試分開：有自己的上限 `light_max_slots`（預設 4）與自己的隊伍，幾秒的單檔測試不會排在十幾分鐘的整套後面。第 1 個輕量執行不看主機狀況直接放行（`light_min_slots`，預設 1），之後依序檢查：
+  1. 輕量執行的預約加總不超過測試群組 `lat-tests.slice` 的 CPU 上限（讀 `~/.config/lat-cpu/slices.conf` 的 `TESTS_CPU_QUOTA`，讀不到時當 20 核）。
+  2. 讀得到主機資料、煞車沒開、預約放得下（與整套測試的[放行計算](#放行計算)第 3–5 步相同，執行中的整套與輕量執行的未用預約都扣掉）。
+- 預約量固定 `light_cores` 核、`light_mem_gb` GiB（預設 2、2），不看實測。整套測試放行時也扣掉輕量執行的未用預約，但輕量執行不佔整套的名額。
+- 每個輕量執行和整套一樣在自己的資源群組裡跑，Ctrl-C、殘留收回都照整套的規則。
+- **巢狀**：已在閘門群組（整套或輕量執行）裡的 `light` 直接執行，不再排隊，例如登記的重指令腳本裡又呼叫 `light`。
+- 指令是整套測試時拒絕執行（結束碼 2），請改用 `run` 或 `affected`。
+
+卡住原因除了[放行計算](#放行計算)的那些，另有 `1 light run(s) queued ahead`、`light-path cap reached: 4/4 running`、`light-path reservations would pass the test slice CPU limit: 18 reserved + 2 > 20 cores`。
+
 ## 失敗重跑
 
 經閘門執行的整套（`run`、`run --registered`、對照表退回的整套）與受影響測試失敗時，閘門在能確定只是某幾個測試檔失敗的情況下，自動只重跑那些檔案一次：
@@ -143,10 +162,11 @@ uv run --no-project python <skill>/scripts/suite-gate.py status --fingerprint <�
 - 每套執行中測試：預約量（`measured` 實測或 `default` 預設）、目前用量；閘門已不在的另註明還有多久會被收回。
 - 最近一次收回（`Latest reclaim`）：時間、停掉幾個程序、原持有者的執行者、目錄與指令，以及每個程序的 PID 與指令。
 - 每個排隊者：卡住的原因與預約量。
+- 輕量路徑（`Light path`）：名額用量、預約加總與測試群組的 CPU 上限，以及每個執行中（`running`）與排隊中（`waiting`，附卡住原因）的輕量執行。
 - 最近紀錄中重跑才通過的，結果後加 `PASSED ONLY ON RERUN (failed first: <第一次失敗的檔案>)`；總結紀錄寫出幾組是這樣，各組那行另附該組紀錄的指紋。
 - 最近紀錄中失敗後經過失敗重跑的：重跑的結果、耗時、第一次的結束碼與每組的指令；沒重跑的寫出原因。之後列出這些紀錄中的時好時壞測試（`flaky`）：時間、檔案與測試名稱。
 - 沒設 tracker 時未處理的背景整套失敗（見[背景整套](#背景整套background)）：時間、結束碼、專案與目錄、指令、提交與指紋。
-- `--json`：`min_slots`（有效下限）、`max_slots`、`config`（實際套用的設定）、`host`（`cores`、`cpu_idle`、`cpu_free_cores`、`mem_available_bytes`、`unused_reservation`、`mem_reserve_bytes`、`cpu_left_cores`、`mem_left_bytes`、`pressure`、`brake`、`unreadable`）、`running`（每筆另有 `usage` 與 `reservation`）、`waiting`（每筆另有 `reason` 與 `reservation`）、`locks`、`records`、`cleanup`（見[定期整理觸發](#定期整理觸發)）、`background_failures`（未處理的背景整套失敗）、`reclaims`（收回紀錄，舊到新；每筆有 `time`、`agent`、`command`、`cwd`、`fingerprint`、`cgroup`、`sid`、是否佔名額 `slot`、佔的指紋鎖 `lock`、`leftover_since`、`grace_seconds`、`process_count` 與 `processes`（`pid`、`command`））。
+- `--json`：`min_slots`（有效下限）、`max_slots`、`config`（實際套用的設定）、`host`（`cores`、`cpu_idle`、`cpu_free_cores`、`mem_available_bytes`、`unused_reservation`、`mem_reserve_bytes`、`cpu_left_cores`、`mem_left_bytes`、`pressure`、`brake`、`unreadable`）、`running`（每筆另有 `usage` 與 `reservation`）、`waiting`（每筆另有 `reason` 與 `reservation`；輕量路徑的排隊者 `kind` 是 `light`）、`light`（`running`：執行中的輕量執行，每筆另有 `usage` 與 `reservation`；`cpu_budget_cores`：測試群組的 CPU 上限）、`locks`、`records`、`cleanup`（見[定期整理觸發](#定期整理觸發)）、`background_failures`（未處理的背景整套失敗）、`reclaims`（收回紀錄，舊到新；每筆有 `time`、`agent`、`command`、`cwd`、`fingerprint`、`cgroup`、`sid`、是否佔名額 `slot`、佔的指紋鎖 `lock`、`leftover_since`、`grace_seconds`、`process_count` 與 `processes`（`pid`、`command`））。
 
 ## 專案登記檔
 
@@ -160,6 +180,7 @@ repo 根目錄放 `.suite-gate.json`（進版控）：
 ```
 
 - `suites`：整套測試指令的樣式，可用 `*`、`?` 萬用字元；比對時空白會先整理成一格。有登記時只以登記為準，不再用預設判斷。
+- `heavy`：要走[輕量路徑](#輕量路徑light)的重指令樣式，寫法與比對方式同 `suites`，例如 `"*bun test *tests/browser/*"`、`"*bun run build"`、`"*bun run check"`、`"*vite build"`。沒有這項時 hook 不擋任何重指令。
 - `fingerprint_include`：額外納入指紋的被忽略檔案（glob，相對 repo 根），例如測試用的環境變數檔。宣告了 `depends_on` 的整套也一律包含它們。
 - `cleanup`：整理票開在哪個 GitHub repo、用哪個標籤，見[定期整理觸發](#定期整理觸發)。
 
@@ -321,6 +342,7 @@ LoopAgentTeams 風格的例子：
 - 兩種回覆的最後都附上測試時點：修改期間跑自己挑的測試檔（不會被擋），合併進整合分支前對最終版本跑一次 `affected --purpose pre-merge`（有對照表時跑受影響測試，沒有時跑登記的整套），會留下紀錄，合併後同內容沿用。沒有對照表又沒有登記整套的專案不附，因為那條指令在那裡不能用。
 - 只看真正會執行的指令：指令開頭、管線與 `&&`／`;` 之後的指令、`sh -c`／`bash -c` 的字串、交給 shell stdin 執行的文字（`bash <<EOF`、`bash /dev/stdin <<EOF`、`cat <<EOF | bash`、`echo '...' | sh`、`printf '%s\n' '...' | sh`；多個 heredoc 時只看最後一個送到 stdin 的，之後另有 `<` 轉向時 heredoc 不算 stdin）。不會執行參數的指令（`echo`、`printf`、`gh`、`hcom send`、`grep`／`egrep`／`fgrep`、`rg`、`ag`、`cat`、`head`、`tail`、`wc`、`less`、`jq`、`tee`、`git commit`／`log`／`grep`／`show`），參數裡提到整套測試不擋；不在清單上的指令照舊判斷，因為它可能是真正執行測試的啟動器（如 `nohup`、`sudo`）。交給 shell 以外指令的 heredoc（`cat > f <<EOF`）是文字。以下兩種保守擋下（blocked conservatively），寧可偶爾多擋也不漏放：結束標記沒加引號的 heredoc，shell 寫檔前會先執行內文的 `$(...)` 與反引號（不論外面有沒有引號），所以照樣判斷裡面的指令，替換裡含引號或反斜線時看不出它在哪裡結束，直接當成整套測試擋下；交給 shell 的 `printf`／`echo` 文字只照 `%s`、`%%`、`\n` 還原，用到其他格式（`%b`、`%.0s`、`%d`）或其他跳脫字元（`\x20`、`\164`）時看不出 shell 收到什麼，直接當成整套測試擋下，整串送進閘門。登記檔樣式以開頭萬用字元（`*bun run test:all`）對上這些文字時不算；樣式本身以該指令開頭（如 `echo smoke`）時照算，明確登記的整套不會因此失去把關。
 - 認得閘門呼叫：完整或相對路徑的 `suite-gate.py run`；或同一串指令裡先賦值為 `suite-gate.py` 路徑的變數（`G=/path/suite-gate.py; uv run --no-project python "$G" run …`、`G=…; $G run …`）。在子 shell、管線或背景（`(G=…)`、`G=… |`、`… | G=…`、`G=… &`）裡的賦值不算。變數來自外部或無法解析時看不出是閘門，其餘部分是整套測試就照樣擋下，回覆附註改用完整路徑。
+- 重指令：不是整套測試、但對上登記檔 `heavy` 樣式的指令，同樣擋下並回覆原地改寫成 `suite-gate.py light -- '<指令>'` 的可直接執行指令，其餘照原樣保留。指令前面接的 `systemd-run`（連同它的選項）會拿掉，因為它另開的群組會把測試帶離閘門的群組。hook 本身在閘門群組裡執行時（巢狀）不擋。`suite-gate.py light` 和 `run` 一樣算閘門呼叫。
 - 放行：透過 `suite-gate.py run` 的指令（含 `--rerun`、`--purpose`、`--reason`）、指定檔案或篩選範圍的測試、非測試指令。同一串指令裡另有沒包裝的整套測試時仍擋下。有對照表的專案中沒帶用途的 `run` 也會被 hook 放行，由 `run` 自己拒絕並回覆 `affected` 指令。
 - Claude 送字串；Codex 送字串或 `["bash", "-lc", "<指令>"]`，兩種都讀。回覆方式兩邊相同。
 - 讀不懂時比照派工把關與廣播攔截寧可多擋，但不讓 Agent 卡死：hook 輸入不是可讀的 JSON 就放行（無從判斷）；指令讀到一半出錯時，只要像測試執行器（pytest、jest、`npm test` 等）且不含 `suite-gate.py` 就擋下。被擋下時照回覆的改寫指令執行一定會放行；被誤擋時同樣改用閘門，或改成指定檔案的寫法。
@@ -495,15 +517,16 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 設定檔欄位（都可省略）：
 
 ```json
-{"min_slots": 2, "max_slots": 8, "brake_io_high": 40, "brake_io_low": 20,
+{"min_slots": 1, "max_slots": 8, "brake_io_high": 40, "brake_io_low": 20,
  "brake_cpu_high": 50, "brake_cpu_low": 25, "default_cores": 4, "default_mem_gb": 4,
  "mem_reserve_gb": 8, "profile_history": 5, "sample_seconds": 2,
- "poll_seconds": 1, "report_seconds": 30, "reclaim_grace_seconds": 600}
+ "poll_seconds": 1, "report_seconds": 30, "reclaim_grace_seconds": 600,
+ "light_min_slots": 1, "light_max_slots": 4, "light_cores": 2, "light_mem_gb": 2}
 ```
 
 | 欄位 | 預設 | 意思 |
 | ---- | ---- | ---- |
-| `min_slots` | 2 | 下限：執行中少於這個數（且少於上限）時一律放行。整數，可為 0 |
+| `min_slots` | 1 | 下限：執行中少於這個數（且少於上限）時一律放行。整數，可為 0 |
 | `max_slots` | 8 | 上限：同時執行的整套測試最多幾套。整數，至少 1。舊設定只寫這一項時照樣是上限（例如只寫 1 就同時只跑 1 套，下限也跟著是 1） |
 | `brake_io_high`、`brake_io_low` | 40、20 | 硬碟等待（IO some avg10，%）的煞車開啟與關閉門檻 |
 | `brake_cpu_high`、`brake_cpu_low` | 50、25 | CPU 等待（CPU some avg10，%）的煞車開啟與關閉門檻 |
@@ -513,6 +536,8 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 | `sample_seconds` | 2 | 執行中多久讀一次群組的 CPU 與記憶體 |
 | `poll_seconds` | 1 | 排隊時多久檢查一次 |
 | `report_seconds` | 30 | 多久印一次等待狀況 |
+| `light_min_slots`、`light_max_slots` | 1、4 | 輕量路徑的下限與上限，與整套分開算。整數，上限至少 1 |
+| `light_cores`、`light_mem_gb` | 2、2 | 每個輕量執行的預約量（核、GiB） |
 | `reclaim_grace_seconds` | 600 | 閘門不在後殘留程序可以佔著名額多久（秒），超過就收回。可為 0（第二次看到時收回） |
 
 設定檔每次檢查都重讀。檔案讀不到或不是 JSON 物件時全部用預設；個別欄位型別不對、是負數（或低於上面寫的最小值）、整數欄位給了小數時，那一欄用預設；同一組煞車門檻的關閉門檻大於開啟門檻時，那一組兩欄都用預設。以上都印出警告（同一個警告每個閘門程序只印一次），閘門照常運作。
@@ -549,6 +574,7 @@ ps -eo pid=,etimes=,args= | awk -v age="$(( $(date +%s) - installed ))" '$2 >= a
 - 測試自己產生的檔案（例如 `__pycache__/`、`.pytest_cache/`、建置輸出）要列進 `.gitignore`，否則每次都會被當成「執行中內容改變」而無法沿用；被標成這樣時，用 `git status --porcelain` 查是哪些檔案變了。
 - 測試執行期間另開新工作階段的背景程式算在名額與用量內；測試正常結束後還留著的，閘門只警告、不殺，也不再佔名額，但它們仍吃主機資源（會反映在主機剩餘量裡）。退回模式下這類程式不算名額。
 - 預約量取過去實測的高峰；沒跑過的指令先用預設值，跑過一次才改用實測值。剛開跑、還沒爬到高峰的測試保留未用的那段，所以預約量偏大時會少放幾套。
-- 未滿下限時不看預約、記憶體保留與煞車，主機極忙時仍會跑到下限套數。
+- 未滿下限時不看預約、記憶體保留與煞車，主機極忙時仍會跑到下限套數（整套與輕量路徑各 1 個）。
+- 輕量路徑只認登記的 `heavy` 樣式，看指令文字：腳本檔、`make` 或其他包裝裡的重指令認不出來，要靠測試群組的 CPU 上限兜底。輕量執行的群組沒有記憶體上限。
 - 硬碟讀寫量不列入預約（使用者 systemd 沒開放 IO 控制器），只用硬碟等待當煞車。
 - 預設判斷只看指令文字，可能誤判；專案登記可讓判斷準確。

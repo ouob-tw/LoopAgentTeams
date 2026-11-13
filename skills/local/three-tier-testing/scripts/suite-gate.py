@@ -1705,8 +1705,9 @@ class Gate:
                 mine['reason'] = f'{len(ahead)} suite(s) queued ahead'
                 return None
             running = [unused_reservation(h, self.config) for h in state['slots']]
+            light = [unused_reservation(h, self.config) for h in state['light']]
             admit, reason = admission(self.config, running, reservation_of(mine, self.config)[:2],
-                                      host_view(state, self.config))
+                                      host_view(state, self.config), light)
             if admit:
                 state['waiters'].remove(mine)
                 state['slots'].append(self._holder())
@@ -4448,16 +4449,22 @@ def cmd_status(as_json, fp_prefix, limit):
             running.append(dict(holder, usage=holder_usage(holder), unused=unused_reservation(
                 holder, config), reservation={'cpu_cores': cpu, 'mem_bytes': mem,
                                               'source': source}))
-        return copy.deepcopy(state), host, running
+        light = []
+        for holder in state['light']:
+            cpu, mem, _ = reservation_of(holder, config)
+            light.append(dict(holder, usage=holder_usage(holder), unused=unused_reservation(
+                holder, config), reservation={'cpu_cores': cpu, 'mem_bytes': mem,
+                                              'source': 'light'}))
+        return copy.deepcopy(state), host, running, light
 
-    state, host, running = with_state(look)
+    state, host, running, light = with_state(look)
     records = read_records()
     if fp_prefix:
         records = [r for r in records if (record_fingerprint(r) or '').startswith(fp_prefix)]
     records = records[-limit:]
     cap, floor = config['max_slots'], min(config['min_slots'], config['max_slots'])
-    unused_cpu = sum(h['unused'][0] for h in running)
-    unused_mem = sum(h['unused'][1] for h in running)
+    unused_cpu = sum(h['unused'][0] for h in running + light)
+    unused_mem = sum(h['unused'][1] for h in running + light)
     reserve = config['mem_reserve_gb'] * GIB
     free, avail = host['cpu_free_cores'], host['mem_available_bytes']
     host.update({
@@ -4477,6 +4484,9 @@ def cmd_status(as_json, fp_prefix, limit):
         shown = [{k: v for k, v in h.items() if k != 'unused'} for h in running]
         print(json.dumps({'min_slots': floor, 'max_slots': cap, 'config': config,
                           'host': host, 'running': shown, 'waiting': waiting,
+                          'light': {'running': [{k: v for k, v in h.items() if k != 'unused'}
+                                                for h in light],
+                                    'cpu_budget_cores': light_budget()},
                           'locks': state['locks'], 'records': records, 'cleanup': cleanup,
                           'background_failures': background,
                           'reclaims': state.get('reclaims') or []},
@@ -4516,13 +4526,29 @@ def cmd_status(as_json, fp_prefix, limit):
         print('  none')
     print('Waiting:')
     for h in sorted(waiting, key=lambda w: w['since']):
+        if h.get('kind') == 'light':
+            continue
         if h.get('kind') == 'slot':
             why = f"host slot: {h.get('reason') or 'not checked yet'}  {fmt_reservation(h)}"
         else:
             why = 'same content running'
         print(f"  {h['agent']}  {fmt_seconds(now - h['since'])}  {why}  "
               f"fp {(h.get('fingerprint') or '-')[:12]}  {h['cwd']}  {h['command']}")
-    if not waiting:
+    if not [h for h in waiting if h.get('kind') != 'light']:
+        print('  none')
+    reserved = sum(h['reservation']['cpu_cores'] for h in light)
+    print(f"Light path: picked test files and builds, not recorded "
+          f"({len(light)}/{config['light_max_slots']} light slots, reserving "
+          f"{fmt_num(reserved)} of {fmt_num(light_budget())} cores):")
+    for h in light:
+        cores, mem = h['usage']['cpu_cores'], h['usage']['mem_bytes']
+        print(f"  running  {h['agent']}  {fmt_seconds(now - h['since'])}  "
+              f"cpu {'-' if cores is None else f'{cores:.1f} cores'}, "
+              f"mem {'-' if mem is None else fmt_bytes(mem)}  {h['cwd']}  {h['command']}")
+    for h in sorted((w for w in waiting if w.get('kind') == 'light'), key=lambda w: w['seq']):
+        print(f"  waiting  {h['agent']}  {fmt_seconds(now - h['since'])}  "
+              f"{h.get('reason') or 'not checked yet'}  {h['cwd']}  {h['command']}")
+    if not light and not any(w.get('kind') == 'light' for w in waiting):
         print('  none')
     print(f'Recent records ({len(records)}):')
     for r in records:
@@ -5735,7 +5761,7 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     # A hook that exits 2 would block every command, so only run and status check this.
     if not sys.platform.startswith('linux') and argv[:1] in (
-            ['run'], ['status'], ['affected'], ['cleanup-done'], ['pre-commit'], ['background'],
+            ['run'], ['light'], ['status'], ['affected'], ['cleanup-done'], ['pre-commit'], ['background'],
             ['install-background']):
         warn('only Linux is supported')
         return 2
@@ -5756,6 +5782,8 @@ def main(argv=None):
                      help='run the registered full suites (all, or those named by directory '
                           'or command) in their registered form, in a temporary clean '
                           'checkout of HEAD; needs a purpose')
+    sub.add_parser('light', help='run a test file or build you picked through the light path: '
+                   'light -- <cmd>; queued in its own slots, nothing recorded')
     affected = sub.add_parser('affected', help='run the tests the affected-test map selects '
                                                'for this change: affected [--base <rev>] '
                                                '[--purpose pre-merge|post-merge]')
@@ -5815,6 +5843,10 @@ def main(argv=None):
         if not command:
             parser.error('run needs the suite command after --')
         return cmd_run(args.rerun, args.purpose, args.reason, command)
+    if args.action == 'light':
+        if not command:
+            parser.error('light needs the command after --')
+        return cmd_light(command)
     if command:
         parser.error(f'{args.action} takes no command')
     if args.action == 'hook':

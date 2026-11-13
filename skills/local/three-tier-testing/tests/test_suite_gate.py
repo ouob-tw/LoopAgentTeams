@@ -136,9 +136,11 @@ elif sys.argv[1:3] == ['issue', 'create']:
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def set_config(self, **values):
+        """Fast polling, and a floor of two, so tests that run two suites at once do not
+        depend on the real host's load."""
         self.config.write_text(json.dumps(
-            dict({'poll_seconds': 0.05, 'report_seconds': 0.2, 'sample_seconds': 0.1},
-                 **values)))
+            dict({'poll_seconds': 0.05, 'report_seconds': 0.2, 'sample_seconds': 0.1,
+                  'min_slots': 2}, **values)))
 
     def commit(self, cwd, message):
         subprocess.run(['git', 'commit', '-qm', message], cwd=cwd, check=True,
@@ -2547,7 +2549,7 @@ class ConfigTests(GateCase):
     def test_defaults_and_a_config_with_only_max_slots(self):
         self.config.unlink()
         status, _ = self.status_of()
-        self.assertEqual((status['min_slots'], status['max_slots']), (2, 8))
+        self.assertEqual((status['min_slots'], status['max_slots']), (1, 8))
         self.assertEqual(status['config'], gate.DEFAULTS)
         self.config.write_text('{"max_slots": 1}')
         status, _ = self.status_of()
@@ -2561,7 +2563,7 @@ class ConfigTests(GateCase):
         self.assertEqual(status['config'], dict(gate.DEFAULTS, mem_reserve_gb=3.0,
                                                 default_cores=1.5))
         for text in ('config max_slots="x" is not usable; using 8',
-                     'config min_slots=-1 is not usable; using 2',
+                     'config min_slots=-1 is not usable; using 1',
                      'config profile_history=2.5 is not usable; using 5',
                      'config brake_io_low (50.0) is above brake_io_high (40.0); '
                      'using 20.0 and 40.0',

@@ -41,6 +41,8 @@ systemd-run --user --scope -q --slice=lat-tests.slice -p MemoryMax=40G -p Memory
 
 這條規則只看指令文字：經測試閘門跑的整套測試、腳本檔與 `make test` 裡的測試都不會被擋，也沒有這個上限。主機沒有 `systemd-run` 或使用者層的 systemd 時不檢查。
 
+專案登記為重指令的瀏覽器測試檔與建置（`.suite-gate.json` 的 `heavy`），還會被測試閘門的 hook 擋下，改走它的輕量路徑排隊：照它回覆的 `suite-gate.py light -- '<指令>'` 執行，不用再包 `systemd-run`。經閘門跑的指令這裡不擋。
+
 ## 會執行指令的 heredoc
 
 結束標記沒加引號的 heredoc（`<<EOF`），內文裡的反引號與 `$(…)` 會在寫檔當下被 shell 執行。寫任務說明或訊息時，內文提到的 `` `bun run build` `` 就會真的跑起來。內文含反引號或 `$(` 且標記沒加引號時擋下；前面加反斜線跳脫的不算。
