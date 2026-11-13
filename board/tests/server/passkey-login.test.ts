@@ -17,10 +17,16 @@ const T0 = Date.parse('2026-11-01T00:00:00.000Z');
 const stepCookieOf = (response: Response) => response.headers.getSetCookie()[0].split(';')[0];
 const deviceCookieOf = (response: Response) => response.headers.getSetCookie().find((set) => set.startsWith('lat_board_device='))?.split(';')[0];
 
-function post(fixture: Fixture, path: string, body: unknown, source: string, cookie?: string): Promise<Response> {
+/** A request from `source` through the trusted proxy, over HTTPS unless `http`. */
+function post(fixture: Fixture, path: string, body: unknown, source: string, cookie?: string, { http = false } = {}): Promise<Response> {
 	return fixture.fetch(path, {
 		method: 'POST',
-		headers: { 'content-type': 'application/json', 'x-forwarded-for': source, 'user-agent': `browser at ${source}` },
+		headers: {
+			'content-type': 'application/json',
+			'x-forwarded-for': source,
+			'user-agent': `browser at ${source}`,
+			...(http ? {} : { 'x-forwarded-proto': 'https' })
+		},
 		body: JSON.stringify(body),
 		cookie
 	});
@@ -202,6 +208,18 @@ describe('a board with its address set and no TOTP', () => {
 		expect(noStep.status).toBe(401);
 	});
 
+	test('over plain http no passkey is made or used, and nothing counts', async () => {
+		const source = '198.51.100.9';
+		const code = enrollCode(fixture);
+		const started = await post(fixture, '/api/login/enroll/options', { password: PASSWORD, code }, source, undefined, { http: true });
+		expect([started.status, await started.json()]).toEqual([409, { error: 'passkey_unavailable' }]);
+		const step = stepCookieOf(await post(fixture, '/api/login', { password: PASSWORD }, source, undefined, { http: true }));
+		const options = await post(fixture, '/api/login/passkey/options', {}, source, step, { http: true });
+		expect([options.status, await options.json()]).toEqual([409, { error: 'passkey_unavailable' }]);
+		// The same code still works over HTTPS: nothing was used up.
+		expect((await enroll(fixture, new SoftPasskey(ORIGIN, RP_ID), code, source)).finished!.status).toBe(200);
+	});
+
 	test('the registration and login endpoints are open to a browser that is not logged in, nothing else is', async () => {
 		expect((await fixture.fetch('/api/board')).status).toBe(401);
 		expect((await post(fixture, '/api/login/passkey/options', {}, '198.51.100.8')).status).toBe(401);
@@ -228,11 +246,14 @@ describe('a board whose address is not set', () => {
 		expect((await fixture.tryCode(stepCookieOf(first), fixture.totpCode())).status).toBe(200);
 	});
 
-	test('a board address that is not http(s), or an RP ID it does not belong to, stops the host command', async () => {
-		const result = Bun.spawnSync(['bun', join(import.meta.dir, '../../src/cli.ts'), 'passkey', 'list'], {
-			env: { ...fixture.serverEnv(), LAT_BOARD_URL: 'https://lat.ouob.net', LAT_BOARD_PASSKEY_RP_ID: 'example.com' }
-		});
-		expect(result.exitCode).toBe(1);
-		expect(result.stderr.toString()).toContain('LAT_BOARD_PASSKEY_RP_ID');
+	test('a board address that is not https, or an RP ID it does not belong to, stops the host command', async () => {
+		for (const [env, named] of [
+			[{ LAT_BOARD_URL: 'http://localhost:7100' }, 'LAT_BOARD_URL'],
+			[{ LAT_BOARD_URL: 'https://lat.ouob.net', LAT_BOARD_PASSKEY_RP_ID: 'example.com' }, 'LAT_BOARD_PASSKEY_RP_ID']
+		] as const) {
+			const result = Bun.spawnSync(['bun', join(import.meta.dir, '../../src/cli.ts'), 'passkey', 'list'], { env: { ...fixture.serverEnv(), ...env } });
+			expect([named, result.exitCode]).toEqual([named, 1]);
+			expect(result.stderr.toString()).toContain(named);
+		}
 	});
 });

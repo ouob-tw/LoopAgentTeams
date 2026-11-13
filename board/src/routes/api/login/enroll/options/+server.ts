@@ -18,7 +18,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!password) return json({ error: 'wrong_password' }, { status: 401 });
 	if (!code) return json({ error: 'wrong_enroll_code' }, { status: 401 });
 	const site = config.passkeySite;
-	if (!site) return json({ error: 'passkey_unavailable' }, { status: 409 });
+	// Over plain http a passkey is never made, whatever the page.
+	if (!site || !locals.https) return json({ error: 'passkey_unavailable' }, { status: 409 });
 
 	const source = locals.clientAddress;
 	const wait = limit.admit(source);

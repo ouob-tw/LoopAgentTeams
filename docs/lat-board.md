@@ -60,7 +60,7 @@ bun run board totp
 Environment=LAT_BOARD_URL=https://lat.ouob.net
 ```
 
-passkey 只在這個網址能登記與使用（它的主機名稱就是 passkey 的網域，即 RP ID；要讓 passkey 屬於上一層網域時另設 `LAT_BOARD_PASSKEY_RP_ID`，例如 `ouob.net`）。從其他網址、內網位址或 http 開看板時，登入畫面會說 passkey 只能在哪個網址用，這時改輸入 TOTP 數字；只登記了 passkey、沒設 TOTP 時就要改從那個網址開。沒設 `LAT_BOARD_URL` 時不能用 passkey，只能用 TOTP。主機上用 `http://localhost:<連接埠>` 開也算安全網頁，把 `LAT_BOARD_URL` 設成它就能在本機試用 passkey。
+passkey 只在這個網址能登記與使用（它的主機名稱就是 passkey 的網域，即 RP ID；要讓 passkey 屬於上一層網域時另設 `LAT_BOARD_PASSKEY_RP_ID`，例如 `ouob.net`）。從其他網址、內網位址或 http 開看板時，登入畫面會說 passkey 只能在哪個網址用，這時改輸入 TOTP 數字；只登記了 passkey、沒設 TOTP 時就要改從那個網址開。沒設 `LAT_BOARD_URL` 時不能用 passkey，只能用 TOTP。`LAT_BOARD_URL` 要是 https 網址（http 的，連 localhost 也不行，看板與主機指令都不會啟動）；看板本身不加密，https 由前面的反向代理負責，代理要設成信任代理。
 
 **登記 passkey**：每把 passkey 都要一組主機產生的登記碼，只知道密碼的人沒辦法自己登記。
 

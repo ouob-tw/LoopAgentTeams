@@ -7,11 +7,12 @@ import type { RequestHandler } from './$types';
 
 /** What the browser signs for the passkey second step: a fresh challenge for this browser's open
  *  step, for any registered passkey. Asking proves nothing, so it neither counts nor clears. */
-export const POST: RequestHandler = async ({ cookies }) => {
+export const POST: RequestHandler = async ({ cookies, locals }) => {
 	const { config } = getBoard();
 	const now = config.now();
 	if (!secondStepOpen(cookies, now)) return json({ error: 'second_step_expired' }, { status: 401 });
-	if (!config.passkeySite) return json({ error: 'passkey_unavailable' }, { status: 409 });
+	// Over plain http a passkey is never used, whatever the page.
+	if (!config.passkeySite || !locals.https) return json({ error: 'passkey_unavailable' }, { status: 409 });
 	let passkeys: Passkey[];
 	try {
 		passkeys = listPasskeys(config.stateDir);

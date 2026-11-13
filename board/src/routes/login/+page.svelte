@@ -109,7 +109,7 @@
 		if (body.error === 'no_second_step') return `還沒設定第二道驗證，請先在主機上執行 ${TOTP_COMMAND}。`;
 		if (body.error === 'second_step_unreadable') return `登入失敗：TOTP 金鑰檔讀不出來，請在主機上重新執行 ${TOTP_COMMAND}。`;
 		if (body.error === 'passkeys_unreadable') return '失敗：看板的 passkey 檔讀不出來，請看主機上看板的紀錄。';
-		if (body.error === 'passkey_unavailable') return '看板沒有設定網址（LAT_BOARD_URL），不能用 passkey。';
+		if (body.error === 'passkey_unavailable') return data.passkeyOrigin ? `passkey 只能在 ${data.passkeyOrigin} 用。` : '看板沒有設定網址（LAT_BOARD_URL），不能用 passkey。';
 		if (body.error === 'no_passkey') return '看板上已經沒有登記的 passkey，請改用驗證碼。';
 		return `失敗：看板伺服器回報錯誤（${response.status}）。`;
 	}

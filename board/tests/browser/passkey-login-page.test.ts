@@ -1,11 +1,15 @@
 // The passkey second step and its registration in a real browser (headless Chrome with its virtual
 // WebAuthn authenticator, the built board), wide and at a phone's width. Chrome reaches the board
-// as lat.ouob.net (resolved to 127.0.0.1, treated as a secure origin), the board's address. Each
+// at https://lat.ouob.net (resolved to 127.0.0.1) through a TLS proxy in front of it, as behind the
+// real reverse proxy, with a certificate made for the test that Chrome is told to accept. Each
 // width gets a Chrome of its own, so each registers a passkey of its own and logs in with it; the
 // TOTP code stays one click away. Opened at another address, the page says passkeys do not work
-// there and TOTP still logs in. With LAT_BOARD_SHOTS set, each state is saved as a frame.
+// there (plain http included) and TOTP still logs in. With LAT_BOARD_SHOTS set, each state is saved as a frame.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { createServer } from 'node:net';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PASSWORD, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 import { SoftPasskey } from '../soft-passkey.ts';
@@ -24,17 +28,44 @@ afterEach(async () => {
 	browser = undefined;
 });
 
-/** A port nothing listens on now: the board's address names it before the board starts. */
-async function freePort(): Promise<number> {
-	const server = createServer();
-	await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-	const { port } = server.address() as { port: number };
-	await new Promise((resolve) => server.close(resolve));
-	return port;
+/** An HTTPS proxy for lat.ouob.net in front of the board, as the reverse proxy is: it ends TLS and
+ *  tells the board, its trusted proxy, that the browser used HTTPS. It listens before the board
+ *  starts, so the board's address can name its port; `target` is read at each request. */
+function httpsProxy(target: () => string) {
+	const dir = mkdtempSync(join(tmpdir(), 'lat-board-tls-'));
+	const [key, cert] = [join(dir, 'key.pem'), join(dir, 'cert.pem')];
+	const made = spawnSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=lat.ouob.net', '-addext', 'subjectAltName=DNS:lat.ouob.net']);
+	if (made.status !== 0) throw new Error(`openssl could not make the test certificate: ${made.stderr}`);
+	const server = Bun.serve({
+		hostname: '127.0.0.1',
+		port: 0,
+		tls: { key: Bun.file(key), cert: Bun.file(cert) },
+		// The board's event stream stays open.
+		idleTimeout: 0,
+		async fetch(request) {
+			const url = new URL(request.url);
+			const headers = new Headers(request.headers);
+			headers.set('x-forwarded-proto', 'https');
+			headers.set('x-forwarded-for', '127.0.0.1');
+			// Passed on as it comes: a body fetch unpacked must not keep its content-encoding.
+			headers.set('accept-encoding', 'identity');
+			// Read whole: passed on as a stream next to its own content-length, Node now and then
+			// refused it with a bare 400.
+			const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer();
+			return fetch(`${target()}${url.pathname}${url.search}`, { method: request.method, headers, body, redirect: 'manual' });
+		}
+	});
+	return {
+		origin: `https://lat.ouob.net:${server.port}`,
+		close() {
+			server.stop(true);
+			rmSync(dir, { recursive: true, force: true });
+		}
+	};
 }
 
-async function open(url: string, origin: string, size: { width: number; height: number }) {
-	browser = await launchChrome({ args: ['--host-resolver-rules=MAP lat.ouob.net 127.0.0.1', `--unsafely-treat-insecure-origin-as-secure=${origin}`] });
+async function open(url: string, size: { width: number; height: number }) {
+	browser = await launchChrome({ args: ['--host-resolver-rules=MAP lat.ouob.net 127.0.0.1', '--ignore-certificate-errors'] });
 	tab = browser.tab;
 	tab.screen = `document.querySelector('main')?.innerText`;
 	await tab.send('Emulation.setDeviceMetricsOverride', { ...size, deviceScaleFactor: 1, mobile: size.width < 761 });
@@ -56,6 +87,19 @@ async function typeInto(selector: string, text: string) {
 const clickText = (text: string) =>
 	tab.eval(`[...document.querySelectorAll('main button')].find((button) => button.textContent.trim() === ${JSON.stringify(text)}).click()`);
 
+/** Open the registration form from the login page just opened. A click can land a moment before
+ *  the page's code has taken over its buttons, so it is clicked again until the form is there. */
+async function openEnroll(ready: string, what: string) {
+	for (let tries = 1; ; tries++) {
+		await clickText('登記 passkey');
+		try {
+			return await tab.until(ready, what, 2_000);
+		} catch (error) {
+			if (tries === 3) throw error;
+		}
+	}
+}
+
 /** Whatever is wrong with the layout: a page wider than the window, a control not wholly inside
  *  it, or text cut inside its own box. Empty when it is right. */
 const LAYOUT_PROBLEMS = `(() => {
@@ -76,24 +120,27 @@ const STEPS = `[...document.querySelectorAll('.steps li')].map((li) => (li.getAt
 const FAILURE = `(document.querySelector('.failed')?.textContent.trim() ?? '')`;
 const BLOCKED = `(document.querySelector('.blocked')?.textContent.trim() ?? '')`;
 
-describe('a board at lat.ouob.net with a TOTP secret', () => {
+describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 	let fixture: Fixture;
+	let proxy: ReturnType<typeof httpsProxy>;
 	let origin: string;
 	let time = T0;
 	beforeAll(async () => {
-		const port = await freePort();
-		origin = `http://lat.ouob.net:${port}`;
-		fixture = await startFixture({ port, env: { LAT_BOARD_URL: origin } });
+		proxy = httpsProxy(() => fixture.url);
+		origin = proxy.origin;
+		fixture = await startFixture({ env: { LAT_BOARD_URL: origin, LAT_BOARD_TRUSTED_PROXIES: '127.0.0.1' } });
 		fixture.setClock(time);
 	});
-	afterAll(() => fixture?.cleanup());
+	afterAll(async () => {
+		proxy?.close();
+		await fixture?.cleanup();
+	});
 
 	for (const [index, size] of SIZES.entries()) {
 		test.skipIf(!CHROME)(`a passkey registered with the host's code logs in; the TOTP code is one click away (${size.width})`, async () => {
 			fixture.setClock((time += STEP_MS));
-			await open(origin, origin, size);
-			await clickText('登記 passkey');
-			await tab.until(`document.querySelector('#enroll-code') !== null`, 'the registration form');
+			await open(origin, size);
+			await openEnroll(`document.querySelector('#enroll-code') !== null`, 'the registration form');
 			expect(await tab.eval(`document.querySelector('h1').textContent`)).toBe('登記 passkey');
 			expect(await tab.eval(LAYOUT_PROBLEMS)).toEqual([]);
 			await shot(tab, `${size.width}-1-enroll`);
@@ -141,11 +188,10 @@ describe('a board at lat.ouob.net with a TOTP secret', () => {
 	}
 
 	for (const size of SIZES) {
-		test.skipIf(!CHROME)(`opened at another address, the page says passkeys do not work there and TOTP logs in (${size.width})`, async () => {
+		test.skipIf(!CHROME)(`opened over plain http, the page says passkeys do not work there and TOTP logs in (${size.width})`, async () => {
 			fixture.setClock((time += STEP_MS));
-			await open(fixture.url, origin, size);
-			await clickText('登記 passkey');
-			await tab.until(`${BLOCKED}.includes('passkey 只能在 ${origin} 用')`, 'the reason on the registration screen');
+			await open(fixture.url, size);
+			await openEnroll(`${BLOCKED}.includes('passkey 只能在 ${origin} 用')`, 'the reason on the registration screen');
 			expect(await tab.eval(`document.querySelector('#enroll-code') === null`)).toBe(true);
 			expect(await tab.eval(LAYOUT_PROBLEMS)).toEqual([]);
 			await shot(tab, `${size.width}-6-enroll-elsewhere`);
@@ -169,17 +215,16 @@ describe('a board at lat.ouob.net with a TOTP secret', () => {
 	}
 });
 
-describe('a board with passkeys and no TOTP, opened at another address', () => {
+describe('a board with passkeys and no TOTP, opened over plain http', () => {
 	let fixture: Fixture;
-	let origin: string;
+	const origin = 'https://lat.ouob.net';
 	beforeAll(async () => {
-		const port = await freePort();
-		origin = `http://lat.ouob.net:${port}`;
-		fixture = await startFixture({ port, totp: null, env: { LAT_BOARD_URL: origin } });
+		fixture = await startFixture({ totp: null, env: { LAT_BOARD_URL: origin, LAT_BOARD_TRUSTED_PROXIES: '127.0.0.1' } });
 		// Registered through the API by a software passkey: the page under test never offers one here.
 		const code = /登記碼：(\S+)/.exec(fixture.cli('passkey', 'code').stdout)![1];
 		const passkey = new SoftPasskey(origin, 'lat.ouob.net');
-		const post = (path: string, body: unknown) => fixture.fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+		const post = (path: string, body: unknown) =>
+			fixture.fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-proto': 'https' }, body: JSON.stringify(body) });
 		const { options, enrollment } = await (await post('/api/login/enroll/options', { password: PASSWORD, code })).json();
 		expect((await post('/api/login/enroll', { enrollment, response: passkey.register(options) })).status).toBe(200);
 	});
@@ -187,7 +232,7 @@ describe('a board with passkeys and no TOTP, opened at another address', () => {
 
 	for (const size of SIZES) {
 		test.skipIf(!CHROME)(`the page says where to open the board instead of asking for a password (${size.width})`, async () => {
-			await open(fixture.url, origin, size);
+			await open(fixture.url, size);
 			await tab.until(`${BLOCKED} !== ''`, 'the reason');
 			expect(await tab.eval(BLOCKED)).toBe(`passkey 只能在 ${origin} 用。`);
 			expect(await tab.eval(`document.querySelector('input') === null`)).toBe(true);

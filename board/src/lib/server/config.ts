@@ -114,14 +114,15 @@ export interface BoardConfig {
 }
 
 export interface PasskeySite {
-	/** The only page origin a passkey is used from, such as `https://lat.ouob.net`. */
+	/** The only page origin a passkey is used from, such as `https://lat.ouob.net`; always https. */
 	origin: string;
 	/** The domain passkeys are made for: the address's host name, or a domain it belongs to. */
 	rpId: string;
 }
 
-/** `LAT_BOARD_URL`, the board's address, and `LAT_BOARD_PASSKEY_RP_ID`, which defaults to its host
- *  name. Throws on an address that is not http(s) or an RP ID the host name does not belong to. */
+/** `LAT_BOARD_URL`, the board's https address, and `LAT_BOARD_PASSKEY_RP_ID`, which defaults to its
+ *  host name. Throws on an address that is not https (passkeys never go over plain http, not even
+ *  to localhost) or an RP ID the host name does not belong to. */
 export function passkeySite(env: Env): PasskeySite | null {
 	const given = env.LAT_BOARD_URL?.trim();
 	if (!given) return null;
@@ -131,7 +132,7 @@ export function passkeySite(env: Env): PasskeySite | null {
 	} catch {
 		throw new Error(`LAT_BOARD_URL: "${given}" is not an address`);
 	}
-	if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error(`LAT_BOARD_URL: "${given}" is not an http or https address`);
+	if (url.protocol !== 'https:') throw new Error(`LAT_BOARD_URL: "${given}" is not an https address`);
 	const rpId = env.LAT_BOARD_PASSKEY_RP_ID?.trim().toLowerCase() || url.hostname;
 	if (url.hostname !== rpId && !url.hostname.endsWith(`.${rpId}`))
 		throw new Error(`LAT_BOARD_PASSKEY_RP_ID: "${rpId}" is not ${url.hostname} or a domain it belongs to`);
