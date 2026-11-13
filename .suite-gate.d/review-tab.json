@@ -1,7 +1,7 @@
 {"map": [
-  {"paths": ["skills/local/lat/herdr-panel/lat_panel.py", "skills/local/lat/herdr-panel/board.py", "board/src/lib/server/helper.ts", "board/src/routes/api/review/**", "board/src/lib/board/review.ts", "board/src/lib/board/unattended.ts", "board/tests/fake-helper.mjs", "board/tests/review-fixture.ts"],
+  {"paths": ["skills/local/lat/herdr-panel/lat_panel.py", "skills/local/lat/herdr-panel/board.py", "board/src/lib/server/helper.ts", "board/src/routes/api/review/**", "board/src/lib/board/review.ts", "board/src/lib/server/evidence-file.ts", "board/src/lib/board/unattended.ts", "board/tests/fake-helper.mjs", "board/tests/review-fixture.ts"],
    "tests": ["board/tests/unit/review.test.ts", "board/tests/server/review.test.ts", "board/tests/browser/review-tab.test.ts"]},
-  {"paths": ["board/src/lib/board/review-ui.svelte.ts", "board/src/lib/components/Review*.svelte", "board/src/lib/components/ControllerInfo.svelte"],
+  {"paths": ["board/src/lib/board/review-ui.svelte.ts", "board/src/lib/board/evidence-view.svelte.ts", "board/src/lib/components/EvidenceWindow.svelte", "board/src/lib/components/Review*.svelte", "board/src/lib/components/ControllerInfo.svelte"],
    "tests": ["board/tests/browser/review-tab.test.ts"]},
   {"paths": ["board/tests/unit/review.test.ts"], "tests": ["board/tests/unit/review.test.ts"]},
   {"paths": ["board/tests/server/review.test.ts"], "tests": ["board/tests/server/review.test.ts"]},

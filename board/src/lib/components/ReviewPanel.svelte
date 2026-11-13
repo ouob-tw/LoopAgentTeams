@@ -8,6 +8,7 @@
 	import { request } from '#lib/board/api.ts';
 	import { isParked, verificationText, type Review, type ReviewItem as Item } from '#lib/board/review.ts';
 	import type { Controller } from '#lib/board/types.ts';
+	import EvidenceWindow from './EvidenceWindow.svelte';
 	import ReviewItem from './ReviewItem.svelte';
 
 	let { controller }: { controller: Controller } = $props();
@@ -122,6 +123,7 @@
 		{#if !count(review.items)}<p class="note">還沒有要看的項目。</p>{/if}
 	{/if}
 </section>
+<EvidenceWindow />
 
 <style>
 	.review {

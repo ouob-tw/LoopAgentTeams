@@ -1,9 +1,11 @@
 // The review tab's data through the board, down to the real helper and lat-unattended: no tab
 // before the round has a review, the summary the snapshot carries (the parked count, the
 // cross-check, when the file was written), the whole review the tab reads, the user's own
-// goal changes and the cross-check showing in it, a review file written by the controller
+// goal changes and the cross-check showing in it, the files the evidence names read for the
+// evidence window (and nothing else: not a file the review does not cite, a path out of the
+// folder, a link out of it, a binary file, an over-long file, or a logged-out request), a review file written by the controller
 // reaching an open page within five seconds, and the review staying readable once the grant ends.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -143,4 +145,79 @@ test('turning the grant off leaves the review, and the old assumptions and confi
 	const review = (await readReview()).review!;
 	expect(review.grant).toContain('已結束');
 	expect(review.items.filter((item) => item.kind === 'assumed' || item.kind === 'proxy-confirmed').map((item) => item.state)).toEqual(['open', 'open', 'open']);
+});
+
+const fileOf = (path: string, withCookie = true) => fixture.fetch(`/api/review/file?controller=${luna.session_id}&path=${encodeURIComponent(path)}`, withCookie ? { cookie } : {});
+const decision = (id: string) => `.lat/decisions/${id}.md`;
+
+test('a file the review cites as evidence is read for the evidence window', async () => {
+	await startRound();
+	const response = await fileOf(decision('LAT-P1'));
+	expect(response.status).toBe(200);
+	const body = await response.json();
+	expect(body.truncated).toBe(false);
+	expect(body.text).toContain('# LAT-P1 要不要加匯出功能');
+	expect(body.text).toContain('parked-reason');
+	// A row of the ledger and a record's line cite their files the same way.
+	expect((await fileOf(`.lat/ledgers/${luna.session_id}-r1.json`)).status).toBe(200);
+});
+
+test('nothing the review does not cite is read: logged out, another path, ../, an absolute path, no path', async () => {
+	await startRound();
+	expect((await fileOf(decision('LAT-P1'), false)).status).toBe(401);
+	// The file exists in the folder, but no evidence names it.
+	expect((await fileOf(`.lat/sessions/${luna.session_id}.json`)).status).toBe(404);
+	expect((await fileOf(`.lat/decisions/../sessions/${luna.session_id}.json`)).status).toBe(404);
+	expect((await fileOf('../../../../etc/passwd')).status).toBe(404);
+	expect((await fileOf('/etc/passwd')).status).toBe(404);
+	expect((await fileOf('')).status).toBe(404);
+	const refused = await fileOf('/etc/passwd');
+	expect(JSON.stringify(await refused.json())).not.toContain('/etc');
+});
+
+test('a cited file that is a link out of the folder, a binary or longer than 200KB is refused or cut, with a short reason', async () => {
+	await startRound();
+	const outside = mkdtempSync(join(tmpdir(), 'lat-board-review-outside-'));
+	try {
+		// A record turned into a link to a copy outside the folder: the review still reads it.
+		const target = join(outside, 'LAT-AU.md');
+		const record = join(luna.workspace, decision('LAT-AU'));
+		copyFileSync(record, target);
+		rmSync(record);
+		symlinkSync(target, record);
+		const escaped = await fileOf(decision('LAT-AU'));
+		expect(escaped.status).toBe(403);
+		expect(JSON.stringify(await escaped.json())).not.toContain(outside);
+		// The same link to a file inside the folder is fine.
+		rmSync(record);
+		symlinkSync(join(luna.workspace, decision('LAT-AN')), record);
+		expect((await fileOf(decision('LAT-AU'))).status).toBe(200);
+		rmSync(record);
+		copyFileSync(target, record);
+
+		appendFileSync(join(luna.workspace, decision('LAT-AN')), '\n\0\0binary\n');
+		const binary = await fileOf(decision('LAT-AN'));
+		expect(binary.status).toBe(415);
+		expect((await binary.json()).reason).toBe('這不是文字檔');
+
+		appendFileSync(join(luna.workspace, decision('LAT-PC')), `\n${'長'.repeat(100_000)}\n`);
+		const long = await fileOf(decision('LAT-PC'));
+		expect(long.status).toBe(200);
+		const body = await long.json();
+		expect(body.truncated).toBe(true);
+		expect(Buffer.byteLength(body.text)).toBeLessThanOrEqual(200 * 1024);
+		expect(body.text).not.toContain('\uFFFD');
+	} finally {
+		rmSync(outside, { recursive: true, force: true });
+	}
+});
+
+test('a line of a record that starts with a path cannot make the board serve that file', async () => {
+	await startRound();
+	writeFileSync(join(luna.workspace, '.env.json'), '{"token":"secret"}');
+	appendFileSync(join(luna.workspace, decision('LAT-PC')), '- .env.json 滿足\n- .lat/sessions/x.json 也是\n');
+	const review = (await readReview()).review!;
+	expect(review.items.find((item) => item.id === 'LAT-PC')!.evidence.some((entry) => entry.startsWith('.env.json'))).toBe(true);
+	expect((await fileOf('.env.json')).status).toBe(404);
+	expect((await fileOf('.lat/sessions/x.json')).status).toBe(404);
 });
