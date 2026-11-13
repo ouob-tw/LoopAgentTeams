@@ -2,8 +2,8 @@
 	// The command line at the bottom of the screen: `@name message` goes to that controller, a line
 	// without a name to the controller that is open. The recipient's model and effort sit beside the
 	// send button. An idle or closed controller is woken instead. A pop-up behind the options button
-	// holds the permission switch of the open agent, or of the page's controller as Herdr lists it, a
-	// wake's other options while waking, and on a computer while a 終端分頁 is shown its 組合鍵
+	// holds the permission switch of the open agent, or of the page's controller as Herdr lists it, the
+	// page's controller's unattended mode, a wake's other options while waking, and on a computer while a 終端分頁 is shown its 組合鍵
 	// (ComboKeys); a phone shows the button only when it holds something. A phone can put the line
 	// away behind a floating button, to read more of the page; what was typed
 	// stays, also across a reload. While an agent's page is open, a line without a name goes to that
@@ -51,6 +51,7 @@
 	import AgentPermissionModes from './AgentPermissionModes.svelte';
 	import ModelPicker from './ModelPicker.svelte';
 	import SendButton from './SendButton.svelte';
+	import UnattendedMenu from './UnattendedMenu.svelte';
 
 	let {
 		controllers,
@@ -226,8 +227,10 @@
 	// A wake's only option left to show is giving up the previous resume.
 	const wakeOptions = $derived(waking && !!abandonable[id]);
 	const combos = $derived(screenView.agentId !== null && !screenView.phone);
-	const hasOptions = $derived(wakeOptions || permissionAgent !== undefined || combos);
-	const optionsTitle = $derived([permissionAgent && '權限', wakeOptions && '放棄前一次接回', combos && '組合鍵'].filter(Boolean).join('、') || '目前沒有可用的選項');
+	/** The page's controller, while the line goes to it, with an unattended mode the board read. */
+	const unattendedOf = $derived(!toAgent && recipient && recipient.id === target?.id && recipient.unattended.state !== 'unknown' ? recipient : undefined);
+	const hasOptions = $derived(wakeOptions || permissionAgent !== undefined || combos || unattendedOf !== undefined);
+	const optionsTitle = $derived([permissionAgent && '權限', unattendedOf && '無人模式', wakeOptions && '放棄前一次接回', combos && '組合鍵'].filter(Boolean).join('、') || '目前沒有可用的選項');
 	const status = $derived(waking ? switching.status[id] : undefined);
 	// A new model and effort only apply when the client is known not to be running: a running one
 	// is typed into and keeps its settings.
@@ -451,7 +454,11 @@
 	{#if optionsOpen && hasOptions}
 		<div class="popup" role="group" aria-label="選項">
 			{#if permissionAgent}<AgentPermissionModes agent={permissionAgent} />{/if}
-			{#if permissionAgent && wakeOptions}<hr />{/if}
+			{#if unattendedOf}
+				{#if permissionAgent}<hr />{/if}
+				<UnattendedMenu controllerId={unattendedOf.id} view={unattendedOf.unattended} ondone={() => (optionsOpen = false)} />
+			{/if}
+			{#if (permissionAgent || unattendedOf) && wakeOptions}<hr />{/if}
 			{#if wakeOptions}
 				<div class="wake" role="group" aria-label="喚醒選項">
 					{#if confirming[id]}
@@ -465,7 +472,7 @@
 					{/if}
 				</div>
 			{/if}
-			{#if combos && (permissionAgent || wakeOptions)}<hr />{/if}
+			{#if combos && (permissionAgent || unattendedOf || wakeOptions)}<hr />{/if}
 			{#if combos}<ComboKeys />{/if}
 		</div>
 	{/if}

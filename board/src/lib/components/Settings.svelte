@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Three groups: this device's settings (theme, overall size, smallest text size), the board's, which every
-	// device shares (how the usage line reads, whether conversations open translated), and the global
-	// pre-authorization file.
+	// device shares (the mode a new controller starts in, how the usage line reads, whether conversations
+	// open translated), and the global pre-authorization file.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import TestDenied from './TestDenied.svelte';
 	import { onMount } from 'svelte';
@@ -10,6 +10,7 @@
 	import { registerSettings } from '#lib/board/settings-link.ts';
 	import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	import PreauthSettings from './PreauthSettings.svelte';
+	import UnattendedSettings from './UnattendedSettings.svelte';
 	import type { TranslateMode } from '#lib/board/translate-mode.ts';
 	import type { UsageStyle } from '#lib/board/usage.ts';
 
@@ -17,10 +18,12 @@
 
 	let dialog: HTMLDialogElement;
 	let preauth: PreauthSettings;
+	let unattended: UnattendedSettings;
 
 	/** With `anchor`, at that pre-authorization action, once the file is read. */
 	export function open(anchor?: string) {
 		if (!dialog.open) dialog.showModal();
+		void unattended.load();
 		void preauth.opened().then(() => {
 			if (anchor) void preauth.reveal(anchor);
 		});
@@ -117,6 +120,8 @@
 			<h3>全局設置</h3>
 			<p class="note">所有已登入的裝置共用</p>
 			<TestDenied />
+
+			<UnattendedSettings bind:this={unattended} />
 
 			<section>
 				<h4>用量列</h4>

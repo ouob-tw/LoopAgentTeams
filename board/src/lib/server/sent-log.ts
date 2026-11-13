@@ -18,6 +18,7 @@ import type { SentMessage } from '../board/messages.ts';
 import type { ModelChoice, SentSwitch, SwitchState } from '../board/models.ts';
 import type { ResumeClose, SentWake } from '../board/wake.ts';
 import { actingTestDevice } from './acting.ts';
+import type { UnattendedScope } from '../board/unattended.ts';
 
 const SENT_LOG_FILE = 'sent-log.jsonl';
 
@@ -102,7 +103,23 @@ export interface SwitchStep {
 	time: string;
 }
 
+/** What a signed-in device asked of a controller's unattended grant: the form it sent, written
+ *  before lat-unattended runs, which checks the grant against it as the human's own action. The
+ *  outcome is the `unattended` agent action written after. */
+export interface UnattendedRequest {
+	kind: 'unattended-request';
+	id: string;
+	time: string;
+	controllerId: string;
+	op: 'create' | 'update';
+	goal: string;
+	done: string[];
+	scope: UnattendedScope;
+	maxHours: number;
+}
+
 export type Line =
+	| UnattendedRequest
 	| SentMessage
 	| StoredAnswer
 	| AnswerMark

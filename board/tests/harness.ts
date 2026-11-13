@@ -250,6 +250,10 @@ export interface HelperPlan extends FixedOutput {
 	answered?: FixedOutput;
 	/** The Python interpreter that runs the real helper's `preauth-read` and `preauth-write`. */
 	realPreauth?: string;
+	/** A Python interpreter that runs the real helper's unattended commands; without it every controller reads as manual. */
+	realUnattended?: string;
+	/** Each session's `board unattended` entry, when not the real one. */
+	unattended?: Record<string, unknown>;
 	/** Notifying the controller fails with this reason; the answer is still written. */
 	notifyFails?: string;
 	/** `board transcript` waits this long on a child process instead of reading, writing the
@@ -338,6 +342,8 @@ export interface Watch {
 	usageStyles: UsageStyle[];
 	/** The translation modes the server sent, in order. */
 	translateModes: TranslateMode[];
+	/** How many times the server said an unattended setting or grant changed. */
+	unattendedChanges: number;
 	latest(): BoardSnapshot | undefined;
 	close(): void;
 }
@@ -557,6 +563,7 @@ export async function startFixture(
 				pds: [],
 				usageStyles: [],
 				translateModes: [],
+				unattendedChanges: 0,
 				latest: () => watch.snapshots.at(-1),
 				close: () => connection.close()
 			};
@@ -570,6 +577,7 @@ export async function startFixture(
 				onPd: (pd) => watch.pds.push(pd),
 				onUsageStyle: (style) => watch.usageStyles.push(style),
 				onTranslateMode: (mode) => watch.translateModes.push(mode),
+				onUnattendedSettings: () => watch.unattendedChanges++,
 				retryMs: 200
 			});
 			watches.push(watch);

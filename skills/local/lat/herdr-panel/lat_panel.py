@@ -93,6 +93,12 @@ LAT record; ``ask`` reads the section from standard input without ``--file``::
   board prune-reports --reports-dir DIR --now TIME --session-id ID...
   board preauth-read [--workspace ROOT]
   board preauth-write --layer (global|project) [--workspace ROOT] --expected-sha256 HEX --changes JSON
+  board unattended [--workspace ROOT --session-id ID]... [--seconds N]
+  board unattended-settings [--project ROOT]... [--seconds N]
+  board unattended-settings-write --layer (global|project) [--project ROOT] \
+      --expected-sha256 HEX --changes JSON [--seconds N]
+  board unattended-grant --workspace ROOT --session-id ID [--seconds N] -- \
+      (create|update|close) ARGS...
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
@@ -340,9 +346,14 @@ from board import (
     board_ledger,
     board_ledgers,
     board_questions,
+    board_unattended,
     notify_controller,
+    unattended_tool,
 )
 import subprocess
+
+# The tool's time when the board gives none; the board passes one inside its own time for the helper.
+UNATTENDED_WRITE_SECONDS = 12
 
 
 def _run_board(args):
@@ -386,6 +397,31 @@ def _run_board(args):
             result, code = {"status": "ok", "deleted": deleted, "failed": failed}, 0
         elif args.board_command == "preauth-read":
             result, code = _lat_preauth().board_settings(args.workspace), 0
+        elif args.board_command == "unattended":
+            if len(args.workspace) != len(args.session_id):
+                raise ValueError("each --workspace needs one --session-id")
+            result = {"unattended": board_unattended(list(zip(args.workspace, args.session_id)), args.seconds)}
+            code = 0
+        elif args.board_command == "unattended-settings":
+            result = unattended_tool(["settings", *(f"--project={root}" for root in args.project)],
+                                     timeout=args.seconds)
+            code = 0 if result["status"] == "ok" else 1
+        elif args.board_command == "unattended-settings-write":
+            result = unattended_tool([
+                "settings-write", f"--layer={args.layer}",
+                *([f"--project={args.project}"] if args.project else []),
+                f"--expected-sha256={args.expected_sha256}", f"--changes={args.changes}",
+            ], timeout=args.seconds)
+            code = 0 if result["status"] == "ok" else 1
+        elif args.board_command == "unattended-grant":
+            # argparse keeps the `--` before the tool's own arguments on some Python versions.
+            operation, *rest = (args.rest[1:] if args.rest[:1] == ["--"] else args.rest) or [""]
+            if operation not in ("create", "update", "close"):
+                raise ValueError("unattended-grant takes create, update or close")
+            result = unattended_tool([operation, f"--workspace={args.workspace}",
+                                      f"--session-id={args.session_id}", *rest],
+                                     timeout=args.seconds)
+            code = 0 if result["status"] == "ok" else 1
         elif args.board_command == "preauth-write":
             result = _lat_preauth().board_write(
                 args.layer, args.workspace, args.expected_sha256, json.loads(args.changes),
@@ -536,6 +572,24 @@ def _build_parser():
     preauth_write.add_argument("--workspace", type=Path)
     preauth_write.add_argument("--expected-sha256", required=True)
     preauth_write.add_argument("--changes", required=True)
+    unattended = board_commands.add_parser("unattended")
+    unattended.add_argument("--workspace", type=Path, action="append", default=[])
+    unattended.add_argument("--session-id", action="append", default=[])
+    unattended.add_argument("--seconds", type=float, default=LEDGERS_SECONDS)
+    unattended_settings = board_commands.add_parser("unattended-settings")
+    unattended_settings.add_argument("--project", type=Path, action="append", default=[])
+    unattended_settings.add_argument("--seconds", type=float, default=UNATTENDED_WRITE_SECONDS)
+    unattended_write = board_commands.add_parser("unattended-settings-write")
+    unattended_write.add_argument("--layer", required=True, choices=("global", "project"))
+    unattended_write.add_argument("--project", type=Path)
+    unattended_write.add_argument("--expected-sha256", required=True)
+    unattended_write.add_argument("--changes", required=True)
+    unattended_write.add_argument("--seconds", type=float, default=UNATTENDED_WRITE_SECONDS)
+    unattended_grant = board_commands.add_parser("unattended-grant")
+    unattended_grant.add_argument("--workspace", required=True, type=Path)
+    unattended_grant.add_argument("--session-id", required=True)
+    unattended_grant.add_argument("--seconds", type=float, default=UNATTENDED_WRITE_SECONDS)
+    unattended_grant.add_argument("rest", nargs=argparse.REMAINDER)
     return parser
 
 

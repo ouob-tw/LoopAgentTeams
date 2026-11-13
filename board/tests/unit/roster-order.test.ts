@@ -96,7 +96,9 @@ test('groups by status, newest report first within a group, no report last, then
 		answered: [],
 		answeredError: null,
 		ledgers: new Map(),
-		ledgersError: null
+		ledgersError: null,
+		unattended: new Map(),
+		unattendedError: null
 	};
 	const { controllers } = buildSnapshot(sources, { read: {}, archived: {} }, NOW);
 	expect(controllers.map((controller) => [controller.hcomName, controller.status])).toEqual([
