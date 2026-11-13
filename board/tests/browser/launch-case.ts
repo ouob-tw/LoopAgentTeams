@@ -20,7 +20,7 @@ test('launchChrome answers the first cookie request without the secret service',
 
 test('without --password-store=basic Chrome waits on the secret service, at start or at the first cookie request', async () => {
 	const flags = CHROME_FLAGS.filter((flag) => !flag.startsWith('--password-store') && flag !== '--use-mock-keychain');
-	const { chrome, profile, end } = startChrome(flags, { dbus: true });
+	const { chrome, profile, end } = startChrome(flags);
 	try {
 		const file = join(profile, 'DevToolsActivePort');
 		const deadline = Date.now() + 10_000;

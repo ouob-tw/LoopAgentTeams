@@ -347,7 +347,7 @@ export function sweepLeftovers(dir = tmpdir()) {
 				continue;
 			}
 			if (Date.now() - made < UNMARKED_MS || inUse(profile)) continue;
-		} else if (Number.isInteger(owner.chrome) && owner.chrome! > 1 && [owner.chromeStart, undefined].includes(startTime(owner.chrome!))) {
+		} else if (owner.chrome !== undefined && Number.isInteger(owner.chrome) && owner.chrome > 1 && [owner.chromeStart, undefined].includes(startTime(owner.chrome))) {
 			// A PID above 1 only: a group kill of 0 or -1 would reach far more than one Chrome. A Chrome
 			// whose PID is gone may have left its group running: no other group can take its number while it does.
 			try {
@@ -378,12 +378,10 @@ export interface Started {
  * Start Chrome with `flags`, a profile of its own and its DevTools on a port it picks. It leads its
  * own process group, which `end` ends. Where `setpriv` is found it starts with `--pdeathsig KILL`:
  * the kernel kills it the moment the test process ends, however it ends (a SIGKILL included), and
- * the rest of its group follows it. Without `dbus` it gets no session bus, so it stays in the test's
- * own systemd scope instead of asking systemd for one of its own, and a run killed by its scope
- * takes it too. Its profile records whose it is (`OWNER_FILE`), and the first start in a process
- * sweeps what gone test processes left (see `sweepLeftovers`).
+ * the rest of its group follows it. Its profile records whose it is (`OWNER_FILE`), and the first
+ * start in a process sweeps what gone test processes left (see `sweepLeftovers`).
  */
-export function startChrome(flags: string[], { dbus = false }: { dbus?: boolean } = {}): Started {
+export function startChrome(flags: string[]): Started {
 	if (!swept) {
 		swept = true;
 		sweepLeftovers();
@@ -398,8 +396,7 @@ export function startChrome(flags: string[], { dbus = false }: { dbus?: boolean 
 	mark(owner);
 	const command = [CHROME, ...flags, `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'];
 	if (SETPRIV) command.unshift(SETPRIV, '--pdeathsig', 'KILL');
-	const env = dbus ? process.env : { ...process.env, DBUS_SESSION_BUS_ADDRESS: 'disabled:' };
-	const chrome = spawn(command[0], command.slice(1), { stdio: ['ignore', 'ignore', 'pipe'], detached: true, env });
+	const chrome = spawn(command[0], command.slice(1), { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
 	if (chrome.pid !== undefined) mark({ ...owner, chrome: chrome.pid, chromeStart: startTime(chrome.pid) });
 	// The end of what Chrome wrote to stderr, to say why it ended.
 	let stderr = '';
