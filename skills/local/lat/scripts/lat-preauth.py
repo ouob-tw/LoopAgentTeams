@@ -716,8 +716,8 @@ def rerun_only_merge_problems(top, version, ledger):
 
 def tiny_merge_problems(top, version, ledger, orchestrator=None):
     """Conditions for each tiny-lane ticket of the round ledger that the merged version
-    carries (a row's branch points at it, or a commit the integration branch lacks names the
-    ticket): the tiny check's hard limits from the ticket card's base commit, an impl row the
+    carries (a row's branch points at it, or a non-merge commit the integration branch lacks
+    names the ticket): the tiny check's hard limits from the ticket card's base commit, an impl row the
     orchestrator owns, and the reviewer's four-limit confirmation, which must cover every hint
     the check shows now, on the same content. Rows are grouped by ticket the way the ledger
     does (a bare number is the project's own tracker). Each refusal tells the orchestrator to
@@ -736,8 +736,9 @@ def tiny_merge_problems(top, version, ledger, orchestrator=None):
     except (OSError, SyntaxError, ImportError) as error:
         return [('error', f'tiny check unavailable: {error}')]
     integration = ledger.get('integration_branch')
-    messages = (git(top, 'log', '--format=%B', version, '--not', f'refs/heads/{integration}')
-                if integration else None) or ''
+    # Merge commits left out: merging the integration branch in names tickets it brought along.
+    messages = (git(top, 'log', '--no-merges', '--format=%B', version, '--not',
+                    f'refs/heads/{integration}') if integration else None) or ''
     reviews = [review for review in ledger.get('reviews') or [] if isinstance(review, dict)]
     problems = []
     for key in tickets:
