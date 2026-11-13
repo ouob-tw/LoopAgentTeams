@@ -1873,7 +1873,9 @@ def sync_parked_dependencies(args, doc, reason='dependencies changed'):
                     release_row(args, doc, row, reason)
                     changed = True
                 elif row['parked_cause'] not in parked_deps:
-                    record(args, row, 'park', {'parked_cause': parked_deps[0]}, reason)
+                    record(args, row, 'park', {'parked_cause': parked_deps[0],
+                                           'parked_reason': f'依賴的列 {parked_deps[0]} 已擱置'},
+                       reason)
                     changed = True
             elif parked_deps and row['status'] in ('unassigned',) + OPEN:
                 grant = find(doc, parked_deps[0])['parked_grant']

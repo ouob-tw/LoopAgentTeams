@@ -2395,6 +2395,8 @@ class ParkTests(LedgerCase):
         self.ok('unpark', str(first), '--reason', 'user decided')
         self.assertEqual(self.item(shared)['status'], 'parked')
         self.assertEqual(self.item(shared)['parked_cause'], second)
+        self.assertIn(f'依賴的列 {second} 已擱置', self.ok('show', '--rows'))
+        self.assertIn(f'依賴的列 {second} 已擱置', self.run_ledger('check').stdout)
         self.ok('unpark', str(second), '--reason', 'user decided')
         self.assertEqual(self.item(shared)['status'], 'unassigned')
 
