@@ -19,7 +19,7 @@ PANEL = SKILL / 'herdr-panel/lat_panel.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
 OTHER = '22222222-2222-4222-8222-222222222222'
 GRANT = ['--goal', '修好登入頁', '--done', '登入成功跳到首頁', '--max-hours', '6',
-         '--source', 'board-form', '--evidence', 'board-action-1']
+         '--source', 'board-form']
 OPINIONS = ('## 參謀意見\n\n'
             '- puma（claude opus）：agree；只改命名，不動驗收\n'
             '- kiwi（codex gpt-6-astra）：agree；屬固定清單第 1 類\n')
@@ -92,10 +92,26 @@ class UnattendedStopCase(unittest.TestCase):
         self.assertEqual(result.returncode, code, result.stderr)
         return json.loads(result.stdout)
 
+    def board_request(self, scope, op='create', goal='修好登入頁'):
+        """The line the board writes to its action log when a device sends the grant form; a
+        board-form grant must cite one that matches it."""
+        log = self.root / 'board' / 'sent-log.jsonl'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        number = len(log.read_text().splitlines()) + 1 if log.exists() else 1
+        entry = dict(kind='unattended-request', id=f'fixture-{number}', op=op,
+                     controllerId=SESSION, time=datetime.now(timezone.utc).isoformat(),
+                     goal=goal, done=['登入成功跳到首頁'], maxHours=6,
+                     scope=dict(ticket_confirmation='ticket-confirmation' in scope,
+                                assume_defaults='assume-defaults' in scope,
+                                prototype_decide='prototype' in scope))
+        with log.open('a') as stream:
+            stream.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        return f'board-action:{entry["id"]}'
+
     def grant(self, *scope):
-        return self.unattended('create', *GRANT, '--scope',
-                               *(scope or ('ticket-confirmation', 'assume-defaults',
-                                           'prototype')))['created']
+        scope = scope or ('ticket-confirmation', 'assume-defaults', 'prototype')
+        return self.unattended('create', *GRANT, '--evidence', self.board_request(scope),
+                               '--scope', *scope)['created']
 
     # Records ----------------------------------------------------------------------------------
 
@@ -216,7 +232,9 @@ class DelegatedRecordTests(UnattendedStopCase):
         self.assertIn('沒有勾選「做樣品再決定」', lines['NOSAMPLE'])
         self.assertIn('驗收對照', lines['NOROWS'])
         # Version 1 ended when version 2 replaced it: citing v1 afterwards is held.
-        self.unattended('update', '--goal', '改目標', '--source', 'user-edit', '--evidence', 'b-2')
+        self.unattended('update', '--goal', '改目標', '--source', 'user-edit', '--evidence',
+                        self.board_request(('ticket-confirmation', 'assume-defaults'),
+                                           op='update', goal='改目標'))
         for path in self.decisions.glob('*.md'):
             path.unlink()
         self.delegated('OLDV', at=datetime.now(timezone.utc))
