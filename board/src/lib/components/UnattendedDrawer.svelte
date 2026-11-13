@@ -197,16 +197,18 @@
 		margin: 0;
 		color: var(--muted);
 	}
+	/* The whole row takes the tap, a finger high (ui-baseline). */
 	.check {
 		display: flex;
 		gap: 0.5rem;
-		align-items: flex-start;
+		align-items: center;
+		min-height: 44px;
 	}
 	.check input {
 		flex: none;
 		width: 1.2rem;
 		height: 1.2rem;
-		margin: 0.15rem 0 0;
+		margin: 0;
 	}
 	textarea {
 		resize: vertical;
@@ -233,7 +235,8 @@
 		gap: 0.5rem;
 	}
 	/* A finger's width on a phone (ui-baseline). */
-	button {
+	button,
+	input:not([type='checkbox']) {
 		min-height: 44px;
 	}
 </style>
