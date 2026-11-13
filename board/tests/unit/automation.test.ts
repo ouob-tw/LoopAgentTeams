@@ -137,13 +137,15 @@ test('missed: shown until dismissed or a run starts after the window; done still
 	expect(taskState(monthly, [], now, [entry(11)])).toBe('missed');
 	expect(taskState(monthly, [], now, [entry(11, { dismissedAt: now })])).toBe('waiting');
 	expect(taskState(monthly, [run({ status: 'failed', startedAt: at(2026, 11, 11, 9) })], now, [entry(11)])).toBe('failed');
+	// A later automatic try does not handle it: only the user does.
+	expect(taskState(monthly, [run({ trigger: 'auto', status: 'failed', startedAt: at(2026, 11, 11, 9) })], now, [entry(11)])).toBe('missed');
 	expect(taskState(monthly, [run({ startedAt: at(2026, 11, 11, 9) })], now, [entry(11)])).toBe('done');
 	// A skipped try is not a run.
 	expect(taskState(monthly, [run({ trigger: 'auto', status: 'skipped', startedAt: at(2026, 11, 11, 9) })], now, [entry(11)])).toBe('missed');
 	expect(missedText([entry(11)])).toBe('11/8–11/10 看板沒開，這期沒跑');
 	expect(missedText([entry(7), entry(8), entry(9), entry(10), entry(11)])).toBe('看板沒開，錯過 5 期，沒有自動補跑');
-	expect(missedNames([entry(7), entry(8), entry(9), entry(10), entry(11)])).toBe('7/8–7/10、8/8–8/10、9/8–9/10');
+	expect(missedNames([entry(7), entry(8), entry(9), entry(10), entry(11)])).toEqual(['7/8–7/10', '8/8–8/10', '9/8–9/10']);
 	// Years are shown against the newest window's: an older year is written out.
 	const january = { period: '2027-01-02', from: at(2027, 1, 2, 0), to: at(2027, 1, 3, 0), recordedAt: 0 };
-	expect(missedNames([{ ...entry(12), from: at(2026, 12, 31, 0), to: at(2027, 1, 1, 0) }, january])).toBe('2026/12/31、1/2');
+	expect(missedNames([{ ...entry(12), from: at(2026, 12, 31, 0), to: at(2027, 1, 1, 0) }, january])).toEqual(['2026/12/31', '1/2']);
 });

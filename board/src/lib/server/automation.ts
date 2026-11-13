@@ -443,8 +443,8 @@ export function createAutomation(options: {
 				.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 				.map((task) => {
 					const own = runs.get(task.id) ?? [];
-					const gone = missed.get(task.id) ?? [];
-					return { task, state: taskState(task, own, at, gone), nextAt: nextAutoAt(task, own, at), runs: own.slice(0, RUNS_SHOWN), missed: openMissed(gone, own) };
+					const recorded = missed.get(task.id) ?? [];
+					return { task, state: taskState(task, own, at, recorded), nextAt: nextAutoAt(task, own, at), runs: own.slice(0, RUNS_SHOWN), missed: openMissed(recorded, own) };
 				}),
 			broken
 		};
@@ -468,7 +468,9 @@ export function createAutomation(options: {
 	for (const [taskId, list] of runs) {
 		const task = tasks.get(taskId);
 		for (const run of list) {
-			if (run.status === 'running' && task?.kind === 'command') record(run, { endedAt: now(), status: 'failed', reason: '看板重啟中斷' });
+			if (run.status !== 'running' || task?.kind !== 'command') continue;
+			const cut = record(run, { endedAt: now(), status: 'failed', reason: '看板重啟中斷' });
+			options.notify?.({ type: 'run-ended', task, run: cut });
 		}
 	}
 	lastSent = JSON.stringify({ ...snapshot(), revision: 0 });
@@ -575,10 +577,20 @@ export function createAutomation(options: {
 	const runnable = (task: AutomationTask) => task.kind === 'command' && task.command !== undefined;
 	const busy = (taskId: string) => children.has(taskId) || (runs.get(taskId) ?? []).some((run) => run.status === 'running');
 
+	/** A run of the task beginning at `at`, in the period that time falls in. */
+	const newRun = (task: AutomationTask, trigger: RunTrigger, at: number): AutomationRun => ({
+		id: `${at.toString(36)}-${newId()}`,
+		taskId: task.id,
+		trigger,
+		period: periodOf(task.schedule, at),
+		startedAt: at,
+		status: 'running'
+	});
+
 	/** Start a run now and record it; a folder gone since saving is a settings error, not a crash. */
 	function start(task: AutomationTask, trigger: RunTrigger): AutomationRun {
 		const at = now();
-		const base: AutomationRun = { id: `${at.toString(36)}-${newId()}`, taskId: task.id, trigger, period: periodOf(task.schedule, at), startedAt: at, status: 'running' };
+		const base = newRun(task, trigger, at);
 		const spec = task.command!;
 		if (!isDirectory(expandHome(spec.folder, home))) {
 			const run = record(base, { ...base, endedAt: at, status: 'config-error', reason: `找不到工作資料夾：${spec.folder}` });
@@ -605,8 +617,10 @@ export function createAutomation(options: {
 		const own = runs.get(task.id) ?? [];
 		const known = new Set((missed.get(task.id) ?? []).map((entry) => entry.period));
 		const found: MissedPeriod[] = [];
-		for (const window of endedWindows(task.schedule, Math.max(after, Date.parse(task.createdAt) || after), at)) {
-			if (known.has(window.period)) continue;
+		const created = Date.parse(task.createdAt) || after;
+		for (const window of endedWindows(task.schedule, after, at)) {
+			// A window the task was added part way through is not counted against it.
+			if (known.has(window.period) || window.from < created) continue;
 			// Any run of the period, whatever it ended in, means the board was there for it.
 			if (own.some((run) => run.period === window.period && (run.trigger === 'auto' || run.trigger === 'manual' || succeeded(run)))) continue;
 			const entry: MissedPeriod = { ...window, recordedAt: at };
@@ -638,7 +652,7 @@ export function createAutomation(options: {
 				options.notify?.({ type: 'missed', task, periods: found });
 			}
 		}
-		// Kept even when the clock went back, so periods are never looked at from a time not yet come.
+		// Follows the clock back too, so a later check never starts from a time that has not come.
 		if (checked !== at) writeAtomic(checkedFile, new Date(at).toISOString() + '\n');
 		for (const task of tasks.values()) {
 			if (!runnable(task)) continue;
@@ -646,7 +660,7 @@ export function createAutomation(options: {
 			if (due === null || (!first && at < due)) continue;
 			changed = true;
 			if (busy(task.id)) {
-				record({ id: `${at.toString(36)}-${newId()}`, taskId: task.id, trigger: 'auto', period: periodOf(task.schedule, at), startedAt: at, endedAt: at, status: 'skipped', reason: '上一次還在跑' });
+				record({ ...newRun(task, 'auto', at), endedAt: at, status: 'skipped', reason: '上一次還在跑' });
 			} else start(task, 'auto');
 		}
 		publish(changed);
@@ -707,17 +721,7 @@ export function createAutomation(options: {
 			const path = text(marker);
 			if (!path) return { ok: false, status: 400, message: '請寫出原本的完成標記路徑（marker）' };
 			const at = now();
-			const run = record({
-				id: `${at.toString(36)}-${newId()}`,
-				taskId: id,
-				trigger: 'carried',
-				period: periodOf(task.schedule, at),
-				startedAt: at,
-				endedAt: at,
-				status: 'success',
-				marker: path,
-				reason: `沿用原紀錄：${path}`
-			});
+			const run = record({ ...newRun(task, 'carried', at), endedAt: at, status: 'success', marker: path, reason: `沿用原紀錄：${path}` });
 			publish();
 			return { ok: true, run };
 		},

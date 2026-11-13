@@ -119,12 +119,15 @@ export interface AutomationRun {
 	marker?: string;
 }
 
-/** A period whose whole window passed with no run at all, while the task was not paused. */
-export interface MissedPeriod {
+/** A period's run window: its first moment and the moment after its last day. */
+export interface RunWindow {
 	period: string;
-	/** The window's first moment and the moment after its last day. */
 	from: number;
 	to: number;
+}
+
+/** A period whose whole window passed with no run at all, while the task was not paused. */
+export interface MissedPeriod extends RunWindow {
 	recordedAt: number;
 	/** 這期就算了: no longer shown. */
 	dismissedAt?: number;
@@ -216,7 +219,7 @@ export function periodOf(schedule: AutomationSchedule, time: number): string {
 
 /** The run window of the period a time falls in: its first moment and the moment after its last
  *  day. A month shorter than the window ends it on its last day. */
-export function windowOf(schedule: AutomationSchedule, time: number): { period: string; from: number; to: number } {
+export function windowOf(schedule: AutomationSchedule, time: number): RunWindow {
 	const day = dayOf(time);
 	const period = periodOf(schedule, time);
 	if (schedule.type === 'daily') return { period, from: startOf(day), to: startOf(day) + DAY_MS };
@@ -235,11 +238,13 @@ export function inWindow(schedule: AutomationSchedule, time: number): boolean {
 	return time >= from && time < to;
 }
 
-/** The windows that ended after `after` and by `upTo`, oldest first; at most the last `limitDays`
- *  days are looked at, so a board off for years still starts in a moment. */
-export function endedWindows(schedule: AutomationSchedule, after: number, upTo: number, limitDays = 3_660): { period: string; from: number; to: number }[] {
-	const found = new Map<string, { period: string; from: number; to: number }>();
-	const first = Math.max(after, upTo - limitDays * DAY_MS);
+/** How far back a check looks: a board off for years still starts in a moment. */
+const LOOK_BACK_DAYS = 3_660;
+
+/** The windows that ended after `after` and by `upTo`, oldest first, from the last LOOK_BACK_DAYS days. */
+export function endedWindows(schedule: AutomationSchedule, after: number, upTo: number): RunWindow[] {
+	const found = new Map<string, RunWindow>();
+	const first = Math.max(after, upTo - LOOK_BACK_DAYS * DAY_MS);
 	for (let time = startOf(dayOf(first)); time <= upTo; time += DAY_MS) {
 		const window = windowOf(schedule, time + DAY_MS / 2);
 		if (window.to > after && window.to <= upTo) found.set(window.period, window);
@@ -291,10 +296,10 @@ export function nextAutoAt(task: AutomationTask, runs: readonly AutomationRun[],
 
 const FAILED: readonly RunStatus[] = ['failed', 'timeout', 'stopped', 'config-error', 'quota'];
 
-/** The missed periods still to show: not dismissed, and no run started after the window ended
- *  (立即執行 handles it as much as 這期就算了 does). */
+/** The missed periods still to show: not dismissed, and no 立即執行 (or 沿用原紀錄) since the window
+ *  ended. A later automatic try does not count: only the user handles a miss. */
 export function openMissed(missed: readonly MissedPeriod[], runs: readonly AutomationRun[]): MissedPeriod[] {
-	const latest = Math.max(-Infinity, ...runs.filter((run) => run.status !== 'skipped' && run.trigger !== 'preview').map((run) => run.startedAt));
+	const latest = Math.max(-Infinity, ...runs.filter((run) => run.trigger === 'manual' || run.trigger === 'carried').map((run) => run.startedAt));
 	return missed.filter((entry) => entry.dismissedAt === undefined && latest < entry.to).sort((a, b) => a.from - b.from);
 }
 
@@ -329,15 +334,15 @@ export function windowText(entry: { from: number; to: number }, reference: numbe
 export const MISSED_NAMED = 3;
 
 /** The missed windows named in a line, oldest first: the first few, each year shown against the newest's. */
-export function missedNames(missed: readonly MissedPeriod[]): string {
+export function missedNames(missed: readonly MissedPeriod[]): string[] {
 	const reference = missed.at(-1)!.to - 1;
-	return missed.slice(0, MISSED_NAMED).map((entry) => windowText(entry, reference)).join('、');
+	return missed.slice(0, MISSED_NAMED).map((entry) => windowText(entry, reference));
 }
 
 /** The list card's line for the missed periods (oldest first), short enough for a phone's card:
  *  the window when there is one, else how many; the task's page names them. */
 export function missedText(missed: readonly MissedPeriod[]): string {
-	if (missed.length === 1) return `${missedNames(missed)} 看板沒開，這期沒跑`;
+	if (missed.length === 1) return `${missedNames(missed)[0]} 看板沒開，這期沒跑`;
 	return `看板沒開，錯過 ${missed.length} 期，沒有自動補跑`;
 }
 

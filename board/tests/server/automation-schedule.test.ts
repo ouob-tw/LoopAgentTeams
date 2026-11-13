@@ -230,6 +230,8 @@ test('back after months: each period missed is listed, one notice per task, no c
 	expect(dailyNotices).toHaveLength(1);
 	expect(dailyNotices[0].count).toBe(117);
 	expect((await ended(daily.id, dailyBefore + 1))[0]).toMatchObject({ trigger: 'auto', period: '2027-03-05' });
+	// Today's automatic run does not handle the misses: they stay until the user acts.
+	expect((await viewOf(daily.id)).missed).toHaveLength(117);
 	expect(missedLogs(paused.id)).toEqual([]);
 
 	const dismissed = await send(`/api/automation/${monthly.id}/dismiss-missed`, 'POST', {});

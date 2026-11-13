@@ -13,7 +13,7 @@
 		scheduleText,
 		TRIGGER_TEXT,
 		timeFormat,
-		windowText,
+		missedNames,
 		type AutomationRun,
 		type AutomationTaskView
 	} from '#lib/board/automation.ts';
@@ -56,11 +56,10 @@
 		<AutomationState state={view.state} />
 	</header>
 	{#if view.missed.length}
-		{@const reference = view.missed.at(-1)!.to - 1}
 		<section class="missed" data-missed={view.missed.length}>
 			<b>{task.name}：{view.missed.length === 1 ? '本期錯過' : `錯過 ${view.missed.length} 期`}</b>
 			<p>
-				{#each view.missed.slice(0, MISSED_NAMED) as entry, index (entry.period)}{index ? '、' : ''}<span class="window">{windowText(entry, reference)}</span>{/each}{view.missed.length > MISSED_NAMED ? ` 等共 ${view.missed.length} 期` : ''}
+				{#each missedNames(view.missed) as name, index (index)}{index ? '、' : ''}<span class="window">{name}</span>{/each}{view.missed.length > MISSED_NAMED ? ` 等共 ${view.missed.length} 期` : ''}
 				看板都沒開，所以沒跑。不會自動補跑。
 			</p>
 			<div class="actions">
