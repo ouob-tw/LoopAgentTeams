@@ -2,7 +2,10 @@
   "map": [
     {
       "paths": [
-        "board/src/lib/server/client-address.ts"
+        "board/src/lib/server/client-address.ts",
+        "board/src/instrumentation.server.ts",
+        "board/src/lib/server/connection-guard.ts",
+        "board/src/lib/server/security-headers.ts"
       ],
       "tests": [
         "board/tests/unit/client-address.test.ts",
