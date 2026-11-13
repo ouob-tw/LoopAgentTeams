@@ -104,6 +104,13 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 	for (const size of SIZES) {
 		test.skipIf(!CHROME)(`a passkey added in the settings logs in alone after logging out, and is deleted after a confirmation (${size.width})`, async () => {
 			await launch(size);
+			// Nothing registered yet, opened over plain http: the login page says where passkeys work.
+			await tab.navigate(`${fixture.url}/login`);
+			await tab.until(`document.querySelector('.blocked') !== null`, 'the reason on the login page');
+			expect(await tab.eval(`document.querySelector('.blocked').textContent.trim()`)).toBe(`passkey 只能在 ${origin} 用。`);
+			expect(await tab.eval(`document.querySelector('button.passkey') === null`)).toBe(true);
+			await shot(tab, `${size.width}-0-login-http-none-registered`);
+
 			const cookie = await fixture.login(`settings-${size.width}`);
 			const chromeDevices = () => fixture.cli('devices').stdout.split('\n').filter((line) => line.includes('HeadlessChrome')).length;
 			const devicesBefore = chromeDevices();
@@ -164,8 +171,24 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			expect(await tab.eval(layoutProblems('main'))).toEqual([]);
 			await shot(tab, `${size.width}-6-login-http`);
 
-			// Deleted after a confirmation; it cannot log in any more.
+			// A delete the server refuses says so, and the passkey stays listed.
 			await openSettings(origin, cookie);
+			await tab.eval(`(() => {
+				const fetch = window.fetch;
+				window.realFetch = fetch;
+				window.fetch = (input, init) => init?.method === 'DELETE'
+					? Promise.resolve(new Response(JSON.stringify({ error: 'passkeys_unreadable' }), { status: 500, headers: { 'content-type': 'application/json' } }))
+					: fetch(input, init);
+			})()`);
+			const refusedButton = `dialog[open] section.passkeys button[aria-label="刪除 passkey ${id}"]`;
+			await clickSteady(refusedButton);
+			await tab.until(`${SECTION}.querySelector('[aria-label="確認刪除"]') !== null`, 'the confirmation');
+			await tab.eval(`[...${SECTION}.querySelectorAll('button')].find((button) => button.textContent.trim() === '確認刪除').click()`);
+			await tab.until(`${SECTION}.querySelector('.failed')?.textContent.trim() === '失敗：看板的 passkey 檔讀不出來，請看主機上看板的紀錄。'`, 'the refusal');
+			expect(await tab.eval(`${ROWS}.length`)).toBe(1);
+			await tab.eval(`window.fetch = window.realFetch`);
+
+			// Deleted after a confirmation; it cannot log in any more.
 			const deleteButton = `dialog[open] section.passkeys button[aria-label="刪除 passkey ${id}"]`;
 			await tab.until(`document.querySelector(${JSON.stringify(deleteButton)}) !== null`, 'the delete button');
 			await clickSteady(deleteButton);

@@ -26,15 +26,20 @@
 	let read = 0;
 	const locked = $derived(testDevice.view !== null);
 
-	/** Read the list again; called when the dialog opens. */
+	/** Read the list again with nothing failed yet; called when the dialog opens. */
 	export async function load() {
+		failure = '';
+		await refresh();
+	}
+
+	/** Read the list again, keeping what an add or delete just reported. */
+	async function refresh() {
 		const mine = ++read;
 		const result = await request<{ origin: string | null; passkeys: Listed[] }>('/api/passkeys');
 		if (mine !== read) return;
 		if (result.ok) {
 			passkeys = result.value.passkeys;
 			blocked = passkeyBlocked(result.value.origin);
-			failure = '';
 		} else if (!result.unpaired) failure = refusal(result);
 	}
 
@@ -74,7 +79,7 @@
 		}
 		const saved = await post('/api/passkeys', { enrollment: started.value.enrollment, response: created });
 		if (!saved.ok && !saved.unpaired) failure = refusal(saved);
-		await load();
+		await refresh();
 		adding = false;
 	}
 
@@ -87,7 +92,7 @@
 		if (!result.ok && !result.unpaired && result.status !== 404) failure = refusal(result);
 		confirming = null;
 		deleting = false;
-		await load();
+		await refresh();
 	}
 
 	const day = new Intl.DateTimeFormat('zh-TW', { timeZone: TIME_ZONE, month: 'numeric', day: 'numeric' });
