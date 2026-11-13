@@ -88,7 +88,7 @@
 						{#each [...review.goals].reverse() as version (version.version)}
 							<li data-version={version.version}>
 								<b>第 {version.version} 版</b>
-								<span class="muted">{version.sourceLabel}{version.endedAt ? `，已被取代或結束（${version.endLabel ?? ''}）` : '，生效中'}</span>
+								<span class="muted">{version.sourceLabel}{version.endedAt ? (version.version < review.goals.length ? '，已被後面的版本取代' : `，已結束（${version.endLabel ?? ''}）`) : '，生效中'}</span>
 								<p class="goal-text">{version.goal}</p>
 								<b>做完的條件</b>
 								<ul>
@@ -205,7 +205,8 @@
 	}
 	.versions {
 		margin: 0;
-		padding: 0 0.8rem 0.5rem 2rem;
+		padding: 0 0.8rem 0.5rem;
+		list-style: none;
 		overflow-wrap: anywhere;
 	}
 	.versions li {

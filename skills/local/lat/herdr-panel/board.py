@@ -338,8 +338,12 @@ def board_unattended(controllers, seconds=LEDGERS_SECONDS):
             # The round had a grant, so it may have a review: its summary rides with the status, and
             # its file joins the files to watch, so a change to it reaches the board's pages.
             summary, path = review_summary(workspace, session_id, deadline - time.monotonic())
+            # Watched even before the file exists: the controller's tool creates it at the first item.
+            files = result.get("files", [])
+            grant = f"/unattended/{session_id}-r{result.get('round')}.json"
+            expected = next((f[:-len(".json")] + "-review.md" for f in files if f.endswith(grant)), None)
             result = {**result, "review": summary,
-                      "files": [*result.get("files", []), *([path] if path else [])]}
+                      "files": [*files, *dict.fromkeys(p for p in (path, expected) if p)]}
         return {**result, "session_id": session_id}
 
     results = _side_by_side(controllers, read, seconds)
