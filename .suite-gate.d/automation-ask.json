@@ -1,0 +1,29 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/automation.ts",
+        "board/src/lib/board/alerts.ts",
+        "board/src/lib/board/automation-actions.ts",
+        "board/src/lib/server/automation.ts",
+        "board/src/lib/server/automation-agent.ts",
+        "board/src/lib/server/automation-host.ts",
+        "board/src/lib/server/alerts.ts",
+        "board/src/lib/components/AskAlertCard.svelte",
+        "board/src/lib/components/AutomationAsk.svelte",
+        "board/src/lib/components/AutomationAsks.svelte",
+        "board/src/lib/components/AlertItemRow.svelte",
+        "board/src/lib/components/AutomationState.svelte",
+        "board/src/lib/components/AutomationTask.svelte",
+        "board/src/routes/api/automation/**"
+      ],
+      "tests": [
+        "board/tests/unit/automation-ask.test.ts",
+        "board/tests/unit/automation.test.ts",
+        "board/tests/unit/alerts.test.ts",
+        "board/tests/server/automation-ask.test.ts",
+        "board/tests/browser/automation-ask-page.test.ts"
+      ]
+    }
+  ]
+}

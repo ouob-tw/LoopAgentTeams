@@ -3,13 +3,14 @@
 	import { runLabel, STATE_TEXT, type AutomationRun, type TaskState } from '#lib/board/automation.ts';
 
 	/** A run shows its own status, or how its check went when that was not a pass. */
-	let { state, run }: { state?: TaskState; run?: Pick<AutomationRun, 'status' | 'review'> } = $props();
+	let { state, run }: { state?: TaskState; run?: Pick<AutomationRun, 'status' | 'review' | 'asks'> } = $props();
 
 	const label = $derived(run ? runLabel(run) : null);
 	const tone = $derived.by(() => {
 		const key = state ?? label!.key;
 		if (key === 'done' || key === 'success') return 'ok';
 		if (key === 'running') return 'going';
+		if (key === 'asking') return 'ask';
 		if (key === 'missed') return 'miss';
 		if (key === 'waiting' || key === 'paused' || key === 'stopped' || key === 'skipped') return 'wait';
 		return 'bad';
@@ -38,6 +39,11 @@
 	.bad {
 		color: var(--danger);
 		border-color: var(--danger);
+	}
+	.ask {
+		color: var(--ask);
+		border-color: var(--ask);
+		background: color-mix(in srgb, var(--ask-fill) 22%, var(--bg));
 	}
 	.miss {
 		color: var(--warn);

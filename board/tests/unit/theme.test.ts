@@ -47,6 +47,7 @@ const COLOURS = [
 	'--warn',
 	'--ok',
 	'--danger',
+	'--ask',
 	'--status-waiting',
 	'--status-working',
 	'--status-delivered',
@@ -72,6 +73,7 @@ test('light theme: text on a filled control has a contrast of at least 7:1', () 
 		const text = fill === '--selected-bg' ? '--selected-text' : '--bg';
 		expect(contrast(resolve(light, text), resolve(light, fill))).toBeGreaterThanOrEqual(7);
 	}
+	expect(contrast(resolve(light, '--ask-ink'), resolve(light, '--ask-fill'))).toBeGreaterThanOrEqual(7);
 });
 
 test('light theme: every colour is opaque', () => {

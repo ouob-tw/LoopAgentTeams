@@ -58,3 +58,9 @@ export async function stopTask(id: string): Promise<Done> {
 	const result = await request(`/api/automation/${encodeURIComponent(id)}/stop`, post('POST', {}));
 	return result.ok ? { ok: true, value: null } : failed(result, '沒有停下來，請再試一次。');
 }
+
+/** 送出回覆: the answer to the question the task's agent waits on. */
+export async function replyTask(id: string, text: string): Promise<Done> {
+	const result = await request(`/api/automation/${encodeURIComponent(id)}/reply`, post('POST', { text }));
+	return result.ok ? { ok: true, value: null } : failed(result, '回覆沒有送出，請再試一次。');
+}

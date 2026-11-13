@@ -197,7 +197,8 @@ export interface MissedPeriod extends RunWindow {
 }
 
 /** A task's state this period, as the list's pill shows it. */
-export type TaskState = 'running' | 'paused' | 'done' | 'failed' | 'check-failed' | 'missed' | 'waiting';
+/** `asking`: the run's agent asked the user something (ASK:) and waits for the answer. */
+export type TaskState = 'running' | 'asking' | 'paused' | 'done' | 'failed' | 'check-failed' | 'missed' | 'waiting';
 
 export interface AutomationTaskView {
 	task: AutomationTask;
@@ -328,11 +329,21 @@ export const sameDay = (a: number, b: number) => startOf(dayOf(a)) === startOf(d
 export const succeeded = (run: AutomationRun) => run.trigger !== 'preview' && run.status === 'success' && (!run.review || run.review.status === 'pass');
 /** The run is still going: running, or its checking agent is still at it. Either way the task is busy. */
 export const isOpen = (run: Pick<AutomationRun, 'status' | 'review'>) => run.status === 'running' || run.review?.status === 'checking';
+/** The question a running run's agent waits on: its last one, while unanswered. */
+export function openAsk(run: Pick<AutomationRun, 'status' | 'asks'>): RunAsk | undefined {
+	const last = run.status === 'running' ? run.asks?.at(-1) : undefined;
+	return last && last.answeredAt === undefined ? last : undefined;
+}
+/** Where an answer came from, as the record shows it: the board's reply box or the agent's own terminal. */
+export const ASK_SOURCE = { board: '看板', terminal: '終端' } as const;
+/** The first line of a question: a yellow card's title and the start of its push. */
+export const askFirstLine = (question: string) => question.trim().split('\n')[0].trim();
 /** Its check ended without a pass: failed, or could not judge (stopped by the user aside). */
 export const reviewFailed = (run: Pick<AutomationRun, 'status' | 'review'>) =>
 	run.status === 'success' && (run.review?.status === 'fail' || (run.review?.status === 'error' && run.review.ended !== 'stopped'));
 /** What a run's label says: its own status, or how its check ended when that went otherwise than a pass. */
-export function runLabel(run: Pick<AutomationRun, 'status' | 'review'>): { text: string; key: string } {
+export function runLabel(run: Pick<AutomationRun, 'status' | 'review' | 'asks'>): { text: string; key: string } {
+	if (openAsk(run)) return { text: STATE_TEXT.asking, key: 'asking' };
 	const review = run.status === 'success' ? run.review : undefined;
 	if (!review || review.status === 'pass') return { text: RUN_STATUS_TEXT[run.status], key: run.status };
 	if (review.status === 'checking') return { text: '▶ 檢查中', key: 'running' };
@@ -382,6 +393,7 @@ export function openMissed(missed: readonly MissedPeriod[], runs: readonly Autom
  *  succeeded (a later failure does not undo it), missed while a missed period is still open,
  *  failed when this period's latest run failed. */
 export function taskState(task: AutomationTask, runs: readonly AutomationRun[], now: number, missed: readonly MissedPeriod[] = []): TaskState {
+	if (runs.some((run) => openAsk(run))) return 'asking';
 	if (runs.some(isOpen)) return 'running';
 	if (task.paused) return 'paused';
 	const period = periodOf(task.schedule, now);
@@ -425,6 +437,7 @@ export function missedText(missed: readonly MissedPeriod[]): string {
 
 export const STATE_TEXT: Record<TaskState, string> = {
 	running: '▶ 執行中',
+	asking: '? 等你回覆',
 	paused: '‖ 已暫停',
 	done: '✓ 本期已完成',
 	failed: '✕ 失敗',
@@ -487,6 +500,8 @@ export function runReason(run: AutomationRun): string {
 export function lastRunText(run: AutomationRun | undefined, timeZone: string, now?: number): string {
 	if (!run) return '還沒跑過';
 	const at = timeFormat(timeZone);
+	const asked = openAsk(run);
+	if (asked) return `${at.full(run.startedAt)} 開始，${at.clock(asked.askedAt)} 起等你回覆`;
 	if (run.status === 'running') return `${at.full(run.startedAt)} 開始，${now === undefined ? '執行中' : `已跑 ${Math.max(0, Math.floor((now - run.startedAt) / 60_000))} 分鐘`}`;
 	const when = at.full(run.endedAt ?? run.startedAt);
 	if (run.status === 'success' && run.review && run.review.status !== 'pass') return `${when} 做完，但${run.review.status === 'checking' ? '還在檢查' : reviewText(run.review)}`;

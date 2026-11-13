@@ -3,7 +3,7 @@
 // agent by the board's close flow, and handles the Codex account through codex-multi-auth and a
 // probe run of Codex. Only `limits --json --refresh` and `switch <n>` of codex-multi-auth are run:
 // never a reset, never an API account.
-import { closeAgent } from './agent-control.ts';
+import { closeAgent, sendToAgent } from './agent-control.ts';
 import type { AgentHost, CodexAccounts, CodexLimits } from './automation-agent.ts';
 import type { Board } from './board.ts';
 import type { BoardConfig } from './config.ts';
@@ -114,6 +114,18 @@ export function boardAgentHost(config: BoardConfig, board: () => Board): AgentHo
 		async transcript(client, sessionId) {
 			const read = await readTranscript(config, client, sessionId);
 			return read.ok ? read.path : null;
+		},
+		async inputAfter(client, sessionId, seq) {
+			const read = await readTranscript(config, client, sessionId);
+			if (!read.ok) return null;
+			// Typed in (the terminal, or the board's own send) or delivered by hcom; a hook's prompt is not input.
+			const input = read.page.items.find((item) => item.seq > seq && (item.kind === 'user' || (item.kind === 'tool' && item.name === 'hcom')));
+			if (!input) return null;
+			return { text: input.kind === 'tool' ? input.detail || input.label : input.text, seq: input.seq };
+		},
+		async send(sessionId, text) {
+			const sent = await sendToAgent(board(), sessionId, text);
+			return sent.body.ok ? null : (sent.body.reason ?? '沒有送到');
 		},
 		async screen(pane) {
 			const read = await readScreen(config, pane, 'detection');

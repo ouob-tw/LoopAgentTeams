@@ -9,7 +9,9 @@ import {
 	missedNames,
 	missedText,
 	nextAutoAt,
+	openAsk,
 	periodOf,
+	runLabel,
 	scheduleText,
 	taskState,
 	windowOf,
@@ -149,4 +151,21 @@ test('missed: shown until dismissed or a run starts after the window; done still
 	// Years are shown against the newest window's: an older year is written out.
 	const january = { period: '2027-01-02', from: at(2027, 1, 2, 0), to: at(2027, 1, 3, 0), recordedAt: 0 };
 	expect(missedNames([{ ...entry(12), from: at(2026, 12, 31, 0), to: at(2027, 1, 1, 0) }, january])).toEqual(['2026/12/31', '1/2']);
+});
+
+test('等你回覆: a running run whose last question is unanswered; the state, the run label and the card\'s last line say so', () => {
+	const zone = 'Asia/Taipei';
+	const now = at(2026, 11, 2, 10, 30);
+	const asked = { question: '開幾張？', askedAt: at(2026, 11, 2, 10, 18) };
+	const waiting = run({ status: 'running', startedAt: at(2026, 11, 2, 10), asks: [asked] });
+	expect(openAsk(waiting)).toEqual(asked);
+	expect(taskState(task(), [waiting], now)).toBe('asking');
+	expect(runLabel(waiting)).toEqual({ text: '? 等你回覆', key: 'asking' });
+	expect(lastRunText(waiting, zone, now)).toBe('11/02 10:00 開始，10:18 起等你回覆');
+	// Answered, it is running again; a run that ended waits on nothing, whatever its record holds.
+	const going = run({ status: 'running', asks: [{ ...asked, answer: '2 張', answeredAt: at(2026, 11, 2, 10, 23), source: '看板' }] });
+	expect(openAsk(going)).toBeUndefined();
+	expect(taskState(task(), [going], now)).toBe('running');
+	expect(openAsk(run({ status: 'timeout', asks: [asked] }))).toBeUndefined();
+	expect(taskState(task(), [run({ status: 'timeout', asks: [asked] })], now)).toBe('failed');
 });

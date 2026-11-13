@@ -10,6 +10,7 @@
 		EFFORT_TEXT,
 		isOpen,
 		kindText,
+		openAsk,
 		reviewFailed,
 		MISSED_NAMED,
 		runReason,
@@ -21,6 +22,8 @@
 		type AutomationTaskView
 	} from '#lib/board/automation.ts';
 	import { dismissMissed, pauseTask, readOutput, runTask, stopTask } from '#lib/board/automation-actions.ts';
+	import AutomationAsk from './AutomationAsk.svelte';
+	import AutomationAsks from './AutomationAsks.svelte';
 	import AutomationReview from './AutomationReview.svelte';
 	import AutomationState from './AutomationState.svelte';
 
@@ -167,7 +170,8 @@
 		{@const live = run.status === 'running'}
 		{@const checking = run.review?.status === 'checking'}
 		{@const checkBad = reviewFailed(run)}
-		<section class="run" class:bad={checkBad || (!live && run.status !== 'success' && run.status !== 'skipped')} class:skip={run.status === 'skipped'} class:live={live || checking} data-run={run.id} data-status={run.status}>
+		{@const waiting = openAsk(run)}
+		<section class="run" class:ask={waiting !== undefined} class:bad={checkBad || (!live && run.status !== 'success' && run.status !== 'skipped')} class:skip={run.status === 'skipped'} class:live={live || checking} data-run={run.id} data-status={run.status}>
 			<div class="when">
 				<b>{at.full(run.startedAt)}{run.endedAt === undefined || run.status === 'skipped' || run.trigger === 'carried' ? '' : ` → ${sameDay(run.startedAt, run.endedAt) ? at.clock(run.endedAt) : at.full(run.endedAt)}`}</b>
 				<AutomationState {run} />
@@ -177,6 +181,12 @@
 				<p>已跑 {minutes(run.startedAt, clock.now)} 分鐘，上限 {task.limitMinutes} 分鐘</p>
 			{:else}
 				<p class="reason">{runReason(run)}</p>
+			{/if}
+			{#if run.asks?.length}
+				<AutomationAsks asks={run.asks} waiting={waiting !== undefined} {timeZone} />
+			{/if}
+			{#if waiting}
+				<AutomationAsk taskId={task.id} {run} ask={waiting} limitMinutes={task.limitMinutes} {timeZone} {onopenagent} {onchanged} />
 			{/if}
 			{#each run.accountSwitches ?? [] as note, index (index)}
 				<p class="hint">換帳號：{note}</p>
@@ -314,6 +324,9 @@
 	}
 	.run.live {
 		border-left-color: var(--accent);
+	}
+	.run.live.ask {
+		border-left-color: var(--ask-fill);
 	}
 	.run.skip {
 		border-left-color: var(--line);
