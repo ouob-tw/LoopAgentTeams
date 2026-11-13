@@ -219,6 +219,16 @@ export class Tab {
 			this.#keepErrors = undefined;
 		}
 	}
+	/** Wait for the page to have started: before that the server-drawn page ignores taps and clicks. */
+	started() {
+		return this.until(`document.body.dataset.hydrated !== undefined`, 'the page to start');
+	}
+	/** Load the page again and wait for the new one to start (the old one is marked started too). */
+	async reload() {
+		await this.eval(`delete document.body.dataset.hydrated`);
+		await this.send('Page.reload');
+		await this.started();
+	}
 	/** Wait for an expression in the page to be true. */
 	async until(expression: string, what = expression, ms = 10_000) {
 		const deadline = Date.now() + ms;

@@ -164,10 +164,8 @@ test('phone: with the command line put away the box runs down to the bottom, no 
 test('tablet (touch, wider than 760px): a command line remembered as put away leaves the box above the dock', async () => {
 	await visit({ width: 1000, height: 800, phone: true, theme: 'dark' });
 	await tab.eval(`localStorage.setItem('lat-board-command-hidden', '1')`);
-	await tab.send('Page.reload');
-	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].some((tab) => tab.firstChild.textContent.trim() === '終端')`, 'the board again');
 	// The page takes touches only once it has started: wait for that before clicking a tab.
-	await tab.until(`document.body.dataset.hydrated !== undefined || performance.now() > 3000`, 'the page to start');
+	await tab.reload();
 	await openScreen();
 	const gap = await tab.eval<number>(`Math.abs(document.querySelector('.screen-panel .box').getBoundingClientRect().bottom - document.querySelector('.dock').getBoundingClientRect().top)`);
 	expect(gap).toBeLessThan(2);
