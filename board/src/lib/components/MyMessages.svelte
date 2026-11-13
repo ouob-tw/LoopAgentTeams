@@ -41,9 +41,10 @@
 	const MORE_MS = 600;
 	const phone = new MediaQuery('(max-width: 760px)', false);
 	/** The narrowest the conversation's column may be for the list to sit beside it. */
-	const BESIDE_PX = 520;
+	const BESIDE_PX = 540;
 	let aside = $state<HTMLElement>();
-	let frameWidth = $state(Infinity);
+	/** The conversation column's width; null until measured, while nothing of the list shows. */
+	let frameWidth = $state<number | null>(null);
 	// A narrow column, not only a phone's window, leaves no room beside the conversation.
 	$effect(() => {
 		const frame = aside?.parentElement;
@@ -53,7 +54,7 @@
 		return () => watch.disconnect();
 	});
 	/** Whether the list is a floating button and a sheet rather than a column. */
-	const compact = $derived(phone.current || frameWidth < BESIDE_PX);
+	const compact = $derived(phone.current || (frameWidth ?? Infinity) < BESIDE_PX);
 	let folded = $state(remembered(MY_MESSAGES_KEY, ['open', 'folded'], 'open') === 'folded');
 	let sheet = $state(false);
 	/** Whether the list shows: the wide layout's column unless folded, a phone's sheet while opened. */
@@ -85,7 +86,7 @@
 	let readFor: string | undefined;
 	// Read when shown, and again after each change of the conversation, a moment later so a burst is one read.
 	$effect(() => {
-		if (!open) return;
+		if (!open || frameWidth === null) return;
 		const forId = id;
 		void version;
 		// Not tracked: the read itself sets them.
@@ -166,7 +167,7 @@
 	{/if}
 {/snippet}
 
-<aside class="mine" bind:this={aside} class:phone={compact} class:open data-block="my-messages">
+<aside class="mine" bind:this={aside} class:phone={compact} class:open class:unmeasured={frameWidth === null} data-block="my-messages">
 	{#if open}
 		{#if compact}
 			<button type="button" class="backdrop" aria-label="關閉我說過的話" onclick={() => toggle(false)}></button>
@@ -203,6 +204,9 @@
 		max-height: calc(100vh - 4rem);
 		display: flex;
 		flex-direction: column;
+	}
+	.unmeasured {
+		visibility: hidden;
 	}
 	.mine:not(.open) {
 		width: auto;
