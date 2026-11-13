@@ -429,7 +429,7 @@ bun run demo --css ./proposed.css --port 7111 --host 127.0.0.1
 
 測試檔不得寫死 `/tmp/` 之類的固定暫存路徑，要用 `mkdtemp(join(tmpdir(), …))` 開暫存資料夾並在結束時刪掉；`tests/unit/no-hardcoded-tmp.test.ts` 掃描 `tests/` 底下的 `.ts`、`.mjs`、`.js`，發現就失敗並列出檔案與行號。
 
-測試不讀寫真實的 `.lat/`、綁定登記或回報紀錄，也不會對真實的主控輸入文字或送出答案。測試用 Node 啟動伺服器，PATH 上沒有 Node 時改用執行測試的 Bun，所以只有 Bun 的主機也能跑完整套（`bun run test:all`）。瀏覽器測試找不到 Chrome 或 Chromium（`CHROME` 有指定時只找它）就失敗並寫明原因，不會略過。測試伺服器和瀏覽器測試用的 Chrome 都綁連接埠 0，由系統挑一個沒人用的，所以不受主機上其他服務占用的連接埠影響，測試也不需要設定連接埠。瀏覽器測試的 Chrome 不會比開它的測試程式活得久：Linux 上以 `setpriv --pdeathsig KILL` 啟動，測試程式不論怎麼結束（含 SIGKILL），系統都會立刻收掉它。它的使用者資料夾（`/tmp/lat-board-test-chrome-*`）裡有 `lat-test-owner.json`，記下測試程式與 Chrome 的程式編號和啟動時間；每個測試程式第一次開 Chrome 前會清掉擁有者已不在的資料夾與 Chrome，只依這些記號辨識，不比對程式名稱，別的測試程式還在用的不動。沒有記號的舊資料夾超過 10 分鐘、且 Chrome 自己的 `SingletonLock` 指向的程式已不在時才清。測試：`tests/browser/chrome-lifetime.test.ts`。
+測試不讀寫真實的 `.lat/`、綁定登記或回報紀錄，也不會對真實的主控輸入文字或送出答案。測試用 Node 啟動伺服器，PATH 上沒有 Node 時改用執行測試的 Bun，所以只有 Bun 的主機也能跑完整套（`bun run test:all`）。瀏覽器測試找不到 Chrome 或 Chromium（`CHROME` 有指定時只找它）就失敗並寫明原因，不會略過。測試伺服器和瀏覽器測試用的 Chrome 都綁連接埠 0，由系統挑一個沒人用的，所以不受主機上其他服務占用的連接埠影響，測試也不需要設定連接埠。瀏覽器測試的 Chrome 不會比開它的測試程式活得久：Linux 上以 `setpriv --pdeathsig KILL` 啟動，測試程式不論怎麼結束（含 SIGKILL），系統都會立刻收掉它；也不給它 D-Bus，讓它留在測試所在的 systemd scope，因此它也讀不到系統的深淺色設定，一律以淺色畫面開啟，要深色的測試自己用 `Emulation.setEmulatedMedia` 指定。它的使用者資料夾（`/tmp/lat-board-test-chrome-*`）裡有 `lat-test-owner.json`，記下測試程式與 Chrome 的程式編號和啟動時間；每個測試程式第一次開 Chrome 前會清掉擁有者已不在的資料夾與 Chrome，只依這些記號辨識，不比對程式名稱，別的測試程式還在用的不動。沒有記號的舊資料夾超過 10 分鐘、且 Chrome 自己的 `SingletonLock` 指向的程式已不在時才清。測試：`tests/browser/chrome-lifetime.test.ts`。
 
 瀏覽器擴充功能（例如 Dark Reader）會在頁面啟動前，在樣式表旁邊插入或搬動節點；樣式表放在頁面元件的範本裡就會讓首頁變成錯誤頁，所以一律放在 `<head>`。
 

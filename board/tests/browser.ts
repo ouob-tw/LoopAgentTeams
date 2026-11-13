@@ -378,10 +378,13 @@ export interface Started {
  * Start Chrome with `flags`, a profile of its own and its DevTools on a port it picks. It leads its
  * own process group, which `end` ends. Where `setpriv` is found it starts with `--pdeathsig KILL`:
  * the kernel kills it the moment the test process ends, however it ends (a SIGKILL included), and
- * the rest of its group follows it. Its profile records whose it is (`OWNER_FILE`), and the first
- * start in a process sweeps what gone test processes left (see `sweepLeftovers`).
+ * the rest of its group follows it. Without `dbus` it gets no session bus, so it stays in the test's
+ * own systemd scope instead of asking systemd for one of its own, and a run killed by its scope
+ * takes it too; it then also has no system colour preference and draws light unless a test emulates
+ * one. Its profile records whose it is (`OWNER_FILE`), and the first start in a process sweeps what
+ * gone test processes left (see `sweepLeftovers`).
  */
-export function startChrome(flags: string[]): Started {
+export function startChrome(flags: string[], { dbus = false }: { dbus?: boolean } = {}): Started {
 	if (!swept) {
 		swept = true;
 		sweepLeftovers();
@@ -396,7 +399,8 @@ export function startChrome(flags: string[]): Started {
 	mark(owner);
 	const command = [CHROME, ...flags, `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'];
 	if (SETPRIV) command.unshift(SETPRIV, '--pdeathsig', 'KILL');
-	const chrome = spawn(command[0], command.slice(1), { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+	const env = dbus ? process.env : { ...process.env, DBUS_SESSION_BUS_ADDRESS: 'disabled:' };
+	const chrome = spawn(command[0], command.slice(1), { stdio: ['ignore', 'ignore', 'pipe'], detached: true, env });
 	if (chrome.pid !== undefined) mark({ ...owner, chrome: chrome.pid, chromeStart: startTime(chrome.pid) });
 	// The end of what Chrome wrote to stderr, to say why it ended.
 	let stderr = '';

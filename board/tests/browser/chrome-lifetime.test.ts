@@ -94,6 +94,12 @@ test('a SIGKILLed `bun test --parallel` takes its workers’ Chromes with it wit
 	expect(await until(() => chromes.every(({ pid, worker }) => !groupAlive(pid) && !alive(worker)), 30_000)).toBe(true);
 }, 120_000);
 
+test('a test Chrome stays in its test process’s systemd scope, so a run killed by its scope takes it too', async () => {
+	const { run, chromes } = await owner(root(), 'hold');
+	const cgroup = (pid: number) => readFileSync(`/proc/${pid}/cgroup`, 'utf8');
+	expect(cgroup(chromes[0].pid)).toBe(cgroup(run.pid!));
+}, 60_000);
+
 test('a test process that exits without closing its Chrome leaves no Chrome behind', async () => {
 	const { chromes } = await owner(root(), 'exit');
 	expect(await until(() => !groupAlive(chromes[0].pid), 30_000)).toBe(true);
