@@ -5,7 +5,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PASSWORD } from '../harness.ts';
+import { totpCode } from '../../src/lib/server/totp.ts';
+import { PASSWORD, TOTP_SECRET } from '../harness.ts';
 
 const SCRIPT = join(import.meta.dir, '../../scripts/demo-board.ts');
 const CSS = ':root { --accent: #ff00aa; }';
@@ -40,17 +41,28 @@ afterAll(async () => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-async function login(): Promise<{ response: Response; cookie: string }> {
-	const response = await fetch(`${url}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PASSWORD }) });
-	return { response, cookie: response.headers.getSetCookie()[0]?.split(';')[0] ?? '' };
+let loggedIn: Promise<{ response: Response; cookie: string }> | undefined;
+
+/** Both login steps with the printed password and TOTP secret, once: a code logs in only once, and
+ *  the demo used the code of the moment for its own setup, so this uses the next step's. */
+function login(): Promise<{ response: Response; cookie: string }> {
+	return (loggedIn ??= (async () => {
+		const json = { 'content-type': 'application/json' };
+		const first = await fetch(`${url}/api/login`, { method: 'POST', headers: json, body: JSON.stringify({ password: PASSWORD }) });
+		const step = first.headers.getSetCookie()[0]?.split(';')[0] ?? '';
+		const response = await fetch(`${url}/api/login/totp`, { method: 'POST', headers: { ...json, cookie: step }, body: JSON.stringify({ code: totpCode(TOTP_SECRET, Date.now() + 30_000) }) });
+		const set = response.headers.getSetCookie().find((cookie) => cookie.startsWith('lat_board_demo='));
+		return { response, cookie: set?.split(';')[0] ?? '' };
+	})());
 }
 
 test('serves the given stylesheet and the made-up board behind the printed password', async () => {
 	expect(output).toContain(PASSWORD);
+	expect(output).toContain(TOTP_SECRET);
 	const { response, cookie } = await login();
 	expect(response.status).toBe(200);
 	// A cookie without Domain belongs to the host name it was set on, so another host name keeps its own login.
-	expect(response.headers.getSetCookie()[0]).not.toMatch(/domain=/i);
+	for (const set of response.headers.getSetCookie()) expect(set).not.toMatch(/domain=/i);
 	expect(await (await fetch(`${url}/user.css`, { headers: { cookie } })).text()).toBe(CSS);
 	expect(await (await fetch(`${url}/`, { headers: { cookie } })).text()).toContain('href="/user.css"');
 	const board = await (await fetch(`${url}/api/board`, { headers: { cookie } })).json() as { controllers: { hcomName: string }[] };

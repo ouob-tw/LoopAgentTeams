@@ -45,6 +45,7 @@
 	.automation {
 		display: flex;
 		flex-direction: column;
+		line-height: 1.6;
 		gap: 0.6rem;
 		min-width: 0;
 	}

@@ -15,6 +15,9 @@ Environment=PATH=<node 所在目錄>:<uv、hcom 與 herdr 所在目錄>:/usr/loc
 # 監聽位址與連接埠；想只給本機用就改成 127.0.0.1
 Environment=HOST=0.0.0.0
 Environment=PORT=7100
+# 預設只接受本機連線。放在反向代理後面時，把代理加進允許來源與信任代理（見 docs/lat-board.md「連線來源與反向代理」）：
+# Environment=LAT_BOARD_ALLOWED_SOURCES=127.0.0.1,::1,<代理位址>
+# Environment=LAT_BOARD_TRUSTED_PROXIES=<代理位址>
 # 其他設定（見 board/README.md）需要時再加，例如：
 # Environment=LAT_BOARD_STATE_DIR=<目錄>
 # 只有 Bun 的主機改成：ExecStart=/usr/bin/env bun build/index.js

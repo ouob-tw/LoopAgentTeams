@@ -56,7 +56,7 @@ test('a file arrives in pieces and reads back the same, kept only for the board 
 	const response = await read(path);
 	expect(response.status).toBe(200);
 	expect(response.headers.get('content-type')).toBe('image/png');
-	expect(response.headers.get('content-security-policy')).toBe('sandbox');
+	expect(response.headers.get('content-security-policy')).toBe("sandbox; frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
 	expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
 });
 
@@ -104,7 +104,7 @@ test('a PDF opens in the browser, still sandboxed, so its own viewer shows it an
 	expect(response.status).toBe(200);
 	expect(response.headers.get('content-type')).toBe('application/pdf');
 	expect(response.headers.get('content-disposition')).toBeNull();
-	expect(response.headers.get('content-security-policy')).toBe('sandbox');
+	expect(response.headers.get('content-security-policy')).toBe("sandbox; frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
 	expect(response.headers.get('x-content-type-options')).toBe('nosniff');
 });
 

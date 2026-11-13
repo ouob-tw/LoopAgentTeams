@@ -4,7 +4,9 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { renderUnicodeCompact } from 'uqr';
 import { loadConfig } from './lib/server/config.ts';
 import {
 	expired,
@@ -19,10 +21,18 @@ import { listHerdrAgents } from './lib/server/herdr.ts';
 import type { BoardConfig } from './lib/server/config.ts';
 import { formatInboxStatus, readInboxStatus } from './lib/server/inbox-status.ts';
 import { hasPassword, setPassword } from './lib/server/password.ts';
+import { deletePasskey, ENROLL_CODE_MINUTES, issueEnrollCode, listPasskeys } from './lib/server/passkeys.ts';
+import { clearTotp, hasTotp, matchingStep, newTotpSecret, otpauthUrl, saveTotp } from './lib/server/totp.ts';
 
 const USAGE = `用法：
   start [--host <位址>] [--port <連接埠>]   啟動看板（需先 build）
   password                                  設定或變更登入密碼（輸入兩次）
+  totp                                      設定或更換第二道驗證（TOTP）：顯示 QR code，
+                                            輸入一次 App 上的六位數字才生效，舊金鑰隨即失效
+  totp clear                                清除 TOTP
+  passkey code                              產生登記 passkey 用的一次性登記碼（10 分鐘內、用一次）
+  passkey list                              列出已登記的 passkey
+  passkey delete <passkey ID>               刪除一把 passkey，它從此不能登入
   devices                                   列出已登入的裝置（含測試裝置）
   revoke <裝置 ID>                          撤銷一台裝置
   test-login [--hours <時數>] [--label <名稱>] [--url <看板網址>]
@@ -31,6 +41,8 @@ const USAGE = `用法：
   inbox                                     列出待辦與已處理的現況（只讀，不需登入）`;
 
 const DEFAULT_PORT = '7100';
+/** How many tries `totp` gives to type the app's code before it gives up. */
+const TOTP_TRIES = 3;
 
 /** What runs the built server: Node when the host has it (the way it has always run), the runtime
  *  running this command otherwise, which is Bun on a host without Node. */
@@ -83,6 +95,52 @@ function passwordReader(): (prompt: string) => Promise<string> {
 		})();
 		return (await lines)[next++] ?? '';
 	};
+}
+
+/** Read lines typed at the terminal, shown as typed; one per line of input otherwise. */
+function lineReader(): { read: (prompt: string) => Promise<string>; close: () => void } {
+	if (!process.stdin.isTTY) return { read: passwordReader(), close: () => {} };
+	const lines = createInterface({ input: process.stdin, output: process.stderr });
+	return { read: (prompt) => lines.question(prompt), close: () => lines.close() };
+}
+
+/** Set a new TOTP secret: shown as a QR code and an otpauth:// link, it replaces the old one only
+ *  once a code from the app proves the app has it. */
+async function setTotp(config: BoardConfig): Promise<number> {
+	let replacing = false;
+	try {
+		replacing = hasTotp(config.stateDir);
+	} catch (error) {
+		// A damaged secret file is replaced; this command is the way to repair it.
+		console.error(`現有的 TOTP 金鑰檔讀不出來（${(error as Error).message}），這次設定會取代它。`);
+	}
+	const secret = newTotpSecret();
+	const url = otpauthUrl(secret, hostname());
+	console.log('用手機的驗證器 App（Google Authenticator、Microsoft Authenticator、1Password 等）掃描：\n');
+	console.log(renderUnicodeCompact(url, { border: 2 }));
+	console.log(`\n不能掃描時，在 App 手動輸入這個網址或金鑰：\n${url}\n金鑰：${secret}`);
+	console.log('QR code 與金鑰等同登入的第二道驗證，不要截圖或傳給別人。\n');
+	const input = lineReader();
+	try {
+		for (let tries = 1; tries <= TOTP_TRIES; tries++) {
+			const code = await input.read('輸入 App 上現在顯示的六位數字：');
+			const now = config.now();
+			const step = matchingStep(secret, code, now);
+			if (step !== null) {
+				saveTotp(config.stateDir, secret, now, step);
+				console.log(
+					replacing
+						? '已更換 TOTP，舊金鑰產生的數字不能再登入；App 裡舊的那一筆可以刪掉。已登入的裝置維持登入。'
+						: '已設定 TOTP。登入看板時，輸入密碼後再輸入 App 上的六位數字。'
+				);
+				return 0;
+			}
+			console.error(tries < TOTP_TRIES ? '數字不對，請確認 App 裡是剛剛掃描的那一筆，等下一組數字出現再輸入。' : `${TOTP_TRIES} 次都不對，TOTP 沒有變更。`);
+		}
+		return 1;
+	} finally {
+		input.close();
+	}
 }
 
 /** A test device's column in `devices`: its label, when it ends, and whether it is used or over. */
@@ -158,12 +216,48 @@ async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 
+	if (command === 'totp' && !args.length) return setTotp(config);
+
+	if (command === 'totp' && args[0] === 'clear' && args.length === 1) {
+		console.log(
+			clearTotp(config.stateDir)
+				? '已清除 TOTP。沒有第二道驗證時無法用密碼登入；重新設定：bun run board totp。已登入的裝置維持登入。'
+				: '沒有設定 TOTP，沒有變更。'
+		);
+		return 0;
+	}
+
+	if (command === 'passkey' && args[0] === 'code' && args.length === 1) {
+		const { code } = issueEnrollCode(config.stateDir, config.now());
+		console.log(`登記碼：${code}`);
+		console.log(`${ENROLL_CODE_MINUTES} 分鐘內在看板登入頁按「登記 passkey」，輸入密碼與這組登記碼；用過一次或產生新的登記碼後就失效。`);
+		if (!config.passkeySite) console.error('注意：看板沒有設定 LAT_BOARD_URL，passkey 目前不能用。');
+		return 0;
+	}
+
+	if (command === 'passkey' && args[0] === 'list' && args.length === 1) {
+		const passkeys = listPasskeys(config.stateDir);
+		if (!passkeys.length) console.log('沒有已登記的 passkey。');
+		for (const passkey of passkeys) console.log([passkey.id, passkey.createdAt, passkey.lastUsedAt ?? '（還沒用過）', passkey.label].join('\t'));
+		return 0;
+	}
+
+	if (command === 'passkey' && args[0] === 'delete' && args[1] && args.length === 2) {
+		if (!deletePasskey(config.stateDir, args[1])) {
+			console.error(`找不到 passkey ${args[1]}。`);
+			return 1;
+		}
+		console.log(`已刪除 passkey ${args[1]}，它不能再登入。用它登入的裝置維持登入；要讓它登出，用 devices 查 ID 再 revoke。`);
+		return 0;
+	}
+
 	if (command === 'devices') {
 		const devices = listDevices(config.stateDir);
 		const now = config.now();
 		if (!devices.length) console.log('沒有已登入的裝置。');
 		for (const device of devices) {
-			console.log([device.id, device.pairedAt, device.label, ...(device.test ? [testColumn(device, now)] : [])].join('\t'));
+			const state = device.test ? [testColumn(device, now)] : expired(device, now) ? ['（登入已失效，須重新登入）'] : [];
+			console.log([device.id, device.pairedAt, device.label, ...state].join('\t'));
 			if (device.test && expired(device, now)) for (const line of await runningOwned(config, device)) console.log(line);
 		}
 		return 0;

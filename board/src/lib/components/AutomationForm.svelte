@@ -254,6 +254,7 @@
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
+		line-height: 1.6;
 		max-width: 46rem;
 	}
 	h2 {
@@ -272,6 +273,11 @@
 		width: 100%;
 		box-sizing: border-box;
 	}
+	input[type='text'],
+	select {
+		min-height: 44px;
+		box-sizing: border-box;
+	}
 	textarea {
 		min-height: 5.5rem;
 		resize: vertical;
@@ -286,6 +292,11 @@
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.4rem 0.5rem;
+	}
+	/* The board's chosen and main buttons are 600, which Chinese fonts draw as 400 or 700. */
+	button.primary,
+	button[aria-pressed='true'] {
+		font-weight: 700;
 	}
 	.seg button,
 	.actions button,
@@ -341,6 +352,7 @@
 	.switch {
 		display: flex;
 		align-items: center;
+		min-height: 44px;
 		gap: 0.6rem;
 		margin-top: 1rem;
 	}
@@ -356,7 +368,7 @@
 	.error {
 		margin: 0.25rem 0 0;
 		color: var(--danger);
-		font-weight: 600;
+		font-weight: 700;
 	}
 	[aria-invalid='true'] {
 		border-color: var(--danger);
