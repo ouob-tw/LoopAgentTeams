@@ -12,9 +12,14 @@ let other: string;
 const ISSUED = Date.parse('2026-05-01T08:00:00.000Z');
 const iso = (time: number) => new Date(time).toISOString();
 
+/** Move the board's clock. A login ends after 7 days without a request, so log in again then. */
+async function at(time: number) {
+	fixture.setClock(time);
+	cookie = await fixture.login();
+}
 /** Move the board's clock and read what it shows then. */
 async function on(time: number): Promise<BoardSnapshot> {
-	fixture.setClock(time);
+	await at(time);
 	return fixture.refresh(cookie);
 }
 const archived = async (title: string, as = cookie) =>
@@ -137,7 +142,7 @@ test('a report that became due since the last read is archived, not marked read'
 	const { key } = titled(await on(ISSUED + 41 * DAY), '到期後才按已讀')!;
 
 	// The clock passes the deadline, but the board has not re-read anything yet.
-	fixture.setClock(ISSUED + 48 * DAY);
+	await at(ISSUED + 48 * DAY);
 
 	expect((await fixture.markRead(cookie, key)).status).toBe(409);
 	expect(titled(await fixture.board(cookie), '到期後才按已讀')).toBeUndefined();

@@ -178,7 +178,9 @@ test('the first reply of a batch reaches the page before Codex ends the turn; on
 
 test('a translation unused for 30 days is dropped and translated again when asked', async () => {
 	await lines(['Reply to be forgotten.']);
+	// A login ends after 7 days without a request: log in again at the new time.
 	fixture.setClock(START + 31 * DAY);
+	cookie = await fixture.login();
 	await lines(['Another reply to trigger expiry.']);
 	const saved = readFileSync(join(fixture.dir, 'board-state', 'translations.json'), 'utf8');
 	expect(saved).not.toContain('Reply to be forgotten');
@@ -215,6 +217,7 @@ test('Codex failing or timing out gives a reason for that text, and nothing is s
 	expect(await lines(['This one fails.'])).toEqual({ 0: { error: 'Codex 沒有完成：usage limit reached' } });
 	expect(codexCalls()).toHaveLength(3);
 	fixture.setClock(START + 31 * DAY + 5 * 60_000 + 1000);
+	cookie = await fixture.login();
 	expect((await lines(['This one fails.']))[0].text).toBe('譯：This one fails.');
 	// The conversation stays out of the journal.
 	expect(fixture.serverOutput()).toContain('[translate] Codex translation failed');

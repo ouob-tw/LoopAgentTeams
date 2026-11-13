@@ -68,7 +68,12 @@ export const TEST_DEVICE_RULES: Record<string, TestRule> = {
 	'PUT /api/uploads/[id]': 'open',
 	'POST /api/client-error': 'open',
 	'POST /api/login': 'open',
-	'POST /api/login/test': 'open'
+	'POST /api/login/test': 'open',
+	'POST /api/login/totp': 'open',
+	'POST /api/login/passkey': 'open',
+	'POST /api/login/passkey/options': 'open',
+	'POST /api/login/enroll': 'open',
+	'POST /api/login/enroll/options': 'open'
 };
 
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
