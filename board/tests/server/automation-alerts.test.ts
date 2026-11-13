@@ -285,7 +285,11 @@ test('a login past its time gets no pushes, as it gets no pages: its subscriptio
 	const card = await eventually(async () => (await alerts()).find((alert) => alert.taskId === task.id && alert.pushed), 'the card pushed');
 	expect(card.pushed!.devices).toBe(1);
 	expect(received.slice(from).map((entry) => entry.path)).toEqual(['/push/phone']);
+	expect(saved().some((entry) => entry.endpoint === `${ORIGIN}/push/laptop`)).toBe(false);
 });
+
+/** The subscriptions as the board keeps them on disk. */
+const saved = (): { deviceId: string; endpoint: string }[] => JSON.parse(readFileSync(join(fixture.dir, 'board-state', 'push', 'subscriptions.json'), 'utf8'));
 
 /** Run a failing task now; the paths its card's push went to. */
 async function failAndPush(name: string): Promise<string[]> {
@@ -332,4 +336,5 @@ test('a login past its 30 days gets no pushes, however often it was used', async
 	expect((await fixture.fetch('/api/push', { cookie: month.cookie })).status).toBe(401);
 	devices[0].cookie = await fixture.login(devices[0].path);
 	expect(await failAndPush('第 31 天')).not.toContain('/push/month');
+	expect(saved().some((entry) => entry.endpoint === `${ORIGIN}/push/month`)).toBe(false);
 });
