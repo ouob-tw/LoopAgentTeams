@@ -272,6 +272,11 @@
 		width: 100%;
 		box-sizing: border-box;
 	}
+	input[type='text'],
+	select {
+		min-height: 44px;
+		box-sizing: border-box;
+	}
 	textarea {
 		min-height: 5.5rem;
 		resize: vertical;
