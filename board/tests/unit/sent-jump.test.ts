@@ -42,6 +42,9 @@ test('earlier parts are needed until the pages reach back before the sent time',
 	// Once a loaded part reaches back past it, the answer is known.
 	expect(sentPlace(view([said(2, -600, 'x'), said(3, 5, 'go'), said(9, 30, 'other')], 1), look)).toBe(3);
 	expect(sentPlace(view([said(2, -600, 'x'), said(9, 30, 'other')], 1), look)).toBeNull();
+	// The same text sent again later is loaded, the nearer one is not yet: load more, not the later one.
+	expect(sentPlace(view([said(30, 600, 'go')], 20), look)).toBeUndefined();
+	expect(sentPlace(view([said(2, -600, 'x'), said(10, 1, 'go'), said(30, 600, 'go')], 1), look)).toBe(10);
 });
 
 test('a text not found is null, with why', () => {

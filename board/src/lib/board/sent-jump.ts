@@ -35,9 +35,12 @@ const plain = (text: string) => text.trim().replace(/\s+/g, ' ');
 /**
  * Where the sent text is in the conversation, as the user message's `seq`: a message with the
  * same text recorded from a minute before it was sent to half an hour after, the nearest in time.
- * Undefined while the pages loaded do not reach back that far; null once they do and none fits.
+ * Undefined while the pages loaded do not reach back that far, even with one found: an earlier
+ * one may be nearer. Null once they do and none fits.
  */
 export function sentPlace(view: TranscriptView, look: SentLook): number | null | undefined {
+	const first = view.items[0]?.time;
+	if (view.before !== null && !(first && Date.parse(first) < look.at - SENT_BEFORE_MS)) return undefined;
 	const text = plain(look.text);
 	let best: { seq: number; distance: number } | null = null;
 	for (const item of view.items) {
@@ -47,10 +50,7 @@ export function sentPlace(view: TranscriptView, look: SentLook): number | null |
 		const distance = Math.abs(time - look.at);
 		if (!best || distance < best.distance) best = { seq: item.seq, distance };
 	}
-	if (best) return best.seq;
-	const first = view.items[0]?.time;
-	if (view.before !== null && !(first && Date.parse(first) < look.at - SENT_BEFORE_MS)) return undefined;
-	return null;
+	return best?.seq ?? null;
 }
 
 /** Why the sent text was not found in a conversation read far enough back. */
