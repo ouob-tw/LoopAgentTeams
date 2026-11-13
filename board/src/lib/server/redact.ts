@@ -1,4 +1,4 @@
-// What a log line may not repeat: the user's password, answers and messages from the request, and
+// What a log line may not repeat: the user's password and login codes, answers and messages from the request, and
 // the device token from its cookie. Every text a line takes from a response, an exception or a
 // browser report goes through `redact` first. Quoting by position (a reason that repeats only a
 // few words of an answer) cannot be recognised; whole values, each of their lines, and the forms
@@ -6,7 +6,7 @@
 export const OMITTED = '[omitted]';
 
 /** The request fields that hold the user's own text. */
-const CONTENT_FIELDS = ['text', 'note', 'password'] as const;
+const CONTENT_FIELDS = ['text', 'note', 'password', 'code'] as const;
 /** Shorter lines of a multi-line text are too common to take out on their own. */
 const MIN_LINE = 4;
 

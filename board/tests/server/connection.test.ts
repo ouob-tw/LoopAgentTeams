@@ -68,6 +68,16 @@ describe('a board with a proxy on its list', () => {
 		const body = loginBody(password);
 		return from(PROXY, '/api/login', { ...body, headers: { ...body.headers, ...headers } });
 	};
+	/** Both login steps from `address`: the password, then the code with the step cookie it set. */
+	const fullLogin = async (address: string, headers: Record<string, string>) => {
+		const first = await from(address, '/api/login', { ...loginBody(PASSWORD), headers: { ...loginBody(PASSWORD).headers, ...headers } });
+		const second = await from(address, '/api/login/totp', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'user-agent': 'curl-device', ...headers, cookie: first.cookies[0].split(';')[0] },
+			body: JSON.stringify({ code: fixture.totpCode() })
+		});
+		return { first, second, device: second.cookies.find((cookie) => !cookie.includes('_step='))! };
+	};
 
 	beforeAll(async () => {
 		fixture = await startFixture({
@@ -144,19 +154,29 @@ describe('a board with a proxy on its list', () => {
 	});
 
 	test('the login cookie is Secure only over HTTPS through the trusted proxy, and lasts 30 days', async () => {
-		const secure = await viaProxy({ 'x-forwarded-proto': 'https', 'x-forwarded-for': '198.51.100.20' }, PASSWORD);
-		expect(secure.status).toBe(200);
-		expect(secure.cookies[0]).toContain('; Secure');
-		expect(secure.cookies[0]).toContain(`Max-Age=${30 * 24 * 60 * 60}`);
+		// Each login uses a code of its own: one code logs in once.
+		const login = async (address: string, headers: Record<string, string>) => {
+			fixture.setClock(T0 + (logins += 30_000));
+			return fullLogin(address, headers);
+		};
+		let logins = 0;
+		const secure = await login(PROXY, { 'x-forwarded-proto': 'https', 'x-forwarded-for': '198.51.100.20' });
+		expect([secure.first.status, secure.second.status]).toEqual([200, 200]);
+		// The second step's cookie too.
+		expect(secure.first.cookies[0]).toContain('; Secure');
+		expect(secure.device).toContain('; Secure');
+		expect(secure.device).toContain(`Max-Age=${30 * 24 * 60 * 60}`);
 
-		const plainProxy = await viaProxy({ 'x-forwarded-for': '198.51.100.20' }, PASSWORD);
-		const forged = await from('127.0.0.1', '/api/login', { ...loginBody(PASSWORD), headers: { ...loginBody(PASSWORD).headers, 'x-forwarded-proto': 'https' } });
+		const plainProxy = await login(PROXY, { 'x-forwarded-for': '198.51.100.20' });
+		const forged = await login('127.0.0.1', { 'x-forwarded-proto': 'https' });
 		for (const answer of [plainProxy, forged]) {
-			expect(answer.status).toBe(200);
-			expect(answer.cookies[0]).not.toContain('Secure');
+			expect([answer.first.status, answer.second.status]).toEqual([200, 200]);
+			expect(answer.first.cookies[0]).not.toContain('Secure');
+			expect(answer.device).not.toContain('Secure');
 		}
 		// The plain http cookie logs in.
-		expect((await fixture.fetch('/api/board', { cookie: forged.cookies[0].split(';')[0] })).status).toBe(200);
+		expect((await fixture.fetch('/api/board', { cookie: forged.device.split(';')[0] })).status).toBe(200);
+		fixture.setClock(T0);
 	});
 
 	test('behind the trusted proxy the lock and the log follow the browser, not the proxy', async () => {

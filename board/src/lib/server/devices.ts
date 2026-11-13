@@ -3,6 +3,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { SecondStep } from './login-steps.ts';
 
 export interface Device {
 	id: string;
@@ -11,6 +12,9 @@ export interface Device {
 	pairedAt: string;
 	/** When the device last made a logged-in request; its login time before the first. */
 	lastSeenAt: string;
+	/** The second step a password login passed; null for a test login and for a password login
+	 *  from before there was one, which is over (`expired`). */
+	secondStep: SecondStep | null;
 	/** A test login's terms; null for a device logged in with the password. */
 	test: TestTerms | null;
 }
@@ -29,6 +33,7 @@ interface StoredDevice {
 	label: string;
 	pairedAt: string;
 	lastSeenAt?: string;
+	secondStep?: SecondStep;
 	/** Empty while a test login's one-time code has not been used. */
 	tokenHash: string;
 	test?: TestTerms & {
@@ -78,7 +83,9 @@ function writeJson(path: string, value: unknown): void {
 	renameSync(temporary, path);
 }
 
-function withLock<T>(stateDir: string, action: () => T): T {
+/** Run `action` holding the state directory's lock, which the server and the host commands share:
+ *  every change to a state file another process may also change goes through it. */
+export function withLock<T>(stateDir: string, action: () => T): T {
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const lock = join(stateDir, 'lock');
 	for (;;) {
@@ -103,8 +110,8 @@ function withLock<T>(stateDir: string, action: () => T): T {
 	}
 }
 
-/** Register a device that has just logged in and return the token its cookie carries. */
-export function registerDevice(stateDir: string, label: string, now: number = Date.now()): { token: string; device: Device } {
+/** Register a device that has just passed both login steps and return the token its cookie carries. */
+export function registerDevice(stateDir: string, label: string, now: number, secondStep: SecondStep): { token: string; device: Device } {
 	return withLock(stateDir, () => {
 		const path = join(stateDir, DEVICES_FILE);
 		const devices = readJson<StoredDevice>(path);
@@ -115,6 +122,7 @@ export function registerDevice(stateDir: string, label: string, now: number = Da
 			label: label.slice(0, 200),
 			pairedAt: at,
 			lastSeenAt: at,
+			secondStep,
 			test: null
 		};
 		const { test: _, ...stored } = device;
@@ -123,18 +131,21 @@ export function registerDevice(stateDir: string, label: string, now: number = Da
 	});
 }
 
-const publicDevice = ({ id, label, pairedAt, lastSeenAt, test }: StoredDevice): Device => ({
+const publicDevice = ({ id, label, pairedAt, lastSeenAt, secondStep, test }: StoredDevice): Device => ({
 	id,
 	label,
 	pairedAt,
 	lastSeenAt: new Date(Math.max(Date.parse(lastSeenAt ?? pairedAt), seen.get(id) ?? 0)).toISOString(),
+	secondStep: secondStep ?? null,
 	test: test ? { label: test.label, expiresAt: test.expiresAt, owned: [...test.owned] } : null
 });
 
-/** Whether a login is over: a test login past its own time; a password login 30 days after it
- *  was made, or 7 days after its last logged-in request. */
-export function expired(device: Pick<Device, 'test' | 'pairedAt' | 'lastSeenAt'>, now: number): boolean {
+/** Whether a login is over: a test login past its own time; a password login made without a
+ *  second step (before the board had one), 30 days after it was made, or 7 days after its last
+ *  logged-in request. */
+export function expired(device: Pick<Device, 'test' | 'pairedAt' | 'lastSeenAt' | 'secondStep'>, now: number): boolean {
 	if (device.test) return Date.parse(device.test.expiresAt) <= now;
+	if (!device.secondStep) return true;
 	return Date.parse(device.pairedAt) + LOGIN_DAYS * DAY_MS <= now || Date.parse(device.lastSeenAt) + IDLE_DAYS * DAY_MS <= now;
 }
 
