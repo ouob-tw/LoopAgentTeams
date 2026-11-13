@@ -12,7 +12,9 @@
         "board/src/lib/components/AutomationState.svelte",
         "board/src/lib/components/AutomationTask.svelte",
         "board/src/routes/api/automation/**",
-        "board/tests/fake-codex-multi-auth.mjs"
+        "board/tests/fake-codex-multi-auth.mjs",
+        "board/src/lib/server/automation-review.ts",
+        "board/src/lib/components/AutomationReview.svelte"
       ],
       "tests": [
         "board/tests/unit/automation.test.ts",
@@ -21,7 +23,10 @@
         "board/tests/server/automation-schedule.test.ts",
         "board/tests/browser/automation-schedule-page.test.ts",
         "board/tests/server/automation-agent.test.ts",
-        "board/tests/browser/automation-agent-page.test.ts"
+        "board/tests/browser/automation-agent-page.test.ts",
+        "board/tests/unit/automation-review.test.ts",
+        "board/tests/server/automation-review.test.ts",
+        "board/tests/browser/automation-review-page.test.ts"
       ]
     }
   ]

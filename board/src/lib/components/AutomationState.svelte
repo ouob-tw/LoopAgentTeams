@@ -1,11 +1,13 @@
 <script lang="ts">
 	// A task's state this period, or one run's result, as an outlined pill coloured by how it went.
-	import { RUN_STATUS_TEXT, STATE_TEXT, type RunStatus, type TaskState } from '#lib/board/automation.ts';
+	import { runLabel, STATE_TEXT, type AutomationRun, type TaskState } from '#lib/board/automation.ts';
 
-	let { state, status }: { state?: TaskState; status?: RunStatus } = $props();
+	/** A run shows its own status, or how its check went when that was not a pass. */
+	let { state, run }: { state?: TaskState; run?: Pick<AutomationRun, 'status' | 'review'> } = $props();
 
+	const label = $derived(run ? runLabel(run) : null);
 	const tone = $derived.by(() => {
-		const key = state ?? status;
+		const key = state ?? label!.key;
 		if (key === 'done' || key === 'success') return 'ok';
 		if (key === 'running') return 'going';
 		if (key === 'missed') return 'miss';
@@ -14,7 +16,7 @@
 	});
 </script>
 
-<span class="pill {tone}" data-state={state ?? status}>{state ? STATE_TEXT[state] : RUN_STATUS_TEXT[status!]}</span>
+<span class="pill {tone}" data-state={state ?? label!.key}>{state ? STATE_TEXT[state] : label!.text}</span>
 
 <style>
 	.pill {

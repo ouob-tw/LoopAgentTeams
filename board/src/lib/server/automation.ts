@@ -18,6 +18,7 @@ import {
 	defaultReviewClient,
 	dueToday,
 	endedWindows,
+	isOpen,
 	nextAutoAt,
 	openMissed,
 	periodOf,
@@ -35,10 +36,12 @@ import {
 	type CommandSpec,
 	type FixedCheck,
 	type MissedPeriod,
+	type RunReview,
 	type RunTrigger,
 	type Weekday
 } from '../board/automation.ts';
 import { codexBeforeLaunch, cutReason, firstMessage, GONE_AT_RESTART, runTag, watchAgent, type AgentEnd, type AgentHost, type Cut } from './automation-agent.ts';
+import { judgeReview, REVIEW_RESUME_MESSAGE, reviewBrief, reviewMessage, reviewTag } from './automation-review.ts';
 
 /** How much of a command's output is kept: its last part, which says how it ended. */
 export const OUTPUT_KEEP_CHARS = 32_000;
@@ -473,9 +476,19 @@ export function createAutomation(options: {
 	load();
 	/** Agent runs the board was watching when it stopped: watched on once everything is set up. */
 	const adopted: [AutomationTask, AutomationRun][] = [];
+	/** Checking agents the board was watching when it stopped: watched on the same way. */
+	const adoptedReviews: [AutomationTask, AutomationRun][] = [];
 	for (const [taskId, list] of runs) {
 		const task = tasks.get(taskId);
 		for (const run of list) {
+			if (run.review?.status === 'checking' && task) {
+				if (options.agents) adoptedReviews.push([task, run]);
+				else {
+					const cut = record(run, { review: { ...run.review, status: 'error', endedAt: now(), reason: '看板重啟中斷' } });
+					options.notify?.({ type: 'run-ended', task, run: cut });
+				}
+				continue;
+			}
 			if (run.status !== 'running' || !task) continue;
 			if (task.kind === 'agent' && options.agents && task.agent) {
 				adopted.push([task, run]);
@@ -537,7 +550,8 @@ export function createAutomation(options: {
 					checks,
 					output: outputName,
 					outputTruncated: kept.truncated,
-					...(cut ? { reason: cutReason(cut, task.limitMinutes) } : error ? { reason: `指令沒有啟動：${error.message}` } : {})
+					...(cut ? { reason: cutReason(cut, task.limitMinutes) } : error ? { reason: `指令沒有啟動：${error.message}` } : {}),
+					...reviewStart(task, status)
 				});
 				publish();
 				options.notify?.({ type: 'run-ended', task, run: finished });
@@ -587,7 +601,7 @@ export function createAutomation(options: {
 	/** Which tasks the board can run: agent tasks need the agents' host. Tasks it cannot run are
 	 *  neither started by the schedule nor counted as missed. */
 	const runnable = (task: AutomationTask) => (task.kind === 'command' ? task.command !== undefined : task.agent !== undefined && options.agents !== undefined);
-	const busy = (taskId: string) => children.has(taskId) || (runs.get(taskId) ?? []).some((run) => run.status === 'running');
+	const busy = (taskId: string) => children.has(taskId) || (runs.get(taskId) ?? []).some(isOpen);
 
 	/** A run of the task beginning at `at`, in the period that time falls in. */
 	const newRun = (task: AutomationTask, trigger: RunTrigger, at: number): AutomationRun => ({
@@ -621,7 +635,7 @@ export function createAutomation(options: {
 			run = record(base);
 			job = runAgent(task, run, folder, brief);
 		}
-		children.set(task.id, job.finally(() => children.delete(task.id)));
+		children.set(task.id, job.then(() => review(task, run, false)).finally(() => children.delete(task.id)));
 		return run;
 	}
 
@@ -630,7 +644,7 @@ export function createAutomation(options: {
 
 	/** End an agent run: its record, the pages, red cards and pushes. */
 	function finish(task: AutomationTask, run: AutomationRun, end: AgentEnd): void {
-		const finished = record(run, { endedAt: now(), ...end });
+		const finished = record(run, { endedAt: now(), ...end, ...reviewStart(task, end.status) });
 		publish();
 		options.notify?.({ type: 'run-ended', task, run: finished });
 	}
@@ -695,14 +709,133 @@ export function createAutomation(options: {
 		}
 	}
 
+	/** A run that succeeded with 跑完後請 Agent 檢查 on goes on as checking, in the same record line as its end. */
+	function reviewStart(task: AutomationTask, status: AutomationRun['status']): { review?: RunReview } {
+		if (status !== 'success' || !task.review.enabled || !options.agents) return {};
+		const { client, model, effort } = task.review;
+		return { review: { status: 'checking', startedAt: now(), client, model, effort } };
+	}
+
+	/** The checking agent of a run that succeeded: its brief, the Codex account, the agent opened like
+	 *  a task's own and watched to its verdict, then closed. With the limit, 停止這次, a restart and
+	 *  the quota handled as a task's agent's are. A run with no check due is left alone. */
+	async function review(task: AutomationTask, run: AutomationRun, adopted: boolean): Promise<void> {
+		const host = options.agents;
+		if (!host || latest(run).review?.status !== 'checking') return;
+		const update = (fields: Partial<RunReview>) => {
+			const current = latest(run);
+			return record(current, { review: { ...current.review!, ...fields } });
+		};
+		const settle = (fields: Partial<RunReview>) => {
+			const finished = update({ endedAt: now(), ...fields });
+			publish();
+			options.notify?.({ type: 'run-ended', task, run: finished });
+		};
+		const settleEnd = (end: AgentEnd) =>
+			settle(
+				end.judged
+					? { status: end.judged.verdict, items: end.judged.items, ...(end.judged.reason ? { reason: end.judged.reason } : {}), ...(end.closeError ? { closeError: end.closeError } : {}) }
+					: { status: 'error', reason: `檢查沒有做完：${end.reason ?? '原因不明'}`, ...(end.status === 'stopped' || end.status === 'timeout' || end.status === 'quota' ? { ended: end.status } : {}), ...(end.closeError ? { closeError: end.closeError } : {}) }
+			);
+		let cut: Cut | null = null;
+		stoppers.set(run.id, (why) => (cut ??= why));
+		const checker = latest(run).review!;
+		const spec: AgentSpec = { client: checker.client, model: checker.model, effort: checker.effort, folder: (task.agent ?? task.command)!.folder, brief: '' };
+		try {
+			const folder = expandHome(spec.folder, home);
+			if (!adopted) {
+				if (!isDirectory(folder)) return settle({ status: 'error', reason: `檢查沒有做完：找不到工作資料夾 ${spec.folder}` });
+				const current = latest(run);
+				const briefName = join('review', task.id, `${run.id}.md`);
+				const transcript = task.kind === 'agent' && current.sessionId ? await host.transcript(task.agent!.client, current.sessionId).catch(() => null) : undefined;
+				mkdirSync(join(dir, 'review', task.id), { recursive: true, mode: 0o700 });
+				const briefPath = join(dir, briefName);
+				writeAtomic(
+					briefPath,
+					reviewBrief({
+						task,
+						run: current,
+						folder,
+						...(task.agent ? { taskBrief: resolve(folder, expandHome(task.agent.brief, home)) } : {}),
+						...(current.output ? { output: join(dir, current.output) } : {}),
+						transcript
+					})
+				);
+				update({ brief: briefName });
+				if (spec.client === 'codex') {
+					const ready = await codexBeforeLaunch(host.accounts, spec.model, spec.effort).catch((): { ok: true; account?: number; note?: string } => ({ ok: true }));
+					if (!ready.ok) return settle({ status: 'error', ended: 'quota', reason: `檢查沒有做完：${ready.reason}` });
+					update({ ...(ready.account !== undefined ? { codexAccount: ready.account } : {}), ...(ready.note ? { accountSwitches: [ready.note] } : {}) });
+				}
+				if (cut) return settleEnd({ status: cut, reason: cutReason(cut, task.limitMinutes) });
+				const launched = await host
+					.launch({ ...spec, folder, brief: briefPath, prompt: reviewMessage(briefPath), tag: reviewTag(task.id, run.id) })
+					.catch((error: Error) => ({ ok: false as const, reason: error.message }));
+				if (!launched.ok) return settle({ status: 'error', reason: `檢查沒有做完：開不了檢查 Agent：${launched.reason}` });
+				update({ agentName: launched.name, ...(launched.workspace ? { agentWorkspace: launched.workspace } : {}) });
+				publish();
+			} else if (!checker.agentName) {
+				// The board stopped between the launch and its name: hcom's list knows the checker's tag.
+				const listed = await host.list();
+				const found = listed.ok ? listed.agents.find((agent) => agent.tag === reviewTag(task.id, run.id)) : undefined;
+				if (!found) return settle({ status: 'error', reason: `檢查沒有做完：${GONE_AT_RESTART}` });
+				update({ agentName: found.name });
+				publish();
+			}
+			// The checker is watched as a run of its own: its start, agent and account are the review's.
+			const view = (): AutomationRun => {
+				const current = latest(run);
+				const own = current.review!;
+				return {
+					...current,
+					startedAt: own.startedAt,
+					agentName: own.agentName,
+					sessionId: own.sessionId,
+					agentWorkspace: own.agentWorkspace,
+					judgeAfter: own.judgeAfter,
+					codexAccount: own.codexAccount,
+					accountSwitches: own.accountSwitches
+				};
+			};
+			const ended = await watchAgent(host, {
+				get run() {
+					return view();
+				},
+				spec,
+				limitMinutes: task.limitMinutes,
+				now,
+				cut: () => cut,
+				note: (fields) => {
+					update(fields as Partial<RunReview>);
+					publish();
+				},
+				closing: () => closed,
+				adopted,
+				judge: judgeReview(task.review.checklist),
+				ending: 'PASS 或 FAIL',
+				resumeMessage: REVIEW_RESUME_MESSAGE
+			}).catch(async (error: Error): Promise<AgentEnd> => {
+				const own = view();
+				const closeError = await host.close({ sessionId: own.sessionId ?? null, name: own.agentName! }).catch((failed: Error) => failed.message);
+				return { status: 'failed', reason: `看板追蹤檢查 Agent 時出錯：${error.message}`, ...(closeError ? { closeError } : {}) };
+			});
+			if (ended) settleEnd(ended);
+		} finally {
+			stoppers.delete(run.id);
+		}
+	}
+
 	/** Watch on the agent runs the board was watching when it stopped. */
 	function adopt(): void {
 		for (const [task, run] of adopted) {
 			let cut: Cut | null = null;
 			stoppers.set(run.id, (why) => (cut ??= why));
-			const job = watch(task, run, true, () => cut).finally(() => stoppers.delete(run.id));
+			const job = watch(task, run, true, () => cut)
+				.finally(() => stoppers.delete(run.id))
+				.then(() => review(task, run, false));
 			children.set(task.id, job.finally(() => children.delete(task.id)));
 		}
+		for (const [task, run] of adoptedReviews) children.set(task.id, review(task, run, true).finally(() => children.delete(task.id)));
 	}
 
 	function readChecked(): number | null {
@@ -811,7 +944,7 @@ export function createAutomation(options: {
 		runNow(id) {
 			const task = tasks.get(id);
 			if (!task) return { ok: false, status: 404, message: '這個任務已不存在' };
-			const running = (runs.get(id) ?? []).find((run) => run.status === 'running');
+			const running = (runs.get(id) ?? []).find(isOpen);
 			if (running || children.has(id)) {
 				const since = running ? new Date(running.startedAt).toLocaleTimeString('zh-TW', { timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit', hour12: false }) : '';
 				return { ok: false, status: 409, message: `這個任務正在跑${since ? `（${since} 開始）` : ''}，等這次結束再執行` };
@@ -823,7 +956,7 @@ export function createAutomation(options: {
 		},
 		stop(id) {
 			if (!tasks.has(id)) return null;
-			const running = (runs.get(id) ?? []).find((run) => run.status === 'running');
+			const running = (runs.get(id) ?? []).find(isOpen);
 			const stopper = running && stoppers.get(running.id);
 			if (!stopper) return false;
 			stopper('stopped');

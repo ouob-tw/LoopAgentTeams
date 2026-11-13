@@ -129,8 +129,57 @@ export interface AutomationRun {
 	outputTruncated?: boolean;
 	/** 沿用原紀錄: the project's own done marker this record stands for. */
 	marker?: string;
-	/** The checking agent's verdict on a run that succeeded (#575); a fail makes a red card. */
-	review?: { verdict: 'pass' | 'fail'; summary?: string };
+	/** The checking agent's work on a run that succeeded, while it checks and once it judged; a fail makes a red card. */
+	review?: RunReview;
+	/** The questions the agent asked while it ran (ASK: …) and the answers it got (#605); the checking agent reads them. */
+	asks?: RunAsk[];
+}
+
+/** One question of a run's agent and the answer it got. */
+export interface RunAsk {
+	question: string;
+	askedAt: number;
+	answer?: string;
+	answeredAt?: number;
+	/** Where the answer came from: the board or the agent's terminal. */
+	source?: string;
+}
+
+/** The checking agent's verdict on one checklist item. */
+export interface ReviewItem {
+	label: string;
+	ok: boolean;
+	reason?: string;
+}
+
+/** `checking` counts as the task still running. `error`: it ended without a verdict (past the limit,
+ *  gone, out of quota, could not start, replied in another form, stopped). */
+export type ReviewStatus = 'checking' | 'pass' | 'fail' | 'error';
+
+/** The checking agent of a run: its settings when it started, its agent kept as a run's own is,
+ *  and its verdict item by item. */
+export interface RunReview {
+	status: ReviewStatus;
+	startedAt: number;
+	endedAt?: number;
+	client: AgentClient;
+	model: string;
+	effort: AgentEffort;
+	/** Its brief, relative to the board's automation folder. */
+	brief?: string;
+	agentName?: string;
+	sessionId?: string;
+	agentWorkspace?: string;
+	judgeAfter?: number;
+	codexAccount?: number;
+	accountSwitches?: string[];
+	closeError?: string;
+	items?: ReviewItem[];
+	/** Why it ended without a verdict, or why a PASS was not taken as one. */
+	reason?: string;
+	/** How a check with no verdict ended, when it was 停止這次, past the limit or out of quota: its
+	 *  label and card say so as a run's would. */
+	ended?: 'stopped' | 'timeout' | 'quota';
 }
 
 /** A period's run window: its first moment and the moment after its last day. */
@@ -275,9 +324,21 @@ function atTime(time: number, hhmm: string): number {
 /** Whether two times fall on the same day in Asia/Taipei. */
 export const sameDay = (a: number, b: number) => startOf(dayOf(a)) === startOf(dayOf(b));
 
-/** Runs that settle a period: any run but a preview that ended in success. */
-export const succeeded = (run: AutomationRun) => run.trigger !== 'preview' && run.status === 'success';
-const isRunning = (run: AutomationRun) => run.status === 'running';
+/** Runs that settle a period: any run but a preview that ended in success, and passed its check when it had one. */
+export const succeeded = (run: AutomationRun) => run.trigger !== 'preview' && run.status === 'success' && (!run.review || run.review.status === 'pass');
+/** The run is still going: running, or its checking agent is still at it. Either way the task is busy. */
+export const isOpen = (run: Pick<AutomationRun, 'status' | 'review'>) => run.status === 'running' || run.review?.status === 'checking';
+/** Its check ended without a pass: failed, or could not judge (stopped by the user aside). */
+export const reviewFailed = (run: Pick<AutomationRun, 'status' | 'review'>) =>
+	run.status === 'success' && (run.review?.status === 'fail' || (run.review?.status === 'error' && run.review.ended !== 'stopped'));
+/** What a run's label says: its own status, or how its check ended when that went otherwise than a pass. */
+export function runLabel(run: Pick<AutomationRun, 'status' | 'review'>): { text: string; key: string } {
+	const review = run.status === 'success' ? run.review : undefined;
+	if (!review || review.status === 'pass') return { text: RUN_STATUS_TEXT[run.status], key: run.status };
+	if (review.status === 'checking') return { text: '▶ 檢查中', key: 'running' };
+	if (review.status === 'error' && review.ended) return { text: RUN_STATUS_TEXT[review.ended], key: review.ended };
+	return { text: STATE_TEXT['check-failed'], key: 'check-failed' };
+}
 /** An automatic try made on the day `time` falls in: whatever it ended in, it is the day's one. */
 export const triedOn = (runs: readonly AutomationRun[], time: number) => runs.some((run) => run.trigger === 'auto' && sameDay(run.startedAt, time));
 
@@ -321,13 +382,15 @@ export function openMissed(missed: readonly MissedPeriod[], runs: readonly Autom
  *  succeeded (a later failure does not undo it), missed while a missed period is still open,
  *  failed when this period's latest run failed. */
 export function taskState(task: AutomationTask, runs: readonly AutomationRun[], now: number, missed: readonly MissedPeriod[] = []): TaskState {
-	if (runs.some(isRunning)) return 'running';
+	if (runs.some(isOpen)) return 'running';
 	if (task.paused) return 'paused';
 	const period = periodOf(task.schedule, now);
 	const own = runs.filter((run) => run.period === period && run.trigger !== 'preview' && run.status !== 'skipped');
 	if (own.some(succeeded)) return 'done';
 	if (openMissed(missed, runs).length) return 'missed';
 	const latest = own.reduce<AutomationRun | undefined>((last, run) => (!last || run.startedAt > last.startedAt ? run : last), undefined);
+	if (latest?.review?.status === 'error' && (latest.review.ended === 'quota' || latest.review.ended === 'timeout')) return 'failed';
+	if (latest && reviewFailed(latest)) return 'check-failed';
 	if (latest && FAILED.includes(latest.status)) return 'failed';
 	return 'waiting';
 }
@@ -399,10 +462,21 @@ export function timeFormat(timeZone: string) {
 	};
 }
 
+/** The checking agent's result in one short line; empty when the run had none. */
+export function reviewText(review: RunReview | undefined): string {
+	if (!review) return '';
+	const items = review.items ?? [];
+	const failed = items.filter((item) => !item.ok).length;
+	if (review.status === 'checking') return '檢查中';
+	if (review.status === 'pass') return `檢查通過（${items.length} 條都過）`;
+	if (review.status === 'fail') return failed ? `檢查未過（${failed} 條沒過）` : '檢查未過';
+	return '檢查沒有做完';
+}
+
 /** Why a run ended as it did, in one short line. */
 export function runReason(run: AutomationRun): string {
 	if (run.reason) return run.reason;
-	if (run.status === 'success') return run.checks?.length ? `${run.checks.length} 項檢查都通過` : '結束碼 0';
+	if (run.status === 'success') return run.checks?.length ? `${run.checks.length} 項檢查都通過` : run.agentName ? 'Agent 回覆 DONE' : '結束碼 0';
 	const failed = run.checks?.filter((check) => !check.ok) ?? [];
 	if (run.exitCode !== undefined && run.exitCode !== 0) return run.exitCode === null ? '被中止' : `結束碼 ${run.exitCode}`;
 	if (failed.length) return `檢查沒過：${failed.map((check) => check.label).join('、')}`;
@@ -415,6 +489,7 @@ export function lastRunText(run: AutomationRun | undefined, timeZone: string, no
 	const at = timeFormat(timeZone);
 	if (run.status === 'running') return `${at.full(run.startedAt)} 開始，${now === undefined ? '執行中' : `已跑 ${Math.max(0, Math.floor((now - run.startedAt) / 60_000))} 分鐘`}`;
 	const when = at.full(run.endedAt ?? run.startedAt);
-	if (run.status === 'success') return `${when} 完成，${runReason(run)}`;
+	if (run.status === 'success' && run.review && run.review.status !== 'pass') return `${when} 做完，但${run.review.status === 'checking' ? '還在檢查' : reviewText(run.review)}`;
+	if (run.status === 'success') return `${when} 完成，${run.review ? reviewText(run.review) : runReason(run)}`;
 	return `${when} ${RUN_STATUS_TEXT[run.status].slice(2)}：${runReason(run)}`;
 }

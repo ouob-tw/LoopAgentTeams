@@ -13,7 +13,7 @@
 // probed, and the same conversation resumed. With no account left the run ends as 額度用完. A Claude
 // run is never switched: a turn that ends on the usage limit is 額度用完. The limit always counts
 // from the run's start.
-import type { AgentSpec, AutomationRun, RunStatus } from '../board/automation.ts';
+import type { AgentSpec, AutomationRun, ReviewItem, RunStatus } from '../board/automation.ts';
 
 /** The first message every agent task's agent gets: the brief, and how to end. */
 export function firstMessage(brief: string): string {
@@ -84,6 +84,8 @@ export interface AgentHost {
 	list(): Promise<{ ok: true; agents: ListedAgent[] } | { ok: false; reason: string }>;
 	/** The conversation's last reply and its position; null text when there is none yet. */
 	lastReply(client: AgentSpec['client'], sessionId: string): Promise<{ ok: true; text: string | null; seq: number } | { ok: false; reason: string }>;
+	/** Where the conversation is kept on disk; null when it cannot be found. */
+	transcript(client: AgentSpec['client'], sessionId: string): Promise<string | null>;
 	/** The pane's bottom as text; null when it cannot be read. */
 	screen(pane: string): Promise<string | null>;
 	/** Close the agent the way the board closes one; why it could not, or null. */
@@ -145,7 +147,12 @@ export interface AgentEnd {
 	status: Exclude<RunStatus, 'running' | 'skipped'>;
 	reason?: string;
 	closeError?: string;
+	/** A checking agent's verdict, item by item. */
+	judged?: { verdict: 'pass' | 'fail'; items: ReviewItem[]; reason?: string };
 }
+
+/** How a reply ends the turn of the agent watched; null when its last line says nothing. */
+export type Judge = (reply: string) => AgentEnd | null;
 
 /** What the watcher reads of the run and may ask of it, from the automation. */
 export interface Watched {
@@ -161,6 +168,11 @@ export interface Watched {
 	closing(): boolean;
 	/** The board started again with this run open. */
 	adopted: boolean;
+	/** A checking agent's: how its reply ends it, the last lines it may end on (for the reason when it
+	 *  ends on neither), and its message after a switch of account. A task's agent by default. */
+	judge?: Judge;
+	ending?: string;
+	resumeMessage?: string;
 }
 
 /** How long a usage limit on screen whose quota was not confirmed at 0 waits before the next live check. */
@@ -171,6 +183,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Watch a launched agent to the end of its run and close it. Null when the board closed first. */
 export async function watchAgent(host: AgentHost, watched: Watched): Promise<AgentEnd | null> {
 	const { run, spec } = watched;
+	const judge = watched.judge ?? verdictOf;
 	const name = run.agentName!;
 	let sessionId = run.sessionId ?? null;
 	/** Replies at or before this position were there before the latest resume: they say nothing. */
@@ -187,10 +200,10 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 	const gone = async (): Promise<AgentEnd> => {
 		if (sessionId) {
 			const reply = await host.lastReply(spec.client, sessionId);
-			const verdict = reply.ok && reply.text !== null && reply.seq > judgeAfter ? verdictOf(reply.text) : null;
+			const verdict = reply.ok && reply.text !== null && reply.seq > judgeAfter ? judge(reply.text) : null;
 			if (verdict) return verdict;
 		}
-		return { status: 'failed', reason: watched.adopted && !seen ? GONE_AT_RESTART : 'Agent 已不在，沒有回覆 DONE 或 FAILED' };
+		return { status: 'failed', reason: watched.adopted && !seen ? GONE_AT_RESTART : `Agent 已不在，沒有回覆 ${watched.ending ?? 'DONE 或 FAILED'}` };
 	};
 
 	for (let first = true; ; first = false) {
@@ -223,10 +236,10 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 		}
 		const reply = await host.lastReply(spec.client, sessionId);
 		if (!reply.ok || reply.text === null || reply.seq <= judgeAfter) continue;
-		const verdict = verdictOf(reply.text);
+		const verdict = judge(reply.text);
 		if (verdict) return end(verdict);
 		if (spec.client === 'claude' && CLAUDE_USAGE_LIMIT.test(reply.text.trim())) return end({ status: 'quota', reason: `額度用完：${clip(reply.text.trim().split('\n').at(-1)!)}（Claude 不換帳號）` });
-		return end({ status: 'failed', reason: `回合結束，但最後一行不是 DONE 或 FAILED：${clip(reply.text.trim().split('\n').at(-1) ?? '')}` });
+		return end({ status: 'failed', reason: `回合結束，但最後一行不是 ${watched.ending ?? 'DONE 或 FAILED'}：${clip(reply.text.trim().split('\n').at(-1) ?? '')}` });
 	}
 }
 
@@ -263,7 +276,7 @@ async function switchAndResume(host: AgentHost, watched: Watched, name: string, 
 	watched.note({ accountSwitches: [...(watched.run.accountSwitches ?? []), note] });
 	const judgeAfter = reply.ok ? reply.seq : -1;
 	watched.note({ judgeAfter });
-	const failed = await host.resume(sessionId, watched.run.agentWorkspace ?? null, RESUME_MESSAGE);
+	const failed = await host.resume(sessionId, watched.run.agentWorkspace ?? null, watched.resumeMessage ?? RESUME_MESSAGE);
 	if (failed) return { status: 'failed', reason: `換帳號後接不回原本的對話：${failed}` };
 	return { judgeAfter };
 }

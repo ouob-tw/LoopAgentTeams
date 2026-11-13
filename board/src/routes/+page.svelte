@@ -725,6 +725,7 @@
 							timeZone={board.automation.timeZone}
 							onsettings={(id) => (navigation.setMiddle('automation'), navigation.go({ kind: 'automation', id }, true))}
 							onchanged={() => void Promise.all([board.reloadAlerts(), board.reloadAutomation()])}
+							onopenagent={openAgent}
 						/>
 					{:else}
 						<p class="empty">這張紅卡已不存在。</p>
