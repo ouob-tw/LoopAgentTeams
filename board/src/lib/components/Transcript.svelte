@@ -620,6 +620,13 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		clearTimeout(markTimer);
 		markTimer = setTimeout(() => (flashed = null), MARK_MS);
 	}
+	/** The list of what the user said mounts a moment after the page itself, so it does not add to
+	 *  the time before the page's own buttons work. */
+	let mineReady = $state(false);
+	onMount(() => {
+		const timer = setTimeout(() => (mineReady = true), 0);
+		return () => clearTimeout(timer);
+	});
 	/** Changes when the conversation gets a new item, for the list of what the user said. */
 	const latestSeq = $derived(view?.items.at(-1)?.seq ?? -1);
 
@@ -803,7 +810,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	{/if}
 	{#if target || held}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
 </section>
-<MyMessages {feed} {id} version={latestSeq} {jumping} failure={jumping === null ? null : earlierFailed} onpick={(seq) => { earlierFailed = null; jumping = seq; }} onretry={() => void loadEarlier()} />
+{#if mineReady}<MyMessages {feed} {id} version={latestSeq} {jumping} failure={jumping === null ? null : earlierFailed} onpick={(seq) => { earlierFailed = null; jumping = seq; }} onretry={() => void loadEarlier()} />{/if}
 </div>
 
 <style>
