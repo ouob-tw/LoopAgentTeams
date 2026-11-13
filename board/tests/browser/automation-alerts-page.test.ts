@@ -153,7 +153,8 @@ for (const width of [1280, 390]) {
 		expect(await text(`[data-alert-row="${missedCard.id}"]`)).toContain('每天清暫存檔：本期錯過，沒有自動補跑');
 		// Shown in Taipei time (10:41, made at 02:41 UTC), though the server and browser run in UTC.
 		expect(await tab.eval(`Intl.DateTimeFormat().resolvedOptions().timeZone`)).toBe('UTC');
-		expect(await text(`[data-alert-row="${failedCard.id}"] time`)).toBe('10:41:00');
+		// A day other than today gets its date in front, so only the time of day is compared.
+		expect(await text(`[data-alert-row="${failedCard.id}"] time`)).toMatch(/(^|\s)10:41:00$/);
 		expect(await tab.eval<boolean>(FITS)).toBe(true);
 		await bothThemes(`${width}-a1-inbox`);
 
