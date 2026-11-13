@@ -73,6 +73,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_PD_TIMEOUT_SECONDS` | 上一項多久沒結束就放棄 | `5` |
 | `LAT_BOARD_PD_SECONDS` | pd 待核准請求多久讀一次，所有瀏覽器共用 | `5` |
 | `LAT_BOARD_AUTOMATION_TICK_SECONDS` | 「自動化」排程多久檢查一次（到點的任務、結束的期別、執行上限）；測試用較短的值 | `60` |
+| `LAT_BOARD_PUSH_TEST_ORIGIN` | 只給測試用：把這個來源（例如 `http://127.0.0.1:9000`）也當成推播服務，測試用假的推播端點；正式環境不設 | 無 |
 
 `XDG_STATE_HOME` 未設定時是 `~/.local/state`，`XDG_CONFIG_HOME` 未設定時是 `~/.config`。
 

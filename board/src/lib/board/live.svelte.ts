@@ -9,6 +9,8 @@ import { reaches, withEarlier, withNewest, type ArchivePage } from './archive.ts
 import type { PdSnapshot } from './pd.ts';
 import { EMPTY_AUTOMATION, type AutomationSnapshot } from './automation.ts';
 import { readAutomation } from './automation-actions.ts';
+import { EMPTY_ALERTS, type AlertsSnapshot } from './alerts.ts';
+import { readAlerts } from './alert-actions.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import { translatePref } from './translate-pref.svelte.ts';
 import { unattendedUi } from './unattended-ui.svelte.ts';
@@ -35,6 +37,8 @@ export class LiveBoard {
 	pd = $state.raw<{ snapshot: PdSnapshot; at: number } | null>(null);
 	/** The 自動化 tab's tasks as the server last sent them. */
 	automation = $state.raw<AutomationSnapshot>(EMPTY_AUTOMATION);
+	/** The automation red cards. */
+	alerts = $state.raw<AlertsSnapshot>(EMPTY_ALERTS);
 	/** The processed items loaded so far, newest first; null until loaded, 'failed' when the newest
 	 *  page could not be read: then only the retry button, or opening the view again, reads it. */
 	archive = $state<ArchivePage | 'failed' | null>(null);
@@ -55,9 +59,10 @@ export class LiveBoard {
 	 *  kept while the board still has them recorded and the answered list read does not have them yet. */
 	#recorded: InboxQuestion[] = [];
 
-	constructor(initial: BoardSnapshot, pd: PdSnapshot | null = null, automation: AutomationSnapshot = EMPTY_AUTOMATION) {
+	constructor(initial: BoardSnapshot, pd: PdSnapshot | null = null, automation: AutomationSnapshot = EMPTY_AUTOMATION, alerts: AlertsSnapshot = EMPTY_ALERTS) {
 		this.snapshot = $state(initial);
 		this.automation = automation;
+		this.alerts = alerts;
 		if (pd) this.pd = { snapshot: pd, at: Date.now() };
 	}
 
@@ -94,6 +99,9 @@ export class LiveBoard {
 			onQuota: (quota) => (this.quota = quota),
 			onPd: (snapshot) => (this.pd = { snapshot, at: Date.now() }),
 			onUsageStyle: (style) => (appearance.usageStyle = style),
+			onAlerts: (alerts) => {
+				if (alerts.revision > this.alerts.revision) this.alerts = alerts;
+			},
 			onAutomation: (automation) => {
 				if (automation.revision > this.automation.revision) this.automation = automation;
 			},
@@ -141,6 +149,12 @@ export class LiveBoard {
 	async reloadAutomation(): Promise<void> {
 		const automation = await readAutomation();
 		if (automation && automation.revision > this.automation.revision) this.automation = automation;
+	}
+
+	/** Read the red cards now, as after closing one: the stream may be down. */
+	async reloadAlerts(): Promise<void> {
+		const alerts = await readAlerts();
+		if (alerts && alerts.revision > this.alerts.revision) this.alerts = alerts;
 	}
 
 	/** Read the newest page again, keeping the earlier pages already loaded below it. */
