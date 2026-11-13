@@ -71,6 +71,7 @@ LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does 
 VISUAL_RULES = '''- This work changes something visible, so it is accepted only after someone other than the implementer (the orchestrator or an independent viewer) has looked at it and said whether it looks right against what the user wants. Passing tests or matching a prototype does not count.
 - Implementing: deliver frame sheets covering each changed look, including mid-motion and transition frames, and report their paths. Open web pages in a real browser, try every control and check the console first.
 - Use the `ui-copy` skill when building the screen or writing its requirements.
+- Use the `ui-baseline` skill when building the screen, and run its acceptance checklist before reporting done.
 - A screen that needs its explanatory text read to be understood counts as wrong.
 - If a prototype or reference itself looks wrong, raise it to the orchestrator; do not copy the defect.
 - Judging: the card's wrong-look list is only examples, not the full list. Mark FAIL any look the user would call wrong at a glance (wrapping with free space beside it, large blank areas, squeezed or misaligned columns), even when every acceptance condition holds; when the ticket itself asks for that look, hand it to the orchestrator instead of passing it.
