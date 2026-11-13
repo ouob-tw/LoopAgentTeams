@@ -7,6 +7,8 @@ import { messaging } from './messaging.svelte.ts';
 import { toasts } from './toasts.svelte.ts';
 import { reaches, withEarlier, withNewest, type ArchivePage } from './archive.ts';
 import type { PdSnapshot } from './pd.ts';
+import { EMPTY_AUTOMATION, type AutomationSnapshot } from './automation.ts';
+import { readAutomation } from './automation-actions.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import { translatePref } from './translate-pref.svelte.ts';
 import type { TranslateMode } from './translate-mode.ts';
@@ -30,6 +32,8 @@ export class LiveBoard {
 	/** pd's waiting requests as the server last read them, and when this page got them (their
 	 *  times count on from then); null until it sends them. */
 	pd = $state.raw<{ snapshot: PdSnapshot; at: number } | null>(null);
+	/** The 自動化 tab's tasks as the server last sent them. */
+	automation = $state.raw<AutomationSnapshot>(EMPTY_AUTOMATION);
 	/** The processed items loaded so far, newest first; null until loaded, 'failed' when the newest
 	 *  page could not be read: then only the retry button, or opening the view again, reads it. */
 	archive = $state<ArchivePage | 'failed' | null>(null);
@@ -50,8 +54,9 @@ export class LiveBoard {
 	 *  kept while the board still has them recorded and the answered list read does not have them yet. */
 	#recorded: InboxQuestion[] = [];
 
-	constructor(initial: BoardSnapshot, pd: PdSnapshot | null = null) {
+	constructor(initial: BoardSnapshot, pd: PdSnapshot | null = null, automation: AutomationSnapshot = EMPTY_AUTOMATION) {
 		this.snapshot = $state(initial);
+		this.automation = automation;
 		if (pd) this.pd = { snapshot: pd, at: Date.now() };
 	}
 
@@ -88,6 +93,9 @@ export class LiveBoard {
 			onQuota: (quota) => (this.quota = quota),
 			onPd: (snapshot) => (this.pd = { snapshot, at: Date.now() }),
 			onUsageStyle: (style) => (appearance.usageStyle = style),
+			onAutomation: (automation) => {
+				if (automation.revision > this.automation.revision) this.automation = automation;
+			},
 			onTranslateMode: (mode) => (translatePref.mode = mode),
 			// Only a record this page has loaded is shown anywhere; others load when opened. A
 			// controller's sent log has the interrupts of its turn.
@@ -125,6 +133,12 @@ export class LiveBoard {
 		} catch {
 			toasts.show('failed', '對話翻譯偏好沒有存成功，請稍後再試。');
 		}
+	}
+
+	/** Read the tasks now, as after a change this page made: the stream may be down. */
+	async reloadAutomation(): Promise<void> {
+		const automation = await readAutomation();
+		if (automation && automation.revision > this.automation.revision) this.automation = automation;
 	}
 
 	/** Read the newest page again, keeping the earlier pages already loaded below it. */

@@ -35,6 +35,7 @@ import { createPdPoller, readPdPending } from './pd.ts';
 import { loadUsageStyle, saveUsageStyle } from './usage-style.ts';
 import type { UsageStyle } from '../board/usage.ts';
 import { loadTranslateMode, saveTranslateMode } from './translate-mode.ts';
+import { createAutomation, type Automation } from './automation.ts';
 import type { TranslateMode } from '../board/translate-mode.ts';
 
 /** The style with its revision: it grows with every save, so a page can tell which of two reports of the style is newer. */
@@ -88,6 +89,8 @@ export interface Board {
 	quota(): QuotaSnapshot | null;
 	/** pd's waiting requests as last read; null until the first reading is done. */
 	pd(): PdSnapshot | null;
+	/** The 自動化 tab's tasks and runs; every change goes to the open pages as an `automation` event. */
+	readonly automation: Automation;
 	/** Read pd's waiting requests now, as after a denial; resolves once every open page was told. */
 	refreshPd(): Promise<void>;
 	/** How the usage line reads on every device. */
@@ -235,6 +238,14 @@ function createBoard(): Board {
 			}
 		}
 	);
+
+	const automation = createAutomation({
+		dir: join(config.stateDir, 'automation'),
+		now: config.now,
+		publish: (snapshot) => {
+			for (const stream of streams) stream.send('automation', JSON.stringify(snapshot));
+		}
+	});
 
 	// Also on its own timer: pd missing or its daemon down leaves the rest of the board alone.
 	const pdPoller = createPdPoller(() => readPdPending(config.pdCommand, config.pdTimeoutMs), {
@@ -682,6 +693,7 @@ function createBoard(): Board {
 		},
 		quota: () => quotaPoller.current(),
 		pd: () => pdPoller.current(),
+		automation,
 		refreshPd: () => pdPoller.refresh(),
 		usageStyle: () => (usageStyle ??= { style: loadUsageStyle(config.stateDir), revision: Date.now() }),
 		setUsageStyle(style) {
@@ -703,6 +715,7 @@ function createBoard(): Board {
 			closed = true;
 			quotaPoller.close();
 			pdPoller.close();
+			automation.close();
 			clearTimeout(debounce);
 			clearTimeout(fallback);
 			clearTimeout(pollTimer);

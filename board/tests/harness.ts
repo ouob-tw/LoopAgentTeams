@@ -7,6 +7,7 @@ import { runHerdr } from './fake-herdr.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ArchivePage } from '../src/lib/board/archive.ts';
+import type { AutomationSnapshot } from '../src/lib/board/automation.ts';
 import { connectBoard, type LinkState } from '../src/lib/board/client.ts';
 import type { PdSnapshot } from '../src/lib/board/pd.ts';
 import type { QuotaSnapshot } from '../src/lib/board/quota.ts';
@@ -334,6 +335,8 @@ export interface Watch {
 	quotas: QuotaSnapshot[];
 	/** The pd readings the server sent, in order. */
 	pds: PdSnapshot[];
+	/** The 自動化 snapshots the server sent, in order. */
+	automations: AutomationSnapshot[];
 	/** The usage line styles the server sent, in order. */
 	usageStyles: UsageStyle[];
 	/** The translation modes the server sent, in order. */
@@ -556,6 +559,7 @@ export async function startFixture(
 				quotas: [],
 				pds: [],
 				usageStyles: [],
+				automations: [],
 				translateModes: [],
 				latest: () => watch.snapshots.at(-1),
 				close: () => connection.close()
@@ -569,6 +573,7 @@ export async function startFixture(
 				onQuota: (quota) => watch.quotas.push(quota),
 				onPd: (pd) => watch.pds.push(pd),
 				onUsageStyle: (style) => watch.usageStyles.push(style),
+				onAutomation: (automation) => watch.automations.push(automation),
 				onTranslateMode: (mode) => watch.translateModes.push(mode),
 				retryMs: 200
 			});
