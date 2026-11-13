@@ -1,6 +1,7 @@
 <script lang="ts">
 	// One automation red card in the 待辦 list: a red edge and label, the task with how it ended,
 	// and under it 自動化 and when, in Asia/Taipei like every automation time, whatever the host's zone.
+	// A yellow card (等你回覆) has a yellow edge and a filled yellow label, the task with its question's first line.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
 	import { ALERT_KIND_TEXT, type AutomationAlert } from '#lib/board/alerts.ts';
@@ -11,7 +12,7 @@
 	const at = $derived(new Date(alert.updatedAt ?? alert.createdAt).toISOString());
 </script>
 
-<div class="row" class:current data-item="alert:{alert.id}" data-alert-row={alert.id} data-kind={alert.kind}>
+<div class="row" class:current class:ask={alert.kind === 'ask'} data-item="alert:{alert.id}" data-alert-row={alert.id} data-kind={alert.kind}>
 	<button class="main" aria-current={current ? 'true' : undefined} onclick={() => onopen(alert)}>
 		<span class="clamp">
 			<span class="kind">{ALERT_KIND_TEXT[alert.kind]}</span>
@@ -81,6 +82,19 @@
 		margin-top: 0.2rem;
 		color: var(--muted);
 		white-space: nowrap;
+	}
+	.row.ask {
+		border-left-color: var(--ask-fill);
+	}
+	.row.ask.current,
+	.row.ask:has(.main:focus-visible) {
+		border-color: var(--ask);
+		border-left-color: var(--ask-fill);
+		outline-color: var(--ask);
+	}
+	.row.ask .kind {
+		background: var(--ask-fill);
+		color: var(--ask-ink);
 	}
 	:global(:root[data-theme='light']) .row.current {
 		outline-width: 2px;

@@ -5,7 +5,10 @@
 // Asia/Taipei: it starts the day's one automatic try, stops runs past their limit and records the
 // periods whose window passed with no run (missed), and tells `notify` so red cards and pushes can
 // follow. An agent task's run opens an agent through `agents` and is watched to its end there
-// (`automation-agent.ts`); one still open when the board starts again is watched on.
+// (`automation-agent.ts`); one still open when the board starts again is watched on. While its agent
+// waits on a question (ASK:, 等你回覆) the run stays running: the question and its answer go into
+// the run's record, `notify` hears of both for the yellow card and its push, and the answer the user
+// writes on the board is sent to the agent here (`reply`).
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
@@ -18,8 +21,10 @@ import {
 	defaultReviewClient,
 	dueToday,
 	endedWindows,
+	ASK_SOURCE,
 	isOpen,
 	nextAutoAt,
+	openAsk,
 	openMissed,
 	periodOf,
 	succeeded,
@@ -36,6 +41,7 @@ import {
 	type CommandSpec,
 	type FixedCheck,
 	type MissedPeriod,
+	type RunAsk,
 	type RunReview,
 	type RunTrigger,
 	type Weekday
@@ -60,6 +66,10 @@ export type Started = { ok: true; run: AutomationRun } | { ok: false; status: nu
  *  for one task (all of them in one event, however many). */
 export type AutomationEvent =
 	| { type: 'run-ended'; task: AutomationTask; run: AutomationRun }
+	/** The run's agent asked the user its `index`th question (in `run.asks`) and waits. */
+	| { type: 'asked'; task: AutomationTask; run: AutomationRun; index: number }
+	/** The question the run's agent waited on was answered: it goes on. */
+	| { type: 'answered'; task: AutomationTask; run: AutomationRun }
 	| { type: 'missed'; task: AutomationTask; periods: MissedPeriod[] };
 
 export interface Automation {
@@ -69,6 +79,9 @@ export interface Automation {
 	setPaused(id: string, paused: boolean): AutomationTask | null;
 	/** 立即執行: refused while the same task runs. Resolves once the run has started, not ended. */
 	runNow(id: string): Started;
+	/** 送出回覆: the answer to the question the task's run waits on, sent to its agent as a message
+	 *  from the user and kept in the run's record. Refused when nothing waits or it cannot be sent. */
+	reply(id: string, text: unknown): Promise<Started>;
 	/** 停止這次: ends the task's running run, recorded as stopped; false when none runs. */
 	stop(id: string): boolean | null;
 	/** 沿用原紀錄: this period counts as done, standing for the project's own done marker. Only the
@@ -377,6 +390,9 @@ export function createAutomation(options: {
 	let broken: BrokenTask[] = [];
 	const runs = new Map<string, AutomationRun[]>();
 	const missed = new Map<string, MissedPeriod[]>();
+	/** Runs whose answer the board is sending now: what their agent's conversation shows meanwhile is
+	 *  that answer, not one typed in its terminal. */
+	const replying = new Set<string>();
 	/** How to stop each run going now, by run: past the limit (the scheduler) or on 停止這次. */
 	const stoppers = new Map<string, (why: Cut) => void>();
 	/** Children running now, by task. */
@@ -673,7 +689,18 @@ export function createAutomation(options: {
 				publish();
 			},
 			closing: () => closed,
-			adopted
+			adopted,
+			asking: {
+				waiting: () => openAsk(latest(run)) !== undefined,
+				replying: () => replying.has(run.id),
+				asked: (question) => {
+					const asks = [...(latest(run).asks ?? []), { question, askedAt: now() }];
+					const asked = record(run, { asks });
+					publish();
+					options.notify?.({ type: 'asked', task, run: asked, index: asks.length - 1 });
+				},
+				resumed: (input) => void answer(task, run, input ?? '（在 Agent 的終端繼續，看板沒讀到回覆內容）', ASK_SOURCE.terminal)
+			}
 		}).catch(async (error: Error): Promise<AgentEnd> => {
 			// Whatever broke, the agent is not left running.
 			const now = latest(run);
@@ -681,6 +708,18 @@ export function createAutomation(options: {
 			return { status: 'failed', reason: `看板追蹤這個 Agent 時出錯：${error.message}`, ...(closeError ? { closeError } : {}) };
 		});
 		if (ended) finish(task, run, ended);
+	}
+
+	/** Keep the answer to the question the run waits on: it goes on, and its yellow card goes. */
+	function answer(task: AutomationTask, run: AutomationRun, text: string, source: string): AutomationRun | null {
+		const current = latest(run);
+		if (!openAsk(current)) return null;
+		const asks: RunAsk[] = [...current.asks!];
+		asks[asks.length - 1] = { ...asks.at(-1)!, answer: text, answeredAt: now(), source };
+		const answered = record(current, { asks });
+		publish();
+		options.notify?.({ type: 'answered', task, run: answered });
+		return answered;
 	}
 
 	/** An agent run: the Codex account first, then the agent, watched to its end. */
@@ -895,7 +934,7 @@ export function createAutomation(options: {
 			if (due === null || (!first && at < due)) continue;
 			changed = true;
 			if (busy(task.id)) {
-				record({ ...newRun(task, 'auto', at), endedAt: at, status: 'skipped', reason: '上一次還在跑' });
+				record({ ...newRun(task, 'auto', at), endedAt: at, status: 'skipped', reason: (runs.get(task.id) ?? []).some((run) => openAsk(run)) ? '上一次還在等你回覆' : '上一次還在跑' });
 			} else start(task, 'auto');
 		}
 		publish(changed);
@@ -945,6 +984,7 @@ export function createAutomation(options: {
 			const task = tasks.get(id);
 			if (!task) return { ok: false, status: 404, message: '這個任務已不存在' };
 			const running = (runs.get(id) ?? []).find(isOpen);
+			if (running && openAsk(running)) return { ok: false, status: 409, message: '這個任務正在等你回覆，回覆或停止這次之後再執行' };
 			if (running || children.has(id)) {
 				const since = running ? new Date(running.startedAt).toLocaleTimeString('zh-TW', { timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit', hour12: false }) : '';
 				return { ok: false, status: 409, message: `這個任務正在跑${since ? `（${since} 開始）` : ''}，等這次結束再執行` };
@@ -953,6 +993,27 @@ export function createAutomation(options: {
 			const run = start(task, 'manual');
 			publish();
 			return { ok: true, run: (runs.get(id) ?? []).find((entry) => entry.id === run.id) ?? run };
+		},
+		async reply(id, input) {
+			const task = tasks.get(id);
+			if (!task) return { ok: false, status: 404, message: '這個任務已不存在' };
+			const answerText = typeof input === 'string' ? input.trim() : '';
+			if (!answerText) return { ok: false, status: 400, message: '請先寫回覆內容' };
+			const run = (runs.get(id) ?? []).find((candidate) => openAsk(candidate));
+			if (!run) return { ok: false, status: 409, message: '這個任務現在沒有在等你回覆，可能已經接著做了' };
+			if (!run.sessionId || !options.agents) return { ok: false, status: 409, message: '還不知道這個 Agent 的對話，沒有送出；請打開 Agent 看即時畫面直接回覆' };
+			if (replying.has(run.id)) return { ok: false, status: 409, message: '上一個回覆還在送，請稍等' };
+			replying.add(run.id);
+			try {
+				const failed = await options.agents.send(run.sessionId, answerText).catch((error: Error) => error.message);
+				if (failed) return { ok: false, status: 502, message: `回覆沒有送到 Agent：${failed}` };
+				const answered = answer(task, run, answerText, ASK_SOURCE.board);
+				// The run ended (past its limit, 停止這次) while the answer was on its way: nobody reads it.
+				if (!answered) return { ok: false, status: 409, message: '送出時這次執行已經結束，回覆沒有記下' };
+				return { ok: true, run: answered };
+			} finally {
+				replying.delete(run.id);
+			}
 		},
 		stop(id) {
 			if (!tasks.has(id)) return null;

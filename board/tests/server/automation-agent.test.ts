@@ -178,7 +178,7 @@ test('a run opens a plain agent with the fixed first message and its tag, shows 
 	const launch = hcomCalls().find((call) => call.args[0] === 'claude')!;
 	const brief = join(work, 'docs/brief.md');
 	const prompt = launch.args[launch.args.indexOf('--hcom-prompt') + 1];
-	expect(prompt).toBe(`讀取並照做 ${brief}，完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>`);
+	expect(prompt).toBe(`讀取並照做 ${brief}，完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>；需要使用者決定或補資料時，最後一行回覆 ASK: <問題> 並等待回覆，收到後接著做`);
 	const tag = launch.args[launch.args.indexOf('--tag') + 1];
 	expect(tag).toBe(`auto-${task.id}-${started.id.split('-').at(-1)!.slice(0, 6)}`);
 	// hcom prints the agent's own name and lists it under its tag: the run follows the listed one.
@@ -207,11 +207,11 @@ test('FAILED records its reason; a turn that ends on neither fails; only the las
 	const task = await create();
 	const cases: [string, string[], string, string][] = [
 		['auto-fail', ['FAILED: 找不到 ZAP 報告'], 'failed', 'Agent 回覆失敗：找不到 ZAP 報告'],
-		['auto-none', ['我做完了，但有點問題'], 'failed', '回合結束，但最後一行不是 DONE 或 FAILED：我做完了，但有點問題'],
-		['auto-mid', ['DONE\n其實還差一步'], 'failed', '回合結束，但最後一行不是 DONE 或 FAILED：其實還差一步'],
-		['auto-old', ['DONE', '等一下，還沒好'], 'failed', '回合結束，但最後一行不是 DONE 或 FAILED：等一下，還沒好'],
+		['auto-none', ['我做完了，但有點問題'], 'failed', '回合結束，但最後一行不是 DONE、FAILED 或 ASK：我做完了，但有點問題'],
+		['auto-mid', ['DONE\n其實還差一步'], 'failed', '回合結束，但最後一行不是 DONE、FAILED 或 ASK：其實還差一步'],
+		['auto-old', ['DONE', '等一下，還沒好'], 'failed', '回合結束，但最後一行不是 DONE、FAILED 或 ASK：等一下，還沒好'],
 		// A reply that only mentions a usage limit is no quota error.
-		['auto-usage', ['網站的 usage limit 是每分鐘 60 次'], 'failed', '回合結束，但最後一行不是 DONE 或 FAILED：網站的 usage limit 是每分鐘 60 次']
+		['auto-usage', ['網站的 usage limit 是每分鐘 60 次'], 'failed', '回合結束，但最後一行不是 DONE、FAILED 或 ASK：網站的 usage limit 是每分鐘 60 次']
 	];
 	for (const [name, replies, status, reason] of cases) {
 		rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
@@ -499,7 +499,7 @@ test('a Codex usage limit mid-run at 0: the agent killed, another account probed
 
 	const resumed = await eventually(async () => hcomCalls().find((call) => call.args[0] === 'r'), 8_000, 'the resume');
 	expect(resumed.args.slice(0, 2)).toEqual(['r', 's-auto-limit']);
-	expect(resumed.args[resumed.args.indexOf('--hcom-prompt') + 1]).toContain('已換帳號接回');
+	expect(resumed.args[resumed.args.indexOf('--hcom-prompt') + 1]).toBe('剛才額度用完，已換帳號接回。請接著把任務做完，完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>；需要使用者決定或補資料時，最後一行回覆 ASK: <問題> 並等待回覆，收到後接著做');
 	expect(resumed.workspace).toBe('wA');
 	const kill = hcomCalls().findIndex((call) => call.args[0] === 'kill');
 	expect(kill).toBeGreaterThan(-1);

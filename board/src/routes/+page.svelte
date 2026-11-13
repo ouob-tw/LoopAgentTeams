@@ -44,6 +44,7 @@
 	import AutomationList from '#lib/components/AutomationList.svelte';
 	import AutomationTask from '#lib/components/AutomationTask.svelte';
 	import AlertCard from '#lib/components/AlertCard.svelte';
+	import AskAlertCard from '#lib/components/AskAlertCard.svelte';
 	import type { AutomationAlert } from '#lib/board/alerts.ts';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
@@ -718,7 +719,16 @@
 						<p class="empty">這個任務已不存在。</p>
 					{/if}
 				{:else if view.kind === 'alert'}
-					{#if alertShown}
+					{#if alertShown?.kind === 'ask'}
+						<AskAlertCard
+							alert={alertShown}
+							task={board.automation.tasks.find((candidate) => candidate.task.id === alertShown.taskId)}
+							timeZone={board.automation.timeZone}
+							onsettings={(id) => (navigation.setMiddle('automation'), navigation.go({ kind: 'automation', id }, true))}
+							onchanged={() => void Promise.all([board.reloadAlerts(), board.reloadAutomation()])}
+							onopenagent={openAgent}
+						/>
+					{:else if alertShown}
 						<AlertCard
 							alert={alertShown}
 							task={board.automation.tasks.find((candidate) => candidate.task.id === alertShown.taskId)}

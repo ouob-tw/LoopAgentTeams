@@ -9,6 +9,11 @@
 	--warn: #f0b429;
 	--ok: #57c785;
 	--danger: #ff7b72;
+	/* 等你回覆 (an automation agent's question): yellow, never to be taken for a red card. --ask is
+	   its text and edge, --ask-fill a filled label's background with --ask-ink on it. */
+	--ask: #facc15;
+	--ask-fill: #facc15;
+	--ask-ink: #1a1a1a;
 	--status-waiting: var(--warn);
 	--status-working: var(--accent);
 	--status-delivered: var(--ok);
@@ -41,6 +46,9 @@
 	--warn: #9a3412;
 	--ok: #14532d;
 	--danger: #8b0000;
+	--ask: #713f12;
+	--ask-fill: #facc15;
+	--ask-ink: #000;
 	--selected-bg: var(--text);
 	--inherit-bg: #e0e0e0;
 	--inherit-text: #000;

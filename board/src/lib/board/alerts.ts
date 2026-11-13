@@ -1,11 +1,15 @@
 // Automation red cards (自動化紅卡): one card per run that ended badly, and one per task for the
-// periods a check found missed. The card sits in the 待辦 list beside the questions until the user
+// periods a check found missed. A yellow card (等你回覆) is one per question an agent task's agent
+// asked (ASK:): it holds the question in full and goes by itself once the agent goes on (answered on
+// the board or in its terminal) or the run ends; its push carries the task's name, 等你回覆 and the
+// start of the question only. The card sits in the 待辦 list beside the questions until the user
 // closes it; closing it never changes the run records. The push sent for a card carries only the
 // task's name and the card's one sentence, never a run's output or a path. Pure, shared by the
 // server and the page.
-import { reviewFailed, type AutomationRun, type MissedPeriod, type RunStatus } from './automation.ts';
+import { askFirstLine, reviewFailed, type AutomationRun, type MissedPeriod, type RunStatus } from './automation.ts';
 
-export type AlertKind = 'failed' | 'timeout' | 'check-failed' | 'config-error' | 'quota' | 'missed';
+/** `ask`: the yellow card; every other kind is a red one. */
+export type AlertKind = 'failed' | 'timeout' | 'check-failed' | 'config-error' | 'quota' | 'missed' | 'ask';
 
 export interface AutomationAlert {
 	id: string;
@@ -17,8 +21,14 @@ export interface AutomationAlert {
 	runId?: string;
 	/** The missed periods, oldest first; one card holds every period found for the task until it is closed. */
 	periods?: MissedPeriod[];
-	/** One sentence saying how it ended: the card's title after the task name, and the push's body. */
+	/** One sentence saying how it ended: the card's title after the task name, and the push's body.
+	 *  A yellow card's is the question's first line. */
 	summary: string;
+	/** A yellow card's question in full, and which of the run's questions it is (its place in `asks`). */
+	question?: string;
+	ask?: number;
+	/** A yellow card that went by itself: the agent went on, or the run ended. */
+	resolved?: 'answered' | 'ended';
 	createdAt: number;
 	/** When missed periods were last added to the card. */
 	updatedAt?: number;
@@ -43,7 +53,8 @@ export const ALERT_KIND_TEXT: Record<AlertKind, string> = {
 	'check-failed': '檢查未過',
 	'config-error': '設定錯誤',
 	quota: '額度用完',
-	missed: '本期錯過'
+	missed: '本期錯過',
+	ask: '等你回覆'
 };
 
 /** The checking agent did not pass a run that succeeded: it judged FAIL, or ended without a verdict
@@ -76,6 +87,8 @@ export function alertSummary(kind: AlertKind, detail: { limitMinutes?: number; p
 			return '額度用完，這次沒有跑';
 		case 'missed':
 			return detail.periods && detail.periods > 1 ? `錯過 ${detail.periods} 期，沒有自動補跑` : '本期錯過，沒有自動補跑';
+		case 'ask':
+			return '等你回覆';
 	}
 }
 
@@ -86,4 +99,13 @@ export interface AlertPush {
 	alert: string;
 }
 
-export const pushOf = (alert: AutomationAlert): AlertPush => ({ title: alert.taskName, body: alert.summary, alert: alert.id });
+/** How much of a question a push carries. */
+export const ASK_PUSH_CHARS = 40;
+
+export const pushOf = (alert: AutomationAlert): AlertPush => {
+	if (alert.kind !== 'ask') return { title: alert.taskName, body: alert.summary, alert: alert.id };
+	const first = askFirstLine(alert.question ?? alert.summary);
+	const whole = (alert.question ?? first).trim() === first;
+	const body = first.length > ASK_PUSH_CHARS ? `${first.slice(0, ASK_PUSH_CHARS)}…` : whole ? first : `${first}…`;
+	return { title: `${alert.taskName} 等你回覆`, body, alert: alert.id };
+};

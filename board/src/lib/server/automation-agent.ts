@@ -1,7 +1,10 @@
 // An agent task's run, from launch to close: the agent opens like a plain agent of the Herdr tab
 // (client, model, effort, folder), its first message fixed and its tag naming the task and the run.
 // It is watched until its turn is over; the last line of its last reply says DONE or FAILED, and
-// whatever the outcome, it is closed the way the board closes any agent. Past the limit or on
+// whatever the outcome, it is closed the way the board closes any agent. A last line `ASK: <question>`
+// leaves it open, waiting for the user (等你回覆): the answer comes from the board, which sends it
+// as a plain message, or is typed in its terminal; either way, once its conversation has new input
+// or a new turn starts, it is taken as going on, and its next reply is judged the same way. Past the limit or on
 // 停止這次 it is closed too. A run the board finds still open when it starts again is watched on
 // while hcom still lists its agent.
 //
@@ -15,13 +18,23 @@
 // from the run's start.
 import type { AgentSpec, AutomationRun, ReviewItem, RunStatus } from '../board/automation.ts';
 
+/** How an agent task's agent ends a turn: done, failed, or asking the user and waiting. */
+export const ENDING_RULES = '完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>；需要使用者決定或補資料時，最後一行回覆 ASK: <問題> 並等待回覆，收到後接著做';
+
 /** The first message every agent task's agent gets: the brief, and how to end. */
 export function firstMessage(brief: string): string {
-	return `讀取並照做 ${brief}，完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>`;
+	return `讀取並照做 ${brief}，${ENDING_RULES}`;
 }
 
 /** The message a Codex agent resumed on another account gets. */
-export const RESUME_MESSAGE = '剛才額度用完，已換帳號接回。請接著把任務做完，完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>';
+export const RESUME_MESSAGE = `剛才額度用完，已換帳號接回。請接著把任務做完，${ENDING_RULES}`;
+
+/** The question of a reply whose last line is `ASK: <question>`; null otherwise. */
+export function askOf(reply: string): string | null {
+	const last = reply.trimEnd().split('\n').at(-1)?.trim() ?? '';
+	const asked = /^ASK\s*[:：]\s*(.*)$/.exec(last);
+	return asked ? asked[1].trim() || '（Agent 沒寫問題內容，請打開 Agent 看對話）' : null;
+}
 
 /** The hcom tag of a run: `auto-<task>-<run>`, so its agent's name says which task and run it is. */
 export function runTag(taskId: string, runId: string): string {
@@ -86,6 +99,12 @@ export interface AgentHost {
 	lastReply(client: AgentSpec['client'], sessionId: string): Promise<{ ok: true; text: string | null; seq: number } | { ok: false; reason: string }>;
 	/** Where the conversation is kept on disk; null when it cannot be found. */
 	transcript(client: AgentSpec['client'], sessionId: string): Promise<string | null>;
+	/** The first input of the conversation after `seq` (typed by the user, or a message hcom
+	 *  delivered), with its position; null when there is none yet, or it cannot be read. */
+	inputAfter(client: AgentSpec['client'], sessionId: string, seq: number): Promise<{ text: string; seq: number } | null>;
+	/** Pass text on to the agent as a message from the user, the way the board sends one; why it
+	 *  could not, or null. */
+	send(sessionId: string, text: string): Promise<string | null>;
 	/** The pane's bottom as text; null when it cannot be read. */
 	screen(pane: string): Promise<string | null>;
 	/** Close the agent the way the board closes one; why it could not, or null. */
@@ -173,6 +192,20 @@ export interface Watched {
 	judge?: Judge;
 	ending?: string;
 	resumeMessage?: string;
+	/** A task's agent may ask the user (ASK:); a checking agent has none of this. */
+	asking?: Asking;
+}
+
+/** What the watcher does with a task agent's questions, through the automation. */
+export interface Asking {
+	/** Whether the run waits on a question now (the record says so). */
+	waiting(): boolean;
+	/** True while the board is sending the user's answer: what arrives meanwhile is that answer. */
+	replying(): boolean;
+	/** The agent asked; its reply's position is what later input is looked for after. */
+	asked(question: string, seq: number): void;
+	/** It went on from its terminal (or anything else but the board's reply box): with the input read, if any. */
+	resumed(input: string | null): void;
 }
 
 /** How long a usage limit on screen whose quota was not confirmed at 0 waits before the next live check. */
@@ -203,7 +236,7 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 			const verdict = reply.ok && reply.text !== null && reply.seq > judgeAfter ? judge(reply.text) : null;
 			if (verdict) return verdict;
 		}
-		return { status: 'failed', reason: watched.adopted && !seen ? GONE_AT_RESTART : `Agent 已不在，沒有回覆 ${watched.ending ?? 'DONE 或 FAILED'}` };
+		return { status: 'failed', reason: watched.adopted && !seen ? GONE_AT_RESTART : `Agent 已不在，沒有回覆 ${watched.ending ?? 'DONE 或 FAILED'}${watched.asking?.waiting() ? '（它在等你回覆時不見了）' : ''}` };
 	};
 
 	for (let first = true; ; first = false) {
@@ -221,6 +254,15 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 			sessionId = agent.sessionId;
 			watched.note({ sessionId });
 		}
+		const asking = watched.asking;
+		if (asking?.waiting() && sessionId) {
+			// Waiting on the user: anything new in its conversation, or a turn begun, means it goes on.
+			if (asking.replying()) continue;
+			const input = await host.inputAfter(spec.client, sessionId, judgeAfter);
+			if (asking.replying() || !asking.waiting()) continue;
+			if (input || agent.status === 'active' || agent.status === 'blocked') asking.resumed(input?.text ?? null);
+			continue;
+		}
 		if (agent.status !== 'listening' || !sessionId) continue;
 
 		if (spec.client === 'codex' && agent.pane) {
@@ -236,10 +278,18 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 		}
 		const reply = await host.lastReply(spec.client, sessionId);
 		if (!reply.ok || reply.text === null || reply.seq <= judgeAfter) continue;
+		const question = asking ? askOf(reply.text) : null;
+		if (asking && question !== null) {
+			// Left open: what comes after this reply is the answer, and the reply after that is judged.
+			judgeAfter = reply.seq;
+			watched.note({ judgeAfter });
+			asking.asked(question, reply.seq);
+			continue;
+		}
 		const verdict = judge(reply.text);
 		if (verdict) return end(verdict);
 		if (spec.client === 'claude' && CLAUDE_USAGE_LIMIT.test(reply.text.trim())) return end({ status: 'quota', reason: `額度用完：${clip(reply.text.trim().split('\n').at(-1)!)}（Claude 不換帳號）` });
-		return end({ status: 'failed', reason: `回合結束，但最後一行不是 ${watched.ending ?? 'DONE 或 FAILED'}：${clip(reply.text.trim().split('\n').at(-1) ?? '')}` });
+		return end({ status: 'failed', reason: `回合結束，但最後一行不是 ${watched.ending ?? 'DONE、FAILED 或 ASK'}：${clip(reply.text.trim().split('\n').at(-1) ?? '')}` });
 	}
 }
 

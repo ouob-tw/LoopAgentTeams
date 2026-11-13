@@ -95,3 +95,14 @@ test('a click on a push opens its card: in a new board tab when none is open, el
 	await pd.fire('notificationclick', { notification: { close: () => {} } });
 	expect(pd.posted).toEqual([{ type: 'pd-open' }]);
 });
+
+test('a yellow card\'s push carries the task name with 等你回覆 and the start of the question only', () => {
+	const card = (question: string): AutomationAlert => ({ id: 'y1', taskId: 't', taskName: '客發展覽維護報告', kind: 'ask', runId: 'r', ask: 0, question, summary: question.split('\n')[0], createdAt: 0 });
+	expect(pushOf(card('11 月要開幾張發票？'))).toEqual({ title: '客發展覽維護報告 等你回覆', body: '11 月要開幾張發票？', alert: 'y1' });
+	const long = '11 月的維護費要開幾張發票？上個月是 1 張 NT$ 30,000，這個月合約備註寫「分兩期」。請回覆：1 張或 2 張（每張金額）。';
+	expect(pushOf(card(long)).body).toBe(`${long.slice(0, 40)}…`);
+	// A card with no question kept: its summary alone, no ellipsis.
+	expect(pushOf({ ...card('x'), question: undefined, summary: '開幾張？' }).body).toBe('開幾張？');
+	// Only the first line, however much follows.
+	expect(pushOf(card('抬頭用哪個？\n舊抬頭：/home/someone/secret.txt'))).toEqual({ title: '客發展覽維護報告 等你回覆', body: '抬頭用哪個？…', alert: 'y1' });
+});
