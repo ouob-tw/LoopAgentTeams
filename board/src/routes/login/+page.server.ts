@@ -20,6 +20,8 @@ export const load = () => {
 		totp: setting(() => hasTotp(stateDir), '看板 TOTP 金鑰檔'),
 		passkeys: setting(() => hasPasskeys(stateDir), '看板 passkey 檔'),
 		/** The only address passkeys work from; null when the board's address is not set. */
-		passkeyOrigin: passkeySite?.origin ?? null
+		passkeyOrigin: passkeySite?.origin ?? null,
+		/** Where `bun run board` works from: the directory this server runs in. */
+		boardDir: process.cwd()
 	};
 };
