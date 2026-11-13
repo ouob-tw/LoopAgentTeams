@@ -566,8 +566,8 @@
 				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => navigation.setMiddle('agents')}
 					>Herdr<small>{agents.length}</small></button
 >
-				<button type="button" data-middle="automation" aria-pressed={middle === 'automation'} onclick={() => navigation.setMiddle('automation')}>自動化</button>
 				<button type="button" data-middle="quota" aria-pressed={middle === 'quota'} onclick={() => navigation.setMiddle('quota')}>額度</button>
+				<button type="button" data-middle="automation" aria-pressed={middle === 'automation'} onclick={() => navigation.setMiddle('automation')}>自動化</button>
 			</div>
 			{#if middle === 'quota'}
 				<QuotaList quota={board.quota} />
