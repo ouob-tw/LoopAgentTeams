@@ -4,7 +4,7 @@
 	// slides in from the right, or up from the bottom on a phone, starting from the goal the
 	// controller drafted (修改: from the version in effect). Nothing is written until 確認開啟.
 	import { tick } from 'svelte';
-	import { fly } from 'svelte/transition';
+	import { fade, fly } from 'svelte/transition';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { sendGrant, unattendedUi } from '#lib/board/unattended-ui.svelte.ts';
@@ -66,6 +66,8 @@
 <svelte:window onkeydown={(event) => open && event.key === 'Escape' && close()} />
 
 {#if open}
+	<!-- The page behind is dimmed and does not take clicks; a click on it is 取消. -->
+	<div class="backdrop" aria-hidden="true" onclick={close} transition:fade={{ duration: 180 }}></div>
 	<div
 		class="drawer"
 		class:sheet={phone.current}
@@ -126,6 +128,12 @@
 {/if}
 
 <style>
+	.backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 59;
+		background: rgb(0 0 0 / 0.45);
+	}
 	/* A computer: the full height at the right edge, over the controller's column. */
 	.drawer {
 		position: fixed;

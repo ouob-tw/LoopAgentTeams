@@ -100,13 +100,11 @@ def draft_file(lat, session, round_number):
 
 
 def read_draft(lat, session, round_number):
+    """The draft, or None; one that cannot be read is no draft: it is never a grant."""
     try:
         draft = json.loads(draft_file(lat, session, round_number).read_text(encoding='utf-8'))
-    except FileNotFoundError:
+    except (OSError, ValueError):
         return None
-    except ValueError as error:
-        raise Refused(f'unreadable draft {draft_file(lat, session, round_number)} ({error})') \
-            from None
     return draft if isinstance(draft, dict) else None
 
 

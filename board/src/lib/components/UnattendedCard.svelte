@@ -5,7 +5,6 @@
 	// start, it says it is waiting for one; no grant is in effect then.
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { clock } from '#lib/board/clock.svelte.ts';
-	import { noticeTime } from '#lib/board/format.ts';
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { sendGrant, unattendedUi } from '#lib/board/unattended-ui.svelte.ts';
@@ -14,6 +13,14 @@
 	let { controllerId, view }: { controllerId: string; view: UnattendedView } = $props();
 
 	let opened = $state(false);
+
+	/** When the time limit runs out, to the minute; with the date when it is not today. */
+	function endTime(iso: string): string {
+		const time = Date.parse(iso);
+		const day = (moment: number) => new Date(moment).toLocaleDateString('zh-TW', { timeZone: clock.timeZone });
+		const clockOnly = { hour: '2-digit', minute: '2-digit', hour12: false } as const;
+		return new Date(time).toLocaleString('zh-TW', { timeZone: clock.timeZone, ...(day(time) === day(clock.now) ? {} : { month: 'numeric', day: 'numeric' }), ...clockOnly });
+	}
 	let closing = $state(false);
 
 	async function turnOff() {
@@ -45,7 +52,7 @@
 					<ul>
 						{#each version.done as item, index (index)}<li>{item}</li>{/each}
 					</ul>
-					<p><b>什麼時候停：</b>額度用完，或跑滿 {version.stop.max_hours} 小時{#if view.endsAt}（到 {noticeTime(view.endsAt, clock.now, clock.timeZone)}）{/if}就停。</p>
+					<p><b>什麼時候停：</b>額度用完，或跑滿 {version.stop.max_hours} 小時{#if view.endsAt}（到 {endTime(view.endsAt)}）{/if}就停。</p>
 					<p>
 						<b>參謀可以替你決定：</b>{SCOPE_KEYS.filter((key) => version.scope[key])
 							.map((key) => SCOPE_LABEL[key])

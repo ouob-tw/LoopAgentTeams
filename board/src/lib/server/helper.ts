@@ -421,8 +421,9 @@ export async function readUnattended(config: BoardConfig, controllers: { workspa
 /** What a write through lat-unattended answers: `ok`, or why not with the tool's own status. */
 export type UnattendedWrite = { ok: true; value: Record<string, unknown> } | { ok: false; status: string; reason: string; problems: string[] };
 
-async function unattendedCommand(config: BoardConfig, args: string[]): Promise<UnattendedWrite> {
-	const done = await run(config, args);
+async function unattendedCommand(config: BoardConfig, [command, ...args]: string[]): Promise<UnattendedWrite> {
+	// The tool's own time ends a second before the board's for the helper, so its answer still comes back.
+	const done = await run(config, [command, `--seconds=${Math.max(1, config.helperTimeoutMs / 1000 - 1)}`, ...args]);
 	const parsed = parseJsonOutput<Record<string, unknown> | null>(done, '輔助工具的輸出不是預期的格式');
 	const payload = parsed.ok ? parsed.value : null;
 	if (payload?.status === 'ok') return { ok: true, value: payload };

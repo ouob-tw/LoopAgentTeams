@@ -233,9 +233,7 @@ function ledger() {
 /** The real helper's `board prune-reports`, with the arguments the board gave. */
 function prune() {
 	if (!plan.realPrune) return { output: { status: 'ok', deleted: [], failed: [] } };
-	const helper = join(import.meta.dirname, '../../skills/local/lat/herdr-panel/lat_panel.py');
-	const run = spawnSync(plan.realPrune, [helper, ...args], { encoding: 'utf8' });
-	return { raw: run.stdout, exit: run.status ?? 1 };
+	return real(plan.realPrune);
 }
 
 const MANUAL = {
@@ -255,6 +253,8 @@ function unattended() {
 	if (plan.realUnattended) return real(plan.realUnattended);
 	if (command !== 'unattended') return { output: { status: 'error', reason: 'the plan has no realUnattended' }, exit: 1 };
 	const sessions = options()['session-id'] ?? [];
+	// As the real helper: one workspace per session.
+	if ((options().workspace ?? []).length !== sessions.length) return { output: { status: 'error', reason: 'each --workspace needs one --session-id' }, exit: 1 };
 	return { output: { unattended: sessions.map((session) => ({ ...(plan.unattended?.[session] ?? MANUAL), session_id: session })) } };
 }
 
@@ -268,9 +268,7 @@ function real(python) {
 /** The real helper's preauth commands, on the files the test's environment names. */
 function preauth() {
 	if (!plan.realPreauth) return { output: { status: 'error', reason: 'the plan has no realPreauth' }, exit: 1 };
-	const helper = join(import.meta.dirname, '../../skills/local/lat/herdr-panel/lat_panel.py');
-	const run = spawnSync(plan.realPreauth, [helper, ...args], { encoding: 'utf8' });
-	return { raw: run.stdout, exit: run.status ?? 1 };
+	return real(plan.realPreauth);
 }
 
 const act =

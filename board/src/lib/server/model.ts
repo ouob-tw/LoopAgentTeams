@@ -348,7 +348,7 @@ function unattendedOf(sources: Pick<Sources, 'unattended' | 'unattendedError'>, 
 	return sources.unattendedError ? { state: 'error', reason: `輔助工具失敗：${sources.unattendedError}` } : { state: 'unknown' };
 }
 
-function activeController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined, ledger: LedgerView, unattended: UnattendedView = { state: 'unknown' }): Controller {
+function activeController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined, ledger: LedgerView, unattended: UnattendedView): Controller {
 	const latest = file?.reports.at(-1);
 	const pendingCount = binding.questions.filter((question) => question.status === 'pending').length;
 
@@ -380,7 +380,7 @@ function activeController(binding: HelperController, file: ReportFile | undefine
 
 /** A bound controller whose client is gone: shown like an unbound one, from its binding. */
 function closedController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined, ledger: LedgerView): Controller {
-	return { ...activeController(binding, file, duty, ledger), status: 'closed', running: false, pendingCount: 0, herdr: null, error: reportError(file) };
+	return { ...activeController(binding, file, duty, ledger, { state: 'unknown' }), status: 'closed', running: false, pendingCount: 0, herdr: null, error: reportError(file) };
 }
 
 /** A controller whose LAT round is no longer bound: 閒置 while its conversation is in hcom's list

@@ -497,6 +497,9 @@ class DraftAndSettingsTests(UnattendedCase):
         self.assertEqual(status['draft']['done'], ['登入成功'])
         self.assertEqual(status['state'], 'none')
         self.assertFalse(self.grant.exists())
+        # A draft that cannot be read is no draft; the status still answers.
+        self.grant.with_name(f'{SESSION}-r1.draft.json').write_text('{not json')
+        self.assertIsNone(self.status()['draft'])
         self.session(status='ended')
         self.assertEqual(self.json_of('draft', '--goal', 'x', '--done', 'y', code=1)['status'],
                          'refused')
