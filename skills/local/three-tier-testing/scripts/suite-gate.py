@@ -68,14 +68,15 @@ REGISTRY_NAME = '.suite-gate.json'
 MAP_DIR = '.suite-gate.d'  # more affected.map rules, one file per topic
 # In the fingerprint of every full suite that declares `depends_on`.
 GATE_WIDE = (REGISTRY_NAME, f'{MAP_DIR}/**', '.gitignore')
-DEFAULTS = {'min_slots': 2, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds': 30.0,
+DEFAULTS = {'min_slots': 1, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds': 30.0,
             'sample_seconds': 2.0, 'brake_io_high': 40.0, 'brake_io_low': 20.0,
             'brake_cpu_high': 50.0, 'brake_cpu_low': 25.0, 'default_cores': 4.0,
             'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5,
-            'reclaim_grace_seconds': 600.0}
+            'reclaim_grace_seconds': 600.0, 'light_min_slots': 1, 'light_max_slots': 4,
+            'light_cores': 2.0, 'light_mem_gb': 2.0}
 # The smallest value each key accepts; an int default takes whole numbers only.
 MINIMUMS = {'min_slots': 0, 'max_slots': 1, 'profile_history': 1, 'poll_seconds': 0.01,
-            'report_seconds': 0.01, 'sample_seconds': 0.01}
+            'report_seconds': 0.01, 'sample_seconds': 0.01, 'light_max_slots': 1}
 BRAKE_PAIRS = (('brake_io_low', 'brake_io_high'), ('brake_cpu_low', 'brake_cpu_high'))
 GIB = 2 ** 30
 CPU_WINDOW_SECONDS = 10.0
@@ -812,23 +813,42 @@ def is_full_suite(command, cwd='.', registry=None):
         commands = split_commands(command)
     except UnreadableShellInput:
         return True
-    runs = [words for words in commands if not _carries_text(words)]
     if isinstance(patterns, list) and patterns:
-        normalized = [p for p in (_normalize_pattern(p) for p in patterns if isinstance(p, str))
-                      if p]
-        # A command that only carries text (echo, hcom send) counts only for a pattern that
-        # names its first word, not for one whose leading wildcard takes the text in.
-        named = [p for p in normalized if p[0] not in '*?[']
-        candidates = [(_normalize_words(_strip_assignments(w)),
-                       named if _carries_text(w) else normalized) for w in commands]
-        candidates.append((_normalize_words([w for c in runs for w in c]), normalized))
-        candidates.append((_normalize_words([w for c in commands for w in c]), named))
-        return any(fnmatch.fnmatchcase(c, p) for c, found in candidates for p in found)
-    for words in runs:
+        return _matches_patterns(commands, patterns)
+    for words in (words for words in commands if not _carries_text(words)):
         found = _unwrap(words)
         if found and not _is_targeted(*found):
             return True
     return False
+
+
+def _matches_patterns(commands, patterns):
+    """True when the simple commands (split_commands) match a registry pattern list."""
+    runs = [words for words in commands if not _carries_text(words)]
+    normalized = [p for p in (_normalize_pattern(p) for p in patterns if isinstance(p, str))
+                  if p]
+    # A command that only carries text (echo, hcom send) counts only for a pattern that
+    # names its first word, not for one whose leading wildcard takes the text in.
+    named = [p for p in normalized if p[0] not in '*?[']
+    candidates = [(_normalize_words(_strip_assignments(w)),
+                   named if _carries_text(w) else normalized) for w in commands]
+    candidates.append((_normalize_words([w for c in runs for w in c]), normalized))
+    candidates.append((_normalize_words([w for c in commands for w in c]), named))
+    return any(fnmatch.fnmatchcase(c, p) for c, found in candidates for p in found)
+
+
+def is_heavy(command, cwd='.', registry=None):
+    """True when a shell command matches the registry's `heavy` patterns (fnmatch, read like
+    `suites`): test files and builds an agent picks that run through the light path."""
+    if registry is None:
+        registry = load_registry(cwd) or {}
+    patterns = registry.get('heavy') if isinstance(registry, dict) else None
+    if not isinstance(patterns, list) or not patterns:
+        return False
+    try:
+        return _matches_patterns(split_commands(command), patterns)
+    except UnreadableShellInput:
+        return False
 
 
 def _normalize_pattern(pattern):
@@ -1266,7 +1286,7 @@ def reclaim_leftovers(state, config):
     it has been seen for the grace period, and drop those holders. The first time a holder is
     seen that way stamps `leftover_since` on it; a holder whose gate runs is never touched."""
     now = time.time()
-    holders = [*state['locks'].values(), *state['slots']]
+    holders = [*state['locks'].values(), *state['slots'], *state['light']]
     expired = {}
     for holder in holders:
         if gate_alive(holder):
@@ -1289,6 +1309,7 @@ def reclaim_leftovers(state, config):
                   'command': holder.get('command'), 'cwd': holder.get('cwd'),
                   'fingerprint': holder.get('fingerprint'), 'cgroup': group, 'sid': sid,
                   'slot': any(h['id'] == holder_id for h in state['slots']), 'lock': lock,
+                  'light': any(h['id'] == holder_id for h in state['light']),
                   'leftover_since': holder['leftover_since'],
                   'grace_seconds': config['reclaim_grace_seconds'],
                   'process_count': len(processes), 'processes': processes}
@@ -1299,6 +1320,7 @@ def reclaim_leftovers(state, config):
              'process(es):\n' + '\n'.join(f"  {p['pid']} {p['command']}" for p in processes))
     state['locks'] = {k: v for k, v in state['locks'].items() if v['id'] not in expired}
     state['slots'] = [h for h in state['slots'] if h['id'] not in expired]
+    state['light'] = [h for h in state['light'] if h['id'] not in expired]
 
 
 def with_state(change):
@@ -1318,6 +1340,7 @@ def with_state(change):
             state.setdefault('seq', 0)
             state['locks'] = {k: v for k, v in state.get('locks', {}).items() if holder_alive(v)}
             state['slots'] = [h for h in state.get('slots', []) if holder_alive(h)]
+            state['light'] = [h for h in state.get('light', []) if holder_alive(h)]
             state['waiters'] = [h for h in state.get('waiters', []) if holder_alive(h)]
             reclaim_leftovers(state, load_config())
             result = change(state)
@@ -1510,11 +1533,12 @@ def brake_reason(host, config):
                                              for name, _, _, low in marks) + f' (now {now})')
 
 
-def admission(config, running, candidate, host):
+def admission(config, running, candidate, host, light=()):
     """(admit, reason why not) for the first suite in the queue.
 
     running: (cores, bytes) of unused reservation per running suite; candidate: (cores, bytes)
-    it reserves; host: from host_view. The cap comes first, then the floor (below it nothing
+    it reserves; host: from host_view; light: the same for light-path runs, which count only
+    in whether the reservation fits. The cap comes first, then the floor (below it nothing
     else is checked), then the brake, then whether the reservation fits.
     """
     count, cap = len(running), config['max_slots']
@@ -1522,6 +1546,12 @@ def admission(config, running, candidate, host):
         return False, f'host cap reached: {count}/{cap} suites running'
     if count < min(config['min_slots'], cap):
         return True, None
+    return host_fit(config, [*running, *light], candidate, host)
+
+
+def host_fit(config, running, candidate, host):
+    """(admit, reason why not) past the floor: readable host data, the brake off, and the
+    candidate's reservation fits beside the unused reservations in running."""
     if host['unreadable']['load']:
         return False, 'host data unreadable: ' + ', '.join(host['unreadable']['load'])
     if host['brake']['on']:
@@ -1542,6 +1572,8 @@ def admission(config, running, candidate, host):
 # ---------------------------------------------------------------- run
 
 class Gate:
+    light = False  # a light-path run (LightGate) keeps its fixed reservation without a group
+
     def __init__(self, argv, cwd, rerun, config, extra=None, template=False):
         self.argv = argv
         self.template = template  # built by the gate from an affected.commands template
@@ -1675,19 +1707,19 @@ class Gate:
         """Record the suite's session and group on this gate's lock and slot. Without a
         group (fallback) the suite reserves the default."""
         def change(state):
-            for holder in [*state['locks'].values(), *state['slots']]:
+            for holder in [*state['locks'].values(), *state['slots'], *state['light']]:
                 if holder['id'] == self.me['id']:
                     holder['sid'], holder['cgroup'] = sid, group
-                    if group is None:
+                    if group is None and not self.light:
                         holder['reservation'] = None
         self.me['sid'], self.me['cgroup'] = sid, group
-        if group is None:
+        if group is None and not self.light:
             self.me['reservation'] = None
         with_state(change)
 
     def store_sample(self, cores, mem):
         def change(state):
-            for holder in state['slots']:
+            for holder in [*state['slots'], *state['light']]:
                 if holder['id'] == self.me['id']:
                     holder['sample'] = {
                         'cpu_cores': None if cores is None else round(cores, 2),
@@ -1714,6 +1746,7 @@ class Gate:
             state['waiters'] = [w for w in state['waiters'] if w['id'] != self.me['id']]
             state['locks'] = {k: v for k, v in state['locks'].items() if still_held(v)}
             state['slots'] = [h for h in state['slots'] if still_held(h)]
+            state['light'] = [h for h in state['light'] if still_held(h)]
         with_state(change)
 
     def run(self):
@@ -2010,6 +2043,131 @@ class Gate:
         warn(f"recorded exit {code} in {duration}s"
              + (f" for fingerprint {info['fingerprint'][:12]}" if info else ''))
         return code
+
+
+# ---------------------------------------------------------------- light path
+# Test files and builds an agent picks while editing: queued in their own slots so a short
+# run never waits behind a full suite, but within the host's brake and the test slice's CPU
+# limit. No fingerprint, no reuse and no record: a light run is never merge evidence.
+
+LIGHT_BUDGET_FALLBACK = 20.0  # cores, when the test slice's CPU limit cannot be read
+
+
+def light_budget():
+    """The test slice's CPU limit in cores; the light path's reservations stay within it."""
+    return tests_slice_cores() or LIGHT_BUDGET_FALLBACK
+
+
+def light_reservation(config):
+    return {'cpu_cores': config['light_cores'], 'mem_bytes': config['light_mem_gb'] * GIB}
+
+
+def light_admission(config, light, reserved, candidate, host, suites=(), budget=None):
+    """(admit, reason why not) for the first light run in its queue.
+
+    light: (cores, bytes) of unused reservation per running light run; reserved: the cores
+    they reserve in all; candidate: (cores, bytes); suites: the unused reservations of the
+    running full suites. The light cap comes first, then the floor, then the test slice's
+    CPU limit on the sum of light reservations, then host_fit().
+    """
+    count, cap = len(light), config['light_max_slots']
+    if count >= cap:
+        return False, f'light-path cap reached: {count}/{cap} running'
+    if count < min(config['light_min_slots'], cap):
+        return True, None
+    budget = light_budget() if budget is None else budget
+    if reserved + candidate[0] > budget:
+        return False, (f'light-path reservations would pass the test slice CPU limit: '
+                       f'{fmt_num(reserved)} reserved + {fmt_num(candidate[0])} > '
+                       f'{fmt_num(budget)} cores')
+    return host_fit(config, [*suites, *light], candidate, host)
+
+
+def inside_gate(state):
+    """True when this process runs inside a group (or session) the gate started for a full
+    suite or a light run, which already holds a slot."""
+    mine = process_cgroup(os.getpid())
+    sid = os.getsid(0)
+    for holder in [*state.get('slots', []), *state.get('light', [])]:
+        group = holder.get('cgroup')
+        if group and mine and (mine == group or mine.startswith(group + '/')):
+            return True
+        if not group and holder.get('sid') == sid:
+            return True
+    return False
+
+
+class LightGate(Gate):
+    """A light run: its own queue and slots (`state['light']`), a fixed reservation, run in
+    its own scope like a suite, nothing recorded."""
+    light = True
+
+    def __init__(self, argv, cwd, config):
+        super().__init__(argv, cwd, None, config)
+
+    def acquire_slot(self):
+        def attempt(state):
+            mine = next((w for w in state['waiters'] if w['id'] == self.me['id']), None)
+            if mine is None:
+                state['seq'] += 1
+                mine = self._holder(kind='light', seq=state['seq'],
+                                    reservation=light_reservation(self.config))
+                state['waiters'].append(mine)
+            self.me['reservation'] = mine['reservation'] = light_reservation(self.config)
+            ahead = [w for w in state['waiters']
+                     if w.get('kind') == 'light' and w['seq'] < mine['seq']]
+            if ahead:
+                mine['reason'] = f'{len(ahead)} light run(s) queued ahead'
+                return None
+            light = [unused_reservation(h, self.config) for h in state['light']]
+            reserved = sum(reservation_of(h, self.config)[0] for h in state['light'])
+            suites = [unused_reservation(h, self.config) for h in state['slots']]
+            admit, reason = light_admission(
+                self.config, light, reserved, reservation_of(mine, self.config)[:2],
+                host_view(state, self.config), suites)
+            if admit:
+                state['waiters'].remove(mine)
+                state['light'].append(self._holder())
+                return True
+            mine['reason'] = reason
+            return None
+
+        def describe(state):
+            mine = next((w for w in state['waiters'] if w['id'] == self.me['id']), None)
+            return (f"waiting for a light-path slot ({len(state['light'])}/"
+                    f"{self.config['light_max_slots']} in use): {(mine or {}).get('reason')}")
+
+        self._wait(attempt, describe)
+
+    def run(self):
+        self.acquire_slot()
+        argv = shell_argv(self.argv[0]) if len(self.argv) == 1 else self.argv
+        try:
+            code, _, _, seconds, _, _ = self._run_command(argv, self.cwd)
+        except OSError as exc:
+            warn(f'could not start the command: {exc}')
+            return 127
+        warn(f'light run exited {code} in {fmt_seconds(seconds)} (not recorded)')
+        return code
+
+
+def cmd_light(argv):
+    """Run a test file or build an agent picked through the light path. A full suite is
+    refused (it goes through `run` or `affected`); inside a group the gate started, the
+    command runs directly, since that group already holds a slot."""
+    cwd = Path.cwd()
+    text = argv[0] if len(argv) == 1 else shlex.join(argv)
+    if gate_rewrite(text, cwd):
+        warn('this runs a full test suite; the light path is only for the test files and '
+             'builds you pick. A full suite goes through `run` (or `affected` in a project '
+             'with an affected-test map); run the command without `light` and the hook '
+             'replies with the exact command')
+        return 2
+    if with_state(inside_gate):
+        command = shell_argv(text) if len(argv) == 1 else list(argv)
+        os.execvp(command[0], command)
+    gate = LightGate(argv, cwd, load_config())
+    return _guarded(lambda: _drive(gate, gate.run))
 
 
 class Tail:
@@ -4469,7 +4627,8 @@ def gate_command(text, flags=()):
 
 
 def _is_gate_run(words):
-    return any(os.path.basename(word) == SCRIPT.name and words[i + 1:i + 2] == ['run']
+    return any(os.path.basename(word) == SCRIPT.name and words[i + 1:i + 2] in (['run'],
+                                                                              ['light'])
                for i, word in enumerate(words))
 
 
@@ -4484,8 +4643,9 @@ def shell_text(command):
     return command if isinstance(command, str) else ''
 
 
-def _wrap_suites(text, cwd, registry, wrap):
-    """text with each full-suite simple command replaced in place by wrap(command text).
+def _wrap_suites(text, cwd, registry, wrap, match=is_full_suite):
+    """text with each full-suite simple command (or each one match() takes) replaced in
+    place by wrap(command text).
 
     The rest of the text (cd, export, pipes, a later echo) stays as written, so the gate
     records the suite's own exit code. In `bash -c '<body>'` only the body argument is
@@ -4499,15 +4659,15 @@ def _wrap_suites(text, cwd, registry, wrap):
             continue
         index = _shell_body_index(words)
         if index is not None:
-            body = _wrap_suites(words[index], cwd, registry, wrap)
+            body = _wrap_suites(words[index], cwd, registry, wrap, match)
             if body != words[index]:
                 edits.append((*spans[index], shlex.quote(body)))
         elif _reads_stdin_script(words):
             for body, _, _, start, end in _stdin_heredoc(heredocs):
-                wrapped = _wrap_suites(body, cwd, registry, wrap)
+                wrapped = _wrap_suites(body, cwd, registry, wrap, match)
                 if wrapped != body:
                     edits.append((start, end, wrapped))
-        elif is_full_suite(shlex.join(words), cwd, registry):
+        elif match(shlex.join(words), cwd, registry):
             start, end = spans[0][0], spans[-1][1]
             edits.append((start, end, wrap(text[start:end])))
     parts, last = [], 0
@@ -4537,6 +4697,53 @@ def gate_rewrite(text, cwd, wrap=gate_command):
         if SCRIPT.name not in text and LOOKS_LIKE_TESTS.search(text):
             return wrap(text)
         return None
+
+
+# systemd-run options that take a value; the light path runs the command in its own scope.
+SYSTEMD_RUN_VALUE = {'-p', '--property', '-u', '--unit', '-E', '--setenv', '-H', '--host',
+                     '-M', '--machine', '--slice', '--description', '--uid', '--gid',
+                     '--nice', '--working-directory', '-d', '--on-active', '--timer-property',
+                     '--path-property', '--socket-property', '--service-type'}
+
+
+def light_command(text):
+    """The ready-to-run command that sends text through the light path; a leading
+    systemd-run is left out, since its own scope would take the command out of the gate's."""
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        words = None
+    if words and os.path.basename(words[0]) == 'systemd-run':
+        rest = words[_skip_options(words, 1, SYSTEMD_RUN_VALUE):]
+        if rest:
+            text = shlex.join(rest)
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'light', '--', text])
+
+
+def light_rewrite(text, cwd):
+    """The command to run instead of text, or None when text runs no registered heavy
+    command outside the gate."""
+    try:
+        commands = [words for words in split_commands(text) if not _is_gate_run(words)]
+        if not commands:
+            return None
+        registry = load_registry(cwd) or {}
+        if not is_heavy(' ; '.join(shlex.join(words) for words in commands), cwd, registry):
+            return None
+        rewritten = _wrap_suites(text, cwd, registry, light_command, is_heavy)
+        return rewritten if rewritten != text else light_command(text)
+    except Exception:  # unreadable text or a hook bug: never block on the light path
+        return None
+
+
+def read_state():
+    """The shared state as last written, read without the lock or any change; {} when
+    there is none."""
+    try:
+        state = json.loads((state_dir() / 'state.json').read_text())
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
 
 
 def _variable_gate_hint(text):
@@ -4591,7 +4798,18 @@ def cmd_hook():
     cwd = cwd if os.path.isdir(cwd) else os.getcwd()
     rewrite = text.strip() and gate_rewrite(text, cwd)
     if not rewrite:
-        return 0
+        light = text.strip() and light_rewrite(text, cwd)
+        if not light or inside_gate(read_state()):
+            return 0
+        print('Blocked: this runs a heavy command (a browser test file or a build the project '
+              'lists under `heavy` in .suite-gate.json) outside the gate. Run this instead; '
+              'it waits for a light-path slot only while the host is busy, then runs at once. '
+              'Nothing is recorded, so it is not merge evidence:\n'
+              f'  {light}\n'
+              'Only the heavy command is wrapped; the rest of your command is unchanged. It '
+              'runs under /bin/sh in its own group, so it sees only exported variables and '
+              'needs no systemd-run around it.' + _variable_gate_hint(text), file=sys.stderr)
+        return 2
     if is_mapped(load_registry(cwd) or {}):
         affected = gate_rewrite(text, cwd, lambda _suite: affected_command())
         full = gate_rewrite(text, cwd, lambda suite: gate_command(suite, REASON_FLAGS))
