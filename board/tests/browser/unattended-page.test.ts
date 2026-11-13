@@ -203,8 +203,8 @@ test.skipIf(!CHROME)('at 390 wide the drawer comes up from the bottom and nothin
 	const c = await browse(PHONE);
 	expect(await c.eval(NO_SIDEWAYS)).toBe(true);
 	await shot(c, '390-card-collapsed');
-	await c.eval(`document.querySelector('${CARD} .summary').click()`);
-	await c.until(`!!document.querySelector('${CARD} .details')`, 'the details');
+	// Clicked again until the page has taken over the button.
+	await c.until(`!!document.querySelector('${CARD} .details') || (document.querySelector('${CARD} .summary').click(), false)`, 'the details');
 	expect(await c.eval(NO_SIDEWAYS)).toBe(true);
 	await shot(c, '390-card-open');
 	await c.eval(`document.querySelector('.cmd button[aria-label="選項"]').click()`);
