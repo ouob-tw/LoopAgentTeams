@@ -3,12 +3,13 @@
 	import { startAuthentication, startRegistration, WebAuthnError } from '@simplewebauthn/browser';
 	import { onMount, tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
+	import { hostCommand } from '#lib/host-command.ts';
 
 	let { data } = $props();
 
-	const SET_COMMAND = 'bun run board password';
-	const TOTP_COMMAND = 'bun run board totp';
-	const ENROLL_COMMAND = 'bun run board passkey code';
+	let SET_COMMAND = $derived(hostCommand(data.boardDir, 'password'));
+	let TOTP_COMMAND = $derived(hostCommand(data.boardDir, 'totp'));
+	let ENROLL_COMMAND = $derived(hostCommand(data.boardDir, 'passkey code'));
 
 	/** Logging in, or registering a passkey. */
 	let mode = $state<'login' | 'enroll'>('login');
@@ -269,7 +270,7 @@
 	<h1>{mode === 'enroll' ? '登記 passkey' : 'LAT 看板'}</h1>
 	{#if data.password !== 'set'}
 		<p>
-			{data.password === 'unset' ? '看板還沒設定密碼' : '看板的密碼檔讀不出來'}，目前無法登入。請在主機上的看板目錄執行：
+			{data.password === 'unset' ? '看板還沒設定密碼' : '看板的密碼檔讀不出來'}，目前無法登入。請在主機上執行：
 		</p>
 		<pre><code>{SET_COMMAND}</code></pre>
 		<p>設定好之後重新載入這個畫面。</p>
@@ -281,7 +282,8 @@
 		{:else}
 			<form onsubmit={enroll}>
 				{@render passwordBox()}
-				<label for="enroll-code">登記碼<span class="hint">（主機上執行 <code>{ENROLL_COMMAND}</code>）</span></label>
+				<label for="enroll-code">登記碼<span class="hint">（在主機上執行）</span></label>
+				<pre><code>{ENROLL_COMMAND}</code></pre>
 				<input
 					id="enroll-code"
 					class="code"
@@ -303,12 +305,12 @@
 		<button class="back" type="button" onclick={() => backToPassword()}>返回登入</button>
 	{:else if data.totp === 'unreadable' || data.passkeys === 'unreadable'}
 		<p>
-			{data.totp === 'unreadable' ? '看板的 TOTP 金鑰檔讀不出來' : '看板的 passkey 檔讀不出來'}，目前無法登入。請在主機上的看板目錄執行：
+			{data.totp === 'unreadable' ? '看板的 TOTP 金鑰檔讀不出來' : '看板的 passkey 檔讀不出來'}，目前無法登入。請在主機上執行：
 		</p>
-		<pre><code>{data.totp === 'unreadable' ? TOTP_COMMAND : 'bun run board passkey list'}</code></pre>
+		<pre><code>{data.totp === 'unreadable' ? TOTP_COMMAND : hostCommand(data.boardDir, 'passkey list')}</code></pre>
 		<p>依它的訊息修好之後重新載入這個畫面。</p>
 	{:else if data.totp !== 'set' && data.passkeys !== 'set'}
-		<p>看板還沒設定第二道驗證，目前無法登入。請在主機上的看板目錄執行：</p>
+		<p>看板還沒設定第二道驗證，目前無法登入。請在主機上執行：</p>
 		<pre><code>{TOTP_COMMAND}</code></pre>
 		<p>用手機的驗證器 App 掃描它顯示的 QR code，設定好之後重新載入這個畫面。</p>
 		{#if data.passkeyOrigin}
@@ -491,7 +493,9 @@
 		color: var(--ok);
 	}
 	pre {
-		overflow-x: auto;
+		/* A long path wraps instead of running off the screen; the text stays one line when copied. */
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 		padding: 0.6rem 0.8rem;
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
