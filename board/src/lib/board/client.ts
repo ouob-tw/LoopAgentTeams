@@ -4,6 +4,7 @@
 import { createRequest, type ApiResult } from './api.ts';
 import type { ArchivePage } from './archive.ts';
 import type { AutomationSnapshot } from './automation.ts';
+import type { AlertsSnapshot } from './alerts.ts';
 import type { PdSnapshot } from './pd.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import type { TranslateMode } from './translate-mode.ts';
@@ -29,6 +30,8 @@ export interface ConnectionOptions {
 	onUsageStyle?(style: UsageStyle): void;
 	/** The 自動化 tab's tasks, sent on connecting and at every change; only a newer revision is passed on. */
 	onAutomation?(automation: AutomationSnapshot): void;
+	/** The automation red cards, sent on connecting and at every change; only a newer revision is passed on. */
+	onAlerts?(alerts: AlertsSnapshot): void;
 	/** Whether conversations open translated, the same on every device; sent on connecting and at every change. */
 	onTranslateMode?(mode: TranslateMode): void;
 	/** An unattended setting or grant changed on some device; the settings page reads them again. */
@@ -78,6 +81,13 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		options.onAutomation?.(automation);
 	}
 
+	let alertsRevision = 0;
+	function hearAlerts(alerts: AlertsSnapshot): void {
+		if (alerts.revision <= alertsRevision) return;
+		alertsRevision = alerts.revision;
+		options.onAlerts?.(alerts);
+	}
+
 	/** The same for the translation mode. */
 	let modeRevision = 0;
 	function hearMode({ mode, revision }: { mode: TranslateMode; revision: number }): void {
@@ -123,6 +133,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		else if (event === 'pd') options.onPd?.(JSON.parse(data));
 		else if (event === 'usage-style') hearStyle(JSON.parse(data));
 		else if (event === 'automation') hearAutomation(JSON.parse(data));
+		else if (event === 'alerts') hearAlerts(JSON.parse(data));
 		else if (event === 'translate-mode') hearMode(JSON.parse(data));
 		else if (event === 'unattended-settings') options.onUnattendedSettings?.();
 	}

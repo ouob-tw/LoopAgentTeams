@@ -20,7 +20,15 @@
 		const result = await request<UnattendedSettings>('/api/unattended/settings');
 		if (mine !== read) return;
 		if (result.ok) show(result.value);
-		else if (!result.unpaired) refusal = '讀不到無人模式設定，請檢查網路後再試。';
+		else if (!result.unpaired) refusal = failureReason(result) ?? '讀不到無人模式設定，請檢查網路後再試。';
+	}
+
+	/** What the server said when it answered with an error (`reason` from a write, `message` from a read); null when no answer came back. */
+	function failureReason(result: { kind: string; body?: unknown }): string | null {
+		if (result.kind !== 'http') return null;
+		const body = result.body as { reason?: unknown; message?: unknown } | null;
+		const said = body?.reason ?? body?.message;
+		return typeof said === 'string' ? said : null;
 	}
 
 	function show(next: UnattendedSettings) {
@@ -57,8 +65,7 @@
 				return true;
 			}
 			if (!result.unpaired) {
-				const reason = result.kind === 'http' ? (result.body as { reason?: unknown } | null)?.reason : null;
-				refusal = typeof reason === 'string' ? reason : '沒有送出，請檢查網路後再改一次。';
+				refusal = failureReason(result) ?? '沒有送出，請檢查網路後再改一次。';
 			}
 			return false;
 		});

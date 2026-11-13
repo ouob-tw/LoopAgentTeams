@@ -122,7 +122,7 @@ for (const width of [1280, 390]) {
 		await tab.until(`document.querySelectorAll('.automation .card').length >= 4`, 'the tasks');
 		expect(await tab.eval(`document.querySelector('[data-middle="automation"]').getAttribute('aria-pressed')`)).toBe('true');
 		// One tab more in the bar, all on one line.
-		expect(await tab.eval(`[...document.querySelectorAll('.middle-tabs button')].map((b) => b.innerText.replace(/\\d+/g, '').trim())`)).toEqual(['待辦', 'Herdr', '自動化', '額度']);
+		expect(await tab.eval(`[...document.querySelectorAll('.middle-tabs button')].map((b) => b.innerText.replace(/\\d+/g, '').trim())`)).toEqual(['待辦', 'Herdr', '額度', '自動化']);
 		expect(await tab.eval(`new Set([...document.querySelectorAll('.middle-tabs button')].map((b) => Math.round(b.getBoundingClientRect().top))).size`)).toBe(1);
 
 		const agent = await card(ids.agent);
