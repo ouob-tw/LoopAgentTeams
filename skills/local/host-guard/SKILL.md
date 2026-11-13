@@ -35,7 +35,7 @@ systemd-run --user --scope --slice=lat-tests.slice -p CPUQuota=400% stress-ng --
 systemd-run --user --scope -q --slice=lat-tests.slice -p MemoryMax=40G -p MemorySwapMax=0 -p OOMPolicy=continue timeout 600 bun test tests/unit
 ```
 
-`--slice=lat-tests.slice` 把測試放進測試專用的 CPU 群組，全部測試加起來有 CPU 上限，看板與其他服務不會被拖慢（群組由專案的 `scripts/install-cpu-slices.sh` 建立；沒建立時照常執行，只是沒有上限）。超過上限時只有這個測試被結束，結束碼是 137。真的需要更多記憶體時調高 `MemoryMax`。
+`--slice=lat-tests.slice` 把測試放進測試專用的 CPU 群組，全部測試加起來有 CPU 上限，看板與其他服務不會被拖慢（主機上沒建立這個群組時照常執行，只是沒有 CPU 上限）。超過上限時只有這個測試被結束，結束碼是 137。真的需要更多記憶體時調高 `MemoryMax`。
 
 上限要直接包住測試指令。`bash -c 'cd a && pytest'` 裡接在 `&&` 後面的測試看不到外層的上限，要寫在 `&&` 後面，或先 `cd` 再包。
 
