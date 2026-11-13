@@ -387,8 +387,9 @@
 			// Only a launch that was made clears the message; anything typed meanwhile stays too.
 			sent.text = '';
 			sent.gitInit = false;
-			attaching.sent(owner, paths);
 		}
+		// The files went out with the launch whatever was typed meanwhile.
+		if (!target && result.ok) attaching.sent(owner, paths);
 		const what = target ? '開新 Agent' : '新建';
 		toasts.show(
 			result.ok ? 'ok' : 'failed',
