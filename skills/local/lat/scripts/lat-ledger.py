@@ -48,14 +48,15 @@ STAGES = {'impl': '實作', 'review': '審查', 'qa-draft': 'QA 草稿', 'qa': '
           'merge': '整合', 'spec-review': 'Spec 審查', 'research': '研究', 'advisor': '參謀',
           'other': '其他'}
 STATUSES = {'unassigned': '未派', 'assigned': '已派', 'in_progress': '進行中',
-            'blocked': '受阻', 'done': '已結案', 'cancelled': '已取消'}
+            'blocked': '受阻', 'parked': '擱置', 'done': '已結案', 'cancelled': '已取消'}
 KINDS = ('commit', 'gate', 'file')
 OPEN = ('assigned', 'in_progress', 'blocked')
 DEP_CANCELLED = '依賴已取消'
+UNATTENDED_SCRIPT = Path(__file__).resolve().parent / 'lat-unattended.py'
 CARD_FIELD = re.compile(r'-\s+([^：:\n]+)[：:]\s*(.*)')
 CARD_CLOSED = ('committed', 'merged', 'completed')
 RELATIVE = re.compile(r'\+(\d+)([mhd])')
-ROUND_LEDGER = re.compile(r'(.+)-r\d+\.json')
+ROUND_LEDGER = re.compile(r'(.+)-r(\d+)\.json')
 # The tool keeps each row's deadline at its estimate plus this; it only drives stall alarms.
 DEADLINE_AFTER_ESTIMATE = timedelta(hours=1)
 # The ticket layer `show` builds from the rows. Each progress step but merged and deployed is
@@ -66,8 +67,8 @@ STEPS = {'draft': '草稿', 'impl': '實作', 'review': '審查', 'qa': '驗收'
 STEP_STAGES = {'draft': ('qa-draft',), 'impl': ('impl',), 'review': ('review',), 'qa': ('qa',)}
 STEP_MARKS = {'done': '✓', 'active': '●', 'pending': '○', 'skipped': '—'}
 # A ticket's state, by precedence: any open row decides it, else how far its delivery went.
-TICKET_STATES = {'in_progress': '進行中', 'blocked': '受阻', 'assigned': '已派',
-                 'unassigned': '未派', 'deployed': '已上線', 'merged': '已合併',
+TICKET_STATES = {'parked': '擱置', 'in_progress': '進行中', 'blocked': '受阻',
+                 'assigned': '已派', 'unassigned': '未派', 'deployed': '已上線', 'merged': '已合併',
                  'done': '已結案', 'cancelled': '已取消'}
 DEPLOY_ACTION = 'deploy-prod'
 TITLE_TIMEOUT_SECONDS = 10
@@ -985,6 +986,7 @@ def cmd_add(args):
         for row in same if args.tiny else []:
             record(args, row, 'tiny', {'tiny': mark}, 'its ticket was marked tiny')
         sync_cancelled_dependencies(args, doc, item, 'depends on a cancelled item')
+        sync_parked_dependencies(args, doc)
     print(item['id'])
 
 
@@ -1028,7 +1030,7 @@ def cmd_update(args):
                               'its evidence, use amend')
             require_status(item, OPEN, 'update')
         elif args.depends is not None:
-            require_status(item, ('unassigned',) + OPEN, 'update --depends')
+            require_status(item, ('unassigned', 'parked') + OPEN, 'update --depends')
         at = now()
         changes = {}
         if args.eta:
@@ -1057,6 +1059,7 @@ def cmd_update(args):
         record(args, item, 'update', changes, reason)
         if args.depends is not None:
             sync_cancelled_dependencies(args, doc, item, 'dependencies changed')
+            sync_parked_dependencies(args, doc)
 
 
 def cmd_block(args):
@@ -1818,6 +1821,109 @@ def cmd_cancel(args):
                 block_for_cancelled_dependency(args, other, f'item {item["id"]} was cancelled')
 
 
+def unattended_grant(ledger):
+    """The unattended grant now in effect for the round this ledger belongs to, read through
+    lat-unattended.py (never parsed here); Failure unless one is."""
+    name = ROUND_LEDGER.fullmatch(Path(ledger).name)
+    ask = 'follow the current rules and ask the user'
+    if not name:
+        raise Failure(f'{ledger} is not a round ledger <session>-r<N>.json, so its unattended '
+                      f'grant cannot be found; {ask}')
+    workspace = json.loads(Path(ledger).read_text())['workspace']
+    command = [sys.executable, str(UNATTENDED_SCRIPT), 'status', '--json', '--workspace',
+               workspace, '--session-id', name[1]]
+    try:
+        status = json.loads(run_cli(command, timeout=60))
+    except ValueError as error:
+        raise Failure(f'cannot read the unattended grant ({error}); {ask}') from error
+    if status.get('state') != 'active' or str(status.get('round')) != name[2]:
+        raise Failure(f'no valid unattended grant for this round ({status.get("state_label")}); '
+                      f'parking is only for unattended mode, {ask}')
+    return status['version']['version']
+
+
+def park_row(args, row, reason, cause, grant):
+    record(args, row, 'park', {'status': 'parked', 'parked_from': row['status'],
+                               'parked_reason': reason, 'parked_cause': cause,
+                               'parked_grant': grant}, reason)
+
+
+def release_row(args, doc, row, reason):
+    changes = {'status': row['parked_from'], 'parked_from': None, 'parked_reason': None,
+               'parked_cause': None, 'parked_grant': None}
+    if row['parked_from'] == 'in_progress':
+        changes['deadline'] = deadline_for(row['estimate'])
+    record(args, row, 'unpark', changes, reason)
+    sync_cancelled_dependencies(args, doc, row, 'dependencies checked after unparking')
+
+
+def sync_parked_dependencies(args, doc, reason='dependencies changed'):
+    """A row follows its dependencies: parked while any of them is parked (it names one as its
+    cause), released once none is. A row parked by itself (no cause) is never released here."""
+    changed = True
+    while changed:
+        changed = False
+        for row in doc['items']:
+            parked_deps = [dep for dep in row['depends_on']
+                           if find(doc, dep)['status'] == 'parked']
+            if row['status'] == 'parked':
+                if row.get('parked_cause') is None:
+                    continue
+                if not parked_deps:
+                    release_row(args, doc, row, reason)
+                    changed = True
+                elif row['parked_cause'] not in parked_deps:
+                    record(args, row, 'park', {'parked_cause': parked_deps[0],
+                                           'parked_reason': f'依賴的列 {parked_deps[0]} 已擱置'},
+                       reason)
+                    changed = True
+            elif parked_deps and row['status'] in ('unassigned',) + OPEN:
+                grant = find(doc, parked_deps[0])['parked_grant']
+                park_row(args, row, f'依賴的列 {parked_deps[0]} 已擱置', parked_deps[0], grant)
+                changed = True
+
+
+def require_orchestrator(doc, args, what):
+    if doc.get('orchestrator') and not same_controller(doc['orchestrator'], actor(args)):
+        raise Failure(f'only the orchestrator {doc["orchestrator"]} may {what}')
+
+
+def cmd_park(args):
+    """Park a row that cannot go on (unattended mode only); rows depending on it follow."""
+    reason = required_text('--reason', args.reason)
+    with transaction(args, 'park', args.id, reason) as doc:
+        require_orchestrator(doc, args, 'park items')
+        item = find(doc, args.id)
+        require_status(item, ('unassigned',) + OPEN, 'park')
+        # Asked inside the lock, right before the write, so a grant that ended meanwhile counts.
+        park_row(args, item, reason, None, unattended_grant(args.ledger))
+        sync_parked_dependencies(args, doc)
+        parked = [row['id'] for row in doc['items'] if row['status'] == 'parked'
+                  and row.get('parked_cause') is not None]
+    print(f'item {item["id"]} parked' + (f'; dependents parked: {", ".join(map(str, parked))}'
+                                         if parked else ''))
+
+
+def cmd_unpark(args):
+    """Return a parked row to the state it had; rows that followed it return too unless another
+    parked row still holds them."""
+    reason = required_text('--reason', args.reason)
+    with transaction(args, 'unpark', args.id, reason) as doc:
+        require_orchestrator(doc, args, 'unpark items')
+        item = find(doc, args.id)
+        require_status(item, ('parked',), 'unpark')
+        if item.get('parked_cause') is not None:
+            raise Failure(f'item {item["id"]} is parked because item {item["parked_cause"]} is; '
+                          f'unpark item {item["parked_cause"]}')
+        before = {row['id'] for row in doc['items'] if row['status'] == 'parked'}
+        release_row(args, doc, item, reason)
+        sync_parked_dependencies(args, doc, reason)
+        released = sorted(before - {row['id'] for row in doc['items']
+                                    if row['status'] == 'parked'} - {item['id']})
+    print(f'item {item["id"]} unparked' + (f'; also {", ".join(map(str, released))}'
+                                           if released else ''))
+
+
 def cmd_tiny_off(args):
     """Take a ticket off the tiny lane (orchestrator only): the mark leaves every row of the
     item's ticket, each with a history entry, so later rows of it are ordinary again."""
@@ -2136,7 +2242,7 @@ def rows_step(rows):
         return None
     if statuses & set(OPEN):
         return 'active'
-    if 'unassigned' in statuses:
+    if statuses & {'unassigned', 'parked'}:
         return 'pending'
     return 'done' if 'done' in statuses else 'skipped'
 
@@ -2190,7 +2296,7 @@ def ticket_state(rows, steps):
     statuses = {row['status'] for row in rows} - {'cancelled'}
     if not statuses:
         return 'cancelled'
-    for status in ('in_progress', 'blocked', 'assigned', 'unassigned'):
+    for status in ('parked', 'in_progress', 'blocked', 'assigned', 'unassigned'):
         if status in statuses:
             return status
     if steps.get('deployed') == 'done':
@@ -2216,6 +2322,8 @@ def ticket_now(rows, state, steps, at):
             row['progress'] and f'「{row["progress"]}」',
             row['blocked_reason'] and f'受阻：{row["blocked_reason"]}',
             late and f'超過預計 {late} 分') if text))
+    parts += [f'{STAGES[row["stage"]]}擱置：{row["parked_reason"]}' for row in rows
+              if row['status'] == 'parked']
     if parts:
         return '／'.join(parts)
     waiting = [STAGES[row['stage']] for row in rows if row['status'] == 'unassigned']
@@ -2311,7 +2419,10 @@ def row_span(row):
     if not start:
         return None
     end = closed_at(row)
-    running = row['status'] not in ('done', 'cancelled')
+    if row['status'] == 'parked':  # the work stopped when it was parked
+        end = next(entry['at'] for entry in reversed(row['history'])
+                   if entry.get('action') == 'park' and 'status' in entry['changes'])
+    running = row['status'] not in ('done', 'cancelled', 'parked')
     return loads_time(start), end and loads_time(end), running
 
 
@@ -2475,7 +2586,7 @@ def tickets_without_qa(doc):
             qa_refs |= ticket_refs(item['ticket'])
     missing = {}
     for item in doc['items']:
-        if item['stage'] != 'impl' or item['status'] == 'cancelled':
+        if item['stage'] != 'impl' or item['status'] in ('cancelled', 'parked'):
             continue
         for ref in sorted(ticket_refs(item['ticket']), key=str):
             if ref not in qa_refs:
@@ -2491,7 +2602,8 @@ def tiny_tickets(doc):
     hands-on file the reviewer attached, and keeps the ordinary QA row (trial period)."""
     found = {}
     for item in doc['items']:
-        if item['stage'] == 'impl' and item['status'] != 'cancelled' and item.get('tiny'):
+        if item['stage'] == 'impl' and item['status'] not in ('cancelled', 'parked') \
+                and item.get('tiny'):
             for ref in sorted(ticket_refs(item['ticket']), key=str):
                 found.setdefault(f'{ref[0] or ""}{ref[1]}', []).append(item)
     result = {}
@@ -2526,7 +2638,7 @@ def tiny_tickets(doc):
 
 def cmd_check(args):
     doc = read_only(args)
-    failures, cancelled = [], []
+    failures, cancelled, parked = [], [], []
     tiny = tiny_tickets(doc)
     for number, (ids, _, problems) in tiny.items():
         if problems:
@@ -2546,6 +2658,10 @@ def cmd_check(args):
         if item['status'] == 'cancelled':
             cancelled.append({'id': item['id'], 'label': label, 'reason': item['cancel_reason']})
             continue
+        if item['status'] == 'parked':
+            parked.append({'id': item['id'], 'label': label, 'reason': item['parked_reason'],
+                           'from': item['parked_from'], 'cause': item.get('parked_cause')})
+            continue
         if item['status'] != 'done':
             failures.append({'id': item['id'], 'label': label,
                              'problems': [f'not closed: {item["status"]}']})
@@ -2560,7 +2676,7 @@ def cmd_check(args):
             failures.append({'id': item['id'], 'label': label, 'problems': problems})
     if args.json:
         print(json.dumps({'ok': not failures, 'failures': failures, 'cancelled': cancelled,
-                          'repos': repos},
+                          'parked': parked, 'repos': repos},
                          ensure_ascii=False, indent=1))
     else:
         print('ledger check: ' + ('FAIL' if failures else 'OK') +
@@ -2571,6 +2687,8 @@ def cmd_check(args):
             print(f'- {failure["label"]}: ' + '; '.join(failure['problems']))
         for entry in cancelled:
             print(f'- cancelled {entry["label"]}: {entry["reason"]}')
+        for entry in parked:
+            print(f'- parked {entry["label"]}: {entry["reason"]}')
     return 1 if failures else 0
 
 
@@ -2730,6 +2848,7 @@ def show_rows(rows):
             row.get('tiny') and '小改動',
             row['blocked_reason'] and f'受阻：{row["blocked_reason"]}',
             row['cancel_reason'] and f'取消：{row["cancel_reason"]}',
+            row['status'] == 'parked' and f'擱置：{row["parked_reason"]}',
             row['follows'] and f'接續自 {row["follows"]}',
             row['card_mismatch'] and f'任務卡不一致：{row["card_mismatch"]}',
             row['progress'] and f'進度：{row["progress"]}',
@@ -2895,6 +3014,12 @@ def build_parser():
     sub.add_argument('--tiny-hints', metavar='TEXT',
                      help='with --tiny-confirm: how each hint the tiny check showed was checked; '
                      'required when it shows any')
+    sub = command('park', 'Park a row that cannot go on, with the reason; rows depending on it '
+                  'are parked too (needs an unattended grant in effect; orchestrator only)')
+    sub.add_argument('--reason', required=True, help='why it cannot go on')
+    sub = command('unpark', 'Return a parked row, and the rows parked because of it, to the '
+                  'state they had (orchestrator only)')
+    sub.add_argument('--reason', required=True, help='what the user decided')
     sub = command('tiny-off', "Take the item's ticket off the tiny lane (orchestrator only)")
     sub.add_argument('--reason', required=True)
     stages = ', '.join(f'{key} ({label})' for key, label in PROBLEM_STAGES.items())
@@ -2965,7 +3090,8 @@ def main():
     handlers = {'init': cmd_init, 'add': cmd_add, 'assign': cmd_assign, 'start': cmd_start,
                 'update': cmd_update, 'block': cmd_block, 'unblock': cmd_unblock,
                 'done': cmd_done, 'amend': cmd_amend, 'cancel': cmd_cancel,
-                'tiny-off': cmd_tiny_off, 'reassign': cmd_reassign,
+                'tiny-off': cmd_tiny_off, 'park': cmd_park, 'unpark': cmd_unpark,
+                'reassign': cmd_reassign,
                 'review-result': cmd_review_result,
                 'problem': cmd_problem, 'problem-update': cmd_problem_update,
                 'problems': cmd_problems,

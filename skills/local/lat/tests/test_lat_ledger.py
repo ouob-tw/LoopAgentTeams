@@ -2235,6 +2235,227 @@ class RoundTests(LedgerCase):
 
 
 
+class ParkTests(LedgerCase):
+    """`park` / `unpark`: parking a row that cannot go on, only under a valid unattended grant
+    read through lat-unattended.py. Temp HOME and XDG dirs; the real ~/.config/lat and the main
+    workspace .lat are never touched."""
+    SESSION = '22222222-2222-4222-8222-222222222222'
+    UNATTENDED = SCRIPT.with_name('lat-unattended.py')
+
+    def setUp(self):
+        super().setUp()
+        self.ledger = self.ledger.with_name(f'{self.SESSION}-r1.json')
+        sessions = self.workspace / '.lat' / 'sessions'
+        sessions.mkdir(parents=True)
+        (sessions / f'{self.SESSION}.json').write_text(json.dumps(
+            {'status': 'active', 'history': [], 'hcom_name': 'orch',
+             'decisions_path': str(self.workspace / '.lat' / 'decisions')}))
+        self.init()
+
+    def unattended(self, *args):
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')}
+        environment.update(HOME=str(self.root / 'home'), XDG_CONFIG_HOME=str(self.root / 'config'),
+                           XDG_STATE_HOME=str(self.root / 'state'),
+                           LAT_BOARD_STATE_DIR=str(self.root / 'board-state'),
+                           CLAUDE_CODE_SESSION_ID=self.SESSION, GIT_CONFIG_NOSYSTEM='1')
+        result = subprocess.run([sys.executable, str(self.UNATTENDED), *args],
+                                capture_output=True, text=True, cwd=self.workspace,
+                                env=environment, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def grant(self):
+        self.unattended('create', '--goal', 'finish the round', '--done', 'tickets merged',
+                        '--scope', 'ticket-confirmation', '--max-hours', '6',
+                        '--source', 'board-form', '--evidence', 'board-action-1')
+
+    def run_ledger(self, *args, **kwargs):
+        env = {'HOME': str(self.root / 'home'), 'XDG_STATE_HOME': str(self.root / 'state'),
+               'LAT_BOARD_STATE_DIR': str(self.root / 'board-state'), **(kwargs.pop('env', None) or {})}
+        return super().run_ledger(*args, env=env, **kwargs)
+
+    def shown(self):
+        return json.loads(self.ok('show', '--json'))
+
+    def test_park_needs_a_valid_unattended_grant_and_a_reason(self):
+        row = self.started()
+        before = self.ledger.read_bytes()
+        error = self.fails('park', str(row), '--reason', 'stuck')
+        self.assertIn('ask the user', error)
+        self.grant()
+        self.assertIn('--reason', self.fails('park', str(row), '--reason', ' '))
+        self.assertEqual(self.ledger.read_bytes(), before)
+        self.ok('park', str(row), '--reason', 'stuck')
+        self.assertEqual(self.item(row)['status'], 'parked')
+        self.ok('unpark', str(row), '--reason', 'user replied')
+        self.unattended('close', '--reason', 'off')
+        self.assertIn('ask the user', self.fails('park', str(row), '--reason', 'stuck again'))
+        self.assertEqual(self.item(row)['status'], 'in_progress')
+
+    def test_a_ledger_that_is_not_this_rounds_cannot_park(self):
+        self.grant()
+        row = self.add()
+        for name in ('round-1.json', f'{self.SESSION}-r2.json'):
+            self.ledger = self.ledger.with_name(name)
+            self.init()
+            self.add()
+            self.assertIn('ask the user', self.fails('park', '1', '--reason', 'stuck'), name)
+        self.assertEqual(self.item(1)['status'], 'unassigned')
+        self.assertEqual(row, 1)
+
+    def test_only_the_orchestrator_parks_and_unparks(self):
+        self.grant()
+        row = self.started()
+        self.assertIn('orchestrator', self.fails('park', str(row), '--reason', 'x', by='impl'))
+        self.ok('park', str(row), '--reason', 'x')
+        self.assertIn('orchestrator', self.fails('unpark', str(row), '--reason', 'x', by='impl'))
+
+    def test_parked_row_shows_reason_keeps_history_and_check_lists_it_without_failing(self):
+        self.grant()
+        row = self.started()
+        self.exempt_qa()
+        self.ok('park', str(row), '--reason', 'reopened twice after the final version')
+        item = self.item(row)
+        self.assertEqual((item['status'], item['parked_from'], item['parked_reason']),
+                         ('parked', 'in_progress', 'reopened twice after the final version'))
+        self.assertEqual([entry['action'] for entry in item['history']][-1], 'park')
+        rows = self.ok('show', '--rows')
+        self.assertIn('擱置', rows)
+        self.assertIn('reopened twice after the final version', rows)
+        shown = self.shown()
+        self.assertEqual(shown['tickets'][0]['state'], 'parked')
+        self.assertIn('擱置', self.ok('show'))
+        result = self.run_ledger('check')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('parked', result.stdout)
+        self.assertIn('reopened twice after the final version', result.stdout)
+        checked = json.loads(self.ok('check', '--json'))
+        self.assertTrue(checked['ok'])
+        self.assertEqual([entry['id'] for entry in checked['parked']], [row])
+
+    def test_dependents_park_with_it_while_unrelated_rows_go_on(self):
+        self.grant()
+        root = self.started(ticket='#1')
+        child = self.add('--depends', str(root), ticket='#2')
+        grandchild = self.add('--depends', str(child), ticket='#3')
+        other = self.started(ticket='#4')
+        done_row = self.add('--depends', str(root), evidence='file', ticket='#5')
+        self.ok('cancel', str(done_row), '--reason', 'not needed')
+        self.ok('park', str(root), '--reason', 'cannot go on')
+        for dependent, cause in ((child, root), (grandchild, child)):
+            item = self.item(dependent)
+            self.assertEqual((item['status'], item['parked_cause'], item['parked_from']),
+                             ('parked', cause, 'unassigned'))
+        self.assertEqual(self.item(done_row)['status'], 'cancelled')
+        self.assertEqual(self.item(other)['status'], 'in_progress')
+        self.ok('update', str(other), '--progress', 'still going', by='impl')
+        self.ok('review-result', '--row', str(other), '--reviewer', 'rev', '--clean')
+        self.ok('done', str(other), '--commit', self.merged, by='impl')
+        self.assertEqual(self.item(other)['status'], 'done')
+        self.assertEqual(self.ok('next').strip(), 'nothing ready to dispatch')
+        late = self.add('--depends', str(grandchild), ticket='#6')
+        self.assertEqual((self.item(late)['status'], self.item(late)['parked_cause']),
+                         ('parked', grandchild))
+        checked = json.loads(self.run_ledger('check', '--json').stdout)
+        self.assertEqual(sorted(entry['id'] for entry in checked['parked']),
+                         sorted([root, child, grandchild, late]))
+        self.assertFalse(any(entry['id'] in (root, child, grandchild, late)
+                             for entry in checked['failures']))
+
+    def test_unpark_restores_the_state_and_keeps_the_history(self):
+        self.grant()
+        root = self.started()
+        estimate = self.item(root)['estimate']
+        child = self.add('--depends', str(root), ticket='#2')
+        blocked = self.started(ticket='#3')
+        self.ok('block', str(blocked), '--reason', 'waits', by='impl')
+        self.ok('park', str(blocked), '--reason', 'no way forward')
+        self.ok('park', str(root), '--reason', 'cannot go on')
+        self.assertIn(f'unpark item {root}', self.fails('unpark', str(child), '--reason', 'x'))
+        self.unattended('close', '--reason', 'off')  # releasing needs no grant
+        self.assertIn('also', self.ok('unpark', str(root), '--reason', 'user decided'))
+        self.ok('unpark', str(blocked), '--reason', 'user decided')
+        restored = self.item(root)
+        self.assertEqual((restored['status'], restored['estimate'], restored['parked_reason']),
+                         ('in_progress', estimate, None))
+        self.assertEqual(self.item(child)['status'], 'unassigned')
+        self.assertEqual((self.item(blocked)['status'], self.item(blocked)['blocked_reason']),
+                         ('blocked', 'waits'))
+        self.assertEqual([entry['action'] for entry in restored['history'][-2:]],
+                         ['park', 'unpark'])
+        self.ok('update', str(root), '--progress', 'resumed', by='impl')
+        self.fails('unpark', str(root), '--reason', 'again')
+
+    def test_a_row_depending_on_two_parked_rows_waits_for_both(self):
+        self.grant()
+        first, second = self.add(ticket='#1'), self.add(ticket='#2')
+        shared = self.add('--depends', f'{first},{second}', ticket='#3')
+        self.ok('park', str(first), '--reason', 'a')
+        self.ok('park', str(second), '--reason', 'b')
+        self.ok('unpark', str(first), '--reason', 'user decided')
+        self.assertEqual(self.item(shared)['status'], 'parked')
+        self.assertEqual(self.item(shared)['parked_cause'], second)
+        self.assertIn(f'依賴的列 {second} 已擱置', self.ok('show', '--rows'))
+        self.assertIn(f'依賴的列 {second} 已擱置', self.run_ledger('check').stdout)
+        self.ok('unpark', str(second), '--reason', 'user decided')
+        self.assertEqual(self.item(shared)['status'], 'unassigned')
+
+    def test_changing_dependencies_follows_parked_rows(self):
+        self.grant()
+        root = self.add(ticket='#1')
+        late, descendant = self.add(ticket='#2'), None
+        descendant = self.add('--depends', str(late), ticket='#3')
+        self.ok('park', str(root), '--reason', 'cannot go on')
+        self.ok('update', str(late), '--depends', str(root), '--reason', 'now needs #1')
+        for row in (late, descendant):
+            self.assertEqual((self.item(row)['status'], self.item(row)['parked_cause']),
+                             ('parked', root if row == late else late))
+        self.assertTrue(json.loads(self.run_ledger('check', '--json').stdout)['ok'])
+        self.ok('update', str(late), '--depends', '', '--reason', 'no longer needs #1')
+        self.assertEqual([self.item(row)['status'] for row in (late, descendant)],
+                         ['unassigned', 'unassigned'])
+
+    def test_show_names_the_parked_reason_beside_an_open_row_and_keeps_the_work_time(self):
+        self.grant()
+        stuck = self.started(ticket='#1')
+        self.started(ticket='#1')
+        self.now = '2026-10-24T10:30:00Z'
+        self.ok('park', str(stuck), '--reason', 'cannot go on')
+        self.now = '2026-10-24T12:00:00Z'
+        ticket = self.shown()['tickets'][0]
+        self.assertEqual(ticket['state'], 'parked')
+        self.assertIn('cannot go on', ticket['now'])
+        self.assertIn('進行中', ticket['now'])
+        impl = next(entry for entry in ticket['times'] if entry['key'] == 'impl')
+        self.assertEqual((impl['minutes'], impl['running']), (30, False))
+
+    def test_stuck_review_and_third_spec_round_park_without_touching_acceptance(self):
+        self.grant()
+        cases = [('impl', 'reopened twice after the final version, a level 甲 finding again'),
+                 ('spec-review', 'spec review round 3 still has must-fix items')]
+        for number, (stage, reason) in enumerate(cases, start=1):
+            with self.subTest(stage=stage):
+                ticket = f'#{number}'
+                row = self.add(ticket=ticket, stage=stage, evidence='file')
+                follower = self.add('--depends', str(row), ticket=f'#9{number}')
+                independent = self.add(ticket=f'#8{number}', evidence='file')
+                fixed = {key: self.item(row)[key] for key in
+                         ('ticket', 'stage', 'evidence_kinds', 'depends_on')}
+                self.ok('assign', str(row), '--agent', 'impl', '--card',
+                        str(self.card(f'card-{row}.md')))
+                self.ok('park', str(row), '--reason', reason)
+                parked = self.item(row)
+                self.assertEqual({key: parked[key] for key in fixed}, fixed)
+                self.assertEqual((parked['status'], parked['parked_from'], parked['parked_reason']),
+                                 ('parked', 'assigned', reason))
+                self.assertEqual(self.item(follower)['status'], 'parked')
+                self.ok('assign', str(independent), '--agent', 'impl', '--card',
+                        str(self.card(f'card-{independent}.md')))
+                self.ok('start', str(independent), '--eta', '+1h', by='impl')
+                self.assertEqual(self.item(independent)['status'], 'in_progress')
+                self.assertIn(reason, self.ok('show', '--rows'))
+
+
 class TinyLaneTests(LedgerCase):
     """The tiny-change lane mark on `add` and the reviewer's four-limit confirmation."""
     TINY = ('--tiny', '--no-feature', '--no-format-change')
