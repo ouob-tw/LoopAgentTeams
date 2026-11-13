@@ -54,7 +54,11 @@ async function main() {
 		process.exit(1);
 	}
 
-	const fixture = await startFixture({ port: args.port, env: { HOST: args.host, LAT_BOARD_QUOTA_SECONDS: '30', LAT_BOARD_COOKIE_NAME: DEMO_COOKIE } });
+	// Made-up data only, opened from other machines: any address may connect, unlike the real board.
+	const fixture = await startFixture({
+		port: args.port,
+		env: { HOST: args.host, LAT_BOARD_QUOTA_SECONDS: '30', LAT_BOARD_COOKIE_NAME: DEMO_COOKIE, LAT_BOARD_ALLOWED_SOURCES: '0.0.0.0/0, ::/0' }
+	});
 	const dir = fixture.dir;
 	let asking: ReturnType<typeof Bun.spawn> | undefined;
 	let stopping = false;

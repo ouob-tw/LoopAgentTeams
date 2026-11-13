@@ -5,7 +5,7 @@ import { isAbsolute, join } from 'node:path';
 import { parseModelOptions, type ModelOptions } from '../board/models.ts';
 import { ASK_EXECUTION_WAIT_MS } from '../board/board-asks.ts';
 import { codexMultiAuthDir } from './quota.ts';
-import { LOCAL_ONLY, parseAddressList, type AddressList } from './client-address.ts';
+import { connectionSettings, type AddressList } from './client-address.ts';
 
 type Env = Record<string, string | undefined>;
 
@@ -220,8 +220,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		fallbackMs,
 		debounceMs: 200,
 		loginLockMs: seconds(env.LAT_BOARD_LOGIN_LOCK_SECONDS, 60_000),
-		allowedSources: parseAddressList(env.LAT_BOARD_ALLOWED_SOURCES?.trim() || LOCAL_ONLY.join(','), 'LAT_BOARD_ALLOWED_SOURCES'),
-		trustedProxies: parseAddressList(env.LAT_BOARD_TRUSTED_PROXIES ?? '', 'LAT_BOARD_TRUSTED_PROXIES'),
+		...connectionSettings(env),
 		asrUrl: env.LAT_BOARD_ASR_URL?.replace(/\/+$/, '') || null,
 		asrToken: env.LAT_BOARD_ASR_TOKEN || null,
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),

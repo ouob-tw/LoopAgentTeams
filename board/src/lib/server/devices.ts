@@ -9,7 +9,7 @@ export interface Device {
 	label: string;
 	/** When the device logged in; devices from before password login keep their pairing time. */
 	pairedAt: string;
-	/** About when the device last made a logged-in request (to the hour); its login time before the first. */
+	/** When the device last made a logged-in request; its login time before the first. */
 	lastSeenAt: string;
 	/** A test login's terms; null for a device logged in with the password. */
 	test: TestTerms | null;
@@ -46,8 +46,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const LOGIN_DAYS = 30;
 /** ...and ends sooner when the device makes no logged-in request for this long. */
 export const IDLE_DAYS = 7;
-/** How stale the last-seen time may get before a request writes it again: one write an hour at most. */
-const SEEN_EVERY_MS = 60 * 60 * 1000;
+/** The server knows each device's last request exactly; the file has it to within this much, one
+ *  write a minute per device at most. Only a restart can lose that minute. */
+const SEEN_EVERY_MS = 60 * 1000;
+/** The last request of each device this process has seen, and when it last wrote one to the file. */
+const seen = new Map<string, number>();
+const written = new Map<string, number>();
 
 export const DEVICES_FILE = 'devices.json';
 const STALE_LOCK_MS = 5_000;
@@ -122,7 +126,7 @@ const publicDevice = ({ id, label, pairedAt, lastSeenAt, test }: StoredDevice): 
 	id,
 	label,
 	pairedAt,
-	lastSeenAt: lastSeenAt ?? pairedAt,
+	lastSeenAt: new Date(Math.max(Date.parse(lastSeenAt ?? pairedAt), seen.get(id) ?? 0)).toISOString(),
 	test: test ? { label: test.label, expiresAt: test.expiresAt, owned: [...test.owned] } : null
 });
 
@@ -133,9 +137,13 @@ export function expired(device: Pick<Device, 'test' | 'pairedAt' | 'lastSeenAt'>
 	return Date.parse(device.pairedAt) + LOGIN_DAYS * DAY_MS <= now || Date.parse(device.lastSeenAt) + IDLE_DAYS * DAY_MS <= now;
 }
 
-/** Note that a logged-in device made a request now; written at most once an hour per device. */
+/** Note that a logged-in device made a request now: at once in this process, in the file at most
+ *  once a minute per device. */
 export function markSeen(stateDir: string, device: Device, now: number): void {
-	if (device.test || now - Date.parse(device.lastSeenAt) < SEEN_EVERY_MS) return;
+	if (device.test) return;
+	seen.set(device.id, now);
+	if (now - (written.get(device.id) ?? -Infinity) < SEEN_EVERY_MS) return;
+	written.set(device.id, now);
 	withLock(stateDir, () => {
 		const path = join(stateDir, DEVICES_FILE);
 		const devices = readJson<StoredDevice>(path);

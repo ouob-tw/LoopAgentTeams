@@ -7,6 +7,7 @@ import { getBoard } from '#lib/server/board.ts';
 import { actingAs } from '#lib/server/acting.ts';
 import { clientAddress, viaHttps } from '#lib/server/client-address.ts';
 import { findDevice, markSeen } from '#lib/server/devices.ts';
+import { securityHeaders } from '#lib/server/security-headers.ts';
 import { testDeviceRefusal } from '#lib/server/test-device.ts';
 import { exceptionFields, log, withRequestId } from '#lib/server/log.ts';
 import { redact, secretsOf } from '#lib/server/redact.ts';
@@ -71,25 +72,12 @@ async function logFailure(event: RequestEvent, response: Response) {
 
 const seeOther = (location: string) => new Response(null, { status: 303, headers: { location } });
 
-// What every answer carries: no other site may show the board in a frame or have a browser guess
-// a file's type, and links out of the board do not tell other sites the board's addresses. The
-// content policy only adds what the pages never use: frames, plugins and a <base> elsewhere.
-const CONTENT_POLICY = "frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
-const SECURITY_HEADERS: [string, string][] = [
-	['x-frame-options', 'DENY'],
-	['x-content-type-options', 'nosniff'],
-	['referrer-policy', 'same-origin']
-];
-/** Over HTTPS only: browsers then refuse plain http to this host name for a year. */
-const HSTS = 'max-age=31536000';
-
-/** The response with the security headers; a policy it already has (an attached file's sandbox) is kept. */
+/** The response with the security headers. The built server's connection guard
+ *  (instrumentation.server.ts) set them already, but a header SvelteKit writes replaces it: here a
+ *  route's own policy (an attached file's sandbox) is joined with the board's. */
 function secured(response: Response, https: boolean): Response {
 	const apply = (headers: Headers) => {
-		for (const [name, value] of SECURITY_HEADERS) headers.set(name, value);
-		const own = headers.get('content-security-policy');
-		headers.set('content-security-policy', own ? `${own}; ${CONTENT_POLICY}` : CONTENT_POLICY);
-		if (https) headers.set('strict-transport-security', HSTS);
+		for (const [name, value] of securityHeaders(https, headers.get('content-security-policy'))) headers.set(name, value);
 	};
 	try {
 		apply(response.headers);
@@ -107,7 +95,8 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// The connection's own address, whatever ADDRESS_HEADER says; `vite dev` has no Node request.
 	const peer = event.platform?.req?.socket.remoteAddress ?? event.getClientAddress();
 	const https = viaHttps(peer, event.request.headers.get('x-forwarded-proto'), config.trustedProxies);
-	// Before any route, the login screen included.
+	// The built server refused it before anything was served (instrumentation.server.ts); `vite dev`
+	// has no such guard, so the check is made here too.
 	if (!config.allowedSources.has(peer)) {
 		log('WARNING', 'board.http', 'source_refused', { ...where(event), peer });
 		return secured(new Response('Forbidden', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } }), https);

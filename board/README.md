@@ -80,7 +80,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - `bun run board password` 在終端機輸入時不回顯；標準輸入不是終端機時，改讀前兩行（測試用這個方式）。
 - 密碼以 scrypt（N=2^15、r=8、p=1，16 位元組隨機鹽）雜湊後存在狀態目錄的 `password.json`，權限 600，不存明文。伺服器每次登入都重讀這個檔，所以變更立即生效。
 - 登入成功就在 `devices.json` 登記一台裝置，瀏覽器拿到 30 天的 HttpOnly cookie；經信任代理的 HTTPS 請求另加 `Secure`。配對碼版本留下的裝置格式相同，沒有 `lastSeenAt` 時以 `pairedAt` 代替。
-- 期限在 `devices.ts` 的 `expired`：密碼登入在 `pairedAt` 起 30 天、或 `lastSeenAt` 起 7 天後失效；測試裝置只看自己的 `expiresAt`。`hooks.server.ts` 每個已登入請求呼叫 `markSeen`，`lastSeenAt` 舊於 1 小時才寫回（每台每小時最多寫一次）。失效的裝置 `findDevice` 回 null，與撤銷相同：API 401、頁面轉 `/login`、事件串流在下一次心跳收到 `unpaired`；`devices` 指令標「登入已失效」，不刪除。
+- 期限在 `devices.ts` 的 `expired`：密碼登入在 `pairedAt` 起 30 天、或 `lastSeenAt` 起 7 天後失效；測試裝置只看自己的 `expiresAt`。`hooks.server.ts` 每個已登入請求呼叫 `markSeen`：伺服器在記憶體記下確切時間（`findDevice` 取檔案與記憶體較晚者），檔案每台每分鐘最多寫一次，所以只有重啟會讓閒置期限最多早 1 分鐘到。失效的裝置 `findDevice` 回 null，與撤銷相同：API 401、頁面轉 `/login`、事件串流在下一次心跳收到 `unpaired`；`devices` 指令標「登入已失效」，不刪除。
 - 連續輸錯的計數依 `locals.clientAddress`（見「連線來源」），失敗次數與鎖定到期時間存在狀態目錄的 `login-limit.json`（權限 600），重啟後讀回；還在檢查中的嘗試只在記憶體。每次鎖定開始寫一行 `login_locked`（`client_ip`），單次輸錯與成功都不寫。`succeeded` 會清除計數：之後加上第二步驗證時，只在全部通過才呼叫它，只通過密碼那一步用 `refund` 結束該次嘗試。
 - 登入畫面（`/login`、`/login/test`）與 `/api/login`、`/api/login/test` 之外的路徑都要登入；`/api/*` 與事件串流未登入時回 401，其他頁面轉到 `/login`。
 
@@ -88,11 +88,11 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 
 設定見[使用說明](../docs/lat-board.md#連線來源與反向代理)，規則見 [ADR 0013](../docs/adr/0013-board-trusted-proxy.md)。實作上：
 
-- `hooks.server.ts` 的 `handle` 第一步：連線位址取自 adapter-node 傳來的 `platform.req.socket.remoteAddress`（`vite dev` 沒有時用 `getClientAddress()`），所以 `ADDRESS_HEADER` 改不了它。不在 `LAT_BOARD_ALLOWED_SOURCES` 就回 403 純文字 `Forbidden`，寫一行 `source_refused`（`peer`），不建請求 ID、不讀 cookie。
+- 建置後的伺服器：`src/instrumentation.server.ts`（SvelteKit 的伺服器 instrumentation，在其他程式載入前執行）以 `connection-guard.ts` 的 `guardServers` 包住 `http.createServer`，adapter-node 建立的伺服器每個請求先經 `guardConnection`：連線位址取自 socket（`ADDRESS_HEADER` 改不了它），不在 `LAT_BOARD_ALLOWED_SOURCES` 就回 403 純文字 `Forbidden`、寫一行 `source_refused`（`peer`）；否則先以 `setHeader` 放上安全標頭再交給 adapter-node。所以建置的靜態檔（`/_app/immutable/*`、圖示、`pd-sw.js`）與 SvelteKit 自己產生的錯誤頁也一樣被擋、帶標頭。
+- `hooks.server.ts` 的 `handle` 再做一次同樣的來源判斷（`platform.req.socket.remoteAddress`，`vite dev` 沒有時用 `getClientAddress()`）：`vite dev` 不經上面的包裝，靠這裡擋。
 - `client-address.ts`：`::ffff:a.b.c.d` 當成 IPv4；`clientAddress` 只在連線位址是信任代理時讀 `X-Forwarded-For`，由右往左取第一個非信任代理的位址，全是信任代理時取最左邊的，任何一項不是 IP 就整串不用、改用連線位址；`viaHttps` 只在連線位址是信任代理且 `X-Forwarded-Proto` 為 `https` 時成立。結果放在 `locals.clientAddress`、`locals.https`。`event.url` 的協定不採用（adapter-node 沒設 `PROTOCOL_HEADER` 時一律當 https）。
-- 安全標頭由 `secured` 加在 `handle` 回傳的每個回應上（含 401、303、403）：`Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri 'self'`（附件原本的 `sandbox` 保留在前面）、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: same-origin`；`locals.https` 時加 `Strict-Transport-Security: max-age=31536000`。原本 `redirect()` 拋出的轉址改成直接回傳 303，才拿得到這些標頭。
-- adapter-node 在 SvelteKit 之前直接送出建置的靜態檔（`/_app/immutable/*`、`static/` 裡的圖示、`pd-sw.js` 等），這些不經過 `handle`：不檢查來源，也沒有安全標頭。它們是公開的程式碼與圖示，不含看板資料；`handle` 拋出例外後 SvelteKit 自己產生的 500 頁也一樣沒有標頭。
-- 測試：`tests/unit/client-address.test.ts`（清單、由右往左、格式錯誤、HTTPS 判斷）、`tests/server/connection.test.ts`（以 `curl --interface` 從 127.0.0.2、127.0.0.3 連入：拒絕、代理後的鎖定與紀錄、偽造標頭、`Secure` 與 HSTS、重啟後鎖定、假時鐘的 30 天與 7 天）、`tests/unit/login-limit.test.ts`（存檔）、`tests/unit/device-expiry.test.ts`。
+- 安全標頭的內容在 `security-headers.ts`。SvelteKit 寫出的同名標頭會蓋掉先放的，所以 `handle` 也以 `secured` 加在它回傳的每個回應上（含 401、303、403）：`Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri 'self'`（附件原本的 `sandbox` 保留在前面）、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: same-origin`；`locals.https` 時加 `Strict-Transport-Security: max-age=31536000`。原本 `redirect()` 拋出的轉址改成直接回傳 303，才拿得到這些標頭。
+- 測試：`tests/unit/client-address.test.ts`（清單、由右往左、格式錯誤、HTTPS 判斷）、`tests/server/connection.test.ts`（以 `curl --interface` 從 127.0.0.2、127.0.0.3 連入：頁面與靜態檔都被拒、靜態檔與錯誤頁的標頭、代理後的鎖定與紀錄、偽造標頭、`Secure` 與 HSTS、重啟後鎖定、假時鐘的 30 天與 7 天）、`tests/unit/login-limit.test.ts`（存檔）、`tests/unit/device-expiry.test.ts`。
 
 ## 測試用登入
 
@@ -435,7 +435,7 @@ bun run demo --css ./proposed.css --port 7111 --host 127.0.0.1
 
 - 不給 `--css` 就是預設外觀；`--port 0` 由系統挑；不收 7100。
 - 啟動後印出網址連接埠與登入密碼（測試用的固定值），Ctrl-C 或 SIGTERM 結束，暫存資料夾一併刪掉。要先 `bun run build:test`；它輸出到 `build-test/`，不會改寫常駐看板用的 `build/`。
-- 資料有兩個主控、待決題、Herdr Agent、已關閉的 Agent、額度與一則看板提問；程式在 `scripts/demo-board.ts`，種資料的方式和測試的 `tests/harness.ts` 相同。
+- 資料有兩個主控、待決題、Herdr Agent、已關閉的 Agent、額度與一則看板提問；程式在 `scripts/demo-board.ts`，種資料的方式和測試的 `tests/harness.ts` 相同。只有假資料，所以允許來源設為任何位址（`0.0.0.0/0, ::/0`），其他機器的瀏覽器也打得開。
 - **不會把常駐看板登出**：cookie 只認主機名稱、不分連接埠，兩個看板用同一個主機名稱開時，同名的登入 cookie 會互相蓋掉。所以示意看板的登入 cookie 叫 `lat_board_demo`（由設定 `LAT_BOARD_COOKIE_NAME` 指定），常駐看板維持 `lat_board_device`；不管用哪個主機名稱開，兩邊的登入互不影響。
 - 測試：`tests/unit/demo-board.test.ts`（參數）、`tests/server/demo-board.test.ts`（真的啟動：樣式套上、cookie 不帶 Domain 且名稱獨立、SIGTERM 後資料夾刪除）；`tests/server/cookie-name.test.ts`（預設名稱不變、換名後只認新名稱）。
 

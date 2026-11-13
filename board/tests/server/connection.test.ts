@@ -3,14 +3,22 @@
 // across a restart. Requests leave from chosen loopback addresses (curl --interface), so
 // 127.0.0.2 plays the trusted proxy and 127.0.0.3 a machine that is not on the list.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
-import { DAY, PASSWORD, startFixture, type Fixture } from '../harness.ts';
+import { join } from 'node:path';
+import { BUILD_DIR, DAY, PASSWORD, startFixture, type Fixture } from '../harness.ts';
 
 const PROXY = '127.0.0.2';
 const OUTSIDER = '127.0.0.3';
 const LOCK_SECONDS = 60;
 const T0 = Date.parse('2026-11-01T00:00:00.000Z');
 const CONTENT_POLICY = "frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+// Files adapter-node serves itself, before SvelteKit and its hooks: one script of this build, an icon, the service worker.
+const BUILT_FILES = [
+	`/_app/immutable/entry/${readdirSync(join(import.meta.dir, '../..', BUILD_DIR, 'client/_app/immutable/entry')).find((name) => name.endsWith('.js'))}`,
+	'/favicon.ico',
+	'/pd-sw.js'
+];
 
 interface Answer {
 	status: number;
@@ -82,6 +90,34 @@ describe('a board with a proxy on its list', () => {
 
 		expect((await from('127.0.0.1', '/login')).status).toBe(200);
 		expect((await from(PROXY, '/login')).status).toBe(200);
+	});
+
+	test('the built files are refused to a connection off the list and carry the headers like every page', async () => {
+		for (const path of BUILT_FILES) {
+			const refused = await from(OUTSIDER, path);
+			expect([path, refused.status, refused.body]).toEqual([path, 403, 'Forbidden']);
+			const served = await from('127.0.0.1', path);
+			expect([path, served.status, served.headers.get('content-security-policy'), served.headers.get('x-content-type-options')]).toEqual([path, 200, CONTENT_POLICY, 'nosniff']);
+			expect(served.headers.get('x-frame-options')).toBe('DENY');
+			expect(served.headers.get('strict-transport-security')).toBeNull();
+			const secure = await from(PROXY, path, { headers: { 'x-forwarded-proto': 'https' } });
+			expect(secure.headers.get('strict-transport-security')).toBe('max-age=31536000');
+		}
+	});
+
+	test("SvelteKit's own error page, when the request hook fails, carries the headers too", async () => {
+		const devices = join(fixture.dir, 'board-state/devices.json');
+		const saved = existsSync(devices) ? readFileSync(devices, 'utf8') : null;
+		writeFileSync(devices, 'not json');
+		try {
+			const failed = await from('127.0.0.1', '/', { headers: { cookie: 'lat_board_device=any-token' } });
+			expect(failed.status).toBe(500);
+			expect(failed.headers.get('content-security-policy')).toBe(CONTENT_POLICY);
+			expect(failed.headers.get('x-frame-options')).toBe('DENY');
+		} finally {
+			if (saved === null) rmSync(devices);
+			else writeFileSync(devices, saved);
+		}
 	});
 
 	test('every answer carries the security headers; HSTS only when a trusted proxy says the browser used HTTPS', async () => {
@@ -213,6 +249,21 @@ describe('a board with a proxy on its list', () => {
 		expect((await fixture.fetch('/api/board', { cookie: fresh })).status).toBe(200);
 		fixture.setClock(start + 44 * DAY - 60_000);
 		expect((await fixture.fetch('/api/board', { cookie: fresh })).status).toBe(401);
+	});
+
+	test('the 7 idle days count from the last request itself, not from when it was last written down', async () => {
+		const start = T0 + 100 * DAY;
+		fixture.setClock(start);
+		const cookie = await fixture.login('seen-twice-in-a-minute');
+		fixture.setClock(start + 10_000);
+		expect((await fixture.fetch('/api/board', { cookie })).status).toBe(200);
+		// Within a minute of the last write: not written again, but the server knows it.
+		fixture.setClock(start + 50_000);
+		expect((await fixture.fetch('/api/board', { cookie })).status).toBe(200);
+		fixture.setClock(start + 50_000 + 7 * DAY - 1_000);
+		expect((await fixture.fetch('/api/board', { cookie })).status).toBe(200);
+		fixture.setClock(start + 50_000 + 7 * DAY - 1_000 + 7 * DAY);
+		expect((await fixture.fetch('/api/board', { cookie })).status).toBe(401);
 	});
 });
 

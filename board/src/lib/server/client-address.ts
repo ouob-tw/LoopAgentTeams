@@ -14,6 +14,15 @@ export interface AddressList {
 /** Without a setting only the host itself may connect. */
 export const LOCAL_ONLY = ['127.0.0.0/8', '::1'];
 
+/** Who may connect, and which proxies are believed: `LAT_BOARD_ALLOWED_SOURCES` (only the host
+ *  itself when not set) and `LAT_BOARD_TRUSTED_PROXIES` (none when not set). */
+export function connectionSettings(env: Record<string, string | undefined>): { allowedSources: AddressList; trustedProxies: AddressList } {
+	return {
+		allowedSources: parseAddressList(env.LAT_BOARD_ALLOWED_SOURCES?.trim() || LOCAL_ONLY.join(','), 'LAT_BOARD_ALLOWED_SOURCES'),
+		trustedProxies: parseAddressList(env.LAT_BOARD_TRUSTED_PROXIES ?? '', 'LAT_BOARD_TRUSTED_PROXIES')
+	};
+}
+
 /** An IPv4 address a dual-stack socket reports as `::ffff:a.b.c.d` is that IPv4 address. */
 export function plainAddress(address: string): string {
 	const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
