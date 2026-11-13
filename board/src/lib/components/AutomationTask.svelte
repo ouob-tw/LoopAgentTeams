@@ -171,6 +171,7 @@
 	.task {
 		display: flex;
 		flex-direction: column;
+		line-height: 1.6;
 		gap: 0.5rem;
 		min-width: 0;
 		max-width: 46rem;
@@ -198,10 +199,13 @@
 	.actions button {
 		min-height: 48px;
 	}
+	.actions button.primary {
+		font-weight: 700;
+	}
 	.notice {
 		margin: 0;
 		color: var(--danger);
-		font-weight: 600;
+		font-weight: 700;
 	}
 	.hint,
 	.where {

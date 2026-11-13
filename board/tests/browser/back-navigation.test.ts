@@ -172,6 +172,11 @@ async function visit(width: number, search = '') {
 	await stopChrome();
 	await startChrome();
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
+	// Without the 我說過的話 list: beside the conversation it narrows it, and these tests compare
+	// positions in a conversation of the column's full width (see my-messages.test.ts for the list).
+	await tab.send('Page.addScriptToEvaluateOnNewDocument', {
+		source: `addEventListener('DOMContentLoaded', () => document.head.append(Object.assign(document.createElement('style'), { textContent: '[data-block="my-messages"] { display: none !important }' })))`
+	});
 	await tab.navigate(START());
 	await tab.navigate(`${fixture.url}/${search}`);
 	await tab.until(STARTED, 'the board to start');

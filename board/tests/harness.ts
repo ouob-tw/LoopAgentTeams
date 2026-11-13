@@ -13,6 +13,7 @@ import type { PdSnapshot } from '../src/lib/board/pd.ts';
 import type { QuotaSnapshot } from '../src/lib/board/quota.ts';
 import type { TranslateMode } from '../src/lib/board/translate-mode.ts';
 import type { UsageStyle } from '../src/lib/board/usage.ts';
+import { saveTotp, totpCode } from '../src/lib/server/totp.ts';
 import type {
 	BoardSnapshot,
 	Controller,
@@ -184,6 +185,8 @@ export function uvPython(): string {
 
 /** The board password every fixture sets unless told not to. A test value, not a real password. */
 export const PASSWORD = 'test-password-一二三';
+/** The TOTP secret every fixture sets unless told not to. A test value, not a real secret. */
+export const TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 /** The JSON lines of a file a fake command appends to while the test reads it: nothing for a file
  *  that is missing or created but not yet written, and not the line still being written. */
 export function jsonLines(file: string): any[] {
@@ -300,9 +303,14 @@ export interface Fixture {
 	cliWithInput(input: string, ...args: string[]): { code: number; stdout: string; stderr: string };
 	/** Set the board password through the host command, typed twice. */
 	setPassword(password: string): void;
-	/** Try to log in; the response as the server gave it. */
+	/** Try the password, the first login step; the response as the server gave it. */
 	tryLogin(password: string, userAgent?: string): Promise<Response>;
-	/** Log a new device in with the fixture's password and return its cookie header. */
+	/** Try a TOTP code, the second login step, with the step cookie the right password set. */
+	tryCode(stepCookie: string, code: string, userAgent?: string): Promise<Response>;
+	/** The code the fixture's TOTP secret gives at the board's clock, `offsetMs` from it. */
+	totpCode(offsetMs?: number): string;
+	/** Log a new device in with the fixture's password and TOTP secret and return its cookie header.
+	 *  Each call can use the code of the moment again: it sets the secret afresh first. */
 	login(userAgent?: string): Promise<string>;
 	fetch(path: string, init?: RequestInit & { cookie?: string }): Promise<Response>;
 	board(cookie: string): Promise<BoardSnapshot>;
@@ -321,7 +329,8 @@ export interface Fixture {
 	/** Start the server. A restart asks for the port it had, which a page open on it needs; with
 	 *  `anyPort`, for any free one, as another process may take that port while the server is down. */
 	start(options?: { anyPort?: boolean }): Promise<void>;
-	stop(): Promise<void>;
+	/** Stop the server: killed at once, or with `SIGTERM` as systemd stops it, waiting for it to exit. */
+	stop(signal?: 'SIGKILL' | 'SIGTERM'): Promise<void>;
 	cleanup(): Promise<void>;
 	/** Everything the server has written to its standard output and error so far. */
 	/** The environment the server runs with: every path in it points into `dir`. Other processes that act for the board take it too. */
@@ -362,6 +371,8 @@ export async function startFixture(
 	options: {
 		env?: Record<string, string>;
 		password?: string | null;
+		/** The TOTP secret to set; null for none. */
+		totp?: string | null;
 		/** What runs the server instead of `NODE`, such as the Bun that runs the tests. */
 		runtime?: string;
 		/** The port to listen on; 0 (the default) lets the system pick one. */
@@ -426,6 +437,8 @@ export async function startFixture(
 	};
 	let server: ChildProcess | undefined;
 	let output = '';
+	const totpSecret = options.totp === undefined ? TOTP_SECRET : options.totp;
+	let logins: Promise<unknown> = Promise.resolve();
 	let sessions = 0;
 	const watches: Watch[] = [];
 
@@ -508,10 +521,31 @@ export async function startFixture(
 				headers: { 'content-type': 'application/json', 'user-agent': userAgent },
 				body: JSON.stringify({ password })
 			}),
-		async login(userAgent = 'test-device') {
-			const response = await fixture.tryLogin(PASSWORD, userAgent);
-			if (!response.ok) throw new Error(`login failed: ${response.status}`);
-			return response.headers.getSetCookie()[0].split(';')[0];
+		tryCode: (stepCookie, code, userAgent = 'test-device') =>
+			fixture.fetch('/api/login/totp', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json', 'user-agent': userAgent },
+				body: JSON.stringify({ code }),
+				cookie: stepCookie
+			}),
+		totpCode(offsetMs = 0) {
+			const clock = join(dir, 'clock');
+			const now = existsSync(clock) ? Date.parse(readFileSync(clock, 'utf8')) : Date.now();
+			return totpCode(totpSecret!, now + offsetMs);
+		},
+		login(userAgent = 'test-device') {
+			// One at a time: each sets the secret afresh so the code of the moment works again.
+			const done = logins.then(async () => {
+				if (!totpSecret) throw new Error('login: this fixture has no TOTP secret');
+				saveTotp(join(dir, 'board-state'), totpSecret, Date.now());
+				const first = await fixture.tryLogin(PASSWORD, userAgent);
+				if (!first.ok) throw new Error(`login failed at the password: ${first.status}`);
+				const second = await fixture.tryCode(first.headers.getSetCookie()[0].split(';')[0], fixture.totpCode(), userAgent);
+				if (!second.ok) throw new Error(`login failed at the code: ${second.status}`);
+				return second.headers.getSetCookie().find((cookie) => !cookie.includes('_step='))!.split(';')[0];
+			});
+			logins = done.catch(() => {});
+			return done;
 		},
 		fetch(path, init = {}) {
 			const { cookie, ...rest } = init;
@@ -622,10 +656,10 @@ export async function startFixture(
 				}
 			}
 		},
-		async stop() {
+		async stop(signal = 'SIGKILL') {
 			if (!server || server.exitCode !== null) return;
 			const exited = new Promise((resolve) => server!.once('exit', resolve));
-			server.kill('SIGKILL');
+			server.kill(signal);
 			await exited;
 		},
 		serverEnv: () => ({ ...env }),
@@ -640,6 +674,7 @@ export async function startFixture(
 
 	fixture.list([]);
 	if (options.password !== null) fixture.setPassword(options.password ?? PASSWORD);
+	if (totpSecret) saveTotp(join(dir, 'board-state'), totpSecret, Date.now());
 	try {
 		await fixture.start();
 	} catch (error) {

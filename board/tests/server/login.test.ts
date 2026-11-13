@@ -54,14 +54,30 @@ test('every data endpoint and the event stream refuse a caller that is not logge
 	expect(forged.status).toBe(401);
 });
 
-test('the right password logs the browser in for 400 days', async () => {
-	const response = await fixture.tryLogin(PASSWORD);
+test('the right password alone logs nothing in; its TOTP code then logs the browser in for 30 days', async () => {
+	const first = await fixture.tryLogin(PASSWORD);
+	expect(first.status).toBe(200);
+	expect(await first.json()).toEqual({ secondStep: ['totp'], secondsLeft: 300 });
+	// Only the second step's cookie, for the login endpoints, for 5 minutes.
+	const [stepCookie, ...more] = first.headers.getSetCookie();
+	expect(more).toEqual([]);
+	expect(stepCookie).toStartWith('lat_board_device_step=');
+	expect(stepCookie).toContain('Path=/api/login');
+	expect(stepCookie).toContain('Max-Age=300');
+	expect(stepCookie).toContain('HttpOnly');
+	expect((await fixture.fetch('/api/board', { cookie: stepCookie.split(';')[0] })).status).toBe(401);
 
+	// The next step's code: the login before this test used up the current one.
+	const response = await fixture.tryCode(stepCookie.split(';')[0], fixture.totpCode(30_000));
 	expect(response.status).toBe(200);
-	const cookie = response.headers.getSetCookie()[0];
+	const cookie = response.headers.getSetCookie().find((set) => set.startsWith('lat_board_device='))!;
+	// The second step's cookie is removed.
+	expect(response.headers.getSetCookie().find((set) => set.startsWith('lat_board_device_step='))).toContain('Max-Age=0');
 	expect(cookie).toContain('HttpOnly');
-	expect(cookie).toContain(`Max-Age=${400 * 24 * 60 * 60}`);
-	const board = await fixture.board(cookieOf(response));
+	expect(cookie).toContain(`Max-Age=${30 * 24 * 60 * 60}`);
+	// Plain http on the host itself: the cookie must still go back over it.
+	expect(cookie).not.toContain('Secure');
+	const board = await fixture.board(cookie.split(';')[0]);
 	expect(board.controllers.map((controller) => controller.hcomName)).toEqual(['luna']);
 });
 
@@ -71,8 +87,8 @@ test('a wrong or empty password is refused and logs nothing in', async () => {
 		expect(response.status).toBe(401);
 		expect(response.headers.getSetCookie()).toEqual([]);
 	}
-	// A right password resets the count of wrong ones.
-	expect((await fixture.tryLogin(PASSWORD)).status).toBe(200);
+	// A login clears the count of wrong ones.
+	await fixture.login();
 });
 
 test('after 5 wrong passwords in a row the source is refused, told how long to wait, then let back in', async () => {
@@ -89,7 +105,7 @@ test('after 5 wrong passwords in a row the source is refused, told how long to w
 	expect(during.headers.getSetCookie()).toEqual([]);
 
 	await sleep(LOCK_SECONDS * 1000 + 200);
-	expect((await fixture.tryLogin(PASSWORD)).status).toBe(200);
+	await fixture.login();
 });
 
 test('many wrong passwords sent at once get no more than 5 tries', async () => {
@@ -98,7 +114,7 @@ test('many wrong passwords sent at once get no more than 5 tries', async () => {
 	expect(responses.filter((response) => response.status === 401).length).toBeLessThanOrEqual(4);
 	expect((await fixture.tryLogin(PASSWORD)).status).toBe(429);
 	await sleep(LOCK_SECONDS * 1000 + 200);
-	expect((await fixture.tryLogin(PASSWORD)).status).toBe(200);
+	await fixture.login();
 });
 
 test('a logged-in browser opening the login screen goes straight to the board', async () => {
@@ -122,6 +138,8 @@ test('a changed password works at once and the old one no longer does; logged-in
 
 		expect((await fixture.tryLogin(PASSWORD)).status).toBe(401);
 		expect((await fixture.tryLogin('new-password-2')).status).toBe(200);
+		fixture.setPassword(PASSWORD);
+		await fixture.login();
 		expect((await fixture.fetch('/api/board', { cookie: before })).status).toBe(200);
 	} finally {
 		fixture.setPassword(PASSWORD);
@@ -138,7 +156,7 @@ test('the host command refuses two different entries or an empty one and keeps t
 	expect(empty.stderr).toContain('不能是空的');
 
 	expect((await fixture.tryLogin('first-try')).status).toBe(401);
-	expect((await fixture.tryLogin(PASSWORD)).status).toBe(200);
+	await fixture.login();
 });
 
 test('the password is nowhere in the state directory, the server output or the command output', async () => {
@@ -154,31 +172,45 @@ test('the password is nowhere in the state directory, the server output or the c
 		expect(text).not.toContain(PASSWORD);
 		expect(text).not.toContain(Buffer.from(PASSWORD).toString('base64'));
 	}
-	// Login succeeded above, so the right password reset the count again.
-	expect((await fixture.tryLogin(PASSWORD)).status).toBe(200);
+	// A login clears the count again.
+	await fixture.login();
 });
 
-test('a device paired before the upgrade stays logged in until it is revoked', async () => {
+test('a device logged in before the second step existed must log in again, test devices aside', async () => {
 	// What the pairing-code version left in the state directory.
 	const token = 'token-from-the-pairing-version';
+	// It has no last-seen time: the time it paired stands in for it.
+	const pairedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
 	const devicesPath = join(fixture.dir, 'board-state/devices.json');
 	const devices = JSON.parse(readFileSync(devicesPath, 'utf8'));
 	devices.push({
 		id: 'a1b2c3d4',
 		label: 'old-paired-phone',
-		pairedAt: '2026-10-01T00:00:00.000Z',
+		pairedAt,
 		tokenHash: createHash('sha256').update(token).digest('hex')
 	});
 	writeFileSync(devicesPath, JSON.stringify(devices));
 	writeFileSync(join(fixture.dir, 'board-state/pairing-codes.json'), '[]\n');
 	const cookie = `lat_board_device=${token}`;
 
-	expect((await fixture.fetch('/', { cookie })).status).toBe(200);
-	expect(fixture.cli('devices').stdout).toContain('a1b2c3d4\t2026-10-01T00:00:00.000Z\told-paired-phone');
-
-	expect(fixture.cli('revoke', 'a1b2c3d4').code).toBe(0);
 	const page = await fixture.fetch('/', { cookie });
 	expect([page.status, page.headers.get('location')]).toEqual([303, '/login']);
+	expect((await fixture.fetch('/api/board', { cookie })).status).toBe(401);
+	expect(fixture.cli('devices').stdout).toContain(`a1b2c3d4\t${pairedAt}\told-paired-phone\t（登入已失效，須重新登入）`);
+	// A test login made on the old version keeps working (test-login.test.ts covers new ones).
+	const test = 'token-of-an-old-test-login';
+	const listed = JSON.parse(readFileSync(devicesPath, 'utf8'));
+	listed.push({
+		id: 'e5f6a7b8',
+		label: 'qa-browser',
+		pairedAt,
+		tokenHash: createHash('sha256').update(test).digest('hex'),
+		test: { label: 'qa', expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(), owned: [] }
+	});
+	writeFileSync(devicesPath, JSON.stringify(listed));
+	expect((await fixture.fetch('/api/board', { cookie: `lat_board_device=${test}` })).status).toBe(200);
+	expect(fixture.cli('revoke', 'a1b2c3d4').code).toBe(0);
+	expect(fixture.cli('revoke', 'e5f6a7b8').code).toBe(0);
 });
 
 test('the host can list devices and revoke one; the revoked device is back at the login screen', async () => {
@@ -238,7 +270,7 @@ test('an unreadable password file is reported on the login screen and logs nothi
 	} finally {
 		if (readFileSync(path, 'utf8') === 'not json') writeFileSync(path, saved);
 	}
-	expect((await fixture.tryLogin(PASSWORD)).status).toBe(200);
+	await fixture.login();
 });
 
 describe('before a password is set', () => {
@@ -263,8 +295,11 @@ describe('before a password is set', () => {
 		const set = fresh.cliWithInput('first-password\nfirst-password\n', 'password');
 		expect(set.stdout).toContain('已設定密碼');
 
-		const response = await fresh.tryLogin('first-password');
+		const first = await fresh.tryLogin('first-password');
+		expect(first.status).toBe(200);
+		const response = await fresh.tryCode(cookieOf(first), fresh.totpCode());
 		expect(response.status).toBe(200);
-		expect((await fresh.fetch('/api/board', { cookie: cookieOf(response) })).status).toBe(200);
+		const device = response.headers.getSetCookie().find((set) => set.startsWith('lat_board_device='))!.split(';')[0];
+		expect((await fresh.fetch('/api/board', { cookie: device })).status).toBe(200);
 	});
 });

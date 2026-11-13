@@ -93,7 +93,7 @@ async function loggedFor(response: Response): Promise<Record<string, unknown>[]>
 	process.stderr.write = ((chunk: string) => (written.push(chunk), true)) as typeof process.stderr.write;
 	try {
 		const request = new Request('http://board/api/login', { method: 'POST' });
-		const event = { request, url: new URL(request.url), cookies: { get: () => undefined }, locals: {} };
+		const event = { request, url: new URL(request.url), cookies: { get: () => undefined }, locals: {}, getClientAddress: () => '127.0.0.1' };
 		expect(await handle({ event, resolve: async () => response } as never)).toBe(response);
 	} finally {
 		process.stderr.write = write;

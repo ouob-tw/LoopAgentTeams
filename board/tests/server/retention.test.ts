@@ -16,8 +16,13 @@ let python: string;
 const T0 = Date.parse('2026-03-01T08:00:00.000Z');
 const iso = (time: number) => new Date(time).toISOString();
 
-async function on(time: number) {
+/** Move the board's clock. A login ends after 7 days without a request, so log in again then. */
+async function at(time: number) {
 	fixture.setClock(time);
+	cookie = await fixture.login();
+}
+async function on(time: number) {
+	await at(time);
 	return fixture.refresh(cookie);
 }
 /** Read again until `check` holds: pruning runs after a read, not within it. */
@@ -195,6 +200,9 @@ test('when the read and archive state cannot be saved first, nothing is deleted'
 	fixture.report('session-unsaved', { tag: 'DONE', summary: '存不了', time: iso(T0), hcom_name: 'vega', workspace });
 	await on(T0 + 10 * DAY);
 	const asked = fixture.helperArgs('prune-reports').length;
+	// A login writes to the state directory, so log in before it turns read-only: early enough
+	// that nothing is due yet, late enough that the login is not 7 days idle at day 31.
+	await at(T0 + 25 * DAY);
 	chmodSync(stateDir(), 0o500);
 	try {
 		fixture.setClock(T0 + 31 * DAY);
@@ -223,7 +231,7 @@ test('a report marked read while the helper runs does not give the deleted repor
 
 	// The helper takes a while and deletes the file, as the real one would.
 	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'ok', deleted: ['session-race'], failed: [] }, sleepMs: 1500 } });
-	fixture.setClock(T0 + 30 * DAY);
+	await at(T0 + 30 * DAY);
 	await fixture.refresh(cookie);
 	await until(() => !Object.keys(inboxState().archived).includes('session-race#0'), 10_000, 'the state to be cleared first');
 	const other = titled(await fixture.board(cookie), '還在信箱')!;
@@ -244,7 +252,7 @@ test('a report marked read while the helper runs does not give the deleted repor
 test('a failed prune is shown and tried again at the next read', async () => {
 	fixture.report('session-old', { tag: 'DONE', summary: '舊的', time: iso(T0), hcom_name: 'vega', workspace: `${fixture.dir}/workspaces/alpha` });
 	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'error', reason: '磁碟壞了' }, exit: 1 } });
-	fixture.setClock(T0 + 31 * DAY);
+	await at(T0 + 31 * DAY);
 	await eventually((next) => next.errors.join() === '超過 30 天的回報紀錄沒有刪除，下次重讀再試：磁碟壞了', 'the failure to be shown');
 
 	// A file that could not be deleted does not hide the ones that were.
@@ -262,7 +270,7 @@ test('a slow helper does not hold up the snapshot', async () => {
 	fixture.report('session-slow', { tag: 'DONE', summary: '慢慢刪', time: iso(T0), hcom_name: 'vega', workspace: `${fixture.dir}/workspaces/alpha` });
 	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'ok', deleted: [], failed: [] }, sleepMs: 4_000 } });
 	const asked = fixture.helperArgs('prune-reports').length;
-	fixture.setClock(T0 + 31 * DAY);
+	await at(T0 + 31 * DAY);
 	const started = Date.now();
 	await fixture.refresh(cookie);
 	await until(() => fixture.helperArgs('prune-reports').length > asked, 10_000, 'the helper to be asked');

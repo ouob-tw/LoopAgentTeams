@@ -1,11 +1,13 @@
-import { isHttpError, isRedirect, json, redirect } from '@sveltejs/kit';
+import { isHttpError, isRedirect, json } from '@sveltejs/kit';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { Handle, HandleServerError, ServerInit } from '@sveltejs/kit/hooks';
 import { randomUUID } from 'node:crypto';
 import { DEVICE_COOKIE } from '#lib/server/auth.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { actingAs } from '#lib/server/acting.ts';
-import { findDevice } from '#lib/server/devices.ts';
+import { clientAddress, viaHttps } from '#lib/server/client-address.ts';
+import { findDevice, markSeen, saveSeen } from '#lib/server/devices.ts';
+import { securityHeaders } from '#lib/server/security-headers.ts';
 import { testDeviceRefusal } from '#lib/server/test-device.ts';
 import { exceptionFields, log, withRequestId } from '#lib/server/log.ts';
 import { redact, secretsOf } from '#lib/server/redact.ts';
@@ -13,12 +15,31 @@ import { redact, secretsOf } from '#lib/server/redact.ts';
 export const init: ServerInit = () => {
 	const board = getBoard();
 	void board.refresh();
-	// Open event streams would otherwise hold the server open after a stop signal.
-	for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => board.close());
+	// Open event streams would otherwise hold the server open after a stop signal. The devices' last
+	// requests of the past minute are written down so a restart does not shorten their idle time.
+	for (const signal of ['SIGINT', 'SIGTERM'] as const)
+		process.once(signal, () => {
+			board.close();
+			try {
+				saveSeen(board.config.stateDir);
+			} catch (error) {
+				log('ERROR', 'board.devices', 'last_seen_unsaved', exceptionFields(error));
+			}
+		});
 };
 
 // Everything except the login screens and their endpoints needs a logged-in device.
-const OPEN_PATHS = new Set(['/login', '/api/login', '/login/test', '/api/login/test']);
+const OPEN_PATHS = new Set([
+	'/login',
+	'/api/login',
+	'/api/login/totp',
+	'/api/login/passkey',
+	'/api/login/passkey/options',
+	'/api/login/enroll',
+	'/api/login/enroll/options',
+	'/login/test',
+	'/api/login/test'
+]);
 
 // The user's own stylesheet: the last thing in the head, so it comes after every built-in style and
 // nothing is painted without it. It is not part of the page's own markup: browser extensions add
@@ -68,7 +89,43 @@ async function logFailure(event: RequestEvent, response: Response) {
 	});
 }
 
-export const handle: Handle = ({ event, resolve }) => {
+const seeOther = (location: string) => new Response(null, { status: 303, headers: { location } });
+
+/** The response with the security headers. The built server's connection guard
+ *  (instrumentation.server.ts) set them already, but a header SvelteKit writes replaces it: here a
+ *  route's own policy (an attached file's sandbox) is joined with the board's. */
+function secured(response: Response, https: boolean): Response {
+	const apply = (headers: Headers) => {
+		for (const [name, value] of securityHeaders(https, headers.get('content-security-policy'))) headers.set(name, value);
+	};
+	try {
+		apply(response.headers);
+		return response;
+	} catch {
+		// A response whose headers cannot change, such as one passed on from fetch.
+		const copy = new Response(response.body, response);
+		apply(copy.headers);
+		return copy;
+	}
+}
+
+export const handle: Handle = async ({ event, resolve }) => {
+	const { config } = getBoard();
+	// The connection's own address, whatever ADDRESS_HEADER says; `vite dev` has no Node request.
+	const peer = event.platform?.req?.socket.remoteAddress ?? event.getClientAddress();
+	const https = viaHttps(peer, event.request.headers.get('x-forwarded-proto'), config.trustedProxies);
+	// The built server refused it before anything was served (instrumentation.server.ts); `vite dev`
+	// has no such guard, so the check is made here too.
+	if (!config.allowedSources.has(peer)) {
+		log('WARNING', 'board.http', 'source_refused', { ...where(event), peer });
+		return secured(new Response('Forbidden', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } }), https);
+	}
+	event.locals.clientAddress = clientAddress(peer, event.request.headers.get('x-forwarded-for'), config.trustedProxies);
+	event.locals.https = https;
+	return secured(await handleAllowed({ event, resolve }), https);
+};
+
+const handleAllowed: Handle = ({ event, resolve }) => {
 	event.locals.requestId = requestIdOf(event);
 	event.locals.redact = redactorFor(event);
 	return withRequestId(event.locals.requestId, async () => {
@@ -76,15 +133,24 @@ export const handle: Handle = ({ event, resolve }) => {
 		try {
 			const token = event.cookies.get(DEVICE_COOKIE);
 			const board = getBoard();
-			const device = token ? findDevice(board.config.stateDir, token, board.config.now()) : null;
+			const now = board.config.now();
+			const device = token ? findDevice(board.config.stateDir, token, now) : null;
+			if (device) {
+				try {
+					markSeen(board.config.stateDir, device, now);
+				} catch (error) {
+					// The time is kept in memory and written again a minute later; the request goes on.
+					log('ERROR', 'board.devices', 'last_seen_unsaved', exceptionFields(error));
+				}
+			}
 			event.locals.device = device;
 
 			const path = event.url.pathname;
 			if (!device && !OPEN_PATHS.has(path)) {
 				if (path.startsWith('/api/')) return json({ error: 'unpaired' }, { status: 401 });
-				redirect(303, '/login');
+				return seeOther('/login');
 			}
-			if (device && path === '/login') redirect(303, '/');
+			if (device && path === '/login') return seeOther('/');
 			// A test device's change is checked against what it may do before any route runs.
 			const refusal = device && (await testDeviceRefusal(board.config, device, event.request.method, event.route.id, event.request));
 			if (refusal) return refusal;

@@ -55,6 +55,9 @@ export const INFO_DETAILS_KEY = 'lat-board-info-details';
  *  board's setting for every device now; the old value is only cleared. */
 export const LEGACY_TRANSLATE_KEY = 'lat-board-translate';
 
+/** 'folded' while the 「我說過的話」 list beside a conversation is collapsed to its button on this device. */
+export const MY_MESSAGES_KEY = 'lat-board-my-messages';
+
 /** Column widths of the wide layout in px. The defaults live in the page's styles. */
 export const WIDTHS = {
 	roster: { key: 'lat-board-roster-width', min: 170, max: 440 },

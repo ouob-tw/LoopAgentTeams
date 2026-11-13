@@ -5,6 +5,7 @@ import { isAbsolute, join } from 'node:path';
 import { parseModelOptions, type ModelOptions } from '../board/models.ts';
 import { ASK_EXECUTION_WAIT_MS } from '../board/board-asks.ts';
 import { codexMultiAuthDir } from './quota.ts';
+import { connectionSettings, type AddressList } from './client-address.ts';
 
 type Env = Record<string, string | undefined>;
 
@@ -57,6 +58,13 @@ export interface BoardConfig {
 	debounceMs: number;
 	/** How long a source address is refused after too many wrong passwords in a row. */
 	loginLockMs: number;
+	/** Who may connect at all, checked before anything else; only the host itself when not set. */
+	allowedSources: AddressList;
+	/** Proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` the board believes; none when not set. */
+	trustedProxies: AddressList;
+	/** Where passkeys work: the board's address as browsers open it, and the passkeys' RP ID. Null
+	 *  when the board's address is not set, which leaves passkeys off. */
+	passkeySite: PasskeySite | null;
 	/** The speech recognition service voice input sends its recordings to; null turns voice input off. */
 	asrUrl: string | null;
 	/** The service's access token. It stays on the server: no response to a page carries it. */
@@ -105,6 +113,32 @@ export interface BoardConfig {
 	screenMs: number;
 	/** The current time in milliseconds. Read state, archiving and the 終端分頁's recovery bookkeeping use this, never `Date.now()`. */
 	now(): number;
+}
+
+export interface PasskeySite {
+	/** The only page origin a passkey is used from, such as `https://lat.ouob.net`; always https. */
+	origin: string;
+	/** The domain passkeys are made for: the address's host name, or a domain it belongs to. */
+	rpId: string;
+}
+
+/** `LAT_BOARD_URL`, the board's https address, and `LAT_BOARD_PASSKEY_RP_ID`, which defaults to its
+ *  host name. Throws on an address that is not https (passkeys never go over plain http, not even
+ *  to localhost) or an RP ID the host name does not belong to. */
+export function passkeySite(env: Env): PasskeySite | null {
+	const given = env.LAT_BOARD_URL?.trim();
+	if (!given) return null;
+	let url: URL;
+	try {
+		url = new URL(given);
+	} catch {
+		throw new Error(`LAT_BOARD_URL: "${given}" is not an address`);
+	}
+	if (url.protocol !== 'https:') throw new Error(`LAT_BOARD_URL: "${given}" is not an https address`);
+	const rpId = env.LAT_BOARD_PASSKEY_RP_ID?.trim().toLowerCase() || url.hostname;
+	if (url.hostname !== rpId && !url.hostname.endsWith(`.${rpId}`))
+		throw new Error(`LAT_BOARD_PASSKEY_RP_ID: "${rpId}" is not ${url.hostname} or a domain it belongs to`);
+	return { origin: url.origin, rpId };
 }
 
 const MAX_FALLBACK_MS = 60_000;
@@ -217,6 +251,8 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		fallbackMs,
 		debounceMs: 200,
 		loginLockMs: seconds(env.LAT_BOARD_LOGIN_LOCK_SECONDS, 60_000),
+		...connectionSettings(env),
+		passkeySite: passkeySite(env),
 		asrUrl: env.LAT_BOARD_ASR_URL?.replace(/\/+$/, '') || null,
 		asrToken: env.LAT_BOARD_ASR_TOKEN || null,
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),
