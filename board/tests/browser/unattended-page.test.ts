@@ -2,8 +2,9 @@
 // settings dialog's global and project settings, the options menu's 無人模式 part, the form drawer
 // (cancel writes nothing, a blank goal cannot be sent, 確認開啟 grants), the status card's badge,
 // goal line, details and 修改, the roster's 無人 mark, and 關掉, each reaching the other browser
-// without a reload. At 1280 and 390 wide nothing scrolls sideways and every button is at least 44px high. With LAT_BOARD_SHOTS set, every
-// look is saved there. Headless Chrome over its DevTools protocol; skipped when the host has no Chrome.
+// without a reload. At 1280 and 390 wide nothing scrolls sideways and every button is at least 44px
+// high. With LAT_BOARD_SHOTS set, every look is saved there. Headless Chrome over its DevTools
+// protocol; skipped when the host has no Chrome.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -30,8 +31,9 @@ const MARK = `(document.querySelector('[data-controller="luna"] .unattended')?.i
 const MENU = '.cmd .popup [aria-label="無人模式"]';
 const DRAWER = '[aria-labelledby="unattended-form-title"]';
 const NO_SIDEWAYS = `document.scrollingElement.scrollWidth <= innerWidth`;
-/** The shown buttons under `scope` less than a finger (44px) high, by label and height. */
-const SMALL = (scope: string) => `[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].filter((b) => b.offsetParent !== null && b.getBoundingClientRect().height < 44).map((b) => b.innerText.trim() + ' ' + b.getBoundingClientRect().height)`;
+/** The shown buttons under `scope` less than a finger (44px) high, by label and height; `no buttons`
+ *  when none is shown, so a wrong scope cannot pass. */
+const SMALL = (scope: string) => `(() => { const shown = [...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].filter((b) => b.offsetParent !== null); return shown.length ? shown.filter((b) => b.getBoundingClientRect().height < 44).map((b) => b.innerText.trim() + ' ' + b.getBoundingClientRect().height) : ['no buttons']; })()`;
 
 let fixture: Fixture;
 let cookie: string;
