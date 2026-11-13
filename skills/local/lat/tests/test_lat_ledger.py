@@ -2471,6 +2471,21 @@ class ParkTests(LedgerCase):
         self.review(row, '乙:e')
         self.ok(*self.park_cause(row, 'review-stuck'))
 
+    def test_another_ledgers_problem_ids_do_not_count(self):
+        self.grant()
+        row = self.started(ticket='#1')
+        for _ in range(3):  # three final reviews whose findings are only 丙
+            self.review(row, '丙:minor')
+        # A 甲 problem of another ledger's review 1..3 sits in the shared log.
+        log = next(self.workspace.glob('.lat/**/problems*.jsonl'), None)
+        self.assertIsNotNone(log)
+        with log.open('a') as handle:
+            for number in range(1, 4):
+                handle.write(json.dumps({'op': 'record', 'id': f'P9{number}', 'ticket': '#1',
+                                         'stage': 'review', 'level': '甲', 'review': number,
+                                         'row': 99, 'ledger': 'elsewhere.json'}) + '\n')
+        self.assertIn('not review-stuck', self.fails(*self.park_cause(row, 'review-stuck')))
+
     def test_spec_review_limit_needs_three_rounds_with_must_fix_in_the_third(self):
         self.grant()
         cases = {'two rounds': (('甲:a',), ('乙:b',)),

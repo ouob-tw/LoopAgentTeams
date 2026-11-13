@@ -1901,11 +1901,9 @@ SPEC_REVIEW_ROUNDS = 3
 def blocking_reviews(doc, row, final_only):
     """The row's recorded reviews in order, each with whether it has a 甲 or 乙 finding. A
     review's findings are the problems that name it; the level is the problem's current one."""
-    levels = {}
-    for problem in read_problems(doc).values():
-        if problem.get('stage') == 'review':
-            levels.setdefault(problem.get('review'), []).append(problem.get('level'))
-    return [(review, any(level in BLOCKING_LEVELS for level in levels.get(review['id'], [])))
+    problems = read_problems(doc)  # the log is shared by every ledger: look up by problem id
+    return [(review, any(problems.get(pid, {}).get('level') in BLOCKING_LEVELS
+                         for pid in review.get('problems', [])))
             for review in doc.get('reviews', [])
             if review.get('row') == row['id'] and (review.get('final') or not final_only)]
 
