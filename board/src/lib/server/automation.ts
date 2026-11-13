@@ -11,7 +11,7 @@
 // writes on the board is sent to the agent here (`reply`).
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -89,6 +89,9 @@ export interface Automation {
 	carry(id: string, marker: unknown): Started;
 	/** 這期就算了: the task's open missed periods are no longer shown; the number dismissed. */
 	dismissMissed(id: string): number | null;
+	/** 刪除任務: the task and everything kept for it (runs, missed periods, outputs, checker briefs).
+	 *  Refused while a run of it is unfinished (running, waiting on an answer, being checked). */
+	remove(id: string): { ok: true } | { ok: false; status: number; message: string };
 	/** The kept output of one run; null when there is none. */
 	output(taskId: string, runId: string): string | null;
 	/** Resolves once every run started so far has ended (tests and closing). */
@@ -1032,6 +1035,18 @@ export function createAutomation(options: {
 			const run = record({ ...newRun(task, 'carried', at), endedAt: at, status: 'success', marker: path, reason: `沿用原紀錄：${path}` });
 			publish();
 			return { ok: true, run };
+		},
+		remove(id) {
+			if (!tasks.has(id)) return { ok: false, status: 404, message: '這個任務已不存在' };
+			if (children.has(id) || (runs.get(id) ?? []).some(isOpen)) return { ok: false, status: 409, message: '這個任務還有一次沒跑完，等它結束或按停止這次之後再刪除' };
+			// The task file first: should the rest fail, what is left is never read as a task.
+			rmSync(taskFile(id), { force: true });
+			tasks.delete(id);
+			runs.delete(id);
+			missed.delete(id);
+			for (const path of [runsFile(id), missedFile(id), join(outputDir, id), join(dir, 'review', id)]) rmSync(path, { recursive: true, force: true });
+			publish();
+			return { ok: true };
 		},
 		dismissMissed(id) {
 			if (!tasks.has(id)) return null;

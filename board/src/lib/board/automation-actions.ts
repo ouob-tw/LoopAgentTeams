@@ -64,3 +64,10 @@ export async function replyTask(id: string, text: string): Promise<Done> {
 	const result = await request(`/api/automation/${encodeURIComponent(id)}/reply`, post('POST', { text }));
 	return result.ok ? { ok: true, value: null } : failed(result, '回覆沒有送出，請再試一次。');
 }
+
+/** 刪除任務: the task and its run records. */
+export async function deleteTask(id: string): Promise<Done> {
+	// Sent as JSON: SvelteKit takes a DELETE with no content type for a cross-site form and refuses it.
+	const result = await request(`/api/automation/${encodeURIComponent(id)}`, post('DELETE', {}), () => Promise.resolve(null));
+	return result.ok ? { ok: true, value: null } : failed(result, '沒有刪除成功，請再試一次。');
+}

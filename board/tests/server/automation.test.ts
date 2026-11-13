@@ -302,6 +302,49 @@ test('a change on one device and a run’s progress reach every open page within
 	theirs.close();
 });
 
+test('刪除任務 removes the task, its runs and outputs, on every open page; refused while a run is unfinished; other tasks stay as they were', async () => {
+	const other = await fixture.login('delete-other-device');
+	const theirs = fixture.watch(other);
+	await until(() => theirs.automations.length, 5_000, 'the other page to connect');
+	const preview = await create(commandTask({ name: '搬遷預覽：每月備份' }, { command: 'sleep 2; echo OK' }));
+	const real = await create(commandTask({ name: '每月備份（正式）' }));
+	const realRun = await runToEnd(real.id);
+	const realBefore = await viewOf(real.id);
+
+	// Running: refused, and nothing removed.
+	expect((await send(`/api/automation/${preview.id}/run`, 'POST')).status).toBe(202);
+	const refused = await send(`/api/automation/${preview.id}`, 'DELETE');
+	expect(refused.status).toBe(409);
+	expect((await refused.json()).message).toBe('這個任務還有一次沒跑完，等它結束或按停止這次之後再刪除');
+	expect(taskFiles()).toContain(`${preview.id}.json`);
+	const ended = await eventually(async () => (await viewOf(preview.id)).runs.find((run) => run.status !== 'running'), 10_000, 'the preview run to end');
+	expect(existsSync(join(automationDir(), ended.output!))).toBe(true);
+
+	const removed = await send(`/api/automation/${preview.id}`, 'DELETE');
+	expect(removed.status).toBe(204);
+	expect(taskFiles()).not.toContain(`${preview.id}.json`);
+	for (const path of [`runs/${preview.id}.jsonl`, `output/${preview.id}`, `missed/${preview.id}.jsonl`]) expect([path, existsSync(join(automationDir(), path))]).toEqual([path, false]);
+	expect((await snapshot()).tasks.some((view) => view.task.id === preview.id)).toBe(false);
+	await until(() => theirs.automations.at(-1)?.tasks.every((view) => view.task.id !== preview.id) ?? false, 5_000, 'the other page to hear it was deleted');
+	// Gone already, or never there.
+	expect((await send(`/api/automation/${preview.id}`, 'DELETE')).status).toBe(404);
+	expect((await send(`/api/automation/${preview.id}/run`, 'POST')).status).toBe(404);
+
+	// The other task, of the same project: settings, records and this period's state as before.
+	const realAfter = await viewOf(real.id);
+	expect(realAfter).toEqual(realBefore);
+	expect(realAfter.runs[0].id).toBe(realRun.id);
+	expect(existsSync(join(automationDir(), `runs/${real.id}.jsonl`))).toBe(true);
+
+	// Still gone after a restart.
+	await fixture.stop();
+	await fixture.start();
+	cookie = await fixture.login();
+	expect((await snapshot()).tasks.some((view) => view.task.id === preview.id)).toBe(false);
+	expect(await viewOf(real.id)).toMatchObject({ task: realBefore.task, state: realBefore.state });
+	theirs.close();
+});
+
 test('only a logged-in device reads or changes tasks', async () => {
 	expect((await fixture.fetch('/api/automation')).status).toBe(401);
 	expect((await fixture.fetch('/api/automation', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(commandTask()) })).status).toBe(401);

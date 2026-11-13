@@ -1,0 +1,18 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/automation.ts",
+        "board/src/lib/board/automation-actions.ts",
+        "board/src/lib/components/AutomationTask.svelte",
+        "board/src/routes/api/automation/[id]/+server.ts",
+        "board/src/lib/server/test-device.ts"
+      ],
+      "tests": [
+        "board/tests/server/automation.test.ts",
+        "board/tests/server/test-login.test.ts",
+        "board/tests/browser/automation-delete-page.test.ts"
+      ]
+    }
+  ]
+}
