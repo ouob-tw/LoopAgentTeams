@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PASSWORD, startFixture, type Fixture } from '../harness.ts';
+import { BOARD_DIR, PASSWORD, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 import { SoftPasskey } from '../soft-passkey.ts';
 
@@ -142,6 +142,7 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			await open(origin, size);
 			await openEnroll(`document.querySelector('#enroll-code') !== null`, 'the registration form');
 			expect(await tab.eval(`document.querySelector('h1').textContent`)).toBe('登記 passkey');
+			expect(await tab.eval(`document.querySelector('main pre')?.textContent`)).toBe(`cd ${BOARD_DIR} && bun run board passkey code`);
 			expect(await tab.eval(LAYOUT_PROBLEMS)).toEqual([]);
 			await shot(tab, `${size.width}-1-enroll`);
 

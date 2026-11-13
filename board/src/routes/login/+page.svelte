@@ -6,9 +6,11 @@
 
 	let { data } = $props();
 
-	const SET_COMMAND = 'bun run board password';
-	const TOTP_COMMAND = 'bun run board totp';
-	const ENROLL_COMMAND = 'bun run board passkey code';
+	/** A host command that runs from any directory: it goes to the board's own first. */
+	const hostCommand = (args: string) => `cd ${data.boardDir} && bun run board ${args}`;
+	let SET_COMMAND = $derived(hostCommand('password'));
+	let TOTP_COMMAND = $derived(hostCommand('totp'));
+	let ENROLL_COMMAND = $derived(hostCommand('passkey code'));
 
 	/** Logging in, or registering a passkey. */
 	let mode = $state<'login' | 'enroll'>('login');
@@ -281,7 +283,8 @@
 		{:else}
 			<form onsubmit={enroll}>
 				{@render passwordBox()}
-				<label for="enroll-code">登記碼<span class="hint">（主機上執行 <code>{ENROLL_COMMAND}</code>）</span></label>
+				<label for="enroll-code">登記碼<span class="hint">（在主機上執行）</span></label>
+				<pre><code>{ENROLL_COMMAND}</code></pre>
 				<input
 					id="enroll-code"
 					class="code"
@@ -305,7 +308,7 @@
 		<p>
 			{data.totp === 'unreadable' ? '看板的 TOTP 金鑰檔讀不出來' : '看板的 passkey 檔讀不出來'}，目前無法登入。請在主機上的看板目錄執行：
 		</p>
-		<pre><code>{data.totp === 'unreadable' ? TOTP_COMMAND : 'bun run board passkey list'}</code></pre>
+		<pre><code>{data.totp === 'unreadable' ? TOTP_COMMAND : hostCommand('passkey list')}</code></pre>
 		<p>依它的訊息修好之後重新載入這個畫面。</p>
 	{:else if data.totp !== 'set' && data.passkeys !== 'set'}
 		<p>看板還沒設定第二道驗證，目前無法登入。請在主機上的看板目錄執行：</p>
@@ -491,7 +494,9 @@
 		color: var(--ok);
 	}
 	pre {
-		overflow-x: auto;
+		/* A long path wraps instead of running off the screen; the text stays one line when copied. */
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 		padding: 0.6rem 0.8rem;
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
