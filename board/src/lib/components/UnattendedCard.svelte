@@ -18,7 +18,7 @@
 	function endTime(iso: string): string {
 		const time = Date.parse(iso);
 		const day = (moment: number) => new Date(moment).toLocaleDateString('zh-TW', { timeZone: clock.timeZone });
-		const clockOnly = { hour: '2-digit', minute: '2-digit', hour12: false } as const;
+		const clockOnly = { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' } as const;
 		return new Date(time).toLocaleString('zh-TW', { timeZone: clock.timeZone, ...(day(time) === day(clock.now) ? {} : { month: 'numeric', day: 'numeric' }), ...clockOnly });
 	}
 	let closing = $state(false);
