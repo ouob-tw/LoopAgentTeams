@@ -170,13 +170,24 @@ export function validateTask(input: unknown, home = homedir(), { paths = true } 
 	const checklist = (Array.isArray(reviewGiven.checklist) ? reviewGiven.checklist : String(reviewGiven.checklist ?? '').split('\n'))
 		.map(text)
 		.filter(Boolean);
-	const reviewClient = reviewGiven.client ?? defaultReviewClient(body.kind, agent?.client);
-	if (reviewClient !== 'claude' && reviewClient !== 'codex') errors.reviewClient = '請選檢查用 Claude 或 Codex';
-	const reviewModel = reviewGiven.model === undefined ? (DEFAULT_REVIEW_MODEL[reviewClient as AgentSpec['client']] ?? '') : text(reviewGiven.model);
-	if (!reviewModel) errors.reviewModel = '請填檢查用的模型';
-	const reviewEffort = reviewGiven.effort ?? 'medium';
-	if (!AGENT_EFFORTS.includes(reviewEffort)) errors.reviewEffort = '請選檢查的強度';
-	const review = { enabled: reviewGiven.enabled === true, checklist, client: reviewClient, model: reviewModel, effort: reviewEffort };
+	// The checker's settings are checked only while it is on; off, anything unusable falls back to the defaults.
+	const enabled = reviewGiven.enabled === true;
+	const fallbackClient = defaultReviewClient(body.kind, agent?.client);
+	const givenClient = reviewGiven.client ?? fallbackClient;
+	const clientOk = givenClient === 'claude' || givenClient === 'codex';
+	if (enabled && !clientOk) errors.reviewClient = '請選檢查用 Claude 或 Codex';
+	const reviewClient: AgentSpec['client'] = clientOk ? givenClient : fallbackClient;
+	let reviewModel = reviewGiven.model === undefined ? DEFAULT_REVIEW_MODEL[reviewClient] : text(reviewGiven.model);
+	if (!reviewModel) {
+		if (enabled) errors.reviewModel = '請填檢查用的模型';
+		else reviewModel = DEFAULT_REVIEW_MODEL[reviewClient];
+	}
+	let reviewEffort = reviewGiven.effort ?? 'medium';
+	if (!AGENT_EFFORTS.includes(reviewEffort)) {
+		if (enabled) errors.reviewEffort = '請選檢查的強度';
+		else reviewEffort = 'medium';
+	}
+	const review = { enabled, checklist, client: reviewClient, model: reviewModel, effort: reviewEffort };
 	if (review.enabled && checklist.length === 0) errors.checklist = '請 Agent 檢查時，驗收清單至少寫一條';
 
 	if (Object.keys(errors).length) return { errors };
@@ -460,24 +471,35 @@ export function createAutomation(options: {
 				done();
 			};
 			child.on('error', (error) => end(null, error));
-			child.on('close', (code) => end(code));
-			if (child.pid) {
-				groups.add(child.pid);
-				// What the command left running in the background ends with the run: the run is over, and
-				// nothing of it may outlive the limit or overlap the next run.
-				child.once('close', () => {
+			// What the command left running in the background ends with the run, before the run counts as
+			// over: nothing of it may outlive the limit or overlap the next run.
+			const endLeftovers = async () => {
+				try {
+					process.kill(-child.pid!, 'SIGTERM');
+				} catch {
+					return;
+				}
+				const deadline = Date.now() + KILL_GRACE_MS;
+				while (Date.now() < deadline) {
+					await new Promise((wait) => setTimeout(wait, 100));
 					try {
-						process.kill(-child.pid!, 'SIGTERM');
+						process.kill(-child.pid!, 0);
 					} catch {
-						// Nothing was left: the group is gone, and its number may be reused.
-						groups.delete(child.pid!);
 						return;
 					}
-					setTimeout(() => {
-						signal('SIGKILL');
-						groups.delete(child.pid!);
-					}, KILL_GRACE_MS).unref?.();
+				}
+				signal('SIGKILL');
+			};
+			child.on('close', (code) => {
+				// The command itself has ended: the limit no longer applies to the cleanup after it.
+				clearTimeout(limit);
+				void endLeftovers().then(() => {
+					groups.delete(child.pid!);
+					end(code);
 				});
+			});
+			if (child.pid) {
+				groups.add(child.pid);
 				record(run, { pid: child.pid });
 			}
 		});

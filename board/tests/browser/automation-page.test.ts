@@ -253,6 +253,10 @@ for (const width of [1280, 390]) {
 		expect(await fits()).toBe(true);
 		await frame(width, '7-new-agent');
 		await shot(tab, `${width}-7b-new-agent-checker`, { box: '.detail form [name=reviewModel]' });
+		// A checker model cleared and then the check turned off does not keep the form from saving.
+		await type('.detail form [name=reviewModel]', '');
+		await click('.detail form [name=review]');
+		expect(await tab.eval(`!!document.querySelector('.detail form [name=reviewModel]')`)).toBe(false);
 		await click('.detail form [data-kind="command"]');
 		expect(await tab.eval(`document.querySelector('.detail form [name=review]').checked`)).toBe(false);
 		const name = `立即執行測試 ${width}`;

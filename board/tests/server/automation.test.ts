@@ -144,6 +144,9 @@ test('the checking agent\'s client, model and effort are saved as chosen, and ch
 	expect((await create(commandTask({ name: '檢查預設' }))).review).toMatchObject({ client: 'codex', model: 'gpt-6.1-sol', effort: 'medium' });
 	const wrong = await send('/api/automation', 'POST', commandTask({ review: { enabled: true, checklist: ['x'], client: 'gemini', model: ' ', effort: 'max' } }));
 	expect(Object.keys((await wrong.json()).errors).sort()).toEqual(['reviewClient', 'reviewEffort', 'reviewModel']);
+	// With the check off, a blank or unusable checker setting is not an error: it falls back to the default.
+	const off = await create(commandTask({ name: '檢查關閉', review: { enabled: false, checklist: [], client: 'gemini', model: ' ', effort: 'max' } }));
+	expect(off.review).toEqual({ enabled: false, checklist: [], client: 'codex', model: 'gpt-6.1-sol', effort: 'medium' });
 });
 
 test('立即執行 records how a command ended: start and end, exit code, output, each check', async () => {
@@ -223,7 +226,13 @@ test('what a command leaves running in the background ends with the run', async 
 	expect(run.status).toBe('success');
 	const pid = Number(readFileSync(join(work, 'bg.pid'), 'utf8'));
 	await eventually(async () => !existsSync(`/proc/${pid}`), 10_000, 'the background sleep to end');
-});
+
+	// One that ignores the polite stop is killed before the run counts as over, so a next run cannot overlap it.
+	const stubborn = await create(commandTask({ name: '不肯停的背景程序' }, { command: `(trap '' TERM; sleep 600) >/dev/null 2>&1 & echo $! > stubborn.pid` }));
+	const ended = await runToEnd(stubborn.id);
+	expect(ended.status).toBe('success');
+	expect(existsSync(`/proc/${Number(readFileSync(join(work, 'stubborn.pid'), 'utf8'))}`)).toBe(false);
+}, 30_000);
 
 test('立即執行 is refused, with the reason, while the same task runs', async () => {
 	const task = await create(commandTask({ name: '跑很久' }, { command: 'sleep 2; echo done' }));
