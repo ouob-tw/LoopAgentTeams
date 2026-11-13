@@ -2,7 +2,7 @@
 // its ticket lines, the rows each opens to, and how times and lateness are written.
 import { expect, test } from 'bun:test';
 import { countsText, findingText, lateText, ledgerFrom, minutesText, rowMinutes, secondsText, testsText, ticketHref, ticketTime, type LedgerView } from '../../src/lib/board/ledger.ts';
-import { item, ticketLedgerOn2026 as ticketLedger, fiveStepLedgerOn2026 as fiveStepLedger } from '../fixtures/ledger-tickets.ts';
+import { item, ticketLedger, fiveStepLedger } from '../fixtures/ledger-tickets.ts';
 
 const ok = (ledger: unknown) => {
 	const view = ledgerFrom({ status: 'ok', ledger });

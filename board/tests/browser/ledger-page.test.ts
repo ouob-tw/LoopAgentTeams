@@ -10,7 +10,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
-import { fiveStepLedger, ticketLedger } from '../fixtures/ledger-tickets.ts';
+import { PINNED_CLOCK, fiveStepLedger, ticketLedger } from '../fixtures/ledger-tickets.ts';
 
 let fixture: Fixture;
 let browser: Browser | undefined;
@@ -39,7 +39,7 @@ beforeAll(async () => {
 	});
 	const cookie = await fixture.login('ledger-page');
 	await fixture.refresh(cookie);
-	browser = await launchChrome();
+	browser = await launchChrome({ scripts: [PINNED_CLOCK] });
 	const [name, value] = cookie.split('=');
 	await browser.tab.send('Network.setCookie', { name, value, url: fixture.url });
 }, 30_000);
