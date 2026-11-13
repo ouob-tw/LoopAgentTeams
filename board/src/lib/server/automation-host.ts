@@ -10,7 +10,7 @@ import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand } from './external.ts';
 import { killAgent, listAgents, resumeAgent } from './hcom.ts';
 import { readTranscript } from './helper.ts';
-import { readScreen } from './herdr.ts';
+import { automationWorkspace, readScreen } from './herdr.ts';
 import { startLaunch } from './launch.ts';
 
 /** The longest a codex-multi-auth command or a probe may take. */
@@ -81,12 +81,15 @@ export function boardAgentHost(config: BoardConfig, board: () => Board): AgentHo
 		pollMs: config.automationAgentPollMs,
 		accounts: codexAccounts(config),
 		async launch(spec) {
+			// Always the AUTOMATION workspace, made first when Herdr has none; the folder stays the task's.
+			const place = await automationWorkspace(config, spec.folder);
+			if (!place.ok) return { ok: false, reason: place.reason };
 			const { body } = await startLaunch(board(), {
 				client: spec.client,
 				folder: spec.folder,
 				text: spec.prompt,
 				gitInit: false,
-				workspace: { kind: 'auto' },
+				workspace: { kind: 'existing', id: place.id },
 				agent: { tabName: '', tag: spec.tag },
 				model: spec.model,
 				effort: spec.effort
