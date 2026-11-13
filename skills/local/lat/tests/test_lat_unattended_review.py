@@ -71,8 +71,10 @@ class CreationTests(ReviewCase):
         self.stop()
         self.assertTrue(self.md.exists())
         self.assertIn('第 1 版：你在看板開啟', self.md.read_text())
+        request = self.board_request(('ticket-confirmation', 'assume-defaults', 'prototype'),
+                                     op='update', goal='修好登入頁與註冊頁')
         self.unattended('update', '--goal', '修好登入頁與註冊頁', '--source', 'user-edit',
-                        '--evidence', 'board-action-2')
+                        '--evidence', request)
         text = self.md.read_text()
         self.assertIn('第 2 版：你修改', text)
         self.assertIn('修好登入頁與註冊頁', text)
