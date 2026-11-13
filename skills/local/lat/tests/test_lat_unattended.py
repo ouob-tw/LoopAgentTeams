@@ -513,6 +513,14 @@ class DraftAndSettingsTests(UnattendedCase):
         self.assertIn(str(self.grant), status['files'])
         self.assertIn(str(self.global_file), status['files'])
 
+    def test_settings_skips_a_listed_workspace_that_is_gone_or_not_in_git(self):
+        gone = self.root / 'gone'
+        plain = self.root / 'plain'
+        plain.mkdir()
+        read = self.json_of('settings', '--project', str(gone), '--project', str(plain),
+                            '--project', str(self.repo))
+        self.assertEqual([project['name'] for project in read['projects']], ['repo'])
+
     def test_settings_write_changes_only_the_keys_given_and_logs_the_write(self):
         self.write(self.global_file, '# mine\n[actions.push]\nallow = true\n')
         worktree = self.root / 'wt'

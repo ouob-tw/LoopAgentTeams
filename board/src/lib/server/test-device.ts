@@ -64,6 +64,9 @@ export const TEST_DEVICE_RULES: Record<string, TestRule> = {
 	'POST /api/passkeys': 'deny',
 	'POST /api/passkeys/options': 'deny',
 	'DELETE /api/passkeys/[id]': 'deny',
+	'POST /api/alerts/[id]/dismiss': 'deny',
+	'PUT /api/push/subscription': 'deny',
+	'DELETE /api/push/subscription': 'deny',
 
 	'POST /api/launches': 'open',
 	'POST /api/refresh': 'open',

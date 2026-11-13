@@ -1,0 +1,34 @@
+// The review as the board reads it: which button an item gets, the message the button sends, the
+// cross-check phrase, and a review that lat-unattended printed in a shape the board does not know.
+import { expect, test } from 'bun:test';
+import { actionWord, reviewFrom, reviewMessage, verificationText, type Review } from '../../src/lib/board/review.ts';
+
+const item = (id: string, kind: string, extra: Record<string, unknown> = {}) => ({ id, kind, kind_label: kind, section: kind, title: `題目 ${id}`, did: '做了', why: '因為', evidence: ['a.md'], revert: '按推翻', state: 'open', state_label: '照這樣做了', ...extra });
+const payload = (items: unknown[], extra: Record<string, unknown> = {}) => ({ status: 'ok', path: '/x.md', verified: false, verification: null, view: { grant: '第 1 版生效中', goals: [], items, top: [], done_tickets: [], problems: [], sections: [], ...extra } });
+
+test('a parked item is answered with 回覆, every other kind is overturned with 推翻', () => {
+	for (const kind of ['parked', 'parked-row'] as const) expect(actionWord({ kind })).toBe('回覆');
+	for (const kind of ['assumed', 'proxy-confirmed', 'prototype-decided', 'auto'] as const) expect(actionWord({ kind })).toBe('推翻');
+});
+
+test('the message names the item ID, its title and what the user wrote', () => {
+	expect(reviewMessage({ id: 'LAT-7', title: '要不要加匯出', kind: 'parked' }, '  加，CSV 就好 ')).toBe('回顧項目 LAT-7「要不要加匯出」回覆：加，CSV 就好');
+	expect(reviewMessage({ id: 'auto-2', title: '把 #577 合併進開發分支', kind: 'auto' }, '退回')).toBe('回顧項目 auto-2「把 #577 合併進開發分支」推翻：退回');
+});
+
+test('the cross-check reads 尚未核對, all matching, or how many do not', () => {
+	const checked = (matched: number, mismatches: { id: string; text: string }[]): Pick<Review, 'verified' | 'verification'> => ({ verified: true, verification: { checker: 'puma', family: 'gpt', at: 't', total: 11, matched, mismatches } });
+	expect(verificationText({ verified: false, verification: null })).toBe('尚未核對');
+	expect(verificationText(checked(11, []))).toBe('Codex 已核對紀錄：11 項全相符');
+	expect(verificationText(checked(10, [{ id: 'LAT-P', text: '沒有這筆' }]))).toBe('Codex 已核對紀錄：11 項中 10 項相符，1 項不符');
+});
+
+test("reviewFrom keeps the tool's items in order and refuses what it cannot read", () => {
+	const read = reviewFrom(payload([item('a', 'parked'), item('b', 'assumed', { state: 'overturned' })], { top: ['b', 'a'] }))!;
+	expect(read.items.map((entry) => [entry.id, entry.state])).toEqual([['a', 'open'], ['b', 'overturned']]);
+	expect(read.top).toEqual(['b', 'a']);
+	expect(reviewFrom(payload([item('a', 'mystery')]))).toBeNull();
+	expect(reviewFrom({ status: 'refused', reason: 'x' })).toBeNull();
+	// A verification of an older content never counts: the tool prints none then.
+	expect(reviewFrom({ ...payload([item('a', 'parked')]), verified: false, verification: { total: 1 } })!.verified).toBe(false);
+});

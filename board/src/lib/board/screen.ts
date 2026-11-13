@@ -60,8 +60,10 @@ export const ESCAPE_KEYS: Record<string, string> = {
 	PageDown: '\x1b[6~'
 };
 
-/** The ⋯ menu's 組合鍵: keys the browser keeps for itself, so a page never gets them pressed. */
+/** The ⋯ menu's 組合鍵: keys the browser keeps for itself, so a page never gets them pressed.
+ *  Esc is here for a browser or extension that keeps it as "leave the focus". */
 export const COMBO_KEYS: { label: string; input: KeyInput }[] = [
+	{ label: 'Esc', input: { key: 'esc' } },
 	{ label: 'Ctrl+W', input: { key: 'ctrl+w' } },
 	{ label: 'Ctrl+T', input: { key: 'ctrl+t' } },
 	{ label: 'Ctrl+N', input: { key: 'ctrl+n' } }
