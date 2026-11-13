@@ -103,6 +103,8 @@ async function openByEdge(width = 1280, height = 800) {
 }
 /** The width of the vertical scrollbar at the window's right edge, whichever element scrolls there. */
 const scrollbarWidth = () => tab.eval<number>(`(() => { let el = document.elementFromPoint(innerWidth - 1, innerHeight / 2); while (el && el !== document.documentElement) { const w = el.offsetWidth - el.clientWidth; if (w > 4 && el.scrollHeight > el.clientHeight) return w; el = el.parentElement; } return innerWidth - document.documentElement.clientWidth; })()`);
+/** The retry button is what a real pointer hits at its centre, not a toast or bar over it. */
+const retryReachable = () => tab.eval<boolean>(`(() => { const b = document.querySelector('${CHIP} .retry'); const r = b.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit === b || b.contains(hit); })()`);
 const boxOf = () => tab.eval<{ left: number; right: number; top: number; bottom: number }>(`(() => { const r = document.querySelector('${BLOCK}').getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; })()`);
 
 const PAGES = [
@@ -275,9 +277,9 @@ test.skipIf(!CHROME)('1280px: what the user says next is at the top of the open 
 	recordOf(luna.session_id, conversation(130));
 }, 30_000);
 
-test.skipIf(!CHROME)('1280px: earlier parts that cannot be loaded say why at the edge, and the retry goes on to the message', async () => {
-	await visit(1280);
-	await openByEdge();
+test.skipIf(!CHROME)('1440px: earlier parts that cannot be loaded say why at the edge, and the retry goes on to the message', async () => {
+	await visit(1440, undefined, 900);
+	await openByEdge(1440, 900);
 	await tab.until(`document.querySelectorAll('${ROWS}').length === 130`, 'the list');
 	const fail = join(fixture.dir, 'transcripts', `${luna.session_id}.fail`);
 	writeFileSync(fail, '紀錄暫時讀不到');
@@ -285,12 +287,14 @@ test.skipIf(!CHROME)('1280px: earlier parts that cannot be loaded say why at the
 		await click(rowOf(seqOf(1)));
 		await tab.until(`!(${SHOWN}) && document.querySelector('${CHIP}')?.innerText.includes('紀錄暫時讀不到')`, 'the reason shown', 15_000);
 		expect(await tab.eval(`!!document.querySelector('${CHIP} .retry')`)).toBe(true);
+		await sleep(2_000);
+		expect(await retryReachable()).toBe(true);
 		expect(await tab.eval(FITS)).toBe(true);
-		await shot(tab, 'my-messages-1280-failed');
+		await shot(tab, 'my-messages-1440-failed');
 	} finally {
 		rmSync(fail, { force: true });
 	}
-	await click(`${CHIP} .retry`);
+	await tab.pointerClick(`${CHIP} .retry`);
 	await tab.until(`${said(seqOf(1))}?.classList.contains('flashed')`, 'the message after the retry', 20_000);
 	expect(await tab.eval(`!document.querySelector('${CHIP}')`)).toBe(true);
 }, 60_000);
@@ -380,6 +384,8 @@ test.skipIf(!CHROME)('390px: a failed load for a picked message shows its reason
 	try {
 		await click(rowOf(seqOf(1)));
 		await tab.until(`!(${SHOWN}) && document.querySelector('${CHIP}')?.innerText.includes('紀錄暫時讀不到')`, 'the reason at the edge', 15_000);
+		await sleep(2_000);
+		expect(await retryReachable()).toBe(true);
 		expect(await tab.eval(FITS)).toBe(true);
 		await shot(tab, 'my-messages-390-failed');
 	} finally {

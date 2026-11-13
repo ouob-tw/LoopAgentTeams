@@ -187,7 +187,7 @@
 </aside>
 {#if !open && jumping !== null}
 	<!-- The list is closed by the pick: where the jump is, and why it stopped, shows at the edge. -->
-	<p class="chip" role="status">
+	<p class="chip" role="status" style:right="{gap}px">
 		{#if failure}
 			更早的紀錄載入失敗：{failure}
 			<button type="button" class="retry" onclick={onretry}>重試</button>
@@ -302,11 +302,11 @@
 			animation: none;
 		}
 	}
-	/* While a pick is loading earlier parts, only this note stays at the edge. */
+	/* While a pick is loading earlier parts, only this note stays at the edge, centred like the list: no toast or bar at the top or bottom covers it. */
 	.chip {
 		position: fixed;
-		right: 0;
-		bottom: calc(var(--dock-h, 0px) + 0.9rem);
+		top: 50%;
+		transform: translateY(-50%);
 		z-index: 40;
 		max-width: calc(100vw - 2rem);
 		margin: 0;
