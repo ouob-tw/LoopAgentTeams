@@ -134,7 +134,7 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	await tab.eval(`${card(3)}.querySelector('button.deny').click()`);
 	await tab.until(`document.querySelectorAll('.inbox .pd .card').length === 1`, 'the denied card gone');
 	expect(JSON.parse(readFileSync(join(fixture.dir, 'pd.json'), 'utf8')).pending.map((request: { id: number }) => request.id)).toEqual([4]);
-	expect(await tab.eval<string>(`document.body.innerText`)).toContain('已拒絕 pd 請求 #3（npm token）');
+	await tab.until(`document.body.innerText.includes('已拒絕 pd 請求 #3（npm token）')`, 'the denied toast');
 
 	// Over a content screen too, which hides the column; the window's title counts the requests.
 	await load(tab, '?controller=gone');
