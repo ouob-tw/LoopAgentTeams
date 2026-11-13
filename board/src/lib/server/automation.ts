@@ -4,7 +4,8 @@
 // A command task's run is a child process in the task's folder. The scheduler checks every minute, in
 // Asia/Taipei: it starts the day's one automatic try, stops runs past their limit and records the
 // periods whose window passed with no run (missed), and tells `notify` so red cards and pushes can
-// follow. Agent runs build on `start` and the records' fields.
+// follow. An agent task's run opens an agent through `agents` and is watched to its end there
+// (`automation-agent.ts`); one still open when the board starts again is watched on.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
@@ -37,6 +38,7 @@ import {
 	type RunTrigger,
 	type Weekday
 } from '../board/automation.ts';
+import { codexBeforeLaunch, cutReason, firstMessage, GONE_AT_RESTART, runTag, watchAgent, type AgentEnd, type AgentHost, type Cut } from './automation-agent.ts';
 
 /** How much of a command's output is kept: its last part, which says how it ended. */
 export const OUTPUT_KEEP_CHARS = 32_000;
@@ -64,6 +66,8 @@ export interface Automation {
 	setPaused(id: string, paused: boolean): AutomationTask | null;
 	/** 立即執行: refused while the same task runs. Resolves once the run has started, not ended. */
 	runNow(id: string): Started;
+	/** 停止這次: ends the task's running run, recorded as stopped; false when none runs. */
+	stop(id: string): boolean | null;
 	/** 沿用原紀錄: this period counts as done, standing for the project's own done marker. Only the
 	 *  API offers it, never a button. */
 	carry(id: string, marker: unknown): Started;
@@ -354,6 +358,8 @@ export function createAutomation(options: {
 	publish(snapshot: AutomationSnapshot): void;
 	/** Runs that ended and periods found missed, for red cards and pushes. */
 	notify?(event: AutomationEvent): void;
+	/** How agent tasks' runs open, watch and close their agents; without it agent tasks do not run. */
+	agents?: AgentHost;
 }): Automation {
 	const { dir, now } = options;
 	const home = options.home ?? homedir();
@@ -368,8 +374,8 @@ export function createAutomation(options: {
 	let broken: BrokenTask[] = [];
 	const runs = new Map<string, AutomationRun[]>();
 	const missed = new Map<string, MissedPeriod[]>();
-	/** How to stop each run going now, by run: what the scheduler does past the limit. */
-	const stoppers = new Map<string, () => void>();
+	/** How to stop each run going now, by run: past the limit (the scheduler) or on 停止這次. */
+	const stoppers = new Map<string, (why: Cut) => void>();
 	/** Children running now, by task. */
 	const children = new Map<string, Promise<void>>();
 	/** Their process groups: a command ends with the board, as the spec has it. */
@@ -465,10 +471,16 @@ export function createAutomation(options: {
 	// A run the record says is running belongs to a board process that has ended: a command's
 	// process ended with it.
 	load();
+	/** Agent runs the board was watching when it stopped: watched on once everything is set up. */
+	const adopted: [AutomationTask, AutomationRun][] = [];
 	for (const [taskId, list] of runs) {
 		const task = tasks.get(taskId);
 		for (const run of list) {
-			if (run.status !== 'running' || task?.kind !== 'command') continue;
+			if (run.status !== 'running' || !task) continue;
+			if (task.kind === 'agent' && options.agents && task.agent) {
+				adopted.push([task, run]);
+				continue;
+			}
 			const cut = record(run, { endedAt: now(), status: 'failed', reason: '看板重啟中斷' });
 			options.notify?.({ type: 'run-ended', task, run: cut });
 		}
@@ -487,7 +499,7 @@ export function createAutomation(options: {
 		mkdirSync(join(outputDir, task.id), { recursive: true, mode: 0o700 });
 		return new Promise<void>((done) => {
 			const output = outputCollector(spec.checks.flatMap((check) => (check.type === 'output' ? [check.text] : [])));
-			let timedOut = false;
+			let cut: Cut | null = null;
 			const child = spawn('bash', ['-c', spec.command], { cwd: folder, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
 			child.stdout.on('data', (chunk: Buffer) => output.add('stdout', chunk));
 			child.stderr.on('data', (chunk: Buffer) => output.add('stderr', chunk));
@@ -499,9 +511,9 @@ export function createAutomation(options: {
 				}
 			};
 			// Past the limit, counted from the run's start by the scheduler's clock.
-			stoppers.set(run.id, () => {
+			stoppers.set(run.id, (why) => {
 				stoppers.delete(run.id);
-				timedOut = true;
+				cut = why;
 				signal('SIGTERM');
 				setTimeout(() => signal('SIGKILL'), KILL_GRACE_MS).unref?.();
 			});
@@ -517,7 +529,7 @@ export function createAutomation(options: {
 					// The record still says how it ended.
 				}
 				const checks = runChecks(spec.checks, folder, kept.has);
-				const status = timedOut ? 'timeout' : code === 0 && checks.every((check) => check.ok) && !error ? 'success' : 'failed';
+				const status = cut ?? (code === 0 && checks.every((check) => check.ok) && !error ? 'success' : 'failed');
 				const finished = record(run, {
 					endedAt: now(),
 					status,
@@ -525,7 +537,7 @@ export function createAutomation(options: {
 					checks,
 					output: outputName,
 					outputTruncated: kept.truncated,
-					...(timedOut ? { reason: `超過上限 ${task.limitMinutes} 分鐘，已停止` } : error ? { reason: `指令沒有啟動：${error.message}` } : {})
+					...(cut ? { reason: cutReason(cut, task.limitMinutes) } : error ? { reason: `指令沒有啟動：${error.message}` } : {})
 				});
 				publish();
 				options.notify?.({ type: 'run-ended', task, run: finished });
@@ -572,9 +584,9 @@ export function createAutomation(options: {
 		});
 	}
 
-	/** Which tasks the board can run yet: agent tasks come with their own runner. Tasks it cannot run
-	 *  are neither started by the schedule nor counted as missed. */
-	const runnable = (task: AutomationTask) => task.kind === 'command' && task.command !== undefined;
+	/** Which tasks the board can run: agent tasks need the agents' host. Tasks it cannot run are
+	 *  neither started by the schedule nor counted as missed. */
+	const runnable = (task: AutomationTask) => (task.kind === 'command' ? task.command !== undefined : task.agent !== undefined && options.agents !== undefined);
 	const busy = (taskId: string) => children.has(taskId) || (runs.get(taskId) ?? []).some((run) => run.status === 'running');
 
 	/** A run of the task beginning at `at`, in the period that time falls in. */
@@ -587,20 +599,110 @@ export function createAutomation(options: {
 		status: 'running'
 	});
 
-	/** Start a run now and record it; a folder gone since saving is a settings error, not a crash. */
+	/** Start a run now and record it; a folder or brief gone since saving is a settings error, not a crash. */
 	function start(task: AutomationTask, trigger: RunTrigger): AutomationRun {
 		const at = now();
 		const base = newRun(task, trigger, at);
-		const spec = task.command!;
-		if (!isDirectory(expandHome(spec.folder, home))) {
-			const run = record(base, { ...base, endedAt: at, status: 'config-error', reason: `找不到工作資料夾：${spec.folder}` });
+		const configError = (reason: string) => {
+			const run = record(base, { ...base, endedAt: at, status: 'config-error', reason });
 			options.notify?.({ type: 'run-ended', task, run });
 			return run;
+		};
+		const folder = expandHome((task.command ?? task.agent)!.folder, home);
+		if (!isDirectory(folder)) return configError(`找不到工作資料夾：${(task.command ?? task.agent)!.folder}`);
+		let job: Promise<void>;
+		let run: AutomationRun;
+		if (task.command) {
+			run = record(base);
+			job = execute(task, run, task.command);
+		} else {
+			const brief = resolve(folder, expandHome(task.agent!.brief, home));
+			if (!isFile(brief)) return configError(`資料夾裡找不到任務說明檔：${task.agent!.brief}`);
+			run = record(base);
+			job = runAgent(task, run, folder, brief);
 		}
-		const run = record(base);
-		const child = execute(task, run, spec).finally(() => children.delete(task.id));
-		children.set(task.id, child);
+		children.set(task.id, job.finally(() => children.delete(task.id)));
 		return run;
+	}
+
+	/** The run as its record says now. */
+	const latest = (run: AutomationRun) => (runs.get(run.taskId) ?? []).find((entry) => entry.id === run.id) ?? run;
+
+	/** End an agent run: its record, the pages, red cards and pushes. */
+	function finish(task: AutomationTask, run: AutomationRun, end: AgentEnd): void {
+		const finished = record(run, { endedAt: now(), ...end });
+		publish();
+		options.notify?.({ type: 'run-ended', task, run: finished });
+	}
+
+	/** Watch an agent run's agent to its end; a run the board took over when it started is `adopted`. */
+	async function watch(task: AutomationTask, run: AutomationRun, adopted: boolean, cut: () => Cut | null): Promise<void> {
+		const host = options.agents!;
+		if (!run.agentName) {
+			// The board stopped between the launch and its name: hcom's list knows the run's tag.
+			const listed = await host.list();
+			const found = listed.ok ? listed.agents.find((agent) => agent.tag === runTag(task.id, run.id)) : undefined;
+			if (!found) return finish(task, run, { status: 'failed', reason: GONE_AT_RESTART });
+			run = record(run, { agentName: found.name });
+			publish();
+		}
+		const ended = await watchAgent(host, {
+			get run() {
+				return latest(run);
+			},
+			spec: task.agent!,
+			limitMinutes: task.limitMinutes,
+			now,
+			cut,
+			note: (fields) => {
+				record(run, fields);
+				publish();
+			},
+			closing: () => closed,
+			adopted
+		}).catch(async (error: Error): Promise<AgentEnd> => {
+			// Whatever broke, the agent is not left running.
+			const now = latest(run);
+			const closeError = await host.close({ sessionId: now.sessionId ?? null, name: now.agentName! }).catch((failed: Error) => failed.message);
+			return { status: 'failed', reason: `看板追蹤這個 Agent 時出錯：${error.message}`, ...(closeError ? { closeError } : {}) };
+		});
+		if (ended) finish(task, run, ended);
+	}
+
+	/** An agent run: the Codex account first, then the agent, watched to its end. */
+	async function runAgent(task: AutomationTask, run: AutomationRun, folder: string, brief: string): Promise<void> {
+		const host = options.agents!;
+		const spec = task.agent!;
+		let cut: Cut | null = null;
+		stoppers.set(run.id, (why) => (cut ??= why));
+		try {
+			if (spec.client === 'codex') {
+				// A check that broke confirms nothing: nothing is switched, as when it cannot be read.
+				const ready = await codexBeforeLaunch(host.accounts, spec.model, spec.effort).catch((): { ok: true; account?: number; note?: string } => ({ ok: true }));
+				if (!ready.ok) return finish(task, run, { status: 'quota', reason: ready.reason });
+				record(run, { ...(ready.account !== undefined ? { codexAccount: ready.account } : {}), ...(ready.note ? { accountSwitches: [ready.note] } : {}) });
+			}
+			if (cut) return finish(task, run, { status: cut, reason: cutReason(cut, task.limitMinutes) });
+			const launched = await host
+				.launch({ ...spec, folder, prompt: firstMessage(brief), tag: runTag(task.id, run.id) })
+				.catch((error: Error) => ({ ok: false as const, reason: error.message }));
+			if (!launched.ok) return finish(task, run, { status: 'failed', reason: `開不了 Agent：${launched.reason}` });
+			record(run, { agentName: launched.name, ...(launched.workspace ? { agentWorkspace: launched.workspace } : {}) });
+			publish();
+			await watch(task, latest(run), false, () => cut);
+		} finally {
+			stoppers.delete(run.id);
+		}
+	}
+
+	/** Watch on the agent runs the board was watching when it stopped. */
+	function adopt(): void {
+		for (const [task, run] of adopted) {
+			let cut: Cut | null = null;
+			stoppers.set(run.id, (why) => (cut ??= why));
+			const job = watch(task, run, true, () => cut).finally(() => stoppers.delete(run.id));
+			children.set(task.id, job.finally(() => children.delete(task.id)));
+		}
 	}
 
 	function readChecked(): number | null {
@@ -639,7 +741,7 @@ export function createAutomation(options: {
 		for (const list of runs.values()) {
 			for (const run of list) {
 				const task = tasks.get(run.taskId);
-				if (run.status === 'running' && task && at - run.startedAt >= task.limitMinutes * 60_000) stoppers.get(run.id)?.();
+				if (run.status === 'running' && task && at - run.startedAt >= task.limitMinutes * 60_000) stoppers.get(run.id)?.('timeout');
 			}
 		}
 		const checked = readChecked();
@@ -668,8 +770,12 @@ export function createAutomation(options: {
 
 	const ticker = setInterval(() => check(false), options.tickMs ?? 60_000);
 	ticker.unref?.();
-	// Right after the board starts, once whatever builds on the automation has it.
-	const firstCheck = setImmediate(() => check(true));
+	// Right after the board starts, once whatever builds on the automation has it: the runs it
+	// watched first, so a try due now never starts beside one still running.
+	const firstCheck = setImmediate(() => {
+		adopt();
+		check(true);
+	});
 
 	return {
 		snapshot,
@@ -710,10 +816,18 @@ export function createAutomation(options: {
 				const since = running ? new Date(running.startedAt).toLocaleTimeString('zh-TW', { timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit', hour12: false }) : '';
 				return { ok: false, status: 409, message: `這個任務正在跑${since ? `（${since} 開始）` : ''}，等這次結束再執行` };
 			}
-			if (!runnable(task)) return { ok: false, status: 409, message: 'Agent 任務還不能從看板執行' };
+			if (!runnable(task)) return { ok: false, status: 409, message: '這個任務的設定不完整，不能執行' };
 			const run = start(task, 'manual');
 			publish();
 			return { ok: true, run: (runs.get(id) ?? []).find((entry) => entry.id === run.id) ?? run };
+		},
+		stop(id) {
+			if (!tasks.has(id)) return null;
+			const running = (runs.get(id) ?? []).find((run) => run.status === 'running');
+			const stopper = running && stoppers.get(running.id);
+			if (!stopper) return false;
+			stopper('stopped');
+			return true;
 		},
 		carry(id, marker) {
 			const task = tasks.get(id);

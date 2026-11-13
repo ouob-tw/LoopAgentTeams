@@ -713,7 +713,7 @@
 					{/if}
 				{:else if view.kind === 'automation'}
 					{#if taskView}
-						<AutomationTask view={taskView} timeZone={board.automation.timeZone} onedit={() => navigation.go({ kind: 'automation-edit', id: taskView.task.id })} onchanged={() => void board.reloadAutomation()} />
+						<AutomationTask view={taskView} timeZone={board.automation.timeZone} onedit={() => navigation.go({ kind: 'automation-edit', id: taskView.task.id })} onchanged={() => void board.reloadAutomation()} onopenagent={openAgent} />
 					{:else}
 						<p class="empty">這個任務已不存在。</p>
 					{/if}

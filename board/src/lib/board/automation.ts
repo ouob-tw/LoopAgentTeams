@@ -106,8 +106,20 @@ export interface AutomationRun {
 	exitCode?: number | null;
 	/** The command's process. */
 	pid?: number;
-	/** An agent run's HCOM name (agent runs come later). */
+	/** An agent run's HCOM name, once hcom gave it. */
 	agentName?: string;
+	/** An agent run's session, once hcom listed it: its page on the board. */
+	sessionId?: string;
+	/** The Herdr workspace its agent opened in, for a resume there. */
+	agentWorkspace?: string;
+	/** Replies of the conversation at or before this position came before the latest resume. */
+	judgeAfter?: number;
+	/** The codex-multi-auth account a Codex run's agent runs on: pinned when it launched or switched to. */
+	codexAccount?: number;
+	/** Each switch of Codex account the run made, in words. */
+	accountSwitches?: string[];
+	/** The agent could not be closed after the run ended: why. */
+	closeError?: string;
 	checks?: CheckResult[];
 	/** Why it failed or was cut short, in words for the user. */
 	reason?: string;
@@ -398,10 +410,10 @@ export function runReason(run: AutomationRun): string {
 }
 
 /** The list card's last line: how the latest run ended, or that there has been none. */
-export function lastRunText(run: AutomationRun | undefined, timeZone: string): string {
+export function lastRunText(run: AutomationRun | undefined, timeZone: string, now?: number): string {
 	if (!run) return '還沒跑過';
 	const at = timeFormat(timeZone);
-	if (run.status === 'running') return `${at.full(run.startedAt)} 開始，執行中`;
+	if (run.status === 'running') return `${at.full(run.startedAt)} 開始，${now === undefined ? '執行中' : `已跑 ${Math.max(0, Math.floor((now - run.startedAt) / 60_000))} 分鐘`}`;
 	const when = at.full(run.endedAt ?? run.startedAt);
 	if (run.status === 'success') return `${when} 完成，${runReason(run)}`;
 	return `${when} ${RUN_STATUS_TEXT[run.status].slice(2)}：${runReason(run)}`;
