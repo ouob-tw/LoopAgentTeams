@@ -667,14 +667,15 @@ def affected_run_step(top, version, action, target):
             f'({last.get("at")}) in {top}: {command}; then check again')
 
 
-def changed_dirs(top, version, action, target):
-    """(the sorted top-level directories changed from the last successful deploy to `version`,
-    None) or (None, why they cannot be listed)."""
+def changed_paths(top, version, action, target):
+    """(the sorted top-level paths, directories or files, changed from the last successful
+    deploy to `version`, None) or (None, why they cannot be listed). A move lists both ends."""
     last, why = last_deploy_base(top, version, action, target) if version else (
         None, 'the version to deploy is unknown')
     if why:
         return None, why
-    names = git(top, 'diff', '--name-only', last['commit'], version)
+    names = git(top, '-c', 'core.quotepath=false', 'diff', '--no-renames', '--name-only',
+                last['commit'], version)
     if names is None:
         return None, f'git diff from {last["commit"][:12]} failed'
     return sorted({name.split('/', 1)[0] for name in names.splitlines()}), None
@@ -992,22 +993,22 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
             elif problems and action in DEPLOY_ACTIONS:
                 ask('condition', f'no rollback method is set for {action}; a full suite is '
                                  'required')
-                fixes.append('to deploy without a full suite, set `rollback = "<how to roll '
-                             f'back>"` under [actions.{action}] in the project layer '
-                             f'{layers[0].location} (the global layer\'s `rollback` does not '
-                             'count); then a passing post-merge affected run from the last '
-                             f'successful {action} covers this deploy instead')
+                fixes += ['to deploy without a full suite, first set `rollback = "<how to roll '
+                          f'back>"` under [actions.{action}] in the project layer '
+                          f'{layers[0].location} (the global layer\'s `rollback` does not '
+                          'count)', affected_run_step(top, version, action,
+                                                      deploy_target(effective))]
             ask_each(problems)
             if not problems:
                 result['basis'].append(f'every registered full suite passed for {version[:12]}')
     if fixes:
         result['fixes'] = fixes
     runbook = effective.get('runbook') if action in DEPLOY_ACTIONS else None
-    if runbook:
-        dirs, why = changed_dirs(top, version, action, deploy_target(effective))
-        result['runbook'] = dict(path=runbook[0], changed_dirs=dirs)
+    if runbook and runbook[0].strip():  # blank text names no doc
+        paths, why = changed_paths(top, version, action, deploy_target(effective))
+        result['runbook'] = dict(path=runbook[0], changed_paths=paths)
         if why:
-            result['runbook']['changed_dirs_unknown'] = why
+            result['runbook']['changed_paths_unknown'] = why
     if not result['reasons']:
         result['verdict'] = 'allow'
     return result
@@ -1028,12 +1029,12 @@ def check_lines(result):
     runbook = result.get('runbook')
     if runbook:
         lines.append(f'Read first: {runbook["path"]}')
-        if runbook['changed_dirs'] is None:
-            lines.append('Changed top-level directories: cannot list them: '
-                         + runbook['changed_dirs_unknown'])
+        if runbook['changed_paths'] is None:
+            lines.append('Changed top-level paths: cannot list them: '
+                         + runbook['changed_paths_unknown'])
         else:
-            lines.append(f'Changed top-level directories since the last successful '
-                         f'{result["action"]}: ' + (', '.join(runbook['changed_dirs']) or 'none'))
+            lines.append(f'Changed top-level paths since the last successful '
+                         f'{result["action"]}: ' + (', '.join(runbook['changed_paths']) or 'none'))
     lines += [f'Fix: {fix}' for fix in result.get('fixes', [])]
     return lines
 

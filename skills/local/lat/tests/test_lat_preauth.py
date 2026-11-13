@@ -1904,16 +1904,24 @@ class DeployAffectedTests(WriteCase):
             self.head = self.deployed
             self.assert_full_suite('deploy-prod', 'is not an ancestor of')
 
-    def test_a_missing_rollback_says_where_to_set_it(self):
+    def test_a_missing_rollback_says_where_to_set_it_and_what_to_run_after(self):
         self.settings()
+        fix = ('to deploy without a full suite, first set `rollback = "<how to roll back>"` '
+               f'under [actions.deploy-prod] in the project layer {self.project_file} (the '
+               "global layer's `rollback` does not count)")
+        with self.subTest('no deploy history: no affected run can cover it'):
+            self.assertEqual(self.check('deploy-prod')['fixes'], [
+                fix, 'no post-merge affected run can cover this deploy (no deploy history '
+                     f'({self.history_file})); only a full suite can'])
         self.history(('deploy-prod', self.deployed, 'succeeded'))
-        fix = ('to deploy without a full suite, set `rollback = "<how to roll back>"` under '
-               f'[actions.deploy-prod] in the project layer {self.project_file} (the global '
-               "layer's `rollback` does not count); then a passing post-merge affected run from "
-               'the last successful deploy-prod covers this deploy instead')
-        self.assertEqual(self.check('deploy-prod')['fixes'], [fix])
-        lines = self.run_tool('check', '--action', 'deploy-prod').stdout.splitlines()
-        self.assertEqual(lines[1:], [f'Fix: {fix}'])
+        run = ('run the post-merge affected tests from the last successful deploy-prod '
+               f'(2026-11-01T10:00:00+00:00) in {self.repo}: uv run --no-project python '
+               f'{SUITE_GATE} affected --purpose post-merge --base {self.deployed}; then check '
+               'again')
+        with self.subTest('with a last deploy'):
+            self.assertEqual(self.check('deploy-prod')['fixes'], [fix, run])
+            lines = self.run_tool('check', '--action', 'deploy-prod').stdout.splitlines()
+            self.assertEqual(lines[1:], [f'Fix: {fix}', f'Fix: {run}'])
 
     def test_an_uncovered_deploy_prints_the_affected_run_to_do(self):
         with self.subTest('no deploy history'):
@@ -1938,7 +1946,7 @@ class DeployAffectedTests(WriteCase):
             self.summary(self.deployed)
             self.assertNotIn('fixes', self.check('deploy-prod'))
 
-    def test_a_runbook_is_shown_with_the_directories_changed_since_the_last_deploy(self):
+    def test_a_runbook_is_shown_with_the_paths_changed_since_the_last_deploy(self):
         self.write(self.project_file, '[actions.deploy-prod]\n'
                                       'rollback = "git revert, then deploy again"\n'
                                       'runbook = "docs/deploy.md"\n')
@@ -1951,12 +1959,12 @@ class DeployAffectedTests(WriteCase):
             verdict = self.check('deploy-prod')
             self.assertEqual(verdict['verdict'], 'ask')
             self.assertEqual(verdict['runbook'], dict(
-                path='docs/deploy.md', changed_dirs=None,
-                changed_dirs_unknown=f'no deploy history ({self.history_file})'))
+                path='docs/deploy.md', changed_paths=None,
+                changed_paths_unknown=f'no deploy history ({self.history_file})'))
             lines = self.run_tool('check', '--action', 'deploy-prod').stdout.splitlines()
             self.assertEqual(lines[1:3], [
                 'Read first: docs/deploy.md',
-                'Changed top-level directories: cannot list them: no deploy history '
+                'Changed top-level paths: cannot list them: no deploy history '
                 f'({self.history_file})'])
         self.history(('deploy-prod', self.deployed, 'succeeded'))
         self.summary(self.deployed)
@@ -1964,11 +1972,11 @@ class DeployAffectedTests(WriteCase):
             verdict = self.check('deploy-prod')
             self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
             self.assertEqual(verdict['runbook'], dict(
-                path='docs/deploy.md', changed_dirs=['agent', 'b.txt', 'web', 'web.txt']))
+                path='docs/deploy.md', changed_paths=['agent', 'b.txt', 'web', 'web.txt']))
             lines = self.run_tool('check', '--action', 'deploy-prod').stdout.splitlines()
             self.assertEqual(lines[1:3], [
                 'Read first: docs/deploy.md',
-                'Changed top-level directories since the last successful deploy-prod: agent, '
+                'Changed top-level paths since the last successful deploy-prod: agent, '
                 'b.txt, web, web.txt'])
             self.assertTrue(lines[3].startswith('Next steps: '), lines)
         with self.subTest('a runbook in the global layer does not count'):
@@ -1978,6 +1986,26 @@ class DeployAffectedTests(WriteCase):
             verdict = self.check('deploy-prod')
             self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
             self.assertNotIn('runbook', verdict)
+
+    def test_a_blank_runbook_counts_as_unset(self):
+        self.write(self.project_file, '[actions.deploy-prod]\nrunbook = "  "\n')
+        self.assertNotIn('runbook', self.check('deploy-prod'))
+        self.assertNotIn('Read first:', self.run_tool('check', '--action', 'deploy-prod').stdout)
+
+    def test_changed_paths_keep_non_ascii_names_and_both_ends_of_a_move(self):
+        self.write(self.project_file, '[actions.deploy-prod]\nrunbook = "docs/deploy.md"\n')
+        (self.repo / 'old').mkdir()
+        self.deployed = self.commit('old place', 'old/a.txt')
+        self.history(('deploy-prod', self.deployed, 'succeeded'))
+        (self.repo / 'new').mkdir()
+        git(self.repo, 'mv', 'old/a.txt', 'new/a.txt')
+        git(self.repo, 'commit', '-q', '-m', 'move')
+        (self.repo / '文件').mkdir()
+        self.commit('docs', '文件/說明.md')
+        self.assertEqual(self.check('deploy-prod')['runbook']['changed_paths'],
+                         ['new', 'old', '文件'])
+        self.assertIn('Changed top-level paths since the last successful deploy-prod: new, old, '
+                      '文件', self.run_tool('check', '--action', 'deploy-prod').stdout)
 
     def test_a_changed_target_needs_the_full_suite(self):
         self.history(('deploy-test', self.deployed, 'succeeded', 'old staging'))
