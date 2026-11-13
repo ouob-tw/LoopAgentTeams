@@ -30,6 +30,19 @@ def load_watch():
     return module
 
 
+def watch_time(watch):
+    """Give lat-watch its own `time` so tests can mock its sleep and clock.
+
+    Patching the shared time module also reaches subprocess, whose wait with a
+    timeout polls with time.sleep while a child that already closed its pipes
+    is still exiting; that used up the loop's mocked sleeps at random.
+    """
+    class WatchTime:
+        def __getattr__(self, name):
+            return getattr(time, name)
+    return patch.object(watch, 'time', WatchTime())
+
+
 def setUpModule():
     # No test may run a real reap against the host; tests that check the call replace this.
     isolated = tempfile.TemporaryDirectory()
@@ -4443,7 +4456,8 @@ esac
         self.run_cycles(watch, *range(0, 3541, 60))
         args = argparse.Namespace(workspace=self.work, tasks=self.tasks, ledger=None,
                                   decisions=self.work / '.lat/decisions', orchestrator='orch')
-        with patch.dict(os.environ, self.env), patch.object(watch.time, 'time', return_value=3600), \
+        with watch_time(watch), patch.dict(os.environ, self.env), \
+                patch.object(watch.time, 'time', return_value=3600), \
                 patch.object(watch.time, 'sleep', side_effect=AssertionError('kept running')):
             self.assertIsNone(watch.run_forever(args))
         self.assertFalse((root / 'sid.pid').exists())
@@ -5747,7 +5761,7 @@ esac
                                   decisions=decisions, orchestrator='orch')
         stop = RuntimeError('stop test loop')
 
-        with patch.object(watch, 'run_cycle', return_value=None) as cycle, \
+        with watch_time(watch), patch.object(watch, 'run_cycle', return_value=None) as cycle, \
                 patch.object(watch.time, 'sleep', side_effect=[None, stop]) as sleeper:
             with self.assertRaisesRegex(RuntimeError, 'stop test loop'):
                 watch.run_forever(args)
@@ -5783,7 +5797,7 @@ esac
         calls, environment = self.fake_reaper()
         stop = RuntimeError('stop test loop')
 
-        with patch.dict(os.environ, environment), \
+        with watch_time(watch), patch.dict(os.environ, environment), \
                 patch.object(watch, 'run_cycle', return_value=None) as cycle, \
                 patch.object(watch.time, 'sleep', side_effect=[None, None, stop]):
             with self.assertRaisesRegex(RuntimeError, 'stop test loop'):
@@ -5804,8 +5818,8 @@ esac
             'echo "Nothing closed: HCOM list unreadable"; exit 1')
         stop = RuntimeError('stop test loop')
 
-        with patch.dict(os.environ, {**self.env, **environment}), patch('sys.stderr'), \
-                patch.object(watch, 'REAP_TIMEOUT_SECONDS', 0.5), \
+        with watch_time(watch), patch.dict(os.environ, {**self.env, **environment}), \
+                patch('sys.stderr'), patch.object(watch, 'REAP_TIMEOUT_SECONDS', 0.5), \
                 patch.object(watch.time, 'sleep', side_effect=[None, stop]) as sleeper:
             with self.assertRaisesRegex(RuntimeError, 'stop test loop'):
                 watch.run_forever(args)
@@ -5839,7 +5853,7 @@ esac
                 raise error
 
         stop = RuntimeError('stop test loop')
-        with patch.object(watch, 'run_cycle', side_effect=cycle) as runner, \
+        with watch_time(watch), patch.object(watch, 'run_cycle', side_effect=cycle) as runner, \
                 patch.object(watch.time, 'time', side_effect=lambda: next(clock)), \
                 patch.object(watch.time, 'sleep', side_effect=[None] * 5 + [stop]), \
                 patch('sys.stderr'):
@@ -5865,7 +5879,7 @@ esac
                                   decisions=decisions, orchestrator='orch')
         stop = RuntimeError('stop test loop')
 
-        with patch.dict(os.environ, self.env), patch('sys.stderr'), \
+        with watch_time(watch), patch.dict(os.environ, self.env), patch('sys.stderr'), \
                 patch.object(watch.time, 'sleep', side_effect=[None, stop]):
             with self.assertRaisesRegex(RuntimeError, 'stop test loop'):
                 watch.run_forever(args)
