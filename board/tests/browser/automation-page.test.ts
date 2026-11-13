@@ -97,6 +97,21 @@ const text = (selector: string) => tab.eval<string>(`document.querySelector(${JS
 const card = (id: string) => text(`.automation [data-task="${id}"]`);
 const fits = () => tab.eval<boolean>(FITS);
 const frame = (width: number, name: string) => shot(tab, `${width}-${name}`);
+// What breaks the type rules under a selector: weights other than 400/700 (Chinese fonts have no
+// 500/600) and running text set tighter than 1.6 times its size.
+const offType = (selector: string) =>
+	tab.eval<string[]>(`(() => {
+		const root = document.querySelector(${JSON.stringify(selector)});
+		const wrong = [];
+		for (const node of [root, ...root.querySelectorAll('*')]) {
+			if (![...node.childNodes].some((child) => child.nodeType === 3 && child.textContent.trim())) continue;
+			const style = getComputedStyle(node);
+			const name = node.tagName + '.' + node.className + ' "' + node.textContent.trim().slice(0, 12) + '"';
+			if (!['400', '700'].includes(style.fontWeight)) wrong.push(name + ' weight ' + style.fontWeight);
+			if (parseFloat(style.lineHeight) / parseFloat(style.fontSize) < 1.6) wrong.push(name + ' line-height ' + style.lineHeight + '/' + style.fontSize);
+		}
+		return wrong;
+	})()`);
 
 for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: the list shows each task's state, window, next try and last result`, async () => {
@@ -150,6 +165,8 @@ for (const width of [1280, 390]) {
 		// The page keeps the same side margin as the form and the other content pages.
 		const left = await tab.eval<number>(`document.querySelector('.detail .task h2').getBoundingClientRect().left - document.querySelector('.detail').getBoundingClientRect().left`);
 		expect(left).toBeGreaterThanOrEqual(8);
+		expect(await offType('.detail .task')).toEqual([]);
+		if (width >= 761) expect(await offType('.automation')).toEqual([]);
 		await frame(width, '2-task');
 		await shot(tab, `${width}-2b-task-runs`, { box: '.detail .run' });
 
@@ -199,6 +216,9 @@ for (const width of [1280, 390]) {
 		// 時間 stays beside its box when the row wraps.
 		const apart = `(() => { const box = document.querySelector('.detail form [name=time]').getBoundingClientRect(); const label = document.querySelector('.detail form .at > span').getBoundingClientRect(); return Math.abs((box.top + box.bottom) / 2 - (label.top + label.bottom) / 2); })()`;
 		expect(await tab.eval<number>(apart)).toBeLessThan(10);
+		expect(await offType('.detail form')).toEqual([]);
+		// The review switch's label, the place a finger presses, is as tall as a button.
+		expect(await tab.eval<number>(`document.querySelector('.detail form label.switch').getBoundingClientRect().height`)).toBeGreaterThanOrEqual(44);
 		// Every box and list is at least 44px tall, a finger's size.
 		expect(await tab.eval<string[]>(`[...document.querySelectorAll('.detail form input[type=text], .detail form select')].filter((box) => box.getBoundingClientRect().height < 44).map((box) => (box.name || box.getAttribute('aria-label')) + ' ' + box.getBoundingClientRect().height)`)).toEqual([]);
 		await frame(width, '5-edit-weekly');
