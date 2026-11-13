@@ -43,6 +43,7 @@
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
 	import Settings from '#lib/components/Settings.svelte';
+	import UnattendedDrawer from '#lib/components/UnattendedDrawer.svelte';
 	import Toasts from '#lib/components/Toasts.svelte';
 	import DockSwipe from '#lib/components/DockSwipe.svelte';
 	import FlaskConical from '@lucide/svelte/icons/flask-conical';
@@ -740,6 +741,7 @@
 </div>
 
 <Settings bind:this={settings} onusagestyle={(style) => void board.setUsageStyle(style)} ontranslatemode={(mode) => void board.setTranslateMode(mode)} />
+<UnattendedDrawer controllers={herdrControllers} />
 
 <style>
 	.dock {

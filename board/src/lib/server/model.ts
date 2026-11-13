@@ -22,6 +22,7 @@ import { askingReport } from '../board/question-message.ts';
 import { reportedAt } from '../board/roster.ts';
 import type { ClosedAgent, ClosedList } from '../board/closed-agents.ts';
 import type { LedgerView } from '../board/ledger.ts';
+import type { UnattendedView } from '../board/unattended.ts';
 import { relinking } from './process-hooks.ts';
 import type { AnsweredFile, AnsweredSources } from './helper.ts';
 import type { InboxState } from './inbox-state.ts';
@@ -62,6 +63,10 @@ export interface Sources {
 	ledgers: Map<string, LedgerView>;
 	/** Why the ledgers could not be read at this read; `ledgers` is empty then. */
 	ledgersError: string | null;
+	/** The unattended mode of each bound controller, by session ID. */
+	unattended: Map<string, UnattendedView>;
+	/** Why it could not be read at this read; `unattended` is empty then. */
+	unattendedError: string | null;
 }
 
 /** The controllers with every question that the answered list of the same read already has
@@ -337,7 +342,13 @@ function dutyOf(recorded: RecordedDuty | undefined, file: ReportFile | undefined
 	return { text: recorded.text, expected: recorded.expected, delivered: done?.summary || null };
 }
 
-function activeController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined, ledger: LedgerView): Controller {
+function unattendedOf(sources: Pick<Sources, 'unattended' | 'unattendedError'>, sessionId: string): UnattendedView {
+	const read = sources.unattended.get(sessionId);
+	if (read) return read;
+	return sources.unattendedError ? { state: 'error', reason: `輔助工具失敗：${sources.unattendedError}` } : { state: 'unknown' };
+}
+
+function activeController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined, ledger: LedgerView, unattended: UnattendedView = { state: 'unknown' }): Controller {
 	const latest = file?.reports.at(-1);
 	const pendingCount = binding.questions.filter((question) => question.status === 'pending').length;
 
@@ -362,6 +373,7 @@ function activeController(binding: HelperController, file: ReportFile | undefine
 		lastReportAt: latest?.time ?? null,
 		duty: dutyOf(duty, file),
 		ledger,
+		unattended,
 		error: joinErrors(binding.error && `問題檔讀不出來：${binding.error}`, reportError(file))
 	};
 }
@@ -393,6 +405,7 @@ function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'p
 		lastReportAt: latest.time,
 		duty: dutyOf(duty, file),
 		ledger: ledgerOf(sources, file.sessionId),
+		unattended: { state: 'unknown' },
 		error: reportError(file)
 	};
 }
@@ -419,7 +432,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		const ledger = ledgerOf(sources, binding.session_id);
 		const controller = closed
 			? closedController(binding, file, duty, ledger)
-			: { ...activeController(binding, file, duty, ledger), paused: isPaused(sources, binding.session_id) };
+			: { ...activeController(binding, file, duty, ledger, unattendedOf(sources, binding.session_id)), paused: isPaused(sources, binding.session_id) };
 		if (sources.helperError) {
 			controller.error = joinErrors(`資料可能過期，輔助工具失敗：${sources.helperError}`, controller.error);
 		}

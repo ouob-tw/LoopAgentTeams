@@ -86,7 +86,9 @@ function snapshotOf(agents: Agent[], archived: string[] = [], closed: Omit<Close
 		answered: [],
 		answeredError: null,
 		ledgers: new Map(),
-		ledgersError: null
+		ledgersError: null,
+		unattended: new Map(),
+		unattendedError: null
 	};
 	const state = { read: {}, archived: Object.fromEntries(archived.map((key) => [key, '2026-10-20T11:00:00Z'])) };
 	return buildSnapshot(sources, state, NOW);

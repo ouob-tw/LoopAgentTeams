@@ -7,6 +7,7 @@ import type { PreauthSettings } from '../board/preauth.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
 import { usageFrom } from '../board/usage.ts';
+import { unattendedFrom, type UnattendedSettings, type UnattendedView } from '../board/unattended.ts';
 import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand } from './external.ts';
 
@@ -393,4 +394,71 @@ export async function writePreauth(
 		toUndo: texts(payload?.to_undo),
 		settings: isPreauthSettings(payload?.settings) ? payload.settings : null
 	};
+}
+
+type HelperUnattended = { ok: true; views: Map<string, { view: UnattendedView; files: string[] }> } | { ok: false; reason: string };
+
+/** These controllers' unattended mode and grant, by session ID, in one run of the helper, with the
+ *  files each depends on, for the board to watch. */
+export async function readUnattended(config: BoardConfig, controllers: { workspace: string; sessionId: string }[]): Promise<HelperUnattended> {
+	if (!controllers.length) return { ok: true, views: new Map() };
+	const read = await run(config, [
+		'unattended',
+		`--seconds=${config.helperTimeoutMs / 2000}`,
+		...controllers.flatMap((controller) => [`--workspace=${controller.workspace}`, `--session-id=${controller.sessionId}`])
+	]);
+	const parsed = parseJsonOutput<{ unattended?: unknown; reason?: unknown } | null>(read, '輔助工具的輸出不是 JSON');
+	if (!parsed.ok) return parsed;
+	const entries = parsed.value?.unattended;
+	const usable = (entry: unknown): entry is { session_id: string; files?: unknown } => typeof (entry as { session_id?: unknown })?.session_id === 'string';
+	if (read.failure || !Array.isArray(entries) || !entries.every(usable)) {
+		return { ok: false, reason: textOrNull(parsed.value?.reason) ?? read.failure ?? '輔助工具的輸出缺少無人模式' };
+	}
+	const files = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []);
+	return { ok: true, views: new Map(entries.map((entry) => [entry.session_id, { view: unattendedFrom(entry), files: files(entry.files) }])) };
+}
+
+/** What a write through lat-unattended answers: `ok`, or why not with the tool's own status. */
+export type UnattendedWrite = { ok: true; value: Record<string, unknown> } | { ok: false; status: string; reason: string; problems: string[] };
+
+async function unattendedCommand(config: BoardConfig, args: string[]): Promise<UnattendedWrite> {
+	const done = await run(config, args);
+	const parsed = parseJsonOutput<Record<string, unknown> | null>(done, '輔助工具的輸出不是預期的格式');
+	const payload = parsed.ok ? parsed.value : null;
+	if (payload?.status === 'ok') return { ok: true, value: payload };
+	return {
+		ok: false,
+		// A timeout may have stopped the tool before or after it wrote, so it is no success.
+		status: typeof payload?.status === 'string' ? payload.status : 'error',
+		reason: textOrNull(payload?.reason) ?? done.failure ?? (parsed.ok ? '輔助工具的輸出不是預期的格式' : parsed.reason),
+		problems: Array.isArray(payload?.problems) ? payload.problems.filter((item): item is string => typeof item === 'string') : []
+	};
+}
+
+/** The global and these projects' unattended settings; a project is named by any folder in it. */
+export async function readUnattendedSettings(config: BoardConfig, projects: string[]): Promise<{ ok: true; settings: UnattendedSettings } | { ok: false; reason: string }> {
+	const read = await unattendedCommand(config, ['unattended-settings', ...projects.map((root) => `--project=${root}`)]);
+	if (!read.ok) return { ok: false, reason: read.reason };
+	const value = read.value as unknown as UnattendedSettings;
+	if (typeof value.global?.sha256 !== 'string' || !Array.isArray(value.projects)) return { ok: false, reason: '輔助工具的輸出缺少無人模式設定' };
+	return { ok: true, settings: value };
+}
+
+/** Write the changed keys of one layer's [unattended], unless its file is no longer the one read. */
+export function writeUnattendedSettings(
+	config: BoardConfig,
+	write: { layer: 'global' | 'project'; project: string | null; sha256: string; changes: Record<string, unknown> }
+): Promise<UnattendedWrite> {
+	return unattendedCommand(config, [
+		'unattended-settings-write',
+		`--layer=${write.layer}`,
+		...(write.project ? [`--project=${write.project}`] : []),
+		`--expected-sha256=${write.sha256}`,
+		`--changes=${JSON.stringify(write.changes)}`
+	]);
+}
+
+/** Create, update or close one controller's grant through lat-unattended. */
+export function changeUnattendedGrant(config: BoardConfig, controller: { workspace: string; sessionId: string }, args: string[]): Promise<UnattendedWrite> {
+	return unattendedCommand(config, ['unattended-grant', `--workspace=${controller.workspace}`, `--session-id=${controller.sessionId}`, '--', ...args]);
 }

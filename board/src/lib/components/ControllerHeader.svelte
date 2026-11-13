@@ -1,7 +1,7 @@
 <script lang="ts">
 	// A controller's header: one line of who and where it stands
-	// with its latest phase (the details behind a disclosure, its duty first) and, while it runs, its context use,
-	// quota, prompt cache and permission mode in small print.
+	// with its latest phase (the details behind a disclosure, its duty first), its unattended mode while
+	// it is on, and, while it runs, its context use, quota, prompt cache and permission mode in small print.
 	import { lastSegment } from '#lib/board/agents.ts';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount } from 'svelte';
@@ -14,6 +14,7 @@
 	import DutyText from './DutyText.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import SummaryText from './SummaryText.svelte';
+	import UnattendedCard from './UnattendedCard.svelte';
 	import UsageLine from './UsageLine.svelte';
 
 	let {
@@ -52,6 +53,7 @@
 		</button>
 	</header>
 	<p class="phase"><SummaryText text={phaseText(controller)} /></p>
+	<UnattendedCard controllerId={controller.id} view={controller.unattended} />
 	<UsageLine {usage} />
 	{#if controller.error}
 		<p class="error" role="alert">⚠ {controller.error}</p>
