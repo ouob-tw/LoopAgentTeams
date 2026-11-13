@@ -6,7 +6,7 @@ import type { ArchivePage } from '../board/archive.ts';
 import type { BoardSnapshot, HelperController, InboxQuestion } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
-import { listControllers, pruneReports, readAnswered, readLedgers, readQuestions, type AnsweredFile } from './helper.ts';
+import { listControllers, pruneReports, readAnswered, readLedgers, readQuestions, readUnattended, type AnsweredFile } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, ledgerSources, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
@@ -35,6 +35,7 @@ import { createPdPoller, readPdPending } from './pd.ts';
 import { loadUsageStyle, saveUsageStyle } from './usage-style.ts';
 import type { UsageStyle } from '../board/usage.ts';
 import { loadTranslateMode, saveTranslateMode } from './translate-mode.ts';
+import { createAutomation, type Automation } from './automation.ts';
 import type { TranslateMode } from '../board/translate-mode.ts';
 
 /** The style with its revision: it grows with every save, so a page can tell which of two reports of the style is newer. */
@@ -88,12 +89,17 @@ export interface Board {
 	quota(): QuotaSnapshot | null;
 	/** pd's waiting requests as last read; null until the first reading is done. */
 	pd(): PdSnapshot | null;
+	/** The 自動化 tab's tasks and runs; every change goes to the open pages as an `automation` event. */
+	readonly automation: Automation;
 	/** Read pd's waiting requests now, as after a denial; resolves once every open page was told. */
 	refreshPd(): Promise<void>;
 	/** How the usage line reads on every device. */
 	usageStyle(): UsageStyleState;
 	/** Save the style and tell every open page. Throws, leaving the style as it was, when it cannot be saved. */
 	setUsageStyle(style: UsageStyle): UsageStyleState;
+	/** An unattended setting or grant was written: every open page reads the settings again, and the
+	 *  controllers' modes are read again now rather than when the file watch notices. */
+	unattendedChanged(): void;
 	/** Whether conversations open translated, on every device. */
 	translateMode(): TranslateModeState;
 	/** Save the mode and tell every open page. Throws, leaving the mode as it was, when it cannot be saved. */
@@ -172,6 +178,8 @@ function createBoard(): Board {
 	let lastAsks: BoardAsk[] = [];
 	/** The ledger files the last read of the ledgers named, watched so a write to one is read in. */
 	let ledgerPaths: string[] = [];
+	/** The same for the files the controllers' unattended mode is read from. */
+	let unattendedPaths: string[] = [];
 
 	const comparable = (value: BoardSnapshot) => JSON.stringify({ ...value, generatedAt: '', revision: 0 });
 
@@ -209,6 +217,7 @@ function createBoard(): Board {
 		}
 		for (const controller of lastActive) addFile(targets, controller.questions_path);
 		for (const path of ledgerPaths) addFile(targets, path);
+		for (const path of unattendedPaths) addFile(targets, path);
 		return targets;
 	}
 	void helperDirectories(config).then((dirs) => {
@@ -235,6 +244,14 @@ function createBoard(): Board {
 			}
 		}
 	);
+
+	const automation = createAutomation({
+		dir: join(config.stateDir, 'automation'),
+		now: config.now,
+		publish: (snapshot) => {
+			for (const stream of streams) stream.send('automation', JSON.stringify(snapshot));
+		}
+	});
 
 	// Also on its own timer: pd missing or its daemon down leaves the rest of the board alone.
 	const pdPoller = createPdPoller(() => readPdPending(config.pdCommand, config.pdTimeoutMs), {
@@ -325,7 +342,7 @@ function createBoard(): Board {
 		const listedAt = Date.now();
 		// The board's clock, which the sent log's times are in.
 		const listedNow = config.now();
-		const [[helper, reports, answered, settled, log, ledgers], listedAgents, listedHerdr, stops] = await Promise.all([
+		const [[helper, reports, answered, settled, log, ledgers, unattended], listedAgents, listedHerdr, stops] = await Promise.all([
 			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
 				// Read after the list: the files are those of the controllers bound now, and of the
 				// sessions that reported. The sent answers settle and the ledgers are read against the
@@ -333,14 +350,15 @@ function createBoard(): Board {
 				// Herdr's lists are not waited for.
 				const log = readLog(config, reading);
 				const bound = helper.ok ? helper.controllers : lastActive;
-				const [answered, settled, ledgers] = await Promise.all([
+				const [answered, settled, ledgers, unattended] = await Promise.all([
 					readAnswered(config, answeredSources(bound, reports.files)),
 					helper.ok && !(log instanceof Error)
 						? settleAnswers(log, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
 						: null,
-					readLedgers(config, ledgerSources(bound, reports.files))
+					readLedgers(config, ledgerSources(bound, reports.files)),
+					readUnattended(config, bound.map((binding) => ({ workspace: binding.workspace, sessionId: binding.session_id })))
 				]);
-				return [helper, reports, answered, settled, log, ledgers] as const;
+				return [helper, reports, answered, settled, log, ledgers, unattended] as const;
 			}),
 			listAgents(config),
 			listHerdrAgents(config),
@@ -357,6 +375,8 @@ function createBoard(): Board {
 		// The problem log beside them too: recording a problem changes the counts without a ledger write.
 		if (ledgers.ok)
 			ledgerPaths = [...ledgers.ledgers.values()].flatMap((read) => [read.path, read.view.state === 'ok' ? read.view.problemsPath : null].filter((path): path is string => path !== null));
+		// The settings and grant files each controller's mode comes from, so a change to one is read in.
+		if (unattended.ok) unattendedPaths = [...unattended.views.values()].flatMap((read) => read.files);
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
@@ -423,7 +443,9 @@ function createBoard(): Board {
 			answered: lastAnswered,
 			answeredError: answered.ok ? null : answered.reason,
 			ledgers: ledgers.ok ? new Map([...ledgers.ledgers].map(([id, read]) => [id, read.view])) : new Map(),
-			ledgersError: ledgers.ok ? null : ledgers.reason
+			ledgersError: ledgers.ok ? null : ledgers.reason,
+			unattended: unattended.ok ? new Map([...unattended.views].map(([id, read]) => [id, read.view])) : new Map(),
+			unattendedError: unattended.ok ? null : unattended.reason
 		};
 
 		if (!closed) sourceWatcher.sync(watchTargets());
@@ -682,6 +704,7 @@ function createBoard(): Board {
 		},
 		quota: () => quotaPoller.current(),
 		pd: () => pdPoller.current(),
+		automation,
 		refreshPd: () => pdPoller.refresh(),
 		usageStyle: () => (usageStyle ??= { style: loadUsageStyle(config.stateDir), revision: Date.now() }),
 		setUsageStyle(style) {
@@ -690,6 +713,10 @@ function createBoard(): Board {
 			usageStyle = { style, revision };
 			for (const stream of streams) stream.send('usage-style', JSON.stringify(usageStyle));
 			return usageStyle;
+		},
+		unattendedChanged() {
+			for (const stream of streams) stream.send('unattended-settings', '{}');
+			if (!closed) void refresh();
 		},
 		translateMode: () => (translateMode ??= { mode: loadTranslateMode(config.stateDir), revision: Date.now() }),
 		setTranslateMode(mode) {
@@ -703,6 +730,7 @@ function createBoard(): Board {
 			closed = true;
 			quotaPoller.close();
 			pdPoller.close();
+			automation.close();
 			clearTimeout(debounce);
 			clearTimeout(fallback);
 			clearTimeout(pollTimer);

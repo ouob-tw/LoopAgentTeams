@@ -58,6 +58,19 @@
     "*python -m unittest discover",
     "*python -m unittest discover -s *tests"
   ],
+  "heavy": [
+    "*bun test *tests/browser/*",
+    "*bun run build",
+    "*bun run build *",
+    "*bun run build:test",
+    "*bun run build:test *",
+    "*bun run check",
+    "*bun run check *",
+    "*vite build",
+    "*vite build *",
+    "*svelte-check",
+    "*svelte-check *"
+  ],
   "integration_branch": "dev",
   "full_suites": [
     {"cwd": "board", "command": "bun run test:all", "depends_on": ["skills/local/lat/herdr-panel/**", "skills/local/lat/scripts/**"]},

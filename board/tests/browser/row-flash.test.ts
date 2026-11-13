@@ -25,6 +25,8 @@ beforeAll(async () => {
 	const [name, value] = cookie.split('=');
 	await send('Network.setCookie', { name, value, url: fixture.url });
 	await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
+	// The colours below are the dark theme's; a test Chrome has no system preference of its own.
+	await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
 }, 30_000);
 
 afterAll(async () => {

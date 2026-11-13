@@ -19,7 +19,7 @@ import {
 } from './navigation.ts';
 import { MIDDLE_TAB_KEY, remember, remembered } from './prefs.ts';
 
-const MIDDLE_TABS = ['inbox', 'agents', 'quota'] as const;
+const MIDDLE_TABS = ['inbox', 'agents', 'automation', 'quota'] as const;
 /** How long a step through the history is waited for, so one that never comes does not stop every
  *  later one. */
 const TRAVEL_WAIT_MS = 1000;

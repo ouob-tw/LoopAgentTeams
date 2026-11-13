@@ -10,6 +10,7 @@
 	import ExplainTip from './ExplainTip.svelte';
 	import HcomBadge from './HcomBadge.svelte';
 	import StatusMark from './StatusMark.svelte';
+	import { isUnattended } from '#lib/board/unattended.ts';
 
 	let { controller, current, onopen }: { controller: Controller; current: boolean; onopen: (id: string) => void } = $props();
 
@@ -41,6 +42,9 @@
 		{/if}
 		{#if controller.pendingCount}
 			<span class="badge" title="待決題數">{controller.pendingCount}</span>
+		{/if}
+		{#if isUnattended(controller.unattended)}
+			<span class="unattended" title="無人模式：照目標自己做，要你決定的事先擱置">無人</span>
 		{/if}
 		{#if controller.error}
 			<span class="error" title={controller.error}>⚠ 錯誤</span>
@@ -104,6 +108,15 @@
 		color: var(--bg);
 		font-family: var(--mono);
 		font-size: max(0.7rem, var(--min-font, 0px));
+	}
+	.unattended {
+		flex: none;
+		padding: 0 0.45rem;
+		border-radius: var(--radius-pill);
+		background: var(--warn);
+		color: var(--bg);
+		font-size: max(0.75rem, var(--min-font, 0px));
+		font-weight: 700;
 	}
 	.error {
 		flex: none;

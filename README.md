@@ -117,6 +117,7 @@ LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址�
 | [analyst](skills/local/analyst/SKILL.md) | 疑難雜症時召喚的分析師：只分析不改程式，交回證據、方案取捨與建議 |
 | [three-tier-testing](skills/local/three-tier-testing/SKILL.md) | 依外部依賴將測試分為單元、整合與 E2E 三層，分開執行，區分模擬與真實服務的驗證 |
 | [ui-copy](skills/local/ui-copy/SKILL.md) | 做畫面、寫介面需求與審查介面時決定資訊怎麼呈現：圖形優先、其次收合、最後才寫字，以及何時才加說明句 |
+| [ui-baseline](skills/local/ui-baseline/SKILL.md) | 做畫面時守的底線：動手前讀設計規格、列狀態表，守文字與觸控尺寸，交付前用手機與電腦寬度截圖驗收 |
 | [ui-choice-demo](skills/local/ui-choice-demo/SKILL.md) | 給使用者看成果、DEMO 或請其選擇前，用一個指令發布成能打開的網址，覆蓋同名、14 天自動清掉 |
 | [retro](skills/local/retro/SKILL.md) | 回顧一次 session，依嚴重度列出能改善 Agent 工作環境的地方；只在使用者或流程規則要求時使用 |
 

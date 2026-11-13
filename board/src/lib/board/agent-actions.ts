@@ -6,7 +6,7 @@ import type { KeyCounts } from './screen.ts';
  *  Herdr tab moved or renamed, it brought back from the 已關閉 section, its HCOM link paused or
  *  resumed, it restarted to link it to HCOM, its board ask answered, its Claude permission mode switched with Shift+Tab, or
  *  a whole Herdr workspace closed from its heading. */
-export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume' | 'pause' | 'unpause' | 'relink' | 'board-ask' | 'permission' | 'close-workspace' | 'keys';
+export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume' | 'pause' | 'unpause' | 'relink' | 'board-ask' | 'permission' | 'close-workspace' | 'keys' | 'unattended';
 
 /** A Claude permission switch: the mode its screen showed first (null when it could not be read),
  *  the one asked for, the one it was left in (null when not known), how many times Shift+Tab was
@@ -47,6 +47,8 @@ export interface AgentAction {
 	testDevice?: { id: string; label: string };
 	/** Set on key presses from the 終端分頁: the kinds typed in and how many, never the text. */
 	keys?: KeyCounts;
+	/** Set on an unattended-mode change: the form's request line it answers, none for 關掉. */
+	request?: string;
 }
 
 /** What the agent endpoints answer for every attempt they made or refused. */
@@ -71,7 +73,8 @@ export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {
 	'board-ask': '看板提問',
 	permission: '切換權限模式',
 	'close-workspace': '關閉工作區',
-	keys: '終端按鍵'
+	keys: '終端按鍵',
+	unattended: '無人模式'
 };
 
 /** Whether the controller's turn can be interrupted from its page: its own agent entry (same session

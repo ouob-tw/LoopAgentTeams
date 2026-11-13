@@ -40,9 +40,13 @@
 	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
 	import { pdNotice, type PdRequest } from '#lib/board/pd.ts';
 	import QuotaList from '#lib/components/QuotaList.svelte';
+	import AutomationForm from '#lib/components/AutomationForm.svelte';
+	import AutomationList from '#lib/components/AutomationList.svelte';
+	import AutomationTask from '#lib/components/AutomationTask.svelte';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
 	import Settings from '#lib/components/Settings.svelte';
+	import UnattendedDrawer from '#lib/components/UnattendedDrawer.svelte';
 	import Toasts from '#lib/components/Toasts.svelte';
 	import DockSwipe from '#lib/components/DockSwipe.svelte';
 	import FlaskConical from '@lucide/svelte/icons/flask-conical';
@@ -56,7 +60,7 @@
 	testDevice.set(data.testDevice);
 
 	// svelte-ignore state_referenced_locally
-	const board = new LiveBoard(data.snapshot, data.pd);
+	const board = new LiveBoard(data.snapshot, data.pd, data.automation);
 	// The notice times read the board's calendar day.
 	$effect.pre(() => {
 		clock.timeZone = board.snapshot.closed.timeZone;
@@ -430,6 +434,16 @@
 	const openAgent = (id: string) => navigation.go({ kind: 'agent', id });
 	const openNewAgent = (workspace: string) => navigation.go({ kind: 'new-agent', workspace });
 
+	/** The task the 自動化 page or edit form shows; undefined once it is gone, and for a new one. */
+	const taskId = $derived(view?.kind === 'automation' || view?.kind === 'automation-edit' ? view.id : null);
+	const taskView = $derived(taskId === null ? undefined : board.automation.tasks.find((candidate) => candidate.task.id === taskId));
+	const openTask = (id: string) => navigation.go({ kind: 'automation', id }, true);
+	/** A saved task's page shows it as the board has it now, whatever the stream has brought so far. */
+	async function taskSaved(id: string) {
+		await board.reloadAutomation();
+		navigation.go({ kind: 'automation', id });
+	}
+
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
 </script>
@@ -551,11 +565,14 @@
 				<button type="button" data-middle="inbox" aria-pressed={middle === 'inbox'} onclick={() => (navigation.setMiddle('inbox'), voice.tap())}>待辦</button>
 				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => navigation.setMiddle('agents')}
 					>Herdr<small>{agents.length}</small></button
-				>
+>
+				<button type="button" data-middle="automation" aria-pressed={middle === 'automation'} onclick={() => navigation.setMiddle('automation')}>自動化</button>
 				<button type="button" data-middle="quota" aria-pressed={middle === 'quota'} onclick={() => navigation.setMiddle('quota')}>額度</button>
 			</div>
 			{#if middle === 'quota'}
 				<QuotaList quota={board.quota} />
+			{:else if middle === 'automation'}
+				<AutomationList automation={board.automation} currentId={taskId} onopen={openTask} onnew={() => navigation.go({ kind: 'automation-edit', id: null }, true)} />
 			{:else if middle === 'agents'}
 				<AgentList {agents} {controllers} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
 				<ClosedAgents {closed} currentId={agentId} onopen={openAgent} />
@@ -591,7 +608,9 @@
 
 		<section class="detail" bind:this={detail} tabindex="-1">
 			{#if view === null}
-				<p class="empty">{middle === 'agents' ? '從 Herdr 清單選一個 Agent，看它的對話紀錄。' : '從待辦選一則，或點主控名稱看它的資訊。'}</p>
+				<p class="empty">
+					{middle === 'agents' ? '從 Herdr 清單選一個 Agent，看它的對話紀錄。' : middle === 'automation' ? '從自動化選一項看內容。' : '從待辦選一則，或點主控名稱看它的資訊。'}
+				</p>
 			{:else}
 				<div class="topbar">
 					<button onclick={() => navigation.back()} aria-label="返回">←</button>
@@ -604,6 +623,10 @@
 						<button class="whose" title="{closedAgent.folder} @{closedAgent.hcomName}" onclick={scrollToTop}>
 							<strong>{folderName(closedAgent.folder)}</strong>
 							<span class="handle">@{lastSegment(closedAgent.hcomName)}</span>
+						</button>
+					{:else if view.kind === 'automation' || view.kind === 'automation-edit'}
+						<button class="whose" onclick={scrollToTop}>
+							<strong>{view.kind === 'automation-edit' ? (view.id === null ? '新增任務' : '編輯任務') : (taskView?.task.name ?? '自動化任務')}</strong>
 						</button>
 					{:else if owner}
 						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->
@@ -658,6 +681,20 @@
 								<BoardAskCard {ask} />
 							{/each}
 						</div>
+					{/if}
+				{:else if view.kind === 'automation'}
+					{#if taskView}
+						<AutomationTask view={taskView} timeZone={board.automation.timeZone} onedit={() => navigation.go({ kind: 'automation-edit', id: taskView.task.id })} onchanged={() => void board.reloadAutomation()} />
+					{:else}
+						<p class="empty">這個任務已不存在。</p>
+					{/if}
+				{:else if view.kind === 'automation-edit'}
+					{#if view.id === null || taskView}
+						{#key view.id}
+							<AutomationForm task={taskView?.task ?? null} onsaved={taskSaved} oncancel={() => navigation.back()} />
+						{/key}
+					{:else}
+						<p class="empty">這個任務已不存在。</p>
 					{/if}
 				{:else if view.kind === 'launch'}
 					<NewController {controllers} {agents} {workspaces} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} onfolderfocus={(focused) => (folderFocused = focused)} />
@@ -740,6 +777,7 @@
 </div>
 
 <Settings bind:this={settings} onusagestyle={(style) => void board.setUsageStyle(style)} ontranslatemode={(mode) => void board.setTranslateMode(mode)} />
+<UnattendedDrawer controllers={herdrControllers} />
 
 <style>
 	.dock {

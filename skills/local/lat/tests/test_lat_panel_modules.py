@@ -146,6 +146,9 @@ assert not {{'questions', 'bindings', 'board', 'lat_panel'}} & sys.modules.keys(
                     results[1].stdout = results[1].stdout.replace(b',ledger', b'')
                     # `board preauth-*` came after the split; test_lat_preauth.py covers them.
                     results[1].stdout = results[1].stdout.replace(b',preauth-read,preauth-write', b'')
+                    # `board unattended*` came after the split; test_lat_unattended.py and the board's tests cover them.
+                    results[1].stdout = results[1].stdout.replace(
+                        b',unattended,unattended-settings,unattended-settings-write,unattended-grant', b'')
                 if args == ['question', '--help']:
                     # `question ask`, `approve` and `record-chat` came after the split; test_lat_panel_ask.py covers them.
                     results[1].stdout = results[1].stdout.replace(b',ask,approve,record-chat', b'')

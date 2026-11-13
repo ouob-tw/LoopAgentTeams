@@ -73,7 +73,7 @@ const CONTROLLERS = ['c-1', 'c-2'];
 /** The screens the board has: two controllers, and an item only the archive holds. */
 function viewAt(archived: Set<string>) {
 	return (place: Place): View => {
-		if (place === null || place.kind === 'launch') return place;
+		if (place === null || place.kind === 'launch' || place.kind === 'automation' || place.kind === 'automation-edit') return place;
 		if (place.kind === 'controller') return CONTROLLERS.includes(place.id) ? place : { kind: 'missing', what: 'controller' };
 		if (place.kind === 'item') {
 			return archived.has(place.key) ? { kind: 'item', item: { key: place.key } as never } : { kind: 'missing', what: 'item' };

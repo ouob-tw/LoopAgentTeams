@@ -1,0 +1,21 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/automation.ts",
+        "board/src/lib/board/automation-actions.ts",
+        "board/src/lib/server/automation.ts",
+        "board/src/lib/components/AutomationForm.svelte",
+        "board/src/lib/components/AutomationList.svelte",
+        "board/src/lib/components/AutomationState.svelte",
+        "board/src/lib/components/AutomationTask.svelte",
+        "board/src/routes/api/automation/**"
+      ],
+      "tests": [
+        "board/tests/unit/automation.test.ts",
+        "board/tests/server/automation.test.ts",
+        "board/tests/browser/automation-page.test.ts"
+      ]
+    }
+  ]
+}

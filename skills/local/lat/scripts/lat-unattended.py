@@ -15,11 +15,14 @@ ends. A new round or a successor controller starts with no grant.
 
 `status` prints the mode with each value's layer and the grant state; `versions` lists every
 version; `create`, `update` and `close` change the grant; `check` says whether a version was in
-effect at a moment. `--json` prints one JSON object, for the board helper.
+effect at a moment; `draft` keeps the goal the controller proposes, which is no grant. `settings`
+and `settings-write` read and write the global and project layers for the board. `--json` prints
+one JSON object, for the board helper.
 """
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -27,6 +30,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _lat_common import shared_lat_dir, write_json_atomic, write_text_atomic
+import _lat_review
 
 
 def load_preauth():
@@ -60,6 +64,13 @@ END_LABELS = dict(CLOSE_REASONS, superseded='被新版本取代', **{'time-limit
 DRAFTED_NOTE = '目標由主控擬出'
 STATE_LABELS = {'pending-goal': '無人模式，尚待目標',
                 'active': '無人授權有效', 'none': '無有效授權'}
+# The board's log of what a signed-in device did; a board-form or user-edit grant cites the
+# request line the board wrote there before calling this tool.
+SENT_LOG = 'sent-log.jsonl'
+BOARD_EVIDENCE = 'board-action:'
+BOARD_REQUEST_OPS = {'board-form': 'create', 'user-edit': 'update'}
+# How long before the grant the user's request may have been made.
+REQUEST_WINDOW = timedelta(minutes=10)
 
 
 def now():
@@ -83,6 +94,20 @@ def session_lock(lat, session):
 
 def grant_file(lat, session, round_number):
     return lat / 'unattended' / f'{session}-r{round_number}.json'
+
+
+def draft_file(lat, session, round_number):
+    """The goal the controller proposes for this round; never a grant."""
+    return lat / 'unattended' / f'{session}-r{round_number}.draft.json'
+
+
+def read_draft(lat, session, round_number):
+    """The draft, or None; one that cannot be read is no draft: it is never a grant."""
+    try:
+        draft = json.loads(draft_file(lat, session, round_number).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return draft if isinstance(draft, dict) else None
 
 
 def read_session(lat, session):
@@ -259,18 +284,83 @@ def snapshot(lat, session):
     """Everything `status` reports."""
     with preauth.locked(session_lock(lat, session)):
         found = load_round(lat, session)
+        draft = read_draft(lat, session, found.number)
     state, current = grant_state(found)
     versions = found.versions
     return dict(session=session, round=found.number, round_active=found.active,
                 settings=found.values, quota_stop=True, problems=found.problems, state=state,
-                state_label=STATE_LABELS[state], version=current,
+                state_label=STATE_LABELS[state], version=current, draft=draft,
+                layer_modes=layer_modes(lat, found.record),
+                files=[str(path) for path in (
+                    session_file(lat, session), grant_file(lat, session, found.number),
+                    draft_file(lat, session, found.number), lat / 'preauth.toml',
+                    preauth.global_path())],
                 ends_at=stamp(deadline(versions)) if current else None,
                 last_end=None if current or not versions else dict(
                     version=versions[-1]['version'], ended_at=versions[-1]['ended_at'],
                     reason=versions[-1]['end_reason']))
 
 
+def layer_modes(lat, record):
+    """The mode each layer itself sets, None where it sets none; the project's may be
+    follow-global. What the status card lists as 各層設定."""
+    def mode_of(values):
+        return values.get('mode') if isinstance(values, dict) else None
+
+    found = dict(controller=mode_of(record.get('unattended') if isinstance(record, dict) else None))
+    for name, path in (('project', lat / 'preauth.toml'), ('global', preauth.global_path())):
+        layer, _ = preauth.file_layer(name, path)
+        found[name] = mode_of(layer.data.get('unattended'))
+    return found
+
+
 # Evidence -------------------------------------------------------------------------------------
+
+def board_request_problem(session, versions, evidence, source, version):
+    """A board-form or user-edit version cites `board-action:<ID>`: the request line the board
+    wrote to its log when a signed-in device sent the form. It must be for this controller and
+    this kind of change, hold the same content, be recent, and not be cited by another version."""
+    if not evidence.startswith(BOARD_EVIDENCE):
+        return f'{source} evidence must be `{BOARD_EVIDENCE}<ID>` from the board\'s action log'
+    if any(old.get('evidence') == evidence for old in versions):
+        return f'{evidence} is already cited by an earlier version'
+    wanted = evidence.removeprefix(BOARD_EVIDENCE)
+    path = preauth.board_writes_path().with_name(SENT_LOG)
+    try:
+        lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    except FileNotFoundError:
+        lines = []
+    entry = None
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict) and item.get('kind') == 'unattended-request' \
+                and item.get('id') == wanted:
+            entry = item
+    if entry is None:
+        return f'no board request {wanted} in {path}'
+    if entry.get('controllerId') != session:
+        return f'board request {wanted} is for controller {entry.get("controllerId")}, not {session}'
+    if entry.get('op') != BOARD_REQUEST_OPS[source]:
+        return f'board request {wanted} is a {entry.get("op")}, not a {BOARD_REQUEST_OPS[source]}'
+    sent = dict(goal=entry.get('goal'), done=entry.get('done'), scope=entry.get('scope'),
+                max_hours=entry.get('maxHours'))
+    given = dict(goal=version['goal'], done=version['done'], scope=version['scope'],
+                 max_hours=version['stop']['max_hours'])
+    differs = [key for key in given if sent[key] != given[key]]
+    if differs:
+        return f'board request {wanted} has another {", ".join(differs)} than this version'
+    try:
+        moment = parse(entry['time'])
+    except (KeyError, TypeError, ValueError):
+        return f'board request {wanted} has no readable time'
+    if not timedelta(minutes=-1) <= now() - moment <= REQUEST_WINDOW:
+        return (f'board request {wanted} was made at {entry["time"]}, not within '
+                f'{REQUEST_WINDOW.seconds // 60} minutes before now')
+    return None
+
 
 def chat_evidence_problem(record, lat, evidence):
     """A chat grant cites the panel answer record `<decision ID> r<N>` the user answered."""
@@ -391,18 +481,18 @@ def cmd_create(args):
         versions = found.versions
         if open_version(versions):
             raise Refused(f'version {versions[-1]["version"]} is in effect; change it with update')
+        version = dict(version=len(versions) + 1, goal=goal, done=done, scope=scope,
+                       stop=dict(quota=True, max_hours=args.max_hours), source=args.source,
+                       evidence=evidence, started_at=stamp(now()), ended_at=None,
+                       end_reason=None)
         if args.source == 'chat':
             problem = chat_evidence_problem(found.record, lat, evidence)
         elif args.source == 'settings-default':
             problem = settings_default_problem(lat, found, evidence, scope, args.max_hours)
         else:
-            problem = None  # board-form: the board checks its signed-in device before calling
+            problem = board_request_problem(session, versions, evidence, args.source, version)
         if problem:
             raise Refused(problem)
-        version = dict(version=len(versions) + 1, goal=goal, done=done, scope=scope,
-                       stop=dict(quota=True, max_hours=args.max_hours), source=args.source,
-                       evidence=evidence, started_at=stamp(now()), ended_at=None,
-                       end_reason=None)
         if args.source == 'settings-default':
             version['note'] = DRAFTED_NOTE
         before = found.grant_bytes
@@ -412,6 +502,7 @@ def cmd_create(args):
                 set_controller_mode(lat, session, found, 'unattended')
             except (OSError, ValueError) as error:
                 undo_grant(lat, session, found, before, error)
+        refresh_after_change(lat, session)
     return report(args, dict(status='ok', created=version), f'已建立第 {version["version"]} 版無人授權')
 
 
@@ -432,9 +523,6 @@ def cmd_update(args):
         current = open_version(versions)
         if not current:
             raise Refused('no grant in effect; start one with create')
-        if args.source == 'chat' and (
-                problem := chat_evidence_problem(found.record, lat, evidence)):
-            raise Refused(problem)
         if args.max_hours is not None and moment >= parse(versions[0]['started_at']) + timedelta(
                 hours=args.max_hours):
             raise Refused(f'{args.max_hours} hours since {versions[0]["started_at"]} have already '
@@ -448,8 +536,13 @@ def cmd_update(args):
                                           else dict(max_hours=args.max_hours))),
             source=args.source, evidence=evidence, started_at=stamp(moment), ended_at=None,
             end_reason=None)
+        problem = (chat_evidence_problem(found.record, lat, evidence) if args.source == 'chat'
+                   else board_request_problem(session, versions, evidence, args.source, version))
+        if problem:
+            raise Refused(problem)
         end_version(current, moment, 'superseded')
         found.save(lat, session, [*versions, version])
+        refresh_after_change(lat, session)
     return report(args, dict(status='ok', created=version),
                   f'已改為第 {version["version"]} 版無人授權，立即生效')
 
@@ -480,6 +573,7 @@ def cmd_close(args):
                 set_controller_mode(lat, session, found, 'manual')
             except (OSError, ValueError) as error:
                 undo_grant(lat, session, found, before, error)
+        refresh_after_change(lat, session)
     text = (f'已結束第 {ended["version"]} 版無人授權（{CLOSE_REASONS[args.reason]}）' if ended
             else '沒有生效中的無人授權')
     return report(args, dict(status='ok', ended=ended), text)
@@ -517,6 +611,285 @@ def cmd_check(args):
     result = dict(status='ok', effective=reason is None, reason=reason, version=found)
     report(args, result, '有效' if reason is None else f'無效：{reason}')
     return 0 if reason is None else 1
+
+
+# Review ---------------------------------------------------------------------------------------
+# The round's review (references/unattended.md「回顧」): Markdown from review_files, rebuilt from the
+# grant, the decision records, the work ledger and the pre-authorization records; the JSON next
+# to it keeps the body hash, the content hash and the cross-check. Created at the first item of
+# a round that had a grant, then rewritten only when the body changes. A content change voids
+# the cross-check; the grant ending (delivery, handover) changes the body but not the content.
+
+CLIENT_FAMILY = {'claude': 'claude', 'codex': 'gpt'}
+FAMILIES = ('claude', 'gpt', 'gemini')
+
+
+def review_files(lat, session, round_number):
+    base = lat / 'unattended' / f'{session}-r{round_number}-review'
+    return base.with_suffix('.md'), base.with_suffix('.json')
+
+
+def read_review_state(path):
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return {}
+    except ValueError as error:
+        raise ValueError(f'unreadable review state {path} ({error})') from None
+    return state if isinstance(state, dict) else {}
+
+
+def decisions_dir(record, lat):
+    directory = record.get('decisions_path')
+    return Path(directory) if isinstance(directory, str) else lat / 'decisions'
+
+
+def write_review(md, state_path, view, body, state):
+    """Write the header with the cross-check that still holds, then the body."""
+    verification = state.get('verification')
+    valid = verification if verification and verification.get('content_sha') == \
+        state['content_sha'] else None
+    header = _lat_review.render_header(view, valid, None if valid else verification,
+                                       state['updated_at'])
+    write_text_atomic(md, header + '\n' + body)
+    write_json_atomic(state_path, state)
+
+
+def sha(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def refresh_review_locked(lat, session, found=None):
+    """Rebuild this round's review; the caller holds session_lock. None when the round never had
+    a grant; else dict(path or None, view, verified, verification)."""
+    found = found or load_round(lat, session)
+    if not found.versions:
+        return None
+    view = _lat_review.collect(
+        lat=lat, workspace=lat.parent, session=session, round_number=found.number,
+        versions=found.versions, decisions=decisions_dir(found.record, lat),
+        end_labels=END_LABELS, scope_labels=SCOPE_LABELS)
+    md, state_path = review_files(lat, session, found.number)
+    state = read_review_state(state_path)
+    if not view['items'] and not md.exists():
+        return dict(path=None, view=view, verified=False, verification=None)
+    body = _lat_review.render_body(view)
+    digest, content = sha(body), sha(_lat_review.content_key(view))
+    if state.get('body_sha') != digest or state.get('content_sha') != content or not md.exists():
+        state = dict(state, body_sha=digest, content_sha=content, updated_at=stamp(now()))
+        write_review(md, state_path, view, body, state)
+    verification = state.get('verification')
+    verified = bool(verification and verification.get('content_sha') == content)
+    return dict(path=md, view=view, verified=verified,
+                verification=verification if verified else None)
+
+
+def refresh_review(lat, session):
+    with preauth.locked(session_lock(lat, session)):
+        return refresh_review_locked(lat, session)
+
+
+def refresh_after_change(lat, session):
+    """A grant change updates the review; a failure here never undoes the grant change."""
+    try:
+        refresh_review_locked(lat, session)
+    except (OSError, ValueError, Refused) as error:
+        print(f'lat-unattended: the review was not updated ({error}); the next turn end retries',
+              file=sys.stderr)
+
+
+def review_result(result):
+    if result is None:
+        return dict(status='ok', path=None, reason='no unattended grant this round')
+    return dict(status='ok', path=str(result['path']) if result['path'] else None,
+                verified=result['verified'], verification=result['verification'],
+                view=result['view'])
+
+
+def review_text(result):
+    if result is None:
+        return '這一輪沒有無人授權，沒有回顧'
+    if result['path'] is None:
+        return '還沒有擱置、代決或自動動作，未建立回顧'
+    return f'{result["path"]}（{"已核對" if result["verified"] else "尚未核對"}）'
+
+
+def cmd_review_update(args):
+    lat, session = owner(args)
+    result = refresh_review(lat, session)
+    return report(args, review_result(result), review_text(result))
+
+
+def cmd_review_show(args):
+    lat, session = owner(args)
+    result = refresh_review(lat, session)
+    if args.json or result is None or result['path'] is None:
+        return report(args, review_result(result), review_text(result))
+    print(result['path'].read_text(encoding='utf-8'), end='')
+    return 0
+
+
+def mismatch_of(text, ids):
+    identifier, _, why = text.partition('：')
+    identifier, why = identifier.strip(), why.strip()
+    if identifier not in ids or not why:
+        raise Refused(f'--mismatch `{text}`: write `<item id>：<what does not match>` with an id '
+                      f'from the review ({", ".join(sorted(ids))})')
+    return dict(id=identifier, text=why)
+
+
+def cmd_review_verify(args):
+    checker = (args.checker or '').strip()
+    if not checker:
+        raise Refused('--checker needs the checking agent\'s name')
+    lat, session = owner(args)
+    with preauth.locked(session_lock(lat, session)):
+        found = load_round(lat, session)
+        result = refresh_review_locked(lat, session, found)
+        if result is None or result['path'] is None:
+            raise Refused('this round has no review to cross-check')
+        own = CLIENT_FAMILY.get(found.record.get('client'))
+        if own is None:
+            raise Refused(f'cannot tell the controller\'s model family from client '
+                          f'{found.record.get("client")!r}')
+        if args.family == own:
+            raise Refused(f'the checker is {args.family} like this controller; a cross-check '
+                          'counts only from another model family')
+        ids = {item['id'] for item in result['view']['items']}
+        if not ids:
+            raise Refused('the review has no items left; there is nothing to cross-check')
+        mismatches = [mismatch_of(text, ids) for text in args.mismatch or []]
+        if len({m['id'] for m in mismatches}) != len(mismatches):
+            raise Refused('one --mismatch per item')
+        if args.total != len(ids):
+            raise Refused(f'the review has {len(ids)} items, not {args.total}; the checker must '
+                          'check every item of the current version')
+        if args.matched + len(mismatches) != args.total:
+            raise Refused(f'{args.matched} matched + {len(mismatches)} mismatched is not '
+                          f'{args.total}; list every item that does not match with --mismatch')
+        md, state_path = review_files(lat, session, found.number)
+        state = read_review_state(state_path)
+        state['verification'] = dict(checker=checker, family=args.family, at=stamp(now()),
+                                     total=args.total, matched=args.matched,
+                                     mismatches=mismatches,
+                                     content_sha=state['content_sha'])
+        body = _lat_review.render_body(result['view'])
+        write_review(md, state_path, result['view'], body, state)
+    return report(args, dict(status='ok', path=str(md), verification=state['verification']),
+                  f'已寫入核對結論：{args.total} 項中 {args.matched} 項相符 → {md}')
+
+
+def cmd_draft(args):
+    """Keep the goal and done conditions the controller proposes from the user's first message;
+    the board's form starts from them. A draft is never a grant."""
+    goal, done = (args.goal or '').strip(), text_list(args.done)
+    missing = [flag for flag, value in (('--goal', goal), ('--done', done)) if not value]
+    if missing:
+        raise Refused('a draft needs ' + ', '.join(missing))
+    lat, session = owner(args)
+    with preauth.locked(session_lock(lat, session)):
+        found = load_round(lat, session)
+        if not found.active:
+            raise Refused(f'session {session} is not active')
+        draft = dict(goal=goal, done=done, at=stamp(now()))
+        write_json_atomic(draft_file(lat, session, found.number), draft)
+    return report(args, dict(status='ok', draft=draft), '已存下目標草稿（不是授權）')
+
+
+# Settings for the board ---------------------------------------------------------------------
+
+def project_lat(root):
+    top = preauth.git(Path(root), 'rev-parse', '--show-toplevel')
+    if not top:
+        raise Refused(f'{root} is not in a Git repository')
+    return shared_lat_dir(Path(top))
+
+
+def settings_view(layer, problems):
+    values = layer.data.get('unattended') if not problems else None
+    values = values if isinstance(values, dict) else {}
+    return dict(path=layer.location, exists=layer.present, sha256=layer.sha256,
+                problems=problems,
+                values={key: values[key] for key in (*SETTING_KEYS, 'source') if key in values})
+
+
+def cmd_settings(args):
+    """The global layer and each project's [unattended] section, as the board edits them. A
+    project is named by any folder in it; worktrees of one project are listed once."""
+    layer, problems = preauth.file_layer('global', preauth.global_path())
+    projects = {}
+    for root in args.project or []:
+        lat = project_lat(root)
+        if str(lat.parent) in projects:
+            continue
+        found, found_problems = preauth.file_layer('project', lat / 'preauth.toml')
+        projects[str(lat.parent)] = dict(root=str(lat.parent), name=lat.parent.name,
+                                         **settings_view(found, found_problems))
+    result = dict(status='ok', initial=INITIAL, **{'global': settings_view(layer, problems)},
+                  projects=list(projects.values()))
+    return report(args, result, json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def setting_value(layer, key, value):
+    """The value to write, None to remove the key, or Refused."""
+    if value is None:
+        return None
+    if key == 'mode':
+        allowed = ('manual', 'unattended', *(('follow-global',) if layer == 'project' else ()))
+        if value not in allowed:
+            raise Refused(f'mode must be one of {", ".join(allowed)}')
+    elif key == 'max_hours':
+        if type(value) is not int or value <= 0:
+            raise Refused('max_hours must be a whole number of hours above 0')
+    elif type(value) is not bool:
+        raise Refused(f'{key} must be true or false')
+    return value
+
+
+def cmd_settings_write(args):
+    """Write the changed keys of one layer's [unattended] for the board, stamped and logged
+    like the board's pre-authorization writes; refused when the file is not the one read."""
+    try:
+        changes = json.loads(args.changes)
+    except ValueError as error:
+        raise Refused(f'--changes is not JSON ({error})') from None
+    if not isinstance(changes, dict) or not changes or changes.keys() - set(SETTING_KEYS):
+        raise Refused(f'--changes must set some of {", ".join(SETTING_KEYS)}')
+    if args.layer == 'project':
+        if not args.project:
+            raise Refused('a project layer needs --project')
+        target = project_lat(args.project) / 'preauth.toml'
+    else:
+        target = preauth.global_path()
+    with preauth.locked(target.with_name(f'.{target.name}.lock')):
+        loaded, problems = preauth.file_layer(args.layer, target)
+        if problems:
+            return report(args, dict(status='invalid', reason='設定檔有錯，沒有寫入，修好檔案後重新載入',
+                                     problems=problems), '設定檔有錯，沒有寫入')
+        if loaded.sha256 != args.expected_sha256:
+            return report(args, dict(status='conflict', reason='設定檔已被改過，沒有寫入，請重新載入',
+                                     problems=[]), '設定檔已被改過，沒有寫入')
+        current = loaded.data.get('unattended', {})
+        values = {}
+        for key, value in changes.items():
+            value = setting_value(args.layer, key, value)
+            if value != current.get(key):
+                values[key] = value
+        if not values:
+            return report(args, dict(status='ok', changes=[]), '沒有改動')
+        source = f'board:{datetime.now().astimezone().isoformat(timespec="seconds")}'
+        listed = [dict(section='unattended', key=key, value=value) for key, value in values.items()]
+        before, written = preauth.write_file_layer(
+            target, {('unattended',): dict(values, source=source)},
+            expected_sha256=args.expected_sha256)
+        try:
+            preauth.append_board_write(dict(layer=args.layer, file=str(target), changes=listed,
+                                            source=source))
+        except (OSError, ValueError) as error:
+            # A write the report cannot list must not stay in effect.
+            preauth.restore(target, before, written)
+            raise ValueError(f'紀錄寫不進去（{error}），設定已還原') from None
+    return report(args, dict(status='ok', changes=listed, source=source), f'已寫入 {target}')
 
 
 # Output ---------------------------------------------------------------------------------------
@@ -614,24 +987,57 @@ def build_parser():
     sub.add_argument('--reason', required=True, choices=CLOSE_REASONS,
                      help='off: the user turned it off (the controller goes back to manual); '
                           'quota: quota ran out; delivered, cancelled, handover: the round ended')
+    review = commands.add_parser('review', help="this round's review: update, show, verify")
+    verbs = review.add_subparsers(dest='verb', required=True)
+    verbs.add_parser('update', parents=[common], help='rebuild the review from its sources'
+                     ).set_defaults(run=cmd_review_update)
+    verbs.add_parser('show', parents=[common], help='rebuild, then print the review (--json: '
+                     'the items for the board)').set_defaults(run=cmd_review_show)
+    sub = verbs.add_parser('verify', parents=[common],
+                           help="record another model family's cross-check of the review")
+    sub.set_defaults(run=cmd_review_verify)
+    sub.add_argument('--checker', required=True, help='the checking agent')
+    sub.add_argument('--family', required=True, choices=FAMILIES,
+                     help="the checker's model family; must differ from the controller's")
+    sub.add_argument('--total', type=int, required=True, help='items checked')
+    sub.add_argument('--matched', type=int, required=True, help='items that match the records')
+    sub.add_argument('--mismatch', action='append',
+                     help='`<item id>：<what does not match>`; one per item that does not match')
     sub = commands.add_parser('check', parents=[common],
                               help='exit 0 when a version was in effect at a moment, else 1; '
                                    'like status, first ends a version past its limit or mode')
     sub.add_argument('--version', type=int, required=True)
     sub.add_argument('--round', type=int, help="the grant's round; default the current one")
     sub.add_argument('--at', help='ISO time; default now')
+    sub = commands.add_parser('draft', parents=[common],
+                              help="keep the controller's proposed goal; the board's form starts "
+                                   'from it; never a grant')
+    sub.add_argument('--goal', help='the proposed goal of this round')
+    sub.add_argument('--done', action='append', help='one done condition; repeat per line')
+    sub = commands.add_parser('settings', parents=[common],
+                              help="the global and projects' [unattended] sections, for the board")
+    sub.add_argument('--project', action='append', help='any folder of a project; repeatable')
+    sub = commands.add_parser('settings-write', parents=[common],
+                              help="write changed keys of one layer's [unattended], for the board")
+    sub.add_argument('--layer', required=True, choices=('global', 'project'))
+    sub.add_argument('--project', help='any folder of the project, for --layer project')
+    sub.add_argument('--expected-sha256', required=True,
+                     help='hash of the file as read; refused when it changed since')
+    sub.add_argument('--changes', required=True,
+                     help='JSON {key: value or null}; null removes the key')
     return parser
 
 
 COMMANDS = dict(status=cmd_status, versions=cmd_versions, create=cmd_create, update=cmd_update,
-                close=cmd_close, check=cmd_check)
+                close=cmd_close, check=cmd_check, draft=cmd_draft, settings=cmd_settings,
+                **{'settings-write': cmd_settings_write})
 
 
 def main():
     args = build_parser().parse_args()
     args.controller_workspace = None  # preauth.round_owner reads it
     try:
-        return COMMANDS[args.command](args)
+        return (getattr(args, 'run', None) or COMMANDS[args.command])(args)
     except Refused as error:
         if args.json:
             print(json.dumps(dict(status='refused', reason=str(error)), ensure_ascii=False))

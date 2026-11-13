@@ -818,6 +818,7 @@ def deactivate(args):
             raise ValueError('Controller identity does not match; record unchanged')
         forced = None
         was_active = record['status'] == 'active'
+        review = None
         if record['status'] == 'active' and record.get('ledger_path'):
             try:
                 forced = ledger_gate(record, args)
@@ -833,6 +834,10 @@ def deactivate(args):
                 unattended.end_round_grant(path.parent.parent, sid, reason)
             except (OSError, ValueError, unattended.Refused) as error:
                 raise ValueError(f'無人授權無法結束（{error}）；record unchanged') from None
+            try:
+                review = unattended.refresh_review_locked(path.parent.parent, sid)
+            except (OSError, ValueError, unattended.Refused) as error:
+                review = dict(path=None, error=error)
         _stop_watcher_locked(record)
         if record.get('hcom_name'):
             release_own_wait(workspace, record['hcom_name'])
@@ -866,6 +871,11 @@ def deactivate(args):
         tracker = tracker_warning(record)
         if tracker:
             print(tracker)
+    if was_active and review and review.get('error'):
+        print(f'回顧檔未更新：{review["error"]}')
+    elif was_active and review and review['path']:
+        print(f'本輪回顧檔：{review["path"]}' + ('（換班：寫進交接，接手主控讀它）'
+                                                 if args.successor else ''))
     reap_on_deactivate(record)
     start_autoclean(workspace)
 
@@ -1676,6 +1686,24 @@ def delegated_stop_check(record):
             '「代決紀錄」補正；不屬參謀可代決的、或兩位參謀不一致的，改為 `- status: parked`。')
 
 
+def review_stop_check(record, message):
+    """Rebuild this round's review at every turn end; why a DONE: Stop should be held because the
+    review of a round that had an unattended grant has no current cross-check, or None."""
+    unattended = unattended_module()
+    result = unattended.refresh_review(unattended_lat(record), record['session_id'])
+    lines = [line for line in message.splitlines() if line.strip()]
+    if not (lines and lines[-1].startswith('DONE:')) or not result or not result['path'] \
+            or result['verified'] or not result['view']['items']:
+        return None
+    count = len(result['view']['items'])
+    return (f'LAT 回顧核對未通過：本輪有過無人授權，回顧檔 {result["path"]}（{count} 項）還沒有另一家模型的'
+            '核對，或核對後內容又更新。交付前派另一家模型（你是 Claude 就派 Codex，反之亦然）對照待決紀錄、'
+            '工作總表與預先授權紀錄逐項核對回顧檔，再執行 '
+            f'`uv run --no-project python {UNATTENDED_SCRIPT} review verify --checker <名稱> '
+            f'--family <claude|gpt|gemini> --total {count} --matched <相符項數> '
+            "[--mismatch '<編號>：<不符之處>' …]`，然後照原樣結束回合。")
+
+
 def done_stop(record, message):
     """Whether this Stop is a DONE: turn end of a controller with a work ledger."""
     lines = [line for line in message.splitlines() if line.strip()]
@@ -1798,6 +1826,13 @@ def report_stop(record, payload):
         else:
             if undeclared:
                 reasons.append(undeclared)
+        try:
+            review = review_stop_check(record, message)
+        except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
+            notes.append(f'LAT 回顧更新發生錯誤，未攔下：{exc}')
+        else:
+            if review:
+                reasons.append(review)
         try:
             delegated = delegated_stop_check(record)
         except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
