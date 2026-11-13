@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Four groups: this device's settings (theme, overall size, smallest text size), its pushes, the board's, which every
 	// device shares (the mode a new controller starts in, how the usage line reads, whether conversations
-	// open translated), and the global pre-authorization file.
+	// open translated, the passkeys that log in), and the global pre-authorization file.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import TestDenied from './TestDenied.svelte';
 	import { onMount } from 'svelte';
@@ -9,6 +9,7 @@
 	import { MIN_FONT, SCALE, SCREEN_FONT } from '#lib/board/prefs.ts';
 	import { registerSettings } from '#lib/board/settings-link.ts';
 	import { translatePref } from '#lib/board/translate-pref.svelte.ts';
+	import PasskeySettings from './PasskeySettings.svelte';
 	import PreauthSettings from './PreauthSettings.svelte';
 	import UnattendedSettings from './UnattendedSettings.svelte';
 	import PushSettings from './PushSettings.svelte';
@@ -20,12 +21,14 @@
 	let dialog: HTMLDialogElement;
 	let preauth: PreauthSettings;
 	let unattended: UnattendedSettings;
+	let passkeys: PasskeySettings;
 	let push: PushSettings;
 
 	/** With `anchor`, at that pre-authorization action, once the file is read. */
 	export function open(anchor?: string) {
 		if (!dialog.open) dialog.showModal();
 		void unattended.load();
+		void passkeys.load();
 		void push.load();
 		void preauth.opened().then(() => {
 			if (anchor) void preauth.reveal(anchor);
@@ -152,6 +155,8 @@
 				</div>
 				<p class="note">手動切換時，按分頁列的翻譯圖示才翻，只影響目前對話。</p>
 			</section>
+
+			<PasskeySettings bind:this={passkeys} />
 		</section>
 
 		<TestDenied />
