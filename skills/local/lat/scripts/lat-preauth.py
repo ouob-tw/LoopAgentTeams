@@ -71,7 +71,11 @@ ACTION_KEYS = {'allow': bool, 'branches': list, 'target': str, 'rollback': str, 
 # Only the project knows its environments and how to roll them back.
 PROJECT_ONLY_KEYS = ('target', 'rollback')
 ADVISOR_KEYS = {'extended': bool, 'may_settle': list, 'must_ask': list, 'source': str}
-TOP_KEYS = {'version', 'actions', 'advisor', 'integration_branch'}
+# [unattended] holds the mode a new controller starts in; lat-unattended.py reads it.
+UNATTENDED_KEYS = {'mode': str, 'ticket_confirmation': bool, 'assume_defaults': bool,
+                   'prototype_decide': bool, 'max_hours': int, 'source': str}
+UNATTENDED_MODES = ('manual', 'unattended', 'follow-global')
+TOP_KEYS = {'version', 'actions', 'advisor', 'integration_branch', 'unattended'}
 VERSION = 1
 BRANCH_ACTIONS = ('merge', 'push')
 DEPLOY_ACTIONS = ('deploy-test', 'deploy-prod')
@@ -161,6 +165,21 @@ def validate(data, where):
             problems += window_problems(section, f'{where} [actions.{name}]')
     if 'advisor' in data:
         problems += section_problems(data['advisor'], ADVISOR_KEYS, f'{where} [advisor]')
+    if 'unattended' in data:
+        problems += unattended_problems(data['unattended'], f'{where} [unattended]')
+    return problems
+
+
+def unattended_problems(section, where):
+    problems = section_problems(section, UNATTENDED_KEYS, where)
+    if not isinstance(section, dict):
+        return problems
+    mode = section.get('mode')
+    if isinstance(mode, str) and mode not in UNATTENDED_MODES:
+        problems.append(f'{where}: `mode` must be one of {", ".join(UNATTENDED_MODES)}')
+    hours = section.get('max_hours')
+    if type(hours) is bool or (isinstance(hours, int) and hours <= 0):
+        problems.append(f'{where}: `max_hours` must be a whole number of hours above 0')
     return problems
 
 
@@ -174,7 +193,8 @@ def section_problems(section, keys, where):
             problems.append(f'{where}: unknown key `{key}`')
         elif not isinstance(value, kind) or (
                 kind is list and not all(isinstance(item, str) for item in value)):
-            expected = {bool: 'true or false', list: 'a list of strings', str: 'a string'}[kind]
+            expected = {bool: 'true or false', list: 'a list of strings', str: 'a string',
+                        int: 'a whole number'}[kind]
             problems.append(f'{where}: `{key}` must be {expected}')
     return problems
 

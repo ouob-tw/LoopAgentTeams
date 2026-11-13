@@ -40,6 +40,7 @@ WATCH_SCRIPT = SKILL_DIR / 'scripts/lat-watch.py'
 AUTOCLEAN_SCRIPT = SKILL_DIR / 'scripts/lat-autoclean.py'
 LEDGER_SCRIPT = SKILL_DIR / 'scripts/lat-ledger.py'
 PREAUTH_SCRIPT = SKILL_DIR / 'scripts/lat-preauth.py'
+UNATTENDED_SCRIPT = SKILL_DIR / 'scripts/lat-unattended.py'
 LEDGER_TIMEOUT_SECONDS = 120
 # Whole recovery prompt: Claude Code moves context over 10,000 characters to a file;
 # Codex caps hook context near 2,500 tokens.
@@ -422,6 +423,7 @@ def activate(args):
     write_json_atomic(path, record, expected=original)
     print(path)
     print(f'已開始第 {round_number} 輪')
+    print(round_mode_line(path.parent.parent, sid))
     print(f'工作總表：{record["ledger_path"]}')
     if duty is None:
         print(f'看板職責：任務明確後執行（任務改變時再執行一次）：{duty_command(record)}')
@@ -464,6 +466,30 @@ def activate(args):
     if ensure_watcher(record, path) is None:
         raise ValueError('Session was deactivated while starting its watcher')
     start_autoclean(workspace)
+
+
+def unattended_module():
+    spec = importlib.util.spec_from_file_location('lat_unattended', UNATTENDED_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def round_mode_line(lat, sid):
+    """Whether this round runs unattended, as the three layers resolve it now."""
+    module = unattended_module()
+    try:
+        result = module.snapshot(lat, sid)
+    except (OSError, ValueError, module.Refused) as error:
+        return f'本輪模式：讀不出（{error}），視為人工確認'
+    mode = result['settings']['mode']
+    line = (f'本輪模式：{module.MODE_LABELS[mode["value"]]}'
+            f'（來自{module.LAYER_LABELS[mode["layer"]]}）')
+    if result['state'] == 'pending-goal':
+        line += ('，尚待目標：派發前依使用者第一句話擬出目標與做完條件，以 '
+                 f'`{UNATTENDED_SCRIPT} create --source settings-default` 寫入第 1 版；'
+                 '寫入前不算有效授權')
+    return line
 
 
 def reclaim_hint(name):
@@ -797,6 +823,16 @@ def deactivate(args):
             except ValueError as refusal:
                 tracker = tracker_warning(record)
                 raise ValueError(f'{refusal}\n\n{tracker}' if tracker else str(refusal)) from refusal
+        if was_active:
+            # A round's grant never outlives it; failing to end it leaves the record active.
+            reason = ('handover' if args.successor else
+                      'cancelled' if args.force_unfinished else 'delivered')
+            unattended = unattended_module()
+            try:
+                unattended.end_round_grant(path.parent.parent, sid,
+                                           len(record.get('history', [])) + 1, reason)
+            except (OSError, ValueError, unattended.Refused) as error:
+                raise ValueError(f'無人授權無法結束（{error}）；record unchanged') from None
         _stop_watcher_locked(record)
         if record.get('hcom_name'):
             release_own_wait(workspace, record['hcom_name'])
