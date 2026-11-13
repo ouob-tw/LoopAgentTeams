@@ -37,8 +37,13 @@
 	let stopping = $state<string | null>(null);
 	async function stop(runId: string) {
 		stopping = runId;
-		await act(() => stopTask(task.id));
-		if (notice) stopping = null;
+		let refused = false;
+		await act(async () => {
+			const done = await stopTask(task.id);
+			refused = !done.ok;
+			return done;
+		});
+		if (refused) stopping = null;
 	}
 	/** What the last button pressed here answered, when it was refused. */
 	let notice = $state<string | null>(null);
@@ -94,7 +99,9 @@
 			<button type="button" class="primary" disabled={busy} onclick={() => act(() => runTask(task.id))}>立即執行</button>
 		{/if}
 		<button type="button" disabled={busy} onclick={() => act(() => pauseTask(task.id, !task.paused))}>{task.paused ? '恢復' : '暫停'}</button>
-		<button type="button" onclick={onedit}>編輯</button>
+		{#if !running}
+			<button type="button" onclick={onedit}>編輯</button>
+		{/if}
 	</div>
 	{#if notice}
 		<p class="notice" role="alert">{notice}</p>

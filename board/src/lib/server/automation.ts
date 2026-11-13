@@ -38,7 +38,7 @@ import {
 	type RunTrigger,
 	type Weekday
 } from '../board/automation.ts';
-import { codexBeforeLaunch, firstMessage, GONE_AT_RESTART, runTag, watchAgent, type AgentEnd, type AgentHost } from './automation-agent.ts';
+import { codexBeforeLaunch, cutReason, firstMessage, GONE_AT_RESTART, runTag, watchAgent, type AgentEnd, type AgentHost, type Cut } from './automation-agent.ts';
 
 /** How much of a command's output is kept: its last part, which says how it ended. */
 export const OUTPUT_KEEP_CHARS = 32_000;
@@ -375,7 +375,7 @@ export function createAutomation(options: {
 	const runs = new Map<string, AutomationRun[]>();
 	const missed = new Map<string, MissedPeriod[]>();
 	/** How to stop each run going now, by run: past the limit (the scheduler) or on 停止這次. */
-	const stoppers = new Map<string, (why: 'timeout' | 'stopped') => void>();
+	const stoppers = new Map<string, (why: Cut) => void>();
 	/** Children running now, by task. */
 	const children = new Map<string, Promise<void>>();
 	/** Their process groups: a command ends with the board, as the spec has it. */
@@ -477,8 +477,8 @@ export function createAutomation(options: {
 		const task = tasks.get(taskId);
 		for (const run of list) {
 			if (run.status !== 'running' || !task) continue;
-			if (task.kind === 'agent') {
-				if (options.agents && task.agent) adopted.push([task, run]);
+			if (task.kind === 'agent' && options.agents && task.agent) {
+				adopted.push([task, run]);
 				continue;
 			}
 			const cut = record(run, { endedAt: now(), status: 'failed', reason: '看板重啟中斷' });
@@ -499,7 +499,7 @@ export function createAutomation(options: {
 		mkdirSync(join(outputDir, task.id), { recursive: true, mode: 0o700 });
 		return new Promise<void>((done) => {
 			const output = outputCollector(spec.checks.flatMap((check) => (check.type === 'output' ? [check.text] : [])));
-			let cut: 'timeout' | 'stopped' | null = null;
+			let cut: Cut | null = null;
 			const child = spawn('bash', ['-c', spec.command], { cwd: folder, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
 			child.stdout.on('data', (chunk: Buffer) => output.add('stdout', chunk));
 			child.stderr.on('data', (chunk: Buffer) => output.add('stderr', chunk));
@@ -537,13 +537,7 @@ export function createAutomation(options: {
 					checks,
 					output: outputName,
 					outputTruncated: kept.truncated,
-					...(cut === 'timeout'
-						? { reason: `超過上限 ${task.limitMinutes} 分鐘，已停止` }
-						: cut === 'stopped'
-							? { reason: '使用者按了停止這次' }
-							: error
-								? { reason: `指令沒有啟動：${error.message}` }
-								: {})
+					...(cut ? { reason: cutReason(cut, task.limitMinutes) } : error ? { reason: `指令沒有啟動：${error.message}` } : {})
 				});
 				publish();
 				options.notify?.({ type: 'run-ended', task, run: finished });
@@ -642,9 +636,17 @@ export function createAutomation(options: {
 	}
 
 	/** Watch an agent run's agent to its end; a run the board took over when it started is `adopted`. */
-	async function watch(task: AutomationTask, run: AutomationRun, adopted: boolean, cut: () => 'stopped' | 'timeout' | null): Promise<void> {
-		if (!run.agentName) return finish(task, run, { status: 'failed', reason: GONE_AT_RESTART });
-		const ended = await watchAgent(options.agents!, {
+	async function watch(task: AutomationTask, run: AutomationRun, adopted: boolean, cut: () => Cut | null): Promise<void> {
+		const host = options.agents!;
+		if (!run.agentName) {
+			// The board stopped between the launch and its name: hcom's list knows the run's tag.
+			const listed = await host.list();
+			const found = listed.ok ? listed.agents.find((agent) => agent.tag === runTag(task.id, run.id)) : undefined;
+			if (!found) return finish(task, run, { status: 'failed', reason: GONE_AT_RESTART });
+			run = record(run, { agentName: found.name });
+			publish();
+		}
+		const ended = await watchAgent(host, {
 			get run() {
 				return latest(run);
 			},
@@ -658,7 +660,12 @@ export function createAutomation(options: {
 			},
 			closing: () => closed,
 			adopted
-		}).catch((error: Error): AgentEnd => ({ status: 'failed', reason: `看板追蹤這個 Agent 時出錯：${error.message}；請到 Herdr 分頁查看` }));
+		}).catch(async (error: Error): Promise<AgentEnd> => {
+			// Whatever broke, the agent is not left running.
+			const now = latest(run);
+			const closeError = await host.close({ sessionId: now.sessionId ?? null, name: now.agentName! }).catch((failed: Error) => failed.message);
+			return { status: 'failed', reason: `看板追蹤這個 Agent 時出錯：${error.message}`, ...(closeError ? { closeError } : {}) };
+		});
 		if (ended) finish(task, run, ended);
 	}
 
@@ -666,16 +673,16 @@ export function createAutomation(options: {
 	async function runAgent(task: AutomationTask, run: AutomationRun, folder: string, brief: string): Promise<void> {
 		const host = options.agents!;
 		const spec = task.agent!;
-		let cut: 'stopped' | 'timeout' | null = null;
+		let cut: Cut | null = null;
 		stoppers.set(run.id, (why) => (cut ??= why));
 		try {
 			if (spec.client === 'codex') {
 				// A check that broke confirms nothing: nothing is switched, as when it cannot be read.
-				const ready = await codexBeforeLaunch(host.accounts, spec.model, spec.effort).catch((): { ok: true; note?: string } => ({ ok: true }));
+				const ready = await codexBeforeLaunch(host.accounts, spec.model, spec.effort).catch((): { ok: true; account?: number; note?: string } => ({ ok: true }));
 				if (!ready.ok) return finish(task, run, { status: 'quota', reason: ready.reason });
-				if (ready.note) record(run, { accountSwitches: [ready.note] });
+				record(run, { ...(ready.account !== undefined ? { codexAccount: ready.account } : {}), ...(ready.note ? { accountSwitches: [ready.note] } : {}) });
 			}
-			if (cut) return finish(task, run, { status: cut, reason: cut === 'stopped' ? '使用者按了停止這次' : `超過上限 ${task.limitMinutes} 分鐘，已停止` });
+			if (cut) return finish(task, run, { status: cut, reason: cutReason(cut, task.limitMinutes) });
 			const launched = await host
 				.launch({ ...spec, folder, prompt: firstMessage(brief), tag: runTag(task.id, run.id) })
 				.catch((error: Error) => ({ ok: false as const, reason: error.message }));
@@ -691,7 +698,7 @@ export function createAutomation(options: {
 	/** Watch on the agent runs the board was watching when it stopped. */
 	function adopt(): void {
 		for (const [task, run] of adopted) {
-			let cut: 'stopped' | 'timeout' | null = null;
+			let cut: Cut | null = null;
 			stoppers.set(run.id, (why) => (cut ??= why));
 			const job = watch(task, run, true, () => cut).finally(() => stoppers.delete(run.id));
 			children.set(task.id, job.finally(() => children.delete(task.id)));

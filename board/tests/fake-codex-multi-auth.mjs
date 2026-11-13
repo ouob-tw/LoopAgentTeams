@@ -35,11 +35,11 @@ if (args[0] === 'limits' && args.includes('--json')) {
 		quota: { status: 200, primary: { usedPercent: account.used, windowMinutes: 300, resetAtMs: 0 }, secondary: { usedPercent: 0, windowMinutes: 0, resetAtMs: null } }
 	}));
 	process.stdout.write(JSON.stringify({ schemaVersion: 1, mode: 'live', selection: { pinnedIndex: pinned }, accounts }));
-} else if (args[0] === 'switch' && args.length === 2) {
+} else if (args[0] === 'switch' && args.length === 2 && /^\d+$/.test(args[1])) {
 	if (plan.switchFail) fail(plan.switchFail);
 	writeFileSync(pinnedFile, String(Number(args[1])));
 	process.stdout.write(`Pinned account ${Number(args[1]) + 1}\n`);
-} else if (args[0] === 'exec') {
+} else if (args[0] === 'exec' && args[1] === '-m' && args[2] && args.at(-1) === 'Reply with OK only.') {
 	const probe = plan.probe?.[String(pinned)] ?? { exit: 0, stdout: 'OK' };
 	process.stdout.write(probe.stdout ?? '');
 	process.exit(probe.exit ?? 0);

@@ -114,6 +114,8 @@ export interface AutomationRun {
 	agentWorkspace?: string;
 	/** Replies of the conversation at or before this position came before the latest resume. */
 	judgeAfter?: number;
+	/** The codex-multi-auth account a Codex run's agent runs on: pinned when it launched or switched to. */
+	codexAccount?: number;
 	/** Each switch of Codex account the run made, in words. */
 	accountSwitches?: string[];
 	/** The agent could not be closed after the run ended: why. */

@@ -132,7 +132,7 @@ for (const width of [1280, 390]) {
 		await tab.until(`!!document.querySelector('.detail .run[data-status="running"] .agent-link')`, 'the running record with its link');
 
 		expect(await text('.detail .task header')).toContain('▶ 執行中');
-		expect(await tab.eval(`[...document.querySelectorAll('.detail .task > .actions button')].map((b) => b.innerText)`)).toEqual(['停止這次', '暫停', '編輯']);
+		expect(await tab.eval(`[...document.querySelectorAll('.detail .task > .actions button')].map((b) => b.innerText)`)).toEqual(['停止這次', '暫停']);
 		const live = await text('.detail .run[data-status="running"]');
 		expect(live).toContain('已跑 12 分鐘，上限 90 分鐘');
 		expect(live).toContain('打開 Agent 看即時畫面 ›');

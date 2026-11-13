@@ -28,6 +28,12 @@ export function runTag(taskId: string, runId: string): string {
 	return `auto-${taskId}-${runId.split('-').at(-1)!.slice(0, 6)}`;
 }
 
+/** How a run was cut short: 停止這次, or past its limit. */
+export type Cut = 'stopped' | 'timeout';
+
+/** A cut run's reason, in words for the user. */
+export const cutReason = (cut: Cut, limitMinutes: number) => (cut === 'stopped' ? '使用者按了停止這次' : `超過上限 ${limitMinutes} 分鐘，已停止`);
+
 /** Why a run whose agent was gone when the board started again failed. */
 export const GONE_AT_RESTART = '看板重啟時 Agent 已不在';
 
@@ -40,8 +46,8 @@ export function verdictOf(reply: string): { status: 'success' } | { status: 'fai
 	return null;
 }
 
-/** A Claude turn that ended on its usage limit. */
-export const CLAUDE_USAGE_LIMIT = /usage limit|hit your limit/i;
+/** A Claude turn that ended on its usage limit: the error Claude Code puts in place of a reply. */
+export const CLAUDE_USAGE_LIMIT = /^(Claude AI usage limit reached|You['’]ve hit your (usage )?limit)\b/i;
 /** What Codex shows when its account's quota ran out. */
 export const CODEX_USAGE_LIMIT = /You['’]ve hit your usage limit/i;
 
@@ -50,6 +56,7 @@ const clip = (text: string, length = 120) => (text.length > length ? `${text.sli
 /** An agent as hcom lists it. */
 export interface ListedAgent {
 	name: string;
+	tag: string | null;
 	sessionId: string | null;
 	pane: string | null;
 	status: string | null;
@@ -99,11 +106,11 @@ function candidates(limits: CodexLimits, skip: number | null) {
 		.sort((a, b) => a.usedPercent! - b.usedPercent!);
 }
 
-/** Pin the first other account with quota that probes fine with the model. The switch notes it
- *  made, or why there is none. */
-async function switchAccount(accounts: CodexAccounts, limits: CodexLimits, model: string, effort: string): Promise<{ ok: true; note: string } | { ok: false; reason: string }> {
+/** Pin the first account but `from` (the one that ran out) with quota that probes fine with the
+ *  model. The account and the note of the switch, or why there is none. */
+async function switchAccount(accounts: CodexAccounts, limits: CodexLimits, from: number, model: string, effort: string): Promise<{ ok: true; account: number; note: string } | { ok: false; reason: string }> {
 	const tried: string[] = [];
-	for (const account of candidates(limits, limits.pinned)) {
+	for (const account of candidates(limits, from)) {
 		const failed = await accounts.switchTo(account.index);
 		if (failed) {
 			tried.push(`${account.label}：換不過去（${failed}）`);
@@ -116,7 +123,7 @@ async function switchAccount(accounts: CodexAccounts, limits: CodexLimits, model
 			continue;
 		}
 		const probed = await accounts.probe(model, effort);
-		if (probed.ok) return { ok: true, note: `${limits.accounts.find((each) => each.index === limits.pinned)?.label ?? '原帳號'} 額度用完，換到 ${account.label}` };
+		if (probed.ok) return { ok: true, account: account.index, note: `${limits.accounts.find((each) => each.index === from)?.label ?? '原帳號'} 額度用完，換到 ${account.label}` };
 		tried.push(`${account.label}：${probed.reason}`);
 	}
 	return { ok: false, reason: tried.length ? `額度用完：其他訂閱帳號都不能用（${tried.join('；')}）` : '額度用完：沒有其他還有額度的訂閱帳號' };
@@ -124,12 +131,13 @@ async function switchAccount(accounts: CodexAccounts, limits: CodexLimits, model
 
 /** Before a Codex run launches: the pinned account as it is, or another one with quota. A check that
  *  cannot be read leaves the pin alone (nothing confirmed, nothing switched). */
-export async function codexBeforeLaunch(accounts: CodexAccounts, model: string, effort: string): Promise<{ ok: true; note?: string } | { ok: false; reason: string }> {
+export async function codexBeforeLaunch(accounts: CodexAccounts, model: string, effort: string): Promise<{ ok: true; account?: number; note?: string } | { ok: false; reason: string }> {
 	const limits = await accounts.limits();
 	if (!limits.ok) return { ok: true };
 	const pinned = limits.value.accounts.find((account) => account.index === limits.value.pinned);
-	if (!pinned || !exhausted(pinned)) return { ok: true };
-	return switchAccount(accounts, limits.value, model, effort);
+	if (!pinned) return { ok: true };
+	if (!exhausted(pinned)) return { ok: true, account: pinned.index };
+	return switchAccount(accounts, limits.value, pinned.index, model, effort);
 }
 
 /** How a watched run ended, for its record. */
@@ -146,7 +154,7 @@ export interface Watched {
 	limitMinutes: number;
 	now(): number;
 	/** Set by 停止這次 or the scheduler past the limit. */
-	cut(): 'stopped' | 'timeout' | null;
+	cut(): Cut | null;
 	/** Record what was learned on the way: the session, a switch of account. */
 	note(fields: Partial<AutomationRun>): void;
 	/** True once the board is closing: the agent is left running, to be watched again on restart. */
@@ -189,8 +197,7 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 		if (!first) await sleep(host.pollMs);
 		if (watched.closing()) return null;
 		const cut = watched.cut() ?? (watched.now() - run.startedAt >= watched.limitMinutes * 60_000 ? 'timeout' : null);
-		if (cut === 'stopped') return end({ status: 'stopped', reason: '使用者按了停止這次' });
-		if (cut === 'timeout') return end({ status: 'timeout', reason: `超過上限 ${watched.limitMinutes} 分鐘，已停止` });
+		if (cut) return end({ status: cut, reason: cutReason(cut, watched.limitMinutes) });
 
 		const listed = await host.list();
 		if (!listed.ok) continue;
@@ -218,26 +225,42 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 		if (!reply.ok || reply.text === null || reply.seq <= judgeAfter) continue;
 		const verdict = verdictOf(reply.text);
 		if (verdict) return end(verdict);
-		if (spec.client === 'claude' && CLAUDE_USAGE_LIMIT.test(reply.text)) return end({ status: 'quota', reason: `額度用完：${clip(reply.text.trim().split('\n').at(-1)!)}（Claude 不換帳號）` });
+		if (spec.client === 'claude' && CLAUDE_USAGE_LIMIT.test(reply.text.trim())) return end({ status: 'quota', reason: `額度用完：${clip(reply.text.trim().split('\n').at(-1)!)}（Claude 不換帳號）` });
 		return end({ status: 'failed', reason: `回合結束，但最後一行不是 DONE 或 FAILED：${clip(reply.text.trim().split('\n').at(-1) ?? '')}` });
 	}
 }
 
-/** A Codex agent stopped on its usage limit: check the quota live, end the old process, switch and
- *  probe, resume the same conversation. What to judge after, or how the run ends. */
+/** A Codex agent stopped on its usage limit: check its own account's quota live (the one it runs
+ *  on, not whatever is pinned now). At 0: end the old process, switch and probe, resume the same
+ *  conversation. Back above 0 while still pinned: resume on it. What to judge after, or how the
+ *  run ends. */
 async function switchAndResume(host: AgentHost, watched: Watched, name: string, sessionId: string): Promise<{ judgeAfter: number | null } | AgentEnd> {
 	const { spec } = watched;
-	const limits = await host.accounts.limits();
-	const pinned = limits.ok ? limits.value.accounts.find((account) => account.index === limits.value.pinned) : undefined;
-	// Not confirmed at 0: nothing is switched or restarted; looked at again later, and the limit still ends the run.
-	if (!limits.ok || !pinned || !exhausted(pinned)) return { judgeAfter: null };
-	if (!candidates(limits.value, limits.value.pinned).length) return { status: 'quota', reason: '額度用完：沒有其他還有額度的訂閱帳號' };
+	// The reply before the kill is what the resumed turn is judged after; read first, so the
+	// quota check and the kill sit together.
 	const reply = await host.lastReply(spec.client, sessionId);
-	const killed = await host.kill(name);
-	if (killed) return { status: 'quota', reason: `額度用完，但舊的 Agent 關不掉，沒有換帳號：${killed}` };
-	const switched = await switchAccount(host.accounts, limits.value, spec.model, spec.effort);
-	if (!switched.ok) return { status: 'quota', reason: switched.reason };
-	watched.note({ accountSwitches: [...(watched.run.accountSwitches ?? []), switched.note] });
+	const limits = await host.accounts.limits();
+	if (!limits.ok) return { judgeAfter: null };
+	const ownIndex = watched.run.codexAccount ?? limits.value.pinned;
+	const own = limits.value.accounts.find((account) => account.index === ownIndex);
+	// Its account unknown, or back above 0 while another one is pinned now: nothing confirmed, nothing
+	// restarted; looked at again later, and the limit still ends the run.
+	if (!own || (!exhausted(own) && limits.value.pinned !== own.index)) return { judgeAfter: null };
+	let note: string;
+	if (!exhausted(own)) {
+		// Same account, quota back: nothing to switch, only the stopped turn to take up again.
+		if (await host.kill(name)) return { judgeAfter: null };
+		note = `${own.label} 額度已恢復，接回續作`;
+	} else {
+		if (!candidates(limits.value, own.index).length) return { status: 'quota', reason: '額度用完：沒有其他還有額度的訂閱帳號' };
+		const killed = await host.kill(name);
+		if (killed) return { status: 'quota', reason: `額度用完，但舊的 Agent 關不掉，沒有換帳號：${killed}` };
+		const switched = await switchAccount(host.accounts, limits.value, own.index, spec.model, spec.effort);
+		if (!switched.ok) return { status: 'quota', reason: switched.reason };
+		watched.note({ codexAccount: switched.account });
+		note = switched.note;
+	}
+	watched.note({ accountSwitches: [...(watched.run.accountSwitches ?? []), note] });
 	const judgeAfter = reply.ok ? reply.seq : -1;
 	watched.note({ judgeAfter });
 	const failed = await host.resume(sessionId, watched.run.agentWorkspace ?? null, RESUME_MESSAGE);

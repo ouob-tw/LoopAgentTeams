@@ -205,7 +205,9 @@ test('FAILED records its reason; a turn that ends on neither fails; only the las
 		['auto-fail', ['FAILED: 找不到 ZAP 報告'], 'failed', 'Agent 回覆失敗：找不到 ZAP 報告'],
 		['auto-none', ['我做完了，但有點問題'], 'failed', '回合結束，但最後一行不是 DONE 或 FAILED：我做完了，但有點問題'],
 		['auto-mid', ['DONE\n其實還差一步'], 'failed', '回合結束，但最後一行不是 DONE 或 FAILED：其實還差一步'],
-		['auto-old', ['DONE', '等一下，還沒好'], 'failed', '回合結束，但最後一行不是 DONE 或 FAILED：等一下，還沒好']
+		['auto-old', ['DONE', '等一下，還沒好'], 'failed', '回合結束，但最後一行不是 DONE 或 FAILED：等一下，還沒好'],
+		// A reply that only mentions a usage limit is no quota error.
+		['auto-usage', ['網站的 usage limit 是每分鐘 60 次'], 'failed', '回合結束，但最後一行不是 DONE 或 FAILED：網站的 usage limit 是每分鐘 60 次']
 	];
 	for (const [name, replies, status, reason] of cases) {
 		rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
@@ -283,6 +285,20 @@ test('after a restart a run whose agent hcom still lists is watched on, with the
 	cookie = await fixture.login();
 	const gone = await ended(task.id, third.id);
 	expect([gone.status, gone.reason]).toEqual(['failed', '看板重啟時 Agent 已不在']);
+
+	// The board stopped after hcom started the agent but before its name was recorded: the run's tag finds it.
+	await fixture.stop();
+	const runId = `${(START + 20 * 60_000).toString(36)}-abcdef0123`;
+	const tag = `auto-${task.id}-abcdef`;
+	appendFileSync(join(dir, 'board-state/automation/runs', `${task.id}.jsonl`), JSON.stringify({ id: runId, taskId: task.id, trigger: 'manual', period: '2026-11', startedAt: START + 20 * 60_000, status: 'running' }) + '\n');
+	writeFileSync(join(dir, 'hcom-added.json'), JSON.stringify([{ name: `${tag}-kiro`, tag, session_id: 's-tagged', status: 'listening', tool: 'claude', launch_context: { pane_id: 'wW:p-tagged' } }]));
+	mkdirSync(join(dir, 'transcripts'), { recursive: true });
+	writeFileSync(join(dir, 'transcripts/s-tagged.jsonl'), JSON.stringify({ kind: 'assistant', time: null, text: 'DONE' }) + '\n');
+	fixture.setClock(START + 21 * 60_000);
+	await fixture.start();
+	cookie = await fixture.login();
+	const tagged = await ended(task.id, runId);
+	expect([tagged.status, tagged.agentName]).toEqual(['success', `${tag}-kiro`]);
 });
 
 test('a Codex run on a pinned account at 0 switches to a subscription account with quota and probes it first; none left is 額度用完 with no agent', async () => {
@@ -322,24 +338,70 @@ test('a Codex run on a pinned account at 0 switches to a subscription account wi
 	expect(authCalls().flat().join(' ')).not.toContain('reset');
 });
 
-test('a Codex usage limit mid-run: checked live, the agent killed, another account probed, the same conversation resumed; with none left, 額度用完', async () => {
-	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low' });
-	writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({ pinned: 0, accounts: [{ index: 0, used: 20 }, { index: 1, used: 30 }] }));
-	hcomPlan([{ name: 'auto-limit', client: 'codex' }], {
-		resumed: { name: 'auto-limit', session_id: 's-auto-limit', status: 'active', tool: 'codex', launch_context: { pane_id: 'wW:p-auto-limit-2' } },
-		resumedHerdr: { agent: 'codex', agent_status: 'working', cwd: work, pane_id: 'wW:p-auto-limit-2', tab_id: 'wW:t-auto-limit-2', workspace_id: 'wW', agent_session: { value: 's-auto-limit' } }
+/** Codex shows its usage limit on the agent's screen. */
+function limitOnScreen(name: string) {
+	const plan = JSON.parse(readFileSync(join(dir, 'herdr.json'), 'utf8'));
+	writeFileSync(join(dir, 'herdr.json'), JSON.stringify({ ...plan, screens: { ...plan.screens, [`wW:p-${name}`]: ["■ You've hit your usage limit. Upgrade to Pro or try again at 3:00 PM.\n› "] } }));
+}
+const accounts = (pinned: number, ...used: number[]) =>
+	writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({ pinned, accounts: used.map((value, index) => ({ index, used: value })) }));
+/** A Codex launch whose resume comes back as the same agent in a new pane. */
+function codexPlan(name: string) {
+	hcomPlan([{ name, client: 'codex' }], {
+		resumed: { name, session_id: `s-${name}`, status: 'active', tool: 'codex', launch_context: { pane_id: `wW:p-${name}-2` } },
+		resumedHerdr: { agent: 'codex', agent_status: 'working', cwd: work, pane_id: `wW:p-${name}-2`, tab_id: `wW:t-${name}-2`, workspace_id: 'wW', agent_session: { value: `s-${name}` } }
 	});
+}
+function freshRun() {
+	for (const name of ['hcom-calls.jsonl', 'hcom-added.json', 'codex-auth-pinned.txt', 'codex-auth-calls.jsonl']) rmSync(join(dir, name), { force: true });
+	herdrPlan();
+}
+
+test('a Codex usage limit mid-run is checked live on the agent\'s own account: quota back there resumes it, another pin does nothing', async () => {
+	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low' });
+	accounts(0, 20, 30);
+	codexPlan('auto-back');
+	const started = await runNow(task.id);
+	expect((await launchedRun(task.id, 'auto-back')).codexAccount).toBe(0);
+	userSaid('auto-back', '讀取並照做');
+	reply('auto-back', '正在掃描');
+	limitOnScreen('auto-back');
+	// Someone pinned account 2 meanwhile; the agent's own account 1 is not at 0: nothing confirmed, nothing done.
+	writeFileSync(join(dir, 'codex-auth-pinned.txt'), '1');
+	setStatus('auto-back', 'listening');
+	await eventually(async () => authCalls().length >= 2, 5_000, 'the live check');
+	await sleep(500);
+	expect(authCalls()).toEqual([['limits', '--json', '--refresh'], ['limits', '--json', '--refresh']]);
+	expect(hcomCalls().filter((call) => call.args[0] !== 'codex')).toEqual([]);
+	expect((await runsOf(task.id))[0].status).toBe('running');
+
+	// Five minutes on, account 1 is pinned again with quota: resumed on it, no switch.
+	rmSync(join(dir, 'codex-auth-pinned.txt'));
+	fixture.setClock(START + 5 * 60_000);
+	const resumed = await eventually(async () => hcomCalls().find((call) => call.args[0] === 'r'), 8_000, 'the resume');
+	expect(resumed.args.slice(0, 2)).toEqual(['r', 's-auto-back']);
+	expect(authCalls().map((call) => call[0])).toEqual(['limits', 'limits', 'limits']);
+	await sleep(300);
+	expect((await runsOf(task.id))[0].accountSwitches).toEqual(['帳號 1 額度已恢復，接回續作']);
+	reply('auto-back', '續作完成\nDONE');
+	setStatus('auto-back', 'listening');
+	expect((await ended(task.id, started.id)).status).toBe('success');
+});
+
+test('a Codex usage limit mid-run at 0: the agent killed, another account probed, the same conversation resumed, the limit still from the start; none left is 額度用完', async () => {
+	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low' });
+	freshRun();
+	accounts(0, 20, 30);
+	codexPlan('auto-limit');
 	const started = await runNow(task.id);
 	await launchedRun(task.id, 'auto-limit');
 	userSaid('auto-limit', '讀取並照做');
 	reply('auto-limit', '正在掃描，已掃 38 / 64 頁');
-	// The pinned account ran out while it worked; Codex says so on screen.
-	writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({ pinned: 0, accounts: [{ index: 0, used: 100 }, { index: 1, used: 30 }] }));
-	const herdr = JSON.parse(readFileSync(join(dir, 'herdr.json'), 'utf8'));
-	writeFileSync(join(dir, 'herdr.json'), JSON.stringify({ ...herdr, screens: { 'wW:p-auto-limit': ["■ You've hit your usage limit. Upgrade to Pro or try again at 3:00 PM.\n› "] } }));
+	accounts(0, 100, 30);
+	limitOnScreen('auto-limit');
 	setStatus('auto-limit', 'listening');
 
-	const resumed = await until(() => hcomCalls().find((call) => call.args[0] === 'r'), 8_000, 'the resume');
+	const resumed = await eventually(async () => hcomCalls().find((call) => call.args[0] === 'r'), 8_000, 'the resume');
 	expect(resumed.args.slice(0, 2)).toEqual(['r', 's-auto-limit']);
 	expect(resumed.args[resumed.args.indexOf('--hcom-prompt') + 1]).toContain('已換帳號接回');
 	expect(resumed.workspace).toBe('wW');
@@ -353,28 +415,29 @@ test('a Codex usage limit mid-run: checked live, the agent killed, another accou
 	const going = (await runsOf(task.id))[0];
 	expect(going.status).toBe('running');
 	expect(going.accountSwitches).toEqual(['帳號 1 額度用完，換到 帳號 2']);
-	reply('auto-limit', '續作完成\nDONE');
-	setStatus('auto-limit', 'listening');
-	expect((await ended(task.id, started.id)).status).toBe('success');
+	expect(going.codexAccount).toBe(1);
+	// The switch does not give it more time: 30 minutes from its start, it is over.
+	fixture.setClock(START + 30 * 60_000);
+	const late = await ended(task.id, started.id);
+	expect([late.status, late.reason]).toEqual(['timeout', '超過上限 30 分鐘，已停止']);
 	expect(listed('auto-limit')).toBe(false);
 
 	// No other account left: stopped, closed, 額度用完.
-	for (const name of ['hcom-calls.jsonl', 'hcom-added.json', 'codex-auth-pinned.txt']) rmSync(join(dir, name), { force: true });
-	herdrPlan();
-	writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({ pinned: 0, accounts: [{ index: 0, used: 20 }, { index: 1, used: 100 }] }));
+	fixture.setClock(START + 31 * 60_000);
+	freshRun();
+	accounts(0, 20, 100);
 	hcomPlan([{ name: 'auto-out', client: 'codex' }]);
 	const second = await runNow(task.id);
 	await launchedRun(task.id, 'auto-out');
-	writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({ pinned: 0, accounts: [{ index: 0, used: 100 }, { index: 1, used: 100 }] }));
-	const plan = JSON.parse(readFileSync(join(dir, 'herdr.json'), 'utf8'));
-	writeFileSync(join(dir, 'herdr.json'), JSON.stringify({ ...plan, screens: { 'wW:p-auto-out': ["■ You've hit your usage limit."] } }));
+	accounts(0, 100, 100);
+	limitOnScreen('auto-out');
 	setStatus('auto-out', 'listening');
 	const out = await ended(task.id, second.id);
 	expect([out.status, out.reason]).toEqual(['quota', '額度用完：沒有其他還有額度的訂閱帳號']);
 	expect(listed('auto-out')).toBe(false);
 	expect(hcomCalls().some((call) => call.args[0] === 'r')).toBe(false);
+	expect(authCalls().flat().join(' ')).not.toContain('reset');
 });
-
 test('a Claude usage limit ends the run as 額度用完 with no account switched, and the next day tries again by itself', async () => {
 	// Daily at 12:30; the clock is 12:00 on the 18th.
 	const task = await create({ schedule: { type: 'daily' }, time: '12:30' });

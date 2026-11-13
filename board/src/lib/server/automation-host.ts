@@ -16,7 +16,8 @@ import { startLaunch } from './launch.ts';
 /** The longest a codex-multi-auth command or a probe may take. */
 const ACCOUNT_TIMEOUT_MS = 60_000;
 const PROBE_TIMEOUT_MS = 180_000;
-/** How long a killed agent gets to leave hcom's list before a switch goes ahead anyway: not at all. */
+/** How many times, and how far apart, hcom's list is read for a killed agent to be gone; still
+ *  listed after that, nothing is switched. */
 const KILL_CHECKS = 10;
 const KILL_CHECK_MS = 500;
 
@@ -98,7 +99,7 @@ export function boardAgentHost(config: BoardConfig, board: () => Board): AgentHo
 		async list() {
 			const listed = await listAgents(config);
 			if (!listed.ok) return listed;
-			return { ok: true, agents: listed.agents.map(({ name, sessionId, pane, status }) => ({ name, sessionId, pane, status })) };
+			return { ok: true, agents: listed.agents.map(({ name, sessionId, pane, status, tag }) => ({ name, sessionId, pane, status, tag: tag ?? null })) };
 		},
 		async lastReply(client, sessionId) {
 			const read = await readTranscript(config, client, sessionId);

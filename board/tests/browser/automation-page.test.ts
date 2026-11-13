@@ -187,7 +187,7 @@ for (const width of [1280, 390]) {
 		expect(await text('.detail .run')).toContain('結束碼 2');
 		expect(await text('.detail .run')).toContain('✕ 失敗');
 
-		// An agent task: its fields and checklist, and no run from the board yet.
+		// An agent task: its fields and checklist, and 立即執行 open to it like any task.
 		await tab.send('Page.navigate', { url: `${fixture.url}/?automation=${ids.agent}` });
 		await tab.until(`document.querySelector('.detail .task')?.dataset.task === '${ids.agent}'`, 'the agent task');
 		const agentPage = await text('.detail .task');
@@ -195,7 +195,7 @@ for (const width of [1280, 390]) {
 		expect(agentPage).toContain('docs/monthly/exhibit-report.md');
 		expect(agentPage).toContain('發票已開立');
 		expect(agentPage).toContain('開，用 Claude claude-opus-5-5 · 強度中');
-		expect(await tab.eval(`[...document.querySelectorAll('.detail .actions button')].find((b) => b.innerText === '立即執行').disabled`)).toBe(true);
+		expect(await tab.eval(`[...document.querySelectorAll('.detail .actions button')].find((b) => b.innerText === '立即執行').disabled`)).toBe(false);
 		expect(await fits()).toBe(true);
 		await frame(width, '3-agent-task');
 	});
