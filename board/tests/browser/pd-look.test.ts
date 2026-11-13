@@ -57,6 +57,8 @@ test.skipIf(!CHROME)('查看對話 opens the caller\'s conversation at its pd ru
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
 	await tab.navigate(`${fixture.url}/`);
+	// A click before the page has started does nothing.
+	await tab.started();
 	await tab.until(`document.querySelectorAll('.inbox .pd .card').length === 3`, 'the pd cards');
 	const look = (id: number) => `.pd [data-pd-request="${id}"] button.look`;
 	// Only for callers the board knows; an unvouched one says the step may not be the right one.

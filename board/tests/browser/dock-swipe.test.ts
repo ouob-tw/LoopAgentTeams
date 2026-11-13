@@ -58,8 +58,8 @@ async function visit() {
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
 	await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-plain` });
-	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].some((tab) => tab.firstChild.textContent.trim() === '終端')`, 'the page');
-	await sleep(500);
+	// A tap before the page has started does nothing.
+	await tab.started();
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端').click()`);
 	await tab.until(`!!document.querySelector('.screen-panel pre') && !!document.querySelector('.dock .keys-pane')`, 'the screen');
 }

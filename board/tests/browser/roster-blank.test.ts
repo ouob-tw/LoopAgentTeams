@@ -39,6 +39,8 @@ async function visit(folded: boolean) {
 	await until(`location.pathname === '/user.css'`);
 	await evaluate(`localStorage.setItem(${JSON.stringify(FOLDED_KEY)}, ${folded ? "'1'" : "'0'"})`);
 	await send('Page.navigate', { url: fixture.url });
+	// A click before the page has started does nothing.
+	await browser!.tab.started();
 }
 
 /** A point on the roster's own surface, below its marks or cards and clear of the controls at its foot. */

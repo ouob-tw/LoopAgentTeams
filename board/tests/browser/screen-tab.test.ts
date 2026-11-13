@@ -186,9 +186,7 @@ test('phone: a swipe left on the command line, only on the 終端 tab, shows eve
 	expect(await tab.eval(SHOWN)).toBe(true);
 
 	// A reload starts on the command line again: nothing is remembered.
-	await tab.eval(`location.reload()`);
-	await sleep(500);
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board again');
+	await tab.reload();
 	await openScreen();
 	await tab.until(`!!${MENU} && ${BESIDE}`, 'the line after a reload');
 
