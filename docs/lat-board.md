@@ -108,6 +108,25 @@ bun run board test-login --hours 4 --label qa-498 --url http://<主機>:7100
 
 要改位址或連接埠，改已複製的 `~/.config/systemd/user/lat-board.service` 裡的 `HOST`、`PORT`（改專案裡的範例檔不會生效）；其他設定用同樣方式加一行 `Environment=`，改完 `systemctl --user daemon-reload && systemctl --user restart lat-board`。
 
+### CPU 群組：測試不拖垮看板
+
+主機上測試與看板搶同一份 CPU 時，過載會讓看板逾時。`scripts/install-cpu-slices.sh` 做兩件事，可重複執行：
+
+- 建立使用者層的 `lat-tests.slice`（`CPUWeight=30`、`CPUQuota=2000%`，即全部測試加起來最多 20 核心）。`suite-gate.py` 與 host-guard 建議的 `systemd-run` 指令都用 `--slice=lat-tests.slice` 把測試放進去。
+- 替 `lat-board.service` 加 `~/.config/systemd/user/lat-board.service.d/cpu-weight.conf`（`CPUWeight=500`），搶 CPU 時看板優先。
+
+```bash
+scripts/install-cpu-slices.sh      # 第一次執行會寫出設定檔，之後讀它
+systemctl --user show lat-tests.slice -p CPUWeight -p CPUQuotaPerSecUSec
+systemctl --user show lat-board.service -p CPUWeight
+```
+
+**調整數值**：改 `~/.config/lat-cpu/slices.conf` 的 `TESTS_CPU_WEIGHT`、`TESTS_CPU_QUOTA`、`BOARD_CPU_WEIGHT`，再執行一次腳本。權重只在真的搶 CPU 時才生效；`CPUQuota` 設太低，測試會被節流而變慢，用 `cat /sys/fs/cgroup/user.slice/user-$UID.slice/user@$UID.service/lat.slice/lat-tests.slice/cpu.stat` 看 `nr_throttled`。腳本內的 `daemon-reload` 會讓執行中的看板立刻套用新權重，不必重啟（以 `show` 的結果為準）。（單位名稱裡的 `-` 會讓 systemd 把它放在 `lat.slice` 底下，所以路徑多一層。）
+
+**移除**：`scripts/install-cpu-slices.sh --remove` 刪掉 slice 與看板的設定並重新載入（設定檔保留）。沒有 `lat-tests.slice` 時測試照常執行，只是沒有上限。已在跑的測試會留在原來的限制裡直到結束。環境變數 `SUITE_GATE_SLICE` 可改 suite-gate 使用的群組名稱，設成空字串就不放進任何群組。
+
+套用在主機上的 cgroup 限制需要使用者層 systemd 已委派 `cpu`（`systemctl show user@$UID.service -p DelegateControllers`）。這台主機沒有委派 cpuset，所以 `AllowedCPUs` 不會生效，限核心數請用 `taskset` 或 `CPUQuota`。
+
 用背景服務時，主機上的 `password`、`devices`、`revoke` 仍照「登入」一節手動執行。若你改了狀態目錄（`LAT_BOARD_STATE_DIR`）或其他設定，這些指令與 `inbox`（含部署後印出的那次）要用相同的環境變數，否則改到或讀到另一份資料。
 
 ## 待辦與已處理

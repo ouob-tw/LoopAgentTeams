@@ -1,0 +1,3 @@
+{"map": [
+  {"paths": ["skills/local/three-tier-testing/tests/test_suite_gate.py", "skills/local/three-tier-testing/tests/test_suite_gate_light.py"], "tests": ["skills/local/three-tier-testing/tests/test_suite_gate_light.py"]}
+]}

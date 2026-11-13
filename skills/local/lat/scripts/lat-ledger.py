@@ -1368,10 +1368,15 @@ def cmd_review_result(args):
         if item['status'] == 'cancelled':
             raise Failure(f'item {item["id"]} is cancelled; no review to record')
         ticket = finding_ticket(doc, item, args.ticket) if findings else None
+        if args.final and item['stage'] != 'impl':
+            raise Failure(f'--final is for implementation rows; item {item["id"]} is '
+                          f'{item["stage"]}; nothing written')
         reviews = doc.setdefault('reviews', [])
         review = {'id': len(reviews) + 1, 'row': item['id'], 'at': stamp(now()),
                   'by': actor(args), 'result': 'findings' if findings else 'clean',
                   'reviewers': reviewers, 'note': note}
+        if args.final:
+            review['final'] = True
         if acks:
             review['rerun_acks'] = list(dict.fromkeys(acks))
         if tiny:
@@ -1842,15 +1847,15 @@ def unattended_grant(ledger):
     return status['version']['version']
 
 
-def park_row(args, row, reason, cause, grant):
+def park_row(args, row, reason, cause, grant, basis=None):
     record(args, row, 'park', {'status': 'parked', 'parked_from': row['status'],
                                'parked_reason': reason, 'parked_cause': cause,
-                               'parked_grant': grant}, reason)
+                               'parked_grant': grant, 'parked_basis': basis}, reason)
 
 
 def release_row(args, doc, row, reason):
     changes = {'status': row['parked_from'], 'parked_from': None, 'parked_reason': None,
-               'parked_cause': None, 'parked_grant': None}
+               'parked_cause': None, 'parked_grant': None, 'parked_basis': None}
     if row['parked_from'] == 'in_progress':
         changes['deadline'] = deadline_for(row['estimate'])
     record(args, row, 'unpark', changes, reason)
@@ -1888,6 +1893,53 @@ def require_orchestrator(doc, args, what):
         raise Failure(f'only the orchestrator {doc["orchestrator"]} may {what}')
 
 
+BLOCKING_LEVELS = ('甲', '乙')  # a finding of these levels reopens a final candidate / is must-fix
+REOPENS_BEFORE_STUCK = 2
+SPEC_REVIEW_ROUNDS = 3
+
+
+def blocking_reviews(doc, row, final_only):
+    """The row's recorded reviews in order, each with whether it has a 甲 or 乙 finding. A
+    review's findings are the problems that name it; the level is the problem's current one."""
+    problems = read_problems(doc)  # the log is shared by every ledger: look up by problem id
+    return [(review, any(problems.get(pid, {}).get('level') in BLOCKING_LEVELS
+                         for pid in review.get('problems', [])))
+            for review in doc.get('reviews', [])
+            if review.get('row') == row['id'] and (review.get('final') or not final_only)]
+
+
+def require_park_cause(doc, item, cause):
+    """Refuse unless the ledger's own review records show the stated cause."""
+    if cause == 'review-stuck':
+        if item['stage'] != 'impl':
+            raise Failure(f'--cause review-stuck is for an implementation row; item {item["id"]} '
+                          f'is {item["stage"]}')
+        reviews = blocking_reviews(doc, item, final_only=True)
+        reopened = sum(blocking for _, blocking in reviews[:-1])
+        if not (reviews and reviews[-1][1] and reopened >= REOPENS_BEFORE_STUCK):
+            raise Failure(
+                f'item {item["id"]} is not review-stuck: it needs {REOPENS_BEFORE_STUCK} earlier '
+                'final-candidate reviews with a 甲 or 乙 finding (reopened) and then a further '
+                f'final review with a 甲 or 乙 finding; the ledger has {len(reviews)} final '
+                f'review(s), {reopened} reopening(s) before the latest, latest '
+                f'{"has" if reviews and reviews[-1][1] else "has no"} 甲/乙. Record them with '
+                '`review-result --final`')
+    elif cause == 'spec-review-limit':
+        if item['stage'] != 'spec-review':
+            raise Failure(f'--cause spec-review-limit is for a Spec review row; item '
+                          f'{item["id"]} is {item["stage"]}')
+        reviews = blocking_reviews(doc, item, final_only=False)
+        if len(reviews) < SPEC_REVIEW_ROUNDS or not reviews[SPEC_REVIEW_ROUNDS - 1][1]:
+            raise Failure(
+                f'item {item["id"]} has not hit the Spec review limit: it needs '
+                f'{SPEC_REVIEW_ROUNDS} recorded review rounds with a must-fix (甲 or 乙) finding '
+                f'in round {SPEC_REVIEW_ROUNDS}; the ledger has {len(reviews)} round(s)'
+                + (f', round {SPEC_REVIEW_ROUNDS} has '
+                   f'{"a" if reviews[SPEC_REVIEW_ROUNDS - 1][1] else "no"} must-fix'
+                   if len(reviews) >= SPEC_REVIEW_ROUNDS else '')
+                + '. Record each round with `review-result` on this row')
+
+
 def cmd_park(args):
     """Park a row that cannot go on (unattended mode only); rows depending on it follow."""
     reason = required_text('--reason', args.reason)
@@ -1896,7 +1948,9 @@ def cmd_park(args):
         item = find(doc, args.id)
         require_status(item, ('unassigned',) + OPEN, 'park')
         # Asked inside the lock, right before the write, so a grant that ended meanwhile counts.
-        park_row(args, item, reason, None, unattended_grant(args.ledger))
+        grant = unattended_grant(args.ledger)
+        require_park_cause(doc, item, args.cause)
+        park_row(args, item, reason, None, grant, args.cause)
         sync_parked_dependencies(args, doc)
         parked = [row['id'] for row in doc['items'] if row['status'] == 'parked'
                   and row.get('parked_cause') is not None]
@@ -2990,6 +3044,9 @@ def build_parser():
                      help='HCOM name of a reviewer (repeat for each); a name HCOM does not list, '
                      'such as a native sub-agent, is kept as given and marked unverified')
     sub.add_argument('--clean', action='store_true', help='the review found nothing')
+    sub.add_argument('--final', action='store_true',
+                     help='impl row only: this review is of a candidate the implementer declared '
+                     'final. `park --cause review-stuck` counts only these')
     sub.add_argument('--note', help='free text kept with the result')
     sub.add_argument('--finding', action='append', metavar='LEVEL:TEXT',
                      help='one problem the review found, as "<甲|乙|丙>:<one line>" (repeat for '
@@ -3017,6 +3074,11 @@ def build_parser():
     sub = command('park', 'Park a row that cannot go on, with the reason; rows depending on it '
                   'are parked too (needs an unattended grant in effect; orchestrator only)')
     sub.add_argument('--reason', required=True, help='why it cannot go on')
+    sub.add_argument('--cause', required=True, choices=('review-stuck', 'spec-review-limit'),
+                     help='review-stuck: an impl row whose final candidate was reopened twice '
+                     'and a further final review (review-result --final) has a 甲/乙 finding; '
+                     'spec-review-limit: a spec-review row with 3 recorded review rounds and '
+                     'a 甲/乙 (must-fix) finding in round 3. Checked from the ledger')
     sub = command('unpark', 'Return a parked row, and the rows parked because of it, to the '
                   'state they had (orchestrator only)')
     sub.add_argument('--reason', required=True, help='what the user decided')

@@ -137,7 +137,7 @@ docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --
 
 下列指令都是 `suite-gate.py` 的子指令（用法見 [references/suite-gate.md](references/suite-gate.md)）。
 
-- **修改期間**（含審查後的修正）：只跑自己挑的測試檔；指定檔案或篩選範圍的測試不經閘門，hook 不擋。有對照表的專案也可以用 `affected` 跑這次改動選出的測試。
+- **修改期間**（含審查後的修正）：只跑自己挑的測試檔；指定檔案或篩選範圍的測試不經閘門，hook 不擋。登記為重指令的瀏覽器測試檔與建置例外：hook 會回覆改走輕量路徑的指令，照它執行（見 [references/suite-gate.md](references/suite-gate.md#輕量路徑light)）。有對照表的專案也可以用 `affected` 跑這次改動選出的測試。
 - **合併進整合分支前**：對最終版本跑一次 `affected --base <這張票的起點> --purpose pre-merge`，它寫的總結紀錄（`kind: affected-summary`、`purpose: pre-merge`）就是合併的測試證據。同內容已有通過紀錄的部分直接沿用。
   - 有對照表：跑對照表選出的受影響測試。改到對照表沒列的檔案或標為共用的路徑時，指令會自動改跑整套（用途 `map-fallback`；只跑觸發檔所在目錄的那幾套）；設了 `affected.full_suite_share` 時，某目錄選出的測試太多就改跑該目錄的整套（用途 `large-selection`）。範圍見 references/suite-gate.md。在整合分支上直接跑時要加 `--base`；沒加而什麼都沒選到時，指令會提示這件事。
   - 沒有對照表：同一條指令改跑每一套登記的整套（`full_suites`）各一次，一樣寫總結紀錄；不必每個候選提交各跑一次。沒加 `--purpose` 的 `affected` 不執行，只提示這條指令。

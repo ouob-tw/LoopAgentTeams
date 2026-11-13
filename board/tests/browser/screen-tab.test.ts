@@ -91,6 +91,8 @@ async function visit({ width, height, phone, agent = 's-plain' }: { width: numbe
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: phone });
 	if (phone) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+	// The screen colours checked are the dark theme's; a test Chrome has no system preference of its own.
+	await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=${agent}` });
 	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
 }

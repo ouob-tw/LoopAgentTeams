@@ -3,7 +3,6 @@
 // window; a PDF in a tab of its own, in Chrome's viewer; anything else still downloads. Nothing in a
 // file runs, a long text shows its first 200KB only, and the window closes by Esc, a click around it
 // or 關閉, leaving the page where it was.
-import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +10,7 @@ import { deflateSync } from 'node:zlib';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { withAttachments } from '../../src/lib/board/attachments.ts';
 import { NODE, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, Tab, type Browser } from '../browser.ts';
+import { launchChrome, startChrome, Tab, type Browser } from '../browser.ts';
 
 /** A 1×1 PNG. */
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
@@ -311,6 +310,24 @@ test('Esc, a click around the window and 關閉 each close it, and the page stay
 	expect(await tab.eval<string>(`document.querySelector('${DIALOG} pre').textContent`)).toBe('');
 }, 60_000);
 
+test('after the window was closed with 關閉, a file just below the screen brought into view is a scroll like any other, not taken back', async () => {
+	await visit('transcript');
+	const scroller = `(() => { let node = ${entry('transcript', 'pixel.png')}; while (node && !(node.scrollHeight > node.clientHeight && /auto|scroll/.test(getComputedStyle(node).overflowY))) node = node.parentElement; return node ?? document.scrollingElement; })()`;
+	await tab.eval(`${entry('transcript', 'pixel.png')}.scrollIntoView({ block: 'center' })`);
+	await tab.until(`[...document.querySelectorAll('${scope('transcript')} .attached img')].every((img) => img.complete && img.naturalWidth > 0)`, 'the thumbnails loaded');
+	const position = () => tab.eval<number>(`${scroller}.scrollTop`);
+	// Scrolled until the other file's button is a few pixels under the bottom of what is shown.
+	await tab.eval(`(() => { const box = ${scroller}; const button = ${entry('transcript', 'pixel.png')}.querySelector('button'); const bottom = box === document.scrollingElement ? innerHeight : box.getBoundingClientRect().bottom; box.scrollTop += button.getBoundingClientRect().bottom - bottom - 3; })()`);
+	await Bun.sleep(300);
+	await openPreview('transcript', 'plain.txt');
+	const before = await position();
+	// 關閉 pressed and the other file focused in one go, before anything about the closed window is looked at again.
+	await tab.eval(`(() => { document.querySelector('${DIALOG} header button').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); document.querySelector('${DIALOG}').close(); ${entry('transcript', 'pixel.png')}.querySelector('button').focus(); })()`);
+	await Bun.sleep(300);
+	// The browser brings the file into view; nothing takes the page back above where it was.
+	expect(await position()).toBeGreaterThanOrEqual(before);
+}, 60_000);
+
 test('a text over 200KB shows its first 204,800 bytes only, says so, and downloads whole', async () => {
 	await visit('sent');
 	await openPreview('sent', 'big.log');
@@ -407,14 +424,7 @@ test('at 390px the window fills the screen and nothing scrolls sideways', async 
  * started with --no-sandbox, as the other browser tests start it.
  */
 async function sandboxedChrome(): Promise<{ debugPort: number; tab: Tab; close: () => void }> {
-	const profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const chrome = spawn(CHROME, ['--headless=new', '--no-first-run', `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'], { stdio: 'ignore', detached: true });
-	const close = () => {
-		try {
-			process.kill(-chrome.pid!, 'SIGKILL');
-		} catch {}
-		rmSync(profile, { recursive: true, force: true });
-	};
+	const { chrome, profile, end: close } = startChrome(['--headless=new', '--no-first-run']);
 	try {
 		const file = join(profile, 'DevToolsActivePort');
 		const deadline = Date.now() + 10_000;
