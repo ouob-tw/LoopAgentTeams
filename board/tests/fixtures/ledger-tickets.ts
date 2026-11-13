@@ -156,7 +156,7 @@ const TIMES_533 = [
  *  caught, one from review and a 甲 from acceptance; #534 a fixed 乙 from review and 0 for its
  *  other done stages; one of the shared row's tickets has one; one after deploy has no known
  *  cause. */
-function ticketLedgerOn2026(workspace: string, reportPath = `${workspace}/.lat/runs/issue-534/report.md`) {
+export function ticketLedgerOn2026(workspace: string, reportPath = `${workspace}/.lat/runs/issue-534/report.md`) {
 	const items = [
 		item(1, '533', { stage: 'qa', status: 'in_progress', late: 12, progress: '第三次長度修正仍失敗', settings: 'gpt-6.1-terra・medium', started: '2026-11-12T09:12:00Z' }),
 		item(2, '534', { status: 'done', closed: '2026-11-12T09:51:00Z', settings: 'opus-5.5・medium', evidence: { commit: ['42f5bed0c0ffee12345678901234567890abcdef'], file: [reportPath], gate: ['e52bc2cab9bcd01cb8fa06eccfb0618d'] }, doneAt: '2026-11-12T09:51:00Z', changeSize: '程式 3 檔 120 行、測試 2 檔 84 行、文件 1 檔 6 行', tests: { seconds: 200.4, runs: 2, reuses: 1 } }),
@@ -201,7 +201,7 @@ function ticketLedgerOn2026(workspace: string, reportPath = `${workspace}/.lat/r
 }
 
 /** A ledger of a project without deploy history: five steps. */
-function fiveStepLedgerOn2026(workspace: string) {
+export function fiveStepLedgerOn2026(workspace: string) {
 	return {
 		ledger: `${workspace}/.lat/ledgers/s-r1.json`,
 		now: '2026-11-12T10:00:00Z',
