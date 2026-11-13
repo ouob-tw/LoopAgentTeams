@@ -9,7 +9,7 @@
 		if (key === 'done' || key === 'success') return 'ok';
 		if (key === 'running') return 'going';
 		if (key === 'missed') return 'miss';
-		if (key === 'waiting' || key === 'paused' || key === 'stopped') return 'wait';
+		if (key === 'waiting' || key === 'paused' || key === 'stopped' || key === 'skipped') return 'wait';
 		return 'bad';
 	});
 </script>

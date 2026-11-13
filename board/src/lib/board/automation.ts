@@ -1,7 +1,8 @@
 // The 自動化 tab's tasks as the board keeps them, and the rules every part reads them by: which
 // period a time falls in, whether a day is inside a task's run window, when the next automatic try
-// is due and what a task's state this period is. Pure: the server computes with them in the host's
-// time zone, and the page only words what the server sent.
+// is due and what a task's state this period is. Pure: every day, period and set time is read in
+// Asia/Taipei whatever the host's zone, times are kept as UTC milliseconds, and the page only words
+// what the server sent.
 
 /** Monday is 1, Sunday 7: a week runs Monday to Sunday and a weekly window never wraps past Sunday. */
 export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -61,7 +62,7 @@ export const clientName = (client: AgentClient) => (client === 'codex' ? 'Codex'
 export interface AutomationTaskInput {
 	name: string;
 	schedule: AutomationSchedule;
-	/** HH:MM in the host's time zone. */
+	/** HH:MM in Asia/Taipei. */
 	time: string;
 	limitMinutes: number;
 	kind: 'command' | 'agent';
@@ -80,7 +81,8 @@ export interface AutomationTask extends AutomationTaskInput {
 /** 自動、手動、預覽、沿用原紀錄. */
 export type RunTrigger = 'auto' | 'manual' | 'preview' | 'carried';
 
-export type RunStatus = 'running' | 'success' | 'failed' | 'timeout' | 'stopped' | 'config-error' | 'quota';
+/** `skipped`: an automatic try came due while the task still ran; it is recorded and counts as the day's try. */
+export type RunStatus = 'running' | 'success' | 'failed' | 'timeout' | 'stopped' | 'config-error' | 'quota' | 'skipped';
 
 export interface CheckResult {
 	/** The check as the user reads it, e.g. 檔案存在：backup/db.gz. */
@@ -113,6 +115,22 @@ export interface AutomationRun {
 	output?: string;
 	/** The output was longer than what is kept: only its end is. */
 	outputTruncated?: boolean;
+	/** 沿用原紀錄: the project's own done marker this record stands for. */
+	marker?: string;
+}
+
+/** A period's run window: its first moment and the moment after its last day. */
+export interface RunWindow {
+	period: string;
+	from: number;
+	to: number;
+}
+
+/** A period whose whole window passed with no run at all, while the task was not paused. */
+export interface MissedPeriod extends RunWindow {
+	recordedAt: number;
+	/** 這期就算了: no longer shown. */
+	dismissedAt?: number;
 }
 
 /** A task's state this period, as the list's pill shows it. */
@@ -125,6 +143,8 @@ export interface AutomationTaskView {
 	nextAt: number | null;
 	/** Newest first, the latest few. */
 	runs: AutomationRun[];
+	/** Missed periods still to be handled (not dismissed, no run since), oldest first. */
+	missed: MissedPeriod[];
 }
 
 /** A task file the board could not read: shown as an error, never taken for an empty task. */
@@ -136,13 +156,19 @@ export interface BrokenTask {
 export interface AutomationSnapshot {
 	/** Grows with every change, so a page keeps only the newest of two it hears. */
 	revision: number;
-	/** The host's time zone: every time shown is in it. */
+	/** Asia/Taipei: every time shown is in it. */
 	timeZone: string;
 	tasks: AutomationTaskView[];
 	broken: BrokenTask[];
 }
 
-export const EMPTY_AUTOMATION: AutomationSnapshot = { revision: 0, timeZone: 'UTC', tasks: [], broken: [] };
+/** The zone every day, period and set time is read in, whatever the host's own. */
+export const TIME_ZONE = 'Asia/Taipei';
+/** Asia/Taipei has kept UTC+8 with no daylight saving since 1980, so its days are fixed offsets of UTC. */
+const OFFSET_MS = 8 * 3_600_000;
+const DAY_MS = 86_400_000;
+
+export const EMPTY_AUTOMATION: AutomationSnapshot = { revision: 0, timeZone: TIME_ZONE, tasks: [], broken: [] };
 
 const WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
 export const weekdayName = (day: number) => WEEKDAY_NAMES[day - 1] ?? '?';
@@ -160,7 +186,7 @@ export function scheduleText(schedule: AutomationSchedule, time: string): string
 
 export const kindText = (kind: AutomationTask['kind']) => (kind === 'command' ? '指令' : 'Agent');
 
-/** A calendar day in the host's time zone. */
+/** A calendar day in Asia/Taipei. */
 interface Day {
 	year: number;
 	/** 1–12. */
@@ -172,54 +198,95 @@ interface Day {
 const pad = (value: number) => String(value).padStart(2, '0');
 
 function dayOf(time: number): Day {
-	const date = new Date(time);
-	const weekday = date.getDay();
-	return { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate(), weekday: (weekday === 0 ? 7 : weekday) as Weekday };
+	const date = new Date(time + OFFSET_MS);
+	const weekday = date.getUTCDay();
+	return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(), weekday: (weekday === 0 ? 7 : weekday) as Weekday };
 }
 
-const daysInMonth = (year: number, month: number) => new Date(year, month, 0).getDate();
+/** The first moment of a day in Asia/Taipei; a day past the month's end runs on into the next. */
+const dayStart = (year: number, month: number, day: number) => Date.UTC(year, month - 1, day) - OFFSET_MS;
+const startOf = (day: Day) => dayStart(day.year, day.month, day.day);
+const daysInMonth = (year: number, month: number) => new Date(Date.UTC(year, month, 0)).getUTCDate();
 
 /** The period a time falls in: the month (2026-11), the week by its Monday (2026-W11-09) or the day (2026-11-13). */
 export function periodOf(schedule: AutomationSchedule, time: number): string {
 	const day = dayOf(time);
 	if (schedule.type === 'monthly') return `${day.year}-${pad(day.month)}`;
 	if (schedule.type === 'daily') return `${day.year}-${pad(day.month)}-${pad(day.day)}`;
-	const monday = new Date(day.year, day.month - 1, day.day - (day.weekday - 1));
-	return `${monday.getFullYear()}-W${pad(monday.getMonth() + 1)}-${pad(monday.getDate())}`;
+	const monday = dayOf(dayStart(day.year, day.month, day.day - (day.weekday - 1)));
+	return `${monday.year}-W${pad(monday.month)}-${pad(monday.day)}`;
 }
 
-/** Whether a day is inside the run window; a month shorter than the window ends it on its last day. */
-export function inWindow(schedule: AutomationSchedule, time: number): boolean {
+/** The run window of the period a time falls in: its first moment and the moment after its last
+ *  day. A month shorter than the window ends it on its last day. */
+export function windowOf(schedule: AutomationSchedule, time: number): RunWindow {
 	const day = dayOf(time);
-	if (schedule.type === 'daily') return true;
-	if (schedule.type === 'weekly') return day.weekday >= schedule.fromWeekday && day.weekday <= schedule.toWeekday;
+	const period = periodOf(schedule, time);
+	if (schedule.type === 'daily') return { period, from: startOf(day), to: startOf(day) + DAY_MS };
+	if (schedule.type === 'weekly') {
+		const monday = startOf(day) - (day.weekday - 1) * DAY_MS;
+		return { period, from: monday + (schedule.fromWeekday - 1) * DAY_MS, to: monday + schedule.toWeekday * DAY_MS };
+	}
 	const last = daysInMonth(day.year, day.month);
-	const from = Math.min(schedule.fromDay, last);
-	const to = Math.min(schedule.toDay, last);
-	return day.day >= from && day.day <= to;
+	const from = dayStart(day.year, day.month, Math.min(schedule.fromDay, last));
+	return { period, from, to: dayStart(day.year, day.month, Math.min(schedule.toDay, last)) + DAY_MS };
 }
 
-/** The time of day on the day `time` falls in. */
+/** Whether a day is inside the run window; the window's last day counts to its end. */
+export function inWindow(schedule: AutomationSchedule, time: number): boolean {
+	const { from, to } = windowOf(schedule, time);
+	return time >= from && time < to;
+}
+
+/** How far back a check looks: a board off for years still starts in a moment. */
+const LOOK_BACK_DAYS = 3_660;
+
+/** The windows that ended after `after` and by `upTo`, oldest first, from the last LOOK_BACK_DAYS days. */
+export function endedWindows(schedule: AutomationSchedule, after: number, upTo: number): RunWindow[] {
+	const found = new Map<string, RunWindow>();
+	const first = Math.max(after, upTo - LOOK_BACK_DAYS * DAY_MS);
+	for (let time = startOf(dayOf(first)); time <= upTo; time += DAY_MS) {
+		const window = windowOf(schedule, time + DAY_MS / 2);
+		if (window.to > after && window.to <= upTo) found.set(window.period, window);
+	}
+	return [...found.values()];
+}
+
+/** The set time on the day `time` falls in. */
 function atTime(time: number, hhmm: string): number {
 	const [hours, minutes] = hhmm.split(':').map(Number);
-	const date = new Date(time);
-	return new Date(date.getFullYear(), date.getMonth(), date.getDate(), hours, minutes).getTime();
+	return startOf(dayOf(time)) + (hours * 60 + minutes) * 60_000;
 }
+
+/** Whether two times fall on the same day in Asia/Taipei. */
+export const sameDay = (a: number, b: number) => startOf(dayOf(a)) === startOf(dayOf(b));
 
 /** Runs that settle a period: any run but a preview that ended in success. */
 export const succeeded = (run: AutomationRun) => run.trigger !== 'preview' && run.status === 'success';
 const isRunning = (run: AutomationRun) => run.status === 'running';
+/** An automatic try made on the day `time` falls in: whatever it ended in, it is the day's one. */
+export const triedOn = (runs: readonly AutomationRun[], time: number) => runs.some((run) => run.trigger === 'auto' && sameDay(run.startedAt, time));
+
+/** When today's automatic try is due: at the set time, or at once on the board's first check after
+ *  it started. Null when no try is due today: paused, outside the window, tried already, the period
+ *  done. Whether the task is running now is the caller's to see. */
+export function dueToday(task: AutomationTask, runs: readonly AutomationRun[], now: number): number | null {
+	if (task.paused || !inWindow(task.schedule, now) || triedOn(runs, now)) return null;
+	const period = periodOf(task.schedule, now);
+	if (runs.some((run) => run.period === period && succeeded(run))) return null;
+	return atTime(now, task.time);
+}
 
 /** The next automatic try: the first day from today inside the window whose period has not
  *  succeeded, at the set time; today only while no automatic try was made today. */
 export function nextAutoAt(task: AutomationTask, runs: readonly AutomationRun[], now: number): number | null {
 	if (task.paused) return null;
 	const done = new Set(runs.filter(succeeded).map((run) => run.period));
-	const today = dayOf(now);
-	const triedToday = runs.some((run) => run.trigger === 'auto' && sameDay(dayOf(run.startedAt), today));
+	const triedToday = triedOn(runs, now);
+	const today = startOf(dayOf(now));
 	// A month window is at most a month away, with periods that succeeded skipped on the way.
 	for (let offset = 0; offset < 800; offset++) {
-		const noon = new Date(today.year, today.month - 1, today.day + offset, 12).getTime();
+		const noon = today + offset * DAY_MS + DAY_MS / 2;
 		if (!inWindow(task.schedule, noon) || done.has(periodOf(task.schedule, noon))) continue;
 		if (offset === 0 && triedToday) continue;
 		return atTime(noon, task.time);
@@ -227,21 +294,56 @@ export function nextAutoAt(task: AutomationTask, runs: readonly AutomationRun[],
 	return null;
 }
 
-const sameDay = (a: Day, b: Day) => a.year === b.year && a.month === b.month && a.day === b.day;
-
 const FAILED: readonly RunStatus[] = ['failed', 'timeout', 'stopped', 'config-error', 'quota'];
 
+/** The missed periods still to show: not dismissed, and no 立即執行 (or 沿用原紀錄) since the window
+ *  ended. A later automatic try does not count: only the user handles a miss. */
+export function openMissed(missed: readonly MissedPeriod[], runs: readonly AutomationRun[]): MissedPeriod[] {
+	const latest = Math.max(-Infinity, ...runs.filter((run) => run.trigger === 'manual' || run.trigger === 'carried').map((run) => run.startedAt));
+	return missed.filter((entry) => entry.dismissedAt === undefined && latest < entry.to).sort((a, b) => a.from - b.from);
+}
+
 /** The task's state this period: running first, then paused; else done once a run of this period
- *  succeeded (a later failure does not undo it), failed when this period's latest run failed. */
-export function taskState(task: AutomationTask, runs: readonly AutomationRun[], now: number): TaskState {
+ *  succeeded (a later failure does not undo it), missed while a missed period is still open,
+ *  failed when this period's latest run failed. */
+export function taskState(task: AutomationTask, runs: readonly AutomationRun[], now: number, missed: readonly MissedPeriod[] = []): TaskState {
 	if (runs.some(isRunning)) return 'running';
 	if (task.paused) return 'paused';
 	const period = periodOf(task.schedule, now);
-	const own = runs.filter((run) => run.period === period && run.trigger !== 'preview');
+	const own = runs.filter((run) => run.period === period && run.trigger !== 'preview' && run.status !== 'skipped');
 	if (own.some(succeeded)) return 'done';
+	if (openMissed(missed, runs).length) return 'missed';
 	const latest = own.reduce<AutomationRun | undefined>((last, run) => (!last || run.startedAt > last.startedAt ? run : last), undefined);
 	if (latest && FAILED.includes(latest.status)) return 'failed';
 	return 'waiting';
+}
+
+/** A missed window as the list words it: 11/8–11/10, or 11/13 for one day; the year is added when
+ *  it is not the year of `reference` (the newest window in the same line). */
+export function windowText(entry: { from: number; to: number }, reference: number): string {
+	const first = dayOf(entry.from);
+	const last = dayOf(entry.to - 1);
+	const thisYear = dayOf(reference).year;
+	const text = (day: Day, withYear: boolean) => `${withYear ? `${day.year}/` : ''}${day.month}/${day.day}`;
+	const start = text(first, first.year !== thisYear);
+	if (startOf(first) === startOf(last)) return start;
+	return `${start}–${text(last, last.year !== first.year)}`;
+}
+
+/** How many missed windows a line names before it only counts the rest. */
+export const MISSED_NAMED = 3;
+
+/** The missed windows named in a line, oldest first: the first few, each year shown against the newest's. */
+export function missedNames(missed: readonly MissedPeriod[]): string[] {
+	const reference = missed.at(-1)!.to - 1;
+	return missed.slice(0, MISSED_NAMED).map((entry) => windowText(entry, reference));
+}
+
+/** The list card's line for the missed periods (oldest first), short enough for a phone's card:
+ *  the window when there is one, else how many; the task's page names them. */
+export function missedText(missed: readonly MissedPeriod[]): string {
+	if (missed.length === 1) return `${missedNames(missed)[0]} 看板沒開，這期沒跑`;
+	return `看板沒開，錯過 ${missed.length} 期，沒有自動補跑`;
 }
 
 export const STATE_TEXT: Record<TaskState, string> = {
@@ -261,7 +363,8 @@ export const RUN_STATUS_TEXT: Record<RunStatus, string> = {
 	timeout: '✕ 逾時',
 	stopped: '■ 已停止',
 	'config-error': '✕ 設定錯誤',
-	quota: '✕ 額度用完'
+	quota: '✕ 額度用完',
+	skipped: '↷ 跳過'
 };
 
 export const TRIGGER_TEXT: Record<RunTrigger, string> = {
@@ -271,7 +374,7 @@ export const TRIGGER_TEXT: Record<RunTrigger, string> = {
 	carried: '沿用原紀錄'
 };
 
-/** Formats a time in the host's time zone: 11/05 09:00, or 09:00 alone. */
+/** Formats a time in the given zone (Asia/Taipei for the board): 11/05 09:00, or 09:00 alone. */
 export function timeFormat(timeZone: string) {
 	const date = new Intl.DateTimeFormat('en-US', { timeZone, month: '2-digit', day: '2-digit' });
 	const clock = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false });

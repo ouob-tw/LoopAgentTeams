@@ -46,3 +46,9 @@ export async function readAutomation(): Promise<AutomationSnapshot | null> {
 	const result = await request<AutomationSnapshot>('/api/automation');
 	return result.ok ? result.value : null;
 }
+
+/** 這期就算了: the task's missed periods are no longer shown. */
+export async function dismissMissed(id: string): Promise<Done> {
+	const result = await request(`/api/automation/${encodeURIComponent(id)}/dismiss-missed`, post('POST', {}));
+	return result.ok ? { ok: true, value: null } : failed(result, '沒有記下來，請再試一次。');
+}

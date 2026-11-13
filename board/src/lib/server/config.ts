@@ -99,6 +99,8 @@ export interface BoardConfig {
 	pdTimeoutMs: number;
 	/** How often pd's waiting requests are read. */
 	pdIntervalMs: number;
+	/** How often the 自動化 scheduler checks for tasks due, ended periods and run limits. */
+	automationTickMs: number;
 	/** How often the agents' statuses (hcom's and Herdr's lists only) are read while a page is connected. */
 	statusPollMs: number;
 	/** The same while an agent works through hcom, so that a turn ended by Esc, which hcom never reports, is noticed in time. */
@@ -272,6 +274,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		pdCommand: commandFrom(env, 'LAT_BOARD_PD_COMMAND') ?? ['pd'],
 		pdTimeoutMs: seconds(env.LAT_BOARD_PD_TIMEOUT_SECONDS, 5_000),
 		pdIntervalMs: seconds(env.LAT_BOARD_PD_SECONDS, 5_000),
+		automationTickMs: seconds(env.LAT_BOARD_AUTOMATION_TICK_SECONDS, 60_000),
 		statusPollMs: seconds(env.LAT_BOARD_STATUS_POLL_SECONDS, 2_000),
 		statusWorkingPollMs: seconds(env.LAT_BOARD_STATUS_WORKING_POLL_SECONDS, 2_000),
 		statusPollTimeoutMs: seconds(env.LAT_BOARD_STATUS_POLL_TIMEOUT_SECONDS, 4_000),
