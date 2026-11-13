@@ -188,6 +188,7 @@ class DelegatedRecordTests(UnattendedStopCase):
             'HUMAN': (dict(extra='\n## 答覆（r1，聊天）\n\n- 答覆：A\n- 來源：聊天\n'), '真人答覆段落'),
             'ACTION': (dict(extra='- action: push main abc123\n'), '一定擱置'),
             'HELPKIND': (dict(extra='- kind: help\n'), '求助題'),
+            'CONSENSUS': (dict(extra='- consensus: v2 ' + '0' * 64 + '\n'), 'Spec 共識'),
             'NOCLASS': (dict(drop=('- assume-class',)), '假設類別未標'),
             'BADCLASS': (dict(drop=('- assume-class',), extra='- assume-class: scope\n'),
                          '假設類別未標或不在固定清單'),

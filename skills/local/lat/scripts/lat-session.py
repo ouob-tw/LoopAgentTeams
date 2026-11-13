@@ -1640,7 +1640,10 @@ def delegated_stop_check(record):
     unattended = sent = None
     held = []
     for path in sorted(decisions.glob('*.md')):
-        status = read_decision_status(path).status
+        try:
+            status = read_decision_status(path).status
+        except (OSError, UnicodeDecodeError):
+            continue  # the DECIDE/HELP check and the omission check report unreadable records
         if status not in DELEGATED or read_decision_session(path) not in (
                 None, record['session_id']):
             continue

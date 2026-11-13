@@ -212,13 +212,11 @@ def delegated_record_problems(path, status):
     elif advisor[:2] != ['proxy', word]:
         problems.append(f'參謀行須為 `- advisor: proxy {word}`')
     for key, label in (('action', '預先授權動作（`- action:`）'), ('exempt-basis', '免諮詢依據'),
-                       ('kind', None)):
-        value = _field(lines, key)
-        if key == 'kind':
-            if value is not None and value.lower().split()[:1] == ['help']:
-                problems.append('求助題（`- kind: help`）屬一定擱置類別')
-        elif value is not None:
+                       ('consensus', 'Spec 共識（`- consensus:`）')):
+        if _field(lines, key) is not None:
             problems.append(f'有{label}行，屬一定擱置類別')
+    if (_field(lines, 'kind') or '').lower().split()[:1] == ['help']:
+        problems.append('求助題（`- kind: help`）屬一定擱置類別')
     if any(line.startswith('## 答覆') for line in lines):
         problems.append('含真人答覆段落（`## 答覆`）；代決不得記成真人答覆')
     if not _field(lines, 'session'):

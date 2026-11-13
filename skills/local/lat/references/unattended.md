@@ -134,7 +134,7 @@ lat-unattended.py close --reason <off|quota|delivered|cancelled|handover>
 - 參謀行依狀態寫 `proxy ticket-confirmation`、`proxy assume-defaults` 或 `proxy prototype`；`grant` 與 `decided-at` 引用作成當下生效的版本（`status` 印出的版本與輪數）。
 - `assumed` 另寫 `- assume-class:` 與 `- revert:`；`prototype-decided` 另寫 `- sample: <樣品位置>`，不寫前兩行。
 - `proxy-confirmed` 另加 `## 驗收對照`，每條驗收條件一行：`- <驗收條件> ← 「<使用者原話>」 <session 與可定位的訊息來源>`。代確認的票照常只合併到整合分支；推送與部署仍只看預先授權，無人授權不放寬它。
-- 回合結束檢查逐一核對本 session 的代決紀錄並逐項列出原因：引用的版本不存在、作成時間不在該版本生效期間或晚於現在、授權沒勾選對應的代決、缺任一位參謀的 `agree` 行或有 `disagree`、含 `## 答覆` 段落、有 `- action:`／`- exempt-basis:`／`- kind: help` 行或參謀行是 `exempt`、缺上述必填行，以及這題已問過使用者。作成時合法的紀錄在授權結束後照常通過，其他 session 的紀錄不檢查。
+- 回合結束檢查逐一核對本 session 的代決紀錄並逐項列出原因：引用的版本不存在、作成時間不在該版本生效期間或晚於現在、授權沒勾選對應的代決、缺任一位參謀的 `agree` 行或有 `disagree`、含 `## 答覆` 段落、有 `- action:`／`- exempt-basis:`／`- consensus:`／`- kind: help` 行或參謀行是 `exempt`、缺上述必填行，以及這題已問過使用者。作成時合法的紀錄在授權結束後照常通過，其他 session 的紀錄不檢查。
 
 **擱置紀錄**寫 `- status: parked`、`- session:`、參謀行（諮詢結果或例外類別）、問題、擱置原因與受阻工作。擱置項不寫面板、不通知使用者，只擋相依工作，其他工作照做；只剩等待時，`lat-watch wait --for-pending` 會把本 session 的擱置項一起列為等待對象。
 
