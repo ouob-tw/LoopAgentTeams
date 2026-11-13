@@ -67,7 +67,7 @@ async function startRun(name: string) {
 	writeFileSync(
 		join(dir, 'herdr.json'),
 		JSON.stringify({
-			workspaces: [{ workspace_id: 'wW', number: 1, label: 'Work' }],
+			workspaces: [{ workspace_id: 'wW', number: 1, label: 'Work' }, { workspace_id: 'wA', number: 2, label: 'AUTOMATION' }],
 			tabs: [{ tab_id: 'wW:t0', label: 'shell', workspace_id: 'wW' }],
 			panes: [{ pane_id: 'wW:p0', workspace_id: 'wW', cwd: work, tab_id: 'wW:t0' }],
 			agents: []
@@ -81,7 +81,7 @@ async function startRun(name: string) {
 			// Closing takes a moment, as a real one does: long enough to see the stopping button.
 			kill: { sleepMs: 1_000 },
 			launched: [{ name, session_id: `s-${name}`, status: 'active', tool: 'claude', launch_context: { pane_id: `wW:p-${name}` } }],
-			launchedHerdr: [{ agent: 'claude', agent_status: 'working', cwd: work, pane_id: `wW:p-${name}`, tab_id: `wW:t-${name}`, tab_label: name, workspace_id: 'wW', agent_session: { value: `s-${name}` } }]
+			launchedHerdr: [{ agent: 'claude', agent_status: 'working', cwd: work, pane_id: `wW:p-${name}`, tab_id: `wW:t-${name}`, tab_label: name, workspace_id: 'wA', agent_session: { value: `s-${name}` } }]
 		})
 	);
 	fixture.setClock(Date.now() - 12 * 60_000);
