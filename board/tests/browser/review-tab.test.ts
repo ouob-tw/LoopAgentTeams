@@ -131,7 +131,7 @@ test.skipIf(!CHROME)('the tab follows 對話紀錄 with the parked count; the ba
 		const shape = await tab.eval<{ title: string; did: string; oneLine: boolean; open: boolean }>(`(() => {
 			const entry = document.querySelector(${JSON.stringify(item(id))});
 			const did = entry.querySelector('.did');
-			return { title: entry.querySelector('.title').innerText, did: did.innerText, oneLine: did.getBoundingClientRect().height < parseFloat(getComputedStyle(did).lineHeight) * 1.5, open: entry.querySelector('details').open };
+			return { title: entry.querySelector('.title').innerText, did: did.innerText, oneLine: did.getBoundingClientRect().height < parseFloat(getComputedStyle(did).lineHeight) * 1.5, open: !!entry.querySelector('.reasons') };
 		})()`);
 		expect(shape.oneLine).toBe(true);
 		expect(shape.open).toBe(false);
@@ -140,9 +140,9 @@ test.skipIf(!CHROME)('the tab follows 對話紀錄 with the parked count; the ba
 	expect(await tab.eval<string>(text(`${item('LAT-P1')} .title`))).toBe('要不要加匯出功能');
 
 	// Opened: the reason, the evidence and how to overturn it.
-	await click(tab, `${item('LAT-AU')} summary`);
-	await tab.until(`document.querySelector('${item('LAT-AU')} details').open`, 'the reasons opened');
-	const reasons = await tab.eval<string>(text(`${item('LAT-AU')} dl`));
+	await click(tab, `${item('LAT-AU')} .toggle`);
+	await tab.until(`!!document.querySelector('${item('LAT-AU')} .reasons')`, 'the reasons opened');
+	const reasons = await tab.eval<string>(text(`${item('LAT-AU')} .reasons`));
 	expect(reasons).toContain('固定清單 setting-default');
 	expect(reasons).toContain('LAT-AU.md');
 	expect(reasons).toContain('改成 7 天或 90 天');
@@ -244,7 +244,7 @@ test.skipIf(!CHROME)('at 390 wide nothing scrolls sideways and the first two ite
 	expect(frame.second[1]).toBeLessThanOrEqual(frame.cmdTop);
 	await shot(tab, '390-review-tab');
 	// Every button and the folded line are touchable and readable.
-	const small = await tab.eval<string[]>(`[...document.querySelectorAll('${PANEL} button, ${PANEL} summary')].filter((el) => el.offsetParent !== null).filter((el) => { const box = el.getBoundingClientRect(); return box.height < 44 - 1; }).map((el) => el.innerText)`);
+	const small = await tab.eval<string[]>(`[...document.querySelectorAll('${PANEL} button')].filter((el) => el.offsetParent !== null).filter((el) => { const box = el.getBoundingClientRect(); return box.height < 44 - 1; }).map((el) => el.innerText)`);
 	expect(small).toEqual([]);
 	const tiny = await tab.eval<number>(`Math.min(...[...document.querySelectorAll('${PANEL} *')].filter((el) => el.childNodes.length && [...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim())).map((el) => parseFloat(getComputedStyle(el).fontSize)))`);
 	expect(tiny).toBeGreaterThanOrEqual(16);
@@ -252,8 +252,13 @@ test.skipIf(!CHROME)('at 390 wide nothing scrolls sideways and the first two ite
 	await tab.until(`!!document.querySelector('${item('LAT-AU')} textarea')`, 'the box on the phone');
 	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
 	await shot(tab, '390-review-comment-box', { box: `${item('LAT-AU')} textarea` });
-	await click(tab, `${item('LAT-AU')} summary`);
-	await shot(tab, '390-review-item-open', { box: `${item('LAT-AU')} dl` });
+	await click(tab, `${item('LAT-AU')} .toggle`);
+	await tab.until(`!!document.querySelector('${item('LAT-AU')} .reasons')`, 'the reasons on the phone');
+	// Opened reasons use the card's whole width, not a column squeezed beside the button.
+	const wide = await tab.eval<number>(`document.querySelector('${item('LAT-AU')} .reasons').getBoundingClientRect().width / document.querySelector('${item('LAT-AU')}').getBoundingClientRect().width`);
+	expect(wide).toBeGreaterThan(0.85);
+	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
+	await shot(tab, '390-review-item-open', { box: `${item('LAT-AU')} .reasons` });
 	await click(tab, `${PANEL} .goal .line`);
 	await shot(tab, '390-review-goal-open', { box: `${PANEL} .goal` });
 	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);

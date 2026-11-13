@@ -6,13 +6,15 @@ import { reviewMessage, type ReviewItem } from './review.ts';
 
 export interface CommentBox {
 	open: boolean;
+	/** The item's reason, evidence and how to overturn it are shown. */
+	more: boolean;
 	text: string;
 	sending: boolean;
 	/** Why the last send failed; the text stays so it can be sent again. */
 	error: string | null;
 }
 
-const EMPTY: CommentBox = { open: false, text: '', sending: false, error: null };
+const EMPTY: CommentBox = { open: false, more: false, text: '', sending: false, error: null };
 
 class ReviewUi {
 	boxes = $state<Record<string, CommentBox>>({});

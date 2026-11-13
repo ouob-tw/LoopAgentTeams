@@ -31,24 +31,24 @@
 		{:else}
 			<span class="state">{item.stateLabel}</span>
 		{/if}
-		<details class="more">
-			<summary>原因與證據</summary>
-			<dl>
-				<dt>做了</dt>
-				<dd>{item.did}</dd>
-				<dt>為什麼</dt>
-				<dd>{item.why}</dd>
-				<dt>證據</dt>
-				<dd>
-					<ul>
-						{#each item.evidence as evidence, index (index)}<li>{evidence}</li>{/each}
-					</ul>
-				</dd>
-				<dt>怎麼推翻</dt>
-				<dd>{item.revert}</dd>
-			</dl>
-		</details>
+		<button type="button" class="toggle" aria-expanded={box.more} onclick={() => reviewUi.patch(controllerId, item.id, { more: !box.more })}>原因與證據</button>
 	</div>
+	{#if box.more}
+		<dl class="reasons">
+			<dt>做了</dt>
+			<dd>{item.did}</dd>
+			<dt>為什麼</dt>
+			<dd>{item.why}</dd>
+			<dt>證據</dt>
+			<dd>
+				<ul>
+					{#each item.evidence as evidence, index (index)}<li>{evidence}</li>{/each}
+				</ul>
+			</dd>
+			<dt>怎麼推翻</dt>
+			<dd>{item.revert}</dd>
+		</dl>
+	{/if}
 	{#if box.open && item.state === 'open'}
 		<div class="box">
 			<label for="review-text-{item.id}">{word === '回覆' ? '你的回覆' : '你想怎麼改？'}</label>
@@ -126,18 +126,14 @@
 	.state {
 		color: var(--muted);
 	}
-	.more {
-		min-width: 0;
-		flex: 1 1 8rem;
-	}
-	summary {
-		display: flex;
-		align-items: center;
+	.toggle {
 		min-height: 44px;
+		padding: 0;
+		border: 0;
+		background: none;
 		color: var(--accent);
-		cursor: pointer;
 	}
-	dl {
+	.reasons {
 		margin: 0 0 0.4rem;
 		overflow-wrap: anywhere;
 	}
