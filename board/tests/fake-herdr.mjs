@@ -5,7 +5,7 @@
 // print, the ID `workspace create` answers with (`created`; null leaves it out), and per command
 // ("pane list", "workspace list", "agent list", "tab list", "workspace create", "agent prompt",
 // "agent send-keys", "pane send-keys", "pane send-text", "pane get", "pane read", "pane close", "pane split", "tab rename", "tab create", "workspace close") a failure to act out, `fail: { exit, stderr }`, or output to
-// print instead, `raw: <text>`. `agent prompt` and `agent send-keys` succeed otherwise, without
+// print instead, `raw: <text>`. `createListed: true` has `workspace create` add the workspace to the list `workspace list` prints. `agent prompt` and `agent send-keys` succeed otherwise, without
 // checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed,
 // and, as Herdr does, its tab and workspace once no pane is left in them (`closePanes`);
 // `tab rename <tab> <label>` gives the listed tab that label; `tab create --workspace <w> --cwd <dir>
@@ -88,6 +88,11 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 	} else if (command === 'workspace create') {
 		const id = plan.created === undefined ? 'wNew' : plan.created;
 		const workspace = id === null ? {} : { workspace_id: id };
+		if (id !== null && plan.createListed) {
+			// `createListed`: the workspace made is listed from now on, under its label, as Herdr lists it.
+			plan.workspaces = [...(plan.workspaces ?? []), { workspace_id: id, number: (plan.workspaces ?? []).length + 1, label: args[args.indexOf('--label') + 1] }];
+			write(planFile, JSON.stringify(plan));
+		}
 		stdout += JSON.stringify({ id: 'cli:workspace:create', result: { workspace, tab: { tab_id: `${id}:t1` }, root_pane: { pane_id: `${id}:p1` } } });
 	} else if (command === 'pane close') {
 		closePanes(plan, [args[2]]);

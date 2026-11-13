@@ -53,14 +53,15 @@ const snapshot = async (): Promise<AutomationSnapshot> => (await authed('/api/au
 const runsOf = async (id: string): Promise<AutomationRun[]> => (await snapshot()).tasks.find((view) => view.task.id === id)!.runs;
 
 /** One workspace with a pane in the work folder, so a launch there opens its agent in it. */
-function herdrPlan() {
+function herdrPlan(withAutomation = true, extra: object = {}) {
 	writeFileSync(
 		join(dir, 'herdr.json'),
 		JSON.stringify({
-			workspaces: [{ workspace_id: 'wW', number: 1, label: 'Work' }],
+			workspaces: [{ workspace_id: 'wW', number: 1, label: 'Work' }, ...(withAutomation ? [{ workspace_id: 'wA', number: 2, label: 'AUTOMATION' }] : [])],
 			tabs: [{ tab_id: 'wW:t0', label: 'shell', workspace_id: 'wW' }],
 			panes: [{ pane_id: 'wW:p0', workspace_id: 'wW', cwd: work, tab_id: 'wW:t0' }],
-			agents: []
+			agents: [],
+			...extra
 		})
 	);
 }
@@ -80,7 +81,7 @@ function hcomPlan(launches: { name: string; client?: 'claude' | 'codex' }[], ext
 				pane_id: `wW:p-${launch.name}`,
 				tab_id: `wW:t-${launch.name}`,
 				tab_label: launch.name,
-				workspace_id: 'wW',
+				workspace_id: 'wA',
 				agent_session: { value: `s-${launch.name}` }
 			})),
 			...extra
@@ -184,7 +185,7 @@ test('a run opens a plain agent with the fixed first message and its tag, shows 
 	expect(run.agentName).toBe(`${tag}-auto-one`);
 	expect(launch.args.slice(launch.args.indexOf('--dir'), launch.args.indexOf('--dir') + 2)).toEqual(['--dir', work]);
 	expect(launch.args).toEqual(expect.arrayContaining(['--model', 'claude-haiku-5-5', '--effort', 'low', '--dangerously-skip-permissions']));
-	expect(launch.workspace).toBe('wW');
+	expect(launch.workspace).toBe('wA');
 	// The board's own agent list has it, under the session its link opens.
 	const board = await fixture.refresh(cookie);
 	expect(board.agents.map((agent) => agent.id)).toContain('s-auto-one');
@@ -341,6 +342,93 @@ test('a Codex run on a pinned account at 0 switches to a subscription account wi
 	expect(authCalls().flat().join(' ')).not.toContain('reset');
 });
 
+const herdrCalls = () => jsonLines(join(dir, 'herdr-calls.jsonl')) as string[][];
+const workspaceCreates = () => herdrCalls().filter((call) => call[0] === 'workspace' && call[1] === 'create');
+
+test('AUTOMATION is created when Herdr has none and never twice: the agent opens there in the task folder, and the run records the workspace', async () => {
+	rmSync(join(dir, 'herdr-calls.jsonl'), { force: true });
+	herdrPlan(false, { created: 'wA', createListed: true });
+	const task = await create();
+	hcomPlan([{ name: 'auto-ws1' }]);
+	const first = await runNow(task.id);
+	const run = await launchedRun(task.id, 'auto-ws1');
+	expect(workspaceCreates()).toEqual([['workspace', 'create', '--cwd', work, '--label', 'AUTOMATION', '--no-focus']]);
+	expect(hcomCalls().find((call) => call.args[0] === 'claude')!.workspace).toBe('wA');
+	expect(run.agentWorkspace).toBe('wA');
+	// The folder the agent works in is the task's, not the workspace's.
+	const launch = hcomCalls().find((call) => call.args[0] === 'claude')!;
+	expect(launch.args.slice(launch.args.indexOf('--dir'), launch.args.indexOf('--dir') + 2)).toEqual(['--dir', work]);
+	reply('auto-ws1', 'DONE');
+	setStatus('auto-ws1', 'listening');
+	await ended(task.id, first.id);
+
+	// A second run finds it listed: no second workspace.
+	for (const name of ['hcom-calls.jsonl', 'hcom-added.json']) rmSync(join(dir, name), { force: true });
+	hcomPlan([{ name: 'auto-ws2' }]);
+	const second = await runNow(task.id);
+	await launchedRun(task.id, 'auto-ws2');
+	expect(workspaceCreates().length).toBe(1);
+	expect(hcomCalls().find((call) => call.args[0] === 'claude')!.workspace).toBe('wA');
+	reply('auto-ws2', 'DONE');
+	setStatus('auto-ws2', 'listening');
+	await ended(task.id, second.id);
+});
+
+test('an AUTOMATION workspace Herdr already lists is used as it is: nothing created, even when the task folder has a project workspace', async () => {
+	rmSync(join(dir, 'herdr-calls.jsonl'), { force: true });
+	const task = await create();
+	hcomPlan([{ name: 'auto-ws3' }]);
+	const started = await runNow(task.id);
+	await launchedRun(task.id, 'auto-ws3');
+	expect(workspaceCreates()).toEqual([]);
+	expect(hcomCalls().find((call) => call.args[0] === 'claude')!.workspace).toBe('wA');
+	reply('auto-ws3', 'DONE');
+	setStatus('auto-ws3', 'listening');
+	await ended(task.id, started.id);
+});
+
+test('two runs starting together create AUTOMATION once', async () => {
+	rmSync(join(dir, 'herdr-calls.jsonl'), { force: true });
+	herdrPlan(false, { created: 'wA', createListed: true });
+	const [one, two] = [await create({ name: '並行一' }), await create({ name: '並行二' })];
+	hcomPlan([{ name: 'auto-par1' }, { name: 'auto-par2' }]);
+	const [first, second] = await Promise.all([runNow(one.id), runNow(two.id)]);
+	await Promise.all([launchedRun(one.id, 'auto-par1'), launchedRun(two.id, 'auto-par2')]);
+	expect(workspaceCreates().length).toBe(1);
+	expect(hcomCalls().filter((call) => call.args[0] === 'claude').map((call) => call.workspace)).toEqual(['wA', 'wA']);
+	for (const [name, task, run] of [['auto-par1', one, first], ['auto-par2', two, second]] as const) {
+		reply(name, 'DONE');
+		setStatus(name, 'listening');
+		await ended(task.id, run.id);
+	}
+});
+
+test('a Herdr that cannot list workspaces fails the run with the reason and starts nothing', async () => {
+	herdrPlan(true, { fail: { 'workspace list': { exit: 1, stderr: 'herdr down' } } });
+	const task = await create();
+	hcomPlan([{ name: 'auto-ws4' }]);
+	const started = await runNow(task.id);
+	const failed = await ended(task.id, started.id);
+	expect(failed.status).toBe('failed');
+	expect(failed.reason).toContain('herdr down');
+	expect(hcomCalls().filter((call) => call.args[0] === 'claude')).toEqual([]);
+});
+
+test('a board restart keeps the workspace the run recorded, for a resume there later', async () => {
+	const task = await create();
+	hcomPlan([{ name: 'auto-ws5' }]);
+	const started = await runNow(task.id);
+	await launchedRun(task.id, 'auto-ws5');
+	await fixture.stop();
+	await fixture.start();
+	cookie = await fixture.login();
+	const kept = (await runsOf(task.id)).find((entry) => entry.id === started.id)!;
+	expect([kept.status, kept.agentWorkspace]).toEqual(['running', 'wA']);
+	reply('auto-ws5', 'DONE');
+	setStatus('auto-ws5', 'listening');
+	expect((await ended(task.id, started.id)).status).toBe('success');
+});
+
 /** Codex shows its usage limit on the agent's screen. */
 function limitOnScreen(name: string) {
 	const plan = JSON.parse(readFileSync(join(dir, 'herdr.json'), 'utf8'));
@@ -355,7 +443,7 @@ function codexPlan(name: string) {
 function resumesAs(run: AutomationRun, name: string) {
 	const plan = JSON.parse(readFileSync(join(dir, 'hcom.json'), 'utf8'));
 	plan.resumed = { name: run.agentName, base_name: name, session_id: `s-${name}`, status: 'active', tool: 'codex', launch_context: { pane_id: `wW:p-${name}-2` } };
-	plan.resumedHerdr = { agent: 'codex', agent_status: 'working', cwd: work, pane_id: `wW:p-${name}-2`, tab_id: `wW:t-${name}-2`, workspace_id: 'wW', agent_session: { value: `s-${name}` } };
+	plan.resumedHerdr = { agent: 'codex', agent_status: 'working', cwd: work, pane_id: `wW:p-${name}-2`, tab_id: `wW:t-${name}-2`, workspace_id: 'wA', agent_session: { value: `s-${name}` } };
 	writeFileSync(join(dir, 'hcom.json'), JSON.stringify(plan));
 }
 function freshRun() {
@@ -412,7 +500,7 @@ test('a Codex usage limit mid-run at 0: the agent killed, another account probed
 	const resumed = await eventually(async () => hcomCalls().find((call) => call.args[0] === 'r'), 8_000, 'the resume');
 	expect(resumed.args.slice(0, 2)).toEqual(['r', 's-auto-limit']);
 	expect(resumed.args[resumed.args.indexOf('--hcom-prompt') + 1]).toContain('已換帳號接回');
-	expect(resumed.workspace).toBe('wW');
+	expect(resumed.workspace).toBe('wA');
 	const kill = hcomCalls().findIndex((call) => call.args[0] === 'kill');
 	expect(kill).toBeGreaterThan(-1);
 	expect(kill).toBeLessThan(hcomCalls().findIndex((call) => call.args[0] === 'r'));

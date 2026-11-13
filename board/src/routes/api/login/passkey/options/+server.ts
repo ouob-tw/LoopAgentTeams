@@ -21,7 +21,7 @@ export const POST: RequestHandler = async ({ cookies, locals }) => {
 		return json({ error: 'passkeys_unreadable' }, { status: 500 });
 	}
 	if (!passkeys.length) return json({ error: 'no_passkey' }, { status: 409 });
-	const options = await loginOptions(config.passkeySite, passkeys);
+	const options = await loginOptions(config.passkeySite, passkeys, 'second step');
 	keepChallenge(cookies, now, options.challenge);
 	return json(options);
 };

@@ -38,7 +38,10 @@ beforeEach(() => {
 	writeFileSync(
 		join(dir, 'herdr.json'),
 		JSON.stringify({
-			workspaces: [{ workspace_id: 'wW', number: 1, label: 'Work' }],
+			workspaces: [
+				{ workspace_id: 'wW', number: 1, label: 'Work' },
+				{ workspace_id: 'wA', number: 2, label: 'AUTOMATION' }
+			],
 			tabs: [{ tab_id: 'wW:t0', label: 'shell', workspace_id: 'wW' }],
 			panes: [{ pane_id: 'wW:p0', workspace_id: 'wW', cwd: work, tab_id: 'wW:t0' }],
 			agents: []
@@ -163,6 +166,9 @@ test('a run that succeeded opens a read-only checker of the other client; FAIL i
 	expect(launch.args[launch.args.indexOf('--hcom-prompt') + 1]).toBe(`讀取並照做 ${brief}：你是只讀的檢查 Agent，不得修改檔案、不得寄送或開票。照說明檔的格式逐條判定，最後一行只回覆 PASS 或 FAIL`);
 	expect(launch.args[launch.args.indexOf('--tag') + 1]).toBe(`autochk-${task.id}-${run.id.split('-').at(-1)!.slice(0, 6)}`);
 	expect(launch.args.slice(launch.args.indexOf('--dir'), launch.args.indexOf('--dir') + 2)).toEqual(['--dir', work]);
+	// In the AUTOMATION workspace, as the task's own agent.
+	expect(launch.workspace).toBe('wA');
+	expect(run.review!.agentWorkspace).toBe('wA');
 	expect(launch.args).toEqual(expect.arrayContaining(['-c', 'model="gpt-6.1-sol"', '-c', 'model_reasoning_effort="medium"']));
 	const text = readFileSync(brief, 'utf8');
 	for (const rule of ['只讀：不得修改、新增、刪除或搬移任何檔案', '不得寄送任何東西', '不得開票']) expect(text).toContain(rule);

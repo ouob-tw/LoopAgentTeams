@@ -1,8 +1,9 @@
 // A password login in two steps: the right password opens a second step for 5 minutes, and only a
 // passed second step logs the device in. The second step is a passkey (/api/login/passkey) or a
-// TOTP code (/api/login/totp), whichever the host has set up.
+// TOTP code (/api/login/totp), whichever the host has set up. A passkey also logs in alone, with no
+// password (/api/login/passwordless).
 //
-// Both steps share one wrong-attempt limit per source. Its count is cleared only when a device is
+// Every step shares one wrong-attempt limit per source. Its count is cleared only when a device is
 // logged in, so "right password, wrong code" over and over still ends in a lock.
 import { createHash, randomBytes } from 'node:crypto';
 import { json, type Cookies } from '@sveltejs/kit';
@@ -83,28 +84,53 @@ export function takeChallenge(cookies: Cookies, now: number): string | undefined
 	return challenge;
 }
 
-/** Passkey registrations under way, by their token's hash: the challenge, the registration
- *  code's hash, and when each ends. In memory only, like the open steps. */
-const enrolling = new Map<string, { challenge: string; codeHash: string; endsAt: number }>();
+/** Who may finish a passkey registration: whoever brings the host's registration code (by its
+ *  hash), or the logged-in device that started it from the settings. */
+export type Enroller = { codeHash: string; deviceId?: undefined } | { deviceId: string; codeHash?: undefined };
 
-/** The password and registration code were right: remember the challenge until the browser answers. */
-export function startEnrollment(challenge: string, codeHash: string, now: number): string {
+/** Passkey registrations under way, by their token's hash: the challenge, who started it, and
+ *  when each ends. In memory only, like the open steps. */
+const enrolling = new Map<string, Enroller & { challenge: string; endsAt: number }>();
+
+/** A registration may start: remember the challenge until the browser answers. */
+export function startEnrollment(challenge: string, by: Enroller, now: number): string {
 	for (const [key, enrollment] of enrolling) if (enrollment.endsAt <= now) enrolling.delete(key);
 	const token = randomBytes(32).toString('base64url');
-	enrolling.set(hash(token), { challenge, codeHash, endsAt: now + SECOND_STEP_SECONDS * 1000 });
+	enrolling.set(hash(token), { ...by, challenge, endsAt: now + SECOND_STEP_SECONDS * 1000 });
 	return token;
 }
 
 /** The registration the token started, which can be answered once; undefined when there is none
  *  or it ran out. */
-export function takeEnrollment(token: string, now: number): { challenge: string; codeHash: string } | undefined {
+export function takeEnrollment(token: string, now: number): (Enroller & { challenge: string }) | undefined {
 	const key = hash(token);
 	const enrollment = enrolling.get(key);
 	enrolling.delete(key);
 	return enrollment && enrollment.endsAt > now ? enrollment : undefined;
 }
 
-/** The second step passed: close it and log the device in. The caller has already told the limit. */
+/** Challenges given for a passkey login without a password, with when each ends. Anyone may ask
+ *  for one, so the oldest go once there are too many. In memory only, like the open steps. */
+const passwordless = new Map<string, number>();
+const PASSWORDLESS_MAX = 1000;
+
+/** Remember a challenge given for a passkey login without a password until `endsAt`. */
+export function keepPasswordlessChallenge(challenge: string, endsAt: number, now: number): void {
+	for (const [key, ends] of passwordless) if (ends <= now) passwordless.delete(key);
+	while (passwordless.size >= PASSWORDLESS_MAX) passwordless.delete(passwordless.keys().next().value!);
+	passwordless.set(challenge, endsAt);
+}
+
+/** Whether this challenge was given for a passkey login without a password and is still good. It
+ *  is answered once: it is gone after this. */
+export function usePasswordlessChallenge(challenge: string, now: number): boolean {
+	const endsAt = passwordless.get(challenge);
+	passwordless.delete(challenge);
+	return endsAt !== undefined && endsAt > now;
+}
+
+/** A login passed (a second step, or a passkey alone): close any open second step and log the
+ *  device in. The caller has already told the limit. */
 export function finishLogin(config: BoardConfig, cookies: Cookies, https: boolean, userAgent: string, step: SecondStep): void {
 	const token = cookies.get(STEP_COOKIE);
 	if (token) open.delete(hash(token));

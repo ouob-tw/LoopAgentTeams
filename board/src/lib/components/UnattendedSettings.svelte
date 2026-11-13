@@ -193,6 +193,10 @@
 	h4:first-child {
 		margin-top: 0;
 	}
+	/* A finger's width on a phone (ui-baseline). */
+	button {
+		min-height: 44px;
+	}
 	.choices {
 		display: flex;
 		flex-wrap: wrap;

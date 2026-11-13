@@ -91,6 +91,10 @@
 		font-weight: 700;
 		white-space: nowrap;
 	}
+	/* A finger's width on a phone (ui-baseline). */
+	button {
+		min-height: 44px;
+	}
 	.off {
 		padding: 0.25rem 0.7rem;
 		color: var(--danger);

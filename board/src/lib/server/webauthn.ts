@@ -16,23 +16,34 @@ import type { PasskeySite } from './config.ts';
 import type { Passkey } from './passkeys.ts';
 
 const RP_NAME = 'LAT 看板';
-const TIMEOUT_MS = 2 * 60 * 1000;
-// A passkey is the second step after the password: having it is what counts. One without a PIN or
-// fingerprint (a plain security key) still works.
-const USER_VERIFICATION = 'preferred';
+export const TIMEOUT_MS = 2 * 60 * 1000;
 
-/** What the browser is asked to sign at login: one of the registered passkeys. */
-export function loginOptions(site: PasskeySite, passkeys: Passkey[]): Promise<PublicKeyCredentialRequestOptionsJSON> {
+/** How a login uses the passkey. `second step`: after the password, where having it is what
+ *  counts, so one without a PIN or fingerprint (a plain security key) still works. `alone`: in
+ *  place of the password, so the authenticator must also check who holds it (PIN, fingerprint,
+ *  face or screen lock). */
+export type PasskeyUse = 'second step' | 'alone';
+
+/** What the browser is asked to sign at login: one of the registered passkeys. They are all
+ *  listed, so a passkey the authenticator does not keep as discoverable still answers. */
+export function loginOptions(site: PasskeySite, passkeys: Passkey[], use: PasskeyUse): Promise<PublicKeyCredentialRequestOptionsJSON> {
 	return generateAuthenticationOptions({
 		rpID: site.rpId,
 		allowCredentials: passkeys.map((passkey) => ({ id: passkey.credentialId, transports: passkey.transports })),
-		userVerification: USER_VERIFICATION,
+		userVerification: use === 'alone' ? 'required' : 'preferred',
 		timeout: TIMEOUT_MS
 	});
 }
 
-/** The signature counter of a valid answer to `challenge` by `passkey`; null for anything else. */
-export async function verifyLogin(site: PasskeySite, challenge: string, response: AuthenticationResponseJSON, passkey: Passkey): Promise<number | null> {
+/** The signature counter of a valid answer by `passkey` to `challenge` (or to one the function
+ *  accepts); null for anything else. */
+export async function verifyLogin(
+	site: PasskeySite,
+	challenge: string | ((challenge: string) => boolean),
+	response: AuthenticationResponseJSON,
+	passkey: Passkey,
+	use: PasskeyUse
+): Promise<number | null> {
 	try {
 		const result = await verifyAuthenticationResponse({
 			response,
@@ -40,7 +51,7 @@ export async function verifyLogin(site: PasskeySite, challenge: string, response
 			expectedOrigin: site.origin,
 			expectedRPID: site.rpId,
 			credential: { id: passkey.credentialId, publicKey: Buffer.from(passkey.publicKey, 'base64url'), counter: passkey.counter, transports: passkey.transports },
-			requireUserVerification: false
+			requireUserVerification: use === 'alone'
 		});
 		return result.verified ? result.authenticationInfo.newCounter : null;
 	} catch {
@@ -50,7 +61,8 @@ export async function verifyLogin(site: PasskeySite, challenge: string, response
 }
 
 /** What the browser is asked to create: a new passkey, not one of those already registered. Each
- *  gets a user handle of its own, so a second passkey on one device does not replace the first. */
+ *  gets a user handle of its own, so a second passkey on one device does not replace the first. It
+ *  must check who holds it, so it can also log in alone. */
 export function enrollOptions(site: PasskeySite, passkeys: Passkey[]): Promise<PublicKeyCredentialCreationOptionsJSON> {
 	return generateRegistrationOptions({
 		rpName: RP_NAME,
@@ -59,7 +71,7 @@ export function enrollOptions(site: PasskeySite, passkeys: Passkey[]): Promise<P
 		userID: randomBytes(16),
 		attestationType: 'none',
 		excludeCredentials: passkeys.map((passkey) => ({ id: passkey.credentialId, transports: passkey.transports })),
-		authenticatorSelection: { residentKey: 'preferred', userVerification: USER_VERIFICATION },
+		authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
 		timeout: TIMEOUT_MS
 	});
 }
