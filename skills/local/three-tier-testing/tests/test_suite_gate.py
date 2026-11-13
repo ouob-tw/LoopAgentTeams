@@ -741,6 +741,36 @@ class ScopeTests(GateCase):
             self.assertIsInstance(profile[field], float, field)
         self.assertGreater(profile['mem_peak_bytes'], 0)
 
+    def test_the_tests_slice_cap_is_read_from_the_installer_conf(self):
+        conf = self.tmp / 'slices.conf'
+        old = os.environ.get('LAT_CPU_CONF')
+        self.addCleanup(lambda: os.environ.pop('LAT_CPU_CONF', None) if old is None
+                        else os.environ.__setitem__('LAT_CPU_CONF', old))
+        os.environ['LAT_CPU_CONF'] = str(conf)
+        self.assertIsNone(gate.tests_slice_cores())
+        conf.write_text('TESTS_CPU_WEIGHT=30\nTESTS_CPU_QUOTA=800%\n')
+        self.assertEqual(gate.tests_slice_cores(), 8.0)
+        conf.write_text('TESTS_CPU_QUOTA=infinity\n')
+        self.assertIsNone(gate.tests_slice_cores())
+
+    def test_a_suite_scope_sits_under_the_tests_slice_unless_overridden(self):
+        for name, slice_env, expected in (('default', None, 'lat-tests.slice'),
+                                          ('custom', f'{self.tmp.name}-own.slice',
+                                           f'{self.tmp.name}-own.slice')):
+            seen = self.tmp / f'slice-{name}'
+            if slice_env:
+                self.env['SUITE_GATE_SLICE'] = slice_env
+            result = self.gate('run', '--rerun', name, '--',
+                               f'cut -d: -f3 /proc/self/cgroup > {seen}')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            group = seen.read_text().strip()
+            self.assertIn(f'/{expected}/', group)
+        self.env['SUITE_GATE_SLICE'] = ''
+        seen = self.tmp / 'slice-none'
+        self.assertEqual(self.gate('run', '--rerun', 'none', '--',
+                                   f'cut -d: -f3 /proc/self/cgroup > {seen}').returncode, 0)
+        self.assertNotIn('lat-tests.slice', seen.read_text())
+
     def test_the_holder_records_the_group_and_the_main_session(self):
         seen = self.tmp / 'seen'
         release = self.tmp / 'release'

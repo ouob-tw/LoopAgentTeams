@@ -78,6 +78,7 @@ MINIMUMS = {'min_slots': 0, 'max_slots': 1, 'profile_history': 1, 'poll_seconds'
             'report_seconds': 0.01, 'sample_seconds': 0.01}
 BRAKE_PAIRS = (('brake_io_low', 'brake_io_high'), ('brake_cpu_low', 'brake_cpu_high'))
 GIB = 2 ** 30
+TESTS_SLICE = 'lat-tests.slice'  # the user slice that caps every suite's CPU; SUITE_GATE_SLICE overrides
 CPU_WINDOW_SECONDS = 10.0
 WORKTREE_PLACEHOLDER = '<worktree>'
 TAIL_LINES = 20
@@ -1541,6 +1542,27 @@ def admission(config, running, candidate, host):
 
 # ---------------------------------------------------------------- run
 
+def scope_slice_args():
+    """`--slice=` for a suite's scope: empty SUITE_GATE_SLICE puts the scope in no slice. A slice
+    nobody installed is created without limits, so a host without it still runs the suite."""
+    name = os.environ.get('SUITE_GATE_SLICE', TESTS_SLICE)
+    return [f'--slice={name}'] if name else []
+
+
+def tests_slice_cores():
+    """The CPU cap of lat-tests.slice in cores, from TESTS_CPU_QUOTA (e.g. `2000%` = 20 cores) in
+    the conf the slice installer reads (~/.config/lat-cpu/slices.conf, or $LAT_CPU_CONF);
+    None when the file or key is missing or not a percentage."""
+    conf = os.environ.get('LAT_CPU_CONF') or str(
+        Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'lat-cpu/slices.conf')
+    try:
+        text = Path(conf).read_text()
+    except OSError:
+        return None
+    found = re.findall(r'^TESTS_CPU_QUOTA=["\']?(\d+(?:\.\d+)?)%', text, re.M)
+    return float(found[-1]) / 100 if found else None
+
+
 class Gate:
     def __init__(self, argv, cwd, rerun, config, extra=None, template=False):
         self.argv = argv
@@ -1788,7 +1810,7 @@ class Gate:
             prefix = os.environ.get('SUITE_GATE_UNIT_PREFIX') or 'suite-gate'
             unit = f"{prefix}-{self.me['id'][:12]}"
             launch = ['systemd-run', '--user', '--scope', '--quiet', '--collect',
-                      f'--unit={unit}', '--', '/bin/sh', '-c', SCOPE_LAUNCHER, 'suite-gate',
+                      *scope_slice_args(), f'--unit={unit}', '--', '/bin/sh', '-c', SCOPE_LAUNCHER, 'suite-gate',
                       *argv]
         # An interrupt must not land between starting the session and recording it.
         old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
