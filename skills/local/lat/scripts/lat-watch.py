@@ -21,7 +21,8 @@ import time
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import DecisionStatus, read_decision_session, read_decision_status
+from lat_decision_status import (WAITABLE_STATUSES, DecisionStatus, read_decision_session,
+                                 read_decision_status)
 from _lat_common import (full_hcom_name, process_starttime, resolve_agent_name, run_cli,
                          same_controller, shared_lat_dir, watcher_process_matches,
                          write_json_atomic, read_hcom_pauses)
@@ -1928,7 +1929,7 @@ def pending_decision(decisions, target, *, log=None, agent=None, exact=True):
                     'file': str(path), 'error': status.error,
                     'target': target, 'treated_as_pending': True,
                 })
-        elif status.status == 'pending':
+        elif status.status in WAITABLE_STATUSES:
             pending = True
     return pending
 
@@ -3603,14 +3604,14 @@ def declare_alarm(args):
 
 
 def own_pending_decisions(decisions, session):
-    """IDs of the pending decision records that name this controller session, sorted."""
+    """IDs of the pending or parked decision records that name this controller session, sorted."""
     if not session:
         return []
     found = []
     for path in sorted(Path(decisions).glob('*.md')):
         try:
             status = read_decision_status(path)
-            if (status.error is None and status.status == 'pending'
+            if (status.error is None and status.status in WAITABLE_STATUSES
                     and read_decision_session(path) == session):
                 found.append(path.stem)
         except (OSError, UnicodeDecodeError):

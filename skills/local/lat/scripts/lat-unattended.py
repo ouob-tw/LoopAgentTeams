@@ -485,25 +485,35 @@ def cmd_close(args):
     return report(args, dict(status='ok', ended=ended), text)
 
 
-def cmd_check(args):
-    """Whether version N was in effect at a moment; delegated decisions cite it."""
-    lat, session = owner(args)
+def version_problem(lat, session, version_number, moment, round_number=None):
+    """`(reason, version)`: why version N of a round (default the current one) was not in effect
+    at `moment`, or None when it was. Reading the current round first ends a version past its
+    limit or mode, like `status`. An earlier round's version left open counts from its start."""
     with preauth.locked(session_lock(lat, session)):
         found_round = load_round(lat, session)
-    versions, round_number = found_round.versions, found_round.number
-    moment = parse(args.at) if args.at else now()
-    found = next((v for v in versions if v['version'] == args.version), None)
+    current = round_number in (None, found_round.number)
+    round_number = found_round.number if current else round_number
+    versions = found_round.versions if current else read_grant(lat, session, round_number)[0]
+    found = next((v for v in versions if v['version'] == version_number), None)
     if found is None:
-        reason = f'version {args.version} does not exist in round {round_number}'
+        reason = f'version {version_number} does not exist in round {round_number}'
     elif moment < parse(found['started_at']):
-        reason = f'version {args.version} started at {found["started_at"]}'
+        reason = f'version {version_number} started at {found["started_at"]}'
     elif found['ended_at'] and moment >= parse(found['ended_at']):
-        reason = (f'version {args.version} ended at {found["ended_at"]} '
+        reason = (f'version {version_number} ended at {found["ended_at"]} '
                   f'({END_LABELS.get(found["end_reason"], found["end_reason"])})')
-    elif found['ended_at'] is None and not found_round.active:
+    elif found['ended_at'] is None and current and not found_round.active:
         reason = f'round {round_number} has ended'
     else:
         reason = None
+    return reason, found
+
+
+def cmd_check(args):
+    """Whether version N was in effect at a moment; delegated decisions cite it."""
+    lat, session = owner(args)
+    moment = parse(args.at) if args.at else now()
+    reason, found = version_problem(lat, session, args.version, moment, args.round)
     result = dict(status='ok', effective=reason is None, reason=reason, version=found)
     report(args, result, '有效' if reason is None else f'無效：{reason}')
     return 0 if reason is None else 1
@@ -608,6 +618,7 @@ def build_parser():
                               help='exit 0 when a version was in effect at a moment, else 1; '
                                    'like status, first ends a version past its limit or mode')
     sub.add_argument('--version', type=int, required=True)
+    sub.add_argument('--round', type=int, help="the grant's round; default the current one")
     sub.add_argument('--at', help='ISO time; default now')
     return parser
 

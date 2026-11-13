@@ -1,0 +1,7 @@
+{"map": [
+  {"paths": ["skills/local/lat/scripts/lat_decision_status.py", "skills/local/lat/scripts/lat-session.py",
+             "skills/local/lat/scripts/lat-unattended.py", "skills/local/lat/scripts/lat-watch.py",
+             "skills/local/lat/scripts/lat-preauth.py", "skills/local/lat/herdr-panel/questions.py",
+             "skills/local/lat/herdr-panel/lat_panel.py"],
+   "tests": ["skills/local/lat/tests/test_lat_unattended_decisions.py"]}
+]}
