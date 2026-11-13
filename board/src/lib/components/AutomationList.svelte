@@ -37,7 +37,7 @@
 					{#if view.missed.length}
 						<span class="ell last missed">{missedText(view.missed)}</span>
 					{:else}
-						<span class="ell muted last">{lastRunText(view.runs.find((run) => run.status !== 'skipped'), automation.timeZone)}</span>
+						<span class="ell muted last">{lastRunText(view.runs.find((run) => run.status !== 'skipped'), automation.timeZone, clock.now)}</span>
 					{/if}
 				</button>
 			</li>

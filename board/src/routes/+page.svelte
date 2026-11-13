@@ -43,6 +43,8 @@
 	import AutomationForm from '#lib/components/AutomationForm.svelte';
 	import AutomationList from '#lib/components/AutomationList.svelte';
 	import AutomationTask from '#lib/components/AutomationTask.svelte';
+	import AlertCard from '#lib/components/AlertCard.svelte';
+	import type { AutomationAlert } from '#lib/board/alerts.ts';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
 	import Settings from '#lib/components/Settings.svelte';
@@ -60,7 +62,7 @@
 	testDevice.set(data.testDevice);
 
 	// svelte-ignore state_referenced_locally
-	const board = new LiveBoard(data.snapshot, data.pd, data.automation);
+	const board = new LiveBoard(data.snapshot, data.pd, data.automation, data.alerts);
 	// The notice times read the board's calendar day.
 	$effect.pre(() => {
 		clock.timeZone = board.snapshot.closed.timeZone;
@@ -444,6 +446,26 @@
 		navigation.go({ kind: 'automation', id });
 	}
 
+	/** The red cards: the open ones are on top of the inbox; a closed one still opens from a push. */
+	const openAlerts = $derived(board.alerts.alerts.filter((alert) => alert.dismissedAt === undefined));
+	const alertId = $derived(view?.kind === 'alert' ? view.id : null);
+	const alertShown = $derived(alertId === null ? undefined : board.alerts.alerts.find((alert) => alert.id === alertId));
+	const openAlert = (alert: AutomationAlert) => navigation.go({ kind: 'alert', id: alert.id }, true);
+	// A push clicked while a board tab is open: that tab shows the card (static/pd-sw.js).
+	onMount(() => {
+		const container = typeof navigator !== 'undefined' ? navigator.serviceWorker : undefined;
+		if (!container) return;
+		const opened = (event: MessageEvent) => {
+			if (event.data?.type !== 'alert-open' || typeof event.data.alert !== 'string') return;
+			navigation.setMiddle('inbox');
+			navigation.go({ kind: 'alert', id: event.data.alert }, true);
+			void board.reloadAlerts();
+		};
+		container.addEventListener('message', opened);
+		container.startMessages();
+		return () => container.removeEventListener('message', opened);
+	});
+
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
 </script>
@@ -566,8 +588,8 @@
 				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => navigation.setMiddle('agents')}
 					>Herdr<small>{agents.length}</small></button
 >
-				<button type="button" data-middle="automation" aria-pressed={middle === 'automation'} onclick={() => navigation.setMiddle('automation')}>自動化</button>
 				<button type="button" data-middle="quota" aria-pressed={middle === 'quota'} onclick={() => navigation.setMiddle('quota')}>額度</button>
+				<button type="button" data-middle="automation" aria-pressed={middle === 'automation'} onclick={() => navigation.setMiddle('automation')}>自動化</button>
 			</div>
 			{#if middle === 'quota'}
 				<QuotaList quota={board.quota} />
@@ -583,6 +605,9 @@
 				<Inbox
 					items={listedInbox}
 					asks={openAsks}
+					alerts={openAlerts}
+					currentAlert={alertId}
+					onalert={openAlert}
 					{endedAsks}
 					{controllers}
 					{sort}
@@ -623,6 +648,10 @@
 						<button class="whose" title="{closedAgent.folder} @{closedAgent.hcomName}" onclick={scrollToTop}>
 							<strong>{folderName(closedAgent.folder)}</strong>
 							<span class="handle">@{lastSegment(closedAgent.hcomName)}</span>
+						</button>
+					{:else if view.kind === 'alert'}
+						<button class="whose" onclick={scrollToTop}>
+							<strong>{alertShown?.taskName ?? '自動化紅卡'}</strong>
 						</button>
 					{:else if view.kind === 'automation' || view.kind === 'automation-edit'}
 						<button class="whose" onclick={scrollToTop}>
@@ -684,9 +713,21 @@
 					{/if}
 				{:else if view.kind === 'automation'}
 					{#if taskView}
-						<AutomationTask view={taskView} timeZone={board.automation.timeZone} onedit={() => navigation.go({ kind: 'automation-edit', id: taskView.task.id })} onchanged={() => void board.reloadAutomation()} />
+						<AutomationTask view={taskView} timeZone={board.automation.timeZone} onedit={() => navigation.go({ kind: 'automation-edit', id: taskView.task.id })} onchanged={() => void board.reloadAutomation()} onopenagent={openAgent} />
 					{:else}
 						<p class="empty">這個任務已不存在。</p>
+					{/if}
+				{:else if view.kind === 'alert'}
+					{#if alertShown}
+						<AlertCard
+							alert={alertShown}
+							task={board.automation.tasks.find((candidate) => candidate.task.id === alertShown.taskId)}
+							timeZone={board.automation.timeZone}
+							onsettings={(id) => (navigation.setMiddle('automation'), navigation.go({ kind: 'automation', id }, true))}
+							onchanged={() => void Promise.all([board.reloadAlerts(), board.reloadAutomation()])}
+						/>
+					{:else}
+						<p class="empty">這張紅卡已不存在。</p>
 					{/if}
 				{:else if view.kind === 'automation-edit'}
 					{#if view.id === null || taskView}

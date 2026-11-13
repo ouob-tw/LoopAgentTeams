@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Three groups: this device's settings (theme, overall size, smallest text size), the board's, which every
+	// Four groups: this device's settings (theme, overall size, smallest text size), its pushes, the board's, which every
 	// device shares (the mode a new controller starts in, how the usage line reads, whether conversations
 	// open translated), and the global pre-authorization file.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
@@ -11,6 +11,7 @@
 	import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	import PreauthSettings from './PreauthSettings.svelte';
 	import UnattendedSettings from './UnattendedSettings.svelte';
+	import PushSettings from './PushSettings.svelte';
 	import type { TranslateMode } from '#lib/board/translate-mode.ts';
 	import type { UsageStyle } from '#lib/board/usage.ts';
 
@@ -19,11 +20,13 @@
 	let dialog: HTMLDialogElement;
 	let preauth: PreauthSettings;
 	let unattended: UnattendedSettings;
+	let push: PushSettings;
 
 	/** With `anchor`, at that pre-authorization action, once the file is read. */
 	export function open(anchor?: string) {
 		if (!dialog.open) dialog.showModal();
 		void unattended.load();
+		void push.load();
 		void preauth.opened().then(() => {
 			if (anchor) void preauth.reveal(anchor);
 		});
@@ -114,6 +117,11 @@
 				</div>
 				<p class="note">只影響終端分頁，不受整體大小與最小字體影響。</p>
 			</section>
+		</section>
+
+		<section class="group">
+			<h3>通知</h3>
+			<PushSettings bind:this={push} />
 		</section>
 
 		<section class="group">

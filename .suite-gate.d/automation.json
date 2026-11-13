@@ -5,18 +5,23 @@
         "board/src/lib/board/automation.ts",
         "board/src/lib/board/automation-actions.ts",
         "board/src/lib/server/automation.ts",
+        "board/src/lib/server/automation-agent.ts",
+        "board/src/lib/server/automation-host.ts",
         "board/src/lib/components/AutomationForm.svelte",
         "board/src/lib/components/AutomationList.svelte",
         "board/src/lib/components/AutomationState.svelte",
         "board/src/lib/components/AutomationTask.svelte",
-        "board/src/routes/api/automation/**"
+        "board/src/routes/api/automation/**",
+        "board/tests/fake-codex-multi-auth.mjs"
       ],
       "tests": [
         "board/tests/unit/automation.test.ts",
         "board/tests/server/automation.test.ts",
         "board/tests/browser/automation-page.test.ts",
         "board/tests/server/automation-schedule.test.ts",
-        "board/tests/browser/automation-schedule-page.test.ts"
+        "board/tests/browser/automation-schedule-page.test.ts",
+        "board/tests/server/automation-agent.test.ts",
+        "board/tests/browser/automation-agent-page.test.ts"
       ]
     }
   ]

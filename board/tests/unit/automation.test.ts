@@ -96,6 +96,7 @@ test('the card’s last line says how the latest run ended', () => {
 	expect(lastRunText(run({ endedAt: at(2026, 11, 1, 3, 4), checks: [{ label: '檔案存在：x', ok: true }] }), zone)).toBe('11/01 03:04 完成，1 項檢查都通過');
 	expect(lastRunText(run({ status: 'failed', exitCode: 1, endedAt: at(2026, 11, 5, 9) }), zone)).toBe('11/05 09:00 失敗：結束碼 1');
 	expect(lastRunText(run({ status: 'running', startedAt: at(2026, 11, 5, 9) }), zone)).toBe('11/05 09:00 開始，執行中');
+	expect(lastRunText(run({ status: 'running', startedAt: at(2026, 11, 5, 9) }), zone, at(2026, 11, 5, 9, 12))).toBe('11/05 09:00 開始，已跑 12 分鐘');
 });
 
 test('days are Taipei days whatever the host zone: 23:30 UTC on the 2nd is the 3rd in Taipei', () => {

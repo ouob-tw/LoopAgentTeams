@@ -102,7 +102,9 @@ export async function launchAgent(
 	const prompt = launch.prompt ? ['--hcom-prompt', launch.prompt] : [];
 	const tag = launch.tag ? ['--tag', launch.tag] : [];
 	const args = [launch.client, '--dir', launch.folder, ...tag, ...terminalArgs(launch.intoPane), '--go', ...prompt, ...launch.extraArgs];
-	const { onName } = launch;
+	// hcom prints a tagged agent's own name, but lists it, and answers to it, as `<tag>-<name>`.
+	const full = (name: string) => (launch.tag && !name.startsWith(`${launch.tag}-`) ? `${launch.tag}-${name}` : name);
+	const onName = launch.onName && ((name: string) => launch.onName!(full(name)));
 	const run = await runCommand(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
 		env: hcomEnv(launch.herdrWorkspace, launch.intoPane),
@@ -112,7 +114,8 @@ export async function launchAgent(
 			if (name) onName(name);
 		})
 	});
-	return launchResult(run);
+	const result = launchResult(run);
+	return result.hcomName ? { ...result, hcomName: full(result.hcomName) } : result;
 }
 
 /** Resume the conversation with this session ID in a new Herdr tab of the workspace, or in

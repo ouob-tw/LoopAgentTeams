@@ -1,8 +1,9 @@
 <script lang="ts">
 	// One task in the content column: its settings, the checklist, and every run kept, newest
 	// first, each with how it was started, when, how it ended and why, the fixed checks one by one
-	// and the output it left. 立即執行, 暫停／恢復 and 編輯 sit at the top; missed periods above them,
-	// with 立即執行 and 這期就算了.
+	// and the output it left. 立即執行 (停止這次 while it runs), 暫停／恢復 and 編輯 sit at the top;
+	// missed periods above them, with 立即執行 and 這期就算了. An agent run links to its agent's page:
+	// the live screen while it runs, the conversation after.
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import {
 		clientName,
@@ -17,14 +18,33 @@
 		type AutomationRun,
 		type AutomationTaskView
 	} from '#lib/board/automation.ts';
-	import { dismissMissed, pauseTask, readOutput, runTask } from '#lib/board/automation-actions.ts';
+	import { dismissMissed, pauseTask, readOutput, runTask, stopTask } from '#lib/board/automation-actions.ts';
 	import AutomationState from './AutomationState.svelte';
 
-	let { view, timeZone, onedit, onchanged }: { view: AutomationTaskView; timeZone: string; onedit: () => void; onchanged: () => void } = $props();
+	let {
+		view,
+		timeZone,
+		onedit,
+		onchanged,
+		onopenagent
+	}: { view: AutomationTaskView; timeZone: string; onedit: () => void; onchanged: () => void; onopenagent: (sessionId: string) => void } = $props();
 
 	const task = $derived(view.task);
 	const at = $derived(timeFormat(timeZone));
-	const running = $derived(view.runs.some((run) => run.status === 'running'));
+	const runningRun = $derived(view.runs.find((run) => run.status === 'running'));
+	const running = $derived(runningRun !== undefined);
+	/** The run 停止這次 was pressed for: until its record ends, the button says it is stopping. */
+	let stopping = $state<string | null>(null);
+	async function stop(runId: string) {
+		stopping = runId;
+		let refused = false;
+		await act(async () => {
+			const done = await stopTask(task.id);
+			refused = !done.ok;
+			return done;
+		});
+		if (refused) stopping = null;
+	}
 	/** What the last button pressed here answered, when it was refused. */
 	let notice = $state<string | null>(null);
 	let busy = $state(false);
@@ -48,6 +68,10 @@
 
 	const minutes = (from: number, to: number) => Math.max(0, Math.floor((to - from) / 60_000));
 	const sameDay = (a: number, b: number) => at.day(a) === at.day(b);
+	const openAgent = (sessionId: string, event: MouseEvent) => {
+		event.preventDefault();
+		onopenagent(sessionId);
+	};
 </script>
 
 <div class="task" data-task={task.id}>
@@ -63,24 +87,24 @@
 				看板都沒開，所以沒跑。不會自動補跑。
 			</p>
 			<div class="actions">
-				<button type="button" class="primary" disabled={busy || running || task.kind !== 'command'} onclick={() => act(() => runTask(task.id))}>立即執行</button>
+				<button type="button" class="primary" disabled={busy || running} onclick={() => act(() => runTask(task.id))}>立即執行</button>
 				<button type="button" disabled={busy} onclick={() => act(() => dismissMissed(task.id))}>這期就算了</button>
 			</div>
 		</section>
 	{/if}
 	<div class="actions">
-		{#if !view.missed.length}
-			<button type="button" class="primary" disabled={busy || running || task.kind !== 'command'} onclick={() => act(() => runTask(task.id))}>立即執行</button>
+		{#if running}
+			<button type="button" class="danger" disabled={busy || stopping === runningRun!.id} onclick={() => stop(runningRun!.id)}>{stopping === runningRun!.id ? '停止中…' : '停止這次'}</button>
+		{:else if !view.missed.length}
+			<button type="button" class="primary" disabled={busy} onclick={() => act(() => runTask(task.id))}>立即執行</button>
 		{/if}
 		<button type="button" disabled={busy} onclick={() => act(() => pauseTask(task.id, !task.paused))}>{task.paused ? '恢復' : '暫停'}</button>
-		<button type="button" onclick={onedit}>編輯</button>
+		{#if !running}
+			<button type="button" onclick={onedit}>編輯</button>
+		{/if}
 	</div>
 	{#if notice}
 		<p class="notice" role="alert">{notice}</p>
-	{:else if running}
-		<p class="hint">正在跑，這次結束後才能再按立即執行。</p>
-	{:else if task.kind !== 'command'}
-		<p class="hint">Agent 任務還不能從看板執行，設定先存著。</p>
 	{/if}
 
 	<dl class="kv">
@@ -149,6 +173,20 @@
 			{:else}
 				<p class="reason">{runReason(run)}</p>
 			{/if}
+			{#each run.accountSwitches ?? [] as note, index (index)}
+				<p class="hint">換帳號：{note}</p>
+			{/each}
+			{#if run.closeError}
+				<p class="notice">{run.closeError}</p>
+			{/if}
+			{#if task.kind === 'agent' && run.trigger !== 'carried' && run.status !== 'skipped' && run.status !== 'config-error'}
+				{#if run.sessionId}
+					<a class="agent-link" href={`?agent=${encodeURIComponent(run.sessionId)}`} onclick={(event) => openAgent(run.sessionId!, event)}>{live ? '打開 Agent 看即時畫面' : '打開 Agent 看對話'} ›</a>
+				{/if}
+				{#if live}
+					<p class="hint">{run.agentName ? `它和一般 Agent 一樣出現在 Herdr 分頁（@${run.agentName}），做完會自動關掉。` : 'Agent 正在開啟…'}</p>
+				{/if}
+			{/if}
 			{#if run.checks?.length}
 				<ul class="checks">
 					{#each run.checks as check, index (index)}
@@ -199,7 +237,20 @@
 	.actions button {
 		min-height: 48px;
 	}
-	.actions button.primary {
+	.actions button.primary,
+	.actions button.danger {
+		font-weight: 700;
+	}
+	.actions button.danger:not(:disabled) {
+		color: var(--danger);
+		border-color: var(--danger);
+	}
+	.agent-link {
+		align-self: flex-start;
+		min-height: 44px;
+		display: inline-flex;
+		align-items: center;
+		color: var(--accent);
 		font-weight: 700;
 	}
 	.notice {
