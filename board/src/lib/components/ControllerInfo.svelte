@@ -34,6 +34,7 @@
 	import ScreenPanel from './ScreenPanel.svelte';
 	import { SCREEN_CLOSED_TEXT, SCREEN_NOT_LISTED_TEXT } from '#lib/board/screen.ts';
 	import SentLog from './SentLog.svelte';
+	import type { SentLook } from '#lib/board/sent-jump.ts';
 	import Transcript from './Transcript.svelte';
 
 	let {
@@ -135,6 +136,18 @@
 		if (targetKey) tab = 'transcript';
 	});
 
+	// A sent-log entry's 查看對話: the conversation tab, scrolled to the text it typed in. Another
+	// controller's page looks for nothing.
+	let sentLook = $state<SentLook | null>(null);
+	$effect.pre(() => {
+		void controller.id;
+		sentLook = null;
+	});
+	function jump(look: SentLook) {
+		sentLook = look;
+		tab = 'transcript';
+	}
+
 	// Read when its tab opens, not with the page, and again at each opening: the file changes elsewhere.
 	let preauth = $state<ControllerPreauth>();
 	$effect(() => {
@@ -172,7 +185,7 @@
 <RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄" translateTab="transcript">
 	{#snippet panel(id)}
 		{#if id === 'transcript'}
-			<Transcript {controller} {asks} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
+			<Transcript {controller} {asks} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} {sentLook} onsentdone={() => (sentLook = null)} bind:usage />
 		{:else if id === 'review'}
 			{#key controller.id}<ReviewPanel {controller} />{/key}
 		{:else if id === 'screen'}
@@ -182,7 +195,7 @@
 		{:else if id === 'ledger'}
 			<LedgerBlock ledger={controller.ledger} />
 		{:else if id === 'sent'}
-			<SentLog {controller} />
+			<SentLog {controller} onjump={jump} />
 		{:else if id === 'preauth'}
 			{#key controller.id}<ControllerPreauth bind:this={preauth} controller={controller.id} />{/key}
 		{:else if agent}
