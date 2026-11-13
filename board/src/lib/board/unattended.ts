@@ -71,7 +71,15 @@ export type UnattendedView =
 			draft: UnattendedDraft | null;
 			/** The settings have errors, so the mode counts as manual. */
 			problems: string[];
+			/** This round's review as the status read found it; absent before the round had a grant. */
+			review?: ReviewSummary;
 	  };
+
+/** What the status read knows of a round's review: enough for the tab to show, and to tell when its file changed. */
+export type ReviewSummary =
+	| { state: 'none' }
+	| { state: 'error'; reason: string }
+	| { state: 'ok'; path: string; count: number; parked: number; verified: boolean; stamp: number };
 
 /** Whether the controller is in unattended mode: what the roster's 無人 mark and the badge show. */
 export const isUnattended = (view: UnattendedView | undefined): boolean => view?.state === 'active' || view?.state === 'pending-goal';
@@ -103,8 +111,17 @@ export function unattendedFrom(entry: unknown): UnattendedView {
 		version: given.version ? (given.version as GrantVersion) : null,
 		endsAt: textOf(given.ends_at),
 		draft: typeof draft.goal === 'string' && Array.isArray(draft.done) ? { goal: draft.goal, done: draft.done.filter((item) => typeof item === 'string') } : null,
-		problems: Array.isArray(given.problems) ? given.problems.filter((item) => typeof item === 'string') : []
+		problems: Array.isArray(given.problems) ? given.problems.filter((item) => typeof item === 'string') : [],
+		...reviewOf(given.review)
 	};
+}
+
+function reviewOf(value: unknown): { review?: ReviewSummary } {
+	const given = record(value);
+	if (given.state === 'none') return { review: { state: 'none' } };
+	if (given.state === 'error') return { review: { state: 'error', reason: textOf(given.reason) ?? '讀不出回顧' } };
+	if (given.state !== 'ok' || typeof given.path !== 'string' || typeof given.count !== 'number' || typeof given.parked !== 'number') return {};
+	return { review: { state: 'ok', path: given.path, count: given.count, parked: given.parked, verified: given.verified === true, stamp: typeof given.stamp === 'number' ? given.stamp : 0 } };
 }
 
 /** What one layer's own mode says, in the status card's line of layers. */

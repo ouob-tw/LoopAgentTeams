@@ -18,7 +18,7 @@
 // `board preauth-read` and `board preauth-write`, which otherwise fail. `board ledger` prints, for each
 // session, the plan's `ledgers` entry for it (`status`, and `ledger` or `reason`), or no ledger.
 // `board unattended` prints, for each session, the plan's `unattended` entry for it, or manual with
-// no grant; with `realUnattended` set to a Python interpreter, it and the other unattended commands
+// no grant; with `realUnattended` set to a Python interpreter, it, `board review` and the other unattended commands
 // run the real helper, on the files the test's environment names.
 // Each call is logged to
 // <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
@@ -274,7 +274,7 @@ function preauth() {
 const act =
 	command === 'preauth-read' || command === 'preauth-write'
 		? preauth
-		: command.startsWith('unattended')
+		: command.startsWith('unattended') || command === 'review'
 		? unattended
 		: command === 'answer'
 		? answer

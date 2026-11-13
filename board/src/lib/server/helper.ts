@@ -7,6 +7,7 @@ import type { PreauthSettings } from '../board/preauth.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
 import { usageFrom } from '../board/usage.ts';
+import { reviewFrom, type Review } from '../board/review.ts';
 import { unattendedFrom, type UnattendedSettings, type UnattendedView } from '../board/unattended.ts';
 import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand } from './external.ts';
@@ -462,4 +463,14 @@ export function writeUnattendedSettings(
 /** Create, update or close one controller's grant through lat-unattended. */
 export function changeUnattendedGrant(config: BoardConfig, controller: { workspace: string; sessionId: string }, args: string[]): Promise<UnattendedWrite> {
 	return unattendedCommand(config, ['unattended-grant', `--workspace=${controller.workspace}`, `--session-id=${controller.sessionId}`, '--', ...args]);
+}
+
+/** One controller's whole review as `lat-unattended review show --json` prints it; `review` is null
+ *  while the round has no review file yet. */
+export async function readReview(config: BoardConfig, controller: { workspace: string; sessionId: string }): Promise<{ ok: true; review: Review | null } | { ok: false; reason: string }> {
+	const done = await unattendedCommand(config, ['review', `--workspace=${controller.workspace}`, `--session-id=${controller.sessionId}`]);
+	if (!done.ok) return { ok: false, reason: done.reason };
+	if (done.value.path === null) return { ok: true, review: null };
+	const review = reviewFrom(done.value);
+	return review ? { ok: true, review } : { ok: false, reason: '輔助工具的輸出缺少回顧' };
 }
