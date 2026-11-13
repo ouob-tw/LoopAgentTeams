@@ -1,6 +1,7 @@
 import { getBoard } from '#lib/server/board.ts';
-import { secondSteps } from '#lib/server/login-steps.ts';
+import { hasPasskeys } from '#lib/server/passkeys.ts';
 import { hasPassword } from '#lib/server/password.ts';
+import { hasTotp } from '#lib/server/totp.ts';
 
 /** Whether a login setting is there, by reading its file; `file` names it in the log. */
 function setting(isSet: () => boolean, file: string): 'set' | 'unset' | 'unreadable' {
@@ -13,9 +14,12 @@ function setting(isSet: () => boolean, file: string): 'set' | 'unset' | 'unreada
 }
 
 export const load = () => {
-	const { stateDir } = getBoard().config;
+	const { stateDir, passkeySite } = getBoard().config;
 	return {
 		password: setting(() => hasPassword(stateDir), '看板密碼檔'),
-		secondStep: setting(() => secondSteps(stateDir).length > 0, '看板第二道驗證的設定檔')
+		totp: setting(() => hasTotp(stateDir), '看板 TOTP 金鑰檔'),
+		passkeys: setting(() => hasPasskeys(stateDir), '看板 passkey 檔'),
+		/** The only address passkeys work from; null when the board's address is not set. */
+		passkeyOrigin: passkeySite?.origin ?? null
 	};
 };

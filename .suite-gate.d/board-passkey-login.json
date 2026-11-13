@@ -1,0 +1,24 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/passkeys.ts",
+        "board/src/lib/server/webauthn.ts",
+        "board/src/lib/server/login-steps.ts",
+        "board/src/lib/server/login-limit.ts",
+        "board/src/lib/server/devices.ts",
+        "board/src/cli.ts",
+        "board/src/routes/api/login/**",
+        "board/src/routes/login/+page.svelte",
+        "board/src/routes/login/+page.server.ts",
+        "board/tests/soft-passkey.ts",
+        "board/tests/server/passkey-login.test.ts",
+        "board/tests/browser/passkey-login-page.test.ts"
+      ],
+      "tests": [
+        "board/tests/server/passkey-login.test.ts",
+        "board/tests/browser/passkey-login-page.test.ts"
+      ]
+    }
+  ]
+}
