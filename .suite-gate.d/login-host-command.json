@@ -9,9 +9,18 @@
         "board/tests/unit/host-command.test.ts",
         "board/tests/server/login.test.ts",
         "board/tests/server/totp-login.test.ts",
+        "board/tests/server/login-public.test.ts",
         "board/tests/browser/totp-login-page.test.ts",
         "board/tests/browser/passkey-login-page.test.ts"
       ]
+    },
+    {
+      "paths": [
+        "board/src/routes/login/**",
+        "board/src/routes/api/login/**",
+        "board/tests/server/login-public.test.ts"
+      ],
+      "tests": ["board/tests/server/login-public.test.ts"]
     }
   ]
 }

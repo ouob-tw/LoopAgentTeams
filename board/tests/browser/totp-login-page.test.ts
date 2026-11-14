@@ -3,7 +3,7 @@
 // with no second step set. Every control stays whole inside the window. With LAT_BOARD_SHOTS set,
 // each state is saved as a frame.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { BOARD_DIR, PASSWORD, startFixture, type Fixture } from '../harness.ts';
+import { PASSWORD, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 
 const T0 = Date.parse('2026-11-01T00:00:00.000Z');
@@ -147,7 +147,8 @@ describe('a board with no second step set', () => {
 	for (const size of SIZES) {
 		test.skipIf(!CHROME)(`the login page names the host command and offers no password box (${size.width})`, async () => {
 			await open(fixture, size);
-			expect(await tab.eval(`document.querySelector('main pre')?.textContent`)).toBe(`cd ${BOARD_DIR} && bun run board totp`);
+			expect(await tab.eval(`document.querySelector('main pre')?.textContent`)).toBe('bun run board totp');
+			expect(await tab.eval(`document.querySelector('main p')?.textContent`)).toContain('請在主機的看板資料夾（board/）執行');
 			expect(await tab.eval(`document.querySelector('input') === null`)).toBe(true);
 			expect(await tab.eval(LAYOUT_PROBLEMS)).toEqual([]);
 			await shot(tab, `${size.width}-5-no-second-step`);

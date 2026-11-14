@@ -1,8 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { hostCommand } from '#lib/host-command.ts';
-
-	let { data } = $props();
+	import { BOARD_FOLDER, hostCommand } from '#lib/host-command.ts';
 
 	// The one-time code rides in the link's fragment, which the browser never sends to a server, so
 	// no log or link preview can use it up: only this button does.
@@ -40,7 +38,7 @@
 		<p>這台瀏覽器會成為<strong>測試裝置</strong>：看得到全部，只能操作自己建立的 Agent，到期自動登出。</p>
 		<button class="primary" onclick={login} disabled={sending}>以測試裝置登入</button>
 	{:else if !failure}
-		<p>這個網址缺少登入碼。請用主機上 <code>{hostCommand(data.boardDir, 'test-login')}</code> 印出的完整網址。</p>
+		<p>這個網址缺少登入碼。請用在{BOARD_FOLDER}執行 <code>{hostCommand('test-login')}</code> 印出的完整網址。</p>
 	{/if}
 	{#if failure}
 		<p class="failed" role="alert">{failure}</p>
