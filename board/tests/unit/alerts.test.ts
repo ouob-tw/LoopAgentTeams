@@ -96,6 +96,17 @@ test('a click on a push opens its card: in a new board tab when none is open, el
 	expect(pd.posted).toEqual([{ type: 'pd-open' }]);
 });
 
+test('a click on a yellow card\'s push opens that card, the address the real desktop click used', async () => {
+	const card: AutomationAlert = { id: 'mwgo8fqo-7531ac7c5a-0', taskId: 't', taskName: '客發展覽維護報告', kind: 'ask', runId: 'r', ask: 0, question: '要開幾張發票？', summary: '要開幾張發票？', createdAt: 0 };
+	const notification = { data: { alert: pushOf(card).alert }, close: () => {} };
+	const none = worker([]);
+	await none.fire('notificationclick', { notification });
+	expect(none.opened).toEqual([`/?alert=${card.id}`]);
+	const open = worker([{ url: 'https://board.example/?tab=inbox' }]);
+	await open.fire('notificationclick', { notification });
+	expect(open.posted).toEqual([{ type: 'alert-open', alert: card.id }]);
+});
+
 test('a yellow card\'s push carries the task name with 等你回覆 and the start of the question only', () => {
 	const card = (question: string): AutomationAlert => ({ id: 'y1', taskId: 't', taskName: '客發展覽維護報告', kind: 'ask', runId: 'r', ask: 0, question, summary: question.split('\n')[0], createdAt: 0 });
 	expect(pushOf(card('11 月要開幾張發票？'))).toEqual({ title: '客發展覽維護報告 等你回覆', body: '11 月要開幾張發票？', alert: 'y1' });
