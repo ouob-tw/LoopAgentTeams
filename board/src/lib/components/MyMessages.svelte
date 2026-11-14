@@ -64,6 +64,7 @@
 	let dragging = $state(false);
 	/** The bar's width in px, which the open list leaves free; its height is `--bar-h` in the style. */
 	let barW = $state(0);
+	let barH = $state(0);
 
 	let messages = $state<MyMessage[] | null>(null);
 	let problem = $state<string | null>(null);
@@ -118,6 +119,7 @@
 		return () => clearTimeout(timer);
 	});
 	$effect(() => () => void reads++);
+	$effect(() => () => clearTimeout(holdTimer));
 
 	function pick(seq: number) {
 		open = false;
@@ -152,28 +154,34 @@
 
 	// The bar: the mouse over it opens the list; a tap on it toggles the list; held for HOLD_MS it is dragged.
 	let holdTimer: ReturnType<typeof setTimeout> | undefined;
-	let press: { id: number; x: number; y: number; wasOpen: boolean; held: boolean } | null = null;
+	let press: { id: number; x: number; y: number; last: number; grab: number; wasOpen: boolean; held: boolean } | null = null;
 	function enter(event: PointerEvent) {
 		// A button held is a drag, of the scrollbar for one: it never brings the list up.
 		if (event.pointerType !== 'mouse' || event.buttons !== 0 || dragging || open) return;
-		gap = scrollbar();
+		measure();
 		open = true;
 	}
 	function down(event: PointerEvent) {
-		if (event.button !== 0) return;
-		press = { id: event.pointerId, x: event.clientX, y: event.clientY, wasOpen: open, held: false };
+		if (event.button !== 0 || press) return;
+		const bar = event.currentTarget as HTMLElement;
+		press = { id: event.pointerId, x: event.clientX, y: event.clientY, last: event.clientY, grab: 0, wasOpen: open, held: false };
 		holdTimer = setTimeout(() => {
 			if (!press) return;
+			// Where the bar is held is where it stays under the pointer: no jump at the first move.
+			const box = bar.getBoundingClientRect();
+			press.grab = box.top + box.height / 2 - press.last;
 			press.held = true;
 			dragging = true;
 			open = false;
 		}, HOLD_MS);
-		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+		bar.setPointerCapture(event.pointerId);
 	}
 	function drag(event: PointerEvent) {
 		if (!press || event.pointerId !== press.id) return;
+		press.last = event.clientY;
 		if (dragging) {
-			place = Math.min(1, Math.max(0, event.clientY / innerHeight));
+			// Inside the window, by the bar's own height, as it is drawn.
+			place = Math.min(innerHeight - barH / 2, Math.max(barH / 2, event.clientY + press.grab)) / innerHeight;
 		} else if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > WANDER) {
 			// Moved before the hold: not a hold.
 			clearTimeout(holdTimer);
@@ -196,7 +204,7 @@
 			// A tap: a finger toggles the list; the mouse, already over the bar, only brings it up when it is closed.
 			if (wasOpen && event.pointerType !== 'mouse') open = false;
 			else if (!wasOpen) {
-				gap = scrollbar();
+				measure();
 				open = true;
 			}
 		}
@@ -205,10 +213,19 @@
 
 <svelte:window onkeydown={keys} onpointermove={moved} onresize={measure} ontouchstart={touched} />
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	class="bar"
 	bind:offsetWidth={barW}
+	bind:offsetHeight={barH}
+	role="button"
+	tabindex="0"
+	aria-label="我說過的話"
+	onkeydown={(event) => {
+		if (event.key !== 'Enter' && event.key !== ' ') return;
+		event.preventDefault();
+		measure();
+		open = !open;
+	}}
 	class:dragging
 	style:right="{gap}px"
 	style:top="clamp(var(--bar-h) / 2, {place * 100}%, 100% - var(--bar-h) / 2)"

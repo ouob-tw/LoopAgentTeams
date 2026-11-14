@@ -103,7 +103,7 @@ const rowOf = (seq: number) => `${ROWS}[data-seq="${seq}"]`;
 const mouse = (x: number, y: number) => tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, pointerType: 'mouse' });
 const barBox = () => tab.eval<{ left: number; right: number; top: number; bottom: number; x: number; y: number }>(`(() => { const r = document.querySelector('${BAR}').getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
 /** The mouse over the long bar: the list comes up. */
-async function openByEdge(_width = 1280, _height = 800) {
+async function openByEdge(..._size: number[]) {
 	const bar = await barBox();
 	await mouse(bar.x, bar.y);
 	await tab.until(SHOWN, 'the list shown');
@@ -135,7 +135,7 @@ const PAGES = [
 ] as const;
 
 for (const [page, path] of PAGES) {
-	test.skipIf(!CHROME)(`1440px, ${page}: nothing shows at rest; the edge brings up a centred list of first lines without times`, async () => {
+	test.skipIf(!CHROME)(`1440px, ${page}: nothing shows at rest; the bar brings up a centred list of first lines without times`, async () => {
 		await visit(1440, path(), 900);
 		// At rest: no list, no button, no overlay anywhere on the right.
 		expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
@@ -448,7 +448,7 @@ test.skipIf(!CHROME)('1280px: only the long bar brings up the list, and with no 
 	await mouse(bar.left - 5, bar.y);
 	await sleep(150);
 	expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
-	// A finger-swipe from the edge does nothing on a wide window either; the bar's own place does open it.
+	// Over the bar itself it opens.
 	await mouse(bar.x, bar.y);
 	await tab.until(SHOWN, 'the list over the bar');
 	await shot(tab, 'my-messages-1280-bar-hovered');
@@ -556,3 +556,14 @@ test.skipIf(!CHROME)('390px: a long press on the bar drags it and keeps the plac
 	expect(await tab.eval(FITS)).toBe(true);
 	expect(tab.errors).toEqual([]);
 }, 60_000);
+
+test.skipIf(!CHROME)('1280px: the bar can be reached with the keyboard: Enter opens the list and Enter again closes it', async () => {
+	await visit(1280);
+	await tab.eval(`document.querySelector('${BAR}').focus()`);
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+	await tab.until(SHOWN, 'the list opened by Enter');
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+	await tab.until(`!(${SHOWN})`, 'the list closed by Enter');
+}, 30_000);
