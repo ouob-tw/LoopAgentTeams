@@ -299,14 +299,17 @@ def merge_commit(repo, target, commit):
     if not (repo and isinstance(target, str) and isinstance(commit, str)) \
             or target.startswith('-') or commit.startswith('-'):
         return None
-    try:
-        log = subprocess.run(['git', '-C', str(repo), 'rev-list', '--first-parent', '--merges',
-                              '--ancestry-path', f'{commit}..{target}', '--'],
+    def rev_list(*args):
+        out = subprocess.run(['git', '-C', str(repo), 'rev-list', *args, '--'],
                              capture_output=True, text=True, timeout=20)
+        return None if out.returncode else out.stdout.split()
+    try:
+        between = rev_list('--merges', '--ancestry-path', f'{commit}..{target}')
+        mainline = set(rev_list('--first-parent', target) or ()) if between else ()
     except (OSError, subprocess.SubprocessError):
         return None
-    found = log.stdout.split()
-    return found[-1] if not log.returncode and found else None
+    found = [sha for sha in between or () if sha in mainline]
+    return found[-1] if found else None
 
 
 def auto_items(path, workspace):
