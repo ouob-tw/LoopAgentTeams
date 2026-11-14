@@ -12,7 +12,7 @@ import type { AutomationSnapshot, AutomationTask } from '../../src/lib/board/aut
 
 const SCREEN = `({ search: location.search, middle: document.querySelector('.inbox')?.innerText.slice(0, 400) ?? '', detail: document.querySelector('.detail')?.innerText.slice(0, 400) ?? '' })`;
 /** Nothing reaches past the window's width, and nothing in the middle or content column past its own box. */
-const FITS = `document.documentElement.scrollWidth <= window.innerWidth && [...document.querySelectorAll('.automation, .automation *, .detail .task, .detail .task *, .detail form, .detail form *')].filter((node) => !node.closest('pre')).every((node) => node.scrollWidth <= node.clientWidth + 1)`;
+const FITS = `document.documentElement.scrollWidth <= window.innerWidth && [...document.querySelectorAll('.automation, .automation *, .detail .task, .detail .task *, .detail form, .detail form *')].filter((node) => !node.closest('pre') && node.tagName !== 'INPUT').every((node) => node.scrollWidth <= node.clientWidth + 1)`;
 
 let fixture: Fixture;
 let cookie: string;
@@ -165,6 +165,10 @@ for (const width of [1280, 390]) {
 		await tab.until(`document.querySelector('.detail .run pre')?.innerText.includes('備份完成')`, 'the output');
 		expect(await text('.detail .run .where')).toMatch(/automation\/output\/.+\.txt/);
 		expect(await fits()).toBe(true);
+		// A long output location wraps inside its box instead of widening the page (#572).
+		await tab.eval(`document.querySelector('.detail .run .where .mono').textContent += '/' + 'a8a4af17dcmwnspsw0f44ccb9c68'.repeat(3) + '.txt'`);
+		expect(await fits()).toBe(true);
+		expect(await tab.eval<boolean>(`(() => { const where = document.querySelector('.detail .run .where'); return where.scrollWidth <= where.clientWidth && where.getBoundingClientRect().right <= window.innerWidth })()`)).toBe(true);
 		// The page keeps the same side margin as the form and the other content pages.
 		const left = await tab.eval<number>(`document.querySelector('.detail .task h2').getBoundingClientRect().left - document.querySelector('.detail').getBoundingClientRect().left`);
 		expect(left).toBeGreaterThanOrEqual(8);
