@@ -3,6 +3,7 @@
 // is due and what a task's state this period is. Pure: every day, period and set time is read in
 // Asia/Taipei whatever the host's zone, times are kept as UTC milliseconds, and the page only words
 // what the server sent.
+import type { UnattendedScope } from './unattended.ts';
 
 /** Monday is 1, Sunday 7: a week runs Monday to Sunday and a weekly window never wraps past Sunday. */
 export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -35,7 +36,21 @@ export interface AgentSpec {
 	folder: string;
 	/** The task brief: relative to the folder, or absolute. */
 	brief: string;
+	/** Set: the run opens a LAT controller that starts its round in unattended mode with this grant
+	 *  (#625). The user filling it on the board is the user turning the grant on for that round. */
+	unattended?: TaskUnattended;
 }
+
+/** An agent task's unattended grant, as the user filled it on the form. Its time limit is the
+ *  task's own limit in whole hours (`grantHours`); quota running out always stops it. */
+export interface TaskUnattended {
+	goal: string;
+	done: string[];
+	scope: UnattendedScope;
+}
+
+/** The grant's time limit for a task's limit: whole hours, rounded up. */
+export const grantHours = (limitMinutes: number) => Math.ceil(limitMinutes / 60);
 
 export interface ReviewSpec {
 	/** 跑完後請 Agent 檢查. */

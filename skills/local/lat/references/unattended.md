@@ -60,6 +60,7 @@ lat-unattended.py draft --goal '<目標>' --done '<條件一>' [--done '<條件�
 lat-unattended.py create --goal '<目標>' --done '<條件一>' --done '<條件二>' \
   --scope ticket-confirmation assume-defaults prototype --max-hours 12 \
   --source <board-form|chat|settings-default> --evidence '<證據>'
+lat-unattended.py create --source board-task --evidence board-task:<執行 ID>
 lat-unattended.py update [--goal …] [--done …] [--scope …] [--max-hours N] \
   --source <user-edit|chat> --evidence '<證據>'
 lat-unattended.py close --reason <off|quota|delivered|cancelled|handover>
@@ -69,8 +70,9 @@ lat-unattended.py close --reason <off|quota|delivered|cancelled|handover>
 - 證據：
   - `chat`：使用者答過的面板題 `<待決 ID> r<版本>`，紀錄須是 answered／approved，且有那一版的 `## 答覆` 段與 `- 來源：` 行。
   - `settings-default`：看板寫入設定的紀錄（`board:<時間>`），須是目前模式所在那層最後一次把 `mode` 寫成 `unattended` 的那筆；只能寫本輪第 1 版，`--scope` 與 `--max-hours` 必須和 `status` 顯示的設定值相同，版本會註明「目標由主控擬出」。模式來自主控層時不能用。
+  - `board-task`：看板自動化任務開主控時記下的執行紀錄 `board-task:<執行 ID>`（目標、做完條件、代決範圍與時間上限都取自它，不必再給，給了就必須相同）；它必須來自使用者最後一次在看板登入裝置（非測試登入）儲存這個任務的紀錄，任務檔之後沒被改過，主控的 HCOM 名稱以那次執行的 tag 開頭，60 分鐘內，而且沒被別的版本引用過。
   - `board-form`、`user-edit`：看板動作紀錄 `board-action:<ID>`，指向看板在登入裝置送出表單時寫進 `sent-log.jsonl` 的那一筆；須是同一個主控、同一種動作（建立或修改）、內容與這一版相同、10 分鐘內，而且沒被別的版本引用過，否則拒絕且不寫檔。
-- `board-form` 與 `chat` 建立時把主控層的模式設為無人模式。
+- `board-form`、`board-task` 與 `chat` 建立時把主控層的模式設為無人模式，不寫專案或全域設定。
 - `update` 產生新版本並立即生效；沒給的欄位沿用目前版本，舊版本保留並記下結束時間。新的時間上限若已經過了就拒絕。
 - `close`：`off` 是使用者關掉，主控層模式同時改回人工確認；`quota` 是額度用完；`delivered`、`cancelled`、`handover` 由 deactivate 依交付、`--force-unfinished`、`--successor` 自動帶入。
 - 時間上限從本輪第 1 版開始算，到期時下一次讀取就把目前版本結束在到期時間，原因「時間上限到期」。設定改過而模式不再是無人模式時，下一次讀取也會結束目前版本，原因「模式改為人工確認」；設定寫錯而被視為人工確認時也一樣，原因記「設定有錯」。之後改回無人模式也不會復活，要重新建立。`status`、`versions`、`check` 讀取時都會先做這兩種結束。
@@ -80,6 +82,7 @@ lat-unattended.py close --reason <off|quota|delivered|cancelled|handover>
 
 - **擬目標**：activate 後，先依使用者第一句話擬出這一輪的目標與做完條件，以 `lat-unattended.py draft --goal '<目標>' --done '<條件>' …` 存成草稿，看板表單據此預填。草稿不是授權。
 - **預設啟動**（`status` 顯示「無人模式，尚待目標」）：派發前用同一份目標與條件寫第 1 版 `create --source settings-default`（`--scope`、`--max-hours` 照 `status` 的設定值）；寫入前照人工確認的規則做事，不得使用任何代決狀態。
+- **看板自動化任務開啟**：看板的 Agent 任務勾了無人模式時，開出的主控第一句話就附上 `create --source board-task` 的完整指令；activate 後先照做，建不起來就不做事，回覆 `FAILED: <原因>`。
 - **聊天開啟**：使用者在聊天說「這輪不用問我」之類的話時，主控把同樣內容整理成一張確認題，用 `question ask --advisor 'exempt requirement-discussion'` 寫入，照常以 `DECIDE:` 提問：
 
   ```markdown

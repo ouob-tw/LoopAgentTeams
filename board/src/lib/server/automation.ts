@@ -10,10 +10,10 @@
 // the run's record, `notify` hears of both for the yellow card and its push, and the answer the user
 // writes on the board is sent to the agent here (`reply`).
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
 	AGENT_EFFORTS,
@@ -44,9 +44,26 @@ import {
 	type RunAsk,
 	type RunReview,
 	type RunTrigger,
+	grantHours,
+	type TaskUnattended,
 	type Weekday
 } from '../board/automation.ts';
-import { codexBeforeLaunch, cutReason, firstMessage, GONE_AT_RESTART, runTag, watchAgent, type AgentEnd, type AgentHost, type Cut } from './automation-agent.ts';
+import { SCOPE_KEYS, type UnattendedScope } from '../board/unattended.ts';
+import {
+	codexBeforeLaunch,
+	controllerGoesOn,
+	controllerMessage,
+	CONTROLLER_RESUME_MESSAGE,
+	cutReason,
+	firstMessage,
+	GONE_AT_RESTART,
+	runTag,
+	watchAgent,
+	type AgentEnd,
+	type AgentHost,
+	type Cut
+} from './automation-agent.ts';
+import { appendSent, readLines, type AutomationTaskSave } from './sent-log.ts';
 import { judgeReview, REVIEW_RESUME_MESSAGE, reviewBrief, reviewMessage, reviewTag } from './automation-review.ts';
 
 /** How much of a command's output is kept: its last part, which says how it ended. */
@@ -58,6 +75,10 @@ const KILL_GRACE_MS = 5_000;
 
 /** Field name → what is wrong with it, worded for the form. */
 export type FieldErrors = Record<string, string>;
+
+export interface SavedBy {
+	deviceId: string;
+}
 
 export type Saved = { ok: true; task: AutomationTask } | { ok: false; status: number; errors: FieldErrors };
 export type Started = { ok: true; run: AutomationRun } | { ok: false; status: number; message: string };
@@ -74,8 +95,10 @@ export type AutomationEvent =
 
 export interface Automation {
 	snapshot(): AutomationSnapshot;
-	create(input: unknown): Saved;
-	update(id: string, input: unknown): Saved;
+	/** `by`: the signed-in device that sent the form, written to the action log with the task's
+	 *  unattended grant; an unattended task's runs start only from such a save. */
+	create(input: unknown, by?: SavedBy): Saved;
+	update(id: string, input: unknown, by?: SavedBy): Saved;
 	setPaused(id: string, paused: boolean): AutomationTask | null;
 	/** 立即執行: refused while the same task runs. Resolves once the run has started, not ended. */
 	runNow(id: string): Started;
@@ -135,6 +158,20 @@ const integer = (value: unknown) => {
 	const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
 	return Number.isInteger(number) ? number : NaN;
 };
+
+/** An agent task's unattended grant as the form sent it: absent or null is none. A list's lines
+ *  may come as one text, as the form's box holds them. */
+function taskUnattended(given: unknown, errors: FieldErrors): TaskUnattended | undefined {
+	if (given === undefined || given === null) return undefined;
+	const body = (typeof given === 'object' ? given : {}) as Record<string, any>;
+	const goal = text(body.goal);
+	if (!goal) errors.unattendedGoal = '請填這一輪的目標';
+	const done = (Array.isArray(body.done) ? body.done : String(body.done ?? '').split('\n')).map(text).filter(Boolean);
+	if (!done.length) errors.unattendedDone = '做完條件至少寫一條';
+	const scopeGiven = body.scope && typeof body.scope === 'object' ? body.scope : {};
+	const scope = Object.fromEntries(SCOPE_KEYS.map((key) => [key, scopeGiven[key] === true])) as UnattendedScope;
+	return { goal, done, scope };
+}
 
 /** Check a form's fields; the task as it will be saved, or every field that is wrong. */
 export function validateTask(input: unknown, home = homedir(), { paths = true } = {}): { task: AutomationTaskInput } | { errors: FieldErrors } {
@@ -203,7 +240,8 @@ export function validateTask(input: unknown, home = homedir(), { paths = true } 
 		const brief = text(given.brief);
 		if (!brief) errors.brief = '請填任務說明檔';
 		else if (paths && !errors.folder && !isFile(resolve(full, expandHome(brief, home)))) errors.brief = `資料夾裡找不到這個檔案：${brief}`;
-		agent = { client, model, effort, folder, brief };
+		const unattended = taskUnattended(given.unattended, errors);
+		agent = { client, model, effort, folder, brief, ...(unattended ? { unattended } : {}) };
 	} else errors.kind = '請選這個任務是指令還是 Agent';
 
 	const reviewGiven = body.review ?? {};
@@ -379,8 +417,12 @@ export function createAutomation(options: {
 	notify?(event: AutomationEvent): void;
 	/** How agent tasks' runs open, watch and close their agents; without it agent tasks do not run. */
 	agents?: AgentHost;
+	/** The board state folder, whose action log (`sent-log.jsonl`) gets each save of a task and
+	 *  each run of an unattended one; the folder above `dir` unless given. */
+	stateDir?: string;
 }): Automation {
 	const { dir, now } = options;
+	const stateDir = options.stateDir ?? dirname(dir);
 	const home = options.home ?? homedir();
 	const runsDir = join(dir, 'runs');
 	const outputDir = join(dir, 'output');
@@ -518,6 +560,31 @@ export function createAutomation(options: {
 		}
 	}
 	lastSent = JSON.stringify({ ...snapshot(), revision: 0 });
+
+	/** A task's unattended grant as its saves and runs log it: the form's fields and the hours. */
+	const grantOf = (task: AutomationTask) => (task.agent?.unattended ? { ...task.agent.unattended, maxHours: grantHours(task.limitMinutes) } : null);
+
+	/** Log a save sent by a signed-in device before it is written: what an unattended run's grant
+	 *  is checked against. Nothing is saved when the log cannot be written. */
+	function logSave(task: AutomationTask, by: SavedBy | undefined): Saved | null {
+		if (!by) return null;
+		try {
+			appendSent(stateDir, { kind: 'automation-task-save', id: randomUUID(), time: new Date(now()).toISOString(), taskId: task.id, taskName: task.name, deviceId: by.deviceId, unattended: grantOf(task) });
+			return null;
+		} catch (error) {
+			return { ok: false, status: 500, errors: { task: `操作紀錄寫不進去，沒有儲存：${(error as Error).message}` } };
+		}
+	}
+
+	/** The save an unattended run's grant comes from: the latest one of the task, by a signed-in
+	 *  device that is no test login, holding the grant the task has now; or why there is none. */
+	function grantSave(task: AutomationTask): AutomationTaskSave | string {
+		const saved = readLines(stateDir, now()).findLast((line): line is AutomationTaskSave => line.kind === 'automation-task-save' && line.taskId === task.id);
+		const again = '請在看板打開這個任務重新儲存';
+		if (!saved || 'testDevice' in saved) return `無人模式的設定沒有在看板儲存的紀錄，${again}`;
+		if (JSON.stringify(saved.unattended) !== JSON.stringify(grantOf(task))) return `任務檔的無人模式設定和最後一次在看板儲存的不同，${again}`;
+		return saved;
+	}
 
 	function save(task: AutomationTask): void {
 		writeAtomic(taskFile(task.id), JSON.stringify(task, null, '\t') + '\n');
@@ -693,7 +760,10 @@ export function createAutomation(options: {
 			},
 			closing: () => closed,
 			adopted,
-			asking: {
+			// An unattended controller never asks: a turn waiting on its agents goes on.
+			...(task.agent!.unattended
+				? { goesOn: controllerGoesOn, ending: 'DONE 或 FAILED', resumeMessage: CONTROLLER_RESUME_MESSAGE }
+				: { asking: {
 				waiting: () => openAsk(latest(run)) !== undefined,
 				replying: () => replying.has(run.id),
 				asked: (question) => {
@@ -703,7 +773,7 @@ export function createAutomation(options: {
 					options.notify?.({ type: 'asked', task, run: asked, index: asks.length - 1 });
 				},
 				resumed: (input) => void answer(task, run, input ?? '（在 Agent 的終端繼續，看板沒讀到回覆內容）', ASK_SOURCE.terminal)
-			}
+			} })
 		}).catch(async (error: Error): Promise<AgentEnd> => {
 			// Whatever broke, the agent is not left running.
 			const now = latest(run);
@@ -739,8 +809,21 @@ export function createAutomation(options: {
 				record(run, { ...(ready.account !== undefined ? { codexAccount: ready.account } : {}), ...(ready.note ? { accountSwitches: [ready.note] } : {}) });
 			}
 			if (cut) return finish(task, run, { status: cut, reason: cutReason(cut, task.limitMinutes) });
+			const tag = runTag(task.id, run.id);
+			let prompt = firstMessage(brief);
+			if (spec.unattended) {
+				// The grant the controller turns on: logged before it opens, from the user's latest save.
+				const saved = grantSave(task);
+				if (typeof saved === 'string') return finish(task, run, { status: 'config-error', reason: saved });
+				try {
+					appendSent(stateDir, { kind: 'unattended-task-run', id: run.id, time: new Date(now()).toISOString(), taskId: task.id, taskName: task.name, tag, save: saved.id, ...saved.unattended! });
+				} catch (error) {
+					return finish(task, run, { status: 'failed', reason: `操作紀錄寫不進去，沒有開主控：${(error as Error).message}` });
+				}
+				prompt = controllerMessage(spec.client, { taskName: task.name, runId: run.id, stateDir, brief });
+			}
 			const launched = await host
-				.launch({ ...spec, folder, prompt: firstMessage(brief), tag: runTag(task.id, run.id) })
+				.launch({ ...spec, folder, prompt, tag })
 				.catch((error: Error) => ({ ok: false as const, reason: error.message }));
 			if (!launched.ok) return finish(task, run, { status: 'failed', reason: `開不了 Agent：${launched.reason}` });
 			record(run, { agentName: launched.name, ...(launched.workspace ? { agentWorkspace: launched.workspace } : {}) });
@@ -954,23 +1037,27 @@ export function createAutomation(options: {
 
 	return {
 		snapshot,
-		create(input) {
+		create(input, by) {
 			const checked = validateTask(input, home);
 			if ('errors' in checked) return { ok: false, status: 400, errors: checked.errors };
 			const at = new Date(now()).toISOString();
 			let id = newId();
 			while (tasks.has(id)) id = newId();
 			const task: AutomationTask = { id, ...checked.task, paused: false, createdAt: at, updatedAt: at };
+			const unlogged = logSave(task, by);
+			if (unlogged) return unlogged;
 			save(task);
 			publish();
 			return { ok: true, task };
 		},
-		update(id, input) {
+		update(id, input, by) {
 			const before = tasks.get(id);
 			if (!before) return { ok: false, status: 404, errors: { task: '這個任務已不存在' } };
 			const checked = validateTask(input, home);
 			if ('errors' in checked) return { ok: false, status: 400, errors: checked.errors };
 			const task: AutomationTask = { id, ...checked.task, paused: before.paused, createdAt: before.createdAt, updatedAt: new Date(now()).toISOString() };
+			const unlogged = logSave(task, by);
+			if (unlogged) return unlogged;
 			save(task);
 			publish();
 			return { ok: true, task };

@@ -36,7 +36,8 @@ SECTION_OF = {PARKED: 'parked', 'parked-row': 'parked', 'proxy-confirmed': 'prox
 ROW_STATES = {'unassigned': '未派工', 'assigned': '已派工', 'in_progress': '進行中',
               'blocked': '受阻'}
 SOURCE_LABELS = {'settings-default': '主控擬出（設定預設開啟）', 'board-form': '你在看板開啟',
-                 'chat': '你在聊天確認', 'user-edit': '你修改'}
+                 'chat': '你在聊天確認', 'user-edit': '你修改',
+                 'board-task': '你在看板自動化任務設定'}
 OPINION = re.compile(r'^(?:- )?(\S+?（[^）]*）)：\s*(agree|disagree)\s*；\s*(\S.*)$',
                      re.IGNORECASE)
 ANSWER_HEADING = re.compile(r'^## 答覆（r\d+，[^，]+，(.+)）\s*$')

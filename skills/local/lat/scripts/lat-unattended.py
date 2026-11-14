@@ -54,7 +54,7 @@ LAYER_LABELS = {'controller': '主控', 'project': '專案', 'global': '全域',
 MODE_LABELS = {'manual': '人工確認', 'unattended': '無人模式'}
 SCOPE_LABELS = {'ticket_confirmation': '短流程票代確認', 'assume_defaults': '在固定清單內選預設',
                 'prototype_decide': '做樣品再決定'}
-CREATE_SOURCES = ('board-form', 'chat', 'settings-default')
+CREATE_SOURCES = ('board-form', 'chat', 'settings-default', 'board-task')
 UPDATE_SOURCES = ('user-edit', 'chat')
 CLOSE_REASONS = {'off': '使用者關掉', 'quota': '額度用完', 'delivered': '交付',
                  'cancelled': '取消', 'handover': '換班'}
@@ -71,6 +71,10 @@ BOARD_EVIDENCE = 'board-action:'
 BOARD_REQUEST_OPS = {'board-form': 'create', 'user-edit': 'update'}
 # How long before the grant the user's request may have been made.
 REQUEST_WINDOW = timedelta(minutes=10)
+# A board automation task's run (#625): the board logs the run before it opens the controller,
+# with the grant from the user's latest save of the task, which the controller turns on.
+TASK_EVIDENCE = 'board-task:'
+TASK_RUN_WINDOW = timedelta(minutes=60)
 
 
 def now():
@@ -362,6 +366,75 @@ def board_request_problem(session, versions, evidence, source, version):
     return None
 
 
+def board_log_lines():
+    """The board's action log as JSON objects, oldest first; lines that cannot be read are left out."""
+    path = preauth.board_writes_path().with_name(SENT_LOG)
+    try:
+        lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    except FileNotFoundError:
+        lines = []
+    items = []
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            items.append(item)
+    return path, items
+
+
+def board_task_grant(record, versions, evidence):
+    """A board-task version cites `board-task:<run>`: the line the board logged for that run of an
+    unattended automation task before it opened this controller. The grant is the run's, which must
+    equal the latest save of the task by a signed-in device that is no test login, and the task
+    file as it is now; the controller's HCOM name starts with the run's tag. (fields, None) or
+    (None, problem)."""
+    if not evidence.startswith(TASK_EVIDENCE):
+        return None, f'board-task evidence must be `{TASK_EVIDENCE}<run ID>` from the board\'s action log'
+    if any(old.get('evidence') == evidence for old in versions):
+        return None, f'{evidence} is already cited by an earlier version'
+    wanted = evidence.removeprefix(TASK_EVIDENCE)
+    path, items = board_log_lines()
+    run = next((item for item in reversed(items)
+                if item.get('kind') == 'unattended-task-run' and item.get('id') == wanted), None)
+    if run is None or 'testDevice' in run:
+        return None, f'no board automation run {wanted} in {path}'
+    saves = [item for item in items if item.get('kind') == 'automation-task-save'
+             and item.get('taskId') == run.get('taskId')]
+    save = saves[-1] if saves else None
+    if save is None or save.get('id') != run.get('save') or 'testDevice' in save:
+        return None, (f'run {wanted} does not come from the latest board save of task '
+                      f'{run.get("taskId")} by a signed-in device')
+    fields = dict(goal=run.get('goal'), done=run.get('done'), scope=run.get('scope'),
+                  maxHours=run.get('maxHours'))
+    if save.get('unattended') != fields:
+        return None, f'run {wanted} has another grant than the board save {save.get("id")}'
+    task_path = path.parent / 'automation' / f'{run.get("taskId")}.json'
+    try:
+        task = json.loads(task_path.read_text(encoding='utf-8'))
+        now_fields = dict(task['agent']['unattended'], maxHours=-(-task['limitMinutes'] // 60))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, f'task file {task_path} has no readable unattended grant'
+    if {key: now_fields.get(key) for key in fields} != fields:
+        return None, f'task file {task_path} changed after the board save {save.get("id")}'
+    name = record.get('hcom_name') if isinstance(record, dict) else None
+    if not isinstance(name, str) or not name.startswith(f'{run.get("tag")}-'):
+        return None, (f'run {wanted} opened an agent tagged {run.get("tag")}; this controller is '
+                      f'{name}')
+    try:
+        moment = parse(run['time'])
+    except (KeyError, TypeError, ValueError):
+        return None, f'board automation run {wanted} has no readable time'
+    if not timedelta(minutes=-1) <= now() - moment <= TASK_RUN_WINDOW:
+        return None, (f'board automation run {wanted} started at {run["time"]}, not within '
+                      f'{TASK_RUN_WINDOW.seconds // 60} minutes before now')
+    scope = fields['scope'] if isinstance(fields['scope'], dict) else {}
+    return dict(goal=fields['goal'], done=fields['done'],
+                scope={key: scope.get(key) is True for key in SCOPE_KEYS},
+                max_hours=fields['maxHours']), None
+
+
 def chat_evidence_problem(record, lat, evidence):
     """A chat grant cites the panel answer record `<decision ID> r<N>` the user answered."""
     directory = record.get('decisions_path')
@@ -459,7 +532,30 @@ def settings_default_problem(lat, found, evidence, scope, max_hours):
     return settings_evidence_problem(lat, values, evidence)
 
 
+def task_grant_args(args):
+    """A board-task create takes the grant from the board's run: fill what was not given, refuse
+    what differs. The session is read here only for the controller's HCOM name."""
+    lat, session = owner(args)
+    with preauth.locked(session_lock(lat, session)):
+        found = load_round(lat, session)
+    evidence = (args.evidence or '').strip()
+    fields, problem = board_task_grant(found.record, found.versions, evidence)
+    if problem:
+        raise Refused(problem)
+    given = dict(goal=(args.goal or '').strip() or None, done=text_list(args.done) or None,
+                 scope=scope_of(args.scope) if args.scope else None, max_hours=args.max_hours)
+    differs = [key for key, value in given.items() if value is not None and value != fields[key]]
+    if differs:
+        raise Refused(f'a board-task grant takes {", ".join(differs)} from the task settings; '
+                      'leave them out')
+    words = [word for word, key in SCOPE_WORDS.items() if fields['scope'][key]] or ['none']
+    args.goal, args.done, args.scope, args.max_hours = (fields['goal'], fields['done'], words,
+                                                         fields['max_hours'])
+
+
 def cmd_create(args):
+    if args.source == 'board-task':
+        task_grant_args(args)
     goal = (args.goal or '').strip()
     done = text_list(args.done)
     evidence = (args.evidence or '').strip()
@@ -489,6 +585,11 @@ def cmd_create(args):
             problem = chat_evidence_problem(found.record, lat, evidence)
         elif args.source == 'settings-default':
             problem = settings_default_problem(lat, found, evidence, scope, args.max_hours)
+        elif args.source == 'board-task':
+            fields, problem = board_task_grant(found.record, versions, evidence)
+            if not problem and fields != dict(goal=goal, done=done, scope=scope,
+                                              max_hours=args.max_hours):
+                problem = 'the grant differs from the task settings'
         else:
             problem = board_request_problem(session, versions, evidence, args.source, version)
         if problem:
@@ -981,11 +1082,13 @@ def build_parser():
         sub.add_argument('--max-hours', type=int, help='time limit in hours')
         sub.add_argument('--source', choices=CREATE_SOURCES if name == 'create' else UPDATE_SOURCES,
                          help='board-form/user-edit: the board form; chat: a confirmation '
-                              'question; settings-default: the project or global default')
+                              'question; settings-default: the project or global default; '
+                              'board-task: a board automation task\'s settings (create only; '
+                              'goal, done, scope and hours come from them)')
         sub.add_argument('--evidence', help='board-form/user-edit: the board action record; chat: '
                                             '`<decision ID> r<N>` the user answered; '
                                             'settings-default: the board settings write '
-                                            '(`board:<time>`)')
+                                            '(`board:<time>`); board-task: `board-task:<run ID>`')
     sub = commands.add_parser('close', parents=[common], help='end the grant in effect')
     sub.add_argument('--reason', required=True, choices=CLOSE_REASONS,
                      help='off: the user turned it off (the controller goes back to manual); '
