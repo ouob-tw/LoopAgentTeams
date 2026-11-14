@@ -25,15 +25,16 @@
 			on = false;
 		}
 		// Only the opening of the settings tries on its own, never the read after a press, so a failure cannot loop.
-		if (again || reason || on !== false) return;
+		if (again || busy || reason || on !== false) return;
 		if (!shouldAutoEnable({ permission: thisPage().permission, on, turnedOff: pushTurnedOff(), testView: testDevice.view !== null })) return;
 		busy = true;
 		try {
 			notice = await autoEnablePush();
 		} catch (error) {
 			notice = `瀏覽器沒有建立推播訂閱：${(error as Error).message}`;
+		} finally {
+			busy = false;
 		}
-		busy = false;
 		await load(true);
 	}
 
