@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { ALL_PASSKEY_ERRORS_PER_MINUTE, BROWSER_FLOWS, logBrowserRefusal, MAX_PASSKEY_ERROR_CHARS } from '#lib/server/auth-log.ts';
-import { createClientErrorLimit } from '#lib/server/client-errors.ts';
+import { CLIENT_ERROR_WINDOW_MS, createClientErrorLimit } from '#lib/server/client-errors.ts';
 import type { PasskeyFlow } from '#lib/board/passkey-here.ts';
 import type { RequestHandler } from './$types';
 
@@ -10,7 +10,7 @@ const perAddress = createClientErrorLimit();
 let all = { start: 0, count: 0 };
 
 function admitAny(now: number): boolean {
-	if (now - all.start >= 60_000) all = { start: now, count: 0 };
+	if (now - all.start >= CLIENT_ERROR_WINDOW_MS) all = { start: now, count: 0 };
 	return ++all.count <= ALL_PASSKEY_ERRORS_PER_MINUTE;
 }
 

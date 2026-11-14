@@ -62,7 +62,7 @@ Environment=LAT_BOARD_URL=https://lat.ouob.net
 
 passkey 只在這個網址能登記與使用（它的主機名稱就是 passkey 的網域，即 RP ID；要讓 passkey 屬於上一層網域時另設 `LAT_BOARD_PASSKEY_RP_ID`，例如 `ouob.net`）。從其他網址、內網位址或 http 開看板時，登入畫面會說 passkey 只能在哪個網址用，這時改輸入 TOTP 數字；只登記了 passkey、沒設 TOTP 時就要改從那個網址開。沒設 `LAT_BOARD_URL` 時不能用 passkey，只能用 TOTP。`LAT_BOARD_URL` 要是 https 網址（http 的，連 localhost 也不行，看板與主機指令都不會啟動）；看板本身不加密，https 由前面的反向代理負責，代理要設成信任代理。
 
-**登記 passkey（已登入的裝置）**：從看板網址開看板，按右上的齒輪開「設定」，在「全局設置」的 passkey 區塊按「新增 passkey」，照瀏覽器或手機的提示（指紋、臉部、螢幕鎖或安全金鑰的 PIN）建立，不需要登記碼。建立好就出現在列表裡（登記時的系統與瀏覽器、短 ID、登記與最後使用日期）。這台裝置已經有看板的 passkey 時，瀏覽器不會再建一把，區塊下方寫「這個裝置已經有看板的 passkey，登入時直接用它。」。passkey 一定要經指紋、臉部、螢幕鎖或 PIN 確認，沒設 PIN 的安全金鑰瀏覽器會要求先設。從其他網址或 http 開時，這個區塊只說 passkey 只能在哪個網址用，沒有新增按鈕。測試用登入的裝置看得到列表，但不能新增或刪除。
+**登記 passkey（已登入的裝置）**：從看板網址開看板，按右上的齒輪開「設定」，在「全局設置」的 passkey 區塊按「新增 passkey」，照瀏覽器或手機的提示（指紋、臉部、螢幕鎖或安全金鑰的 PIN）建立，不需要登記碼。建立好就出現在列表裡（登記時的系統與瀏覽器、短 ID、登記與最後使用日期）。這台裝置已經有看板的 passkey 時，瀏覽器不會再建一把，區塊下方寫「這台裝置已有看板的 passkey，直接用它登入。」。passkey 一定要經指紋、臉部、螢幕鎖或 PIN 確認，沒設 PIN 的安全金鑰瀏覽器會要求先設。從其他網址或 http 開時，這個區塊只說 passkey 只能在哪個網址用，沒有新增按鈕。測試用登入的裝置看得到列表，但不能新增或刪除。
 
 **登記 passkey（還沒設 TOTP 也沒有 passkey 時）**：登入畫面只在看板完全沒有第二道驗證時提供登記；設了 TOTP 或已有 passkey 之後就沒有這個入口，請先登入再到設定裡新增。每把 passkey 都要一組主機產生的登記碼，只知道密碼的人沒辦法自己登記。
 
@@ -120,7 +120,7 @@ bun run board revoke <裝置 ID>   # 撤銷一台裝置，它會回到登入畫�
 | `logout` | 在瀏覽器登出 |
 | `login_locked` | 同一位址輸錯太多次被鎖（`WARNING`，`during` 是觸發鎖定的動作，`lock_seconds` 是鎖多久） |
 
-每行都有 `result`（`start`、`success` 或 `failure`）、瀏覽器的真實位址 `client_ip`（經信任代理時是代理轉來的位址）、`user_agent`，有裝置時另有 `device_id`（登入成功的那行是新登入的裝置），用到 passkey 時另有 `passkey_id`（同 `bun run board passkey list` 的 ID）。失敗的那行有 `reason`：伺服器回給頁面的錯誤碼，例如 `wrong_password`、`wrong_code`、`wrong_enroll_code`、`passkey_failed`、`enroll_expired`，被鎖時是 `locked`；passkey 驗證沒通過時 `cause` 再寫原因（`unknown_passkey` 看板上沒有這把、`not_verified` 簽章或持有人檢查沒過、`no_challenge` 沒有先拿題目、`counter_rejected` 計數器倒退）。瀏覽器自己拒絕建立或使用 passkey 時（例如使用者取消、或這台裝置已經有看板的 passkey），頁面會回報錯誤名稱，記成該動作的 `failure`，`source` 是 `browser`，`reason` 是錯誤名稱，例如 `NotAllowedError`（取消或逾時）、`InvalidStateError`（這台裝置已經登記過）；不在已知清單的名稱記成 `other`。這種回報同一位址每分鐘最多記 10 行。密碼、數字、登記碼、cookie、token 與 passkey 的內容一律不記。
+每行都有 `result`（`start`、`success` 或 `failure`）、瀏覽器的真實位址 `client_ip`（經信任代理時是代理轉來的位址）、`user_agent`，有裝置時另有 `device_id`（登入成功的那行是新登入的裝置），用到 passkey 時另有 `passkey_id`（同 `bun run board passkey list` 的 ID）。失敗的那行有 `reason`：伺服器回給頁面的錯誤碼，例如 `wrong_password`、`wrong_code`、`wrong_enroll_code`、`passkey_failed`、`enroll_expired`，被鎖時是 `locked`；passkey 驗證沒通過時 `cause` 再寫原因（`passkey_unavailable` 看板沒有設定網址、`unknown_passkey` 看板上沒有這把、`not_verified` 簽章或持有人檢查沒過、`no_challenge` 沒有先拿題目、`counter_rejected` 計數器倒退）。瀏覽器自己拒絕建立或使用 passkey 時（例如使用者取消、或這台裝置已經有看板的 passkey），頁面會回報錯誤名稱，記成該動作的 `failure`，`source` 是 `browser`，`reason` 是錯誤名稱，例如 `NotAllowedError`（取消或逾時）、`InvalidStateError`（這台裝置已經登記過）；不在已知清單的名稱記成 `other`。這種回報同一位址每分鐘最多記 10 行。密碼、數字、登記碼、cookie、token 與 passkey 的內容一律不記。
 
 **升級到兩步登入的版本**：之前登入的裝置（含配對碼版本配對的）都要重新登入一次，`devices` 清單裡標為登入已失效；測試用登入不受影響。升級後先在主機上執行 `bun run board totp`（或設好 `LAT_BOARD_URL` 再登記 passkey），否則誰都登入不了。`bun run board pair` 已移除；狀態目錄裡留下的 `pairing-codes.json` 不再使用，可以刪掉。
 

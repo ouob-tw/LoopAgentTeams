@@ -149,7 +149,23 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 				until(() => logged(fixture.serverOutput().slice(loggedFrom), message).filter((line) => line.source === 'browser').at(0), 5_000, `the browser's ${message} line`);
 			await clickSteady('dialog[open] section.passkeys button.add');
 			await tab.until(`${SECTION}.querySelector('.here') !== null && ${ADD}.textContent.trim() === '新增 passkey'`, 'the passkey already here');
-			expect(await tab.eval(`${SECTION}.querySelector('.here').textContent.trim()`)).toBe('這個裝置已經有看板的 passkey，登入時直接用它。');
+			expect(await tab.eval(`${SECTION}.querySelector('.here').textContent.trim()`)).toBe('這台裝置已有看板的 passkey，直接用它登入。');
+			// If it wraps, its lines are about as long as each other: no last line of a word or two left alone.
+			const lineWidths = await tab.eval<number[]>(`(() => {
+				const range = document.createRange();
+				range.selectNodeContents([...${SECTION}.querySelector('.here').childNodes].find((node) => node.nodeType === Node.TEXT_NODE));
+				const lines = new Map();
+				for (const rect of range.getClientRects()) {
+					if (!rect.width) continue;
+					const top = Math.round(rect.top / 4);
+					const line = lines.get(top) ?? { left: rect.left, right: rect.right };
+					lines.set(top, { left: Math.min(line.left, rect.left), right: Math.max(line.right, rect.right) });
+				}
+				return [...lines.values()].map((line) => Math.round(line.right - line.left));
+			})()`);
+			expect(Math.min(...lineWidths) / Math.max(...lineWidths)).toBeGreaterThan(0.4);
+			// At the default font it fits on one line, phone width included.
+			expect(lineWidths).toHaveLength(1);
 			expect(await tab.eval(`${SECTION}.querySelector('.failed')`)).toBeNull();
 			expect(await tab.eval(`${ROWS}.length`)).toBe(1);
 			expect(await tab.eval(layoutProblems('dialog[open] section.passkeys'))).toEqual([]);
