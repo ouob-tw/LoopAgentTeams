@@ -1,0 +1,22 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/auth-log.ts",
+        "board/src/lib/server/login-steps.ts",
+        "board/src/lib/server/client-errors.ts",
+        "board/src/routes/api/login/**",
+        "board/src/routes/api/passkeys/**",
+        "board/src/routes/api/device/+server.ts",
+        "board/tests/server/login-log.test.ts"
+      ],
+      "tests": [
+        "board/tests/server/login-log.test.ts",
+        "board/tests/server/server-log.test.ts",
+        "board/tests/server/connection.test.ts",
+        "board/tests/server/logout.test.ts",
+        "board/tests/browser/passkey-settings-page.test.ts"
+      ]
+    }
+  ]
+}
