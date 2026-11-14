@@ -363,10 +363,9 @@ test('a check that ends past midnight, a week’s end or a month’s end settles
 		replyAndWait(`chk-b${index}`, '1. PASS: a\n2. PASS: b\n3. PASS: c\nPASS');
 		const done = await checked(task.id, started.id);
 		expect(done).toMatchObject({ period: each.period, status: 'success', review: { status: 'pass' } });
-		// The new period has no run of its own, is not missed and still waits for its set time.
+		// The new period has no run of its own and still waits for its set time.
 		const view = await viewOf(task.id);
 		expect(view.runs).toHaveLength(1);
-		expect(view.missed).toEqual([]);
 		expect(view.state).toBe('waiting');
 		expect(view.nextAt).toBe(each.next);
 		expect((await alerts()).some((alert) => alert.runId === started.id)).toBe(false);

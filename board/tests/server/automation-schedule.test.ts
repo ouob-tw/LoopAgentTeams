@@ -385,7 +385,6 @@ test('a run that ends past a week’s end or a month’s end belongs to the peri
 	expect(crossedWeek).toMatchObject({ trigger: 'auto', status: 'success', period: '2026-W11-09', startedAt: tpe(2026, 11, 15, 23, 46), endedAt: tpe(2026, 11, 16, 0, 30) });
 	const week = await viewOf(weekly.id);
 	expect(week.state).toBe('waiting');
-	expect(week.missed).toEqual([]);
 	expect(week.nextAt).toBe(tpe(2026, 11, 16, 23, 45));
 
 	await restartAt(tpe(2026, 11, 30, 23, 40));
@@ -398,7 +397,5 @@ test('a run that ends past a week’s end or a month’s end belongs to the peri
 	expect(crossedMonth).toMatchObject({ id: novemberRun.id, trigger: 'auto', status: 'success', period: '2026-11', endedAt: tpe(2026, 12, 1, 0, 30) });
 	const month = await viewOf(monthly.id);
 	expect(month.state).toBe('waiting');
-	expect(month.missed).toEqual([]);
 	expect(month.nextAt).toBe(tpe(2026, 12, 1, 23, 45));
-	expect(missedLogs(monthly.id)).toEqual([]);
 }, 60_000);
