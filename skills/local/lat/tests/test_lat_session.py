@@ -81,7 +81,7 @@ class SessionTests(unittest.TestCase):
         self.hcom_events = self.root / 'hcom-events.jsonl'
         hcom.chmod(0o755)
         # The delivery tracker check reads each ledger ticket with `gh api`; by default every
-        # ticket is closed and clean. Like the real gh it refuses any other call shape.
+        # ticket is closed and clean and no cleanup ticket is open. Like the real gh it refuses any other call shape.
         (self.work / 'docs/agents').mkdir(parents=True)
         (self.work / 'docs/agents/issue-tracker.md').write_text('always pass `-R acme/work`\n')
         self.tracker_issue = self.root / 'tracker-issue.json'
@@ -90,6 +90,7 @@ class SessionTests(unittest.TestCase):
         gh.write_text(
             '#!/bin/sh\n'
             '[ $# = 2 ] && [ "$1" = api ] || { echo "unknown gh invocation: $*" >&2; exit 1; }\n'
+            'case "$2" in "repos/acme/work/issues?state=open&labels="*) echo "[]"; exit 0;; esac\n'
             'case "$2" in "repos/acme/work/issues/"*[!0-9]*|"repos/acme/work/issues/") ;;\n'
             '  "repos/acme/work/issues/"*) cat "$FAKE_TRACKER_ISSUE"; exit 0;; esac\n'
             'echo "unknown gh invocation: $*" >&2; exit 1\n')
