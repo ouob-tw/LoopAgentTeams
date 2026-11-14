@@ -5,6 +5,7 @@ import copy
 import difflib
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import importlib
 import importlib.util
 import ipaddress
@@ -1718,18 +1719,43 @@ def draft_stop_check(record):
             '之後到又有新列前不再為此提醒；做完再照原樣結束回合。')
 
 
+def delegated_seen_path(record):
+    return unattended_lat(record) / 'unattended' / f'{record["session_id"]}-delegated-seen.json'
+
+
+def first_seen(seen, path):
+    """When this content of a delegated record first appeared: remembered from an earlier turn
+    end, else the file's inode change time, which a writer cannot set back (unlike the record's
+    own decided-at; the kernel's coarse file clock can only make it read a few ms early, never
+    late). Changed content counts as a new record."""
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    entry = seen.get(path.stem)
+    if not (isinstance(entry, dict) and entry.get('sha') == digest):
+        moment = datetime.fromtimestamp(path.stat().st_ctime, timezone.utc)
+        entry = seen[path.stem] = dict(sha=digest, at=moment.isoformat())
+    return datetime.fromisoformat(entry['at'])
+
+
 def delegated_stop_check(record):
     """Why this Stop should be held for delegated decision records of this session, or None.
 
     Each record is checked against the grant version it cites, at the time it says it was
     made, so a record made while its version was in effect keeps passing after the grant ends;
-    another session's records are its own controller's.
+    a record that first appears after its version ended is held whatever time it claims
+    (first_seen). Another session's records are its own controller's.
     """
     decisions = Path(record['decisions_path'])
     if not decisions.is_dir():
         return None
     unattended = sent = None
     held = []
+    seen_path = delegated_seen_path(record)
+    try:
+        seen = json.loads(seen_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        seen = {}
+    seen = seen if isinstance(seen, dict) else {}
+    before = copy.deepcopy(seen)
     for path in sorted(decisions.glob('*.md')):
         try:
             status = read_decision_status(path).status
@@ -1757,10 +1783,23 @@ def delegated_stop_check(record):
                 elif not version['scope'][DELEGATED[status][1]]:
                     label = unattended.SCOPE_LABELS[DELEGATED[status][1]]
                     problems.append(f'授權 r{grant.round} v{grant.version} 沒有勾選「{label}」')
+                if version is not None and version['ended_at'] and not reason:
+                    appeared = first_seen(seen, path)
+                    if appeared >= datetime.fromisoformat(version['ended_at']):
+                        problems.append(f'紀錄在授權 r{grant.round} v{grant.version} 結束'
+                                        f'（{version["ended_at"]}）後才出現（{appeared.isoformat()}），'
+                                        '結束後不能再新增代決')
+                else:
+                    first_seen(seen, path)
         if question_sent(record['session_id'], sent, path.stem):
             problems.append('這題已問過使用者，只有真人答覆能解除，不能寫成代決')
         if problems:
             held.append(f'- {path.stem}（{status}）：' + '；'.join(problems))
+    if seen != before:
+        try:
+            write_json_atomic(seen_path, seen)
+        except (OSError, ValueError) as error:
+            print(f'lat-session: could not save {seen_path} ({error})', file=sys.stderr)
     if not held:
         return None
     return ('LAT 代決紀錄檢查未通過：\n' + '\n'.join(held) + '\n依 references/unattended.md '
