@@ -2112,7 +2112,7 @@ def first_assigned(item):
 
 
 def last_deploy_commit(workspace):
-    """(whether the project of this checkout has a successful production deploy, the
+    """(whether the project of this checkout has a successful full production deploy, the
     latest one's commit)."""
     try:
         path = shared_lat_dir(workspace) / 'deploy-history.jsonl'
@@ -2125,8 +2125,9 @@ def last_deploy_commit(workspace):
             entry = json.loads(line)
         except ValueError:
             continue
+        # A partial deploy (lat-preauth record --partial) left other services older.
         if (isinstance(entry, dict) and entry.get('action') == DEPLOY_ACTION
-                and entry.get('result') == 'succeeded'):
+                and entry.get('result') == 'succeeded' and entry.get('partial') is not True):
             commit = entry.get('commit') or commit
     return commit is not None, commit
 
@@ -2220,7 +2221,7 @@ def landing_time(repo, sha, branches):
 
 
 def deploy_entries(workspace):
-    """The project's successful production deploys in order: (commit, time or None)."""
+    """The project's successful full production deploys in order: (commit, time or None)."""
     try:
         lines = (shared_lat_dir(workspace) / 'deploy-history.jsonl').read_text(
             encoding='utf-8').splitlines()
@@ -2233,7 +2234,8 @@ def deploy_entries(workspace):
         except ValueError:
             continue
         if (isinstance(entry, dict) and entry.get('action') == DEPLOY_ACTION
-                and entry.get('result') == 'succeeded' and entry.get('commit')):
+                and entry.get('result') == 'succeeded' and entry.get('partial') is not True
+                and entry.get('commit')):
             found.append((entry['commit'], optional_time(entry.get('at'))))
     return found
 

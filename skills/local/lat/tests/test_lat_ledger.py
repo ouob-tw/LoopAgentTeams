@@ -1504,6 +1504,13 @@ class TicketTests(LedgerCase):
             stream.write(json.dumps({'action': 'deploy-prod', 'commit': self.merged,
                                      'result': 'succeeded'}) + '\n')
         self.assertEqual(self.steps(self.tickets()['acme/work#20'])['deployed'], 'pending')
+        with history.open('a') as stream:  # a partial deploy left other services older
+            stream.write(json.dumps({'action': 'deploy-prod',
+                                     'commit': git(self.workspace, 'rev-parse', 'HEAD'),
+                                     'result': 'succeeded', 'partial': True}) + '\n')
+        ticket = self.tickets()['acme/work#20']
+        self.assertEqual(self.steps(ticket)['deployed'], 'pending')
+        self.assertNotEqual(ticket['state'], 'deployed')
         with history.open('a') as stream:
             stream.write(json.dumps({'action': 'deploy-prod',
                                      'commit': git(self.workspace, 'rev-parse', 'HEAD'),
@@ -2850,6 +2857,9 @@ class StageTimeTests(LedgerCase):
              'at': '2026-10-24T11:20:00+00:00'},
             {'action': 'deploy-prod', 'commit': merge, 'result': 'failed',
              'at': '2026-10-24T11:30:00+00:00'},
+            # A partial deploy is not when the ticket went live.
+            {'action': 'deploy-prod', 'commit': merge, 'result': 'succeeded', 'partial': True,
+             'at': '2026-10-24T11:35:00+00:00'},
             {'action': 'deploy-prod', 'commit': merge, 'result': 'succeeded',
              'at': '2026-10-24T19:45:00+08:00'})) + '\n')
         self.decision('ORCH-1', '- status: approved\n- blocked work: #1\n\n'

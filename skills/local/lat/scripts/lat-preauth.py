@@ -586,67 +586,79 @@ def full_success(entry):
 
 
 def last_deploy(top, action, target):
-    """(the last successful full deploy of `action` to `target`, the count of successful
-    partial deploys after it, None) or (None, that count, why there is no usable one). A partial
-    deploy leaves the other services older, so it is no base; a failed deploy after the base
-    leaves what runs there unknown."""
+    """(the last successful full deploy of `action` to `target`, the successful partial
+    deploys after it, None) or (None, those partial deploys, why there is no usable one). A
+    partial deploy leaves the other services older, so it is no base; a failed deploy after the
+    base leaves what runs there unknown."""
     try:
         entries = [entry for entry in read_deploy_history(top) if entry.get('action') == action]
     except FileNotFoundError:
-        return None, 0, f'no deploy history ({deploy_history_path(top)})'
+        return None, [], f'no deploy history ({deploy_history_path(top)})'
     except (OSError, UnicodeDecodeError, ValueError) as error:
-        return None, 0, f'deploy history unreadable ({error})'
+        return None, [], f'deploy history unreadable ({error})'
     same = [entry for entry in entries if entry.get('target') == target]
     found = next((index for index in range(len(same) - 1, -1, -1)
                   if full_success(same[index])), None)
     later = same[found + 1:] if found is not None else same
-    skipped = sum(entry.get('result') == 'succeeded' for entry in later)
+    partials = [entry for entry in later if entry.get('result') == 'succeeded']
     if found is None:
         other = next((entry for entry in reversed(entries) if full_success(entry)), None)
         if other:
-            return None, skipped, (
+            return None, partials, (
                 f'the deploy target changed since the last successful {action} '
                 f'(then {json.dumps(other.get("target"), ensure_ascii=False)}, now '
                 f'{json.dumps(target, ensure_ascii=False)})')
-        return None, skipped, f'no successful {action} in the deploy history' + (
-            f' except {skipped} partial deploy(s), which leave other services older'
-            if skipped else '')
+        return None, partials, f'no successful {action} in the deploy history' + (
+            f' except {len(partials)} partial deploy(s), which leave other services older'
+            if partials else '')
     failed = [entry for entry in later if entry.get('result') != 'succeeded']
     if failed:
-        return None, skipped, (
+        return None, partials, (
             f'a {action} failed at {failed[-1].get("at")} after the last successful one '
             f'({same[found].get("at")}), so what runs there is unknown')
-    return same[found], skipped, None
+    return same[found], partials, None
 
 
 def last_deploy_base(top, version, action, target):
-    """(the last successful full deploy, None) when its commit is in this repo and `version` or an
-    ancestor of it, else (None, why not)."""
-    last, _, why = last_deploy(top, action, target)
+    """(the last successful full deploy, the successful partial deploys after it, None) when
+    the commits of all of them are in this repo and `version` or ancestors of it, else (None,
+    those partial deploys, why not): an older or diverging version takes a service back."""
+    last, partials, why = last_deploy(top, action, target)
     if why:
-        return None, why
+        return None, partials, why
+    for entry in partials:
+        commit = entry.get('commit')
+        if not isinstance(commit, str) or not resolve_version(top, commit):
+            return None, partials, (f'the partial {action} commit `{commit}` ({entry.get("at")}) '
+                                    'is not in this repository')
+        if not is_ancestor(top, commit, version):
+            return None, partials, (
+                f'the partial {action} commit {commit[:12]} ({entry.get("at")}) is not an '
+                f'ancestor of {version[:12]}, so this deploy would take the services it '
+                'updated back')
     commit = last.get('commit')
     if not isinstance(commit, str) or not resolve_version(top, commit):
-        return None, f'the last successful {action} commit `{commit}` is not in this repository'
+        return None, partials, (f'the last successful {action} commit `{commit}` is not in this '
+                                'repository')
     if not is_ancestor(top, commit, version):
-        return None, (f'the last successful {action} commit {commit[:12]} is not an ancestor of '
-                      f'{version[:12]}')
-    return last, None
+        return None, partials, (f'the last successful {action} commit {commit[:12]} is not an '
+                                f'ancestor of {version[:12]}')
+    return last, partials, None
 
 
-def deploy_base_note(top, action, target):
-    """{commit, at, skipped_partial} of the full deploy the check counts from when it skipped
-    later partial deploys, else None."""
-    last, skipped, why = last_deploy(top, action, target)
-    if why or not skipped:
+def deploy_base_note(top, version, action, target):
+    """{commit, at, skipped_partial} of the usable full deploy the check counts from when it
+    skipped later partial deploys, else None."""
+    last, partials, why = last_deploy_base(top, version, action, target)
+    if why or not partials:
         return None
-    return dict(commit=last.get('commit'), at=last.get('at'), skipped_partial=skipped)
+    return dict(commit=last.get('commit'), at=last.get('at'), skipped_partial=len(partials))
 
 
 def affected_deploy_problems(top, version, action, target):
     """(reasons, basis). A passing post-merge affected summary stands in for the full suite when
     it tested this version's content from the last successful deploy's commit or an ancestor."""
-    last, why = last_deploy_base(top, version, action, target)
+    last, _, why = last_deploy_base(top, version, action, target)
     if why:
         return [why], None
     commit = last['commit']
@@ -677,7 +689,7 @@ def affected_deploy_problems(top, version, action, target):
 def affected_run_step(top, version, action, target):
     """The step that lets a deploy with a rollback method skip the full suite: the post-merge
     affected run from the last successful deploy's commit, or why there is none to run."""
-    last, why = last_deploy_base(top, version, action, target)
+    last, _, why = last_deploy_base(top, version, action, target)
     if why:
         return (f'no post-merge affected run can cover this deploy ({why}); only a full suite '
                 'can')
@@ -691,8 +703,8 @@ def affected_run_step(top, version, action, target):
 def changed_paths(top, version, action, target):
     """(the sorted top-level paths, directories or files, changed from the last successful
     deploy to `version`, None) or (None, why they cannot be listed). A move lists both ends."""
-    last, why = last_deploy_base(top, version, action, target) if version else (
-        None, 'the version to deploy is unknown')
+    last, _, why = last_deploy_base(top, version, action, target) if version else (
+        None, None, 'the version to deploy is unknown')
     if why:
         return None, why
     names = git(top, '-c', 'core.quotepath=false', 'diff', '--no-renames', '--name-only',
@@ -1026,7 +1038,7 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
     if fixes:
         result['fixes'] = fixes
     if action in DEPLOY_ACTIONS and version:
-        note = deploy_base_note(top, action, deploy_target(effective))
+        note = deploy_base_note(top, version, action, deploy_target(effective))
         if note:
             result['deploy_base'] = note
     runbook = effective.get('runbook') if action in DEPLOY_ACTIONS else None

@@ -2074,6 +2074,50 @@ class DeployAffectedTests(WriteCase):
                                               'except 2 partial deploy(s)')
         self.assertNotIn('deploy_base', self.check('deploy-prod'))
 
+    def test_a_version_that_takes_a_partial_deploy_back_needs_the_full_suite(self):
+        version = self.head
+        self.write(self.project_file, '[actions.deploy-prod]\n'
+                                      'rollback = "git revert, then deploy again"\n'
+                                      'runbook = "docs/deploy.md"\n')
+        newer = self.commit('app change deployed alone', 'app.txt')
+        git(self.repo, 'reset', '-q', '--hard', version)
+        self.history(('deploy-prod', self.deployed, 'succeeded'),
+                     ('deploy-prod', newer, 'succeeded'), partial=(2,))
+        self.summary(self.deployed)
+        self.assert_full_suite('deploy-prod', f'the partial deploy-prod commit {newer[:12]} '
+                                              '(2026-11-02T10:00:00+00:00) is not an ancestor '
+                                              f'of {version[:12]}, so this deploy would take '
+                                              'the services it updated back')
+        verdict = self.check('deploy-prod')
+        self.assertNotIn('deploy_base', verdict)
+        self.assertIsNone(verdict['runbook']['changed_paths'])
+        self.assertNotIn('Deploy base:', self.run_tool('check', '--action', 'deploy-prod').stdout)
+
+    def test_a_failure_after_a_partial_deploy_leaves_what_runs_unknown(self):
+        later = self.head
+        self.head = self.commit('version to deploy')
+        self.summary(self.deployed)
+        self.history(('deploy-prod', self.deployed, 'succeeded'),
+                     ('deploy-prod', later, 'succeeded'), ('deploy-prod', later, 'failed'),
+                     partial=(2,))
+        self.assert_full_suite('deploy-prod', 'a deploy-prod failed at 2026-11-03T10:00:00+00:00 '
+                                              'after the last successful one')
+        with self.subTest('a partial success after the failure is still no base'):
+            self.history(('deploy-prod', self.deployed, 'succeeded'),
+                         ('deploy-prod', later, 'failed'), ('deploy-prod', later, 'succeeded'),
+                         partial=(3,))
+            self.assert_full_suite('deploy-prod', 'a deploy-prod failed at '
+                                                  '2026-11-02T10:00:00+00:00')
+
+    def test_a_row_with_partial_false_is_a_full_deploy(self):
+        self.write(self.history_file, json.dumps(dict(
+            at='2026-11-01T10:00:00+00:00', action='deploy-prod', target=None,
+            commit=self.deployed, result='succeeded', approval='preauth', partial=False)) + '\n')
+        self.summary(self.deployed)
+        verdict = self.check('deploy-prod')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+        self.assertNotIn('deploy_base', verdict)
+
     def record(self, *args, **kwargs):
         return self.run_tool('record', *args, path=self.path, **kwargs)
 
