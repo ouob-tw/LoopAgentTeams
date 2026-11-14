@@ -1,6 +1,6 @@
 <script lang="ts">
-	// Five groups: this device's settings (theme, overall size, smallest text size), its pushes, its login
-	// (登出), the board's, which every device shares (the mode a new controller starts in, how the usage
+	// The header holds 登出 (this device's login) beside 關閉. Four groups: this device's settings (theme,
+	// overall size, smallest text size), its pushes, the board's, which every device shares (the mode a new controller starts in, how the usage
 	// line reads, whether conversations open translated, the passkeys that log in), and the global
 	// pre-authorization file.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
@@ -64,8 +64,16 @@
 	<div class="body">
 		<header>
 			<h2 id="settings-title">設定</h2>
-			<button onclick={() => dialog.close()}>關閉</button>
+			<div class="actions">
+				<button class="logout" disabled={loggingOut} onclick={() => void logout()}>
+					<LogOut size="1em" aria-hidden="true" />{loggingOut ? '登出中…' : '登出'}
+				</button>
+				<button onclick={() => dialog.close()}>關閉</button>
+			</div>
 		</header>
+		{#if logoutFailed}
+			<p class="failed" role="alert">沒有登出，請再試一次。</p>
+		{/if}
 
 		<section class="group">
 			<h3>本地設置</h3>
@@ -145,18 +153,6 @@
 		</section>
 
 		<section class="group">
-			<h3>登入</h3>
-			<div class="choices">
-				<button class="logout" disabled={loggingOut} onclick={() => void logout()}>
-					<LogOut size="1em" aria-hidden="true" />{loggingOut ? '登出中…' : '登出'}
-				</button>
-			</div>
-			{#if logoutFailed}
-				<p class="failed" role="alert">沒有登出，請再試一次。</p>
-			{/if}
-		</section>
-
-		<section class="group">
 			<h3>全局設置</h3>
 			<p class="note">所有已登入的裝置共用</p>
 			<TestDenied />
@@ -217,6 +213,11 @@
 		justify-content: space-between;
 		align-items: center;
 	}
+	.actions {
+		display: flex;
+		gap: 0.4rem;
+		align-items: center;
+	}
 	h2,
 	h3 {
 		margin: 0;
@@ -250,7 +251,7 @@
 		text-align: center;
 	}
 	/* A phone's smallest tap target at every overall size: it ends the login, so a finger must not
-	   miss it for a neighbour. */
+	   miss it for 關閉 beside it. */
 	.logout {
 		min-height: max(44px, 2.75rem);
 		display: inline-flex;
