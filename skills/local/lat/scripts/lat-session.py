@@ -1749,7 +1749,59 @@ def undeclared_wait_check(record, message):
     return ('LAT 等待檢查未通過：這則以 `NO REPLY:` 結尾，但你沒有有效的等待或鬧鐘聲明'
             '（等待對象全部回過訊息會使聲明自動失效，也可能是尚未宣告）。沒有聲明時監控不會保溫。'
             f'若仍在等，先執行 `{command}`（另有對象加 `--for <名稱>`，定時喚醒改用 `alarm`），再照原樣結束回合；'
-            '真的不需要聲明（例如有背景指令在跑）就直接照原樣結束回合。')
+            '真的不需要聲明就直接照原樣結束回合。（Claude 主控有背景指令在跑時本檢查會自動放行。）')
+
+
+BACKGROUND_START = re.compile(r'Command running in background with ID: ([A-Za-z0-9_-]+)')
+BACKGROUND_END = re.compile(
+    r'<task-notification>\s*<task-id>([A-Za-z0-9_-]+)</task-id>(?:(?!</task-notification>).)*?'
+    r'<status>(completed|failed|killed|stopped)</status>', re.S)
+
+
+def record_texts(record):
+    """The text pieces of one Claude transcript user record (message text and tool results)."""
+    content = record.get('message', {}).get('content')
+    if isinstance(content, str):
+        return [content]
+    texts = []
+    for item in content if isinstance(content, list) else []:
+        if not isinstance(item, dict):
+            continue
+        for value in (item.get('text'), item.get('content')):
+            if isinstance(value, str):
+                texts.append(value)
+            elif isinstance(value, list):
+                texts += [part['text'] for part in value
+                          if isinstance(part, dict) and isinstance(part.get('text'), str)]
+    return texts
+
+
+def running_background_ids(payload):
+    """IDs of Claude Code background commands started but not yet reported finished in the
+    transcript; empty when the transcript is missing or unreadable (the plain check then applies)."""
+    path = payload.get('transcript_path')
+    if not isinstance(path, str) or not Path(path).is_absolute():
+        return []
+    running = {}
+    try:
+        with open(path, 'rb') as stream:
+            for raw in stream:
+                if b'background' not in raw and b'<task-id>' not in raw:
+                    continue
+                try:
+                    record = json.loads(raw.decode('utf-8'))
+                except ValueError:
+                    continue
+                if not isinstance(record, dict) or record.get('type') != 'user':
+                    continue
+                for text in record_texts(record):
+                    for match in BACKGROUND_START.finditer(text):
+                        running[match[1]] = True
+                    for match in BACKGROUND_END.finditer(text):
+                        running.pop(match[1], None)
+    except (OSError, UnicodeDecodeError, AttributeError):
+        return []
+    return list(running)
 
 
 def reports_path(record):
@@ -1824,7 +1876,12 @@ def report_stop(record, payload):
         except Exception as exc:  # noqa: BLE001 - a broken wait check never holds the Stop
             notes.append(f'LAT 等待檢查發生錯誤，未攔下：{exc}')
         else:
-            if undeclared:
+            background = running_background_ids(payload) \
+                if undeclared and record.get('client') == 'claude' else []
+            if background:
+                notes.append(f'LAT 等待檢查：有背景指令 {", ".join(background)} 在跑，放行'
+                             '（結束時 Claude Code 會叫醒你）。')
+            elif undeclared:
                 reasons.append(undeclared)
         try:
             review = review_stop_check(record, message)
