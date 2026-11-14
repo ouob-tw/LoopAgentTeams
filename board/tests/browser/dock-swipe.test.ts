@@ -73,7 +73,11 @@ const offset = () => tab.eval<number>(`(() => { const dock = document.querySelec
 const dockWidth = () => tab.eval<number>(`document.querySelector('.dock').getBoundingClientRect().width`);
 const dots = () => tab.eval<number[]>(`[...document.querySelectorAll('.dock .dots i')].map((dot) => (dot.classList.contains('on') ? 1 : 0))`);
 const showing = async () => ((await offset()) < 2 ? 'keys' : 'bar');
-const settle = () => sleep(350);
+/** After the finger is up: the panel's slide to where it rests has run out. A busy host draws the slide late, so the wait is for it to end, not a fixed time. */
+const settle = async () => {
+	await sleep(350);
+	await tab.until(`!document.querySelector('.dock .swipe.dragging') && document.querySelector('.dock .track').getAnimations().length === 0`, 'the panel to come to rest');
+};
 /** A point of the command line that is not its box: the strip under the controls. */
 const edge = () => tab.eval<{ x: number; y: number }>(`(() => { const r = document.querySelector('.dock .cmd').getBoundingClientRect(); return { x: r.right - 6, y: r.bottom - 5 }; })()`);
 const box = () => tab.eval<{ x: number; y: number }>(`(() => { const r = document.querySelector('.dock textarea').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
