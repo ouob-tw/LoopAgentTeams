@@ -280,10 +280,10 @@
 <style>
 	/* The long upright bar at the window's right edge, like a scrollbar: the only place that brings
 	   the list up. --bar-w by --bar-h, taller than wide, flush with the right edge; where a finger is
-	   the pointer it is as wide as a fingertip, drawn as the same thin bar at its right. */
+	   the pointer it is as wide as a fingertip, drawn as the same 12px handle at its right. */
 	.bar {
-		--bar-w: 0.75rem;
-		--bar-h: 6rem;
+		--bar-w: 12px;
+		--bar-h: 110px;
 		position: fixed;
 		z-index: 41;
 		width: var(--bar-w);
@@ -295,19 +295,24 @@
 		-webkit-touch-callout: none;
 		touch-action: none;
 	}
+	/* The handle: 12px wide, rounded on the left, a dot grip to show it can be dragged. */
 	.bar::after {
 		content: '';
 		position: absolute;
 		inset: 0 0 0 auto;
-		width: 0.75rem;
-		border-radius: var(--radius-pill) 0 0 var(--radius-pill);
-		background: var(--muted);
-		border: 1px solid var(--surface);
+		width: 12px;
 		box-sizing: border-box;
+		border: 1px solid var(--line);
+		border-right: 0;
+		border-radius: 6px 0 0 6px;
+		background-color: var(--surface);
+		background-image: radial-gradient(circle, var(--muted) 1.4px, transparent 1.6px);
+		background-size: 12px 8px;
+		background-position: center;
 	}
 	.bar:hover::after,
 	.bar.dragging::after {
-		background: var(--accent);
+		border-color: var(--accent);
 	}
 	.bar.dragging {
 		cursor: grabbing;
