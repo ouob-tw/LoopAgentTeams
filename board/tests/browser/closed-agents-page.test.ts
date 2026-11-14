@@ -266,21 +266,21 @@ test.skipIf(!CHROME)("a touch phone: a closed agent's 終端 tab hides the top b
 	await sleep(500);
 	expect(await barShown()).toBe(true);
 	await openScreen();
-	await tab.until(`!!document.querySelector('.detail .bar .back')`, 'the folded card');
+	await tab.until(`!!document.querySelector('.detail .screen-bar .back')`, 'the folded card');
 	expect(await barShown()).toBe(false);
-	expect(await tab.eval<string>(`document.querySelector('.detail .bar').innerText`)).toContain('已關閉');
+	expect(await tab.eval<string>(`document.querySelector('.detail .screen-bar').innerText`)).toContain('已關閉');
 	// 展開 shows the card and the 接回 again; the screen tab says there is no screen.
-	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
+	await tab.eval(`document.querySelector('.detail .screen-bar button[aria-expanded]').click()`);
 	await tab.until(`!!document.querySelector('.detail [data-closed-agent]') && !!document.querySelector(${JSON.stringify(RESUME)})`, 'the card and 接回');
-	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
+	await tab.eval(`document.querySelector('.detail .screen-bar button[aria-expanded]').click()`);
 	await tab.until(`!document.querySelector('.detail [data-closed-agent]')`, 'folded again');
-	await tab.eval(`document.querySelector('.detail .bar .back').click()`);
+	await tab.eval(`document.querySelector('.detail .screen-bar .back').click()`);
 	await tab.until(`location.search === '?tab=agents' || location.search === ''`, 'the list');
 	// Back on the page, the 對話紀錄 tab brings the bar and the card back.
 	await tab.eval(`history.forward()`);
 	await tab.until(`!!document.querySelector('.detail [role=tab]')`, 'the page again');
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '對話紀錄').click()`);
-	await tab.until(`!document.querySelector('.detail .bar') && !!document.querySelector('.detail [data-closed-agent]')`, 'the card back');
+	await tab.until(`!document.querySelector('.detail .screen-bar') && !!document.querySelector('.detail [data-closed-agent]')`, 'the card back');
 	expect(await barShown()).toBe(true);
 	await browser.close();
 	browser = undefined;
@@ -293,9 +293,9 @@ test.skipIf(!CHROME)("a touch phone: a closed agent's 終端 tab hides the top b
 	await tab.until(`!!document.querySelector('.detail [data-closed-agent]')`, 'the closed agent');
 	await sleep(500);
 	await openScreen();
-	await tab.until(`!!document.querySelector('.detail .bar')`, 'the folded card');
+	await tab.until(`!!document.querySelector('.detail .screen-bar')`, 'the folded card');
 	expect(await barShown()).toBe(true);
-	expect(await tab.eval(`!!document.querySelector('.detail .bar .back')`)).toBe(false);
+	expect(await tab.eval(`!!document.querySelector('.detail .screen-bar .back')`)).toBe(false);
 }, 60_000);
 
 test.skipIf(!CHROME)("390px: a closed agent's address opens its page, with the list behind it", async () => {

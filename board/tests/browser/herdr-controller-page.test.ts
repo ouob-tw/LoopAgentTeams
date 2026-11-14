@@ -251,12 +251,12 @@ test.skipIf(!CHROME)('on the 終端 tab the header, its close and its questions 
 	await visit(390, '?agent=s-lead');
 	await tab.until(leadPage, "the controller's header");
 	await tab.eval(click('.detail [role="tablist"]', '終端'));
-	await tab.until(`!!document.querySelector('.detail .bar') && !document.querySelector('.detail .profile, .detail .questions, .detail [data-action="close"]')`, 'the folded line');
-	expect(await tab.eval<string>(`document.querySelector('.detail .bar').innerText`)).toContain('2 題待決');
-	await tab.eval(click('.detail .bar', '展開'));
+	await tab.until(`!!document.querySelector('.detail .screen-bar') && !document.querySelector('.detail .profile, .detail .questions, .detail [data-action="close"]')`, 'the folded line');
+	expect(await tab.eval<string>(`document.querySelector('.detail .screen-bar').innerText`)).toContain('2 題待決');
+	await tab.eval(click('.detail .screen-bar', '展開'));
 	await tab.until(`!!document.querySelector('.detail .profile') && !!document.querySelector('.detail .questions') && !!document.querySelector('.detail [data-action="close"]')`, 'the card unfolded');
 	await tab.eval(click('.detail [role="tablist"]', '回報'));
-	await tab.until(`!document.querySelector('.detail .bar') && !!document.querySelector('.detail .profile')`, 'the card back');
+	await tab.until(`!document.querySelector('.detail .screen-bar') && !!document.querySelector('.detail .profile')`, 'the card back');
 	expect(await tab.eval(FITS)).toBe(true);
 }, 60_000);
 
