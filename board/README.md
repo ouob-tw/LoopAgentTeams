@@ -21,7 +21,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_BUILD_DIR` | 建置輸出到哪個目錄、`start` 啟動哪一份建置（相對看板目錄）；`bun run build:test` 設為 `build-test`，讓測試不改寫常駐看板正在用的 `build/` | `build` |
 | `LAT_BOARD_LAT_DIR` | LAT 技能目錄 | `~/.agents/skills/lat` |
 | `LAT_BOARD_HELPER_COMMAND` | 直接指定輔助工具指令（JSON 字串陣列），看板會在後面加上 `board list` 等參數 | 由技能目錄組出 |
-| `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已登入裝置、密碼雜湊、TOTP 金鑰 `totp.json`、passkey 與登記碼雜湊 `passkeys.json`、回報的已讀與封存、用量列樣式 `usage-style.json`、送出紀錄、預先授權寫入紀錄 `preauth-writes.jsonl`） | `$XDG_STATE_HOME/lat/board` |
+| `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已登入裝置、密碼雜湊、TOTP 金鑰 `totp.json`、passkey 與登記碼雜湊 `passkeys.json`、回報的已讀與封存、用量列樣式 `usage-style.json`、送出紀錄、預先授權寫入紀錄 `preauth-writes.jsonl`）；在 `bun test` 裡建立看板時必須設定，否則直接丟錯 | `$XDG_STATE_HOME/lat/board` |
 | `LAT_REPORTS_DIR` | 主控回報紀錄目錄，須與 LAT hook 寫入的位置相同 | `$XDG_STATE_HOME/lat/reports` |
 | `LAT_USAGE_DIR` | Claude 主控用量檔的目錄，須與狀態列記錄程式寫入的位置相同（見「用量與快取」） | `$XDG_STATE_HOME/lat/usage` |
 | `LAT_BOARD_FALLBACK_SECONDS` | 漏掉檔案變動時，最慢幾秒內補上（從變動到畫面更新）；5 到 60 | `60` |

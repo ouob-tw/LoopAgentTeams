@@ -1,0 +1,5 @@
+{
+  "map": [
+    {"paths": ["board/src/lib/server/board.ts", "board/src/hooks.server.ts", "board/tests/unit/log.test.ts", "board/tests/unit/test-state-guard.test.ts", "board/tests/fallback-clock.ts"], "tests": ["board/tests/unit/test-state-guard.test.ts", "board/tests/unit/log.test.ts", "board/tests/server/fallback.test.ts", "board/tests/unit/board-log-read.test.ts"]}
+  ]
+}
