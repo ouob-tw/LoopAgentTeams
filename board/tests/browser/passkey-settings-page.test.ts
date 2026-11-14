@@ -149,7 +149,9 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 				until(() => logged(fixture.serverOutput().slice(loggedFrom), message).filter((line) => line.source === 'browser').at(0), 5_000, `the browser's ${message} line`);
 			await clickSteady('dialog[open] section.passkeys button.add');
 			await tab.until(`${SECTION}.querySelector('.here') !== null && ${ADD}.textContent.trim() === '新增 passkey'`, 'the passkey already here');
-			expect(await tab.eval(`${SECTION}.querySelector('.here').textContent.trim()`)).toBe('這台裝置已有看板的 passkey，直接用它登入。');
+			expect(await tab.eval(`${SECTION}.querySelector('.here').textContent.trim()`)).toBe('這台裝置已有 passkey，直接用它登入。');
+			// At least 16px, like the rest of the page's text.
+			expect(await tab.eval<number>(`parseFloat(getComputedStyle(${SECTION}.querySelector('.here')).fontSize)`)).toBeGreaterThanOrEqual(16);
 			// If it wraps, its lines are about as long as each other: no last line of a word or two left alone.
 			const lineWidths = await tab.eval<number[]>(`(() => {
 				const range = document.createRange();

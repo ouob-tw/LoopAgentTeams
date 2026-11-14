@@ -258,7 +258,7 @@
 		gap: 0.35em;
 		align-items: baseline;
 		margin: 0.35rem 0 0;
-		font-size: max(0.85rem, var(--min-font, 0px));
+		font-size: max(1rem, var(--min-font, 0px));
 		text-wrap: balance;
 	}
 	.here :global(svg) {

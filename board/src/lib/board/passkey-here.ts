@@ -12,7 +12,7 @@ export function passkeyBlocked(origin: string | null): string {
 }
 
 /** What the page says when this device already holds one of the board's passkeys. */
-export const PASSKEY_ALREADY_HERE = '這台裝置已有看板的 passkey，直接用它登入。';
+export const PASSKEY_ALREADY_HERE = '這台裝置已有 passkey，直接用它登入。';
 
 /** Whether the browser refused to make a passkey because this device already holds one of the
  *  board's (InvalidStateError, which @simplewebauthn names ERROR_AUTHENTICATOR_PREVIOUSLY_REGISTERED). */
