@@ -223,7 +223,7 @@ class BriefTests(DispatchCase):
         first = self.make_card()
         second = self.make_card()
         self.assertEqual(second.name, '2026-10-23-nanu-impl123-2.md')
-        source, _, result = self.brief(BRIEF, card=first)
+        _, _, result = self.brief(BRIEF, card=first)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(str(second), result.stderr)
         self.assertFalse((self.root / 'brief.brief.md').exists())
@@ -233,6 +233,14 @@ class BriefTests(DispatchCase):
         self.assertIn(str(third), result.stderr)
         _, _, result = self.brief(BRIEF, card=third)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_brief_ignores_other_cards_whose_tag_merely_ends_in_a_number(self):
+        plain = self.make_card()
+        self.agents.append({'name': 'nanu-impl123-5-kora', 'tag': 'nanu-impl123-5'})
+        numbered = self.make_card(tag='nanu-impl123-5')
+        _, _, result = self.brief(BRIEF, card=plain)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(numbered.exists())
 
     def test_brief_sees_a_continuation_card_already_moved_to_done(self):
         first = self.make_card()

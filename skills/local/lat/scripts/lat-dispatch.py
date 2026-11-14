@@ -30,7 +30,6 @@ that are pre-authorized right now.
 import argparse
 from datetime import date
 import fcntl
-import glob
 import importlib.util
 import json
 import os
@@ -549,23 +548,35 @@ def warn_former_controllers(text, workspace, orchestrator):
                   file=sys.stderr)
 
 
-CONTINUATION = re.compile(r'(.+)-(\d+)')
+CONTINUATION = re.compile(r'(.+)-(\d+)')  # `<day>-<tag>-<N>` as `make_card` names reissues
+
+
+def continues(candidate, name):
+    """True when card file `candidate` opens with `接續：` pointing at a card named `name`."""
+    try:
+        first = candidate.read_text(encoding='utf-8').splitlines()[0]
+    except (OSError, UnicodeError, IndexError):
+        return False
+    return first.startswith('接續：') and Path(first[len('接續：'):].strip()).name == name
 
 
 def newer_card(path):
-    """The highest-numbered continuation card (`<name>-2.md`, `-3`…) after `path`, else None."""
+    """The latest card that continues `path` (`接續：` chain through tasks/ and done/), else None.
+    The chain, not the file name, decides: a tag may itself end in `-2`."""
     path = Path(path).resolve()
     folder = path.parent.parent if path.parent.name == 'done' else path.parent
-    match = CONTINUATION.fullmatch(path.stem)
-    base, current = (match.group(1), int(match.group(2))) if match else (path.stem, 1)
-    best = None
-    for where in (folder, folder / 'done'):
-        for other in where.glob(f'{glob.escape(base)}-*.md'):
-            tail = CONTINUATION.fullmatch(other.stem)
-            if tail and tail.group(1) == base and int(tail.group(2)) > current and (
-                    best is None or int(tail.group(2)) > best[0]):
-                best = (int(tail.group(2)), other)
-    return best[1] if best else None
+    latest = None
+    while True:
+        current = latest or path
+        match = CONTINUATION.fullmatch(current.stem)
+        names = [f'{current.stem}-2.md']
+        if match:
+            names.append(f'{match.group(1)}-{int(match.group(2)) + 1}.md')
+        following = next((where / name for name in names for where in (folder, folder / 'done')
+                          if continues(where / name, current.name)), None)
+        if not following:
+            return latest
+        latest = following
 
 
 def refuse_stale_card(card, path):
