@@ -2,7 +2,7 @@
 	// 推播通知 in the settings: 允許通知 makes this device's subscription, 關閉通知 removes it; other
 	// devices keep theirs. Where the page cannot take pushes, the reason stands in place of the button.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
-	import { disablePush, enablePush, pushState, pushSupport, thisPage } from '#lib/board/push-setup.ts';
+	import { autoEnablePush, disablePush, enablePush, pushState, pushSupport, pushTurnedOff, shouldAutoEnable, thisPage } from '#lib/board/push-setup.ts';
 	import TestDenied from './TestDenied.svelte';
 
 	/** null until read. */
@@ -12,8 +12,8 @@
 	let busy = $state(false);
 
 	/** Read again each time the settings open: the browser's permission may have changed meanwhile. */
-	export async function load() {
-		notice = null;
+	export async function load(again = false) {
+		if (!again) notice = null;
 		const support = pushSupport(thisPage());
 		reason = support.ok ? null : support.reason;
 		if (!support.ok) return;
@@ -24,6 +24,18 @@
 		} catch {
 			on = false;
 		}
+		// Only the opening of the settings tries on its own, never the read after a press, so a failure cannot loop.
+		if (again || busy || reason || on !== false) return;
+		if (!shouldAutoEnable({ permission: thisPage().permission, on, turnedOff: pushTurnedOff(), testView: testDevice.view !== null })) return;
+		busy = true;
+		try {
+			notice = await autoEnablePush();
+		} catch (error) {
+			notice = `瀏覽器沒有建立推播訂閱：${(error as Error).message}`;
+		} finally {
+			busy = false;
+		}
+		await load(true);
 	}
 
 	async function toggle() {
@@ -31,7 +43,7 @@
 		notice = null;
 		notice = on ? await disablePush() : await enablePush();
 		busy = false;
-		await load();
+		await load(true);
 		// What went wrong stays in view after the state was read again.
 	}
 </script>

@@ -226,6 +226,8 @@ for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: 允許通知 turns this device's pushes on and 關閉通知 off`, async () => {
 		await visit(width);
 		await tab.send('Browser.grantPermissions', { origin: fixture.url, permissions: ['notifications'] });
+		// 關閉通知 was pressed on this device before, so the granted permission does not turn it on by itself.
+		await tab.eval(`localStorage.setItem('lat-board-push-off', '1')`);
 		await click('button[aria-label="設定"]');
 		await tab.until(`document.querySelector('[data-push]')?.dataset.push === 'off'`, 'pushes off');
 		expect(await text('[data-push]')).toContain('這台裝置：未開啟');
@@ -259,4 +261,90 @@ test.skipIf(!CHROME)('390px: on plain http under a LAN name the setting says why
 	expect(await tab.eval<boolean>(FITS)).toBe(true);
 	await tab.eval(`document.querySelector('[data-push]').scrollIntoView({ block: 'center' })`);
 	await bothThemes('390-p3-not-https');
+});
+
+const pushNow = async () => (await (await fixture.fetch('/api/push', { cookie })).json()).endpoint as string | null;
+const reload = async () => {
+	await tab.eval(`window.__old = true`);
+	await tab.send('Page.reload');
+	await tab.until(`!window.__old && JSON.stringify(history.state).includes('depth')`, 'the board again');
+	await sleep(1000);
+};
+const openSettings = async (label = 'the push state') => {
+	// A fresh opening each time: the settings read the push state only when they open.
+	await tab.eval(`document.querySelector('dialog[open]')?.close()`);
+	await click('button[aria-label="設定"]');
+	await tab.until(`['on', 'off'].includes(document.querySelector('[data-push]')?.dataset.push)`, label);
+	await tab.until(`document.querySelector('[data-push]')?.dataset.push === 'on' || !${button('[data-push]', '允許通知')}?.disabled`, 'the push state settled');
+};
+
+test.skipIf(!CHROME)('390px: a granted permission turns this device on at opening the settings, 關閉通知 stops that across reloads, 允許通知 brings it back', async () => {
+	await send('/api/push/subscription', 'DELETE', {});
+	await visit(390);
+	await tab.send('Browser.grantPermissions', { origin: fixture.url, permissions: ['notifications'] });
+	await tab.eval(`window.__asked = 0; const ask = Notification.requestPermission; Notification.requestPermission = function () { window.__asked++; return ask.apply(this, arguments); }`);
+	await openSettings();
+	await tab.until(`document.querySelector('[data-push]')?.dataset.push === 'on'`, 'on without a press');
+	expect(await text('[data-push]')).toContain('這台裝置：已開啟');
+	expect(await pushNow()).toBe(`${PUSH_ORIGIN}/push/browser`);
+	expect(await tab.eval<number>(`window.__asked`)).toBe(0);
+	expect(await tab.eval<boolean>(FITS)).toBe(true);
+	await tab.eval(`document.querySelector('[data-push]').scrollIntoView({ block: 'center' })`);
+	await bothThemes('390-p4-auto-on');
+
+	await tab.eval(`${button('[data-push]', '關閉通知')}.click()`);
+	await tab.until(`document.querySelector('[data-push]')?.dataset.push === 'off'`, 'off');
+	expect(await pushNow()).toBeNull();
+
+	// A reload of the page, then the settings again: still off, nothing registered.
+	await reload();
+	await openSettings('push state after reload');
+	await sleep(500);
+	expect(await text('[data-push]')).toContain('這台裝置：未開啟');
+	expect(await pushNow()).toBeNull();
+	await shot(tab, '390-p5-off-stays');
+
+	// 允許通知 again, then the board loses the subscription: the next opening registers again.
+	await tab.eval(`${button('[data-push]', '允許通知')}.click()`);
+	await tab.until(`document.querySelector('[data-push]')?.dataset.push === 'on'`, 'on again');
+	expect(await tab.eval<string | null>(`localStorage.getItem('lat-board-push-off')`)).toBeNull();
+	await send('/api/push/subscription', 'DELETE', {});
+	await tab.eval(`navigator.serviceWorker.getRegistration('/').then((r) => r?.pushManager.getSubscription()).then((s) => s?.unsubscribe())`);
+	await reload();
+	await openSettings();
+	await tab.until(`document.querySelector('[data-push]')?.dataset.push === 'on'`, 'registered again');
+	expect(await pushNow()).toBe(`${PUSH_ORIGIN}/push/browser`);
+	await send('/api/push/subscription', 'DELETE', {});
+});
+
+test.skipIf(!CHROME)('390px: with the permission not asked yet the settings open with the 允許通知 button and no browser question', async () => {
+	await visit(390);
+	await tab.eval(`window.__asked = 0; Notification.requestPermission = function () { window.__asked++; return Promise.resolve('default'); }`);
+	expect(await tab.eval(`Notification.permission`)).toBe('default');
+	await openSettings();
+	await sleep(500);
+	expect(await text('[data-push]')).toContain('這台裝置：未開啟');
+	expect(await tab.eval<number>(`window.__asked`)).toBe(0);
+	expect(await tab.eval<boolean>(`!${button('[data-push]', '允許通知')}.disabled`)).toBe(true);
+	expect(await pushNow()).toBeNull();
+});
+
+test.skipIf(!CHROME)('390px: an automatic subscribing that fails says what a pressed 允許通知 says and leaves the button usable', async () => {
+	await visit(390);
+	await tab.send('Browser.grantPermissions', { origin: fixture.url, permissions: ['notifications'] });
+	await tab.eval(`PushManager.prototype.subscribe = async function () { throw new Error('no service'); }`);
+	await openSettings();
+	await tab.until(`!!document.querySelector('[data-push] [role="alert"]')`, 'the notice');
+	const automatic = await text('[data-push] [role="alert"]');
+	expect(automatic).toBe('瀏覽器沒有建立推播訂閱：no service');
+	expect(await text('[data-push]')).toContain('這台裝置：未開啟');
+	expect(await tab.eval<boolean>(`!${button('[data-push]', '允許通知')}.disabled`)).toBe(true);
+	expect(await tab.eval<boolean>(FITS)).toBe(true);
+	await shot(tab, '390-p6-auto-failed');
+
+	await tab.eval(`${button('[data-push]', '允許通知')}.click()`);
+	await sleep(500);
+	expect(await text('[data-push] [role="alert"]')).toBe(automatic);
+	expect(await tab.eval<boolean>(`!${button('[data-push]', '允許通知')}.disabled`)).toBe(true);
+	expect(await pushNow()).toBeNull();
 });

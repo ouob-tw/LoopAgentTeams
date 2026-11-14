@@ -58,11 +58,47 @@ export async function pushState(): Promise<{ on: boolean; problem: string | null
 	return { on: subscription?.endpoint === server.value.endpoint, problem: null };
 }
 
+/** Set on this device (browser storage only) once 關閉通知 was pressed; keeps the settings from turning pushes on by themselves. */
+export const PUSH_OFF_KEY = 'lat-board-push-off';
+
+export function pushTurnedOff(): boolean {
+	try {
+		return localStorage.getItem(PUSH_OFF_KEY) === '1';
+	} catch {
+		return false;
+	}
+}
+
+function markTurnedOff(off: boolean): void {
+	try {
+		if (off) localStorage.setItem(PUSH_OFF_KEY, '1');
+		else localStorage.removeItem(PUSH_OFF_KEY);
+	} catch {
+		// Private mode or blocked storage: the device then simply has no marker.
+	}
+}
+
+/** Whether opening the settings should turn this device's pushes on by itself: the browser already
+ *  allowed them, this device has no subscription, 關閉通知 was never pressed here, and no test device is shown. */
+export function shouldAutoEnable(given: { permission: NotificationPermission | null; on: boolean; turnedOff: boolean; testView: boolean }): boolean {
+	return given.permission === 'granted' && !given.on && !given.turnedOff && !given.testView;
+}
+
 /** 允許通知: asks the browser first; the words to show when it did not turn on, else null. */
 export async function enablePush(): Promise<string | null> {
+	markTurnedOff(false);
 	const permission = await Notification.requestPermission();
 	if (permission === 'denied') return BLOCKED;
 	if (permission !== 'granted') return '沒有允許通知，推播沒有開啟。';
+	return subscribeThisDevice();
+}
+
+/** The same subscribing as 允許通知 without asking the browser: for a permission already granted. */
+export async function autoEnablePush(): Promise<string | null> {
+	return subscribeThisDevice();
+}
+
+async function subscribeThisDevice(): Promise<string | null> {
 	const server = await request<BoardPush>('/api/push');
 	if (!server.ok) return NO_ANSWER;
 	if (!server.value.publicKey) return server.value.problem ?? NO_ANSWER;
@@ -91,6 +127,7 @@ export async function enablePush(): Promise<string | null> {
 export async function disablePush(): Promise<string | null> {
 	const removed = await request('/api/push/subscription', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: '{}' });
 	if (!removed.ok) return removed.kind === 'network' ? NO_ANSWER : '沒有關掉，請再試一次。';
+	markTurnedOff(true);
 	try {
 		await (await navigator.serviceWorker.getRegistration('/'))?.pushManager.getSubscription().then((subscription) => subscription?.unsubscribe());
 	} catch {
