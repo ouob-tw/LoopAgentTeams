@@ -78,6 +78,7 @@ export const TEST_DEVICE_RULES: Record<string, TestRule> = {
 	'POST /api/uploads': 'open',
 	'PUT /api/uploads/[id]': 'open',
 	'POST /api/client-error': 'open',
+	'DELETE /api/device': 'open',
 	'POST /api/login': 'open',
 	'POST /api/login/test': 'open',
 	'POST /api/login/totp': 'open',
