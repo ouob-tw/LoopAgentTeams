@@ -374,7 +374,7 @@ test('a try that comes due while the task still runs is skipped and recorded, on
 	expect((await viewOf(task.id)).state).toBe('done');
 }, 30_000);
 
-test('a run that ends past a week’s end or a month’s end belongs to the period it started in; the new period is tried on its own', async () => {
+test('a run that ends past a week’s end or a month’s end belongs to the period it started in, and the new period waits for its own set time', async () => {
 	// 2026-11-15 is a Sunday and 2026-11-30 the month's last day.
 	await open(tpe(2026, 11, 15, 23, 40));
 	const weekly = await create(commandTask({ type: 'weekly', fromWeekday: 1, toWeekday: 7 }, 'sleep 1.5; echo ok', { name: '跨週', time: '23:45', limitMinutes: 120 }));
@@ -394,7 +394,7 @@ test('a run that ends past a week’s end or a month’s end belongs to the peri
 	const novemberRun = await eventually(async () => (await viewOf(monthly.id)).runs.find((run) => run.status === 'running'), 'the monthly run to start');
 	expect(novemberRun.period).toBe('2026-11');
 	fixture!.setClock(tpe(2026, 12, 1, 0, 30));
-	const crossedMonth = (await ended(monthly.id, (await viewOf(monthly.id)).runs.length))[0];
+	const crossedMonth = (await ended(monthly.id, 1))[0];
 	expect(crossedMonth).toMatchObject({ id: novemberRun.id, trigger: 'auto', status: 'success', period: '2026-11', endedAt: tpe(2026, 12, 1, 0, 30) });
 	const month = await viewOf(monthly.id);
 	expect(month.state).toBe('waiting');

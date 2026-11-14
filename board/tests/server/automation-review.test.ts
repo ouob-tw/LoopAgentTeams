@@ -351,9 +351,9 @@ test('a check that ends past midnight, a week’s end or a month’s end settles
 	for (const [index, each] of cases.entries()) {
 		rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
 		rmSync(join(dir, 'hcom-added.json'), { force: true });
+		fixture.setClock(each.start);
 		const task = await create({ name: each.name, schedule: each.schedule, time: '23:45', limitMinutes: 120 });
 		hcomPlan([{ name: `auto-b${index}` }, null, { name: `chk-b${index}`, client: 'codex' }]);
-		fixture.setClock(each.start);
 		const started = await doneThenChecking(task, `auto-b${index}`, `chk-b${index}`);
 		expect(started.period).toBe(each.period);
 		// The check is still going when the period turns over.
@@ -387,6 +387,7 @@ test('a check that fails past the boundary leaves the period it started in not d
 	expect(done).toMatchObject({ period: '2026-11', review: { status: 'fail' } });
 	const view = await viewOf(task.id);
 	expect(view.missed).toEqual([]);
-	expect(view.state).not.toBe('done');
+	expect(view.state).toBe('waiting');
+	expect((await alerts()).some((alert) => alert.runId === started.id && alert.kind === 'check-failed')).toBe(true);
 	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
 }, 30_000);
