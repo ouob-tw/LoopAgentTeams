@@ -16,31 +16,16 @@ Follow /triage: write the agent brief into the issue (problem, decided approach,
 
 ## 2. Fix at most 3 tickets
 
-List the candidates: open, `ready-for-agent`, without `nightly-hold`:
+Tracker steps go through `scripts/nightly-tickets.py` (run from this repo with `uv run --no-project python scripts/nightly-tickets.py …`); it holds the pick order and the hold label.
 
-```bash
-gh issue list -R ouob-tw/LoopAgentTeams-work -l ready-for-agent --state open \
-  --search '-label:nightly-hold' --json number,title,labels,createdAt --limit 200
-```
+1. `pick` prints tonight's tickets (at most 3, in order). Fix only those.
+2. `hold <N>` before any work on ticket N, so a round cut short (time limit, quota) still leaves it skipped.
+3. Fix N by the LAT short flow up to a merge into `dev`, then `release <N>`. Push only as the pre-authorization allows; never push `main`, deploy production or install anything on the host.
+4. N parked or failed: `blocked <N> --reason '<what the user should decide or fix>'`. Anything needing the user is parked into the review page, as unattended mode says.
 
-Order them: severe first — `suite-failure`, then `bug`, then the rest (`test-cleanup`, `enhancement`, unlabelled); within a tier, oldest `createdAt` first. Pick the first 3 at most. Before any work on a picked ticket, mark it (step 3), so a round cut short by the time limit or quota still leaves the mark. Tickets opened by the test gate (`test-cleanup`) and by retro-log are ordinary tickets. Do not take entries from the retro feedback store; only tracker tickets.
+Tickets from the test gate (`test-cleanup`) and retro-log are ordinary tickets; never take entries from the retro feedback store.
 
-Fix each picked ticket by the LAT short flow up to a merge into `dev`. Push only as the pre-authorization allows; never push `main`, never deploy production, never install anything on the host. Anything that needs the user is parked into the review page, as unattended mode says.
-
-## 3. Hold marks
-
-- **When picked**, before working on it: add the label `nightly-hold` and a comment `Nightly round <date, Asia/Taipei>: working on this.` The next nights skip any ticket with this label.
-- **Merged into `dev`**: remove `nightly-hold` (and close the ticket as the short flow does).
-- **Parked or failed**: keep `nightly-hold` and add one comment saying what blocked it and what the user should decide or fix. It stays skipped until the user removes the label.
-
-A round that is stopped midway (time limit, quota) leaves its unfinished tickets labelled, so they are not picked again before the user looks. Create the label once if it is missing:
-
-```bash
-gh label create nightly-hold -R ouob-tw/LoopAgentTeams-work --color B60205 \
-  --description 'A nightly unattended round is on this, or parked or failed it; remove to let it be picked again' 2>/dev/null || true
-```
-
-## 4. Finish
+## 3. Finish
 
 Before delivering, run the review's pre-delivery cross-check (`references/unattended.md`「交付前核對」) so the review page exists and its check passed. Then deactivate the round. Your last reply's last line is only `DONE`; on failure `FAILED: <reason>`. While waiting on your agents, end turns with `NO REPLY:` as LAT says. Never end with `ASK:`.
 

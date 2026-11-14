@@ -26,7 +26,7 @@
       "這一輪的回顧頁（.lat/unattended/<主控 session>-r<輪>-review.md）存在，檔頭寫明交付前核對已做且全部相符",
       "這次執行期間沒有推送 main（origin/main 的提交與推送紀錄在執行期間沒有變動）",
       "這一輪修的 ready-for-agent 票不超過 3 張，且只合併到 dev",
-      "挑出的票都先標了 nightly-hold；已合併到 dev 的拿掉了標籤，擱置或失敗的保留標籤並留言說明原因"
+      "挑出的票都先用 scripts/nightly-tickets.py hold 標了 nightly-hold；已合併到 dev 的拿掉了標籤，擱置或失敗的保留標籤並留言說明原因"
     ],
     "client": "codex",
     "model": "gpt-6.1-sol",
