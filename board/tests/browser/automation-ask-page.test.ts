@@ -273,6 +273,45 @@ for (const width of [1280, 390]) {
 	});
 }
 
+/** The address a click on the yellow card's push carries: the worker opens /?alert=<id> or sends `alert-open` with the id. */
+async function askAlertId() {
+	const card = (await alerts()).find((alert) => alert.kind === 'ask' && alert.dismissedAt === undefined);
+	if (!card) throw new Error('no yellow card');
+	return card.id;
+}
+
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: a click on the ASK push opens the yellow card, with no board tab open and in an open tab, and the reply sent there reaches the agent`, async () => {
+		await startAsking(`ask-push-${width}`);
+		const id = await askAlertId();
+
+		// No board tab open: the worker opens /?alert=<id>, which is the card's own page.
+		await visit(width, `/?alert=${id}`);
+		await tab.until(`!!document.querySelector('.detail [data-alert="${id}"][data-kind="ask"] textarea')`, 'the yellow card from the address');
+		expect(await text('.detail [data-kind="ask"]')).toContain(QUESTION);
+		expect(await tab.eval(`location.search`)).toBe(`?alert=${id}`);
+		expect(await tab.eval<string[]>(OVERFLOW)).toEqual([]);
+		await shot(tab, `${width}-ask-8-push-opened`);
+		expect(tab.errors).toEqual([]);
+		await browser?.close();
+		browser = undefined;
+
+		// A board tab open on another list: the worker's message switches it to 待辦 and the yellow card.
+		await visit(width, '/?tab=automation');
+		await tab.eval(`navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: { type: 'alert-open', alert: ${JSON.stringify(id)} } }))`);
+		await tab.until(`location.search.includes('alert=${id}') && !!document.querySelector('.detail [data-alert="${id}"][data-kind="ask"] textarea')`, 'the yellow card from the message');
+		expect(await text('.detail [data-kind="ask"]')).toContain(QUESTION);
+		expect(await tab.eval<string[]>(OVERFLOW)).toEqual([]);
+
+		await typeReply('.detail [data-kind="ask"]', '2 張，各 NT$ 15,000');
+		await tab.eval(`${sendButton('.detail [data-kind="ask"]')}.click()`);
+		await tab.until(`!!document.querySelector('.detail [data-closed="answered"]')`, 'the card saying it was answered', 10_000);
+		expect(jsonLines(join(injectDir, 'inject-typed.jsonl'))).toEqual([{ text: '2 張，各 NT$ 15,000', enter: true }]);
+		expect((await alerts()).some((alert) => alert.id === id && alert.dismissedAt === undefined)).toBe(false);
+		await send(`/api/automation/${task.id}/stop`, 'POST');
+	});
+}
+
 test.skipIf(!CHROME)('the dark theme: the yellow card stays yellow and readable beside the red one, at 1280px and 390px', async () => {
 	await startAsking('ask-dark');
 	for (const width of [1280, 390]) {
