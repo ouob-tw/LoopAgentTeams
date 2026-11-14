@@ -4144,6 +4144,8 @@ CLEANUP_GROWTH = 1.3     # due when the median of later passes reaches baseline 
 CLEANUP_MIN_SAMPLES = 3  # later passes needed before the speed is judged
 CLEANUP_LATEST = 5       # the median is taken over at most this many latest passes
 CLEANUP_LABEL = 'test-cleanup'
+CLEANUP_READY_LABEL = 'ready-for-agent'  # also put on a ticket the gate opens
+CLEANUP_RATIO_STEP = 0.2  # a comment again when the median ratio rose this much since the last
 CLEANUP_SLOWEST = 10     # test files listed on the cleanup ticket
 TRACKER_TIMEOUT = 10
 
@@ -4169,7 +4171,7 @@ def new_window(unit, baseline=None):
     the last tracker action stays, so a reset never allows a second action that day."""
     unit.update(last_cleanup=today().isoformat(), window_start=now_iso(), baseline=baseline,
                 baseline_source='given' if baseline else None, samples=[], sample_count=0,
-                slowest=None, flaky={})
+                slowest=None, flaky={}, commented={})
     return unit
 
 
@@ -4234,20 +4236,47 @@ def cleanup_median(unit):
     return statistics.median(unit['samples'])
 
 
-def cleanup_due(unit):
-    """The reasons this unit is due for a cleanup; empty when it is not."""
+def cleanup_triggers(unit):
+    """[(kind, reason)] why this unit is due for a cleanup; empty when it is not."""
     reasons = []
     days = (today() - date.fromisoformat(unit['last_cleanup'])).days
     if days > CLEANUP_DAYS:
-        reasons.append(f"{days} days since the last cleanup ({unit['last_cleanup']}), "
-                       f'more than {CLEANUP_DAYS}')
+        reasons.append(('days', f"{days} days since the last cleanup ({unit['last_cleanup']}), "
+                                f'more than {CLEANUP_DAYS}'))
     median = cleanup_median(unit)
     if median is not None and median >= unit['baseline'] * CLEANUP_GROWTH:
-        reasons.append(f"median {secs(median)} of the latest {len(unit['samples'])} passes "
-                       f"is {median / unit['baseline']:.0%} of the baseline "
-                       f"{secs(unit['baseline'])}, "
-                       f'at least {CLEANUP_GROWTH:.0%}')
+        reasons.append(('speed', f"median {secs(median)} of the latest {len(unit['samples'])} "
+                                 f"passes is {median / unit['baseline']:.0%} of the baseline "
+                                 f"{secs(unit['baseline'])}, at least {CLEANUP_GROWTH:.0%}"))
     return reasons
+
+
+def cleanup_due(unit):
+    """The reasons this unit is due for a cleanup; empty when it is not."""
+    return [reason for _, reason in cleanup_triggers(unit)]
+
+
+def comment_snapshot(unit):
+    """What a comment on a cleanup ticket says about this unit: the trigger kinds, the
+    median as a share of the baseline (None before it is judged), the flaky tests listed."""
+    median = cleanup_median(unit)
+    return {'kinds': sorted(kind for kind, _ in cleanup_triggers(unit)),
+            'ratio': median / unit['baseline'] if median is not None else None,
+            'flaky': sorted((unit.get('flaky') or {}))}
+
+
+def comment_needed(unit, number):
+    """Whether this unit has something new for the open cleanup ticket `number`: it never
+    commented there, a trigger kind is new, the median ratio rose CLEANUP_RATIO_STEP or more
+    since the last comment, or a flaky test was not listed then."""
+    last = (unit.get('commented') or {}).get(str(number))
+    if last is None:
+        return True
+    now = comment_snapshot(unit)
+    rose = (now['ratio'] is not None and last['ratio'] is not None
+            and now['ratio'] - last['ratio'] >= CLEANUP_RATIO_STEP - 1e-9)
+    return bool(set(now['kinds']) - set(last['kinds']) or rose
+                or set(now['flaky']) - set(last['flaky']))
 
 
 def cleanup_numbers(unit):
@@ -4329,24 +4358,42 @@ def tracker_key(tracker):
     return json.dumps([tracker['repo'], tracker['label']])
 
 
-def post_cleanup(tracker, title, body, comment, opened):
-    """Comment on the open cleanup issue, or open one; returns (what was done, the number of
-    an issue opened now or None). opened is the issue this gate opened last: it is asked
-    first, since a new issue can be missing from the label list for a while."""
+def create_ticket(tracker, title, body):
+    """Open the ticket with the tracker label and `ready-for-agent`; a repo without that
+    label gets the tracker label only. Returns the new issue's URL."""
+    command = ['issue', 'create', '--title', title, '--label', tracker['label']]
+    try:
+        return gh([*command, '--label', CLEANUP_READY_LABEL, '--body', body], tracker).strip()
+    except RuntimeError as exc:
+        if CLEANUP_READY_LABEL not in str(exc):
+            raise
+    return gh([*command, '--body', body], tracker).strip()
+
+
+def post_cleanup(tracker, title, body, comment, opened, needed=lambda number: True):
+    """Comment on the open cleanup issue, or open one. Returns (what was done, the number of
+    an issue opened now or None, the number of the issue now carrying this unit's numbers or
+    None when nothing was posted). opened is the issue this gate opened last: it is asked
+    first, since a new issue can be missing from the label list for a while. needed(number)
+    says whether an open issue is worth a comment."""
+    target = None
     if opened is not None:
         issue = json.loads(gh(['issue', 'view', str(opened), '--json', 'state,url'], tracker))
         if issue['state'] == 'OPEN':
-            gh(['issue', 'comment', str(opened), '--body', comment], tracker)
-            return f"commented on {issue['url']}", None
-    found = json.loads(gh(['issue', 'list', '--state', 'open', '--label', tracker['label'],
-                           '--json', 'number,url', '--limit', '1'], tracker))
-    if found:
-        gh(['issue', 'comment', str(found[0]['number']), '--body', comment], tracker)
-        return f"commented on {found[0]['url']}", None
-    url = gh(['issue', 'create', '--title', title, '--label', tracker['label'],
-              '--body', body], tracker).strip()
+            target = {'number': opened, 'url': issue['url']}
+    if target is None:
+        found = json.loads(gh(['issue', 'list', '--state', 'open', '--label', tracker['label'],
+                               '--json', 'number,url', '--limit', '1'], tracker))
+        target = found[0] if found else None
+    if target is not None:
+        if not needed(target['number']):
+            return (f"no comment on {target['url']}: nothing new since the last one", None, None)
+        gh(['issue', 'comment', str(target['number']), '--body', comment], tracker)
+        return f"commented on {target['url']}", None, target['number']
+    url = create_ticket(tracker, title, body)
     number = re.search(r'/issues/(\d+)$', url)
-    return f'opened {url}', int(number.group(1)) if number else None
+    number = int(number.group(1)) if number else None
+    return f'opened {url}', number, number
 
 
 def check_cleanup(finished, command, cwd):
@@ -4395,7 +4442,8 @@ def _check_cleanup(finished, command, cwd):
              'updated today')
         return
     try:
-        done, number = post_cleanup(tracker, title, body, comment, opened)
+        done, number, posted = post_cleanup(tracker, title, body, comment, opened,
+                                            lambda n: comment_needed(unit, n))
     except Interrupted:
         raise
     except Exception as exc:
@@ -4408,9 +4456,21 @@ def _check_cleanup(finished, command, cwd):
              f"({exc}). Open or update the open `{tracker['label']}` issue by hand:\n"
              f'Title: {title}\n{body}')
         return
-    if number is not None:
+    if done.startswith('no comment'):
+        def release(state):  # nothing was posted, so the day is not used up
+            stored = state.get('cleanup', {}).get(key)
+            if stored and stored['acted'] == day:
+                stored['acted'] = previous
+        with_state(release)
+    if number is not None or posted is not None:
+        snapshot = comment_snapshot(unit)
+
         def remember(state):
-            state.setdefault('cleanup_issues', {})[tracker_key(tracker)] = number
+            if number is not None:
+                state.setdefault('cleanup_issues', {})[tracker_key(tracker)] = number
+            stored = state.get('cleanup', {}).get(key)
+            if posted is not None and stored is not None:
+                stored.setdefault('commented', {})[str(posted)] = snapshot
         with_state(remember)
     warn(f'test cleanup is due: {done}')
 

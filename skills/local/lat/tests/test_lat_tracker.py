@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 import os
@@ -17,8 +18,8 @@ def load(name, file):
     return module
 
 
-# A fake `gh` as strict as the real one: only `gh api repos/<owner>/<repo>/issues/<n>` is
-# accepted; any other argument shape, an unknown issue or a logged-out state exits non-zero.
+# A fake `gh` as strict as the real one: only `gh api repos/<owner>/<repo>/issues/<n>` and the
+# open cleanup tickets list `gh api repos/<owner>/<repo>/issues?...labels=<label>...` are accepted; any other argument shape, an unknown issue or a logged-out state exits non-zero.
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, re, sys
 args = sys.argv[1:]
@@ -26,6 +27,10 @@ data = json.load(open(os.environ['FAKE_GH_DATA']))
 open(os.environ['FAKE_GH_LOG'], 'a').write(' '.join(args) + '\n')
 if data.get('logged_out'):
     sys.stderr.write('gh: To get started with GitHub CLI, please run:  gh auth login\n'); sys.exit(4)
+listing = len(args) == 2 and args[0] == 'api' and re.fullmatch(
+    r'repos/([\w.-]+/[\w.-]+)/issues\?state=open&labels=([\w.-]+)&.*', args[1])
+if listing:
+    print(json.dumps(data.get('cleanup_open', {}).get(listing.group(1) + ':' + listing.group(2), []))); sys.exit(0)
 match = len(args) == 2 and args[0] == 'api' and re.fullmatch(
     r'repos/([\w.-]+/[\w.-]+)/issues/(\d+)', args[1])
 if not match:
@@ -37,7 +42,7 @@ print(json.dumps(issue))
 '''
 
 
-class TrackerWarningTests(unittest.TestCase):
+class TrackerBase(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -58,6 +63,10 @@ class TrackerWarningTests(unittest.TestCase):
         self.addCleanup(os.environ.__setitem__, 'PATH', os.environ['PATH'])
         for key, value in self.env.items():
             os.environ[key] = value
+        self.gate_dir = self.root / 'gate-state'  # the real gate state is never read
+        self.gate_dir.mkdir()
+        os.environ['SUITE_GATE_STATE_DIR'] = str(self.gate_dir)
+        self.addCleanup(os.environ.pop, 'SUITE_GATE_STATE_DIR', None)
         self.set_issues({})
         self.tracker = load('lat_tracker', '_lat_tracker.py')
         self.ledger = load('lat_ledger', 'lat-ledger.py')
@@ -85,6 +94,9 @@ class TrackerWarningTests(unittest.TestCase):
     def warnings(self):
         return self.tracker.tracker_warnings(self.ledger, self.path, self.work)
 
+
+
+class TrackerWarningTests(TrackerBase):
     def test_open_ticket_is_listed(self):
         self.set_issues({'acme/work#5': self.issue('open', ['ready-for-agent'])})
         self.ledger_with('#5')
@@ -146,14 +158,97 @@ class TrackerWarningTests(unittest.TestCase):
     def test_non_ticket_text_is_skipped(self):
         self.ledger_with('no-ticket-yet')
         self.assertEqual(self.warnings(), [])
-        self.assertFalse(self.log.exists())
+        self.assertEqual([l for l in self.log.read_text().splitlines() if '/issues/' in l], [])
 
     def test_only_reads_with_the_api_path_form(self):
         self.set_issues({'acme/work#5': self.issue('open')})
         self.ledger_with('#5', '#5')
         self.log.write_text('')  # adding the rows read the tracker for titles
         self.warnings()
-        self.assertEqual(self.log.read_text().splitlines(), ['api repos/acme/work/issues/5'])
+        self.assertEqual(self.log.read_text().splitlines()[0], 'api repos/acme/work/issues/5')
+
+
+class CleanupTicketWarningTests(TrackerBase):
+    """The extra line for a cleanup ticket open for more than 7 days (#622)."""
+
+    def cleanup_ticket(self, days, number=272, label='test-cleanup'):
+        created = datetime.now(timezone.utc) - timedelta(days=days)
+        self.set_issues({}, cleanup_open={f'acme/work:{label}': [{
+            'number': number, 'html_url': f'https://github.com/acme/work/issues/{number}',
+            'created_at': created.strftime('%Y-%m-%dT%H:%M:%SZ')}]})
+
+    def git(self, cwd, *args):
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t',
+                   GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@t')
+        subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, env=env)
+
+    def gate_status(self, *units, project=None):
+        samples = lambda median: [median] * 3
+        (self.gate_dir / 'state.json').write_text(json.dumps({'cleanup': {str(i): dict(
+            project=project or str(self.work.resolve()), command=cmd, baseline=baseline,
+            samples=samples(median), sample_count=3 if median else 0)
+            for i, (cmd, median, baseline) in enumerate(units)}}))
+
+    def test_an_old_ticket_adds_a_line_with_link_days_and_the_slowest_suite(self):
+        self.cleanup_ticket(10)
+        self.gate_status(('bun test', 130, 100), ('pytest', 180, 100), ('other', None, 100))
+        self.ledger_with()
+        lines = self.warnings()
+        self.assertEqual(lines[0], 'LAT tracker 警告（只提醒，不擋；不會自動關票或改標籤）：')
+        self.assertEqual(lines[1:], ['- 本專案有開著超過 7 天的整理票：'
+                                     '[acme/work#272](https://github.com/acme/work/issues/272)，已開 10 天；'
+                                     '目前最慢的一套是 `pytest`，為基準的 180%'])
+
+    def test_a_linked_worktree_workspace_finds_the_main_checkout_units(self):
+        self.git(self.work, 'init', '-q', '-b', 'main')
+        self.git(self.work, 'commit', '-q', '--allow-empty', '-m', 'x')
+        linked = self.root / 'linked'
+        self.git(self.work, 'worktree', 'add', '-q', str(linked))
+        self.gate_status(('pytest', 180, 100), project=str(self.work.resolve()))
+        self.cleanup_ticket(10)
+        self.assertIn('為基準的 180%', self.tracker.cleanup_lines('acme/work', linked)[0])
+
+    def test_reading_the_speed_never_changes_the_gate_state(self):
+        self.gate_status(('pytest', 180, 100))
+        before = sorted((p.name, p.read_bytes()) for p in self.gate_dir.iterdir())
+        self.cleanup_ticket(10)
+        self.ledger_with()
+        self.warnings()
+        self.assertEqual(sorted((p.name, p.read_bytes()) for p in self.gate_dir.iterdir()), before)
+
+    def test_no_speed_numbers_still_names_the_ticket(self):
+        self.cleanup_ticket(8)
+        self.ledger_with()
+        [header, line] = self.warnings()
+        self.assertTrue(line.endswith('已開 8 天'), line)
+
+    def test_a_ticket_open_for_7_days_or_less_or_none_adds_nothing(self):
+        self.cleanup_ticket(6)
+        self.ledger_with()
+        self.assertEqual(self.warnings(), [])
+        self.set_issues({})
+        self.assertEqual(self.warnings(), [])
+
+    def test_the_registry_label_is_used(self):
+        (self.work / '.suite-gate.json').write_text(json.dumps({'cleanup': {'label': 'tidy'}}))
+        self.cleanup_ticket(9, label='tidy')
+        self.ledger_with()
+        self.assertIn('已開 9 天', '\n'.join(self.warnings()))
+
+    def test_a_gate_that_cannot_be_read_still_names_the_ticket(self):
+        self.cleanup_ticket(10)
+        (self.gate_dir / 'state.json').write_text('not json')
+        self.ledger_with()
+        [header, line] = self.warnings()
+        self.assertTrue(line.endswith('已開 10 天'), line)
+
+    def test_a_failing_ticket_query_is_one_skip_line(self):
+        self.ledger_with()
+        self.set_issues({}, logged_out=True)
+        lines = self.warnings()
+        self.assertEqual(len(lines), 2)
+        self.assertIn('整理票查詢略過', lines[1])
+        self.assertIn('gh auth login', lines[1])
 
 
 if __name__ == '__main__':

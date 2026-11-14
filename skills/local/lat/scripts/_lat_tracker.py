@@ -1,13 +1,19 @@
 """Warning-only tracker check for the tickets on a round ledger (never blocks, never writes)."""
+from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 import shlex
 import subprocess
+import statistics
 
 TRIAGE_STATES = ('needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human')
 GH_TIMEOUT_SECONDS = 30
 TRACKER_DOC = Path('docs/agents/issue-tracker.md')
+CLEANUP_LABEL = 'test-cleanup'
+CLEANUP_OLD = timedelta(days=7)
+CLEANUP_MIN_SAMPLES = 3  # as the suite gate: later passes needed before the speed is judged
 REPO_FLAG = re.compile(r'-R\s+`?([\w.-]+/[\w.-]+)`?')
 
 
@@ -51,6 +57,73 @@ def ledger_tickets(ledger, path, default_repo):
     return list(seen)
 
 
+def cleanup_label(workspace):
+    """The cleanup ticket label the project's suite-gate registry names, else the default."""
+    try:
+        label = json.loads((Path(workspace) / '.suite-gate.json').read_text(encoding='utf-8'))['cleanup']['label']
+        return label.strip() if isinstance(label, str) and label.strip() else CLEANUP_LABEL
+    except (OSError, ValueError, KeyError, TypeError):
+        return CLEANUP_LABEL
+
+
+def project_root(workspace):
+    """The main work tree of the workspace's repository, as the suite gate names a project."""
+    workspace = Path(workspace).resolve()
+    try:
+        common = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+                                cwd=workspace, text=True, capture_output=True,
+                                timeout=GH_TIMEOUT_SECONDS).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return workspace
+    return Path(common).parent if common and Path(common).name == '.git' else workspace
+
+
+def gate_state_file():
+    """The suite gate's state file (read only here; the gate's own status would write it)."""
+    if os.environ.get('SUITE_GATE_STATE_DIR'):
+        return Path(os.environ['SUITE_GATE_STATE_DIR']) / 'state.json'
+    base = os.environ.get('XDG_STATE_HOME') or str(Path.home() / '.local/state')
+    return Path(base) / 'suite-gate/state.json'
+
+
+def slowest_suite(workspace):
+    """(command, median as a share of the baseline) of the project's slowest full suite from the
+    suite gate's state, or None when no suite has a judged speed or the state cannot be read."""
+    try:
+        units = json.loads(gate_state_file().read_text(encoding='utf-8')).get('cleanup', {}).values()
+        project = str(project_root(workspace))
+        ratios = [(statistics.median(unit['samples']) / unit['baseline'], unit['command'])
+                  for unit in units if unit['project'] == project and unit.get('baseline')
+                  and unit['sample_count'] >= CLEANUP_MIN_SAMPLES]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, statistics.StatisticsError):
+        return None
+    if not ratios:
+        return None
+    ratio, command = max(ratios)
+    return command, ratio
+
+
+def cleanup_lines(repo, workspace, now=None):
+    """One line when the project has a cleanup ticket open for more than 7 days, else []."""
+    label = cleanup_label(workspace)
+    path = f'repos/{repo}/issues?state=open&labels={label}&sort=created&direction=asc&per_page=20'
+    result = subprocess.run(['gh', 'api', path], text=True, capture_output=True, timeout=GH_TIMEOUT_SECONDS)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or result.stdout.strip() or f'gh exit {result.returncode}')
+    now = now or datetime.now(timezone.utc)
+    for issue in json.loads(result.stdout):
+        if 'pull_request' in issue:
+            continue
+        created = datetime.fromisoformat(issue['created_at'].replace('Z', '+00:00'))
+        if now - created > CLEANUP_OLD:
+            line = f'- 本專案有開著超過 7 天的整理票：[{repo}#{issue["number"]}]({issue["html_url"]})，已開 {(now - created).days} 天'
+            slowest = slowest_suite(workspace)
+            if slowest:
+                line += f'；目前最慢的一套是 `{slowest[0]}`，為基準的 {slowest[1]:.0%}'
+            return [line]
+    return []
+
+
 def tracker_warnings(ledger, path, workspace):
     """Warning lines for the ledger's tickets, [] when all is in order. A read failure is one line."""
     lines = []
@@ -73,6 +146,10 @@ def tracker_warnings(ledger, path, workspace):
                     command = shlex.join(['gh', 'issue', 'edit', str(number), '-R', repo] + [
                         part for name in stale for part in ('--remove-label', name)])
                     lines.append(f'- {repo}#{number} 已關閉但仍掛 {", ".join(stale)}；移除：`{command}`')
+        try:
+            lines += cleanup_lines(default_repo, workspace)
+        except Exception as error:  # noqa: BLE001 - the cleanup check only ever costs one line
+            lines.append(f'- 整理票查詢略過（{" ".join(str(error).split()) or repr(error)}）')
     except Exception as error:  # noqa: BLE001 - a tracker problem only ever costs one line
         detail = " ".join(str(error).split()) or repr(error)
         if not lines:
