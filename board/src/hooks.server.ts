@@ -39,6 +39,7 @@ const OPEN_PATHS = new Set([
 	'/api/login/enroll/options',
 	'/api/login/passwordless',
 	'/api/login/passwordless/options',
+	'/api/login/passkey-error',
 	'/login/test',
 	'/api/login/test'
 ]);

@@ -1,6 +1,6 @@
-// The board's error log: one JSON object per line on standard error, which systemd keeps in the
-// journal. Only error events and two refusals that matter (a source off the list, a login lock) are
-// written, never an entry per request. Fixed fields come first and no extra field can replace them;
+// The board's log: one JSON object per line on standard error, which systemd keeps in the journal.
+// Error events, a source off the list, and each login and passkey event (auth-log.ts) are written,
+// never an entry for other requests. Fixed fields come first and no extra field can replace them;
 // every line written while a request is handled carries its id.
 import { AsyncLocalStorage } from 'node:async_hooks';
 

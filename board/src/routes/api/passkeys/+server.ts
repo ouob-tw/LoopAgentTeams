@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { audited } from '#lib/server/auth-log.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { takeEnrollment } from '#lib/server/login-steps.ts';
 import { addDevicePasskey, listPasskeys, type Passkey } from '#lib/server/passkeys.ts';
@@ -25,7 +26,7 @@ export const GET: RequestHandler = () => {
 /** The end of registering a passkey from the settings: the browser's new passkey, for the
  *  registration this device started (/api/passkeys/options). A logged-in device needs no code.
  *  No refusal here is a 401, which the page takes for a device no longer logged in. */
-export const POST: RequestHandler = async ({ request, locals }) => {
+export const POST: RequestHandler = audited('passkey_enroll', async ({ request, locals }, note) => {
 	const { config } = getBoard();
 	const body = await request.json().catch(() => null);
 	const token = typeof body?.enrollment === 'string' ? body.enrollment : '';
@@ -39,9 +40,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!created) return json({ error: 'passkey_failed' }, { status: 400 });
 	try {
 		const { id } = addDevicePasskey(config.stateDir, config.now(), { ...created, label: request.headers.get('user-agent') ?? '' });
+		note.passkey_id = id;
 		return json({ enrolled: id });
 	} catch (error) {
 		console.error(`看板 passkey 檔寫不進去：${(error as Error).message}`);
 		return json({ error: 'passkeys_unreadable' }, { status: 500 });
 	}
-};
+}, { fields: { via: 'settings' } });

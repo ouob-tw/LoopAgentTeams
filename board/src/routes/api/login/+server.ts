@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { audited } from '#lib/server/auth-log.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { locked, loginLimit, openSecondStep, secondSteps, type SecondStep } from '#lib/server/login-steps.ts';
 import { checkPassword } from '#lib/server/password.ts';
@@ -7,7 +8,7 @@ import type { RequestHandler } from './$types';
 /** The first step of a login. The right password logs nothing in: it opens the second step
  *  (login-steps.ts) and neither counts nor clears a wrong attempt. The password is never logged or
  *  echoed back, whatever happens. */
-export const POST: RequestHandler = async ({ request, cookies, locals }) => {
+export const POST: RequestHandler = audited('login_password', async ({ request, cookies, locals }) => {
 	const { config } = getBoard();
 	const limit = loginLimit(config);
 	const body = await request.json().catch(() => null);
@@ -51,4 +52,4 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
 	limit.refund(source);
 	const seconds = openSecondStep(cookies, locals.https, config.now());
 	return json({ secondStep: steps, secondsLeft: seconds });
-};
+});

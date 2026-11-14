@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { audited } from '#lib/server/auth-log.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { finishLogin, locked, loginLimit, secondStepOpen } from '#lib/server/login-steps.ts';
 import { useTotp } from '#lib/server/totp.ts';
@@ -7,7 +8,7 @@ import type { RequestHandler } from './$types';
 /** The TOTP second step: the six digits of the authenticator app, within 5 minutes of the right
  *  password. A wrong code counts like a wrong password; only a right one clears the count and logs
  *  the device in. The code is never logged or echoed back. */
-export const POST: RequestHandler = async ({ request, cookies, locals }) => {
+export const POST: RequestHandler = audited('login_totp', async ({ request, cookies, locals }, note) => {
 	const { config } = getBoard();
 	const limit = loginLimit(config);
 	const body = await request.json().catch(() => null);
@@ -37,6 +38,6 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
 	const lockedFor = right ? limit.succeeded(source) : limit.failed(source);
 	if (lockedFor) return locked(lockedFor);
 	if (!right) return json({ error: 'wrong_code' }, { status: 401 });
-	finishLogin(config, cookies, locals.https, request.headers.get('user-agent') ?? '', 'totp');
+	note.device_id = finishLogin(config, cookies, locals.https, request.headers.get('user-agent') ?? '', 'totp');
 	return json({ loggedIn: true });
-};
+});

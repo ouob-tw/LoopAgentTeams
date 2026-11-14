@@ -198,7 +198,8 @@ test('ordinary refusals and successes write nothing', async () => {
 	expect((await fixture.fetch('/no-such-page', { cookie })).status).toBe(404);
 	expect((await fixture.fetch('/api/board', { cookie })).status).toBe(200);
 	await settled();
-	expect(output().split('\n').filter((line) => line.startsWith('{'))).toEqual([]);
+	// Logins, the wrong password included, have lines of their own (tests/server/login-log.test.ts).
+	expect(output().split('\n').filter((line) => line.startsWith('{') && !line.includes('"logger":"board.login"'))).toEqual([]);
 });
 
 /** A report as a page of this board sends it; `at` is an address on this board. */

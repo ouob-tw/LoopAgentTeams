@@ -9,7 +9,7 @@
 	import { startRegistration } from '@simplewebauthn/browser';
 	import { request, type ApiResult } from '#lib/board/api.ts';
 	import { TIME_ZONE } from '#lib/board/automation.ts';
-	import { passkeyBlocked, passkeyRefusal } from '#lib/board/passkey-here.ts';
+	import { PASSKEY_ALREADY_HERE, passkeyAlreadyHere, passkeyBlocked, passkeyRefusal, reportPasskeyRefusal } from '#lib/board/passkey-here.ts';
 	import { passkeyName } from '#lib/board/passkey-name.ts';
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 
@@ -19,6 +19,8 @@
 	/** Why this page cannot make a passkey; empty when it can. */
 	let blocked = $state('');
 	let failure = $state('');
+	/** This device already holds one of the board's passkeys: nothing failed, nothing to add. */
+	let alreadyHere = $state(false);
 	let adding = $state(false);
 	/** The passkey whose delete waits for a confirmation, and whether it is being deleted. */
 	let confirming = $state<string | null>(null);
@@ -29,6 +31,7 @@
 	/** Read the list again with nothing failed yet; called when the dialog opens. */
 	export async function load() {
 		failure = '';
+		alreadyHere = false;
 		await refresh();
 	}
 
@@ -62,6 +65,7 @@
 		if (adding || locked) return;
 		adding = true;
 		failure = '';
+		alreadyHere = false;
 		confirming = null;
 		const started = await post<{ options: Parameters<typeof startRegistration>[0]['optionsJSON']; enrollment: string }>('/api/passkeys/options', {});
 		if (!started.ok) {
@@ -73,7 +77,9 @@
 		try {
 			created = await startRegistration({ optionsJSON: started.value.options });
 		} catch (error) {
-			failure = passkeyRefusal(error, true);
+			reportPasskeyRefusal('settings', error);
+			if (passkeyAlreadyHere(error)) alreadyHere = true;
+			else failure = passkeyRefusal(error, true);
 			adding = false;
 			return;
 		}
@@ -87,6 +93,7 @@
 		if (deleting || locked) return;
 		deleting = true;
 		failure = '';
+		alreadyHere = false;
 		const result = await request(`/api/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' });
 		// One already gone is what was asked for.
 		if (!result.ok && !result.unpaired && result.status !== 404) failure = refusal(result);
@@ -150,6 +157,9 @@
 				</button>
 			</div>
 		{/if}
+	{/if}
+	{#if alreadyHere}
+		<p class="here" role="status"><KeyRound size="1em" aria-hidden="true" />{PASSKEY_ALREADY_HERE}</p>
 	{/if}
 	{#if failure}
 		<p class="failed" role="alert">{failure}</p>
@@ -242,6 +252,18 @@
 	button.danger {
 		color: var(--danger);
 		border-color: var(--danger);
+	}
+	.here {
+		display: flex;
+		gap: 0.35em;
+		align-items: baseline;
+		margin: 0.35rem 0 0;
+		font-size: max(1rem, var(--min-font, 0px));
+		text-wrap: balance;
+	}
+	.here :global(svg) {
+		flex: none;
+		align-self: center;
 	}
 	.failed {
 		margin: 0.35rem 0 0;
