@@ -67,7 +67,9 @@
         "board/tests/browser/screen-nav-bar.test.ts",
         "board/tests/unit/swipe.test.ts",
         "board/tests/browser/dock-swipe.test.ts",
-        "board/tests/unit/screen-theme.test.ts"
+        "board/tests/unit/screen-theme.test.ts",
+        "board/tests/browser/closed-agents-page.test.ts",
+        "board/tests/browser/herdr-controller-page.test.ts"
       ]
     },
     {
