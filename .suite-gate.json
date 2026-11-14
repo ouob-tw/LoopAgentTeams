@@ -178,7 +178,7 @@
       {"paths": ["board/src/routes/api/archive/**"],
        "tests": ["board/tests/server/archive.test.ts", "board/tests/unit/archive-pages.test.ts", "board/tests/server/retention.test.ts", "board/tests/server/inbox.test.ts"]},
       {"paths": ["board/src/lib/server/reports.ts"],
-       "tests": ["board/tests/*/controller-*.test.ts", "board/tests/unit/roster-order.test.ts", "board/tests/unit/report-place.test.ts", "board/tests/server/coldstart.test.ts", "board/tests/server/isolation.test.ts", "board/tests/unit/log.test.ts", "board/tests/server/duty.test.ts"]},
+       "tests": ["board/tests/*/controller-*.test.ts", "board/tests/unit/roster-order.test.ts", "board/tests/unit/report-place.test.ts", "board/tests/server/coldstart.test.ts", "board/tests/server/isolation.test.ts", "board/tests/unit/log.test.ts", "board/tests/server/duty.test.ts", "board/tests/server/roster.test.ts"]},
       {"paths": ["board/src/lib/components/ReportList.svelte"],
        "tests": ["board/tests/browser/controller-*.test.ts"]},
       {"paths": ["board/src/lib/components/ControllerHeader.svelte"],

@@ -8,13 +8,15 @@
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { request } from '#lib/board/api.ts';
 	import { isParked, verificationText, type Review, type ReviewItem as Item } from '#lib/board/review.ts';
-	import type { Controller } from '#lib/board/types.ts';
+	import { needsWake, type Controller } from '#lib/board/types.ts';
 	import EvidenceWindow from './EvidenceWindow.svelte';
 	import ReviewItem from './ReviewItem.svelte';
 
 	let { controller }: { controller: Controller } = $props();
 
-	const summary = $derived(controller.unattended.state === 'unknown' || controller.unattended.state === 'error' ? null : (controller.unattended.review ?? null));
+	/** The controller's round is over or its client gone: a reply wakes it. */
+	const wake = $derived(needsWake(controller));
+	const summary = $derived(controller.unattended.state === 'error' ? null : (controller.unattended.review ?? null));
 	/** Changes with every write of the review file. */
 	const written = $derived(summary?.state === 'ok' ? `${summary.stamp}:${summary.verified}` : null);
 
@@ -74,7 +76,7 @@
 			{#if section.key === 'parked'}
 				<!-- The banner above is this section's heading. -->
 				<ul class="items parked" data-section="parked">
-					{#each section.items as item (item.id)}<ReviewItem controllerId={controller.id} {item} />{/each}
+					{#each section.items as item (item.id)}<ReviewItem controllerId={controller.id} {wake} {item} />{/each}
 				</ul>
 			{:else if section.key === 'goal' && current}
 				<div class="goal" data-heading={section.heading}>
@@ -102,7 +104,7 @@
 			{:else if section.key === 'top'}
 				<h4 data-heading={section.heading}>{section.heading}</h4>
 				<ul class="items" data-section="top">
-					{#each top as item (item.id)}<ReviewItem controllerId={controller.id} {item} />{/each}
+					{#each top as item (item.id)}<ReviewItem controllerId={controller.id} {wake} {item} />{/each}
 				</ul>
 			{:else if section.key === 'done'}
 				<h4 data-heading={section.heading}>{section.heading}</h4>
@@ -112,7 +114,7 @@
 			{:else if section.key !== 'goal'}
 				<h4 data-heading={section.heading}>{section.heading}</h4>
 				<ul class="items" data-section={section.key}>
-					{#each section.items as item (item.id)}<ReviewItem controllerId={controller.id} {item} />{/each}
+					{#each section.items as item (item.id)}<ReviewItem controllerId={controller.id} {wake} {item} />{/each}
 				</ul>
 			{/if}
 		{/each}

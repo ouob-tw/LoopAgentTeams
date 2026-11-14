@@ -1,7 +1,7 @@
 // What the review tab keeps while the page lives: for each item, whether its comment box is open,
 // what was typed and how the last send ended. Kept by controller and item ID, so a review read
 // again, or an item moving between the sections, never drops a half-written reply.
-import { messaging } from './messaging.svelte.ts';
+import { messaging, type Outcome } from './messaging.svelte.ts';
 import { reviewMessage, type ReviewItem } from './review.ts';
 
 export interface CommentBox {
@@ -29,15 +29,17 @@ class ReviewUi {
 	}
 
 	/** Send the item and the user's words to the controller, through the board's usual message path,
-	 *  so they show in its 送出紀錄. Returns whether it was sent. */
-	async send(controllerId: string, item: ReviewItem): Promise<boolean> {
+	 *  so they show in its 送出紀錄; a controller whose round is over is woken with them instead (#638).
+	 *  Returns how it went, or null when there was nothing to send. */
+	async send(controllerId: string, item: ReviewItem, wake = false): Promise<Outcome | null> {
 		const text = this.box(controllerId, item.id).text;
-		if (!text.trim()) return false;
+		if (!text.trim()) return null;
 		this.patch(controllerId, item.id, { sending: true, error: null });
-		const outcome = await messaging.send(controllerId, reviewMessage(item, text));
+		const message = reviewMessage(item, text);
+		const outcome = await (wake ? messaging.wake(controllerId, message) : messaging.send(controllerId, message));
 		if (outcome.ok) this.patch(controllerId, item.id, { open: false, text: '', sending: false, error: null });
 		else this.patch(controllerId, item.id, { sending: false, error: outcome.reason ?? '沒有送出' });
-		return outcome.ok;
+		return outcome;
 	}
 }
 

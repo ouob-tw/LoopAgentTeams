@@ -118,6 +118,20 @@ test('status table: an unbound controller with an unarchived report, gone from h
 	});
 });
 
+// An automation task's controller (#625) ends its last turn with a bare `DONE` line, as the board's
+// runner asks, which LAT's report hook records with no tag (#638).
+test('an ended automation controller whose final report ends with a bare DONE stays on the roster', async () => {
+	const workspace = `${fixture.dir}/workspaces/gamma`;
+	fixture.report('session-auto', { tag: 'NO REPLY', summary: '等 QA', hcom_name: 'auto-bf579a568c-f7256b-siti', workspace });
+	fixture.report('session-auto', { tag: '', summary: '', message: '今晚這一輪做完了，已經停用。\n\n擱置等你決定：推送 dev。\n\nDONE', hcom_name: 'auto-bf579a568c-f7256b-siti', workspace, final: true });
+	fixture.list([]);
+
+	const snapshot = await fixture.refresh(cookie);
+
+	expect(named(snapshot, 'auto-bf579a568c-f7256b-siti')).toMatchObject({ id: 'session-auto', status: 'closed', phase: '今晚這一輪做完了，已經停用。' });
+	expect(snapshot.offRoster.map((controller) => controller.id)).not.toContain('session-auto');
+});
+
 test('已關閉 wins over 等你: an unbound controller whose last report is HELP or DECIDE is 已關閉', async () => {
 	const workspace = `${fixture.dir}/workspaces/gamma`;
 	fixture.report('session-ended-help', { tag: 'HELP', summary: '求助後被取消', hcom_name: 'orin', workspace, final: true });

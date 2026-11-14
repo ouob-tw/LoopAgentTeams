@@ -53,7 +53,8 @@ export interface UnattendedDraft {
 
 /** One controller's unattended mode, as the board snapshot carries it. */
 export type UnattendedView =
-	| { state: 'unknown' }
+	/** Not known; an ended round's controller carries only its review, as nothing else can change any more (#638). */
+	| { state: 'unknown'; review?: ReviewSummary }
 	| { state: 'error'; reason: string }
 	| {
 			/** `active`: a grant is in effect. `pending-goal`: a default start whose goal the controller has

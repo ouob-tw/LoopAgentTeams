@@ -364,3 +364,21 @@ test.skipIf(!CHROME)('a cited record that is gone says so in the window instead 
 	expect(await tab.eval<string>(text('dialog.evidence [role="alert"]'))).toContain('打不開');
 	await shot(tab, '1280-review-evidence-gone');
 });
+
+test.skipIf(!CHROME)('once the round is over and unbound the tab stays, and 回覆 wakes the controller with the words (#638)', async () => {
+	// Deactivated, its final report a bare DONE as an automation task's controller ends.
+	fixture.setHelper({ output: { controllers: [] }, realUnattended: uvPython(), realPreauth: uvPython() });
+	fixture.report(luna.session_id, { tag: '', summary: '', message: '這一輪做完了。\n\nDONE', hcom_name: luna.hcom_name, workspace: luna.workspace, final: true });
+	await fixture.refresh(cookie);
+	const tab = await browse();
+	await tab.until(`(document.querySelector('${TAB}')?.click(), document.querySelector('${TAB}')?.getAttribute('aria-selected') === 'true')`, 'the 回顧 tab of the ended controller');
+	await tab.until(`!!document.querySelector('${item('LAT-P2')} button.act')`, 'the parked item');
+	await click(tab, `${item('LAT-P2')} button.act`);
+	await tab.until(`!!document.querySelector('${item('LAT-P2')} textarea')`, 'the reply box');
+	await type(tab, `${item('LAT-P2')} textarea`, '先不要');
+	await click(tab, `${item('LAT-P2')} button.send`);
+	await tab.until(`!document.querySelector('${item('LAT-P2')} textarea') || !!document.querySelector('${item('LAT-P2')} .failed')`, 'the reply sent or refused');
+	expect(await tab.eval<string>(text(`${item('LAT-P2')} .failed`))).toBe('');
+	expect(typed().map((line) => line.text)).toContain(`回顧項目 LAT-P2「${await tab.eval<string>(text(`${item('LAT-P2')} .title`))}」回覆：先不要`);
+	await shot(tab, '1280-review-ended-reply-sent');
+});
