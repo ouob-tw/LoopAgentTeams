@@ -398,6 +398,77 @@ class SessionTests(unittest.TestCase):
                 self.declare_wait(**extra)
                 self.assert_silent(self.stop_hook('NO REPLY: waiting'))
 
+    def background_transcript(self, *events):
+        """A fake Claude transcript: ('start', id) / ('end', id, status) / ('raw', line)."""
+        lines = []
+        for event in events:
+            if event[0] == 'raw':
+                lines.append(event[1])
+                continue
+            if event[0] == 'start':
+                text = (f'Command running in background with ID: {event[1]}. Output is being '
+                        'written to: /tmp/x.output.')
+                content = [dict(type='tool_result', tool_use_id='t', content=text)]
+            else:
+                content = (f'<task-notification>\n<task-id>{event[1]}</task-id>\n'
+                           f'<status>{event[2]}</status>\n<summary>done</summary>\n</task-notification>')
+            lines.append(json.dumps(dict(type='user', message=dict(role='user', content=content))))
+        path = self.root / 'claude-transcript.jsonl'
+        path.write_text('\n'.join(lines) + '\n')
+        return str(path)
+
+    def claude_no_reply(self, transcript):
+        self.activate()
+        record = json.loads(self.record.read_text())
+        record['client'] = 'claude'
+        self.record.write_text(json.dumps(record))
+        return self.stop_hook('Done\nNO REPLY: waiting', 'claude', transcript_path=transcript)
+
+    def test_no_reply_passes_with_a_running_background_command_and_says_so(self):
+        cases = (((('start', 'bg1'),), 'bg1', None),
+                 ((('start', 'bg1'), ('start', 'bg2'), ('end', 'bg1', 'completed')), 'bg2', 'bg1'))
+        for events, shown, hidden in cases:
+            with self.subTest(shown=shown):
+                result = self.claude_no_reply(self.background_transcript(*events))
+                message = json.loads(result.stdout)['systemMessage']
+                self.assertIn('有背景指令', message)
+                self.assertIn(shown, message)
+                if hidden:
+                    self.assertNotIn(hidden, message)
+                self.assertEqual(self.reports()[-1]['tag'], 'NO REPLY')
+                self.record.unlink()
+                (self.root / 'reports' / f'{SESSION}.jsonl').unlink()
+
+    def test_no_reply_is_held_when_every_background_command_has_finished(self):
+        for status in ('completed', 'failed', 'killed', 'stopped'):
+            with self.subTest(status=status):
+                held = json.loads(self.claude_no_reply(self.background_transcript(
+                    ('start', 'bg1'), ('end', 'bg1', status))).stdout)
+                self.assertEqual(held['decision'], 'block')
+                self.assertIn('LAT 等待檢查未通過', held['reason'])
+                self.record.unlink()
+
+    def test_no_reply_is_held_when_the_transcript_is_missing_or_unrecognised(self):
+        quote = json.dumps(dict(type='assistant', message=dict(content=[dict(
+            type='text', text='Command running in background with ID: fake')])))
+        cases = {'missing': str(self.root / 'nope.jsonl'), 'relative': 'nope.jsonl', 'none': None,
+                 'garbage': self.background_transcript(('raw', 'not json background'), ('raw', '{')),
+                 'assistant quote': self.background_transcript(('raw', quote))}
+        for name, path in cases.items():
+            with self.subTest(case=name):
+                held = json.loads(self.claude_no_reply(path).stdout)
+                self.assertEqual(held['decision'], 'block')
+                self.assertIn('LAT 等待檢查未通過', held['reason'])
+                self.assertNotIn('例如有背景指令在跑', held['reason'])
+                self.record.unlink()
+
+    def test_codex_ignores_background_commands_in_the_transcript(self):
+        self.activate()
+        path = self.background_transcript(('start', 'bg1'))
+        held = json.loads(self.stop_hook('Done\nNO REPLY: waiting', 'codex',
+                                         transcript_path=path).stdout)
+        self.assertEqual(held['decision'], 'block')
+
     def test_wait_check_ignores_other_tags_plain_messages_and_executors(self):
         self.activate()
         self.assert_silent(self.stop_hook('Plain message\nNO REPLY not a tag'))
