@@ -27,8 +27,8 @@ from lat_decision_status import (DELEGATED, delegated_record_problems,
                                  read_decision_action, read_decision_session, read_exempt_basis,
                                  read_decision_kind, read_decision_status,
                                  read_spec_consensus_error, read_tried)
-from _lat_common import (full_hcom_name, reports_directory, run_cli, shared_lat_dir,
-                         watcher_process_matches, write_json_atomic)
+from _lat_common import (full_hcom_name, reports_directory, run_cli, same_controller,
+                         shared_lat_dir, watcher_process_matches, write_json_atomic)
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 GROUP_NAME = 'lat-codex-recovery'
@@ -815,8 +815,11 @@ def deactivate(args):
     args.reason = (args.reason or '').strip()
     if args.force_unfinished and not args.reason:
         raise ValueError('--force-unfinished needs a non-empty --reason; record unchanged')
-    if args.reason and not args.force_unfinished:
-        raise ValueError('--reason only goes with --force-unfinished; record unchanged')
+    if args.skip_retro and not args.reason:
+        raise ValueError('--skip-retro needs a non-empty --reason; record unchanged')
+    if args.reason and not (args.force_unfinished or args.skip_retro):
+        raise ValueError('--reason only goes with --force-unfinished or --skip-retro; '
+                         'record unchanged')
     workspace = args.workspace.resolve(strict=True)
     sid = session_id(args.session_id or os.environ.get(SESSION_ENV[args.client]))
     path = session_path(workspace, sid)
@@ -832,6 +835,7 @@ def deactivate(args):
         if any(record.get(key) != value for key, value in expected.items()):
             raise ValueError('Controller identity does not match; record unchanged')
         forced = None
+        retro_note = None
         was_active = record['status'] == 'active'
         review = None
         if record['status'] == 'active' and record.get('ledger_path'):
@@ -840,6 +844,7 @@ def deactivate(args):
             except ValueError as refusal:
                 tracker = tracker_warning(record)
                 raise ValueError(f'{refusal}\n\n{tracker}' if tracker else str(refusal)) from refusal
+            retro_note = retro_gate(record, args)
         if was_active:
             # A round's grant never outlives it; failing to end it leaves the record active.
             reason = ('handover' if args.successor else
@@ -882,6 +887,8 @@ def deactivate(args):
     if forced:
         print(f'已強制停用，未結案原因寫入{"工作總表歷史" if forced["saved_in"] == "ledger" else "session 紀錄"}：'
               f'{forced["reason"]}')
+    if retro_note:
+        print(retro_note)
     if record.get('ledger_path') and was_active:
         tracker = tracker_warning(record)
         if tracker:
@@ -1796,6 +1803,170 @@ def ledger_stop_check(record, message):
     return f'LAT 交付檢查未通過：工作總表無法讀取（{text}）。{fix}，再照原樣結束回合。'
 
 
+# ---- retro before delivery (#623) ------------------------------------------------------
+# A round where something went wrong gets a /retro before DONE: and deactivate pass.
+RETRO_CONDITIONS = dict(problem='工作總表有問題紀錄', reopen='定版後被甲、乙級發現重開',
+                        park='有擱置的列', nudge='停住監控送過催促')
+
+
+def round_nudges(record):
+    """Evidence lines for each urging nudge this controller's watcher delivered since the
+    round began, from the watch log that never rotates."""
+    watch = watch_module()
+    path = shared_lat_dir(record['workspace']) / 'watch' / record['hcom_name'] / watch.NUDGE_LOG
+    started = record.get('started_at_utc')
+    since = datetime.fromisoformat(started).timestamp() if started else 0
+    try:
+        lines = path.read_text(errors='replace').splitlines()
+    except FileNotFoundError:
+        return []
+    found = []
+    for number, line in enumerate(lines, 1):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and isinstance(entry.get('at'), (int, float)) \
+                and entry['at'] >= since and isinstance(entry.get('nudges'), list):
+            found += [f'催促 {entry.get("agent")}（{kind}，{path} 第 {number} 行）'
+                      for kind in entry['nudges']]
+    return found
+
+
+def retro_triggers(record):
+    """This round's retro triggers as [(condition, evidence)]; empty when nothing went wrong.
+    Raises ValueError when the ledger, the problem log or a watch log cannot be read."""
+    module = ledger_module()
+    ledger = Path(record['ledger_path'])
+    try:
+        doc = module.read_only(argparse.Namespace(ledger=ledger))
+        problems = module.read_problems(doc)
+        triggers = [('problem', f'{pid} {problem.get("ticket")} {problem.get("stage")} '
+                                f'{problem.get("level")}：{problem.get("text")}'
+                                f'（{module.problems_path(doc)}）')
+                    for pid, problem in problems.items()
+                    if problem.get('stage') != 'review' and problem.get('ledger')
+                    and Path(problem['ledger']).resolve() == ledger.resolve()]
+        for row in doc['items']:
+            label = f'列 {row["id"]}（{row["ticket"]}）'
+            if row['stage'] == 'impl':
+                triggers += [('reopen', f'{label}定版審查 {review["id"]} 有甲／乙級發現 '
+                                        f'{"、".join(review.get("problems", []))}（{ledger}）')
+                             for review, blocking in module.blocking_reviews(doc, row, True)
+                             if blocking]
+            parks = [entry for entry in row['history'] if entry.get('action') == 'park']
+            if parks:
+                triggers.append(('park', f'{label}擱置：{parks[-1].get("reason")}（{ledger}）'))
+        triggers += [('nudge', text) for text in round_nudges(record)]
+    except (module.Failure, OSError) as exc:
+        raise ValueError(str(exc)) from exc
+    return triggers
+
+
+def retro_command(record, *extra):
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(Path(__file__).resolve()),
+                       'retro-done', '--client', record['client'], '--workspace',
+                       record['workspace'], *extra])
+
+
+def retro_block(record, triggers):
+    """The refusal text naming the hit conditions and what to do."""
+    hits = '\n'.join(f'- {RETRO_CONDITIONS[condition]}：{evidence}'
+                     for condition, evidence in triggers)
+    done = retro_command(record, '--by', '<HCOM 名稱>', '--summary', '<retro-log 摘要>')
+    skip = retro_command(record, '--skip-retro', '--reason', '<原因>')
+    return ('LAT 交付回顧未完成：本輪出過事，交付前要跑 retro 並記錄。命中的條件：\n' + hits
+            + '\n要做的事：依 /hcom-spawn 派一個與你不同家的模型（你是 Claude 就派 Codex，反之亦然），'
+            f'對本主控 session（{record["client"]} {record["session_id"]}）跑 /retro，'
+            '再以 /retro-log 流程模式記錄（要開票的問題照它的規則開票標 needs-triage），'
+            f'最後執行 `{done} [--issue <owner/repo#N> …] [--entry "retro #N" …]` 登記完成'
+            '（--by 是跑 retro 的 Agent，不能是你自己），再照原樣重試。'
+            f'確定不跑時執行 `{skip}`（原因寫進本輪紀錄與交付回報）。')
+
+
+def retro_text(retro):
+    """One line for the delivery report: the recorded retro or its skip reason."""
+    if retro.get('skipped'):
+        return f'本輪略過 retro：{retro["reason"]}'
+    return (f'本輪 retro 已由 {retro["by"]} 完成：{retro["summary"]}；新開 issue：'
+            f'{"、".join(retro["issues"]) or "無"}；反饋庫條目：{"、".join(retro["entries"]) or "無"}')
+
+
+def retro_stop_check(record, message):
+    """(hold reason or None, note or None) for a DONE Stop of a round that needs a retro."""
+    if not done_stop(record, message):
+        return None, None
+    if record.get('retro'):
+        return None, retro_text(record['retro'])
+    triggers = retro_triggers(record)
+    return (retro_block(record, triggers) if triggers else None), None
+
+
+def retro_gate(record, args):
+    """Check the retro at deactivate; records --skip-retro and returns a note to print or None."""
+    if args.skip_retro:
+        record['retro'] = dict(at=datetime.now(timezone.utc).isoformat(), skipped=True,
+                               reason=args.reason)
+        return retro_text(record['retro'])
+    if record.get('retro'):
+        return retro_text(record['retro'])
+    lenient = args.force_unfinished or args.successor
+    try:
+        triggers = retro_triggers(record)
+    except ValueError as exc:
+        if lenient:
+            return f'LAT 提醒：本輪 retro 觸發條件讀不出（{exc}），未檢查。'
+        raise ValueError(f'本輪 retro 觸發條件讀不出，拒絕停用：{exc}\n修好後重跑，或加 '
+                         '`--skip-retro --reason "<原因>"` 略過。') from exc
+    if not triggers:
+        return None
+    if lenient:
+        names = '、'.join(dict.fromkeys(RETRO_CONDITIONS[condition] for condition, _ in triggers))
+        return f'LAT 提醒：本輪出過事（{names}）但沒有 retro 紀錄；強制結束或換班不擋。'
+    raise ValueError(retro_block(record, triggers))
+
+
+def retro_done(args):
+    """Record this round's retro (or its skip) in the active controller record."""
+    fields = dict(by=(args.by or '').strip(), summary=(args.summary or '').strip())
+    reason = (args.reason or '').strip()
+    if args.skip_retro:
+        if not reason:
+            raise ValueError('--skip-retro needs a non-empty --reason; record unchanged')
+        if any(fields.values()) or args.issue or args.entry:
+            raise ValueError('--skip-retro goes only with --reason; record unchanged')
+        retro = dict(skipped=True, reason=reason)
+    else:
+        if reason:
+            raise ValueError('--reason only goes with --skip-retro; record unchanged')
+        missing = [f'--{key}' for key, value in fields.items() if not value]
+        if missing:
+            raise ValueError(f'{" and ".join(missing)} required; record unchanged')
+        retro = dict(fields, issues=[item.strip() for item in args.issue or [] if item.strip()],
+                     entries=[item.strip() for item in args.entry or [] if item.strip()])
+    workspace = args.workspace.resolve(strict=True)
+    sid = session_id(os.environ.get(SESSION_ENV[args.client]))
+    path = session_path(workspace, sid)
+    _, lock_path, _ = watcher_paths(dict(workspace=str(workspace), session_id=sid))
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        original = current_bytes(path)
+        record = read_json(path)
+        expected = dict(client=args.client, session_id=sid, role='orchestrator',
+                        workspace=str(workspace), status='active')
+        if any(record.get(key) != value for key, value in expected.items()):
+            raise ValueError('No active controller record of this session; record unchanged')
+        name = record['hcom_name']
+        if not args.skip_retro and (same_controller(fields['by'], name)
+                                    or same_controller(name, fields['by'])):
+            raise ValueError(f'--by {fields["by"]} is this controller; the retro must be run by '
+                             'another agent of a different model family; record unchanged')
+        record['retro'] = dict(at=datetime.now(timezone.utc).isoformat(), **retro)
+        write_json_atomic(path, record, expected=original)
+    print(retro_text(record['retro']))
+
+
 def watch_module():
     spec = importlib.util.spec_from_file_location('lat_watch', WATCH_SCRIPT)
     module = importlib.util.module_from_spec(spec)
@@ -1896,6 +2067,8 @@ def append_report(record, message):
                   client=record['client'], workspace=record['workspace'], round=round_number,
                   tag=match[1] if match else '', summary=match[2] if match else '',
                   message=message, final=final)
+    if record.get('retro') and (final or report['tag'] == 'DONE'):
+        report['retro'] = record['retro']
     if final and record.get('force_unfinished_reason'):
         report.update({key: record.get(key) for key in (
             'force_unfinished_reason', 'force_unfinished_saved_in', 'force_unfinished_check')})
@@ -1942,6 +2115,15 @@ def report_stop(record, payload):
             reasons.append(ledger + ('\n\n' + tracker if tracker else ''))
         elif tracker:
             notes.append(tracker)
+        try:
+            retro, retro_note = retro_stop_check(record, message)
+        except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
+            notes.append(f'LAT 交付回顧檢查發生錯誤，未攔下：{exc}')
+        else:
+            if retro:
+                reasons.append(retro)
+            if retro_note:
+                notes.append(retro_note)
         try:
             undeclared = undeclared_wait_check(record, message)
         except Exception as exc:  # noqa: BLE001 - a broken wait check never holds the Stop
@@ -2413,7 +2595,20 @@ def main():
     stop.add_argument('--session-id', help='Explicit ID for manual stale-record deactivation')
     stop.add_argument('--force-unfinished', action='store_true',
                       help='End even though the work ledger check fails; needs --reason')
-    stop.add_argument('--reason', help='Why unfinished work is left; kept in the ledger history')
+    stop.add_argument('--skip-retro', action='store_true',
+                      help='End without the retro this round needs; needs --reason, kept in the '
+                      'session record and the final report')
+    stop.add_argument('--reason', help='Why unfinished work is left (kept in the ledger history) '
+                      'or why the retro is skipped')
+    retro = sub.add_parser('retro-done', help="Record this round's retro, or skip it with a reason")
+    retro.add_argument('--workspace', type=Path, required=True)
+    retro.add_argument('--by', help='HCOM name of the agent that ran /retro; not this controller')
+    retro.add_argument('--summary', help='The /retro-log summary')
+    retro.add_argument('--issue', action='append', help='An issue the retro-log opened; repeatable')
+    retro.add_argument('--entry', action='append',
+                       help='A feedback entry the retro-log wrote, as "retro #N"; repeatable')
+    retro.add_argument('--skip-retro', action='store_true', help='Skip the retro; needs --reason')
+    retro.add_argument('--reason', help='Why the retro is skipped')
     duty = sub.add_parser('duty', help="Record this controller's duty for the board")
     duty.add_argument('--workspace', type=Path, required=True)
     duty.add_argument('--text', required=True, help=f'What it is responsible for, <= {DUTY_LIMIT} shown chars; [text](http url) counts as text')
@@ -2440,6 +2635,8 @@ def main():
             deactivate(args)
         elif args.action == 'duty':
             record_duty(args)
+        elif args.action == 'retro-done':
+            retro_done(args)
         elif args.action == 'list':
             list_active(args)
         elif args.action == 'hook':

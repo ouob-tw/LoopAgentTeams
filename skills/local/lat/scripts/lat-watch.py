@@ -2293,7 +2293,31 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
     )
 
 
+# Nudges that are not about a stall: an alarm the agent set itself and the cache keep-alive.
+UNPROMPTED_NUDGES = ('alarm-ring', 'cache-keepalive')
+LEDGER_NUDGES = ('ledger-start-missing', 'ledger-estimate-passed')
+NUDGE_LOG = 'nudges.jsonl'
+
+
+def delivered_nudges(record):
+    """The kind of each urging nudge a watch log record says was delivered: a stall nudge
+    ('stall'), a wait-expiry nudge or a ledger start/estimate nudge."""
+    kinds = []
+    if record.get('decision') in LEDGER_NUDGES and record.get('result') == 'sent':
+        kinds.append(record['decision'])
+    actions, results = record.get('actions'), record.get('action_results')
+    if isinstance(actions, list) and isinstance(results, list) and len(actions) == len(results):
+        kinds += [action.get('category') or 'stall' for action, result in zip(actions, results)
+                  if isinstance(action, dict) and isinstance(result, dict)
+                  and action.get('kind') == 'nudge' and result.get('status') == 'done'
+                  and action.get('category') not in UNPROMPTED_NUDGES]
+    return kinds
+
+
 def append_log(path, record):
+    """Append one line; past LOG_ROTATE_BYTES the file is rotated and only one older one kept.
+    Delivered urging nudges also go to NUDGE_LOG, which never rotates (the delivery retro
+    check reads a whole round from it)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     # Other processes (alarm registration) append too; the directory lock keeps rotation atomic.
     directory = os.open(path.parent, os.O_RDONLY)
@@ -2307,6 +2331,13 @@ def append_log(path, record):
             stream.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
             stream.flush()
             os.fsync(stream.fileno())
+        nudges = delivered_nudges(record)
+        if nudges:
+            with path.with_name(NUDGE_LOG).open('a') as stream:
+                stream.write(json.dumps(dict(at=record.get('at'), agent=record.get('agent'),
+                                             nudges=nudges), ensure_ascii=False) + '\n')
+                stream.flush()
+                os.fsync(stream.fileno())
     finally:
         os.close(directory)
 
