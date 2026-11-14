@@ -21,7 +21,11 @@
       "tests": [
         "board/tests/browser/my-messages.test.ts",
         "board/tests/browser/transcript-reading-place.test.ts",
-        "board/tests/browser/back-navigation.test.ts"
+        "board/tests/browser/back-navigation.test.ts",
+        "board/tests/browser/closed-agents-page.test.ts",
+        "board/tests/browser/herdr-controller-page.test.ts",
+        "board/tests/browser/screen-layout.test.ts",
+        "board/tests/browser/screen-nav-bar.test.ts"
       ]
     }
   ]

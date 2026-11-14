@@ -69,7 +69,7 @@ async function shot(name: string) {
 const openTab = (label: string) => tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '${label}').click()`);
 const openScreen = async () => {
 	await openTab('終端');
-	await tab.until(`!!document.querySelector('.screen-panel pre') && !!document.querySelector('.detail .bar')`, 'the screen');
+	await tab.until(`!!document.querySelector('.screen-panel pre') && !!document.querySelector('.detail .screen-bar')`, 'the screen');
 };
 const topbarShown = () => tab.eval<boolean>(`(() => { const bar = document.querySelector('.detail .topbar'); return !!bar && getComputedStyle(bar).display !== 'none'; })()`);
 const rect = (selector: string) => `(() => { const r = document.querySelector('${selector}').getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; })()`;
@@ -83,18 +83,18 @@ for (const theme of ['dark', 'light'] as const) {
 		await shot(`phone-${theme}-transcript-bar`);
 		await openScreen();
 		expect(await topbarShown()).toBe(false);
-		const bar = await tab.eval<Box>(rect('.detail .bar'));
+		const bar = await tab.eval<Box>(rect('.detail .screen-bar'));
 		expect(bar.top).toBeLessThan(8);
 		expect((await tab.eval<Box>(rect('.detail [role=tablist]'))).top).toBeLessThan(withBar);
 		// "←" is the card's leftmost thing and big enough to tap.
-		const back = await tab.eval<Box>(rect('.detail .bar .back'));
+		const back = await tab.eval<Box>(rect('.detail .screen-bar .back'));
 		expect(back.left - bar.left).toBeLessThan(16);
 		expect(back.bottom - back.top).toBeGreaterThanOrEqual(30);
-		expect(await tab.eval<string>(`document.querySelector('.detail .bar .back').innerText`)).toBe('←');
+		expect(await tab.eval<string>(`document.querySelector('.detail .screen-bar .back').innerText`)).toBe('←');
 		await shot(`phone-${theme}-screen`);
 		// The page does not scroll: the box ends at the command line.
 		expect(await tab.eval<number>(`document.documentElement.scrollHeight - innerHeight`)).toBeLessThanOrEqual(0);
-		await tab.eval(`document.querySelector('.detail .bar .back').click()`);
+		await tab.eval(`document.querySelector('.detail .screen-bar .back').click()`);
 		await tab.until(`location.search === '?tab=agents' || location.search === ''`, 'the list');
 		expect(await tab.eval(`getComputedStyle(document.querySelector('.detail')).display`)).toBe('none');
 	}, 30_000);
@@ -104,7 +104,7 @@ for (const theme of ['dark', 'light'] as const) {
 		await openScreen();
 		expect(await topbarShown()).toBe(false);
 		await openTab('對話紀錄');
-		await tab.until(`!document.querySelector('.detail .bar')`, 'the card back');
+		await tab.until(`!document.querySelector('.detail .screen-bar')`, 'the card back');
 		expect(await topbarShown()).toBe(true);
 		expect(await tab.eval(`!!document.querySelector('.detail .topbar button[aria-label="返回"]')`)).toBe(true);
 		await shot(`phone-${theme}-transcript-again`);
@@ -122,8 +122,8 @@ test('phone: a notice sits at the very top and covers neither "←" nor "展開"
 	await tab.eval(`document.querySelector('.dock .keys-pane button.key').click()`);
 	await tab.until(`!!document.querySelector('.toasts .toast')`, 'a notice');
 	const toast = await tab.eval<Box>(rect('.toasts .toast'));
-	const back = await tab.eval<Box>(rect('.detail .bar .back'));
-	const expand = await tab.eval<Box>(rect('.detail .bar button[aria-expanded]'));
+	const back = await tab.eval<Box>(rect('.detail .screen-bar .back'));
+	const expand = await tab.eval<Box>(rect('.detail .screen-bar button[aria-expanded]'));
 	expect(toast.top).toBeLessThan(8);
 	expect(toast.left).toBeGreaterThanOrEqual(back.right);
 	expect(toast.right).toBeLessThanOrEqual(expand.left);
@@ -133,12 +133,12 @@ test('phone: a notice sits at the very top and covers neither "←" nor "展開"
 test('computer: the top bar stays on the 終端 tab and the card has no "←"', async () => {
 	await visit({ width: 1280, height: 800, phone: false, theme: 'dark' });
 	await openScreen();
-	expect(await tab.eval(`!!document.querySelector('.detail .bar .back')`)).toBe(false);
+	expect(await tab.eval(`!!document.querySelector('.detail .screen-bar .back')`)).toBe(false);
 	await shot('computer-screen');
 	// A narrow window with a mouse is a computer too: its top bar stays.
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 420, height: 800, deviceScaleFactor: 1, mobile: false });
 	await tab.until(`getComputedStyle(document.querySelector('.detail .topbar')).display !== 'none'`, 'the bar at 420px');
-	expect(await tab.eval(`!!document.querySelector('.detail .bar .back')`)).toBe(false);
+	expect(await tab.eval(`!!document.querySelector('.detail .screen-bar .back')`)).toBe(false);
 }, 30_000);
 
 test('phone: with the command line put away the box runs down to the bottom, no swipe brings the keys, and it all returns when reopened', async () => {
