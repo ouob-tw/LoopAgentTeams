@@ -878,7 +878,9 @@ class NotificationTests(PanelTestCase):
                 (self.hcom_dir / "calls.jsonl").unlink(missing_ok=True)
                 self.core.mark_notification_pending(self.questions)
                 self.set_hcom("offline")
-                app = self.make_app(NOTIFY_DELAY=30)
+                # The slow stub needs interpreter start + 0.5s; a loaded host can push that past
+                # the default 1s timeout, which fails the flush instead of closing.
+                app = self.make_app(NOTIFY_DELAY=30, NOTIFY_TIMEOUT=10)
                 async with app.run_test() as pilot:
                     await self.settle(app, pilot)
                     if mode == "raw":
