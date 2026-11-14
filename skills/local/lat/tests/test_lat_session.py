@@ -2632,7 +2632,7 @@ class SessionTests(unittest.TestCase):
             try:
                 args = argparse.Namespace(
                     workspace=self.work, client='codex', session_id=SESSION,
-                    successor=None, force_unfinished=False, reason=None,
+                    successor=None, force_unfinished=False, skip_retro=False, reason=None,
                 )
                 with patch('builtins.print'):
                     helper.deactivate(args)
@@ -3801,6 +3801,167 @@ class SessionTests(unittest.TestCase):
         del record['ledger_path']
         self.record.write_text(json.dumps(record))
         self.assert_silent(self.stop_hook('DONE: delivered'))
+
+    # ---- retro before delivery (#623) ----
+
+    def retro_triggers(self):
+        spec = importlib.util.spec_from_file_location('lat_session_retro', SCRIPT)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        return helper.retro_triggers(json.loads(self.record.read_text()))
+
+    def delivered_round(self):
+        """An active round whose one ticket is closed and its QA exempted: DONE passes as is."""
+        self.activate()
+        item = self.open_item('#5')
+        self.exempt_qa('#5')
+        self.close_item(item)
+        return item
+
+    def watch_log(self, *entries):
+        log = self.work / '.lat/watch/orch/watch.jsonl'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open('a') as stream:
+            stream.writelines(json.dumps(entry) + '\n' for entry in entries)
+        return log
+
+    @staticmethod
+    def nudge(at, category=None, status='done'):
+        action = dict(kind='nudge', agent='worker', **({'category': category} if category else {}))
+        return dict(at=at, agent='worker', actions=[action],
+                    action_results=[dict(kind='nudge', status=status)])
+
+    def retro_done(self, *extra):
+        return self.cli('retro-done', '--workspace', self.work, *extra)
+
+    def test_retro_triggers_none_hit_and_done_and_deactivate_stay_as_before(self):
+        item = self.delivered_round()
+        # Not triggers: a non-final review finding, a nudge the agent asked for (alarm), the
+        # cache keep-alive, a failed nudge and a nudge from before this round began.
+        self.ledger('review-result', '--row', item, '--reviewer', 'auto-reviewer',
+                    '--finding', '乙:caught before the final candidate')
+        now = time.time()
+        self.watch_log(self.nudge(now, 'alarm-ring'), self.nudge(now, 'cache-keepalive'),
+                       self.nudge(now, status='failed'), self.nudge(0))
+        self.assertEqual(self.retro_triggers(), [])
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+        result = self.deactivate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('retro', result.stdout)
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+        self.assertNotIn('retro', self.reports()[-1])
+
+    def test_retro_trigger_problem_record_of_this_round(self):
+        self.delivered_round()
+        problem = self.ledger('problem', '--stage', 'post-deploy-user', '--level', '乙',
+                              '--text', 'user saw a blank page', '--ticket', '#5').strip()
+        [(condition, evidence)] = self.retro_triggers()
+        self.assertEqual(condition, 'problem')
+        self.assertEqual(evidence, f'{problem} acme/work#5 post-deploy-user 乙：user saw a blank page'
+                                   f'（{self.work / ".lat/problems.jsonl"}）')
+
+    def test_retro_trigger_final_candidate_reopened(self):
+        item = self.delivered_round()
+        self.ledger('review-result', '--row', item, '--reviewer', 'auto-reviewer', '--final',
+                    '--finding', '丙:wording only')
+        self.assertEqual(self.retro_triggers(), [])
+        out = self.ledger('review-result', '--row', item, '--reviewer', 'auto-reviewer',
+                          '--final', '--finding', '甲:breaks deactivate')
+        problem = out.strip().rsplit(' ', 1)[-1]
+        self.assertEqual(self.retro_triggers(), [
+            ('reopen', f'列 {item}（#5）定版審查 3 有甲／乙級發現 {problem}（{self.ledger_path()}）')])
+
+    def test_retro_trigger_parked_row(self):
+        self.delivered_round()
+        # A real park needs an unattended grant; the ledger's own history entry is what counts.
+        ledger = json.loads(self.ledger_path().read_text())
+        row = ledger['items'][0]
+        row['history'].append(dict(at=row['history'][-1]['at'], by='orch', action='park',
+                                   changes={}, reason='waiting for the user to pick a layout'))
+        self.ledger_path().write_text(json.dumps(ledger))
+        self.ledger('repair', '--reason', 'test adds a park entry')
+        self.assertEqual(self.retro_triggers(), [
+            ('park', f'列 1（#5）擱置：waiting for the user to pick a layout（{self.ledger_path()}）')])
+
+    def test_retro_trigger_watch_nudges_this_round(self):
+        self.delivered_round()
+        now = time.time()
+        log = self.watch_log(self.nudge(now), dict(
+            at=now, agent='worker', decision='ledger-estimate-passed', item=1, result='sent',
+            actions=[]))
+        self.assertEqual(self.retro_triggers(), [
+            ('nudge', f'催促 worker（stall，{log} 第 1 行）'),
+            ('nudge', f'催促 worker（ledger-estimate-passed，{log} 第 2 行）')])
+
+    def test_done_and_deactivate_hold_a_round_with_triggers_until_retro_done(self):
+        self.delivered_round()
+        self.ledger('problem', '--stage', 'self', '--level', '乙', '--text', 'wrong base',
+                    '--ticket', '#5')
+        held = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertEqual(held['decision'], 'block')
+        for text in ('LAT 交付回顧未完成', '工作總表有問題紀錄：P1 acme/work#5 self 乙：wrong base',
+                     '/hcom-spawn', '不同家的模型', f'codex {SESSION}', '/retro-log 流程模式',
+                     'retro-done --client codex', '--skip-retro'):
+            self.assertIn(text, held['reason'])
+        refused = self.deactivate()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn('工作總表有問題紀錄：P1', refused.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+        own = self.retro_done('--by', 'orch', '--summary', 'self review')
+        self.assertEqual(own.returncode, 1)
+        self.assertIn('is this controller', own.stderr)
+        self.assertNotIn('retro', json.loads(self.record.read_text()))
+        done = self.retro_done('--by', 'codex-retro', '--summary', 'one issue opened',
+                               '--issue', 'acme/work#9', '--entry', 'retro #3')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        line = ('本輪 retro 已由 codex-retro 完成：one issue opened；新開 issue：acme/work#9；'
+                '反饋庫條目：retro #3')
+        self.assertEqual(done.stdout.strip(), line)
+        passed = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertNotIn('decision', passed)
+        self.assertIn(line, passed['systemMessage'])
+        self.assertEqual(self.reports()[-1]['retro']['issues'], ['acme/work#9'])
+        result = self.deactivate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(line, result.stdout)
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+        final = self.reports()[-1]
+        self.assertTrue(final['final'])
+        self.assertEqual(final['retro']['entries'], ['retro #3'])
+
+    def test_skip_retro_needs_a_reason_and_is_kept_for_the_report(self):
+        self.delivered_round()
+        self.watch_log(self.nudge(time.time()))
+        for extra in (('--skip-retro',), ('--skip-retro', '--reason', ' ')):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.deactivate(*extra).returncode, 1)
+                self.assertEqual(self.retro_done(*extra).returncode, 1)
+        self.assertEqual(self.retro_done('--skip-retro', '--reason', 'x', '--by', 'a').returncode, 1)
+        result = self.deactivate('--skip-retro', '--reason', 'only a typo nudge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('本輪略過 retro：only a typo nudge', result.stdout)
+        self.stop_hook('DONE: delivered')
+        self.assertEqual({key: self.reports()[-1]['retro'][key] for key in ('skipped', 'reason')},
+                         dict(skipped=True, reason='only a typo nudge'))
+
+    def test_skip_retro_at_done_with_retro_done(self):
+        self.delivered_round()
+        self.watch_log(self.nudge(time.time()))
+        self.assertEqual(json.loads(self.stop_hook('DONE: delivered').stdout)['decision'], 'block')
+        self.assertEqual(self.retro_done('--skip-retro', '--reason', 'user said no').returncode, 0)
+        passed = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertNotIn('decision', passed)
+        self.assertIn('本輪略過 retro：user said no', passed['systemMessage'])
+
+    def test_force_unfinished_with_triggers_only_reminds_in_one_line(self):
+        self.activate()
+        self.open_item('#9')
+        self.watch_log(self.nudge(time.time()))
+        forced = self.deactivate('--force-unfinished', '--reason', 'user stopped the round')
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        [line] = [line for line in forced.stdout.splitlines() if 'retro' in line]
+        self.assertEqual(line, 'LAT 提醒：本輪出過事（停住監控送過催促）但沒有 retro 紀錄；'
+                               '強制結束或換班不擋。')
 
     def test_deactivate_refuses_unfinished_ledger_and_force_keeps_reason(self):
         self.activate()
