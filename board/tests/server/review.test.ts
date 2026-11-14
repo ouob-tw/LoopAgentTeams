@@ -164,6 +164,18 @@ test('a round that ended and was unbound keeps its review tab while its last rep
 	}
 });
 
+test('a bound round whose client is gone keeps its review tab too (#638)', async () => {
+	await startRound();
+	try {
+		fixture.setHcom({ agents: [] });
+		await fixture.refresh(cookie);
+		expect(named(await fixture.refresh(cookie), 'luna')).toMatchObject({ status: 'closed', unattended: { state: 'unknown' } });
+		expect(await summary()).toMatchObject({ state: 'ok', parked: 3 });
+	} finally {
+		rmSync(join(fixture.dir, 'hcom.json'), { force: true });
+	}
+});
+
 const fileOf = (path: string, withCookie = true) => fixture.fetch(`/api/review/file?controller=${luna.session_id}&path=${encodeURIComponent(path)}`, withCookie ? { cookie } : {});
 const decision = (id: string) => `.lat/decisions/${id}.md`;
 

@@ -203,7 +203,8 @@ export function ledgerSources(active: HelperController[], files: ReportFile[]): 
 
 /** The controllers whose unattended mode and review to read: every bound one, and every unbound one
  *  on the roster, that is with a DONE or HELP report not yet due for the archive, so the review of an
- *  ended round stays open from its controller (#638). */
+ *  ended round stays open from its controller (#638). Reports are archived only by age (`archiveDue`),
+ *  so this is the roster's own rule for unbound controllers. */
 export function unattendedSources(active: HelperController[], files: ReportFile[], now: number): { workspace: string; sessionId: string }[] {
 	const found = new Map(active.map((binding) => [binding.session_id, binding.workspace]));
 	for (const file of files) {
@@ -390,15 +391,16 @@ function activeController(binding: HelperController, file: ReportFile | undefine
 	};
 }
 
-/** An ended round's unattended view: only its review, which stays open; no grant can start for it. */
+/** The unattended view of an ended round or a gone client: only its review, which stays open; no
+ *  grant can start or change from the board for it. */
 function endedUnattended(sources: Pick<Sources, 'unattended'>, sessionId: string): UnattendedView {
 	const read = sources.unattended.get(sessionId);
 	return read && 'review' in read && read.review ? { state: 'unknown', review: read.review } : { state: 'unknown' };
 }
 
 /** A bound controller whose client is gone: shown like an unbound one, from its binding. */
-function closedController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined, ledger: LedgerView): Controller {
-	return { ...activeController(binding, file, duty, ledger, { state: 'unknown' }), status: 'closed', running: false, pendingCount: 0, herdr: null, error: reportError(file) };
+function closedController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined, ledger: LedgerView, unattended: UnattendedView): Controller {
+	return { ...activeController(binding, file, duty, ledger, unattended), status: 'closed', running: false, pendingCount: 0, herdr: null, error: reportError(file) };
 }
 
 /** A controller whose LAT round is no longer bound: 閒置 while its conversation is in hcom's list
@@ -449,7 +451,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		const duty = sources.duties.get(binding.session_id);
 		const ledger = ledgerOf(sources, binding.session_id);
 		const controller = closed
-			? closedController(binding, file, duty, ledger)
+			? closedController(binding, file, duty, ledger, endedUnattended(sources, binding.session_id))
 			: { ...activeController(binding, file, duty, ledger, unattendedOf(sources, binding.session_id)), paused: isPaused(sources, binding.session_id) };
 		if (sources.helperError) {
 			controller.error = joinErrors(`資料可能過期，輔助工具失敗：${sources.helperError}`, controller.error);

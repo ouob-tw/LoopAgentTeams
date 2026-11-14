@@ -14,6 +14,8 @@
 
 	let { controller }: { controller: Controller } = $props();
 
+	/** The controller's round is over or its client gone: a reply wakes it. */
+	const wake = $derived(needsWake(controller));
 	const summary = $derived(controller.unattended.state === 'error' ? null : (controller.unattended.review ?? null));
 	/** Changes with every write of the review file. */
 	const written = $derived(summary?.state === 'ok' ? `${summary.stamp}:${summary.verified}` : null);
@@ -74,7 +76,7 @@
 			{#if section.key === 'parked'}
 				<!-- The banner above is this section's heading. -->
 				<ul class="items parked" data-section="parked">
-					{#each section.items as item (item.id)}<ReviewItem controllerId={controller.id} wake={needsWake(controller)} {item} />{/each}
+					{#each section.items as item (item.id)}<ReviewItem controllerId={controller.id} {wake} {item} />{/each}
 				</ul>
 			{:else if section.key === 'goal' && current}
 				<div class="goal" data-heading={section.heading}>
@@ -102,7 +104,7 @@
 			{:else if section.key === 'top'}
 				<h4 data-heading={section.heading}>{section.heading}</h4>
 				<ul class="items" data-section="top">
-					{#each top as item (item.id)}<ReviewItem controllerId={controller.id} wake={needsWake(controller)} {item} />{/each}
+					{#each top as item (item.id)}<ReviewItem controllerId={controller.id} {wake} {item} />{/each}
 				</ul>
 			{:else if section.key === 'done'}
 				<h4 data-heading={section.heading}>{section.heading}</h4>
@@ -112,7 +114,7 @@
 			{:else if section.key !== 'goal'}
 				<h4 data-heading={section.heading}>{section.heading}</h4>
 				<ul class="items" data-section={section.key}>
-					{#each section.items as item (item.id)}<ReviewItem controllerId={controller.id} wake={needsWake(controller)} {item} />{/each}
+					{#each section.items as item (item.id)}<ReviewItem controllerId={controller.id} {wake} {item} />{/each}
 				</ul>
 			{/if}
 		{/each}
