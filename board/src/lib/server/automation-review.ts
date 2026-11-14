@@ -66,6 +66,8 @@ export function reviewBrief({ task, run, folder, taskBrief, output, transcript }
 		if (transcript) lines.push(`- 執行任務的 Agent 對話紀錄：${transcript}`);
 		else if (run.sessionId) lines.push(`- 執行任務的 Agent 對話：${task.agent?.client === 'codex' ? 'Codex' : 'Claude'} session ${run.sessionId}（找不到紀錄檔位置）`);
 		if (run.agentName) lines.push(`- 執行任務的 Agent：@${run.agentName}（已關閉）`);
+		if (task.agent?.unattended && run.sessionId)
+			lines.push(`- 它是無人模式的 LAT 主控：這一輪的回顧檔是 ${folder}/.lat/unattended/${run.sessionId}-r<輪>-review.md（輪數取最大的）`);
 	} else if (task.command) {
 		lines.push('- 指令：', '', fence(task.command.command), '');
 		lines.push(`- 結束碼：${run.exitCode === null ? '被中止' : (run.exitCode ?? '不明')}`);

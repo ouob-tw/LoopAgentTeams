@@ -486,6 +486,112 @@ class BoardRequestTests(UnattendedCase):
         self.assertEqual(self.update(goal='另一個')['created']['version'], 2)
 
 
+TASK_GRANT = dict(goal='處理已知問題', done=['回顧頁通過交付前核對'],
+                  scope=dict(ticket_confirmation=True, assume_defaults=False,
+                             prototype_decide=True), maxHours=6)
+TAG = 'auto-t1-abc123'
+
+
+class BoardTaskTests(UnattendedCase):
+    """A board-task version comes from a board automation task's run (#625): the run line, the
+    user's latest save of the task, and the task file must agree, for the agent the run opened."""
+
+    def setUp(self):
+        super().setUp()
+        self.session(hcom_name=f'{TAG}-hepe')
+
+    def session(self, status='active', **extra):
+        extra.setdefault('hcom_name', 'orch')
+        extra.setdefault('history', [])
+        self.write(self.lat / 'sessions' / f'{SESSION}.json',
+                   json.dumps(dict(status=status,
+                                   decisions_path=str(self.lat / 'decisions'), **extra)))
+
+    def log(self, **entry):
+        path = self.board_state / 'sent-log.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a') as stream:
+            stream.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+    def save(self, grant=TASK_GRANT, **extra):
+        identifier = str(uuid.uuid4())
+        self.log(kind='automation-task-save', id=identifier, time='2026-11-14T00:00:00Z',
+                 taskId='t1', taskName='每晚', deviceId='d1', unattended=grant, **extra)
+        return identifier
+
+    def task_file(self, grant=TASK_GRANT, limit=360):
+        unattended = {key: grant[key] for key in ('goal', 'done', 'scope')}
+        self.write(self.board_state / 'automation' / 't1.json',
+                   json.dumps(dict(id='t1', limitMinutes=limit, agent=dict(unattended=unattended))))
+
+    def run_line(self, save, grant=TASK_GRANT, at=None, run='run-1'):
+        self.log(kind='unattended-task-run', id=run, taskId='t1', taskName='每晚', tag=TAG,
+                 save=save, time=(at or datetime.now(timezone.utc)).isoformat(), **grant)
+        return f'board-task:{run}'
+
+    def task_create(self, evidence, *extra, code=0):
+        return self.json_of('create', '--source', 'board-task', '--evidence', evidence, *extra,
+                            code=code)
+
+    def test_the_grant_comes_from_the_task_settings_for_the_controller_it_opened(self):
+        self.task_file()
+        evidence = self.run_line(self.save())
+        created = self.task_create(evidence)['created']
+        self.assertEqual((created['source'], created['evidence']), ('board-task', evidence))
+        self.assertEqual((created['goal'], created['done'], created['stop']['max_hours']),
+                         (TASK_GRANT['goal'], TASK_GRANT['done'], 6))
+        self.assertEqual(created['scope'], TASK_GRANT['scope'])
+        # Only this controller's round turns unattended; no project or global default is written.
+        self.assertEqual(self.record()['unattended']['mode'], 'unattended')
+        self.assertFalse(self.project_file.exists())
+        self.assertFalse(self.global_file.exists())
+        self.json_of('close', '--reason', 'off')
+        self.assertIn('already cited', self.task_create(evidence, code=1)['reason'])
+        # Nor in a later round of the same controller.
+        self.session(hcom_name=f'{TAG}-hepe', history=[dict(round=1)])
+        self.assertIn('already cited', self.task_create(evidence, code=1)['reason'])
+
+    def test_refused_when_the_run_save_task_file_or_agent_do_not_agree(self):
+        other = dict(TASK_GRANT, goal='別的')
+        old = datetime.now(timezone.utc) - timedelta(minutes=90)
+
+        def later_save():
+            first = self.save()
+            self.save()
+            return self.run_line(first)
+
+        cases = [
+            ('no such run', lambda: 'board-task:missing'),
+            ('not board-task evidence', lambda: 'board-action:x'),
+            ('not the latest save', later_save),
+            ('a test device save', lambda: self.run_line(self.save(testDevice=dict(id='t')))),
+            ('run differs from save', lambda: self.run_line(self.save(), grant=other)),
+            ('task file changed after', lambda: (self.task_file(other),
+                                                 self.run_line(self.save()))[1]),
+            ('limit changed after', lambda: (self.task_file(limit=600),
+                                             self.run_line(self.save()))[1]),
+            ('too old', lambda: self.run_line(self.save(), at=old)),
+            ('another agent', lambda: (self.session(hcom_name='orch'),
+                                       self.run_line(self.save()))[1]),
+        ]
+        for name, make in cases:
+            with self.subTest(name):
+                (self.board_state / 'sent-log.jsonl').unlink(missing_ok=True)
+                self.task_file()
+                self.session(hcom_name=f'{TAG}-hepe')
+                self.assertEqual(self.task_create(make(), code=1)['status'], 'refused')
+                self.assertFalse(self.grant.exists())
+                self.assertNotIn('unattended', self.record())
+
+    def test_settings_given_on_the_command_line_must_equal_the_task(self):
+        self.task_file()
+        evidence = self.run_line(self.save())
+        refused = self.task_create(evidence, '--goal', '別的', code=1)
+        self.assertIn('goal', refused['reason'])
+        created = self.task_create(evidence, '--max-hours', '6')['created']
+        self.assertEqual(created['version'], 1)
+
+
 class DraftAndSettingsTests(UnattendedCase):
     def test_a_draft_is_shown_but_is_no_grant(self):
         self.assertIsNone(self.status()['draft'])

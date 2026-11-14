@@ -17,6 +17,8 @@
 // run is never switched: a turn that ends on the usage limit is 額度用完. The limit always counts
 // from the run's start.
 import type { AgentSpec, AutomationRun, ReviewItem, RunStatus } from '../board/automation.ts';
+import { join } from 'node:path';
+import { latCommand } from '../board/launch.ts';
 
 /** How an agent task's agent ends a turn: done, failed, or asking the user and waiting. */
 export const ENDING_RULES = '完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>；需要使用者決定或補資料時，最後一行回覆 ASK: <問題> 並等待回覆，收到後接著做';
@@ -25,6 +27,30 @@ export const ENDING_RULES = '完成後最後一行只回覆 DONE，失敗回覆 
 export function firstMessage(brief: string): string {
 	return `讀取並照做 ${brief}，${ENDING_RULES}`;
 }
+
+/** How a run's LAT controller in unattended mode (#625) ends: never ASK, and DONE only once its
+ *  round is over. */
+export const CONTROLLER_ENDING = '這一輪做完並 deactivate 之後，最後一行只回覆 DONE；失敗回覆 FAILED: <原因>。中途等其他 Agent 時照 LAT 規則以 NO REPLY: 結尾。無人模式不發問，不要回覆 ASK:';
+
+/** The first message of an unattended task's controller: start the LAT round, turn the grant on
+ *  from the task's settings (the board's record of this run), then follow the brief. The state
+ *  folder is named because the agent does not inherit the board's environment; the tool is the
+ *  board's own LAT skill folder's. */
+export function controllerMessage(client: AgentSpec['client'], run: { taskName: string; runId: string; stateDir: string; latDir: string; brief: string }): string {
+	const text = [
+		`這是看板自動化任務「${run.taskName}」開的主控（執行 ${run.runId}），這一輪用無人模式。`,
+		`activate 後先執行 \`LAT_BOARD_STATE_DIR=${shellQuote(run.stateDir)} uv run --no-project python ${shellQuote(join(run.latDir, 'scripts/lat-unattended.py'))} create --source board-task --evidence board-task:${run.runId}\`：目標、做完條件、代決範圍與時間上限都取自任務設定，不要另外給或改。`,
+		'建不起來就不要做事，deactivate 後最後一行回覆 FAILED: <原因>。',
+		`建好後讀取並照做 ${run.brief}。`,
+		CONTROLLER_ENDING
+	].join('');
+	return latCommand(client, text);
+}
+
+const shellQuote = (value: string) => (/^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`);
+
+/** A controller's turn that ended waiting on its agents (NO REPLY:): the run goes on. */
+export const controllerGoesOn = (reply: string) => /^NO REPLY\s*[:：]/.test(reply.trimEnd().split('\n').at(-1)?.trim() ?? '');
 
 /** The message a Codex agent resumed on another account gets. */
 export const RESUME_MESSAGE = `剛才額度用完，已換帳號接回。請接著把任務做完，${ENDING_RULES}`;
@@ -194,6 +220,12 @@ export interface Watched {
 	resumeMessage?: string;
 	/** A task's agent may ask the user (ASK:); a checking agent has none of this. */
 	asking?: Asking;
+	/** A reply that ends a turn with the run going on (an unattended controller waiting on its
+	 *  agents): the next reply is judged instead. */
+	goesOn?: (reply: string) => boolean;
+	/** An unattended controller: its grant stops when quota runs out, so a Codex account confirmed
+	 *  at 0 ends the run as 額度用完, with no switch and no resume. */
+	quotaStops?: boolean;
 }
 
 /** What the watcher does with a task agent's questions, through the automation. */
@@ -286,6 +318,11 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 			asking.asked(question, reply.seq);
 			continue;
 		}
+		if (watched.goesOn?.(reply.text)) {
+			judgeAfter = reply.seq;
+			watched.note({ judgeAfter });
+			continue;
+		}
 		const verdict = judge(reply.text);
 		if (verdict) return end(verdict);
 		if (spec.client === 'claude' && CLAUDE_USAGE_LIMIT.test(reply.text.trim())) return end({ status: 'quota', reason: `額度用完：${clip(reply.text.trim().split('\n').at(-1)!)}（Claude 不換帳號）` });
@@ -309,6 +346,7 @@ async function switchAndResume(host: AgentHost, watched: Watched, name: string, 
 	// Its account unknown, or back above 0 while another one is pinned now: nothing confirmed, nothing
 	// restarted; looked at again later, and the limit still ends the run.
 	if (!own || (!exhausted(own) && limits.value.pinned !== own.index)) return { judgeAfter: null };
+	if (watched.quotaStops) return exhausted(own) ? { status: 'quota', reason: `額度用完：${own.label} 用完，無人模式的主控額度用完就停，不換帳號` } : { judgeAfter: null };
 	let note: string;
 	if (!exhausted(own)) {
 		// Same account, quota back: nothing to switch, only the stopped turn to take up again.

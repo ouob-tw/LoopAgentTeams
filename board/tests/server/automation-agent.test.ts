@@ -572,3 +572,81 @@ test('a Claude usage limit ends the run as 額度用完 with no account switched
 	await ended(task.id, today.id);
 	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
 });
+
+test('an unattended task opens a LAT controller whose grant comes from the saved settings: NO REPLY turns go on, DONE ends it; settings with no save behind them are a settings error', async () => {
+	const grant = { goal: '處理已知問題', done: ['回顧頁通過交付前核對'], scope: { ticket_confirmation: true, assume_defaults: false, prototype_decide: true } };
+	const task = await create({ limitMinutes: 90 }, { unattended: grant });
+	expect(task.agent!.unattended).toEqual(grant);
+	hcomPlan([{ name: 'auto-lat' }]);
+	const started = await runNow(task.id);
+	const run = await launchedRun(task.id, 'auto-lat');
+
+	const state = join(dir, 'board-state');
+	const launch = hcomCalls().find((call) => call.args[0] === 'claude')!;
+	const prompt = launch.args[launch.args.indexOf('--hcom-prompt') + 1];
+	expect(prompt.startsWith('/lat 這是看板自動化任務「Agent 任務」開的主控')).toBe(true);
+	expect(prompt).toContain(`LAT_BOARD_STATE_DIR=${state} uv run --no-project python ${join(dir, 'home', '.agents/skills/lat/scripts/lat-unattended.py')} create --source board-task --evidence board-task:${started.id}`);
+	expect(prompt).toContain(`讀取並照做 ${join(work, 'docs/brief.md')}`);
+	expect(prompt).not.toContain('ASK: <問題> 並等待');
+	// The device's save and this run's grant, as lat-unattended reads them; the hours are the limit's, rounded up.
+	const lines = jsonLines(join(state, 'sent-log.jsonl')) as Record<string, any>[];
+	const save = lines.findLast((line) => line.kind === 'automation-task-save' && line.taskId === task.id)!;
+	expect(save.unattended).toEqual({ ...grant, maxHours: 2 });
+	expect(typeof save.deviceId).toBe('string');
+	const logged = lines.find((line) => line.kind === 'unattended-task-run' && line.id === started.id)!;
+	expect(logged).toMatchObject({ taskId: task.id, save: save.id, tag: launch.args[launch.args.indexOf('--tag') + 1], ...grant, maxHours: 2 });
+
+	// Waiting on its agents is no verdict; neither is an ASK: it never waits on the user.
+	reply('auto-lat', '派出 worker，等它回報。\nNO REPLY: 等 worker');
+	setStatus('auto-lat', 'listening');
+	await sleep(600);
+	expect((await runsOf(task.id))[0]).toMatchObject({ status: 'running' });
+	expect((await runsOf(task.id))[0].asks).toBeUndefined();
+	setStatus('auto-lat', 'active');
+	reply('auto-lat', '回顧頁已核對，已 deactivate。\nDONE');
+	setStatus('auto-lat', 'listening');
+	expect((await ended(task.id, started.id)).status).toBe('success');
+	expect(hcomCalls().some((call) => call.args[0] === 'kill' && call.args[1] === run.agentName)).toBe(true);
+
+	// No save by a signed-in device behind the settings (a task file written by hand): nothing opens.
+	const log = join(state, 'sent-log.jsonl');
+	writeFileSync(log, readFileSync(log, 'utf8').split('\n').filter((line) => !line.includes('"automation-task-save"')).join('\n'));
+	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
+	const refused = await ended(task.id, (await runNow(task.id)).id);
+	expect(refused.status).toBe('config-error');
+	expect(refused.reason).toBe('無人模式的設定沒有在看板儲存的紀錄，請在看板打開這個任務重新儲存');
+	expect(hcomCalls().some((call) => call.args[0] === 'claude')).toBe(false);
+});
+
+test('an unattended task needs a goal and at least one done condition', async () => {
+	const response = await send('/api/automation', 'POST', {
+		name: '無人',
+		schedule: { type: 'daily' },
+		time: '03:00',
+		limitMinutes: 360,
+		kind: 'agent',
+		agent: { client: 'claude', model: 'claude-opus-5-5', effort: 'medium', folder: work, brief: 'docs/brief.md', unattended: { goal: ' ', done: '\n ', scope: {} } },
+		review: { enabled: false, checklist: [] }
+	});
+	expect(response.status).toBe(400);
+	expect((await response.json()).errors).toEqual({ unattendedGoal: '請填這一輪的目標', unattendedDone: '做完條件至少寫一條' });
+});
+
+test('an unattended Codex controller whose account runs out mid-run stops as 額度用完: no switch, no resume, even with another account left', async () => {
+	const grant = { goal: '處理已知問題', done: ['回顧頁通過交付前核對'], scope: { ticket_confirmation: true, assume_defaults: true, prototype_decide: true } };
+	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low', unattended: grant });
+	freshRun();
+	accounts(0, 20, 30);
+	codexPlan('auto-lat-cx');
+	const started = await runNow(task.id);
+	await launchedRun(task.id, 'auto-lat-cx');
+	reply('auto-lat-cx', '正在修 #12');
+	accounts(0, 100, 30);
+	limitOnScreen('auto-lat-cx');
+	setStatus('auto-lat-cx', 'listening');
+	const out = await ended(task.id, started.id);
+	expect([out.status, out.reason]).toEqual(['quota', '額度用完：帳號 1 用完，無人模式的主控額度用完就停，不換帳號']);
+	expect(authCalls().some((call) => call[0] === 'switch')).toBe(false);
+	expect(hcomCalls().some((call) => call.args[0] === 'r')).toBe(false);
+	expect(listed('auto-lat-cx')).toBe(false);
+});

@@ -287,6 +287,8 @@ function createBoard(): Board {
 
 	const automation = createAutomation({
 		dir: join(config.stateDir, 'automation'),
+		stateDir: config.stateDir,
+		latDir: config.latDir,
 		now: config.now,
 		tickMs: config.automationTickMs,
 		publish: (snapshot) => {

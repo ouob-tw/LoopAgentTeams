@@ -9,6 +9,7 @@
 	import {
 		clientName,
 		EFFORT_TEXT,
+		grantHours,
 		isOpen,
 		kindText,
 		openAsk,
@@ -25,6 +26,7 @@
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import { deleteTask, dismissMissed, pauseTask, readOutput, runTask, stopTask } from '#lib/board/automation-actions.ts';
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import { SCOPE_KEYS, SCOPE_LABEL } from '#lib/board/unattended.ts';
 	import AutomationAsk from './AutomationAsk.svelte';
 	import AutomationAsks from './AutomationAsks.svelte';
 	import AutomationReview from './AutomationReview.svelte';
@@ -175,6 +177,18 @@
 			<dd class="mono">{task.agent.folder}</dd>
 			<dt>任務說明檔</dt>
 			<dd class="mono">{task.agent.brief}</dd>
+			{#if task.agent.unattended}
+				{@const grant = task.agent.unattended}
+				<dt>無人模式</dt>
+				<dd data-unattended>
+					<p class="grant-line">開 LAT 主控，目標：{grant.goal}</p>
+					<p class="grant-line">做完條件：</p>
+					<ul class="plain">
+						{#each grant.done as line, index (index)}<li>・{line}</li>{/each}
+					</ul>
+					參謀可以替你決定：{SCOPE_KEYS.filter((key) => grant.scope[key]).map((key) => SCOPE_LABEL[key]).join('、') || '都不代決'}；額度用完或跑滿 {grantHours(task.limitMinutes)} 小時就停。
+				</dd>
+			{/if}
 		{/if}
 		<dt>跑完後請 Agent 檢查</dt>
 		<dd>{task.review.enabled ? `開，用 ${clientName(task.review.client)} ${task.review.model} · 強度${EFFORT_TEXT[task.review.effort]}` : '關'}</dd>
@@ -489,5 +503,8 @@
 		.kv dt {
 			margin-top: 0.3rem;
 		}
+	}
+	.grant-line {
+		margin: 0;
 	}
 </style>

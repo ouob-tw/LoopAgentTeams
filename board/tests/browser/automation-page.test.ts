@@ -229,6 +229,11 @@ for (const width of [1280, 390]) {
 		// Every box and list is at least 44px tall, a finger's size.
 		expect(await tab.eval<string[]>(`[...document.querySelectorAll('.detail form input[type=text], .detail form select')].filter((box) => box.getBoundingClientRect().height < 44).map((box) => (box.name || box.getAttribute('aria-label')) + ' ' + box.getBoundingClientRect().height)`)).toEqual([]);
 		await frame(width, '5-edit-weekly');
+		// An agent task's segmented buttons, the strengths too, are at least 44 x 44 (#625 QA: 低/中/高 were 43.6 wide).
+		await click('.detail form [data-kind="agent"]');
+		expect(await tab.eval<string[]>(`[...document.querySelectorAll('.detail form .seg button')].filter((button) => { const r = button.getBoundingClientRect(); return r.width < 44 || r.height < 44; }).map((button) => button.innerText + ' ' + button.getBoundingClientRect().width)`)).toEqual([]);
+		expect(await tab.eval<number>(`document.querySelectorAll('.detail form [data-effort], .detail form [data-review-effort]').length`)).toBe(3);
+		await click('.detail form [data-kind="command"]');
 		await click('.detail form [data-schedule="monthly"]');
 		expect(await fields()).toEqual(['fromDay', 'toDay', 'time']);
 

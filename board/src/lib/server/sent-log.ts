@@ -19,6 +19,7 @@ import type { ModelChoice, SentSwitch, SwitchState } from '../board/models.ts';
 import type { ResumeClose, SentWake } from '../board/wake.ts';
 import { actingTestDevice } from './acting.ts';
 import type { UnattendedScope } from '../board/unattended.ts';
+import type { TaskUnattended } from '../board/automation.ts';
 
 const SENT_LOG_FILE = 'sent-log.jsonl';
 
@@ -118,7 +119,37 @@ export interface UnattendedRequest {
 	maxHours: number;
 }
 
+/** An automation task saved by a signed-in device, with the unattended grant its agent's runs
+ *  start (#625), or null for none. lat-unattended checks a run's grant against the latest of these
+ *  for its task: the user's own action, not the task file, which agents could have written. */
+export interface AutomationTaskSave {
+	kind: 'automation-task-save';
+	id: string;
+	time: string;
+	taskId: string;
+	taskName: string;
+	deviceId: string;
+	unattended: (TaskUnattended & { maxHours: number }) | null;
+}
+
+/** A run of an unattended agent task about to open its controller: what `create --source
+ *  board-task --evidence board-task:<run>` grants, the save it comes from, and the tag the
+ *  controller's HCOM name starts with. */
+export interface UnattendedTaskRun extends TaskUnattended {
+	kind: 'unattended-task-run';
+	/** The run's ID. */
+	id: string;
+	time: string;
+	taskId: string;
+	taskName: string;
+	tag: string;
+	save: string;
+	maxHours: number;
+}
+
 export type Line =
+	| AutomationTaskSave
+	| UnattendedTaskRun
 	| UnattendedRequest
 	| SentMessage
 	| StoredAnswer
@@ -249,6 +280,10 @@ function keysOf(line: Line): string[] {
 			return [line.switchId];
 		case 'wake':
 			return line.switchId ? [line.id, line.switchId] : [line.id];
+		// A task's saves and runs together: its latest save is kept while its runs go on.
+		case 'automation-task-save':
+		case 'unattended-task-run':
+			return [`automation-task:${line.taskId}`];
 		default:
 			return [line.id];
 	}
