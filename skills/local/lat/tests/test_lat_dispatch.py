@@ -71,7 +71,7 @@ class DispatchCase(unittest.TestCase):
     def make_card(self, **kwargs):
         result = self.run_script(*self.card_args(**kwargs))
         self.assertEqual(result.returncode, 0, result.stderr)
-        return Path(result.stdout.splitlines()[0])
+        return Path(result.stdout.splitlines()[-1].removeprefix('card: '))
 
     def write_brief(self, text=BRIEF, name='brief.md'):
         path = self.root / name
@@ -84,7 +84,7 @@ class CardTests(DispatchCase):
         result = self.run_script(*self.card_args('--model', 'codex gpt-6-astra medium'))
         self.assertEqual(result.returncode, 0, result.stderr)
         card = self.tasks / '2026-10-23-nanu-impl123.md'
-        self.assertEqual(result.stdout.splitlines()[0], str(card))
+        self.assertEqual(result.stdout.splitlines()[-1], f'card: {card}')
         lines = card.read_text().splitlines()
         self.assertEqual(lines[0], '接續：無')
         names = [re.match(r'- ([^：]+)：', line).group(1) for line in lines[2:]]
@@ -218,6 +218,30 @@ class BriefTests(DispatchCase):
         card = card or self.make_card()
         result = self.run_script('brief', '--card', str(card), '--input', str(source), *extra)
         return source, card, result
+
+    def test_brief_refuses_a_card_with_a_continuation_card_and_names_it(self):
+        first = self.make_card()
+        second = self.make_card()
+        self.assertEqual(second.name, '2026-10-23-nanu-impl123-2.md')
+        source, _, result = self.brief(BRIEF, card=first)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(second), result.stderr)
+        self.assertFalse((self.root / 'brief.brief.md').exists())
+        third = self.make_card()
+        _, _, result = self.brief(BRIEF, card=second)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(third), result.stderr)
+        _, _, result = self.brief(BRIEF, card=third)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_brief_sees_a_continuation_card_already_moved_to_done(self):
+        first = self.make_card()
+        second = self.make_card()
+        (self.tasks / 'done').mkdir()
+        second.rename(self.tasks / 'done' / second.name)
+        _, _, result = self.brief(BRIEF, card=first)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(second.name, result.stderr)
 
     def test_complete_input_produces_filled_brief_and_leaves_the_input_alone(self):
         source, card, result = self.brief(
@@ -389,7 +413,7 @@ class BriefTests(DispatchCase):
         command = '實作最終版本跑一次 `suite-gate.py affected --base <sha> --purpose pre-merge`'
         result = self.run_script(*self.card_args('--full-suite', command))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.brief(BRIEF, card=Path(result.stdout.splitlines()[0]))
+        self.brief(BRIEF, card=Path(result.stdout.splitlines()[-1].removeprefix('card: ')))
         text = (self.root / 'brief.brief.md').read_text()
         self.assertIn(f'- 整套測試：{command}\n', text)
         self.brief()
@@ -589,7 +613,7 @@ class LedgerCase(DispatchCase):
     def card_with(self, *extra):
         result = self.run_script(*self.card_args(*extra))
         self.assertEqual(result.returncode, 0, result.stderr)
-        return Path(result.stdout.splitlines()[0])
+        return Path(result.stdout.splitlines()[-1].removeprefix('card: '))
 
     def brief_commands(self, card):
         """The four ledger commands of a generated brief, with placeholders filled in."""
@@ -621,6 +645,24 @@ class LedgerCardTests(LedgerCase):
         text = card.read_text()
         self.assertIn(f'- ledger row：1 ({self.ledger})\n', text)
         self.assertIn('- status：dispatched\n', text)
+
+    def test_brief_refuses_a_card_whose_ledger_row_is_closed(self):
+        card = self.ledger_card()
+        source = self.write_brief()
+        self.run_ledger('cancel', '1', '--by', 'nanu', '--reason', 'dropped')
+        result = self.run_script('brief', '--card', str(card), '--input', str(source))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('ledger row 1 is cancelled', result.stderr)
+        self.assertFalse((self.root / 'brief.brief.md').exists())
+
+    def test_brief_names_the_new_card_when_the_closed_one_was_continued(self):
+        old = self.ledger_card()
+        self.run_ledger('cancel', '1', '--by', 'nanu', '--reason', 'dropped')
+        new = self.ledger_card()
+        result = self.run_script('brief', '--card', str(old), '--input',
+                                 str(self.write_brief()))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(new), result.stderr)
 
     def test_native_card_keeps_the_ledger_row_after_status(self):
         card = self.ledger_card('--native', '--agent', 'nanu-research-web')
@@ -1489,9 +1531,10 @@ class BeforeLaunchTests(LedgerCase):
         return output.read_text()
 
     def test_two_cards_for_one_tag_get_their_own_report_files(self):
-        first, second = self.pending_card(), self.pending_card()
-        reports = {re.search(r'report-[^ ]+\.md', self.brief_text(card)).group(0)
-                   for card in (first, second)}
+        first = self.pending_card()
+        first_report = re.search(r'report-[^ ]+\.md', self.brief_text(first)).group(0)
+        second = self.pending_card()  # a brief for `first` is refused from here on
+        reports = {first_report, re.search(r'report-[^ ]+\.md', self.brief_text(second)).group(0)}
         self.assertEqual(reports, {f'report-{first.stem}.md', f'report-{second.stem}.md'})
 
     def test_read_only_brief_still_lets_the_agent_bind_its_card(self):

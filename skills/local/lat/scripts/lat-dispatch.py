@@ -16,6 +16,8 @@ worktree and task branch are gone.
 prints the `hcom send` command; its `--name` values are the base names HCOM records for tagged
 senders. For a card still waiting for `card bind` the brief names the agent as
 "$HCOM_INSTANCE_NAME", opens with the bind step and prints the `--hcom-prompt` launch argument.
+`brief` refuses a card with a newer `-2`, `-3`… continuation card or a closed ledger row and names
+the card to use; `card` prints `card: <path>` as its last line.
 It never launches agents and never sends anything. Hand-written cards and briefs stay allowed.
 
 With --ledger, `card` also opens and assigns a row in the LAT work ledger (lat-ledger.py) and
@@ -28,6 +30,7 @@ that are pre-authorized right now.
 import argparse
 from datetime import date
 import fcntl
+import glob
 import importlib.util
 import json
 import os
@@ -262,11 +265,11 @@ def make_card(args):
     except FileExistsError as error:
         where = f' (ledger row {row} is already assigned to it)' if ledger else ''
         raise Failure(f'task card appeared meanwhile: {path}{where}; rerun') from error
-    print(path)
     print(f'agent: {agent}' + (' (the agent binds itself with `card bind`)'
                                 if args.before_launch else ''))
     if ledger:
         print(f'ledger row: {row}')
+    print(f'card: {path}')  # last line, so `tail -1` and `tail -2` both reach the path
 
 
 def ledger_request(args):
@@ -546,8 +549,45 @@ def warn_former_controllers(text, workspace, orchestrator):
                   file=sys.stderr)
 
 
+CONTINUATION = re.compile(r'(.+)-(\d+)')
+
+
+def newer_card(path):
+    """The highest-numbered continuation card (`<name>-2.md`, `-3`…) after `path`, else None."""
+    path = Path(path).resolve()
+    folder = path.parent.parent if path.parent.name == 'done' else path.parent
+    match = CONTINUATION.fullmatch(path.stem)
+    base, current = (match.group(1), int(match.group(2))) if match else (path.stem, 1)
+    best = None
+    for where in (folder, folder / 'done'):
+        for other in where.glob(f'{glob.escape(base)}-*.md'):
+            tail = CONTINUATION.fullmatch(other.stem)
+            if tail and tail.group(1) == base and int(tail.group(2)) > current and (
+                    best is None or int(tail.group(2)) > best[0]):
+                best = (int(tail.group(2)), other)
+    return best[1] if best else None
+
+
+def refuse_stale_card(card, path):
+    """Fail when `path` is superseded by a continuation card or its ledger row is closed."""
+    newer = newer_card(path)
+    if newer:
+        raise Failure(f'card {path} is superseded by {newer}; make the brief from that card')
+    if card['ledger row']:
+        number, ledger = card['ledger row']
+        try:
+            items = json.loads(Path(ledger).read_text(encoding='utf-8'))['items']
+            state = next(item['status'] for item in items if str(item['id']) == number)
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError, StopIteration):
+            return  # an unreadable ledger is already warned about by row_stage
+        if state in ('done', 'cancelled'):
+            raise Failure(f'card {path} is closed (ledger row {number} is {state}); make the '
+                          'brief from the card of the current round, not this one')
+
+
 def make_brief(args):
     card = read_card(args.card)
+    refuse_stale_card(card, args.card)
     source = Path(args.input)
     try:
         text = source.read_text(encoding='utf-8')
