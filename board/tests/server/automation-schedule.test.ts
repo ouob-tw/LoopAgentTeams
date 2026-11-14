@@ -373,3 +373,29 @@ test('a try that comes due while the task still runs is skipped and recorded, on
 	expect((await viewOf(task.id)).runs).toHaveLength(2);
 	expect((await viewOf(task.id)).state).toBe('done');
 }, 30_000);
+
+test('a run that ends past a week’s end or a month’s end belongs to the period it started in, and the new period waits for its own set time', async () => {
+	// 2026-11-15 is a Sunday and 2026-11-30 the month's last day.
+	await open(tpe(2026, 11, 15, 23, 40));
+	const weekly = await create(commandTask({ type: 'weekly', fromWeekday: 1, toWeekday: 7 }, 'sleep 1.5; echo ok', { name: '跨週', time: '23:45', limitMinutes: 120 }));
+	await at(tpe(2026, 11, 15, 23, 46));
+	await eventually(async () => (await viewOf(weekly.id)).runs[0]?.status === 'running', 'the weekly run to start');
+	fixture!.setClock(tpe(2026, 11, 16, 0, 30));
+	const [crossedWeek] = await ended(weekly.id, 1);
+	expect(crossedWeek).toMatchObject({ trigger: 'auto', status: 'success', period: '2026-W11-09', startedAt: tpe(2026, 11, 15, 23, 46), endedAt: tpe(2026, 11, 16, 0, 30) });
+	const week = await viewOf(weekly.id);
+	expect(week.state).toBe('waiting');
+	expect(week.nextAt).toBe(tpe(2026, 11, 16, 23, 45));
+
+	await restartAt(tpe(2026, 11, 30, 23, 40));
+	const monthly = await create(commandTask({ type: 'monthly', fromDay: 1, toDay: 31 }, 'sleep 1.5; echo ok', { name: '跨月', time: '23:45', limitMinutes: 120 }));
+	await at(tpe(2026, 11, 30, 23, 46));
+	const novemberRun = await eventually(async () => (await viewOf(monthly.id)).runs.find((run) => run.status === 'running'), 'the monthly run to start');
+	expect(novemberRun.period).toBe('2026-11');
+	fixture!.setClock(tpe(2026, 12, 1, 0, 30));
+	const crossedMonth = (await ended(monthly.id, 1))[0];
+	expect(crossedMonth).toMatchObject({ id: novemberRun.id, trigger: 'auto', status: 'success', period: '2026-11', endedAt: tpe(2026, 12, 1, 0, 30) });
+	const month = await viewOf(monthly.id);
+	expect(month.state).toBe('waiting');
+	expect(month.nextAt).toBe(tpe(2026, 12, 1, 23, 45));
+}, 60_000);
