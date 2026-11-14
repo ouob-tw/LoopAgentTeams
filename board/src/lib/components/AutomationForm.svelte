@@ -335,6 +335,10 @@
 	.icon {
 		min-height: 48px;
 	}
+	/* One-character choices (低/中/高) are still a finger wide. */
+	.seg button {
+		min-width: 48px;
+	}
 	.row {
 		margin-top: 0.4rem;
 	}
