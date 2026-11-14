@@ -697,7 +697,8 @@ def affected_run_step(top, version, action, target):
         'uv', 'run', '--no-project', 'python', SUITE_GATE, 'affected', '--purpose', 'post-merge',
         '--base', last['commit']))
     return (f'run the post-merge affected tests from the last successful {action} '
-            f'({last.get("at")}) in {top}: {command}; then check again')
+            f'({last.get("at")}) in {top}: {command} (it can queue for several minutes for a host '
+            'slot: run it in the background and do not wrap it in `timeout`); then check again')
 
 
 def changed_paths(top, version, action, target):

@@ -363,6 +363,7 @@
 	.where {
 		margin: 0;
 		color: var(--muted);
+		overflow-wrap: anywhere;
 	}
 	.kv {
 		display: grid;

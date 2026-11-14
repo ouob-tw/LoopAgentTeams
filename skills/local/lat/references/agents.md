@@ -23,7 +23,7 @@ hcom-spawn 的「自身名稱」是發起委派的那一方：主控派工時是
 - 派 Designer 寫 Spec 與拆票（/to-spec、/to-tickets）時寫明：「現有測試全部通過」只寫在 Spec 層級，全部合併後由一人做一次合併後驗證，不寫進各票驗收條件。
 - [Spec 文件審查](spec-review.md) 派給全新、與 Designer 不同家模型的 Agent：Designer 是 Claude 時派 Codex `gpt-6-astra`、effort `medium`；是 Codex 時派 Claude，模型依 /hcom-spawn 預設。它在確認前審 Spec 本身，與實作後審程式的 Spec 面向不同，不互相取代。
 - 不同家模型不可用時，先依 /hcom-spawn 的額度與恢復程序處理（如 Codex 換帳號）；仍不可用，依 SKILL.md「使用者待決事項」問使用者要等待還是改用同家全新 Agent。答覆前不改用同家模型、不略過審查，也不發 Spec 確認題。
-- 參謀一位 Codex `gpt-6-astra`、effort `medium`，一位 Claude、模型依 /hcom-spawn 預設。這是上一條的例外：某一家不可用時改用兩位同家參謀、不問使用者，見 [參謀](advisors.md#模型與降級)。
+- 參謀的模型與同家降級例外見 [參謀](advisors.md#模型與降級)。
 - 每項任務用自己的 tag，不跨任務共用，整組關閉時才不誤關其他任務的 Agents。
 - 執行 Agent 卡住時，由召喚它的一方依 /hcom-spawn 的升級規則提高 effort 或換模型；走完仍卡住，交回主控決定新 context 或拆小任務。
 

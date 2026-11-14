@@ -130,13 +130,25 @@ class SessionTests(unittest.TestCase):
         env.update(extra_env or {})
         return env
 
-    def activate(self, session=SESSION, duty=True):
+    def activate(self, session=SESSION, duty=True, draft=True):
         result = self.cli('activate', '--workspace', self.work,
                           '--progress', self.progress, '--decisions', self.decisions,
                           session=session)
         self.assertEqual(result.returncode, 0, result.stderr)
         if duty:
             self.record_duty(session=session)
+        if draft:
+            self.seed_draft(session)
+
+    def seed_draft(self, session=SESSION, at='2999-01-01T00:00:00+00:00'):
+        """A goal draft for the current round; by default newer than any ledger row, so the
+        draft check stays out of the tests about other checks."""
+        record = json.loads((self.work / '.lat/sessions' / f'{session}.json').read_text())
+        round_number = len(record.get('history', [])) + 1
+        path = self.work / '.lat/unattended' / f'{session}-r{round_number}.draft.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(goal='修好登入頁', done=['能登入'], at=at)))
+        return path
 
     def record_duty(self, text='整理看板名冊', expected='名冊顯示職責', session=SESSION,
                     client='codex', extra_env=None):
@@ -295,6 +307,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(self.record.read_text())['hcom_name'], 'team-futa')
         self.assertTrue(json.loads(self.record.read_text())['ledger_path'].endswith('-r1.json'))
+        self.seed_draft()
         held = json.loads(self.stop_hook('Done\nNO REPLY: waiting').stdout)
         self.assertEqual(held['decision'], 'block')
         self.assertIn('--agent team-futa', held['reason'])
@@ -604,6 +617,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual((duty['text'], duty['expected']), ('整理看板名冊', '名冊顯示職責'))
         self.assertIn(f'看板職責已登記：{self.duty_file()}', result.stdout)
         self.assertNotIn('lat-session.py duty --client', result.stdout)
+        self.seed_draft()
         self.assert_silent(self.stop_hook('Work done\nDONE: delivered'))
 
     def test_activate_finishes_when_the_duty_cannot_be_written(self):
@@ -1540,6 +1554,7 @@ class SessionTests(unittest.TestCase):
         result = self.cli('activate', '--workspace', self.work, '--progress', progress,
                           '--decisions', decisions)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.seed_draft()
         self.progress.unlink()
         for source in ('compact', 'resume'):
             recovered = self.hook(source=source)
@@ -2334,6 +2349,7 @@ class SessionTests(unittest.TestCase):
                           extra_env=self.unattended_env(mode))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.record_duty(session=session)
+        self.seed_draft(session)
         return result
 
     def test_activate_marks_whether_the_round_runs_unattended(self):
@@ -2633,7 +2649,7 @@ class SessionTests(unittest.TestCase):
             try:
                 args = argparse.Namespace(
                     workspace=self.work, client='codex', session_id=SESSION,
-                    successor=None, force_unfinished=False, reason=None,
+                    successor=None, force_unfinished=False, skip_retro=False, reason=None,
                 )
                 with patch('builtins.print'):
                     helper.deactivate(args)
@@ -3803,6 +3819,186 @@ class SessionTests(unittest.TestCase):
         self.record.write_text(json.dumps(record))
         self.assert_silent(self.stop_hook('DONE: delivered'))
 
+    # ---- retro before delivery (#623) ----
+
+    def retro_triggers(self):
+        spec = importlib.util.spec_from_file_location('lat_session_retro', SCRIPT)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        return helper.retro_triggers(json.loads(self.record.read_text()))
+
+    def delivered_round(self):
+        """An active round whose one ticket is closed and its QA exempted: DONE passes as is."""
+        self.activate()
+        item = self.open_item('#5')
+        self.exempt_qa('#5')
+        self.close_item(item)
+        return item
+
+    def watch_log(self, *entries):
+        """Log the entries as the watcher does; returns the never-rotated nudge log."""
+        spec = importlib.util.spec_from_file_location('lat_watch_retro', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+        log = self.work / '.lat/watch/orch/watch.jsonl'
+        for entry in entries:
+            watch.append_log(log, entry)
+        return log.with_name('nudges.jsonl')
+
+    @staticmethod
+    def nudge(at, category=None, status='done'):
+        action = dict(kind='nudge', agent='worker', **({'category': category} if category else {}))
+        return dict(at=at, agent='worker', actions=[action],
+                    action_results=[dict(kind='nudge', status=status)])
+
+    def retro_done(self, *extra):
+        return self.cli('retro-done', '--workspace', self.work, *extra)
+
+    def test_retro_triggers_none_hit_and_done_and_deactivate_stay_as_before(self):
+        item = self.delivered_round()
+        # Not triggers: a non-final review finding, a nudge the agent asked for (alarm), the
+        # cache keep-alive, a failed nudge and a nudge from before this round began.
+        self.ledger('review-result', '--row', item, '--reviewer', 'auto-reviewer',
+                    '--finding', '乙:caught before the final candidate')
+        now = time.time()
+        self.watch_log(self.nudge(now, 'alarm-ring'), self.nudge(now, 'cache-keepalive'),
+                       self.nudge(now, status='failed'), self.nudge(0))
+        self.assertEqual(self.retro_triggers(), [])
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+        result = self.deactivate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('retro', result.stdout)
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+        self.assertNotIn('retro', self.reports()[-1])
+
+    def test_retro_trigger_problem_record_of_this_round(self):
+        self.delivered_round()
+        problem = self.ledger('problem', '--stage', 'post-deploy-user', '--level', '乙',
+                              '--text', 'user saw a blank page', '--ticket', '#5').strip()
+        [(condition, evidence)] = self.retro_triggers()
+        self.assertEqual(condition, 'problem')
+        self.assertEqual(evidence, f'{problem} acme/work#5 post-deploy-user 乙：user saw a blank page'
+                                   f'（{self.work / ".lat/problems.jsonl"}）')
+
+    def test_retro_trigger_final_candidate_reopened(self):
+        item = self.delivered_round()
+        self.ledger('review-result', '--row', item, '--reviewer', 'auto-reviewer', '--final',
+                    '--finding', '丙:wording only')
+        self.assertEqual(self.retro_triggers(), [])
+        out = self.ledger('review-result', '--row', item, '--reviewer', 'auto-reviewer',
+                          '--final', '--finding', '甲:breaks deactivate')
+        problem = out.strip().rsplit(' ', 1)[-1]
+        self.assertEqual(self.retro_triggers(), [
+            ('reopen', f'列 {item}（#5）定版審查 3 有甲／乙級發現 {problem}（{self.ledger_path()}）')])
+
+    def test_retro_trigger_parked_row(self):
+        self.delivered_round()
+        # A real park needs an unattended grant; the ledger's own history entry is what counts.
+        ledger = json.loads(self.ledger_path().read_text())
+        row = ledger['items'][0]
+        row['history'].append(dict(at=row['history'][-1]['at'], by='orch', action='park',
+                                   changes={}, reason='waiting for the user to pick a layout'))
+        self.ledger_path().write_text(json.dumps(ledger))
+        self.ledger('repair', '--reason', 'test adds a park entry')
+        self.assertEqual(self.retro_triggers(), [
+            ('park', f'列 1（#5）擱置：waiting for the user to pick a layout（{self.ledger_path()}）')])
+
+    def test_retro_trigger_watch_nudges_this_round(self):
+        self.delivered_round()
+        now = time.time()
+        log = self.watch_log(self.nudge(now), dict(
+            at=now, agent='worker', decision='ledger-estimate-passed', item=1, result='sent',
+            actions=[]))
+        self.assertEqual(self.retro_triggers(), [
+            ('nudge', f'催促 worker（stall，{log} 第 1 行）'),
+            ('nudge', f'催促 worker（ledger-estimate-passed，{log} 第 2 行）')])
+        # The rotating watch log keeps one older file; the nudge log keeps the whole round.
+        filler = dict(at=now, agent='worker', actions=[], note='x' * (1024 * 1024 + 1))
+        self.watch_log(filler, filler, filler)
+        self.assertEqual(len(self.retro_triggers()), 2)
+
+    def test_done_and_deactivate_hold_a_round_with_triggers_until_retro_done(self):
+        self.delivered_round()
+        self.ledger('problem', '--stage', 'self', '--level', '乙', '--text', 'wrong base',
+                    '--ticket', '#5')
+        held = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertEqual(held['decision'], 'block')
+        for text in ('LAT 交付回顧未完成', '工作總表有問題紀錄：P1 acme/work#5 self 乙：wrong base',
+                     '/hcom-spawn', '不同家的模型', f'codex {SESSION}', '/retro-log 流程模式',
+                     'retro-done --client codex', '--skip-retro'):
+            self.assertIn(text, held['reason'])
+        refused = self.deactivate()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn('工作總表有問題紀錄：P1', refused.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+        own = self.retro_done('--by', 'orch', '--summary', 'self review')
+        self.assertEqual(own.returncode, 1)
+        self.assertIn('is this controller', own.stderr)
+        self.assertNotIn('retro', json.loads(self.record.read_text()))
+        done = self.retro_done('--by', 'codex-retro', '--summary', 'one issue opened',
+                               '--issue', 'acme/work#9', '--entry', 'retro #3')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        line = ('本輪 retro 已由 codex-retro 完成：one issue opened；新開 issue：acme/work#9；'
+                '反饋庫條目：retro #3')
+        self.assertEqual(done.stdout.strip(), line)
+        passed = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertNotIn('decision', passed)
+        self.assertIn(line, passed['systemMessage'])
+        self.assertEqual(self.reports()[-1]['retro']['issues'], ['acme/work#9'])
+        result = self.deactivate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(line, result.stdout)
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+        final = self.reports()[-1]
+        self.assertTrue(final['final'])
+        self.assertEqual(final['retro']['entries'], ['retro #3'])
+
+    def test_skip_retro_needs_a_reason_and_is_kept_for_the_report(self):
+        self.delivered_round()
+        self.watch_log(self.nudge(time.time()))
+        for extra in (('--skip-retro',), ('--skip-retro', '--reason', ' ')):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.deactivate(*extra).returncode, 1)
+                self.assertEqual(self.retro_done(*extra).returncode, 1)
+        self.assertEqual(self.retro_done('--skip-retro', '--reason', 'x', '--by', 'a').returncode, 1)
+        result = self.deactivate('--skip-retro', '--reason', 'only a typo nudge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('本輪略過 retro：only a typo nudge', result.stdout)
+        self.stop_hook('DONE: delivered')
+        self.assertEqual({key: self.reports()[-1]['retro'][key] for key in ('skipped', 'reason')},
+                         dict(skipped=True, reason='only a typo nudge'))
+
+    def test_skip_retro_at_done_with_retro_done(self):
+        self.delivered_round()
+        self.watch_log(self.nudge(time.time()))
+        self.assertEqual(json.loads(self.stop_hook('DONE: delivered').stdout)['decision'], 'block')
+        self.assertEqual(self.retro_done('--skip-retro', '--reason', 'user said no').returncode, 0)
+        passed = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertNotIn('decision', passed)
+        self.assertIn('本輪略過 retro：user said no', passed['systemMessage'])
+
+    def test_force_unfinished_with_triggers_only_reminds_in_one_line(self):
+        self.activate()
+        self.open_item('#9')
+        self.watch_log(self.nudge(time.time()))
+        forced = self.deactivate('--force-unfinished', '--reason', 'user stopped the round')
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        [line] = [line for line in forced.stdout.splitlines() if 'retro' in line]
+        self.assertEqual(line, 'LAT 提醒：本輪出過事（停住監控送過催促）但沒有 retro 紀錄；'
+                               '強制結束或換班不擋。')
+
+    def test_unreadable_watch_log_refuses_deactivate_but_force_and_handover_only_remind(self):
+        self.delivered_round()
+        (self.work / '.lat/watch/orch/nudges.jsonl').mkdir(parents=True)
+        refused = self.deactivate()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn('本輪 retro 觸發條件讀不出，拒絕停用', refused.stderr)
+        self.assertIn('--skip-retro', refused.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+        handover = self.deactivate('--successor', 'next-orch')
+        self.assertEqual(handover.returncode, 0, handover.stderr)
+        self.assertIn('LAT 提醒：本輪 retro 觸發條件讀不出', handover.stdout)
+
     def test_deactivate_refuses_unfinished_ledger_and_force_keeps_reason(self):
         self.activate()
         self.open_item('#9')
@@ -3931,6 +4127,129 @@ class SessionTests(unittest.TestCase):
         self.assertIn('repair --from-journal', context)
         self.assertTrue(context.endswith('never recreate it by hand.'))
 
+    # The goal draft the board's "開啟無人模式" form starts from (#624) ----------------------
+
+    def draft(self, goal='修好登入頁', *done):
+        # The real tool finds the session's state through Git; the test workspace's .git is empty.
+        subprocess.run(['git', 'init', '-q', str(self.work)], check=True, capture_output=True)
+        result = subprocess.run(
+            [sys.executable, str(SKILL / 'scripts/lat-unattended.py'), 'draft', '--workspace',
+             str(self.work), '--goal', goal, *[part for item in (done or ('能登入',))
+                                                for part in ('--done', item)]],
+            text=True, capture_output=True, cwd=self.work,
+            env=self.cli_environment(extra_env=self.unattended_env()))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def draft_held(self, result):
+        output = json.loads(result.stdout)
+        self.assertEqual(output['decision'], 'block')
+        return output['reason']
+
+    def test_activate_reminds_to_write_the_goal_draft_with_the_full_command(self):
+        for mode, label in ((None, '人工確認'), ('unattended', '無人模式')):
+            with self.subTest(mode=mode):
+                result = self.activate_with(mode)
+                self.assertIn(f'本輪模式：{label}', result.stdout)
+                self.assertIn('目標草稿：還沒有', result.stdout)
+                self.assertIn(f'{SKILL / "scripts/lat-unattended.py"} draft --workspace '
+                              f"{self.work} --goal '<目標>' --done '<條件一>'", result.stdout)
+                self.assertEqual(self.cli('deactivate', '--workspace', self.work,
+                                          extra_env=self.unattended_env()).returncode, 0)
+
+    def test_stop_without_a_draft_is_held_once_then_passes_once_written(self):
+        # A controller that was already running without a draft gets the same reminder.
+        self.activate(draft=False)
+        self.declare_wait()
+        held = self.draft_held(self.stop_hook('Plain message'))
+        self.assertIn('LAT 目標草稿檢查未通過：本輪還沒有可用的目標草稿', held)
+        self.assertIn(f"lat-unattended.py draft --workspace {self.work} --goal '<目標>'", held)
+        released = json.loads(self.stop_hook('Plain message', stop_hook_active=True).stdout)
+        self.assertNotIn('decision', released)
+        self.assertIn('本輪還沒有可用的目標草稿', released['systemMessage'])
+        self.assertIn('本回合已繼續過，不再攔下', released['systemMessage'])
+        # A draft file without a usable goal or time counts as none.
+        self.seed_draft(at='not a time')
+        self.assertIn('可用的目標草稿', self.draft_held(self.stop_hook('Plain message')))
+        self.draft('修好登入頁', '能登入', '有測試')
+        self.assert_silent(self.stop_hook('Plain message'))
+        self.assert_silent(self.stop_hook('Done\nNO REPLY: waiting'))
+        # What the board's form reads to prefill.
+        self.assertEqual({key: self.unattended_status()['draft'][key] for key in ('goal', 'done')},
+                         dict(goal='修好登入頁', done=['能登入', '有測試']))
+
+    def test_no_draft_hold_while_a_grant_is_in_effect(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        self.open_grant()
+        self.assertEqual(self.unattended_status()['state'], 'active')
+        self.assert_silent(self.stop_hook('Plain message'))
+        self.seed_draft(at='not a time')  # an unreadable draft is no draft either
+        self.assert_silent(self.stop_hook('Plain message'))
+
+    def test_rows_added_after_the_draft_ask_to_check_it_until_rewritten(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        self.seed_draft(at='2020-01-01T00:00:00+00:00')
+        first = self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence',
+                            'file').strip()
+        held = self.draft_held(self.stop_hook('Plain message'))
+        self.assertIn(f'工作總表在草稿寫入後新增了第 {first} 列', held)
+        # The ready command to keep the draft as it is.
+        self.assertIn(f"draft --workspace {self.work} --goal '修好登入頁' --done '能登入'", held)
+        self.assertIn('本回合已繼續過', json.loads(
+            self.stop_hook('Plain message', stop_hook_active=True).stdout)['systemMessage'])
+        # Rewriting it unchanged says it was checked.
+        self.past_last_row_second()
+        self.draft()
+        self.assert_silent(self.stop_hook('Plain message'))
+        # A later row asks again; the draft's time is moved back to stand for time passing.
+        path = self.seed_draft(at='2020-01-01T00:00:00+00:00')
+        self.ledger('add', '--ticket', '#2', '--stage', 'impl', '--evidence', 'file')
+        held = self.draft_held(self.stop_hook('Plain message'))
+        self.assertIn(f'第 {first} 列、第 {int(first) + 1} 列', held)
+        self.past_last_row_second()
+        self.draft('修好登入頁和註冊頁', '能登入', '能註冊')
+        self.assertNotEqual(json.loads(path.read_text())['at'], '2020-01-01T00:00:00+00:00')
+        self.assert_silent(self.stop_hook('Plain message'))
+
+    def last_row_added_at(self):
+        item = json.loads(self.ledger_path().read_text())['items'][-1]
+        return datetime.fromisoformat(item['history'][0]['at'].replace('Z', '+00:00'))
+
+    def past_last_row_second(self):
+        """Wait out the second the last ledger row was added in: a draft written in that same
+        second still counts the row as new."""
+        while datetime.now(timezone.utc).replace(microsecond=0) <= self.last_row_added_at():
+            time.sleep(0.05)
+
+    def test_a_row_added_in_the_same_second_as_the_draft_is_not_missed(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        row = self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file').strip()
+        # The draft was written later in the same whole second the row's time shows.
+        self.seed_draft(at=self.last_row_added_at().replace(microsecond=900000).isoformat())
+        self.assertIn(f'新增了第 {row} 列', self.draft_held(self.stop_hook('Plain message')))
+
+    def test_rows_added_after_the_draft_ask_to_check_it_even_while_a_grant_is_in_effect(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        self.open_grant()
+        self.seed_draft(at='2020-01-01T00:00:00+00:00')
+        row = self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file').strip()
+        self.assertEqual(self.unattended_status()['state'], 'active')
+        self.assertIn(f'新增了第 {row} 列', self.draft_held(self.stop_hook('Plain message')))
+        self.past_last_row_second()
+        self.draft()
+        self.assert_silent(self.stop_hook('Plain message'))
+
+    def test_draft_check_leaves_other_roles_and_sessions_without_a_record_alone(self):
+        self.declare_wait()
+        self.assert_silent(self.stop_hook('Plain message'))
+        self.activate(draft=False)
+        record = json.loads(self.record.read_text())
+        self.record.write_text(json.dumps(dict(record, role='executor')))
+        self.assert_silent(self.stop_hook('Plain message'))
+        self.assertFalse((self.work / '.lat/unattended').exists())
 
 class ListActiveTests(unittest.TestCase):
     """list --active: records are checked against a fake `hcom list --json` file."""
