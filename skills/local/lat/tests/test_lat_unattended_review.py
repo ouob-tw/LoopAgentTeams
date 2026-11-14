@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_lat_unattended_decisions import (  # noqa: E402
-    SESSION, SESSION_SCRIPT, UnattendedStopCase)
+    OTHER, PREAUTH, SESSION, SESSION_SCRIPT, UnattendedStopCase)
 
 PARKED = '- status: parked\n- advisor: exempt spec-confirmation\n- session: {session}\n' \
          '- grant: r1 v1\n- version: r1\n- question: Spec 要不要加匯出\n' \
@@ -80,6 +80,31 @@ class CreationTests(ReviewCase):
         self.assertIn('修好登入頁與註冊頁', text)
         self.unattended('close', '--reason', 'off')
         self.assertIn('- 無人授權：已結束（第 2 版，使用者關掉', self.md.read_text())
+
+    def command(self, line='ls'):
+        """The controller's next shell command: the PreToolUse hook runs before it."""
+        payload = dict(hook_event_name='PreToolUse', cwd=str(self.work), session_id=SESSION,
+                       tool_name='Bash', tool_input=dict(command=line))
+        result = self.run_script(SESSION_SCRIPT, 'hook', '--client', 'codex',
+                                 stdin=json.dumps(payload), session=OTHER)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+
+    def test_each_new_or_changed_item_is_in_the_review_before_the_turn_ends(self):
+        """#568: a record written with the editor is in the review by the controller's next
+        command; an auto-action record is in it as soon as lat-preauth writes it."""
+        self.grant()
+        self.command()
+        self.assertFalse(self.md.exists())
+        self.parked()
+        self.command()
+        self.assertEqual(self.item_ids(), ['LAT-P'])
+        self.autos(dict(kind='auto', action='merge', target='dev', commit='a' * 40,
+                        basis='allow merge dev', result='succeeded'))
+        result = self.run_script(PREAUTH, 'record', '--kind', 'correction', '--commit', 'a' * 40,
+                                 '--note', '合錯分支')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('已更正', self.md.read_text())
+        self.assertEqual(self.item_ids(), ['LAT-P', 'auto-1'])
 
     def test_no_review_for_a_round_without_a_grant(self):
         self.autos(dict(kind='auto', action='merge', target='dev', commit='a' * 40,

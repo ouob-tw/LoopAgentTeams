@@ -1806,6 +1806,18 @@ def delegated_stop_check(record):
             '「代決紀錄」補正；不屬參謀可代決的、或兩位參謀不一致的，改為 `- status: parked`。')
 
 
+def refresh_review_before_command(record):
+    """Rebuild this round's review before each of the controller's shell commands, so a parked
+    or delegated record it just wrote with its editor is in the review by its next command,
+    not only at the turn end (the tools that write other items refresh it themselves). A no-op
+    in a round without a grant; a failure only warns."""
+    try:
+        unattended = unattended_module()
+        unattended.refresh_review(unattended_lat(record), record['session_id'])
+    except Exception as exc:  # noqa: BLE001 - never block the command
+        print(f'LAT review not updated: {exc}', file=sys.stderr)
+
+
 def review_stop_check(record, message):
     """Rebuild this round's review at every turn end; why a DONE: Stop should be held because the
     review of a round that had an unattended grant has no current cross-check, or None."""
@@ -2538,10 +2550,7 @@ def hook(client):
         elif event == 'SessionStart':
             if payload.get('source') not in ('compact', 'resume'):
                 return
-        elif event == 'PreToolUse':
-            if 'close' not in str(payload.get('tool_input')):
-                return 0
-        elif event != 'UserPromptSubmit':
+        elif event not in ('UserPromptSubmit', 'PreToolUse'):
             return
         sid = session_id(payload.get('session_id'))
         cwd = Path(payload['cwd'])
@@ -2570,6 +2579,9 @@ def hook(client):
             return
         if event == 'PreToolUse':
             if not all(record.get(key) == value for key, value in expected.items()):
+                return 0
+            refresh_review_before_command(record)
+            if 'close' not in str(payload.get('tool_input')):
                 return 0
             try:
                 return close_check(record, payload)

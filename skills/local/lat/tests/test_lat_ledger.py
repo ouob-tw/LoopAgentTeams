@@ -2314,6 +2314,18 @@ class ParkTests(LedgerCase):
         self.assertIn('ask the user', self.fails('park', str(row), '--cause', 'review-stuck', '--reason', 'stuck again'))
         self.assertEqual(self.item(row)['status'], 'in_progress')
 
+    def test_park_and_unpark_update_the_review_at_once(self):
+        """#568: the round's review shows a parked row as soon as it is parked, not at the
+        controller's turn end, and shows it released after unpark."""
+        self.grant()
+        row = self.started()
+        review = self.workspace / '.lat' / 'unattended' / f'{self.SESSION}-r1-review.md'
+        self.assertFalse(review.exists())
+        self.park_stuck(row, 'stuck')
+        self.assertIn(f'### row-{row} ', review.read_text())
+        self.ok('unpark', str(row), '--reason', 'user replied')
+        self.assertIn('已解除擱置', review.read_text())
+
     def test_a_ledger_that_is_not_this_rounds_cannot_park(self):
         self.grant()
         row = self.add()
