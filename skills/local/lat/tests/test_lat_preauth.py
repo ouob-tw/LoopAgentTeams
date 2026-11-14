@@ -1752,12 +1752,14 @@ class DeployAffectedTests(WriteCase):
             text += f'rollback = "{rollback}"\n[actions.deploy-prod]\nrollback = "{rollback}"\n'
         self.write(self.project_file, text)
 
-    def history(self, *rows):
-        """Rows are (action, commit, result) or (action, commit, result, target)."""
+    def history(self, *rows, partial=()):
+        """Rows are (action, commit, result) or (action, commit, result, target); `partial`
+        holds the 1-based numbers of rows recorded with --partial."""
         self.write(self.history_file, ''.join(json.dumps(dict(
             at=f'2026-11-0{index}T10:00:00+00:00', action=row[0],
             target=row[3] if len(row) > 3 else (self.TARGET if row[0] == 'deploy-test' else None),
-            commit=row[1], result=row[2], approval='preauth')) + '\n'
+            commit=row[1], result=row[2], approval='preauth',
+            **(dict(partial=True) if index in partial else {}))) + '\n'
             for index, row in enumerate(rows, 1)))
 
     def summary(self, base, ref='HEAD', passed=True):
@@ -2026,6 +2028,52 @@ class DeployAffectedTests(WriteCase):
         self.assertIn(f'covering the last successful deploy-prod {middle[:12]}',
                       ' '.join(verdict['basis']))
 
+    def test_a_partial_deploy_is_no_base_and_the_check_says_it_skipped_it(self):
+        self.write(self.project_file, '[actions.deploy-prod]\n'
+                                      'rollback = "git revert, then deploy again"\n'
+                                      'runbook = "docs/deploy.md"\n')
+        (self.repo / 'agent').mkdir()
+        app_only = self.commit('agent change', 'agent/x.txt')
+        self.head = self.commit('version to deploy', 'web.txt')
+        self.history(('deploy-prod', self.deployed, 'succeeded'),
+                     ('deploy-prod', app_only, 'succeeded'), partial=(2,))
+        with self.subTest('a summary from the partial deploy does not cover the agent change'):
+            self.summary(app_only)
+            verdict = self.check('deploy-prod')
+            self.assertEqual(verdict['verdict'], 'ask')
+            self.assertIn(f'not at the last successful deploy-prod commit {self.deployed[:12]}',
+                          ' '.join(verdict['reasons']))
+            self.assertIn(f'--base {self.deployed}; then check again', verdict['fixes'][0])
+        self.summary(self.deployed)
+        verdict = self.check('deploy-prod')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+        self.assertEqual(verdict['deploy_base'], dict(
+            commit=self.deployed, at='2026-11-01T10:00:00+00:00', skipped_partial=1))
+        self.assertEqual(verdict['runbook']['changed_paths'], ['agent', 'b.txt', 'web.txt'])
+        lines = self.run_tool('check', '--action', 'deploy-prod').stdout.splitlines()
+        self.assertEqual(lines[1:4], [
+            f'Deploy base: the last full deploy-prod {self.deployed[:12]} '
+            '(2026-11-01T10:00:00+00:00); skipped 1 partial deploy(s) after it',
+            'Read first: docs/deploy.md',
+            'Changed top-level paths since the last successful deploy-prod: agent, b.txt, '
+            'web.txt'])
+        with self.subTest('a full deploy after it is the base again, with no note'):
+            self.history(('deploy-prod', self.deployed, 'succeeded'),
+                         ('deploy-prod', app_only, 'succeeded'),
+                         ('deploy-prod', app_only, 'succeeded'), partial=(2,))
+            self.summary(app_only)
+            verdict = self.check('deploy-prod')
+            self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+            self.assertNotIn('deploy_base', verdict)
+
+    def test_only_partial_deploys_need_the_full_suite(self):
+        self.summary(self.deployed)
+        self.history(('deploy-prod', self.deployed, 'succeeded'),
+                     ('deploy-prod', self.head, 'succeeded'), partial=(1, 2))
+        self.assert_full_suite('deploy-prod', 'no successful deploy-prod in the deploy history '
+                                              'except 2 partial deploy(s)')
+        self.assertNotIn('deploy_base', self.check('deploy-prod'))
+
     def record(self, *args, **kwargs):
         return self.run_tool('record', *args, path=self.path, **kwargs)
 
@@ -2059,6 +2107,22 @@ class DeployAffectedTests(WriteCase):
         self.assertEqual(self.check('deploy-test')['verdict'], 'allow')
         self.assertEqual(self.deploy_flow('deploy-test', self.head, 'failed').returncode, 0)
         self.assert_full_suite('deploy-test', 'a deploy-test failed')
+
+    def test_a_partial_deploy_record_marks_its_history_row(self):
+        self.assertEqual(self.deploy_flow('deploy-test', self.deployed).returncode, 0)
+        result = self.deploy_flow('deploy-test', self.head, 'succeeded', '--partial')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([row.get('partial') for row in self.history_rows()], [None, True])
+        self.summary(self.deployed)
+        self.assertEqual(self.check('deploy-test')['deploy_base']['commit'], self.deployed)
+        with self.subTest('a record that writes no deploy history refuses --partial'):
+            result = self.record('--kind', 'bug-intake', '--issue', '#1', '--source', 's',
+                                 '--self-reported', 'a', '--clear-expected', 'b',
+                                 '--single-ticket', 'c', '--restores-stated', 'd',
+                                 '--no-existing-guard', 'e', '--partial')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('--partial is for a deploy-test or deploy-prod record', result.stderr)
+            self.assertEqual(len(self.records()), 2)
 
     def test_an_unknown_commit_is_refused_before_anything_is_written(self):
         result = self.deploy_flow('deploy-prod', 'f' * 40)
@@ -2559,6 +2623,18 @@ class DoTests(NoticeCase):
         self.assertEqual([(i['action'], i['target'], i['commit'], i['result'], i['approval'])
                           for i in history],
                          [('deploy-test', 'staging', self.head, 'succeeded', 'preauth')])
+        with self.subTest('--partial reaches the history row'):
+            self.assertEqual(self.do(self.touch(), '--partial', action='deploy-test').returncode,
+                             0)
+            last = json.loads((self.repo / '.lat' / 'deploy-history.jsonl').read_text()
+                              .splitlines()[-1])
+            self.assertIs(last['partial'], True)
+        with self.subTest('--partial is refused for install-host before anything runs'):
+            self.marker.unlink()
+            result = self.do(self.touch(), '--partial')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('--partial is for deploy-test and deploy-prod', result.stderr)
+            self.assertFalse(self.marker.exists())
 
     def test_actions_without_notices_and_a_missing_command_are_refused(self):
         for label, args, reason in (

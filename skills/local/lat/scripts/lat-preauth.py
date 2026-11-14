@@ -580,37 +580,49 @@ def read_deploy_history(top):
     return entries
 
 
+def full_success(entry):
+    """A successful deploy of every service: a row without `partial` (older rows) is full."""
+    return entry.get('result') == 'succeeded' and entry.get('partial') is not True
+
+
 def last_deploy(top, action, target):
-    """(the last successful deploy of `action` to `target`, None) or (None, why there is no
-    usable one). A failed deploy after it leaves what runs there unknown."""
+    """(the last successful full deploy of `action` to `target`, the count of successful
+    partial deploys after it, None) or (None, that count, why there is no usable one). A partial
+    deploy leaves the other services older, so it is no base; a failed deploy after the base
+    leaves what runs there unknown."""
     try:
         entries = [entry for entry in read_deploy_history(top) if entry.get('action') == action]
     except FileNotFoundError:
-        return None, f'no deploy history ({deploy_history_path(top)})'
+        return None, 0, f'no deploy history ({deploy_history_path(top)})'
     except (OSError, UnicodeDecodeError, ValueError) as error:
-        return None, f'deploy history unreadable ({error})'
+        return None, 0, f'deploy history unreadable ({error})'
     same = [entry for entry in entries if entry.get('target') == target]
     found = next((index for index in range(len(same) - 1, -1, -1)
-                  if same[index].get('result') == 'succeeded'), None)
+                  if full_success(same[index])), None)
+    later = same[found + 1:] if found is not None else same
+    skipped = sum(entry.get('result') == 'succeeded' for entry in later)
     if found is None:
-        other = next((entry for entry in reversed(entries)
-                      if entry.get('result') == 'succeeded'), None)
+        other = next((entry for entry in reversed(entries) if full_success(entry)), None)
         if other:
-            return None, (f'the deploy target changed since the last successful {action} '
-                          f'(then {json.dumps(other.get("target"), ensure_ascii=False)}, now '
-                          f'{json.dumps(target, ensure_ascii=False)})')
-        return None, f'no successful {action} in the deploy history'
-    failed = [entry for entry in same[found + 1:] if entry.get('result') != 'succeeded']
+            return None, skipped, (
+                f'the deploy target changed since the last successful {action} '
+                f'(then {json.dumps(other.get("target"), ensure_ascii=False)}, now '
+                f'{json.dumps(target, ensure_ascii=False)})')
+        return None, skipped, f'no successful {action} in the deploy history' + (
+            f' except {skipped} partial deploy(s), which leave other services older'
+            if skipped else '')
+    failed = [entry for entry in later if entry.get('result') != 'succeeded']
     if failed:
-        return None, (f'a {action} failed at {failed[-1].get("at")} after the last successful one '
-                      f'({same[found].get("at")}), so what runs there is unknown')
-    return same[found], None
+        return None, skipped, (
+            f'a {action} failed at {failed[-1].get("at")} after the last successful one '
+            f'({same[found].get("at")}), so what runs there is unknown')
+    return same[found], skipped, None
 
 
 def last_deploy_base(top, version, action, target):
-    """(the last successful deploy, None) when its commit is in this repo and `version` or an
+    """(the last successful full deploy, None) when its commit is in this repo and `version` or an
     ancestor of it, else (None, why not)."""
-    last, why = last_deploy(top, action, target)
+    last, _, why = last_deploy(top, action, target)
     if why:
         return None, why
     commit = last.get('commit')
@@ -620,6 +632,15 @@ def last_deploy_base(top, version, action, target):
         return None, (f'the last successful {action} commit {commit[:12]} is not an ancestor of '
                       f'{version[:12]}')
     return last, None
+
+
+def deploy_base_note(top, action, target):
+    """{commit, at, skipped_partial} of the full deploy the check counts from when it skipped
+    later partial deploys, else None."""
+    last, skipped, why = last_deploy(top, action, target)
+    if why or not skipped:
+        return None
+    return dict(commit=last.get('commit'), at=last.get('at'), skipped_partial=skipped)
 
 
 def affected_deploy_problems(top, version, action, target):
@@ -1004,6 +1025,10 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
                 result['basis'].append(f'every registered full suite passed for {version[:12]}')
     if fixes:
         result['fixes'] = fixes
+    if action in DEPLOY_ACTIONS and version:
+        note = deploy_base_note(top, action, deploy_target(effective))
+        if note:
+            result['deploy_base'] = note
     runbook = effective.get('runbook') if action in DEPLOY_ACTIONS else None
     if runbook and runbook[0].strip():  # blank text names no doc
         paths, why = changed_paths(top, version, action, deploy_target(effective))
@@ -1027,6 +1052,11 @@ def check_lines(result):
     """The text check prints after the verdict line: the deploy's runbook with what changed
     since the last deploy, then how to get past each ask that has a known fix."""
     lines = []
+    base = result.get('deploy_base')
+    if base:
+        lines.append(f'Deploy base: the last full {result["action"]} {str(base["commit"])[:12]} '
+                     f'({base["at"]}); skipped {base["skipped_partial"]} partial deploy(s) '
+                     'after it')
     runbook = result.get('runbook')
     if runbook:
         lines.append(f'Read first: {runbook["path"]}')
@@ -1780,6 +1810,8 @@ def record_locked(args, top, session):
         if missing:
             raise Refused(f'a bug-intake record needs {", ".join(missing)}')
         entry = dict(kind='bug-intake', issue=args.issue, source=args.source, **conditions)
+    if args.partial and not deploy:
+        raise Refused('--partial is for a deploy-test or deploy-prod record')
     path = append_record(top, session, round_number, entry)
     print(f'recorded {args.kind} → {path}')
     if deploy:
@@ -1804,6 +1836,8 @@ def deploy_entry(args, **extra):
     if not commit:
         raise Refused(f'commit `{args.commit}` is not in {top}')
     target = deploy_target(action_settings(load_layers(top)[0], args.action))
+    if args.partial:
+        extra['partial'] = True
     return top, dict(action=args.action, target=target, commit=commit, result=args.result,
                      **extra)
 
@@ -2035,6 +2069,8 @@ def cmd_do(args):
     command = args.run[1:] if args.run[:1] == ['--'] else args.run
     if not command:
         raise Refused('give the command after `--`')
+    if args.partial and args.action not in DEPLOY_ACTIONS:
+        raise Refused('--partial is for deploy-test and deploy-prod')
     if args.action in BRANCH_ACTIONS:
         return do_branch_action(args, command)
     if args.action not in MAIN_CHECKOUT_ACTIONS:
@@ -2059,7 +2095,8 @@ def cmd_do(args):
                         *recipients, *across)
         do_must('record', '--action', args.action, '--commit', args.commit, '--basis',
                 checked.splitlines()[0], '--result', result, '--started', started,
-                '--notice-before', before, '--notice-after', after, *across)
+                '--notice-before', before, '--notice-after', after,
+                *(['--partial'] if args.partial else []), *across)
     except DO_ERRORS as error:
         print(f'lat-preauth: the command ran and {result}, but the after-notice or record step '
               f'failed, so the record may be missing or partial (started {started}, '
@@ -2631,6 +2668,9 @@ def build_parser():
     sub.add_argument('--result', choices=RESULTS, help='auto, manual: how the action ended')
     sub.add_argument('--question', help='manual: ID of the decision record the user answered; '
                                          'correction: the one that shows what really happened')
+    sub.add_argument('--partial', action='store_true',
+                     help='auto, manual deploy: only some services were updated, so the deploy '
+                          'history keeps it but checks count from the last full deploy')
     sub.add_argument('--note', help='correction: what really happened')
     sub.add_argument('--started', help='auto deploy/install: time the action started, from `now`')
     sub.add_argument('--notice-before', type=notice_id, help='auto deploy/install: HCOM event ID '
@@ -2675,6 +2715,8 @@ def build_parser():
     sub.add_argument('--question', help='merge, push: when the check asks, ID of the decision '
                                         'record where the user approved it')
     sub.add_argument('--to', nargs='+', metavar='NAME', help='notice recipients, as for notice')
+    sub.add_argument('--partial', action='store_true',
+                     help='deploy: only some services were updated (as for record)')
     sub.add_argument('run', nargs=argparse.REMAINDER, metavar='command', help='after --: the command to run')
     sub = commands.add_parser('pre-push', help='Git pre-push hook: refuse pushing held commits, '
                                                'and a push by an active controller that `do` '
