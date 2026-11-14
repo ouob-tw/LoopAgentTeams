@@ -144,9 +144,10 @@ for name in args[args.index('--skill') + 1:args.index('--global')]:
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIsNone(self.bunx_args())
         self.assertIn(f'  alpha: skills/local/alpha: {SUITE} ({why})', result.stderr)
-        self.assertIn(f"cd {self.repo / 'skills/local/alpha'} && uv run --no-project python ",
+        self.assertIn(f"cd {self.repo} && uv run --no-project python ", result.stderr)
+        self.assertIn(f"suite-gate.py run --registered '{SUITE}' --purpose release",
                       result.stderr)
-        self.assertIn(f"suite-gate.py run --purpose release -- '{SUITE}'", result.stderr)
+        self.assertNotIn('--purpose release --', result.stderr)
 
     def test_a_passing_record_for_the_current_content_installs(self):
         self.record()

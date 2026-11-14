@@ -166,19 +166,22 @@ def main(argv=None):
     if lacking:
         print('Not installed: these skills have no passing full-suite record for their '
               'current content:', file=sys.stderr)
-        commands = []
+        suites = []
         for name, suite, result in lacking:
             why = 'the latest run of this content failed' if result == 'failed' \
                 else 'no run of this content'
             print(f"  {name}: {suite['cwd']}: {suite['command']} ({why})", file=sys.stderr)
-            run = gate.gate_command(suite['command'], ('--purpose', 'release'))
-            command = f"cd {shlex.quote(str(ROOT / suite['cwd']))} && {run}"
-            if command not in commands:
-                commands.append(command)
-        print('Run each suite through the gate on this content, then install again:',
+            if suite['command'] not in suites:
+                suites.append(suite['command'])
+        # The snapshot form tests HEAD in a clean checkout, so another agent merging into
+        # this work tree mid-run cannot void the record; it is filed under the same
+        # content tree, directory and command that the check above reads.
+        command = shlex.join(['uv', 'run', '--no-project', 'python', str(gate.SCRIPT), 'run',
+                              '--registered', *suites, '--purpose', 'release'])
+        print('Run the suites through the gate on a snapshot of the committed HEAD (commit '
+              'your changes first; uncommitted ones are not tested), then install again:',
               file=sys.stderr)
-        for command in commands:
-            print(f'  {command}', file=sys.stderr)
+        print(f"  cd {shlex.quote(str(ROOT))} && {command}", file=sys.stderr)
         return 1
     try:
         return install(tree, names, [skills[name] for name in names])
