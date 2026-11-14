@@ -103,14 +103,23 @@ class CommentRuleTests(CommentCase):
     def test_a_failed_comment_is_not_counted_and_is_judged_again(self):
         self.day('2026-02-01')
         self.set_speed(100, [130, 130, 130])
-        (self.gh_dir / 'fail').touch()
+        (self.gh_dir / 'fail-comment').touch()
         result = self.run_suite('2026-02-02', code=3)
-        self.assertIn('could not be updated', result.stderr)
+        self.assertIn('could not be updated (gh issue comment failed', result.stderr)
         self.assertEqual(self.commented()['5']['kinds'], ['days'])
-        (self.gh_dir / 'fail').unlink()
+        (self.gh_dir / 'fail-comment').unlink()
         self.run_suite('2026-02-02', code=1)
         self.assertEqual(len(self.comments()), 2)
         self.assertEqual(self.commented()['5']['kinds'], ['days', 'speed'])
+
+    def test_a_skipped_comment_does_not_use_up_the_day(self):
+        self.run_suite('2026-02-01')
+        self.day('2026-02-02')  # nothing new: no comment
+        self.assertEqual(len(self.comments()), 1)
+        self.set_flaky('late')
+        result = self.run_suite('2026-02-02', code=1)
+        self.assertIn('commented on', result.stderr)
+        self.assertEqual(len(self.comments()), 2)
 
     def test_a_new_window_forgets_what_was_commented(self):
         self.day('2026-02-01')

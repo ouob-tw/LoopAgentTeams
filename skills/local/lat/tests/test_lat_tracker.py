@@ -63,14 +63,10 @@ class TrackerBase(unittest.TestCase):
         self.addCleanup(os.environ.__setitem__, 'PATH', os.environ['PATH'])
         for key, value in self.env.items():
             os.environ[key] = value
-        self.gate = bin_dir / 'suite-gate.py'  # the real gate and its state are never read
-        self.gate.write_text('import json, os, sys\n'
-                             'sys.exit(3) if os.environ.get("FAKE_GATE_FAIL") else '
-                             'print(os.environ.get("FAKE_GATE_STATUS", "{\\"cleanup\\": []}"))\n')
-        os.environ['LAT_LEDGER_SUITE_GATE'] = str(self.gate)
-        self.addCleanup(os.environ.pop, 'LAT_LEDGER_SUITE_GATE', None)
-        self.addCleanup(os.environ.pop, 'FAKE_GATE_STATUS', None)
-        self.addCleanup(os.environ.pop, 'FAKE_GATE_FAIL', None)
+        self.gate_dir = self.root / 'gate-state'  # the real gate state is never read
+        self.gate_dir.mkdir()
+        os.environ['SUITE_GATE_STATE_DIR'] = str(self.gate_dir)
+        self.addCleanup(os.environ.pop, 'SUITE_GATE_STATE_DIR', None)
         self.set_issues({})
         self.tracker = load('lat_tracker', '_lat_tracker.py')
         self.ledger = load('lat_ledger', 'lat-ledger.py')
@@ -181,10 +177,17 @@ class CleanupTicketWarningTests(TrackerBase):
             'number': number, 'html_url': f'https://github.com/acme/work/issues/{number}',
             'created_at': created.strftime('%Y-%m-%dT%H:%M:%SZ')}]})
 
-    def gate_status(self, *units):
-        os.environ['FAKE_GATE_STATUS'] = json.dumps({'cleanup': [
-            dict(project=str(self.work.resolve()), command=cmd, median=median, baseline=baseline)
-            for cmd, median, baseline in units]})
+    def git(self, cwd, *args):
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t',
+                   GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@t')
+        subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, env=env)
+
+    def gate_status(self, *units, project=None):
+        samples = lambda median: [median] * 3
+        (self.gate_dir / 'state.json').write_text(json.dumps({'cleanup': {str(i): dict(
+            project=project or str(self.work.resolve()), command=cmd, baseline=baseline,
+            samples=samples(median), sample_count=3 if median else 0)
+            for i, (cmd, median, baseline) in enumerate(units)}}))
 
     def test_an_old_ticket_adds_a_line_with_link_days_and_the_slowest_suite(self):
         self.cleanup_ticket(10)
@@ -195,6 +198,23 @@ class CleanupTicketWarningTests(TrackerBase):
         self.assertEqual(lines[1:], ['- 本專案有開著超過 7 天的整理票：'
                                      '[acme/work#272](https://github.com/acme/work/issues/272)，已開 10 天；'
                                      '目前最慢的一套是 `pytest`，為基準的 180%'])
+
+    def test_a_linked_worktree_workspace_finds_the_main_checkout_units(self):
+        self.git(self.work, 'init', '-q', '-b', 'main')
+        self.git(self.work, 'commit', '-q', '--allow-empty', '-m', 'x')
+        linked = self.root / 'linked'
+        self.git(self.work, 'worktree', 'add', '-q', str(linked))
+        self.gate_status(('pytest', 180, 100), project=str(self.work.resolve()))
+        self.cleanup_ticket(10)
+        self.assertIn('為基準的 180%', self.tracker.cleanup_lines('acme/work', linked)[0])
+
+    def test_reading_the_speed_never_changes_the_gate_state(self):
+        self.gate_status(('pytest', 180, 100))
+        before = sorted((p.name, p.read_bytes()) for p in self.gate_dir.iterdir())
+        self.cleanup_ticket(10)
+        self.ledger_with()
+        self.warnings()
+        self.assertEqual(sorted((p.name, p.read_bytes()) for p in self.gate_dir.iterdir()), before)
 
     def test_no_speed_numbers_still_names_the_ticket(self):
         self.cleanup_ticket(8)
@@ -217,7 +237,7 @@ class CleanupTicketWarningTests(TrackerBase):
 
     def test_a_gate_that_cannot_be_read_still_names_the_ticket(self):
         self.cleanup_ticket(10)
-        os.environ['FAKE_GATE_FAIL'] = '1'
+        (self.gate_dir / 'state.json').write_text('not json')
         self.ledger_with()
         [header, line] = self.warnings()
         self.assertTrue(line.endswith('已開 10 天'), line)

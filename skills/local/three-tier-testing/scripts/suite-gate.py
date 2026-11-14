@@ -4442,6 +4442,12 @@ def _check_cleanup(finished, command, cwd):
              f"({exc}). Open or update the open `{tracker['label']}` issue by hand:\n"
              f'Title: {title}\n{body}')
         return
+    if done.startswith('no comment'):
+        def release(state):  # nothing was posted, so the day is not used up
+            stored = state.get('cleanup', {}).get(key)
+            if stored and stored['acted'] == day:
+                stored['acted'] = previous
+        with_state(release)
     if number is not None or posted is not None:
         snapshot = comment_snapshot(unit)
 

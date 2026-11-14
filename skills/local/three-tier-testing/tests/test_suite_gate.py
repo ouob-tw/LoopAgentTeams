@@ -106,7 +106,7 @@ class GateCase(unittest.TestCase):
         """A `gh` first on PATH that logs its arguments; the real one is never reached.
 
         `issue list` prints gh/open.json (default `[]`), `issue view` gh/view.json (default
-        an open issue); with gh/fail present every call fails; with gh/no-ready-label an
+        an open issue); with gh/fail present every call fails, with gh/fail-comment only `issue comment`; with gh/no-ready-label an
         `issue create` naming the `ready-for-agent` label fails as in a repo without it."""
         self.gh_dir = self.tmp / 'gh'
         self.gh_dir.mkdir()
@@ -119,6 +119,8 @@ d = Path({str(self.gh_dir)!r})
 with open(d / 'calls.jsonl', 'a') as log:
     log.write(json.dumps(sys.argv[1:]) + '\\n')
 if (d / 'fail').exists():
+    sys.exit('gh: HTTP 502')
+if (d / 'fail-comment').exists() and sys.argv[1:3] == ['issue', 'comment']:
     sys.exit('gh: HTTP 502')
 if sys.argv[1:3] == ['issue', 'list']:
     print((d / 'open.json').read_text() if (d / 'open.json').exists() else '[]')

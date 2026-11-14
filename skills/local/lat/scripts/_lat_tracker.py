@@ -6,14 +6,14 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
-import sys
+import statistics
 
 TRIAGE_STATES = ('needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human')
 GH_TIMEOUT_SECONDS = 30
 TRACKER_DOC = Path('docs/agents/issue-tracker.md')
 CLEANUP_LABEL = 'test-cleanup'
 CLEANUP_OLD = timedelta(days=7)
-GATE_ENV = 'LAT_LEDGER_SUITE_GATE'  # a stand-in suite-gate.py, as lat-ledger.py reads it
+CLEANUP_MIN_SAMPLES = 3  # as the suite gate: later passes needed before the speed is judged
 REPO_FLAG = re.compile(r'-R\s+`?([\w.-]+/[\w.-]+)`?')
 
 
@@ -66,18 +66,36 @@ def cleanup_label(workspace):
         return CLEANUP_LABEL
 
 
+def project_root(workspace):
+    """The main work tree of the workspace's repository, as the suite gate names a project."""
+    workspace = Path(workspace).resolve()
+    try:
+        common = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+                                cwd=workspace, text=True, capture_output=True,
+                                timeout=GH_TIMEOUT_SECONDS).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return workspace
+    return Path(common).parent if common and Path(common).name == '.git' else workspace
+
+
+def gate_state_file():
+    """The suite gate's state file (read only here; the gate's own status would write it)."""
+    if os.environ.get('SUITE_GATE_STATE_DIR'):
+        return Path(os.environ['SUITE_GATE_STATE_DIR']) / 'state.json'
+    base = os.environ.get('XDG_STATE_HOME') or str(Path.home() / '.local/state')
+    return Path(base) / 'suite-gate/state.json'
+
+
 def slowest_suite(workspace):
     """(command, median as a share of the baseline) of the project's slowest full suite from the
-    suite gate's status, or None when no suite has a judged speed or the gate cannot be read."""
-    script = os.environ.get(GATE_ENV) or Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
+    suite gate's state, or None when no suite has a judged speed or the state cannot be read."""
     try:
-        result = subprocess.run([sys.executable, str(script), 'status', '--json'], text=True,
-                                capture_output=True, timeout=GH_TIMEOUT_SECONDS)
-        units = json.loads(result.stdout)['cleanup'] if result.returncode == 0 else []
-        project = str(Path(workspace).resolve())
-        ratios = [(unit['median'] / unit['baseline'], unit['command']) for unit in units
-                  if unit['project'] == project and unit.get('median') and unit.get('baseline')]
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        units = json.loads(gate_state_file().read_text(encoding='utf-8')).get('cleanup', {}).values()
+        project = str(project_root(workspace))
+        ratios = [(statistics.median(unit['samples']) / unit['baseline'], unit['command'])
+                  for unit in units if unit['project'] == project and unit.get('baseline')
+                  and unit['sample_count'] >= CLEANUP_MIN_SAMPLES]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, statistics.StatisticsError):
         return None
     if not ratios:
         return None
