@@ -3476,6 +3476,15 @@ def head_commit(root):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def commits_ahead(root, commit):
+    """How many commits HEAD of root is ahead of commit (0 when it did not move or is not a
+    descendant)."""
+    if not commit:
+        return 0
+    result = git(['rev-list', '--count', f'{commit}..HEAD'], root)
+    return int(result.stdout.strip() or 0) if result.returncode == 0 else 0
+
+
 def write_summary(root, checkout, run_id, base, changed, start, results, *, nothing_selected,
                   interrupted, started_at, purpose='post-merge'):
     """Write the summary of one affected run with a purpose (`kind: affected-summary`) for
@@ -3503,9 +3512,14 @@ def write_summary(root, checkout, run_id, base, changed, start, results, *, noth
         warn(f'{purpose} summary: the content changed during the run, so it counts as failed; '
              'run it again on unchanged content')
     reused = sum(1 for r in results if r.get('reused'))
-    warn(f"{purpose} summary {run_id[:12]}: {'passed' if passed else 'FAILED'} "
+    verdict = 'passed' if passed else 'interrupted (not a test failure)' if interrupted else 'FAILED'
+    warn(f"{purpose} summary {run_id[:12]}: {verdict} "
          f'({len(results)} group(s), {reused} reused, base {base[:12]}, '
          f'commit {(start[0] or "-")[:12]})')
+    ahead = commits_ahead(root, start[0])
+    if ahead:
+        warn(f'{purpose} summary: this result covers only {start[0][:12]}; HEAD of {root} is '
+             f'now {head_commit(root)[:12]} ({ahead} more commit(s))')
     for group in record['rerun_only']:
         warn(f"{purpose} summary: {group['kind']} in {group['dir']} "
              f"{rerun_only_text(group['failed_first'])}, fingerprint {group['fingerprint']}; "

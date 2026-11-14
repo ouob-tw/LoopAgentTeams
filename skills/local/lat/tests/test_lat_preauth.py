@@ -1918,8 +1918,9 @@ class DeployAffectedTests(WriteCase):
         self.history(('deploy-prod', self.deployed, 'succeeded'))
         run = ('run the post-merge affected tests from the last successful deploy-prod '
                f'(2026-11-01T10:00:00+00:00) in {self.repo}: uv run --no-project python '
-               f'{SUITE_GATE} affected --purpose post-merge --base {self.deployed}; then check '
-               'again')
+               f'{SUITE_GATE} affected --purpose post-merge --base {self.deployed} (it can queue for several '
+               'minutes for a host slot: run it in the background and do not wrap it in '
+               '`timeout`); then check again')
         with self.subTest('with a last deploy'):
             self.assertEqual(self.check('deploy-prod')['fixes'], [fix, run])
             lines = self.run_tool('check', '--action', 'deploy-prod').stdout.splitlines()
@@ -1933,8 +1934,9 @@ class DeployAffectedTests(WriteCase):
         self.history(('deploy-prod', self.deployed, 'succeeded'))
         fix = ('run the post-merge affected tests from the last successful deploy-prod '
                f'(2026-11-01T10:00:00+00:00) in {self.repo}: uv run --no-project python '
-               f'{SUITE_GATE} affected --purpose post-merge --base {self.deployed}; then check '
-               'again')
+               f'{SUITE_GATE} affected --purpose post-merge --base {self.deployed} (it can queue for several '
+               'minutes for a host slot: run it in the background and do not wrap it in '
+               '`timeout`); then check again')
         with self.subTest('no summary'):
             self.assertEqual(self.check('deploy-prod')['fixes'], [fix])
         with self.subTest('the summary starts after the last deploy'):
@@ -2043,7 +2045,7 @@ class DeployAffectedTests(WriteCase):
             self.assertEqual(verdict['verdict'], 'ask')
             self.assertIn(f'not at the last successful deploy-prod commit {self.deployed[:12]}',
                           ' '.join(verdict['reasons']))
-            self.assertIn(f'--base {self.deployed}; then check again', verdict['fixes'][0])
+            self.assertIn(f'--base {self.deployed} (it can queue', verdict['fixes'][0])
         self.summary(self.deployed)
         verdict = self.check('deploy-prod')
         self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])

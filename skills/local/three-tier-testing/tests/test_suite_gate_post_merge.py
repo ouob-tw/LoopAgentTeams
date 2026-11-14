@@ -62,6 +62,8 @@ class PostMergeTests(AffectedCase):
         ran_in = Path(self.log.read_text().split()[0])
         self.assertEqual(ran_in.parent, self.state / 'checkouts')
         self.assertIn('uncommitted changes; they are not tested', result.stderr)
+        self.assertIn(f'this result covers only {head[:12]}; HEAD of {self.repo} is now '
+                      f'{rev(self.repo, "HEAD")[:12]} (1 more commit(s))', result.stderr)
         self.assertEqual(self.checkouts_left(), ([], []))
 
     def test_all_groups_passing_is_an_overall_pass_sharing_one_run_id(self):
@@ -91,6 +93,7 @@ class PostMergeTests(AffectedCase):
         self.assertEqual(len(groups), 3)
         self.assertEqual({r['run_id'] for r in groups}, {summary['run_id']})
         self.assertIn('post-merge summary', result.stderr)
+        self.assertNotIn('covers only', result.stderr, 'HEAD did not move during the run')
 
     def test_one_failing_directory_fails_the_whole_run(self):
         self.registry['affected']['commands']['web'] = 'true {tests}; exit 3'
@@ -202,6 +205,10 @@ class PostMergeTests(AffectedCase):
         proc.send_signal(signal.SIGTERM)
         code, _, err = self.finish(proc)
         self.assertEqual(code, 128 + signal.SIGTERM, err)
+        line = next(l for l in err.splitlines() if 'post-merge summary ' in l and '(1 group' in l)
+        self.assertIn('interrupted (not a test failure)', line)
+        self.assertNotIn('FAILED', line)
+        self.assertNotIn('covers only', err, 'HEAD did not move')
         summary = self.summary()
         self.assertEqual((summary['passed'], summary['interrupted']), (False, True))
         self.assertEqual([(g['dir'], g['exit_code'], g['interrupted']) for g in summary['groups']],
