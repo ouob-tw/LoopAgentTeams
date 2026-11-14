@@ -53,6 +53,7 @@ const lookProblems = `(() => {
 	if (button.scrollWidth > button.clientWidth + 1 || button.scrollHeight > button.clientHeight + 1) problems.push('label cut off');
 	if (r.height < 44 && width < 761) problems.push('shorter than 44px on a phone: ' + r.height);
 	const close = ${OTHER}.getBoundingClientRect();
+	if (close.height < 44 && width < 761) problems.push('關閉 shorter than 44px on a phone: ' + close.height);
 	if (Math.abs(r.top + r.height / 2 - (close.top + close.height / 2)) > 2) problems.push('not on the same row as 關閉');
 	if (r.right > close.left || close.left - r.right > 16) problems.push('not directly left of 關閉: gap ' + (close.left - r.right));
 	if (${BUTTON}.closest('header') === null) problems.push('not in the header');

@@ -250,10 +250,12 @@
 		font-family: var(--mono);
 		text-align: center;
 	}
-	/* A phone's smallest tap target at every overall size: it ends the login, so a finger must not
-	   miss it for 關閉 beside it. */
-	.logout {
+	/* A phone's smallest tap target at every overall size, for both header buttons: 登出 ends the login,
+	   so a finger must not miss it for 關閉 beside it. */
+	.actions button {
 		min-height: max(44px, 2.75rem);
+	}
+	.logout {
 		display: inline-flex;
 		gap: 0.35rem;
 		align-items: center;
