@@ -4,6 +4,7 @@ Kept apart from test_lat_session.py so an edit to those references runs only the
 """
 import importlib.util
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -64,6 +65,17 @@ class InlineReferenceBudgetTests(unittest.TestCase):
                 selected, fallback = suite_gate.select_tests(root, [path], amap)
                 self.assertEqual(fallback, [])
                 self.assertIn(here, selected)
+
+
+def load_tests(loader, tests, pattern):
+    """Add the one test_lat_session test that runs the real hook with these references inlined.
+
+    Imported here, not at module level, so the loader does not collect all of SessionTests.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_lat_session import SessionTests
+    tests.addTest(SessionTests('test_recovery_inlines_dispatch_references_for_claude_only'))
+    return tests
 
 
 if __name__ == '__main__':
