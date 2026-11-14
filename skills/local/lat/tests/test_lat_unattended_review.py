@@ -4,12 +4,13 @@ a fake controller record, as in test_lat_unattended_decisions."""
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_lat_unattended_decisions import (  # noqa: E402
-    SESSION, SESSION_SCRIPT, UnattendedStopCase)
+    SESSION, SESSION_SCRIPT, UnattendedStopCase, git)
 
 PARKED = '- status: parked\n- advisor: exempt spec-confirmation\n- session: {session}\n' \
          '- grant: r1 v1\n- version: r1\n- question: Spec 要不要加匯出\n' \
@@ -179,6 +180,50 @@ class LayoutTests(ReviewCase):
         self.assertRegex(text, r'- 狀態：已由你推翻（20\d\d-')
         self.assertIn('- 狀態：已解除擱置（2026-11-13T02:00:00+00:00）：使用者：照 B 做', text)
         self.assertNotIn('## 最該先看的幾項', text)
+
+
+class TruthfulTextTests(ReviewCase):
+    def item(self, identifier):
+        text = self.md.read_text()
+        return text.split(f'### {identifier} ', 1)[1].split('\n### ', 1)[0].split('\n## ', 1)[0]
+
+    def commit(self, message):
+        git(self.work, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q',
+            '--allow-empty', '-m', message)
+        return subprocess.run(['git', '-C', str(self.work), 'rev-parse', 'HEAD'], check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def test_a_proxy_confirmed_item_takes_the_decision_line(self):
+        self.grant()
+        self.delegated('LAT-PC', 'proxy-confirmed', extra='- decision: 開工，先做登入頁\n')
+        self.review('update')
+        self.assertIn('開工，先做登入頁', self.item('LAT-PC').split('做了什麼：', 1)[1].split('\n', 1)[0])
+
+    def test_an_auto_merge_names_the_merge_commit_not_the_merged_in_one(self):
+        self.grant()
+        self.commit('base')
+        git(self.work, 'checkout', '-q', '-b', 'topic')
+        merged_in = self.commit('topic work')
+        git(self.work, 'checkout', '-q', 'dev')
+        self.commit('dev work')
+        git(self.work, '-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-ff',
+            'topic', '-m', 'merge topic')
+        merge = subprocess.run(['git', '-C', str(self.work), 'rev-parse', 'HEAD'], check=True,
+                               capture_output=True, text=True).stdout.strip()
+        self.autos(dict(kind='auto', action='merge', target='dev', commit=merged_in,
+                        basis='allow merge dev', result='succeeded'))
+        self.review('update')
+        revert = self.item('auto-1').split('怎麼推翻：', 1)[1].split('\n', 1)[0]
+        self.assertIn(merge[:12], revert)
+        self.assertNotIn(merged_in[:12], revert)
+
+    def test_an_unknown_merge_commit_says_how_to_find_it(self):
+        self.grant()
+        self.autos(dict(kind='auto', action='merge', target='dev', commit='b' * 40,
+                        basis='allow merge dev', result='succeeded'))
+        self.review('update')
+        revert = self.item('auto-1').split('怎麼推翻：', 1)[1].split('\n', 1)[0]
+        self.assertIn('git log --first-parent --merges', revert)
 
 
 class CrossCheckTests(ReviewCase):
