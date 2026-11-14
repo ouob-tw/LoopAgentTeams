@@ -112,7 +112,7 @@
 		...(paneAgent ? agentWarnings(paneAgent) : [])
 	]);
 	/** The tab shows only while the latest round has a review file; its count is the parked items. */
-	const reviewSummary = $derived(controller.unattended.state === 'unknown' || controller.unattended.state === 'error' ? null : (controller.unattended.review ?? null));
+	const reviewSummary = $derived(controller.unattended.state === 'error' ? null : (controller.unattended.review ?? null));
 	const tabs = $derived([
 		{ id: 'transcript', label: '對話紀錄', count: null },
 		// A failed read keeps the tab, so a slow poll never throws the user off it.

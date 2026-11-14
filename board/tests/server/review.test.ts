@@ -4,7 +4,8 @@
 // goal changes and the cross-check showing in it, the files the evidence names read for the
 // evidence window (and nothing else: not a file the review does not cite, a path out of the
 // folder, a link out of it, a binary file, an over-long file, or a logged-out request), a review file written by the controller
-// reaching an open page within five seconds, and the review staying readable once the grant ends.
+// reaching an open page within five seconds, and the review staying readable once the grant ends and
+// once the round is over and unbound.
 import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -145,6 +146,22 @@ test('turning the grant off leaves the review, and the old assumptions and confi
 	const review = (await readReview()).review!;
 	expect(review.grant).toContain('已結束');
 	expect(review.items.filter((item) => item.kind === 'assumed' || item.kind === 'proxy-confirmed').map((item) => item.state)).toEqual(['open', 'open', 'open']);
+});
+
+test('a round that ended and was unbound keeps its review tab while its last report is in the inbox (#638)', async () => {
+	await startRound();
+	expect((await grant({ op: 'close' })).status).toBe(200);
+	try {
+		// Deactivated: no longer bound, its final report a bare DONE as an automation task's controller ends.
+		fixture.setHelper({ output: { controllers: [] }, realUnattended: uvPython() });
+		fixture.report(luna.session_id, { tag: '', summary: '', message: '這一輪做完了。\n\nDONE', hcom_name: 'luna', workspace: luna.workspace, final: true });
+		// Unbound, it has no Herdr place any more, and no grant can start for it: only the review is carried.
+		expect(named(await fixture.refresh(cookie), 'luna')).toMatchObject({ herdr: null, phase: '這一輪做完了。', unattended: { state: 'unknown' } });
+		expect(await summary()).toMatchObject({ state: 'ok', parked: 3 });
+		expect((await readReview()).review!.items.filter((item) => item.kind === 'parked' && item.state === 'open')).toHaveLength(2);
+	} finally {
+		fixture.setHelper({ output: { controllers: [luna] }, realUnattended: uvPython() });
+	}
 });
 
 const fileOf = (path: string, withCookie = true) => fixture.fetch(`/api/review/file?controller=${luna.session_id}&path=${encodeURIComponent(path)}`, withCookie ? { cookie } : {});

@@ -9,14 +9,16 @@
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 
-	let { controllerId, item }: { controllerId: string; item: ReviewItem } = $props();
+	/** `wake`: the controller's round is over or its client gone, so the words wake it, as the command line does. */
+	let { controllerId, item, wake }: { controllerId: string; item: ReviewItem; wake: boolean } = $props();
 
 	const word = $derived(actionWord(item));
 	const box = $derived(reviewUi.box(controllerId, item.id));
 	const locked = $derived(testDevice.lockedReason(controllerId));
 
 	async function send() {
-		if (await reviewUi.send(controllerId, item)) toasts.show('ok', '已把你的話傳給主控。');
+		const outcome = await reviewUi.send(controllerId, item, wake);
+		if (outcome?.ok) toasts.show('ok', outcome.reason || '已把你的話傳給主控。');
 	}
 </script>
 

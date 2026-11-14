@@ -63,7 +63,7 @@ export interface Sources {
 	ledgers: Map<string, LedgerView>;
 	/** Why the ledgers could not be read at this read; `ledgers` is empty then. */
 	ledgersError: string | null;
-	/** The unattended mode of each bound controller, by session ID. */
+	/** The unattended mode of each bound controller and each unbound one on the roster, by session ID. */
 	unattended: Map<string, UnattendedView>;
 	/** Why it could not be read at this read; `unattended` is empty then. */
 	unattendedError: string | null;
@@ -197,6 +197,18 @@ export function ledgerSources(active: HelperController[], files: ReportFile[]): 
 	for (const file of files) {
 		const latest = file.reports.at(-1);
 		if (latest && !found.has(file.sessionId)) found.set(file.sessionId, latest.workspace);
+	}
+	return [...found].map(([sessionId, workspace]) => ({ workspace, sessionId }));
+}
+
+/** The controllers whose unattended mode and review to read: every bound one, and every unbound one
+ *  on the roster, that is with a DONE or HELP report not yet due for the archive, so the review of an
+ *  ended round stays open from its controller (#638). */
+export function unattendedSources(active: HelperController[], files: ReportFile[], now: number): { workspace: string; sessionId: string }[] {
+	const found = new Map(active.map((binding) => [binding.session_id, binding.workspace]));
+	for (const file of files) {
+		const report = file.reports.findLast((report) => report.tag === 'DONE' || report.tag === 'HELP');
+		if (report && !found.has(file.sessionId) && now - Date.parse(report.time) < ARCHIVE_MS) found.set(file.sessionId, report.workspace);
 	}
 	return [...found].map(([sessionId, workspace]) => ({ workspace, sessionId }));
 }
@@ -378,6 +390,12 @@ function activeController(binding: HelperController, file: ReportFile | undefine
 	};
 }
 
+/** An ended round's unattended view: only its review, which stays open; no grant can start for it. */
+function endedUnattended(sources: Pick<Sources, 'unattended'>, sessionId: string): UnattendedView {
+	const read = sources.unattended.get(sessionId);
+	return read && 'review' in read && read.review ? { state: 'unknown', review: read.review } : { state: 'unknown' };
+}
+
 /** A bound controller whose client is gone: shown like an unbound one, from its binding. */
 function closedController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined, ledger: LedgerView): Controller {
 	return { ...activeController(binding, file, duty, ledger, { state: 'unknown' }), status: 'closed', running: false, pendingCount: 0, herdr: null, error: reportError(file) };
@@ -385,7 +403,7 @@ function closedController(binding: HelperController, file: ReportFile | undefine
 
 /** A controller whose LAT round is no longer bound: 閒置 while its conversation is in hcom's list
  *  or paused, or before any list was read; 已關閉 once it is gone from it. */
-function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'paused' | 'agents' | 'ledgers' | 'ledgersError'>, duty: RecordedDuty | undefined): Controller {
+function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'paused' | 'agents' | 'ledgers' | 'ledgersError' | 'unattended'>, duty: RecordedDuty | undefined): Controller {
 	const latest = file.reports.at(-1)!;
 	const running = sources.running;
 	const paused = isPaused(sources, file.sessionId);
@@ -405,7 +423,7 @@ function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'p
 		lastReportAt: latest.time,
 		duty: dutyOf(duty, file),
 		ledger: ledgerOf(sources, file.sessionId),
-		unattended: { state: 'unknown' },
+		unattended: endedUnattended(sources, file.sessionId),
 		error: reportError(file)
 	};
 }

@@ -8,7 +8,7 @@ import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice, findDeviceById } from './devices.ts';
 import { listControllers, pruneReports, readAnswered, readLedgers, readQuestions, readUnattended, type AnsweredFile } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
-import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, ledgerSources, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
+import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, ledgerSources, mark, processedPage, type MarkResult, type Sources, unattendedSources, withRecorded } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openLog, type SentLog } from './sent-log.ts';
@@ -408,7 +408,7 @@ function createBoard(): Board {
 						? settleAnswers(log, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
 						: null,
 					readLedgers(config, ledgerSources(bound, reports.files)),
-					readUnattended(config, bound.map((binding) => ({ workspace: binding.workspace, sessionId: binding.session_id })))
+					readUnattended(config, unattendedSources(bound, reports.files, config.now()))
 				]);
 				return [helper, reports, answered, settled, log, ledgers, unattended] as const;
 			}),
