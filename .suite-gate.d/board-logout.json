@@ -1,0 +1,20 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/routes/api/device/**",
+        "board/src/lib/server/devices.ts",
+        "board/src/lib/server/auth.ts",
+        "board/src/lib/server/test-device.ts",
+        "board/src/hooks.server.ts",
+        "board/src/lib/components/Settings.svelte",
+        "board/tests/server/logout.test.ts",
+        "board/tests/browser/logout-page.test.ts"
+      ],
+      "tests": [
+        "board/tests/server/logout.test.ts",
+        "board/tests/browser/logout-page.test.ts"
+      ]
+    }
+  ]
+}

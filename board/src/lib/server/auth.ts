@@ -17,3 +17,9 @@ export function setDeviceCookie(cookies: Cookies, token: string, secure: boolean
 		maxAge: maxAgeSeconds
 	});
 }
+
+/** Remove the login cookie, with the attributes it was set with: a `Secure` removal sent over plain
+ *  http would be ignored. */
+export function clearDeviceCookie(cookies: Cookies, secure: boolean): void {
+	cookies.delete(DEVICE_COOKIE, { path: '/', httpOnly: true, sameSite: 'strict', secure });
+}

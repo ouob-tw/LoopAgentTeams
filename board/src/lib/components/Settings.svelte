@@ -1,10 +1,13 @@
 <script lang="ts">
-	// Four groups: this device's settings (theme, overall size, smallest text size), its pushes, the board's, which every
-	// device shares (the mode a new controller starts in, how the usage line reads, whether conversations
-	// open translated, the passkeys that log in), and the global pre-authorization file.
+	// Five groups: this device's settings (theme, overall size, smallest text size), its pushes, its login
+	// (登出), the board's, which every device shares (the mode a new controller starts in, how the usage
+	// line reads, whether conversations open translated, the passkeys that log in), and the global
+	// pre-authorization file.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import TestDenied from './TestDenied.svelte';
 	import { onMount } from 'svelte';
+	import LogOut from '@lucide/svelte/icons/log-out';
+	import { request } from '#lib/board/api.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { MIN_FONT, SCALE, SCREEN_FONT } from '#lib/board/prefs.ts';
 	import { registerSettings } from '#lib/board/settings-link.ts';
@@ -36,6 +39,20 @@
 	}
 
 	onMount(() => registerSettings(open));
+
+	let loggingOut = $state(false);
+	let logoutFailed = $state(false);
+
+	/** End this device's login on the server, then go to the login screen: replaced, so going back
+	 *  does not return to the board. A 401 means it was over already, and the page reloads to login. */
+	async function logout() {
+		loggingOut = true;
+		logoutFailed = false;
+		const result = await request('/api/device', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: '{}' });
+		if (result.ok) return location.replace('/login');
+		loggingOut = false;
+		logoutFailed = !result.unpaired;
+	}
 </script>
 
 <!-- A click on the dialog element itself is a click on the area around its content. -->
@@ -125,6 +142,18 @@
 		<section class="group">
 			<h3>通知</h3>
 			<PushSettings bind:this={push} />
+		</section>
+
+		<section class="group">
+			<h3>登入</h3>
+			<div class="choices">
+				<button class="logout" disabled={loggingOut} onclick={() => void logout()}>
+					<LogOut size="1em" aria-hidden="true" />{loggingOut ? '登出中…' : '登出'}
+				</button>
+			</div>
+			{#if logoutFailed}
+				<p class="failed" role="alert">沒有登出，請再試一次。</p>
+			{/if}
 		</section>
 
 		<section class="group">
@@ -219,6 +248,19 @@
 		min-width: 3.5rem;
 		font-family: var(--mono);
 		text-align: center;
+	}
+	/* A phone's smallest tap target at every overall size: it ends the login, so a finger must not
+	   miss it for a neighbour. */
+	.logout {
+		min-height: max(44px, 2.75rem);
+		display: inline-flex;
+		gap: 0.35rem;
+		align-items: center;
+	}
+	.failed {
+		margin: 0;
+		color: var(--danger);
+		font-size: max(1rem, var(--min-font, 0px));
 	}
 	.note {
 		margin: 0.35rem 0 0;
