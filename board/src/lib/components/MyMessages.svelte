@@ -1,8 +1,9 @@
 <script lang="ts">
 	// 「我說過的話」: what the user said in the whole conversation, newest first. It never shows on
-	// its own: a mouse reaching the window's right edge, or a finger swiping left from that edge,
-	// brings it up flush right and centred, over nothing but the page; it goes away when the mouse
-	// leaves it, or on a pick or a touch outside. A pick is handed to the conversation, which
+	// its own: a mouse over the long upright bar at the window's right edge, or a tap on it, brings it up
+	// flush right beside the bar, over nothing but the page; it goes away when the mouse leaves it,
+	// or on a pick or a touch outside. Held for half a second, the bar is dragged up and down the
+	// edge, and where it was let go is kept in this browser. A pick is handed to the conversation, which
 	// scrolls to it, loading earlier parts first when it is not there yet.
 	import { createRequest } from '#lib/board/api.ts';
 	import type { MyMessage, MyMessagesUpdate } from '#lib/board/my-messages.ts';
@@ -34,18 +35,36 @@
 
 	/** How soon the list asks again while the server is still reading the older part. */
 	const MORE_MS = 600;
-	/** The strip at the window's right edge that brings the list up, in px. */
+	/** The strip at the window's right edge that keeps the open list open, in px. */
 	const EDGE = 8;
+	/** How long the bar is held before it can be dragged, in ms. */
+	const HOLD_MS = 500;
+	/** How far a finger may wander while holding before it is not a hold, in px. */
+	const WANDER = 10;
+	const BAR_KEY = 'lat-board-my-messages-bar';
 	/** How far around the open list the mouse may stray without closing it, in px. */
 	const MARGIN = 24;
-	/** A touch starting this close to the right edge may be a swipe that brings the list up, in px. */
-	const SWIPE_START = 24;
-	/** How far left a finger must move to bring it up, in px. */
-	const SWIPE_DISTANCE = 40;
 	let open = $state(false);
 	/** The width of the scrollbar at the window's right edge, which the open list leaves free, in px. */
 	let gap = $state(0);
 	let aside = $state<HTMLElement>();
+
+	/** Where the bar's centre is, as a part of the window's height: 0 the top, 1 the bottom. */
+	function stored(): number {
+		try {
+			const saved = localStorage.getItem(BAR_KEY);
+			const value = Number(saved);
+			if (saved?.trim() && Number.isFinite(value) && value >= 0 && value <= 1) return value;
+		} catch {
+			// Storage not available: the middle.
+		}
+		return 0.5;
+	}
+	let place = $state(stored());
+	let dragging = $state(false);
+	/** The bar's width in px, which the open list leaves free; its height is `--bar-h` in the style. */
+	let barW = $state(0);
+	let barH = $state(0);
 
 	let messages = $state<MyMessage[] | null>(null);
 	let problem = $state<string | null>(null);
@@ -70,6 +89,17 @@
 		} else problem = result.value.reason;
 	}
 
+	// The scrollbar is known before the list opens, so the bar sits left of it: asked at the start, on a
+	// resize and after each change of the conversation (which may be what made it scroll).
+	function measure() {
+		gap = scrollbar();
+	}
+	$effect(() => {
+		void version;
+		const timer = setTimeout(measure, 100);
+		return () => clearTimeout(timer);
+	});
+
 	let readFor: string | undefined;
 	// Read when shown, and again after each change of the conversation, a moment later so a burst is one read.
 	$effect(() => {
@@ -89,6 +119,7 @@
 		return () => clearTimeout(timer);
 	});
 	$effect(() => () => void reads++);
+	$effect(() => () => clearTimeout(holdTimer));
 
 	function pick(seq: number) {
 		open = false;
@@ -101,7 +132,8 @@
 	// (the list touches the edge or the scrollbar, so there is no gap to fall through; over the scrollbar is inside too): nothing flickers.
 	/** How wide the scrollbar is at the window's right edge, in the middle of its height: the page's or the scrolling area's under it. */
 	function scrollbar(): number {
-		let element: Element | null = document.elementFromPoint(innerWidth - 1, innerHeight / 2);
+		// Not the bar or the list, which sit there too.
+		let element: Element | null = document.elementsFromPoint(innerWidth - 1, innerHeight / 2).find((hit) => !hit.closest('.bar, .mine')) ?? null;
 		while (element && element !== document.documentElement) {
 			const width = (element as HTMLElement).offsetWidth - element.clientWidth;
 			if (width > 4 && element.scrollHeight > element.clientHeight) return width;
@@ -110,39 +142,104 @@
 		return innerWidth - document.documentElement.clientWidth;
 	}
 	function moved(event: PointerEvent) {
-		if (event.pointerType !== 'mouse') return;
-		const atEdge = event.clientX >= innerWidth - EDGE;
-		if (!open) {
-			// A button held is a drag, of the scrollbar for one: it never brings the list up.
-			if (atEdge && event.buttons === 0) {
-				gap = scrollbar();
-				open = true;
-			}
-			return;
-		}
-		// The whole scrollbar counts as the edge, not only its outer EDGE px.
-		if (atEdge || event.clientX >= innerWidth - gap || !aside) return;
+		if (event.pointerType !== 'mouse' || !open || dragging) return;
+		// The whole scrollbar and the bar's column count as the edge, not only its outer EDGE px.
+		if (event.clientX >= innerWidth - EDGE || event.clientX >= innerWidth - gap - barW || !aside) return;
 		const box = aside.getBoundingClientRect();
 		if (event.clientX < box.left - MARGIN || event.clientY < box.top - MARGIN || event.clientY > box.bottom + MARGIN) open = false;
 	}
-	let swipeFrom: number | null = null;
 	function touched(event: TouchEvent) {
-		const x = event.touches[0].clientX;
-		swipeFrom = x > innerWidth - SWIPE_START ? x : null;
-		if (open && !aside?.contains(event.target as Node)) open = false;
+		if (open && !aside?.contains(event.target as Node) && !(event.target as Element).closest?.('.bar')) open = false;
 	}
-	function swiped(event: TouchEvent) {
-		if (swipeFrom !== null && swipeFrom - event.touches[0].clientX > SWIPE_DISTANCE) {
-			gap = scrollbar();
-			open = true;
-			swipeFrom = null;
+
+	// The bar: the mouse over it opens the list; a tap on it toggles the list; held for HOLD_MS it is dragged.
+	let holdTimer: ReturnType<typeof setTimeout> | undefined;
+	let press: { id: number; x: number; y: number; last: number; grab: number; wasOpen: boolean; held: boolean } | null = null;
+	function enter(event: PointerEvent) {
+		// A button held is a drag, of the scrollbar for one: it never brings the list up.
+		if (event.pointerType !== 'mouse' || event.buttons !== 0 || dragging || open) return;
+		measure();
+		open = true;
+	}
+	function down(event: PointerEvent) {
+		if (event.button !== 0 || press) return;
+		const bar = event.currentTarget as HTMLElement;
+		press = { id: event.pointerId, x: event.clientX, y: event.clientY, last: event.clientY, grab: 0, wasOpen: open, held: false };
+		holdTimer = setTimeout(() => {
+			if (!press) return;
+			// Where the bar is held is where it stays under the pointer: no jump at the first move.
+			const box = bar.getBoundingClientRect();
+			press.grab = box.top + box.height / 2 - press.last;
+			press.held = true;
+			dragging = true;
+			open = false;
+		}, HOLD_MS);
+		bar.setPointerCapture(event.pointerId);
+	}
+	function drag(event: PointerEvent) {
+		if (!press || event.pointerId !== press.id) return;
+		press.last = event.clientY;
+		if (dragging) {
+			// Inside the window, by the bar's own height, as it is drawn.
+			place = Math.min(innerHeight - barH / 2, Math.max(barH / 2, event.clientY + press.grab)) / innerHeight;
+		} else if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > WANDER) {
+			// Moved before the hold: not a hold.
+			clearTimeout(holdTimer);
+			press = null;
+		}
+	}
+	function up(event: PointerEvent) {
+		if (!press || event.pointerId !== press.id) return;
+		clearTimeout(holdTimer);
+		const { held, wasOpen } = press;
+		press = null;
+		if (held) {
+			dragging = false;
+			try {
+				localStorage.setItem(BAR_KEY, String(place));
+			} catch {
+				// Not kept; the bar stays where it was let go until the page is closed.
+			}
+		} else if (event.type === 'pointerup') {
+			// A tap: a finger toggles the list; the mouse, already over the bar, only brings it up when it is closed.
+			if (wasOpen && event.pointerType !== 'mouse') open = false;
+			else if (!wasOpen) {
+				measure();
+				open = true;
+			}
 		}
 	}
 </script>
 
-<svelte:window onkeydown={keys} onpointermove={moved} ontouchstart={touched} ontouchmove={swiped} />
+<svelte:window onkeydown={keys} onpointermove={moved} onresize={measure} ontouchstart={touched} />
 
-<aside class="mine" bind:this={aside} class:open style:right="{gap}px" aria-label="我說過的話" data-block="my-messages">
+<div
+	class="bar"
+	bind:offsetWidth={barW}
+	bind:offsetHeight={barH}
+	role="button"
+	tabindex="0"
+	aria-label="我說過的話"
+	onkeydown={(event) => {
+		if (event.key !== 'Enter' && event.key !== ' ') return;
+		event.preventDefault();
+		measure();
+		open = !open;
+	}}
+	class:dragging
+	style:right="{gap}px"
+	style:top="clamp(var(--bar-h) / 2, {place * 100}%, 100% - var(--bar-h) / 2)"
+	data-block="my-messages-bar"
+	onpointerenter={enter}
+	onpointerdown={down}
+	onpointermove={drag}
+	onpointerup={up}
+	onpointercancel={up}
+	onmousedown={(event) => event.preventDefault()}
+	oncontextmenu={(event) => event.preventDefault()}
+></div>
+
+<aside class="mine" bind:this={aside} class:open style:right="{gap + barW}px" style:top="{place * 100}%" style:transform="translateY(-{place * 100}%)" aria-label="我說過的話" data-block="my-messages">
 	{#if open}
 	<h3>我說過的話</h3>
 	{#if jumping !== null}
@@ -187,7 +284,7 @@
 </aside>
 {#if !open && jumping !== null}
 	<!-- The list is closed by the pick: where the jump is, and why it stopped, shows at the edge. -->
-	<p class="chip" role="status" style:right="{gap}px">
+	<p class="chip" role="status" style:right="{gap + barW}px">
 		{#if failure}
 			更早的紀錄載入失敗：{failure}
 			<button type="button" class="retry" onclick={onretry}>重試</button>
@@ -198,16 +295,59 @@
 {/if}
 
 <style>
-	/* Flush right and centred in the window, as tall as its rows need and no taller than the window;
-	   no overlay, no animation. Shown only while open. */
+	/* The long upright bar at the window's right edge, like a scrollbar: the only place that brings
+	   the list up. --bar-w by --bar-h, taller than wide, flush with the right edge; where a finger is
+	   the pointer it is as wide as a fingertip, drawn as the same 12px handle at its right. */
+	.bar {
+		--bar-w: 12px;
+		--bar-h: 110px;
+		position: fixed;
+		z-index: 41;
+		width: var(--bar-w);
+		height: var(--bar-h);
+		transform: translateY(-50%);
+		cursor: grab;
+		user-select: none;
+		-webkit-user-select: none;
+		-webkit-touch-callout: none;
+		touch-action: none;
+	}
+	/* The handle: 12px wide, rounded on the left, a dot grip to show it can be dragged. */
+	.bar::after {
+		content: '';
+		position: absolute;
+		inset: 0 0 0 auto;
+		width: 12px;
+		box-sizing: border-box;
+		border: 1px solid var(--line);
+		border-right: 0;
+		border-radius: 6px 0 0 6px;
+		background-color: var(--surface);
+		background-image: radial-gradient(circle, var(--muted) 1.4px, transparent 1.6px);
+		background-size: 12px 8px;
+		background-position: center;
+	}
+	.bar:hover::after,
+	.bar.dragging::after {
+		border-color: var(--accent);
+	}
+	.bar.dragging {
+		cursor: grabbing;
+	}
+	@media (pointer: coarse) {
+		.bar {
+			--bar-w: 2.75rem;
+		}
+	}
+	/* Flush right beside the bar, as tall as its rows need and no taller than the window, lined up
+	   with the bar's height (the top edge at the window's top when the bar is, the bottom edge at
+	   the bottom when it is); no overlay, no animation. Shown only while open. */
 	.mine {
 		position: fixed;
-		top: 50%;
-		transform: translateY(-50%);
 		z-index: 40;
 		display: none;
 		flex-direction: column;
-		width: min(20rem, calc(100vw - 2rem));
+		width: min(20rem, calc(100vw - 5rem));
 		max-height: 100dvh;
 		background: var(--surface);
 		border: 1px solid var(--line);
@@ -308,7 +448,7 @@
 		top: 50%;
 		transform: translateY(-50%);
 		z-index: 40;
-		max-width: calc(100vw - 2rem);
+		max-width: calc(100vw - 4rem);
 		margin: 0;
 		padding: 0.5rem 0.9rem;
 		border: 1px solid var(--line);
