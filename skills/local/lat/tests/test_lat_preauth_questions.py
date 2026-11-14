@@ -39,6 +39,10 @@ class PreauthQuestionTests(unittest.TestCase):
         self.reports.mkdir()
         # A duty on record, so DECIDE Stops are not held for the duty check.
         (self.reports / f'{SESSION}.duty.json').write_text('{"text": "t", "expected": "e"}')
+        # A goal draft newer than any ledger row, so Stops are not held for the draft check.
+        draft = self.work / '.lat' / 'unattended' / f'{SESSION}-r1.draft.json'
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text('{"goal": "g", "done": ["d"], "at": "2999-01-01T00:00:00+00:00"}')
         self.decision = self.decisions / 'LAT-P.md'
         self.decision.write_text(RECORD)
         self.source = self.root / 'question.md'
