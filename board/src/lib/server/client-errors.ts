@@ -20,7 +20,7 @@ export const MAX_CLIENT_ERROR_CHARS = 64 * 1024;
 export const MAX_FRAMES = 30;
 export const MAX_USER_AGENT = 500;
 
-const TRUNCATED = '…[truncated]';
+export const TRUNCATED = '…[truncated]';
 
 const KINDS = new Set(['handleError', 'error', 'unhandledrejection']);
 const TYPES = new Set([

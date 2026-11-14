@@ -5,6 +5,8 @@
 // is copied into it: no password, code, cookie, token or WebAuthn answer. See docs/lat-board.md.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequestEvent } from '@sveltejs/kit';
+import type { PasskeyFlow } from '../board/passkey-here.ts';
+import { MAX_USER_AGENT, TRUNCATED } from './client-errors.ts';
 import { log } from './log.ts';
 
 export type AuthEvent =
@@ -18,10 +20,6 @@ export type AuthEvent =
 
 type AuthResult = 'start' | 'success' | 'failure';
 
-/** A longer user agent is cut to this many characters. */
-export const MAX_USER_AGENT = 500;
-const TRUNCATED = '…[truncated]';
-
 const LOGGER = 'board.login';
 
 /** Who an event is about: the browser's own address, its device when there is one, its user agent. */
@@ -32,7 +30,7 @@ interface Who {
 }
 
 /** What a route adds to its line: the device it logged in, the passkey it used, why a passkey failed. */
-export type Note = { device_id?: string; passkey_id?: string; cause?: string };
+export type LineFields = { device_id?: string; passkey_id?: string; cause?: string };
 
 /** The event a request is handling and who sent it, for the lock line written deep inside it. */
 const current = new AsyncLocalStorage<{ event: AuthEvent; who: Who }>();
@@ -59,22 +57,43 @@ async function reasonOf(response: Response): Promise<string> {
 
 /** A route handler that writes one `name` line for each request it answers: `success` (or `start`
  *  for a step that only begins the event) for a 2xx or 3xx, `failure` with the reason for anything
- *  else. `fields` are fixed fields of every line, such as where a passkey is registered from. */
+ *  else, `exception` when the handler throws (hooks.server.ts logs the error itself). `fields` are
+ *  fixed fields of every line, such as where a passkey is registered from. */
 export function audited<E extends RequestEvent>(
 	name: AuthEvent,
-	handler: (event: E, note: Note) => Response | Promise<Response>,
+	handler: (event: E, note: LineFields) => Response | Promise<Response>,
 	{ start = false, fields = {} }: { start?: boolean; fields?: Record<string, string> } = {}
 ): (event: E) => Promise<Response> {
 	return async (event) => {
 		const who = whoOf(event);
-		const note: Note = {};
-		const response = await current.run({ event: name, who }, () => handler(event, note));
-		const { device_id, ...rest } = note;
-		const line = { ...who, device_id: device_id ?? who.device_id };
-		if (response.status < 400) write(name, start ? 'start' : 'success', line, { ...fields, ...rest });
-		else write(name, 'failure', line, { ...fields, reason: await reasonOf(response), ...rest });
+		const note: LineFields = {};
+		const line = () => {
+			const { device_id, ...rest } = note;
+			return [{ ...who, device_id: device_id ?? who.device_id }, { ...fields, ...rest }] as const;
+		};
+		let response: Response;
+		try {
+			response = await current.run({ event: name, who }, () => handler(event, note));
+		} catch (error) {
+			const [whose, extra] = line();
+			write(name, 'failure', whose, { ...extra, reason: 'exception' });
+			throw error;
+		}
+		const [whose, extra] = line();
+		if (response.status < 400) write(name, start ? 'start' : 'success', whose, extra);
+		else write(name, 'failure', whose, { ...extra, reason: await reasonOf(response) });
 		return response;
 	};
+}
+
+/** Why a passkey login did not pass, for its line's `cause`; undefined when it passed. `challenge`
+ *  is false when the browser had not asked for one first. */
+export function passkeyCause(check: { site: unknown; passkey: unknown; challenge: boolean; counter: number | null; right: boolean }): string | undefined {
+	if (check.right) return undefined;
+	if (!check.site) return 'passkey_unavailable';
+	if (!check.passkey) return 'unknown_passkey';
+	if (!check.challenge) return 'no_challenge';
+	return check.counter === null ? 'not_verified' : 'counter_rejected';
 }
 
 /** A source was locked out by the request being handled: one warning line, with the event that
@@ -94,8 +113,11 @@ export const BROWSER_FLOWS = {
 	alone: { event: 'login_passwordless' },
 	host_code: { event: 'passkey_enroll', via: 'host_code' },
 	settings: { event: 'passkey_enroll', via: 'settings' }
-} as const satisfies Record<string, { event: AuthEvent; via?: string }>;
-export type BrowserFlow = keyof typeof BROWSER_FLOWS;
+} as const satisfies Record<PasskeyFlow, { event: AuthEvent; via?: string }>;
+
+/** Reports of the browser's refusal logged in a minute from every address together, so changing
+ *  addresses cannot flood the journal. */
+export const ALL_PASSKEY_ERRORS_PER_MINUTE = 100;
 
 /** A longer report of the browser's refusal is refused: it is a flow and an error name. */
 export const MAX_PASSKEY_ERROR_CHARS = 1024;
@@ -115,7 +137,7 @@ const BROWSER_ERRORS = new Set([
 
 /** The page says the browser refused a passkey: a `failure` line for the flow's event, with the
  *  error's name from the list above as the reason. */
-export function logBrowserRefusal(event: Pick<RequestEvent, 'locals' | 'request'>, flow: BrowserFlow, name: unknown): void {
+export function logBrowserRefusal(event: Pick<RequestEvent, 'locals' | 'request'>, flow: PasskeyFlow, name: unknown): void {
 	const { event: auth, ...fields } = BROWSER_FLOWS[flow];
 	const reason = typeof name === 'string' && BROWSER_ERRORS.has(name) ? name : 'other';
 	write(auth, 'failure', whoOf(event), { ...fields, reason, source: 'browser' });

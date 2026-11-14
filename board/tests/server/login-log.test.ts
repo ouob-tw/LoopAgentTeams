@@ -7,7 +7,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MAX_PASSKEY_ERROR_CHARS } from '../../src/lib/server/auth-log.ts';
+import { ALL_PASSKEY_ERRORS_PER_MINUTE, MAX_PASSKEY_ERROR_CHARS } from '../../src/lib/server/auth-log.ts';
 import { CLIENT_ERRORS_PER_WINDOW } from '../../src/lib/server/client-errors.ts';
 import { PASSKEYS_FILE } from '../../src/lib/server/passkeys.ts';
 import { logged, PASSWORD, startFixture, until, type Fixture } from '../harness.ts';
@@ -239,12 +239,41 @@ describe("the browser's refusals the pages report", () => {
 		expect((await report({ flow: 'alone', name: 'NotAllowedError' }, source, { headers: { 'content-type': 'application/xml' } })).status).toBe(415);
 		expect((await report({ flow: 'alone', name: 'NotAllowedError' }, source, { headers: { 'sec-fetch-site': 'cross-site' } })).status).toBe(403);
 		expect((await report({ flow: 'alone', name: 'x'.repeat(MAX_PASSKEY_ERROR_CHARS) }, source)).status).toBe(413);
+		// Sent in pieces with no length given: refused once it passes the limit.
+		const chunks = [`{"flow":"alone","name":"`, 'x'.repeat(MAX_PASSKEY_ERROR_CHARS), '"}'];
+		const streamed = new ReadableStream({
+			pull(controller) {
+				const chunk = chunks.shift();
+				if (chunk === undefined) controller.close();
+				else controller.enqueue(new TextEncoder().encode(chunk));
+			}
+		});
+		const piecewise = await fixture
+			.fetch('/api/login/passkey-error', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json', 'x-forwarded-for': source },
+				body: streamed,
+				// @ts-expect-error: Bun's fetch takes a streamed body without `duplex`, Node's types ask for it.
+				duplex: 'half'
+			})
+			.then((response) => response.status);
+		expect(piecewise).toBe(413);
 		for (let i = 0; i < CLIENT_ERRORS_PER_WINDOW; i++) expect((await report({ flow: 'alone', name: 'NotAllowedError' }, source)).status).toBe(204);
 		expect((await report({ flow: 'alone', name: 'NotAllowedError' }, source)).status).toBe(429);
 		// Another address still gets its own.
 		expect((await report({ flow: 'alone', name: 'NotAllowedError' }, '198.51.100.32')).status).toBe(204);
 		const logins = await lines('login_passwordless', CLIENT_ERRORS_PER_WINDOW + 1);
 		expect(logins.filter((line) => line.client_ip === source)).toHaveLength(CLIENT_ERRORS_PER_WINDOW);
+	});
+
+	test('every address together gets only so many lines a minute', async () => {
+		const statuses: number[] = [];
+		for (let i = 0; i < ALL_PASSKEY_ERRORS_PER_MINUTE + 5; i++) statuses.push((await report({ flow: 'alone', name: 'NotAllowedError' }, `203.0.113.${i % 250}`)).status);
+		expect(statuses.at(-1)).toBe(429);
+		// The earlier tests' reports count in the same minute.
+		const taken = statuses.filter((status) => status === 204).length;
+		expect(taken).toBeLessThan(ALL_PASSKEY_ERRORS_PER_MINUTE);
+		expect(statuses.slice(taken).every((status) => status === 429)).toBe(true);
 	});
 });
 

@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { audited } from '#lib/server/auth-log.ts';
+import { audited, passkeyCause } from '#lib/server/auth-log.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { finishLogin, locked, loginLimit, usePasswordlessChallenge } from '#lib/server/login-steps.ts';
 import { listPasskeys, recordUse, type Passkey } from '#lib/server/passkeys.ts';
@@ -35,10 +35,8 @@ export const POST: RequestHandler = audited('login_passwordless', async ({ reque
 	}
 	const passkey = passkeys.find((candidate) => candidate.credentialId === response.id);
 	note.passkey_id = passkey?.id;
-	if (!passkey) note.cause = 'unknown_passkey';
 	const counter = passkey ? await verifyLogin(site, (challenge) => usePasswordlessChallenge(challenge, config.now()), response, passkey, 'alone') : null;
 	let right = false;
-	if (passkey && counter === null) note.cause ??= 'not_verified';
 	if (counter !== null) {
 		try {
 			right = recordUse(config.stateDir, passkey!.credentialId, counter, config.now());
@@ -48,7 +46,7 @@ export const POST: RequestHandler = audited('login_passwordless', async ({ reque
 			return json({ error: 'passkeys_unreadable' }, { status: 500 });
 		}
 	}
-	if (counter !== null && !right) note.cause = 'counter_rejected';
+	note.cause = passkeyCause({ site, passkey, challenge: true, counter, right });
 	const lockedFor = right ? limit.succeeded(source) : limit.failed(source);
 	if (lockedFor) return locked(lockedFor);
 	if (!right) return json({ error: 'passkey_failed' }, { status: 401 });
