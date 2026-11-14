@@ -56,11 +56,19 @@ def ensure_label(repo):
 
 
 def cmd_pick(args):
-    # Held tickets are left out by the search, so the limit only counts tickets that can be picked.
-    issues = json.loads(gh('issue', 'list', '-R', args.repo, '-l', 'ready-for-agent', '--state',
-                           'open', '--search', f'-label:{HOLD}', '--json',
-                           'number,title,labels,createdAt', '--limit', '1000'))
-    picked = order(issues)
+    # One query per tier, oldest first on the server, so no limit can drop a ticket that ranks
+    # above the ones returned; held tickets never come back.
+    issues, excluded = {}, [f'-label:{HOLD}']
+    for tier in (*TIERS, None):
+        labels = ['-l', 'ready-for-agent', *(['-l', tier] if tier else [])]
+        search = ' '.join([*excluded, 'sort:created-asc'])
+        for issue in json.loads(gh('issue', 'list', '-R', args.repo, *labels, '--state', 'open',
+                                   '--search', search, '--json', 'number,title,labels,createdAt',
+                                   '--limit', str(MAX_PICK))):
+            issues.setdefault(issue['number'], issue)
+        if tier:
+            excluded.append(f'-label:{tier}')
+    picked = order(list(issues.values()))
     if args.json:
         print(json.dumps([dict(number=i['number'], title=i['title']) for i in picked],
                          ensure_ascii=False))

@@ -24,7 +24,20 @@ def fail(why):
 if value('-R') != 'ouob-tw/LoopAgentTeams-work':
     fail('wrong repo')
 if args[:2] == ['issue', 'list']:
-    print(json.dumps(state['issues']))
+    # gh's -l (all required) and the search's -label: and sort:created-asc, cut at --limit.
+    wanted = [args[i + 1] for i, arg in enumerate(args) if arg == '-l']
+    words = (value('--search') or '').split()
+    if 'sort:created-asc' not in words:
+        fail('the helper relies on oldest-first order')
+    unknown = [word for word in words if word != 'sort:created-asc' and not word.startswith('-label:')]
+    if unknown:
+        fail(f'unknown search words {unknown}')
+    banned = [word[len('-label:'):] for word in words if word.startswith('-label:')]
+    found = [issue for issue in state['issues']
+             if all(name in [l['name'] for l in issue['labels']] for name in wanted)
+             and not any(name in [l['name'] for l in issue['labels']] for name in banned)]
+    found.sort(key=lambda issue: issue['createdAt'])
+    print(json.dumps(found[:int(value('--limit'))]))
 elif args[:2] == ['label', 'list']:
     print(json.dumps([{'name': name} for name in state['labels']]))
 elif args[:2] == ['label', 'create'] and len(args) > 2:
@@ -88,12 +101,18 @@ class NightlyTickets(unittest.TestCase):
         # Same tier and same time: the lower number first.
         self.assertEqual([item['number'] for item in picked], [12, 11, 14])
         self.assertEqual(self.run_tool('pick').splitlines()[0], '#12 ticket 12')
-        listed = self.gh_calls()[0]
-        self.assertEqual(listed[:2], ['issue', 'list'])
-        self.assertIn('ready-for-agent', listed)
-        self.assertIn('open', listed)
-        # Held tickets are excluded by the query itself, not only after the limit cut the list.
-        self.assertEqual(listed[listed.index('--search') + 1], '-label:nightly-hold')
+        # Held tickets and lower tiers' labels are excluded by each query itself.
+        searches = [call[call.index('--search') + 1] for call in self.gh_calls()[:3]]
+        self.assertEqual(searches, ['-label:nightly-hold sort:created-asc',
+                                    '-label:nightly-hold -label:suite-failure sort:created-asc',
+                                    '-label:nightly-hold -label:suite-failure -label:bug '
+                                    'sort:created-asc'])
+
+    def test_a_higher_tier_is_found_however_many_older_lower_tier_tickets_there_are(self):
+        older = [issue(100 + n, f'2026-01-{n + 1:02d}T00:00:00Z', 'enhancement') for n in range(9)]
+        self.given([*older, issue(200, '2026-11-14T00:00:00Z', 'suite-failure')], ['nightly-hold'])
+        picked = json.loads(self.run_tool('pick', '--json'))
+        self.assertEqual([item['number'] for item in picked], [200, 100, 101])
 
     def test_pick_with_fewer_candidates_prints_what_there_is(self):
         self.given([issue(20, '2026-11-01T00:00:00Z'),
