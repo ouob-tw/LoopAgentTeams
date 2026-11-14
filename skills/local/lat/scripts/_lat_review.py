@@ -13,6 +13,7 @@ status and the update time, which the body hash leaves out.
 import json
 from pathlib import Path
 import re
+import subprocess
 
 from lat_decision_status import (DELEGATED, PARKED, read_decision_session,
                                  read_decision_status)
@@ -130,7 +131,8 @@ def decision_item(path, lines, kind, answer, workspace):
         why = reason or why or (f'參謀結論 {advisor}' if advisor else '紀錄沒寫原因')
         revert = '按「回覆」寫下你的決定；主控記成你的答覆後解除擱置'
     elif kind == 'proxy-confirmed':
-        did = '兩位參謀拿你的原話對照驗收條件，代你確認開工' + (f'：{question}' if question else '')
+        did = (chosen(lines, identifier, question, decision) if decision else
+               '兩位參謀拿你的原話對照驗收條件，代你確認開工' + (f'：{question}' if question else ''))
         rows = section_lines(lines, '驗收對照')
         evidence += [row.lstrip('- ') for row in rows]
         revert = '按「推翻」寫明哪條驗收條件不對；這張票只合併到整合分支，推送與部署仍照預先授權'
@@ -290,6 +292,26 @@ def same_commit(one, other):
     return len(shorter) >= 7 and longer.startswith(shorter)
 
 
+def merge_commit(repo, target, commit):
+    """The commit the merge of `commit` produced on `target`: the oldest first-parent merge on the
+    way from `commit` to `target`. None when git cannot tell: no repo, no such branch, or a
+    fast-forward (no merge commit exists)."""
+    if not (repo and isinstance(target, str) and isinstance(commit, str)) \
+            or target.startswith('-') or commit.startswith('-'):
+        return None
+    def rev_list(*args):
+        out = subprocess.run(['git', '-C', str(repo), 'rev-list', *args, '--'],
+                             capture_output=True, text=True, timeout=20)
+        return None if out.returncode else out.stdout.split()
+    try:
+        between = rev_list('--merges', '--ancestry-path', f'{commit}..{target}')
+        mainline = set(rev_list('--first-parent', target) or ()) if between else ()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = [sha for sha in between or () if sha in mainline]
+    return found[-1] if found else None
+
+
 def auto_items(path, workspace):
     """(items, problems): one item per auto record of the round, `auto-<line number>`."""
     try:
@@ -316,7 +338,13 @@ def auto_items(path, workspace):
         action, target, commit = entry.get('action'), entry.get('target'), entry.get('commit')
         head = ' '.join(str(part) for part in (action, target, commit) if part)
         if action == 'merge':
-            revert = f'按「推翻」；主控在 {target or "整合分支"} 還原這次合併（{commit}）'
+            merged = merge_commit(entry.get('action_repo') or workspace, target, commit)
+            where = target or '整合分支'
+            revert = (f'按「推翻」；主控在 {where} 還原合併提交 {merged[:12]}'
+                      if merged else
+                      f'按「推翻」；紀錄只存了被合併進來的提交 {commit}，查不到合併提交；'
+                      f'主控在 {where} 用 git log --first-parent --merges 找出併入它的那個合併提交再還原；'
+                      f'若是快轉合併就沒有合併提交，改還原它帶進來的那幾個提交')
         elif action == 'push':
             revert = f'按「推翻」；主控在 {target or "遠端"} 還原這次推送的提交'
         else:
