@@ -4016,6 +4016,7 @@ class SessionTests(unittest.TestCase):
         self.assertIn('本回合已繼續過', json.loads(
             self.stop_hook('Plain message', stop_hook_active=True).stdout)['systemMessage'])
         # Rewriting it unchanged says it was checked.
+        self.past_last_row_second()
         self.draft()
         self.assert_silent(self.stop_hook('Plain message'))
         # A later row asks again; the draft's time is moved back to stand for time passing.
@@ -4023,8 +4024,39 @@ class SessionTests(unittest.TestCase):
         self.ledger('add', '--ticket', '#2', '--stage', 'impl', '--evidence', 'file')
         held = self.draft_held(self.stop_hook('Plain message'))
         self.assertIn(f'第 {first} 列、第 {int(first) + 1} 列', held)
+        self.past_last_row_second()
         self.draft('修好登入頁和註冊頁', '能登入', '能註冊')
         self.assertNotEqual(json.loads(path.read_text())['at'], '2020-01-01T00:00:00+00:00')
+        self.assert_silent(self.stop_hook('Plain message'))
+
+    def last_row_added_at(self):
+        item = json.loads(self.ledger_path().read_text())['items'][-1]
+        return datetime.fromisoformat(item['history'][0]['at'].replace('Z', '+00:00'))
+
+    def past_last_row_second(self):
+        """Wait out the second the last ledger row was added in: a draft written in that same
+        second still counts the row as new."""
+        while datetime.now(timezone.utc).replace(microsecond=0) <= self.last_row_added_at():
+            time.sleep(0.05)
+
+    def test_a_row_added_in_the_same_second_as_the_draft_is_not_missed(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        row = self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file').strip()
+        # The draft was written later in the same whole second the row's time shows.
+        self.seed_draft(at=self.last_row_added_at().replace(microsecond=900000).isoformat())
+        self.assertIn(f'新增了第 {row} 列', self.draft_held(self.stop_hook('Plain message')))
+
+    def test_rows_added_after_the_draft_ask_to_check_it_even_while_a_grant_is_in_effect(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        self.open_grant()
+        self.seed_draft(at='2020-01-01T00:00:00+00:00')
+        row = self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file').strip()
+        self.assertEqual(self.unattended_status()['state'], 'active')
+        self.assertIn(f'新增了第 {row} 列', self.draft_held(self.stop_hook('Plain message')))
+        self.past_last_row_second()
+        self.draft()
         self.assert_silent(self.stop_hook('Plain message'))
 
     def test_draft_check_leaves_other_roles_and_sessions_without_a_record_alone(self):

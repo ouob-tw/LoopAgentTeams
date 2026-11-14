@@ -1667,7 +1667,8 @@ def draft_time(draft):
 def rows_added_after(ledger_path, moment):
     """IDs of ledger rows added after `moment`; an unreadable ledger has none here (the
     delivery check reports it). Ledger times have whole seconds, so a row added in the same
-    second as the draft counts as before it."""
+    second as the draft counts as after it: a row is never missed, at the cost of at most one
+    extra reminder when the draft was rewritten in the second the row was added."""
     ledger = ledger_module()
     store = ledger.Store(Path(ledger_path))
     try:
@@ -1677,22 +1678,24 @@ def rows_added_after(ledger_path, moment):
         return []
     floor = moment.replace(microsecond=0)
     return [item['id'] for item in items
-            if any(entry['action'] == 'add' and ledger.loads_time(entry['at']) > floor
+            if any(entry['action'] == 'add' and ledger.loads_time(entry['at']) >= floor
                    for entry in item['history'])]
 
 
 def draft_stop_check(record):
     """Why this Stop should be held because the round has no goal draft for the board's
-    "開啟無人模式" form, or ledger rows were added after the draft was written; None while
-    a grant is in effect, since then the form is not used to open one."""
+    "開啟無人模式" form (not asked while a grant is in effect, since then the form is not
+    used to open one), or ledger rows were added after the draft was written."""
     if legacy_record(record):
         return None
     result = unattended_module().snapshot(unattended_lat(record), record['session_id'])
-    if result['state'] == 'active' or not result['round_active']:
+    if not result['round_active']:
         return None
     draft = result['draft']
     written = draft_time(draft)
     if written is None:
+        if result['state'] == 'active':
+            return None
         return ('LAT 目標草稿檢查未通過：本輪還沒有可用的目標草稿（沒寫過或讀不出），看板「開啟無人模式」表單沒有內容可預填。'
                 '依使用者的話擬出這一輪的目標與做完條件，執行 '
                 f'`{draft_command(record["workspace"])}`（草稿不是授權），再照原樣結束回合。')
