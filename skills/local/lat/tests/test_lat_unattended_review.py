@@ -217,6 +217,23 @@ class TruthfulTextTests(ReviewCase):
         self.assertIn(merge[:12], revert)
         self.assertNotIn(merged_in[:12], revert)
 
+    def test_a_merge_after_the_recorded_commit_still_finds_the_merge_commit(self):
+        self.grant()
+        self.commit('base')
+        git(self.work, 'checkout', '-q', '-b', 'topic')
+        merged_in = self.commit('topic work')
+        self.commit('later topic work')
+        git(self.work, 'checkout', '-q', 'dev')
+        self.commit('dev work')
+        git(self.work, '-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-ff',
+            'topic', '-m', 'merge topic')
+        merge = subprocess.run(['git', '-C', str(self.work), 'rev-parse', 'HEAD'], check=True,
+                               capture_output=True, text=True).stdout.strip()
+        self.autos(dict(kind='auto', action='merge', target='dev', commit=merged_in[:10],
+                        basis='allow merge dev', result='succeeded'))
+        self.review('update')
+        self.assertIn(merge[:12], self.item('auto-1').split('怎麼推翻：', 1)[1])
+
     def test_an_unknown_merge_commit_says_how_to_find_it(self):
         self.grant()
         self.autos(dict(kind='auto', action='merge', target='dev', commit='b' * 40,

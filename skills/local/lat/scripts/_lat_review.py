@@ -293,25 +293,20 @@ def same_commit(one, other):
 
 
 def merge_commit(repo, target, commit):
-    """The commit the merge of `commit` produced on `target` (a first-parent merge whose merged-in
-    parent is `commit`), or None when git cannot tell: no repo, no such branch, a fast-forward
-    (no merge commit exists) or more than one candidate."""
-    if not (repo and target and commit):
+    """The commit the merge of `commit` produced on `target`: the oldest first-parent merge on the
+    way from `commit` to `target`. None when git cannot tell: no repo, no such branch, or a
+    fast-forward (no merge commit exists)."""
+    if not (repo and isinstance(target, str) and isinstance(commit, str)) \
+            or target.startswith('-') or commit.startswith('-'):
         return None
     try:
-        full = subprocess.run(['git', '-C', str(repo), 'rev-parse', '--verify', '--quiet',
-                               f'{commit}^{{commit}}'], capture_output=True, text=True,
-                              timeout=20).stdout.strip()
         log = subprocess.run(['git', '-C', str(repo), 'rev-list', '--first-parent', '--merges',
-                              '--parents', target, '--'], capture_output=True, text=True,
-                             timeout=20)
+                              '--ancestry-path', f'{commit}..{target}', '--'],
+                             capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError):
         return None
-    if not full or log.returncode:
-        return None
-    found = [fields[0] for fields in (line.split() for line in log.stdout.splitlines())
-             if full in fields[2:]]
-    return found[0] if len(found) == 1 else None
+    found = log.stdout.split()
+    return found[-1] if not log.returncode and found else None
 
 
 def auto_items(path, workspace):
@@ -345,7 +340,8 @@ def auto_items(path, workspace):
             revert = (f'按「推翻」；主控在 {where} 還原合併提交 {merged[:12]}'
                       if merged else
                       f'按「推翻」；紀錄只存了被合併進來的提交 {commit}，查不到合併提交；'
-                      f'主控在 {where} 用 git log --first-parent --merges 找出併入它的那個合併提交再還原')
+                      f'主控在 {where} 用 git log --first-parent --merges 找出併入它的那個合併提交再還原；'
+                      f'若是快轉合併就沒有合併提交，改還原它帶進來的那幾個提交')
         elif action == 'push':
             revert = f'按「推翻」；主控在 {target or "遠端"} 還原這次推送的提交'
         else:
