@@ -1,0 +1,8 @@
+{"map": [
+  {"paths": ["skills/local/lat/tests/cached_script.py"],
+   "tests": ["skills/local/lat/tests/test_lat_session.py", "skills/local/lat/tests/test_lat_ledger.py",
+             "skills/local/lat/tests/test_lat_watch.py", "skills/local/lat/tests/test_lat_dispatch.py",
+             "skills/local/lat/tests/test_lat_preauth.py"]},
+  {"paths": ["skills/local/three-tier-testing/tests/cached_script.py"],
+   "tests": ["skills/local/three-tier-testing/tests/test_suite_gate*.py"]}
+]}
