@@ -1736,42 +1736,29 @@ def ledger_stop_check(record, message):
 # A round where something went wrong gets a /retro before DONE: and deactivate pass.
 RETRO_CONDITIONS = dict(problem='工作總表有問題紀錄', reopen='定版後被甲、乙級發現重開',
                         park='有擱置的列', nudge='停住監控送過催促')
-# Nudges that are not about a stall: an alarm the agent set itself and the cache keep-alive.
-UNPROMPTED_NUDGES = ('alarm-ring', 'cache-keepalive')
-LEDGER_NUDGES = ('ledger-start-missing', 'ledger-estimate-passed')
 
 
 def round_nudges(record):
-    """Evidence lines for each nudge this round's watcher delivered since the round began."""
-    directory = shared_lat_dir(record['workspace']) / 'watch' / record['hcom_name']
+    """Evidence lines for each urging nudge this controller's watcher delivered since the
+    round began, from the watch log that never rotates."""
+    watch = watch_module()
+    path = shared_lat_dir(record['workspace']) / 'watch' / record['hcom_name'] / watch.NUDGE_LOG
     started = record.get('started_at_utc')
     since = datetime.fromisoformat(started).timestamp() if started else 0
+    try:
+        lines = path.read_text(errors='replace').splitlines()
+    except FileNotFoundError:
+        return []
     found = []
-    for path in (directory / 'watch.jsonl.1', directory / 'watch.jsonl'):
+    for number, line in enumerate(lines, 1):
         try:
-            lines = path.read_text(errors='replace').splitlines()
-        except FileNotFoundError:
+            entry = json.loads(line)
+        except ValueError:
             continue
-        for number, line in enumerate(lines, 1):
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(entry, dict) or not isinstance(entry.get('at'), (int, float)) \
-                    or entry['at'] < since:
-                continue
-            kinds = []
-            if entry.get('decision') in LEDGER_NUDGES and entry.get('result') == 'sent':
-                kinds.append(entry['decision'])
-            actions, results = entry.get('actions'), entry.get('action_results')
-            if isinstance(actions, list) and isinstance(results, list) \
-                    and len(actions) == len(results):
-                kinds += [action.get('category') or 'stall'
-                          for action, result in zip(actions, results)
-                          if isinstance(action, dict) and isinstance(result, dict)
-                          and action.get('kind') == 'nudge' and result.get('status') == 'done'
-                          and action.get('category') not in UNPROMPTED_NUDGES]
-            found += [f'催促 {entry.get("agent")}（{kind}，{path} 第 {number} 行）' for kind in kinds]
+        if isinstance(entry, dict) and isinstance(entry.get('at'), (int, float)) \
+                and entry['at'] >= since and isinstance(entry.get('nudges'), list):
+            found += [f'催促 {entry.get("agent")}（{kind}，{path} 第 {number} 行）'
+                      for kind in entry['nudges']]
     return found
 
 

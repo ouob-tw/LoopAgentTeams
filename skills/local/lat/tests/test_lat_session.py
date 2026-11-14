@@ -3819,11 +3819,14 @@ class SessionTests(unittest.TestCase):
         return item
 
     def watch_log(self, *entries):
+        """Log the entries as the watcher does; returns the never-rotated nudge log."""
+        spec = importlib.util.spec_from_file_location('lat_watch_retro', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
         log = self.work / '.lat/watch/orch/watch.jsonl'
-        log.parent.mkdir(parents=True, exist_ok=True)
-        with log.open('a') as stream:
-            stream.writelines(json.dumps(entry) + '\n' for entry in entries)
-        return log
+        for entry in entries:
+            watch.append_log(log, entry)
+        return log.with_name('nudges.jsonl')
 
     @staticmethod
     def nudge(at, category=None, status='done'):
@@ -3892,6 +3895,10 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.retro_triggers(), [
             ('nudge', f'催促 worker（stall，{log} 第 1 行）'),
             ('nudge', f'催促 worker（ledger-estimate-passed，{log} 第 2 行）')])
+        # The rotating watch log keeps one older file; the nudge log keeps the whole round.
+        filler = dict(at=now, agent='worker', actions=[], note='x' * (1024 * 1024 + 1))
+        self.watch_log(filler, filler, filler)
+        self.assertEqual(len(self.retro_triggers()), 2)
 
     def test_done_and_deactivate_hold_a_round_with_triggers_until_retro_done(self):
         self.delivered_round()
@@ -3965,7 +3972,7 @@ class SessionTests(unittest.TestCase):
 
     def test_unreadable_watch_log_refuses_deactivate_but_force_and_handover_only_remind(self):
         self.delivered_round()
-        (self.work / '.lat/watch/orch/watch.jsonl').mkdir(parents=True)
+        (self.work / '.lat/watch/orch/nudges.jsonl').mkdir(parents=True)
         refused = self.deactivate()
         self.assertEqual(refused.returncode, 1)
         self.assertIn('本輪 retro 觸發條件讀不出，拒絕停用', refused.stderr)
