@@ -127,6 +127,55 @@ class CommentRuleTests(CommentCase):
         self.assertEqual(self.commented(), {})
 
 
+class TwoSuitesTests(CommentCase):
+    """Two full suites of one project on the same open ticket are judged one by one."""
+
+    def setUp(self):
+        super().setUp()
+        self.first = self.command
+        self.second = self.command + '; true'  # another command text is another suite
+        self.command = self.second
+        self.run_suite('2026-01-01')
+
+    def run_both(self, day):
+        """A failed run of each suite (no samples) with every speed pinned at 100%."""
+        path = self.state / 'state.json'
+        state = json.loads(path.read_text())
+        for unit in state['cleanup'].values():
+            unit.update(baseline=100, baseline_source='given', samples=[100] * 3, sample_count=3)
+        path.write_text(json.dumps(state))
+        for command in (self.first, self.second):
+            self.command = command
+            self.run_suite(day, code=1)
+
+    def flaky_in(self, command, *names):
+        path = self.state / 'state.json'
+        state = json.loads(path.read_text())
+        [unit] = [u for u in state['cleanup'].values() if u['command'] == command]
+        unit['flaky'] = {f'a.py::{n}': {'file': 'a.py', 'test': n, 'count': 1, 'last': 't'}
+                         for n in names}
+        path.write_text(json.dumps(state))
+
+    def commented_suites(self):
+        return [next(line for line in call[4].splitlines() if line.startswith('- Suite: '))
+                for call in self.comments()]
+
+    def test_each_suite_makes_its_own_first_comment_on_the_ticket(self):
+        self.run_both('2026-02-01')
+        self.assertEqual(len(self.comments()), 2)
+        self.assertEqual(sorted(self.commented_suites()),
+                         sorted(f'- Suite: `{c}` in `.`' for c in (self.first, self.second)))
+
+    def test_one_suite_changing_does_not_make_the_other_comment(self):
+        self.run_both('2026-02-01')
+        self.flaky_in(self.first, 'late')
+        self.run_both('2026-02-02')
+        self.assertEqual(len(self.comments()), 3)
+        self.assertEqual(self.commented_suites()[-1], f'- Suite: `{self.first}` in `.`')
+        self.run_both('2026-02-03')
+        self.assertEqual(len(self.comments()), 3, 'nothing changed in either suite')
+
+
 class OpenedTicketLabelTests(CleanupCase):
     def create_call(self):
         return next(c for c in self.gh_calls() if c[:2] == ['issue', 'create'])

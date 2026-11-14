@@ -216,6 +216,16 @@ class CleanupTicketWarningTests(TrackerBase):
         self.warnings()
         self.assertEqual(sorted((p.name, p.read_bytes()) for p in self.gate_dir.iterdir()), before)
 
+    def test_the_7_day_edge_is_more_than_7_days_not_7_days_or_more(self):
+        created = '2026-11-01T00:00:00Z'
+        self.set_issues({}, cleanup_open={'acme/work:test-cleanup': [{
+            'number': 272, 'html_url': 'https://github.com/acme/work/issues/272',
+            'created_at': created}]})
+        seven = datetime(2026, 11, 8, tzinfo=timezone.utc)
+        self.assertEqual(self.tracker.cleanup_lines('acme/work', self.work, now=seven), [])
+        [line] = self.tracker.cleanup_lines('acme/work', self.work, now=seven + timedelta(seconds=1))
+        self.assertIn('已開 7 天', line)
+
     def test_no_speed_numbers_still_names_the_ticket(self):
         self.cleanup_ticket(8)
         self.ledger_with()
