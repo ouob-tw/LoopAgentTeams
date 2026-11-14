@@ -1,5 +1,8 @@
 // The log line format and the browser-report limit on their own.
-import { expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { CLIENT_ERROR_WINDOW_MS, CLIENT_ERRORS_PER_WINDOW, createClientErrorLimit } from '../../src/lib/server/client-errors.ts';
 import { exceptionFields, logLine, withRequestId } from '../../src/lib/server/log.ts';
 import { redact, secretsOf } from '../../src/lib/server/redact.ts';
@@ -83,6 +86,49 @@ test('an exception SvelteKit reports before the request hook ran is still logged
 		{ message: 'http_error', request_id: 'req-early', path: '/agents', status: 500 }
 	]);
 	expect(written.join('')).not.toContain('tok-early');
+});
+
+// The request hook builds the board from process.env: here it gets a folder of its own and no real
+// hcom, Herdr or other command, never the real board's folder and the tasks due in it (#615).
+const BOARD_KEY = Symbol.for('lat-board');
+const COMMANDS = ['HELPER', 'INJECT', 'HCOM', 'HERDR', 'TIDY', 'TRANSLATE', 'SKILLS', 'CSWAP', 'PD', 'CODEX_MULTI_AUTH', 'CODEX_PROBE'];
+const saved = new Map<string, string | undefined>();
+let boardDir = '';
+
+beforeAll(() => {
+	boardDir = mkdtempSync(join(tmpdir(), 'lat-log-test-'));
+	const env: Record<string, string> = {
+		HOME: join(boardDir, 'home'),
+		XDG_STATE_HOME: join(boardDir, 'state'),
+		XDG_CONFIG_HOME: join(boardDir, 'config'),
+		LAT_BOARD_STATE_DIR: join(boardDir, 'board-state'),
+		LAT_REPORTS_DIR: join(boardDir, 'reports'),
+		LAT_USAGE_DIR: join(boardDir, 'usage'),
+		LAT_BOARD_CONFIG_DIR: join(boardDir, 'board-config'),
+		LAT_BOARD_UPLOAD_DIR: join(boardDir, 'uploads'),
+		LAT_HCOM_PAUSED_DIR: join(boardDir, 'hcom-paused'),
+		LAT_BOARD_ASKS_DIR: join(boardDir, 'board-asks'),
+		HCOM_DIR: join(boardDir, 'hcom'),
+		HERDR_SOCKET_PATH: join(boardDir, 'herdr.sock'),
+		HERDR_CONFIG_PATH: join(boardDir, 'herdr.toml'),
+		CODEX_MULTI_AUTH_DIR: join(boardDir, 'codex-multi-auth'),
+		...Object.fromEntries(COMMANDS.map((name) => [`LAT_BOARD_${name}_COMMAND`, JSON.stringify(['false'])]))
+	};
+	for (const [name, value] of Object.entries(env)) {
+		saved.set(name, process.env[name]);
+		process.env[name] = value;
+	}
+});
+
+afterAll(() => {
+	const global = globalThis as typeof globalThis & { [BOARD_KEY]?: { close(): void } };
+	global[BOARD_KEY]?.close();
+	delete global[BOARD_KEY];
+	for (const [name, value] of saved) {
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+	}
+	rmSync(boardDir, { recursive: true, force: true });
 });
 
 /** What the request hook logs for a response the route gave; /api/login needs no device. */
