@@ -4,7 +4,7 @@
 	import { onMount, tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { BOARD_FOLDER, hostCommand } from '#lib/host-command.ts';
-	import { passkeyBlocked as blockedHere, passkeyRefusal } from '#lib/board/passkey-here.ts';
+	import { passkeyBlocked as blockedHere, passkeyRefusal, reportPasskeyRefusal } from '#lib/board/passkey-here.ts';
 
 	let { data } = $props();
 
@@ -186,6 +186,7 @@
 		try {
 			answer = await startAuthentication({ optionsJSON: await options.json() });
 		} catch (error) {
+			reportPasskeyRefusal(alone ? 'alone' : 'second_step', error);
 			failure = browserRefused(error);
 			sending = false;
 			return;
@@ -230,6 +231,7 @@
 		try {
 			created = await startRegistration({ optionsJSON: options });
 		} catch (error) {
+			reportPasskeyRefusal('host_code', error);
 			failure = browserRefused(error);
 			sending = false;
 			return;

@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { audited } from '#lib/server/auth-log.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { finishLogin, locked, loginLimit, secondStepOpen, takeChallenge } from '#lib/server/login-steps.ts';
 import { listPasskeys, recordUse, type Passkey } from '#lib/server/passkeys.ts';
@@ -8,7 +9,7 @@ import type { RequestHandler } from './$types';
 /** The passkey second step: the browser's answer to the challenge its open step was given, within
  *  5 minutes of the right password. A failed check counts like a wrong password; only a passed one
  *  clears the count and logs the device in. Each challenge is answered once. */
-export const POST: RequestHandler = async ({ request, cookies, locals }) => {
+export const POST: RequestHandler = audited('login_passkey', async ({ request, cookies, locals }, note) => {
 	const { config } = getBoard();
 	const limit = loginLimit(config);
 	const body = await request.json().catch(() => null);
@@ -33,9 +34,13 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
 		return json({ error: 'passkeys_unreadable' }, { status: 500 });
 	}
 	const passkey = passkeys.find((candidate) => candidate.credentialId === response.id);
+	note.passkey_id = passkey?.id;
+	if (!passkey) note.cause = 'unknown_passkey';
 	const site = config.passkeySite;
+	if (passkey && !challenge) note.cause = 'no_challenge';
 	const counter = site && challenge && passkey ? await verifyLogin(site, challenge, response, passkey, 'second step') : null;
 	let right = false;
+	if (passkey && counter === null) note.cause ??= 'not_verified';
 	if (counter !== null) {
 		try {
 			right = recordUse(config.stateDir, passkey!.credentialId, counter, config.now());
@@ -45,9 +50,10 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
 			return json({ error: 'passkeys_unreadable' }, { status: 500 });
 		}
 	}
+	if (counter !== null && !right) note.cause = 'counter_rejected';
 	const lockedFor = right ? limit.succeeded(source) : limit.failed(source);
 	if (lockedFor) return locked(lockedFor);
 	if (!right) return json({ error: 'passkey_failed' }, { status: 401 });
-	finishLogin(config, cookies, locals.https, request.headers.get('user-agent') ?? '', 'passkey');
+	note.device_id = finishLogin(config, cookies, locals.https, request.headers.get('user-agent') ?? '', 'passkey');
 	return json({ loggedIn: true });
-};
+});

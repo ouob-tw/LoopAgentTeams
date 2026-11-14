@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { audited } from '#lib/server/auth-log.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { locked, loginLimit, startEnrollment } from '#lib/server/login-steps.ts';
 import { enrollCodeHash, enrollCodeWorks, listPasskeys, type Passkey } from '#lib/server/passkeys.ts';
@@ -9,7 +10,7 @@ import type { RequestHandler } from './$types';
 /** The start of registering a passkey: the password and the host's registration code, both right,
  *  give the browser what to create. A wrong one counts like a wrong password; right ones neither
  *  count nor clear, as registering logs nothing in. Neither is logged or echoed back. */
-export const POST: RequestHandler = async ({ request, locals }) => {
+export const POST: RequestHandler = audited('passkey_enroll', async ({ request, locals }) => {
 	const { config } = getBoard();
 	const limit = loginLimit(config);
 	const body = await request.json().catch(() => null);
@@ -53,4 +54,4 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	limit.refund(source);
 	const options = await enrollOptions(site, passkeys);
 	return json({ options, enrollment: startEnrollment(options.challenge, { codeHash: enrollCodeHash(code) }, config.now()) });
-};
+}, { start: true, fields: { via: 'host_code' } });

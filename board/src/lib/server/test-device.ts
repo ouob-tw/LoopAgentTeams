@@ -87,7 +87,8 @@ export const TEST_DEVICE_RULES: Record<string, TestRule> = {
 	'POST /api/login/enroll': 'open',
 	'POST /api/login/enroll/options': 'open',
 	'POST /api/login/passwordless': 'open',
-	'POST /api/login/passwordless/options': 'open'
+	'POST /api/login/passwordless/options': 'open',
+	'POST /api/login/passkey-error': 'open'
 };
 
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);

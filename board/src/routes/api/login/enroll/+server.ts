@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { audited } from '#lib/server/auth-log.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { locked, loginLimit, takeEnrollment } from '#lib/server/login-steps.ts';
 import { addPasskey, type Passkey } from '#lib/server/passkeys.ts';
@@ -8,7 +9,7 @@ import type { RequestHandler } from './$types';
 /** The end of registering a passkey: the browser's new passkey, for the registration its
  *  `enrollment` token started. Saving it uses the registration code up. A failed check counts like
  *  a wrong password. Registering logs nothing in. */
-export const POST: RequestHandler = async ({ request, locals }) => {
+export const POST: RequestHandler = audited('passkey_enroll', async ({ request, locals }, note) => {
 	const { config } = getBoard();
 	const limit = loginLimit(config);
 	const body = await request.json().catch(() => null);
@@ -38,5 +39,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 	// The code was used, replaced or ran out while the browser made the passkey.
 	if (!added) return json({ error: 'wrong_enroll_code' }, { status: 401 });
+	note.passkey_id = added.id;
 	return json({ enrolled: true });
-};
+}, { fields: { via: 'host_code' } });

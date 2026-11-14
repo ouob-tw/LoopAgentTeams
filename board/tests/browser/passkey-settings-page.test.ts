@@ -6,7 +6,7 @@
 // and the login page say passkeys do not work there and offer nothing to press; the passkey is
 // deleted after a confirmation; a board without its address says so on both pages. With LAT_BOARD_SHOTS set, each state is saved as a frame.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { sleep, startFixture, type Fixture } from '../harness.ts';
+import { logged, sleep, startFixture, until, type Fixture } from '../harness.ts';
 import { CHROME, holdRequests, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 import { httpsProxy, PROXY_CHROME_ARGS } from '../https-proxy.ts';
 
@@ -17,6 +17,7 @@ const SIZES = [
 
 let browser: Browser | undefined;
 let tab: Tab;
+let authenticatorId = '';
 afterEach(async () => {
 	await browser?.close();
 	browser = undefined;
@@ -64,9 +65,9 @@ async function launch(size: { width: number; height: number }) {
 	tab.screen = `(document.querySelector('dialog[open]') ?? document.querySelector('main'))?.innerText`;
 	await tab.send('Emulation.setDeviceMetricsOverride', { ...size, deviceScaleFactor: 1, mobile: size.width < 761 });
 	await tab.send('WebAuthn.enable');
-	await tab.send('WebAuthn.addVirtualAuthenticator', {
+	({ authenticatorId } = await tab.send('WebAuthn.addVirtualAuthenticator', {
 		options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true }
-	});
+	}));
 }
 
 /** Open the board at `url` as the device with `cookie`, and its settings dialog. */
@@ -141,6 +142,24 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			await shot(tab, `${size.width}-3-settings-listed-dark`);
 			await tab.send('Emulation.setEmulatedMedia', { features: [] });
 
+			// Added again on this device, which already holds it: the browser refuses, the page says
+			// the passkey is already here (not a failure), and the server logs the browser's reason.
+			const loggedFrom = fixture.serverOutput().length;
+			const browserLines = async (message: string) =>
+				until(() => logged(fixture.serverOutput().slice(loggedFrom), message).filter((line) => line.source === 'browser').at(0), 5_000, `the browser's ${message} line`);
+			await clickSteady('dialog[open] section.passkeys button.add');
+			await tab.until(`${SECTION}.querySelector('.here') !== null && ${ADD}.textContent.trim() === '新增 passkey'`, 'the passkey already here');
+			expect(await tab.eval(`${SECTION}.querySelector('.here').textContent.trim()`)).toBe('這個裝置已經有看板的 passkey，登入時直接用它。');
+			expect(await tab.eval(`${SECTION}.querySelector('.failed')`)).toBeNull();
+			expect(await tab.eval(`${ROWS}.length`)).toBe(1);
+			expect(await tab.eval(layoutProblems('dialog[open] section.passkeys'))).toEqual([]);
+			expect(await browserLines('passkey_enroll')).toMatchObject({ result: 'failure', reason: 'InvalidStateError', via: 'settings' });
+			await tab.eval(`${SECTION}.querySelector('.here').scrollIntoView({ block: 'center', behavior: 'instant' })`);
+			await shot(tab, `${size.width}-3b-settings-already-here`);
+			await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+			await shot(tab, `${size.width}-3b-settings-already-here-dark`);
+			await tab.send('Emulation.setEmulatedMedia', { features: [] });
+
 			// Logged out: the login page offers the passkey alone, and it logs in with no password.
 			await tab.send('Network.clearBrowserCookies');
 			await tab.navigate(`${origin}/login`);
@@ -151,6 +170,13 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
 			await shot(tab, `${size.width}-4-login-passkey-dark`);
 			await tab.send('Emulation.setEmulatedMedia', { features: [] });
+			// An authenticator that does not check who holds it is refused by the browser; the page
+			// says so and the server logs the browser's reason.
+			await tab.send('WebAuthn.setUserVerified', { authenticatorId, isUserVerified: false });
+			await tab.pointerClick('[data-action="passkey-alone"]');
+			await tab.until(`document.querySelector('[role="alert"], .failed') !== null`, 'the refused passkey');
+			expect(await browserLines('login_passwordless')).toMatchObject({ result: 'failure', reason: 'NotAllowedError' });
+			await tab.send('WebAuthn.setUserVerified', { authenticatorId, isUserVerified: true });
 			await tab.pointerClick('[data-action="passkey-alone"]');
 			await tab.until(`location.pathname === '/' && JSON.stringify(history.state).includes('depth')`, 'the board');
 			expect(chromeDevices()).toBe(devicesBefore + 1);

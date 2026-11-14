@@ -10,7 +10,7 @@ import { json, type Cookies } from '@sveltejs/kit';
 import { DEVICE_COOKIE, setDeviceCookie } from './auth.ts';
 import type { BoardConfig } from './config.ts';
 import { registerDevice } from './devices.ts';
-import { log } from './log.ts';
+import { logLocked } from './auth-log.ts';
 import { createLoginLimit, fileStore, type LoginLimit } from './login-limit.ts';
 import { hasPasskeys } from './passkeys.ts';
 import { hasTotp } from './totp.ts';
@@ -29,11 +29,11 @@ let limit: LoginLimit | undefined;
 export const locked = (seconds: number) =>
 	json({ error: 'locked', retryAfterSeconds: seconds }, { status: 429, headers: { 'retry-after': String(seconds) } });
 
-/** The one limit every login step counts against. A lock is written down with the browser's own
- *  address; single wrong attempts are not. */
+/** The one limit every login step counts against. A lock is logged once as it starts
+ *  (auth-log.ts); each attempt is logged by its own route. */
 export function loginLimit(config: BoardConfig): LoginLimit {
 	return (limit ??= createLoginLimit(config.loginLockMs, config.now, fileStore(config.stateDir), (source) =>
-		log('WARNING', 'board.login', 'login_locked', { client_ip: source, lock_seconds: config.loginLockMs / 1000 })
+		logLocked(source, config.loginLockMs / 1000)
 	));
 }
 
@@ -130,11 +130,12 @@ export function usePasswordlessChallenge(challenge: string, now: number): boolea
 }
 
 /** A login passed (a second step, or a passkey alone): close any open second step and log the
- *  device in. The caller has already told the limit. */
-export function finishLogin(config: BoardConfig, cookies: Cookies, https: boolean, userAgent: string, step: SecondStep): void {
+ *  device in. The caller has already told the limit. Returns the new device's id. */
+export function finishLogin(config: BoardConfig, cookies: Cookies, https: boolean, userAgent: string, step: SecondStep): string {
 	const token = cookies.get(STEP_COOKIE);
 	if (token) open.delete(hash(token));
 	cookies.delete(STEP_COOKIE, { path: STEP_PATH, httpOnly: true, sameSite: 'strict', secure: https });
-	const { token: deviceToken } = registerDevice(config.stateDir, userAgent, config.now(), step);
+	const { token: deviceToken, device } = registerDevice(config.stateDir, userAgent, config.now(), step);
 	setDeviceCookie(cookies, deviceToken, https);
+	return device.id;
 }
