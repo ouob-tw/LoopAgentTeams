@@ -292,6 +292,7 @@ for (const width of [1280, 390]) {
 		expect(await tab.eval(`location.search`)).toBe(`?alert=${id}`);
 		expect(await tab.eval<string[]>(OVERFLOW)).toEqual([]);
 		await shot(tab, `${width}-ask-8-push-opened`);
+		expect(tab.errors).toEqual([]);
 		await browser?.close();
 		browser = undefined;
 
