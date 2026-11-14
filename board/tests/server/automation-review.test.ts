@@ -340,3 +340,53 @@ test('a Codex checker on a pinned account at 0 switches to one with quota; none 
 	expect(hcomCalls().some((call) => call.args[0] === 'codex')).toBe(false);
 	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
 });
+
+test('a check that ends past midnight, a week’s end or a month’s end settles the period the run started in, and the new period is untouched', async () => {
+	const cases = [
+		{ name: '跨夜', schedule: { type: 'daily' }, start: tpe(2026, 11, 18, 23, 30), end: tpe(2026, 11, 19, 0, 30), period: '2026-11-18', next: tpe(2026, 11, 19, 23, 45) },
+		// 2026-11-15 is a Sunday: the check ends on the Monday, the next week's first day.
+		{ name: '跨週', schedule: { type: 'weekly', fromWeekday: 1, toWeekday: 7 }, start: tpe(2026, 11, 15, 23, 30), end: tpe(2026, 11, 16, 0, 30), period: '2026-W11-09', next: tpe(2026, 11, 16, 23, 45) },
+		{ name: '跨月', schedule: { type: 'monthly', fromDay: 1, toDay: 31 }, start: tpe(2026, 11, 30, 23, 30), end: tpe(2026, 12, 1, 0, 30), period: '2026-11', next: tpe(2026, 12, 1, 23, 45) }
+	];
+	for (const [index, each] of cases.entries()) {
+		rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
+		rmSync(join(dir, 'hcom-added.json'), { force: true });
+		const task = await create({ name: each.name, schedule: each.schedule, time: '23:45', limitMinutes: 120 });
+		hcomPlan([{ name: `auto-b${index}` }, null, { name: `chk-b${index}`, client: 'codex' }]);
+		fixture.setClock(each.start);
+		const started = await doneThenChecking(task, `auto-b${index}`, `chk-b${index}`);
+		expect(started.period).toBe(each.period);
+		// The check is still going when the period turns over.
+		fixture.setClock(each.end);
+		await sleep(500);
+		expect((await runsOf(task.id)).find((run) => run.id === started.id)!.review?.status).toBe('checking');
+		replyAndWait(`chk-b${index}`, '1. PASS: a\n2. PASS: b\n3. PASS: c\nPASS');
+		const done = await checked(task.id, started.id);
+		expect(done).toMatchObject({ period: each.period, status: 'success', review: { status: 'pass' } });
+		// The new period has no run of its own, is not missed and still waits for its set time.
+		const view = await viewOf(task.id);
+		expect(view.runs).toHaveLength(1);
+		expect(view.missed).toEqual([]);
+		expect(view.state).toBe('waiting');
+		expect(view.nextAt).toBe(each.next);
+		expect((await alerts()).some((alert) => alert.runId === started.id)).toBe(false);
+		await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
+	}
+}, 60_000);
+
+test('a check that fails past the boundary leaves the period it started in not done, and that period is not missed either', async () => {
+	const task = await create({ name: '跨月檢查未過', schedule: { type: 'monthly', fromDay: 28, toDay: 30 }, time: '23:45', limitMinutes: 120 });
+	hcomPlan([{ name: 'auto-bf' }, null, { name: 'chk-bf', client: 'codex' }]);
+	fixture.setClock(tpe(2026, 11, 30, 23, 30));
+	const started = await doneThenChecking(task, 'auto-bf', 'chk-bf');
+	// Past the window's last day: the run still holds the period, so it is not missed.
+	fixture.setClock(tpe(2026, 12, 1, 0, 30));
+	await sleep(500);
+	replyAndWait('chk-bf', '1. PASS: a\n2. FAIL: b\n3. PASS: c\nFAIL');
+	const done = await checked(task.id, started.id);
+	expect(done).toMatchObject({ period: '2026-11', review: { status: 'fail' } });
+	const view = await viewOf(task.id);
+	expect(view.missed).toEqual([]);
+	expect(view.state).not.toBe('done');
+	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
+}, 30_000);
