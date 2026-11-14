@@ -1,6 +1,6 @@
 // The 回顧 tab in real browsers on one built board, the real helper and lat-unattended: no tab
 // before a review exists; the tab right after 對話紀錄 with the parked count; the banner with the
-// cross-check, the goal folded and opened to every version, 最該先看, the sections, items folded to
+// cross-check, the goal folded and opened to every version, 最該先看, every section of the file in its order, items folded to
 // a title and one line and opened to their reasons; 回覆 on parked items and 推翻 on the rest;
 // a comment box sending the item's ID, title and words to the controller and into 送出紀錄, and
 // keeping the words when the send fails; the review rewritten by the controller reaching the page
@@ -83,6 +83,27 @@ async function browse(size = WIDE): Promise<Tab> {
 	await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'alpha'`, 'the controller page');
 	return tab;
 }
+/** The review file's `##` sections in order, each with the item IDs it lists (`### <ID>` or `<n>. <ID>（`). */
+function fileSections(file: string) {
+	const sections: { heading: string; ids: string[] }[] = [];
+	for (const line of file.split('\n')) {
+		if (line.startsWith('## ')) sections.push({ heading: line.slice(3), ids: [] });
+		const id = line.match(/^### (\S+) /) ?? line.match(/^\d+\. (\S+?)（/);
+		if (id && sections.length) sections.at(-1)!.ids.push(id[1]);
+	}
+	return sections;
+}
+/** The tab's sections in page order, each with the item IDs in the list that follows its heading. */
+const shownSections = (tab: Tab) =>
+	tab.eval<{ heading: string; ids: string[] }[]>(
+		`[...document.querySelectorAll('${PANEL} [data-heading]')].map((heading) => { const list = heading.nextElementSibling; return { heading: heading.dataset.heading, ids: list?.matches('ul.items') ? [...list.querySelectorAll('[data-item]')].map((entry) => entry.dataset.item) : [] }; })`
+	);
+/** One look per section, its heading scrolled to the middle, numbered in page order. */
+async function sectionShots(tab: Tab, width: string) {
+	const headings = (await shownSections(tab)).map((section) => section.heading);
+	for (const [index, heading] of headings.entries()) await shot(tab, `${width}-review-section-${index + 1}`, { box: `${PANEL} [data-heading="${heading}"]` });
+	await tab.eval('scrollTo(0, 0)');
+}
 const tabNames = (tab: Tab) => tab.eval<string[]>(`[...document.querySelectorAll('.tabs [role="tab"]')].map((tab) => tab.dataset.tab)`);
 /** Type into a textarea the way a user does: the value, then an input event. */
 const type = (tab: Tab, selector: string, value: string) => tab.eval(`(() => { const box = document.querySelector(${JSON.stringify(selector)}); box.value = ${JSON.stringify(value)}; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
@@ -122,9 +143,15 @@ test.skipIf(!CHROME)('the tab follows 對話紀錄 with the parked count; the ba
 	expect(goal).toContain('測試全過');
 	await click(tab, `${PANEL} .goal .line`);
 
-	// Each section is there, 最該先看 first, in the file's order.
-	expect(await tab.eval<string[]>(`[...document.querySelectorAll('${PANEL} h4')].map((h) => h.innerText)`)).toEqual(['最該先看的幾項', '假設', '自動做的動作', '本輪完成的票']);
-	expect(await tab.eval<string[]>(`[...document.querySelectorAll('${PANEL} [data-section="top"] [data-item]')].map((entry) => entry.dataset.item)`)).toEqual(['LAT-P1', 'LAT-P2', 'row-3', 'LAT-PC', 'LAT-AU']);
+	// Every section of the review file, in the file's order, each with every item the file lists
+	// under it: an item in 最該先看 stays in its own section too (the banner heads 擱置等你的事).
+	const file = readFileSync(join(luna.workspace, `.lat/unattended/${luna.session_id}-r1-review.md`), 'utf8');
+	const inFile = fileSections(file);
+	expect(inFile.map((section) => section.heading)).toEqual(['擱置等你的事', '本輪目標與做完條件', '最該先看的幾項', '假設', '代確認的票', '自動做的動作', '本輪完成的票']);
+	expect(await shownSections(tab)).toEqual(inFile);
+	expect(inFile.find((section) => section.heading === '代確認的票')?.ids).toEqual(['LAT-PC']);
+	expect(inFile.find((section) => section.heading === '最該先看的幾項')?.ids).toEqual(['LAT-P1', 'LAT-P2', 'row-3', 'LAT-PC', 'LAT-AU']);
+	await sectionShots(tab, '1280');
 
 	// Folded: a title and one line of 做了; the reasons are not shown. A long line stays one line.
 	for (const id of ['LAT-P1', 'LAT-AU', 'LAT-PC']) {
@@ -213,7 +240,8 @@ test.skipIf(!CHROME)('a review the controller rewrites shows within five seconds
 	await shot(tab, '1280-review-goal-versions', { box: `${PANEL} .goal` });
 	await click(tab, `${PANEL} .goal .line`);
 
-	const total = await tab.eval<number>(`document.querySelectorAll('${PANEL} [data-item]').length`);
+	// An item in 最該先看 is shown twice; the check counts it once.
+	const total = await tab.eval<number>(`new Set([...document.querySelectorAll('${PANEL} [data-item]')].map((entry) => entry.dataset.item)).size`);
 	tool('review', 'verify', '--checker', 'kiwi', '--family', 'gpt', '--total', String(total), '--matched', String(total));
 	await tab.until(`${text(`${PANEL} .banner`)}.includes('Codex 已核對紀錄：${total} 項全相符')`, 'the cross-check shown', 5_000);
 
@@ -233,8 +261,8 @@ test.skipIf(!CHROME)('at 390 wide nothing scrolls sideways and the first two ite
 	await tab.until(`document.querySelector('${item('LAT-P1')}')?.getBoundingClientRect().height > 0`, 'the items shown');
 	await sleep(300);
 	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
-	// No item is listed twice, and no two items share a title.
-	const shown = await tab.eval<string[][]>(`[...document.querySelectorAll('${PANEL} [data-item]')].map((entry) => [entry.dataset.item, entry.querySelector('.title').innerText])`);
+	// Outside 最該先看 no item is listed twice, and no two items share a title.
+	const shown = await tab.eval<string[][]>(`[...document.querySelectorAll('${PANEL} ul.items:not([data-section="top"]) [data-item]')].map((entry) => [entry.dataset.item, entry.querySelector('.title').innerText])`);
 	expect(new Set(shown.map(([id]) => id)).size).toBe(shown.length);
 	expect(new Set(shown.map(([, title]) => title)).size).toBe(shown.length);
 	// The page may scroll, but at its start the first two items are whole above the input row.
@@ -247,6 +275,8 @@ test.skipIf(!CHROME)('at 390 wide nothing scrolls sideways and the first two ite
 	expect(frame.first[0]).toBeGreaterThanOrEqual(0);
 	expect(frame.second[1]).toBeLessThanOrEqual(frame.cmdTop);
 	await shot(tab, '390-review-tab');
+	expect(await shownSections(tab)).toEqual(fileSections(readFileSync(join(luna.workspace, `.lat/unattended/${luna.session_id}-r1-review.md`), 'utf8')));
+	await sectionShots(tab, '390');
 	// Every button and the folded line are touchable and readable.
 	const small = await tab.eval<string[]>(`[...document.querySelectorAll('${PANEL} button')].filter((el) => el.offsetParent !== null).filter((el) => { const box = el.getBoundingClientRect(); return box.height < 44 - 1; }).map((el) => el.innerText)`);
 	expect(small).toEqual([]);

@@ -54,7 +54,7 @@ export interface Review {
 	doneTickets: string[];
 	/** Sources the tool could not read. */
 	problems: string[];
-	/** The sections after 目標 and 最該先看, in the review file's order, with their headings. */
+	/** Every section of the review file, in its order, with its heading. */
 	sections: { key: string; heading: string }[];
 }
 
