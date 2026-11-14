@@ -146,6 +146,11 @@ function readLog(config: BoardConfig, reading: Reading): SentLog | Error {
 }
 
 function createBoard(): Board {
+	// A board built inside `bun test` without its own folder would read and write the real board's,
+	// and its automation would start the real tasks due today (#615).
+	if (process.env.NODE_ENV === 'test' && !process.env.LAT_BOARD_STATE_DIR) {
+		throw new Error('LAT_BOARD_STATE_DIR must be set in tests: a board built from the default folder would use the real board\'s state');
+	}
 	const config = loadConfig();
 	const readReports = createReportReader(config.reportsDir);
 	/** The helper's registry and notification directories; null until Herdr has said where they are,
