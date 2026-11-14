@@ -36,7 +36,16 @@ function parseReport(line: string): Report | null {
 		typeof value.round === 'number' &&
 		typeof value.final === 'boolean' &&
 		TAGS.has(value.tag);
-	return complete ? value : null;
+	return complete ? withBareDone(value) : null;
+}
+
+/** An automation task's controller ends its last turn with a bare `DONE` line, as the board's runner
+ *  asks, and the report hook records only `DONE: <summary>` as one (#638): such a report is a DONE,
+ *  summed up by its message's first line. */
+function withBareDone(report: Report): Report {
+	const lines = report.message.split('\n').map((line) => line.trim()).filter(Boolean);
+	if (report.tag !== '' || lines.at(-1) !== 'DONE') return report;
+	return { ...report, tag: 'DONE', summary: report.summary || (lines.length > 1 ? lines[0] : '') };
 }
 
 /** A controller's `<session-id>.duty.json`, as `lat-session.py duty` writes it. */
