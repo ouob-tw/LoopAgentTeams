@@ -9,14 +9,37 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'nightly-tickets.py'
 FAKE_GH = '''#!/usr/bin/env python3
+# As strict as gh for what the helper uses: unknown calls and labels the repo lacks fail.
 import json, os, sys
-state = json.load(open(os.environ['FAKE_GH_STATE']))
+path = os.environ['FAKE_GH_STATE']
+state = json.load(open(path))
+args = sys.argv[1:]
 with open(os.environ['FAKE_GH_CALLS'], 'a') as calls:
-    calls.write(json.dumps(sys.argv[1:]) + '\\n')
-if sys.argv[1:3] == ['issue', 'list']:
+    calls.write(json.dumps(args) + '\\n')
+def value(flag):
+    return args[args.index(flag) + 1] if flag in args else None
+def fail(why):
+    print(why, file=sys.stderr)
+    sys.exit(1)
+if value('-R') != 'ouob-tw/LoopAgentTeams-work':
+    fail('wrong repo')
+if args[:2] == ['issue', 'list']:
     print(json.dumps(state['issues']))
-elif sys.argv[1:3] == ['label', 'list']:
+elif args[:2] == ['label', 'list']:
     print(json.dumps([{'name': name} for name in state['labels']]))
+elif args[:2] == ['label', 'create'] and len(args) > 2:
+    if args[2] in state['labels']:
+        fail('label already exists')
+    state['labels'].append(args[2])
+    json.dump(state, open(path, 'w'))
+elif args[:2] == ['issue', 'edit'] and args[2].isdigit():
+    label = value('--add-label') or value('--remove-label')
+    if label not in state['labels']:
+        fail(f"'{label}' not found")
+elif args[:2] == ['issue', 'comment'] and args[2].isdigit() and value('--body'):
+    pass
+else:
+    fail('unknown call')
 '''
 
 
@@ -69,6 +92,8 @@ class NightlyTickets(unittest.TestCase):
         self.assertEqual(listed[:2], ['issue', 'list'])
         self.assertIn('ready-for-agent', listed)
         self.assertIn('open', listed)
+        # Held tickets are excluded by the query itself, not only after the limit cut the list.
+        self.assertEqual(listed[listed.index('--search') + 1], '-label:nightly-hold')
 
     def test_pick_with_fewer_candidates_prints_what_there_is(self):
         self.given([issue(20, '2026-11-01T00:00:00Z'),
@@ -82,7 +107,7 @@ class NightlyTickets(unittest.TestCase):
         calls = self.gh_calls()
         self.assertEqual(calls[1][:3], ['label', 'create', 'nightly-hold'])
         self.assertEqual(calls[2][:3], ['issue', 'edit', '42'])
-        self.assertIn('--add-label', calls[2])
+        self.assertEqual(calls[2][calls[2].index('--add-label') + 1], 'nightly-hold')
         self.assertEqual(calls[3][:3], ['issue', 'comment', '42'])
         self.assertIn('Nightly round 2026-11-15', calls[3][calls[3].index('--body') + 1])
 
@@ -97,7 +122,7 @@ class NightlyTickets(unittest.TestCase):
                           '--remove-label', 'nightly-hold'])
         self.run_tool('blocked', '8', '--reason', 'needs your call on the API shape')
         calls = self.gh_calls()
-        self.assertIn('--add-label', calls[-2])
+        self.assertEqual(calls[-2][calls[-2].index('--add-label') + 1], 'nightly-hold')
         body = calls[-1][calls[-1].index('--body') + 1]
         self.assertIn('needs your call on the API shape', body)
         self.assertNotIn('--remove-label', calls[-2])

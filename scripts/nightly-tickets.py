@@ -56,8 +56,10 @@ def ensure_label(repo):
 
 
 def cmd_pick(args):
+    # Held tickets are left out by the search, so the limit only counts tickets that can be picked.
     issues = json.loads(gh('issue', 'list', '-R', args.repo, '-l', 'ready-for-agent', '--state',
-                           'open', '--json', 'number,title,labels,createdAt', '--limit', '500'))
+                           'open', '--search', f'-label:{HOLD}', '--json',
+                           'number,title,labels,createdAt', '--limit', '1000'))
     picked = order(issues)
     if args.json:
         print(json.dumps([dict(number=i['number'], title=i['title']) for i in picked],
