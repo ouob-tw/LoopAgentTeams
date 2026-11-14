@@ -13,6 +13,8 @@ import unittest
 from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-dispatch.py'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cached_script  # noqa: E402
 WATCH = SCRIPT.parent / 'lat-watch.py'
 LIVE = '重建 staging 最多 2 次；最長 45 分鐘；出現 429 即停'
 PREFLIGHT = '測試帳號 qa-01 已登入（主控已核對）；重建失敗時切回上一個映像'
@@ -54,7 +56,7 @@ class DispatchCase(unittest.TestCase):
         self.listing.write_text(json.dumps(self.agents if agents == 'default' else agents))
         env = {**os.environ, 'LAT_DISPATCH_HCOM_LIST': str(self.listing),
                'LAT_LEDGER_HCOM_LIST': str(self.listing), **(env or {})}
-        return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
+        return subprocess.run(cached_script.command(SCRIPT, *args), capture_output=True,
                               text=True, env=env, timeout=60)
 
     def card_args(self, *extra, tag='nanu-impl123', live=LIVE, preflight=PREFLIGHT, visual='無'):
@@ -605,7 +607,7 @@ class LedgerCase(DispatchCase):
             self.review_before_done(args[1])
         self.listing.write_text(json.dumps(self.agents))
         result = subprocess.run(
-            [sys.executable, str(LEDGER), args[0], '--ledger', str(self.ledger), *args[1:]],
+            cached_script.command(LEDGER, args[0], '--ledger', self.ledger, *args[1:]),
             capture_output=True, text=True, env=self.ledger_env, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
@@ -1162,7 +1164,8 @@ class CardCloseMergedTests(LedgerCase):
         self.exempt_qa()
         result = self.close(card, '--merged-into', 'dev')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.check().returncode, 0, self.check().stdout)
+        check = self.check()
+        self.assertEqual(check.returncode, 0, check.stdout)
         row = self.items()[0]
         self.assertEqual((row['repo'], row['branch']), (str(self.workspace), 'dev'))
         self.assertEqual(row['card'], str(self.tasks / 'done' / card.name))
@@ -1181,7 +1184,8 @@ class CardCloseMergedTests(LedgerCase):
         self.exempt_qa()
         result = self.close(card, '--merged-into', 'dev')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.check().returncode, 0, self.check().stdout)
+        check = self.check()
+        self.assertEqual(check.returncode, 0, check.stdout)
         self.assertEqual(self.items()[0]['repo'], str(other))
 
     def test_an_unmerged_commit_is_refused_and_check_still_fails(self):

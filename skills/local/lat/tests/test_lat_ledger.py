@@ -14,6 +14,8 @@ import tempfile
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-ledger.py'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cached_script  # noqa: E402
 NOW = '2026-10-24T10:00:00Z'
 FP = 'f00dfeed' * 8
 
@@ -114,8 +116,8 @@ class LedgerCase(unittest.TestCase):
                        **(env or {})}
         environment.pop('SUITE_GATE_CONFIG', None)
         command, *rest = args
-        return subprocess.run([sys.executable, str(script or SCRIPT), command, '--ledger', str(self.ledger),
-                               *rest], capture_output=True, text=True, env=environment,
+        return subprocess.run(cached_script.command(script or SCRIPT, command, '--ledger', self.ledger,
+                                                    *rest), capture_output=True, text=True, env=environment,
                               timeout=60)
 
     def ok(self, *args, **kwargs):
@@ -952,22 +954,21 @@ class QaCoverageTests(LedgerCase):
         self.ok('check')
 
     def test_comma_lists_in_any_spelling_cover_the_same_numbers(self):
+        # The spelling rule itself, in process; the CLI tests above show check reports it.
+        spec = importlib.util.spec_from_file_location('ledger_qa_cover', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
         cases = (('480,481', '480,481', True), ('480, 481', '#480,#481', True),
                  ('#480,#481', '480 481', True), ('480,481', '480', False),
                  ('org/repo#480,481', 'org/repo#480,#481', True),
                  ('org/repo#480,481', 'org/repo#480,org/repo#481', False))
         for impl_ticket, qa_ticket, covered in cases:
             with self.subTest(impl=impl_ticket, qa=qa_ticket):
-                for path in (self.ledger, self.seal, self.journal):
-                    path.unlink()
-                self.init()
-                self.exempt_qa('#1')  # setUp's #1 impl row is gone with the ledger
-                impl = self.started(ticket=impl_ticket)
-                self.ok('done', str(impl), '--commit', self.merged)
-                self.assertEqual(self.run_ledger('check').returncode, 1)
-                qa = self.add(ticket=qa_ticket, stage='qa', evidence='file')
-                self.ok('cancel', str(qa), '--reason', 'covered')
-                self.assertEqual(self.run_ledger('check').returncode, 0 if covered else 1)
+                impl = dict(id=1, ticket=impl_ticket, stage='impl', status='done')
+                self.assertTrue(module.tickets_without_qa(dict(items=[impl])))
+                qa = dict(id=2, ticket=qa_ticket, stage='qa', status='cancelled')
+                self.assertEqual(module.tickets_without_qa(dict(items=[impl, qa])) == {},
+                                 covered)
 
     def test_a_ledger_with_a_hand_set_deadline_still_loads(self):
         baseline = self.root / 'baseline'

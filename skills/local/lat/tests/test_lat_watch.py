@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-watch.py'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cached_script  # noqa: E402
 SPAWN_WATCH = Path(__file__).resolve().parents[2] / 'hcom-spawn/scripts/spawn-watch.py'
 TAIPEI = timezone(timedelta(hours=8))
 _UNSET_LEDGER = object()
@@ -1636,7 +1638,7 @@ class WatchCliTests(unittest.TestCase):
         )
 
     def cli(self, *args):
-        return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
+        return subprocess.run(cached_script.command(SCRIPT, *args),
                               text=True, capture_output=True, cwd=self.work, env=self.env)
 
     def fake_transcript(self):
@@ -4421,19 +4423,20 @@ esac
         decisions = self.work / '.lat/decisions'
         decisions.mkdir()
         with patch.dict(os.environ, self.env):
+            # The rule compares timestamps only, so a few cycles per stretch cover it.
             results = [watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
-                       for now in range(0, 1801, 60)]
+                       for now in (0, 900, 1800)]
             self.listing_hcom(orch='listening', worker_open='active')
             results.append(watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=1860))
             self.assertNotIn('missing_since', self.watch_state()['orch'])
             # A listed inactive identity is still found, so it never counts as gone.
             self.listing_hcom(orch='inactive', worker_open='active')
             results += [watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
-                        for now in range(1920, 1920 + 3601, 60)]
+                        for now in (1920, 3720, 5520)]
             self.assertNotIn('missing_since', self.watch_state()['orch'])
             self.listing_hcom(worker_open='active')
             results += [watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
-                        for now in range(5580, 5580 + 3600, 60)]
+                        for now in (5580, 7380, 9120)]
             self.assertEqual(set(results), {None})
             reason = watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=9180)
         self.assertEqual(reason, 'orchestrator orch missing from HCOM for 60 minutes')
@@ -4453,7 +4456,7 @@ esac
         root.mkdir()
         (root / 'sid.pid').write_text(str(os.getpgrp()))
         (root / 'other.pid').write_text('999999')
-        self.run_cycles(watch, *range(0, 3541, 60))
+        self.run_cycles(watch, 0, 1800, 3540)
         args = argparse.Namespace(workspace=self.work, tasks=self.tasks, ledger=None,
                                   decisions=self.work / '.lat/decisions', orchestrator='orch')
         with watch_time(watch), patch.dict(os.environ, self.env), \

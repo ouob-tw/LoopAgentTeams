@@ -13,6 +13,8 @@ from pathlib import Path
 from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/suite-gate.py'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cached_script  # noqa: E402
 
 
 def load():
@@ -160,11 +162,11 @@ elif sys.argv[1:3] == ['issue', 'create']:
         return len(self.counter.read_text().splitlines()) if self.counter.exists() else 0
 
     def gate(self, *args, cwd=None, **kwargs):
-        return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=cwd or self.repo,
+        return subprocess.run(cached_script.command(SCRIPT, *args), cwd=cwd or self.repo,
                               env=self.env, capture_output=True, text=True, timeout=60, **kwargs)
 
     def start(self, *args, cwd=None):
-        proc = subprocess.Popen([sys.executable, str(SCRIPT), *args], cwd=cwd or self.repo,
+        proc = subprocess.Popen(cached_script.command(SCRIPT, *args), cwd=cwd or self.repo,
                                 env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True)
         self.procs.append(proc)
@@ -2889,7 +2891,7 @@ class DetectionTests(unittest.TestCase):
 def run_hook(command, cwd, env=None, hook_cwd=None):
     payload = json.dumps({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',
                           'tool_input': {'command': command}, 'cwd': str(cwd)})
-    return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=payload, text=True,
+    return subprocess.run(cached_script.command(SCRIPT, 'hook'), input=payload, text=True,
                           capture_output=True, env=env, timeout=60, cwd=hook_cwd)
 
 
@@ -4050,7 +4052,7 @@ class InstallTests(unittest.TestCase):
                       'codex': self.tmp / 'codex/hooks.json'}
 
     def configure(self, action, client, *extra):
-        return subprocess.run([sys.executable, str(SCRIPT), action, '--client', client, *extra],
+        return subprocess.run(cached_script.command(SCRIPT, action, '--client', client, *extra),
                               env=self.env, capture_output=True, text=True, timeout=60)
 
     def seed(self, client):
