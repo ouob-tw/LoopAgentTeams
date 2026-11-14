@@ -4002,6 +4002,8 @@ class SessionTests(unittest.TestCase):
         self.open_grant()
         self.assertEqual(self.unattended_status()['state'], 'active')
         self.assert_silent(self.stop_hook('Plain message'))
+        self.seed_draft(at='not a time')  # an unreadable draft is no draft either
+        self.assert_silent(self.stop_hook('Plain message'))
 
     def test_rows_added_after_the_draft_ask_to_check_it_until_rewritten(self):
         self.activate(draft=False)

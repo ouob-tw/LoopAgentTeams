@@ -1667,8 +1667,8 @@ def draft_time(draft):
 def rows_added_after(ledger_path, moment):
     """IDs of ledger rows added after `moment`; an unreadable ledger has none here (the
     delivery check reports it). Ledger times have whole seconds, so a row added in the same
-    second as the draft counts as after it: a row is never missed, at the cost of at most one
-    extra reminder when the draft was rewritten in the second the row was added."""
+    second as the draft counts as after it: a row is never missed, at the cost of extra
+    reminders while the draft was last rewritten in the second the row was added."""
     ledger = ledger_module()
     store = ledger.Store(Path(ledger_path))
     try:
