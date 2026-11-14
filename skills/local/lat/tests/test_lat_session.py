@@ -129,13 +129,25 @@ class SessionTests(unittest.TestCase):
         env.update(extra_env or {})
         return env
 
-    def activate(self, session=SESSION, duty=True):
+    def activate(self, session=SESSION, duty=True, draft=True):
         result = self.cli('activate', '--workspace', self.work,
                           '--progress', self.progress, '--decisions', self.decisions,
                           session=session)
         self.assertEqual(result.returncode, 0, result.stderr)
         if duty:
             self.record_duty(session=session)
+        if draft:
+            self.seed_draft(session)
+
+    def seed_draft(self, session=SESSION, at='2999-01-01T00:00:00+00:00'):
+        """A goal draft for the current round; by default newer than any ledger row, so the
+        draft check stays out of the tests about other checks."""
+        record = json.loads((self.work / '.lat/sessions' / f'{session}.json').read_text())
+        round_number = len(record.get('history', [])) + 1
+        path = self.work / '.lat/unattended' / f'{session}-r{round_number}.draft.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(goal='修好登入頁', done=['能登入'], at=at)))
+        return path
 
     def record_duty(self, text='整理看板名冊', expected='名冊顯示職責', session=SESSION,
                     client='codex', extra_env=None):
@@ -294,6 +306,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(self.record.read_text())['hcom_name'], 'team-futa')
         self.assertTrue(json.loads(self.record.read_text())['ledger_path'].endswith('-r1.json'))
+        self.seed_draft()
         held = json.loads(self.stop_hook('Done\nNO REPLY: waiting').stdout)
         self.assertEqual(held['decision'], 'block')
         self.assertIn('--agent team-futa', held['reason'])
@@ -603,6 +616,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual((duty['text'], duty['expected']), ('整理看板名冊', '名冊顯示職責'))
         self.assertIn(f'看板職責已登記：{self.duty_file()}', result.stdout)
         self.assertNotIn('lat-session.py duty --client', result.stdout)
+        self.seed_draft()
         self.assert_silent(self.stop_hook('Work done\nDONE: delivered'))
 
     def test_activate_finishes_when_the_duty_cannot_be_written(self):
@@ -1539,6 +1553,7 @@ class SessionTests(unittest.TestCase):
         result = self.cli('activate', '--workspace', self.work, '--progress', progress,
                           '--decisions', decisions)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.seed_draft()
         self.progress.unlink()
         for source in ('compact', 'resume'):
             recovered = self.hook(source=source)
@@ -2333,6 +2348,7 @@ class SessionTests(unittest.TestCase):
                           extra_env=self.unattended_env(mode))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.record_duty(session=session)
+        self.seed_draft(session)
         return result
 
     def test_activate_marks_whether_the_round_runs_unattended(self):
@@ -3930,6 +3946,92 @@ class SessionTests(unittest.TestCase):
         self.assertIn('repair --from-journal', context)
         self.assertTrue(context.endswith('never recreate it by hand.'))
 
+    # The goal draft the board's "開啟無人模式" form starts from (#624) ----------------------
+
+    def draft(self, goal='修好登入頁', *done):
+        # The real tool finds the session's state through Git; the test workspace's .git is empty.
+        subprocess.run(['git', 'init', '-q', str(self.work)], check=True, capture_output=True)
+        result = subprocess.run(
+            [sys.executable, str(SKILL / 'scripts/lat-unattended.py'), 'draft', '--workspace',
+             str(self.work), '--goal', goal, *[part for item in (done or ('能登入',))
+                                                for part in ('--done', item)]],
+            text=True, capture_output=True, cwd=self.work,
+            env=self.cli_environment(extra_env=self.unattended_env()))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def draft_held(self, result):
+        output = json.loads(result.stdout)
+        self.assertEqual(output['decision'], 'block')
+        return output['reason']
+
+    def test_activate_reminds_to_write_the_goal_draft_with_the_full_command(self):
+        for mode, label in ((None, '人工確認'), ('unattended', '無人模式')):
+            with self.subTest(mode=mode):
+                result = self.activate_with(mode)
+                self.assertIn(f'本輪模式：{label}', result.stdout)
+                self.assertIn('目標草稿：還沒有', result.stdout)
+                self.assertIn(f'{SKILL / "scripts/lat-unattended.py"} draft --workspace '
+                              f"{self.work} --goal '<目標>' --done '<條件一>'", result.stdout)
+                self.assertEqual(self.cli('deactivate', '--workspace', self.work,
+                                          extra_env=self.unattended_env()).returncode, 0)
+
+    def test_stop_without_a_draft_is_held_once_then_passes_once_written(self):
+        # A controller that was already running without a draft gets the same reminder.
+        self.activate(draft=False)
+        self.declare_wait()
+        held = self.draft_held(self.stop_hook('Plain message'))
+        self.assertIn('LAT 目標草稿檢查未通過：本輪還沒有目標草稿', held)
+        self.assertIn(f"lat-unattended.py draft --workspace {self.work} --goal '<目標>'", held)
+        released = json.loads(self.stop_hook('Plain message', stop_hook_active=True).stdout)
+        self.assertNotIn('decision', released)
+        self.assertIn('本輪還沒有目標草稿', released['systemMessage'])
+        self.assertIn('本回合已繼續過，不再攔下', released['systemMessage'])
+        self.draft('修好登入頁', '能登入', '有測試')
+        self.assert_silent(self.stop_hook('Plain message'))
+        self.assert_silent(self.stop_hook('Done\nNO REPLY: waiting'))
+        # What the board's form reads to prefill.
+        self.assertEqual({key: self.unattended_status()['draft'][key] for key in ('goal', 'done')},
+                         dict(goal='修好登入頁', done=['能登入', '有測試']))
+
+    def test_no_draft_hold_while_a_grant_is_in_effect(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        self.open_grant()
+        self.assertEqual(self.unattended_status()['state'], 'active')
+        self.assert_silent(self.stop_hook('Plain message'))
+
+    def test_rows_added_after_the_draft_ask_to_check_it_until_rewritten(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        self.seed_draft(at='2020-01-01T00:00:00+00:00')
+        first = self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence',
+                            'file').strip()
+        held = self.draft_held(self.stop_hook('Plain message'))
+        self.assertIn(f'工作總表在草稿寫入後新增了第 {first} 列', held)
+        # The ready command to keep the draft as it is.
+        self.assertIn(f"draft --workspace {self.work} --goal '修好登入頁' --done '能登入'", held)
+        self.assertIn('本回合已繼續過', json.loads(
+            self.stop_hook('Plain message', stop_hook_active=True).stdout)['systemMessage'])
+        # Rewriting it unchanged says it was checked.
+        self.draft()
+        self.assert_silent(self.stop_hook('Plain message'))
+        # A later row asks again; the draft's time is moved back to stand for time passing.
+        path = self.seed_draft(at='2020-01-01T00:00:00+00:00')
+        self.ledger('add', '--ticket', '#2', '--stage', 'impl', '--evidence', 'file')
+        held = self.draft_held(self.stop_hook('Plain message'))
+        self.assertIn(f'第 {first} 列、第 {int(first) + 1} 列', held)
+        self.draft('修好登入頁和註冊頁', '能登入', '能註冊')
+        self.assertNotEqual(json.loads(path.read_text())['at'], '2020-01-01T00:00:00+00:00')
+        self.assert_silent(self.stop_hook('Plain message'))
+
+    def test_draft_check_leaves_other_roles_and_sessions_without_a_record_alone(self):
+        self.declare_wait()
+        self.assert_silent(self.stop_hook('Plain message'))
+        self.activate(draft=False)
+        record = json.loads(self.record.read_text())
+        self.record.write_text(json.dumps(dict(record, role='executor')))
+        self.assert_silent(self.stop_hook('Plain message'))
+        self.assertFalse((self.work / '.lat/unattended').exists())
 
 class ListActiveTests(unittest.TestCase):
     """list --active: records are checked against a fake `hcom list --json` file."""

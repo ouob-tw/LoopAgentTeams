@@ -424,7 +424,7 @@ def activate(args):
     write_json_atomic(path, record, expected=original)
     print(path)
     print(f'已開始第 {round_number} 輪')
-    print(round_mode_line(path.parent.parent, sid))
+    print(round_mode_line(path.parent.parent, sid, workspace))
     print(f'工作總表：{record["ledger_path"]}')
     if duty is None:
         print(f'看板職責：任務明確後執行（任務改變時再執行一次）：{duty_command(record)}')
@@ -476,8 +476,19 @@ def unattended_module():
     return module
 
 
-def round_mode_line(lat, sid):
-    """Whether this round runs unattended, as the three layers resolve it now."""
+def draft_command(workspace, goal=None, done=None):
+    """The `lat-unattended draft` command; placeholders unless the goal and conditions are given."""
+    head = (f'uv run --no-project python {shlex.quote(str(UNATTENDED_SCRIPT))} draft '
+            f'--workspace {shlex.quote(str(workspace))}')
+    if goal is None:
+        return head + " --goal '<目標>' --done '<條件一>' [--done '<條件二>' …]"
+    return head + f' --goal {shlex.quote(goal)}' + ''.join(
+        f' --done {shlex.quote(item)}' for item in done)
+
+
+def round_mode_line(lat, sid, workspace):
+    """Whether this round runs unattended, as the three layers resolve it now, and the draft
+    reminder while the round has no goal draft and no grant in effect."""
     try:
         module = unattended_module()
         result = module.snapshot(lat, sid)
@@ -490,6 +501,10 @@ def round_mode_line(lat, sid):
         line += ('，尚待目標：派發前依使用者第一句話擬出目標與做完條件，以 '
                  f'`{UNATTENDED_SCRIPT} create --source settings-default` 寫入第 1 版；'
                  '寫入前不算有效授權')
+    if result['state'] != 'active' and not result['draft']:
+        line += ('\n目標草稿：還沒有。依使用者第一句話擬出目標與做完條件，執行 '
+                 f'`{draft_command(workspace)}` 存成草稿，看板「開啟無人模式」表單從它預填'
+                 '（草稿不是授權）')
     return line
 
 
@@ -1637,6 +1652,69 @@ def unattended_question_check(record):
             '`NO REPLY:` 或 `DONE:` 結尾；擱置項由回顧頁交給使用者。要當場問使用者，先請使用者關掉無人模式。')
 
 
+def draft_time(draft):
+    """When the draft was written (UTC), or None when it has no usable goal or time."""
+    if not isinstance(draft, dict) or not isinstance(draft.get('goal'), str) \
+            or not draft['goal'].strip() or not isinstance(draft.get('done'), list):
+        return None
+    try:
+        moment = datetime.fromisoformat(str(draft.get('at')).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return moment.astimezone(timezone.utc) if moment.tzinfo else None
+
+
+def rows_added_after(ledger_path, moment):
+    """IDs of ledger rows added after `moment`; an unreadable ledger has none here (the
+    delivery check reports it). Ledger times have whole seconds, so a row added in the same
+    second as the draft counts as before it."""
+    try:
+        doc = json.loads(Path(ledger_path).read_text(encoding='utf-8'))
+        items = doc['items']
+    except (OSError, TypeError, ValueError, KeyError):
+        return []
+    floor = moment.replace(microsecond=0)
+    added = []
+    for item in items if isinstance(items, list) else []:
+        history = item.get('history') if isinstance(item, dict) else None
+        at = next((entry.get('at') for entry in history or [] if isinstance(entry, dict)
+                   and entry.get('action') == 'add'), None)
+        try:
+            when = datetime.fromisoformat(str(at).replace('Z', '+00:00'))
+        except ValueError:
+            continue
+        if when.tzinfo and when > floor:
+            added.append(item.get('id'))
+    return added
+
+
+def draft_stop_check(record):
+    """Why this Stop should be held because the round has no goal draft for the board's
+    "開啟無人模式" form, or ledger rows were added after the draft was written; None while
+    a grant is in effect, since then the form is not used to open one."""
+    if legacy_record(record):
+        return None
+    result = unattended_module().snapshot(unattended_lat(record), record['session_id'])
+    if result['state'] == 'active' or not result['round_active']:
+        return None
+    draft = result['draft']
+    written = draft_time(draft)
+    if written is None:
+        return ('LAT 目標草稿檢查未通過：本輪還沒有目標草稿，看板「開啟無人模式」表單沒有內容可預填。'
+                '依使用者的話擬出這一輪的目標與做完條件，執行 '
+                f'`{draft_command(record["workspace"])}`（草稿不是授權），再照原樣結束回合。')
+    added = rows_added_after(record.get('ledger_path'), written)
+    if not added:
+        return None
+    rows = '、'.join(f'第 {row} 列' for row in added)
+    done = [str(item) for item in draft['done']]
+    return (f'LAT 目標草稿檢查未通過：工作總表在草稿寫入後新增了{rows}。核對草稿的目標與做完條件是否還涵蓋'
+            '這些工作：要改就用新內容執行 '
+            f'`{draft_command(record["workspace"])}`；不用改就照原內容重寫一次表明已核對：'
+            f'`{draft_command(record["workspace"], draft["goal"], done)}`。'
+            '之後到又有新列前不再為此提醒；做完再照原樣結束回合。')
+
+
 def delegated_stop_check(record):
     """Why this Stop should be held for delegated decision records of this session, or None.
 
@@ -1890,6 +1968,13 @@ def report_stop(record, payload):
         else:
             if review:
                 reasons.append(review)
+        try:
+            draft = draft_stop_check(record)
+        except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
+            notes.append(f'LAT 目標草稿檢查發生錯誤，未攔下：{exc}')
+        else:
+            if draft:
+                reasons.append(draft)
         try:
             delegated = delegated_stop_check(record)
         except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop

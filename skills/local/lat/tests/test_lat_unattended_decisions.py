@@ -46,6 +46,10 @@ class UnattendedStopCase(unittest.TestCase):
         self.reports.mkdir()
         # The duty check needs a duty on record before a tagged Stop.
         (self.reports / f'{SESSION}.duty.json').write_text('{}')
+        # A goal draft newer than any ledger row, so Stops are not held for the draft check.
+        draft = self.lat / 'unattended' / f'{SESSION}-r1.draft.json'
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text('{"goal": "g", "done": ["d"], "at": "2999-01-01T00:00:00+00:00"}')
         self.binary = self.root / 'bin'
         self.binary.mkdir()
         for name in ('hcom', 'herdr'):
