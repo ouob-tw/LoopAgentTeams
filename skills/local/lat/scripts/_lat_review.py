@@ -244,16 +244,41 @@ def self_park(row):
     return found
 
 
+# The stages that deliver a ticket. Advisor, research, Spec and other rows (a cross-check, a
+# retro) are steps around it: they never make a ticket done, and closing one after the review
+# was cross-checked must not change what the check vouched for.
+TICKET_WORK = ('impl', 'review', 'qa-draft', 'qa', 'merge')
+
+
+def done_tickets(doc):
+    """One line per ticket whose delivery rows are all done, in the order tickets first
+    appear: the ticket, its title and the evidence of its done rows."""
+    tickets = {}
+    for row in doc['items']:
+        if isinstance(row, dict) and row.get('stage') in TICKET_WORK \
+                and row.get('status') != 'cancelled':
+            tickets.setdefault(str(row.get('ticket') or '').lstrip('#'), []).append(row)
+    lines = []
+    for ticket, rows in tickets.items():
+        if not all(row.get('status') == 'done' for row in rows):
+            continue
+        proof = []
+        for row in rows:
+            for key, value in sorted((row.get('evidence') or {}).items()):
+                for one in value if isinstance(value, list) else [value]:
+                    if isinstance(one, str) and f'{key} {one}' not in proof:
+                        proof.append(f'{key} {one}')
+        head = f'#{ticket}' if ticket.isdigit() else ticket
+        title = ticket_title(doc, ticket)
+        lines.append(f'{head} {title}'.strip() + f'：{"、".join(proof) or "沒有證據欄"}')
+    return lines
+
+
 def ledger_items(doc, path, workspace):
-    items, done = [], []
+    items = []
     for row in doc['items']:
         if not isinstance(row, dict):
             continue
-        if row.get('status') == 'done':
-            evidence = row.get('evidence') or {}
-            proof = '、'.join(f'{key} {value}' for key, value in sorted(evidence.items())
-                             if isinstance(value, str)) or '沒有證據欄'
-            done.append(f'{row_label(doc, row)}：{proof}')
         parked = self_park(row)
         if not parked:
             continue
@@ -280,7 +305,7 @@ def ledger_items(doc, path, workspace):
                         answered_at=answer[0], answer=answer[1],
                         revert='已解除；要改回擱置或改做法，告訴主控')
         items.append(item)
-    return items, done
+    return items, done_tickets(doc)
 
 
 # Pre-authorization records --------------------------------------------------------------------

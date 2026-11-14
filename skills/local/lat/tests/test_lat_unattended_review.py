@@ -323,6 +323,50 @@ class DoneHoldTests(ReviewCase):
         self.assertEqual(self.stop('完成\nDONE: 交付'), {})
 
 
+class DoneTicketTests(ReviewCase):
+    def row(self, row_id, stage, status, ticket='7', commit=None):
+        return dict(id=row_id, ticket=ticket, stage=stage, status=status, history=[],
+                    parked_cause=None, evidence=dict(commit=[commit]) if commit else {})
+
+    def done_lines(self):
+        text = self.md.read_text()
+        return text.split('## 本輪完成的票\n\n', 1)[1].split('\n\n', 1)[0].splitlines() \
+            if '## 本輪完成的票' in text else []
+
+    def test_done_tickets_are_one_line_per_delivered_ticket(self):
+        self.grant()
+        self.parked()
+        self.ledger([self.row(1, 'advisor', 'done'), self.row(2, 'impl', 'done', commit='abc1234'),
+                     self.row(3, 'review', 'done'), self.row(4, 'other', 'done'),
+                     self.row(5, 'impl', 'in_progress', ticket='8'),
+                     self.row(6, 'research', 'done', ticket='9')])
+        self.review('update')
+        self.assertEqual(self.done_lines(), ['- #7 登入頁：commit abc1234'])
+
+    def test_closing_the_checker_row_and_delivering_keep_the_cross_check(self):
+        """#568: the cross-check row (or a retro row) closing after `review verify`, then
+        deactivate, leave the review checked; a ticket finishing afterwards resets it."""
+        self.grant()
+        self.parked()
+        rows = [self.row(1, 'impl', 'done', commit='abc1234'), self.row(2, 'other', 'in_progress'),
+                self.row(3, 'impl', 'in_progress', ticket='8')]
+        self.ledger(rows)
+        self.review('update')
+        self.verify()
+        rows[1]['status'] = 'done'
+        rows.append(self.row(4, 'advisor', 'done'))
+        self.ledger(rows)
+        result = self.run_script(SESSION_SCRIPT, 'deactivate', '--client', 'codex',
+                                 '--workspace', self.work, '--session-id', SESSION)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('- 核對：puma（claude）', self.md.read_text())
+        self.assertTrue(self.review('show')['verified'])
+        rows[2].update(status='done', evidence=dict(commit=['def5678']))
+        self.ledger(rows)
+        self.review('update')
+        self.assertIn('- 核對：尚未核對（', self.md.read_text())
+
+
 class HandoverTests(ReviewCase):
     def test_deactivate_prints_the_review_path_and_another_session_can_read_it(self):
         self.grant()
