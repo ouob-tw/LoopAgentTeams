@@ -12,6 +12,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" show
 - `check` 印一行 `allow <動作> <標的> — basis: …`（每個生效值來自哪一層、哪一段與 `source`）或 `ask <動作> <標的> — reasons: …`；結束碼 `allow` 為 0、`ask` 為 1、工具出錯為 2。`--json` 輸出 `verdict`、`action`、`target`、`basis`、`reasons`，以及與 `reasons` 同順序的 `reason_kinds`，每個原因一個類別：`allow-false`（某層明寫 `allow = false`）、`condition`（不在下方「時段」內，或下方「固定條件」不成立，含沒寫 `target` 或整合分支）、`unset`（沒有任何層寫 `allow` 或 `branches`）、`always-ask`（任何設定都不能預先授權）、`error`（設定讀不出、參數缺漏等 `check` 無法判斷）。參謀免諮詢類別 `exempt preauth-ask` 依這個欄位判斷，見 [參謀](advisors.md)。
 - `deploy-test`、`deploy-prod`、`install-host` 得到 `allow` 時另印 `Next steps:`（`--json` 增加 `next_steps`）：用 `notice --text '<內容>'` 發動作前通知並記下它印的事件編號，再以 `now` 取得 `--started`、執行動作、同樣發動作後通知，最後 `record --kind auto … --notice-before <id> --notice-after <id> --started <time>`。`notice` 沒印編號就是沒送出，不可執行動作，步驟的串接見 [動作前後的步驟](#動作前後的步驟)；沒有其他在線主控時它不發訊息，改印 `none-<n>`，可原樣給 `--notice-before`／`--notice-after`。合併、推送與 `ask` 不印 `Next steps:`。
 - `deploy-test`、`deploy-prod` 的專案層寫了 `runbook` 時，不論 `allow` 或 `ask`，判定那行之後都印 `Read first: <runbook>`（`runbook` 是一段文字，照原樣印出，通常寫相對 repo 根的部署文件路徑；空白算沒寫），下一行列出上次成功部署（同「固定條件」的上一次成功部署）到這一版改到的頂層路徑（`git diff --name-only` 每個路徑的第一段，目錄或檔案；搬移時新舊位置都列）；沒有可用的部署紀錄時改印無法列出與原因。`--json` 增加 `runbook`：`path`、`changed_paths`（列不出時為 `null`，另有 `changed_paths_unknown` 寫原因）。寫部署題前先讀這份文件，選項要寫明採用文件中的哪一種做法。
+- 採用的上一次成功部署可用（見「固定條件」）且跳過了它之後的部分部署（見「固定條件」的部署歷史）時，判定那行之後另印一行 `Deploy base: the last full <動作> <提交前 12 碼> (<時間>); skipped <n> partial deploy(s) after it`（`--json` 增加 `deploy_base`：`commit`、`at`、`skipped_partial`）。
 - 部署因整套測試被 `ask` 時，判定那行之後另印 `Fix: …`（`--json` 增加 `fixes`），寫出不跑整套的下一步，見「固定條件」。
 - `notice --text '<內容>' [--to <名稱>…]` 代主控以 `@名稱` 發 `--intent inform` 通知，成功時只印這則訊息的 HCOM 事件編號。收件人預設是本專案其他進行中的主控（由 session 紀錄查得；[跨 repo](#主控與動作不在同一個-repo) 時再加上動作所在 repo 的主控），或用 `--to` 點名；只發給 `hcom list --json` 目前還在的（紀錄裡已離線的主控略過並提示；`--to` 點名的不在線就整則不送），不能是自己，不廣播。沒有 `--to` 且沒有其他在線主控時，不發訊息、寫入本輪 `.lat/preauth-records/<session>-r<輪數>-no-recipient.jsonl`（發送者、時間、當時記錄的其他主控都已離線），印 `none-<n>` 並以 0 結束，不需隨便點名無關的 Agent。送出後以發送者、內容完全相同、開始發送之後的時間到 `hcom events` 找出這則訊息；`--to` 的收件人都不在線、HCOM 讀不到、發送失敗、找不到訊息或找到多則相同的，都以非 0 結束並說明原因，不印編號。
 - `show` 印兩層位置與是否生效、合併後的有效設定，以及每個值的出處；專案檔寫了 `[advisor]` 時在該段註明「專案層的 [advisor] 不生效」；設定有錯時列出錯誤。
@@ -132,13 +133,15 @@ source = "<待決紀錄 ID>"
 - `deploy-prod` 另核對：要部署的版本含有（本身或祖先）未解除的[保留中的提交](#保留不推送的提交)就 `ask`。
 - 整套測試閘門（推送 `main`、`deploy-test`、`deploy-prod`、`install-host`；推送 `main` 以外的分支如 `dev` 不查這一項，只查上面的分支清單與提交票號）：沿用 three-tier-testing 閘門推送前檢查的同一段程式，依該版本的內容、每一套整套命令與執行目錄算出指紋，登記檔 `full_suites` 的每一套都要有可沿用的通過紀錄。沒有紀錄、只有失敗紀錄、或版本內容變了使舊紀錄不適用，都 `ask` 並寫出缺的那一套；登記檔沒列整套也 `ask`。只讀閘門紀錄，不跑測試。
   - `deploy-test`、`deploy-prod` 例外：專案層該動作段寫了 `rollback` 時，以下全部成立就不必有整套通過紀錄（`basis` 寫出 `rollback` 與採用的總結紀錄）；任一項不成立就照上面要求整套，`ask` 的原因同時寫出為什麼受影響測試不夠：
-    - 部署歷史（見下一項）裡有「上一次成功部署」：同一動作、同一部署目標（設定的 `target` 原文；`deploy-prod` 沒寫時兩邊都是空）最近一筆 `result` 為 `succeeded` 的紀錄。沒有歷史檔、找不到成功紀錄、只有別的目標成功過（部署目標改了）都要整套。`deploy-test` 的紀錄不算 `deploy-prod` 的上一次部署，反之亦然。
-    - 那筆成功之後，同動作同目標沒有失敗的部署；有的話線上版本不明（換上新版才失敗，或退回也失敗），要整套。失敗之後又成功一次，就以那次新的成功為準。
-    - 它的提交在這個 repo 找得到，而且是要部署版本本身或祖先（退版或分歧都要整套）。
+    - 部署歷史（見下一項）裡有「上一次成功部署」：同一動作、同一部署目標（設定的 `target` 原文；`deploy-prod` 沒寫時兩邊都是空）最近一筆 `result` 為 `succeeded` 且不是部分部署（見「固定條件」的部署歷史）的紀錄。沒有歷史檔、找不到成功的完整部署（只有部分部署時原因註明跳過幾筆）、只有別的目標成功過（部署目標改了）都要整套。`deploy-test` 的紀錄不算 `deploy-prod` 的上一次部署，反之亦然。
+    - 那筆成功之後，同動作同目標沒有失敗的部署；有的話線上版本不明（換上新版才失敗，或退回也失敗），要整套。失敗之後又有一次成功的完整部署，就以那次新的成功為準；失敗之後只有成功的部分部署，線上版本仍然不明。
+    - 它的提交在這個 repo 找得到，而且是要部署版本本身或祖先（退版或分歧都要整套）。它之後每一筆成功的部分部署也一樣：提交找不到，或不是要部署版本本身或祖先（這次部署會把那些服務退回舊版或換成分歧的版本）都要整套，原因寫出是哪一筆。
     - three-tier-testing 閘門有一筆 `post-merge` 的合併後受影響測試總結紀錄（`kind: affected-summary`）整體通過（`passed: true`），它的 `tree` 等於要部署版本的 tree，起點 `base` 是上一次成功部署的提交本身或它的祖先。只讀閘門紀錄，不跑測試。
     - 輸出明說結果：全部成立時 `basis` 寫「no full suite needed」並指出採用的總結紀錄；不成立時 `ask` 的原因寫出是哪一項不成立，並說明需要整套；沒設 `rollback` 的部署寫「no rollback method is set …; a full suite is required」。
     - 被 `ask` 時印出下一步（`Fix:`）：沒設 `rollback` 的，指出在專案層 `.lat/preauth.toml` 的 `[actions.<動作>]` 寫 `rollback = "<退回方法>"`（全域層寫了不算），並同時印出下面那一步；設了 `rollback` 但測試紀錄不夠的，印出可直接執行的 `suite-gate.py affected --purpose post-merge --base <上一次成功部署的提交>`（含執行目錄），沒有可用的上一次成功部署時改說明只能跑整套。
-  - 部署歷史：被部署專案主工作區的 `.lat/deploy-history.jsonl`，每行一筆：`at`（時間）、`action`、`target`（當時設定的部署目標原文，沒寫為 `null`）、`commit`（完整提交）、`result`、`approval`（`preauth` 依預先授權、`manual` 人工核准），人工核准另有 `question`（待決題號）。由 `record` 寫入，見「記錄：record」。
+  - 部署歷史：被部署專案主工作區的 `.lat/deploy-history.jsonl`，每行一筆：`at`（時間）、`action`、`target`（當時設定的部署目標原文，沒寫為 `null`）、`commit`（完整提交）、`result`、`approval`（`preauth` 依預先授權、`manual` 人工核准），人工核准另有 `question`（待決題號），部分部署另有 `partial: true`（沒有這個欄位的舊紀錄算完整部署）。由 `record` 寫入，見「記錄：record」。
+  - 部分部署：只更新部分服務（例如只重建 app、其他服務沿用舊映像）時，`record` 或 `do` 加 `--partial`。這筆照樣寫進部署歷史，但上一次成功部署、受影響測試的起點、`Fix:` 指令與改到的頂層路徑都從它之前最近一筆完整部署算起，因為沒更新的服務還跑那一版。它之後的失敗部署照舊使線上版本不明。所有服務都換成這一版才算完整部署，不加 `--partial`。工作總表與看板也只把完整部署當作票已上線（`已上線`、等上線結束）。
+    - 忘了加 `--partial`：`record --kind correction` 不改部署歷史，請手動編輯 `.lat/deploy-history.jsonl` 那一行，加上 `"partial": true`，其他欄位不動；`"partial": false` 或沒有這個欄位都算完整部署。
   - `install-host` 例外：只看 `skills/` 下各技能資料夾（有 `SKILL.md` 的資料夾，略過點開頭的目錄）裡登記的整套，與安裝腳本共用閘門的同一段判斷：該套最近一次「這個資料夾內容與現在相同」的執行通過才算數，資料夾外的改動（例如看板）不影響。缺的那一套寫在原因裡，並註明所在技能資料夾與「沒有這份內容的執行」或「最近一次執行失敗」。專案沒有任何技能資料夾時，照上面的規則看全部整套。
 
 ## 保留不推送的提交
@@ -202,6 +205,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-i
   - `deploy-test`、`deploy-prod`：待決紀錄要在本主控的待決目錄、狀態為 `answered` 或 `approved`。另在部署歷史記 `approval: manual` 與 `question`，否則下一次部署會因為找不到上一次部署而要整套。
   - `push`、`merge`：另要 `--branch`；待決紀錄同 `do --question` 要有真人答覆（含 `- 來源：` 行）。不寫部署歷史。
 - `--kind correction`：只追加一筆更正，不改舊行。要 `--commit`（至少 7 碼，與紀錄裡的版本前段相同就算同一個）與 `--note`；`--action` 只更正那個動作的紀錄（同一版本有推送也有部署時用）；`--question` 的題要有真人答覆。該輪找不到這個版本的紀錄就拒絕。`--session-id` 可寫到已結束主控那一輪（它最後一輪），其他種類只能寫進行中的一輪。`report` 在被更正的那筆後面加「（已更正：<說明>；待決 <題號>，<時間>）」。
+- `deploy-test`、`deploy-prod` 只更新了部分服務時加 `--partial`（`do` 也收），見「固定條件」的部分部署；其他動作或不寫部署歷史的紀錄給 `--partial` 會拒絕、不寫檔。
 - `bug-intake` 的五項依據都要寫。
 
 ## 免確認開短流程 bug 票
