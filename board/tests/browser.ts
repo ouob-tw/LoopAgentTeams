@@ -172,14 +172,18 @@ export class Tab {
 		}
 	}
 	/** A finger put down at (x, y) and moved by (dx, dy) in `steps` moves over `ms` ms, then lifted;
-	 *  touch emulation must be on. `hold` leaves it down at the end instead of lifting. */
+	 *  touch emulation must be on. `hold` leaves it down at the end instead of lifting. Each event
+	 *  carries the time it is meant to happen at, so a page that reads the speed from the events'
+	 *  times sees `ms` even when a busy host sends them later than that. */
 	async swipe(x: number, y: number, dx: number, { dy = 0, ms = 200, steps = 10, hold = false } = {}) {
-		await this.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+		const begun = Date.now() / 1000;
+		const at = (step: number) => begun + (ms * step) / steps / 1000;
+		await this.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }], timestamp: at(0) });
 		for (let step = 1; step <= steps; step++) {
 			await sleep(ms / steps);
-			await this.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x + (dx * step) / steps, y: y + (dy * step) / steps }] });
+			await this.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x + (dx * step) / steps, y: y + (dy * step) / steps }], timestamp: at(step) });
 		}
-		if (!hold) await this.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+		if (!hold) await this.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [], timestamp: at(steps) });
 	}
 	/** As `swipe`, starting at the centre of the first element matching `selector`. */
 	async swipeOn(selector: string, dx: number, options: { dy?: number; ms?: number; steps?: number; hold?: boolean } = {}) {
