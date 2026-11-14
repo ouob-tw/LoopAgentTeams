@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { totpCode } from '../../src/lib/server/totp.ts';
-import { BOARD_DIR, PASSWORD, startFixture, type Fixture } from '../harness.ts';
+import { PASSWORD, startFixture, type Fixture } from '../harness.ts';
 
 const LOCK_SECONDS = 60;
 const T0 = Date.parse('2026-11-01T00:00:00.000Z');
@@ -216,8 +216,7 @@ describe('the host command for TOTP', () => {
 
 	test('without a second step no password login gets in, and the login screen names the command', async () => {
 		const html = await (await fixture.fetch('/login')).text();
-		// The page is HTML: `&&` is written `&amp;&amp;`.
-		expect(html).toContain(`cd ${BOARD_DIR} &amp;&amp; bun run board totp`);
+		expect(html).toContain('<code>bun run board totp</code>');
 		expect(html).not.toContain('type="password"');
 		// The same answer for a wrong password: it tells nobody whether a password was right.
 		for (const value of [PASSWORD, 'wrong']) {
@@ -279,7 +278,7 @@ describe('the host command for TOTP', () => {
 		expect(cleared.code).toBe(0);
 		expect(cleared.stdout).toContain('已清除 TOTP');
 		expect((await fixture.tryLogin(PASSWORD)).status).toBe(409);
-		expect(await (await fixture.fetch('/login')).text()).toContain(`cd ${BOARD_DIR} &amp;&amp; bun run board totp`);
+		expect(await (await fixture.fetch('/login')).text()).toContain('<code>bun run board totp</code>');
 		expect(fixture.cli('totp', 'clear').stdout).toContain('沒有設定 TOTP');
 	});
 });

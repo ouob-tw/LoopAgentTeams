@@ -3,14 +3,14 @@
 	import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
 	import { onMount, tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
-	import { hostCommand } from '#lib/host-command.ts';
+	import { BOARD_FOLDER, hostCommand } from '#lib/host-command.ts';
 	import { passkeyBlocked as blockedHere, passkeyRefusal } from '#lib/board/passkey-here.ts';
 
 	let { data } = $props();
 
-	let SET_COMMAND = $derived(hostCommand(data.boardDir, 'password'));
-	let TOTP_COMMAND = $derived(hostCommand(data.boardDir, 'totp'));
-	let ENROLL_COMMAND = $derived(hostCommand(data.boardDir, 'passkey code'));
+	const SET_COMMAND = hostCommand('password');
+	const TOTP_COMMAND = hostCommand('totp');
+	const ENROLL_COMMAND = hostCommand('passkey code');
 
 	/** Logging in, or registering a passkey. */
 	let mode = $state<'login' | 'enroll'>('login');
@@ -109,10 +109,10 @@
 			backToPassword(TIMED_OUT);
 			return TIMED_OUT;
 		}
-		if (body.error === 'password_unreadable') return `登入失敗：看板的密碼檔讀不出來，請在主機上重新執行 ${SET_COMMAND}。`;
-		if (body.error === 'no_password') return `還沒設定密碼，請先在主機上執行 ${SET_COMMAND}。`;
-		if (body.error === 'no_second_step') return `還沒設定第二道驗證，請先在主機上執行 ${TOTP_COMMAND}。`;
-		if (body.error === 'second_step_unreadable') return `登入失敗：TOTP 金鑰檔讀不出來，請在主機上重新執行 ${TOTP_COMMAND}。`;
+		if (body.error === 'password_unreadable') return `登入失敗：看板的密碼檔讀不出來，請在${BOARD_FOLDER}重新執行 ${SET_COMMAND}。`;
+		if (body.error === 'no_password') return `還沒設定密碼，請先在${BOARD_FOLDER}執行 ${SET_COMMAND}。`;
+		if (body.error === 'no_second_step') return `還沒設定第二道驗證，請先在${BOARD_FOLDER}執行 ${TOTP_COMMAND}。`;
+		if (body.error === 'second_step_unreadable') return `登入失敗：TOTP 金鑰檔讀不出來，請在${BOARD_FOLDER}重新執行 ${TOTP_COMMAND}。`;
 		if (body.error === 'passkeys_unreadable') return '失敗：看板的 passkey 檔讀不出來，請看主機上看板的紀錄。';
 		if (body.error === 'passkey_unavailable') return data.passkeyOrigin ? `passkey 只能在 ${data.passkeyOrigin} 用。` : '看板沒有設定網址（LAT_BOARD_URL），不能用 passkey。';
 		if (body.error === 'no_passkey') return '看板上已經沒有登記的 passkey，請改用驗證碼。';
@@ -273,7 +273,7 @@
 	<h1>{mode === 'enroll' ? '登記 passkey' : 'LAT 看板'}</h1>
 	{#if data.password !== 'set'}
 		<p>
-			{data.password === 'unset' ? '看板還沒設定密碼' : '看板的密碼檔讀不出來'}，目前無法登入。請在主機上執行：
+			{data.password === 'unset' ? '看板還沒設定密碼' : '看板的密碼檔讀不出來'}，目前無法登入。請在{BOARD_FOLDER}執行：
 		</p>
 		<pre><code>{SET_COMMAND}</code></pre>
 		<p>設定好之後重新載入這個畫面。</p>
@@ -285,7 +285,7 @@
 		{:else}
 			<form onsubmit={enroll}>
 				{@render passwordBox()}
-				<label for="enroll-code">登記碼<span class="hint">（在主機上執行）</span></label>
+				<label for="enroll-code">登記碼 <span class="hint">在{BOARD_FOLDER}執行</span></label>
 				<pre><code>{ENROLL_COMMAND}</code></pre>
 				<input
 					id="enroll-code"
@@ -308,12 +308,12 @@
 		<button class="back" type="button" onclick={() => backToPassword()}>返回登入</button>
 	{:else if data.totp === 'unreadable' || data.passkeys === 'unreadable'}
 		<p>
-			{data.totp === 'unreadable' ? '看板的 TOTP 金鑰檔讀不出來' : '看板的 passkey 檔讀不出來'}，目前無法登入。請在主機上執行：
+			{data.totp === 'unreadable' ? '看板的 TOTP 金鑰檔讀不出來' : '看板的 passkey 檔讀不出來'}，目前無法登入。請在{BOARD_FOLDER}執行：
 		</p>
-		<pre><code>{data.totp === 'unreadable' ? TOTP_COMMAND : hostCommand(data.boardDir, 'passkey list')}</code></pre>
+		<pre><code>{data.totp === 'unreadable' ? TOTP_COMMAND : hostCommand('passkey list')}</code></pre>
 		<p>依它的訊息修好之後重新載入這個畫面。</p>
 	{:else if data.totp !== 'set' && data.passkeys !== 'set'}
-		<p>看板還沒設定第二道驗證，目前無法登入。請在主機上執行：</p>
+		<p>看板還沒設定第二道驗證，目前無法登入。請在{BOARD_FOLDER}執行：</p>
 		<pre><code>{TOTP_COMMAND}</code></pre>
 		<p>用手機的驗證器 App 掃描它顯示的 QR code，設定好之後重新載入這個畫面。</p>
 		{#if data.passkeyOrigin}
@@ -379,18 +379,17 @@
 				{failure}{#if waitLeft}請等 {waitLeft} 秒。{/if}
 			</p>
 		{/if}
-		<div class="links">
-			{#if step === 'code'}
+		<!-- No 登記 passkey here: with a second step set, a passkey is added in Settings once logged in. -->
+		{#if step === 'code'}
+			<div class="links">
 				{#if method === 'passkey' && offered.includes('totp')}
 					<button class="back" type="button" onclick={() => switchTo('totp')}>改用驗證碼</button>
 				{:else if method === 'totp' && offered.includes('passkey') && passkeyHere}
 					<button class="back" type="button" onclick={() => switchTo('passkey')}>改用 passkey</button>
 				{/if}
 				<button class="back" type="button" onclick={() => backToPassword()}>重新輸入密碼</button>
-			{:else if data.passkeyOrigin}
-				<button class="back" type="button" onclick={openEnroll}>登記 passkey</button>
-			{/if}
-		</div>
+			</div>
+		{/if}
 	{/if}
 </main>
 
