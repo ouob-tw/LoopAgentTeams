@@ -249,9 +249,10 @@
 		font-family: var(--mono);
 		text-align: center;
 	}
-	/* A phone's smallest tap target: it ends the login, so a finger must not miss it for a neighbour. */
+	/* A phone's smallest tap target at every overall size: it ends the login, so a finger must not
+	   miss it for a neighbour. */
 	.logout {
-		min-height: 2.75rem;
+		min-height: max(44px, 2.75rem);
 		display: inline-flex;
 		gap: 0.35rem;
 		align-items: center;
@@ -259,7 +260,7 @@
 	.failed {
 		margin: 0;
 		color: var(--danger);
-		font-size: max(0.85rem, var(--min-font, 0px));
+		font-size: max(1rem, var(--min-font, 0px));
 	}
 	.note {
 		margin: 0.35rem 0 0;

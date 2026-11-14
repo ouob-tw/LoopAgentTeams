@@ -98,11 +98,18 @@ for (const size of SIZES) {
 			await shot(tab, `${size.width}-1-button-${scheme}`);
 		}
 		await theme('light');
+		// The smallest overall size shrinks every other button; this one stays a finger's size.
+		for (let i = 0; i < 2; i++) await tab.eval(`document.querySelector('dialog[open] [aria-label="縮小"]').click()`);
+		await tab.until(`document.querySelector('dialog[open] [aria-label="整體大小"] output').textContent === '80%'`, 'the smallest overall size');
+		expect(await tab.eval(`${BUTTON}.getBoundingClientRect().height`)).toBeGreaterThanOrEqual(44);
+		await tab.eval(`document.querySelector('dialog[open] [aria-label="整體大小"] button:last-child').click()`);
+		await tab.until(`document.querySelector('dialog[open] [aria-label="整體大小"] output').textContent === '100%'`, 'the overall size back at its default');
 
 		// No answer: the button says so and the device stays logged in.
 		await tab.eval(`window.realFetch = window.fetch; window.fetch = (input, init) => String(input).includes('/api/device') ? Promise.reject(new TypeError('Failed to fetch')) : window.realFetch(input, init)`);
 		await tab.pointerClick('dialog[open] button.logout');
 		await tab.until(`document.querySelector('dialog[open] p.failed')?.textContent.trim() === '沒有登出，請再試一次。'`, 'the failure under the button');
+		expect(await tab.eval(`parseFloat(getComputedStyle(document.querySelector('dialog[open] p.failed')).fontSize)`)).toBeGreaterThanOrEqual(16);
 		expect(await tab.eval(`${BUTTON}.disabled`)).toBe(false);
 		expect(fixture.cli('devices').stdout).toContain(label);
 		await shot(tab, `${size.width}-2-failed-light`);
