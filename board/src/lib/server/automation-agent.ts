@@ -47,9 +47,6 @@ export function controllerMessage(client: AgentSpec['client'], run: { taskName: 
 	return latCommand(client, text);
 }
 
-/** The message a Codex controller resumed on another account gets. */
-export const CONTROLLER_RESUME_MESSAGE = `剛才額度用完，已換帳號接回。請接著把這一輪做完，${CONTROLLER_ENDING}`;
-
 const shellQuote = (value: string) => (/^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`);
 
 /** A controller's turn that ended waiting on its agents (NO REPLY:): the run goes on. */
@@ -226,6 +223,9 @@ export interface Watched {
 	/** A reply that ends a turn with the run going on (an unattended controller waiting on its
 	 *  agents): the next reply is judged instead. */
 	goesOn?: (reply: string) => boolean;
+	/** An unattended controller: its grant stops when quota runs out, so a Codex account confirmed
+	 *  at 0 ends the run as 額度用完, with no switch and no resume. */
+	quotaStops?: boolean;
 }
 
 /** What the watcher does with a task agent's questions, through the automation. */
@@ -346,6 +346,7 @@ async function switchAndResume(host: AgentHost, watched: Watched, name: string, 
 	// Its account unknown, or back above 0 while another one is pinned now: nothing confirmed, nothing
 	// restarted; looked at again later, and the limit still ends the run.
 	if (!own || (!exhausted(own) && limits.value.pinned !== own.index)) return { judgeAfter: null };
+	if (watched.quotaStops) return exhausted(own) ? { status: 'quota', reason: `額度用完：${own.label} 用完，無人模式的主控額度用完就停，不換帳號` } : { judgeAfter: null };
 	let note: string;
 	if (!exhausted(own)) {
 		// Same account, quota back: nothing to switch, only the stopped turn to take up again.

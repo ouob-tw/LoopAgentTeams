@@ -23,17 +23,21 @@ gh issue list -R ouob-tw/LoopAgentTeams-work -l ready-for-agent --state open \
   --search '-label:nightly-hold' --json number,title,labels,createdAt --limit 200
 ```
 
-Order them: severe first — `suite-failure`, then `bug`, then the rest (`test-cleanup`, `enhancement`, unlabelled); within a tier, oldest `createdAt` first. Pick the first 3 at most. Tickets opened by the test gate (`test-cleanup`) and by retro-log are ordinary tickets. Do not take entries from the retro feedback store; only tracker tickets.
+Order them: severe first — `suite-failure`, then `bug`, then the rest (`test-cleanup`, `enhancement`, unlabelled); within a tier, oldest `createdAt` first. Pick the first 3 at most. Before any work on a picked ticket, mark it (step 3), so a round cut short by the time limit or quota still leaves the mark. Tickets opened by the test gate (`test-cleanup`) and by retro-log are ordinary tickets. Do not take entries from the retro feedback store; only tracker tickets.
 
 Fix each picked ticket by the LAT short flow up to a merge into `dev`. Push only as the pre-authorization allows; never push `main`, never deploy production, never install anything on the host. Anything that needs the user is parked into the review page, as unattended mode says.
 
-## 3. Mark what was not finished
+## 3. Hold marks
 
-A picked ticket that ends parked or failed tonight gets the label `nightly-hold` and one comment saying what blocked it and what the user should decide or fix; the next nights skip it until the user removes the label. Create the label once if it is missing:
+- **When picked**, before working on it: add the label `nightly-hold` and a comment `Nightly round <date, Asia/Taipei>: working on this.` The next nights skip any ticket with this label.
+- **Merged into `dev`**: remove `nightly-hold` (and close the ticket as the short flow does).
+- **Parked or failed**: keep `nightly-hold` and add one comment saying what blocked it and what the user should decide or fix. It stays skipped until the user removes the label.
+
+A round that is stopped midway (time limit, quota) leaves its unfinished tickets labelled, so they are not picked again before the user looks. Create the label once if it is missing:
 
 ```bash
 gh label create nightly-hold -R ouob-tw/LoopAgentTeams-work --color B60205 \
-  --description 'Nightly unattended round parked or failed this; remove to let it be picked again' 2>/dev/null || true
+  --description 'A nightly unattended round is on this, or parked or failed it; remove to let it be picked again' 2>/dev/null || true
 ```
 
 ## 4. Finish

@@ -53,7 +53,6 @@ import {
 	codexBeforeLaunch,
 	controllerGoesOn,
 	controllerMessage,
-	CONTROLLER_RESUME_MESSAGE,
 	cutReason,
 	firstMessage,
 	GONE_AT_RESTART,
@@ -764,7 +763,7 @@ export function createAutomation(options: {
 			adopted,
 			// An unattended controller never asks: a turn waiting on its agents goes on.
 			...(task.agent!.unattended
-				? { goesOn: controllerGoesOn, ending: 'DONE 或 FAILED', resumeMessage: CONTROLLER_RESUME_MESSAGE }
+				? { goesOn: controllerGoesOn, ending: 'DONE 或 FAILED', quotaStops: true }
 				: { asking: {
 				waiting: () => openAsk(latest(run)) !== undefined,
 				replying: () => replying.has(run.id),

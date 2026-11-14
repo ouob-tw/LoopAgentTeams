@@ -384,7 +384,23 @@ def board_log_lines():
     return path, items
 
 
-def board_task_grant(record, versions, evidence):
+def cited_by_any_grant(lat, evidence):
+    """Whether a version of any session's round in this project cites the evidence: a board run
+    grants one round of one controller, never a later round."""
+    for path in (lat / 'unattended').glob('*-r*.json'):
+        if not path.name[:-len('.json')].rsplit('-r', 1)[-1].isdigit():
+            continue  # a draft or a review, not a grant
+        try:
+            versions = json.loads(path.read_text(encoding='utf-8')).get('versions')
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(versions, list) and any(
+                isinstance(old, dict) and old.get('evidence') == evidence for old in versions):
+            return True
+    return False
+
+
+def board_task_grant(lat, record, versions, evidence):
     """A board-task version cites `board-task:<run>`: the line the board logged for that run of an
     unattended automation task before it opened this controller. The grant is the run's, which must
     equal the latest save of the task by a signed-in device that is no test login, and the task
@@ -392,7 +408,7 @@ def board_task_grant(record, versions, evidence):
     (None, problem)."""
     if not evidence.startswith(TASK_EVIDENCE):
         return None, f'board-task evidence must be `{TASK_EVIDENCE}<run ID>` from the board\'s action log'
-    if any(old.get('evidence') == evidence for old in versions):
+    if any(old.get('evidence') == evidence for old in versions) or cited_by_any_grant(lat, evidence):
         return None, f'{evidence} is already cited by an earlier version'
     wanted = evidence.removeprefix(TASK_EVIDENCE)
     path, items = board_log_lines()
@@ -539,7 +555,7 @@ def task_grant_args(args):
     with preauth.locked(session_lock(lat, session)):
         found = load_round(lat, session)
     evidence = (args.evidence or '').strip()
-    fields, problem = board_task_grant(found.record, found.versions, evidence)
+    fields, problem = board_task_grant(lat, found.record, found.versions, evidence)
     if problem:
         raise Refused(problem)
     given = dict(goal=(args.goal or '').strip() or None, done=text_list(args.done) or None,
@@ -586,7 +602,7 @@ def cmd_create(args):
         elif args.source == 'settings-default':
             problem = settings_default_problem(lat, found, evidence, scope, args.max_hours)
         elif args.source == 'board-task':
-            fields, problem = board_task_grant(found.record, versions, evidence)
+            fields, problem = board_task_grant(lat, found.record, versions, evidence)
             if not problem and fields != dict(goal=goal, done=done, scope=scope,
                                               max_hours=args.max_hours):
                 problem = 'the grant differs from the task settings'

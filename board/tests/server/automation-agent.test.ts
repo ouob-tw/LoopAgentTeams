@@ -631,3 +631,22 @@ test('an unattended task needs a goal and at least one done condition', async ()
 	expect(response.status).toBe(400);
 	expect((await response.json()).errors).toEqual({ unattendedGoal: '請填這一輪的目標', unattendedDone: '做完條件至少寫一條' });
 });
+
+test('an unattended Codex controller whose account runs out mid-run stops as 額度用完: no switch, no resume, even with another account left', async () => {
+	const grant = { goal: '處理已知問題', done: ['回顧頁通過交付前核對'], scope: { ticket_confirmation: true, assume_defaults: true, prototype_decide: true } };
+	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low', unattended: grant });
+	freshRun();
+	accounts(0, 20, 30);
+	codexPlan('auto-lat-cx');
+	const started = await runNow(task.id);
+	await launchedRun(task.id, 'auto-lat-cx');
+	reply('auto-lat-cx', '正在修 #12');
+	accounts(0, 100, 30);
+	limitOnScreen('auto-lat-cx');
+	setStatus('auto-lat-cx', 'listening');
+	const out = await ended(task.id, started.id);
+	expect([out.status, out.reason]).toEqual(['quota', '額度用完：帳號 1 用完，無人模式的主控額度用完就停，不換帳號']);
+	expect(authCalls().some((call) => call[0] === 'switch')).toBe(false);
+	expect(hcomCalls().some((call) => call.args[0] === 'r')).toBe(false);
+	expect(listed('auto-lat-cx')).toBe(false);
+});

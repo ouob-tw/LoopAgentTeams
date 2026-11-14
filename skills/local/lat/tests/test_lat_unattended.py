@@ -502,8 +502,9 @@ class BoardTaskTests(UnattendedCase):
 
     def session(self, status='active', **extra):
         extra.setdefault('hcom_name', 'orch')
+        extra.setdefault('history', [])
         self.write(self.lat / 'sessions' / f'{SESSION}.json',
-                   json.dumps(dict(status=status, history=[],
+                   json.dumps(dict(status=status,
                                    decisions_path=str(self.lat / 'decisions'), **extra)))
 
     def log(self, **entry):
@@ -545,6 +546,9 @@ class BoardTaskTests(UnattendedCase):
         self.assertFalse(self.project_file.exists())
         self.assertFalse(self.global_file.exists())
         self.json_of('close', '--reason', 'off')
+        self.assertIn('already cited', self.task_create(evidence, code=1)['reason'])
+        # Nor in a later round of the same controller.
+        self.session(hcom_name=f'{TAG}-hepe', history=[dict(round=1)])
         self.assertIn('already cited', self.task_create(evidence, code=1)['reason'])
 
     def test_refused_when_the_run_save_task_file_or_agent_do_not_agree(self):
