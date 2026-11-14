@@ -145,7 +145,7 @@ for name in args[args.index('--skill') + 1:args.index('--global')]:
         self.assertIsNone(self.bunx_args())
         self.assertIn(f'  alpha: skills/local/alpha: {SUITE} ({why})', result.stderr)
         self.assertIn(f"cd {self.repo} && uv run --no-project python ", result.stderr)
-        self.assertIn(f"suite-gate.py run --registered '{SUITE}' --purpose release",
+        self.assertIn('suite-gate.py run --registered skills/local/alpha --purpose release',
                       result.stderr)
         self.assertNotIn('--purpose release --', result.stderr)
 
@@ -222,6 +222,45 @@ for name in args[args.index('--skill') + 1:args.index('--global')]:
         result = self.install()
         self.assert_refused(result, 'no run of this content')
         self.assertIn('Not installed', result.stderr)
+
+    def add_skill(self, name):
+        self.write(f'skills/local/{name}/SKILL.md', f'---\nname: {name}\ndescription: x\n---\n')
+        self.write(f'skills/local/{name}/tests/test_{name}.py',
+                   'import unittest\n\n\nclass T(unittest.TestCase):\n'
+                   '    def test_ok(self):\n        pass\n')
+
+    def commit_suites(self, *names):
+        self.write('.suite-gate.json', json.dumps({'full_suites': [
+            {'cwd': f'skills/local/{n}', 'command': SUITE} for n in names]}))
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'more')
+
+    def test_suites_sharing_a_command_are_named_by_directory_once_each(self):
+        self.add_skill('gamma')
+        self.commit_suites('alpha', 'gamma')
+        result = self.install('--skill', 'alpha', 'gamma')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('suite-gate.py run --registered skills/local/alpha skills/local/gamma '
+                      '--purpose release', result.stderr)
+        self.assertEqual(result.stderr.count('--registered'), 1)
+        self.assertNotIn('Commit these folders first', result.stderr)
+
+    def test_an_uncommitted_skill_folder_is_named(self):
+        self.write('skills/local/alpha/notes.txt', 'uncommitted\n')
+        result = self.install()
+        self.assertIn('Commit these folders first', result.stderr)
+        self.assertIn('\n  skills/local/alpha\n', result.stderr)
+
+    def test_a_snapshot_run_of_the_printed_directory_satisfies_the_check(self):
+        run = subprocess.run([sys.executable, str(GATE), 'run', '--registered',
+                              'skills/local/alpha', '--purpose', 'release'], cwd=self.repo,
+                             env=self.env, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            _, lacking = gate.lacking_folder_suites(
+                self.repo, gate.load_registry(self.repo), ['skills/local/alpha'])
+        self.assertEqual(lacking, [])
+        self.assert_installed(self.install('--skill', 'alpha'), ['alpha'])
 
     def test_a_changed_skill_folder_refuses(self):
         self.record()

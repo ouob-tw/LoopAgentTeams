@@ -171,13 +171,21 @@ def main(argv=None):
             why = 'the latest run of this content failed' if result == 'failed' \
                 else 'no run of this content'
             print(f"  {name}: {suite['cwd']}: {suite['command']} ({why})", file=sys.stderr)
-            if suite['command'] not in suites:
-                suites.append(suite['command'])
+            if suite['cwd'] not in suites:
+                suites.append(suite['cwd'])
         # The snapshot form tests HEAD in a clean checkout, so another agent merging into
         # this work tree mid-run cannot void the record; it is filed under the same
         # content tree, directory and command that the check above reads.
         command = shlex.join(['uv', 'run', '--no-project', 'python', str(gate.SCRIPT), 'run',
                               '--registered', *suites, '--purpose', 'release'])
+        folders = sorted({skills[name] for name, _, _ in lacking})
+        # The snapshot is HEAD's content, the check above is the work tree's.
+        uncommitted = [folder for folder, work, head in zip(
+            folders, gate.subtrees(ROOT, [f'{tree}:{f}' for f in folders]),
+            gate.subtrees(ROOT, [f'HEAD:{f}' for f in folders])) if work != head]
+        if uncommitted:
+            print('Commit these folders first, or the snapshot will not test their current '
+                  'content:\n  ' + '\n  '.join(uncommitted), file=sys.stderr)
         print('Run the suites through the gate on a snapshot of the committed HEAD (commit '
               'your changes first; uncommitted ones are not tested), then install again:',
               file=sys.stderr)
