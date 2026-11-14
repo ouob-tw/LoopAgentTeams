@@ -112,6 +112,10 @@ class CreationTests(ReviewCase):
         patch = '*** Begin Patch\n*** Add File: .lat/decisions/LAT-Q.md\n+...\n*** End Patch\n'
         self.edited('apply_patch', dict(command=patch))
         self.assertEqual(self.item_ids(), ['LAT-P', 'LAT-Q'])
+        (self.decisions / 'LAT-Q.md').unlink()
+        self.edited('apply_patch', dict(command='*** Begin Patch\n*** Delete File: '
+                                        '.lat/decisions/LAT-Q.md\n*** End Patch\n'))
+        self.assertEqual(self.item_ids(), ['LAT-P'])
 
     def test_each_new_or_changed_item_is_in_the_review_before_the_turn_ends(self):
         """#568: a record written with the editor is in the review by the controller's next

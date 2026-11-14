@@ -62,8 +62,9 @@ HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit', 'PreToolUse', 'PostTo
 # follows the file tools: Claude's Write/Edit/MultiEdit and Codex's apply_patch.
 MATCHERS = dict(SessionStart=MATCHER, PreToolUse='Bash',
                 PostToolUse='Write|Edit|MultiEdit|apply_patch')
-# The files an apply_patch call writes, as its patch text names them.
-PATCH_PATH = re.compile(r'^\*\*\* (?:Add File|Update File|Move to): (.+)$', re.MULTILINE)
+# The files an apply_patch call adds, changes, moves or deletes, as its patch text names them.
+PATCH_PATH = re.compile(r'^\*\*\* (?:Add File|Update File|Move to|Delete File): (.+)$',
+                        re.MULTILINE)
 # An unchecked Markdown checkbox: the close check reads acceptance items this way.
 UNCHECKED_ITEM = re.compile(r'^[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+\[ \][ \t]*(.*)$', re.MULTILINE)
 # `<decision ID> r<N>` cited in a close comment.

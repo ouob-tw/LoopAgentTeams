@@ -2,7 +2,7 @@
 
 先將 `lat_dir` 設為本次實際安裝的 LAT 技能目錄絕對路徑。
 
-技能檔案安裝不會註冊 hook。Claude 使用者層級設定：`install --client claude --claude-settings <settings.json>`（預設 `~/.claude/settings.json`），於 SessionStart 新增 matcher `^(compact|resume)$`、command 結尾為 `hook --client claude` 的 group，在 Stop 與 UserPromptSubmit 新增同一 command（無 matcher），PreToolUse 新增 matcher `Bash` 的同一 command；同樣先 preview、備份、保留其他設定，重跑不重複，`uninstall` 加相同參數移除。使用者層級 hook 不需信任步驟；重啟 Claude Code 後在 `/hooks` 確認。
+技能檔案安裝不會註冊 hook。Claude 使用者層級設定：`install --client claude --claude-settings <settings.json>`（預設 `~/.claude/settings.json`），於 SessionStart 新增 matcher `^(compact|resume)$`、command 結尾為 `hook --client claude` 的 group，在 Stop 與 UserPromptSubmit 新增同一 command（無 matcher），PreToolUse 新增 matcher `Bash`、PostToolUse 新增 matcher `Write|Edit|MultiEdit|apply_patch` 的同一 command；同樣先 preview、備份、保留其他設定，重跑不重複，`uninstall` 加相同參數移除。使用者層級 hook 不需信任步驟；重啟 Claude Code 後在 `/hooks` 確認。
 
 Codex：先確認有效 `CODEX_HOME`（預設 `~/.codex`），檢查 preview 後，在既有授權範圍內執行同一指令去掉 `--preview`。以下示範隔離目錄：
 
@@ -35,7 +35,7 @@ UserPromptSubmit 在主控收到使用者訊息時列出自己仍待答的題目
 
 PreToolUse 只對啟用中的主控生效：要執行 `gh issue close` 時先用 `gh issue view` 讀票的內文，還有未勾選的 `- [ ]` 項目就擋下並列出。關閉留言（`-c`／`--comment`）引用 `<待決 ID> r<版本>`、且該紀錄有這版的真人答覆（`## 答覆` 段落與 `- 來源：` 行）時放行；引用的紀錄沒有真人答覆仍擋。讀不到票時只警告、不擋；指令無法解析時擋下，請把 `gh issue close` 單獨執行。檢查在指令執行前進行，所以打勾（`gh issue edit`）與關票要分兩條指令執行；同一條指令裡兩者並存而被擋時，擋下訊息會提醒這點。本輪有過無人授權時，每條指令執行前也會重建回顧檔（PostToolUse 漏掉時的備援）；重建失敗只警告。新增此事件後須重跑 install，Codex 另到 `/hooks` 信任。
 
-PostToolUse 只對啟用中的主控生效：主控用檔案工具（Claude 的 Write／Edit／MultiEdit、Codex 的 apply_patch）寫了待決目錄裡的 `.md` 後，立刻重建本輪回顧檔，讓剛寫的擱置或代決紀錄馬上出現在回顧（見 [回顧](unattended.md#回顧)）；其他檔案不處理，失敗只警告、不擋。新增此事件後須重跑 install，Codex 另到 `/hooks` 信任，主控重開後才生效。
+PostToolUse 只對啟用中的主控生效：主控用檔案工具（Claude 的 Write／Edit／MultiEdit、Codex 的 apply_patch）寫入、搬移或刪除待決目錄裡的 `.md` 後，立刻重建本輪回顧檔，讓剛寫的擱置或代決紀錄馬上出現在回顧（見 [回顧](unattended.md#回顧)）；其他檔案不處理，失敗只警告、不擋。新增此事件後須重跑 install，Codex 另到 `/hooks` 信任，主控重開後才生效。
 
 ## 提交訊息票號檢查
 
