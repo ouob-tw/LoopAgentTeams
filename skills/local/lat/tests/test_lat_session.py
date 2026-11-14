@@ -3963,6 +3963,18 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(line, 'LAT 提醒：本輪出過事（停住監控送過催促）但沒有 retro 紀錄；'
                                '強制結束或換班不擋。')
 
+    def test_unreadable_watch_log_refuses_deactivate_but_force_and_handover_only_remind(self):
+        self.delivered_round()
+        (self.work / '.lat/watch/orch/watch.jsonl').mkdir(parents=True)
+        refused = self.deactivate()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn('本輪 retro 觸發條件讀不出，拒絕停用', refused.stderr)
+        self.assertIn('--skip-retro', refused.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+        handover = self.deactivate('--successor', 'next-orch')
+        self.assertEqual(handover.returncode, 0, handover.stderr)
+        self.assertIn('LAT 提醒：本輪 retro 觸發條件讀不出', handover.stdout)
+
     def test_deactivate_refuses_unfinished_ledger_and_force_keeps_reason(self):
         self.activate()
         self.open_item('#9')

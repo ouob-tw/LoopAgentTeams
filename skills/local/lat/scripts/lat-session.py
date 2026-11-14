@@ -1777,7 +1777,7 @@ def round_nudges(record):
 
 def retro_triggers(record):
     """This round's retro triggers as [(condition, evidence)]; empty when nothing went wrong.
-    Raises ValueError when the ledger or the problem log cannot be read."""
+    Raises ValueError when the ledger, the problem log or a watch log cannot be read."""
     module = ledger_module()
     ledger = Path(record['ledger_path'])
     try:
@@ -1799,9 +1799,10 @@ def retro_triggers(record):
             parks = [entry for entry in row['history'] if entry.get('action') == 'park']
             if parks:
                 triggers.append(('park', f'{label}擱置：{parks[-1].get("reason")}（{ledger}）'))
-    except module.Failure as exc:
+        triggers += [('nudge', text) for text in round_nudges(record)]
+    except (module.Failure, OSError) as exc:
         raise ValueError(str(exc)) from exc
-    return triggers + [('nudge', text) for text in round_nudges(record)]
+    return triggers
 
 
 def retro_command(record, *extra):
