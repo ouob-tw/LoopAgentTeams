@@ -106,7 +106,8 @@ class GateCase(unittest.TestCase):
         """A `gh` first on PATH that logs its arguments; the real one is never reached.
 
         `issue list` prints gh/open.json (default `[]`), `issue view` gh/view.json (default
-        an open issue); with gh/fail present every call fails."""
+        an open issue); with gh/fail present every call fails; with gh/no-ready-label an
+        `issue create` naming the `ready-for-agent` label fails as in a repo without it."""
         self.gh_dir = self.tmp / 'gh'
         self.gh_dir.mkdir()
         fake = self.tmp / 'bin/gh'
@@ -126,6 +127,8 @@ elif sys.argv[1:3] == ['issue', 'view']:
     print(view.read_text() if view.exists() else json.dumps(
         {{'state': 'OPEN', 'url': 'https://github.com/o/r/issues/' + sys.argv[3]}}))
 elif sys.argv[1:3] == ['issue', 'create']:
+    if (d / 'no-ready-label').exists() and 'ready-for-agent' in sys.argv:
+        sys.exit("could not add label: 'ready-for-agent' not found")
     print('https://github.com/o/r/issues/7')
 """)
         fake.chmod(0o755)
@@ -2078,6 +2081,7 @@ class CleanupTests(CleanupCase):
                                      '--repo', 'o/r'])
         self.assertEqual(create[:4], ['issue', 'create', '--title', f'Test cleanup: {self.repo.name}'])
         self.assertEqual(create[4:6], ['--label', 'test-cleanup'])
+        self.assertEqual(create[6:8], ['--label', 'ready-for-agent'])
         self.assertEqual(create[-2:], ['--repo', 'o/r'])
         body = create[create.index('--body') + 1]
         self.assertIn('31 days since the last cleanup (2026-01-01)', body)
@@ -2221,13 +2225,15 @@ class CleanupTests(CleanupCase):
         self.assertIn('already updated today', again.stderr)
         self.assertEqual(len(self.actions()), 1)
         self.run_suite('2026-02-16')
-        self.assertEqual(len(self.actions()), 2)
+        self.assertEqual(len(self.actions()), 1, 'the same trigger is not repeated next day')
+        self.assertIn('no comment on', self.run_suite('2026-02-17').stderr)
 
     def test_the_opened_issue_gets_the_next_comment_even_before_the_label_list_shows_it(self):
         self.run_suite('2026-01-01')
         self.run_suite('2026-02-01')
         self.assertEqual(self.actions(), [['issue', 'create', '--title']])
-        result = self.run_suite('2026-02-02')  # the label list still returns []
+        self.set_speed(100, [130, 130, 130])  # a new trigger kind is worth a comment
+        result = self.run_suite('2026-02-02', code=1)  # the label list still returns []
         self.assertIn('commented on https://github.com/o/r/issues/7', result.stderr)
         self.assertEqual(self.gh_calls()[-2][:5], ['issue', 'view', '7', '--json', 'state,url'])
         self.assertEqual(self.actions(), [['issue', 'create', '--title'],
