@@ -8,6 +8,7 @@
 	import {
 		AGENT_EFFORTS,
 		DEFAULT_REVIEW_MODEL,
+		grantHours,
 		defaultReviewClient,
 		EFFORT_TEXT,
 		weekdayName,
@@ -18,6 +19,7 @@
 		type ScheduleType
 	} from '#lib/board/automation.ts';
 	import { saveTask, type FieldErrors } from '#lib/board/automation-actions.ts';
+	import { SCOPE_KEYS, SCOPE_LABEL, type UnattendedScope } from '#lib/board/unattended.ts';
 
 	let { task, onsaved, oncancel }: { task: AutomationTask | null; onsaved: (id: string) => void; oncancel: () => void } = $props();
 
@@ -40,6 +42,13 @@
 	let model = $state(from?.agent?.model ?? '');
 	let effort = $state<AgentEffort>(from?.agent?.effort ?? 'medium');
 	let brief = $state(from?.agent?.brief ?? '');
+	// An agent task may open a LAT controller in unattended mode, with the grant filled here (#625).
+	let unattended = $state(from?.agent?.unattended !== undefined);
+	let goal = $state(from?.agent?.unattended?.goal ?? '');
+	let doneText = $state(from?.agent?.unattended?.done.join('\n') ?? '');
+	let scope = $state<UnattendedScope>({ ...(from?.agent?.unattended?.scope ?? { ticket_confirmation: true, assume_defaults: true, prototype_decide: true }) });
+	/** The grant's time limit: the task's limit in whole hours, once the limit reads as one. */
+	const hours = $derived(/^\d+$/.test(limitMinutes.trim()) && Number(limitMinutes) > 0 ? `${grantHours(Number(limitMinutes))} 小時` : '上限');
 	let review = $state(from?.review.enabled ?? false);
 	/** Once the switch is set by hand, picking the other kind leaves it alone. */
 	let reviewTouched = $state(from !== null);
@@ -94,7 +103,7 @@
 			time,
 			limitMinutes,
 			kind,
-			...(kind === 'command' ? { command: { command, folder, checks } } : { agent: { client, model, effort, folder, brief } }),
+			...(kind === 'command' ? { command: { command, folder, checks } } : { agent: { client, model, effort, folder, brief, unattended: unattended ? { goal, done: doneText.split('\n'), scope } : null } }),
 			review: { enabled: review, checklist: checklist.split('\n'), client: reviewClient, model: reviewModel, effort: reviewEffort }
 		};
 		const saved = await saveTask(task?.id ?? null, body);
@@ -214,6 +223,28 @@
 	<label for="automation-limit">最久跑多久（分鐘）</label>
 	<input id="automation-limit" name="limitMinutes" class="clock" type="text" inputmode="numeric" bind:value={limitMinutes} aria-invalid={!!errors.limitMinutes} />
 	{@render error('limitMinutes')}
+
+	{#if kind === 'agent'}
+		<label class="switch">
+			<input type="checkbox" name="unattended" bind:checked={unattended} />
+			開 LAT 主控，用無人模式跑
+		</label>
+		{#if unattended}
+			<label for="automation-goal">這一輪的目標</label>
+			<textarea id="automation-goal" name="goal" class="short" bind:value={goal} aria-invalid={!!errors.unattendedGoal}></textarea>
+			{@render error('unattendedGoal')}
+			<label for="automation-done">怎麼算做完（一行一條）</label>
+			<textarea id="automation-done" name="done" class="tall" bind:value={doneText} aria-invalid={!!errors.unattendedDone}></textarea>
+			{@render error('unattendedDone')}
+			<fieldset class="scope">
+				<legend class="label">參謀可以替你決定的事</legend>
+				{#each SCOPE_KEYS as key (key)}
+					<label class="tick"><input type="checkbox" name={key} bind:checked={scope[key]} /><span>{SCOPE_LABEL[key]}</span></label>
+				{/each}
+			</fieldset>
+			<p class="fixed" data-stop>什麼時候停：額度用完，或跑滿 {hours}。</p>
+		{/if}
+	{/if}
 
 	<label class="switch">
 		<input type="checkbox" name="review" bind:checked={review} onchange={() => (reviewTouched = true)} />
@@ -356,10 +387,40 @@
 		gap: 0.6rem;
 		margin-top: 1rem;
 	}
-	.switch input {
+	.switch input,
+	.tick input {
 		width: 24px;
 		height: 24px;
 		flex: none;
+	}
+	/* The goal and done boxes grow with what is typed, so nothing hides behind a scroll on a phone. */
+	textarea.short,
+	textarea.tall {
+		field-sizing: content;
+	}
+	textarea.short {
+		min-height: 4.5rem;
+	}
+	textarea.tall {
+		min-height: 8.5rem;
+	}
+	.scope {
+		margin: 0.7rem 0 0;
+		padding: 0;
+		border: 0;
+		min-width: 0;
+	}
+	.scope legend {
+		margin: 0 0 0.2rem;
+		padding: 0;
+	}
+	.tick {
+		display: flex;
+		align-items: center;
+		min-height: 44px;
+		gap: 0.6rem;
+		margin: 0;
+		font-weight: 400;
 	}
 	.hint {
 		margin: 0.8rem 0 0;

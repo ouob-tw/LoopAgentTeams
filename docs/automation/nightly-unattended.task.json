@@ -1,0 +1,35 @@
+{
+  "name": "每晚處理已知問題",
+  "schedule": { "type": "daily" },
+  "time": "03:00",
+  "limitMinutes": 360,
+  "kind": "agent",
+  "agent": {
+    "client": "claude",
+    "model": "claude-opus-5-5",
+    "effort": "medium",
+    "folder": "~/LoopAgentTeams",
+    "brief": "docs/automation/nightly-unattended.md",
+    "unattended": {
+      "goal": "處理 tracker 上的已知問題：先 triage needs-triage 的票，再修最多 3 張 ready-for-agent 的票並合併到 dev",
+      "done": [
+        "needs-triage 的票都已寫好 agent brief，改標 ready-for-agent 或 needs-info",
+        "挑出的票（最多 3 張）已合併到 dev，或已擱置／失敗並標上 nightly-hold 與留言",
+        "回顧頁已產生並通過交付前核對"
+      ],
+      "scope": { "ticket_confirmation": true, "assume_defaults": true, "prototype_decide": true }
+    }
+  },
+  "review": {
+    "enabled": true,
+    "checklist": [
+      "這一輪的回顧頁（.lat/unattended/<主控 session>-r<輪>-review.md）存在，檔頭寫明交付前核對已做且全部相符",
+      "這次執行期間沒有推送 main（origin/main 的提交與推送紀錄在執行期間沒有變動）",
+      "這一輪修的 ready-for-agent 票不超過 3 張，且只合併到 dev",
+      "挑出的票都先標了 nightly-hold；已合併到 dev 的拿掉了標籤，擱置或失敗的保留標籤並留言說明原因"
+    ],
+    "client": "codex",
+    "model": "gpt-6.1-sol",
+    "effort": "medium"
+  }
+}

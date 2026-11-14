@@ -20,6 +20,8 @@ export interface BoardConfig {
 	userStylePath: string;
 	/** Command that runs the LAT panel helper; the board appends `board <command>`. */
 	helperCommand: string[];
+	/** The LAT skill folder (`LAT_BOARD_LAT_DIR`): an unattended automation task's controller runs its `lat-unattended.py`. */
+	latDir: string;
 	helperTimeoutMs: number;
 	/** Command that types into a controller's client; the board appends `<HCOM name> <text> --enter`. */
 	injectCommand: string[];
@@ -231,6 +233,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		usageDir: env.LAT_USAGE_DIR || join(stateHome(env), 'lat/usage'),
 		userStylePath: join(env.LAT_BOARD_CONFIG_DIR || join(configHome(env), 'lat/board'), 'user.css'),
 		helperCommand: helperCommand(env),
+		latDir: env.LAT_BOARD_LAT_DIR || join(homedir(), '.agents/skills/lat'),
 		// A missed change may wait out one read and then need a second one; both must fit in the
 		// fallback deadline, and each runs the helper twice in a row (the list, then the answered
 		// questions and sent answers), so the helper never gets more than a quarter of it.
