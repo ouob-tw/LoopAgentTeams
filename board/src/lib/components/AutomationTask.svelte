@@ -181,9 +181,10 @@
 				{@const grant = task.agent.unattended}
 				<dt>無人模式</dt>
 				<dd data-unattended>
-					開 LAT 主控：{grant.goal}
+					<p class="grant-line">開 LAT 主控，目標：{grant.goal}</p>
+					<p class="grant-line">做完條件：</p>
 					<ul class="plain">
-						{#each grant.done as line, index (index)}<li>{line}</li>{/each}
+						{#each grant.done as line, index (index)}<li>・{line}</li>{/each}
 					</ul>
 					參謀可以替你決定：{SCOPE_KEYS.filter((key) => grant.scope[key]).map((key) => SCOPE_LABEL[key]).join('、') || '都不代決'}；額度用完或跑滿 {grantHours(task.limitMinutes)} 小時就停。
 				</dd>
@@ -502,5 +503,8 @@
 		.kv dt {
 			margin-top: 0.3rem;
 		}
+	}
+	.grant-line {
+		margin: 0;
 	}
 </style>

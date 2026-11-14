@@ -231,10 +231,10 @@
 		</label>
 		{#if unattended}
 			<label for="automation-goal">這一輪的目標</label>
-			<input id="automation-goal" name="goal" type="text" bind:value={goal} aria-invalid={!!errors.unattendedGoal} />
+			<textarea id="automation-goal" name="goal" class="short" bind:value={goal} aria-invalid={!!errors.unattendedGoal}></textarea>
 			{@render error('unattendedGoal')}
 			<label for="automation-done">怎麼算做完（一行一條）</label>
-			<textarea id="automation-done" name="done" bind:value={doneText} aria-invalid={!!errors.unattendedDone}></textarea>
+			<textarea id="automation-done" name="done" class="tall" bind:value={doneText} aria-invalid={!!errors.unattendedDone}></textarea>
 			{@render error('unattendedDone')}
 			<fieldset class="scope">
 				<legend class="label">參謀可以替你決定的事</legend>
@@ -393,11 +393,26 @@
 		height: 24px;
 		flex: none;
 	}
+	/* The goal and done boxes grow with what is typed, so nothing hides behind a scroll on a phone. */
+	textarea.short,
+	textarea.tall {
+		field-sizing: content;
+	}
+	textarea.short {
+		min-height: 4.5rem;
+	}
+	textarea.tall {
+		min-height: 8.5rem;
+	}
 	.scope {
-		margin: 0;
+		margin: 0.7rem 0 0;
 		padding: 0;
 		border: 0;
 		min-width: 0;
+	}
+	.scope legend {
+		margin: 0 0 0.2rem;
+		padding: 0;
 	}
 	.tick {
 		display: flex;

@@ -420,6 +420,8 @@ export function createAutomation(options: {
 	/** The board state folder, whose action log (`sent-log.jsonl`) gets each save of a task and
 	 *  each run of an unattended one; the folder above `dir` unless given. */
 	stateDir?: string;
+	/** The LAT skill folder an unattended task's controller runs `lat-unattended.py` from. */
+	latDir?: string;
 }): Automation {
 	const { dir, now } = options;
 	const stateDir = options.stateDir ?? dirname(dir);
@@ -820,7 +822,7 @@ export function createAutomation(options: {
 				} catch (error) {
 					return finish(task, run, { status: 'failed', reason: `操作紀錄寫不進去，沒有開主控：${(error as Error).message}` });
 				}
-				prompt = controllerMessage(spec.client, { taskName: task.name, runId: run.id, stateDir, brief });
+				prompt = controllerMessage(spec.client, { taskName: task.name, runId: run.id, stateDir, latDir: options.latDir ?? join(home, '.agents/skills/lat'), brief });
 			}
 			const launched = await host
 				.launch({ ...spec, folder, prompt, tag })

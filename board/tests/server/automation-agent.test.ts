@@ -585,7 +585,7 @@ test('an unattended task opens a LAT controller whose grant comes from the saved
 	const launch = hcomCalls().find((call) => call.args[0] === 'claude')!;
 	const prompt = launch.args[launch.args.indexOf('--hcom-prompt') + 1];
 	expect(prompt.startsWith('/lat 這是看板自動化任務「Agent 任務」開的主控')).toBe(true);
-	expect(prompt).toContain(`LAT_BOARD_STATE_DIR=${state} uv run --no-project python <lat 技能>/scripts/lat-unattended.py create --source board-task --evidence board-task:${started.id}`);
+	expect(prompt).toContain(`LAT_BOARD_STATE_DIR=${state} uv run --no-project python ${join(dir, 'home', '.agents/skills/lat/scripts/lat-unattended.py')} create --source board-task --evidence board-task:${started.id}`);
 	expect(prompt).toContain(`讀取並照做 ${join(work, 'docs/brief.md')}`);
 	expect(prompt).not.toContain('ASK: <問題> 並等待');
 	// The device's save and this run's grant, as lat-unattended reads them; the hours are the limit's, rounded up.

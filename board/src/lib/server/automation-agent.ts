@@ -17,6 +17,7 @@
 // run is never switched: a turn that ends on the usage limit is 額度用完. The limit always counts
 // from the run's start.
 import type { AgentSpec, AutomationRun, ReviewItem, RunStatus } from '../board/automation.ts';
+import { join } from 'node:path';
 import { latCommand } from '../board/launch.ts';
 
 /** How an agent task's agent ends a turn: done, failed, or asking the user and waiting. */
@@ -33,11 +34,12 @@ export const CONTROLLER_ENDING = '這一輪做完並 deactivate 之後，最後�
 
 /** The first message of an unattended task's controller: start the LAT round, turn the grant on
  *  from the task's settings (the board's record of this run), then follow the brief. The state
- *  folder is named because the agent does not inherit the board's environment. */
-export function controllerMessage(client: AgentSpec['client'], run: { taskName: string; runId: string; stateDir: string; brief: string }): string {
+ *  folder is named because the agent does not inherit the board's environment; the tool is the
+ *  board's own LAT skill folder's. */
+export function controllerMessage(client: AgentSpec['client'], run: { taskName: string; runId: string; stateDir: string; latDir: string; brief: string }): string {
 	const text = [
 		`這是看板自動化任務「${run.taskName}」開的主控（執行 ${run.runId}），這一輪用無人模式。`,
-		`activate 後先執行 \`LAT_BOARD_STATE_DIR=${shellQuote(run.stateDir)} uv run --no-project python <lat 技能>/scripts/lat-unattended.py create --source board-task --evidence board-task:${run.runId}\`：目標、做完條件、代決範圍與時間上限都取自任務設定，不要另外給或改。`,
+		`activate 後先執行 \`LAT_BOARD_STATE_DIR=${shellQuote(run.stateDir)} uv run --no-project python ${shellQuote(join(run.latDir, 'scripts/lat-unattended.py'))} create --source board-task --evidence board-task:${run.runId}\`：目標、做完條件、代決範圍與時間上限都取自任務設定，不要另外給或改。`,
 		'建不起來就不要做事，deactivate 後最後一行回覆 FAILED: <原因>。',
 		`建好後讀取並照做 ${run.brief}。`,
 		CONTROLLER_ENDING
