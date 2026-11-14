@@ -57,9 +57,13 @@ QUESTION_TAGS = ('DECIDE:', 'HELP:')
 DUTY_TAGS = QUESTION_TAGS + ('DONE:',)
 DUTY_LIMIT = 40
 REAP_TIMEOUT_SECONDS = 60
-HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit', 'PreToolUse')
-# Events whose LAT group runs only for these matchers; the others take no matcher.
-MATCHERS = dict(SessionStart=MATCHER, PreToolUse='Bash')
+HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse')
+# Events whose LAT group runs only for these matchers; the others take no matcher. PostToolUse
+# follows the file tools: Claude's Write/Edit/MultiEdit and Codex's apply_patch.
+MATCHERS = dict(SessionStart=MATCHER, PreToolUse='Bash',
+                PostToolUse='Write|Edit|MultiEdit|apply_patch')
+# The files an apply_patch call writes, as its patch text names them.
+PATCH_PATH = re.compile(r'^\*\*\* (?:Add File|Update File|Move to): (.+)$', re.MULTILINE)
 # An unchecked Markdown checkbox: the close check reads acceptance items this way.
 UNCHECKED_ITEM = re.compile(r'^[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+\[ \][ \t]*(.*)$', re.MULTILINE)
 # `<decision ID> r<N>` cited in a close comment.
@@ -1806,11 +1810,30 @@ def delegated_stop_check(record):
             '「代決紀錄」補正；不屬參謀可代決的、或兩位參謀不一致的，改為 `- status: parked`。')
 
 
+def edited_paths(payload):
+    """The files a PostToolUse file-tool call wrote: Claude's `file_path`, or the paths in a
+    Codex apply_patch's patch text, relative paths taken from the hook's cwd."""
+    tool_input = payload.get('tool_input')
+    if not isinstance(tool_input, dict):
+        return []
+    command = tool_input.get('command')
+    command = '\n'.join(map(str, command)) if isinstance(command, list) else str(command or '')
+    names = [str(tool_input.get('file_path') or ''), *PATCH_PATH.findall(command)]
+    return [Path(payload['cwd'], name.strip()) for name in names if name.strip()]
+
+
+def wrote_decision_record(record, payload):
+    """Whether this file-tool call wrote a Markdown file in the controller's decisions folder."""
+    decisions = Path(record['decisions_path']).resolve()
+    return any(path.suffix == '.md' and path.resolve().parent == decisions
+               for path in edited_paths(payload))
+
+
 def refresh_review_before_command(record):
-    """Rebuild this round's review before each of the controller's shell commands, so a parked
-    or delegated record it just wrote with its editor is in the review by its next command,
-    not only at the turn end (the tools that write other items refresh it themselves). A no-op
-    in a round without a grant; a failure only warns."""
+    """Rebuild this round's review: right after the controller writes a decision record with
+    its editor (PostToolUse) and, as the fallback where a client has no such hook, before each
+    of its shell commands (PreToolUse); the tools that write other items refresh it
+    themselves. A no-op in a round without a grant; a failure only warns."""
     try:
         unattended = unattended_module()
         unattended.refresh_review(unattended_lat(record), record['session_id'])
@@ -2550,7 +2573,7 @@ def hook(client):
         elif event == 'SessionStart':
             if payload.get('source') not in ('compact', 'resume'):
                 return
-        elif event not in ('UserPromptSubmit', 'PreToolUse'):
+        elif event not in ('UserPromptSubmit', 'PreToolUse', 'PostToolUse'):
             return
         sid = session_id(payload.get('session_id'))
         cwd = Path(payload['cwd'])
@@ -2577,6 +2600,11 @@ def hook(client):
                 except Exception as exc:  # noqa: BLE001 - never block the user's message
                     warn_reminder(exc)
             return
+        if event == 'PostToolUse':
+            if all(record.get(key) == value for key, value in expected.items()) \
+                    and wrote_decision_record(record, payload):
+                refresh_review_before_command(record)
+            return 0
         if event == 'PreToolUse':
             if not all(record.get(key) == value for key, value in expected.items()):
                 return 0
@@ -2615,6 +2643,9 @@ def hook(client):
             return
         if event == 'PreToolUse':
             close_warning(exc)
+            return 0
+        if event == 'PostToolUse':
+            print(f'LAT review not updated: {exc}', file=sys.stderr)
             return 0
         if event == 'Stop':
             tag = question_tag(message)

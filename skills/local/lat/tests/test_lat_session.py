@@ -3617,6 +3617,16 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
         self.assertNotIn('PreToolUse', json.loads(settings.read_text())['hooks'])
 
+    def test_install_adds_post_tool_use_for_the_file_tools_of_both_clients(self):
+        settings, codex = self.root / 'settings.json', self.root / 'codex-home'
+        for flags, path in ((('--client', 'claude', '--claude-settings', settings), settings),
+                            (('--client', 'codex', '--codex-home', codex), codex / 'hooks.json')):
+            self.assertEqual(self.cli('install', *flags).returncode, 0)
+            group, = json.loads(path.read_text())['hooks']['PostToolUse']
+            self.assertEqual(group['matcher'], 'Write|Edit|MultiEdit|apply_patch')
+            self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
+            self.assertNotIn('PostToolUse', json.loads(path.read_text())['hooks'])
+
     # ---- work ledger (#299) ------------------------------------------------------------
 
     def ledger_path(self, round_number=1):

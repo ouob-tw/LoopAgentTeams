@@ -90,6 +90,29 @@ class CreationTests(ReviewCase):
                                  stdin=json.dumps(payload), session=OTHER)
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
 
+    def edited(self, tool_name, tool_input):
+        """The controller's file tool just ran: the PostToolUse hook runs after it."""
+        payload = dict(hook_event_name='PostToolUse', cwd=str(self.work), session_id=SESSION,
+                       tool_name=tool_name, tool_input=tool_input)
+        result = self.run_script(SESSION_SCRIPT, 'hook', '--client', 'codex',
+                                 stdin=json.dumps(payload), session=OTHER)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+
+    def test_a_record_written_with_the_editor_is_in_the_review_right_after_the_write(self):
+        """#568: Claude's Write/Edit and Codex's apply_patch of a decision record rebuild the
+        review at once, before any further command; other files do not."""
+        self.grant()
+        (self.work / 'notes.md').write_text('x')
+        self.edited('Write', dict(file_path=str(self.work / 'notes.md'), content='x'))
+        self.assertFalse(self.md.exists())
+        self.parked()
+        self.edited('Write', dict(file_path=str(self.decisions / 'LAT-P.md'), content='...'))
+        self.assertEqual(self.item_ids(), ['LAT-P'])
+        self.parked('LAT-Q')
+        patch = '*** Begin Patch\n*** Add File: .lat/decisions/LAT-Q.md\n+...\n*** End Patch\n'
+        self.edited('apply_patch', dict(command=patch))
+        self.assertEqual(self.item_ids(), ['LAT-P', 'LAT-Q'])
+
     def test_each_new_or_changed_item_is_in_the_review_before_the_turn_ends(self):
         """#568: a record written with the editor is in the review by the controller's next
         command; an auto-action record is in it as soon as lat-preauth writes it."""
