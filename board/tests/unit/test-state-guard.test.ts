@@ -52,7 +52,8 @@ function filesInHome(): string[] {
 function bun(args: string[], extra: Record<string, string> = {}) {
 	const result = Bun.spawnSync([process.execPath, ...args], {
 		cwd: ROOT,
-		env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, ...extra },
+		// No transpiler cache either: it would land in the home and count as a file the board wrote.
+		env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0', ...extra },
 		stdout: 'pipe',
 		stderr: 'pipe',
 		// A board built in the child keeps it running; it is stopped so the check fails, not hangs.
