@@ -217,12 +217,19 @@ export function fiveStepLedger(workspace: string) {
 	};
 }
 
-/** A script for the page: its clock reads 2026-11-12T10:00:00Z when it loads and moves on with real time. */
-export const PINNED_CLOCK = `(() => {
-	const Real = Date, base = Real.parse('2026-11-12T10:00:00Z'), start = Real.now();
+/** A script for the page: its clock reads `at` when it loads and moves on with real time. */
+export const pinnedClock = (at: string) => `(() => {
+	const Real = Date, base = Real.parse(${JSON.stringify(at)}), start = Real.now();
 	const now = () => base + (Real.now() - start);
 	globalThis.Date = class extends Real {
 		constructor(...args) { if (args.length) super(...args); else super(now()); }
 		static now() { return now(); }
 	};
 })();`;
+
+/** The page's clock reads 2026-11-12T10:00:00Z when it loads, the fixture's `now`. */
+export const PINNED_CLOCK = pinnedClock('2026-11-12T10:00:00Z');
+
+/** The same ledger moved to another day: every 2026-11-12 in it becomes `day` (YYYY-MM-DD, a UTC date whose
+ *  Asia/Taipei date is the same, as the fixture's 08:00–10:00 UTC times keep), the clock times unchanged. */
+export const onDay = <T>(ledger: T, day: string): T => JSON.parse(JSON.stringify(ledger).replaceAll('2026-11-12', day));
