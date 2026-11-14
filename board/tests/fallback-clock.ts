@@ -24,6 +24,8 @@ const config = configuration.loadConfig({
 	LAT_BOARD_FALLBACK_SECONDS: '12', LAT_BOARD_HELPER_TIMEOUT_SECONDS: '2.75',
 	LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS: '1', LAT_BOARD_HERDR_TIMEOUT_SECONDS: '1'
 });
+// The board refuses to start under bun test without its own folder (#615); this one is the mock's.
+process.env.LAT_BOARD_STATE_DIR = config.stateDir;
 spyOn(configuration, 'loadConfig').mockReturnValue(config);
 spyOn(watchers, 'createSourceWatcher').mockReturnValue({ sync() {}, close() {} });
 spyOn(sources, 'helperDirectories').mockResolvedValue({ config: join(dir, 'config'), state: join(dir, 'helper-state') });
