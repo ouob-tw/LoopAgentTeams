@@ -231,26 +231,26 @@ test('a screen shorter than the box has its bottom line at the bottom and blank 
 
 test('the status card folds into one line on the 終端 tab, shows and folds again on 展開, and is back on another tab', async () => {
 	await visit({ width: 390, height: 844, phone: true });
-	const shown = () => tab.eval<{ card: boolean; controls: boolean; bar: string; height: number }>(`(() => { const bar = document.querySelector('.detail .bar'); return { card: !!document.querySelector('.detail article.profile'), controls: !!document.querySelector('.detail .controls'), bar: bar?.innerText ?? '', height: bar?.getBoundingClientRect().height ?? 0 }; })()`);
+	const shown = () => tab.eval<{ card: boolean; controls: boolean; bar: string; height: number }>(`(() => { const bar = document.querySelector('.detail .screen-bar'); return { card: !!document.querySelector('.detail article.profile'), controls: !!document.querySelector('.detail .controls'), bar: bar?.innerText ?? '', height: bar?.getBoundingClientRect().height ?? 0 }; })()`);
 	const folded = await shown();
 	expect(folded.card).toBe(false);
 	expect(folded.controls).toBe(false);
 	expect(folded.bar).toContain('展開');
 	expect(folded.height).toBeLessThan(44);
 	const closedBox = (await layout()).boxTop;
-	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
+	await tab.eval(`document.querySelector('.detail .screen-bar button[aria-expanded]').click()`);
 	await tab.until(`!!document.querySelector('.detail article.profile') && !!document.querySelector('.detail .controls')`, 'the card');
 	expect((await shown()).bar).toContain('收回');
 	await shot('phone-status-unfolded');
-	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
+	await tab.eval(`document.querySelector('.detail .screen-bar button[aria-expanded]').click()`);
 	await tab.until(`!document.querySelector('.detail article.profile')`, 'folded again');
 	expect((await layout()).boxTop).toBe(closedBox);
-	await tab.eval(`document.querySelector('.detail .bar button[aria-expanded]').click()`);
+	await tab.eval(`document.querySelector('.detail .screen-bar button[aria-expanded]').click()`);
 	await openTab('對話紀錄');
-	await tab.until(`!document.querySelector('.detail .bar') && !!document.querySelector('.detail article.profile')`, 'the card back');
+	await tab.until(`!document.querySelector('.detail .screen-bar') && !!document.querySelector('.detail article.profile')`, 'the card back');
 	// Back on the 終端 tab it is folded again, not left unfolded.
 	await openTab('終端');
-	await tab.until(`!!document.querySelector('.detail .bar') && !document.querySelector('.detail article.profile')`, 'folded on returning');
+	await tab.until(`!!document.querySelector('.detail .screen-bar') && !document.querySelector('.detail article.profile')`, 'folded on returning');
 });
 
 test('phone: the key panel takes the command line\'s place and height without moving or covering the screen box', async () => {

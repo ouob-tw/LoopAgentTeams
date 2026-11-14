@@ -191,7 +191,7 @@ test('computer: a click draws the top line and colours the tab, and keys go into
 	await shot('desktop-direct-unsupported');
 
 	// A click elsewhere leaves; keys then go nowhere.
-	await tab.pointerClick('.detail .bar b');
+	await tab.pointerClick('.detail .screen-bar b');
 	await tab.until(`!document.querySelector('.screen-panel .box').classList.contains('direct')`, 'direct operation left');
 	expect(await tabLook()).toBe(tabBefore);
 	expect(await tab.eval(`!!document.querySelector('.page.screen-direct')`)).toBe(false);
