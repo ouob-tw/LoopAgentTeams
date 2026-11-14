@@ -109,7 +109,7 @@ class CommentRuleTests(CommentCase):
         self.assertEqual(self.commented()['5']['kinds'], ['days'])
         (self.gh_dir / 'fail-comment').unlink()
         self.run_suite('2026-02-02', code=1)
-        self.assertEqual(len(self.comments()), 2)
+        self.assertEqual(len(self.comments()), 3, 'first comment, the failed try, the retry')
         self.assertEqual(self.commented()['5']['kinds'], ['days', 'speed'])
 
     def test_a_skipped_comment_does_not_use_up_the_day(self):
