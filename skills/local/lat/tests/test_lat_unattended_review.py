@@ -339,30 +339,32 @@ class DoneTicketTests(ReviewCase):
         self.ledger([self.row(1, 'advisor', 'done'), self.row(2, 'impl', 'done', commit='abc1234'),
                      self.row(3, 'review', 'done'), self.row(4, 'other', 'done'),
                      self.row(5, 'impl', 'in_progress', ticket='8'),
-                     self.row(6, 'research', 'done', ticket='9')])
+                     self.row(6, 'research', 'done', ticket='9'),
+                     self.row(7, 'impl', 'done', ticket='#10, o/w#11', commit='fed9876'),
+                     self.row(8, 'review', 'in_progress', ticket='o/w#11')])
         self.review('update')
-        self.assertEqual(self.done_lines(), ['- #7 登入頁：commit abc1234'])
+        # Ticket 11 waits for its review row; a row naming two tickets counts for each.
+        self.assertEqual(self.done_lines(), ['- #7 登入頁：commit abc1234', '- #10：commit fed9876'])
 
     def test_closing_the_checker_row_and_delivering_keep_the_cross_check(self):
-        """#568: the cross-check row (or a retro row) closing after `review verify`, then
-        deactivate, leave the review checked; a ticket finishing afterwards resets it."""
+        """#568: the cross-check row closing after `review verify` (whatever its stage), a
+        retro row and deactivate leave the review checked; a new item afterwards resets it."""
         self.grant()
         self.parked()
-        rows = [self.row(1, 'impl', 'done', commit='abc1234'), self.row(2, 'other', 'in_progress'),
+        rows = [self.row(1, 'impl', 'done', commit='abc1234'), self.row(2, 'review', 'in_progress'),
                 self.row(3, 'impl', 'in_progress', ticket='8')]
         self.ledger(rows)
         self.review('update')
         self.verify()
-        rows[1]['status'] = 'done'
-        rows.append(self.row(4, 'advisor', 'done'))
+        rows[1].update(status='done', evidence=dict(file=['.lat/runs/check.md']))
+        rows += [self.row(4, 'other', 'done'), self.row(5, 'impl', 'done', ticket='8', commit='def5678')]
         self.ledger(rows)
         result = self.run_script(SESSION_SCRIPT, 'deactivate', '--client', 'codex',
                                  '--workspace', self.work, '--session-id', SESSION)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('- 核對：puma（claude）', self.md.read_text())
         self.assertTrue(self.review('show')['verified'])
-        rows[2].update(status='done', evidence=dict(commit=['def5678']))
-        self.ledger(rows)
+        self.delegated('LAT-AN')
         self.review('update')
         self.assertIn('- 核對：尚未核對（', self.md.read_text())
 

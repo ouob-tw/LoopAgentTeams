@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 
+from _lat_tracker import tracker_repo
 from lat_decision_status import (DELEGATED, PARKED, read_decision_session,
                                  read_decision_status)
 
@@ -245,31 +246,46 @@ def self_park(row):
 
 
 # The stages that deliver a ticket. Advisor, research, Spec and other rows (a cross-check, a
-# retro) are steps around it: they never make a ticket done, and closing one after the review
-# was cross-checked must not change what the check vouched for.
+# retro) are steps around it and never make a ticket done.
 TICKET_WORK = ('impl', 'review', 'qa-draft', 'qa', 'merge')
+
+
+def ticket_keys(text, default_repo):
+    """The tickets a row's ticket field names, as lat-ledger groups them: `owner/repo#N`, a
+    bare number belonging to the project's tracker, and other text as its own ticket."""
+    keys = []
+    for token in re.split(r'[\s,;、]+', text.strip()):
+        match = re.fullmatch(r'(?:([\w.-]+/[\w.-]+))?#?(\d+)', token)
+        if match:
+            keys.append(f'{match[1] or default_repo or ""}#{match[2]}')
+    return keys or [text.strip()]
 
 
 def done_tickets(doc):
     """One line per ticket whose delivery rows are all done, in the order tickets first
-    appear: the ticket, its title and the evidence of its done rows."""
+    appear: the ticket, its title and the evidence of its done rows. Not part of what a
+    cross-check vouches for (content_key)."""
+    default_repo = tracker_repo(doc['workspace']) if isinstance(doc.get('workspace'), str) else None
+    titles = doc.get('titles') or {}
     tickets = {}
     for row in doc['items']:
         if isinstance(row, dict) and row.get('stage') in TICKET_WORK \
                 and row.get('status') != 'cancelled':
-            tickets.setdefault(str(row.get('ticket') or '').lstrip('#'), []).append(row)
+            for key in ticket_keys(str(row.get('ticket') or ''), default_repo):
+                tickets.setdefault(key, []).append(row)
     lines = []
-    for ticket, rows in tickets.items():
+    for key, rows in tickets.items():
         if not all(row.get('status') == 'done' for row in rows):
             continue
         proof = []
         for row in rows:
-            for key, value in sorted((row.get('evidence') or {}).items()):
+            for kind, value in sorted((row.get('evidence') or {}).items()):
                 for one in value if isinstance(value, list) else [value]:
-                    if isinstance(one, str) and f'{key} {one}' not in proof:
-                        proof.append(f'{key} {one}')
-        head = f'#{ticket}' if ticket.isdigit() else ticket
-        title = ticket_title(doc, ticket)
+                    if isinstance(one, str) and f'{kind} {one}' not in proof:
+                        proof.append(f'{kind} {one}')
+        own = default_repo and key.startswith(f'{default_repo}#') or key.startswith('#')
+        head = key[key.index('#'):] if own else key
+        title = titles.get(key) or (ticket_title(doc, head.lstrip('#')) if own else '')
         lines.append(f'{head} {title}'.strip() + f'：{"、".join(proof) or "沒有證據欄"}')
     return lines
 
@@ -457,12 +473,13 @@ def collect(*, lat, workspace, session, round_number, versions, decisions, end_l
 
 
 def content_key(view):
-    """What a cross-check vouches for: the items, the goal versions, the done tickets and the
-    unreadable sources, without when the grant ended."""
+    """What a cross-check vouches for: the items, the goal versions and the unreadable sources,
+    without when the grant ended. The done tickets are no item the check counts, and a row
+    of the check itself or a retro closing must not void it."""
     goals = [{key: value for key, value in goal.items() if key not in ('ended_at', 'end_label')}
              for goal in view['goals']]
-    return json.dumps(dict(items=view['items'], goals=goals, done=view['done_tickets'],
-                           problems=view['problems']), ensure_ascii=False, sort_keys=True)
+    return json.dumps(dict(items=view['items'], goals=goals, problems=view['problems']),
+                      ensure_ascii=False, sort_keys=True)
 
 
 def item_lines(item):
