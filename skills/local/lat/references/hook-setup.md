@@ -2,7 +2,7 @@
 
 先將 `lat_dir` 設為本次實際安裝的 LAT 技能目錄絕對路徑。
 
-技能檔案安裝不會註冊 hook。Claude 使用者層級設定：`install --client claude --claude-settings <settings.json>`（預設 `~/.claude/settings.json`），於 SessionStart 新增 matcher `^(compact|resume)$`、command 結尾為 `hook --client claude` 的 group，在 Stop 與 UserPromptSubmit 新增同一 command（無 matcher），PreToolUse 新增 matcher `Bash` 的同一 command；同樣先 preview、備份、保留其他設定，重跑不重複，`uninstall` 加相同參數移除。使用者層級 hook 不需信任步驟；重啟 Claude Code 後在 `/hooks` 確認。
+技能檔案安裝不會註冊 hook。Claude 使用者層級設定：`install --client claude --claude-settings <settings.json>`（預設 `~/.claude/settings.json`），於 SessionStart 新增 matcher `^(compact|resume)$`、command 結尾為 `hook --client claude` 的 group，在 Stop 與 UserPromptSubmit 新增同一 command（無 matcher），PreToolUse 新增 matcher `Bash`、PostToolUse 新增 matcher `Write|Edit|MultiEdit|apply_patch` 的同一 command；同樣先 preview、備份、保留其他設定，重跑不重複，`uninstall` 加相同參數移除。使用者層級 hook 不需信任步驟；重啟 Claude Code 後在 `/hooks` 確認。
 
 Codex：先確認有效 `CODEX_HOME`（預設 `~/.codex`），檢查 preview 後，在既有授權範圍內執行同一指令去掉 `--preview`。以下示範隔離目錄：
 
@@ -14,7 +14,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install \
   --codex-home "$codex_home"
 ```
 
-只在該目錄的 `hooks.json` 合併獨立 `lat-codex-recovery` group，SessionStart 的 matcher 只有 compact／resume，Stop 與 UserPromptSubmit 使用同一 command、無 matcher，PreToolUse 的 matcher 為 `Bash`；四個事件一起安裝與移除。command 使用 helper 所在技能的實際絕對路徑。HCOM／第三方 entries 與未知欄位保留；同版本重跑不重複。變更前備份為 `hooks.json.lat-backup-*`，寫入前檢查內容是否同期變動，再原子替換；偵測到變動便停止，檢查後重跑。安裝期間避免同時由其他工具改設定，檢查不是跨工具的檔案鎖。
+只在該目錄的 `hooks.json` 合併獨立 `lat-codex-recovery` group，SessionStart 的 matcher 只有 compact／resume，Stop 與 UserPromptSubmit 使用同一 command、無 matcher，PreToolUse 的 matcher 為 `Bash`，PostToolUse 的 matcher 為 `Write|Edit|MultiEdit|apply_patch`；五個事件一起安裝與移除。command 使用 helper 所在技能的實際絕對路徑。HCOM／第三方 entries 與未知欄位保留；同版本重跑不重複。變更前備份為 `hooks.json.lat-backup-*`，寫入前檢查內容是否同期變動，再原子替換；偵測到變動便停止，檢查後重跑。安裝期間避免同時由其他工具改設定，檢查不是跨工具的檔案鎖。
 
 在該隔離 `CODEX_HOME` 啟動 Codex，透過正常 `/hooks` 介面檢查並信任此 command；helper 不寫信任設定、不 bypass。更新 command 或搬動技能後需重新檢查。hook 的執行環境須能找到 `uv` 與 Python。
 
@@ -27,13 +27,15 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" uninstall \
   --codex-home "$codex_home"
 ```
 
-移除四個事件中的 LAT command，保留其他 handlers／未知欄位；不刪 session 紀錄、備份或信任設定。
+移除五個事件中的 LAT command，保留其他 handlers／未知欄位；不刪 session 紀錄、備份或信任設定。
 
 Stop 在主控訊息顯示後才執行；未通過 DECIDE／HELP 檢查會要求主控繼續補做，原訊息仍在。再次未通過與工具錯誤只留使用者可見的警告；判斷範圍與補做順序見 [回合結束檢查](recovery.md#回合結束檢查)。
 
 UserPromptSubmit 在主控收到使用者訊息時列出自己仍待答的題目，提示撤回或改版；只附加內容、不擋訊息，見 [撤回過時題目](question-panel.md#撤回過時題目)。新增此事件後，已安裝的使用者須重跑 install，Codex 另到 `/hooks` 信任新項目，Claude 與 Codex 主控重開後才生效。
 
-PreToolUse 只對啟用中的主控生效：要執行 `gh issue close` 時先用 `gh issue view` 讀票的內文，還有未勾選的 `- [ ]` 項目就擋下並列出。關閉留言（`-c`／`--comment`）引用 `<待決 ID> r<版本>`、且該紀錄有這版的真人答覆（`## 答覆` 段落與 `- 來源：` 行）時放行；引用的紀錄沒有真人答覆仍擋。讀不到票時只警告、不擋；指令無法解析時擋下，請把 `gh issue close` 單獨執行。檢查在指令執行前進行，所以打勾（`gh issue edit`）與關票要分兩條指令執行；同一條指令裡兩者並存而被擋時，擋下訊息會提醒這點。新增此事件後須重跑 install，Codex 另到 `/hooks` 信任。
+PreToolUse 只對啟用中的主控生效：要執行 `gh issue close` 時先用 `gh issue view` 讀票的內文，還有未勾選的 `- [ ]` 項目就擋下並列出。關閉留言（`-c`／`--comment`）引用 `<待決 ID> r<版本>`、且該紀錄有這版的真人答覆（`## 答覆` 段落與 `- 來源：` 行）時放行；引用的紀錄沒有真人答覆仍擋。讀不到票時只警告、不擋；指令無法解析時擋下，請把 `gh issue close` 單獨執行。檢查在指令執行前進行，所以打勾（`gh issue edit`）與關票要分兩條指令執行；同一條指令裡兩者並存而被擋時，擋下訊息會提醒這點。本輪有過無人授權時，每條指令執行前也會重建回顧檔（PostToolUse 漏掉時的備援）；重建失敗只警告。新增此事件後須重跑 install，Codex 另到 `/hooks` 信任。
+
+PostToolUse 只對啟用中的主控生效：主控用檔案工具（Claude 的 Write／Edit／MultiEdit、Codex 的 apply_patch）寫入、搬移或刪除待決目錄裡的 `.md` 後，立刻重建本輪回顧檔，讓剛寫的擱置或代決紀錄馬上出現在回顧（見 [回顧](unattended.md#回顧)）；其他檔案不處理，失敗只警告、不擋。新增此事件後須重跑 install，Codex 另到 `/hooks` 信任，主控重開後才生效。
 
 ## 提交訊息票號檢查
 

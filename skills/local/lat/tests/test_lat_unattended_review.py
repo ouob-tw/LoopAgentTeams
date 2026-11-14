@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_lat_unattended_decisions import (  # noqa: E402
-    SESSION, SESSION_SCRIPT, UnattendedStopCase, git)
+    OTHER, PREAUTH, SESSION, SESSION_SCRIPT, UnattendedStopCase, git)
 
 PARKED = '- status: parked\n- advisor: exempt spec-confirmation\n- session: {session}\n' \
          '- grant: r1 v1\n- version: r1\n- question: Spec 要不要加匯出\n' \
@@ -81,6 +81,58 @@ class CreationTests(ReviewCase):
         self.assertIn('修好登入頁與註冊頁', text)
         self.unattended('close', '--reason', 'off')
         self.assertIn('- 無人授權：已結束（第 2 版，使用者關掉', self.md.read_text())
+
+    def command(self, line='ls'):
+        """The controller's next shell command: the PreToolUse hook runs before it."""
+        payload = dict(hook_event_name='PreToolUse', cwd=str(self.work), session_id=SESSION,
+                       tool_name='Bash', tool_input=dict(command=line))
+        result = self.run_script(SESSION_SCRIPT, 'hook', '--client', 'codex',
+                                 stdin=json.dumps(payload), session=OTHER)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+
+    def edited(self, tool_name, tool_input):
+        """The controller's file tool just ran: the PostToolUse hook runs after it."""
+        payload = dict(hook_event_name='PostToolUse', cwd=str(self.work), session_id=SESSION,
+                       tool_name=tool_name, tool_input=tool_input)
+        result = self.run_script(SESSION_SCRIPT, 'hook', '--client', 'codex',
+                                 stdin=json.dumps(payload), session=OTHER)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+
+    def test_a_record_written_with_the_editor_is_in_the_review_right_after_the_write(self):
+        """#568: Claude's Write/Edit and Codex's apply_patch of a decision record rebuild the
+        review at once, before any further command; other files do not."""
+        self.grant()
+        (self.work / 'notes.md').write_text('x')
+        self.edited('Write', dict(file_path=str(self.work / 'notes.md'), content='x'))
+        self.assertFalse(self.md.exists())
+        self.parked()
+        self.edited('Write', dict(file_path=str(self.decisions / 'LAT-P.md'), content='...'))
+        self.assertEqual(self.item_ids(), ['LAT-P'])
+        self.parked('LAT-Q')
+        patch = '*** Begin Patch\n*** Add File: .lat/decisions/LAT-Q.md\n+...\n*** End Patch\n'
+        self.edited('apply_patch', dict(command=patch))
+        self.assertEqual(self.item_ids(), ['LAT-P', 'LAT-Q'])
+        (self.decisions / 'LAT-Q.md').unlink()
+        self.edited('apply_patch', dict(command='*** Begin Patch\n*** Delete File: '
+                                        '.lat/decisions/LAT-Q.md\n*** End Patch\n'))
+        self.assertEqual(self.item_ids(), ['LAT-P'])
+
+    def test_each_new_or_changed_item_is_in_the_review_before_the_turn_ends(self):
+        """#568: a record written with the editor is in the review by the controller's next
+        command; an auto-action record is in it as soon as lat-preauth writes it."""
+        self.grant()
+        self.command()
+        self.assertFalse(self.md.exists())
+        self.parked()
+        self.command()
+        self.assertEqual(self.item_ids(), ['LAT-P'])
+        self.autos(dict(kind='auto', action='merge', target='dev', commit='a' * 40,
+                        basis='allow merge dev', result='succeeded'))
+        result = self.run_script(PREAUTH, 'record', '--kind', 'correction', '--commit', 'a' * 40,
+                                 '--note', '合錯分支')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('已更正', self.md.read_text())
+        self.assertEqual(self.item_ids(), ['LAT-P', 'auto-1'])
 
     def test_no_review_for_a_round_without_a_grant(self):
         self.autos(dict(kind='auto', action='merge', target='dev', commit='a' * 40,
@@ -296,6 +348,52 @@ class DoneHoldTests(ReviewCase):
         (self.decisions / 'LAT-P.md').unlink()
         self.grant()
         self.assertEqual(self.stop('完成\nDONE: 交付'), {})
+
+
+class DoneTicketTests(ReviewCase):
+    def row(self, row_id, stage, status, ticket='7', commit=None):
+        return dict(id=row_id, ticket=ticket, stage=stage, status=status, history=[],
+                    parked_cause=None, evidence=dict(commit=[commit]) if commit else {})
+
+    def done_lines(self):
+        text = self.md.read_text()
+        return text.split('## 本輪完成的票\n\n', 1)[1].split('\n\n', 1)[0].splitlines() \
+            if '## 本輪完成的票' in text else []
+
+    def test_done_tickets_are_one_line_per_delivered_ticket(self):
+        self.grant()
+        self.parked()
+        self.ledger([self.row(1, 'advisor', 'done'), self.row(2, 'impl', 'done', commit='abc1234'),
+                     self.row(3, 'review', 'done'), self.row(4, 'other', 'done'),
+                     self.row(5, 'impl', 'in_progress', ticket='8'),
+                     self.row(6, 'research', 'done', ticket='9'),
+                     self.row(7, 'impl', 'done', ticket='#10, o/w#11', commit='fed9876'),
+                     self.row(8, 'review', 'in_progress', ticket='o/w#11')])
+        self.review('update')
+        # Ticket 11 waits for its review row; a row naming two tickets counts for each.
+        self.assertEqual(self.done_lines(), ['- #7 登入頁：commit abc1234', '- #10：commit fed9876'])
+
+    def test_closing_the_checker_row_and_delivering_keep_the_cross_check(self):
+        """#568: the cross-check row closing after `review verify` (whatever its stage), a
+        retro row and deactivate leave the review checked; a new item afterwards resets it."""
+        self.grant()
+        self.parked()
+        rows = [self.row(1, 'impl', 'done', commit='abc1234'), self.row(2, 'review', 'in_progress'),
+                self.row(3, 'impl', 'in_progress', ticket='8')]
+        self.ledger(rows)
+        self.review('update')
+        self.verify()
+        rows[1].update(status='done', evidence=dict(file=['.lat/runs/check.md']))
+        rows += [self.row(4, 'other', 'done'), self.row(5, 'impl', 'done', ticket='8', commit='def5678')]
+        self.ledger(rows)
+        result = self.run_script(SESSION_SCRIPT, 'deactivate', '--client', 'codex',
+                                 '--workspace', self.work, '--session-id', SESSION)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('- 核對：puma（claude）', self.md.read_text())
+        self.assertTrue(self.review('show')['verified'])
+        self.delegated('LAT-AN')
+        self.review('update')
+        self.assertIn('- 核對：尚未核對（', self.md.read_text())
 
 
 class HandoverTests(ReviewCase):

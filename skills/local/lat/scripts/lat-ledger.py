@@ -1847,6 +1847,19 @@ def unattended_grant(ledger):
     return status['version']['version']
 
 
+def refresh_review(ledger):
+    """A parked row is a review item (references/unattended.md「回顧」): rebuild the round's
+    review right after park or unpark, not at the turn end; a failure only warns."""
+    name = ROUND_LEDGER.fullmatch(Path(ledger).name)
+    try:
+        workspace = json.loads(Path(ledger).read_text())['workspace']
+        run_cli([sys.executable, str(UNATTENDED_SCRIPT), 'review', 'update', '--json',
+                 '--workspace', workspace, '--session-id', name[1]], timeout=60)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f'lat-ledger: the review was not updated ({error}); the next turn end retries',
+              file=sys.stderr)
+
+
 def park_row(args, row, reason, cause, grant, basis=None):
     record(args, row, 'park', {'status': 'parked', 'parked_from': row['status'],
                                'parked_reason': reason, 'parked_cause': cause,
@@ -1956,6 +1969,7 @@ def cmd_park(args):
                   and row.get('parked_cause') is not None]
     print(f'item {item["id"]} parked' + (f'; dependents parked: {", ".join(map(str, parked))}'
                                          if parked else ''))
+    refresh_review(args.ledger)
 
 
 def cmd_unpark(args):
@@ -1976,6 +1990,7 @@ def cmd_unpark(args):
                                     if row['status'] == 'parked'} - {item['id']})
     print(f'item {item["id"]} unparked' + (f'; also {", ".join(map(str, released))}'
                                            if released else ''))
+    refresh_review(args.ledger)
 
 
 def cmd_tiny_off(args):

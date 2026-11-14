@@ -1366,7 +1366,23 @@ def append_record(top, session, round_number, entry):
     entry = dict(at=datetime.now(timezone.utc).isoformat(timespec='seconds'), **entry)
     text = (original or b'').decode('utf-8') + json.dumps(entry, ensure_ascii=False) + '\n'
     write_text_atomic(path, text, expected=original)
+    refresh_review(top, session)
     return path
+
+
+def refresh_review(top, session):
+    """An auto action is a review item (references/unattended.md「回顧」): rebuild the round's
+    review now, not at the turn end. Every append_record caller holds session_lock, which
+    lat-unattended's refresh_review_locked needs; a failure never undoes the record."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            'lat_unattended', Path(__file__).resolve().parent / 'lat-unattended.py')
+        unattended = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(unattended)
+        unattended.refresh_review_locked(shared_lat_dir(top), session)
+    except Exception as error:  # noqa: BLE001 - the next turn end retries
+        print(f'lat-preauth: the review was not updated ({error}); the next turn end retries',
+              file=sys.stderr)
 
 
 def restore(path, original, written):

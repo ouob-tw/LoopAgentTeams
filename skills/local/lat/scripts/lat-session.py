@@ -5,6 +5,7 @@ import copy
 import difflib
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import importlib
 import importlib.util
 import ipaddress
@@ -56,9 +57,14 @@ QUESTION_TAGS = ('DECIDE:', 'HELP:')
 DUTY_TAGS = QUESTION_TAGS + ('DONE:',)
 DUTY_LIMIT = 40
 REAP_TIMEOUT_SECONDS = 60
-HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit', 'PreToolUse')
-# Events whose LAT group runs only for these matchers; the others take no matcher.
-MATCHERS = dict(SessionStart=MATCHER, PreToolUse='Bash')
+HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse')
+# Events whose LAT group runs only for these matchers; the others take no matcher. PostToolUse
+# follows the file tools: Claude's Write/Edit/MultiEdit and Codex's apply_patch.
+MATCHERS = dict(SessionStart=MATCHER, PreToolUse='Bash',
+                PostToolUse='Write|Edit|MultiEdit|apply_patch')
+# The files an apply_patch call adds, changes, moves or deletes, as its patch text names them.
+PATCH_PATH = re.compile(r'^\*\*\* (?:Add File|Update File|Move to|Delete File): (.+)$',
+                        re.MULTILINE)
 # An unchecked Markdown checkbox: the close check reads acceptance items this way.
 UNCHECKED_ITEM = re.compile(r'^[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+\[ \][ \t]*(.*)$', re.MULTILINE)
 # `<decision ID> r<N>` cited in a close comment.
@@ -1718,18 +1724,43 @@ def draft_stop_check(record):
             '之後到又有新列前不再為此提醒；做完再照原樣結束回合。')
 
 
+def delegated_seen_path(record):
+    return unattended_lat(record) / 'unattended' / f'{record["session_id"]}-delegated-seen.json'
+
+
+def first_seen(seen, path):
+    """When this content of a delegated record first appeared: remembered from an earlier turn
+    end, else the file's inode change time, which a writer cannot set back (unlike the record's
+    own decided-at; the kernel's coarse file clock can only make it read a few ms early, never
+    late). Changed content counts as a new record."""
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    entry = seen.get(path.stem)
+    if not (isinstance(entry, dict) and entry.get('sha') == digest):
+        moment = datetime.fromtimestamp(path.stat().st_ctime, timezone.utc)
+        entry = seen[path.stem] = dict(sha=digest, at=moment.isoformat())
+    return datetime.fromisoformat(entry['at'])
+
+
 def delegated_stop_check(record):
     """Why this Stop should be held for delegated decision records of this session, or None.
 
     Each record is checked against the grant version it cites, at the time it says it was
     made, so a record made while its version was in effect keeps passing after the grant ends;
-    another session's records are its own controller's.
+    a record that first appears after its version ended is held whatever time it claims
+    (first_seen). Another session's records are its own controller's.
     """
     decisions = Path(record['decisions_path'])
     if not decisions.is_dir():
         return None
     unattended = sent = None
     held = []
+    seen_path = delegated_seen_path(record)
+    try:
+        seen = json.loads(seen_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        seen = {}
+    seen = seen if isinstance(seen, dict) else {}
+    before = copy.deepcopy(seen)
     for path in sorted(decisions.glob('*.md')):
         try:
             status = read_decision_status(path).status
@@ -1757,14 +1788,58 @@ def delegated_stop_check(record):
                 elif not version['scope'][DELEGATED[status][1]]:
                     label = unattended.SCOPE_LABELS[DELEGATED[status][1]]
                     problems.append(f'授權 r{grant.round} v{grant.version} 沒有勾選「{label}」')
+                if version is not None and version['ended_at'] and not reason:
+                    appeared = first_seen(seen, path)
+                    if appeared >= datetime.fromisoformat(version['ended_at']):
+                        problems.append(f'紀錄在授權 r{grant.round} v{grant.version} 結束'
+                                        f'（{version["ended_at"]}）後才出現（{appeared.isoformat()}），'
+                                        '結束後不能再新增代決')
+                else:
+                    first_seen(seen, path)
         if question_sent(record['session_id'], sent, path.stem):
             problems.append('這題已問過使用者，只有真人答覆能解除，不能寫成代決')
         if problems:
             held.append(f'- {path.stem}（{status}）：' + '；'.join(problems))
+    if seen != before:
+        try:
+            write_json_atomic(seen_path, seen)
+        except (OSError, ValueError) as error:
+            print(f'lat-session: could not save {seen_path} ({error})', file=sys.stderr)
     if not held:
         return None
     return ('LAT 代決紀錄檢查未通過：\n' + '\n'.join(held) + '\n依 references/unattended.md '
             '「代決紀錄」補正；不屬參謀可代決的、或兩位參謀不一致的，改為 `- status: parked`。')
+
+
+def edited_paths(payload):
+    """The files a PostToolUse file-tool call wrote: Claude's `file_path`, or the paths in a
+    Codex apply_patch's patch text, relative paths taken from the hook's cwd."""
+    tool_input = payload.get('tool_input')
+    if not isinstance(tool_input, dict):
+        return []
+    command = tool_input.get('command')
+    command = '\n'.join(map(str, command)) if isinstance(command, list) else str(command or '')
+    names = [str(tool_input.get('file_path') or ''), *PATCH_PATH.findall(command)]
+    return [Path(payload['cwd'], name.strip()) for name in names if name.strip()]
+
+
+def wrote_decision_record(record, payload):
+    """Whether this file-tool call wrote a Markdown file in the controller's decisions folder."""
+    decisions = Path(record['decisions_path']).resolve()
+    return any(path.suffix == '.md' and path.resolve().parent == decisions
+               for path in edited_paths(payload))
+
+
+def refresh_review_before_command(record):
+    """Rebuild this round's review: right after the controller writes a decision record with
+    its editor (PostToolUse) and, as the fallback where a client has no such hook, before each
+    of its shell commands (PreToolUse); the tools that write other items refresh it
+    themselves. A no-op in a round without a grant; a failure only warns."""
+    try:
+        unattended = unattended_module()
+        unattended.refresh_review(unattended_lat(record), record['session_id'])
+    except Exception as exc:  # noqa: BLE001 - never block the command
+        print(f'LAT review not updated: {exc}', file=sys.stderr)
 
 
 def review_stop_check(record, message):
@@ -2499,10 +2574,7 @@ def hook(client):
         elif event == 'SessionStart':
             if payload.get('source') not in ('compact', 'resume'):
                 return
-        elif event == 'PreToolUse':
-            if 'close' not in str(payload.get('tool_input')):
-                return 0
-        elif event != 'UserPromptSubmit':
+        elif event not in ('UserPromptSubmit', 'PreToolUse', 'PostToolUse'):
             return
         sid = session_id(payload.get('session_id'))
         cwd = Path(payload['cwd'])
@@ -2529,8 +2601,16 @@ def hook(client):
                 except Exception as exc:  # noqa: BLE001 - never block the user's message
                     warn_reminder(exc)
             return
+        if event == 'PostToolUse':
+            if all(record.get(key) == value for key, value in expected.items()) \
+                    and wrote_decision_record(record, payload):
+                refresh_review_before_command(record)
+            return 0
         if event == 'PreToolUse':
             if not all(record.get(key) == value for key, value in expected.items()):
+                return 0
+            refresh_review_before_command(record)
+            if 'close' not in str(payload.get('tool_input')):
                 return 0
             try:
                 return close_check(record, payload)
@@ -2564,6 +2644,9 @@ def hook(client):
             return
         if event == 'PreToolUse':
             close_warning(exc)
+            return 0
+        if event == 'PostToolUse':
+            print(f'LAT review not updated: {exc}', file=sys.stderr)
             return 0
         if event == 'Stop':
             tag = question_tag(message)

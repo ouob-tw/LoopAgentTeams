@@ -243,10 +243,26 @@ class DelegatedRecordTests(UnattendedStopCase):
             path.unlink()
         self.delegated('OLDV', at=datetime.now(timezone.utc))
         second = self.unattended('versions')['versions'][1]
+        # Written now but dated inside v1's window: new after v1 ended, so held too (#565).
         self.delegated('INV1', at=self.started(first) + (self.started(second) - self.started(first)) / 2)
         reason = self.assert_held(self.stop(), 'OLDV')
         self.assertIn('ended at', reason)
-        self.assertNotIn('INV1', reason)
+        self.assertIn('後才出現', reason.split('- INV1')[1])
+
+    def test_no_new_record_can_be_added_on_a_version_after_it_ends(self):
+        """#565: after the quota closes the grant, a new record dated back into the version is
+        held, while one already there before the close keeps passing (#566)."""
+        version = self.grant()
+        self.delegated('LAT-BEFORE', 'proxy-confirmed')
+        self.unattended('close', '--reason', 'quota')
+        self.assertEqual(self.stop(), {})
+        self.delegated('LAT-LATE', 'proxy-confirmed', at=self.started(version))
+        reason = self.assert_held(self.stop(), 'LAT-LATE', '後才出現', '結束後不能再新增代決')
+        self.assertNotIn('LAT-BEFORE', reason)
+        # Rewriting a record already seen into another decision counts as new as well.
+        before = self.decisions / 'LAT-BEFORE.md'
+        before.write_text(before.read_text().replace('元件要叫什麼名字', '要不要刪資料表'))
+        self.assert_held(self.stop(), 'LAT-BEFORE', '後才出現')
 
     def test_a_question_already_asked_cannot_become_a_delegated_record(self):
         self.grant()
