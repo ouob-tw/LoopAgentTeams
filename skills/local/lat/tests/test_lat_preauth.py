@@ -14,6 +14,8 @@ import unittest.mock
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-preauth.py'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cached_script  # noqa: E402
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
 REVIEW_SIZE = Path(__file__).resolve().parents[1] / 'scripts/review-size.py'
 INSTALLER = Path(__file__).resolve().parents[4] / 'scripts/install-skills.py'
@@ -75,7 +77,7 @@ class PreauthCase(unittest.TestCase):
         if path:
             environment['PATH'] = path
         environment['CLAUDE_CODE_SESSION_ID'] = SESSION
-        command = [sys.executable, str(self.script), *args]
+        command = cached_script.command(self.script, *args)
         if not wait:
             return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, cwd=cwd or self.repo, env=environment)
