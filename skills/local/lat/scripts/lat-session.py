@@ -501,7 +501,7 @@ def round_mode_line(lat, sid, workspace):
         line += ('，尚待目標：派發前依使用者第一句話擬出目標與做完條件，以 '
                  f'`{UNATTENDED_SCRIPT} create --source settings-default` 寫入第 1 版；'
                  '寫入前不算有效授權')
-    if result['state'] != 'active' and not result['draft']:
+    if result['state'] != 'active' and draft_time(result['draft']) is None:
         line += ('\n目標草稿：還沒有。依使用者第一句話擬出目標與做完條件，執行 '
                  f'`{draft_command(workspace)}` 存成草稿，看板「開啟無人模式」表單從它預填'
                  '（草稿不是授權）')
@@ -1668,24 +1668,17 @@ def rows_added_after(ledger_path, moment):
     """IDs of ledger rows added after `moment`; an unreadable ledger has none here (the
     delivery check reports it). Ledger times have whole seconds, so a row added in the same
     second as the draft counts as before it."""
+    ledger = ledger_module()
+    store = ledger.Store(Path(ledger_path))
     try:
-        doc = json.loads(Path(ledger_path).read_text(encoding='utf-8'))
-        items = doc['items']
-    except (OSError, TypeError, ValueError, KeyError):
+        with ledger.locked(store, exclusive=False):
+            items = ledger.load(store)[0]['items']
+    except (ledger.Failure, OSError):
         return []
     floor = moment.replace(microsecond=0)
-    added = []
-    for item in items if isinstance(items, list) else []:
-        history = item.get('history') if isinstance(item, dict) else None
-        at = next((entry.get('at') for entry in history or [] if isinstance(entry, dict)
-                   and entry.get('action') == 'add'), None)
-        try:
-            when = datetime.fromisoformat(str(at).replace('Z', '+00:00'))
-        except ValueError:
-            continue
-        if when.tzinfo and when > floor:
-            added.append(item.get('id'))
-    return added
+    return [item['id'] for item in items
+            if any(entry['action'] == 'add' and ledger.loads_time(entry['at']) > floor
+                   for entry in item['history'])]
 
 
 def draft_stop_check(record):
@@ -1700,10 +1693,10 @@ def draft_stop_check(record):
     draft = result['draft']
     written = draft_time(draft)
     if written is None:
-        return ('LAT 目標草稿檢查未通過：本輪還沒有目標草稿，看板「開啟無人模式」表單沒有內容可預填。'
+        return ('LAT 目標草稿檢查未通過：本輪還沒有可用的目標草稿（沒寫過或讀不出），看板「開啟無人模式」表單沒有內容可預填。'
                 '依使用者的話擬出這一輪的目標與做完條件，執行 '
                 f'`{draft_command(record["workspace"])}`（草稿不是授權），再照原樣結束回合。')
-    added = rows_added_after(record.get('ledger_path'), written)
+    added = rows_added_after(record['ledger_path'], written) if record.get('ledger_path') else []
     if not added:
         return None
     rows = '、'.join(f'第 {row} 列' for row in added)
