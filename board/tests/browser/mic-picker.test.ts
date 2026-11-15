@@ -63,7 +63,7 @@ test('each mic and its picker are one control in the command line and the answer
 		expect(
 			await tab().eval(`[...document.querySelectorAll('.mic-group')].every((group) => {
 				const [mic, pick] = [...group.children].map((child) => child.getBoundingClientRect());
-				return group.children.length === 2 && Math.abs(mic.top - pick.top) < 1 && Math.abs(mic.bottom - pick.bottom) < 1 && Math.abs(mic.right - pick.left) <= 1 && pick.width >= 32 && pick.height >= 40;
+				return group.children.length === 2 && Math.abs(mic.top - pick.top) < 1 && Math.abs(mic.bottom - pick.bottom) < 1 && Math.abs(mic.right - pick.left) <= 1 && pick.width >= mic.width - 1 && pick.height >= mic.height - 1;
 			})`)
 		).toBe(true);
 		// Nothing is squeezed into sideways scrolling.
@@ -128,7 +128,7 @@ const HIDE_NAMES = `(() => {
 		granted = true;
 		return stream;
 	};
-	media.enumerateDevices = async () => [...names].map(([deviceId, label]) => ({ kind: 'audioinput', deviceId, label: granted ? label : '' }));
+	media.enumerateDevices = async () => [...names].map(([deviceId, label]) => ({ kind: 'audioinput', deviceId: granted ? deviceId : '', label: granted ? label : '' }));
 })()`;
 
 test('before the browser allows the mic, opening the menu asks once, then lists the names', async () => {

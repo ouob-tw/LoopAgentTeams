@@ -17,9 +17,9 @@ export function micOptions(devices: readonly Pick<MediaDeviceInfo, 'kind' | 'dev
 	return mics.map((device, index) => ({ id: device.deviceId, label: device.label.trim() || `麥克風 ${index + 1}` }));
 }
 
-/** True while some listed microphone has no name: the browser shows names only once it allows the mic. */
+/** True while some listed microphone has no name: the browser shows names (and may hide the id too) only once it allows the mic. */
 export const unnamed = (devices: readonly Pick<MediaDeviceInfo, 'kind' | 'deviceId' | 'label'>[]): boolean =>
-	devices.some((device) => device.kind === 'audioinput' && device.deviceId && !device.label);
+	devices.some((device) => device.kind === 'audioinput' && !device.label);
 
 /** What to ask `getUserMedia` for: the chosen microphone, or whichever the system uses. */
 export function micConstraints(chosen: string | null): MediaStreamConstraints {

@@ -172,7 +172,8 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		min-width: 2.4rem;
+		/* As wide as the mic is tall, so it is no harder to hit than the mic. */
+		min-width: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
 		padding: 0;
 		margin-left: -1px;
 		border-top-left-radius: 0;

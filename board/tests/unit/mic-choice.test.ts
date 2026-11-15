@@ -16,6 +16,8 @@ test("the menu lists only microphones, without the browser's own default entries
 test('names are missing until the browser allows the microphone', () => {
 	expect(unnamed([device('audioinput', 'a', '')])).toBe(true);
 	expect(unnamed([device('audioinput', 'a', 'Headset'), device('videoinput', 'v', '')])).toBe(false);
+	// Before permission the browser may hide the id as well.
+	expect(unnamed([device('audioinput', '', '')])).toBe(true);
 	expect(unnamed([])).toBe(false);
 });
 
