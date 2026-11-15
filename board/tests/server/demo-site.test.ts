@@ -113,6 +113,12 @@ test('the handover: state cookie, one-time code, then the demo address’s own l
 	expect(page.body).toContain('hello demo');
 });
 
+/** The demo address may show its own pages in frames, no other site may (#658). */
+function expectOwnFramesOnly(what: string, headers: Answer['headers']) {
+	const policy = String(headers['content-security-policy']);
+	expect({ what, policy, frames: headers['x-frame-options'] }).toEqual({ what, policy: "frame-ancestors 'self'; object-src 'none'; base-uri 'self'", frames: 'SAMEORIGIN' });
+}
+
 test('logged in there, the demo address serves demo files, unsandboxed, not stored, without a referrer', async () => {
 	const login = await demoLogin();
 	const page = await demo('/d1/', [login]);
@@ -122,6 +128,20 @@ test('logged in there, the demo address serves demo files, unsandboxed, not stor
 	const module = await demo('/d1/app.js', [login]);
 	expect([module.status, module.headers['content-type']]).toEqual([200, 'text/javascript; charset=utf-8']);
 	expect((await demo('/d1', [login])).location).toBe('/d1/');
+});
+
+test('every demo address answer lets its own pages frame it and no other site; the board still refuses all frames', async () => {
+	const login = await demoLogin();
+	const answers: [string, Answer][] = [
+		['page', await demo('/d1/', [login])],
+		['file', await demo('/d1/app.js', [login])],
+		['missing', await demo('/nope/', [login])],
+		['logged out', await demo('/d1/')]
+	];
+	expect(answers.map(([what, answer]) => [what, answer.status])).toEqual([['page', 200], ['file', 200], ['missing', 404], ['logged out', 303]]);
+	for (const [what, answer] of answers) expectOwnFramesOnly(what, answer.headers);
+	const board = await fixture.fetch('/', { cookie });
+	expect([board.headers.get('content-security-policy'), board.headers.get('x-frame-options')]).toEqual(["frame-ancestors 'none'; object-src 'none'; base-uri 'self'", 'DENY']);
 });
 
 test('the demo address answers nothing but demos: board pages, API, the board’s own files are 404', async () => {

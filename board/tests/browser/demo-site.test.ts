@@ -2,7 +2,7 @@
 // the built board): logged in on the board, its /demo/<name>/ lands on the demo address after the
 // login is handed over, and the page's module script, fetched data, image, stylesheet and web font
 // all load. The two addresses are one site apart from their first label, as the host's are, and the
-// page still cannot read the board.
+// page still cannot read the board. A page that shows its own pages in frames sees them (#658).
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -44,6 +44,16 @@ const data = await (await fetch('data.json')).json();
 document.body.dataset.data = data.value;
 const face = await document.fonts.load('16px DemoFont');
 document.body.dataset.font = face.length ? 'loaded' : 'missing';`;
+/** A demo whose index shows its own panel page twice in frames, as agents' demos often do (#658). */
+const FRAMED = `<!doctype html><meta charset="utf-8"><title>d2</title>
+<iframe src="panel.html?row=1"></iframe><iframe src="panel.html?row=2"></iframe>`;
+const PANEL = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<p id="styled">panel</p><img id="dot" src="dot.png">
+<script>
+const out = document.body.dataset;
+out.row = new URLSearchParams(location.search).get('row');
+addEventListener('load', () => (out.image = String(document.getElementById('dot').naturalWidth)));
+</script>`;
 
 let fixture: Fixture;
 let proxy: ReturnType<typeof httpsProxy>;
@@ -61,6 +71,11 @@ beforeAll(async () => {
 	writeFileSync(join(site, 'style.css'), `@font-face{font-family:DemoFont;src:url(f.ttf)}#styled{color:rgb(1, 2, 3);font-family:DemoFont}`);
 	writeFileSync(join(site, 'dot.png'), Buffer.from(PNG, 'base64'));
 	copyFileSync(someFont(), join(site, 'f.ttf'));
+	const framed = join(dir, 'data', 'site', 'd2');
+	mkdirSync(framed);
+	writeFileSync(join(framed, 'index.html'), FRAMED);
+	writeFileSync(join(framed, 'panel.html'), PANEL);
+	for (const file of ['style.css', 'dot.png', 'f.ttf']) copyFileSync(join(site, file), join(framed, file));
 	proxy = httpsProxy(() => fixture.url, NAMES);
 	fixture = await startFixture({
 		env: { LAT_BOARD_DEMO_DIR: join(dir, 'data'), LAT_BOARD_URL: proxy.origin, LAT_BOARD_DEMO_URL: proxy.originOf(NAMES[1]), LAT_BOARD_TRUSTED_PROXIES: '127.0.0.1' }
@@ -118,4 +133,21 @@ test('a demo page’s script cannot swap the browser’s demo login for another 
 	await tab.navigate(attack);
 	expect(await tab.eval<string>(`document.body.innerText`)).toContain('已失效');
 	expect(await device()).toBe(before);
+}, 30_000);
+
+test('a demo page shows its own pages in frames, each with its stylesheet and image', async () => {
+	const { tab } = await loggedInChrome('demo-site-frames');
+	await tab.navigate(`${proxy.origin}/demo/d2/`);
+	expect(await tab.eval<string>(`location.origin + location.pathname`)).toBe(`${proxy.originOf(NAMES[1])}/d2/`);
+	const panels = `[...document.querySelectorAll('iframe')].map((frame) => {
+		const doc = frame.contentDocument;
+		return doc?.body?.dataset.image ? { row: doc.body.dataset.row, image: doc.body.dataset.image, color: getComputedStyle(doc.getElementById('styled')).color } : null;
+	})`;
+	// A refused frame shows Chrome's error page, which the demo cannot read: null for good.
+	await tab.until(`${panels}.every(Boolean)`, 'both framed panels to load');
+	expect(await tab.eval(panels)).toEqual([
+		{ row: '1', image: '1', color: 'rgb(1, 2, 3)' },
+		{ row: '2', image: '1', color: 'rgb(1, 2, 3)' }
+	]);
+	expect(tab.errors).toEqual([]);
 }, 30_000);

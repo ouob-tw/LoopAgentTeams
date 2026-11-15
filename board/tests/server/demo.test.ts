@@ -61,6 +61,8 @@ function expectDemoHeaders(what: string, headers: { get(name: string): string | 
 	const policy = headers.get('content-security-policy') ?? '';
 	expect({ what, sandboxed: policy.startsWith('sandbox allow-scripts allow-popups;'), sameOrigin: policy.includes('allow-same-origin') }).toEqual({ what, sandboxed: true, sameOrigin: false });
 	expect({ what, cache: headers.get('cache-control'), referrer: headers.get('referrer-policy') }).toEqual({ what, cache: 'no-store', referrer: 'no-referrer' });
+	// The demo address may frame its own pages (#658); the board's /demo still refuses every frame.
+	expect({ what, noFrames: policy.includes("frame-ancestors 'none'"), frames: headers.get('x-frame-options') }).toEqual({ what, noFrames: true, frames: 'DENY' });
 }
 
 test('every answer under /demo carries the demo headers: the login redirect, 404, 308 and framework errors; the reload page does not', async () => {

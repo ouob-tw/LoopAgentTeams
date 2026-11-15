@@ -2,6 +2,9 @@
 // a file's type, and links out of the board do not tell other sites the board's addresses. The
 // content policy only adds what the pages never use: frames, plugins and a <base> elsewhere.
 export const CONTENT_POLICY = "frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+/** The demo address's policy: a demo page may show its own pages in a frame (a panel beside its
+ *  index), still no other site, the board included. */
+export const DEMO_SITE_POLICY = "frame-ancestors 'self'; object-src 'none'; base-uri 'self'";
 /** Over HTTPS only: browsers then refuse plain http to this host name for a year. */
 export const HSTS = 'max-age=31536000';
 
@@ -12,17 +15,19 @@ export const DEMO_POLICY = 'sandbox allow-scripts allow-popups';
 export const isDemoPath = (path: string) => path === '/demo' || path.startsWith('/demo/');
 
 /** A demo answer: `sandbox` under the board's /demo, `site` on the demo address (demo-site.ts),
- *  which is an origin of its own already. */
+ *  which is an origin of its own already and so may frame its own pages. */
 export type DemoAnswer = 'sandbox' | 'site' | null;
 
 /** The security headers for one answer; a content policy the answer already has (an attached
  *  file's sandbox) is kept in front of the board's own. A demo answer is not stored and sends no
- *  referrer, and under the board's /demo gets the demo sandbox in place of its own policy. */
+ *  referrer, and under the board's /demo gets the demo sandbox in place of its own policy; on the
+ *  demo address it may be framed by its own pages. */
 export function securityHeaders(https: boolean, ownPolicy: string | null = null, demo: DemoAnswer = null): [string, string][] {
 	const policy = demo === 'sandbox' ? DEMO_POLICY : ownPolicy;
+	const base = demo === 'site' ? DEMO_SITE_POLICY : CONTENT_POLICY;
 	return [
-		['content-security-policy', policy ? `${policy}; ${CONTENT_POLICY}` : CONTENT_POLICY],
-		['x-frame-options', 'DENY'],
+		['content-security-policy', policy ? `${policy}; ${base}` : base],
+		['x-frame-options', demo === 'site' ? 'SAMEORIGIN' : 'DENY'],
 		['x-content-type-options', 'nosniff'],
 		['referrer-policy', demo ? 'no-referrer' : 'same-origin'],
 		...(demo ? [['cache-control', 'no-store'] as [string, string]] : []),

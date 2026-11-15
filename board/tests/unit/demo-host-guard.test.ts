@@ -24,13 +24,17 @@ test('the demo host however written goes on under the demo prefix, marked, with 
 	for (const host of ['demo.example.test', 'DEMO.example.test', 'demo.example.test:443', 'demo.example.test:0443']) {
 		expect({ host, ...guarded({ host }) }).toMatchObject({ host, url: '/__demo-host/_app/version.json', mark: '1' });
 	}
-	expect(guarded({ host: 'demo.example.test' }).set['cache-control']).toBe('no-store');
+	const { set } = guarded({ host: 'demo.example.test' });
+	expect([set['cache-control'], set['x-frame-options'], set['content-security-policy']]).toEqual(['no-store', 'SAMEORIGIN', "frame-ancestors 'self'; object-src 'none'; base-uri 'self'"]);
 });
 
 test('another host, or another port, is the board: not rewritten, and a mark the client sent is removed', () => {
 	for (const host of ['board.example.test', 'demo.example.test:8443', 'demo.example.test.evil', 'bad host']) {
-		expect({ host, ...guarded({ host, 'x-lat-demo-address': '1' }) }).toMatchObject({ host, url: '/_app/version.json', mark: undefined });
+		const answer = guarded({ host, 'x-lat-demo-address': '1' });
+		expect({ host, ...answer }).toMatchObject({ host, url: '/_app/version.json', mark: undefined });
+		expect([host, answer.set['x-frame-options'], answer.set['content-security-policy']]).toEqual([host, 'DENY', "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"]);
 	}
+	expect(guarded({ host: 'board.example.test' }, '/demo/d1/').set['x-frame-options']).toBe('DENY');
 });
 
 test('with HOST_HEADER the host comes from it, and from Host when it is not sent, as adapter-node does', () => {
