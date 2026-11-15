@@ -189,7 +189,6 @@
 		}
 		.actions > button:not(.info) {
 			padding-inline: 0.55rem;
-			font-size: max(0.9rem, var(--min-font, 0px));
 		}
 		button.info {
 			padding-inline: 0;

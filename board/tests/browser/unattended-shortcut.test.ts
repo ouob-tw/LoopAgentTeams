@@ -23,7 +23,7 @@ const DRAWER = '[aria-labelledby="unattended-form-title"]';
 const MARK = `(document.querySelector('[data-controller="luna"] .unattended')?.innerText ?? '')`;
 const button = (scope: string, label: string) => `[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.innerText.replace(/\\s+/g, '') === ${JSON.stringify(label)} && b.offsetParent !== null)`;
 /** The row's buttons as [label, left, top, height], in page order. */
-const ROW_BUTTONS = `[...document.querySelectorAll('${ROW} > button, ${ROW} > .shortcut > button')].map((b) => { const r = b.getBoundingClientRect(); return { label: b.innerText.replace(/\s+/g, '') || b.getAttribute('aria-label'), left: r.left, top: r.top, height: r.height, width: r.width, right: r.right }; })`;
+const ROW_BUTTONS = `[...document.querySelectorAll('${ROW} > button, ${ROW} > .shortcut > button')].map((b) => { const r = b.getBoundingClientRect(); return { label: b.innerText.replace(/\s+/g, '') || b.getAttribute('aria-label'), left: r.left, top: r.top, height: r.height, width: r.width, font: parseFloat(getComputedStyle(b).fontSize), right: r.right }; })`;
 
 let fixture: Fixture;
 let cookie: string;
@@ -83,24 +83,29 @@ async function visit(width: number, session = SESSION): Promise<Tab> {
 
 /** The row stays on one line, in the order 無人模式, then the close, inside the window, every button 44px high. */
 async function expectRow(tab: Tab, width: number) {
-	const buttons = await tab.eval<{ label: string; left: number; top: number; height: number; width: number; right: number }[]>(ROW_BUTTONS);
+	const buttons = await tab.eval<{ label: string; left: number; top: number; height: number; width: number; font: number; right: number }[]>(ROW_BUTTONS);
 	const labels = buttons.map((b) => b.label);
-	expect(labels.slice(0, 2)).toEqual([expect.stringContaining('無人模式'), '關閉 Agent']);
-	expect(new Set(buttons.map((b) => Math.round(b.top))).size).toBe(1);
-	expect(buttons[0].right).toBeLessThanOrEqual(buttons[1].left);
+	expect(labels.slice(0, 2)).toEqual([expect.stringMatching(/^(手動|無人)$/), '關閉 Agent']);
+	// One line at the acceptance width (390 and up); below it a wrap to a second row is allowed.
+	if (width >= 390) {
+		expect(new Set(buttons.map((b) => Math.round(b.top))).size).toBe(1);
+		expect(buttons[0].right).toBeLessThanOrEqual(buttons[1].left);
+	}
 	expect(Math.max(...buttons.map((b) => b.right))).toBeLessThanOrEqual(width);
 	expect(buttons.filter((b) => b.height < 44 || b.width < 44).map((b) => `${b.label} ${b.width}x${b.height}`)).toEqual([]);
+	// The text is at least 16px (ui-baseline); the icon-only button has none.
+	expect(buttons.filter((b) => b.font < 16).map((b) => `${b.label} ${b.font}px`)).toEqual([]);
 	expect(await tab.eval(`document.scrollingElement.scrollWidth <= innerWidth`)).toBe(true);
 }
 
 for (const width of [1400, 390, 360]) {
 	test.skipIf(!CHROME)(`${width}px: the button is left of 關閉 Agent on a controller's page, opens the form, and 關掉無人模式 goes back`, async () => {
 		const tab = await visit(width);
-		await tab.until(`${button(ROW, '無人模式關')} !== undefined`, 'manual on the button');
+		await tab.until(`${button(ROW, '手動')} !== undefined`, 'manual on the button');
 		await shot(tab, `${width}-shortcut-manual`);
 		await expectRow(tab, width);
 
-		await tab.eval(`${button(ROW, '無人模式關')}.click()`);
+		await tab.eval(`${button(ROW, '手動')}.click()`);
 		await tab.until(`document.querySelector('${MENU}')?.innerText.includes('現在：人工確認')`, 'the menu in manual');
 		expect(await tab.eval(`document.scrollingElement.scrollWidth <= innerWidth`)).toBe(true);
 		const popup = await tab.eval<{ left: number; right: number }>(`(() => { const r = document.querySelector('${ROW} .shortcut .popup').getBoundingClientRect(); return { left: r.left, right: r.right }; })()`);
@@ -111,15 +116,15 @@ for (const width of [1400, 390, 360]) {
 		await tab.until(`!!document.querySelector('${DRAWER} input[type="text"]') && !document.querySelector('${MENU}')`, 'the form, the menu closed');
 		await tab.eval(`(() => { const box = document.querySelector('${DRAWER} input[type="text"]'); box.value = '改好 #655'; box.dispatchEvent(new Event('input', { bubbles: true })); const done = document.querySelector('${DRAWER} textarea'); done.value = '#655 合併'; done.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 		await tab.eval(`${button(DRAWER, '確認開啟')}.click()`);
-		await tab.until(`!document.querySelector('${DRAWER}') && ${button(ROW, '無人模式開')} !== undefined`, 'the button says on');
+		await tab.until(`!document.querySelector('${DRAWER}') && ${button(ROW, '無人')} !== undefined`, 'the button says on');
 		await expectRow(tab, width);
 		await shot(tab, `${width}-shortcut-unattended`);
 
-		await tab.eval(`${button(ROW, '無人模式開')}.click()`);
+		await tab.eval(`${button(ROW, '無人')}.click()`);
 		await tab.until(`!!${button(MENU, '關掉無人模式')}`, 'the menu in unattended');
 		await shot(tab, `${width}-shortcut-menu-unattended`);
 		await tab.eval(`${button(MENU, '關掉無人模式')}.click()`);
-		await tab.until(`${button(ROW, '無人模式關')} !== undefined && !document.querySelector('${MENU}')`, 'back to manual');
+		await tab.until(`${button(ROW, '手動')} !== undefined && !document.querySelector('${MENU}')`, 'back to manual');
 		expect(await tab.eval(MARK)).toBe('');
 	}, 60_000);
 }
