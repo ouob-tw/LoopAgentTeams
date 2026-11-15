@@ -92,6 +92,8 @@
 		const path = (feed === 'agent' ? `/api/agents/transcript/mine?session=${encodeURIComponent(forId)}` : `/api/transcript/mine?controller=${encodeURIComponent(forId)}`) + (open ? '' : '&newest=1');
 		const result = await request<MyMessagesUpdate>(path);
 		if (mine !== reads) return;
+		// A read that failed is asked again when the list is next opened.
+		if (!result.ok || !result.value.ok) behind = true;
 		if (!result.ok) {
 			if (!result.unpaired) problem = '沒有收到看板伺服器的回應。';
 		} else if (result.value.ok) {
