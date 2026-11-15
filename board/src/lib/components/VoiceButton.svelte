@@ -5,7 +5,10 @@
 	// A mic drawn again with the same `key` carries on the recording in progress; without a key, or
 	// once no mic holds it, it stops and lets go of the mic.
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+	import Check from '@lucide/svelte/icons/check';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Mic from '@lucide/svelte/icons/mic';
+	import { micDevices } from '#lib/board/mic-devices.svelte.ts';
 	import { recordingFor, type Phase } from '#lib/board/voice-recording.svelte.ts';
 
 	/** The button's name and tip in each phase. */
@@ -30,8 +33,77 @@
 	});
 	const phase = $derived(recording?.phase ?? 'idle');
 	const left = $derived(recording?.left ?? 0);
+
+	// The small button joined to the mic lists this computer's microphones. The choice is shared by
+	// every mic and applies from the next recording; one already recording is not touched.
+	let group = $state<HTMLElement>();
+	let pick = $state<HTMLButtonElement>();
+	let open = $state(false);
+	/** Where the menu goes: below the button, or above it when there is more room there. */
+	let place = $state('');
+
+	function toggle() {
+		if (open) return (open = false);
+		const box = pick!.getBoundingClientRect();
+		const room = innerWidth - 16;
+		const left = Math.max(8, Math.min(box.right - Math.min(room, 320), innerWidth - 8 - Math.min(room, 320)));
+		const up = box.top > innerHeight - box.bottom;
+		place = `left:${left}px;${up ? `bottom:${innerHeight - box.top + 4}px;max-height:${box.top - 12}px` : `top:${box.bottom + 4}px;max-height:${innerHeight - box.bottom - 12}px`}`;
+		open = true;
+		void micDevices.load(true);
+	}
+
+	function choose(id: string | null) {
+		micDevices.choose(id);
+		open = false;
+		pick?.focus();
+	}
+
+	function keys(event: KeyboardEvent) {
+		const items = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+		const at = items.indexOf(document.activeElement as HTMLElement);
+		const move = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[event.key];
+		if (move !== undefined) {
+			event.preventDefault();
+			items[(move + items.length) % items.length]?.focus();
+		} else if (event.key === 'Escape') {
+			event.preventDefault();
+			open = false;
+			pick?.focus();
+		} else if (event.key === 'Tab') open = false;
+	}
+
+	/** Opens with the chosen item in focus, so the arrow keys start from it. */
+	function focusChosen(element: HTMLElement) {
+		const items = [...element.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+		(items.find((item) => item.getAttribute('aria-checked') === 'true') ?? items[0])?.focus();
+	}
+
+	// While the menu is open: a click anywhere else closes it, scrolling or resizing moves it out
+	// from under the button so it closes too, and plugging a microphone in or out updates the list.
+	$effect(() => {
+		if (!open) return;
+		const outside = (event: PointerEvent) => {
+			if (!group?.contains(event.target as Node)) open = false;
+		};
+		const close = (event?: Event) => {
+			if (!(event?.target instanceof Node && group?.contains(event.target))) open = false;
+		};
+		const changed = () => void micDevices.load(false);
+		addEventListener('pointerdown', outside, true);
+		addEventListener('resize', close);
+		addEventListener('scroll', close, true);
+		navigator.mediaDevices?.addEventListener?.('devicechange', changed);
+		return () => {
+			removeEventListener('pointerdown', outside, true);
+			removeEventListener('resize', close);
+			removeEventListener('scroll', close, true);
+			navigator.mediaDevices?.removeEventListener?.('devicechange', changed);
+		};
+	});
 </script>
 
+<span class="mic-group" bind:this={group}>
 <button
 	bind:this={button}
 	type="button"
@@ -51,8 +123,116 @@
 		<Mic size="1.1em" />
 	{/if}
 </button>
+<button
+	bind:this={pick}
+	type="button"
+	class="mic-pick"
+	aria-label="選麥克風"
+	title="選麥克風"
+	aria-haspopup="menu"
+	aria-expanded={open}
+	disabled={phase === 'starting'}
+	onclick={toggle}
+>
+	<ChevronDown size="1em" />
+</button>
+{#if open}
+	<div class="mic-menu" style={place}>
+		<div class="items" role="menu" aria-label="麥克風" tabindex="-1" onkeydown={keys} {@attach focusChosen}>
+			{@render item(null, '系統預設')}
+			{#each micDevices.options as option (option.id)}
+				{@render item(option.id, option.label)}
+			{/each}
+		</div>
+		{#if micDevices.asking}
+			<p class="note">請在瀏覽器允許麥克風，才看得到名稱。</p>
+		{:else if micDevices.note}
+			<p class="note">{micDevices.note}</p>
+		{/if}
+	</div>
+{/if}
+</span>
+
+{#snippet item(id: string | null, label: string)}
+	<button type="button" role="menuitemradio" aria-checked={micDevices.shown === id} title={label} onclick={() => choose(id)}>
+		<span class="check">{#if micDevices.shown === id}<Check size="1em" />{/if}</span>
+		<span class="name">{label}</span>
+	</button>
+{/snippet}
 
 <style>
+	/* The mic and its picker are one control: two halves sharing one frame. */
+	.mic-group {
+		flex: none;
+		display: inline-flex;
+		align-items: stretch;
+		font-size: max(1rem, var(--min-font, 0px));
+	}
+	.mic-pick {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 2.4rem;
+		padding: 0;
+		margin-left: -1px;
+		border-top-left-radius: 0;
+		border-bottom-left-radius: 0;
+		line-height: 1;
+	}
+	.mic-menu {
+		position: fixed;
+		z-index: 50;
+		display: flex;
+		flex-direction: column;
+		width: min(20rem, calc(100vw - 1rem));
+		overflow-y: auto;
+		padding: 4px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--bg);
+		color: var(--text);
+		box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
+	}
+	.items {
+		display: flex;
+		flex-direction: column;
+	}
+	.items button {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		min-height: 44px;
+		padding: 0 0.5rem;
+		border: 0;
+		background: none;
+		color: var(--text);
+		text-align: left;
+	}
+	.items button:is(:hover, :focus-visible) {
+		background: color-mix(in srgb, var(--text) 12%, var(--bg));
+	}
+	.check {
+		flex: none;
+		display: inline-flex;
+		width: 1em;
+		color: var(--accent);
+	}
+	.name {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.items button[aria-checked='true'] .name {
+		font-weight: 700;
+	}
+	.note {
+		margin: 0;
+		padding: 0.4rem 0.5rem;
+		color: var(--muted);
+		line-height: 1.6;
+	}
+
 	/* Square, as tall as a one-line box; it widens only if the countdown would not fit. */
 	.mic {
 		flex: none;
@@ -63,6 +243,10 @@
 		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
 		padding: 0;
 		line-height: 1;
+	}
+	.mic:not(:last-child) {
+		border-top-right-radius: 0;
+		border-bottom-right-radius: 0;
 	}
 	.mic[data-voice='recording'] {
 		border-color: var(--danger);

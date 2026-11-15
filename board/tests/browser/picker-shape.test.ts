@@ -54,9 +54,12 @@ const SMALL = `parseFloat(getComputedStyle(document.documentElement).getProperty
 
 /** Buttons and boxes around the picker and the corners they had before it changed. The send button
  *  is a square only with its arrow, not while it says 喚醒 to a closed controller. */
-const KEPT: [selector: string, radius: string][] = [
+/** `joined` marks a half of a two-part button: the corners on the side where it meets the other half are square
+ *  (top left, top right, bottom right, bottom left; 1 keeps the corner, 0 squares it). */
+const KEPT: [selector: string, radius: string, joined?: number[]][] = [
 	['.cmd .attach-slot button', 'var(--radius)'],
-	['.cmd .voice-slot button', 'var(--radius)'],
+	['.cmd .voice-slot .mic', 'var(--radius)', [1, 0, 0, 1]],
+	['.cmd .voice-slot .mic-pick', 'var(--radius)', [0, 1, 1, 0]],
 	['.cmd textarea', 'var(--radius)'],
 	['.cmd .send.square', 'calc(var(--radius) - 2px)'],
 	['.cmd .send:not(.square)', 'var(--radius)'],
@@ -110,13 +113,13 @@ for (const theme of ['dark', 'light'] as const) {
 				);
 				for (const part of parts) expect(part.cut, `${theme} ${width}px ${search} "${part.text}" is cut`).toBe(false);
 				if (search.startsWith('?controller')) expect(parts.map((part) => part.text.trim()).join(' ')).not.toBe('模型 強度');
-				for (const [selector, radius] of KEPT) {
+				for (const [selector, radius, joined] of KEPT) {
 					const want = await tab().eval<number>(
 						`(() => { const probe = document.body.appendChild(document.createElement('div')); probe.style.borderRadius = ${JSON.stringify(radius)}; const value = parseFloat(getComputedStyle(probe).borderTopLeftRadius); probe.remove(); return value; })()`
 					);
 					const found = await tab().eval<Corner[]>(corners(selector));
 					if (!selector.startsWith('.cmd .send')) expect(found.length, `${search}: ${selector}`).toBeGreaterThan(0);
-					for (const one of found) expect(one.radius, `${theme} ${width}px ${search} ${selector}`).toEqual([want, want, want, want]);
+					for (const one of found) expect(one.radius, `${theme} ${width}px ${search} ${selector}`).toEqual((joined ?? [1, 1, 1, 1]).map((keep) => keep * want));
 				}
 				const shots = process.env.PICKER_SHAPE_SHOTS;
 				if (shots) {

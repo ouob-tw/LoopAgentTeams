@@ -381,6 +381,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 使用方式見[使用說明](../docs/lat-board.md#語音輸入)。實作上：功能開關記在瀏覽器的 localStorage，連按「待辦」分頁 5 次切換。
 
 - 錄音送到看板伺服器的 `/api/voice`，由伺服器帶著憑證轉給語音辨識服務（見「設定」的 `LAT_BOARD_ASR_*`）；結果用 opencc-js 轉成台灣正體字（`traditional.ts` 的 `toTraditionalChars`，`cn` → `tw`，只轉字、不換用詞；翻譯用的 `toTraditional` 仍是 `twp`、含用詞），Codex 整理的提示也要它保留原本的用詞。放入時只取代選取的文字；錄音最長約 3 分鐘（略短於語音辨識服務的 180 秒上限）。
+- 麥克風旁的小按鈕（`VoiceButton.svelte` 的 `.mic-pick`，和麥克風同一個框）列出 `enumerateDevices()` 的麥克風（`mic-choice.ts`）。選擇存在 localStorage 的 `lat-board-mic`，每個麥克風共用（`mic-devices.svelte.ts`）；錄音以 `getUserMedia({ audio: { deviceId: { exact } } })` 要求，選的那支不在了（`OverconstrainedError`／`NotFoundError`）就改用系統預設並跳通知。裝置名稱要在瀏覽器允許麥克風後才有，所以打開選單時名稱還是空的就先要求一次權限；選單開著時 `devicechange` 會更新清單。
 - 20 個字以內直接放到游標處；更長的先交給 Codex app server 修錯字、去掉口誤與贅字再放入。Codex 失敗、看不懂或逾時就放轉換後的原文，並以通知說明原因。
 - 測試以 Bun 啟動的假語音辨識服務與 `tests/fake-codex.mjs`（假的 Codex app server）代替真的服務，不會呼叫外部服務。
 

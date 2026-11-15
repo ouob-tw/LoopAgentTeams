@@ -4,6 +4,8 @@
 // said still goes into that box. Once no mic holds a recording any more, it stops, lets go of the
 // mic and is dropped.
 import { request } from './api.ts';
+import { micConstraints, micGone } from './mic-choice.ts';
+import { micDevices } from './mic-devices.svelte.ts';
 import { toasts } from './toasts.svelte.ts';
 import type { VoiceResult } from './voice.ts';
 
@@ -67,7 +69,15 @@ class Recording {
 		this.phase = 'starting';
 		let stream: MediaStream | null = null;
 		try {
-			stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			const chosen = micDevices.chosen;
+			try {
+				stream = await navigator.mediaDevices.getUserMedia(micConstraints(chosen));
+			} catch (error) {
+				// The chosen microphone was unplugged: record from the system default this once.
+				if (!chosen || !micGone(error)) throw error;
+				stream = await navigator.mediaDevices.getUserMedia(micConstraints(null));
+				if (!this.#gone) toasts.show('info', '選的麥克風找不到了，這次改用系統預設。');
+			}
 			if (this.#gone) throw null;
 			const current = new MediaRecorder(stream, { audioBitsPerSecond: 24_000 });
 			const chunks: Blob[] = [];

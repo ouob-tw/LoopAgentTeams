@@ -484,9 +484,26 @@ async function debuggingPort(profile: string, chrome: ChildProcess): Promise<num
 }
 
 /** Voice input that works without a microphone or the speech service: run in a loaded page, a
- *  recording is a few bytes and the board answers every one with `text`. */
-export const fakeMic = (text: string) => `(() => {
-	Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async () => ({ getTracks: () => [] }) } });
+ *  recording is a few bytes and the board answers every one with `text`. `mics` are the computer's
+ *  microphones (none by default); a request for one that is not among them is refused as the
+ *  browser does for an unplugged one. Every request's constraints are kept in `window.mediaAsked`,
+ *  and `window.plugMics(list)` swaps the list and fires `devicechange`. */
+export const fakeMic = (text: string, mics: { id: string; label: string }[] = []) => `(() => {
+	let mics = ${JSON.stringify(mics)};
+	window.mediaAsked = [];
+	const media = new EventTarget();
+	media.getUserMedia = async (constraints) => {
+		window.mediaAsked.push(constraints);
+		const exact = constraints.audio?.deviceId?.exact;
+		if (exact && !mics.some((mic) => mic.id === exact)) throw Object.assign(new Error('gone'), { name: 'OverconstrainedError' });
+		return { getTracks: () => [] };
+	};
+	media.enumerateDevices = async () => mics.map((mic) => ({ kind: 'audioinput', deviceId: mic.id, label: mic.label }));
+	window.plugMics = (list) => {
+		mics = list;
+		media.dispatchEvent(new Event('devicechange'));
+	};
+	Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: media });
 	window.MediaRecorder = class {
 		mimeType = 'audio/webm';
 		start() {}
@@ -503,7 +520,7 @@ export const fakeMic = (text: string) => `(() => {
 })()`;
 
 /** The mic beside a text box that is not a MessageBox. */
-export const micOf = (box: string) => `document.querySelector(${JSON.stringify(box)})?.parentElement.querySelector(':scope > button.mic')`;
+export const micOf = (box: string) => `document.querySelector(${JSON.stringify(box)})?.parentElement.querySelector(':scope > .mic-group > button.mic')`;
 
 /** How much the icon of the mic beside `box` differs in size from the command line's mic icon, in
  *  CSS pixels: the larger of the width and height differences. */
