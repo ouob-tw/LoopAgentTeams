@@ -18,13 +18,12 @@ const HCOM_STATUS: Record<string, AgentStatus> = { active: 'working', listening:
 const asStatus = (value: string | null): AgentStatus =>
 	(AGENT_STATUSES as readonly string[]).includes(value ?? '') ? (value as AgentStatus) : 'unknown';
 
-/** The hcom agent a Herdr agent is: the one with its session ID, else the one in its pane. */
+/** The hcom agent a Herdr agent is: the one with its session ID, else the one in its pane, unless
+ *  hcom has that one under another session: the pane then runs another agent than hcom has there. */
 function pair(agent: HerdrAgent, hcom: HcomAgent[]): HcomAgent | null {
-	return (
-		(agent.sessionId && hcom.find((candidate) => candidate.sessionId === agent.sessionId)) ||
-		hcom.find((candidate) => candidate.pane === agent.pane) ||
-		null
-	);
+	const samePane = (candidate: HcomAgent) =>
+		candidate.pane === agent.pane && !(agent.sessionId && candidate.sessionId && candidate.sessionId !== agent.sessionId);
+	return (agent.sessionId && hcom.find((candidate) => candidate.sessionId === agent.sessionId)) || hcom.find(samePane) || null;
 }
 
 /** Where Herdr lists an agent, as a model switch keeps it. */
@@ -107,7 +106,14 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 			};
 			/** The names of the fresh launches open switches resume their sessions in. */
 			const resuming = new Set(switches.flatMap((view) => (view.relaunch?.session && view.relaunchedName ? [view.relaunchedName] : [])));
-			const shown = listed.filter((agent) => agent.sessionId !== null || !resuming.has(pairings.get(pairingKey(agent))?.name ?? ''));
+			/** The sessions of open switches that keep where Herdr listed the agent, so can list it themselves. */
+			const switchRows = new Set(switches.flatMap((view) => (view.agent ? [view.controllerId] : [])));
+			// One with no session yet that hcom has in its pane under such a session is that agent: its switch's row stands for it.
+			const shown = listed.filter((agent) => {
+				if (agent.sessionId !== null) return true;
+				const paired = pairings.get(pairingKey(agent));
+				return !resuming.has(paired?.name ?? '') && !(paired?.sessionId && switchRows.has(paired.sessionId));
+			});
 			const agents = shown.map((agent): Agent => {
 				// A list that cannot be read does not mean an agent is not linked: the last pairing stands,
 				// and one that appeared since no list was read is not known either way.

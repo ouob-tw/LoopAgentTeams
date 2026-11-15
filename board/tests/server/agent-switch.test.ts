@@ -16,7 +16,7 @@ import {
 	type SwitchView
 } from '../../src/lib/board/models.ts';
 import type { Agent } from '../../src/lib/board/types.ts';
-import { checkRunHere, startFixture, until, type Fixture } from '../harness.ts';
+import { checkRunHere, jsonLines, startFixture, until, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -731,4 +731,75 @@ test('a board restarted while a fresh client is awaited marks it done by its rea
 	while (lastStep(switched.body.entry!.id)?.state !== 'done' && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
 	expect(lastStep(switched.body.entry!.id)).toMatchObject({ state: 'done' });
 	expect(launches()).toHaveLength(1);
+});
+
+/** Herdr starts running `agent` in a pane of its own, as a resumed client's new pane. */
+function herdrRuns(agent: { pane_id: string; [field: string]: unknown }) {
+	const herdrFile = join(fixture.dir, 'herdr.json');
+	const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
+	herdr.agents = [...herdr.agents.filter((listed: { pane_id: string }) => listed.pane_id !== agent.pane_id), agent];
+	if (!herdr.panes.some((listed: { pane_id: string }) => listed.pane_id === agent.pane_id)) {
+		herdr.panes.push({ pane_id: agent.pane_id, workspace_id: 'wA', tab_id: 'wA:t-s-codex', cwd: '/projects/s-codex' });
+	}
+	writeFileSync(herdrFile, JSON.stringify(herdr));
+}
+const codexRows = async () =>
+	(await agents()).filter((agent) => agent.client === 'codex').map((agent) => ({ id: agent.id, name: agent.name, inHerdr: agent.inHerdr, pane: agent.herdr.pane, state: agent.switch?.state ?? null }));
+
+test('a Codex resumed in a pane Herdr knows no session for yet stays exactly one row from the switch to its first turn', async () => {
+	// hcom lists the resumed client at once; Herdr runs it a read later, with no session until its first turn.
+	hcomPlan({ resumed: hcomAgent('coxa', 's-codex', 'listening', 'wA:p-new'), resumedExits: true });
+	expect((await change('s-codex', null, 'high')).status).toBe(200);
+	const switchRow = { id: 's-codex', name: 'coxa', inHerdr: false, pane: 'wA:p-s-codex', state: 'resuming' as const };
+	expect(await codexRows()).toEqual([switchRow]);
+
+	herdrRuns({ ...herdrAgent('s-codex', 'wA:p-new'), agent_session: null });
+	expect(await codexRows()).toEqual([switchRow]);
+	await fixture.refresh(cookie);
+	await until(() => sentLog().some((line) => line.kind === 'resume-closed'), 5_000, 'the resume settled');
+	// Until its first turn it is the pane's card: Herdr knows no session to key it by (ouob-tw/LoopAgentTeams-work#362).
+	const paneRow = { id: null, name: 'coxa', inHerdr: true, pane: 'wA:p-new', state: null };
+	expect(await codexRows()).toEqual([paneRow]);
+	await fixture.refresh(cookie);
+	expect(await codexRows()).toEqual([paneRow]);
+
+	herdrRuns(herdrAgent('s-codex', 'wA:p-new'));
+	await fixture.refresh(cookie);
+	expect(await codexRows()).toEqual([{ id: 's-codex', name: 'coxa', inHerdr: true, pane: 'wA:p-new', state: null }]);
+});
+
+test("a pane hcom still has the resumed Codex in, once another session's agent runs there, is not shown as that Codex", async () => {
+	hcomPlan({ resumed: hcomAgent('coxa', 's-codex', 'listening', 'wA:p-new'), resumedExits: true });
+	expect((await change('s-codex', null, 'high')).status).toBe(200);
+	// Another client runs in the pane hcom lists the Codex in, under a session of its own.
+	herdrRuns({ ...herdrAgent('s-other', 'wA:p-new'), agent: 'codex' });
+	for (const hcomOther of [true, false]) {
+		const added = join(fixture.dir, 'hcom-added.json');
+		const listed = JSON.parse(readFileSync(added, 'utf8')).filter((agent: { name: string }) => agent.name !== 'zora');
+		writeFileSync(added, JSON.stringify(hcomOther ? [...listed, hcomAgent('zora', 's-other', 'listening', 'wA:p-new')] : listed));
+		await fixture.refresh(cookie);
+		const inPane = (await codexRows()).filter((row) => row.pane === 'wA:p-new');
+		expect(inPane).toHaveLength(1);
+		expect(inPane[0]).toMatchObject({ id: 's-other', inHerdr: true });
+		expect(inPane[0].name).not.toBe('coxa');
+	}
+});
+
+test('a connected page whose status poll sees the resumed Codex pane before its switch settles is pushed one row for it', async () => {
+	hcomPlan({ resumed: hcomAgent('coxa', 's-codex', 'listening', 'wA:p-new'), resumedExits: true });
+	expect((await change('s-codex', null, 'high')).status).toBe(200);
+	await fixture.refresh(cookie);
+	const page = fixture.watch(cookie);
+	const pushed = () => (page.latest()?.agents ?? []).filter((agent) => agent.client === 'codex').map((agent) => [agent.id, agent.inHerdr, agent.switch?.state ?? null]);
+	await until(() => pushed().length > 0, 5_000, 'the first snapshot');
+	expect(pushed()).toEqual([['s-codex', false, 'resuming']]);
+
+	// Only the status poll reads the lists from here: no full read settles the switch meanwhile.
+	herdrRuns({ ...herdrAgent('s-codex', 'wA:p-new'), agent_session: null });
+	const polls = () => jsonLines(join(fixture.dir, 'hcom-list-calls.jsonl')).length;
+	const before = polls();
+	await until(() => polls() >= before + 2, 8_000, 'two status polls');
+	expect(pushed()).toEqual([['s-codex', false, 'resuming']]);
+	expect(sentLog().some((line) => line.kind === 'resume-closed')).toBe(false);
+	page.close();
 });
