@@ -338,6 +338,15 @@ test.skipIf(!CHROME)('wide: leaving before the 6 s keeps the report unread, and 
 	expect(await inInbox(REPORT)).toBe(true);
 	await click('.inbox', OTHER);
 	await until(`document.querySelector('.detail').innerText.includes(${JSON.stringify(OTHER)})`, 'the other open');
+	// Going from an inbox report to an item the inbox does not list also ends the stay.
+	await click('.inbox .toggle', '已處理');
+	await until(`!!document.querySelector('.inbox .row')`, 'the processed list');
+	await click('.inbox', '單選答過的題目');
+	await sleep(DWELL * 2);
+	await click('.inbox .toggle', '依時間');
+	expect(await inInbox(OTHER)).toBe(true);
+	await click('.inbox', OTHER);
+	await until(`document.querySelector('.detail').innerText.includes(${JSON.stringify(OTHER)})`, 'the other open again');
 	await sleep(DWELL * 0.6);
 	await evaluate(`__hidden(true)`);
 	await sleep(DWELL * 3);

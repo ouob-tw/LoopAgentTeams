@@ -393,7 +393,10 @@
 		const entry = key === null ? undefined : inbox.find((candidate) => candidate.key === key);
 		const prev = untrack(() => stay);
 		if (key === null) stay = null;
-		else if (entry && prev?.key !== key) stay = { key, counting: entry.kind === 'report' && entry.readAt === null && !testDevice.view };
+		// A new key starts a new stay at once; it counts only if the inbox lists it unread right then.
+		else if (prev?.key !== key) {
+			stay = { key, counting: entry?.kind === 'report' && entry.readAt === null && !testDevice.view };
+		}
 	});
 	$effect(() => {
 		if (!stay?.counting) return;
