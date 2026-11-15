@@ -16,7 +16,7 @@ import {
 	type SwitchView
 } from '../../src/lib/board/models.ts';
 import type { Agent } from '../../src/lib/board/types.ts';
-import { checkRunHere, startFixture, until, type Fixture } from '../harness.ts';
+import { checkRunHere, jsonLines, startFixture, until, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -783,4 +783,23 @@ test("a pane hcom still has the resumed Codex in, once another session's agent r
 		expect(inPane[0]).toMatchObject({ id: 's-other', inHerdr: true });
 		expect(inPane[0].name).not.toBe('coxa');
 	}
+});
+
+test('a connected page whose status poll sees the resumed Codex pane before its switch settles is pushed one row for it', async () => {
+	hcomPlan({ resumed: hcomAgent('coxa', 's-codex', 'listening', 'wA:p-new'), resumedExits: true });
+	expect((await change('s-codex', null, 'high')).status).toBe(200);
+	await fixture.refresh(cookie);
+	const page = fixture.watch(cookie);
+	const pushed = () => (page.latest()?.agents ?? []).filter((agent) => agent.client === 'codex').map((agent) => [agent.id, agent.inHerdr, agent.switch?.state ?? null]);
+	await until(() => pushed().length > 0, 5_000, 'the first snapshot');
+	expect(pushed()).toEqual([['s-codex', false, 'resuming']]);
+
+	// Only the status poll reads the lists from here: no full read settles the switch meanwhile.
+	herdrRuns({ ...herdrAgent('s-codex', 'wA:p-new'), agent_session: null });
+	const polls = () => jsonLines(join(fixture.dir, 'hcom-list-calls.jsonl')).length;
+	const before = polls();
+	await until(() => polls() >= before + 2, 8_000, 'two status polls');
+	expect(pushed()).toEqual([['s-codex', false, 'resuming']]);
+	expect(sentLog().some((line) => line.kind === 'resume-closed')).toBe(false);
+	page.close();
 });
