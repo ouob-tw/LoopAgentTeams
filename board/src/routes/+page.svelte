@@ -1152,7 +1152,9 @@
 		left: calc(var(--col-roster) + var(--col-inbox));
 		z-index: 4;
 		min-width: 0;
-		overflow-y: scroll;
+		/* The gutter is kept as the column keeps it, so the card is as wide with an overlay scrollbar too. */
+		overflow-y: auto;
+		scrollbar-gutter: stable;
 		/* Scrolling it to its end does not scroll the page under it. */
 		overscroll-behavior: contain;
 		/* The column's own sides: its padding, with the right one cut to the scrollbar gutter's. */
@@ -1441,6 +1443,7 @@
 			position: fixed;
 			inset: 0;
 			overflow-y: auto;
+			scrollbar-gutter: auto;
 			/* Its end clear of the command line, like the page's. */
 			padding: 5rem calc(3px + 0.6rem) var(--dock-h, 0px);
 		}
