@@ -8,7 +8,8 @@
 	// followed until Herdr lists it. A folder that is not there yet is created when the form is sent.
 	// Either form chooses the Herdr workspace: the new-agent form's own, the project's, one Herdr
 	// lists, or a new one named after the folder unless renamed, created when the form is sent.
-	// The message box hints the skills of the chosen client in the chosen folder.
+	// The message box hints the skills of the chosen client in the chosen folder. A new controller
+	// starts its first round manual or unattended (#656), manual each time the form is opened.
 	import { untrack } from 'svelte';
 	import { folderName, listKey, pathMatches, shownSearch, stillListed, suggestedFolders } from '#lib/board/folder-search.ts';
 	import { formatTime } from '#lib/board/format.ts';
@@ -25,6 +26,7 @@
 		TAB_NAME_MAX,
 		WORKSPACE_NAME_MAX,
 		workspaceToSend,
+		type ControllerMode,
 		type LaunchClient,
 		type LaunchView,
 		type Project,
@@ -228,6 +230,14 @@
 	});
 	// The workspace field starts where the button that opened the form says, each time it is opened.
 	untrack(() => (form.workspaceOption = defaultWorkspaceOption(target?.workspace ?? null)));
+	// So does a new controller's mode, at manual.
+	untrack(() => {
+		if (!target) launching.mode = 'manual';
+	});
+	const MODE_CHOICES: [ControllerMode, string][] = [
+		['manual', '手動'],
+		['unattended', '無人']
+	];
 	// A new controller starts from the most recent folder, unless the box was typed in.
 	$effect(() => {
 		if (target) return;
@@ -545,6 +555,16 @@
 					{/each}
 				</select>
 			</label>
+			{#if !target}
+				<div class="mode">
+					<span id="mode-label">模式</span>
+					<div class="choices" role="group" aria-labelledby="mode-label">
+						{#each MODE_CHOICES as [mode, label] (mode)}
+							<button type="button" aria-pressed={launching.mode === mode} onclick={() => (launching.mode = mode)}>{label}</button>
+						{/each}
+					</div>
+				</div>
+			{/if}
 			{#if target}
 				<label class="tab-name">
 					分頁名稱（選填）
@@ -730,6 +750,27 @@
 	.settings select,
 	.where select {
 		max-width: 100%;
+	}
+	.mode {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
+	}
+	.mode .choices {
+		display: flex;
+	}
+	/* A finger high (ui-baseline); the pair reads as one switch. */
+	.mode button {
+		min-height: 44px;
+		min-width: 4rem;
+	}
+	.mode button:first-child {
+		border-radius: var(--radius) 0 0 var(--radius);
+	}
+	.mode button:last-child {
+		border-left: 0;
+		border-radius: 0 var(--radius) var(--radius) 0;
 	}
 	.clients {
 		display: flex;

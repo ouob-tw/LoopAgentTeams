@@ -75,6 +75,10 @@ REQUEST_WINDOW = timedelta(minutes=10)
 # with the grant from the user's latest save of the task, which the controller turns on.
 TASK_EVIDENCE = 'board-task:'
 TASK_RUN_WINDOW = timedelta(minutes=60)
+# The board's new-controller form (#656): the board logs the mode chosen for the controller it opens
+# as soon as hcom names it; activate writes it into the controller layer, citing the launch.
+LAUNCH_EVIDENCE = 'board-launch:'
+LAUNCH_WINDOW = timedelta(minutes=60)
 
 
 def now():
@@ -272,14 +276,23 @@ def load_round(lat, session):
     return found
 
 
+def launch_source(record):
+    """The `board-launch:<launch ID>` the controller layer's mode came from, else None."""
+    controller = record.get('unattended') if isinstance(record, dict) else None
+    source = controller.get('source') if isinstance(controller, dict) else None
+    return source if isinstance(source, str) and source.startswith(LAUNCH_EVIDENCE) else None
+
+
 def grant_state(found):
-    """(state, the open version or None)."""
+    """(state, the open version or None). A default start, from the settings or from the board's
+    new-controller form, waits for the goal while the round has no version yet."""
     current = open_version(found.versions)
     if not found.active or found.values['mode']['value'] != 'unattended':
         return 'none', None
     if current:
         return 'active', current
-    if not found.versions and is_default(found.values):
+    launched = found.values['mode']['layer'] == 'controller' and launch_source(found.record)
+    if not found.versions and (is_default(found.values) or launched):
         return 'pending-goal', None
     return 'none', None
 
@@ -382,6 +395,38 @@ def board_log_lines():
         if isinstance(item, dict):
             items.append(item)
     return path, items
+
+
+def board_launch_mode(name):
+    """(mode, `board-launch:<launch ID>`) the board's new-controller form chose for the controller
+    it opened under this HCOM name, from the newest such line of the board's log when that is
+    within LAUNCH_WINDOW; None when there is none."""
+    _, items = board_log_lines()
+    line = next((item for item in reversed(items)
+                 if item.get('kind') == 'launch-mode' and item.get('hcomName') == name), None)
+    if line is None or line.get('mode') not in MODE_LABELS or not isinstance(line.get('launchId'), str):
+        return None
+    try:
+        age = now() - parse(line['time'])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not timedelta(minutes=-1) <= age <= LAUNCH_WINDOW:
+        return None
+    return line['mode'], f'{LAUNCH_EVIDENCE}{line["launchId"]}'
+
+
+def launch_evidence_problem(record, evidence):
+    """A default start of a controller the board's new-controller form opened unattended cites the
+    launch its controller layer came from, which the board logged for this controller."""
+    if evidence != launch_source(record):
+        return f'{evidence} is not the board launch the controller mode came from ({launch_source(record)})'
+    path, items = board_log_lines()
+    wanted = evidence.removeprefix(LAUNCH_EVIDENCE)
+    if not any(item.get('kind') == 'launch-mode' and item.get('launchId') == wanted
+               and item.get('hcomName') == record.get('hcom_name') and item.get('mode') == 'unattended'
+               for item in items):
+        return f'no board launch {wanted} of {record.get("hcom_name")} in unattended mode in {path}'
+    return None
 
 
 def cited_by_any_grant(lat, evidence):
@@ -545,6 +590,8 @@ def settings_default_problem(lat, found, evidence, scope, max_hours):
         words = [word for word, key in SCOPE_WORDS.items() if wanted[key]] or ['none']
         return ('a default start takes the scope and time limit from the settings: '
                 f'--scope {" ".join(words)} --max-hours {values["max_hours"]["value"]}')
+    if values['mode']['layer'] == 'controller' and launch_source(found.record):
+        return launch_evidence_problem(found.record, evidence)
     return settings_evidence_problem(lat, values, evidence)
 
 
@@ -1104,7 +1151,9 @@ def build_parser():
         sub.add_argument('--evidence', help='board-form/user-edit: the board action record; chat: '
                                             '`<decision ID> r<N>` the user answered; '
                                             'settings-default: the board settings write '
-                                            '(`board:<time>`); board-task: `board-task:<run ID>`')
+                                            '(`board:<time>`), or `board-launch:<launch ID>` '
+                                            'for a controller the board opened unattended; '
+                                            'board-task: `board-task:<run ID>`')
     sub = commands.add_parser('close', parents=[common], help='end the grant in effect')
     sub.add_argument('--reason', required=True, choices=CLOSE_REASONS,
                      help='off: the user turned it off (the controller goes back to manual); '

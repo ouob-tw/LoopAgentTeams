@@ -65,7 +65,13 @@ export interface LaunchRequest {
 	/** Null: the client's own default, and no argument for it. */
 	model: string | null;
 	effort: string | null;
+	/** A controller's mode for its first round (#656); missing for a plain agent. */
+	mode?: ControllerMode;
 }
+
+/** How a new controller's first round starts: asking the user, or unattended. */
+export type ControllerMode = 'manual' | 'unattended';
+export const isControllerMode = (value: unknown): value is ControllerMode => value === 'manual' || value === 'unattended';
 
 /** How the hcom launch command ended: exit 0, exit 2 or a timeout, anything else. */
 export type LaunchOutcome = 'started' | 'pending' | 'failed';

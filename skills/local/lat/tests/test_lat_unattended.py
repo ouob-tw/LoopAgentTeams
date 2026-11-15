@@ -386,6 +386,42 @@ class DefaultStartTests(UnattendedCase):
                 self.assertEqual(self.status()['state'], 'active')
                 self.assertNotIn('unattended', self.record())
 
+    def launch_line(self, launch_id='L1', name='orch', mode='unattended'):
+        path = self.board_state / 'sent-log.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a') as stream:
+            stream.write(json.dumps(dict(kind='launch-mode', id=f'm-{launch_id}', launchId=launch_id,
+                                         hcomName=name, mode=mode,
+                                         time=datetime.now(timezone.utc).isoformat())) + '\n')
+
+    def test_a_controller_the_board_opened_unattended_waits_for_its_goal(self):
+        # The board's new-controller form: the controller layer cites the board launch (#656).
+        self.write(self.global_file, '[unattended]\nmode = "manual"\n')
+        self.session(unattended=dict(mode='unattended', source='board-launch:L1'))
+        status = self.status()
+        self.assertEqual(status['state'], 'pending-goal')
+        self.assertEqual(status['settings']['mode']['layer'], 'controller')
+        # The evidence is the launch the mode came from, logged by the board for this controller.
+        self.assertIn('board-launch:L1', self.default_create('board-launch:L2', code=1)['reason'])
+        self.assertIn('no board launch', self.default_create('board-launch:L1', code=1)['reason'])
+        self.launch_line(name='someone-else')
+        self.launch_line(mode='manual')
+        self.assertIn('no board launch', self.default_create('board-launch:L1', code=1)['reason'])
+        self.assertFalse(self.grant.exists())
+        self.launch_line()
+        created = self.default_create('board-launch:L1')['created']
+        self.assertEqual((created['source'], created['note']), ('settings-default', '目標由主控擬出'))
+        self.assertEqual(self.status()['state'], 'active')
+
+    def test_a_controller_the_board_opened_manual_stays_manual_over_an_unattended_default(self):
+        self.write(self.global_file, '[unattended]\nmode = "unattended"\n')
+        self.write(self.project_file, '[unattended]\nmode = "unattended"\n')
+        self.session(unattended=dict(mode='manual', source='board-launch:L1'))
+        status = self.status()
+        self.assertEqual(status['state'], 'none')
+        self.assertEqual((status['settings']['mode']['value'], status['settings']['mode']['layer']),
+                         ('manual', 'controller'))
+
     def test_manual_default_never_waits_for_a_goal(self):
         self.write(self.global_file, '[unattended]\nmode = "unattended"\n')
         self.write(self.project_file, '[unattended]\nmode = "manual"\n')

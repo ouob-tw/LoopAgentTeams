@@ -69,7 +69,7 @@ lat-unattended.py close --reason <off|quota|delivered|cancelled|handover>
 - `create` 每一項都必填，缺任何一項拒絕且不寫檔；`--scope none` 表示不給代決。已有生效中的版本時拒絕，改用 `update`。
 - 證據：
   - `chat`：使用者答過的面板題 `<待決 ID> r<版本>`，紀錄須是 answered／approved，且有那一版的 `## 答覆` 段與 `- 來源：` 行。
-  - `settings-default`：看板寫入設定的紀錄（`board:<時間>`），須是目前模式所在那層最後一次把 `mode` 寫成 `unattended` 的那筆；只能寫本輪第 1 版，`--scope` 與 `--max-hours` 必須和 `status` 顯示的設定值相同，版本會註明「目標由主控擬出」。模式來自主控層時不能用。
+  - `settings-default`：看板寫入設定的紀錄（`board:<時間>`），須是目前模式所在那層最後一次把 `mode` 寫成 `unattended` 的那筆；只能寫本輪第 1 版，`--scope` 與 `--max-hours` 必須和 `status` 顯示的設定值相同，版本會註明「目標由主控擬出」。模式來自主控層時不能用，看板新建主控選「無人」的例外：證據改用 activate 印出的 `board-launch:<新建 ID>`。
   - `board-task`：看板自動化任務開主控時記下的執行紀錄 `board-task:<執行 ID>`（目標、做完條件、代決範圍與時間上限都取自它，不必再給，給了就必須相同）；它必須來自使用者最後一次在看板登入裝置（非測試登入）儲存這個任務的紀錄，任務檔之後沒被改過，主控的 HCOM 名稱以那次執行的 tag 開頭，60 分鐘內，而且沒被別的版本引用過。
   - `board-form`、`user-edit`：看板動作紀錄 `board-action:<ID>`，指向看板在登入裝置送出表單時寫進 `sent-log.jsonl` 的那一筆；須是同一個主控、同一種動作（建立或修改）、內容與這一版相同、10 分鐘內，而且沒被別的版本引用過，否則拒絕且不寫檔。
 - `board-form`、`board-task` 與 `chat` 建立時把主控層的模式設為無人模式，不寫專案或全域設定。
@@ -81,7 +81,7 @@ lat-unattended.py close --reason <off|quota|delivered|cancelled|handover>
 ## 開啟：擬目標與確認題
 
 - **擬目標**：activate 後，先依使用者第一句話擬出這一輪的目標與做完條件，以 `lat-unattended.py draft --goal '<目標>' --done '<條件>' …` 存成草稿，看板表單據此預填。草稿不是授權。
-- **預設啟動**（`status` 顯示「無人模式，尚待目標」）：派發前用同一份目標與條件寫第 1 版 `create --source settings-default`（`--scope`、`--max-hours` 照 `status` 的設定值）；寫入前照人工確認的規則做事，不得使用任何代決狀態。
+- **預設啟動**（`status` 顯示「無人模式，尚待目標」；看板新建主控時選「無人」也是，activate 已把主控層模式寫好）：派發前用同一份目標與條件寫第 1 版 `create --source settings-default`（`--scope`、`--max-hours` 照 `status` 的設定值）；寫入前照人工確認的規則做事，不得使用任何代決狀態。
 - **看板自動化任務開啟**：看板的 Agent 任務勾了無人模式時，開出的主控第一句話就附上 `create --source board-task` 的完整指令；activate 後先照做，建不起來就不做事，回覆 `FAILED: <原因>`。
 - **聊天開啟**：使用者在聊天說「這輪不用問我」之類的話時，主控把同樣內容整理成一張確認題，用 `question ask --advisor 'exempt requirement-discussion'` 寫入，照常以 `DECIDE:` 提問：
 

@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { json } from '@sveltejs/kit';
-import { isLaunchClient, TAB_NAME_MAX, WORKSPACE_NAME_MAX, type LaunchRequest, type WorkspacePick } from '#lib/board/launch.ts';
+import { isControllerMode, isLaunchClient, TAB_NAME_MAX, WORKSPACE_NAME_MAX, type ControllerMode, type LaunchRequest, type WorkspacePick } from '#lib/board/launch.ts';
 import { offered } from '#lib/board/models.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { listLaunches, startLaunch } from '#lib/server/launch.ts';
@@ -38,7 +38,7 @@ function workspacePart(value: unknown): WorkspacePick | null | undefined {
  *  answers with its sent-log entry. */
 export const POST: RequestHandler = async ({ request }) => {
 	const body: Partial<Record<keyof LaunchRequest, unknown>> | null = await request.json().catch(() => null);
-	const { client, folder, text, gitInit, model = null, effort = null } = body ?? {};
+	const { client, folder, text, gitInit, model = null, effort = null, mode = 'manual' } = body ?? {};
 	const agent = agentPart(body?.agent);
 	const workspace = workspacePart(body?.workspace);
 	const board = getBoard();
@@ -56,13 +56,25 @@ export const POST: RequestHandler = async ({ request }) => {
 		typeof gitInit !== 'boolean' ||
 		// The board never runs `git init` for a plain agent.
 		(agent && gitInit) ||
+		// A controller's first round starts manual or unattended (#656); a plain agent has no mode.
+		(agent ? body?.mode !== undefined && body?.mode !== null : !isControllerMode(mode)) ||
 		(model !== null && typeof model !== 'string') ||
 		(effort !== null && typeof effort !== 'string') ||
 		!offered(board.config.modelOptions[client], { model, effort })
 	) {
 		return json({ error: 'invalid_launch' }, { status: 400 });
 	}
-	const result = await startLaunch(board, { client, folder, text, gitInit, model, effort, agent, workspace: workspace ?? { kind: 'auto' } });
+	const result = await startLaunch(board, {
+		client,
+		folder,
+		text,
+		gitInit,
+		model,
+		effort,
+		agent,
+		workspace: workspace ?? { kind: 'auto' },
+		...(agent ? {} : { mode: mode as ControllerMode })
+	});
 	return json(result.body, { status: result.status });
 };
 

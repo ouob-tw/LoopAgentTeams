@@ -414,8 +414,11 @@ def activate(args):
             else:
                 record = existing
             new_round = False
+    launch_note = None
     if new_round:
         record['started_at_utc'] = datetime.now(timezone.utc).isoformat()
+        if not record.get('history'):
+            launch_note = board_launch_layer(record)
     record.setdefault('rule_fingerprint', fingerprint)
     panel = panel_module()
     try:
@@ -430,7 +433,9 @@ def activate(args):
     write_json_atomic(path, record, expected=original)
     print(path)
     print(f'已開始第 {round_number} 輪')
-    print(round_mode_line(path.parent.parent, sid, workspace))
+    if launch_note:
+        print(launch_note)
+    print(round_mode_line(path.parent.parent, sid, workspace, record))
     print(f'工作總表：{record["ledger_path"]}')
     if duty is None:
         print(f'看板職責：任務明確後執行（任務改變時再執行一次）：{duty_command(record)}')
@@ -492,7 +497,21 @@ def draft_command(workspace, goal=None, done=None):
         f' --done {shlex.quote(item)}' for item in done)
 
 
-def round_mode_line(lat, sid, workspace):
+def board_launch_layer(record):
+    """On a session's first round, the controller layer's mode the board's new-controller form
+    chose for this controller (#656), written into `record`; a line to print when the board's log
+    could not be read, else None."""
+    try:
+        found = unattended_module().board_launch_mode(record['hcom_name'])
+    except Exception as error:  # noqa: BLE001 - activate goes on; the mode line says what holds
+        return f'看板新建紀錄讀不出（{error}），本輪模式照專案與全域設定'
+    if found:
+        mode, source = found
+        record['unattended'] = dict(mode=mode, source=source)
+    return None
+
+
+def round_mode_line(lat, sid, workspace, record):
     """Whether this round runs unattended, as the three layers resolve it now, and the draft
     reminder while the round has no goal draft and no grant in effect."""
     try:
@@ -504,8 +523,10 @@ def round_mode_line(lat, sid, workspace):
     line = (f'本輪模式：{module.MODE_LABELS[mode["value"]]}'
             f'（來自{module.LAYER_LABELS[mode["layer"]]}）')
     if result['state'] == 'pending-goal':
+        source = (record.get('unattended') or {}).get('source') if mode['layer'] == 'controller' else None
+        evidence = f' --evidence {source}' if source else ''
         line += ('，尚待目標：派發前依使用者第一句話擬出目標與做完條件，以 '
-                 f'`{UNATTENDED_SCRIPT} create --source settings-default` 寫入第 1 版；'
+                 f'`{UNATTENDED_SCRIPT} create --source settings-default{evidence}` 寫入第 1 版；'
                  '寫入前不算有效授權')
     if result['state'] != 'active' and draft_time(result['draft']) is None:
         line += ('\n目標草稿：還沒有。依使用者第一句話擬出目標與做完條件，執行 '

@@ -3,7 +3,7 @@
 // and the recent launches.
 import { request } from './api.ts';
 import { latestOnly, typedFolder } from './folder-search.ts';
-import type { FolderSearch, LaunchClient, LaunchList, LaunchResponse, WorkspaceOption, WorkspacePick } from './launch.ts';
+import type { ControllerMode, FolderSearch, LaunchClient, LaunchList, LaunchResponse, WorkspaceOption, WorkspacePick } from './launch.ts';
 import type { LaunchDefaults } from './models.ts';
 
 export interface StartResult {
@@ -41,6 +41,8 @@ class Launching {
 	folderDefault = $state<string | null>(null);
 	text = $state('');
 	gitInit = $state(false);
+	/** The new controller's mode for its first round; each time the form is opened it starts manual. */
+	mode = $state<ControllerMode>('manual');
 	/** '' starts the client with its own default. */
 	model = $state('');
 	effort = $state('');
@@ -125,7 +127,8 @@ class Launching {
 				model: this.model || null,
 				effort: this.effort || null,
 				workspace,
-				agent: this.workspace === null ? null : { tabName: this.tabName.trim() }
+				agent: this.workspace === null ? null : { tabName: this.tabName.trim() },
+				...(this.workspace === null ? { mode: this.mode } : {})
 			})
 		});
 		if (!result.ok && result.kind === 'network') {
