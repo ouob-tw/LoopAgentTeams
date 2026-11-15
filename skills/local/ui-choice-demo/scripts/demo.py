@@ -1,9 +1,11 @@
 """Resident static demo server and the `publish` command (stdlib only).
 
 serve   run the server (systemd keeps it up)
-publish copy a folder or file to the server, print one verified URL
+publish copy a folder or file to the server, print one verified URL, then the LAT board's
+        address of the same page when the board is set
 
-Settings come from env, then ~/.agents/demo.json: port, host (public name), data (dir), bind.
+Settings come from env, then ~/.agents/demo.json: port, host (public name), data (dir), bind,
+board (the LAT board's URL, which serves <data>/site behind its login at /demo/<name>/).
 The URL key lives in <data>/.key and is created on first use.
 """
 import hmac
@@ -77,7 +79,8 @@ def settings():
     if not host:
         raise SystemExit('demo: no host; set DEMO_HOST or "host" in ~/.agents/demo.json (see ~/.agents/lat-private.md)')
     return {'port': int(port), 'host': host,
-            'bind': pick('DEMO_BIND', 'bind', '0.0.0.0'), 'data': data}
+            'bind': pick('DEMO_BIND', 'bind', '0.0.0.0'), 'data': data,
+            'board': pick('DEMO_BOARD', 'board')}
 
 
 def get_key(data):
@@ -207,6 +210,8 @@ def publish(src, name):
     except (urllib.error.URLError, OSError) as e:
         raise SystemExit(f'demo: published but the URL cannot be opened ({e}); is the server running?')
     print(url)
+    if conf['board']:
+        print(f'{conf["board"].rstrip("/")}/demo/{name}/')
 
 
 def main(argv):
