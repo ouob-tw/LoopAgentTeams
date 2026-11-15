@@ -9,7 +9,7 @@ import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
+import { CHROME, holdRequests, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 
 const BLOCK = '[data-block="my-messages"]';
 const BAR = '[data-block="my-messages-bar"]';
@@ -83,6 +83,7 @@ beforeAll(async () => {
 afterEach(async () => {
 	await browser?.close();
 	browser = undefined;
+	heldScript = undefined;
 });
 afterAll(async () => {
 	await fixture?.cleanup();
@@ -750,3 +751,79 @@ test.skipIf(!CHROME)('1280px: the bar can be reached with the keyboard: Enter op
 	await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
 	await tab.until(`!(${SHOWN})`, 'the list closed by Enter');
 }, 30_000);
+
+// The dots before the server answers: the count it gave last time in this browser.
+const COUNTS = 'lat-board-my-messages-counts';
+const DOTS_H = `parseFloat(getComputedStyle(document.querySelector('${BAR}')).getPropertyValue('--dots-h'))`;
+/** Load `path` (a reload when null) with the answers of /mine held until `window.release()`; `window.firstFrame` is the dots the bar has on the first frame it is drawn. */
+let heldScript: string | undefined;
+async function loadHeld(path: string | null) {
+	const first = `(() => { window.firstFrame = null; const look = () => { const bar = document.querySelector('${BAR}'); if (bar) window.firstFrame = { dots: parseFloat(getComputedStyle(bar).getPropertyValue('--dots-h')) / 8, height: bar.getBoundingClientRect().height }; else requestAnimationFrame(look); }; requestAnimationFrame(look); })()`;
+	if (heldScript) await tab.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: heldScript });
+	heldScript = ((await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: `${holdRequests('/transcript/mine')}; ${first}` })) as { identifier: string }).identifier;
+	if (path === null) await tab.reload();
+	else await tab.navigate(fixture.url + path);
+	await tab.until(`window.firstFrame !== null`, 'the bar');
+}
+
+test.skipIf(!CHROME)('1280px: a conversation seen before draws its remembered dots before the server answers, and the server count replaces them', async () => {
+	await visit(1280, '/?agent=s-short');
+	await tab.until(`${DOTS_H} === 32`, 'four dots');
+	await loadHeld(null);
+	expect(await tab.eval(`window.firstFrame`)).toEqual({ dots: 4, height: 46 });
+	await shot(tab, 'my-messages-1280-first-frame-reload');
+	// Said once more while the answer is still on its way: the answer's count wins.
+	appendFileSync(join(fixture.dir, 'transcripts', 's-short.jsonl'), line('user', '又說了一句'));
+	await sleep(500);
+	expect((await dots()).dots).toBe(4);
+	await tab.eval(`window.release()`);
+	await tab.until(`${DOTS_H} === 40`, 'five dots from the server');
+	expect(JSON.parse(await tab.eval<string>(`localStorage.getItem('${COUNTS}')`))).toContainEqual(['agent:s-short', 5]);
+	// Away to another conversation and back: the first frame of the one seen again has its dots.
+	await loadHeld('/?agent=s-one');
+	expect((await tab.eval<{ dots: number }>(`window.firstFrame`)).dots).toBe(0);
+	await tab.eval(`window.release()`);
+	await tab.until(`${DOTS_H} === 8`, 'one dot from the server');
+	await loadHeld('/?agent=s-short');
+	expect(await tab.eval(`window.firstFrame`)).toEqual({ dots: 5, height: 54 });
+	await shot(tab, 'my-messages-1280-first-frame-switched-back');
+	expect(tab.errors).toEqual([]);
+	recordOf('s-short', conversation(4));
+}, 60_000);
+
+test.skipIf(!CHROME)('1280px: a conversation not seen before waits for the server, and the remembered counts are capped', async () => {
+	await visit(1280, '/?agent=s-short');
+	await tab.until(`${DOTS_H} === 32`, 'four dots');
+	await tab.eval(`localStorage.removeItem('${COUNTS}')`);
+	await loadHeld(null);
+	expect(await tab.eval(`window.firstFrame`)).toEqual({ dots: 0, height: 44 });
+	await tab.eval(`window.release()`);
+	await tab.until(`${DOTS_H} === 32`, 'four dots from the server');
+	// 200 are kept: the longest unseen one goes when another is added.
+	await tab.eval(`localStorage.setItem('${COUNTS}', JSON.stringify(Array.from({ length: 200 }, (_, index) => ['agent:old-' + index, 3])))`);
+	await tab.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: heldScript });
+	await tab.navigate(fixture.url + '/?agent=s-one');
+	await tab.until(`JSON.parse(localStorage.getItem('${COUNTS}') ?? '[]').some(([key]) => key === 'agent:s-one')`, 'the count kept');
+	const kept = JSON.parse(await tab.eval<string>(`localStorage.getItem('${COUNTS}')`)) as [string, number][];
+	expect(kept.length).toBe(200);
+	expect(kept.some(([key]) => key === 'agent:old-0')).toBe(false);
+	expect(kept.at(-1)).toEqual(['agent:s-one', 1]);
+}, 60_000);
+
+test.skipIf(!CHROME)('1280px: storage that throws or holds rubbish draws no remembered dots and the server count still shows', async () => {
+	await visit(1280, '/?agent=s-short');
+	await tab.until(`${DOTS_H} === 32`, 'four dots');
+	await tab.eval(`localStorage.setItem('${COUNTS}', '{not json')`);
+	await loadHeld(null);
+	expect((await tab.eval<{ dots: number }>(`window.firstFrame`)).dots).toBe(0);
+	await tab.eval(`window.release()`);
+	await tab.until(`${DOTS_H} === 32`, 'four dots from the server');
+	await tab.send('Page.addScriptToEvaluateOnNewDocument', {
+		source: `Object.defineProperty(window, 'localStorage', { get() { throw new Error('no storage'); } })`
+	});
+	await loadHeld(null);
+	expect((await tab.eval<{ dots: number }>(`window.firstFrame`)).dots).toBe(0);
+	await tab.eval(`window.release()`);
+	await tab.until(`${DOTS_H} === 32`, 'four dots from the server');
+	expect(tab.errors).toEqual([]);
+}, 60_000);

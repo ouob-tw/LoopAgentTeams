@@ -77,9 +77,38 @@
 	let barW = $state(0);
 	let barH = $state(0);
 
+	/** How many conversations' last dot counts this browser keeps; the one longest unseen goes first. */
+	const KEEP = 200;
+	const COUNTS_KEY = 'lat-board-my-messages-counts';
+	const countKey = (forId: string) => `${feed}:${forId}`;
+	function counts(): [string, number][] {
+		try {
+			const saved: unknown = JSON.parse(localStorage.getItem(COUNTS_KEY) ?? '[]');
+			if (Array.isArray(saved)) return saved.filter((entry): entry is [string, number] => Array.isArray(entry) && typeof entry[0] === 'string' && Number.isInteger(entry[1]) && entry[1] >= 0);
+		} catch {
+			// Storage not available or not readable: nothing remembered.
+		}
+		return [];
+	}
+	/** The dot count the server last gave for this conversation in this browser, or null when it never did. */
+	function recall(forId: string): number | null {
+		return counts().find(([key]) => key === countKey(forId))?.[1] ?? null;
+	}
+	function remember(forId: string, count: number) {
+		try {
+			const kept = counts().filter(([key]) => key !== countKey(forId));
+			kept.push([countKey(forId), count]);
+			localStorage.setItem(COUNTS_KEY, JSON.stringify(kept.slice(-KEEP)));
+		} catch {
+			// Not kept: the next load waits for the server as before.
+		}
+	}
+
 	let messages = $state<MyMessage[] | null>(null);
 	let problem = $state<string | null>(null);
-	const dotsH = $derived(Math.min(messages?.length ?? 0, FIT) * PITCH);
+	/** What the bar shows until the server answers: the count remembered for this conversation. */
+	let recalled = $state<number | null>(untrack(() => recall(id)));
+	const dotsH = $derived(Math.min(messages?.length ?? recalled ?? 0, FIT) * PITCH);
 	const height = $derived(Math.min(BAR_MAX, Math.max(BAR_MIN, dotsH + 2 * BAR_PAD)));
 	let reads = 0;
 	const request = createRequest();
@@ -101,6 +130,7 @@
 			if (!result.unpaired) problem = '沒有收到看板伺服器的回應。';
 		} else if (result.value.ok) {
 			messages = result.value.messages;
+			remember(forId, messages.length);
 			problem = null;
 			partial = !result.value.complete;
 			// The older part of a long conversation is still being read: asked again shortly, while the list is open.
@@ -134,6 +164,7 @@
 		const state = untrack(() => {
 			if (readFor !== forId) {
 				readFor = forId;
+				recalled = recall(forId);
 				messages = null;
 				problem = null;
 				partial = false;
