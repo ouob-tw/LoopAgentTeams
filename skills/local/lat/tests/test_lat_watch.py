@@ -818,6 +818,66 @@ class WatchDecisionTests(unittest.TestCase):
             self.assertFalse(watch.successful_hcom_send_since(
                 transcript, '2026-10-04T14:01:00+00:00'))
 
+    @staticmethod
+    def claude_send_lines(recipient='worker'):
+        records = [
+            {'timestamp': '2026-10-04T14:01:41.176Z', 'type': 'assistant',
+             'message': {'content': [{'type': 'tool_use', 'id': 'tool-1', 'name': 'Bash',
+                                      'input': {'command': f"hcom send @{recipient} -- 'ok'"}}]}},
+            {'timestamp': '2026-10-04T14:01:41.273Z', 'type': 'user',
+             'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tool-1',
+                                      'content': f'Sent to: {recipient}', 'is_error': False}]}},
+        ]
+        return [(json.dumps(row) + '\n').encode() for row in records]
+
+    def test_send_reader_skips_undecodable_bytes_and_still_finds_valid_send(self):
+        watch = load_watch()
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'bad.jsonl'
+            transcript.write_bytes(b'\xff\xfe not json \x80\n' + b''.join(self.claude_send_lines()))
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:01:40+00:00'))
+            transcript.write_bytes(b'\xff\xfe\x80\n')
+            self.assertFalse(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:01:40+00:00'))
+
+    def test_send_reader_survives_deeply_nested_json_line(self):
+        watch = load_watch()
+        deep = b'[' * 200000 + b']' * 200000 + b'\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'deep.jsonl'
+            transcript.write_bytes(deep)
+            self.assertFalse(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:01:40+00:00'))
+            transcript.write_bytes(deep + b''.join(self.claude_send_lines()))
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:01:40+00:00'))
+
+    def test_corrupt_target_transcript_does_not_stop_observing_other_targets(self):
+        watch = load_watch()
+        declaration = {'agent': 'waiting-agent', 'target': 'one-sofe', 'kind': 'agent',
+                       'declared_at_utc': '2026-10-04T14:00:58+00:00', 'active': True,
+                       'targets': [{'target': 'one-sofe', 'kind': 'agent'},
+                                   {'target': 'two-teho', 'kind': 'agent'}]}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            decisions = root / 'decisions'
+            decisions.mkdir()
+            path = watch.wait_path(root, 'waiting-agent')
+            watch.write_object(path, declaration)
+            (root / 'one-sofe').write_bytes(b'\xff\x80\n' + b'[' * 200000 + b'\n')
+            (root / 'two-teho').write_bytes(b''.join(self.claude_send_lines('waiting-agent')))
+            agents = {'waiting-agent': {'name': 'waiting-agent', 'base_name': 'waiter',
+                                        'session_id': 's'}}
+            for name in ('one-sofe', 'two-teho'):
+                agents[name] = {'name': name, 'base_name': name.split('-')[1],
+                                'session_id': name, 'transcript_path': str(root / name)}
+            with (patch.object(watch, 'session_events', return_value=[]),
+                  patch.object(watch, 'delivered_messages', return_value=[])):
+                watch.release_wait_if_needed(root, decisions, 'orch', declaration,
+                                             agents=agents)
+            self.assertEqual(json.loads(path.read_text())['answered'], ['two-teho'])
+
     def release_wait_after_target_send(self, recipient, participant_events=(), intent='request',
                                        target_status=None):
         watch = load_watch()

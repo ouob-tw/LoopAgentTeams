@@ -2054,14 +2054,14 @@ def successful_hcom_send_since(transcript, declared_at, recipient=None, skip_inf
     """
     claude_hcom_send_ids = set()
     try:
-        lines = Path(transcript).open()
+        lines = Path(transcript).open(errors='replace')
     except (FileNotFoundError, OSError):
         return False
     with lines:
         for line in lines:
             try:
                 record = json.loads(line)
-            except (json.JSONDecodeError, TypeError):
+            except (ValueError, TypeError, RecursionError):
                 continue
             if not isinstance(record, dict):
                 continue
