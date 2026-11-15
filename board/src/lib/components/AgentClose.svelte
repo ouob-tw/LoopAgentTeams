@@ -15,7 +15,10 @@
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import { TEST_DEVICE_NOT_OWNED } from '#lib/board/test-device.ts';
 
-	let { agent, label = '關閉 Agent' }: { agent: KnownAgent; label?: string } = $props();
+	import type { Snippet } from 'svelte';
+
+	/** `before` is shown in the button row, left of the close. */
+	let { agent, label = '關閉 Agent', before }: { agent: KnownAgent; label?: string; before?: Snippet } = $props();
 
 	/** Agents whose close confirmation is open. */
 	let confirming = $state<Record<string, boolean>>({});
@@ -104,6 +107,7 @@
 			</div>
 		{:else}
 			<div class="actions">
+				{@render before?.()}
 				<button type="button" data-action="close" disabled={!closable || busy[agent.id]} onclick={() => (confirming[agent.id] = true)}>{label}</button>
 				{#if agent.noHooks}
 					<button type="button" data-action="relink" disabled={!closable || busy[agent.id]} onclick={relink}>{busy[agent.id] ? '處理中…' : AGENT_ACTION_LABEL.relink}</button>
