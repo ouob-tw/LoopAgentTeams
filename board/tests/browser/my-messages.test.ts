@@ -584,7 +584,10 @@ test.skipIf(!CHROME)('1280px: with a short list the grip stays under the pointer
 		expect(await tab.eval(SHOWN)).toBe(true);
 	}
 	await shot(tab, 'my-messages-1280-short-dragging');
-	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: grip.x, y: grip.y + 200, button: 'left', clickCount: 1 });
+	// Dragged right down: a short list goes to the window's bottom.
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: grip.x, y: 790, button: 'left', buttons: 1 });
+	expect((await boxOf()).bottom).toBeGreaterThan(790);
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: grip.x, y: 790, button: 'left', clickCount: 1 });
 	const after = await boxOf();
 	expect(after.top).toBeGreaterThanOrEqual(0);
 	expect(after.bottom).toBeLessThanOrEqual(800);

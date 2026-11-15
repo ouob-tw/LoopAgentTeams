@@ -224,19 +224,21 @@
 	$effect(() => {
 		if (!open) held = false;
 	});
-	let grab: { id: number; y: number; anchor: number; place: number } | null = null;
+	let grab: { id: number; y: number; anchor: number; place: number; room: number } | null = null;
 	function gripDown(event: PointerEvent) {
 		if (event.button !== 0 || grab) return;
-		anchor = aside?.getBoundingClientRect().top ?? 0;
+		const box = aside?.getBoundingClientRect();
+		anchor = box?.top ?? 0;
 		held = true;
-		grab = { id: event.pointerId, y: event.clientY, anchor, place };
+		// A short list may go to the window's bottom; a tall one keeps LIST_MIN of itself in view.
+		grab = { id: event.pointerId, y: event.clientY, anchor, place, room: Math.min(LIST_MIN, box?.height ?? LIST_MIN) };
 		dragging = true;
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 	}
 	function gripMove(event: PointerEvent) {
 		if (!grab || event.pointerId !== grab.id) return;
 		const moved = event.clientY - grab.y;
-		anchor = Math.min(Math.max(0, innerHeight - LIST_MIN), Math.max(0, grab.anchor + moved));
+		anchor = Math.min(Math.max(0, innerHeight - grab.room), Math.max(0, grab.anchor + moved));
 		// The bar stays inside the window, by its own height, as it is drawn.
 		place = Math.min(1 - barH / 2 / innerHeight, Math.max(barH / 2 / innerHeight, grab.place + moved / innerHeight));
 	}
