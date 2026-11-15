@@ -233,6 +233,8 @@
 	}
 	function down(event: PointerEvent) {
 		if (event.button !== 0) return;
+		// The browser snaps a touch up to ~8px outside the bar onto it; the touch itself landed off the bar, so it opens nothing.
+		if (event.pointerType !== 'mouse' && event.clientX < (event.currentTarget as HTMLElement).getBoundingClientRect().left) return;
 		press = { x: event.clientX, y: event.clientY, wasOpen: open };
 	}
 	function up(event: PointerEvent) {
@@ -316,7 +318,7 @@
 	oncontextmenu={(event) => event.preventDefault()}
 ></div>
 
-<aside class="mine" bind:this={aside} class:open style:right="{gap + barW}px" style:top={held ? `${anchor}px` : `${place * 100}%`} style:transform={held ? 'none' : `translateY(-${place * 100}%)`} style:max-height={held ? `max(${LIST_MIN}px, calc(100dvh - ${anchor}px))` : null} aria-label="我說過的話" data-block="my-messages">
+<aside class="mine" bind:this={aside} class:open style:right="{gap + Math.min(barW, 12)}px" style:top={held ? `${anchor}px` : `${place * 100}%`} style:transform={held ? 'none' : `translateY(-${place * 100}%)`} style:max-height={held ? `max(${LIST_MIN}px, calc(100dvh - ${anchor}px))` : null} aria-label="我說過的話" data-block="my-messages">
 	{#if open}
 	<div class="head">
 		<h3>我說過的話</h3>
@@ -377,7 +379,7 @@
 </aside>
 {#if !open && jumping !== null}
 	<!-- The list is closed by the pick: where the jump is, and why it stopped, shows at the edge. -->
-	<p class="chip" role="status" style:right="{gap + barW}px">
+	<p class="chip" role="status" style:right="{gap + Math.min(barW, 12)}px">
 		{#if failure}
 			更早的紀錄載入失敗：{failure}
 			<button type="button" class="retry" onclick={onretry}>重試</button>
