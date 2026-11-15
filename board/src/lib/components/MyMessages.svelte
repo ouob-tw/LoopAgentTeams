@@ -233,6 +233,8 @@
 	}
 	function down(event: PointerEvent) {
 		if (event.button !== 0) return;
+		// The browser snaps a touch up to ~8px outside the bar onto it; the touch itself landed off the bar, so it opens nothing.
+		if (event.pointerType !== 'mouse' && event.clientX < (event.currentTarget as HTMLElement).getBoundingClientRect().left) return;
 		press = { x: event.clientX, y: event.clientY, wasOpen: open };
 	}
 	function up(event: PointerEvent) {
@@ -303,6 +305,7 @@
 		open = !open;
 	}}
 	class:dragging
+	class:open
 	style:right="{gap}px"
 	style:--bar-h="{height}px"
 	style:--dots-h="{dotsH}px"
@@ -390,7 +393,7 @@
 <style>
 	/* The long upright bar at the window's right edge, like a scrollbar: the only place that brings
 	   the list up. --bar-w by --bar-h, taller than wide, flush with the right edge; where a finger is
-	   the pointer it is as wide as a fingertip, drawn as the same 12px handle at its right. */
+	   the pointer it is 22px wide (half a fingertip, as asked), drawn as the same 12px handle at its right. */
 	.bar {
 		--bar-w: 12px;
 		--bar-h: 110px;
@@ -434,9 +437,16 @@
 	.bar.dragging::after {
 		border-color: var(--accent);
 	}
+	/* Where a finger is the pointer the hit area is 1.375rem (22px), half the 2.75rem it was, so a scroll or
+	   a tap beside the handle opens nothing by mistake. Under the 44px touch minimum on purpose: the user
+	   asked for exactly this (ouob-tw/LoopAgentTeams-work#652). */
 	@media (pointer: coarse) {
 		.bar {
-			--bar-w: 2.75rem;
+			--bar-w: 1.375rem;
+		}
+		/* Open, the list sits flush against the handle: the bar is only the handle wide so nothing overlaps. */
+		.bar.open {
+			--bar-w: 12px;
 		}
 	}
 	/* Flush right beside the bar, as tall as its rows need and no taller than the window, lined up
