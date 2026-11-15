@@ -1957,8 +1957,12 @@ def agent_info(agents, name):
     return matches[0] if len(matches) == 1 else None
 
 
-def session_events(orchestrator, info, *filters, after_id=None):
-    """Read only events carrying the exact session identity from hcom list."""
+def session_events(orchestrator, info, *filters, after_id=None, own_only=False):
+    """Read only events carrying the exact session identity from hcom list.
+
+    own_only drops `deliver:<sender>` status events: hcom writes them when a message is handed
+    to the agent, so they are not the agent's own progress.
+    """
     session_id = info.get('session_id') if isinstance(info, dict) else None
     if not isinstance(session_id, str) or not session_id:
         return []
@@ -1966,6 +1970,8 @@ def session_events(orchestrator, info, *filters, after_id=None):
     query = f"json_extract(data, '$.session') = '{quoted}'"
     if after_id is not None:
         query += f" AND id > {int(after_id)}"
+    if own_only:
+        query += " AND COALESCE(json_extract(data, '$.context'), '') NOT LIKE 'deliver:%'"
     events = hcom_events(orchestrator, *filters, '--sql', query)
     return [event for event in events
             if event_value(event, 'session', 'status') == session_id]
@@ -2238,7 +2244,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
             transcript_mtime_ns = stat.st_mtime_ns
         except OSError:
             pass
-    own_events = session_events(orchestrator, info, '--last', '1')
+    own_events = session_events(orchestrator, info, '--last', '1', own_only=True)
     event_id = latest_event_id(own_events)
     declaration, wait_original = read_wait(wait_path(workspace, agent))
     released = release_wait_if_needed(
