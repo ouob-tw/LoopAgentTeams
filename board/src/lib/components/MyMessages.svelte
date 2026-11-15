@@ -390,7 +390,7 @@
 <style>
 	/* The long upright bar at the window's right edge, like a scrollbar: the only place that brings
 	   the list up. --bar-w by --bar-h, taller than wide, flush with the right edge; where a finger is
-	   the pointer it is as wide as a fingertip, drawn as the same 12px handle at its right. */
+	   the pointer it is 22px wide (half a fingertip, as asked), drawn as the same 12px handle at its right. */
 	.bar {
 		--bar-w: 12px;
 		--bar-h: 110px;
@@ -434,9 +434,12 @@
 	.bar.dragging::after {
 		border-color: var(--accent);
 	}
+	/* Where a finger is the pointer the hit area is 1.375rem (22px), half the 2.75rem it was, so a scroll or
+	   a tap beside the handle opens nothing by mistake. Under the 44px touch minimum on purpose: the user
+	   asked for exactly this (ouob-tw/LoopAgentTeams-work#652). */
 	@media (pointer: coarse) {
 		.bar {
-			--bar-w: 2.75rem;
+			--bar-w: 1.375rem;
 		}
 	}
 	/* Flush right beside the bar, as tall as its rows need and no taller than the window, lined up

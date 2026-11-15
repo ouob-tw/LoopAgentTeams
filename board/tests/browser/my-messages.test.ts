@@ -379,7 +379,7 @@ for (const [page, path] of PAGES) {
 		expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
 		const bar = await barBox();
 		expect(bar.right).toBe(390);
-		expect(bar.right - bar.left).toBeGreaterThanOrEqual(44);
+		expect(Math.abs(bar.right - bar.left - 22)).toBeLessThanOrEqual(1);
 
 		await tapBar();
 		await tab.until(`${SHOWN} && document.querySelectorAll('${ROWS}').length === 130`, 'the list');
@@ -400,6 +400,20 @@ for (const [page, path] of PAGES) {
 		await shot(tab, `my-messages-390-${page.replace(' ', '-')}-picked`);
 	}, 90_000);
 }
+
+// #652: the user asked for half the old 44px hit width on touch screens (a deliberate exception to the 44px minimum).
+test.skipIf(!CHROME)('390px: the bar is 22px wide to a finger; a tap 36px left of the right edge (inside the old 44px, past the browser touch snapping) opens nothing, a tap 10px in does', async () => {
+	await visit(390);
+	const bar = await barBox();
+	expect(Math.abs(bar.right - bar.left - 22)).toBeLessThanOrEqual(1);
+	expect(await tab.eval(`getComputedStyle(document.querySelector('${BAR}'), '::after').width`)).toBe('12px');
+	await tab.swipe(bar.right - 36, bar.y, 0, { steps: 1, ms: 50 });
+	await sleep(300);
+	expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
+	await tab.swipe(bar.right - 10, bar.y, 0, { steps: 1, ms: 50 });
+	await tab.until(`${SHOWN}`, 'the list opened by a tap 10px in');
+	expect((await boxOf()).right).toBe(bar.left);
+}, 60_000);
 
 test.skipIf(!CHROME)('390px: a touch outside the open list closes it', async () => {
 	await visit(390);
