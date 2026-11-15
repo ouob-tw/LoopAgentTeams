@@ -106,7 +106,7 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 			};
 			/** The names of the fresh launches open switches resume their sessions in. */
 			const resuming = new Set(switches.flatMap((view) => (view.relaunch?.session && view.relaunchedName ? [view.relaunchedName] : [])));
-			/** The sessions open switches list a row for, while Herdr does not list them. */
+			/** The sessions of open switches that keep where Herdr listed the agent, so can list it themselves. */
 			const switchRows = new Set(switches.flatMap((view) => (view.agent ? [view.controllerId] : [])));
 			// One with no session yet that hcom has in its pane under such a session is that agent: its switch's row stands for it.
 			const shown = listed.filter((agent) => {
