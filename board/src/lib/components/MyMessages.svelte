@@ -176,20 +176,25 @@
 		}
 	}
 
-	// The grip in the list's title row: pressed, it drags the bar and the list at once. Where the bar
-	// is held is where it stays under the pointer: no jump at the first move.
-	let grab: { id: number; offset: number } | null = null;
+	// The grip in the list's title row: pressed, it drags the bar and the list at once, and the grip
+	// stays under the pointer. The list's top is place * (window - list), so the pointer's travel
+	// is divided by that; a list nearly as tall as the window can hardly move, so the bar follows the
+	// pointer one to one instead.
+	let grab: { id: number; y: number } | null = null;
 	function gripDown(event: PointerEvent) {
 		if (event.button !== 0 || grab) return;
-		const centre = Math.min(innerHeight - barH / 2, Math.max(barH / 2, place * innerHeight));
-		grab = { id: event.pointerId, offset: centre - event.clientY };
+		grab = { id: event.pointerId, y: event.clientY };
 		dragging = true;
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 	}
 	function gripMove(event: PointerEvent) {
 		if (!grab || event.pointerId !== grab.id) return;
-		// Inside the window, by the bar's own height, as it is drawn.
-		place = Math.min(innerHeight - barH / 2, Math.max(barH / 2, event.clientY + grab.offset)) / innerHeight;
+		// Step by step: the list may grow while it is held, as its rows arrive.
+		const free = innerHeight - (aside?.getBoundingClientRect().height ?? 0);
+		// The bar stays inside the window, by its own height, as it is drawn.
+		const next = place + (event.clientY - grab.y) / (free >= innerHeight / 4 ? free : innerHeight);
+		place = Math.min(1 - barH / 2 / innerHeight, Math.max(barH / 2 / innerHeight, next));
+		grab.y = event.clientY;
 	}
 	function gripUp(event: PointerEvent) {
 		if (!grab || event.pointerId !== grab.id) return;

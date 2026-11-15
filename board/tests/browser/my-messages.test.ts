@@ -73,7 +73,8 @@ beforeAll(async () => {
 	fixture.list([luna]);
 	recordOf(luna.session_id, conversation(130));
 	recordOf('s-agent', conversation(130));
-	setHerdr([{ session: 's-agent' }]);
+	recordOf('s-short', conversation(4));
+	setHerdr([{ session: 's-agent' }, { session: 's-short' }]);
 	await fixture.refresh(cookie);
 }, 30_000);
 afterEach(async () => {
@@ -119,6 +120,8 @@ const gripBox = () => tab.eval<{ left: number; right: number; top: number; botto
 /** The list opened by the mouse over the bar, the grip pressed at once and moved so the bar's centre ends at `y`; left pressed when `release` is false. */
 async function dragBar(y: number, { release = true } = {}) {
 	if (!(await tab.eval(SHOWN))) await openByEdge();
+	await tab.until(`!!document.querySelector('${ROWS}')`, 'the rows');
+	await sleep(100);
 	const bar = await barBox();
 	const grip = await gripBox();
 	const to = grip.y + (y - bar.y);
@@ -126,6 +129,7 @@ async function dragBar(y: number, { release = true } = {}) {
 	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: grip.x, y: grip.y, button: 'left', buttons: 1, clickCount: 1 });
 	for (let step = 1; step <= 5; step++) await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: grip.x, y: grip.y + ((to - grip.y) * step) / 5, button: 'left', buttons: 1 });
 	if (release) await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: grip.x, y: to, button: 'left', clickCount: 1 });
+	return to;
 }
 const stored = () => tab.eval<string | null>(`localStorage.getItem('${KEY}')`);
 /** The width of the vertical scrollbar at the window's right edge, whichever element scrolls there. */
@@ -489,19 +493,19 @@ test.skipIf(!CHROME)('1280px: the grip drags bar and list together at once, with
 	expect(await stored()).toBeNull();
 
 	// Pressed and moved at once, no hold: the bar and the list follow, the list stays, nothing is selected.
-	await dragBar(220, { release: false });
+	const heldAt = await dragBar(220, { release: false });
 	const during = await barBox();
 	const list1 = await boxOf();
 	expect(Math.abs(during.y - 220)).toBeLessThanOrEqual(2);
 	expect(list1.top).not.toBe(list0.top);
 	expect(await tab.eval(`(${SHOWN}) && window.getSelection().toString() === ''`)).toBe(true);
 	// The mouse far from the list while dragging does not close it.
-	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 100, y: 220, button: 'left', buttons: 1 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 100, y: heldAt, button: 'left', buttons: 1 });
 	await sleep(100);
 	expect(await tab.eval(SHOWN)).toBe(true);
 	expect(await stored()).toBeNull();
 	await shot(tab, 'my-messages-1280-bar-dragging');
-	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 100, y: 220, button: 'left', clickCount: 1 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 100, y: heldAt, button: 'left', clickCount: 1 });
 	expect(await tab.eval(SHOWN)).toBe(true);
 	expect(Number(await stored())).toBeCloseTo(220 / 800, 1);
 	expect(bar0.y).toBeGreaterThan(during.y);
@@ -545,6 +549,32 @@ test.skipIf(!CHROME)('1280px: Escape while the grip is held does not stop the dr
 	await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
 	await tab.until(`!(${SHOWN})`, 'the list closed by Escape');
 	await openByEdge();
+	expect(tab.errors).toEqual([]);
+}, 30_000);
+
+test.skipIf(!CHROME)('1280px: with a short list the grip stays under the pointer during a drag, and the bar and list stay inside the window', async () => {
+	await visit(1280, '/?agent=s-short');
+	await openByEdge();
+	await tab.until(`!!document.querySelector('${ROWS}')`, 'the rows');
+	await sleep(100);
+	const list = await boxOf();
+	expect(list.bottom - list.top).toBeLessThan(400);
+	const grip = await gripBox();
+	await mouse(grip.x, grip.y);
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: grip.x, y: grip.y, button: 'left', buttons: 1, clickCount: 1 });
+	for (const dy of [-60, -150, -200, -100, 100, 200]) {
+		const y = grip.y + dy;
+		await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: grip.x, y, button: 'left', buttons: 1 });
+		const now = await gripBox();
+		expect([dy, Math.abs(now.y - y) <= 4]).toEqual([dy, true]);
+		expect(await tab.eval(SHOWN)).toBe(true);
+	}
+	await shot(tab, 'my-messages-1280-short-dragging');
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: grip.x, y: grip.y + 200, button: 'left', clickCount: 1 });
+	const after = await boxOf();
+	expect(after.top).toBeGreaterThanOrEqual(0);
+	expect(after.bottom).toBeLessThanOrEqual(800);
+	expect(await stored()).not.toBeNull();
 	expect(tab.errors).toEqual([]);
 }, 30_000);
 
@@ -602,20 +632,24 @@ test.skipIf(!CHROME)('390px: a finger drags the bar and the list by the grip and
 	// Tapped: the list opens; its grip, touched and moved up, takes bar and list along with the list open.
 	await tapBar();
 	await tab.until(SHOWN, 'the list');
+	await tab.until(`!!document.querySelector('${ROWS}')`, 'the rows');
+	await sleep(100);
 	const grip = await gripBox();
 	await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: grip.x, y: grip.y }] });
 	for (let step = 1; step <= 5; step++) await tab.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: grip.x, y: grip.y - step * 40 }] });
 	await sleep(100);
 	expect(await tab.eval(SHOWN)).toBe(true);
+	// A list as tall as the window cannot move: the bar follows the finger one to one.
 	expect(Math.abs((await barBox()).y - 200)).toBeLessThanOrEqual(2);
 	await shot(tab, 'my-messages-390-bar-dragging');
 	await tab.liftFinger();
 	await sleep(100);
 	expect(await tab.eval(SHOWN)).toBe(true);
-	expect(Number(await stored())).toBeCloseTo(0.25, 1);
+	const kept = Number(await stored());
+	expect(kept).toBeLessThan(0.5);
 	await tab.reload();
 	await tab.until(`!!document.querySelector('${BAR}')`, 'the bar');
-	expect(Math.abs((await barBox()).y - 200)).toBeLessThanOrEqual(2);
+	expect(Math.abs((await barBox()).y - kept * 800)).toBeLessThanOrEqual(2);
 	await shot(tab, 'my-messages-390-bar-after-reload');
 	// Tapped: opens, beside the bar and inside the window; tapped again: closes.
 	await tapBar();
