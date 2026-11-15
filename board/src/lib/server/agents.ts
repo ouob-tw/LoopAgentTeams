@@ -106,7 +106,14 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 			};
 			/** The names of the fresh launches open switches resume their sessions in. */
 			const resuming = new Set(switches.flatMap((view) => (view.relaunch?.session && view.relaunchedName ? [view.relaunchedName] : [])));
-			const shown = listed.filter((agent) => agent.sessionId !== null || !resuming.has(pairings.get(pairingKey(agent))?.name ?? ''));
+			/** The sessions open switches list a row for, while Herdr does not list them. */
+			const switchRows = new Set(switches.flatMap((view) => (view.agent ? [view.controllerId] : [])));
+			// One with no session yet that hcom has in its pane under such a session is that agent: its switch's row stands for it.
+			const shown = listed.filter((agent) => {
+				if (agent.sessionId !== null) return true;
+				const paired = pairings.get(pairingKey(agent));
+				return !resuming.has(paired?.name ?? '') && !(paired?.sessionId && switchRows.has(paired.sessionId));
+			});
 			const agents = shown.map((agent): Agent => {
 				// A list that cannot be read does not mean an agent is not linked: the last pairing stands,
 				// and one that appeared since no list was read is not known either way.
