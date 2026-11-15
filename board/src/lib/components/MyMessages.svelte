@@ -305,6 +305,7 @@
 		open = !open;
 	}}
 	class:dragging
+	class:open
 	style:right="{gap}px"
 	style:--bar-h="{height}px"
 	style:--dots-h="{dotsH}px"
@@ -318,7 +319,7 @@
 	oncontextmenu={(event) => event.preventDefault()}
 ></div>
 
-<aside class="mine" bind:this={aside} class:open style:right="{gap + Math.min(barW, 12)}px" style:top={held ? `${anchor}px` : `${place * 100}%`} style:transform={held ? 'none' : `translateY(-${place * 100}%)`} style:max-height={held ? `max(${LIST_MIN}px, calc(100dvh - ${anchor}px))` : null} aria-label="我說過的話" data-block="my-messages">
+<aside class="mine" bind:this={aside} class:open style:right="{gap + barW}px" style:top={held ? `${anchor}px` : `${place * 100}%`} style:transform={held ? 'none' : `translateY(-${place * 100}%)`} style:max-height={held ? `max(${LIST_MIN}px, calc(100dvh - ${anchor}px))` : null} aria-label="我說過的話" data-block="my-messages">
 	{#if open}
 	<div class="head">
 		<h3>我說過的話</h3>
@@ -379,7 +380,7 @@
 </aside>
 {#if !open && jumping !== null}
 	<!-- The list is closed by the pick: where the jump is, and why it stopped, shows at the edge. -->
-	<p class="chip" role="status" style:right="{gap + Math.min(barW, 12)}px">
+	<p class="chip" role="status" style:right="{gap + barW}px">
 		{#if failure}
 			更早的紀錄載入失敗：{failure}
 			<button type="button" class="retry" onclick={onretry}>重試</button>
@@ -442,6 +443,10 @@
 	@media (pointer: coarse) {
 		.bar {
 			--bar-w: 1.375rem;
+		}
+		/* Open, the list sits flush against the handle: the bar is only the handle wide so nothing overlaps. */
+		.bar.open {
+			--bar-w: 12px;
 		}
 	}
 	/* Flush right beside the bar, as tall as its rows need and no taller than the window, lined up

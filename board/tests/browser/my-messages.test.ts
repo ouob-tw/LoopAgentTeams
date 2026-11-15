@@ -412,7 +412,9 @@ test.skipIf(!CHROME)('390px: the bar is 22px wide to a finger; a tap 30px left o
 	expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
 	await tab.swipe(bar.right - 10, bar.y, 0, { steps: 1, ms: 50 });
 	await tab.until(`${SHOWN}`, 'the list opened by a tap 10px in');
-	expect((await boxOf()).right).toBe(bar.right - 12);
+	const listed = await boxOf();
+	expect(listed.right).toBe(bar.right - 12);
+	expect((await barBox()).left).toBe(listed.right);
 }, 60_000);
 
 test.skipIf(!CHROME)('390px: a touch outside the open list closes it', async () => {
