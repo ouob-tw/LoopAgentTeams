@@ -128,11 +128,11 @@ test('a controller the board does not know and a missing ID are refused', async 
 	expect((await fixture.fetch('/api/transcript/mine?controller=nobody')).status).toBe(401);
 });
 
-test('asked for the newest part only, it answers the newest texts as not complete and reads no older page', async () => {
+test('asked for the newest part only, it answers the newest texts as not complete and reads no older page than it takes', async () => {
 	const luna = await bind('alpha', 'newest-only');
 	record(luna.session_id, alternating(400));
 	const calls = fixture.helperArgs('transcript').length;
-	const response = await fixture.fetch(`/api/transcript/mine?controller=${encodeURIComponent(luna.session_id)}&newest=1`, { cookie });
+	const response = await fixture.fetch(`/api/transcript/mine?controller=${encodeURIComponent(luna.session_id)}&newest=12`, { cookie });
 	const update: MyMessagesUpdate = await response.json();
 	if (!update.ok) throw new Error(update.reason);
 	expect(update.complete).toBe(false);
@@ -143,4 +143,14 @@ test('asked for the newest part only, it answers the newest texts as not complet
 	expect(reads[0].some((arg) => arg.startsWith('--before'))).toBe(false);
 	// Asked for all of it afterwards, the whole conversation is listed.
 	expect(messagesOf(await mine(luna.session_id)).length).toBe(200);
+});
+
+test('asked for the newest part only, it reads on past pages without the user’s texts until it holds as many as asked', async () => {
+	const luna = await bind('alpha', 'newest-sparse');
+	record(luna.session_id, [...Array.from({ length: 100 }, (_, index) => line('user', `早先 ${index}`)), ...Array.from({ length: 120 }, (_, index) => line('assistant', `回覆 ${index}`))]);
+	const response = await fixture.fetch(`/api/transcript/mine?controller=${encodeURIComponent(luna.session_id)}&newest=12`, { cookie });
+	const update: MyMessagesUpdate = await response.json();
+	if (!update.ok) throw new Error(update.reason);
+	expect(update.complete).toBe(false);
+	expect(update.messages.length).toBeGreaterThanOrEqual(12);
 });

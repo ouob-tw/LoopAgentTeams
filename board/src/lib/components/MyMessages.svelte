@@ -88,8 +88,8 @@
 	let readAt = -1;
 	async function read(forId: string) {
 		const mine = ++reads;
-		// Closed, only the newest part is read: the bar needs a count, not all of it.
-		const path = (feed === 'agent' ? `/api/agents/transcript/mine?session=${encodeURIComponent(forId)}` : `/api/transcript/mine?controller=${encodeURIComponent(forId)}`) + (open ? '' : '&newest=1');
+		// Closed, only as much of the newest part is read as it takes to fill the bar: it needs a count, not all of it.
+		const path = (feed === 'agent' ? `/api/agents/transcript/mine?session=${encodeURIComponent(forId)}` : `/api/transcript/mine?controller=${encodeURIComponent(forId)}`) + (open ? '' : `&newest=${FIT}`);
 		const result = await request<MyMessagesUpdate>(path);
 		if (mine !== reads) return;
 		// A read that failed is asked again when the list is next opened.

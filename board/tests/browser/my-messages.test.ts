@@ -75,7 +75,9 @@ beforeAll(async () => {
 	recordOf('s-agent', conversation(130));
 	recordOf('s-short', conversation(4));
 	recordOf('s-one', conversation(1));
-	setHerdr([{ session: 's-agent' }, { session: 's-short' }, { session: 's-one' }]);
+	// Said a lot long ago, only replies since: the newest pages hold none of it.
+	recordOf('s-sparse', Array.from({ length: 100 }, (_, index) => line('user', `早先 ${index}`)).join('') + Array.from({ length: 120 }, (_, index) => line('assistant', `回覆 ${index}`)).join(''));
+	setHerdr([{ session: 's-agent' }, { session: 's-short' }, { session: 's-one' }, { session: 's-sparse' }]);
 	await fixture.refresh(cookie);
 }, 30_000);
 afterEach(async () => {
@@ -421,7 +423,7 @@ test.skipIf(!CHROME)('1280px: the conversation is read once on load for the bar,
 	const mine = () => tab.eval<string[]>(`performance.getEntriesByType('resource').map((entry) => entry.name).filter((name) => name.includes('/transcript/mine'))`);
 	const asked = await mine();
 	expect(asked.length).toBeGreaterThan(0);
-	expect(asked.every((name) => name.includes('newest=1'))).toBe(true);
+	expect(asked.every((name) => name.includes('newest=12'))).toBe(true);
 	appendFileSync(join(fixture.dir, 'transcripts', `${luna.session_id}.jsonl`), line('user', '又說了一句'));
 	await tab.until(`document.querySelector('[data-block="transcript"]').innerText.includes('又說了一句')`, 'the new message in the conversation');
 	await sleep(1_500);
@@ -609,6 +611,10 @@ test.skipIf(!CHROME)('1280px: the bar has a dot for each thing said, at least 44
 	recordOf('s-short', conversation(4));
 	await visit(1280);
 	await tab.until(`parseFloat(getComputedStyle(document.querySelector('${BAR}')).getPropertyValue('--dots-h')) === 96`, 'twelve dots');
+	// The newest pages hold none of what was said: twelve dots all the same, without the list opened.
+	await visit(1280, '/?agent=s-sparse');
+	await tab.until(`parseFloat(getComputedStyle(document.querySelector('${BAR}')).getPropertyValue('--dots-h')) === 96`, 'twelve dots from older pages');
+	expect(await tab.eval(SHOWN)).toBe(false);
 	expect(await dots()).toEqual({ height: 110, dots: 12 });
 	await shot(tab, 'my-messages-1280-bar-many');
 	expect(tab.errors).toEqual([]);
