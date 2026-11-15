@@ -187,6 +187,32 @@ class AskTests(AskTestCase):
                 self.assertFalse(self.record().exists())
                 self.assertFalse(self.questions.exists())
 
+    def test_an_action_record_naming_no_branch_is_refused_and_nothing_changes(self):
+        for action in ("merge", "push"):
+            with self.subTest(action=action):
+                self.ask(SECTION, *HUMAN, question_id=f"A-{action}")
+                record = self.record(f"A-{action}")
+                record.write_text(record.read_text() + f"- action: {action}\n")
+                before = record.read_text()
+                panel = self.questions.read_text()
+
+                result = self.ask(SECTION.replace("驗收", "改過"), question_id=f"A-{action}")
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"- action: {action} <branch> [commit]", result.stderr)
+                self.assertIn(f"- action: {action} dev", result.stderr)
+                self.assertEqual(record.read_text(), before)
+                self.assertEqual(self.questions.read_text(), panel)
+
+    def test_an_action_record_with_a_branch_is_not_refused_for_the_branch(self):
+        self.ask(SECTION, *HUMAN, question_id="A-ok")
+        record = self.record("A-ok")
+        record.write_text(record.read_text() + "- action: push dev\n")
+
+        result = self.ask(SECTION.replace("驗收", "改過"), question_id="A-ok")
+
+        self.assertNotIn("names no branch", result.stderr)
+
     def test_record_fields_are_refused_for_an_existing_record(self):
         self.ask(SECTION, *HUMAN)
         before = self.record().read_text()

@@ -119,8 +119,8 @@ import argparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from lat_decision_status import (advisor_error, exempt_basis_category, read_advisor_words,
-                                 read_decision_kind, read_decision_status, read_exempt_basis,
-                                 read_tried)
+                                 read_decision_action, read_decision_kind,
+                                 read_decision_status, read_exempt_basis, read_tried)
 from _lat_common import plugin_directory, run_cli, write_text_atomic as _replace_locked
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import questions
@@ -787,6 +787,12 @@ def _ask(args):
         raise ValueError(f"decisions directory does not exist: {args.decisions}")
     given = [field for field in ASK_RECORD_FIELDS if field != "--question"
              and getattr(args, field[2:].replace("-", "_")) is not None]
+    found = read_decision_action(path) if path.exists() else None
+    if found and found[0] in ("merge", "push") and not found[1]:
+        raise ValueError(
+            f"{path}: `- action: {found[0]}` names no branch, so the pre-authorization check "
+            f"can never pass it; write `- action: {found[0]} <branch> [commit]`, "
+            f"for example `- action: {found[0]} dev`. Nothing was changed.")
     created = not path.exists()
     if created:
         if args.advisor is None:

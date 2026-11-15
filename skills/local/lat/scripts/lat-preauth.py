@@ -431,74 +431,70 @@ def is_round_ticket(ref, tickets, own=None):
         for repo, number in tickets)
 
 
-def earlier_round_ledgers(top, session):
-    """The same session's earlier round ledgers (each `history` entry's `ledger_path` in its
-    session record) as [(path, dict)], newest round first; unreadable ones are left out."""
-    if top is None or not session:
-        return []
-    try:
-        record = json.loads((shared_lat_dir(top) / 'sessions' / f'{session}.json').read_text())
-        history = record.get('history')
-        current = record.get('ledger_path')
-    except (OSError, ValueError, AttributeError):
+def repo_ledgers(top):
+    """Every work ledger in the repo's main-workspace `.lat/ledgers/*.json` (any session, any
+    round, active or ended) as [(file name, dict)]; unreadable ones are left out."""
+    if top is None:
         return []
     found = []
-    for entry in reversed(history) if isinstance(history, list) else []:
-        path = entry.get('ledger_path') if isinstance(entry, dict) else None
-        if not isinstance(path, str) or not path or path == current:
-            continue
+    try:
+        paths = sorted((shared_lat_dir(top) / 'ledgers').glob('*.json'))
+    except OSError:
+        return []
+    for path in paths:
         try:
-            ledger = json.loads(Path(path).read_text())
+            ledger = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
         if isinstance(ledger, dict):
-            found.append((path, ledger))
+            found.append((path.name, ledger))
     return found
 
 
-def unpushed_commit_problems(top, version, ledger, session=None):
-    """Commits the remotes lack must each reference only tickets of this round's ledger.
-    A ticket-less merge passes as a sync merge when each parent is on a remote or an unpushed
-    commit that passed, and at least one parent is such an unpushed commit.
-    A ticket that is on the same session's earlier round ledger gets that ledger named.
-    Each problem is a (kind, reason) pair."""
-    if ledger is None:
-        return [('error',
-                 'no active round ledger to tell whose tickets the unpushed commits belong to')]
-    tickets, own = round_tickets(ledger), own_tracker(top)
+def unpushed_commit_problems(top, version, ledger):
+    """Commits the remotes lack must each reference a ticket that is on a work ledger of this
+    repo (`ledger`, this round's, or any in `.lat/ledgers/`). A ticket-less merge passes as a
+    sync merge when each parent is on a remote or an unpushed commit that passed, and at least
+    one parent is such an unpushed commit.
+    Returns (problems, found): each problem a (kind, reason) pair; `found` maps the file name
+    of each other ledger to the tickets that were found only there."""
+    own = own_tracker(top)
+    own_tickets = round_tickets(ledger)
+    others = [(name, round_tickets(other)) for name, other in repo_ledgers(top)]
     log = git(top, 'log', '--reverse', '--topo-order', '--format=%H%x1f%P%x1f%s%x1f%B%x1e',
               version, '--not', '--remotes')
     if log is None:
-        return [('error', f'cannot list the commits the remotes lack for {version[:12]}')]
+        return [('error', f'cannot list the commits the remotes lack for {version[:12]}')], {}
     entries = [entry.split('\x1f', 3)
                for entry in filter(None, (part.strip('\n') for part in log.split('\x1e')))]
     unpushed_shas = {sha for sha, *_ in entries}
-    foreign, passed, missing = [], set(), set()
+    foreign, passed, found = [], set(), {}
     for sha, parents, subject, body in entries:  # parents before children
         refs = {(repo.lower(), number) for repo, number in ISSUE_REF.findall(body)}
-        outside = {ref for ref in refs if not is_round_ticket(ref, tickets, own)}
-        missing |= outside
-        others = sorted(ticket_name(ref) for ref in outside)
+        elsewhere = set()
+        for ref in refs:
+            if is_round_ticket(ref, own_tickets, own):
+                continue
+            home = next((name for name, tickets in others
+                         if is_round_ticket(ref, tickets, own)), None)
+            if home:
+                found.setdefault(home, set()).add(ticket_name(ref))
+            else:
+                elsewhere.add(ref)
+        names = sorted(ticket_name(ref) for ref in elsewhere)
         parents = parents.split()
         sync_merge = (len(parents) > 1 and any(p in passed for p in parents)
                       and all(p in passed or p not in unpushed_shas for p in parents))
-        if others:
-            foreign.append(f'{sha[:12]} "{subject}" ({", ".join(others)})')
+        if names:
+            foreign.append(f'{sha[:12]} "{subject}" ({", ".join(names)})')
         elif not refs and not sync_merge:
             foreign.append(f'{sha[:12]} "{subject}" (no ticket)')
         else:
             passed.add(sha)
     if not foreign:
-        return []
-    names = ', '.join(sorted(ticket_name(ticket) for ticket in tickets)) or 'none'
-    reason = f"unpushed commits outside this round's tickets ({names}): " + '; '.join(foreign)
-    for path, earlier in earlier_round_ledgers(top, session) if missing else []:
-        on = {ref for ref in missing if is_round_ticket(ref, round_tickets(earlier), own)}
-        if on:
-            reason += (f"; on the same session's earlier round ledger {path}: "
-                       + ', '.join(sorted(map(ticket_name, on))))
-            missing -= on
-    return [('condition', reason)]
+        return [], found
+    return [('condition', 'unpushed commits with no ticket, or a ticket on no LAT ledger in '
+                          'this repo: ' + '; '.join(foreign))], found
 
 
 def load_suite_gate():
@@ -981,15 +977,18 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
         if version is None:
             ask('error', f'cannot resolve the version to push (`{commit or branch}`)')
         else:
-            problems = unpushed_commit_problems(top, version, ledger, session)
+            problems, found = unpushed_commit_problems(top, version, ledger)
             ask_each(problems)
             try:
                 ask_each(held_problems(top, unpushed(top, version)))
             except ValueError as error:
                 ask('error', str(error))
             if not problems:
-                result['basis'].append(f'every unpushed commit of {version[:12]} references '
-                                       'only tickets of the round ledger')
+                result['basis'].append(
+                    f'every unpushed commit of {version[:12]} references a ticket on a LAT '
+                    'ledger of this repo' + ''.join(
+                        f'; {", ".join(sorted(tickets))} on {name}'
+                        for name, tickets in sorted(found.items())))
     merged = resolve_version(top, commit) if action == 'merge' and commit else None
     if action == 'merge' and not merged and any(
             isinstance(item, dict) and item.get('tiny')
