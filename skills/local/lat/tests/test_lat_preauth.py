@@ -3236,6 +3236,19 @@ class HoldTests(WriteCase):
         self.assertIn(f'{self.held[:12]} (decision HOLD-1)', reason)
         self.assertEqual(verdict['reason_kinds'], ['condition'])
 
+    def test_a_held_commit_of_another_ledgers_ticket_still_asks(self):
+        self.write(self.repo / '.lat' / 'ledgers' / 'other-r2.json',
+                   json.dumps({'items': [{'ticket': '#500'}]}))
+        theirs = self.commit('feat: theirs (#500)', 'c.txt')
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+        self.add(theirs)
+        verdict = self.check('push', '--branch', 'dev')
+        self.assertEqual(verdict['verdict'], 'ask')
+        [reason] = verdict['reasons']
+        self.assertIn('held commits', reason)
+        self.assertIn(f'{theirs[:12]} (decision HOLD-1)', reason)
+        self.assertEqual(verdict['reason_kinds'], ['condition'])
+
     def test_a_held_commit_the_remote_already_has_is_not_in_the_range(self):
         self.add()
         git(self.repo, 'push', '-q', 'origin', 'dev')
@@ -3409,13 +3422,6 @@ class RepoLedgerTicketTests(PreauthCase):
         reasons = self.check('push', '--branch', 'dev')['reasons']
         self.assertEqual(len(reasons), 1, reasons)
         self.assertIn(f'{sha[:12]} "chore: by hand" (no ticket)', reasons[0])
-
-    def test_a_held_commit_still_asks(self):
-        self.other('other-r2.json', '#500')
-        sha = self.commit('feat: theirs (#500)')
-        holds = self.repo / '.lat' / 'holds.json'
-        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
-        self.assertTrue(hasattr(self, 'hold') or True)  # holds are covered by the held tests
 
     def test_a_bad_ledger_file_is_skipped(self):
         self.write(self.ledgers / 'bad.json', '{not json')
