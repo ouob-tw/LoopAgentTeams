@@ -2,12 +2,14 @@
 	// 「我說過的話」: what the user said in the whole conversation, newest first. It never shows on
 	// its own: a mouse over the long upright bar at the window's right edge, or a tap on it, brings it up
 	// flush right beside the bar, over nothing but the page; it goes away when the mouse leaves it,
-	// or on a pick or a touch outside. Held for half a second, the bar is dragged up and down the
-	// edge, and where it was let go is kept in this browser. A pick is handed to the conversation, which
+	// or on a pick or a touch outside. The grip at the right end of the list's title row drags the bar
+	// and the list together up and down the edge, from the moment it is pressed, with the list staying
+	// open; where it was let go is kept in this browser. A pick is handed to the conversation, which
 	// scrolls to it, loading earlier parts first when it is not there yet.
 	import { createRequest } from '#lib/board/api.ts';
 	import type { MyMessage, MyMessagesUpdate } from '#lib/board/my-messages.ts';
 	import type { TranscriptFeed } from '#lib/board/earlier.ts';
+	import GripVertical from '@lucide/svelte/icons/grip-vertical';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import { untrack } from 'svelte';
 
@@ -37,9 +39,7 @@
 	const MORE_MS = 600;
 	/** The strip at the window's right edge that keeps the open list open, in px. */
 	const EDGE = 8;
-	/** How long the bar is held before it can be dragged, in ms. */
-	const HOLD_MS = 500;
-	/** How far a finger may wander while holding before it is not a hold, in px. */
+	/** How far a finger may wander during a tap on the bar before it is not a tap, in px. */
 	const WANDER = 10;
 	const BAR_KEY = 'lat-board-my-messages-bar';
 	/** How far around the open list the mouse may stray without closing it, in px. */
@@ -119,7 +119,6 @@
 		return () => clearTimeout(timer);
 	});
 	$effect(() => () => void reads++);
-	$effect(() => () => clearTimeout(holdTimer));
 
 	function pick(seq: number) {
 		open = false;
@@ -152,9 +151,8 @@
 		if (open && !aside?.contains(event.target as Node) && !(event.target as Element).closest?.('.bar')) open = false;
 	}
 
-	// The bar: the mouse over it opens the list; a tap on it toggles the list; held for HOLD_MS it is dragged.
-	let holdTimer: ReturnType<typeof setTimeout> | undefined;
-	let press: { id: number; x: number; y: number; last: number; grab: number; wasOpen: boolean; held: boolean } | null = null;
+	// The bar: the mouse over it opens the list; a tap on it toggles the list.
+	let press: { x: number; y: number; wasOpen: boolean } | null = null;
 	function enter(event: PointerEvent) {
 		// A button held is a drag, of the scrollbar for one: it never brings the list up.
 		if (event.pointerType !== 'mouse' || event.buttons !== 0 || dragging || open) return;
@@ -162,51 +160,44 @@
 		open = true;
 	}
 	function down(event: PointerEvent) {
-		if (event.button !== 0 || press) return;
-		const bar = event.currentTarget as HTMLElement;
-		press = { id: event.pointerId, x: event.clientX, y: event.clientY, last: event.clientY, grab: 0, wasOpen: open, held: false };
-		holdTimer = setTimeout(() => {
-			if (!press) return;
-			// Where the bar is held is where it stays under the pointer: no jump at the first move.
-			const box = bar.getBoundingClientRect();
-			press.grab = box.top + box.height / 2 - press.last;
-			press.held = true;
-			dragging = true;
-			open = false;
-		}, HOLD_MS);
-		bar.setPointerCapture(event.pointerId);
-	}
-	function drag(event: PointerEvent) {
-		if (!press || event.pointerId !== press.id) return;
-		press.last = event.clientY;
-		if (dragging) {
-			// Inside the window, by the bar's own height, as it is drawn.
-			place = Math.min(innerHeight - barH / 2, Math.max(barH / 2, event.clientY + press.grab)) / innerHeight;
-		} else if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > WANDER) {
-			// Moved before the hold: not a hold.
-			clearTimeout(holdTimer);
-			press = null;
-		}
+		if (event.button !== 0) return;
+		press = { x: event.clientX, y: event.clientY, wasOpen: open };
 	}
 	function up(event: PointerEvent) {
-		if (!press || event.pointerId !== press.id) return;
-		clearTimeout(holdTimer);
-		const { held, wasOpen } = press;
+		const start = press;
 		press = null;
-		if (held) {
-			dragging = false;
-			try {
-				localStorage.setItem(BAR_KEY, String(place));
-			} catch {
-				// Not kept; the bar stays where it was let go until the page is closed.
-			}
-		} else if (event.type === 'pointerup') {
-			// A tap: a finger toggles the list; the mouse, already over the bar, only brings it up when it is closed.
-			if (wasOpen && event.pointerType !== 'mouse') open = false;
-			else if (!wasOpen) {
-				measure();
-				open = true;
-			}
+		if (!start || event.type !== 'pointerup' || Math.hypot(event.clientX - start.x, event.clientY - start.y) > WANDER) return;
+		// A tap: a finger toggles the list; the mouse, already over the bar, only brings it up when it is closed.
+		if (start.wasOpen && event.pointerType !== 'mouse') open = false;
+		else if (!start.wasOpen) {
+			measure();
+			open = true;
+		}
+	}
+
+	// The grip in the list's title row: pressed, it drags the bar and the list at once. Where the bar
+	// is held is where it stays under the pointer: no jump at the first move.
+	let grab: { id: number; offset: number } | null = null;
+	function gripDown(event: PointerEvent) {
+		if (event.button !== 0 || grab) return;
+		const centre = Math.min(innerHeight - barH / 2, Math.max(barH / 2, place * innerHeight));
+		grab = { id: event.pointerId, offset: centre - event.clientY };
+		dragging = true;
+		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+	}
+	function gripMove(event: PointerEvent) {
+		if (!grab || event.pointerId !== grab.id) return;
+		// Inside the window, by the bar's own height, as it is drawn.
+		place = Math.min(innerHeight - barH / 2, Math.max(barH / 2, event.clientY + grab.offset)) / innerHeight;
+	}
+	function gripUp(event: PointerEvent) {
+		if (!grab || event.pointerId !== grab.id) return;
+		grab = null;
+		dragging = false;
+		try {
+			localStorage.setItem(BAR_KEY, String(place));
+		} catch {
+			// Not kept; the bar stays where it was let go until the page is closed.
 		}
 	}
 </script>
@@ -232,7 +223,6 @@
 	data-block="my-messages-bar"
 	onpointerenter={enter}
 	onpointerdown={down}
-	onpointermove={drag}
 	onpointerup={up}
 	onpointercancel={up}
 	onmousedown={(event) => event.preventDefault()}
@@ -241,7 +231,21 @@
 
 <aside class="mine" bind:this={aside} class:open style:right="{gap + barW}px" style:top="{place * 100}%" style:transform="translateY(-{place * 100}%)" aria-label="我說過的話" data-block="my-messages">
 	{#if open}
-	<h3>我說過的話</h3>
+	<div class="head">
+		<h3>我說過的話</h3>
+		<button
+			type="button"
+			class="grip"
+			class:dragging
+			aria-label="拖動來移動長條"
+			onpointerdown={gripDown}
+			onpointermove={gripMove}
+			onpointerup={gripUp}
+			onpointercancel={gripUp}
+			onmousedown={(event) => event.preventDefault()}
+			oncontextmenu={(event) => event.preventDefault()}
+		><GripVertical size="1.5em" aria-hidden="true" /></button>
+	</div>
 	{#if jumping !== null}
 		<p class="status" role="status">
 			{#if failure}
@@ -306,7 +310,7 @@
 		width: var(--bar-w);
 		height: var(--bar-h);
 		transform: translateY(-50%);
-		cursor: grab;
+		cursor: pointer;
 		user-select: none;
 		-webkit-user-select: none;
 		-webkit-touch-callout: none;
@@ -330,9 +334,6 @@
 	.bar:hover::after,
 	.bar.dragging::after {
 		border-color: var(--accent);
-	}
-	.bar.dragging {
-		cursor: grabbing;
 	}
 	@media (pointer: coarse) {
 		.bar {
@@ -360,12 +361,42 @@
 	.mine.open {
 		display: flex;
 	}
+	.head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		border-bottom: 1px solid var(--line);
+	}
 	h3 {
 		margin: 0;
 		padding: 0.6rem 0.9rem;
-		border-bottom: 1px solid var(--line);
 		font-size: max(1rem, var(--min-font, 0px));
 		font-weight: 700;
+	}
+	/* The drag handle at the title row's right end: a 44px hit area, a grab hand, a finger drags it too. */
+	.grip {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+		width: 2.75rem;
+		height: 2.75rem;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		color: var(--muted);
+		cursor: grab;
+		user-select: none;
+		-webkit-user-select: none;
+		-webkit-touch-callout: none;
+		touch-action: none;
+	}
+	.grip:hover,
+	.grip.dragging {
+		color: var(--accent);
+	}
+	.grip.dragging {
+		cursor: grabbing;
 	}
 	.retry {
 		display: inline-flex;

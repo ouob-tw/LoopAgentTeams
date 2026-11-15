@@ -1,8 +1,9 @@
 // 「我說過的話」 in a real browser (headless Chrome over its DevTools protocol, on the built board
 // with fake data): nothing of it shows until a mouse is over the long upright bar at the window's right edge
 // (1280px) or a finger taps it (390px); open, it sits flush right beside the bar with no times and
-// no overlay, and stays steady while the mouse moves around its boundary. The bar is dragged after
-// a half-second hold and its place is kept in localStorage. A pick scrolls to the
+// no overlay, and stays steady while the mouse moves around its boundary. The grip at the right end
+// of the list's title row drags bar and list at once and its place is kept in localStorage; holding
+// the bar itself drags nothing. A pick scrolls to the
 // message and marks it, loading earlier parts first. LAT_BOARD_SHOTS names a folder for frames.
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -113,14 +114,18 @@ async function tapBar() {
 	const bar = await barBox();
 	await tab.swipe(bar.x, bar.y, 0, { steps: 1, ms: 50 });
 }
-/** The bar held for `hold` ms with the mouse, then moved to `y` in a few steps; left pressed when `release` is false. */
-async function dragBar(y: number, { hold = 650, release = true } = {}) {
+const GRIP = `${BLOCK} .grip`;
+const gripBox = () => tab.eval<{ left: number; right: number; top: number; bottom: number; x: number; y: number }>(`(() => { const r = document.querySelector('${GRIP}').getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+/** The list opened by the mouse over the bar, the grip pressed at once and moved so the bar's centre ends at `y`; left pressed when `release` is false. */
+async function dragBar(y: number, { release = true } = {}) {
+	if (!(await tab.eval(SHOWN))) await openByEdge();
 	const bar = await barBox();
-	await mouse(bar.x, bar.y);
-	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: bar.x, y: bar.y, button: 'left', buttons: 1, clickCount: 1 });
-	await sleep(hold);
-	for (let step = 1; step <= 5; step++) await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: bar.x, y: bar.y + ((y - bar.y) * step) / 5, button: 'left', buttons: 1 });
-	if (release) await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: bar.x, y, button: 'left', clickCount: 1 });
+	const grip = await gripBox();
+	const to = grip.y + (y - bar.y);
+	await mouse(grip.x, grip.y);
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: grip.x, y: grip.y, button: 'left', buttons: 1, clickCount: 1 });
+	for (let step = 1; step <= 5; step++) await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: grip.x, y: grip.y + ((to - grip.y) * step) / 5, button: 'left', buttons: 1 });
+	if (release) await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: grip.x, y: to, button: 'left', clickCount: 1 });
 }
 const stored = () => tab.eval<string | null>(`localStorage.getItem('${KEY}')`);
 /** The width of the vertical scrollbar at the window's right edge, whichever element scrolls there. */
@@ -455,35 +460,62 @@ test.skipIf(!CHROME)('1280px: only the long bar brings up the list, and with no 
 	expect(tab.errors).toEqual([]);
 }, 30_000);
 
-test.skipIf(!CHROME)('1280px: the bar held half a second is dragged without the list or selected text, kept inside the window, and kept across reloads and conversations', async () => {
+test.skipIf(!CHROME)('1280px: the list has a grip at the right end of its title row, big enough for a finger', async () => {
+	await visit(1280);
+	await openByEdge();
+	const grip = await gripBox();
+	const box = await boxOf();
+	const title = await tab.eval<{ right: number; top: number; bottom: number }>(`(() => { const r = document.querySelector('${BLOCK} h3').getBoundingClientRect(); return { right: r.right, top: r.top, bottom: r.bottom }; })()`);
+	expect(grip.right - grip.left).toBeGreaterThanOrEqual(44);
+	expect(grip.bottom - grip.top).toBeGreaterThanOrEqual(44);
+	// The far right of the title's own row, after the title.
+	expect(box.right - grip.right).toBeLessThanOrEqual(2);
+	expect(grip.left).toBeGreaterThanOrEqual(title.right);
+	expect(grip.y).toBeGreaterThan(title.top);
+	expect(grip.y).toBeLessThan(title.bottom);
+	expect(await tab.eval(`document.querySelector('${GRIP}').getAttribute('aria-label')`)).toBeTruthy();
+	expect(await tab.eval(`getComputedStyle(document.querySelector('${GRIP}')).cursor`)).toBe('grab');
+	expect(await tab.eval(`getComputedStyle(document.querySelector('${GRIP}')).touchAction`)).toBe('none');
+	await shot(tab, 'my-messages-1280-grip');
+	expect(tab.errors).toEqual([]);
+}, 30_000);
+
+test.skipIf(!CHROME)('1280px: the grip drags bar and list together at once, with the list open and nothing selected, kept inside the window, and kept across reloads and conversations', async () => {
 	await visit(1280);
 	await shot(tab, 'my-messages-1280-bar-default');
-	// Pressed and moved at once, before the hold: not a drag, the bar stays.
+	await openByEdge();
 	const bar0 = await barBox();
-	await dragBar(200, { hold: 50 });
-	expect(Math.abs((await barBox()).y - bar0.y)).toBeLessThanOrEqual(1);
+	const list0 = await boxOf();
 	expect(await stored()).toBeNull();
-	await mouse(300, 300);
-	await tab.until(`!(${SHOWN})`, 'the list closed');
 
-	// Held, then moved: the bar follows, the list never shows, nothing is selected.
+	// Pressed and moved at once, no hold: the bar and the list follow, the list stays, nothing is selected.
 	await dragBar(220, { release: false });
 	const during = await barBox();
+	const list1 = await boxOf();
 	expect(Math.abs(during.y - 220)).toBeLessThanOrEqual(2);
-	expect(await tab.eval(`!(${SHOWN}) && window.getSelection().toString() === ''`)).toBe(true);
+	expect(list1.top).not.toBe(list0.top);
+	expect(await tab.eval(`(${SHOWN}) && window.getSelection().toString() === ''`)).toBe(true);
+	// The mouse far from the list while dragging does not close it.
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 100, y: 220, button: 'left', buttons: 1 });
+	await sleep(100);
+	expect(await tab.eval(SHOWN)).toBe(true);
+	expect(await stored()).toBeNull();
 	await shot(tab, 'my-messages-1280-bar-dragging');
-	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: during.x, y: 220, button: 'left', clickCount: 1 });
-	expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 100, y: 220, button: 'left', clickCount: 1 });
+	expect(await tab.eval(SHOWN)).toBe(true);
 	expect(Number(await stored())).toBeCloseTo(220 / 800, 1);
+	expect(bar0.y).toBeGreaterThan(during.y);
 
 	// Dragged far out of the window: held inside it.
 	await dragBar(-500);
 	const top = await barBox();
 	expect(top.top).toBeGreaterThanOrEqual(0);
+	expect((await boxOf()).top).toBeGreaterThanOrEqual(0);
 	await dragBar(5000);
 	const bottom = await barBox();
 	expect(bottom.bottom).toBeLessThanOrEqual(800);
 	expect(bottom.bottom).toBeGreaterThan(780);
+	expect((await boxOf()).bottom).toBeLessThanOrEqual(800);
 	await dragBar(220);
 
 	// Reloaded, and in another conversation: the same place; a smaller window keeps it inside.
@@ -501,6 +533,22 @@ test.skipIf(!CHROME)('1280px: the bar held half a second is dragged without the 
 	expect(small.bottom).toBeLessThanOrEqual(150);
 	expect(tab.errors).toEqual([]);
 }, 60_000);
+
+test.skipIf(!CHROME)('1280px: the bar held for a second drags nothing and the list still opens over it', async () => {
+	await visit(1280);
+	const bar = await barBox();
+	await mouse(bar.x, bar.y);
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: bar.x, y: bar.y, button: 'left', buttons: 1, clickCount: 1 });
+	await sleep(900);
+	for (let step = 1; step <= 5; step++) await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: bar.x, y: bar.y - step * 40, button: 'left', buttons: 1 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: bar.x, y: bar.y - 200, button: 'left', clickCount: 1 });
+	expect(Math.abs((await barBox()).y - bar.y)).toBeLessThanOrEqual(1);
+	expect(await stored()).toBeNull();
+	expect(await tab.eval(`window.getSelection().toString() === ''`)).toBe(true);
+	await mouse(bar.x, bar.y);
+	await tab.until(SHOWN, 'the list over the bar');
+	expect(tab.errors).toEqual([]);
+}, 30_000);
 
 test.skipIf(!CHROME)('1280px: a stored place that is not a number from 0 to 1 puts the bar in the middle, and storage that throws does not break it', async () => {
 	await visit(1280);
@@ -525,21 +573,31 @@ test.skipIf(!CHROME)('1280px: a stored place that is not a number from 0 to 1 pu
 	expect(Math.abs((await barBox()).y - 300)).toBeLessThanOrEqual(2);
 }, 60_000);
 
-test.skipIf(!CHROME)('390px: a long press on the bar drags it and keeps the place; a tap opens the list and a second tap closes it', async () => {
+test.skipIf(!CHROME)('390px: a finger drags the bar and the list by the grip and keeps the place; a tap on the bar opens the list and a second tap closes it', async () => {
 	await visit(390);
 	const bar = await barBox();
 	expect(Math.abs(bar.y - 400)).toBeLessThanOrEqual(1);
-	// Held for half a second with the finger, then moved up: the bar follows; no list.
+	// Held on the bar itself and moved: nothing drags.
 	await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: bar.x, y: bar.y }] });
 	await sleep(650);
 	for (let step = 1; step <= 5; step++) await tab.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: bar.x, y: bar.y - step * 40 }] });
+	await tab.liftFinger();
 	await sleep(100);
-	expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
+	expect(Math.abs((await barBox()).y - bar.y)).toBeLessThanOrEqual(1);
+	expect(await stored()).toBeNull();
+	// Tapped: the list opens; its grip, touched and moved up, takes bar and list along with the list open.
+	await tapBar();
+	await tab.until(SHOWN, 'the list');
+	const grip = await gripBox();
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: grip.x, y: grip.y }] });
+	for (let step = 1; step <= 5; step++) await tab.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: grip.x, y: grip.y - step * 40 }] });
+	await sleep(100);
+	expect(await tab.eval(SHOWN)).toBe(true);
 	expect(Math.abs((await barBox()).y - 200)).toBeLessThanOrEqual(2);
 	await shot(tab, 'my-messages-390-bar-dragging');
 	await tab.liftFinger();
 	await sleep(100);
-	expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
+	expect(await tab.eval(SHOWN)).toBe(true);
 	expect(Number(await stored())).toBeCloseTo(0.25, 1);
 	await tab.reload();
 	await tab.until(`!!document.querySelector('${BAR}')`, 'the bar');
@@ -551,6 +609,7 @@ test.skipIf(!CHROME)('390px: a long press on the bar drags it and keeps the plac
 	const box = await boxOf();
 	expect(box.top).toBeGreaterThanOrEqual(0);
 	expect(box.bottom).toBeLessThanOrEqual(800);
+	await shot(tab, 'my-messages-390-list');
 	await tapBar();
 	await tab.until(`!(${SHOWN})`, 'the list closed by the second tap');
 	expect(await tab.eval(FITS)).toBe(true);
