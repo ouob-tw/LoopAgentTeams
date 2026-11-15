@@ -779,8 +779,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 						{#if index > 0}
 							<li class="guide"><ArrowUp size="1em" />較新的訊息</li>
 						{/if}
-						<!-- The opened report is watched too: marked unread on it, it counts again only after leaving the screen. -->
-						{@const placedReport = segment.seq === null ? undefined : reported.get(segment.seq)}
+						<!-- The opened report is watched too: marked unread on it, it counts again only after leaving the screen.
+						     Question cards shown there are not a report, whatever their message is. -->
+						{@const placedReport = segment.seq === null || (questionCards && placedQuestions.length) ? undefined : reported.get(segment.seq)}
 						<li class="placed" data-seq={segment.seq ?? undefined} data-report-key={placedReport?.key} data-unread={placedReport ? placedReport.readAt === null && !placedReport.archived : undefined}>
 							{#if questionCards && placedQuestions.length}
 								{#snippet placedNote()}{@render askingNoteFold(segment.seq!)}{/snippet}
