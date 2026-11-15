@@ -755,12 +755,14 @@ test.skipIf(!CHROME)('1280px: the bar can be reached with the keyboard: Enter op
 // The dots before the server answers: the count it gave last time in this browser.
 const COUNTS = 'lat-board-my-messages-counts';
 const DOTS_H = `parseFloat(getComputedStyle(document.querySelector('${BAR}')).getPropertyValue('--dots-h'))`;
-/** Load `path` (a reload when null) with the answers of /mine held until `window.release()`; `window.firstFrame` is the dots the bar has on the first frame it is drawn. */
+/** Load `path` (a reload when null) with the answers of /mine held until `window.release()`; `window.firstFrame` is the dots the bar has on the first frame it is drawn.
+ *  `storage` is run in the new document before the page's own scripts: the page still open reads again whenever
+ *  its conversation changes and writes the counts back, so what the test wrote into storage just before the load could be overwritten by it. */
 let heldScript: string | undefined;
-async function loadHeld(path: string | null) {
+async function loadHeld(path: string | null, storage = '') {
 	const first = `(() => { window.firstFrame = null; const look = () => { const bar = document.querySelector('${BAR}'); if (bar) window.firstFrame = { dots: parseFloat(getComputedStyle(bar).getPropertyValue('--dots-h')) / 8, height: bar.getBoundingClientRect().height }; else requestAnimationFrame(look); }; requestAnimationFrame(look); })()`;
 	if (heldScript) await tab.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: heldScript });
-	heldScript = ((await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: `${holdRequests('/transcript/mine')}; ${first}` })) as { identifier: string }).identifier;
+	heldScript = ((await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: `${storage}; ${holdRequests('/transcript/mine')}; ${first}` })) as { identifier: string }).identifier;
 	if (path === null) await tab.reload();
 	else await tab.navigate(fixture.url + path);
 	await tab.until(`window.firstFrame !== null`, 'the bar');
@@ -794,8 +796,7 @@ test.skipIf(!CHROME)('1280px: a conversation seen before draws its remembered do
 test.skipIf(!CHROME)('1280px: a conversation not seen before waits for the server, and the remembered counts are capped', async () => {
 	await visit(1280, '/?agent=s-short');
 	await tab.until(`${DOTS_H} === 32`, 'four dots');
-	await tab.eval(`localStorage.removeItem('${COUNTS}')`);
-	await loadHeld(null);
+	await loadHeld(null, `localStorage.removeItem('${COUNTS}')`);
 	expect(await tab.eval(`window.firstFrame`)).toEqual({ dots: 0, height: 44 });
 	await tab.eval(`window.release()`);
 	await tab.until(`${DOTS_H} === 32`, 'four dots from the server');
@@ -813,8 +814,7 @@ test.skipIf(!CHROME)('1280px: a conversation not seen before waits for the serve
 test.skipIf(!CHROME)('1280px: storage that throws or holds rubbish draws no remembered dots and the server count still shows', async () => {
 	await visit(1280, '/?agent=s-short');
 	await tab.until(`${DOTS_H} === 32`, 'four dots');
-	await tab.eval(`localStorage.setItem('${COUNTS}', '{not json')`);
-	await loadHeld(null);
+	await loadHeld(null, `localStorage.setItem('${COUNTS}', '{not json')`);
 	expect((await tab.eval<{ dots: number }>(`window.firstFrame`)).dots).toBe(0);
 	await tab.eval(`window.release()`);
 	await tab.until(`${DOTS_H} === 32`, 'four dots from the server');
