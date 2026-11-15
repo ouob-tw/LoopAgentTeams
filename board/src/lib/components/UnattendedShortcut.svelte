@@ -29,7 +29,7 @@
 
 {#if view.state !== 'unknown'}
 	<div class="shortcut" bind:this={wrap}>
-		<button type="button" class="toggle" class:on data-action="unattended" aria-expanded={open} aria-controls="unattended-shortcut-{controllerId}" onclick={() => (open = !open)}>
+		<button type="button" class="toggle" class:on data-action="unattended" aria-expanded={open} aria-controls={open ? `unattended-shortcut-${controllerId}` : undefined} onclick={() => (open = !open)}>
 			無人模式<span class="state">{on ? '開' : '關'}</span>
 		</button>
 		{#if open}
