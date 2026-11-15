@@ -722,6 +722,9 @@ for (const width of [390, 1400]) {
 		await tab.until(`document.querySelector('.placeholder')?.innerText.includes('第 40 段')`, 'the copy over the content');
 		const copy = `document.querySelector('.placeholder > div')`;
 		const start = await tab.eval<number>(`${copy}.getBoundingClientRect().top`);
+		// The copy's sides, which the real card must take over unmoved.
+		const sides = (selector: string) => tab.eval<{ left: number; right: number; width: number }>(`(({ left, right, width }) => ({ left, right, width }))(${selector}.getBoundingClientRect())`);
+		const copySides = await sides(copy);
 
 		// Scrolled as a person does, with the wheel over the copy.
 		const wheel = (deltaY: number) => tab.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: width - 100, y: 400, deltaX: 0, deltaY });
@@ -743,6 +746,10 @@ for (const width of [390, 1400]) {
 		// Where the copy was read, from the moment it is gone, and still after it is kept there.
 		const placedTop = () => tab.eval<number>(`${PLACED}.getBoundingClientRect().top`);
 		expect(Math.abs((await placedTop()) - read)).toBeLessThanOrEqual(1);
+		const placedSides = await sides(PLACED);
+		expect(Math.abs(placedSides.left - copySides.left)).toBeLessThanOrEqual(1);
+		expect(Math.abs(placedSides.right - copySides.right)).toBeLessThanOrEqual(1);
+		expect(Math.abs(placedSides.width - copySides.width)).toBeLessThanOrEqual(1);
 		const real = await tab.eval<{ top: number; height: number }>(`(({ top, height }) => ({ top, height }))(${paragraph('.history .placed')}.getBoundingClientRect())`);
 		expect(Math.abs(real.top - reading.top)).toBeLessThanOrEqual(1);
 		expect(real.height).toBe(reading.height);
