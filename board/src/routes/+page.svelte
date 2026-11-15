@@ -1117,6 +1117,12 @@
 	.page:not(.screen-open) .detail {
 		scrollbar-gutter: stable;
 	}
+	/* The reserved gutter takes the right padding's room, so the column keeps the width it had (the seven tabs fit at 1280). */
+	@media (min-width: 761px) {
+		.page:not(.screen-open) .detail {
+			padding-right: 0.25rem;
+		}
+	}
 	/* A 終端分頁 shown: its panel takes all the column's height down to the command line and all its
 	   width. A status card opened above it scrolls the column, the panel keeping a usable height. */
 	.screen-open .detail {
