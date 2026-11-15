@@ -6,7 +6,7 @@ import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { viaHttps, type AddressList } from './client-address.ts';
 import { log } from './log.ts';
-import { securityHeaders } from './security-headers.ts';
+import { isDemoPath, securityHeaders } from './security-headers.ts';
 
 export interface ConnectionSettings {
 	allowedSources: AddressList;
@@ -20,7 +20,7 @@ const headerText = (value: string | string[] | undefined) => (Array.isArray(valu
 export function guardConnection(req: IncomingMessage, res: ServerResponse, settings: ConnectionSettings): boolean {
 	const peer = req.socket.remoteAddress ?? '';
 	const https = viaHttps(peer, headerText(req.headers['x-forwarded-proto']), settings.trustedProxies);
-	for (const [name, value] of securityHeaders(https)) res.setHeader(name, value);
+	for (const [name, value] of securityHeaders(https, null, isDemoPath((req.url ?? '').split('?')[0]))) res.setHeader(name, value);
 	if (settings.allowedSources.has(peer)) return true;
 	log('WARNING', 'board.http', 'source_refused', { method: req.method, path: (req.url ?? '').split('?')[0], peer });
 	res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });

@@ -56,6 +56,33 @@ function raw(path: string, method = 'GET'): Promise<{ status: number; body: stri
 	});
 }
 
+/** The headers every answer under /demo carries, whoever wrote it. */
+function expectDemoHeaders(what: string, headers: { get(name: string): string | null }) {
+	const policy = headers.get('content-security-policy') ?? '';
+	expect({ what, sandboxed: policy.startsWith('sandbox allow-scripts allow-popups;'), sameOrigin: policy.includes('allow-same-origin') }).toEqual({ what, sandboxed: true, sameOrigin: false });
+	expect({ what, cache: headers.get('cache-control'), referrer: headers.get('referrer-policy') }).toEqual({ what, cache: 'no-store', referrer: 'no-referrer' });
+}
+
+test('every answer under /demo carries the demo headers: the login redirect, 404, 308 and framework errors', async () => {
+	const cases: [string, string, RequestInit & { cookie?: string }, number][] = [
+		['logged out', '/demo/d1/', {}, 303],
+		['logged out, from another site', '/demo/d1/', { headers: { 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'cross-site' } }, 200],
+		['logged out, bare /demo', '/demo', {}, 303],
+		['missing', '/demo/nope/', { cookie }, 404],
+		['no slash', '/demo/d1', { cookie }, 308],
+		['bad escape', '/demo/nope/%FF', { cookie }, 400],
+		['POST', '/demo/d1/', { cookie, method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }, 405],
+		['OPTIONS', '/demo/d1/', { cookie, method: 'OPTIONS' }, 405]
+	];
+	for (const [what, path, init, status] of cases) {
+		const response = await fixture.fetch(path, init);
+		expect({ what, status: response.status }).toEqual({ what, status });
+		expectDemoHeaders(what, response.headers);
+	}
+	// The rest of the board keeps its own headers.
+	expect((await fixture.fetch('/', { cookie })).headers.get('referrer-policy')).toBe('same-origin');
+});
+
 test('logged out, a demo page goes to the login screen and shows nothing', async () => {
 	const response = await fixture.fetch('/demo/d1/');
 	expect(response.status).toBe(303);

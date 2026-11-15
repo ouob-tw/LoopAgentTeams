@@ -5,15 +5,23 @@ export const CONTENT_POLICY = "frame-ancestors 'none'; object-src 'none'; base-u
 /** Over HTTPS only: browsers then refuse plain http to this host name for a year. */
 export const HSTS = 'max-age=31536000';
 
+/** Every answer under /demo (demo.ts), whoever writes it: the page, a 404, the login redirect, a
+ *  framework error. Agent-written HTML runs sandboxed without `allow-same-origin`, as an origin of
+ *  its own; scripts and the switch bar run, and links may open windows, which stay sandboxed. */
+export const DEMO_POLICY = 'sandbox allow-scripts allow-popups';
+export const isDemoPath = (path: string) => path === '/demo' || path.startsWith('/demo/');
+
 /** The security headers for one answer; a content policy the answer already has (an attached
- *  file's sandbox) is kept in front of the board's own, and an answer that sends no referrer at all
- *  (a demo page) keeps that. */
-export function securityHeaders(https: boolean, ownPolicy: string | null = null, ownReferrer: string | null = null): [string, string][] {
+ *  file's sandbox) is kept in front of the board's own. An answer under /demo gets the demo
+ *  sandbox in its place, is not stored and sends no referrer. */
+export function securityHeaders(https: boolean, ownPolicy: string | null = null, demo = false): [string, string][] {
+	const policy = demo ? DEMO_POLICY : ownPolicy;
 	return [
-		['content-security-policy', ownPolicy ? `${ownPolicy}; ${CONTENT_POLICY}` : CONTENT_POLICY],
+		['content-security-policy', policy ? `${policy}; ${CONTENT_POLICY}` : CONTENT_POLICY],
 		['x-frame-options', 'DENY'],
 		['x-content-type-options', 'nosniff'],
-		['referrer-policy', ownReferrer === 'no-referrer' ? ownReferrer : 'same-origin'],
+		['referrer-policy', demo ? 'no-referrer' : 'same-origin'],
+		...(demo ? [['cache-control', 'no-store'] as [string, string]] : []),
 		...(https ? [['strict-transport-security', HSTS] as [string, string]] : [])
 	];
 }

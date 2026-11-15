@@ -1,7 +1,8 @@
 // Demo pages published by the ui-choice-demo skill (`demo.py publish`), served read-only under
-// `/demo/<name>/…` behind the board's login. The pages are HTML an agent wrote, so every answer is
-// sandboxed without `allow-same-origin`: the page runs as an origin of its own, which gets no board
-// cookie and cannot read any board answer.
+// `/demo/<name>/…` behind the board's login. The pages are HTML an agent wrote, so every answer
+// under /demo is sandboxed without `allow-same-origin` (security-headers.ts, set for the path by
+// hooks.server.ts and the connection guard): the page runs as an origin of its own, which gets no
+// board cookie and cannot read any board answer.
 import type { Cookies } from '@sveltejs/kit';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
@@ -12,9 +13,6 @@ import { findDeviceById, type Device } from './devices.ts';
 
 /** The same names `demo.py publish` accepts. */
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-
-/** Scripts and the switch bar run; links may open new windows, which stay sandboxed too. */
-export const DEMO_POLICY = 'sandbox allow-scripts allow-popups';
 
 const TYPES: Record<string, string> = {
 	html: 'text/html; charset=utf-8',
@@ -44,14 +42,7 @@ const TYPES: Record<string, string> = {
 	wasm: 'application/wasm'
 };
 
-const HEADERS = {
-	'content-security-policy': DEMO_POLICY,
-	'cache-control': 'no-store',
-	'referrer-policy': 'no-referrer',
-	'x-content-type-options': 'nosniff'
-};
-
-const missing = () => new Response('not found', { status: 404, headers: { ...HEADERS, 'content-type': 'text/plain; charset=utf-8' } });
+const missing = () => new Response('not found', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
 
 /** The type a file is served as, by its extension; unknown ones download as bytes. */
 export function demoType(file: string): string {
@@ -90,10 +81,10 @@ export async function serveDemo(siteDir: string, rest: string, search: string): 
 		const root = realpathSync(siteDir);
 		const own = realpathSync(join(root, name));
 		if (!own.startsWith(root + sep) || !statSync(own).isDirectory()) return missing();
-		if (!inside.length) return new Response(null, { status: 308, headers: { ...HEADERS, location: `/demo/${name}/${search}` } });
+		if (!inside.length) return new Response(null, { status: 308, headers: { location: `/demo/${name}/${search}` } });
 		const file = realpathSync(join(own, ...inside));
 		if (!file.startsWith(own + sep) || !statSync(file).isFile()) return missing();
-		return new Response(await readFile(file), { headers: { ...HEADERS, 'content-type': demoType(file) } });
+		return new Response(await readFile(file), { headers: { 'content-type': demoType(file) } });
 	} catch {
 		return missing();
 	}
