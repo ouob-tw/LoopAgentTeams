@@ -1141,6 +1141,18 @@
 	.detail:focus {
 		outline: none;
 	}
+	/* The conversation's column keeps its scrollbar's place: while a new conversation reads, the one
+	   "讀取中…" line is shorter than the window and the scrollbar would go, then come back. A 終端
+	   分頁 (screen-open) takes the column's full width, so it keeps none. */
+	.page:not(.screen-open) .detail {
+		scrollbar-gutter: stable;
+	}
+	/* The reserved gutter takes the right padding's room, so the column keeps the width it had (the seven tabs fit at 1280). */
+	@media (min-width: 761px) {
+		.page:not(.screen-open) .detail {
+			padding-right: 0.25rem;
+		}
+	}
 	/* A 終端分頁 shown: its panel takes all the column's height down to the command line and all its
 	   width. A status card opened above it scrolls the column, the panel keeping a usable height. */
 	.screen-open .detail {
@@ -1407,6 +1419,10 @@
 		.viewing .roster,
 		.viewing .inbox {
 			display: none;
+		}
+		/* A narrow window with a classic scrollbar: the page scrolls, not the column, so the page keeps the place (a phone's overlay bar takes none). */
+		:global(html:has(.page:not(.screen-open) .viewing)) {
+			scrollbar-gutter: stable;
 		}
 		.viewing .detail {
 			display: flex;
