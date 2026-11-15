@@ -900,12 +900,24 @@ class CrossRepoTests(NoticeCase):
                 self.assertEqual(report.returncode, 0, report.stderr)
                 self.assertIn(f'merge dev abc123（動作在 {self.other}）：succeeded', report.stdout)
 
-    def test_a_push_in_another_repo_still_asks_because_the_round_ledger_is_not_there(self):
+    def test_a_push_in_another_repo_uses_that_repos_ledgers_not_this_ones(self):
         self.write(self.other / '.lat' / 'preauth.toml',
                    '[actions.push]\nallow = true\nbranches = ["dev"]\n')
-        verdict = self.check('push', '--branch', 'dev', '--workspace', str(self.other))
-        self.assertEqual(verdict['verdict'], 'ask')
-        self.assertIn('no active round ledger', ' '.join(verdict['reasons']))
+        git(self.other, 'commit', '-q', '--allow-empty', '-m', 'feat: b work (#77)')
+        with self.subTest('B has no ledger with the ticket'):
+            self.write(self.repo / '.lat' / 'ledgers' / 'a-r1.json',
+                       json.dumps({'items': [{'ticket': '#77'}]}))
+            verdict = self.check('push', '--branch', 'dev', '--workspace', str(self.other))
+            self.assertEqual(verdict['verdict'], 'ask')
+            self.assertIn('a ticket on no LAT ledger in this repo', ' '.join(verdict['reasons']))
+            self.assertNotIn('no active round ledger', ' '.join(verdict['reasons']))
+        with self.subTest('B has a ledger with the ticket'):
+            self.write(self.other / '.lat' / 'ledgers' / 'b-r1.json',
+                       json.dumps({'items': [{'ticket': '#77'}]}))
+            [reason] = self.check('push', '--branch', 'dev',
+                                  '--workspace', str(self.other))['reasons']
+            self.assertIn('"first" (no ticket)', reason)
+            self.assertNotIn('b work', reason)
 
     def test_identity_comes_from_the_controller_and_recipients_cover_both_repos(self):
         self.other_sessions(('kela', 'active'))
@@ -1104,7 +1116,8 @@ class InstallHostGateTests(PreauthCase):
 
 
 class PushTests(PreauthCase):
-    """Push: listed branch, every full suite passed, unpushed commits only of this round."""
+    """Push: listed branch, every full suite passed, unpushed commits only of tickets on a
+    ledger of this repo."""
 
     def setUp(self):
         super().setUp()
@@ -1130,7 +1143,8 @@ class PushTests(PreauthCase):
             result = self.check('push', '--branch', 'dev')
             self.assertEqual(result['verdict'], 'allow', result['reasons'])
             self.assertFalse(any('full suite' in line for line in result['basis']))
-            self.assertTrue(any('references only tickets' in line for line in result['basis']))
+            self.assertTrue(any('references a ticket on a LAT ledger' in line
+                                for line in result['basis']))
         with self.subTest('dev still asks for a ticket-less commit'):
             self.commit('chore: no ticket', 'c.txt')
             reasons = self.check('push', '--branch', 'dev')['reasons']
@@ -1150,8 +1164,8 @@ class PushTests(PreauthCase):
         self.assertIn('allow push main — basis: ', result.stdout)
         self.assertEqual(len(result.stdout.splitlines()), 1)
         self.assertNotIn('next_steps', self.check('push', '--branch', 'main'))
-        self.assertIn(f'every unpushed commit of {sha[:12]} references only tickets of the '
-                      'round ledger', result.stdout)
+        self.assertIn(f'every unpushed commit of {sha[:12]} references a ticket on a LAT '
+                      'ledger of this repo', result.stdout)
         self.assertIn(f'every registered full suite passed for {sha[:12]}', result.stdout)
 
     def test_missing_failed_or_stale_gate_records_ask_and_name_the_suite(self):
@@ -1198,7 +1212,7 @@ class PushTests(PreauthCase):
         reasons = self.check('push', '--branch', 'main')['reasons']
         self.assertEqual(len(reasons), 1, reasons)
         self.assertTrue(reasons[0].startswith(
-            "unpushed commits outside this round's tickets (#313, ouob-tw/loopagentteams-work#314): "),
+            'unpushed commits with no ticket, or a ticket on no LAT ledger in this repo: '),
             reasons[0])
         self.assertIn(f'{bare[:12]} "chore: tidy" (no ticket)', reasons[0])
         self.assertIn(f'{other[:12]} "feat: theirs (#999)" (#999)', reasons[0])
@@ -1311,12 +1325,19 @@ class PushTests(PreauthCase):
         self.gate_record()
         self.assertEqual(self.check('push', '--branch', 'main')['verdict'], 'allow')
 
-    def test_without_a_round_ledger_push_asks(self):
+    def test_without_an_active_round_ledger_the_repo_ledgers_decide(self):
         self.commit('feat(lat): mine (#313)')
         self.gate_record()
         self.session(status='ended')
-        self.assertIn('no active round ledger to tell whose tickets the unpushed commits '
-                      'belong to', self.check('push', '--branch', 'main')['reasons'])
+        result = self.check('push', '--branch', 'main')
+        self.assertEqual(result['verdict'], 'allow', result['reasons'])
+        self.assertIn('#313 on round.json', ' '.join(result['basis']))
+        with self.subTest('a ticket on no ledger still asks'):
+            self.commit('feat: nowhere (#999)', 'c.txt')
+            self.gate_record()
+            reasons = self.check('push', '--branch', 'main')['reasons']
+            self.assertEqual(len(reasons), 1, reasons)
+            self.assertIn('a ticket on no LAT ledger in this repo', reasons[0])
 
     def test_unresolvable_version_and_missing_registry_ask(self):
         self.assertIn('cannot resolve the version to push (`nope`)',
@@ -3215,6 +3236,19 @@ class HoldTests(WriteCase):
         self.assertIn(f'{self.held[:12]} (decision HOLD-1)', reason)
         self.assertEqual(verdict['reason_kinds'], ['condition'])
 
+    def test_a_held_commit_of_another_ledgers_ticket_still_asks(self):
+        self.write(self.repo / '.lat' / 'ledgers' / 'other-r2.json',
+                   json.dumps({'items': [{'ticket': '#500'}]}))
+        theirs = self.commit('feat: theirs (#500)', 'c.txt')
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+        self.add(theirs)
+        verdict = self.check('push', '--branch', 'dev')
+        self.assertEqual(verdict['verdict'], 'ask')
+        [reason] = verdict['reasons']
+        self.assertIn('held commits', reason)
+        self.assertIn(f'{theirs[:12]} (decision HOLD-1)', reason)
+        self.assertEqual(verdict['reason_kinds'], ['condition'])
+
     def test_a_held_commit_the_remote_already_has_is_not_in_the_range(self):
         self.add()
         git(self.repo, 'push', '-q', 'origin', 'dev')
@@ -3341,9 +3375,8 @@ class HoldTests(WriteCase):
         self.assertEqual(self.push(hooks).returncode, 0)
 
 
-class EarlierRoundHintTests(PreauthCase):
-    """Push asks for tickets not on the round ledger; ones on the same session's earlier round
-    ledger get that ledger named."""
+class RepoLedgerTicketTests(PreauthCase):
+    """A push passes a ticket that is on any work ledger of this repo, not only this round's."""
 
     def setUp(self):
         super().setUp()
@@ -3352,26 +3385,57 @@ class EarlierRoundHintTests(PreauthCase):
         git(self.repo, 'remote', 'add', 'origin', str(remote))
         git(self.repo, 'push', '-q', 'origin', 'dev')
         self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["dev"]\n')
-        self.earlier = self.repo / '.lat' / 'ledgers' / 'earlier.json'
-        self.write(self.earlier, json.dumps({'items': [{'ticket': '#500'}]}))
-        self.session(history=0)
-        record = json.loads((self.sessions / f'{SESSION}.json').read_text())
-        record['history'] = [{'status': 'finished', 'ledger_path': str(self.earlier)}]
-        self.write(self.sessions / f'{SESSION}.json', json.dumps(record))
+        self.session()
+        self.ledgers = self.repo / '.lat' / 'ledgers'
 
-    def test_ticket_on_the_earlier_round_ledger_names_that_ledger(self):
-        sha = self.commit('feat: carried over (#500)')
-        self.assertEqual(self.check('push', '--branch', 'dev')['reasons'], [
-            f"unpushed commits outside this round's tickets (#313): {sha[:12]} "
-            f'"feat: carried over (#500)" (#500); on the same session\'s earlier round ledger '
-            f'{self.earlier}: #500'])
+    def other(self, name, *tickets):
+        self.write(self.ledgers / name, json.dumps({'items': [{'ticket': t} for t in tickets]}))
 
-    def test_ticket_on_neither_ledger_keeps_the_reason(self):
-        sha = self.commit('feat: elsewhere (#999)')
-        self.assertEqual(self.check('push', '--branch', 'dev')['reasons'], [
-            f"unpushed commits outside this round's tickets (#313): {sha[:12]} "
-            '"feat: elsewhere (#999)" (#999)'])
+    def test_own_and_another_sessions_ticket_allow_and_the_basis_names_the_ledger(self):
+        self.other('other-r2.json', '#500')
+        self.commit('feat: mine (#313)')
+        self.commit('feat: theirs (#500)', 'c.txt')
+        result = self.check('push', '--branch', 'dev')
+        self.assertEqual(result['verdict'], 'allow', result['reasons'])
+        basis = ' '.join(result['basis'])
+        self.assertIn('#500 on other-r2.json', basis)
+        self.assertNotIn('#313 on', basis)
 
+    def test_a_ticket_only_on_an_ended_controllers_ledger_allows(self):
+        self.write(self.ledgers / 'gone-r1.json', json.dumps(
+            {'items': [{'ticket': 'ouob-tw/LoopAgentTeams-work#600'}], 'status': 'ended'}))
+        self.commit('feat: old (ouob-tw/LoopAgentTeams-work#600)')
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+
+    def test_a_ticket_on_no_ledger_asks_and_says_so(self):
+        self.other('other-r2.json', '#500')
+        self.commit('feat: theirs (#500)')
+        sha = self.commit('feat: nowhere (#999)', 'c.txt')
+        reasons = self.check('push', '--branch', 'dev')['reasons']
+        self.assertEqual(reasons, [
+            'unpushed commits with no ticket, or a ticket on no LAT ledger in this repo: '
+            f'{sha[:12]} "feat: nowhere (#999)" (#999)'])
+
+    def test_a_ticketless_commit_still_asks(self):
+        self.other('other-r2.json', '#500')
+        sha = self.commit('chore: by hand')
+        reasons = self.check('push', '--branch', 'dev')['reasons']
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertIn(f'{sha[:12]} "chore: by hand" (no ticket)', reasons[0])
+
+    def test_a_bad_ledger_file_is_skipped(self):
+        self.write(self.ledgers / 'bad.json', '{not json')
+        self.write(self.ledgers / 'list.json', '[1]')
+        self.other('other-r2.json', '#500')
+        self.commit('feat: theirs (#500)')
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+
+    def test_another_repos_ticket_with_the_same_number_is_not_matched(self):
+        self.other('other-r2.json', 'ouob-tw/LoopAgentTeams-work#500')
+        sha = self.commit('feat: theirs (someone/else#500)')
+        reasons = self.check('push', '--branch', 'dev')['reasons']
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertIn(f'{sha[:12]} "feat: theirs (someone/else#500)"', reasons[0])
 
 
 class TinyMergeTests(PreauthCase):

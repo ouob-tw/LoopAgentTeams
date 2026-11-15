@@ -61,7 +61,7 @@ p report --controller-workspace <A>
 - `notice` 的預設收件人是 A 與 B 其他進行中的主控：動作影響 B，A 的主控也需要知道主控在做什麼。
 - `check` 沒有這個選項，只看 B：
   - 設定取 B 的專案層與全域層。
-  - 本輪工作總表在 A，`check` 找不到，所以 `push` 一律 `ask`（`no active round ledger`），要照「使用者待決事項」提問，答覆後以 `do --question <待決 ID>` 推送；部署與 `install-host` 的整合分支只取設定的 `integration_branch`。
+  - 工作總表取 B 的主工作區 `.lat/ledgers/*.json`，不看 A 的；`push` 的票號歸屬因此照 B 的總表判斷（見下方 `push` 條件）。部署與 `install-host` 的整合分支只取設定的 `integration_branch`，因為本輪總表在 A，`check` 找不到。
 - 待決紀錄的 `- action:` 重查（見 [接上提問](#接上提問)）在主控工作區 A 執行，結果可能與 `check --workspace <B>` 不同；B 的動作以 `check --workspace <B>` 為準，不要只憑重查的結論動手。
 
 ## 兩層與合併
@@ -126,7 +126,7 @@ source = "<待決紀錄 ID>"
 
 - `merge`、`push`：要給 `--branch`，且分支在有效的 `branches` 清單內；沒有任何層寫 `branches` 就 `ask`。
 - `push` 另核對兩件事，要推的版本是 `--commit`，沒給就是該分支的本地最新版本：
-  - 遠端沒有的提交（`git log <版本> --not --remotes`，不會先 fetch）每一個的提交訊息都要引用票號（`#313` 或 `owner/repo#313`），而且引用的票號全部是本輪工作總表上的票。票號相同才算同一張票；兩邊都寫了 repo 時 repo 也要相同，總表只寫數字的票代表本專案自己的 tracker（`docs/agents/issue-tracker.md` 裡 `gh issue` 指令帶的那一個 `-R owner/repo`，`gh pr` 指令的不算；檔案不在、沒寫或寫了不只一個就當認不出），帶 repo 的引用接受本專案 tracker 與總表其他票寫過的 repo（總表全是數字就只比數字）。沒有票號、或引用了總表以外的票時 `ask`，原因列出全部那些提交；找不到本輪工作總表也 `ask`。同步用的合併提交（例如 `git merge dev` 產生的 `Merge branch …`）不需要票號：每個 parent 不是遠端已有、就是範圍內已通過檢查的提交，且至少一個是後者；併進沒檢查過的分支，或所有 parent 都在遠端時照舊列出。
+  - 遠端沒有的提交（`git log <版本> --not --remotes`，不會先 fetch）每一個的提交訊息都要引用票號（`#313` 或 `owner/repo#313`），而且引用的票號全部在本 repo 主工作區 `.lat/ledgers/*.json` 任一份工作總表上（任何 session、任何一輪，進行中或已結束都算；本主控沒有進行中的本輪總表也照常判斷）。票號相同才算同一張票；兩邊都寫了 repo 時 repo 也要相同，總表只寫數字的票代表本專案自己的 tracker（`docs/agents/issue-tracker.md` 裡 `gh issue` 指令帶的那一個 `-R owner/repo`，`gh pr` 指令的不算；檔案不在、沒寫或寫了不只一個就當認不出），帶 repo 的引用接受本專案 tracker 與該份總表其他票寫過的 repo（該份總表全是數字就只比數字）。沒有票號、或引用的票不在任何一份總表上時 `ask`，原因以 `unpushed commits with no ticket, or a ticket on no LAT ledger in this repo` 開頭，列出全部那些提交（沒票號的標 `(no ticket)`）。通過時 `basis` 寫明不在本輪總表、而在別份總表上找到的票號，例如 `#625, #629 on <總表檔名>`。同步用的合併提交（例如 `git merge dev` 產生的 `Merge branch …`）不需要票號：每個 parent 不是遠端已有、就是範圍內已通過檢查的提交，且至少一個是後者；併進沒檢查過的分支，或所有 parent 都在遠端時照舊列出。使用者明說不推的提交靠[保留不推送](#保留不推送的提交)擋，不靠票號歸屬。
   - 整套測試閘門：僅推送 `main` 時查，見下方。
   - 範圍內（同上，遠端沒有的提交）有[保留中的提交](#保留不推送的提交)就 `ask`。
 - `deploy-test`、`deploy-prod`、`install-host`：在主工作區執行，且 HEAD 等於整合分支的最新版本；給了 `--commit` 時必須就是 HEAD。整合分支取本輪工作總表的 `integration_branch`，總表沒寫（例如 `activate` 建立的總表）才取設定的 `integration_branch`，兩者都沒有就 `ask`。`deploy-test` 另要求專案層寫了 `target`。
@@ -230,7 +230,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" report
 
 ## 接上提問
 
-要問的是上面五種動作之一時，待決紀錄加一行 `- action: <動作> [分支] [版本]`：`merge`、`push` 先寫分支再寫版本，例如 `- action: push dev`；其他三種沒有分支，第二個字就是版本，例如 `- action: deploy-test` 或 `- action: install-host 1a2b3c4`。版本可省略，意思同 `check` 不給 `--commit`。
+要問的是上面五種動作之一時，待決紀錄加一行 `- action: <動作> [分支] [版本]`：`merge`、`push` 先寫分支再寫版本，例如 `- action: push dev`；其他三種沒有分支，第二個字就是版本，例如 `- action: deploy-test` 或 `- action: install-host 1a2b3c4`。版本可省略，意思同 `check` 不給 `--commit`。 `merge`、`push` 沒寫分支時，`question ask` 拒絕、不改任何檔，並印出正確寫法 `- action: push <分支> [版本]`，因為少了分支一定查不出結果。
 
 面板寫題（`question ask`）與回合結束的 DECIDE／HELP 檢查遇到有 `- action:` 的紀錄，一律依當下設定與當下時間重跑 `check`，不採用紀錄裡先前寫的結論：
 
