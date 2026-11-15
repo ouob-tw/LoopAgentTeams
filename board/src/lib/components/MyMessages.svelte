@@ -125,7 +125,8 @@
 		onpick(seq);
 	}
 	function keys(event: KeyboardEvent) {
-		if (event.key === 'Escape') open = false;
+		// Not while the grip is held: its button would go with the list and the drag could not end.
+		if (event.key === 'Escape' && !grab) open = false;
 	}
 	// Open at the very edge; once open, stay open while the mouse is within the list plus a margin
 	// (the list touches the edge or the scrollbar, so there is no gap to fall through; over the scrollbar is inside too): nothing flickers.
@@ -242,6 +243,8 @@
 			onpointermove={gripMove}
 			onpointerup={gripUp}
 			onpointercancel={gripUp}
+			onlostpointercapture={gripUp}
+			tabindex={-1}
 			onmousedown={(event) => event.preventDefault()}
 			oncontextmenu={(event) => event.preventDefault()}
 		><GripVertical size="1.5em" aria-hidden="true" /></button>

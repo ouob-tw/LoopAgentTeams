@@ -534,6 +534,20 @@ test.skipIf(!CHROME)('1280px: the grip drags bar and list together at once, with
 	expect(tab.errors).toEqual([]);
 }, 60_000);
 
+test.skipIf(!CHROME)('1280px: Escape while the grip is held does not stop the drag from ending, and the bar still opens the list afterwards', async () => {
+	await visit(1280);
+	await dragBar(250, { release: false });
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+	expect(await tab.eval(SHOWN)).toBe(true);
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1230, y: 250, button: 'left', clickCount: 1 });
+	expect(await stored()).not.toBeNull();
+	await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+	await tab.until(`!(${SHOWN})`, 'the list closed by Escape');
+	await openByEdge();
+	expect(tab.errors).toEqual([]);
+}, 30_000);
+
 test.skipIf(!CHROME)('1280px: the bar held for a second drags nothing and the list still opens over it', async () => {
 	await visit(1280);
 	const bar = await barBox();
