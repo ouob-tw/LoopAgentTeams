@@ -102,6 +102,9 @@ test.skipIf(!CHROME)('wide: from the roster, a report on screen 6 s is read with
 	const rows = await tab.eval<number>(`document.querySelectorAll('.inbox .row').length`);
 	await tab.eval(`[...document.querySelectorAll('nav.roster button')].find((b) => b.innerText.includes('@nova')).click()`);
 	await tab.until(`!!${line(LOW)} && !!${line(TOP)}`, 'the conversation');
+	// Not read before its 6 s are up.
+	await sleep(SEEN * 0.3);
+	expect(await readAt(TOP)).toBeNull();
 	const at = await tab.eval<number>(SCROLLED);
 	const lowTop = await tab.eval<number>(`Math.round(${line(LOW)}.getBoundingClientRect().top)`);
 

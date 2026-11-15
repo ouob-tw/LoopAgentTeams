@@ -8,8 +8,8 @@
 	// message that asked questions still in the inbox, or answered ones, shows their cards in its
 	// place; a message whose questions the board has no data for stays text. Given a report card, a
 	// DONE report of the inbox shows its card in place of its text. An unread report seen for 6 s is
-	// handed to `onseen` (see seen-reports.ts). Board asks show where they were asked. With 中文 picked above it, the English replies shown are translated, each with its
-	// original a click away. Beside it, 「我說過的話」 lists what the user said in the whole
+	// handed to `onseen` (see seen-reports.ts). Board asks show where they were asked. With 中文
+	// picked above it, the English replies shown are translated, each with its original a click away. Beside it, 「我說過的話」 lists what the user said in the whole
 	// conversation; a pick scrolls to that message and marks it for a moment, loading earlier
 	// parts first when it is not there yet.
 	import { lastSegment } from '#lib/board/agents.ts';
@@ -694,22 +694,22 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 
 	// The unread reports shown are watched while they are, each as the element it is now.
 	const seeing = $derived(!!onseen);
-	let seen = $state.raw<ReturnType<typeof watchSeen> | null>(null);
+	let seenWatch = $state.raw<ReturnType<typeof watchSeen> | null>(null);
 	$effect(() => {
 		if (!seeing) return;
 		const watcher = watchSeen((key) => onseen?.(key));
-		seen = watcher;
+		seenWatch = watcher;
 		return () => {
 			watcher.stop();
-			seen = null;
+			seenWatch = null;
 		};
 	});
 	$effect(() => {
 		void shown;
 		void reported;
-		if (!seen || !list) return;
+		if (!seenWatch || !list) return;
 		const elements = [...list.querySelectorAll<HTMLElement>('[data-report-key]')];
-		seen.sync(elements.map((element) => ({ key: element.dataset.reportKey!, element, unread: element.dataset.unread === 'true' })));
+		seenWatch.sync(elements.map((element) => ({ key: element.dataset.reportKey!, element, unread: element.dataset.unread === 'true' })));
 	});
 
 	// Watched again after every load, so an end that is still in view loads the next part. After a
@@ -779,7 +779,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 						{#if index > 0}
 							<li class="guide"><ArrowUp size="1em" />較新的訊息</li>
 						{/if}
-						<li class="placed" data-seq={segment.seq ?? undefined}>
+						<!-- The opened report is watched too: marked unread on it, it counts again only after leaving the screen. -->
+						{@const placedReport = segment.seq === null ? undefined : reported.get(segment.seq)}
+						<li class="placed" data-seq={segment.seq ?? undefined} data-report-key={placedReport?.key} data-unread={placedReport ? placedReport.readAt === null && !placedReport.archived : undefined}>
 							{#if questionCards && placedQuestions.length}
 								{#snippet placedNote()}{@render askingNoteFold(segment.seq!)}{/snippet}
 								{@render questionCards(placedQuestions, segment.seq !== null && askingNotes.has(segment.seq) ? placedNote : undefined)}
