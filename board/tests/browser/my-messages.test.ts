@@ -408,12 +408,24 @@ test.skipIf(!CHROME)('390px: a touch outside the open list closes it', async () 
 }, 30_000);
 
 test.skipIf(!CHROME)('1280px: the conversation is read once on load for the bar, and a closed or open list stops reading while nothing changes', async () => {
+	const start = fixture.helperArgs('transcript').length;
 	await visit(1280);
 	await sleep(1_000);
 	const before = fixture.helperArgs('transcript').length;
 	expect(before).toBeGreaterThan(0);
 	await sleep(1_500);
 	expect(fixture.helperArgs('transcript').length).toBe(before);
+	// Closed, only the newest part was read: no request for an older one, though the conversation has more.
+	expect(fixture.helperArgs('transcript').slice(start, before).some((args) => args.some((arg) => arg.startsWith('--before')))).toBe(false);
+	// The bar is full already: a new message while closed asks the server for no more of the list.
+	const mine = () => tab.eval<string[]>(`performance.getEntriesByType('resource').map((entry) => entry.name).filter((name) => name.includes('/transcript/mine'))`);
+	const asked = await mine();
+	expect(asked.length).toBeGreaterThan(0);
+	expect(asked.every((name) => name.includes('newest=1'))).toBe(true);
+	appendFileSync(join(fixture.dir, 'transcripts', `${luna.session_id}.jsonl`), line('user', '又說了一句'));
+	await sleep(2_500);
+	expect(await mine()).toEqual(asked);
+	recordOf(luna.session_id, conversation(130));
 	await openByEdge();
 	await tab.until(`document.querySelectorAll('${ROWS}').length === 130`, 'the list');
 	await sleep(1_000);

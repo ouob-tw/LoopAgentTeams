@@ -47,6 +47,8 @@
 	const BAR_MAX = 110;
 	const BAR_MIN = 44;
 	const BAR_PAD = 7;
+	/** How many dots fit on the tallest bar: a count this big needs no more reading while the list is closed. */
+	const FIT = Math.floor((BAR_MAX - 2 * BAR_PAD) / PITCH);
 	const BAR_KEY = 'lat-board-my-messages-bar';
 	/** How far around the open list the mouse may stray without closing it, in px. */
 	const MARGIN = 24;
@@ -74,14 +76,17 @@
 
 	let messages = $state<MyMessage[] | null>(null);
 	let problem = $state<string | null>(null);
-	const dotsH = $derived(Math.min(messages?.length ?? 0, Math.floor((BAR_MAX - 2 * BAR_PAD) / PITCH)) * PITCH);
+	const dotsH = $derived(Math.min(messages?.length ?? 0, FIT) * PITCH);
 	const height = $derived(Math.min(BAR_MAX, Math.max(BAR_MIN, dotsH + 2 * BAR_PAD)));
 	let reads = 0;
 	const request = createRequest();
 
+	/** What the last read left out: the older parts, which only an open list needs. */
+	let partial = false;
 	async function read(forId: string) {
 		const mine = ++reads;
-		const path = feed === 'agent' ? `/api/agents/transcript/mine?session=${encodeURIComponent(forId)}` : `/api/transcript/mine?controller=${encodeURIComponent(forId)}`;
+		// Closed, only the newest part is read: the bar needs a count, not all of it.
+		const path = (feed === 'agent' ? `/api/agents/transcript/mine?session=${encodeURIComponent(forId)}` : `/api/transcript/mine?controller=${encodeURIComponent(forId)}`) + (open ? '' : '&newest=1');
 		const result = await request<MyMessagesUpdate>(path);
 		if (mine !== reads) return;
 		if (!result.ok) {
@@ -89,8 +94,9 @@
 		} else if (result.value.ok) {
 			messages = result.value.messages;
 			problem = null;
-			// The older part of a long conversation is still being read: asked again shortly.
-			if (!result.value.complete) {
+			partial = !result.value.complete;
+			// The older part of a long conversation is still being read: asked again shortly, while the list is open.
+			if (!result.value.complete && open) {
 				await new Promise((resolve) => setTimeout(resolve, MORE_MS));
 				if (mine === reads) void read(forId);
 			}
@@ -110,10 +116,12 @@
 
 	let readFor: string | undefined;
 	// Read on load, shown or not (the bar's dots count the messages), and again after each change of the
-	// conversation, a moment later so a burst is one read.
+	// conversation, a moment later so a burst is one read. Closed, only the newest part is read, and not
+	// at all once the count fills the bar (it only grows); opened, the rest is read.
 	$effect(() => {
 		const forId = id;
 		void version;
+		const shown = open;
 		// Not tracked: the read itself sets them.
 		const first = untrack(() => {
 			if (readFor !== forId) {
@@ -121,8 +129,9 @@
 				messages = null;
 				problem = null;
 			}
-			return messages === null;
+			return messages === null || (shown && partial);
 		});
+		if (!shown && untrack(() => messages !== null && messages.length >= FIT)) return;
 		const timer = setTimeout(() => void read(forId), first ? 0 : 300);
 		return () => clearTimeout(timer);
 	});

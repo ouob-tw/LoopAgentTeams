@@ -22,6 +22,8 @@ interface Job {
 	/** Settles after the newest page, or sooner when it failed. */
 	started: Promise<void>;
 	finished: boolean;
+	/** Only the newest page was asked for: the rest is not read, and the answer is not complete. */
+	newest: boolean;
 }
 
 const seen = new Map<string, Seen>();
@@ -31,7 +33,7 @@ const failures = new Map<string, string>();
 
 /** The messages the user said in this conversation, newest first. One read per conversation at a
  *  time; callers that arrive meanwhile share it. */
-export async function readMyMessages(config: BoardConfig, client: string, sessionId: string): Promise<MyMessagesUpdate> {
+export async function readMyMessages(config: BoardConfig, client: string, sessionId: string, newest = false): Promise<MyMessagesUpdate> {
 	const key = `${config.helperCommand.join('\0')}\0${client}\0${sessionId}`;
 	const failed = failures.get(key);
 	if (failed !== undefined) {
@@ -39,7 +41,7 @@ export async function readMyMessages(config: BoardConfig, client: string, sessio
 		return { ok: false, reason: failed };
 	}
 	let job = jobs.get(key);
-	if (!job) job = start(config, client, sessionId, key);
+	if (!job) job = start(config, client, sessionId, key, newest);
 	await job.started;
 	return snapshot(job, seen.get(key));
 }
@@ -48,14 +50,14 @@ function snapshot(job: Job, before: Seen | undefined): MyMessagesUpdate {
 	if (job.failure !== null && job.messages.size === 0) return { ok: false, reason: job.failure };
 	const messages = new Map(job.messages);
 	// What an earlier read holds below where this one has got to stands in until it gets there.
-	if (!job.finished && before) for (const [seq, message] of before.messages) if (seq < job.lowest) messages.set(seq, message);
-	const complete = job.finished && job.failure === null;
+	if ((!job.finished || job.newest) && before) for (const [seq, message] of before.messages) if (seq < job.lowest) messages.set(seq, message);
+	const complete = job.finished && job.failure === null && !job.newest;
 	return { ok: true, messages: [...messages.values()].sort((a, b) => b.seq - a.seq), complete };
 }
 
-function start(config: BoardConfig, client: string, sessionId: string, key: string): Job {
+function start(config: BoardConfig, client: string, sessionId: string, key: string, newest: boolean): Job {
 	let began!: () => void;
-	const job: Job = { messages: new Map(), lowest: Infinity, failure: null, started: new Promise<void>((resolve) => (began = resolve)), finished: false };
+	const job: Job = { messages: new Map(), lowest: Infinity, failure: null, started: new Promise<void>((resolve) => (began = resolve)), finished: false, newest };
 	jobs.set(key, job);
 	const before = seen.get(key);
 	void (async () => {
@@ -74,6 +76,7 @@ function start(config: BoardConfig, client: string, sessionId: string, key: stri
 				const first = read.page.items[0]?.seq ?? read.page.before ?? 0;
 				job.lowest = first;
 				began();
+				if (newest && read.page.before !== null) return;
 				if (read.page.before === null) break;
 				// The page reaches what an earlier read already holds: the rest is the same.
 				if (before && first <= before.last) {
