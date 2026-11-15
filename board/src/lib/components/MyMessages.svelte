@@ -83,6 +83,9 @@
 
 	/** What the last read left out: the older parts, which only an open list needs. */
 	let partial = false;
+	/** The conversation changed while a closed list skipped reading it, or the conversation read last is not the one shown. */
+	let behind = false;
+	let readAt = -1;
 	async function read(forId: string) {
 		const mine = ++reads;
 		// Closed, only the newest part is read: the bar needs a count, not all of it.
@@ -98,7 +101,7 @@
 			// The older part of a long conversation is still being read: asked again shortly, while the list is open.
 			if (!result.value.complete && open) {
 				await new Promise((resolve) => setTimeout(resolve, MORE_MS));
-				if (mine === reads) void read(forId);
+				if (mine === reads && open) void read(forId);
 			}
 		} else problem = result.value.reason;
 	}
@@ -120,19 +123,32 @@
 	// at all once the count fills the bar (it only grows); opened, the rest is read.
 	$effect(() => {
 		const forId = id;
-		void version;
+		const now = version;
 		const shown = open;
 		// Not tracked: the read itself sets them.
-		const first = untrack(() => {
+		const state = untrack(() => {
 			if (readFor !== forId) {
 				readFor = forId;
 				messages = null;
 				problem = null;
+				partial = false;
+				behind = false;
 			}
-			return messages === null || (shown && partial);
+			return { none: messages === null, full: messages !== null && messages.length >= FIT };
 		});
-		if (!shown && untrack(() => messages !== null && messages.length >= FIT)) return;
-		const timer = setTimeout(() => void read(forId), first ? 0 : 300);
+		const urgent = state.none || (shown && (partial || behind));
+		// Opened with nothing new since the last read of all of it: nothing to ask.
+		if (shown && !urgent && now === readAt) return;
+		// Closed and the bar already full: the count only grows.
+		if (!shown && state.full) {
+			behind = behind || now !== readAt;
+			return;
+		}
+		const timer = setTimeout(() => {
+			readAt = now;
+			behind = false;
+			void read(forId);
+		}, urgent ? 0 : 300);
 		return () => clearTimeout(timer);
 	});
 	$effect(() => () => void reads++);

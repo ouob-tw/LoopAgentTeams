@@ -423,7 +423,8 @@ test.skipIf(!CHROME)('1280px: the conversation is read once on load for the bar,
 	expect(asked.length).toBeGreaterThan(0);
 	expect(asked.every((name) => name.includes('newest=1'))).toBe(true);
 	appendFileSync(join(fixture.dir, 'transcripts', `${luna.session_id}.jsonl`), line('user', '又說了一句'));
-	await sleep(2_500);
+	await tab.until(`document.querySelector('[data-block="transcript"]').innerText.includes('又說了一句')`, 'the new message in the conversation');
+	await sleep(1_500);
 	expect(await mine()).toEqual(asked);
 	recordOf(luna.session_id, conversation(130));
 	await openByEdge();
