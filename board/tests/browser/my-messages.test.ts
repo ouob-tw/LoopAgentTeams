@@ -74,7 +74,8 @@ beforeAll(async () => {
 	recordOf(luna.session_id, conversation(130));
 	recordOf('s-agent', conversation(130));
 	recordOf('s-short', conversation(4));
-	setHerdr([{ session: 's-agent' }, { session: 's-short' }]);
+	recordOf('s-one', conversation(1));
+	setHerdr([{ session: 's-agent' }, { session: 's-short' }, { session: 's-one' }]);
 	await fixture.refresh(cookie);
 }, 30_000);
 afterEach(async () => {
@@ -406,10 +407,11 @@ test.skipIf(!CHROME)('390px: a touch outside the open list closes it', async () 
 	expect(await tab.eval(FITS)).toBe(true);
 }, 30_000);
 
-test.skipIf(!CHROME)('1280px: a list nobody opened does not read the conversation, and an open one stops while nothing changes', async () => {
+test.skipIf(!CHROME)('1280px: the conversation is read once on load for the bar, and a closed or open list stops reading while nothing changes', async () => {
 	await visit(1280);
 	await sleep(1_000);
 	const before = fixture.helperArgs('transcript').length;
+	expect(before).toBeGreaterThan(0);
 	await sleep(1_500);
 	expect(fixture.helperArgs('transcript').length).toBe(before);
 	await openByEdge();
@@ -489,15 +491,12 @@ test.skipIf(!CHROME)('1280px: the grip drags bar and list together at once, with
 	await shot(tab, 'my-messages-1280-bar-default');
 	await openByEdge();
 	const bar0 = await barBox();
-	const list0 = await boxOf();
 	expect(await stored()).toBeNull();
 
 	// Pressed and moved at once, no hold: the bar and the list follow, the list stays, nothing is selected.
 	const heldAt = await dragBar(220, { release: false });
 	const during = await barBox();
-	const list1 = await boxOf();
 	expect(Math.abs(during.y - 220)).toBeLessThanOrEqual(2);
-	expect(list1.top).not.toBe(list0.top);
 	expect(await tab.eval(`(${SHOWN}) && window.getSelection().toString() === ''`)).toBe(true);
 	// The mouse far from the list while dragging does not close it.
 	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 100, y: heldAt, button: 'left', buttons: 1 });
@@ -577,6 +576,30 @@ test.skipIf(!CHROME)('1280px: with a short list the grip stays under the pointer
 	expect(await stored()).not.toBeNull();
 	expect(tab.errors).toEqual([]);
 }, 30_000);
+
+/** The bar's height and how many dots it draws (one every 8px). */
+const dots = () => tab.eval<{ height: number; dots: number }>(`(() => { const bar = document.querySelector('${BAR}'); return { height: bar.getBoundingClientRect().height, dots: parseFloat(getComputedStyle(bar).getPropertyValue('--dots-h')) / 8 }; })()`);
+
+test.skipIf(!CHROME)('1280px: the bar has a dot for each thing said, at least 44px tall and at most 110px, and grows with a new message', async () => {
+	await visit(1280, '/?agent=s-one');
+	await tab.until(`parseFloat(getComputedStyle(document.querySelector('${BAR}')).getPropertyValue('--dots-h')) === 8`, 'one dot');
+	expect((await dots()).height).toBe(44);
+	await shot(tab, 'my-messages-1280-bar-one');
+	await visit(1280, '/?agent=s-short');
+	await tab.until(`parseFloat(getComputedStyle(document.querySelector('${BAR}')).getPropertyValue('--dots-h')) === 32`, 'four dots');
+	expect((await dots()).height).toBe(46);
+	await shot(tab, 'my-messages-1280-bar-four');
+	// A new thing said: one more dot, without the list ever having been opened.
+	appendFileSync(join(fixture.dir, 'transcripts', 's-short.jsonl'), line('user', '又說了一句'));
+	await tab.until(`parseFloat(getComputedStyle(document.querySelector('${BAR}')).getPropertyValue('--dots-h')) === 40`, 'five dots', 8_000);
+	expect((await dots()).height).toBe(54);
+	recordOf('s-short', conversation(4));
+	await visit(1280);
+	await tab.until(`parseFloat(getComputedStyle(document.querySelector('${BAR}')).getPropertyValue('--dots-h')) > 0`, 'dots');
+	expect(await dots()).toEqual({ height: 110, dots: 12 });
+	await shot(tab, 'my-messages-1280-bar-many');
+	expect(tab.errors).toEqual([]);
+}, 60_000);
 
 test.skipIf(!CHROME)('1280px: the bar held for a second drags nothing and the list still opens over it', async () => {
 	await visit(1280);

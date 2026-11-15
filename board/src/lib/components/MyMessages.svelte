@@ -1,6 +1,7 @@
 <script lang="ts">
 	// 「我說過的話」: what the user said in the whole conversation, newest first. It never shows on
-	// its own: a mouse over the long upright bar at the window's right edge, or a tap on it, brings it up
+	// its own: a mouse over the upright bar at the window's right edge (a dot on it for each thing said, 44 to
+	// 110px tall), or a tap on it, brings it up
 	// flush right beside the bar, over nothing but the page; it goes away when the mouse leaves it,
 	// or on a pick or a touch outside. The grip at the right end of the list's title row drags the bar
 	// and the list together up and down the edge, from the moment it is pressed, with the list staying
@@ -41,6 +42,11 @@
 	const EDGE = 8;
 	/** How far a finger may wander during a tap on the bar before it is not a tap, in px. */
 	const WANDER = 10;
+	/** One dot per message, this far apart, in px; the bar is this tall at most and at least, and has this much room above and below its dots. */
+	const PITCH = 8;
+	const BAR_MAX = 110;
+	const BAR_MIN = 44;
+	const BAR_PAD = 7;
 	const BAR_KEY = 'lat-board-my-messages-bar';
 	/** How far around the open list the mouse may stray without closing it, in px. */
 	const MARGIN = 24;
@@ -68,6 +74,8 @@
 
 	let messages = $state<MyMessage[] | null>(null);
 	let problem = $state<string | null>(null);
+	const dotsH = $derived(Math.min(messages?.length ?? 0, Math.floor((BAR_MAX - 2 * BAR_PAD) / PITCH)) * PITCH);
+	const height = $derived(Math.min(BAR_MAX, Math.max(BAR_MIN, dotsH + 2 * BAR_PAD)));
 	let reads = 0;
 	const request = createRequest();
 
@@ -101,9 +109,9 @@
 	});
 
 	let readFor: string | undefined;
-	// Read when shown, and again after each change of the conversation, a moment later so a burst is one read.
+	// Read on load, shown or not (the bar's dots count the messages), and again after each change of the
+	// conversation, a moment later so a burst is one read.
 	$effect(() => {
-		if (!open) return;
 		const forId = id;
 		void version;
 		// Not tracked: the read itself sets them.
@@ -225,6 +233,8 @@
 	}}
 	class:dragging
 	style:right="{gap}px"
+	style:--bar-h="{height}px"
+	style:--dots-h="{dotsH}px"
 	style:top="clamp(var(--bar-h) / 2, {place * 100}%, 100% - var(--bar-h) / 2)"
 	data-block="my-messages-bar"
 	onpointerenter={enter}
@@ -313,6 +323,7 @@
 	.bar {
 		--bar-w: 12px;
 		--bar-h: 110px;
+		--dots-h: 0px;
 		position: fixed;
 		z-index: 41;
 		width: var(--bar-w);
@@ -324,7 +335,7 @@
 		-webkit-touch-callout: none;
 		touch-action: none;
 	}
-	/* The handle: 12px wide, rounded on the left, a dot grip to show it can be dragged. */
+	/* The handle: 12px wide, rounded on the left; its dots are one for each message. */
 	.bar::after {
 		content: '';
 		position: absolute;
@@ -335,9 +346,18 @@
 		border-right: 0;
 		border-radius: 6px 0 0 6px;
 		background-color: var(--surface);
+	}
+	/* One dot per message, centred on the handle. */
+	.bar::before {
+		content: '';
+		position: absolute;
+		z-index: 1;
+		right: 0;
+		width: 12px;
+		top: calc((var(--bar-h) - var(--dots-h)) / 2);
+		height: var(--dots-h);
 		background-image: radial-gradient(circle, var(--muted) 1.4px, transparent 1.6px);
 		background-size: 12px 8px;
-		background-position: center;
 	}
 	.bar:hover::after,
 	.bar.dragging::after {
