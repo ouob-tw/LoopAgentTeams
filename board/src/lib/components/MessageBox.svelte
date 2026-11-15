@@ -221,6 +221,8 @@
 	<AttachmentTray owner={attachTo} />
 {/if}
 <div class="message-box" class:dropping role="group" ondragover={dragover} ondragleave={() => (dropping = false)} ondrop={drop}>
+	<!-- The box and its skill list are placed against each other; the tools under them are not part of that. -->
+	<div class="area">
 	<textarea
 		bind:this={box}
 		bind:value
@@ -255,17 +257,6 @@
 			typing = null;
 		}}
 	></textarea>
-	{#if tools && ((attachTo) || voice.unlocked)}
-		<!-- Under the box, at the right: the box keeps the whole width. -->
-		<span class="tools">
-			{#if attachTo}
-				<AttachButton owner={attachTo} {disabled} />
-			{/if}
-			{#if voice.unlocked}
-				<VoiceButton {disabled} oninsert={insert} />
-			{/if}
-		</span>
-	{/if}
 	{#if hinting}
 		<!-- Pressing a skill keeps the focus in the box, so the list is not closed before the tap. -->
 		<ul id={`${id}-skills`} class="skills" class:below={place.below} style:max-height="min(18rem, {place.room}px)" role="listbox" aria-label="Skill" onmousedown={(event) => event.preventDefault()}>
@@ -279,6 +270,18 @@
 			{/each}
 		</ul>
 	{/if}
+	</div>
+	{#if tools && ((attachTo) || voice.unlocked)}
+		<!-- Under the box, at the right: the box keeps the whole width. -->
+		<span class="tools">
+			{#if attachTo}
+				<AttachButton owner={attachTo} {disabled} />
+			{/if}
+			{#if voice.unlocked}
+				<VoiceButton {disabled} oninsert={insert} />
+			{/if}
+		</span>
+	{/if}
 </div>
 
 <style>
@@ -288,6 +291,11 @@
 		flex-wrap: wrap;
 		align-items: flex-end;
 		gap: 0.4rem;
+	}
+	.area {
+		position: relative;
+		flex: 1 1 100%;
+		min-width: 0;
 	}
 	.tools {
 		display: flex;
@@ -300,7 +308,7 @@
 	}
 	textarea {
 		display: block;
-		flex: 1 1 100%;
+		flex: 1;
 		min-width: 0;
 		width: 100%;
 		max-height: 12rem;

@@ -55,8 +55,7 @@ for (const width of [260, 390]) {
 				return strong.scrollWidth > strong.clientWidth && getComputedStyle(strong).textOverflow === 'ellipsis' && name.right <= tools.left;
 			})()`)
 		).toBe(true);
-		await tab().eval(`document.querySelector('form.answer') || [...document.querySelectorAll('a,button')].find((element) => element.textContent.includes('作答'))?.click()`);
-		await tab().until(`!!document.querySelector('form.answer')`, 'the answer form');
+		await tab().until(`!!document.querySelector('form.answer') || ([...document.querySelectorAll('a,button')].find((element) => element.textContent.includes('作答'))?.click(), false)`, 'the answer form');
 		await tab().eval(`[...document.querySelectorAll('label')].find((label) => label.textContent.trim() === '其他')?.querySelector('input')?.click()`);
 		await tab().until(`!!document.querySelector('textarea[aria-label="其他的內容"]')`, 'the 其他 box');
 		const fit = await tab().eval<{ widths: number[]; low: boolean[]; fits: boolean }>(`(() => {
