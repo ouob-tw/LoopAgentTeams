@@ -1,0 +1,15 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/automation.ts",
+        "board/src/lib/server/automation-agent.ts",
+        "board/src/lib/server/automation-host.ts"
+      ],
+      "tests": [
+        "board/tests/unit/automation-launch-retry.test.ts",
+        "board/tests/unit/automation-launch-halt.test.ts"
+      ]
+    }
+  ]
+}
