@@ -6,14 +6,15 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
-import type { HelperQuestion } from '../../src/lib/board/types.ts';
+import type { HelperQuestion, InboxReport } from '../../src/lib/board/types.ts';
 import { hcomStartedProcess, jsonLines, question, sleep, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
 
 
 
-/** The page's 6 s reading time run in 0.4 s. */
-const FAST_DWELL = `(() => { const set = window.setTimeout.bind(window); window.setTimeout = (fn, ms, ...rest) => set(fn, ms === 6000 ? 400 : ms, ...rest); })()`;
+/** The page's 6 s a report card has to be seen, run in 0.4 s; given to the visits that check it. */
+const FAST_SEEN = `(() => { const set = window.setTimeout.bind(window); window.setTimeout = (fn, ms, ...rest) => set(fn, ms === 6000 ? 400 : ms, ...rest); })()`;
+const SEEN = 400;
 const SCREEN = `({ search: location.search, detail: document.querySelector('.detail')?.innerText ?? '', notices: document.querySelector('.dock')?.innerText ?? '' })`;
 /** The tab strip's labels, without their counts. */
 const TABS = `[...document.querySelectorAll('.detail [role="tablist"] [role="tab"]')].map((b) => b.innerText.replace(/\\s*\\d+$/, '').trim())`;
@@ -147,8 +148,8 @@ afterAll(async () => {
 });
 
 /** A new Chrome, logged in, on the board at `search` in a window `width` wide. */
-async function visit(width: number, search = '') {
-	browser = await launchChrome({ screen: SCREEN, scripts: [FAST_DWELL] });
+async function visit(width: number, search = '', fast = false) {
+	browser = await launchChrome({ screen: SCREEN, scripts: fast ? [FAST_SEEN] : [] });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
@@ -433,7 +434,7 @@ for (const width of [1280, 390]) {
 		}
 	}, 60_000);
 
-	test.skipIf(!CHROME)(`${width}px: a DONE report opened from the report list is shown in the conversation and read after the 6 s stay, as in the inbox`, async () => {
+	test.skipIf(!CHROME)(`${width}px: a DONE report clicked in the report list is read at once and shown in the conversation`, async () => {
 		// Each width starts with the report unread, whatever an earlier width or test left behind.
 		const key = (await fixture.board(cookie)).inbox.find((item) => item.kind === 'report' && item.message === SAID.done2)!.key;
 		expect((await fixture.markUnread(cookie, key)).ok).toBe(true);
@@ -442,10 +443,12 @@ for (const width of [1280, 390]) {
 		expect(await tab.eval<string>(`${historyCard('report', SAID.done2)}.innerText`)).toContain('標為已讀');
 		await tab.eval(click('.detail [role="tablist"]', '回報'));
 		await tab.until(`!!document.querySelector('#panel-reports:not([hidden]) .row')`, 'the report list');
+		const clicked = Date.now();
 		await tab.eval(click('#panel-reports', SAID.done2));
 		await tab.until(`!document.querySelector('#panel-transcript').hidden && ${OPENED}?.innerText.includes(${JSON.stringify(SAID.done2)})`, 'the report in the conversation');
-		// Read once it has been open for the stay.
-		await tab.until(`${OPENED}.innerText.includes('已讀（')`, 'read after the stay');
+		await tab.until(`${OPENED}.innerText.includes('已讀（')`, 'read by the click');
+		// At once, not after 6 s seen.
+		expect(Date.now() - clicked).toBeLessThan(3_000);
 		expect((await fixture.board(cookie)).inbox.find((item) => item.key === key)).toMatchObject({ readAt: expect.any(String) });
 		expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-lead');
 		expect(await tab.eval(FITS)).toBe(true);
@@ -459,6 +462,33 @@ for (const width of [1280, 390]) {
 		// Unread again, for the next width.
 		await tab.eval(`[...${OPENED}.querySelectorAll('button')].find((b) => b.innerText === '標為未讀').click()`);
 		await tab.until(`${OPENED}.innerText.includes('標為已讀')`, 'unread again');
+	}, 60_000);
+
+	test.skipIf(!CHROME)(`${width}px: a DONE card seen 6 s on the agent's page is read; marked unread there it stays so until it has left the screen`, async () => {
+		const key = (await fixture.board(cookie)).inbox.find((item) => item.kind === 'report' && item.message === SAID.done2)!.key;
+		expect((await fixture.markUnread(cookie, key)).ok).toBe(true);
+		const unread = async () => ((await fixture.board(cookie)).inbox.find((item) => item.key === key) as InboxReport).readAt === null;
+		await visit(width, '?agent=s-lead', true);
+		await tab.until(`${leadPage} && ${CARDS_IN}`, 'the cards');
+		const done2 = historyCard('report', SAID.done2);
+		await tab.eval(`${done2}.scrollIntoView({ block: 'center' })`);
+		await tab.until(`${done2}.innerText.includes('已讀（')`, 'read once seen');
+		expect(await unread()).toBe(false);
+
+		await tab.eval(`[...${done2}.querySelectorAll('button')].find((b) => b.innerText === '標為未讀').click()`);
+		await tab.until(`${done2}.innerText.includes('標為已讀')`, 'marked unread');
+		await sleep(SEEN * 3);
+		expect(await unread()).toBe(true);
+
+		// Off screen (another tab) and back: counted again.
+		await tab.eval(click('.detail [role="tablist"]', '回報'));
+		await tab.until(`!!document.querySelector('#panel-reports:not([hidden]) .row')`, 'the report list');
+		await tab.eval(click('.detail [role="tablist"]', '對話紀錄'));
+		await tab.until(`!document.querySelector('#panel-transcript').hidden && !!${done2}`, 'the conversation again');
+		await tab.eval(`${done2}.scrollIntoView({ block: 'center' })`);
+		await tab.until(`${done2}.innerText.includes('已讀（')`, 'read again once seen');
+		expect(await tab.eval(FITS)).toBe(true);
+		expect((await fixture.markUnread(cookie, key)).ok).toBe(true);
 	}, 60_000);
 }
 

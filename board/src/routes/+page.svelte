@@ -140,10 +140,8 @@
 	const processedCount = $derived(board.snapshot.processedCount + endedAsks.length);
 	const workspaces = $derived(board.snapshot.workspaces);
 	const closed = $derived(board.snapshot.closed);
-	/** The report opened from the inbox list: it stays there, read, until another screen is shown. */
-	let lingering = $state<string | null>(null);
-	/** What the inbox lists: the questions and the unread reports, and the report still open. */
-	const listedInbox = $derived(inbox.filter((entry) => entry.kind === 'question' || entry.readAt === null || entry.key === lingering));
+	/** What the inbox lists: the questions and the unread reports. */
+	const listedInbox = $derived(inbox.filter((entry) => entry.kind === 'question' || entry.readAt === null));
 
 	/** Items as they were when opened on this page, so going back shows one that has left the inbox since. */
 	const kept = new Map<string, InboxItem>();
@@ -186,8 +184,6 @@
 					lost = null;
 					locate(controllers.some((candidate) => candidate.id === next.item.controllerId));
 				} else locate(false);
-				// A read report leaves the inbox list once another screen replaces it, not while it is open.
-				lingering = next?.kind === 'item' && listedInbox.some((entry) => entry.key === next.item.key) ? next.item.key : null;
 			},
 			shown(next, scrollY) {
 				detail.scrollTop = 0;
@@ -374,57 +370,26 @@
 
 	function openItem(next: InboxItem, fromList = false) {
 		kept.set(next.key, next);
-		// Kept on the list from now: the read state may reach the page before the item is shown.
-		if (listedInbox.some((entry) => entry.key === next.key)) lingering = next.key;
 		navigation.go({ kind: 'item', key: next.key }, fromList);
+		readOnClick(next);
 	}
 	/** An item opened from the page of a controller's agent stays on that page, shown in place. */
 	function openInAgent(next: InboxItem) {
 		if (agentId === null) return;
 		kept.set(next.key, next);
 		navigation.go({ kind: 'agent', id: agentId, item: next.key });
+		readOnClick(next);
 	}
-	/** An inbox report is read after it has been open for this long in one go with the page visible. */
-	const DWELL_MS = 6_000;
-	/** The stay on the open report: the key, and whether it started unread (only then it counts). */
-	let stay = $state.raw<{ key: string; counting: boolean } | null>(null);
-	$effect(() => {
-		const key = openKey ?? (view?.kind === 'agent' ? (view.item ?? null) : null);
-		const entry = key === null ? undefined : inbox.find((candidate) => candidate.key === key);
-		const prev = untrack(() => stay);
-		if (key === null) stay = null;
-		// A new key starts a new stay at once; it counts only if the inbox lists it unread right then.
-		else if (prev?.key !== key) {
-			stay = { key, counting: entry?.kind === 'report' && entry.readAt === null && !testDevice.view };
+	/** Clicking an unread inbox report reads it at once, so it leaves the inbox list right away; its
+	 *  content stays open. Only the click does: a report marked unread while open stays unread. A
+	 *  report seen for a while in a conversation is read too; see seen-reports.ts. */
+	function readOnClick(next: InboxItem) {
+		const listed = inbox.find((entry) => entry.key === next.key);
+		// A test device leaves read marks to the user.
+		if (listed?.kind === 'report' && listed.readAt === null && !listed.archived && !testDevice.view) {
+			board.mark(listed.key, true).catch(() => toasts.readFailed('沒有標為已讀，請重新點開再試一次。'));
 		}
-	});
-	$effect(() => {
-		if (!stay?.counting) return;
-		const key = stay.key;
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		// Hiding the page drops the count: the stay has to be 6 s in one go with the page visible.
-		const stop = () => {
-			clearTimeout(timer);
-			timer = undefined;
-		};
-		const start = () => {
-			if (timer !== undefined || document.visibilityState !== 'visible') return;
-			timer = setTimeout(() => {
-				timer = undefined;
-				stay = { key, counting: false };
-				// The content stays open; only the list drops it.
-				lingering = null;
-				board.mark(key, true).catch(() => toasts.readFailed('沒有標為已讀，請重新點開再試一次。'));
-			}, DWELL_MS);
-		};
-		const change = () => (document.visibilityState === 'visible' ? start() : stop());
-		document.addEventListener('visibilitychange', change);
-		start();
-		return () => {
-			document.removeEventListener('visibilitychange', change);
-			stop();
-		};
-	});
+	}
 	/** The ask whose card the screen being opened scrolls to, and whether that screen is shown (it
 	 *  starts at the top, so the card is scrolled to after). Dropped after a few seconds, so a card
 	 *  that never comes does not pull a later visit. */
