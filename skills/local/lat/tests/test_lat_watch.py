@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -30,6 +31,33 @@ def load_watch():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def sqlite_hcom_events(rows):
+    """Fake run_json_lines for `hcom events` that runs the real --sql/--last on SQLite."""
+    database = sqlite3.connect(':memory:')
+    database.execute('CREATE TABLE events (id INTEGER PRIMARY KEY, type TEXT, instance TEXT,'
+                     ' data TEXT)')
+
+    def add(event_id, context, session='s-worker', status='active'):
+        database.execute('INSERT INTO events VALUES (?, ?, ?, ?)', (
+            event_id, 'status', 'worker', json.dumps(
+                {'context': context, 'session': session, 'status': status})))
+
+    for row in rows:
+        add(*row)
+
+    def run(command):
+        query = command[command.index('--sql') + 1]
+        limit = int(command[command.index('--last') + 1])
+        found = database.execute(
+            f'SELECT id, type, instance, data FROM events WHERE {query}'
+            ' ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
+        return [{'id': event_id, 'type': kind, 'instance': instance, 'data': json.loads(data)}
+                for event_id, kind, instance, data in reversed(found)]
+
+    run.add = add
+    return run
 
 
 def watch_time(watch):
@@ -653,6 +681,58 @@ class WatchDecisionTests(unittest.TestCase):
         command = run_events.call_args.args[0]
         self.assertIn('--sql', command)
         self.assertIn(watched['session_id'], command[command.index('--sql') + 1])
+
+    def test_own_session_events_skip_message_deliveries(self):
+        watch = load_watch()
+        info = {'name': 'worker', 'session_id': 's-worker'}
+        events = sqlite_hcom_events([
+            (10, 'tool:Bash'), (11, 'deliver:orch'), (12, 'deliver:[hcom-launcher]'),
+            (13, 'tool:Bash', 's-other'),
+        ])
+
+        with patch.object(watch, 'run_json_lines', side_effect=events):
+            everything = watch.session_events('orch', info, '--last', '1')
+            own = watch.session_events('orch', info, '--last', '1', own_only=True)
+
+        self.assertEqual(watch.latest_event_id(everything), 12)
+        self.assertEqual(watch.latest_event_id(own), 10)
+
+    def test_active_agent_receiving_only_messages_is_notified_at_twenty_minutes(self):
+        """ouob-tw/LoopAgentTeams-work#66: deliveries to a stalled agent are not its progress."""
+        watch = load_watch()
+        terminal = {'ready': False, 'prompt_empty': True, 'input_text': '', 'lines': []}
+        info = {'name': 'worker', 'status': 'active', 'tool': 'codex', 'unread_count': 0,
+                'session_id': 's-worker'}
+
+        def run(own_events_at):
+            events = sqlite_hcom_events([(1, 'tool:events')])
+            state, kinds = None, {}
+            with tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(watch, 'run_json', return_value=terminal), \
+                    patch.object(watch, 'run_json_lines', side_effect=events), \
+                    patch.object(watch, 'release_wait_if_needed', return_value=None):
+                root = Path(temporary)
+                for minute in range(0, 41):
+                    now = minute * 60
+                    events.add(100 + minute, f'deliver:sender-{minute}')
+                    if minute in own_events_at:
+                        events.add(1000 + minute, own_events_at[minute])
+                    observation = watch.observe(root, root / 'decisions', 'orch', 'worker',
+                                                info, processes=[])
+                    state, actions = watch.decide(state, observation, now)
+                    kinds[minute] = [action.kind for action in actions]
+            return kinds
+
+        receive_only = run({})
+        self.assertTrue(all(receive_only[minute] == [] for minute in range(20)))
+        self.assertEqual(receive_only[20], ['notify-orchestrator'])
+
+        # The agent's own tool call and turn end still reset progress.
+        for own in ('tool:Bash', ''):
+            with self.subTest(own=own):
+                kinds = run({10: own})
+                self.assertTrue(all(kinds[minute] == [] for minute in range(30)))
+                self.assertEqual(kinds[30], ['notify-orchestrator'])
 
     def test_successful_send_in_exact_claude_transcript_releases_wait(self):
         watch = load_watch()
