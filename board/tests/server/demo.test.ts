@@ -75,7 +75,7 @@ test('logged in, the page is served sandboxed, not stored and without a referrer
 	expect(response.headers.get('cache-control')).toBe('no-store');
 	expect(response.headers.get('referrer-policy')).toBe('no-referrer');
 	expect(response.headers.get('x-content-type-options')).toBe('nosniff');
-	expect(response.headers.get('set-cookie') ?? '').not.toContain('lat_board_device');
+	expect(response.headers.get('set-cookie') ?? '').not.toContain(`${cookie.split('=')[0]}=`);
 });
 
 test('the page’s own files come with the type their extension names, also sandboxed', async () => {
@@ -129,6 +129,40 @@ test('a folder is never listed, and a missing or wrongly named demo is 404', asy
 		expect(response.body).not.toContain('a.png');
 	}
 	expect((await raw('/demo/nope/')).headers['content-security-policy']).toStartWith('sandbox allow-scripts allow-popups;');
+});
+
+/** The demo cookie the board gives a logged-in device opening a demo, as `name=value`. */
+async function demoCookie(login = cookie): Promise<string> {
+	const set = (await fixture.fetch('/demo/d1/', { cookie: login })).headers.get('set-cookie') ?? '';
+	const [pair, ...attributes] = set.split(';').map((part) => part.trim());
+	expect(pair.startsWith(`${cookie.split('=')[0]}_demo=`)).toBe(true);
+	expect(attributes.map((a) => a.toLowerCase()).sort()).toEqual(['httponly', 'max-age=86400', 'path=/demo/', 'samesite=none', 'secure']);
+	return pair;
+}
+
+test('the demo cookie lets the page’s own files load, and nothing but demos', async () => {
+	const demo = await demoCookie();
+	expect((await fixture.fetch('/demo/d1/style.css', { cookie: demo })).status).toBe(200);
+	expect((await fixture.fetch('/demo/d1/', { cookie: demo, method: 'HEAD' })).status).toBe(200);
+	expect((await fixture.fetch('/api/board', { cookie: demo })).status).toBe(401);
+	expect((await fixture.fetch('/user.css', { cookie: demo })).status).toBe(303);
+	expect((await fixture.fetch('/', { cookie: demo })).status).toBe(303);
+	// Only reading: a change sent to a demo address is not let in by it.
+	expect((await fixture.fetch('/demo/d1/', { cookie: demo, method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(303);
+});
+
+test('a forged demo cookie, or one whose device logged out, lets nothing in', async () => {
+	const demo = await demoCookie();
+	const [name, value] = demo.split('=');
+	const [id, mac] = value.split('.');
+	for (const forged of [`${name}=other.${mac}`, `${name}=${id}.${mac.slice(1)}x`, `${name}=${id}`, `${name}=`]) {
+		expect({ forged, status: (await fixture.fetch('/demo/d1/style.css', { cookie: forged })).status }).toEqual({ forged, status: 303 });
+	}
+	const other = await fixture.login('demo-logout');
+	const otherDemo = await demoCookie(other);
+	expect((await fixture.fetch('/demo/d1/style.css', { cookie: otherDemo })).status).toBe(200);
+	expect((await fixture.fetch('/api/device', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: '{}', cookie: other })).status).toBe(200);
+	expect((await fixture.fetch('/demo/d1/style.css', { cookie: otherDemo })).status).toBe(303);
 });
 
 test('without a demo folder every demo is 404 and the rest of the board works', async () => {

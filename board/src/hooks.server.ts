@@ -3,6 +3,7 @@ import type { RequestEvent } from '@sveltejs/kit';
 import type { Handle, HandleServerError, ServerInit } from '@sveltejs/kit/hooks';
 import { randomUUID } from 'node:crypto';
 import { DEVICE_COOKIE } from '#lib/server/auth.ts';
+import { DEMO_COOKIE, demoCookieDevice, readsDemo, setDemoCookie } from '#lib/server/demo.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { actingAs } from '#lib/server/acting.ts';
 import { clientAddress, viaHttps } from '#lib/server/client-address.ts';
@@ -155,7 +156,12 @@ const handleAllowed: Handle = ({ event, resolve }) => {
 			const token = event.cookies.get(DEVICE_COOKIE);
 			const board = getBoard();
 			const now = board.config.now();
-			const device = token ? findDevice(board.config.stateDir, token, now) : null;
+			const path = event.url.pathname;
+			const loggedIn = token ? findDevice(board.config.stateDir, token, now) : null;
+			// A demo page's own files come without the login cookie; see demo.ts.
+			const demo = readsDemo(event.request.method, path);
+			if (loggedIn && demo) setDemoCookie(event.cookies, loggedIn);
+			const device = loggedIn ?? (demo ? demoCookieDevice(board.config.stateDir, event.cookies.get(DEMO_COOKIE), now) : null);
 			if (device) {
 				try {
 					markSeen(board.config.stateDir, device, now);
@@ -166,7 +172,6 @@ const handleAllowed: Handle = ({ event, resolve }) => {
 			}
 			event.locals.device = device;
 
-			const path = event.url.pathname;
 			if (!device && !OPEN_PATHS.has(path)) {
 				if (path.startsWith('/api/')) return json({ error: 'unpaired' }, { status: 401 });
 				if (openedFromOutside(event.request)) return reloadFromHere();

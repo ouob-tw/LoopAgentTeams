@@ -2,9 +2,13 @@
 // `/demo/<name>/…` behind the board's login. The pages are HTML an agent wrote, so every answer is
 // sandboxed without `allow-same-origin`: the page runs as an origin of its own, which gets no board
 // cookie and cannot read any board answer.
+import type { Cookies } from '@sveltejs/kit';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
+import { DEVICE_COOKIE } from './auth.ts';
+import { findDeviceById, type Device } from './devices.ts';
 
 /** The same names `demo.py publish` accepts. */
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -93,4 +97,35 @@ export async function serveDemo(siteDir: string, rest: string, search: string): 
 	} catch {
 		return missing();
 	}
+}
+
+// A sandboxed page asks for its own files (images, scripts, styles) as another site would, so the
+// login cookie, which is SameSite=Strict, stays off those requests. A logged-in device opening a
+// demo also gets this cookie: sent to /demo/ only, accepted for reading /demo/ only, and naming its
+// device, which must still be logged in. It is SameSite=None so the sandboxed page's requests carry
+// it; browsers take that only with Secure, which they also accept from http://localhost.
+export const DEMO_COOKIE = `${DEVICE_COOKIE}_demo`;
+const DEMO_COOKIE_SECONDS = 24 * 60 * 60;
+/** Made anew at each start: a demo opened before a restart gets a new cookie when it is loaded again. */
+const SECRET = randomBytes(32);
+
+const mac = (id: string) => createHmac('sha256', SECRET).update(id).digest('base64url');
+
+/** Whether a request may be let in by the demo cookie: reading a demo. */
+export const readsDemo = (method: string, path: string) => (method === 'GET' || method === 'HEAD') && path.startsWith('/demo/');
+
+/** Give the device the demo cookie, on its request for a demo page. */
+export function setDemoCookie(cookies: Cookies, device: Device): void {
+	cookies.set(DEMO_COOKIE, `${device.id}.${mac(device.id)}`, { path: '/demo/', httpOnly: true, secure: true, sameSite: 'none', maxAge: DEMO_COOKIE_SECONDS });
+}
+
+/** The still logged-in device a demo cookie names; null for none or a forged one. */
+export function demoCookieDevice(stateDir: string, value: string | undefined, now: number): Device | null {
+	const dot = value?.lastIndexOf('.') ?? -1;
+	if (!value || dot <= 0) return null;
+	const id = value.slice(0, dot);
+	const given = Buffer.from(value.slice(dot + 1));
+	const expected = Buffer.from(mac(id));
+	if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
+	return findDeviceById(stateDir, id, now);
 }

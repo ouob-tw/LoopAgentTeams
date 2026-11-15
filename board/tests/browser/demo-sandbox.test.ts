@@ -1,5 +1,6 @@
 // A published demo page opened from the board in a real browser (headless Chrome, the built board),
-// logged in: the switch bar and its `#b` anchors work as on the demo server, but the page's own
+// logged in: the switch bar, its `#b` anchors and the page's relative files work as on the demo
+// server (the files through the demo cookie, demo.ts), but the page's own
 // script runs as an origin of its own. It cannot read a board answer even with credentials, cannot
 // see the login cookie, and what it asks the board for arrives without the login.
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
@@ -15,6 +16,10 @@ const DEMO_SCRIPT = join(import.meta.dir, '../../../skills/local/ui-choice-demo/
 // What the page's script tries, written where the test reads it.
 const PROBE = `<script>
 const out = document.body.dataset;
+const image = new Image();
+image.onload = () => (out.image = 'loaded ' + image.naturalWidth);
+image.onerror = () => (out.image = 'failed');
+image.src = 'dot.png';
 try { out.cookie = String(document.cookie); } catch (error) { out.cookie = 'threw ' + error.name; }
 out.origin = origin;
 fetch('/api/board', { credentials: 'include' }).then((r) => r.text()).then((t) => (out.api = 'read ' + t.slice(0, 80)), (e) => (out.api = 'failed ' + e.name));
@@ -41,6 +46,8 @@ beforeAll(async () => {
 	const built = spawnSync(uvPython(), ['-c', `import importlib.util,sys; s=importlib.util.spec_from_file_location('demo', sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); sys.stdout.write(m.build_index(sys.stdin.read(), 'd1'))`, DEMO_SCRIPT], { input: fragment, encoding: 'utf8' });
 	if (built.status !== 0) throw new Error(built.stderr);
 	writeFileSync(join(site, 'index.html'), built.stdout);
+	// A 1×1 PNG beside the page, asked for by a relative address.
+	writeFileSync(join(site, 'dot.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'));
 	fixture = await startFixture({ env: { LAT_BOARD_DEMO_DIR: join(dir, 'data') } });
 	cookie = await fixture.login('demo-sandbox');
 }, 30_000);
@@ -70,6 +77,12 @@ test('the switch bar and a #b anchor work on the board’s demo address', async 
 	await tab.eval(`[...document.querySelectorAll('#variants button')].find((b) => b.textContent === '甲').click()`);
 	await tab.until(`location.hash === '#a' && !document.getElementById('pa').closest('section').hidden`, 'variant a after its button');
 	expect(tab.errors).toEqual([]);
+}, 30_000);
+
+test('the page’s own files at relative addresses load, with no board login on those requests', async () => {
+	const tab = await openDemo('/demo/d1/');
+	await tab.until(`document.body.dataset.image`, 'the relative image');
+	expect(await tab.eval<string>(`document.body.dataset.image`)).toBe('loaded 1');
 }, 30_000);
 
 test('the demo page’s script cannot read the board, see the login cookie or ask with the login', async () => {
