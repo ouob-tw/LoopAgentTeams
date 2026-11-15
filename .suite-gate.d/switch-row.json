@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/lib/server/agents.ts"],
+      "tests": ["board/tests/unit/switch-row.test.ts", "board/tests/server/agent-switch.test.ts", "board/tests/server/agent-permission.test.ts"]
+    }
+  ]
+}
