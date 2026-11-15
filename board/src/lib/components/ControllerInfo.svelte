@@ -36,6 +36,7 @@
 	import SentLog from './SentLog.svelte';
 	import type { SentLook } from '#lib/board/sent-jump.ts';
 	import Transcript from './Transcript.svelte';
+	import UnattendedShortcut from './UnattendedShortcut.svelte';
 
 	let {
 		controller,
@@ -159,6 +160,10 @@
 	});
 </script>
 
+{#snippet before()}
+	<UnattendedShortcut controllerId={controller.id} view={controller.unattended} />
+{/snippet}
+
 {#if folded}
 	<ScreenBar status={controller.status} text={STATUS_LABEL[controller.status]} name={lastSegment(controller.hcomName)} {warnings} bind:unfolded />
 {/if}
@@ -169,19 +174,19 @@
      Herdr tab, the agent's own close below stands for this one. -->
 {#if !controller.herdr && controller.status !== 'closed' && !agent}
 	{#if idleAgent}
-		<AgentClose agent={idleAgent} label="關閉" />
+		<AgentClose agent={idleAgent} label="關閉" {before} />
 	{:else}
 		<p class="note">Herdr 的清單上找不到它的分頁，無法從這裡關閉。</p>
 	{/if}
 {:else if controller.herdr && !agent && idleAgent}
 	<!-- A running controller: closed as on the Herdr tab, its HCOM link paused or resumed beside. -->
-	<AgentClose agent={idleAgent} />
+	<AgentClose agent={idleAgent} {before} />
 {/if}
 
 <PendingQuestions status={controller.status} {questions} {onopen} />
 
 {#if agent}
-	<AgentClose {agent} />
+	<AgentClose {agent} {before} />
 {/if}
 {/if}
 

@@ -339,6 +339,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
   ```
 - 未結案的接回由後來追加的行結案：`resume-closed` 記結果（`succeeded`、`ended`、`abandoned`），`resume-pane` 補記後來才查到的窗格。每次讀取資料讀到的 hcom 清單上出現該 session，就結案為成功。
 - 再次喚醒前的查證依序是：session 在 hcom 清單上 → 結案為成功，改走輸入框；清單上有主控原本的名稱或接回輸出的名稱（含還沒綁定的 Agent）或記下的窗格還在 `herdr pane list` 裡 → 拒絕；記下的窗格已不在 → 結案為已結束，照常接回；沒記到窗格 → 拒絕並回傳可放棄的那一筆（`abandon`）。窗格清單讀不到也拒絕。等待時間只用來顯示提示，不會放行。
+- 主控頁按鈕列（`ControllerInfo.svelte` 傳給 `AgentClose.svelte` 的 `before`）在「關閉 Agent」／「關閉」左邊有「無人模式」按鈕（`UnattendedShortcut.svelte`），以機器人圖示加「無人」或「手動」標示目前模式（完整意思在 `aria-label`／`title`），按下在按鈕下方開出與命令列選項相同的無人模式選單（`UnattendedMenu`）；一般 Agent 頁沒有，讀不到無人模式狀態時也不顯示。
 - 閒置主控的資訊頁有「關閉」（`ControllerInfo.svelte`），與 Herdr 分頁的「關閉 Agent」共用 `AgentClose.svelte` 與 `POST /api/agents/close`：拒絕條件、確認與結果通知都相同，確認文字一律說明可以從主控資訊頁喚醒接回，與從 Herdr 分頁打開它時相同。按鈕只在這次讀到的 Herdr 清單上有同一個 session ID 的 Agent 時出現，找不到時說明無法從這裡關閉；它有未完成的模型切換時，與 Agent 頁面一樣不顯示按鈕、只說明要先處理切換；進行中的主控同樣在 Herdr 清單上找得到時有「關閉 Agent」（與 Herdr 分頁的主控頁相同），有接 HCOM 或暫停通訊時旁邊另有「暫停通訊」／「恢復通訊」；有未完成的模型切換時照 Agent 頁只說明要先處理切換。關閉後 session 從 hcom 清單消失，下一次讀取資料就顯示為已關閉。
 - 測試以 `tests/fake-hcom.mjs`（`list --json` 與 `r`）、`tests/fake-herdr.mjs`、`tests/fake-inject.mjs` 代替真的指令。
 

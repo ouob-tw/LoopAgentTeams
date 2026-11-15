@@ -5,6 +5,7 @@
 	// An agent with a switch left unfinished is pointed to the command line to continue or give it up
 	// instead; one Herdr no longer lists is shown only for that. A controller's information page
 	// closes its agent this way too.
+	import type { Snippet } from 'svelte';
 	import Info from '@lucide/svelte/icons/info';
 	import { AGENT_ACTION_LABEL, AGENT_HCOM_UNKNOWN_REASON, AGENT_NO_HOOKS_TEXT, AGENT_PAUSE_POINTS, agentCloseConfirmText } from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -15,7 +16,8 @@
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import { TEST_DEVICE_NOT_OWNED } from '#lib/board/test-device.ts';
 
-	let { agent, label = '關閉 Agent' }: { agent: KnownAgent; label?: string } = $props();
+	/** `before` is shown in the button row, left of the close. */
+	let { agent, label = '關閉 Agent', before }: { agent: KnownAgent; label?: string; before?: Snippet } = $props();
 
 	/** Agents whose close confirmation is open. */
 	let confirming = $state<Record<string, boolean>>({});
@@ -104,6 +106,7 @@
 			</div>
 		{:else}
 			<div class="actions">
+				{@render before?.()}
 				<button type="button" data-action="close" disabled={!closable || busy[agent.id]} onclick={() => (confirming[agent.id] = true)}>{label}</button>
 				{#if agent.noHooks}
 					<button type="button" data-action="relink" disabled={!closable || busy[agent.id]} onclick={relink}>{busy[agent.id] ? '處理中…' : AGENT_ACTION_LABEL.relink}</button>
@@ -170,11 +173,26 @@
 	button.info {
 		display: inline-flex;
 		align-items: center;
+		min-width: 44px;
+		min-height: 44px;
+		justify-content: center;
 		padding-inline: 0.5em;
 		background: none;
 		border: none;
 		color: var(--muted);
 		cursor: help;
+	}
+	/* On a phone the row (無人模式, close, pause, the icon) has to stay on one line: tighter buttons. */
+	@media (max-width: 480px) {
+		.actions {
+			gap: 0.3rem;
+		}
+		.actions > button:not(.info) {
+			padding-inline: 0.55rem;
+		}
+		button.info {
+			padding-inline: 0;
+		}
 	}
 	.pause-info {
 		margin: 0;
