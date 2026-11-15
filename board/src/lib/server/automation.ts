@@ -824,8 +824,9 @@ export function createAutomation(options: {
 				prompt = controllerMessage(spec.client, { taskName: task.name, runId: run.id, stateDir, latDir: options.latDir ?? join(home, '.agents/skills/lat'), brief });
 			}
 			const launched = await host
-				.launch({ ...spec, folder, prompt, tag })
-				.catch((error: Error) => ({ ok: false as const, reason: error.message }));
+				.launch({ ...spec, folder, prompt, tag, halted: () => cut ?? (now() - latest(run).startedAt >= task.limitMinutes * 60_000 ? 'timeout' : null) })
+				.catch((error: Error) => ({ ok: false as const, reason: error.message, cut: undefined }));
+			if (!launched.ok && launched.cut) return finish(task, run, { status: launched.cut, reason: cutReason(launched.cut, task.limitMinutes) });
 			if (!launched.ok) return finish(task, run, { status: 'failed', reason: `開不了 Agent：${launched.reason}` });
 			record(run, { agentName: launched.name, ...(launched.workspace ? { agentWorkspace: launched.workspace } : {}) });
 			publish();
@@ -895,8 +896,9 @@ export function createAutomation(options: {
 				}
 				if (cut) return settleEnd({ status: cut, reason: cutReason(cut, task.limitMinutes) });
 				const launched = await host
-					.launch({ ...spec, folder, brief: briefPath, prompt: reviewMessage(briefPath), tag: reviewTag(task.id, run.id) })
-					.catch((error: Error) => ({ ok: false as const, reason: error.message }));
+					.launch({ ...spec, folder, brief: briefPath, prompt: reviewMessage(briefPath), tag: reviewTag(task.id, run.id), halted: () => cut ?? (now() - latest(run).review!.startedAt >= task.limitMinutes * 60_000 ? 'timeout' : null) })
+					.catch((error: Error) => ({ ok: false as const, reason: error.message, cut: undefined }));
+				if (!launched.ok && launched.cut) return settleEnd({ status: launched.cut, reason: cutReason(launched.cut, task.limitMinutes) });
 				if (!launched.ok) return settle({ status: 'error', reason: `檢查沒有做完：開不了檢查 Agent：${launched.reason}` });
 				update({ agentName: launched.name, ...(launched.workspace ? { agentWorkspace: launched.workspace } : {}) });
 				publish();

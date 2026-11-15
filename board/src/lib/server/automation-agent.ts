@@ -119,7 +119,9 @@ export interface CodexAccounts {
 
 /** What a run does through the board. */
 export interface AgentHost {
-	launch(spec: AgentSpec & { folder: string; prompt: string; tag: string }): Promise<{ ok: true; name: string; workspace: string | null } | { ok: false; reason: string }>;
+	/** `halted` tells whether the run was stopped or ran out of time; a launch that waits to retry
+	 *  (#657) gives up then, with `cut`. */
+	launch(spec: AgentSpec & { folder: string; prompt: string; tag: string; halted?: () => Cut | null }): Promise<{ ok: true; name: string; workspace: string | null } | { ok: false; reason: string; cut?: Cut }>;
 	list(): Promise<{ ok: true; agents: ListedAgent[] } | { ok: false; reason: string }>;
 	/** The conversation's last reply and its position; null text when there is none yet. */
 	lastReply(client: AgentSpec['client'], sessionId: string): Promise<{ ok: true; text: string | null; seq: number } | { ok: false; reason: string }>;
