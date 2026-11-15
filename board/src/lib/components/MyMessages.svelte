@@ -121,7 +121,7 @@
 
 	let readFor: string | undefined;
 	// Read on load, shown or not (the bar's dots count the messages), and again after each change of the
-	// conversation, a moment later so a burst is one read. Closed, only the newest part is read, and not
+	// conversation, a moment later so a burst is one read. Closed, only enough of the newest part is read, and not
 	// at all once the count fills the bar (it only grows); opened, the rest is read.
 	$effect(() => {
 		const forId = id;

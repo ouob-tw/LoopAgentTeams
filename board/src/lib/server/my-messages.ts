@@ -1,6 +1,6 @@
 // The user's own messages of a whole conversation. The helper only pages through a record, one
 // process per page, so a long conversation takes a while to read through. The newest page is
-// answered at once and the rest is read on behind it; the answer says whether it is complete yet.
+// answered at once (for the newest part only: once it holds as many messages as asked for) and the rest is read on behind it; the answer says whether it is complete yet.
 // A record only grows at its end, so what was read before is kept, and a later read goes back only
 // as far as what is new.
 import { myMessages, type MyMessage, type MyMessagesUpdate } from '../board/my-messages.ts';
@@ -63,13 +63,15 @@ function start(config: BoardConfig, client: string, sessionId: string, key: stri
 	const before = seen.get(key);
 	void (async () => {
 		let last = -1;
+		// Told to the next ask only when the answer was given already; before that the asker gets it.
+		let answered = false;
 		let cursor: number | null = null;
 		try {
 			for (;;) {
 				const read = await readTranscript(config, client, sessionId, cursor);
 				if (!read.ok) {
 					job.failure = read.reason;
-					if (cursor !== null) failures.set(key, read.reason);
+					if (answered) failures.set(key, read.reason);
 					return;
 				}
 				for (const message of myMessages(read.page.items)) job.messages.set(message.seq, message);
@@ -81,7 +83,10 @@ function start(config: BoardConfig, client: string, sessionId: string, key: stri
 					job.stopped = true;
 					return;
 				}
-				if (!newest) began();
+				if (!newest) {
+					began();
+					answered = true;
+				}
 				if (read.page.before === null) break;
 				// The page reaches what an earlier read already holds: the rest is the same.
 				if (before && first <= before.last) {
@@ -93,7 +98,7 @@ function start(config: BoardConfig, client: string, sessionId: string, key: stri
 			seen.set(key, { messages: job.messages, last });
 		} catch (error) {
 			job.failure = `讀取失敗：${error instanceof Error ? error.message : String(error)}`;
-			if (job.lowest !== Infinity) failures.set(key, job.failure);
+			if (answered) failures.set(key, job.failure);
 		} finally {
 			job.finished = true;
 			jobs.delete(key);
