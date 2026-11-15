@@ -377,24 +377,51 @@
 		// Kept on the list from now: the read state may reach the page before the item is shown.
 		if (listedInbox.some((entry) => entry.key === next.key)) lingering = next.key;
 		navigation.go({ kind: 'item', key: next.key }, fromList);
-		readOnOpening(next);
 	}
 	/** An item opened from the page of a controller's agent stays on that page, shown in place. */
 	function openInAgent(next: InboxItem) {
 		if (agentId === null) return;
 		kept.set(next.key, next);
 		navigation.go({ kind: 'agent', id: agentId, item: next.key });
-		readOnOpening(next);
 	}
-	/** Opening an inbox report reads it. Only opening does: a report marked unread stays unread
-	 *  while it is still open. An archived report keeps the read state it had. */
-	function readOnOpening(next: InboxItem) {
-		const listed = inbox.find((entry) => entry.key === next.key);
-		// A test device leaves read marks to the user.
-		if (listed?.kind === 'report' && listed.readAt === null && !testDevice.view) {
-			board.mark(listed.key, true).catch(() => toasts.readFailed('沒有標為已讀，請重新點開再試一次。'));
-		}
-	}
+	/** An inbox report is read after it has been open for this long in one go with the page visible. */
+	const DWELL_MS = 6_000;
+	/** The stay on the open report: the key, and whether it started unread (only then it counts). */
+	let stay = $state.raw<{ key: string; counting: boolean } | null>(null);
+	$effect(() => {
+		const key = openKey ?? (view?.kind === 'agent' ? (view.item ?? null) : null);
+		const entry = key === null ? undefined : inbox.find((candidate) => candidate.key === key);
+		const prev = untrack(() => stay);
+		if (key === null) stay = null;
+		else if (entry && prev?.key !== key) stay = { key, counting: entry.kind === 'report' && entry.readAt === null && !testDevice.view };
+	});
+	$effect(() => {
+		if (!stay?.counting) return;
+		const key = stay.key;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		// Hiding the page drops the count: the stay has to be 6 s in one go with the page visible.
+		const stop = () => {
+			clearTimeout(timer);
+			timer = undefined;
+		};
+		const start = () => {
+			if (timer !== undefined || document.visibilityState !== 'visible') return;
+			timer = setTimeout(() => {
+				timer = undefined;
+				stay = { key, counting: false };
+				// The content stays open; only the list drops it.
+				lingering = null;
+				board.mark(key, true).catch(() => toasts.readFailed('沒有標為已讀，請重新點開再試一次。'));
+			}, DWELL_MS);
+		};
+		const change = () => (document.visibilityState === 'visible' ? start() : stop());
+		document.addEventListener('visibilitychange', change);
+		start();
+		return () => {
+			document.removeEventListener('visibilitychange', change);
+			stop();
+		};
+	});
 	/** The ask whose card the screen being opened scrolls to, and whether that screen is shown (it
 	 *  starts at the top, so the card is scrolled to after). Dropped after a few seconds, so a card
 	 *  that never comes does not pull a later visit. */

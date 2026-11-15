@@ -232,6 +232,16 @@ async function visit(width: number) {
 	await until(`JSON.stringify(history.state ?? {}).includes('depth')`, 'the board to start');
 }
 
+/** The page's 6 s reading time run in 0.4 s, and a way to hide the page: `__hidden(true)`. */
+const FAST_DWELL = `(() => {
+	const set = window.setTimeout.bind(window);
+	window.setTimeout = (fn, ms, ...rest) => set(fn, ms === 6000 ? 400 : ms, ...rest);
+	let hidden = false;
+	Object.defineProperty(document, 'visibilityState', { get: () => (hidden ? 'hidden' : 'visible') });
+	window.__hidden = (value) => { hidden = value; document.dispatchEvent(new Event('visibilitychange')); };
+})()`;
+const DWELL = 400;
+
 const REPORT = '剛交付的票';
 const OTHER = '另一則求助';
 
@@ -280,7 +290,7 @@ beforeAll(async () => {
 /** A new Chrome for every visit, as the other files that start one do: the streams a page left
  *  open can hold the browser's connections to the board, and the next page waits on them. */
 async function startChrome() {
-	browser = await launchChrome();
+	browser = await launchChrome({ scripts: [FAST_DWELL] });
 	const [name, value] = cookie.split('=');
 	await send('Network.setCookie', { name, value, url: fixture.url });
 }
@@ -292,16 +302,14 @@ async function stopChrome() {
 
 afterAll(stopChrome);
 
-test.skipIf(!CHROME)('wide: a report read in the inbox stays listed while open, leaves when another opens, and comes back marked unread', async () => {
+test.skipIf(!CHROME)('wide: an opened report stays listed for 6 s, then leaves with its content still open, and comes back marked unread', async () => {
 	await unreadReports();
 	await visit(1200);
 	await click('.inbox', REPORT);
-	await until(`document.querySelector('.detail').innerText.includes('已讀')`, 'the report open and read');
-	await sleep(300);
+	await until(`document.querySelector('.detail').innerText.includes(${JSON.stringify(REPORT)})`, 'the report open');
 	expect(await inInbox(REPORT)).toBe(true);
-
-	await click('.inbox', OTHER);
-	await until(`!${button('.inbox .row', REPORT)}`, 'the read report gone from the inbox');
+	await until(`!${button('.inbox .row', REPORT)}`, 'the report gone from the inbox after the stay');
+	expect(await evaluate<string>(`document.querySelector('.detail').innerText`)).toContain(REPORT);
 	expect(await inInbox(OTHER)).toBe(true);
 
 	await click('.inbox .toggle', '已處理');
@@ -311,16 +319,43 @@ test.skipIf(!CHROME)('wide: a report read in the inbox stays listed while open, 
 	await until(`!!${button('.detail', '標為未讀')}`, 'the way to mark it unread');
 	await click('.detail', '標為未讀');
 	await until(`!${button('.inbox .row', REPORT)}`, 'the report gone from the processed');
+	// This stay does not read it again.
+	await sleep(DWELL * 3);
 	await click('.inbox .toggle', '依時間');
 	await until(`!!${button('.inbox .row', REPORT)}`, 'the report back in the inbox');
 }, 30_000);
 
-test.skipIf(!CHROME)('phone: a report opened from the inbox has left it on the way back to the list', async () => {
+test.skipIf(!CHROME)('wide: leaving before the 6 s keeps the report unread, and a hidden page restarts the count', async () => {
+	await unreadReports();
+	await visit(1200);
+	await click('.inbox', REPORT);
+	await until(`document.querySelector('.detail').innerText.includes(${JSON.stringify(REPORT)})`, 'the report open');
+	await click('.inbox', OTHER);
+	await sleep(DWELL / 2);
+	await click('.inbox', REPORT);
+	await sleep(DWELL / 2);
+	// Neither stay lasted the whole time, and the first one does not carry over.
+	expect(await inInbox(REPORT)).toBe(true);
+	await click('.inbox', OTHER);
+	await until(`document.querySelector('.detail').innerText.includes(${JSON.stringify(OTHER)})`, 'the other open');
+	await sleep(DWELL * 0.6);
+	await evaluate(`__hidden(true)`);
+	await sleep(DWELL * 3);
+	expect(await inInbox(OTHER)).toBe(true);
+	// Visible again: the count starts over, so the time before the hide does not count.
+	await evaluate(`__hidden(false)`);
+	await sleep(DWELL * 0.6);
+	expect(await inInbox(OTHER)).toBe(true);
+	await until(`!${button('.inbox .row', OTHER)}`, 'the report read after a whole stay visible');
+}, 30_000);
+
+test.skipIf(!CHROME)('phone: a report is read after the stay and has left the inbox on the way back to the list', async () => {
 	await unreadReports();
 	await visit(390);
 	await click('.inbox', REPORT);
 	await until(`location.search.startsWith('?item=')`, 'the report open');
 	await until(`document.querySelector('.detail').innerText.includes('已讀')`, 'the report read');
+	expect(await evaluate<string>(`document.querySelector('.detail').innerText`)).toContain(REPORT);
 	await evaluate(`document.querySelector('.topbar button').click()`);
 	await until(`location.search === '' && getComputedStyle(document.querySelector('.inbox')).display !== 'none'`, 'the list');
 	expect(await inInbox(REPORT)).toBe(false);
