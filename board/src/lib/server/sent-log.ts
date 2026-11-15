@@ -18,7 +18,7 @@ import type { SentMessage } from '../board/messages.ts';
 import type { ModelChoice, SentSwitch, SwitchState } from '../board/models.ts';
 import type { ResumeClose, SentWake } from '../board/wake.ts';
 import { actingTestDevice } from './acting.ts';
-import type { UnattendedScope } from '../board/unattended.ts';
+import type { UnattendedMode, UnattendedScope } from '../board/unattended.ts';
 import type { TaskUnattended } from '../board/automation.ts';
 
 const SENT_LOG_FILE = 'sent-log.jsonl';
@@ -42,6 +42,17 @@ interface LaunchMark {
 	kind: 'launch-bound';
 	launchId: string;
 	controllerId: string;
+	time: string;
+}
+
+/** The mode the new-controller form chose for a controller (#656), written as soon as hcom names
+ *  it, before the controller can activate: activate writes it into the controller layer. */
+export interface LaunchMode {
+	kind: 'launch-mode';
+	id: string;
+	launchId: string;
+	hcomName: string;
+	mode: UnattendedMode;
 	time: string;
 }
 
@@ -156,6 +167,7 @@ export type Line =
 	| AnswerMark
 	| SentLaunch
 	| LaunchMark
+	| LaunchMode
 	| LaunchFollowed
 	| SentWake
 	| ResumeMark
@@ -270,6 +282,7 @@ function keysOf(line: Line): string[] {
 		case 'answer-state':
 			return [line.answerId];
 		case 'launch-bound':
+		case 'launch-mode':
 		case 'launch-followed':
 			return [line.launchId];
 		case 'resume-closed':

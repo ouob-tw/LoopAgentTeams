@@ -5,6 +5,7 @@ import { offered } from '#lib/board/models.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { listLaunches, startLaunch } from '#lib/server/launch.ts';
 import { typedText } from '#lib/server/send.ts';
+import type { UnattendedMode } from '#lib/board/unattended.ts';
 import type { RequestHandler } from './$types';
 
 /** A name as a tab or workspace title takes it: one line, no longer than `max`; undefined when it
@@ -38,7 +39,7 @@ function workspacePart(value: unknown): WorkspacePick | null | undefined {
  *  answers with its sent-log entry. */
 export const POST: RequestHandler = async ({ request }) => {
 	const body: Partial<Record<keyof LaunchRequest, unknown>> | null = await request.json().catch(() => null);
-	const { client, folder, text, gitInit, model = null, effort = null } = body ?? {};
+	const { client, folder, text, gitInit, model = null, effort = null, mode = null } = body ?? {};
 	const agent = agentPart(body?.agent);
 	const workspace = workspacePart(body?.workspace);
 	const board = getBoard();
@@ -56,13 +57,26 @@ export const POST: RequestHandler = async ({ request }) => {
 		typeof gitInit !== 'boolean' ||
 		// The board never runs `git init` for a plain agent.
 		(agent && gitInit) ||
+		// A controller's first round starts manual or unattended (#656); a plain agent has no mode.
+		(mode !== null && (agent || (mode !== 'manual' && mode !== 'unattended'))) ||
 		(model !== null && typeof model !== 'string') ||
 		(effort !== null && typeof effort !== 'string') ||
 		!offered(board.config.modelOptions[client], { model, effort })
 	) {
 		return json({ error: 'invalid_launch' }, { status: 400 });
 	}
-	const result = await startLaunch(board, { client, folder, text, gitInit, model, effort, agent, workspace: workspace ?? { kind: 'auto' } });
+	const result = await startLaunch(board, {
+		client,
+		folder,
+		text,
+		gitInit,
+		model,
+		effort,
+		agent,
+		workspace: workspace ?? { kind: 'auto' },
+		// A controller sent without one starts manual.
+		...(agent ? {} : { mode: (mode ?? 'manual') as UnattendedMode })
+	});
 	return json(result.body, { status: result.status });
 };
 

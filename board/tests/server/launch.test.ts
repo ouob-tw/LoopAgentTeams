@@ -690,6 +690,54 @@ needsPlain('the folders to choose from are the report workspaces, each once, mos
 	]);
 });
 
+// --- The new controller's mode (#656) -----------------------------------------------------------
+
+const modeLines = () => {
+	const file = join(fixture.dir, 'board-state', 'sent-log.jsonl');
+	return existsSync(file)
+		? readFileSync(file, 'utf8')
+				.trim()
+				.split('\n')
+				.map((line) => JSON.parse(line))
+				.filter((line) => line.kind === 'launch-mode')
+		: [];
+};
+
+test('the chosen mode is logged for the controller as soon as hcom names it, before the launch command ends', async () => {
+	const repo = folder('mode-early', true);
+	herdrPlan({ panes: [{ workspace_id: 'wE', cwd: repo }], workspaces: [['wE', 1, 'mode-early']] });
+	hcomPlan({ names: ['mode-early-agent'], sleepMs: 1500 });
+	const before = modeLines().length;
+
+	const pending = launch({ folder: repo, mode: 'unattended' });
+	// hcom has printed the name but is still running: activate may already read the log.
+	let early: Record<string, unknown>[] = [];
+	for (let tries = 0; tries < 50 && early.length === 0; tries++) {
+		await Bun.sleep(20);
+		early = modeLines().slice(before);
+	}
+	expect(early).toMatchObject([{ kind: 'launch-mode', hcomName: 'mode-early-agent', mode: 'unattended' }]);
+	const { status, body } = await pending;
+	expect(status).toBe(200);
+	// Once only, citing the launch.
+	expect(modeLines().slice(before)).toEqual([expect.objectContaining({ launchId: body.entry!.id })]);
+});
+
+test('a controller sent without a mode starts manual; a plain agent has none and may not be given one', async () => {
+	const repo = folder('mode-default', true);
+	herdrPlan({ panes: [{ workspace_id: 'wF', cwd: repo }], workspaces: [['wF', 1, 'mode-default']] });
+	hcomPlan({ names: ['mode-default-agent'] });
+	const before = modeLines().length;
+
+	expect((await launch({ folder: repo })).status).toBe(200);
+	expect(modeLines().slice(before)).toMatchObject([{ hcomName: 'mode-default-agent', mode: 'manual' }]);
+
+	for (const mode of ['auto', 'MANUAL', 1]) expect((await launch({ folder: repo, mode })).status).toBe(400);
+	const agentBody = { folder: repo, text: '', workspace: { kind: 'existing', id: 'wF' }, agent: { tabName: '' } };
+	expect((await launch({ ...agentBody, mode: 'manual' })).status).toBe(400);
+	expect(modeLines().length).toBe(before + 1);
+});
+
 test('malformed launch requests are rejected without running anything', async () => {
 	const repo = folder('bad', true);
 	for (const body of [

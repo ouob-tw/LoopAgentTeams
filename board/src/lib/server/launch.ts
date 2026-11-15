@@ -268,6 +268,13 @@ async function attempt(
 	else {
 		front = frontTab(config, entry.herdrWorkspace!, await tabsBefore(config, entry.herdrWorkspace!));
 		let named: string | null = null;
+		// The form's mode goes in the log as soon as hcom names the controller, before it can activate.
+		let modeLogged = false;
+		const logMode = (hcomName: string) => {
+			if (!request.mode || modeLogged) return;
+			appendSent(config.stateDir, { kind: 'launch-mode', id: randomUUID(), launchId: entry.id, hcomName, mode: request.mode, time: new Date(config.now()).toISOString() });
+			modeLogged = true;
+		};
 		const launching = launchAgent(config, {
 			client: entry.client,
 			folder: prepared.startIn,
@@ -276,13 +283,27 @@ async function attempt(
 			...(agent?.tag ? { tag: agent.tag } : {}),
 			// A new Claude starts in bypass-permissions mode. Not in modelArgs: hcom repeats it on resumes (see permission.ts).
 			extraArgs: [...(entry.client === 'claude' ? ['--dangerously-skip-permissions'] : []), ...modelArgs(entry.client, request)],
-			onName: (name) => (named = name)
+			onName: (name) => {
+				named = name;
+				try {
+					logMode(name);
+				} catch {
+					// Tried again once the launch command is done.
+				}
+			}
 		});
 		early = frontWhileLaunching(config, () => (named ? { name: named } : null), front, launching);
 		const launched = await launching;
 		entry.outcome = launched.outcome;
 		entry.hcomName = launched.hcomName;
 		entry.error = launched.reason;
+		if (launched.hcomName && !modeLogged) {
+			try {
+				logMode(launched.hcomName);
+			} catch (error) {
+				entry.error ??= `模式紀錄寫入失敗：${(error as Error).message}`;
+			}
+		}
 		entry.earlierSessions = prepared.bound
 			.filter((controller) => controller.hcom_name === launched.hcomName)
 			.map((controller) => controller.session_id);

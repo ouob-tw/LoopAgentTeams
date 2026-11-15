@@ -4,6 +4,7 @@
 import { folderName } from './folder-search.ts';
 import { DEFAULT_UNREADABLE_TEXT, type ModelChoice, type ModelOptions } from './models.ts';
 import type { Agent, Controller } from './types.ts';
+import type { UnattendedMode } from './unattended.ts';
 
 export const LAUNCH_CLIENTS = ['claude', 'codex'] as const;
 export type LaunchClient = (typeof LAUNCH_CLIENTS)[number];
@@ -65,6 +66,8 @@ export interface LaunchRequest {
 	/** Null: the client's own default, and no argument for it. */
 	model: string | null;
 	effort: string | null;
+	/** A controller's mode for its first round (#656); missing for a plain agent. */
+	mode?: UnattendedMode;
 }
 
 /** How the hcom launch command ended: exit 0, exit 2 or a timeout, anything else. */

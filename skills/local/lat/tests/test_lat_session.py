@@ -1,7 +1,7 @@
 """CLI contract tests; only disposable local files, no Codex/model calls."""
 import json
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import importlib.util
 from unittest.mock import patch
 import os
@@ -2361,6 +2361,50 @@ class SessionTests(unittest.TestCase):
         self.assertIn('本輪模式：無人模式（來自全域），尚待目標', pending.stdout)
         self.assertIn('create --source settings-default', pending.stdout)
         self.assertEqual(self.unattended_status()['state'], 'pending-goal')
+
+    def board_launch(self, mode, launch_id='L1', name='orch', minutes_ago=0):
+        """The line the board's new-controller form logs once hcom names the controller (#656)."""
+        path = self.root / 'board/sent-log.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        moment = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        with path.open('a') as stream:
+            stream.write(json.dumps(dict(kind='launch-mode', id=f'm-{launch_id}', launchId=launch_id,
+                                         hcomName=name, mode=mode, time=moment.isoformat())) + '\n')
+
+    def test_activate_writes_the_mode_the_board_launch_chose_into_the_controller_layer(self):
+        # Manual over unattended project and global defaults.
+        (self.work / '.lat/preauth.toml').write_text('[unattended]\nmode = "unattended"\n')
+        self.board_launch('manual', name='someone-else', launch_id='L0')
+        self.board_launch('manual')
+        manual = self.activate_with('unattended')
+        self.assertIn('本輪模式：人工確認（來自主控）', manual.stdout)
+        self.assertEqual(json.loads(self.record.read_text())['unattended'],
+                         dict(mode='manual', source='board-launch:L1'))
+        self.assertEqual(self.unattended_status()['state'], 'none')
+        # A later round of the same session is not the launch's round.
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        again = self.activate_with('unattended')
+        self.assertIn('本輪模式：無人模式（來自專案）', again.stdout)
+        self.assertNotIn('unattended', json.loads(self.record.read_text()))
+        # Another session under the same name does not take the launch again.
+        self.activate_with(session=OTHER)
+        other = self.unattended_status(OTHER)
+        self.assertEqual(other['settings']['mode']['layer'], 'project')
+
+    def test_activate_of_a_controller_the_board_opened_unattended_waits_for_its_goal(self):
+        self.board_launch('unattended', launch_id='L7')
+        pending = self.activate_with('manual')
+        self.assertIn('本輪模式：無人模式（來自主控），尚待目標', pending.stdout)
+        self.assertIn('create --source settings-default --evidence board-launch:L7', pending.stdout)
+        status = self.unattended_status()
+        self.assertEqual((status['state'], status['settings']['mode']['layer']),
+                         ('pending-goal', 'controller'))
+
+    def test_activate_ignores_a_board_launch_older_than_an_hour(self):
+        self.board_launch('unattended', minutes_ago=61)
+        result = self.activate_with()
+        self.assertIn('本輪模式：人工確認（來自初始值）', result.stdout)
+        self.assertNotIn('unattended', json.loads(self.record.read_text()))
 
     def test_deactivate_ends_the_grant_with_the_way_the_round_ended(self):
         cases = (((), 'delivered'), (('--successor', 'next-orch'), 'handover'),
