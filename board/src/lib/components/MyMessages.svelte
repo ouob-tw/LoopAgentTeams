@@ -4,7 +4,8 @@
 	// 110px tall), or a tap on it, brings it up
 	// flush right beside the bar, over nothing but the page; it goes away when the mouse leaves it,
 	// or on a pick or a touch outside. The grip at the right end of the list's title row drags the bar
-	// and the list together up and down the edge, from the moment it is pressed, with the list staying
+	// and the list together up and down the edge, from the moment it is pressed, the list hanging from where
+	// it is and staying
 	// open; where it was let go is kept in this browser. A pick is handed to the conversation, which
 	// scrolls to it, loading earlier parts first when it is not there yet.
 	import { createRequest } from '#lib/board/api.ts';
@@ -49,6 +50,8 @@
 	const BAR_PAD = 7;
 	/** How many dots fit on the tallest bar: a count this big needs no more reading while the list is closed. */
 	const FIT = Math.floor((BAR_MAX - 2 * BAR_PAD) / PITCH);
+	/** The least height, in px, the list keeps while it hangs from the grip; the grip goes no lower than that leaves room for. */
+	const LIST_MIN = 192;
 	const BAR_KEY = 'lat-board-my-messages-bar';
 	/** How far around the open list the mouse may stray without closing it, in px. */
 	const MARGIN = 24;
@@ -212,24 +215,30 @@
 	}
 
 	// The grip in the list's title row: pressed, it drags the bar and the list at once, and the grip
-	// stays under the pointer. The list's top is place * (window - list), so the pointer's travel
-	// is divided by that; a list nearly as tall as the window can hardly move, so the bar follows the
-	// pointer one to one instead.
-	let grab: { id: number; y: number } | null = null;
+	// stays under the pointer. From the press the list hangs from where it is (its top edge in px, no
+	// longer a part of the bar's height), as tall as the room below it allows, scrolling inside, down to
+	// LIST_MIN; it stays so until it is closed, so letting go moves nothing. The bar moves as far as the
+	// pointer does.
+	let held = $state(false);
+	let anchor = $state(0);
+	$effect(() => {
+		if (!open) held = false;
+	});
+	let grab: { id: number; y: number; anchor: number; place: number } | null = null;
 	function gripDown(event: PointerEvent) {
 		if (event.button !== 0 || grab) return;
-		grab = { id: event.pointerId, y: event.clientY };
+		anchor = aside?.getBoundingClientRect().top ?? 0;
+		held = true;
+		grab = { id: event.pointerId, y: event.clientY, anchor, place };
 		dragging = true;
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 	}
 	function gripMove(event: PointerEvent) {
 		if (!grab || event.pointerId !== grab.id) return;
-		// Step by step: the list may grow while it is held, as its rows arrive.
-		const free = innerHeight - (aside?.getBoundingClientRect().height ?? 0);
+		const moved = event.clientY - grab.y;
+		anchor = Math.min(Math.max(0, innerHeight - LIST_MIN), Math.max(0, grab.anchor + moved));
 		// The bar stays inside the window, by its own height, as it is drawn.
-		const next = place + (event.clientY - grab.y) / (free >= innerHeight / 4 ? free : innerHeight);
-		place = Math.min(1 - barH / 2 / innerHeight, Math.max(barH / 2 / innerHeight, next));
-		grab.y = event.clientY;
+		place = Math.min(1 - barH / 2 / innerHeight, Math.max(barH / 2 / innerHeight, grab.place + moved / innerHeight));
 	}
 	function gripUp(event: PointerEvent) {
 		if (!grab || event.pointerId !== grab.id) return;
@@ -272,7 +281,7 @@
 	oncontextmenu={(event) => event.preventDefault()}
 ></div>
 
-<aside class="mine" bind:this={aside} class:open style:right="{gap + barW}px" style:top="{place * 100}%" style:transform="translateY(-{place * 100}%)" aria-label="我說過的話" data-block="my-messages">
+<aside class="mine" bind:this={aside} class:open style:right="{gap + barW}px" style:top={held ? `${anchor}px` : `${place * 100}%`} style:transform={held ? 'none' : `translateY(-${place * 100}%)`} style:max-height={held ? `max(${LIST_MIN}px, calc(100dvh - ${anchor}px))` : null} aria-label="我說過的話" data-block="my-messages">
 	{#if open}
 	<div class="head">
 		<h3>我說過的話</h3>

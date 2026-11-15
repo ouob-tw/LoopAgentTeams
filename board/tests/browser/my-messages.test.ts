@@ -620,6 +620,37 @@ test.skipIf(!CHROME)('1280px: the bar has a dot for each thing said, at least 44
 	expect(tab.errors).toEqual([]);
 }, 60_000);
 
+test.skipIf(!CHROME)('1280px: with a tall list the grip stays under the pointer during a drag too, the list scrolls inside the room below it, and letting go moves nothing', async () => {
+	await visit(1280);
+	await openByEdge();
+	await tab.until(`document.querySelectorAll('${ROWS}').length === 130`, 'the whole list');
+	await sleep(100);
+	const list = await boxOf();
+	expect(list.bottom - list.top).toBeGreaterThan(700);
+	const grip = await gripBox();
+	const bar0 = await barBox();
+	await mouse(grip.x, grip.y);
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: grip.x, y: grip.y, button: 'left', buttons: 1, clickCount: 1 });
+	for (const dy of [50, 150, 300, 450, 250, 100]) {
+		const y = grip.y + dy;
+		await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: grip.x, y, button: 'left', buttons: 1 });
+		const now = await gripBox();
+		expect([dy, Math.abs(now.y - y) <= 4]).toEqual([dy, true]);
+		const box = await boxOf();
+		expect(box.top).toBeGreaterThanOrEqual(0);
+		expect(box.bottom).toBeLessThanOrEqual(800);
+		// The bar goes as far as the pointer does, beside the list.
+		expect(Math.abs((await barBox()).y - Math.min(bar0.y + dy, 800 - 55))).toBeLessThanOrEqual(2);
+		expect(await tab.eval(SHOWN)).toBe(true);
+	}
+	await shot(tab, 'my-messages-1280-tall-dragging');
+	const before = await boxOf();
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: grip.x, y: grip.y + 100, button: 'left', clickCount: 1 });
+	expect(await boxOf()).toEqual(before);
+	expect(await stored()).not.toBeNull();
+	expect(tab.errors).toEqual([]);
+}, 30_000);
+
 test.skipIf(!CHROME)('1280px: the bar held for a second drags nothing and the list still opens over it', async () => {
 	await visit(1280);
 	const bar = await barBox();
@@ -681,7 +712,7 @@ test.skipIf(!CHROME)('390px: a finger drags the bar and the list by the grip and
 	for (let step = 1; step <= 5; step++) await tab.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: grip.x, y: grip.y - step * 40 }] });
 	await sleep(100);
 	expect(await tab.eval(SHOWN)).toBe(true);
-	// A list as tall as the window cannot move: the bar follows the finger one to one.
+	// The bar follows the finger.
 	expect(Math.abs((await barBox()).y - 200)).toBeLessThanOrEqual(2);
 	await shot(tab, 'my-messages-390-bar-dragging');
 	await tab.liftFinger();
