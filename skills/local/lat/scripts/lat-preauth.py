@@ -457,7 +457,7 @@ def unpushed_commit_problems(top, version, ledger):
     sync merge when each parent is on a remote or an unpushed commit that passed, and at least
     one parent is such an unpushed commit.
     Returns (problems, found): each problem a (kind, reason) pair; `found` maps the file name
-    of each other ledger to the tickets that were found only there."""
+    of each other ledger to the ticket numbers that were found only there."""
     own = own_tracker(top)
     own_tickets = round_tickets(ledger)
     others = [(name, round_tickets(other)) for name, other in repo_ledgers(top)]
@@ -478,7 +478,7 @@ def unpushed_commit_problems(top, version, ledger):
             home = next((name for name, tickets in others
                          if is_round_ticket(ref, tickets, own)), None)
             if home:
-                found.setdefault(home, set()).add(ticket_name(ref))
+                found.setdefault(home, set()).add(int(ref[1]))
             else:
                 elsewhere.add(ref)
         names = sorted(ticket_name(ref) for ref in elsewhere)
@@ -987,7 +987,7 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
                 result['basis'].append(
                     f'every unpushed commit of {version[:12]} references a ticket on a LAT '
                     'ledger of this repo' + ''.join(
-                        f'; {", ".join(sorted(tickets))} on {name}'
+                        f'; {", ".join(f"#{n}" for n in sorted(tickets))} on {name}'
                         for name, tickets in sorted(found.items())))
     merged = resolve_version(top, commit) if action == 'merge' and commit else None
     if action == 'merge' and not merged and any(
