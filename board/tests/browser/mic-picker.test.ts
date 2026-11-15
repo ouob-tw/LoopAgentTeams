@@ -1,4 +1,4 @@
-// The picker joined to each mic, in a real browser on the built board with a fake mic that lists
+// The picker joined to the command line's mic, in a real browser on the built board with a fake mic that lists
 // microphones: the menu lists them, the choice reaches the recording request, is shared by the
 // command line and the answer boxes, survives a reload, falls back when the microphone is gone,
 // and does not appear while voice input is off.
@@ -56,25 +56,37 @@ test('voice input off: no picker beside any mic', async () => {
 	await tab().eval(`localStorage.setItem('lat-board-voice', '1')`);
 }, 30_000);
 
-test('each mic and its picker are one control in the command line and the answer box, at both widths', async () => {
-	for (const width of [1280, 390]) {
+test('the picker is joined to the command line mic only; the answer box mic is alone, under its box at the right', async () => {
+	for (const width of [1280, 390, 260]) {
 		await open(width);
 		await tab().until(`document.querySelectorAll('.mic-group').length >= 2`, 'the mics');
+		// The command line: mic and picker are one control.
 		expect(
-			await tab().eval(`[...document.querySelectorAll('.mic-group')].every((group) => {
-				const [mic, pick] = [...group.children].map((child) => child.getBoundingClientRect());
-				return group.children.length === 2 && Math.abs(mic.top - pick.top) < 1 && Math.abs(mic.bottom - pick.bottom) < 1 && Math.abs(mic.right - pick.left) <= 1 && pick.width >= mic.width - 1 && pick.height >= mic.height - 1;
-			})`)
+			await tab().eval(`(() => {
+				const [mic, pick] = [...document.querySelector('.cmd .mic-group').children].map((child) => child.getBoundingClientRect());
+				return document.querySelector('.cmd .mic-group').children.length === 2 && Math.abs(mic.top - pick.top) < 1 && Math.abs(mic.bottom - pick.bottom) < 1 && Math.abs(mic.right - pick.left) <= 1 && pick.width >= mic.width - 1 && pick.height >= mic.height - 1;
+			})()`)
+		).toBe(true);
+		// Anywhere else: the mic alone, no picker.
+		expect(await tab().eval(`document.querySelectorAll('${PICK}').length === 1 && !!document.querySelector('.cmd ${PICK}')`)).toBe(true);
+		// The answer box takes the whole width of its card and the mic sits below it, flush right.
+		expect(
+			await tab().eval(`(() => {
+				const box = document.querySelector('${BOX}').getBoundingClientRect();
+				const field = document.querySelector('${BOX}').parentElement.getBoundingClientRect();
+				const mic = document.querySelector('${BOX}').parentElement.querySelector('.mic').getBoundingClientRect();
+				return Math.abs(box.width - field.width) <= 1 && mic.top >= box.bottom && Math.abs(mic.right - box.right) <= 1;
+			})()`)
 		).toBe(true);
 		// Nothing is squeezed into sideways scrolling.
 		expect(await tab().eval(`document.documentElement.scrollWidth <= innerWidth`)).toBe(true);
 		await shot(tab(), `mic-picker-idle-${width}`, { box: BOX });
 	}
-}, 30_000);
+}, 40_000);
 
 test('the menu lists the system default and each mic, marks the one in use, and the choice reaches every recording and a reload', async () => {
 	await open(390);
-	await tab().until(`document.querySelectorAll('${PICK}').length >= 2`, 'the pickers');
+	await tab().until(`!!document.querySelector('.cmd ${PICK}')`, 'the picker');
 	await tab().eval(`document.querySelector('.cmd ${PICK}').click()`);
 	await tab().until(`document.querySelectorAll('.mic-menu [role="menuitemradio"]').length === 3`, 'the menu');
 	expect(await tab().eval(ITEMS)).toEqual(['系統預設 ✓', 'USB 麥克風', '內建麥克風']);
@@ -86,9 +98,9 @@ test('the menu lists the system default and each mic, marks the one in use, and 
 	// Recording in the answer box (not the mic that was set) asks for the picked one.
 	await speak(tab(), BOX);
 	expect(await tab().eval(`mediaAsked.at(-1)`)).toEqual({ audio: { deviceId: { exact: 'usb' } } });
-	// The choice is still there after a reload, in the other mic's menu.
+	// The choice is still there after a reload, in the command line's menu.
 	await open(390);
-	await tab().eval(`document.querySelectorAll('${PICK}')[1].click()`);
+	await tab().eval(`document.querySelector('.cmd ${PICK}').click()`);
 	await tab().until(`document.querySelectorAll('.mic-menu [role="menuitemradio"]').length === 3`, 'the menu after reload');
 	expect(await tab().eval(ITEMS)).toEqual(['系統預設', 'USB 麥克風 ✓', '內建麥克風']);
 	expect(tab().errors).toEqual([]);

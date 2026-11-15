@@ -36,18 +36,19 @@
 
 {#if voice.unlocked}
 	<div class="voice-field" bind:this={field}>
-		<VoiceButton {disabled} {key} oninsert={insert} />
 		{@render children()}
+		<VoiceButton {disabled} {key} oninsert={insert} />
 	</div>
 {:else}
 	{@render children()}
 {/if}
 
 <style>
-	/* As wide as the box was, so it stays on its own row; the mic in the text colour even inside a
+	/* The box takes the whole width and the mic sits under it at the right; the mic in the text colour even inside a
 	   muted label, as the command line's is. */
 	.voice-field {
 		display: flex;
+		flex-direction: column;
 		align-items: flex-end;
 		gap: 0.4rem;
 		width: 100%;
@@ -58,7 +59,7 @@
 		font-size: max(1rem, var(--min-font, 0px));
 	}
 	.voice-field > :global(textarea) {
-		flex: 1;
+		align-self: stretch;
 		min-width: 0;
 	}
 </style>

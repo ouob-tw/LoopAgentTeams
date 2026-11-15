@@ -326,7 +326,7 @@
 {#snippet attachAndVoice()}
 	<span class="attach-slot"><AttachButton owner={attachOwner} disabled={boxDisabled} /></span>
 	{#if voice.unlocked}
-		<span class="voice-slot"><VoiceButton disabled={boxDisabled} key="command-line" oninsert={(text) => messageBox?.insert(text)} /></span>
+		<span class="voice-slot"><VoiceButton picker disabled={boxDisabled} key="command-line" oninsert={(text) => messageBox?.insert(text)} /></span>
 	{/if}
 {/snippet}
 
@@ -377,7 +377,6 @@
 		void submit();
 	}}
 >
-	<span class="to" class:other={recipient !== undefined && recipient.id !== target?.id} title={toAgent && agent?.hcomName ? `@${agent.hcomName}` : toClosed && closed ? `@${closed.hcomName}` : recipient ? `@${recipient.hcomName}` : undefined}>→ {toAgent && agent ? agentName : toClosed && closed ? `@${lastSegment(closed.hcomName)}` : recipient ? `@${lastSegment(recipient.hcomName)}` : '@名稱'}</span>
 	<!-- The paperclip and the mic sit before the box as they do in a message box of its own, and the
 	     files above both; placed here so a phone can move them to the row under the box. The send
 	     button sits inside the box at its right edge; the box keeps its text clear of it. -->
@@ -494,7 +493,7 @@
 	.cmd {
 		position: relative;
 		display: grid;
-		grid-template-columns: auto 1fr;
+		grid-template-columns: 1fr;
 		grid-auto-columns: auto;
 		grid-auto-flow: column;
 		gap: 0.6rem;
@@ -502,17 +501,6 @@
 		padding: 0.6rem 1rem;
 		background: var(--surface);
 		border-top: 1px solid var(--line);
-	}
-	/* Bottom-aligned like the send button: as tall as a one-line box (its line, padding and border),
-	   so the text sits level with the box's last line and does not move when the box grows. */
-	.to {
-		display: flex;
-		align-items: center;
-		box-sizing: border-box;
-		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
-		font-family: var(--mono);
-		font-size: max(0.8rem, var(--min-font, 0px));
-		color: var(--muted);
 	}
 	/* As tall as a one-line box, so the label stays level with its last line as it grows. */
 	.pill-slot[inert] {
@@ -740,18 +728,26 @@
 			flex: none;
 			margin-left: auto;
 		}
-		/* The top bar already names the open controller; the line names its recipient only when it
-		   is someone else, in full on a short row above the box, so it is never cut. */
-		.to {
-			display: none;
+	}
+	/* A 390px phone at 150% zoom (260px): the model and effort, paperclip, mic with its picker and
+	   the put-away button share one line. The options button, when it has something to show,
+	   starts the next line with the put-away button at its right, so nothing is cut off or scrolls
+	   sideways and no control floats between lines. */
+	@media (max-width: 300px) {
+		.cmd {
+			gap: 0.25rem;
 		}
-		.to.other {
-			display: block;
-			order: -3;
-			flex-basis: 100%;
-			height: auto;
-			overflow-wrap: anywhere;
-			color: var(--accent);
+		.controls {
+			display: contents;
+		}
+		.pill-slot,
+		.attach-slot,
+		.voice-slot,
+		.options {
+			flex: none;
+		}
+		.pill-slot :global(.picker .part) {
+			padding-inline: 3px;
 		}
 	}
 </style>

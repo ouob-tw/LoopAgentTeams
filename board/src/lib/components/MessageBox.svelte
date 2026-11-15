@@ -221,12 +221,8 @@
 	<AttachmentTray owner={attachTo} />
 {/if}
 <div class="message-box" class:dropping role="group" ondragover={dragover} ondragleave={() => (dropping = false)} ondrop={drop}>
-	{#if attachTo && tools}
-		<AttachButton owner={attachTo} {disabled} />
-	{/if}
-	{#if voice.unlocked && tools}
-		<VoiceButton {disabled} oninsert={insert} />
-	{/if}
+	<!-- The box and its skill list are placed against each other; the tools under them are not part of that. -->
+	<div class="area">
 	<textarea
 		bind:this={box}
 		bind:value
@@ -274,14 +270,37 @@
 			{/each}
 		</ul>
 	{/if}
+	</div>
+	{#if tools && ((attachTo) || voice.unlocked)}
+		<!-- Under the box, at the right: the box keeps the whole width. -->
+		<span class="tools">
+			{#if attachTo}
+				<AttachButton owner={attachTo} {disabled} />
+			{/if}
+			{#if voice.unlocked}
+				<VoiceButton {disabled} oninsert={insert} />
+			{/if}
+		</span>
+	{/if}
 </div>
 
 <style>
 	.message-box {
 		position: relative;
 		display: flex;
+		flex-wrap: wrap;
 		align-items: flex-end;
 		gap: 0.4rem;
+	}
+	.area {
+		position: relative;
+		flex: 1 1 100%;
+		min-width: 0;
+	}
+	.tools {
+		display: flex;
+		gap: 0.4rem;
+		margin-left: auto;
 	}
 	.message-box.dropping textarea {
 		border-color: var(--accent);

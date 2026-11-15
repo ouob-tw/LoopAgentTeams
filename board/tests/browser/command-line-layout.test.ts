@@ -30,6 +30,7 @@ const PLACES = `(() => {
 		to: place('.to'),
 		attach: place('.attach-slot button'),
 		voice: place('.voice-slot button'),
+		pick: place('.voice-slot .mic-pick'),
 		box: place('textarea'),
 		pill: place('.pill-slot .picker'),
 		options: place('.options'),
@@ -38,7 +39,7 @@ const PLACES = `(() => {
 		fits: document.documentElement.scrollWidth <= innerWidth
 	};
 })()`;
-type Places = Record<'to' | 'attach' | 'voice' | 'box' | 'pill' | 'options' | 'hide', Box> & { width: number; fits: boolean };
+type Places = Record<'to' | 'attach' | 'voice' | 'pick' | 'box' | 'pill' | 'options' | 'hide', Box> & { width: number; fits: boolean };
 
 async function visit(width: number) {
 	await tab().send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
@@ -68,10 +69,11 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-test.skipIf(!CHROME)('a wide screen keeps one row: recipient, paperclip, mic, box, model and effort, then the rest', async () => {
+test.skipIf(!CHROME)('a wide screen keeps one row: paperclip, mic, box, model and effort, then the rest', async () => {
 	const at = await visit(1280);
 	expect(at.hide).toBeNull();
-	const row = [at.to, at.attach, at.voice, at.box, at.pill, ...(at.options ? [at.options] : [])] as NonNullable<Box>[];
+	expect(at.to).toBeNull();
+	const row = [at.attach, at.voice, at.box, at.pill, ...(at.options ? [at.options] : [])] as NonNullable<Box>[];
 	for (const [index, box] of row.entries()) {
 		expect(box).not.toBeNull();
 		if (index) expect(box.left).toBeGreaterThanOrEqual(row[index - 1].right);
@@ -82,13 +84,16 @@ test.skipIf(!CHROME)('a wide screen keeps one row: recipient, paperclip, mic, bo
 	expect(at.fits).toBe(true);
 });
 
-for (const width of [360, 390]) {
+for (const width of [260, 360, 390]) {
 	test.skipIf(!CHROME)(`${width}px: the box alone on top; model and effort, paperclip, mic, the rest, and put away at the far right`, async () => {
 		const at = await visit(width);
 		// No recipient for the open controller, and the box takes the whole row.
 		expect(at.to).toBeNull();
 		expect(at.box!.right - at.box!.left).toBeGreaterThan(width * 0.9);
-		const row = [at.pill, at.attach, at.voice, ...(at.options ? [at.options] : []), at.hide] as NonNullable<Box>[];
+		// At 260px the options button, when it has something to show, starts a line of its own with
+		// the put-away button (see the test below).
+		const wrapped = width <= 300 && !!at.options;
+		const row = [at.pill, at.attach, at.voice, ...(at.options && !wrapped ? [at.options] : []), ...(wrapped ? [] : [at.hide])] as NonNullable<Box>[];
 		for (const [index, box] of row.entries()) {
 			expect(box).not.toBeNull();
 			expect(box.hit).toBe(true);
@@ -98,7 +103,17 @@ for (const width of [360, 390]) {
 		// One row under the box, put away at its right edge.
 		expect(Math.max(...row.map((box) => box.top))).toBeLessThan(Math.min(...row.map((box) => box.bottom)));
 		expect(at.hide!.right).toBeGreaterThan(width - 24);
+		expect(at.hide!.hit).toBe(true);
 		expect(at.fits).toBe(true);
+		// Every control, the mic picker and the options button too, is whole inside the screen and
+		// can be hit: nothing cut off at the right.
+		for (const box of [...row, at.pick, at.options].filter(Boolean) as NonNullable<Box>[]) {
+			expect(box.right).toBeLessThanOrEqual(width);
+			expect(box.left).toBeGreaterThanOrEqual(0);
+			expect(box.hit).toBe(true);
+		}
+		expect(at.pick).not.toBeNull();
+		expect(at.pick!.left).toBeGreaterThanOrEqual(at.voice!.right - 1);
 		// Put away, then brought back.
 		await tab().eval(`document.querySelector('.cmd .hide').click()`);
 		const shown = (selector: string) => `!!document.querySelector('${selector}')?.getBoundingClientRect().height`;
@@ -183,3 +198,23 @@ for (const width of [1280, 390]) {
 		await tab().eval(`document.querySelector('.cmd .options').click()`);
 	});
 }
+
+// 260px with the options button showing: it takes a line of its own, whole and clickable, and the
+// page does not scroll sideways.
+test.skipIf(!CHROME)('260px: the options button showing goes to its own line with the put-away button, whole and clickable', async () => {
+	await visit(260);
+	await sleep(400);
+	await tab().eval(`document.querySelector('.cmd .options').classList.remove('idle')`);
+	const at = await tab().eval<Places>(PLACES);
+	for (const box of [at.options, at.pick, at.voice, at.attach, at.pill, at.hide] as NonNullable<Box>[]) {
+		expect(box).not.toBeNull();
+		expect(box.hit).toBe(true);
+		expect(box.left).toBeGreaterThanOrEqual(0);
+		expect(box.right).toBeLessThanOrEqual(260);
+	}
+	expect(at.options!.top).toBeGreaterThanOrEqual(at.voice!.bottom - 1);
+	// The put-away button shares that line, at its right, level with the options button.
+	expect(Math.abs((at.hide!.top + at.hide!.bottom) / 2 - (at.options!.top + at.options!.bottom) / 2)).toBeLessThanOrEqual(2);
+	expect(at.hide!.right).toBeGreaterThan(260 - 24);
+	expect(at.fits).toBe(true);
+});

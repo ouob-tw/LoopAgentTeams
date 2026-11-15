@@ -19,7 +19,7 @@
 		processing: { label: '辨識中', title: '辨識中…' }
 	};
 
-	let { disabled = false, key, oninsert }: { disabled?: boolean; key?: string; oninsert: (text: string) => void } = $props();
+	let { disabled = false, key, picker = false, oninsert }: { disabled?: boolean; key?: string; /** Joins the microphone picker to the mic; only the command line has it. */ picker?: boolean; oninsert: (text: string) => void } = $props();
 
 	let button = $state<HTMLButtonElement>();
 	let recording = $state<ReturnType<typeof recordingFor>>();
@@ -123,6 +123,7 @@
 		<Mic size="1.1em" />
 	{/if}
 </button>
+{#if picker}
 <button
 	bind:this={pick}
 	type="button"
@@ -150,6 +151,7 @@
 			<p class="note">{micDevices.note}</p>
 		{/if}
 	</div>
+{/if}
 {/if}
 </span>
 

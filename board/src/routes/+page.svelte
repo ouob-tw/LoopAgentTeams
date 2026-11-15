@@ -1261,6 +1261,7 @@
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
+		overflow: hidden;
 		line-height: 1.25;
 	}
 	button.whose {
@@ -1275,11 +1276,13 @@
 		cursor: pointer;
 	}
 	.topbar strong {
+		max-width: 100%;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.handle {
+		max-width: 100%;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
