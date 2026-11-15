@@ -1111,6 +1111,12 @@
 	.detail:focus {
 		outline: none;
 	}
+	/* The conversation's column keeps its scrollbar's place: while a new conversation reads, the one
+	   "讀取中…" line is shorter than the window and the scrollbar would go, then come back. A 終端
+	   分頁 (screen-open) takes the column's full width, so it keeps none. */
+	.page:not(.screen-open) .detail {
+		scrollbar-gutter: stable;
+	}
 	/* A 終端分頁 shown: its panel takes all the column's height down to the command line and all its
 	   width. A status card opened above it scrolls the column, the panel keeping a usable height. */
 	.screen-open .detail {

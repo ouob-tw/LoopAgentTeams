@@ -174,7 +174,8 @@
 		let element: Element | null = document.elementsFromPoint(innerWidth - 1, innerHeight / 2).find((hit) => !hit.closest('.bar, .mine')) ?? null;
 		while (element && element !== document.documentElement) {
 			const width = (element as HTMLElement).offsetWidth - element.clientWidth;
-			if (width > 4 && element.scrollHeight > element.clientHeight) return width;
+			// A column that keeps its scrollbar's place (scrollbar-gutter) has the track whether it scrolls or not.
+			if (width > 4 && (element.scrollHeight > element.clientHeight || getComputedStyle(element).scrollbarGutter.startsWith('stable'))) return width;
 			element = element.parentElement;
 		}
 		return innerWidth - document.documentElement.clientWidth;
