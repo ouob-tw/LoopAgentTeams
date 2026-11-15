@@ -10,13 +10,14 @@ import { join } from 'node:path';
 /** The Chrome flags that send lat.ouob.net to this host and accept the test certificate. */
 export const PROXY_CHROME_ARGS = ['--host-resolver-rules=MAP lat.ouob.net 127.0.0.1', '--ignore-certificate-errors'];
 
-/** An HTTPS proxy for lat.ouob.net in front of the board, as the reverse proxy is: it ends TLS and
- *  tells the board, its trusted proxy, that the browser used HTTPS. It listens before the board
+/** An HTTPS proxy for lat.ouob.net (or `names`, the first one the board's) in front of the board, as
+ *  the reverse proxy is: it ends TLS, passes the host name on, and tells the board, its trusted
+ *  proxy, that the browser used HTTPS. It listens before the board
  *  starts, so the board's address can name its port; `target` is read at each request. */
-export function httpsProxy(target: () => string) {
+export function httpsProxy(target: () => string, names = ['lat.ouob.net']) {
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-tls-'));
 	const [key, cert] = [join(dir, 'key.pem'), join(dir, 'cert.pem')];
-	const made = spawnSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=lat.ouob.net', '-addext', 'subjectAltName=DNS:lat.ouob.net']);
+	const made = spawnSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', `/CN=${names[0]}`, '-addext', `subjectAltName=${names.map((name) => `DNS:${name}`).join(',')}`]);
 	if (made.status !== 0) throw new Error(`openssl could not make the test certificate: ${made.stderr}`);
 	const server = Bun.serve({
 		hostname: '127.0.0.1',
@@ -38,7 +39,9 @@ export function httpsProxy(target: () => string) {
 		}
 	});
 	return {
-		origin: `https://lat.ouob.net:${server.port}`,
+		origin: `https://${names[0]}:${server.port}`,
+		/** The address of another of `names` (the demo address), through the same proxy. */
+		originOf: (name: string) => `https://${name}:${server.port}`,
 		close() {
 			server.stop(true);
 			rmSync(dir, { recursive: true, force: true });

@@ -1,8 +1,9 @@
 // Demo pages published by the ui-choice-demo skill (`demo.py publish`), served read-only under
-// `/demo/<name>/…` behind the board's login. The pages are HTML an agent wrote, so every answer
-// under /demo is sandboxed without `allow-same-origin` (security-headers.ts, set for the path by
-// hooks.server.ts and the connection guard): the page runs as an origin of its own, which gets no
-// board cookie and cannot read any board answer.
+// `/demo/<name>/…` behind the board's login, or on the demo pages' own address (demo-site.ts). The
+// pages are HTML an agent wrote: under the board's /demo every answer is sandboxed without
+// `allow-same-origin` (security-headers.ts, set for the path by hooks.server.ts and the connection
+// guard), so the page runs as an origin of its own, which gets no board cookie and cannot read any
+// board answer; the demo address is such an origin already.
 import { realpathSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
@@ -63,11 +64,18 @@ function segments(pathname: string): string[] | null {
 	return parts;
 }
 
-/** The answer to `GET /demo/<rest>`, `rest` as the address has it (still percent-encoded).
- *  A folder's address serves its `index.html`; nothing is listed. `/demo/<name>` goes to
- *  `/demo/<name>/` so the page's relative addresses resolve inside its folder. Anything that is
- *  not a file inside the demo's own folder once links are followed answers 404. */
-export async function serveDemo(siteDir: string, rest: string, search: string): Promise<Response> {
+/** Whether `rest` (as the address has it) names a demo and stays inside it, before any file is read. */
+export function isDemoAddress(rest: string): boolean {
+	const parts = segments(rest);
+	return parts !== null && NAME.test(parts[0]);
+}
+
+/** The answer to `GET <base><rest>`, `rest` as the address has it (still percent-encoded); `base`
+ *  is `/demo/` on the board's address and `/` on the demo address. A folder's address serves its
+ *  `index.html`; nothing is listed. `<base><name>` goes to `<base><name>/` so the page's relative
+ *  addresses resolve inside its folder. Anything that is not a file inside the demo's own folder
+ *  once links are followed answers 404. */
+export async function serveDemo(siteDir: string, rest: string, search: string, base = '/demo/'): Promise<Response> {
 	const parts = segments(rest);
 	if (!parts || !NAME.test(parts[0])) return missing();
 	const [name, ...inside] = parts;
@@ -77,7 +85,7 @@ export async function serveDemo(siteDir: string, rest: string, search: string): 
 		const root = realpathSync(siteDir);
 		const own = realpathSync(join(root, name));
 		if (!own.startsWith(root + sep) || !statSync(own).isDirectory()) return missing();
-		if (!inside.length) return new Response(null, { status: 308, headers: { location: `/demo/${name}/${search}` } });
+		if (!inside.length) return new Response(null, { status: 308, headers: { location: `${base}${name}/${search}` } });
 		const file = realpathSync(join(own, ...inside));
 		if (!file.startsWith(own + sep) || !statSync(file).isFile()) return missing();
 		return new Response(await readFile(file), { headers: { 'content-type': demoType(file) } });

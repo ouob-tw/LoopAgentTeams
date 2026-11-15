@@ -6,6 +6,7 @@ import { parseModelOptions, type ModelOptions } from '../board/models.ts';
 import { ASK_EXECUTION_WAIT_MS } from '../board/board-asks.ts';
 import { codexMultiAuthDir } from './quota.ts';
 import { connectionSettings, type AddressList } from './client-address.ts';
+import { demoAddress, type DemoSite } from './demo-address.ts';
 
 type Env = Record<string, string | undefined>;
 
@@ -76,6 +77,9 @@ export interface BoardConfig {
 	uploadDir: string;
 	/** Where `demo.py publish` puts demo pages (`<data>/site`), served under `/demo/<name>/`. May not exist. */
 	demoSiteDir: string;
+	/** The demo pages' own address (`LAT_BOARD_DEMO_URL`), another origin than the board's; null serves
+	 *  them sandboxed under the board's `/demo/` instead. */
+	demoSite: DemoSite | null;
 	/** The largest file that may be attached. */
 	uploadMaxBytes: number;
 	/** Command that runs a Codex app server over standard input and output, to tidy long speech. */
@@ -151,6 +155,16 @@ export function passkeySite(env: Env): PasskeySite | null {
 	if (url.hostname !== rpId && !url.hostname.endsWith(`.${rpId}`))
 		throw new Error(`LAT_BOARD_PASSKEY_RP_ID: "${rpId}" is not ${url.hostname} or a domain it belongs to`);
 	return { origin: url.origin, rpId };
+}
+
+/** `LAT_BOARD_DEMO_URL` (demo-address.ts). Its logins are handed over from the board, so the
+ *  board's own address must be set too, and be another one. */
+export function demoSite(env: Env, board: PasskeySite | null): DemoSite | null {
+	const demo = demoAddress(env);
+	if (!demo) return null;
+	if (!board) throw new Error('LAT_BOARD_DEMO_URL needs LAT_BOARD_URL: the demo address sends logins to the board');
+	if (demo.origin === board.origin) throw new Error('LAT_BOARD_DEMO_URL must be another address than LAT_BOARD_URL');
+	return demo;
 }
 
 const MAX_FALLBACK_MS = 60_000;
@@ -241,6 +255,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		MIN_FALLBACK_MS,
 		Math.min(seconds(env.LAT_BOARD_FALLBACK_SECONDS, MAX_FALLBACK_MS), MAX_FALLBACK_MS)
 	);
+	const board = passkeySite(env);
 	return {
 		stateDir: env.LAT_BOARD_STATE_DIR || join(stateHome(env), 'lat/board'),
 		// 須與 `skills/local/lat/scripts/_lat_common.py` 一致
@@ -278,7 +293,8 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		debounceMs: 200,
 		loginLockMs: seconds(env.LAT_BOARD_LOGIN_LOCK_SECONDS, 60_000),
 		...connectionSettings(env),
-		passkeySite: passkeySite(env),
+		passkeySite: board,
+		demoSite: demoSite(env, board),
 		asrUrl: env.LAT_BOARD_ASR_URL?.replace(/\/+$/, '') || null,
 		asrToken: env.LAT_BOARD_ASR_TOKEN || null,
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),

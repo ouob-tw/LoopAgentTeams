@@ -56,6 +56,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_UPLOAD_DIR` | 附件存放的資料夾（見「附件」）；資料夾是連結或不屬於看板的帳號時拒絕使用 | `/tmp/lat-board-uploads` |
 | `LAT_BOARD_UPLOAD_MAX_MB` | 單一附件的大小上限（MB） | `250` |
 | `LAT_BOARD_DEMO_DIR` | `ui-choice-demo` 技能 `demo.py` 的資料夾（看板讀其中的 `site/<名稱>/`，見「示意頁」）；沒設時讀 `~/.agents/demo.json` 的 `data`，讀不到或沒寫就用 demo.py 的預設。資料夾不存在時 `/demo/` 一律 404 | `~/.local/share/demo-publish` |
+| `LAT_BOARD_DEMO_URL` | 示意頁專用的 https 網址（只寫來源，例如 `https://demo.example.net`，見「示意頁」）。設了以後看板的 `/demo/<名稱>/` 轉到這個網址，示意頁在那裡以獨立來源提供；必須同時設 `LAT_BOARD_URL`，而且不能和它相同，否則看板不啟動。反向代理要把這個主機名稱也轉給看板，並保留 `Host`（或照 adapter-node 設 `HOST_HEADER`） | 不設定（示意頁留在看板的 `/demo/`，以 sandbox 隔離） |
 | `BODY_SIZE_LIMIT` | 伺服器收的請求大小上限（adapter-node 的設定）。約 3 分鐘的錄音會超過預設的 512K，用語音輸入時設成 `2M` | `512K` |
 | `LAT_BOARD_TIDY_COMMAND` | 整理長語音用的 Codex app server 指令（JSON 字串陣列），每次整理啟動一個、以標準輸入輸出溝通，用完即結束；模型固定為 `gpt-6-luna`、思考強度 `low`。預設指令關掉 apps、hooks、memories、plugins、skills 說明與各種工具（`config.ts` 的 `TEXT_ONLY_CODEX`），自訂時照用所設的值、不會自動補上 | `["codex","app-server","-c","features.apps=false",…]` |
 | `LAT_BOARD_TIDY_TIMEOUT_SECONDS` | Codex 整理多久沒完成就改放原始辨識文字並提示 | `30` |
@@ -404,7 +405,12 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 路徑以送來的原文逐段解碼（不用 SvelteKit 解碼後的參數），任何一段是空的、開頭是點（含 `.`、`..` 與隱藏檔）或含 `/`、`\`、NUL 就 404；`%2e%2e` 在網址解析時已併成 `..` 處理。名稱的規則與 demo.py 相同。解開連結後檔案要在該示意自己的資料夾內（示意資料夾本身是連到外面的連結也拒絕），而且是一般檔案。
 - 以 `/` 結尾讀該資料夾的 `index.html`，沒有就 404，不列目錄；`/demo/<名稱>` 以 308 轉到加上 `/` 的網址（保留查詢字串），頁面的相對路徑才會落在自己的資料夾。
 - `/demo` 底下的每個回應，不論誰寫的（示意檔、404、308、沒登入的 303、SvelteKit 的 400／405），都帶 `Content-Security-Policy: sandbox allow-scripts allow-popups`（沒有 `allow-same-origin`，後面接看板自己的那段）、`Cache-Control: no-store`、`Referrer-Policy: no-referrer`：`security-headers.ts` 的 `securityHeaders` 依路徑（`isDemoPath`）決定，`hooks.server.ts` 的 `secured` 與連線守門（`connection-guard.ts`）都照這個路徑套用；其他路徑照舊 `same-origin`。唯一的例外是從外站點進來時看板自己的重新載入頁（`reloadFromHere`，固定內容、不含資料）：它若也在 sandbox 裡，重新載入就又是跨站請求、帶不到登入 Cookie，會一直停在這頁，所以 `handle` 對它不套示意標頭。內容類型依副檔名（`demoType`），不認得的以 `application/octet-stream` 回應。sandbox 讓示意頁成為獨立的匿名來源：讀不到看板的 Cookie，對 `/api/` 的請求不帶登入 Cookie、回應也讀不到。
-- 測試：`tests/server/demo.test.ts`（登入、標頭、路徑跳脫、連結、不列目錄、404）。
+- 沒設 `LAT_BOARD_DEMO_URL` 時就是上面這樣（sandbox 版）：示意頁的相對路徑檔案要從匿名來源請求，帶不到 SameSite=Strict 的登入 Cookie，所以只保證單一檔案的示意頁。
+- 示意網址（`LAT_BOARD_DEMO_URL`，`config.ts` 的 `demoSite`，解析在 `demo-address.ts`）：
+  - 分流：連線守門看請求的主機（`Host`，或 `HOST_HEADER` 指定的標頭）是示意網址時，把路徑改寫成 `/__demo-host/…`（`DEMO_HOST_PREFIX`），adapter-node 的建置檔、圖示、`pd-sw.js` 就不會在示意網址出現；`hooks.server.ts` 的 `handle` 在來源檢查後、看板登入之前，把 `event.url.host` 是示意網址的請求全交給 `demo-site.ts` 的 `answerDemoAddress`，其他看板路徑一律不經過。示意網址只接受 GET／HEAD（其他 405），路徑第一段不是合法名稱就 404（`/`、`/api/…`、`/login`、`/_app/…` 都是）。示意檔由 `serveDemo` 以 `/` 為根提供，不加 sandbox（已是獨立來源），帶 `no-store`、`no-referrer`。
+  - 登入交接：示意網址沒有有效的登入 Cookie 時，產生隨機的 state，設 `<登入 Cookie 名稱>_demo_state`（`Path=/__login`、HttpOnly、Secure、SameSite=Lax、5 分鐘），303 到 `<LAT_BOARD_URL>/demo-login?to=<路徑與查詢>&state=<state>`。看板的 `/demo-login`（`src/routes/demo-login/+server.ts`，照一般登入檢查；從示意網址轉來算跨站，先經重新載入頁拿回登入 Cookie）確認 `to` 解析後仍在示意網址、第一段是合法名稱（`demoReturnPath`，`//`、`\`、完整網址、`javascript:` 都 400），發 60 秒的一次性代碼（只存在記憶體，綁裝置 ID、state 與 `to`），303 到 `<示意網址>/__login?code=…`。示意網址的 `/__login` 一拿到代碼就刪掉（不論成敗），要在時限內、帶著同一個 state Cookie（別的瀏覽器拿到代碼也沒用）、裝置仍登入著，才設登入 Cookie `<登入 Cookie 名稱>_demo`（值是裝置 ID 加上以啟動時隨機金鑰算的 HMAC；只限示意主機、`Path=/`、HttpOnly、Secure、SameSite=Lax、一天）並 303 回 `to`；否則 403。之後每個請求都以 `findDeviceById` 重查裝置，登出或撤銷後立即失效；看板重啟後金鑰換新，下次打開時再交接一次。
+  - 看板這邊：設了示意網址時 `/demo/<名稱>/…` 303 到示意網址的同一路徑（保留查詢字串），`demo.py` 印的看板網址就一直可用。看板不認示意網址的 Cookie（登入只看 `DEVICE_COOKIE`）。示意網址與看板同站（只差子網域）時，示意頁送到看板的請求會帶看板的 SameSite=Strict Cookie，所以 `handle` 拒絕 `Origin` 是示意網址的所有非讀取請求（403 `demo_origin`，記一行 `demo_origin_refused`）；讀取請求的回應示意頁讀不到（沒有 CORS）。
+- 測試：`tests/server/demo.test.ts`（sandbox 版：登入、標頭、路徑跳脫、連結、不列目錄、404）、`tests/server/demo-site.test.ts`（示意網址：轉址、交接、代碼重用／過期／別的瀏覽器／裝置登出、偽造 Cookie、只給示意檔、轉回目標、看板不認示意 Cookie、`Origin` 檢查）、`tests/unit/demo-site-config.test.ts`（設定檢查）、`tests/browser/demo-sandbox.test.ts`（sandbox 版的切換列、錨點與隔離）、`tests/browser/demo-site.test.ts`（真 Chrome 經測試用 HTTPS 代理開兩個同站主機：模組腳本、fetch、圖片、樣式、網頁字型都載入，讀不到看板）。
 
 ## 版面與外觀
 

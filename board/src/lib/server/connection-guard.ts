@@ -6,11 +6,19 @@ import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { viaHttps, type AddressList } from './client-address.ts';
 import { log } from './log.ts';
+import { DEMO_HOST_PREFIX } from './demo-address.ts';
 import { isDemoPath, securityHeaders } from './security-headers.ts';
 
 export interface ConnectionSettings {
 	allowedSources: AddressList;
 	trustedProxies: AddressList;
+	/** The demo address's host (demo-address.ts); null when there is none. */
+	demoHost: string | null;
+}
+
+/** The host the request names, read from the header adapter-node reads it from (`HOST_HEADER`). */
+function hostOf(req: IncomingMessage): string {
+	return headerText(req.headers[(process.env.HOST_HEADER || 'host').toLowerCase()])?.toLowerCase() ?? '';
 }
 
 const headerText = (value: string | string[] | undefined) => (Array.isArray(value) ? value.join(', ') : (value ?? null));
@@ -20,8 +28,13 @@ const headerText = (value: string | string[] | undefined) => (Array.isArray(valu
 export function guardConnection(req: IncomingMessage, res: ServerResponse, settings: ConnectionSettings): boolean {
 	const peer = req.socket.remoteAddress ?? '';
 	const https = viaHttps(peer, headerText(req.headers['x-forwarded-proto']), settings.trustedProxies);
-	for (const [name, value] of securityHeaders(https, null, isDemoPath((req.url ?? '').split('?')[0]))) res.setHeader(name, value);
-	if (settings.allowedSources.has(peer)) return true;
+	const demoHost = settings.demoHost !== null && hostOf(req) === settings.demoHost;
+	const demo = demoHost ? 'site' : isDemoPath((req.url ?? '').split('?')[0]) ? 'sandbox' : null;
+	for (const [name, value] of securityHeaders(https, null, demo)) res.setHeader(name, value);
+	if (settings.allowedSources.has(peer)) {
+		if (demoHost) req.url = DEMO_HOST_PREFIX + (req.url ?? '/');
+		return true;
+	}
 	log('WARNING', 'board.http', 'source_refused', { method: req.method, path: (req.url ?? '').split('?')[0], peer });
 	res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
 	res.end('Forbidden');
