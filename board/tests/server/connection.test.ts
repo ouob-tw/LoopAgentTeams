@@ -166,7 +166,7 @@ describe('a board with a proxy on its list', () => {
 			expect(answer.headers.get('x-content-type-options')).toBe('nosniff');
 			expect(answer.headers.get('referrer-policy')).toBe('same-origin');
 			// The page loads its own address and nothing else; no board data, no address from the request.
-			expect(answer.body).toContain('location.replace(location.pathname + location.search)');
+			expect(answer.body).toContain('location.replace(location.href.split("#")[0])');
 			expect(answer.body).not.toContain('127.0.0.1');
 		}
 		// The address and query the browser asked for never appear in the page.
@@ -182,12 +182,12 @@ describe('a board with a proxy on its list', () => {
 		expect((await outside('cross-site', '/api/board')).status).toBe(401);
 		const login = await outside('cross-site', '/login');
 		expect(login.status).toBe(200);
-		expect(login.body).not.toContain('location.replace(location.pathname + location.search)');
+		expect(login.body).not.toContain('location.replace(location.href.split("#")[0])');
 		// With the cookie the board is served whatever the headers say.
 		const cookie = await fixture.login();
 		const board = await from('127.0.0.1', '/', { headers: { cookie, 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'cross-site' } });
 		expect(board.status).toBe(200);
-		expect(board.body).not.toContain('location.replace(location.pathname + location.search)');
+		expect(board.body).not.toContain('location.replace(location.href.split("#")[0])');
 		expect(board.body).toContain('/_app/immutable/');
 	});
 

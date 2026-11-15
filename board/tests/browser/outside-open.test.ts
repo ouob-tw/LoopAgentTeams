@@ -2,7 +2,8 @@
 // app started from the home screen or a link in another app is: the login cookie is SameSite=Strict,
 // so Chrome leaves it off that first request. A link on another site (a data: page) stands in for
 // it. Logged in, the board loads itself again once and shows; logged out, it lands on the login
-// screen after that one extra page, also from an address with a fragment.
+// screen after that one extra page, also from an address with a fragment, and a path that reads as
+// another host (`//evil.example/`) keeps the tab on the board.
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
@@ -55,4 +56,12 @@ test.skipIf(!CHROME)('logged out, the board opened from another site lands on th
 	await open();
 	await tab.until(`location.pathname === '/login' && document.querySelector('input[type="password"]') !== null`, 'the login screen');
 	expect(await loads()).toBe('/ /login');
+}, 30_000);
+
+test.skipIf(!CHROME)('a path that reads as another host reloads on the board, not on that host', async () => {
+	const open = await openFromOutside('/evil.example/');
+	await open();
+	await tab.until(`location.pathname === '/login' && document.querySelector('input[type="password"]') !== null`, 'the login screen');
+	expect(await tab.eval(`location.origin`)).toBe(fixture.url);
+	expect(await loads()).toBe('//evil.example/ /login');
 }, 30_000);
