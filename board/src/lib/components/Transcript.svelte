@@ -7,9 +7,9 @@
 	// question, its card where the message that asked it is, or where that message will come. A
 	// message that asked questions still in the inbox, or answered ones, shows their cards in its
 	// place; a message whose questions the board has no data for stays text. Given a report card, a
-	// DONE report of the inbox shows its card in place of its text. Board asks show where they were
-	// asked. With 中文 picked above it, the English replies shown are translated, each with its
-	// original a click away. Beside it, 「我說過的話」 lists what the user said in the whole
+	// DONE report of the inbox shows its card in place of its text. An unread report seen for 6 s is
+	// handed to `onseen` (see seen-reports.ts). Board asks show where they were asked. With 中文
+	// picked above it, the English replies shown are translated, each with its original a click away. Beside it, 「我說過的話」 lists what the user said in the whole
 	// conversation; a pick scrolls to that message and marks it for a moment, loading earlier
 	// parts first when it is not there yet.
 	import { lastSegment } from '#lib/board/agents.ts';
@@ -22,6 +22,7 @@
 	import { splitAttachments } from '#lib/board/attachments.ts';
 	import { answering } from '#lib/board/answering.svelte.ts';
 	import { RenderedMarkdown } from '#lib/board/markdown.ts';
+	import { watchSeen } from '#lib/board/seen-reports.ts';
 	import { keepReadingPlace, type ReadingPlace } from '#lib/board/reading-place.ts';
 	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
 	import { sentMissText, sentPlace, type SentLook } from '#lib/board/sent-jump.ts';
@@ -78,6 +79,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		copy,
 		sentLook = null,
 		onsentdone,
+		onseen,
 		usage = $bindable(null)
 	}: {
 		/** Whose conversation; an agent's is its session ID, its HCOM name or else its tab's title, and no report time. */
@@ -114,6 +116,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		sentLook?: SentLook | null;
 		/** Called once the sent text is shown, or told why it cannot be. */
 		onsentdone?: () => void;
+		/** Called with the key of an unread report whose text or card was seen long enough to be read. */
+		onseen?: (key: string) => void;
 		/** Context use, quota and prompt cache, as the live feed last told; null when unknown. */
 		usage?: Usage | null;
 	} = $props();
@@ -688,6 +692,26 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		if (earlierFailed) toasts.readFailed(`更早的紀錄載入失敗：${earlierFailed}`);
 	}
 
+	// The unread reports shown are watched while they are, each as the element it is now.
+	const seeing = $derived(!!onseen);
+	let seenWatch = $state.raw<ReturnType<typeof watchSeen> | null>(null);
+	$effect(() => {
+		if (!seeing) return;
+		const watcher = watchSeen((key) => onseen?.(key));
+		seenWatch = watcher;
+		return () => {
+			watcher.stop();
+			seenWatch = null;
+		};
+	});
+	$effect(() => {
+		void shown;
+		void reported;
+		if (!seenWatch || !list) return;
+		const elements = [...list.querySelectorAll<HTMLElement>('[data-report-key]')];
+		seenWatch.sync(elements.map((element) => ({ key: element.dataset.reportKey!, element, unread: element.dataset.unread === 'true' })));
+	});
+
 	// Watched again after every load, so an end that is still in view loads the next part. After a
 	// failure only the button retries.
 	$effect(() => {
@@ -755,7 +779,10 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 						{#if index > 0}
 							<li class="guide"><ArrowUp size="1em" />較新的訊息</li>
 						{/if}
-						<li class="placed" data-seq={segment.seq ?? undefined}>
+						<!-- The opened report is watched too: marked unread on it, it counts again only after leaving the screen.
+						     Question cards shown there are not a report, whatever their message is. -->
+						{@const placedReport = segment.seq === null || (questionCards && placedQuestions.length) ? undefined : reported.get(segment.seq)}
+						<li class="placed" data-seq={segment.seq ?? undefined} data-report-key={placedReport?.key} data-unread={placedReport ? placedReport.readAt === null && !placedReport.archived : undefined}>
 							{#if questionCards && placedQuestions.length}
 								{#snippet placedNote()}{@render askingNoteFold(segment.seq!)}{/snippet}
 								{@render questionCards(placedQuestions, segment.seq !== null && askingNotes.has(segment.seq) ? placedNote : undefined)}
@@ -772,11 +799,12 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 						<li class="asking" data-seq={seq}>{@render questionCards(asking.get(seq)!, askingNotes.has(seq) ? note : undefined)}</li>
 					{:else if segment.kind === 'text' && reportCard && reported.get(segment.item.seq)?.tag === 'DONE'}
 						{@const translation = english.has(segment.item.seq) ? (translated[segment.item.text] ?? { status: 'pending' as const }) : null}
-						<li class="report" data-seq={segment.item.seq}>{@render reportCard(reported.get(segment.item.seq)!, translation)}</li>
+						{@const report = reported.get(segment.item.seq)!}
+						<li class="report" data-seq={segment.item.seq} data-report-key={report.key} data-unread={report.readAt === null && !report.archived}>{@render reportCard(report, translation)}</li>
 					{:else if segment.kind === 'text'}
 						{@const marked = reported.get(segment.item.seq)}
 						{@const translation = english.has(segment.item.seq) ? (translated[segment.item.text] ?? { status: 'pending' }) : null}
-						<li class="said" class:flashed={flashed === segment.item.seq} data-seq={segment.item.seq} class:reported={!!marked} class:done={marked?.tag === 'DONE'} class:unread={marked?.readAt === null} data-kind={segment.item.kind} data-translation={translation?.status}>
+						<li class="said" class:flashed={flashed === segment.item.seq} data-seq={segment.item.seq} data-report-key={marked?.key} data-unread={marked ? marked.readAt === null && !marked.archived : undefined} class:reported={!!marked} class:done={marked?.tag === 'DONE'} class:unread={marked?.readAt === null} data-kind={segment.item.kind} data-translation={translation?.status}>
 							<p class="meta">
 								{#if marked}<span class="label">{itemLabel(marked)}</span>{/if}
 								<span title={segment.item.kind === 'user' ? undefined : `@${controller.hcomName}`}>{segment.item.kind === 'user' ? '你' : `@${lastSegment(controller.hcomName)}`}</span>

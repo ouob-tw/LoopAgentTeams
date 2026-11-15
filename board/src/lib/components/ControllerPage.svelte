@@ -10,6 +10,8 @@
 	import type { Translation } from '#lib/board/translate.ts';
 	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
 	import type { Snippet } from 'svelte';
+	import { testDevice } from '#lib/board/test-device.svelte.ts';
+	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import ControllerInfo from './ControllerInfo.svelte';
 	import ItemContent from './ItemContent.svelte';
 
@@ -66,6 +68,12 @@
 
 	/** The cards shown at the asking message: every question of the inbox it asked, the last named on top. */
 	const together = $derived(item?.kind === 'question' ? askedTogether(item, withAnswered(inbox, answered)) : item ? [item] : []);
+	/** An unread report seen long enough in the conversation is read; a test device leaves read marks to the user. */
+	const onseen = $derived(
+		testDevice.view
+			? undefined
+			: (key: string) => void board.mark(key, true).catch(() => toasts.readFailed('沒有標為已讀，捲出畫面再回來會重新計時。'))
+	);
 	function lose(key: string) {
 		lost = key;
 		onplaced?.();
@@ -156,6 +164,7 @@
 		reportCard={doneCard}
 		card={agentCard}
 		{asks}
+		{onseen}
 	/>
 {:else if item && item.key !== lost}
 	<!-- A report is the controller's last text of its turn, and a question was asked in one: shown
@@ -175,6 +184,7 @@
 		questionCards={askedCards}
 		card={togetherCards}
 		{asks}
+		{onseen}
 	/>
 {:else if item}
 	<p class="empty">找不到提出這題的原訊息。</p>
@@ -185,7 +195,7 @@
 		{item.project} · <span title="@{item.hcomName}">@{lastSegment(item.hcomName)}</span>　看主控資訊 →
 	</button>
 {:else}
-	<ControllerInfo tabMoves={board.tabMoves} {controller} {idleAgent} {items} {answered} {onopen} questionCards={askedCards} {asks} />
+	<ControllerInfo tabMoves={board.tabMoves} {controller} {idleAgent} {items} {answered} {onopen} questionCards={askedCards} {asks} {onseen} />
 {/if}
 
 <style>

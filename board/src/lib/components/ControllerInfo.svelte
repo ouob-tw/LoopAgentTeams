@@ -53,6 +53,7 @@
 		copy,
 		questionCards,
 		reportCard,
+		onseen,
 		asks = []
 	}: {
 		controller: Controller;
@@ -83,6 +84,8 @@
 		questionCards?: Snippet<[InboxQuestion[], Snippet | undefined]>;
 		/** A DONE report's card, in place of its text; see Transcript. */
 		reportCard?: Snippet<[InboxReport, Translation | null]>;
+		/** An unread report seen long enough in the conversation; see Transcript. */
+		onseen?: (key: string) => void;
 		/** Its board asks, oldest first: its permission requests (its menu questions are refused). */
 		asks?: BoardAsk[];
 	} = $props();
@@ -185,7 +188,7 @@
 <RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄" translateTab="transcript">
 	{#snippet panel(id)}
 		{#if id === 'transcript'}
-			<Transcript {controller} {asks} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} {sentLook} onsentdone={() => (sentLook = null)} bind:usage />
+			<Transcript {controller} {asks} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} {sentLook} {onseen} onsentdone={() => (sentLook = null)} bind:usage />
 		{:else if id === 'review'}
 			{#key controller.id}<ReviewPanel {controller} />{/key}
 		{:else if id === 'screen'}
