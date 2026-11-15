@@ -23,6 +23,19 @@ export function demoAddress(env: Record<string, string | undefined>): DemoSite |
 	return { origin: url.origin, host: url.host };
 }
 
+/** A Host header as `URL.host` writes it, the way adapter-node builds the request's address (https
+ *  unless told otherwise): lower case, without the default port. Null when it is no host. */
+export function normalHost(header: string): string | null {
+	try {
+		return new URL(`https://${header}`).host;
+	} catch {
+		return null;
+	}
+}
+
 /** A request to the demo address goes on under this path, so adapter-node's own files (the board's
  *  scripts, icons, service worker) are never found for it and every one reaches hooks.server.ts. */
 export const DEMO_HOST_PREFIX = '/__demo-host';
+/** The connection guard's word that a request is to the demo address: the one place that decides,
+ *  so the static files and SvelteKit never disagree. The guard removes any such header a client sent. */
+export const DEMO_MARK = 'x-lat-demo-address';

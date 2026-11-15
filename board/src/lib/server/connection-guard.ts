@@ -6,7 +6,7 @@ import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { viaHttps, type AddressList } from './client-address.ts';
 import { log } from './log.ts';
-import { DEMO_HOST_PREFIX } from './demo-address.ts';
+import { DEMO_HOST_PREFIX, DEMO_MARK, normalHost } from './demo-address.ts';
 import { isDemoPath, securityHeaders } from './security-headers.ts';
 
 export interface ConnectionSettings {
@@ -16,9 +16,10 @@ export interface ConnectionSettings {
 	demoHost: string | null;
 }
 
-/** The host the request names, read from the header adapter-node reads it from (`HOST_HEADER`). */
+/** The host the request names, read as adapter-node reads it: `HOST_HEADER` when set and sent, else `Host`. */
 function hostOf(req: IncomingMessage): string {
-	return headerText(req.headers[(process.env.HOST_HEADER || 'host').toLowerCase()])?.toLowerCase() ?? '';
+	const named = process.env.HOST_HEADER?.toLowerCase();
+	return (named && headerText(req.headers[named])) || headerText(req.headers.host) || '';
 }
 
 const headerText = (value: string | string[] | undefined) => (Array.isArray(value) ? value.join(', ') : (value ?? null));
@@ -28,11 +29,16 @@ const headerText = (value: string | string[] | undefined) => (Array.isArray(valu
 export function guardConnection(req: IncomingMessage, res: ServerResponse, settings: ConnectionSettings): boolean {
 	const peer = req.socket.remoteAddress ?? '';
 	const https = viaHttps(peer, headerText(req.headers['x-forwarded-proto']), settings.trustedProxies);
-	const demoHost = settings.demoHost !== null && hostOf(req) === settings.demoHost;
+	// Compared as URLs write hosts, so `:443` or upper case cannot slip by.
+	const demoHost = settings.demoHost !== null && normalHost(hostOf(req)) === settings.demoHost;
+	delete req.headers[DEMO_MARK];
 	const demo = demoHost ? 'site' : isDemoPath((req.url ?? '').split('?')[0]) ? 'sandbox' : null;
 	for (const [name, value] of securityHeaders(https, null, demo)) res.setHeader(name, value);
 	if (settings.allowedSources.has(peer)) {
-		if (demoHost) req.url = DEMO_HOST_PREFIX + (req.url ?? '/');
+		if (demoHost) {
+			req.url = DEMO_HOST_PREFIX + (req.url ?? '/');
+			req.headers[DEMO_MARK] = '1';
+		}
 		return true;
 	}
 	log('WARNING', 'board.http', 'source_refused', { method: req.method, path: (req.url ?? '').split('?')[0], peer });

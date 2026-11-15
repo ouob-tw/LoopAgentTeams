@@ -9,6 +9,7 @@ import { clientAddress, viaHttps } from '#lib/server/client-address.ts';
 import { findDevice, markSeen, saveSeen } from '#lib/server/devices.ts';
 import { isDemoPath, securityHeaders, type DemoAnswer } from '#lib/server/security-headers.ts';
 import { answerDemoAddress } from '#lib/server/demo-site.ts';
+import { DEMO_MARK } from '#lib/server/demo-address.ts';
 import { testDeviceRefusal } from '#lib/server/test-device.ts';
 import { exceptionFields, log, withRequestId } from '#lib/server/log.ts';
 import { redact, secretsOf } from '#lib/server/redact.ts';
@@ -153,8 +154,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 		log('WARNING', 'board.http', 'source_refused', { ...where(event), peer });
 		return secured(new Response('Forbidden', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } }), https, demo);
 	}
-	// The demo address answers its own way, apart from everything below (demo-site.ts).
-	if (config.demoSite && event.url.host === config.demoSite.host) return secured(await answerDemoAddress(config, event), https, 'site');
+	// The demo address answers its own way, apart from everything below (demo-site.ts). The built
+	// server's connection guard decided which requests are to it; `vite dev` has no guard.
+	const toDemoAddress = event.platform?.req ? event.request.headers.get(DEMO_MARK) === '1' : event.url.host === config.demoSite?.host;
+	if (config.demoSite && toDemoAddress) return secured(await answerDemoAddress(config, event), https, 'site');
 	// A demo page there runs as the user's browser: what it sends to the board must not change anything.
 	if (config.demoSite && !READ_METHODS.has(event.request.method) && event.request.headers.get('origin') === config.demoSite.origin) {
 		log('WARNING', 'board.http', 'demo_origin_refused', where(event));

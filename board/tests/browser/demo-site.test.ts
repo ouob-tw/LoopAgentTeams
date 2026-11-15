@@ -76,13 +76,19 @@ afterEach(async () => {
 	browser = undefined;
 });
 
-test('the board’s demo address lands on the demo address, where modules, fetch, images, styles and fonts load', async () => {
+/** A Chrome logged in on the board as `label`, which reaches both addresses through the proxy. */
+async function loggedInChrome(label: string) {
 	browser = await launchChrome({ args: [`--host-resolver-rules=${NAMES.map((name) => `MAP ${name} 127.0.0.1`).join(',')}`, '--ignore-certificate-errors'] });
 	const tab = browser.tab;
 	tab.screen = `location.href + ' ' + JSON.stringify(document.body?.dataset ?? {})`;
-	const [name, value] = (await fixture.login('demo-site')).split('=');
+	const [name, value] = (await fixture.login(label)).split('=');
 	// As the board sets it over HTTPS (connection.test.ts checks the server's Set-Cookie).
 	await tab.send('Network.setCookie', { name, value, url: proxy.origin, httpOnly: true, secure: true, sameSite: 'Strict' });
+	return { tab, name };
+}
+
+test('the board’s demo address lands on the demo address, where modules, fetch, images, styles and fonts load', async () => {
+	const { tab } = await loggedInChrome('demo-site');
 	await tab.navigate(`${proxy.origin}/demo/d1/?board=${encodeURIComponent(proxy.origin)}`);
 	await tab.until(`document.body?.dataset.font && document.body.dataset.board`, 'the demo page to finish loading');
 	expect(await tab.eval<string>(`location.origin + location.pathname`)).toBe(`${proxy.originOf(NAMES[1])}/d1/`);
@@ -92,4 +98,24 @@ test('the board’s demo address lands on the demo address, where modules, fetch
 	expect(seen.board).toBe('failed TypeError');
 	expect(seen.cookie).toBe('');
 	expect(tab.errors.filter((error) => !error.includes(`${proxy.origin}/api/board`))).toEqual([]);
+}, 30_000);
+
+test('a demo page’s script cannot swap the browser’s demo login for another device’s code', async () => {
+	const { tab, name } = await loggedInChrome('demo-site-victim');
+	await tab.navigate(`${proxy.origin}/demo/d1/?board=${encodeURIComponent(proxy.origin)}`);
+	await tab.until(`document.body?.dataset.font`, 'the demo page');
+	const device = async () => {
+		const { cookies } = await tab.send('Network.getCookies', { urls: [`${proxy.originOf(NAMES[1])}/d1/`] });
+		return (cookies as { name: string; value: string }[]).find((c) => c.name === `${name}_demo`)?.value.split('.')[0];
+	};
+	const before = await device();
+	// Another logged-in device asks for a code with a state of its choosing...
+	const state = 'A'.repeat(43);
+	const minted = await fixture.fetch(`/demo-login?to=%2Fd1%2F&state=${state}`, { cookie: await fixture.login('demo-site-other') });
+	const attack = minted.headers.get('location')!;
+	// ...and the page's script puts that state where the board's state cookie would be, then goes to the code.
+	await tab.eval(`document.cookie = ${JSON.stringify(`${name}_demo_state=${state}; Path=/__login; Secure; SameSite=Lax`)}`);
+	await tab.navigate(attack);
+	expect(await tab.eval<string>(`document.body.innerText`)).toContain('已失效');
+	expect(await device()).toBe(before);
 }, 30_000);

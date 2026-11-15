@@ -43,11 +43,11 @@ interface Answer {
 }
 
 /** A request to the demo address: the board's port with the demo host name, as the proxy sends it. */
-function demo(path: string, cookies: string[] = [], method = 'GET'): Promise<Answer> {
+function demo(path: string, cookies: string[] = [], method = 'GET', host = DEMO_HOST): Promise<Answer> {
 	const body = method === 'GET' ? {} : { 'content-type': 'application/json' };
 	const { hostname, port } = new URL(fixture.url);
 	return new Promise((resolve, reject) => {
-		const req = request({ hostname, port, path, method, headers: { host: DEMO_HOST, cookie: cookies.join('; '), ...body } }, (res) => {
+		const req = request({ hostname, port, path, method, headers: { host, cookie: cookies.join('; '), ...body } }, (res) => {
 			let body = '';
 			res.setEncoding('utf8');
 			res.on('data', (chunk) => (body += chunk));
@@ -99,7 +99,7 @@ test('the board’s /demo/<name>/ sends a logged-in browser to the demo address,
 
 test('the handover: state cookie, one-time code, then the demo address’s own login cookie', async () => {
 	const { state, stateValue, first } = await start('/d1/?v=2');
-	expect(attributes(first.cookies[0])).toEqual(['httponly', 'max-age=300', 'path=/__login', 'samesite=lax', 'secure']);
+	expect(attributes(first.cookies[0])).toEqual(['httponly', 'max-age=34560000', 'path=/__login', 'samesite=lax', 'secure']);
 	expect(state).toBe(`${cookie.split('=')[0]}_demo_state=${stateValue}`);
 	expect(new URL(first.location).searchParams.get('to')).toBe('/d1/?v=2');
 	const traded = await demo(await code(`/demo-login?to=${encodeURIComponent('/d1/?v=2')}&state=${stateValue}`), [state]);
@@ -132,6 +132,16 @@ test('the demo address answers nothing but demos: board pages, API, the board’
 		expect(answer.body).not.toContain('hello demo');
 	}
 	expect((await demo('/d1/', [login], 'POST')).status).toBe(405);
+});
+
+test('the demo host written any other way URLs read the same (upper case) is still the demo address', async () => {
+	// The board's own file, there on the board's address.
+	expect((await fixture.fetch('/_app/version.json')).status).toBe(200);
+	for (const host of [DEMO_HOST.toUpperCase(), 'Demo.Example.Test:8443']) {
+		const answer = await demo('/_app/version.json', [], 'GET', host);
+		expect({ host, status: answer.status }).toEqual({ host, status: 404 });
+		expect((await demo('/d1/', [], 'GET', host)).status).toBe(303);
+	}
 });
 
 test('without the board’s login there is no code and no demo content', async () => {
@@ -174,6 +184,32 @@ test('a code is refused when used again, late, by another browser, or after its 
 	const after = await demo('/d1/', [kept]);
 	expect(after.status).toBe(303);
 	expect(after.body).not.toContain('hello demo');
+});
+
+test('a forged cookie with characters outside ASCII is refused like any other, not an error', async () => {
+	const name = `${cookie.split('=')[0]}_demo`;
+	const odd = '%C3%A9'.repeat(43);
+	expect((await demo('/d1/', [`${name}=abc.${odd}`])).status).toBe(303);
+	const { handover } = await start();
+	expect((await demo(await code(handover), [`${name}_state=${odd}`])).status).toBe(403);
+});
+
+test('a trade replaces the state cookie rather than removing it, and a second state cookie beside it is refused', async () => {
+	const { state, handover } = await start();
+	const traded = await demo(await code(handover), [state]);
+	const replaced = traded.cookies.find((c) => c.startsWith(`${cookie.split('=')[0]}_demo_state=`))!;
+	expect(pair(replaced)).not.toBe(state);
+	expect(pair(replaced).split('=')[1]).toMatch(/^[\w-]{43}$/);
+	expect(attributes(replaced)).toContain('httponly');
+	// One put beside it by a page's script under another path or domain: two arrive together.
+	const second = await start();
+	expect((await demo(await code(second.handover), [second.state, `${cookie.split('=')[0]}_demo_state=${second.stateValue}`])).status).toBe(403);
+});
+
+test('a client cannot claim to be the demo address with the guard’s own header', async () => {
+	const answer = await fixture.fetch('/d1/', { cookie, headers: { 'x-lat-demo-address': '1' } });
+	expect(answer.status).toBe(404);
+	expect(await answer.text()).not.toContain('hello demo');
 });
 
 test('a forged demo login cookie lets nothing in', async () => {
