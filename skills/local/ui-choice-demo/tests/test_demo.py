@@ -64,6 +64,22 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn('hi', body)
 
+    def test_board_url_line_follows_when_the_board_is_set(self):
+        self.env['DEMO_BOARD'] = 'https://board.example/'
+        r = self.publish(self.make('<p>hi</p>'))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = r.stdout.strip().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertRegex(lines[0], r'^http://127\.0\.0\.1:7161/d1/\?k=\S+$')
+        self.assertEqual(lines[1], 'https://board.example/demo/d1/')
+
+    def test_board_url_from_the_settings_file(self):
+        conf = self.root / 'demo.json'
+        conf.write_text('{"board": "https://board.example"}')
+        self.env['DEMO_CONFIG'] = str(conf)
+        lines = self.publish(self.make('<p>hi</p>'), name='d2').stdout.strip().splitlines()
+        self.assertEqual(lines[1:], ['https://board.example/demo/d2/'])
+
     def test_no_stash_dirs_are_served_and_key_file_is_private(self):
         self.publish(self.make('<p>a</p>'))
         self.publish(self.make('<p>b</p>'))

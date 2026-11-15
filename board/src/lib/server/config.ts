@@ -6,6 +6,7 @@ import { parseModelOptions, type ModelOptions } from '../board/models.ts';
 import { ASK_EXECUTION_WAIT_MS } from '../board/board-asks.ts';
 import { codexMultiAuthDir } from './quota.ts';
 import { connectionSettings, type AddressList } from './client-address.ts';
+import { demoAddress, type DemoSite } from './demo-address.ts';
 
 type Env = Record<string, string | undefined>;
 
@@ -74,6 +75,11 @@ export interface BoardConfig {
 	asrTimeoutMs: number;
 	/** Where files attached to a message are kept; the message carries their paths. */
 	uploadDir: string;
+	/** Where `demo.py publish` puts demo pages (`<data>/site`), served under `/demo/<name>/`. May not exist. */
+	demoSiteDir: string;
+	/** The demo pages' own address (`LAT_BOARD_DEMO_URL`), another origin than the board's; null serves
+	 *  them sandboxed under the board's `/demo/` instead. */
+	demoSite: DemoSite | null;
 	/** The largest file that may be attached. */
 	uploadMaxBytes: number;
 	/** Command that runs a Codex app server over standard input and output, to tidy long speech. */
@@ -151,6 +157,16 @@ export function passkeySite(env: Env): PasskeySite | null {
 	return { origin: url.origin, rpId };
 }
 
+/** `LAT_BOARD_DEMO_URL` (demo-address.ts). Its logins are handed over from the board, so the
+ *  board's own address must be set too, and be another one. */
+export function demoSite(env: Env, board: PasskeySite | null): DemoSite | null {
+	const demo = demoAddress(env);
+	if (!demo) return null;
+	if (!board) throw new Error('LAT_BOARD_DEMO_URL needs LAT_BOARD_URL: the demo address sends logins to the board');
+	if (demo.origin === board.origin) throw new Error('LAT_BOARD_DEMO_URL must be another address than LAT_BOARD_URL');
+	return demo;
+}
+
 const MAX_FALLBACK_MS = 60_000;
 const DAY_SECONDS = 24 * 60 * 60;
 /** Below this there is no room left for the helper to run twice. */
@@ -171,6 +187,19 @@ function configHome(env: Env): string {
 function seconds(value: string | undefined, fallback: number): number {
 	const parsed = Number(value);
 	return value && Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : fallback;
+}
+
+/** demo.py's data folder: `LAT_BOARD_DEMO_DIR`, else `data` in `~/.agents/demo.json` (demo.py's own
+ *  settings), else demo.py's default. A settings file that cannot be read is passed over. */
+function demoDataDir(env: Env): string {
+	if (env.LAT_BOARD_DEMO_DIR) return env.LAT_BOARD_DEMO_DIR;
+	try {
+		const data: unknown = JSON.parse(readFileSync(join(homedir(), '.agents/demo.json'), 'utf8')).data;
+		if (typeof data === 'string' && data) return data;
+	} catch {
+		// No settings file, or not JSON: the default below.
+	}
+	return join(homedir(), '.local/share/demo-publish');
 }
 
 /** A command given as a JSON array of strings; undefined when the variable is not set. */
@@ -226,6 +255,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		MIN_FALLBACK_MS,
 		Math.min(seconds(env.LAT_BOARD_FALLBACK_SECONDS, MAX_FALLBACK_MS), MAX_FALLBACK_MS)
 	);
+	const board = passkeySite(env);
 	return {
 		stateDir: env.LAT_BOARD_STATE_DIR || join(stateHome(env), 'lat/board'),
 		// 須與 `skills/local/lat/scripts/_lat_common.py` 一致
@@ -263,11 +293,13 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		debounceMs: 200,
 		loginLockMs: seconds(env.LAT_BOARD_LOGIN_LOCK_SECONDS, 60_000),
 		...connectionSettings(env),
-		passkeySite: passkeySite(env),
+		passkeySite: board,
+		demoSite: demoSite(env, board),
 		asrUrl: env.LAT_BOARD_ASR_URL?.replace(/\/+$/, '') || null,
 		asrToken: env.LAT_BOARD_ASR_TOKEN || null,
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),
 		uploadDir: env.LAT_BOARD_UPLOAD_DIR || '/tmp/lat-board-uploads',
+		demoSiteDir: join(demoDataDir(env), 'site'),
 		uploadMaxBytes: (Number(env.LAT_BOARD_UPLOAD_MAX_MB) > 0 ? Number(env.LAT_BOARD_UPLOAD_MAX_MB) : 250) * 1024 * 1024,
 		tidyCommand: commandFrom(env, 'LAT_BOARD_TIDY_COMMAND') ?? [...TEXT_ONLY_CODEX],
 		tidyTimeoutMs: seconds(env.LAT_BOARD_TIDY_TIMEOUT_SECONDS, 30_000),

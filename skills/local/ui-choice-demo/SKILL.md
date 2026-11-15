@@ -26,9 +26,9 @@ description: "Use when the user will look at something: before asking them to ch
    uv run --no-project python <本技能目錄>/scripts/demo.py publish ./my-demo --name hcom-mailbox
    ```
 
-   名稱用小寫英數與 `.` `_` `-`。同名再發布就覆蓋，原網址重新整理即是新版。指令會自己打開網址確認，成功只印一行網址（含密鑰，直接整行貼給使用者）；失敗會印原因，先修好再繼續。
+   名稱用小寫英數與 `.` `_` `-`。同名再發布就覆蓋，原網址重新整理即是新版。指令會自己打開網址確認，成功印出內網網址（含密鑰）；有設定看板網址時，第二行是看板網址（`<看板>/demo/<名稱>/`，已登入看板的瀏覽器在外網也打得開）。給使用者時兩行都整行貼上；失敗會印原因，先修好再繼續。
 3. 滿 14 天沒更新的展示會自動清掉，不必手動關。
-4. 問選擇時，網址放進題目；用 LAT 面板就交給 `question ask` 或 `question upsert` 的 `--visual`（見 `lat` 技能的 `references/question-panel.md`）。作答仍走面板，展示頁不收點選。
+4. 問選擇時，網址放進題目；用 LAT 面板就交給 `question ask` 或 `question upsert` 的 `--visual`（見 `lat` 技能的 `references/question-panel.md`）。有看板網址時 `--visual` 放看板網址，使用者在外面也看得到。作答仍走面板，展示頁不收點選。
 
 只提供靜態檔案。要先做示意頁時用 `/prototype` 的介面分支（它的 `UI.md`），貼著真實頁面做，不做空頁。
 
@@ -37,8 +37,10 @@ description: "Use when the user will look at something: before asking them to ch
 指令回報連不上，代表常駐服務還沒裝。埠號與網域不寫進 repo：先看專案 `CLAUDE.md` 指向的主機私人設定檔，把展示用的埠號與網域寫進 `~/.agents/demo.json`：
 
 ```json
-{"port": <展示用埠號>, "host": "<網域>"}
+{"port": <展示用埠號>, "host": "<網域>", "board": "<LAT 看板網址，選填>"}
 ```
+
+`board` 寫上主機的 LAT 看板網址後，發布時多印看板網址；看板從同一個資料夾提供示意頁，要使用者登入看板才看得到。
 
 再建立 `~/.config/systemd/user/demo-publish.service`，把 `<…>` 換成實際值後啟用（服務的 PATH 很短，所以 uv 要寫完整路徑）：
 

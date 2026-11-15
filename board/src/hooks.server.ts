@@ -7,7 +7,9 @@ import { getBoard } from '#lib/server/board.ts';
 import { actingAs } from '#lib/server/acting.ts';
 import { clientAddress, viaHttps } from '#lib/server/client-address.ts';
 import { findDevice, markSeen, saveSeen } from '#lib/server/devices.ts';
-import { securityHeaders } from '#lib/server/security-headers.ts';
+import { isDemoPath, securityHeaders, type DemoAnswer } from '#lib/server/security-headers.ts';
+import { answerDemoAddress } from '#lib/server/demo-site.ts';
+import { DEMO_MARK } from '#lib/server/demo-address.ts';
 import { testDeviceRefusal } from '#lib/server/test-device.ts';
 import { exceptionFields, log, withRequestId } from '#lib/server/log.ts';
 import { redact, secretsOf } from '#lib/server/redact.ts';
@@ -92,6 +94,8 @@ async function logFailure(event: RequestEvent, response: Response) {
 	});
 }
 
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 const seeOther = (location: string) => new Response(null, { status: 303, headers: { location } });
 
 /**
@@ -110,14 +114,22 @@ function openedFromOutside(request: Request): boolean {
 }
 
 const RELOAD_PAGE = '<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>LAT</title><script>location.replace(location.href.split("#")[0])</script>';
-const reloadFromHere = () => new Response(RELOAD_PAGE, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+/** Reload pages answered: under /demo too, one goes out without the demo sandbox, which would make
+ *  its reload a cross-site one that again comes without the cookie. It is the board's own markup. */
+const reloads = new WeakSet<Response>();
+const reloadFromHere = () => {
+	const page = new Response(RELOAD_PAGE, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+	reloads.add(page);
+	return page;
+};
 
 /** The response with the security headers. The built server's connection guard
  *  (instrumentation.server.ts) set them already, but a header SvelteKit writes replaces it: here a
- *  route's own policy (an attached file's sandbox) is joined with the board's. */
-function secured(response: Response, https: boolean): Response {
+ *  route's own policy (an attached file's sandbox) is joined with the board's, and every answer
+ *  under /demo, the login redirect included, gets the demo headers. */
+function secured(response: Response, https: boolean, demo: DemoAnswer): Response {
 	const apply = (headers: Headers) => {
-		for (const [name, value] of securityHeaders(https, headers.get('content-security-policy'))) headers.set(name, value);
+		for (const [name, value] of securityHeaders(https, headers.get('content-security-policy'), demo)) headers.set(name, value);
 	};
 	try {
 		apply(response.headers);
@@ -135,15 +147,26 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// The connection's own address, whatever ADDRESS_HEADER says; `vite dev` has no Node request.
 	const peer = event.platform?.req?.socket.remoteAddress ?? event.getClientAddress();
 	const https = viaHttps(peer, event.request.headers.get('x-forwarded-proto'), config.trustedProxies);
+	const demo: DemoAnswer = isDemoPath(event.url.pathname) ? 'sandbox' : null;
 	// The built server refused it before anything was served (instrumentation.server.ts); `vite dev`
 	// has no such guard, so the check is made here too.
 	if (!config.allowedSources.has(peer)) {
 		log('WARNING', 'board.http', 'source_refused', { ...where(event), peer });
-		return secured(new Response('Forbidden', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } }), https);
+		return secured(new Response('Forbidden', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } }), https, demo);
+	}
+	// The demo address answers its own way, apart from everything below (demo-site.ts). The built
+	// server's connection guard decided which requests are to it; `vite dev` has no guard.
+	const toDemoAddress = event.platform?.req ? event.request.headers.get(DEMO_MARK) === '1' : event.url.host === config.demoSite?.host;
+	if (config.demoSite && toDemoAddress) return secured(await answerDemoAddress(config, event), https, 'site');
+	// A demo page there runs as the user's browser: what it sends to the board must not change anything.
+	if (config.demoSite && !READ_METHODS.has(event.request.method) && event.request.headers.get('origin') === config.demoSite.origin) {
+		log('WARNING', 'board.http', 'demo_origin_refused', where(event));
+		return secured(json({ error: 'demo_origin' }, { status: 403 }), https, demo);
 	}
 	event.locals.clientAddress = clientAddress(peer, event.request.headers.get('x-forwarded-for'), config.trustedProxies);
 	event.locals.https = https;
-	return secured(await handleAllowed({ event, resolve }), https);
+	const response = await handleAllowed({ event, resolve });
+	return secured(response, https, reloads.has(response) ? null : demo);
 };
 
 const handleAllowed: Handle = ({ event, resolve }) => {
