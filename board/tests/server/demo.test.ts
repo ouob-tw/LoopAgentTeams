@@ -63,10 +63,9 @@ function expectDemoHeaders(what: string, headers: { get(name: string): string | 
 	expect({ what, cache: headers.get('cache-control'), referrer: headers.get('referrer-policy') }).toEqual({ what, cache: 'no-store', referrer: 'no-referrer' });
 }
 
-test('every answer under /demo carries the demo headers: the login redirect, 404, 308 and framework errors', async () => {
+test('every answer under /demo carries the demo headers: the login redirect, 404, 308 and framework errors; the reload page does not', async () => {
 	const cases: [string, string, RequestInit & { cookie?: string }, number][] = [
 		['logged out', '/demo/d1/', {}, 303],
-		['logged out, from another site', '/demo/d1/', { headers: { 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'cross-site' } }, 200],
 		['logged out, bare /demo', '/demo', {}, 303],
 		['missing', '/demo/nope/', { cookie }, 404],
 		['no slash', '/demo/d1', { cookie }, 308],
@@ -79,6 +78,12 @@ test('every answer under /demo carries the demo headers: the login redirect, 404
 		expect({ what, status: response.status }).toEqual({ what, status });
 		expectDemoHeaders(what, response.headers);
 	}
+	// Except the board's own reload page for a link from another site: sandboxed, its reload would
+	// be cross-site again and come without the login cookie (demo-sandbox.test.ts opens one).
+	const reload = await fixture.fetch('/demo/d1/', { headers: { 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'cross-site' } });
+	expect(reload.status).toBe(200);
+	expect(reload.headers.get('content-security-policy')).not.toContain('sandbox');
+	expect(await reload.text()).not.toContain('hello demo');
 	// The rest of the board keeps its own headers.
 	expect((await fixture.fetch('/', { cookie })).headers.get('referrer-policy')).toBe('same-origin');
 });

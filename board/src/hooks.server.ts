@@ -111,7 +111,14 @@ function openedFromOutside(request: Request): boolean {
 }
 
 const RELOAD_PAGE = '<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>LAT</title><script>location.replace(location.href.split("#")[0])</script>';
-const reloadFromHere = () => new Response(RELOAD_PAGE, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+/** Reload pages answered: under /demo too, one goes out without the demo sandbox, which would make
+ *  its reload a cross-site one that again comes without the cookie. It is the board's own markup. */
+const reloads = new WeakSet<Response>();
+const reloadFromHere = () => {
+	const page = new Response(RELOAD_PAGE, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+	reloads.add(page);
+	return page;
+};
 
 /** The response with the security headers. The built server's connection guard
  *  (instrumentation.server.ts) set them already, but a header SvelteKit writes replaces it: here a
@@ -146,7 +153,8 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 	event.locals.clientAddress = clientAddress(peer, event.request.headers.get('x-forwarded-for'), config.trustedProxies);
 	event.locals.https = https;
-	return secured(await handleAllowed({ event, resolve }), https, demo);
+	const response = await handleAllowed({ event, resolve });
+	return secured(response, https, demo && !reloads.has(response));
 };
 
 const handleAllowed: Handle = ({ event, resolve }) => {

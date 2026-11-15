@@ -98,3 +98,15 @@ test('the demo page’s script cannot read the board, see the login cookie or as
 	expect(seen.cookie.startsWith('threw') || seen.cookie === '').toBe(true);
 	expect(seen.userCss).toBe('refused');
 }, 30_000);
+
+test('a demo link opened from another site shows the demo after the board’s one reload', async () => {
+	browser = await launchChrome();
+	const tab = browser.tab;
+	tab.screen = `location.href + ' ' + document.body?.innerText.slice(0, 80)`;
+	const [name, value] = cookie.split('=');
+	await tab.send('Network.setCookie', { name, value, url: fixture.url, httpOnly: true, sameSite: 'Strict' });
+	// A link on another site (a data: page) stands in for a chat app or notification.
+	await tab.navigate(`data:text/html,${encodeURIComponent(`<a href="${fixture.url}/demo/d1/#b">demo</a>`)}`);
+	await tab.eval(`document.querySelector('a').click()`);
+	await tab.until(`location.pathname === '/demo/d1/' && document.getElementById('pb') !== null`, 'the demo page');
+}, 30_000);
