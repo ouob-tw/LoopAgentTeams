@@ -99,7 +99,7 @@ const seeOther = (location: string) => new Response(null, { status: 303, headers
  * another app or site) arrives without the login cookie, which is SameSite=Strict. Such a request
  * gets a page that loads the same address again from itself: that load is same-origin, so the
  * browser sends the cookie. The page holds no data and names no address, so it cannot send the
- * browser anywhere else. A same-origin request without the cookie, and one without these headers
+ * browser anywhere else. The fragment is left out: an address with one would only scroll, not load. A same-origin request without the cookie, and one without these headers
  * (an old browser, curl), goes to the login screen as before, so this happens at most once.
  */
 function openedFromOutside(request: Request): boolean {
@@ -107,7 +107,7 @@ function openedFromOutside(request: Request): boolean {
 	return request.headers.get('sec-fetch-mode') === 'navigate' && site !== null && site !== 'same-origin';
 }
 
-const RELOAD_PAGE = '<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>LAT</title><script>location.replace(location.href)</script>';
+const RELOAD_PAGE = '<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>LAT</title><script>location.replace(location.pathname + location.search)</script>';
 const reloadFromHere = () => new Response(RELOAD_PAGE, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 
 /** The response with the security headers. The built server's connection guard

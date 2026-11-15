@@ -166,7 +166,7 @@ describe('a board with a proxy on its list', () => {
 			expect(answer.headers.get('x-content-type-options')).toBe('nosniff');
 			expect(answer.headers.get('referrer-policy')).toBe('same-origin');
 			// The page loads its own address and nothing else; no board data, no address from the request.
-			expect(answer.body).toContain('location.replace(location.href)');
+			expect(answer.body).toContain('location.replace(location.pathname + location.search)');
 			expect(answer.body).not.toContain('127.0.0.1');
 		}
 		// The address and query the browser asked for never appear in the page.
@@ -175,17 +175,19 @@ describe('a board with a proxy on its list', () => {
 		const again = await outside('same-origin');
 		expect([again.status, again.headers.get('location')]).toEqual([303, '/login']);
 		// No Fetch Metadata (an old browser, curl), or not a page load: the login screen as before.
-		expect([(await from('127.0.0.1', '/')).status, (await from('127.0.0.1', '/')).headers.get('location')]).toEqual([303, '/login']);
+		const plain = await from('127.0.0.1', '/');
+		expect([plain.status, plain.headers.get('location')]).toEqual([303, '/login']);
 		expect((await from('127.0.0.1', '/', { headers: { 'sec-fetch-mode': 'no-cors', 'sec-fetch-site': 'cross-site' } })).status).toBe(303);
 		// The API still answers 401, and the login screen itself is served as before.
 		expect((await outside('cross-site', '/api/board')).status).toBe(401);
-		expect((await outside('cross-site', '/login')).status).toBe(200);
-		expect((await outside('cross-site', '/login')).body).not.toContain('location.replace(location.href)');
+		const login = await outside('cross-site', '/login');
+		expect(login.status).toBe(200);
+		expect(login.body).not.toContain('location.replace(location.pathname + location.search)');
 		// With the cookie the board is served whatever the headers say.
 		const cookie = await fixture.login();
 		const board = await from('127.0.0.1', '/', { headers: { cookie, 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'cross-site' } });
 		expect(board.status).toBe(200);
-		expect(board.body).not.toContain('location.replace(location.href)');
+		expect(board.body).not.toContain('location.replace(location.pathname + location.search)');
 		expect(board.body).toContain('/_app/immutable/');
 	});
 

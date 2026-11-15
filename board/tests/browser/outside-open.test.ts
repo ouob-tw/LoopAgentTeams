@@ -2,7 +2,7 @@
 // app started from the home screen or a link in another app is: the login cookie is SameSite=Strict,
 // so Chrome leaves it off that first request. A link on another site (a data: page) stands in for
 // it. Logged in, the board loads itself again once and shows; logged out, it lands on the login
-// screen after that one extra page.
+// screen after that one extra page, also from an address with a fragment.
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
@@ -28,13 +28,13 @@ afterEach(async () => {
 const RECORD = `if (location.protocol === 'http:') sessionStorage.setItem('loads', (sessionStorage.getItem('loads') ?? '') + location.pathname + ' ')`;
 const loads = () => tab.eval<string>(`sessionStorage.getItem('loads').trim()`);
 
-/** A Chrome whose `open()` follows a link to the board's front page from a page of another site. */
-async function openFromOutside() {
+/** A Chrome whose `open()` follows a link to the board's front page (`/` and `suffix`) from a page of another site. */
+async function openFromOutside(suffix = '') {
 	browser = await launchChrome({ scripts: [RECORD] });
 	tab = browser.tab;
 	tab.screen = `document.body?.innerText`;
 	return async () => {
-		await tab.navigate(`data:text/html,<a href="${fixture.url}/">board</a>`);
+		await tab.navigate(`data:text/html,${encodeURIComponent(`<a href="${fixture.url}/${suffix}">board</a>`)}`);
 		await tab.eval(`document.querySelector('a').click()`);
 	};
 }
@@ -51,7 +51,7 @@ test.skipIf(!CHROME)('logged in, the board opened from another site shows after 
 }, 30_000);
 
 test.skipIf(!CHROME)('logged out, the board opened from another site lands on the login screen after one extra page', async () => {
-	const open = await openFromOutside();
+	const open = await openFromOutside('#top');
 	await open();
 	await tab.until(`location.pathname === '/login' && document.querySelector('input[type="password"]') !== null`, 'the login screen');
 	expect(await loads()).toBe('/ /login');
