@@ -74,6 +74,8 @@ export interface BoardConfig {
 	asrTimeoutMs: number;
 	/** Where files attached to a message are kept; the message carries their paths. */
 	uploadDir: string;
+	/** Where `demo.py publish` puts demo pages (`<data>/site`), served under `/demo/<name>/`. May not exist. */
+	demoSiteDir: string;
 	/** The largest file that may be attached. */
 	uploadMaxBytes: number;
 	/** Command that runs a Codex app server over standard input and output, to tidy long speech. */
@@ -173,6 +175,19 @@ function seconds(value: string | undefined, fallback: number): number {
 	return value && Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : fallback;
 }
 
+/** demo.py's data folder: `LAT_BOARD_DEMO_DIR`, else `data` in `~/.agents/demo.json` (demo.py's own
+ *  settings), else demo.py's default. A settings file that cannot be read is passed over. */
+function demoDataDir(env: Env): string {
+	if (env.LAT_BOARD_DEMO_DIR) return env.LAT_BOARD_DEMO_DIR;
+	try {
+		const data: unknown = JSON.parse(readFileSync(join(homedir(), '.agents/demo.json'), 'utf8')).data;
+		if (typeof data === 'string' && data) return data;
+	} catch {
+		// No settings file, or not JSON: the default below.
+	}
+	return join(homedir(), '.local/share/demo-publish');
+}
+
 /** A command given as a JSON array of strings; undefined when the variable is not set. */
 function commandFrom(env: Env, name: string): string[] | undefined {
 	if (!env[name]) return undefined;
@@ -268,6 +283,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		asrToken: env.LAT_BOARD_ASR_TOKEN || null,
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),
 		uploadDir: env.LAT_BOARD_UPLOAD_DIR || '/tmp/lat-board-uploads',
+		demoSiteDir: join(demoDataDir(env), 'site'),
 		uploadMaxBytes: (Number(env.LAT_BOARD_UPLOAD_MAX_MB) > 0 ? Number(env.LAT_BOARD_UPLOAD_MAX_MB) : 250) * 1024 * 1024,
 		tidyCommand: commandFrom(env, 'LAT_BOARD_TIDY_COMMAND') ?? [...TEXT_ONLY_CODEX],
 		tidyTimeoutMs: seconds(env.LAT_BOARD_TIDY_TIMEOUT_SECONDS, 30_000),

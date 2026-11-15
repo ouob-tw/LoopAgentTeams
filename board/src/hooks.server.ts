@@ -114,10 +114,10 @@ const reloadFromHere = () => new Response(RELOAD_PAGE, { status: 200, headers: {
 
 /** The response with the security headers. The built server's connection guard
  *  (instrumentation.server.ts) set them already, but a header SvelteKit writes replaces it: here a
- *  route's own policy (an attached file's sandbox) is joined with the board's. */
+ *  route's own policy (an attached file's or a demo page's sandbox) is joined with the board's. */
 function secured(response: Response, https: boolean): Response {
 	const apply = (headers: Headers) => {
-		for (const [name, value] of securityHeaders(https, headers.get('content-security-policy'))) headers.set(name, value);
+		for (const [name, value] of securityHeaders(https, headers.get('content-security-policy'), headers.get('referrer-policy'))) headers.set(name, value);
 	};
 	try {
 		apply(response.headers);

@@ -6,13 +6,14 @@ export const CONTENT_POLICY = "frame-ancestors 'none'; object-src 'none'; base-u
 export const HSTS = 'max-age=31536000';
 
 /** The security headers for one answer; a content policy the answer already has (an attached
- *  file's sandbox) is kept in front of the board's own. */
-export function securityHeaders(https: boolean, ownPolicy: string | null = null): [string, string][] {
+ *  file's sandbox) is kept in front of the board's own, and an answer that sends no referrer at all
+ *  (a demo page) keeps that. */
+export function securityHeaders(https: boolean, ownPolicy: string | null = null, ownReferrer: string | null = null): [string, string][] {
 	return [
 		['content-security-policy', ownPolicy ? `${ownPolicy}; ${CONTENT_POLICY}` : CONTENT_POLICY],
 		['x-frame-options', 'DENY'],
 		['x-content-type-options', 'nosniff'],
-		['referrer-policy', 'same-origin'],
+		['referrer-policy', ownReferrer === 'no-referrer' ? ownReferrer : 'same-origin'],
 		...(https ? [['strict-transport-security', HSTS] as [string, string]] : [])
 	];
 }

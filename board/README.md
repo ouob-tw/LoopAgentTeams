@@ -55,6 +55,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_ASR_TIMEOUT_SECONDS` | 語音辨識多久沒回應就放棄 | `60` |
 | `LAT_BOARD_UPLOAD_DIR` | 附件存放的資料夾（見「附件」）；資料夾是連結或不屬於看板的帳號時拒絕使用 | `/tmp/lat-board-uploads` |
 | `LAT_BOARD_UPLOAD_MAX_MB` | 單一附件的大小上限（MB） | `250` |
+| `LAT_BOARD_DEMO_DIR` | `ui-choice-demo` 技能 `demo.py` 的資料夾（看板讀其中的 `site/<名稱>/`，見「示意頁」）；沒設時讀 `~/.agents/demo.json` 的 `data`，讀不到或沒寫就用 demo.py 的預設。資料夾不存在時 `/demo/` 一律 404 | `~/.local/share/demo-publish` |
 | `BODY_SIZE_LIMIT` | 伺服器收的請求大小上限（adapter-node 的設定）。約 3 分鐘的錄音會超過預設的 512K，用語音輸入時設成 `2M` | `512K` |
 | `LAT_BOARD_TIDY_COMMAND` | 整理長語音用的 Codex app server 指令（JSON 字串陣列），每次整理啟動一個、以標準輸入輸出溝通，用完即結束；模型固定為 `gpt-6-luna`、思考強度 `low`。預設指令關掉 apps、hooks、memories、plugins、skills 說明與各種工具（`config.ts` 的 `TEXT_ONLY_CODEX`），自訂時照用所設的值、不會自動補上 | `["codex","app-server","-c","features.apps=false",…]` |
 | `LAT_BOARD_TIDY_TIMEOUT_SECONDS` | Codex 整理多久沒完成就改放原始辨識文字並提示 | `30` |
@@ -394,6 +395,16 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 送出時在訊息最後空一行接上「附件：」與每個檔案的完整路徑（一行一個），Agent 自己開檔案；送出紀錄（主控與 Agent）與對話紀錄裡使用者自己的訊息找到這段就改顯示成附件（`AttachmentList.svelte`；Agent 的回覆不受影響）；讀不回來的檔案改寫「檔案已不在」（圖片與影片以外的檔案在顯示時以 `HEAD` 確認一次；點開圖片或 PDF、下載任何檔案時再確認一次，文字檔的預覽則由讀檔本身得知）。附件依輸入框的草稿分組：主控共用一組，每個 Agent 各一組。
 - `GET /api/uploads/file?path=<完整路徑>` 讀回附件，只給附件資料夾內（解開連結後）已傳完的檔案，其他一律 404。圖片、影片與 PDF 照類型回應（PDF 為 `application/pdf`、不帶下載標頭，瀏覽器在新分頁用內建檢視器開），並支援分段讀取（影片拖曳進度與文字預覽要用），其他檔案一律以下載方式回應，下載標頭的檔名是上傳時的原名（`uploadedName` 去掉 16 碼前綴，存檔名稱不變）；所有回應都帶 `Content-Security-Policy: sandbox` 與 `nosniff`，上傳的網頁、SVG 或 PDF 不會以看板的身分執行（Chrome 的 PDF 檢視器在 sandbox 下照常顯示，已以 Chrome 144 實測）。
 - 檔案種類依副檔名判斷（`attachments.ts` 的 `attachmentKind`）：圖片、影片、PDF、Markdown（.md、.markdown）、文字（常見文字與程式碼副檔名）與其他。點圖片或文字檔開 `AttachmentPreview.svelte` 的視窗（`<dialog>`）。文字預覽以 `Range: bytes=0-204799` 只讀開頭 200KB（204,800 位元組），由 `Content-Range` 的總長判斷是否截斷，切在一個字中間時捨去那半個字；Markdown 用對話紀錄同一個 `renderMarkdown`（不允許原始 HTML、不載入圖片、擋掉不安全的連結），其他文字放進 `<pre>` 當純文字。讀檔時發現檔案已不在就關掉視窗，改寫「檔案已不在」。視窗標題與「下載」用原名；標題只佔一行，`nameParts` 把檔名分成前 3 字、中段、副檔名前最多 6 字（不含前 3 字）與副檔名，太窄時先把中段縮成「…」，再從前面縮那 6 字（也標「…」），前 3 字與副檔名不縮。圖片以 `max-width`／`max-height: 100%` 整張放進視窗，觸控的雙指縮放與單指拖曳由 pointer 事件自己算（`touch-action: none`，只處理 `pointerType` 為 touch），滑鼠不縮放。視窗開著時 `:root:has(dialog.preview[open])` 設 `overflow: hidden`，背後頁面不捲動，關閉後位置不變。
+
+## 示意頁
+
+使用方式見[使用說明](../docs/lat-board.md#示意頁)。實作上：
+
+- `GET /demo/<名稱>/<路徑>`（`src/routes/demo/[...path]/+server.ts`，`trailingSlash = 'ignore'`，讀檔在 `src/lib/server/demo.ts` 的 `serveDemo`）從 `LAT_BOARD_DEMO_DIR/site/<名稱>/` 讀檔，只有 GET／HEAD。登入檢查照 `hooks.server.ts` 的既有規則：沒登入時頁面 303 轉 `/login`（從外站點進來的先重新載入一次）；測試裝置可讀（讀取請求不經 `TEST_DEVICE_RULES`）。
+- 路徑以送來的原文逐段解碼（不用 SvelteKit 解碼後的參數），任何一段是空的、開頭是點（含 `.`、`..` 與隱藏檔）或含 `/`、`\`、NUL 就 404；`%2e%2e` 在網址解析時已併成 `..` 處理。名稱的規則與 demo.py 相同。解開連結後檔案要在該示意自己的資料夾內（示意資料夾本身是連到外面的連結也拒絕），而且是一般檔案。
+- 以 `/` 結尾讀該資料夾的 `index.html`，沒有就 404，不列目錄；`/demo/<名稱>` 以 308 轉到加上 `/` 的網址（保留查詢字串），頁面的相對路徑才會落在自己的資料夾。
+- 每個回應（含 404 與 308）都帶 `Content-Security-Policy: sandbox allow-scripts allow-popups`（沒有 `allow-same-origin`，`secured` 再接上看板自己的那段）、`Cache-Control: no-store`、`Referrer-Policy: no-referrer`（`securityHeaders` 保留回應自己的 `no-referrer`，其他回應照舊 `same-origin`）與 `nosniff`；內容類型依副檔名（`demoType`），不認得的以 `application/octet-stream` 回應。sandbox 讓示意頁成為獨立的匿名來源：讀不到看板的 Cookie，對 `/api/` 的請求不帶登入 Cookie、回應也讀不到。
+- 測試：`tests/server/demo.test.ts`（登入、標頭、路徑跳脫、連結、不列目錄、404）。
 
 ## 版面與外觀
 
