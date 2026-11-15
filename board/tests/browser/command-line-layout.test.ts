@@ -90,8 +90,10 @@ for (const width of [260, 360, 390]) {
 		// No recipient for the open controller, and the box takes the whole row.
 		expect(at.to).toBeNull();
 		expect(at.box!.right - at.box!.left).toBeGreaterThan(width * 0.9);
-		// At 260px the options button, when it has something to show, takes a line of its own.
-		const row = [at.pill, at.attach, at.voice, ...(at.options && width > 300 ? [at.options] : []), at.hide] as NonNullable<Box>[];
+		// At 260px the options button, when it has something to show, starts a line of its own with
+		// the put-away button (see the test below).
+		const wrapped = width <= 300 && !!at.options;
+		const row = [at.pill, at.attach, at.voice, ...(at.options && !wrapped ? [at.options] : []), ...(wrapped ? [] : [at.hide])] as NonNullable<Box>[];
 		for (const [index, box] of row.entries()) {
 			expect(box).not.toBeNull();
 			expect(box.hit).toBe(true);
@@ -101,6 +103,7 @@ for (const width of [260, 360, 390]) {
 		// One row under the box, put away at its right edge.
 		expect(Math.max(...row.map((box) => box.top))).toBeLessThan(Math.min(...row.map((box) => box.bottom)));
 		expect(at.hide!.right).toBeGreaterThan(width - 24);
+		expect(at.hide!.hit).toBe(true);
 		expect(at.fits).toBe(true);
 		// Every control, the mic picker and the options button too, is whole inside the screen and
 		// can be hit: nothing cut off at the right.
@@ -198,7 +201,7 @@ for (const width of [1280, 390]) {
 
 // 260px with the options button showing: it takes a line of its own, whole and clickable, and the
 // page does not scroll sideways.
-test.skipIf(!CHROME)('260px: the options button showing goes to its own line, whole and clickable', async () => {
+test.skipIf(!CHROME)('260px: the options button showing goes to its own line with the put-away button, whole and clickable', async () => {
 	await visit(260);
 	await sleep(400);
 	await tab().eval(`document.querySelector('.cmd .options').classList.remove('idle')`);
@@ -210,5 +213,8 @@ test.skipIf(!CHROME)('260px: the options button showing goes to its own line, wh
 		expect(box.right).toBeLessThanOrEqual(260);
 	}
 	expect(at.options!.top).toBeGreaterThanOrEqual(at.voice!.bottom - 1);
+	// The put-away button shares that line, at its right, level with the options button.
+	expect(Math.abs((at.hide!.top + at.hide!.bottom) / 2 - (at.options!.top + at.options!.bottom) / 2)).toBeLessThanOrEqual(2);
+	expect(at.hide!.right).toBeGreaterThan(260 - 24);
 	expect(at.fits).toBe(true);
 });

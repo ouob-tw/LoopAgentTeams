@@ -729,19 +729,22 @@
 			margin-left: auto;
 		}
 	}
-	/* A 390px phone at 150% zoom (260px): the model and effort, paperclip and mic (with its picker)
-	   and the put-away button fit the one line; the options button, when it has anything to show,
-	   goes to a line of its own instead of sliding out of sight sideways. */
+	/* A 390px phone at 150% zoom (260px): the model and effort, paperclip, mic with its picker and
+	   the put-away button share one line. The options button, when it has something to show,
+	   starts the next line with the put-away button at its right, so nothing is cut off or scrolls
+	   sideways and no control floats between lines. */
 	@media (max-width: 300px) {
-		.cmd,
-		.controls {
+		.cmd {
 			gap: 0.25rem;
 		}
 		.controls {
-			flex-wrap: wrap;
-			overflow: visible;
-			padding: 0;
-			margin: 0;
+			display: contents;
+		}
+		.pill-slot,
+		.attach-slot,
+		.voice-slot,
+		.options {
+			flex: none;
 		}
 		.pill-slot :global(.picker .part) {
 			padding-inline: 3px;
