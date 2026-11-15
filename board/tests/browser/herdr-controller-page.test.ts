@@ -12,6 +12,8 @@ import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
 
 
 
+/** The page's 6 s reading time run in 0.4 s. */
+const FAST_DWELL = `(() => { const set = window.setTimeout.bind(window); window.setTimeout = (fn, ms, ...rest) => set(fn, ms === 6000 ? 400 : ms, ...rest); })()`;
 const SCREEN = `({ search: location.search, detail: document.querySelector('.detail')?.innerText ?? '', notices: document.querySelector('.dock')?.innerText ?? '' })`;
 /** The tab strip's labels, without their counts. */
 const TABS = `[...document.querySelectorAll('.detail [role="tablist"] [role="tab"]')].map((b) => b.innerText.replace(/\\s*\\d+$/, '').trim())`;
@@ -146,7 +148,7 @@ afterAll(async () => {
 
 /** A new Chrome, logged in, on the board at `search` in a window `width` wide. */
 async function visit(width: number, search = '') {
-	browser = await launchChrome({ screen: SCREEN });
+	browser = await launchChrome({ screen: SCREEN, scripts: [FAST_DWELL] });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
@@ -431,7 +433,7 @@ for (const width of [1280, 390]) {
 		}
 	}, 60_000);
 
-	test.skipIf(!CHROME)(`${width}px: a DONE report opened from the report list is shown in the conversation and read by opening it, as in the inbox`, async () => {
+	test.skipIf(!CHROME)(`${width}px: a DONE report opened from the report list is shown in the conversation and read after the 6 s stay, as in the inbox`, async () => {
 		// Each width starts with the report unread, whatever an earlier width or test left behind.
 		const key = (await fixture.board(cookie)).inbox.find((item) => item.kind === 'report' && item.message === SAID.done2)!.key;
 		expect((await fixture.markUnread(cookie, key)).ok).toBe(true);
@@ -442,8 +444,8 @@ for (const width of [1280, 390]) {
 		await tab.until(`!!document.querySelector('#panel-reports:not([hidden]) .row')`, 'the report list');
 		await tab.eval(click('#panel-reports', SAID.done2));
 		await tab.until(`!document.querySelector('#panel-transcript').hidden && ${OPENED}?.innerText.includes(${JSON.stringify(SAID.done2)})`, 'the report in the conversation');
-		// Opening it read it.
-		await tab.until(`${OPENED}.innerText.includes('已讀（')`, 'read by opening it');
+		// Read once it has been open for the stay.
+		await tab.until(`${OPENED}.innerText.includes('已讀（')`, 'read after the stay');
 		expect((await fixture.board(cookie)).inbox.find((item) => item.key === key)).toMatchObject({ readAt: expect.any(String) });
 		expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-lead');
 		expect(await tab.eval(FITS)).toBe(true);
