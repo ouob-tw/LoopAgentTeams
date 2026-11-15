@@ -242,7 +242,7 @@ for (const width of [1280, 390]) {
 		const box = `.dock textarea`;
 		expect(await tab.eval(`document.querySelector('${box}').disabled`)).toBe(true);
 		expect(await tab.eval(`document.querySelector('${box}').placeholder`)).toBe('已關閉，先接回才能傳訊息。');
-		expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @yesterday');
+		expect(await tab.eval(`!document.querySelector('.dock .to')`)).toBe(true);
 		expect(await tab.eval(FITS)).toBe(true);
 
 		await tab.eval(`document.querySelector('.detail .topbar button[aria-label="返回"]').click()`);
@@ -324,7 +324,7 @@ test.skipIf(!CHROME)("a draft kept from before is not sent to the closed agent, 
 		await openClosed(session);
 		await tab.until(`document.querySelector('.dock textarea').value === ${JSON.stringify(draft)}`, 'the kept draft');
 		expect(await tab.eval(`document.querySelector('.dock textarea').disabled`)).toBe(true);
-		expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe(`→ ${to}`);
+		expect(await tab.eval(`!document.querySelector('.dock .to')`)).toBe(true);
 		expect(await tab.eval(`document.querySelector('.dock .closed-note')?.innerText`)).toBe('已關閉，先接回才能傳訊息。');
 		expect(await tab.eval(`document.querySelector('.dock button[type="submit"], .dock .send')?.disabled`)).toBe(true);
 		await tab.eval(`document.querySelector('.dock form').requestSubmit()`);

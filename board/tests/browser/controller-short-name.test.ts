@@ -93,8 +93,7 @@ test.skipIf(!CHROME)('the roster card, page header and command line show the las
 		`(() => { const el = document.querySelector('[data-controller="${FULL}"] .handle'); return { text: el.innerText, title: el.title }; })()`
 	);
 	expect(card).toEqual({ text: '@tevu', title: `@${FULL}` });
-	expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @tevu');
-	expect(await tab.eval(`document.querySelector('.dock .to').title`)).toBe(`@${FULL}`);
+	expect(await tab.eval(`!document.querySelector('.dock .to')`)).toBe(true);
 	expect(await tab.eval<string>(`document.body.innerText`)).not.toContain(FULL);
 });
 

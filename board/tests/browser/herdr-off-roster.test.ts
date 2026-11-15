@@ -167,7 +167,7 @@ for (const width of [1280, 390]) {
 		expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-old');
 		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '終端', '回報', '工作總表', '送出紀錄', '預先授權', '操作紀錄']);
 		expect(await tab.eval<string>(`document.querySelector('.detail .profile').innerText`)).toContain('已關閉');
-		if (width > 760) expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @old');
+		if (width > 760) expect(await tab.eval(`!document.querySelector('.dock .to')`)).toBe(true);
 		// The wake's options, as on any closed controller's page; addressed by its name too.
 		await type(`@old ${text}`);
 		await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);

@@ -68,10 +68,11 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-test.skipIf(!CHROME)('a wide screen keeps one row: recipient, paperclip, mic, box, model and effort, then the rest', async () => {
+test.skipIf(!CHROME)('a wide screen keeps one row: paperclip, mic, box, model and effort, then the rest', async () => {
 	const at = await visit(1280);
 	expect(at.hide).toBeNull();
-	const row = [at.to, at.attach, at.voice, at.box, at.pill, ...(at.options ? [at.options] : [])] as NonNullable<Box>[];
+	expect(at.to).toBeNull();
+	const row = [at.attach, at.voice, at.box, at.pill, ...(at.options ? [at.options] : [])] as NonNullable<Box>[];
 	for (const [index, box] of row.entries()) {
 		expect(box).not.toBeNull();
 		if (index) expect(box.left).toBeGreaterThanOrEqual(row[index - 1].right);
@@ -82,13 +83,14 @@ test.skipIf(!CHROME)('a wide screen keeps one row: recipient, paperclip, mic, bo
 	expect(at.fits).toBe(true);
 });
 
-for (const width of [360, 390]) {
+for (const width of [260, 360, 390]) {
 	test.skipIf(!CHROME)(`${width}px: the box alone on top; model and effort, paperclip, mic, the rest, and put away at the far right`, async () => {
 		const at = await visit(width);
 		// No recipient for the open controller, and the box takes the whole row.
 		expect(at.to).toBeNull();
 		expect(at.box!.right - at.box!.left).toBeGreaterThan(width * 0.9);
-		const row = [at.pill, at.attach, at.voice, ...(at.options ? [at.options] : []), at.hide] as NonNullable<Box>[];
+		// At 260px the options button, when it has something to show, takes a line of its own.
+		const row = [at.pill, at.attach, at.voice, ...(at.options && width > 300 ? [at.options] : []), at.hide] as NonNullable<Box>[];
 		for (const [index, box] of row.entries()) {
 			expect(box).not.toBeNull();
 			expect(box.hit).toBe(true);
@@ -99,6 +101,8 @@ for (const width of [360, 390]) {
 		expect(Math.max(...row.map((box) => box.top))).toBeLessThan(Math.min(...row.map((box) => box.bottom)));
 		expect(at.hide!.right).toBeGreaterThan(width - 24);
 		expect(at.fits).toBe(true);
+		// Every control is whole inside the screen: nothing cut off at the right.
+		for (const box of row) expect(box.right).toBeLessThanOrEqual(width);
 		// Put away, then brought back.
 		await tab().eval(`document.querySelector('.cmd .hide').click()`);
 		const shown = (selector: string) => `!!document.querySelector('${selector}')?.getBoundingClientRect().height`;

@@ -190,7 +190,7 @@ for (const width of [1280, 390]) {
 		await visit(width, '?agent=s-lead');
 		await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(BOX)})`, "the controller's page");
 		await type(text);
-		if (width > 760) expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @lead');
+		if (width > 760) expect(await tab.eval(`!document.querySelector('.dock .to')`)).toBe(true);
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).getAttribute('aria-label')`)).toBe('送出');
 		// No agent's model picker: the line is the controller's. It is at work, so its stop sits beside the send button.
 		expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`)).toBe(false);
@@ -496,7 +496,7 @@ for (const { width, kind, value, flags } of [
 		const prompt = text;
 		await visit(width, '?agent=s-gone');
 		await tab.until(`${pageOf('dusk')} && document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, "the closed controller's page");
-		if (width > 760) expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @gone');
+		if (width > 760) expect(await tab.eval(`!document.querySelector('.dock .to')`)).toBe(true);
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).disabled`)).toBe(false);
 		await type(text);
 		await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
@@ -651,7 +651,7 @@ test.skipIf(!CHROME)("the controller's model picker is worked by keys, and a cli
 test.skipIf(!CHROME)("an ordinary agent is still written to as an agent, from a draft of its own", async () => {
 	await visit(1280, '?agent=s-plain');
 	await tab.until(`!!document.querySelector('.detail [data-agent="s-plain"]') && !!document.querySelector(${JSON.stringify(BOX)})`, 'the agent page');
-	expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @plain');
+	expect(await tab.eval(`!document.querySelector('.dock .to')`)).toBe(true);
 	await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick="model"]')`, "the agent's model picker");
 	// Its options hold its permission only, never a wake's.
 	await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);

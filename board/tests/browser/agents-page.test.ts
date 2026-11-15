@@ -942,10 +942,10 @@ test.skipIf(!CHROME)('on an agent\'s page a line starting with @name still goes 
 	rmSync(join(injectDir, 'inject-calls.jsonl'), { force: true });
 	await visit(1280, '?agent=s-plain');
 	await tab.until(`!!document.querySelector('.detail [data-agent="s-plain"]') && !!document.querySelector(${JSON.stringify(BOX)})`, 'the agent page');
-	expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ 分頁-s-plain');
+	expect(await tab.eval(`!document.querySelector('.dock .to')`)).toBe(true);
 	await type('@lead 給主控的話');
 	// Named: the controller is the recipient, with its own model and effort beside the button.
-	await tab.until(`document.querySelector('.dock .to').innerText === '→ @lead'`, 'the controller as recipient');
+	await tab.until(`!document.querySelector('.dock .to') && document.querySelector('.dock textarea').getAttribute('aria-label').includes('@lead')`, 'the controller as recipient');
 	expect(await tab.eval(`!!document.querySelector('.dock [data-action="apply"], .dock [data-pick]')`)).toBe(false);
 	await click(SEND);
 	await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');
@@ -995,7 +995,7 @@ test.skipIf(!CHROME)('a card is titled by its tab, then the short hcom name, whi
 		await openAgent('s-wide');
 		await tab.until(`!!document.querySelector('.detail [data-agent="s-wide"]')`, 'its page');
 		expect(await tab.eval(`document.querySelector('.detail h2').innerText`)).toBe('wido');
-		expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @wido');
+		expect(await tab.eval(`!document.querySelector('.dock .to')`)).toBe(true);
 	} finally {
 		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
 		setHerdr(AGENTS);
