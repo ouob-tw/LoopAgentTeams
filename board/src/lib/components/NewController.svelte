@@ -26,7 +26,6 @@
 		TAB_NAME_MAX,
 		WORKSPACE_NAME_MAX,
 		workspaceToSend,
-		type ControllerMode,
 		type LaunchClient,
 		type LaunchView,
 		type Project,
@@ -39,6 +38,7 @@
 	import { DEFAULT_UNREADABLE_TEXT, defaultEffort, modelShort } from '#lib/board/models.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { Agent, Controller, HerdrWorkspace } from '#lib/board/types.ts';
+	import type { UnattendedMode } from '#lib/board/unattended.ts';
 	import MessageBox from './MessageBox.svelte';
 
 	let {
@@ -234,7 +234,7 @@
 	untrack(() => {
 		if (!target) launching.mode = 'manual';
 	});
-	const MODE_CHOICES: [ControllerMode, string][] = [
+	const MODE_CHOICES: [UnattendedMode, string][] = [
 		['manual', '手動'],
 		['unattended', '無人']
 	];

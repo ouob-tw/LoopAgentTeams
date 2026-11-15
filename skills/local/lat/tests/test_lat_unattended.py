@@ -412,6 +412,10 @@ class DefaultStartTests(UnattendedCase):
         created = self.default_create('board-launch:L1')['created']
         self.assertEqual((created['source'], created['note']), ('settings-default', '目標由主控擬出'))
         self.assertEqual(self.status()['state'], 'active')
+        # One launch grants one round: a later round citing it again is refused.
+        self.json_of('close', '--reason', 'quota')
+        self.grant.rename(self.lat / 'unattended' / f'{SESSION}-r0.json')
+        self.assertIn('already cited', self.default_create('board-launch:L1', code=1)['reason'])
 
     def test_a_controller_the_board_opened_manual_stays_manual_over_an_unattended_default(self):
         self.write(self.global_file, '[unattended]\nmode = "unattended"\n')

@@ -283,6 +283,12 @@ def launch_source(record):
     return source if isinstance(source, str) and source.startswith(LAUNCH_EVIDENCE) else None
 
 
+def board_launched(found):
+    """The `board-launch:<launch ID>` the mode now comes from, when the board's new-controller form
+    set it in the controller layer; else None."""
+    return launch_source(found.record) if found.values['mode']['layer'] == 'controller' else None
+
+
 def grant_state(found):
     """(state, the open version or None). A default start, from the settings or from the board's
     new-controller form, waits for the goal while the round has no version yet."""
@@ -291,8 +297,7 @@ def grant_state(found):
         return 'none', None
     if current:
         return 'active', current
-    launched = found.values['mode']['layer'] == 'controller' and launch_source(found.record)
-    if not found.versions and (is_default(found.values) or launched):
+    if not found.versions and (is_default(found.values) or board_launched(found)):
         return 'pending-goal', None
     return 'none', None
 
@@ -397,34 +402,57 @@ def board_log_lines():
     return path, items
 
 
-def board_launch_mode(name):
+def launch_lines(name):
+    """(log path, the board's `launch-mode` lines for this HCOM name, oldest first)."""
+    path, items = board_log_lines()
+    return path, [item for item in items
+                  if item.get('kind') == 'launch-mode' and item.get('hcomName') == name]
+
+
+def launch_taken(lat, evidence):
+    """Whether a session record in this project, any round of it, already took this launch's
+    mode: a launch sets the first round of one controller only."""
+    for path in (lat / 'sessions').glob('*.json'):
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        rounds = [record, *record.get('history', [])] if isinstance(record, dict) else []
+        if any(launch_source(item) == evidence for item in rounds if isinstance(item, dict)):
+            return True
+    return False
+
+
+def board_launch_mode(lat, name):
     """(mode, `board-launch:<launch ID>`) the board's new-controller form chose for the controller
     it opened under this HCOM name, from the newest such line of the board's log when that is
-    within LAUNCH_WINDOW; None when there is none."""
-    _, items = board_log_lines()
-    line = next((item for item in reversed(items)
-                 if item.get('kind') == 'launch-mode' and item.get('hcomName') == name), None)
+    within LAUNCH_WINDOW and no session took it yet; None when there is none."""
+    _, lines = launch_lines(name)
+    line = lines[-1] if lines else None
     if line is None or line.get('mode') not in MODE_LABELS or not isinstance(line.get('launchId'), str):
         return None
     try:
         age = now() - parse(line['time'])
     except (KeyError, TypeError, ValueError):
         return None
+    # A minute ahead is the board's and this host's clocks differing, as for a board-task run.
     if not timedelta(minutes=-1) <= age <= LAUNCH_WINDOW:
         return None
-    return line['mode'], f'{LAUNCH_EVIDENCE}{line["launchId"]}'
+    evidence = f'{LAUNCH_EVIDENCE}{line["launchId"]}'
+    return None if launch_taken(lat, evidence) else (line['mode'], evidence)
 
 
-def launch_evidence_problem(record, evidence):
+def launch_evidence_problem(lat, record, evidence):
     """A default start of a controller the board's new-controller form opened unattended cites the
-    launch its controller layer came from, which the board logged for this controller."""
-    if evidence != launch_source(record):
-        return f'{evidence} is not the board launch the controller mode came from ({launch_source(record)})'
-    path, items = board_log_lines()
+    launch its controller layer came from, which the board logged for this controller, once."""
+    source = launch_source(record)
+    if evidence != source:
+        return f'{evidence} is not the board launch the controller mode came from ({source})'
+    if cited_by_any_grant(lat, evidence):
+        return f'{evidence} is already cited by an earlier version'
+    path, lines = launch_lines(record.get('hcom_name'))
     wanted = evidence.removeprefix(LAUNCH_EVIDENCE)
-    if not any(item.get('kind') == 'launch-mode' and item.get('launchId') == wanted
-               and item.get('hcomName') == record.get('hcom_name') and item.get('mode') == 'unattended'
-               for item in items):
+    if not any(line.get('launchId') == wanted and line.get('mode') == 'unattended' for line in lines):
         return f'no board launch {wanted} of {record.get("hcom_name")} in unattended mode in {path}'
     return None
 
@@ -590,8 +618,8 @@ def settings_default_problem(lat, found, evidence, scope, max_hours):
         words = [word for word, key in SCOPE_WORDS.items() if wanted[key]] or ['none']
         return ('a default start takes the scope and time limit from the settings: '
                 f'--scope {" ".join(words)} --max-hours {values["max_hours"]["value"]}')
-    if values['mode']['layer'] == 'controller' and launch_source(found.record):
-        return launch_evidence_problem(found.record, evidence)
+    if board_launched(found):
+        return launch_evidence_problem(lat, found.record, evidence)
     return settings_evidence_problem(lat, values, evidence)
 
 

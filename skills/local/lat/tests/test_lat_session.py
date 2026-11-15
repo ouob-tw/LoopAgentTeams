@@ -2372,7 +2372,8 @@ class SessionTests(unittest.TestCase):
                                          hcomName=name, mode=mode, time=moment.isoformat())) + '\n')
 
     def test_activate_writes_the_mode_the_board_launch_chose_into_the_controller_layer(self):
-        # Manual over an unattended global default.
+        # Manual over unattended project and global defaults.
+        (self.work / '.lat/preauth.toml').write_text('[unattended]\nmode = "unattended"\n')
         self.board_launch('manual', name='someone-else', launch_id='L0')
         self.board_launch('manual')
         manual = self.activate_with('unattended')
@@ -2383,8 +2384,12 @@ class SessionTests(unittest.TestCase):
         # A later round of the same session is not the launch's round.
         self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
         again = self.activate_with('unattended')
-        self.assertIn('本輪模式：無人模式（來自全域）', again.stdout)
+        self.assertIn('本輪模式：無人模式（來自專案）', again.stdout)
         self.assertNotIn('unattended', json.loads(self.record.read_text()))
+        # Another session under the same name does not take the launch again.
+        self.activate_with(session=OTHER)
+        other = self.unattended_status(OTHER)
+        self.assertEqual(other['settings']['mode']['layer'], 'project')
 
     def test_activate_of_a_controller_the_board_opened_unattended_waits_for_its_goal(self):
         self.board_launch('unattended', launch_id='L7')

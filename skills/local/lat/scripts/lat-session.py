@@ -418,7 +418,7 @@ def activate(args):
     if new_round:
         record['started_at_utc'] = datetime.now(timezone.utc).isoformat()
         if not record.get('history'):
-            launch_note = board_launch_layer(record)
+            launch_note = board_launch_layer(path.parent.parent, record)
     record.setdefault('rule_fingerprint', fingerprint)
     panel = panel_module()
     try:
@@ -497,12 +497,12 @@ def draft_command(workspace, goal=None, done=None):
         f' --done {shlex.quote(item)}' for item in done)
 
 
-def board_launch_layer(record):
+def board_launch_layer(lat, record):
     """On a session's first round, the controller layer's mode the board's new-controller form
     chose for this controller (#656), written into `record`; a line to print when the board's log
     could not be read, else None."""
     try:
-        found = unattended_module().board_launch_mode(record['hcom_name'])
+        found = unattended_module().board_launch_mode(lat, record['hcom_name'])
     except Exception as error:  # noqa: BLE001 - activate goes on; the mode line says what holds
         return f'看板新建紀錄讀不出（{error}），本輪模式照專案與全域設定'
     if found:

@@ -13,12 +13,12 @@ import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, 
 import { join } from 'node:path';
 import type { AgentAction } from '../board/agent-actions.ts';
 import type { AnswerState, SentAnswer } from '../board/answers.ts';
-import type { ControllerMode, LaunchFollow, SentLaunch } from '../board/launch.ts';
+import type { LaunchFollow, SentLaunch } from '../board/launch.ts';
 import type { SentMessage } from '../board/messages.ts';
 import type { ModelChoice, SentSwitch, SwitchState } from '../board/models.ts';
 import type { ResumeClose, SentWake } from '../board/wake.ts';
 import { actingTestDevice } from './acting.ts';
-import type { UnattendedScope } from '../board/unattended.ts';
+import type { UnattendedMode, UnattendedScope } from '../board/unattended.ts';
 import type { TaskUnattended } from '../board/automation.ts';
 
 const SENT_LOG_FILE = 'sent-log.jsonl';
@@ -52,7 +52,7 @@ export interface LaunchMode {
 	id: string;
 	launchId: string;
 	hcomName: string;
-	mode: ControllerMode;
+	mode: UnattendedMode;
 	time: string;
 }
 

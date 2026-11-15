@@ -1,10 +1,11 @@
 import { isAbsolute } from 'node:path';
 import { json } from '@sveltejs/kit';
-import { isControllerMode, isLaunchClient, TAB_NAME_MAX, WORKSPACE_NAME_MAX, type ControllerMode, type LaunchRequest, type WorkspacePick } from '#lib/board/launch.ts';
+import { isLaunchClient, TAB_NAME_MAX, WORKSPACE_NAME_MAX, type LaunchRequest, type WorkspacePick } from '#lib/board/launch.ts';
 import { offered } from '#lib/board/models.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { listLaunches, startLaunch } from '#lib/server/launch.ts';
 import { typedText } from '#lib/server/send.ts';
+import type { UnattendedMode } from '#lib/board/unattended.ts';
 import type { RequestHandler } from './$types';
 
 /** A name as a tab or workspace title takes it: one line, no longer than `max`; undefined when it
@@ -38,7 +39,7 @@ function workspacePart(value: unknown): WorkspacePick | null | undefined {
  *  answers with its sent-log entry. */
 export const POST: RequestHandler = async ({ request }) => {
 	const body: Partial<Record<keyof LaunchRequest, unknown>> | null = await request.json().catch(() => null);
-	const { client, folder, text, gitInit, model = null, effort = null, mode = 'manual' } = body ?? {};
+	const { client, folder, text, gitInit, model = null, effort = null, mode = null } = body ?? {};
 	const agent = agentPart(body?.agent);
 	const workspace = workspacePart(body?.workspace);
 	const board = getBoard();
@@ -57,7 +58,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		// The board never runs `git init` for a plain agent.
 		(agent && gitInit) ||
 		// A controller's first round starts manual or unattended (#656); a plain agent has no mode.
-		(agent ? body?.mode !== undefined && body?.mode !== null : !isControllerMode(mode)) ||
+		(mode !== null && (agent || (mode !== 'manual' && mode !== 'unattended'))) ||
 		(model !== null && typeof model !== 'string') ||
 		(effort !== null && typeof effort !== 'string') ||
 		!offered(board.config.modelOptions[client], { model, effort })
@@ -73,7 +74,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		effort,
 		agent,
 		workspace: workspace ?? { kind: 'auto' },
-		...(agent ? {} : { mode: mode as ControllerMode })
+		// A controller sent without one starts manual.
+		...(agent ? {} : { mode: (mode ?? 'manual') as UnattendedMode })
 	});
 	return json(result.body, { status: result.status });
 };

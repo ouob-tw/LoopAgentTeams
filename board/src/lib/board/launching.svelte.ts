@@ -3,8 +3,9 @@
 // and the recent launches.
 import { request } from './api.ts';
 import { latestOnly, typedFolder } from './folder-search.ts';
-import type { ControllerMode, FolderSearch, LaunchClient, LaunchList, LaunchResponse, WorkspaceOption, WorkspacePick } from './launch.ts';
+import type { FolderSearch, LaunchClient, LaunchList, LaunchResponse, WorkspaceOption, WorkspacePick } from './launch.ts';
 import type { LaunchDefaults } from './models.ts';
+import type { UnattendedMode } from './unattended.ts';
 
 export interface StartResult {
 	ok: boolean;
@@ -42,7 +43,7 @@ class Launching {
 	text = $state('');
 	gitInit = $state(false);
 	/** The new controller's mode for its first round; each time the form is opened it starts manual. */
-	mode = $state<ControllerMode>('manual');
+	mode = $state<UnattendedMode>('manual');
 	/** '' starts the client with its own default. */
 	model = $state('');
 	effort = $state('');
