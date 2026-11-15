@@ -53,11 +53,17 @@ export async function launchWithLockRetry(deps: {
 	let result = await deps.attempt();
 	for (const wait of waits) {
 		if (result.ok || !isLockedFailure(result.reason)) return result;
-		const left = await deps.cleanup();
-		if (left) return { ok: false, reason: `${result.reason}；清不掉這次留下的半開 Agent：${left}` };
+		let left = await deps.cleanup();
+		if (left && !isLockedFailure(left)) return { ok: false, reason: `${result.reason}；清不掉這次留下的半開 Agent：${left}` };
 		await pause(wait, deps.halted);
 		const cut = deps.halted();
 		if (cut) return { ok: false, reason: result.reason, cut };
+		// The lock hit the cleanup too: it is done again after the wait, before anything is launched.
+		if (left && (left = await deps.cleanup())) {
+			if (!isLockedFailure(left)) return { ok: false, reason: `${result.reason}；清不掉這次留下的半開 Agent：${left}` };
+			result = { ok: false, reason: `${result.reason}；清理也遇到：${left}` };
+			continue;
+		}
 		result = await deps.attempt();
 	}
 	if (!result.ok && isLockedFailure(result.reason)) return { ok: false, reason: `已重試 ${waits.length} 次仍失敗，最後一次：${result.reason}` };

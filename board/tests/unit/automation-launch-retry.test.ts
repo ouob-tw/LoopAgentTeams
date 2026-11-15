@@ -13,7 +13,7 @@ const MIN = 60_000;
 type Result = Awaited<ReturnType<Parameters<typeof launchWithLockRetry>[0]['attempt']>>;
 
 /** A launch whose answers come in turn; records the waits and how many times it was cleaned up. */
-function rig(answers: Result[], haltDuring?: { atWait: number; cut: Cut }) {
+function rig(answers: Result[], haltDuring?: { atWait: number; cut: Cut }, cleanups: (string | null)[] = []) {
 	const seen = { attempts: 0, cleanups: 0, waits: [] as number[], cleanupAnswer: null as string | null };
 	let cut: Cut | null = null;
 	return {
@@ -21,7 +21,7 @@ function rig(answers: Result[], haltDuring?: { atWait: number; cut: Cut }) {
 		run: () =>
 			launchWithLockRetry({
 				attempt: async () => answers[seen.attempts++]!,
-				cleanup: async () => (seen.cleanups++, seen.cleanupAnswer),
+				cleanup: async () => (seen.cleanups++, cleanups.length ? (cleanups.shift() ?? null) : seen.cleanupAnswer),
 				halted: () => cut,
 				pause: async (ms) => {
 					seen.waits.push(ms);
@@ -79,6 +79,21 @@ test('a half-opened agent that cannot be cleaned up stops the retries', async ()
 	expect(result.ok).toBe(false);
 	expect(r.seen.attempts).toBe(1);
 	if (!result.ok) expect(result.reason).toContain('清不掉');
+});
+
+test('a lock hitting the cleanup too is cleaned again after the wait, and nothing is launched until it is clean', async () => {
+	const r = rig([...locked(1), { ok: true, name: 'n', workspace: null }], undefined, ['hcom: database is locked', null]);
+	expect(await r.run()).toEqual({ ok: true, name: 'n', workspace: null });
+	expect(r.seen).toMatchObject({ attempts: 2, cleanups: 2, waits: [MIN] });
+});
+
+test('a cleanup locked every time uses up the retries without launching again', async () => {
+	const stuck = 'hcom: database is locked';
+	const r = rig(locked(1), undefined, [stuck, stuck, stuck, stuck, stuck, stuck]);
+	const result = await r.run();
+	expect(r.seen).toMatchObject({ attempts: 1, waits: [MIN, 2 * MIN, 4 * MIN] });
+	expect(result.ok).toBe(false);
+	if (!result.ok) expect(result.reason).toContain('已重試 3 次');
 });
 
 test('the default wait ends within seconds of a stop', async () => {
