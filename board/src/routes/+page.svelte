@@ -1390,6 +1390,10 @@
 		.viewing .inbox {
 			display: none;
 		}
+		/* A narrow window with a classic scrollbar: the page scrolls, not the column, so the page keeps the place (a phone's overlay bar takes none). */
+		:global(html:has(.page:not(.screen-open) .viewing)) {
+			scrollbar-gutter: stable;
+		}
 		.viewing .detail {
 			display: flex;
 		}

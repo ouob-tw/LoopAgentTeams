@@ -65,14 +65,15 @@ async function release() {
 	for (const requestId of tab.paused.splice(0)) await tab.send('Fetch.continueRequest', { requestId }).catch(() => {});
 }
 
-for (const width of [1280, 390]) {
-	test.skipIf(!CHROME)(`${width}px: switching conversation keeps the content and the bar where they were while the new one reads`, async () => {
+// 600px with a classic scrollbar: the page scrolls there, not the column.
+for (const [width, mobile] of [[1280, false], [390, true], [600, false]] as const) {
+	test.skipIf(!CHROME)(`${width}px${mobile ? ' phone' : ''}: switching conversation keeps the content and the bar where they were while the new one reads`, async () => {
 		browser = await launchChrome({ screen: `location.search + ' ' + document.body.innerText.slice(0, 300)` });
 		tab = browser.tab;
 		const [name, value] = cookie.split('=');
 		await tab.send('Network.setCookie', { name, value, url: fixture.url });
-		await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
-		if (width < 761) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+		await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile });
+		if (mobile) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
 		await tab.navigate(`${fixture.url}/?controller=${luna.session_id}`);
 		await tab.until(`!!document.querySelector('${LINES}')`, 'the first conversation');
 		await sleep(300);
@@ -98,6 +99,7 @@ for (const width of [1280, 390]) {
 		expect(first.other).toBe(false);
 		expect(loaded.other).toBe(true);
 		expect(reading.column).toBe(loaded.column);
+		expect(reading.box).toBe(first.box);
 		expect(reading.box).toBe(loaded.box);
 		expect(reading.barRight).toBe(loaded.barRight);
 		expect(reading.column).toBe(first.column);
