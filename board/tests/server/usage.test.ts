@@ -66,7 +66,7 @@ describe('the line', () => {
 	});
 
 	test('every part in its safe range is left off, and the line is then empty', () => {
-		expect(usageParts({ ...full, context: 10 }, NOW)).toEqual([]);
+		expect(usageParts({ ...full, context: 10, cache: { warm: true, hit: 0.97, expires: NOW + 41 * MINUTE } }, NOW)).toEqual([]);
 	});
 
 	test('each part is left off past its boundary, and shown on it', () => {
@@ -85,14 +85,14 @@ describe('the line', () => {
 		const hit = (ratio: number) => only({ cache: { warm: true, hit: ratio, expires: null } });
 		expect(hit(0.8)).toBe('快取命中 80%');
 		expect(hit(0.81)).toBe('');
-		// Countdown: shown up to 30 minutes.
+		// Countdown: shown up to 40 minutes.
 		const left = (ms: number, ratio = 0.97) => only({ cache: { warm: true, hit: ratio, expires: NOW + ms } });
-		expect(left(30 * MINUTE + 59_000)).toBe('快取 30 分鐘後失效');
-		expect(left(31 * MINUTE)).toBe('');
+		expect(left(40 * MINUTE + 59_000)).toBe('快取 40 分鐘後失效');
+		expect(left(41 * MINUTE)).toBe('');
 		// A countdown without its hit keeps the label; with its hit, it follows it.
 		expect(left(20 * MINUTE)).toBe('快取 20 分鐘後失效');
 		expect(left(20 * MINUTE, 0.7)).toBe('快取命中 70% 20 分鐘後失效');
-		expect(left(31 * MINUTE, 0.7)).toBe('快取命中 70%');
+		expect(left(41 * MINUTE, 0.7)).toBe('快取命中 70%');
 		// Cold and expired are never safe.
 		expect(only({ cache: { warm: false, hit: 0.99, expires: NOW + 60 * MINUTE } })).toBe('快取尚未建立');
 		expect(only({ cache: { warm: true, hit: 0.99, expires: NOW - 1 } })).toBe('快取已失效');
@@ -246,11 +246,14 @@ describe('the compact line', () => {
 	});
 
 	test('the same parts are left off as in the detailed line, with the same colours', () => {
-		expect(usageParts({ ...full, context: 10 }, NOW, { style: 'compact' })).toEqual([]);
+		expect(usageParts({ ...full, context: 10, cache: { warm: true, hit: 0.97, expires: NOW + 41 * MINUTE } }, NOW, { style: 'compact' })).toEqual([]);
 		expect(only({ context: 10 })).toBe('');
 		expect(only({ context: 11 })).toBe('Ctx 11%');
 		expect(only({ limits: [{ minutes: 300, used: 54 }] })).toBe('');
 		expect(only({ limits: [{ minutes: 10080, used: 70 }] })).toBe('7d 30%');
+		const left = (ms: number) => only({ cache: { warm: true, hit: 0.97, expires: NOW + ms } });
+		expect(left(40 * MINUTE + 59_000)).toBe('Cache ⏳ 40 min');
+		expect(left(41 * MINUTE)).toBe('');
 		const usage: Usage = {
 			context: 80,
 			limits: [{ minutes: 300, used: 81 }],

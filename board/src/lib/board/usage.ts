@@ -155,7 +155,7 @@ const SAFE_LEFT: Record<number, number> = { 300: 45, 10080: 30 };
  * 5 minutes or less of cache left; an expired cache in the alarm colour. A cold cache shows as
  * `快取尚未建立`, without hit or expiry. A part in its safe range is left off: context at or under 10% used,
  * over 45% of the 5-hour or 30% of the 7-day quota left (other windows always show), a cache hit over
- * 80%, over 30 minutes of cache left, bypass permissions; a countdown shown without its hit carries
+ * 80%, over 40 minutes of cache left, bypass permissions; a countdown shown without its hit carries
  * the cache's name itself (`快取 20 分鐘後失效`, `快取已失效`). A cold or expired cache always shows. The
  * permission comes last, e.g. `權限：自動模式`. With `all`, nothing is left off.
  *
@@ -191,7 +191,7 @@ export function usageParts(
 		// Whole minutes left, as the status line counts them.
 		const minutes = cache.expires !== null ? Math.floor((cache.expires - now) / 60_000) : null;
 		const expired = cache.expires !== null && cache.expires <= now;
-		const countdownShown = minutes !== null && (all || expired || minutes <= 30);
+		const countdownShown = minutes !== null && (all || expired || minutes <= 40);
 		if (compact && (hitShown || countdownShown)) parts.push({ text: hitShown ? `Cache ${hit}%` : 'Cache', level: 'normal' });
 		else if (hitShown) parts.push({ text: `快取命中 ${hit}%`, level: 'normal' });
 		if (countdownShown) {
