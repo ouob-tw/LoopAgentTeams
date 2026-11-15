@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/lib/components/VoiceField.svelte", "board/src/lib/components/VoiceButton.svelte", "board/src/lib/board/voice-recording.svelte.ts", "board/src/lib/board/mic-devices.svelte.ts", "board/src/lib/board/mic-choice.ts"],
+      "tests": ["board/tests/browser/mic-picker.test.ts", "board/tests/unit/mic-choice.test.ts"]
+    }
+  ]
+}
