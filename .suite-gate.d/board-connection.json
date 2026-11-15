@@ -22,7 +22,8 @@
       ],
       "tests": [
         "board/tests/server/connection.test.ts",
-        "board/tests/unit/login-limit.test.ts"
+        "board/tests/unit/login-limit.test.ts",
+        "board/tests/browser/outside-open.test.ts"
       ]
     },
     {

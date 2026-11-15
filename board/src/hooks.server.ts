@@ -94,6 +94,24 @@ async function logFailure(event: RequestEvent, response: Response) {
 
 const seeOther = (location: string) => new Response(null, { status: 303, headers: { location } });
 
+/**
+ * A page opened from outside the board (an installed app started from the home screen, a link in
+ * another app or site) arrives without the login cookie, which is SameSite=Strict. Such a request
+ * gets a page that loads the same address again from itself: that load is same-origin, so the
+ * browser sends the cookie. The page holds no data and names no address: it loads its own full
+ * address, so it cannot send the browser anywhere else (a path alone would, read as `//host/...`).
+ * The fragment is left out, since loading an address with one would only scroll. A same-origin
+ * request without the cookie, and one without these headers (an old browser, curl), goes to the
+ * login screen as before, so this happens at most once.
+ */
+function openedFromOutside(request: Request): boolean {
+	const site = request.headers.get('sec-fetch-site');
+	return request.headers.get('sec-fetch-mode') === 'navigate' && site !== null && site !== 'same-origin';
+}
+
+const RELOAD_PAGE = '<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>LAT</title><script>location.replace(location.href.split("#")[0])</script>';
+const reloadFromHere = () => new Response(RELOAD_PAGE, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+
 /** The response with the security headers. The built server's connection guard
  *  (instrumentation.server.ts) set them already, but a header SvelteKit writes replaces it: here a
  *  route's own policy (an attached file's sandbox) is joined with the board's. */
@@ -151,6 +169,7 @@ const handleAllowed: Handle = ({ event, resolve }) => {
 			const path = event.url.pathname;
 			if (!device && !OPEN_PATHS.has(path)) {
 				if (path.startsWith('/api/')) return json({ error: 'unpaired' }, { status: 401 });
+				if (openedFromOutside(event.request)) return reloadFromHere();
 				return seeOther('/login');
 			}
 			if (device && path === '/login') return seeOther('/');

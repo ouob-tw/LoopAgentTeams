@@ -153,6 +153,44 @@ describe('a board with a proxy on its list', () => {
 		expect((await from('127.0.0.1', '/login', { headers: { 'x-forwarded-proto': 'https' } })).headers.get('strict-transport-security')).toBeNull();
 	});
 
+	test('a page opened from outside without the login cookie loads itself again once; same-origin and curl go to the login screen', async () => {
+		const outside = (site: string, path = '/') => from('127.0.0.1', path, { headers: { 'sec-fetch-mode': 'navigate', 'sec-fetch-site': site, 'sec-fetch-dest': 'document' } });
+		for (const site of ['cross-site', 'none', 'same-site']) {
+			const answer = await outside(site);
+			expect([site, answer.status]).toEqual([site, 200]);
+			expect(answer.headers.get('location')).toBeNull();
+			expect(answer.headers.get('cache-control')).toBe('no-store');
+			expect(answer.headers.get('content-type')).toBe('text/html; charset=utf-8');
+			expect(answer.headers.get('content-security-policy')).toBe(CONTENT_POLICY);
+			expect(answer.headers.get('x-frame-options')).toBe('DENY');
+			expect(answer.headers.get('x-content-type-options')).toBe('nosniff');
+			expect(answer.headers.get('referrer-policy')).toBe('same-origin');
+			// The page loads its own address and nothing else; no board data, no address from the request.
+			expect(answer.body).toContain('location.replace(location.href.split("#")[0])');
+			expect(answer.body).not.toContain('127.0.0.1');
+		}
+		// The address and query the browser asked for never appear in the page.
+		expect((await outside('cross-site', '/?next=https%3A%2F%2Fevil.example')).body).not.toContain('evil');
+		// The load the page makes is same-origin: without the cookie it goes to the login screen, so at most one extra load.
+		const again = await outside('same-origin');
+		expect([again.status, again.headers.get('location')]).toEqual([303, '/login']);
+		// No Fetch Metadata (an old browser, curl), or not a page load: the login screen as before.
+		const plain = await from('127.0.0.1', '/');
+		expect([plain.status, plain.headers.get('location')]).toEqual([303, '/login']);
+		expect((await from('127.0.0.1', '/', { headers: { 'sec-fetch-mode': 'no-cors', 'sec-fetch-site': 'cross-site' } })).status).toBe(303);
+		// The API still answers 401, and the login screen itself is served as before.
+		expect((await outside('cross-site', '/api/board')).status).toBe(401);
+		const login = await outside('cross-site', '/login');
+		expect(login.status).toBe(200);
+		expect(login.body).not.toContain('location.replace(location.href.split("#")[0])');
+		// With the cookie the board is served whatever the headers say.
+		const cookie = await fixture.login();
+		const board = await from('127.0.0.1', '/', { headers: { cookie, 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'cross-site' } });
+		expect(board.status).toBe(200);
+		expect(board.body).not.toContain('location.replace(location.href.split("#")[0])');
+		expect(board.body).toContain('/_app/immutable/');
+	});
+
 	test('the login cookie is Secure only over HTTPS through the trusted proxy, and lasts 30 days', async () => {
 		// Each login uses a code of its own: one code logs in once.
 		const login = async (address: string, headers: Record<string, string>) => {
@@ -166,6 +204,8 @@ describe('a board with a proxy on its list', () => {
 		expect(secure.first.cookies[0]).toContain('; Secure');
 		expect(secure.device).toContain('; Secure');
 		expect(secure.device).toContain(`Max-Age=${30 * 24 * 60 * 60}`);
+		// Strict: a request another site or app starts carries no login (see the test of a page opened from outside).
+		expect(secure.device).toContain('SameSite=Strict');
 
 		const plainProxy = await login(PROXY, { 'x-forwarded-for': '198.51.100.20' });
 		const forged = await login('127.0.0.1', { 'x-forwarded-proto': 'https' });
