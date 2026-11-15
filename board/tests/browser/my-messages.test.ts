@@ -595,7 +595,7 @@ test.skipIf(!CHROME)('1280px: the bar has a dot for each thing said, at least 44
 	expect((await dots()).height).toBe(54);
 	recordOf('s-short', conversation(4));
 	await visit(1280);
-	await tab.until(`parseFloat(getComputedStyle(document.querySelector('${BAR}')).getPropertyValue('--dots-h')) > 0`, 'dots');
+	await tab.until(`parseFloat(getComputedStyle(document.querySelector('${BAR}')).getPropertyValue('--dots-h')) === 96`, 'twelve dots');
 	expect(await dots()).toEqual({ height: 110, dots: 12 });
 	await shot(tab, 'my-messages-1280-bar-many');
 	expect(tab.errors).toEqual([]);
