@@ -302,7 +302,7 @@ function createBoard(): Board {
 			if (alert) void pushAlert(alert);
 		},
 		// Read once a run needs it, by then the board below exists.
-		agents: boardAgentHost(config, () => board)
+		agents: boardAgentHost(config, () => board, config.automationLaunchRetryWaitsMs ? { waitsMs: config.automationLaunchRetryWaitsMs } : {})
 	});
 
 	// Also on its own timer: pd missing or its daemon down leaves the rest of the board alone.

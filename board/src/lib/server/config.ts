@@ -111,6 +111,8 @@ export interface BoardConfig {
 	automationTickMs: number;
 	/** How often a running agent task's agent is looked at (hcom's list, its last reply). */
 	automationAgentPollMs: number;
+	/** Waits before each retry of a launch hcom failed on its database lock; null for the fixed 1, 2, 4 minutes. Only tests set it. */
+	automationLaunchRetryWaitsMs: number[] | null;
 	/** codex-multi-auth, for an agent task's Codex account: `limits --json --refresh` and `switch <n>`, never a reset. */
 	codexMultiAuthCommand: string[];
 	/** Codex, for the account probe after a switch: `exec -m <model> … 'Reply with OK only.'`. */
@@ -319,6 +321,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		pdIntervalMs: seconds(env.LAT_BOARD_PD_SECONDS, 5_000),
 		automationTickMs: seconds(env.LAT_BOARD_AUTOMATION_TICK_SECONDS, 60_000),
 		automationAgentPollMs: seconds(env.LAT_BOARD_AUTOMATION_AGENT_POLL_SECONDS, 10_000),
+		automationLaunchRetryWaitsMs: env.LAT_BOARD_AUTOMATION_LAUNCH_RETRY_WAITS_SECONDS ? env.LAT_BOARD_AUTOMATION_LAUNCH_RETRY_WAITS_SECONDS.split(',').map((value) => seconds(value, 0)) : null,
 		codexMultiAuthCommand: commandFrom(env, 'LAT_BOARD_CODEX_MULTI_AUTH_COMMAND') ?? ['codex-multi-auth'],
 		codexProbeCommand: commandFrom(env, 'LAT_BOARD_CODEX_PROBE_COMMAND') ?? ['codex'],
 		pushTestOrigin: env.LAT_BOARD_PUSH_TEST_ORIGIN?.trim() || null,

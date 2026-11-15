@@ -18,6 +18,8 @@
 //     agent list like `resumed`, and the Herdr agent (or a list of them) it adds to the fake
 //     Herdr's <dir>/herdr.json with its pane and, from `tab_label`, its tab at the end; null adds none.
 // A launch with `--tag <tag>` lists its `launched` agent as `<tag>-<name>`, with `base_name` and `tag`, as hcom does.
+// `launchLocked: { tagPrefix, times }`: the first `times` launches whose `--tag` starts with `tagPrefix` fail
+// with `database is locked (attempt n)`, each leaving a listed agent with that tag and no terminal, as hcom does.
 // Each launch or resume also logs to <dir>/hcom-env.jsonl the names of the variables it got that
 // look like an agent's, hcom's or Herdr's own (HCOM_*, CLAUDE*, CODEX_*, HERDR_*, AI_AGENT), and
 // the values of those it must still get (HCOM_DIR, CODEX_HOME, HERDR_SOCKET_PATH, HOME, PATH), with
@@ -235,9 +237,18 @@ if (args[0] === 'stop') {
 		write(herdrFile, JSON.stringify(herdr));
 	}
 	if (args[0] === 'r' && plan.readOnly) chmodSync(plan.readOnly, 0o444);
-	const given = args[0] === 'r' ? null : plan.launched?.[call - 1];
 	// As hcom: a launch with `--tag` prints the agent's own name, and lists it as `<tag>-<name>`.
 	const tagged = args.indexOf('--tag') >= 0 ? args[args.indexOf('--tag') + 1] : null;
+	const lockedFile = join(dir, 'hcom-locked-count.txt');
+	const lockedSoFar = existsSync(lockedFile) ? Number(readFileSync(lockedFile, 'utf8')) : 0;
+	if (args[0] !== 'r' && plan.launchLocked && tagged?.startsWith(plan.launchLocked.tagPrefix) && lockedSoFar < plan.launchLocked.times) {
+		const attempt = lockedSoFar + 1;
+		write(lockedFile, String(attempt));
+		write(addedFile, JSON.stringify([...added(), { name: `${tagged}-half${attempt}`, base_name: `half${attempt}`, tag: tagged, session_id: null, status: 'inactive', tool: 'codex' }]));
+		process.stderr.write(`Launch failed: Failed to spawn PTY: failed to persist PTY process: database is locked: Error code 5 (attempt ${attempt})\n`);
+		process.exit(1);
+	}
+	const given = args[0] === 'r' ? null : plan.launched?.[call - 1];
 	const listedLaunch = given && tagged && !given.name.startsWith(`${tagged}-`) ? { ...given, name: `${tagged}-${given.name}`, base_name: given.name, tag: tagged } : given;
 	if (listedLaunch) write(addedFile, JSON.stringify([...added(), listedLaunch]));
 	const launchedHerdr = args[0] === 'r' ? null : plan.launchedHerdr?.[call - 1];
