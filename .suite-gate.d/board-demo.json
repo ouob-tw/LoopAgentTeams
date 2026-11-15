@@ -1,0 +1,34 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/demo.ts",
+        "board/src/lib/server/demo-site.ts",
+        "board/src/lib/server/demo-address.ts",
+        "board/src/lib/server/security-headers.ts",
+        "board/src/lib/server/connection-guard.ts",
+        "board/src/lib/server/config.ts",
+        "board/src/instrumentation.server.ts",
+        "board/src/hooks.server.ts",
+        "board/src/routes/demo/**",
+        "board/src/routes/demo-login/**",
+        "board/tests/https-proxy.ts",
+        "skills/local/ui-choice-demo/scripts/demo.py",
+        "board/tests/server/demo.test.ts",
+        "board/tests/server/demo-site.test.ts",
+        "board/tests/unit/demo-host-guard.test.ts",
+        "board/tests/unit/demo-site-config.test.ts",
+        "board/tests/browser/demo-sandbox.test.ts",
+        "board/tests/browser/demo-site.test.ts"
+      ],
+      "tests": [
+        "board/tests/server/demo.test.ts",
+        "board/tests/server/demo-site.test.ts",
+        "board/tests/unit/demo-host-guard.test.ts",
+        "board/tests/unit/demo-site-config.test.ts",
+        "board/tests/browser/demo-sandbox.test.ts",
+        "board/tests/browser/demo-site.test.ts"
+      ]
+    }
+  ]
+}
