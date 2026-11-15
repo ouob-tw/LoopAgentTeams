@@ -93,7 +93,7 @@ async function expectRow(tab: Tab, width: number) {
 	expect(await tab.eval(`document.scrollingElement.scrollWidth <= innerWidth`)).toBe(true);
 }
 
-for (const width of [1400, 390]) {
+for (const width of [1400, 390, 360]) {
 	test.skipIf(!CHROME)(`${width}px: the button is left of 關閉 Agent on a controller's page, opens the form, and 關掉無人模式 goes back`, async () => {
 		const tab = await visit(width);
 		await tab.until(`${button(ROW, '無人模式關')} !== undefined`, 'manual on the button');

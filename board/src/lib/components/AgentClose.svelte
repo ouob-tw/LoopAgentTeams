@@ -173,11 +173,24 @@
 	button.info {
 		display: inline-flex;
 		align-items: center;
+		min-height: 44px;
 		padding-inline: 0.5em;
 		background: none;
 		border: none;
 		color: var(--muted);
 		cursor: help;
+	}
+	/* On a phone the row (無人模式, close, pause, the icon) has to stay on one line: tighter buttons. */
+	@media (max-width: 480px) {
+		.actions {
+			gap: 0.3rem;
+		}
+		.actions > button:not(.info) {
+			padding-inline: 0.55rem;
+		}
+		button.info {
+			padding-inline: 0.35em;
+		}
 	}
 	.pause-info {
 		margin: 0;

@@ -51,6 +51,11 @@
 		gap: 0.35em;
 		min-height: 44px;
 	}
+	@media (max-width: 480px) {
+		.toggle {
+			padding-inline: 0.55rem;
+		}
+	}
 	.state {
 		font-weight: 700;
 	}
