@@ -1,4 +1,4 @@
 {"map": [
-  {"paths": ["board/src/lib/board/seen-reports.ts", "board/src/lib/components/Transcript.svelte", "board/src/lib/components/ControllerInfo.svelte", "board/src/lib/components/ControllerPage.svelte", "board/src/routes/+page.svelte", "board/tests/browser/read-on-sight.test.ts"],
-   "tests": ["board/tests/browser/read-on-sight.test.ts", "board/tests/browser/processed.test.ts", "board/tests/browser/herdr-controller-page.test.ts"]}
+  {"paths": ["board/src/lib/board/seen-reports.ts", "board/src/lib/components/Transcript.svelte", "board/src/lib/components/ControllerInfo.svelte", "board/src/lib/components/ControllerPage.svelte", "board/src/routes/+page.svelte", "board/tests/browser/read-on-sight.test.ts", "board/tests/unit/seen-reports.test.ts"],
+   "tests": ["board/tests/browser/read-on-sight.test.ts", "board/tests/browser/processed.test.ts", "board/tests/browser/herdr-controller-page.test.ts", "board/tests/unit/seen-reports.test.ts"]}
 ]}

@@ -34,8 +34,14 @@ export function inSight(element: HTMLElement): boolean {
 		top = Math.max(top, clip.top);
 		bottom = Math.min(bottom, clip.bottom);
 	}
-	const shown = Math.min(rect.bottom, bottom) - Math.max(rect.top, top);
-	return shown > 0 && shown >= SEEN_SHARE * Math.min(rect.height, bottom - top);
+	return shownEnough(rect, { top, bottom });
+}
+
+/** Whether a card spanning `card` shows enough of itself inside the visible box `port` (both as
+ *  tops and bottoms on screen): half the card, or half the box for a card taller than it. */
+export function shownEnough(card: { top: number; bottom: number }, port: { top: number; bottom: number }): boolean {
+	const shown = Math.min(card.bottom, port.bottom) - Math.max(card.top, port.top);
+	return shown > 0 && shown >= SEEN_SHARE * Math.min(card.bottom - card.top, port.bottom - port.top);
 }
 
 /** Watches the unread report cards it is given and calls `onseen` with the key of each one seen
