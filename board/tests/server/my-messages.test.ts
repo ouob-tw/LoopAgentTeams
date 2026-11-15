@@ -1,7 +1,7 @@
 // 「我說過的話」: the user's own messages of a whole controller conversation, read through the fake
 // helper that pages <dir>/transcripts/<session>.jsonl fifty texts at a time.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MyMessagesUpdate } from '../../src/lib/board/my-messages.ts';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
@@ -153,4 +153,108 @@ test('asked for the newest part only, it reads on past pages without the user’
 	if (!update.ok) throw new Error(update.reason);
 	expect(update.complete).toBe(false);
 	expect(update.messages.length).toBeGreaterThanOrEqual(12);
+});
+
+// What a finished read holds is kept in <state>/my-messages, one file per conversation, so a
+// restarted board answers from it and reads only what is new.
+const cacheDir = () => join(fixture.dir, 'board-state', 'my-messages');
+const cacheFiles = () => (existsSync(cacheDir()) ? readdirSync(cacheDir()) : []);
+const transcriptReads = (session: string, from: number) => fixture.helperArgs('transcript').slice(from).filter((args) => args.some((arg) => arg.includes(session))).length;
+/** The one file a new conversation's first finished read adds. */
+async function readAndKeep(session: string): Promise<string> {
+	const files = new Set(cacheFiles());
+	await mine(session);
+	const added = cacheFiles().filter((file) => !files.has(file));
+	expect(added).toHaveLength(1);
+	return join(cacheDir(), added[0]);
+}
+async function restart(between?: () => void) {
+	await fixture.stop();
+	between?.();
+	await fixture.start();
+	await fixture.refresh(cookie);
+}
+const kept = (file: string) => JSON.parse(readFileSync(file, 'utf8'));
+
+test('after a restart a conversation read before is answered from its file, and only what is new is read', async () => {
+	const luna = await bind('alpha', 'kept-restart');
+	record(luna.session_id, alternating(240));
+	const file = await readAndKeep(luna.session_id);
+	expect(file.endsWith('.json')).toBe(true);
+	expect(cacheFiles().some((name) => name.endsWith('.tmp'))).toBe(false);
+	await restart();
+
+	let calls = fixture.helperArgs('transcript').length;
+	const first = await once(luna.session_id);
+	expect(first.ok && first.complete).toBe(true);
+	expect(messagesOf(first)).toHaveLength(120);
+	expect(transcriptReads(luna.session_id, calls)).toBe(1);
+
+	appendFileSync(recordPath(luna.session_id), line('user', '重啟後新說的'));
+	calls = fixture.helperArgs('transcript').length;
+	const later = await once(luna.session_id);
+	expect(later.ok && later.complete).toBe(true);
+	expect(messagesOf(later)[0].line).toBe('重啟後新說的');
+	expect(messagesOf(later)).toHaveLength(121);
+	expect(transcriptReads(luna.session_id, calls)).toBe(1);
+	expect(kept(file).messages).toHaveLength(121);
+});
+
+test('after a restart the newest part only is answered complete from the file without paging back', async () => {
+	const luna = await bind('alpha', 'kept-newest');
+	record(luna.session_id, alternating(400));
+	await readAndKeep(luna.session_id);
+	await restart();
+	const calls = fixture.helperArgs('transcript').length;
+	const update: MyMessagesUpdate = await (await fixture.fetch(`/api/transcript/mine?controller=${encodeURIComponent(luna.session_id)}&newest=12`, { cookie })).json();
+	expect(update.ok && update.complete).toBe(true);
+	expect(messagesOf(update)).toHaveLength(200);
+	expect(transcriptReads(luna.session_id, calls)).toBe(1);
+});
+
+test('a broken, unreadable or deleted file is read through again and written anew', async () => {
+	const luna = await bind('alpha', 'kept-broken');
+	record(luna.session_id, alternating(240));
+	const file = await readAndKeep(luna.session_id);
+	const spoils = [
+		() => writeFileSync(file, '{"version":1,"last":'),
+		() => writeFileSync(file, JSON.stringify({ version: 1, last: 10, messages: [{ seq: 99, time: null, line: 'x' }] })),
+		() => rmSync(file)
+	];
+	for (const spoil of spoils) {
+		await restart(spoil);
+		const calls = fixture.helperArgs('transcript').length;
+		const messages = messagesOf(await mine(luna.session_id));
+		expect(messages).toHaveLength(120);
+		expect(messages.at(-1)!.line).toBe('第 0 段');
+		expect(transcriptReads(luna.session_id, calls)).toBeGreaterThan(1);
+		expect(kept(file).messages).toHaveLength(120);
+	}
+});
+
+test('a record that no longer matches its file (shorter, or other words) is read through again', async () => {
+	const luna = await bind('alpha', 'kept-changed');
+	record(luna.session_id, alternating(240));
+	const file = await readAndKeep(luna.session_id);
+	await restart(() => record(luna.session_id, alternating(100)));
+	expect(messagesOf(await mine(luna.session_id))).toHaveLength(50);
+	expect(kept(file).last).toBe(99);
+
+	await restart(() => record(luna.session_id, [...alternating(98), line('user', '換了一句'), line('assistant', '好')]));
+	const messages = messagesOf(await mine(luna.session_id));
+	expect(messages[0].line).toBe('換了一句');
+	expect(messages).toHaveLength(50);
+});
+
+test('a write cut short leaves no broken file: a half-written file beside it is ignored', async () => {
+	const luna = await bind('alpha', 'kept-cut');
+	record(luna.session_id, alternating(240));
+	const file = await readAndKeep(luna.session_id);
+	const whole = readFileSync(file, 'utf8');
+	// What a board killed while writing leaves: the whole old file, and a part of the new one beside it.
+	await restart(() => writeFileSync(`${file}.12345.tmp`, whole.slice(0, 40)));
+	const calls = fixture.helperArgs('transcript').length;
+	expect(messagesOf(await mine(luna.session_id))).toHaveLength(120);
+	expect(transcriptReads(luna.session_id, calls)).toBe(1);
+	expect(readFileSync(file, 'utf8')).toBe(whole);
 });
