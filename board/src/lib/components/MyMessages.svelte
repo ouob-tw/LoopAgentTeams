@@ -209,14 +209,8 @@
 			if (width > 4 && (element.scrollHeight > element.clientHeight || getComputedStyle(element).scrollbarGutter.startsWith('stable'))) return width;
 			element = element.parentElement;
 		}
-		const page = innerWidth - document.documentElement.clientWidth;
-		if (page || !getComputedStyle(document.documentElement).scrollbarGutter.startsWith('stable')) return page;
-		// The page keeps the place of a scrollbar it does not have yet: as wide as one that scrolls.
-		const probe = document.body.appendChild(document.createElement('div'));
-		probe.style.cssText = 'position: absolute; visibility: hidden; overflow: scroll; width: 50px; height: 50px';
-		const track = probe.offsetWidth - probe.clientWidth;
-		probe.remove();
-		return track;
+		// The page's own scrollbar is not counted: the bar is fixed, so it already sits left of it.
+		return 0;
 	}
 	function moved(event: PointerEvent) {
 		if (event.pointerType !== 'mouse' || !open || dragging) return;

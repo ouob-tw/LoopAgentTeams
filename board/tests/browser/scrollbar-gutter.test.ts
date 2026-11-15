@@ -54,11 +54,12 @@ afterAll(async () => {
 
 /** The width the conversation has: its box, and the scrolling column's inside (what is left of the scrollbar). The bar's right edge too. */
 const measure = () =>
-	tab.eval<{ box: number; column: number; barRight: number; reading: boolean; other: boolean }>(`(() => {
+	tab.eval<{ box: number; column: number; scrollbarLeft: number; barRight: number; reading: boolean; other: boolean }>(`(() => {
 		const box = document.querySelector('[data-block="transcript"]');
 		const column = box.closest('.detail');
 		const bar = document.querySelector('${BAR}')?.getBoundingClientRect();
-		return { box: box.getBoundingClientRect().width, column: column.clientWidth, barRight: bar?.right ?? -1, reading: box.innerText.includes('讀取中'), other: box.innerText.includes('答覆') };
+		return { box: box.getBoundingClientRect().width, column: column.clientWidth,
+			scrollbarLeft: (() => { let el = document.elementFromPoint(innerWidth - 1, innerHeight / 2); while (el && el !== document.documentElement) { const w = el.offsetWidth - el.clientWidth; if (w > 4 && el.scrollHeight > el.clientHeight) return innerWidth - w; el = el.parentElement; } return document.documentElement.clientWidth; })(), barRight: bar?.right ?? -1, reading: box.innerText.includes('讀取中'), other: box.innerText.includes('答覆') };
 	})()`);
 
 async function release() {
@@ -100,6 +101,9 @@ for (const [width, mobile] of [[1280, false], [390, true], [600, false]] as cons
 		expect(loaded.other).toBe(true);
 		expect(reading.column).toBe(loaded.column);
 		expect(reading.box).toBe(first.box);
+		// Flush left of the scrollbar, not short of it (nor over it).
+		expect(first.barRight).toBe(first.scrollbarLeft);
+		expect(loaded.barRight).toBe(loaded.scrollbarLeft);
 		expect(reading.box).toBe(loaded.box);
 		expect(reading.barRight).toBe(loaded.barRight);
 		expect(reading.column).toBe(first.column);
