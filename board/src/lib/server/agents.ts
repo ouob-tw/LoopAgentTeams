@@ -18,13 +18,12 @@ const HCOM_STATUS: Record<string, AgentStatus> = { active: 'working', listening:
 const asStatus = (value: string | null): AgentStatus =>
 	(AGENT_STATUSES as readonly string[]).includes(value ?? '') ? (value as AgentStatus) : 'unknown';
 
-/** The hcom agent a Herdr agent is: the one with its session ID, else the one in its pane. */
+/** The hcom agent a Herdr agent is: the one with its session ID, else the one in its pane, unless
+ *  hcom has that one under another session: the pane then runs another agent than hcom has there. */
 function pair(agent: HerdrAgent, hcom: HcomAgent[]): HcomAgent | null {
-	return (
-		(agent.sessionId && hcom.find((candidate) => candidate.sessionId === agent.sessionId)) ||
-		hcom.find((candidate) => candidate.pane === agent.pane) ||
-		null
-	);
+	const samePane = (candidate: HcomAgent) =>
+		candidate.pane === agent.pane && !(agent.sessionId && candidate.sessionId && candidate.sessionId !== agent.sessionId);
+	return (agent.sessionId && hcom.find((candidate) => candidate.sessionId === agent.sessionId)) || hcom.find(samePane) || null;
 }
 
 /** Where Herdr lists an agent, as a model switch keeps it. */
