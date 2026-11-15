@@ -6,7 +6,7 @@
 // the board's state folder, so a restarted board does the same instead of reading it all again.
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { myMessages, type MyMessage, type MyMessagesUpdate } from '../board/my-messages.ts';
 import type { BoardConfig } from './config.ts';
 import { readTranscript } from './helper.ts';
@@ -34,7 +34,7 @@ interface Job {
 }
 
 /** The folder under the board's state folder with one file per conversation. */
-export const MY_MESSAGES_DIR = 'my-messages';
+const MY_MESSAGES_DIR = 'my-messages';
 
 const seen = new Map<string, Seen>();
 const jobs = new Map<string, Job>();
@@ -124,6 +124,9 @@ function start(config: BoardConfig, client: string, sessionId: string, key: stri
 			}
 			const found: Seen = { messages: job.messages, last };
 			seen.set(key, found);
+			// Answered before the file is written; askers meanwhile join this finished read.
+			job.finished = true;
+			began();
 			if (!same(job.before, found)) await save(path, found);
 		} catch (error) {
 			job.failure = `讀取失敗：${error instanceof Error ? error.message : String(error)}`;
@@ -163,7 +166,7 @@ async function load(path: string): Promise<Seen | undefined> {
 async function save(path: string, found: Seen): Promise<void> {
 	const temporary = `${path}.${process.pid}.tmp`;
 	try {
-		await mkdir(join(path, '..'), { recursive: true, mode: 0o700 });
+		await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 		const messages = [...found.messages.values()].sort((a, b) => a.seq - b.seq);
 		await writeFile(temporary, JSON.stringify({ version: 1, last: found.last, messages }) + '\n', { mode: 0o600 });
 		await rename(temporary, path);

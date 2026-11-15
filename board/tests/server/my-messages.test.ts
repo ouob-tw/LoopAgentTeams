@@ -160,14 +160,27 @@ test('asked for the newest part only, it reads on past pages without the user’
 const cacheDir = () => join(fixture.dir, 'board-state', 'my-messages');
 const cacheFiles = () => (existsSync(cacheDir()) ? readdirSync(cacheDir()) : []);
 const transcriptReads = (session: string, from: number) => fixture.helperArgs('transcript').slice(from).filter((args) => args.some((arg) => arg.includes(session))).length;
+/** The file is written just after the answer: what `read` gives once it holds, within two seconds. */
+async function eventually<T>(read: () => T, holds: (value: T) => boolean): Promise<T> {
+	for (let tries = 0; ; tries++) {
+		let value: T | undefined;
+		try {
+			value = read();
+		} catch {}
+		if (value !== undefined && holds(value)) return value;
+		if (tries >= 40) throw new Error('the cache file did not get there');
+		await sleep(50);
+	}
+}
 /** The one file a new conversation's first finished read adds. */
 async function readAndKeep(session: string): Promise<string> {
 	const files = new Set(cacheFiles());
 	await mine(session);
-	const added = cacheFiles().filter((file) => !files.has(file));
+	const added = await eventually(() => cacheFiles().filter((file) => !files.has(file) && file.endsWith('.json')), (found) => found.length > 0);
 	expect(added).toHaveLength(1);
 	return join(cacheDir(), added[0]);
 }
+const keptMessages = (file: string, count: number) => eventually(() => kept(file).messages.length, (length) => length === count);
 async function restart(between?: () => void) {
 	await fixture.stop();
 	between?.();
@@ -197,7 +210,7 @@ test('after a restart a conversation read before is answered from its file, and 
 	expect(messagesOf(later)[0].line).toBe('重啟後新說的');
 	expect(messagesOf(later)).toHaveLength(121);
 	expect(transcriptReads(luna.session_id, calls)).toBe(1);
-	expect(kept(file).messages).toHaveLength(121);
+	expect(await keptMessages(file, 121)).toBe(121);
 });
 
 test('after a restart the newest part only is answered complete from the file without paging back', async () => {
@@ -228,7 +241,7 @@ test('a broken, unreadable or deleted file is read through again and written ane
 		expect(messages).toHaveLength(120);
 		expect(messages.at(-1)!.line).toBe('第 0 段');
 		expect(transcriptReads(luna.session_id, calls)).toBeGreaterThan(1);
-		expect(kept(file).messages).toHaveLength(120);
+		expect(await keptMessages(file, 120)).toBe(120);
 	}
 });
 
@@ -238,7 +251,7 @@ test('a record that no longer matches its file (shorter, or other words) is read
 	const file = await readAndKeep(luna.session_id);
 	await restart(() => record(luna.session_id, alternating(100)));
 	expect(messagesOf(await mine(luna.session_id))).toHaveLength(50);
-	expect(kept(file).last).toBe(99);
+	expect(await eventually(() => kept(file).last, (last) => last === 99)).toBe(99);
 
 	await restart(() => record(luna.session_id, [...alternating(98), line('user', '換了一句'), line('assistant', '好')]));
 	const messages = messagesOf(await mine(luna.session_id));
