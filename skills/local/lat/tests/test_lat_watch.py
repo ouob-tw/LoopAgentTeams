@@ -57,6 +57,7 @@ def sqlite_hcom_events(rows):
                 for event_id, kind, instance, data in reversed(found)]
 
     run.add = add
+    run.close = database.close
     return run
 
 
@@ -689,6 +690,7 @@ class WatchDecisionTests(unittest.TestCase):
             (10, 'tool:Bash'), (11, 'deliver:orch'), (12, 'deliver:[hcom-launcher]'),
             (13, 'tool:Bash', 's-other'),
         ])
+        self.addCleanup(events.close)
 
         with patch.object(watch, 'run_json_lines', side_effect=events):
             everything = watch.session_events('orch', info, '--last', '1')
@@ -706,6 +708,7 @@ class WatchDecisionTests(unittest.TestCase):
 
         def run(own_events_at):
             events = sqlite_hcom_events([(1, 'tool:events')])
+            self.addCleanup(events.close)
             state, kinds = None, {}
             with tempfile.TemporaryDirectory() as temporary, \
                     patch.object(watch, 'run_json', return_value=terminal), \
