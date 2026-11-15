@@ -30,6 +30,7 @@ const PLACES = `(() => {
 		to: place('.to'),
 		attach: place('.attach-slot button'),
 		voice: place('.voice-slot button'),
+		pick: place('.voice-slot .mic-pick'),
 		box: place('textarea'),
 		pill: place('.pill-slot .picker'),
 		options: place('.options'),
@@ -38,7 +39,7 @@ const PLACES = `(() => {
 		fits: document.documentElement.scrollWidth <= innerWidth
 	};
 })()`;
-type Places = Record<'to' | 'attach' | 'voice' | 'box' | 'pill' | 'options' | 'hide', Box> & { width: number; fits: boolean };
+type Places = Record<'to' | 'attach' | 'voice' | 'pick' | 'box' | 'pill' | 'options' | 'hide', Box> & { width: number; fits: boolean };
 
 async function visit(width: number) {
 	await tab().send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
@@ -101,8 +102,15 @@ for (const width of [260, 360, 390]) {
 		expect(Math.max(...row.map((box) => box.top))).toBeLessThan(Math.min(...row.map((box) => box.bottom)));
 		expect(at.hide!.right).toBeGreaterThan(width - 24);
 		expect(at.fits).toBe(true);
-		// Every control is whole inside the screen: nothing cut off at the right.
-		for (const box of row) expect(box.right).toBeLessThanOrEqual(width);
+		// Every control, the mic picker and the options button too, is whole inside the screen and
+		// can be hit: nothing cut off at the right.
+		for (const box of [...row, at.pick, at.options].filter(Boolean) as NonNullable<Box>[]) {
+			expect(box.right).toBeLessThanOrEqual(width);
+			expect(box.left).toBeGreaterThanOrEqual(0);
+			expect(box.hit).toBe(true);
+		}
+		expect(at.pick).not.toBeNull();
+		expect(at.pick!.left).toBeGreaterThanOrEqual(at.voice!.right - 1);
 		// Put away, then brought back.
 		await tab().eval(`document.querySelector('.cmd .hide').click()`);
 		const shown = (selector: string) => `!!document.querySelector('${selector}')?.getBoundingClientRect().height`;
@@ -187,3 +195,20 @@ for (const width of [1280, 390]) {
 		await tab().eval(`document.querySelector('.cmd .options').click()`);
 	});
 }
+
+// 260px with the options button showing: it takes a line of its own, whole and clickable, and the
+// page does not scroll sideways.
+test.skipIf(!CHROME)('260px: the options button showing goes to its own line, whole and clickable', async () => {
+	await visit(260);
+	await sleep(400);
+	await tab().eval(`document.querySelector('.cmd .options').classList.remove('idle')`);
+	const at = await tab().eval<Places>(PLACES);
+	for (const box of [at.options, at.pick, at.voice, at.attach, at.pill, at.hide] as NonNullable<Box>[]) {
+		expect(box).not.toBeNull();
+		expect(box.hit).toBe(true);
+		expect(box.left).toBeGreaterThanOrEqual(0);
+		expect(box.right).toBeLessThanOrEqual(260);
+	}
+	expect(at.options!.top).toBeGreaterThanOrEqual(at.voice!.bottom - 1);
+	expect(at.fits).toBe(true);
+});

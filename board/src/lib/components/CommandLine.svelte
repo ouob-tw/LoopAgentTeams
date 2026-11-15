@@ -743,9 +743,6 @@
 			padding: 0;
 			margin: 0;
 		}
-		.hide {
-			padding: 0.1rem;
-		}
 		.pill-slot :global(.picker .part) {
 			padding-inline: 3px;
 		}
