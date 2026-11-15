@@ -1,13 +1,17 @@
 <script lang="ts">
 	// 「我說過的話」: what the user said in the whole conversation, newest first. It never shows on
-	// its own: a mouse over the long upright bar at the window's right edge, or a tap on it, brings it up
+	// its own: a mouse over the upright bar at the window's right edge (a dot on it for each thing said, 44 to
+	// 110px tall), or a tap on it, brings it up
 	// flush right beside the bar, over nothing but the page; it goes away when the mouse leaves it,
-	// or on a pick or a touch outside. Held for half a second, the bar is dragged up and down the
-	// edge, and where it was let go is kept in this browser. A pick is handed to the conversation, which
+	// or on a pick or a touch outside. The grip at the right end of the list's title row drags the bar
+	// and the list together up and down the edge, from the moment it is pressed, the list hanging from where
+	// it is and staying
+	// open; where it was let go is kept in this browser. A pick is handed to the conversation, which
 	// scrolls to it, loading earlier parts first when it is not there yet.
 	import { createRequest } from '#lib/board/api.ts';
 	import type { MyMessage, MyMessagesUpdate } from '#lib/board/my-messages.ts';
 	import type { TranscriptFeed } from '#lib/board/earlier.ts';
+	import GripVertical from '@lucide/svelte/icons/grip-vertical';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import { untrack } from 'svelte';
 
@@ -37,10 +41,17 @@
 	const MORE_MS = 600;
 	/** The strip at the window's right edge that keeps the open list open, in px. */
 	const EDGE = 8;
-	/** How long the bar is held before it can be dragged, in ms. */
-	const HOLD_MS = 500;
-	/** How far a finger may wander while holding before it is not a hold, in px. */
+	/** How far a finger may wander during a tap on the bar before it is not a tap, in px. */
 	const WANDER = 10;
+	/** One dot per message, this far apart, in px; the bar is this tall at most and at least, and has this much room above and below its dots. */
+	const PITCH = 8;
+	const BAR_MAX = 110;
+	const BAR_MIN = 44;
+	const BAR_PAD = 7;
+	/** How many dots fit on the tallest bar: a count this big needs no more reading while the list is closed. */
+	const FIT = Math.floor((BAR_MAX - 2 * BAR_PAD) / PITCH);
+	/** The least height, in px, the list keeps while it hangs from the grip; the grip goes no lower than that leaves room for. */
+	const LIST_MIN = 192;
 	const BAR_KEY = 'lat-board-my-messages-bar';
 	/** How far around the open list the mouse may stray without closing it, in px. */
 	const MARGIN = 24;
@@ -68,23 +79,34 @@
 
 	let messages = $state<MyMessage[] | null>(null);
 	let problem = $state<string | null>(null);
+	const dotsH = $derived(Math.min(messages?.length ?? 0, FIT) * PITCH);
+	const height = $derived(Math.min(BAR_MAX, Math.max(BAR_MIN, dotsH + 2 * BAR_PAD)));
 	let reads = 0;
 	const request = createRequest();
 
+	/** What the last read left out: the older parts, which only an open list needs. */
+	let partial = false;
+	/** The conversation changed while a closed list skipped reading it, or the conversation read last is not the one shown. */
+	let behind = false;
+	let readAt = -1;
 	async function read(forId: string) {
 		const mine = ++reads;
-		const path = feed === 'agent' ? `/api/agents/transcript/mine?session=${encodeURIComponent(forId)}` : `/api/transcript/mine?controller=${encodeURIComponent(forId)}`;
+		// Closed, only as much of the newest part is read as it takes to fill the bar: it needs a count, not all of it.
+		const path = (feed === 'agent' ? `/api/agents/transcript/mine?session=${encodeURIComponent(forId)}` : `/api/transcript/mine?controller=${encodeURIComponent(forId)}`) + (open ? '' : `&newest=${FIT}`);
 		const result = await request<MyMessagesUpdate>(path);
 		if (mine !== reads) return;
+		// A read that failed is asked again when the list is next opened.
+		if (!result.ok || !result.value.ok) behind = true;
 		if (!result.ok) {
 			if (!result.unpaired) problem = '沒有收到看板伺服器的回應。';
 		} else if (result.value.ok) {
 			messages = result.value.messages;
 			problem = null;
-			// The older part of a long conversation is still being read: asked again shortly.
-			if (!result.value.complete) {
+			partial = !result.value.complete;
+			// The older part of a long conversation is still being read: asked again shortly, while the list is open.
+			if (!result.value.complete && open) {
 				await new Promise((resolve) => setTimeout(resolve, MORE_MS));
-				if (mine === reads) void read(forId);
+				if (mine === reads && open) void read(forId);
 			}
 		} else problem = result.value.reason;
 	}
@@ -101,32 +123,48 @@
 	});
 
 	let readFor: string | undefined;
-	// Read when shown, and again after each change of the conversation, a moment later so a burst is one read.
+	// Read on load, shown or not (the bar's dots count the messages), and again after each change of the
+	// conversation, a moment later so a burst is one read. Closed, only enough of the newest part is read, and not
+	// at all once the count fills the bar (it only grows); opened, the rest is read.
 	$effect(() => {
-		if (!open) return;
 		const forId = id;
-		void version;
+		const now = version;
+		const shown = open;
 		// Not tracked: the read itself sets them.
-		const first = untrack(() => {
+		const state = untrack(() => {
 			if (readFor !== forId) {
 				readFor = forId;
 				messages = null;
 				problem = null;
+				partial = false;
+				behind = false;
 			}
-			return messages === null;
+			return { none: messages === null, full: messages !== null && messages.length >= FIT };
 		});
-		const timer = setTimeout(() => void read(forId), first ? 0 : 300);
+		const urgent = state.none || (shown && (partial || behind));
+		// Opened with nothing new since the last read of all of it: nothing to ask.
+		if (shown && !urgent && now === readAt) return;
+		// Closed and the bar already full: the count only grows.
+		if (!shown && state.full) {
+			behind = behind || now !== readAt;
+			return;
+		}
+		const timer = setTimeout(() => {
+			readAt = now;
+			behind = false;
+			void read(forId);
+		}, urgent ? 0 : 300);
 		return () => clearTimeout(timer);
 	});
 	$effect(() => () => void reads++);
-	$effect(() => () => clearTimeout(holdTimer));
 
 	function pick(seq: number) {
 		open = false;
 		onpick(seq);
 	}
 	function keys(event: KeyboardEvent) {
-		if (event.key === 'Escape') open = false;
+		// Not while the grip is held: its button would go with the list and the drag could not end.
+		if (event.key === 'Escape' && !grab) open = false;
 	}
 	// Open at the very edge; once open, stay open while the mouse is within the list plus a margin
 	// (the list touches the edge or the scrollbar, so there is no gap to fall through; over the scrollbar is inside too): nothing flickers.
@@ -152,9 +190,8 @@
 		if (open && !aside?.contains(event.target as Node) && !(event.target as Element).closest?.('.bar')) open = false;
 	}
 
-	// The bar: the mouse over it opens the list; a tap on it toggles the list; held for HOLD_MS it is dragged.
-	let holdTimer: ReturnType<typeof setTimeout> | undefined;
-	let press: { id: number; x: number; y: number; last: number; grab: number; wasOpen: boolean; held: boolean } | null = null;
+	// The bar: the mouse over it opens the list; a tap on it toggles the list.
+	let press: { x: number; y: number; wasOpen: boolean } | null = null;
 	function enter(event: PointerEvent) {
 		// A button held is a drag, of the scrollbar for one: it never brings the list up.
 		if (event.pointerType !== 'mouse' || event.buttons !== 0 || dragging || open) return;
@@ -162,51 +199,57 @@
 		open = true;
 	}
 	function down(event: PointerEvent) {
-		if (event.button !== 0 || press) return;
-		const bar = event.currentTarget as HTMLElement;
-		press = { id: event.pointerId, x: event.clientX, y: event.clientY, last: event.clientY, grab: 0, wasOpen: open, held: false };
-		holdTimer = setTimeout(() => {
-			if (!press) return;
-			// Where the bar is held is where it stays under the pointer: no jump at the first move.
-			const box = bar.getBoundingClientRect();
-			press.grab = box.top + box.height / 2 - press.last;
-			press.held = true;
-			dragging = true;
-			open = false;
-		}, HOLD_MS);
-		bar.setPointerCapture(event.pointerId);
-	}
-	function drag(event: PointerEvent) {
-		if (!press || event.pointerId !== press.id) return;
-		press.last = event.clientY;
-		if (dragging) {
-			// Inside the window, by the bar's own height, as it is drawn.
-			place = Math.min(innerHeight - barH / 2, Math.max(barH / 2, event.clientY + press.grab)) / innerHeight;
-		} else if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > WANDER) {
-			// Moved before the hold: not a hold.
-			clearTimeout(holdTimer);
-			press = null;
-		}
+		if (event.button !== 0) return;
+		press = { x: event.clientX, y: event.clientY, wasOpen: open };
 	}
 	function up(event: PointerEvent) {
-		if (!press || event.pointerId !== press.id) return;
-		clearTimeout(holdTimer);
-		const { held, wasOpen } = press;
+		const start = press;
 		press = null;
-		if (held) {
-			dragging = false;
-			try {
-				localStorage.setItem(BAR_KEY, String(place));
-			} catch {
-				// Not kept; the bar stays where it was let go until the page is closed.
-			}
-		} else if (event.type === 'pointerup') {
-			// A tap: a finger toggles the list; the mouse, already over the bar, only brings it up when it is closed.
-			if (wasOpen && event.pointerType !== 'mouse') open = false;
-			else if (!wasOpen) {
-				measure();
-				open = true;
-			}
+		if (!start || event.type !== 'pointerup' || Math.hypot(event.clientX - start.x, event.clientY - start.y) > WANDER) return;
+		// A tap: a finger toggles the list; the mouse, already over the bar, only brings it up when it is closed.
+		if (start.wasOpen && event.pointerType !== 'mouse') open = false;
+		else if (!start.wasOpen) {
+			measure();
+			open = true;
+		}
+	}
+
+	// The grip in the list's title row: pressed, it drags the bar and the list at once, and the grip
+	// stays under the pointer. From the press the list hangs from where it is (its top edge in px, no
+	// longer a part of the bar's height), as tall as the room below it allows, scrolling inside, down to
+	// LIST_MIN; it stays so until it is closed, so letting go moves nothing. The bar moves as far as the
+	// pointer does.
+	let held = $state(false);
+	let anchor = $state(0);
+	$effect(() => {
+		if (!open) held = false;
+	});
+	let grab: { id: number; y: number; anchor: number; place: number; room: number } | null = null;
+	function gripDown(event: PointerEvent) {
+		if (event.button !== 0 || grab) return;
+		const box = aside?.getBoundingClientRect();
+		anchor = box?.top ?? 0;
+		held = true;
+		// A short list may go to the window's bottom; a tall one keeps LIST_MIN of itself in view.
+		grab = { id: event.pointerId, y: event.clientY, anchor, place, room: Math.min(LIST_MIN, box?.height ?? LIST_MIN) };
+		dragging = true;
+		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+	}
+	function gripMove(event: PointerEvent) {
+		if (!grab || event.pointerId !== grab.id) return;
+		const moved = event.clientY - grab.y;
+		anchor = Math.min(Math.max(0, innerHeight - grab.room), Math.max(0, grab.anchor + moved));
+		// The bar stays inside the window, by its own height, as it is drawn.
+		place = Math.min(1 - barH / 2 / innerHeight, Math.max(barH / 2 / innerHeight, grab.place + moved / innerHeight));
+	}
+	function gripUp(event: PointerEvent) {
+		if (!grab || event.pointerId !== grab.id) return;
+		grab = null;
+		dragging = false;
+		try {
+			localStorage.setItem(BAR_KEY, String(place));
+		} catch {
+			// Not kept; the bar stays where it was let go until the page is closed.
 		}
 	}
 </script>
@@ -228,20 +271,37 @@
 	}}
 	class:dragging
 	style:right="{gap}px"
+	style:--bar-h="{height}px"
+	style:--dots-h="{dotsH}px"
 	style:top="clamp(var(--bar-h) / 2, {place * 100}%, 100% - var(--bar-h) / 2)"
 	data-block="my-messages-bar"
 	onpointerenter={enter}
 	onpointerdown={down}
-	onpointermove={drag}
 	onpointerup={up}
 	onpointercancel={up}
 	onmousedown={(event) => event.preventDefault()}
 	oncontextmenu={(event) => event.preventDefault()}
 ></div>
 
-<aside class="mine" bind:this={aside} class:open style:right="{gap + barW}px" style:top="{place * 100}%" style:transform="translateY(-{place * 100}%)" aria-label="我說過的話" data-block="my-messages">
+<aside class="mine" bind:this={aside} class:open style:right="{gap + barW}px" style:top={held ? `${anchor}px` : `${place * 100}%`} style:transform={held ? 'none' : `translateY(-${place * 100}%)`} style:max-height={held ? `max(${LIST_MIN}px, calc(100dvh - ${anchor}px))` : null} aria-label="我說過的話" data-block="my-messages">
 	{#if open}
-	<h3>我說過的話</h3>
+	<div class="head">
+		<h3>我說過的話</h3>
+		<button
+			type="button"
+			class="grip"
+			class:dragging
+			aria-label="拖動來移動長條"
+			onpointerdown={gripDown}
+			onpointermove={gripMove}
+			onpointerup={gripUp}
+			onpointercancel={gripUp}
+			onlostpointercapture={gripUp}
+			tabindex={-1}
+			onmousedown={(event) => event.preventDefault()}
+			oncontextmenu={(event) => event.preventDefault()}
+		><GripVertical size="1.5em" aria-hidden="true" /></button>
+	</div>
 	{#if jumping !== null}
 		<p class="status" role="status">
 			{#if failure}
@@ -301,18 +361,19 @@
 	.bar {
 		--bar-w: 12px;
 		--bar-h: 110px;
+		--dots-h: 0px;
 		position: fixed;
 		z-index: 41;
 		width: var(--bar-w);
 		height: var(--bar-h);
 		transform: translateY(-50%);
-		cursor: grab;
+		cursor: pointer;
 		user-select: none;
 		-webkit-user-select: none;
 		-webkit-touch-callout: none;
 		touch-action: none;
 	}
-	/* The handle: 12px wide, rounded on the left, a dot grip to show it can be dragged. */
+	/* The handle: 12px wide, rounded on the left; its dots are one for each message. */
 	.bar::after {
 		content: '';
 		position: absolute;
@@ -323,16 +384,22 @@
 		border-right: 0;
 		border-radius: 6px 0 0 6px;
 		background-color: var(--surface);
+	}
+	/* One dot per message, centred on the handle. */
+	.bar::before {
+		content: '';
+		position: absolute;
+		z-index: 1;
+		right: 0;
+		width: 12px;
+		top: calc((var(--bar-h) - var(--dots-h)) / 2);
+		height: var(--dots-h);
 		background-image: radial-gradient(circle, var(--muted) 1.4px, transparent 1.6px);
 		background-size: 12px 8px;
-		background-position: center;
 	}
 	.bar:hover::after,
 	.bar.dragging::after {
 		border-color: var(--accent);
-	}
-	.bar.dragging {
-		cursor: grabbing;
 	}
 	@media (pointer: coarse) {
 		.bar {
@@ -360,12 +427,42 @@
 	.mine.open {
 		display: flex;
 	}
+	.head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		border-bottom: 1px solid var(--line);
+	}
 	h3 {
 		margin: 0;
 		padding: 0.6rem 0.9rem;
-		border-bottom: 1px solid var(--line);
 		font-size: max(1rem, var(--min-font, 0px));
 		font-weight: 700;
+	}
+	/* The drag handle at the title row's right end: a 44px hit area, a grab hand, a finger drags it too. */
+	.grip {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+		width: 2.75rem;
+		height: 2.75rem;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		color: var(--muted);
+		cursor: grab;
+		user-select: none;
+		-webkit-user-select: none;
+		-webkit-touch-callout: none;
+		touch-action: none;
+	}
+	.grip:hover,
+	.grip.dragging {
+		color: var(--accent);
+	}
+	.grip.dragging {
+		cursor: grabbing;
 	}
 	.retry {
 		display: inline-flex;

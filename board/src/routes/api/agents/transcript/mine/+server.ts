@@ -11,5 +11,5 @@ export const GET: RequestHandler = async ({ url }) => {
 	const board = getBoard();
 	const source = await agentTranscriptSource(board, sessionId);
 	if (!source) return json({ error: 'unknown_agent' }, { status: 404 });
-	return json(await readMyMessages(board.config, source.client, source.sessionId));
+	return json(await readMyMessages(board.config, source.client, source.sessionId, Math.max(0, Number.parseInt(url.searchParams.get('newest') ?? '', 10) || 0)));
 };
