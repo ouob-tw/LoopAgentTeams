@@ -23,7 +23,7 @@ const DRAWER = '[aria-labelledby="unattended-form-title"]';
 const MARK = `(document.querySelector('[data-controller="luna"] .unattended')?.innerText ?? '')`;
 const button = (scope: string, label: string) => `[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.innerText.replace(/\\s+/g, '') === ${JSON.stringify(label)} && b.offsetParent !== null)`;
 /** The row's buttons as [label, left, top, height], in page order. */
-const ROW_BUTTONS = `[...document.querySelectorAll('${ROW} > button, ${ROW} > .shortcut > button')].map((b) => { const r = b.getBoundingClientRect(); return { label: b.innerText.replace(/\s+/g, ''), left: r.left, top: r.top, height: r.height, right: r.right }; })`;
+const ROW_BUTTONS = `[...document.querySelectorAll('${ROW} > button, ${ROW} > .shortcut > button')].map((b) => { const r = b.getBoundingClientRect(); return { label: b.innerText.replace(/\s+/g, '') || b.getAttribute('aria-label'), left: r.left, top: r.top, height: r.height, width: r.width, right: r.right }; })`;
 
 let fixture: Fixture;
 let cookie: string;
@@ -83,13 +83,13 @@ async function visit(width: number, session = SESSION): Promise<Tab> {
 
 /** The row stays on one line, in the order 無人模式, then the close, inside the window, every button 44px high. */
 async function expectRow(tab: Tab, width: number) {
-	const buttons = await tab.eval<{ label: string; left: number; top: number; height: number; right: number }[]>(ROW_BUTTONS);
+	const buttons = await tab.eval<{ label: string; left: number; top: number; height: number; width: number; right: number }[]>(ROW_BUTTONS);
 	const labels = buttons.map((b) => b.label);
 	expect(labels.slice(0, 2)).toEqual([expect.stringContaining('無人模式'), '關閉 Agent']);
 	expect(new Set(buttons.map((b) => Math.round(b.top))).size).toBe(1);
 	expect(buttons[0].right).toBeLessThanOrEqual(buttons[1].left);
 	expect(Math.max(...buttons.map((b) => b.right))).toBeLessThanOrEqual(width);
-	expect(buttons.filter((b) => b.height < 44).map((b) => b.label)).toEqual([]);
+	expect(buttons.filter((b) => b.height < 44 || b.width < 44).map((b) => `${b.label} ${b.width}x${b.height}`)).toEqual([]);
 	expect(await tab.eval(`document.scrollingElement.scrollWidth <= innerWidth`)).toBe(true);
 }
 

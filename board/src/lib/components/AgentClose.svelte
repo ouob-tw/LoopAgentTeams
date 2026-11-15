@@ -173,7 +173,9 @@
 	button.info {
 		display: inline-flex;
 		align-items: center;
+		min-width: 44px;
 		min-height: 44px;
+		justify-content: center;
 		padding-inline: 0.5em;
 		background: none;
 		border: none;
@@ -187,9 +189,10 @@
 		}
 		.actions > button:not(.info) {
 			padding-inline: 0.55rem;
+			font-size: max(0.9rem, var(--min-font, 0px));
 		}
 		button.info {
-			padding-inline: 0.35em;
+			padding-inline: 0;
 		}
 	}
 	.pause-info {

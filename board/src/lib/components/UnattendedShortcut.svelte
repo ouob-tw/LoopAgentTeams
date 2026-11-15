@@ -54,6 +54,7 @@
 	@media (max-width: 480px) {
 		.toggle {
 			padding-inline: 0.55rem;
+			font-size: max(0.9rem, var(--min-font, 0px));
 		}
 	}
 	.state {
