@@ -46,7 +46,7 @@ test('a lock on the first launch and success on the second opens the agent, trac
 test('four locks in a row launch four times, 1, 2 and 4 minutes apart, then fail saying three retries and the last error', async () => {
 	const r = rig(locked(4));
 	const result = await r.run();
-	expect(r.seen).toMatchObject({ attempts: 4, waits: [MIN, 2 * MIN, 4 * MIN] });
+	expect(r.seen).toMatchObject({ attempts: 4, cleanups: 4, waits: [MIN, 2 * MIN, 4 * MIN] });
 	expect(result.ok).toBe(false);
 	if (result.ok) return;
 	expect(result.cut).toBeUndefined();
@@ -94,6 +94,25 @@ test('a cleanup locked every time uses up the retries without launching again', 
 	expect(r.seen).toMatchObject({ attempts: 1, waits: [MIN, 2 * MIN, 4 * MIN] });
 	expect(result.ok).toBe(false);
 	if (!result.ok) expect(result.reason).toContain('已重試 3 次');
+});
+
+test('a stop arriving while the second cleanup runs is not launched over', async () => {
+	let cut: Cut | null = null;
+	let attempts = 0;
+	const answers = [...locked(1), { ok: true as const, name: 'n', workspace: null }];
+	const cleanups: (string | null)[] = ['hcom: database is locked', null];
+	const result = await launchWithLockRetry({
+		attempt: async () => answers[attempts++]!,
+		cleanup: async () => {
+			const answer = cleanups.shift() ?? null;
+			if (answer === null) cut = 'stopped';
+			return answer;
+		},
+		halted: () => cut,
+		pause: async () => {}
+	});
+	expect(result).toMatchObject({ ok: false, cut: 'stopped' });
+	expect(attempts).toBe(1);
 });
 
 test('the default wait ends within seconds of a stop', async () => {

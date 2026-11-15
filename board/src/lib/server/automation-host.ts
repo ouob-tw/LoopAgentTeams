@@ -64,10 +64,15 @@ export async function launchWithLockRetry(deps: {
 			result = { ok: false, reason: `${result.reason}；清理也遇到：${left}` };
 			continue;
 		}
+		// Looked at again right before launching: a stop during the cleanup is not launched over.
+		const late = deps.halted();
+		if (late) return { ok: false, reason: result.reason, cut: late };
 		result = await deps.attempt();
 	}
-	if (!result.ok && isLockedFailure(result.reason)) return { ok: false, reason: `已重試 ${waits.length} 次仍失敗，最後一次：${result.reason}` };
-	return result;
+	if (result.ok || !isLockedFailure(result.reason)) return result;
+	// The last launch left its half-opened agent too; the run fails without an agent to close it.
+	const left = await deps.cleanup();
+	return { ok: false, reason: `已重試 ${waits.length} 次仍失敗，最後一次：${result.reason}${left ? `；清不掉這次留下的半開 Agent：${left}` : ''}` };
 }
 
 /** The agent a failed launch left: same tag, listed by hcom, no terminal. `hcom kill` ends it;
