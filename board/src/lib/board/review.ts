@@ -1,6 +1,7 @@
 // A round's unattended review as the board shows it: what `lat-unattended review show --json`
 // prints, kept to what a page needs, and the words of the message 推翻 and 回覆 send. The review
-// file's layout and order are lat-unattended's; nothing here reorders or rewrites them.
+// file's layout and order are lat-unattended's; the review tab groups them (reviewGroups).
+import { cardsFrom, type DelegatedCard } from './delegated.ts';
 
 export type ReviewKind = 'parked' | 'parked-row' | 'proxy-confirmed' | 'assumed' | 'prototype-decided';
 export type ReviewItemState = 'open' | 'answered' | 'overturned';
@@ -34,10 +35,25 @@ export interface ReviewGoal {
 	maxHours: number;
 }
 
+/** A question the controller asked the user during this round's grant (#661, `- grant:`). */
+export interface AskedQuestion {
+	/** The decision record's ID, which is also the question's ID on the board. */
+	id: string;
+	title: string;
+	state: 'open' | 'answered';
+	/** The recorded answer; null while open, or when the record holds none. */
+	answer: string | null;
+	answeredAt: string | null;
+}
+
 export interface Review {
 	grant: string;
 	goals: ReviewGoal[];
 	items: ReviewItem[];
+	/** The delegated items in full, in the review's order (the review tab's 代決 rows). */
+	delegated: DelegatedCard[];
+	/** The questions asked during this round's grant, in the tool's order. */
+	asked: AskedQuestion[];
 	/** IDs of the items 最該先看的幾項 lists, in order. */
 	top: string[];
 	doneTickets: string[];
@@ -63,9 +79,9 @@ export function reviewFrom(payload: unknown): Review | null {
 	const items: ReviewItem[] = [];
 	for (const raw of view.items) {
 		const item = record(raw);
-		// Auto actions are no longer review items; a payload that still has them reads without them.
-		if (item.kind === 'auto') continue;
-		if (typeof item.id !== 'string' || !KINDS.includes(text(item.kind)) || !STATES.includes(text(item.state))) return null;
+		// Auto actions are no longer review items, and an item the board does not know is left out
+		// too: an old review, or one from a newer tool, still opens with the rest.
+		if (typeof item.id !== 'string' || !KINDS.includes(text(item.kind)) || !STATES.includes(text(item.state))) continue;
 		items.push({
 			id: item.id,
 			kind: item.kind as ReviewKind,
@@ -98,12 +114,33 @@ export function reviewFrom(payload: unknown): Review | null {
 			};
 		}),
 		items,
+		delegated: cardsFrom(view.items),
+		asked: list(view.asked).flatMap((raw): AskedQuestion[] => {
+			const asked = record(raw);
+			if (typeof asked.id !== 'string') return [];
+			const answer = typeof asked.answer === 'string' && asked.answer.trim() ? asked.answer : null;
+			return [{ id: asked.id, title: text(asked.title) || asked.id, state: asked.state === 'answered' ? 'answered' : 'open', answer, answeredAt: typeof asked.answered_at === 'string' ? asked.answered_at : null }];
+		}),
 		top: strings(view.top),
 		doneTickets: strings(view.done_tickets),
 		problems: strings(view.problems),
 		sections: list(view.sections)
 			.map((raw) => ({ key: text(record(raw).key), heading: text(record(raw).heading) }))
 			.filter((section) => section.key && section.heading)
+	};
+}
+
+/** The review tab's groups, in order (#664); a group with nothing in it is left out by the page.
+ *  `fresh`: the IDs of the delegated cards the controller page still lists as not seen (a grant
+ *  ending takes them off it). */
+export function reviewGroups(review: Pick<Review, 'items' | 'delegated' | 'asked'>, fresh: ReadonlySet<string>) {
+	const unseen = review.delegated.filter((card) => card.state === 'open' && fresh.has(card.id));
+	return {
+		unseen,
+		settled: review.delegated.filter((card) => !unseen.includes(card)),
+		asked: review.asked,
+		/** Parked items, written before #661 parked became a question: answered with 回覆. */
+		parked: review.items.filter(isParked)
 	};
 }
 

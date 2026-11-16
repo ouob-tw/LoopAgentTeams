@@ -197,7 +197,7 @@
 		{#if id === 'transcript'}
 			<Transcript {controller} {asks} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} {sentLook} {onseen} onsentdone={() => (sentLook = null)} bind:usage />
 		{:else if id === 'review'}
-			{#key controller.id}<ReviewPanel {controller} />{/key}
+			{#key controller.id}<ReviewPanel {controller} {questions} {onopen} />{/key}
 		{:else if id === 'screen'}
 			<ScreenPanel agentId={paneAgent?.id ?? controller.id} active={tab === 'screen'} unavailable={paneAgent?.inHerdr ? null : controller.status === 'closed' ? SCREEN_CLOSED_TEXT : SCREEN_NOT_LISTED_TEXT} />
 		{:else if id === 'reports'}

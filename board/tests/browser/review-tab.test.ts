@@ -1,11 +1,12 @@
-// The 回顧 tab in real browsers on one built board, the real helper and lat-unattended: no tab
-// before a review exists; the tab right after 對話紀錄 with the parked count; the banner with no
-// cross-check (#662), the goal folded and opened to every version, 最該先看, every section of the
-// file in its order with no auto actions, items folded to a title and one line and opened to their reasons; 回覆 on parked items and 推翻 on the rest;
-// a comment box sending the item's ID, title and words to the controller and into 送出紀錄, and
-// keeping the words when the send fails; the review rewritten by the controller reaching the page
-// within five seconds; the old assumptions still open to 推翻 after the grant is turned off; at
-// 1280 and 390 wide nothing scrolls sideways and the first two items sit above the input row.
+// The 回顧 tab in real browsers on one built board, the real helper and lat-unattended (#664): no
+// tab before a review exists; the tab right after 對話紀錄; cards in groups, in order: the goal and
+// what counts as done, the 代決 not seen yet, those seen or whose grant ended (「沒推翻，算同意」, or
+// 「已由你推翻（time）：words」 once the controller recorded the 推翻), the questions asked during
+// the grant (the answer, or 「等你回答」 leading to the question), parked items from before #661;
+// a group with nothing in it left out. A 代決 opened here is marked seen; 推翻 sends its ID, title
+// and words to the controller. The rows are the controller page's 代決 rows. After the grant ends
+// and after the controller has ended the cards still open to 推翻; an old review file opens. At
+// 1280 and 390 wide, dark and light, text is 16px or more, buttons 44px, nothing scrolls sideways.
 // With LAT_BOARD_SHOTS set every look is saved there. Headless Chrome over its DevTools protocol;
 // skipped when the host has no Chrome.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -13,12 +14,13 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { NODE, sleep, startFixture, uvPython, type Fixture } from '../harness.ts';
+import { NODE, question, sleep, startFixture, uvPython, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 import { writeRound } from '../review-fixture.ts';
 import type { HelperController } from '../../src/lib/board/types.ts';
 
 const TOOL = join(import.meta.dirname, '../../../skills/local/lat/scripts/lat-unattended.py');
+const PANEL_TOOL = join(import.meta.dirname, '../../../skills/local/lat/herdr-panel/lat_panel.py');
 const WIDE = { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false };
 const PHONE = { width: 390, height: 844, deviceScaleFactor: 2, mobile: true };
 const FORM = { goal: '#577 按鈕字改「儲存」、#578 修錯字，明早 07:30 前做完', done: ['#577、#578 都合併進開發分支', '測試全過'], scope: { ticket_confirmation: true, assume_defaults: true, prototype_decide: true }, maxHours: 12 };
@@ -26,8 +28,16 @@ const FORM = { goal: '#577 按鈕字改「儲存」、#578 修錯字，明早 07
 const TAB = '[data-tab="review"]';
 const PANEL = '#panel-review';
 const item = (id: string) => `${PANEL} [data-item="${id}"]`;
+const card = (id: string) => `${PANEL} [data-delegated="${id}"]`;
+const asked = (id: string) => `${PANEL} [data-asked="${id}"]`;
+const group = (key: string) => `${PANEL} [data-group="${key}"]`;
 const NO_SIDEWAYS = `document.scrollingElement.scrollWidth <= innerWidth`;
 const text = (selector: string) => `(document.querySelector(${JSON.stringify(selector)})?.innerText ?? '')`;
+/** The smallest font size of any text shown inside `selector`, in CSS pixels. */
+const smallestFont = (tab: Tab, selector: string) =>
+	tab.eval<number>(`Math.min(...[...document.querySelectorAll(${JSON.stringify(`${selector}, ${selector} *`)})].filter((node) => node.offsetParent !== null && [...node.childNodes].some((child) => child.nodeType === 3 && child.textContent.trim())).map((node) => parseFloat(getComputedStyle(node).fontSize)))`);
+/** Every visible button in the panel lower than 44px, by its text. */
+const smallButtons = (tab: Tab) => tab.eval<string[]>(`[...document.querySelectorAll('${PANEL} button')].filter((el) => el.offsetParent !== null && el.getBoundingClientRect().height < 43).map((el) => el.innerText)`);
 
 const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-review-inject-'));
 let fixture: Fixture;
@@ -40,7 +50,7 @@ beforeAll(async () => {
 	if (!CHROME) return;
 	config = mkdtempSync(join(tmpdir(), 'lat-board-review-page-'));
 	fixture = await startFixture({ env: { XDG_CONFIG_HOME: config, LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, '../fake-inject.mjs'), injectDir]), LAT_BOARD_INJECT_TIMEOUT_SECONDS: '5' } });
-	luna = fixture.bound('alpha', 'luna');
+	luna = fixture.bound('alpha', 'luna', { questions: [question({ id: 'Q-OPEN', title: '通知卡片要不要加關閉鈕？' })] });
 	spawnSync('git', ['init', '-q', '-b', 'dev', luna.workspace]);
 	mkdirSync(join(luna.workspace, '.lat/sessions'), { recursive: true });
 	writeFileSync(join(luna.workspace, `.lat/sessions/${luna.session_id}.json`), JSON.stringify({ status: 'active', client: 'claude', history: [] }));
@@ -61,7 +71,13 @@ afterAll(async () => {
 /** The controller's own tool, as it runs at a turn end. */
 function tool(...args: string[]) {
 	const run = spawnSync(uvPython(), [TOOL, ...args, `--workspace=${luna.workspace}`, `--session-id=${luna.session_id}`, '--json'], { encoding: 'utf8', env: fixture.serverEnv() });
-	expect(run.status).toBe(0);
+	expect(run.status, run.stdout + run.stderr).toBe(0);
+}
+/** A question the controller asked the user during the grant (#661), waiting or answered. */
+function askedRecord(id: string, title: string, answer?: string) {
+	const lines = [`# ${id} ${title}`, '', `- status: ${answer ? 'approved' : 'pending'}`, '- advisor: needs-human', `- session: ${luna.session_id}`, '- grant: r1 v1', '- version: r1', `- question: ${title}`, '- options: A 要加 / B 不加', ''];
+	if (answer) lines.push('## 答覆（r1，面板，2026-11-16T09:30:00+08:00）', '', `- 答覆：${answer}`, '');
+	writeFileSync(join(luna.workspace, '.lat/decisions', `${id}.md`), lines.join('\n'));
 }
 const grant = (body: object) => fixture.fetch('/api/unattended', { method: 'POST', cookie, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ controllerId: luna.session_id, ...body }) });
 const typed = () => {
@@ -83,27 +99,32 @@ async function browse(size = WIDE): Promise<Tab> {
 	await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'alpha'`, 'the controller page');
 	return tab;
 }
-/** The review file's `##` sections in order, each with the item IDs it lists (`### <ID>` or `<n>. <ID>（`). */
-function fileSections(file: string) {
-	const sections: { heading: string; ids: string[] }[] = [];
-	for (const line of file.split('\n')) {
-		if (line.startsWith('## ')) sections.push({ heading: line.slice(3), ids: [] });
-		const id = line.match(/^### (\S+) /) ?? line.match(/^\d+\. (\S+?)（/);
-		if (id && sections.length) sections.at(-1)!.ids.push(id[1]);
+/** Open the review tab, clicked until the page has taken over its buttons. */
+async function openTab(tab: Tab) {
+	await tab.until(`(document.querySelector('${TAB}')?.click(), document.querySelector('${TAB}')?.getAttribute('aria-selected') === 'true')`, 'the 回顧 tab opened');
+	await tab.until(`!!document.querySelector('${group('goal')}')`, 'the review read');
+}
+const reload = async (tab: Tab) => {
+	await tab.send('Page.reload', {});
+	await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'alpha'`, 'the controller page again');
+	await openTab(tab);
+};
+/** The theme the board follows from the system's colour scheme. */
+async function theme(tab: Tab, name: 'dark' | 'light') {
+	await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: name }] });
+	await tab.until(`document.documentElement.dataset.theme === ${JSON.stringify(name)}`, `the ${name} theme`);
+}
+/** One look of `box` per theme, at 1280 and at 390 wide; the page is put back to 1280 dark. */
+async function looks(tab: Tab, name: string, box: string) {
+	for (const scheme of ['dark', 'light'] as const) {
+		await theme(tab, scheme);
+		await shot(tab, `1280-${scheme}-${name}`, { box });
+		await shot(tab, `390-${scheme}-${name}`, { phone: true, box, back: WIDE });
 	}
-	return sections;
+	await theme(tab, 'dark');
 }
-/** The tab's sections in page order, each with the item IDs in the list that follows its heading. */
-const shownSections = (tab: Tab) =>
-	tab.eval<{ heading: string; ids: string[] }[]>(
-		`[...document.querySelectorAll('${PANEL} [data-heading]')].map((heading) => { const list = heading.nextElementSibling; return { heading: heading.dataset.heading, ids: list?.matches('ul.items') ? [...list.querySelectorAll('[data-item]')].map((entry) => entry.dataset.item) : [] }; })`
-	);
-/** One look per section, its heading scrolled to the middle, numbered in page order. */
-async function sectionShots(tab: Tab, width: string) {
-	const headings = (await shownSections(tab)).map((section) => section.heading);
-	for (const [index, heading] of headings.entries()) await shot(tab, `${width}-review-section-${index + 1}`, { box: `${PANEL} [data-heading="${heading}"]` });
-	await tab.eval('scrollTo(0, 0)');
-}
+const groups = (tab: Tab) => tab.eval<string[]>(`[...document.querySelectorAll('${PANEL} [data-group]')].map((entry) => entry.dataset.group)`);
+const ids = (tab: Tab, key: string) => tab.eval<string[]>(`[...document.querySelectorAll('${group(key)} [data-delegated], ${group(key)} [data-asked], ${group(key)} [data-item]')].map((entry) => entry.dataset.delegated ?? entry.dataset.asked ?? entry.dataset.item)`);
 const tabNames = (tab: Tab) => tab.eval<string[]>(`[...document.querySelectorAll('.tabs [role="tab"]')].map((tab) => tab.dataset.tab)`);
 /** Type into a textarea the way a user does: the value, then an input event. */
 const type = (tab: Tab, selector: string, value: string) => tab.eval(`(() => { const box = document.querySelector(${JSON.stringify(selector)}); box.value = ${JSON.stringify(value)}; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
@@ -118,262 +139,217 @@ test.skipIf(!CHROME)('before the round has a review there is no 回顧 tab', asy
 	expect(await tabNames(tab)).not.toContain('review');
 });
 
-test.skipIf(!CHROME)('the tab follows 對話紀錄 with the parked count; the banner, goal and folded items read right', async () => {
+test.skipIf(!CHROME)('the cards come in groups, in order, and an empty group is left out', async () => {
 	const tab = browsers[0].tab;
 	writeRound(luna.workspace, luna.session_id);
+	askedRecord('Q-DONE', '設定頁要不要加深色模式？', 'A. 要加');
+	askedRecord('Q-OPEN', '通知卡片要不要加關閉鈕？');
 	tool('review', 'update');
 	await tab.until(`!!document.querySelector('${TAB}')`, 'the 回顧 tab appearing without a reload');
 	expect((await tabNames(tab)).slice(0, 2)).toEqual(['transcript', 'review']);
-	expect(await tab.eval(text(TAB))).toMatch(/^回顧\s*3$/);
+	await openTab(tab);
+	await tab.until(`!!document.querySelector('${group('asked')}')`, 'the questions read');
 
-	await click(tab, TAB);
-	await tab.until(`!!document.querySelector('${PANEL} .banner')`, 'the panel');
-	const banner = await tab.eval<string>(text(`${PANEL} .banner`));
-	expect(banner).toContain('擱置等你的事：3 項');
-	expect(banner).not.toContain('核對');
+	// Nothing seen or ended yet: no such group.
+	expect(await groups(tab)).toEqual(['goal', 'unseen', 'asked', 'parked']);
+	expect(await tab.eval<string[]>(`[...document.querySelectorAll('${PANEL} h4')].map((h) => h.innerText.replace(/\\s+\\d+$/, ''))`)).toEqual(['本輪目標與做完條件', '還沒看過的代決', '這輪無人期間問過你的題', '擱置等你的事']);
+	expect(await ids(tab, 'unseen')).toEqual(['LAT-AN', 'LAT-AU', 'LAT-PC']);
+	expect(await ids(tab, 'asked')).toEqual(['Q-DONE', 'Q-OPEN']);
+	expect(await ids(tab, 'parked')).toEqual(['LAT-P1', 'LAT-P2', 'row-3']);
 
-	// The goal is one line until opened; opened it shows the version and its conditions.
-	expect(await tab.eval<string>(text(`${PANEL} .goal .line`))).toContain(`目標：${FORM.goal} · 條件 2 條`);
-	expect(await tab.eval(`!!document.querySelector('${PANEL} .goal .versions')`)).toBe(false);
-	await click(tab, `${PANEL} .goal .line`);
-	await tab.until(`!!document.querySelector('${PANEL} .goal .versions')`, 'the goal opened');
-	const goal = await tab.eval<string>(text(`${PANEL} .goal .versions`));
-	expect(goal).toContain('第 1 版');
-	expect(goal).toContain('你在看板開啟');
+	// The goal in effect, with what counts as done, not folded.
+	const goal = await tab.eval<string>(text(group('goal')));
+	expect(goal).toContain('第 1 版 · 生效中');
+	expect(goal).toContain(FORM.goal);
+	expect(goal).toContain('做完的條件');
 	expect(goal).toContain('測試全過');
-	await click(tab, `${PANEL} .goal .line`);
+	expect(goal).not.toContain('之前的版本');
 
-	// Every section of the review file, in the file's order, each with every item the file lists
-	// under it: an item in 最該先看 stays in its own section too (the banner heads 擱置等你的事).
-	const file = readFileSync(join(luna.workspace, `.lat/unattended/${luna.session_id}-r1-review.md`), 'utf8');
-	const inFile = fileSections(file);
-	expect(inFile.map((section) => section.heading)).toEqual(['擱置等你的事', '本輪目標與做完條件', '最該先看的幾項', '假設', '代確認的票', '本輪完成的票']);
-	expect(await shownSections(tab)).toEqual(inFile);
-	expect(inFile.find((section) => section.heading === '代確認的票')?.ids).toEqual(['LAT-PC']);
-	expect(inFile.find((section) => section.heading === '最該先看的幾項')?.ids).toEqual(['LAT-P1', 'LAT-P2', 'row-3', 'LAT-PC', 'LAT-AU']);
-	await sectionShots(tab, '1280');
+	// The 代決 rows are the controller page's: ◇, the kind, the title and 看看.
+	expect(await tab.eval<string>(text(`${card('LAT-AU')} .row`))).toMatch(/^◇ 已代決：備份預設留 30 天\s*看看 ›$/);
+	expect(await tab.eval(`getComputedStyle(document.querySelector('${card('LAT-AU')}')).borderTopStyle`)).toBe('dashed');
 
-	// Folded: a title and one line of 做了; the reasons are not shown. A long line stays one line.
-	for (const id of ['LAT-P1', 'LAT-AU', 'LAT-PC']) {
-		const shape = await tab.eval<{ title: string; did: string; oneLine: boolean; open: boolean }>(`(() => {
-			const entry = document.querySelector(${JSON.stringify(item(id))});
-			const did = entry.querySelector('.did');
-			return { title: entry.querySelector('.title').innerText, did: did.innerText, oneLine: did.getBoundingClientRect().height < parseFloat(getComputedStyle(did).lineHeight) * 1.5, open: !!entry.querySelector('.reasons') };
-		})()`);
-		expect(shape.oneLine).toBe(true);
-		expect(shape.open).toBe(false);
-		expect(shape.did).toMatch(/^做了：/);
+	// An answered question says the answer; a waiting one says so and leads to its card.
+	expect(await tab.eval<string>(text(asked('Q-DONE')))).toMatch(/▲ 待決：設定頁要不要加深色模式？\s*你答：A\. 要加/);
+	expect(await tab.eval(`document.querySelector('${asked('Q-DONE')}').tagName`)).toBe('DIV');
+	expect(await tab.eval<string>(text(asked('Q-OPEN')))).toMatch(/▲ 待決：通知卡片要不要加關閉鈕？\s*作答 ›\s*等你回答/);
+	expect(await tab.eval(`document.querySelector('${asked('Q-OPEN')}').tagName`)).toBe('BUTTON');
+
+	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
+	expect(await smallestFont(tab, PANEL)).toBeGreaterThanOrEqual(16);
+	expect(await smallButtons(tab)).toEqual([]);
+	await looks(tab, 'goal', group('goal'));
+	await looks(tab, 'unseen', group('unseen'));
+	await looks(tab, 'asked', group('asked'));
+});
+
+test.skipIf(!CHROME)('a 代決 opened here shows its record and is marked seen; after a reload it reads 沒推翻，算同意', async () => {
+	const tab = browsers[0].tab;
+	await click(tab, `${card('LAT-AU')} .row`);
+	await tab.until(`!!document.querySelector('${card('LAT-AU')} .detail')`, 'LAT-AU opened');
+	expect(await tab.eval<string[]>(`[...document.querySelectorAll('${card('LAT-AU')} dt')].map((label) => label.innerText)`)).toEqual(['原本要問', '參謀決定', '兩位參謀', '可以改成']);
+	expect(await tab.eval<string[]>(`[...document.querySelectorAll('${card('LAT-AU')} .detail button')].map((button) => button.innerText)`)).toEqual(['推翻']);
+	// Only the review's row opened: the controller page's strip keeps its own.
+	expect(await tab.eval(`!!document.querySelector('.delegated-strip [data-delegated="LAT-AU"] .detail')`)).toBe(false);
+	const seenFile = join(fixture.dir, 'board-state', 'delegated-seen.json');
+	for (let tries = 0; tries < 50; tries++) {
+		try {
+			if (`${luna.session_id}:LAT-AU` in JSON.parse(readFileSync(seenFile, 'utf8')).seen) break;
+		} catch {}
+		await sleep(100);
 	}
-	expect(await tab.eval<string>(text(`${item('LAT-P1')} .title`))).toBe('要不要加匯出功能');
-
-	// Opened: the reason, the evidence and how to overturn it.
-	await click(tab, `${item('LAT-AU')} .toggle`);
-	await tab.until(`!!document.querySelector('${item('LAT-AU')} .reasons')`, 'the reasons opened');
-	const reasons = await tab.eval<string>(text(`${item('LAT-AU')} .reasons`));
-	expect(reasons).toContain('固定清單 setting-default');
-	expect(reasons).toContain('LAT-AU.md');
-	expect(reasons).toContain('改成 7 天或 90 天');
-	await shot(tab, '1280-review-tab');
-	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
+	expect(Object.keys(JSON.parse(readFileSync(seenFile, 'utf8')).seen)).toEqual([`${luna.session_id}:LAT-AU`]);
+	// Opened on this page, it stays where it was until the page closes.
+	expect(await ids(tab, 'unseen')).toEqual(['LAT-AN', 'LAT-AU', 'LAT-PC']);
+	await looks(tab, 'unseen-open', card('LAT-AU'));
+	await reload(tab);
+	await tab.until(`!!document.querySelector('${group('settled')}')`, 'the settled group');
+	expect(await groups(tab)).toEqual(['goal', 'unseen', 'settled', 'asked', 'parked']);
+	expect(await ids(tab, 'unseen')).toEqual(['LAT-AN', 'LAT-PC']);
+	expect(await ids(tab, 'settled')).toEqual(['LAT-AU']);
+	expect(await tab.eval<string>(text(`${card('LAT-AU')} [data-settled]`))).toBe('沒推翻，算同意');
+	// Seen and not seen are told apart by more than colour: the tint goes.
+	const tints = await tab.eval<string[]>(`[document.querySelector('${card('LAT-AN')}'), document.querySelector('${card('LAT-AU')}')].map((el) => getComputedStyle(el).backgroundColor)`);
+	expect(tints[0]).not.toBe(tints[1]);
 });
 
-test.skipIf(!CHROME)('回覆 on a parked item and 推翻 on every other kind', async () => {
+test.skipIf(!CHROME)('推翻 from the review sends the item to the controller, and the recorded answer shows with its time and words', async () => {
 	const tab = browsers[0].tab;
-	const buttons = await tab.eval<Record<string, string>>(`Object.fromEntries([...document.querySelectorAll('${PANEL} [data-item]')].map((entry) => [entry.dataset.item, entry.querySelector('button.act')?.innerText ?? '']))`);
-	expect(buttons).toMatchObject({ 'LAT-P1': '回覆', 'LAT-P2': '回覆', 'row-3': '回覆', 'LAT-PC': '推翻', 'LAT-AU': '推翻', 'LAT-AN': '推翻' });
-	expect(Object.keys(buttons).some((id) => id.startsWith('auto-'))).toBe(false);
-});
-
-test.skipIf(!CHROME)('the comment box sends the item ID, title and words to the controller and logs them; a failed send keeps the words', async () => {
-	const tab = browsers[0].tab;
-	await click(tab, `${item('LAT-AU')} button.act`);
-	await tab.until(`!!document.querySelector('${item('LAT-AU')} textarea')`, 'the comment box');
-	// Nothing to send until something is written.
-	expect(await tab.eval(`document.querySelector('${item('LAT-AU')} button.send').disabled`)).toBe(true);
-	await shot(tab, '1280-review-comment-box', { box: `${item('LAT-AU')} textarea` });
-	await type(tab, `${item('LAT-AU')} textarea`, '改成 7 天');
-	await click(tab, `${item('LAT-AU')} button.send`);
-	await tab.until(`!document.querySelector('${item('LAT-AU')} textarea')`, 'the box closed after sending');
-	expect(typed().map((line) => line.text).join('')).toBe('回顧項目 LAT-AU「備份預設留 30 天」推翻：改成 7 天');
-	// It is in 送出紀錄 like any message to the controller.
-	await click(tab, '[data-tab="sent"]');
-	await tab.until(`${text('#panel-sent')}.includes('回顧項目 LAT-AU')`, 'the sent log showing it');
-	expect(await tab.eval<string>(text('#panel-sent'))).toContain('推翻：改成 7 天');
-	await click(tab, TAB);
-
-	// A send that fails keeps the words and says why.
-	writeFileSync(join(injectDir, 'inject.json'), JSON.stringify({ [luna.hcom_name]: { exit: 1, stdout: '輸入框壞了' } }));
-	await click(tab, `${item('LAT-P1')} button.act`);
-	await tab.until(`!!document.querySelector('${item('LAT-P1')} textarea')`, 'the reply box');
-	await type(tab, `${item('LAT-P1')} textarea`, '加，CSV 就好');
-	await click(tab, `${item('LAT-P1')} button.send`);
-	await tab.until(`!!document.querySelector('${item('LAT-P1')} .failed')`, 'the failure shown');
-	expect(await tab.eval<string>(text(`${item('LAT-P1')} .failed`))).toContain('輸入框壞了');
-	expect(await tab.eval(`document.querySelector('${item('LAT-P1')} textarea').value`)).toBe('加，CSV 就好');
-	await shot(tab, '1280-review-send-failed');
-	rmSync(join(injectDir, 'inject.json'), { force: true });
-	await click(tab, `${item('LAT-P1')} button.send`);
-	await tab.until(`!document.querySelector('${item('LAT-P1')} textarea')`, 'the retry sent');
-	expect(typed().at(-2)?.text).toBe('回顧項目 LAT-P1「要不要加匯出功能」回覆：加，CSV 就好');
-});
-
-test.skipIf(!CHROME)('a review the controller rewrites shows within five seconds; turning the grant off leaves 推翻 on the old assumptions', async () => {
-	const tab = browsers[0].tab;
-	writeRound(luna.workspace, luna.session_id, { parkedRecords: 3 });
-	const wrote = Date.now();
+	await click(tab, `${card('LAT-AN')} .row`);
+	await tab.until(`!!document.querySelector('${card('LAT-AN')} .overturn')`, 'LAT-AN opened');
+	await click(tab, `${card('LAT-AN')} .overturn`);
+	await tab.until(`!!document.querySelector('${card('LAT-AN')} textarea')`, 'the comment box');
+	expect(await tab.eval(`document.querySelector('${card('LAT-AN')} button.send').disabled`)).toBe(true);
+	await type(tab, `${card('LAT-AN')} textarea`, '改叫 SignIn');
+	await looks(tab, 'overturn-box', card('LAT-AN'));
+	await click(tab, `${card('LAT-AN')} button.send`);
+	await tab.until(`!document.querySelector('${card('LAT-AN')} textarea')`, 'the box closed after sending');
+	expect(typed().at(-1)?.text).toBe('回顧項目 LAT-AN「元件叫 LoginPanel」推翻：改叫 SignIn');
+	// The controller records it the way a review answer is recorded, and its turn end rebuilds the review.
+	const run = spawnSync(uvPython(), [PANEL_TOOL, 'question', 'record-chat', '--id', 'LAT-AN', '--text', '推翻：改叫 SignIn', '--source', 'session s-1 看板回顧', '--questions', luna.questions_path, '--decisions', join(luna.workspace, '.lat/decisions')], { encoding: 'utf8', env: fixture.serverEnv() });
+	expect(run.status, run.stdout + run.stderr).toBe(0);
 	tool('review', 'update');
-	await tab.until(`${text(TAB)}.replace(/\\s+/g, '') === '回顧4'`, 'the new count', 5_000);
-	expect(Date.now() - wrote).toBeLessThan(5_000);
-	await tab.until(`!!document.querySelector('${item('LAT-P3')}')`, 'the new item');
+	await tab.until(`${text(`${card('LAT-AN')} [data-settled]`)}.startsWith('已由你推翻（')`, 'the card overturned', 8_000);
+	expect(await tab.eval<string>(text(`${card('LAT-AN')} [data-settled]`))).toMatch(/^已由你推翻（\d{1,2}\/\d{1,2} \d{2}:\d{2}）：改叫 SignIn$/);
+	expect(await ids(tab, 'settled')).toEqual(['LAT-AN', 'LAT-AU']);
+	expect(await tab.eval(`!!document.querySelector('${card('LAT-AN')} .overturn')`)).toBe(false);
+	// Still open from the send: closed for the look of the group.
+	await click(tab, `${card('LAT-AN')} .row`);
+	await tab.until(`!document.querySelector('${card('LAT-AN')} .detail')`, 'LAT-AN closed');
+	await looks(tab, 'settled', group('settled'));
+});
 
-	// The user's own change of the goal is listed as a version of its own, the older one marked replaced.
-	expect((await grant({ op: 'update', ...FORM, goal: '#577、#578 都做完，再補 #579' })).status).toBe(200);
-	await tab.until(`${text(`${PANEL} .goal .line`)}.includes('改過 1 次')`, 'the goal line counting the change', 5_000);
-	await click(tab, `${PANEL} .goal .line`);
-	await tab.until(`!!document.querySelector('${PANEL} .goal .versions')`, 'the versions');
-	const versions = await tab.eval<string[]>(`[...document.querySelectorAll('${PANEL} .goal .versions > li')].map((entry) => entry.innerText)`);
-	expect(versions).toHaveLength(2);
-	expect(versions[0]).toContain('第 2 版');
-	expect(versions[0]).toContain('你修改');
-	expect(versions[0]).toContain('#577、#578 都做完，再補 #579');
-	expect(versions[1]).toContain('第 1 版');
-	expect(versions[1]).toContain('已被後面的版本取代');
-	await shot(tab, '1280-review-goal-versions', { box: `${PANEL} .goal` });
-	await click(tab, `${PANEL} .goal .line`);
+test.skipIf(!CHROME)('a waiting question leads to its card; once answered it shows the answer', async () => {
+	const tab = browsers[0].tab;
+	await click(tab, asked('Q-OPEN'));
+	await tab.until(`new URLSearchParams(location.search).has('item')`, 'the question opened');
+	expect(new URLSearchParams(await tab.eval<string>('location.search')).get('item')).toContain('Q-OPEN');
+	await tab.send('Page.navigate', { url: `${fixture.url}/?controller=${luna.session_id}` });
+	await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'alpha'`, 'the controller page again');
+	await openTab(tab);
+	// The controller records the answer: the record and the question file say so.
+	askedRecord('Q-OPEN', '通知卡片要不要加關閉鈕？', 'B. 不加');
+	fixture.setHelper({ output: { controllers: [{ ...luna, questions: [question({ id: 'Q-OPEN', title: '通知卡片要不要加關閉鈕？', status: 'recorded', answer: 'B. 不加' })] }] }, realUnattended: uvPython(), realPreauth: uvPython() });
+	await fixture.refresh(cookie);
+	await tab.until(`${text(asked('Q-OPEN'))}.includes('你答：B. 不加')`, 'the answer shown', 8_000);
+	expect(await tab.eval(`document.querySelector('${asked('Q-OPEN')}').tagName`)).toBe('DIV');
+	await looks(tab, 'asked-answered', group('asked'));
+});
 
+test.skipIf(!CHROME)('when the grant ends the 代決 not seen move to the seen or ended group, still open to 推翻', async () => {
+	const tab = browsers[0].tab;
 	expect((await grant({ op: 'close' })).status).toBe(200);
-	await click(tab, `${PANEL} .goal .line`);
-	await tab.until(`${text(`${PANEL} .goal .versions`)}.includes('使用者關掉')`, 'the goal showing the grant ended', 5_000);
-	expect(await tab.eval<string>(text(`${PANEL} .banner`))).not.toContain('核對');
-	expect(await tab.eval(`!!document.querySelector('${TAB}')`)).toBe(true);
-	for (const id of ['LAT-AU', 'LAT-AN', 'LAT-PC']) expect(await tab.eval<string>(text(`${item(id)} button.act`))).toBe('推翻');
+	await tab.until(`!document.querySelector('${group('unseen')}')`, 'the unseen group gone', 8_000);
+	expect(await ids(tab, 'settled')).toEqual(['LAT-AN', 'LAT-AU', 'LAT-PC']);
+	expect(await tab.eval<string>(text(`${card('LAT-PC')} [data-settled]`))).toBe('沒推翻，算同意');
+	await tab.until(`${text(group('goal'))}.includes('已結束（使用者關掉）')`, 'the goal showing the grant ended', 8_000);
+	await click(tab, `${card('LAT-PC')} .row`);
+	await tab.until(`!!document.querySelector('${card('LAT-PC')} .overturn')`, 'LAT-PC still overturnable');
+	await click(tab, `${card('LAT-PC')} .row`);
+	// A new grant version is listed; the earlier one folds below it.
+	expect((await grant({ op: 'create', ...FORM, goal: '#579 也做完' })).status).toBe(200);
+	await tab.until(`${text(group('goal'))}.includes('之前的版本（1）')`, 'the earlier version folded', 8_000);
+	expect(await tab.eval<string>(text(group('goal')))).toContain('第 2 版 · 生效中');
+	await click(tab, `${group('goal')} .earlier`);
+	await tab.until(`document.querySelectorAll('${group('goal')} .version').length === 2`, 'the earlier version opened');
+	expect(await tab.eval<string>(text(`${group('goal')} .version[data-version="1"]`))).toContain(FORM.goal);
+	await looks(tab, 'goal-versions', group('goal'));
 });
 
-test.skipIf(!CHROME)('at 390 wide nothing scrolls sideways and the first two items sit above the input row', async () => {
+test.skipIf(!CHROME)('at 390 wide, dark and light, nothing scrolls sideways, text is 16px or more and buttons are 44px', async () => {
 	const tab = await browse(PHONE);
-	// Clicked until the page has taken over its buttons.
-	await tab.until(`(document.querySelector('${TAB}')?.click(), document.querySelector('${TAB}')?.getAttribute('aria-selected') === 'true')`, 'the tab opened');
-	await tab.until(`document.querySelector('${item('LAT-P1')}')?.getBoundingClientRect().height > 0`, 'the items shown');
-	await sleep(300);
+	await openTab(tab);
+	await tab.until(`!!document.querySelector('${group('settled')}')`, 'the groups');
+	for (const scheme of ['dark', 'light'] as const) {
+		await theme(tab, scheme);
+		expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
+		expect(await smallestFont(tab, PANEL)).toBeGreaterThanOrEqual(16);
+		expect(await smallButtons(tab)).toEqual([]);
+	}
+	// The longest row: the overturn line wraps inside the card, never past it.
+	const fits = await tab.eval<boolean>(`[...document.querySelectorAll('${PANEL} [data-delegated], ${PANEL} [data-asked]')].every((row) => row.scrollWidth <= row.clientWidth + 1 && row.getBoundingClientRect().right <= innerWidth)`);
+	expect(fits).toBe(true);
+	await click(tab, `${card('LAT-AU')} .row`);
+	await tab.until(`!!document.querySelector('${card('LAT-AU')} .detail')`, 'the detail on the phone');
 	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
-	// Outside 最該先看 no item is listed twice, and no two items share a title.
-	const shown = await tab.eval<string[][]>(`[...document.querySelectorAll('${PANEL} ul.items:not([data-section="top"]) [data-item]')].map((entry) => [entry.dataset.item, entry.querySelector('.title').innerText])`);
-	expect(new Set(shown.map(([id]) => id)).size).toBe(shown.length);
-	expect(new Set(shown.map(([, title]) => title)).size).toBe(shown.length);
-	// The page may scroll, but at its start the first two items are whole above the input row.
-	const frame = await tab.eval<{ cmdTop: number; first: number[]; second: number[] }>(`(() => {
-		const [one, two] = [...document.querySelectorAll('${PANEL} [data-item]')].slice(0, 2).map((entry) => entry.getBoundingClientRect());
-		return { cmdTop: document.querySelector('.cmd').getBoundingClientRect().top, first: [one.top, one.bottom], second: [two.top, two.bottom] };
-	})()`);
-	expect(frame.first[1] - frame.first[0]).toBeGreaterThan(40);
-	expect(frame.second[1] - frame.second[0]).toBeGreaterThan(40);
-	expect(frame.first[0]).toBeGreaterThanOrEqual(0);
-	expect(frame.second[1]).toBeLessThanOrEqual(frame.cmdTop);
-	await shot(tab, '390-review-tab');
-	expect(await shownSections(tab)).toEqual(fileSections(readFileSync(join(luna.workspace, `.lat/unattended/${luna.session_id}-r1-review.md`), 'utf8')));
-	await sectionShots(tab, '390');
-	// Every button and the folded line are touchable and readable.
-	const small = await tab.eval<string[]>(`[...document.querySelectorAll('${PANEL} button')].filter((el) => el.offsetParent !== null).filter((el) => { const box = el.getBoundingClientRect(); return box.height < 44 - 1; }).map((el) => el.innerText)`);
-	expect(small).toEqual([]);
-	const tiny = await tab.eval<number>(`Math.min(...[...document.querySelectorAll('${PANEL} *')].filter((el) => el.childNodes.length && [...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim())).map((el) => parseFloat(getComputedStyle(el).fontSize)))`);
-	expect(tiny).toBeGreaterThanOrEqual(16);
-	await click(tab, `${item('LAT-AU')} button.act`);
-	await tab.until(`!!document.querySelector('${item('LAT-AU')} textarea')`, 'the box on the phone');
-	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
-	await shot(tab, '390-review-comment-box', { box: `${item('LAT-AU')} textarea` });
-	await click(tab, `${item('LAT-AU')} .toggle`);
-	await tab.until(`!!document.querySelector('${item('LAT-AU')} .reasons')`, 'the reasons on the phone');
-	// Opened reasons use the card's whole width, not a column squeezed beside the button.
-	const wide = await tab.eval<number>(`document.querySelector('${item('LAT-AU')} .reasons').getBoundingClientRect().width / document.querySelector('${item('LAT-AU')}').getBoundingClientRect().width`);
-	expect(wide).toBeGreaterThan(0.85);
-	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
-	await shot(tab, '390-review-item-open', { box: `${item('LAT-AU')} .reasons` });
-	await click(tab, `${PANEL} .goal .line`);
-	await shot(tab, '390-review-goal-open', { box: `${PANEL} .goal` });
-	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
+	await theme(tab, 'dark');
 });
 
-/** Open an item's evidence, press its file link and read the file in the window; Esc closes it. */
+/** Open a parked item's evidence, press its file link and read the file in the window; Esc closes it. */
 async function evidenceWindow(size: typeof WIDE, name: string) {
 	const tab = await browse(size);
-	await tab.until(`!!document.querySelector('${TAB}')`, 'the 回顧 tab');
-	await tab.until(`(document.querySelector('${TAB}')?.click(), document.querySelector('${TAB}')?.getAttribute('aria-selected') === 'true')`, 'the tab opened');
+	await openTab(tab);
 	await tab.until(`!!document.querySelector('${item('LAT-P1')} .toggle')`, 'the items');
-	// The page may not have taken its handlers yet: press until the evidence is open.
 	await tab.until(`(() => { const box = document.querySelector('${item('LAT-P1')}'); if (!box.querySelector('.reasons')) box.querySelector('.toggle').click(); return !!box.querySelector('.reasons'); })()`, 'the evidence opened');
 	const link = `${item('LAT-P1')} .reasons button.link`;
-	// The cited record is a link, 44px high, in the evidence list and nowhere as plain text.
-	const shape = await tab.eval<{ label: string; height: number; plain: string[] }>(`(() => {
-		const entry = document.querySelector('${link}');
-		return { label: entry.innerText, height: entry.getBoundingClientRect().height, plain: [...document.querySelectorAll('${item('LAT-P1')} .reasons li')].filter((li) => !li.querySelector('button.link, a')).map((li) => li.innerText) };
-	})()`);
-	expect(shape.label).toBe('.lat/decisions/LAT-P1.md');
-	expect(shape.height).toBeGreaterThanOrEqual(44);
-	expect(shape.plain).toEqual([]);
-	expect(await tab.eval(`!!document.querySelector('dialog.evidence[open]')`)).toBe(false);
-
+	expect(await tab.eval<string>(text(link))).toBe('.lat/decisions/LAT-P1.md');
+	expect(await tab.eval<number>(`document.querySelector('${link}').getBoundingClientRect().height`)).toBeGreaterThanOrEqual(44);
 	await click(tab, link);
 	await tab.until(`!!document.querySelector('dialog.evidence[open] .md')`, 'the record laid out in the window');
-	const open = await tab.eval<{ title: string; body: string; close: number; fits: boolean }>(`(() => {
-		const dialog = document.querySelector('dialog.evidence');
-		const box = dialog.getBoundingClientRect();
-		return { title: dialog.querySelector('h2').innerText, body: dialog.querySelector('.content').innerText, close: dialog.querySelector('header button').getBoundingClientRect().height, fits: box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight + 1 };
-	})()`);
-	expect(open.title).toBe('.lat/decisions/LAT-P1.md');
-	expect(open.body).toContain('LAT-P1 要不要加匯出功能');
-	expect(open.body).toContain('屬 Spec 確認，一定擱置');
-	expect(open.close).toBeGreaterThanOrEqual(44);
-	expect(open.fits).toBe(true);
+	expect(await tab.eval<string>(text('dialog.evidence .content'))).toContain('屬 Spec 確認，一定擱置');
 	expect(await tab.eval(NO_SIDEWAYS)).toBe(true);
 	await shot(tab, `${name}-review-evidence-window`);
-
 	await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
 	await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
 	await tab.until(`!document.querySelector('dialog.evidence[open]')`, 'the window closed by Esc');
-	// The same file opens again, and 關閉 closes it.
-	await click(tab, link);
-	await tab.until(`!!document.querySelector('dialog.evidence[open] .md')`, 'the window opened again');
-	await click(tab, 'dialog.evidence header button');
-	await tab.until(`!document.querySelector('dialog.evidence[open]')`, 'the window closed by 關閉');
-	await shot(tab, `${name}-review-evidence-list`, { box: `${item('LAT-P1')} .reasons` });
 }
 
-test.skipIf(!CHROME)('at 1280 the cited record opens in a window that reads, from a 44px link', async () => {
+test.skipIf(!CHROME)('a parked item from before #661 keeps 回覆 and opens its cited record, at 1280 and 390', async () => {
+	expect(await browsers[0].tab.eval<string>(text(`${item('LAT-P1')} button.act`))).toBe('回覆');
 	await evidenceWindow(WIDE, '1280');
-});
-
-test.skipIf(!CHROME)('at 390 the cited record opens in a window that fits the phone', async () => {
 	await evidenceWindow(PHONE, '390');
 });
 
-test.skipIf(!CHROME)('a cited record that is gone says so in the window instead of staying blank', async () => {
+test.skipIf(!CHROME)('a review file from before #662 opens with its cards, no error and not blank', async () => {
+	const state = join(luna.workspace, `.lat/unattended/${luna.session_id}-r1-review.json`);
+	const md = state.replace(/\.json$/, '.md');
+	// The review as it was written before #662, with its cross-check: never rewritten again.
+	writeFileSync(md, '# 無人模式回顧：舊版\n\n- 核對：kiwi 已核對\n');
+	writeFileSync(state, JSON.stringify({ body_sha: 'x', verification: { checker: 'kiwi', total: 1, matched: 1, mismatches: [] }, content_sha: 'y' }));
+	await fixture.refresh(cookie);
 	const tab = await browse();
-	await tab.until(`!!document.querySelector('${TAB}')`, 'the 回顧 tab');
-	await tab.until(`(document.querySelector('${TAB}')?.click(), document.querySelector('${TAB}')?.getAttribute('aria-selected') === 'true')`, 'the tab opened');
-	await tab.until(`!!document.querySelector('${item('LAT-AN')} .toggle')`, 'the items');
-	await tab.until(`(() => { const box = document.querySelector('${item('LAT-AN')}'); if (!box.querySelector('.reasons')) box.querySelector('.toggle').click(); return !!box.querySelector('.reasons'); })()`, 'the evidence opened');
-	// The record is taken away after the page showed it, before it is pressed.
-	rmSync(join(luna.workspace, '.lat/decisions/LAT-AN.md'));
-	await click(tab, `${item('LAT-AN')} .reasons button.link`);
-	await tab.until(`!!document.querySelector('dialog.evidence[open] [role="alert"]')`, 'the reason in the window');
-	expect(await tab.eval<string>(text('dialog.evidence [role="alert"]'))).toContain('打不開');
-	await shot(tab, '1280-review-evidence-gone');
+	await openTab(tab);
+	expect(await tab.eval(`!!document.querySelector('${PANEL} .failed')`)).toBe(false);
+	expect((await groups(tab)).length).toBeGreaterThan(0);
+	expect(readFileSync(md, 'utf8')).toContain('- 核對：kiwi 已核對');
+	await shot(tab, '1280-dark-old-review', { box: PANEL });
 });
 
-test.skipIf(!CHROME)('once the round is over and unbound the tab stays, and 回覆 wakes the controller with the words (#638)', async () => {
+test.skipIf(!CHROME)('once the controller has ended the tab stays, its 代決 still open, and 推翻 wakes it with the words', async () => {
 	// Deactivated, its final report a bare DONE as an automation task's controller ends.
 	fixture.setHelper({ output: { controllers: [] }, realUnattended: uvPython(), realPreauth: uvPython() });
 	fixture.report(luna.session_id, { tag: '', summary: '', message: '這一輪做完了。\n\nDONE', hcom_name: luna.hcom_name, workspace: luna.workspace, final: true });
 	await fixture.refresh(cookie);
 	const tab = await browse();
-	await tab.until(`(document.querySelector('${TAB}')?.click(), document.querySelector('${TAB}')?.getAttribute('aria-selected') === 'true')`, 'the 回顧 tab of the ended controller');
-	await tab.until(`!!document.querySelector('${item('LAT-P2')} button.act')`, 'the parked item');
-	await click(tab, `${item('LAT-P2')} button.act`);
-	await tab.until(`!!document.querySelector('${item('LAT-P2')} textarea')`, 'the reply box');
-	await type(tab, `${item('LAT-P2')} textarea`, '先不要');
-	await click(tab, `${item('LAT-P2')} button.send`);
-	await tab.until(`!document.querySelector('${item('LAT-P2')} textarea') || !!document.querySelector('${item('LAT-P2')} .failed')`, 'the reply sent or refused');
-	expect(await tab.eval<string>(text(`${item('LAT-P2')} .failed`))).toBe('');
-	expect(typed().map((line) => line.text)).toContain(`回顧項目 LAT-P2「${await tab.eval<string>(text(`${item('LAT-P2')} .title`))}」回覆：先不要`);
-	await shot(tab, '1280-review-ended-reply-sent');
+	await openTab(tab);
+	await tab.until(`!!document.querySelector('${card('LAT-AU')}')`, 'the 代決 of the ended controller');
+	await click(tab, `${card('LAT-AU')} .row`);
+	await tab.until(`!!document.querySelector('${card('LAT-AU')} .overturn')`, 'LAT-AU opened');
+	await click(tab, `${card('LAT-AU')} .overturn`);
+	await type(tab, `${card('LAT-AU')} textarea`, '改成 7 天');
+	await looks(tab, 'ended', group('settled'));
+	await click(tab, `${card('LAT-AU')} button.send`);
+	await tab.until(`!document.querySelector('${card('LAT-AU')} textarea') || !!document.querySelector('${card('LAT-AU')} .failed')`, 'sent or refused');
+	expect(await tab.eval<string>(text(`${card('LAT-AU')} .failed`))).toBe('');
+	expect(typed().map((line) => line.text)).toContain('回顧項目 LAT-AU「備份預設留 30 天」推翻：改成 7 天');
 });

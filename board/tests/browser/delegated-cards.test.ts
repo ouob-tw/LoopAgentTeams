@@ -23,13 +23,14 @@ const WIDE = { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false };
 const PHONE = { width: 390, height: 844, deviceScaleFactor: 2, mobile: true };
 const FORM = { goal: '#577 按鈕字改「儲存」', done: ['#577 合併進開發分支'], scope: { ticket_confirmation: true, assume_defaults: true, prototype_decide: true }, maxHours: 12 };
 
-const card = (id: string) => `[data-delegated="${id}"]`;
+// The strip's own rows: the 回顧 tab, mounted though hidden, shows the same rows (#664).
+const card = (id: string) => `.delegated-strip [data-delegated="${id}"]`;
 const ROSTER = (name: string) => `button.person[data-controller="${name}"] .delegated`;
 const NO_SIDEWAYS = `document.scrollingElement.scrollWidth <= innerWidth`;
 const text = (selector: string) => `(document.querySelector(${JSON.stringify(selector)})?.innerText ?? '')`;
 const click = (tab: Tab, selector: string) => tab.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);
 const type = (tab: Tab, selector: string, value: string) => tab.eval(`(() => { const box = document.querySelector(${JSON.stringify(selector)}); box.value = ${JSON.stringify(value)}; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-const rows = (tab: Tab) => tab.eval<string[]>(`[...document.querySelectorAll('[data-delegated]')].map((entry) => entry.dataset.delegated)`);
+const rows = (tab: Tab) => tab.eval<string[]>(`[...document.querySelectorAll('.delegated-strip [data-delegated]')].map((entry) => entry.dataset.delegated)`);
 /** The smallest font size of any text shown inside `selector`, in CSS pixels. */
 const smallestFont = (tab: Tab, selector: string) =>
 	tab.eval<number>(`Math.min(...[...document.querySelectorAll(${JSON.stringify(`${selector}, ${selector} *`)})].filter((node) => [...node.childNodes].some((child) => child.nodeType === 3 && child.textContent.trim())).map((node) => parseFloat(getComputedStyle(node).fontSize)))`);
@@ -98,9 +99,9 @@ async function theme(tab: Tab, name: 'dark' | 'light') {
 
 test.skipIf(!CHROME)('below the question, one dashed row per delegated decision, and 代決 3 beside the question count', async () => {
 	const tab = await browse();
-	await tab.until(`document.querySelectorAll('[data-delegated]').length === 3`, 'the three cards');
+	await tab.until(`document.querySelectorAll('.delegated-strip [data-delegated]').length === 3`, 'the three cards');
 	expect(await rows(tab)).toEqual(['LAT-AS', 'LAT-PC', 'LAT-PR']);
-	const titles = await tab.eval<string[]>(`[...document.querySelectorAll('[data-delegated] .title')].map((title) => title.innerText)`);
+	const titles = await tab.eval<string[]>(`[...document.querySelectorAll('.delegated-strip [data-delegated] .title')].map((title) => title.innerText)`);
 	expect(titles).toEqual(['◇ 已代決：設定頁按鈕文字用「儲存」', '◇ 已代確認：#656 新建主控表單加模式切換', '◇ 樣品決定：通知列表用卡片版']);
 	// The strip follows the questions waiting.
 	expect(await tab.eval(`!!(document.querySelector('.questions').compareDocumentPosition(document.querySelector('.delegated-strip')) & Node.DOCUMENT_POSITION_FOLLOWING)`)).toBe(true);
@@ -109,7 +110,7 @@ test.skipIf(!CHROME)('below the question, one dashed row per delegated decision,
 	for (const name of ['dark', 'light'] as const) {
 		await theme(tab, name);
 		// Told apart from the question by the frame, not by colour alone.
-		const frames = await tab.eval<{ question: string; delegated: string }>(`({ question: getComputedStyle(document.querySelector('.questions .question')).borderTopStyle, delegated: getComputedStyle(document.querySelector('[data-delegated]')).borderTopStyle })`);
+		const frames = await tab.eval<{ question: string; delegated: string }>(`({ question: getComputedStyle(document.querySelector('.questions .question')).borderTopStyle, delegated: getComputedStyle(document.querySelector('.delegated-strip [data-delegated]')).borderTopStyle })`);
 		expect(frames).toEqual({ question: 'solid', delegated: 'dashed' });
 		expect(await smallestFont(tab, '.delegated-strip')).toBeGreaterThanOrEqual(16);
 		expect(await smallestFont(tab, ROSTER('luna'))).toBeGreaterThanOrEqual(16);
@@ -188,7 +189,7 @@ test.skipIf(!CHROME)('a reload and another browser no longer list the opened car
 test.skipIf(!CHROME)('a seen mark the host cannot keep leaves the card with the note, at 390 wide with no sideways scroll', async () => {
 	writeDelegated(luna.workspace, luna.session_id, 'LAT-A2', 'assumed', 1, '匯出檔名用日期開頭');
 	const tab = browsers[1].tab;
-	await tab.until(`document.querySelectorAll('[data-delegated]').length === 1`, 'the new card');
+	await tab.until(`document.querySelectorAll('.delegated-strip [data-delegated]').length === 1`, 'the new card');
 	const state = join(fixture.dir, 'board-state');
 	chmodSync(state, 0o555);
 	try {

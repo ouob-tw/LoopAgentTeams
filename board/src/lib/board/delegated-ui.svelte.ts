@@ -20,6 +20,13 @@ class DelegatedUi {
 			return;
 		}
 		this.shown = key;
+		await this.markSeen(controllerId, cardId, seen);
+	}
+
+	/** Note a card opened on this page and, unless it already is, mark it seen on the host: the
+	 *  controller page's strip and the review tab both do. */
+	async markSeen(controllerId: string, cardId: string, seen: boolean): Promise<void> {
+		const key = seenKey(controllerId, cardId);
 		this.opened[key] = true;
 		if (seen) return;
 		const result = await request('/api/delegated/seen', {

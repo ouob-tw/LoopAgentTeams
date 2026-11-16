@@ -79,3 +79,22 @@ test('the seen marks are kept in the state folder, and an unusable file is not s
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test('a settled card in the review tab says it was agreed, or when and how the user overturned it (#664)', async () => {
+	const { overturnWords, settledLabel, shortTime } = await import('../../src/lib/board/delegated.ts');
+	const card = { id: 'LAT-AS', title: '設定頁按鈕文字用「儲存」', state: 'open' as const, answer: null, answeredAt: null };
+	expect(settledLabel(card)).toBe('沒推翻，算同意');
+	// The board's own message is cut down to the user's words, also with brackets in the title.
+	const overturned = { ...card, state: 'overturned' as const, answer: '回顧項目 LAT-AS「設定頁按鈕文字用「儲存」」推翻：改用「存檔」', answeredAt: '2026-11-16T02:05:00+00:00' };
+	expect(overturnWords(overturned)).toBe('改用「存檔」');
+	expect(settledLabel(overturned)).toBe('已由你推翻（11/16 10:05）：改用「存檔」');
+	// An answer the controller wrote in its own words is shown as written; no time, no brackets.
+	expect(settledLabel({ ...overturned, answer: '改用頁面測試', answeredAt: null })).toBe('已由你推翻：改用頁面測試');
+	expect(overturnWords({ ...overturned, title: '別的標題' })).toBe('改用「存檔」');
+	expect(overturnWords({ ...overturned, answer: '推翻：改成「套用」' })).toBe('改成「套用」');
+	expect(settledLabel({ ...overturned, answer: null })).toBe('已由你推翻（11/16 10:05）');
+	// Taiwan's time whatever the offset given; text that is not a time stays as it is.
+	expect(shortTime('2026-11-15T01:45:01+08:00')).toBe('11/15 01:45');
+	expect(shortTime('2026-12-31T16:30:00Z')).toBe('1/1 00:30');
+	expect(shortTime('不是時間')).toBe('不是時間');
+});
