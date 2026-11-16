@@ -40,6 +40,8 @@
 		(controller.paused ? '，暫停通訊' : '') +
 		(controller.pendingCount ? `，待決 ${controller.pendingCount} 題` : '') +
 		(unseenCount(controller) ? `，代決 ${unseenCount(controller)} 項` : '');
+	/** Each controller's 代決 N, counted once per snapshot. */
+	const delegated = $derived(new Map(controllers.map((controller) => [controller.id, unseenCount(controller)])));
 </script>
 
 <div class="rail">
@@ -67,8 +69,8 @@
 				{#if controller.pendingCount}
 					<span class="count">{controller.pendingCount}</span>
 				{/if}
-				{#if unseenCount(controller)}
-					<span class="delegated" title="代決">{unseenCount(controller)}</span>
+				{#if delegated.get(controller.id)}
+					<span class="delegated" title="代決">{delegated.get(controller.id)}</span>
 				{/if}
 			</button>
 		{/each}

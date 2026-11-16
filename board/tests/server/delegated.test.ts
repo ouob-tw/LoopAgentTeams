@@ -120,7 +120,7 @@ test('an update keeps the unseen cards; an end takes them for good, and a new gr
 test('推翻 recorded through question record-chat shows on the card', async () => {
 	await grant({ op: 'create', ...FORM });
 	writeDelegated(luna.workspace, luna.session_id, 'LAT-AS', 'assumed', 1);
-	await fixture.refresh(cookie);
+	// Not read in yet: the mark reads the sources again rather than refusing a card just written.
 	expect((await seen('LAT-AS')).status).toBe(200);
 	const run = spawnSync(uvPython(), [PANEL, 'question', 'record-chat', '--id', 'LAT-AS', '--text', '推翻：改叫 SignIn', '--source', 'session s-1 看板代決', '--questions', luna.questions_path, '--decisions', join(luna.workspace, '.lat/decisions')], { encoding: 'utf8', env: fixture.serverEnv() });
 	expect(run.status, run.stdout + run.stderr).toBe(0);

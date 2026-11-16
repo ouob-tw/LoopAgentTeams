@@ -44,7 +44,7 @@ export const KIND_WORD: Record<DelegatedKind, string> = {
 	'prototype-decided': '樣品決定'
 };
 
-const KINDS: readonly string[] = ['proxy-confirmed', 'assumed', 'prototype-decided'];
+const KINDS: readonly string[] = Object.keys(KIND_WORD);
 const record = (value: unknown): Record<string, unknown> => (typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {});
 const textOrNull = (value: unknown) => (typeof value === 'string' && value.trim() ? value : null);
 
@@ -98,14 +98,18 @@ export function withSeen<T extends { id: string; unattended: UnattendedView }>(c
 	return { ...controller, unattended: { ...view, review: { ...review, delegated } } };
 }
 
-/** The detail's lines, each only when the record has it: never an empty field. */
-export function detailRows(card: DelegatedCard): { label: string; text?: string; lines?: string[] }[] {
-	const rows: { label: string; text?: string; lines?: string[] }[] = [];
+/** One line of a card's detail: a label with one text or a list of lines. */
+export type DetailRow = { label: string; text?: string; lines?: string[] };
+
+/** The detail's lines, each only when the record has it: never an empty field. The helper sets
+ *  a kind's own field only for that kind. */
+export function detailRows(card: DelegatedCard): DetailRow[] {
+	const rows: DetailRow[] = [];
 	if (card.question) rows.push({ label: '原本要問', text: card.question });
 	if (card.decision) rows.push({ label: '參謀決定', text: card.decision });
 	if (card.opinions.length) rows.push({ label: '兩位參謀', lines: card.opinions.map((opinion) => `${opinion.who}：${opinion.agree ? '同意' : '不同意'}；${opinion.text}`) });
-	if (card.kind === 'assumed' && card.revertTo) rows.push({ label: '可以改成', text: card.revertTo });
-	if (card.kind === 'proxy-confirmed' && card.checks.length) rows.push({ label: '驗收對照', lines: card.checks });
-	if (card.kind === 'prototype-decided' && card.sample) rows.push({ label: '樣品', text: card.sample });
+	if (card.revertTo) rows.push({ label: '可以改成', text: card.revertTo });
+	if (card.checks.length) rows.push({ label: '驗收對照', lines: card.checks });
+	if (card.sample) rows.push({ label: '樣品', text: card.sample });
 	return rows;
 }

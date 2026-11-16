@@ -33,6 +33,9 @@
 					<span class="title"><span aria-hidden="true">◇</span> <b>{KIND_WORD[card.kind]}</b>：{card.title}</span>
 					<span class="go">{card.state === 'overturned' ? '已推翻' : shown ? '收起' : '看看'} ›</span>
 				</button>
+				{#if delegatedUi.unsaved[key(card)]}
+					<p class="unsaved" role="status">沒記下看過，下次打開會再出現</p>
+				{/if}
 				{#if shown}
 					<div class="detail" id="delegated-{card.id}">
 						<dl>
@@ -49,9 +52,6 @@
 								</dd>
 							{/each}
 						</dl>
-						{#if delegatedUi.unsaved[key(card)]}
-							<p class="unsaved" role="status">沒記下看過，下次打開會再出現</p>
-						{/if}
 						{#if card.state === 'overturned'}
 							<p class="state">{card.stateLabel}</p>
 						{:else if box.open}
@@ -187,13 +187,15 @@
 		flex-wrap: wrap;
 		gap: 0.5rem;
 	}
-	.state,
-	.unsaved {
+	.state {
 		margin: 0 0 0.5rem;
 		color: var(--muted);
 	}
 	.unsaved {
+		margin: 0;
+		padding: 0 0.7rem 0.5rem;
 		color: var(--warn);
+		font-size: max(1rem, var(--min-font, 0px));
 	}
 	.failed {
 		margin: 0;

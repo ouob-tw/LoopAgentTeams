@@ -746,11 +746,11 @@ function createBoard(): Board {
 		sources: readSources,
 		mark: async (key, read) => publish(await readSources(), { key, read })!,
 		async markDelegatedSeen(controllerId, cardId) {
-			const from = await readSources();
-			const controller = everyController(snapshot ?? (await board.current())).find((candidate) => candidate.id === controllerId);
-			if (!controller || !delegatedOf(controller).some((card) => card.id === cardId)) return 'unknown';
+			const listed = (from: BoardSnapshot) => everyController(from).some((controller) => controller.id === controllerId && delegatedOf(controller).some((card) => card.id === cardId));
+			// A card written a moment ago may not be in the last read yet: read once more before refusing.
+			if (!listed(await board.current()) && !listed(await board.refresh())) return 'unknown';
 			lastSeen = markDelegatedSeen(config.stateDir, seenKey(controllerId, cardId), config.now());
-			publish(from);
+			publish(await readSources());
 			return 'marked';
 		},
 		archive: async (before) => processedPage(await readSources(), loadInboxState(config.stateDir), config.now(), before),

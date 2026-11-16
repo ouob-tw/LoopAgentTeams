@@ -199,6 +199,10 @@ test.skipIf(!CHROME)('a seen mark the host cannot keep leaves the card with the 
 			await theme(tab, name);
 			await shot(tab, `390-${name}-unsaved`, { box: card('LAT-A2') });
 		}
+		// Closed again, the card still says so.
+		await click(tab, `${card('LAT-A2')} .row`);
+		await tab.until(`!document.querySelector('${card('LAT-A2')} .detail')`, 'the card closed');
+		expect(await tab.eval(text(`${card('LAT-A2')} .unsaved`))).toBe('沒記下看過，下次打開會再出現');
 		await reload(tab);
 		expect(await rows(tab)).toEqual(['LAT-A2']);
 	} finally {
