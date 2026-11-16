@@ -25,6 +25,7 @@
 	import AgentLog from './AgentLog.svelte';
 	import ControllerHeader from './ControllerHeader.svelte';
 	import ControllerPreauth from './ControllerPreauth.svelte';
+	import DelegatedCards from './DelegatedCards.svelte';
 	import LedgerBlock from './LedgerBlock.svelte';
 	import PendingQuestions from './PendingQuestions.svelte';
 	import RecordTabs from './RecordTabs.svelte';
@@ -184,6 +185,7 @@
 {/if}
 
 <PendingQuestions status={controller.status} {questions} {onopen} />
+<DelegatedCards {controller} />
 
 {#if agent}
 	<AgentClose {agent} {before} />

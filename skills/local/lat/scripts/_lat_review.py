@@ -109,6 +109,17 @@ def opinions(lines):
             if match and match[2].lower() == 'agree']
 
 
+def opinion_rows(lines):
+    """Every advisor line of 參謀意見 as dict(who, stance, text), agree or not."""
+    return [dict(who=match[1], stance=match[2].lower(), text=match[3].strip())
+            for match in map(OPINION.match, section_lines(lines, '參謀意見')) if match]
+
+
+def record_version(lines):
+    cited = re.fullmatch(r'r[1-9][0-9]* v([1-9][0-9]*)', field(lines, 'grant') or '')
+    return int(cited[1]) if cited else None
+
+
 def chosen(lines, identifier, question, decision):
     if decision and question:
         return f'{question} → {decision}'
@@ -150,6 +161,14 @@ def decision_item(path, lines, kind, answer, workspace):
     item = dict(id=identifier, kind=kind, title=title_of(lines, identifier), did=did,
                 why=why or '紀錄沒寫理由', evidence=evidence, revert=revert,
                 assume_class=(field(lines, 'assume-class') or '').lower() or None)
+    if kind != PARKED:
+        # The record's own lines, for a page that shows a delegated decision in full (#663).
+        item.update(question=question, decision=decision, opinions=opinion_rows(lines),
+                    grant_version=record_version(lines),
+                    revert_to=field(lines, 'revert') if kind == 'assumed' else None,
+                    checks=([row.lstrip('- ') for row in section_lines(lines, '驗收對照')]
+                            if kind == 'proxy-confirmed' else []),
+                    sample=field(lines, 'sample') if kind == 'prototype-decided' else None)
     return with_state(item, answer, PARKED if kind == PARKED else 'delegated')
 
 
@@ -365,6 +384,7 @@ def collect(*, lat, workspace, session, round_number, versions, decisions, end_l
     goals = [dict(version=v['version'], goal=v['goal'], done=v['done'],
                   source=v['source'], source_label=SOURCE_LABELS.get(v['source'], v['source']),
                   note=v.get('note'), started_at=v['started_at'], ended_at=v['ended_at'],
+                  end_reason=v['end_reason'],
                   end_label=end_labels.get(v['end_reason'], v['end_reason']),
                   scope=[scope_labels[key] for key in scope_labels if v['scope'].get(key)],
                   max_hours=v['stop']['max_hours']) for v in versions]

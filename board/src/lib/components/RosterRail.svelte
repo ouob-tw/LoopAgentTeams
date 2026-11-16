@@ -8,6 +8,7 @@
 	import { splitRoster } from '#lib/board/roster.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
 	import { STATUS_LABEL, type Controller } from '#lib/board/types.ts';
+	import { unseenCount } from '#lib/board/delegated.ts';
 	import ControllerExplain from './ControllerExplain.svelte';
 	import EndedRoster from './EndedRoster.svelte';
 	import ExplainTip from './ExplainTip.svelte';
@@ -34,10 +35,14 @@
 	 *  that opens their list. */
 	const parts = $derived(splitRoster(controllers, Date.now()));
 
+	/** Each controller's 代決 N, counted once per snapshot. */
+	const delegated = $derived(new Map(controllers.map((controller) => [controller.id, unseenCount(controller)])));
+
 	const label = (controller: Controller) =>
 		`${controller.project} @${lastSegment(controller.hcomName)}：${STATUS_LABEL[controller.status]}` +
 		(controller.paused ? '，暫停通訊' : '') +
-		(controller.pendingCount ? `，待決 ${controller.pendingCount} 題` : '');
+		(controller.pendingCount ? `，待決 ${controller.pendingCount} 題` : '') +
+		(delegated.get(controller.id) ? `，代決 ${delegated.get(controller.id)} 項` : '');
 </script>
 
 <div class="rail">
@@ -64,6 +69,9 @@
 				<StatusMark status={controller.status} decorative />
 				{#if controller.pendingCount}
 					<span class="count">{controller.pendingCount}</span>
+				{/if}
+				{#if delegated.get(controller.id)}
+					<span class="delegated" title="代決">{delegated.get(controller.id)}</span>
 				{/if}
 			</button>
 		{/each}
@@ -155,6 +163,17 @@
 		border-radius: var(--radius-pill);
 		background: var(--status-waiting);
 		color: var(--bg);
+		font-family: var(--mono);
+		font-size: max(0.7rem, var(--min-font, 0px));
+		font-weight: 700;
+		line-height: 1.3;
+	}
+	/* 代決 N, outlined and dashed beside the filled count of questions waiting. */
+	.delegated {
+		padding: 0 0.35rem;
+		border: 1px dashed var(--proxy);
+		border-radius: var(--radius-pill);
+		color: var(--proxy);
 		font-family: var(--mono);
 		font-size: max(0.7rem, var(--min-font, 0px));
 		font-weight: 700;

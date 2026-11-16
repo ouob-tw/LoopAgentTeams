@@ -28,10 +28,11 @@ class ReviewUi {
 		this.boxes[key] = { ...(this.boxes[key] ?? EMPTY), ...change };
 	}
 
-	/** Send the item and the user's words to the controller, through the board's usual message path,
+	/** Send the item and the user's words to the controller (a review item, or a 代決 card on the
+	 *  controller page, which shares its box by the same item ID), through the board's usual message path,
 	 *  so they show in its 送出紀錄; a controller whose round is over is woken with them instead (#638).
 	 *  Returns how it went, or null when there was nothing to send. */
-	async send(controllerId: string, item: ReviewItem, wake = false): Promise<Outcome | null> {
+	async send(controllerId: string, item: Pick<ReviewItem, 'id' | 'title' | 'kind'>, wake = false): Promise<Outcome | null> {
 		const text = this.box(controllerId, item.id).text;
 		if (!text.trim()) return null;
 		this.patch(controllerId, item.id, { sending: true, error: null });

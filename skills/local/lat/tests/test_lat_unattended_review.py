@@ -349,3 +349,75 @@ class HandoverTests(ReviewCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def load_board():
+    """herdr-panel/board.py, imported by path as lat_panel does."""
+    import importlib
+    panel = Path(__file__).resolve().parents[1] / 'herdr-panel'
+    if str(panel) not in sys.path:
+        sys.path.insert(0, str(panel))
+    return importlib.import_module('board')
+
+
+class DelegatedCardTests(ReviewCase):
+    """#663: what the board's 代決 cards are built from: each delegated item carries its record's
+    own lines, and a grant ending takes the cards made before it off the controller page."""
+
+    def items(self):
+        return {item['id']: item for item in self.review('show')['view']['items']}
+
+    def cards(self):
+        return [card['id'] for card in load_board().delegated_cards(self.review('show')['view'])]
+
+    def test_each_kind_carries_its_own_lines(self):
+        self.grant()
+        self.parked()
+        self.delegated('LAT-AS', extra='- decision: 叫 SignIn\n')
+        self.delegated('LAT-PC', 'proxy-confirmed')
+        self.delegated('LAT-PR', 'prototype-decided', extra='- decision: 用卡片版\n')
+        items = self.items()
+        assumed, confirmed, sample = items['LAT-AS'], items['LAT-PC'], items['LAT-PR']
+        for item in (assumed, confirmed, sample):
+            self.assertEqual(item['question'], '元件要叫什麼名字')
+            self.assertEqual(item['grant_version'], 1)
+            self.assertEqual([(o['who'], o['stance']) for o in item['opinions']],
+                             [('puma（claude opus）', 'agree'), ('kiwi（codex gpt-6-astra）', 'agree')])
+            self.assertEqual(item['opinions'][0]['text'], '只改命名，不動驗收')
+        self.assertEqual((assumed['decision'], assumed['revert_to'], assumed['checks'], assumed['sample']),
+                         ('叫 SignIn', '改成 LoginPanel', [], None))
+        self.assertEqual((confirmed['decision'], confirmed['revert_to'], confirmed['sample']), (None, None, None))
+        self.assertEqual(confirmed['checks'], ['登入成功跳到首頁 ← 「登入後要回首頁」 session s-1 第 2 則'])
+        self.assertEqual((sample['revert_to'], sample['checks'], sample['sample']),
+                         (None, [], '.lat/runs/issue-1/proto/index.html'))
+        self.assertNotIn('opinions', items['LAT-P'])
+        # Only the delegated ones are cards; the parked record is a question of its own.
+        self.assertEqual(self.cards(), ['LAT-AS', 'LAT-PC', 'LAT-PR'])
+
+    def test_an_update_keeps_the_cards_and_an_end_takes_them_for_good(self):
+        self.grant()
+        self.delegated('LAT-A1')
+        self.assertEqual(self.cards(), ['LAT-A1'])
+        self.unattended('update', '--goal', '改目標', '--source', 'user-edit', '--evidence',
+                        self.board_request(('ticket-confirmation', 'assume-defaults', 'prototype'),
+                                           op='update', goal='改目標'))
+        self.delegated('LAT-A2', version=2)
+        self.assertEqual(self.cards(), ['LAT-A1', 'LAT-A2'])
+        self.unattended('close', '--reason', 'off')
+        self.assertEqual(self.cards(), [])
+        self.grant()
+        self.delegated('LAT-A3', version=3)
+        self.assertEqual(self.cards(), ['LAT-A3'])
+        # The review itself still lists every one of them.
+        self.assertEqual(sorted(self.items()), ['LAT-A1', 'LAT-A2', 'LAT-A3'])
+
+    def test_every_way_a_grant_ends_takes_the_cards(self):
+        for reason in ('off', 'quota', 'delivered', 'cancelled', 'handover'):
+            with self.subTest(reason=reason):
+                for path in self.decisions.glob('*.md'):
+                    path.unlink()
+                version = self.grant()['version']
+                self.delegated(f'LAT-{reason}', version=version)
+                self.assertEqual(self.cards(), [f'LAT-{reason}'])
+                self.unattended('close', '--reason', reason)
+                self.assertEqual(self.cards(), [])

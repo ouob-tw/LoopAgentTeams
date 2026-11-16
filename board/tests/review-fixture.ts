@@ -71,3 +71,16 @@ export function writeRound(workspace: string, session: string, { parkedRecords =
 	);
 	return { parked: [...parked, 'row-3'], assumed: ['LAT-AU', 'LAT-AN'], proxy: ['LAT-PC'] };
 }
+
+/** One delegated record of this session under grant version `version` of round 1, with the lines its kind has; returns its path. */
+export function writeDelegated(workspace: string, session: string, id: string, kind: 'assumed' | 'proxy-confirmed' | 'prototype-decided', version: number, title = '登入元件的名字'): string {
+	const decisions = join(workspace, '.lat', 'decisions');
+	mkdirSync(decisions, { recursive: true });
+	const advisor = { assumed: 'assume-defaults', 'proxy-confirmed': 'ticket-confirmation', 'prototype-decided': 'prototype' }[kind];
+	const lines = [`- status: ${kind}`, `- advisor: proxy ${advisor}`, `- grant: r1 v${version}`, `- decided-at: ${new Date().toISOString()}`, '- question: 元件要叫什麼名字'];
+	if (kind === 'assumed') lines.push('- assume-class: naming', '- revert: 改成 SignIn', '- decision: 叫 LoginPanel');
+	if (kind === 'prototype-decided') lines.push('- sample: .lat/runs/issue-1/proto/index.html', '- decision: 用卡片版');
+	const tail = kind === 'proxy-confirmed' ? `${OPINIONS}\n## 驗收對照\n\n- 登入後回首頁 ← 「登入後要回首頁」 session s-1 第 2 則\n` : OPINIONS;
+	record(decisions, session, id, title, lines, tail);
+	return join(decisions, `${id}.md`);
+}

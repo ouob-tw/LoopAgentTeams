@@ -35,6 +35,7 @@ export const TEST_DEVICE_RULES: Record<string, TestRule> = {
 	'POST /api/model': 'controllerId',
 	'POST /api/wake': 'controllerId',
 	'POST /api/wake/abandon': 'controllerId',
+	'POST /api/delegated/seen': 'controllerId',
 
 	'POST /api/agents/permission': 'deny',
 	'POST /api/agents/relink': 'deny',

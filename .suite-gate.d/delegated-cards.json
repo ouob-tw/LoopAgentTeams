@@ -1,0 +1,10 @@
+{"map": [
+  {"paths": ["skills/local/lat/herdr-panel/board.py", "skills/local/lat/scripts/_lat_review.py", "skills/local/lat/scripts/lat-unattended.py", "board/src/lib/server/helper.ts", "board/src/lib/server/board.ts", "board/src/lib/server/delegated-state.ts", "board/src/routes/api/delegated/**", "board/src/lib/board/delegated.ts", "board/src/lib/board/unattended.ts", "board/tests/review-fixture.ts"],
+   "tests": ["board/tests/unit/delegated.test.ts", "board/tests/server/delegated.test.ts", "board/tests/browser/delegated-cards.test.ts", "skills/local/lat/tests/test_lat_unattended_review.py"]},
+  {"paths": ["board/src/lib/board/delegated-ui.svelte.ts", "board/src/lib/board/review-ui.svelte.ts", "board/src/lib/components/DelegatedCards.svelte", "board/src/lib/components/ControllerInfo.svelte", "board/src/lib/components/RosterCard.svelte", "board/src/lib/components/RosterRail.svelte", "board/src/app.css"],
+   "tests": ["board/tests/browser/delegated-cards.test.ts"]},
+  {"paths": ["board/tests/unit/delegated.test.ts"], "tests": ["board/tests/unit/delegated.test.ts"]},
+  {"paths": ["board/tests/server/delegated.test.ts"], "tests": ["board/tests/server/delegated.test.ts"]},
+  {"paths": ["board/tests/browser/delegated-cards.test.ts"], "tests": ["board/tests/browser/delegated-cards.test.ts"]},
+  {"paths": ["skills/local/lat/tests/test_lat_unattended_review.py"], "tests": ["skills/local/lat/tests/test_lat_unattended_review.py"]}
+]}
