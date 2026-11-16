@@ -66,10 +66,12 @@ NUDGE = ('[lat-watch] Read any unread HCOM messages and finish all work not bloc
 KEEPALIVE = ('[lat-watch] Prompt cache keep-alive. Read any unread HCOM messages. If nothing '
              'is new, run no tools, keep your current wait without declaring it again and '
              'end your turn with the shortest possible reply.')
-BACKGROUND_NUDGE = ('[lat-watch] Your turn ended an hour ago with only a background command '
-                    'running and no wait or alarm. Check whether it is stuck; if you still '
-                    'wait for it, register lat-watch alarm --pid <pid> --timeout <minutes>.')
-BACKGROUND_REASON = 'turn ended with only a background command running for 60 minutes'
+BACKGROUND_NUDGE = (f'[lat-watch] Your turn ended {BACKGROUND_SECONDS // 60} minutes ago with only '
+                    'a background command running and no wait or alarm. Check whether it is '
+                    'stuck; if you still wait for it, register a lat-watch alarm with --pid <pid> '
+                    '--timeout <minutes> (see references/stall-watch.md).')
+BACKGROUND_REASON = (f'turn ended with only a background command running for '
+                     f'{BACKGROUND_SECONDS // 60} minutes')
 QUOTA_CONTINUE = '[lat-watch] Please continue.'
 CAPACITY_CONTINUE = 'Continue'
 # One Continue per Codex capacity episode; kept until new output or another error.
@@ -966,9 +968,10 @@ def decide(previous, observation, now):
         if state['quota_notified']:
             state['quota_notified_at'] = previous.get('quota_notified_at', now)
     stalled = now - state['last_progress_at'] >= IDLE_SECONDS
+    turn_ended = (observation.status == 'listening' and observation.prompt_empty is True
+                  and not observation.input_text and not observation.screen_working)
     background_only = (observation.is_orchestrator and observation.command_running
-                       and observation.status == 'listening' and observation.prompt_empty is True
-                       and not observation.input_text and not observation.screen_working)
+                       and turn_ended)
     active_stalled = now - state['last_progress_at'] >= ACTIVE_SECONDS
     finished_active = (observation.client.lower() == 'codex'
                        and observation.codex_turn_finished is True
@@ -1067,7 +1070,8 @@ def decide(previous, observation, now):
     elif (state['nudged'] and not observation.wait_active
           and observation.prompt_empty
           and (idle_prompt(observation) if state.get('stall_reason') == 'alarm rang'
-               else background_only if state.get('stall_reason') == BACKGROUND_REASON
+               # The background command may end without a transcript change; keep escalating.
+               else turn_ended if state.get('stall_reason') == BACKGROUND_REASON
                else not observation.command_running or finished_active)
           and now - state['nudged_at'] >= IDLE_SECONDS):
         if observation.is_orchestrator and not state.get('user_notified'):

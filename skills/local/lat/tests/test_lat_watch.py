@@ -328,6 +328,17 @@ class WatchDecisionTests(unittest.TestCase):
         state, actions = watch.decide(state, alarm, now=4_200)
         self.assertEqual(actions, ())
 
+    def test_background_nudge_escalates_even_if_the_command_ends_quietly(self):
+        watch = load_watch()
+        waiting = self.background_orchestrator(watch)
+        state, _ = watch.decide(None, waiting, now=0)
+        state, _ = watch.decide(state, waiting, now=3_600)
+        ended = waiting._replace(command_running=False)
+        state, actions = watch.decide(state, ended, now=3_900)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, ended, now=4_200)
+        self.assertEqual(actions[0].kind, 'notify-user')
+
     def test_failed_background_nudge_is_retried_with_its_own_text(self):
         watch = load_watch()
         waiting = self.background_orchestrator(watch)
