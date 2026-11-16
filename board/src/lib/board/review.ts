@@ -63,9 +63,9 @@ export function reviewFrom(payload: unknown): Review | null {
 	const items: ReviewItem[] = [];
 	for (const raw of view.items) {
 		const item = record(raw);
-		if (typeof item.id !== 'string' || !STATES.includes(text(item.state))) return null;
-		// A kind the review no longer has (the auto actions before #662) is left out, not an error.
-		if (!KINDS.includes(text(item.kind))) continue;
+		// Auto actions are no longer review items; a payload that still has them reads without them.
+		if (item.kind === 'auto') continue;
+		if (typeof item.id !== 'string' || !KINDS.includes(text(item.kind)) || !STATES.includes(text(item.state))) return null;
 		items.push({
 			id: item.id,
 			kind: item.kind as ReviewKind,
@@ -116,12 +116,11 @@ export function reviewMessage(item: Pick<ReviewItem, 'id' | 'title' | 'kind'>, w
 	return `回顧項目 ${item.id}「${item.title}」${actionWord(item)}：${words.trim()}`;
 }
 
-/** The record an evidence entry opens with, one of the three kinds lat-unattended cites
- *  (`.lat/decisions/<id>.md`, `.lat/ledgers/<name>.json`, `.lat/preauth-records/<name>.jsonl`),
- *  with or without `row 3` / `第 3 行` after it, and what follows the path. Null for any other
+/** The record an evidence entry opens with, one of the two kinds lat-unattended cites
+ *  (`.lat/decisions/<id>.md`, `.lat/ledgers/<name>.json`), with or without `row 3` after it, and what follows the path. Null for any other
  *  entry: a record's own text can start with a path, and only these folders are ever shown. */
 export function evidenceFile(entry: string): { path: string; rest: string } | null {
-	const found = /^(\.lat\/(?:decisions\/[\w-][\w.-]*\.md|ledgers\/[\w-][\w.-]*\.json|preauth-records\/[\w-][\w.-]*\.jsonl))(?=\s|$)(.*)$/s.exec(entry);
+	const found = /^(\.lat\/(?:decisions\/[\w-][\w.-]*\.md|ledgers\/[\w-][\w.-]*\.json))(?=\s|$)(.*)$/s.exec(entry);
 	return found ? { path: found[1], rest: found[2] } : null;
 }
 

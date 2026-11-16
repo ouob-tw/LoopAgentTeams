@@ -244,7 +244,8 @@ def self_park(row):
     return found
 
 
-# The stages that deliver a ticket. Advisor, research, Spec and other rows (a retro) are steps around it and never make a ticket done.
+# The stages that deliver a ticket. Advisor, research, Spec and other rows (a retro) are steps
+# around it and never make a ticket done.
 TICKET_WORK = ('impl', 'review', 'qa-draft', 'qa', 'merge')
 
 

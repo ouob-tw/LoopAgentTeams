@@ -809,8 +809,9 @@ def cmd_check(args):
 # The round's review (references/unattended.md「回顧」): Markdown from review_files, rebuilt from the
 # grant, the decision records and the work ledger; the JSON next to it keeps the body hash and
 # the update time. Created at the first item of a round that had a grant, then rewritten only
-# when the body changes. A state file from before #662 may still hold a cross-check; it is
-# ignored and dropped at the next write.
+# when the body changes. A review whose state still holds a cross-check (written before the
+# check was dropped) is left as it was; its items are still rebuilt from the sources.
+LEGACY_STATE = ('verification', 'content_sha')
 
 
 def review_files(lat, session, round_number):
@@ -858,7 +859,9 @@ def refresh_review_locked(lat, session, found=None):
         return dict(path=None, view=view)
     body = _lat_review.render_body(view)
     digest = sha(body)
-    if state.get('body_sha') != digest or not md.exists() or set(state) - {'body_sha', 'updated_at'}:
+    if any(key in state for key in LEGACY_STATE) and md.exists():
+        return dict(path=md, view=view)
+    if state.get('body_sha') != digest or not md.exists():
         write_review(md, state_path, view, body, dict(body_sha=digest, updated_at=stamp(now())))
     return dict(path=md, view=view)
 

@@ -271,9 +271,10 @@ class NoCrossCheckTests(ReviewCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('核對', result.stdout)
 
-    def test_a_review_from_before_662_still_opens_and_loses_the_old_lines(self):
+    def test_an_old_review_with_a_check_line_and_auto_items_opens_and_is_not_rewritten(self):
         """A state file with a cross-check and a review file with the check line and an auto
-        item (written before #662) open without errors; the next rebuild drops both."""
+        item open without errors; the files stay as they were and the items come from the
+        sources."""
         self.grant()
         self.delegated('LAT-AN')
         self.review('update')
@@ -290,14 +291,15 @@ class NoCrossCheckTests(ReviewCase):
         self.md.write_text(old)
         self.autos(dict(kind='auto', action='merge', target='dev', commit='a' * 40,
                         basis='allow merge dev', result='succeeded'))
+        self.delegated('LAT-AB')
+        saved = state_path.read_text()
         shown = self.review('show')
-        self.assertEqual([item['id'] for item in shown['view']['items']], ['LAT-AN'])
+        self.assertEqual([item['id'] for item in shown['view']['items']], ['LAT-AB', 'LAT-AN'])
         self.assertNotIn('verified', shown)
-        text = self.md.read_text()
-        self.assertIn('### LAT-AN ', text)
-        self.assertNotIn('核對', text)
-        self.assertNotIn('自動做的動作', text)
-        self.assertEqual(set(json.loads(state_path.read_text())), {'body_sha', 'updated_at'})
+        printed = self.run_script(SESSION_SCRIPT.parent / 'lat-unattended.py', 'review', 'show')
+        self.assertEqual((printed.returncode, printed.stdout), (0, old))
+        self.assertEqual(self.stop('完成\nDONE: 交付'), {})
+        self.assertEqual((self.md.read_text(), state_path.read_text()), (old, saved))
 
 
 class DoneTicketTests(ReviewCase):

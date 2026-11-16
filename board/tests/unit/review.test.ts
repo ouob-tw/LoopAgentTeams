@@ -20,11 +20,11 @@ test("reviewFrom keeps the tool's items in order and refuses what it cannot read
 	const read = reviewFrom(payload([item('a', 'parked'), item('b', 'assumed', { state: 'overturned' })], { top: ['b', 'a'] }))!;
 	expect(read.items.map((entry) => [entry.id, entry.state])).toEqual([['a', 'open'], ['b', 'overturned']]);
 	expect(read.top).toEqual(['b', 'a']);
-	expect(reviewFrom(payload([{ ...item('a', 'parked'), state: 'mystery' }]))).toBeNull();
+	expect(reviewFrom(payload([item('a', 'mystery')]))).toBeNull();
 	expect(reviewFrom({ status: 'refused', reason: 'x' })).toBeNull();
 });
 
-test('a payload from before #662 opens: its auto items are left out and its cross-check ignored', () => {
+test('a payload with auto items and a cross-check opens without them', () => {
 	const old = reviewFrom({ ...payload([item('a', 'parked'), item('auto-1', 'auto'), item('b', 'assumed')], { top: ['a', 'auto-1'] }), verified: true, verification: { checker: 'kiwi', family: 'gpt', total: 3, matched: 3, mismatches: [] } })!;
 	expect(old.items.map((entry) => entry.id)).toEqual(['a', 'b']);
 	expect(old).not.toHaveProperty('verified');
@@ -34,7 +34,7 @@ test('a payload from before #662 opens: its auto items are left out and its cros
 test('evidence entries naming a file in the workspace become links, others stay text', async () => {
 	const { evidenceFile, evidencePaths, evidencePieces } = await import('../../src/lib/board/review.ts');
 	expect(evidenceFile('.lat/decisions/LAT-P1.md')).toEqual({ path: '.lat/decisions/LAT-P1.md', rest: '' });
-	expect(evidenceFile('.lat/preauth-records/s-r1.jsonl 第 2 行（更正）')).toEqual({ path: '.lat/preauth-records/s-r1.jsonl', rest: ' 第 2 行（更正）' });
+	expect(evidenceFile('.lat/preauth-records/s-r1.jsonl 第 2 行')).toBeNull();
 	expect(evidenceFile('.lat/ledgers/s-r1.json row 3')?.rest).toBe(' row 3');
 	// Only the records lat-unattended cites: a row of a record cannot pick another file.
 	for (const entry of ['.env.json', '.codex/auth.json 滿足', 'node_modules/x/package.json', '.lat/sessions/s.json', '.lat/decisions/a/b.md', '.lat/decisions/x.json', '.lat/ledgers/../x.json']) expect(evidenceFile(entry)).toBeNull();
