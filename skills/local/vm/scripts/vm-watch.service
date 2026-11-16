@@ -1,0 +1,17 @@
+# Template for the vm watcher, a systemd user service. Copy it to
+# ~/.config/systemd/user/vm-watch.service, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now vm-watch.service
+# It runs the installed skill, so after updating the skill restart the service.
+[Unit]
+Description=vm watcher: reminds, expires and reclaims borrowed virtual machines
+After=default.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env uv run --no-project python %h/.agents/skills/vm/scripts/vm.py watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
