@@ -463,6 +463,17 @@ class ReviewFixTests(VmCase):
         self.set_memory(4)
         self.watch(at(minutes=5))
         self.assertEqual(self.leases(), {})
+        self.assertIn('借用已清除', self.sends('aaaa')[-1][-1])
+
+    def test_failed_low_memory_stop_is_tried_once_per_round(self):
+        self.ok('borrow', 'win', 'x')
+        self.update_docker(fail_stop=['busi-vm-win'])
+        self.set_memory(4)
+        self.watch(at(minutes=5))
+        self.assertEqual(len(self.stops()), 1)
+        self.watch(at(minutes=6))
+        self.assertEqual(len(self.stops()), 2)
+        self.assertEqual(self.leases()['win']['stop_failed']['release'], False)
 
     def test_extending_a_failed_stop_lease_keeps_it_after_the_retry(self):
         self.ok('borrow', 'win', 'x')

@@ -569,7 +569,7 @@ class Vm:
     def watch_once(self):
         """One watcher round, entirely inside the lock and on freshly read files."""
         with self.store.locked():
-            self._low_memory()
+            stopped_now = self._low_memory()
             present = None
             asked = False
             machines = self.store.machines()
@@ -584,6 +584,8 @@ class Vm:
                                      '沒有借用卻在執行', False, 'watch')
                     continue
                 failed = lease.get('stop_failed')
+                if failed and name in stopped_now:
+                    continue  # the low-memory stop already tried this round
                 if failed:
                     if running is False or running is None:
                         self._settle_stopped(name, failed)
@@ -663,22 +665,28 @@ class Vm:
                 state = {'low_memory': False}
                 self.store.save_state(state)
                 self.store.log('low-memory-end', None, None, f'可用 {free:.1f}G', 'watch')
-            return
+            return set()
         if not state.get('low_memory'):
             state = {'low_memory': True, 'since': iso(now())}
             self.store.save_state(state)
             self.store.log('low-memory', None, None, f'可用 {free:.1f}G', 'watch')
         machines, leases = self.store.machines(), self.store.leases()
+        tried = set()
         for name in sorted(machines):
             machine = machines[name]
             if not self.docker.running(machine['container']):
                 continue
+            tried.add(name)
             lease = leases.get(name)
             reason = f'可用記憶體 {free:.1f}G 低於 {RESERVE_GB:g}G'
-            if stop_machine(self.store, machine, name, lease, self.docker, self.hcom, reason,
-                            False, 'watch') and lease and not lease.get('human'):
-                self.hcom.send(lease['borrower'], f'vm：主機可用記憶體不足，{name} 已關機。'
-                               f'借用保留，記憶體恢復後可用 vm start {name} 再開。')
+            stopped = stop_machine(self.store, machine, name, lease, self.docker, self.hcom,
+                                   reason, False, 'watch')
+            if stopped and lease and not lease.get('human'):
+                kept = name in self.store.leases()
+                self.hcom.send(lease['borrower'], f'vm：主機可用記憶體不足，{name} 已關機。' + (
+                    f'借用保留，記憶體恢復後可用 vm start {name} 再開。' if kept
+                    else '你先前的歸還已完成，借用已清除。'))
+        return tried
 
 
 # ---------------------------------------------------------------- command line
