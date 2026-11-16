@@ -579,10 +579,15 @@
 		font-weight: 700;
 		color: var(--accent);
 	}
-	/* A long label stays beside its ✓ instead of wrapping to a line below it. */
-	.options li.picked > div {
+	/* An option's text stays beside its letter or ✓ instead of wrapping to a line below it, and
+	   never wider than the option: a wide code block or table scrolls sideways in its own box. */
+	.options :is(li, label) > div {
 		flex: 1;
 		min-width: 0;
+	}
+	/* Each block as wide as its content, as when the text was only as wide as it needed. */
+	.impact :global(:is(pre, table)) {
+		width: fit-content;
 	}
 	.options .option.text {
 		flex: 1;
