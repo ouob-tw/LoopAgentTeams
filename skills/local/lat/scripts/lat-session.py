@@ -2073,6 +2073,14 @@ def watch_module():
     return module
 
 
+def watch_command(record, subcommand, *args):
+    """A runnable lat-watch command line for this controller."""
+    script = Path(record['skill_dir']) / 'scripts/lat-watch.py'
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(script), subcommand,
+                       '--workspace', record['workspace'], '--agent', record['hcom_name'],
+                       *args])
+
+
 def undeclared_wait_check(record, message):
     """Why a NO REPLY Stop should be held for a missing wait or alarm, or None."""
     lines = [line for line in message.splitlines() if line.strip()]
@@ -2082,15 +2090,22 @@ def undeclared_wait_check(record, message):
     declaration, _ = watch.read_wait(watch.wait_path(record['workspace'], record['hcom_name']))
     if declaration and declaration.get('active', True):
         return None
-    script = Path(record['skill_dir']) / 'scripts/lat-watch.py'
-    command = shlex.join([
-        'uv', 'run', '--no-project', 'python', str(script), 'wait',
-        '--workspace', record['workspace'], '--agent', record['hcom_name'],
-        '--for-pending', '--for-my-agents', '--reason', '<一句原因>'])
+    command = watch_command(record, 'wait', '--for-pending', '--for-my-agents',
+                            '--reason', '<一句原因>')
     return ('LAT 等待檢查未通過：這則以 `NO REPLY:` 結尾，但你沒有有效的等待或鬧鐘聲明'
             '（等待對象全部回過訊息會使聲明自動失效，也可能是尚未宣告）。沒有聲明時監控不會保溫。'
             f'若仍在等，先執行 `{command}`（另有對象加 `--for <名稱>`，定時喚醒改用 `alarm`），再照原樣結束回合；'
-            '真的不需要聲明就直接照原樣結束回合。（Claude 主控有背景指令在跑時本檢查會自動放行。）')
+            '真的不需要聲明就直接照原樣結束回合。')
+
+
+def background_wait_reason(record, background):
+    """The hold reason when only background commands keep a NO REPLY turn waiting."""
+    command = watch_command(record, 'alarm')
+    return (f'LAT 等待檢查未通過：這則以 `NO REPLY:` 結尾，有背景指令 {", ".join(background)} 在跑，'
+            '但沒有有效的等待或鬧鐘聲明；背景指令掛住時沒有人會叫醒你。'
+            f"先執行 `{command} --pid <pid> --timeout <minutes> --reason '<一句原因>'`"
+            '（`<pid>` 是背景程序的 PID，可用 `pgrep -af \'<指令片段>\'` 查並確認是哪一支；`<minutes>` 是最久要等的分鐘數），'
+            '再照原樣結束回合。')
 
 
 BACKGROUND_START = re.compile(r'Command running in background with ID: ([A-Za-z0-9_-]+)')
@@ -2231,8 +2246,7 @@ def report_stop(record, payload):
             background = running_background_ids(payload) \
                 if undeclared and record.get('client') == 'claude' else []
             if background:
-                notes.append(f'LAT 等待檢查：有背景指令 {", ".join(background)} 在跑，放行'
-                             '（結束時 Claude Code 會叫醒你）。')
+                reasons.append(background_wait_reason(record, background))
             elif undeclared:
                 reasons.append(undeclared)
         try:

@@ -439,20 +439,36 @@ class SessionTests(unittest.TestCase):
         self.record.write_text(json.dumps(record))
         return self.stop_hook('Done\nNO REPLY: waiting', 'claude', transcript_path=transcript)
 
-    def test_no_reply_passes_with_a_running_background_command_and_says_so(self):
+    def test_no_reply_with_a_running_background_command_is_held_once_with_the_alarm_form(self):
         cases = (((('start', 'bg1'),), 'bg1', None),
                  ((('start', 'bg1'), ('start', 'bg2'), ('end', 'bg1', 'completed')), 'bg2', 'bg1'))
         for events, shown, hidden in cases:
             with self.subTest(shown=shown):
-                result = self.claude_no_reply(self.background_transcript(*events))
-                message = json.loads(result.stdout)['systemMessage']
-                self.assertIn('有背景指令', message)
-                self.assertIn(shown, message)
+                transcript = self.background_transcript(*events)
+                held = json.loads(self.claude_no_reply(transcript).stdout)
+                self.assertEqual(held['decision'], 'block')
+                self.assertIn('LAT 等待檢查未通過', held['reason'])
+                self.assertIn(shown, held['reason'])
                 if hidden:
-                    self.assertNotIn(hidden, message)
+                    self.assertNotIn(hidden, held['reason'])
+                for part in (f'{SKILL}/scripts/lat-watch.py alarm', f'--workspace {self.work}',
+                             '--agent orch', '--pid <pid> --timeout <minutes>'):
+                    self.assertIn(part, held['reason'])
+                self.assertEqual(self.reports(), [])
+                retry = self.stop_hook('Done\nNO REPLY: waiting', 'claude', stop_hook_active=True,
+                                       transcript_path=transcript)
+                self.assertIn('本回合已繼續過', json.loads(retry.stdout)['systemMessage'])
                 self.assertEqual(self.reports()[-1]['tag'], 'NO REPLY')
                 self.record.unlink()
                 (self.root / 'reports' / f'{SESSION}.jsonl').unlink()
+
+    def test_no_reply_with_a_background_command_and_an_active_alarm_is_not_held(self):
+        transcript = self.background_transcript(('start', 'bg1'))
+        for extra in (dict(kind='alarm', target='alarm', due_at=9e12), dict()):
+            with self.subTest(extra=extra):
+                self.declare_wait(**extra)
+                self.assert_silent(self.claude_no_reply(transcript))
+                self.record.unlink()
 
     def test_no_reply_is_held_when_every_background_command_has_finished(self):
         for status in ('completed', 'failed', 'killed', 'stopped'):
