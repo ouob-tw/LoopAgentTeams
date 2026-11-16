@@ -199,8 +199,10 @@ test.skipIf(!CHROME)('重跑一次 starts the task now; 打開自動化設定 op
 	await tab.until(`location.search.includes('automation=${failedTask.id}') && !!document.querySelector('.detail [data-task="${failedTask.id}"]')`, 'the task page');
 	expect(await tab.eval(`document.querySelector('[data-middle="automation"]').getAttribute('aria-pressed')`)).toBe('true');
 
+	await tab.eval('window.beforeNavigate = true');
 	await tab.send('Page.navigate', { url: `${fixture.url}/?alert=${failedCard.id}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth') && !!${button('.detail [data-alert]', '知道了，關掉紅卡')}`, 'the card page again');
+	await tab.boardStarted({ started: `!window.beforeNavigate && ${BOARD_STARTED}`, what: 'the card page to start again' });
+	await tab.until(`!!${button('.detail [data-alert]', '知道了，關掉紅卡')}`, 'the card page again');
 	const kept = JSON.stringify((await automation()).tasks.find((view) => view.task.id === failedTask.id)!.runs);
 	await tab.eval(`${button('.detail [data-alert]', '知道了，關掉紅卡')}.click()`);
 	await tab.until(`!document.querySelector('[data-alert-row="${failedCard.id}"]') && !!document.querySelector('.detail [data-closed]')`, 'the card closed');

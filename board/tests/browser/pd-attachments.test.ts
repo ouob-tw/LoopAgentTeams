@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 import { fakeNotifications } from './pd-notifications.ts';
 
 const SCREEN = `({ pd: document.querySelector('.inbox .pd')?.innerText ?? '' })`;
@@ -131,7 +131,7 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 			await shot(tab, `${label}-${i + 1}-${NAMES[i]}`);
 		}
 		expect(tab.errors).toEqual([]);
-	}, 40_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('a new attachment request’s notification uses the Chinese action name', async () => {
@@ -141,7 +141,8 @@ test.skipIf(!CHROME)('a new attachment request’s notification uses the Chinese
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.navigate(`${fixture.url}/`);
-	await tab.until(`!!${card(6)} && JSON.stringify(history.state).includes('depth')`, 'the read card, and the page started');
+	await tab.boardStarted();
+	await tab.until(`!!${card(6)}`, 'the read card');
 	await Bun.sleep(1500);
 	setPd([readFiles, file, replace, detach]);
 	await tab.until(`!!${card(5)}`, 'the new cards');
@@ -151,7 +152,7 @@ test.skipIf(!CHROME)('a new attachment request’s notification uses the Chinese
 	expect(titles).toContain('pd 請求 #3（取代附件）等你核准');
 	expect(titles).toContain('pd 請求 #5（刪除附件）等你核准');
 	expect(await tab.eval<string>(`window.__notes.find((note) => note.title.includes('#5')).body`)).toBe('prod-deploy-key：old_key.pem');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('an attachment action pd adds later is still never shown as 讀取, and a plain read is unchanged', async () => {
 	const future = { ...base, id: 8, action: 'attach-all', item: 'something' };
@@ -165,4 +166,4 @@ test.skipIf(!CHROME)('an attachment action pd adds later is still never shown as
 	expect(await tab.eval<string[]>(`[${card(8)}, ${card(9)}].map((node) => node.querySelector('.action').innerText)`)).toEqual(['attach-all', '讀取']);
 	expect(await tab.eval(`${card(9)}.querySelector('.warning') === null`)).toBe(true);
 	expect(await tab.eval<string[]>(`[...${card(9)}.querySelectorAll('dt')].map((dt) => dt.textContent)`)).toEqual(['欄位', '指令', '工作目錄', '呼叫者']);
-}, 30_000);
+}, TEST_MS);

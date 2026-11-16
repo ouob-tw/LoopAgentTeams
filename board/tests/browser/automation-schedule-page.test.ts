@@ -6,7 +6,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 import type { AutomationSnapshot, AutomationTask } from '../../src/lib/board/automation.ts';
 
 const SCREEN = `({ search: location.search, middle: document.querySelector('.inbox')?.innerText.slice(0, 400) ?? '', detail: document.querySelector('.detail')?.innerText.slice(0, 400) ?? '' })`;
@@ -160,15 +160,19 @@ for (const width of [1280, 390]) {
 			expect(await card(ids.many)).not.toContain('錯過');
 			await shot(tab, `${width}-s3-dismissed`);
 			// 立即執行 from the other one's box: the run is recorded and the box goes.
+			await tab.eval('window.beforeNavigate = true');
 			await tab.send('Page.navigate', { url: `${fixture.url}/?automation=${ids.one}` });
-			await tab.until(`JSON.stringify(history.state).includes('depth') && !!document.querySelector('.detail .missed')`, 'the other missed box');
+			await tab.boardStarted({ started: `!window.beforeNavigate && ${BOARD_STARTED}` });
+			await tab.until(`!!document.querySelector('.detail .missed')`, 'the other missed box');
 			expect(await text('.detail .missed')).toContain('每月寄帳單提醒：本期錯過');
 			await tab.eval(`${buttonByText('立即執行')}.click()`);
 			await tab.until(`!document.querySelector('.detail .missed') && document.querySelector('.detail .run')?.innerText.includes('手動')`, 'the run');
 			await tab.until(`document.querySelector('.detail .task header')?.innerText.includes('本期已完成')`, 'the run to end');
 		}
+		await tab.eval('window.beforeNavigate = true');
 		await tab.send('Page.navigate', { url: `${fixture.url}/?automation=${ids.busy}` });
-		await tab.until(`JSON.stringify(history.state).includes('depth') && document.querySelectorAll('.detail .run').length === 2`, 'the busy task\'s records');
+		await tab.boardStarted({ started: `!window.beforeNavigate && ${BOARD_STARTED}` });
+		await tab.until(`document.querySelectorAll('.detail .run').length === 2`, 'the busy task\'s records');
 		const skipped = await text('.detail .run[data-status="skipped"]');
 		expect(skipped).toContain('↷ 跳過');
 		expect(skipped).toContain('自動');

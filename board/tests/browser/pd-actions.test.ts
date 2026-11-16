@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 import { fakeNotifications } from './pd-notifications.ts';
 
 const SCREEN = `({ pd: document.querySelector('.inbox .pd')?.innerText ?? '' })`;
@@ -97,7 +97,7 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 		await tab.eval(`document.querySelector('.inbox .pd .cards').scrollTop = 1e6`);
 		await shot(tab, `${label}-cards-end`);
 		expect(tab.errors).toEqual([]);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['desktop', 1280, 900, false]] as const) {
@@ -117,7 +117,7 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 		expect(await tab.eval(FITS)).toBe(true);
 		await shot(tab, `q17-${label}-edit-types`);
 		expect(tab.errors).toEqual([]);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 const remove = { ...base, id: 4, action: 'delete', item: 'old-deploy-token-for-the-staging-cluster-that-is-no-longer-used', item_id: 'u4', type: 'login', fields: [], values: {}, secrets: [] };
@@ -153,7 +153,7 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 		expect(await tab.eval(FITS)).toBe(true);
 		await shot(tab, `${label}-delete-cards`);
 		expect(tab.errors).toEqual([]);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('a new add request’s notification names the action; 拒絕 denies a write request', async () => {
@@ -163,7 +163,8 @@ test.skipIf(!CHROME)('a new add request’s notification names the action; 拒�
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.navigate(`${fixture.url}/`);
-	await tab.until(`!!${card(1)} && JSON.stringify(history.state).includes('depth')`, 'the read card, and the page started');
+	await tab.boardStarted();
+	await tab.until(`!!${card(1)}`, 'the read card');
 	await Bun.sleep(1500); // Two readings pass: the page has its first one before the next request comes.
 	setPd([read, add]);
 	await tab.until(`!!${card(2)}`, 'the add card');
@@ -178,7 +179,7 @@ test.skipIf(!CHROME)('a new add request’s notification names the action; 拒�
 	await tab.eval(`${card(2)}.querySelector('button.deny').click()`);
 	await tab.until(`!${card(2)}`, 'the add card denied');
 	expect(await tab.eval(`!!${card(1)}`)).toBe(true);
-}, 30_000);
+}, TEST_MS);
 
 for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['desktop', 1280, 900, false]] as const) {
 	test.skipIf(!CHROME)(`${label}: a card keeps the open or folded state the user gave it through list re-reads`, async () => {
@@ -210,5 +211,5 @@ for (const [label, width, height, mobile] of [['phone', 390, 900, true], ['deskt
 		await tab.until(`!!${card(7)} && !!${card(8)}`, 'new cards');
 		expect([await isOpen(7), await isOpen(8), await isOpen(1), await isOpen(2)]).toEqual([false, true, true, false]);
 		expect(tab.errors).toEqual([]);
-	}, 40_000);
+	}, TEST_MS);
 }

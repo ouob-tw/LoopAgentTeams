@@ -238,7 +238,8 @@ test.skipIf(!CHROME)('an agent opened from another agent\'s page goes back to th
 	// A reload, then the phone's "←".
 	await tab.eval('window.beforeReload = true');
 	await tab.send('Page.reload');
-	await tab.until(`!window.beforeReload && JSON.stringify(history.state).includes('depth') && !!document.querySelector('.detail [data-agent="s-other"]')`, 'the reloaded agent');
+	await tab.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the reloaded board to start' });
+	await tab.until(`!!document.querySelector('.detail [data-agent="s-other"]')`, 'the reloaded agent');
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: true });
 	// Tapped until it works: the reloaded entry has its depth before the page's buttons do.
 	await tab.until(`(document.querySelector('.topbar button')?.click(), ${LIST})`, 'the list after the reload');
@@ -416,7 +417,8 @@ for (const width of [1280, 390]) {
 			await tab.until(`!!document.querySelector('.inbox [data-agent="s-other"]')`, 'the agent list');
 			await tab.eval('window.beforeReload = true');
 			await tab.send('Page.reload');
-			await tab.until(`!window.beforeReload && !!document.querySelector('.inbox [data-agent="s-other"]')`, 'the reloaded list');
+			await tab.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the reloaded board to start' });
+			await tab.until(`!!document.querySelector('.inbox [data-agent="s-other"]')`, 'the reloaded list');
 			expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-plain"]')`)).toBe(false);
 		} finally {
 			setHerdr(AGENTS);

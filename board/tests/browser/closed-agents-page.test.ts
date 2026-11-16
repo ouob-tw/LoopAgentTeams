@@ -1,5 +1,5 @@
 import { answerHerdrList } from '../harness.ts';
-import { CHROME, fakeMic, launchChrome, micIconOff, micOf, shot, speak, TEST_MS, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, fakeMic, launchChrome, micIconOff, micOf, shot, speak, TEST_MS, type Browser, type Tab } from '../browser.ts';
 // The Herdr tab's 已關閉 section in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with fake hcom, Herdr and helper, wide and at a phone's width. The
 // board runs in Taipei time, so its calendar days are not the test host's. Skipped when the host
@@ -311,8 +311,10 @@ test.skipIf(!CHROME)("390px: a closed agent's address opens its page, with the l
 test.skipIf(!CHROME)("a draft kept from before is not sent to the closed agent, named or not, and the reason still shows", async () => {
 	await visit(1280);
 	await tab.eval(`localStorage.setItem('lat-board-agent-drafts', JSON.stringify({ 's-lead': '@lead 繼續', 's-yesterday': '還沒送出' }))`);
+	await tab.eval('window.beforeReload = true');
 	await tab.send('Page.reload');
-	await tab.until(`JSON.stringify(history.state).includes('depth') && !!document.querySelector('.inbox [data-agent="s-live"]')`, 'the board again');
+	await tab.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the board to start again' });
+	await tab.until(`!!document.querySelector('.inbox [data-agent="s-live"]')`, 'the board again');
 	// Unfolded once the reloaded page answers clicks.
 	await tab.until(
 		`(() => { const trigger = document.querySelector(${JSON.stringify(TRIGGER)}); if (trigger?.getAttribute('aria-expanded') === 'false') trigger.click(); return !!document.querySelector('[data-closed]'); })()`,
