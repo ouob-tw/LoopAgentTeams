@@ -1712,7 +1712,9 @@ def rows_added_after(ledger_path, moment):
                    for entry in item['history'])]
 
 
-DRAFT_TICKET = re.compile(r'(?:(?<![\w.-])([\w.-]+/[\w.-]+))?#(\d+)(?!\d)')
+# ASCII only: Unicode \w would swallow CJK prose written right before `owner/repo#N`.
+DRAFT_TICKET = re.compile(
+    r'(?:(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#([0-9]+)(?![0-9])')
 NUMBERED_TICKET = re.compile(r'(?:[\w.-]+/[\w.-]+)?#\d+')
 
 

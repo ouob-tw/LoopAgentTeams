@@ -4278,11 +4278,22 @@ class SessionTests(unittest.TestCase):
         self.assert_silent(self.stop_hook('Plain message', stop_hook_active=True))
 
     def test_a_pending_goal_round_is_manual_for_the_draft_check(self):
-        self.activate(draft=False)
+        self.activate_with('unattended')
         self.declare_wait()
+        self.assertEqual(self.unattended_status()['state'], 'pending-goal')
         self.seed_draft(at=self.OLD)
         self.add_row('#1')
-        self.assertNotEqual(self.unattended_status()['state'], 'active')
+        self.assert_silent(self.stop_hook('Plain message'))  # stale draft: no hold, no note
+        self.seed_draft(at='not a time')
+        released = json.loads(self.stop_hook('Plain message').stdout)
+        self.assertNotIn('decision', released)
+        self.assertIn('本輪還沒有可用的目標草稿', released['systemMessage'])
+
+    def test_grant_cjk_prose_next_to_a_qualified_ticket_still_covers(self):
+        self.with_tracker()
+        self.grant_with_draft(f'修好{self.REPO}#12', f'完成other/repo#13，並收#14')
+        for ticket in (f'{self.REPO}#12', '#12', 'other/repo#13', '#14'):
+            self.add_row(ticket)
         self.assert_silent(self.stop_hook('Plain message'))
 
     def test_no_draft_hold_while_a_grant_is_in_effect(self):
