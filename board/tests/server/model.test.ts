@@ -97,7 +97,7 @@ type HcomPlan = {
 	exit?: number;
 	stderr?: string;
 	listFail?: object;
-	kill?: { exit?: number; stderr?: string; sleepMs?: number; stays?: boolean };
+	kill?: { exit?: number; stderr?: string; sleepMs?: number; stays?: boolean; closes?: string[] };
 };
 const hcomPlan = (plan: HcomPlan) => writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
 const herdrPanes = (panes: { workspace_id: string; cwd: string; pane_id: string }[]) =>
@@ -447,6 +447,48 @@ test('a listening Codex is stopped, seen gone, and resumed by session with -c ov
 	// The session shows up in hcom's list: the board settles the switch by itself.
 	await fixture.refresh(cookie);
 	expect((await switches(target.id))[0]).toMatchObject({ state: 'done', open: false });
+});
+
+// --- an agent paused and resumed: hcom lists it with no pane, Herdr still knows it ----------------------
+
+/** What hcom lists after `hcom stop` and `hcom start --as`: the agent with an empty launch context. */
+const resumedAfterPause = (target: Awaited<ReturnType<typeof running>>, herdrHasIt: boolean) => {
+	const paneless = { ...target.self, launch_context: {} };
+	hcomPlan({ agents: [paneless], resumed: agent(target.name, target.id, 'listening', 'wP:new'), kill: { closes: [target.pane] } });
+	const herdr = JSON.parse(readFileSync(join(commandDir, 'herdr.json'), 'utf8'));
+	herdr.agents = herdrHasIt
+		? [{ agent: 'codex', agent_status: 'idle', cwd: target.workspace, pane_id: target.pane, tab_id: 'wP:t', workspace_id: 'wP', agent_session: { value: target.id } }]
+		: [];
+	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify(herdr));
+};
+
+for (const [what, model, effort, args] of [
+	['effort', null, 'low', ['-c', 'model_reasoning_effort="low"']],
+	['model', 'gpt-6-astra', null, ['-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="medium"']]
+] as const) {
+	test(`a paused then resumed Codex (hcom has no pane) has its ${what} switched using the pane Herdr lists for the session`, async () => {
+		const target = await running('codex');
+		resumedAfterPause(target, true);
+
+		const { status, body } = await change(target.id, model, effort);
+
+		expect(status).toBe(200);
+		expect(body.entry).toMatchObject({ route: 'restart', state: 'resuming', open: true, pane: target.pane });
+		expect(kills()).toEqual([['kill', target.name]]);
+		expect(resumes()).toEqual([['r', target.id, '--terminal', 'herdr', '--no-run-here', '--go', ...args]]);
+	});
+}
+
+test('a paused then resumed Codex that neither hcom nor Herdr has a pane for keeps the original error', async () => {
+	const target = await running('codex');
+	resumedAfterPause(target, false);
+
+	const { status, body } = await change(target.id, null, 'low');
+
+	expect(status).toBe(502);
+	expect(body.reason).toContain('沒有記到原本的 Herdr 窗格');
+	expect(body.entry).toMatchObject({ state: 'stop-unknown', pane: null });
+	expect(resumes()).toEqual([]);
 });
 
 test('a Codex that is working, blocked, or whose state cannot be read is not touched', async () => {
