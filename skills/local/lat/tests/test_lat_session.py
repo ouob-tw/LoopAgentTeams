@@ -4227,26 +4227,63 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(self.cli('deactivate', '--workspace', self.work,
                                           extra_env=self.unattended_env()).returncode, 0)
 
-    def test_stop_without_a_draft_is_held_once_then_passes_once_written(self):
-        # A controller that was already running without a draft gets the same reminder.
+    OLD = '2020-01-01T00:00:00+00:00'
+    REPO = 'ouob-tw/LoopAgentTeams-work'
+
+    def with_tracker(self):
+        doc = self.work / 'docs/agents/issue-tracker.md'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text(f'gh issue view 1 -R `{self.REPO}`\n')
+
+    def grant_with_draft(self, goal, *done):
+        """A grant in effect and an old draft, so every row added next is after the draft."""
         self.activate(draft=False)
         self.declare_wait()
-        held = self.draft_held(self.stop_hook('Plain message'))
-        self.assertIn('LAT 目標草稿檢查未通過：本輪還沒有可用的目標草稿', held)
-        self.assertIn(f"lat-unattended.py draft --workspace {self.work} --goal '<目標>'", held)
-        released = json.loads(self.stop_hook('Plain message', stop_hook_active=True).stdout)
-        self.assertNotIn('decision', released)
-        self.assertIn('本輪還沒有可用的目標草稿', released['systemMessage'])
-        self.assertIn('本回合已繼續過，不再攔下', released['systemMessage'])
-        # A draft file without a usable goal or time counts as none.
+        self.open_grant()
+        self.assertEqual(self.unattended_status()['state'], 'active')
+        path = self.seed_draft(at=self.OLD)
+        path.write_text(json.dumps(dict(goal=goal, done=list(done), at=self.OLD)))
+
+    def add_row(self, ticket):
+        return self.ledger('add', '--ticket', ticket, '--stage', 'impl', '--evidence',
+                           'file').strip()
+
+    def test_manual_mode_without_a_draft_gets_one_note_and_no_hold(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        for kwargs in ({}, {'stop_hook_active': True}):
+            released = json.loads(self.stop_hook('Plain message', **kwargs).stdout)
+            self.assertNotIn('decision', released)
+            self.assertEqual(released['systemMessage'].count('本輪還沒有可用的目標草稿'), 1)
+            self.assertIn(f"lat-unattended.py draft --workspace {self.work} --goal '<目標>'",
+                          released['systemMessage'])
+            self.assertNotIn('本回合已繼續過', released['systemMessage'])
+        # An unusable draft counts as none; a usable one silences the note.
         self.seed_draft(at='not a time')
-        self.assertIn('可用的目標草稿', self.draft_held(self.stop_hook('Plain message')))
+        self.assertIn('可用的目標草稿', json.loads(self.stop_hook('Plain message').stdout)['systemMessage'])
         self.draft('修好登入頁', '能登入', '有測試')
         self.assert_silent(self.stop_hook('Plain message'))
         self.assert_silent(self.stop_hook('Done\nNO REPLY: waiting'))
         # What the board's form reads to prefill.
         self.assertEqual({key: self.unattended_status()['draft'][key] for key in ('goal', 'done')},
                          dict(goal='修好登入頁', done=['能登入', '有測試']))
+
+    def test_manual_mode_stale_draft_is_neither_held_nor_mentioned(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        self.seed_draft(at=self.OLD)
+        self.add_row('#1')
+        self.add_row('#2')
+        self.assert_silent(self.stop_hook('Plain message'))
+        self.assert_silent(self.stop_hook('Plain message', stop_hook_active=True))
+
+    def test_a_pending_goal_round_is_manual_for_the_draft_check(self):
+        self.activate(draft=False)
+        self.declare_wait()
+        self.seed_draft(at=self.OLD)
+        self.add_row('#1')
+        self.assertNotEqual(self.unattended_status()['state'], 'active')
+        self.assert_silent(self.stop_hook('Plain message'))
 
     def test_no_draft_hold_while_a_grant_is_in_effect(self):
         self.activate(draft=False)
@@ -4255,33 +4292,54 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.unattended_status()['state'], 'active')
         self.assert_silent(self.stop_hook('Plain message'))
         self.seed_draft(at='not a time')  # an unreadable draft is no draft either
+        self.add_row('#1')
         self.assert_silent(self.stop_hook('Plain message'))
 
-    def test_rows_added_after_the_draft_ask_to_check_it_until_rewritten(self):
+    def test_grant_holds_once_for_uncovered_rows_then_warns(self):
+        self.grant_with_draft('修好登入頁 #5', '能登入')
+        covered = self.add_row('#5')
+        row = self.add_row('#7')
+        text_row = self.add_row('另一件事')
+        held = self.draft_held(self.stop_hook('Plain message'))
+        self.assertIn(f'第 {row} 列（票：#7）', held)
+        self.assertIn(f'第 {text_row} 列（票：另一件事）', held)
+        self.assertNotIn(f'第 {covered} 列', held)
+        self.assertIn(f"lat-unattended.py draft --workspace {self.work} --goal '<目標>'", held)
+        self.assertNotIn('照原內容重寫', held)
+        released = json.loads(self.stop_hook('Plain message', stop_hook_active=True).stdout)
+        self.assertNotIn('decision', released)
+        self.assertIn('本回合已繼續過，不再攔下', released['systemMessage'])
+        # Naming them in the draft ends it (new draft is newer than the rows).
+        self.past_last_row_second()
+        self.draft('修好登入頁 #5 #7', '能登入', '另一件事')
+        self.assert_silent(self.stop_hook('Plain message'))
+
+    def test_grant_covered_rows_do_not_hold(self):
+        self.with_tracker()
+        self.grant_with_draft('收 #12', f'{self.REPO}#13 完成', '文字票 要有')
+        for ticket in ('#12', f'{self.REPO}#12', '13', f'{self.REPO}#13', '#12, #13', '文字票'):
+            self.add_row(ticket)
+        self.assert_silent(self.stop_hook('Plain message'))
+
+    def test_grant_a_longer_number_or_other_repo_does_not_cover(self):
+        self.with_tracker()
+        self.grant_with_draft('收 #120', f'other/repo#12 完成', '文字票')
+        longer = self.add_row('#12')
+        other = self.add_row(f'{self.REPO}#12')
+        partial = self.add_row('#120, #121')
+        near = self.add_row('文字票據')
+        held = self.draft_held(self.stop_hook('Plain message'))
+        for row in (longer, other, partial, near):
+            self.assertIn(f'第 {row} 列', held)
+
+    def test_a_row_added_in_the_same_second_as_the_draft_is_not_missed(self):
         self.activate(draft=False)
         self.declare_wait()
-        self.seed_draft(at='2020-01-01T00:00:00+00:00')
-        first = self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence',
-                            'file').strip()
-        held = self.draft_held(self.stop_hook('Plain message'))
-        self.assertIn(f'工作總表在草稿寫入後新增了第 {first} 列', held)
-        # The ready command to keep the draft as it is.
-        self.assertIn(f"draft --workspace {self.work} --goal '修好登入頁' --done '能登入'", held)
-        self.assertIn('本回合已繼續過', json.loads(
-            self.stop_hook('Plain message', stop_hook_active=True).stdout)['systemMessage'])
-        # Rewriting it unchanged says it was checked.
-        self.past_last_row_second()
-        self.draft()
-        self.assert_silent(self.stop_hook('Plain message'))
-        # A later row asks again; the draft's time is moved back to stand for time passing.
-        path = self.seed_draft(at='2020-01-01T00:00:00+00:00')
-        self.ledger('add', '--ticket', '#2', '--stage', 'impl', '--evidence', 'file')
-        held = self.draft_held(self.stop_hook('Plain message'))
-        self.assertIn(f'第 {first} 列、第 {int(first) + 1} 列', held)
-        self.past_last_row_second()
-        self.draft('修好登入頁和註冊頁', '能登入', '能註冊')
-        self.assertNotEqual(json.loads(path.read_text())['at'], '2020-01-01T00:00:00+00:00')
-        self.assert_silent(self.stop_hook('Plain message'))
+        self.open_grant()
+        row = self.add_row('#1')
+        # The draft was written later in the same whole second the row's time shows.
+        self.seed_draft(at=self.last_row_added_at().replace(microsecond=900000).isoformat())
+        self.assertIn(f'第 {row} 列', self.draft_held(self.stop_hook('Plain message')))
 
     def last_row_added_at(self):
         item = json.loads(self.ledger_path().read_text())['items'][-1]
@@ -4292,26 +4350,6 @@ class SessionTests(unittest.TestCase):
         second still counts the row as new."""
         while datetime.now(timezone.utc).replace(microsecond=0) <= self.last_row_added_at():
             time.sleep(0.05)
-
-    def test_a_row_added_in_the_same_second_as_the_draft_is_not_missed(self):
-        self.activate(draft=False)
-        self.declare_wait()
-        row = self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file').strip()
-        # The draft was written later in the same whole second the row's time shows.
-        self.seed_draft(at=self.last_row_added_at().replace(microsecond=900000).isoformat())
-        self.assertIn(f'新增了第 {row} 列', self.draft_held(self.stop_hook('Plain message')))
-
-    def test_rows_added_after_the_draft_ask_to_check_it_even_while_a_grant_is_in_effect(self):
-        self.activate(draft=False)
-        self.declare_wait()
-        self.open_grant()
-        self.seed_draft(at='2020-01-01T00:00:00+00:00')
-        row = self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file').strip()
-        self.assertEqual(self.unattended_status()['state'], 'active')
-        self.assertIn(f'新增了第 {row} 列', self.draft_held(self.stop_hook('Plain message')))
-        self.past_last_row_second()
-        self.draft()
-        self.assert_silent(self.stop_hook('Plain message'))
 
     def test_draft_check_leaves_other_roles_and_sessions_without_a_record_alone(self):
         self.declare_wait()

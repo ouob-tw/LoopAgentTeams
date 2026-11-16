@@ -630,12 +630,17 @@ def ledger_check(path):
     return 'unreadable', result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
 
 
+def tracker_module():
+    spec = importlib.util.spec_from_file_location('lat_tracker', SKILL_DIR / 'scripts/_lat_tracker.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def tracker_warning(record):
     """The tracker warning text for the round's ledger tickets, or '' (never raises)."""
     try:
-        spec = importlib.util.spec_from_file_location('lat_tracker', SKILL_DIR / 'scripts/_lat_tracker.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = tracker_module()
         return '\n'.join(module.tracker_warnings(ledger_module(), record['ledger_path'],
                                                  record['workspace']))
     except Exception as exc:  # noqa: BLE001 - a warning never blocks
@@ -1690,10 +1695,10 @@ def draft_time(draft):
 
 
 def rows_added_after(ledger_path, moment):
-    """IDs of ledger rows added after `moment`; an unreadable ledger has none here (the
-    delivery check reports it). Ledger times have whole seconds, so a row added in the same
-    second as the draft counts as after it: a row is never missed, at the cost of extra
-    reminders while the draft was last rewritten in the second the row was added."""
+    """(id, ticket) of the ledger rows added after `moment`; an unreadable ledger has none
+    here (the delivery check reports it). Ledger times have whole seconds, so a row added in
+    the same second as the draft counts as after it: a row is never missed, at the cost of
+    extra reminders while the draft was last rewritten in the second the row was added."""
     ledger = ledger_module()
     store = ledger.Store(Path(ledger_path))
     try:
@@ -1702,38 +1707,68 @@ def rows_added_after(ledger_path, moment):
     except (ledger.Failure, OSError):
         return []
     floor = moment.replace(microsecond=0)
-    return [item['id'] for item in items
+    return [(item['id'], str(item.get('ticket', ''))) for item in items
             if any(entry['action'] == 'add' and ledger.loads_time(entry['at']) >= floor
                    for entry in item['history'])]
 
 
+DRAFT_TICKET = re.compile(r'(?:(?<![\w.-])([\w.-]+/[\w.-]+))?#(\d+)(?!\d)')
+NUMBERED_TICKET = re.compile(r'(?:[\w.-]+/[\w.-]+)?#\d+')
+
+
+def draft_ticket_keys(text, default_repo):
+    """Every `#N` / `owner/repo#N` in the draft's text as `owner/repo#N` (a bare number
+    belongs to `default_repo`, like in the ledger's own ticket keys)."""
+    return {f'{repo or default_repo or ""}#{number}'
+            for repo, number in DRAFT_TICKET.findall(text)}
+
+
+def uncovered_rows(rows, draft, workspace):
+    """The (id, ticket) rows whose ticket the draft's goal and done text does not name: all of
+    a row's numbered tickets must be in it; a text ticket must appear verbatim."""
+    ledger = ledger_module()
+    default_repo = tracker_module().tracker_repo(workspace)
+    text = '\n'.join([draft['goal'], *map(str, draft['done'])])
+    named = draft_ticket_keys(text, default_repo)
+    missing = []
+    for row, ticket in rows:
+        for key in ledger.ticket_keys(ticket, default_repo):
+            covered = key in named if NUMBERED_TICKET.fullmatch(key) else key in text
+            if not covered:
+                missing.append((row, ticket))
+                break
+    return missing
+
+
 def draft_stop_check(record):
-    """Why this Stop should be held because the round has no goal draft for the board's
-    "開啟無人模式" form (not asked while a grant is in effect, since then the form is not
-    used to open one), or ledger rows were added after the draft was written."""
+    """(hold reason, note) for the round's goal draft; either may be None.
+
+    Attended (no unattended grant in effect, pending goal included): never a hold; with no
+    usable draft one note line, a stale draft says nothing. Grant in effect: hold only for
+    ledger rows added at or after the draft whose ticket the draft's goal and done text do
+    not name (#674)."""
     if legacy_record(record):
-        return None
+        return None, None
     result = unattended_module().snapshot(unattended_lat(record), record['session_id'])
     if not result['round_active']:
-        return None
+        return None, None
     draft = result['draft']
     written = draft_time(draft)
-    if written is None:
-        if result['state'] == 'active':
-            return None
-        return ('LAT 目標草稿檢查未通過：本輪還沒有可用的目標草稿（沒寫過或讀不出），看板「開啟無人模式」表單沒有內容可預填。'
-                '依使用者的話擬出這一輪的目標與做完條件，執行 '
-                f'`{draft_command(record["workspace"])}`（草稿不是授權），再照原樣結束回合。')
-    added = rows_added_after(record['ledger_path'], written) if record.get('ledger_path') else []
-    if not added:
-        return None
-    rows = '、'.join(f'第 {row} 列' for row in added)
-    done = [str(item) for item in draft['done']]
-    return (f'LAT 目標草稿檢查未通過：工作總表在草稿寫入後新增了{rows}。核對草稿的目標與做完條件是否還涵蓋'
-            '這些工作：要改就用新內容執行 '
-            f'`{draft_command(record["workspace"])}`；不用改就照原內容重寫一次表明已核對：'
-            f'`{draft_command(record["workspace"], draft["goal"], done)}`。'
-            '之後到又有新列前不再為此提醒；做完再照原樣結束回合。')
+    command = draft_command(record['workspace'])
+    if result['state'] != 'active':
+        if written is not None:
+            return None, None
+        return None, ('LAT 提醒：本輪還沒有可用的目標草稿（沒寫過或讀不出），看板「開啟無人模式」表單沒有內容可預填。'
+                      f'依使用者的話擬出目標與做完條件，執行 `{command}`（草稿不是授權）。')
+    if written is None or not record.get('ledger_path'):
+        return None, None
+    missing = uncovered_rows(rows_added_after(record['ledger_path'], written), draft,
+                             record['workspace'])
+    if not missing:
+        return None, None
+    rows = '、'.join(f'第 {row} 列（票：{ticket or "空白"}）' for row, ticket in missing)
+    return (f'LAT 目標草稿檢查未通過：無人授權生效中，工作總表在草稿寫入後新增的{rows}沒有寫在草稿的目標或做完條件裡。'
+            f'把這些工作補進草稿的目標或做完條件，用新內容執行 `{command}`；做完再照原樣結束回合。'), None
 
 
 def parked_stop_check(record):
@@ -2268,12 +2303,14 @@ def report_stop(record, payload):
         except Exception as exc:  # noqa: BLE001 - a broken rebuild never holds the Stop
             notes.append(f'LAT 回顧更新發生錯誤，未攔下：{exc}')
         try:
-            draft = draft_stop_check(record)
+            draft, draft_note = draft_stop_check(record)
         except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
             notes.append(f'LAT 目標草稿檢查發生錯誤，未攔下：{exc}')
         else:
             if draft:
                 reasons.append(draft)
+            if draft_note:
+                notes.append(draft_note)
         try:
             parked = parked_stop_check(record)
         except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
