@@ -2104,7 +2104,7 @@ def background_wait_reason(record, background):
     return (f'LAT 等待檢查未通過：這則以 `NO REPLY:` 結尾，有背景指令 {", ".join(background)} 在跑，'
             '但沒有有效的等待或鬧鐘聲明；背景指令掛住時沒有人會叫醒你。'
             f"先執行 `{command} --pid <pid> --timeout <minutes> --reason '<一句原因>'`"
-            '（`<pid>` 是背景程序的 PID，可用 `pgrep -f \'<指令片段>\'` 查；`<minutes>` 是最久要等的分鐘數），'
+            '（`<pid>` 是背景程序的 PID，可用 `pgrep -af \'<指令片段>\'` 查並確認是哪一支；`<minutes>` 是最久要等的分鐘數），'
             '再照原樣結束回合。')
 
 
