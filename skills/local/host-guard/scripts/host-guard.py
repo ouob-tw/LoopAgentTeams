@@ -318,11 +318,12 @@ def last_component(word):
 
 
 def resolve_path(text, cwd):
-    """The path a delete argument's shell text names, or None when it holds a substitution
-    the hook cannot know."""
+    """The path a shell word names, or None when it holds a substitution the hook cannot
+    know. ~ and the variables of the folders the rules protect are expanded."""
     path = text
     for name, default in (('CLAUDE_CONFIG_DIR', None), ('CODEX_HOME', None),
-                          ('XDG_STATE_HOME', None), ('HOME', str(Path.home()))):
+                          ('XDG_STATE_HOME', None), ('VM_HOME', None),
+                          ('HOME', str(Path.home()))):
         value = os.environ.get(name) or default
         if value:
             path = re.sub(r'\$\{?' + name + r'\}?(?![\w])', lambda _: value, path)
@@ -331,7 +332,13 @@ def resolve_path(text, cwd):
         return None
     for char, placeholder in LITERAL.items():
         path = path.replace(placeholder, char)
-    return os.path.normpath(os.path.join(cwd, path))
+    return os.path.normpath(os.path.join(str(cwd), path))
+
+
+def cd_target(words):
+    """The folder word of a `cd` command's words; ~ when it names none."""
+    target = [w for w in words[1:] if w not in ('--', '-L', '-P', '-e', '-@')]
+    return target[0] if target else '~'
 
 
 def operators(code):
@@ -723,8 +730,7 @@ def command_install(words, base):
     words = after_prefixes(words)
     name = os.path.basename(words[0]) if words else ''
     if name == 'cd':
-        target = [w for w in words[1:] if w not in ('--', '-L', '-P', '-e', '-@')]
-        return None, where(target[0] if target else '~')
+        return None, where(cd_target(words))
     if name in SHELLS:
         body = shell_script(words)
         return (repo_install(body, base) if body else None), base
@@ -804,16 +810,19 @@ COMPOSE_VALUE_OPTIONS = {'-f', '--file', '-p', '--project-name', '--project-dire
                          '--env-file', '--profile', '--ansi', '--progress', '--parallel'}
 COMPOSE_FILES = ('compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml')
 DESTROY_TOOLS = {'rm', 'rmdir', 'unlink', 'shred', 'trash-put', 'trash'}
-WRITE_TOOLS = {'tee', 'truncate', 'touch'}
+WRITE_TOOLS = {'tee', 'truncate', 'touch', 'sponge'}
 IN_PLACE_TOOLS = {'sed', 'perl'}
 COPY_TOOLS = {'cp', 'install', 'ln', 'rsync', 'scp'}
 SYSTEMCTL_STARTS = {'start', 'enable', 'restart', 'reenable', 'link', 'try-restart',
                     'reload-or-restart', 'try-reload-or-restart'}
-SYSTEMD_RUN_TIMERS = ('--on-', '--timer-property')
 # The one sanctioned VM service: the vm watcher.
 VM_WATCH_UNIT = 'vm-watch'
 UNIT_SUFFIXES = ('.service', '.timer')
-UNIT_NAME_WORDS = {'vm', 'busi', 'kvm'}
+SYSTEMCTL_VALUE_OPTIONS = {'-H', '--host', '-M', '--machine', '-p', '--property', '-t', '--type',
+                           '--state', '-n', '--lines', '-o', '--output', '--root', '-s',
+                           '--signal', '--kill-whom', '--job-mode', '--what', '--timestamp'}
+SEARCH_TOOLS = {'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack'}
+INTERPRETERS = ('python', 'uv')
 OUT_REDIRECT = re.compile(r'(?:\d*|&)>{1,2}\|?(?P<target>.*)')
 GLOB_CHARS = '*?['
 FILE_TOOLS = {'Write': 'file_path', 'Edit': 'file_path', 'NotebookEdit': 'notebook_path'}
@@ -866,7 +875,7 @@ VM_OLD_MOVED = 'The same data is under {root}{rest} after the move. ' + VM_USAGE
 VM_OLD_FALLBACK = 'Each machine has its folder {root}/<machine>/. ' + VM_USAGE
 
 
-class VmPlace:
+class VmRegistry:
     """The vm data root, the machine list and the leases as this hook sees them. Missing or
     unreadable files read as empty, so only VM writes and creates are blocked then."""
 
@@ -882,7 +891,8 @@ class VmPlace:
         self.destroy = self.states | {self.root, *map(str, Path(self.root).parents)}
         words = '|'.join(re.escape(c) for c in self.containers)
         self.terms = re.compile(
-            r'/dev/kvm|vm-busi|busi-vm|(?<![\w.-])(?:vmctl|guard\.py|vm\.py)(?![\w.-])'
+            r'/dev/kvm|vm-busi|busi-vm|(?<![\w.-])(?:vmctl|guard\.py)(?![\w.-])'
+            r'|(?<![\w.-])vm\.py(?![\w.-])(?!\s+(?:list|status)\b)'
             r'|~/vm(?![\w.-])|' + re.escape(self.root) + r'(?![\w.-])'
             + (r'|(?<![\w.-])(?:' + words + r')(?![\w.-])' if words else ''))
 
@@ -895,22 +905,11 @@ class VmPlace:
         return {k: v for k, v in value.items() if isinstance(v, dict)} \
             if isinstance(value, dict) else {}
 
-    def within(self, path, folder):
-        return path == folder or path.startswith(folder.rstrip('/') + '/')
 
 
-def vm_path(text, folder):
-    """The absolute path a shell word names (~, $HOME, $VM_HOME expanded), or None when it
-    holds another substitution."""
-    home = str(Path.home())
-    for name, value in (('HOME', home), ('VM_HOME', os.environ.get('VM_HOME'))):
-        if value:
-            text = re.sub(r'\$\{?' + name + r'\}?(?!\w)', lambda _: value, text)
-    if text == '~' or text.startswith('~/'):
-        text = home + text[1:]
-    if '$' in text or '`' in text:
-        return None
-    return os.path.normpath(os.path.join(str(folder), text))
+def within(path, folder):
+    """True when path is folder or inside it."""
+    return path == folder or path.startswith(folder.rstrip('/') + '/')
 
 
 def path_hits(path, targets):
@@ -960,8 +959,7 @@ def vm_statements(command, cwd, depth=0):
             rest = after_prefixes(words)
             name = os.path.basename(rest[0]) if rest else ''
             if name == 'cd':
-                target = [w for w in rest[1:] if w not in ('--', '-L', '-P', '-e', '-@')]
-                moved = vm_path(target[0] if target else '~', base)
+                moved = resolve_path(cd_target(rest), base)
                 base = Path(moved) if moved else base
             if depth < 4:
                 script = shell_script(rest) if name in SHELLS else None
@@ -992,8 +990,8 @@ def split_redirections(words):
                 i += 1
                 target = words[i]
             targets.append(target)
-        elif REDIRECTION.fullmatch(word):  # an input redirection: its target is read only
-            i += 0 if REDIRECTION.fullmatch(word).group('target') else 1
+        elif (inward := REDIRECTION.fullmatch(word)):  # an input: its target is only read
+            i += 0 if inward.group('target') else 1
         else:
             kept.append(word)
         i += 1
@@ -1004,7 +1002,7 @@ def file_text(path, limit=SCRIPT_MAX_BYTES):
     try:
         with open(path, errors='replace') as handle:
             return handle.read(limit)
-    except (OSError, TypeError):
+    except OSError:
         return ''
 
 
@@ -1020,17 +1018,16 @@ def schedule_places():
 
 
 def vm_unit(unit, place):
-    """True when a systemd unit, by its name or the unit files behind it, powers a VM."""
+    """True when a systemd unit powers a VM: by the unit files behind it (a timer with its
+    service), or by its name when no unit file is found. The vm watcher is the exception."""
     name = os.path.basename(unit)
     stem = name[:-len(name.rsplit('.', 1)[-1]) - 1] if name.endswith(UNIT_SUFFIXES) else name
     if stem == VM_WATCH_UNIT:
         return False
-    if place.terms.search(name) or set(re.split(r'[-_.@]', stem)) & (UNIT_NAME_WORDS
-                                                                       | set(place.machines)):
-        return True
     files = [unit] if '/' in unit else [os.path.join(d, stem + s) for d in unit_dirs()
                                         for s in UNIT_SUFFIXES]
-    return any(place.terms.search(file_text(f)) for f in files)
+    texts = [file_text(f) for f in files if os.path.isfile(f)]
+    return any(place.terms.search(t) for t in texts) if texts else bool(place.terms.search(name))
 
 
 def schedule_problem(words, rest, name, command, folder, place):
@@ -1041,51 +1038,76 @@ def schedule_problem(words, rest, name, command, folder, place):
         if '--scope' not in args and place.terms.search(' '.join(args)):
             return 'systemd service or timer'
     if name == 'systemctl':
-        args = [w for w in rest[1:] if not w.startswith('-')]
+        args = operands(rest, SYSTEMCTL_VALUE_OPTIONS)
         if args and args[0] in SYSTEMCTL_STARTS and any(vm_unit(u, place) for u in args[1:]):
             return 'systemd service or timer'
     if name in ('at', 'batch'):
         files = [rest[i + 1] for i, w in enumerate(rest[:-1]) if w == '-f']
-        texts = [command, *(file_text(vm_path(f, folder)) for f in files)]
+        texts = [command, *(file_text(p) for p in (resolve_path(f, folder) for f in files) if p)]
         if any(place.terms.search(t) for t in texts):
             return 'job with at'
     if name == 'crontab':
-        operands = [w for w in rest[1:] if not w.startswith('-')]
-        if any(w in ('-l', '-r', '-e') for w in rest[1:]) and not operands:
+        files = operands(rest, {'-u'})
+        if any(w in ('-l', '-r', '-e') for w in rest[1:]) and not files:
             return None
-        texts = [command, *(file_text(vm_path(f, folder)) for f in operands)]
+        texts = [command, *(file_text(p) for p in (resolve_path(f, folder) for f in files) if p)]
         if any(place.terms.search(t) for t in texts):
             return 'crontab entry'
     return None
 
 
+def operands(rest, value_options=()):
+    """The words after a command name that are not options or the values of value_options."""
+    found, skip = [], False
+    for word in rest[1:]:
+        if skip:
+            skip = False
+        elif word.startswith('-'):
+            skip = word in value_options
+        else:
+            found.append(word)
+    return found
+
+
 def written_paths(rest, name, folder):
-    """(paths a command may delete or move away, paths it writes) from its words."""
-    operands = [w for w in rest[1:] if not w.startswith('-')]
-    if name == 'gio' and operands[:1] == ['trash']:
-        return [vm_path(w, folder) for w in operands[1:]], []
+    """(paths a command may delete or move away, paths it writes) from its words; a path
+    the hook cannot resolve is left out."""
+    moved, writes = word_paths(rest, name, folder)
+    return [p for p in moved if p], [p for p in writes if p]
+
+
+def word_paths(rest, name, folder):
+    args = [w for w in rest[1:] if not w.startswith('-')]
+    if name == 'find' and ('-delete' in rest or any(
+            w in ('-exec', '-execdir', '-ok') and os.path.basename(n) in DESTROY_TOOLS | WRITE_TOOLS
+            | {'mv', 'sed', 'perl'} for w, n in zip(rest, rest[1:]))):
+        starts = [w for w in rest[1:] if not w.startswith(('-', '(', '!'))][:1]
+        found = [resolve_path(w, folder) for w in starts]
+        return [], [os.path.join(p, '*') for p in found if p]  # what it may delete inside
+    if name == 'gio' and args[:1] == ['trash']:
+        return [resolve_path(w, folder) for w in args[1:]], []
     if name in DESTROY_TOOLS:
-        return [vm_path(w, folder) for w in operands], []
+        return [resolve_path(w, folder) for w in args], []
     if name in WRITE_TOOLS:
-        return [], [vm_path(w, folder) for w in operands]
+        return [], [resolve_path(w, folder) for w in args]
     if name in IN_PLACE_TOOLS and any(
             w == '--in-place' or w.startswith('--in-place=')
             or re.fullmatch(r'-[A-Za-z]*i\S*', w) for w in rest[1:]):
-        return [], [vm_path(w, folder) for w in operands]
+        return [], [resolve_path(w, folder) for w in args]
     if name == 'dd':
-        return [], [vm_path(w[3:], folder) for w in rest[1:] if w.startswith('of=')]
+        return [], [resolve_path(w[3:], folder) for w in rest[1:] if w.startswith('of=')]
     if name in COPY_TOOLS or name == 'mv':
         target = next((rest[i + 1] for i, w in enumerate(rest[:-1]) if w == '-t'), None)
         target = target or next((w.split('=', 1)[1] for w in rest
                                  if w.startswith('--target-directory=')), None)
-        sources = operands if target else operands[:-1]
-        dest = target or (operands[-1] if len(operands) > 1 else None)
+        sources = args if target else args[:-1]
+        dest = target or (args[-1] if len(args) > 1 else None)
         if dest is None:
             return [], []
-        dest = vm_path(dest, folder)
+        dest = resolve_path(dest, folder)
         writes = [dest] + ([os.path.join(dest, os.path.basename(s.rstrip('/'))) for s in sources]
                            if dest else [])
-        moved = [vm_path(s, folder) for s in sources] if name == 'mv' else []
+        moved = [resolve_path(s, folder) for s in sources] if name == 'mv' else []
         return moved, writes
     return [], []
 
@@ -1116,9 +1138,9 @@ def compose_problem(args, folder, place):
                 i += 1
                 value = args[i] if i < len(args) else ''
             if flag in ('-f', '--file'):
-                files.append(vm_path(value, folder))
+                files.append(resolve_path(value, folder))
             elif flag == '--project-directory':
-                project = vm_path(value, folder)
+                project = resolve_path(value, folder)
         i += 1
     action = args[i] if i < len(args) else ''
     if action not in COMPOSE_ACTIONS:
@@ -1128,8 +1150,8 @@ def compose_problem(args, folder, place):
     files = files or [os.path.join(project, f) for f in COMPOSE_FILES]
     hit = next((w for w in args[i + 1:] if w in place.containers), None)
     if hit:
-        return VM_POWER_MESSAGE, {'container': hit, 'machine': place.containers[hit]}
-    if place.within(project, place.root) or place.within(project, place.old):
+        return power_message(hit, place)
+    if within(project, place.root) or within(project, place.old):
         return VM_POWER_MESSAGE, {'container': f'the compose project in {project}',
                                   'machine': os.path.basename(project)}
     if action in COMPOSE_STARTS and any('/dev/kvm' in file_text(f) for f in files):
@@ -1174,34 +1196,44 @@ def create_problem(args, folder, place):
     for source in mounts:
         if source.startswith('/dev/'):
             continue
-        path = vm_path(source, folder) if source.startswith(('/', '~', '.', '$')) else None
-        if not path or not place.within(path, allowed):
+        path = resolve_path(source, folder) if source.startswith(('/', '~', '.', '$')) else None
+        if not path or not within(path, allowed):
             return f'it mounts {source}; it may use mounts only under {allowed}/.'
     return None
 
 
-def human_flag(words, rest):
-    """The user-only flag or action a vm command uses, or None."""
-    first = len(words) - len(rest)
-    start = next((i for i, w in enumerate(words) if os.path.basename(w) == 'vm.py'
-                  and (i == first or os.path.basename(words[i - 1]).startswith('python'))), None)
-    if start is None and rest[:1] == ['vm']:
-        start = first
+def human_flag(rest):
+    """The user-only flag or action a vm command uses, or None. The vm command is `vm`, or
+    vm.py run directly or by python or uv."""
+    first = os.path.basename(rest[0]) if rest else ''
+    start = 0 if first in ('vm', 'vm.py') else next(
+        (i for i, w in enumerate(rest) if os.path.basename(w) == 'vm.py'), None) \
+        if first.startswith(INTERPRETERS) else None
     if start is None:
         return None
-    for word in words[start + 1:]:
+    args = rest[start + 1:]
+    for word in args:
         flag = word.split('=', 1)[0]
-        if len(flag) >= 5 and '--human'.startswith(flag):
+        if len(flag) >= 4 and '--human'.startswith(flag):  # argparse takes --hu for --human
             return '--human'
-        if word == 'reclaim':
-            return 'vm reclaim'
-    return None
+    action = operands(['vm', *args], {'--root'})
+    return 'vm reclaim' if action[:1] == ['reclaim'] else None
 
 
-def old_folder_problem(words, folder, place):
-    """(message, fields) for a word naming a path in the old ~/vm-busi folder, or None."""
+def search_patterns(rest):
+    """The pattern words of a grep-like search: the -e values, else the first operand."""
+    if not rest or os.path.basename(rest[0]) not in SEARCH_TOOLS:
+        return []
+    given = [rest[i + 1] for i, w in enumerate(rest[:-1]) if w in ('-e', '--regexp')]
+    return given or operands(rest, {'-e', '--regexp', '-f', '--file', '-g', '--glob', '-t',
+                                     '--type', '-A', '-B', '-C', '-m', '--max-count'})[:1]
+
+
+def old_folder_problem(words, folder, place, skip=()):
+    """(message, fields) for a word naming a path in the old ~/vm-busi folder, or None.
+    Words in skip are text (a search pattern), not paths."""
     for word in words:
-        if any(c.isspace() for c in word):
+        if any(c.isspace() for c in word) or word in skip:
             continue  # text, such as a commit message
         out = OUT_REDIRECT.fullmatch(word)
         candidates = [word, out.group('target')] if out else [word]
@@ -1211,10 +1243,10 @@ def old_folder_problem(words, folder, place):
             candidates.append(word[2:])
         for text in candidates:
             path_like = '/' in text or text.startswith(('~', '.', '$'))
-            if not path_like and not place.within(str(folder), place.old):
+            if not path_like and not within(str(folder), place.old):
                 continue
-            path = vm_path(text, folder)
-            if path and place.within(path, place.old) and (path_like or os.path.lexists(path)):
+            path = resolve_path(text, folder)
+            if path and within(path, place.old) and (path_like or os.path.lexists(path)):
                 return VM_OLD_MESSAGE, old_folder_fields(path, place)
     return None
 
@@ -1231,22 +1263,26 @@ def old_folder_fields(path, place):
             'hint': hint.format(root=place.root, rest=rest, vm=VM_COMMAND)}
 
 
+def power_message(container, place):
+    return VM_POWER_MESSAGE, {'container': container, 'machine': place.containers[container]}
+
+
 def vm_statement_problem(words, folder, command, place):
     """(message, fields) for one simple command that goes around vm borrowing, or None."""
-    found = old_folder_problem(words, folder, place)
-    if found:
-        return found
     plain, targets = split_redirections(words)
     rest = after_prefixes(plain)
     name = os.path.basename(rest[0]) if rest else ''
+    found = old_folder_problem(words, folder, place, search_patterns(rest))
+    if found:
+        return found
     if name == 'vmctl':
         return VM_OLD_MESSAGE, {**old_folder_fields(os.path.join(place.old, 'vmctl'), place),
                                 'path': 'vmctl'}
-    flag = human_flag(plain, rest)
+    flag = human_flag(rest)
     if flag:
         return VM_HUMAN_MESSAGE, {'flag': flag}
     moved, writes = written_paths(rest, name, folder)
-    writes = [*writes, *(vm_path(t, folder) for t in targets)]
+    writes = [p for p in (*writes, *(resolve_path(t, folder) for t in targets)) if p]
     for path in moved:
         hits = path_hits(path, place.destroy)
         if hits:
@@ -1256,21 +1292,21 @@ def vm_statement_problem(words, folder, command, place):
         if hits:
             return VM_STATE_MESSAGE, {'path': hits[0]}
     kind = schedule_problem(plain, rest, name, command, folder, place)
-    if kind is None and any(p and any(place.within(p, d) for d in schedule_places())
+    if kind is None and any(any(within(p, d) for d in schedule_places())
                             and os.path.basename(p).split('.')[0] != VM_WATCH_UNIT
                             for p in writes):
-        sources = [vm_path(w, folder) for w in rest[1:-1] if not w.startswith('-')]
-        if any(place.terms.search(t) for t in [command, *map(file_text, sources)]):
+        sources = [resolve_path(w, folder) for w in rest[1:-1] if not w.startswith('-')]
+        if any(place.terms.search(t) for t in [command, *(file_text(p) for p in sources if p)]):
             kind = 'systemd unit or cron entry'
     if kind:
         return VM_SCHEDULE_MESSAGE, {'kind': kind}
     sub, args = docker_command(rest)
     if sub == 'compose':
         return compose_problem(args, folder, place)
-    if sub in DOCKER_POWER:
-        hit = next((w for w in args if w in place.containers), None)
-        if hit:
-            return VM_POWER_MESSAGE, {'container': hit, 'machine': place.containers[hit]}
+    hit = next((w for w in args if w in place.containers), None)
+    if hit and (sub in DOCKER_POWER or sub == 'update' and any(
+            w.startswith('--restart') for w in args)):
+        return power_message(hit, place)
     if sub in ('run', 'create') and any('/dev/kvm' in w for w in args):
         if sub == 'run':
             return VM_RUN_MESSAGE, {'what': 'docker run'}
@@ -1282,7 +1318,7 @@ def vm_statement_problem(words, folder, command, place):
 
 def vm_problem(command, cwd):
     """The block message for a shell command that goes around vm borrowing, or None."""
-    place = VmPlace()
+    place = VmRegistry()
     for words, folder in vm_statements(command, cwd):
         found = vm_statement_problem(words, folder, command, place)
         if found:
@@ -1295,11 +1331,11 @@ def vm_file_problem(path, cwd):
     """The block message for a Claude file tool writing vm state or the old folder, or None."""
     if not isinstance(path, str) or not path:
         return None
-    place = VmPlace()
-    full = vm_path(path, cwd) or os.path.normpath(os.path.join(cwd, path))
+    place = VmRegistry()
+    full = resolve_path(path, cwd) or os.path.normpath(os.path.join(cwd, path))
     if path_hits(full, place.states):
         return VM_STATE_MESSAGE.format(vm=VM_COMMAND, root=place.root, path=full)
-    if place.within(full, place.old):
+    if within(full, place.old):
         return VM_OLD_MESSAGE.format(vm=VM_COMMAND, root=place.root,
                                      **old_folder_fields(full, place))
     return None

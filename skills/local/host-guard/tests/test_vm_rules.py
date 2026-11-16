@@ -81,7 +81,8 @@ class PowerTests(VmCase):
                         'docker stop other vm-win-1', 'sudo docker stop vm-win-1',
                         "bash -c 'docker stop vm-win-1'", 'x=$(docker start vm-win-1)',
                         'echo "$(docker stop vm-win-1)"', 'echo `docker stop vm-win-1`',
-                        'timeout 60 docker stop vm-win-1', 'cd /tmp && docker stop vm-mac-1']:
+                        'timeout 60 docker stop vm-win-1', 'cd /tmp && docker stop vm-mac-1',
+                        'docker update --restart=always vm-win-1']:
             with self.subTest(command):
                 result = self.blocked(command, 'vm borrow')
                 self.assertIn('vm return', result.stderr)
@@ -106,6 +107,7 @@ class PowerTests(VmCase):
                         'docker compose stop db', 'docker run --rm alpine echo hi',
                         'docker create --name scratch alpine',
                         'docker exec vm-win-1 ls', 'docker stats --no-stream',
+                        'docker update --memory 4g my-app',
                         'git commit -m "docker stop vm-win-1 is blocked now"',
                         'grep -rn "docker stop vm-win-1" skills/']:
             with self.subTest(command):
@@ -130,7 +132,11 @@ class StateFileTests(VmCase):
                         f'rm {r}/*.json', f'cd {r} && rm leases.json',
                         f'cd {r} && echo {{}} > leases.json', f'sudo rm {r}/leases.json',
                         f"bash -c 'rm {r}/leases.json'", 'rm $VM_HOME/leases.json',
-                        'echo {} > ${VM_HOME}/leases.json']:
+                        'echo {} > ${VM_HOME}/leases.json',
+                        f'jq . {r}/leases.json | sponge {r}/leases.json',
+                        f'find {r} -name "*.json" -delete', f'find {r} -exec rm {{}} +',
+                        f'x=$(rm {r}/leases.json)', f'echo "$(cp /tmp/x {r}/leases.json)"',
+                        f'timeout 5 sudo tee {r}/leases.json < /tmp/x']:
             with self.subTest(command):
                 result = self.blocked(command, 'only the vm command writes')
                 self.assertIn('vm extend', result.stderr)
@@ -149,7 +155,9 @@ class StateFileTests(VmCase):
                         f'grep luna {r}/leases.json', f'ls -la {r}', f'cp x {r}/win/notes.txt',
                         f'echo hi > {r}/win/oem/install.bat', f'rm {r}/win/old.iso',
                         'echo hi > /tmp/leases.json', 'rm -rf /tmp/vm-test',
-                        'sed -i s/a/b/ notes.txt', 'touch README.md']:
+                        'sed -i s/a/b/ notes.txt', 'touch README.md',
+                        f'find {r} -name "*.json"', f'find {r} -exec cat {{}} +',
+                        'find ~ -name "*.tmp" -delete', f'find {self.home} -name x -delete']:
             with self.subTest(command):
                 self.allowed(command)
 
@@ -202,13 +210,18 @@ class ScheduleTests(VmCase):
                         "at now + 1 hour <<'EOF'\ndocker stop vm-mac-1\nEOF",
                         '(crontab -l; echo "0 3 * * * docker stop vm-win-1") | crontab -',
                         f"cat > {unit_dir}/x.service <<'EOF'\n[Service]\n"
-                        "ExecStart=docker stop vm-win-1\nEOF"]:
+                        "ExecStart=docker stop vm-win-1\nEOF",
+                        'sudo systemctl start qa290-mac-guard.service',
+                        "bash -c 'systemctl --user start stopper.timer'",
+                        'x=$(systemd-run --user --on-active=1h docker stop vm-win-1)',
+                        'systemctl -M host --user start qa290-mac-guard']:
             with self.subTest(command):
                 self.blocked(command, 'vm watcher')
 
     def test_unrelated_schedules_and_the_vm_watcher_pass(self):
         self.unit('backup.service', '[Service]\nExecStart=/usr/bin/rsync -a a b\n')
         self.unit('vm-watch.service', '[Service]\nExecStart=uv run python vm.py watch\n')
+        self.unit('mac-notify.service', '[Service]\nExecStart=notify-send hi\n')
         for command in ['systemctl --user start backup.service',
                         'systemctl --user enable --now vm-watch.service',
                         'systemctl --user restart lat-board', 'systemctl --user status vm-watch',
@@ -216,7 +229,9 @@ class ScheduleTests(VmCase):
                         'systemd-run --user --scope -p MemoryMax=4G timeout 60 '
                         'pytest skills/local/vm/tests/test_vm.py',
                         'echo "make report" | at now + 1 hour', 'crontab -l',
-                        'crontab -l | grep vm-win-1']:
+                        'crontab -l | grep vm-win-1', 'systemctl --user restart mac-notify.service',
+                        'systemctl --user start win-build.timer',
+                        'systemd-run --user --wait uv run python ~/.agents/skills/vm/scripts/vm.py list']:
             with self.subTest(command):
                 self.allowed(command)
 
@@ -228,7 +243,8 @@ class KvmCreateTests(VmCase):
                         'dockurr/windows',
                         'docker run --device /dev/kvm sickcodes/docker-osx',
                         'docker run -v /dev/kvm:/dev/kvm x', 'docker container run --device=/dev/kvm x',
-                        "sudo bash -c 'docker run --device=/dev/kvm x'"]:
+                        "sudo bash -c 'docker run --device=/dev/kvm x'",
+                        'id=$(docker run -d --device=/dev/kvm x)']:
             with self.subTest(command):
                 self.blocked(command, 'docker create')
 
@@ -275,7 +291,11 @@ class HumanFlagTests(VmCase):
                         f'{vm} borrow win x --hum', f'{vm} reclaim win --stop',
                         f'{vm} --root /tmp/v reclaim win --to-human', 'vm borrow win x --human',
                         'vm reclaim win --stop', 'python3 skills/local/vm/scripts/vm.py reclaim win --stop',
-                        f"bash -c '{vm} reclaim win --stop'"]:
+                        f"bash -c '{vm} reclaim win --stop'", f'{vm} borrow win x --hu',
+                        'uv run ~/.agents/skills/vm/scripts/vm.py reclaim win --stop',
+                        'python3 -u ~/.agents/skills/vm/scripts/vm.py reclaim win --stop',
+                        '~/.agents/skills/vm/scripts/vm.py borrow --human win x',
+                        f'sudo {vm} reclaim win --stop', f'x=$({vm} borrow --human win x)']:
             with self.subTest(command):
                 self.blocked(command, 'for the user only')
 
@@ -284,6 +304,8 @@ class HumanFlagTests(VmCase):
         for command in [f'{vm} list', f'{vm} borrow win "test installer" --hours 2',
                         f'{vm} extend win --hours 1', f'{vm} return win', f'{vm} start win',
                         f'{vm} status win', 'vm list', 'grep -n reclaim skills/local/vm/SKILL.md',
+                        f'{vm} borrow win reclaim', f'{vm} --root /tmp/reclaim list',
+                        'grep -n -- --human skills/local/vm/scripts/vm.py',
                         'git commit -m "vm reclaim --human is user only"']:
             with self.subTest(command):
                 self.allowed(command)
@@ -327,7 +349,9 @@ class OldFolderTests(VmCase):
     def test_text_about_the_old_folder_passes(self):
         for command in ['git commit -m "move ~/vm-busi/ssh-config to the new place"',
                         'grep -rn vm-busi docs/', "echo 'see ~/vm-busi/ssh-config'",
-                        'ls ~/vm-busier', 'cat notes/vm-busi.md']:
+                        'ls ~/vm-busier', 'cat notes/vm-busi.md',
+                        "rg -n '~/vm-busi/ssh-config' ~/proj", 'grep -rln ~/vm-busi docs',
+                        'grep -rn -e ~/vm-busi/vmctl .']:
             with self.subTest(command):
                 self.allowed(command)
 
