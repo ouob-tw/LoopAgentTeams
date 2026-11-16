@@ -82,7 +82,8 @@ class PowerTests(VmCase):
                         "bash -c 'docker stop vm-win-1'", 'x=$(docker start vm-win-1)',
                         'echo "$(docker stop vm-win-1)"', 'echo `docker stop vm-win-1`',
                         'timeout 60 docker stop vm-win-1', 'cd /tmp && docker stop vm-mac-1',
-                        'docker update --restart=always vm-win-1']:
+                        'docker update --restart=always vm-win-1',
+                        'docker update --restart unless-stopped vm-mac-1']:
             with self.subTest(command):
                 result = self.blocked(command, 'vm borrow')
                 self.assertIn('vm return', result.stderr)
@@ -107,7 +108,7 @@ class PowerTests(VmCase):
                         'docker compose stop db', 'docker run --rm alpine echo hi',
                         'docker create --name scratch alpine',
                         'docker exec vm-win-1 ls', 'docker stats --no-stream',
-                        'docker update --memory 4g my-app',
+                        'docker update --memory 4g my-app', 'docker update --restart=no vm-win-1',
                         'git commit -m "docker stop vm-win-1 is blocked now"',
                         'grep -rn "docker stop vm-win-1" skills/']:
             with self.subTest(command):
@@ -135,6 +136,7 @@ class StateFileTests(VmCase):
                         'echo {} > ${VM_HOME}/leases.json',
                         f'jq . {r}/leases.json | sponge {r}/leases.json',
                         f'find {r} -name "*.json" -delete', f'find {r} -exec rm {{}} +',
+                        f'find {self.tmp} -name leases.json -delete', f'cd {r} && find . -delete',
                         f'x=$(rm {r}/leases.json)', f'echo "$(cp /tmp/x {r}/leases.json)"',
                         f'timeout 5 sudo tee {r}/leases.json < /tmp/x']:
             with self.subTest(command):
@@ -157,7 +159,8 @@ class StateFileTests(VmCase):
                         'echo hi > /tmp/leases.json', 'rm -rf /tmp/vm-test',
                         'sed -i s/a/b/ notes.txt', 'touch README.md',
                         f'find {r} -name "*.json"', f'find {r} -exec cat {{}} +',
-                        'find ~ -name "*.tmp" -delete', f'find {self.home} -name x -delete']:
+                        'find ~ -name "*.tmp" -delete', f'find {self.home} -name x -delete',
+                        f'find {r} -name "*.tmp" -delete', f'find {r}/win -delete']:
             with self.subTest(command):
                 self.allowed(command)
 

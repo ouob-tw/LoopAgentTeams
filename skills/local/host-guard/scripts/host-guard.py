@@ -906,7 +906,6 @@ class VmRegistry:
             if isinstance(value, dict) else {}
 
 
-
 def within(path, folder):
     """True when path is folder or inside it."""
     return path == folder or path.startswith(folder.rstrip('/') + '/')
@@ -1077,13 +1076,8 @@ def written_paths(rest, name, folder):
 
 
 def word_paths(rest, name, folder):
+    """written_paths before unresolved paths are dropped."""
     args = [w for w in rest[1:] if not w.startswith('-')]
-    if name == 'find' and ('-delete' in rest or any(
-            w in ('-exec', '-execdir', '-ok') and os.path.basename(n) in DESTROY_TOOLS | WRITE_TOOLS
-            | {'mv', 'sed', 'perl'} for w, n in zip(rest, rest[1:]))):
-        starts = [w for w in rest[1:] if not w.startswith(('-', '(', '!'))][:1]
-        found = [resolve_path(w, folder) for w in starts]
-        return [], [os.path.join(p, '*') for p in found if p]  # what it may delete inside
     if name == 'gio' and args[:1] == ['trash']:
         return [resolve_path(w, folder) for w in args[1:]], []
     if name in DESTROY_TOOLS:
@@ -1264,7 +1258,26 @@ def old_folder_fields(path, place):
 
 
 def power_message(container, place):
+    """The block for a docker power action on a listed VM container."""
     return VM_POWER_MESSAGE, {'container': container, 'machine': place.containers[container]}
+
+
+def find_problem(rest, folder, place):
+    """The vm state file a find deletes or changes, by its start folders and its -name and
+    -path tests, or None."""
+    changing = '-delete' in rest or any(
+        w in ('-exec', '-execdir', '-ok') and os.path.basename(n) in DESTROY_TOOLS | WRITE_TOOLS
+        | IN_PLACE_TOOLS | {'mv'} for w, n in zip(rest, rest[1:]))
+    if not changing:
+        return None
+    starts = [p for p in (resolve_path(w, folder) for w in rest[1:]
+                          if not w.startswith(('-', '(', '!', ')'))) if p]
+    starts = starts[:1] or [str(folder)]
+    names = [n for w, n in zip(rest, rest[1:]) if w in ('-name', '-iname')]
+    paths = [n for w, n in zip(rest, rest[1:]) if w in ('-path', '-wholename')]
+    return next((state for state in sorted(place.states) if within(state, starts[0])
+                 and all(fnmatch.fnmatchcase(os.path.basename(state), n) for n in names)
+                 and all(fnmatch.fnmatchcase(state, p) for p in paths)), None)
 
 
 def vm_statement_problem(words, folder, command, place):
@@ -1281,6 +1294,9 @@ def vm_statement_problem(words, folder, command, place):
     flag = human_flag(rest)
     if flag:
         return VM_HUMAN_MESSAGE, {'flag': flag}
+    state = find_problem(rest, folder, place) if name == 'find' else None
+    if state:
+        return VM_STATE_MESSAGE, {'path': state}
     moved, writes = written_paths(rest, name, folder)
     writes = [p for p in (*writes, *(resolve_path(t, folder) for t in targets)) if p]
     for path in moved:
@@ -1304,8 +1320,9 @@ def vm_statement_problem(words, folder, command, place):
     if sub == 'compose':
         return compose_problem(args, folder, place)
     hit = next((w for w in args if w in place.containers), None)
-    if hit and (sub in DOCKER_POWER or sub == 'update' and any(
-            w.startswith('--restart') for w in args)):
+    restart = next((w.split('=', 1)[1] if '=' in w else args[i + 1] if i + 1 < len(args) else ''
+                    for i, w in enumerate(args) if w.split('=', 1)[0] == '--restart'), 'no')
+    if hit and (sub in DOCKER_POWER or sub == 'update' and restart != 'no'):
         return power_message(hit, place)
     if sub in ('run', 'create') and any('/dev/kvm' in w for w in args):
         if sub == 'run':

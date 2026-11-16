@@ -82,8 +82,8 @@ kill <PID>
 | 擋下的動作 | 改用 |
 |---|---|
 | 對機器清單上的容器 `docker start／stop／restart／kill／rm／pause／unpause`、`docker update --restart`（含 `docker container …`）；`docker compose` 指名這些容器，或專案在 `~/vm` 底下 | `vm borrow`、`vm start`、`vm return` |
-| 寫入、搬移或刪除 `~/vm` 的狀態檔：`machines.json`、`leases.json`、`watch-state.json`、`vm.log`、`.lock`，或整個 `~/vm`（重新導向、`cp`、`mv`、`rm`、`tee`、`sponge`、`sed -i`、`truncate`、`dd of=`、`find … -delete` 等）；Claude 的 Write、Edit、NotebookEdit 寫這些檔案也擋 | `vm extend`、`vm return`、`vm add` |
-| 開關虛擬機的排程：`systemd-run`（`--scope` 除外）、`systemctl start／enable／restart` 的服務或計時器、`at`、`crontab`，或寫進 systemd、cron 設定資料夾，內容提到清單容器、`/dev/kvm`、`vm.py`（`list`、`status` 除外）、`~/vm`、`vm-busi` 等。`systemctl` 看單元檔內容，找不到單元檔時才看名稱 | 借用時給夠時間（`--hours`），`vm extend` 延長；看守程式負責到期關機 |
+| 寫入、搬移或刪除 `~/vm` 的狀態檔：`machines.json`、`leases.json`、`watch-state.json`、`vm.log`、`.lock`，或整個 `~/vm`（重新導向、`cp`、`mv`、`rm`、`tee`、`sponge`、`sed -i`、`truncate`、`dd of=`、`find … -delete` 依起點與 `-name`、`-path` 判斷等）；Claude 的 Write、Edit、NotebookEdit 寫這些檔案也擋 | `vm extend`、`vm return`、`vm add` |
+| 開關虛擬機的排程：`systemd-run`（`--scope` 除外）、`systemctl start／enable／restart` 的服務或計時器、`at`、`crontab`，或寫進 systemd、cron 設定資料夾，內容提到清單容器、`/dev/kvm`、`vm.py`（`list`、`status` 除外）、`~/vm`、`vm-busi` 等。`systemctl` 看標準位置（`~/.config/systemd/user` 等）的單元檔內容，找不到單元檔時才看名稱 | 借用時給夠時間（`--hours`），`vm extend` 延長；看守程式負責到期關機 |
 | 掛 `/dev/kvm` 的 `docker run`（含 `docker compose up` 的設定檔有 `/dev/kvm`），一律擋 | `vm add` → `docker create` → `vm start` |
 | 掛 `/dev/kvm` 的 `docker create`：容器名稱不在清單上、呼叫者（`HCOM_INSTANCE_NAME`）不是這台目前的借用者，或掛載不在 `~/vm/<機器>/` 底下（`/dev/…` 裝置除外） | 先 `vm add` 登記，以借用者身分照 vm 技能的「新增機器」建立 |
 | `vm` 的使用者專用旗標 `--human` 與 `vm reclaim` | 問借用者或使用者 |
