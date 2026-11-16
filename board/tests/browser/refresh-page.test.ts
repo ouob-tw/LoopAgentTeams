@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { question, sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 const COUNT_POPSTATE = `(() => { const add = window.addEventListener; window.popstateListeners = 0; window.addEventListener = function(type, ...rest) { if (type === 'popstate') window.popstateListeners++; return add.call(this, type, ...rest); }; })()`;
 const STARTED = `window.popstateListeners >= 2`;
 const SCREEN = `document.body.innerText`;
@@ -29,7 +29,7 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 const count = (path: string) => tab.eval<number>(`window.requests214.filter(url => url.split('?')[0] === ${JSON.stringify(path)}).length`);
-async function navigate(path: string) { await tab.navigate(fixture.url + path); await tab.until(STARTED); }
+async function navigate(path: string) { await tab.navigate(fixture.url + path); await tab.boardStarted({ started: STARTED }); }
 test.skipIf(!CHROME)('five snapshot pushes reuse location/history; a recorded answer reloads history once; moving a tab updates its next snapshot', async () => {
 	await navigate('/?controller=' + controller.session_id);
 	await tab.until(`document.querySelector('.profile h2')?.innerText === 'alpha'`);
@@ -57,7 +57,7 @@ test.skipIf(!CHROME)('five snapshot pushes reuse location/history; a recorded an
 	await tab.until(`window.requests214.filter(url=>url.startsWith('/api/answered')).length === ${answered + 1}`);
 	await sleep(200);
 	expect(await count('/api/answered')).toBe(answered + 1);
-}, 30000);
+}, TEST_MS);
 test.skipIf(!CHROME)('an idle new-controller page stays open for forty seconds with no timer reload; a waiting launch reloads once at expiry', async () => {
 	await navigate('/?launch');
 	await tab.until(`window.requests214.includes('/api/launches')`);

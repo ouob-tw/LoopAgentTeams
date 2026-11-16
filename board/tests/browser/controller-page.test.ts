@@ -69,7 +69,7 @@ async function visit(width: number) {
 }
 async function open() {
 	await tab.navigate(`${fixture.url}/?controller=${luna.session_id}`);
-	await tab.until(STARTED, 'the board to start');
+	await tab.boardStarted({ started: STARTED });
 	await tab.until(`document.querySelector('.detail [role="tablist"]') && document.querySelector('.detail .profile h2')?.innerText === 'alpha'`, "the controller's page");
 }
 
@@ -293,7 +293,7 @@ test.skipIf(!CHROME)("at a phone's width the tag shows the duty; a long press ex
 	await visit(390);
 	await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
 	await tab.navigate(`${fixture.url}/`);
-	await tab.until(STARTED, 'the board to start');
+	await tab.boardStarted({ started: STARTED });
 	await tab.until(`document.querySelector(${JSON.stringify(CARD)})?.innerText.includes('整理看板名冊')`, 'the duty on the tag');
 
 	const at = await middle(CARD);

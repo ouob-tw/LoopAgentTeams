@@ -3,7 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, expect, test } from 'bun:test';
-import { launchChrome, REQUEST_MS, Tab, type Browser } from '../browser.ts';
+import { launchChrome, REQUEST_MS, START_MS, Tab, TEST_MS, type Browser } from '../browser.ts';
 
 let browser: Browser | undefined;
 afterEach(async () => {
@@ -44,17 +44,54 @@ test('Tab.until gives a check only the time left and takes no answer after its d
 	tab.close();
 });
 
+/** A socket in place of Chrome's whose page goes through the board's start stages at the times in
+ *  `stages` (ms from now): loaded, then hydrated, then started; one not given is never reached. */
+class StartingPage extends EventTarget {
+	#begun = Date.now();
+	constructor(private stages: number[]) {
+		super();
+	}
+	send(text: string) {
+		const { id } = JSON.parse(text);
+		const passed = this.stages.filter((at) => Date.now() - this.#begun >= at).length;
+		const value = { stage: Math.min(passed, 2), met: passed === 3 };
+		queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ id, result: { result: { value } } }) })));
+	}
+	close() {
+		this.dispatchEvent(new Event('close'));
+	}
+}
+
+test('Tab.boardStarted waits START_MS, and its timeout says how long it waited and the stage it was stuck at', async () => {
+	expect(START_MS).toBe(30_000);
+	const wait = (stages: number[]) => new Tab(new StartingPage(stages) as unknown as WebSocket).boardStarted({ ms: 600 }).then(() => 'met', (error: Error) => String(error));
+	expect(await wait([0, 100, 200])).toBe('met');
+	// The times are only checked to be there and in order, so a slow host cannot make this fail.
+	const seconds = (text: string) => [...text.matchAll(/(\d+\.\d) s/g)].map((match) => Number(match[1]));
+	const never = await wait([]);
+	expect(never).toMatch(/^Error: timed out after \d+\.\d s waiting for the board to start, stuck at loading the page$/);
+	expect(seconds(never)[0]).toBeGreaterThanOrEqual(0.6);
+	const hydrated = await wait([0, 150]);
+	expect(hydrated).toMatch(
+		/^Error: timed out after \d+\.\d s waiting for the board to start, stuck at its start check after hydration \(done: loading the page after \d+\.\d s, starting the page's scripts \(hydration\) after \d+\.\d s\)$/
+	);
+	const [waited, loaded, started] = seconds(hydrated);
+	expect(loaded).toBeLessThanOrEqual(started);
+	expect(started).toBeGreaterThanOrEqual(0.1);
+	expect(started).toBeLessThanOrEqual(waited);
+});
+
 test('Tab.until in a real Chrome: a never answered check ends near the deadline, and one check gets at most REQUEST_MS', async () => {
 	browser = await launchChrome();
 	const wait = (ms: number) => browser!.tab.until('new Promise(() => {})', 'the check', ms).catch((error: Error) => String(error));
 	let started = Date.now();
 	expect(await wait(500)).toContain('timed out waiting for the check: no answer from Chrome in');
 	expect(Date.now() - started).toBeLessThan(3_000);
-	// A longer wait still gives one check no more than REQUEST_MS, well before Bun's 30 s.
+	// A longer wait still gives one check no more than REQUEST_MS, well before Bun's limit (TEST_MS).
 	started = Date.now();
 	expect(await wait(30_000)).toContain(`timed out waiting for the check: no answer from Chrome in ${REQUEST_MS} ms`);
 	expect(Date.now() - started).toBeLessThan(REQUEST_MS + 2_000);
-}, 30_000);
+}, TEST_MS);
 
 test('a request waiting when Chrome ends fails at once with how Chrome ended, and so does the next', async () => {
 	browser = await launchChrome();
@@ -65,4 +102,4 @@ test('a request waiting when Chrome ends fails at once with how Chrome ended, an
 	expect(String(await pending)).toMatch(/the Chrome tab (closed|failed): Chrome exited with SIGKILL/);
 	expect(Date.now() - started).toBeLessThan(3_000);
 	expect(String(await tab.eval('1 + 1').catch((error: Error) => error))).toMatch(/Chrome exited with SIGKILL/);
-}, 30_000);
+}, TEST_MS);

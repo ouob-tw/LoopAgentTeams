@@ -39,6 +39,7 @@ const LINE_SHOWN = `getComputedStyle(document.querySelector('.cmd')).display !==
 async function open(page: string, width = 1200, height = 800) {
 	await tab().send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab().navigate(`${fixture.url}/${page}`);
+	await tab().boardStarted();
 	await until(`!!document.querySelector('#folder-box')?.value`, 'the page hydrated');
 	await evaluate(`(() => {
 		const real = window.fetch;

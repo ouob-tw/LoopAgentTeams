@@ -7,7 +7,7 @@ import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from '
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { jsonLines, sleep, startFixture, type Fixture } from '../harness.ts';
-import { launchChrome, type Browser, type Tab } from '../browser.ts';
+import { launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 const SHOTS = process.env.SCREEN_TAB_SHOTS;
 const ESC = '\x1b';
@@ -94,7 +94,7 @@ async function visit({ width, height, phone, agent = 's-plain' }: { width: numbe
 	// The screen colours checked are the dark theme's; a test Chrome has no system preference of its own.
 	await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=${agent}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 async function shot(name: string) {
 	if (!SHOTS) return;
@@ -262,7 +262,7 @@ test('after the connection drops and comes back, the tab shows the latest screen
 	await fixture.start();
 	await tab.until(`document.querySelector('.screen-panel pre')?.innerText.includes('back after the drop')`, 'the latest screen', 20_000);
 	await shot('desktop-after-reconnect');
-}, 40_000);
+}, TEST_MS);
 
 test('phone: a press made offline stays refused after the connection comes back, until the server takes its recovery request and reads the screen again', async () => {
 	await visit({ width: 390, height: 844, phone: true });
@@ -296,7 +296,7 @@ test('phone: a press made offline stays refused after the connection comes back,
 	await tab.until(`${KEYS}.every((button) => !button.disabled)`, 'the keys enabled again', 10_000);
 	expect(herdrCalls()).toEqual([]);
 	await shot('phone-offline-press-recovered');
-}, 40_000);
+}, TEST_MS);
 
 test('phone on its side (844x390, touch): every one of the 13 keys is whole inside the screen and tappable, the page does not scroll and the screen box is still above the dock', async () => {
 	await visit({ width: 844, height: 390, phone: true });

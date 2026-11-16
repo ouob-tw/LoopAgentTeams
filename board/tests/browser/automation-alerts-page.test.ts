@@ -9,7 +9,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { question, sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 import type { AlertsSnapshot, AutomationAlert } from '../../src/lib/board/alerts.ts';
 import type { AutomationSnapshot, AutomationTask } from '../../src/lib/board/automation.ts';
 import { NOT_HTTPS } from '../../src/lib/board/push-setup.ts';
@@ -127,7 +127,7 @@ async function visit(width: number, path = '/?tab=inbox', origin = fixture.url, 
 	await tab.until(`document.readyState === 'complete'`, 'a page of the board');
 	await tab.eval(`localStorage.setItem('lat-board-inbox-width', '400')`);
 	await tab.send('Page.navigate', { url: `${origin}${path}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 const click = (selector: string) => tab.eval(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (!node) throw new Error('no ${selector.replace(/'/g, '')}'); node.click(); })()`);
 const text = (selector: string) => tab.eval<string>(`document.querySelector(${JSON.stringify(selector)})?.innerText ?? ''`);
@@ -199,8 +199,10 @@ test.skipIf(!CHROME)('重跑一次 starts the task now; 打開自動化設定 op
 	await tab.until(`location.search.includes('automation=${failedTask.id}') && !!document.querySelector('.detail [data-task="${failedTask.id}"]')`, 'the task page');
 	expect(await tab.eval(`document.querySelector('[data-middle="automation"]').getAttribute('aria-pressed')`)).toBe('true');
 
+	await tab.eval('window.beforeNavigate = true');
 	await tab.send('Page.navigate', { url: `${fixture.url}/?alert=${failedCard.id}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth') && !!${button('.detail [data-alert]', '知道了，關掉紅卡')}`, 'the card page again');
+	await tab.boardStarted({ started: `!window.beforeNavigate && ${BOARD_STARTED}`, what: 'the card page to start again' });
+	await tab.until(`!!${button('.detail [data-alert]', '知道了，關掉紅卡')}`, 'the card page again');
 	const kept = JSON.stringify((await automation()).tasks.find((view) => view.task.id === failedTask.id)!.runs);
 	await tab.eval(`${button('.detail [data-alert]', '知道了，關掉紅卡')}.click()`);
 	await tab.until(`!document.querySelector('[data-alert-row="${failedCard.id}"]') && !!document.querySelector('.detail [data-closed]')`, 'the card closed');
@@ -267,7 +269,7 @@ const pushNow = async () => (await (await fixture.fetch('/api/push', { cookie })
 const reload = async () => {
 	await tab.eval(`window.__old = true`);
 	await tab.send('Page.reload');
-	await tab.until(`!window.__old && JSON.stringify(history.state).includes('depth')`, 'the board again');
+	await tab.boardStarted({ started: `!window.__old && ${BOARD_STARTED}`, what: 'the board again' });
 	await sleep(1000);
 };
 const openSettings = async (label = 'the push state') => {

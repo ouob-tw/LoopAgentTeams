@@ -1,5 +1,5 @@
 import { answerHerdrList } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 // The 所有 Agent tab in a real browser: headless Chrome driven over its DevTools protocol, on the
 // built board with fake data, wide and at a phone's width. Skipped when the host has no Chrome.
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -134,7 +134,7 @@ async function visit(width: number, search = '') {
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/${search}` });
 	// Started: the board's first history write is done, so its buttons work.
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 const openTab = () => tab.eval(`document.querySelector('[data-middle="agents"]').click()`);
 /** The command line, which is the open agent's box; its send button, and the stop that stands in
@@ -192,7 +192,7 @@ for (const width of [1280, 390]) {
 			await tab.eval(`document.querySelector('.topbar button').click()`);
 			await tab.until(`location.search === '?tab=agents' && !!document.querySelector('.inbox [data-agent="s-plain"]')`, 'the list again');
 		}
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('the conversation shows the newest first and loads earlier parts at its end', async () => {
@@ -206,7 +206,7 @@ test.skipIf(!CHROME)('the conversation shows the newest first and loads earlier 
 	await tab.until(`${texts}.some((text) => text.includes('第 0 段'))`, 'the earlier part');
 	shown = await tab.eval<string[]>(texts);
 	expect(shown.at(-1)).toContain('第 0 段');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a reload keeps the tab the list was switched to', async () => {
 	await visit(1280);
@@ -214,10 +214,10 @@ test.skipIf(!CHROME)('a reload keeps the tab the list was switched to', async ()
 	await tab.until(`!!document.querySelector('.inbox [data-agent="s-plain"]')`, 'the agent list');
 	await tab.eval('window.beforeReload = true');
 	await tab.send('Page.reload');
-	await tab.until(`!window.beforeReload && JSON.stringify(history.state).includes('depth')`, 'the reloaded board');
+	await tab.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the reloaded board' });
 	await tab.until(`!!document.querySelector('.inbox [data-agent="s-plain"]')`, 'the agent list after the reload');
 	expect(await tab.eval(`document.querySelector('[data-middle="agents"]').getAttribute('aria-pressed')`)).toBe('true');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('an agent opened from another agent\'s page goes back to the list, after a reload too', async () => {
 	const LIST = `location.search === '?tab=agents' && !document.querySelector('.detail [data-agent]')`;
@@ -238,11 +238,12 @@ test.skipIf(!CHROME)('an agent opened from another agent\'s page goes back to th
 	// A reload, then the phone's "←".
 	await tab.eval('window.beforeReload = true');
 	await tab.send('Page.reload');
-	await tab.until(`!window.beforeReload && JSON.stringify(history.state).includes('depth') && !!document.querySelector('.detail [data-agent="s-other"]')`, 'the reloaded agent');
+	await tab.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the reloaded board to start' });
+	await tab.until(`!!document.querySelector('.detail [data-agent="s-other"]')`, 'the reloaded agent');
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: true });
 	// Tapped until it works: the reloaded entry has its depth before the page's buttons do.
 	await tab.until(`(document.querySelector('.topbar button')?.click(), ${LIST})`, 'the list after the reload');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('an address that opens an agent shows its tab; an agent Herdr no longer lists says so', async () => {
 	await visit(1280, '?agent=s-other');
@@ -258,7 +259,7 @@ test.skipIf(!CHROME)('an address that opens an agent shows its tab; an agent Her
 	expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-other"]')`)).toBe(false);
 	setHerdr(AGENTS);
 	await fixture.refresh(cookie);
-}, 30_000);
+}, TEST_MS);
 
 /** The Herdr commands that act on an agent, not the lists every read makes nor the pane list that
  *  checks a close. */
@@ -304,7 +305,7 @@ for (const width of [1280, 390]) {
 		expect(log.indexOf('中斷')).toBeLessThan(log.indexOf('請先停下來'));
 		expect(log).toContain('已送出');
 		expect(await tab.eval(FITS)).toBe(true);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('text Herdr refuses stays in the box with Herdr\'s reason, and is not sent again', async () => {
@@ -326,7 +327,7 @@ test.skipIf(!CHROME)('text Herdr refuses stays in the box with Herdr\'s reason, 
 	} finally {
 		setHerdr(AGENTS);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('while hcom cannot tell whether an agent is linked, its box is off but it can still be interrupted', async () => {
 	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
@@ -350,7 +351,7 @@ test.skipIf(!CHROME)('while hcom cannot tell whether an agent is linked, its box
 		setHerdr(AGENTS);
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('an action from another device shows in an open record at once', async () => {
 	await visit(1280, '?agent=s-plain');
@@ -368,7 +369,7 @@ test.skipIf(!CHROME)('an action from another device shows in an open record at o
 	});
 	expect(response.status).toBe(200);
 	await tab.until(`document.querySelectorAll('.detail #agent-panel-log li').length === ${count + 1}`, 'the new entry');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('an interrupt\'s notice names the agent interrupted, even when another one is open by then', async () => {
 	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
@@ -392,7 +393,7 @@ test.skipIf(!CHROME)('an interrupt\'s notice names the agent interrupted, even w
 	} finally {
 		setHerdr(AGENTS);
 	}
-}, 30_000);
+}, TEST_MS);
 
 for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: closing an agent asks first, shows the result and the agent is not listed after a reload`, async () => {
@@ -416,13 +417,14 @@ for (const width of [1280, 390]) {
 			await tab.until(`!!document.querySelector('.inbox [data-agent="s-other"]')`, 'the agent list');
 			await tab.eval('window.beforeReload = true');
 			await tab.send('Page.reload');
-			await tab.until(`!window.beforeReload && !!document.querySelector('.inbox [data-agent="s-other"]')`, 'the reloaded list');
+			await tab.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the reloaded board to start' });
+			await tab.until(`!!document.querySelector('.inbox [data-agent="s-other"]')`, 'the reloaded list');
 			expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-plain"]')`)).toBe(false);
 		} finally {
 			setHerdr(AGENTS);
 			await fixture.refresh(cookie);
 		}
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('a close Herdr refuses says why and leaves the agent on its page; a controller\'s confirmation says it can be woken', async () => {
@@ -454,7 +456,7 @@ test.skipIf(!CHROME)('a close Herdr refuses says why and leaves the agent on its
 	} finally {
 		setHerdr(AGENTS);
 	}
-}, 30_000);
+}, TEST_MS);
 
 /** A Claude linked to hcom and listening, with every agent's pane in Herdr, for a model switch. */
 const LINKED = herdrAgent('s-link', { status: 'idle' });
@@ -499,7 +501,7 @@ test.skipIf(!CHROME)("an idle controller's information page closes it as the 所
 		// Opened from the Herdr tab it asks what its controller page asks.
 		await tab.eval('window.beforeNavigate = true');
 		await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-idle` });
-		await tab.until(`!window.beforeNavigate && JSON.stringify(history.state).includes('depth')`, 'the board to start on the agent page');
+		await tab.boardStarted({ started: `!window.beforeNavigate && ${BOARD_STARTED}`, what: 'the board to start on the agent page' });
 		await tab.until(`(${header}).includes('@idol') && !!document.querySelector('.detail [data-action="close"]')`, 'its page on the Herdr tab');
 		await click('.detail [data-action="close"]');
 		await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'its agent page confirmation');
@@ -509,13 +511,13 @@ test.skipIf(!CHROME)("an idle controller's information page closes it as the 所
 		// Opened at its report, its page has the same close.
 		await tab.eval('window.beforeNavigate = true');
 		await tab.send('Page.navigate', { url: `${fixture.url}/?item=s-idle%230` });
-		await tab.until(`!window.beforeNavigate && JSON.stringify(history.state).includes('depth')`, 'the board to start on the report');
+		await tab.boardStarted({ started: `!window.beforeNavigate && ${BOARD_STARTED}`, what: 'the board to start on the report' });
 		await tab.until(`(${header}).includes('@idol') && !!document.querySelector('.detail [data-action="close"]')`, 'the report on its page, with 關閉');
 		expect((await screen()).detail).not.toContain('找不到它的分頁');
 
 		await tab.eval('window.beforeNavigate = true');
 		await tab.send('Page.navigate', { url: `${fixture.url}/?controller=s-idle` });
-		await tab.until(`!window.beforeNavigate && JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.boardStarted({ started: `!window.beforeNavigate && ${BOARD_STARTED}`, what: 'the board to start again' });
 		await tab.until(`(${header}).includes('@idol') && !!document.querySelector('.detail [data-action="close"]')`, "the idle controller's page");
 		expect(await tab.eval<string>(header)).toContain('閒置');
 		expect(await tab.eval<string>(`document.querySelector('.detail [data-action="close"]').innerText`)).toBe('關閉');
@@ -618,7 +620,7 @@ for (const width of [1280, 390]) {
 			fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
 			await fixture.refresh(cookie);
 		}
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('after a switch the parts show what it sent until the resumed session has a turn, then that turn', async () => {
@@ -658,7 +660,7 @@ test.skipIf(!CHROME)('after a switch the parts show what it sent until the resum
 		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 // The agent's menus by keys: it opens with the chosen item in focus; the arrows, Home and End
 // move round the list; Escape closes it and gives the focus back to its part; a click anywhere
@@ -710,7 +712,7 @@ test.skipIf(!CHROME)("the agent's model picker is worked by keys, and a click el
 		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('繼續切換 asks first and resumes an unfinished switch; a busy agent, or one not linked, says why it cannot switch', async () => {
 	for (const file of ['hcom-calls.jsonl', 'hcom-added.json', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
@@ -755,7 +757,7 @@ test.skipIf(!CHROME)('繼續切換 asks first and resumes an unfinished switch; 
 		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('an agent still in Herdr whose switch did not stop it offers only continuing or giving up the switch', async () => {
 	for (const file of ['hcom-calls.jsonl', 'hcom-added.json', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
@@ -781,7 +783,7 @@ test.skipIf(!CHROME)('an agent still in Herdr whose switch did not stop it offer
 		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a Herdr list that cannot be read is reported while the last one stays listed, and the next one read replaces it', async () => {
 	await visit(1280);
@@ -811,7 +813,7 @@ test.skipIf(!CHROME)('a Herdr list that cannot be read is reported while the las
 		setHerdr(AGENTS);
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a conversation not written yet is empty without a notice; one that cannot be read says why, and shows once it can be', async () => {
 	const transcript = `document.querySelector('.detail #agent-panel-transcript')?.innerText ?? ''`;
@@ -833,7 +835,7 @@ test.skipIf(!CHROME)('a conversation not written yet is empty without a notice; 
 		rmSync(fail, { force: true });
 		rmSync(join(fixture.dir, 'transcripts', 's-other.jsonl'), { force: true });
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('while hcom cannot tell whether an agent is linked its page says what is off and still shows its conversation; a list read again restores it', async () => {
 	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
@@ -864,7 +866,7 @@ test.skipIf(!CHROME)('while hcom cannot tell whether an agent is linked its page
 		setHerdr(AGENTS);
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('an interrupt Herdr does not carry out says why, is recorded as failed, and the page stays usable', async () => {
 	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
@@ -899,7 +901,7 @@ test.skipIf(!CHROME)('an interrupt Herdr does not carry out says why, is recorde
 	} finally {
 		setHerdr(AGENTS);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('text typed for one agent stays with it: another agent opened meanwhile neither shows nor gets it', async () => {
 	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
@@ -935,7 +937,7 @@ test.skipIf(!CHROME)('text typed for one agent stays with it: another agent open
 	} finally {
 		setHerdr(AGENTS);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('on an agent\'s page a line starting with @name still goes to that controller, apart from the agent\'s own draft', async () => {
 	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
@@ -954,7 +956,7 @@ test.skipIf(!CHROME)('on an agent\'s page a line starting with @name still goes 
 	expect(injected.flat().some((arg: string) => arg.includes('給主控的話'))).toBe(true);
 	// Nothing reached the agent.
 	expect(herdrCalls()).toEqual([]);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a card is titled by its tab, then the short hcom name, which goes when the tab name alone does not fit', async () => {
 	const wide = { ...herdrAgent('s-wide', { status: 'idle' }) };
@@ -1001,7 +1003,7 @@ test.skipIf(!CHROME)('a card is titled by its tab, then the short hcom name, whi
 		setHerdr(AGENTS);
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('one session open in two panes lists a card for each, and the page keeps working', async () => {
 	const again = { ...herdrAgent('s-plain', { status: 'idle', client: 'codex' }), pane_id: 'wA:p-s-plain-again', tab_id: 'wA:t-s-plain-again' };
@@ -1017,7 +1019,7 @@ test.skipIf(!CHROME)('one session open in two panes lists a card for each, and t
 		setHerdr(AGENTS);
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('the list tabs stay on one line, and the address names the tab shown', async () => {
 	await visit(390);
@@ -1027,7 +1029,7 @@ test.skipIf(!CHROME)('the list tabs stay on one line, and the address names the 
 	expect(new Set(tops).size).toBe(1);
 	await tab.eval(`document.querySelector('[data-middle="inbox"]').click()`);
 	await tab.until(`location.search === ''`, 'the inbox, which the address leaves unsaid');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a record that cannot be read, a request that gets no answer and a record that cannot be written are each said so', async () => {
 	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
@@ -1067,7 +1069,7 @@ test.skipIf(!CHROME)('a record that cannot be read, a request that gets no answe
 	} finally {
 		chmodSync(sentLog, 0o600);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a Codex started with a fixed model offers only its effort and says why; one started with -c model= is not locked, and unread launch arguments say so', async () => {
 	const launches: Record<string, unknown> = {
@@ -1220,7 +1222,7 @@ test.skipIf(!CHROME)('dragging a workspace to the top edge of a long list scroll
 	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已調整工作區順序')`, 'the move');
 	expect(await tab.eval(`document.querySelector('.inbox [data-workspace]').dataset.workspace`)).toBe('wB');
 	expect(herdrCalls() as unknown[][]).toEqual([['socket', 'workspace.move', { workspace_id: 'wB', insert_index: 0 }]]);
-}, 30_000);
+}, TEST_MS);
 
 for (const width of [1280, 390]) {
 	const touch = width < 761;
@@ -1261,7 +1263,7 @@ for (const width of [1280, 390]) {
 		expect(await cardsOf('wA')).toEqual(['s-plain', 's-lead']);
 		expect(herdrCalls()).toHaveLength(2);
 		expect(await tab.eval(FITS)).toBe(true);
-	}, 30_000);
+	}, TEST_MS);
 
 	test.skipIf(!CHROME)(`${width}px: with Herdr slow to answer, a dropped card and a dropped workspace stay where they were dropped; a refusal puts back Herdr's order`, async () => {
 		await freshTabs();
@@ -1302,9 +1304,9 @@ for (const width of [1280, 390]) {
 		// The order shown is the one the server now reads from Herdr, not only the one kept from the drops.
 		await tab.eval(`window.beforeReload = true`);
 		await tab.send('Page.reload');
-		await tab.until(`!window.beforeReload && JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the board to start again' });
 		await tab.until(`JSON.stringify(${CARDS}) === '["s-plain","s-lead"]' && JSON.stringify(${SPACES}) === '["wB","wA"]'`, 'Herdr’s order after a reload');
-	}, 40_000);
+	}, TEST_MS);
 
 	test.skipIf(!CHROME)(`${width}px: a workspace heading's handle drags the workspace among the others, showing where it lands`, async () => {
 		await freshTabs();
@@ -1340,7 +1342,7 @@ for (const width of [1280, 390]) {
 		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('排序失敗：移動工作區失敗：workspace is busy')`, 'the failure');
 		expect(await order()).toEqual(['wB', 'wA']);
 		expect(await tab.eval(FITS)).toBe(true);
-	}, 30_000);
+	}, TEST_MS);
 
 	test.skipIf(!CHROME)(`${width}px: dragging a handle to the list's top or bottom edge scrolls it, and the drop counts the scroll`, async () => {
 		await freshTabs();
@@ -1427,7 +1429,7 @@ for (const width of [1280, 390]) {
 		expect(await scrolled()).toBe(rest);
 		expect(await tab.eval(FITS)).toBe(true);
 		setHerdr(AGENTS);
-	}, 40_000);
+	}, TEST_MS);
 
 	test.skipIf(!CHROME)(`${width}px: ${touch ? 'a long press' : 'a right click'} opens the card's menu, and its one item renames the tab on the card`, async () => {
 		await freshTabs();
@@ -1488,7 +1490,7 @@ for (const width of [1280, 390]) {
 		const log = await tab.eval<string>(`document.querySelector('.detail #agent-panel-log').innerText`);
 		expect(log).toContain('「分頁-s-plain」改為「審查」');
 		expect(log).toContain('label refused');
-	}, 30_000);
+	}, TEST_MS);
 }
 
 /** The edges of the hovered controller's explanation, with the window's height. */
@@ -1544,7 +1546,7 @@ test.skipIf(!CHROME)('a tall explanation stays inside the window at its top and 
 	} finally {
 		rmSync(duty, { force: true });
 	}
-}, 30_000);
+}, TEST_MS);
 
 for (const width of [1280, 390]) {
 	const touch = width < 761;
@@ -1582,7 +1584,7 @@ for (const width of [1280, 390]) {
 		} finally {
 			rmSync(duty, { force: true });
 		}
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)("a controller's duty links show as new-tab links in the agent list's hover explanation and menu", async () => {
@@ -1603,7 +1605,7 @@ test.skipIf(!CHROME)("a controller's duty links show as new-tab links in the age
 	} finally {
 		rmSync(duty, { force: true });
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('the pause of the HCOM link shows for a linked agent, its resume for a paused one, neither for one not linked; pausing marks the controller paused', async () => {
 	const pausedDir = join(fixture.dir, 'hcom-paused');
@@ -1647,7 +1649,7 @@ test.skipIf(!CHROME)('the pause of the HCOM link shows for a linked agent, its r
 		setHerdr(AGENTS);
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 const OPTIONS = '.dock .cmd button.options';
 const MODES = '.dock .popup section[aria-label="權限"]';
@@ -1695,7 +1697,7 @@ test.skipIf(!CHROME)('a Claude agent\'s options pop-up shows the mode its screen
 		setHerdr(AGENTS);
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)("390px: a Codex agent that cannot be switched now shows why in its options pop-up, its modes not clickable", async () => {
 	await visit(390, '?agent=s-plain');
@@ -1710,4 +1712,4 @@ test.skipIf(!CHROME)("390px: a Codex agent that cannot be switched now shows why
 	await sleep(300);
 	expect(await tab.eval(`document.querySelector('.dock .toasts')?.innerText ?? ''`)).not.toContain('切換');
 	expect(await tab.eval(FITS)).toBe(true);
-}, 30_000);
+}, TEST_MS);

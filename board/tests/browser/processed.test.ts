@@ -10,7 +10,7 @@ import { chosenIn } from '../../src/lib/board/answers.ts';
 import { processedTime } from '../../src/lib/board/archive.ts';
 import type { HelperController, HelperQuestion, InboxItem, InboxQuestion, InboxReport } from '../../src/lib/board/types.ts';
 import { DAY, question, startFixture, titled, type Fixture, type HelperPlan } from '../harness.ts';
-import { CHROME, launchChrome, type Browser } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser } from '../browser.ts';
 
 const NOW = Date.parse('2026-06-10T08:00:00.000Z');
 const HOUR = 60 * 60 * 1000;
@@ -229,7 +229,7 @@ async function visit(width: number) {
 	await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await send('Page.navigate', { url: fixture.url });
 	// The board has mounted once it wrote its first history entry.
-	await until(`JSON.stringify(history.state ?? {}).includes('depth')`, 'the board to start');
+	await browser!.tab.boardStarted();
 }
 
 const REPORT = '剛交付的票';
@@ -318,7 +318,7 @@ test.skipIf(!CHROME)('wide: a report clicked in the inbox is read at once, leave
 	await until(`!${button('.inbox .row', REPORT)}`, 'the report gone from the processed');
 	await click('.inbox .toggle', '依時間');
 	await until(`!!${button('.inbox .row', REPORT)}`, 'the report back in the inbox');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('phone: a report tapped in the inbox is read at once and has left the inbox on the way back to the list', async () => {
 	await unreadReports();
@@ -331,7 +331,7 @@ test.skipIf(!CHROME)('phone: a report tapped in the inbox is read at once and ha
 	await until(`location.search === '' && getComputedStyle(document.querySelector('.inbox')).display !== 'none'`, 'the list');
 	expect(await inInbox(REPORT)).toBe(false);
 	expect(await inInbox(OTHER)).toBe(true);
-}, 30_000);
+}, TEST_MS);
 
 /** How an answered question's card shows: its label, the options marked chosen, whether anything
  *  can still be filled in, and the order of the parts after the options. */
@@ -379,7 +379,7 @@ for (const width of [1200, 390]) {
 		const semicolon = await evaluate<Card>(card('.detail .placed', questionKey(mira.session_id, 'AQ-3')));
 		expect(semicolon.picked).toEqual([`✓ ${SEMICOLON_LABEL}`, '✓ 其他：自己寫的']);
 		expect(semicolon.options).toBe(4);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)("the controller's conversation shows answered questions as their cards, and a message without data as text", async () => {
@@ -391,4 +391,4 @@ test.skipIf(!CHROME)("the controller's conversation shows answered questions as 
 	expect(await evaluate<Card>(card('.history .asking', questionKey(mira.session_id, 'AQ-2')))).toMatchObject({ inputs: 0 });
 	expect(await evaluate(`[...document.querySelectorAll('.history .said')].some((li) => li.innerText.includes('DECIDE: GONE-1 r1'))`)).toBe(true);
 	expect(await evaluate(`document.querySelectorAll('.history .asking').length`)).toBe(1);
-}, 30_000);
+}, TEST_MS);

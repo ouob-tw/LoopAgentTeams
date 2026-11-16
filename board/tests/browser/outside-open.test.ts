@@ -6,7 +6,7 @@
 // another host (`//evil.example/`) keeps the tab on the board.
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 let fixture: Fixture;
 let browser: Browser | undefined;
@@ -49,14 +49,14 @@ test.skipIf(!CHROME)('logged in, the board opened from another site shows after 
 	await tab.started();
 	expect(await tab.eval(`location.pathname`)).toBe('/');
 	expect(await loads()).toBe('/ /');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('logged out, the board opened from another site lands on the login screen after one extra page', async () => {
 	const open = await openFromOutside('#top');
 	await open();
 	await tab.until(`location.pathname === '/login' && document.querySelector('input[type="password"]') !== null`, 'the login screen');
 	expect(await loads()).toBe('/ /login');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a path that reads as another host reloads on the board, not on that host', async () => {
 	const open = await openFromOutside('/evil.example/');
@@ -64,4 +64,4 @@ test.skipIf(!CHROME)('a path that reads as another host reloads on the board, no
 	await tab.until(`location.pathname === '/login' && document.querySelector('input[type="password"]') !== null`, 'the login screen');
 	expect(await tab.eval(`location.origin`)).toBe(fixture.url);
 	expect(await loads()).toBe('//evil.example/ /login');
-}, 30_000);
+}, TEST_MS);

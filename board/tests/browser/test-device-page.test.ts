@@ -65,7 +65,7 @@ async function visit(cookie: string, width: number, search = '') {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/${search}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 
 /** The mark's box, whether it is in view, and the pd window's top. */

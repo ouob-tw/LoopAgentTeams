@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
-import { launchChrome, type Browser, type Tab } from '../browser.ts';
+import { launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 /** The ticket's numbers, written here as they are: a quarter of the width, 0.3px/ms. */
 const QUARTER = 0.25;
 const FLICK = 0.3;
@@ -100,7 +100,7 @@ test('a slow swipe left past a quarter of the width shows the keys, a slow swipe
 	await settle();
 	expect(await showing()).toBe('bar');
 	expect(await dots()).toEqual([1, 0]);
-}, 30_000);
+}, TEST_MS);
 
 test('a slow swipe short of a quarter of the width goes back; a quick flick of the same distance switches', async () => {
 	await visit();
@@ -120,7 +120,7 @@ test('a slow swipe short of a quarter of the width goes back; a quick flick of t
 	await tab.swipe(width / 2, (await edge()).y, short, { ms: 60, steps: 6 });
 	await settle();
 	expect(await showing()).toBe('bar');
-}, 30_000);
+}, TEST_MS);
 
 test('while the finger is down the panel is where the finger moved it, to the pixel, with no pull back; past the end it stays at the end', async () => {
 	await visit();
@@ -148,7 +148,7 @@ test('while the finger is down the panel is where the finger moved it, to the pi
 	await sleep(100);
 	expect(await offset()).toBeCloseTo(width, 0);
 	await tab.liftFinger();
-}, 30_000);
+}, TEST_MS);
 
 test('a drag that is mostly vertical does nothing, and no key panel appears', async () => {
 	await visit();
@@ -159,7 +159,7 @@ test('a drag that is mostly vertical does nothing, and no key panel appears', as
 	await tab.swipe(start.x - 100, start.y, -60, { dy: -90, ms: 300 });
 	await settle();
 	expect(await showing()).toBe('bar');
-}, 30_000);
+}, TEST_MS);
 
 test('while the box has the focus its drags are the text\'s; from the rest of the line, or with no focus, a swipe switches', async () => {
 	await visit();
@@ -182,7 +182,7 @@ test('while the box has the focus its drags are the text\'s; from the rest of th
 	await tab.swipe(start.x, start.y, -(width / 2), { ms: 400 });
 	await settle();
 	expect(await showing()).toBe('keys');
-}, 30_000);
+}, TEST_MS);
 
 test('a swipe over the screen scrolls a long line and never switches the panel', async () => {
 	await visit();
@@ -193,7 +193,7 @@ test('a swipe over the screen scrolls a long line and never switches the panel',
 	expect(await showing()).toBe('bar');
 	expect(await tab.eval<number>(`document.querySelector('.screen-panel .scroller').scrollLeft`)).toBeGreaterThan(before + 50);
 	await shot('swipe-over-screen');
-}, 30_000);
+}, TEST_MS);
 
 test('the swipe ending on a key does not press it; another tab gives the line back; a press on a key still goes', async () => {
 	await visit();
@@ -211,4 +211,4 @@ test('the swipe ending on a key does not press it; another tab gives the line ba
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '對話紀錄').click()`);
 	await tab.until(`!document.querySelector('.dock .keys-pane')`, 'the panel gone');
 	expect(await tab.eval(`document.querySelector('.dock textarea').getBoundingClientRect().left >= 0`)).toBe(true);
-}, 30_000);
+}, TEST_MS);

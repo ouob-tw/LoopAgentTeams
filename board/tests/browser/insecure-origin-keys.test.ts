@@ -47,7 +47,7 @@ test('phone on a non-secure http origin: a key press reaches the pane', async ()
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
 	await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 	await tab.send('Page.navigate', { url: `${origin}/?agent=s-plain` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	// The premise: this page is not a secure context and has no randomUUID.
 	expect(await tab.eval(`[window.isSecureContext, typeof crypto.randomUUID]`)).toEqual([false, 'undefined']);
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端').click()`);

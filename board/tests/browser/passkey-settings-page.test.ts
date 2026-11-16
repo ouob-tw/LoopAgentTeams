@@ -7,7 +7,7 @@
 // deleted after a confirmation; a board without its address says so on both pages. With LAT_BOARD_SHOTS set, each state is saved as a frame.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { logged, sleep, startFixture, until, type Fixture } from '../harness.ts';
-import { CHROME, holdRequests, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, holdRequests, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 import { httpsProxy, PROXY_CHROME_ARGS } from '../https-proxy.ts';
 
 const SIZES = [
@@ -196,7 +196,7 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			expect(await browserLines('login_passwordless')).toMatchObject({ result: 'failure', reason: 'NotAllowedError' });
 			await tab.send('WebAuthn.setUserVerified', { authenticatorId, isUserVerified: true });
 			await tab.pointerClick('[data-action="passkey-alone"]');
-			await tab.until(`location.pathname === '/' && JSON.stringify(history.state).includes('depth')`, 'the board');
+			await tab.boardStarted({ started: `location.pathname === '/' && ${BOARD_STARTED}`, what: 'the board' });
 			expect(await chromeDevices()).toBe(devicesBefore + 1);
 			expect((await fixture.cli('passkey', 'list')).stdout).not.toContain('還沒用過');
 

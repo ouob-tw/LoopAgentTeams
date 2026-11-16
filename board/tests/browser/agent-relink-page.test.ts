@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:te
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
 
 const SESSION = 's-plain';
@@ -59,7 +59,7 @@ async function visit(width: number) {
 	await tab.send('Runtime.enable', {});
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=${SESSION}` });
 	// Started: the board's first history write is done, so its buttons work.
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await tab.until(has('close'), 'the agent page');
 	expect(await tab.eval(`document.documentElement.scrollWidth <= window.innerWidth`)).toBe(true);
 }
@@ -124,7 +124,7 @@ for (const [width, label] of [[1280, 'desktop'], [390, 'phone']] as const) {
 		expect(await tab.eval(has('relink'))).toBe(false);
 		expect(await tab.eval(`document.documentElement.scrollWidth <= window.innerWidth`)).toBe(true);
 		await shot(`${label}-3-relinked`);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('whatever hcom lists for it, neither the header nor the roster shows it linked', async () => {
@@ -136,7 +136,7 @@ test.skipIf(!CHROME)('whatever hcom lists for it, neither the header nor the ros
 	expect(await tab.eval(`[...document.querySelectorAll('.profile .chip')].some((chip) => chip.innerText.includes('HCOM'))`)).toBe(false);
 	expect(await tab.eval(`[...document.querySelectorAll('button.agent')].some((row) => row.innerText.includes('HCOM'))`)).toBe(false);
 	await shot('desktop-6-listed-no-hooks');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a bound controller with no hooks gets the restart, not a closed page', async () => {
 	fixture.list([fixture.bound('lat', 'modi', { session_id: SESSION })]);
@@ -149,7 +149,7 @@ test.skipIf(!CHROME)('a bound controller with no hooks gets the restart, not a c
 	} finally {
 		fixture.list([]);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a paused one offers the restart, not the resume', async () => {
 	mkdirSync(join(fixture.dir, 'hcom-paused'), { recursive: true });
@@ -158,7 +158,7 @@ test.skipIf(!CHROME)('a paused one offers the restart, not the resume', async ()
 	await tab.until(has('relink'), 'the restart button');
 	expect(await tab.eval(has('unpause'))).toBe(false);
 	await shot('desktop-4-paused-no-hooks');
-}, 30_000);
+}, TEST_MS);
 
 const outcomes: [string, () => void, string][] = [
 	['refused-working', () => setHerdr({ agents: [herdrAgent('working')] }), '它正在工作，沒有重新啟動'],
@@ -174,5 +174,5 @@ for (const [name, arrange, says] of outcomes) {
 		await tab.until(`(${NOTICE}).includes(${JSON.stringify(says)})`, 'the notice');
 		await shot(`desktop-5-${name}`);
 		if (name === 'failed-resume') await tab.until(`document.querySelector('.detail')?.innerText.includes('已不在 Herdr 的清單上')`, 'the page to show it is gone');
-	}, 30_000);
+	}, TEST_MS);
 }

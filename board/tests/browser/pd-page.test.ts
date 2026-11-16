@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 const SCREEN = `({ search: location.search, middle: document.querySelector('.inbox')?.innerText ?? '' })`;
 // The caller's and the command's lines of a card end in an ellipsis when longer; everything else wraps.
@@ -41,7 +41,7 @@ const setPd = (state: unknown) => writeFileSync(join(fixture.dir, 'pd.json'), JS
  *  window already, and before then its buttons do nothing and the script has not laid it out. */
 async function load(tab: Tab, search = '') {
 	await tab.navigate(`${fixture.url}/${search}`);
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 
 beforeAll(async () => {
@@ -165,7 +165,7 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	setPd({ pending: [], unavailable: true });
 	await tab.until(`${SHOWN('.inbox .pd-unavailable')} && document.querySelector('.inbox .pd-unavailable').textContent === 'pd 服務不可用'`, 'the visible unavailable notice');
 	expect(await tab.eval(SHOWN('.inbox .pd'))).toBe(true);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('on a desktop the window floats over the middle column on every list, moves and resizes, keeps its place and stays on screen; 稍後 folds it to a badge, a new request opens it', async () => {
 	const tab = browser!.tab;
@@ -245,4 +245,4 @@ test.skipIf(!CHROME)('on a desktop the window floats over the middle column on e
 	setPd({ pending: [] });
 	await tab.until(`!document.querySelector('.inbox .pd, .pd-badge')`, 'no pd window when nothing waits');
 	expect(tab.errors).toEqual([]);
-}, 30_000);
+}, TEST_MS);

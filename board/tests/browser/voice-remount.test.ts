@@ -98,7 +98,7 @@ async function open(scripts: string[], { width, height, mobile }: { width: numbe
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: mobile ? 2 : 1, mobile });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-ask` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	return tab;
 }
 

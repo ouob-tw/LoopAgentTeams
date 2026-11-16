@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { launchChrome, type Browser, type Tab } from '../browser.ts';
+import { launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 const SHOTS = process.env.SCREEN_TAB_SHOTS;
 const PANE = 'wA:p-s-plain';
@@ -59,7 +59,7 @@ async function visit({ width, height, phone, theme }: { width: number; height: n
 	if (phone) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 	await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('lat-board-theme', '${theme}')` });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-plain` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 async function shot(name: string) {
 	if (!SHOTS) return;
@@ -97,7 +97,7 @@ for (const theme of ['dark', 'light'] as const) {
 		await tab.eval(`document.querySelector('.detail .screen-bar .back').click()`);
 		await tab.until(`location.search === '?tab=agents' || location.search === ''`, 'the list');
 		expect(await tab.eval(`getComputedStyle(document.querySelector('.detail')).display`)).toBe('none');
-	}, 30_000);
+	}, TEST_MS);
 
 	test(`phone, ${theme}: the bar comes back on the 對話紀錄 tab and goes again on returning to 終端`, async () => {
 		await visit({ width: 390, height: 844, phone: true, theme });
@@ -110,7 +110,7 @@ for (const theme of ['dark', 'light'] as const) {
 		await shot(`phone-${theme}-transcript-again`);
 		await openScreen();
 		expect(await topbarShown()).toBe(false);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test('phone: a notice sits at the very top and covers neither "←" nor "展開"', async () => {
@@ -128,7 +128,7 @@ test('phone: a notice sits at the very top and covers neither "←" nor "展開"
 	expect(toast.left).toBeGreaterThanOrEqual(back.right);
 	expect(toast.right).toBeLessThanOrEqual(expand.left);
 	await shot('phone-dark-notice');
-}, 30_000);
+}, TEST_MS);
 
 test('computer: the top bar stays on the 終端 tab and the card has no "←"', async () => {
 	await visit({ width: 1280, height: 800, phone: false, theme: 'dark' });
@@ -139,7 +139,7 @@ test('computer: the top bar stays on the 終端 tab and the card has no "←"', 
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 420, height: 800, deviceScaleFactor: 1, mobile: false });
 	await tab.until(`getComputedStyle(document.querySelector('.detail .topbar')).display !== 'none'`, 'the bar at 420px');
 	expect(await tab.eval(`!!document.querySelector('.detail .screen-bar .back')`)).toBe(false);
-}, 30_000);
+}, TEST_MS);
 
 test('phone: with the command line put away the box runs down to the bottom, no swipe brings the keys, and it all returns when reopened', async () => {
 	await visit({ width: 390, height: 844, phone: true, theme: 'dark' });
@@ -159,7 +159,7 @@ test('phone: with the command line put away the box runs down to the bottom, no 
 	await tab.eval(`document.querySelector('.dock .reopen').click()`);
 	await tab.until(`!document.querySelector('.dock .reopen')`, 'the command line back');
 	await tab.until(`Math.abs(document.querySelector('.screen-panel .box').getBoundingClientRect().bottom - document.querySelector('.dock').getBoundingClientRect().top) < 2`, 'the box above it');
-}, 30_000);
+}, TEST_MS);
 
 test('tablet (touch, wider than 760px): a command line remembered as put away leaves the box above the dock', async () => {
 	await visit({ width: 1000, height: 800, phone: true, theme: 'dark' });
@@ -169,4 +169,4 @@ test('tablet (touch, wider than 760px): a command line remembered as put away le
 	await openScreen();
 	const gap = await tab.eval<number>(`Math.abs(document.querySelector('.screen-panel .box').getBoundingClientRect().bottom - document.querySelector('.dock').getBoundingClientRect().top)`);
 	expect(gap).toBeLessThan(2);
-}, 30_000);
+}, TEST_MS);

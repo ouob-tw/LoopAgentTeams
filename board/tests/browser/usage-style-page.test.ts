@@ -7,7 +7,7 @@ import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
 
 
 /** As it reads on screen: the dots between the groups are drawn by the styles. */
@@ -84,7 +84,8 @@ test.skipIf(!CHROME)('a change in one browser reaches the page open in the other
 
 	await b.eval(`window.beforeReload = true`);
 	await b.send('Page.reload');
-	await b.until(`!window.beforeReload && document.querySelector('.detail .profile h2')?.innerText === 'beta'`, 'the page to load again');
+	await b.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the page to start again' });
+	await b.until(`document.querySelector('.detail .profile h2')?.innerText === 'beta'`, 'the page to load again');
 	await b.until(`(${LINE}) === ${JSON.stringify(COMPACT)}`, 'the compact line after a reload');
 	await openSettings(b);
 	expect(await b.eval(pressed('精簡'))).toBe(true);

@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { DAY, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 const MIN = 60_000;
 
@@ -89,7 +89,7 @@ async function visit(width: number) {
 	await tab.until(`document.readyState === 'complete'`, 'a page of the board');
 	await tab.eval(`localStorage.setItem('lat-board-inbox-width', '360')`);
 	await tab.send('Page.navigate', { url: `${fixture.url}/?tab=quota` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await tab.until(`!!document.querySelector('.inbox .quota .card')`, 'the 額度 tab');
 }
 const groupText = (client: string) => tab.eval<string>(`document.querySelector('.quota [data-client="${client}"]')?.innerText ?? ''`);
@@ -150,7 +150,7 @@ for (const width of [1280, 360]) {
 		// No quota on the roster, folded or not.
 		expect(await tab.eval(`document.querySelector('.roster').innerText`)).not.toMatch(/額度|%/);
 		expect(await tab.eval(FITS)).toBe(true);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('an old reading turns its group header yellow; no Codex usage reads 沒有紀錄', async () => {
@@ -177,4 +177,4 @@ test.skipIf(!CHROME)('an old reading turns its group header yellow; no Codex usa
 	expect(codex[1].text).toContain('one@example.com');
 	expect(codex[1].text).toContain('沒有紀錄');
 	expect(codex[1].text).not.toContain('方案未知');
-}, 30_000);
+}, TEST_MS);

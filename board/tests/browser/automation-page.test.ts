@@ -91,7 +91,7 @@ async function visit(width: number, path = '/?tab=automation') {
 	await tab.until(`document.readyState === 'complete'`, 'a page of the board');
 	await tab.eval(`localStorage.setItem('lat-board-inbox-width', '400')`);
 	await tab.send('Page.navigate', { url: `${fixture.url}${path}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 const click = (selector: string) => tab.eval(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (!node) throw new Error('no ${selector.replace(/'/g, '')}'); node.click(); })()`);
 const type = (selector: string, value: string) =>
@@ -352,7 +352,7 @@ test.skipIf(!CHROME)('立即執行 pressed on a page that has not heard the task
 	// The event stream never connects: the page knows only what it loaded with.
 	await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/events*' }] });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?automation=${task.id}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await tab.until(`document.querySelector('.detail .task')?.dataset.task === '${task.id}'`, 'the task page');
 	expect((await send(`/api/automation/${task.id}/run`, 'POST')).status).toBe(202);
 	expect(await tab.eval(`document.querySelector('.detail .actions .primary').disabled`)).toBe(false);

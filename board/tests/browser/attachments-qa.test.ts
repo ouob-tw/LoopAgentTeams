@@ -17,7 +17,7 @@ async function visit(search = '?controller=s-lead', width = 1280) {
  b = await launchChrome({ screen: 'document.body.innerText' }); t = b.tab;
  const [name, value] = cookie.split('='); await t.send('Network.setCookie', { name, value, url: f.url });
  await t.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width <= 760 });
- await t.navigate(f.url + '/' + search); await t.until(`JSON.stringify(history.state).includes('depth') && !!document.querySelector('${BOX}')`);
+ await t.navigate(f.url + '/' + search); await t.boardStarted(); await t.until(`!!document.querySelector('${BOX}')`);
  await t.eval(`window.qaRequests=[];window.qaOriginalFetch=window.fetch;window.fetch=async(...a)=>{const r=await window.qaOriginalFetch(...a); if(String(a[0]).includes('/api/uploads')) window.qaRequests.push({url:String(a[0]),method:a[1]?.method,status:r.status,body:await r.clone().text()});return r;}`);
 }
 async function pick(paths: string[]) { const { root } = await t.send('DOM.getDocument'); const { nodeId } = await t.send('DOM.querySelector', { nodeId: root.nodeId, selector: '.dock input[type=file]' }); await t.send('DOM.setFileInputFiles', { nodeId, files: paths }); }

@@ -6,7 +6,7 @@
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
 
 const SHOTS = process.env.SHOTS;
@@ -72,7 +72,7 @@ async function visit(width: number, touch: boolean, search = '') {
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	if (touch) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/${search}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 async function shot(name: string) {
 	if (!SHOTS) return;
@@ -161,7 +161,7 @@ for (const [width, touch, kind] of [[1280, false, 'desktop'], [390, true, 'phone
 		expect(herdrCalls()).toEqual([['workspace', 'close', 'wB'], ['workspace', 'close', 'wB']]);
 		expect(await headings()).toEqual(['Alpha', 'Gamma']);
 		await shot(`${kind}-6-closed`);
-	}, 40_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('the last agent of a workspace closed from its page leaves the workspace in its place, with a CMD tab in Herdr', async () => {
@@ -182,10 +182,10 @@ test.skipIf(!CHROME)('the last agent of a workspace closed from its page leaves 
 	expect(plan.tabs.filter((candidate: { workspace_id: string }) => candidate.workspace_id === 'wC').map((candidate: { label: string }) => candidate.label)).toEqual(['CMD']);
 	// Back on the list, where a phone shows it alone.
 	await tab.send('Page.navigate', { url: `${fixture.url}/` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board again');
+	await tab.boardStarted({ what: 'the board again' });
 	await tab.eval(`document.querySelector('[data-middle="agents"]').click()`);
 	await tab.until(`document.querySelector(${JSON.stringify(HEAD('wC'))})?.checkVisibility()`, 'the list');
 	expect(await headings()).toEqual(['Alpha', 'Beta', 'Gamma']);
 	expect(await tab.eval<string>(`document.querySelector('.inbox [data-workspace="wC"]').innerText`)).toContain('沒有 Agent');
 	await shot('phone-7-last-agent-closed');
-}, 30_000);
+}, TEST_MS);

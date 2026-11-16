@@ -156,7 +156,7 @@ async function visit(width: number, search = '', fast = false) {
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.navigate(`${fixture.url}/${search}`);
 	// Started: the board's first history write is done, so its buttons work.
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 /** From the Herdr tab's list, open an agent's page. */
 async function openAgent(session: string) {

@@ -1,5 +1,5 @@
 import { answerHerdrList } from '../harness.ts';
-import { CHROME, fakeMic, launchChrome, micIconOff, micOf, shot, speak, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, fakeMic, launchChrome, micIconOff, micOf, shot, speak, TEST_MS, type Browser, type Tab } from '../browser.ts';
 // The Herdr tab's 已關閉 section in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with fake hcom, Herdr and helper, wide and at a phone's width. The
 // board runs in Taipei time, so its calendar days are not the test host's. Skipped when the host
@@ -157,7 +157,7 @@ async function visit(width: number, search = '?tab=agents', { voice = false } = 
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/${search}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await tab.until(`!!document.querySelector('.inbox [data-agent="s-live"]')`, 'the Herdr tab');
 }
 const TRIGGER = `.inbox .closed .trigger`;
@@ -210,7 +210,7 @@ for (const width of [1280, 390]) {
 
 		await unfold();
 		await tab.until(`document.querySelectorAll('[data-closed]').length === 0`, 'the rows to fold');
-	}, 30_000);
+	}, TEST_MS);
 }
 
 for (const width of [1280, 390]) {
@@ -249,7 +249,7 @@ for (const width of [1280, 390]) {
 		await tab.until(`location.search === '?tab=agents'`, 'the list again');
 		await tab.until(`!!document.querySelector('[data-closed="s-yesterday"]')`, 'the row again');
 		if (width <= 760) expect(await tab.eval(`getComputedStyle(document.querySelector('.detail')).display`)).toBe('none');
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)("a touch phone: a closed agent's 終端 tab hides the top bar, the folded card's ← goes back, and the bar returns on 對話紀錄; a computer keeps the bar", async () => {
@@ -306,13 +306,15 @@ test.skipIf(!CHROME)("390px: a closed agent's address opens its page, with the l
 	await tab.eval(`document.querySelector('.detail .topbar button[aria-label="返回"]').click()`);
 	await tab.until(`location.search === '?tab=agents' || location.search === ''`, 'the list');
 	expect(await tab.eval(`getComputedStyle(document.querySelector('.detail')).display`)).toBe('none');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)("a draft kept from before is not sent to the closed agent, named or not, and the reason still shows", async () => {
 	await visit(1280);
 	await tab.eval(`localStorage.setItem('lat-board-agent-drafts', JSON.stringify({ 's-lead': '@lead 繼續', 's-yesterday': '還沒送出' }))`);
+	await tab.eval('window.beforeReload = true');
 	await tab.send('Page.reload');
-	await tab.until(`JSON.stringify(history.state).includes('depth') && !!document.querySelector('.inbox [data-agent="s-live"]')`, 'the board again');
+	await tab.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the board to start again' });
+	await tab.until(`!!document.querySelector('.inbox [data-agent="s-live"]')`, 'the board again');
 	// Unfolded once the reloaded page answers clicks.
 	await tab.until(
 		`(() => { const trigger = document.querySelector(${JSON.stringify(TRIGGER)}); if (trigger?.getAttribute('aria-expanded') === 'false') trigger.click(); return !!document.querySelector('[data-closed]'); })()`,
@@ -332,7 +334,7 @@ test.skipIf(!CHROME)("a draft kept from before is not sent to the closed agent, 
 		expect(wakes()).toBe(before);
 		expect(await tab.eval(`document.querySelector('.dock textarea').value`)).toBe(draft);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)("a closed controller's 接回 stopped by an earlier resume offers to give that one up on its page", async () => {
 	const earlier = {
@@ -353,7 +355,7 @@ test.skipIf(!CHROME)("a closed controller's 接回 stopped by an earlier resume 
 	await tab.eval(`document.querySelector('${WAKE} [data-action="abandon"]').click()`);
 	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已放棄前一次接回')`, 'the notice');
 	await tab.until(`!document.querySelector('${WAKE} [data-action="abandon"]')`, 'the offer to go');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a 接回 that fails stays on the page and the row with why, logged', async () => {
 	fixture.setHcom({ agents: [], exit: 1, stderr: 'no such session' });
@@ -367,7 +369,7 @@ test.skipIf(!CHROME)('a 接回 that fails stays on the page and the row with why
 	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('沒有接回 @fail')`, 'the failure notice');
 	expect(sentLog().filter((line) => line.action === 'resume' && line.agentId === 's-fail')).toMatchObject([{ agentId: 's-fail', ok: false }]);
 	expect(await tab.eval(`document.querySelector(${JSON.stringify(RESUME)}).disabled`)).toBe(false);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)("390px: 接回 from the page brings the agent back to its workspace at the front, and the page becomes the running agent's", async () => {
 	fixture.setHcom({ agents: [], resumed: { name: 'n-s-today', session_id: 's-today', status: 'listening', launch_context: { pane_id: 'wA:p-back' } } });
@@ -389,7 +391,7 @@ test.skipIf(!CHROME)("390px: 接回 from the page brings the agent back to its w
 	expect(await tab.eval(`document.querySelector(${JSON.stringify(TRIGGER)}).textContent.trim()`)).toBe('已關閉 4');
 	// Written to like any agent now.
 	expect(await tab.eval(`document.querySelector('.dock textarea').disabled`)).toBe(false);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)("390px, voice input on: the wake's first message has a mic that puts what was said at the cursor", async () => {
 	await visit(390, '?tab=agents', { voice: true });
@@ -405,7 +407,7 @@ test.skipIf(!CHROME)("390px, voice input on: the wake's first message has a mic 
 	await tab.until(`document.querySelector('${box}').value === '/lat 繼續'`, 'the speech at the cursor');
 	await shot(tab, 'wake-first-message-voice-on', { phone: true, box, back: { width: 390, height: 800, mobile: true } });
 	expect(tab.errors).toEqual([]);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)("390px: a closed controller's page shows its conversation, and its 接回 opens the wake's options and wakes it with them", async () => {
 	fixture.setHcom({ agents: [], resumed: { name: 'lead', session_id: 's-lead', status: 'listening', launch_context: { pane_id: 'ws-lat:p-back' } } });
@@ -435,7 +437,7 @@ test.skipIf(!CHROME)("390px: a closed controller's page shows its conversation, 
 	const resumed = readFileSync(join(fixture.dir, 'hcom-calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.args[0] === 'r');
 	expect(resumed.at(-1).args).toEqual(['r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 繼續']);
 	expect(sentLog().find((line) => line.kind === 'wake' && line.text === '/lat 繼續')).toMatchObject({ controllerId: 's-lead', route: 'resume' });
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('once its model switch is given up, the agent moves to the section', async () => {
 	await visit(1280);
@@ -450,7 +452,7 @@ test.skipIf(!CHROME)('once its model switch is given up, the agent moves to the 
 	expect(given.status).toBe(200);
 	await tab.until(`!!document.querySelector('[data-closed="s-switch"]')`, 'the row');
 	expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-switch"]')`)).toBe(false);
-}, 30_000);
+}, TEST_MS);
 
 for (const [kind, session] of [
 	['a running agent', 's-live'],
@@ -468,5 +470,5 @@ for (const [kind, session] of [
 		await tab.eval(`${title}.click()`);
 		await tab.until(`scrollY === 0`, 'the page back at its top');
 		expect(await tab.eval(`JSON.stringify([history.length, history.state, location.search])`)).toBe(before);
-	}, 30_000);
+	}, TEST_MS);
 }

@@ -50,7 +50,7 @@ async function visit(width: number, path: string) {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.navigate(`${fixture.url}${path}`);
-	await tab.until(STARTED, 'the board to start');
+	await tab.boardStarted({ started: STARTED });
 }
 const middle = (selector: string) =>
 	tab.eval<{ x: number; y: number }>(`(() => { const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; })()`);
@@ -105,7 +105,7 @@ test.skipIf(!CHROME)("at a phone's width a long press shows the box and its link
 	await visit(390, '/');
 	await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
 	await tab.navigate(`${fixture.url}/`);
-	await tab.until(STARTED, 'the board to start');
+	await tab.boardStarted({ started: STARTED });
 	await tab.until(`!!document.querySelector(${JSON.stringify(CARD)})`, 'the tag');
 	await tab.eval(`document.addEventListener('click', (e) => { const a = e.target.closest?.('a'); if (a) { e.preventDefault(); window.tapped = a.href; } }, true)`);
 	const at = await middle(CARD);
@@ -129,7 +129,7 @@ test.skipIf(!CHROME)('the folded rail mark explains with the same link, and the 
 	await visit(1280, '/');
 	await tab.eval(`localStorage.setItem(${JSON.stringify(FOLDED_KEY)}, '1')`);
 	await tab.navigate(`${fixture.url}/`);
-	await tab.until(STARTED, 'the board to start');
+	await tab.boardStarted({ started: STARTED });
 	const MARK = '.rail .entry';
 	await tab.until(`document.querySelector(${JSON.stringify(MARK)})?.getBoundingClientRect().width >= 30`, 'the folded rail');
 	const from = await middle(MARK);

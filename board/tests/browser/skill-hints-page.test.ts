@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { NODE, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, shot, type Browser } from '../browser.ts';
+import { CHROME, launchChrome, shot, TEST_MS, type Browser } from '../browser.ts';
 
 const ROOT = join(import.meta.dir, '../..');
 const codexDir = mkdtempSync(join(tmpdir(), 'lat-board-skill-hints-'));
@@ -112,6 +112,7 @@ afterAll(async () => {
 
 test.skipIf(!CHROME)("the command line hints the recipient's own skills: `/` for Claude, `$` for Codex", async () => {
 	await tab().navigate(`${fixture.url}/?launch`);
+	await tab().boardStarted();
 	await until(`!!document.querySelector('#folder-box')?.value`, 'the page hydrated');
 	await clear(LINE);
 	await type('@luna /');
@@ -158,7 +159,7 @@ test.skipIf(!CHROME)("the command line hints the recipient's own skills: `/` for
 	await type('@sol /');
 	await Bun.sleep(300);
 	expect(await evaluate(SHOWN)).toBe('[]');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('no list opens while an input method is composing', async () => {
 	await clear(LINE);
@@ -179,10 +180,11 @@ test.skipIf(!CHROME)('no list opens while an input method is composing', async (
 	await Bun.sleep(200);
 	expect(await valueOf(LINE)).toBe('@luna /');
 	await press('Escape');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a skill list that cannot be read shows no hints and the line still sends', async () => {
 	await tab().navigate(`${fixture.url}/?launch`);
+	await tab().boardStarted();
 	await until(`!!document.querySelector('#folder-box')?.value`, 'the page hydrated');
 	await evaluate(`(() => {
 		const fetch = window.fetch;
@@ -196,12 +198,13 @@ test.skipIf(!CHROME)('a skill list that cannot be read shows no hints and the li
 	await evaluate(`document.querySelector('.cmd .send-slot button:not([data-action="interrupt"])').click()`);
 	await until(`document.querySelector(${JSON.stringify(LINE)}).value === ''`, 'the line sent and emptied');
 	expect(readFileSync(join(codexDir, 'inject-typed.jsonl'), 'utf8')).toContain('/us 你好');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('the new-controller and new-agent forms hint the chosen client, picked with a tap', async () => {
 	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }] }));
 	for (const url of [`${fixture.url}/?launch`, `${fixture.url}/?new-agent=wA`]) {
 		await tab().navigate(url);
+		await tab().boardStarted();
 		await until(`!!document.querySelector('#folder-box')?.value`, 'the page hydrated');
 		await evaluate(`(() => {
 			const box = document.querySelector('#folder-box');
@@ -235,11 +238,12 @@ test.skipIf(!CHROME)('the new-controller and new-agent forms hint the chosen cli
 		expect(await valueOf(box)).toBe('$codex-project ');
 		await evaluate(`document.querySelector('input[type=radio][value="claude"]').click()`);
 	}
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('on a phone the list fits the screen, above the line and in the new form, and takes a tap', async () => {
 	await tab().send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 	await tab().navigate(`${fixture.url}/?launch`);
+	await tab().boardStarted();
 	await until(`!!document.querySelector('#folder-box')?.value`, 'the page hydrated');
 	await clear(LINE);
 	await type('@luna /');
@@ -279,7 +283,7 @@ test.skipIf(!CHROME)('on a phone the list fits the screen, above the line and in
 	expect(await valueOf(FIRST)).toBe('$tdd ');
 	await evaluate(`document.querySelector('input[type=radio][value="claude"]').click()`);
 	await tab().send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
-}, 30_000);
+}, TEST_MS);
 
 /** The phone's on-screen keyboard, `px` tall, as the visual viewport shows it (Chrome shows none
  *  here); 0 takes it away. */
@@ -305,6 +309,7 @@ const placed = (box: string) =>
 test.skipIf(!CHROME)('on a phone with the keyboard up, the list opens above a box in the lower half of what can be seen, inside it', async () => {
 	await tab().send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 	await tab().navigate(`${fixture.url}/?launch`);
+	await tab().boardStarted();
 	await until(`!!document.querySelector('#folder-box')?.value`, 'the page hydrated');
 	await evaluate(`(() => {
 		const box = document.querySelector('#folder-box');
@@ -375,4 +380,4 @@ test.skipIf(!CHROME)('on a phone with the keyboard up, the list opens above a bo
 	await press('Escape');
 	await keyboard(0);
 	await tab().send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
-}, 30_000);
+}, TEST_MS);

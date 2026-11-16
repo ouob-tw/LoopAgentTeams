@@ -84,7 +84,7 @@ async function visit(width: number, search = '') {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.navigate(`${fixture.url}/${search}`);
-	await tab.until(`JSON.stringify(history.state ?? {}).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 
 /** The line of a report in the conversation, by its title. */
