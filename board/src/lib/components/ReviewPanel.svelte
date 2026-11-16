@@ -4,7 +4,7 @@
 	// the goal and what counts as done (every version, the user's changes too) folded to one line,
 	// 最該先看的幾項, and every other section with all its items, the ones in 最該先看 too; each item
 	// is folded to its title and one line of what was done. The file changes on its own, so it is
-	// read again whenever the status read says its file was written.
+	// read again whenever the status read says its content changed.
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { request } from '#lib/board/api.ts';
 	import { isParked, type Review, type ReviewItem as Item } from '#lib/board/review.ts';
@@ -17,7 +17,7 @@
 	/** The controller's round is over or its client gone: a reply wakes it. */
 	const wake = $derived(needsWake(controller));
 	const summary = $derived(controller.unattended.state === 'error' ? null : (controller.unattended.review ?? null));
-	/** Changes with every write of the review file. */
+	/** Changes whenever the review's content does. */
 	const written = $derived(summary?.state === 'ok' ? String(summary.stamp) : null);
 
 	let review = $state<Review | null>(null);

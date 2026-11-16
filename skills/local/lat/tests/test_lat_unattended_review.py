@@ -291,9 +291,12 @@ class NoCrossCheckTests(ReviewCase):
         self.md.write_text(old)
         self.autos(dict(kind='auto', action='merge', target='dev', commit='a' * 40,
                         basis='allow merge dev', result='succeeded'))
+        first = self.review('show')['body_sha']
         self.delegated('LAT-AB')
         saved = state_path.read_text()
         shown = self.review('show')
+        # The board reloads the tab when this changes, though the file is not rewritten.
+        self.assertNotEqual(shown['body_sha'], first)
         self.assertEqual([item['id'] for item in shown['view']['items']], ['LAT-AB', 'LAT-AN'])
         self.assertNotIn('verified', shown)
         printed = self.run_script(SESSION_SCRIPT.parent / 'lat-unattended.py', 'review', 'show')

@@ -860,11 +860,11 @@ def refresh_review_locked(lat, session, found=None):
     body = _lat_review.render_body(view)
     digest = sha(body)
     if any(key in state for key in LEGACY_STATE) and md.exists():
-        header = _lat_review.render_header(view, state.get('updated_at') or stamp(now()))
-        return dict(path=md, view=view, text=header + '\n' + body)
+        header = _lat_review.render_header(view, stamp(now()))
+        return dict(path=md, view=view, body_sha=digest, text=header + '\n' + body)
     if state.get('body_sha') != digest or not md.exists():
         write_review(md, state_path, view, body, dict(body_sha=digest, updated_at=stamp(now())))
-    return dict(path=md, view=view)
+    return dict(path=md, view=view, body_sha=digest)
 
 
 def refresh_review(lat, session):
@@ -885,7 +885,7 @@ def review_result(result):
     if result is None:
         return dict(status='ok', path=None, reason='no unattended grant this round')
     return dict(status='ok', path=str(result['path']) if result['path'] else None,
-                view=result['view'])
+                body_sha=result.get('body_sha'), view=result['view'])
 
 
 def review_text(result):

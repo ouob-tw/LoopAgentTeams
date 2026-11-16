@@ -76,7 +76,7 @@ export type UnattendedView =
 			review?: ReviewSummary;
 	  };
 
-/** What the status read knows of a round's review: enough for the tab to show, and to tell when its file changed. */
+/** What the status read knows of a round's review: enough for the tab to show, and to tell when its content changed. */
 export type ReviewSummary =
 	| { state: 'none' }
 	| { state: 'error'; reason: string }

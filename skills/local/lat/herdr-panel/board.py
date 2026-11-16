@@ -357,7 +357,8 @@ PARKED_KINDS = ("parked", "parked-row")
 def review_summary(workspace, session_id, seconds):
     """(summary, path) of one controller's review: ``{state: none}`` when the round has none yet,
     ``{state: ok, path, count, parked, stamp}`` when it has one, ``{state: error, reason}``
-    when it could not be read. ``stamp`` changes with every write of the file."""
+    when it could not be read. ``stamp`` changes whenever the review's content does, also for
+    an old review file that is no longer rewritten."""
     seconds = min(LEDGER_READ_SECONDS, seconds)
     if seconds <= 0:
         return {"state": "error", "reason": _TIME_UP}, None
@@ -370,10 +371,9 @@ def review_summary(workspace, session_id, seconds):
     if not path:
         return {"state": "none"}, None
     items = view.get("items") if isinstance(view.get("items"), list) else []
-    try:
-        stamp = Path(path).stat().st_mtime_ns
-    except OSError:
-        stamp = 0
+    digest = result.get("body_sha")
+    # 13 hex digits fit a JavaScript number exactly.
+    stamp = int(digest[:13], 16) if isinstance(digest, str) and len(digest) >= 13 else 0
     parked = sum(1 for item in items
                  if item.get("kind") in PARKED_KINDS and item.get("state") == "open")
     return {"state": "ok", "path": path, "count": len(items), "parked": parked,
