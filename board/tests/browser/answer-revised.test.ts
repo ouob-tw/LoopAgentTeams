@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import type { HelperController, HelperQuestion } from '../../src/lib/board/types.ts';
 import { question, sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser } from '../browser.ts';
+import { CHROME, launchChrome, shot, type Browser } from '../browser.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -153,3 +153,49 @@ test.skipIf(!CHROME)('a revision at the moment of sending is still refused with 
 	expect(answerCalls().slice(before)).toHaveLength(1);
 	expect(answerCalls().at(-1)).toEqual(expect.arrayContaining(['--revision=2', '--select=3']));
 }, 30_000);
+
+/** The failure notice whose text includes `text`, as a selector-free expression. */
+const toastOf = (text: string) => `[...document.querySelectorAll('.toasts .toast')].find((toast) => toast.innerText.includes(${JSON.stringify(text)}))`;
+
+// #667: the refusal notice is closed by its close button, with the pointer, at a computer's and a
+// phone's width; it leads with a circled "!" hidden from screen readers, not an "✗" like the close.
+for (const width of [1200, 390]) {
+	test.skipIf(!CHROME)(`at ${width}px the refusal notice leads with an alert icon and its close button takes it away`, async () => {
+		await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 2, mobile: width < 700 });
+		try {
+			const id = `S-close-${width}`;
+			const shown = single({ id, title: '關閉通知的題' });
+			const luna = fixture.bound('alpha', 'luna', { questions: [shown] });
+			fixture.list([luna]);
+			await fixture.refresh(cookie);
+			await open(luna, id);
+			await choose(1);
+			fixture.list([{ ...luna, questions: [single({ id, title: '關閉通知的題', revision: 2, section_sha256: sha('e') })] }]);
+			await submit();
+			await until(`!!${toastOf(REFUSED)}`);
+			await fixture.refresh(cookie);
+			await until(`document.querySelector('article.content header .id')?.textContent.includes('r2')`);
+
+			await shot(browser!.tab, `toast-${width}-open`);
+			const look = await evaluate<{ text: string; icon: boolean; hidden: boolean; buttons: number }>(`(() => {
+				const toast = ${toastOf(REFUSED)};
+				const icon = toast.querySelector('.lucide-circle-alert');
+				return { text: toast.querySelector('p').innerText, icon: !!icon, hidden: !!icon?.closest('[aria-hidden="true"]'), buttons: toast.querySelectorAll('button').length };
+			})()`);
+			expect(look).toEqual({ text: expect.stringMatching(/^題目已變更/), icon: true, hidden: true, buttons: 1 });
+
+			// Every notice on screen is closed with the pointer at its close button, as a person would.
+			for (let left = 5; left > 0 && (await evaluate<boolean>(`!!document.querySelector('.toasts .toast button')`)); left--) {
+				const hit = await evaluate<boolean>(`(() => { const button = document.querySelector('.toasts .toast button'); const box = button.getBoundingClientRect(); return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest('button') === button; })()`);
+				expect(hit).toBe(true);
+				await browser!.tab.pointerClick('.toasts .toast button');
+				await sleep(300);
+				await shot(browser!.tab, `toast-${width}-closed-${6 - left}`);
+			}
+			expect(await evaluate<number>(`document.querySelectorAll('.toasts .toast').length`)).toBe(0);
+			expect(await evaluate<boolean>(`!!${toastOf(REFUSED)}`)).toBe(false);
+		} finally {
+			await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
+		}
+	}, 30_000);
+}
