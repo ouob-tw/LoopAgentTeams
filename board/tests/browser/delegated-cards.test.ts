@@ -205,6 +205,7 @@ test.skipIf(!CHROME)('a seen mark the host cannot keep leaves the card with the 
 		await tab.until(`!document.querySelector('${card('LAT-A2')} .detail')`, 'the card closed');
 		expect(await tab.eval(text(`${card('LAT-A2')} .unsaved`))).toBe('沒記下看過，下次打開會再出現');
 		await reload(tab);
+		await tab.until(`document.querySelectorAll('.delegated-strip [data-delegated]').length > 0`, 'the strip after the reload');
 		expect(await rows(tab)).toEqual(['LAT-A2']);
 	} finally {
 		chmodSync(state, 0o755);
