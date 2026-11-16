@@ -1443,10 +1443,11 @@ def _record_question_lines(question_id, incoming, question=None):
 
 def new_decision_record(question_id, incoming, *, advisor, session_id, question=None,
                         authority_gap=None, blocked_work=None, help_question=False,
-                        exempt_basis=None, tried=None):
+                        exempt_basis=None, tried=None, grant=None):
     """The text of a new pending decision record for ``question ask``, at r1.
 
     Unset fields default from the question: its title and its option letters and labels.
+    ``grant`` (``r<round> v<version>``) is the unattended grant in effect when it is asked.
     """
     heading, question_line, options_line = _record_question_lines(question_id, incoming, question)
     # The advisor line sits right below the status line (references/advisors.md).
@@ -1460,6 +1461,8 @@ def new_decision_record(question_id, incoming, *, advisor, session_id, question=
         lines.append(f"- tried: {tried}")
     if session_id:
         lines.append(f"- session: {session_id}")
+    if grant:
+        lines.append(f"- grant: {grant}")
     lines += [
         "- version: r1",
         question_line,
@@ -1481,7 +1484,7 @@ def decision_revision(decision_path):
 
 
 def sync_decision_record(decision_path, revision, *, reopen=False, help_question=False,
-                         question_id=None, incoming=None, question=None):
+                         question_id=None, incoming=None, question=None, grant=None):
     """Set the record's version line to the panel revision; optionally reopen it or mark help.
 
     ``reopen`` sets the status back to pending; ``help_question`` makes the kind line
@@ -1489,6 +1492,8 @@ def sync_decision_record(decision_path, revision, *, reopen=False, help_question
     With ``question_id`` and ``incoming`` and a record version other than ``revision``, the
     heading, ``- question:`` and ``- options:`` lines are replaced in the same write
     (a missing line is added); the answer sections and other fields stay as they are.
+    ``grant`` adds a ``- grant:`` line after the session line (else the status line) when the
+    record has none; an existing one is kept.
     """
     decision_path = Path(decision_path)
     with _path_lock(decision_path):
@@ -1505,6 +1510,9 @@ def sync_decision_record(decision_path, revision, *, reopen=False, help_question
         elif help_question:
             after = fields.get("advisor", status)[1]
             edits.append((after, after, "\n- kind: help"))
+        if grant and "grant" not in fields:
+            after = fields.get("session", status)[1]
+            edits.append((after, after, f"\n- grant: {grant}"))
         version = fields.get("version")
         extra = ""
         if incoming is not None and _record_revision(text) != revision:

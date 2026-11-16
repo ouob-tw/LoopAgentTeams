@@ -33,7 +33,7 @@
 | `pending` | 交給使用者，只有真人答覆能解除。 | `- advisor: needs-human`、`- advisor: exempt <類別>` 或 `- advisor: late <結論>` |
 | `answered` | 使用者已在面板或看板送出，程式已記下答覆原文與來源；主控判斷意思、寫核准範圍後改為 `approved`（求助題 `resolved`），見 [待答問題面板](question-panel.md#收到-lat-panel-通知)。不是 `pending`。 | 沿用 `pending` 時的參謀行 |
 
-- 無人模式另有 `parked`（擱置）與三種代決狀態 `proxy-confirmed`、`assumed`、`prototype-decided`（參謀行 `- advisor: proxy <範圍>`），格式與檢查見 [代決與擱置](unattended.md#代決與擱置)。
+- 無人模式另有三種代決狀態 `proxy-confirmed`、`assumed`、`prototype-decided`（參謀行 `- advisor: proxy <範圍>`），格式與檢查見 [代決與提問](unattended.md#代決與提問)；改版前寫的 `parked`（擱置）紀錄照舊可讀，不再新寫。
 - 參謀行讀法比照狀態行：取第一行以 `- advisor:` 開頭的行，鍵名與值都不分大小寫；第一個字決定結論，`exempt`、`late` 的第二個字決定類別或結論，其後可接註記。同家降級時在結論後加 `same-family-degraded`，例如 `- advisor: needs-human same-family-degraded`。依據行同樣只取第一行，值去除前後空白後比對原文。
 - 結束回合的 DECIDE／HELP 檢查要求每個寫出的題號都有 `needs-human`、`exempt <spec-confirmation｜ticket-confirmation｜requirement-discussion｜account-quota｜preauth-ask｜user-account｜prior-promise｜must-ask>` 或 `late <needs-human｜resolved｜self-check>` 參謀行；缺少或寫錯就攔下，補做順序見 [主控恢復程序](recovery.md) 的「回合結束檢查」。`exempt preauth-ask` 另依當下設定重跑 `check` 核對上表條件，不符就逐題攔下；設定讀不出等 `check` 無法判斷的原因（類別 `error`）只警告。`exempt prior-promise`、`exempt must-ask` 另核對依據行，不符就逐題攔下，只有全域設定讀不出時才警告；`question ask` 也做同樣的核對，不符就拒絕寫題。求助題另須有 `- tried:` 行，規則見 [主控恢復程序](recovery.md) 的「回合結束檢查」。
 
@@ -61,7 +61,7 @@
 - 待決目錄：<決策目錄絕對路徑>（含先前參謀的結論與真人答覆）
 - 授權規則：<LAT 技能目錄絕對路徑>/SKILL.md 的「確認與自動推進」「使用者待決事項」；結論格式見同目錄 references/advisors.md 的「參謀結論」
 - 預先授權：`uv run --no-project python <LAT 技能目錄絕對路徑>/scripts/lat-preauth.py show --workspace <主控工作區>` 印出 `[advisor]` 段與動作設定
-- 無人授權（有效時才附）：`lat-unattended.py status` 印出的輪數、版本、目標、做完條件與可代決範圍；使用者原話逐字附 session 與可定位的訊息來源；判斷規則見 references/unattended.md 的「代決與擱置」
+- 無人授權（有效時才附）：`lat-unattended.py status` 印出的輪數、版本、目標、做完條件與可代決範圍；使用者原話逐字附 session 與可定位的訊息來源；判斷規則見 references/unattended.md 的「代決與提問」
 - 限制：只讀不改，不修改程式、Spec、待決紀錄或任務卡；不聯絡使用者；只回覆主控。
 - 回覆格式：第一行 `<ID> r<版本>: resolved <選項或做法>`、`needs-human` 或 `self-check`，下一行起寫理由；resolved 必須引用已確認 Spec 的具體段落，或含真人答覆證據的待決紀錄 ID 與版本，或預先授權（`預先授權 <層>：<段落>`，見 references/advisors.md 的「參謀結論」）。以 `hcom send` 回覆主控時一律用 `--intent inform`：結論不需主控回覆，主控需要更多時會再諮詢；用 `--intent request` 而主控沒回，HCOM 會送來「未回應」通知，讓你的待命被提前解除並被催促。
 - 回覆後：以 `lat-watch wait --workspace <主控工作區> --agent <你的完整 HCOM 名稱> --for <主控完整 HCOM 名稱> --reason '<一句>'` 聲明待命再結束回合；完整名稱含 tag，短名會依 `hcom list --json` 唯一解析，撞名或查無名稱時拒絕寫入，清單讀取失敗時會警告並沿用輸入。
@@ -87,8 +87,8 @@
 
 ### 無人授權有效時
 
-- 例外類別不再直接問使用者：`ticket-confirmation` 在授權勾選短流程票代確認時照常諮詢、可代確認；其他類別一律擱置，見 [代決與擱置](unattended.md#代決與擱置)。
-- 合併依該段的表：兩位都 `agree` 同一種代決才寫代決紀錄，`## 參謀意見` 每位一行 `<名稱>（<client> <模型>）：agree；<理由>`；任一位 `disagree`、再議一輪仍不一致，或結論是 `needs-human`，都改寫 `parked`，不發 DECIDE／HELP。
+- 例外類別：`ticket-confirmation` 在授權勾選短流程票代確認時照常諮詢、可代確認；其他類別照人工模式直接發題問使用者，見 [代決與提問](unattended.md#代決與提問)。
+- 合併依該段的表：兩位都 `agree` 同一種代決才寫代決紀錄，`## 參謀意見` 每位一行 `<名稱>（<client> <模型>）：agree；<理由>`；任一位 `disagree`、再議一輪仍不一致，或結論是 `needs-human`，都照上表寫成 `pending` 待決題、發 DECIDE／HELP，只停住相依的工作。
 - 參謀不能放寬授權：代決只在授權勾選的範圍內，參謀不自行擴充固定清單。
 
 ## 與真人授權的關係

@@ -2309,7 +2309,7 @@ class ParkTests(LedgerCase):
         self.assertEqual(self.ledger.read_bytes(), before)
         self.park_stuck(row, 'stuck')
         self.assertEqual(self.item(row)['status'], 'parked')
-        self.ok('unpark', str(row), '--reason', 'user replied')
+        self.unpark(row, '--reason', 'user replied')
         self.unattended('close', '--reason', 'off')
         self.assertIn('ask the user', self.fails('park', str(row), '--cause', 'review-stuck', '--reason', 'stuck again'))
         self.assertEqual(self.item(row)['status'], 'in_progress')
@@ -2323,7 +2323,7 @@ class ParkTests(LedgerCase):
         self.assertFalse(review.exists())
         self.park_stuck(row, 'stuck')
         self.assertIn(f'### row-{row} ', review.read_text())
-        self.ok('unpark', str(row), '--reason', 'user replied')
+        self.unpark(row, '--reason', 'user replied')
         self.assertIn('已解除擱置', review.read_text())
 
     def test_a_ledger_that_is_not_this_rounds_cannot_park(self):
@@ -2407,8 +2407,8 @@ class ParkTests(LedgerCase):
         self.park_stuck(root, 'cannot go on')
         self.assertIn(f'unpark item {root}', self.fails('unpark', str(child), '--reason', 'x'))
         self.unattended('close', '--reason', 'off')  # releasing needs no grant
-        self.assertIn('also', self.ok('unpark', str(root), '--reason', 'user decided'))
-        self.ok('unpark', str(blocked), '--reason', 'user decided')
+        self.assertIn('also', self.unpark(root, '--reason', 'user decided'))
+        self.unpark(blocked, '--reason', 'user decided')
         restored = self.item(root)
         self.assertEqual((restored['status'], restored['estimate'], restored['parked_reason']),
                          ('in_progress', estimate, None))
@@ -2426,12 +2426,12 @@ class ParkTests(LedgerCase):
         shared = self.add('--depends', f'{first},{second}', ticket='#3')
         self.park_stuck(first, 'a')
         self.park_stuck(second, 'b')
-        self.ok('unpark', str(first), '--reason', 'user decided')
+        self.unpark(first, '--reason', 'user decided')
         self.assertEqual(self.item(shared)['status'], 'parked')
         self.assertEqual(self.item(shared)['parked_cause'], second)
         self.assertIn(f'依賴的列 {second} 已擱置', self.ok('show', '--rows'))
         self.assertIn(f'依賴的列 {second} 已擱置', self.run_ledger('check').stdout)
-        self.ok('unpark', str(second), '--reason', 'user decided')
+        self.unpark(second, '--reason', 'user decided')
         self.assertEqual(self.item(shared)['status'], 'unassigned')
 
     def test_changing_dependencies_follows_parked_rows(self):
@@ -2469,8 +2469,24 @@ class ParkTests(LedgerCase):
                 *(['--finding', *sum((['--finding', f] for f in findings[1:]), [findings[0]])]
                   if findings else ['--clean']))
 
+    def question(self, row, status='pending', session=None):
+        """The decision record Q<row> that asks the user about the parked row (#661)."""
+        decisions = self.workspace / '.lat' / 'decisions'
+        decisions.mkdir(parents=True, exist_ok=True)
+        path = decisions / f'Q{row}.md'
+        answer = '\n## 答覆（r1，聊天）\n\n- 答覆：A\n' if status in ('answered', 'approved') else ''
+        path.write_text(f'# Q{row} 卡住了怎麼辦\n\n- status: {status}\n- advisor: needs-human\n'
+                        f'- session: {session or self.SESSION}\n- version: r1\n{answer}')
+        return f'Q{row}'
+
+    def unpark(self, row, *args, **kwargs):
+        """Record the user's answer to the row's park question, then unpark it."""
+        self.question(row, 'answered')
+        return self.ok('unpark', str(row), *args, **kwargs)
+
     def park_cause(self, row, cause, reason='cannot go on'):
-        return ('park', str(row), '--cause', cause, '--reason', reason)
+        return ('park', str(row), '--cause', cause, '--reason', reason,
+                '--question', self.question(row))
 
     def test_review_stuck_needs_two_reopens_then_another_blocking_final_review(self):
         self.grant()
@@ -2577,8 +2593,69 @@ class ParkTests(LedgerCase):
                 self.ok('start', str(independent), '--eta', '+1h', by='impl')
                 self.assertEqual(self.item(independent)['status'], 'in_progress')
                 self.assertIn(reason, self.ok('show', '--rows'))
-                self.ok('unpark', str(row), '--reason', 'user decided')
+                self.unpark(row, '--reason', 'user decided')
                 self.assertIsNone(self.item(row).get('parked_basis'))
+
+    def test_park_asks_the_user_and_prints_the_question_command_with_the_findings(self):
+        """#661: parking under the grant also asks the user; the command carries the open
+        甲/乙 findings (review-stuck) or must-fix items (spec-review-limit)."""
+        self.grant()
+        impl = self.started(ticket='#1')
+        for found in (('甲:old reopen',), ('乙:second reopen',), ('甲:login breaks', '丙:typo')):
+            self.review(impl, *found)
+        spec = self.add(ticket='#2', stage='spec-review', evidence='file')
+        for found in (('甲:a',), ('甲:b',), ('乙:scope unclear',)):
+            self.review(spec, *found, final=False)
+        before = self.ledger.read_bytes()
+        for row, cause, finding, body in ((impl, 'review-stuck', '甲 login breaks', '甲/乙 findings'),
+                                          (spec, 'spec-review-limit', '乙 scope unclear',
+                                           'must-fix')):
+            with self.subTest(cause=cause):
+                error = self.fails('park', str(row), '--cause', cause, '--reason', 'stuck')
+                for part in ('question ask', '--question <ID>', finding, body, 'DECIDE:',
+                             'Nothing was changed'):
+                    self.assertIn(part, error)
+                self.assertNotIn('typo', error)
+                self.assertNotIn('old reopen', error)
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_park_refuses_a_question_that_is_not_waiting_for_this_session(self):
+        self.grant()
+        row = self.started()
+        for _ in range(3):
+            self.review(row, '甲:reopens')
+        base = ('park', str(row), '--cause', 'review-stuck', '--reason', 'stuck', '--question')
+        self.assertIn('no decision record', self.fails(*base, 'Q404'))
+        self.assertIn('not a decision record ID', self.fails(*base, '../x'))
+        self.question(row, 'answered')
+        self.assertIn('not a question waiting', self.fails(*base, f'Q{row}'))
+        self.question(row, session='33333333-3333-4333-8333-333333333333')
+        self.assertIn('belongs to session', self.fails(*base, f'Q{row}'))
+        self.assertEqual(self.item(row)['status'], 'in_progress')
+        self.question(row)
+        self.ok(*base, f'Q{row}')
+        self.assertEqual(self.item(row)['parked_question'], f'Q{row}')
+
+    def test_unpark_waits_for_the_human_answer_to_the_park_question(self):
+        self.grant()
+        row = self.started()
+        follower = self.add('--depends', str(row), ticket='#2')
+        self.park_stuck(row, 'stuck')
+        for status in ('pending', 'withdrawn'):
+            with self.subTest(status=status):
+                self.question(row, status)
+                self.assertIn(f'waits for the user\'s answer to question Q{row}',
+                              self.fails('unpark', str(row), '--reason', 'decided'))
+                self.assertEqual(self.item(row)['status'], 'parked')
+        for status in ('answered', 'approved'):
+            with self.subTest(status=status):
+                self.question(row, status)
+                self.ok('unpark', str(row), '--reason', 'user chose A')
+                self.assertEqual((self.item(row)['status'], self.item(row)['parked_question'],
+                                  self.item(follower)['status']),
+                                 ('in_progress', None, 'unassigned'))
+                if status == 'answered':
+                    self.park_stuck(row, 'stuck again')
 
     def park_stuck(self, row, reason):
         """Record the review evidence the row's stage needs, then park it with its cause."""

@@ -33,6 +33,7 @@ sys.path.insert(1, str(Path(__file__).resolve().parents[1] / 'herdr-panel'))
 from _lat_common import (full_hcom_name, read_hcom_list, resolve_agent_name, run_cli,
                          same_controller, shared_lat_dir, write_text_atomic)
 from _lat_tracker import read_issue, tracker_repo
+from lat_decision_status import read_decision_session, read_decision_status
 from transcript import current_settings
 
 LAT_DIR = Path(__file__).resolve().parents[1]
@@ -1860,15 +1861,19 @@ def refresh_review(ledger):
               file=sys.stderr)
 
 
-def park_row(args, row, reason, cause, grant, basis=None):
-    record(args, row, 'park', {'status': 'parked', 'parked_from': row['status'],
-                               'parked_reason': reason, 'parked_cause': cause,
-                               'parked_grant': grant, 'parked_basis': basis}, reason)
+def park_row(args, row, reason, cause, grant, basis=None, question=None):
+    changes = {'status': 'parked', 'parked_from': row['status'], 'parked_reason': reason,
+               'parked_cause': cause, 'parked_grant': grant, 'parked_basis': basis}
+    if question:
+        changes['parked_question'] = question
+    record(args, row, 'park', changes, reason)
 
 
 def release_row(args, doc, row, reason):
     changes = {'status': row['parked_from'], 'parked_from': None, 'parked_reason': None,
                'parked_cause': None, 'parked_grant': None, 'parked_basis': None}
+    if row.get('parked_question') is not None:
+        changes['parked_question'] = None
     if row['parked_from'] == 'in_progress':
         changes['deadline'] = deadline_for(row['estimate'])
     record(args, row, 'unpark', changes, reason)
@@ -1953,8 +1958,88 @@ def require_park_cause(doc, item, cause):
                 + '. Record each round with `review-result` on this row')
 
 
+PANEL_SCRIPT = Path(__file__).resolve().parents[1] / 'herdr-panel' / 'lat_panel.py'
+# A park question waits for the user while it has one of these statuses; a human answer moves
+# it to answered (and approve to approved).
+WAITING_QUESTION = ('pending', 'parked')
+ANSWERED_QUESTION = ('answered', 'approved')
+PARK_QUESTION_BODY = {
+    'review-stuck': 'the 甲/乙 findings the latest final review still has',
+    'spec-review-limit': 'the must-fix (甲/乙) items still open after round 3'}
+
+
+def question_record(doc, identifier):
+    """The decision record ``identifier`` in the shared .lat, or Failure for a bad ID."""
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', identifier or ''):
+        raise Failure(f'--question {identifier!r} is not a decision record ID')
+    return shared_lat_dir(doc['workspace']) / 'decisions' / f'{identifier}.md'
+
+
+def open_findings(doc, item):
+    """`<id> <level> <text>` of the 甲/乙 problems the row's latest counted review has."""
+    reviews = blocking_reviews(doc, item, final_only=item['stage'] == 'impl')
+    if not reviews:
+        return []
+    problems = read_problems(doc)
+    return [f'{pid} {problems[pid]["level"]} {problems[pid].get("text", "")}'.rstrip()
+            for pid in reviews[-1][0].get('problems', [])
+            if problems.get(pid, {}).get('level') in BLOCKING_LEVELS]
+
+
+def require_park_question(args, doc, item):
+    """The ID of the pending question that asks the user about this parked row (unattended
+    mode asks like attended mode, references/unattended.md). Without one, Failure prints the
+    `question ask` command to send it first."""
+    if not args.question:
+        findings = ''.join(f'\n  - {line}' for line in open_findings(doc, item))
+        raise Failure(
+            f'--cause {args.cause} also asks the user: send a question about item {item["id"]} '
+            f'({item["ticket"]} {item["stage"]}) first, then rerun park with --question <ID>. '
+            'Nothing was changed. Ask it with:\n'
+            f'uv run --no-project python {PANEL_SCRIPT} question ask --id "<ID>" '
+            f'--advisor "<參謀結論>" --blocked-work "{item["ticket"]} {item["stage"]}" '
+            "<<'Q'\n## <題目>\n\n<背景，附 "
+            f'{PARK_QUESTION_BODY[args.cause]}>\n\n- A. <選項>\n- B. <選項>\nQ\n'
+            'and end the turn with DECIDE: <ID> r1. '
+            + (f'Findings to attach:{findings}' if findings else
+               'The ledger lists no open 甲/乙 problem for its latest review.'))
+    path = question_record(doc, args.question)
+    if not path.is_file():
+        raise Failure(f'--question {args.question}: no decision record {path}; ask it with '
+                      '`question ask` first. Nothing was changed.')
+    status = read_decision_status(path)
+    if status.error or status.status not in WAITING_QUESTION:
+        raise Failure(f'--question {args.question} is '
+                      f'{status.error or status.status}, not a question waiting for the user; '
+                      'ask a new one with `question ask`. Nothing was changed.')
+    session = ROUND_LEDGER.fullmatch(Path(args.ledger).name)[1]
+    if read_decision_session(path) != session:
+        raise Failure(f'--question {args.question} belongs to session '
+                      f'{read_decision_session(path)}, not this round\'s {session}. '
+                      'Nothing was changed.')
+    return args.question
+
+
+def require_question_answered(doc, item):
+    """Refuse to unpark a row whose park question has no human answer yet."""
+    identifier = item.get('parked_question')
+    if not identifier:
+        return  # parked before parking asked the user (#661)
+    path = question_record(doc, identifier)
+    try:
+        status = read_decision_status(path)
+    except OSError as error:
+        raise Failure(f'item {item["id"]} waits for question {identifier}, whose record cannot '
+                      f'be read ({error}); it stays parked') from error
+    if status.error or status.status not in ANSWERED_QUESTION:
+        raise Failure(f'item {item["id"]} waits for the user\'s answer to question {identifier} '
+                      f'(now {status.error or status.status}); record the answer with `question '
+                      'record-chat` or the panel first, then unpark. Nothing was changed.')
+
+
 def cmd_park(args):
-    """Park a row that cannot go on (unattended mode only); rows depending on it follow."""
+    """Park a row that cannot go on (unattended mode only) and name the question that asks the
+    user about it; rows depending on it follow."""
     reason = required_text('--reason', args.reason)
     with transaction(args, 'park', args.id, reason) as doc:
         require_orchestrator(doc, args, 'park items')
@@ -1963,7 +2048,8 @@ def cmd_park(args):
         # Asked inside the lock, right before the write, so a grant that ended meanwhile counts.
         grant = unattended_grant(args.ledger)
         require_park_cause(doc, item, args.cause)
-        park_row(args, item, reason, None, grant, args.cause)
+        question = require_park_question(args, doc, item)
+        park_row(args, item, reason, None, grant, args.cause, question)
         sync_parked_dependencies(args, doc)
         parked = [row['id'] for row in doc['items'] if row['status'] == 'parked'
                   and row.get('parked_cause') is not None]
@@ -1983,6 +2069,7 @@ def cmd_unpark(args):
         if item.get('parked_cause') is not None:
             raise Failure(f'item {item["id"]} is parked because item {item["parked_cause"]} is; '
                           f'unpark item {item["parked_cause"]}')
+        require_question_answered(doc, item)
         before = {row['id'] for row in doc['items'] if row['status'] == 'parked'}
         release_row(args, doc, item, reason)
         sync_parked_dependencies(args, doc, reason)
@@ -3096,8 +3183,13 @@ def build_parser():
                      'and a further final review (review-result --final) has a 甲/乙 finding; '
                      'spec-review-limit: a spec-review row with 3 recorded review rounds and '
                      'a 甲/乙 (must-fix) finding in round 3. Checked from the ledger')
+    sub.add_argument('--question', metavar='ID',
+                     help='required: the pending decision record (sent with `question ask`) that '
+                     'asks the user about this row; without it park prints the command to ask. '
+                     'unpark then waits for its human answer')
     sub = command('unpark', 'Return a parked row, and the rows parked because of it, to the '
-                  'state they had (orchestrator only)')
+                  "state they had, once the row's park question has a human answer "
+                  '(orchestrator only)')
     sub.add_argument('--reason', required=True, help='what the user decided')
     sub = command('tiny-off', "Take the item's ticket off the tiny lane (orchestrator only)")
     sub.add_argument('--reason', required=True)

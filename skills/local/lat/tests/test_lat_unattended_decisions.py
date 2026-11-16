@@ -1,5 +1,5 @@
 """Unattended mode at the turn-end check: delegated decision records, parked items, DECIDE/HELP
-while the grant is in effect, and replies to review items. Temp HOME/XDG dirs, a temp Git repo
+while the grant is in effect (asked like attended mode since #661), and replies to review items. Temp HOME/XDG dirs, a temp Git repo
 and a fake controller record; no model, HCOM or Herdr call reaches the host."""
 from datetime import datetime, timedelta, timezone
 import json
@@ -162,24 +162,55 @@ class UnattendedStopCase(unittest.TestCase):
 
 
 class QuestionTagTests(UnattendedStopCase):
-    def test_decide_is_held_once_while_the_grant_is_in_effect_and_passes_without_one(self):
+    def test_decide_and_help_pass_while_the_grant_is_in_effect(self):
+        """#661: unattended mode asks like attended mode; the grant never holds DECIDE/HELP."""
         (self.decisions / 'LAT-A.md').write_text(
             f'- status: pending\n- advisor: needs-human\n- session: {SESSION}\n')
-        for tag in ('DECIDE', 'HELP'):
-            with self.subTest('manual round', tag=tag):
-                output = self.stop(f'題目\n{tag}: LAT-A r1')
-                self.assertNotIn('無人模式', json.dumps(output, ensure_ascii=False))
+        for grant in (False, True):
+            if grant:
+                self.grant()
+            for tag in ('DECIDE', 'HELP'):
+                with self.subTest(grant=grant, tag=tag):
+                    output = json.dumps(self.stop(f'題目\n{tag}: LAT-A r1'), ensure_ascii=False)
+                    self.assertNotIn('無人模式', output)
+                    self.assertNotIn('parked', output)
+
+    def test_a_question_asked_under_the_grant_names_it_and_one_asked_without_does_not(self):
+        questions = self.lat / 'questions/orch.md'
+
+        def ask(name):
+            section = self.root / f'{name}.md'
+            section.write_text(QUESTION)
+            result = self.run_script(PANEL, 'question', 'ask', '--questions', questions,
+                                     '--decisions', self.decisions, '--id', name, '--file',
+                                     section, '--advisor', 'exempt spec-confirmation',
+                                     '--session-id', SESSION)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return (self.decisions / f'{name}.md').read_text()
+
+        self.assertNotIn('- grant:', ask('LAT-MANUAL'))
         self.grant()
-        for tag in ('DECIDE', 'HELP'):
-            with self.subTest('unattended round', tag=tag):
-                self.assert_held(self.stop(f'題目\n{tag}: LAT-A r1'), 'LAT 無人模式檢查未通過',
-                                 'parked', 'NO REPLY:')
-                released = self.stop(f'題目\n{tag}: LAT-A r1', active=True)
-                self.assertNotIn('decision', released)
-                self.assertIn('本回合已繼續過，不再攔下', released['systemMessage'])
-        self.unattended('close', '--reason', 'off')
-        self.assertNotIn('無人模式', json.dumps(self.stop('題目\nDECIDE: LAT-A r1'),
+        version = self.unattended('status')['version']['version']
+        record = ask('LAT-UNATT')
+        self.assertIn(f'- session: {SESSION}\n- grant: r1 v{version}\n', record)
+        self.assertIn('- status: pending', record)
+        board = self.run_script(PANEL, 'board', 'questions', '--questions', questions)
+        self.assertEqual(board.returncode, 0, board.stderr)
+        listed = json.loads(board.stdout)
+        listed = listed.get('questions', listed) if isinstance(listed, dict) else listed
+        self.assertEqual(sorted(item['id'] for item in listed if item['status'] == 'pending'),
+                         ['LAT-MANUAL', 'LAT-UNATT'])  # the board's pending list, one more
+        self.assertNotIn('無人模式', json.dumps(self.stop('題目\nDECIDE: LAT-UNATT r1'),
                                                ensure_ascii=False))
+        # A re-ask under the grant adds the line to a record that has none and keeps one.
+        (self.root / 'LAT-MANUAL.md').write_text(QUESTION.replace('要開工嗎', '現在要開工嗎'))
+        result = self.run_script(PANEL, 'question', 'ask', '--questions', questions,
+                                 '--decisions', self.decisions, '--id', 'LAT-MANUAL', '--file',
+                                 self.root / 'LAT-MANUAL.md')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        record = (self.decisions / 'LAT-MANUAL.md').read_text()
+        self.assertEqual(record.count('- grant:'), 1)
+        self.assertIn(f'- session: {SESSION}\n- grant: r1 v{version}\n', record)
 
 
 class DelegatedRecordTests(UnattendedStopCase):
@@ -204,7 +235,7 @@ class DelegatedRecordTests(UnattendedStopCase):
             'ONEADV': (dict(opinions='## 參謀意見\n\n- puma（claude opus）：agree；可以\n'),
                        '缺參謀結論'),
             'DISAGREE': (dict(opinions=OPINIONS.replace('agree；屬', 'disagree；不屬')),
-                         '應記為擱置'),
+                         '改用 `question ask` 發待決題'),
             'HUMAN': (dict(extra='\n## 答覆（r1，聊天）\n\n- 答覆：A\n- 來源：聊天\n'), '真人答覆段落'),
             'ACTION': (dict(extra='- action: push main abc123\n'), '一定擱置'),
             'HELPKIND': (dict(extra='- kind: help\n'), '求助題'),
@@ -283,10 +314,11 @@ class DelegatedRecordTests(UnattendedStopCase):
 
 class ParkedTests(UnattendedStopCase):
     def test_parked_items_need_no_question_and_a_no_reply_turn_passes_after_waiting(self):
-        self.grant()
+        # A parked record written before #661 (here: before the grant) keeps working.
         (self.decisions / 'LAT-P.md').write_text(
             f'- status: parked\n- advisor: exempt spec-confirmation\n- session: {SESSION}\n'
             '- version: r1\n- question: Spec 要不要改\n')
+        self.grant()
         held = self.assert_held(self.stop('等待中\nNO REPLY: 擱置一項，其他照做'), 'LAT 等待檢查未通過')
         self.assertNotIn('LAT-P', held)
         waited = self.run_script(WATCH, 'wait', '--workspace', self.work, '--agent', 'orch',
@@ -295,6 +327,22 @@ class ParkedTests(UnattendedStopCase):
         self.assertIn('LAT-P', waited.stdout)
         # Nothing about the parked item reaches the user: no hold, no shown question.
         self.assertEqual(self.stop('等待中\nNO REPLY: 擱置一項，其他照做'), {})
+
+
+    def test_a_parked_record_written_under_the_grant_is_held(self):
+        """#661: no new `- status: parked` while a grant is in effect; ask with question ask."""
+        self.grant()
+        (self.decisions / 'LAT-NEW.md').write_text(
+            f'- status: parked\n- advisor: needs-human\n- session: {SESSION}\n- version: r1\n')
+        (self.decisions / 'LAT-ELSE.md').write_text(
+            f'- status: parked\n- advisor: needs-human\n- session: {OTHER}\n- version: r1\n')
+        reason = self.assert_held(self.stop(), 'LAT 擱置紀錄檢查未通過', 'LAT-NEW', 'question ask')
+        self.assertNotIn('LAT-ELSE', reason)
+        self.unattended('close', '--reason', 'off')
+        self.assert_held(self.stop(), 'LAT-NEW')  # written during this round's grant
+        (self.decisions / 'LAT-NEW.md').write_text(
+            f'- status: pending\n- advisor: needs-human\n- session: {SESSION}\n- version: r1\n')
+        self.assertNotIn('擱置紀錄', json.dumps(self.stop(), ensure_ascii=False))
 
 
 class PreauthTests(UnattendedStopCase):

@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import (DELEGATED, delegated_record_problems,
+from lat_decision_status import (DELEGATED, PARKED, delegated_record_problems,
                                  exempt_basis_category, read_advisor_error, read_advisor_words,
                                  read_decision_action, read_decision_session, read_exempt_basis,
                                  read_decision_kind, read_decision_status,
@@ -1677,15 +1677,6 @@ def unattended_lat(record):
     return session_path(record['workspace'], record['session_id']).parent.parent
 
 
-def unattended_question_check(record):
-    """Why a DECIDE/HELP Stop should be held while this round's unattended grant is in effect."""
-    if unattended_module().snapshot(unattended_lat(record), record['session_id'])['state'] != 'active':
-        return None
-    return ('LAT 無人模式檢查未通過：無人授權有效期間不發 DECIDE／HELP。把要使用者決定的事記成擱置'
-            '（待決紀錄 `- status: parked`，寫明原因，不寫面板、不通知），其他工作照做，回合改以 '
-            '`NO REPLY:` 或 `DONE:` 結尾；擱置項由回顧頁交給使用者。要當場問使用者，先請使用者關掉無人模式。')
-
-
 def draft_time(draft):
     """When the draft was written (UTC), or None when it has no usable goal or time."""
     if not isinstance(draft, dict) or not isinstance(draft.get('goal'), str) \
@@ -1743,6 +1734,40 @@ def draft_stop_check(record):
             f'`{draft_command(record["workspace"])}`；不用改就照原內容重寫一次表明已核對：'
             f'`{draft_command(record["workspace"], draft["goal"], done)}`。'
             '之後到又有新列前不再為此提醒；做完再照原樣結束回合。')
+
+
+def parked_stop_check(record):
+    """Why this Stop should be held for a `- status: parked` record of this session written
+    after the round's first grant version started: since #661 an item that must wait for the
+    user is asked with `question ask` like in attended mode. Older parked records (an earlier
+    round, or before the grant) still work and are never held."""
+    if legacy_record(record):
+        return None
+    decisions = Path(record['decisions_path'])
+    if not decisions.is_dir():
+        return None
+    unattended, lat = unattended_module(), unattended_lat(record)
+    number = unattended.snapshot(lat, record['session_id'])['round']
+    versions, _ = unattended.read_grant(lat, record['session_id'], number)
+    if not versions:
+        return None
+    started = datetime.fromisoformat(versions[0]['started_at'])
+    found = []
+    for path in sorted(decisions.glob('*.md')):
+        try:
+            if read_decision_status(path).status != PARKED or \
+                    read_decision_session(path) != record['session_id']:
+                continue
+            written = datetime.fromtimestamp(path.stat().st_ctime, timezone.utc)
+        except (OSError, UnicodeDecodeError):
+            continue  # the DECIDE/HELP check and the omission check report unreadable records
+        if written >= started:
+            found.append(path.stem)
+    if not found:
+        return None
+    return (f'LAT 擱置紀錄檢查未通過：{"、".join(found)} 是無人授權期間新寫的 `- status: parked`。'
+            '要使用者決定的事改用 `question ask` 發待決題（狀態 pending，參謀行沿用原本的參謀結論或例外類別），'
+            '以 `DECIDE:`／`HELP:` 提問，只停住相依的工作；做法見 references/unattended.md「要問使用者的事」。')
 
 
 def delegated_seen_path(record):
@@ -1829,7 +1854,7 @@ def delegated_stop_check(record):
     if not held:
         return None
     return ('LAT 代決紀錄檢查未通過：\n' + '\n'.join(held) + '\n依 references/unattended.md '
-            '「代決紀錄」補正；不屬參謀可代決的、或兩位參謀不一致的，改為 `- status: parked`。')
+            '「代決紀錄」補正；不屬參謀可代決的、或兩位參謀不一致的，改用 `question ask` 發待決題問使用者。')
 
 
 def edited_paths(payload):
@@ -2264,6 +2289,13 @@ def report_stop(record, payload):
             if draft:
                 reasons.append(draft)
         try:
+            parked = parked_stop_check(record)
+        except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
+            notes.append(f'LAT 擱置紀錄檢查發生錯誤，未攔下：{exc}')
+        else:
+            if parked:
+                reasons.append(parked)
+        try:
             delegated = delegated_stop_check(record)
         except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
             notes.append(f'LAT 代決紀錄檢查發生錯誤，未攔下：{exc}')
@@ -2271,13 +2303,6 @@ def report_stop(record, payload):
             if delegated:
                 reasons.append(delegated)
         if tag:
-            try:
-                reason = unattended_question_check(record)
-            except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
-                notes.append(f'LAT 無人模式檢查發生錯誤，未攔下：{exc}')
-            else:
-                if reason:
-                    reasons.append(reason)
             try:
                 reason = stop_check(record, payload)
             except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
