@@ -2,6 +2,7 @@
 	// Notices float over the page's corner, so showing or closing one never moves the content.
 	// `standing` are the board's own conditions (read errors), shown while they last, like
 	// those components put in `toasts.standing`.
+	import CircleAlert from '@lucide/svelte/icons/circle-alert';
 	import X from '@lucide/svelte/icons/x';
 	import { toasts, type ToastKind } from '#lib/board/toasts.svelte.ts';
 
@@ -27,7 +28,9 @@
 	{/each}
 	{#each toasts.list as toast (toast.id)}
 		<div class="toast" data-kind={toast.kind} role={toast.kind === 'failed' ? 'alert' : 'status'}>
-			<p>{toast.kind === 'ok' ? '✓ ' : toast.kind === 'failed' ? '✗ ' : ''}{toast.text}</p>
+			<!-- A failure leads with a circled "!", not an "✗" that reads as a second close. -->
+			{#if toast.kind === 'failed'}<span class="lead" aria-hidden="true"><CircleAlert size="1.15em" /></span>{/if}
+			<p>{toast.kind === 'ok' ? '✓ ' : ''}{toast.text}</p>
 			<button aria-label="關閉" title="關閉" onclick={() => toasts.close(toast.id)}><X size="1em" /></button>
 		</div>
 	{/each}
@@ -71,6 +74,15 @@
 		overflow-wrap: anywhere;
 	}
 	.toast[data-kind='failed'] p {
+		color: var(--danger);
+	}
+	/* As tall as the text's first line, the icon in its middle. */
+	.lead {
+		display: flex;
+		flex: none;
+		align-items: center;
+		height: 1lh;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--danger);
 	}
 	button {
