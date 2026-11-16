@@ -5,8 +5,7 @@
 	import { lastSegment } from '#lib/board/agents.ts';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount } from 'svelte';
-	import { clock } from '#lib/board/clock.svelte.ts';
-	import { noticeTime, placeText } from '#lib/board/format.ts';
+	import { placeText } from '#lib/board/format.ts';
 	import { INFO_DETAILS_KEY, remember, remembered } from '#lib/board/prefs.ts';
 	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
@@ -47,7 +46,6 @@
 		<h2>{controller.project}</h2>
 		<span class="handle" title="@{controller.hcomName}">@{lastSegment(controller.hcomName)}</span>
 		{#if controller.paused}<span class="chip"><HcomBadge hcom="paused" /></span>{/if}
-		{#if controller.lastReportAt}<span class="chip">最後回報 {noticeTime(controller.lastReportAt, clock.now, clock.timeZone)}</span>{/if}
 		<button type="button" class="more" aria-expanded={details} onclick={toggleDetails}>
 			詳細資料<span class="chevron" class:open={details}><ChevronDown size="1em" /></span>
 		</button>

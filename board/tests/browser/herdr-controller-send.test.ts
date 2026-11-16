@@ -477,13 +477,10 @@ for (const { name, report, ended, lat, hcom, herdr, stop } of LEAD_CASES) {
 	}, 60_000);
 }
 
-test.skipIf(!CHROME)("a controller's last report of today shows the time only (the date from yesterday on is in notice-time.test.ts)", async () => {
+test.skipIf(!CHROME)("a controller's header does not show a last-report time even when it has a report", async () => {
 	await visit(1280, '?controller=s-luna');
 	await tab.until(pageOf('moon'), "luna's page");
-	const shown = await tab.eval<string>(`[...document.querySelectorAll('.detail .chip')].map((chip) => chip.innerText).find((text) => text.includes('最後回報'))`);
-	// Her report is 15 minutes old: today unless midnight just passed.
-	const reportedToday = hostDay(Date.parse(LUNA_REPORTED_AT)) === hostDay(Date.now());
-	expect(shown).toMatch(reportedToday ? /最後回報 \d{2}:\d{2}:\d{2}$/ : /最後回報 \d+\/\d+ \d{2}:\d{2}:\d{2}$/);
+	expect(await tab.eval<string>(`document.querySelector('.detail .profile header').innerText`)).not.toContain('最後回報');
 }, 60_000);
 
 // Wide: an effort; a phone: the same conversation with another model.
