@@ -218,10 +218,20 @@ def parse(value):
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
+def anchor(versions):
+    """The first version of the current continuous grant: walk back from the latest version while
+    the previous one ended as `superseded` (an update). A grant that ended any other way starts a
+    new chain, so a create after an expiry or close counts its time limit from itself."""
+    index = len(versions) - 1
+    while index > 0 and versions[index - 1].get('end_reason') == 'superseded':
+        index -= 1
+    return versions[index]
+
+
 def deadline(versions):
-    """When the open version's time limit runs out, counted from the round's first version."""
-    current = versions[-1]
-    return parse(versions[0]['started_at']) + timedelta(hours=current['stop']['max_hours'])
+    """When the open version's time limit runs out, counted from the current grant's anchor."""
+    return parse(anchor(versions)['started_at']) + timedelta(
+        hours=versions[-1]['stop']['max_hours'])
 
 
 def open_version(versions):
@@ -715,9 +725,10 @@ def cmd_update(args):
         current = open_version(versions)
         if not current:
             raise Refused('no grant in effect; start one with create')
-        if args.max_hours is not None and moment >= parse(versions[0]['started_at']) + timedelta(
+        began = anchor(versions)['started_at']
+        if args.max_hours is not None and moment >= parse(began) + timedelta(
                 hours=args.max_hours):
-            raise Refused(f'{args.max_hours} hours since {versions[0]["started_at"]} have already '
+            raise Refused(f'{args.max_hours} hours since {began} have already '
                           'passed; give a longer --max-hours or close the grant')
         version = dict(
             version=current['version'] + 1,

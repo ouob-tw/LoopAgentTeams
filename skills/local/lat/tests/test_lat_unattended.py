@@ -356,6 +356,53 @@ class GrantTests(UnattendedCase):
         self.assertEqual(len(json.loads(self.grant.read_text())['versions']), 1)
         self.assertEqual(self.status()['state'], 'active')
 
+    def age_grant(self, hours):
+        """Move every version's start and end back by `hours` to simulate time passing."""
+        data = json.loads(self.grant.read_text())
+        for version in data['versions']:
+            for key in ('started_at', 'ended_at'):
+                if version.get(key):
+                    version[key] = (datetime.fromisoformat(version[key])
+                                    - timedelta(hours=hours)).isoformat()
+        self.grant.write_text(json.dumps(data))
+
+    def test_create_after_the_time_limit_counts_from_the_new_version(self):
+        self.create()
+        self.age_grant(7)
+        self.assertEqual(self.status()['last_end']['reason'], 'time-limit')
+        self.create()
+        status = self.status()
+        self.assertEqual(status['state'], 'active')
+        started = datetime.fromisoformat(status['version']['started_at'])
+        self.assertEqual(datetime.fromisoformat(status['ends_at']), started + timedelta(hours=6))
+        self.assertEqual(self.json_of('check', '--version', '2')['effective'], True)
+
+    def test_update_keeps_the_anchor_and_cannot_extend_time(self):
+        self.create()
+        self.age_grant(4)
+        self.update(goal='again')
+        self.update(goal='and again')
+        first = datetime.fromisoformat(json.loads(self.grant.read_text())['versions'][0]['started_at'])
+        self.assertEqual(datetime.fromisoformat(self.status()['ends_at']), first + timedelta(hours=6))
+        # 2 hours remain, so a new limit of 3 hours since the anchor has passed.
+        refused = self.json_of('update', '--max-hours', '3', '--source', 'user-edit',
+                               '--evidence', 'e', code=1)
+        self.assertIn('already passed', refused['reason'])
+
+    def test_close_then_create_starts_a_new_anchor(self):
+        self.create()
+        self.age_grant(4)
+        self.json_of('close', '--reason', 'quota')
+        self.create()
+        status = self.status()
+        self.assertEqual(status['state'], 'active')
+        started = datetime.fromisoformat(status['version']['started_at'])
+        self.assertEqual(datetime.fromisoformat(status['ends_at']), started + timedelta(hours=6))
+        # An update after the reopen counts from the reopened version, not the closed one.
+        self.update(goal='x')
+        self.assertEqual(datetime.fromisoformat(self.status()['ends_at']),
+                         started + timedelta(hours=6))
+
     def test_an_ended_round_has_no_grant_in_effect(self):
         self.create()
         self.session(status='ended', unattended=dict(mode='unattended'))
