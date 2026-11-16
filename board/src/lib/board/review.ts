@@ -1,7 +1,8 @@
 // A round's unattended review as the board shows it: what `lat-unattended review show --json`
 // prints, kept to what a page needs, and the words of the message 推翻 and 回覆 send. The review
 // file's layout and order are lat-unattended's; the review tab groups them (reviewGroups).
-import { cardsFrom, shortTime, type DelegatedCard } from './delegated.ts';
+import { cardsFrom, shortTime, unseenCount, type DelegatedCard } from './delegated.ts';
+import type { UnattendedView } from './unattended.ts';
 
 export type ReviewKind = 'parked' | 'parked-row' | 'proxy-confirmed' | 'assumed' | 'prototype-decided';
 export type ReviewItemState = 'open' | 'answered' | 'overturned';
@@ -211,4 +212,13 @@ export function evidencePieces(text: string): EvidencePiece[] {
 	}
 	if (last < text.length) pieces.push({ kind: 'text', text: text.slice(last) });
 	return pieces;
+}
+
+/** The 回顧 tab's number (#664): what still needs the user: 代決 not opened yet, questions asked
+ *  during the grant and not answered (only while the controller can still take an answer), and
+ *  open parked items from before #661. Null without a review. */
+export function reviewTabCount(controller: { unattended: UnattendedView }, inactive: boolean): number | null {
+	const review = 'review' in controller.unattended ? controller.unattended.review : undefined;
+	if (review?.state !== 'ok') return null;
+	return unseenCount(controller) + (inactive ? 0 : review.askedOpen) + review.parked;
 }

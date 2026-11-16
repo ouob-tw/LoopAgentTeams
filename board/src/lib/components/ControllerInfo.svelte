@@ -14,7 +14,7 @@
 	import type { BoardAsk } from '#lib/board/board-asks.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { agentWarnings, lastSegment } from '#lib/board/agents.ts';
-	import { reviewTabCount } from '#lib/board/delegated.ts';
+	import { reviewTabCount } from '#lib/board/review.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import { withAnswered } from '#lib/board/question-message.ts';

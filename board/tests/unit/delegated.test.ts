@@ -81,7 +81,7 @@ test('the seen marks are kept in the state folder, and an unusable file is not s
 });
 
 test('the 回顧 tab counts what still needs the user: unseen 代決, unanswered questions while the controller runs, open parked items (#664)', async () => {
-	const { reviewTabCount } = await import('../../src/lib/board/delegated.ts');
+	const { reviewTabCount } = await import('../../src/lib/board/review.ts');
 	const view = (review: Record<string, unknown>) => unattendedFrom({ status: 'ok', state: 'active', settings: { mode: { value: 'unattended', layer: 'controller' }, max_hours: { value: 12 } }, layer_modes: {}, review });
 	const base = { state: 'ok', path: '/r.md', count: 3, stamp: 1 };
 	// One of the three cards seen: two unseen, plus two questions and one parked item.
