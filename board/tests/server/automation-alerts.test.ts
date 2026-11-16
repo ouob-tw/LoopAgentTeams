@@ -301,7 +301,7 @@ async function failAndPush(name: string): Promise<string[]> {
 }
 
 test('a test login gets pushes only until its time ends, and cannot subscribe itself', async () => {
-	const issued = fixture.cli('test-login', '--url', fixture.url, '--label', 'qa', '--hours', '1');
+	const issued = await fixture.cli('test-login', '--url', fixture.url, '--label', 'qa', '--hours', '1');
 	expect(issued.code).toBe(0);
 	const id = issued.stdout.match(/裝置 ([0-9a-f]{8})/)![1];
 	const code = issued.stdout.match(new RegExp(`${fixture.url}/login/test#(\\S+)`))![1];

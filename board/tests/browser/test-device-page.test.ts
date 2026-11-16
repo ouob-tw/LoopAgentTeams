@@ -38,7 +38,7 @@ beforeAll(async () => {
 		})
 	);
 	writeFileSync(join(fixture.dir, 'pd.json'), JSON.stringify({ pending: [{ id: 3, waiting: 5, caller: 'codex', item: 'npm token', item_id: 'i-3', fields: ['password'], argv: ['npm', 'publish'], cwd: '/srv' }] }));
-	const issued = fixture.cli('test-login', '--label', 'qa-page', '--url', fixture.url);
+	const issued = await fixture.cli('test-login', '--label', 'qa-page', '--url', fixture.url);
 	const code = issued.stdout.match(/login\/test#(\S+)/)![1];
 	const id = issued.stdout.match(/裝置 ([0-9a-f]{8})/)![1];
 	const redeemed = await fixture.fetch('/api/login/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });

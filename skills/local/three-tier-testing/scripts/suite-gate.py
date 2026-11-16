@@ -92,6 +92,9 @@ TIME_LIMIT_FACTOR = 4
 TIME_LIMIT_FLOOR = 1800.0
 TIME_LIMIT_DEFAULT = 7200.0
 TIMEOUT_EXIT = 124  # the exit code recorded for a command stopped at its time limit
+# A test command whose output has not grown for this long is stopped the same way (#482: a
+# hung bun worker once held a suite for hours); SUITE_GATE_SILENCE_SECONDS overrides it.
+SILENCE_LIMIT_SECONDS = 900.0
 RECLAIM_HISTORY = 10  # reclaim records kept in the shared state
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 FALLBACK_NOTE = ('running the suite in a new session instead; its usage is not measured and '
@@ -1616,7 +1619,7 @@ class Gate:
         self.sampler = None
         self.keeper = self.keeper_pid = None  # holds the group open until it is measured
         self.finished = False  # the suite exited by itself
-        self.timed_out = None  # {limit_s, limit_source} when the last command hit its limit
+        self.timed_out = None  # {limit_s, limit_source[, reason]} when the last command hit a limit
         self.key = None  # what its measured usage is filed under
         self.measured = None  # ((profile_history, ledger version), reservation) for self.key
         self.scopes = None  # whether an empty user scope started, probed once before queueing
@@ -1940,8 +1943,9 @@ class Gate:
     def _run_command(self, argv, cwd, scan=None, command=None):
         """Run argv in cwd as this gate's suite, its output passed through (and fed to scan),
         and wait for it: (exit code, output tail, profile, seconds, start, end), the start
-        and end as UTC datetimes. OSError when it cannot start. Past time_limit() it ends
-        the suite's whole group (or session), sets self.timed_out and exits TIMEOUT_EXIT."""
+        and end as UTC datetimes. OSError when it cannot start. Past time_limit(), or when
+        its output has not grown for silence_limit(), it ends the suite's whole group (or
+        session), sets self.timed_out and exits TIMEOUT_EXIT."""
         self.child = self.group = self.sampler = self.keeper = self.keeper_pid = None
         self.finished = False
         self.timed_out = None
@@ -1957,12 +1961,28 @@ class Gate:
                                           ('err', child.stderr, sys.stderr.buffer))]
         for thread in pumps:
             thread.start()
-        try:
-            code = child.wait(timeout=limit)
-        except subprocess.TimeoutExpired:
-            warn(f'TIMED OUT: still running after its {fmt_seconds(limit)} limit ({source}); '
-                 'stopping it and every process it started')
-            self.timed_out = {'limit_s': round(limit, 1), 'limit_source': source}
+        silence = silence_limit()
+        code = None
+        while code is None:
+            now = time.monotonic()
+            quiet = now - tail.last_output
+            if quiet >= silence:
+                reason = f'no output for {fmt_seconds(silence)}'
+                warn(f'TIMED OUT: {reason}; stopping it and every process it started')
+                self.timed_out = {'limit_s': round(now - started, 1), 'limit_source': reason,
+                                  'reason': reason}
+            elif now - started >= limit:
+                warn(f'TIMED OUT: still running after its {fmt_seconds(limit)} limit ({source}); '
+                     'stopping it and every process it started')
+                self.timed_out = {'limit_s': round(limit, 1), 'limit_source': source}
+            if self.timed_out:
+                break
+            try:
+                code = child.wait(timeout=max(0.05, min(5.0, silence - quiet,
+                                                        limit - (now - started))))
+            except subprocess.TimeoutExpired:
+                pass
+        if code is None:
             self.end_suite()
             try:
                 child.wait(KILL_GRACE_SECONDS)
@@ -2243,9 +2263,11 @@ class Tail:
     def __init__(self):
         self.data = bytearray()
         self.lock = threading.Lock()
+        self.last_output = time.monotonic()
 
     def add(self, chunk):
         with self.lock:
+            self.last_output = time.monotonic()
             self.data += chunk
             del self.data[:-TAIL_BYTES]
 
@@ -4256,6 +4278,16 @@ def is_registered_suite(cwd, rel, command):
     return any(s['cwd'] == rel and s['command'] == command for s in suites)
 
 
+def silence_limit():
+    """Seconds a test command's output may stay still before the gate stops it:
+    SUITE_GATE_SILENCE_SECONDS when it is a number above 0, else SILENCE_LIMIT_SECONDS."""
+    try:
+        value = float(os.environ.get('SUITE_GATE_SILENCE_SECONDS', SILENCE_LIMIT_SECONDS))
+    except ValueError:
+        value = 0
+    return value if math.isfinite(value) and value > 0 else SILENCE_LIMIT_SECONDS
+
+
 def time_limit(cwd, command):
     """(seconds, where they come from): the total time command may run in cwd. The
     registry's `time_limit_minutes` (minutes, or minutes by directory with "*" for the
@@ -4769,6 +4801,8 @@ def cmd_status(as_json, fp_prefix, limit):
             result += ' ' + rerun_only_text(files)
         if r.get('timed_out'):
             result += f" TIMED OUT after {fmt_seconds(r['timed_out'].get('limit_s') or 0)}"
+            if r['timed_out'].get('reason'):
+                result += f" ({r['timed_out']['reason']})"
         rerun = f"  rerun: {r['rerun_reason']}" if r.get('rerun_reason') else ''
         purpose = f"  purpose: {describe_purpose(r)}" if r.get('purpose') else ''
         print(f"  {r.get('time')}  {result}  fp {(record_fingerprint(r) or '-')[:12]}  "

@@ -198,6 +198,48 @@ export function jsonLines(file: string): any[] {
 }
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export type CliResult = { code: number; stdout: string; stderr: string };
+/** How long one host command may run before the test fails; below the suites' 30 s test timeout so this message, not a bare timeout, explains it (#482: a synchronous spawn once spun a worker for hours). */
+export const CLI_TIME_LIMIT_MS = 20_000;
+
+/**
+ * Run a command without blocking the test worker: write `input` to its standard input, collect its output
+ * and resolve when it closes. A command still running after `timeoutMs` has its process group killed and the
+ * call rejects with a message naming the command.
+ */
+export function runCli(
+	command: string,
+	args: string[],
+	options: { env?: Record<string, string | undefined>; input?: string; timeoutMs?: number } = {}
+): Promise<CliResult> {
+	const timeoutMs = options.timeoutMs ?? CLI_TIME_LIMIT_MS;
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args, { env: options.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+		let stdout = '';
+		let stderr = '';
+		child.stdout!.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
+		child.stderr!.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
+		const timer = setTimeout(() => {
+			try {
+				process.kill(-child.pid!, 'SIGKILL');
+			} catch {
+				child.kill('SIGKILL');
+			}
+			reject(new Error(`\`${[command, ...args].join(' ')}\` did not finish within ${timeoutMs} ms and was killed; output so far:\n${stdout}${stderr}`));
+		}, timeoutMs);
+		child.on('error', (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+		child.on('close', (code) => {
+			clearTimeout(timer);
+			resolve({ code: code ?? -1, stdout, stderr });
+		});
+		child.stdin!.on('error', () => {});
+		child.stdin!.end(options.input ?? '');
+	});
+}
+
 export async function until<T>(read: () => T | undefined | false | null, timeoutMs: number, what: string): Promise<T> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
@@ -300,11 +342,12 @@ export interface Fixture {
 	touchRegistry(): void;
 	report(sessionId: string, fields: Partial<Report> & { tag: Report['tag'] }): void;
 	appendRaw(sessionId: string, text: string): void;
-	cli(...args: string[]): { code: number; stdout: string; stderr: string };
-	/** Run a host command with this text on its standard input. */
-	cliWithInput(input: string, ...args: string[]): { code: number; stdout: string; stderr: string };
+	/** Run a host command; it fails the test if the command has not ended within CLI_TIME_LIMIT_MS. */
+	cli(...args: string[]): Promise<CliResult>;
+	/** Run a host command with this text on its standard input, under the same time limit as `cli`. */
+	cliWithInput(input: string, ...args: string[]): Promise<CliResult>;
 	/** Set the board password through the host command, typed twice. */
-	setPassword(password: string): void;
+	setPassword(password: string): Promise<void>;
 	/** Try the password, the first login step; the response as the server gave it. */
 	tryLogin(password: string, userAgent?: string): Promise<Response>;
 	/** Try a TOTP code, the second login step, with the step cookie the right password set. */
@@ -512,12 +555,9 @@ export async function startFixture(
 		},
 		appendRaw: (sessionId, text) => appendFileSync(join(reportsDir, `${sessionId}.jsonl`), text),
 		cli: (...args) => fixture.cliWithInput('', ...args),
-		cliWithInput(input, ...args) {
-			const result = spawnSync('bun', [join(ROOT, 'src/cli.ts'), ...args], { env, input, encoding: 'utf8' });
-			return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
-		},
-		setPassword(password) {
-			const result = fixture.cliWithInput(`${password}\n${password}\n`, 'password');
+		cliWithInput: (input, ...args) => runCli('bun', [join(ROOT, 'src/cli.ts'), ...args], { env, input }),
+		async setPassword(password) {
+			const result = await fixture.cliWithInput(`${password}\n${password}\n`, 'password');
 			if (result.code !== 0) throw new Error(`setting the password failed: ${result.stderr}`);
 		},
 		tryLogin: (password, userAgent = 'test-device') =>
@@ -678,7 +718,7 @@ export async function startFixture(
 	};
 
 	fixture.list([]);
-	if (options.password !== null) fixture.setPassword(options.password ?? PASSWORD);
+	if (options.password !== null) await fixture.setPassword(options.password ?? PASSWORD);
 	if (totpSecret) saveTotp(join(dir, 'board-state'), totpSecret, Date.now());
 	try {
 		await fixture.start();

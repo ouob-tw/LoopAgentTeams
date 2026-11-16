@@ -35,6 +35,10 @@ step = steps.pop(0)
 plan.write_text(json.dumps(steps))
 sys.stderr.write(step['out'])
 sys.stderr.flush()
+for _ in range(step.get('chatter', 0)):
+    time.sleep(0.25)
+    sys.stderr.write('(pass) still going\\n')
+    sys.stderr.flush()
 if step.get('hang'):
     child = subprocess.Popen(['sleep', '300'])
     with open({str(self.pids)!r}, 'a') as f:
@@ -211,6 +215,44 @@ class TimeLimitTests(TimeoutCase):
     def test_an_unusable_setting_is_ignored(self):
         self.project(limit={'web': 0})
         self.assertEqual(self.limit()[0], 7200)
+
+
+class SilenceLimitTests(TimeoutCase):
+    """A command whose output stops growing for the silence limit (15 minutes, 2 s here) is
+    stopped like one past its time limit, with the reason in the record and in `status`."""
+
+    def setUp(self):
+        super().setUp()
+        self.env['SUITE_GATE_SILENCE_SECONDS'] = '2'
+
+    def test_a_silent_suite_that_never_ends_is_stopped_with_the_reason(self):
+        self.project(limit=None)
+        self.plan({'out': SERIAL, 'hang': True})
+        started = time.monotonic()
+        result = self.run_suite()
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertIn('TIMED OUT: no output for 2s; stopping it and every process it started',
+                      result.stderr)
+        self.assert_stopped()
+        record = self.records()[-1]
+        self.assertEqual(record['exit_code'], 124)
+        self.assertFalse(record['reusable'])
+        self.assertEqual(record['timed_out']['reason'], 'no output for 2s')
+        self.assertEqual(record['rerun'], {'skipped': 'the run timed out'})
+        self.assertIn('FAIL exit 124 TIMED OUT after 2s (no output for 2s)',
+                      self.gate('status').stdout)
+
+    def test_a_suite_that_keeps_printing_runs_past_the_silence_limit(self):
+        self.project(limit=None)
+        # About 4 s of output every 0.25 s: twice the silence limit, never quiet for long.
+        self.plan({'out': SERIAL, 'chatter': 16, 'code': 0})
+        started = time.monotonic()
+        result = self.run_suite()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreater(time.monotonic() - started, 4)
+        self.assertNotIn('TIMED OUT', result.stderr)
+        self.assertNotIn('timed_out', self.records()[-1])
 
 
 if __name__ == '__main__':

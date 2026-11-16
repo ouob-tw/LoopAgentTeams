@@ -159,6 +159,8 @@ uv run --no-project python <skill>/scripts/suite-gate.py light -- '<指令>'
 
 超過上限就停掉整個測試程序群組（同一個 scope，沒有 scope 時是同一個 session），結束碼記 124，紀錄另有 `timed_out`：`limit_s`、`limit_source`、`unfinished_files`（還沒跑完的測試檔）與 `unfinished_basis`（怎麼看出來的，或為什麼看不出來）。逾時算失敗，不自動重跑（`rerun.skipped` 為 `the run timed out`），不能沿用，也不會標成重跑才通過。只有 bun 印出每個測試結果時看得出還沒跑完的檔案：依序執行時是正在跑的那個檔；平行執行時只列指令點名、卻沒有任何結果的檔案。AI Agent 執行時 bun 只印失敗的測試，就看不出來。`status` 在結果後寫 `TIMED OUT after <上限>`。
 
+另有沒有輸出的上限：測試指令的輸出連續 15 分鐘沒有增長（環境變數 `SUITE_GATE_SILENCE_SECONDS` 可改秒數，測試用），就照上面的方式停掉並記為逾時失敗，`timed_out` 另有 `reason`（如 `no output for 15m00s`），`status` 寫 `TIMED OUT after <已跑時間> (no output for 15m00s)`。持續有輸出的指令不受影響；AI Agent 執行時 bun 只印失敗的測試，所以單一測試檔若安靜跑超過 15 分鐘也會被停掉。
+
 ## 查狀態與紀錄
 
 ```bash

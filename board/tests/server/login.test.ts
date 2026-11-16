@@ -131,27 +131,27 @@ test('a logged-in browser opening the login screen goes straight to the board', 
 
 test('a changed password works at once and the old one no longer does; logged-in devices stay in', async () => {
 	const before = await fixture.login();
-	const changed = fixture.cliWithInput('new-password-2\nnew-password-2\n', 'password');
+	const changed = await fixture.cliWithInput('new-password-2\nnew-password-2\n', 'password');
 	try {
 		expect(changed.code).toBe(0);
 		expect(changed.stdout).toContain('已變更密碼');
 
 		expect((await fixture.tryLogin(PASSWORD)).status).toBe(401);
 		expect((await fixture.tryLogin('new-password-2')).status).toBe(200);
-		fixture.setPassword(PASSWORD);
+		await fixture.setPassword(PASSWORD);
 		await fixture.login();
 		expect((await fixture.fetch('/api/board', { cookie: before })).status).toBe(200);
 	} finally {
-		fixture.setPassword(PASSWORD);
+		await fixture.setPassword(PASSWORD);
 	}
 });
 
 test('the host command refuses two different entries or an empty one and keeps the old password', async () => {
-	const mismatch = fixture.cliWithInput('first-try\nsecond-try\n', 'password');
+	const mismatch = await fixture.cliWithInput('first-try\nsecond-try\n', 'password');
 	expect(mismatch.code).toBe(1);
 	expect(mismatch.stderr).toContain('兩次輸入不一致');
 
-	const empty = fixture.cliWithInput('\n\n', 'password');
+	const empty = await fixture.cliWithInput('\n\n', 'password');
 	expect(empty.code).toBe(1);
 	expect(empty.stderr).toContain('不能是空的');
 
@@ -160,7 +160,7 @@ test('the host command refuses two different entries or an empty one and keeps t
 });
 
 test('the password is nowhere in the state directory, the server output or the command output', async () => {
-	const set = fixture.cliWithInput(`${PASSWORD}\n${PASSWORD}\n`, 'password');
+	const set = await fixture.cliWithInput(`${PASSWORD}\n${PASSWORD}\n`, 'password');
 	await fixture.tryLogin(PASSWORD);
 	await fixture.tryLogin(`${PASSWORD}-wrong`);
 
@@ -196,7 +196,7 @@ test('a device logged in before the second step existed must log in again, test 
 	const page = await fixture.fetch('/', { cookie });
 	expect([page.status, page.headers.get('location')]).toEqual([303, '/login']);
 	expect((await fixture.fetch('/api/board', { cookie })).status).toBe(401);
-	expect(fixture.cli('devices').stdout).toContain(`a1b2c3d4\t${pairedAt}\told-paired-phone\t（登入已失效，須重新登入）`);
+	expect((await fixture.cli('devices')).stdout).toContain(`a1b2c3d4\t${pairedAt}\told-paired-phone\t（登入已失效，須重新登入）`);
 	// A test login made on the old version keeps working (test-login.test.ts covers new ones).
 	const test = 'token-of-an-old-test-login';
 	const listed = JSON.parse(readFileSync(devicesPath, 'utf8'));
@@ -209,8 +209,8 @@ test('a device logged in before the second step existed must log in again, test 
 	});
 	writeFileSync(devicesPath, JSON.stringify(listed));
 	expect((await fixture.fetch('/api/board', { cookie: `lat_board_device=${test}` })).status).toBe(200);
-	expect(fixture.cli('revoke', 'a1b2c3d4').code).toBe(0);
-	expect(fixture.cli('revoke', 'e5f6a7b8').code).toBe(0);
+	expect((await fixture.cli('revoke', 'a1b2c3d4')).code).toBe(0);
+	expect((await fixture.cli('revoke', 'e5f6a7b8')).code).toBe(0);
 });
 
 test('the host can list devices and revoke one; the revoked device is back at the login screen', async () => {
@@ -220,11 +220,11 @@ test('the host can list devices and revoke one; the revoked device is back at th
 	const desktopStream = fixture.watch(desktop);
 	await until(() => phoneStream.latest() && desktopStream.latest(), 5_000, 'both streams to deliver the board');
 
-	const listed = fixture.cli('devices').stdout.trim().split('\n').map((line) => line.split('\t'));
+	const listed = (await fixture.cli('devices')).stdout.trim().split('\n').map((line) => line.split('\t'));
 	const phoneId = listed.find((row) => row[2] === 'phone-browser')![0];
 	expect(listed.some((row) => row[2] === 'desktop-browser')).toBe(true);
 
-	const revoked = fixture.cli('revoke', phoneId);
+	const revoked = await fixture.cli('revoke', phoneId);
 	expect(revoked.code).toBe(0);
 
 	// The open stream is told to leave, and every later request is refused.
@@ -232,7 +232,7 @@ test('the host can list devices and revoke one; the revoked device is back at th
 	expect((await fixture.fetch('/api/board', { cookie: phone })).status).toBe(401);
 	const page = await fixture.fetch('/', { cookie: phone });
 	expect([page.status, page.headers.get('location')]).toEqual([303, '/login']);
-	expect(fixture.cli('devices').stdout).not.toContain('phone-browser');
+	expect((await fixture.cli('devices')).stdout).not.toContain('phone-browser');
 
 	// The other device keeps working.
 	expect(desktopStream.unpaired).toBe(false);
@@ -240,12 +240,12 @@ test('the host can list devices and revoke one; the revoked device is back at th
 });
 
 test('revoking an unknown device fails without touching the others', async () => {
-	const before = fixture.cli('devices').stdout;
+	const before = (await fixture.cli('devices')).stdout;
 
-	const result = fixture.cli('revoke', 'ffffffff');
+	const result = await fixture.cli('revoke', 'ffffffff');
 
 	expect(result.code).toBe(1);
-	expect(fixture.cli('devices').stdout).toBe(before);
+	expect((await fixture.cli('devices')).stdout).toBe(before);
 });
 
 test('an unreadable password file is reported on the login screen and logs nothing in', async () => {
@@ -263,7 +263,7 @@ test('an unreadable password file is reported on the login screen and logs nothi
 		expect(response.headers.getSetCookie()).toEqual([]);
 
 		// What the screen says to do repairs it.
-		const repaired = fixture.cliWithInput(`${PASSWORD}\n${PASSWORD}\n`, 'password');
+		const repaired = await fixture.cliWithInput(`${PASSWORD}\n${PASSWORD}\n`, 'password');
 		expect(repaired.code).toBe(0);
 		expect(repaired.stderr).toContain('讀不出來');
 		expect(repaired.stdout).toContain('已變更密碼');
@@ -296,7 +296,7 @@ describe('before a password is set', () => {
 	});
 
 	test('setting the password on the host lets the browser in without a restart', async () => {
-		const set = fresh.cliWithInput('first-password\nfirst-password\n', 'password');
+		const set = await fresh.cliWithInput('first-password\nfirst-password\n', 'password');
 		expect(set.stdout).toContain('已設定密碼');
 
 		const first = await fresh.tryLogin('first-password');

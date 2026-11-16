@@ -275,8 +275,8 @@ test('a device revoked while the page is open stops getting the history', async 
 	const feed = follow(tala.session_id, phone);
 	try {
 		await until(() => feed.updates[0], 5_000, 'the first page');
-		const listed = fixture.cli('devices').stdout.trim().split('\n').map((line) => line.split('\t'));
-		expect(fixture.cli('revoke', listed.find((row) => row[2] === 'phone-browser')![0]).code).toBe(0);
+		const listed = (await fixture.cli('devices')).stdout.trim().split('\n').map((line) => line.split('\t'));
+		expect((await fixture.cli('revoke', listed.find((row) => row[2] === 'phone-browser')![0])).code).toBe(0);
 
 		append(tala.session_id, [said('assistant', '不該送到被撤銷的裝置')]);
 

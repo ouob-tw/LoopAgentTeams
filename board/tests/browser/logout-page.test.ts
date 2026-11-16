@@ -117,7 +117,7 @@ for (const size of SIZES) {
 		await tab.until(`document.querySelector('dialog[open] p.failed')?.textContent.trim() === '沒有登出，請再試一次。'`, 'the failure under the button');
 		expect(await tab.eval(`parseFloat(getComputedStyle(document.querySelector('dialog[open] p.failed')).fontSize)`)).toBeGreaterThanOrEqual(16);
 		expect(await tab.eval(`${BUTTON}.disabled`)).toBe(false);
-		expect(fixture.cli('devices').stdout).toContain(label);
+		expect((await fixture.cli('devices')).stdout).toContain(label);
 		await shot(tab, `${size.width}-2-failed-light`);
 		await theme('dark');
 		await shot(tab, `${size.width}-2-failed-dark`);
@@ -133,7 +133,7 @@ for (const size of SIZES) {
 		await tab.eval(`window.release()`);
 
 		await tab.until(onLogin, 'the login screen');
-		expect(fixture.cli('devices').stdout).not.toContain(label);
+		expect((await fixture.cli('devices')).stdout).not.toContain(label);
 		const { cookies } = (await tab.send('Network.getCookies', { urls: [fixture.url] })) as { cookies: { name: string }[] };
 		expect(cookies.map((cookie) => cookie.name)).not.toContain(name);
 		expect((await fixture.fetch('/api/board', { cookie })).status).toBe(401);
