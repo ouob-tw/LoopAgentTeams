@@ -2067,8 +2067,8 @@ class Gate:
                              f"{f['file']} ({', '.join(f['tests'])})" for f in flaky))
                 else:
                     warn(f'the rerun failed too (exit {code}): the run counts as failed')
-                timed_out = next((r['timed_out'] for r in rerun['runs'] if r.get('timed_out')),
-                                 None)
+                timed_out = next((dict(r['timed_out'], dir=r['dir']) for r in rerun['runs']
+                                  if r.get('timed_out')), None)
         record = {
             'fingerprint': info and info['fingerprint'], 'tree': info and info['tree'],
             'repo': info and info['repo'], 'command': self.command, 'cwd': str(self.cwd),
@@ -4247,14 +4247,13 @@ def unit_key(project, rel, command):
     return json.dumps([str(project), rel, command])
 
 
-def registered_suite(cwd, rel, command):
+def is_registered_suite(cwd, rel, command):
     """Whether command is a registered full suite of directory rel."""
     try:
         suites = read_full_suites(load_registry(cwd) or {})
     except ValueError:
         return False
-    return any(_dir_key(s.get('cwd', '.')) == rel and s['command'].strip() == command
-               for s in suites)
+    return any(s['cwd'] == rel and s['command'] == command for s in suites)
 
 
 def time_limit(cwd, command):
@@ -4286,7 +4285,7 @@ def time_limit(cwd, command):
             and u.get('rel_cwd') == rel and _number(u.get('baseline')) and u['baseline'] > 0]
     own = [u for u in here if u.get('command') == command]
     # A full suite with no baseline of its own gets the default, not its neighbours' sum.
-    here = own or ([] if registered_suite(cwd, rel, command) else here)
+    here = own or ([] if is_registered_suite(cwd, rel, command) else here)
     if here:
         baseline = sum(u['baseline'] for u in here)
         return (max(baseline * TIME_LIMIT_FACTOR, TIME_LIMIT_FLOOR),
@@ -4776,7 +4775,9 @@ def cmd_status(as_json, fp_prefix, limit):
               f"{r.get('agent')}  {r.get('duration_s')}s  {r.get('cwd')}  "
               f"{r.get('command')}{rerun}{purpose}")
         if (r.get('timed_out') or {}).get('unfinished_files'):
-            print(f"    not finished: {', '.join(r['timed_out']['unfinished_files'])}")
+            where = r['timed_out'].get('dir')
+            print(f"    not finished{' in ' + where if where else ''}: "
+                  f"{', '.join(r['timed_out']['unfinished_files'])}")
         retry = r.get('rerun')
         if isinstance(retry, dict) and retry.get('skipped'):
             print(f"    failed tests not rerun: {retry['skipped']}")
