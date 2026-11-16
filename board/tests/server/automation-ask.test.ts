@@ -368,3 +368,53 @@ test('waiting counts within the limit: past it the agent is closed, the run a ti
 	const cards = (await alerts()).filter((alert) => alert.runId === second.id);
 	expect(cards.map((alert) => [alert.kind, alert.resolved])).toEqual([['ask', 'ended']]);
 });
+
+const grant = { goal: '處理已知問題', done: ['回顧頁通過交付前核對'], scope: { ticket_confirmation: true, assume_defaults: false, prototype_decide: true } };
+const unattendedAgent = () => ({ client: 'claude', model: 'claude-haiku-5-5', effort: 'low', folder: work, brief: 'docs/brief.md', unattended: grant });
+
+test.each(['DECIDE', 'HELP'])('an unattended controller ending %s waits as 等你回覆, not failed; the answer sends it on and DONE ends it (#665)', async (tag) => {
+	const task = await create({ agent: unattendedAgent() });
+	const name = `un-${tag.toLowerCase()}`;
+	hcomPlan([{ name }]);
+	const started = await runNow(task.id);
+	await runWhen(task.id, started.id, (run) => run.sessionId === `s-${name}`, `${name} to be listed`);
+	turn(name, `授權範圍外，需要你決定。\n${tag}: ${QUESTION}`);
+	const run = await runWhen(task.id, started.id, (each) => each.asks?.length === 1, 'the question to be recorded');
+	expect(run.status).toBe('running');
+	expect(run.asks).toEqual([{ question: QUESTION, askedAt: START }]);
+	await sleep(500);
+	expect(listed(name)).toBe(true);
+	expect((await viewOf(task.id)).state).toBe('asking');
+	expect(await yellow(run.id)).toHaveLength(1);
+
+	expect((await reply(task.id, '2 張')).status).toBe(200);
+	const after = await answered(task.id, run.id, 1);
+	expect(after).toMatchObject({ status: 'running' });
+	expect((await viewOf(task.id)).state).toBe('running');
+	setStatus(name, 'active');
+	await sleep(300);
+	turn(name, '做完了，已 deactivate。\nDONE', '2 張');
+	expect((await ended(task.id, run.id)).status).toBe('success');
+});
+
+test('an unattended controller ending ASK: still fails (#665)', async () => {
+	const unattended = await create({ agent: unattendedAgent() });
+	hcomPlan([{ name: 'un-ask' }]);
+	const started = await runNow(unattended.id);
+	await runWhen(unattended.id, started.id, (run) => run.sessionId === 's-un-ask', 'un-ask to be listed');
+	turn('un-ask', `ASK: ${QUESTION}`);
+	const failed = await ended(unattended.id, started.id);
+	expect(failed.status).toBe('failed');
+	expect(failed.asks).toBeUndefined();
+});
+
+test('a manual run ending DECIDE: still fails (#665)', async () => {
+	const manual = await create({ name: '人工任務' });
+	hcomPlan([{ name: 'man-decide' }]);
+	const run = await runNow(manual.id);
+	await runWhen(manual.id, run.id, (each) => each.sessionId === 's-man-decide', 'man-decide to be listed');
+	turn('man-decide', `DECIDE: ${QUESTION}`);
+	const ranOut = await ended(manual.id, run.id);
+	expect(ranOut.status).toBe('failed');
+	expect(ranOut.asks).toBeUndefined();
+});
