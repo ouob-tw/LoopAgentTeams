@@ -114,7 +114,7 @@
 				<label class="field">
 					<span class="label">時間上限</span>
 					<span class="hours"><input type="number" min="1" step="1" inputmode="numeric" bind:value={form.maxHours} /><span>小時</span></span>
-					<span class="note">從這一輪的第一版開始算，到時自動關掉。</span>
+					<span class="note">從這次開啟算起，改內容不會延長；到時自動關掉。</span>
 				</label>
 				{#if problem}<p class="why" role="status">{problem}</p>{/if}
 				{#if refusal}<p class="alert" role="alert">沒有生效：{refusal}</p>{/if}
