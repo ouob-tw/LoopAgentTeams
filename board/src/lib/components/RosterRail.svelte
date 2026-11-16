@@ -35,13 +35,14 @@
 	 *  that opens their list. */
 	const parts = $derived(splitRoster(controllers, Date.now()));
 
+	/** Each controller's 代決 N, counted once per snapshot. */
+	const delegated = $derived(new Map(controllers.map((controller) => [controller.id, unseenCount(controller)])));
+
 	const label = (controller: Controller) =>
 		`${controller.project} @${lastSegment(controller.hcomName)}：${STATUS_LABEL[controller.status]}` +
 		(controller.paused ? '，暫停通訊' : '') +
 		(controller.pendingCount ? `，待決 ${controller.pendingCount} 題` : '') +
-		(unseenCount(controller) ? `，代決 ${unseenCount(controller)} 項` : '');
-	/** Each controller's 代決 N, counted once per snapshot. */
-	const delegated = $derived(new Map(controllers.map((controller) => [controller.id, unseenCount(controller)])));
+		(delegated.get(controller.id) ? `，代決 ${delegated.get(controller.id)} 項` : '');
 </script>
 
 <div class="rail">
