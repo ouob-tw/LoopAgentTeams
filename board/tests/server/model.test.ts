@@ -491,7 +491,7 @@ test('a paused then resumed Codex that neither hcom nor Herdr has a pane for kee
 	expect(resumes()).toEqual([]);
 });
 
-test('a paused then resumed Codex that turns busy before the last check is not stopped', async () => {
+test('a paused then resumed Codex found busy by the last check is not stopped, whatever pane it fell back to', async () => {
 	const target = await running('codex');
 	resumedAfterPause(target, true);
 	const paneless = { ...target.self, launch_context: {} };
