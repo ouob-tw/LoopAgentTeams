@@ -161,6 +161,7 @@ class HungSuiteTests(TimeoutCase):
         run = record['rerun']['runs'][0]
         self.assertEqual(run['exit_code'], 124)
         self.assertEqual(run['timed_out']['limit_s'], 3.0)
+        self.assertEqual(record['timed_out']['limit_s'], 3.0)
         self.assertIn('the rerun failed too (exit 124)', result.stderr)
 
 
@@ -199,6 +200,9 @@ class TimeLimitTests(TimeoutCase):
         self.assertEqual(self.limit(command='bun test tests/a.test.ts')[0], 5200)
         self.baselines(('web', 'bun test ./tests', 60))
         self.assertEqual(self.limit()[0], 1800)
+        # A registered suite with no baseline of its own does not borrow its neighbours'.
+        self.baselines(('web', 'bun test ./other', 300))
+        self.assertEqual(self.limit()[0], 7200)
 
     def test_without_a_setting_or_baseline_the_default_is_two_hours(self):
         self.project(limit=None)

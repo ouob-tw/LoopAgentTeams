@@ -1964,7 +1964,11 @@ class Gate:
                  'stopping it and every process it started')
             self.timed_out = {'limit_s': round(limit, 1), 'limit_source': source}
             self.end_suite()
-            child.wait()
+            try:
+                child.wait(KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:  # the group kill failed and it ignores SIGTERM
+                child.kill()
+                child.wait()
             code = TIMEOUT_EXIT
         self.finished = True
         ended_at = datetime.now(timezone.utc)
@@ -2034,9 +2038,9 @@ class Gate:
         except OSError as exc:
             warn(f'could not start the command: {exc}')
             return 127
-        timed_out = self.timed_out and self.timed_out_report(scan, [
-            dir_relative(t, info['rel_cwd']) for t in self.extra.get('selected_tests') or []
-            if info and self.template])
+        named = self.extra.get('selected_tests') if info and self.template else None
+        timed_out = self.timed_out and self.timed_out_report(
+            scan, [dir_relative(t, info['rel_cwd']) for t in named or []])
         reaped = (reaped_during(self.cwd, started_at, ended_at) if code == 0
                   else reaped_after_failure(self.cwd, started_at, ended_at))
         duration = round(seconds, 1)
@@ -2063,6 +2067,8 @@ class Gate:
                              f"{f['file']} ({', '.join(f['tests'])})" for f in flaky))
                 else:
                     warn(f'the rerun failed too (exit {code}): the run counts as failed')
+                timed_out = next((r['timed_out'] for r in rerun['runs'] if r.get('timed_out')),
+                                 None)
         record = {
             'fingerprint': info and info['fingerprint'], 'tree': info and info['tree'],
             'repo': info and info['repo'], 'command': self.command, 'cwd': str(self.cwd),
@@ -4241,6 +4247,16 @@ def unit_key(project, rel, command):
     return json.dumps([str(project), rel, command])
 
 
+def registered_suite(cwd, rel, command):
+    """Whether command is a registered full suite of directory rel."""
+    try:
+        suites = read_full_suites(load_registry(cwd) or {})
+    except ValueError:
+        return False
+    return any(_dir_key(s.get('cwd', '.')) == rel and s['command'].strip() == command
+               for s in suites)
+
+
 def time_limit(cwd, command):
     """(seconds, where they come from): the total time command may run in cwd. The
     registry's `time_limit_minutes` (minutes, or minutes by directory with "*" for the
@@ -4261,13 +4277,16 @@ def time_limit(cwd, command):
         warn_once(f'{REGISTRY_NAME} {TIME_LIMIT_KEY} for {rel} is not minutes above 0: '
                   f'{json.dumps(setting)}; ignoring it')
     try:
-        units = json.loads((state_dir() / 'state.json').read_text()).get('cleanup') or {}
+        units = json.loads((state_dir() / 'state.json').read_text()).get('cleanup')
+        units = list(units.values()) if isinstance(units, dict) else []
     except (OSError, ValueError, AttributeError):
-        units = {}
+        units = []
     project = str(project_root(root))
-    here = [u for u in units.values() if isinstance(u, dict) and u.get('project') == project
+    here = [u for u in units if isinstance(u, dict) and u.get('project') == project
             and u.get('rel_cwd') == rel and _number(u.get('baseline')) and u['baseline'] > 0]
-    here = [u for u in here if u.get('command') == command] or here
+    own = [u for u in here if u.get('command') == command]
+    # A full suite with no baseline of its own gets the default, not its neighbours' sum.
+    here = own or ([] if registered_suite(cwd, rel, command) else here)
     if here:
         baseline = sum(u['baseline'] for u in here)
         return (max(baseline * TIME_LIMIT_FACTOR, TIME_LIMIT_FLOOR),
