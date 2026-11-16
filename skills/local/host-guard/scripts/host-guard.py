@@ -1275,7 +1275,7 @@ def find_problem(rest, folder, place):
     while words and words[0] in ('-H', '-L', '-P'):
         words = words[1:]
     starts = list(itertools.takewhile(lambda w: not w.startswith(('-', '(', '!')), words))
-    start = resolve_path(starts[0], folder) if starts else str(folder)
+    starts = [resolve_path(w, folder) for w in starts] or [str(folder)]
 
     def patterns(flags):
         """(pattern, ignore case) of each test in flags; -i tests ignore case."""
@@ -1287,7 +1287,8 @@ def find_problem(rest, folder, place):
 
     names = patterns(('-name', '-iname'))
     paths = patterns(('-path', '-ipath', '-wholename', '-iwholename'))
-    return next((state for state in sorted(place.states) if start and within(state, start)
+    return next((state for state in sorted(place.states)
+                 if any(start and within(state, start) for start in starts)
                  and all(matches(n, os.path.basename(state)) for n in names)
                  and all(matches(p, state) for p in paths)), None)
 
