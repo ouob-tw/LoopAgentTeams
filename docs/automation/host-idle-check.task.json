@@ -1,0 +1,15 @@
+{
+  "name": "主機閒置資源檢查",
+  "schedule": { "type": "daily" },
+  "time": "10:00",
+  "limitMinutes": 240,
+  "kind": "agent",
+  "agent": {
+    "client": "claude",
+    "model": "claude-sonnet-5-5",
+    "effort": "medium",
+    "folder": "~/LoopAgentTeams",
+    "brief": "docs/automation/host-idle-check.md"
+  },
+  "review": { "enabled": false }
+}

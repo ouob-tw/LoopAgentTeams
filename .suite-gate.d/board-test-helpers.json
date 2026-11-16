@@ -55,6 +55,14 @@
       "tests": [
         "board/tests/server/launch-new-folder.test.ts"
       ]
+    },
+    {
+      "paths": [
+        "board/tests/unit/harness-cli.test.ts"
+      ],
+      "tests": [
+        "board/tests/unit/harness-cli.test.ts"
+      ]
     }
   ]
 }

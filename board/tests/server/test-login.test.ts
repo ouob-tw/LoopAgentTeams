@@ -80,8 +80,8 @@ const lines = (file: string): unknown[] => (existsSync(file) ? readFileSync(file
 const sentLog = () => lines(join(fixture.dir, 'board-state', 'sent-log.jsonl')) as Record<string, unknown>[];
 
 /** Issue a test login with the host command; its device ID and one-time code. */
-function issue(...args: string[]): { id: string; code: string; stdout: string } {
-	const result = fixture.cli('test-login', '--url', fixture.url, ...args);
+async function issue(...args: string[]): Promise<{ id: string; code: string; stdout: string }> {
+	const result = await fixture.cli('test-login', '--url', fixture.url, ...args);
 	expect(result.code).toBe(0);
 	const link = result.stdout.match(new RegExp(`${fixture.url}/login/test#(\\S+)`));
 	const id = result.stdout.match(/裝置 ([0-9a-f]{8})/);
@@ -91,7 +91,7 @@ function issue(...args: string[]): { id: string; code: string; stdout: string } 
 const redeem = (code: string) => fixture.fetch('/api/login/test', { method: 'POST', headers: { ...json, 'user-agent': 'qa-browser' }, body: JSON.stringify({ code }) });
 /** A logged-in test device: its ID and cookie. */
 async function testDevice(label = 'qa'): Promise<{ id: string; cookie: string }> {
-	const { id, code } = issue('--label', label);
+	const { id, code } = await issue('--label', label);
 	const response = await redeem(code);
 	expect(response.status).toBe(200);
 	return { id, cookie: response.headers.getSetCookie()[0].split(';')[0] };
@@ -110,10 +110,10 @@ async function eventually(check: () => Promise<boolean>, timeoutMs: number, what
 // --- Issuing and logging in ---------------------------------------------------------------------
 
 test('the host issues a one-time link for 4 hours by default; it logs one browser in, and never again', async () => {
-	const { id, code, stdout } = issue('--label', 'qa-run');
+	const { id, code, stdout } = await issue('--label', 'qa-run');
 	expect(stdout).toContain('「qa-run」');
 	// Listed before it is used, as a test device whose link is waiting.
-	expect(fixture.cli('devices').stdout).toMatch(new RegExp(`${id}\\t.*\\t測試裝置「qa-run」到期 \\S+（網址尚未使用）`));
+	expect((await fixture.cli('devices')).stdout).toMatch(new RegExp(`${id}\\t.*\\t測試裝置「qa-run」到期 \\S+（網址尚未使用）`));
 
 	const first = await redeem(code);
 	expect(first.status).toBe(200);
@@ -124,7 +124,7 @@ test('the host issues a one-time link for 4 hours by default; it logs one browse
 	expect((await redeem(code)).status).toBe(401);
 	expect((await redeem('not-a-code')).status).toBe(401);
 
-	const listed = fixture.cli('devices').stdout.split('\n').find((line) => line.startsWith(id))!;
+	const listed = (await fixture.cli('devices')).stdout.split('\n').find((line) => line.startsWith(id))!;
 	expect(listed).toContain('\tqa-browser\t測試裝置「qa-run」到期 ');
 	expect(listed).not.toContain('尚未使用');
 	const view = await device(cookie.split(';')[0]);
@@ -132,10 +132,10 @@ test('the host issues a one-time link for 4 hours by default; it logs one browse
 	expect(Math.abs(Date.parse(view.expiresAt) - Date.now() - 4 * 3600_000)).toBeLessThan(60_000);
 });
 
-test('the hours can be set up to 24, and no more', () => {
-	expect(fixture.cli('test-login', '--hours', '25').code).toBe(2);
-	expect(fixture.cli('test-login', '--hours', '0').code).toBe(2);
-	const { stdout } = issue('--hours', '24');
+test('the hours can be set up to 24, and no more', async () => {
+	expect((await fixture.cli('test-login', '--hours', '25')).code).toBe(2);
+	expect((await fixture.cli('test-login', '--hours', '0')).code).toBe(2);
+	const { stdout } = await issue('--hours', '24');
 	const until24 = Date.parse(stdout.match(/到期 (\S+?)。/)![1]);
 	expect(Math.abs(until24 - Date.now() - 24 * 3600_000)).toBeLessThan(60_000);
 });
@@ -153,7 +153,7 @@ test('a test device reads everything a password device does, and is told it is o
 
 test('a revoked test device is logged out; one past its time too, its open stream told to leave', async () => {
 	const revoked = await testDevice('to-revoke');
-	expect(fixture.cli('revoke', revoked.id).code).toBe(0);
+	expect((await fixture.cli('revoke', revoked.id)).code).toBe(0);
 	expect((await fixture.fetch('/api/board', { cookie: revoked.cookie })).status).toBe(401);
 
 	const { id, cookie } = await testDevice('to-expire');
@@ -163,7 +163,7 @@ test('a revoked test device is logged out; one past its time too, its open strea
 		fixture.setClock(Date.now() + 5 * 3600_000);
 		await eventually(async () => (await fixture.fetch('/api/board', { cookie })).status === 401, 5_000, 'the expired device to be refused');
 		await until(() => stream.unpaired, 40_000, 'the expired stream to be closed');
-		expect(fixture.cli('devices').stdout).toMatch(new RegExp(`${id}\\t.*（已到期）`));
+		expect((await fixture.cli('devices')).stdout).toMatch(new RegExp(`${id}\\t.*（已到期）`));
 		// A password device is not touched by any of it.
 		expect((await fixture.fetch('/api/board', { cookie: password })).status).toBe(200);
 	} finally {
@@ -306,7 +306,7 @@ test('a request whose body is still arriving when the login is revoked does noth
 	});
 	const sent = fetch(`${fixture.url}/api/agents/interrupt`, { method: 'POST', headers: { ...json, cookie }, body, duplex: 'half' } as RequestInit);
 	await sleep(300);
-	expect(fixture.cli('revoke', id).code).toBe(0);
+	expect((await fixture.cli('revoke', id)).code).toBe(0);
 	finish();
 	expect((await sent).status).toBe(401);
 	expect(lines(join(commandDir, 'herdr-calls.jsonl'))).toEqual([]);
@@ -325,7 +325,7 @@ test('a request whose body is still arriving when the login is revoked does noth
 	});
 	const launching = fetch(`${fixture.url}/api/launches`, { method: 'POST', headers: { ...json, cookie: launcher.cookie }, body: launchBody, duplex: 'half' } as RequestInit);
 	await sleep(300);
-	expect(fixture.cli('revoke', launcher.id).code).toBe(0);
+	expect((await fixture.cli('revoke', launcher.id)).code).toBe(0);
 	done();
 	expect((await launching).status).toBe(401);
 	expect(lines(join(commandDir, 'hcom-calls.jsonl'))).toEqual([]);

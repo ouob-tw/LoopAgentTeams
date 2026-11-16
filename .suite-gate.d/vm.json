@@ -1,0 +1,3 @@
+{"map": [
+  {"paths": ["skills/local/vm/scripts/**", "skills/local/vm/tests/fake_*.py", "skills/local/vm/SKILL.md", "skills/local/vm/FORMATS.md"], "tests": ["skills/local/vm/tests/test_*.py"]}
+]}

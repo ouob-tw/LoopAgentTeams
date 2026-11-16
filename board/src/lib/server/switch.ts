@@ -47,7 +47,7 @@ import { WAKE_UNKNOWN_REASON, type SentWake } from '../board/wake.ts';
 import type { Board } from './board.ts';
 import { modelLock, readCurrent, readLaunchArgs, readTranscript } from './helper.ts';
 import { hasHoldTerminal, killAgent, listAgents, type HcomAgent } from './hcom.ts';
-import { closePane, paneExists, paneTab, splitPane } from './herdr.ts';
+import { closePane, listHerdrAgents, paneExists, paneTab, splitPane } from './herdr.ts';
 import { switchPlace } from './agents.ts';
 import { queued } from './send.ts';
 import { appendSent, readLines, type SwitchStep } from './sent-log.ts';
@@ -244,10 +244,11 @@ async function permissionSwitch(
 
 /** A first switch: check the client once more, log the switch, stop the client and, once it is
  *  seen to be gone, resume the conversation with the new settings. */
-async function restartSwitch(board: Board, controller: SwitchTarget, entry: SentSwitch, seen: HcomAgent): Promise<Result<SwitchResponse>> {
+async function restartSwitch(board: Board, controller: SwitchTarget, entry: SentSwitch, listed: HcomAgent): Promise<Result<SwitchResponse>> {
+	const seen = await withPane(board, controller, listed);
 	// Before the last check, so nothing is awaited between that check and the stop.
 	const hold = await holdShell(board, null, seen.pane);
-	const ready = await recheck(board, controller, seen.name, hold?.beside);
+	const ready = await recheck(board, controller, seen.name, hold?.beside, seen.pane);
 	if ('refuse' in ready) {
 		await dropHold(board, hold);
 		return finish(board, entry, { reason: ready.refuse });
@@ -271,17 +272,31 @@ async function restartSwitch(board: Board, controller: SwitchTarget, entry: Sent
 
 /** The client again just before it is stopped: still this session under the name it had a moment
  *  ago, still `listening`, and still in the pane a shell was held beside, when one was. */
-async function recheck(board: Board, controller: SwitchTarget, name: string, heldBeside?: string | null): Promise<{ agent: HcomAgent } | { refuse: string }> {
+async function recheck(board: Board, controller: SwitchTarget, name: string, heldBeside?: string | null, knownPane: string | null = null): Promise<{ agent: HcomAgent } | { refuse: string }> {
 	const list = await listAgents(board.config);
 	if (!list.ok) return { refuse: `${WAKE_UNKNOWN_REASON}：${list.reason}` };
-	const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
-	if (!agent) return { refuse: notRunningReason(controller) };
+	const listed = list.agents.find((candidate) => candidate.sessionId === controller.id);
+	if (!listed) return { refuse: notRunningReason(controller) };
+	// No external read here: the pane hcom lacks is the one read before this check (`withPane`), joined as nothing is awaited.
+	const agent = listed.pane === null && knownPane !== null ? { ...listed, pane: knownPane } : listed;
 	if (agent.name !== name) return { refuse: `${noun(controller)}的 HCOM 名稱剛剛變了（@${name} → @${agent.name}），沒有切換，請再試一次` };
 	if (agent.status !== 'listening') return { refuse: busyReason(controller) };
 	if (heldBeside !== undefined && agent.pane !== heldBeside) return { refuse: `${noun(controller)}的 Herdr 窗格剛剛變了，沒有切換，請再試一次` };
 	// Stopping closes the pane hcom has for the client; never the one the board itself runs in.
 	if (agent.pane !== null && agent.pane === board.config.ownPane) return { refuse: OWN_PANE_REASON };
 	return { agent };
+}
+
+/**
+ * The agent with the pane its stop is checked against. hcom's `launch_context.pane_id` is empty for
+ * an agent paused and resumed (`hcom start --as` registers it without one); Herdr's agent list
+ * then gives the pane of the same session. Neither: the pane stays null and the stop cannot be confirmed.
+ */
+async function withPane(board: Board, controller: SwitchTarget, agent: HcomAgent): Promise<HcomAgent> {
+	if (agent.pane !== null) return agent;
+	const herdr = await listHerdrAgents(board.config);
+	const pane = herdr.ok ? (herdr.agents.find((candidate) => candidate.sessionId === controller.id)?.pane ?? null) : null;
+	return pane === null ? agent : { ...agent, pane };
 }
 
 /** Stop the client, log how that went and resume once it is gone. The switch is already logged. */
@@ -371,8 +386,9 @@ export async function continueSwitch(board: Board, controller: SwitchTarget, ope
 	}
 	const list = await listAgents(board.config);
 	if (!list.ok) return respondLogged(board, open.id, { reason: `${WAKE_UNKNOWN_REASON}：${list.reason}`, status: 409 }, null);
-	const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
-	if (agent) {
+	const listedAgent = list.agents.find((candidate) => candidate.sessionId === controller.id);
+	if (listedAgent) {
+		const agent = await withPane(board, controller, listedAgent);
 		if (agent.status !== 'listening') {
 			return respondLogged(board, open.id, { reason: `${noun(controller)}還在跑，而且不是等待狀態，沒有繼續切換。${busyReason(controller)}`, status: 409 }, null);
 		}
@@ -380,7 +396,7 @@ export async function continueSwitch(board: Board, controller: SwitchTarget, ope
 		// Read before the last check, so nothing is awaited between that check and the stop.
 		const carry = await carried(board, controller, to);
 		const hold = await holdShell(board, open.holdPane, agent.pane);
-		const ready = await recheck(board, controller, agent.name, hold?.beside ?? undefined);
+		const ready = await recheck(board, controller, agent.name, hold?.beside ?? undefined, agent.pane);
 		if ('refuse' in ready) {
 			await dropHold(board, hold);
 			return respondLogged(board, open.id, { reason: ready.refuse, status: 409 }, null);

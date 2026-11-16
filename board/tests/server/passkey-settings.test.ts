@@ -77,7 +77,7 @@ describe('a board at https://lat.ouob.net', () => {
 		const passkeys = await listed(fixture, cookie);
 		expect(passkeys).toEqual([{ id: expect.any(String), label: 'browser at 198.51.100.1', createdAt: new Date(time).toISOString(), lastUsedAt: null }]);
 		expect(JSON.stringify(passkeys)).not.toContain(phone.id);
-		expect(fixture.cli('passkey', 'list').stdout).toContain(passkeys[0].id);
+		expect((await fixture.cli('passkey', 'list')).stdout).toContain(passkeys[0].id);
 	});
 
 	test('the registered passkey logs in alone, with no password', async () => {
@@ -88,7 +88,7 @@ describe('a board at https://lat.ouob.net', () => {
 		expect([response.status, await response.json()]).toEqual([200, { loggedIn: true }]);
 		const loggedIn = deviceCookieOf(response);
 		expect((await fixture.fetch('/api/board', { cookie: loggedIn })).status).toBe(200);
-		expect(fixture.cli('devices').stdout).toContain('browser at 198.51.100.2');
+		expect((await fixture.cli('devices')).stdout).toContain('browser at 198.51.100.2');
 		expect((await listed(fixture, cookie))[0].lastUsedAt).toBe(new Date(time).toISOString());
 
 		// Signed once: the same answer does not log in again.
@@ -97,7 +97,7 @@ describe('a board at https://lat.ouob.net', () => {
 	});
 
 	test('a passkey registered with the host code logs in alone too', async () => {
-		const code = /登記碼：(\S+)/.exec(fixture.cli('passkey', 'code').stdout)![1];
+		const code = /登記碼：(\S+)/.exec((await fixture.cli('passkey', 'code')).stdout)![1];
 		const started = await call(fixture, 'POST', '/api/login/enroll/options', { body: { password: PASSWORD, code }, source: '198.51.100.3' });
 		const { options, enrollment } = await started.json();
 		expect((await call(fixture, 'POST', '/api/login/enroll', { body: { enrollment, response: laptop.register(options) }, source: '198.51.100.3' })).status).toBe(200);
@@ -133,7 +133,7 @@ describe('a board at https://lat.ouob.net', () => {
 		const deleted = await call(fixture, 'DELETE', `/api/passkeys/${id}`, { cookie });
 		expect([deleted.status, await deleted.json()]).toEqual([200, { deleted: id }]);
 		expect((await call(fixture, 'DELETE', `/api/passkeys/${id}`, { cookie })).status).toBe(404);
-		expect(fixture.cli('passkey', 'list').stdout).not.toContain(id);
+		expect((await fixture.cli('passkey', 'list')).stdout).not.toContain(id);
 		const refused = await loginAlone(fixture, phone, '198.51.100.4');
 		expect([refused.status, await refused.json()]).toEqual([401, { error: 'passkey_failed' }]);
 		expect((await loginAlone(fixture, laptop, '198.51.100.4')).status).toBe(200);
@@ -171,7 +171,7 @@ describe('a board at https://lat.ouob.net', () => {
 	test('the settings endpoints need a logged-in device, and a test device may not change passkeys', async () => {
 		expect((await call(fixture, 'GET', '/api/passkeys')).status).toBe(401);
 		expect((await call(fixture, 'POST', '/api/passkeys/options')).status).toBe(401);
-		const link = new RegExp(`${fixture.url}/login/test#(\\S+)`).exec(fixture.cli('test-login', '--url', fixture.url, '--label', 'qa').stdout)![1];
+		const link = new RegExp(`${fixture.url}/login/test#(\\S+)`).exec((await fixture.cli('test-login', '--url', fixture.url, '--label', 'qa')).stdout)![1];
 		const redeemed = await fixture.fetch('/api/login/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: link }) });
 		const test = redeemed.headers.getSetCookie()[0].split(';')[0];
 		const id = (await listed(fixture, cookie))[0].id;
