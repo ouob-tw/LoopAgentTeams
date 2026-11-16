@@ -596,7 +596,7 @@ test('an unattended task opens a LAT controller whose grant comes from the saved
 	const logged = lines.find((line) => line.kind === 'unattended-task-run' && line.id === started.id)!;
 	expect(logged).toMatchObject({ taskId: task.id, save: save.id, tag: launch.args[launch.args.indexOf('--tag') + 1], ...grant, maxHours: 2 });
 
-	// Waiting on its agents is no verdict; neither is an ASK: it never waits on the user.
+	// Waiting on its agents is no verdict; an unattended controller's DECIDE:/HELP: waits on the user (tests/server/automation-ask.test.ts).
 	reply('auto-lat', '派出 worker，等它回報。\nNO REPLY: 等 worker');
 	setStatus('auto-lat', 'listening');
 	await sleep(600);

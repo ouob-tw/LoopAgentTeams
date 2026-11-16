@@ -761,10 +761,11 @@ export function createAutomation(options: {
 			},
 			closing: () => closed,
 			adopted,
-			// An unattended controller never asks: a turn waiting on its agents goes on.
-			...(task.agent!.unattended
-				? { goesOn: controllerGoesOn, ending: 'DONE 或 FAILED', quotaStops: true }
-				: { asking: {
+			// An unattended controller's turn waiting on its agents goes on; one ending DECIDE:/HELP:
+			// waits for the user like a manual run's ASK: (#665).
+			...(task.agent!.unattended ? { goesOn: controllerGoesOn, ending: 'DONE、FAILED、DECIDE 或 HELP', quotaStops: true } : {}),
+			asking: {
+				tags: task.agent!.unattended ? ['DECIDE', 'HELP'] : undefined,
 				waiting: () => openAsk(latest(run)) !== undefined,
 				replying: () => replying.has(run.id),
 				asked: (question) => {
@@ -774,7 +775,7 @@ export function createAutomation(options: {
 					options.notify?.({ type: 'asked', task, run: asked, index: asks.length - 1 });
 				},
 				resumed: (input) => void answer(task, run, input ?? '（在 Agent 的終端繼續，看板沒讀到回覆內容）', ASK_SOURCE.terminal)
-			} })
+			}
 		}).catch(async (error: Error): Promise<AgentEnd> => {
 			// Whatever broke, the agent is not left running.
 			const now = latest(run);

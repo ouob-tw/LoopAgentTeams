@@ -28,9 +28,9 @@ export function firstMessage(brief: string): string {
 	return `讀取並照做 ${brief}，${ENDING_RULES}`;
 }
 
-/** How a run's LAT controller in unattended mode (#625) ends: never ASK, and DONE only once its
- *  round is over. */
-export const CONTROLLER_ENDING = '這一輪做完並 deactivate 之後，最後一行只回覆 DONE；失敗回覆 FAILED: <原因>。中途等其他 Agent 時照 LAT 規則以 NO REPLY: 結尾。無人模式不發問，不要回覆 ASK:';
+/** How a run's LAT controller in unattended mode (#625) ends: DONE only once its round is over;
+ *  with no grant to decide, DECIDE:/HELP: waits for the user (#665). */
+export const CONTROLLER_ENDING = '這一輪做完並 deactivate 之後，最後一行只回覆 DONE；失敗回覆 FAILED: <原因>。中途等其他 Agent 時照 LAT 規則以 NO REPLY: 結尾。需要使用者決定或補資料時，最後一行回覆 DECIDE: <問題>（卡住要人幫忙用 HELP: <問題>）並等待回覆，收到後接著做；不要回覆 ASK:';
 
 /** The first message of an unattended task's controller: start the LAT round, turn the grant on
  *  from the task's settings (the board's record of this run), then follow the brief. The state
@@ -55,10 +55,11 @@ export const controllerGoesOn = (reply: string) => /^NO REPLY\s*[:：]/.test(rep
 /** The message a Codex agent resumed on another account gets. */
 export const RESUME_MESSAGE = `剛才額度用完，已換帳號接回。請接著把任務做完，${ENDING_RULES}`;
 
-/** The question of a reply whose last line is `ASK: <question>`; null otherwise. */
-export function askOf(reply: string): string | null {
+/** The question of a reply whose last line is `ASK: <question>` (or another of `tags`, as an
+ *  unattended controller's DECIDE:/HELP:); null otherwise. */
+export function askOf(reply: string, tags: readonly string[] = ['ASK']): string | null {
 	const last = reply.trimEnd().split('\n').at(-1)?.trim() ?? '';
-	const asked = /^ASK\s*[:：]\s*(.*)$/.exec(last);
+	const asked = new RegExp(`^(?:${tags.join('|')})\\s*[:：]\\s*(.*)$`).exec(last);
 	return asked ? asked[1].trim() || '（Agent 沒寫問題內容，請打開 Agent 看對話）' : null;
 }
 
@@ -232,6 +233,8 @@ export interface Watched {
 
 /** What the watcher does with a task agent's questions, through the automation. */
 export interface Asking {
+	/** The last-line tags that ask; ASK by default, DECIDE and HELP for an unattended controller. */
+	tags?: readonly string[];
 	/** Whether the run waits on a question now (the record says so). */
 	waiting(): boolean;
 	/** True while the board is sending the user's answer: what arrives meanwhile is that answer. */
@@ -312,7 +315,7 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 		}
 		const reply = await host.lastReply(spec.client, sessionId);
 		if (!reply.ok || reply.text === null || reply.seq <= judgeAfter) continue;
-		const question = asking ? askOf(reply.text) : null;
+		const question = asking ? askOf(reply.text, asking.tags) : null;
 		if (asking && question !== null) {
 			// Left open: what comes after this reply is the answer, and the reply after that is judged.
 			judgeAfter = reply.seq;
