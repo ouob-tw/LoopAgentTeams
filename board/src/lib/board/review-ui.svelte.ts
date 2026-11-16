@@ -31,7 +31,7 @@ class ReviewUi {
 	/** Send the item and the user's words to the controller, through the board's usual message path,
 	 *  so they show in its 送出紀錄; a controller whose round is over is woken with them instead (#638).
 	 *  Returns how it went, or null when there was nothing to send. */
-	async send(controllerId: string, item: ReviewItem, wake = false): Promise<Outcome | null> {
+	async send(controllerId: string, item: Pick<ReviewItem, 'id' | 'title' | 'kind'>, wake = false): Promise<Outcome | null> {
 		const text = this.box(controllerId, item.id).text;
 		if (!text.trim()) return null;
 		this.patch(controllerId, item.id, { sending: true, error: null });

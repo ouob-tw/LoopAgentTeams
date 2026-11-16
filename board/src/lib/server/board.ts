@@ -3,11 +3,13 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ArchivePage } from '../board/archive.ts';
-import type { BoardSnapshot, HelperController, InboxQuestion } from '../board/types.ts';
+import { everyController, type BoardSnapshot, type HelperController, type InboxQuestion } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice, findDeviceById } from './devices.ts';
 import { listControllers, pruneReports, readAnswered, readLedgers, readQuestions, readUnattended, type AnsweredFile } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
+import { loadDelegatedSeen, markDelegatedSeen, type DelegatedSeen } from './delegated-state.ts';
+import { delegatedOf, seenKey, withSeen } from '../board/delegated.ts';
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, ledgerSources, mark, processedPage, type MarkResult, type Sources, unattendedSources, withRecorded } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
@@ -76,6 +78,9 @@ export interface Board {
 	sources(): Promise<Sources>;
 	/** Mark one inbox report read or unread for every logged-in device. */
 	mark(key: string, read: boolean): Promise<MarkResult>;
+	/** Mark one controller's delegated decision card opened, for every logged-in device. `unknown`
+	 *  when the snapshot has no such card; throws when the mark cannot be kept. */
+	markDelegatedSeen(controllerId: string, cardId: string): Promise<'marked' | 'unknown'>;
 	/** One page of the processed items, newest first: the newest page, or the one after the
 	 *  `before` cursor. Throws on a cursor that is not one. */
 	archive(before: string | null): Promise<ArchivePage>;
@@ -174,6 +179,8 @@ function createBoard(): Board {
 	let sources: Sources | null = null;
 	/** The read and archive state as last read from, or written to, its file. */
 	let lastState: InboxState | null = null;
+	/** The delegated cards' seen marks as last read; kept when the file cannot be read. */
+	let lastSeen: DelegatedSeen = {};
 	let running: Promise<BoardSnapshot> | null = null;
 	let queued: Promise<BoardSnapshot> | null = null;
 	let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -540,9 +547,16 @@ function createBoard(): Board {
 		if (!problem) lastState = state;
 
 		const built = buildSnapshot(from, state, now);
+		try {
+			lastSeen = loadDelegatedSeen(config.stateDir);
+		} catch (error) {
+			problem = [problem, `代決看過的紀錄讀不出來，沿用上次讀到的：${(error as Error).message}`].filter(Boolean).join('；');
+		}
 		const asking = new Set(lastAsks.filter((ask) => ask.state === 'waiting').map((ask) => ask.sessionId));
 		const next: BoardSnapshot = {
 			...built,
+			controllers: built.controllers.map((controller) => withSeen(controller, lastSeen)),
+			offRoster: built.offRoster.map((controller) => withSeen(controller, lastSeen)),
 			agents: built.agents.map((agent) => ({ ...agent, asking: agent.id !== null && asking.has(agent.id) })),
 			asks: lastAsks,
 			revision: ++revision
@@ -731,6 +745,14 @@ function createBoard(): Board {
 		sentLogError: () => sentLogError,
 		sources: readSources,
 		mark: async (key, read) => publish(await readSources(), { key, read })!,
+		async markDelegatedSeen(controllerId, cardId) {
+			const from = await readSources();
+			const controller = everyController(snapshot ?? (await board.current())).find((candidate) => candidate.id === controllerId);
+			if (!controller || !delegatedOf(controller).some((card) => card.id === cardId)) return 'unknown';
+			lastSeen = markDelegatedSeen(config.stateDir, seenKey(controllerId, cardId), config.now());
+			publish(from);
+			return 'marked';
+		},
 		archive: async (before) => processedPage(await readSources(), loadInboxState(config.stateDir), config.now(), before),
 		answered: async (controllerId) => answeredOf(await readSources(), controllerId, config.now()),
 		subscribe(stream) {

@@ -14,6 +14,9 @@
 	--ask: #facc15;
 	--ask-fill: #facc15;
 	--ask-ink: #1a1a1a;
+	/* 代決 (a decision the advisors made under the unattended grant): its own colour, drawn dashed,
+	   never to be taken for a question waiting. */
+	--proxy: #a78bfa;
 	--status-waiting: var(--warn);
 	--status-working: var(--accent);
 	--status-delivered: var(--ok);
@@ -49,6 +52,7 @@
 	--ask: #713f12;
 	--ask-fill: #facc15;
 	--ask-ink: #000;
+	--proxy: #4c1d95;
 	--selected-bg: var(--text);
 	--inherit-bg: #e0e0e0;
 	--inherit-text: #000;

@@ -11,11 +11,13 @@
 	import HcomBadge from './HcomBadge.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import { isUnattended } from '#lib/board/unattended.ts';
+	import { unseenCount } from '#lib/board/delegated.ts';
 
 	let { controller, current, onopen }: { controller: Controller; current: boolean; onopen: (id: string) => void } = $props();
 
 	const explainer = new Explainer<string>((id) => onopen(id), { hoverable: true });
 	const tipId = $derived(`roster-tip-${controller.id}`);
+	const delegated = $derived(unseenCount(controller));
 </script>
 
 <button
@@ -42,6 +44,9 @@
 		{/if}
 		{#if controller.pendingCount}
 			<span class="badge" title="待決題數">{controller.pendingCount}</span>
+		{/if}
+		{#if delegated}
+			<span class="delegated" title="參謀代你決定、你還沒看過的事">代決 {delegated}</span>
 		{/if}
 		{#if isUnattended(controller.unattended)}
 			<span class="unattended" title="無人模式：照目標自己做，要你決定的事先擱置">無人</span>
@@ -108,6 +113,17 @@
 		color: var(--bg);
 		font-family: var(--mono);
 		font-size: max(0.7rem, var(--min-font, 0px));
+	}
+	/* 代決 N: outlined and dashed, unlike the filled count of questions waiting. */
+	.delegated {
+		flex: none;
+		padding: 0 0.45rem;
+		border: 1px dashed var(--proxy);
+		border-radius: var(--radius-pill);
+		color: var(--proxy);
+		font-size: max(1rem, var(--min-font, 0px));
+		font-weight: 700;
+		white-space: nowrap;
 	}
 	.unattended {
 		flex: none;
