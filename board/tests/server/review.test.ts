@@ -81,7 +81,7 @@ test('a round with no grant and one with a grant but no items have no review: th
 	expect(await readReview()).toEqual({ status: 200, review: null });
 });
 
-test('the snapshot counts the parked items and the tab reads the review in the file\'s own order', async () => {
+test('the snapshot counts the parked items and the tab reads its items, 代決 and questions', async () => {
 	const files = await startRound();
 	const found = await readReview();
 	expect(found.status).toBe(200);
@@ -89,12 +89,12 @@ test('the snapshot counts the parked items and the tab reads the review in the f
 	// Parked: two records and one ledger row; the tab's number is the open ones.
 	expect(await summary()).toMatchObject({ state: 'ok', count: review.items.length, parked: 3 });
 	expect(review.items.filter((item) => item.kind === 'parked' || item.kind === 'parked-row').map((item) => item.id).sort()).toEqual([...files.parked].sort());
-	// 最該先看: parked, then the confirmed ticket, then the assumption at the edge of the acceptance; no auto action.
-	expect(review.top).toEqual(['LAT-P1', 'LAT-P2', 'row-3', 'LAT-PC', 'LAT-AU']);
-	expect(review.sections.map((section) => section.key)).toEqual(['parked', 'goal', 'top', 'assumed', 'proxy-confirmed', 'prototype-decided', 'done']);
+	// The delegated items in full, for the tab's 代決 rows (#664), in the review's order; no auto action.
+	expect(review.delegated.map((card) => card.id)).toEqual(['LAT-AN', 'LAT-AU', 'LAT-PC']);
+	expect(review.delegated[1]).toMatchObject({ kind: 'assumed', decision: '照 30 天做', revertTo: '改成 7 天或 90 天', state: 'open', answer: null });
+	expect(review.asked).toEqual([]);
 	expect(review.goals).toHaveLength(1);
 	expect(review.goals[0]).toMatchObject({ version: 1, goal: FORM.goal, done: FORM.done, sourceLabel: '你在看板開啟', endedAt: null });
-	expect(review.doneTickets.join('\n')).toContain('abc1234');
 	const parked = review.items.find((item) => item.id === 'LAT-P1')!;
 	expect(parked).toMatchObject({ kind: 'parked', title: '要不要加匯出功能', state: 'open', section: 'parked' });
 	expect(parked.why).toContain('一定擱置');

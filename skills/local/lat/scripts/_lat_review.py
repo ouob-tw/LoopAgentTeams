@@ -72,34 +72,36 @@ def section_lines(lines, heading):
     return found
 
 
-def review_answer(lines):
-    """(time, text) of the last answer recorded from the review, or None."""
-    found, current = None, None
+def answer_sections(lines):
+    """Every `## 答覆（…）` section of a record, in order, as dict(at, text, review): its time,
+    its first `- 答覆：` line, and whether it was recorded from the review."""
+    found, inside = [], False
     for line in lines:
         if line.startswith('## '):
             match = ANSWER_HEADING.match(line)
-            current = dict(at=match[1], text='', review=False) if match else None
+            inside = bool(match)
+            if match:
+                found.append(dict(at=match[1], text='', review=False))
             continue
-        if current is None:
+        if not inside:
             continue
-        if line.startswith('- 答覆：'):
-            current['text'] = line[len('- 答覆：'):].strip()
+        if line.startswith('- 答覆：') and not found[-1]['text']:
+            found[-1]['text'] = line[len('- 答覆：'):].strip()
         elif line.startswith('- 來源：') and REVIEW_SOURCE in line:
-            current['review'] = True
-            found = (current['at'], current['text'])
+            found[-1]['review'] = True
     return found
 
 
+def review_answer(lines):
+    """(time, text) of the last answer recorded from the review, or None."""
+    answers = [answer for answer in answer_sections(lines) if answer['review']]
+    return (answers[-1]['at'], answers[-1]['text']) if answers else None
+
+
 def last_answer(lines):
-    """(time, text) of the record's last answer section, from any source, or None."""
-    found = None
-    for line in lines:
-        if line.startswith('## '):
-            match = ANSWER_HEADING.match(line)
-            found = dict(at=match[1], text='') if match else found
-        elif found is not None and line.startswith('- 答覆：') and not found['text']:
-            found['text'] = line[len('- 答覆：'):].strip()
-    return (found['at'], found['text']) if found else None
+    """(time, text) of the record's last answer, from any source, or None."""
+    answers = answer_sections(lines)
+    return (answers[-1]['at'], answers[-1]['text']) if answers else None
 
 
 def record_round(lines):
@@ -258,7 +260,6 @@ def asked_items(directory, session, round_number):
             continue
         answer = last_answer(lines) if status in ANSWERED else None
         asked.append(dict(id=path.stem, title=title_of(lines, path.stem),
-                          question=field(lines, 'question'), grant_version=record_version(lines),
                           state='open' if status == 'pending' else 'answered',
                           answer=answer[1] if answer else None,
                           answered_at=answer[0] if answer else None))

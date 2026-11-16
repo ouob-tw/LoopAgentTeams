@@ -10,8 +10,8 @@
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { request } from '#lib/board/api.ts';
 	import { delegatedUi } from '#lib/board/delegated-ui.svelte.ts';
-	import { delegatedOf, seenKey, settledLabel, type DelegatedCard } from '#lib/board/delegated.ts';
-	import { reviewGroups, type AskedQuestion, type Review, type ReviewGoal } from '#lib/board/review.ts';
+	import { delegatedOf, seenKey, type DelegatedCard } from '#lib/board/delegated.ts';
+	import { reviewGroups, settledLabel, type AskedQuestion, type Review, type ReviewGoal } from '#lib/board/review.ts';
 	import { summaryPlain } from '#lib/board/summary-links.ts';
 	import { isInactive, needsWake, type Controller, type InboxItem, type InboxQuestion } from '#lib/board/types.ts';
 	import DelegatedRow from './DelegatedRow.svelte';
@@ -163,7 +163,7 @@
 						{:else}
 							<div class="ask" class:done={asked.state === 'answered'} data-asked={asked.id} data-state={asked.state}>
 								<span class="title">▲ <b>待決</b>：{title}</span>
-								<span class="ask-state">{asked.state === 'answered' ? (asked.answer ? `你答：${asked.answer}` : '已回答') : '等你回答'}</span>
+								<span class="ask-state">{asked.state === 'answered' ? (asked.answer ? `你答：${asked.answer}` : '已回答') : inactive ? '沒答到，主控已結束' : '等你回答'}</span>
 							</div>
 						{/if}
 					{/each}

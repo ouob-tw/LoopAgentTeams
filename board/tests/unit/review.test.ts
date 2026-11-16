@@ -19,9 +19,10 @@ test('the message names the item ID, its title and what the user wrote', () => {
 test("reviewFrom keeps the tool's items in order, leaves out an item it does not know and refuses what is not a review", () => {
 	const read = reviewFrom(payload([item('a', 'parked'), item('b', 'assumed', { state: 'overturned' })], { top: ['b', 'a'] }))!;
 	expect(read.items.map((entry) => [entry.id, entry.state])).toEqual([['a', 'open'], ['b', 'overturned']]);
-	expect(read.top).toEqual(['b', 'a']);
-	// An old review, or one from a newer tool, still opens with the items the board knows.
-	expect(reviewFrom(payload([item('a', 'mystery'), item('b', 'assumed')]))!.items.map((entry) => entry.id)).toEqual(['b']);
+	// An old review, or one from a newer tool, still opens with the items the board knows, and says some were left out.
+	const newer = reviewFrom(payload([item('a', 'mystery'), item('b', 'assumed')]))!;
+	expect(newer.items.map((entry) => entry.id)).toEqual(['b']);
+	expect(newer.problems).toEqual(['回顧裡有 1 項看板認不得，沒有列出']);
 	expect(reviewFrom(payload([item('a', 'assumed', { state: 'strange' })]))!.items).toEqual([]);
 	expect(reviewFrom({ status: 'refused', reason: 'x' })).toBeNull();
 });
@@ -58,6 +59,7 @@ test('the review tab groups: unseen 代決, seen or ended 代決, the questions 
 test('a payload with auto items and a cross-check opens without them', () => {
 	const old = reviewFrom({ ...payload([item('a', 'parked'), item('auto-1', 'auto'), item('b', 'assumed')], { top: ['a', 'auto-1'] }), verified: true, verification: { checker: 'kiwi', family: 'gpt', total: 3, matched: 3, mismatches: [] } })!;
 	expect(old.items.map((entry) => entry.id)).toEqual(['a', 'b']);
+	expect(old.problems).toEqual([]);
 	expect(old).not.toHaveProperty('verified');
 	expect(old).not.toHaveProperty('verification');
 });
@@ -78,4 +80,25 @@ test('evidence entries naming a file in the workspace become links, others stay 
 		{ kind: 'commit', text: 'abc1234f', href: 'https://github.com/ouob-tw/LoopAgentTeams/commit/abc1234f' },
 		{ kind: 'text', text: ' 完成；plain 12345678 20261114 不是 deadbeef' }
 	]);
+});
+
+test('a settled card in the review tab says it was agreed, or when and how the user overturned it (#664)', async () => {
+	const { overturnWords, settledLabel } = await import('../../src/lib/board/review.ts');
+	const { shortTime } = await import('../../src/lib/board/delegated.ts');
+	const card = { id: 'LAT-AS', title: '設定頁按鈕文字用「儲存」', kind: 'assumed' as const, state: 'open' as const, answer: null, answeredAt: null };
+	expect(settledLabel(card)).toBe('沒推翻，算同意');
+	// The board's own message is cut down to the user's words, also with brackets in the title.
+	const overturned = { ...card, state: 'overturned' as const, answer: '回顧項目 LAT-AS「設定頁按鈕文字用「儲存」」推翻：改用「存檔」', answeredAt: '2026-11-16T02:05:00+00:00' };
+	expect(overturnWords(overturned)).toBe('改用「存檔」');
+	expect(settledLabel(overturned)).toBe('已由你推翻（11/16 10:05）：改用「存檔」');
+	// An answer the controller wrote in its own words is shown as written; no time, no brackets.
+	expect(settledLabel({ ...overturned, answer: '改用頁面測試', answeredAt: null })).toBe('已由你推翻：改用頁面測試');
+	// Another title is another item's message: shown as recorded.
+	expect(overturnWords({ ...overturned, title: '別的標題' })).toBe(overturned.answer);
+	expect(overturnWords({ ...overturned, answer: '推翻：改成「套用」' })).toBe('改成「套用」');
+	expect(settledLabel({ ...overturned, answer: null })).toBe('已由你推翻（11/16 10:05）');
+	// Taiwan's time whatever the offset given; text that is not a time stays as it is.
+	expect(shortTime('2026-11-15T01:45:01+08:00')).toBe('11/15 01:45');
+	expect(shortTime('2026-12-31T16:30:00Z')).toBe('1/1 00:30');
+	expect(shortTime('不是時間')).toBe('不是時間');
 });

@@ -132,20 +132,3 @@ export function shortTime(iso: string): string {
 	);
 	return `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
 }
-
-/** What the user wrote to overturn a card: the recorded answer without the 「回顧項目 <ID>「<title>」推翻：」
- *  the board's message starts with, or the bare 「推翻：」 a controller may record before the words. */
-export function overturnWords(card: Pick<DelegatedCard, 'id' | 'title' | 'answer'>): string {
-	const answer = (card.answer ?? '').trim();
-	const exact = `回顧項目 ${card.id}「${card.title}」推翻：`;
-	if (answer.startsWith(exact)) return answer.slice(exact.length).trim();
-	return answer.replace(/^回顧項目 \S+「.*」(?:推翻|回覆)：/s, '').replace(/^推翻[：:]/, '').trim();
-}
-
-/** A card that is no longer new, as the review tab says it: left alone it counts as agreed. */
-export function settledLabel(card: Pick<DelegatedCard, 'id' | 'title' | 'state' | 'answer' | 'answeredAt'>): string {
-	if (card.state !== 'overturned') return '沒推翻，算同意';
-	const when = card.answeredAt ? `（${shortTime(card.answeredAt)}）` : '';
-	const words = overturnWords(card);
-	return `已由你推翻${when}${words ? `：${words}` : ''}`;
-}

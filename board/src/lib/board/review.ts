@@ -1,7 +1,7 @@
 // A round's unattended review as the board shows it: what `lat-unattended review show --json`
 // prints, kept to what a page needs, and the words of the message 推翻 and 回覆 send. The review
 // file's layout and order are lat-unattended's; the review tab groups them (reviewGroups).
-import { cardsFrom, type DelegatedCard } from './delegated.ts';
+import { cardsFrom, shortTime, type DelegatedCard } from './delegated.ts';
 
 export type ReviewKind = 'parked' | 'parked-row' | 'proxy-confirmed' | 'assumed' | 'prototype-decided';
 export type ReviewItemState = 'open' | 'answered' | 'overturned';
@@ -54,13 +54,8 @@ export interface Review {
 	delegated: DelegatedCard[];
 	/** The questions asked during this round's grant, in the tool's order. */
 	asked: AskedQuestion[];
-	/** IDs of the items 最該先看的幾項 lists, in order. */
-	top: string[];
-	doneTickets: string[];
-	/** Sources the tool could not read. */
+	/** Sources the tool could not read, and a line for review items the board could not show. */
 	problems: string[];
-	/** Every section of the review file, in its order, with its heading. */
-	sections: { key: string; heading: string }[];
 }
 
 const record = (value: unknown): Record<string, unknown> => (typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {});
@@ -77,11 +72,17 @@ export function reviewFrom(payload: unknown): Review | null {
 	const view = record(given.view);
 	if (given.status !== 'ok' || typeof given.path !== 'string' || !Array.isArray(view.items)) return null;
 	const items: ReviewItem[] = [];
+	let unknown = 0;
 	for (const raw of view.items) {
 		const item = record(raw);
 		// Auto actions are no longer review items, and an item the board does not know is left out
-		// too: an old review, or one from a newer tool, still opens with the rest.
-		if (typeof item.id !== 'string' || !KINDS.includes(text(item.kind)) || !STATES.includes(text(item.state))) continue;
+		// too, with a line under 讀不出的來源: an old review, or one from a newer tool, still opens
+		// with the rest.
+		if (item.kind === 'auto') continue;
+		if (typeof item.id !== 'string' || !KINDS.includes(text(item.kind)) || !STATES.includes(text(item.state))) {
+			unknown++;
+			continue;
+		}
 		items.push({
 			id: item.id,
 			kind: item.kind as ReviewKind,
@@ -121,12 +122,7 @@ export function reviewFrom(payload: unknown): Review | null {
 			const answer = typeof asked.answer === 'string' && asked.answer.trim() ? asked.answer : null;
 			return [{ id: asked.id, title: text(asked.title) || asked.id, state: asked.state === 'answered' ? 'answered' : 'open', answer, answeredAt: typeof asked.answered_at === 'string' ? asked.answered_at : null }];
 		}),
-		top: strings(view.top),
-		doneTickets: strings(view.done_tickets),
-		problems: strings(view.problems),
-		sections: list(view.sections)
-			.map((raw) => ({ key: text(record(raw).key), heading: text(record(raw).heading) }))
-			.filter((section) => section.key && section.heading)
+		problems: [...strings(view.problems), ...(unknown ? [`回顧裡有 ${unknown} 項看板認不得，沒有列出`] : [])]
 	};
 }
 
@@ -151,6 +147,24 @@ export const actionWord = (item: Pick<ReviewItem, 'kind'>): '回覆' | '推翻' 
 /** What the controller is sent: the item's ID and title, then the user's words. */
 export function reviewMessage(item: Pick<ReviewItem, 'id' | 'title' | 'kind'>, words: string): string {
 	return `回顧項目 ${item.id}「${item.title}」${actionWord(item)}：${words.trim()}`;
+}
+
+/** What the user wrote to overturn a card: the recorded answer without the start of the message
+ *  reviewMessage builds, or without the bare 「推翻：」 a controller may record before the words.
+ *  An answer recorded in other words is shown as it is. */
+export function overturnWords(card: Pick<DelegatedCard, 'id' | 'title' | 'kind' | 'answer'>): string {
+	const answer = (card.answer ?? '').trim();
+	const start = reviewMessage(card, '');
+	if (answer.startsWith(start)) return answer.slice(start.length).trim();
+	return answer.replace(/^推翻[：:]/, '').trim();
+}
+
+/** A card that is no longer new, as the review tab says it: left alone it counts as agreed. */
+export function settledLabel(card: Pick<DelegatedCard, 'id' | 'title' | 'kind' | 'state' | 'answer' | 'answeredAt'>): string {
+	if (card.state !== 'overturned') return '沒推翻，算同意';
+	const when = card.answeredAt ? `（${shortTime(card.answeredAt)}）` : '';
+	const words = overturnWords(card);
+	return `已由你推翻${when}${words ? `：${words}` : ''}`;
 }
 
 /** The record an evidence entry opens with, one of the two kinds lat-unattended cites

@@ -455,12 +455,11 @@ class AskedQuestionTests(ReviewCase):
         asked = result['view']['asked']
         self.assertEqual([entry['id'] for entry in asked], ['Q-DONE', 'Q-OPEN'])
         done, waiting = asked
-        self.assertEqual((done['state'], done['answer'], done['answered_at'], done['grant_version']),
-                         ('answered', 'A. 要加', '2026-11-16T10:00:00+08:00', 1))
+        self.assertEqual((done['state'], done['answer'], done['answered_at']),
+                         ('answered', 'A. 要加', '2026-11-16T10:00:00+08:00'))
         self.assertEqual(done['title'], '通知卡片要不要加關閉鈕？')
         self.assertEqual((waiting['state'], waiting['answer'], waiting['answered_at']),
                          ('open', None, None))
-        self.assertEqual(waiting['question'], '通知卡片要不要加關閉鈕')
         # They stay out of the items and out of the review file.
         self.assertNotIn('Q-OPEN', [item['id'] for item in result['view']['items']])
         self.assertNotIn('Q-OPEN', self.md.read_text())

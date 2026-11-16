@@ -352,4 +352,11 @@ test.skipIf(!CHROME)('once the controller has ended the tab stays, its 代決 st
 	await tab.until(`!document.querySelector('${card('LAT-AU')} textarea') || !!document.querySelector('${card('LAT-AU')} .failed')`, 'sent or refused');
 	expect(await tab.eval<string>(text(`${card('LAT-AU')} .failed`))).toBe('');
 	expect(typed().map((line) => line.text)).toContain('回顧項目 LAT-AU「備份預設留 30 天」推翻：改成 7 天');
+	// A question it asked and never had answered says it can no longer be answered, instead of waiting.
+	askedRecord('Q-LATE', '匯出要不要分頁？');
+	tool('review', 'update');
+	await fixture.refresh(cookie);
+	await tab.until(`!!document.querySelector('${asked('Q-LATE')}')`, 'the late question', 8_000);
+	expect(await tab.eval<string>(text(asked('Q-LATE')))).toMatch(/沒答到，主控已結束$/);
+	expect(await tab.eval(`document.querySelector('${asked('Q-LATE')}').tagName`)).toBe('DIV');
 });
