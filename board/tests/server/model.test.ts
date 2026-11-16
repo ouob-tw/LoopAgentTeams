@@ -491,6 +491,19 @@ test('a paused then resumed Codex that neither hcom nor Herdr has a pane for kee
 	expect(resumes()).toEqual([]);
 });
 
+test('a paused then resumed Codex that turns busy before the last check is not stopped', async () => {
+	const target = await running('codex');
+	resumedAfterPause(target, true);
+	const paneless = { ...target.self, launch_context: {} };
+	hcomPlan({ listSeries: [[paneless], [{ ...paneless, status: 'active' }]], agents: [{ ...paneless, status: 'active' }] });
+
+	const { status, body } = await change(target.id, null, 'low');
+
+	expect(status).toBe(409);
+	expect(body.reason).toBe(BUSY_REASON);
+	expect(kills()).toEqual([]);
+});
+
 test('a Codex that is working, blocked, or whose state cannot be read is not touched', async () => {
 	for (const state of ['active', 'blocked', 'unknown']) {
 		const target = await running('codex', state);

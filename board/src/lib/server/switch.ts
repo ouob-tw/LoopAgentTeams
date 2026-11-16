@@ -248,7 +248,7 @@ async function restartSwitch(board: Board, controller: SwitchTarget, entry: Sent
 	const seen = await withPane(board, controller, listed);
 	// Before the last check, so nothing is awaited between that check and the stop.
 	const hold = await holdShell(board, null, seen.pane);
-	const ready = await recheck(board, controller, seen.name, hold?.beside);
+	const ready = await recheck(board, controller, seen.name, hold?.beside, seen.pane);
 	if ('refuse' in ready) {
 		await dropHold(board, hold);
 		return finish(board, entry, { reason: ready.refuse });
@@ -272,12 +272,13 @@ async function restartSwitch(board: Board, controller: SwitchTarget, entry: Sent
 
 /** The client again just before it is stopped: still this session under the name it had a moment
  *  ago, still `listening`, and still in the pane a shell was held beside, when one was. */
-async function recheck(board: Board, controller: SwitchTarget, name: string, heldBeside?: string | null): Promise<{ agent: HcomAgent } | { refuse: string }> {
+async function recheck(board: Board, controller: SwitchTarget, name: string, heldBeside?: string | null, knownPane: string | null = null): Promise<{ agent: HcomAgent } | { refuse: string }> {
 	const list = await listAgents(board.config);
 	if (!list.ok) return { refuse: `${WAKE_UNKNOWN_REASON}：${list.reason}` };
 	const listed = list.agents.find((candidate) => candidate.sessionId === controller.id);
 	if (!listed) return { refuse: notRunningReason(controller) };
-	const agent = await withPane(board, controller, listed);
+	// No external read here: the pane hcom lacks is the one read before this check (`withPane`), joined as nothing is awaited.
+	const agent = listed.pane === null && knownPane !== null ? { ...listed, pane: knownPane } : listed;
 	if (agent.name !== name) return { refuse: `${noun(controller)}的 HCOM 名稱剛剛變了（@${name} → @${agent.name}），沒有切換，請再試一次` };
 	if (agent.status !== 'listening') return { refuse: busyReason(controller) };
 	if (heldBeside !== undefined && agent.pane !== heldBeside) return { refuse: `${noun(controller)}的 Herdr 窗格剛剛變了，沒有切換，請再試一次` };
@@ -395,7 +396,7 @@ export async function continueSwitch(board: Board, controller: SwitchTarget, ope
 		// Read before the last check, so nothing is awaited between that check and the stop.
 		const carry = await carried(board, controller, to);
 		const hold = await holdShell(board, open.holdPane, agent.pane);
-		const ready = await recheck(board, controller, agent.name, hold?.beside ?? undefined);
+		const ready = await recheck(board, controller, agent.name, hold?.beside ?? undefined, agent.pane);
 		if ('refuse' in ready) {
 			await dropHold(board, hold);
 			return respondLogged(board, open.id, { reason: ready.refuse, status: 409 }, null);
