@@ -30,7 +30,8 @@ KIND_LABELS = {PARKED: '擱置', 'parked-row': '擱置的票', 'proxy-confirmed'
 # (section key, heading), in the Spec's order.
 SECTIONS = (('parked', '擱置等你的事'), ('goal', '本輪目標與做完條件'), ('top', '最該先看的幾項'),
             ('assumed', '假設'), ('proxy-confirmed', '代確認的票'),
-            ('prototype-decided', '樣品決定'), ('done', '本輪完成的票'))
+            ('prototype-decided', '樣品決定'), ('asked', '無人期間問過你的題'),
+            ('done', '本輪完成的票'))
 SECTION_OF = {PARKED: 'parked', 'parked-row': 'parked', 'proxy-confirmed': 'proxy-confirmed',
               'assumed': 'assumed', 'prototype-decided': 'prototype-decided'}
 ROW_STATES = {'unassigned': '未派工', 'assigned': '已派工', 'in_progress': '進行中',
@@ -438,7 +439,7 @@ def collect(*, lat, workspace, session, round_number, versions, decisions, end_l
              f'第 {last["version"]} 版生效中' if last['ended_at'] is None else
              f'已結束（第 {last["version"]} 版，{end_labels.get(last["end_reason"], last["end_reason"])}，'
              f'{last["ended_at"]}）')
-    # Not review items: the review file does not list them, only the board's review tab (#664).
+    # Not review items: the file lists them in a section of their own, the board's review tab in a group (#664).
     asked = asked_items(Path(decisions), session, round_number)
     return dict(session=session, round=round_number, grant=grant, goals=goals, items=items,
                 asked=asked, top=top, done_tickets=done, problems=problems,
@@ -479,6 +480,17 @@ def render_body(view):
                 lines += [f'## {heading}', '']
                 lines += [f'{n}. {by_id[i]["id"]}（{by_id[i]["kind_label"]}）{by_id[i]["title"]}'
                           f'：{one_line(by_id[i]["did"])}' for n, i in enumerate(view['top'], 1)]
+                lines.append('')
+            continue
+        if key == 'asked':
+            # The questions asked during the grant (#664): listed so the file, and its hash,
+            # change when one is asked or answered.
+            if view['asked']:
+                lines += [f'## {heading}', '']
+                lines += [f'- {q["id"]} {one_line(q["title"])}：'
+                          + (f'你答（{q["answered_at"]}）：{one_line(q["answer"])}' if q['answer']
+                             else '已回答' if q['state'] == 'answered' else '等你回答')
+                          for q in view['asked']]
                 lines.append('')
             continue
         if key == 'done':

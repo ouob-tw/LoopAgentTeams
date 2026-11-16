@@ -14,10 +14,11 @@
 	import type { BoardAsk } from '#lib/board/board-asks.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { agentWarnings, lastSegment } from '#lib/board/agents.ts';
+	import { reviewTabCount } from '#lib/board/delegated.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import { withAnswered } from '#lib/board/question-message.ts';
-	import { STATUS_LABEL, type Controller, type InboxItem, type InboxQuestion, type InboxReport, type KnownAgent } from '#lib/board/types.ts';
+	import { isInactive, STATUS_LABEL, type Controller, type InboxItem, type InboxQuestion, type InboxReport, type KnownAgent } from '#lib/board/types.ts';
 	import type { Translation } from '#lib/board/translate.ts';
 	import type { PlacedTarget } from '#lib/board/transcript.ts';
 	import type { Usage } from '#lib/board/usage.ts';
@@ -116,12 +117,12 @@
 		...(questions.length ? [`${questions.length} 題待決`] : []),
 		...(paneAgent ? agentWarnings(paneAgent) : [])
 	]);
-	/** The tab shows only while the latest round has a review file; its count is the parked items. */
+	/** The tab shows only while the latest round has a review file; its count is what still needs the user (reviewTabCount). */
 	const reviewSummary = $derived(controller.unattended.state === 'error' ? null : (controller.unattended.review ?? null));
 	const tabs = $derived([
 		{ id: 'transcript', label: '對話紀錄', count: null },
 		// A failed read keeps the tab, so a slow poll never throws the user off it.
-		...(reviewSummary?.state === 'ok' || reviewSummary?.state === 'error' ? [{ id: 'review', label: '回顧', count: reviewSummary.state === 'ok' ? reviewSummary.parked : null } as const] : []),
+		...(reviewSummary?.state === 'ok' || reviewSummary?.state === 'error' ? [{ id: 'review', label: '回顧', count: reviewTabCount(controller, isInactive(controller.status)) } as const] : []),
 		{ id: 'screen', label: '終端', count: null },
 		{ id: 'reports', label: '回報', count: reports.length },
 		{ id: 'ledger', label: '工作總表', count: controller.ledger.state === 'ok' ? controller.ledger.tickets.length : null },

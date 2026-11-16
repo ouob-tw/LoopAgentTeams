@@ -147,6 +147,8 @@ test.skipIf(!CHROME)('the cards come in groups, in order, and an empty group is 
 	tool('review', 'update');
 	await tab.until(`!!document.querySelector('${TAB}')`, 'the 回顧 tab appearing without a reload');
 	expect((await tabNames(tab)).slice(0, 2)).toEqual(['transcript', 'review']);
+	// The number is what still needs the user: 3 unseen 代決, 1 question waiting, 3 parked items.
+	await tab.until(`${text(TAB)}.replace(/\\s+/g, '') === '回顧7'`, 'the tab counting what waits');
 	await openTab(tab);
 	await tab.until(`!!document.querySelector('${group('asked')}')`, 'the questions read');
 
@@ -204,6 +206,8 @@ test.skipIf(!CHROME)('a 代決 opened here shows its record and is marked seen; 
 	await looks(tab, 'unseen-open', card('LAT-AU'));
 	await reload(tab);
 	await tab.until(`!!document.querySelector('${group('settled')}')`, 'the settled group');
+	// One 代決 seen: one less to look at.
+	await tab.until(`${text(TAB)}.replace(/\\s+/g, '') === '回顧6'`, 'the tab count after one was seen');
 	expect(await groups(tab)).toEqual(['goal', 'unseen', 'settled', 'asked', 'parked']);
 	expect(await ids(tab, 'unseen')).toEqual(['LAT-AN', 'LAT-PC']);
 	expect(await ids(tab, 'settled')).toEqual(['LAT-AU']);

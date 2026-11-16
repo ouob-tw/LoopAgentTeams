@@ -460,6 +460,26 @@ class AskedQuestionTests(ReviewCase):
         self.assertEqual(done['title'], '通知卡片要不要加關閉鈕？')
         self.assertEqual((waiting['state'], waiting['answer'], waiting['answered_at']),
                          ('open', None, None))
-        # They stay out of the items and out of the review file.
+        # They are not review items; the file lists them in a section of their own.
         self.assertNotIn('Q-OPEN', [item['id'] for item in result['view']['items']])
-        self.assertNotIn('Q-OPEN', self.md.read_text())
+        self.assertIn('無人期間問過你的題', self.headings())
+        text = self.md.read_text()
+        self.assertIn('- Q-OPEN 通知卡片要不要加關閉鈕？：等你回答', text)
+        self.assertIn('- Q-DONE 通知卡片要不要加關閉鈕？：你答（2026-11-16T10:00:00+08:00）：A. 要加', text)
+        self.assertNotIn('Q-OLD', text)
+
+    def test_a_round_that_only_asked_gets_a_review_and_an_answer_rewrites_it(self):
+        self.grant()
+        self.review('update')
+        self.assertFalse(self.md.exists())
+        self.question('Q-ONLY')
+        first = self.review('show')
+        self.assertTrue(self.md.exists())
+        self.assertEqual(first['path'], str(self.md))
+        self.assertEqual(self.item_ids(), [])
+        self.assertIn('Q-ONLY', self.md.read_text())
+        self.question('Q-ONLY', status='approved', tail=(
+            '\n## 答覆（r1，面板，2026-11-16T10:00:00+08:00）\n\n- 答覆：B. 不加\n'))
+        second = self.review('show')
+        self.assertNotEqual(first['body_sha'], second['body_sha'])
+        self.assertIn('你答（2026-11-16T10:00:00+08:00）：B. 不加', self.md.read_text())

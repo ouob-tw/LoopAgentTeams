@@ -79,3 +79,19 @@ test('the seen marks are kept in the state folder, and an unusable file is not s
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test('the 回顧 tab counts what still needs the user: unseen 代決, unanswered questions while the controller runs, open parked items (#664)', async () => {
+	const { reviewTabCount } = await import('../../src/lib/board/delegated.ts');
+	const view = (review: Record<string, unknown>) => unattendedFrom({ status: 'ok', state: 'active', settings: { mode: { value: 'unattended', layer: 'controller' }, max_hours: { value: 12 } }, layer_modes: {}, review });
+	const base = { state: 'ok', path: '/r.md', count: 3, stamp: 1 };
+	// One of the three cards seen: two unseen, plus two questions and one parked item.
+	const both = withSeen({ id: 's-1', unattended: view({ ...base, parked: 1, asked_open: 2, delegated: RAW }) }, { 's-1:LAT-AS': 'x' });
+	expect(reviewTabCount(both, false)).toBe(5);
+	// The controller has ended: its questions can no longer be answered, the 代決 still can be overturned.
+	expect(reviewTabCount(both, true)).toBe(3);
+	// A round after #661 that only asked: not 0.
+	expect(reviewTabCount({ unattended: view({ ...base, parked: 0, asked_open: 1, delegated: [] }) }, false)).toBe(1);
+	// A helper from before #664 sends no asked_open.
+	expect(reviewTabCount({ unattended: view({ ...base, parked: 2, delegated: [] }) }, false)).toBe(2);
+	expect(reviewTabCount({ unattended: view({ state: 'none' }) }, false)).toBeNull();
+});

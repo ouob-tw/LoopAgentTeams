@@ -95,6 +95,15 @@ export function delegatedOf(controller: { unattended: UnattendedView }): Delegat
 /** How many of its cards the user has not opened yet: the roster's 代決 N. */
 export const unseenCount = (controller: { unattended: UnattendedView }): number => delegatedOf(controller).filter((card) => !card.seen).length;
 
+/** The 回顧 tab's number (#664): what still needs the user: 代決 not opened yet, questions asked
+ *  during the grant and not answered (only while the controller can still take an answer), and
+ *  open parked items from before #661. Null without a review. */
+export function reviewTabCount(controller: { unattended: UnattendedView }, inactive: boolean): number | null {
+	const review = 'review' in controller.unattended ? controller.unattended.review : undefined;
+	if (review?.state !== 'ok') return null;
+	return unseenCount(controller) + (inactive ? 0 : review.askedOpen) + review.parked;
+}
+
 /** The cards with the host's seen state; the same object when nothing changes. */
 export function withSeen<T extends { id: string; unattended: UnattendedView }>(controller: T, seen: Record<string, string>): T {
 	const view = controller.unattended;

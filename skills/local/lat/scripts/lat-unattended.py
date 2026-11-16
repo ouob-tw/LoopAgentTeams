@@ -855,7 +855,8 @@ def refresh_review_locked(lat, session, found=None):
         end_labels=END_LABELS, scope_labels=SCOPE_LABELS)
     md, state_path = review_files(lat, session, found.number)
     state = read_review_state(state_path)
-    if not view['items'] and not md.exists():
+    # Created at the first item, or at the first question asked during the grant (#664).
+    if not view['items'] and not view['asked'] and not md.exists():
         return dict(path=None, view=view)
     body = _lat_review.render_body(view)
     digest = sha(body)

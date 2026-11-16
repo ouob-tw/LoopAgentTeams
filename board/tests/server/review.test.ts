@@ -102,6 +102,24 @@ test('the snapshot counts the parked items and the tab reads its items, 代決 a
 	expect(review).not.toHaveProperty('verified');
 });
 
+test('a round that only asked a question during the grant has a review, counted until the question is answered (#664)', async () => {
+	expect((await grant({ op: 'create', ...FORM })).status).toBe(200);
+	expect(await summary()).toEqual({ state: 'none' });
+	const record = (status: string, tail = '') =>
+		writeFileSync(join(luna.workspace, '.lat/decisions/Q-ONLY.md'), [`# Q-ONLY 匯出要不要分頁？`, '', `- status: ${status}`, '- advisor: needs-human', `- session: ${luna.session_id}`, '- grant: r1 v1', '- version: r1', '- question: 匯出要不要分頁', ''].join('\n') + tail);
+	mkdirSync(join(luna.workspace, '.lat/decisions'), { recursive: true });
+	record('pending');
+	const asked = await summary();
+	expect(asked).toMatchObject({ state: 'ok', count: 0, parked: 0, askedOpen: 1 });
+	expect((await readReview()).review!.asked).toEqual([{ id: 'Q-ONLY', title: '匯出要不要分頁？', state: 'open', answer: null, answeredAt: null }]);
+	record('approved', '\n## 答覆（r1，面板，2026-11-16T10:00:00+08:00）\n\n- 答覆：B. 不分頁\n');
+	const answered = await summary();
+	expect(answered).toMatchObject({ state: 'ok', askedOpen: 0 });
+	// The review file lists the answer, so the tab reads the review again.
+	expect(answered?.state === 'ok' && asked?.state === 'ok' && answered.stamp !== asked.stamp).toBe(true);
+	expect((await readReview()).review!.asked[0]).toMatchObject({ state: 'answered', answer: 'B. 不分頁' });
+});
+
 test('the user\'s goal change adds a version', async () => {
 	await startRound();
 	const edited = await grant({ op: 'update', ...FORM, goal: '#577、#578 都做完' });
