@@ -137,6 +137,8 @@ class StateFileTests(VmCase):
                         f'jq . {r}/leases.json | sponge {r}/leases.json',
                         f'find {r} -name "*.json" -delete', f'find {r} -exec rm {{}} +',
                         f'find {self.tmp} -name leases.json -delete', f'cd {r} && find . -delete',
+                        f'cd {r} && find -name leases.json -delete',
+                        f'find {self.tmp} -iname LEASES.JSON -delete',
                         f'x=$(rm {r}/leases.json)', f'echo "$(cp /tmp/x {r}/leases.json)"',
                         f'timeout 5 sudo tee {r}/leases.json < /tmp/x']:
             with self.subTest(command):

@@ -27,6 +27,7 @@ import argparse
 import copy
 import difflib
 import fnmatch
+import itertools
 import json
 import os
 import re
@@ -1270,14 +1271,25 @@ def find_problem(rest, folder, place):
         | IN_PLACE_TOOLS | {'mv'} for w, n in zip(rest, rest[1:]))
     if not changing:
         return None
-    starts = [p for p in (resolve_path(w, folder) for w in rest[1:]
-                          if not w.startswith(('-', '(', '!', ')'))) if p]
-    starts = starts[:1] or [str(folder)]
-    names = [n for w, n in zip(rest, rest[1:]) if w in ('-name', '-iname')]
-    paths = [n for w, n in zip(rest, rest[1:]) if w in ('-path', '-wholename')]
-    return next((state for state in sorted(place.states) if within(state, starts[0])
-                 and all(fnmatch.fnmatchcase(os.path.basename(state), n) for n in names)
-                 and all(fnmatch.fnmatchcase(state, p) for p in paths)), None)
+    words = rest[1:]
+    while words and words[0] in ('-H', '-L', '-P'):
+        words = words[1:]
+    starts = list(itertools.takewhile(lambda w: not w.startswith(('-', '(', '!')), words))
+    start = resolve_path(starts[0], folder) if starts else str(folder)
+
+    def patterns(flags):
+        """(pattern, ignore case) of each test in flags; -i tests ignore case."""
+        return [(n.lower() if w.startswith('-i') else n, w.startswith('-i'))
+                for w, n in zip(rest, rest[1:]) if w in flags]
+
+    def matches(pattern, text):
+        return fnmatch.fnmatchcase(text.lower() if pattern[1] else text, pattern[0])
+
+    names = patterns(('-name', '-iname'))
+    paths = patterns(('-path', '-ipath', '-wholename', '-iwholename'))
+    return next((state for state in sorted(place.states) if start and within(state, start)
+                 and all(matches(n, os.path.basename(state)) for n in names)
+                 and all(matches(p, state) for p in paths)), None)
 
 
 def vm_statement_problem(words, folder, command, place):

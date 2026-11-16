@@ -91,7 +91,7 @@ kill <PID>
 
 `~/vm` 依 `VM_HOME` 決定，沒設時是家目錄的 `vm`；機器清單與借用紀錄的格式見 vm 技能的 `FORMATS.md`。清單或借用紀錄不存在或讀不懂時，只擋狀態檔寫入、`/dev/kvm` 建立與舊資料夾，其他指令照常放行。`vm-watch` 服務是唯一允許的虛擬機服務。
 
-已知限制：這是接住 Agent 不小心繞過的保護，不是資安防線。只看指令文字，`eval`、腳本檔或自己寫程式改紀錄都擋不住；Codex 的檔案編輯工具不經過 hook，只擋得住 Codex 下的 shell 指令。以下也不檢查：用容器 ID、`$(docker ps -q)` 或 `xargs` 指定容器；`docker run --privileged`（沒寫 `/dev/kvm`）；停掉 `vm-watch` 服務；`docker create` 的連線埠是否只綁 `127.0.0.1`。
+已知限制：這是接住 Agent 不小心繞過的保護，不是資安防線。只看指令文字，`eval`、腳本檔或自己寫程式改紀錄都擋不住；Codex 的檔案編輯工具不經過 hook，只擋得住 Codex 下的 shell 指令。以下也不檢查：`find` 的 `-o`、`-regex` 等其他條件；用容器 ID、`$(docker ps -q)` 或 `xargs` 指定容器；`docker run --privileged`（沒寫 `/dev/kvm`）；停掉 `vm-watch` 服務；`docker create` 的連線埠是否只綁 `127.0.0.1`。
 
 ## 直接從 LoopAgentTeams 安裝技能
 
