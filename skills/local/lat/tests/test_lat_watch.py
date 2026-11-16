@@ -275,6 +275,69 @@ class WatchDecisionTests(unittest.TestCase):
         state, actions = watch.decide(state, stale, now=1_800)
         self.assertEqual(actions[0].kind, 'notify-orchestrator')
 
+    def background_orchestrator(self, watch, **changes):
+        values = dict(agent='orch', status='listening', prompt_empty=True, command_running=True,
+                      transcript_size=100, transcript_mtime_ns=1_000, event_id=7,
+                      is_orchestrator=True, client='claude')
+        values.update(changes)
+        return watch.Observation(**values)
+
+    def test_orchestrator_with_only_a_background_command_is_nudged_at_an_hour_then_user(self):
+        watch = load_watch()
+        waiting = self.background_orchestrator(watch)
+        state, _ = watch.decide(None, waiting, now=0)
+        state, actions = watch.decide(state, waiting, now=3_599)
+        self.assertEqual((actions, state['decision']), ((), 'command-running'))
+        state, actions = watch.decide(state, waiting, now=3_600)
+        self.assertEqual(actions, (watch.Action('nudge', 'orch', text=watch.BACKGROUND_NUDGE),))
+        self.assertIn('--pid <pid> --timeout <minutes>', watch.BACKGROUND_NUDGE)
+        self.assertEqual(state['nudge_text'], watch.BACKGROUND_NUDGE)
+        state, actions = watch.decide(state, waiting, now=4_199)
+        self.assertEqual(actions, ())
+        # Only the injected nudge and a short reply: still unhandled.
+        replied = waiting._replace(transcript_size=150, nudge_only=True)
+        state, actions = watch.decide(state, replied, now=4_200)
+        self.assertEqual(actions[0].kind, 'notify-user')
+        self.assertIn('only a background command', actions[0].message)
+        state, actions = watch.decide(state, replied, now=9_000)
+        self.assertEqual(actions, ())
+
+    def test_background_command_hour_rule_skips_waits_progress_executors_and_busy_screens(self):
+        watch = load_watch()
+        waiting = self.background_orchestrator(watch)
+        cases = {'wait': waiting._replace(wait_active=True),
+                 'executor': waiting._replace(agent='worker', is_orchestrator=False),
+                 'active': waiting._replace(status='active'),
+                 'typed': waiting._replace(prompt_empty=False, input_text='draft'),
+                 'working': waiting._replace(screen_working=True)}
+        for name, observation in cases.items():
+            with self.subTest(case=name):
+                state, _ = watch.decide(None, observation, now=0)
+                state, actions = watch.decide(state, observation, now=3_600)
+                self.assertFalse(any(action.kind == 'nudge' for action in actions))
+        state, _ = watch.decide(None, waiting, now=0)
+        state, _ = watch.decide(state, waiting, now=3_600)
+        handled = waiting._replace(transcript_size=900, event_id=8)
+        state, actions = watch.decide(state, handled, now=4_200)
+        self.assertEqual(actions, ())
+        self.assertFalse(state['nudged'])
+        # The background command finished and the orchestrator went back to work: old rules.
+        alarm = waiting._replace(wait_active=True)
+        state, _ = watch.decide(None, waiting, now=0)
+        state, _ = watch.decide(state, waiting, now=3_600)
+        state, actions = watch.decide(state, alarm, now=4_200)
+        self.assertEqual(actions, ())
+
+    def test_failed_background_nudge_is_retried_with_its_own_text(self):
+        watch = load_watch()
+        waiting = self.background_orchestrator(watch)
+        state, _ = watch.decide(None, waiting, now=0)
+        state, actions = watch.decide(state, waiting, now=3_600)
+        watch.roll_back(actions[0], state)
+        self.assertNotIn('nudge_text', state)
+        state, actions = watch.decide(state, waiting, now=3_660)
+        self.assertEqual(actions[0].text, watch.BACKGROUND_NUDGE)
+
     def test_active_running_command_notifies_owner_once_without_nudge(self):
         watch = load_watch()
         running = watch.Observation(
@@ -2212,6 +2275,24 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         lines = self.hcom_log.read_text().splitlines()
         self.assertEqual(sum(line.startswith('term inject worker-open') for line in lines), 1)
         self.assertEqual(sum(line.startswith('send ') and '--intent request' in line and 'agent worker-open' in line for line in lines), 1)
+
+    def test_orchestrator_background_command_cycle_nudges_then_notifies_the_user(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        with patch.object(watch, 'background_process_running', return_value=True):
+            self.run_cycles(watch, 0, 60, 3_599)
+            self.assertNotIn('term inject', self.hcom_log.read_text())
+            self.run_cycles(watch, 3_600, 4_199)
+            lines = self.hcom_log.read_text().splitlines()
+            self.assertEqual([line for line in lines if line.startswith('term inject')],
+                             [f'term inject orch {watch.BACKGROUND_NUDGE} --enter --name orch'])
+            self.assertFalse(any(line.startswith('send ') for line in lines))
+            self.run_cycles(watch, 4_200, 4_800)
+        lines = self.hcom_log.read_text().splitlines()
+        sends = [line for line in lines if line.startswith('send ') and 'agent orch' in line]
+        self.assertEqual(len(sends), 1)
+        self.assertIn('only a background command', sends[0])
+        self.assertFalse(any(line.startswith('term inject worker-open') for line in lines))
 
     def test_alarm_new_progress_prevents_restoring_the_old_ring_nudge(self):
         self.alarm_cycle_environment()

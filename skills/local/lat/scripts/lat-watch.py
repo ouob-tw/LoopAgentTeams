@@ -30,6 +30,8 @@ from _lat_common import (full_hcom_name, process_starttime, resolve_agent_name, 
 
 IDLE_SECONDS = 10 * 60
 ACTIVE_SECONDS = 20 * 60
+# An orchestrator whose turn ended with only a background command and no wait or alarm.
+BACKGROUND_SECONDS = 60 * 60
 WAIT_DEFAULT_MINUTES = 50
 WAIT_EXTENSION_SECONDS = 30 * 60
 PROMPT_SECONDS = 5 * 60
@@ -64,6 +66,10 @@ NUDGE = ('[lat-watch] Read any unread HCOM messages and finish all work not bloc
 KEEPALIVE = ('[lat-watch] Prompt cache keep-alive. Read any unread HCOM messages. If nothing '
              'is new, run no tools, keep your current wait without declaring it again and '
              'end your turn with the shortest possible reply.')
+BACKGROUND_NUDGE = ('[lat-watch] Your turn ended an hour ago with only a background command '
+                    'running and no wait or alarm. Check whether it is stuck; if you still '
+                    'wait for it, register lat-watch alarm --pid <pid> --timeout <minutes>.')
+BACKGROUND_REASON = 'turn ended with only a background command running for 60 minutes'
 QUOTA_CONTINUE = '[lat-watch] Please continue.'
 CAPACITY_CONTINUE = 'Continue'
 # One Continue per Codex capacity episode; kept until new output or another error.
@@ -960,6 +966,9 @@ def decide(previous, observation, now):
         if state['quota_notified']:
             state['quota_notified_at'] = previous.get('quota_notified_at', now)
     stalled = now - state['last_progress_at'] >= IDLE_SECONDS
+    background_only = (observation.is_orchestrator and observation.command_running
+                       and observation.status == 'listening' and observation.prompt_empty is True
+                       and not observation.input_text and not observation.screen_working)
     active_stalled = now - state['last_progress_at'] >= ACTIVE_SECONDS
     finished_active = (observation.client.lower() == 'codex'
                        and observation.codex_turn_finished is True
@@ -1040,6 +1049,11 @@ def decide(previous, observation, now):
         state['nudged_at'] = now
         state['nudge_fingerprint'] = fingerprint
         state['stall_reason'] = 'listening at an empty prompt with no command running'
+    elif (background_only and not observation.wait_active and not state['nudged']
+          and now - state['last_progress_at'] >= BACKGROUND_SECONDS):
+        actions = (Action('nudge', observation.agent, text=BACKGROUND_NUDGE),)
+        state.update(nudged=True, nudged_at=now, nudge_fingerprint=fingerprint,
+                     nudge_text=BACKGROUND_NUDGE, stall_reason=BACKGROUND_REASON)
     elif (active_stalled and not observation.wait_active and not state['nudged']
           and observation.status == 'active'
           and observation.prompt_empty
@@ -1053,6 +1067,7 @@ def decide(previous, observation, now):
     elif (state['nudged'] and not observation.wait_active
           and observation.prompt_empty
           and (idle_prompt(observation) if state.get('stall_reason') == 'alarm rang'
+               else background_only if state.get('stall_reason') == BACKGROUND_REASON
                else not observation.command_running or finished_active)
           and now - state['nudged_at'] >= IDLE_SECONDS):
         if observation.is_orchestrator and not state.get('user_notified'):
@@ -2616,7 +2631,7 @@ def observation_record(observation):
 
 
 ACTION_POLICIES = {
-    'nudge': (perform_nudge, 'nudged', ('nudged_at',)),
+    'nudge': (perform_nudge, 'nudged', ('nudged_at', 'nudge_text')),
     'notify-orchestrator': (
         perform_notify_orchestrator,
         'orchestrator_notified',

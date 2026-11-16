@@ -24,12 +24,13 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 | 催促後仍沒進展 | 10 分鐘 | 執行 Agent：通知主控；主控：通知使用者 |
 | 主控收到通知後該 Agent 仍沒被處理 | 10 分鐘 | 通知使用者 |
 | `active`，畫面仍在執行指令 | 20 分鐘 | 通知上一層一次，不催 |
+| 主控 `listening`、輸入框空，只有背景指令在跑，沒有有效等待或鬧鐘聲明 | 60 分鐘 | 催主控一次，請它查看並登記 `alarm --pid … --timeout …`；之後照「催促後仍沒進展」通知使用者。執行 Agent 不適用 |
 | `blocked`（等核准） | 10 分鐘 | 通知上一層一次，不催 |
 | 輸入框有字、有訊息排隊，字 5 分鐘沒變 | 5 分鐘 | 存檔、清空輸入框、通知使用者 |
 | 任務卡 Agent 不在 HCOM 清單或為非額度原因的 `inactive` | 連續兩輪 | 通知主控一次，不催；重新出現後重新計算 |
 | 當前畫面最後的錯誤是額度用完、模型滿載或程式崩潰（不論 HCOM 狀態），或 HCOM 為 `inactive (failure:rate_limit)` | 立即（程式崩潰須沒有進展滿 20 分鐘） | 通知上一層；執行 Agent 的畫面錯誤每 20 分鐘再通知主控（見下段）；Codex 模型滿載先送一次 `Continue`（見下段）；Claude 額度選單依下節核對額度後恢復，其他情況不催 |
 
-「上一層」對執行 Agent 是它的主控，對主控是使用者。背景指令還在跑時不算停住（要是 client 自己開在另一個 session 的指令，或帶這位 Agent 標記、已脫離 client 的另一個 session 的程序；MCP 服務底下的一切（語言伺服器與它代跑的指令分不開，代跑的指令留在背景時，仍可能被催並通知主控），以及 `lat-watch.py`、`spawn-watch.py`、HCOM 的啟動腳本都不算；MCP 這條只適用 Claude 與 Codex）；但 Codex 紀錄顯示回合已結束、之後沒有新回合或使用者輸入，狀態卻仍是 `active` 時，依上表催促與升級。晚到的同回合完成事件不會推翻回合已結束的判斷，但紀錄變動仍會讓計時歸零。紀錄讀不到或末段找不到回合邊界時，維持原本判斷；Claude 不變。
+「上一層」對執行 Agent 是它的主控，對主控是使用者。背景指令還在跑時不算停住（主控例外，見上表；要是 client 自己開在另一個 session 的指令，或帶這位 Agent 標記、已脫離 client 的另一個 session 的程序；MCP 服務底下的一切（語言伺服器與它代跑的指令分不開，代跑的指令留在背景時，仍可能被催並通知主控），以及 `lat-watch.py`、`spawn-watch.py`、HCOM 的啟動腳本都不算；MCP 這條只適用 Claude 與 Codex）；但 Codex 紀錄顯示回合已結束、之後沒有新回合或使用者輸入，狀態卻仍是 `active` 時，依上表催促與升級。晚到的同回合完成事件不會推翻回合已結束的判斷，但紀錄變動仍會讓計時歸零。紀錄讀不到或末段找不到回合邊界時，維持原本判斷；Claude 不變。
 等核准與其他非輸入框畫面可能在 `hcom term --json` 回傳 `input_text=null`；監控會把它當成「沒有輸入文字」，不會因此略過 `blocked` 通知。
 
 額度與滿載辨識只看 `hcom term --json` 當前可見畫面的 client UI 結構，不以固定行數猜測本輪邊界。Codex 的 `■` 錯誤後若已出現更新的 `Working`、Agent 回覆、非空白新提示或另一條 `■` 錯誤（即使監控不認得它的內容），就當作舊輪。Claude 的 `● Usage limit reached` 除了畫面上完整的自動繼續時間與 `esc to cancel`，還必須對得上 Claude 紀錄檔末端未被新 user/assistant 回合取代的 system notice；畫面後面有新的回覆、非空白使用者提示或 `Working` 也會判為舊輪。最後一條輸入區分隔線下的 `⚠ Usage limit reached` 則本身就是當前狀態，不依賴模型列。當前狀態列與舊的主錯誤同時出現時，以狀態列的重置時間為準。這些條件不會把舊畫面或 Agent 回覆引用的同段文字當成錯誤。錯誤與重置時間換行時會先合併再辨識。Codex 的額度錯誤包括 `You've hit your usage limit` 與 `Quota exceeded`。
@@ -105,9 +106,9 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" wait --workspace "$wo
 - 聲明在下列情況失效：等待其他執行 Agent 的期限到期（附屬 Agent 等自己的主控除外），或下列條件成立：任何人（含等待對象）傳來 intent 不是 `inform`／`ack` 的訊息（`request` 或沒有 intent）、等待的決策不再是 `pending`、等待的 Agent 成功把非 `inform`／`ack` 的訊息傳給自己。任何人傳來的 `inform`、`ack`（含等待對象的）都不使聲明失效，停住監控也不因此催促重新聲明，留到下一回合再讀。監控以雙方在 `hcom list --json` 的確切 session 歸屬核對傳送成功；該 Agent 傳給其他人、可能撞名的短名或僅嘗試傳送都不算回報。失效後若仍在等，處理完新訊息再重新聲明。
 - 等待對象自己的訊息與回報另看它的 HCOM 狀態：仍是 `active`（還在執行；Codex 回合已結束的不算）時當作進度，不使聲明失效，也不算多對象的回覆；轉為 `listening`、`blocked`、`inactive` 或已不在清單後，它這段期間傳來的任何訊息（含 `inform`）都使聲明失效或算回覆。讀不到狀態（短名撞名、Codex 對話紀錄讀不出）或等的是自己的主控時，照上一條的 intent 規則。
 - 多對象聲明的失效條件：每位 Agent 成功傳來非 `inform`／`ack` 的訊息、每個決策不再是 `pending`，全部成立時失效（原因 `targets-answered`）。列名對象的訊息只算它回覆過，同一位再傳也不使聲明失效；未列名者傳來 `request` 或沒有 intent 的訊息仍立刻失效。`inform`／`ack` 不算回覆。失效後重新聲明時只列還沒回覆的對象（紀錄檔的 `answered` 有已回覆者），已回覆的不會再回。
-- 等核准的工具呼叫或背景指令還在跑時，不需要聲明；但 Codex 回合已結束、狀態仍 `active` 時是例外，此時若真的只剩等待，仍須聲明等待。
+- 等核准的工具呼叫還在跑時，不需要聲明。主控回合結束時若只剩背景指令在跑，要登記 `alarm --pid <背景程序 PID> --timeout <分鐘>`；Codex 回合已結束、狀態仍 `active` 時，若真的只剩等待，也須聲明等待。
 - 成功時 stdout 只印一行摘要（如 `Waiting on 2: worker-a (agent), D62 (decision)`）；要完整聲明 JSON 加 `--json`。失敗時 stdout 沒有輸出，原因只在 stderr。
-- 主控以 `NO REPLY:` 結尾而沒有有效等待或鬧鐘聲明時，回合結束檢查會擋一次並印出可直接執行的 `wait --for-pending --for-my-agents` 指令；同回合再結束照常放行。
+- 主控以 `NO REPLY:` 結尾而沒有有效等待或鬧鐘聲明時，回合結束檢查會擋一次並印出可直接執行的 `wait --for-pending --for-my-agents` 指令；Claude 主控有背景指令在跑時改印 `alarm --pid <pid> --timeout <minutes>` 的寫法。同回合再結束照常放行。
 
 ## 鬧鐘：等時間、檔案或程序
 
