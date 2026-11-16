@@ -138,12 +138,29 @@ test.skipIf(!CHROME)('in a message, long paths and links break in place and the 
 	}
 }, 30_000);
 
-// With LAT_BOARD_SHOTS set: the card and the message at phone width, and the card at desktop width.
+// With LAT_BOARD_SHOTS set: at phone width the answered and the open card and the message, each
+// also with its wide blocks scrolled to their far end; the answered card at desktop width.
 test.skipIf(!CHROME)('screenshots', async () => {
 	const tab = browser!.tab;
-	await shot(tab, 'transcript-overflow-390-card', { phone: true, box: `.history [data-content="${key('Q-SENT')}"] .options` });
-	await shot(tab, 'transcript-overflow-390-message', { phone: true, box: '.history li.said:last-child pre' });
+	const card = (id: string) => `.history [data-content="${key(id)}"] .options`;
+	const message = `[...document.querySelectorAll('.history li.said')].find((li) => li.innerText.includes('seller-screen'))`;
+	const scrollEnd = (root: string, end: boolean) =>
+		tab.eval(`${root}.querySelectorAll('pre, table').forEach((el) => (el.scrollLeft = ${end ? 'el.scrollWidth' : '0'}))`);
+	const frames: [string, string][] = [
+		['card-answered', `document.querySelector('${card('Q-SENT')}')`],
+		['card-open', `document.querySelector('${card('Q-OPEN')}')`],
+		['message', `${message}.querySelector('pre')`]
+	];
+	for (const [name, root] of frames) {
+		const box = name === 'message' ? message : root;
+		await tab.eval(`${root}.scrollIntoView({ block: 'center' })`);
+		await shot(tab, `transcript-overflow-390-${name}`, { phone: true });
+		await scrollEnd(box, true);
+		await shot(tab, `transcript-overflow-390-${name}-scrolled-end`, { phone: true });
+		await scrollEnd(box, false);
+	}
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
-	await shot(tab, 'transcript-overflow-1280-card', { box: `.history [data-content="${key('Q-SENT')}"] .options` });
+	await tab.eval(`document.querySelector('${card('Q-SENT')}').scrollIntoView({ block: 'center' })`);
+	await shot(tab, 'transcript-overflow-1280-card');
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: WIDTH, height: 800, deviceScaleFactor: 1, mobile: true });
 }, 30_000);
