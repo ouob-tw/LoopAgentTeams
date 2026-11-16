@@ -2,7 +2,7 @@
 // the built board, at a desktop and a phone width. Skipped when the host has no Chrome.
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 
 
@@ -59,5 +59,5 @@ for (const width of [1280, 360]) {
 		// Still named for assistive technology: a heading that is hidden from the eye only.
 		expect(row.named).toEqual(['待辦', '待辦檢視']);
 		expect(row.fits).toBe(true);
-	}, 30_000);
+	}, TEST_MS);
 }

@@ -13,7 +13,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:te
 import type { SentEntry } from '../../src/lib/board/answers.ts';
 import { AGENT_DRAFTS_KEY, COMMAND_DRAFT_KEY } from '../../src/lib/board/prefs.ts';
 import { DAY, jsonLines, NODE, question, sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 
 
@@ -412,7 +412,7 @@ test('390px: a turn starting just after an idle sample shows and removes its sto
 		fixture.setHcom({ agents: HCOM_AGENTS });
 		await fixture.refresh(cookie);
 	}
-}, 30_000);
+}, TEST_MS);
 
 // The stop follows the live agent with the controller's session, not the LAT reports. Each case
 // changes only what LAT or the live agent says of `lead` and puts it back.

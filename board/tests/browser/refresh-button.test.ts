@@ -3,7 +3,7 @@
 // of an answer, is quiet, and one the server fails is a notice; its icon makes a whole turn.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { question, sleep, startFixture, type Fixture } from '../harness.ts';
-import { launchChrome, type Browser, type Tab } from '../browser.ts';
+import { launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 /** Lets the test make the next refreshes fail, as the server failing them or with no answer. */
 const FAKE_REFRESH = `(() => { const fetch = window.fetch; window.fetch = async (input, init) => { if (String(input) === '/api/inbox/read') { window.markTries = (window.markTries ?? 0) + 1; if (window.failMark) return new Response('{}', { status: 500 }); } if (String(input).startsWith('/api/messages')) { window.messageReads = (window.messageReads ?? 0) + 1; if (window.failMessages) return new Response('{}', { status: 500 }); } if (String(input) === '/api/refresh' && window.slowRefresh) await new Promise((resolve) => setTimeout(resolve, window.slowRefresh)); if (String(input) === '/api/refresh' && window.failRefresh === 'http') return Promise.resolve(new Response('{}', { status: 500 })); if (String(input) === '/api/refresh' && window.failRefresh === 'network') return Promise.reject(new TypeError('Failed to fetch')); return fetch(input, init); }; })()`;
@@ -59,7 +59,7 @@ test('a reload of the page turns the icon too, and it stops', async () => {
 	await tab.navigate(`${fixture.url}/`);
 	await tab.until(`document.querySelector('button.tool.spinning')`, 'the icon turning after a load');
 	await idle();
-}, 30_000);
+}, TEST_MS);
 
 test('the icon makes at least a whole turn for a quick answer, and stops; with reduced motion it does not turn', async () => {
 	await idle();
@@ -73,7 +73,7 @@ test('the icon makes at least a whole turn for a quick answer, and stops; with r
 	expect(await tab.eval<number>(`${SHOWN}[0].querySelector('svg').getAnimations().length`)).toBe(0);
 	await idle();
 	await tab.send('Emulation.setEmulatedMedia', { features: [] });
-}, 30_000);
+}, TEST_MS);
 
 test('a slow refresh stops the icon at the end of a turn', async () => {
 	await idle();
@@ -82,7 +82,7 @@ test('a slow refresh stops the icon at the end of a turn', async () => {
 	await tab.eval(`window.slowRefresh = undefined`);
 	expect(turned).toBeGreaterThanOrEqual(4_000);
 	expect(turned).toBeLessThan(4_150);
-}, 30_000);
+}, TEST_MS);
 
 test('with the link up a refresh the server failed is a notice; one that got no answer is not', async () => {
 	await idle();
@@ -94,7 +94,7 @@ test('with the link up a refresh the server failed is a notice; one that got no 
 	await tab.until(`${NOTICES}.includes(${JSON.stringify(FAILED)})`, 'the failure notice');
 	await tab.eval(`document.querySelector('.dock .toasts button')?.click(); window.failRefresh = undefined`);
 	await tab.until(`!${NOTICES}`, 'the notice closed');
-}, 30_000);
+}, TEST_MS);
 
 test('while the link is down the button is red on every layout, nothing else says so, and refreshing is quiet; back up it is its own colour', async () => {
 	await idle();

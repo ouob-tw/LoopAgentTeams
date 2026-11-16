@@ -1,5 +1,6 @@
 // What every browser test shares: finding Chrome, starting one on a port the system picks, and
 // speaking to its tab over the DevTools protocol. Nothing here reads or writes the real profile.
+import { setDefaultTimeout } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,13 +18,21 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * How long a request to Chrome may go unanswered: as long as the other waits here (a page load, a
- * `Tab.until`), and well inside the 30 s the board's tests give a test, so a stalled request fails
+ * `Tab.until`), and well inside the time the board's tests give a test (TEST_MS), so a stalled request fails
  * its own test with its name instead of running into Bun's timeout, which also kills the shared
  * board the file started in `beforeAll`.
  */
 export const REQUEST_MS = 10_000;
 /** How long `Tab.boardStarted` waits for a page of the board to start. */
 export const START_MS = 30_000;
+/**
+ * How long a browser test may take before Bun stops it: START_MS for the board to start, with room
+ * before it to start Chrome and after it for the test's own steps, so a slow start fails in
+ * `boardStarted` with its stage instead of in Bun's timeout. It is the default of every test file
+ * that loads this one, over `bun test --timeout`; a test that gives its own limit uses this or more.
+ */
+export const TEST_MS = START_MS + 30_000;
+setDefaultTimeout(TEST_MS);
 /** What a page of the board has started by default: its first history write is done. */
 export const BOARD_STARTED = `JSON.stringify(history.state ?? {}).includes('depth')`;
 /** The stages a page of the board goes through to start, as a timeout names the one it was stuck at. */

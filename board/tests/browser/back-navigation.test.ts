@@ -6,7 +6,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { ARCHIVE_PAGE } from '../../src/lib/board/archive.ts';
 import type { InboxReport } from '../../src/lib/board/types.ts';
 import { DAY, question, sleep, startFixture, titled, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 
 /** Runs first in every document: counts the listeners for the browser's back. */
@@ -219,7 +219,7 @@ test.skipIf(!CHROME)('phone: from a question, its controller goes back to the li
 
 	await back();
 	await tab.until(LEFT, 'leaving the board');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)("phone: a controller's question goes back to the controller by the browser's back, and going forward to a report finds it again", async () => {
 	await visit(390);
@@ -247,7 +247,7 @@ test.skipIf(!CHROME)("phone: a controller's question goes back to the controller
 	await showsList();
 	await back();
 	await tab.until(LEFT, 'leaving the board');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a reload keeps the open screen and the way back', async () => {
 	await visit(390);
@@ -266,7 +266,7 @@ test.skipIf(!CHROME)('a reload keeps the open screen and the way back', async ()
 	await showsList();
 	await back();
 	await tab.until(LEFT, 'leaving the board');
-}, 30_000);
+}, TEST_MS);
 
 /** From now on, `window.listSeen` is set if the content screen ever gives way to the list. */
 const WATCH_FOR_LIST = `(() => { window.listSeen = false; new MutationObserver(() => { if (!document.querySelector('.shell').classList.contains('viewing')) window.listSeen = true; }).observe(document.querySelector('.shell'), { attributes: true }); })()`;
@@ -302,7 +302,7 @@ test.skipIf(!CHROME)('phone: another controller from a question of the first goe
 	expect(await tab.eval('location.search')).toBe(SOL());
 	await back();
 	await showsList();
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('phone: after a reload on a question of a controller, the title and another controller go back to the list too', async () => {
 	await visit(390);
@@ -324,7 +324,7 @@ test.skipIf(!CHROME)('phone: after a reload on a question of a controller, the t
 	await showsList();
 	await back();
 	await tab.until(LEFT, 'leaving the board');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('an address of a question opened from elsewhere goes back to the list, then leaves', async () => {
 	await visit(390, QUESTION(4));
@@ -333,7 +333,7 @@ test.skipIf(!CHROME)('an address of a question opened from elsewhere goes back t
 	await showsList();
 	await back();
 	await tab.until(LEFT, 'leaving the board');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('the new-controller form comes back after a reload', async () => {
 	await visit(390);
@@ -343,7 +343,7 @@ test.skipIf(!CHROME)('the new-controller form comes back after a reload', async 
 	await shows('?launch', '新建主控');
 	await tab.eval(ARROW);
 	await showsList();
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a reloaded screen that no longer exists says so, and back goes to the list', async () => {
 	await visit(390, '?item=q%3Anobody%3AQ-9');
@@ -357,7 +357,7 @@ test.skipIf(!CHROME)('a reloaded screen that no longer exists says so, and back 
 	await shows('?controller=nobody', '這個主控已不存在');
 	await back();
 	await showsList();
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('wide: an item picked in the list goes back to the list, whichever screen was open beside it', async () => {
 	await visit(1400);
@@ -385,7 +385,7 @@ test.skipIf(!CHROME)('wide: an item picked in the list goes back to the list, wh
 	await shows(CONTROLLER(), '@luna');
 	await back();
 	await tab.until(`location.search === ''`, 'the list');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('a reload on an archived report past the first archive page opens it again', async () => {
 	expect(oldest.title).toBe(`封存回報 ${ARCHIVE_PAGE + 9}`);
@@ -396,7 +396,7 @@ test.skipIf(!CHROME)('a reload on an archived report past the first archive page
 	await shows(search, oldest.title);
 	await back();
 	await showsList();
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('phone: the list comes back where it was scrolled after a reload, by "←" and by the browser back', async () => {
 	for (const goBack of [() => tab.eval(ARROW), back]) {
@@ -457,7 +457,7 @@ test.skipIf(!CHROME)('phone: the title on the controller page only scrolls to th
 	expect(await tab.eval('history.length')).toBe(length);
 	await back();
 	await showsList();
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('phone: an archived report of a controller off the roster has a title that is not a button', async () => {
 	const search = `?item=${encodeURIComponent(oldest.key)}`;
@@ -467,14 +467,14 @@ test.skipIf(!CHROME)('phone: an archived report of a controller off the roster h
 	await tab.eval(`${TITLE}.click()`);
 	await sleep(200);
 	expect(await tab.eval('location.search')).toBe(search);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('wide: the top bar stays hidden', async () => {
 	await visit(1400);
 	await tab.eval(click('.inbox', '題目 1'));
 	await shows(QUESTION(1), '題目 1');
 	expect(await tab.eval(`getComputedStyle(document.querySelector('.topbar')).display`)).toBe('none');
-}, 30_000);
+}, TEST_MS);
 
 const SOL_QUESTION = (id: string) => `?item=${encodeURIComponent(`q:${sol.session_id}:${id}`)}`;
 /** The question's card in the conversation, once the placeholder over it is gone. */
@@ -523,7 +523,7 @@ for (const width of [390, 1400]) {
 		await tab.eval(click('.history .placed', '送出答覆'));
 		await tab.until(`${PLACED}.innerText.includes('已送出')`, 'the answer sent');
 		expect(fixture.listed().find((entry) => entry.session_id === sol.session_id)!.questions[0]).toMatchObject({ id: 'DQ-1', status: 'submitted' });
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('phone: a help question opens at its HELP message the same way', async () => {
@@ -535,7 +535,7 @@ test.skipIf(!CHROME)('phone: a help question opens at its HELP message the same 
 	expect(text).toContain('HQ-1 r1');
 	expect(text).toContain('送出答覆');
 	expect(text).not.toContain('測試機 7110 被舊的預覽程序佔用。');
-}, 30_000);
+}, TEST_MS);
 
 for (const [width, opened] of [[390, '一起問的甲題'], [1400, '一起問的乙題']] as const) {
 	test.skipIf(!CHROME)(`${width}px: the questions one message asked are its cards one after another, scrolled to the opened one`, async () => {
@@ -551,7 +551,7 @@ for (const [width, opened] of [[390, '一起問的甲題'], [1400, '一起問的
 		await shot(`pending-${width}-opened-${opened}`);
 		expect(await tab.eval(`document.querySelectorAll('.history .placed').length`)).toBe(1);
 		expect(await tab.eval(`[...document.querySelectorAll('.history .said')].some((li) => li.innerText.includes('這兩題一起問。'))`)).toBe(false);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('a question no message asked shows only its card, saying the message is not found', async () => {
@@ -561,7 +561,7 @@ test.skipIf(!CHROME)('a question no message asked shows only its card, saying th
 	const text = (await screen()).text;
 	expect(text).toContain('只在面板上問');
 	expect(await tab.eval(`document.querySelector('.history')`)).toBeNull();
-}, 30_000);
+}, TEST_MS);
 
 for (const [title, context] of [
 	['對話紀錄讀不到的題目', '紀錄讀不到時的說明'],
@@ -576,7 +576,7 @@ for (const [title, context] of [
 		expect(await tab.eval(`document.querySelector('.history')`)).toBeNull();
 		await reload();
 		await tab.until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found notice after a reload');
-	}, 30_000);
+	}, TEST_MS);
 }
 
 /** Time for the conversation the page watches while a question is lost to have been read once: the
@@ -601,7 +601,7 @@ for (const width of [390, 1400]) {
 		await placedAt(SOL_QUESTION(id), `原訊息晚到的題目 ${width}`);
 		expect(await placedText()).toContain(`${id} r1`);
 		expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('phone: a lost question is found at its revision\'s message that reached the conversation before the revision reached the page', async () => {
@@ -626,7 +626,7 @@ test.skipIf(!CHROME)('phone: a lost question is found at its revision\'s message
 	await fixture.refresh(cookie);
 	await placedAt(SOL_QUESTION(id), '改版前就收到原訊息的題目');
 	expect(await placedText()).toContain(`${id} r2`);
-}, 30_000);
+}, TEST_MS);
 
 for (const width of [390, 1400]) {
 	test.skipIf(!CHROME)(`${width}px: a question opened from another of the same controller, its asking message not in the conversation, says it is not found`, async () => {
@@ -639,7 +639,7 @@ for (const width of [390, 1400]) {
 		await tab.until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found notice');
 		expect((await screen()).text).toContain('對話紀錄裡沒有原訊息');
 		expect(await tab.eval(`document.querySelector('.history')`)).toBeNull();
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('phone: a question opened from another of the same controller and revised there waits for its new asking message', async () => {
@@ -664,7 +664,7 @@ test.skipIf(!CHROME)('phone: a question opened from another of the same controll
 	await tab.until(`${PLACED}?.innerText.includes('DQ-1 r3')`, 'the card at the r3 message');
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('phone: forward and reload find the question in its conversation again, like a report', async () => {
 	await visit(390);
@@ -680,7 +680,7 @@ test.skipIf(!CHROME)('phone: forward and reload find the question in its convers
 	await showsList();
 	await back();
 	await tab.until(LEFT, 'leaving the board');
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('phone: a revision asked while the question is open moves its card to the new message and scrolls to it', async () => {
 	fixture.list([luna, sol]);
@@ -708,7 +708,7 @@ test.skipIf(!CHROME)('phone: a revision asked while the question is open moves i
 	await placedAt(SOL_QUESTION('DQ-1'), '有原訊息的待決題');
 	// The r2 message is an ordinary message again.
 	expect(await tab.eval(`[...document.querySelectorAll('.history .said')].some((li) => li.innerText.includes('DQ-1 r2'))`)).toBe(true);
-}, 30_000);
+}, TEST_MS);
 
 for (const width of [390, 1400]) {
 	test.skipIf(!CHROME)(`${width}px: the copy of a report scrolls while its conversation loads, and the report takes its place where it was read`, async () => {
@@ -762,7 +762,7 @@ for (const width of [390, 1400]) {
 		const moved = await placedTop();
 		await sleep(500);
 		expect(await placedTop()).toBe(moved);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 /** The conversation's question cards, each with the title it shows. */
@@ -803,7 +803,7 @@ for (const width of [390, 1400]) {
 		expect(await tab.eval(`${ASKING_TITLES}.find((text) => text.includes(${JSON.stringify(title)}))`)).toContain('送出答覆');
 		fixture.list([luna, sol]);
 		await fixture.refresh(cookie);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('phone: a message whose question is not in the inbox stays text, and is replaced by its card once the question arrives', async () => {
@@ -826,7 +826,7 @@ test.skipIf(!CHROME)('phone: a message whose question is not in the inbox stays 
 	expect(await tab.eval(saidIncludes('題目還沒到。'))).toBe(false);
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('1400px: opened at a question, its conversation shows the other asking messages as their cards, a new one too', async () => {
 	const id = 'OQ-1';
@@ -854,7 +854,7 @@ test.skipIf(!CHROME)('1400px: opened at a question, its conversation shows the o
 	expect(await tab.eval(`${PLACED}.innerText`)).toContain('有原訊息的求助題');
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
-}, 30_000);
+}, TEST_MS);
 
 for (const width of [390, 1400]) {
 	test.skipIf(!CHROME)(`${width}px: a question opened before its message is at the end of its conversation, and stays put when the message comes`, async () => {
@@ -894,7 +894,7 @@ for (const width of [390, 1400]) {
 		expect(await tab.eval(`${PLACED}.innerText`)).toContain(title);
 		fixture.list([luna, sol]);
 		await fixture.refresh(cookie);
-	}, 30_000);
+	}, TEST_MS);
 }
 
 test.skipIf(!CHROME)('phone: a question opened before its message, whose turn then ends without the message in the conversation, is not found after a while, and found once it comes', async () => {
@@ -923,7 +923,7 @@ test.skipIf(!CHROME)('phone: a question opened before its message, whose turn th
 	expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('phone: a question at its message stays there when its turn ends with another text, which no report of the question matches', async () => {
 	const id = 'MT-1';
@@ -948,7 +948,7 @@ test.skipIf(!CHROME)('phone: a question at its message stays there when its turn
 	expect(await tab.eval(`${PLACED}.innerText`)).toContain(title);
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('phone: a question opened after its turn ended, its message no report matches, is found at that message', async () => {
 	const id = 'MO-1';
@@ -965,7 +965,7 @@ test.skipIf(!CHROME)('phone: a question opened after its turn ended, its message
 	expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
-}, 30_000);
+}, TEST_MS);
 
 // A push bringing one text renders that text's Markdown alone, not every text shown before it:
 // counted with the browser's own call counts, as markdown-it's `render` keeps its name in the build.
@@ -990,7 +990,7 @@ test.skipIf(!CHROME)("a conversation's push of one new text renders only that te
 	} finally {
 		await tab.send('Profiler.stopPreciseCoverage');
 	}
-}, 30_000);
+}, TEST_MS);
 
 for (const width of [390, 1400]) {
 	test.skipIf(!CHROME || !SHOTS)(`${width}px: frames of one message's cards, one answered and one pending`, async () => {
@@ -1010,5 +1010,5 @@ for (const width of [390, 1400]) {
 			fixture.list([luna, sol]);
 			await fixture.refresh(cookie);
 		}
-	}, 30_000);
+	}, TEST_MS);
 }
