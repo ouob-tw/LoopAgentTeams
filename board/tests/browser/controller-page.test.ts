@@ -180,7 +180,7 @@ test.skipIf(!CHROME)("at a phone's width the tabs share the width and nothing sc
 	expect(await tab.eval(FITS)).toBe(true);
 }, 60_000);
 
-test.skipIf(!CHROME)('a controller without a report shows no latest report; the usage line reads in the style the settings pick', async () => {
+test.skipIf(!CHROME)('the header shows no latest report; the usage line reads in the style the settings pick', async () => {
 	const orin = fixture.bound('beta', 'orin', { client: 'codex' });
 	fixture.list([luna, orin]);
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
@@ -192,8 +192,8 @@ test.skipIf(!CHROME)('a controller without a report shows no latest report; the 
 	await fixture.refresh(cookie);
 	await visit(1280);
 	const header = `document.querySelector('.detail .profile header').innerText`;
-	// Neither header names the client; one with a report says when.
-	expect(await tab.eval<string>(header)).toContain('最後回報');
+	// Neither header names the client nor shows a last-report time.
+	expect(await tab.eval<string>(header)).not.toContain('最後回報');
 	expect(await tab.eval<string>(header)).not.toContain('claude');
 
 	// As it reads on screen: the dots between the groups are drawn by the styles.
