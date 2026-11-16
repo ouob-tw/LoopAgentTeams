@@ -24,7 +24,7 @@
 </script>
 
 {#if rows.length}
-	<div class="delegated">
+	<div class="delegated-strip">
 		{#each rows as card (card.id)}
 			{@const shown = delegatedUi.shown === key(card)}
 			{@const box = reviewUi.box(controller.id, card.id)}
@@ -82,7 +82,7 @@
 {/if}
 
 <style>
-	.delegated {
+	.delegated-strip {
 		display: flex;
 		flex-direction: column;
 		gap: 0.4rem;
