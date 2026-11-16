@@ -2,7 +2,7 @@
 // prints, kept to what a page needs, and the words of the message 推翻 and 回覆 send. The review
 // file's layout and order are lat-unattended's; nothing here reorders or rewrites them.
 
-export type ReviewKind = 'parked' | 'parked-row' | 'proxy-confirmed' | 'assumed' | 'prototype-decided' | 'auto';
+export type ReviewKind = 'parked' | 'parked-row' | 'proxy-confirmed' | 'assumed' | 'prototype-decided';
 export type ReviewItemState = 'open' | 'answered' | 'overturned';
 
 export interface ReviewItem {
@@ -34,19 +34,8 @@ export interface ReviewGoal {
 	maxHours: number;
 }
 
-export interface ReviewVerification {
-	checker: string;
-	family: string;
-	at: string;
-	total: number;
-	matched: number;
-	mismatches: { id: string; text: string }[];
-}
-
 export interface Review {
 	grant: string;
-	verified: boolean;
-	verification: ReviewVerification | null;
 	goals: ReviewGoal[];
 	items: ReviewItem[];
 	/** IDs of the items 最該先看的幾項 lists, in order. */
@@ -63,7 +52,7 @@ const text = (value: unknown, fallback = '') => (typeof value === 'string' ? val
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const strings = (value: unknown): string[] => list(value).filter((item): item is string => typeof item === 'string');
 
-const KINDS: readonly string[] = ['parked', 'parked-row', 'proxy-confirmed', 'assumed', 'prototype-decided', 'auto'];
+const KINDS: readonly string[] = ['parked', 'parked-row', 'proxy-confirmed', 'assumed', 'prototype-decided'];
 const STATES: readonly string[] = ['open', 'answered', 'overturned'];
 
 /** The payload of `board review`, or null when it is not one. */
@@ -74,7 +63,9 @@ export function reviewFrom(payload: unknown): Review | null {
 	const items: ReviewItem[] = [];
 	for (const raw of view.items) {
 		const item = record(raw);
-		if (typeof item.id !== 'string' || !KINDS.includes(text(item.kind)) || !STATES.includes(text(item.state))) return null;
+		if (typeof item.id !== 'string' || !STATES.includes(text(item.state))) return null;
+		// A kind the review no longer has (the auto actions before #662) is left out, not an error.
+		if (!KINDS.includes(text(item.kind))) continue;
 		items.push({
 			id: item.id,
 			kind: item.kind as ReviewKind,
@@ -89,21 +80,8 @@ export function reviewFrom(payload: unknown): Review | null {
 			stateLabel: text(item.state_label)
 		});
 	}
-	const verification = given.verified ? record(given.verification) : null;
 	return {
 		grant: text(view.grant),
-		verified: given.verified === true && verification !== null && typeof verification.total === 'number',
-		verification:
-			verification && typeof verification.total === 'number'
-				? {
-						checker: text(verification.checker),
-						family: text(verification.family),
-						at: text(verification.at),
-						total: verification.total,
-						matched: typeof verification.matched === 'number' ? verification.matched : 0,
-						mismatches: list(verification.mismatches).map((entry) => ({ id: text(record(entry).id), text: text(record(entry).text) }))
-					}
-				: null,
 		goals: list(view.goals).map((raw) => {
 			const goal = record(raw);
 			return {
@@ -136,15 +114,6 @@ export const actionWord = (item: Pick<ReviewItem, 'kind'>): '回覆' | '推翻' 
 /** What the controller is sent: the item's ID and title, then the user's words. */
 export function reviewMessage(item: Pick<ReviewItem, 'id' | 'title' | 'kind'>, words: string): string {
 	return `回顧項目 ${item.id}「${item.title}」${actionWord(item)}：${words.trim()}`;
-}
-
-/** Where the review's verification line stands, in one phrase for the banner. */
-export function verificationText(review: Pick<Review, 'verified' | 'verification'>): string {
-	const check = review.verification;
-	if (!review.verified || !check) return '尚未核對';
-	const who = check.family === 'gpt' ? 'Codex' : check.family === 'claude' ? 'Claude' : check.checker;
-	if (!check.mismatches.length && check.matched === check.total) return `${who} 已核對紀錄：${check.total} 項全相符`;
-	return `${who} 已核對紀錄：${check.total} 項中 ${check.matched} 項相符，${check.mismatches.length} 項不符`;
 }
 
 /** The record an evidence entry opens with, one of the three kinds lat-unattended cites

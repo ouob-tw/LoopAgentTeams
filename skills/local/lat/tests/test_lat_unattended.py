@@ -526,7 +526,7 @@ class BoardRequestTests(UnattendedCase):
         self.assertEqual(self.update(goal='另一個')['created']['version'], 2)
 
 
-TASK_GRANT = dict(goal='處理已知問題', done=['回顧頁通過交付前核對'],
+TASK_GRANT = dict(goal='處理已知問題', done=['挑出的票已合併到 dev'],
                   scope=dict(ticket_confirmation=True, assume_defaults=False,
                              prototype_decide=True), maxHours=6)
 TAG = 'auto-t1-abc123'

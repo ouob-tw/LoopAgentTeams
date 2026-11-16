@@ -80,7 +80,7 @@ export type UnattendedView =
 export type ReviewSummary =
 	| { state: 'none' }
 	| { state: 'error'; reason: string }
-	| { state: 'ok'; path: string; count: number; parked: number; verified: boolean; stamp: number };
+	| { state: 'ok'; path: string; count: number; parked: number; stamp: number };
 
 /** Whether the controller is in unattended mode: what the roster's 無人 mark and the badge show. */
 export const isUnattended = (view: UnattendedView | undefined): boolean => view?.state === 'active' || view?.state === 'pending-goal';
@@ -122,7 +122,7 @@ function reviewOf(value: unknown): { review?: ReviewSummary } {
 	if (given.state === 'none') return { review: { state: 'none' } };
 	if (given.state === 'error') return { review: { state: 'error', reason: textOf(given.reason) ?? '讀不出回顧' } };
 	if (given.state !== 'ok' || typeof given.path !== 'string' || typeof given.count !== 'number' || typeof given.parked !== 'number') return {};
-	return { review: { state: 'ok', path: given.path, count: given.count, parked: given.parked, verified: given.verified === true, stamp: typeof given.stamp === 'number' ? given.stamp : 0 } };
+	return { review: { state: 'ok', path: given.path, count: given.count, parked: given.parked, stamp: typeof given.stamp === 'number' ? given.stamp : 0 } };
 }
 
 /** What one layer's own mode says, in the status card's line of layers. */

@@ -356,7 +356,7 @@ PARKED_KINDS = ("parked", "parked-row")
 
 def review_summary(workspace, session_id, seconds):
     """(summary, path) of one controller's review: ``{state: none}`` when the round has none yet,
-    ``{state: ok, path, count, parked, verified, stamp}`` when it has one, ``{state: error, reason}``
+    ``{state: ok, path, count, parked, stamp}`` when it has one, ``{state: error, reason}``
     when it could not be read. ``stamp`` changes with every write of the file."""
     seconds = min(LEDGER_READ_SECONDS, seconds)
     if seconds <= 0:
@@ -377,12 +377,12 @@ def review_summary(workspace, session_id, seconds):
     parked = sum(1 for item in items
                  if item.get("kind") in PARKED_KINDS and item.get("state") == "open")
     return {"state": "ok", "path": path, "count": len(items), "parked": parked,
-            "verified": bool(result.get("verified")), "stamp": stamp}, path
+            "stamp": stamp}, path
 
 
 def board_review(workspace, session_id, seconds=LEDGERS_SECONDS):
     """One controller's whole review as ``lat-unattended review show --json`` prints it: ``path``
-    (null before the first item), ``verified``, ``verification`` and the ``view`` with every item."""
+    (null before the first item) and the ``view`` with every item."""
     if not _SESSION_ID.fullmatch(session_id):
         return {"session_id": session_id, "status": "error", "reason": f"不是 session ID：{session_id}"}
     result = unattended_tool(["review", "show", f"--workspace={workspace}",

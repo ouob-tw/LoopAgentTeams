@@ -1,16 +1,16 @@
 """The unattended round's review file: when it is created and updated, its layout, stable item
-ids, the cross-check and the DONE: hold at the turn end. Temp HOME/XDG dirs, a temp Git repo and
-a fake controller record, as in test_lat_unattended_decisions."""
+ids, that actions taken under the pre-authorization stay out of it, that it never holds DONE: or
+deactivate, and that a review file from before #662 still opens. Temp HOME/XDG dirs, a temp Git
+repo and a fake controller record, as in test_lat_unattended_decisions."""
 import json
 from pathlib import Path
 import re
-import subprocess
 import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_lat_unattended_decisions import (  # noqa: E402
-    OTHER, PREAUTH, SESSION, SESSION_SCRIPT, UnattendedStopCase, git)
+    OTHER, PREAUTH, SESSION, SESSION_SCRIPT, UnattendedStopCase)
 
 PARKED = '- status: parked\n- advisor: exempt spec-confirmation\n- session: {session}\n' \
          '- grant: r1 v1\n- version: r1\n- question: Spec 要不要加匯出\n' \
@@ -55,12 +55,6 @@ class ReviewCase(UnattendedStopCase):
 
     def item_ids(self):
         return re.findall(r'^### (\S+) ', self.md.read_text(), re.MULTILINE)
-
-    def verify(self, *extra, family='claude', code=0, total=None):
-        total = total if total is not None else len(self.item_ids())
-        return self.review('verify', '--checker', 'puma', '--family', family, '--total',
-                           total, '--matched', total - len(extra) // 2, *extra, code=code)
-
 
 class CreationTests(ReviewCase):
     def test_created_at_the_first_item_and_updated_on_every_change(self):
@@ -119,20 +113,24 @@ class CreationTests(ReviewCase):
 
     def test_each_new_or_changed_item_is_in_the_review_before_the_turn_ends(self):
         """#568: a record written with the editor is in the review by the controller's next
-        command; an auto-action record is in it as soon as lat-preauth writes it."""
+        command. #662: a pre-authorization record is no review item, and writing one leaves
+        the review as it was."""
         self.grant()
         self.command()
         self.assertFalse(self.md.exists())
         self.parked()
         self.command()
         self.assertEqual(self.item_ids(), ['LAT-P'])
+        before = self.md.read_bytes()
         self.autos(dict(kind='auto', action='merge', target='dev', commit='a' * 40,
                         basis='allow merge dev', result='succeeded'))
         result = self.run_script(PREAUTH, 'record', '--kind', 'correction', '--commit', 'a' * 40,
                                  '--note', '合錯分支')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('已更正', self.md.read_text())
-        self.assertEqual(self.item_ids(), ['LAT-P', 'auto-1'])
+        self.assertEqual(self.md.read_bytes(), before)
+        self.review('update')
+        self.assertEqual(self.md.read_bytes(), before)
+        self.assertEqual(self.item_ids(), ['LAT-P'])
 
     def test_no_review_for_a_round_without_a_grant(self):
         self.autos(dict(kind='auto', action='merge', target='dev', commit='a' * 40,
@@ -172,13 +170,14 @@ class LayoutTests(ReviewCase):
         self.fill()
         self.review('update')
         self.assertEqual(self.headings(), ['擱置等你的事', '本輪目標與做完條件', '最該先看的幾項',
-                                           '假設', '代確認的票', '樣品決定', '自動做的動作',
-                                           '本輪完成的票'])
+                                           '假設', '代確認的票', '樣品決定', '本輪完成的票'])
         text = self.md.read_text()
         top = re.findall(r'^\d+\. (\S+)（', text, re.MULTILINE)
-        # parked -> proxy-confirmed -> boundary assumption -> auto deploy -> the rest
-        self.assertEqual(top, ['LAT-P', 'row-3', 'LAT-PC', 'LAT-AU', 'auto-2'])
-        self.assertTrue(text.startswith(f'# 無人模式回顧：session {SESSION} 第 1 輪\n\n- 核對：尚未核對'))
+        # parked -> proxy-confirmed -> boundary assumption -> the rest; no auto action
+        self.assertEqual(top, ['LAT-P', 'row-3', 'LAT-PC', 'LAT-AU', 'LAT-AN'])
+        self.assertTrue(text.startswith(f'# 無人模式回顧：session {SESSION} 第 1 輪\n\n- 更新：'))
+        self.assertNotIn('核對', text)
+        self.assertNotIn('auto-', text)
 
     def test_every_item_has_each_field_and_ids_survive_updates(self):
         self.fill()
@@ -197,20 +196,23 @@ class LayoutTests(ReviewCase):
         self.review('update')
         after = self.item_ids()
         self.assertEqual([i for i in after if i in before], before)
-        self.assertEqual(set(after) - set(before), {'LAT-AA', 'auto-3'})
+        self.assertEqual(set(after) - set(before), {'LAT-AA'})
         view = self.review('show')['view']
         self.assertEqual(sorted(item['id'] for item in view['items']), sorted(after))
 
-    def test_an_unreadable_record_line_is_listed_and_leaves_the_other_ids_alone(self):
+    def test_pre_authorization_records_are_not_read(self):
+        """#662: an unreadable or auto line in the pre-authorization records is neither an
+        item nor an unreadable source."""
         self.grant()
+        self.parked()
         path = self.lat / 'preauth-records' / f'{SESSION}-r1.jsonl'
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('{broken\n' + json.dumps(dict(kind='auto', action='merge', target='dev',
                                                          commit='e' * 40, basis='allow',
                                                          result='succeeded')) + '\n')
         self.review('update')
-        self.assertEqual(self.item_ids(), ['auto-2'])
-        self.assertIn('## 讀不出的來源', self.md.read_text())
+        self.assertEqual(self.item_ids(), ['LAT-P'])
+        self.assertNotIn('## 讀不出的來源', self.md.read_text())
 
     def test_a_reply_or_override_is_marked_with_its_time(self):
         self.grant()
@@ -239,115 +241,63 @@ class TruthfulTextTests(ReviewCase):
         text = self.md.read_text()
         return text.split(f'### {identifier} ', 1)[1].split('\n### ', 1)[0].split('\n## ', 1)[0]
 
-    def commit(self, message):
-        git(self.work, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q',
-            '--allow-empty', '-m', message)
-        return subprocess.run(['git', '-C', str(self.work), 'rev-parse', 'HEAD'], check=True,
-                              capture_output=True, text=True).stdout.strip()
-
     def test_a_proxy_confirmed_item_takes_the_decision_line(self):
         self.grant()
         self.delegated('LAT-PC', 'proxy-confirmed', extra='- decision: 開工，先做登入頁\n')
         self.review('update')
         self.assertIn('開工，先做登入頁', self.item('LAT-PC').split('做了什麼：', 1)[1].split('\n', 1)[0])
 
-    def test_an_auto_merge_names_the_merge_commit_not_the_merged_in_one(self):
-        self.grant()
-        self.commit('base')
-        git(self.work, 'checkout', '-q', '-b', 'topic')
-        merged_in = self.commit('topic work')
-        git(self.work, 'checkout', '-q', 'dev')
-        self.commit('dev work')
-        git(self.work, '-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-ff',
-            'topic', '-m', 'merge topic')
-        merge = subprocess.run(['git', '-C', str(self.work), 'rev-parse', 'HEAD'], check=True,
-                               capture_output=True, text=True).stdout.strip()
-        self.autos(dict(kind='auto', action='merge', target='dev', commit=merged_in,
-                        basis='allow merge dev', result='succeeded'))
-        self.review('update')
-        revert = self.item('auto-1').split('怎麼推翻：', 1)[1].split('\n', 1)[0]
-        self.assertIn(merge[:12], revert)
-        self.assertNotIn(merged_in[:12], revert)
+class NoCrossCheckTests(ReviewCase):
+    def test_review_verify_is_gone(self):
+        result = self.run_script(SESSION_SCRIPT.parent / 'lat-unattended.py', 'review', '--help')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('verify', result.stdout)
+        result = self.run_script(SESSION_SCRIPT.parent / 'lat-unattended.py', 'review', 'verify',
+                                 '--checker', 'puma', '--family', 'claude', '--total', '1',
+                                 '--matched', '1')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid choice: 'verify'", result.stderr)
 
-    def test_a_merge_after_the_recorded_commit_still_finds_the_merge_commit(self):
+    def test_done_and_deactivate_pass_with_an_unchecked_review(self):
         self.grant()
-        self.commit('base')
-        git(self.work, 'checkout', '-q', '-b', 'topic')
-        merged_in = self.commit('topic work')
-        self.commit('later topic work')
-        git(self.work, 'checkout', '-q', 'dev')
-        self.commit('dev work')
-        git(self.work, '-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-ff',
-            'topic', '-m', 'merge topic')
-        merge = subprocess.run(['git', '-C', str(self.work), 'rev-parse', 'HEAD'], check=True,
-                               capture_output=True, text=True).stdout.strip()
-        self.autos(dict(kind='auto', action='merge', target='dev', commit=merged_in[:10],
-                        basis='allow merge dev', result='succeeded'))
-        self.review('update')
-        self.assertIn(merge[:12], self.item('auto-1').split('怎麼推翻：', 1)[1])
-
-    def test_an_unknown_merge_commit_says_how_to_find_it(self):
-        self.grant()
-        self.autos(dict(kind='auto', action='merge', target='dev', commit='b' * 40,
-                        basis='allow merge dev', result='succeeded'))
-        self.review('update')
-        revert = self.item('auto-1').split('怎麼推翻：', 1)[1].split('\n', 1)[0]
-        self.assertIn('git log --first-parent --merges', revert)
-
-
-class CrossCheckTests(ReviewCase):
-    def setUp(self):
-        super().setUp()
-        self.grant()
-        self.parked()
         self.delegated('LAT-AN')
         self.review('update')
-
-    def test_the_conclusion_is_written_and_a_later_change_resets_it(self):
-        self.assertIn('- 核對：尚未核對', self.md.read_text())
-        refused = self.verify(family='gpt', code=1)  # the controller is Codex
-        self.assertIn('another model family', refused['reason'])
-        self.assertIn('2 items', self.verify(total=3, code=1)['reason'])
-        self.assertIn('--mismatch', self.review(
-            'verify', '--checker', 'puma', '--family', 'claude', '--total', 2, '--matched', 1,
-            code=1)['reason'])
-        self.verify('--mismatch', 'LAT-AN：紀錄寫的是 LoginForm')
-        text = self.md.read_text()
-        self.assertIn('- 核對：puma（claude）於 ', text)
-        self.assertIn('2 項中 1 項相符，1 項不符\n  - 不符 LAT-AN：紀錄寫的是 LoginForm', text)
-        self.assertTrue(self.review('show')['verified'])
-        # The grant ending changes the body but not what was checked.
-        self.unattended('close', '--reason', 'delivered')
-        self.assertIn('- 核對：puma（claude）', self.md.read_text())
-        self.delegated('LAT-AB')
-        self.review('update')
-        self.assertIn('- 核對：尚未核對（', self.md.read_text())
-        self.assertFalse(self.review('show')['verified'])
-
-
-class DoneHoldTests(ReviewCase):
-    def test_done_is_held_once_until_the_review_is_cross_checked(self):
-        self.parked()  # a parked record from before #661; one written under the grant is held
-        self.grant()
-        self.assert_held(self.stop('完成\nDONE: 交付'), 'LAT 回顧核對未通過', 'review verify',
-                         '--total 1')
-        released = self.stop('完成\nDONE: 交付', active=True)
-        self.assertNotEqual(released.get('decision'), 'block')
-        self.verify()
+        self.assertEqual(self.item_ids(), ['LAT-AN'])
         self.assertEqual(self.stop('完成\nDONE: 交付'), {})
-
-    def test_a_grant_that_already_ended_still_needs_the_check(self):
-        self.grant()
-        self.parked()
         self.unattended('close', '--reason', 'off')
-        self.assert_held(self.stop('完成\nDONE: 交付'), 'LAT 回顧核對未通過')
+        self.assertEqual(self.stop('完成\nDONE: 交付'), {})
+        result = self.run_script(SESSION_SCRIPT, 'deactivate', '--client', 'codex',
+                                 '--workspace', self.work, '--session-id', SESSION)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('核對', result.stdout)
 
-    def test_no_hold_without_a_grant_or_without_items(self):
-        self.parked()
-        self.assertEqual(self.stop('完成\nDONE: 交付'), {})
-        (self.decisions / 'LAT-P.md').unlink()
+    def test_a_review_from_before_662_still_opens_and_loses_the_old_lines(self):
+        """A state file with a cross-check and a review file with the check line and an auto
+        item (written before #662) open without errors; the next rebuild drops both."""
         self.grant()
-        self.assertEqual(self.stop('完成\nDONE: 交付'), {})
+        self.delegated('LAT-AN')
+        self.review('update')
+        state_path = self.md.with_suffix('.json')
+        state = json.loads(state_path.read_text())
+        state.update(content_sha='0' * 64, verification=dict(
+            checker='puma', family='claude', at='2026-11-01T00:00:00+00:00', total=2, matched=2,
+            mismatches=[], content_sha='0' * 64))
+        state_path.write_text(json.dumps(state))
+        old = self.md.read_text().replace(
+            '\n- 更新：', '\n- 核對：puma（claude）於 2026-11-01T00:00:00+00:00 核對，2 項中 2 項相符，'
+            '0 項不符\n- 更新：') + ('\n## 自動做的動作\n\n### auto-1 merge dev aaaaaaa\n\n'
+                                  '- 種類：自動動作\n- 狀態：已執行\n')
+        self.md.write_text(old)
+        self.autos(dict(kind='auto', action='merge', target='dev', commit='a' * 40,
+                        basis='allow merge dev', result='succeeded'))
+        shown = self.review('show')
+        self.assertEqual([item['id'] for item in shown['view']['items']], ['LAT-AN'])
+        self.assertNotIn('verified', shown)
+        text = self.md.read_text()
+        self.assertIn('### LAT-AN ', text)
+        self.assertNotIn('核對', text)
+        self.assertNotIn('自動做的動作', text)
+        self.assertEqual(set(json.loads(state_path.read_text())), {'body_sha', 'updated_at'})
 
 
 class DoneTicketTests(ReviewCase):
@@ -372,28 +322,6 @@ class DoneTicketTests(ReviewCase):
         self.review('update')
         # Ticket 11 waits for its review row; a row naming two tickets counts for each.
         self.assertEqual(self.done_lines(), ['- #7 登入頁：commit abc1234', '- #10：commit fed9876'])
-
-    def test_closing_the_checker_row_and_delivering_keep_the_cross_check(self):
-        """#568: the cross-check row closing after `review verify` (whatever its stage), a
-        retro row and deactivate leave the review checked; a new item afterwards resets it."""
-        self.grant()
-        self.parked()
-        rows = [self.row(1, 'impl', 'done', commit='abc1234'), self.row(2, 'review', 'in_progress'),
-                self.row(3, 'impl', 'in_progress', ticket='8')]
-        self.ledger(rows)
-        self.review('update')
-        self.verify()
-        rows[1].update(status='done', evidence=dict(file=['.lat/runs/check.md']))
-        rows += [self.row(4, 'other', 'done'), self.row(5, 'impl', 'done', ticket='8', commit='def5678')]
-        self.ledger(rows)
-        result = self.run_script(SESSION_SCRIPT, 'deactivate', '--client', 'codex',
-                                 '--workspace', self.work, '--session-id', SESSION)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('- 核對：puma（claude）', self.md.read_text())
-        self.assertTrue(self.review('show')['verified'])
-        self.delegated('LAT-AN')
-        self.review('update')
-        self.assertIn('- 核對：尚未核對（', self.md.read_text())
 
 
 class HandoverTests(ReviewCase):

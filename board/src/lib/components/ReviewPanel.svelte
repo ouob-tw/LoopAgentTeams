@@ -1,13 +1,12 @@
 <script lang="ts">
 	// A controller's review tab: the latest round's review file as lat-unattended read it, with the
-	// file's sections in the file's order. A banner with the parked count and the cross-check's state
-	// heads 擱置等你的事; then the goal and what counts as done (every version, the user's changes
-	// too) folded to one line, 最該先看的幾項, and every other section with all its items, the ones
-	// in 最該先看 too; each item is folded to its title and one line of what was done. The file
+	// file's sections in the file's order. A banner with the parked count heads 擱置等你的事; then
+	// the goal and what counts as done (every version, the user's changes too) folded to one line,
+	// 最該先看的幾項, and every other section with all its items, the ones in 最該先看 too; each item is folded to its title and one line of what was done. The file
 	// changes on its own, so it is read again whenever the status read says its file was written.
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { request } from '#lib/board/api.ts';
-	import { isParked, verificationText, type Review, type ReviewItem as Item } from '#lib/board/review.ts';
+	import { isParked, type Review, type ReviewItem as Item } from '#lib/board/review.ts';
 	import { needsWake, type Controller } from '#lib/board/types.ts';
 	import EvidenceWindow from './EvidenceWindow.svelte';
 	import ReviewItem from './ReviewItem.svelte';
@@ -18,7 +17,7 @@
 	const wake = $derived(needsWake(controller));
 	const summary = $derived(controller.unattended.state === 'error' ? null : (controller.unattended.review ?? null));
 	/** Changes with every write of the review file. */
-	const written = $derived(summary?.state === 'ok' ? `${summary.stamp}:${summary.verified}` : null);
+	const written = $derived(summary?.state === 'ok' ? String(summary.stamp) : null);
 
 	let review = $state<Review | null>(null);
 	let problem = $state<string | null>(null);
@@ -67,10 +66,6 @@
 	{:else}
 		<div class="banner" class:waiting={parked > 0} data-heading={parkedSection?.heading}>
 			<b>擱置等你的事：{parked} 項</b>
-			<span class="check" data-verified={review.verified}>{verificationText(review)}</span>
-			{#each review.verification?.mismatches ?? [] as mismatch (mismatch.id)}
-				<span class="mismatch">不符 {mismatch.id}：{mismatch.text}</span>
-			{/each}
 		</div>
 		{#each sections as section (section.key)}
 			{#if section.key === 'parked'}
@@ -158,14 +153,8 @@
 	.banner.waiting b {
 		color: var(--warn);
 	}
-	.check,
-	.mismatch,
 	.muted {
 		color: var(--muted);
-	}
-	.check[data-verified='false'] {
-		color: var(--warn);
-		font-weight: 700;
 	}
 	.unread {
 		margin: 1rem 0 0.6rem;

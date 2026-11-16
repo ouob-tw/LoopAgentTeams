@@ -87,40 +87,28 @@ test('the snapshot counts the parked items and the tab reads the review in the f
 	expect(found.status).toBe(200);
 	const review = found.review!;
 	// Parked: two records and one ledger row; the tab's number is the open ones.
-	expect(await summary()).toMatchObject({ state: 'ok', count: review.items.length, parked: 3, verified: false });
+	expect(await summary()).toMatchObject({ state: 'ok', count: review.items.length, parked: 3 });
 	expect(review.items.filter((item) => item.kind === 'parked' || item.kind === 'parked-row').map((item) => item.id).sort()).toEqual([...files.parked].sort());
-	// 最該先看: parked, then the confirmed ticket, then the assumption at the edge of the acceptance, then auto deploy.
+	// 最該先看: parked, then the confirmed ticket, then the assumption at the edge of the acceptance; no auto action.
 	expect(review.top).toEqual(['LAT-P1', 'LAT-P2', 'row-3', 'LAT-PC', 'LAT-AU']);
-	expect(review.sections.map((section) => section.key)).toEqual(['parked', 'goal', 'top', 'assumed', 'proxy-confirmed', 'prototype-decided', 'auto', 'done']);
+	expect(review.sections.map((section) => section.key)).toEqual(['parked', 'goal', 'top', 'assumed', 'proxy-confirmed', 'prototype-decided', 'done']);
 	expect(review.goals).toHaveLength(1);
 	expect(review.goals[0]).toMatchObject({ version: 1, goal: FORM.goal, done: FORM.done, sourceLabel: '你在看板開啟', endedAt: null });
 	expect(review.doneTickets.join('\n')).toContain('abc1234');
 	const parked = review.items.find((item) => item.id === 'LAT-P1')!;
 	expect(parked).toMatchObject({ kind: 'parked', title: '要不要加匯出功能', state: 'open', section: 'parked' });
 	expect(parked.why).toContain('一定擱置');
-	expect(review.verified).toBe(false);
+	expect(review.items.some((item) => item.id.startsWith('auto-'))).toBe(false);
+	expect(review).not.toHaveProperty('verified');
 });
 
-test('the user\'s goal change adds a version, and the cross-check shows once another family has checked it', async () => {
+test('the user\'s goal change adds a version', async () => {
 	await startRound();
 	const edited = await grant({ op: 'update', ...FORM, goal: '#577、#578 都做完' });
 	expect(edited.status).toBe(200);
 	const review = (await readReview()).review!;
 	expect(review.goals.map((goal) => [goal.version, goal.sourceLabel, goal.goal])).toEqual([[1, '你在看板開啟', FORM.goal], [2, '你修改', '#577、#578 都做完']]);
 	expect(review.goals[0].endedAt).not.toBeNull();
-
-	const total = review.items.length;
-	tool('review', 'verify', '--checker', 'kiwi', '--family', 'gpt', '--total', String(total), '--matched', String(total));
-	await fixture.refresh(cookie);
-	const checked = (await readReview()).review!;
-	expect(checked.verified).toBe(true);
-	expect(checked.verification).toMatchObject({ checker: 'kiwi', family: 'gpt', total, matched: total, mismatches: [] });
-	expect(await summary()).toMatchObject({ verified: true });
-
-	// A new item after the check: the check no longer counts.
-	writeRound(luna.workspace, luna.session_id, { parkedRecords: 3 });
-	tool('review', 'update');
-	expect((await readReview()).review!.verified).toBe(false);
 });
 
 test('a review the controller rewrites reaches an open page within five seconds, with the parked count', async () => {

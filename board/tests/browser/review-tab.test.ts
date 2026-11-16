@@ -1,7 +1,7 @@
 // The 回顧 tab in real browsers on one built board, the real helper and lat-unattended: no tab
-// before a review exists; the tab right after 對話紀錄 with the parked count; the banner with the
-// cross-check, the goal folded and opened to every version, 最該先看, every section of the file in its order, items folded to
-// a title and one line and opened to their reasons; 回覆 on parked items and 推翻 on the rest;
+// before a review exists; the tab right after 對話紀錄 with the parked count; the banner with no
+// cross-check (#662), the goal folded and opened to every version, 最該先看, every section of the
+// file in its order with no auto actions, items folded to a title and one line and opened to their reasons; 回覆 on parked items and 推翻 on the rest;
 // a comment box sending the item's ID, title and words to the controller and into 送出紀錄, and
 // keeping the words when the send fails; the review rewritten by the controller reaching the page
 // within five seconds; the old assumptions still open to 推翻 after the grant is turned off; at
@@ -130,7 +130,7 @@ test.skipIf(!CHROME)('the tab follows 對話紀錄 with the parked count; the ba
 	await tab.until(`!!document.querySelector('${PANEL} .banner')`, 'the panel');
 	const banner = await tab.eval<string>(text(`${PANEL} .banner`));
 	expect(banner).toContain('擱置等你的事：3 項');
-	expect(banner).toContain('尚未核對');
+	expect(banner).not.toContain('核對');
 
 	// The goal is one line until opened; opened it shows the version and its conditions.
 	expect(await tab.eval<string>(text(`${PANEL} .goal .line`))).toContain(`目標：${FORM.goal} · 條件 2 條`);
@@ -147,7 +147,7 @@ test.skipIf(!CHROME)('the tab follows 對話紀錄 with the parked count; the ba
 	// under it: an item in 最該先看 stays in its own section too (the banner heads 擱置等你的事).
 	const file = readFileSync(join(luna.workspace, `.lat/unattended/${luna.session_id}-r1-review.md`), 'utf8');
 	const inFile = fileSections(file);
-	expect(inFile.map((section) => section.heading)).toEqual(['擱置等你的事', '本輪目標與做完條件', '最該先看的幾項', '假設', '代確認的票', '自動做的動作', '本輪完成的票']);
+	expect(inFile.map((section) => section.heading)).toEqual(['擱置等你的事', '本輪目標與做完條件', '最該先看的幾項', '假設', '代確認的票', '本輪完成的票']);
 	expect(await shownSections(tab)).toEqual(inFile);
 	expect(inFile.find((section) => section.heading === '代確認的票')?.ids).toEqual(['LAT-PC']);
 	expect(inFile.find((section) => section.heading === '最該先看的幾項')?.ids).toEqual(['LAT-P1', 'LAT-P2', 'row-3', 'LAT-PC', 'LAT-AU']);
@@ -180,7 +180,8 @@ test.skipIf(!CHROME)('the tab follows 對話紀錄 with the parked count; the ba
 test.skipIf(!CHROME)('回覆 on a parked item and 推翻 on every other kind', async () => {
 	const tab = browsers[0].tab;
 	const buttons = await tab.eval<Record<string, string>>(`Object.fromEntries([...document.querySelectorAll('${PANEL} [data-item]')].map((entry) => [entry.dataset.item, entry.querySelector('button.act')?.innerText ?? '']))`);
-	expect(buttons).toMatchObject({ 'LAT-P1': '回覆', 'LAT-P2': '回覆', 'row-3': '回覆', 'LAT-PC': '推翻', 'LAT-AU': '推翻', 'LAT-AN': '推翻', 'auto-1': '推翻', 'auto-2': '推翻' });
+	expect(buttons).toMatchObject({ 'LAT-P1': '回覆', 'LAT-P2': '回覆', 'row-3': '回覆', 'LAT-PC': '推翻', 'LAT-AU': '推翻', 'LAT-AN': '推翻' });
+	expect(Object.keys(buttons).some((id) => id.startsWith('auto-'))).toBe(false);
 });
 
 test.skipIf(!CHROME)('the comment box sends the item ID, title and words to the controller and logs them; a failed send keeps the words', async () => {
@@ -216,7 +217,7 @@ test.skipIf(!CHROME)('the comment box sends the item ID, title and words to the 
 	expect(typed().at(-2)?.text).toBe('回顧項目 LAT-P1「要不要加匯出功能」回覆：加，CSV 就好');
 });
 
-test.skipIf(!CHROME)('a review the controller rewrites shows within five seconds; the cross-check shows; turning the grant off leaves 推翻 on the old assumptions', async () => {
+test.skipIf(!CHROME)('a review the controller rewrites shows within five seconds; turning the grant off leaves 推翻 on the old assumptions', async () => {
 	const tab = browsers[0].tab;
 	writeRound(luna.workspace, luna.session_id, { parkedRecords: 3 });
 	const wrote = Date.now();
@@ -240,16 +241,10 @@ test.skipIf(!CHROME)('a review the controller rewrites shows within five seconds
 	await shot(tab, '1280-review-goal-versions', { box: `${PANEL} .goal` });
 	await click(tab, `${PANEL} .goal .line`);
 
-	// An item in 最該先看 is shown twice; the check counts it once.
-	const total = await tab.eval<number>(`new Set([...document.querySelectorAll('${PANEL} [data-item]')].map((entry) => entry.dataset.item)).size`);
-	tool('review', 'verify', '--checker', 'kiwi', '--family', 'gpt', '--total', String(total), '--matched', String(total));
-	await tab.until(`${text(`${PANEL} .banner`)}.includes('Codex 已核對紀錄：${total} 項全相符')`, 'the cross-check shown', 5_000);
-
 	expect((await grant({ op: 'close' })).status).toBe(200);
-	// The grant ending is no change to what the check vouched for: it still stands.
 	await click(tab, `${PANEL} .goal .line`);
 	await tab.until(`${text(`${PANEL} .goal .versions`)}.includes('使用者關掉')`, 'the goal showing the grant ended', 5_000);
-	expect(await tab.eval<string>(text(`${PANEL} .banner`))).toContain('已核對紀錄');
+	expect(await tab.eval<string>(text(`${PANEL} .banner`))).not.toContain('核對');
 	expect(await tab.eval(`!!document.querySelector('${TAB}')`)).toBe(true);
 	for (const id of ['LAT-AU', 'LAT-AN', 'LAT-PC']) expect(await tab.eval<string>(text(`${item(id)} button.act`))).toBe('推翻');
 });
