@@ -561,9 +561,20 @@ class InstallTests(unittest.TestCase):
         groups = data['hooks']['PreToolUse']
         self.assertEqual(groups[0], other)
         self.assertEqual(len(groups), 2)
-        self.assertEqual(groups[1]['matcher'], 'Bash|Grep|Glob')
+        self.assertEqual(groups[1]['matcher'], 'Bash|Grep|Glob|Write|Edit|NotebookEdit')
         self.assertEqual(groups[1]['hooks'][0]['command'], guard.HOOK_COMMAND)
         self.assertTrue(list(self.tmp.glob('settings.json.host-guard-backup-*')))
+
+    def test_claude_reinstall_widens_an_older_matcher_to_the_file_tools(self):
+        settings = self.tmp / 'settings.json'
+        old = {'matcher': 'Bash|Grep|Glob', 'hooks': [{'type': 'command',
+                                                      'command': guard.HOOK_COMMAND}]}
+        settings.write_text(json.dumps({'hooks': {'PreToolUse': [old]}}))
+        result = self.run_cli('install', '--client', 'claude', '--claude-settings', str(settings))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        groups = json.loads(settings.read_text())['hooks']['PreToolUse']
+        self.assertEqual(groups, [{'matcher': 'Bash|Grep|Glob|Write|Edit|NotebookEdit',
+                                   'hooks': [{'type': 'command', 'command': guard.HOOK_COMMAND}]}])
 
     def test_codex_install_names_the_group_and_uninstall_removes_only_it(self):
         codex = self.tmp / 'codex'

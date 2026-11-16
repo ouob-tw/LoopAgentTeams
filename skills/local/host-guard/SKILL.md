@@ -1,11 +1,11 @@
 ---
 name: host-guard
-description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench), running tests without a memory limit, searching for files across the whole filesystem, deleting a path built from a variable, or killing a process by name on a host shared with other agents. Covers how to pin load to a few cores, how to cap test memory, how to search narrowly, how to write heredocs that stay literal, how to delete safely, how to kill by PID, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
+description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench), running tests without a memory limit, searching for files across the whole filesystem, deleting a path built from a variable, or killing a process by name on a host shared with other agents, or before starting, stopping or creating a host VM container or touching ~/vm or ~/vm-busi. Covers how to pin load to a few cores, how to cap test memory, how to search narrowly, how to write heredocs that stay literal, how to delete safely, how to kill by PID, how to use host VMs through the vm command, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
 ---
 
 # 共用主機保護（host-guard）
 
-多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下七類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
+多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下八類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
 
 ## 從根目錄搜尋整個磁碟
 
@@ -75,6 +75,24 @@ kill <PID>
 
 沒有 `-f` 的 `pkill <名稱>`、`pgrep -f`、`kill <PID>` 不擋；只是提到也不擋：引號內文字、heredoc 內文、`grep pkill`。這條規則是接住手誤，雙引號裡的 `$(…)`、`eval`、餵給 shell 的 heredoc 與腳本檔裡的指令不解析。
 
+## 繞過虛擬機借用
+
+主機的虛擬機一律經 vm 技能借用（`vm` 指 `uv run --no-project python <vm 技能>/scripts/vm.py`，用法見 vm 技能）。下列動作擋下，訊息會寫出對應的 `vm` 用法；包在 `sudo`、`timeout`、`bash -c '…'`、`$(…)` 裡同樣擋：
+
+| 擋下的動作 | 改用 |
+|---|---|
+| 對機器清單上的容器 `docker start／stop／restart／kill／rm／pause／unpause`（含 `docker container …`）；`docker compose` 指名這些容器，或專案在 `~/vm` 底下 | `vm borrow`、`vm start`、`vm return` |
+| 寫入、搬移或刪除 `~/vm` 的狀態檔：`machines.json`、`leases.json`、`watch-state.json`、`vm.log`、`.lock`，或整個 `~/vm`（重新導向、`cp`、`mv`、`rm`、`tee`、`sed -i`、`truncate`、`dd of=` 等）；Claude 的 Write、Edit、NotebookEdit 寫這些檔案也擋 | `vm extend`、`vm return`、`vm add` |
+| 開關虛擬機的排程：`systemd-run`（`--scope` 除外）、`systemctl start／enable／restart` 的服務或計時器、`at`、`crontab`，或寫進 systemd、cron 設定資料夾，內容提到清單容器、`/dev/kvm`、`vm.py`、`~/vm`、`vm-busi` 等 | 借用時給夠時間（`--hours`），`vm extend` 延長；看守程式負責到期關機 |
+| 掛 `/dev/kvm` 的 `docker run`（含 `docker compose up` 的設定檔有 `/dev/kvm`），一律擋 | `vm add` → `docker create` → `vm start` |
+| 掛 `/dev/kvm` 的 `docker create`：容器名稱不在清單上、呼叫者（`HCOM_INSTANCE_NAME`）不是這台目前的借用者，或掛載不在 `~/vm/<機器>/` 底下（`/dev/…` 裝置除外） | 先 `vm add` 登記，以借用者身分照 vm 技能的「新增機器」建立 |
+| `vm` 的使用者專用旗標 `--human` 與 `vm reclaim` | 問借用者或使用者 |
+| 指向舊資料夾 `~/vm-busi/` 的任何路徑（`ssh -F ~/vm-busi/ssh-config`、`vmctl`、`deadline`、`guard.py` 等） | 訊息列出 `~/vm` 下的新位置或 `vm` 用法 |
+
+`~/vm` 依 `VM_HOME` 決定，沒設時是家目錄的 `vm`；機器清單與借用紀錄的格式見 vm 技能的 `FORMATS.md`。清單或借用紀錄不存在或讀不懂時，只擋狀態檔寫入、`/dev/kvm` 建立與舊資料夾，其他指令照常放行。`vm-watch` 服務是唯一允許的虛擬機服務。
+
+已知限制：這是接住 Agent 不小心繞過的保護，不是資安防線。只看指令文字，`eval`、腳本檔或自己寫程式改紀錄都擋不住；Codex 的檔案編輯工具不經過 hook，只擋得住 Codex 下的 shell 指令；用容器 ID 或 `$(docker ps -q)` 指定容器時認不出來。
+
 ## 直接從 LoopAgentTeams 安裝技能
 
 `bunx skills add`（`npx`、`bun x`、`pnpm dlx` 也算）的來源是 LoopAgentTeams 的本地 clone 或其 worktree 時擋下，包含其中的子資料夾、`~`、`$HOME` 與 `cd <repo> && bunx skills add .` 的寫法。判斷依據是來源資料夾往上找得到 `scripts/install-skills.py`。其他來源（`mattpocock/skills`、GitHub 上的 `ouob-tw/LoopAgentTeams`）不擋。
@@ -115,7 +133,7 @@ uv run --no-project python <skill>/scripts/host-guard.py install --client codex
 ```
 
 - 寫入位置：Claude 預設 `$CLAUDE_CONFIG_DIR/settings.json`（沒設時 `~/.claude/settings.json`），可用 `--claude-settings <檔案>` 指定；Codex 預設 `$CODEX_HOME/hooks.json`（沒設時 `~/.codex/hooks.json`），可用 `--codex-home <目錄>` 指定。
-- 在 `PreToolUse` 新增獨立 group：Claude 的 matcher 是 `Bash|Grep|Glob`，Codex 是 `Bash` 並帶 `"name": "host-guard"`。寫入前備份為同目錄的 `<檔名>.host-guard-backup-*`。
+- 在 `PreToolUse` 新增獨立 group：Claude 的 matcher 是 `Bash|Grep|Glob|Write|Edit|NotebookEdit`（已安裝舊版時重跑 install 會更新），Codex 是 `Bash` 並帶 `"name": "host-guard"`。寫入前備份為同目錄的 `<檔名>.host-guard-backup-*`。
 - `uninstall --client claude|codex` 只移除這筆 hook。
-- Claude Code 重啟後在 `/hooks` 確認；Codex 重啟後須在 `/hooks` 信任這個 command。已在執行的 Agent 重啟後才生效。
+- Claude Code 重啟後在 `/hooks` 確認；Codex 重啟後須在 `/hooks` 信任這個 command。第一次安裝時，已在執行的 Agent 重啟後才生效。之後更新技能時，hook 每次都執行安裝後的最新程式，新的 shell 規則對已在執行的 Agent 立即生效；matcher 寫在 client 設定裡，改了 matcher（例如新加的 Write、Edit、NotebookEdit）要 Agent 重啟後才確定生效。
 - 使用者在終端機自己打的指令不經 hook。
