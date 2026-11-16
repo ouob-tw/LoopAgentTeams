@@ -369,7 +369,7 @@ test('waiting counts within the limit: past it the agent is closed, the run a ti
 	expect(cards.map((alert) => [alert.kind, alert.resolved])).toEqual([['ask', 'ended']]);
 });
 
-const grant = { goal: '處理已知問題', done: ['回顧頁通過交付前核對'], scope: { ticket_confirmation: true, assume_defaults: false, prototype_decide: true } };
+const grant = { goal: '處理已知問題', done: ['挑出的票已合併到 dev'], scope: { ticket_confirmation: true, assume_defaults: false, prototype_decide: true } };
 const unattendedAgent = () => ({ client: 'claude', model: 'claude-haiku-5-5', effort: 'low', folder: work, brief: 'docs/brief.md', unattended: grant });
 
 test.each(['DECIDE', 'HELP'])('an unattended controller ending %s waits as 等你回覆, not failed; the answer sends it on and DONE ends it (#665)', async (tag) => {

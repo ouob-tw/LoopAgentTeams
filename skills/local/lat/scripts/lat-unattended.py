@@ -807,13 +807,11 @@ def cmd_check(args):
 
 # Review ---------------------------------------------------------------------------------------
 # The round's review (references/unattended.md「回顧」): Markdown from review_files, rebuilt from the
-# grant, the decision records, the work ledger and the pre-authorization records; the JSON next
-# to it keeps the body hash, the content hash and the cross-check. Created at the first item of
-# a round that had a grant, then rewritten only when the body changes. A content change voids
-# the cross-check; the grant ending (delivery, handover) changes the body but not the content.
-
-CLIENT_FAMILY = {'claude': 'claude', 'codex': 'gpt'}
-FAMILIES = ('claude', 'gpt', 'gemini')
+# grant, the decision records and the work ledger; the JSON next to it keeps the body hash and
+# the update time. Created at the first item of a round that had a grant, then rewritten only
+# when the body changes. A review whose state still holds a cross-check (written before the
+# check was dropped) is never rewritten; `show` prints the text rebuilt from the sources.
+LEGACY_STATE = ('verification', 'content_sha')
 
 
 def review_files(lat, session, round_number):
@@ -837,13 +835,7 @@ def decisions_dir(record, lat):
 
 
 def write_review(md, state_path, view, body, state):
-    """Write the header with the cross-check that still holds, then the body."""
-    verification = state.get('verification')
-    valid = verification if verification and verification.get('content_sha') == \
-        state['content_sha'] else None
-    header = _lat_review.render_header(view, valid, None if valid else verification,
-                                       state['updated_at'])
-    write_text_atomic(md, header + '\n' + body)
+    write_text_atomic(md, _lat_review.render_header(view, state['updated_at']) + '\n' + body)
     write_json_atomic(state_path, state)
 
 
@@ -853,7 +845,7 @@ def sha(text):
 
 def refresh_review_locked(lat, session, found=None):
     """Rebuild this round's review; the caller holds session_lock. None when the round never had
-    a grant; else dict(path or None, view, verified, verification)."""
+    a grant; else dict(path or None, view)."""
     found = found or load_round(lat, session)
     if not found.versions:
         return None
@@ -864,16 +856,15 @@ def refresh_review_locked(lat, session, found=None):
     md, state_path = review_files(lat, session, found.number)
     state = read_review_state(state_path)
     if not view['items'] and not md.exists():
-        return dict(path=None, view=view, verified=False, verification=None)
+        return dict(path=None, view=view)
     body = _lat_review.render_body(view)
-    digest, content = sha(body), sha(_lat_review.content_key(view))
-    if state.get('body_sha') != digest or state.get('content_sha') != content or not md.exists():
-        state = dict(state, body_sha=digest, content_sha=content, updated_at=stamp(now()))
-        write_review(md, state_path, view, body, state)
-    verification = state.get('verification')
-    verified = bool(verification and verification.get('content_sha') == content)
-    return dict(path=md, view=view, verified=verified,
-                verification=verification if verified else None)
+    digest = sha(body)
+    if any(key in state for key in LEGACY_STATE) and md.exists():
+        header = _lat_review.render_header(view, stamp(now()))
+        return dict(path=md, view=view, body_sha=digest, text=header + '\n' + body)
+    if state.get('body_sha') != digest or not md.exists():
+        write_review(md, state_path, view, body, dict(body_sha=digest, updated_at=stamp(now())))
+    return dict(path=md, view=view, body_sha=digest)
 
 
 def refresh_review(lat, session):
@@ -894,16 +885,15 @@ def review_result(result):
     if result is None:
         return dict(status='ok', path=None, reason='no unattended grant this round')
     return dict(status='ok', path=str(result['path']) if result['path'] else None,
-                verified=result['verified'], verification=result['verification'],
-                view=result['view'])
+                body_sha=result.get('body_sha'), view=result['view'])
 
 
 def review_text(result):
     if result is None:
         return '這一輪沒有無人授權，沒有回顧'
     if result['path'] is None:
-        return '還沒有擱置、代決或自動動作，未建立回顧'
-    return f'{result["path"]}（{"已核對" if result["verified"] else "尚未核對"}）'
+        return '還沒有擱置或代決，未建立回顧'
+    return str(result['path'])
 
 
 def cmd_review_update(args):
@@ -917,58 +907,8 @@ def cmd_review_show(args):
     result = refresh_review(lat, session)
     if args.json or result is None or result['path'] is None:
         return report(args, review_result(result), review_text(result))
-    print(result['path'].read_text(encoding='utf-8'), end='')
+    print(result.get('text') or result['path'].read_text(encoding='utf-8'), end='')
     return 0
-
-
-def mismatch_of(text, ids):
-    identifier, _, why = text.partition('：')
-    identifier, why = identifier.strip(), why.strip()
-    if identifier not in ids or not why:
-        raise Refused(f'--mismatch `{text}`: write `<item id>：<what does not match>` with an id '
-                      f'from the review ({", ".join(sorted(ids))})')
-    return dict(id=identifier, text=why)
-
-
-def cmd_review_verify(args):
-    checker = (args.checker or '').strip()
-    if not checker:
-        raise Refused('--checker needs the checking agent\'s name')
-    lat, session = owner(args)
-    with preauth.locked(session_lock(lat, session)):
-        found = load_round(lat, session)
-        result = refresh_review_locked(lat, session, found)
-        if result is None or result['path'] is None:
-            raise Refused('this round has no review to cross-check')
-        own = CLIENT_FAMILY.get(found.record.get('client'))
-        if own is None:
-            raise Refused(f'cannot tell the controller\'s model family from client '
-                          f'{found.record.get("client")!r}')
-        if args.family == own:
-            raise Refused(f'the checker is {args.family} like this controller; a cross-check '
-                          'counts only from another model family')
-        ids = {item['id'] for item in result['view']['items']}
-        if not ids:
-            raise Refused('the review has no items left; there is nothing to cross-check')
-        mismatches = [mismatch_of(text, ids) for text in args.mismatch or []]
-        if len({m['id'] for m in mismatches}) != len(mismatches):
-            raise Refused('one --mismatch per item')
-        if args.total != len(ids):
-            raise Refused(f'the review has {len(ids)} items, not {args.total}; the checker must '
-                          'check every item of the current version')
-        if args.matched + len(mismatches) != args.total:
-            raise Refused(f'{args.matched} matched + {len(mismatches)} mismatched is not '
-                          f'{args.total}; list every item that does not match with --mismatch')
-        md, state_path = review_files(lat, session, found.number)
-        state = read_review_state(state_path)
-        state['verification'] = dict(checker=checker, family=args.family, at=stamp(now()),
-                                     total=args.total, matched=args.matched,
-                                     mismatches=mismatches,
-                                     content_sha=state['content_sha'])
-        body = _lat_review.render_body(result['view'])
-        write_review(md, state_path, result['view'], body, state)
-    return report(args, dict(status='ok', path=str(md), verification=state['verification']),
-                  f'已寫入核對結論：{args.total} 項中 {args.matched} 項相符 → {md}')
 
 
 def cmd_draft(args):
@@ -1186,22 +1126,12 @@ def build_parser():
     sub.add_argument('--reason', required=True, choices=CLOSE_REASONS,
                      help='off: the user turned it off (the controller goes back to manual); '
                           'quota: quota ran out; delivered, cancelled, handover: the round ended')
-    review = commands.add_parser('review', help="this round's review: update, show, verify")
+    review = commands.add_parser('review', help="this round's review: update, show")
     verbs = review.add_subparsers(dest='verb', required=True)
     verbs.add_parser('update', parents=[common], help='rebuild the review from its sources'
                      ).set_defaults(run=cmd_review_update)
     verbs.add_parser('show', parents=[common], help='rebuild, then print the review (--json: '
                      'the items for the board)').set_defaults(run=cmd_review_show)
-    sub = verbs.add_parser('verify', parents=[common],
-                           help="record another model family's cross-check of the review")
-    sub.set_defaults(run=cmd_review_verify)
-    sub.add_argument('--checker', required=True, help='the checking agent')
-    sub.add_argument('--family', required=True, choices=FAMILIES,
-                     help="the checker's model family; must differ from the controller's")
-    sub.add_argument('--total', type=int, required=True, help='items checked')
-    sub.add_argument('--matched', type=int, required=True, help='items that match the records')
-    sub.add_argument('--mismatch', action='append',
-                     help='`<item id>：<what does not match>`; one per item that does not match')
     sub = commands.add_parser('check', parents=[common],
                               help='exit 0 when a version was in effect at a moment, else 1; '
                                    'like status, first ends a version past its limit or mode')

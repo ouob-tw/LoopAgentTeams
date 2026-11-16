@@ -1890,22 +1890,9 @@ def refresh_review_before_command(record):
         print(f'LAT review not updated: {exc}', file=sys.stderr)
 
 
-def review_stop_check(record, message):
-    """Rebuild this round's review at every turn end; why a DONE: Stop should be held because the
-    review of a round that had an unattended grant has no current cross-check, or None."""
-    unattended = unattended_module()
-    result = unattended.refresh_review(unattended_lat(record), record['session_id'])
-    lines = [line for line in message.splitlines() if line.strip()]
-    if not (lines and lines[-1].startswith('DONE:')) or not result or not result['path'] \
-            or result['verified'] or not result['view']['items']:
-        return None
-    count = len(result['view']['items'])
-    return (f'LAT 回顧核對未通過：本輪有過無人授權，回顧檔 {result["path"]}（{count} 項）還沒有另一家模型的'
-            '核對，或核對後內容又更新。交付前派另一家模型（你是 Claude 就派 Codex，反之亦然）對照待決紀錄、'
-            '工作總表與預先授權紀錄逐項核對回顧檔，再執行 '
-            f'`uv run --no-project python {UNATTENDED_SCRIPT} review verify --checker <名稱> '
-            f'--family <claude|gpt|gemini> --total {count} --matched <相符項數> '
-            "[--mismatch '<編號>：<不符之處>' …]`，然後照原樣結束回合。")
+def refresh_review_at_stop(record):
+    """Rebuild this round's review at every turn end; it never holds the Stop."""
+    unattended_module().refresh_review(unattended_lat(record), record['session_id'])
 
 
 def done_stop(record, message):
@@ -2277,12 +2264,9 @@ def report_stop(record, payload):
             elif undeclared:
                 reasons.append(undeclared)
         try:
-            review = review_stop_check(record, message)
-        except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop
+            refresh_review_at_stop(record)
+        except Exception as exc:  # noqa: BLE001 - a broken rebuild never holds the Stop
             notes.append(f'LAT 回顧更新發生錯誤，未攔下：{exc}')
-        else:
-            if review:
-                reasons.append(review)
         try:
             draft = draft_stop_check(record)
         except Exception as exc:  # noqa: BLE001 - a broken check never holds the Stop

@@ -2,18 +2,16 @@
 (stdlib only).
 
 `collect` reads one round of one session: the grant versions it is given, the session's parked
-and delegated decision records (and those the user has since answered from the review), the
-round's work ledger (parked rows, done rows) and its pre-authorization records (auto actions).
-Every item has an id taken from its source, so it stays the same across updates: the decision
-ID, `row-<ledger row>`, or `auto-<line>` for the auto record on that line of the round's
-pre-authorization records.
-`render_body` turns the view into the Markdown body; `render_header` adds the verification
-status and the update time, which the body hash leaves out.
+and delegated decision records (and those the user has since answered from the review) and the
+round's work ledger (parked rows, done rows). Actions taken under the pre-authorization are not
+review items; `lat-preauth report` lists them. Every item has an id taken from its source, so it
+stays the same across updates: the decision ID or `row-<ledger row>`.
+`render_body` turns the view into the Markdown body; `render_header` adds the update time,
+which the body hash leaves out.
 """
 import json
 from pathlib import Path
 import re
-import subprocess
 
 from _lat_tracker import tracker_repo
 from lat_decision_status import (DELEGATED, PARKED, read_decision_session,
@@ -28,13 +26,13 @@ BOUNDARY_CLASSES = ('ui-detail', 'setting-default')
 TOP_LIMIT = 5
 
 KIND_LABELS = {PARKED: '擱置', 'parked-row': '擱置的票', 'proxy-confirmed': '代確認',
-               'assumed': '假設', 'prototype-decided': '樣品決定', 'auto': '自動動作'}
+               'assumed': '假設', 'prototype-decided': '樣品決定'}
 # (section key, heading), in the Spec's order.
 SECTIONS = (('parked', '擱置等你的事'), ('goal', '本輪目標與做完條件'), ('top', '最該先看的幾項'),
             ('assumed', '假設'), ('proxy-confirmed', '代確認的票'),
-            ('prototype-decided', '樣品決定'), ('auto', '自動做的動作'), ('done', '本輪完成的票'))
+            ('prototype-decided', '樣品決定'), ('done', '本輪完成的票'))
 SECTION_OF = {PARKED: 'parked', 'parked-row': 'parked', 'proxy-confirmed': 'proxy-confirmed',
-              'assumed': 'assumed', 'prototype-decided': 'prototype-decided', 'auto': 'auto'}
+              'assumed': 'assumed', 'prototype-decided': 'prototype-decided'}
 ROW_STATES = {'unassigned': '未派工', 'assigned': '已派工', 'in_progress': '進行中',
               'blocked': '受阻'}
 SOURCE_LABELS = {'settings-default': '主控擬出（設定預設開啟）', 'board-form': '你在看板開啟',
@@ -246,8 +244,8 @@ def self_park(row):
     return found
 
 
-# The stages that deliver a ticket. Advisor, research, Spec and other rows (a cross-check, a
-# retro) are steps around it and never make a ticket done.
+# The stages that deliver a ticket. Advisor, research, Spec and other rows (a retro) are steps
+# around it and never make a ticket done.
 TICKET_WORK = ('impl', 'review', 'qa-draft', 'qa', 'merge')
 
 
@@ -264,8 +262,7 @@ def ticket_keys(text, default_repo):
 
 def done_tickets(doc):
     """One line per ticket whose delivery rows are all done, in the order tickets first
-    appear: the ticket, its title and the evidence of its done rows. Not part of what a
-    cross-check vouches for (content_key)."""
+    appear: the ticket, its title and the evidence of its done rows."""
     default_repo = tracker_repo(doc['workspace']) if isinstance(doc.get('workspace'), str) else None
     titles = doc.get('titles') or {}
     tickets = {}
@@ -325,92 +322,6 @@ def ledger_items(doc, path, workspace):
     return items, done_tickets(doc)
 
 
-# Pre-authorization records --------------------------------------------------------------------
-
-def same_commit(one, other):
-    if not isinstance(one, str) or not isinstance(other, str):
-        return False
-    shorter, longer = sorted((one.lower(), other.lower()), key=len)
-    return len(shorter) >= 7 and longer.startswith(shorter)
-
-
-def merge_commit(repo, target, commit):
-    """The commit the merge of `commit` produced on `target`: the oldest first-parent merge on the
-    way from `commit` to `target`. None when git cannot tell: no repo, no such branch, or a
-    fast-forward (no merge commit exists)."""
-    if not (repo and isinstance(target, str) and isinstance(commit, str)) \
-            or target.startswith('-') or commit.startswith('-'):
-        return None
-    def rev_list(*args):
-        out = subprocess.run(['git', '-C', str(repo), 'rev-list', *args, '--'],
-                             capture_output=True, text=True, timeout=20)
-        return None if out.returncode else out.stdout.split()
-    try:
-        between = rev_list('--merges', '--ancestry-path', f'{commit}..{target}')
-        mainline = set(rev_list('--first-parent', target) or ()) if between else ()
-    except (OSError, subprocess.SubprocessError):
-        return None
-    found = [sha for sha in between or () if sha in mainline]
-    return found[-1] if found else None
-
-
-def auto_items(path, workspace):
-    """(items, problems): one item per auto record of the round, `auto-<line number>`."""
-    try:
-        lines = path.read_text(encoding='utf-8').splitlines()
-    except FileNotFoundError:
-        return [], []
-    except (OSError, UnicodeDecodeError) as error:
-        return [], [f'{relative(path, workspace)}：讀不出（{error}）']
-    entries, problems = [], []
-    for number, line in enumerate(lines, 1):
-        if not line.strip():
-            continue
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            problems.append(f'{relative(path, workspace)} 第 {number} 行讀不懂')
-            continue
-        if isinstance(entry, dict):
-            entries.append((number, entry))
-    items = []
-    for number, entry in entries:
-        if entry.get('kind') != 'auto':
-            continue
-        action, target, commit = entry.get('action'), entry.get('target'), entry.get('commit')
-        head = ' '.join(str(part) for part in (action, target, commit) if part)
-        if action == 'merge':
-            merged = merge_commit(entry.get('action_repo') or workspace, target, commit)
-            where = target or '整合分支'
-            revert = (f'按「推翻」；主控在 {where} 還原合併提交 {merged[:12]}'
-                      if merged else
-                      f'按「推翻」；紀錄只存了被合併進來的提交 {commit}，查不到合併提交；'
-                      f'主控在 {where} 用 git log --first-parent --merges 找出併入它的那個合併提交再還原；'
-                      f'若是快轉合併就沒有合併提交，改還原它帶進來的那幾個提交')
-        elif action == 'push':
-            revert = f'按「推翻」；主控在 {target or "遠端"} 還原這次推送的提交'
-        else:
-            revert = f'按「推翻」；主控把 {action} 退回前一版'
-        corrections = [(n, e) for n, e in entries if n > number and e.get('kind') == 'correction'
-                       and same_commit(commit, e.get('commit'))
-                       and e.get('action') in (None, action)]
-        item = dict(id=f'auto-{number}', kind='auto', title=head or f'第 {number} 行',
-                    did=f'依預先授權自動執行，結果 {entry.get("result")}', why=f'預先授權：{entry.get("basis")}',
-                    evidence=[f'{relative(path, workspace)} 第 {number} 行'], revert=revert,
-                    assume_class=None, action=action)
-        if corrections:
-            n, last = corrections[-1]
-            label = '已由你推翻' if last.get('question') else '已更正'
-            item.update(state='overturned' if last.get('question') else 'corrected',
-                        state_label=f'{label}（{last.get("at")}）：{last.get("note")}',
-                        answered_at=last.get('at'), answer=last.get('note'))
-            item['evidence'].append(f'{relative(path, workspace)} 第 {n} 行（更正）')
-        else:
-            item.update(state='open', state_label='已執行', answered_at=None, answer=None)
-        items.append(item)
-    return items, problems
-
-
 # The view ---------------------------------------------------------------------------------------
 
 def relative(path, workspace):
@@ -430,9 +341,7 @@ def top_rank(item):
         return 1
     if item['kind'] == 'assumed' and item.get('assume_class') in BOUNDARY_CLASSES:
         return 2
-    if item['kind'] == 'auto' and item.get('action') not in ('merge', 'push'):
-        return 3
-    return 4
+    return 3
 
 
 def collect(*, lat, workspace, session, round_number, versions, decisions, end_labels,
@@ -447,10 +356,6 @@ def collect(*, lat, workspace, session, round_number, versions, decisions, end_l
     if doc:
         rows, done = ledger_items(doc, ledger_path, workspace)
         items += rows
-    autos, more = auto_items(lat / 'preauth-records' / f'{session}-r{round_number}.jsonl',
-                             workspace)
-    items += autos
-    problems += more
     for item in items:
         item['kind_label'] = KIND_LABELS[item['kind']]
         item['section'] = SECTION_OF[item['kind']]
@@ -471,16 +376,6 @@ def collect(*, lat, workspace, session, round_number, versions, decisions, end_l
     return dict(session=session, round=round_number, grant=grant, goals=goals, items=items,
                 top=top, done_tickets=done, problems=problems,
                 sections=[dict(key=key, heading=heading) for key, heading in SECTIONS])
-
-
-def content_key(view):
-    """What a cross-check vouches for: the items, the goal versions and the unreadable sources,
-    without when the grant ended. The done tickets are no item the check counts, and a row
-    of the check itself or a retro closing must not void it."""
-    goals = [{key: value for key, value in goal.items() if key not in ('ended_at', 'end_label')}
-             for goal in view['goals']]
-    return json.dumps(dict(items=view['items'], goals=goals, problems=view['problems']),
-                      ensure_ascii=False, sort_keys=True)
 
 
 def item_lines(item):
@@ -534,15 +429,6 @@ def render_body(view):
     return '\n'.join(lines).rstrip('\n') + '\n'
 
 
-def render_header(view, verification, stale, updated_at):
-    lines = [f'# 無人模式回顧：session {view["session"]} 第 {view["round"]} 輪', '']
-    if verification:
-        mismatches = verification['mismatches']
-        lines.append(f'- 核對：{verification["checker"]}（{verification["family"]}）於 '
-                     f'{verification["at"]} 核對，{verification["total"]} 項中 '
-                     f'{verification["matched"]} 項相符，{len(mismatches)} 項不符')
-        lines += [f'  - 不符 {m["id"]}：{one_line(m["text"])}' for m in mismatches]
-    else:
-        lines.append('- 核對：尚未核對' + (f'（{stale["at"]} 的核對之後內容有更新）' if stale else ''))
-    lines.append(f'- 更新：{updated_at}')
-    return '\n'.join(lines) + '\n'
+def render_header(view, updated_at):
+    return (f'# 無人模式回顧：session {view["session"]} 第 {view["round"]} 輪\n\n'
+            f'- 更新：{updated_at}\n')

@@ -574,7 +574,7 @@ test('a Claude usage limit ends the run as 額度用完 with no account switched
 });
 
 test('an unattended task opens a LAT controller whose grant comes from the saved settings: NO REPLY turns go on, DONE ends it; settings with no save behind them are a settings error', async () => {
-	const grant = { goal: '處理已知問題', done: ['回顧頁通過交付前核對'], scope: { ticket_confirmation: true, assume_defaults: false, prototype_decide: true } };
+	const grant = { goal: '處理已知問題', done: ['挑出的票已合併到 dev'], scope: { ticket_confirmation: true, assume_defaults: false, prototype_decide: true } };
 	const task = await create({ limitMinutes: 90 }, { unattended: grant });
 	expect(task.agent!.unattended).toEqual(grant);
 	hcomPlan([{ name: 'auto-lat' }]);
@@ -633,7 +633,7 @@ test('an unattended task needs a goal and at least one done condition', async ()
 });
 
 test('an unattended Codex controller whose account runs out mid-run stops as 額度用完: no switch, no resume, even with another account left', async () => {
-	const grant = { goal: '處理已知問題', done: ['回顧頁通過交付前核對'], scope: { ticket_confirmation: true, assume_defaults: true, prototype_decide: true } };
+	const grant = { goal: '處理已知問題', done: ['挑出的票已合併到 dev'], scope: { ticket_confirmation: true, assume_defaults: true, prototype_decide: true } };
 	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low', unattended: grant });
 	freshRun();
 	accounts(0, 20, 30);
