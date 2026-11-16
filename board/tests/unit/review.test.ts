@@ -102,3 +102,14 @@ test('a settled card in the review tab says it was agreed, or when and how the u
 	expect(shortTime('2026-12-31T16:30:00Z')).toBe('1/1 00:30');
 	expect(shortTime('不是時間')).toBe('不是時間');
 });
+
+test('a question asked during the grant says whether it waits, was answered, or can no longer be answered', async () => {
+	const { askedLabel } = await import('../../src/lib/board/review.ts');
+	expect(askedLabel({ state: 'answered', answer: 'A. 要加' }, false, null)).toBe('你答：A. 要加');
+	expect(askedLabel({ state: 'answered', answer: null }, true, null)).toBe('已回答');
+	expect(askedLabel({ state: 'open', answer: null }, false, { sent: false })).toBe('等你回答');
+	expect(askedLabel({ state: 'open', answer: null }, false, { sent: true })).toBe('已送出答覆，等主控記下');
+	// Ended: whether its card is still listed or not, it can no longer be answered.
+	expect(askedLabel({ state: 'open', answer: null }, true, { sent: false })).toBe('沒答到，主控已結束');
+	expect(askedLabel({ state: 'open', answer: null }, true, null)).toBe('沒答到，主控已結束');
+});

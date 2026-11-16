@@ -140,6 +140,15 @@ export function reviewGroups(review: Pick<Review, 'items' | 'delegated' | 'asked
 	};
 }
 
+/** What a question asked during the grant says under its title. `waiting`: its card is still in
+ *  the inbox, null when it is not; `sent` when the user's answer went out but is not recorded yet.
+ *  An ended controller's question can no longer be answered on the board. */
+export function askedLabel(asked: Pick<AskedQuestion, 'state' | 'answer'>, inactive: boolean, waiting: { sent: boolean } | null): string {
+	if (asked.state === 'answered') return asked.answer ? `你答：${asked.answer}` : '已回答';
+	if (waiting?.sent) return '已送出答覆，等主控記下';
+	return inactive ? '沒答到，主控已結束' : '等你回答';
+}
+
 /** A parked item is answered with 回覆; every other kind is overturned with 推翻. */
 export const isParked = (item: Pick<ReviewItem, 'kind'>): boolean => item.kind === 'parked' || item.kind === 'parked-row';
 export const actionWord = (item: Pick<ReviewItem, 'kind'>): '回覆' | '推翻' => (isParked(item) ? '回覆' : '推翻');

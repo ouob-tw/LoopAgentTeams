@@ -74,7 +74,7 @@ def section_lines(lines, heading):
 
 def answer_sections(lines):
     """Every `## 答覆（…）` section of a record, in order, as dict(at, text, review): its time,
-    its first `- 答覆：` line, and whether it was recorded from the review."""
+    its last `- 答覆：` line, and whether it was recorded from the review."""
     found, inside = [], False
     for line in lines:
         if line.startswith('## '):
@@ -85,7 +85,7 @@ def answer_sections(lines):
             continue
         if not inside:
             continue
-        if line.startswith('- 答覆：') and not found[-1]['text']:
+        if line.startswith('- 答覆：'):
             found[-1]['text'] = line[len('- 答覆：'):].strip()
         elif line.startswith('- 來源：') and REVIEW_SOURCE in line:
             found[-1]['review'] = True

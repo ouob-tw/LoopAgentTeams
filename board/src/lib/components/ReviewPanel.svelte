@@ -11,7 +11,7 @@
 	import { request } from '#lib/board/api.ts';
 	import { delegatedUi } from '#lib/board/delegated-ui.svelte.ts';
 	import { delegatedOf, seenKey, type DelegatedCard } from '#lib/board/delegated.ts';
-	import { reviewGroups, settledLabel, type AskedQuestion, type Review, type ReviewGoal } from '#lib/board/review.ts';
+	import { askedLabel, reviewGroups, settledLabel, type AskedQuestion, type Review, type ReviewGoal } from '#lib/board/review.ts';
 	import { summaryPlain } from '#lib/board/summary-links.ts';
 	import { isInactive, needsWake, type Controller, type InboxItem, type InboxQuestion } from '#lib/board/types.ts';
 	import DelegatedRow from './DelegatedRow.svelte';
@@ -155,15 +155,15 @@
 						{@const inbox = asked.state === 'open' ? inboxOf(asked) : null}
 						{@const title = summaryPlain(asked.title) || asked.title}
 						{#if inbox && onopen}
-							<button type="button" class="ask" data-asked={asked.id} data-state="open" onclick={() => onopen(inbox)}>
+							<button type="button" class="ask" class:done={inactive} data-asked={asked.id} data-state={inactive ? 'ended' : 'open'} onclick={() => onopen(inbox)}>
 								<span class="title">▲ <b>待決</b>：{title}</span>
 								<span class="go">{inactive || !inbox.unsent ? '查看' : '作答'} ›</span>
-								<span class="ask-state">{inbox.unsent ? '等你回答' : '已送出答覆，等主控記下'}</span>
+								<span class="ask-state">{askedLabel(asked, inactive, { sent: !inbox.unsent })}</span>
 							</button>
 						{:else}
-							<div class="ask" class:done={asked.state === 'answered'} data-asked={asked.id} data-state={asked.state}>
+							<div class="ask" class:done={asked.state === 'answered' || inactive} data-asked={asked.id} data-state={asked.state === 'open' && inactive ? 'ended' : asked.state}>
 								<span class="title">▲ <b>待決</b>：{title}</span>
-								<span class="ask-state">{asked.state === 'answered' ? (asked.answer ? `你答：${asked.answer}` : '已回答') : inactive ? '沒答到，主控已結束' : '等你回答'}</span>
+								<span class="ask-state">{askedLabel(asked, inactive, null)}</span>
 							</div>
 						{/if}
 					{/each}
