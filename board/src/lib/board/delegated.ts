@@ -35,6 +35,10 @@ export interface DelegatedCard {
 	stateLabel: string;
 	/** The user opened it on some device. */
 	seen: boolean;
+	/** The 推翻 the controller recorded, as the record has it, and when; null while open. Only
+	 *  the review's items carry them, not the controller page's cards. */
+	answer?: string | null;
+	answeredAt?: string | null;
 }
 
 /** What the strip's row says before the title. */
@@ -70,7 +74,9 @@ export function cardsFrom(value: unknown): DelegatedCard[] {
 				sample: textOrNull(given.sample),
 				state: given.state === 'overturned' ? 'overturned' : 'open',
 				stateLabel: typeof given.state_label === 'string' ? given.state_label : '',
-				seen: false
+				seen: false,
+				answer: textOrNull(given.answer),
+				answeredAt: textOrNull(given.answered_at)
 			}
 		];
 	});
@@ -112,4 +118,17 @@ export function detailRows(card: DelegatedCard): DetailRow[] {
 	if (card.checks.length) rows.push({ label: '驗收對照', lines: card.checks });
 	if (card.sample) rows.push({ label: '樣品', text: card.sample });
 	return rows;
+}
+
+/** A time the records give (ISO, any offset) as the user reads it: month/day and hour:minute in
+ *  Taiwan; the text as given when it is not a time. */
+export function shortTime(iso: string): string {
+	const time = Date.parse(iso);
+	if (Number.isNaN(time)) return iso;
+	const parts = Object.fromEntries(
+		new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+			.formatToParts(time)
+			.map((part) => [part.type, part.value])
+	);
+	return `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
 }

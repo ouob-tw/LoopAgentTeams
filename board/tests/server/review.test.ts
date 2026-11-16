@@ -81,7 +81,7 @@ test('a round with no grant and one with a grant but no items have no review: th
 	expect(await readReview()).toEqual({ status: 200, review: null });
 });
 
-test('the snapshot counts the parked items and the tab reads the review in the file\'s own order', async () => {
+test('the snapshot counts the parked items and the tab reads its items, 代決 and questions', async () => {
 	const files = await startRound();
 	const found = await readReview();
 	expect(found.status).toBe(200);
@@ -89,17 +89,35 @@ test('the snapshot counts the parked items and the tab reads the review in the f
 	// Parked: two records and one ledger row; the tab's number is the open ones.
 	expect(await summary()).toMatchObject({ state: 'ok', count: review.items.length, parked: 3 });
 	expect(review.items.filter((item) => item.kind === 'parked' || item.kind === 'parked-row').map((item) => item.id).sort()).toEqual([...files.parked].sort());
-	// 最該先看: parked, then the confirmed ticket, then the assumption at the edge of the acceptance; no auto action.
-	expect(review.top).toEqual(['LAT-P1', 'LAT-P2', 'row-3', 'LAT-PC', 'LAT-AU']);
-	expect(review.sections.map((section) => section.key)).toEqual(['parked', 'goal', 'top', 'assumed', 'proxy-confirmed', 'prototype-decided', 'done']);
+	// The delegated items in full, for the tab's 代決 rows (#664), in the review's order; no auto action.
+	expect(review.delegated.map((card) => card.id)).toEqual(['LAT-AN', 'LAT-AU', 'LAT-PC']);
+	expect(review.delegated[1]).toMatchObject({ kind: 'assumed', decision: '照 30 天做', revertTo: '改成 7 天或 90 天', state: 'open', answer: null });
+	expect(review.asked).toEqual([]);
 	expect(review.goals).toHaveLength(1);
 	expect(review.goals[0]).toMatchObject({ version: 1, goal: FORM.goal, done: FORM.done, sourceLabel: '你在看板開啟', endedAt: null });
-	expect(review.doneTickets.join('\n')).toContain('abc1234');
 	const parked = review.items.find((item) => item.id === 'LAT-P1')!;
 	expect(parked).toMatchObject({ kind: 'parked', title: '要不要加匯出功能', state: 'open', section: 'parked' });
 	expect(parked.why).toContain('一定擱置');
 	expect(review.items.some((item) => item.id.startsWith('auto-'))).toBe(false);
 	expect(review).not.toHaveProperty('verified');
+});
+
+test('a round that only asked a question during the grant has a review, counted until the question is answered (#664)', async () => {
+	expect((await grant({ op: 'create', ...FORM })).status).toBe(200);
+	expect(await summary()).toEqual({ state: 'none' });
+	const record = (status: string, tail = '') =>
+		writeFileSync(join(luna.workspace, '.lat/decisions/Q-ONLY.md'), [`# Q-ONLY 匯出要不要分頁？`, '', `- status: ${status}`, '- advisor: needs-human', `- session: ${luna.session_id}`, '- grant: r1 v1', '- version: r1', '- question: 匯出要不要分頁', ''].join('\n') + tail);
+	mkdirSync(join(luna.workspace, '.lat/decisions'), { recursive: true });
+	record('pending');
+	const asked = await summary();
+	expect(asked).toMatchObject({ state: 'ok', count: 0, parked: 0, askedOpen: 1 });
+	expect((await readReview()).review!.asked).toEqual([{ id: 'Q-ONLY', title: '匯出要不要分頁？', state: 'open', answer: null, answeredAt: null }]);
+	record('approved', '\n## 答覆（r1，面板，2026-11-16T10:00:00+08:00）\n\n- 答覆：B. 不分頁\n');
+	const answered = await summary();
+	expect(answered).toMatchObject({ state: 'ok', askedOpen: 0 });
+	// The review file lists the answer, so the tab reads the review again.
+	expect(answered?.state === 'ok' && asked?.state === 'ok' && answered.stamp !== asked.stamp).toBe(true);
+	expect((await readReview()).review!.asked[0]).toMatchObject({ state: 'answered', answer: 'B. 不分頁' });
 });
 
 test('the user\'s goal change adds a version', async () => {

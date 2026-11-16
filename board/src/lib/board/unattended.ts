@@ -81,7 +81,17 @@ export type UnattendedView =
 export type ReviewSummary =
 	| { state: 'none' }
 	| { state: 'error'; reason: string }
-	| { state: 'ok'; path: string; count: number; parked: number; stamp: number; delegated: DelegatedCard[] };
+	| {
+			state: 'ok';
+			path: string;
+			count: number;
+			/** Parked items still open (reviews from before #661). */
+			parked: number;
+			/** Questions asked during the grant still unanswered (#664); 0 from a helper that does not count them. */
+			askedOpen: number;
+			stamp: number;
+			delegated: DelegatedCard[];
+	  };
 
 /** Whether the controller is in unattended mode: what the roster's 無人 mark and the badge show. */
 export const isUnattended = (view: UnattendedView | undefined): boolean => view?.state === 'active' || view?.state === 'pending-goal';
@@ -124,7 +134,15 @@ function reviewOf(value: unknown): { review?: ReviewSummary } {
 	if (given.state === 'error') return { review: { state: 'error', reason: textOf(given.reason) ?? '讀不出回顧' } };
 	if (given.state !== 'ok' || typeof given.path !== 'string' || typeof given.count !== 'number' || typeof given.parked !== 'number') return {};
 	return {
-		review: { state: 'ok', path: given.path, count: given.count, parked: given.parked, stamp: typeof given.stamp === 'number' ? given.stamp : 0, delegated: cardsFrom(given.delegated) }
+		review: {
+			state: 'ok',
+			path: given.path,
+			count: given.count,
+			parked: given.parked,
+			askedOpen: typeof given.asked_open === 'number' ? given.asked_open : 0,
+			stamp: typeof given.stamp === 'number' ? given.stamp : 0,
+			delegated: cardsFrom(given.delegated)
+		}
 	};
 }
 

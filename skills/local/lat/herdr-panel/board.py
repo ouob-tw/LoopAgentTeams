@@ -375,10 +375,11 @@ def delegated_cards(view):
 
 def review_summary(workspace, session_id, seconds):
     """(summary, path) of one controller's review: ``{state: none}`` when the round has none yet,
-    ``{state: ok, path, count, parked, stamp, delegated}`` when it has one (``delegated``: the
+    ``{state: ok, path, count, parked, asked_open, stamp, delegated}`` when it has one (``delegated``: the
     cards ``delegated_cards`` keeps), ``{state: error, reason}``
     when it could not be read. ``stamp`` changes whenever the review's content does, also for
-    an old review file that is no longer rewritten."""
+    an old review file that is no longer rewritten; the file lists the questions asked during
+    the grant, so asking or answering one changes it too. ``asked_open``: those not answered."""
     seconds = min(LEDGER_READ_SECONDS, seconds)
     if seconds <= 0:
         return {"state": "error", "reason": _TIME_UP}, None
@@ -392,12 +393,15 @@ def review_summary(workspace, session_id, seconds):
         return {"state": "none"}, None
     items = view.get("items") if isinstance(view.get("items"), list) else []
     digest = result.get("body_sha")
+    asked = view.get("asked") if isinstance(view.get("asked"), list) else []
     # 13 hex digits fit a JavaScript number exactly.
     stamp = int(digest[:13], 16) if isinstance(digest, str) and len(digest) >= 13 else 0
     parked = sum(1 for item in items
                  if item.get("kind") in PARKED_KINDS and item.get("state") == "open")
+    asked_open = sum(1 for question in asked
+                     if isinstance(question, dict) and question.get("state") == "open")
     return {"state": "ok", "path": path, "count": len(items), "parked": parked,
-            "stamp": stamp, "delegated": delegated_cards(view)}, path
+            "asked_open": asked_open, "stamp": stamp, "delegated": delegated_cards(view)}, path
 
 
 def board_review(workspace, session_id, seconds=LEDGERS_SECONDS):

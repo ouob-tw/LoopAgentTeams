@@ -30,7 +30,8 @@ KIND_LABELS = {PARKED: '擱置', 'parked-row': '擱置的票', 'proxy-confirmed'
 # (section key, heading), in the Spec's order.
 SECTIONS = (('parked', '擱置等你的事'), ('goal', '本輪目標與做完條件'), ('top', '最該先看的幾項'),
             ('assumed', '假設'), ('proxy-confirmed', '代確認的票'),
-            ('prototype-decided', '樣品決定'), ('done', '本輪完成的票'))
+            ('prototype-decided', '樣品決定'), ('asked', '無人期間問過你的題'),
+            ('done', '本輪完成的票'))
 SECTION_OF = {PARKED: 'parked', 'parked-row': 'parked', 'proxy-confirmed': 'proxy-confirmed',
               'assumed': 'assumed', 'prototype-decided': 'prototype-decided'}
 ROW_STATES = {'unassigned': '未派工', 'assigned': '已派工', 'in_progress': '進行中',
@@ -41,6 +42,8 @@ SOURCE_LABELS = {'settings-default': '主控擬出（設定預設開啟）', 'bo
 OPINION = re.compile(r'^(?:- )?(\S+?（[^）]*）)：\s*(agree|disagree)\s*；\s*(\S.*)$',
                      re.IGNORECASE)
 ANSWER_HEADING = re.compile(r'^## 答覆（r\d+，[^，]+，(.+)）\s*$')
+# The statuses of a question asked during the grant (#661): still waiting, or answered.
+ASKED_STATUSES = ('pending', *ANSWERED)
 
 
 def one_line(text):
@@ -70,22 +73,36 @@ def section_lines(lines, heading):
     return found
 
 
-def review_answer(lines):
-    """(time, text) of the last answer recorded from the review, or None."""
-    found, current = None, None
+def answer_sections(lines):
+    """Every `## 答覆（…）` section of a record, in order, as dict(at, text, review): its time,
+    its last `- 答覆：` line, and whether it was recorded from the review."""
+    found, inside = [], False
     for line in lines:
         if line.startswith('## '):
             match = ANSWER_HEADING.match(line)
-            current = dict(at=match[1], text='', review=False) if match else None
+            inside = bool(match)
+            if match:
+                found.append(dict(at=match[1], text='', review=False))
             continue
-        if current is None:
+        if not inside:
             continue
         if line.startswith('- 答覆：'):
-            current['text'] = line[len('- 答覆：'):].strip()
+            found[-1]['text'] = line[len('- 答覆：'):].strip()
         elif line.startswith('- 來源：') and REVIEW_SOURCE in line:
-            current['review'] = True
-            found = (current['at'], current['text'])
+            found[-1]['review'] = True
     return found
+
+
+def review_answer(lines):
+    """(time, text) of the last answer recorded from the review, or None."""
+    answers = [answer for answer in answer_sections(lines) if answer['review']]
+    return (answers[-1]['at'], answers[-1]['text']) if answers else None
+
+
+def last_answer(lines):
+    """(time, text) of the record's last answer, from any source, or None."""
+    answers = answer_sections(lines)
+    return (answers[-1]['at'], answers[-1]['text']) if answers else None
 
 
 def record_round(lines):
@@ -219,6 +236,35 @@ def decision_items(directory, session, round_number, workspace):
             continue
         items.append(decision_item(path, lines, kind, answer, workspace))
     return items, problems
+
+
+def asked_items(directory, session, round_number):
+    """The questions this session asked the user during this round's grant (#661): records whose
+    `- grant:` line cites the round, still pending or answered. Delegated records (an overturn
+    makes one answered, its advisor still `proxy`) and parked ones (written before #661, with a
+    `- parked-reason:`) are review items instead. A record that cannot be read is skipped here;
+    decision_items reports it."""
+    asked = []
+    if not directory.is_dir():
+        return asked
+    for path in sorted(directory.glob('*.md')):
+        try:
+            status = read_decision_status(path).status
+            if status not in ASKED_STATUSES or read_decision_session(path) != session:
+                continue
+            lines = path.read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if record_round(lines) != round_number or field(lines, 'parked-reason') is not None:
+            continue
+        if (field(lines, 'advisor') or '').lower().split()[:1] == ['proxy']:
+            continue
+        answer = last_answer(lines) if status in ANSWERED else None
+        asked.append(dict(id=path.stem, title=title_of(lines, path.stem),
+                          state='open' if status == 'pending' else 'answered',
+                          answer=answer[1] if answer else None,
+                          answered_at=answer[0] if answer else None))
+    return asked
 
 
 # Work ledger -----------------------------------------------------------------------------------
@@ -393,8 +439,10 @@ def collect(*, lat, workspace, session, round_number, versions, decisions, end_l
              f'第 {last["version"]} 版生效中' if last['ended_at'] is None else
              f'已結束（第 {last["version"]} 版，{end_labels.get(last["end_reason"], last["end_reason"])}，'
              f'{last["ended_at"]}）')
+    # Not review items: the file lists them in a section of their own, the board's review tab in a group (#664).
+    asked = asked_items(Path(decisions), session, round_number)
     return dict(session=session, round=round_number, grant=grant, goals=goals, items=items,
-                top=top, done_tickets=done, problems=problems,
+                asked=asked, top=top, done_tickets=done, problems=problems,
                 sections=[dict(key=key, heading=heading) for key, heading in SECTIONS])
 
 
@@ -432,6 +480,17 @@ def render_body(view):
                 lines += [f'## {heading}', '']
                 lines += [f'{n}. {by_id[i]["id"]}（{by_id[i]["kind_label"]}）{by_id[i]["title"]}'
                           f'：{one_line(by_id[i]["did"])}' for n, i in enumerate(view['top'], 1)]
+                lines.append('')
+            continue
+        if key == 'asked':
+            # The questions asked during the grant (#664): listed so the file, and its hash,
+            # change when one is asked or answered.
+            if view['asked']:
+                lines += [f'## {heading}', '']
+                lines += [f'- {q["id"]} {one_line(q["title"])}：'
+                          + (f'你答（{q["answered_at"]}）：{one_line(q["answer"])}' if q['answer']
+                             else '已回答' if q['state'] == 'answered' else '等你回答')
+                          for q in view['asked']]
                 lines.append('')
             continue
         if key == 'done':

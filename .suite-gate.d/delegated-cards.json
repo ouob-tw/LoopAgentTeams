@@ -3,6 +3,8 @@
    "tests": ["board/tests/unit/delegated.test.ts", "board/tests/server/delegated.test.ts", "board/tests/browser/delegated-cards.test.ts", "skills/local/lat/tests/test_lat_unattended_review.py"]},
   {"paths": ["board/src/lib/board/delegated-ui.svelte.ts", "board/src/lib/board/review-ui.svelte.ts", "board/src/lib/components/DelegatedCards.svelte", "board/src/lib/components/ControllerInfo.svelte", "board/src/lib/components/RosterCard.svelte", "board/src/lib/components/RosterRail.svelte", "board/src/app.css"],
    "tests": ["board/tests/browser/delegated-cards.test.ts"]},
+  {"paths": ["board/src/lib/components/DelegatedRow.svelte", "board/src/lib/board/delegated.ts", "board/src/lib/board/delegated-ui.svelte.ts", "skills/local/lat/scripts/_lat_review.py"],
+   "tests": ["board/tests/browser/delegated-cards.test.ts", "board/tests/browser/review-tab.test.ts", "board/tests/unit/review.test.ts"]},
   {"paths": ["board/tests/unit/delegated.test.ts"], "tests": ["board/tests/unit/delegated.test.ts"]},
   {"paths": ["board/tests/server/delegated.test.ts"], "tests": ["board/tests/server/delegated.test.ts"]},
   {"paths": ["board/tests/browser/delegated-cards.test.ts"], "tests": ["board/tests/browser/delegated-cards.test.ts"]},

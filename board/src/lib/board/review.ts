@@ -1,6 +1,8 @@
 // A round's unattended review as the board shows it: what `lat-unattended review show --json`
 // prints, kept to what a page needs, and the words of the message 推翻 and 回覆 send. The review
-// file's layout and order are lat-unattended's; nothing here reorders or rewrites them.
+// file's layout and order are lat-unattended's; the review tab groups them (reviewGroups).
+import { cardsFrom, shortTime, unseenCount, type DelegatedCard } from './delegated.ts';
+import type { UnattendedView } from './unattended.ts';
 
 export type ReviewKind = 'parked' | 'parked-row' | 'proxy-confirmed' | 'assumed' | 'prototype-decided';
 export type ReviewItemState = 'open' | 'answered' | 'overturned';
@@ -34,17 +36,27 @@ export interface ReviewGoal {
 	maxHours: number;
 }
 
+/** A question the controller asked the user during this round's grant (#661, `- grant:`). */
+export interface AskedQuestion {
+	/** The decision record's ID, which is also the question's ID on the board. */
+	id: string;
+	title: string;
+	state: 'open' | 'answered';
+	/** The recorded answer; null while open, or when the record holds none. */
+	answer: string | null;
+	answeredAt: string | null;
+}
+
 export interface Review {
 	grant: string;
 	goals: ReviewGoal[];
 	items: ReviewItem[];
-	/** IDs of the items 最該先看的幾項 lists, in order. */
-	top: string[];
-	doneTickets: string[];
-	/** Sources the tool could not read. */
+	/** The delegated items in full, in the review's order (the review tab's 代決 rows). */
+	delegated: DelegatedCard[];
+	/** The questions asked during this round's grant, in the tool's order. */
+	asked: AskedQuestion[];
+	/** Sources the tool could not read, and a line for review items the board could not show. */
 	problems: string[];
-	/** Every section of the review file, in its order, with its heading. */
-	sections: { key: string; heading: string }[];
 }
 
 const record = (value: unknown): Record<string, unknown> => (typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {});
@@ -61,11 +73,17 @@ export function reviewFrom(payload: unknown): Review | null {
 	const view = record(given.view);
 	if (given.status !== 'ok' || typeof given.path !== 'string' || !Array.isArray(view.items)) return null;
 	const items: ReviewItem[] = [];
+	let unknown = 0;
 	for (const raw of view.items) {
 		const item = record(raw);
-		// Auto actions are no longer review items; a payload that still has them reads without them.
+		// Auto actions are no longer review items, and an item the board does not know is left out
+		// too, with a line under 讀不出的來源: an old review, or one from a newer tool, still opens
+		// with the rest.
 		if (item.kind === 'auto') continue;
-		if (typeof item.id !== 'string' || !KINDS.includes(text(item.kind)) || !STATES.includes(text(item.state))) return null;
+		if (typeof item.id !== 'string' || !KINDS.includes(text(item.kind)) || !STATES.includes(text(item.state))) {
+			unknown++;
+			continue;
+		}
 		items.push({
 			id: item.id,
 			kind: item.kind as ReviewKind,
@@ -98,13 +116,38 @@ export function reviewFrom(payload: unknown): Review | null {
 			};
 		}),
 		items,
-		top: strings(view.top),
-		doneTickets: strings(view.done_tickets),
-		problems: strings(view.problems),
-		sections: list(view.sections)
-			.map((raw) => ({ key: text(record(raw).key), heading: text(record(raw).heading) }))
-			.filter((section) => section.key && section.heading)
+		delegated: cardsFrom(view.items),
+		asked: list(view.asked).flatMap((raw): AskedQuestion[] => {
+			const asked = record(raw);
+			if (typeof asked.id !== 'string') return [];
+			const answer = typeof asked.answer === 'string' && asked.answer.trim() ? asked.answer : null;
+			return [{ id: asked.id, title: text(asked.title) || asked.id, state: asked.state === 'answered' ? 'answered' : 'open', answer, answeredAt: typeof asked.answered_at === 'string' ? asked.answered_at : null }];
+		}),
+		problems: [...strings(view.problems), ...(unknown ? [`回顧裡有 ${unknown} 項看板認不得，沒有列出`] : [])]
 	};
+}
+
+/** The review tab's groups, in order (#664); a group with nothing in it is left out by the page.
+ *  `fresh`: the IDs of the delegated cards the controller page still lists as not seen (a grant
+ *  ending takes them off it). */
+export function reviewGroups(review: Pick<Review, 'items' | 'delegated' | 'asked'>, fresh: ReadonlySet<string>) {
+	const unseen = review.delegated.filter((card) => card.state === 'open' && fresh.has(card.id));
+	return {
+		unseen,
+		settled: review.delegated.filter((card) => !unseen.includes(card)),
+		asked: review.asked,
+		/** Parked items, written before #661 parked became a question: answered with 回覆. */
+		parked: review.items.filter(isParked)
+	};
+}
+
+/** What a question asked during the grant says under its title. `waiting`: its card is still in
+ *  the inbox, null when it is not; `sent` when the user's answer went out but is not recorded yet.
+ *  An ended controller's question can no longer be answered on the board. */
+export function askedLabel(asked: Pick<AskedQuestion, 'state' | 'answer'>, inactive: boolean, waiting: { sent: boolean } | null): string {
+	if (asked.state === 'answered') return asked.answer ? `你答：${asked.answer}` : '已回答';
+	if (waiting?.sent) return '已送出答覆，等主控記下';
+	return inactive ? '沒答到，主控已結束' : '等你回答';
 }
 
 /** A parked item is answered with 回覆; every other kind is overturned with 推翻. */
@@ -114,6 +157,24 @@ export const actionWord = (item: Pick<ReviewItem, 'kind'>): '回覆' | '推翻' 
 /** What the controller is sent: the item's ID and title, then the user's words. */
 export function reviewMessage(item: Pick<ReviewItem, 'id' | 'title' | 'kind'>, words: string): string {
 	return `回顧項目 ${item.id}「${item.title}」${actionWord(item)}：${words.trim()}`;
+}
+
+/** What the user wrote to overturn a card: the recorded answer without the start of the message
+ *  reviewMessage builds, or without the bare 「推翻：」 a controller may record before the words.
+ *  An answer recorded in other words is shown as it is. */
+export function overturnWords(card: Pick<DelegatedCard, 'id' | 'title' | 'kind' | 'answer'>): string {
+	const answer = (card.answer ?? '').trim();
+	const start = reviewMessage(card, '');
+	if (answer.startsWith(start)) return answer.slice(start.length).trim();
+	return answer.replace(/^推翻[：:]/, '').trim();
+}
+
+/** A card that is no longer new, as the review tab says it: left alone it counts as agreed. */
+export function settledLabel(card: Pick<DelegatedCard, 'id' | 'title' | 'kind' | 'state' | 'answer' | 'answeredAt'>): string {
+	if (card.state !== 'overturned') return '沒推翻，算同意';
+	const when = card.answeredAt ? `（${shortTime(card.answeredAt)}）` : '';
+	const words = overturnWords(card);
+	return `已由你推翻${when}${words ? `：${words}` : ''}`;
 }
 
 /** The record an evidence entry opens with, one of the two kinds lat-unattended cites
@@ -151,4 +212,13 @@ export function evidencePieces(text: string): EvidencePiece[] {
 	}
 	if (last < text.length) pieces.push({ kind: 'text', text: text.slice(last) });
 	return pieces;
+}
+
+/** The 回顧 tab's number (#664): what still needs the user: 代決 not opened yet, questions asked
+ *  during the grant and not answered (only while the controller can still take an answer), and
+ *  open parked items from before #661. Null without a review. */
+export function reviewTabCount(controller: { unattended: UnattendedView }, inactive: boolean): number | null {
+	const review = 'review' in controller.unattended ? controller.unattended.review : undefined;
+	if (review?.state !== 'ok') return null;
+	return unseenCount(controller) + (inactive ? 0 : review.askedOpen) + review.parked;
 }
