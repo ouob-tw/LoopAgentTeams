@@ -421,3 +421,46 @@ class DelegatedCardTests(ReviewCase):
                 self.assertEqual(self.cards(), [f'LAT-{reason}'])
                 self.unattended('close', '--reason', reason)
                 self.assertEqual(self.cards(), [])
+
+
+class AskedQuestionTests(ReviewCase):
+    """#664: the questions asked during this round's grant, for the board's review tab: told by
+    their `- grant:` line, waiting or answered with the answer; never delegated or parked ones,
+    and the review file does not list them."""
+
+    def question(self, name, *, status='pending', grant='r1 v1', session=SESSION, advisor='needs-human',
+                 tail=''):
+        lines = [f'# {name} 通知卡片要不要加關閉鈕？', '', f'- status: {status}', f'- advisor: {advisor}',
+                 f'- session: {session}']
+        if grant:
+            lines.append(f'- grant: {grant}')
+        lines += ['- version: r1', '- question: 通知卡片要不要加關閉鈕', '- options: A 要加 / B 不加']
+        (self.decisions / f'{name}.md').write_text('\n'.join(lines) + '\n' + tail)
+
+    def test_waiting_and_answered_questions_of_this_grant_are_listed(self):
+        self.grant()
+        self.question('Q-OPEN')
+        self.question('Q-DONE', status='approved', tail=(
+            '\n## 答覆（r1，面板，2026-11-16T10:00:00+08:00）\n\n- 答覆：A. 要加\n- 核准：加關閉鈕\n'))
+        self.question('Q-OLD', grant='r2 v1')
+        self.question('Q-NOGRANT', grant=None)
+        self.question('Q-OTHER', session=OTHER)
+        self.question('Q-RESOLVED', status='advisor-resolved', advisor='resolved')
+        self.question('Q-OVERTURN', status='answered', advisor='proxy assume-defaults', tail=(
+            '\n## 答覆（r1，聊天，2026-11-16T10:00:00+08:00）\n\n- 答覆：推翻\n'
+            '- 來源：聊天（回顧項目）\n'))
+        self.parked()
+        self.delegated('LAT-AS')
+        result = self.review('show')
+        asked = result['view']['asked']
+        self.assertEqual([entry['id'] for entry in asked], ['Q-DONE', 'Q-OPEN'])
+        done, waiting = asked
+        self.assertEqual((done['state'], done['answer'], done['answered_at'], done['grant_version']),
+                         ('answered', 'A. 要加', '2026-11-16T10:00:00+08:00', 1))
+        self.assertEqual(done['title'], '通知卡片要不要加關閉鈕？')
+        self.assertEqual((waiting['state'], waiting['answer'], waiting['answered_at']),
+                         ('open', None, None))
+        self.assertEqual(waiting['question'], '通知卡片要不要加關閉鈕')
+        # They stay out of the items and out of the review file.
+        self.assertNotIn('Q-OPEN', [item['id'] for item in result['view']['items']])
+        self.assertNotIn('Q-OPEN', self.md.read_text())
