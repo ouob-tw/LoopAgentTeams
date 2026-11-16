@@ -8,8 +8,9 @@ from typing import NamedTuple
 # Exemptions that need a `- exempt-basis:` line, checked by lat-preauth's exempt_basis_problem.
 EXEMPT_BASIS_CATEGORIES = ('prior-promise', 'must-ask')
 
-# Unattended mode (references/unattended.md): a parked item waits for the user like a pending one
-# but is never sent; a delegated record is the two advisors' decision under the grant.
+# Unattended mode (references/unattended.md): a parked item (written before #661; no longer
+# written) waits for the user like a pending one; a delegated record is the two advisors'
+# decision under the grant.
 PARKED = 'parked'
 WAITABLE_STATUSES = ('pending', PARKED)
 # Delegated status -> (the word after `- advisor: proxy`, the grant scope key that allows it).
@@ -240,7 +241,7 @@ def delegated_record_problems(path, status):
     opinions = [OPINION.match(line.strip()) for line in _section(lines, '參謀意見')]
     opinions = [match for match in opinions if match]
     if any(match[2].lower() == 'disagree' for match in opinions):
-        problems.append('有參謀不同意；應記為擱置（`- status: parked`）')
+        problems.append('有參謀不同意；不能代決，改用 `question ask` 發待決題問使用者')
     agreed = {match[1] for match in opinions if match[2].lower() == 'agree'}
     if len(agreed) < 2:
         problems.append('缺參謀結論：`## 參謀意見` 須有兩位不同參謀各一行 '

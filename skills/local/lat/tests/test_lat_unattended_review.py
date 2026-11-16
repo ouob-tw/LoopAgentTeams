@@ -327,8 +327,8 @@ class CrossCheckTests(ReviewCase):
 
 class DoneHoldTests(ReviewCase):
     def test_done_is_held_once_until_the_review_is_cross_checked(self):
+        self.parked()  # a parked record from before #661; one written under the grant is held
         self.grant()
-        self.parked()
         self.assert_held(self.stop('完成\nDONE: 交付'), 'LAT 回顧核對未通過', 'review verify',
                          '--total 1')
         released = self.stop('完成\nDONE: 交付', active=True)

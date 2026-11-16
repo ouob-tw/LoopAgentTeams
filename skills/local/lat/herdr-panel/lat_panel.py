@@ -119,7 +119,7 @@ import argparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from lat_decision_status import (advisor_error, exempt_basis_category, read_advisor_words,
-                                 read_decision_action, read_decision_kind,
+                                 read_decision_action, read_decision_kind, read_decision_session,
                                  read_decision_status, read_exempt_basis, read_tried)
 from _lat_common import plugin_directory, run_cli, write_text_atomic as _replace_locked
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -778,6 +778,24 @@ def _check_exempt_basis(advisor_words, basis, decisions):
         print(f"lat-panel: exempt {category} 無法判斷，未攔下：{warning}", file=sys.stderr)
 
 
+def _unattended_grant(decisions, session):
+    """``r<round> v<version>`` of the unattended grant in effect for ``session``, read through
+    lat-unattended (the decisions folder's parent is the .lat folder), else None. A grant that
+    cannot be read only warns: the question is still asked, without the line."""
+    lat = Path(decisions).resolve().parent
+    if not session or not (lat / "sessions" / f"{session}.json").is_file():
+        return None
+    try:
+        status = _lat_session().unattended_module().snapshot(lat, session)
+    except Exception as error:  # noqa: BLE001 - a broken grant read never stops a question
+        print(f"lat-panel: 讀不到無人授權，題目照常寫入但沒有 `- grant:` 行：{error}",
+              file=sys.stderr)
+        return None
+    if status.get("state") != "active":
+        return None
+    return f"r{status['round']} v{status['version']['version']}"
+
+
 def _ask(args):
     """One controller command per question: record, panel question, version, gap check."""
     text = _input_section(args)
@@ -842,7 +860,8 @@ def _ask(args):
                 args.id, incoming, advisor=args.advisor, session_id=session,
                 question=args.question, authority_gap=args.authority_gap,
                 blocked_work=args.blocked_work, help_question=help_question,
-                exempt_basis=args.exempt_basis, tried=args.tried))
+                exempt_basis=args.exempt_basis, tried=args.tried,
+                grant=_unattended_grant(args.decisions, session)))
     code = 1
     try:
         code, revision, written = _upsert(args.questions, args.decisions, args.id, text,
@@ -864,7 +883,9 @@ def _ask(args):
                              "change the question to ask again")
         sync_decision_record(path, revision, reopen=reopen,
                              help_question=args.help_question,
-                             question_id=args.id, incoming=incoming, question=args.question)
+                             question_id=args.id, incoming=incoming, question=args.question,
+                             grant=_unattended_grant(args.decisions,
+                                                     read_decision_session(path)))
     return _report_pending(args.questions, args.decisions, _ask_session(args.questions),
                            quiet=True)
 
