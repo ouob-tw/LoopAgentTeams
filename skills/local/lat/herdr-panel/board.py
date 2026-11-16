@@ -1,5 +1,6 @@
 """Board question and answer JSON assembly."""
 
+import hashlib
 import json
 from pathlib import Path
 import queue
@@ -378,7 +379,8 @@ def review_summary(workspace, session_id, seconds):
     ``{state: ok, path, count, parked, stamp, delegated}`` when it has one (``delegated``: the
     cards ``delegated_cards`` keeps), ``{state: error, reason}``
     when it could not be read. ``stamp`` changes whenever the review's content does, also for
-    an old review file that is no longer rewritten."""
+    an old review file that is no longer rewritten, and whenever a question asked during the
+    grant is answered."""
     seconds = min(LEDGER_READ_SECONDS, seconds)
     if seconds <= 0:
         return {"state": "error", "reason": _TIME_UP}, None
@@ -392,6 +394,12 @@ def review_summary(workspace, session_id, seconds):
         return {"state": "none"}, None
     items = view.get("items") if isinstance(view.get("items"), list) else []
     digest = result.get("body_sha")
+    asked = view.get("asked")
+    if isinstance(digest, str) and asked:
+        # The questions asked during the grant are not in the review file, so their answers
+        # change the stamp too: the review tab reads them again (#664).
+        digest = hashlib.sha256(
+            (digest + json.dumps(asked, sort_keys=True, ensure_ascii=False)).encode()).hexdigest()
     # 13 hex digits fit a JavaScript number exactly.
     stamp = int(digest[:13], 16) if isinstance(digest, str) and len(digest) >= 13 else 0
     parked = sum(1 for item in items

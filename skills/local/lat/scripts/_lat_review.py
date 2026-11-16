@@ -41,6 +41,8 @@ SOURCE_LABELS = {'settings-default': '主控擬出（設定預設開啟）', 'bo
 OPINION = re.compile(r'^(?:- )?(\S+?（[^）]*）)：\s*(agree|disagree)\s*；\s*(\S.*)$',
                      re.IGNORECASE)
 ANSWER_HEADING = re.compile(r'^## 答覆（r\d+，[^，]+，(.+)）\s*$')
+# The statuses of a question asked during the grant (#661): still waiting, or answered.
+ASKED_STATUSES = ('pending', *ANSWERED)
 
 
 def one_line(text):
@@ -86,6 +88,18 @@ def review_answer(lines):
             current['review'] = True
             found = (current['at'], current['text'])
     return found
+
+
+def last_answer(lines):
+    """(time, text) of the record's last answer section, from any source, or None."""
+    found = None
+    for line in lines:
+        if line.startswith('## '):
+            match = ANSWER_HEADING.match(line)
+            found = dict(at=match[1], text='') if match else found
+        elif found is not None and line.startswith('- 答覆：') and not found['text']:
+            found['text'] = line[len('- 答覆：'):].strip()
+    return (found['at'], found['text']) if found else None
 
 
 def record_round(lines):
@@ -219,6 +233,36 @@ def decision_items(directory, session, round_number, workspace):
             continue
         items.append(decision_item(path, lines, kind, answer, workspace))
     return items, problems
+
+
+def asked_items(directory, session, round_number):
+    """The questions this session asked the user during this round's grant (#661): records whose
+    `- grant:` line cites the round, still pending or answered. Delegated records (an overturn
+    makes one answered, its advisor still `proxy`) and parked ones (written before #661, with a
+    `- parked-reason:`) are review items instead. A record that cannot be read is skipped here;
+    decision_items reports it."""
+    asked = []
+    if not directory.is_dir():
+        return asked
+    for path in sorted(directory.glob('*.md')):
+        try:
+            status = read_decision_status(path).status
+            if status not in ASKED_STATUSES or read_decision_session(path) != session:
+                continue
+            lines = path.read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if record_round(lines) != round_number or field(lines, 'parked-reason') is not None:
+            continue
+        if (field(lines, 'advisor') or '').lower().split()[:1] == ['proxy']:
+            continue
+        answer = last_answer(lines) if status in ANSWERED else None
+        asked.append(dict(id=path.stem, title=title_of(lines, path.stem),
+                          question=field(lines, 'question'), grant_version=record_version(lines),
+                          state='open' if status == 'pending' else 'answered',
+                          answer=answer[1] if answer else None,
+                          answered_at=answer[0] if answer else None))
+    return asked
 
 
 # Work ledger -----------------------------------------------------------------------------------
@@ -393,8 +437,10 @@ def collect(*, lat, workspace, session, round_number, versions, decisions, end_l
              f'第 {last["version"]} 版生效中' if last['ended_at'] is None else
              f'已結束（第 {last["version"]} 版，{end_labels.get(last["end_reason"], last["end_reason"])}，'
              f'{last["ended_at"]}）')
+    # Not review items: the review file does not list them, only the board's review tab (#664).
+    asked = asked_items(Path(decisions), session, round_number)
     return dict(session=session, round=round_number, grant=grant, goals=goals, items=items,
-                top=top, done_tickets=done, problems=problems,
+                asked=asked, top=top, done_tickets=done, problems=problems,
                 sections=[dict(key=key, heading=heading) for key, heading in SECTIONS])
 
 
