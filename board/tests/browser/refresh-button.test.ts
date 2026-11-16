@@ -49,7 +49,7 @@ beforeAll(async () => {
 	await size(1280, 800);
 	await tab.navigate(`${fixture.url}/`);
 	await tab.boardStarted();
-}, 30_000);
+}, TEST_MS);
 afterAll(async () => {
 	await browser?.close();
 	await fixture?.cleanup();
