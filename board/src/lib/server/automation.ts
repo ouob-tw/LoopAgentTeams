@@ -763,7 +763,7 @@ export function createAutomation(options: {
 			adopted,
 			// An unattended controller's turn waiting on its agents goes on; one ending DECIDE:/HELP:
 			// waits for the user like a manual run's ASK: (#665).
-			...(task.agent!.unattended ? { goesOn: controllerGoesOn, ending: 'DONE 或 FAILED', quotaStops: true } : {}),
+			...(task.agent!.unattended ? { goesOn: controllerGoesOn, ending: 'DONE、FAILED、DECIDE 或 HELP', quotaStops: true } : {}),
 			asking: {
 				tags: task.agent!.unattended ? ['DECIDE', 'HELP'] : undefined,
 				waiting: () => openAsk(latest(run)) !== undefined,
