@@ -85,6 +85,13 @@ WORKTREE_PLACEHOLDER = '<worktree>'
 TAIL_LINES = 20
 TAIL_BYTES = 8192
 KILL_GRACE_SECONDS = 5.0
+# Total time a test command may run: the registry's `time_limit_minutes`, else the suite's
+# recorded baseline x TIME_LIMIT_FACTOR (at least TIME_LIMIT_FLOOR), else TIME_LIMIT_DEFAULT.
+TIME_LIMIT_KEY = 'time_limit_minutes'
+TIME_LIMIT_FACTOR = 4
+TIME_LIMIT_FLOOR = 1800.0
+TIME_LIMIT_DEFAULT = 7200.0
+TIMEOUT_EXIT = 124  # the exit code recorded for a command stopped at its time limit
 RECLAIM_HISTORY = 10  # reclaim records kept in the shared state
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 FALLBACK_NOTE = ('running the suite in a new session instead; its usage is not measured and '
@@ -1609,6 +1616,7 @@ class Gate:
         self.sampler = None
         self.keeper = self.keeper_pid = None  # holds the group open until it is measured
         self.finished = False  # the suite exited by itself
+        self.timed_out = None  # {limit_s, limit_source} when the last command hit its limit
         self.key = None  # what its measured usage is filed under
         self.measured = None  # ((profile_history, ledger version), reservation) for self.key
         self.scopes = None  # whether an empty user scope started, probed once before queueing
@@ -1929,12 +1937,15 @@ class Gate:
         else:
             end_session(self.child.pid, self.child)
 
-    def _run_command(self, argv, cwd, scan=None):
+    def _run_command(self, argv, cwd, scan=None, command=None):
         """Run argv in cwd as this gate's suite, its output passed through (and fed to scan),
         and wait for it: (exit code, output tail, profile, seconds, start, end), the start
-        and end as UTC datetimes. OSError when it cannot start."""
+        and end as UTC datetimes. OSError when it cannot start. Past time_limit() it ends
+        the suite's whole group (or session), sets self.timed_out and exits TIMEOUT_EXIT."""
         self.child = self.group = self.sampler = self.keeper = self.keeper_pid = None
         self.finished = False
+        self.timed_out = None
+        limit, source = time_limit(cwd, command or normalize_command(argv))
         started = time.monotonic()
         # The reaper logs whole seconds; a kill in the run's first second must still count.
         started_at = datetime.now(timezone.utc).replace(microsecond=0)
@@ -1946,7 +1957,19 @@ class Gate:
                                           ('err', child.stderr, sys.stderr.buffer))]
         for thread in pumps:
             thread.start()
-        code = child.wait()
+        try:
+            code = child.wait(timeout=limit)
+        except subprocess.TimeoutExpired:
+            warn(f'TIMED OUT: still running after its {fmt_seconds(limit)} limit ({source}); '
+                 'stopping it and every process it started')
+            self.timed_out = {'limit_s': round(limit, 1), 'limit_source': source}
+            self.end_suite()
+            try:
+                child.wait(KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:  # the group kill failed and it ignores SIGTERM
+                child.kill()
+                child.wait()
+            code = TIMEOUT_EXIT
         self.finished = True
         ended_at = datetime.now(timezone.utc)
         for thread in pumps:
@@ -1956,6 +1979,15 @@ class Gate:
         profile = self.measure(time.monotonic() - started)
         return (128 - code if code < 0 else code, tail, profile, time.monotonic() - started,
                 started_at, ended_at)
+
+    def timed_out_report(self, scan, named):
+        """self.timed_out with the test files the output shows had not finished (named: the
+        files the command names, relative to its directory), warned."""
+        files, basis = scan.unfinished(named)
+        warn('the run timed out, so it counts as failed and is not rerun or reused; '
+             + (f"test files that had not finished ({basis}): {', '.join(files)}" if files
+                else basis))
+        return dict(self.timed_out, unfinished_files=files, unfinished_basis=basis)
 
     def plan_rerun(self, scan):
         """rerun_plan() for this run's output, with the project's affected.commands; why not
@@ -1980,14 +2012,18 @@ class Gate:
         for directory, tests in groups.items():
             text, cwd = affected_text(root, commands, directory, tests)
             warn(f'rerunning {len(tests)} failed test file(s) once in {directory}: {text}')
+            scan = TestScan()
             try:
-                code, tail, _, seconds, _, _ = self._run_command(shell_argv(text), cwd)
+                code, tail, _, seconds, _, _ = self._run_command(shell_argv(text), cwd, scan)
             except OSError as exc:
                 warn(f'could not start the rerun: {exc}')
                 code, tail, seconds = first_code, None, 0.0
             runs.append({'dir': directory, 'command': text, 'tests': tests, 'exit_code': code,
                          'duration_s': round(seconds, 1),
                          'output_tail': tail.text() if tail else ''})
+            if self.timed_out:
+                runs[-1]['timed_out'] = self.timed_out_report(
+                    scan, [dir_relative(t, directory) for t in tests])
         return {'exit_code': next((r['exit_code'] for r in runs if r['exit_code']), 0),
                 'first_exit_code': first_code,
                 'duration_s': round(time.monotonic() - started, 1), 'runs': runs}
@@ -1998,10 +2034,13 @@ class Gate:
         try:
             argv = shell_argv(self.argv[0]) if len(self.argv) == 1 else self.argv
             code, tail, profile, seconds, started_at, ended_at = self._run_command(
-                argv, self.cwd, scan)
+                argv, self.cwd, scan, self.command)
         except OSError as exc:
             warn(f'could not start the command: {exc}')
             return 127
+        named = self.extra.get('selected_tests') if info and self.template else None
+        timed_out = self.timed_out and self.timed_out_report(
+            scan, [dir_relative(t, info['rel_cwd']) for t in named or []])
         reaped = (reaped_during(self.cwd, started_at, ended_at) if code == 0
                   else reaped_after_failure(self.cwd, started_at, ended_at))
         duration = round(seconds, 1)
@@ -2009,7 +2048,9 @@ class Gate:
         changed = info is not None and after['fingerprint'] != info['fingerprint']
         rerun = flaky = None
         if code and info is not None:
-            plan = 'the content changed during the run' if changed else self.plan_rerun(scan)
+            plan = ('the run timed out' if timed_out
+                    else 'the content changed during the run' if changed
+                    else self.plan_rerun(scan))
             if isinstance(plan, str):
                 rerun = {'skipped': plan}
                 warn(f'failed tests not rerun: {plan}')
@@ -2026,6 +2067,8 @@ class Gate:
                              f"{f['file']} ({', '.join(f['tests'])})" for f in flaky))
                 else:
                     warn(f'the rerun failed too (exit {code}): the run counts as failed')
+                timed_out = next((dict(r['timed_out'], dir=r['dir']) for r in rerun['runs']
+                                  if r.get('timed_out')), None)
         record = {
             'fingerprint': info and info['fingerprint'], 'tree': info and info['tree'],
             'repo': info and info['repo'], 'command': self.command, 'cwd': str(self.cwd),
@@ -2038,6 +2081,8 @@ class Gate:
         }
         if rerun is not None:
             record.update(rerun=rerun, flaky=flaky or [], rerun_only=bool(flaky))
+        if timed_out:
+            record['timed_out'] = timed_out
         full = not self.extra.get('kind')
         files = full and scan.file_seconds(self.cwd, info and info['repo'],
                                            pytest=pytest_durations_0(self.argv, self.cwd))
@@ -2249,6 +2294,7 @@ BUN_PASS = re.compile(r'\(pass\) .+?(?: \[([\d.]+)(m?s)\])?')  # a very fast tes
 BUN_COUNT = re.compile(r' (\d+) (pass|fail|errors?)')
 BUN_FAILED_LIST = re.compile(r'\d+ tests? failed:')  # the closing list of failures
 BUN_DONE = re.compile(r'Ran \d+ tests? across \d+ files?\. \[.*\]')
+BUN_START = re.compile(r'bun test v\S+.*')
 UT_FAIL = re.compile(r'(FAIL|ERROR): (\S+) \(([^()\s]+)\)(?: .*)?')
 UT_RAN = re.compile(r'Ran \d+ tests? in [\d.]+s')
 UT_END = re.compile(r'(?:OK|FAILED)(?: \((.*)\))?')
@@ -2289,6 +2335,8 @@ class TestScan:
         self.bun_results = self.bun_counted = 0  # result lines under a file, summaries pass + fail
         self.pt_durations = {}
         self.pt_seconds = {}
+        self.bun_started = self.bun_parallel = self.bun_passes = False
+        self.bun_seen = set()  # files bun printed a result header for
 
     def add(self, key, chunk):
         *lines, rest = (self.partial.get(key, b'') + chunk).split(b'\n')
@@ -2302,6 +2350,24 @@ class TestScan:
             if rest:
                 self._line(key, rest)
         self.partial = {}
+
+    def unfinished(self, named=()):
+        """([test files], how the output shows it) for a run stopped at its time limit:
+        the file under serial bun's last header, or in a parallel run the named files
+        (relative to the command's directory) with no result; ([], why not) otherwise."""
+        if not self.bun_started:
+            return [], 'only bun test output shows which test files had not finished'
+        if not self.bun_passes:
+            return [], ('bun printed only failed tests (as it does when an AI agent runs it), '
+                        'so its output does not show which test files had not finished')
+        if not self.bun_parallel:
+            running = sorted({f for f in self.bun_file.values() if f})
+            return running, 'the file bun was running'
+        left = [t for t in named if os.path.normpath(t) not in self.bun_seen]
+        if left:
+            return left, ('named in the command but printed no result; in a parallel run a '
+                          'file that printed some may not have finished either')
+        return [], 'a parallel bun run does not show which test files had not finished'
 
     def _problem(self, why):
         if why not in self.problems:
@@ -2365,6 +2431,10 @@ class TestScan:
         if m := BUN_HEADER.fullmatch(line):
             self.bun_file[key] = m[1]
             self.bun_list[key] = False
+            self.bun_seen.add(os.path.normpath(m[1]))
+        elif BUN_START.fullmatch(line):
+            self.bun_started = True
+            self.bun_parallel = self.bun_parallel or 'PARALLEL' in line
         elif BUN_FAILED_LIST.fullmatch(line):
             self.bun_list[key] = True
         elif self.bun_list.get(key) and (m := BUN_FAIL.fullmatch(line)):
@@ -2373,6 +2443,7 @@ class TestScan:
             if not any(f[0] == 'bun test' and f[2] == m[1] for f in self.failures):
                 self._fail('bun test', None, m[1])
         elif m := BUN_PASS.fullmatch(line):
+            self.bun_passes = True
             self._bun_time(key, m[1], m[2])
         elif m := BUN_FAIL.fullmatch(line):
             self._fail('bun test', self.bun_file.get(key), m[1])
@@ -2748,6 +2819,11 @@ def affected_text(root, commands, directory, tests):
     rel = [t if directory == '.' else t[len(directory) + 1:] for t in tests]
     text = commands[directory].replace('{tests}', ' '.join(map(shlex.quote, rel)))
     return text, root if directory == '.' else root / directory
+
+
+def dir_relative(test, directory):
+    """A repo path relative to directory (a repo-relative directory, '.' for the root)."""
+    return test if directory == '.' else os.path.relpath(test, directory)
 
 
 def fmt_seconds(seconds):
@@ -3520,6 +3596,10 @@ def write_summary(root, checkout, run_id, base, changed, start, results, *, noth
     if ahead:
         warn(f'{purpose} summary: this result covers only {start[0][:12]}; HEAD of {root} is '
              f'now {head_commit(root)[:12]} ({ahead} more commit(s))')
+    for group in results:
+        if group.get('timed_out'):
+            warn(f"{purpose} summary: {group['kind']} in {group['dir']} TIMED OUT, "
+                 f"fingerprint {group['fingerprint']}")
     for group in record['rerun_only']:
         warn(f"{purpose} summary: {group['kind']} in {group['dir']} "
              f"{rerun_only_text(group['failed_first'])}, fingerprint {group['fingerprint']}; "
@@ -3778,6 +3858,7 @@ def group_result(kind, directory, command, code, gate=None, tests=None, not_run=
         'rerun_only': ({'fingerprint': ran.get('fingerprint'), 'failed_first': failed_first(ran)}
                        if ran and failed_first(ran) else None),
         'content_changed': bool(record and record.get('content_changed')),
+        'timed_out': bool(record and record.get('timed_out')),
         'reused': None if reused is None else {
             'time': reused.get('time'), 'agent': reused.get('agent'),
             'purpose': reused.get('purpose'), 'fingerprint': reused.get('fingerprint'),
@@ -4164,6 +4245,53 @@ def project_root(root):
 
 def unit_key(project, rel, command):
     return json.dumps([str(project), rel, command])
+
+
+def is_registered_suite(cwd, rel, command):
+    """Whether command is a registered full suite of directory rel."""
+    try:
+        suites = read_full_suites(load_registry(cwd) or {})
+    except ValueError:
+        return False
+    return any(s['cwd'] == rel and s['command'] == command for s in suites)
+
+
+def time_limit(cwd, command):
+    """(seconds, where they come from): the total time command may run in cwd. The
+    registry's `time_limit_minutes` (minutes, or minutes by directory with "*" for the
+    others) comes first; then TIME_LIMIT_FACTOR x the baseline of command's full suite (of
+    every full suite in that directory added up, for another command), at least
+    TIME_LIMIT_FLOOR; then TIME_LIMIT_DEFAULT."""
+    root = repo_root(Path(cwd))
+    if root is None:
+        return TIME_LIMIT_DEFAULT, 'the default, outside a Git work tree'
+    rel = rel_cwd(root, cwd)
+    setting = (load_registry(cwd) or {}).get(TIME_LIMIT_KEY)
+    if isinstance(setting, dict):
+        setting = {_dir_key(k) if k != '*' else k: v for k, v in setting.items()}
+        setting = setting.get(rel, setting.get('*'))
+    if setting is not None:
+        if _number(setting) and math.isfinite(setting) and setting > 0:
+            return float(setting) * 60, f'{TIME_LIMIT_KEY} in {REGISTRY_NAME}'
+        warn_once(f'{REGISTRY_NAME} {TIME_LIMIT_KEY} for {rel} is not minutes above 0: '
+                  f'{json.dumps(setting)}; ignoring it')
+    try:
+        units = json.loads((state_dir() / 'state.json').read_text()).get('cleanup')
+        units = list(units.values()) if isinstance(units, dict) else []
+    except (OSError, ValueError, AttributeError):
+        units = []
+    project = str(project_root(root))
+    here = [u for u in units if isinstance(u, dict) and u.get('project') == project
+            and u.get('rel_cwd') == rel and _number(u.get('baseline')) and u['baseline'] > 0]
+    own = [u for u in here if u.get('command') == command]
+    # A full suite with no baseline of its own gets the default, not its neighbours' sum.
+    here = own or ([] if is_registered_suite(cwd, rel, command) else here)
+    if here:
+        baseline = sum(u['baseline'] for u in here)
+        return (max(baseline * TIME_LIMIT_FACTOR, TIME_LIMIT_FLOOR),
+                f'{TIME_LIMIT_FACTOR}x the recorded baseline {fmt_seconds(baseline)}, '
+                f'at least {fmt_seconds(TIME_LIMIT_FLOOR)}')
+    return TIME_LIMIT_DEFAULT, f'the default: no {TIME_LIMIT_KEY} and no recorded baseline'
 
 
 def new_window(unit, baseline=None):
@@ -4639,11 +4767,17 @@ def cmd_status(as_json, fp_prefix, limit):
         files = r.get('reused_failed_first') if r.get('kind') == 'reuse' else failed_first(r)
         if files:
             result += ' ' + rerun_only_text(files)
+        if r.get('timed_out'):
+            result += f" TIMED OUT after {fmt_seconds(r['timed_out'].get('limit_s') or 0)}"
         rerun = f"  rerun: {r['rerun_reason']}" if r.get('rerun_reason') else ''
         purpose = f"  purpose: {describe_purpose(r)}" if r.get('purpose') else ''
         print(f"  {r.get('time')}  {result}  fp {(record_fingerprint(r) or '-')[:12]}  "
               f"{r.get('agent')}  {r.get('duration_s')}s  {r.get('cwd')}  "
               f"{r.get('command')}{rerun}{purpose}")
+        if (r.get('timed_out') or {}).get('unfinished_files'):
+            where = r['timed_out'].get('dir')
+            print(f"    not finished{' in ' + where if where else ''}: "
+                  f"{', '.join(r['timed_out']['unfinished_files'])}")
         retry = r.get('rerun')
         if isinstance(retry, dict) and retry.get('skipped'):
             print(f"    failed tests not rerun: {retry['skipped']}")

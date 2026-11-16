@@ -149,6 +149,16 @@ uv run --no-project python <skill>/scripts/suite-gate.py light -- '<指令>'
   - 失敗的測試檔超過 10 個，或第一次執行前後內容改變。
 - **紀錄**：一次執行只寫一筆，在重跑結束後寫入。結束碼取重跑的結果（有幾組時取第一個失敗的）。另記 `rerun` 與 `flaky`（見[紀錄與設定位置](#紀錄與設定位置)）。重跑才通過的紀錄另標 `rerun_only: true`，輸出與 `status` 在結果後寫 `PASSED ONLY ON RERUN (failed first: <檔案>)`：這可能是真的退步，審查者要看過才能合併（LAT 工作總表的 `done`、`check` 與合併的預先授權檢查要審查者看過後以 `lat-ledger.py review-result ... --rerun-ack <指紋>` 記下才放行）。重跑通過的整套紀錄與一般通過一樣可沿用；重跑期間內容改變時標為內容改變、不可沿用。不重跑時 `rerun` 只有 `skipped`（不重跑的原因），閘門也印出 `failed tests not rerun: <原因>`。
 
+## 時間上限
+
+閘門執行的每個測試指令（整套、受影響測試、失敗重跑、輕量路徑）都有總時間上限，避免某個測試程序空轉時一直等（bun 的 `--timeout` 只管單一測試）。上限依序取：
+
+1. 登記檔的 `time_limit_minutes`：一個分鐘數套用全部，或 `{"<執行目錄>": 分鐘, "*": 分鐘}` 依目錄設定（目錄相對 repo 根，根目錄為 `.`）。
+2. 該套已記錄的基準時間（[定期整理](#定期整理觸發)的 baseline）× 4，至少 30 分鐘；受影響測試與重跑不是某一套的指令，取該目錄所有整套基準時間的總和；登記的整套還沒有自己的基準時間時不借用別套的。
+3. 都沒有時 2 小時。
+
+超過上限就停掉整個測試程序群組（同一個 scope，沒有 scope 時是同一個 session），結束碼記 124，紀錄另有 `timed_out`：`limit_s`、`limit_source`、`unfinished_files`（還沒跑完的測試檔）與 `unfinished_basis`（怎麼看出來的，或為什麼看不出來）。逾時算失敗，不自動重跑（`rerun.skipped` 為 `the run timed out`），不能沿用，也不會標成重跑才通過。只有 bun 印出每個測試結果時看得出還沒跑完的檔案：依序執行時是正在跑的那個檔；平行執行時只列指令點名、卻沒有任何結果的檔案。AI Agent 執行時 bun 只印失敗的測試，就看不出來。`status` 在結果後寫 `TIMED OUT after <上限>`。
+
 ## 查狀態與紀錄
 
 ```bash
