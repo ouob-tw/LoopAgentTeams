@@ -810,7 +810,7 @@ def cmd_check(args):
 # grant, the decision records and the work ledger; the JSON next to it keeps the body hash and
 # the update time. Created at the first item of a round that had a grant, then rewritten only
 # when the body changes. A review whose state still holds a cross-check (written before the
-# check was dropped) is left as it was; its items are still rebuilt from the sources.
+# check was dropped) is never rewritten; `show` prints the text rebuilt from the sources.
 LEGACY_STATE = ('verification', 'content_sha')
 
 
@@ -860,7 +860,8 @@ def refresh_review_locked(lat, session, found=None):
     body = _lat_review.render_body(view)
     digest = sha(body)
     if any(key in state for key in LEGACY_STATE) and md.exists():
-        return dict(path=md, view=view)
+        header = _lat_review.render_header(view, state.get('updated_at') or stamp(now()))
+        return dict(path=md, view=view, text=header + '\n' + body)
     if state.get('body_sha') != digest or not md.exists():
         write_review(md, state_path, view, body, dict(body_sha=digest, updated_at=stamp(now())))
     return dict(path=md, view=view)
@@ -906,7 +907,7 @@ def cmd_review_show(args):
     result = refresh_review(lat, session)
     if args.json or result is None or result['path'] is None:
         return report(args, review_result(result), review_text(result))
-    print(result['path'].read_text(encoding='utf-8'), end='')
+    print(result.get('text') or result['path'].read_text(encoding='utf-8'), end='')
     return 0
 
 

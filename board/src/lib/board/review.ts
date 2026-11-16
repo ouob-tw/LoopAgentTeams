@@ -117,8 +117,9 @@ export function reviewMessage(item: Pick<ReviewItem, 'id' | 'title' | 'kind'>, w
 }
 
 /** The record an evidence entry opens with, one of the two kinds lat-unattended cites
- *  (`.lat/decisions/<id>.md`, `.lat/ledgers/<name>.json`), with or without `row 3` after it, and what follows the path. Null for any other
- *  entry: a record's own text can start with a path, and only these folders are ever shown. */
+ *  (`.lat/decisions/<id>.md`, `.lat/ledgers/<name>.json`), with or without `row 3` / `第 3 行`
+ *  after it, and what follows the path. Null for any other entry: a record's own text can start
+ *  with a path, and only these folders are ever shown. */
 export function evidenceFile(entry: string): { path: string; rest: string } | null {
 	const found = /^(\.lat\/(?:decisions\/[\w-][\w.-]*\.md|ledgers\/[\w-][\w.-]*\.json))(?=\s|$)(.*)$/s.exec(entry);
 	return found ? { path: found[1], rest: found[2] } : null;

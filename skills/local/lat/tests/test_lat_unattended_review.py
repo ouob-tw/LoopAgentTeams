@@ -273,8 +273,8 @@ class NoCrossCheckTests(ReviewCase):
 
     def test_an_old_review_with_a_check_line_and_auto_items_opens_and_is_not_rewritten(self):
         """A state file with a cross-check and a review file with the check line and an auto
-        item open without errors; the files stay as they were and the items come from the
-        sources."""
+        item open without errors; the files stay as they were, and both the JSON and the printed
+        text come from the sources."""
         self.grant()
         self.delegated('LAT-AN')
         self.review('update')
@@ -297,7 +297,10 @@ class NoCrossCheckTests(ReviewCase):
         self.assertEqual([item['id'] for item in shown['view']['items']], ['LAT-AB', 'LAT-AN'])
         self.assertNotIn('verified', shown)
         printed = self.run_script(SESSION_SCRIPT.parent / 'lat-unattended.py', 'review', 'show')
-        self.assertEqual((printed.returncode, printed.stdout), (0, old))
+        self.assertEqual(printed.returncode, 0, printed.stderr)
+        self.assertIn('### LAT-AB ', printed.stdout)
+        self.assertNotIn('核對', printed.stdout)
+        self.assertNotIn('自動做的動作', printed.stdout)
         self.assertEqual(self.stop('完成\nDONE: 交付'), {})
         self.assertEqual((self.md.read_text(), state_path.read_text()), (old, saved))
 
