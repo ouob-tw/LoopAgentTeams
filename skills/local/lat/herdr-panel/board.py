@@ -352,11 +352,31 @@ def board_unattended(controllers, seconds=LEDGERS_SECONDS):
 
 
 PARKED_KINDS = ("parked", "parked-row")
+DELEGATED_KINDS = ("proxy-confirmed", "assumed", "prototype-decided")
+CARD_FIELDS = ("id", "kind", "title", "question", "decision", "opinions", "revert_to", "checks",
+               "sample", "state", "state_label", "grant_version")
+
+
+def delegated_cards(view):
+    """The round's delegated decisions as the board's 代決 cards (#663), in the review's order.
+    A grant ending (anything but an ``update``, which supersedes its version) takes every card
+    made under that version or an earlier one off the controller page, and a later grant in the
+    same round does not bring them back; only the review keeps them."""
+    goals = view.get("goals") if isinstance(view.get("goals"), list) else []
+    ends = [goal.get("version") for goal in goals
+            if isinstance(goal, dict) and goal.get("ended_at") and goal.get("end_reason") != "superseded"
+            and isinstance(goal.get("version"), int)]
+    last_end = max(ends, default=0)
+    items = view.get("items") if isinstance(view.get("items"), list) else []
+    return [{key: item.get(key) for key in CARD_FIELDS} for item in items
+            if isinstance(item, dict) and item.get("kind") in DELEGATED_KINDS
+            and isinstance(item.get("grant_version"), int) and item["grant_version"] > last_end]
 
 
 def review_summary(workspace, session_id, seconds):
     """(summary, path) of one controller's review: ``{state: none}`` when the round has none yet,
-    ``{state: ok, path, count, parked, stamp}`` when it has one, ``{state: error, reason}``
+    ``{state: ok, path, count, parked, stamp, delegated}`` when it has one (``delegated``: the
+    cards ``delegated_cards`` keeps), ``{state: error, reason}``
     when it could not be read. ``stamp`` changes whenever the review's content does, also for
     an old review file that is no longer rewritten."""
     seconds = min(LEDGER_READ_SECONDS, seconds)
@@ -377,7 +397,7 @@ def review_summary(workspace, session_id, seconds):
     parked = sum(1 for item in items
                  if item.get("kind") in PARKED_KINDS and item.get("state") == "open")
     return {"state": "ok", "path": path, "count": len(items), "parked": parked,
-            "stamp": stamp}, path
+            "stamp": stamp, "delegated": delegated_cards(view)}, path
 
 
 def board_review(workspace, session_id, seconds=LEDGERS_SECONDS):
