@@ -3,7 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, expect, test } from 'bun:test';
-import { launchChrome, REQUEST_MS, Tab, type Browser } from '../browser.ts';
+import { launchChrome, REQUEST_MS, START_MS, Tab, type Browser } from '../browser.ts';
 
 let browser: Browser | undefined;
 afterEach(async () => {
@@ -42,6 +42,34 @@ test('Tab.until gives a check only the time left and takes no answer after its d
 	expect(await wait('late', 500)).toStartWith('Error: timed out waiting for the check');
 	expect(await wait('late', 5_000)).toBe('met');
 	tab.close();
+});
+
+/** A socket in place of Chrome's whose page goes through the board's start stages at the times in
+ *  `stages` (ms from now): loaded, then hydrated, then started; one not given is never reached. */
+class StartingPage extends EventTarget {
+	#begun = Date.now();
+	constructor(private stages: number[]) {
+		super();
+	}
+	send(text: string) {
+		const { id } = JSON.parse(text);
+		const passed = this.stages.filter((at) => Date.now() - this.#begun >= at).length;
+		const value = { stage: Math.min(passed, 2), met: passed === 3 };
+		queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ id, result: { result: { value } } }) })));
+	}
+	close() {
+		this.dispatchEvent(new Event('close'));
+	}
+}
+
+test('Tab.boardStarted waits START_MS, and its timeout says how long it waited and the stage it was stuck at', async () => {
+	expect(START_MS).toBe(30_000);
+	const wait = (stages: number[]) => new Tab(new StartingPage(stages) as unknown as WebSocket).boardStarted({ ms: 600 }).then(() => 'met', (error: Error) => String(error));
+	expect(await wait([0, 100, 200])).toBe('met');
+	expect(await wait([])).toMatch(/^Error: timed out after 0\.\d s waiting for the board to start, stuck at loading the page$/);
+	expect(await wait([0, 150])).toMatch(
+		/^Error: timed out after 0\.\d s waiting for the board to start, stuck at its start check after hydration \(done: loading the page after 0\.0 s, starting the page's scripts \(hydration\) after 0\.[12] s\)$/
+	);
 });
 
 test('Tab.until in a real Chrome: a never answered check ends near the deadline, and one check gets at most REQUEST_MS', async () => {

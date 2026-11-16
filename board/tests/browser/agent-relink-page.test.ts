@@ -59,7 +59,7 @@ async function visit(width: number) {
 	await tab.send('Runtime.enable', {});
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=${SESSION}` });
 	// Started: the board's first history write is done, so its buttons work.
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await tab.until(has('close'), 'the agent page');
 	expect(await tab.eval(`document.documentElement.scrollWidth <= window.innerWidth`)).toBe(true);
 }

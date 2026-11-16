@@ -59,7 +59,7 @@ async function visit({ width, height, phone, theme }: { width: number; height: n
 	if (phone) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 	await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('lat-board-theme', '${theme}')` });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-plain` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 async function shot(name: string) {
 	if (!SHOTS) return;

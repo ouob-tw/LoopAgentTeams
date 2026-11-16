@@ -229,7 +229,7 @@ async function visit(width: number) {
 	await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await send('Page.navigate', { url: fixture.url });
 	// The board has mounted once it wrote its first history entry.
-	await until(`JSON.stringify(history.state ?? {}).includes('depth')`, 'the board to start');
+	await browser!.tab.boardStarted();
 }
 
 const REPORT = '剛交付的票';

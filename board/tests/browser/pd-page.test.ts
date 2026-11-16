@@ -41,7 +41,7 @@ const setPd = (state: unknown) => writeFileSync(join(fixture.dir, 'pd.json'), JS
  *  window already, and before then its buttons do nothing and the script has not laid it out. */
 async function load(tab: Tab, search = '') {
 	await tab.navigate(`${fixture.url}/${search}`);
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 
 beforeAll(async () => {

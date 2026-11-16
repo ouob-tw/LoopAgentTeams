@@ -77,7 +77,7 @@ async function visit(width: number, session = SESSION): Promise<Tab> {
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=${session}` });
 	await tab.until(`!!document.querySelector('${ROW} button[data-action="close"]')`, 'the close button');
 	// Started: the board's first history write is done, so its buttons work.
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	return tab;
 }
 

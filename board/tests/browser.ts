@@ -22,6 +22,12 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * board the file started in `beforeAll`.
  */
 export const REQUEST_MS = 10_000;
+/** How long `Tab.boardStarted` waits for a page of the board to start. */
+export const START_MS = 30_000;
+/** What a page of the board has started by default: its first history write is done. */
+export const BOARD_STARTED = `JSON.stringify(history.state ?? {}).includes('depth')`;
+/** The stages a page of the board goes through to start, as a timeout names the one it was stuck at. */
+const START_STAGES = ['loading the page', "starting the page's scripts (hydration)", 'its start check after hydration'];
 /** How long `Tab.until` waits for its `screen` after a timeout: a page that stopped answering may not show it. */
 const SCREEN_MS = 2_000;
 /** How long a closed tab waits for its Chrome to exit, to say how Chrome ended. */
@@ -253,6 +259,52 @@ export class Tab {
 			// An answer after the deadline is too late, whatever it says.
 			if (Date.now() > deadline) throw await timedOut();
 			if (met) return;
+			await sleep(Math.min(50, deadline - Date.now()));
+		}
+	}
+	/**
+	 * Wait for a page of the board, loaded or still loading, to start: `started` true in it (by default
+	 * the board's first history write is done, so its buttons work). It may take START_MS, more than
+	 * `until`: on a busy host loading and starting a page is what slows down most. A timeout says how
+	 * long it waited and the stage it was stuck at (see START_STAGES), with when the earlier ones were
+	 * reached.
+	 */
+	async boardStarted({ started = BOARD_STARTED, what = 'the board to start', ms = START_MS }: { started?: string; what?: string; ms?: number } = {}) {
+		const begun = Date.now();
+		const deadline = begun + ms;
+		const reached: number[] = [];
+		let stage = 0;
+		const probe = `(() => {
+			const board = location.protocol.startsWith('http');
+			const stage = !board || document.readyState === 'loading' ? 0 : document.body?.dataset.hydrated === undefined ? 1 : 2;
+			let met = false;
+			try { met = board && !!(${started}); } catch {}
+			return { stage, met };
+		})()`;
+		const timedOut = async (why = '') => {
+			const waited = ((Date.now() - begun) / 1000).toFixed(1);
+			const before = reached.map((at, index) => `${START_STAGES[index]} after ${(at / 1000).toFixed(1)} s`).join(', ');
+			const shown = this.screen ? `; the page shows ${JSON.stringify(await this.eval(this.screen, SCREEN_MS).catch(() => null))}` : '';
+			return new Error(`timed out after ${waited} s waiting for ${what}, stuck at ${START_STAGES[stage]}${before ? ` (done: ${before})` : ''}${why}${shown}`);
+		};
+		for (;;) {
+			const left = deadline - Date.now();
+			if (left <= 0) throw await timedOut();
+			// As in `until`: one check gets only the time left, and a Chrome that does not answer ends the wait.
+			const now = await this.eval<{ stage: number; met: boolean }>(probe, Math.min(left, REQUEST_MS)).catch((error: Error) => {
+				if (this.#gone) throw error;
+				if (error.message.startsWith('no answer from Chrome')) return error;
+				// A page being replaced has no context to run the check in: not started yet.
+				return undefined;
+			});
+			if (now instanceof Error) throw await timedOut(`: ${now.message}`);
+			if (Date.now() > deadline) throw await timedOut();
+			if (now) {
+				// A new page replacing the one there starts over.
+				if (now.stage < stage) reached.length = stage = now.stage;
+				for (; stage < now.stage; stage++) reached[stage] = Date.now() - begun;
+				if (now.met) return;
+			}
 			await sleep(Math.min(50, deadline - Date.now()));
 		}
 	}

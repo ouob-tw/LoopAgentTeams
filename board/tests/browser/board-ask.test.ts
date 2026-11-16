@@ -63,7 +63,7 @@ async function open({ voice = false } = {}): Promise<Tab> {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
 	await tab.send('Page.navigate', { url: `${fixture.url}/` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await tab.eval(`document.querySelector('[data-middle="agents"]').click()`);
 	await tab.until(`document.querySelector('[data-agent="s-ask"]')`, 'the agent in the list');
 	return tab;
@@ -245,7 +245,7 @@ test('a timed-out card stays on the page of an agent that left Herdr\'s list, an
 		expect(await tab.eval(`document.querySelector('${card}')?.dataset.state`)).toBe('timed_out');
 		// Opened afresh, by its address: still there, still to be answered.
 		await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-ask` });
-		await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.boardStarted({ what: 'the board to start again' });
 		await tab.until(`document.querySelector('${card}[data-state="timed_out"]')`, 'the timed-out card after a reload');
 		expect(await tab.eval(`document.querySelector('.detail').innerText`)).toContain('這個 Agent 已不在 Herdr 的清單上');
 		// A click before the page has taken over the card is lost: picked again until it counts.
@@ -260,7 +260,7 @@ test('a timed-out card stays on the page of an agent that left Herdr\'s list, an
 
 		// And again once answered.
 		await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-ask` });
-		await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.boardStarted({ what: 'the board to start again' });
 		await tab.until(`document.querySelector('${card}')`, 'the card after a reload');
 		expect(await tab.eval(`document.querySelector('.detail').innerText`)).toContain('這個 Agent 已不在 Herdr 的清單上');
 		expect(await tab.eval(`document.querySelector('${card}').dataset.state`)).toBe('gone');

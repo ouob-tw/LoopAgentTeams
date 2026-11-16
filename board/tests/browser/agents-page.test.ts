@@ -1,5 +1,5 @@
 import { answerHerdrList } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
 // The 所有 Agent tab in a real browser: headless Chrome driven over its DevTools protocol, on the
 // built board with fake data, wide and at a phone's width. Skipped when the host has no Chrome.
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -134,7 +134,7 @@ async function visit(width: number, search = '') {
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/${search}` });
 	// Started: the board's first history write is done, so its buttons work.
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 const openTab = () => tab.eval(`document.querySelector('[data-middle="agents"]').click()`);
 /** The command line, which is the open agent's box; its send button, and the stop that stands in
@@ -214,7 +214,7 @@ test.skipIf(!CHROME)('a reload keeps the tab the list was switched to', async ()
 	await tab.until(`!!document.querySelector('.inbox [data-agent="s-plain"]')`, 'the agent list');
 	await tab.eval('window.beforeReload = true');
 	await tab.send('Page.reload');
-	await tab.until(`!window.beforeReload && JSON.stringify(history.state).includes('depth')`, 'the reloaded board');
+	await tab.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the reloaded board' });
 	await tab.until(`!!document.querySelector('.inbox [data-agent="s-plain"]')`, 'the agent list after the reload');
 	expect(await tab.eval(`document.querySelector('[data-middle="agents"]').getAttribute('aria-pressed')`)).toBe('true');
 }, 30_000);
@@ -499,7 +499,7 @@ test.skipIf(!CHROME)("an idle controller's information page closes it as the 所
 		// Opened from the Herdr tab it asks what its controller page asks.
 		await tab.eval('window.beforeNavigate = true');
 		await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-idle` });
-		await tab.until(`!window.beforeNavigate && JSON.stringify(history.state).includes('depth')`, 'the board to start on the agent page');
+		await tab.boardStarted({ started: `!window.beforeNavigate && ${BOARD_STARTED}`, what: 'the board to start on the agent page' });
 		await tab.until(`(${header}).includes('@idol') && !!document.querySelector('.detail [data-action="close"]')`, 'its page on the Herdr tab');
 		await click('.detail [data-action="close"]');
 		await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'its agent page confirmation');
@@ -509,13 +509,13 @@ test.skipIf(!CHROME)("an idle controller's information page closes it as the 所
 		// Opened at its report, its page has the same close.
 		await tab.eval('window.beforeNavigate = true');
 		await tab.send('Page.navigate', { url: `${fixture.url}/?item=s-idle%230` });
-		await tab.until(`!window.beforeNavigate && JSON.stringify(history.state).includes('depth')`, 'the board to start on the report');
+		await tab.boardStarted({ started: `!window.beforeNavigate && ${BOARD_STARTED}`, what: 'the board to start on the report' });
 		await tab.until(`(${header}).includes('@idol') && !!document.querySelector('.detail [data-action="close"]')`, 'the report on its page, with 關閉');
 		expect((await screen()).detail).not.toContain('找不到它的分頁');
 
 		await tab.eval('window.beforeNavigate = true');
 		await tab.send('Page.navigate', { url: `${fixture.url}/?controller=s-idle` });
-		await tab.until(`!window.beforeNavigate && JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.boardStarted({ started: `!window.beforeNavigate && ${BOARD_STARTED}`, what: 'the board to start again' });
 		await tab.until(`(${header}).includes('@idol') && !!document.querySelector('.detail [data-action="close"]')`, "the idle controller's page");
 		expect(await tab.eval<string>(header)).toContain('閒置');
 		expect(await tab.eval<string>(`document.querySelector('.detail [data-action="close"]').innerText`)).toBe('關閉');
@@ -1302,7 +1302,7 @@ for (const width of [1280, 390]) {
 		// The order shown is the one the server now reads from Herdr, not only the one kept from the drops.
 		await tab.eval(`window.beforeReload = true`);
 		await tab.send('Page.reload');
-		await tab.until(`!window.beforeReload && JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.boardStarted({ started: `!window.beforeReload && ${BOARD_STARTED}`, what: 'the board to start again' });
 		await tab.until(`JSON.stringify(${CARDS}) === '["s-plain","s-lead"]' && JSON.stringify(${SPACES}) === '["wB","wA"]'`, 'Herdr’s order after a reload');
 	}, 40_000);
 

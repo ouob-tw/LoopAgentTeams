@@ -29,7 +29,7 @@ async function visit(width: number) {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?tab=inbox` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await tab.until(`!!document.querySelector('.inbox .toggle')`, 'the 待辦 tab');
 }
 

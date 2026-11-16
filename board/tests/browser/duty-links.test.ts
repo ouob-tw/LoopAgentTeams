@@ -52,7 +52,7 @@ async function visit(path: string) {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
 	await tab.navigate(`${fixture.url}${path}`);
-	await tab.until(STARTED, 'the board to start');
+	await tab.boardStarted({ started: STARTED });
 }
 const links = (box: string) =>
 	tab.eval<{ text: string; href: string; target: string }[]>(

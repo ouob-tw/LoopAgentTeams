@@ -75,7 +75,7 @@ async function visit({ phone = false, width = 1280, height = 800, screen = true,
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: phone });
 	if (phone) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-plain` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await tab.until(`[...document.querySelectorAll('.detail [role=tab]')].length === 3`, 'the tabs');
 	await tab.eval(`[...document.querySelectorAll('.detail [role=tab]')].find((tab) => tab.firstChild.textContent.trim() === '終端').click()`);
 	await tab.until(screen ? `!!document.querySelector('.screen-panel pre')` : `!!document.querySelector('.screen-panel .box')`, 'the screen');

@@ -72,7 +72,7 @@ async function visit(width: number, touch: boolean, search = '') {
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	if (touch) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/${search}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 async function shot(name: string) {
 	if (!SHOTS) return;
@@ -182,7 +182,7 @@ test.skipIf(!CHROME)('the last agent of a workspace closed from its page leaves 
 	expect(plan.tabs.filter((candidate: { workspace_id: string }) => candidate.workspace_id === 'wC').map((candidate: { label: string }) => candidate.label)).toEqual(['CMD']);
 	// Back on the list, where a phone shows it alone.
 	await tab.send('Page.navigate', { url: `${fixture.url}/` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board again');
+	await tab.boardStarted({ what: 'the board again' });
 	await tab.eval(`document.querySelector('[data-middle="agents"]').click()`);
 	await tab.until(`document.querySelector(${JSON.stringify(HEAD('wC'))})?.checkVisibility()`, 'the list');
 	expect(await headings()).toEqual(['Alpha', 'Beta', 'Gamma']);

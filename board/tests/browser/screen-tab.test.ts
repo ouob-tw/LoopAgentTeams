@@ -94,7 +94,7 @@ async function visit({ width, height, phone, agent = 's-plain' }: { width: numbe
 	// The screen colours checked are the dark theme's; a test Chrome has no system preference of its own.
 	await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=${agent}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 async function shot(name: string) {
 	if (!SHOTS) return;

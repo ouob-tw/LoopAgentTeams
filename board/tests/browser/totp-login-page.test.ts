@@ -4,7 +4,7 @@
 // each state is saved as a frame.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { PASSWORD, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 
 const T0 = Date.parse('2026-11-01T00:00:00.000Z');
 const STEP_MS = 30_000;
@@ -91,7 +91,7 @@ describe('a board with a TOTP secret', () => {
 
 			await typeInto('#code', fixture.totpCode());
 			await tab.pointerClick('form button.primary');
-			await tab.until(`location.pathname === '/' && JSON.stringify(history.state).includes('depth')`, 'the board');
+			await tab.boardStarted({ started: `location.pathname === '/' && ${BOARD_STARTED}`, what: 'the board' });
 			expect(tab.errors).toEqual([]);
 		});
 

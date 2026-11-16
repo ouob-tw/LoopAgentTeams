@@ -49,7 +49,7 @@ async function visit(width: number) {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.navigate(`${fixture.url}/?controller=${luna.session_id}`);
-	await tab.until(STARTED, 'the board to start');
+	await tab.boardStarted({ started: STARTED });
 }
 const links = (box: string) =>
 	tab.eval<{ text: string; href: string; target: string; rel: string }[]>(

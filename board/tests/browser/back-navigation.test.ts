@@ -179,7 +179,7 @@ async function visit(width: number, search = '') {
 	});
 	await tab.navigate(START());
 	await tab.navigate(`${fixture.url}/${search}`);
-	await tab.until(STARTED, 'the board to start');
+	await tab.boardStarted({ started: STARTED });
 	// Started: the board's first history write is done.
 	await tab.until(`JSON.stringify(history.state).includes('depth')`, "the board's first history entry");
 }

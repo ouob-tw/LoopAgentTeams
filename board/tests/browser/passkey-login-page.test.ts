@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { PASSKEYS_FILE } from '../../src/lib/server/passkeys.ts';
 import { clearTotp, saveTotp } from '../../src/lib/server/totp.ts';
 import { PASSWORD, startFixture, TOTP_SECRET, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 import { httpsProxy, PROXY_CHROME_ARGS } from '../https-proxy.ts';
 import { SoftPasskey } from '../soft-passkey.ts';
 
@@ -196,7 +196,7 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			await clickText('改用 passkey');
 			await tab.until(`document.querySelector('button.passkey') !== null`, 'the passkey step again');
 			await tab.pointerClick('button.passkey');
-			await tab.until(`location.pathname === '/' && JSON.stringify(history.state).includes('depth')`, 'the board');
+			await tab.boardStarted({ started: `location.pathname === '/' && ${BOARD_STARTED}`, what: 'the board' });
 			expect(tab.errors).toEqual([]);
 		});
 	}
@@ -231,7 +231,7 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 
 			await typeInto('#code', fixture.totpCode());
 			await tab.pointerClick('form button.primary');
-			await tab.until(`location.pathname === '/' && JSON.stringify(history.state).includes('depth')`, 'the board');
+			await tab.boardStarted({ started: `location.pathname === '/' && ${BOARD_STARTED}`, what: 'the board' });
 			expect(tab.errors).toEqual([]);
 		});
 	}

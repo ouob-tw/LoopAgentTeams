@@ -159,7 +159,7 @@ async function visit(width: number, search = '', stored: Record<string, string> 
 	await started();
 }
 /** The board's first history write is done, so its buttons work. */
-const started = () => tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+const started = () => tab.boardStarted();
 const type = (text: string) =>
 	tab.eval(`(() => {
 		const box = document.querySelector(${JSON.stringify(BOX)});

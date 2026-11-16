@@ -157,7 +157,7 @@ async function visit(width: number, search = '?tab=agents', { voice = false } = 
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/${search}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await tab.until(`!!document.querySelector('.inbox [data-agent="s-live"]')`, 'the Herdr tab');
 }
 const TRIGGER = `.inbox .closed .trigger`;

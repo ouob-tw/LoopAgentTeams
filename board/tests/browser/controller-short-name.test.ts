@@ -73,7 +73,7 @@ async function visit(search: string) {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
 	await tab.send('Page.navigate', { url: `${fixture.url}/${search}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }
 const type = (text: string) =>
 	tab.eval(`(() => {

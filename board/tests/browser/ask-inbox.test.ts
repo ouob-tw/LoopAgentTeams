@@ -71,7 +71,7 @@ async function open(path = '/'): Promise<Tab> {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
 	await tab.send('Page.navigate', { url: `${fixture.url}${path}` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	return tab;
 }
 const row = (session: string) => `.inbox [data-ask-row]:has(.owner[title$="· ${session === 's-one' ? 'one' : 'two'}"])`;

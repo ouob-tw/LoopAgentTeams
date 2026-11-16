@@ -89,7 +89,7 @@ async function visit(width: number) {
 	await tab.until(`document.readyState === 'complete'`, 'a page of the board');
 	await tab.eval(`localStorage.setItem('lat-board-inbox-width', '360')`);
 	await tab.send('Page.navigate', { url: `${fixture.url}/?tab=quota` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await tab.until(`!!document.querySelector('.inbox .quota .card')`, 'the 額度 tab');
 }
 const groupText = (client: string) => tab.eval<string>(`document.querySelector('.quota [data-client="${client}"]')?.innerText ?? ''`);

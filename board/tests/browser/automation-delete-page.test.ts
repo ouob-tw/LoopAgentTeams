@@ -68,7 +68,7 @@ async function visit(width: number, path: string, dark = false) {
 	await tab.until(`document.readyState === 'complete'`, 'a page of the board');
 	await tab.eval(`localStorage.setItem('lat-board-inbox-width', '400')`);
 	await tab.send('Page.navigate', { url: `${fixture.url}/?tab=automation` });
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	if (path) {
 		await tab.until(`!!document.querySelector(${JSON.stringify(path)})`, 'the task in the list');
 		await tab.eval(`document.querySelector(${JSON.stringify(path)}).click()`);

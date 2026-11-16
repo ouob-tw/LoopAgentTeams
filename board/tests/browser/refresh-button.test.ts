@@ -48,7 +48,7 @@ beforeAll(async () => {
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await size(1280, 800);
 	await tab.navigate(`${fixture.url}/`);
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 }, 30_000);
 afterAll(async () => {
 	await browser?.close();
@@ -146,7 +146,7 @@ test('a read of the page that failed is quiet while the link is down, comes back
 	for (const summary of ['first report', 'second report']) fixture.report(controller.session_id, { tag: 'DONE', summary, hcom_name: 'tavi', workspace: controller.workspace });
 	await fixture.refresh(cookie);
 	await tab.navigate(`${fixture.url}/`);
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start');
+	await tab.boardStarted();
 	await idle();
 	await tab.until(`!document.querySelector('button.tool.offline')`, 'the link up');
 
