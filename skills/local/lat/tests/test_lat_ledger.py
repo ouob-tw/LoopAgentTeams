@@ -2627,8 +2627,9 @@ class ParkTests(LedgerCase):
         base = ('park', str(row), '--cause', 'review-stuck', '--reason', 'stuck', '--question')
         self.assertIn('no decision record', self.fails(*base, 'Q404'))
         self.assertIn('not a decision record ID', self.fails(*base, '../x'))
-        self.question(row, 'answered')
-        self.assertIn('not a question waiting', self.fails(*base, f'Q{row}'))
+        for status in ('answered', 'parked'):
+            self.question(row, status)
+            self.assertIn('not a question waiting', self.fails(*base, f'Q{row}'))
         self.question(row, session='33333333-3333-4333-8333-333333333333')
         self.assertIn('belongs to session', self.fails(*base, f'Q{row}'))
         self.assertEqual(self.item(row)['status'], 'in_progress')
@@ -2647,14 +2648,14 @@ class ParkTests(LedgerCase):
                 self.assertIn(f'waits for the user\'s answer to question Q{row}',
                               self.fails('unpark', str(row), '--reason', 'decided'))
                 self.assertEqual(self.item(row)['status'], 'parked')
-        for status in ('answered', 'approved'):
+        for status in ('answered', 'approved', 'resolved'):
             with self.subTest(status=status):
                 self.question(row, status)
                 self.ok('unpark', str(row), '--reason', 'user chose A')
                 self.assertEqual((self.item(row)['status'], self.item(row)['parked_question'],
                                   self.item(follower)['status']),
                                  ('in_progress', None, 'unassigned'))
-                if status == 'answered':
+                if status != 'resolved':
                     self.park_stuck(row, 'stuck again')
 
     def park_stuck(self, row, reason):

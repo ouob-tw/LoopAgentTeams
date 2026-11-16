@@ -1959,10 +1959,10 @@ def require_park_cause(doc, item, cause):
 
 
 PANEL_SCRIPT = Path(__file__).resolve().parents[1] / 'herdr-panel' / 'lat_panel.py'
-# A park question waits for the user while it has one of these statuses; a human answer moves
-# it to answered (and approve to approved).
-WAITING_QUESTION = ('pending', 'parked')
-ANSWERED_QUESTION = ('answered', 'approved')
+# A park question is a panel question the user sees (pending; an old parked record never
+# reached the user); a human answer moves it to answered, approve to approved, and a help
+# question's close to resolved.
+ANSWERED_QUESTION = ('answered', 'approved', 'resolved')
 PARK_QUESTION_BODY = {
     'review-stuck': 'the 甲/乙 findings the latest final review still has',
     'spec-review-limit': 'the must-fix (甲/乙) items still open after round 3'}
@@ -2008,7 +2008,7 @@ def require_park_question(args, doc, item):
         raise Failure(f'--question {args.question}: no decision record {path}; ask it with '
                       '`question ask` first. Nothing was changed.')
     status = read_decision_status(path)
-    if status.error or status.status not in WAITING_QUESTION:
+    if status.error or status.status != 'pending':
         raise Failure(f'--question {args.question} is '
                       f'{status.error or status.status}, not a question waiting for the user; '
                       'ask a new one with `question ask`. Nothing was changed.')

@@ -109,7 +109,7 @@ lat-unattended.py close --reason <off|quota|delivered|cancelled|handover>
 
 | 情況 | 紀錄狀態 |
 |---|---|
-| 屬下方「一定問使用者」 | 發待決題（`pending`），不必諮詢 |
+| 屬下方「一定問使用者」 | 發待決題（`pending`）；屬參謀例外類別的不必諮詢，其他照人工模式諮詢後寫參謀行 |
 | 參謀本來就能定案（引用已確認 Spec、真人答覆或 `may_settle`） | `advisor-resolved`，照舊，不需授權 |
 | 短流程確認題，授權勾選「短流程票代確認」，兩位參謀逐條對照使用者原話與驗收條件都同意 | `proxy-confirmed`（代確認） |
 | 落在下方固定清單，授權勾選「在固定清單內選預設」，兩位都同意 | `assumed`（假設） |

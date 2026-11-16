@@ -1758,7 +1758,9 @@ def parked_stop_check(record):
             if read_decision_status(path).status != PARKED or \
                     read_decision_session(path) != record['session_id']:
                 continue
-            written = datetime.fromtimestamp(path.stat().st_ctime, timezone.utc)
+            # Content time, not inode change time: a rename or chmod of an old record must
+            # not make it look new.
+            written = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
         except (OSError, UnicodeDecodeError):
             continue  # the DECIDE/HELP check and the omission check report unreadable records
         if written >= started:
