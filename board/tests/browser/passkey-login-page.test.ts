@@ -97,7 +97,7 @@ function noSecondStep(fixture: Fixture) {
 
 /** Register a passkey through the API with a software passkey, as the host's code allows. */
 async function registerSoftPasskey(fixture: Fixture, origin: string) {
-	const code = /登記碼：(\S+)/.exec(fixture.cli('passkey', 'code').stdout)![1];
+	const code = /登記碼：(\S+)/.exec((await fixture.cli('passkey', 'code')).stdout)![1];
 	const passkey = new SoftPasskey(origin, new URL(origin).hostname);
 	const post = (path: string, body: unknown) =>
 		fixture.fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-proto': 'https' }, body: JSON.stringify(body) });
@@ -152,12 +152,12 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			expect(await tab.eval(LAYOUT_PROBLEMS)).toEqual([]);
 			await shot(tab, `${size.width}-2-enroll-wrong-code`);
 
-			const code = /登記碼：(\S+)/.exec(fixture.cli('passkey', 'code').stdout)![1];
+			const code = /登記碼：(\S+)/.exec((await fixture.cli('passkey', 'code')).stdout)![1];
 			await typeInto('#password', PASSWORD);
 			await typeInto('#enroll-code', code);
 			await tab.pointerClick('form button.primary');
 			await tab.until(`document.querySelector('.notice')?.textContent.includes('已登記 passkey')`, 'the passkey registered');
-			expect(fixture.cli('passkey', 'list').stdout.trim().split('\n')).toHaveLength(1);
+			expect((await fixture.cli('passkey', 'list')).stdout.trim().split('\n')).toHaveLength(1);
 			expect(await tab.eval(`document.activeElement?.id`)).toBe('password');
 			// The passkey now logs in alone, or after the password; the page no longer offers to register one.
 			expect(await tab.eval(`document.querySelector('[data-action="passkey-alone"]')?.textContent.trim()`)).toBe('用 passkey 登入');

@@ -33,8 +33,8 @@ function post(fixture: Fixture, path: string, body: unknown, source: string, coo
 }
 
 /** A registration code from the host command. */
-function enrollCode(fixture: Fixture): string {
-	const result = fixture.cli('passkey', 'code');
+async function enrollCode(fixture: Fixture): Promise<string> {
+	const result = await fixture.cli('passkey', 'code');
 	expect(result.code).toBe(0);
 	return /登記碼：(\S+)/.exec(result.stdout)![1];
 }
@@ -84,7 +84,7 @@ describe('a board with its address set and no TOTP', () => {
 		const none = await enroll(fixture, phone, 'ABCDE-FGHJK', source);
 		expect([none.started.status, await none.started.json()]).toEqual([401, { error: 'wrong_enroll_code' }]);
 
-		const code = enrollCode(fixture);
+		const code = await enrollCode(fixture);
 		const wrongPassword = await enroll(fixture, phone, code, source, 'not-the-password');
 		expect([wrongPassword.started.status, await wrongPassword.started.json()]).toEqual([401, { error: 'wrong_password' }]);
 
@@ -107,13 +107,13 @@ describe('a board with its address set and no TOTP', () => {
 
 	test('a code runs out after 10 minutes, and a newer code replaces the older one', async () => {
 		const source = '198.51.100.3';
-		const late = enrollCode(fixture);
+		const late = await enrollCode(fixture);
 		fixture.setClock((time += 10 * 60 * 1000));
 		const expired = await enroll(fixture, laptop, late, source);
 		expect([expired.started.status, await expired.started.json()]).toEqual([401, { error: 'wrong_enroll_code' }]);
 
-		const older = enrollCode(fixture);
-		const newer = enrollCode(fixture);
+		const older = await enrollCode(fixture);
+		const newer = await enrollCode(fixture);
 		expect((await enroll(fixture, laptop, older, source)).started.status).toBe(401);
 		// A code that runs out while the browser makes the passkey saves nothing.
 		fixture.setClock((time += 9 * 60 * 1000));
@@ -123,7 +123,7 @@ describe('a board with its address set and no TOTP', () => {
 		const tooLate = await post(fixture, '/api/login/enroll', { enrollment, response: laptop.register(options) }, source);
 		expect([tooLate.status, await tooLate.json()]).toEqual([401, { error: 'wrong_enroll_code' }]);
 
-		const fresh = await enroll(fixture, laptop, enrollCode(fixture), source);
+		const fresh = await enroll(fixture, laptop, await enrollCode(fixture), source);
 		expect(fresh.finished!.status).toBe(200);
 	});
 
@@ -136,11 +136,11 @@ describe('a board with its address set and no TOTP', () => {
 			const cookie = deviceCookieOf(response);
 			expect((await fixture.fetch('/api/board', { cookie })).status).toBe(200);
 		}
-		const listed = fixture.cli('passkey', 'list');
+		const listed = await fixture.cli('passkey', 'list');
 		expect(listed.stdout.trim().split('\n')).toHaveLength(2);
 		expect(listed.stdout).not.toContain('還沒用過');
 		// The device remembers how it logged in.
-		expect(fixture.cli('devices').stdout).toContain('browser at 198.51.100.4');
+		expect((await fixture.cli('devices')).stdout).toContain('browser at 198.51.100.4');
 	});
 
 	test('a signed answer is used once: sent again, it is refused', async () => {
@@ -184,12 +184,12 @@ describe('a board with its address set and no TOTP', () => {
 
 	test('a deleted passkey cannot log in; the other one still can', async () => {
 		const source = '198.51.100.6';
-		const lines = fixture.cli('passkey', 'list').stdout.trim().split('\n');
+		const lines = (await fixture.cli('passkey', 'list')).stdout.trim().split('\n');
 		const phoneId = lines[0].split('\t')[0];
-		const deleted = fixture.cli('passkey', 'delete', phoneId);
+		const deleted = await fixture.cli('passkey', 'delete', phoneId);
 		expect(deleted.code).toBe(0);
-		expect(fixture.cli('passkey', 'delete', phoneId).code).toBe(1);
-		expect(fixture.cli('passkey', 'list').stdout.trim().split('\n')).toHaveLength(1);
+		expect((await fixture.cli('passkey', 'delete', phoneId)).code).toBe(1);
+		expect((await fixture.cli('passkey', 'list')).stdout.trim().split('\n')).toHaveLength(1);
 
 		const refused = await loginWith(fixture, phone, source);
 		expect([refused.status, await refused.json()]).toEqual([401, { error: 'passkey_failed' }]);
@@ -210,7 +210,7 @@ describe('a board with its address set and no TOTP', () => {
 
 	test('over plain http no passkey is made or used, and nothing counts', async () => {
 		const source = '198.51.100.9';
-		const code = enrollCode(fixture);
+		const code = await enrollCode(fixture);
 		const started = await post(fixture, '/api/login/enroll/options', { password: PASSWORD, code }, source, undefined, { http: true });
 		expect([started.status, await started.json()]).toEqual([409, { error: 'passkey_unavailable' }]);
 		const step = stepCookieOf(await post(fixture, '/api/login', { password: PASSWORD }, source, undefined, { http: true }));
@@ -235,8 +235,8 @@ describe('a board whose address is not set', () => {
 	afterAll(() => fixture.cleanup());
 
 	test('passkeys cannot be registered or used, and TOTP logs in as before', async () => {
-		const code = enrollCode(fixture);
-		expect(fixture.cli('passkey', 'code').stderr).toContain('LAT_BOARD_URL');
+		const code = await enrollCode(fixture);
+		expect((await fixture.cli('passkey', 'code')).stderr).toContain('LAT_BOARD_URL');
 		const started = await post(fixture, '/api/login/enroll/options', { password: PASSWORD, code }, '127.0.0.1');
 		expect([started.status, await started.json()]).toEqual([409, { error: 'passkey_unavailable' }]);
 		const first = await fixture.tryLogin(PASSWORD);

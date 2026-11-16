@@ -113,8 +113,8 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			await shot(tab, `${size.width}-0-login-http-none-registered`);
 
 			const cookie = await fixture.login(`settings-${size.width}`);
-			const chromeDevices = () => fixture.cli('devices').stdout.split('\n').filter((line) => line.includes('HeadlessChrome')).length;
-			const devicesBefore = chromeDevices();
+			const chromeDevices = async () => (await fixture.cli('devices')).stdout.split('\n').filter((line) => line.includes('HeadlessChrome')).length;
+			const devicesBefore = await chromeDevices();
 			await openSettings(origin, cookie);
 			expect(await tab.eval(`${SECTION}.querySelector('p.note').textContent.trim()`)).toBe('還沒有登記 passkey。');
 			expect(await tab.eval(`${ADD}.textContent.trim()`)).toBe('新增 passkey');
@@ -132,7 +132,7 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			const [row] = await tab.eval<string[]>(ROWS);
 			expect(row).toMatch(/^Linux · Chrome\s*[0-9a-f]{8}$/);
 			expect(await tab.eval(`${SECTION}.querySelector('li p.note').textContent.trim()`)).toMatch(/^登記 \d+\/\d+・還沒用過$/);
-			const listed = fixture.cli('passkey', 'list').stdout.trim().split('\n');
+			const listed = (await fixture.cli('passkey', 'list')).stdout.trim().split('\n');
 			expect(listed).toHaveLength(1);
 			const id = listed[0].split('\t')[0];
 			expect(row.endsWith(id)).toBe(true);
@@ -197,8 +197,8 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			await tab.send('WebAuthn.setUserVerified', { authenticatorId, isUserVerified: true });
 			await tab.pointerClick('[data-action="passkey-alone"]');
 			await tab.until(`location.pathname === '/' && JSON.stringify(history.state).includes('depth')`, 'the board');
-			expect(chromeDevices()).toBe(devicesBefore + 1);
-			expect(fixture.cli('passkey', 'list').stdout).not.toContain('還沒用過');
+			expect(await chromeDevices()).toBe(devicesBefore + 1);
+			expect((await fixture.cli('passkey', 'list')).stdout).not.toContain('還沒用過');
 
 			// Over plain http: the list is there, and why nothing can be added; nothing to press on the login page.
 			await openSettings(fixture.url, cookie);
@@ -270,7 +270,7 @@ describe('a board at https://lat.ouob.net with a TOTP secret', () => {
 			await shot(tab, `${size.width}-7-settings-delete-confirm`);
 			await tab.eval(`[...${SECTION}.querySelectorAll('button')].find((button) => button.textContent.trim() === '確認刪除').click()`);
 			await tab.until(`${SECTION}.querySelector('p.note')?.textContent.trim() === '還沒有登記 passkey。'`, 'the list empty again');
-			expect(fixture.cli('passkey', 'list').stdout).not.toContain(id);
+			expect((await fixture.cli('passkey', 'list')).stdout).not.toContain(id);
 			expect(tab.errors).toEqual([]);
 		});
 	}

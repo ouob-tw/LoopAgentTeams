@@ -301,7 +301,7 @@ describe('a board with a proxy on its list', () => {
 		expect((await fixture.fetch('/api/board', { cookie: idle })).status).toBe(401);
 		// Seen on day 6, so its 7 idle days ran out on day 13, before day 30.
 		expect((await fixture.fetch('/api/board', { cookie: back })).status).toBe(401);
-		expect(fixture.cli('devices').stdout).toMatch(/\tused-every-6-days\t（登入已失效，須重新登入）/);
+		expect((await fixture.cli('devices')).stdout).toMatch(/\tused-every-6-days\t（登入已失效，須重新登入）/);
 
 		// A device idle for just under 7 days is still in; at 7 days it is out.
 		const fresh = await fixture.login('fresh');

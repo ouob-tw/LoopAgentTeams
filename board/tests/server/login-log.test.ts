@@ -74,8 +74,8 @@ async function rightPassword(source: string): Promise<string> {
 	return cookieNamed(response, 'lat_board_device_step')!;
 }
 
-function enrollCode(): string {
-	const code = /登記碼：(\S+)/.exec(fixture.cli('passkey', 'code').stdout)![1];
+async function enrollCode(): Promise<string> {
+	const code = /登記碼：(\S+)/.exec((await fixture.cli('passkey', 'code')).stdout)![1];
 	keep(code);
 	return code;
 }
@@ -106,7 +106,7 @@ describe('the password and TOTP steps', () => {
 		expect(totp[0]).toMatchObject({ ...from(source), result: 'failure', reason: 'wrong_code' });
 		expect(totp[1]).toMatchObject({ ...from(source), result: 'success' });
 		expect(deviceId).toMatch(/^[0-9a-f]{8}$/);
-		expect(fixture.cli('devices').stdout).toContain(`${deviceId}\t`);
+		expect((await fixture.cli('devices')).stdout).toContain(`${deviceId}\t`);
 	});
 
 	test('the attempt that locks a source writes a warning with who and during what; a locked attempt says locked', async () => {
@@ -126,7 +126,7 @@ describe('passkeys', () => {
 	test('registering with the host code: a wrong code fails, the right one starts and succeeds with the passkey', async () => {
 		const source = '198.51.100.20';
 		expect((await post('/api/login/enroll/options', { password: PASSWORD, code: 'NOT-A-CODE' }, source)).status).toBe(401);
-		const started = await post('/api/login/enroll/options', { password: PASSWORD, code: enrollCode() }, source);
+		const started = await post('/api/login/enroll/options', { password: PASSWORD, code: await enrollCode() }, source);
 		expect(started.status).toBe(200);
 		const { options, enrollment } = await started.json();
 		keep(enrollment, options.challenge);
@@ -184,7 +184,7 @@ describe('passkeys', () => {
 		const source = '198.51.100.23';
 		const cookie = await fixture.login('settings-device');
 		keep(cookie, cookie.split('=')[1]);
-		const device = fixture.cli('devices').stdout.split('\n').find((line) => line.includes('settings-device'))!;
+		const device = (await fixture.cli('devices')).stdout.split('\n').find((line) => line.includes('settings-device'))!;
 		const deviceId = /\b[0-9a-f]{8}\b/.exec(device)![0];
 		const laptop = new SoftPasskey(ORIGIN, RP_ID);
 		const started = await call('POST', '/api/passkeys/options', { source, cookie });

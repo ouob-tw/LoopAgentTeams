@@ -178,7 +178,7 @@ describe('a board with a TOTP secret', () => {
 	test('a device that passed the second step is listed as logged in by the host command', async () => {
 		nextStep();
 		await fixture.login('totp-phone');
-		const line = fixture.cli('devices').stdout.split('\n').find((row) => row.includes('totp-phone'))!;
+		const line = (await fixture.cli('devices')).stdout.split('\n').find((row) => row.includes('totp-phone'))!;
 		expect(line).not.toContain('失效');
 	});
 });
@@ -228,7 +228,7 @@ describe('the host command for TOTP', () => {
 	});
 
 	test('a test login needs no second step', async () => {
-		const issued = fixture.cli('test-login', '--label', 'qa');
+		const issued = await fixture.cli('test-login', '--label', 'qa');
 		const testCode = /#(\S+)/.exec(issued.stdout)![1];
 		const redeemed = await fixture.fetch('/api/login/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: testCode }) });
 		expect(redeemed.status).toBe(200);
@@ -274,11 +274,11 @@ describe('the host command for TOTP', () => {
 	});
 
 	test('clearing it stops password logins until it is set again', async () => {
-		const cleared = fixture.cli('totp', 'clear');
+		const cleared = await fixture.cli('totp', 'clear');
 		expect(cleared.code).toBe(0);
 		expect(cleared.stdout).toContain('已清除 TOTP');
 		expect((await fixture.tryLogin(PASSWORD)).status).toBe(409);
 		expect(await (await fixture.fetch('/login')).text()).toContain('<code>bun run board totp</code>');
-		expect(fixture.cli('totp', 'clear').stdout).toContain('沒有設定 TOTP');
+		expect((await fixture.cli('totp', 'clear')).stdout).toContain('沒有設定 TOTP');
 	});
 });

@@ -14,7 +14,7 @@ beforeAll(async () => {
 afterAll(() => fixture.cleanup());
 
 const logout = (cookie: string, init: RequestInit = { headers: json, body: '{}' }) => fixture.fetch('/api/device', { method: 'DELETE', ...init, cookie });
-const devices = () => fixture.cli('devices').stdout;
+const devices = async () => (await fixture.cli('devices')).stdout;
 
 test('logging out ends that device on the server and clears its cookie; other devices stay logged in', async () => {
 	const phone = await fixture.login('logout-phone');
@@ -35,15 +35,15 @@ test('logging out ends that device on the server and clears its cookie; other de
 	expect((await logout(phone)).status).toBe(401);
 	const page = await fixture.fetch('/', { cookie: phone });
 	expect([page.status, page.headers.get('location')]).toEqual([303, '/login']);
-	expect(devices()).not.toContain('logout-phone');
+	expect(await devices()).not.toContain('logout-phone');
 
 	expect(desktopStream.unpaired).toBe(false);
 	expect((await fixture.fetch('/api/board', { cookie: desktop })).status).toBe(200);
-	expect(devices()).toContain('logout-desktop');
+	expect(await devices()).toContain('logout-desktop');
 });
 
 test('a test login logs out the same way, ending that test login', async () => {
-	const issued = fixture.cli('test-login', '--url', fixture.url, '--label', 'logout-qa');
+	const issued = await fixture.cli('test-login', '--url', fixture.url, '--label', 'logout-qa');
 	expect(issued.code).toBe(0);
 	const code = issued.stdout.match(new RegExp(`${fixture.url}/login/test#(\\S+)`))![1];
 	const id = issued.stdout.match(/裝置 ([0-9a-f]{8})/)![1];
@@ -54,7 +54,7 @@ test('a test login logs out the same way, ending that test login', async () => {
 	expect((await logout(cookie)).status).toBe(200);
 
 	expect((await fixture.fetch('/api/board', { cookie })).status).toBe(401);
-	expect(devices()).not.toContain(id);
+	expect(await devices()).not.toContain(id);
 });
 
 test('another site cannot log the device out', async () => {
@@ -69,5 +69,5 @@ test('another site cannot log the device out', async () => {
 	for (const init of attempts) expect((await logout(victim, init)).status).toBe(403);
 
 	expect((await fixture.fetch('/api/board', { cookie: victim })).status).toBe(200);
-	expect(devices()).toContain('logout-victim');
+	expect(await devices()).toContain('logout-victim');
 });

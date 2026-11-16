@@ -60,7 +60,7 @@ test('with no password set, the hint names the board folder and nothing names th
 });
 
 test('with no second step at all, the login page offers 登記 passkey next to the TOTP command', async () => {
-	fixture.setPassword(PASSWORD);
+	await fixture.setPassword(PASSWORD);
 	const html = await loginPage();
 	expect(html).toContain('<code>bun run board totp</code>');
 	expect(html).toContain(`改為${ENTRY}`);
@@ -68,7 +68,7 @@ test('with no second step at all, the login page offers 登記 passkey next to t
 });
 
 test('once a passkey or a TOTP is set, the login page offers no 登記 passkey', async () => {
-	const code = /登記碼：(\S+)/.exec(fixture.cli('passkey', 'code').stdout)![1];
+	const code = /登記碼：(\S+)/.exec((await fixture.cli('passkey', 'code')).stdout)![1];
 	const started = await post('/api/login/enroll/options', { password: PASSWORD, code });
 	const { options, enrollment } = await started.json();
 	expect((await post('/api/login/enroll', { enrollment, response: new SoftPasskey(ORIGIN, 'lat.ouob.net').register(options) })).status).toBe(200);
