@@ -6,7 +6,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { ARCHIVE_PAGE } from '../../src/lib/board/archive.ts';
 import type { InboxReport } from '../../src/lib/board/types.ts';
 import { DAY, question, sleep, startFixture, titled, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 
 /** Runs first in every document: counts the listeners for the browser's back. */
@@ -179,16 +179,15 @@ async function visit(width: number, search = '') {
 	});
 	await tab.navigate(START());
 	await tab.navigate(`${fixture.url}/${search}`);
-	await tab.boardStarted({ started: STARTED });
-	// Started: the board's first history write is done.
-	await tab.until(`JSON.stringify(history.state).includes('depth')`, "the board's first history entry");
+	// Started: both listen for the back, and the board's first history write is done.
+	await tab.boardStarted({ started: `${STARTED} && ${BOARD_STARTED}` });
 }
 const screen = () => tab.eval<{ search: string; listeners: number; notices: string; text: string }>(SCREEN);
 const back = () => tab.eval(`history.back()`);
 async function reload() {
 	await tab.eval('window.beforeReload = true');
 	await tab.send('Page.reload');
-	await tab.until(STARTED, 'the reloaded board to start');
+	await tab.boardStarted({ started: STARTED, what: 'the reloaded board to start' });
 }
 async function shows(search: string, text: string) {
 	await tab.until(`location.search === ${JSON.stringify(search)} && document.querySelector('.detail')?.innerText.includes(${JSON.stringify(text)})`, `${search} showing ${text}`);

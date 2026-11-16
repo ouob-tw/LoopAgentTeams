@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser } from '../browser.ts';
+import { CHROME, launchChrome, TEST_MS, type Browser } from '../browser.ts';
 
 const SCREEN = `({ search: location.search, pd: document.querySelector('.inbox .pd')?.innerText ?? '' })`;
 
@@ -81,4 +81,4 @@ test.skipIf(!CHROME)('查看對話 opens the caller\'s conversation at its pd ru
 	await tab.until(`[...document.querySelectorAll('.toast')].some((toast) => toast.innerText.includes('找不到這次 pd 請求的那一步：這份對話在請求送出前後 5 分鐘內沒有執行 pd 的步驟。先顯示最新的部分。'))`, 'the notice');
 	expect(await tab.eval(`!!document.querySelector('section.detail [data-pd-hit]')`)).toBe(false);
 	expect(tab.errors).toEqual([]);
-}, 30_000);
+}, TEST_MS);

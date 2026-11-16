@@ -9,7 +9,7 @@ import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, holdRequests, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
+import { CHROME, holdRequests, launchChrome, shot, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 const BLOCK = '[data-block="my-messages"]';
 const BAR = '[data-block="my-messages-bar"]';
@@ -319,7 +319,7 @@ test.skipIf(!CHROME)('1280px: what the user says next is at the top of the open 
 	expect(Date.now() - before).toBeLessThan(5_000);
 	// Put back for the tests after this one.
 	recordOf(luna.session_id, conversation(130));
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('1440px: earlier parts that cannot be loaded say why at the edge, and the retry goes on to the message', async () => {
 	await visit(1440, undefined, 900);
@@ -424,7 +424,7 @@ test.skipIf(!CHROME)('390px: a touch outside the open list closes it', async () 
 	await tab.swipe(40, 300, 0, { steps: 1 });
 	await tab.until(`!(${SHOWN})`, 'the list closed by the outside touch');
 	expect(await tab.eval(FITS)).toBe(true);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('1280px: the conversation is read once on load for the bar, and a closed or open list stops reading while nothing changes', async () => {
 	const start = fixture.helperArgs('transcript').length;
@@ -452,7 +452,7 @@ test.skipIf(!CHROME)('1280px: the conversation is read once on load for the bar,
 	const calls = fixture.helperArgs('transcript').length;
 	await sleep(2_500);
 	expect(fixture.helperArgs('transcript').length).toBe(calls);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('390px: a failed load for a picked message shows its reason and retry at the edge, with the list closed', async () => {
 	await visit(390);
@@ -496,7 +496,7 @@ test.skipIf(!CHROME)('1280px: only the long bar brings up the list, and with no 
 	await tab.until(SHOWN, 'the list over the bar');
 	await shot(tab, 'my-messages-1280-bar-hovered');
 	expect(tab.errors).toEqual([]);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('1280px: the list has a grip at the right end of its title row, big enough for a finger', async () => {
 	await visit(1280);
@@ -516,7 +516,7 @@ test.skipIf(!CHROME)('1280px: the list has a grip at the right end of its title 
 	expect(await tab.eval(`getComputedStyle(document.querySelector('${GRIP}')).touchAction`)).toBe('none');
 	await shot(tab, 'my-messages-1280-grip');
 	expect(tab.errors).toEqual([]);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('1280px: the grip drags bar and list together at once, with the list open and nothing selected, kept inside the window, and kept across reloads and conversations', async () => {
 	await visit(1280);
@@ -581,7 +581,7 @@ test.skipIf(!CHROME)('1280px: Escape while the grip is held does not stop the dr
 	await tab.until(`!(${SHOWN})`, 'the list closed by Escape');
 	await openByEdge();
 	expect(tab.errors).toEqual([]);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('1280px: with a short list the grip stays under the pointer during a drag, and the bar and list stay inside the window', async () => {
 	await visit(1280, '/?agent=s-short');
@@ -610,7 +610,7 @@ test.skipIf(!CHROME)('1280px: with a short list the grip stays under the pointer
 	expect(after.bottom).toBeLessThanOrEqual(800);
 	expect(await stored()).not.toBeNull();
 	expect(tab.errors).toEqual([]);
-}, 30_000);
+}, TEST_MS);
 
 /** The bar's height and how many dots it draws (one every 8px). */
 const dots = () => tab.eval<{ height: number; dots: number }>(`(() => { const bar = document.querySelector('${BAR}'); return { height: bar.getBoundingClientRect().height, dots: parseFloat(getComputedStyle(bar).getPropertyValue('--dots-h')) / 8 }; })()`);
@@ -669,7 +669,7 @@ test.skipIf(!CHROME)('1280px: with a tall list the grip stays under the pointer 
 	expect(await boxOf()).toEqual(before);
 	expect(await stored()).not.toBeNull();
 	expect(tab.errors).toEqual([]);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('1280px: the bar held for a second drags nothing and the list still opens over it', async () => {
 	await visit(1280);
@@ -685,7 +685,7 @@ test.skipIf(!CHROME)('1280px: the bar held for a second drags nothing and the li
 	await mouse(bar.x, bar.y);
 	await tab.until(SHOWN, 'the list over the bar');
 	expect(tab.errors).toEqual([]);
-}, 30_000);
+}, TEST_MS);
 
 test.skipIf(!CHROME)('1280px: a stored place that is not a number from 0 to 1 puts the bar in the middle, and storage that throws does not break it', async () => {
 	await visit(1280);
@@ -766,7 +766,7 @@ test.skipIf(!CHROME)('1280px: the bar can be reached with the keyboard: Enter op
 	await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
 	await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
 	await tab.until(`!(${SHOWN})`, 'the list closed by Enter');
-}, 30_000);
+}, TEST_MS);
 
 // The dots before the server answers: the count it gave last time in this browser.
 const COUNTS = 'lat-board-my-messages-counts';

@@ -238,9 +238,10 @@ export class Tab {
 			this.#keepErrors = undefined;
 		}
 	}
-	/** Wait for the page to have started: before that the server-drawn page ignores taps and clicks. */
+	/** Wait for the page to have started: before that the server-drawn page ignores taps and clicks.
+	 *  A start, so it may take START_MS (see `boardStarted`). */
 	started() {
-		return this.until(`document.body.dataset.hydrated !== undefined`, 'the page to start');
+		return this.boardStarted({ started: `document.body.dataset.hydrated !== undefined`, what: 'the page to start' });
 	}
 	/** Load the page again and wait for the new one to start (the old one is marked started too). */
 	async reload() {
