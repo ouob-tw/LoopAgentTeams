@@ -16,6 +16,12 @@ with open(state_path.with_suffix('.lock'), 'a') as lock:
     state = json.loads(state_path.read_text())
     with open(os.environ['FAKE_EVENTS'], 'a') as events:
         events.write(json.dumps(['docker', *args]) + '\n')
+# Only the exact call shapes vm.py may use; anything else fails like a wrong docker call.
+shapes = {'inspect': ['inspect', '-f', '{{.State.Running}}'], 'start': ['start'],
+          'stop': ['stop', '-t', '120']}
+if len(args) < 2 or args[0] not in shapes or args[:-1] != shapes[args[0]]:
+    print(f'fake docker: unexpected call {args}', file=sys.stderr)
+    sys.exit(125)
 container = args[-1]
 known = state['containers'].get(container)
 if known is None:
@@ -35,8 +41,6 @@ elif args[0] == 'stop':
         print(f'Error response from daemon: cannot stop {container}', file=sys.stderr)
         sys.exit(1)
     running = False
-else:
-    sys.exit(2)
 with open(state_path.with_suffix('.lock'), 'a') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     state = json.loads(state_path.read_text())

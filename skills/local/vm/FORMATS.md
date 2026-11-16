@@ -16,7 +16,7 @@
 
 ```json
 {"machines": {
-  "win": {"container": "busi-vm-win", "memory_gb": 16,
+  "win": {"container": "vm-win-1", "memory_gb": 16,
           "ports": {"web": 8006, "rdp": 3389, "ssh": 2222},
           "ssh_host": "vm-win", "folder": "win"}
 }}
@@ -32,7 +32,7 @@
 
 ```json
 {"leases": {
-  "win": {"borrower": "zizi", "human": false, "purpose": "測試安裝程式",
+  "win": {"borrower": "luna", "human": false, "purpose": "測試安裝程式",
           "borrowed_at": "2026-11-17T00:00:00Z", "expires_at": "2026-11-17T03:00:00Z",
           "powered_on_at": "2026-11-17T00:00:00Z", "warned": false,
           "absent_since": null,
@@ -59,7 +59,7 @@
 ### vm.log
 
 ```json
-{"time": "2026-11-17T02:50:00Z", "action": "remind", "machine": "win", "borrower": "zizi", "reason": "10 分鐘後到期", "by": "watch"}
+{"time": "2026-11-17T02:50:00Z", "action": "remind", "machine": "win", "borrower": "luna", "reason": "10 分鐘後到期", "by": "watch"}
 ```
 
 `by` 是 `watch`（看守）、借用者名稱或 `使用者`。看守的 `action`：`remind`、`stop`、`release`、`absent`、`stop-failed`、`retry-stop`、`low-memory`、`low-memory-end`。

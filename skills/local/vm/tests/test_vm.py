@@ -446,6 +446,41 @@ class WatchTests(VmCase):
         self.assertIn('可用記憶體不足', self.refused('start', 'win', when=at(minutes=31)))
 
 
+class ReviewFixTests(VmCase):
+    def test_low_memory_does_not_pause_expiry(self):
+        self.ok('borrow', 'win', 'x')
+        self.set_memory(4)
+        self.watch(at(minutes=30))
+        self.watch(at(hours=3))
+        self.assertEqual(self.leases(), {})
+        self.assertIn('到期', [e['reason'] for e in self.log() if e['action'] == 'release'])
+
+    def test_low_memory_stop_keeps_a_pending_return_release(self):
+        self.ok('borrow', 'win', 'x')
+        self.update_docker(fail_stop=['busi-vm-win'])
+        self.refused('return', 'win')
+        self.update_docker(fail_stop=[])
+        self.set_memory(4)
+        self.watch(at(minutes=5))
+        self.assertEqual(self.leases(), {})
+
+    def test_extending_a_failed_stop_lease_keeps_it_after_the_retry(self):
+        self.ok('borrow', 'win', 'x')
+        self.update_docker(fail_stop=['busi-vm-win'])
+        self.watch(at(hours=3))
+        self.ok('extend', 'win', '--hours', '2', when=at(hours=3, minutes=1))
+        self.update_docker(fail_stop=[])
+        self.watch(at(hours=3, minutes=2))
+        self.assertEqual(self.leases()['win']['borrower'], 'aaaa')
+        self.assertNotIn('stop_failed', self.leases()['win'])
+
+    def test_running_machine_without_a_lease_cannot_be_borrowed_until_stopped(self):
+        self.set_docker({'busi-vm-win': {'running': True}, 'busi-vm-mac': {'running': False}})
+        self.assertIn('看守程式會把它關機', self.refused('borrow', 'win', 'x'))
+        self.watch(at())
+        self.ok('borrow', 'win', 'x')
+
+
 class ReclaimTests(VmCase):
     def test_reclaim_notifies_first_then_hands_to_the_user(self):
         self.ok('borrow', 'win', 'x')
@@ -524,7 +559,7 @@ class FailureMessageTests(VmCase):
             self.assertIn(reason, err, args)
             self.assertIn(step, err, args)
         self.set_docker({'busi-vm-win': {'running': True}})
-        err = self.refused('borrow', 'mac', 'y', who='bebe')
+        err = self.refused('borrow', 'mac', 'y', who='bebe')  # mac's container is gone
         self.assertIn('不存在', err)
         self.assertIn('vm start', err)
 

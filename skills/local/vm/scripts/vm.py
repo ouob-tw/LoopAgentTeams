@@ -67,7 +67,10 @@ class Refused(Exception):
 def now():
     fixed = os.environ.get('VM_NOW')
     if fixed:
-        return dt.datetime.fromisoformat(fixed).astimezone(UTC)
+        moment = dt.datetime.fromisoformat(fixed)
+        if moment.tzinfo is None:
+            raise ValueError('VM_NOW needs a UTC offset, e.g. 2026-11-17T00:00:00+00:00')
+        return moment.astimezone(UTC)
     return dt.datetime.now(UTC)
 
 
@@ -295,6 +298,12 @@ def hours_or_refuse(hours):
     return hours
 
 
+def new_lease(who, purpose, current, hours, powered_on_at):
+    return {'borrower': who, 'human': who == HUMAN, 'purpose': purpose,
+            'borrowed_at': iso(current), 'expires_at': iso(current + dt.timedelta(hours=hours)),
+            'powered_on_at': powered_on_at, 'warned': False}
+
+
 def booting(lease, current):
     on = lease.get('powered_on_at')
     return bool(on) and current - parse(on) < BOOT_WINDOW
@@ -321,6 +330,8 @@ def admit(store, machines, leases, name, current, docker):
 def stop_machine(store, machine, name, lease, docker, hcom, reason, release, by):
     """Stop the machine. On success drop the lease when `release`; on failure keep the
     lease, mark it stop-failed, log it and notify the borrower. True when stopped."""
+    pending = (store.leases().get(name) or {}).get('stop_failed')
+    release = release or bool(pending and pending['release'])  # a failed return still ends
     error = docker.stop(machine['container'])
     leases = store.leases()
     if error is None:
@@ -420,23 +431,21 @@ class Vm:
                 raise Refused(f'{name} 由 {describe(lease)}。請等它歸還或到期，'
                               '或改借其他機器（vm list）。')
             running = self.docker.running(machine['container'])
+            if running:
+                raise Refused(f'{name} 沒有人借用卻在執行，看守程式會把它關機。等 vm list 顯示'
+                              f'關機後再 vm borrow {name}。')
             if running is None:
                 raise Refused(f'{name} 的容器 {machine["container"]} 不存在。新登記的機器用 '
                               'vm add 的登記者身分建立容器後，以 vm start 開機。')
-            if not running:
-                admit(self.store, machines, leases, name, current, self.docker)
-                error = self.docker.start(machine['container'])
-                if error:
-                    self.store.log('borrow-failed', name, who, f'開機失敗：{error}', who)
-                    raise Refused(f'{name} 開機失敗，借用沒有成立：{error}')
-            expires = current + dt.timedelta(hours=hours)
-            leases[name] = {'borrower': who, 'human': who == HUMAN, 'purpose': purpose,
-                            'borrowed_at': iso(current), 'expires_at': iso(expires),
-                            'powered_on_at': iso(current) if not running else None,
-                            'warned': False}
+            admit(self.store, machines, leases, name, current, self.docker)
+            error = self.docker.start(machine['container'])
+            if error:
+                self.store.log('borrow-failed', name, who, f'開機失敗：{error}', who)
+                raise Refused(f'{name} 開機失敗，借用沒有成立：{error}')
+            leases[name] = new_lease(who, purpose, current, hours, iso(current))
             self.store.save_leases(leases)
             self.store.log('borrow', name, who, purpose, who)
-        return f'已借用 {name}，到期 {taipei(expires)}。用完請 vm return {name}。'
+        return f'已借用 {name}，到期 {taipei(parse(leases[name]["expires_at"]))}。用完請 vm return {name}。'
 
     def extend(self, name, hours, human):
         who = caller(human)
@@ -452,6 +461,8 @@ class Vm:
                               f'（最晚 {taipei(limit)}）。改用較短的 --hours。')
             lease['expires_at'] = iso(new)
             lease['warned'] = False
+            if lease.get('stop_failed'):  # keep the extended lease once the retry stops it
+                lease['stop_failed']['release'] = False
             self.store.save_leases(leases)
             self.store.log('extend', name, who, f'到期改為 {iso(new)}', who)
         return f'{name} 延長到 {taipei(new)}。'
@@ -504,7 +515,7 @@ class Vm:
         if not memory_gb > 0:
             raise Refused('記憶體需求要大於 0（單位 G），例如 --memory-gb 16。')
         if not purpose.strip():
-            raise Refused('用途是空的。請寫明用途，例如 vm borrow win "測試安裝程式"。')
+            raise Refused('用途是空的。請用 --purpose 寫明用途，例如 --purpose "安裝新系統"。')
         with self.store.locked():
             machines, leases, current = self.store.machines(), self.store.leases(), now()
             if name in machines:
@@ -515,10 +526,8 @@ class Vm:
                               'ports': ports, 'ssh_host': ssh_host, 'folder': name}
             (self.store.root / name).mkdir(parents=True, exist_ok=True)
             self.store.save_machines(machines)
-            expires = current + dt.timedelta(hours=hours)
-            leases[name] = {'borrower': who, 'human': who == HUMAN, 'purpose': purpose,
-                            'borrowed_at': iso(current), 'expires_at': iso(expires),
-                            'powered_on_at': None, 'warned': False}
+            leases[name] = new_lease(who, purpose, current, hours, None)
+            expires = parse(leases[name]['expires_at'])
             self.store.save_leases(leases)
             self.store.log('add', name, who, purpose, who)
         return (f'已登記 {name}，你是借用者（到期 {taipei(expires)}），尚未開機。'
@@ -540,11 +549,9 @@ class Vm:
                                f'機器將{what}。請停止使用這台機器。')
             self.store.log('reclaim', name, lease['borrower'], what, HUMAN)
             if to_human:
-                expires = current + dt.timedelta(hours=hours)
-                leases[name] = {'borrower': HUMAN, 'human': True,
-                                'purpose': purpose or '強制收回',
-                                'borrowed_at': iso(current), 'expires_at': iso(expires),
-                                'powered_on_at': lease.get('powered_on_at'), 'warned': False}
+                leases[name] = new_lease(HUMAN, purpose or '強制收回', current, hours,
+                                         lease.get('powered_on_at'))
+                expires = parse(leases[name]['expires_at'])
                 self.store.save_leases(leases)
                 return f'{name} 已轉給使用者，到期 {taipei(expires)}。'
             if self.docker.running(machine['container']):
@@ -554,6 +561,7 @@ class Vm:
             else:
                 leases.pop(name)
                 self.store.save_leases(leases)
+                self.store.log('release', name, lease['borrower'], '強制收回（未在執行）', HUMAN)
         return f'{name} 已收回並關機。'
 
     # ------------------------------------------------------------ watcher
@@ -562,8 +570,6 @@ class Vm:
         """One watcher round, entirely inside the lock and on freshly read files."""
         with self.store.locked():
             self._low_memory()
-            if self.store.state().get('low_memory'):
-                return
             present = None
             asked = False
             machines = self.store.machines()
