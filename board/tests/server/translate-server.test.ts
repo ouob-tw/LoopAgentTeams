@@ -223,3 +223,22 @@ test('Codex failing or timing out gives a reason for that text, and nothing is s
 	expect(fixture.serverOutput()).toContain('[translate] Codex translation failed');
 	expect(fixture.serverOutput()).not.toContain('This one hangs');
 });
+
+// Last in the file: it leaves the board on Haiku for 30 minutes.
+test('luna out of quota: the same batch is translated by Haiku, sent and saved, with the switch logged without the text', async () => {
+	codexPlan({ usageLimit: true });
+	writeFileSync(join(fixture.dir, 'claude.json'), JSON.stringify({ prefix: '譯：' }));
+	expect(await lines(['Quota one is translated.', 'Quota two is translated.'])).toEqual({
+		0: { text: '譯：Quota one is translated.' },
+		1: { text: '譯：Quota two is translated.' }
+	});
+	expect(codexCalls()).toHaveLength(1);
+	const claudeCalls = readFileSync(join(fixture.dir, 'claude-calls.jsonl'), 'utf8').trim().split('\n');
+	expect(claudeCalls).toHaveLength(1);
+	await until(() => existsSync(join(fixture.dir, 'board-state/translations.json')) && readFileSync(join(fixture.dir, 'board-state/translations.json'), 'utf8').includes('譯：Quota two'), 3000, 'the Haiku translations saved');
+	// Within the 30 minutes Codex is not started.
+	expect(await lines(['Quota three is translated.'])).toEqual({ 0: { text: '譯：Quota three is translated.' } });
+	expect(codexCalls()).toHaveLength(1);
+	expect(fixture.serverOutput()).toMatch(/\[luna-fallback\] Codex usage limit at \d{4}-\d\d-\d\dT[\d:.]+Z: translation and tidy use Haiku until/);
+	expect(fixture.serverOutput()).not.toContain('Quota one');
+});

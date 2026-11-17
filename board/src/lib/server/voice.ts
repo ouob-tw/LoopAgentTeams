@@ -1,10 +1,12 @@
 // Voice input: a recording goes to the speech recognition service, comes back in Simplified or
 // Traditional Chinese and is turned into Taiwan's Traditional Chinese here. Long speech is then
-// tidied by a Codex app server started for the one request (codex-turn.ts). The service's token
+// tidied by a Codex app server started for the one request (codex-turn.ts), or by Haiku while
+// luna's quota is out (luna-fallback.ts). The service's token
 // never leaves the server: no answer to the page carries it.
 import { isShort, type VoiceResult } from '../board/voice.ts';
-import { codexTurn, type Outcome } from './codex-turn.ts';
+import type { Outcome } from './codex-turn.ts';
 import type { BoardConfig } from './config.ts';
+import { textTurn, type TextOutcome } from './luna-fallback.ts';
 import { toTraditionalChars } from './traditional.ts';
 
 const MODEL_ID = 'whisper-large-v3-turbo';
@@ -55,9 +57,9 @@ const TIDY_INSTRUCTIONS = [
 	"Write Chinese in Traditional characters as used in Taiwan, keeping the speaker's own words (do not swap mainland terms for Taiwan ones). Reply with the tidied text only, without tags, quotes or comments."
 ].join('\n');
 
-/** The transcript tidied by a Codex app server. */
-export async function tidy(config: BoardConfig, text: string): Promise<Outcome<string>> {
-	const tidied = await codexTurn({
+/** The transcript tidied by a Codex app server, or by Haiku while luna's quota is out (luna-fallback.ts). */
+export async function tidy(config: BoardConfig, text: string): Promise<TextOutcome> {
+	const tidied = await textTurn(config, {
 		command: config.tidyCommand,
 		timeoutMs: config.tidyTimeoutMs,
 		model: TIDY_MODEL,
@@ -67,9 +69,10 @@ export async function tidy(config: BoardConfig, text: string): Promise<Outcome<s
 		input: `<transcript>\n${text}\n</transcript>`,
 		// Neither the speech nor the service's token goes in the journal.
 		secrets: [text, config.asrToken],
-		journal: '[voice] Codex tidy'
+		journal: '[voice] Codex tidy',
+		haikuJournal: '[voice] Haiku tidy'
 	});
-	return tidied.ok ? { ok: true, value: toTraditionalChars(tidied.value) } : tidied;
+	return tidied.ok ? { ...tidied, value: toTraditionalChars(tidied.value) } : tidied;
 }
 
 /** What to put in the box for one recording: an HTTP status and the body the page gets. */
@@ -83,5 +86,5 @@ export async function voiceText(config: BoardConfig, audio: Blob): Promise<{ sta
 	if (isShort(text)) return { status: 200, body: { text, notice: null } };
 	const tidied = await tidy(config, text);
 	if (tidied.ok) return { status: 200, body: { text: tidied.value, notice: null } };
-	return { status: 200, body: { text, notice: `Codex 整理失敗，已放入原始辨識文字（${tidied.reason}）` } };
+	return { status: 200, body: { text, notice: `${tidied.by} 整理失敗，已放入原始辨識文字（${tidied.reason}）` } };
 }

@@ -1,0 +1,12 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/lib/server/luna-fallback.ts", "board/src/lib/server/claude-turn.ts", "board/tests/fake-claude.mjs"],
+      "tests": ["board/tests/unit/luna-fallback.test.ts", "board/tests/*/translate*.test.ts", "board/tests/*/voice*.test.ts"]
+    },
+    {
+      "paths": ["board/src/lib/server/codex-turn.ts", "board/src/lib/server/translate.ts", "board/src/lib/server/voice.ts", "board/tests/fake-codex.mjs"],
+      "tests": ["board/tests/unit/luna-fallback.test.ts"]
+    }
+  ]
+}

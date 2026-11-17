@@ -476,6 +476,8 @@ export async function startFixture(
 		// An agent task's Codex account: checked, switched and probed through a fake; never the real one.
 		LAT_BOARD_CODEX_MULTI_AUTH_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-codex-multi-auth.mjs'), dir]),
 		LAT_BOARD_CODEX_PROBE_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-codex-multi-auth.mjs'), dir]),
+		// Translation and tidy fall back to Haiku through a fake Claude CLI; never the real one.
+		LAT_BOARD_HAIKU_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-claude.mjs'), dir]),
 		// The pd section reads and denies through pd; never the real one or its socket.
 		LAT_BOARD_PD_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-pd.mjs'), dir]),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,
