@@ -14,9 +14,10 @@
 // probed with the run's model before anything starts on it. When the Codex screen says the usage
 // limit was hit mid-run, the quota is checked live, the old process ended, the account switched and
 // probed, and the same conversation resumed. With no account left the run ends as 額度用完. A Claude
-// run is never switched: a turn that ends on the usage limit is 額度用完. The limit always counts
-// from the run's start.
+// run is never switched: a turn that ends on the usage limit is 額度用完. The limit counts the run's
+// working time: from its start, less the time it waited on the user (#675).
 import type { AgentSpec, AutomationRun, ReviewItem, RunStatus } from '../board/automation.ts';
+import { pastLimit } from '../board/automation.ts';
 import { join } from 'node:path';
 import { latCommand } from '../board/launch.ts';
 
@@ -279,7 +280,7 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 	for (let first = true; ; first = false) {
 		if (!first) await sleep(host.pollMs);
 		if (watched.closing()) return null;
-		const cut = watched.cut() ?? (watched.now() - run.startedAt >= watched.limitMinutes * 60_000 ? 'timeout' : null);
+		const cut = watched.cut() ?? (pastLimit(watched.run, watched.limitMinutes, watched.now()) ? 'timeout' : null);
 		if (cut) return end({ status: cut, reason: cutReason(cut, watched.limitMinutes) });
 
 		const listed = await host.list();

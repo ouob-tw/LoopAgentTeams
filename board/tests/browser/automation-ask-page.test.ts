@@ -1,6 +1,6 @@
 // 等你回覆 in a real browser at 1280px and 390px, against the fake hcom, Herdr and input command:
 // the yellow card on top of 待辦 beside a red card and a question, yellow and not red; its page with
-// the question in full, the limit and the time to answer by, the reply box and 送出回覆, 打開 Agent
+// the question in full, the working minutes with the wait taken off and the limit (#675), the reply box and 送出回覆, 打開 Agent
 // 看即時畫面 and 停止這次; the 自動化 list's ? 等你回覆 and the task page's question and reply box;
 // a reply sent from the card or the task page reaching the agent, the card gone, the run back to
 // 執行中 with the question and answer in its record. Frames go to LAT_BOARD_SHOTS when it is set.
@@ -17,6 +17,8 @@ const SCREEN = `({ search: location.search, middle: document.querySelector('.inb
 /** What reaches past the window's width, or past its own box in the cards, the list and the pages. */
 const OVERFLOW = `[...(document.documentElement.scrollWidth > window.innerWidth ? ['page ' + document.documentElement.scrollWidth] : []), ...[...document.querySelectorAll('[data-alert-row], [data-alert-row] *, .detail [data-alert], .detail [data-alert] *, .automation, .automation *, .detail .task, .detail .task *')].filter((node) => node.scrollWidth > node.clientWidth + 1).map((node) => node.tagName + '.' + node.className + ' ' + node.scrollWidth + '>' + node.clientWidth)]`;
 
+/** How long ago the agent asked, by the board's clock: 2 hours 5 minutes. */
+const WAITED = 125;
 const QUESTION = '11 月的維護費要開幾張發票？上個月是 1 張 NT$ 30,000，這個月合約備註寫「分兩期」。請回覆：1 張或 2 張（每張金額）。';
 
 const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-ask-page-'));
@@ -84,8 +86,11 @@ beforeAll(async () => {
 			review: { enabled: false, checklist: [] }
 		})
 	).json();
+	// Older than the yellow card's question, asked WAITED minutes ago: the newest card is on top.
+	fixture.setClock(Date.now() - 3 * 3_600_000);
 	await send(`/api/automation/${failing.id}/run`, 'POST');
 	await until(async () => (await alerts()).some((alert) => alert.taskId === failing.id), 'the red card');
+	fixture.setClock(Date.now());
 	const gebu = fixture.bound('LoopAgentTeams', 'gebu', { questions: [question({ id: 'Q-1', title: '跑完後的檢查 Agent：任務預設開、腳本預設關，可以嗎？', asked_at: new Date().toISOString() })] });
 	fixture.list([gebu]);
 	await fixture.refresh(cookie);
@@ -106,8 +111,9 @@ function setStatus(name: string, status: string) {
 	writeFileSync(file, JSON.stringify(added.map((agent: { name: string; base_name?: string }) => (agent.name === name || agent.base_name === name ? { ...agent, status } : agent))));
 }
 
-/** A run of the task, started 18 minutes ago by the board's clock, whose agent `name` asked QUESTION and waits. */
-async function startAsking(name: string) {
+/** A run of the task whose agent `name` worked 18 minutes by the board's clock, then asked QUESTION
+ *  `waited` minutes ago and waits: that time does not count toward the limit (#675). */
+async function startAsking(name: string, waited = WAITED) {
 	const dir = fixture.dir;
 	if ((await send(`/api/automation/${task.id}/stop`, 'POST')).status === 202) await until(async () => (await latestRun())?.status !== 'running', 'the earlier run to stop');
 	for (const file of ['hcom-calls.jsonl', 'hcom-added.json']) rmSync(join(dir, file), { force: true });
@@ -130,15 +136,16 @@ async function startAsking(name: string) {
 			launchedHerdr: [{ agent: 'codex', agent_status: 'working', cwd: work, pane_id: `wW:p-${name}`, tab_id: `wW:t-${name}`, tab_label: name, workspace_id: 'wA', agent_session: { value: `s-${name}` } }]
 		})
 	);
-	fixture.setClock(Date.now() - 18 * 60_000);
+	fixture.setClock(Date.now() - (18 + waited) * 60_000);
 	expect((await send(`/api/automation/${task.id}/run`, 'POST')).status).toBe(202);
 	await until(async () => (await latestRun())?.sessionId === `s-${name}`, `${name} to start`);
-	fixture.setClock(Date.now());
+	fixture.setClock(Date.now() - waited * 60_000);
 	mkdirSync(join(dir, 'transcripts'), { recursive: true });
 	appendFileSync(join(dir, 'transcripts', `s-${name}.jsonl`), JSON.stringify({ kind: 'user', time: null, text: '讀取並照做' }) + '\n');
 	appendFileSync(join(dir, 'transcripts', `s-${name}.jsonl`), JSON.stringify({ kind: 'assistant', time: null, text: `合約看完了。\nASK: ${QUESTION}` }) + '\n');
 	setStatus(name, 'listening');
 	await until(async () => (await latestRun())?.asks?.length === 1, 'the question');
+	fixture.setClock(Date.now());
 	await until(async () => (await alerts()).some((alert) => alert.kind === 'ask' && alert.dismissedAt === undefined), 'the yellow card');
 }
 
@@ -205,7 +212,7 @@ for (const width of [1280, 390]) {
 		await click('[data-alert-row][data-kind="ask"] .main');
 		await tab.until(`!!document.querySelector('.detail [data-kind="ask"] textarea')`, "the yellow card's page");
 		const page = await text('.detail [data-kind="ask"]');
-		for (const part of ['客發展覽維護報告：等你回覆', '? 等你回覆', QUESTION, '已跑 18 分鐘　上限 90 分鐘', '你的回覆：送給這個 Agent，它收到就接著做', '前要回覆）才算失敗並關掉']) expect(page).toContain(part);
+		for (const part of ['客發展覽維護報告：等你回覆', '? 等你回覆', QUESTION, '已跑 18 分鐘（扣掉等你回覆 2 小時 5 分鐘）　上限 90 分鐘', '你的回覆：送給這個 Agent，它收到就接著做', '等你回覆的時間不算進上限 90 分鐘']) expect(page).toContain(part);
 		expect(page).toContain('沒有裝置收到推播');
 		expect(await buttons('.detail [data-kind="ask"] .ask')).toEqual(['送出回覆', '打開 Agent 看即時畫面', '停止這次']);
 		expect(await small('.detail [data-kind="ask"]')).toEqual([]);
@@ -266,7 +273,7 @@ for (const width of [1280, 390]) {
 		expect(after).toMatch(/你回覆（\d\d:\d\d，看板）：\s*2 張，各 NT\$ 15,000/);
 		expect(await text('.detail .task header')).toContain('▶ 執行中');
 		expect(await tab.eval<string[]>(OVERFLOW)).toEqual([]);
-		if (width > 760) expect(await text(`.automation [data-task="${task.id}"]`)).toMatch(/\d\d:\d\d 你已回覆，繼續中/);
+		if (width > 760) expect(await text(`.automation [data-task="${task.id}"]`)).toContain('已跑 18 分鐘（扣掉等你回覆 2 小時 5 分鐘）');
 		await shot(tab, `${width}-ask-5-after`);
 		await shot(tab, `${width}-ask-5b-after-record`, { box: '.detail .run' });
 		await send(`/api/automation/${task.id}/stop`, 'POST');

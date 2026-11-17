@@ -5,8 +5,8 @@
 // answer typed in its terminal, or any new turn, is noticed the same way (終端). A run may ask more than
 // once, and the checking agent's brief carries every question and answer. While it waits neither the
 // schedule nor 立即執行 starts the task again, also after a restart, which watches on (an agent gone by
-// then fails the run); waiting counts within the limit, past which it stops and the yellow card turns
-// into a red one; 停止這次 works while it waits. Nothing here starts a real agent.
+// then fails the run); the time it waits does not count toward the limit (#675), so it stops past the
+// limit only on its working time, and the yellow card turns into a red one; 停止這次 works while it waits. Nothing here starts a real agent.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -342,31 +342,107 @@ test('a restart while it waits: an agent still there waits on with its yellow ca
 	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
 });
 
-test('waiting counts within the limit: past it the agent is closed, the run a timeout and the yellow card a red one; 停止這次 works while it waits', async () => {
-	const task = await create({ limitMinutes: 10 });
+/** Start the task, let its agent work until `askAt`, then have it ask; the run once it waits. */
+async function askingAt(task: AutomationTask, name: string, askAt: number): Promise<AutomationRun> {
+	const started = await runNow(task.id);
+	await runWhen(task.id, started.id, (run) => run.sessionId === `s-${name}`, `${name} to be listed`);
+	fixture.setClock(askAt);
+	turn(name, `ASK: ${QUESTION}`);
+	return waitingOn(task.id, started.id, 1);
+}
+const stillRunning = async (id: string, runId: string) => {
+	// Several watch polls and scheduler checks pass at this clock.
+	await sleep(500);
+	const run = (await runsOf(id)).find((each) => each.id === runId)!;
+	expect([run.status, run.reason]).toEqual(['running', undefined]);
+	return run;
+};
+
+test('waiting does not count toward the limit (#675): unanswered past the limit it waits on; answered, it times out only once its working time passes the limit', async () => {
+	const task = await create({ limitMinutes: 60 });
 	hcomPlan([{ name: 'ask-late' }]);
-	const run = await asking(task, 'ask-late');
-	fixture.setClock(START + 10 * 60_000);
+	// 30 minutes of work, then a question left for 5 hours: far past 60 minutes from the start.
+	const run = await askingAt(task, 'ask-late', START + 30 * 60_000);
+	fixture.setClock(START + 30 * 60_000 + 5 * 3_600_000);
+	await stillRunning(task.id, run.id);
+	expect((await viewOf(task.id)).state).toBe('asking');
+	expect(listed('ask-late')).toBe(true);
+	expect((await yellow(run.id))[0].dismissedAt).toBeUndefined();
+
+	const answeredAt = START + 30 * 60_000 + 5 * 3_600_000;
+	expect((await reply(task.id, '2 張')).status).toBe(200);
+	await answered(task.id, run.id, 1);
+	setStatus('ask-late', 'active');
+	// 29 more minutes: 59 worked.
+	fixture.setClock(answeredAt + 29 * 60_000);
+	await stillRunning(task.id, run.id);
+	// 31 more minutes: 61 worked.
+	fixture.setClock(answeredAt + 31 * 60_000);
 	const late = await ended(task.id, run.id);
-	expect([late.status, late.reason]).toEqual(['timeout', '超過上限 10 分鐘，已停止']);
+	expect([late.status, late.reason]).toEqual(['timeout', '超過上限 60 分鐘，已停止']);
 	expect(listed('ask-late')).toBe(false);
 	const own = await eventually(async () => {
 		const cards = (await alerts()).filter((alert) => alert.runId === run.id);
 		return cards.some((alert) => alert.kind === 'timeout') && cards;
 	}, 5_000, 'the red card');
-	expect(own.find((alert) => alert.kind === 'ask')).toMatchObject({ resolved: 'ended' });
-	expect(own.find((alert) => alert.kind === 'timeout')!.dismissedAt).toBeUndefined();
+	expect(own.find((alert) => alert.kind === 'ask')).toMatchObject({ resolved: 'answered' });
+});
+
+test('every wait is taken off, one answered in the terminal too (#675); 停止這次 works while it waits', async () => {
+	const task = await create({ limitMinutes: 60 });
+	hcomPlan([{ name: 'ask-many' }]);
+	const run = await askingAt(task, 'ask-many', START + 20 * 60_000);
+	// Answered on the board after 2 hours.
+	fixture.setClock(START + 20 * 60_000 + 2 * 3_600_000);
+	expect((await reply(task.id, '2 張')).status).toBe(200);
+	await answered(task.id, run.id, 1);
+	// 20 more minutes of work (40 worked), then a second question answered in the terminal 3 hours later.
+	const second = START + 40 * 60_000 + 2 * 3_600_000;
+	fixture.setClock(second);
+	turn('ask-many', 'ASK: 發票抬頭用舊的還是新的？', '2 張');
+	await waitingOn(task.id, run.id, 2);
+	fixture.setClock(second + 3 * 3_600_000);
+	typed('ask-many', '用新的');
+	const both = await answered(task.id, run.id, 2);
+	expect(both.asks![1]).toMatchObject({ source: '終端', answeredAt: second + 3 * 3_600_000 });
+	// 19 more minutes: 59 worked.
+	fixture.setClock(second + 3 * 3_600_000 + 19 * 60_000);
+	await stillRunning(task.id, run.id);
+	fixture.setClock(second + 3 * 3_600_000 + 21 * 60_000);
+	expect((await ended(task.id, run.id)).status).toBe('timeout');
 
 	fixture.setClock(START);
 	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
 	hcomPlan([{ name: 'ask-stop' }]);
-	const second = await asking(task, 'ask-stop');
+	const stop = await asking(task, 'ask-stop');
 	expect((await send(`/api/automation/${task.id}/stop`, 'POST')).status).toBe(202);
-	const stopped = await ended(task.id, second.id);
+	const stopped = await ended(task.id, stop.id);
 	expect(stopped.status).toBe('stopped');
 	expect(listed('ask-stop')).toBe(false);
-	const cards = (await alerts()).filter((alert) => alert.runId === second.id);
+	const cards = (await alerts()).filter((alert) => alert.runId === stop.id);
 	expect(cards.map((alert) => [alert.kind, alert.resolved])).toEqual([['ask', 'ended']]);
+});
+
+test('a restart while it waits keeps taking the wait off (#675): the run taken over waits on past its limit, and after the answer has only its working time left', async () => {
+	const task = await create({ limitMinutes: 60 });
+	hcomPlan([{ name: 'ask-rest' }]);
+	const run = await askingAt(task, 'ask-rest', START + 20 * 60_000);
+	await fixture.stop();
+	// Back 5 hours later, still waiting: the first check and the watch both leave it be.
+	const back = START + 20 * 60_000 + 5 * 3_600_000;
+	fixture.setClock(back);
+	await fixture.start();
+	cookie = await fixture.login();
+	await stillRunning(task.id, run.id);
+	expect((await viewOf(task.id)).state).toBe('asking');
+	expect((await reply(task.id, '2 張')).status).toBe(200);
+	await answered(task.id, run.id, 1);
+	setStatus('ask-rest', 'active');
+	fixture.setClock(back + 39 * 60_000);
+	await stillRunning(task.id, run.id);
+	fixture.setClock(back + 41 * 60_000);
+	const late = await ended(task.id, run.id);
+	expect([late.status, late.reason]).toEqual(['timeout', '超過上限 60 分鐘，已停止']);
 });
 
 const grant = { goal: '處理已知問題', done: ['挑出的票已合併到 dev'], scope: { ticket_confirmation: true, assume_defaults: false, prototype_decide: true } };

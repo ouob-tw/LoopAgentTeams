@@ -349,6 +349,35 @@ export function openAsk(run: Pick<AutomationRun, 'status' | 'asks'>): RunAsk | u
 	const last = run.status === 'running' ? run.asks?.at(-1) : undefined;
 	return last && last.answeredAt === undefined ? last : undefined;
 }
+/** How long a run waited on the user: each question from asked to answered, an unanswered one up to
+ *  `now`. Spans are kept inside the run's start and `now`, so a clock that went back takes off nothing. */
+export function waitedMs(run: Pick<AutomationRun, 'startedAt' | 'asks'>, now: number): number {
+	let waited = 0;
+	for (const ask of run.asks ?? []) {
+		const from = Math.max(ask.askedAt, run.startedAt);
+		const to = Math.min(ask.answeredAt ?? now, now);
+		if (to > from) waited += to - from;
+	}
+	return waited;
+}
+/** How long a run's agent has worked: from its start to `now`, less the time it waited on the user
+ *  (#675). The limit counts only this; the record's asks carry it over a board restart. */
+export const workedMs = (run: Pick<AutomationRun, 'startedAt' | 'asks'>, now: number) => Math.max(0, now - run.startedAt - waitedMs(run, now));
+/** The run has worked its limit: the one rule every place that stops a run past its limit goes by. */
+export const pastLimit = (run: Pick<AutomationRun, 'startedAt' | 'asks'>, limitMinutes: number, now: number) => workedMs(run, now) >= limitMinutes * 60_000;
+/** Whole minutes in words: `25 分鐘`, `5 小時`, `2 小時 5 分鐘`. */
+export function spanText(ms: number): string {
+	const total = Math.max(0, Math.floor(ms / 60_000));
+	const hours = Math.floor(total / 60);
+	const minutes = total % 60;
+	return hours ? `${hours} 小時${minutes ? ` ${minutes} 分鐘` : ''}` : `${minutes} 分鐘`;
+}
+/** A running run's time so far: worked minutes, and the waiting left out when there was any. */
+export function workedText(run: Pick<AutomationRun, 'startedAt' | 'asks'>, now: number): string {
+	const waited = waitedMs(run, now);
+	const worked = `已跑 ${Math.max(0, Math.floor(workedMs(run, now) / 60_000))} 分鐘`;
+	return waited >= 60_000 ? `${worked}（扣掉等你回覆 ${spanText(waited)}）` : worked;
+}
 /** Where an answer came from, as the record shows it: the board's reply box or the agent's own terminal. */
 export const ASK_SOURCE = { board: '看板', terminal: '終端' } as const;
 /** The first line of a question: a yellow card's title and the start of its push. */
@@ -517,9 +546,13 @@ export function lastRunText(run: AutomationRun | undefined, timeZone: string, no
 	const at = timeFormat(timeZone);
 	const asked = openAsk(run);
 	if (asked) return `${at.full(run.startedAt)} 開始，${at.clock(asked.askedAt)} 起等你回覆`;
+	if (run.status === 'running' && now !== undefined) {
+		// After a wait the working time and the wait taken off fill the line: the start is on the task's page.
+		return waitedMs(run, now) >= 60_000 ? workedText(run, now) : `${at.full(run.startedAt)} 開始，${workedText(run, now)}`;
+	}
 	const replied = run.status === 'running' ? run.asks?.at(-1)?.answeredAt : undefined;
 	if (replied !== undefined) return `${at.full(run.startedAt)} 開始，${at.clock(replied)} 你已回覆，繼續中`;
-	if (run.status === 'running') return `${at.full(run.startedAt)} 開始，${now === undefined ? '執行中' : `已跑 ${Math.max(0, Math.floor((now - run.startedAt) / 60_000))} 分鐘`}`;
+	if (run.status === 'running') return `${at.full(run.startedAt)} 開始，執行中`;
 	const when = at.full(run.endedAt ?? run.startedAt);
 	if (run.status === 'success' && run.review && run.review.status !== 'pass') return `${when} 做完，但${run.review.status === 'checking' ? '還在檢查' : reviewText(run.review)}`;
 	if (run.status === 'success') return `${when} 完成，${run.review ? reviewText(run.review) : runReason(run)}`;

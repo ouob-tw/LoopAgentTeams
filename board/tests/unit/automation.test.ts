@@ -10,10 +10,15 @@ import {
 	missedText,
 	nextAutoAt,
 	openAsk,
+	pastLimit,
 	periodOf,
 	runLabel,
 	scheduleText,
+	spanText,
 	taskState,
+	waitedMs,
+	workedMs,
+	workedText,
 	windowOf,
 	type AutomationRun,
 	type AutomationTask,
@@ -165,8 +170,46 @@ test('等你回覆: a running run whose last question is unanswered; the state, 
 	// Answered, it is running again; a run that ended waits on nothing, whatever its record holds.
 	const going = run({ status: 'running', asks: [{ ...asked, answer: '2 張', answeredAt: at(2026, 11, 2, 10, 23), source: '看板' }] });
 	expect(openAsk(going)).toBeUndefined();
-	expect(lastRunText({ ...going, startedAt: at(2026, 11, 2, 10) }, zone, now)).toBe('11/02 10:00 開始，10:23 你已回覆，繼續中');
+	expect(lastRunText({ ...going, startedAt: at(2026, 11, 2, 10) }, zone, now)).toBe('已跑 25 分鐘（扣掉等你回覆 5 分鐘）');
+	expect(lastRunText({ ...going, startedAt: at(2026, 11, 2, 10) }, zone)).toBe('11/02 10:00 開始，10:23 你已回覆，繼續中');
 	expect(taskState(task(), [going], now)).toBe('running');
 	expect(openAsk(run({ status: 'timeout', asks: [asked] }))).toBeUndefined();
 	expect(taskState(task(), [run({ status: 'timeout', asks: [asked] })], now)).toBe('failed');
+});
+
+test('working time (#675): from the start less every wait, an unanswered one up to now; the limit counts only that', () => {
+	const start = at(2026, 11, 17, 3);
+	const min = 60_000;
+	const ask = (asked: number, answered?: number) => ({ question: '？', askedAt: start + asked * min, ...(answered === undefined ? {} : { answer: 'a', answeredAt: start + answered * min, source: '終端' }) });
+	// No question: all of it is work.
+	expect(workedMs(run({ startedAt: start }), start + 45 * min)).toBe(45 * min);
+	// Asked at 30 minutes and still unanswered: work stops at 30 however long it waits.
+	const waiting = run({ startedAt: start, asks: [ask(30)] });
+	expect(waitedMs(waiting, start + 330 * min)).toBe(300 * min);
+	expect(workedMs(waiting, start + 330 * min)).toBe(30 * min);
+	expect(pastLimit(waiting, 60, start + 24 * 60 * min)).toBe(false);
+	// The issue's example: limit 60, 30 worked, 5 hours waited, then 31 more is past it and 29 is not.
+	const answered = run({ startedAt: start, asks: [ask(30, 330)] });
+	expect(pastLimit(answered, 60, start + 359 * min)).toBe(false);
+	expect(pastLimit(answered, 60, start + 360 * min)).toBe(true);
+	// Several waits, one from the terminal, one still open: each is taken off.
+	const many = run({ startedAt: start, asks: [ask(10, 70), ask(80, 200), ask(210)] });
+	expect(waitedMs(many, start + 300 * min)).toBe((60 + 120 + 90) * min);
+	expect(workedMs(many, start + 300 * min)).toBe(30 * min);
+	// A run a restarted board took over is judged from the same record: nothing else is kept.
+	expect(workedMs(JSON.parse(JSON.stringify(many)), start + 300 * min)).toBe(30 * min);
+	// A wait never takes off time before the start or after now.
+	expect(waitedMs(run({ startedAt: start, asks: [ask(-10, 5)] }), start + 20 * min)).toBe(5 * min);
+	expect(waitedMs(run({ startedAt: start, asks: [ask(5, 50)] }), start + 20 * min)).toBe(15 * min);
+});
+
+test('working time in words: worked minutes, and the waiting taken off when there was any (#675)', () => {
+	const start = at(2026, 11, 17, 3);
+	const min = 60_000;
+	expect([spanText(0), spanText(25 * min), spanText(60 * min), spanText(125 * min + 59_000)]).toEqual(['0 分鐘', '25 分鐘', '1 小時', '2 小時 5 分鐘']);
+	expect(workedText(run({ startedAt: start }), start + 12 * min)).toBe('已跑 12 分鐘');
+	expect(workedText(run({ startedAt: start, asks: [{ question: '？', askedAt: start + 30 * min }] }), start + 330 * min)).toBe('已跑 30 分鐘（扣掉等你回覆 5 小時）');
+	// Under a minute of waiting says nothing extra.
+	expect(workedText(run({ startedAt: start, asks: [{ question: '？', askedAt: start + 5 * min, answer: 'a', answeredAt: start + 5 * min + 30_000 }] }), start + 12 * min)).toBe('已跑 11 分鐘');
+	expect(lastRunText(run({ status: 'running', startedAt: start, asks: [{ question: '？', askedAt: start + 30 * min, answer: 'a', answeredAt: start + 330 * min }] }), 'Asia/Taipei', start + 340 * min)).toBe('已跑 40 分鐘（扣掉等你回覆 5 小時）');
 });

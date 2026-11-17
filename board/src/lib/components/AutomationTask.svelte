@@ -20,6 +20,7 @@
 		TRIGGER_TEXT,
 		timeFormat,
 		missedNames,
+		workedText,
 		type AutomationRun,
 		type AutomationTaskView
 	} from '#lib/board/automation.ts';
@@ -103,7 +104,6 @@
 		outputs[run.id] = read.ok ? read.value : read.message;
 	}
 
-	const minutes = (from: number, to: number) => Math.max(0, Math.floor((to - from) / 60_000));
 	const sameDay = (a: number, b: number) => at.day(a) === at.day(b);
 	const openAgent = (sessionId: string, event: MouseEvent) => {
 		event.preventDefault();
@@ -239,7 +239,7 @@
 				<span class="trigger">{TRIGGER_TEXT[run.trigger]}</span>
 			</div>
 			{#if live}
-				<p>已跑 {minutes(run.startedAt, clock.now)} 分鐘，上限 {task.limitMinutes} 分鐘</p>
+				<p>{workedText(run, clock.now)}，上限 {task.limitMinutes} 分鐘</p>
 			{:else}
 				<p class="reason">{runReason(run)}</p>
 			{/if}
