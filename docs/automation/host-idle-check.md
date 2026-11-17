@@ -17,11 +17,10 @@ Record load average, `free -h` and swap use for the report, then gather:
 - `docker ps --format '{{.Names}}\t{{.Status}}\t{{.Label "com.docker.compose.project"}}'` and `docker stats --no-stream`.
 - `uv run --no-project python ~/.agents/skills/lat/scripts/lat-reap.py scan --limit 0`.
 - `ss -ltnp` for listening ports.
-- `herdr pane list` (`pane_id`, `cwd`) and, for candidates, `herdr pane process-info --pane <id>` (`foreground_processes` with `pid`, `name`, `cmdline`).
 
 ## Never touch
 
-- Processes of other users or root; anything whose cgroup is a systemd `.service` (e.g. `lat-board.service`, the live board on port 7100 run from `~/LoopAgentTeams/board` as `node build`); docker, herdr, hcom, pdd, rslsync (rule 6 closes Herdr panes; it never touches the herdr process).
+- Processes of other users or root; anything whose cgroup is a systemd `.service` (e.g. `lat-board.service`, the live board on port 7100 run from `~/LoopAgentTeams/board` as `node build`); docker, herdr, hcom, pdd, rslsync (rule 6 closes Herdr panes through its script; it never touches the herdr process).
 - Your own process tree, and every agent or process of a running automation run (hcom tags starting `auto-` or `autochk-`).
 - Processes kept by `lat-reap` (listed as keeps in the scan).
 - Docker volumes, images and stopped containers (host timers already clean those). Never `docker rm` or `docker compose down -v`.
@@ -35,11 +34,7 @@ Only when every condition of a rule holds. Close by PID, never by name (`pkill -
 3. **Orphan headless test browsers**: a `chrome`/`chromium` process with `--headless` and a `--user-data-dir` under `/tmp`, parent PID 1, running over 12 hours. Close the top orphan; its children go with it.
 4. **Stale LAT monitors**: `lat-watch.py run … --orchestrator <name>` with parent PID 1, running over 12 hours, and `<name>` is not in `hcom list` (alive agents).
 5. **Leftover test browser folders**: `/tmp/lat-board-test-chrome-*` and `/tmp/playwright_chromiumdev_profile-*` last modified over 2 days ago and not named in any running process's arguments. Remove with `trash-put`.
-6. **Empty Herdr panes**: nothing runs in the pane, it is not your own pane (`HERDR_PANE_ID` in your environment), and it is one of the two kinds below. Nothing runs means: `herdr pane process-info` lists exactly one foreground process; its `cmdline` is a bare shell (`bash`, `-bash`, `bash -l`, `zsh -l`; no script path, no `-c`); `/proc/<pid>/stat` shows it sleeping (`S`) and `/proc/<pid>/wchan` is `do_select` or `do_sys_poll` and its terminal is out of line mode (`ICANON` off in `termios.tcgetattr` on `/proc/<pid>/fd/0`): that is the shell's line editor waiting for a key at its prompt; a `read` (even `read -t`, which also waits in select) or a script waiting for input leaves `ICANON` on; and `/proc/<pid>/task/*/children` is empty (no background job).
-   - **hcom opened it and its agent is gone**: that shell has `HCOM_INSTANCE_NAME` in `/proc/<pid>/environ` and no `HCOM_PROCESS_ID`. hcom's launch script sets that name; after the agent exits the script drops the launch ids and leaves a `bash -l` that keeps it. No agent in `hcom list --json` has this pane as `launch_context.pane_id`.
-   - **Its working folder is deleted**: Herdr shows the pane's `cwd` ending in `(deleted)`.
-
-   Tell them from the user's own terminals by these records only, never by the pane label or terminal title. A shell without `HCOM_INSTANCE_NAME` whose folder still exists is the user's terminal: leave it even when idle. A pane where anything else runs (an agent, an editor, a command) stays. Right before closing, read `hcom list --json` and `process-info` again, then check the shell's `stat`, `wchan`, terminal mode and `children` once more and close at once with `herdr pane close <pane_id>`; skip the pane if anything changed. Log each one (pane id, kind, `cwd`, hcom name if any) and list them in the report.
+6. **Empty Herdr panes**: `uv run --no-project python ~/.agents/skills/hcom-spawn/scripts/empty-panes.py` lists panes where nothing runs any more, of two kinds only: `hcom` (hcom opened it and its agent is gone) and `deleted` (its working folder is deleted). It judges them by hcom's records and the processes in the pane, never by the pane label or title, and never lists your own pane. A terminal the user opened whose folder still exists is never closed, even when idle. Then run it again with `--close`: it checks each empty pane once more right before closing it and prints closed or kept and why. Copy both outputs into the report.
 
 ## 3. Ask about the rest
 

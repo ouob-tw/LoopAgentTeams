@@ -137,10 +137,10 @@ class FakeHerdr:
     -> tab id, processes maps pane id -> foreground process ids."""
 
     def __init__(self, panes=None, get_fails=False, rename_fails=False, missing=False,
-                 processes=None):
+                 processes=None, cwds=None):
         self.panes, self.calls = panes or {}, []
         self.get_fails, self.rename_fails, self.missing = get_fails, rename_fails, missing
-        self.processes = processes or {}
+        self.processes, self.cwds = processes or {}, cwds or {}
 
     def __call__(self, *args):
         self.calls.append(args)
@@ -158,10 +158,27 @@ class FakeHerdr:
                 return 1, json.dumps({'error': {'code': 'pane_not_found'}})
             return 0, json.dumps({'result': {'process_info': {'foreground_processes': [
                 {'name': 'bash', 'pid': pid} for pid in self.processes.get(args[3], [])]}}})
+        if args[:2] == ('pane', 'list'):
+            return 0, json.dumps({'result': {'panes': [
+                {'pane_id': pane, 'cwd': self.cwds.get(pane, '/home/u')} for pane in self.panes]}})
         if args[:2] == ('pane', 'close'):
             self.panes.pop(args[2], None)
             return 0, '{}'
         raise AssertionError(f'unexpected herdr call {args}')
+
+
+def fake_process(proc_root, herdr, pid, argv=('bash', '-l'), state='S', children='',
+                 wchan='do_select', **env):
+    """A process in a fake /proc, by default a login shell waiting at its prompt, listed by
+    herdr as the foreground of its HERDR_PANE_ID."""
+    proc = Path(proc_root) / str(pid)
+    (proc / 'task' / str(pid)).mkdir(parents=True)
+    (proc / 'environ').write_bytes(''.join(f'{key}={value}\0' for key, value in env.items()).encode())
+    (proc / 'cmdline').write_bytes(''.join(f'{word}\0' for word in argv).encode())
+    (proc / 'stat').write_text(f'{pid} ({argv[0]}) {state} 1 {pid} {pid} 0')
+    (proc / 'task' / str(pid) / 'children').write_text(children)
+    (proc / 'wchan').write_text(wchan)
+    herdr.processes.setdefault(env.get('HERDR_PANE_ID'), []).append(pid)
 
 
 def agent_row(name, pane=None, preset='herdr', tag='vare-review'):
@@ -895,18 +912,8 @@ class FailedLaunchTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.herdr = self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1', 'w1:p2': 'w1:t2'})
 
-    def shell(self, pid, argv=('bash', '-l'), state='S', children='', wchan='do_select', **env):
-        """A process in the fake /proc, by default a login shell waiting at its prompt in the
-        foreground of its HERDR_PANE_ID."""
-        proc = self.proc / str(pid)
-        (proc / 'task' / str(pid)).mkdir(parents=True)
-        (proc / 'environ').write_bytes(
-            ''.join(f'{key}={value}\0' for key, value in env.items()).encode())
-        (proc / 'cmdline').write_bytes(''.join(f'{word}\0' for word in argv).encode())
-        (proc / 'stat').write_text(f'{pid} ({argv[0]}) {state} 1 {pid} {pid} 0')
-        (proc / 'task' / str(pid) / 'children').write_text(children)
-        (proc / 'wchan').write_text(wchan)
-        self.herdr.processes.setdefault(env.get('HERDR_PANE_ID'), []).append(pid)
+    def shell(self, pid, **options):
+        fake_process(self.proc, self.herdr, pid, **options)
 
     def leftover(self, pid=501, pane='w1:p1', name='kilo', **extra):
         self.shell(pid, HERDR_PANE_ID=pane, HCOM_INSTANCE_NAME=name, HCOM_TOOL='claude', **extra)
