@@ -69,7 +69,8 @@ TRANSCRIPT_TAIL_BYTES = 256 * 1024
 UNREADABLE_ARGS = 'its command line could not be read'
 PATTERN_GRACE = 5      # seconds a watch with a --tag pattern leaves a batch to exact-tag watches
 SHELLS = {'bash', 'sh', 'dash', 'zsh', 'fish', 'ksh', 'tcsh', 'csh'}
-LEFTOVER_SLACK = 60    # seconds a leftover launch shell may have started before its batch event
+LOGIN_FLAGS = {'-l', '-i', '--login'}
+LEFTOVER_SLACK = 30    # seconds between a launch shell's start and its batch event, either way
 VARIABLE = re.compile(r'\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?!$-]|\{[^}]*\})')
 
 clock, sleep = time.monotonic, time.sleep
@@ -861,10 +862,11 @@ def launch_pane(name, tool, batch):
     hcom runs the agent from a launch script in the pane with HCOM_INSTANCE_NAME, HCOM_TOOL
     and HCOM_LAUNCH_BATCH_ID set (Herdr adds HERDR_PANE_ID). When the agent exits, the script
     unsets the launch ids and execs `bash -l`, which keeps HCOM_INSTANCE_NAME, HCOM_TOOL and
-    the script's start time. So a process with this batch id is the launch itself, and a
-    shell with this name and tool but no HCOM_PROCESS_ID is the launch's leftover when it
-    started at most LEFTOVER_SLACK seconds before the batch event. Leftovers in two panes
-    are ambiguous and give None.
+    the script's start time (about half a second before hcom writes the batch event). So a
+    process with this batch id is the launch itself, and a shell with this name and tool but
+    no HCOM_PROCESS_ID is the launch's leftover when it started within LEFTOVER_SLACK seconds
+    of the batch event; an earlier or later launch under the same name falls outside.
+    Leftovers in two panes are ambiguous and give None.
     """
     batch_id, since = (batch.get('data') or {}).get('batch_id'), batch_time(batch)
     leftovers = set()
@@ -880,37 +882,66 @@ def launch_pane(name, tool, batch):
             return pane
         if ('HCOM_PROCESS_ID' not in env and env.get('HCOM_TOOL') == tool and since is not None
                 and (started := started_at(proc.name)) is not None
-                and started >= since - LEFTOVER_SLACK):
+                and abs(started - since) <= LEFTOVER_SLACK):
             leftovers.add(pane)
     return leftovers.pop() if len(leftovers) == 1 else None
 
 
-def close_pane(full, pane, rows):
+def idle_leftover(pid, name, tool):
+    """Why the process is not this agent's idle leftover launch shell, or None when it is:
+    hcom's launch environment for this agent without HCOM_PROCESS_ID (launch_pane), a bare
+    login or interactive shell (no script, no -c), asleep, with no child processes."""
+    proc = PROC / str(pid)
+    try:
+        env = environ(proc)
+        argv = (proc / 'cmdline').read_bytes().decode(errors='replace').rstrip('\0').split('\0')
+        state = (proc / 'stat').read_text().rsplit(')', 1)[1].split()[0]
+        children = ''.join(path.read_text() for path in (proc / 'task').glob('*/children'))
+    except (OSError, IndexError):
+        return f'process {pid} could not be read'
+    if (env.get('HCOM_INSTANCE_NAME') != name or env.get('HCOM_TOOL') != tool
+            or 'HCOM_PROCESS_ID' in env):
+        return f'process {pid} is not the shell hcom left for this agent'
+    if (argv[0].rsplit('/', 1)[-1].lstrip('-') not in SHELLS
+            or not set(argv[1:]) <= LOGIN_FLAGS):
+        command = ' '.join(argv)[:80]
+        return f'`{command}` runs in it'
+    if state != 'S' or children.split():
+        return f'its shell (process {pid}) is busy'
+    return None
+
+
+def close_pane(full, name, tool, pane):
     """Close a failed agent's Herdr pane; return the sentence for the notice.
 
-    Same tie as close-agent.py: no other agent in `hcom list` has the pane recorded. And
-    only shells run in it (`herdr pane process-info`), so a launch that still runs, the
-    spawner's own pane or something typed into it is left alone.
+    The slow reads come first: what runs in the pane (`herdr pane process-info`), then
+    `hcom list`, where no other agent may have the pane recorded (the tie close-agent.py
+    uses). Then, with nothing awaited before `herdr pane close`, the one foreground process
+    must be this agent's idle leftover shell (idle_leftover), so a launch that still runs,
+    the spawner's own pane or anything typed into the shell is left alone.
     """
-    if rows is None:
-        return f'Its Herdr pane {pane} was not closed: hcom list could not be read.'
-    sharers = sorted(name for name, row in rows.items() if name != full
-                     and (row.get('launch_context') or {}).get('pane_id') == pane)
-    if sharers:
-        return (f"Its Herdr pane {pane} was not closed: it is also recorded for "
-                f"{', '.join(sharers)}.")
     code, out = herdr('pane', 'process-info', '--pane', pane)
     try:
         processes = json.loads(out)['result']['process_info']['foreground_processes']
-        running = [str(process.get('cmdline') or process.get('name')) for process in processes
-                   if str(process.get('name', '')).lstrip('-') not in SHELLS]
+        pids = [int(process['pid']) for process in processes]
     except (ValueError, KeyError, TypeError, AttributeError):
         if 'pane_not_found' in out:
             return f'Its Herdr pane {pane} is already gone.'
         return (f'Its Herdr pane {pane} was not closed: herdr pane process-info failed: '
                 f'{out.strip()[:200]}')
-    if running:
-        return f'Its Herdr pane {pane} was not closed: `{running[0][:80]}` still runs in it.'
+    rows = listing()
+    if rows is None:
+        return f'Its Herdr pane {pane} was not closed: hcom list could not be read.'
+    sharers = sorted(other for other, row in rows.items() if other != full
+                     and (row.get('launch_context') or {}).get('pane_id') == pane)
+    if sharers:
+        return (f"Its Herdr pane {pane} was not closed: it is also recorded for "
+                f"{', '.join(sharers)}.")
+    if len(pids) != 1:
+        return (f'Its Herdr pane {pane} was not closed: {len(pids)} foreground processes '
+                'instead of one idle shell.')
+    if busy := idle_leftover(pids[0], name, tool):
+        return f'Its Herdr pane {pane} was not closed: {busy}.'
     code, out = herdr('pane', 'close', pane)
     if code:
         return f'Its Herdr pane {pane} was not closed: herdr pane close failed: {out.strip()[:200]}'
@@ -938,7 +969,7 @@ def failed_launch(tool, name, full, why, batch):
     if not pane:
         return head + ('No Herdr pane was found for it in hcom list or in its launch '
                        'environment, so no pane was closed.')
-    outcome = close_pane(full, pane, rows)
+    outcome = close_pane(full, name, tool, pane)
     log(f'{full}: launch failed ({why}); {outcome}')
     return head + outcome
 
