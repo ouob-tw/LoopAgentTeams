@@ -98,7 +98,10 @@ export function claudeTurn(turn: ClaudeTurn): Promise<Outcome<string>> {
 			// Claude Code may put its usage-limit notice in place of the answer without marking an error.
 			if (answer.is_error === true || code !== 0 || !result || CLAUDE_USAGE_LIMIT.test(result)) {
 				const why = result || (answer.is_error === true && typeof answer.subtype === 'string' ? answer.subtype : '沒有回覆');
-				return finish({ ok: false, reason: `Haiku 沒有完成：${why}` }, ended);
+				// Only Claude Code's own error text goes in the journal: a result that is not one may be
+				// Haiku's translation or tidied speech, which no secret covers.
+				const ownError = answer.is_error === true || CLAUDE_USAGE_LIMIT.test(result) || !result;
+				return finish({ ok: false, reason: `Haiku 沒有完成：${why}` }, ended, ownError ? undefined : 'Haiku 沒有完成：結束碼不是 0');
 			}
 			finish({ ok: true, value: result }, ended);
 		});

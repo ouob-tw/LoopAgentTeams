@@ -158,12 +158,24 @@ test('a restarted board starts on luna', async () => {
 	expect(codexCalls()).toHaveLength(2);
 });
 
-test("Codex's usage limit is known by its error code or by its words alone", async () => {
+test("Codex's usage limit is known by its error code or by its words alone, in a failed turn or a refused one", async () => {
 	for (const only of ['code', 'message']) {
 		codexPlan({ usageLimit: only });
 		expect((await tidy(board(), SPEECH)).by).toBe('Haiku');
 	}
-	expect(claudeCalls()).toHaveLength(2);
+	// Refused at turn/start with Codex's words, rather than a failed turn.
+	codexPlan({ usageLimitOnStart: true });
+	expect((await tidy(board(), SPEECH)).by).toBe('Haiku');
+	expect(claudeCalls()).toHaveLength(3);
+});
+
+test("Haiku's own answer never reaches the journal when the CLI exits non-zero after it", async () => {
+	const config = board();
+	claudePlan({ reply: '這是海酷整理出來的私人語音內容', exitCode: 1 });
+	const result = await tidy(config, SPEECH);
+	expect(result).toEqual({ ok: false, reason: 'Haiku 沒有完成：這是海酷整理出來的私人語音內容', by: 'Haiku' });
+	const failed = lines.filter((line) => line.startsWith('[voice] Haiku tidy failed: '));
+	expect(failed).toEqual(['[voice] Haiku tidy failed: Haiku 沒有完成：結束碼不是 0 (exit 1)']);
 });
 
 test('a Codex timeout, early exit, garbled answer or other failure fails as before: no Haiku and no hold', async () => {

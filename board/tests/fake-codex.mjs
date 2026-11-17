@@ -3,7 +3,7 @@
 // <dir>/codex.json says: `reply` is the agent message it answers with; `fail` ends the turn as
 // failed, `usageLimit` ends it failed the way Codex does when the account's quota ran out, before
 // any reply (its own words and `codexErrorInfo`; `usageLimit: "message"` or `"code"` sends only
-// that one), `hang` never ends it, `exit` quits as soon as the turn starts, `itemOnly` sends the reply
+// that one; `usageLimitOnStart` refuses turn/start itself with those words), `hang` never ends it, `exit` quits as soon as the turn starts, `itemOnly` sends the reply
 // only as a completed item (the finished turn lists none) and `garbled` ends the turn with no turn,
 // `junk` answers with that text on a line of its own, which is not JSON; `prefix` answers with it
 // followed by what the input holds inside its tags, as a translation that keeps every marker would;
@@ -38,6 +38,10 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
 	else if (message.method === 'thread/start') {
 		appendFileSync(join(dir, 'codex-threads.jsonl'), JSON.stringify(message.params) + '\n');
 		write({ id: message.id, result: { thread: { id: 'thread-1' }, params: message.params } });
+	}
+	else if (message.method === 'turn/start' && plan.usageLimitOnStart) {
+		appendFileSync(join(dir, 'codex-calls.jsonl'), JSON.stringify({ text: message.params.input[0].text, model: message.params.model, effort: message.params.effort }) + '\n');
+		write({ id: message.id, error: { code: -32603, message: "You've hit your usage limit. Try again at 3:05 PM." } });
 	}
 	else if (message.method === 'turn/start') {
 		const text = message.params.input[0].text;

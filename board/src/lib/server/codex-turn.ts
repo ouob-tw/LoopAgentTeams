@@ -153,7 +153,12 @@ export function codexTurn(turn: CodexTurn): Promise<Outcome<string>> {
 					reply.error || !reply.result
 						? optional
 							? answered({})
-							: finish({ ok: false, reason: `Codex ${method}：${reply.error?.message ?? '沒有結果'}` })
+							: finish({
+									ok: false,
+									reason: `Codex ${method}：${reply.error?.message ?? '沒有結果'}`,
+									// Should the server refuse the request itself for the quota.
+									...(CODEX_USAGE_LIMIT.test(reply.error?.message ?? '') ? { usageLimit: true as const } : {})
+								})
 						: answered(reply.result)
 				);
 				write({ id, method, params });

@@ -6,7 +6,8 @@
 // takes the markers out of that numbered reply; `error` ends as an error with that text (exit 1);
 // `limit` ends with Claude Code's usage-limit notice as an error; `limitAsReply` prints that notice
 // as an ordinary answer; `hang` never ends; `exit` quits with no output; `junk` prints that text,
-// which is not JSON; `stderr` is written to standard error first.
+// which is not JSON; `exitCode` ends with that code after an ordinary answer; `stderr` is written
+// to standard error first.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -28,7 +29,7 @@ process.stdin.on('end', () => {
 	/** @param {string} result @param {boolean} error */
 	const answer = (result, error) => {
 		process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: error, result, num_turns: 1 }) + '\n');
-		process.exitCode = error ? 1 : 0;
+		process.exitCode = error ? 1 : (plan.exitCode ?? 0);
 	};
 	if (plan.error) return answer(plan.error, true);
 	if (plan.limit) return answer(LIMIT, true);
