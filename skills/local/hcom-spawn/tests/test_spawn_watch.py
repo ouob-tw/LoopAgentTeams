@@ -882,13 +882,17 @@ class FailedLaunchTests(unittest.TestCase):
         self.proc = Path(self.state.name) / 'proc'
         self.proc.mkdir()
         self.watch.PROC = self.proc
-        self.watch.started_at = lambda pid: self.starts.get(pid)
-        self.starts = {}
+        self.hcom_dir = Path(self.state.name) / 'hcom'
+        for folder in ('launch', 'terminal_ids'):
+            (self.hcom_dir / '.tmp' / folder).mkdir(parents=True)
+        patcher = mock.patch.dict(os.environ, {'HCOM_DIR': str(self.hcom_dir)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.herdr = self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1', 'w1:p2': 'w1:t2'})
 
-    def shell(self, pid, started=1000.0, argv=('bash', '-l'), state='S', children='', **env):
-        """A process in the fake /proc, by default an idle login shell in the foreground of
-        its HERDR_PANE_ID."""
+    def shell(self, pid, argv=('bash', '-l'), state='S', children='', wchan='do_select', **env):
+        """A process in the fake /proc, by default a login shell waiting at its prompt in the
+        foreground of its HERDR_PANE_ID."""
         proc = self.proc / str(pid)
         (proc / 'task' / str(pid)).mkdir(parents=True)
         (proc / 'environ').write_bytes(
@@ -896,11 +900,21 @@ class FailedLaunchTests(unittest.TestCase):
         (proc / 'cmdline').write_bytes(''.join(f'{word}\0' for word in argv).encode())
         (proc / 'stat').write_text(f'{pid} ({argv[0]}) {state} 1 {pid} {pid} 0')
         (proc / 'task' / str(pid) / 'children').write_text(children)
-        self.starts[str(pid)] = started
+        (proc / 'wchan').write_text(wchan)
         self.herdr.processes.setdefault(env.get('HERDR_PANE_ID'), []).append(pid)
 
     def leftover(self, pid=501, pane='w1:p1', name='kilo', **extra):
         self.shell(pid, HERDR_PANE_ID=pane, HCOM_INSTANCE_NAME=name, HCOM_TOOL='claude', **extra)
+
+    def record(self, name='kilo', pane='w1:p1', batch='b1', tool='claude', terminal=True):
+        """hcom's launch records: the runner script it keeps and the pane of its process id."""
+        process = f'proc-{name}-{batch}-{tool}'
+        (self.hcom_dir / '.tmp/launch' / f'{tool}_{name}_4242_{len(batch)}{tool}.sh').write_text(
+            f"#!/bin/bash\nexport HCOM_INSTANCE_NAME={name}; export HCOM_LAUNCH_BATCH_ID={batch}; "
+            f"export HCOM_PANE_TITLE='x y'; export HCOM_PROCESS_ID={process}; "
+            f"export HCOM_TOOL={tool};\nexec hcom pty {tool}\n")
+        if terminal:
+            (self.hcom_dir / '.tmp/terminal_ids' / process).write_text(pane)
 
     def run_failed(self, fake):
         fake.batch['ts'] = '1970-01-01T00:16:40'  # Unix time 1000
@@ -918,7 +932,7 @@ class FailedLaunchTests(unittest.TestCase):
     def test_pane_hcom_listed_for_an_agent_that_failed_at_once_is_closed(self):
         fake = FakeHcom(screens=[], stop_after=0)
         fake.launch_failed, fake.agents = FAILED, [agent_row('kilo', 'w1:p1')]
-        self.leftover(started=0.0)  # found through hcom list, so its start time does not matter
+        self.leftover()
         sent = self.run_failed(fake)
         self.assertEqual(self.closes(), [('pane', 'close', 'w1:p1')])
         self.assertEqual(len(sent), 1)
@@ -927,21 +941,25 @@ class FailedLaunchTests(unittest.TestCase):
                       sent[0])
         self.assertIn('Its Herdr pane w1:p1 was closed.', sent[0])
 
-    def test_agent_gone_from_hcom_list_is_found_by_the_shell_its_launch_left(self):
+    def test_agent_gone_from_hcom_list_is_found_by_hcoms_launch_records(self):
         fake = FakeHcom(screens=[], stop_after=0)
         fake.launch_failed, fake.agents = FAILED, [agent_row('mona', 'w1:p2')]
-        self.leftover(started=1000.5)
+        self.record()
+        self.record('mona', 'w1:p2', batch='b9')
+        self.leftover()
         self.leftover(502, pane='w1:p2', name='mona')
         sent = self.run_failed(fake)
         self.assertEqual(self.closes(), [('pane', 'close', 'w1:p1')])
         self.assertIn('Its Herdr pane w1:p1 was closed.', sent[0])
 
-    def test_leftover_shell_of_an_earlier_or_later_launch_or_another_tool_is_not_used(self):
+    def test_launch_records_of_another_batch_or_tool_or_without_a_pane_are_not_used(self):
         fake = FakeHcom(screens=[], stop_after=0)
         fake.launch_failed, fake.agents = FAILED, []
-        self.leftover(started=900.0)
-        self.leftover(503, pane='w1:p2', started=1180.0)
-        self.shell(502, HERDR_PANE_ID='w1:p2', HCOM_INSTANCE_NAME='kilo', HCOM_TOOL='codex')
+        self.record(batch='b0')                     # same name, launched by another batch
+        self.record(pane='w1:p2', tool='codex')     # same name and batch id, other tool
+        self.record(pane='w1:p2', batch='b1', terminal=False)  # hcom kept no pane for it
+        self.leftover()
+        self.leftover(502, pane='w1:p2')
         sent = self.run_failed(fake)
         self.assertEqual(self.closes(), [])
         self.assertIn('No Herdr pane was found for it', sent[0])
@@ -949,6 +967,7 @@ class FailedLaunchTests(unittest.TestCase):
     def test_agent_never_listed_within_3_minutes_gets_its_pane_closed(self):
         fake = FakeHcom(screens=[], stop_after=500)
         fake.agents = []
+        self.record()
         self.leftover()
         sent = self.run_failed(fake)
         self.assertGreaterEqual(fake.now, self.watch.DEADLINE)
@@ -959,6 +978,7 @@ class FailedLaunchTests(unittest.TestCase):
     def test_launch_still_running_in_its_pane_is_left_open(self):
         fake = FakeHcom(screens=[], stop_after=500)
         fake.agents = []
+        self.record()
         self.leftover(argv=('bash', '/home/u/.hcom/.tmp/launch/hcom_1_2.sh'),
                       HCOM_PROCESS_ID='x', HCOM_LAUNCH_BATCH_ID='b1')
         sent = self.run_failed(fake)
@@ -972,7 +992,8 @@ class FailedLaunchTests(unittest.TestCase):
                  '`bash /tmp/user-work.sh` runs in it'),
                 ('-c', {'argv': ('bash', '-c', 'make test')}, '`bash -c make test` runs in it'),
                 ('busy', {'state': 'R'}, 'its shell (process 501) is busy'),
-                ('job', {'children': '777 '}, 'its shell (process 501) is busy')):
+                ('job', {'children': '777 '}, 'its shell (process 501) is busy'),
+                ('read', {'wchan': 'n_tty_read'}, 'its shell (process 501) is busy')):
             with self.subTest(case=case):
                 self.setUp()
                 fake = FakeHcom(screens=[], stop_after=0)

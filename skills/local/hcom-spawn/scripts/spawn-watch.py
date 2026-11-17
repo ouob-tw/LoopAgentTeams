@@ -22,7 +22,6 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
@@ -70,7 +69,7 @@ UNREADABLE_ARGS = 'its command line could not be read'
 PATTERN_GRACE = 5      # seconds a watch with a --tag pattern leaves a batch to exact-tag watches
 SHELLS = {'bash', 'sh', 'dash', 'zsh', 'fish', 'ksh', 'tcsh', 'csh'}
 LOGIN_FLAGS = {'-l', '-i', '--login'}
-LEFTOVER_SLACK = 30    # seconds between a launch shell's start and its batch event, either way
+PROMPT_WAITS = {'do_select', 'do_sys_poll'}  # kernel waits of a shell's line editor at its prompt
 VARIABLE = re.compile(r'\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?!$-]|\{[^}]*\})')
 
 clock, sleep = time.monotonic, time.sleep
@@ -836,66 +835,63 @@ def environ(proc):
                 if '=' in item)
 
 
-def started_at(pid):
-    """Start of a process as a Unix time, or None."""
-    ticks = process_start(pid)
-    try:
-        boot = next(int(line.split()[1]) for line in (PROC / 'stat').read_text().splitlines()
-                    if line.startswith('btime '))
-    except (OSError, ValueError, IndexError, StopIteration):
-        return None
-    return None if ticks is None else boot + ticks / os.sysconf('SC_CLK_TCK')
+def hcom_dir():
+    return Path(os.environ.get('HCOM_DIR') or Path.home() / '.hcom')
 
 
-def batch_time(batch):
-    """Unix time of a batch_launched event (hcom writes ts in UTC), or None."""
-    try:
-        return datetime.fromisoformat(batch['ts']).replace(tzinfo=timezone.utc).timestamp()
-    except (KeyError, TypeError, ValueError):
-        return None
+def exported(script, name):
+    """Value a launch script exports for name, or None."""
+    match = re.search(rf"export {name}=(?:'([^']*)'|([^;\s]*))", script)
+    return None if match is None else match.group(1) or match.group(2)
 
 
 def launch_pane(name, tool, batch):
-    """Herdr pane of the shell hcom's launch of this agent runs in, or None, from the
-    environment hcom gave the launch.
+    """Herdr pane hcom opened for this agent's launch, or None, from hcom's launch records.
 
-    hcom runs the agent from a launch script in the pane with HCOM_INSTANCE_NAME, HCOM_TOOL
-    and HCOM_LAUNCH_BATCH_ID set (Herdr adds HERDR_PANE_ID). When the agent exits, the script
-    unsets the launch ids and execs `bash -l`, which keeps HCOM_INSTANCE_NAME, HCOM_TOOL and
-    the script's start time (about half a second before hcom writes the batch event). So a
-    process with this batch id is the launch itself, and a shell with this name and tool but
-    no HCOM_PROCESS_ID is the launch's leftover when it started within LEFTOVER_SLACK seconds
-    of the batch event; an earlier or later launch under the same name falls outside.
-    Leftovers in two panes are ambiguous and give None.
+    hcom writes a runner script `<HCOM_DIR>/.tmp/launch/<tool>_<name>_*.sh` that exports the
+    launch's HCOM_LAUNCH_BATCH_ID and HCOM_PROCESS_ID and keeps it after the agent exits,
+    and `<HCOM_DIR>/.tmp/terminal_ids/<process id>` holding the pane until the agent binds.
+    The script with this batch id gives the process id, whose file gives the pane.
     """
-    batch_id, since = (batch.get('data') or {}).get('batch_id'), batch_time(batch)
-    leftovers = set()
-    for proc in PROC.glob('[0-9]*'):
+    batch_id = (batch.get('data') or {}).get('batch_id')
+    if not batch_id:
+        return None
+    panes = set()
+    for path in (hcom_dir() / '.tmp' / 'launch').glob(f'{tool}_{name}_*.sh'):
         try:
-            env = environ(proc)
+            script = path.read_text(errors='replace')
         except OSError:
             continue
-        pane = env.get('HERDR_PANE_ID')
-        if not pane or env.get('HCOM_INSTANCE_NAME') != name:
+        process_id = exported(script, 'HCOM_PROCESS_ID')
+        if (exported(script, 'HCOM_LAUNCH_BATCH_ID') != batch_id
+                or exported(script, 'HCOM_INSTANCE_NAME') != name
+                or not process_id or not NAME.match(process_id)):
             continue
-        if batch_id and env.get('HCOM_LAUNCH_BATCH_ID') == batch_id:
-            return pane
-        if ('HCOM_PROCESS_ID' not in env and env.get('HCOM_TOOL') == tool and since is not None
-                and (started := started_at(proc.name)) is not None
-                and abs(started - since) <= LEFTOVER_SLACK):
-            leftovers.add(pane)
-    return leftovers.pop() if len(leftovers) == 1 else None
+        try:
+            pane = (hcom_dir() / '.tmp' / 'terminal_ids' / process_id).read_text().strip()
+        except OSError:
+            continue
+        if pane:
+            panes.add(pane)
+    return panes.pop() if len(panes) == 1 else None
 
 
 def idle_leftover(pid, name, tool):
-    """Why the process is not this agent's idle leftover launch shell, or None when it is:
-    hcom's launch environment for this agent without HCOM_PROCESS_ID (launch_pane), a bare
-    login or interactive shell (no script, no -c), asleep, with no child processes."""
+    """Why the process is not this agent's idle leftover launch shell, or None when it is.
+
+    hcom runs the agent from a launch script in the pane with HCOM_INSTANCE_NAME and
+    HCOM_TOOL set; when the agent exits the script unsets the launch ids (HCOM_PROCESS_ID
+    among them) and execs `bash -l`, which keeps the name and tool. So the shell must carry
+    this agent's name and tool without HCOM_PROCESS_ID, be a bare login or interactive shell
+    (no script, no -c) with no child processes, waiting at its prompt: asleep in the line
+    editor's select or poll (PROMPT_WAITS in /proc/<pid>/wchan). A `read` builtin or a
+    sourced script waiting for input sleeps in another kernel wait and keeps the pane."""
     proc = PROC / str(pid)
     try:
         env = environ(proc)
         argv = (proc / 'cmdline').read_bytes().decode(errors='replace').rstrip('\0').split('\0')
         state = (proc / 'stat').read_text().rsplit(')', 1)[1].split()[0]
+        wait = (proc / 'wchan').read_text().strip()
         children = ''.join(path.read_text() for path in (proc / 'task').glob('*/children'))
     except (OSError, IndexError):
         return f'process {pid} could not be read'
@@ -906,7 +902,7 @@ def idle_leftover(pid, name, tool):
             or not set(argv[1:]) <= LOGIN_FLAGS):
         command = ' '.join(argv)[:80]
         return f'`{command}` runs in it'
-    if state != 'S' or children.split():
+    if state != 'S' or children.split() or wait not in PROMPT_WAITS:
         return f'its shell (process {pid}) is busy'
     return None
 
@@ -956,8 +952,8 @@ def failed_launch(tool, name, full, why, batch):
     spawner.
 
     The pane is the one hcom recorded for the agent in `hcom list` during this watch, else
-    the one its launch environment points to (launch_pane), since an agent that dies at once
-    often leaves `hcom list` before it is read. Panes in other terminals are left alone.
+    the one in hcom's launch records (launch_pane), since an agent that dies at once often
+    leaves `hcom list` before it is read. Panes in other terminals are left alone.
     """
     rows = listing()
     context = recorded.get(full) or ((rows or {}).get(full) or {}).get('launch_context') or {}
@@ -967,8 +963,8 @@ def failed_launch(tool, name, full, why, batch):
         return head + f'It was launched in {preset}, not herdr, so no pane was closed.'
     pane = context.get('pane_id') or launch_pane(name, tool, batch)
     if not pane:
-        return head + ('No Herdr pane was found for it in hcom list or in its launch '
-                       'environment, so no pane was closed.')
+        return head + ('No Herdr pane was found for it in hcom list or in hcom\'s launch '
+                       'records, so no pane was closed.')
     outcome = close_pane(full, name, tool, pane)
     log(f'{full}: launch failed ({why}); {outcome}')
     return head + outcome
