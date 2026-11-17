@@ -20,7 +20,7 @@ Record load average, `free -h` and swap use for the report, then gather:
 
 ## Never touch
 
-- Processes of other users or root; anything whose cgroup is a systemd `.service` (e.g. `lat-board.service`, the live board on port 7100 run from `~/LoopAgentTeams/board` as `node build`); docker, herdr, hcom, pdd, rslsync.
+- Processes of other users or root; anything whose cgroup is a systemd `.service` (e.g. `lat-board.service`, the live board on port 7100 run from `~/LoopAgentTeams/board` as `node build`); docker, herdr, hcom, pdd, rslsync (rule 6 closes Herdr panes through its script; it never touches the herdr process).
 - Your own process tree, and every agent or process of a running automation run (hcom tags starting `auto-` or `autochk-`).
 - Processes kept by `lat-reap` (listed as keeps in the scan).
 - Docker volumes, images and stopped containers (host timers already clean those). Never `docker rm` or `docker compose down -v`.
@@ -34,6 +34,7 @@ Only when every condition of a rule holds. Close by PID, never by name (`pkill -
 3. **Orphan headless test browsers**: a `chrome`/`chromium` process with `--headless` and a `--user-data-dir` under `/tmp`, parent PID 1, running over 12 hours. Close the top orphan; its children go with it.
 4. **Stale LAT monitors**: `lat-watch.py run … --orchestrator <name>` with parent PID 1, running over 12 hours, and `<name>` is not in `hcom list` (alive agents).
 5. **Leftover test browser folders**: `/tmp/lat-board-test-chrome-*` and `/tmp/playwright_chromiumdev_profile-*` last modified over 2 days ago and not named in any running process's arguments. Remove with `trash-put`.
+6. **Empty Herdr panes**: `uv run --no-project python ~/.agents/skills/hcom-spawn/scripts/empty-panes.py` lists panes where nothing runs any more, of two kinds only: `hcom` (hcom opened it and its agent is gone) and `deleted` (its working folder is deleted). It judges them by hcom's records and the processes in the pane, never by the pane label or title, and never lists your own pane. A terminal the user opened whose folder still exists is never closed, even when idle. Then run it again with `--close`: it checks each empty pane once more right before closing it and prints closed or kept and why. Copy both outputs into the report.
 
 ## 3. Ask about the rest
 

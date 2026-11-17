@@ -1,0 +1,6 @@
+{"map": [
+  {"paths": ["skills/local/hcom-spawn/scripts/empty-panes.py",
+             "skills/local/hcom-spawn/scripts/spawn-watch.py",
+             "skills/local/hcom-spawn/tests/test_spawn_watch.py"],
+   "tests": ["skills/local/hcom-spawn/tests/test_empty_panes.py"]}
+]}

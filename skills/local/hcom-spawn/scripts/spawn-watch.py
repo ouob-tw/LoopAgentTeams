@@ -7,7 +7,9 @@ permission on the agent's screen with the launch command, tells the spawner abou
 mismatch or anything it could not confirm, and removes the subscriptions once the agents
 stop. Until then it also types Continue once when a Codex agent stops on model capacity
 and tells the spawner once when one stops on another API error or its usage limit (see
-capacity_step).
+capacity_step). When the launch fails (hcom's launch_failed event, or the agent never shows
+up in `hcom list`), it closes the Herdr pane hcom opened for the agent once nothing runs in it
+and says so in its notice (see failed_launch).
 """
 import argparse
 import contextlib
@@ -18,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import termios
 import threading
 import time
 from pathlib import Path
@@ -65,6 +68,9 @@ STOP_NOTICE = {
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 UNREADABLE_ARGS = 'its command line could not be read'
 PATTERN_GRACE = 5      # seconds a watch with a --tag pattern leaves a batch to exact-tag watches
+SHELLS = {'bash', 'sh', 'dash', 'zsh', 'fish', 'ksh', 'tcsh', 'csh'}
+LOGIN_FLAGS = {'-l', '-i', '--login'}
+PROMPT_WAITS = {'do_select', 'do_sys_poll'}  # kernel waits of a shell's line editor at its prompt
 VARIABLE = re.compile(r'\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?!$-]|\{[^}]*\})')
 
 clock, sleep = time.monotonic, time.sleep
@@ -72,6 +78,7 @@ PROC = Path('/proc')
 episodes = {}            # agent base name -> current capacity episode
 stop_errors = {}         # agent base name -> error texts already told to the spawner
 last_capacity_check = [None]
+recorded = {}            # agent full name -> launch_context seen in `hcom list` during this watch
 
 
 def hcom(*args, timeout=30):
@@ -225,6 +232,8 @@ def label_tabs(spawner, agents):
     waiting = {}
     for name, full in agents.items():
         context, label = contexts.get(full, {}), tab_label(spawner, name)
+        if context.get('pane_id') or context.get('terminal_preset_effective'):
+            recorded[full] = context
         preset, pane = context.get('terminal_preset_effective'), context.get('pane_id')
         if preset and preset != 'herdr':
             log(f'tab {label} not set: launched in {preset}, not herdr')
@@ -739,10 +748,12 @@ def capacity_step(name, full, spawner):
             episode['notified'] = True
 
 
-def check(tool, agents, expected, watched, launch_id, start, unattributed=None):
+def check(tool, agents, expected, watched, launch_id, start, unattributed=None, batch=None):
     """Read screens (then session logs) until every item is known or time runs out.
 
-    Agents that stop meanwhile get no report.
+    Agents that stop meanwhile get no report, unless hcom recorded their launch as failed;
+    a failed launch, or an agent that never got ready and is not in a readable `hcom list`
+    at the end, gets failed_launch's notice instead of the check result.
     """
     seen = {name: {} for name in agents}
     reasons = {name: 'agent did not become ready' for name in agents}
@@ -779,9 +790,228 @@ def check(tool, agents, expected, watched, launch_id, start, unattributed=None):
                 pending.discard(name)
         sleep(POLL)
     stopped |= {name for name in agents if stopped_since(name, launch_id)}
-    return {name: report(tool, agents[name], expected, seen[name],
-                         f'{reasons[name]} within {DEADLINE}s', unattributed)
-            for name in agents if name not in stopped}
+    rows = listing() if set(agents) - set(ready_at) - stopped else None
+    reports = {}
+    for name, full in agents.items():
+        if name in stopped:
+            why = launch_failure(name, launch_id)
+        elif name not in ready_at and rows is not None and full not in rows:
+            why = f'it did not show up in hcom list within {DEADLINE}s'
+        else:
+            why = None
+        if why:
+            reports[name] = failed_launch(tool, name, full, why, batch or {})
+        elif name not in stopped:
+            reports[name] = report(tool, full, expected, seen[name],
+                                   f'{reasons[name]} within {DEADLINE}s', unattributed)
+    return reports
+
+
+def listing():
+    """`hcom list --json` rows by full name, or None when hcom cannot be read."""
+    _, out = hcom('list', '--json')
+    try:
+        return {row['name']: row for row in json.loads(out)}
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def launch_failure(name, launch_id):
+    """Why hcom says the agent's launch failed (its launch_failed event after the launch),
+    or None. hcom's row_finalized duplicate is used only when nothing else is there."""
+    found = events('--type', 'life', '--action', 'launch_failed', '--agent', name,
+                   '--sql', f'id > {launch_id}')
+    found = [event for event in found if isinstance(event.get('data'), dict)]
+    for event in sorted(found, key=lambda event: event['data'].get('reason') == 'row_finalized'):
+        data = event['data']
+        detail = ' / '.join(line.strip() for line in str(data.get('detail') or '').splitlines()
+                            if line.strip())
+        return (detail or str(data.get('reason') or 'launch failed'))[:300]
+    return None
+
+
+def environ(proc):
+    return dict(item.split('=', 1) for item in
+                (proc / 'environ').read_bytes().decode(errors='replace').split('\0')
+                if '=' in item)
+
+
+def hcom_dir():
+    return Path(os.environ.get('HCOM_DIR') or Path.home() / '.hcom')
+
+
+def exported(script, name):
+    """Value a launch script exports for name, or None."""
+    match = re.search(rf"export {name}=(?:'([^']*)'|([^;\s]*))", script)
+    return None if match is None else match.group(1) or match.group(2)
+
+
+def launch_pane(name, tool, batch):
+    """Herdr pane hcom opened for this agent's launch, or None, from hcom's launch records.
+
+    hcom writes a runner script `<HCOM_DIR>/.tmp/launch/<tool>_<name>_*.sh` that exports the
+    launch's HCOM_LAUNCH_BATCH_ID and HCOM_PROCESS_ID and keeps it after the agent exits,
+    and `<HCOM_DIR>/.tmp/terminal_ids/<process id>` holding the pane until the agent binds.
+    The script with this batch id gives the process id, whose file gives the pane.
+    """
+    batch_id = (batch.get('data') or {}).get('batch_id')
+    if not batch_id:
+        return None
+    panes = set()
+    for path in (hcom_dir() / '.tmp' / 'launch').glob(f'{tool}_{name}_*.sh'):
+        try:
+            script = path.read_text(errors='replace')
+        except OSError:
+            continue
+        process_id = exported(script, 'HCOM_PROCESS_ID')
+        if (exported(script, 'HCOM_LAUNCH_BATCH_ID') != batch_id
+                or exported(script, 'HCOM_INSTANCE_NAME') != name
+                or not process_id or not NAME.match(process_id)):
+            continue
+        try:
+            pane = (hcom_dir() / '.tmp' / 'terminal_ids' / process_id).read_text().strip()
+        except OSError:
+            continue
+        if pane:
+            panes.add(pane)
+    return panes.pop() if len(panes) == 1 else None
+
+
+def line_mode(pid):
+    """True when the terminal on the process's stdin is in line mode (ICANON), False when
+    not, None when it cannot be read. Reading the settings changes nothing."""
+    try:
+        fd = os.open(PROC / str(pid) / 'fd' / '0', os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        return bool(termios.tcgetattr(fd)[3] & termios.ICANON)
+    except termios.error:
+        return None
+    finally:
+        os.close(fd)
+
+
+def idle_shell(pid):
+    """Why the process is not a shell waiting idle at its prompt, or None when it is.
+
+    It must be a bare login or interactive shell (no script, no -c) with no child
+    processes, asleep in its line editor's select or poll (PROMPT_WAITS in
+    /proc/<pid>/wchan) with its terminal out of line mode, as the line editor sets it while
+    it waits for a key. A `read` builtin or a sourced script waiting for input (`read -t`
+    also waits in select) leaves the terminal in line mode and counts as busy."""
+    proc = PROC / str(pid)
+    try:
+        argv = (proc / 'cmdline').read_bytes().decode(errors='replace').rstrip('\0').split('\0')
+        state = (proc / 'stat').read_text().rsplit(')', 1)[1].split()[0]
+        wait = (proc / 'wchan').read_text().strip()
+        children = ''.join(path.read_text() for path in (proc / 'task').glob('*/children'))
+    except (OSError, IndexError):
+        return f'process {pid} could not be read'
+    if (argv[0].rsplit('/', 1)[-1].lstrip('-') not in SHELLS
+            or not set(argv[1:]) <= LOGIN_FLAGS):
+        command = ' '.join(argv)[:80]
+        return f'`{command}` runs in it'
+    if state != 'S' or children.split() or wait not in PROMPT_WAITS:
+        return f'its shell (process {pid}) is busy'
+    if line_mode(pid) is not False:
+        return f'its shell (process {pid}) is not waiting at its prompt'
+    return None
+
+
+def leftover_of(pid):
+    """(name, tool) of the agent whose hcom launch left this shell, or None.
+
+    hcom runs the agent from a launch script in the pane with HCOM_INSTANCE_NAME and
+    HCOM_TOOL set; when the agent exits the script unsets the launch ids (HCOM_PROCESS_ID
+    among them) and execs `bash -l`, which keeps the name and tool."""
+    try:
+        env = environ(PROC / str(pid))
+    except OSError:
+        return None
+    if not env.get('HCOM_INSTANCE_NAME') or 'HCOM_PROCESS_ID' in env:
+        return None
+    return env['HCOM_INSTANCE_NAME'], env.get('HCOM_TOOL', '')
+
+
+def idle_leftover(pid, name, tool):
+    """Why the process is not this agent's idle leftover launch shell (leftover_of, then
+    idle_shell), or None when it is."""
+    if leftover_of(pid) != (name, tool):
+        return f'process {pid} is not the shell hcom left for this agent'
+    return idle_shell(pid)
+
+
+def guarded_close(pane, accept, owner=None):
+    """Close a Herdr pane only if it is still empty; return (outcome, reason).
+
+    outcome is 'closed', 'gone' (Herdr no longer has it), 'kept' (reason says why) or
+    'stuck' (closed, but Herdr still shows it). The slow reads come first: what runs in the
+    pane (`herdr pane process-info`), then `hcom list`, where no agent other than owner may
+    have the pane recorded (the tie close-agent.py uses). Then, with nothing awaited before
+    `herdr pane close`, the one foreground process must pass accept(pid), which returns why
+    not or None.
+    """
+    code, out = herdr('pane', 'process-info', '--pane', pane)
+    try:
+        processes = json.loads(out)['result']['process_info']['foreground_processes']
+        pids = [int(process['pid']) for process in processes]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        if 'pane_not_found' in out:
+            return 'gone', None
+        return 'kept', f'herdr pane process-info failed: {out.strip()[:200]}'
+    rows = listing()
+    if rows is None:
+        return 'kept', 'hcom list could not be read'
+    sharers = sorted(other for other, row in rows.items() if other != owner
+                     and (row.get('launch_context') or {}).get('pane_id') == pane)
+    if sharers:
+        return 'kept', f"it is {'also ' if owner else ''}recorded for {', '.join(sharers)}"
+    if len(pids) != 1:
+        return 'kept', f'{len(pids)} foreground processes instead of one idle shell'
+    if busy := accept(pids[0]):
+        return 'kept', busy
+    code, out = herdr('pane', 'close', pane)
+    if code:
+        return 'kept', f'herdr pane close failed: {out.strip()[:200]}'
+    code, out = herdr('pane', 'get', pane)
+    if code == 0 or 'pane_not_found' not in out:
+        return 'stuck', None
+    return 'closed', None
+
+
+def close_pane(full, name, tool, pane):
+    """Close a failed agent's Herdr pane (guarded_close, accepting only this agent's idle
+    leftover shell, so a launch that still runs, the spawner's own pane or anything typed
+    into the shell is left alone); return the sentence for the notice."""
+    outcome, reason = guarded_close(pane, lambda pid: idle_leftover(pid, name, tool), full)
+    return {'closed': f'Its Herdr pane {pane} was closed.',
+            'gone': f'Its Herdr pane {pane} is already gone.',
+            'stuck': f'herdr pane close {pane} was run but Herdr still shows the pane.',
+            'kept': f'Its Herdr pane {pane} was not closed: {reason}.'}[outcome]
+
+
+def failed_launch(tool, name, full, why, batch):
+    """Close the Herdr pane of an agent whose launch failed; return the notice for the
+    spawner.
+
+    The pane is the one hcom recorded for the agent in `hcom list` during this watch, else
+    the one in hcom's launch records (launch_pane), since an agent that dies at once often
+    leaves `hcom list` before it is read. Panes in other terminals are left alone.
+    """
+    rows = listing()
+    context = recorded.get(full) or ((rows or {}).get(full) or {}).get('launch_context') or {}
+    preset = context.get('terminal_preset_effective')
+    head = f'hcom-spawn launch check: {full} ({tool}) failed to start: {why}. '
+    if preset and preset != 'herdr':
+        return head + f'It was launched in {preset}, not herdr, so no pane was closed.'
+    pane = context.get('pane_id') or launch_pane(name, tool, batch)
+    if not pane:
+        return head + ('No Herdr pane was found for it in hcom list or in hcom\'s launch '
+                       'records, so no pane was closed.')
+    outcome = close_pane(full, name, tool, pane)
+    log(f'{full}: launch failed ({why}); {outcome}')
+    return head + outcome
 
 
 def notify(spawner, text):
@@ -855,7 +1085,7 @@ def main(argv=None):
         expected = {'model': model, 'effort': effort,
                     'permission': EXPECTED_PERMISSION[args.tool]}
         for text in check(args.tool, agents, expected, watched, launch_id, start,
-                          unattributed).values():
+                          unattributed, batch).values():
             if text:
                 notify(spawner, text)
     try:

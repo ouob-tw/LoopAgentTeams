@@ -69,7 +69,7 @@ hcom 1 claude --tag <自身名稱>-<主題> --go --name <自身名稱> \
   --hcom-prompt 'Your task from <自身名稱> is in <任務檔絕對路徑>. Read that file and follow it.'
 ```
 
-Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在任務檔裡。主機裝有派工把關 hook 時，缺這些參數的派工指令會被擋下，放行的派工會在背景自動核對，不符或 Agent 停在確認畫面時通知你；Codex 停在模型滿載時背景會先送一次 `Continue`，5 分鐘沒恢復再通知你；停在其他 API 錯誤或額度用完時直接通知你並附上錯誤內容，不自動換帳號；安裝方式見 [references/spawn-guard.md](references/spawn-guard.md)。
+Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在任務檔裡。主機裝有派工把關 hook 時，缺這些參數的派工指令會被擋下，放行的派工會在背景自動核對，不符或 Agent 停在確認畫面時通知你；Codex 停在模型滿載時背景會先送一次 `Continue`，5 分鐘沒恢復再通知你；停在其他 API 錯誤或額度用完時直接通知你並附上錯誤內容，不自動換帳號；召喚失敗（client 立刻結束，或 3 分鐘內一直沒出現在 `hcom list`）時關掉 hcom 為它開的空 HERDR 視窗並通知你；安裝方式見 [references/spawn-guard.md](references/spawn-guard.md)。
 
 本次還沒確認帳號跑得了這個 Codex 模型時（例如換帳號或額度重置後第一次啟動它），啟動前先做 [troubleshooting 的帳號探測](references/troubleshooting.md#codex-額度與換帳號)。
 
@@ -155,6 +155,8 @@ uv run --no-project python <本次實際載入的本技能目錄絕對路徑>/sc
 ```
 
 「已關閉」指腳本確認名稱與視窗都不在了。腳本只關 hcom 為該 Agent 記錄、且沒有其他 Agent 或你自己共用的視窗；對不上就不動它。結束碼非 0 時，照輸出列出的剩餘項目（名稱還在、視窗還開著、視窗對不上）處理，處理完才算關閉。
+
+Agent 已不在、視窗卻還留著空 shell 時，`scripts/empty-panes.py` 列出這類空視窗，加 `--close` 關掉；它只認 hcom 開的且 Agent 已不在，或工作資料夾已刪的視窗，裡面只剩停在提示字元的 shell 才算空，你自己的視窗與使用者自己開的終端都不動。
 
 接回會還原對話與工作目錄，但不會還原當時執行中的指令、HERDR 視窗排版或已刪除的 worktree；工作目錄已不存在時，接回前先指定有效目錄並核對。
 

@@ -3,6 +3,9 @@ import importlib.util
 import io
 import json
 import os
+import pty
+import shutil
+import signal
 import tempfile
 import threading
 import time
@@ -74,6 +77,7 @@ class FakeHcom:
         self.unsub_fails = False
         self.injected, self.on_inject = [], None
         self.agents = None  # `hcom list --json` rows; None answers like `hcom list <name>`
+        self.launch_failed = None  # data of hcom's launch_failed event for the agent
 
     def clock(self):
         return self.now
@@ -97,6 +101,9 @@ class FakeHcom:
         if args[0] == 'events':
             if 'batch_launched' in args:
                 return 0, ''.join(json.dumps(batch) + '\n' for batch in self.batches)
+            if 'launch_failed' in args:
+                return 0, (json.dumps({'id': 290, 'data': self.launch_failed}) + '\n'
+                           if self.launch_failed else '')
             if 'stopped' in args:
                 stopped = self.stop_after is not None and self.now >= self.stop_after
                 return 0, ('{"id": 300, "data": {"action": "stopped"}}\n' if stopped else '')
@@ -126,11 +133,14 @@ class FakeHcom:
 
 
 class FakeHerdr:
-    """Answers `herdr pane get` and `herdr tab rename`; panes maps pane id -> tab id."""
+    """Answers `herdr pane get|process-info|close` and `herdr tab rename`; panes maps pane id
+    -> tab id, processes maps pane id -> foreground process ids."""
 
-    def __init__(self, panes=None, get_fails=False, rename_fails=False, missing=False):
+    def __init__(self, panes=None, get_fails=False, rename_fails=False, missing=False,
+                 processes=None, cwds=None):
         self.panes, self.calls = panes or {}, []
         self.get_fails, self.rename_fails, self.missing = get_fails, rename_fails, missing
+        self.processes, self.cwds = processes or {}, cwds or {}
 
     def __call__(self, *args):
         self.calls.append(args)
@@ -143,7 +153,33 @@ class FakeHerdr:
                                                       'tab_id': self.panes[args[2]]}}})
         if args[:2] == ('tab', 'rename'):
             return (1, 'rename failed') if self.rename_fails else (0, '{}')
+        if args[:3] == ('pane', 'process-info', '--pane'):
+            if args[3] not in self.panes:
+                return 1, json.dumps({'error': {'code': 'pane_not_found'}})
+            return 0, json.dumps({'result': {'process_info': {'foreground_processes': [
+                {'name': 'bash', 'pid': pid} for pid in self.processes.get(args[3], [])]}}})
+        if args[:2] == ('pane', 'list'):
+            return 0, json.dumps({'result': {'panes': [
+                {'pane_id': pane, 'cwd': self.cwds.get(pane, '/home/u')} for pane in self.panes]}})
+        if args[:2] == ('pane', 'close'):
+            self.panes.pop(args[2], None)
+            return 0, '{}'
         raise AssertionError(f'unexpected herdr call {args}')
+
+
+def fake_process(proc_root, herdr, pid, argv=('bash', '-l'), state='S', children='',
+                 wchan='do_select', cwd='/home/u', **env):
+    """A process in a fake /proc, by default a login shell waiting at its prompt, listed by
+    herdr as the foreground of its HERDR_PANE_ID."""
+    proc = Path(proc_root) / str(pid)
+    (proc / 'task' / str(pid)).mkdir(parents=True)
+    (proc / 'environ').write_bytes(''.join(f'{key}={value}\0' for key, value in env.items()).encode())
+    (proc / 'cmdline').write_bytes(''.join(f'{word}\0' for word in argv).encode())
+    (proc / 'stat').write_text(f'{pid} ({argv[0]}) {state} 1 {pid} {pid} 0')
+    (proc / 'task' / str(pid) / 'children').write_text(children)
+    (proc / 'wchan').write_text(wchan)
+    (proc / 'cwd').symlink_to(cwd)
+    herdr.processes.setdefault(env.get('HERDR_PANE_ID'), []).append(pid)
 
 
 def agent_row(name, pane=None, preset='herdr', tag='vare-review'):
@@ -404,6 +440,7 @@ class SpawnWatchTests(unittest.TestCase):
             with self.subTest(wrong=wrong):
                 self.watch = load()
                 self.watch.herdr = FakeHerdr()
+                self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.3, 0.01
                 entry = {'model': 'claude-opus-5-5', 'effort': 'medium', **found}
                 log = self.write_log([
                     {'type': 'permission-mode', 'permissionMode': 'bypassPermissions'},
@@ -844,6 +881,251 @@ class SpawnWatchTests(unittest.TestCase):
             self.assertEqual(self.run_watch(fake), 0)
         self.assertIn('vare-kilo', log.getvalue())
         self.assertEqual(fake.sent, [])
+
+
+FAILED = {'action': 'launch_failed', 'batch_id': 'b1', 'reason': 'exited_before_ready',
+          'detail': 'exited 0s after spawn before ready (exit code 1)\nPTY output:\n'
+                    "error: unknown model 'claude-nope'"}
+
+
+class FailedLaunchTests(unittest.TestCase):
+    """A launch hcom recorded as failed, or one that never shows up in `hcom list`, gets its
+    Herdr pane closed when nothing runs in it; working launches are never touched."""
+
+    def setUp(self):
+        self.state = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state.cleanup)
+        patcher = mock.patch.dict(os.environ, {'XDG_STATE_HOME': self.state.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.watch = load()
+        self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.3, 0.01
+        self.proc = Path(self.state.name) / 'proc'
+        self.proc.mkdir()
+        self.watch.PROC = self.proc
+        self.line_modes = {}
+        self.watch.line_mode = lambda pid: self.line_modes.get(int(pid), False)
+        self.hcom_dir = Path(self.state.name) / 'hcom'
+        for folder in ('launch', 'terminal_ids'):
+            (self.hcom_dir / '.tmp' / folder).mkdir(parents=True)
+        patcher = mock.patch.dict(os.environ, {'HCOM_DIR': str(self.hcom_dir)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.herdr = self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1', 'w1:p2': 'w1:t2'})
+
+    def shell(self, pid, **options):
+        fake_process(self.proc, self.herdr, pid, **options)
+
+    def leftover(self, pid=501, pane='w1:p1', name='kilo', **extra):
+        self.shell(pid, HERDR_PANE_ID=pane, HCOM_INSTANCE_NAME=name, HCOM_TOOL='claude', **extra)
+
+    def record(self, name='kilo', pane='w1:p1', batch='b1', tool='claude', terminal=True):
+        """hcom's launch records: the runner script it keeps and the pane of its process id."""
+        process = f'proc-{name}-{batch}-{tool}'
+        (self.hcom_dir / '.tmp/launch' / f'{tool}_{name}_4242_{len(batch)}{tool}.sh').write_text(
+            f"#!/bin/bash\nexport HCOM_INSTANCE_NAME={name}; export HCOM_LAUNCH_BATCH_ID={batch}; "
+            f"export HCOM_PANE_TITLE='x y'; export HCOM_PROCESS_ID={process}; "
+            f"export HCOM_TOOL={tool};\nexec hcom pty {tool}\n")
+        if terminal:
+            (self.hcom_dir / '.tmp/terminal_ids' / process).write_text(pane)
+
+    def run_failed(self, fake):
+        fake.batch['ts'] = '1970-01-01T00:16:40'  # Unix time 1000
+        self.watch.hcom, self.watch.clock, self.watch.sleep = fake, fake.clock, fake.sleep
+        self.watch.process_ids = lambda: {}
+        self.watch.launched_with = lambda tool, process_id: None
+        with mock.patch('sys.stderr', new=io.StringIO()):
+            self.watch.main(['--spawner', 'vare', '--tool', 'claude', '--model', 'claude-nope',
+                             '--effort', 'low', '--after-id', '99'])
+        return [send[-1] for send in fake.sent]
+
+    def closes(self):
+        return [call for call in self.herdr.calls if call[:2] == ('pane', 'close')]
+
+    def test_pane_hcom_listed_for_an_agent_that_failed_at_once_is_closed(self):
+        fake = FakeHcom(screens=[], stop_after=0)
+        fake.launch_failed, fake.agents = FAILED, [agent_row('kilo', 'w1:p1')]
+        self.leftover()
+        sent = self.run_failed(fake)
+        self.assertEqual(self.closes(), [('pane', 'close', 'w1:p1')])
+        self.assertEqual(len(sent), 1)
+        self.assertIn('vare-review-kilo (claude) failed to start: exited 0s after spawn before '
+                      "ready (exit code 1) / PTY output: / error: unknown model 'claude-nope'",
+                      sent[0])
+        self.assertIn('Its Herdr pane w1:p1 was closed.', sent[0])
+
+    def test_agent_gone_from_hcom_list_is_found_by_hcoms_launch_records(self):
+        fake = FakeHcom(screens=[], stop_after=0)
+        fake.launch_failed, fake.agents = FAILED, [agent_row('mona', 'w1:p2')]
+        self.record()
+        self.record('mona', 'w1:p2', batch='b9')
+        self.leftover()
+        self.leftover(502, pane='w1:p2', name='mona')
+        sent = self.run_failed(fake)
+        self.assertEqual(self.closes(), [('pane', 'close', 'w1:p1')])
+        self.assertIn('Its Herdr pane w1:p1 was closed.', sent[0])
+
+    def test_launch_records_of_another_batch_or_tool_or_without_a_pane_are_not_used(self):
+        fake = FakeHcom(screens=[], stop_after=0)
+        fake.launch_failed, fake.agents = FAILED, []
+        self.record(batch='b0')                     # same name, launched by another batch
+        self.record(pane='w1:p2', tool='codex')     # same name and batch id, other tool
+        self.record(pane='w1:p2', batch='b1', terminal=False)  # hcom kept no pane for it
+        self.leftover()
+        self.leftover(502, pane='w1:p2')
+        sent = self.run_failed(fake)
+        self.assertEqual(self.closes(), [])
+        self.assertIn('No Herdr pane was found for it', sent[0])
+
+    def test_agent_never_listed_within_3_minutes_gets_its_pane_closed(self):
+        fake = FakeHcom(screens=[], stop_after=500)
+        fake.agents = []
+        self.record()
+        self.leftover()
+        sent = self.run_failed(fake)
+        self.assertGreaterEqual(fake.now, self.watch.DEADLINE)
+        self.assertEqual(self.closes(), [('pane', 'close', 'w1:p1')])
+        self.assertIn('failed to start: it did not show up in hcom list within 180s', sent[0])
+        self.assertIn('Its Herdr pane w1:p1 was closed.', sent[0])
+
+    def test_launch_still_running_in_its_pane_is_left_open(self):
+        fake = FakeHcom(screens=[], stop_after=500)
+        fake.agents = []
+        self.record()
+        self.leftover(argv=('bash', '/home/u/.hcom/.tmp/launch/hcom_1_2.sh'),
+                      HCOM_PROCESS_ID='x', HCOM_LAUNCH_BATCH_ID='b1')
+        sent = self.run_failed(fake)
+        self.assertEqual(self.closes(), [])
+        self.assertIn('Its Herdr pane w1:p1 was not closed: process 501 is not the shell hcom '
+                      'left for this agent.', sent[0])
+
+    def test_leftover_shell_with_anything_running_in_it_is_left_open(self):
+        for case, extra, why in (
+                ('script', {'argv': ('bash', '/tmp/user-work.sh')},
+                 '`bash /tmp/user-work.sh` runs in it'),
+                ('-c', {'argv': ('bash', '-c', 'make test')}, '`bash -c make test` runs in it'),
+                ('busy', {'state': 'R'}, 'its shell (process 501) is busy'),
+                ('job', {'children': '777 '}, 'its shell (process 501) is busy'),
+                ('read', {'wchan': 'n_tty_read'}, 'its shell (process 501) is busy'),
+                ('read -t', {}, 'its shell (process 501) is not waiting at its prompt')):
+            with self.subTest(case=case):
+                self.setUp()
+                if case == 'read -t':  # waits in select like the prompt, in line mode
+                    self.line_modes[501] = True
+                fake = FakeHcom(screens=[], stop_after=0)
+                fake.launch_failed, fake.agents = FAILED, [agent_row('kilo', 'w1:p1')]
+                self.leftover(**extra)
+                sent = self.run_failed(fake)
+                self.assertEqual(self.closes(), [])
+                self.assertIn(f'Its Herdr pane w1:p1 was not closed: {why}.', sent[0])
+
+    def test_second_foreground_process_or_user_shell_keeps_the_pane(self):
+        for case, add, why in (
+                ('two', lambda: self.shell(502, HERDR_PANE_ID='w1:p1'),
+                 '2 foreground processes instead of one idle shell'),
+                ('user', None, 'process 502 is not the shell hcom left for this agent')):
+            with self.subTest(case=case):
+                self.setUp()
+                fake = FakeHcom(screens=[], stop_after=0)
+                fake.launch_failed, fake.agents = FAILED, [agent_row('kilo', 'w1:p1')]
+                if add:
+                    self.leftover()
+                    add()
+                else:
+                    self.shell(502, HERDR_PANE_ID='w1:p1')
+                sent = self.run_failed(fake)
+                self.assertEqual(self.closes(), [])
+                self.assertIn(f'Its Herdr pane w1:p1 was not closed: {why}.', sent[0])
+
+    def test_pane_also_recorded_for_another_listed_agent_is_left_open(self):
+        fake = FakeHcom(screens=[], stop_after=0)
+        fake.launch_failed = FAILED
+        fake.agents = [agent_row('kilo', 'w1:p1'), agent_row('mona', 'w1:p1')]
+        sent = self.run_failed(fake)
+        self.assertEqual(self.closes(), [])
+        self.assertIn('also recorded for vare-review-mona', sent[0])
+
+    def test_agent_taking_the_pane_while_herdr_answers_keeps_it_open(self):
+        fake = FakeHcom(screens=[], stop_after=0)
+        fake.launch_failed, fake.agents = FAILED, [agent_row('kilo', 'w1:p1')]
+        self.leftover()
+        real = self.herdr.__call__
+
+        def herdr(*args):
+            if args[:2] == ('pane', 'process-info'):  # someone joins hcom in that pane meanwhile
+                fake.agents = [agent_row('kilo', 'w1:p1'), agent_row('mona', 'w1:p1')]
+            return real(*args)
+        self.watch.herdr = herdr
+        sent = self.run_failed(fake)
+        self.assertEqual(self.closes(), [])
+        self.assertIn('also recorded for vare-review-mona', sent[0])
+
+    def test_agent_launched_in_another_terminal_keeps_its_pane(self):
+        fake = FakeHcom(screens=[], stop_after=0)
+        fake.launch_failed, fake.agents = FAILED, [agent_row('kilo', '%3', preset='tmux')]
+        sent = self.run_failed(fake)
+        self.assertEqual(self.closes(), [])
+        self.assertIn('launched in tmux, not herdr, so no pane was closed', sent[0])
+
+    def test_working_agent_and_one_that_stops_without_a_failed_launch_keep_their_panes(self):
+        for stop_after in (50, 5):
+            with self.subTest(stop_after=stop_after):
+                self.herdr.calls.clear()
+                fake = FakeHcom(screens=[CLAUDE_START], stop_after=stop_after)
+                fake.agents = [agent_row('kilo', 'w1:p1')]
+                self.leftover(600 + stop_after)
+                self.run_failed(fake)
+                self.assertEqual([call for call in self.herdr.calls if call[1] != 'get'
+                                  and call[0] != 'tab'], [])
+                self.assertIn('w1:p1', self.herdr.panes)
+
+
+@unittest.skipUnless(shutil.which('bash') and Path('/proc/self/wchan').exists(),
+                     'needs bash and Linux /proc')
+class RealShellTests(unittest.TestCase):
+    """idle_leftover on a real interactive bash in a pseudo-terminal."""
+
+    def setUp(self):
+        self.watch = load()
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+
+    def bash(self):
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execve(shutil.which('bash'), ['bash', '-i'], {
+                'HOME': self.home.name, 'PATH': '/usr/bin:/bin', 'PS1': '$ ',
+                'HCOM_INSTANCE_NAME': 'kilo', 'HCOM_TOOL': 'claude', 'HERDR_PANE_ID': 'w1:p1'})
+
+        def stop():
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            os.close(fd)
+        self.addCleanup(stop)
+        return pid, fd
+
+    def verdict(self, pid, wanted):
+        """idle_leftover's answer once it settles on wanted, or the last one after 5 s."""
+        end = time.monotonic() + 5
+        while (answer := self.watch.idle_leftover(pid, 'kilo', 'claude')) != wanted:
+            if time.monotonic() > end:
+                return answer
+            time.sleep(0.05)
+        return answer
+
+    def test_shell_at_its_prompt_is_idle(self):
+        pid, _ = self.bash()
+        self.assertIsNone(self.verdict(pid, None))
+
+    def test_shell_waiting_in_read_keeps_its_pane(self):
+        for command, why in ((b'read -r -t 20 answer\n', 'is not waiting at its prompt'),
+                             (b'read -r answer\n', 'is busy')):
+            with self.subTest(command=command):
+                pid, fd = self.bash()
+                self.verdict(pid, None)
+                os.write(fd, command)
+                self.assertEqual(self.verdict(pid, f'its shell (process {pid}) {why}'),
+                                 f'its shell (process {pid}) {why}')
 
 
 if __name__ == '__main__':
