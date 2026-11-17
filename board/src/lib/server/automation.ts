@@ -27,6 +27,7 @@ import {
 	openAsk,
 	openMissed,
 	periodOf,
+	pastLimit,
 	succeeded,
 	taskState,
 	TIME_ZONE,
@@ -825,7 +826,7 @@ export function createAutomation(options: {
 				prompt = controllerMessage(spec.client, { taskName: task.name, runId: run.id, stateDir, latDir: options.latDir ?? join(home, '.agents/skills/lat'), brief });
 			}
 			const launched = await host
-				.launch({ ...spec, folder, prompt, tag, halted: () => cut ?? (now() - latest(run).startedAt >= task.limitMinutes * 60_000 ? 'timeout' : null) })
+				.launch({ ...spec, folder, prompt, tag, halted: () => cut ?? (pastLimit(latest(run), task.limitMinutes, now()) ? 'timeout' : null) })
 				.catch((error: Error) => ({ ok: false as const, reason: error.message, cut: undefined }));
 			if (!launched.ok && launched.cut) return finish(task, run, { status: launched.cut, reason: cutReason(launched.cut, task.limitMinutes) });
 			if (!launched.ok) return finish(task, run, { status: 'failed', reason: `開不了 Agent：${launched.reason}` });
@@ -912,11 +913,13 @@ export function createAutomation(options: {
 				publish();
 			}
 			// The checker is watched as a run of its own: its start, agent and account are the review's.
+			// It never asks, so the run's questions stay out: its limit takes no wait off (#675).
 			const view = (): AutomationRun => {
 				const current = latest(run);
 				const own = current.review!;
 				return {
 					...current,
+					asks: undefined,
 					startedAt: own.startedAt,
 					agentName: own.agentName,
 					sessionId: own.sessionId,
@@ -1003,7 +1006,7 @@ export function createAutomation(options: {
 		for (const list of runs.values()) {
 			for (const run of list) {
 				const task = tasks.get(run.taskId);
-				if (run.status === 'running' && task && at - run.startedAt >= task.limitMinutes * 60_000) stoppers.get(run.id)?.('timeout');
+				if (run.status === 'running' && task && pastLimit(run, task.limitMinutes, at)) stoppers.get(run.id)?.('timeout');
 			}
 		}
 		const checked = readChecked();

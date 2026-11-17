@@ -28,7 +28,6 @@
 	} = $props();
 
 	const at = $derived(timeFormat(timeZone));
-	const deadline = $derived(run.startedAt + limitMinutes * 60_000);
 	let text = $state('');
 	let busy = $state(false);
 	let stopping = $state(false);
@@ -79,7 +78,7 @@
 	{#if notice}
 		<p class="notice" role="alert">{notice}</p>
 	{/if}
-	<p class="hint">還沒回覆前，Agent 開著等你，不算失敗；超過上限（{limitMinutes} 分鐘，<span class="keep">{at.day(deadline) === at.day(ask.askedAt) ? at.clock(deadline) : at.full(deadline)} 前要回覆</span>）才算失敗並關掉。</p>
+	<p class="hint">Agent 開著等你，等你回覆的時間不算進<span class="keep">上限 {limitMinutes} 分鐘</span>。</p>
 </div>
 
 <style>

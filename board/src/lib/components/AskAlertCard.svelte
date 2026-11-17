@@ -1,11 +1,11 @@
 <script lang="ts">
 	// One yellow card (等你回覆) in the content column: the task, whether the phones heard of it, and
-	// the run with the question in full, the time it must be answered by and the box to answer it.
+	// the run with the question in full, its working time so far and the box to answer it.
 	// It goes by itself once the agent goes on or the run ends; opened from a push after that, it
 	// says so and points to the task.
 	import type { AutomationAlert } from '#lib/board/alerts.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
-	import { openAsk, timeFormat, type AutomationTaskView } from '#lib/board/automation.ts';
+	import { openAsk, timeFormat, workedText, type AutomationTaskView } from '#lib/board/automation.ts';
 	import AutomationAsk from './AutomationAsk.svelte';
 	import AutomationAsks from './AutomationAsks.svelte';
 	import AutomationState from './AutomationState.svelte';
@@ -33,7 +33,6 @@
 	/** This card's question is the one the run waits on now. */
 	const live = $derived(alert.dismissedAt === undefined && waiting !== undefined && run!.asks!.length - 1 === alert.ask);
 	const answered = $derived(alert.resolved === 'answered' || (alert.ask !== undefined && run?.asks?.[alert.ask]?.answeredAt !== undefined));
-	const minutes = $derived(run ? Math.max(0, Math.floor((clock.now - run.startedAt) / 60_000)) : 0);
 </script>
 
 <div class="card" data-alert={alert.id} data-kind="ask">
@@ -57,7 +56,7 @@
 				<b>{at.full(run.startedAt)} → 進行中</b>
 				<AutomationState {run} />
 			</div>
-			<p>已跑 {minutes} 分鐘　上限 {task.task.limitMinutes} 分鐘</p>
+			<p>{workedText(run, clock.now)}　上限 {task.task.limitMinutes} 分鐘</p>
 			<AutomationAsks asks={run.asks ?? []} waiting {timeZone} />
 			<AutomationAsk taskId={task.task.id} {run} ask={waiting} limitMinutes={task.task.limitMinutes} {timeZone} withControls {onopenagent} {onchanged} />
 			<TestDenied />
