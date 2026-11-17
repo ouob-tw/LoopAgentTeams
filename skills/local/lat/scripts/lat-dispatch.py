@@ -137,6 +137,9 @@ REPORT_IN_MESSAGE = 'The card names no runs folder, so send the full report in t
 REVIEW_RESULT = '''- Record each review round's result before you close its reviewers; `done` is refused until this row has one recorded since its latest start. A clean review: `{cmd} review-result --row {row} --ledger {ledger_arg} --by {agent} --reviewer <HCOM name> --clean`; a review with findings: the same with one `--finding '<甲|乙|丙>:<one line>'` per finding instead of `--clean`, which prints the problem ids. Record one result per reviewer; a native sub-agent goes by the name you gave it.
 - When a finding is settled: `{cmd} problem-update <id> --ledger {ledger_arg} --by {agent} --fixed <commit>` (or `--known-limit`, `--wontfix '<why>'`, `--new-ticket <#N>`).
 '''
+TINY_REVIEW_RESULT = '''- Record each review round's result before you close its reviewers; `done` is refused until this row has one recorded since its latest start. This ticket is on the tiny-change lane, so the reviewer first runs `uv run --no-project python {review_size} {base} --tiny --integration {integration}` (it counts the added code lines, 30 at most, tests and docs excluded, and lists hints). When it passes, a clean review is recorded with `{cmd} review-result --row {row} --ledger {ledger_arg} --by {agent} --reviewer <HCOM name> --clean --tiny-confirm`, which confirms the four limits: the work is for one ticket only, adds at most 30 code lines (tests and docs excluded), adds no feature, and changes no data or storage format. When the check shows hints, add `--tiny-hints "<how each hint was checked>"`. If the content changes after the confirmation, confirm again with a new review result. A change that touches code also needs `--handson <absolute path of the screenshot or record file>` on the confirmation and a QA row. A review with findings: the same `review-result` with one `--finding '<甲|乙|丙>:<one line>'` per finding instead of `--clean`, which prints the problem ids. Record one result per reviewer; a native sub-agent goes by the name you gave it.
+- When a finding is settled: `{cmd} problem-update <id> --ledger {ledger_arg} --by {agent} --fixed <commit>` (or `--known-limit`, `--wontfix '<why>'`, `--new-ticket <#N>`).
+'''
 QA_FINDINGS = '''- Record each problem you find when you find it: `{cmd} problem --row {row} --ledger {ledger_arg} --by {agent} --stage qa --level <甲|乙|丙> --text '<one line>'` (add `--caught <gate fingerprint>` when an automatic test caught it). `done` is refused until you recorded one in this round; when you found none, add `--no-findings` to `done`.
 '''
 SPEC_COVERAGE = '''
@@ -680,7 +683,17 @@ def make_brief(args):
         fixed += LEDGER_FIXED.format(**commands)
         stage = row_stage(ledger, row)
         if stage == 'impl':
-            fixed += REVIEW_RESULT.format(**commands)
+            tiny = row_tiny(ledger, row)
+            if tiny is None:
+                fixed += REVIEW_RESULT.format(**commands)
+            else:
+                base = card.get('base commit', '')
+                if not re.fullmatch(r'[0-9a-fA-F]{7,64}', base):
+                    base = '<card base commit>'
+                fixed += TINY_REVIEW_RESULT.format(
+                    review_size=shlex.quote(str(args.lat_dir.resolve() / 'scripts'
+                                                / 'review-size.py')),
+                    base=base, integration=shlex.quote(tiny), **commands)
         if stage == 'qa':
             fixed += QA_FINDINGS.format(**commands)
         if stage == 'qa-draft':
@@ -710,6 +723,18 @@ def row_stage(ledger, row):
     except (OSError, UnicodeError, ValueError, KeyError, TypeError, StopIteration) as error:
         print(f'lat-dispatch: warning: cannot read the stage of ledger row {row} in {ledger} '
               f'({error!r}); the brief carries no spec coverage section', file=sys.stderr)
+        return None
+
+
+def row_tiny(ledger, row):
+    """The integration branch when ledger row `row` carries the tiny-lane marker, else None."""
+    try:
+        doc = json.loads(Path(ledger).read_text(encoding='utf-8'))
+        item = next(i for i in doc['items'] if str(i['id']) == str(row))
+        if not item.get('tiny'):
+            return None
+        return doc.get('integration_branch') or '<integration branch>'
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError, StopIteration):
         return None
 
 
