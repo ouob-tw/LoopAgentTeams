@@ -176,6 +176,10 @@ test("Haiku's own answer never reaches the journal when the CLI exits non-zero a
 	expect(result).toEqual({ ok: false, reason: 'Haiku 沒有完成：這是海酷整理出來的私人語音內容', by: 'Haiku' });
 	const failed = lines.filter((line) => line.startsWith('[voice] Haiku tidy failed: '));
 	expect(failed).toEqual(['[voice] Haiku tidy failed: Haiku 沒有完成：結束碼不是 0 (exit 1)']);
+	// A long error is cut for the page and the 5-minute failure memo.
+	claudePlan({ error: `API Error: ${'x'.repeat(1_000)}` });
+	const long = await tidy(config, SPEECH);
+	if (!long.ok) expect(long.reason).toBe(`Haiku 沒有完成：API Error: ${'x'.repeat(189)}…`);
 });
 
 test('a Codex timeout, early exit, garbled answer or other failure fails as before: no Haiku and no hold', async () => {
@@ -223,15 +227,19 @@ test('Haiku failing after the switch fails as before with the reason naming Haik
 		expect(failed).toHaveLength(1);
 		journalIsClean();
 	}
-	// Only the first one asked Codex: Haiku's failures neither end nor extend the 30 minutes.
+	// Only the first one asked Codex: Haiku's failures do not end the 30 minutes. One failing 20
+	// minutes in does not extend them either: at 30 minutes from the switch luna is tried first.
 	expect(codexCalls()).toHaveLength(1);
+	setClock(START + 20 * 60_000);
 	claudePlan({ error: 'overloaded' });
 	expect(await translate(config, [ENGLISH])).toEqual([{ ok: false, reason: 'Haiku 沒有完成：overloaded' }]);
 	expect(lines.filter((line) => line.startsWith('[translate] Haiku translation failed: '))).toHaveLength(1);
 	journalIsClean();
+	expect(codexCalls()).toHaveLength(1);
 	setClock(START + HAIKU_HOLD_MS);
 	codexPlan({ reply: '整理好了。' });
 	expect((await tidy(config, SPEECH)).by).toBe('Codex');
+	expect(codexCalls()).toHaveLength(2);
 });
 
 test('the Haiku turn runs the configured command with only the system prompt added, the text on standard input', async () => {

@@ -25,6 +25,8 @@ export interface ClaudeTurn {
 const STDERR_TAIL = 300;
 /** Past this much stderr none of it is logged: a secret cut at the edge could not be found. */
 const STDERR_MAX = 1_000_000;
+/** How much of the CLI's own error text goes into a failure reason. */
+const REASON_MAX = 200;
 /** Past this much standard output the turn fails; a one-turn answer is far shorter. */
 const STDOUT_MAX = 10_000_000;
 
@@ -97,7 +99,8 @@ export function claudeTurn(turn: ClaudeTurn): Promise<Outcome<string>> {
 			const result = typeof answer.result === 'string' ? answer.result.trim() : '';
 			// Claude Code may put its usage-limit notice in place of the answer without marking an error.
 			if (answer.is_error === true || code !== 0 || !result || CLAUDE_USAGE_LIMIT.test(result)) {
-				const why = result || (answer.is_error === true && typeof answer.subtype === 'string' ? answer.subtype : '沒有回覆');
+				const full = result || (answer.is_error === true && typeof answer.subtype === 'string' ? answer.subtype : '沒有回覆');
+				const why = full.length > REASON_MAX ? `${full.slice(0, REASON_MAX)}…` : full;
 				// Only Claude Code's own error text goes in the journal: a result that is not one may be
 				// Haiku's translation or tidied speech, which no secret covers.
 				const ownError = answer.is_error === true || CLAUDE_USAGE_LIMIT.test(result) || !result;
