@@ -3,6 +3,9 @@ import importlib.util
 import io
 import json
 import os
+import pty
+import shutil
+import signal
 import tempfile
 import threading
 import time
@@ -882,6 +885,8 @@ class FailedLaunchTests(unittest.TestCase):
         self.proc = Path(self.state.name) / 'proc'
         self.proc.mkdir()
         self.watch.PROC = self.proc
+        self.line_modes = {}
+        self.watch.line_mode = lambda pid: self.line_modes.get(int(pid), False)
         self.hcom_dir = Path(self.state.name) / 'hcom'
         for folder in ('launch', 'terminal_ids'):
             (self.hcom_dir / '.tmp' / folder).mkdir(parents=True)
@@ -993,9 +998,12 @@ class FailedLaunchTests(unittest.TestCase):
                 ('-c', {'argv': ('bash', '-c', 'make test')}, '`bash -c make test` runs in it'),
                 ('busy', {'state': 'R'}, 'its shell (process 501) is busy'),
                 ('job', {'children': '777 '}, 'its shell (process 501) is busy'),
-                ('read', {'wchan': 'n_tty_read'}, 'its shell (process 501) is busy')):
+                ('read', {'wchan': 'n_tty_read'}, 'its shell (process 501) is busy'),
+                ('read -t', {}, 'its shell (process 501) is not waiting at its prompt')):
             with self.subTest(case=case):
                 self.setUp()
+                if case == 'read -t':  # waits in select like the prompt, in line mode
+                    self.line_modes[501] = True
                 fake = FakeHcom(screens=[], stop_after=0)
                 fake.launch_failed, fake.agents = FAILED, [agent_row('kilo', 'w1:p1')]
                 self.leftover(**extra)
@@ -1062,6 +1070,54 @@ class FailedLaunchTests(unittest.TestCase):
                 self.assertEqual([call for call in self.herdr.calls if call[1] != 'get'
                                   and call[0] != 'tab'], [])
                 self.assertIn('w1:p1', self.herdr.panes)
+
+
+@unittest.skipUnless(shutil.which('bash') and Path('/proc/self/wchan').exists(),
+                     'needs bash and Linux /proc')
+class RealShellTests(unittest.TestCase):
+    """idle_leftover on a real interactive bash in a pseudo-terminal."""
+
+    def setUp(self):
+        self.watch = load()
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+
+    def bash(self):
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execve(shutil.which('bash'), ['bash', '-i'], {
+                'HOME': self.home.name, 'PATH': '/usr/bin:/bin', 'PS1': '$ ',
+                'HCOM_INSTANCE_NAME': 'kilo', 'HCOM_TOOL': 'claude', 'HERDR_PANE_ID': 'w1:p1'})
+
+        def stop():
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            os.close(fd)
+        self.addCleanup(stop)
+        return pid, fd
+
+    def verdict(self, pid, wanted):
+        """idle_leftover's answer once it settles on wanted, or the last one after 5 s."""
+        end = time.monotonic() + 5
+        while (answer := self.watch.idle_leftover(pid, 'kilo', 'claude')) != wanted:
+            if time.monotonic() > end:
+                return answer
+            time.sleep(0.05)
+        return answer
+
+    def test_shell_at_its_prompt_is_idle(self):
+        pid, _ = self.bash()
+        self.assertIsNone(self.verdict(pid, None))
+
+    def test_shell_waiting_in_read_keeps_its_pane(self):
+        for command, why in ((b'read -r -t 20 answer\n', 'is not waiting at its prompt'),
+                             (b'read -r answer\n', 'is busy')):
+            with self.subTest(command=command):
+                pid, fd = self.bash()
+                self.verdict(pid, None)
+                os.write(fd, command)
+                self.assertEqual(self.verdict(pid, f'its shell (process {pid}) {why}'),
+                                 f'its shell (process {pid}) {why}')
 
 
 if __name__ == '__main__':

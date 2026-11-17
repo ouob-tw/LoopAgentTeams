@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import termios
 import threading
 import time
 from pathlib import Path
@@ -876,6 +877,21 @@ def launch_pane(name, tool, batch):
     return panes.pop() if len(panes) == 1 else None
 
 
+def line_mode(pid):
+    """True when the terminal on the process's stdin is in line mode (ICANON), False when
+    not, None when it cannot be read. Reading the settings changes nothing."""
+    try:
+        fd = os.open(PROC / str(pid) / 'fd' / '0', os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        return bool(termios.tcgetattr(fd)[3] & termios.ICANON)
+    except termios.error:
+        return None
+    finally:
+        os.close(fd)
+
+
 def idle_leftover(pid, name, tool):
     """Why the process is not this agent's idle leftover launch shell, or None when it is.
 
@@ -884,8 +900,10 @@ def idle_leftover(pid, name, tool):
     among them) and execs `bash -l`, which keeps the name and tool. So the shell must carry
     this agent's name and tool without HCOM_PROCESS_ID, be a bare login or interactive shell
     (no script, no -c) with no child processes, waiting at its prompt: asleep in the line
-    editor's select or poll (PROMPT_WAITS in /proc/<pid>/wchan). A `read` builtin or a
-    sourced script waiting for input sleeps in another kernel wait and keeps the pane."""
+    editor's select or poll (PROMPT_WAITS in /proc/<pid>/wchan) with its terminal out of
+    line mode, as the line editor sets it while it waits for a key. A `read` builtin or a
+    sourced script waiting for input (`read -t` also waits in select) leaves the terminal
+    in line mode and keeps the pane."""
     proc = PROC / str(pid)
     try:
         env = environ(proc)
@@ -904,6 +922,8 @@ def idle_leftover(pid, name, tool):
         return f'`{command}` runs in it'
     if state != 'S' or children.split() or wait not in PROMPT_WAITS:
         return f'its shell (process {pid}) is busy'
+    if line_mode(pid) is not False:
+        return f'its shell (process {pid}) is not waiting at its prompt'
     return None
 
 
