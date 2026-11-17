@@ -445,6 +445,24 @@ test('a restart while it waits keeps taking the wait off (#675): the run taken o
 	expect([late.status, late.reason]).toEqual(['timeout', '超過上限 60 分鐘，已停止']);
 });
 
+test('a run that ends with a question still open does not carry its wait into the checker: the checker keeps its own limit (#675)', async () => {
+	const task = await create({ limitMinutes: 10, review: { enabled: true, checklist: ['發票已開立'] } });
+	// Gone agents are not closed: no close call sits between the two launches.
+	hcomPlan([{ name: 'ask-gone' }, { name: 'chk-gone', client: 'codex' }]);
+	const run = await asking(task, 'ask-gone');
+	// Answered and done between two looks: gone from hcom with DONE last, the question never marked answered.
+	appendFileSync(join(dir, 'transcripts', 's-ask-gone.jsonl'), JSON.stringify({ kind: 'assistant', time: null, text: 'DONE' }) + '\n');
+	writeFileSync(join(dir, 'hcom-added.json'), '[]');
+	const checking = await runWhen(task.id, run.id, (each) => each.status === 'success' && each.review?.sessionId === 's-chk-gone', 'the checker');
+	expect(checking.asks!.at(-1)!.answeredAt).toBeUndefined();
+	fixture.setClock(START + 9 * 60_000);
+	await sleep(500);
+	expect((await runsOf(task.id))[0].review?.status).toBe('checking');
+	fixture.setClock(START + 11 * 60_000);
+	const late = await runWhen(task.id, run.id, (each) => each.review?.status !== 'checking', 'the check to end');
+	expect(late.review).toMatchObject({ status: 'error', ended: 'timeout', reason: '檢查沒有做完：超過上限 10 分鐘，已停止' });
+});
+
 const grant = { goal: '處理已知問題', done: ['挑出的票已合併到 dev'], scope: { ticket_confirmation: true, assume_defaults: false, prototype_decide: true } };
 const unattendedAgent = () => ({ client: 'claude', model: 'claude-haiku-5-5', effort: 'low', folder: work, brief: 'docs/brief.md', unattended: grant });
 

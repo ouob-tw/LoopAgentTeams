@@ -913,11 +913,13 @@ export function createAutomation(options: {
 				publish();
 			}
 			// The checker is watched as a run of its own: its start, agent and account are the review's.
+			// It never asks, so the run's questions stay out: its limit takes no wait off (#675).
 			const view = (): AutomationRun => {
 				const current = latest(run);
 				const own = current.review!;
 				return {
 					...current,
+					asks: undefined,
 					startedAt: own.startedAt,
 					agentName: own.agentName,
 					sessionId: own.sessionId,
