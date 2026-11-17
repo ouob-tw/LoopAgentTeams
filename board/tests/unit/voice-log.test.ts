@@ -42,7 +42,7 @@ function onlyLine(): string {
 test('Codex quitting early logs the reason, the exit code and its stderr', async () => {
 	plan({ exit: true, stderr: 'fatal: not logged in' });
 	const result = await tidy(config(fakeCodex), SPEECH);
-	expect(result).toEqual({ ok: false, reason: 'Codex 提前結束' });
+	expect(result).toEqual({ ok: false, reason: 'Codex 提前結束', by: 'Codex' });
 	expect(onlyLine()).toBe('[voice] Codex tidy failed: Codex 提前結束 (exit 1) stderr: fatal: not logged in');
 });
 
@@ -84,7 +84,7 @@ test('stderr is cut to its tail, flattened to one line, and the speech and token
 
 test('a tidy that works logs nothing', async () => {
 	plan({ reply: '整理好的文字。', stderr: 'noise' });
-	expect(await tidy(config(fakeCodex), SPEECH)).toEqual({ ok: true, value: '整理好的文字。' });
+	expect(await tidy(config(fakeCodex), SPEECH)).toEqual({ ok: true, value: '整理好的文字。', by: 'Codex' });
 	expect(lines).toEqual([]);
 });
 

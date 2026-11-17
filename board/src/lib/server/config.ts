@@ -88,6 +88,9 @@ export interface BoardConfig {
 	/** The same for translating English replies of a conversation into Chinese. */
 	translateCommand: string[];
 	translateTimeoutMs: number;
+	/** Command that runs one text-only turn of the Claude CLI on Haiku, standing in for Codex in
+	 *  translation and tidy while luna's quota is out; the board appends `--system-prompt <prompt>`. */
+	haikuCommand: string[];
 	/** Command that runs a Codex app server as the user's own, to list the skills Codex can call in a folder. */
 	skillsCommand: string[];
 	skillsTimeoutMs: number;
@@ -231,6 +234,24 @@ const TEXT_ONLY_CODEX = [
 	].flatMap((setting) => ['-c', setting])
 ];
 
+/** One turn of the Claude CLI on Haiku that only rewrites text: safe mode leaves out CLAUDE.md,
+ *  skills, plugins, hooks and MCP servers; no tools, no MCP servers, no slash commands or skills,
+ *  and no session kept. The answer comes as one JSON object (claude-turn.ts). */
+const TEXT_ONLY_CLAUDE = [
+	'claude',
+	'-p',
+	'--model',
+	'claude-haiku-5-5',
+	'--safe-mode',
+	'--tools',
+	'',
+	'--strict-mcp-config',
+	'--disable-slash-commands',
+	'--no-session-persistence',
+	'--output-format',
+	'json'
+];
+
 function helperCommand(env: Env): string[] {
 	const given = commandFrom(env, 'LAT_BOARD_HELPER_COMMAND');
 	if (given) return given;
@@ -307,6 +328,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		tidyTimeoutMs: seconds(env.LAT_BOARD_TIDY_TIMEOUT_SECONDS, 30_000),
 		translateCommand: commandFrom(env, 'LAT_BOARD_TRANSLATE_COMMAND') ?? [...TEXT_ONLY_CODEX],
 		translateTimeoutMs: seconds(env.LAT_BOARD_TRANSLATE_TIMEOUT_SECONDS, 60_000),
+		haikuCommand: commandFrom(env, 'LAT_BOARD_HAIKU_COMMAND') ?? [...TEXT_ONLY_CLAUDE],
 		skillsCommand: commandFrom(env, 'LAT_BOARD_SKILLS_COMMAND') ?? ['codex', 'app-server'],
 		skillsTimeoutMs: seconds(env.LAT_BOARD_SKILLS_TIMEOUT_SECONDS, 15_000),
 		translateConcurrency: Math.max(1, Math.floor(Number(env.LAT_BOARD_TRANSLATE_CONCURRENCY)) || 3),

@@ -1,7 +1,9 @@
 // Stands in for `codex app-server`: speaks just enough of its JSON-RPC over standard input and
 // output for one tidy turn. Logs each turn's input text to <dir>/codex-calls.jsonl and behaves as
 // <dir>/codex.json says: `reply` is the agent message it answers with; `fail` ends the turn as
-// failed, `hang` never ends it, `exit` quits as soon as the turn starts, `itemOnly` sends the reply
+// failed, `usageLimit` ends it failed the way Codex does when the account's quota ran out, before
+// any reply (its own words and `codexErrorInfo`; `usageLimit: "message"` or `"code"` sends only
+// that one; `usageLimitOnStart` refuses turn/start itself with those words), `hang` never ends it, `exit` quits as soon as the turn starts, `itemOnly` sends the reply
 // only as a completed item (the finished turn lists none) and `garbled` ends the turn with no turn,
 // `junk` answers with that text on a line of its own, which is not JSON; `prefix` answers with it
 // followed by what the input holds inside its tags, as a translation that keeps every marker would;
@@ -37,6 +39,10 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
 		appendFileSync(join(dir, 'codex-threads.jsonl'), JSON.stringify(message.params) + '\n');
 		write({ id: message.id, result: { thread: { id: 'thread-1' }, params: message.params } });
 	}
+	else if (message.method === 'turn/start' && plan.usageLimitOnStart) {
+		appendFileSync(join(dir, 'codex-calls.jsonl'), JSON.stringify({ text: message.params.input[0].text, model: message.params.model, effort: message.params.effort }) + '\n');
+		write({ id: message.id, error: { code: -32603, message: "You've hit your usage limit. Try again at 3:05 PM." } });
+	}
 	else if (message.method === 'turn/start') {
 		const text = message.params.input[0].text;
 		appendFileSync(join(dir, 'codex-calls.jsonl'), JSON.stringify({ text, model: message.params.model, effort: message.params.effort }) + '\n');
@@ -45,6 +51,15 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
 		if (plan.exit) process.exit(1);
 		if (plan.hang) return;
 		if (plan.garbled) return write({ method: 'turn/completed', params: { threadId: 'thread-1' } });
+		// The quota is checked before anything is written.
+		if (plan.usageLimit) {
+			const limitError = {
+				message: plan.usageLimit === 'code' ? 'Quota exceeded.' : "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:05 PM.",
+				codexErrorInfo: plan.usageLimit === 'message' ? 'other' : 'usageLimitExceeded',
+				additionalDetails: null
+			};
+			return write({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'failed', items: [], error: limitError } } });
+		}
 		if (plan.delayMs) await new Promise((resolve) => setTimeout(resolve, plan.delayMs));
 		const inner = text.replace(/^<[^>]+>\n?|\n?<\/[^>]+>$/g, '');
 		const translated = text.includes('<reply id="')

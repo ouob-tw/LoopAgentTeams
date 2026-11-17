@@ -193,3 +193,19 @@ test('without a configured service, voice input says so', async () => {
 		await bare.cleanup();
 	}
 });
+
+// Last in the file: it leaves the board on Haiku for 30 minutes.
+test('luna out of quota: Haiku tidies the speech, and no Codex failure notice comes back', async () => {
+	answer = transcript('嗯,那个,我想要请你帮我看一下,这个这个登录页面的问题');
+	codexPlan({ usageLimit: true });
+	writeFileSync(join(fixture.dir, 'claude.json'), JSON.stringify({ reply: '我想请你帮我看一下这个登录页面的问题。' }));
+	expect(await speak()).toEqual({ status: 200, body: { text: '我想請你幫我看一下這個登錄頁面的問題。', notice: null } });
+	expect(codexCalls()).toHaveLength(1);
+	// Haiku failing too: the converted text with a notice naming Haiku; Codex is not started again.
+	writeFileSync(join(fixture.dir, 'claude.json'), JSON.stringify({ error: 'API Error: 529 overloaded' }));
+	const { body } = await speak();
+	expect(body).toEqual({ text: '嗯,那個,我想要請你幫我看一下,這個這個登錄頁面的問題', notice: 'Haiku 整理失敗，已放入原始辨識文字（Haiku 沒有完成：API Error: 529 overloaded）' });
+	expect(codexCalls()).toHaveLength(1);
+	expect(fixture.serverOutput()).toContain('[voice] Haiku tidy failed: Haiku 沒有完成：API Error: 529 overloaded (exit 1)');
+	expect(fixture.serverOutput()).not.toContain('登錄頁面');
+});

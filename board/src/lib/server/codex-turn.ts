@@ -4,9 +4,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
+import { CODEX_USAGE_LIMIT } from './automation-agent.ts';
 import { ownEnv } from './hcom.ts';
 
-export type Outcome<T> = { ok: true; value: T } | { ok: false; reason: string };
+/** `usageLimit` marks a Codex turn that failed because the account's quota ran out. */
+export type Outcome<T> = { ok: true; value: T } | { ok: false; reason: string; usageLimit?: true };
 
 export interface CodexTurn {
 	command: string[];
@@ -50,7 +52,7 @@ function markSecrets(value: string, secrets: CodexTurn['secrets'], hidden: boole
 }
 
 /** The value with every secret taken out. */
-function hide(turn: CodexTurn, value: string): string {
+export function hide(turn: Pick<CodexTurn, 'secrets'>, value: string): string {
 	const hidden = Array<boolean>(value.length).fill(false);
 	markSecrets(value, turn.secrets, hidden);
 	let clean = '';
@@ -66,6 +68,12 @@ function logFailure(turn: CodexTurn, reason: string, ended: string | null, stder
 	const clean = (value: string) => hide(turn, value).replace(/\s+/g, ' ').trim();
 	const tail = clean(stderr).slice(-STDERR_TAIL);
 	console.error(`${turn.journal} failed: ${clean(reason)}${ended ? ` (${ended})` : ''}${tail ? ` stderr: ${tail}` : ''}`);
+}
+
+/** Whether a failed turn's error says the account's quota ran out: the app server's own code for it
+ *  (`codexErrorInfo: "usageLimitExceeded"`), or the words Codex shows for it. */
+function usageLimit(error: { message?: string; codexErrorInfo?: unknown } | null): boolean {
+	return error?.codexErrorInfo === 'usageLimitExceeded' || CODEX_USAGE_LIMIT.test(error?.message ?? '');
 }
 
 /** Codex's last agent message of the turn, as it wrote it. */
@@ -145,7 +153,12 @@ export function codexTurn(turn: CodexTurn): Promise<Outcome<string>> {
 					reply.error || !reply.result
 						? optional
 							? answered({})
-							: finish({ ok: false, reason: `Codex ${method}：${reply.error?.message ?? '沒有結果'}` })
+							: finish({
+									ok: false,
+									reason: `Codex ${method}：${reply.error?.message ?? '沒有結果'}`,
+									// Should the server refuse the request itself for the quota.
+									...(CODEX_USAGE_LIMIT.test(reply.error?.message ?? '') ? { usageLimit: true as const } : {})
+								})
 						: answered(reply.result)
 				);
 				write({ id, method, params });
@@ -169,10 +182,11 @@ export function codexTurn(turn: CodexTurn): Promise<Outcome<string>> {
 			}
 			if (message.method === 'item/completed' && message.params?.item?.type === 'agentMessage') reply = message.params.item.text;
 			if (message.method !== 'turn/completed') return;
-			const done = message.params?.turn as { status: string; error: { message?: string } | null; items?: { type: string; text?: string }[] };
+			const done = message.params?.turn as { status: string; error: { message?: string; codexErrorInfo?: unknown } | null; items?: { type: string; text?: string }[] };
 			const text = (done.items?.findLast((item) => item.type === 'agentMessage')?.text ?? reply)?.trim();
-			if (done.status === 'completed' && text) finish({ ok: true, value: text });
-			else finish({ ok: false, reason: `Codex 沒有完成：${done.error?.message ?? done.status}` });
+			if (done.status === 'completed' && text) return finish({ ok: true, value: text });
+			const reason = `Codex 沒有完成：${done.error?.message ?? done.status}`;
+			finish(usageLimit(done.error) ? { ok: false, reason, usageLimit: true } : { ok: false, reason });
 		};
 		createInterface({ input: child.stdout! }).on('line', (line) => {
 			try {

@@ -6,12 +6,14 @@
 // one translation, and a failure is answered as it was for a few minutes. At most a few Codex
 // translations run at once; a text still waiting for its turn is dropped once no page wants it.
 // Each translation is answered as soon as Codex closes its reply, before the rest of the batch.
+// While luna's quota is out Haiku translates instead, the whole batch in one answer (luna-fallback.ts).
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MAX_LENGTH, swapCode } from '../board/translate.ts';
-import { codexTurn, type CodexTurn, type Outcome } from './codex-turn.ts';
+import type { Outcome } from './codex-turn.ts';
 import type { BoardConfig } from './config.ts';
+import { textTurn, type TextTurn } from './luna-fallback.ts';
 import { toTraditional } from './traditional.ts';
 
 const FILE = 'translations.json';
@@ -68,7 +70,7 @@ export interface Translator {
 	translate(texts: string[], each: (index: number, outcome: Outcome<string>) => void, signal?: AbortSignal): Promise<void>;
 }
 
-type Turn = (turn: CodexTurn) => Promise<Outcome<string>>;
+type Turn = (turn: TextTurn) => Promise<Outcome<string>>;
 
 /** One text being translated, shared by every request that wants it. */
 interface Job {
@@ -90,7 +92,7 @@ const DROPPED: Outcome<string> = { ok: false, reason: '沒有頁面在等，沒�
 /** What kind of error was thrown, for the journal: its message may quote the conversation. */
 const kindOf = (error: unknown) => (error instanceof Error ? error.name : typeof error);
 
-export function createTranslator(config: BoardConfig, turn: Turn = codexTurn): Translator {
+export function createTranslator(config: BoardConfig, turn: Turn = (asked) => textTurn(config, asked)): Translator {
 	const file = join(config.stateDir, FILE);
 	let saved = new Map<string, Saved>();
 	try {
@@ -137,12 +139,14 @@ export function createTranslator(config: BoardConfig, turn: Turn = codexTurn): T
 		const answered = new Set<Job>();
 		/** How much of the streamed text held no new closed reply. */
 		let scanned = 0;
+		/** Who wrote the replies: only Codex streams, Haiku's come with the end of the turn. */
+		let by = 'Codex';
 		/** Answer one job with its translated reply; none, or more than one, is a failure. */
 		const answer = (job: Job, parts: string[] | undefined) => {
 			answered.add(job);
 			const restored = parts?.length === 1 ? restore(toTraditional(parts[0]), job.kept) : null;
 			if (restored === null) {
-				console.error('[translate] Codex translation failed: a reply or marker was dropped or repeated');
+				console.error(`[translate] ${by} translation failed: a reply or marker was dropped or repeated`);
 				finish(job, { ok: false, reason: '譯文少了原文的程式碼、網址或路徑' });
 				return;
 			}
@@ -171,6 +175,7 @@ export function createTranslator(config: BoardConfig, turn: Turn = codexTurn): T
 				// Every original and masked reply stays out of the journal.
 				secrets: batch.flatMap((job) => [job.text, job.masked]),
 				journal: '[translate] Codex translation',
+				haikuJournal: '[translate] Haiku translation',
 				// A reply goes out once Codex closes it; a later repeat of it is not seen. Only what came
 				// after the last closed reply is looked through again.
 				onText: (text) => {
@@ -183,8 +188,9 @@ export function createTranslator(config: BoardConfig, turn: Turn = codexTurn): T
 					});
 				}
 			});
+			if ('by' in done) by = String(done.by);
 			if (!done.ok) {
-				batch.forEach((job) => answered.has(job) || finish(job, done));
+				batch.forEach((job) => answered.has(job) || finish(job, { ok: false, reason: done.reason }));
 				return;
 			}
 			const replies = repliesIn(done.value);
