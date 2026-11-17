@@ -168,7 +168,7 @@ class FakeHerdr:
 
 
 def fake_process(proc_root, herdr, pid, argv=('bash', '-l'), state='S', children='',
-                 wchan='do_select', **env):
+                 wchan='do_select', cwd='/home/u', **env):
     """A process in a fake /proc, by default a login shell waiting at its prompt, listed by
     herdr as the foreground of its HERDR_PANE_ID."""
     proc = Path(proc_root) / str(pid)
@@ -178,6 +178,7 @@ def fake_process(proc_root, herdr, pid, argv=('bash', '-l'), state='S', children
     (proc / 'stat').write_text(f'{pid} ({argv[0]}) {state} 1 {pid} {pid} 0')
     (proc / 'task' / str(pid) / 'children').write_text(children)
     (proc / 'wchan').write_text(wchan)
+    (proc / 'cwd').symlink_to(cwd)
     herdr.processes.setdefault(env.get('HERDR_PANE_ID'), []).append(pid)
 
 

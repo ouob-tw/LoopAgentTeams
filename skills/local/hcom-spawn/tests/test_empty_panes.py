@@ -44,8 +44,8 @@ class EmptyPanesTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.process(501, 'w1:p1', **HCOM)
-        self.process(502, 'w1:p2')
-        self.process(503, 'w1:p3')
+        self.process(502, 'w1:p2', cwd='/ws/.worktrees/old (deleted)')
+        self.process(503, 'w1:p3', cwd='/ws')
         self.process(504, 'w1:p4', HCOM_INSTANCE_NAME='zero', HCOM_TOOL='codex')
         self.process(505, 'w1:p5', HCOM_INSTANCE_NAME='mona', HCOM_TOOL='claude')
 
@@ -80,7 +80,7 @@ class EmptyPanesTests(unittest.TestCase):
     def test_pane_where_something_runs_is_listed_as_kept_and_not_closed(self):
         self.herdr.processes = {}
         self.process(601, 'w1:p1', argv=('bash', '/tmp/work.sh'), **HCOM)
-        self.process(602, 'w1:p2')
+        self.process(602, 'w1:p2', cwd='/ws/.worktrees/old (deleted)')
         self.line_modes[602] = True  # e.g. waiting in `read -t`
         code, lines = self.run_cli('--close')
         self.assertEqual(lines, [
@@ -103,6 +103,23 @@ class EmptyPanesTests(unittest.TestCase):
         code, lines = self.run_cli('--close')
         self.assertEqual(lines[0][-1], 'kept: its shell (process 501) is not waiting at its prompt')
         self.assertEqual(self.closes(), ['w1:p2'])
+
+    def test_shell_that_left_the_deleted_folder_since_the_listing_is_kept(self):
+        real = self.herdr.__call__
+        seen = []
+
+        def herdr(*args):
+            if args[:2] == ('pane', 'process-info') and args[3] == 'w1:p2':
+                seen.append(args)
+                if len(seen) == 2:  # the user ran `cd ~/work` before the re-check
+                    link = self.watch.PROC / '502' / 'cwd'
+                    link.unlink()
+                    link.symlink_to('/home/u/work')
+            return real(*args)
+        self.watch.herdr = herdr
+        code, lines = self.run_cli('--close')
+        self.assertEqual(lines[1][-1], 'kept: process 502 is no longer the deleted shell it was')
+        self.assertEqual(self.closes(), ['w1:p1'])
 
     def test_unreadable_hcom_list_lists_and_closes_nothing(self):
         self.rows = None

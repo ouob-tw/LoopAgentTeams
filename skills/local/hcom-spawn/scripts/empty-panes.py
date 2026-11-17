@@ -5,7 +5,8 @@ Only two kinds count as empty, and only when the pane's one foreground process i
 waiting idle at its prompt (spawn-watch.py idle_shell):
 - hcom: hcom opened the pane for an agent that is gone. Its shell is the leftover of
   hcom's launch (HCOM_INSTANCE_NAME without HCOM_PROCESS_ID, spawn-watch.py leftover_of).
-- deleted: the pane's working folder is deleted (Herdr shows its cwd as "... (deleted)").
+- deleted: the shell's working folder is deleted (/proc/<pid>/cwd ends in " (deleted)",
+  as Herdr shows it).
 A pane recorded for an agent in `hcom list`, the caller's own pane (HERDR_PANE_ID) and every
 other pane, such as a terminal the user opened whose folder still exists, are never listed
 or closed. Pane labels and titles are never read.
@@ -32,19 +33,23 @@ _spec.loader.exec_module(watch)
 DELETED = ' (deleted)'
 
 
-def kind_of(pid, cwd):
-    """(kind, hcom name) of a pane whose one foreground process is pid, or None."""
+def kind_of(pid):
+    """(kind, hcom name) of a pane whose one foreground process is pid, or None. Both are
+    read from the process itself, so a re-check sees a `cd` made since the listing."""
     leftover = watch.leftover_of(pid)
     if leftover:
         return 'hcom', leftover[0]
-    if cwd.endswith(DELETED):
-        return 'deleted', None
+    try:
+        if os.readlink(watch.PROC / str(pid) / 'cwd').endswith(DELETED):
+            return 'deleted', None
+    except OSError:
+        pass
     return None
 
 
-def why_not_empty(pid, kind, name, cwd):
+def why_not_empty(pid, kind, name):
     """Why the pane with this foreground process is not (or no longer) empty, or None."""
-    if kind_of(pid, cwd) != (kind, name):
+    if kind_of(pid) != (kind, name):
         return f'process {pid} is no longer the {kind} shell it was'
     return watch.idle_shell(pid)
 
@@ -72,10 +77,9 @@ def candidates(own):
                     json.loads(out)['result']['process_info']['foreground_processes']]
         except (ValueError, KeyError, TypeError, AttributeError):
             continue
-        if len(pids) != 1 or not (kind := kind_of(pids[0], cwd)):
+        if len(pids) != 1 or not (kind := kind_of(pids[0])):
             continue
-        found.append((pane_id, kind[0], cwd, kind[1],
-                      why_not_empty(pids[0], kind[0], kind[1], cwd)))
+        found.append((pane_id, kind[0], cwd, kind[1], why_not_empty(pids[0], *kind)))
     return found
 
 
@@ -93,7 +97,7 @@ def main(argv=None):
         verdict = f'kept: {why}' if why else 'empty'
         if args.close and not why:
             outcome, reason = watch.guarded_close(
-                pane, lambda pid: why_not_empty(pid, kind, name, cwd))
+                pane, lambda pid: why_not_empty(pid, kind, name))
             verdict = {'closed': 'closed', 'gone': 'gone',
                        'stuck': 'kept: herdr pane close ran but Herdr still shows the pane',
                        'kept': f'kept: {reason}'}[outcome]
