@@ -17,10 +17,11 @@ Record load average, `free -h` and swap use for the report, then gather:
 - `docker ps --format '{{.Names}}\t{{.Status}}\t{{.Label "com.docker.compose.project"}}'` and `docker stats --no-stream`.
 - `uv run --no-project python ~/.agents/skills/lat/scripts/lat-reap.py scan --limit 0`.
 - `ss -ltnp` for listening ports.
+- `herdr pane list` (`pane_id`, `cwd`) and, for candidates, `herdr pane process-info --pane <id>` (`foreground_processes` with `pid`, `name`, `cmdline`).
 
 ## Never touch
 
-- Processes of other users or root; anything whose cgroup is a systemd `.service` (e.g. `lat-board.service`, the live board on port 7100 run from `~/LoopAgentTeams/board` as `node build`); docker, herdr, hcom, pdd, rslsync.
+- Processes of other users or root; anything whose cgroup is a systemd `.service` (e.g. `lat-board.service`, the live board on port 7100 run from `~/LoopAgentTeams/board` as `node build`); docker, herdr, hcom, pdd, rslsync (rule 6 closes Herdr panes; it never touches the herdr process).
 - Your own process tree, and every agent or process of a running automation run (hcom tags starting `auto-` or `autochk-`).
 - Processes kept by `lat-reap` (listed as keeps in the scan).
 - Docker volumes, images and stopped containers (host timers already clean those). Never `docker rm` or `docker compose down -v`.
@@ -34,6 +35,11 @@ Only when every condition of a rule holds. Close by PID, never by name (`pkill -
 3. **Orphan headless test browsers**: a `chrome`/`chromium` process with `--headless` and a `--user-data-dir` under `/tmp`, parent PID 1, running over 12 hours. Close the top orphan; its children go with it.
 4. **Stale LAT monitors**: `lat-watch.py run … --orchestrator <name>` with parent PID 1, running over 12 hours, and `<name>` is not in `hcom list` (alive agents).
 5. **Leftover test browser folders**: `/tmp/lat-board-test-chrome-*` and `/tmp/playwright_chromiumdev_profile-*` last modified over 2 days ago and not named in any running process's arguments. Remove with `trash-put`.
+6. **Empty Herdr panes**: nothing runs in the pane (every process in `herdr pane process-info` is a shell: `bash`, `sh`, `zsh`, `fish`, `dash`), it is not your own pane (`HERDR_PANE_ID` in your environment), and it is one of these two kinds:
+   - **hcom opened it and its agent is gone**: the pane's shell has `HCOM_INSTANCE_NAME` in `/proc/<pid>/environ` and no `HCOM_PROCESS_ID`. hcom's launch script sets that name; after the agent exits the script drops the launch ids and leaves a `bash -l` that keeps it. No agent in `hcom list --json` has this pane as `launch_context.pane_id`.
+   - **Its working folder is deleted**: Herdr shows the pane's `cwd` ending in `(deleted)`.
+
+   Tell them from the user's own terminals by these records only, never by the pane label or terminal title. A shell without `HCOM_INSTANCE_NAME` whose folder still exists is the user's terminal: leave it even when idle. A pane where anything else runs (an agent, an editor, a command) stays. Right before closing, read `process-info` again and skip the pane if its processes changed; close with `herdr pane close <pane_id>`. Log each one (pane id, kind, `cwd`, hcom name if any) and list them in the report.
 
 ## 3. Ask about the rest
 
