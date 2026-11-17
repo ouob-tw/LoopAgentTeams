@@ -687,11 +687,13 @@ def make_brief(args):
             if tiny is None:
                 fixed += REVIEW_RESULT.format(**commands)
             else:
-                base = card.get('base commit') or '<card base commit>'
+                base = card.get('base commit', '')
+                if not re.fullmatch(r'[0-9a-fA-F]{7,64}', base):
+                    base = '<card base commit>'
                 fixed += TINY_REVIEW_RESULT.format(
                     review_size=shlex.quote(str(args.lat_dir.resolve() / 'scripts'
                                                 / 'review-size.py')),
-                    base=shlex.quote(base), integration=shlex.quote(tiny), **commands)
+                    base=base, integration=shlex.quote(tiny), **commands)
         if stage == 'qa':
             fixed += QA_FINDINGS.format(**commands)
         if stage == 'qa-draft':

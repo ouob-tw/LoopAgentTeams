@@ -863,6 +863,36 @@ class LedgerBriefTests(LedgerCase):
         self.assertIn('--stage qa --level <甲|乙|丙>', qa)
         self.assertIn('add `--no-findings` to `done`', qa)
 
+    def test_tiny_impl_row_gets_the_tiny_review_paragraph(self):
+        card = self.ledger_card('--tiny', '--no-feature', '--no-format-change',
+                                '--base-commit', 'abc1234def')
+        text, _ = self.brief_commands(card)
+        base = 'abc1234def'
+        self.assertRegex(text, rf'review-size\.py {re.escape(base)} --tiny --integration \S+')
+        self.assertRegex(text, r'lat-ledger\.py review-result --row 1 --ledger \S*ledger\S* '
+                               r'--by \S+ --reviewer <HCOM name> --clean --tiny-confirm')
+        self.assertIn('--tiny-hints "<how each hint was checked>"', text)
+        self.assertIn('confirm again', text)
+        self.assertIn('--handson', text)
+        self.assertIn('lat-ledger.py problem-update <id> --ledger', text)
+
+    def test_ordinary_impl_row_review_paragraph_is_unchanged(self):
+        text, _ = self.brief_commands(self.ledger_card())
+        self.assertNotIn('--tiny', text)
+        self.assertIn(
+            "A clean review: `uv run --no-project python " + str(LEDGER) + " review-result --row 1 "
+            "--ledger " + str(self.ledger) + " --by nanu-impl123-fida --reviewer <HCOM name> "
+            "--clean`; a review with findings: the same with one `--finding", text)
+
+    def test_qa_rows_of_a_tiny_ticket_are_unaffected(self):
+        self.ledger_card('--tiny', '--no-feature', '--no-format-change')
+        for stage in ('qa', 'qa-draft'):
+            card = self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage',
+                                  stage, '--evidence', 'file')
+            text = self.brief_commands(card)[0]
+            self.assertNotIn('--tiny', text)
+            self.assertNotIn('review-result', text)
+
     def test_other_stages_carry_no_spec_coverage(self):
         text, _ = self.brief_commands(self.ledger_card())
         self.assertNotIn('## Spec coverage', text)
