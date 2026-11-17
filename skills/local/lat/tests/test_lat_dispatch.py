@@ -873,6 +873,9 @@ class LedgerBriefTests(LedgerCase):
                                r'--by \S+ --reviewer <HCOM name> --clean --tiny-confirm')
         self.assertIn('--tiny-hints "<how each hint was checked>"', text)
         self.assertIn('confirm again', text)
+        for limit in ('one ticket only', 'at most 30 code lines', 'adds no feature',
+                      'no data or storage format'):
+            self.assertIn(limit, text)
         self.assertIn('--handson', text)
         self.assertIn('lat-ledger.py problem-update <id> --ledger', text)
 
