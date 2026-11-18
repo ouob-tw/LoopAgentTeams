@@ -63,6 +63,14 @@
       "tests": [
         "board/tests/unit/harness-cli.test.ts"
       ]
+    },
+    {
+      "paths": [
+        "board/tests/server/harness-output.test.ts"
+      ],
+      "tests": [
+        "board/tests/server/harness-output.test.ts"
+      ]
     }
   ]
 }
