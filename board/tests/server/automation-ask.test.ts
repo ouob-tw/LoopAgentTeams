@@ -528,6 +528,7 @@ test('a manual run ending DECIDE: still fails (#665)', async () => {
 
 test.each([
 	['unattended DECIDE', 'DECIDE', true],
+	['unattended HELP', 'HELP', true],
 	['manual ASK', 'ASK', false]
 ])('%s: a hcom message from another agent does not answer it, the panel answer (lat-panel) does, and the wait stays off the limit (#678)', async (_label, tag, unattended) => {
 	const task = await create({ limitMinutes: 60, ...(unattended ? { agent: unattendedAgent() } : {}) });
@@ -574,4 +575,20 @@ test('a run left waiting, its answer missed, still ends when the agent replies D
 	expect(done.status).toBe('success');
 	expect(done.asks![0].answeredAt).toBeUndefined();
 	expect(listed('ask-missed')).toBe(false);
+});
+
+test('a run left waiting, its answer missed, ends failed when the agent replies FAILED: agent closed, the question stays unanswered (#678)', async () => {
+	const task = await create({ limitMinutes: 60 });
+	hcomPlan([{ name: 'ask-missed-f' }]);
+	const run = await asking(task, 'ask-missed-f');
+	delivered('ask-missed-f', 'hcom');
+	setStatus('ask-missed-f', 'active');
+	await sleep(500);
+	expect((await runsOf(task.id))[0].asks![0].answeredAt).toBeUndefined();
+	appendFileSync(join(dir, 'transcripts', 's-ask-missed-f.jsonl'), JSON.stringify({ kind: 'assistant', time: null, text: '做不下去。\nFAILED: 合約檔打不開' }) + '\n');
+	setStatus('ask-missed-f', 'listening');
+	const failed = await ended(task.id, run.id);
+	expect([failed.status, failed.reason]).toEqual(['failed', expect.stringContaining('合約檔打不開')]);
+	expect(failed.asks![0].answeredAt).toBeUndefined();
+	expect(listed('ask-missed-f')).toBe(false);
 });
