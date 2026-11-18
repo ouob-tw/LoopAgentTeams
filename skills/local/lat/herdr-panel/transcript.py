@@ -173,19 +173,20 @@ def _injected(time, text):
     return None if text.strip() == "<hcom>" else _notice(time, text)
 
 
-# A delivery's header names its sender: `[inform #12] lat-panel → receiver: …`. The panel's own
-# message always opens with "Questions file changed:", so a quoted header in another agent's body
-# does not pass as the panel (a body that copies both is not told apart; the sender is unverified).
+# A delivery opens with a header naming its sender: `<hcom>[inform #12] lat-panel → receiver: …`.
+# Only that opening header is read: later header-shaped lines can sit inside a message body (an
+# agent quoting a report), so they say nothing about who sent it. The cost: a delivery that batches
+# the panel's message behind another agent's is not told from the other agent's (#678).
 _HCOM_SENDER = re.compile(
-    r"(?:^|\n)\s*(?:<hcom>)?\[(?:\d+ )?(?:new message|request|inform|ack)\b[^\]]*\]\s*([\w.@-]+)\s*→\s*[^\s:]+:\s*Questions file changed:"
+    r"\s*(?:<hcom>)?\[(?:\d+ )?(?:new message|request|inform|ack)\b[^\]]*\]\s*([\w.@-]+)\s*→"
 )
 
 
 def _hcom_notice(time, text):
     """An HCOM delivery. One from the question panel (the user's answer) is named `lat-panel`, so a
     reader can tell it from other agents' messages; the sender is the only thing read from it."""
-    from_panel = "lat-panel" in _HCOM_SENDER.findall(text)
-    return _tool(time, "lat-panel" if from_panel else "hcom", "收到 hcom 通知")
+    opening = _HCOM_SENDER.match(text)
+    return _tool(time, "lat-panel" if opening and opening.group(1) == "lat-panel" else "hcom", "收到 hcom 通知")
 
 
 def _notice(time, text):

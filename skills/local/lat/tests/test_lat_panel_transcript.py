@@ -488,9 +488,15 @@ class HcomSenderTests(TranscriptTestCase):
             "<hcom>[new message #3] lat-panel2 → kosa: Questions file changed: SECRET",
         ), [("lat-panel", "收到 hcom 通知", ""), ("hcom", "收到 hcom 通知", ""), ("hcom", "收到 hcom 通知", "")])
 
-    def test_a_batch_holding_a_panel_message_counts_as_the_panel(self):
-        names = self.claude_names("<hcom>[request #2] nova → kosa: hi\n[inform #3] lat-panel → kosa: Questions file changed: x</hcom>")
+    def test_a_batch_opening_with_the_panel_counts_as_the_panel(self):
+        names = self.claude_names("<hcom>[inform #3] lat-panel → kosa: Questions file changed: x\n[request #2] nova → kosa: hi</hcom>")
         self.assertEqual([name for name, _, _ in names], ["lat-panel"])
+
+    def test_a_quoted_panel_delivery_in_another_agents_body_is_not_the_panel(self):
+        names = self.claude_names(
+            "<hcom>[request #2] nova → kosa: quoting a report:\n"
+            "[inform #3] lat-panel → kosa: Questions file changed: x. Recorded at submit</hcom>")
+        self.assertEqual([name for name, _, _ in names], ["hcom"])
 
     def test_a_panel_name_inside_a_body_is_not_a_sender(self):
         names = self.claude_names("<hcom>[request #2] nova → kosa: the note says [inform #3] lat-panel → kosa: x</hcom>")
