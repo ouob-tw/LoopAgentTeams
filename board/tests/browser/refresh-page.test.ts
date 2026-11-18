@@ -12,7 +12,9 @@ let controller: ReturnType<Fixture['bound']>;
 beforeAll(async () => {
 	if (!CHROME)
 		return;
-	fixture = await startFixture({ env: { LAT_BOARD_LAUNCH_WAIT_SECONDS: '2' } });
+	// A launch stays pending eight seconds: room for the page to open and handle its opening reads
+	// before the expiry read, even on a busy host.
+	fixture = await startFixture({ env: { LAT_BOARD_LAUNCH_WAIT_SECONDS: '8' } });
 	cookie = await fixture.login();
 	controller = fixture.bound('alpha', 'tavi', { herdr_workspace: 'wA', herdr_tab: 'wA:t2', questions: [question({ id: 'Q-214' })] });
 	fixture.list([controller]);
@@ -22,13 +24,73 @@ beforeAll(async () => {
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
-	await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { const fetch = window.fetch; window.requests214 = []; window.fetch = (...args) => { window.requests214.push(String(args[0])); return fetch(...args); }; })()` });
+	await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: `(${trackRequests})()` });
 }, 30000);
 afterAll(async () => {
 	await browser?.close();
 	await fixture?.cleanup();
 });
 const count = (path: string) => tab.eval<number>(`window.requests214.filter(url => url.split('?')[0] === ${JSON.stringify(path)}).length`);
+/**
+ * Runs in the page before its own scripts. Records each request the page makes (`requests214`),
+ * the snapshots the event stream brings (`boardEvents214`), and how many snapshots and answers the
+ * page has not finished handling yet (`pending214`). One is handled a task after it came in, or after
+ * its body was read: the stream's reader and the page's own get the same chunk in the same task, and
+ * what the page does with it (set the snapshot, rerun its effects, start the reads they make) runs
+ * in microtasks before that.
+ */
+function trackRequests() {
+	const send = window.fetch;
+	const page = window as unknown as { requests214: string[]; boardEvents214: number; pending214: number };
+	page.requests214 = [];
+	page.boardEvents214 = 0;
+	page.pending214 = 0;
+	const handled = () => setTimeout(() => page.pending214--);
+	window.fetch = ((...args: Parameters<typeof fetch>) => {
+		const url = String(args[0]);
+		page.requests214.push(url);
+		const answer = send(...args);
+		if (url === '/api/events') {
+			answer.then(async (response) => {
+				const reader = response.clone().body!.pipeThrough(new TextDecoderStream()).getReader();
+				for (let text = ''; ; ) {
+					const { done, value } = await reader.read();
+					if (done) return;
+					text += value;
+					for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+						if (!text.slice(0, end).split('\n').includes('event: board')) continue;
+						page.boardEvents214++;
+						page.pending214++;
+						handled();
+					}
+				}
+			}).catch(() => {}); // The stream ends with an error when the page leaves.
+			return answer;
+		}
+		// The reads whose answers can start a launch-list read: the list, its defaults, and the
+		// snapshot a page asks for when it opens.
+		if (!url.startsWith('/api/launches') && url !== '/api/refresh') return answer;
+		page.pending214++;
+		return answer.then((response) => {
+			const json = response.json.bind(response);
+			response.json = () => json().finally(handled);
+			return response;
+		}, (error) => {
+			handled();
+			throw error;
+		});
+	}) as typeof fetch;
+}
+/**
+ * The new-controller form reads the launch list when it opens and again for each new snapshot; the
+ * defaults also each time the list comes in. A page that has just opened gets its snapshots from
+ * the stream's first event and from the refresh it asks for; once both and every read they started
+ * are handled, nothing but a timer can make another read. Returns the launch-list reads by then.
+ */
+async function openingReads() {
+	await tab.until(`window.boardEvents214 >= 1 && window.requests214.includes('/api/refresh') && window.pending214 === 0`, 'the opening snapshots and the reads they start, all handled');
+	return count('/api/launches');
+}
 async function navigate(path: string) { await tab.navigate(fixture.url + path); await tab.boardStarted({ started: STARTED }); }
 test.skipIf(!CHROME)('five snapshot pushes reuse location/history; a recorded answer reloads history once; moving a tab updates its next snapshot', async () => {
 	await navigate('/?controller=' + controller.session_id);
@@ -60,9 +122,7 @@ test.skipIf(!CHROME)('five snapshot pushes reuse location/history; a recorded an
 }, TEST_MS);
 test.skipIf(!CHROME)('an idle new-controller page stays open for forty seconds with no timer reload; a waiting launch reloads once at expiry', async () => {
 	await navigate('/?launch');
-	await tab.until(`window.requests214.includes('/api/launches')`);
-	await sleep(300);
-	const before = await count('/api/launches');
+	const before = await openingReads();
 	const defaultsBefore = await count('/api/launches/defaults');
 	await sleep(40000);
 	expect(await count('/api/launches')).toBe(before);
@@ -72,9 +132,7 @@ test.skipIf(!CHROME)('an idle new-controller page stays open for forty seconds w
 	writeFileSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), JSON.stringify(launch) + '\n');
 	await navigate('/?launch');
 	await tab.until(`document.body.innerText.includes('啟動中，等主控啟用')`);
-	// The opening SSE snapshot can replace the SSR stamp, causing the retained stamp reload.
-	await sleep(300);
-	const starting = await count('/api/launches');
+	const starting = await openingReads();
 	await tab.until(`document.body.innerText.includes('已開分頁，但主控尚未啟用')`);
 	expect(await count('/api/launches')).toBe(starting + 1);
 	await sleep(2500);
