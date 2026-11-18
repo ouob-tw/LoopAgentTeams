@@ -173,12 +173,25 @@ def _injected(time, text):
     return None if text.strip() == "<hcom>" else _notice(time, text)
 
 
+# A delivery's header names its sender: `[inform #12] lat-panel → receiver: …`.
+_HCOM_SENDER = re.compile(
+    r"(?:^|\n)\s*(?:<hcom>)?\[(?:\d+ )?(?:new message|request|inform|ack)\b[^\]]*\]\s*([\w.@-]+)\s*→"
+)
+
+
+def _hcom_notice(time, text):
+    """An HCOM delivery. One from the question panel (the user's answer) is named `lat-panel`, so a
+    reader can tell it from other agents' messages; the sender is the only thing read from it."""
+    from_panel = "lat-panel" in _HCOM_SENDER.findall(text)
+    return _tool(time, "lat-panel" if from_panel else "hcom", "收到 hcom 通知")
+
+
 def _notice(time, text):
     """An HCOM delivery, a LAT watch reminder or a hook's prompt, by what it says; never its content."""
     if text.lstrip().startswith("[lat-watch]"):
         return _tool(time, "lat-watch", "收到 lat-watch 提醒")
     if _HCOM_DELIVERY.match(text) or _INJECTED_INPUT.match(text):
-        return _tool(time, "hcom", "收到 hcom 通知")
+        return _hcom_notice(time, text)
     return _tool(time, "hook", "hook 提示")
 
 
@@ -400,8 +413,9 @@ def _codex_items(records):
             record.get("type") == "response_item" and payload.get("type") == "message"
             and payload.get("role") == "developer"
         ):
-            if _codex_text(payload.get("content")).lstrip().startswith("<hcom>"):
-                items.append(_tool(time, "hcom", "收到 hcom 通知"))
+            developer = _codex_text(payload.get("content"))
+            if developer.lstrip().startswith("<hcom>"):
+                items.append(_hcom_notice(time, developer))
 
     try:
         return _each_record(records, handle)
