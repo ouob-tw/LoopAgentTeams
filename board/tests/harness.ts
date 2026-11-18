@@ -96,6 +96,11 @@ export const BOARD_DIR = ROOT;
  * LAT_BOARD_BUILD_DIR (the variable `build:test` honours) names another one, so runs that overlap each use their own. */
 export const BUILD_DIR = process.env.LAT_BOARD_BUILD_DIR ?? 'build-test';
 const BUILD = join(ROOT, BUILD_DIR, 'index.js');
+// Where the test servers' output is echoed. A full-suite run once found `process.stderr` undefined
+// in the test worker (ouob-tw/LoopAgentTeams-work#637), and echoing then threw in the child's data
+// event in place of the board's own output; the streams this file loaded with are the fallback.
+const LOADED_STDIO = { stdout: process.stdout, stderr: process.stderr };
+const echo = (name: 'stdout' | 'stderr', chunk: unknown) => (process[name] ?? LOADED_STDIO[name]).write(chunk as Uint8Array);
 // Test servers and Chrome bind port 0, so the system picks a free port; the server says which one
 // on its standard output (`Listening on http://host:port`), Chrome in its profile's DevToolsActivePort.
 
@@ -677,13 +682,13 @@ export async function startFixture(
 			server = spawn(options.runtime ?? NODE, [BUILD], { cwd: ROOT, env: { ...env, PORT: String(anyPort ? 0 : port) }, stdio: ['ignore', 'pipe', 'pipe'] });
 			const child = server;
 			let heard = '';
-			child.stderr!.on('data', (chunk) => ((output += chunk), process.stderr.write(chunk)));
+			child.stderr!.on('data', (chunk) => ((output += chunk), echo('stderr', chunk)));
 			port = await new Promise<number>((resolve, reject) => {
 				const timer = setTimeout(() => reject(new Error('board server did not say where it listens')), 10_000);
 				child.once('exit', (code) => (clearTimeout(timer), reject(new Error(`board server exited with ${code}`))));
 				child.stdout!.on('data', (chunk) => {
 					output += chunk;
-					process.stdout.write(chunk);
+					echo('stdout', chunk);
 					heard += chunk;
 					const match = /Listening on http:\/\/[^\s:]+:(\d+)/.exec(heard);
 					if (match) (clearTimeout(timer), resolve(Number(match[1])));
