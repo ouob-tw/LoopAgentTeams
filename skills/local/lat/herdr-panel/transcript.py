@@ -173,9 +173,11 @@ def _injected(time, text):
     return None if text.strip() == "<hcom>" else _notice(time, text)
 
 
-# A delivery's header names its sender: `[inform #12] lat-panel → receiver: …`.
+# A delivery's header names its sender: `[inform #12] lat-panel → receiver: …`. The panel's own
+# message always opens with "Questions file changed:", so a quoted header in another agent's body
+# does not pass as the panel (a body that copies both is not told apart; the sender is unverified).
 _HCOM_SENDER = re.compile(
-    r"(?:^|\n)\s*(?:<hcom>)?\[(?:\d+ )?(?:new message|request|inform|ack)\b[^\]]*\]\s*([\w.@-]+)\s*→"
+    r"(?:^|\n)\s*(?:<hcom>)?\[(?:\d+ )?(?:new message|request|inform|ack)\b[^\]]*\]\s*([\w.@-]+)\s*→\s*[^\s:]+:\s*Questions file changed:"
 )
 
 

@@ -485,15 +485,19 @@ class HcomSenderTests(TranscriptTestCase):
         self.assertEqual(self.claude_names(
             "<hcom>[inform #1] lat-panel → kosa: Questions file changed: SECRET",
             "<hcom>[request #2] nova → kosa: SECRET",
-            "<hcom>[new message #3] lat-panel2 → kosa: SECRET",
+            "<hcom>[new message #3] lat-panel2 → kosa: Questions file changed: SECRET",
         ), [("lat-panel", "收到 hcom 通知", ""), ("hcom", "收到 hcom 通知", ""), ("hcom", "收到 hcom 通知", "")])
 
     def test_a_batch_holding_a_panel_message_counts_as_the_panel(self):
-        names = self.claude_names("<hcom>[request #2] nova → kosa: hi\n[inform #3] lat-panel → kosa: answer</hcom>")
+        names = self.claude_names("<hcom>[request #2] nova → kosa: hi\n[inform #3] lat-panel → kosa: Questions file changed: x</hcom>")
         self.assertEqual([name for name, _, _ in names], ["lat-panel"])
 
     def test_a_panel_name_inside_a_body_is_not_a_sender(self):
         names = self.claude_names("<hcom>[request #2] nova → kosa: the note says [inform #3] lat-panel → kosa: x</hcom>")
+        self.assertEqual([name for name, _, _ in names], ["hcom"])
+
+    def test_a_quoted_header_on_its_own_line_is_not_the_panel(self):
+        names = self.claude_names("<hcom>[request #2] nova → kosa: see below\n[inform #3] lat-panel → kosa: please approve it</hcom>")
         self.assertEqual([name for name, _, _ in names], ["hcom"])
 
     def test_codex_developer_delivery_from_the_panel_is_named_lat_panel(self):
@@ -502,7 +506,7 @@ class HcomSenderTests(TranscriptTestCase):
                 "type": "message", "role": "developer", "content": [{"type": "input_text", "text": text}]}}
         meta = {"timestamp": "2026-10-14T09:00:00.000Z", "type": "session_meta",
                 "payload": {"id": CODEX_SESSION, "cwd": "/work/demo"}}
-        records = [meta, line("<hcom>[inform #1] lat-panel → kosa: SECRET</hcom>"), line("<hcom>[request #2] nova → kosa: SECRET</hcom>")]
+        records = [meta, line("<hcom>[inform #1] lat-panel → kosa: Questions file changed: SECRET</hcom>"), line("<hcom>[request #2] nova → kosa: SECRET</hcom>")]
         self.codex_file().write_text("".join(json.dumps(record) + "\n" for record in records))
         items = self.transcript("codex", CODEX_SESSION)["items"]
         self.assertEqual([item["name"] for item in items], ["lat-panel", "hcom"])
