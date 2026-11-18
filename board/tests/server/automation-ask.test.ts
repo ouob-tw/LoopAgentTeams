@@ -140,6 +140,10 @@ function turn(name: string, text: string, input = '讀取並照做') {
 function typed(name: string, text: string) {
 	appendFileSync(join(dir, 'transcripts', `s-${name}.jsonl`), JSON.stringify({ kind: 'user', time: null, text }) + '\n');
 }
+/** An hcom delivery in the agent's conversation: another agent's message (`hcom`), or the question panel's answer (`lat-panel`, #678). */
+function delivered(name: string, sender: 'hcom' | 'lat-panel') {
+	appendFileSync(join(dir, 'transcripts', `s-${name}.jsonl`), JSON.stringify({ kind: 'tool', time: null, name: sender, label: '收到 hcom 通知', detail: '', error: false }) + '\n');
+}
 const injected = () => jsonLines(join(injectDir, 'inject-typed.jsonl')) as { text: string; enter: boolean }[];
 
 const QUESTION = '11 月的維護費要開幾張發票？上個月是 1 張 NT$ 30,000，這個月合約備註寫「分兩期」。請回覆：1 張或 2 張（每張金額）。';
@@ -234,7 +238,7 @@ test('ASK leaves the agent open as 等你回覆 with a yellow card; the board\'s
 	expect((await alerts()).filter((alert) => alert.runId === run.id && alert.kind !== 'ask')).toEqual([]);
 });
 
-test('an answer typed in the terminal, and a new turn with nothing read, are noticed as 終端; a run asks more than once; the checker reads every question and answer', async () => {
+test('an answer typed in the terminal is noticed as 終端, while a hcom message from another agent and the turn it starts are not (#678); a run asks more than once; the checker reads every question and answer', async () => {
 	const task = await create({ review: { enabled: true, checklist: ['發票已開立'] } });
 	hcomPlan([{ name: 'ask-term' }, null, { name: 'chk-term', client: 'codex' }]);
 	const run = await asking(task, 'ask-term');
@@ -259,12 +263,21 @@ test('an answer typed in the terminal, and a new turn with nothing read, are not
 	);
 	expect((await viewOf(task.id)).state).toBe('asking');
 
-	// A turn begins with nothing new read from the conversation: it went on all the same.
+	// Other agents' hcom messages, and the turn they start, are not the user's answer (#678).
 	fixture.setClock(START + 6 * 60_000);
+	delivered('ask-term', 'hcom');
 	setStatus('ask-term', 'active');
+	await sleep(500);
+	expect((await runsOf(task.id))[0].asks![1].answeredAt).toBeUndefined();
+	setStatus('ask-term', 'blocked');
+	await sleep(300);
+	expect((await runsOf(task.id))[0].asks![1].answeredAt).toBeUndefined();
+	expect((await viewOf(task.id)).state).toBe('asking');
+	// What the user types in the terminal after that is.
+	fixture.setClock(START + 7 * 60_000);
+	typed('ask-term', '用新的');
 	const second = await answered(task.id, run.id, 2);
-	expect(second.asks![1]).toMatchObject({ question: '發票抬頭用舊的還是新的？', answeredAt: START + 6 * 60_000, source: '終端' });
-	expect(second.asks![1].answer).toBeString();
+	expect(second.asks![1]).toMatchObject({ question: '發票抬頭用舊的還是新的？', answer: '用新的', answeredAt: START + 7 * 60_000, source: '終端' });
 
 	turn('ask-term', 'DONE', '用新的');
 	await runWhen(task.id, run.id, (each) => each.review?.sessionId === 's-chk-term', 'the checker');
@@ -511,4 +524,71 @@ test('a manual run ending DECIDE: still fails (#665)', async () => {
 	const ranOut = await ended(manual.id, run.id);
 	expect(ranOut.status).toBe('failed');
 	expect(ranOut.asks).toBeUndefined();
+});
+
+test.each([
+	['unattended DECIDE', 'DECIDE', true],
+	['unattended HELP', 'HELP', true],
+	['manual ASK', 'ASK', false]
+])('%s: a hcom message from another agent does not answer it, the panel answer (lat-panel) does, and the wait stays off the limit (#678)', async (_label, tag, unattended) => {
+	const task = await create({ limitMinutes: 60, ...(unattended ? { agent: unattendedAgent() } : {}) });
+	const name = `pan-${tag.toLowerCase()}`;
+	hcomPlan([{ name }]);
+	const started = await runNow(task.id);
+	await runWhen(task.id, started.id, (run) => run.sessionId === `s-${name}`, `${name} to be listed`);
+	turn(name, `需要你決定。\n${tag}: ${QUESTION}`);
+	const run = await waitingOn(task.id, started.id, 1);
+
+	// A helper agent reports in and the controller starts working: still waiting, hours later too.
+	delivered(name, 'hcom');
+	setStatus(name, 'active');
+	fixture.setClock(START + 5 * 3_600_000);
+	await sleep(600);
+	const still = (await runsOf(task.id)).find((each) => each.id === run.id)!;
+	expect([still.status, still.asks![0].answeredAt]).toEqual(['running', undefined]);
+	expect((await viewOf(task.id)).state).toBe('asking');
+	expect((await yellow(run.id))[0].dismissedAt).toBeUndefined();
+	expect(listed(name)).toBe(true);
+
+	// The answer the question panel delivers ends the wait; the time left counts from there.
+	delivered(name, 'lat-panel');
+	const after = await answered(task.id, run.id, 1);
+	expect(after.asks![0]).toMatchObject({ answeredAt: START + 5 * 3_600_000, source: '終端' });
+	expect((await viewOf(task.id)).state).toBe('running');
+	fixture.setClock(START + 5 * 3_600_000 + 59 * 60_000);
+	await sleep(600);
+	expect((await runsOf(task.id)).find((each) => each.id === run.id)!.status).toBe('running');
+});
+
+test('a run left waiting, its answer missed, still ends when the agent replies DONE: success, agent closed, the question stays unanswered (#678)', async () => {
+	const task = await create({ limitMinutes: 60 });
+	hcomPlan([{ name: 'ask-missed' }]);
+	const run = await asking(task, 'ask-missed');
+	delivered('ask-missed', 'hcom');
+	setStatus('ask-missed', 'active');
+	await sleep(500);
+	expect((await runsOf(task.id))[0].asks![0].answeredAt).toBeUndefined();
+	// Only the agent's own reply, no input from the user.
+	appendFileSync(join(dir, 'transcripts', 's-ask-missed.jsonl'), JSON.stringify({ kind: 'assistant', time: null, text: '另一位 Agent 已回報，全部做完。\nDONE' }) + '\n');
+	setStatus('ask-missed', 'listening');
+	const done = await ended(task.id, run.id);
+	expect(done.status).toBe('success');
+	expect(done.asks![0].answeredAt).toBeUndefined();
+	expect(listed('ask-missed')).toBe(false);
+});
+
+test('a run left waiting, its answer missed, ends failed when the agent replies FAILED: agent closed, the question stays unanswered (#678)', async () => {
+	const task = await create({ limitMinutes: 60 });
+	hcomPlan([{ name: 'ask-missed-f' }]);
+	const run = await asking(task, 'ask-missed-f');
+	delivered('ask-missed-f', 'hcom');
+	setStatus('ask-missed-f', 'active');
+	await sleep(500);
+	expect((await runsOf(task.id))[0].asks![0].answeredAt).toBeUndefined();
+	appendFileSync(join(dir, 'transcripts', 's-ask-missed-f.jsonl'), JSON.stringify({ kind: 'assistant', time: null, text: '做不下去。\nFAILED: 合約檔打不開' }) + '\n');
+	setStatus('ask-missed-f', 'listening');
+	const failed = await ended(task.id, run.id);
+	expect([failed.status, failed.reason]).toEqual(['failed', expect.stringContaining('合約檔打不開')]);
+	expect(failed.asks![0].answeredAt).toBeUndefined();
+	expect(listed('ask-missed-f')).toBe(false);
 });

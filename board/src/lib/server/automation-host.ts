@@ -190,8 +190,9 @@ export function boardAgentHost(config: BoardConfig, board: () => Board, retry: {
 		async inputAfter(client, sessionId, seq) {
 			const read = await readTranscript(config, client, sessionId);
 			if (!read.ok) return null;
-			// Typed in (the terminal, or the board's own send) or delivered by hcom; a hook's prompt is not input.
-			const input = read.page.items.find((item) => item.seq > seq && (item.kind === 'user' || (item.kind === 'tool' && item.name === 'hcom')));
+			// Typed in (the terminal, or the board's own send) or the question panel's answer (hcom
+			// sender lat-panel, #678); other agents' hcom messages and hook prompts are not the user's input.
+			const input = read.page.items.find((item) => item.seq > seq && (item.kind === 'user' || (item.kind === 'tool' && item.name === 'lat-panel')));
 			if (!input) return null;
 			return { text: input.kind === 'tool' ? input.detail || input.label : input.text, seq: input.seq };
 		},

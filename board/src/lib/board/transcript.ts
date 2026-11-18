@@ -19,7 +19,7 @@ export interface TranscriptTool {
 	seq: number;
 	kind: 'tool';
 	time: string | null;
-	/** `hcom`, `lat-watch` and `hook` for what arrived from outside; otherwise the tool's name. */
+	/** `hcom` (another agent's message), `lat-panel` (the user's answer from the question panel), `lat-watch` and `hook` for what arrived from outside; otherwise the tool's name. */
 	name: string;
 	label: string;
 	detail: string;
@@ -130,7 +130,7 @@ export function askPlaces<T extends { createdAt: string }>(items: TranscriptItem
 
 export const toolsSummary =(items: TranscriptTool[]) => `⋯ 做了 ${items.length} 個操作`;
 
-const ICONS: Record<string, string> = { hcom: '📨', 'lat-watch': '⏰', hook: '🪝' };
+const ICONS: Record<string, string> = { hcom: '📨', 'lat-panel': '📨', 'lat-watch': '⏰', hook: '🪝' };
 
 /** One operation as one line, e.g. `🔧 執行指令：git status`; a failed one is marked. */
 export function toolLine(item: TranscriptTool): string {

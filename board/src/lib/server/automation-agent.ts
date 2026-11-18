@@ -129,8 +129,9 @@ export interface AgentHost {
 	lastReply(client: AgentSpec['client'], sessionId: string): Promise<{ ok: true; text: string | null; seq: number } | { ok: false; reason: string }>;
 	/** Where the conversation is kept on disk; null when it cannot be found. */
 	transcript(client: AgentSpec['client'], sessionId: string): Promise<string | null>;
-	/** The first input of the conversation after `seq` (typed by the user, or a message hcom
-	 *  delivered), with its position; null when there is none yet, or it cannot be read. */
+	/** The first input of the user's after `seq` in the conversation (typed in the terminal, or an
+	 *  answer the question panel delivered through hcom as `lat-panel`; other agents' hcom messages
+	 *  are not the user's), with its position; null when there is none yet, or it cannot be read. */
 	inputAfter(client: AgentSpec['client'], sessionId: string, seq: number): Promise<{ text: string; seq: number } | null>;
 	/** Pass text on to the agent as a message from the user, the way the board sends one; why it
 	 *  could not, or null. */
@@ -294,11 +295,23 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 		}
 		const asking = watched.asking;
 		if (asking?.waiting() && sessionId) {
-			// Waiting on the user: anything new in its conversation, or a turn begun, means it goes on.
+			// Waiting on the user: only the user's own input ends it (#678). Other agents' hcom messages
+			// and the `active`/`blocked` turns they cause do not; the agent may work on meanwhile.
 			if (asking.replying()) continue;
 			const input = await host.inputAfter(spec.client, sessionId, judgeAfter);
 			if (asking.replying() || !asking.waiting()) continue;
-			if (input || agent.status === 'active' || agent.status === 'blocked') asking.resumed(input?.text ?? null);
+			if (input) {
+				asking.resumed(input.text);
+				continue;
+			}
+			// An answer missed must not hang the run: a later reply ending DONE or FAILED still ends it
+			// the usual way, the open question left unanswered.
+			const reply = await host.lastReply(spec.client, sessionId);
+			if (asking.replying() || !asking.waiting()) continue;
+			if (reply.ok && reply.text !== null && reply.seq > judgeAfter && agent.status === 'listening') {
+				const verdict = judge(reply.text);
+				if (verdict) return end(verdict);
+			}
 			continue;
 		}
 		if (agent.status !== 'listening' || !sessionId) continue;
