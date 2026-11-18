@@ -300,7 +300,18 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 			if (asking.replying()) continue;
 			const input = await host.inputAfter(spec.client, sessionId, judgeAfter);
 			if (asking.replying() || !asking.waiting()) continue;
-			if (input) asking.resumed(input.text);
+			if (input) {
+				asking.resumed(input.text);
+				continue;
+			}
+			// An answer missed must not hang the run: a later reply ending DONE or FAILED still ends it
+			// the usual way, the open question left unanswered.
+			const reply = await host.lastReply(spec.client, sessionId);
+			if (asking.replying() || !asking.waiting()) continue;
+			if (reply.ok && reply.text !== null && reply.seq > judgeAfter && agent.status === 'listening') {
+				const verdict = judge(reply.text);
+				if (verdict) return end(verdict);
+			}
 			continue;
 		}
 		if (agent.status !== 'listening' || !sessionId) continue;

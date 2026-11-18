@@ -558,3 +558,20 @@ test.each([
 	await sleep(600);
 	expect((await runsOf(task.id)).find((each) => each.id === run.id)!.status).toBe('running');
 });
+
+test('a run left waiting, its answer missed, still ends when the agent replies DONE: success, agent closed, the question stays unanswered (#678)', async () => {
+	const task = await create({ limitMinutes: 60 });
+	hcomPlan([{ name: 'ask-missed' }]);
+	const run = await asking(task, 'ask-missed');
+	delivered('ask-missed', 'hcom');
+	setStatus('ask-missed', 'active');
+	await sleep(500);
+	expect((await runsOf(task.id))[0].asks![0].answeredAt).toBeUndefined();
+	// Only the agent's own reply, no input from the user.
+	appendFileSync(join(dir, 'transcripts', 's-ask-missed.jsonl'), JSON.stringify({ kind: 'assistant', time: null, text: '另一位 Agent 已回報，全部做完。\nDONE' }) + '\n');
+	setStatus('ask-missed', 'listening');
+	const done = await ended(task.id, run.id);
+	expect(done.status).toBe('success');
+	expect(done.asks![0].answeredAt).toBeUndefined();
+	expect(listed('ask-missed')).toBe(false);
+});
