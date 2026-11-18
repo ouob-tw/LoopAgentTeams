@@ -72,8 +72,8 @@ test('a change written just before a sync is still reported', async () => {
 			setup.reset();
 			writeFileSync(join(setup.watched, 'session.jsonl'), `${i}\n`);
 			setup.sync();
-			await sleep(20);
-			if (setup.changes() === 0) missed++;
+			// Wait for the event, not a fixed time: it counts as missed only if none arrives within the limit.
+			await until(() => setup.changes() > 0, 2_000, 'the change written before the sync').catch(() => missed++);
 		}
 		expect(missed).toBe(0);
 	} finally {
