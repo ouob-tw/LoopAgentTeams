@@ -3489,11 +3489,14 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
             owner = other_watcher(agent, identity) if agent != orchestrator else None
             judged = previous
             if owner is not None and previous and previous.get('nudged'):
-                # End this watcher's stall episode so it does not escalate it either.
+                # End this watcher's stall episode and its escalations; if the owner ends,
+                # a new episode starts with fresh notices.
                 judged = {key: value for key, value in previous.items()
                           if key not in ('nudged_at', 'nudge_text', 'nudge_fingerprint',
-                                         'stall_reason')}
-                judged['nudged'] = False
+                                         'stall_reason', 'orchestrator_notified_at',
+                                         'orchestrator_notice_task_revision')}
+                judged.update(nudged=False, orchestrator_notified=False,
+                              orchestrator_handled=False, user_notified=False)
             try:
                 state, actions = decide(judged, observation, now)
             except (TypeError, ValueError, KeyError, AttributeError) as error:

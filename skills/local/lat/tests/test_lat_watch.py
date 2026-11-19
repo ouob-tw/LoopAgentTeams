@@ -6661,24 +6661,36 @@ esac
         decisions.mkdir()
         watch = load_watch()
         with patch.dict(os.environ, self.env):
-            for now in range(0, 601, 60):
+            # Nudged at 600, escalated to orch at 1200.
+            for now in range(0, 1201, 60):
                 watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
             self.assertEqual(self.injected('worker-open'), 1)
-            self.assertTrue(self.watch_state()['worker-open']['nudged'])
+            self.assertTrue(self.watch_state()['worker-open']['orchestrator_notified'])
+            notices = self.worker_notices()
             other = self.root / 'other'
             (other / '.git').mkdir(parents=True)
             (other / '.lat/tasks').mkdir(parents=True)
             (other / '.lat/decisions').mkdir()
             own = self.start_watcher(other, 'worker-open', other / '.lat/tasks',
                                      other / '.lat/decisions')
-            for now in range(660, 3001, 60):
+            for now in range(1260, 3601, 60):
                 watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
             state = self.watch_state()['worker-open']
             self.assertEqual(self.injected('worker-open'), 1)
-            self.assertFalse([line for line in self.hcom_log.read_text().splitlines()
-                              if line.startswith('send ') and 'worker-open' in line])
-            self.assertFalse(state['nudged'])
+            self.assertEqual(self.worker_notices(), notices)
+            self.assertFalse(state['nudged'] or state['orchestrator_notified']
+                             or state['user_notified'])
             self.assertEqual(state['nudge_owner']['pid'], own.pid)
+            # Once the owner ends, a fresh episode: nudge, then a new notice to orch.
+            self.stop_watcher(own)
+            for now in range(3660, 4801, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+        self.assertEqual(self.injected('worker-open'), 2)
+        self.assertEqual(len(self.worker_notices()), len(notices) + 1)
+
+    def worker_notices(self):
+        return [line for line in self.hcom_log.read_text().splitlines()
+                if line.startswith('send ') and 'agent worker-open' in line]
 
     def test_agent_with_its_own_watcher_is_nudged_only_by_that_watcher(self):
         # worker-open runs its own round in another workspace (#680: a sub-orchestrator
