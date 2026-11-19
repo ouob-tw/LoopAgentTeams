@@ -319,6 +319,26 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertEqual(fake.sent, [])
         self.assertIn(('list', 'vare-review-kilo', '--json'), fake.calls)
 
+    def test_session_log_path_missing_at_first_is_looked_up_again_every_few_seconds(self):
+        log = self.write_log([
+            {'type': 'permission-mode', 'permissionMode': 'bypassPermissions'},
+            {'type': 'assistant', 'message': {'model': 'claude-sonnet-5-5'}, 'effort': 'low'}])
+        fake = FakeHcom(screens=[CLAUDE_PROMPTED], stop_after=500)
+        fake.ready = False
+        answer = fake.__call__
+
+        def hcom(*args, timeout=30):
+            if args[:1] == ('list',) and len(args) == 3:
+                fake.calls.append(args)
+                return 0, json.dumps({'transcript_path': log if fake.now >= 40 else ''})
+            return answer(*args, timeout=timeout)
+
+        hcom.clock, hcom.sleep, hcom.batches = fake.clock, fake.sleep, fake.batches
+        self.run_watch(hcom)
+        self.assertEqual(fake.sent, [])
+        lookups = [call for call in fake.calls if call == ('list', 'vare-review-kilo', '--json')]
+        self.assertTrue(2 <= len(lookups) <= 5, len(lookups))
+
     def test_busy_never_ready_agent_with_another_model_in_its_session_log_is_a_mismatch(self):
         log = self.write_log([
             {'type': 'assistant', 'message': {'model': 'claude-opus-5-5'}, 'effort': 'low'}])
