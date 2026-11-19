@@ -433,6 +433,82 @@ class WatchDecisionTests(unittest.TestCase):
         state, actions = watch.decide(state, exhausted, now=605)
         self.assertEqual(actions[0].kind, 'notify-orchestrator')
 
+    def login_observation(self, watch, **fields):
+        base = dict(agent='worker', status='listening', prompt_empty=True,
+                    command_running=False, transcript_size=100, transcript_mtime_ns=1_000,
+                    event_id=10, client='claude', model='Opus 5.5',
+                    login_issue='Login expired · Please run /login')
+        base.update(fields)
+        return watch.Observation(**base)
+
+    def test_claude_login_expired_screen_reports_once_without_nudge(self):
+        watch = load_watch()
+        lines = ['● hello', '  ⎿  Login expired · Please run /login', '', '❯']
+        self.assertEqual(watch.detect_screen_login(lines, 'claude'),
+                         '⎿  Login expired · Please run /login')
+        self.assertIsNone(watch.detect_screen_login(lines, 'codex'))
+        stuck = self.login_observation(watch)
+
+        state, actions = watch.decide(None, stuck, now=0)
+        self.assertEqual([a.kind for a in actions], ['notify-orchestrator'])
+        self.assertIn('/login', actions[0].message)
+        self.assertIn('Only the user can fix', actions[0].message)
+        self.assertFalse(state['nudged'])
+        # Far past the idle threshold, still no nudge and no repeat.
+        for now in (60, 700, 2400, 7200):
+            state, actions = watch.decide(state, stuck, now=now)
+            self.assertEqual(actions, ())
+            self.assertFalse(state['nudged'])
+
+    def test_hcom_authentication_failed_status_is_handled_the_same(self):
+        watch = load_watch()
+        info = {'status': 'inactive', 'status_context': 'failure:authentication_failed'}
+        self.assertEqual(watch.hcom_login_issue(info), 'inactive (failure:authentication_failed)')
+        self.assertIsNone(watch.hcom_login_issue({'status': 'listening',
+                                                  'status_context': 'failure:rate_limit'}))
+        stuck = self.login_observation(watch, client='codex', status='inactive',
+                                       login_issue=watch.hcom_login_issue(info))
+        state, actions = watch.decide(None, stuck, now=0)
+        self.assertEqual([a.kind for a in actions], ['notify-orchestrator'])
+        self.assertIn('failure:authentication_failed', actions[0].message)
+        self.assertNotIn('/login', actions[0].message)
+        state, actions = watch.decide(state, stuck, now=5000)
+        self.assertEqual(actions, ())
+
+    def test_login_failure_on_orchestrator_notifies_user(self):
+        watch = load_watch()
+        stuck = self.login_observation(watch, agent='orch', is_orchestrator=True)
+        state, actions = watch.decide(None, stuck, now=0)
+        self.assertEqual([a.kind for a in actions], ['notify-user'])
+        self.assertEqual(actions[0].label, '登入失效')
+        state, actions = watch.decide(state, stuck, now=3000)
+        self.assertEqual(actions, ())
+
+    def test_scrolled_up_login_text_followed_by_new_conversation_is_not_matched(self):
+        watch = load_watch()
+        for later in (['● new answer', '❯'], ['❯ do something', ''], ['✻ Working… (esc to interrupt)']):
+            lines = ['  ⎿  Login expired · Please run /login', *later]
+            self.assertIsNone(watch.detect_screen_login(lines, 'claude'), later)
+        self.assertIsNone(watch.detect_screen_login(['  Login expired in the docs'], 'claude'))
+
+    def test_recovered_login_returns_to_normal_stall_judgment(self):
+        watch = load_watch()
+        stuck = self.login_observation(watch)
+        state, _ = watch.decide(None, stuck, now=0)
+        ok = stuck._replace(login_issue=None)
+        state, actions = watch.decide(state, ok, now=100)
+        self.assertEqual(actions, ())
+        # The stall clock restarted at recovery, not at the old progress.
+        state, actions = watch.decide(state, ok, now=100 + 599)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, ok, now=100 + 600)
+        self.assertEqual(actions, (watch.Action('nudge', 'worker'),))
+        # A new login failure after two clear rounds is reported again.
+        state, _ = watch.decide(state, ok, now=800)
+        state, _ = watch.decide(state, ok, now=801)
+        state, actions = watch.decide(state, stuck, now=802)
+        self.assertEqual([a.kind for a in actions], ['notify-orchestrator'])
+
     def test_quota_issue_on_orchestrator_notifies_user_once_despite_progress(self):
         watch = load_watch()
         issue = watch.QuotaIssue(

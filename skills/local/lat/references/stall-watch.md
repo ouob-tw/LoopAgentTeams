@@ -29,6 +29,7 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 | 輸入框有字、有訊息排隊，字 5 分鐘沒變 | 5 分鐘 | 存檔、清空輸入框、通知使用者 |
 | 任務卡 Agent 不在 HCOM 清單或為非額度原因的 `inactive` | 連續兩輪 | 通知主控一次，不催；重新出現後重新計算 |
 | 當前畫面最後的錯誤是額度用完、模型滿載或程式崩潰（不論 HCOM 狀態），或 HCOM 為 `inactive (failure:rate_limit)` | 立即（程式崩潰須沒有進展滿 20 分鐘） | 通知上一層；執行 Agent 的畫面錯誤每 20 分鐘再通知主控（見下段）；Codex 模型滿載先送一次 `Continue`（見下段）；Claude 額度選單依下節核對額度後恢復，其他情況不催 |
+| Claude 畫面最後的錯誤是 `Login expired · Please run /login`，或 HCOM 為 `inactive (failure:authentication_failed)`（Codex 只看 HCOM 狀態） | 立即 | 通知上一層（主控自己則通知使用者）一次，寫明這是登入失效、只有使用者能處理（Claude 用 `/login`）；不催、不代為登入；畫面或狀態恢復後回到一般停滯判斷 |
 
 「上一層」對執行 Agent 是它的主控，對主控是使用者。背景指令還在跑時不算停住（主控只剩背景指令時見上表；要是 client 自己開在另一個 session 的指令，或帶這位 Agent 標記、已脫離 client 的另一個 session 的程序；MCP 服務底下的一切（語言伺服器與它代跑的指令分不開，代跑的指令留在背景時，仍可能被催並通知主控），以及 `lat-watch.py`、`spawn-watch.py`、HCOM 的啟動腳本都不算；MCP 這條只適用 Claude 與 Codex）；但 Codex 紀錄顯示回合已結束、之後沒有新回合或使用者輸入，狀態卻仍是 `active` 時，依上表催促與升級。晚到的同回合完成事件不會推翻回合已結束的判斷，但紀錄變動仍會讓計時歸零。紀錄讀不到或末段找不到回合邊界時，維持原本判斷；Claude 不變。
 等核准與其他非輸入框畫面可能在 `hcom term --json` 回傳 `input_text=null`；監控會把它當成「沒有輸入文字」，不會因此略過 `blocked` 通知。

@@ -40,6 +40,7 @@ PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 QUOTA_CLEAR_ROUNDS = 2
 QUOTA_REPEAT_SECONDS = 20 * 60
+LOGIN_CLEAR_ROUNDS = 2
 CAPACITY_CONTINUE_SECONDS = 5 * 60
 FAILURE_REPEAT_SECONDS = 60 * 60
 ORCHESTRATOR_GONE_SECONDS = 60 * 60
@@ -104,6 +105,8 @@ CLIENT_PROFILES = {
 }
 # Raw crash output starts at column 0; client replies and tool output are prefixed or indented.
 CRASH = re.compile(r'^(?:[A-Za-z].*\bpanicked\b|(?:stack )?backtrace\b)', re.IGNORECASE)
+LOGIN_LINE = re.compile(r'^[●⎿\s]*Login expired\s+·\s+Please run /login\b', re.IGNORECASE)
+LOGIN_STATUS_CONTEXT = 'failure:authentication_failed'
 CRASH_ACTION = ('inspect the agent screen, then resume the same agent or replace it and '
                 'resend its task')
 RECOVERY_ACTIONS = {
@@ -136,6 +139,8 @@ class Observation(NamedTuple):
     client: str = 'unknown'
     model: str = 'unknown'
     quota_issue: object = None
+    # Login failure text (str) when the agent's login expired; only the user can fix it.
+    login_issue: object = None
     codex_turn_finished: object = None
     nudge_only: bool = False
     keepalive_only: bool = False
@@ -254,6 +259,31 @@ def quota_notice(observation, unchanged_minutes=None, continue_minutes=None,
     kind = 'notify-user' if observation.is_orchestrator else 'notify-orchestrator'
     label = {'model-capacity': '模型滿載', 'crash': '程式崩潰'}.get(issue.kind, '額度不足')
     return Action(kind, observation.agent, message, category='quota', label=label)
+
+
+def login_notice(observation):
+    fix = ('run /login in that agent session' if observation.client.lower() == 'claude'
+           else 'log the agent in again')
+    message = (f'LAT stall watcher: login failure for agent {observation.agent}. Client: '
+               f'{observation.client}. Model: {observation.model}. Matched: '
+               f'{observation.login_issue}. Only the user can fix this: {fix}. No terminal '
+               'nudge was injected and no login was attempted. Action needed: the user '
+               f'logs in again ({fix}); the watcher resumes normal checks afterwards.')
+    kind = 'notify-user' if observation.is_orchestrator else 'notify-orchestrator'
+    return Action(kind, observation.agent, message, category='login', label='登入失效')
+
+
+def login_dedupe(previous, issue):
+    """Keep one notice per login-failure episode; it re-arms after clear screens."""
+    previous = previous or {}
+    notified = previous.get('login_notified', False)
+    clear_rounds = 0
+    if issue is None:
+        if notified:
+            clear_rounds = previous.get('login_clear_rounds', 0) + 1
+        if clear_rounds >= LOGIN_CLEAR_ROUNDS:
+            notified, clear_rounds = False, 0
+    return {'login_notified': notified, 'login_clear_rounds': clear_rounds}
 
 
 def quota_dedupe(previous, issue):
@@ -631,6 +661,28 @@ def detect_screen_quota(lines, client, claude_notice=None):
     return None
 
 
+def detect_screen_login(lines, client):
+    """Match Claude's login-expired error only while it is the last thing on the screen."""
+    if client.lower() != 'claude' or not isinstance(lines, list):
+        return None
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
+        if isinstance(line, str) and LOGIN_LINE.search(line):
+            later = [text for text in lines[index + 1:] if isinstance(text, str)]
+            if not claude_primary_is_current(lines, index) or any(
+                    re.search(r'^[✢✳✶✻✽·*]\s+.*esc to interrupt', text.strip()) for text in later):
+                return None
+            return screen_message(lines, index)
+    return None
+
+
+def hcom_login_issue(info):
+    context = info.get('status_context', info.get('context', ''))
+    if info.get('status') == 'inactive' and context == LOGIN_STATUS_CONTEXT:
+        return f'inactive ({LOGIN_STATUS_CONTEXT})'
+    return None
+
+
 def spawn_capacity_dir():
     base = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state'))
     return base / 'hcom-spawn/capacity'
@@ -895,7 +947,9 @@ def decide(previous, observation, now):
         progressed = False
     quota_cleared = bool(previous and previous.get('quota_active')
                          and observation.quota_issue is None)
-    reset = progressed or observation.wait_released or quota_cleared
+    login_cleared = bool(previous and previous.get('login_active')
+                         and observation.login_issue is None)
+    reset = progressed or observation.wait_released or quota_cleared or login_cleared
     if reset:
         state = {
             'fingerprint': fingerprint,
@@ -944,6 +998,8 @@ def decide(previous, observation, now):
         state.pop('prompt_recovery_uncertain', None)
     actions = ()
     state.update(quota_dedupe(previous, observation.quota_issue))
+    state.update(login_dedupe(previous, observation.login_issue))
+    state['login_active'] = observation.login_issue is not None
     # A Continue episode ends on new output or another error, not on a passing clear screen.
     new_output = observation.capacity_output
     other_error = (observation.quota_issue is not None
@@ -1006,7 +1062,12 @@ def decide(previous, observation, now):
     capacity_continue = capacity and observation.status != 'inactive' and not input_has_text
     covered = capacity and observation.capacity_covered
     continue_at = state.get('capacity_continue_at')
-    if observation.quota_issue is not None and not state['quota_notified']:
+    if observation.login_issue is not None:
+        # Never nudge a logged-out agent; tell the upper layer once.
+        if not state['login_notified']:
+            actions = (login_notice(observation),)
+            state['login_notified'] = True
+    elif observation.quota_issue is not None and not state['quota_notified']:
         if covered:
             # spawn-watch already typed Continue or told the spawner; only repeats remain.
             state['quota_notified'] = True
@@ -1122,7 +1183,10 @@ def decide(previous, observation, now):
             state['orchestrator_notice_task_revision'] = observation.task_card_revision
     if actions:
         state['decision'] = ('quota-issue' if actions[0].category == 'quota'
+                             else 'login-issue' if actions[0].category == 'login'
                              else actions[0].kind)
+    elif observation.login_issue is not None:
+        state['decision'] = 'login-issue'
     elif covered:
         state['decision'] = 'capacity-covered'
     elif state.get('orchestrator_handled'):
@@ -1771,6 +1835,8 @@ def keepalive_blocker(declaration, observation, now, busy=False):
         return 'no-wait'
     if observation.quota_issue and observation.quota_issue.kind == 'rate-limit':
         return 'rate-limited'
+    if observation.login_issue:
+        return 'login-expired'
     if busy:
         return 'other-action'
     if observation.status != 'listening':
@@ -2215,10 +2281,11 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
 
 def observe(workspace, decisions, orchestrator, agent, info, card=None, *, processes):
     status_issue = hcom_quota_issue(info)
+    login_status = hcom_login_issue(info)
     try:
         terminal = run_json(['hcom', 'term', agent, '--json', '--name', orchestrator])
     except (OSError, ValueError):
-        if status_issue is None:
+        if status_issue is None and login_status is None:
             raise
         terminal = {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': []}
     if not isinstance(terminal, dict):
@@ -2240,13 +2307,15 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
     menu_screen = claude_quota_menu(terminal) if client.lower() == 'claude' else ()
     if menu_screen:
         screen_issue = QuotaIssue('rate-limit', 'Claude rate-limit-options menu')
+    login_issue = login_status or detect_screen_login(lines, client)
     prompt_empty = terminal.get('prompt_empty')
     prompt_readable = isinstance(prompt_empty, bool)
     if not prompt_readable:
         # A menu opened at a listening Claude prompt (/model, /rate-limit-options) has no
         # input box; typing there would pick a menu entry.
         listening_claude = client.lower() == 'claude' and info.get('status') == 'listening'
-        if info.get('status') == 'blocked' or screen_issue or status_issue or listening_claude:
+        if info.get('status') == 'blocked' or screen_issue or status_issue or login_issue \
+                or listening_claude:
             prompt_empty = False
         else:
             raise ValueError(f'hcom term omitted boolean prompt_empty for {agent}')
@@ -2304,6 +2373,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
         client=client,
         model=model,
         quota_issue=quota_issue,
+        login_issue=login_issue,
         codex_turn_finished=(codex_turn_finished(transcript)
                              if client.lower() == 'codex' else None),
         prompt_readable=prompt_readable,
@@ -2667,6 +2737,9 @@ def roll_back(action, state):
             state['capacity_continue_notified'] = False
         else:
             state['quota_notified'] = False
+        return
+    if action.category == 'login':
+        state['login_notified'] = False
         return
     if action.category == 'unreadable-screen':
         # The notice retries next cycle; the log line is already written.
@@ -3191,7 +3264,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
             previous['last_seen_at'] = now
             states[agent] = previous
         disappeared = (info is None or (
-            info.get('status') == 'inactive' and hcom_quota_issue(info) is None))
+            info.get('status') == 'inactive' and hcom_quota_issue(info) is None
+            and hcom_login_issue(info) is None))
         if disappeared:
             unavailable_alarm(workspace, orchestrator, agent, previous, now, log)
             states[agent] = previous
@@ -3832,6 +3906,8 @@ def cache_status(info, state, now=None):
         reason, possible = 'cache-expired' if cache.get('warm') is True else 'cache-cold', False
     elif hcom_quota_issue(info):
         reason, possible = 'rate-limited', False
+    elif hcom_login_issue(info):
+        reason, possible = 'login-expired', False
     elif status != 'listening':
         reason, possible = f'status-{status}', False
     elif (not check or str(check.get('reason')).startswith('status-')
