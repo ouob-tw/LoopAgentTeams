@@ -2437,11 +2437,57 @@ def same_process(claim, identity):
     return claim['pid'] == identity['pid'] and claim['start'] == identity['start']
 
 
-def claim_orchestrator(workspace, orchestrator, identity, now):
+def watcher_processes(proc_root=Path('/proc')):
+    """Running `lat-watch.py run` processes outside this process group, by orchestrator:
+    one entry per process group (pid, start, pgid, workspace), oldest group first.
+
+    Watchers started before claims existed (#682) never write one; this finds them too.
+    """
+    own, groups = os.getpgrp(), {}
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            parts = [part.decode() for part in (entry / 'cmdline').read_bytes().split(b'\0')
+                     if part]
+            index = next(i for i, part in enumerate(parts) if Path(part).name == 'lat-watch.py')
+            args = parts[index + 1:]
+            if not args or args[0] != 'run':
+                continue
+            options = dict(zip(args[1::2], args[2::2]))
+            pid = int(entry.name)
+            pgid = os.getpgid(pid)
+            start = process_starttime(pid)
+        except (OSError, ValueError, StopIteration, UnicodeDecodeError):
+            continue
+        name = options.get('--orchestrator')
+        if pgid == own or start is None or not name:
+            continue
+        found = groups.setdefault(name, {})
+        if pgid not in found or start < found[pgid]['start']:
+            found[pgid] = dict(pid=pid, start=start, pgid=pgid, session=None,
+                               workspace=options.get('--workspace'))
+    return {name: sorted(found.values(), key=lambda item: (item['start'], item['pgid']))
+            for name, found in groups.items()}
+
+
+def older_watcher(orchestrator, processes):
+    """The oldest other watcher process for orchestrator started before this one's process
+    group; the oldest one acts, so two new watchers never both wait for each other."""
+    own = os.getpgrp()
+    key = (process_starttime(own) or process_starttime(os.getpid()) or 0, own)
+    older = [item for item in processes.get(orchestrator, ())
+             if (item['start'], item['pgid']) < key]
+    return older[0] if older else None
+
+
+def claim_orchestrator(workspace, orchestrator, identity, now, processes):
     """Make this process the one watcher that nudges orchestrator, host-wide.
 
-    Returns the claim of another live watcher process that already holds it (this one then
-    stays quiet), else None. A claim whose process ended is taken over.
+    Returns the claim of another live watcher process that already holds it, or an older
+    watcher process for the same orchestrator that holds no claim (one started before
+    claims existed); this one then stays quiet. Else claims it and returns None. A claim
+    whose process ended is taken over.
     """
     path = claim_path(orchestrator)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2450,16 +2496,23 @@ def claim_orchestrator(workspace, orchestrator, identity, now):
         current = live_claim(path)
         if current is not None and not same_process(current, identity):
             return current
+        older = older_watcher(orchestrator, processes)
+        if older is not None:
+            return older
         if current is None or current.get('workspace') != str(workspace):
             write_object(path, {**identity, 'orchestrator': orchestrator,
                                 'workspace': str(workspace), 'claimed_at': now})
     return None
 
 
-def other_watcher(agent, identity):
-    """The live claim of another watcher process that nudges agent as its own orchestrator."""
+def other_watcher(agent, identity, processes):
+    """The live claim, or else the running process, of another watcher that nudges agent as
+    its own orchestrator."""
     claim = live_claim(claim_path(agent))
-    return None if claim is None or same_process(claim, identity) else claim
+    if claim is not None and not same_process(claim, identity):
+        return claim
+    running = processes.get(agent)
+    return running[0] if running else None
 
 
 def claim_summary(claim):
@@ -2468,10 +2521,10 @@ def claim_summary(claim):
 
 def log_claim_once(log, record):
     """Log a duplicate-watcher or claim-failure line only when it differs from the last one."""
-    key = [record['decision'], record.get('holder'), record.get('error')]
-    if CLAIM_LOGGED.get(str(log)) != key:
+    slot, key = (str(log), record['decision']), [record.get('holder'), record.get('error')]
+    if CLAIM_LOGGED.get(slot) != key:
         append_log(log, record)
-        CLAIM_LOGGED[str(log)] = key
+        CLAIM_LOGGED[slot] = key
 
 
 def trace_nudge(log, at, agent, kind, wait_active, decision, watcher):
@@ -3273,13 +3326,13 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
     path = state_path(workspace, orchestrator)
     log = path.with_name('watch.jsonl')
     identity = watcher_identity(watch_dir(workspace))
+    watchers = watcher_processes()
     try:
-        holder = claim_orchestrator(workspace, orchestrator, identity, now)
-        if holder is None:
-            CLAIM_LOGGED.pop(str(log), None)
+        holder = claim_orchestrator(workspace, orchestrator, identity, now, watchers)
+        CLAIM_LOGGED.pop((str(log), 'watcher-claim-failed'), None)
     except (OSError, ValueError) as error:
-        # Without the host claim this watcher still watches (as before #682) rather than none.
-        holder = None
+        # Without the host claim the oldest running watcher process still acts alone.
+        holder = older_watcher(orchestrator, watchers)
         log_claim_once(log, {'at': now, 'agent': orchestrator,
                              'decision': 'watcher-claim-failed', 'watcher': identity,
                              'actions': [], 'error': f'{type(error).__name__}: {error}'})
@@ -3290,6 +3343,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                              'watcher': identity, 'holder': claim_summary(holder),
                              'actions': []})
         return None
+    CLAIM_LOGGED.pop((str(log), 'duplicate-watcher'), None)
     paused = read_hcom_pauses(lambda path, error: append_log(log, {
         'at': now, 'decision': 'pause-record-invalid', 'path': str(path),
         'error': error, 'actions': [],
@@ -3486,7 +3540,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                                  'wait': saved_wait})
             # An agent that orchestrates its own round has its own watcher, which sees the
             # waits it declares in its workspace; that watcher alone nudges it (#682).
-            owner = other_watcher(agent, identity) if agent != orchestrator else None
+            owner = (other_watcher(agent, identity, watchers) if agent != orchestrator
+                     else None)
             judged = previous
             if owner is not None and previous and previous.get('nudged'):
                 # End this watcher's stall episode and its escalations; if the owner ends,

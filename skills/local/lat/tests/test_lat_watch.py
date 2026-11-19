@@ -6557,28 +6557,45 @@ esac
             'esac\n')
 
     def injected(self, agent):
+        if not self.hcom_log.exists():
+            return 0  # A quiet watcher never ran hcom.
         return sum(line.startswith(f'term inject {agent} ')
                    for line in self.hcom_log.read_text().splitlines())
 
-    def start_watcher(self, workspace, orchestrator, tasks, decisions):
-        """Another watcher process: one real cycle (claiming orchestrator), then idle."""
-        code = ('import importlib.util, sys, time\n'
+    def start_watcher(self, workspace, orchestrator, tasks, decisions, times=(0,), env=None):
+        """Another watcher process in its own process group: real cycles at `times`
+        (claiming orchestrator), then idle until killed."""
+        code = ('import importlib.util, json, sys, time\n'
                 'from pathlib import Path\n'
                 'spec = importlib.util.spec_from_file_location("lat_watch", sys.argv[1])\n'
                 'watch = importlib.util.module_from_spec(spec)\n'
                 'spec.loader.exec_module(watch)\n'
-                'watch.run_cycle(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]),\n'
-                '                sys.argv[5], now=0)\n'
+                'for now in json.loads(sys.argv[6]):\n'
+                '    watch.run_cycle(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]),\n'
+                '                    sys.argv[5], now=now)\n'
                 'print("ready", flush=True)\n'
                 'time.sleep(300)\n')
         process = subprocess.Popen(
             [sys.executable, '-c', code, str(SCRIPT), str(workspace), str(tasks),
-             str(decisions), orchestrator],
-            env=self.env, stdout=subprocess.PIPE, text=True)
+             str(decisions), orchestrator, json.dumps(list(times))],
+            env=env or self.env, stdout=subprocess.PIPE, text=True, start_new_session=True)
         self.addCleanup(process.stdout.close)
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
         self.assertEqual(process.stdout.readline().strip(), 'ready')
+        return process
+
+    def start_old_watcher(self, orchestrator, workspace=None):
+        """A watcher from before claims (#682): the `lat-watch.py run` command line in its
+        own process group, never writing a claim."""
+        workspace = workspace or self.work
+        process = subprocess.Popen(
+            [sys.executable, '-c', 'import time; time.sleep(300)', str(SCRIPT), 'run',
+             '--workspace', str(workspace), '--orchestrator', orchestrator,
+             '--tasks', str(self.tasks), '--decisions', str(workspace / '.lat/decisions')],
+            start_new_session=True)
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
         return process
 
     def stop_watcher(self, process):
@@ -6691,6 +6708,69 @@ esac
     def worker_notices(self):
         return [line for line in self.hcom_log.read_text().splitlines()
                 if line.startswith('send ') and 'agent worker-open' in line]
+
+    def test_new_watcher_stays_quiet_beside_an_old_watcher_without_a_claim(self):
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        old = self.start_old_watcher('orch')
+        # A newer watcher for orch runs half an hour of cycles while the old one lives.
+        new = self.start_watcher(self.work, 'orch', self.tasks, decisions,
+                                 times=range(0, 1801, 60))
+        self.stop_watcher(new)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (0, 0))
+        [duplicate] = [record for record in self.watch_records()
+                       if record.get('decision') == 'duplicate-watcher']
+        self.assertEqual((duplicate['holder']['pid'], duplicate['watcher']['pid']),
+                         (old.pid, new.pid))
+        self.assertFalse((self.root / 'state/lat/watchers/orch.json').exists())
+        # The old one ended: a watcher started after that acts and claims.
+        self.stop_watcher(old)
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            # The quiet watcher saved no state, so the idle clock starts now.
+            for now in range(1860, 2461, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (1, 1))
+        claim = json.loads((self.root / 'state/lat/watchers/orch.json').read_text())
+        self.assertEqual(claim['pid'], os.getpid())
+
+    def test_unwritable_claim_still_defers_to_an_older_watcher(self):
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        blocked = self.root / 'state-file'
+        blocked.write_text('not a directory')
+        old = self.start_old_watcher('orch')
+        new = self.start_watcher(self.work, 'orch', self.tasks, decisions,
+                                 times=range(0, 1801, 60),
+                                 env=dict(self.env, XDG_STATE_HOME=str(blocked)))
+        self.stop_watcher(new)
+        self.stop_watcher(old)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (0, 0))
+        decisions_logged = [record.get('decision') for record in self.watch_records()]
+        self.assertEqual(decisions_logged.count('watcher-claim-failed'), 1)
+        self.assertEqual(decisions_logged.count('duplicate-watcher'), 1)
+
+    def test_agent_with_an_old_watcher_of_its_own_is_not_nudged_here(self):
+        self.sender_environment()
+        other = self.root / 'other'
+        (other / '.git').mkdir(parents=True)
+        own = self.start_old_watcher('worker-open', other)
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            for now in range(0, 1201, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+            state = self.watch_state()['worker-open']
+            self.assertEqual(self.injected('worker-open'), 0)
+            self.assertEqual((state['decision'], state['nudge_owner']['pid'],
+                              state['nudge_owner']['workspace']),
+                             ('nudge-left-to-own-watcher', own.pid, str(other)))
+            self.stop_watcher(own)
+            watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=1260)
+        self.assertEqual(self.injected('worker-open'), 1)
 
     def test_agent_with_its_own_watcher_is_nudged_only_by_that_watcher(self):
         # worker-open runs its own round in another workspace (#680: a sub-orchestrator
