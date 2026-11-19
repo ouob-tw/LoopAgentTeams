@@ -34,7 +34,8 @@ NAME = re.compile(r'^[A-Za-z0-9_-]+$')
 SENDER = 'hcom-spawn'
 BATCH_WAIT = 90        # seconds to wait for the launch to show up in hcom events
 ARGS_WAIT = 10         # seconds to wait for a new agent's command line to be readable
-SCREEN_WINDOW = 20     # seconds of screen reading after the agent is ready
+SCREEN_WINDOW = 20     # seconds of screen reading before the session log fills the gaps
+LIST_RETRY = 5         # seconds between `hcom list` lookups of a session log path not known yet
 DEADLINE = 180         # seconds after the launch to give up on confirming
 POLL = 0.3
 STOP_POLL = 5
@@ -44,6 +45,11 @@ ITEMS = ('model', 'effort', 'permission')
 EXPECTED_PERMISSION = {'claude': 'bypass permissions on', 'codex': 'YOLO'}
 EFFORTS = 'none|minimal|low|medium|high|xhigh|max'
 CLAUDE_BANNER = re.compile(r'\b([A-Z][a-z]+ \d+(?:\.\d+)?) with (\w+) effort')
+# Claude's status bar, e.g. `  Opus 5.5 M · ~/work`: only the model name is read, and only for
+# known model families, so a conversation line like `  Step 2 A · ...` is never taken for a
+# model; other models come from the session log. The effort initial (L, M, H, X...) is too
+# short to tell levels apart and is ignored.
+CLAUDE_STATUS = re.compile(r'^\s*((?:Opus|Sonnet|Haiku|Fable) \d+(?:\.\d+)?) [A-Z] · ')
 CLAUDE_EFFORT = re.compile(rf'\b({EFFORTS}) · /effort')
 CLAUDE_MODES = re.compile(r'(bypass permissions on|auto mode on|accept edits on|plan mode on)')
 CODEX_STATUS = re.compile(rf'^\s*([^\s:│•]+(?: [^\s:│•]+){{0,1}}?) ({EFFORTS}) · ')
@@ -414,6 +420,8 @@ def read_screen(tool, lines, seen):
             if match := CLAUDE_BANNER.search(line):
                 note('model', match.group(1))
                 note('effort', match.group(2))
+            if match := CLAUDE_STATUS.search(line):
+                note('model', match.group(1))
             if match := CLAUDE_EFFORT.search(line):
                 note('effort', match.group(1))
             if match := CLAUDE_MODES.search(line):
@@ -475,7 +483,7 @@ def report(tool, full, expected, seen, reason, unattributed=None):
     they were started with. Being unattributed alone is no finding, so without problems it
     only goes to watch.log.
     """
-    unknown, problems = [], []
+    unknown, problems, differs = [], [], False
     for item in ITEMS:
         if expected[item] is None:
             value, source = seen.get(item, ('nothing', 'screen'))
@@ -485,6 +493,7 @@ def report(tool, full, expected, seen, reason, unattributed=None):
         elif not matches(tool, item, expected[item], seen[item][0]):
             value, source = seen[item]
             problems.append(f'{item}: expected {expected[item]}, {source} shows {value}')
+            differs = True
     if unattributed and not problems and (unattributed == UNREADABLE_ARGS or not unknown):
         log(f'{full} ({tool}): {unattributed}.' + (f" {'; '.join(unknown)}" if unknown else ''))
         return None
@@ -495,7 +504,9 @@ def report(tool, full, expected, seen, reason, unattributed=None):
         return (f'hcom-spawn launch check: could not tell which launch command started {full} '
                 f'({tool}): {unattributed}. ' + '; '.join(problems)
                 + f'. Look at it with `hcom term {full}`; it was not stopped.')
-    return (f'hcom-spawn launch check: {full} ({tool}) does not match its launch command. '
+    verdict = ('does not match its launch command' if differs
+               else 'could not be checked against its launch command')
+    return (f'hcom-spawn launch check: {full} ({tool}) {verdict}. '
             + '; '.join(problems)
             + f'. Look at it with `hcom term {full}`; it was not stopped.')
 
@@ -751,13 +762,18 @@ def capacity_step(name, full, spawner):
 def check(tool, agents, expected, watched, launch_id, start, unattributed=None, batch=None):
     """Read screens (then session logs) until every item is known or time runs out.
 
+    The session log fills what the screen did not show once the screen has been readable for
+    SCREEN_WINDOW (ready or busy alike), and for every agent in the last SCREEN_WINDOW before
+    the deadline. The reason given for unconfirmed items is the latest state: "could not be
+    read" only while no screen read has succeeded.
     Agents that stop meanwhile get no report, unless hcom recorded their launch as failed;
     a failed launch, or an agent that never got ready and is not in a readable `hcom list`
     at the end, gets failed_launch's notice instead of the check result.
     """
     seen = {name: {} for name in agents}
     reasons = {name: 'agent did not become ready' for name in agents}
-    ready_at, logs, pending, stopped = {}, {}, set(agents), set()
+    ready_at, readable_at, logs, looked_up = {}, {}, {}, {}
+    pending, stopped = set(agents), set()
     while pending and clock() - start < DEADLINE:
         release_stopped(watched)
         check_capacity(watched)
@@ -772,19 +788,22 @@ def check(tool, agents, expected, watched, launch_id, start, unattributed=None, 
                 screen = None
             if screen:
                 read_screen(tool, [str(line) for line in screen.get('lines', [])], seen[name])
+                readable_at.setdefault(name, clock())
+                reasons[name] = 'not shown on the screen or in the session log'
                 if screen.get('ready'):
                     ready_at.setdefault(name, clock())
-                    reasons[name] = 'not shown on the screen or in the session log'
-            elif name not in ready_at:
+            elif name not in readable_at:
                 reasons[name] = 'screen could not be read: ' + (out.strip() or 'no output')[:120]
-            if name in ready_at and clock() - ready_at[name] > SCREEN_WINDOW:
-                if name not in logs:
+            if ((name in readable_at and clock() - readable_at[name] > SCREEN_WINDOW)
+                    or clock() - start > DEADLINE - SCREEN_WINDOW):
+                if not logs.get(name) and clock() - looked_up.get(name, -LIST_RETRY) >= LIST_RETRY:
+                    looked_up[name] = clock()
                     _, listed = hcom('list', full, '--json')
                     try:
                         logs[name] = json.loads(listed).get('transcript_path') or ''
                     except (ValueError, AttributeError):
                         logs[name] = ''
-                if logs[name]:
+                if logs.get(name):
                     read_session_log(tool, logs[name], seen[name])
             if all(item in seen[name] for item in ITEMS):
                 pending.discard(name)
