@@ -241,7 +241,7 @@ Codex 的觀察紀錄以 `codex_turn_finished` 表示回合已結束（`true`）
 
 一個 Agent 只由一支監控催促：每支監控在主機的 `$XDG_STATE_HOME/lat/watchers/<主控 HCOM 名稱>.json`（未設定時在 `~/.local/state`）登記自己（pid、啟動時間、session、工作區）。同一主控有多支監控在跑時，只由最早啟動的那支出手；其他的整輪不出手，`watch.jsonl` 記一次 `duplicate-watcher`（含 `holder`），等它結束才接手。監控每輪查主機上還在跑的 `lat-watch.py run --orchestrator <名稱>` 程序（只算同一份主機狀態目錄的），所以沒登記的舊版監控也算；登記檔寫不進去時（記一次 `watcher-claim-failed`）也照這個規則。任務卡上的 Agent 若自己也是主控、有自己的監控（登記檔或還在跑的監控程序；例如在另一個工作區開的子主控，等待登記在那邊），這裡不送一般催促、也不再為先前的催促升級通知，狀態記 `nudge-left-to-own-watcher` 與 `nudge_owner`；那支監控結束後照原規則恢復。
 
-每次實際送出的催促（含停住、到期、鬧鐘、保溫與工作總表催促）在打進去的當下就另記一筆到 `$XDG_STATE_HOME/lat/nudges/<收件 Agent>.jsonl`，不論哪個工作區的監控送出；`nudges.jsonl` 與這份每筆都含送出監控 `watcher`（pid、啟動時間、程序群組、session）、當時的 `wait_active` 與 `decision`、所在記錄檔 `log`。查「收到催促卻找不到紀錄」時先看這份。
+監控每次替 Agent 打字送出（停住 `stall`、背景指令 `background`、等待到期、鬧鐘、保溫、工作總表催促，以及額度選單後的 `quota-continue`、Codex 滿載的 `capacity-continue`）都在送出的當下另記一筆到 `$XDG_STATE_HOME/lat/nudges/<收件 Agent>.jsonl`，不論哪個工作區的監控送出；其中催促類也記進 `nudges.jsonl`。每筆含送出監控 `watcher`（pid、啟動時間、程序群組、session）、當時的 `wait_active` 與 `decision`、所在記錄檔 `log`。session 取自監控目錄裡指向本程序群組的 `<session>.pid`，沒有時取該主控 active 的 session 紀錄；手動啟動、沒有 active session 的監控才會是空的。這份紀錄寫入失敗只在監控的錯誤輸出留一行，不撤回已送出的內容（已知限制）。查「收到催促卻找不到紀錄」時先看這份。
 
 ## 通知使用者的情況
 

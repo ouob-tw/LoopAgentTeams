@@ -903,6 +903,8 @@ def recover_claude_quota(observation, previous, state, orchestrator, workspace, 
                 and terminal.get('input_text') == QUOTA_CONTINUE)
         record('verified', prompt=QUOTA_CONTINUE)
         key('continue-Enter', enter=True)
+        trace_nudge(log, now, observation.agent, 'quota-continue', observation.wait_active,
+                    state.get('decision') or 'quota-recovery', watcher_identity(log))
         episode['completed'] = True
         record('completed', text=QUOTA_CONTINUE)
     except (OSError, ValueError) as error:
@@ -2391,8 +2393,9 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
     )
 
 
-# Nudges that are not about a stall: an alarm the agent set itself and the cache keep-alive.
-UNPROMPTED_NUDGES = ('alarm-ring', 'cache-keepalive')
+# Typed sends that are not about a stall (kept out of NUDGE_LOG, still traced): an alarm the
+# agent set itself, the cache keep-alive and the Continue typed after a quota or capacity error.
+UNPROMPTED_NUDGES = ('alarm-ring', 'cache-keepalive', 'capacity-continue', 'quota-continue')
 NUDGE_LOG = 'nudges.jsonl'
 # Last 'duplicate-watcher' or 'watcher-claim-failed' line logged per watch log (#682).
 CLAIM_LOGGED = {}
@@ -2413,16 +2416,32 @@ def process_state_dir(entry):
     return host_state_dir('')
 
 
-def watcher_identity(watch_root=None):
-    """This process as a nudge sender: pid, start time, process group and the LAT session
-    whose <session>.pid file in watch_root names that process group."""
+def watcher_identity(log=None):
+    """This process as a nudge sender: pid, start time, process group and LAT session.
+
+    log is the watcher's <lat>/watch/<orchestrator>/watch.jsonl. The session is the
+    <session>.pid file there naming this process group; else (the launcher writes that
+    file just after starting the watcher, and older records keep it in their worktree) the
+    active session record of that orchestrator. None only for a watcher started by hand
+    with no active session.
+    """
     pid, pgid = os.getpid(), os.getpgrp()
     identity = {'pid': pid, 'start': process_starttime(pid), 'pgid': pgid, 'session': None}
-    for pid_path in sorted(Path(watch_root).glob('*.pid')) if watch_root else ():
+    if log is None or Path(log).parent.parent.name != 'watch':
+        return identity
+    root, orchestrator = Path(log).parent.parent, Path(log).parent.name
+    for pid_path in sorted(root.glob('*.pid')):
         with contextlib.suppress(OSError, ValueError):
             if int(pid_path.read_text()) == pgid:
                 identity['session'] = pid_path.stem
-                break
+                return identity
+    for record_path in sorted((root.parent / 'sessions').glob('*.json')):
+        with contextlib.suppress(OSError, ValueError):
+            record = json.loads(record_path.read_text())
+            if (isinstance(record, dict) and record.get('status') == 'active'
+                    and record.get('hcom_name') == orchestrator):
+                identity['session'] = record.get('session_id') or record_path.stem
+                return identity
     return identity
 
 
@@ -3134,7 +3153,7 @@ def check_ledger(location, saved, orchestrator, workspace, observe_agent, paused
         if kind in ('start', 'estimate'):
             trace_nudge(log, now, item['agent'], LEDGER_DECISIONS[kind],
                         delivery.get('wait_active'), LEDGER_DECISIONS[kind],
-                        watcher_identity(log.parent.parent))
+                        watcher_identity(log))
         entry['attempts'] += 1
         entry.pop('error', None)
         entry.update(status='sent', sent_at=now)
@@ -3351,7 +3370,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
     orchestrator = valid_name(orchestrator)
     path = state_path(workspace, orchestrator)
     log = path.with_name('watch.jsonl')
-    identity = watcher_identity(watch_dir(workspace))
+    identity = watcher_identity(log)
     watchers = watcher_processes()
     try:
         holder = claim_orchestrator(workspace, orchestrator, identity, now, watchers)
@@ -3629,11 +3648,19 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
             results = []
 
             def deliver(action):
-                """Perform action; trace a nudge as soon as it is typed (#682)."""
+                """Perform action; trace each text typed into the agent as soon as it is
+                sent (#682)."""
                 delivery = perform(action, orchestrator, workspace)
                 if action.kind == 'nudge':
-                    trace_nudge(log, now, agent, action.category or 'stall',
-                                observation.wait_active, state.get('decision'), identity)
+                    kind = action.category or ('background' if action.text == BACKGROUND_NUDGE
+                                               else 'stall')
+                elif (action.kind == 'capacity-continue'
+                      and delivery.get('delivery') != 'skipped'):
+                    kind = 'capacity-continue'
+                else:
+                    return delivery
+                trace_nudge(log, now, agent, kind, observation.wait_active,
+                            state.get('decision'), identity)
                 return delivery
 
             for action in actions:

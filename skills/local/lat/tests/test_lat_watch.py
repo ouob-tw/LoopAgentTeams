@@ -6811,6 +6811,137 @@ esac
                 watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
         self.assertEqual(self.injected('worker-open'), 1)
 
+    def scenario_capacity_continue(self):
+        """A Codex agent on the model-capacity screen gets Continue typed by run_cycle."""
+        lines = json.dumps(self.CAPACITY_LINES)
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'case "$1" in\n'
+            'list) [ "$2" = worker-open ] && exit 0\n'
+            '  printf \'%s\\n\' \'[{"name":"orch","status":"listening"},'
+            '{"name":"worker-open","status":"active","tool":"codex"}]\';;\n'
+            'term) [ "$2" = inject ] || printf \'%s\\n\' '
+            f'\'{{"ready":true,"prompt_empty":true,"input_text":"","lines":{lines}}}\';;\n'
+            'events) printf \'%s\\n\' \'{"id":1,"type":"status"}\';;\n'
+            'esac\n')
+        self.run_cycles(load_watch(), 0, 60)
+        self.assertEqual(len(self.typed_sends(self.hcom_log)), 1)
+
+    @staticmethod
+    def typed_sends(hcom_log):
+        """(agent, text) for every text the fake hcom saw typed and submitted (--enter)."""
+        sends = []
+        for line in hcom_log.read_text().splitlines():
+            if line.startswith('term inject ') and ' --enter --name ' in line:
+                agent, _, rest = line[len('term inject '):].partition(' ')
+                text = rest.rpartition(' --enter --name ')[0]
+                if text:
+                    sends.append((agent, text))
+        return sends
+
+    def test_watcher_session_comes_from_its_pid_file_or_active_session_record(self):
+        watch = load_watch()
+        log = self.work / '.lat/watch/orch/watch.jsonl'
+        root = log.parent.parent
+        root.mkdir(parents=True)
+        sessions = self.work / '.lat/sessions'
+        sessions.mkdir(parents=True)
+        # Hand-started watcher: nothing names it.
+        self.assertIsNone(watch.watcher_identity(log)['session'])
+        # Before the launcher writes the pid file (or with it in an older worktree), the
+        # orchestrator's active session record names the session.
+        (root / 'other.pid').write_text(str(os.getpgrp() + 1))
+        (sessions / 'ended.json').write_text(json.dumps(
+            dict(status='ended', hcom_name='orch', session_id='ended')))
+        (sessions / 's-rec.json').write_text(json.dumps(
+            dict(status='active', hcom_name='orch', session_id='s-rec')))
+        self.assertEqual(watch.watcher_identity(log)['session'], 's-rec')
+        (root / 's-pid.pid').write_text(str(os.getpgrp()))
+        identity = watch.watcher_identity(log)
+        self.assertEqual((identity['session'], identity['pid'], identity['pgid']),
+                         ('s-pid', os.getpid(), os.getpgrp()))
+
+    def test_every_typed_send_has_exactly_one_trace_record(self):
+        """AC1 (#682): run each kind of send through the real delivery path and match every
+        submitted text one-to-one with a trace record naming this watcher and its session."""
+        watch = load_watch()
+
+        def kind(text):
+            prefixes = [(watch.NUDGE, 'stall'), (watch.BACKGROUND_NUDGE, 'background'),
+                        (watch.KEEPALIVE, 'cache-keepalive'),
+                        (watch.QUOTA_CONTINUE, 'quota-continue'),
+                        ('[lat-watch] Your wait for ', 'wait-expiry'),
+                        ('[lat-watch] Your alarm', 'alarm-ring')]
+            if text == watch.CAPACITY_CONTINUE:
+                return 'capacity-continue'
+            if text.startswith('[lat-watch] Ledger item'):
+                return ('ledger-start-missing' if 'was assigned to you' in text
+                        else 'ledger-estimate-passed')
+            return next((name for prefix, name in prefixes if text.startswith(prefix)),
+                        f'unmapped: {text[:60]}')
+
+        scenarios = [
+            (WatchCliTests, 'test_valid_pending_wait_gets_no_nudge_across_cycles_until_released'),
+            (WatchCliTests, 'test_orchestrator_background_command_cycle_nudges_then_notifies_the_user'),
+            (WatchCliTests, 'test_alarm_successful_ring_save_failure_does_not_ring_again'),
+            (WatchCliTests, 'scenario_capacity_continue'),
+            (KeepaliveCycleTests, 'test_agent_wait_keepalive_is_sent_once_and_reply_changes_nothing'),
+            (LedgerDueTests, 'test_unstarted_item_is_nudged_once_ten_minutes_after_dispatch'),
+            (LedgerDueTests, 'test_passed_estimate_is_nudged_once_and_update_restarts_the_check'),
+            (ClaudeQuotaRecoveryTests, 'quota_resume_once'),
+        ]
+        covered = set()
+        for cls, name in scenarios:
+            with self.subTest(scenario=name):
+                case = cls(name if hasattr(cls, name) else 'run')
+                case.setUp()
+                try:
+                    if cls is ClaudeQuotaRecoveryTests:
+                        case.log = case.root / '.lat/watch/orch/watch.jsonl'
+                        case.log.parent.mkdir(parents=True)
+                        watch_root = case.log.parent.parent
+                    else:
+                        watch_root = case.work / '.lat/watch'
+                        watch_root.mkdir(parents=True, exist_ok=True)
+                    # The launcher's pid file naming this process group as session s-682.
+                    (watch_root / 's-682.pid').write_text(str(os.getpgrp()))
+                    if name == 'quota_resume_once':
+                        case.select(2)
+                        case.recover()
+                        self.assertTrue(case.state['quota_recovery']['completed'])
+                    else:
+                        getattr(case, name)()
+                    if cls is ClaudeQuotaRecoveryTests:
+                        sends = [(command[3], command[4]) for command in case.commands
+                                 if command[:3] == ['hcom', 'term', 'inject']
+                                 and command[4] == watch.QUOTA_CONTINUE]
+                    else:
+                        sends = self.typed_sends(case.hcom_log)
+                    expected = sorted((agent, kind(text)) for agent, text in sends)
+                    records = []
+                    for base in {Path(os.environ['XDG_STATE_HOME']), case.root / 'state'}:
+                        for path in sorted((base / 'lat/nudges').glob('*.jsonl')):
+                            records += [entry for entry in map(json.loads,
+                                                               path.read_text().splitlines())
+                                        if entry['log'].startswith(str(case.root))]
+                    self.assertTrue(expected)
+                    self.assertEqual(sorted((entry['agent'], entry['nudges'][0])
+                                            for entry in records), expected)
+                    for entry in records:
+                        self.assertEqual(len(entry['nudges']), 1)
+                        self.assertEqual((entry['watcher']['pid'], entry['watcher']['session']),
+                                         (os.getpid(), 's-682'))
+                        self.assertIsNotNone(entry['watcher']['start'])
+                        self.assertIsInstance(entry['wait_active'], bool)
+                        self.assertTrue(entry['decision'])
+                    covered.update(kind for _, kind in expected)
+                finally:
+                    case.doCleanups()
+        self.assertEqual(covered, {'stall', 'background', 'wait-expiry', 'alarm-ring',
+                                   'cache-keepalive', 'capacity-continue', 'quota-continue',
+                                   'ledger-start-missing', 'ledger-estimate-passed'})
+
     def test_agent_with_its_own_watcher_is_nudged_only_by_that_watcher(self):
         # worker-open runs its own round in another workspace (#680: a sub-orchestrator
         # spawned from a task card); its waits live there, so only its watcher nudges it.
