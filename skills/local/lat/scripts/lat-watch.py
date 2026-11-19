@@ -2395,11 +2395,89 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
 UNPROMPTED_NUDGES = ('alarm-ring', 'cache-keepalive')
 LEDGER_NUDGES = ('ledger-start-missing', 'ledger-estimate-passed')
 NUDGE_LOG = 'nudges.jsonl'
+# Last 'duplicate-watcher' or 'watcher-claim-failed' line logged per watch log (#682).
+CLAIM_LOGGED = {}
 
 
-def delivered_nudges(record):
-    """The kind of each urging nudge a watch log record says was delivered: a stall nudge
-    ('stall'), a wait-expiry nudge or a ledger start/estimate nudge."""
+def host_state_dir():
+    """Host-wide LAT state shared by every workspace's watchers."""
+    state = os.environ.get('XDG_STATE_HOME', '')
+    return (Path(state) if state.startswith('/') else Path.home() / '.local/state') / 'lat'
+
+
+def watcher_identity(watch_root=None):
+    """This process as a nudge sender: pid, start time, process group and the LAT session
+    whose <session>.pid file in watch_root names that process group."""
+    pid, pgid = os.getpid(), os.getpgrp()
+    identity = {'pid': pid, 'start': process_starttime(pid), 'pgid': pgid, 'session': None}
+    for pid_path in sorted(Path(watch_root).glob('*.pid')) if watch_root else ():
+        with contextlib.suppress(OSError, ValueError):
+            if int(pid_path.read_text()) == pgid:
+                identity['session'] = pid_path.stem
+                break
+    return identity
+
+
+def claim_path(agent):
+    return host_state_dir() / 'watchers' / f'{valid_name(agent)}.json'
+
+
+def live_claim(path):
+    """The claim in path while its watcher process (same pid and start time) still runs."""
+    try:
+        claim = json.loads(path.read_text())
+        if (isinstance(claim, dict) and claim.get('start') is not None
+                and process_starttime(int(claim['pid'])) == claim['start']):
+            return claim
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def same_process(claim, identity):
+    return claim['pid'] == identity['pid'] and claim['start'] == identity['start']
+
+
+def claim_orchestrator(workspace, orchestrator, identity, now):
+    """Make this process the one watcher that nudges orchestrator, host-wide.
+
+    Returns the claim of another live watcher process that already holds it (this one then
+    stays quiet), else None. A claim whose process ended is taken over.
+    """
+    path = claim_path(orchestrator)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_name(f'.{path.stem}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = live_claim(path)
+        if current is not None and not same_process(current, identity):
+            return current
+        if current is None or current.get('workspace') != str(workspace):
+            write_object(path, {**identity, 'orchestrator': orchestrator,
+                                'workspace': str(workspace), 'claimed_at': now})
+    return None
+
+
+def other_watcher(agent, identity):
+    """The live claim of another watcher process that nudges agent as its own orchestrator."""
+    claim = live_claim(claim_path(agent))
+    return None if claim is None or same_process(claim, identity) else claim
+
+
+def claim_summary(claim):
+    return {key: claim.get(key) for key in ('pid', 'start', 'session', 'workspace')}
+
+
+def log_claim_once(log, record):
+    """Log a duplicate-watcher or claim-failure line only when it differs from the last one."""
+    key = [record['decision'], record.get('holder'), record.get('error')]
+    if CLAIM_LOGGED.get(str(log)) != key:
+        append_log(log, record)
+        CLAIM_LOGGED[str(log)] = key
+
+
+def delivered_injections(record):
+    """The kind of every nudge a watch log record says was typed into an agent: a stall
+    nudge ('stall'), a wait-expiry, alarm-ring or keep-alive nudge, or a ledger nudge."""
     kinds = []
     if record.get('decision') in LEDGER_NUDGES and record.get('result') == 'sent':
         kinds.append(record['decision'])
@@ -2407,9 +2485,33 @@ def delivered_nudges(record):
     if isinstance(actions, list) and isinstance(results, list) and len(actions) == len(results):
         kinds += [action.get('category') or 'stall' for action, result in zip(actions, results)
                   if isinstance(action, dict) and isinstance(result, dict)
-                  and action.get('kind') == 'nudge' and result.get('status') == 'done'
-                  and action.get('category') not in UNPROMPTED_NUDGES]
+                  and action.get('kind') == 'nudge' and result.get('status') == 'done']
     return kinds
+
+
+def delivered_nudges(record):
+    """The urging nudges among delivered_injections: not an alarm ring or a keep-alive."""
+    return [kind for kind in delivered_injections(record) if kind not in UNPROMPTED_NUDGES]
+
+
+def nudge_entry(path, record, kinds):
+    """One nudge-log line: who was nudged, by which watcher process, and the wait judgment."""
+    observation = record.get('observation')
+    state = record.get('state')
+    return dict(
+        at=record.get('at'), agent=record.get('agent'), nudges=kinds,
+        watcher=record.get('watcher') or watcher_identity(path.parent.parent),
+        log=str(path),
+        wait_active=observation.get('wait_active') if isinstance(observation, dict) else None,
+        decision=(state.get('decision') if isinstance(state, dict) else None)
+        or record.get('decision'))
+
+
+def append_line(path, entry):
+    with path.open('a') as stream:
+        stream.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def append_log(path, record):
@@ -2429,13 +2531,17 @@ def append_log(path, record):
             stream.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
             stream.flush()
             os.fsync(stream.fileno())
-        nudges = delivered_nudges(record)
-        if nudges:
-            with path.with_name(NUDGE_LOG).open('a') as stream:
-                stream.write(json.dumps(dict(at=record.get('at'), agent=record.get('agent'),
-                                             nudges=nudges), ensure_ascii=False) + '\n')
-                stream.flush()
-                os.fsync(stream.fileno())
+        injected = delivered_injections(record)
+        if injected:
+            entry = nudge_entry(path, record, injected)
+            nudges = [kind for kind in injected if kind not in UNPROMPTED_NUDGES]
+            if nudges:
+                append_line(path.with_name(NUDGE_LOG), {**entry, 'nudges': nudges})
+            # Every typed nudge, by recipient, whichever workspace's watcher sent it (#682).
+            with contextlib.suppress(OSError, ValueError):
+                received = host_state_dir() / 'nudges' / f'{valid_name(entry["agent"])}.jsonl'
+                received.parent.mkdir(parents=True, exist_ok=True)
+                append_line(received, entry)
     finally:
         os.close(directory)
 
@@ -3169,8 +3275,11 @@ def check_prompt_readable(log, agent, observation, previous, state, now):
 
 def log_signature(observation, state):
     """What counts as a status change for the log; progress alone is not one."""
-    return [observation.status, observation.wait_active, observation.command_running,
-            observation.prompt_empty, state['quota_active'], state['nudged']]
+    signature = [observation.status, observation.wait_active, observation.command_running,
+                 observation.prompt_empty, state['quota_active'], state['nudged']]
+    owner = state.get('nudge_owner')
+    # Log once when another watcher takes over (or gives up) nudging this agent (#682).
+    return signature + [owner['pid']] if owner else signature
 
 
 def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
@@ -3183,6 +3292,24 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
     orchestrator = valid_name(orchestrator)
     path = state_path(workspace, orchestrator)
     log = path.with_name('watch.jsonl')
+    identity = watcher_identity(watch_dir(workspace))
+    try:
+        holder = claim_orchestrator(workspace, orchestrator, identity, now)
+        if holder is None:
+            CLAIM_LOGGED.pop(str(log), None)
+    except (OSError, ValueError) as error:
+        # Without the host claim this watcher still watches (as before #682) rather than none.
+        holder = None
+        log_claim_once(log, {'at': now, 'agent': orchestrator,
+                             'decision': 'watcher-claim-failed', 'watcher': identity,
+                             'actions': [], 'error': f'{type(error).__name__}: {error}'})
+    if holder is not None:
+        # Another live watcher process already nudges this orchestrator; stay quiet until
+        # it ends, then take over (#682).
+        log_claim_once(log, {'at': now, 'agent': orchestrator, 'decision': 'duplicate-watcher',
+                             'watcher': identity, 'holder': claim_summary(holder),
+                             'actions': []})
+        return None
     paused = read_hcom_pauses(lambda path, error: append_log(log, {
         'at': now, 'decision': 'pause-record-invalid', 'path': str(path),
         'error': error, 'actions': [],
@@ -3384,6 +3511,21 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                     raise
                 reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
                 state, actions = decide(None, observation, now)
+            state.pop('nudge_owner', None)
+            owner = (other_watcher(agent, identity)
+                     if agent != orchestrator and any(a.kind == 'nudge' for a in actions)
+                     else None)
+            if owner is not None:
+                # The agent orchestrates its own round with its own watcher, which sees the
+                # waits it declares in its workspace; that watcher alone nudges it (#682).
+                for action in actions:
+                    if action.kind == 'nudge':
+                        roll_back(action, state)
+                for key in ('nudge_fingerprint', 'stall_reason'):
+                    state.pop(key, None)
+                actions = tuple(action for action in actions if action.kind != 'nudge')
+                state['decision'] = 'nudge-left-to-own-watcher'
+                state['nudge_owner'] = claim_summary(owner)
             kept = previous.get('keepalive') if previous else None
             if isinstance(kept, dict) and 'keepalive' not in state:
                 # Progress ends the reply window but the same expiry is still sent only once.
@@ -3507,6 +3649,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                     'at': now, 'agent': agent, 'observation': observation_record(observation),
                     'state': state, 'actions': [action_record(action) for action in actions],
                     'action_results': results,
+                    **({'watcher': identity} if actions else {}),
                 })
         except (OSError, ValueError, TypeError, KeyError) as error:
             append_log(log, {
