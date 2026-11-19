@@ -3914,6 +3914,15 @@ class SessionTests(unittest.TestCase):
         log = self.work / '.lat/watch/orch/watch.jsonl'
         for entry in entries:
             watch.append_log(log, entry)
+            # The watcher traces each nudge it types, and each ledger nudge it sends.
+            kinds = [action.get('category') or 'stall'
+                     for action, result in zip(entry['actions'], entry.get('action_results', []))
+                     if action['kind'] == 'nudge' and result['status'] == 'done']
+            if (entry.get('decision') in ('ledger-start-missing', 'ledger-estimate-passed')
+                    and entry.get('result') == 'sent'):
+                kinds.append(entry['decision'])
+            for kind in kinds:
+                watch.trace_nudge(log, entry['at'], entry['agent'], kind, None, None, {})
         return log.with_name('nudges.jsonl')
 
     @staticmethod

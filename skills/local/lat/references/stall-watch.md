@@ -239,6 +239,10 @@ Codex 的觀察紀錄以 `codex_turn_finished` 表示回合已結束（`true`）
 
 等待生命週期也記錄 `wait-expired`、`wait-extended`（每筆第一次）、`wait-expiry-notified`（成功後）。觀察紀錄記在主工作區的 `.lat/watch/<主控 HCOM 名稱>/watch.jsonl`，只在 Agent 狀態改變（HCOM 狀態、有效等待、執行中指令、輸入框是否為空、額度狀況、是否已催促）、發出催促或通知、或出錯時寫一筆；只有進展、狀態不變時不寫。Agent 消失只在第一輪與發出通知時記 `agent-disappeared`，主控不在清單只在開始時記一次 `not-observable`。檔案超過 1 MB 時改名為 `watch.jsonl.1`（取代上一份），只保留目前檔與一份舊檔。無法辨識而跳過的任務卡也記在這裡（`task-card-skipped`，卡片持續無法辨識期間同一內容只記一次；修好或移走後重新計算）。某一輪檢查出錯時記 `cycle-failed`（錯誤類型與訊息，同一錯誤連續發生時每小時最多記一次），下一分鐘照常再查；狀態檔損壞時改名為 `<原檔名>.corrupt-<時間>` 留存，記 `state-file-reset` 後從頭計時；只有個別 Agent 的狀態損壞時，複製一份同名留存檔，記 `agent-state-reset`，只讓該 Agent 從頭計時；任務卡目錄不存在時只盯主控，記一次 `task-directory-missing`。監控程式本身的錯誤輸出在 `$workspace/.lat/watch/<session-id>.log`。查誤報或漏報時讀這兩份的最後幾行。
 
+一個 Agent 只由一支監控催促：每支監控在主機的 `$XDG_STATE_HOME/lat/watchers/<主控 HCOM 名稱>.json`（未設定時在 `~/.local/state`）登記自己（pid、啟動時間、session、工作區）。同一主控有多支監控在跑時，只由最早啟動的那支出手；其他的整輪不出手，`watch.jsonl` 記一次 `duplicate-watcher`（含 `holder`），等它結束才接手。監控每輪查主機上還在跑的 `lat-watch.py run --orchestrator <名稱>` 程序（只算同一份主機狀態目錄的），所以沒登記的舊版監控也算；登記檔寫不進去時（記一次 `watcher-claim-failed`）也照這個規則。任務卡上的 Agent 若自己也是主控、有自己的監控（登記檔或還在跑的監控程序；例如在另一個工作區開的子主控，等待登記在那邊），這裡不送一般催促、也不再為先前的催促升級通知，狀態記 `nudge-left-to-own-watcher` 與 `nudge_owner`；那支監控結束後照原規則恢復。
+
+監控每次替 Agent 打字送出（停住 `stall`、背景指令 `background`、等待到期、鬧鐘、保溫、工作總表催促，以及額度選單後的 `quota-continue`、Codex 滿載的 `capacity-continue`）都在送出的當下另記一筆到 `$XDG_STATE_HOME/lat/nudges/<收件 Agent>.jsonl`，不論哪個工作區的監控送出；其中催促類也記進 `nudges.jsonl`。每筆含送出監控 `watcher`（pid、啟動時間、程序群組、session）、當時的 `wait_active` 與 `decision`、所在記錄檔 `log`。session 取自監控目錄裡指向本程序群組的 `<session>.pid`，沒有時取該主控 active 的 session 紀錄；手動啟動、沒有 active session 的監控才會是空的。這份紀錄寫入失敗只在監控的錯誤輸出留一行，不撤回已送出的內容（已知限制）。查「收到催促卻找不到紀錄」時先看這份。
+
 ## 通知使用者的情況
 
 只有以下情況打擾使用者，用 Herdr 彈出通知加提示音（沒有 Herdr 時只留 HCOM 訊息），同時在主控對話留一則說明：

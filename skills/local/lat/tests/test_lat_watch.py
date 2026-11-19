@@ -2275,6 +2275,12 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertEqual(sum(line.startswith('term inject worker-open')
                              for line in self.hcom_log.read_text().splitlines()), 1)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+        # The ring was typed, so it is traced even though the save after it failed (#682).
+        received = Path(os.environ['XDG_STATE_HOME']) / 'lat/nudges/worker-open.jsonl'
+        rings = [entry for entry in map(json.loads, received.read_text().splitlines())
+                 if entry['log'] == str(self.work / '.lat/watch/orch/watch.jsonl')]
+        self.assertEqual([(entry['nudges'], entry['watcher']['pid']) for entry in rings],
+                         [(['alarm-ring'], os.getpid())])
         self.assertEqual(sum(row.get('decision') == 'alarm-ring' for row in self.watch_records()), 1)
 
     def test_alarm_successful_notice_save_failure_does_not_send_again(self):
@@ -3135,6 +3141,11 @@ esac
         with patch.object(watch.subprocess, 'run', side_effect=external_command):
             self.run_cycles(watch, 3600)
         self.assertEqual(json.loads(path.read_text()), replacement)
+        # The expiry nudge was typed before the save lost the race; it is still traced (#682).
+        [line] = [json.loads(text) for text in (
+            self.work / '.lat/watch/orch/nudges.jsonl').read_text().splitlines()]
+        self.assertEqual((line['agent'], line['nudges'], line['wait_active']),
+                         ('worker-open', ['wait-expiry'], False))
 
     def test_cycle_extends_only_until_monitored_target_declares_wait(self):
         self.write_task('target.md', 'worker-target', 'orch', 'in progress')
@@ -6528,6 +6539,461 @@ esac
                           if record.get('decision') == 'observation-failed'])
         self.assertTrue(json.loads(path.read_text())['replaced'])
 
+    # ---- one nudge sender per agent, every nudge traceable (#682) ----
+
+    def sender_environment(self):
+        """Idle orch and worker-open; nudges are logged as `term inject <agent>` lines."""
+        self.env['XDG_STATE_HOME'] = str(self.root / 'state')
+        transcript = self.fake_transcript()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'case "$1" in\n'
+            f'list) printf \'%s\\n\' \'[{{"name":"orch","status":"listening",'
+            f'"transcript_path":"{transcript}"}},{{"name":"worker-open",'
+            f'"status":"listening","transcript_path":"{transcript}"}}]\';;\n'
+            'term) [ "$2" = inject ] || printf \'%s\\n\' \'{"ready":true,"prompt_empty":true}\';;\n'
+            'events) printf \'%s\\n\' \'{"id":1,"type":"status"}\';;\n'
+            'esac\n')
+
+    def injected(self, agent):
+        if not self.hcom_log.exists():
+            return 0  # A quiet watcher never ran hcom.
+        return sum(line.startswith(f'term inject {agent} ')
+                   for line in self.hcom_log.read_text().splitlines())
+
+    def start_watcher(self, workspace, orchestrator, tasks, decisions, times=(0,), env=None):
+        """Another watcher process in its own process group: real cycles at `times`
+        (claiming orchestrator), then idle until killed."""
+        code = ('import importlib.util, json, sys, time\n'
+                'from pathlib import Path\n'
+                'spec = importlib.util.spec_from_file_location("lat_watch", sys.argv[1])\n'
+                'watch = importlib.util.module_from_spec(spec)\n'
+                'spec.loader.exec_module(watch)\n'
+                'for now in json.loads(sys.argv[6]):\n'
+                '    watch.run_cycle(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]),\n'
+                '                    sys.argv[5], now=now)\n'
+                'print("ready", flush=True)\n'
+                'time.sleep(300)\n')
+        process = subprocess.Popen(
+            [sys.executable, '-c', code, str(SCRIPT), str(workspace), str(tasks),
+             str(decisions), orchestrator, json.dumps(list(times))],
+            env=env or self.env, stdout=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(process.stdout.close)
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        self.assertEqual(process.stdout.readline().strip(), 'ready')
+        return process
+
+    def start_old_watcher(self, orchestrator, workspace=None, env=None):
+        """A watcher from before claims (#682): the `lat-watch.py run` command line in its
+        own process group, never writing a claim; it shares this test's host state."""
+        workspace = workspace or self.work
+        process = subprocess.Popen(
+            [sys.executable, '-c', 'import time; time.sleep(300)', str(SCRIPT), 'run',
+             '--workspace', str(workspace), '--orchestrator', orchestrator,
+             '--tasks', str(self.tasks), '--decisions', str(workspace / '.lat/decisions')],
+            env=env or self.env, start_new_session=True)
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        return process
+
+    def stop_watcher(self, process):
+        process.kill()
+        process.wait()
+
+    def nudge_lines(self, orchestrator='orch', agent=None):
+        path = self.work / f'.lat/watch/{orchestrator}/nudges.jsonl'
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        return [line for line in lines if agent is None or line['agent'] == agent]
+
+    def test_valid_pending_wait_gets_no_nudge_across_cycles_until_released(self):
+        self.sender_environment()
+        decisions = self.wait_session()
+        record = self.work / '.lat/sessions/orch.json'
+        record.write_text(json.dumps(dict(json.loads(record.read_text()), session_id='s-orch')))
+        for name in ('A-1', 'A-2'):
+            (decisions / f'{name}.md').write_text('- status: pending\n- session: s-orch\n')
+        result = self.cli('wait', '--json', '--workspace', self.work, '--agent', 'orch',
+                          '--for-pending', '--reason', 'waiting for two answers')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            for now in range(0, 3 * 3600 + 1, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+            self.assertEqual(self.injected('orch'), 0)
+            self.assertEqual(self.watch_state()['orch']['decision'], 'valid-wait')
+            # The worker has no wait: it is nudged once, and that nudge names its sender.
+            self.assertEqual(self.injected('worker-open'), 1)
+            [line] = self.nudge_lines(agent='worker-open')
+            self.assertEqual(line['nudges'], ['stall'])
+            self.assertEqual((line['watcher']['pid'], line['wait_active'], line['decision']),
+                             (os.getpid(), False, 'nudge'))
+            self.assertIsNotNone(line['watcher']['start'])
+            [received] = [json.loads(text) for text in (
+                self.root / 'state/lat/nudges/worker-open.jsonl').read_text().splitlines()]
+            self.assertEqual(received, line)
+            # Answering one decision keeps the wait; answering both releases it.
+            (decisions / 'A-1.md').write_text('- status: approved\n- session: s-orch\n')
+            for now in range(3 * 3600 + 60, 3 * 3600 + 1201, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+            self.assertEqual(self.injected('orch'), 0)
+            (decisions / 'A-2.md').write_text('- status: approved\n- session: s-orch\n')
+            for now in range(3 * 3600 + 1260, 3 * 3600 + 2401, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+        self.assertEqual(self.injected('orch'), 1)
+        [line] = self.nudge_lines(agent='orch')
+        self.assertEqual((line['nudges'], line['wait_active'], line['decision']),
+                         (['stall'], False, 'nudge'))
+
+    def test_duplicate_watcher_stays_quiet_until_the_first_one_ends(self):
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        first = self.start_watcher(self.work, 'orch', self.tasks, decisions)
+        claim = json.loads((self.root / 'state/lat/watchers/orch.json').read_text())
+        self.assertEqual(claim['pid'], first.pid)
+        # A second, newer watcher for orch runs half an hour of cycles meanwhile.
+        second = self.start_watcher(self.work, 'orch', self.tasks, decisions,
+                                    times=range(60, 1801, 60))
+        self.stop_watcher(second)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (0, 0))
+        [duplicate] = [record for record in self.watch_records()
+                       if record.get('decision') == 'duplicate-watcher']
+        self.assertEqual((duplicate['holder']['pid'], duplicate['watcher']['pid']),
+                         (first.pid, second.pid))
+        # A stale first watcher that ended no longer blocks: the next one takes over.
+        self.stop_watcher(first)
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            for now in range(1860, 2521, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (1, 1))
+        claim = json.loads((self.root / 'state/lat/watchers/orch.json').read_text())
+        self.assertEqual(claim['pid'], os.getpid())
+        self.assertEqual({line['watcher']['pid'] for line in self.nudge_lines()}, {os.getpid()})
+
+    def test_older_watcher_acts_even_after_a_newer_one_claimed_first(self):
+        # This test process is older than any watcher it starts; the oldest acts, so a
+        # newer claim holder does not leave both watchers waiting on each other.
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        newer = self.start_watcher(self.work, 'orch', self.tasks, decisions)
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            for now in range(60, 661, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (1, 1))
+        claim = json.loads((self.root / 'state/lat/watchers/orch.json').read_text())
+        self.assertEqual(claim['pid'], os.getpid())
+        # The newer watcher, still running, now stays quiet beside the older holder.
+        self.stop_watcher(newer)
+        later = self.start_watcher(self.work, 'orch', self.tasks, decisions,
+                                   times=range(720, 2521, 60))
+        self.stop_watcher(later)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (1, 1))
+        holders = [record['holder']['pid'] for record in self.watch_records()
+                   if record.get('decision') == 'duplicate-watcher']
+        self.assertEqual(holders, [os.getpid()])
+
+    def test_owned_agent_already_nudged_here_is_not_escalated(self):
+        # Nudged once by this watcher, the agent then starts its own round and watcher.
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            # Nudged at 600, escalated to orch at 1200.
+            for now in range(0, 1201, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+            self.assertEqual(self.injected('worker-open'), 1)
+            self.assertTrue(self.watch_state()['worker-open']['orchestrator_notified'])
+            notices = self.worker_notices()
+            other = self.root / 'other'
+            (other / '.git').mkdir(parents=True)
+            (other / '.lat/tasks').mkdir(parents=True)
+            (other / '.lat/decisions').mkdir()
+            own = self.start_watcher(other, 'worker-open', other / '.lat/tasks',
+                                     other / '.lat/decisions')
+            for now in range(1260, 3601, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+            state = self.watch_state()['worker-open']
+            self.assertEqual(self.injected('worker-open'), 1)
+            self.assertEqual(self.worker_notices(), notices)
+            self.assertFalse(state['nudged'] or state['orchestrator_notified']
+                             or state['user_notified'])
+            self.assertEqual(state['nudge_owner']['pid'], own.pid)
+            # Once the owner ends, a fresh episode: nudge, then a new notice to orch.
+            self.stop_watcher(own)
+            for now in range(3660, 4801, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+        self.assertEqual(self.injected('worker-open'), 2)
+        self.assertEqual(len(self.worker_notices()), len(notices) + 1)
+
+    def worker_notices(self):
+        return [line for line in self.hcom_log.read_text().splitlines()
+                if line.startswith('send ') and 'agent worker-open' in line]
+
+    def test_new_watcher_stays_quiet_beside_an_old_watcher_without_a_claim(self):
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        old = self.start_old_watcher('orch')
+        # A newer watcher for orch runs half an hour of cycles while the old one lives.
+        new = self.start_watcher(self.work, 'orch', self.tasks, decisions,
+                                 times=range(0, 1801, 60))
+        self.stop_watcher(new)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (0, 0))
+        [duplicate] = [record for record in self.watch_records()
+                       if record.get('decision') == 'duplicate-watcher']
+        self.assertEqual((duplicate['holder']['pid'], duplicate['watcher']['pid']),
+                         (old.pid, new.pid))
+        self.assertFalse((self.root / 'state/lat/watchers/orch.json').exists())
+        # The old one ended: a watcher started after that acts and claims.
+        self.stop_watcher(old)
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            # The quiet watcher saved no state, so the idle clock starts now.
+            for now in range(1860, 2461, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (1, 1))
+        claim = json.loads((self.root / 'state/lat/watchers/orch.json').read_text())
+        self.assertEqual(claim['pid'], os.getpid())
+
+    def test_unwritable_claim_still_defers_to_an_older_watcher(self):
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        blocked = self.root / 'state-file'
+        blocked.write_text('not a directory')
+        env = dict(self.env, XDG_STATE_HOME=str(blocked))
+        old = self.start_old_watcher('orch', env=env)
+        new = self.start_watcher(self.work, 'orch', self.tasks, decisions,
+                                 times=range(0, 1801, 60), env=env)
+        self.stop_watcher(new)
+        self.stop_watcher(old)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (0, 0))
+        decisions_logged = [record.get('decision') for record in self.watch_records()]
+        self.assertEqual(decisions_logged.count('watcher-claim-failed'), 1)
+        self.assertEqual(decisions_logged.count('duplicate-watcher'), 1)
+
+    def test_agent_with_an_old_watcher_of_its_own_is_not_nudged_here(self):
+        self.sender_environment()
+        other = self.root / 'other'
+        (other / '.git').mkdir(parents=True)
+        own = self.start_old_watcher('worker-open', other)
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            for now in range(0, 1201, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+            state = self.watch_state()['worker-open']
+            self.assertEqual(self.injected('worker-open'), 0)
+            self.assertEqual((state['decision'], state['nudge_owner']['pid'],
+                              state['nudge_owner']['workspace']),
+                             ('nudge-left-to-own-watcher', own.pid, str(other)))
+            self.stop_watcher(own)
+            watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=1260)
+        self.assertEqual(self.injected('worker-open'), 1)
+
+    def test_watcher_with_another_host_state_is_ignored(self):
+        # Another test run (its own XDG_STATE_HOME) watching the same names changes nothing.
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        elsewhere = dict(self.env, XDG_STATE_HOME=str(self.root / 'elsewhere'))
+        self.start_old_watcher('worker-open', env=elsewhere)
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            for now in range(0, 601, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+        self.assertEqual(self.injected('worker-open'), 1)
+
+    def test_capacity_continue_marker_failure_keeps_the_delivery_and_its_trace(self):
+        watch = load_watch()
+        original = watch.write_json_atomic
+
+        def failing(path, *args, **kwargs):
+            if str(path).endswith('.continued.json'):
+                raise OSError('disk full')
+            return original(path, *args, **kwargs)
+
+        with patch.object(watch, 'write_json_atomic', side_effect=failing):
+            self.scenario_capacity_continue(watch=watch, times=(0, 60, 120))
+        received = Path(os.environ['XDG_STATE_HOME']) / 'lat/nudges/worker-open.jsonl'
+        traced = [entry for entry in map(json.loads, received.read_text().splitlines())
+                  if entry['log'].startswith(str(self.root))]
+        self.assertEqual([entry['nudges'] for entry in traced], [['capacity-continue']])
+        [record] = [record for record in self.watch_records()
+                    if record.get('actions') and record['actions'][0]['kind'] == 'capacity-continue']
+        self.assertEqual(record['action_results'][0]['status'], 'done')
+        self.assertEqual(record['action_results'][0]['continued_marker_error'], 'disk full')
+
+    def scenario_capacity_continue(self, watch=None, times=(0, 60)):
+        """A Codex agent on the model-capacity screen gets Continue typed by run_cycle."""
+        lines = json.dumps(self.CAPACITY_LINES)
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'case "$1" in\n'
+            'list) [ "$2" = worker-open ] && exit 0\n'
+            '  printf \'%s\\n\' \'[{"name":"orch","status":"listening"},'
+            '{"name":"worker-open","status":"active","tool":"codex"}]\';;\n'
+            'term) [ "$2" = inject ] || printf \'%s\\n\' '
+            f'\'{{"ready":true,"prompt_empty":true,"input_text":"","lines":{lines}}}\';;\n'
+            'events) printf \'%s\\n\' \'{"id":1,"type":"status"}\';;\n'
+            'esac\n')
+        self.run_cycles(watch or load_watch(), *times)
+        self.assertEqual(len(self.typed_sends(self.hcom_log)), 1)
+
+    @staticmethod
+    def typed_sends(hcom_log):
+        """(agent, text) for every text the fake hcom saw typed and submitted (--enter)."""
+        sends = []
+        for line in hcom_log.read_text().splitlines():
+            if line.startswith('term inject ') and ' --enter --name ' in line:
+                agent, _, rest = line[len('term inject '):].partition(' ')
+                text = rest.rpartition(' --enter --name ')[0]
+                if text:
+                    sends.append((agent, text))
+        return sends
+
+    def test_watcher_session_comes_from_its_pid_file_or_active_session_record(self):
+        watch = load_watch()
+        log = self.work / '.lat/watch/orch/watch.jsonl'
+        root = log.parent.parent
+        root.mkdir(parents=True)
+        sessions = self.work / '.lat/sessions'
+        sessions.mkdir(parents=True)
+        # Hand-started watcher: nothing names it.
+        self.assertIsNone(watch.watcher_identity(log)['session'])
+        # Before the launcher writes the pid file (or with it in an older worktree), the
+        # orchestrator's active session record names the session.
+        (root / 'other.pid').write_text(str(os.getpgrp() + 1))
+        (sessions / 'ended.json').write_text(json.dumps(
+            dict(status='ended', hcom_name='orch', session_id='ended')))
+        (sessions / 's-rec.json').write_text(json.dumps(
+            dict(status='active', hcom_name='orch', session_id='s-rec')))
+        self.assertEqual(watch.watcher_identity(log)['session'], 's-rec')
+        (root / 's-pid.pid').write_text(str(os.getpgrp()))
+        identity = watch.watcher_identity(log)
+        self.assertEqual((identity['session'], identity['pid'], identity['pgid']),
+                         ('s-pid', os.getpid(), os.getpgrp()))
+
+    def test_every_typed_send_has_exactly_one_trace_record(self):
+        """AC1 (#682): run each kind of send through the real delivery path and match every
+        submitted text one-to-one with a trace record naming this watcher and its session."""
+        watch = load_watch()
+
+        def kind(text):
+            prefixes = [(watch.NUDGE, 'stall'), (watch.BACKGROUND_NUDGE, 'background'),
+                        (watch.KEEPALIVE, 'cache-keepalive'),
+                        (watch.QUOTA_CONTINUE, 'quota-continue'),
+                        ('[lat-watch] Your wait for ', 'wait-expiry'),
+                        ('[lat-watch] Your alarm', 'alarm-ring')]
+            if text == watch.CAPACITY_CONTINUE:
+                return 'capacity-continue'
+            if text.startswith('[lat-watch] Ledger item'):
+                return ('ledger-start-missing' if 'was assigned to you' in text
+                        else 'ledger-estimate-passed')
+            return next((name for prefix, name in prefixes if text.startswith(prefix)),
+                        f'unmapped: {text[:60]}')
+
+        scenarios = [
+            (WatchCliTests, 'test_valid_pending_wait_gets_no_nudge_across_cycles_until_released'),
+            (WatchCliTests, 'test_orchestrator_background_command_cycle_nudges_then_notifies_the_user'),
+            (WatchCliTests, 'test_alarm_successful_ring_save_failure_does_not_ring_again'),
+            (WatchCliTests, 'scenario_capacity_continue'),
+            (KeepaliveCycleTests, 'test_agent_wait_keepalive_is_sent_once_and_reply_changes_nothing'),
+            (LedgerDueTests, 'test_unstarted_item_is_nudged_once_ten_minutes_after_dispatch'),
+            (LedgerDueTests, 'test_passed_estimate_is_nudged_once_and_update_restarts_the_check'),
+            (ClaudeQuotaRecoveryTests, 'quota_resume_once'),
+        ]
+        covered = set()
+        for cls, name in scenarios:
+            with self.subTest(scenario=name):
+                case = cls(name if hasattr(cls, name) else 'run')
+                case.setUp()
+                try:
+                    if cls is ClaudeQuotaRecoveryTests:
+                        case.log = case.root / '.lat/watch/orch/watch.jsonl'
+                        case.log.parent.mkdir(parents=True)
+                        watch_root = case.log.parent.parent
+                    else:
+                        watch_root = case.work / '.lat/watch'
+                        watch_root.mkdir(parents=True, exist_ok=True)
+                    # The launcher's pid file naming this process group as session s-682.
+                    (watch_root / 's-682.pid').write_text(str(os.getpgrp()))
+                    if name == 'quota_resume_once':
+                        case.select(2)
+                        case.recover()
+                        self.assertTrue(case.state['quota_recovery']['completed'])
+                    else:
+                        getattr(case, name)()
+                    if cls is ClaudeQuotaRecoveryTests:
+                        sends = [(command[3], command[4]) for command in case.commands
+                                 if command[:3] == ['hcom', 'term', 'inject']
+                                 and command[4] == watch.QUOTA_CONTINUE]
+                    else:
+                        sends = self.typed_sends(case.hcom_log)
+                    expected = sorted((agent, kind(text)) for agent, text in sends)
+                    records = []
+                    for base in {Path(os.environ['XDG_STATE_HOME']), case.root / 'state'}:
+                        for path in sorted((base / 'lat/nudges').glob('*.jsonl')):
+                            records += [entry for entry in map(json.loads,
+                                                               path.read_text().splitlines())
+                                        if entry['log'].startswith(str(case.root))]
+                    self.assertTrue(expected)
+                    self.assertEqual(sorted((entry['agent'], entry['nudges'][0])
+                                            for entry in records), expected)
+                    for entry in records:
+                        self.assertEqual(len(entry['nudges']), 1)
+                        self.assertEqual((entry['watcher']['pid'], entry['watcher']['session']),
+                                         (os.getpid(), 's-682'))
+                        self.assertIsNotNone(entry['watcher']['start'])
+                        self.assertIsInstance(entry['wait_active'], bool)
+                        self.assertTrue(entry['decision'])
+                    covered.update(kind for _, kind in expected)
+                finally:
+                    case.doCleanups()
+        self.assertEqual(covered, {'stall', 'background', 'wait-expiry', 'alarm-ring',
+                                   'cache-keepalive', 'capacity-continue', 'quota-continue',
+                                   'ledger-start-missing', 'ledger-estimate-passed'})
+
+    def test_agent_with_its_own_watcher_is_nudged_only_by_that_watcher(self):
+        # worker-open runs its own round in another workspace (#680: a sub-orchestrator
+        # spawned from a task card); its waits live there, so only its watcher nudges it.
+        self.sender_environment()
+        other = self.root / 'other'
+        (other / '.git').mkdir(parents=True)
+        (other / '.lat/tasks').mkdir(parents=True)
+        (other / '.lat/decisions').mkdir()
+        own = self.start_watcher(other, 'worker-open', other / '.lat/tasks',
+                                 other / '.lat/decisions')
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            for now in range(0, 1801, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+            self.assertEqual(self.injected('worker-open'), 0)
+            self.assertEqual(self.injected('orch'), 1)
+            state = self.watch_state()['worker-open']
+            self.assertEqual(state['decision'], 'nudge-left-to-own-watcher')
+            self.assertFalse(state['nudged'])
+            self.assertEqual((state['nudge_owner']['pid'], state['nudge_owner']['workspace']),
+                             (own.pid, str(other)))
+            left = [record for record in self.watch_records()
+                    if record.get('state', {}).get('decision') == 'nudge-left-to-own-watcher']
+            self.assertEqual(len(left), 1)
+            self.stop_watcher(own)
+            for now in range(1860, 1921, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+        self.assertEqual(self.injected('worker-open'), 1)
+        self.assertNotIn('nudge_owner', self.watch_state()['worker-open'])
+
 
 # Prompt-cache keep-alive (temp usage dir, pinned Asia/Taipei time zone).
 def taipei(hour, minute=0, second=0):
@@ -7640,6 +8106,23 @@ class ClaudeQuotaRecoveryTests(unittest.TestCase):
     def records(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
+    def test_submitted_continue_is_traced_even_if_the_step_log_then_fails(self):
+        self.log = self.root / '.lat/watch/orch/watch.jsonl'
+        self.log.parent.mkdir(parents=True)
+        original = self.watch.append_log
+
+        def failing(path, record):
+            if record.get('step') == 'key-sent' and record.get('key') == 'continue-Enter':
+                raise OSError('log disk full')
+            return original(path, record)
+
+        with patch.object(self.watch, 'append_log', side_effect=failing):
+            self.recover()
+        received = Path(os.environ['XDG_STATE_HOME']) / 'lat/nudges/worker.jsonl'
+        traced = [entry for entry in map(json.loads, received.read_text().splitlines())
+                  if entry['log'] == str(self.log)]
+        self.assertEqual([entry['nudges'] for entry in traced], [['quota-continue']])
+
     def test_both_real_menu_shapes_all_cursor_positions(self):
         for name, count in [('manual', 3), ('exhausted', 4)]:
             for selected in range(count):
@@ -7991,11 +8474,34 @@ esac
         self.assertEqual(len(self.injects('Ledger item 1')), 1)
         [record] = self.records('ledger-start-missing')
         self.assertEqual((record['item'], record['result'], record['agent']), (1, 'sent', 'worker'))
+        [line] = self.traced()
+        self.assertEqual((line['agent'], line['nudges'], line['wait_active'], line['decision'],
+                          line['watcher']['pid']),
+                         ('worker', ['ledger-start-missing'], False, 'ledger-start-missing',
+                          os.getpid()))
         state = json.loads((self.work / '.lat/watch/orch/state.json').read_text())
         self.assertEqual(state['orch']['feature_versions']['ledger_due'], 1)
         [entry] = state['orch']['ledger']['deliveries'].values()
         self.assertEqual((entry['kind'], entry['status'], entry['sent_at']),
                          ('start', 'sent', self.START + 600))
+
+    def traced(self):
+        path = self.work / '.lat/watch/orch/nudges.jsonl'
+        return [line for line in map(json.loads, path.read_text().splitlines())
+                if line['agent'] == 'worker']
+
+    def test_estimate_nudge_trace_keeps_the_recipients_wait_judgment(self):
+        watch = load_watch()
+        watch.write_object(watch.wait_path(self.work, 'worker'), dict(
+            agent='worker', target='orch', kind='agent', reason='waiting for review',
+            declared_at=self.START, declared_at_utc=self.iso(0), active=True))
+        self.assign()
+        self.ledger('start', 1, '--eta', '+5m', at=60)
+        self.cycles(359, 600, watch=watch)
+        self.assertEqual(len(self.injects('passed your estimate')), 1)
+        [line] = self.traced()
+        self.assertEqual((line['nudges'], line['wait_active'], line['decision']),
+                         (['ledger-estimate-passed'], True, 'ledger-estimate-passed'))
 
     def test_passed_estimate_is_nudged_once_and_update_restarts_the_check(self):
         self.assign()
