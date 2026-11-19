@@ -1780,6 +1780,9 @@ def delivered_messages(orchestrator, waiting_info, participant_events, after):
 
 def idle_prompt(observation):
     """An empty ready terminal is usable only after the agent's turn ends."""
+    if observation.login_issue is not None:
+        # A logged-out agent gets no typed text (wait, alarm or ledger nudges); only the user can fix it.
+        return False
     if observation.client.lower() == 'claude':
         # Claude hooks report the turn end; the screen only confirms an empty prompt.
         return (observation.status == 'listening' and observation.prompt_empty is True

@@ -460,6 +460,13 @@ class WatchDecisionTests(unittest.TestCase):
             self.assertEqual(actions, ())
             self.assertFalse(state['nudged'])
 
+    def test_login_failure_blocks_every_typed_nudge_path_until_recovery(self):
+        watch = load_watch()
+        stuck = self.login_observation(watch)
+        self.assertFalse(watch.idle_prompt(stuck))
+        self.assertFalse(watch.idle_prompt(stuck._replace(client='codex')))
+        self.assertTrue(watch.idle_prompt(stuck._replace(login_issue=None)))
+
     def test_hcom_authentication_failed_status_is_handled_the_same(self):
         watch = load_watch()
         info = {'status': 'inactive', 'status_context': 'failure:authentication_failed'}
