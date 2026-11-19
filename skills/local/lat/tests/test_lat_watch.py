@@ -2275,6 +2275,12 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertEqual(sum(line.startswith('term inject worker-open')
                              for line in self.hcom_log.read_text().splitlines()), 1)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+        # The ring was typed, so it is traced even though the save after it failed (#682).
+        received = Path(os.environ['XDG_STATE_HOME']) / 'lat/nudges/worker-open.jsonl'
+        rings = [entry for entry in map(json.loads, received.read_text().splitlines())
+                 if entry['log'] == str(self.work / '.lat/watch/orch/watch.jsonl')]
+        self.assertEqual([(entry['nudges'], entry['watcher']['pid']) for entry in rings],
+                         [(['alarm-ring'], os.getpid())])
         self.assertEqual(sum(row.get('decision') == 'alarm-ring' for row in self.watch_records()), 1)
 
     def test_alarm_successful_notice_save_failure_does_not_send_again(self):
@@ -3135,6 +3141,11 @@ esac
         with patch.object(watch.subprocess, 'run', side_effect=external_command):
             self.run_cycles(watch, 3600)
         self.assertEqual(json.loads(path.read_text()), replacement)
+        # The expiry nudge was typed before the save lost the race; it is still traced (#682).
+        [line] = [json.loads(text) for text in (
+            self.work / '.lat/watch/orch/nudges.jsonl').read_text().splitlines()]
+        self.assertEqual((line['agent'], line['nudges'], line['wait_active']),
+                         ('worker-open', ['wait-expiry'], False))
 
     def test_cycle_extends_only_until_monitored_target_declares_wait(self):
         self.write_task('target.md', 'worker-target', 'orch', 'in progress')
@@ -6643,6 +6654,32 @@ esac
         self.assertEqual(claim['pid'], os.getpid())
         self.assertEqual({line['watcher']['pid'] for line in self.nudge_lines()}, {os.getpid()})
 
+    def test_owned_agent_already_nudged_here_is_not_escalated(self):
+        # Nudged once by this watcher, the agent then starts its own round and watcher.
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            for now in range(0, 601, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+            self.assertEqual(self.injected('worker-open'), 1)
+            self.assertTrue(self.watch_state()['worker-open']['nudged'])
+            other = self.root / 'other'
+            (other / '.git').mkdir(parents=True)
+            (other / '.lat/tasks').mkdir(parents=True)
+            (other / '.lat/decisions').mkdir()
+            own = self.start_watcher(other, 'worker-open', other / '.lat/tasks',
+                                     other / '.lat/decisions')
+            for now in range(660, 3001, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+            state = self.watch_state()['worker-open']
+            self.assertEqual(self.injected('worker-open'), 1)
+            self.assertFalse([line for line in self.hcom_log.read_text().splitlines()
+                              if line.startswith('send ') and 'worker-open' in line])
+            self.assertFalse(state['nudged'])
+            self.assertEqual(state['nudge_owner']['pid'], own.pid)
+
     def test_agent_with_its_own_watcher_is_nudged_only_by_that_watcher(self):
         # worker-open runs its own round in another workspace (#680: a sub-orchestrator
         # spawned from a task card); its waits live there, so only its watcher nudges it.
@@ -8138,11 +8175,34 @@ esac
         self.assertEqual(len(self.injects('Ledger item 1')), 1)
         [record] = self.records('ledger-start-missing')
         self.assertEqual((record['item'], record['result'], record['agent']), (1, 'sent', 'worker'))
+        [line] = self.traced()
+        self.assertEqual((line['agent'], line['nudges'], line['wait_active'], line['decision'],
+                          line['watcher']['pid']),
+                         ('worker', ['ledger-start-missing'], False, 'ledger-start-missing',
+                          os.getpid()))
         state = json.loads((self.work / '.lat/watch/orch/state.json').read_text())
         self.assertEqual(state['orch']['feature_versions']['ledger_due'], 1)
         [entry] = state['orch']['ledger']['deliveries'].values()
         self.assertEqual((entry['kind'], entry['status'], entry['sent_at']),
                          ('start', 'sent', self.START + 600))
+
+    def traced(self):
+        path = self.work / '.lat/watch/orch/nudges.jsonl'
+        return [line for line in map(json.loads, path.read_text().splitlines())
+                if line['agent'] == 'worker']
+
+    def test_estimate_nudge_trace_keeps_the_recipients_wait_judgment(self):
+        watch = load_watch()
+        watch.write_object(watch.wait_path(self.work, 'worker'), dict(
+            agent='worker', target='orch', kind='agent', reason='waiting for review',
+            declared_at=self.START, declared_at_utc=self.iso(0), active=True))
+        self.assign()
+        self.ledger('start', 1, '--eta', '+5m', at=60)
+        self.cycles(359, 600, watch=watch)
+        self.assertEqual(len(self.injects('passed your estimate')), 1)
+        [line] = self.traced()
+        self.assertEqual((line['nudges'], line['wait_active'], line['decision']),
+                         (['ledger-estimate-passed'], True, 'ledger-estimate-passed'))
 
     def test_passed_estimate_is_nudged_once_and_update_restarts_the_check(self):
         self.assign()

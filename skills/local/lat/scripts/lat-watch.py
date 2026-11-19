@@ -2393,7 +2393,6 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
 
 # Nudges that are not about a stall: an alarm the agent set itself and the cache keep-alive.
 UNPROMPTED_NUDGES = ('alarm-ring', 'cache-keepalive')
-LEDGER_NUDGES = ('ledger-start-missing', 'ledger-estimate-passed')
 NUDGE_LOG = 'nudges.jsonl'
 # Last 'duplicate-watcher' or 'watcher-claim-failed' line logged per watch log (#682).
 CLAIM_LOGGED = {}
@@ -2475,49 +2474,35 @@ def log_claim_once(log, record):
         CLAIM_LOGGED[str(log)] = key
 
 
-def delivered_injections(record):
-    """The kind of every nudge a watch log record says was typed into an agent: a stall
-    nudge ('stall'), a wait-expiry, alarm-ring or keep-alive nudge, or a ledger nudge."""
-    kinds = []
-    if record.get('decision') in LEDGER_NUDGES and record.get('result') == 'sent':
-        kinds.append(record['decision'])
-    actions, results = record.get('actions'), record.get('action_results')
-    if isinstance(actions, list) and isinstance(results, list) and len(actions) == len(results):
-        kinds += [action.get('category') or 'stall' for action, result in zip(actions, results)
-                  if isinstance(action, dict) and isinstance(result, dict)
-                  and action.get('kind') == 'nudge' and result.get('status') == 'done']
-    return kinds
+def trace_nudge(log, at, agent, kind, wait_active, decision, watcher):
+    """Record one nudge right after it was typed into agent, before any later step can fail.
 
-
-def delivered_nudges(record):
-    """The urging nudges among delivered_injections: not an alarm ring or a keep-alive."""
-    return [kind for kind in delivered_injections(record) if kind not in UNPROMPTED_NUDGES]
-
-
-def nudge_entry(path, record, kinds):
-    """One nudge-log line: who was nudged, by which watcher process, and the wait judgment."""
-    observation = record.get('observation')
-    state = record.get('state')
-    return dict(
-        at=record.get('at'), agent=record.get('agent'), nudges=kinds,
-        watcher=record.get('watcher') or watcher_identity(path.parent.parent),
-        log=str(path),
-        wait_active=observation.get('wait_active') if isinstance(observation, dict) else None,
-        decision=(state.get('decision') if isinstance(state, dict) else None)
-        or record.get('decision'))
-
-
-def append_line(path, entry):
-    with path.open('a') as stream:
-        stream.write(json.dumps(entry, ensure_ascii=False) + '\n')
-        stream.flush()
-        os.fsync(stream.fileno())
+    Urging kinds go to NUDGE_LOG beside log, which never rotates (the delivery retro check
+    reads a whole round from it); every kind also goes to the host-wide log of the recipient,
+    whichever workspace's watcher sent it (#682). A failed write is reported on stderr and
+    never turns the delivered nudge into a failed one.
+    """
+    entry = dict(at=at, agent=agent, nudges=[kind], watcher=watcher, log=str(log),
+                 wait_active=wait_active, decision=decision)
+    paths = [] if kind in UNPROMPTED_NUDGES else [log.with_name(NUDGE_LOG)]
+    try:
+        paths.append(host_state_dir() / 'nudges' / f'{valid_name(agent)}.jsonl')
+    except ValueError:
+        pass
+    for path in paths:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open('a') as stream:
+                stream.write(json.dumps(entry, ensure_ascii=False) + '\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as error:
+            print(f'LAT watch nudge trace failed: {path}: {error}', file=sys.stderr, flush=True)
 
 
 def append_log(path, record):
     """Append one line; past LOG_ROTATE_BYTES the file is rotated and only one older one kept.
-    Delivered urging nudges also go to NUDGE_LOG, which never rotates (the delivery retro
-    check reads a whole round from it)."""
+    Delivered nudges are traced separately by trace_nudge."""
     path.parent.mkdir(parents=True, exist_ok=True)
     # Other processes (alarm registration) append too; the directory lock keeps rotation atomic.
     directory = os.open(path.parent, os.O_RDONLY)
@@ -2531,17 +2516,6 @@ def append_log(path, record):
             stream.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
             stream.flush()
             os.fsync(stream.fileno())
-        injected = delivered_injections(record)
-        if injected:
-            entry = nudge_entry(path, record, injected)
-            nudges = [kind for kind in injected if kind not in UNPROMPTED_NUDGES]
-            if nudges:
-                append_line(path.with_name(NUDGE_LOG), {**entry, 'nudges': nudges})
-            # Every typed nudge, by recipient, whichever workspace's watcher sent it (#682).
-            with contextlib.suppress(OSError, ValueError):
-                received = host_state_dir() / 'nudges' / f'{valid_name(entry["agent"])}.jsonl'
-                received.parent.mkdir(parents=True, exist_ok=True)
-                append_line(received, entry)
     finally:
         os.close(directory)
 
@@ -2987,8 +2961,10 @@ def deliver_ledger(kind, item, entry, location, orchestrator, workspace, observe
             raise ValueError('input box has text')
         if not idle_prompt(observation):
             return None
-        return perform(Action('nudge', agent, text=message, category=LEDGER_DECISIONS[kind]),
-                       orchestrator, workspace)
+        delivery = perform(Action('nudge', agent, text=message,
+                                  category=LEDGER_DECISIONS[kind]), orchestrator, workspace)
+        # The recipient's wait judgment when it was nudged, for the nudge trace (#682).
+        return {**delivery, 'wait_active': observation.wait_active}
     if kind == 'deadline':
         return perform(Action('notify-orchestrator', item['agent'] or orchestrator, message,
                               category=LEDGER_DECISIONS[kind]), orchestrator, workspace)
@@ -3076,6 +3052,10 @@ def check_ledger(location, saved, orchestrator, workspace, observe_agent, paused
             continue
         if delivery is None:
             continue
+        if kind in ('start', 'estimate'):
+            trace_nudge(log, now, item['agent'], LEDGER_DECISIONS[kind],
+                        delivery.get('wait_active'), LEDGER_DECISIONS[kind],
+                        watcher_identity(log.parent.parent))
         entry['attempts'] += 1
         entry.pop('error', None)
         entry.update(status='sent', sent_at=now)
@@ -3504,20 +3484,25 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
             for event in wait_events:
                 append_log(log, {'at': now, 'agent': agent, 'decision': event,
                                  'wait': saved_wait})
+            # An agent that orchestrates its own round has its own watcher, which sees the
+            # waits it declares in its workspace; that watcher alone nudges it (#682).
+            owner = other_watcher(agent, identity) if agent != orchestrator else None
+            judged = previous
+            if owner is not None and previous and previous.get('nudged'):
+                # End this watcher's stall episode so it does not escalate it either.
+                judged = {key: value for key, value in previous.items()
+                          if key not in ('nudged_at', 'nudge_text', 'nudge_fingerprint',
+                                         'stall_reason')}
+                judged['nudged'] = False
             try:
-                state, actions = decide(previous, observation, now)
+                state, actions = decide(judged, observation, now)
             except (TypeError, ValueError, KeyError, AttributeError) as error:
                 if previous is None:
                     raise
                 reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
                 state, actions = decide(None, observation, now)
             state.pop('nudge_owner', None)
-            owner = (other_watcher(agent, identity)
-                     if agent != orchestrator and any(a.kind == 'nudge' for a in actions)
-                     else None)
-            if owner is not None:
-                # The agent orchestrates its own round with its own watcher, which sees the
-                # waits it declares in its workspace; that watcher alone nudges it (#682).
+            if owner is not None and any(action.kind == 'nudge' for action in actions):
                 for action in actions:
                     if action.kind == 'nudge':
                         roll_back(action, state)
@@ -3557,6 +3542,15 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                 elif keepalive_expires_at is not None:
                     actions = [Action('nudge', agent, text=KEEPALIVE, category='cache-keepalive')]
             results = []
+
+            def deliver(action):
+                """Perform action; trace a nudge as soon as it is typed (#682)."""
+                delivery = perform(action, orchestrator, workspace)
+                if action.kind == 'nudge':
+                    trace_nudge(log, now, agent, action.category or 'stall',
+                                observation.wait_active, state.get('decision'), identity)
+                return delivery
+
             for action in actions:
                 try:
                     if action.category == 'cache-keepalive':
@@ -3564,7 +3558,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                                   'kind': saved_wait.get('kind'),
                                   'expires_at': keepalive_expires_at}
                         try:
-                            delivery = perform(action, orchestrator, workspace)
+                            delivery = deliver(action)
                         except (OSError, ValueError) as error:
                             state['keepalive_last'] = {'at': now, 'result': 'failed',
                                                        'expires_at': keepalive_expires_at,
@@ -3578,7 +3572,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                         append_log(log, {**record, 'result': 'sent'})
                     elif action.category == 'alarm-ring':
                         try:
-                            delivery = perform(action, orchestrator, workspace)
+                            delivery = deliver(action)
                         except (OSError, ValueError):
                             if now >= saved_wait['due_at'] + IDLE_SECONDS:
                                 expire_alarm(saved_wait, now, 'input failed')
@@ -3605,7 +3599,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                             action, saved_wait, wait_path(workspace, agent), wait_original,
                             orchestrator, workspace)
                     else:
-                        delivery = perform(action, orchestrator, workspace)
+                        delivery = deliver(action)
                     if action.category.startswith('wait-expiry'):
                         if action.kind == 'nudge':
                             saved_wait['expiry_nudge_pending'] = False
