@@ -52,6 +52,12 @@ CLAUDE_PROMPTED = [f'❯ {PROMPT}', '● Read(/ws/brief.md)', '  ⎿  Read 120 l
                    '  ⏵⏵ bypass permissions on (shift+tab to cycle)', '      ○ low · /effort']
 CODEX_PROMPTED = [f'› {PROMPT}', '', '• Ran cat /ws/brief.md', '  └ # Task brief',
                   'Working (5s • esc to interrupt)', '', *CODEX_SCREEN]
+# A busy Claude agent seen after its banner scrolled away: the status bar names the model with
+# only an effort initial (captured from a real Opus 5.5 agent, ouob-tw/LoopAgentTeams-work#680).
+CLAUDE_BUSY_STATUS = [f'❯ {PROMPT}', '● Read(/ws/brief.md)',
+                      '✻ Working… (6s · esc to interrupt)', '❯',
+                      '  Opus 5.5 L · ~/Morari · Context 12%',
+                      '  ⏵⏵ bypass permissions on (shift+tab to cycle)', '      ○ low · /effort']
 REPLY = {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'OK'}}
 ECHO = {'type': 'event_msg', 'payload': {'type': 'user_message', 'message': 'Continue'}}
 
@@ -78,6 +84,8 @@ class FakeHcom:
         self.injected, self.on_inject = [], None
         self.agents = None  # `hcom list --json` rows; None answers like `hcom list <name>`
         self.launch_failed = None  # data of hcom's launch_failed event for the agent
+        self.term_fails = 0  # first `hcom term` reads that fail as before the terminal exists
+        self.ready = True    # `ready` in `hcom term --json`; False while the agent is busy
 
     def clock(self):
         return self.now
@@ -117,10 +125,11 @@ class FakeHcom:
                 self.on_inject()
             return 0, ''
         if args[0] == 'term':
-            if not self.screens:
-                return 1, "Error: 'kilo' has no terminal registered yet\n"
+            if not self.screens or self.term_fails:
+                self.term_fails = max(self.term_fails - 1, 0)
+                return 1, ''  # hcom writes the error to stderr, which hcom() does not return
             lines = self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
-            return 0, json.dumps({'lines': lines, 'ready': True, 'prompt_empty': True,
+            return 0, json.dumps({'lines': lines, 'ready': self.ready, 'prompt_empty': True,
                                   'input_text': ''})
         if args == ('list', '--json') and self.agents is not None:
             return 0, json.dumps(self.agents)
@@ -240,7 +249,7 @@ class SpawnWatchTests(unittest.TestCase):
         send = fake.sent[0]
         self.assertEqual(send[1], '@vare')
         text = send[-1]
-        self.assertIn('vare-review-kilo', text)
+        self.assertIn('vare-review-kilo (claude) does not match its launch command', text)
         self.assertIn('model: expected claude-sonnet-5-5, screen shows Opus 5.5', text)
         self.assertIn('permission: expected bypass permissions on, screen shows auto mode on', text)
         self.assertNotIn('effort', text)
@@ -281,6 +290,98 @@ class SpawnWatchTests(unittest.TestCase):
         fake = FakeHcom(screens=[['❯', '  ⏵⏵ bypass permissions on']], log=log, stop_after=60)
         self.run_watch(fake)
         self.assertEqual(fake.sent, [])
+
+    def test_busy_agent_read_after_an_early_failed_read_gets_no_notice(self):
+        fake = FakeHcom(screens=[CLAUDE_BUSY_STATUS], stop_after=500)
+        fake.term_fails, fake.ready = 1, False
+        self.run_watch(fake, model='claude-opus-5-5')
+        self.assertEqual(fake.sent, [])
+
+    def test_later_screen_reads_replace_an_early_could_not_be_read_reason(self):
+        fake = FakeHcom(screens=[CLAUDE_PROMPTED], stop_after=500)
+        fake.term_fails, fake.ready = 1, False
+        self.run_watch(fake)
+        text = fake.sent[0][-1]
+        self.assertIn('vare-review-kilo (claude) could not be checked against its launch command',
+                      text)
+        self.assertIn('model: expected claude-sonnet-5-5, could not confirm (not shown on the '
+                      'screen or in the session log within 180s)', text)
+        self.assertNotIn('could not be read', text)
+        self.assertNotIn('does not match', text)
+
+    def test_busy_never_ready_agent_gets_the_model_from_its_session_log(self):
+        log = self.write_log([
+            {'type': 'permission-mode', 'permissionMode': 'bypassPermissions'},
+            {'type': 'assistant', 'message': {'model': 'claude-sonnet-5-5'}, 'effort': 'low'}])
+        fake = FakeHcom(screens=[CLAUDE_PROMPTED], log=log, stop_after=500)
+        fake.ready = False
+        self.run_watch(fake)
+        self.assertEqual(fake.sent, [])
+        self.assertIn(('list', 'vare-review-kilo', '--json'), fake.calls)
+
+    def test_session_log_path_missing_at_first_is_looked_up_again_every_few_seconds(self):
+        log = self.write_log([
+            {'type': 'permission-mode', 'permissionMode': 'bypassPermissions'},
+            {'type': 'assistant', 'message': {'model': 'claude-sonnet-5-5'}, 'effort': 'low'}])
+        fake = FakeHcom(screens=[CLAUDE_PROMPTED], stop_after=500)
+        fake.ready = False
+        answer = fake.__call__
+
+        def hcom(*args, timeout=30):
+            if args[:1] == ('list',) and len(args) == 3:
+                fake.calls.append(args)
+                return 0, json.dumps({'transcript_path': log if fake.now >= 40 else ''})
+            return answer(*args, timeout=timeout)
+
+        hcom.clock, hcom.sleep, hcom.batches = fake.clock, fake.sleep, fake.batches
+        self.run_watch(hcom)
+        self.assertEqual(fake.sent, [])
+        lookups = [call for call in fake.calls if call == ('list', 'vare-review-kilo', '--json')]
+        self.assertTrue(2 <= len(lookups) <= 5, len(lookups))
+
+    def test_busy_never_ready_agent_with_another_model_in_its_session_log_is_a_mismatch(self):
+        log = self.write_log([
+            {'type': 'assistant', 'message': {'model': 'claude-opus-5-5'}, 'effort': 'low'}])
+        fake = FakeHcom(screens=[CLAUDE_PROMPTED], log=log, stop_after=500)
+        fake.ready = False
+        self.run_watch(fake)
+        text = fake.sent[0][-1]
+        self.assertIn('does not match its launch command', text)
+        self.assertIn('model: expected claude-sonnet-5-5, session log shows claude-opus-5-5', text)
+
+    def test_unreadable_screen_and_empty_session_log_is_could_not_check(self):
+        fake = FakeHcom(screens=[], log=self.write_log([]), stop_after=500)
+        self.run_watch(fake)
+        self.assertEqual(len(fake.sent), 1)
+        text = fake.sent[0][-1]
+        self.assertIn('vare-review-kilo (claude) could not be checked against its launch command',
+                      text)
+        self.assertIn('could not confirm (screen could not be read: no output within 180s)', text)
+        self.assertNotIn('does not match', text)
+
+    def test_unreadable_screen_is_confirmed_from_the_session_log_before_the_deadline(self):
+        log = self.write_log([
+            {'type': 'permission-mode', 'permissionMode': 'bypassPermissions'},
+            {'type': 'assistant', 'message': {'model': 'claude-sonnet-5-5'}, 'effort': 'low'}])
+        fake = FakeHcom(screens=[], log=log, stop_after=500)
+        self.run_watch(fake)
+        self.assertEqual(fake.sent, [])
+
+    def test_status_bar_model_that_differs_is_a_mismatch(self):
+        fake = FakeHcom(screens=[CLAUDE_BUSY_STATUS], stop_after=500)
+        fake.ready = False
+        self.run_watch(fake)
+        text = fake.sent[0][-1]
+        self.assertIn('does not match its launch command', text)
+        self.assertIn('model: expected claude-sonnet-5-5, screen shows Opus 5.5', text)
+
+    def test_claude_status_bar_gives_the_model_but_not_the_effort(self):
+        seen = {}
+        self.watch.read_screen('claude', ['  Opus 5.5 M · ~/Morari · Context 3%'], seen)
+        self.assertEqual(seen, {'model': ('Opus 5.5', 'screen')})
+        for line in ('  Step 2 A · notes', '● Opus 5.5 M · quoted', '  Opus 5.5 · ~/x',
+                     '  Opus 5.5 Max · ~/x'):
+            self.assertFalse(self.watch.CLAUDE_STATUS.search(line), line)
 
     def test_agent_blocked_before_the_subscription_existed_is_reported_once(self):
         fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
