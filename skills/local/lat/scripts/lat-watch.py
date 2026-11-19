@@ -833,6 +833,10 @@ def recover_claude_quota(observation, previous, state, orchestrator, workspace, 
         if enter:
             command.append('--enter')
         run_command([*command, '--name', orchestrator])
+        if label == 'continue-Enter':
+            # Traced before anything else can fail once the text is submitted (#682).
+            trace_nudge(log, now, observation.agent, 'quota-continue', observation.wait_active,
+                        state.get('decision') or 'quota-recovery', watcher_identity(log))
         record('key-sent', key=label)
 
     def settled(predicate):
@@ -903,8 +907,6 @@ def recover_claude_quota(observation, previous, state, orchestrator, workspace, 
                 and terminal.get('input_text') == QUOTA_CONTINUE)
         record('verified', prompt=QUOTA_CONTINUE)
         key('continue-Enter', enter=True)
-        trace_nudge(log, now, observation.agent, 'quota-continue', observation.wait_active,
-                    state.get('decision') or 'quota-recovery', watcher_identity(log))
         episode['completed'] = True
         record('completed', text=QUOTA_CONTINUE)
     except (OSError, ValueError) as error:
@@ -2653,8 +2655,12 @@ def perform_capacity_continue(action, orchestrator, workspace=None):
             return {'delivery': 'skipped', 'reason': 'spawn-watch covers the agent'}
         transcript, size = transcript_now(action.agent, orchestrator)
         result = perform_nudge(action, orchestrator, workspace)
-        write_json_atomic(directory / f'{action.agent}.continued.json',
-                          {'at': time.time(), 'transcript': transcript, 'size': size})
+        try:
+            write_json_atomic(directory / f'{action.agent}.continued.json',
+                              {'at': time.time(), 'transcript': transcript, 'size': size})
+        except OSError as error:
+            # Continue was typed: report it delivered so it is traced and not typed again.
+            return {**result, 'continued_marker_error': str(error)}
         return result
     finally:
         os.close(lock)

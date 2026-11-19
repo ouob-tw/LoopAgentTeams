@@ -6811,7 +6811,27 @@ esac
                 watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
         self.assertEqual(self.injected('worker-open'), 1)
 
-    def scenario_capacity_continue(self):
+    def test_capacity_continue_marker_failure_keeps_the_delivery_and_its_trace(self):
+        watch = load_watch()
+        original = watch.write_json_atomic
+
+        def failing(path, *args, **kwargs):
+            if str(path).endswith('.continued.json'):
+                raise OSError('disk full')
+            return original(path, *args, **kwargs)
+
+        with patch.object(watch, 'write_json_atomic', side_effect=failing):
+            self.scenario_capacity_continue(watch=watch, times=(0, 60, 120))
+        received = Path(os.environ['XDG_STATE_HOME']) / 'lat/nudges/worker-open.jsonl'
+        traced = [entry for entry in map(json.loads, received.read_text().splitlines())
+                  if entry['log'].startswith(str(self.root))]
+        self.assertEqual([entry['nudges'] for entry in traced], [['capacity-continue']])
+        [record] = [record for record in self.watch_records()
+                    if record.get('actions') and record['actions'][0]['kind'] == 'capacity-continue']
+        self.assertEqual(record['action_results'][0]['status'], 'done')
+        self.assertEqual(record['action_results'][0]['continued_marker_error'], 'disk full')
+
+    def scenario_capacity_continue(self, watch=None, times=(0, 60)):
         """A Codex agent on the model-capacity screen gets Continue typed by run_cycle."""
         lines = json.dumps(self.CAPACITY_LINES)
         self.install_hcom(
@@ -6825,7 +6845,7 @@ esac
             f'\'{{"ready":true,"prompt_empty":true,"input_text":"","lines":{lines}}}\';;\n'
             'events) printf \'%s\\n\' \'{"id":1,"type":"status"}\';;\n'
             'esac\n')
-        self.run_cycles(load_watch(), 0, 60)
+        self.run_cycles(watch or load_watch(), *times)
         self.assertEqual(len(self.typed_sends(self.hcom_log)), 1)
 
     @staticmethod
@@ -8085,6 +8105,23 @@ class ClaudeQuotaRecoveryTests(unittest.TestCase):
 
     def records(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def test_submitted_continue_is_traced_even_if_the_step_log_then_fails(self):
+        self.log = self.root / '.lat/watch/orch/watch.jsonl'
+        self.log.parent.mkdir(parents=True)
+        original = self.watch.append_log
+
+        def failing(path, record):
+            if record.get('step') == 'key-sent' and record.get('key') == 'continue-Enter':
+                raise OSError('log disk full')
+            return original(path, record)
+
+        with patch.object(self.watch, 'append_log', side_effect=failing):
+            self.recover()
+        received = Path(os.environ['XDG_STATE_HOME']) / 'lat/nudges/worker.jsonl'
+        traced = [entry for entry in map(json.loads, received.read_text().splitlines())
+                  if entry['log'] == str(self.log)]
+        self.assertEqual([entry['nudges'] for entry in traced], [['quota-continue']])
 
     def test_both_real_menu_shapes_all_cursor_positions(self):
         for name, count in [('manual', 3), ('exhausted', 4)]:
