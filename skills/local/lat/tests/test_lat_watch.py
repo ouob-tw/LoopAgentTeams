@@ -6585,15 +6585,15 @@ esac
         self.assertEqual(process.stdout.readline().strip(), 'ready')
         return process
 
-    def start_old_watcher(self, orchestrator, workspace=None):
+    def start_old_watcher(self, orchestrator, workspace=None, env=None):
         """A watcher from before claims (#682): the `lat-watch.py run` command line in its
-        own process group, never writing a claim."""
+        own process group, never writing a claim; it shares this test's host state."""
         workspace = workspace or self.work
         process = subprocess.Popen(
             [sys.executable, '-c', 'import time; time.sleep(300)', str(SCRIPT), 'run',
              '--workspace', str(workspace), '--orchestrator', orchestrator,
              '--tasks', str(self.tasks), '--decisions', str(workspace / '.lat/decisions')],
-            start_new_session=True)
+            env=env or self.env, start_new_session=True)
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
         return process
@@ -6653,23 +6653,49 @@ esac
         first = self.start_watcher(self.work, 'orch', self.tasks, decisions)
         claim = json.loads((self.root / 'state/lat/watchers/orch.json').read_text())
         self.assertEqual(claim['pid'], first.pid)
+        # A second, newer watcher for orch runs half an hour of cycles meanwhile.
+        second = self.start_watcher(self.work, 'orch', self.tasks, decisions,
+                                    times=range(60, 1801, 60))
+        self.stop_watcher(second)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (0, 0))
+        [duplicate] = [record for record in self.watch_records()
+                       if record.get('decision') == 'duplicate-watcher']
+        self.assertEqual((duplicate['holder']['pid'], duplicate['watcher']['pid']),
+                         (first.pid, second.pid))
+        # A stale first watcher that ended no longer blocks: the next one takes over.
+        self.stop_watcher(first)
         watch = load_watch()
         with patch.dict(os.environ, self.env):
-            for now in range(60, 1801, 60):
-                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
-            self.assertEqual((self.injected('orch'), self.injected('worker-open')), (0, 0))
-            [duplicate] = [record for record in self.watch_records()
-                           if record.get('decision') == 'duplicate-watcher']
-            self.assertEqual(duplicate['holder']['pid'], first.pid)
-            self.assertEqual(duplicate['watcher']['pid'], os.getpid())
-            # A stale first watcher that ended no longer blocks: this one takes over.
-            self.stop_watcher(first)
             for now in range(1860, 2521, 60):
                 watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
         self.assertEqual((self.injected('orch'), self.injected('worker-open')), (1, 1))
         claim = json.loads((self.root / 'state/lat/watchers/orch.json').read_text())
         self.assertEqual(claim['pid'], os.getpid())
         self.assertEqual({line['watcher']['pid'] for line in self.nudge_lines()}, {os.getpid()})
+
+    def test_older_watcher_acts_even_after_a_newer_one_claimed_first(self):
+        # This test process is older than any watcher it starts; the oldest acts, so a
+        # newer claim holder does not leave both watchers waiting on each other.
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        newer = self.start_watcher(self.work, 'orch', self.tasks, decisions)
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            for now in range(60, 661, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (1, 1))
+        claim = json.loads((self.root / 'state/lat/watchers/orch.json').read_text())
+        self.assertEqual(claim['pid'], os.getpid())
+        # The newer watcher, still running, now stays quiet beside the older holder.
+        self.stop_watcher(newer)
+        later = self.start_watcher(self.work, 'orch', self.tasks, decisions,
+                                   times=range(720, 2521, 60))
+        self.stop_watcher(later)
+        self.assertEqual((self.injected('orch'), self.injected('worker-open')), (1, 1))
+        holders = [record['holder']['pid'] for record in self.watch_records()
+                   if record.get('decision') == 'duplicate-watcher']
+        self.assertEqual(holders, [os.getpid()])
 
     def test_owned_agent_already_nudged_here_is_not_escalated(self):
         # Nudged once by this watcher, the agent then starts its own round and watcher.
@@ -6741,10 +6767,10 @@ esac
         decisions.mkdir()
         blocked = self.root / 'state-file'
         blocked.write_text('not a directory')
-        old = self.start_old_watcher('orch')
+        env = dict(self.env, XDG_STATE_HOME=str(blocked))
+        old = self.start_old_watcher('orch', env=env)
         new = self.start_watcher(self.work, 'orch', self.tasks, decisions,
-                                 times=range(0, 1801, 60),
-                                 env=dict(self.env, XDG_STATE_HOME=str(blocked)))
+                                 times=range(0, 1801, 60), env=env)
         self.stop_watcher(new)
         self.stop_watcher(old)
         self.assertEqual((self.injected('orch'), self.injected('worker-open')), (0, 0))
@@ -6770,6 +6796,19 @@ esac
                              ('nudge-left-to-own-watcher', own.pid, str(other)))
             self.stop_watcher(own)
             watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=1260)
+        self.assertEqual(self.injected('worker-open'), 1)
+
+    def test_watcher_with_another_host_state_is_ignored(self):
+        # Another test run (its own XDG_STATE_HOME) watching the same names changes nothing.
+        self.sender_environment()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        elsewhere = dict(self.env, XDG_STATE_HOME=str(self.root / 'elsewhere'))
+        self.start_old_watcher('worker-open', env=elsewhere)
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            for now in range(0, 601, 60):
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
         self.assertEqual(self.injected('worker-open'), 1)
 
     def test_agent_with_its_own_watcher_is_nudged_only_by_that_watcher(self):
