@@ -97,8 +97,10 @@ test.skipIf(!CHROME)('page modules that stay gone reload the page only once', as
 	await Bun.sleep(3_000);
 	expect(await tab.eval<number>(LOADS)).toBe(2);
 	expect(await tab.eval<boolean>(`document.body?.dataset.hydrated !== undefined`)).toBe(false);
-	// Its error handlers did run, and reported the failure, but did not reload.
-	expect(logged(fixture.serverOutput().slice(from), 'client_error').some((line) => line.exc_message === 'failed to load a module')).toBe(true);
+	// Its error handlers did run, and reported the failure with the page's route, but did not reload.
+	const failures = logged(fixture.serverOutput().slice(from), 'client_error').filter((line) => line.exc_message === 'failed to load a module');
+	expect(failures.length).toBeGreaterThan(0);
+	for (const line of failures) expect(line.route).toBe(line.url as string);
 }, TEST_MS);
 
 test.skipIf(!CHROME)('a page loaded again that works, and then finds a module gone soon after, does not reload again', async () => {

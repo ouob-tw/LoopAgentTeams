@@ -293,6 +293,16 @@ test('the source maps are built but never served, and no served script names one
 	expect(await hidden.text()).not.toContain('"mappings"');
 });
 
+test("a report sent before SvelteKit started has no route: it gets its page's, and none for any other address", async () => {
+	const device = await fixture.login('route-from-path');
+	mark = fixture.serverOutput().length;
+	const { route: _, ...early } = report();
+	for (const url of [at('/login'), `${at('/')}?password=${PASSWORD}#x`, at('/not-a-page'), 'http://elsewhere.example/login'])
+		expect((await post('/api/client-error', { ...early, url }, { cookie: device })).status).toBe(204);
+	expect((await waitLines('client_error', 4)).map((line) => line.route ?? null)).toEqual(['/login', '/', null, null]);
+	expect(output()).not.toContain(PASSWORD);
+});
+
 test('known engine messages are logged by their canonical text, never with what they name', async () => {
 	const messages = {
 		"Cannot read properties of undefined (reading 'secret-answer-1')": 'cannot read a property of undefined',

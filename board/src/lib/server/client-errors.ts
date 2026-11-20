@@ -167,6 +167,20 @@ function pagePath(value: unknown, host: string): string | null {
 /** The board's routes (SvelteKit route ids of src/routes' pages). */
 export const ROUTES = new Set(['/', '/login', '/login/test']);
 
+/** The route a report names; one sent before SvelteKit started (a page whose scripts would not
+ *  load) has none, and gets its address's: the board's routes have no parameters, so a page's
+ *  route id is its path. */
+function routeOf(report: Record<string, unknown>, host: string): string | null {
+	if (report.route != null) return listed(report.route, ROUTES);
+	if (typeof report.url !== 'string') return null;
+	try {
+		const url = new URL(report.url);
+		return url.host === host && ROUTES.has(url.pathname) ? url.pathname : null;
+	} catch {
+		return null;
+	}
+}
+
 const listed = (value: unknown, known: Set<string>) => (typeof value === 'string' && known.has(value) ? value : value == null ? null : OMITTED);
 
 interface ClientErrorLimit {
@@ -204,7 +218,7 @@ export async function logClientError(
 		exc_message: knownMessage(report.message),
 		traceback: stackFrames(report.stack, host),
 		url: pagePath(report.url, host),
-		route: listed(report.route, ROUTES),
+		route: routeOf(report, host),
 		user_agent: agent && agent.length > MAX_USER_AGENT ? agent.slice(0, MAX_USER_AGENT) + TRUNCATED : agent
 	};
 	for (const [key, value] of Object.entries(fields)) if (value) fields[key] = await redact(value);
