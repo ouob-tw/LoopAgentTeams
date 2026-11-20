@@ -1,0 +1,29 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/hooks.client.ts",
+        "board/src/lib/board/module-reload.ts",
+        "board/src/lib/server/client-errors.ts",
+        "board/src/lib/server/source-maps.ts",
+        "board/src/routes/api/client-error/**",
+        "board/vite.config.ts",
+        "board/tests/unit/client-error-routes.test.ts",
+        "board/tests/unit/module-reload.test.ts",
+        "board/tests/unit/source-maps.test.ts",
+        "board/tests/browser/client-error-page.test.ts",
+        "board/tests/browser/module-reload-page.test.ts",
+        "board/tests/browser/history-info-lost.test.ts"
+      ],
+      "tests": [
+        "board/tests/unit/client-error-routes.test.ts",
+        "board/tests/unit/module-reload.test.ts",
+        "board/tests/unit/source-maps.test.ts",
+        "board/tests/server/server-log.test.ts",
+        "board/tests/browser/client-error-page.test.ts",
+        "board/tests/browser/module-reload-page.test.ts",
+        "board/tests/browser/history-info-lost.test.ts"
+      ]
+    }
+  ]
+}
