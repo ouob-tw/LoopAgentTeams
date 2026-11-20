@@ -12,11 +12,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import unittest.mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-ledger.py'
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cached_script  # noqa: E402
+import in_process  # noqa: E402
 NOW = '2026-10-24T10:00:00Z'
 FP = 'f00dfeed' * 8
 
@@ -37,36 +37,7 @@ print(json.dumps({'state': 'open', 'labels': [], 'title': title}))
 '''
 
 
-def load_ledger():
-    sys.path.insert(0, str(SCRIPT.parent))
-    spec = importlib.util.spec_from_file_location('lat_ledger_cli', SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-LEDGER = load_ledger()
-
-
-def run_in_process(argv, environment):
-    """Run `lat-ledger.py *argv` in this process with exactly `environment`, as
-    subprocess.run(..., capture_output=True, text=True) would report it. Starting Python per
-    command was most of this file's time (ouob-tw/LoopAgentTeams-work#632); the tests that
-    run an older copy of the script, or a second writer, still start it for real.
-
-    Writes skip the flush to disk (os.fstat only checks the handle): no test can observe it,
-    it was a third of the remaining time, and test_lat_common covers the flushes themselves."""
-    out, err = io.StringIO(), io.StringIO()
-    with unittest.mock.patch.dict(os.environ, environment, clear=True), \
-            unittest.mock.patch.object(os, 'fsync', os.fstat), \
-            unittest.mock.patch.object(sys, 'argv', [str(SCRIPT), *map(str, argv)]), \
-            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        try:
-            code = LEDGER.main()
-        except SystemExit as stop:  # argparse refusing the arguments
-            code = stop.code if isinstance(stop.code, int) else (0 if stop.code is None else 1)
-    return subprocess.CompletedProcess([str(SCRIPT), *map(str, argv)], code, out.getvalue(),
-                                       err.getvalue())
+LEDGER = in_process.load(SCRIPT, 'lat_ledger_cli')
 
 
 def git(cwd, *args):
@@ -150,7 +121,7 @@ class LedgerCase(unittest.TestCase):
         environment.pop('SUITE_GATE_CONFIG', None)
         command, *rest = args
         if script is None:
-            return run_in_process([command, '--ledger', self.ledger, *rest], environment)
+            return in_process.run(LEDGER, [command, '--ledger', self.ledger, *rest], environment)
         return subprocess.run(cached_script.command(script, command, '--ledger', self.ledger,
                                                     *rest), capture_output=True, text=True, env=environment,
                               timeout=60)
