@@ -207,7 +207,7 @@ class SpawnWatchTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.watch = load()
         self.watch.herdr = FakeHerdr()
-        self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.3, 0.01
+        self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.05, 0.01
 
     def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low', tag=None,
                   launched=None, extra=()):
@@ -541,7 +541,7 @@ class SpawnWatchTests(unittest.TestCase):
             with self.subTest(wrong=wrong):
                 self.watch = load()
                 self.watch.herdr = FakeHerdr()
-                self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.3, 0.01
+                self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.05, 0.01
                 entry = {'model': 'claude-opus-5-5', 'effort': 'medium', **found}
                 log = self.write_log([
                     {'type': 'permission-mode', 'permissionMode': 'bypassPermissions'},
@@ -1000,7 +1000,7 @@ class FailedLaunchTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.watch = load()
-        self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.3, 0.01
+        self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.05, 0.01
         self.proc = Path(self.state.name) / 'proc'
         self.proc.mkdir()
         self.watch.PROC = self.proc
@@ -1564,7 +1564,7 @@ class CapacityWatchTests(unittest.TestCase):
     def run_codex(self, fake):
         watch = load()
         watch.herdr = FakeHerdr()
-        watch.LABEL_WAIT, watch.LABEL_POLL = 0.3, 0.01
+        watch.LABEL_WAIT, watch.LABEL_POLL = 0.05, 0.01
         watch.hcom, watch.clock, watch.sleep = fake, fake.clock, fake.sleep
         watch.process_ids = lambda: {'kilo': 'kilo'}
         watch.launched_with = lambda tool, process_id: ('gpt-6.1-sol', 'low')
@@ -1623,7 +1623,7 @@ class CapacityWatchTests(unittest.TestCase):
     def test_claude_agents_are_not_marked_or_checked_for_capacity(self):
         watch = load()
         watch.herdr = FakeHerdr()
-        watch.LABEL_WAIT, watch.LABEL_POLL = 0.3, 0.01
+        watch.LABEL_WAIT, watch.LABEL_POLL = 0.05, 0.01
         fake = FakeHcom(screens=[CLAUDE_START, CAPACITY_SCREEN], stop_after=400)
         watch.hcom, watch.clock, watch.sleep = fake, fake.clock, fake.sleep
         watch.process_ids = lambda: {'kilo': 'kilo'}
