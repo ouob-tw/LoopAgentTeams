@@ -2,12 +2,11 @@
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/host-guard.py'
+from hook_runner import run_hook
 
 MACHINES = {'machines': {
     'win': {'container': 'vm-win-1', 'memory_gb': 16, 'ports': {'web': 8006, 'ssh': 2222},
@@ -53,8 +52,7 @@ class VmCase(unittest.TestCase):
                 full.pop(key, None)
             else:
                 full[key] = value
-        return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
-                              env=full, capture_output=True, text=True)
+        return run_hook(payload, full)
 
     def bash(self, command, cwd=None, **env):
         return self.hook({'tool_name': 'Bash', 'cwd': str(cwd or self.work),

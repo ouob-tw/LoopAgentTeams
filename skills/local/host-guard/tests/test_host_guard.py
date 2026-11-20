@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import os
 import subprocess
@@ -7,17 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/host-guard.py'
-
-
-def load():
-    spec = importlib.util.spec_from_file_location('host_guard', SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-guard = load()
+from hook_runner import SCRIPT, guard, run_hook
 
 
 class HookCase(unittest.TestCase):
@@ -31,9 +20,7 @@ class HookCase(unittest.TestCase):
                                            'max_load_cores': 4}))
 
     def hook(self, payload):
-        env = dict(os.environ, HOST_GUARD_CONFIG=str(self.config))
-        return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
-                              env=env, capture_output=True, text=True)
+        return run_hook(payload, dict(os.environ, HOST_GUARD_CONFIG=str(self.config)))
 
     def bash(self, command, cwd=None):
         return self.hook({'tool_name': 'Bash', 'cwd': str(cwd or self.tmp),
@@ -87,6 +74,16 @@ class ScanTests(HookCase):
         bad = subprocess.run([sys.executable, str(SCRIPT), 'hook'], input='not json',
                              capture_output=True, text=True)
         self.assertEqual(bad.returncode, 0)
+
+    def test_the_script_itself_blocks_with_exit_2(self):
+        # The other cases call the hook in-process; this one runs it as the clients do.
+        env = dict(os.environ, HOST_GUARD_CONFIG=str(self.config))
+        payload = {'tool_name': 'Bash', 'cwd': str(self.tmp),
+                   'tool_input': {'command': 'find / -name x'}}
+        real = subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
+                              env=env, capture_output=True, text=True)
+        self.assert_blocked(real, 'scans the whole filesystem')
+        self.assertEqual(real.stderr, self.hook(payload).stderr)
 
 
 class LoadTests(HookCase):
@@ -154,8 +151,7 @@ class TestRunTests(HookCase):
     def run_hook(self, command, env=None):
         full = dict(os.environ, HOST_GUARD_CONFIG=str(self.config), **(env or self.env))
         payload = {'tool_name': 'Bash', 'cwd': str(self.tmp), 'tool_input': {'command': command}}
-        return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
-                              env=full, capture_output=True, text=True)
+        return run_hook(payload, full)
 
     def test_unlimited_runners_are_blocked(self):
         for command in ['bun test tests/unit/panel.test.js', 'nice bun run test',
@@ -352,8 +348,7 @@ class DeleteTests(HookCase):
         env = {k: v for k, v in os.environ.items()
                if k not in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_STATE_HOME')}
         env.update(HOME=str(self.tmp), HOST_GUARD_CONFIG=str(self.config), **self.extra_env)
-        return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
-                              env=env, capture_output=True, text=True)
+        return run_hook(payload, env)
 
     extra_env = {}
 
@@ -467,9 +462,8 @@ class SkillsAddTests(HookCase):
         (self.home / 'other/skills').mkdir(parents=True)
 
     def hook(self, payload):
-        env = dict(os.environ, HOST_GUARD_CONFIG=str(self.config), HOME=str(self.home))
-        return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
-                              env=env, capture_output=True, text=True)
+        return run_hook(payload, dict(os.environ, HOST_GUARD_CONFIG=str(self.config),
+                                      HOME=str(self.home)))
 
     def test_installs_from_the_repo_are_blocked(self):
         for command, cwd in [

@@ -16,6 +16,7 @@ import unittest
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-ledger.py'
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cached_script  # noqa: E402
+import in_process  # noqa: E402
 NOW = '2026-10-24T10:00:00Z'
 FP = 'f00dfeed' * 8
 
@@ -34,6 +35,9 @@ if not title:
     sys.stderr.write('gh: Not Found (HTTP 404)\n'); sys.exit(1)
 print(json.dumps({'state': 'open', 'labels': [], 'title': title}))
 '''
+
+
+LEDGER = in_process.load(SCRIPT, 'lat_ledger_cli')
 
 
 def git(cwd, *args):
@@ -116,7 +120,9 @@ class LedgerCase(unittest.TestCase):
                        **(env or {})}
         environment.pop('SUITE_GATE_CONFIG', None)
         command, *rest = args
-        return subprocess.run(cached_script.command(script or SCRIPT, command, '--ledger', self.ledger,
+        if script is None:
+            return in_process.run(LEDGER, [command, '--ledger', self.ledger, *rest], environment)
+        return subprocess.run(cached_script.command(script, command, '--ledger', self.ledger,
                                                     *rest), capture_output=True, text=True, env=environment,
                               timeout=60)
 

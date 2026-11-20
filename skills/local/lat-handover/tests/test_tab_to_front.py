@@ -126,7 +126,7 @@ class TabToFrontTests(unittest.TestCase):
 
     def test_silent_server_times_out(self):
         module = load()
-        module.TIMEOUT_SECONDS = 0.3
+        module.TIMEOUT_SECONDS = 0.05
         # A listening socket that never accepts or answers.
         silent = os.path.join(self.tmp.name, 'silent.sock')
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

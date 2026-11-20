@@ -1,7 +1,7 @@
 // The refresh button in a real browser, on a board the test stops and starts: while the link is
 // down it is red on every layout and nothing else says so; a refresh that fails then, or for want
 // of an answer, is quiet, and one the server fails is a notice; its icon makes a whole turn.
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { question, sleep, startFixture, type Fixture } from '../harness.ts';
 import { launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
@@ -20,21 +20,36 @@ const button = async () => {
 	return tab.eval<{ offline: boolean; color: string; label: string; title: string }>(`(() => { const b = ${SHOWN}[0]; return { offline: b.classList.contains('offline'), color: getComputedStyle(b.querySelector('svg')).color, label: b.ariaLabel, title: b.title }; })()`);
 };
 const idle = () => tab.until(`!document.querySelector('button.tool.spinning')`, 'the refresh to end');
-/** Click the refresh button; the most of a turn its icon got to, and how it ended. */
+/**
+ * Click the refresh button; how far its icon had turned when it stopped, and how it ended. The
+ * turn is read when the button loses `spinning`, as the time since the animation started: a
+ * sample per frame can land up to a frame before the stop, short of a turn the icon did make.
+ */
 const spin = () =>
 	tab.eval<Promise<{ turned: number; turning: number }>>(`new Promise((resolve) => {
 		const b = ${SHOWN}[0];
+		let animation = null, turned = 0;
+		const done = () => (stop.disconnect(), resolve({ turned, turning: b.querySelector('svg').getAnimations().length }));
+		const stop = new MutationObserver(() => {
+			if (b.classList.contains('spinning') || !animation) return;
+			turned = performance.now() - animation.startTime;
+			done();
+		});
+		stop.observe(b, { attributes: true, attributeFilter: ['class'] });
 		b.click();
-		let turned = 0;
+		const started = performance.now();
 		const look = () => {
 			const running = b.querySelector('svg').getAnimations()[0];
-			if (running) turned = Math.max(turned, running.currentTime);
-			if (b.classList.contains('spinning') || !turned) { if (performance.now() - started < 5000) return requestAnimationFrame(look); }
-			resolve({ turned, turning: b.querySelector('svg').getAnimations().length });
+			if (running && running.startTime !== null) animation = running;
+			if (performance.now() - started > 5000) return done();
+			if (!turned) requestAnimationFrame(look);
 		};
-		const started = performance.now();
 		requestAnimationFrame(look);
 	})`);
+/** Stop and start the test's board; a stopped one is started again after the test, pass or fail. */
+let down = false;
+const stopBoard = async () => ((down = true), await fixture.stop());
+const startBoard = async () => (await fixture.start(), (down = false));
 
 beforeAll(async () => {
 	fixture = await startFixture();
@@ -49,6 +64,9 @@ beforeAll(async () => {
 	await size(1280, 800);
 	await tab.navigate(`${fixture.url}/`);
 	await tab.boardStarted();
+}, TEST_MS);
+afterEach(async () => {
+	if (down) await startBoard();
 }, TEST_MS);
 afterAll(async () => {
 	await browser?.close();
@@ -101,7 +119,7 @@ test('while the link is down the button is red on every layout, nothing else say
 	const usual = await button();
 	expect(usual).toMatchObject({ offline: false, label: '重新整理', title: '立即重新讀取所有資料' });
 
-	await fixture.stop();
+	await stopBoard();
 	await tab.until(`document.querySelector('button.tool.offline')`, 'the button to turn red', 15_000);
 	const red = await button();
 	expect(red).toMatchObject({ offline: true, label: '連線中斷，重新整理' });
@@ -132,7 +150,7 @@ test('while the link is down the button is red on every layout, nothing else say
 	expect(await tab.eval<string>(NOTICES)).toBe('');
 	expect((await button()).offline).toBe(true);
 
-	await fixture.start();
+	await startBoard();
 	await tab.until(`!document.querySelector('button.tool.offline')`, 'the button its own colour again', 15_000);
 	expect((await button()).color).toBe(usual.color);
 	expect(await tab.eval<string>(NOTICES)).toBe('');
@@ -162,7 +180,7 @@ test('a read of the page that failed is quiet while the link is down, comes back
 	await tab.eval(`window.failMark = false; window.markTries = 0`);
 
 	// Opened while down: its read fails with no answer, and nothing says so.
-	await fixture.stop();
+	await stopBoard();
 	await tab.until(`document.querySelector('button.tool.offline')`, 'the link down', 15_000);
 	expect(await tab.eval<string>(NOTICES)).toBe('');
 
@@ -182,18 +200,18 @@ test('a read of the page that failed is quiet while the link is down, comes back
 	// Back up and it still fails: now it says so.
 	await tab.eval(`window.failMessages = true`);
 	const failedReads = await reads();
-	await fixture.start();
+	await startBoard();
 	await tab.until(`window.messageReads > ${failedReads}`, 'the read tried again', 15_000);
 	await tab.until(`${NOTICES}.includes(${JSON.stringify(SENT)})`, 'the notice after a read that still fails', 15_000);
 
 	// Down again: taken away, and with reads working again it does not come back.
-	await fixture.stop();
+	await stopBoard();
 	await tab.until(`!${NOTICES}`, 'the notice taken away while down', 15_000);
 	await tab.eval(`window.failMessages = false`);
 	const before = await reads();
 	// Every notice shown from here on, however short.
 	await tab.eval(`window.notices = []; new MutationObserver(() => window.notices.push(${NOTICES})).observe(document.querySelector('.dock'), { childList: true, subtree: true, characterData: true })`);
-	await fixture.start();
+	await startBoard();
 	await tab.until(`window.messageReads > ${before} && !document.querySelector('button.tool.offline')`, 'the read tried again', 15_000);
 	await sleep(300);
 	expect(await tab.eval<string>(NOTICES)).toBe('');

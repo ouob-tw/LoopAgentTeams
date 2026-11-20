@@ -263,7 +263,8 @@ test.skipIf(!CHROME)("a touch phone: a closed agent's 終端 tab hides the top b
 	await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-week` });
 	await tab.until(`!!document.querySelector('.detail [data-closed-agent]')`, 'the closed agent');
-	await sleep(500);
+	// The tab is tapped only once the page's scripts run: a tap before hydration does nothing.
+	await tab.boardStarted();
 	expect(await barShown()).toBe(true);
 	await openScreen();
 	await tab.until(`!!document.querySelector('.detail .screen-bar .back')`, 'the folded card');
@@ -291,7 +292,8 @@ test.skipIf(!CHROME)("a touch phone: a closed agent's 終端 tab hides the top b
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: false });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-week` });
 	await tab.until(`!!document.querySelector('.detail [data-closed-agent]')`, 'the closed agent');
-	await sleep(500);
+	// The tab is tapped only once the page's scripts run: a tap before hydration does nothing.
+	await tab.boardStarted();
 	await openScreen();
 	await tab.until(`!!document.querySelector('.detail .screen-bar')`, 'the folded card');
 	expect(await barShown()).toBe(true);
