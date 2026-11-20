@@ -11,11 +11,15 @@ let fixture: Fixture;
 let cookie: string;
 let work: string;
 
+/** The board's clock for this whole file, held still. Times written into the record by hand come
+ *  from it, never from the real clock, which keeps moving past it. */
+const BOARD_NOW = Date.UTC(2026, 10, 19, 17);
+
 beforeAll(async () => {
 	fixture = await startFixture();
 	// Friday 2026-11-20 01:00 in Taipei: outside every window these tasks have and before the daily
 	// one's time, so the scheduler starts none of them whatever day the tests run on.
-	fixture.setClock(Date.UTC(2026, 10, 19, 17));
+	fixture.setClock(BOARD_NOW);
 	cookie = await fixture.login();
 	work = join(fixture.dir, 'work');
 	mkdirSync(join(work, 'docs'), { recursive: true });
@@ -356,7 +360,8 @@ test('after a restart: a broken file is an error, a half-written temporary is ig
 	writeFileSync(join(automationDir(), 'broken1234.json'), '{"id": "broken1234", "name": "壞');
 	writeFileSync(join(automationDir(), 'abcdef0123.json.4242.ab12cd.tmp'), '{"id": "abcdef0123", "na');
 	writeFileSync(join(automationDir(), 'nested0001.json'), JSON.stringify({ ...commandTask({ name: '少欄位' }, { folder: undefined }), id: 'nested0001', paused: false, createdAt: 'x', updatedAt: 'x' }));
-	appendFileSync(join(automationDir(), 'runs', `${task.id}.jsonl`), JSON.stringify({ id: 'cut-1', taskId: task.id, trigger: 'manual', period: '2026-11', startedAt: Date.now(), status: 'running', pid: 999999 }) + '\n' + '{"id":"torn');
+	// Started a minute before the restart by the board's clock, so the run after the restart is newer.
+	appendFileSync(join(automationDir(), 'runs', `${task.id}.jsonl`), JSON.stringify({ id: 'cut-1', taskId: task.id, trigger: 'manual', period: '2026-11', startedAt: BOARD_NOW - 60_000, status: 'running', pid: 999999 }) + '\n' + '{"id":"torn');
 	await fixture.start();
 	const after = await snapshot();
 	expect(after.broken).toEqual([
