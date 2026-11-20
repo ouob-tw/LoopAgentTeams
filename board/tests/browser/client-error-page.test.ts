@@ -41,8 +41,14 @@ test.skipIf(!CHROME)('a page that renders into Internal Error logs the error cod
 	const [line] = await waitFor(() => reports(from).length > 0 && reports(from), 10_000, 'the browser error in the log');
 
 	expect(await evaluate<string>('document.body.innerText')).toContain('Internal Error');
-	expect(line).toMatchObject({ level: 'ERROR', logger: 'board.client', kind: 'handleError', exc_type: 'Error', exc_message: 'svelte:each_key_duplicate', url: '/' });
-	expect(String(line.traceback)).toMatch(/^at \/_app\/immutable\/\S+\.js:\d+:\d+(\nat \/_app\/immutable\/\S+\.js:\d+:\d+)*$/);
+	expect(line).toMatchObject({ level: 'ERROR', logger: 'board.client', kind: 'handleError', exc_type: 'Error', exc_message: 'svelte:each_key_duplicate', url: '/', route: '/' });
+	// Each frame is the built script's place, with the source file it came from where its map says.
+	const frames = String(line.traceback).split('\n');
+	for (const frame of frames) expect(frame).toMatch(/^at (\S+:\d+:\d+ \()?\/_app\/immutable\/\S+\.js:\d+:\d+\)?$/);
+	// The list's own component, and the page's frames past Chrome's ten, under Svelte's own.
+	const own = (pattern: RegExp) => frames.flatMap((frame, index) => (pattern.test(frame) ? [index] : []));
+	expect(own(/^at src\/lib\/components\/Inbox\.svelte:\d+:\d+ /).length).toBeGreaterThan(0);
+	expect(Math.max(...own(/^at src\/routes\/\+page\.svelte:\d+:\d+ /))).toBeGreaterThanOrEqual(10);
 	expect(String(line.user_agent)).toContain('Chrome');
 }, 30_000);
 

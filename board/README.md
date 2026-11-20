@@ -428,6 +428,8 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 主控資訊頁的 Herdr 位置（在「詳細資料」裡）以工作區與分頁的名稱和第幾個顯示，由 `GET /api/herdr-place?controller=<ID>`（要登入）讀 `herdr workspace list` 與 `herdr tab list`；分頁的第幾個依清單順序計算，每次看板資料更新時重讀；看板移動接回分頁不會改變看板資料，所以移動成功後另外推送 `tab-moved` 事件，開著的頁面收到就重讀。
 - 開著的畫面寫在網址裡（`?item=<key>`、`?controller=<ID>`、`?launch`、`?agent=<session ID>`），瀏覽器歷史紀錄照層級記，最多三筆：列表、Agent 或主控頁（含兩個新增表單）、從它們打開的項目（`src/lib/board/navigation.ts`）。主控的 Agent 頁就地打開項目時，網址是 `?agent=<session ID>&item=<key>`，也算項目那一層；不在待辦時先往前讀已處理的項目，都找不到才退到 Agent 頁。從中間欄打開項目，或跳到另一個 Agent、主控時，先退回列表那一筆再加一筆，所以前面還留著的紀錄會一起清掉，往前也回不到舊的順序；中間那一下不會顯示列表。退到待辦列表時的捲動位置記在列表那一筆歷史紀錄裡，重新整理後也找得回來；不在待辦的項目會在「已處理」往前讀更早的頁找到為止；從別處直接開帶畫面的網址時，在它前面補一筆待辦列表。只為重新整理與返回使用，不保證網址拿到其他裝置的行為。
 - 從別的網頁以整頁載入來到看板、再按「上一頁」回來時頁面會重新載入，不瞬間還原：瀏覽器暫存的離開頁面會一直占著即時連線，純 HTTP/1.1 下同一主機最多 6 條，幾頁暫存頁就會讓目前這頁的請求（翻譯、傳話、載入更早）一直卡住，所以離開時暫存頁面就結束連線（`src/hooks.client.ts`）。看板內點擊切換不受影響。
+- 舊分頁要載入的程式檔已不存在（重新建置後）或下載中斷時，頁面自動重新整理一次（`src/lib/board/module-reload.ts`）；重新整理後 60 秒內又失敗就停在錯誤畫面，不會一直重新整理。
+- SvelteKit 3.0.1 在「上一頁／下一頁」進到它沒記錄的歷史項目後會丟 `cannot set a property of undefined` 並卡住換頁（[sveltejs/kit#17500](https://github.com/sveltejs/kit/issues/17500)，修正 [#17671](https://github.com/sveltejs/kit/pull/17671) 尚未合併）。看板以 `patches/@sveltejs%2Fkit@3.0.1.patch`（`package.json` 的 `patchedDependencies`）套上同樣的修正，`bun install` 時自動套用；升級 SvelteKit 時確認新版已含修正再拿掉這個 patch。
 - 用量列樣式與對話翻譯偏好由看板統一保存、所有裝置共用；其餘版面設定只記在各自裝置的瀏覽器裡（清單見使用說明）。
 
 ## 錯誤紀錄
@@ -445,13 +447,15 @@ journalctl --user -u lat-board -o cat | grep '"message":"client_error"' | jq .
 | --- | --- | --- |
 | `http_error` | 任何 API 或頁面回應狀態 ≥ 500（例如輔助工具失敗的 502、寫不進送出紀錄的 500），也包括看板自己在處理請求前就出錯的 500 | `method`、`path`、`status`，以及回應裡的 `reason`、`error`、`logError`、`detail`（SvelteKit 錯誤頁的訊息），各最多 2000 字 |
 | `unhandled_error` | 伺服器端沒被處理的例外（同一請求另有一行 500 的 `http_error`，連 SvelteKit 在請求處理前就失敗也是） | `method`、`path`、`exc_type`、`exc_message`、`traceback` |
-| `client_error` | 瀏覽器端的錯誤：頁面變成 Internal Error、或沒被處理的 `error`／`unhandledrejection`，由頁面送到 `POST /api/client-error` | `kind`、`exc_type`、`exc_message`、`traceback`、`url`、`user_agent`、`device_id`；內容見下 |
+| `client_error` | 瀏覽器端的錯誤：頁面變成 Internal Error、沒被處理的 `error`／`unhandledrejection`、或 Vite 預載程式檔失敗（`preloadError`），由頁面送到 `POST /api/client-error` | `kind`、`exc_type`、`exc_message`、`traceback`、`url`、`route`、`user_agent`、`device_id`；內容見下 |
 | `transcript_push_failed` | 對話紀錄有更新時，送給某個開著的頁面出錯（同一段對話的其他頁面照常收到） | `client`、`session_id`、`exc_type`、`exc_message`、`traceback` |
 
 不寫密碼、裝置 token、答覆與訊息內文：
 
 - 伺服器端的 `http_error` 與 `unhandled_error`：每一行從回應或例外取來的文字，都先把該請求內容裡的 `text`、`note`、`password`、`code`（不論請求宣稱的內容類型；含去頭尾空白、換行統一、JSON 跳脫後的樣子與其中每一行）和該請求 cookie 的裝置 token 換成 `[omitted]`；Node 引述無法傳給指令的參數（`Received …`）、`JSON.parse` 引述讀不懂的內容（`"…" is not valid JSON`，含截短的）也一樣，網址去掉查詢字串與 `#` 之後。只引用答覆其中幾個字的原因認不出來。
-- 瀏覽器的 `client_error`：頁面送來的錯誤訊息是任意文字，伺服器分辨不出其中有沒有答覆，所以一律不照原樣記，只記伺服器自己檢查後寫的內容。`exc_message` 只有認得整句的已知錯誤才記一個固定說法（Svelte 錯誤碼如 `svelte:each_key_duplicate`，常見的引擎訊息如 `cannot read a property of undefined`、`not a function`、`invalid JSON`、`network request failed`，其中提到的名稱不記），其餘記 `[omitted]`；`exc_type` 只收內建的錯誤類型（`Error`、`TypeError` 等），`kind` 只收三種來源，不符合的記 `[omitted]`；`traceback` 只留這次建置真有的腳本檔（伺服器列出 `build/client/_app/immutable` 下的檔案）裡的位置（`at /_app/...js:行:欄`，最多 30 個，多的以 `…[truncated]` 標示），函式名稱、訊息行、其他網站與不存在的檔案都不記，開發模式沒有建置所以不記位置；`url` 只記看板的頁面（`/`、`/login`），其他路徑記 `[omitted]`。`user_agent` 取自請求標頭，最多 500 字。以上每個欄位也再濾一次該請求的裝置 token。
+- 瀏覽器的 `client_error`：頁面送來的錯誤訊息是任意文字，伺服器分辨不出其中有沒有答覆，所以一律不照原樣記，只記伺服器自己檢查後寫的內容。`exc_message` 只有認得整句的已知錯誤才記一個固定說法（Svelte 錯誤碼如 `svelte:each_key_duplicate`，常見的引擎訊息如 `cannot read a property of undefined`、`not a function`、`invalid JSON`、`network request failed`，其中提到的名稱不記），其餘記 `[omitted]`；`exc_type` 只收內建的錯誤類型（`Error`、`TypeError` 等），`kind` 只收四種來源，不符合的記 `[omitted]`；`traceback` 只留這次建置真有的腳本檔（伺服器列出 `build/client/_app/immutable` 下的檔案）裡的位置，最多 50 個，多的以 `…[truncated]` 標示；頁面把呼叫紀錄保留到 50 層（`Error.stackTraceLimit`，Chrome 預設只有 10 層，會被 Svelte 內部占滿）。每個位置用建置時產生的 source map 換回原始檔案與行列，記成 `at src/routes/+page.svelte:行:欄 (/_app/...js:行:欄)`；找不到 map 或對不上時只記打包位置 `at /_app/...js:行:欄`。函式名稱、訊息行、其他網站與不存在的檔案都不記，開發模式沒有建置所以不記位置；`url` 只記看板的頁面（`/`、`/login`），其他路徑記 `[omitted]`；`route` 是當時畫面的 SvelteKit 路由 ID，只收看板真有的頁面（`/`、`/login`、`/login/test`），其他記 `[omitted]`。`user_agent` 取自請求標頭，最多 500 字。以上每個欄位也再濾一次該請求的裝置 token。
+
+source map 只給伺服器用：建置時（`vite.config.ts`）以 `hidden` 產生、從瀏覽器的輸出拿掉並去掉原始碼內容，放在 `build/sourcemaps/`，不在對外提供的 `build/client/` 裡，打包後的 `.js` 也沒有 `sourceMappingURL`。
 
 `/api/client-error` 只收已登入裝置（未登入回 401、不寫）；整個請求超過 64K 字回 413；同一裝置每分鐘最多記 10 筆，其餘回 429 不寫。只寫標準錯誤，不另存日誌檔。
 
@@ -520,6 +524,6 @@ bun scripts/measure-commandline.ts --serve     # 啟動已登入的假資料看�
 
 手機寬度（760px 以下）的指令列分兩行：迴紋針與麥克風由 `CommandLine.svelte` 自己放（`MessageBox` 的 `tools={false}`，麥克風呼叫它的 `insert`），寬版時仍在輸入框左邊、外觀與放在框內時相同；手機時外層改成 `display: contents`，以 `order` 排成第一行只有輸入框，第二行迴紋針、模型與思考強度、麥克風、選項按鈕（浮動框有權限段或「放棄前一次接回」時才顯示）、收起鈕（最右）。模型標籤的選單在手機改從指令列左側往上展開。`tests/browser/command-line-layout.test.ts` 檢查寬版一行與 360、390px 兩行的順序、每個按鈕點得到、沒有橫向捲動，以及收起後能再展開。
 
-錯誤紀錄的伺服器端在 `tests/server/server-log.test.ts`（起點加 63），格式與限頻本身在 `tests/unit/log.test.ts`；`tests/browser/client-error-page.test.ts` 用無頭 Chrome（起點加 64 與加 65）讓頁面變成 Internal Error，檢查 journal 那一行。
+錯誤紀錄的伺服器端在 `tests/server/server-log.test.ts`（起點加 63），格式與限頻本身在 `tests/unit/log.test.ts`；`tests/browser/client-error-page.test.ts` 用無頭 Chrome（起點加 64 與加 65）讓頁面變成 Internal Error，檢查 journal 那一行（含換回的原始位置與路由 ID）。source map 的換算在 `tests/unit/source-maps.test.ts`；載入失敗自動重新整理的判斷在 `tests/unit/module-reload.test.ts`，真實瀏覽器在 `tests/browser/module-reload-page.test.ts`；上一頁／下一頁的 SvelteKit 修正在 `tests/browser/history-info-lost.test.ts`。
 
 封存與 30 天保留的期限都用看板的時鐘計算。測試以 `LAT_BOARD_CLOCK_FILE` 指定一個檔案，內容是一個 ISO 時間，看板就把它當成現在；沒有設定或檔案讀不出時間時用系統時間。
