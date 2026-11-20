@@ -33,6 +33,55 @@ def load_watch():
     return module
 
 
+def own_processes(view):
+    """A stand-in for /proc in `view`: links to this test process and its descendants only.
+
+    Each watch cycle reads every process on the host twice (read_processes and
+    watcher_processes); with hundreds of cycles per test that scan, not the watcher, was
+    most of the suite's time and grew with the host's load (ouob-tw/LoopAgentTeams-work#632).
+    The processes a test starts are its children, so they are still seen; the host's other
+    processes never matched a test's agents or watchers anyway.
+    """
+    view.mkdir()
+
+    def refresh():
+        pids, todo = set(), [os.getpid()]
+        while todo:
+            pid = todo.pop()
+            if pid in pids:
+                continue
+            pids.add(pid)
+            try:
+                for task in Path(f'/proc/{pid}/task').iterdir():
+                    todo += [int(child) for child in (task / 'children').read_text().split()]
+            except OSError:
+                pass
+        for link in view.iterdir():
+            if int(link.name) not in pids:
+                link.unlink()
+        for pid in pids:
+            link = view / str(pid)
+            if not link.is_symlink():
+                link.symlink_to(f'/proc/{pid}')
+        return view
+    return refresh
+
+
+def load_watch_seeing(refresh):
+    """load_watch whose process scans read `refresh()` instead of /proc unless given a root."""
+    def load():
+        watch = real_load_watch()
+        scans = {name: getattr(watch, name) for name in ('read_processes', 'watcher_processes')}
+        for name, scan in scans.items():
+            setattr(watch, name, lambda proc_root=None, scan=scan: scan(
+                refresh() if proc_root is None else proc_root))
+        return watch
+    return load
+
+
+real_load_watch = load_watch
+
+
 def sqlite_hcom_events(rows):
     """Fake run_json_lines for `hcom events` that runs the real --sql/--last on SQLite."""
     database = sqlite3.connect(':memory:')
@@ -1923,6 +1972,10 @@ class WatchCliTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=f'{binary}:{os.environ["PATH"]}',
                         FAKE_HCOM_LOG=str(self.hcom_log),
                         FAKE_HERDR_LOG=str(self.herdr_log))
+        patcher = patch(f'{__name__}.load_watch',
+                        load_watch_seeing(own_processes(self.root / 'proc-view')))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def write_task(self, relative, agent, orchestrator, status, next_step=''):
         path = self.tasks / relative
