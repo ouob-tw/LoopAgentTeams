@@ -44,8 +44,5 @@
 	},
 	"engines": {
 		"node": ">=22"
-	},
-	"patchedDependencies": {
-		"@sveltejs/kit@3.0.1": "patches/@sveltejs%2Fkit@3.0.1.patch"
 	}
 }

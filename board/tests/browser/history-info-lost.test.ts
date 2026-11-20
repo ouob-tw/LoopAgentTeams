@@ -1,7 +1,7 @@
 // Back and forward after a reload that lost SvelteKit's record of the tab's history entries (an
 // earlier document went away without saving it, as a phone's browser may). SvelteKit 3.0.1 threw
 // "cannot set a property of undefined" on the next step and stopped following the history (the
-// board patches it, see patches/ and https://github.com/sveltejs/kit/issues/17500). In a real
+// board fixes it as it builds, see fixKitHistory in vite.config.ts and https://github.com/sveltejs/kit/issues/17500). In a real
 // browser: headless Chrome driven over its DevTools protocol, on the built board with fake data.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { logged, question, startFixture, type Fixture } from '../harness.ts';

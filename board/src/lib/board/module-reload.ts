@@ -24,11 +24,13 @@ export function isModuleLoadFailure(error: unknown): boolean {
 /** Whether to reload the page for a failure now. Yes, and remembered for this tab, unless the last
  *  such reload was within the window; a tab whose storage cannot be used never reloads, as it
  *  could not tell a second time from the first. */
-export function claimModuleReload(storage: Pick<Storage, 'getItem' | 'setItem'>, now: number): boolean {
+export function claimModuleReload(storage: () => Pick<Storage, 'getItem' | 'setItem'>, now: number): boolean {
 	try {
-		const last = Number(storage.getItem(MODULE_RELOAD_KEY));
+		// Asked for inside: a browser that blocks storage throws already when the page reaches for it.
+		const tab = storage();
+		const last = Number(tab.getItem(MODULE_RELOAD_KEY));
 		if (Number.isFinite(last) && last > 0 && now - last >= 0 && now - last < MODULE_RELOAD_WINDOW_MS) return false;
-		storage.setItem(MODULE_RELOAD_KEY, String(now));
+		tab.setItem(MODULE_RELOAD_KEY, String(now));
 		return true;
 	} catch {
 		return false;

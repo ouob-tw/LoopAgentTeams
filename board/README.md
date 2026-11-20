@@ -429,7 +429,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 開著的畫面寫在網址裡（`?item=<key>`、`?controller=<ID>`、`?launch`、`?agent=<session ID>`），瀏覽器歷史紀錄照層級記，最多三筆：列表、Agent 或主控頁（含兩個新增表單）、從它們打開的項目（`src/lib/board/navigation.ts`）。主控的 Agent 頁就地打開項目時，網址是 `?agent=<session ID>&item=<key>`，也算項目那一層；不在待辦時先往前讀已處理的項目，都找不到才退到 Agent 頁。從中間欄打開項目，或跳到另一個 Agent、主控時，先退回列表那一筆再加一筆，所以前面還留著的紀錄會一起清掉，往前也回不到舊的順序；中間那一下不會顯示列表。退到待辦列表時的捲動位置記在列表那一筆歷史紀錄裡，重新整理後也找得回來；不在待辦的項目會在「已處理」往前讀更早的頁找到為止；從別處直接開帶畫面的網址時，在它前面補一筆待辦列表。只為重新整理與返回使用，不保證網址拿到其他裝置的行為。
 - 從別的網頁以整頁載入來到看板、再按「上一頁」回來時頁面會重新載入，不瞬間還原：瀏覽器暫存的離開頁面會一直占著即時連線，純 HTTP/1.1 下同一主機最多 6 條，幾頁暫存頁就會讓目前這頁的請求（翻譯、傳話、載入更早）一直卡住，所以離開時暫存頁面就結束連線（`src/hooks.client.ts`）。看板內點擊切換不受影響。
 - 舊分頁要載入的程式檔已不存在（重新建置後）或下載中斷時，頁面自動重新整理一次（`src/lib/board/module-reload.ts`）；重新整理後 60 秒內又失敗就停在錯誤畫面，不會一直重新整理。
-- SvelteKit 3.0.1 在「上一頁／下一頁」進到它沒記錄的歷史項目後會丟 `cannot set a property of undefined` 並卡住換頁（[sveltejs/kit#17500](https://github.com/sveltejs/kit/issues/17500)，修正 [#17671](https://github.com/sveltejs/kit/pull/17671) 尚未合併）。看板以 `patches/@sveltejs%2Fkit@3.0.1.patch`（`package.json` 的 `patchedDependencies`）套上同樣的修正，`bun install` 時自動套用；升級 SvelteKit 時確認新版已含修正再拿掉這個 patch。
+- SvelteKit 3.0.1 在「上一頁／下一頁」進到它沒記錄的歷史項目後會丟 `cannot set a property of undefined` 並卡住換頁（[sveltejs/kit#17500](https://github.com/sveltejs/kit/issues/17500)，修正 [#17671](https://github.com/sveltejs/kit/pull/17671) 尚未合併）。看板在建置瀏覽器端程式時套上同樣的一行修正（`vite.config.ts` 的 `fixKitHistory`），用 Bun 或 npm 安裝都一樣；SvelteKit 那段程式改了就讓建置失敗，這時確認新版是否已含修正，有就拿掉這個 plugin。
 - 用量列樣式與對話翻譯偏好由看板統一保存、所有裝置共用；其餘版面設定只記在各自裝置的瀏覽器裡（清單見使用說明）。
 
 ## 錯誤紀錄

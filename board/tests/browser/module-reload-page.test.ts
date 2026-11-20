@@ -86,8 +86,26 @@ test.skipIf(!CHROME)('page modules that stay gone reload the page only once', as
 	await openBoard(() => true);
 	await toLogin();
 	await tab.until(`${LOADS} === 2`, 'the page loaded again');
+	const from = fixture.serverOutput().length;
 	// The page loaded again cannot start either; it stays as it is rather than reload again.
 	await Bun.sleep(3_000);
 	expect(await tab.eval<number>(LOADS)).toBe(2);
 	expect(await tab.eval<boolean>(`document.body?.dataset.hydrated !== undefined`)).toBe(false);
+	// Its error handlers did run, and reported the failure, but did not reload.
+	expect(logged(fixture.serverOutput().slice(from), 'client_error').some((line) => line.exc_message === 'failed to load a module')).toBe(true);
+}, TEST_MS);
+
+test.skipIf(!CHROME)('a page loaded again that works, and then finds a module gone soon after, does not reload again', async () => {
+	let goneAgain = false;
+	await openBoard((n) => n === 1 || goneAgain);
+	await toLogin();
+	await tab.until(`${LOADS} === 2`, 'the page loaded again');
+	await tab.until(`document.body?.dataset.hydrated !== undefined`, 'the page loaded again to start');
+	const from = fixture.serverOutput().length;
+
+	goneAgain = true;
+	await toLogin();
+	await Bun.sleep(3_000);
+	expect(await tab.eval<number>(LOADS)).toBe(2);
+	expect(logged(fixture.serverOutput().slice(from), 'client_error').some((line) => line.exc_message === 'failed to load a module')).toBe(true);
 }, TEST_MS);

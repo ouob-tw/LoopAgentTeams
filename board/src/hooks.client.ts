@@ -38,7 +38,7 @@ function report(kind: string, error: unknown, route = routeId()) {
 
 /** A script file that could not be loaded: the page is loaded again, once (module-reload.ts). */
 function reloadAfter(error: unknown): void {
-	if (isModuleLoadFailure(error) && claimModuleReload(sessionStorage, Date.now())) location.reload();
+	if (isModuleLoadFailure(error) && claimModuleReload(() => sessionStorage, Date.now())) location.reload();
 }
 
 window.addEventListener('error', (event) => {
@@ -53,7 +53,7 @@ window.addEventListener('unhandledrejection', (event) => {
 // unless a reload did not help just before, when it goes on as an error.
 window.addEventListener('vite:preloadError', (event) => {
 	report('preloadError', (event as Event & { payload?: unknown }).payload);
-	if (!claimModuleReload(sessionStorage, Date.now())) return;
+	if (!claimModuleReload(() => sessionStorage, Date.now())) return;
 	event.preventDefault();
 	location.reload();
 });
