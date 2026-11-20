@@ -32,8 +32,9 @@ afterEach(async () => {
 afterAll(() => fixture?.cleanup());
 
 /** A new Chrome on the started board; from then on the page modules it asks for are answered by
- *  `gone(n)` for the n-th such request: a 404 when true, the real file otherwise. */
-async function openBoard(gone: (n: number) => boolean) {
+ *  `gone(n)` for the n-th such request: a 404 when true, the real file otherwise. While `held(n)`
+ *  is true the n-th request waits unanswered. */
+async function openBoard(gone: (n: number) => boolean, held: (n: number) => boolean = () => false) {
 	browser = await launchChrome({ scripts: [COUNT_LOADS] });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
@@ -47,11 +48,12 @@ async function openBoard(gone: (n: number) => boolean) {
 	void (async () => {
 		let n = 0;
 		while (pumping) {
-			const id = tab.paused.shift();
-			if (!id) {
+			const id = tab.paused[0];
+			if (!id || held(n + 1)) {
 				await Bun.sleep(10);
 				continue;
 			}
+			tab.paused.shift();
 			n++;
 			const answer = gone(n)
 				? tab.send('Fetch.fulfillRequest', { requestId: id, responseCode: 404, responseHeaders: [{ name: 'content-type', value: 'text/plain' }], body: '' })
@@ -83,10 +85,14 @@ test.skipIf(!CHROME)('a page module that is gone reloads the page once, and the 
 }, TEST_MS);
 
 test.skipIf(!CHROME)('page modules that stay gone reload the page only once', async () => {
-	await openBoard(() => true);
+	let release = false;
+	// The page loaded again finds its modules gone only once the log is marked, so its own report
+	// is told apart from the first page's.
+	await openBoard(() => true, (n) => n > 1 && !release);
 	await toLogin();
 	await tab.until(`${LOADS} === 2`, 'the page loaded again');
 	const from = fixture.serverOutput().length;
+	release = true;
 	// The page loaded again cannot start either; it stays as it is rather than reload again.
 	await Bun.sleep(3_000);
 	expect(await tab.eval<number>(LOADS)).toBe(2);
