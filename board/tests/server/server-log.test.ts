@@ -6,6 +6,7 @@ import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { CLIENT_ERRORS_PER_WINDOW, MAX_CLIENT_ERROR_CHARS, MAX_FRAMES, MAX_USER_AGENT } from '../../src/lib/server/client-errors.ts';
+import { createSourceLocator } from '../../src/lib/server/source-maps.ts';
 import { BUILD_DIR, logged, PASSWORD, question, startFixture, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
@@ -209,12 +210,20 @@ const [CHUNK, ENTRY] = ['chunks', 'entry'].map((dir) => {
 	const file = readdirSync(join(import.meta.dir, '../..', BUILD_DIR, 'client/_app/immutable', dir)).find((name) => name.endsWith('.js'));
 	return `/_app/immutable/${dir}/${file}`;
 });
+/** The build's source maps, which the server reads as well. */
+const locate = createSourceLocator(join(import.meta.dir, '../..', BUILD_DIR, 'sourcemaps'));
+/** A frame as the server logs it: with the original place when the map has one. */
+const frame = (script: string, line: number, column: number) => {
+	const source = locate(script, line, column);
+	return source ? `at ${source} (${script}:${line}:${column})` : `at ${script}:${line}:${column}`;
+};
 const report = () => ({
 	kind: 'handleError',
 	type: 'Error',
 	message: 'https://svelte.dev/e/each_key_duplicate',
 	stack: `Error: https://svelte.dev/e/each_key_duplicate\n    at Pe (${at(CHUNK!)}:1:200)\n    at ${at(ENTRY!)}:3:40`,
-	url: at('/')
+	url: at('/'),
+	route: '/'
 });
 
 test('a browser error from a logged-in device is one line of what the server checked: message code, type, script locations, page path', async () => {
@@ -230,12 +239,68 @@ test('a browser error from a logged-in device is one line of what the server che
 		kind: 'handleError',
 		exc_type: 'Error',
 		exc_message: 'svelte:each_key_duplicate',
-		traceback: `at ${CHUNK}:1:200\nat ${ENTRY}:3:40`,
+		traceback: `${frame(CHUNK!, 1, 200)}\n${frame(ENTRY!, 3, 40)}`,
 		url: '/',
+		route: '/',
 		user_agent: 'TestBrowser/1.0'
 	});
 	expect(line.device_id).toBeString();
 	expect(output()).not.toContain(cookie.split('=')[1]);
+});
+
+test("a frame in a page's built script is logged with the page's source file and line; one its map does not explain stays as built", async () => {
+	// Some place in the built pages that came from the main page's own component.
+	const client = join(import.meta.dir, '../..', BUILD_DIR, 'client');
+	let found: { script: string; line: number; column: number; source: string } | undefined;
+	for (const name of readdirSync(join(client, '_app/immutable/nodes'))) {
+		const script = `/_app/immutable/nodes/${name}`;
+		const lines = readFileSync(join(client, script), 'utf8').split('\n');
+		for (let line = 1; line <= lines.length && !found; line++)
+			for (let column = 1; column <= lines[line - 1]!.length && !found; column += 97) {
+				const source = locate(script, line, column);
+				if (source?.startsWith('src/routes/+page.svelte:')) found = { script, line, column, source };
+			}
+		if (found) break;
+	}
+	if (!found) throw new Error('no place in the built pages maps to src/routes/+page.svelte');
+	const { script, line, column, source } = found;
+
+	const stack = `TypeError: x\n    at render (${at(script)}:${line}:${column})\n    at ${at(script)}:99999:1`;
+	// A device of its own: this file's main device has only so many reports a minute.
+	const device = await fixture.login('source-map');
+	mark = fixture.serverOutput().length;
+	expect((await post('/api/client-error', { ...report(), type: 'TypeError', stack }, { cookie: device })).status).toBe(204);
+
+	const [logged] = await waitLines('client_error');
+	expect(logged!.traceback).toBe(`at ${source} (${script}:${line}:${column})\nat ${script}:99999:1`);
+	expect(source).toMatch(/^src\/routes\/\+page\.svelte:\d+:\d+$/);
+});
+
+test('the source maps are built but never served, and no served script names one', async () => {
+	const build = join(import.meta.dir, '../..', BUILD_DIR);
+	const maps = readdirSync(join(build, 'sourcemaps/_app/immutable'), { recursive: true, encoding: 'utf8' }).filter((file) => file.endsWith('.js.map'));
+	expect(maps.length).toBeGreaterThan(0);
+	const served = readdirSync(join(build, 'client'), { recursive: true, encoding: 'utf8' });
+	expect(served.filter((file) => file.endsWith('.map'))).toEqual([]);
+	for (const file of served.filter((name) => name.endsWith('.js'))) expect(readFileSync(join(build, 'client', file), 'utf8')).not.toContain('sourceMappingURL');
+
+	for (const script of [CHUNK!, ENTRY!]) {
+		const response = await fixture.fetch(`${script}.map`, { cookie });
+		expect(response.status).not.toBe(200);
+		expect(await response.text()).not.toContain('"mappings"');
+	}
+	const hidden = await fixture.fetch(`/sourcemaps${CHUNK}.map`, { cookie });
+	expect(await hidden.text()).not.toContain('"mappings"');
+});
+
+test("a report sent before SvelteKit started has no route: it gets its page's, and none for any other address", async () => {
+	const device = await fixture.login('route-from-path');
+	mark = fixture.serverOutput().length;
+	const { route: _, ...early } = report();
+	for (const url of [at('/login'), `${at('/')}?password=${PASSWORD}#x`, at('/not-a-page'), 'http://elsewhere.example/login'])
+		expect((await post('/api/client-error', { ...early, url }, { cookie: device })).status).toBe(204);
+	expect((await waitLines('client_error', 4)).map((line) => line.route ?? null)).toEqual(['/login', '/', null, null]);
+	expect(output()).not.toContain(PASSWORD);
 });
 
 test('known engine messages are logged by their canonical text, never with what they name', async () => {
@@ -270,7 +335,8 @@ test('anything a report says that the server does not recognise reaches the log 
 			`    at ${at(ENTRY!)}#${token}:7:8`,
 			`    ${answer}`
 		].join('\n'),
-		url: `${at('/login')}?password=${PASSWORD}#${token}`
+		url: `${at('/login')}?password=${PASSWORD}#${token}`,
+		route: `/login?password=${PASSWORD}`
 	});
 
 	expect(response.status).toBe(204);
@@ -279,8 +345,9 @@ test('anything a report says that the server does not recognise reaches the log 
 		kind: '[omitted]',
 		exc_type: '[omitted]',
 		exc_message: '[omitted]',
-		traceback: `at ${CHUNK}:1:2\nat ${ENTRY}:7:8`,
-		url: '/login'
+		traceback: `${frame(CHUNK!, 1, 2)}\n${frame(ENTRY!, 7, 8)}`,
+		url: '/login',
+		route: '[omitted]'
 	});
 	for (const secret of [answer, encodeURIComponent(answer), token, PASSWORD, 'PRIVATE-MESSAGE']) expect(output()).not.toContain(secret);
 

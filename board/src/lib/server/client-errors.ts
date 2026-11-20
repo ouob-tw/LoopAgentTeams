@@ -3,26 +3,29 @@
 // answer or a message, which the server cannot tell apart. So a line holds only what the server
 // itself writes after checking the report: a canonical message for a known kind of error (anything
 // else is [omitted]), an error type from a fixed list, locations in the script files this build
-// really has, and which of the board's pages it was. One device gets only so many lines a minute, so a page that keeps
-// failing cannot flood the journal.
+// really has (each with the original source location its map gives, see source-maps.ts), and which
+// of the board's pages and routes it was. One device gets only so many lines a minute, so a page
+// that keeps failing cannot flood the journal.
 import { readdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { log } from './log.ts';
 import { OMITTED } from './redact.ts';
+import { createSourceLocator, type SourceLocator } from './source-maps.ts';
 
 /** Lines per device in one window; the rest of the window's reports are dropped. */
 export const CLIENT_ERRORS_PER_WINDOW = 10;
 export const CLIENT_ERROR_WINDOW_MS = 60_000;
 /** A longer request body is refused. */
 export const MAX_CLIENT_ERROR_CHARS = 64 * 1024;
-/** Stack frames kept; the rest are dropped with a mark. */
-export const MAX_FRAMES = 30;
+/** Stack frames kept; the rest are dropped with a mark. As many as the page records (hooks.client.ts):
+ *  under deep Svelte internals the page's own component is far down. */
+export const MAX_FRAMES = 50;
 export const MAX_USER_AGENT = 500;
 
 export const TRUNCATED = '…[truncated]';
 
-const KINDS = new Set(['handleError', 'error', 'unhandledrejection']);
+const KINDS = new Set(['handleError', 'error', 'unhandledrejection', 'preloadError']);
 const TYPES = new Set([
 	'Error',
 	'TypeError',
@@ -87,31 +90,49 @@ function knownMessage(value: unknown): string | null {
 /** The board's pages (src/routes); any other path is not logged. */
 const PAGES = new Set(['/', '/login']);
 
-let scripts: Set<string> | undefined;
-/** The script files this build serves under /_app/immutable, found next to the server's own
- *  modules (build/client beside build/server). None without a build, as in development. */
-function builtScripts(): Set<string> {
-	if (scripts) return scripts;
-	scripts = new Set();
+/** The build's own folder (build/ with client/ and sourcemaps/ in it), found from the server's own
+ *  modules (build/server); null without a build, as in development. */
+let root: string | null | undefined;
+function buildRoot(): string | null {
+	if (root !== undefined) return root;
+	root = null;
 	for (let dir = dirname(fileURLToPath(import.meta.url)), up = 0; up < 8; dir = dirname(dir), up++) {
-		const root = join(dir, 'client');
-		let files: string[];
 		try {
-			files = readdirSync(join(root, '_app/immutable'), { recursive: true, encoding: 'utf8' });
+			readdirSync(join(dir, 'client/_app/immutable'));
 		} catch {
 			continue;
 		}
-		for (const file of files) if (file.endsWith('.js')) scripts.add('/' + relative(root, join(root, '_app/immutable', file)));
+		root = dir;
 		break;
 	}
+	return root;
+}
+
+let scripts: Set<string> | undefined;
+/** The script files this build serves under /_app/immutable. */
+function builtScripts(): Set<string> {
+	if (scripts) return scripts;
+	scripts = new Set();
+	const home = buildRoot();
+	if (!home) return scripts;
+	const client = join(home, 'client');
+	const files = readdirSync(join(client, '_app/immutable'), { recursive: true, encoding: 'utf8' });
+	for (const file of files) if (file.endsWith('.js')) scripts.add('/' + relative(client, join(client, '_app/immutable', file)));
 	return scripts;
 }
 
-/** Locations in this build's own scripts, one `at <path>:<line>:<column>` per frame. A frame of
+let locator: SourceLocator | undefined;
+const sourceOf: SourceLocator = (script, line, column) => {
+	locator ??= createSourceLocator(buildRoot() && join(buildRoot()!, 'sourcemaps'));
+	return locator(script, line, column);
+};
+
+/** Locations in this build's own scripts, one per frame: `at <source>:<line>:<column> (<script>:<line>:<column>)`
+ *  where the script's map gives the original place, else `at <script>:<line>:<column>`. A frame of
  *  another host or of a file the build does not have, and every function name and message line,
  *  are left out. `host` is the board's as the request named it: the server cannot tell http from
  *  https without an ORIGIN setting, so only host and port are compared. */
-function stackFrames(value: unknown, host: string, known = builtScripts()): string | null {
+function stackFrames(value: unknown, host: string, known = builtScripts(), locate = sourceOf): string | null {
 	if (typeof value !== 'string') return null;
 	const frames: string[] = [];
 	for (const line of value.split('\n')) {
@@ -124,7 +145,9 @@ function stackFrames(value: unknown, host: string, known = builtScripts()): stri
 			continue;
 		}
 		if (url.host !== host || !known.has(url.pathname)) continue;
-		frames.push(`at ${url.pathname}:${location[2]}:${location[3]}`);
+		const built = `${url.pathname}:${location[2]}:${location[3]}`;
+		const source = locate(url.pathname, Number(location[2]), Number(location[3]));
+		frames.push(source ? `at ${source} (${built})` : `at ${built}`);
 	}
 	if (!frames.length) return null;
 	return frames.length > MAX_FRAMES ? [...frames.slice(0, MAX_FRAMES), TRUNCATED].join('\n') : frames.join('\n');
@@ -138,6 +161,23 @@ function pagePath(value: unknown, host: string): string | null {
 		return url.host === host && PAGES.has(url.pathname) ? url.pathname : OMITTED;
 	} catch {
 		return OMITTED;
+	}
+}
+
+/** The board's routes (SvelteKit route ids of src/routes' pages). */
+export const ROUTES = new Set(['/', '/login', '/login/test']);
+
+/** The route a report names; one sent before SvelteKit started (a page whose scripts would not
+ *  load) has none, and gets its address's: the board's routes have no parameters, so a page's
+ *  route id is its path. */
+function routeOf(report: Record<string, unknown>, host: string): string | null {
+	if (report.route != null) return listed(report.route, ROUTES);
+	if (typeof report.url !== 'string') return null;
+	try {
+		const url = new URL(report.url);
+		return url.host === host && ROUTES.has(url.pathname) ? url.pathname : null;
+	} catch {
+		return null;
 	}
 }
 
@@ -178,6 +218,7 @@ export async function logClientError(
 		exc_message: knownMessage(report.message),
 		traceback: stackFrames(report.stack, host),
 		url: pagePath(report.url, host),
+		route: routeOf(report, host),
 		user_agent: agent && agent.length > MAX_USER_AGENT ? agent.slice(0, MAX_USER_AGENT) + TRUNCATED : agent
 	};
 	for (const [key, value] of Object.entries(fields)) if (value) fields[key] = await redact(value);
