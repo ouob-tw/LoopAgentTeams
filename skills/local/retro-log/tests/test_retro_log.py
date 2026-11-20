@@ -1,12 +1,19 @@
 """retro-log backlog store contracts through the command entry point."""
+import contextlib
+import importlib.util
+import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/retro-log.py'
+_spec = importlib.util.spec_from_file_location('retro_log', SCRIPT)
+retro_log = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(retro_log)
 T1, T2, T3 = '2026-10-01T10:00:00+08:00', '2026-10-02T10:00:00+08:00', '2026-10-03T10:00:00+08:00'
 T4, T5, T6 = '2026-10-04T10:00:00+08:00', '2026-10-05T10:00:00+08:00', '2026-10-06T10:00:00+08:00'
 
@@ -19,8 +26,20 @@ class RetroLogTests(unittest.TestCase):
         self.env = {**os.environ, 'HOME': self.temp.name, 'RETRO_BACKLOG_DIR': str(self.backlog)}
 
     def cli(self, *args):
-        return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True,
-                              env=self.env, cwd=self.temp.name)
+        """Run the command entry point in this process with the test's home, backlog and
+        folder; starting Python per command made up much of the suite's time
+        (ouob-tw/LoopAgentTeams-work#632). The concurrent-writer test still starts the
+        real script."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                contextlib.chdir(self.temp.name), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = retro_log.main(list(args))
+            except SystemExit as stop:  # argparse refusing the arguments
+                code = stop.code if isinstance(stop.code, int) else 1
+        return subprocess.CompletedProcess([str(SCRIPT), *args], code, out.getvalue(),
+                                           err.getvalue())
 
     def ok(self, *args):
         result = self.cli(*args)
