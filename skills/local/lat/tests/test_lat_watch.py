@@ -79,6 +79,14 @@ def load_watch_seeing(refresh):
     return load
 
 
+def see_own_processes(case):
+    """For the rest of the test, watches from load_watch() see only the test's own processes."""
+    patcher = patch(f'{__name__}.load_watch',
+                    load_watch_seeing(own_processes(case.root / 'proc-view')))
+    patcher.start()
+    case.addCleanup(patcher.stop)
+
+
 real_load_watch = load_watch
 
 
@@ -1972,10 +1980,7 @@ class WatchCliTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=f'{binary}:{os.environ["PATH"]}',
                         FAKE_HCOM_LOG=str(self.hcom_log),
                         FAKE_HERDR_LOG=str(self.herdr_log))
-        patcher = patch(f'{__name__}.load_watch',
-                        load_watch_seeing(own_processes(self.root / 'proc-view')))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        see_own_processes(self)
 
     def write_task(self, relative, agent, orchestrator, status, next_step=''):
         path = self.tasks / relative
@@ -7281,6 +7286,7 @@ class KeepaliveCycleTests(PinnedEnvironment):
 
     def setUp(self):
         super().setUp()
+        see_own_processes(self)
         self.work = self.root / 'work'
         (self.work / '.git').mkdir(parents=True)
         self.tasks = self.work / '.lat/tasks'
@@ -8427,6 +8433,7 @@ class LedgerDueTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        see_own_processes(self)
         self.work = self.root / 'work'
         (self.work / '.git').mkdir(parents=True)
         self.tasks = self.work / '.lat/tasks'
