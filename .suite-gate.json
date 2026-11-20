@@ -481,7 +481,7 @@
        "tests": ["skills/local/hcom-spawn/tests/test_close_agent.py"]},
       {"paths": ["skills/local/lat-handover/scripts/**"],
        "tests": ["skills/local/lat-handover/tests/test_*.py"]},
-      {"paths": ["skills/local/host-guard/scripts/**"],
+      {"paths": ["skills/local/host-guard/scripts/**", "skills/local/host-guard/tests/hook_runner.py"],
        "tests": ["skills/local/host-guard/tests/test_*.py"]},
       {"paths": ["board/src/app.css"],
        "tests": ["board/tests/browser/select-style.test.ts", "board/tests/unit/theme.test.ts", "board/tests/browser/model-defaults-page.test.ts", "board/tests/browser/workspace-picker-page.test.ts", "board/tests/browser/controller-page.test.ts", "board/tests/browser/herdr-controller-page.test.ts", "board/tests/browser/command-line-layout.test.ts"]},
