@@ -272,8 +272,12 @@ class AskRevisionSyncTests(AskTestCase):
         self.assertIn("- question: 改問要不要推送？\n", text)
         self.assertIn("- options: A 推送 / B 暫緩（建議）\n", text)
         self.assertIn("- version: r2\n", text)
+        header, prior = text.split("\n## 舊版 r1（由 r2 取代）\n", 1)
         for old in ("要合併到 dev 嗎？", "A 合併", "r1"):
-            self.assertNotIn(old, text)
+            self.assertNotIn(old, header)
+        # The replaced question stays readable below the header, not as record fields.
+        self.assertEqual(prior, "\n- 標題：要合併到 dev 嗎？\n- 原題：要合併到 dev 嗎？\n"
+                                "- 原選項：A 合併，不推送（建議） / B 先不合併\n")
         self.assertEqual(text.count("# Q1"), 1)
 
     def test_answered_record_reopened_gets_the_new_question(self):

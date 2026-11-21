@@ -796,6 +796,25 @@ def _unattended_grant(decisions, session):
     return f"r{status['round']} v{status['version']['version']}"
 
 
+def _sync_upserted_record(path, question_id, revision, text):
+    """Move an existing same-ID decision record to the revision ``question upsert`` wrote.
+
+    Without it the panel answer is not recorded, as the record is at another revision.
+    The question is already written, so a failure here only warns.
+    """
+    if not path.exists():
+        return
+    try:
+        # A record with no version line never tracked the panel; leave it as it was.
+        if decision_revision(path) in (None, revision):
+            return
+        sync_decision_record(path, revision, question_id=question_id,
+                             incoming=_question_input(text))
+    except (OSError, ValueError) as error:
+        print(f"lat-panel: {path} not moved to r{revision}: {error}; the panel answer will "
+              f"not be recorded until its version line is r{revision}", file=sys.stderr)
+
+
 def _ask(args):
     """One controller command per question: record, panel question, version, gap check."""
     text = _input_section(args)
@@ -940,8 +959,12 @@ def main(argv=None):
         if args.command == "question" and hasattr(args, "decisions"):
             _session_paths(args)
         if args.command == "question" and args.question_command == "upsert":
-            return _upsert(args.questions, args.decisions, args.id,
-                           _input_section(args))[0]
+            text = _input_section(args)
+            code, revision, written = _upsert(args.questions, args.decisions, args.id, text)
+            if not code and written:
+                _sync_upserted_record(Path(args.decisions) / f"{args.id}.md", args.id,
+                                      revision, text)
+            return code
         if args.command == "question" and args.question_command == "ask":
             return _ask(args)
         if args.command == "question" and args.question_command == "approve":
