@@ -2989,6 +2989,46 @@ class StageTimeTests(LedgerCase):
         self.assertNotIn('各段用時', main)
         self.assertIn('| 2 小時 0 分 |', main)  # the total from the first assignment to the close
 
+    def test_a_long_deploy_history_costs_git_runs_per_commit_not_per_deploy(self):
+        # #691: an ended ledger with many tickets asked git once per deploy per commit and ran
+        # past the board helper's 3 s limit on every read.
+        impl = self.impl_row('09:00')
+        self.at('09:30')
+        self.ok('done', str(impl), '--commit', self.side, by='impl')
+        self.exempt_qa()
+        self.merge('11:15', '--no-ff')
+        merge = git(self.workspace, 'rev-parse', 'HEAD')
+        log = self.root / 'git.log'
+        shim = self.root / 'git-shim'
+        shim.mkdir()
+        (shim / 'git').write_text(f'#!/bin/sh\necho "$*" >> {log}\nexec {shutil.which("git")} "$@"\n')
+        (shim / 'git').chmod(0o755)
+        path = {'PATH': f'{shim}:{self.gh_env["PATH"]}'}
+
+        def deployed(*commits):
+            (self.lat / 'deploy-history.jsonl').write_text(''.join(
+                json.dumps({'action': 'deploy-prod', 'commit': commit, 'result': 'succeeded',
+                            'at': f'2026-10-24T{clock}:00+00:00'}) + '\n'
+                for commit, clock in commits))
+            log.write_text('')
+            self.at('12:00')
+            ticket = {t['key']: t for t in json.loads(self.ok('show', '--json', env=path))['tickets']}['#1']
+            return [s['end'] and s['end'][11:16] for s in ticket['times'] if s['key'] == 'wait_deploy']
+
+        # Thirty earlier deploys of commits without the ticket's work, each a different commit.
+        tree, older, parent = git(self.workspace, 'rev-parse', f'{self.merged}^{{tree}}'), [], self.merged
+        for minute in range(30):
+            parent = git(self.workspace, 'commit-tree', tree, '-p', parent, '-m', f'old {minute}')
+            older.append((parent, f'10:{minute:02}'))
+        # A deploy of a commit the repo does not have carried nothing; one named by a short ID
+        # is still checked on its own.
+        self.assertEqual(deployed(*older, ('f' * 40, '11:30'), (merge[:12], '11:40'),
+                                  (merge, '11:45')), ['11:40'])
+        self.assertEqual(deployed(*older, ('f' * 40, '11:30'), (merge.upper(), '11:45')),
+                         ['11:45'])
+        ancestry = [line for line in log.read_text().splitlines() if 'merge-base' in line]
+        self.assertLess(len(ancestry), 5, ancestry)
+
     def test_qa_started_after_the_implementation_closed_has_no_wait(self):
         impl = self.impl_row('09:00')
         self.at('09:30')

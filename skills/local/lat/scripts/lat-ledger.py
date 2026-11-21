@@ -480,6 +480,40 @@ def reachable(repo, sha, branches):
     return False
 
 
+FULL_COMMIT = re.compile(r'[0-9a-f]{40}')
+
+
+def existing_commits(repo, commits):
+    """The full commit IDs among `commits` (any case) that are in `repo`, lower-cased; None
+    when git could not tell."""
+    full = list(dict.fromkeys(c.lower() for c in commits if FULL_COMMIT.fullmatch(c.lower())))
+    if not full:
+        return frozenset()
+    try:
+        found = run_cli(['git', '-C', repo, 'rev-list', '--no-walk', '--ignore-missing', *full],
+                        timeout=30).split()
+    except ValueError:
+        return None
+    return frozenset(found) & frozenset(full)
+
+
+def carrying(repo, sha, tips):
+    """Those of `tips` (full commit IDs in `repo`) that `sha` is an ancestor of, or is: what
+    `reachable(repo, sha, [tip])` answers for each, in two git runs. Empty when `sha` is not a
+    commit there; None when git could not list them."""
+    try:
+        full = run_cli(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', '--end-of-options',
+                        f'{sha}^{{commit}}'], timeout=30).strip()
+    except ValueError:
+        return frozenset()
+    try:
+        after = set(run_cli(['git', '-C', repo, 'rev-list', '--ancestry-path', f'^{full}',
+                             *sorted(tips)], timeout=30).split())
+    except ValueError:
+        return None
+    return frozenset(tip for tip in tips if tip == full or tip in after)
+
+
 def owning_checkout(path):
     """The main checkout of the repo `path` is in (a bare repo stands for itself), or None."""
     try:
@@ -2293,6 +2327,21 @@ class Lookups:
     def deploys(self, place):
         return self.once(('deploys', place), lambda: deploy_entries(place))
 
+    def deploy_carries(self, place, commit, sha):
+        """Whether the deploy of `commit` carried `sha`. Asking git once per deploy per commit
+        made an ended ledger with many tickets take over a thousand git runs (#691), so each
+        commit asks once for every deploy that carries it; a deploy commit that is not a full
+        commit ID keeps the one-by-one check."""
+        tips = self.once(('deploy tips', place), lambda: existing_commits(
+            place, [entry[0] for entry in self.deploys(place)]))
+        key = commit.lower()
+        if tips is None or not FULL_COMMIT.fullmatch(key):
+            return self.reachable(place, sha, [commit])
+        if key not in tips:
+            return False  # not in the repo: nothing to be an ancestor of
+        carried = self.once(('carried by', place, sha), lambda: carrying(place, sha, tips))
+        return self.reachable(place, sha, [commit]) if carried is None else key in carried
+
     def decisions(self, default_repo):
         return self.once('decisions', lambda: read_decisions(self.doc['workspace'],
                                                              default_repo))
@@ -2677,8 +2726,8 @@ def delivery_segments(lookups, rows, impl_done, at):
         return found
     deployed, running = None, True
     for commit, time in lookups.deploys(places[0]):
-        if all(lookups.reachable(place, sha, [commit]) for row, place in zip(delivered, places)
-               for sha in row['evidence']['commit']):
+        if all(lookups.deploy_carries(place, commit, sha)
+               for row, place in zip(delivered, places) for sha in row['evidence']['commit']):
             deployed, running = time, False
             break
     found.append(segment('wait_deploy', merged, deployed, running, at))
