@@ -19,7 +19,9 @@
 // session, the plan's `ledgers` entry for it (`status`, and `ledger` or `reason`), or no ledger.
 // `board unattended` prints, for each session, the plan's `unattended` entry for it, or manual with
 // no grant; with `realUnattended` set to a Python interpreter, it, `board review` and the other unattended commands
-// run the real helper, on the files the test's environment names.
+// run the real helper, on the files the test's environment names. With `holdOneUnattended`
+// (`{ claim, ready, release }` paths) the first `board unattended` call for a single session to
+// claim it reads, writes `ready` and waits for `release` before printing: a read that comes back late.
 // Each call is logged to
 // <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
 import { spawn, spawnSync } from 'node:child_process';
@@ -250,7 +252,20 @@ const MANUAL = {
 };
 
 function unattended() {
-	if (plan.realUnattended) return real(plan.realUnattended);
+	if (plan.realUnattended) {
+		const hold = plan.holdOneUnattended;
+		let claimed = false;
+		if (hold && command === 'unattended' && (options()['session-id'] ?? []).length === 1) {
+			try {
+				writeFileSync(hold.claim, String(process.pid), { flag: 'wx' });
+				claimed = true;
+			} catch {
+				// Another call has it.
+			}
+		}
+		const result = real(plan.realUnattended);
+		return claimed ? { ...result, barrier: { ready: hold.ready, release: hold.release } } : result;
+	}
 	if (command !== 'unattended') return { output: { status: 'error', reason: 'the plan has no realUnattended' }, exit: 1 };
 	const sessions = options()['session-id'] ?? [];
 	// As the real helper: one workspace per session.

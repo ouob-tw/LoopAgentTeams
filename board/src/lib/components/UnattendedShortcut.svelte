@@ -2,6 +2,8 @@
 	// The 無人模式 button of a controller page's button row, left of the close: it says which mode
 	// the controller is in, and a tap opens the command line's 無人模式 menu (UnattendedMenu) under it.
 	import Bot from '@lucide/svelte/icons/bot';
+	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+	import { unattendedUi } from '#lib/board/unattended-ui.svelte.ts';
 	import type { UnattendedView } from '#lib/board/unattended.ts';
 	import UnattendedMenu from './UnattendedMenu.svelte';
 
@@ -11,6 +13,8 @@
 	let wrap = $state<HTMLElement>();
 	/** On while it holds a grant or waits for the controller's goal. */
 	const on = $derived(view.state === 'active' || view.state === 'pending-goal');
+	const updating = $derived(unattendedUi.updating[controllerId] === true);
+	const label = $derived(updating ? '更新中' : on ? '無人' : '手動');
 	$effect(() => {
 		if (!open) return;
 		const away = (event: Event) => {
@@ -30,8 +34,10 @@
 
 {#if view.state !== 'unknown'}
 	<div class="shortcut" bind:this={wrap}>
-		<button type="button" class="toggle" class:on data-action="unattended" aria-expanded={open} aria-controls={open ? `unattended-shortcut-${controllerId}` : undefined} onclick={() => (open = !open)} aria-label="無人模式：{on ? '無人' : '手動'}" title="無人模式：{on ? '無人' : '手動'}">
-			<Bot size="1.1em" aria-hidden="true" /><span class="state">{on ? '無人' : '手動'}</span>
+		<button type="button" class="toggle" class:on data-action="unattended" aria-expanded={open} aria-controls={open ? `unattended-shortcut-${controllerId}` : undefined} onclick={() => (open = !open)} aria-label="無人模式：{label}" title="無人模式：{label}">
+			{#if updating}<span class="spinning" aria-hidden="true"><LoaderCircle size="1.1em" /></span>{:else}<Bot size="1.1em" aria-hidden="true" />{/if}
+			<!-- The widest word sits under the shown one, so the button keeps its width when 更新中 comes and goes. -->
+			<span class="state"><span aria-hidden="true" class="sizer">更新中</span><span>{label}</span></span>
 		</button>
 		{#if open}
 			<div class="popup" id="unattended-shortcut-{controllerId}">
@@ -58,7 +64,30 @@
 		}
 	}
 	.state {
+		display: inline-grid;
 		font-weight: 700;
+	}
+	.state > span {
+		grid-area: 1 / 1;
+	}
+	.sizer {
+		visibility: hidden;
+	}
+	.spinning {
+		display: inline-flex;
+	}
+	.spinning :global(svg) {
+		animation: spin 1s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.spinning :global(svg) {
+			animation: none;
+		}
 	}
 	.toggle.on {
 		background: var(--selected-bg);

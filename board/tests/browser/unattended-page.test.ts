@@ -2,7 +2,8 @@
 // settings dialog's global and project settings, the options menu's 無人模式 part, the form drawer
 // (cancel writes nothing, a blank goal cannot be sent, 確認開啟 grants), the status card's badge,
 // goal line, details and 修改, the roster's 無人 mark, and 關掉, each reaching the other browser
-// without a reload. At 1280 and 390 wide nothing scrolls sideways and every button, checkbox row and
+// without a reload within 2 seconds; 更新中 on the card and the roster while a write is under way,
+// taken off with the mode kept when it is refused. At 1280 and 390 wide nothing scrolls sideways and every button, checkbox row and
 // box to type in is at least 44px high. With LAT_BOARD_SHOTS set, every look is saved there. Headless Chrome over its DevTools
 // protocol; skipped when the host has no Chrome.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -180,9 +181,26 @@ test.skipIf(!CHROME)('the options menu opens the form; cancel writes nothing, a 
 	expect(await a.eval<string>(`document.querySelector('${DRAWER} .why').innerText`)).toContain('還沒寫這一輪的目標');
 	await save(a, '1280-drawer-blank-goal');
 	await a.eval(`(() => { const box = document.querySelector('${DRAWER} input[type="text"]'); box.value = '#577 按鈕字改「儲存」、#578 修錯字'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+	// Refused first: 更新中 in the roster, then manual again, the roster card not moving at any point.
+	const manual = await a.eval(ROSTER_PLACES);
+	await holdGrants(a, `new Response(JSON.stringify({ reason: '測試用的拒絕' }), { status: 409, headers: { 'content-type': 'application/json' } })`);
 	await a.eval(`${button(DRAWER, '確認開啟')}.click()`);
-	await a.until(`!document.querySelector('${DRAWER}') && ${BADGE} === '無人模式（來自這個主控）'`, 'the badge');
-	await b.until(`${MARK} === '無人' && ${BADGE} === '無人模式（來自這個主控）'`, 'the mark and badge in the other browser');
+	await a.until(`${UPDATING_ROSTER} === '更新中'`, '更新中 in the roster');
+	expect(await a.eval(ROSTER_PLACES)).toEqual(manual);
+	await a.until(`${UPDATING_ROSTER} === '' && document.querySelector('${DRAWER}')?.innerText.includes('測試用的拒絕')`, 'the refusal in the form');
+	expect(await a.eval(ROSTER_PLACES)).toEqual(manual);
+	expect(await a.eval(MARK)).toBe('');
+	expect(existsSync(grantFile)).toBe(false);
+	await a.eval('window.fetch = window.__send');
+	const sentAt = Date.now();
+	await a.eval(`${button(DRAWER, '確認開啟')}.click()`);
+	await Promise.all([
+		a.until(`!document.querySelector('${DRAWER}') && ${MARK} === '無人' && ${BADGE} === '無人模式（來自這個主控）'`, 'the mark and badge'),
+		b.until(`${MARK} === '無人' && ${BADGE} === '無人模式（來自這個主控）'`, 'the mark and badge in the other browser')
+	]);
+	// Both pages show it within 2 seconds of the tap (#688), the time logged.
+	console.log(`timing: 確認開啟 → both pages ${Date.now() - sentAt} ms`);
+	expect(Date.now() - sentAt).toBeLessThan(2_000);
 	expect(JSON.parse(readFileSync(grantFile, 'utf8')).versions[0]).toMatchObject({ goal: '#577 按鈕字改「儲存」、#578 修錯字', source: 'board-form' });
 	expect(await a.eval<string>(`document.querySelector('${CARD} .summary').innerText`)).toContain('條件 2 條');
 	await save(a, '1280-card-collapsed');
@@ -200,9 +218,14 @@ test.skipIf(!CHROME)('the card opens to the goal, conditions, stop and layers; �
 	await a.eval(`${button(CARD, '修改')}.click()`);
 	await a.until(`document.querySelector('${DRAWER} input[type="text"]')?.value === '#577 按鈕字改「儲存」、#578 修錯字'`, 'the form with the version in effect');
 	await a.eval(`(() => { const box = document.querySelector('${DRAWER} textarea'); box.value = '#577、#578 都合併進開發分支'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+	const sentAt = Date.now();
 	await a.eval(`${button(DRAWER, '送出修改')}.click()`);
-	await a.until(`document.querySelector('${CARD} .summary')?.innerText.includes('條件 1 條')`, 'the new version on the card');
-	await b.until(`document.querySelector('${CARD} .summary')?.innerText.includes('條件 1 條')`, 'the new version in the other browser');
+	await Promise.all([
+		a.until(`document.querySelector('${CARD} .summary')?.innerText.includes('條件 1 條')`, 'the new version on the card'),
+		b.until(`document.querySelector('${CARD} .summary')?.innerText.includes('條件 1 條')`, 'the new version in the other browser')
+	]);
+	console.log(`timing: 送出修改 → both pages ${Date.now() - sentAt} ms`);
+	expect(Date.now() - sentAt).toBeLessThan(2_000);
 	const versions = JSON.parse(readFileSync(grantFile, 'utf8')).versions;
 	expect(versions.map((version: { source: string }) => version.source)).toEqual(['board-form', 'user-edit']);
 	const log = readFileSync(join(fixture.dir, 'board-state/sent-log.jsonl'), 'utf8');
@@ -255,13 +278,46 @@ test.skipIf(!CHROME)('at 390 wide the drawer comes up from the bottom and nothin
 	await c.until(`${BADGE} !== ''`, 'the controller page again');
 }, 30_000);
 
-test.skipIf(!CHROME)('關掉 on the card turns it back to manual on every page within 5 seconds', async () => {
+/** Hold this page's grant writes back for a moment, so 更新中 can be seen; `answer` replaces the server's reply. */
+const holdGrants = (tab: Tab, answer = 'send(input, init)') =>
+	tab.eval(`(() => { const send = window.__send ??= window.fetch; window.fetch = (input, init) => (new URL(String(input), location.href).pathname === '/api/unattended' ? new Promise((done) => setTimeout(done, 700)).then(() => ${answer}) : send(input, init)); })()`);
+const UPDATING_CARD = `(document.querySelector('${CARD} [role="status"]')?.innerText ?? '')`;
+const UPDATING_ROSTER = `(document.querySelector('[data-controller="luna"] .mode-slot [role="status"]')?.innerText ?? '')`;
+/** Where the roster card's name and mode slot sit, to see that swapping 無人 and 更新中 moves nothing. */
+const ROSTER_PLACES = `(() => { const card = document.querySelector('[data-controller="luna"] .handle').closest('[data-controller="luna"]'); const box = (selector) => { const r = card.querySelector(selector).getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; }; return { handle: box('.handle'), slot: box('.mode-slot'), card: box('.phase') }; })()`;
+
+test.skipIf(!CHROME)('更新中 shows on the card and the roster from the tap; a refused write takes it off and keeps the mode', async () => {
+	const a = browsers[0].tab;
+	await holdGrants(a, `new Response(JSON.stringify({ reason: '測試用的拒絕' }), { status: 409, headers: { 'content-type': 'application/json' } })`);
+	const places = await a.eval(ROSTER_PLACES);
+	await a.eval(`${button(CARD, '關掉')}.click()`);
+	await a.until(`${UPDATING_CARD} === '更新中' && ${UPDATING_ROSTER} === '更新中'`, '更新中 on every control');
+	await save(a, '1280-updating-refused');
+	expect(await a.eval(ROSTER_PLACES)).toEqual(places);
+	expect(await a.eval(`document.querySelector('${CARD} .off').disabled`)).toBe(true);
+	await a.until(`${UPDATING_CARD} === '' && ${UPDATING_ROSTER} === ''`, 'the mark off after the refusal');
+	expect(await a.eval(BADGE)).toBe('無人模式（來自這個主控）');
+	expect(await a.eval(MARK)).toBe('無人');
+	expect(await a.eval(ROSTER_PLACES)).toEqual(places);
+	expect(await a.eval<string>(`document.body.innerText`)).toContain('沒有關掉：測試用的拒絕');
+	await save(a, '1280-updating-refused-after');
+	expect(JSON.parse(readFileSync(grantFile, 'utf8')).versions.at(-1).end_reason ?? null).toBeNull();
+});
+
+test.skipIf(!CHROME)('關掉 on the card says 更新中, then turns it back to manual on every page within 2 seconds', async () => {
 	const [a, b] = [browsers[0].tab, browsers[1].tab];
 	await save(a, '1280-roster-mark');
+	await holdGrants(a);
 	const at = Date.now();
 	await a.eval(`${button(CARD, '關掉')}.click()`);
+	await a.until(`${UPDATING_CARD} === '更新中' && ${UPDATING_ROSTER} === '更新中'`, '更新中 while the write is under way');
+	await save(a, '1280-updating');
+	await a.until(`${UPDATING_ROSTER} === '' && ${MARK} === '' && ${BADGE} === ''`, 'manual, and the mark off, on this page');
+	await save(a, '1280-updating-after');
 	await b.until(`${MARK} === '' && ${BADGE} === ''`, 'the mark and badge gone in the other browser');
-	expect(Date.now() - at).toBeLessThan(5_000);
+	// Less the 700 ms this page held the write back for.
+	console.log(`timing: 關掉 → other page ${Date.now() - at - 700} ms`);
+	expect(Date.now() - at - 700).toBeLessThan(2_000);
 	await b.eval(`document.querySelector('.cmd button[aria-label="選項"]').click()`);
 	await b.until(`document.querySelector('${MENU}')?.innerText.includes('現在：人工確認（來自這個主控）')`, 'the menu back to manual');
 	await save(b, '1280-after-off');

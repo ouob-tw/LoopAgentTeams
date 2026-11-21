@@ -1,6 +1,7 @@
 // Unattended mode through the board, down to the real helper, lat-unattended and the files: the
 // settings page's reads and writes, turning a controller's grant on, changing it and turning it off,
-// the human request each form leaves in the action log, and every open page being told.
+// the human request each form leaves in the action log, and every open page being told: the new
+// mode pushed as soon as the write is done, which a full read begun before it does not undo.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -146,4 +147,73 @@ test('a refusal of the tool is the outcome logged and shown', async () => {
 	expect(action).toMatchObject({ action: 'unattended', ok: false });
 	expect(action.error).toContain('no grant in effect');
 	expect(existsSync(grantFile)).toBe(false);
+});
+
+test('a grant write pushes the new mode at once, and a full read begun before it does not put the old mode back', async () => {
+	expect(await lunaNow()).toMatchObject({ state: 'none' });
+	const page = fixture.watch(cookie);
+	await until(() => page.latest(), 5_000, 'the first snapshot');
+	const hcomFile = join(fixture.dir, 'hcom.json');
+	const hcomPlan = existsSync(hcomFile) ? readFileSync(hcomFile, 'utf8') : null;
+	// hcom's list holds the full read back after it has read the controller's mode, still manual.
+	fixture.setHcom({ ...(hcomPlan ? JSON.parse(hcomPlan) : {}), listDelayMs: 6_000 });
+	try {
+		const reads = fixture.helperArgs('unattended').length;
+		const older = fixture.refresh(cookie);
+		await until(() => fixture.helperArgs('unattended').length > reads, 5_000, 'the full read reading the modes');
+		// The real helper's read of the mode has had time to finish.
+		await new Promise((resolve) => setTimeout(resolve, 1_500));
+		const at = Date.now();
+		const created = await grant({ op: 'create', ...FORM });
+		expect(created.status).toBe(200);
+		const { revision } = await created.json();
+		expect(typeof revision).toBe('number');
+		// Pushed by the write itself, not by the held full read.
+		const pushed = await until(() => page.snapshots.find((snapshot) => snapshot.revision === revision), 2_000, 'the push of the new mode');
+		expect(named(pushed, 'luna')?.unattended.state).toBe('active');
+		expect(Date.now() - at).toBeLessThan(5_000);
+		const sent = page.snapshots.length;
+		// The full read ends with the mode it read before the write; the page keeps the new one.
+		expect(named(await older, 'luna')?.unattended.state).toBe('active');
+		const after = page.snapshots.slice(sent);
+		expect(after.every((snapshot) => named(snapshot, 'luna')?.unattended.state === 'active')).toBe(true);
+	} finally {
+		if (hcomPlan === null) rmSync(hcomFile, { force: true });
+		else writeFileSync(hcomFile, hcomPlan);
+		page.close();
+	}
+});
+
+test('a read of the controller alone that comes back after a newer mode was applied does not put its older mode back', async () => {
+	const page = fixture.watch(cookie);
+	await until(() => page.latest(), 5_000, 'the first snapshot');
+	const hold = { claim: join(fixture.dir, 'hold-claim'), ready: join(fixture.dir, 'hold-ready'), release: join(fixture.dir, 'hold-release') };
+	for (const path of Object.values(hold)) rmSync(path, { force: true });
+	// A second controller: the full read asks for both, the write's own read for luna alone, which is the one held.
+	const nova = fixture.bound('alpha', 'nova');
+	fixture.setHelper({ output: { controllers: [luna, nova] }, realUnattended: uvPython(), holdOneUnattended: hold });
+	await fixture.refresh(cookie);
+	try {
+		let answered = false;
+		const first = grant({ op: 'create', ...FORM }).then((response) => ((answered = true), response));
+		// The write's own read has read the grant (active) and is held; the full read after it is not.
+		await until(() => existsSync(hold.ready), 10_000, 'the read alone held');
+		await until(() => named(page.latest(), 'luna')?.unattended.state === 'active', 10_000, 'the grant from the full read');
+		expect(answered).toBe(false);
+		// Turned off meanwhile, and a full read after that applied.
+		expect((await grant({ op: 'close' })).status).toBe(200);
+		await until(() => named(page.latest(), 'luna')?.unattended.state === 'none', 10_000, 'the grant off');
+		expect(named(await fixture.refresh(cookie), 'luna')?.unattended.state).toBe('none');
+		const before = page.snapshots.length;
+		writeFileSync(hold.release, '');
+		const response = await first;
+		expect(response.status).toBe(200);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(page.snapshots.slice(before).map((snapshot) => named(snapshot, 'luna')?.unattended.state).filter((state) => state !== 'none')).toEqual([]);
+		expect(named(await fixture.board(cookie), 'luna')?.unattended.state).toBe('none');
+	} finally {
+		writeFileSync(hold.release, '');
+		fixture.setHelper({ output: { controllers: [luna] }, realUnattended: uvPython() });
+		page.close();
+	}
 });

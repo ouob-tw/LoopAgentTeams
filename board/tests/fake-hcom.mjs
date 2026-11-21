@@ -4,6 +4,7 @@
 //   - `names`: the agent name each call in turn reports (default `agent<n>`); null prints no `Names:` line.
 //   - `stdout`, `stderr`, `exit`: replace the launch output, add an error, set the exit code.
 //   - `sleepMs`: wait this long after printing, before exiting.
+//   - `listDelayMs`: `list` waits this long before printing, holding back a read of the board.
 //   - `resumed`: an agent a resume adds to the agent list, as `list --json` prints one.
 //   - `resumedHerdr`: an agent a resume adds to the fake Herdr's <dir>/herdr.json, as `agent list`
 //     prints one, with its pane (in the agent's workspace and folder) and, when herdr.json lists
@@ -88,6 +89,7 @@ if (args[0] === 'list') {
 		process.stderr.write(listed.fail.stderr ?? '');
 		process.exit(listed.fail.exit ?? 1);
 	}
+	if (plan.listDelayMs) await new Promise((resolve) => setTimeout(resolve, plan.listDelayMs));
 	process.stdout.write(JSON.stringify([...listed, ...added()]));
 	process.exit(0);
 }

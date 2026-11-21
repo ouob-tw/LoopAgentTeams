@@ -13,7 +13,7 @@ import { EMPTY_ALERTS, type AlertsSnapshot } from './alerts.ts';
 import { readAlerts } from './alert-actions.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import { translatePref } from './translate-pref.svelte.ts';
-import { unattendedUi } from './unattended-ui.svelte.ts';
+import { heardSnapshot, unattendedUi } from './unattended-ui.svelte.ts';
 import type { TranslateMode } from './translate-mode.ts';
 import type { UsageStyle } from './usage.ts';
 import { justRecorded } from './question-message.ts';
@@ -61,6 +61,7 @@ export class LiveBoard {
 
 	constructor(initial: BoardSnapshot, pd: PdSnapshot | null = null, automation: AutomationSnapshot = EMPTY_AUTOMATION, alerts: AlertsSnapshot = EMPTY_ALERTS) {
 		this.snapshot = $state(initial);
+		heardSnapshot(initial.revision);
 		this.automation = automation;
 		this.alerts = alerts;
 		if (pd) this.pd = { snapshot: pd, at: Date.now() };
@@ -79,6 +80,7 @@ export class LiveBoard {
 					this.answered = { controllerId, questions: [...questions, ...recorded] };
 				}
 				this.snapshot = snapshot;
+				heardSnapshot(snapshot.revision);
 			},
 			onState: (state) => {
 				const back = this.link === 'offline' && state === 'live';

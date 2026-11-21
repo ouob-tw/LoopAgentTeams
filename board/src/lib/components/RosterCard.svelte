@@ -11,6 +11,8 @@
 	import HcomBadge from './HcomBadge.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import { isUnattended } from '#lib/board/unattended.ts';
+	import { unattendedUi } from '#lib/board/unattended-ui.svelte.ts';
+	import UnattendedUpdating from './UnattendedUpdating.svelte';
 	import { unseenCount } from '#lib/board/delegated.ts';
 
 	let { controller, current, onopen }: { controller: Controller; current: boolean; onopen: (id: string) => void } = $props();
@@ -48,12 +50,19 @@
 		{#if delegated}
 			<span class="delegated" title="參謀代你決定、你還沒看過的事">代決 {delegated}</span>
 		{/if}
-		{#if isUnattended(controller.unattended)}
-			<span class="unattended" title="無人模式：照目標自己做，要你決定的事先擱置">無人</span>
-		{/if}
 		{#if controller.error}
 			<span class="error" title={controller.error}>⚠ 錯誤</span>
 		{/if}
+		<!-- Last in the row, always there: 無人 and 更新中 share one slot as wide as 更新中, so neither
+		     a swap nor a refused write moves the name or the other marks; in manual mode it stays empty. -->
+		<span class="mode-slot">
+			<span class="sizer" aria-hidden="true"><UnattendedUpdating sizer /></span>
+			{#if unattendedUi.updating[controller.id]}
+				<span class="updating"><UnattendedUpdating /></span>
+			{:else if isUnattended(controller.unattended)}
+				<span class="unattended" title="無人模式：照目標自己做，要你決定的事先擱置">無人</span>
+			{/if}
+		</span>
 	</span>
 	<span class="phase">{summaryPlain(phaseText(controller))}</span>
 	{#if controller.duty}
@@ -125,8 +134,22 @@
 		font-weight: 700;
 		white-space: nowrap;
 	}
-	.unattended {
+	.mode-slot {
+		display: inline-grid;
 		flex: none;
+		font-size: max(0.75rem, var(--min-font, 0px));
+	}
+	.mode-slot > span {
+		grid-area: 1 / 1;
+	}
+	.sizer {
+		visibility: hidden;
+	}
+	.updating {
+		justify-self: center;
+	}
+	.unattended {
+		text-align: center;
 		padding: 0 0.45rem;
 		border-radius: var(--radius-pill);
 		background: var(--warn);

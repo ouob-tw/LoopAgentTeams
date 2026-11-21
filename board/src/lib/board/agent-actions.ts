@@ -58,6 +58,9 @@ export interface AgentActionResponse {
 	entry: AgentAction;
 	/** Set when the attempt could not be written to the sent log. */
 	logError: string | null;
+	/** An unattended grant change only: the revision of the last snapshot sent to the pages once the
+	 *  new mode is in it; null when the write failed or nothing more will be pushed for it. */
+	revision?: number | null;
 }
 
 export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {

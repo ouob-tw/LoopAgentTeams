@@ -11,6 +11,7 @@ import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.t
 import { loadDelegatedSeen, markDelegatedSeen, type DelegatedSeen } from './delegated-state.ts';
 import { delegatedOf, seenKey, withSeen } from '../board/delegated.ts';
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, ledgerSources, mark, processedPage, type MarkResult, type Sources, unattendedSources, withRecorded } from './model.ts';
+import type { UnattendedView } from '../board/unattended.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openLog, type SentLog } from './sent-log.ts';
@@ -114,6 +115,11 @@ export interface Board {
 	/** An unattended setting or grant was written: every open page reads the settings again, and the
 	 *  controllers' modes are read again now rather than when the file watch notices. */
 	unattendedChanged(): void;
+	/** A grant of this controller was just written: read its mode alone and push it to every page now,
+	 *  before the full read catches up. The revision of the last snapshot sent to the pages once it is
+	 *  in; when it cannot be read alone, once the full read under way or queued is in; null when
+	 *  there is none or the board closed. */
+	unattendedWritten(controller: { workspace: string; sessionId: string }): Promise<number | null>;
 	/** Whether conversations open translated, on every device. */
 	translateMode(): TranslateModeState;
 	/** Save the mode and tell every open page. Throws, leaving the mode as it was, when it cannot be saved. */
@@ -202,6 +208,14 @@ function createBoard(): Board {
 	let ledgerPaths: string[] = [];
 	/** The same for the files the controllers' unattended mode is read from. */
 	let unattendedPaths: string[] = [];
+	/** Each controller's mode read alone just after a grant write, with when that read began: a full
+	 *  read that began before it must not put the older mode back (as `keepNewest` for the lists). */
+	const unattendedNewest = new Map<string, { at: number; view: UnattendedView }>();
+	/** When the read began whose mode of each controller the sources hold, full or alone: a read alone
+	 *  that comes back after a newer one was applied must not put its older mode back either. */
+	const unattendedApplied = new Map<string, number>();
+	/** The revision of the last snapshot sent to the pages; an unchanged one is not sent. */
+	let sentRevision = 0;
 
 	const comparable = (value: BoardSnapshot) => JSON.stringify({ ...value, generatedAt: '', revision: 0 });
 
@@ -503,7 +517,7 @@ function createBoard(): Board {
 			answeredError: answered.ok ? null : answered.reason,
 			ledgers: ledgers.ok ? new Map([...ledgers.ledgers].map(([id, read]) => [id, read.view])) : new Map(),
 			ledgersError: ledgers.ok ? null : ledgers.reason,
-			unattended: unattended.ok ? new Map([...unattended.views].map(([id, read]) => [id, read.view])) : new Map(),
+			unattended: unattended.ok ? keptUnattended(listedAt, new Map([...unattended.views].map(([id, read]) => [id, read.view]))) : new Map(),
 			unattendedError: unattended.ok ? null : unattended.reason
 		};
 
@@ -575,8 +589,45 @@ function createBoard(): Board {
 		if (problem) next.errors.push(problem);
 		const changed = !snapshot || comparable(snapshot) !== comparable(next);
 		snapshot = next;
-		if (changed) for (const stream of streams) stream.send('board', JSON.stringify(next));
+		if (changed) {
+			sentRevision = next.revision;
+			for (const stream of streams) stream.send('board', JSON.stringify(next));
+		}
 		return marked;
+	}
+
+	/** A full read's modes, read from `at`, with each one read alone since then in its place. One read
+	 *  alone before `at` is older than this read and is dropped. */
+	function keptUnattended(at: number, read: Map<string, UnattendedView>): Map<string, UnattendedView> {
+		for (const [id, kept] of unattendedNewest) {
+			if (kept.at >= at) read.set(id, kept.view);
+			else unattendedNewest.delete(id);
+		}
+		for (const id of read.keys()) if (!unattendedNewest.has(id)) unattendedApplied.set(id, at);
+		return read;
+	}
+
+	async function unattendedWritten(controller: { workspace: string; sessionId: string }): Promise<number | null> {
+		const began = Date.now();
+		const read = await readUnattended(config, [controller]);
+		const view = read.ok ? read.views.get(controller.sessionId)?.view : undefined;
+		if (closed) return null;
+		if (!sources || !view) {
+			// Not read alone: the full read already asked for shows it, so the pages wait for that one.
+			const pending = queued ?? running;
+			if (!pending) return null;
+			await pending.catch(() => undefined);
+			return closed ? null : sentRevision;
+		}
+		// A read that began later, full or alone, already put a newer mode in; the pages have it.
+		if ((unattendedApplied.get(controller.sessionId) ?? -Infinity) > began) return sentRevision;
+		unattendedNewest.set(controller.sessionId, { at: began, view });
+		unattendedApplied.set(controller.sessionId, began);
+		const unattended = new Map(sources.unattended);
+		unattended.set(controller.sessionId, view);
+		sources = { ...sources, unattended };
+		publish(sources);
+		return sentRevision;
 	}
 
 	/** The sources as last read, reading them first if nothing has been read yet. */
@@ -790,6 +841,7 @@ function createBoard(): Board {
 			for (const stream of streams) stream.send('usage-style', JSON.stringify(usageStyle));
 			return usageStyle;
 		},
+		unattendedWritten,
 		unattendedChanged() {
 			for (const stream of streams) stream.send('unattended-settings', '{}');
 			if (!closed) void refresh();
