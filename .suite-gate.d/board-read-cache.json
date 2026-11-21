@@ -1,4 +1,4 @@
 {"map": [
   {"paths": ["board/src/lib/server/read-cache.ts", "board/src/lib/server/helper.ts", "board/src/lib/server/board.ts", "board/tests/fake-helper.mjs"],
-   "tests": ["board/tests/unit/read-cache.test.ts", "board/tests/server/answers.test.ts", "board/tests/server/archive.test.ts"]}
+   "tests": ["board/tests/unit/read-cache.test.ts", "board/tests/server/answers.test.ts", "board/tests/server/archive.test.ts", "board/tests/browser/answer-torn.test.ts"]}
 ]}

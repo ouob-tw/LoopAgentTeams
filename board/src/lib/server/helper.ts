@@ -164,21 +164,18 @@ export async function readAnswered(config: BoardConfig, { paths, controllers }: 
 	}
 	const files: AnsweredFile[] = payload.files;
 	if (!cache) return { ok: true, files };
-	for (const file of files) {
+	// The files asked for by path come first, in order, then those asked for by name.
+	const byPath = files.slice(0, paths.length);
+	const byName = files.slice(paths.length);
+	for (const file of byName) {
 		if (file.workspace === undefined || file.questions_path === null || file.error !== null) continue;
 		const sources = answeredFiles(file.workspace, file.questions_path);
 		if (sources) cache.set(answeredKey(file), file, sources, startedAt);
 	}
 	if (!kept.size) return { ok: true, files };
 	// In the order asked for, as one run of the helper for all of them prints them.
-	const byName = new Map(files.filter((file) => file.workspace !== undefined).map((file) => [answeredKey(file), file]));
-	return {
-		ok: true,
-		files: [
-			...files.filter((file) => file.workspace === undefined),
-			...controllers.flatMap((controller) => kept.get(answeredKey(controller)) ?? byName.get(answeredKey(controller)) ?? [])
-		]
-	};
+	const fresh = new Map(byName.map((file) => [answeredKey(file), file]));
+	return { ok: true, files: [...byPath, ...controllers.flatMap((controller) => kept.get(answeredKey(controller)) ?? fresh.get(answeredKey(controller)) ?? [])] };
 }
 
 /** What `board answer` and `board notify` print: one JSON object with a status. */
