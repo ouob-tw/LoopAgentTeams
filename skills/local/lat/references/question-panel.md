@@ -81,7 +81,12 @@ Q
 
 檢查通過後依「聊天提問格式」提問；使用者可在面板或聊天作答。
 
-等答覆時題目不必逐一列出：`lat-watch.py wait … --for-pending --for-my-agents`（見 [停住監控](stall-watch.md#結束回合前)）。
+等答覆時題目不必逐一列出（見 [停住監控](stall-watch.md#結束回合前)）：
+
+```bash
+uv run --no-project python "$lat_dir/scripts/lat-watch.py" wait --workspace "$workspace" \
+  --agent <自己的完整 HCOM 名稱> --for-pending --for-my-agents --reason '<一句原因>'
+```
 
 ### 題目格式
 

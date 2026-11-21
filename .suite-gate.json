@@ -439,6 +439,8 @@
        "tests": ["board/tests/unit/no-hardcoded-tmp.test.ts"]},
       {"paths": ["board/scripts/**", "board/lat-board.service", "board/.gitignore"],
        "tests": []},
+      {"paths": ["skills/local/lat/SKILL.md", "skills/local/lat/references/**", "skills/local/lat/tests/test_wait_examples.py", "skills/local/lat/scripts/lat-watch.py"],
+       "tests": ["skills/local/lat/tests/test_wait_examples.py"]},
       {"paths": ["skills/local/lat/scripts/lat-watch.py"],
        "tests": ["skills/local/lat/tests/test_lat_watch.py", "skills/local/lat/tests/test_lat_common.py", "skills/local/lat/tests/test_lat_session.py", "skills/local/lat/tests/test_lat_panel.py", "skills/local/lat/tests/test_lat_panel_transcript.py", "skills/local/lat/tests/test_lat_panel_autorecord.py", "skills/local/lat/tests/test_lat_dispatch.py"]},
       {"paths": ["skills/local/lat/scripts/lat-session.py"],
