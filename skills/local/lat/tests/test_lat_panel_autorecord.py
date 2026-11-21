@@ -241,6 +241,14 @@ class UpsertRevisionTests(AutoRecordTestCase):
         self.assertEqual(read_decision_status(self.decision("Q5")).status, "answered")
         self.assertEqual(self.core.questions.decision_revision(self.decision("Q5")), 3)
 
+    def test_field_names_in_any_case_are_kept_as_the_old_version(self):
+        self.decision("Q5").write_text(UPSERT_RECORD.replace("- question:", "- Question:"))
+        self.upsert("要用哪個名稱？", ["A. 甲名", "B. 乙名"])
+        self.upsert("改用哪個名稱？", ["A. 丙名", "B. 丁名"])
+        record = self.decision("Q5").read_text()
+        self.assertIn("- question: 改用哪個名稱？\n", record)
+        self.assertIn("- 原題：要用哪個名稱？\n", record)
+
     def test_record_that_cannot_be_synced_only_warns(self):
         self.upsert("要用哪個名稱？", ["A. 甲名", "B. 乙名"])
         self.decision("Q5").write_text("# Q5\n\n- version: r1\n")

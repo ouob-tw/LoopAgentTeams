@@ -1493,7 +1493,7 @@ def _prior_question_section(question_id, old_lines, old_revision, revision, new_
     label = f"r{old_revision}" if old_revision is not None else ""
     out = [f"## 舊版{' ' if label else ''}{label}（由 r{revision} 取代）", ""]
     for line in old_lines:
-        prefix, name = next(item for item in _PRIOR_KEYS if line.startswith(item[0]))
+        prefix, name = next(item for item in _PRIOR_KEYS if line.lower().startswith(item[0]))
         value = line[len(prefix):].strip()
         if name == "標題" and value.split(" ", 1)[0] == question_id:
             value = value[len(question_id):].strip()
