@@ -192,7 +192,8 @@ test.skipIf(!CHROME)('a failed launch\'s card says it failed and can be removed'
 	expect(await evaluate(`${CARD}.dataset.state`)).toBe('failed');
 	expect(await evaluate(`${CARD}.querySelector('.phase').textContent`)).toBe('失敗');
 	await send('Page.navigate', { url: fixture.url });
-	await until(`!!${CARD}`);
+	// Running, not only the server's first render: a click before that does nothing.
+	await until(`${BOARD_STARTED} && !!${CARD}`);
 	await shot(browser!.tab, '1400-failed');
 	await resize(390);
 	await until(`!!document.querySelector('.people [data-launch]')`);

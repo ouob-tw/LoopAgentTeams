@@ -134,7 +134,12 @@ test.skipIf(!CHROME)('an idle new-controller page stays open for forty seconds w
 	await tab.until(`document.body.innerText.includes('啟動中，等主控啟用')`);
 	const starting = await openingReads();
 	await tab.until(`document.body.innerText.includes('已開分頁，但主控尚未啟用')`);
-	expect(await count('/api/launches')).toBe(starting + 1);
+	// The timer reloads once; the roster's card of this launch turning overdue (#689) is new board
+	// data, which reloads the list once more. Nothing reloads after that.
 	await sleep(2500);
-	expect(await count('/api/launches')).toBe(starting + 1);
-}, 60000);
+	const expired = await count('/api/launches');
+	expect(expired).toBeGreaterThanOrEqual(starting + 1);
+	expect(expired).toBeLessThanOrEqual(starting + 2);
+	await sleep(2500);
+	expect(await count('/api/launches')).toBe(expired);
+}, 70000);
