@@ -3,13 +3,14 @@
 // writes: the limits (read only, never send anything, never open a ticket), the checklist, where the
 // run's output or its agent's conversation is, and the questions the agent asked on the way. Its
 // reply's last line says PASS or FAIL; the lines before say each item's verdict and why.
-import type { AutomationRun, AutomationTask, ReviewItem } from '../board/automation.ts';
+import type { AutomationRun, AutomationTask, ReviewItem, RunReview } from '../board/automation.ts';
 import { timeFormat, TIME_ZONE } from '../board/automation.ts';
 import type { AgentEnd } from './automation-agent.ts';
 
-/** The hcom tag of a run's checking agent, beside the run's own `auto-<task>-<run>`. */
-export function reviewTag(taskId: string, runId: string): string {
-	return `autochk-${taskId}-${runId.split('-').at(-1)!.slice(0, 6)}`;
+/** The hcom tag of a run's checking agent, beside the run's own `auto-<task>-<run>`; the second
+ *  check's (#690) ends in `-2`. */
+export function reviewTag(taskId: string, runId: string, round: 1 | 2 = 1): string {
+	return `autochk-${taskId}-${runId.split('-').at(-1)!.slice(0, 6)}${round === 2 ? '-2' : ''}`;
 }
 
 /** The first message of a checking agent. */
@@ -32,6 +33,8 @@ export interface ReviewInput {
 	output?: string;
 	/** An agent task's conversation on disk, when it was found. */
 	transcript?: string | null;
+	/** The second check (#690): the first one, which judged FAIL, and the task agent's reply to it. */
+	recheck?: { first: RunReview; reply: string };
 }
 
 const fence = (text: string) => {
@@ -40,7 +43,7 @@ const fence = (text: string) => {
 };
 
 /** The checking agent's brief. */
-export function reviewBrief({ task, run, folder, taskBrief, output, transcript }: ReviewInput): string {
+export function reviewBrief({ task, run, folder, taskBrief, output, transcript, recheck }: ReviewInput): string {
 	const at = timeFormat(TIME_ZONE);
 	const when = `${at.full(run.startedAt)}${run.endedAt ? ` → ${at.full(run.endedAt)}` : ''}（台灣時間）`;
 	const lines = [
@@ -48,6 +51,12 @@ export function reviewBrief({ task, run, folder, taskBrief, output, transcript }
 		'',
 		`你是檢查 Agent。這個自動化任務剛跑完一次，回報成功；你的工作是照下面的驗收清單判定它是不是真的做到，不是替它補做。`,
 		'',
+		...(recheck
+			? [
+					'這是第二次檢查，也是最後一次：第一次檢查判沒過，執行任務的 Agent 已被接回，對沒過的條目逐條補做或反駁（見下面「第一次檢查結果」與「任務 Agent 的回應」）。請照驗收清單重新判定每一條：補做的要查證據；反駁有理由和證據、你也查得到的，可以接受並判 PASS，理由寫你為什麼接受。這次的判定就是最終結果。',
+					''
+				]
+			: []),
 		'## 限制',
 		'',
 		'- 只讀：不得修改、新增、刪除或搬移任何檔案（包括這份說明檔），不得執行會改變狀態的指令（例如 git commit、git push、安裝套件、改設定、重跑任務）。',
@@ -81,6 +90,12 @@ export function reviewBrief({ task, run, folder, taskBrief, output, transcript }
 			else lines.push('   沒有回覆。', '');
 		});
 	}
+	if (recheck) {
+		lines.push('', '## 第一次檢查結果', '');
+		(recheck.first.items ?? []).forEach((item, index) => lines.push(`${index + 1}. ${item.ok ? 'PASS' : 'FAIL'}: ${item.reason ?? '（沒寫理由）'}`));
+		if (recheck.first.reason) lines.push('', `總結：${recheck.first.reason}`);
+		lines.push('', '## 任務 Agent 的回應', '', fence(recheck.reply));
+	}
 	lines.push('', '## 驗收清單', '');
 	task.review.checklist.forEach((item, index) => lines.push(`${index + 1}. ${item}`));
 	lines.push(
@@ -96,6 +111,26 @@ export function reviewBrief({ task, run, folder, taskBrief, output, transcript }
 	);
 	return lines.join('\n');
 }
+
+/** The message that resumes the task's agent after its first check judged FAIL (#690): the items that
+ *  failed and why, how to answer each, and how to end. One line, as every first message is. */
+export function fixMessage(review: Pick<RunReview, 'items' | 'reason'>, { unattended = false } = {}): string {
+	const failed = (review.items ?? []).flatMap((item, index) => (item.ok ? [] : [`${index + 1}. ${item.label}（檢查理由：${item.reason ?? '沒寫'}）`]));
+	return [
+		`看板的檢查 Agent 判這次執行沒過。沒過的條目：${failed.join('；') || '（沒有逐條結果）'}${review.reason ? `；總結：${review.reason}` : ''}。`,
+		'請逐條處理並在回覆裡每條寫一行：「N. 已補做：<做了什麼>」或「N. 反駁：<理由與證據>」。',
+		'補做只限原任務授權內、不需要新授權的事；需要使用者決定或新授權的，寫成「N. 沒補做：<原因>」，不要問使用者，也不要發新的待決題。',
+		unattended ? '這是無人模式那一輪結束後的修正：不要重新建立或延長無人授權（不要跑 lat-unattended.py），不要回覆 DECIDE: 或 HELP:；中途等其他 Agent 時照 LAT 規則以 NO REPLY: 結尾。' : '',
+		'回覆後會再派一次檢查 Agent，它的判定就是最終結果。',
+		FIX_ENDING
+	].join('');
+}
+
+/** How the agent ends its reply to a failed check: as its task's ending, with no question to ask. */
+const FIX_ENDING = '最後一行只回覆 DONE，失敗回覆 FAILED: <原因>';
+
+/** Its message when it is resumed on another Codex account during that round. */
+export const FIX_RESUME_MESSAGE = `剛才額度用完，已換帳號接回。請接著把沒過的條目逐條補做或反駁，每條寫一行，${FIX_ENDING}`;
 
 const ITEM = /^\s*(?:[-*]\s*)?(\d+)\s*[.、)．:：]?\s*\**\s*(PASS|FAIL)\b\**\s*[:：\-—–]?\s*(.*)$/i;
 

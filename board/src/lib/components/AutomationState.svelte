@@ -3,7 +3,7 @@
 	import { runLabel, STATE_TEXT, type AutomationRun, type TaskState } from '#lib/board/automation.ts';
 
 	/** A run shows its own status, or how its check went when that was not a pass. */
-	let { state, run }: { state?: TaskState; run?: Pick<AutomationRun, 'status' | 'review' | 'asks'> } = $props();
+	let { state, run }: { state?: TaskState; run?: Pick<AutomationRun, 'status' | 'review' | 'asks' | 'fix' | 'firstReview'> } = $props();
 
 	const label = $derived(run ? runLabel(run) : null);
 	const tone = $derived.by(() => {

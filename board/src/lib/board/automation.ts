@@ -148,6 +148,36 @@ export interface AutomationRun {
 	review?: RunReview;
 	/** The questions the agent asked while it ran (ASK: …) and the answers it got (#605); the checking agent reads them. */
 	asks?: RunAsk[];
+	/** A first check that judged FAIL sent the run back to its agent once (#690): that round. */
+	fix?: RunFix;
+	/** Once the agent replied: the first check, while `review` is the second, final one. */
+	firstReview?: RunReview;
+}
+
+/** How long the agent sent back after a failed check has, unless the task says otherwise. */
+export const FIX_LIMIT_MINUTES = 30;
+
+/** The round a first check that judged FAIL opens (#690): the task's own agent resumed with the items
+ *  that failed, to fix each within the task's own grant or dispute it. Its reply goes to a second
+ *  check; with no reply (could not resume, past its limit, out of quota, stopped) the first FAIL stands. */
+export interface RunFix {
+	/** `fixing` counts as the task still running; `replied` is followed by the second check. */
+	status: 'fixing' | 'replied' | 'failed';
+	startedAt: number;
+	endedAt?: number;
+	limitMinutes: number;
+	/** The agent as hcom lists it once resumed; the run's own session and workspace otherwise. */
+	agentName?: string;
+	sessionId?: string;
+	judgeAfter?: number;
+	codexAccount?: number;
+	accountSwitches?: string[];
+	closeError?: string;
+	/** The agent's last reply: each item fixed or disputed. */
+	reply?: string;
+	/** Why it ended with no reply. */
+	reason?: string;
+	ended?: 'stopped' | 'timeout' | 'quota';
 }
 
 /** One question of a run's agent and the answer it got. */
@@ -343,7 +373,7 @@ export const sameDay = (a: number, b: number) => startOf(dayOf(a)) === startOf(d
 /** Runs that settle a period: any run but a preview that ended in success, and passed its check when it had one. */
 export const succeeded = (run: AutomationRun) => run.trigger !== 'preview' && run.status === 'success' && (!run.review || run.review.status === 'pass');
 /** The run is still going: running, or its checking agent is still at it. Either way the task is busy. */
-export const isOpen = (run: Pick<AutomationRun, 'status' | 'review'>) => run.status === 'running' || run.review?.status === 'checking';
+export const isOpen = (run: Pick<AutomationRun, 'status' | 'review' | 'fix'>) => run.status === 'running' || run.review?.status === 'checking' || run.fix?.status === 'fixing';
 /** The question a running run's agent waits on: its last one, while unanswered. */
 export function openAsk(run: Pick<AutomationRun, 'status' | 'asks'>): RunAsk | undefined {
 	const last = run.status === 'running' ? run.asks?.at(-1) : undefined;
@@ -382,16 +412,20 @@ export function workedText(run: Pick<AutomationRun, 'startedAt' | 'asks'>, now: 
 export const ASK_SOURCE = { board: '看板', terminal: '終端' } as const;
 /** The first line of a question: a yellow card's title and the start of its push. */
 export const askFirstLine = (question: string) => question.trim().split('\n')[0].trim();
-/** Its check ended without a pass: failed, or could not judge (stopped by the user aside). */
-export const reviewFailed = (run: Pick<AutomationRun, 'status' | 'review'>) =>
-	run.status === 'success' && (run.review?.status === 'fail' || (run.review?.status === 'error' && run.review.ended !== 'stopped'));
+/** Its check ended without a pass: failed, or could not judge (stopped by the user aside, unless a
+ *  first check had failed already). Not while its agent is still sent back to fix it. */
+export const reviewFailed = (run: Pick<AutomationRun, 'status' | 'review' | 'fix' | 'firstReview'>) =>
+	run.status === 'success' &&
+	run.fix?.status !== 'fixing' &&
+	(run.review?.status === 'fail' || (run.review?.status === 'error' && (run.review.ended !== 'stopped' || run.firstReview !== undefined)));
 /** What a run's label says: its own status, or how its check ended when that went otherwise than a pass. */
-export function runLabel(run: Pick<AutomationRun, 'status' | 'review' | 'asks'>): { text: string; key: string } {
+export function runLabel(run: Pick<AutomationRun, 'status' | 'review' | 'asks' | 'fix' | 'firstReview'>): { text: string; key: string } {
 	if (openAsk(run)) return { text: STATE_TEXT.asking, key: 'asking' };
 	const review = run.status === 'success' ? run.review : undefined;
 	if (!review || review.status === 'pass') return { text: RUN_STATUS_TEXT[run.status], key: run.status };
-	if (review.status === 'checking') return { text: '▶ 檢查中', key: 'running' };
-	if (review.status === 'error' && review.ended) return { text: RUN_STATUS_TEXT[review.ended], key: review.ended };
+	if (run.fix?.status === 'fixing') return { text: '↻ 交回修正中', key: 'running' };
+	if (review.status === 'checking') return { text: run.firstReview ? '▶ 第二次檢查中' : '▶ 檢查中', key: 'running' };
+	if (review.status === 'error' && review.ended && !(review.ended === 'stopped' && run.firstReview)) return { text: RUN_STATUS_TEXT[review.ended], key: review.ended };
 	return { text: STATE_TEXT['check-failed'], key: 'check-failed' };
 }
 /** An automatic try made on the day `time` falls in: whatever it ended in, it is the day's one. */
@@ -530,6 +564,14 @@ export function reviewText(review: RunReview | undefined): string {
 	return '檢查沒有做完';
 }
 
+/** A run's checks in one short line, the round sent back to its agent included (#690). */
+export function runReviewText(run: Pick<AutomationRun, 'review' | 'fix' | 'firstReview'>): string {
+	if (run.fix?.status === 'fixing') return '第一次檢查未過，已交回任務 Agent 修正';
+	if (run.firstReview && run.review) return run.review.status === 'checking' ? '第一次檢查未過，任務 Agent 已回應，第二次檢查中' : `第一次檢查未過，第二次${reviewText(run.review)}`;
+	if (run.fix?.status === 'failed') return `${reviewText(run.review)}，交回修正沒有完成`;
+	return reviewText(run.review);
+}
+
 /** Why a run ended as it did, in one short line. */
 export function runReason(run: AutomationRun): string {
 	if (run.reason) return run.reason;
@@ -554,6 +596,7 @@ export function lastRunText(run: AutomationRun | undefined, timeZone: string, no
 	if (replied !== undefined) return `${at.full(run.startedAt)} 開始，${at.clock(replied)} 你已回覆，繼續中`;
 	if (run.status === 'running') return `${at.full(run.startedAt)} 開始，執行中`;
 	const when = at.full(run.endedAt ?? run.startedAt);
+	if (run.status === 'success' && run.review && (run.fix || run.firstReview)) return `${when} 做完，${runReviewText(run)}`;
 	if (run.status === 'success' && run.review && run.review.status !== 'pass') return `${when} 做完，但${run.review.status === 'checking' ? '還在檢查' : reviewText(run.review)}`;
 	if (run.status === 'success') return `${when} 完成，${run.review ? reviewText(run.review) : runReason(run)}`;
 	return `${when} ${RUN_STATUS_TEXT[run.status].slice(2)}：${runReason(run)}`;

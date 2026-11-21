@@ -1,7 +1,7 @@
 // The checking agent's brief and how its reply is read; a check's part in a task's state this period.
 import { expect, test } from 'bun:test';
-import { lastRunText, nextAutoAt, runLabel, taskState, type AutomationRun, type AutomationTask, type RunReview } from '../../src/lib/board/automation.ts';
-import { judgeReview, reviewBrief } from '../../src/lib/server/automation-review.ts';
+import { isOpen, lastRunText, nextAutoAt, reviewFailed, runLabel, taskState, type AutomationRun, type AutomationTask, type RunFix, type RunReview } from '../../src/lib/board/automation.ts';
+import { fixMessage, judgeReview, reviewBrief } from '../../src/lib/server/automation-review.ts';
 
 const at = (year: number, month: number, day: number, hour = 12, minute = 0) => Date.UTC(year, month - 1, day, hour - 8, minute);
 const CHECKLIST = ['報告 PDF 已產生', '發票已開立', '通知信已寄出'];
@@ -126,4 +126,71 @@ test('a check decides the period: checking runs, a pass is done, a fail or a che
 	expect(lastRunText(run({ review: review('fail', { items }) }), zone)).toBe('11/02 10:41 做完，但檢查未過（1 條沒過）');
 	expect(lastRunText(run({ review: review('pass', { items: [items[0]] }) }), zone)).toBe('11/02 10:41 完成，檢查通過（1 條都過）');
 	expect(lastRunText(run({ review: review('checking') }), zone)).toBe('11/02 10:41 做完，但還在檢查');
+});
+
+const fix = (status: RunFix['status'], more: Partial<RunFix> = {}): RunFix => ({ status, startedAt: at(2026, 11, 2, 10, 50), limitMinutes: 30, ...more });
+const failedItems = [
+	{ label: '報告 PDF 已產生', ok: true, reason: '有' },
+	{ label: '發票已開立', ok: false, reason: '找不到發票' },
+	{ label: '通知信已寄出', ok: false }
+];
+
+test('the message that sends a failed run back lists only the failed items with the checker\'s reasons, in one line; an unattended controller is told not to renew its grant', () => {
+	const text = fixMessage({ items: failedItems });
+	expect(text).toContain('沒過的條目：2. 發票已開立（檢查理由：找不到發票）；3. 通知信已寄出（檢查理由：沒寫）。');
+	expect(text).not.toContain('報告 PDF 已產生');
+	expect(text).not.toContain('\n');
+	expect(text).toEndWith('最後一行只回覆 DONE，失敗回覆 FAILED: <原因>');
+	expect(text).not.toContain('lat-unattended.py');
+	expect(fixMessage({ items: failedItems, reason: '總結寫 PASS，但有條目沒過或沒判定' })).toContain('；總結：總結寫 PASS，但有條目沒過或沒判定。');
+	expect(fixMessage({ items: failedItems }, { unattended: true })).toContain('不要重新建立或延長無人授權（不要跑 lat-unattended.py），不要回覆 DECIDE: 或 HELP:');
+});
+
+test('the second check\'s brief carries the first verdict and the agent\'s reply; the first check\'s has neither', () => {
+	const text = reviewBrief({ task: task(), run: run(), folder: '/w', recheck: { first: review('fail', { items: failedItems }), reply: '2. 反駁：本月沒有成交\n3. 已補做：寄出\nDONE' } });
+	for (const part of ['這是第二次檢查，也是最後一次', '## 第一次檢查結果', '1. PASS: 有', '2. FAIL: 找不到發票', '3. FAIL: （沒寫理由）', '## 任務 Agent 的回應', '```\n2. 反駁：本月沒有成交\n3. 已補做：寄出\nDONE\n```']) expect(text).toContain(part);
+	expect(text.indexOf('## 任務 Agent 的回應')).toBeLessThan(text.indexOf('## 驗收清單'));
+	const plain = reviewBrief({ task: task(), run: run(), folder: '/w' });
+	for (const part of ['第二次檢查', '第一次檢查結果', '任務 Agent 的回應']) expect(plain).not.toContain(part);
+});
+
+test('a run sent back to its agent stays open with no card until its second check; the second verdict is the result, a round with no reply keeps the first FAIL; an old record reads as before', () => {
+	const now = at(2026, 11, 3);
+	const zone = 'Asia/Taipei';
+	const first = review('fail', { items: failedItems });
+	const fixing = run({ review: first, fix: fix('fixing') });
+	expect(isOpen(fixing)).toBe(true);
+	expect(reviewFailed(fixing)).toBe(false);
+	expect(taskState(task(), [fixing], now)).toBe('running');
+	expect(runLabel(fixing)).toEqual({ text: '↻ 交回修正中', key: 'running' });
+	expect(lastRunText(fixing, zone)).toBe('11/02 10:41 做完，第一次檢查未過，已交回任務 Agent 修正');
+
+	const rechecking = run({ firstReview: first, fix: fix('replied', { reply: 'DONE' }), review: review('checking') });
+	expect(isOpen(rechecking)).toBe(true);
+	expect(runLabel(rechecking).text).toBe('▶ 第二次檢查中');
+	expect(lastRunText(rechecking, zone)).toBe('11/02 10:41 做完，第一次檢查未過，任務 Agent 已回應，第二次檢查中');
+
+	const passed = run({ firstReview: first, fix: fix('replied', { reply: 'DONE' }), review: review('pass', { items: [{ label: 'a', ok: true }] }) });
+	expect(taskState(task(), [passed], now)).toBe('done');
+	expect(reviewFailed(passed)).toBe(false);
+	expect(lastRunText(passed, zone)).toBe('11/02 10:41 做完，第一次檢查未過，第二次檢查通過（1 條都過）');
+	const failedAgain = run({ firstReview: first, fix: fix('replied', { reply: 'DONE' }), review: review('fail', { items: failedItems }) });
+	expect(taskState(task(), [failedAgain], now)).toBe('check-failed');
+	expect(runLabel(failedAgain).text).toBe('✕ 檢查未過');
+	// A second check the user stopped leaves the first FAIL standing.
+	const stoppedSecond = run({ firstReview: first, fix: fix('replied', { reply: 'DONE' }), review: review('error', { ended: 'stopped' }) });
+	expect(reviewFailed(stoppedSecond)).toBe(true);
+	expect(runLabel(stoppedSecond).text).toBe('✕ 檢查未過');
+
+	const noReply = run({ review: first, fix: fix('failed', { reason: '超過上限 30 分鐘，已停止', ended: 'timeout' }) });
+	expect(isOpen(noReply)).toBe(false);
+	expect(reviewFailed(noReply)).toBe(true);
+	expect(taskState(task(), [noReply], now)).toBe('check-failed');
+	expect(lastRunText(noReply, zone)).toBe('11/02 10:41 做完，檢查未過（2 條沒過），交回修正沒有完成');
+
+	// A record from before #690: one check, read as it always was.
+	const old = run({ review: first });
+	expect(isOpen(old)).toBe(false);
+	expect(runLabel(old).text).toBe('✕ 檢查未過');
+	expect(lastRunText(old, zone)).toBe('11/02 10:41 做完，但檢查未過（2 條沒過）');
 });
