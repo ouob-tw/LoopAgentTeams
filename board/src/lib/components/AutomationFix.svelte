@@ -15,7 +15,7 @@
 <div class="fix" data-fix={fix.status}>
 	{#if fix.status === 'fixing'}
 		<b>已交回任務 Agent 修正</b>
-		<p>已修正 {Math.max(0, Math.floor((now - fix.startedAt) / 60_000))} 分鐘，上限 {fix.limitMinutes} 分鐘</p>
+		<p>修正中，已過 {Math.max(0, Math.floor((now - fix.startedAt) / 60_000))} 分鐘，上限 {fix.limitMinutes} 分鐘</p>
 		{#if sessionId}
 			<a href={`?agent=${encodeURIComponent(sessionId)}`} onclick={open}>打開任務 Agent 看即時畫面 ›</a>
 		{/if}

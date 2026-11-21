@@ -197,7 +197,9 @@ test.skipIf(!CHROME)('a failed check sent back: 交回修正中, the reply, 第�
 		const record = await text(run);
 		expect(record).toContain('第一次檢查：沒過');
 		expect(record).toContain('已交回任務 Agent 修正');
-		expect(record).toMatch(/已修正 1[12] 分鐘，上限 30 分鐘/);
+		expect(record).toMatch(/修正中，已過 1[12] 分鐘，上限 30 分鐘/);
+		// Still going: nothing on the step may read as already fixed.
+		expect(record).not.toContain('已修正');
 		expect(record).not.toContain('第二次檢查');
 		expect(await tab.eval(`[...document.querySelectorAll('${run} .fix a')].map((a) => [a.innerText, a.getAttribute('href')])`)).toEqual([['打開任務 Agent 看即時畫面 ›', '?agent=s-fix-run']]);
 		expect(await tab.eval(`[...document.querySelectorAll('.detail .task > .actions button')].map((b) => b.innerText)`)).toEqual(['停止這次', '暫停']);
