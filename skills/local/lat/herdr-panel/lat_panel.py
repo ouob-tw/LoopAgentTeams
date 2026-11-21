@@ -805,7 +805,8 @@ def _sync_upserted_record(path, question_id, revision, text):
     if not path.exists():
         return
     try:
-        if decision_revision(path) == revision:
+        # A record with no version line never tracked the panel; leave it as it was.
+        if decision_revision(path) in (None, revision):
             return
         sync_decision_record(path, revision, question_id=question_id,
                              incoming=_question_input(text))

@@ -260,6 +260,13 @@ class UpsertRevisionTests(AutoRecordTestCase):
         self.assertIn("not moved to r2: decision record has no - status: line", result.stderr)
         self.assertEqual(self.decision("Q5").read_text(), "# Q5\n\n- version: r1\n")
 
+    def test_record_without_a_version_line_is_left_alone(self):
+        plain = "- status: pending\n- advisor: needs-human\n"
+        self.decision("Q5").write_text(plain)
+        self.upsert("要用哪個名稱？", ["A. 甲名", "B. 乙名"])
+        self.upsert("改用哪個名稱？", ["A. 丙名", "B. 丁名"])
+        self.assertEqual(self.decision("Q5").read_text(), plain)
+
     def test_upsert_without_a_record_leaves_the_decisions_directory_alone(self):
         before = sorted(path.name for path in self.decisions.iterdir())
         self.upsert("要用哪個名稱？", ["A. 甲名", "B. 乙名"])
