@@ -8,19 +8,49 @@ export const unattendedUi = $state<{
 	settingsChanges: number;
 	/** The controller whose form is open, and whether it changes the grant in effect. */
 	form: { controllerId: string; editing: boolean } | null;
-}>({ settingsChanges: 0, form: null });
+	/** Controllers whose grant was just sent, until a snapshot with the new mode arrives: their
+	 *  controls say 更新中. */
+	updating: Record<string, true>;
+}>({ settingsChanges: 0, form: null, updating: {} });
+
+/** The newest snapshot revision the page has, and per controller the one that shows its new mode. */
+let heardRevision = 0;
+const awaited = new Map<string, { revision: number; timer: ReturnType<typeof setTimeout> }>();
+/** A snapshot that never comes (a server restart resets the revisions) must not leave the mark on. */
+const GIVE_UP_MS = 30_000;
+
+function settle(controllerId: string): void {
+	clearTimeout(awaited.get(controllerId)?.timer);
+	awaited.delete(controllerId);
+	delete unattendedUi.updating[controllerId];
+}
+
+/** A snapshot arrived: the marks of the controllers it shows the new mode of come off. */
+export function heardSnapshot(revision: number): void {
+	heardRevision = revision;
+	for (const [controllerId, wait] of awaited) if (wait.revision <= revision) settle(controllerId);
+}
 
 export type GrantResult = { ok: true } | { ok: false; reason: string };
 
 /** Send the form (`create` or `update`), or turn the grant off (`close`). */
 export async function sendGrant(controllerId: string, op: 'create' | 'update' | 'close', form?: GrantForm): Promise<GrantResult> {
 	const body = form ? { controllerId, op, goal: form.goal, done: doneLines(form.done), scope: form.scope, maxHours: form.maxHours } : { controllerId, op };
+	settle(controllerId);
+	unattendedUi.updating[controllerId] = true;
 	const result = await request<AgentActionResponse>('/api/unattended', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(body)
 	});
-	if (result.ok) return { ok: true };
+	if (!result.ok) settle(controllerId);
+	if (result.ok) {
+		// Without the server's own read of the new mode, the full read that follows shows it: any newer snapshot.
+		const revision = typeof result.value.revision === 'number' ? result.value.revision : heardRevision + 1;
+		if (revision <= heardRevision) settle(controllerId);
+		else awaited.set(controllerId, { revision, timer: setTimeout(() => settle(controllerId), GIVE_UP_MS) });
+		return { ok: true };
+	}
 	if (result.kind === 'http') {
 		const reason = (result.body as { reason?: unknown } | null)?.reason;
 		return { ok: false, reason: typeof reason === 'string' ? reason : '沒有生效，請再試一次。' };

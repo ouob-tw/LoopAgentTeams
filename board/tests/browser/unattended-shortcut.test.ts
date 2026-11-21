@@ -1,7 +1,8 @@
 // The 無人模式 button of a controller page's button row (#655), in a real browser on one built board
 // with the real helper and lat-unattended: it sits left of 關閉 Agent on a controller's page and not
 // on an ordinary agent's, says the mode, opens the options menu's 無人模式 part, whose 開啟無人模式…
-// opens the form (確認開啟 grants) and 關掉無人模式 goes back to manual. At 1400 and 390 wide the row
+// opens the form (確認開啟 grants) and 關掉無人模式 goes back to manual, saying 更新中 meanwhile on
+// the button and in the menu without anything moving. At 1400 and 390 wide the row
 // stays on one line without scrolling sideways and each button is 44px high. With LAT_BOARD_SHOTS
 // set, every look is saved there. Skipped when the host has no Chrome.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -123,8 +124,20 @@ for (const width of [1400, 390, 360]) {
 		await tab.eval(`${button(ROW, '無人')}.click()`);
 		await tab.until(`!!${button(MENU, '關掉無人模式')}`, 'the menu in unattended');
 		await shot(tab, `${width}-shortcut-menu-unattended`);
+		// The write held back a moment: the button says 更新中 at the same width, and so does the menu.
+		const before = await tab.eval<{ label: string; width: number; top: number }[]>(ROW_BUTTONS);
+		await tab.eval(`(() => { const send = window.fetch; window.fetch = (input, init) => (new URL(String(input), location.href).pathname === '/api/unattended' ? new Promise((done) => setTimeout(done, 700)).then(() => send(input, init)) : send(input, init)); })()`);
 		await tab.eval(`${button(MENU, '關掉無人模式')}.click()`);
+		await tab.until(`document.querySelector('${TOGGLE}').getAttribute('aria-label') === '無人模式：更新中' && document.querySelector('${MENU} [role="status"]')?.innerText === '更新中'`, '更新中 on the button and in the menu');
+		await shot(tab, `${width}-shortcut-updating`);
+		const during = await tab.eval<{ width: number; top: number }[]>(ROW_BUTTONS);
+		expect(during.map((b) => b.width)).toEqual(before.map((b) => b.width));
+		// Nothing moves, in the row or in the open menu.
+		expect(during.map((b) => b.top)).toEqual(before.map((b) => b.top));
 		await tab.until(`${button(ROW, '手動')} !== undefined && !document.querySelector('${MENU}')`, 'back to manual');
+		const row = (buttons: { label: string; width: number }[]) => buttons.filter((b) => b.label !== '關掉無人模式').map((b) => b.width);
+		expect(row(await tab.eval(ROW_BUTTONS))).toEqual(row(before));
+		await shot(tab, `${width}-shortcut-after-off`);
 		expect(await tab.eval(MARK)).toBe('');
 	}, 60_000);
 }

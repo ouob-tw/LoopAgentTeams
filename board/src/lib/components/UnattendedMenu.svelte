@@ -4,6 +4,7 @@
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { sendGrant, unattendedUi } from '#lib/board/unattended-ui.svelte.ts';
+	import UnattendedUpdating from './UnattendedUpdating.svelte';
 	import { FROM_LABEL, MODE_LABEL, type UnattendedView } from '#lib/board/unattended.ts';
 
 	let { controllerId, view, ondone }: { controllerId: string; view: UnattendedView; ondone: () => void } = $props();
@@ -11,6 +12,7 @@
 	let closing = $state(false);
 	/** A test device changes no grant; the server refuses it too. */
 	const locked = $derived(testDevice.view !== null);
+	const updating = $derived(unattendedUi.updating[controllerId] === true);
 
 	function openForm() {
 		unattendedUi.form = { controllerId, editing: false };
@@ -35,11 +37,14 @@
 			現在：{view.state === 'pending-goal' ? '無人模式，等主控擬目標' : view.state === 'active' ? MODE_LABEL.unattended : view.mode === 'unattended' ? '無人模式，授權已結束' : MODE_LABEL.manual}（來自{FROM_LABEL[view.layer]}）
 		</p>
 		{#if view.state === 'none'}
-			<button type="button" class="primary" disabled={locked} onclick={openForm}>開啟無人模式…</button>
+			<button type="button" class="primary" disabled={locked || updating} onclick={openForm}>開啟無人模式…</button>
 		{:else}
 			<div class="actions">
-				{#if view.state === 'pending-goal'}<button type="button" disabled={locked} onclick={openForm}>自己寫目標…</button>{/if}
-				<button type="button" class="danger" disabled={closing || locked} onclick={turnOff}>關掉無人模式</button>
+				{#if view.state === 'pending-goal'}<button type="button" disabled={locked || updating} onclick={openForm}>自己寫目標…</button>{/if}
+				<!-- While a change is under way it says 更新中 in the room the wider label keeps, so nothing in the menu moves. -->
+				<button type="button" class="danger" disabled={closing || locked || updating} onclick={turnOff}>
+					<span class="swap"><span class="sizer" aria-hidden="true">關掉無人模式</span><span>{#if updating}<UnattendedUpdating />{:else}關掉無人模式{/if}</span></span>
+				</button>
 			</div>
 		{/if}
 	{/if}
@@ -75,6 +80,16 @@
 	/* A finger's width on a phone (ui-baseline). */
 	button {
 		min-height: 44px;
+	}
+	.swap {
+		display: inline-grid;
+		justify-items: center;
+	}
+	.swap > span {
+		grid-area: 1 / 1;
+	}
+	.sizer {
+		visibility: hidden;
 	}
 	button.danger {
 		color: var(--danger);

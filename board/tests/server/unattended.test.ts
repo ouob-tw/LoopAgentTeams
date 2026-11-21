@@ -1,6 +1,7 @@
 // Unattended mode through the board, down to the real helper, lat-unattended and the files: the
 // settings page's reads and writes, turning a controller's grant on, changing it and turning it off,
-// the human request each form leaves in the action log, and every open page being told.
+// the human request each form leaves in the action log, and every open page being told: the new
+// mode pushed as soon as the write is done, which a full read begun before it does not undo.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -146,4 +147,39 @@ test('a refusal of the tool is the outcome logged and shown', async () => {
 	expect(action).toMatchObject({ action: 'unattended', ok: false });
 	expect(action.error).toContain('no grant in effect');
 	expect(existsSync(grantFile)).toBe(false);
+});
+
+test('a grant write pushes the new mode at once, and a full read begun before it does not put the old mode back', async () => {
+	expect(await lunaNow()).toMatchObject({ state: 'none' });
+	const page = fixture.watch(cookie);
+	await until(() => page.latest(), 5_000, 'the first snapshot');
+	const hcomFile = join(fixture.dir, 'hcom.json');
+	const hcomPlan = existsSync(hcomFile) ? readFileSync(hcomFile, 'utf8') : null;
+	// hcom's list holds the full read back after it has read the controller's mode, still manual.
+	fixture.setHcom({ ...(hcomPlan ? JSON.parse(hcomPlan) : {}), listDelayMs: 6_000 });
+	try {
+		const reads = fixture.helperArgs('unattended').length;
+		const older = fixture.refresh(cookie);
+		await until(() => fixture.helperArgs('unattended').length > reads, 5_000, 'the full read reading the modes');
+		// The real helper's read of the mode has had time to finish.
+		await new Promise((resolve) => setTimeout(resolve, 1_500));
+		const at = Date.now();
+		const created = await grant({ op: 'create', ...FORM });
+		expect(created.status).toBe(200);
+		const { revision } = await created.json();
+		expect(typeof revision).toBe('number');
+		// Pushed by the write itself, not by the held full read.
+		const pushed = await until(() => page.snapshots.find((snapshot) => snapshot.revision === revision), 2_000, 'the push of the new mode');
+		expect(named(pushed, 'luna')?.unattended.state).toBe('active');
+		expect(Date.now() - at).toBeLessThan(5_000);
+		const sent = page.snapshots.length;
+		// The full read ends with the mode it read before the write; the page keeps the new one.
+		expect(named(await older, 'luna')?.unattended.state).toBe('active');
+		const after = page.snapshots.slice(sent);
+		expect(after.every((snapshot) => named(snapshot, 'luna')?.unattended.state === 'active')).toBe(true);
+	} finally {
+		if (hcomPlan === null) rmSync(hcomFile, { force: true });
+		else writeFileSync(hcomFile, hcomPlan);
+		page.close();
+	}
 });

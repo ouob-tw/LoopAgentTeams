@@ -143,6 +143,8 @@ export async function changeGrant(board: Board, body: GrantBody | null): Promise
 	}
 	board.agentActed(controller.id);
 	board.unattendedChanged();
+	// The full read just asked for takes seconds; this controller's new mode is pushed on its own first.
+	const revision = done.ok ? await board.unattendedWritten({ workspace: controller.workspace, sessionId: controller.id }) : null;
 	const status = done.ok ? 200 : done.status === 'refused' ? 409 : 502;
-	return { status, body: { ok: done.ok, reason, entry, logError } };
+	return { status, body: { ok: done.ok, reason, entry, logError, revision } };
 }

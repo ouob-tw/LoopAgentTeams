@@ -8,11 +8,13 @@
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { sendGrant, unattendedUi } from '#lib/board/unattended-ui.svelte.ts';
+	import UnattendedUpdating from './UnattendedUpdating.svelte';
 	import { FROM_LABEL, layerModeText, MODE_LABEL, SCOPE_KEYS, SCOPE_LABEL, type UnattendedView } from '#lib/board/unattended.ts';
 
 	let { controllerId, view }: { controllerId: string; view: UnattendedView } = $props();
 
 	let opened = $state(false);
+	const updating = $derived(unattendedUi.updating[controllerId] === true);
 
 	/** When the time limit runs out, to the minute; with the date when it is not today. */
 	function endTime(iso: string): string {
@@ -35,7 +37,10 @@
 	<div class="unattended" data-state={view.state}>
 		<div class="row">
 			<span class="badge">無人模式（來自{FROM_LABEL[view.layer]}）</span>
-			<button type="button" class="off" disabled={closing || testDevice.view !== null} onclick={turnOff}>關掉</button>
+			<!-- While a change is under way the button says 更新中, in the room the wider word keeps for it, so the row does not wrap or move. -->
+			<button type="button" class="off" disabled={closing || updating || testDevice.view !== null} onclick={turnOff}>
+				<span class="swap"><span class="sizer" aria-hidden="true"><UnattendedUpdating sizer /></span><span>{#if updating}<UnattendedUpdating />{:else}關掉{/if}</span></span>
+			</button>
 		</div>
 		{#if view.state === 'pending-goal' || !view.version}
 			<p class="waiting">等主控擬目標，還沒有生效的授權。</p>
@@ -62,7 +67,7 @@
 					<p class="muted layers">
 						哪一層算數：全域預設 {view.layerModes.global ? layerModeText(view.layerModes.global) : `沒有設（${MODE_LABEL.manual}）`} → 這個專案 {layerModeText(view.layerModes.project)} → 這個主控 {layerModeText(view.layerModes.controller)}。<b>生效的是「{FROM_LABEL[view.layer]}」。</b>
 					</p>
-					<div><button type="button" disabled={testDevice.view !== null} onclick={() => (unattendedUi.form = { controllerId, editing: true })}>修改</button></div>
+					<div><button type="button" disabled={updating || testDevice.view !== null} onclick={() => (unattendedUi.form = { controllerId, editing: true })}>修改</button></div>
 				</div>
 			{/if}
 		{/if}
@@ -99,6 +104,16 @@
 		padding: 0.25rem 0.7rem;
 		color: var(--danger);
 		border-color: var(--danger);
+	}
+	.swap {
+		display: inline-grid;
+		justify-items: center;
+	}
+	.swap > span {
+		grid-area: 1 / 1;
+	}
+	.sizer {
+		visibility: hidden;
 	}
 	.waiting {
 		margin: 0;
