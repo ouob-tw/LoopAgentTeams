@@ -117,7 +117,8 @@ export interface Board {
 	unattendedChanged(): void;
 	/** A grant of this controller was just written: read its mode alone and push it to every page now,
 	 *  before the full read catches up. The revision of the last snapshot sent to the pages once it is
-	 *  in, or null when it could not be read. */
+	 *  in; when it cannot be read alone, once the full read under way or queued is in; null when
+	 *  there is none or the board closed. */
 	unattendedWritten(controller: { workspace: string; sessionId: string }): Promise<number | null>;
 	/** Whether conversations open translated, on every device. */
 	translateMode(): TranslateModeState;
@@ -210,6 +211,9 @@ function createBoard(): Board {
 	/** Each controller's mode read alone just after a grant write, with when that read began: a full
 	 *  read that began before it must not put the older mode back (as `keepNewest` for the lists). */
 	const unattendedNewest = new Map<string, { at: number; view: UnattendedView }>();
+	/** When the read began whose mode of each controller the sources hold, full or alone: a read alone
+	 *  that comes back after a newer one was applied must not put its older mode back either. */
+	const unattendedApplied = new Map<string, number>();
 	/** The revision of the last snapshot sent to the pages; an unchanged one is not sent. */
 	let sentRevision = 0;
 
@@ -599,6 +603,7 @@ function createBoard(): Board {
 			if (kept.at >= at) read.set(id, kept.view);
 			else unattendedNewest.delete(id);
 		}
+		for (const id of read.keys()) if (!unattendedNewest.has(id)) unattendedApplied.set(id, at);
 		return read;
 	}
 
@@ -606,11 +611,20 @@ function createBoard(): Board {
 		const began = Date.now();
 		const read = await readUnattended(config, [controller]);
 		const view = read.ok ? read.views.get(controller.sessionId)?.view : undefined;
-		if (closed || !sources || !view) return null;
-		const kept = unattendedNewest.get(controller.sessionId);
-		if (!kept || began >= kept.at) unattendedNewest.set(controller.sessionId, { at: began, view });
+		if (closed) return null;
+		if (!sources || !view) {
+			// Not read alone: the full read already asked for shows it, so the pages wait for that one.
+			const pending = queued ?? running;
+			if (!pending) return null;
+			await pending.catch(() => undefined);
+			return closed ? null : sentRevision;
+		}
+		// A read that began later, full or alone, already put a newer mode in; the pages have it.
+		if ((unattendedApplied.get(controller.sessionId) ?? -Infinity) > began) return sentRevision;
+		unattendedNewest.set(controller.sessionId, { at: began, view });
+		unattendedApplied.set(controller.sessionId, began);
 		const unattended = new Map(sources.unattended);
-		unattended.set(controller.sessionId, unattendedNewest.get(controller.sessionId)!.view);
+		unattended.set(controller.sessionId, view);
 		sources = { ...sources, unattended };
 		publish(sources);
 		return sentRevision;

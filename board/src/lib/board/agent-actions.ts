@@ -58,8 +58,8 @@ export interface AgentActionResponse {
 	entry: AgentAction;
 	/** Set when the attempt could not be written to the sent log. */
 	logError: string | null;
-	/** An unattended grant change only: the revision of the snapshot that shows the new mode, once
-	 *  sent to the pages; null when it could not be read and only the full read that follows shows it. */
+	/** An unattended grant change only: the revision of the last snapshot sent to the pages once the
+	 *  new mode is in it; null when the write failed or nothing more will be pushed for it. */
 	revision?: number | null;
 }
 

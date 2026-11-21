@@ -45,9 +45,9 @@ export async function sendGrant(controllerId: string, op: 'create' | 'update' | 
 	});
 	if (!result.ok) settle(controllerId);
 	if (result.ok) {
-		// Without the server's own read of the new mode, the full read that follows shows it: any newer snapshot.
-		const revision = typeof result.value.revision === 'number' ? result.value.revision : heardRevision + 1;
-		if (revision <= heardRevision) settle(controllerId);
+		// Without a revision the server had nothing more to push: the mark comes off now.
+		const { revision } = result.value;
+		if (typeof revision !== 'number' || revision <= heardRevision) settle(controllerId);
 		else awaited.set(controllerId, { revision, timer: setTimeout(() => settle(controllerId), GIVE_UP_MS) });
 		return { ok: true };
 	}

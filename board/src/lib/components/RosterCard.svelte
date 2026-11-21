@@ -50,10 +50,16 @@
 		{#if delegated}
 			<span class="delegated" title="參謀代你決定、你還沒看過的事">代決 {delegated}</span>
 		{/if}
-		{#if unattendedUi.updating[controller.id]}
-			<span class="updating"><UnattendedUpdating /></span>
-		{:else if isUnattended(controller.unattended)}
-			<span class="unattended" title="無人模式：照目標自己做，要你決定的事先擱置">無人</span>
+		{#if unattendedUi.updating[controller.id] || isUnattended(controller.unattended)}
+			<!-- 無人 and 更新中 share one slot as wide as 更新中, so swapping them moves nothing. -->
+			<span class="mode-slot">
+				<span class="sizer" aria-hidden="true"><UnattendedUpdating sizer /></span>
+				{#if unattendedUi.updating[controller.id]}
+					<span class="updating"><UnattendedUpdating /></span>
+				{:else}
+					<span class="unattended" title="無人模式：照目標自己做，要你決定的事先擱置">無人</span>
+				{/if}
+			</span>
 		{/if}
 		{#if controller.error}
 			<span class="error" title={controller.error}>⚠ 錯誤</span>
@@ -129,13 +135,22 @@
 		font-weight: 700;
 		white-space: nowrap;
 	}
-	.updating {
-		display: inline-flex;
+	.mode-slot {
+		display: inline-grid;
 		flex: none;
 		font-size: max(0.75rem, var(--min-font, 0px));
 	}
+	.mode-slot > span {
+		grid-area: 1 / 1;
+	}
+	.sizer {
+		visibility: hidden;
+	}
+	.updating {
+		justify-self: center;
+	}
 	.unattended {
-		flex: none;
+		text-align: center;
 		padding: 0 0.45rem;
 		border-radius: var(--radius-pill);
 		background: var(--warn);

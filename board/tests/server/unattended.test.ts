@@ -183,3 +183,37 @@ test('a grant write pushes the new mode at once, and a full read begun before it
 		page.close();
 	}
 });
+
+test('a read of the controller alone that comes back after a newer mode was applied does not put its older mode back', async () => {
+	const page = fixture.watch(cookie);
+	await until(() => page.latest(), 5_000, 'the first snapshot');
+	const hold = { claim: join(fixture.dir, 'hold-claim'), ready: join(fixture.dir, 'hold-ready'), release: join(fixture.dir, 'hold-release') };
+	for (const path of Object.values(hold)) rmSync(path, { force: true });
+	// A second controller: the full read asks for both, the write's own read for luna alone, which is the one held.
+	const nova = fixture.bound('alpha', 'nova');
+	fixture.setHelper({ output: { controllers: [luna, nova] }, realUnattended: uvPython(), holdOneUnattended: hold });
+	await fixture.refresh(cookie);
+	try {
+		let answered = false;
+		const first = grant({ op: 'create', ...FORM }).then((response) => ((answered = true), response));
+		// The write's own read has read the grant (active) and is held; the full read after it is not.
+		await until(() => existsSync(hold.ready), 10_000, 'the read alone held');
+		await until(() => named(page.latest(), 'luna')?.unattended.state === 'active', 10_000, 'the grant from the full read');
+		expect(answered).toBe(false);
+		// Turned off meanwhile, and a full read after that applied.
+		expect((await grant({ op: 'close' })).status).toBe(200);
+		await until(() => named(page.latest(), 'luna')?.unattended.state === 'none', 10_000, 'the grant off');
+		expect(named(await fixture.refresh(cookie), 'luna')?.unattended.state).toBe('none');
+		const before = page.snapshots.length;
+		writeFileSync(hold.release, '');
+		const response = await first;
+		expect(response.status).toBe(200);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(page.snapshots.slice(before).map((snapshot) => named(snapshot, 'luna')?.unattended.state).filter((state) => state !== 'none')).toEqual([]);
+		expect(named(await fixture.board(cookie), 'luna')?.unattended.state).toBe('none');
+	} finally {
+		writeFileSync(hold.release, '');
+		fixture.setHelper({ output: { controllers: [luna] }, realUnattended: uvPython() });
+		page.close();
+	}
+});
