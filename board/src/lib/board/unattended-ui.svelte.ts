@@ -1,6 +1,7 @@
 // The page's own unattended-mode state: the form drawer that is open, and how many times some
 // device changed a setting or grant, which the settings page reads again on.
 import { request } from './api.ts';
+import { toasts } from './toasts.svelte.ts';
 import type { AgentActionResponse } from './agent-actions.ts';
 import { doneLines, type GrantForm } from './unattended.ts';
 
@@ -16,7 +17,9 @@ export const unattendedUi = $state<{
 /** The newest snapshot revision the page has, and per controller the one that shows its new mode. */
 let heardRevision = 0;
 const awaited = new Map<string, { revision: number; timer: ReturnType<typeof setTimeout> }>();
-/** A snapshot that never comes (a server restart resets the revisions) must not leave the mark on. */
+/** A snapshot that never comes (the link to the server is down) must not leave the mark on for good:
+ *  it comes off with a notice that the screen may still show the old mode. A restarted server's
+ *  revisions start from its clock, so its first snapshot settles the wait as usual. */
 const GIVE_UP_MS = 30_000;
 
 function settle(controllerId: string): void {
@@ -48,7 +51,14 @@ export async function sendGrant(controllerId: string, op: 'create' | 'update' | 
 		// Without a revision the server had nothing more to push: the mark comes off now.
 		const { revision } = result.value;
 		if (typeof revision !== 'number' || revision <= heardRevision) settle(controllerId);
-		else awaited.set(controllerId, { revision, timer: setTimeout(() => settle(controllerId), GIVE_UP_MS) });
+		else
+			awaited.set(controllerId, {
+				revision,
+				timer: setTimeout(() => {
+					settle(controllerId);
+					toasts.show('failed', '已送出，但還沒收到新狀態，請重新整理頁面確認。');
+				}, GIVE_UP_MS)
+			});
 		return { ok: true };
 	}
 	if (result.kind === 'http') {

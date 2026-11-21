@@ -305,6 +305,8 @@ export interface HelperPlan extends FixedOutput {
 	realPreauth?: string;
 	/** A Python interpreter that runs the real helper's unattended commands; without it every controller reads as manual. */
 	realUnattended?: string;
+	/** Hold the first single-session `board unattended` read after it has read, until `release` exists (see fake-helper.mjs). */
+	holdOneUnattended?: { claim: string; ready: string; release: string };
 	/** Each session's `board unattended` entry, when not the real one. */
 	unattended?: Record<string, unknown>;
 	/** Notifying the controller fails with this reason; the answer is still written. */
