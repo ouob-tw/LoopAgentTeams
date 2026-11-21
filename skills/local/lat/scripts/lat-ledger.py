@@ -499,14 +499,11 @@ def existing_commits(repo, commits):
 
 def carrying(repo, sha, tips):
     """Those of `tips` (full commit IDs in `repo`) that `sha` is an ancestor of, or is: what
-    `reachable(repo, sha, [tip])` answers for each, in two git runs. Empty when `sha` is not a
-    commit there; None when git could not list them."""
+    `reachable(repo, sha, [tip])` answers for each, in two git runs; None when git could not
+    tell (also for a `sha` that is not a commit there, which the one-by-one check answers)."""
     try:
         full = run_cli(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', '--end-of-options',
                         f'{sha}^{{commit}}'], timeout=30).strip()
-    except ValueError:
-        return frozenset()
-    try:
         after = set(run_cli(['git', '-C', repo, 'rev-list', '--ancestry-path', f'^{full}',
                              *sorted(tips)], timeout=30).split())
     except ValueError:

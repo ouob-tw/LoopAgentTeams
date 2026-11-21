@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-ledger.py'
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -3028,6 +3029,22 @@ class StageTimeTests(LedgerCase):
                          ['11:45'])
         ancestry = [line for line in log.read_text().splitlines() if 'merge-base' in line]
         self.assertLess(len(ancestry), 5, ancestry)
+
+    def test_a_deploy_check_git_could_not_answer_falls_back_to_one_by_one(self):
+        tip, sha = 'a' * 40, 'b' * 40
+        asked = []
+
+        def git_stub(command, timeout):
+            asked.append(command[3])
+            if command[3] == 'rev-parse':
+                raise ValueError('git rev-parse timed out after 30 seconds')
+            return tip if command[3] == 'rev-list' else ''  # merge-base: an ancestor
+
+        lookups = LEDGER.Lookups({'workspace': str(self.workspace)})
+        with mock.patch.object(LEDGER, 'run_cli', git_stub), \
+                mock.patch.object(LEDGER, 'deploy_entries', lambda place: [(tip, None)]):
+            self.assertTrue(lookups.deploy_carries('repo', tip, sha))
+        self.assertEqual(asked, ['rev-list', 'rev-parse', 'merge-base'])
 
     def test_qa_started_after_the_implementation_closed_has_no_wait(self):
         impl = self.impl_row('09:00')
