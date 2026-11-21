@@ -141,3 +141,32 @@ test('a plain agent opened from the Herdr tab gets no roster card', async () => 
 	await fixture.refresh(cookie);
 	expect(card(watch.latest(), body.entry!.id)).toBeUndefined();
 });
+
+test('the card is in the stream while hcom still runs, named as soon as hcom prints the name', async () => {
+	const folder = repo('slow');
+	// hcom prints the name at once, then runs past the board's 2-second wait.
+	hcomPlan({ names: ['sivo'], sleepMs: 4_000 });
+	const sent = Date.now();
+	const answer = launch({ folder });
+	await until(() => watch.latest()!.launching.some((entry) => entry.folder === folder && entry.hcomName === 'sivo' && entry.state === 'starting'), 2_000);
+	const shown = Date.now() - sent;
+	const body = await answer;
+	expect(Date.now() - sent).toBeGreaterThan(shown);
+	// The same card, now on the logged launch.
+	await until(() => card(watch.latest(), body.entry!.id)?.state === 'starting', 2_000);
+	expect(watch.latest()!.launching.filter((entry) => entry.folder === folder)).toHaveLength(1);
+});
+
+test('a launch the board refuses before running anything leaves no card behind', async () => {
+	const folder = join(fixture.dir, 'plain-refused');
+	// Not in a Git project and no git init asked for: refused, nothing logged.
+	mkdirSync(folder, { recursive: true });
+	const response = await fixture.fetch('/api/launches', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ client: 'claude', text: '做一件事', gitInit: false, folder }),
+		cookie
+	});
+	expect(response.status).toBe(409);
+	await until(() => !watch.latest()!.launching.some((entry) => entry.folder === folder), 2_000);
+});

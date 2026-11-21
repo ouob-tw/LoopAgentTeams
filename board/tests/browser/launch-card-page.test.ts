@@ -41,14 +41,16 @@ async function dark(look: () => Promise<void>) {
 	await until(`${BOARD_STARTED} && !!document.querySelector('.people [data-launch]')`);
 }
 
-/** Send the new-controller form for `folder`, timing the launch's answer and the card's arrival in the page. */
-async function sendForm() {
+/** Send the new-controller form for `folder` in `mode`, timing from the click on 新建主控 to the
+ *  card's arrival in the page, and to the launch's answer. */
+async function sendForm(mode: 'manual' | 'unattended' = 'manual') {
 	await resize(1400);
 	await send('Page.navigate', { url: `${fixture.url}/?launch` });
 	await until(`!!document.querySelector('#folder-box') && !!document.querySelector('.new textarea')`);
 	await evaluate(`(() => {
 		window.answeredAt = null;
 		window.cardAt = null;
+		window.sentAt = null;
 		const fetch = window.fetch;
 		window.fetch = async (input, init) => {
 			const response = await fetch(input, init);
@@ -63,10 +65,11 @@ async function sendForm() {
 		type(document.querySelector('#folder-box'), ${JSON.stringify(folder)});
 		type(document.querySelector('.new textarea'), '把測試修好');
 	})()`);
+	if (mode === 'unattended') await evaluate(`[...document.querySelectorAll('.new .mode button')][1].click()`);
 	await until(`!document.querySelector('form > .primary').disabled`);
-	await evaluate(`document.querySelector('form > .primary').click()`);
-	await until('window.answeredAt !== null && window.cardAt !== null', 10_000);
-	return evaluate<number>('window.cardAt - window.answeredAt');
+	await evaluate(`(() => { window.sentAt = performance.now(); document.querySelector('form > .primary').click(); })()`);
+	await until('window.answeredAt !== null && window.cardAt !== null', 15_000);
+	return evaluate<{ card: number; answer: number }>('({ card: window.cardAt - window.sentAt, answer: window.answeredAt - window.sentAt })');
 }
 
 beforeAll(async () => {
@@ -92,8 +95,15 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-test.skipIf(!CHROME)('the card is on the roster within 2 seconds of the launch answering, like a controller card, its long name cut short', async () => {
-	expect(await sendForm()).toBeLessThan(2_000);
+test.skipIf(!CHROME)('the card is on the roster within 2 seconds of sending, before hcom is done, like a controller card, its long name cut short', async () => {
+	// hcom takes 4 seconds to answer, as it waits for the client: the card does not wait for it.
+	hcom({ names: ['pavo'], sleepMs: 4_000 });
+	// Reading the bindings before the launch is slow too, as on a busy host.
+	fixture.setHelper({ output: { controllers: [luna] }, sleepMs: 2_500 });
+	const timing = await sendForm();
+	fixture.list([luna]);
+	expect(timing.card).toBeLessThan(2_000);
+	expect(timing.answer).toBeGreaterThan(timing.card + 1_000);
 	expect(await evaluate(`${CARD}.dataset.state`)).toBe('starting');
 	expect(await evaluate(`${CARD}.querySelector('.phase').textContent`)).toBe('啟動中，等主控啟用');
 	await shot(browser!.tab, '1400-starting');
@@ -113,7 +123,14 @@ test.skipIf(!CHROME)('the card is on the roster within 2 seconds of the launch a
 	await evaluate(`document.querySelector('.rail .grip').click()`);
 	await until(`!!${CARD}`);
 	await dark(async () => shot(browser!.tab, '1400-dark-starting'));
-}, 30_000);
+
+	// A real click on the middle of the card, away from the new-controller page, opens it.
+	await send('Page.navigate', { url: fixture.url });
+	await until(`${BOARD_STARTED} && !!${CARD}`);
+	const middle = await evaluate<{ x: number; y: number }>(`(() => { const r = ${CARD}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+	for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, ...middle, button: 'left', clickCount: 1 });
+	await until(`location.search.includes('launch')`, 2_000);
+}, 40_000);
 
 test.skipIf(!CHROME)('on a phone the card is a tag like the others, with its state word', async () => {
 	await resize(390);
@@ -154,6 +171,20 @@ test.skipIf(!CHROME)('once the controller binds its own card takes the place: ne
 	expect(await evaluate(`document.querySelectorAll('.unfolded .people [data-controller="pavo"]').length`)).toBe(1);
 	await shot(browser!.tab, '1400-bound');
 }, 30_000);
+
+test.skipIf(!CHROME)('an unattended launch sent from the form gets its card within 2 seconds too, replaced once bound', async () => {
+	// hcom's calls are counted across the file: every one names rinu.
+	hcom({ names: ['rinu', 'rinu', 'rinu'], sleepMs: 4_000 });
+	const timing = await sendForm('unattended');
+	expect(timing.card).toBeLessThan(2_000);
+	expect(await evaluate(`${CARD}.querySelector('.handle').textContent`)).toBe('@rinu');
+	const pavo = fixture.listed().find((binding: { hcom_name: string }) => binding.hcom_name === 'pavo')!;
+	const rinu = fixture.bound(LONG, 'rinu', { workspace: folder });
+	hcom({ agents: [{ name: 'luna', session_id: luna.session_id, status: 'listening' }, { name: 'pavo', session_id: pavo.session_id, status: 'listening' }, { name: 'rinu', session_id: rinu.session_id, status: 'listening' }] });
+	fixture.list([luna, pavo, rinu]);
+	await fixture.refresh(cookie);
+	await until(`!!document.querySelector('.unfolded .people [data-controller="rinu"]') && !${CARD}`);
+}, 40_000);
 
 test.skipIf(!CHROME)('a failed launch\'s card says it failed and can be removed', async () => {
 	hcom({ exit: 1, stdout: '', stderr: 'Error: claude not found on PATH\n' });

@@ -46,9 +46,11 @@
 		border: 1px dashed var(--line);
 		border-radius: var(--radius);
 	}
-	/* The whole card opens; the text above it lets the pointer through. */
+	/* The whole card opens; the text above it lets the pointer through. Above the roster's own
+	   hover area (`.person::after`), which would take the click as this frame's. */
 	.open {
 		position: absolute;
+		z-index: 1;
 		inset: 0;
 		padding: 0;
 		background: none;
@@ -104,7 +106,7 @@
 		position: absolute;
 		top: 0;
 		right: 0;
-		z-index: 1;
+		z-index: 2;
 		display: flex;
 		align-items: flex-start;
 		justify-content: flex-end;
