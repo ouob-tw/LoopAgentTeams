@@ -31,6 +31,7 @@
 	import AutomationAsk from './AutomationAsk.svelte';
 	import AutomationAsks from './AutomationAsks.svelte';
 	import AutomationReview from './AutomationReview.svelte';
+	import AutomationFix from './AutomationFix.svelte';
 	import AutomationState from './AutomationState.svelte';
 	import TestDenied from './TestDenied.svelte';
 
@@ -270,7 +271,16 @@
 					{/each}
 				</ul>
 			{/if}
-			{#if run.review}
+			{#if run.fix && run.review}
+				<!-- Sent back to its agent after a failed check (#690): first check, the agent's reply, the final check. -->
+				<ol class="rounds">
+					<li><AutomationReview review={run.firstReview ?? run.review} round={1} now={clock.now} limitMinutes={task.limitMinutes} {onopenagent} /></li>
+					<li><AutomationFix fix={run.fix} sessionId={run.fix.sessionId ?? run.sessionId} now={clock.now} {onopenagent} /></li>
+					{#if run.firstReview}
+						<li><AutomationReview review={run.review} round={2} now={clock.now} limitMinutes={task.limitMinutes} {onopenagent} /></li>
+					{/if}
+				</ol>
+			{:else if run.review}
 				<AutomationReview review={run.review} now={clock.now} limitMinutes={task.limitMinutes} onopenagent={onopenagent} />
 			{/if}
 			{#if run.output}
@@ -459,6 +469,48 @@
 		border-radius: var(--radius-pill);
 		background: color-mix(in srgb, var(--text) 10%, var(--bg));
 		white-space: nowrap;
+	}
+	/* The check, the agent's reply and the final check as numbered steps joined by a line. */
+	.rounds {
+		margin: 0.3rem 0 0;
+		padding: 0;
+		list-style: none;
+		counter-reset: round;
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+	.rounds li {
+		position: relative;
+		padding: 0 0 0.6rem 2.2rem;
+		min-width: 0;
+		counter-increment: round;
+	}
+	.rounds li::before {
+		content: counter(round);
+		position: absolute;
+		left: 0;
+		top: 0.1rem;
+		width: 1.6rem;
+		height: 1.6rem;
+		border: 2px solid var(--line);
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-weight: 700;
+		box-sizing: border-box;
+	}
+	.rounds li:not(:last-child)::after {
+		content: '';
+		position: absolute;
+		left: calc(0.8rem - 1px);
+		top: 1.8rem;
+		bottom: 0.1rem;
+		border-left: 2px solid var(--line);
+	}
+	.rounds li:last-child {
+		padding-bottom: 0;
 	}
 	.checks {
 		margin: 0;

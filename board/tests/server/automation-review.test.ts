@@ -120,6 +120,20 @@ const runWhen = (id: string, runId: string, test: (run: AutomationRun) => boolea
 	});
 const checkerListed = (id: string, runId: string, name: string) => runWhen(id, runId, (run) => run.review?.sessionId === `s-${name}`, `the checker ${name} to be listed`);
 const checked = (id: string, runId: string) => runWhen(id, runId, (run) => run.review !== undefined && run.review.status !== 'checking', 'the check to end');
+/** The run once nothing of it is open: its check, the round sent back to its agent and a second check all over. */
+const settled = (id: string, runId: string) => runWhen(id, runId, (run) => run.review !== undefined && run.review.status !== 'checking' && run.fix?.status !== 'fixing', 'the run to settle');
+/** The task's agent comes back under its own name and session when the board resumes it (#690). */
+function resumesAs(run: AutomationRun, name: string) {
+	const plan = JSON.parse(readFileSync(join(dir, 'hcom.json'), 'utf8'));
+	plan.resumed = { name: run.agentName, base_name: name, session_id: `s-${name}`, status: 'active', tool: 'claude', launch_context: { pane_id: `wW:p-${name}-2` } };
+	writeFileSync(join(dir, 'hcom.json'), JSON.stringify(plan));
+}
+/** Every hcom call from now on fails, as a resume that cannot bring the agent back. */
+function hcomFails() {
+	const plan = JSON.parse(readFileSync(join(dir, 'hcom.json'), 'utf8'));
+	writeFileSync(join(dir, 'hcom.json'), JSON.stringify({ ...plan, exit: 1, stderr: 'no such session' }));
+}
+const resumes = () => hcomCalls().filter((call) => call.args[0] === 'r');
 
 const CHECKLIST = ['報告 PDF 已產生', '發票已開立', '通知信已寄出'];
 
@@ -150,11 +164,12 @@ async function doneThenChecking(task: AutomationTask, agent: string, checker: st
 	return checkerListed(task.id, started.id, checker);
 }
 
-test('a run that succeeded opens a read-only checker of the other client; FAIL is 檢查未過 item by item, with a red card, and the period stays open', async () => {
+test('a run that succeeded opens a read-only checker of the other client; a FAIL sends it back to its agent once, a second check reads the reply and its FAIL is final, with a red card, and the period stays open', async () => {
 	// Daily at 12:30 and started by hand at 12:00: the try due at 12:30 comes while the checker checks.
 	const task = await create({ schedule: { type: 'daily' }, time: '12:30', limitMinutes: 60 });
 	expect(task.review).toMatchObject({ enabled: true, client: 'codex', checklist: CHECKLIST });
-	hcomPlan([{ name: 'auto-a' }, null, { name: 'chk-a', client: 'codex' }]);
+	// Launch, close, checker, close, resume, close, second checker, close.
+	hcomPlan([{ name: 'auto-a' }, null, { name: 'chk-a', client: 'codex' }, null, null, null, { name: 'chk-a2', client: 'codex' }]);
 	const run = await doneThenChecking(task, 'auto-a', 'chk-a');
 	expect(run.status).toBe('success');
 	expect(run.review).toMatchObject({ status: 'checking', client: 'codex', model: 'gpt-6.1-sol', effort: 'medium' });
@@ -184,9 +199,10 @@ test('a run that succeeded opens a read-only checker of the other client; FAIL i
 	expect([skip.trigger, skip.reason]).toEqual(['auto', '上一次還在跑']);
 	expect(hcomCalls().filter((call) => call.args[0] === 'claude')).toHaveLength(1);
 
+	resumesAs(run, 'auto-a');
 	replyAndWait('chk-a', ['1. PASS: out/report.pdf 存在，12 頁', '2. FAIL: 報告裡沒有發票號碼，也找不到開立紀錄', '3. PASS: 寄信紀錄有 250 OK', 'FAIL'].join('\n'));
-	const done = await checked(task.id, run.id);
-	expect(done.review).toMatchObject({
+	const first = await checked(task.id, run.id);
+	expect(first.review).toMatchObject({
 		status: 'fail',
 		items: [
 			{ label: '報告 PDF 已產生', ok: true, reason: 'out/report.pdf 存在，12 頁' },
@@ -195,6 +211,42 @@ test('a run that succeeded opens a read-only checker of the other client; FAIL i
 		]
 	});
 	expect(listed('chk-a')).toBe(false);
+
+	// Sent back to the task's own agent, in its own conversation and workspace, with the failed item and why.
+	const resume = await eventually(async () => resumes()[0], 8_000, 'the resume');
+	expect(resume.args.slice(0, 2)).toEqual(['r', 's-auto-a']);
+	expect(resume.workspace).toBe('wA');
+	const message = resume.args[resume.args.indexOf('--hcom-prompt') + 1];
+	expect(message).toContain('沒過的條目：2. 發票已開立（檢查理由：報告裡沒有發票號碼，也找不到開立紀錄）。');
+	expect(message).not.toContain('報告 PDF 已產生');
+	for (const rule of ['「N. 已補做：<做了什麼>」或「N. 反駁：<理由與證據>」', '補做只限原任務授權內、不需要新授權的事', '不要發新的待決題', '最後一行只回覆 DONE，失敗回覆 FAILED: <原因>']) expect(message).toContain(rule);
+	expect(message).not.toContain('\n');
+	const fixing = await runWhen(task.id, run.id, (each) => each.fix?.status === 'fixing' && each.fix.agentName !== undefined, 'the round to be watched');
+	expect(fixing.fix).toMatchObject({ limitMinutes: 30, agentName: run.agentName });
+	// Still open: no card yet, the task counts as running, and the label says it went back.
+	expect((await viewOf(task.id)).state).toBe('running');
+	expect((await alerts()).some((alert) => alert.runId === run.id)).toBe(false);
+
+	const answer = ['2. 已補做：補開發票 AB-123，存在 out/invoice.pdf', 'DONE'].join('\n');
+	replyAndWait('auto-a', answer);
+	const second = await runWhen(task.id, run.id, (each) => each.review?.status === 'checking' && each.review.sessionId === 's-chk-a2', 'the second checker');
+	expect(second.fix).toMatchObject({ status: 'replied', reply: answer });
+	expect(second.firstReview).toMatchObject({ status: 'fail' });
+	expect(listed('auto-a')).toBe(false);
+	const secondLaunch = hcomCalls().filter((call) => call.args[0] === 'codex')[1];
+	expect(secondLaunch.args[secondLaunch.args.indexOf('--tag') + 1]).toBe(`autochk-${task.id}-${run.id.split('-').at(-1)!.slice(0, 6)}-2`);
+	const secondBrief = readFileSync(join(dir, 'board-state/automation', second.review!.brief!), 'utf8');
+	expect(second.review!.brief).not.toBe(first.review!.brief);
+	for (const part of ['這是第二次檢查，也是最後一次', '## 第一次檢查結果', '2. FAIL: 報告裡沒有發票號碼，也找不到開立紀錄', '## 任務 Agent 的回應', '2. 已補做：補開發票 AB-123', '## 驗收清單']) expect(secondBrief).toContain(part);
+
+	replyAndWait('chk-a2', ['1. PASS: 有', '2. FAIL: out/invoice.pdf 是空檔', '3. PASS: 有', 'FAIL'].join('\n'));
+	const done = await settled(task.id, run.id);
+	expect(done.review).toMatchObject({ status: 'fail', items: [{ ok: true }, { ok: false, reason: 'out/invoice.pdf 是空檔' }, { ok: true }] });
+	// The second verdict is final: no third check, no second resume.
+	await sleep(500);
+	expect(resumes()).toHaveLength(1);
+	expect(hcomCalls().filter((call) => call.args[0] === 'codex')).toHaveLength(2);
+	expect((await runsOf(task.id)).find((each) => each.id === run.id)!.review?.status).toBe('fail');
 	const view = await viewOf(task.id);
 	expect(view.state).toBe('check-failed');
 	// Not done: tomorrow's try is still due.
@@ -212,15 +264,27 @@ test('PASS settles the period with no card; a PASS over an item judged FAIL or l
 	expect((await checked(task.id, first.id)).review?.status).toBe('pass');
 	expect((await viewOf(task.id)).state).toBe('done');
 	expect((await alerts()).some((alert) => alert.runId === first.id)).toBe(false);
+	// A PASS sends nothing back.
+	await sleep(300);
+	expect(resumes()).toEqual([]);
+	expect((await runsOf(task.id)).find((run) => run.id === first.id)!.fix).toBeUndefined();
 
+	// A FAIL whose agent cannot be resumed keeps the first FAIL, saying why, with its card.
 	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
 	rmSync(join(dir, 'hcom-added.json'), { force: true });
 	hcomPlan([{ name: 'auto-q' }, null, { name: 'chk-q', client: 'codex' }]);
 	const second = await doneThenChecking(task, 'auto-q', 'chk-q');
+	hcomFails();
 	replyAndWait('chk-q', ['1. PASS: 有', '3. PASS: 已寄', 'PASS'].join('\n'));
-	const left = await checked(task.id, second.id);
+	const left = await settled(task.id, second.id);
 	expect(left.review).toMatchObject({ status: 'fail', reason: '總結寫 PASS，但有條目沒過或沒判定' });
 	expect(left.review!.items![1]).toEqual({ label: '發票已開立', ok: false, reason: '檢查 Agent 沒有判定這一條' });
+	expect(resumes()).toHaveLength(1);
+	expect(left.fix).toMatchObject({ status: 'failed' });
+	expect(left.fix!.reason).toStartWith('接不回任務 Agent 原本的對話：');
+	expect(left.firstReview).toBeUndefined();
+	expect((await alerts()).find((alert) => alert.runId === second.id)?.kind).toBe('check-failed');
+	expect(hcomCalls().filter((call) => call.args[0] === 'codex')).toHaveLength(1);
 
 	// A run that failed is not checked.
 	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
@@ -259,6 +323,81 @@ test('PASS settles the period with no card; a PASS over an item judged FAIL or l
 	await send(`/api/automation/${command.id}/pause`, 'POST', { paused: true });
 });
 
+test('a dispute the second check accepts settles the period with no card; a round with no reply past its own 30 minutes keeps the first FAIL', async () => {
+	const task = await create({ limitMinutes: 120 });
+	hcomPlan([{ name: 'auto-d' }, null, { name: 'chk-d', client: 'codex' }, null, null, null, { name: 'chk-d2', client: 'codex' }]);
+	const first = await doneThenChecking(task, 'auto-d', 'chk-d');
+	resumesAs(first, 'auto-d');
+	replyAndWait('chk-d', '1. PASS: a\n2. FAIL: 找不到發票\n3. PASS: c\nFAIL');
+	await eventually(async () => resumes()[0], 8_000, 'the resume');
+	await runWhen(task.id, first.id, (run) => run.fix?.agentName !== undefined, 'the round to be watched');
+	replyAndWait('auto-d', '2. 反駁：這個月沒有成交，不用開發票，見 out/sales.csv 是空的\nDONE');
+	await runWhen(task.id, first.id, (run) => run.review?.sessionId === 's-chk-d2', 'the second checker');
+	replyAndWait('chk-d2', '1. PASS: a\n2. PASS: 接受反駁，sales.csv 沒有資料列\n3. PASS: c\nPASS');
+	const passed = await settled(task.id, first.id);
+	expect(passed.review?.status).toBe('pass');
+	expect(passed.firstReview?.status).toBe('fail');
+	expect((await viewOf(task.id)).state).toBe('done');
+	expect((await alerts()).some((alert) => alert.runId === first.id)).toBe(false);
+	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
+
+	// Run again by hand: the agent never replies; the round has 30 minutes of its own.
+	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
+	rmSync(join(dir, 'hcom-added.json'), { force: true });
+	hcomPlan([{ name: 'auto-e' }, null, { name: 'chk-e', client: 'codex' }]);
+	const second = await doneThenChecking(task, 'auto-e', 'chk-e');
+	resumesAs(second, 'auto-e');
+	replyAndWait('chk-e', '1. PASS: a\n2. FAIL: 找不到發票\n3. PASS: c\nFAIL');
+	const fixing = await runWhen(task.id, second.id, (run) => run.fix?.agentName !== undefined, 'the round to be watched');
+	fixture.setClock(fixing.fix!.startedAt + 29 * 60_000);
+	await sleep(500);
+	expect((await runsOf(task.id)).find((run) => run.id === second.id)!.fix?.status).toBe('fixing');
+	fixture.setClock(fixing.fix!.startedAt + 30 * 60_000);
+	const late = await settled(task.id, second.id);
+	expect(late.fix).toMatchObject({ status: 'failed', ended: 'timeout', reason: '超過上限 30 分鐘，已停止' });
+	expect(late.review?.status).toBe('fail');
+	expect(listed('auto-e')).toBe(false);
+	expect((await alerts()).find((alert) => alert.runId === second.id)?.kind).toBe('check-failed');
+}, 30_000);
+
+test('a restart before the resume was recorded ends the round with the first FAIL: the old DONE never passes for a reply', async () => {
+	const task = await create({ name: '重啟中的修正' });
+	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
+	const items = CHECKLIST.map((label, index) => ({ label, ok: index !== 1, reason: index === 1 ? '找不到發票' : '有' }));
+	const review = { client: 'codex', model: 'gpt-6.1-sol', effort: 'medium' };
+	const runId = `${(START - 60 * 60_000).toString(36)}-0123456789`;
+	const run = {
+		id: runId,
+		taskId: task.id,
+		trigger: 'manual',
+		period: '2026-11',
+		startedAt: START - 60 * 60_000,
+		endedAt: START - 40 * 60_000,
+		status: 'success',
+		agentName: 'auto-old',
+		sessionId: 's-auto-old',
+		agentWorkspace: 'wA',
+		review: { ...review, status: 'fail', startedAt: START - 40 * 60_000, endedAt: START - 30 * 60_000, items },
+		fix: { status: 'fixing', startedAt: START - 30 * 60_000, limitMinutes: 30 }
+	};
+	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
+	writeFileSync(join(dir, 'hcom-added.json'), '[]');
+	mkdirSync(join(dir, 'transcripts'), { recursive: true });
+	writeFileSync(join(dir, 'transcripts/s-auto-old.jsonl'), JSON.stringify({ kind: 'assistant', time: null, text: '報告做好了\nDONE' }) + '\n');
+	await fixture.stop();
+	appendFileSync(join(dir, 'board-state/automation/runs', `${task.id}.jsonl`), JSON.stringify(run) + '\n');
+	await fixture.start();
+	cookie = await fixture.login();
+	const done = await settled(task.id, runId);
+	expect(done.fix).toMatchObject({ status: 'failed', reason: '看板重啟時還沒確定接回任務 Agent，交回修正中斷' });
+	expect(done.fix!.reply).toBeUndefined();
+	expect(done.firstReview).toBeUndefined();
+	expect(done.review?.status).toBe('fail');
+	await sleep(300);
+	expect(hcomCalls().filter((call) => call.args[0] === 'codex' || call.args[0] === 'r')).toEqual([]);
+	expect((await alerts()).find((alert) => alert.runId === runId)?.kind).toBe('check-failed');
+});
+
 test('停止這次 and the limit end the checker and close it; after a restart a checker still listed is watched on, one gone ends the check', async () => {
 	const task = await create({ limitMinutes: 10 });
 	hcomPlan([{ name: 'auto-s' }, null, { name: 'chk-s', client: 'codex' }]);
@@ -267,8 +406,9 @@ test('停止這次 and the limit end the checker and close it; after a restart a
 	const stopped = await checked(task.id, first.id);
 	expect(stopped.review).toMatchObject({ status: 'error', ended: 'stopped', reason: '檢查沒有做完：使用者按了停止這次' });
 	expect(listed('chk-s')).toBe(false);
-	// Stopped by the user: no card.
+	// Stopped by the user: no card, and nothing sent back to the task's agent.
 	expect((await alerts()).some((alert) => alert.runId === first.id)).toBe(false);
+	expect(resumes()).toEqual([]);
 
 	// The checker's limit counts from its own start, and its run is carded.
 	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
@@ -282,6 +422,8 @@ test('停止這次 and the limit end the checker and close it; after a restart a
 	fixture.setClock(START + 15 * 60_000);
 	const late = await checked(task.id, second.id);
 	expect(late.review).toMatchObject({ status: 'error', ended: 'timeout', reason: '檢查沒有做完：超過上限 10 分鐘，已停止' });
+	expect(late.fix).toBeUndefined();
+	expect(resumes()).toEqual([]);
 	expect(listed('chk-t')).toBe(false);
 	expect((await alerts()).find((alert) => alert.runId === second.id)?.kind).toBe('timeout');
 	expect((await viewOf(task.id)).state).toBe('failed');
@@ -381,8 +523,9 @@ test('a check that fails past the boundary leaves the period it started in not d
 	// Past the window's last day: the run still holds the period, so it is not missed.
 	fixture.setClock(tpe(2026, 12, 1, 0, 30));
 	await sleep(500);
+	hcomFails();
 	replyAndWait('chk-bf', '1. PASS: a\n2. FAIL: b\n3. PASS: c\nFAIL');
-	const done = await checked(task.id, started.id);
+	const done = await settled(task.id, started.id);
 	expect(done).toMatchObject({ period: '2026-11', review: { status: 'fail' } });
 	const view = await viewOf(task.id);
 	expect(view.missed).toEqual([]);

@@ -14,7 +14,8 @@
         "board/src/routes/api/automation/**",
         "board/tests/fake-codex-multi-auth.mjs",
         "board/src/lib/server/automation-review.ts",
-        "board/src/lib/components/AutomationReview.svelte"
+        "board/src/lib/components/AutomationReview.svelte",
+        "board/src/lib/components/AutomationFix.svelte"
       ],
       "tests": [
         "board/tests/unit/automation.test.ts",
@@ -26,7 +27,8 @@
         "board/tests/browser/automation-agent-page.test.ts",
         "board/tests/unit/automation-review.test.ts",
         "board/tests/server/automation-review.test.ts",
-        "board/tests/browser/automation-review-page.test.ts"
+        "board/tests/browser/automation-review-page.test.ts",
+        "board/tests/browser/automation-fix-page.test.ts"
       ]
     }
   ]
