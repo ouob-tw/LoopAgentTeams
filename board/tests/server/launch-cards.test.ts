@@ -23,7 +23,7 @@ let watch: Watch;
 beforeAll(async () => {
 	// No status poll within a test: it would publish the card too, and hide whether the launch does.
 	fixture = await startFixture({
-		env: { ...AGENT_SHELL_ENV, ...commandEnv, LAT_BOARD_HCOM_TIMEOUT_SECONDS: '2', LAT_BOARD_STATUS_POLL_SECONDS: '60', LAT_BOARD_STATUS_WORKING_POLL_SECONDS: '60' }
+		env: { ...AGENT_SHELL_ENV, ...commandEnv, LAT_BOARD_HCOM_TIMEOUT_SECONDS: '10', LAT_BOARD_STATUS_POLL_SECONDS: '60', LAT_BOARD_STATUS_WORKING_POLL_SECONDS: '60' }
 	});
 	cookie = await fixture.login();
 });
@@ -111,7 +111,7 @@ test('a failed launch shows failed, an uncertain one uncertain, and neither stay
 	hcomPlan({ names: [null] });
 	const uncertain = (await launch({ folder })).entry!;
 
-	await until(() => !!card(watch.latest(), failed.id) && !!card(watch.latest(), uncertain.id), 2_000);
+	await until(() => card(watch.latest(), failed.id)?.state === 'failed' && card(watch.latest(), uncertain.id)?.state === 'uncertain', 2_000);
 	expect(card(watch.latest(), failed.id)).toMatchObject({ state: 'failed', error: expect.stringContaining('claude not found on PATH') });
 	expect(card(watch.latest(), uncertain.id)).toMatchObject({ state: 'uncertain', hcomName: null });
 });
@@ -170,3 +170,41 @@ test('a launch the board refuses before running anything leaves no card behind',
 	expect(response.status).toBe(409);
 	await until(() => !watch.latest()!.launching.some((entry) => entry.folder === folder), 2_000);
 });
+
+test('a launch waiting behind another in the queue has its card within 2 seconds of being sent', async () => {
+	const first = join(fixture.dir, 'projects', `${++folders}-queue-a`);
+	const second = join(fixture.dir, 'projects', `${++folders}-queue-b`);
+	for (const path of [first, second]) mkdirSync(join(path, '.git'), { recursive: true });
+	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify({ panes: [first, second].map((cwd) => ({ workspace_id: 'wA', cwd })), workspaces: [{ workspace_id: 'wA', number: 1, label: 'a' }] }));
+	// Each hcom run takes 4 seconds: the second launch waits for the first.
+	hcomPlan({ names: ['kemo', 'luvi'], sleepMs: 4_000 });
+	const answers = [launch({ folder: first })];
+	await until(() => watch.latest()!.launching.some((entry) => entry.folder === first), 2_000);
+	const sent = Date.now();
+	answers.push(launch({ folder: second }));
+	await until(() => watch.latest()!.launching.some((entry) => entry.folder === second), 2_000);
+	expect(Date.now() - sent).toBeLessThan(2_000);
+	await Promise.all(answers);
+	expect(watch.latest()!.launching.filter((entry) => entry.folder === first || entry.folder === second).map((entry) => entry.hcomName).sort()).toEqual(['kemo', 'luvi']);
+}, 30_000);
+
+test('a controller that binds while hcom still runs never shows beside its card', async () => {
+	const folder = repo('early-bind');
+	hcomPlan({ names: ['bilo'], sleepMs: 4_000 });
+	const from = watch.snapshots.length;
+	const answer = launch({ folder });
+	await until(() => watch.latest()!.launching.some((entry) => entry.hcomName === 'bilo'), 2_000);
+	// Binds before hcom is done: the next read has the controller, the launch is not logged yet.
+	const controller = fixture.bound('p', 'bilo', { workspace: folder });
+	hcomPlan({ agents: [{ name: 'bilo', session_id: controller.session_id, status: 'listening' }] });
+	fixture.list([controller]);
+	await fixture.refresh(cookie);
+	await until(() => watch.latest()!.controllers.some((entry) => entry.hcomName === 'bilo'), 5_000);
+	expect(watch.latest()!.launching.some((entry) => entry.hcomName === 'bilo')).toBe(false);
+	await answer;
+	await fixture.refresh(cookie);
+	for (const snapshot of watch.snapshots.slice(from)) {
+		const both = snapshot.launching.some((entry) => entry.hcomName === 'bilo') && snapshot.controllers.some((entry) => entry.hcomName === 'bilo');
+		expect(both).toBe(false);
+	}
+}, 30_000);

@@ -17,7 +17,7 @@ import { listAgents, type AgentList } from './hcom.ts';
 import { openLog, type Line, type SentLog } from './sent-log.ts';
 import { exceptionFields, log } from './log.ts';
 import { openSwitches, readLaunches } from './sent-views.ts';
-import { launchCards, type LaunchCard, type SentLaunch } from '../board/launch.ts';
+import { launchCards, type PendingLaunch, type SentLaunch } from '../board/launch.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
 import { settleAnswers } from './answer.ts';
@@ -115,7 +115,7 @@ export interface Board {
 	setUsageStyle(style: UsageStyle): UsageStyleState;
 	/** A controller launch was sent, or hcom named it, and is not logged yet: every open page gets
 	 *  (or updates) its starting card on the roster now (#689). */
-	launchBegun(entry: SentLaunch): void;
+	launchBegun(launch: PendingLaunch): void;
 	/** A controller launch was logged: its card stands on the log from now on, before the next read. */
 	launched(entry: SentLaunch): void;
 	/** A controller launch is over: its card goes unless the launch was logged (`launched`). */
@@ -215,8 +215,9 @@ function createBoard(): Board {
 	/** The sent log's launch lines as last read, with the launches logged since: the roster's
 	 *  launch cards are worked out from them at every publish. Kept when the log cannot be read. */
 	let launchLines: Line[] = [];
-	/** Controller launches sent and not logged yet, newest first: a starting card each. */
-	let pendingLaunches: LaunchCard[] = [];
+	/** Controller launches sent and not logged yet, newest first: a starting card each, chosen
+	 *  like the logged ones (`launchCards`). */
+	let pendingLaunches: PendingLaunch[] = [];
 	/** The ledger files the last read of the ledgers named, watched so a write to one is read in. */
 	let ledgerPaths: string[] = [];
 	/** The same for the files the controllers' unattended mode is read from. */
@@ -588,7 +589,11 @@ function createBoard(): Board {
 			offRoster: built.offRoster.map((controller) => withSeen(controller, lastSeen)),
 			agents: built.agents.map((agent) => ({ ...agent, asking: agent.id !== null && asking.has(agent.id) })),
 			// At every publish, not only at a read: a starting launch turns overdue on the clock.
-			launching: [...pendingLaunches, ...launchCards(readLaunches(launchLines, now, config.launchWaitMs), everyController(built), now)],
+			launching: launchCards(
+				[...pendingLaunches.map((launch) => ({ ...launch, state: 'starting' as const, error: null })), ...readLaunches(launchLines, now, config.launchWaitMs)],
+				everyController(built),
+				now
+			),
 			asks: lastAsks,
 			revision: ++revision
 		};
@@ -842,9 +847,9 @@ function createBoard(): Board {
 			}, config.statusAfterActionMs);
 		},
 		tabMoved,
-		launchBegun(entry) {
-			const { id, time, client, folder, scope, hcomName } = entry;
-			pendingLaunches = [{ id, time, client, folder, scope, hcomName, state: 'starting', error: null }, ...pendingLaunches.filter((card) => card.id !== id)];
+		launchBegun(launch) {
+			const { id, time, client, folder, scope, hcomName, earlierSessions } = launch;
+			pendingLaunches = [{ id, time, client, folder, scope, hcomName, earlierSessions }, ...pendingLaunches.filter((card) => card.id !== id)];
 			if (!closed && sources) publish(sources);
 		},
 		launchSettled(id) {

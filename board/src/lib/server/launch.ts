@@ -208,18 +208,29 @@ export async function frontWhileLaunching(
 }
 
 /** Start a launch. A test device's request makes it the owner of the agent once it runs. */
-export function startLaunch(board: Board, request: LaunchRequest): Promise<{ status: number; body: LaunchResponse }> {
+export async function startLaunch(board: Board, request: LaunchRequest): Promise<{ status: number; body: LaunchResponse }> {
 	const owner = actingTestDevice()?.id ?? null;
-	return inLaunchQueue(async () => {
-		const made = await attempt(board, request, owner);
-		return { value: { status: made.status, body: made.body }, follow: made.follow };
-	});
+	const id = randomUUID();
+	// A controller's card is on the roster from the moment it is sent (#689), also while launches
+	// before it in the queue run, the folder is checked and hcom runs; it goes again if the launch
+	// is not logged.
+	const controller = !request.agent;
+	if (controller) board.launchBegun({ id, time: new Date(board.config.now()).toISOString(), client: request.client, folder: request.folder, scope: null, hcomName: null, earlierSessions: [] });
+	try {
+		return await inLaunchQueue(async () => {
+			const made = await attempt(board, request, owner, id);
+			return { value: { status: made.status, body: made.body }, follow: made.follow };
+		});
+	} finally {
+		if (controller) board.launchSettled(id);
+	}
 }
 
 async function attempt(
 	board: Board,
 	request: LaunchRequest,
-	owner: string | null
+	owner: string | null,
+	id: string
 ): Promise<{ status: number; body: LaunchResponse; follow?: Promise<void> }> {
 	const config = board.config;
 	const agent = request.agent ?? null;
@@ -228,7 +239,7 @@ async function attempt(
 	// What the client's settings give for what the form left to them, as they are now.
 	const defaults = launchDefaults(request.folder)[request.client];
 	const entry: SentLaunch = {
-		id: randomUUID(),
+		id,
 		kind: 'launch',
 		...(agent ? { role: 'agent' as const, tabName: agent.tabName } : {}),
 		time: new Date(config.now()).toISOString(),
@@ -250,92 +261,87 @@ async function attempt(
 		error: null
 	};
 
-	// The roster shows the controller's card from the moment it is sent, while the folder is
-	// checked and hcom runs (#689); it goes again if nothing is logged.
-	if (!agent) board.launchBegun(entry);
-	try {
-		// A folder that is not there is created only once the launch is about to go ahead.
-		const create = !isFolderThere(request.folder);
-		const refused = create ? cannotCreate(normalizePath(request.folder)) : null;
-		const prepared: Stop | Prepared = refused
-			? { reason: `資料夾不存在，${refused}；沒有建立資料夾，也沒有${agent ? '開新 Agent' : '啟動主控'}。`, refused: true }
-			: agent
-				? await prepareAgent(board, request.folder, pick, entry, create)
-				: await prepare(board, request, pick, entry, create);
-		if ('refused' in prepared) {
-			// The form does not allow this; nothing was started or changed, so nothing is logged.
-			return { status: 409, body: { ok: false, reason: prepared.reason, entry: null, logError: null } };
-		}
-		let front: ReturnType<typeof frontTab> | null = null;
-		let early: Promise<void> = Promise.resolve();
-		if ('reason' in prepared) entry.error = prepared.reason;
-		else {
-			// Its project is known now.
-			if (!agent) board.launchBegun(entry);
-			front = frontTab(config, entry.herdrWorkspace!, await tabsBefore(config, entry.herdrWorkspace!));
-			let named: string | null = null;
-			// The form's mode goes in the log as soon as hcom names the controller, before it can activate.
-			let modeLogged = false;
-			const logMode = (hcomName: string) => {
-				if (!request.mode || modeLogged) return;
-				appendSent(config.stateDir, { kind: 'launch-mode', id: randomUUID(), launchId: entry.id, hcomName, mode: request.mode, time: new Date(config.now()).toISOString() });
-				modeLogged = true;
-			};
-			const launching = launchAgent(config, {
-				client: entry.client,
-				folder: prepared.startIn,
-				herdrWorkspace: entry.herdrWorkspace!,
-				prompt: agent ? entry.text : latCommand(entry.client, entry.text),
-				...(agent?.tag ? { tag: agent.tag } : {}),
-				// A new Claude starts in bypass-permissions mode. Not in modelArgs: hcom repeats it on resumes (see permission.ts).
-				extraArgs: [...(entry.client === 'claude' ? ['--dangerously-skip-permissions'] : []), ...modelArgs(entry.client, request)],
-				onName: (name) => {
-					named = name;
-					if (!agent) board.launchBegun({ ...entry, hcomName: name });
-					try {
-						logMode(name);
-					} catch {
-						// Tried again once the launch command is done.
-					}
-				}
-			});
-			early = frontWhileLaunching(config, () => (named ? { name: named } : null), front, launching);
-			const launched = await launching;
-			entry.outcome = launched.outcome;
-			entry.hcomName = launched.hcomName;
-			entry.error = launched.reason;
-			if (launched.hcomName && !modeLogged) {
+	// A folder that is not there is created only once the launch is about to go ahead.
+	const create = !isFolderThere(request.folder);
+	const refused = create ? cannotCreate(normalizePath(request.folder)) : null;
+	const prepared: Stop | Prepared = refused
+		? { reason: `資料夾不存在，${refused}；沒有建立資料夾，也沒有${agent ? '開新 Agent' : '啟動主控'}。`, refused: true }
+		: agent
+			? await prepareAgent(board, request.folder, pick, entry, create)
+			: await prepare(board, request, pick, entry, create);
+	if ('refused' in prepared) {
+		// The form does not allow this; nothing was started or changed, so nothing is logged.
+		return { status: 409, body: { ok: false, reason: prepared.reason, entry: null, logError: null } };
+	}
+	let front: ReturnType<typeof frontTab> | null = null;
+	let early: Promise<void> = Promise.resolve();
+	if ('reason' in prepared) entry.error = prepared.reason;
+	else {
+		// Its project is known now.
+		if (!agent) board.launchBegun(entry);
+		front = frontTab(config, entry.herdrWorkspace!, await tabsBefore(config, entry.herdrWorkspace!));
+		let named: string | null = null;
+		// The form's mode goes in the log as soon as hcom names the controller, before it can activate.
+		let modeLogged = false;
+		const logMode = (hcomName: string) => {
+			if (!request.mode || modeLogged) return;
+			appendSent(config.stateDir, { kind: 'launch-mode', id: randomUUID(), launchId: entry.id, hcomName, mode: request.mode, time: new Date(config.now()).toISOString() });
+			modeLogged = true;
+		};
+		const launching = launchAgent(config, {
+			client: entry.client,
+			folder: prepared.startIn,
+			herdrWorkspace: entry.herdrWorkspace!,
+			prompt: agent ? entry.text : latCommand(entry.client, entry.text),
+			...(agent?.tag ? { tag: agent.tag } : {}),
+			// A new Claude starts in bypass-permissions mode. Not in modelArgs: hcom repeats it on resumes (see permission.ts).
+			extraArgs: [...(entry.client === 'claude' ? ['--dangerously-skip-permissions'] : []), ...modelArgs(entry.client, request)],
+			onName: (name) => {
+				named = name;
+				// Named before hcom is done; a session bound under the name before is not this one.
+				const earlierSessions = prepared.bound.filter((controller) => controller.hcom_name === name).map((controller) => controller.session_id);
+				if (!agent) board.launchBegun({ ...entry, hcomName: name, earlierSessions });
 				try {
-					logMode(launched.hcomName);
-				} catch (error) {
-					entry.error ??= `模式紀錄寫入失敗：${(error as Error).message}`;
+					logMode(name);
+				} catch {
+					// Tried again once the launch command is done.
 				}
 			}
-			entry.earlierSessions = prepared.bound
-				.filter((controller) => controller.hcom_name === launched.hcomName)
-				.map((controller) => controller.session_id);
+		});
+		early = frontWhileLaunching(config, () => (named ? { name: named } : null), front, launching);
+		const launched = await launching;
+		entry.outcome = launched.outcome;
+		entry.hcomName = launched.hcomName;
+		entry.error = launched.reason;
+		if (launched.hcomName && !modeLogged) {
+			try {
+				logMode(launched.hcomName);
+			} catch (error) {
+				entry.error ??= `模式紀錄寫入失敗：${(error as Error).message}`;
+			}
 		}
-
-		let logError: string | null = null;
-		try {
-			appendSent(config.stateDir, entry);
-		} catch (error) {
-			// What happened to the launch is what the page must show either way.
-			logError = (error as Error).message;
-		}
-		// Its card stands on the logged launch from now on, not from the next read.
-		if (!agent && !logError) board.launched(entry);
-		const ok = entry.outcome !== 'failed';
-		const state = !ok ? 'failed' : entry.hcomName ? 'starting' : 'uncertain';
-		return {
-			status: ok ? 200 : 502,
-			body: { ok, reason: ok ? null : entry.error, entry: { ...entry, state, controllerId: null, follow: null }, logError },
-			// Without a name nothing in Herdr's list can be told to be this agent.
-			follow: ok && entry.hcomName ? early.then(() => followAgent(board, entry, entry.hcomName!, agent?.tabName ?? '', front!, owner)) : undefined
-		};
-	} finally {
-		if (!agent) board.launchSettled(entry.id);
+		entry.earlierSessions = prepared.bound
+			.filter((controller) => controller.hcom_name === launched.hcomName)
+			.map((controller) => controller.session_id);
 	}
+
+	let logError: string | null = null;
+	try {
+		appendSent(config.stateDir, entry);
+	} catch (error) {
+		// What happened to the launch is what the page must show either way.
+		logError = (error as Error).message;
+	}
+	// Its card stands on the logged launch from now on, not from the next read.
+	if (!agent && !logError) board.launched(entry);
+	const ok = entry.outcome !== 'failed';
+	const state = !ok ? 'failed' : entry.hcomName ? 'starting' : 'uncertain';
+	return {
+		status: ok ? 200 : 502,
+		body: { ok, reason: ok ? null : entry.error, entry: { ...entry, state, controllerId: null, follow: null }, logError },
+		// Without a name nothing in Herdr's list can be told to be this agent.
+		follow: ok && entry.hcomName ? early.then(() => followAgent(board, entry, entry.hcomName!, agent?.tabName ?? '', front!, owner)) : undefined
+	};
 }
 
 /**

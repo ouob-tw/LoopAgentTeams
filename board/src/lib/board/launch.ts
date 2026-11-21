@@ -192,6 +192,9 @@ export function launchLink(
 /** A controller launch the roster shows as a card of its own until the controller is bound (#689). */
 export type LaunchCard = Pick<LaunchView, 'id' | 'time' | 'client' | 'folder' | 'scope' | 'hcomName' | 'state' | 'error'>;
 
+/** A controller launch sent and not logged yet: what its starting card is chosen and drawn from. */
+export type PendingLaunch = Pick<SentLaunch, 'id' | 'time' | 'client' | 'folder' | 'scope' | 'hcomName' | 'earlierSessions'>;
+
 /** How long after it was sent a launch that is no longer starting (failed, overdue, uncertain)
  *  keeps its roster card; a starting one keeps it until it is bound or turns overdue. */
 export const LAUNCH_CARD_KEEP_MS = 30 * 60_000;
@@ -210,7 +213,7 @@ export const LAUNCH_CARD_TAG: Partial<Record<LaunchState, string>> = {
  *  name since the launch began, though the binding is not logged yet) has none, so the roster never
  *  shows a controller twice. */
 export function launchCards(
-	launches: readonly LaunchView[],
+	launches: readonly (Pick<LaunchView, keyof LaunchCard | 'earlierSessions'> & Partial<Pick<LaunchView, 'role'>>)[],
 	controllers: readonly Pick<Controller, 'id' | 'hcomName'>[],
 	now: number,
 	keepMs: number = LAUNCH_CARD_KEEP_MS
