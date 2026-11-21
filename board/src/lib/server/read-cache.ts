@@ -2,6 +2,7 @@
 // the same: a full read then asks the helper only for the bound controllers and for what changed,
 // not again for every session that still has a report file (#687).
 import { statSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 /** How long an entry is kept at most: some of what the helper prints comes from outside the files
  *  it is checked against (git, the tracker's settings, the panel journal), so even an entry whose
@@ -36,8 +37,8 @@ export interface FileCache<V> {
 	/** The kept value, when every file it was read from is as it was then and it has not expired. */
 	get(key: string, now: number): V | undefined;
 	/** Keep `value`, read from `files` by a read that started at `startedAt` (real clock). A file may
-	 *  be missing: one that appears later changes the stamp. Nothing is kept when a file changed
-	 *  around or after `startedAt`. */
+	 *  be missing: one that appears later changes the stamp. Nothing is kept when a file, or the
+	 *  folder of a missing one, changed around or after `startedAt`. */
 	set(key: string, value: V, files: string[], startedAt: number, maxAgeMs?: number): void;
 	/** Forget every entry whose key is not in `keys`: its session is no longer read. */
 	keepOnly(keys: Iterable<string>): void;
@@ -60,7 +61,9 @@ export function createFileCache<V>(maxAgeMs = CACHE_MAX_AGE_MS, random: () => nu
 			entries.delete(key);
 			if (ownMaxAgeMs <= 0) return;
 			const infos = files.map(stat);
-			if (infos.some((info) => info && info.mtimeMs > startedAt - CHANGE_SLACK_MS)) return;
+			// A missing file may have been deleted while the helper read it: its folder changed then.
+			const changed = (path: string, info: { mtimeMs: number } | null) => ((info ?? stat(dirname(path)))?.mtimeMs ?? -Infinity) > startedAt - CHANGE_SLACK_MS;
+			if (files.some((path, index) => changed(path, infos[index]))) return;
 			entries.set(key, { value, files, stamps: infos.map(stampOf).join('\n'), expires: startedAt + ownMaxAgeMs * (0.5 + random() / 2) });
 		},
 		keepOnly(keys) {

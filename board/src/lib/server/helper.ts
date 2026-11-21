@@ -1,7 +1,7 @@
 // The only way the board reads and writes question files, and reads a controller's conversation
 // and work ledger: the LAT panel helper's `board` commands.
 import { existsSync, realpathSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ledgerFrom, type LedgerView } from '../board/ledger.ts';
 import { linkEvidence } from './ledger-evidence.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
@@ -372,33 +372,39 @@ export interface LedgerCache {
 
 /** Row statuses whose times do not move with the clock. */
 const SETTLED_ROWS = new Set(['done', 'cancelled', 'unassigned']);
+/** Ticket step states that no longer change: a step still to come (a merge, a deploy) comes from
+ *  git or the deploy history, not from the files the entry is checked against. */
+const SETTLED_STEPS = new Set(['done', 'skipped']);
 
-/** How long a ledger whose times still count up is kept: its rows and tickets are counted to the
- *  time lat-ledger read it, and whether a ticket waiting for its merge got it comes from git, so it
- *  is read again after one to two minutes even when its files did not change. */
+/** How long a ledger that can still change without a file changing is kept: its rows and tickets
+ *  are counted to the time lat-ledger read it, and a ticket waiting for its merge or deploy learns
+ *  of it from git, so it is read again after one to two minutes. */
 const MOVING_LEDGER_MAX_AGE_MS = 2 * 60_000;
 
 /** The files a read ledger came from, when what was printed can be kept: the session record in
  *  either place, the ledger, the problem log and each row's task card; and how long it may be kept,
- *  shorter for one whose times still count up. Null for one that cannot be kept: not read, or gone
- *  already. */
+ *  shorter for one that still moves. Null for one that cannot be kept: not read, gone already, or
+ *  naming a task card by a relative path (the helper resolves it from its own folder). */
 function ledgerFiles(workspace: string, sessionId: string, entry: LedgerEntry): { files: string[]; maxAgeMs?: number } | null {
 	const ledger = entry.ledger as { problems_path?: unknown; items?: unknown; tickets?: unknown } | undefined;
 	if (entry.status !== 'ok' || typeof entry.ledger_path !== 'string' || !existsSync(entry.ledger_path)) return null;
 	if (typeof ledger?.problems_path !== 'string' || !Array.isArray(ledger.items) || !Array.isArray(ledger.tickets)) return null;
 	const items = ledger.items as { status?: unknown; card?: unknown }[];
-	const tickets = ledger.tickets as { running?: unknown; times?: unknown }[];
+	const cards = items.flatMap((item) => (typeof item?.card === 'string' && item.card ? [item.card] : []));
+	if (!cards.every((card) => isAbsolute(card))) return null;
+	const tickets = ledger.tickets as { running?: unknown; times?: unknown; steps?: unknown }[];
+	const settled = (list: unknown, done: (value: { running?: unknown; state?: unknown }) => boolean) =>
+		!Array.isArray(list) || list.every((value) => typeof value === 'object' && value !== null && done(value));
 	const moving =
 		!items.every((item) => typeof item?.status === 'string' && SETTLED_ROWS.has(item.status)) ||
-		tickets.some((ticket) => ticket?.running !== false || (Array.isArray(ticket.times) && ticket.times.some((segment) => segment?.running !== false)));
+		!tickets.every(
+			(ticket) =>
+				ticket?.running === false &&
+				settled(ticket.times, (segment) => segment.running === false) &&
+				settled(ticket.steps, (step) => typeof step.state === 'string' && SETTLED_STEPS.has(step.state))
+		);
 	const record = `${sessionId}.json`;
-	const files = [
-		join(dirname(ledger.problems_path), 'sessions', record),
-		join(workspace, '.lat', 'sessions', record),
-		entry.ledger_path,
-		ledger.problems_path,
-		...items.flatMap((item) => (typeof item.card === 'string' && item.card ? [item.card] : []))
-	];
+	const files = [join(dirname(ledger.problems_path), 'sessions', record), join(workspace, '.lat', 'sessions', record), entry.ledger_path, ledger.problems_path, ...cards];
 	return moving ? { files, maxAgeMs: MOVING_LEDGER_MAX_AGE_MS } : { files };
 }
 

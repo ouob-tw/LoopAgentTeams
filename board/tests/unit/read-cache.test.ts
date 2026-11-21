@@ -17,12 +17,13 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-/** Write a file and date it a minute back, as one written before the read started. */
+/** Write a file and date it and its folder a minute back, as written before the read started. */
 function old(path: string, text: string) {
 	mkdirSync(join(path, '..'), { recursive: true });
 	writeFileSync(path, text);
 	const then = new Date(Date.now() - 60_000);
 	utimesSync(path, then, then);
+	utimesSync(join(path, '..'), then, then);
 }
 
 /** Rewrite a file with the same size and date it 30 seconds back: only its time changes. */
@@ -49,7 +50,10 @@ test('a kept value stands while its files are unchanged, and goes when one chang
 	rmSync(a);
 	expect(cache.get('k', Date.now())).toBeUndefined();
 
+	const then = new Date(Date.now() - 60_000);
+	utimesSync(dir, then, then);
 	cache.set('k', 'value', [missing], Date.now());
+	expect(cache.get('k', Date.now())).toBe('value');
 	old(missing, 'now here');
 	expect(cache.get('k', Date.now())).toBeUndefined();
 });
@@ -59,6 +63,13 @@ test('nothing is kept from a file changed around the start of the read, and an e
 	const a = join(dir, 'a');
 	writeFileSync(a, 'just written');
 	cache.set('k', 'value', [a], Date.now());
+	expect(cache.get('k', Date.now())).toBeUndefined();
+
+	// Deleted while the helper read it: its folder changed during the read.
+	const gone = join(dir, 'sub', 'gone');
+	old(gone, 'x');
+	rmSync(gone);
+	cache.set('k', 'value', [gone], Date.now());
 	expect(cache.get('k', Date.now())).toBeUndefined();
 
 	old(a, 'older');
@@ -144,15 +155,20 @@ test('an ended controller\'s ledger is read again only when one of its files cha
 	expect(gone.ok && gone.ledgers.get('ended')?.view).toEqual({ state: 'none' });
 });
 
-test('a ledger whose times still count up is read again after two minutes, a settled one is kept', async () => {
+test('a ledger still counting up or waiting for a merge is read again after two minutes, a settled one is kept', async () => {
 	const workspace = join(dir, 'ws');
 	const lat = join(workspace, '.lat');
 	for (const file of ['ledgers/l.json', 'problems.jsonl', 'tasks/card.md']) old(join(lat, file), '{}');
 	const waiting = ledgerPlan(workspace, 'done', 'w');
 	waiting.ledger.tickets = [{ key: 'w', running: true, times: [{ key: 'wait_merge', running: true }] }] as never;
-	plan({ ledgers: { open: ledgerPlan(workspace, 'in_progress', 'o'), waiting, settled: ledgerPlan(workspace, 'done', 's') } });
+	// Done but not merged yet: lat-ledger does not call the ticket running, but its merge comes from git.
+	const unmerged = ledgerPlan(workspace, 'done', 'u');
+	unmerged.ledger.tickets = [{ key: 'u', running: false, times: [], steps: [{ key: 'merged', state: 'pending' }] }] as never;
+	const settled = ledgerPlan(workspace, 'done', 's');
+	settled.ledger.tickets = [{ key: 's', running: false, times: [{ key: 'impl', running: false }], steps: [{ key: 'merged', state: 'done' }, { key: 'deployed', state: 'skipped' }] }] as never;
+	plan({ ledgers: { open: ledgerPlan(workspace, 'in_progress', 'o'), waiting, unmerged, settled } });
 	const cache = { store: createFileCache<LedgerEntry>(), bound: new Set<string>() };
-	const controllers = ['open', 'waiting', 'settled'].map((sessionId) => ({ workspace, sessionId }));
+	const controllers = ['open', 'waiting', 'unmerged', 'settled'].map((sessionId) => ({ workspace, sessionId }));
 	try {
 		await readLedgers(config(), controllers, cache);
 		await readLedgers(config(), controllers, cache);
@@ -161,7 +177,10 @@ test('a ledger whose times still count up is read again after two minutes, a set
 	} finally {
 		setSystemTime();
 	}
-	expect(calls('session-id')).toEqual([['open', 'waiting', 'settled'], [], ['open', 'waiting']].filter((call) => call.length));
+	expect(calls('session-id')).toEqual([
+		['open', 'waiting', 'unmerged', 'settled'],
+		['open', 'waiting', 'unmerged']
+	]);
 });
 
 test('a session no longer read leaves the ledger cache', async () => {
