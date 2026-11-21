@@ -189,6 +189,51 @@ export function launchLink(
 	return agent ? { kind: 'agent', id: agent.id! } : null;
 }
 
+/** A controller launch the roster shows as a card of its own until the controller is bound (#689). */
+export type LaunchCard = Pick<LaunchView, 'id' | 'time' | 'client' | 'folder' | 'scope' | 'hcomName' | 'state' | 'error'>;
+
+/** A controller launch sent and not logged yet: what its starting card is chosen and drawn from. */
+export type PendingLaunch = Pick<SentLaunch, 'id' | 'time' | 'client' | 'folder' | 'scope' | 'hcomName' | 'earlierSessions'>;
+
+/** How long after it was sent a launch that is no longer starting (failed, overdue, uncertain)
+ *  keeps its roster card; a starting one keeps it until it is bound or turns overdue. */
+export const LAUNCH_CARD_KEEP_MS = 30 * 60_000;
+
+/** The roster's short word for each state a launch card can be in, where the state text has no room. */
+export const LAUNCH_CARD_TAG: Partial<Record<LaunchState, string>> = {
+	starting: '啟動中',
+	overdue: '未啟用',
+	uncertain: '不確定',
+	failed: '失敗'
+};
+
+/** The controller launches that get a roster card at `now`, newest first, from `launches` newest
+ *  first: not yet bound, and not a plain agent's. A name hcom hands out again belongs to the newest
+ *  launch with it, and a launch whose controller is already on the roster or off it (bound under its
+ *  name since the launch began, though the binding is not logged yet) has none, so the roster never
+ *  shows a controller twice. */
+export function launchCards(
+	launches: readonly (Pick<LaunchView, keyof LaunchCard | 'earlierSessions'> & Partial<Pick<LaunchView, 'role'>>)[],
+	controllers: readonly Pick<Controller, 'id' | 'hcomName'>[],
+	now: number,
+	keepMs: number = LAUNCH_CARD_KEEP_MS
+): LaunchCard[] {
+	const named = new Set<string>();
+	const cards: LaunchCard[] = [];
+	for (const launch of launches) {
+		if (launch.role === 'agent') continue;
+		const { hcomName } = launch;
+		const newest = !hcomName || !named.has(hcomName);
+		if (hcomName) named.add(hcomName);
+		if (!newest || !(launch.state in LAUNCH_CARD_TAG)) continue;
+		if (launch.state !== 'starting' && now - Date.parse(launch.time) >= keepMs) continue;
+		if (hcomName && controllers.some((controller) => controller.hcomName === hcomName && !launch.earlierSessions.includes(controller.id))) continue;
+		const { id, time, client, folder, scope, state, error } = launch;
+		cards.push({ id, time, client, folder, scope, hcomName, state, error });
+	}
+	return cards;
+}
+
 /** A plain agent's states where they read differently from a controller's. */
 export const AGENT_LAUNCH_STATE_TEXT: Partial<Record<LaunchState, string>> = {
 	starting: '啟動中',

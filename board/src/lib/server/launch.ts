@@ -208,18 +208,29 @@ export async function frontWhileLaunching(
 }
 
 /** Start a launch. A test device's request makes it the owner of the agent once it runs. */
-export function startLaunch(board: Board, request: LaunchRequest): Promise<{ status: number; body: LaunchResponse }> {
+export async function startLaunch(board: Board, request: LaunchRequest): Promise<{ status: number; body: LaunchResponse }> {
 	const owner = actingTestDevice()?.id ?? null;
-	return inLaunchQueue(async () => {
-		const made = await attempt(board, request, owner);
-		return { value: { status: made.status, body: made.body }, follow: made.follow };
-	});
+	const id = randomUUID();
+	// A controller's card is on the roster from the moment it is sent (#689), also while launches
+	// before it in the queue run, the folder is checked and hcom runs; it goes again if the launch
+	// is not logged.
+	const controller = !request.agent;
+	if (controller) board.launchBegun({ id, time: new Date(board.config.now()).toISOString(), client: request.client, folder: request.folder, scope: null, hcomName: null, earlierSessions: [] });
+	try {
+		return await inLaunchQueue(async () => {
+			const made = await attempt(board, request, owner, id);
+			return { value: { status: made.status, body: made.body }, follow: made.follow };
+		});
+	} finally {
+		if (controller) board.launchSettled(id);
+	}
 }
 
 async function attempt(
 	board: Board,
 	request: LaunchRequest,
-	owner: string | null
+	owner: string | null,
+	id: string
 ): Promise<{ status: number; body: LaunchResponse; follow?: Promise<void> }> {
 	const config = board.config;
 	const agent = request.agent ?? null;
@@ -228,7 +239,7 @@ async function attempt(
 	// What the client's settings give for what the form left to them, as they are now.
 	const defaults = launchDefaults(request.folder)[request.client];
 	const entry: SentLaunch = {
-		id: randomUUID(),
+		id,
 		kind: 'launch',
 		...(agent ? { role: 'agent' as const, tabName: agent.tabName } : {}),
 		time: new Date(config.now()).toISOString(),
@@ -266,6 +277,8 @@ async function attempt(
 	let early: Promise<void> = Promise.resolve();
 	if ('reason' in prepared) entry.error = prepared.reason;
 	else {
+		// Its project is known now.
+		if (!agent) board.launchBegun(entry);
 		front = frontTab(config, entry.herdrWorkspace!, await tabsBefore(config, entry.herdrWorkspace!));
 		let named: string | null = null;
 		// The form's mode goes in the log as soon as hcom names the controller, before it can activate.
@@ -285,6 +298,9 @@ async function attempt(
 			extraArgs: [...(entry.client === 'claude' ? ['--dangerously-skip-permissions'] : []), ...modelArgs(entry.client, request)],
 			onName: (name) => {
 				named = name;
+				// Named before hcom is done; a session bound under the name before is not this one.
+				const earlierSessions = prepared.bound.filter((controller) => controller.hcom_name === name).map((controller) => controller.session_id);
+				if (!agent) board.launchBegun({ ...entry, hcomName: name, earlierSessions });
 				try {
 					logMode(name);
 				} catch {
@@ -316,6 +332,8 @@ async function attempt(
 		// What happened to the launch is what the page must show either way.
 		logError = (error as Error).message;
 	}
+	// Its card stands on the logged launch from now on, not from the next read.
+	if (!agent && !logError) board.launched(entry);
 	const ok = entry.outcome !== 'failed';
 	const state = !ok ? 'failed' : entry.hcomName ? 'starting' : 'uncertain';
 	return {

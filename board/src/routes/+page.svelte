@@ -131,6 +131,8 @@
 	}
 
 	const controllers = $derived(board.snapshot.controllers);
+	// Missing from a server from before #689.
+	const launching = $derived(board.snapshot.launching ?? []);
 	const inbox = $derived(board.snapshot.inbox);
 	const agents = $derived(board.snapshot.agents);
 	/** The board asks as inbox rows: those not ended are in the inbox, the ended ones among the processed. */
@@ -529,8 +531,10 @@
 			<div class="folded">
 				<RosterRail
 					{controllers}
+					{launching}
 					currentId={view?.kind === 'controller' ? view.id : null}
 					onopen={openController}
+					onlaunch={openLaunch}
 					onexpand={() => appearance.setFolded(false)}
 				>
 					{#snippet tools()}
@@ -562,7 +566,7 @@
 						{@render openSettings()}
 					</span>
 				</header>
-				<Roster {controllers} currentId={view?.kind === 'controller' ? view.id : null} onopen={openController} />
+				<Roster {controllers} {launching} currentId={view?.kind === 'controller' ? view.id : null} onopen={openController} onlaunch={openLaunch} />
 			</div>
 		</nav>
 		{@render resize('roster')}

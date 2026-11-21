@@ -1,23 +1,44 @@
 <script lang="ts">
 	// The controller roster: three-line cards on a wide screen, a strip of two-line tags on a phone,
 	// a faint line between the runs of one status. Idle and closed controllers that last reported
-	// over a day ago are one row at the end that opens their list.
+	// over a day ago are one row at the end that opens their list. Controllers launched from the
+	// board and not bound yet go first, each a card of its own until its controller takes its place.
+	import { onMount } from 'svelte';
+	import { dismissedLaunches } from '#lib/board/launch-cards.svelte.ts';
+	import type { LaunchCard } from '#lib/board/launch.ts';
 	import { splitRoster } from '#lib/board/roster.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import EndedRoster from './EndedRoster.svelte';
+	import LaunchRosterCard from './LaunchRosterCard.svelte';
 	import RosterCard from './RosterCard.svelte';
 
 	let {
 		controllers,
+		launching = [],
 		currentId,
-		onopen
-	}: { controllers: Controller[]; currentId: string | null; onopen: (id: string) => void } = $props();
+		onopen,
+		onlaunch
+	}: {
+		controllers: Controller[];
+		launching?: LaunchCard[];
+		currentId: string | null;
+		onopen: (id: string) => void;
+		/** Opens the new-controller page, where a launch's row leads on. */
+		onlaunch: () => void;
+	} = $props();
+
+	const launches = $derived(dismissedLaunches.shown(launching));
+	onMount(() => dismissedLaunches.load());
 
 	// Read again with every new board data, which hands a new list.
 	const parts = $derived(splitRoster(controllers, Date.now()));
 </script>
 
 <div class="people">
+	{#each launches as launch (launch.id)}
+		<LaunchRosterCard {launch} onopen={onlaunch} ondismiss={(id) => dismissedLaunches.dismiss(id)} />
+	{/each}
+	{#if launches.length && (parts.groups.length || parts.older.length)}<hr class="sep" />{/if}
 	{#each parts.groups as group, index (group[0].id)}
 		{#if index > 0}<hr class="sep" />{/if}
 		{#each group as controller (controller.id)}
@@ -28,7 +49,7 @@
 		{#if parts.groups.length}<hr class="sep" />{/if}
 		<EndedRoster ended={parts.older} {currentId} {onopen} />
 	{/if}
-	{#if !controllers.length}
+	{#if !controllers.length && !launches.length}
 		<p class="none">目前沒有主控。</p>
 	{/if}
 </div>
