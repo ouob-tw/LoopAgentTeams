@@ -181,5 +181,83 @@ class NotRecordedTests(AutoRecordTestCase):
         self.assert_not_recorded("Q3", 1, "--text", "想法", reason="session record cannot be read")
 
 
+UPSERT_RECORD = ("# Q5 要用哪個名稱？\n\n- status: pending\n- advisor: needs-human\n- version: r1\n"
+                 "- question: 要用哪個名稱？\n- options: A 甲名 / B 乙名\n"
+                 "- authority gap: 需使用者決定\n- blocked work: 命名\n")
+
+
+class UpsertRevisionTests(AutoRecordTestCase):
+    """question upsert moves the record to the new revision so the panel answer records itself."""
+
+    def upsert(self, title, options, question_id="Q5"):
+        section = self.root / "section.md"
+        section.write_text(f"## {title}\n\n背景。\n\n" + "".join(f"- {o}\n" for o in options))
+        result = self.run_cli("question", "upsert", "--questions", self.questions,
+                              "--decisions", self.decisions, "--id", question_id, "--file", section)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_upsert_revision_then_panel_answer_records_on_the_new_revision(self):
+        self.decision("Q5").write_text(UPSERT_RECORD)
+        self.assertEqual(self.upsert("要用哪個名稱？", ["A. 甲名", "B. 乙名"]), "Q5 r1\n")
+        self.assertEqual(self.decision("Q5").read_text(), UPSERT_RECORD)
+
+        self.assertEqual(self.upsert("改用哪個名稱？", ["A. 丙名", "B. 丁名"]), "Q5 r2\n")
+        record = self.decision("Q5").read_text()
+        self.assertTrue(record.startswith(
+            "# Q5 改用哪個名稱？\n\n- status: pending\n- advisor: needs-human\n- version: r2\n"
+            "- question: 改用哪個名稱？\n- options: A 丙名 / B 丁名\n"), record)
+        # The replaced question stays readable, but not as record fields.
+        self.assertIn("## 舊版 r1（由 r2 取代）\n\n- 標題：要用哪個名稱？\n"
+                      "- 原題：要用哪個名稱？\n- 原選項：A 甲名 / B 乙名\n", record)
+
+        result = self.answer(self.questions, "Q5", 2, "--select", "2")
+
+        self.assertTrue(result["recorded"], result.get("record_reason"))
+        self.assertEqual(self.question("Q5")["status"], "recorded")
+        record = self.decision("Q5").read_text()
+        self.assertEqual(read_decision_status(self.decision("Q5")).status, "answered")
+        self.assertIn("- 題目：Q5 r2\n", record)
+        self.assertIn("- 答覆：B. 丁名\n", record)
+        self.assertIn("- 原選項：A 甲名 / B 乙名\n", record)
+
+    def test_later_revision_keeps_older_versions_and_answer_sections(self):
+        self.decision("Q5").write_text(UPSERT_RECORD)
+        self.upsert("要用哪個名稱？", ["A. 甲名", "B. 乙名"])
+        self.upsert("改用哪個名稱？", ["A. 丙名", "B. 丁名"])
+        self.answer(self.questions, "Q5", 2, "--select", "2")
+        answered = self.decision("Q5").read_text()
+        answer = answered[answered.index("## 答覆"):]
+
+        self.assertEqual(self.upsert("最後用哪個名稱？", ["A. 戊名", "B. 己名"]), "Q5 r3\n")
+
+        record = self.decision("Q5").read_text()
+        self.assertIn("- version: r3\n- question: 最後用哪個名稱？\n- options: A 戊名 / B 己名\n",
+                      record)
+        newer, older = record.index("## 舊版 r2（由 r3 取代）"), record.index("## 舊版 r1（由 r2 取代）")
+        self.assertLess(newer, older)
+        self.assertIn("- 原題：改用哪個名稱？\n- 原選項：A 丙名 / B 丁名\n", record[newer:older])
+        self.assertTrue(record.endswith(answer), record)
+        self.assertEqual(read_decision_status(self.decision("Q5")).status, "answered")
+        self.assertEqual(self.core.questions.decision_revision(self.decision("Q5")), 3)
+
+    def test_record_that_cannot_be_synced_only_warns(self):
+        self.upsert("要用哪個名稱？", ["A. 甲名", "B. 乙名"])
+        self.decision("Q5").write_text("# Q5\n\n- version: r1\n")
+        section = self.root / "section.md"
+        section.write_text("## 改用哪個名稱？\n\n背景。\n\n- A. 丙名\n")
+        result = self.run_cli("question", "upsert", "--questions", self.questions,
+                              "--decisions", self.decisions, "--id", "Q5", "--file", section)
+        self.assertEqual((result.returncode, result.stdout), (0, "Q5 r2\n"), result.stderr)
+        self.assertIn("not moved to r2: decision record has no - status: line", result.stderr)
+        self.assertEqual(self.decision("Q5").read_text(), "# Q5\n\n- version: r1\n")
+
+    def test_upsert_without_a_record_leaves_the_decisions_directory_alone(self):
+        before = sorted(path.name for path in self.decisions.iterdir())
+        self.upsert("要用哪個名稱？", ["A. 甲名", "B. 乙名"])
+        self.assertEqual(self.upsert("改用哪個名稱？", ["A. 丙名", "B. 丁名"]), "Q5 r2\n")
+        self.assertEqual(sorted(path.name for path in self.decisions.iterdir()), before)
+
+
 if __name__ == "__main__":
     unittest.main()

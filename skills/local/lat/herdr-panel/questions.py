@@ -1483,6 +1483,24 @@ def decision_revision(decision_path):
     return _record_revision(_read_text_exact(decision_path))
 
 
+_PRIOR_KEYS = (("# ", "標題"), ("- question:", "原題"), ("- options:", "原選項"))
+
+
+def _prior_question_section(question_id, old_lines, old_revision, revision, new_lines):
+    """The ``## 舊版`` section keeping a record's replaced question lines, or "" if unchanged."""
+    if not old_lines or all(line in new_lines for line in old_lines):
+        return ""
+    label = f"r{old_revision}" if old_revision is not None else ""
+    out = [f"## 舊版{' ' if label else ''}{label}（由 r{revision} 取代）", ""]
+    for line in old_lines:
+        prefix, name = next(item for item in _PRIOR_KEYS if line.startswith(item[0]))
+        value = line[len(prefix):].strip()
+        if name == "標題" and value.split(" ", 1)[0] == question_id:
+            value = value[len(question_id):].strip()
+        out.append(f"- {name}：{value}")
+    return "\n".join(out) + "\n"
+
+
 def sync_decision_record(decision_path, revision, *, reopen=False, help_question=False,
                          question_id=None, incoming=None, question=None, grant=None):
     """Set the record's version line to the panel revision; optionally reopen it or mark help.
@@ -1492,6 +1510,9 @@ def sync_decision_record(decision_path, revision, *, reopen=False, help_question
     With ``question_id`` and ``incoming`` and a record version other than ``revision``, the
     heading, ``- question:`` and ``- options:`` lines are replaced in the same write
     (a missing line is added); the answer sections and other fields stay as they are.
+    The replaced lines are kept in a ``## 舊版 r<N>（由 r<M> 取代）`` section right below the
+    header (newest first), unless they already match the new question; its lines use
+    Chinese keys so none of them reads as a record field.
     ``grant`` adds a ``- grant:`` line after the session line (else the status line) when the
     record has none; an existing one is kept.
     """
@@ -1526,11 +1547,18 @@ def sync_decision_record(decision_path, revision, *, reopen=False, help_question
                 edits.append((heading_match.start(), heading_match.end(), heading))
             else:
                 edits.append((0, 0, heading + "\n\n"))
+            old_lines = [heading_match.group(0)] if heading_match else []
             for key, line in (("question", question_line), ("options", options_line)):
                 if key in fields and fields[key][0] < header_end:
+                    old_lines.append(text[slice(*fields[key])])
                     edits.append((*fields[key], line))
                 else:
                     extra += "\n" + line
+            prior = _prior_question_section(question_id, old_lines, _record_revision(text),
+                                            revision, (heading, question_line, options_line))
+            if prior:
+                lead = "" if text[:header_end].endswith("\n") else "\n"
+                edits.append((header_end, header_end, f"{lead}\n{prior}"))
         if version is None:
             edits.append((status[1], status[1], f"\n- version: r{revision}{extra}"))
         else:
