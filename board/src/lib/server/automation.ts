@@ -1031,17 +1031,26 @@ export function createAutomation(options: {
 					update({ ...(ready.account !== undefined ? { codexAccount: ready.account } : {}), ...(ready.note ? { accountSwitches: [ready.note] } : {}) });
 				}
 				if (cut) return fail(cutReason(cut, limitMinutes), cut);
-				// Its replies so far say nothing about the round: only one after the resume ends it.
+				// Its replies so far say nothing about the round: only one after the resume ends it. With no
+				// position to judge after, its old DONE could pass for a reply, so it is not resumed.
 				const before = await host.lastReply(spec.client, sessionId);
-				update({ judgeAfter: before.ok ? before.seq : -1 });
+				if (!before.ok) return fail(`接不回任務 Agent：讀不到它的對話（${before.reason}）`);
+				update({ judgeAfter: before.seq });
 				const failed = await host
 					.resume(sessionId, latest(run).agentWorkspace ?? null, fixMessage(latest(run).review!, { unattended: spec.unattended !== undefined }))
 					.catch((error: Error) => error.message);
 				if (failed) return fail(`接不回任務 Agent 原本的對話：${failed}`);
 				const listed = await host.list();
 				const found = listed.ok ? listed.agents.find((agent) => agent.sessionId === sessionId) : undefined;
-				update({ agentName: found?.name ?? latest(run).agentName });
+				update({ agentName: found?.name ?? latest(run).agentName, resumedAt: now() });
 				publish();
+			} else if (latest(run).fix!.resumedAt === undefined || latest(run).fix!.judgeAfter === undefined) {
+				// The board stopped before the resume was recorded: nothing says the agent got the failed items,
+				// and its old DONE must not pass for a reply. One that did come back is closed.
+				const listed = await host.list();
+				const found = listed.ok && sessionId ? listed.agents.find((agent) => agent.sessionId === sessionId) : undefined;
+				const closeError = found ? await host.close({ sessionId: sessionId ?? null, name: found.name }).catch((error: Error) => error.message) : null;
+				return fail('看板重啟時還沒確定接回任務 Agent，交回修正中斷', undefined, closeError ?? undefined);
 			}
 			// Watched as a run of its own: its start, agent and account are the round's.
 			const view = (): AutomationRun => {

@@ -170,6 +170,8 @@ export interface RunFix {
 	agentName?: string;
 	sessionId?: string;
 	judgeAfter?: number;
+	/** When the agent was resumed with the failed items: only replies after that count. */
+	resumedAt?: number;
 	codexAccount?: number;
 	accountSwitches?: string[];
 	closeError?: string;

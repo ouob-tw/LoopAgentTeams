@@ -360,6 +360,44 @@ test('a dispute the second check accepts settles the period with no card; a roun
 	expect((await alerts()).find((alert) => alert.runId === second.id)?.kind).toBe('check-failed');
 }, 30_000);
 
+test('a restart before the resume was recorded ends the round with the first FAIL: the old DONE never passes for a reply', async () => {
+	const task = await create({ name: '重啟中的修正' });
+	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
+	const items = CHECKLIST.map((label, index) => ({ label, ok: index !== 1, reason: index === 1 ? '找不到發票' : '有' }));
+	const review = { client: 'codex', model: 'gpt-6.1-sol', effort: 'medium' };
+	const runId = `${(START - 60 * 60_000).toString(36)}-0123456789`;
+	const run = {
+		id: runId,
+		taskId: task.id,
+		trigger: 'manual',
+		period: '2026-11',
+		startedAt: START - 60 * 60_000,
+		endedAt: START - 40 * 60_000,
+		status: 'success',
+		agentName: 'auto-old',
+		sessionId: 's-auto-old',
+		agentWorkspace: 'wA',
+		review: { ...review, status: 'fail', startedAt: START - 40 * 60_000, endedAt: START - 30 * 60_000, items },
+		fix: { status: 'fixing', startedAt: START - 30 * 60_000, limitMinutes: 30 }
+	};
+	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
+	writeFileSync(join(dir, 'hcom-added.json'), '[]');
+	mkdirSync(join(dir, 'transcripts'), { recursive: true });
+	writeFileSync(join(dir, 'transcripts/s-auto-old.jsonl'), JSON.stringify({ kind: 'assistant', time: null, text: '報告做好了\nDONE' }) + '\n');
+	await fixture.stop();
+	appendFileSync(join(dir, 'board-state/automation/runs', `${task.id}.jsonl`), JSON.stringify(run) + '\n');
+	await fixture.start();
+	cookie = await fixture.login();
+	const done = await settled(task.id, runId);
+	expect(done.fix).toMatchObject({ status: 'failed', reason: '看板重啟時還沒確定接回任務 Agent，交回修正中斷' });
+	expect(done.fix!.reply).toBeUndefined();
+	expect(done.firstReview).toBeUndefined();
+	expect(done.review?.status).toBe('fail');
+	await sleep(300);
+	expect(hcomCalls().filter((call) => call.args[0] === 'codex' || call.args[0] === 'r')).toEqual([]);
+	expect((await alerts()).find((alert) => alert.runId === runId)?.kind).toBe('check-failed');
+});
+
 test('停止這次 and the limit end the checker and close it; after a restart a checker still listed is watched on, one gone ends the check', async () => {
 	const task = await create({ limitMinutes: 10 });
 	hcomPlan([{ name: 'auto-s' }, null, { name: 'chk-s', client: 'codex' }]);
