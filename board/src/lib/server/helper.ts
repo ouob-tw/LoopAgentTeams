@@ -1,5 +1,7 @@
 // The only way the board reads and writes question files, and reads a controller's conversation
 // and work ledger: the LAT panel helper's `board` commands.
+import { existsSync, realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ledgerFrom, type LedgerView } from '../board/ledger.ts';
 import { linkEvidence } from './ledger-evidence.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
@@ -11,6 +13,7 @@ import { reviewFrom, type Review } from '../board/review.ts';
 import { unattendedFrom, type UnattendedSettings, type UnattendedView } from '../board/unattended.ts';
 import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand } from './external.ts';
+import type { FileCache } from './read-cache.ts';
 
 type HelperList =
 	| { ok: true; controllers: HelperController[] }
@@ -108,13 +111,49 @@ export interface AnsweredSources {
 	controllers: { workspace: string; hcomName: string }[];
 }
 
-/** The answered questions each of these question files and its archive hold. */
-export async function readAnswered(config: BoardConfig, { paths, controllers }: AnsweredSources): Promise<HelperAnswered> {
+/** The files `board answered` reads for a controller that is not bound, from the file it named:
+ *  the root `.lat` file and the `.lat/questions/` file of its name, both in the `.lat` that file is
+ *  in and in the workspace's own `.lat`, each with its archive. Null when the name of the file does
+ *  not follow either form. */
+function answeredFiles(workspace: string, questionsPath: string): string[] | null {
+	const name = basename(questionsPath, '.md');
+	const inFolder = basename(dirname(questionsPath)) === 'questions';
+	if (!questionsPath.endsWith('.md') || (!inFolder && !name.startsWith('questions-'))) return null;
+	const safe = inFolder ? name : name.slice('questions-'.length);
+	const lat = inFolder ? dirname(dirname(questionsPath)) : dirname(questionsPath);
+	let own: string;
+	try {
+		own = realpathSync(workspace);
+	} catch {
+		own = resolve(workspace);
+	}
+	const lats = new Set([lat, join(own, '.lat')]);
+	return [...lats].flatMap((dir) =>
+		[join(dir, `questions-${safe}`), join(dir, 'questions', safe)].flatMap((stem) => [`${stem}.md`, `${stem}-archive.md`])
+	);
+}
+
+const answeredKey = (controller: { workspace?: string; hcomName?: string; hcom_name?: string }) =>
+	`${controller.workspace}\n${controller.hcomName ?? controller.hcom_name}`;
+
+/** The answered questions each of these question files and its archive hold. With `cache`, a
+ *  controller asked for by name whose files have not changed is not asked for again; what was
+ *  printed for it last stands in. Files asked for by path, the bound controllers', are always read. */
+export async function readAnswered(config: BoardConfig, { paths, controllers }: AnsweredSources, cache?: FileCache<AnsweredFile>): Promise<HelperAnswered> {
+	const startedAt = Date.now();
+	cache?.keepOnly(controllers.map(answeredKey));
 	if (!paths.length && !controllers.length) return { ok: true, files: [] };
+	const kept = new Map<string, AnsweredFile>();
+	for (const controller of controllers) {
+		const hit = cache?.get(answeredKey(controller), startedAt);
+		if (hit) kept.set(answeredKey(controller), hit);
+	}
+	const asked = controllers.filter((controller) => !kept.has(answeredKey(controller)));
+	if (!paths.length && !asked.length) return { ok: true, files: controllers.map((controller) => kept.get(answeredKey(controller))!) };
 	const read = await run(config, [
 		'answered',
 		...paths.map((path) => `--questions=${path}`),
-		...controllers.flatMap((controller) => [`--workspace=${controller.workspace}`, `--hcom-name=${controller.hcomName}`])
+		...asked.flatMap((controller) => [`--workspace=${controller.workspace}`, `--hcom-name=${controller.hcomName}`])
 	]);
 	const { failure } = read;
 	const parsed = parseJsonOutput<{ files?: unknown; reason?: unknown }>(read, '輔助工具的輸出不是 JSON');
@@ -123,7 +162,20 @@ export async function readAnswered(config: BoardConfig, { paths, controllers }: 
 	if (failure || !Array.isArray(payload?.files) || !payload.files.every(isAnsweredFile)) {
 		return { ok: false, reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出缺少答過的題目' };
 	}
-	return { ok: true, files: payload.files };
+	const files: AnsweredFile[] = payload.files;
+	if (!cache) return { ok: true, files };
+	// The files asked for by path come first, in order, then those asked for by name.
+	const byPath = files.slice(0, paths.length);
+	const byName = files.slice(paths.length);
+	for (const file of byName) {
+		if (file.workspace === undefined || file.questions_path === null || file.error !== null) continue;
+		const sources = answeredFiles(file.workspace, file.questions_path);
+		if (sources) cache.set(answeredKey(file), file, sources, startedAt);
+	}
+	if (!kept.size) return { ok: true, files };
+	// In the order asked for, as one run of the helper for all of them prints them.
+	const fresh = new Map(byName.map((file) => [answeredKey(file), file]));
+	return { ok: true, files: [...byPath, ...controllers.flatMap((controller) => kept.get(answeredKey(controller)) ?? fresh.get(answeredKey(controller)) ?? [])] };
 }
 
 /** What `board answer` and `board notify` print: one JSON object with a status. */
@@ -305,25 +357,100 @@ export interface ReadLedger {
 
 type HelperLedgers = { ok: true; ledgers: Map<string, ReadLedger> } | { ok: false; reason: string };
 
+/** One controller's entry as `board ledger` prints it. */
+export type LedgerEntry = { session_id: string; ledger_path?: unknown; status?: unknown; reason?: unknown; ledger?: unknown };
+
+/** What a full read keeps of the ledgers of controllers that are not bound, and which are bound:
+ *  those are always read again. */
+export interface LedgerCache {
+	store: FileCache<LedgerEntry>;
+	bound: ReadonlySet<string>;
+}
+
+/** Row statuses whose times do not move with the clock. */
+const SETTLED_ROWS = new Set(['done', 'cancelled', 'unassigned']);
+/** Ticket step states that no longer change: a step still to come (a merge, a deploy) comes from
+ *  git or the deploy history, not from the files the entry is checked against. */
+const SETTLED_STEPS = new Set(['done', 'skipped']);
+
+/** How long a ledger that can still change without a file changing is kept: its rows and tickets
+ *  are counted to the time lat-ledger read it, and a ticket waiting for its merge or deploy learns
+ *  of it from git, so it is read again after one to two minutes. */
+const MOVING_LEDGER_MAX_AGE_MS = 2 * 60_000;
+
+/** The files a read ledger came from, when what was printed can be kept: the session record in
+ *  either place, the ledger, the problem log and each row's task card; and how long it may be kept,
+ *  shorter for one that still moves. Null for one that cannot be kept: not read, gone already, or
+ *  naming a task card by a relative path (the helper resolves it from its own folder). */
+function ledgerFiles(workspace: string, sessionId: string, entry: LedgerEntry): { files: string[]; maxAgeMs?: number } | null {
+	const ledger = entry.ledger as { problems_path?: unknown; items?: unknown; tickets?: unknown } | undefined;
+	if (entry.status !== 'ok' || typeof entry.ledger_path !== 'string' || !existsSync(entry.ledger_path)) return null;
+	if (typeof ledger?.problems_path !== 'string' || !Array.isArray(ledger.items) || !Array.isArray(ledger.tickets)) return null;
+	const items = ledger.items as { status?: unknown; card?: unknown }[];
+	const cards = items.flatMap((item) => (typeof item?.card === 'string' && item.card ? [item.card] : []));
+	if (!cards.every((card) => isAbsolute(card))) return null;
+	const tickets = ledger.tickets as { running?: unknown; times?: unknown; steps?: unknown }[];
+	const settled = (list: unknown, done: (value: { running?: unknown; state?: unknown }) => boolean) =>
+		!Array.isArray(list) || list.every((value) => typeof value === 'object' && value !== null && done(value));
+	const moving =
+		!items.every((item) => typeof item?.status === 'string' && SETTLED_ROWS.has(item.status)) ||
+		!tickets.every(
+			(ticket) =>
+				ticket?.running === false &&
+				settled(ticket.times, (segment) => segment.running === false) &&
+				settled(ticket.steps, (step) => typeof step.state === 'string' && SETTLED_STEPS.has(step.state))
+		);
+	const record = `${sessionId}.json`;
+	const files = [join(dirname(ledger.problems_path), 'sessions', record), join(workspace, '.lat', 'sessions', record), entry.ledger_path, ledger.problems_path, ...cards];
+	return moving ? { files, maxAgeMs: MOVING_LEDGER_MAX_AGE_MS } : { files };
+}
+
 /** These controllers' work ledgers, by session ID, in one run of the helper: it finds each one's
  *  ledger in its session record and reads it with `lat-ledger show --json`. The reads get half the
  *  helper's time, the rest left for it to start and print, so a ledger whose writer holds it fails
- *  alone. */
-export async function readLedgers(config: BoardConfig, controllers: { workspace: string; sessionId: string }[]): Promise<HelperLedgers> {
+ *  alone. With `cache`, a controller that is not bound and whose files have not changed is not
+ *  asked for again; what it printed last stands in. */
+export async function readLedgers(config: BoardConfig, controllers: { workspace: string; sessionId: string }[], cache?: LedgerCache): Promise<HelperLedgers> {
+	const startedAt = Date.now();
+	const keyOf = (controller: { workspace: string; sessionId: string }) => `${controller.workspace}\n${controller.sessionId}`;
+	cache?.store.keepOnly(controllers.map(keyOf));
 	if (!controllers.length) return { ok: true, ledgers: new Map() };
-	const read = await run(config, [
-		'ledger',
-		`--seconds=${config.helperTimeoutMs / 2000}`,
-		...controllers.flatMap((controller) => [`--workspace=${controller.workspace}`, `--session-id=${controller.sessionId}`])
-	]);
-	const parsed = parseJsonOutput<{ ledgers?: unknown; reason?: unknown } | null>(read, '輔助工具的輸出不是 JSON');
-	if (!parsed.ok) return parsed;
-	const entries = parsed.value?.ledgers;
-	const usable = (entry: unknown): entry is { session_id: string; ledger_path?: unknown; status?: unknown; reason?: unknown; ledger?: unknown } =>
-		typeof (entry as { session_id?: unknown })?.session_id === 'string';
-	if (read.failure || !Array.isArray(entries) || !entries.every(usable)) {
-		return { ok: false, reason: textOrNull(parsed.value?.reason) ?? read.failure ?? '輔助工具的輸出缺少總表' };
+	const kept = new Map<string, LedgerEntry>();
+	if (cache) {
+		for (const controller of controllers) {
+			const hit = cache.bound.has(controller.sessionId) ? undefined : cache.store.get(keyOf(controller), startedAt);
+			if (hit) kept.set(controller.sessionId, hit);
+		}
 	}
+	const asked = controllers.filter((controller) => !kept.has(controller.sessionId));
+	let read: LedgerEntry[] = [];
+	if (asked.length) {
+		const done = await run(config, [
+			'ledger',
+			`--seconds=${config.helperTimeoutMs / 2000}`,
+			...asked.flatMap((controller) => [`--workspace=${controller.workspace}`, `--session-id=${controller.sessionId}`])
+		]);
+		const parsed = parseJsonOutput<{ ledgers?: unknown; reason?: unknown } | null>(done, '輔助工具的輸出不是 JSON');
+		if (!parsed.ok) return parsed;
+		const entries = parsed.value?.ledgers;
+		const usable = (entry: unknown): entry is LedgerEntry => typeof (entry as { session_id?: unknown })?.session_id === 'string';
+		if (done.failure || !Array.isArray(entries) || !entries.every(usable)) {
+			return { ok: false, reason: textOrNull(parsed.value?.reason) ?? done.failure ?? '輔助工具的輸出缺少總表' };
+		}
+		read = entries;
+		if (cache) {
+			const workspaces = new Map(asked.map((controller) => [controller.sessionId, controller.workspace]));
+			for (const entry of read) {
+				const workspace = workspaces.get(entry.session_id);
+				if (workspace === undefined || cache.bound.has(entry.session_id)) continue;
+				const kept = ledgerFiles(workspace, entry.session_id, entry);
+				if (kept) cache.store.set(keyOf({ workspace, sessionId: entry.session_id }), entry, kept.files, startedAt, kept.maxAgeMs);
+			}
+		}
+	}
+	// In the order asked for, as one run of the helper for all of them prints them.
+	const fresh = new Map(read.map((entry) => [entry.session_id, entry]));
+	const entries = kept.size ? controllers.flatMap((controller) => kept.get(controller.sessionId) ?? fresh.get(controller.sessionId) ?? []) : read;
 	const views = await linkEvidence(entries.map(ledgerFrom));
 	return {
 		ok: true,

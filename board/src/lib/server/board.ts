@@ -6,7 +6,8 @@ import type { ArchivePage } from '../board/archive.ts';
 import { everyController, type BoardSnapshot, type HelperController, type InboxQuestion } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice, findDeviceById } from './devices.ts';
-import { listControllers, pruneReports, readAnswered, readLedgers, readQuestions, readUnattended, type AnsweredFile } from './helper.ts';
+import { listControllers, pruneReports, readAnswered, readLedgers, readQuestions, readUnattended, type AnsweredFile, type LedgerEntry } from './helper.ts';
+import { createFileCache } from './read-cache.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { loadDelegatedSeen, markDelegatedSeen, type DelegatedSeen } from './delegated-state.ts';
 import { delegatedOf, seenKey, withSeen } from '../board/delegated.ts';
@@ -187,6 +188,9 @@ function createBoard(): Board {
 	let revision = Date.now();
 	let lastActive: HelperController[] = [];
 	let lastAnswered: AnsweredFile[] = [];
+	// What the helper printed for controllers that are not bound, kept while their files stay the same.
+	const answeredCache = createFileCache<AnsweredFile>();
+	const ledgerCache = createFileCache<LedgerEntry>();
 	/** Session IDs in hcom's last list that could be read; null until one could. */
 	let lastRunning: Set<string> | null = null;
 	/** What the last read found; read state changes rebuild the snapshot from it. */
@@ -438,11 +442,11 @@ function createBoard(): Board {
 				const log = readLog(config, reading);
 				const bound = helper.ok ? helper.controllers : lastActive;
 				const [answered, settled, ledgers, unattended] = await Promise.all([
-					readAnswered(config, answeredSources(bound, reports.files)),
+					readAnswered(config, answeredSources(bound, reports.files), answeredCache),
 					helper.ok && !(log instanceof Error)
 						? settleAnswers(log, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
 						: null,
-					readLedgers(config, ledgerSources(bound, reports.files)),
+					readLedgers(config, ledgerSources(bound, reports.files), { store: ledgerCache, bound: new Set(bound.map((binding) => binding.session_id)) }),
 					readUnattended(config, unattendedSources(bound, reports.files, config.now()))
 				]);
 				return [helper, reports, answered, settled, log, ledgers, unattended] as const;
