@@ -1,5 +1,6 @@
 // The board's data model, shared by the server and the UI.
 import type { HerdrPlace } from './format.ts';
+import type { LaunchCard } from './launch.ts';
 import type { SwitchView } from './models.ts';
 import type { ClosedList } from './closed-agents.ts';
 import type { BoardAsk } from './board-asks.ts';
@@ -210,6 +211,9 @@ export interface BoardSnapshot {
 	/** Bound controllers whose client is closed and whose reports are all archived: off the roster,
 	 *  but controllers on the Herdr tab, opened and woken as one. */
 	offRoster: Controller[];
+	/** Controller launches not yet bound, newest first: each a card at the top of the roster until
+	 *  its controller is on it (`launchCards`). */
+	launching: LaunchCard[];
 	/** Questions and unarchived reports, in source order; the page sorts them. The inbox lists the
 	 *  questions and the unread reports; the read ones are among the processed items too. */
 	inbox: InboxItem[];

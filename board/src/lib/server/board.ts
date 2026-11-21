@@ -14,9 +14,10 @@ import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, e
 import type { UnattendedView } from '../board/unattended.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
-import { openLog, type SentLog } from './sent-log.ts';
+import { openLog, type Line, type SentLog } from './sent-log.ts';
 import { exceptionFields, log } from './log.ts';
-import { openSwitches } from './sent-views.ts';
+import { openSwitches, readLaunches } from './sent-views.ts';
+import { launchCards, type SentLaunch } from '../board/launch.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
 import { settleAnswers } from './answer.ts';
@@ -112,6 +113,9 @@ export interface Board {
 	usageStyle(): UsageStyleState;
 	/** Save the style and tell every open page. Throws, leaving the style as it was, when it cannot be saved. */
 	setUsageStyle(style: UsageStyle): UsageStyleState;
+	/** A controller launch was logged: every open page gets its roster card now, before the next
+	 *  read (#689). */
+	launched(entry: SentLaunch): void;
 	/** An unattended setting or grant was written: every open page reads the settings again, and the
 	 *  controllers' modes are read again now rather than when the file watch notices. */
 	unattendedChanged(): void;
@@ -204,6 +208,9 @@ function createBoard(): Board {
 	let lastSwitches: SwitchView[] = [];
 	/** The board asks as last read from the shared folder. */
 	let lastAsks: BoardAsk[] = [];
+	/** The sent log's launch lines as last read, with the launches logged since: the roster's
+	 *  launch cards are worked out from them at every publish. Kept when the log cannot be read. */
+	let launchLines: Line[] = [];
 	/** The ledger files the last read of the ledgers named, watched so a write to one is read in. */
 	let ledgerPaths: string[] = [];
 	/** The same for the files the controllers' unattended mode is read from. */
@@ -468,6 +475,8 @@ function createBoard(): Board {
 		try {
 			if (log instanceof Error) throw log;
 			lastSwitches = openSwitches(log.lines, config.now(), config.launchWaitMs);
+			// With the bindings this read settled: the log keeps the lines appended to it.
+			launchLines = log.lines.filter((line) => line.kind === 'launch' || line.kind === 'launch-bound' || line.kind === 'launch-followed');
 			reading.settled = settleRelaunches(board, log, lastSwitches);
 		} catch {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
@@ -572,6 +581,8 @@ function createBoard(): Board {
 			controllers: built.controllers.map((controller) => withSeen(controller, lastSeen)),
 			offRoster: built.offRoster.map((controller) => withSeen(controller, lastSeen)),
 			agents: built.agents.map((agent) => ({ ...agent, asking: agent.id !== null && asking.has(agent.id) })),
+			// At every publish, not only at a read: a starting launch turns overdue on the clock.
+			launching: launchCards(readLaunches(launchLines, now, config.launchWaitMs), everyController(built), now),
 			asks: lastAsks,
 			revision: ++revision
 		};
@@ -771,6 +782,7 @@ function createBoard(): Board {
 					revision: ++revision,
 					controllers: [],
 					offRoster: [],
+					launching: [],
 					inbox: [],
 					recordedKeys: [],
 					processedCount: 0,
@@ -824,6 +836,13 @@ function createBoard(): Board {
 			}, config.statusAfterActionMs);
 		},
 		tabMoved,
+		launched(entry) {
+			// A read under way has it already, from the log it keeps up.
+			if (!launchLines.some((line) => line.kind === 'launch' && line.id === entry.id)) launchLines = [...launchLines, entry];
+			// Nothing else changed: the last sources. Before the first read there is nothing to
+			// publish; that read brings the card.
+			if (!closed && sources) publish(sources);
+		},
 		agentActed(agentId) {
 			for (const stream of streams) stream.send('agent-action', JSON.stringify({ agentId }));
 		},

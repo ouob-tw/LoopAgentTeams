@@ -13,17 +13,27 @@
 	import EndedRoster from './EndedRoster.svelte';
 	import ExplainTip from './ExplainTip.svelte';
 	import StatusMark from './StatusMark.svelte';
+	import LaunchMark from './LaunchMark.svelte';
+	import { onMount } from 'svelte';
+	import { dismissedLaunches } from '#lib/board/launch-cards.svelte.ts';
+	import { folderName } from '#lib/board/folder-search.ts';
+	import { LAUNCH_STATE_TEXT, type LaunchCard } from '#lib/board/launch.ts';
 
 	let {
 		controllers,
+		launching = [],
 		currentId,
 		onopen,
+		onlaunch,
 		onexpand,
 		tools
 	}: {
 		controllers: Controller[];
+		/** Controllers launched and not bound yet: a mark each above the others, opening the new-controller page. */
+		launching?: LaunchCard[];
 		currentId: string | null;
 		onopen: (id: string) => void;
+		onlaunch: () => void;
 		onexpand: () => void;
 		/** Controls shown at the foot of the rail; using them does not unfold the roster. */
 		tools: Snippet;
@@ -38,6 +48,11 @@
 	/** Each controller's 代決 N, counted once per snapshot. */
 	const delegated = $derived(new Map(controllers.map((controller) => [controller.id, unseenCount(controller)])));
 
+	const launches = $derived(dismissedLaunches.shown(launching));
+	onMount(() => dismissedLaunches.load());
+	const launchLabel = (launch: LaunchCard) =>
+		`${folderName(launch.scope ?? launch.folder)}${launch.hcomName ? ` @${lastSegment(launch.hcomName)}` : ''}：${LAUNCH_STATE_TEXT[launch.state]}`;
+
 	const label = (controller: Controller) =>
 		`${controller.project} @${lastSegment(controller.hcomName)}：${STATUS_LABEL[controller.status]}` +
 		(controller.paused ? '，暫停通訊' : '') +
@@ -47,6 +62,12 @@
 
 <div class="rail">
 	<button class="grip" onclick={onexpand} aria-label="展開主控名冊" title="展開主控名冊"><PanelLeftOpen size="1.1em" /></button>
+	{#each launches as launch (launch.id)}
+		<button class="entry" data-launch={launch.id} aria-label={launchLabel(launch)} title={launchLabel(launch)} onclick={onlaunch}>
+			<LaunchMark state={launch.state} />
+		</button>
+	{/each}
+	{#if launches.length && (parts.groups.length || parts.older.length)}<hr class="sep" />{/if}
 	{#each parts.groups as group, index (group[0].id)}
 		{#if index > 0}<hr class="sep" />{/if}
 		{#each group as controller (controller.id)}

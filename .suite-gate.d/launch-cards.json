@@ -1,0 +1,34 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/launch.ts",
+        "board/src/lib/board/launch-cards.svelte.ts",
+        "board/src/lib/components/LaunchMark.svelte",
+        "board/src/lib/components/LaunchRosterCard.svelte",
+        "board/src/lib/components/Roster.svelte",
+        "board/src/lib/components/RosterRail.svelte",
+        "board/src/lib/server/board.ts",
+        "board/src/lib/server/launch.ts",
+        "board/src/routes/+page.svelte"
+      ],
+      "tests": [
+        "board/tests/unit/launch-cards.test.ts",
+        "board/tests/server/launch-cards.test.ts",
+        "board/tests/browser/launch-card-page.test.ts"
+      ]
+    },
+    {
+      "paths": ["board/tests/unit/launch-cards.test.ts"],
+      "tests": ["board/tests/unit/launch-cards.test.ts"]
+    },
+    {
+      "paths": ["board/tests/server/launch-cards.test.ts"],
+      "tests": ["board/tests/server/launch-cards.test.ts"]
+    },
+    {
+      "paths": ["board/tests/browser/launch-card-page.test.ts"],
+      "tests": ["board/tests/browser/launch-card-page.test.ts"]
+    }
+  ]
+}

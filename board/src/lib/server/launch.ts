@@ -316,6 +316,8 @@ async function attempt(
 		// What happened to the launch is what the page must show either way.
 		logError = (error as Error).message;
 	}
+	// The roster shows the controller's card from now on, not from the next read.
+	if (!agent && !logError) board.launched(entry);
 	const ok = entry.outcome !== 'failed';
 	const state = !ok ? 'failed' : entry.hcomName ? 'starting' : 'uncertain';
 	return {
