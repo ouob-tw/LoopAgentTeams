@@ -135,10 +135,10 @@ for (const page of FORMS) {
 		await type('z');
 		await Bun.sleep(100);
 		expect(await evaluate(LIST_TEXT)).toBe(NO_MATCH);
-		await until(`!!document.querySelector('.folder .note, .folder .failed')`, 'the answer for the new text');
+		await until(`!!document.querySelector('.folder-head .hint')`, 'the answer for the new text');
 		expect(await evaluate(LIST_TEXT)).toBe(NO_MATCH);
-		// What the box says about the folder stays readable under the line.
-		expect(await evaluate(`document.querySelector('#folder-list').getBoundingClientRect().bottom <= document.querySelector('.folder .note, .folder .failed').getBoundingClientRect().top`)).toBe(true);
+		// What the box says about the folder sits above the list, so the list never covers it.
+		expect(await evaluate(`document.querySelector('.folder-head .hint').getBoundingClientRect().bottom <= document.querySelector('#folder-list').getBoundingClientRect().top`)).toBe(true);
 		await retype(`${alpha}/oth`);
 		await rowsAre(['other']);
 		expect(await evaluate(`window.gone`)).toBe(0);
@@ -352,7 +352,7 @@ test.skipIf(!CHROME)('with the project list unread, a path that cannot be search
 		})()`
 	}) as { identifier: string };
 	await tab().navigate(`${fixture.url}/?launch`);
-	await until(`document.querySelector('.folder .failed')?.textContent.includes('專案清單讀取失敗')`, 'the failed project list');
+	await until(`document.querySelector('.folder .hint.failed')?.textContent.includes('專案清單讀取失敗')`, 'the failed project list');
 	await evaluate(`document.querySelector('#folder-box').focus()`);
 	await type('~/x');
 	await until(`(${LIST_TEXT}) === '讀不到資料夾清單'`, 'the failure line');

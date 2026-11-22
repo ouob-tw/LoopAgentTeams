@@ -72,6 +72,9 @@
 
 	/** How long typing pauses before the folder box is searched. */
 	const SEARCH_DELAY_MS = 120;
+	/** How long typing must stop before the git-init box may appear: past the search delay and a
+	 *  typical gap between keystrokes, so it does not blink in and out while a path is typed. */
+	const TYPING_REST_MS = 600;
 
 	$effect(() => {
 		void stamp;
@@ -256,9 +259,17 @@
 		form.gitInit = false;
 	}
 
+	/** Typing has paused long enough for the git-init box to be worth showing. */
+	let typingRested = $state(true);
+	let restTimer: ReturnType<typeof setTimeout> | undefined;
+	$effect(() => () => clearTimeout(restTimer));
+
 	function typing() {
 		form.folderEdited = true;
 		form.gitInit = false;
+		typingRested = false;
+		clearTimeout(restTimer);
+		restTimer = setTimeout(() => (typingRested = true), TYPING_REST_MS);
 		listOpen = true;
 		active = -1;
 	}
@@ -302,9 +313,19 @@
 	/** Why the folder cannot be sent as it is typed; null when it can. */
 	const folderProblem = $derived.by(() => {
 		if (form.folder.trim() === '') return '請輸入資料夾。';
-		if (form.folderPath === null) return form.list ? '請輸入完整路徑（以 / 或 ~ 開頭）。' : null;
+		if (form.folderPath === null) return form.list ? '請輸入完整路徑（/ 或 ~ 開頭）。' : null;
 		if (typed?.state === 'not-folder') return '這不是資料夾。';
-		if (typed?.state === 'missing' && typed.cannotCreate) return `這個資料夾不存在，也不能建立：${typed.cannotCreate}。`;
+		if (typed?.state === 'missing' && typed.cannotCreate) return `不存在，也不能建立：${typed.cannotCreate}。`;
+		return null;
+	});
+	/** The one thing said beside the folder label, on one line so nothing below it moves: a problem
+	 *  with the folder first, then a failed project list, then what sending will do. */
+	const hint = $derived.by((): { text: string; kind: 'failed' | 'note'; alert: boolean } | null => {
+		if (folderProblem && form.folderEdited) return { text: folderProblem, kind: 'failed', alert: false };
+		if (form.loadFailed && !form.list) return { text: '專案清單讀取失敗。', kind: 'failed', alert: true };
+		if (form.list?.projectsError) return { text: `專案清單讀取失敗：${form.list.projectsError}`, kind: 'failed', alert: true };
+		if (willCreate) return { text: `還不存在，送出時會建立${target === null ? '並 git init' : ''}。`, kind: 'note', alert: false };
+		if (searchFailed) return { text: '讀不到狀態，送出時由看板確認。', kind: 'note', alert: false };
 		return null;
 	});
 	// Until the search says how the folder stands it cannot be sent, unless the search failed:
@@ -426,7 +447,12 @@
 		}}
 	>
 		<div class="folder">
-			<label for="folder-box">資料夾</label>
+			<div class="folder-head">
+				<label for="folder-box">資料夾</label>
+				{#if hint}
+					<span class="hint {hint.kind}" role={hint.alert ? 'alert' : undefined} title={hint.text}>{hint.text}</span>
+				{/if}
+			</div>
 			<div class="combo">
 				<input
 					id="folder-box"
@@ -469,19 +495,7 @@
 					</ul>
 				{/if}
 			</div>
-			{#if form.loadFailed && !form.list}
-				<p class="failed" role="alert">專案清單讀取失敗。</p>
-			{:else if form.list?.projectsError}
-				<p class="failed" role="alert">專案清單讀取失敗：{form.list.projectsError}</p>
-			{/if}
-			{#if folderProblem && form.folderEdited}
-				<p class="failed">{folderProblem}</p>
-			{:else if willCreate}
-				<p class="note">這個資料夾還不存在，送出時會建立{target === null ? '並 git init' : ''}。</p>
-			{:else if searchFailed}
-				<p class="note">讀不到這個資料夾的狀態，送出時由看板確認。</p>
-			{/if}
-			{#if needsInit}
+			{#if needsInit && typingRested}
 				<label class="init"><input type="checkbox" bind:checked={form.gitInit} /> 不在 Git 專案裡：先 git init 再開</label>
 			{/if}
 		</div>
@@ -651,11 +665,38 @@
 		font-size: max(1.1rem, var(--min-font, 0px));
 	}
 	h3,
-	.folder > label {
+	.folder-head > label {
 		margin: 0;
 		padding: 0;
 		font-size: max(0.8rem, var(--min-font, 0px));
 		font-weight: 600;
+		color: var(--muted);
+	}
+	/* One line of fixed height: the hint sits to the right of the label and is cut short with an
+	   ellipsis rather than wrapping, so it appearing or going never moves the box below. */
+	.folder-head {
+		display: flex;
+		align-items: baseline;
+		gap: 0.6rem;
+		min-width: 0;
+		min-height: 1.4em;
+		font-size: max(0.8rem, var(--min-font, 0px));
+	}
+	.folder-head > label {
+		flex: none;
+	}
+	.hint {
+		flex: 1 1 0;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		text-align: right;
+	}
+	.hint.failed {
+		color: var(--danger);
+	}
+	.hint.note {
 		color: var(--muted);
 	}
 	.folder {
