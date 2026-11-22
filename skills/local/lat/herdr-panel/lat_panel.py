@@ -48,7 +48,8 @@ Public API used by the Textual panel and LAT controller:
   ``board_launch_args`` reads the arguments hcom stored for an agent's launch,
   read-only from hcom's own database. ``board_ledger`` reads a controller's
   work ledger through ``lat-ledger show --json``, from the path in its session
-  record. ``prune_reports`` deletes the named
+  record; ``board_ledger_rounds`` its earlier rounds' ledgers, from the record's
+  history. ``prune_reports`` deletes the named
   controller report files whose newest record is past the board's retention,
   under the same lock the turn-end hook appends with.
 
@@ -90,6 +91,7 @@ LAT record; ``ask`` reads the section from standard input without ``--file``::
   board transcript --client (claude|codex) --session-id ID [--before SEQ]
   board launch-args --session-id ID
   board ledger [--workspace ROOT --session-id ID]... [--seconds N]
+  board ledger-rounds --workspace ROOT --session-id ID [--known PATH]... [--seconds N]
   board prune-reports --reports-dir DIR --now TIME --session-id ID...
   board preauth-read [--workspace ROOT]
   board preauth-write --layer (global|project) [--workspace ROOT] --expected-sha256 HEX --changes JSON
@@ -345,6 +347,7 @@ from board import (
     board_answered,
     board_controllers,
     board_ledger,
+    board_ledger_rounds,
     board_ledgers,
     board_questions,
     board_review,
@@ -391,6 +394,9 @@ def _run_board(args):
                 raise ValueError("each --workspace needs one --session-id")
             result = {"ledgers": board_ledgers(list(zip(args.workspace, args.session_id)), args.seconds)}
             code = 0
+        elif args.board_command == "ledger-rounds":
+            result = board_ledger_rounds(args.workspace, args.session_id, args.known, args.seconds)
+            code = 0 if result["status"] == "ok" else 1
         elif args.board_command == "prune-reports":
             now = datetime.fromisoformat(args.now)
             if now.tzinfo is None:
@@ -566,6 +572,11 @@ def _build_parser():
     ledger.add_argument("--workspace", type=Path, action="append", default=[])
     ledger.add_argument("--session-id", action="append", default=[])
     ledger.add_argument("--seconds", type=float, default=LEDGERS_SECONDS)
+    ledger_rounds = board_commands.add_parser("ledger-rounds")
+    ledger_rounds.add_argument("--workspace", required=True, type=Path)
+    ledger_rounds.add_argument("--session-id", required=True)
+    ledger_rounds.add_argument("--known", action="append", default=[])
+    ledger_rounds.add_argument("--seconds", type=float, default=LEDGERS_SECONDS)
     prune = board_commands.add_parser("prune-reports")
     prune.add_argument("--reports-dir", required=True, type=Path)
     prune.add_argument("--now", required=True)

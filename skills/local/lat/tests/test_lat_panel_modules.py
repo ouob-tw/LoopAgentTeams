@@ -142,8 +142,8 @@ assert not {{'questions', 'bindings', 'board', 'lat_panel'}} & sys.modules.keys(
                     results.append(subprocess.run([sys.executable, str(script), *args],
                                                   env=env, cwd=state, capture_output=True))
                 if args == ['board', '--help']:
-                    # `board ledger` came after the split; test_lat_panel_board.py covers it.
-                    results[1].stdout = results[1].stdout.replace(b',ledger', b'')
+                    # `board ledger` and `ledger-rounds` came after the split; test_lat_panel_board.py covers them.
+                    results[1].stdout = results[1].stdout.replace(b',ledger,ledger-rounds', b'')
                     # `board preauth-*` came after the split; test_lat_preauth.py covers them.
                     results[1].stdout = results[1].stdout.replace(b',preauth-read,preauth-write', b'')
                     # `board unattended*` and `board review` came after the split; test_lat_unattended.py and the board's tests cover them.

@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ledgerFrom, type LedgerView } from '../../src/lib/board/ledger.ts';
-import { EVIDENCE_MAX_BYTES, evidenceUrl, githubBase, linkEvidence, serveEvidence } from '../../src/lib/server/ledger-evidence.ts';
+import { EVIDENCE_MAX_BYTES, evidenceUrl, forgetEvidence, githubBase, linkEvidence, serveEvidence } from '../../src/lib/server/ledger-evidence.ts';
 import { item } from '../fixtures/ledger-tickets.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'ledger-evidence-'));
@@ -90,4 +90,28 @@ test('a file larger than the cap, or one the next read no longer names, is not s
 
 	await linkEvidence([view(workspace, {})]);
 	expect(serveEvidence(report).status).toBe(404);
+});
+
+test("a read of a controller's earlier rounds keeps the board's files served beside its own (#694)", async () => {
+	const workspace = project('rounds', null);
+	const current = join(workspace, '.lat/runs/current.md');
+	const earlier = join(workspace, '.lat/runs/earlier.md');
+	writeFileSync(current, 'now');
+	writeFileSync(earlier, 'before');
+
+	await linkEvidence([view(workspace, { file: [current] })]);
+	await linkEvidence([view(workspace, { file: [earlier] })], 'rounds\nalpha');
+	expect(serveEvidence(current).status).toBe(200);
+	expect(serveEvidence(earlier).status).toBe(200);
+
+	// Each source's next read replaces only its own.
+	await linkEvidence([view(workspace, {})], 'rounds\nalpha');
+	expect(serveEvidence(earlier).status).toBe(404);
+	expect(serveEvidence(current).status).toBe(200);
+
+	// A controller gone from the board: its earlier rounds' files are no longer served.
+	await linkEvidence([view(workspace, { file: [earlier] })], 'rounds\nalpha');
+	forgetEvidence('rounds\nalpha');
+	expect(serveEvidence(earlier).status).toBe(404);
+	expect(serveEvidence(current).status).toBe(200);
 });

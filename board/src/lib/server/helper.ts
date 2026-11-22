@@ -2,8 +2,8 @@
 // and work ledger: the LAT panel helper's `board` commands.
 import { existsSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { ledgerFrom, type LedgerView } from '../board/ledger.ts';
-import { linkEvidence } from './ledger-evidence.ts';
+import { ledgerFrom, type LedgerRounds, type LedgerView } from '../board/ledger.ts';
+import { forgetEvidence, linkEvidence } from './ledger-evidence.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import type { PreauthSettings } from '../board/preauth.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
@@ -383,6 +383,16 @@ const MOVING_LEDGER_MAX_AGE_MS = 2 * 60_000;
  *  shorter for one that still moves. Null for one that cannot be kept: not read, gone already, or
  *  naming a task card by a relative path (the helper resolves it from its own folder). */
 function ledgerFiles(workspace: string, sessionId: string, entry: LedgerEntry): { files: string[]; maxAgeMs?: number } | null {
+	const kept = keptFiles(entry);
+	if (!kept) return null;
+	const record = `${sessionId}.json`;
+	const problemsPath = (entry.ledger as { problems_path: string }).problems_path;
+	return { ...kept, files: [join(dirname(problemsPath), 'sessions', record), join(workspace, '.lat', 'sessions', record), ...kept.files] };
+}
+
+/** The files one read ledger came from (the ledger, the problem log and each row's task card) and
+ *  how long it may be kept, as for `ledgerFiles`; null for one that cannot be kept. */
+function keptFiles(entry: { status?: unknown; ledger_path?: unknown; ledger?: unknown }): { files: string[]; maxAgeMs?: number } | null {
 	const ledger = entry.ledger as { problems_path?: unknown; items?: unknown; tickets?: unknown } | undefined;
 	if (entry.status !== 'ok' || typeof entry.ledger_path !== 'string' || !existsSync(entry.ledger_path)) return null;
 	if (typeof ledger?.problems_path !== 'string' || !Array.isArray(ledger.items) || !Array.isArray(ledger.tickets)) return null;
@@ -400,8 +410,7 @@ function ledgerFiles(workspace: string, sessionId: string, entry: LedgerEntry): 
 				settled(ticket.times, (segment) => segment.running === false) &&
 				settled(ticket.steps, (step) => typeof step.state === 'string' && SETTLED_STEPS.has(step.state))
 		);
-	const record = `${sessionId}.json`;
-	const files = [join(dirname(ledger.problems_path), 'sessions', record), join(workspace, '.lat', 'sessions', record), entry.ledger_path, ledger.problems_path, ...cards];
+	const files = [entry.ledger_path, ledger.problems_path, ...cards];
 	return moving ? { files, maxAgeMs: MOVING_LEDGER_MAX_AGE_MS } : { files };
 }
 
@@ -455,6 +464,83 @@ export async function readLedgers(config: BoardConfig, controllers: { workspace:
 	return {
 		ok: true,
 		ledgers: new Map(entries.map((entry, index) => [entry.session_id, { view: views[index], path: textOrNull(entry.ledger_path) }]))
+	};
+}
+
+/** One earlier round as `board ledger-rounds` prints it. */
+export type RoundEntry = { round: number; ledger_path: string; started_at?: unknown; ended_at?: unknown; status?: unknown; reason?: unknown; ledger?: unknown };
+
+/** What the earlier rounds' reads keep: each ended round's ledger by its path, and which paths
+ *  each controller's earlier rounds had at its last read. */
+export interface RoundsCache {
+	store: FileCache<RoundEntry>;
+	paths: Map<string, string[]>;
+}
+
+const roundsKey = (controller: { workspace: string; sessionId: string }) => `${controller.workspace}\n${controller.sessionId}`;
+
+/** Forget the earlier rounds, and stop serving their evidence, of every controller not among
+ *  `controllers` (those on the board now). */
+export function forgetRounds(cache: RoundsCache, controllers: { workspace: string; sessionId: string }[]): void {
+	const live = new Set(controllers.map(roundsKey));
+	for (const key of [...cache.paths.keys()]) {
+		if (live.has(key)) continue;
+		cache.paths.delete(key);
+		forgetEvidence(`rounds\n${key}`);
+	}
+	cache.store.keepOnly([...cache.paths.values()].flat());
+}
+
+/** A controller's earlier rounds, newest first, with this round's number and start: from its
+ *  session record's history, each round's ledger read with `lat-ledger show --json`. A round's
+ *  ledger whose files have not changed since it was read is not read again (the rule `readLedgers`
+ *  keeps a ledger by). */
+export async function readLedgerRounds(
+	config: BoardConfig,
+	controller: { workspace: string; sessionId: string },
+	cache: RoundsCache
+): Promise<{ ok: true; rounds: LedgerRounds } | { ok: false; reason: string }> {
+	const startedAt = Date.now();
+	const key = roundsKey(controller);
+	const known = new Map<string, RoundEntry>();
+	for (const path of cache.paths.get(key) ?? []) {
+		const hit = cache.store.get(path, startedAt);
+		if (hit) known.set(path, hit);
+	}
+	const done = await run(config, [
+		'ledger-rounds',
+		`--workspace=${controller.workspace}`,
+		`--session-id=${controller.sessionId}`,
+		`--seconds=${config.helperTimeoutMs / 2000}`,
+		...[...known.keys()].map((path) => `--known=${path}`)
+	]);
+	const parsed = parseJsonOutput<{ status?: unknown; reason?: unknown; current?: unknown; earlier?: unknown } | null>(done, '輔助工具的輸出不是 JSON');
+	if (!parsed.ok) return parsed;
+	const { current, earlier } = parsed.value ?? {};
+	const usable = (entry: unknown): entry is RoundEntry =>
+		typeof (entry as RoundEntry)?.round === 'number' && typeof (entry as RoundEntry).ledger_path === 'string';
+	const round = (current as { round?: unknown } | undefined)?.round;
+	if (parsed.value?.status !== 'ok' || typeof round !== 'number' || !Array.isArray(earlier) || !earlier.every(usable)) {
+		return { ok: false, reason: textOrNull(parsed.value?.reason) ?? done.failure ?? '輔助工具的輸出缺少輪次' };
+	}
+	const entries = earlier.map((entry) => {
+		const hit = entry.status === 'known' ? known.get(entry.ledger_path) : undefined;
+		if (hit) return { ...hit, round: entry.round, started_at: entry.started_at, ended_at: entry.ended_at };
+		if (entry.status === 'known') return { ...entry, status: 'error', reason: '這一輪的總表剛換過，下次重讀再試' };
+		const kept = keptFiles(entry);
+		if (kept) cache.store.set(entry.ledger_path, entry, kept.files, startedAt, kept.maxAgeMs);
+		return entry;
+	});
+	cache.paths.set(key, entries.map((entry) => entry.ledger_path));
+	cache.store.keepOnly([...cache.paths.values()].flat());
+	// Its own files to serve: the board's read of this round's ledgers keeps allowing theirs.
+	const views = await linkEvidence(entries.map(ledgerFrom), `rounds\n${key}`);
+	return {
+		ok: true,
+		rounds: {
+			current: { round, startedAt: textOrNull((current as { started_at?: unknown }).started_at) },
+			earlier: entries.map((entry, index) => ({ round: entry.round, startedAt: textOrNull(entry.started_at), endedAt: textOrNull(entry.ended_at), ledger: views[index] }))
+		}
 	};
 }
 

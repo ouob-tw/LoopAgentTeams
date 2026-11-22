@@ -326,6 +326,10 @@ export interface HelperPlan extends FixedOutput {
 	 *  `reason`, and `ledger_path`; a session not named has no ledger. */
 	ledgers?: Record<string, Record<string, unknown>>;
 	ledger?: FixedOutput;
+	/** What `board ledger-rounds` prints for a session, by session ID: `current` and `earlier`;
+	 *  a session not named is in its first round. */
+	rounds?: Record<string, { current: { round: number; started_at: string | null }; earlier: Record<string, unknown>[] }>;
+	'ledger-rounds'?: FixedOutput;
 }
 
 export interface Fixture {
@@ -344,7 +348,7 @@ export interface Fixture {
 	listed(): HelperController[];
 	helperCalls(): number;
 	/** The argument list of every helper call so far that ran this `board` command. */
-	helperArgs(command: 'list' | 'questions' | 'answered' | 'answer' | 'notify' | 'transcript' | 'launch-args' | 'prune-reports' | 'ledger' | 'unattended'): string[][];
+	helperArgs(command: 'list' | 'questions' | 'answered' | 'answer' | 'notify' | 'transcript' | 'launch-args' | 'prune-reports' | 'ledger' | 'ledger-rounds' | 'unattended'): string[][];
 	/** Rewrite the binding registry file, the way a controller binding or unbinding does. */
 	touchRegistry(): void;
 	report(sessionId: string, fields: Partial<Report> & { tag: Report['tag'] }): void;
