@@ -1,0 +1,19 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/automation.ts",
+        "board/src/lib/server/automation.ts",
+        "board/src/lib/components/AutomationForm.svelte",
+        "board/src/lib/components/AutomationList.svelte",
+        "board/src/lib/components/AutomationTask.svelte",
+        "board/tests/fixtures/daily-cases.ts",
+        "board/tests/fixtures/daily-before-692.json"
+      ],
+      "tests": [
+        "board/tests/unit/automation-every-n-days.test.ts",
+        "board/tests/browser/automation-every-n-days-page.test.ts"
+      ]
+    }
+  ]
+}
