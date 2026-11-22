@@ -325,7 +325,7 @@
 		form.loadFailed && !form.list ? '專案清單讀取失敗。' : form.list?.projectsError ? `專案清單讀取失敗：${form.list.projectsError}` : null
 	);
 	const hint = $derived.by((): { text: string; kind: 'failed' | 'note'; alert: boolean } | null => {
-		if (folderProblem && form.folderEdited) return { text: folderProblem, kind: 'failed', alert: false };
+		if (folderProblem && form.folderEdited) return { text: folderProblem, kind: 'failed', alert: true };
 		if (form.loadFailed && !form.list) return { text: '專案清單讀取失敗。', kind: 'failed', alert: true };
 		if (form.list?.projectsError) return { text: `專案清單讀取失敗：${form.list.projectsError}`, kind: 'failed', alert: true };
 		if (willCreate) return { text: `還不存在，送出時會建立${target === null ? '並 git init' : ''}。`, kind: 'note', alert: false };
@@ -454,9 +454,9 @@
 			<div class="folder-head">
 				<label for="folder-box">資料夾</label>
 				{#if hint}
-					<span class="hint {hint.kind}" role={hint.alert ? 'alert' : undefined} title={hint.text}>{hint.text}</span>
+					<span id="folder-hint" class="hint {hint.kind}" role={hint.alert ? 'alert' : undefined} title={hint.text}>{hint.text}</span>
 				{/if}
-				{#if projectsFailure && !hint?.alert}<span class="sr-only" role="alert">{projectsFailure}</span>{/if}
+				{#if projectsFailure && hint?.text !== projectsFailure}<span class="sr-only" role="alert">{projectsFailure}</span>{/if}
 			</div>
 			<div class="combo">
 				<input
@@ -467,6 +467,7 @@
 					aria-autocomplete="list"
 					aria-expanded={shownRows.length > 0 || emptyNote !== null}
 					aria-controls="folder-list"
+					aria-describedby={hint ? 'folder-hint' : undefined}
 					aria-activedescendant={active >= 0 && active < shownRows.length ? `folder-row-${active}` : undefined}
 					placeholder="~/專案資料夾"
 					bind:value={form.folder}

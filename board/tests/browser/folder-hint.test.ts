@@ -112,6 +112,9 @@ for (const { page, name } of FORMS) {
 				expect(shown.sameLine).toBe(true);
 				expect(shown.clear).toBe(true);
 				expect(shown.title).toContain(one.text);
+				// A failure is announced, and every hint is tied to the box it is about.
+				expect(await evaluate(`${HINT}.getAttribute('role')`)).toBe(one.failed ? 'alert' : null);
+				expect(await evaluate(`document.querySelector('#folder-box').getAttribute('aria-describedby') === ${HINT}.id`)).toBe(true);
 				// One line: no taller than the label line; the line and the field below stay put.
 				expect(await evaluate<boolean>(ONE_LINE)).toBe(true);
 				// Long or short, the hint stays inside the form's right edge.
