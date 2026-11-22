@@ -47,15 +47,18 @@ const real = (path: string) => {
 	}
 };
 
-/** The report files the latest ledger read allows, by real path. */
-let allowed = new Set<string>();
+/** The report files each kind of ledger read allows, by real path: the board's read of every
+ *  controller's ledger, and the latest read of each controller's earlier rounds. */
+const allowed = new Map<string, Set<string>>();
+/** The board's read of the controllers' ledgers. */
+export const BOARD_LEDGERS = 'board';
 
 /** Where the page opens one evidence file. */
 export const evidenceUrl = (path: string) => `/api/ledger/evidence?path=${encodeURIComponent(path)}`;
 
 /** The read ledgers with their evidence linked where it can be opened; the files linked become
- *  the only ones the evidence route serves, until the next read. */
-export async function linkEvidence(views: LedgerView[]): Promise<LedgerView[]> {
+ *  the ones the evidence route serves for this `source` of reads, until its next read. */
+export async function linkEvidence(views: LedgerView[], source = BOARD_LEDGERS): Promise<LedgerView[]> {
 	const files = new Set<string>();
 	const linked = await Promise.all(
 		views.map(async (view) => {
@@ -84,16 +87,16 @@ export async function linkEvidence(views: LedgerView[]): Promise<LedgerView[]> {
 			return { ...view, items };
 		})
 	);
-	allowed = files;
+	allowed.set(source, files);
 	return linked;
 }
 
-/** One evidence file, read-only, when the latest ledger read allows it; 404 otherwise. Text is
+/** One evidence file, read-only, when a latest ledger read allows it; 404 otherwise. Text is
  *  served as plain text, never rendered. */
 export function serveEvidence(path: string | null): Response {
 	const missing = () => new Response('not found', { status: 404 });
 	const resolved = path && !path.includes('\0') ? real(path) : null;
-	if (!resolved || !allowed.has(resolved)) return missing();
+	if (!resolved || ![...allowed.values()].some((files) => files.has(resolved))) return missing();
 	const type = typeOf(resolved);
 	if (!type) return missing();
 	let body: Buffer;

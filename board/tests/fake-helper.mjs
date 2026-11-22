@@ -17,6 +17,9 @@
 // on the test's own reports directory that the board passes it; `realPreauth` does the same for
 // `board preauth-read` and `board preauth-write`, which otherwise fail. `board ledger` prints, for each
 // session, the plan's `ledgers` entry for it (`status`, and `ledger` or `reason`), or no ledger.
+// `board ledger-rounds` prints the plan's `rounds` entry for the session (`current` and `earlier`),
+// or a first round with no earlier ones; an earlier round whose path the board names `--known` is
+// printed `status: known` without its ledger, as the real command does.
 // `board unattended` prints, for each session, the plan's `unattended` entry for it, or manual with
 // no grant; with `realUnattended` set to a Python interpreter, it, `board review` and the other unattended commands
 // run the real helper, on the files the test's environment names. With `holdOneUnattended`
@@ -232,6 +235,17 @@ function ledger() {
 	return { output: { ledgers: sessions.map((session) => ({ session_id: session, ...(plan.ledgers?.[session] ?? { status: 'none' }) })) } };
 }
 
+/** The session's planned rounds, as the real command prints them. */
+function ledgerRounds() {
+	const given = options();
+	const known = new Set(given.known ?? []);
+	const planned = plan.rounds?.[given['session-id']?.[0] ?? ''] ?? { current: { round: 1, started_at: null }, earlier: [] };
+	const earlier = planned.earlier.map((/** @type {any} */ entry) =>
+		known.has(entry.ledger_path) ? { round: entry.round, ledger_path: entry.ledger_path, started_at: entry.started_at, ended_at: entry.ended_at, status: 'known' } : entry
+	);
+	return { output: { session_id: given['session-id']?.[0], status: 'ok', ...planned, earlier } };
+}
+
 /** The real helper's `board prune-reports`, with the arguments the board gave. */
 function prune() {
 	if (!plan.realPrune) return { output: { status: 'ok', deleted: [], failed: [] } };
@@ -305,7 +319,9 @@ const act =
 							? prune
 							: command === 'ledger'
 								? ledger
-								: notify;
+								: command === 'ledger-rounds'
+									? ledgerRounds
+									: notify;
 const result = command === 'list' ? plan : (plan[command] ?? act());
 if (result.barrier) {
 	writeFileSync(result.barrier.ready, 'ready');

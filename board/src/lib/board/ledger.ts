@@ -155,6 +155,21 @@ export type LedgerView =
 			problemsPath: string | null;
 	  };
 
+/** One earlier round of a controller's LAT, as its session record lists it, with its ledger. */
+export interface LedgerRound {
+	round: number;
+	startedAt: string | null;
+	endedAt: string | null;
+	ledger: LedgerView;
+}
+
+/** A controller's rounds besides the one its page shows: this round's number and start, and the
+ *  earlier ones newest first (none for a controller in its first round). */
+export interface LedgerRounds {
+	current: { round: number; startedAt: string | null };
+	earlier: LedgerRound[];
+}
+
 /** lat-ledger's ticket states in the order it lists them. */
 const STATE_ORDER = ['in_progress', 'blocked', 'assigned', 'unassigned', 'deployed', 'merged', 'done', 'cancelled'];
 const STEP_STATES = new Set<string>(['done', 'active', 'pending', 'skipped']);
@@ -375,4 +390,26 @@ export function countsText(view: { tickets: unknown[]; counts: { label: string; 
 export function findingText(entry: FindingCount): string {
 	const severe = (['甲', '乙'] as const).filter((level) => entry.levels[level]).map((level) => `${level} ${entry.levels[level]}`);
 	return `${entry.label} ${entry.count}` + (severe.length ? `（${severe.join('、')}）` : '');
+}
+
+/** A time as a round's label writes it: `11/22 23:25`, the date left out when `sameDayAs` is on
+ *  the same day; 不明 when unknown. */
+function roundTime(iso: string | null, timeZone: string, sameDayAs: string | null = null): string {
+	if (!iso || Number.isNaN(Date.parse(iso))) return '不明';
+	const day = (value: string) => new Date(value).toLocaleDateString('zh-TW', { timeZone, month: 'numeric', day: 'numeric' });
+	const clock = new Date(iso).toLocaleTimeString('zh-TW', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+	const sameDay = sameDayAs !== null && !Number.isNaN(Date.parse(sameDayAs)) && day(sameDayAs) === day(iso) && Math.abs(Date.parse(iso) - Date.parse(sameDayAs)) < 86_400_000;
+	return sameDay ? clock : `${day(iso)} ${clock}`;
+}
+
+/** An earlier round's label: `第 1 輪（11/22 23:25–11/23 01:40）`, with its ticket count after
+ *  (`· 2 張票`) when its ledger was read. */
+export function roundLabel(round: LedgerRound, timeZone: string): { title: string; tickets: string | null } {
+	const span = `${roundTime(round.startedAt, timeZone)}–${roundTime(round.endedAt, timeZone, round.startedAt)}`;
+	return { title: `第 ${round.round} 輪（${span}）`, tickets: round.ledger.state === 'ok' ? `${round.ledger.tickets.length} 張票` : round.ledger.state === 'error' ? '讀不出來' : '尚無總表' };
+}
+
+/** This round's label once there are earlier ones: `第 2 輪（本輪，11/23 09:10 起）`. */
+export function currentRoundLabel(current: LedgerRounds['current'], timeZone: string): string {
+	return `第 ${current.round} 輪（本輪${current.startedAt ? `，${roundTime(current.startedAt, timeZone)} 起` : ''}）`;
 }

@@ -1116,5 +1116,65 @@ class LedgerTests(BoardTestCase):
         self.assertEqual(result["status"], "error")
 
 
+class LedgerRoundsTests(BoardTestCase):
+    """`board ledger-rounds`: a controller's earlier rounds from its session record's history."""
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = self.root / "project-a"
+        self.ledger = self.workspace / ".lat/ledgers/s-a-r1.json"
+
+    record = LedgerTests.record
+    ledger_tool = LedgerTests.ledger_tool
+
+    def rounds(self, *known, code=0):
+        args = ["--workspace", self.workspace, "--session-id", "s-a"]
+        for path in known:
+            args += ["--known", path]
+        return self.board("ledger-rounds", *args, code=code)
+
+    def test_earlier_rounds_newest_first_each_read_unless_known(self):
+        first, second, third = (self.workspace / f".lat/ledgers/s-a-r{n}.json" for n in (1, 2, 3))
+        for path in (first, second):
+            self.ledger = path
+            self.ledger_tool("init", "--workspace", str(self.workspace))
+        self.ledger_tool("add", "--ticket", "#302", "--stage", "impl", "--evidence", "commit")
+        self.record(ledger_path=str(third), started_at_utc="2026-11-23T03:00:00+00:00", history=[
+            {"ledger_path": str(first), "started_at_utc": "2026-11-22T01:00:00+00:00", "ended_at_utc": "2026-11-22T02:00:00+00:00"},
+            {"progress_path": "/x", "started_at_utc": "2026-11-22T02:10:00+00:00"},
+            {"ledger_path": str(second), "started_at_utc": "2026-11-22T03:00:00+00:00", "ended_at_utc": "2026-11-22T04:00:00+00:00"},
+        ])
+
+        result = self.rounds()
+
+        self.assertEqual(result["current"], {"round": 4, "started_at": "2026-11-23T03:00:00+00:00"})
+        self.assertEqual([(entry["round"], entry["ledger_path"], entry["status"]) for entry in result["earlier"]],
+                         [(3, str(second), "ok"), (1, str(first), "ok")])
+        self.assertEqual(result["earlier"][0]["ended_at"], "2026-11-22T04:00:00+00:00")
+        self.assertEqual(len(result["earlier"][0]["ledger"]["items"]), 1)
+
+        known = self.rounds(str(second))["earlier"]
+        self.assertEqual([entry["status"] for entry in known], ["known", "ok"])
+        self.assertNotIn("ledger", known[0])
+
+    def test_an_unreadable_earlier_round_is_its_own_error(self):
+        missing = self.workspace / ".lat/ledgers/s-a-r1.json"
+        self.record(ledger_path=str(self.workspace / ".lat/ledgers/s-a-r2.json"),
+                    history=[{"ledger_path": str(missing)}])
+        [entry] = self.rounds()["earlier"]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("no ledger at", entry["reason"])
+
+    def test_a_single_round_has_no_earlier_rounds(self):
+        self.record(ledger_path=str(self.ledger))
+        self.assertEqual(self.rounds()["earlier"], [])
+        # A rebound record whose history names this round's ledger again does not list it twice.
+        self.record(ledger_path=str(self.ledger), history=[{"ledger_path": str(self.ledger)}])
+        self.assertEqual(self.rounds()["earlier"], [])
+
+    def test_unreadable_record_fails(self):
+        self.assertEqual(self.rounds(code=1)["status"], "error")
+
+
 if __name__ == "__main__":
     unittest.main()

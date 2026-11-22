@@ -432,19 +432,60 @@ def board_ledger(workspace, session_id, *, deadline=None):
     path = record.get("ledger_path") if isinstance(record, dict) else None
     if not path:
         return {"session_id": session_id, "status": "none"}
-    result = {"session_id": session_id, "ledger_path": str(path)}
+    return {"session_id": session_id, "ledger_path": str(path), **_show_ledger(path, deadline)}
+
+
+def _show_ledger(path, deadline):
+    """``lat-ledger show --json`` of one ledger: ``status`` ok with ``ledger``, or error with
+    ``reason``."""
     left = LEDGER_READ_SECONDS if deadline is None else min(LEDGER_READ_SECONDS, deadline - time.monotonic())
     if left <= 0:
-        return {**result, "status": "error", "reason": _TIME_UP}
+        return {"status": "error", "reason": _TIME_UP}
     try:
         output = run_cli([sys.executable, str(LEDGER_TOOL), "show", "--json", "--ledger", str(path)],
                          timeout=left, failure="lat-ledger show")
-        return {**result, "status": "ok", "ledger": json.loads(output)}
+        return {"status": "ok", "ledger": json.loads(output)}
     except ValueError as error:
         # run_cli names the interpreter and the script path; a timeout says what it means instead.
         reason = (f"lat-ledger show 逾時（{left:.0f} 秒內沒讀完，可能正在寫入），下次重讀再試"
                   if "timed out" in str(error) else str(error))
-        return {**result, "status": "error", "reason": reason}
+        return {"status": "error", "reason": reason}
+
+
+def board_ledger_rounds(workspace, session_id, known=(), seconds=LEDGERS_SECONDS):
+    """A controller's rounds as its session record lists them: this round's number and start, and
+    each earlier round (newest first) with its number, start, end and ledger path.
+
+    Each earlier round's ledger is read with ``lat-ledger show --json`` side by side, except those
+    in ``known`` (the board keeps those it read already): ``status`` ok with ``ledger``, error with
+    ``reason``, or ``known`` unread. A round without a ledger is left out. Read-only.
+    """
+    if not _SESSION_ID.fullmatch(session_id):
+        return {"session_id": session_id, "status": "error", "reason": f"不是 session ID：{session_id}"}
+    try:
+        record = session_record(workspace, session_id)
+        if not isinstance(record, dict):
+            raise ValueError("不是 JSON 物件")
+    except (OSError, ValueError) as error:
+        return {"session_id": session_id, "status": "error", "reason": f"讀不到 session 紀錄：{error}"}
+    history = record.get("history")
+    history = [entry for entry in history if isinstance(entry, dict)] if isinstance(history, list) else []
+    current = record.get("ledger_path") or None
+    earlier = [{"round": number, "ledger_path": str(entry["ledger_path"]),
+                "started_at": entry.get("started_at_utc"), "ended_at": entry.get("ended_at_utc")}
+               for number, entry in enumerate(history, start=1)
+               if isinstance(entry.get("ledger_path"), str) and entry["ledger_path"]
+               and entry["ledger_path"] != current]
+    earlier.reverse()
+    known = {str(path) for path in known}
+    unread = [entry for entry in earlier if entry["ledger_path"] not in known]
+    reads = _side_by_side([(entry["ledger_path"], None) for entry in unread],
+                          lambda path, _, *, deadline: _show_ledger(path, deadline), seconds)
+    shown = {entry["ledger_path"]: read or {"status": "error", "reason": _TIME_UP}
+             for entry, read in zip(unread, reads)}
+    return {"session_id": session_id, "status": "ok",
+            "current": {"round": len(history) + 1, "started_at": record.get("started_at_utc")},
+            "earlier": [{**entry, **shown.get(entry["ledger_path"], {"status": "known"})} for entry in earlier]}
 
 
 def _board_answer(section, selections, text, note):

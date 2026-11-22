@@ -27,7 +27,7 @@
 	import ControllerHeader from './ControllerHeader.svelte';
 	import ControllerPreauth from './ControllerPreauth.svelte';
 	import DelegatedCards from './DelegatedCards.svelte';
-	import LedgerBlock from './LedgerBlock.svelte';
+	import LedgerTab from './LedgerTab.svelte';
 	import PendingQuestions from './PendingQuestions.svelte';
 	import RecordTabs from './RecordTabs.svelte';
 	import ReportList from './ReportList.svelte';
@@ -204,7 +204,7 @@
 		{:else if id === 'reports'}
 			<ReportList {reports} {onopen} />
 		{:else if id === 'ledger'}
-			<LedgerBlock ledger={controller.ledger} />
+			<LedgerTab {controller} active={tab === 'ledger'} />
 		{:else if id === 'sent'}
 			<SentLog {controller} onjump={jump} />
 		{:else if id === 'preauth'}
