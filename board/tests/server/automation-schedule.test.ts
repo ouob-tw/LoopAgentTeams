@@ -359,6 +359,36 @@ test('weekly and daily: the same rules in their own periods', async () => {
 	expect((await ended(weekly.id, 3))[0]).toMatchObject({ trigger: 'auto', period: '2026-W11-16' });
 }, 60_000);
 
+test('every 2 days (#692): one try on each block’s first day only, none before the start date, an untried first day is missed', async () => {
+	await open(tpe(2026, 11, 20, 12));
+	// Starts on Sunday 11/22: nothing before it, and Saturday is not a missed period.
+	const two = await create(commandTask({ type: 'daily', everyDays: 2, startDate: '2026-11-22' }, 'exit 1', { name: '每兩天', time: '07:00' }));
+	const gone = await create(commandTask({ type: 'daily', everyDays: 2, startDate: '2026-11-22' }, 'echo ok', { name: '每兩天錯過', time: '23:50' }));
+	expect((await viewOf(two.id)).nextAt).toBe(tpe(2026, 11, 22, 7));
+	await at(tpe(2026, 11, 21, 12));
+	expect((await viewOf(two.id)).runs).toEqual([]);
+	// The first day: one try, which fails; later that day and all the next day, no more.
+	await at(tpe(2026, 11, 22, 7));
+	expect((await ended(two.id, 1))[0]).toMatchObject({ trigger: 'auto', status: 'failed', period: '2026-11-22' });
+	await at(tpe(2026, 11, 22, 18));
+	await at(tpe(2026, 11, 23, 7, 30));
+	expect((await viewOf(two.id)).runs).toHaveLength(1);
+	expect((await viewOf(two.id)).state).toBe('failed');
+	expect((await viewOf(two.id)).nextAt).toBe(tpe(2026, 11, 24, 7));
+	// The other one's first day passed with the board up but before its 23:50: the window ended at
+	// midnight untried, so 11/22 is missed, once.
+	expect((await viewOf(gone.id)).missed).toEqual([{ period: '2026-11-22', from: tpe(2026, 11, 22, 0), to: tpe(2026, 11, 23, 0), recordedAt: expect.any(Number) }]);
+	expect(missedLogs(gone.id)).toHaveLength(1);
+	// The next block: fixed, it succeeds on its first day; the block is done.
+	await send(`/api/automation/${two.id}`, 'PUT', commandTask(two.schedule, 'echo ok', { name: two.name, time: '07:00' }));
+	await at(tpe(2026, 11, 24, 7));
+	expect((await ended(two.id, 2))[0]).toMatchObject({ trigger: 'auto', status: 'success', period: '2026-11-24' });
+	await at(tpe(2026, 11, 25, 9));
+	expect((await viewOf(two.id)).state).toBe('done');
+	expect((await viewOf(two.id)).runs).toHaveLength(2);
+	expect((await viewOf(two.id)).nextAt).toBe(tpe(2026, 11, 26, 7));
+}, 60_000);
+
 test('a try that comes due while the task still runs is skipped and recorded, once', async () => {
 	await open(tpe(2026, 11, 2, 9, 59));
 	const task = await create(commandTask({ type: 'monthly', fromDay: 1, toDay: 5 }, 'sleep 3; echo ok'));

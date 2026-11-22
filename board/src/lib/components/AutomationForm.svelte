@@ -1,6 +1,7 @@
 <script lang="ts">
 	// Adding or editing a task. The schedule type shows only its own fields: a month's days, a
-	// week's days (Monday to Sunday, never past Sunday) or nothing for every day. A command and an
+	// week's days (Monday to Sunday, never past Sunday) or every how many days, with the day the
+	// blocks count from once that is 2 or more (#692). A command and an
 	// agent task each show their own fields. The board checks everything on saving and answers
 	// field by field; each answer shows under its field and nothing is written.
 	import X from '@lucide/svelte/icons/x';
@@ -8,6 +9,8 @@
 	import {
 		AGENT_EFFORTS,
 		DEFAULT_REVIEW_MODEL,
+		dateOf,
+		everyDaysOf,
 		grantHours,
 		defaultReviewClient,
 		EFFORT_TEXT,
@@ -32,6 +35,11 @@
 	let toDay = $state(String(from?.schedule.type === 'monthly' ? from.schedule.toDay : 5));
 	let fromWeekday = $state(from?.schedule.type === 'weekly' ? from.schedule.fromWeekday : 1);
 	let toWeekday = $state(from?.schedule.type === 'weekly' ? from.schedule.toWeekday : 5);
+	let everyDays = $state(String(from?.schedule.type === 'daily' ? everyDaysOf(from.schedule) : 1));
+	// A new every-N-days schedule counts from today, as Asia/Taipei reads it.
+	let startDate = $state((from?.schedule.type === 'daily' ? from.schedule.startDate : undefined) ?? dateOf(Date.now()));
+	/** The start date box shows while N reads as 2 or more, or as anything that is not 1. */
+	const counted = $derived(everyDays.trim() !== '1');
 	let time = $state(from?.time ?? '09:00');
 	let limitMinutes = $state(String(from?.limitMinutes ?? 60));
 	let kind = $state<'command' | 'agent'>(from?.kind ?? 'command');
@@ -77,7 +85,7 @@
 	const TYPES: { type: ScheduleType; text: string }[] = [
 		{ type: 'monthly', text: '每月' },
 		{ type: 'weekly', text: '每週' },
-		{ type: 'daily', text: '每天' }
+		{ type: 'daily', text: '每 N 天' }
 	];
 	const WEEKDAYS = [1, 2, 3, 4, 5, 6, 7] as const;
 
@@ -96,7 +104,7 @@
 		event.preventDefault();
 		saving = true;
 		failure = null;
-		const schedule = type === 'monthly' ? { type, fromDay, toDay } : type === 'weekly' ? { type, fromWeekday, toWeekday } : { type };
+		const schedule = type === 'monthly' ? { type, fromDay, toDay } : type === 'weekly' ? { type, fromWeekday, toWeekday } : { type, everyDays, ...(counted ? { startDate } : {}) };
 		const body = {
 			name,
 			schedule,
@@ -148,7 +156,17 @@
 				{#each WEEKDAYS as day (day)}<option value={day}>星期{weekdayName(day)}</option>{/each}
 			</select>
 		{:else}
-			<span>每天</span>
+			<span class="at">
+				<span>每</span>
+				<input class="num" name="everyDays" type="text" inputmode="numeric" aria-label="每幾天" bind:value={everyDays} aria-invalid={!!errors.everyDays} />
+				<span>天</span>
+			</span>
+			{#if counted}
+				<span class="at apart">
+					<span>起算日</span>
+					<input class="date" name="startDate" type="text" inputmode="numeric" aria-label="從哪天起算" placeholder="2026-11-22" bind:value={startDate} aria-invalid={!!errors.startDate} />
+				</span>
+			{/if}
 		{/if}
 		<!-- The label and its box wrap together. -->
 		<span class="at">
@@ -158,6 +176,8 @@
 	</div>
 	{@render error('days')}
 	{@render error('weekdays')}
+	{@render error('everyDays')}
+	{@render error('startDate')}
 	{@render error('schedule')}
 	{@render error('time')}
 	<p class="fixed">這期成功後就不再跑。</p>
@@ -348,6 +368,13 @@
 	.row input.clock,
 	input.clock {
 		width: 7rem;
+	}
+	.row input.date {
+		width: 9.5rem;
+	}
+	/* 天 and 起算日 side by side read as one word without a wider gap. */
+	.row .apart {
+		margin-inline-start: 0.5rem;
 	}
 	.at {
 		display: inline-flex;

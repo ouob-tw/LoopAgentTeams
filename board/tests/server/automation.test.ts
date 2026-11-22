@@ -125,6 +125,47 @@ test('every wrong field is answered by name and nothing is written', async () =>
 	expect(taskFiles()).toEqual(before);
 });
 
+test('every N days (#692): N and the start date are checked, N = 1 is saved as plain every day, an old daily file still reads', async () => {
+	const before = taskFiles();
+	const errorsOf = async (schedule: unknown) => {
+		const response = await send('/api/automation', 'POST', commandTask({ schedule }));
+		expect(response.status).toBe(400);
+		return (await response.json()).errors;
+	};
+	for (const everyDays of [0, 366, 1.5, '2.5', '', 'x', -2, null]) expect(Object.keys(await errorsOf({ type: 'daily', everyDays, startDate: '2026-11-22' }))).toEqual(['everyDays']);
+	expect((await errorsOf({ type: 'daily', everyDays: 0 })).everyDays).toBe('天數要填 1 到 365 的整數');
+	expect(await errorsOf({ type: 'daily', everyDays: 2 })).toEqual({ startDate: '請填從哪天起算' });
+	expect(await errorsOf({ type: 'daily', everyDays: 2, startDate: '2026/11/22' })).toEqual({ startDate: '起算日請寫成 YYYY-MM-DD，例如 2026-11-22' });
+	expect(await errorsOf({ type: 'daily', everyDays: '7', startDate: '2027-02-29' })).toEqual({ startDate: '沒有這一天：2027-02-29' });
+	expect(await errorsOf({ type: 'daily', everyDays: 2, startDate: '2026-11-31' })).toEqual({ startDate: '沒有這一天：2026-11-31' });
+	expect(taskFiles()).toEqual(before);
+
+	const two = await create(commandTask({ name: '每兩天', schedule: { type: 'daily', everyDays: '2', startDate: ' 2026-11-22 ' }, time: '07:00' }));
+	expect(two.schedule).toEqual({ type: 'daily', everyDays: 2, startDate: '2026-11-22' });
+	expect(JSON.parse(readFileSync(join(automationDir(), `${two.id}.json`), 'utf8')).schedule).toEqual({ type: 'daily', everyDays: 2, startDate: '2026-11-22' });
+	// The board's clock is 2026-11-20 01:00: 11/22 is ahead, the first try is on it.
+	expect((await viewOf(two.id)).nextAt).toBe(Date.UTC(2026, 10, 21, 23));
+	const one = await create(commandTask({ name: '每一天', schedule: { type: 'daily', everyDays: 1, startDate: '2026-11-22' } }));
+	expect(JSON.parse(readFileSync(join(automationDir(), `${one.id}.json`), 'utf8')).schedule).toEqual({ type: 'daily' });
+
+	// A task file from before #692: no N. Read as every day, listed, not broken.
+	await fixture.stop();
+	writeFileSync(join(automationDir(), 'olddaily01.json'), JSON.stringify({ ...commandTask({ name: '舊的每天', schedule: { type: 'daily' }, time: '03:00' }), id: 'olddaily01', paused: false, createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z' }));
+	await fixture.start();
+	const after = await snapshot();
+	expect(after.broken.some((entry) => entry.file === 'olddaily01.json')).toBe(false);
+	expect(after.tasks.find((view) => view.task.id === 'olddaily01')!.task.schedule).toEqual({ type: 'daily' });
+	// It keeps working as every day: the first check after the restart tries today's period (11/20 by
+	// the board's clock) at once, and the next try is 11/21 03:00 in Taipei.
+	const old = await eventually(async () => {
+		const view = await viewOf('olddaily01');
+		return view.runs[0] && view.runs[0].status !== 'running' ? view : undefined;
+	}, 10_000, 'the old task to try today');
+	expect(old.runs[0]).toMatchObject({ trigger: 'auto', period: '2026-11-20', status: 'success' });
+	expect(old.nextAt).toBe(Date.UTC(2026, 10, 20, 19));
+	for (const id of [two.id, one.id, 'olddaily01']) expect((await send(`/api/automation/${id}`, 'DELETE')).status).toBe(204);
+});
+
 test('an agent task keeps its fields', async () => {
 	const task = await create({
 		...commandTask({ name: '客發展覽維護報告', schedule: { type: 'weekly', fromWeekday: 1, toWeekday: 3 }, time: '09:00' }),
