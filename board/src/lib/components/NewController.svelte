@@ -320,6 +320,10 @@
 	});
 	/** The one thing said beside the folder label, on one line so nothing below it moves: a problem
 	 *  with the folder first, then a failed project list, then what sending will do. */
+	/** A failed project list, said for screen readers whenever another hint took the visible slot. */
+	const projectsFailure = $derived(
+		form.loadFailed && !form.list ? '專案清單讀取失敗。' : form.list?.projectsError ? `專案清單讀取失敗：${form.list.projectsError}` : null
+	);
 	const hint = $derived.by((): { text: string; kind: 'failed' | 'note'; alert: boolean } | null => {
 		if (folderProblem && form.folderEdited) return { text: folderProblem, kind: 'failed', alert: false };
 		if (form.loadFailed && !form.list) return { text: '專案清單讀取失敗。', kind: 'failed', alert: true };
@@ -452,6 +456,7 @@
 				{#if hint}
 					<span class="hint {hint.kind}" role={hint.alert ? 'alert' : undefined} title={hint.text}>{hint.text}</span>
 				{/if}
+				{#if projectsFailure && !hint?.alert}<span class="sr-only" role="alert">{projectsFailure}</span>{/if}
 			</div>
 			<div class="combo">
 				<input
@@ -692,6 +697,14 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		text-align: right;
+	}
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
 	.hint.failed {
 		color: var(--danger);

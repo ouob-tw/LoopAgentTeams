@@ -37,6 +37,9 @@ async function open(page: string, size = SIZES[1]!, init?: string) {
 	await tab().navigate(`${fixture.url}/${page}`);
 	await tab().boardStarted();
 	await until(`!!document.querySelector('#folder-box')`, 'the form');
+	// Typing before the page has taken over would be wiped when it does: wait for its own default folder.
+	if (!init) await until(`!!document.querySelector('#folder-box').value`, 'the page hydrated');
+	else await Bun.sleep(500);
 	if (added) await tab().send('Page.removeScriptToEvaluateOnNewDocument', { identifier: added.identifier });
 	await evaluate(`document.querySelector('#folder-box').focus()`);
 }
@@ -111,6 +114,8 @@ for (const { page, name } of FORMS) {
 				expect(shown.title).toContain(one.text);
 				// One line: no taller than the label line; the line and the field below stay put.
 				expect(await evaluate<boolean>(ONE_LINE)).toBe(true);
+				// Long or short, the hint stays inside the form's right edge.
+				expect(await evaluate<boolean>(`${HINT}.getBoundingClientRect().right <= document.querySelector('.folder').getBoundingClientRect().right + 0.5`)).toBe(true);
 				expect(await evaluate(HEAD)).toEqual(head);
 				expect(await evaluate<number>(BELOW)).toBe(below);
 				await shot(tab(), `${name}-${size.width}-${one.shot}`);
