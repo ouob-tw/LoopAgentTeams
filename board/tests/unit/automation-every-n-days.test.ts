@@ -129,3 +129,20 @@ test('dates: real days only', () => {
 	for (const bad of ['2027-02-29', '2026-13-01', '2026-11-31', '2026-00-10', '2026-1-5', '20261122', '', '0099-01-01']) expect(parseDate(bad)).toBeNull();
 	expect(dateOf(Date.UTC(2026, 10, 22, 16, 30))).toBe('2026-11-23');
 });
+
+test('before a start date ahead, runs under an earlier schedule are not this period’s: waiting, not done (#692 QA)', () => {
+	// An every-day task that succeeded on 11/23, then changed to every 2 days from 12/01.
+	const legacy = [run({ period: '2026-11-23', startedAt: at(2026, 11, 23, 0, 5) })];
+	const two = task(every(2, '2026-12-01'));
+	expect(periodOf(two.schedule, at(2026, 11, 23, 9))).toBe('2026-11-23');
+	expect(taskState(two, legacy, at(2026, 11, 23, 9))).toBe('waiting');
+	expect(taskState(two, [run({ period: '2026-11-23', startedAt: at(2026, 11, 23, 0, 5), status: 'failed' })], at(2026, 11, 23, 9))).toBe('waiting');
+	expect(nextAutoAt(two, legacy, at(2026, 11, 23, 9))).toBe(at(2026, 12, 1, 7));
+	// Still shown: a run going on, paused, and an open missed period.
+	expect(taskState(two, [run({ status: 'running', startedAt: at(2026, 11, 23, 8) })], at(2026, 11, 23, 9))).toBe('running');
+	expect(taskState({ ...two, paused: true }, legacy, at(2026, 11, 23, 9))).toBe('paused');
+	const missed = [{ period: '2026-11-21', from: at(2026, 11, 21, 0), to: at(2026, 11, 22, 0), recordedAt: at(2026, 11, 22, 0) }];
+	expect(taskState(two, [], at(2026, 11, 23, 9), missed)).toBe('missed');
+	// From the start date the task's own periods count again.
+	expect(taskState(two, [...legacy, run({ period: '2026-12-01', startedAt: at(2026, 12, 1, 7) })], at(2026, 12, 1, 9))).toBe('done');
+});

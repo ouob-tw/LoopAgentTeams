@@ -354,6 +354,12 @@ function blocksStart(schedule: AutomationSchedule): number | null {
 	return parseDate(schedule.startDate);
 }
 
+/** Whether an every-N-days schedule has begun by `time`: false only before its start date. */
+export function scheduleStarted(schedule: AutomationSchedule, time: number): boolean {
+	const start = blocksStart(schedule);
+	return start === null || startOf(dayOf(time)) >= start;
+}
+
 /** The N-day block a time falls in: its first day's first moment, and whether the block starts on
  *  or after the start date (blocks before it are counted back from it and have no run window). */
 function blockOf(schedule: DailySchedule, time: number): { first: number; started: boolean } {
@@ -532,6 +538,9 @@ export function taskState(task: AutomationTask, runs: readonly AutomationRun[], 
 	if (runs.some((run) => openAsk(run))) return 'asking';
 	if (runs.some(isOpen)) return 'running';
 	if (task.paused) return 'paused';
+	// Before an every-N-days start date no period of it has begun: runs made before (under an
+	// earlier schedule) are not its own, whatever their period is called (#692 QA).
+	if (!scheduleStarted(task.schedule, now)) return openMissed(missed, runs).length ? 'missed' : 'waiting';
 	const period = periodOf(task.schedule, now);
 	const own = runs.filter((run) => run.period === period && run.trigger !== 'preview' && run.status !== 'skipped');
 	if (own.some(succeeded)) return 'done';

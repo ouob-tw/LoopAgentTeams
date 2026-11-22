@@ -139,45 +139,44 @@
 			<button type="button" data-schedule={option.type} aria-pressed={type === option.type} onclick={() => (type = option.type)}>{option.text}</button>
 		{/each}
 	</div>
-	<div class="row">
-		{#if type === 'monthly'}
-			<span>每月</span>
-			<input class="num" name="fromDay" type="text" inputmode="numeric" aria-label="從幾號" bind:value={fromDay} aria-invalid={!!errors.days} />
-			<span>到</span>
-			<input class="num" name="toDay" type="text" inputmode="numeric" aria-label="到幾號" bind:value={toDay} aria-invalid={!!errors.days} />
-			<span>日</span>
-		{:else if type === 'weekly'}
-			<span>每週</span>
-			<select name="fromWeekday" aria-label="從星期幾" bind:value={fromWeekday} aria-invalid={!!errors.weekdays}>
-				{#each WEEKDAYS as day (day)}<option value={day}>星期{weekdayName(day)}</option>{/each}
-			</select>
-			<span>到</span>
-			<select name="toWeekday" aria-label="到星期幾" bind:value={toWeekday} aria-invalid={!!errors.weekdays}>
-				{#each WEEKDAYS as day (day)}<option value={day}>星期{weekdayName(day)}</option>{/each}
-			</select>
-		{:else}
-			<span class="at">
-				<span>每</span>
-				<input class="num" name="everyDays" type="text" inputmode="numeric" aria-label="每幾天" bind:value={everyDays} aria-invalid={!!errors.everyDays} />
-				<span>天</span>
-			</span>
-			{#if showStartDate}
-				<span class="at apart">
-					<span>起算日</span>
-					<input class="date" name="startDate" type="text" inputmode="numeric" aria-label="從哪天起算" placeholder="2026-11-22" bind:value={startDate} aria-invalid={!!errors.startDate} />
-				</span>
+	<div class="when">
+		<div class="row" class:fields={type === 'daily'}>
+			{#if type === 'monthly'}
+				<span>每月</span>
+				<input class="num" name="fromDay" type="text" inputmode="numeric" aria-label="從幾號" bind:value={fromDay} aria-invalid={!!errors.days} />
+				<span>到</span>
+				<input class="num" name="toDay" type="text" inputmode="numeric" aria-label="到幾號" bind:value={toDay} aria-invalid={!!errors.days} />
+				<span>日</span>
+			{:else if type === 'weekly'}
+				<span>每週</span>
+				<select name="fromWeekday" aria-label="從星期幾" bind:value={fromWeekday} aria-invalid={!!errors.weekdays}>
+					{#each WEEKDAYS as day (day)}<option value={day}>星期{weekdayName(day)}</option>{/each}
+				</select>
+				<span>到</span>
+				<select name="toWeekday" aria-label="到星期幾" bind:value={toWeekday} aria-invalid={!!errors.weekdays}>
+					{#each WEEKDAYS as day (day)}<option value={day}>星期{weekdayName(day)}</option>{/each}
+				</select>
+			{:else}
+				<!-- A grid, so each box's answer starts right under that box whatever the width. -->
+				<span class="l-every">每</span>
+				<input class="num b-every" name="everyDays" type="text" inputmode="numeric" aria-label="每幾天" bind:value={everyDays} aria-invalid={!!errors.everyDays} />
+				<span class="u-every">天</span>
+				{@render error('everyDays')}
+				{#if showStartDate}
+					<span class="l-start">起算日</span>
+					<input class="date b-start" name="startDate" type="text" inputmode="numeric" aria-label="從哪天起算" placeholder="2026-11-22" bind:value={startDate} aria-invalid={!!errors.startDate} />
+					{@render error('startDate')}
+				{/if}
 			{/if}
-		{/if}
-		<!-- The label and its box wrap together. -->
-		<span class="at">
-			<span>時間</span>
-			<input class="clock" name="time" type="text" inputmode="numeric" aria-label="時間" placeholder="09:30" bind:value={time} aria-invalid={!!errors.time} />
-		</span>
+			<!-- The label and its box wrap together. -->
+			<span class="at">
+				<span class="l-time">時間</span>
+				<input class="clock b-time" name="time" type="text" inputmode="numeric" aria-label="時間" placeholder="09:30" bind:value={time} aria-invalid={!!errors.time} />
+			</span>
+		</div>
 	</div>
 	{@render error('days')}
 	{@render error('weekdays')}
-	{@render error('everyDays')}
-	{@render error('startDate')}
 	{@render error('schedule')}
 	{@render error('time')}
 	<p class="fixed">這期成功後就不再跑。</p>
@@ -372,9 +371,67 @@
 	.row input.date {
 		width: 9.5rem;
 	}
+	/* Every N days: one line of label and box pairs, each answer under its own box (#692 QA); on a
+	   narrow column one pair a line, the boxes lined up. */
+	.when {
+		container-type: inline-size;
+	}
+	.row.fields {
+		display: grid;
+		grid-template-columns: repeat(7, auto) 1fr;
+		justify-content: start;
+		gap: 0.25rem 0.5rem;
+	}
+	.fields .at {
+		display: contents;
+	}
+	.fields > :not(.error),
+	.fields .at > * {
+		grid-row: 1;
+	}
+	.fields .error {
+		grid-row: 2;
+		margin: 0;
+	}
+	.fields [data-error='everyDays'] {
+		grid-column: 2 / -1;
+	}
+	.fields [data-error='startDate'] {
+		grid-column: 5 / -1;
+	}
 	/* 天 and 起算日 side by side read as one word without a wider gap. */
-	.row .apart {
+	.fields .l-start {
 		margin-inline-start: 0.5rem;
+	}
+	@container (width < 32rem) {
+		.row.fields {
+			grid-template-columns: auto auto auto 1fr;
+		}
+		.fields .l-start,
+		.fields .l-time {
+			grid-column: 1;
+			margin: 0;
+		}
+		.fields .b-start,
+		.fields .b-time {
+			grid-column: 2 / -1;
+			justify-self: start;
+		}
+		.fields [data-error='everyDays'] {
+			grid-row: 2;
+		}
+		.fields .l-start,
+		.fields .b-start {
+			grid-row: 3;
+		}
+		.fields [data-error='startDate'] {
+			grid-row: 4;
+			grid-column: 2 / -1;
+		}
+		.fields .l-time,
+		.fields .b-time {
+			grid-row: 5;
+		}
 	}
 	.at {
 		display: inline-flex;

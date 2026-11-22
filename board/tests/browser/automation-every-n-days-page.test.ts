@@ -76,12 +76,38 @@ const type = (selector: string, value: string) =>
 const text = (selector: string) => tab.eval<string>(`document.querySelector(${JSON.stringify(selector)})?.innerText ?? ''`);
 const has = (selector: string) => tab.eval<boolean>(`!!document.querySelector(${JSON.stringify(selector)})`);
 const fits = () => tab.eval<boolean>(FITS);
-/** Each label sits on the same line as its box: their middles less than 10px apart. */
-const besideBox = (name: string) =>
-	tab.eval<number>(`(() => { const box = document.querySelector('.detail form [name=${name}]'); const group = box.closest('.at'); return Math.max(...[...group.children].map((child) => { const a = child.getBoundingClientRect(), b = box.getBoundingClientRect(); return Math.abs((a.top + a.bottom) / 2 - (b.top + b.bottom) / 2); })); })()`);
-/** How far below the bottom of the row of fields an error starts; negative when it is not under it. */
-const underRow = (field: string) =>
-	tab.eval<number>(`(() => { const row = document.querySelector('.detail form .row').getBoundingClientRect(); const error = document.querySelector('.detail form [data-error=${field}]').getBoundingClientRect(); return error.top - row.bottom; })()`);
+/** How far a label's middle is from its box's: under 10px is on the same line. */
+const besideBox = (name: string, label: string) =>
+	tab.eval<number>(`(() => { const a = document.querySelector('.detail form ${label}').getBoundingClientRect(); const b = document.querySelector('.detail form [name=${name}]').getBoundingClientRect(); return Math.abs((a.top + a.bottom) / 2 - (b.top + b.bottom) / 2); })()`);
+/** Where an error sits against its own box (#692 QA: the start date's answer began under the N box):
+ *  how far below the box it starts, and how far its left edge is from the box's. */
+const underBox = (field: string) =>
+	tab.eval<{ below: number; offset: number }>(`(() => { const box = document.querySelector('.detail form [name=${field}]').getBoundingClientRect(); const error = document.querySelector('.detail form [data-error=${field}]').getBoundingClientRect(); return { below: error.top - box.bottom, offset: Math.abs(error.left - box.left) }; })()`);
+/** The error sits right under its own box: starting below it within 12px, its left edge on the box's within 4px. */
+async function expectUnderBox(field: string) {
+	const { below, offset } = await underBox(field);
+	expect(below).toBeGreaterThanOrEqual(0);
+	expect(below).toBeLessThan(12);
+	expect(offset).toBeLessThan(4);
+}
+
+/** An answer does not move the row (#692 QA: a long one widened its field, opening a gap after 天 and
+ *  pushing 時間 to the next line). At 1280 the boxes stay on one line with 起算日 close after 天; on a
+ *  phone each pair has its own line, the boxes lined up on one left edge. */
+async function expectRowKept(width: number) {
+	const box = (selector: string) => tab.eval<{ left: number; right: number; middle: number }>(`(() => { const r = document.querySelector('.detail form ${selector}').getBoundingClientRect(); return { left: r.left, right: r.right, middle: (r.top + r.bottom) / 2 }; })()`);
+	const [every, unit, start, startBox, time] = await Promise.all(['[name=everyDays]', '.u-every', '.l-start', '[name=startDate]', '[name=time]'].map(box));
+	// 天 stays right after its box.
+	expect(unit.left - every.right).toBeLessThan(16);
+	if (width >= 1000) {
+		expect(Math.abs(time.middle - every.middle)).toBeLessThan(10);
+		expect(Math.abs(startBox.middle - every.middle)).toBeLessThan(10);
+		expect(start.left - unit.right).toBeLessThan(24);
+	} else {
+		expect([Math.abs(startBox.left - every.left), Math.abs(time.left - every.left)].every((gap) => gap < 2)).toBe(true);
+		expect(startBox.middle - every.middle).toBeGreaterThan(20);
+	}
+}
 
 for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: an old every-day task opens with N = 1; N = 2 adds the start date; wrong values are answered under the row; saved it reads 每 2 天 07:00`, async () => {
@@ -102,9 +128,10 @@ for (const width of [1280, 390]) {
 		await type('.detail form [name=everyDays]', '2');
 		await tab.until(`!!document.querySelector('.detail form [name=startDate]')`, 'the start date box');
 		expect(await tab.eval(`document.querySelector('.detail form [name=startDate]').value`)).toBe(dateOf(Date.now()));
-		expect(await besideBox('everyDays')).toBeLessThan(10);
-		expect(await besideBox('startDate')).toBeLessThan(10);
-		expect(await besideBox('time')).toBeLessThan(10);
+		expect(await besideBox('everyDays', '.l-every')).toBeLessThan(10);
+		expect(await besideBox('everyDays', '.u-every')).toBeLessThan(10);
+		expect(await besideBox('startDate', '.l-start')).toBeLessThan(10);
+		expect(await besideBox('time', '.l-time')).toBeLessThan(10);
 		expect(await tab.eval<string[]>(`[...document.querySelectorAll('.detail form .row input')].filter((box) => box.getBoundingClientRect().height < 44 || box.scrollWidth > box.clientWidth + 1).map((box) => box.name)`)).toEqual([]);
 		// The date fits its box whole.
 		expect(await tab.eval<boolean>(`(() => { const box = document.querySelector('.detail form [name=startDate]'); const probe = document.createElement('span'); probe.style.font = getComputedStyle(box).font; probe.textContent = '2026-11-22'; document.body.append(probe); const wide = probe.getBoundingClientRect().width; probe.remove(); const style = getComputedStyle(box); return wide <= box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight); })()`)).toBe(true);
@@ -119,8 +146,8 @@ for (const width of [1280, 390]) {
 		await tab.until(`!!document.querySelector('.detail form [data-error="everyDays"]')`, 'the N error');
 		expect(await text('.detail form [data-error="everyDays"]')).toBe('天數要填 1 到 365 的整數');
 		expect(await tab.eval(`document.querySelector('.detail form [name=everyDays]').getAttribute('aria-invalid')`)).toBe('true');
-		expect(await underRow('everyDays')).toBeGreaterThanOrEqual(0);
-		expect(await underRow('everyDays')).toBeLessThan(12);
+		await expectUnderBox('everyDays');
+		await expectRowKept(width);
 		await shot(tab, `${width}-3-error-every-days`, { box: '.detail form .row' });
 		await type('.detail form [name=everyDays]', '2');
 		await type('.detail form [name=startDate]', '2027-02-29');
@@ -128,8 +155,8 @@ for (const width of [1280, 390]) {
 		await tab.until(`!!document.querySelector('.detail form [data-error="startDate"]')`, 'the date error');
 		expect(await has('.detail form [data-error="everyDays"]')).toBe(false);
 		expect(await text('.detail form [data-error="startDate"]')).toBe('沒有這一天：2027-02-29');
-		expect(await underRow('startDate')).toBeGreaterThanOrEqual(0);
-		expect(await underRow('startDate')).toBeLessThan(12);
+		await expectUnderBox('startDate');
+		await expectRowKept(width);
 		expect(readFileSync(file, 'utf8')).toBe(before);
 		expect(await fits()).toBe(true);
 		await shot(tab, `${width}-4-error-start-date`, { box: '.detail form .row' });
