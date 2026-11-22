@@ -20,6 +20,7 @@ import {
 	DEFAULT_REVIEW_MODEL,
 	defaultReviewClient,
 	FIX_LIMIT_MINUTES,
+	MAX_EVERY_DAYS,
 	dueToday,
 	endedWindows,
 	ASK_SOURCE,
@@ -27,6 +28,7 @@ import {
 	nextAutoAt,
 	openAsk,
 	openMissed,
+	parseDate,
 	periodOf,
 	pastLimit,
 	succeeded,
@@ -201,7 +203,18 @@ export function validateTask(input: unknown, home = homedir(), { paths = true } 
 		if (!(fromWeekday >= 1 && fromWeekday <= 7) || !(toWeekday >= 1 && toWeekday <= 7)) errors.weekdays = '請選星期一到星期日';
 		else if (fromWeekday > toWeekday) errors.weekdays = '一週從星期一算到星期日，開始的星期不能晚於結束的星期';
 		schedule = { type: 'weekly', fromWeekday: fromWeekday as Weekday, toWeekday: toWeekday as Weekday };
-	} else if (given.type !== 'daily') errors.schedule = '請選每月、每週或每天';
+	} else if (given.type === 'daily') {
+		// Every N days (#692): N = 1 is saved as a plain daily schedule, as every task before it was.
+		const everyDays = given.everyDays === undefined ? 1 : integer(given.everyDays);
+		if (!(everyDays >= 1 && everyDays <= MAX_EVERY_DAYS)) errors.everyDays = `天數要填 1 到 ${MAX_EVERY_DAYS} 的整數`;
+		else if (everyDays > 1) {
+			const startDate = text(given.startDate);
+			if (!startDate) errors.startDate = '請填從哪天起算';
+			else if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) errors.startDate = '起算日請寫成 YYYY-MM-DD，例如 2026-11-22';
+			else if (parseDate(startDate) === null) errors.startDate = `沒有這一天：${startDate}`;
+			schedule = { type: 'daily', everyDays, startDate };
+		}
+	} else errors.schedule = '請選每月、每週或每 N 天';
 
 	const time = /^(\d{1,2}):(\d{2})$/.exec(text(body.time));
 	const timeText = time ? `${time[1].padStart(2, '0')}:${time[2]}` : '';

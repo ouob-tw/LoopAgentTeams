@@ -11,7 +11,22 @@ export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export type AutomationSchedule =
 	| { type: 'monthly'; fromDay: number; toDay: number }
 	| { type: 'weekly'; fromWeekday: Weekday; toWeekday: Weekday }
-	| { type: 'daily' };
+	| DailySchedule;
+
+/** Every N days (#692): the days cut into blocks of `everyDays` from `startDate`, each block one
+ *  period run on its first day only. Without `everyDays` (every task saved before #692, and every
+ *  N = 1 task) it is every day, with no start date. */
+export interface DailySchedule {
+	type: 'daily';
+	/** 2–365; absent means 1. */
+	everyDays?: number;
+	/** YYYY-MM-DD in Asia/Taipei, the first block's first day; present exactly when `everyDays` is. */
+	startDate?: string;
+}
+
+export const MAX_EVERY_DAYS = 365;
+/** A daily schedule's N: 1 when not set. */
+export const everyDaysOf = (schedule: DailySchedule) => schedule.everyDays ?? 1;
 
 export type ScheduleType = AutomationSchedule['type'];
 
@@ -284,9 +299,9 @@ export const EMPTY_AUTOMATION: AutomationSnapshot = { revision: 0, timeZone: TIM
 const WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
 export const weekdayName = (day: number) => WEEKDAY_NAMES[day - 1] ?? '?';
 
-/** The run window as the list shows it: 每月 1–5 日 10:00, 每週一至三 09:00, 每天 03:00. */
+/** The run window as the list shows it: 每月 1–5 日 10:00, 每週一至三 09:00, 每天 03:00, 每 2 天 07:00. */
 export function scheduleText(schedule: AutomationSchedule, time: string): string {
-	if (schedule.type === 'daily') return `每天 ${time}`;
+	if (schedule.type === 'daily') return everyDaysOf(schedule) > 1 ? `每 ${schedule.everyDays} 天 ${time}` : `每天 ${time}`;
 	if (schedule.type === 'weekly') {
 		const { fromWeekday: from, toWeekday: to } = schedule;
 		return `每週${weekdayName(from)}${from === to ? '' : `至${weekdayName(to)}`} ${time}`;
@@ -318,22 +333,65 @@ function dayOf(time: number): Day {
 const dayStart = (year: number, month: number, day: number) => Date.UTC(year, month - 1, day) - OFFSET_MS;
 const startOf = (day: Day) => dayStart(day.year, day.month, day.day);
 const daysInMonth = (year: number, month: number) => new Date(Date.UTC(year, month, 0)).getUTCDate();
+const dayId = (day: Day) => `${day.year}-${pad(day.month)}-${pad(day.day)}`;
 
-/** The period a time falls in: the month (2026-11), the week by its Monday (2026-W11-09) or the day (2026-11-13). */
+/** A YYYY-MM-DD that names a real day: its first moment in Asia/Taipei, else null. */
+export function parseDate(text: string): number | null {
+	const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+	if (!match) return null;
+	const [year, month, day] = match.slice(1).map(Number);
+	// Date.UTC reads years 0–99 as 1900–1999: those are not taken.
+	if (year < 1000 || month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return null;
+	return dayStart(year, month, day);
+}
+
+/** The day `time` falls in, as YYYY-MM-DD in Asia/Taipei: a new every-N-days task's start date. */
+export const dateOf = (time: number) => dayId(dayOf(time));
+
+/** The first moment of an every-N-days schedule's start date; null for every day (N = 1). */
+function blocksStart(schedule: AutomationSchedule): number | null {
+	if (schedule.type !== 'daily' || everyDaysOf(schedule) < 2 || !schedule.startDate) return null;
+	return parseDate(schedule.startDate);
+}
+
+/** Whether an every-N-days schedule has begun by `time`: false only before its start date. */
+export function scheduleStarted(schedule: AutomationSchedule, time: number): boolean {
+	const start = blocksStart(schedule);
+	return start === null || startOf(dayOf(time)) >= start;
+}
+
+/** The N-day block a time falls in: its first day's first moment, and whether the block starts on
+ *  or after the start date (blocks before it are counted back from it and have no run window). */
+function blockOf(schedule: DailySchedule, time: number): { first: number; started: boolean } {
+	const today = startOf(dayOf(time));
+	const every = everyDaysOf(schedule);
+	const start = blocksStart(schedule);
+	if (start === null) return { first: today, started: true };
+	const index = Math.floor(Math.round((today - start) / DAY_MS) / every);
+	return { first: start + index * every * DAY_MS, started: index >= 0 };
+}
+
+/** The period a time falls in: the month (2026-11), the week by its Monday (2026-W11-09) or the
+ *  every-N-days block by its first day (2026-11-13; with N = 1 the day itself). */
 export function periodOf(schedule: AutomationSchedule, time: number): string {
 	const day = dayOf(time);
 	if (schedule.type === 'monthly') return `${day.year}-${pad(day.month)}`;
-	if (schedule.type === 'daily') return `${day.year}-${pad(day.month)}-${pad(day.day)}`;
+	if (schedule.type === 'daily') return dayId(dayOf(blockOf(schedule, time).first));
 	const monday = dayOf(dayStart(day.year, day.month, day.day - (day.weekday - 1)));
 	return `${monday.year}-W${pad(monday.month)}-${pad(monday.day)}`;
 }
 
 /** The run window of the period a time falls in: its first moment and the moment after its last
- *  day. A month shorter than the window ends it on its last day. */
+ *  day. A month shorter than the window ends it on its last day. An every-N-days block's window is
+ *  its first day; a block before the start date has an empty one. */
 export function windowOf(schedule: AutomationSchedule, time: number): RunWindow {
 	const day = dayOf(time);
 	const period = periodOf(schedule, time);
-	if (schedule.type === 'daily') return { period, from: startOf(day), to: startOf(day) + DAY_MS };
+	if (schedule.type === 'daily') {
+		// Only the block's first day is its window; a block before the start date has none (from = to).
+		const { first, started } = blockOf(schedule, time);
+		return { period, from: first, to: started ? first + DAY_MS : first };
+	}
 	if (schedule.type === 'weekly') {
 		const monday = startOf(day) - (day.weekday - 1) * DAY_MS;
 		return { period, from: monday + (schedule.fromWeekday - 1) * DAY_MS, to: monday + schedule.toWeekday * DAY_MS };
@@ -358,7 +416,7 @@ export function endedWindows(schedule: AutomationSchedule, after: number, upTo: 
 	const first = Math.max(after, upTo - LOOK_BACK_DAYS * DAY_MS);
 	for (let time = startOf(dayOf(first)); time <= upTo; time += DAY_MS) {
 		const window = windowOf(schedule, time + DAY_MS / 2);
-		if (window.to > after && window.to <= upTo) found.set(window.period, window);
+		if (window.to > window.from && window.to > after && window.to <= upTo) found.set(window.period, window);
 	}
 	return [...found.values()];
 }
@@ -450,11 +508,15 @@ export function nextAutoAt(task: AutomationTask, runs: readonly AutomationRun[],
 	const done = new Set(runs.filter(succeeded).map((run) => run.period));
 	const triedToday = triedOn(runs, now);
 	const today = startOf(dayOf(now));
-	// A month window is at most a month away, with periods that succeeded skipped on the way.
+	// An every-N-days task with a start date still ahead looks from that day on.
+	const start = blocksStart(task.schedule);
+	const from = start !== null && start > today ? start : today;
+	// A month window is at most a month away, an N-day block at most a year, with periods that
+	// succeeded skipped on the way.
 	for (let offset = 0; offset < 800; offset++) {
-		const noon = today + offset * DAY_MS + DAY_MS / 2;
+		const noon = from + offset * DAY_MS + DAY_MS / 2;
 		if (!inWindow(task.schedule, noon) || done.has(periodOf(task.schedule, noon))) continue;
-		if (offset === 0 && triedToday) continue;
+		if (from === today && offset === 0 && triedToday) continue;
 		return atTime(noon, task.time);
 	}
 	return null;
@@ -476,6 +538,9 @@ export function taskState(task: AutomationTask, runs: readonly AutomationRun[], 
 	if (runs.some((run) => openAsk(run))) return 'asking';
 	if (runs.some(isOpen)) return 'running';
 	if (task.paused) return 'paused';
+	// Before an every-N-days start date no period of it has begun: runs made before (under an
+	// earlier schedule) are not its own, whatever their period is called (#692 QA).
+	if (!scheduleStarted(task.schedule, now)) return openMissed(missed, runs).length ? 'missed' : 'waiting';
 	const period = periodOf(task.schedule, now);
 	const own = runs.filter((run) => run.period === period && run.trigger !== 'preview' && run.status !== 'skipped');
 	if (own.some(succeeded)) return 'done';
