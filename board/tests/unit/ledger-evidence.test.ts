@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ledgerFrom, type LedgerView } from '../../src/lib/board/ledger.ts';
-import { EVIDENCE_MAX_BYTES, evidenceUrl, githubBase, linkEvidence, serveEvidence } from '../../src/lib/server/ledger-evidence.ts';
+import { EVIDENCE_MAX_BYTES, evidenceUrl, forgetEvidence, githubBase, linkEvidence, serveEvidence } from '../../src/lib/server/ledger-evidence.ts';
 import { item } from '../fixtures/ledger-tickets.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'ledger-evidence-'));
@@ -106,6 +106,12 @@ test("a read of a controller's earlier rounds keeps the board's files served bes
 
 	// Each source's next read replaces only its own.
 	await linkEvidence([view(workspace, {})], 'rounds\nalpha');
+	expect(serveEvidence(earlier).status).toBe(404);
+	expect(serveEvidence(current).status).toBe(200);
+
+	// A controller gone from the board: its earlier rounds' files are no longer served.
+	await linkEvidence([view(workspace, { file: [earlier] })], 'rounds\nalpha');
+	forgetEvidence('rounds\nalpha');
 	expect(serveEvidence(earlier).status).toBe(404);
 	expect(serveEvidence(current).status).toBe(200);
 });

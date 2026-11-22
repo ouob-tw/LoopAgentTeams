@@ -2,8 +2,10 @@
 	// A controller's 工作總表 tab (#694): this round's ledger as the board's data brings it, and below
 	// it the same session's earlier rounds, newest first, each folded to one line naming its round,
 	// when it ran and how many tickets it had; opened, it shows that round's ledger as this round's
-	// is shown. A controller in its first round shows this round only. The earlier rounds are read
-	// when the tab opens, and again when this round's ledger changes while it is open.
+	// is shown. A controller in its first round shows this round only, also when the earlier rounds
+	// cannot be read. The earlier rounds are read when the tab opens, and while it stays open again
+	// at most once a minute when this round's ledger changes (a new round starts with a new one).
+	import { untrack } from 'svelte';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { request } from '#lib/board/api.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
@@ -17,15 +19,20 @@
 	let problem = $state<string | null>(null);
 	/** The latest read started; an older one that answers later is dropped. */
 	let reads = 0;
+	/** When the latest read started (page clock), for reading again on a change at most once a minute. */
+	let readAt = 0;
+	const AGAIN_MS = 60_000;
 
 	async function load(id: string) {
 		const mine = ++reads;
+		readAt = Date.now();
 		const result = await request<{ rounds: LedgerRounds }>(`/api/ledger/rounds?controller=${encodeURIComponent(id)}`);
 		if (mine !== reads) return;
 		if (!result.ok) {
 			if (result.unpaired) return;
 			const reason = (result.kind === 'http' && (result.body as { reason?: string } | null)?.reason) || result.message;
-			problem = `前幾輪的總表讀不出來：${reason}`;
+			// Said only where earlier rounds were shown: a first round looks as it always did.
+			problem = rounds?.earlier.length ? `前幾輪的總表讀不出來：${reason}` : null;
 			return;
 		}
 		rounds = result.value.rounds;
@@ -38,10 +45,16 @@
 		rounds = null;
 		problem = null;
 	});
+	// Each opening of the tab, and another controller's page, reads them.
+	$effect(() => {
+		if (active) void load(controller.id);
+	});
 	const changed = $derived(controller.ledger.state === 'ok' ? controller.ledger.updatedAt : controller.ledger.state);
 	$effect(() => {
 		void changed;
-		if (active) void load(controller.id);
+		untrack(() => {
+			if (active && Date.now() - readAt >= AGAIN_MS) void load(controller.id);
+		});
 	});
 
 	const earlier = $derived(rounds?.earlier ?? []);

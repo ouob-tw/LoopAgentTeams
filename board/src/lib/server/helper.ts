@@ -3,7 +3,7 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ledgerFrom, type LedgerRounds, type LedgerView } from '../board/ledger.ts';
-import { linkEvidence } from './ledger-evidence.ts';
+import { forgetEvidence, linkEvidence } from './ledger-evidence.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import type { PreauthSettings } from '../board/preauth.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
@@ -383,7 +383,7 @@ const MOVING_LEDGER_MAX_AGE_MS = 2 * 60_000;
  *  shorter for one that still moves. Null for one that cannot be kept: not read, gone already, or
  *  naming a task card by a relative path (the helper resolves it from its own folder). */
 function ledgerFiles(workspace: string, sessionId: string, entry: LedgerEntry): { files: string[]; maxAgeMs?: number } | null {
-	const kept = readFrom(entry);
+	const kept = keptFiles(entry);
 	if (!kept) return null;
 	const record = `${sessionId}.json`;
 	const problemsPath = (entry.ledger as { problems_path: string }).problems_path;
@@ -392,7 +392,7 @@ function ledgerFiles(workspace: string, sessionId: string, entry: LedgerEntry): 
 
 /** The files one read ledger came from (the ledger, the problem log and each row's task card) and
  *  how long it may be kept, as for `ledgerFiles`; null for one that cannot be kept. */
-function readFrom(entry: { status?: unknown; ledger_path?: unknown; ledger?: unknown }): { files: string[]; maxAgeMs?: number } | null {
+function keptFiles(entry: { status?: unknown; ledger_path?: unknown; ledger?: unknown }): { files: string[]; maxAgeMs?: number } | null {
 	const ledger = entry.ledger as { problems_path?: unknown; items?: unknown; tickets?: unknown } | undefined;
 	if (entry.status !== 'ok' || typeof entry.ledger_path !== 'string' || !existsSync(entry.ledger_path)) return null;
 	if (typeof ledger?.problems_path !== 'string' || !Array.isArray(ledger.items) || !Array.isArray(ledger.tickets)) return null;
@@ -477,6 +477,20 @@ export interface RoundsCache {
 	paths: Map<string, string[]>;
 }
 
+const roundsKey = (controller: { workspace: string; sessionId: string }) => `${controller.workspace}\n${controller.sessionId}`;
+
+/** Forget the earlier rounds, and stop serving their evidence, of every controller not among
+ *  `controllers` (those on the board now). */
+export function forgetRounds(cache: RoundsCache, controllers: { workspace: string; sessionId: string }[]): void {
+	const live = new Set(controllers.map(roundsKey));
+	for (const key of [...cache.paths.keys()]) {
+		if (live.has(key)) continue;
+		cache.paths.delete(key);
+		forgetEvidence(`rounds\n${key}`);
+	}
+	cache.store.keepOnly([...cache.paths.values()].flat());
+}
+
 /** A controller's earlier rounds, newest first, with this round's number and start: from its
  *  session record's history, each round's ledger read with `lat-ledger show --json`. A round's
  *  ledger whose files have not changed since it was read is not read again (the rule `readLedgers`
@@ -487,7 +501,7 @@ export async function readLedgerRounds(
 	cache: RoundsCache
 ): Promise<{ ok: true; rounds: LedgerRounds } | { ok: false; reason: string }> {
 	const startedAt = Date.now();
-	const key = `${controller.workspace}\n${controller.sessionId}`;
+	const key = roundsKey(controller);
 	const known = new Map<string, RoundEntry>();
 	for (const path of cache.paths.get(key) ?? []) {
 		const hit = cache.store.get(path, startedAt);
@@ -513,7 +527,7 @@ export async function readLedgerRounds(
 		const hit = entry.status === 'known' ? known.get(entry.ledger_path) : undefined;
 		if (hit) return { ...hit, round: entry.round, started_at: entry.started_at, ended_at: entry.ended_at };
 		if (entry.status === 'known') return { ...entry, status: 'error', reason: '這一輪的總表剛換過，下次重讀再試' };
-		const kept = readFrom(entry);
+		const kept = keptFiles(entry);
 		if (kept) cache.store.set(entry.ledger_path, entry, kept.files, startedAt, kept.maxAgeMs);
 		return entry;
 	});

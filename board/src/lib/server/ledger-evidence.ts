@@ -53,6 +53,11 @@ const allowed = new Map<string, Set<string>>();
 /** The board's read of the controllers' ledgers. */
 export const BOARD_LEDGERS = 'board';
 
+/** Stop serving what this source of reads allowed: its controller is no longer on the board. */
+export function forgetEvidence(source: string): void {
+	allowed.delete(source);
+}
+
 /** Where the page opens one evidence file. */
 export const evidenceUrl = (path: string) => `/api/ledger/evidence?path=${encodeURIComponent(path)}`;
 

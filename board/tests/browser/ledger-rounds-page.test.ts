@@ -78,6 +78,8 @@ async function openTab(tab: Tab, controller: string, size: typeof DESKTOP, round
 async function capture(tab: Tab, name: string) {
 	const folder = process.env.LAT_BOARD_SHOTS;
 	if (!folder) return;
+	// Let an opened line's chevron finish turning.
+	await tab.eval(`new Promise((done) => setTimeout(done, 300))`);
 	await tab.eval(`document.head.insertAdjacentHTML('beforeend', '<style id="shot-hide">' + [...document.querySelectorAll('body *')].filter((el) => ['fixed', 'sticky'].includes(getComputedStyle(el).position) && !el.closest('#panel-ledger')).map((el, index) => (el.dataset.shotHide = index, '[data-shot-hide="' + index + '"]')).join(',') + '{visibility:hidden !important} *:has(#panel-ledger){overflow:visible !important;height:auto !important;max-height:none !important}</style>')`);
 	const box = await tab.eval<{ x: number; y: number; width: number; height: number }>(
 		`(() => { const r = document.querySelector('.detail #panel-ledger').getBoundingClientRect(); return { x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height }; })()`
@@ -151,4 +153,17 @@ test.skipIf(!CHROME)('a controller in its first round shows this round only: no 
 	await openTab(tab, nova.session_id, PHONE, 0);
 	expect(await tab.eval(`[...${panel}.children].length`)).toBe(1);
 	await capture(tab, 'ledger-rounds-single-390');
+}, 60_000);
+
+test.skipIf(!CHROME)('a first-round controller whose earlier rounds cannot be read still shows this round only', async () => {
+	const tab = browser!.tab;
+	const [luna, nova] = fixture.listed();
+	fixture.setHelper({
+		output: { controllers: [luna, nova] },
+		ledgers: { [nova.session_id]: { status: 'ok', ledger: fiveStepLedger(nova.workspace) } },
+		'ledger-rounds': { output: { status: 'error', reason: '輔助工具逾時' }, exit: 1 }
+	});
+	await openTab(tab, nova.session_id, DESKTOP, 0);
+	const panel = `document.querySelector('.detail #panel-ledger')`;
+	expect(await tab.eval(`[...${panel}.children].map((child) => child.tagName.toLowerCase() + '.' + child.className.split(' ')[0])`)).toEqual(['section.ledger']);
 }, 60_000);

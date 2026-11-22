@@ -239,6 +239,9 @@ function ledger() {
 function ledgerRounds() {
 	const given = options();
 	const known = new Set(given.known ?? []);
+	// As the real command: both are required, the session ID in its form.
+	if (given.workspace?.length !== 1 || given['session-id']?.length !== 1) return { output: { status: 'error', reason: 'ledger-rounds takes one --workspace and one --session-id' }, exit: 2 };
+	if (!/^[A-Za-z0-9_-]{1,128}$/.test(given['session-id'][0])) return { output: { session_id: given['session-id'][0], status: 'error', reason: `不是 session ID：${given['session-id'][0]}` }, exit: 1 };
 	const planned = plan.rounds?.[given['session-id']?.[0] ?? ''] ?? { current: { round: 1, started_at: null }, earlier: [] };
 	const earlier = planned.earlier.map((/** @type {any} */ entry) =>
 		known.has(entry.ledger_path) ? { round: entry.round, ledger_path: entry.ledger_path, started_at: entry.started_at, ended_at: entry.ended_at, status: 'known' } : entry

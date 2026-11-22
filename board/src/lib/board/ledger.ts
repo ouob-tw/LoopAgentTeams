@@ -398,7 +398,7 @@ function roundTime(iso: string | null, timeZone: string, sameDayAs: string | nul
 	if (!iso || Number.isNaN(Date.parse(iso))) return '不明';
 	const day = (value: string) => new Date(value).toLocaleDateString('zh-TW', { timeZone, month: 'numeric', day: 'numeric' });
 	const clock = new Date(iso).toLocaleTimeString('zh-TW', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-	const sameDay = sameDayAs !== null && !Number.isNaN(Date.parse(sameDayAs)) && day(sameDayAs) === day(iso) && Math.abs(Date.parse(iso) - Date.parse(sameDayAs)) < 86_400_000;
+	const sameDay = sameDayAs !== null && !Number.isNaN(Date.parse(sameDayAs)) && day(sameDayAs) === day(iso);
 	return sameDay ? clock : `${day(iso)} ${clock}`;
 }
 
