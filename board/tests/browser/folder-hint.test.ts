@@ -112,6 +112,8 @@ for (const { page, name } of FORMS) {
 				expect(shown.sameLine).toBe(true);
 				expect(shown.clear).toBe(true);
 				expect(shown.title).toContain(one.text);
+				// Readable size: the hint is never under 16px.
+				expect(await evaluate<number>(`parseFloat(getComputedStyle(${HINT}).fontSize)`)).toBeGreaterThanOrEqual(16);
 				// A failure is announced, and every hint is tied to the box it is about.
 				expect(await evaluate(`${HINT}.getAttribute('role')`)).toBe(one.failed ? 'alert' : null);
 				expect(await evaluate(`document.querySelector('#folder-box').getAttribute('aria-describedby') === ${HINT}.id`)).toBe(true);

@@ -685,13 +685,17 @@
 		align-items: baseline;
 		gap: 0.6rem;
 		min-width: 0;
-		min-height: 1.4em;
+		/* Tall enough for the hint's own line, so it appearing never changes the row. */
+		height: max(1.5rem, calc(var(--min-font, 0px) * 1.4));
 		font-size: max(0.8rem, var(--min-font, 0px));
 	}
 	.folder-head > label {
 		flex: none;
 	}
-	.hint {
+	.folder-head .hint {
+		/* Text on the board is never under 16px, the hint included. */
+		font-size: max(1rem, var(--min-font, 0px));
+		line-height: 1.2;
 		flex: 1 1 0;
 		min-width: 0;
 		overflow: hidden;
