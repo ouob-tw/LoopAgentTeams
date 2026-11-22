@@ -60,16 +60,22 @@ function record(session: string, answers = 1) {
 	const lines = items.map((line) => JSON.stringify({ ...line, time: '2026-10-19T09:00:00.000Z' }) + '\n');
 	writeFileSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), lines.join(''));
 }
-let eventId = 1;
+/** hcom's `stopped` event of a session, as `hcom events --full` prints it. */
 function stopEvent(session: string, by: string, time: number, name = `n-${session}`) {
-	const event = {
+	return {
 		data: { action: 'stopped', by, reason: 'killed', snapshot: { name, session_id: session, tool: 'claude', directory: `/home/someone/projects/${session}` } },
-		id: ++eventId,
-		instance: name,
 		ts: new Date(time).toISOString(),
 		type: 'life'
 	};
-	appendFileSync(join(fixture.dir, 'hcom-events.jsonl'), JSON.stringify(event) + '\n');
+}
+/** Append the events in one write, oldest first with ids rising, as hcom logs them. The board asks
+ *  only for stops after the latest it has read: written one by one newest first, a read between two
+ *  writes would hide the older ones for good. */
+function writeStops(events: ReturnType<typeof stopEvent>[]) {
+	const lines = events
+		.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
+		.map((event, index) => JSON.stringify({ ...event, id: index + 2, instance: event.data.snapshot.name }) + '\n');
+	appendFileSync(join(fixture.dir, 'hcom-events.jsonl'), lines.join(''));
 }
 /** Midnight starting today in Taipei, as a time; and noon some days before. */
 function taipeiMidnight(daysBack = 0): number {
@@ -111,13 +117,15 @@ beforeAll(async () => {
 	setHerdr(LIVE);
 	fixture.setHcom({ agents: [] });
 	const now = Date.now();
-	stopEvent('s-today', 'pty', Math.max(taipeiMidnight() + 1000, now - 60_000));
-	stopEvent('s-lead', 'cli', Math.max(taipeiMidnight() + 500, now - 120_000), 'lead');
-	stopEvent('s-fail', 'session', Math.max(taipeiMidnight(), now - 180_000));
-	stopEvent('s-yesterday', 'cli', taipeiMidnight(1) + 12 * 60 * 60 * 1000);
-	stopEvent('s-week', 'system', taipeiMidnight(3) + 12 * 60 * 60 * 1000);
-	// Stopped by its model switch, which is open: listed in the tab's main list instead.
-	stopEvent('s-switch', 'cli', now - 30_000);
+	writeStops([
+		stopEvent('s-today', 'pty', Math.max(taipeiMidnight() + 1000, now - 60_000)),
+		stopEvent('s-lead', 'cli', Math.max(taipeiMidnight() + 500, now - 120_000), 'lead'),
+		stopEvent('s-fail', 'session', Math.max(taipeiMidnight(), now - 180_000)),
+		stopEvent('s-yesterday', 'cli', taipeiMidnight(1) + 12 * 60 * 60 * 1000),
+		stopEvent('s-week', 'system', taipeiMidnight(3) + 12 * 60 * 60 * 1000),
+		// Stopped by its model switch, which is open: listed in the tab's main list instead.
+		stopEvent('s-switch', 'cli', now - 30_000)
+	]);
 	mkdirSync(join(fixture.dir, 'board-state'), { recursive: true });
 	const place = { name: 'n-s-switch', folder: '/home/someone/projects/s-switch', workspace: 'wA', workspaceLabel: 'Alpha', workspaceNumber: 1 };
 	appendFileSync(

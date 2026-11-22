@@ -67,6 +67,8 @@ test.skipIf(!CHROME)("the controller page's question rows show the button beside
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
 	await tab.send('Page.navigate', { url: `${fixture.url}/?controller=${encodeURIComponent(controller.session_id)}` });
 	await tab.until(`document.querySelectorAll('.questions .row').length === 4`, 'the question rows');
+	// The server's page is there before its styles load; widths are read once the page has started.
+	await tab.boardStarted();
 	const rows = await tab.eval<{ links: string[]; bar: number; row: number; nested: boolean }[]>(`[...document.querySelectorAll('.questions .row')].map((row) => ({
 		links: [...row.querySelectorAll('a.visual')].map((a) => a.href),
 		bar: row.querySelector('.question').offsetWidth,

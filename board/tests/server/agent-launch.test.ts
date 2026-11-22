@@ -12,8 +12,9 @@ import { checkRunHere, NODE, sleep, startFixture, until, type Fixture } from '..
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-agent-launch-'));
 const socketPath = join(commandDir, 'herdr.sock');
-/** How long a launch waits for its agent to appear in Herdr in these tests. */
-const WAIT_SECONDS = 3;
+/** How long a launch waits for its agent to appear in Herdr in these tests: long enough that a
+ *  case watching 1.5 s for nothing to move still sees its agent appear on a busy host. */
+const WAIT_SECONDS = 5;
 
 // A folder outside any Git project needs a temporary directory with no `.git` above it.
 const plainBase = [tmpdir(), '/var/tmp', '/dev/shm'].find((base) => existsSync(base) && gitRoot(base) === null);

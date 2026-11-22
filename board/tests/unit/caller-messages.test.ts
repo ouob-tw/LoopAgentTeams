@@ -25,16 +25,22 @@ const HANGS = node('setTimeout(() => {}, 60000)');
 const NOT_JSON = node(`process.stdout.write('not json\\n')`);
 const SILENT = node('process.exit(3)');
 
-const config = (overrides: Partial<BoardConfig>) =>
-	({
-		helperTimeoutMs: 300,
-		hcomTimeoutMs: 300,
-		hcomListTimeoutMs: 300,
-		herdrTimeoutMs: 300,
-		injectTimeoutMs: 300,
+/** The time limit for a command: 0.3 s for the one that hangs, so its message names 0.3 s; the
+ *  others end on their own and get 10 s, since starting Node alone can take longer than 0.3 s on a
+ *  busy host and they would time out instead of failing as they do. */
+const limit = (command: string[]) => (command === HANGS ? 300 : 10_000);
+const config = (overrides: Partial<BoardConfig>) => {
+	const ms = Object.values(overrides).includes(HANGS) ? 300 : 10_000;
+	return {
+		helperTimeoutMs: ms,
+		hcomTimeoutMs: ms,
+		hcomListTimeoutMs: ms,
+		herdrTimeoutMs: ms,
+		injectTimeoutMs: ms,
 		reportsDir: '/nonexistent/reports',
 		...overrides
-	}) as BoardConfig;
+	} as BoardConfig;
+};
 
 test('the panel helper', async () => {
 	const helper = (helperCommand: string[]) => config({ helperCommand });
@@ -89,10 +95,10 @@ test('Herdr', async () => {
 });
 
 test('claude-swap', async () => {
-	expect(await readClaudeQuota(FAILS, 300)).toEqual({ ok: false, reason: 'claude-swap 沒有回答（結束碼 1）' });
-	expect(await readClaudeQuota(HANGS, 300)).toEqual({ ok: false, reason: 'claude-swap 沒有回答（逾時）' });
-	expect(await readClaudeQuota(NOT_JSON, 300)).toEqual({ ok: false, reason: 'claude-swap 沒有回答（結束碼 0）' });
-	expect(await readClaudeQuota(['/nonexistent/cswap'], 300)).toEqual({ ok: false, reason: '找不到或無法啟動 cswap 指令' });
+	expect(await readClaudeQuota(FAILS, limit(FAILS))).toEqual({ ok: false, reason: 'claude-swap 沒有回答（結束碼 1）' });
+	expect(await readClaudeQuota(HANGS, limit(HANGS))).toEqual({ ok: false, reason: 'claude-swap 沒有回答（逾時）' });
+	expect(await readClaudeQuota(NOT_JSON, limit(NOT_JSON))).toEqual({ ok: false, reason: 'claude-swap 沒有回答（結束碼 0）' });
+	expect(await readClaudeQuota(['/nonexistent/cswap'], limit(['/nonexistent/cswap']))).toEqual({ ok: false, reason: '找不到或無法啟動 cswap 指令' });
 });
 
 test('the input command', async () => {
