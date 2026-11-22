@@ -284,7 +284,10 @@ test('a login past its time gets no pushes, as it gets no pages: its subscriptio
 	await send(phone.cookie, `/api/automation/${task.id}/run`, 'POST');
 	const card = await eventually(async () => (await alerts()).find((alert) => alert.taskId === task.id && alert.pushed), 'the card pushed');
 	expect(card.pushed!.devices).toBe(1);
-	expect(received.slice(from).map((entry) => entry.path)).toEqual(['/push/phone']);
+	// This card's pushes alone: eight days on, the clock jump may push notices of other tasks too.
+	expect(pushesSince(from).filter((push) => push.message.alert === card.id).map((push) => push.path)).toEqual(['/push/phone']);
+	// Nothing at all goes to the laptop.
+	expect(received.slice(from).map((entry) => entry.path)).not.toContain('/push/laptop');
 	expect(saved().some((entry) => entry.endpoint === `${ORIGIN}/push/laptop`)).toBe(false);
 });
 
