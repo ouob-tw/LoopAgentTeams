@@ -88,6 +88,7 @@ for (const width of [1280, 390]) {
 		await visit(width, `/?automation=${ids.daily}`);
 		await tab.until(`!!document.querySelector('.detail .task')`, 'the task page');
 		expect(await text('.detail .task')).toContain('每天 07:00，成功後本期不再跑');
+		expect(await has('.detail .task [data-start-date]')).toBe(false);
 		await click('.detail .actions button:nth-child(3)');
 		await tab.until(`!!document.querySelector('.detail form')`, 'the form');
 		expect(await text('.detail form [data-schedule="daily"]')).toBe('每 N 天');
@@ -138,6 +139,7 @@ for (const width of [1280, 390]) {
 		await click('.detail form button[type=submit]');
 		await tab.until(`!!document.querySelector('.detail .task')`, 'the task page again');
 		expect(await text('.detail .task')).toContain('每 2 天 07:00，成功後本期不再跑');
+		expect(await text('.detail .task [data-start-date]')).toBe('2026-11-22');
 		expect(JSON.parse(readFileSync(file, 'utf8')).schedule).toEqual({ type: 'daily', everyDays: 2, startDate: '2026-11-22' });
 		// The board's clock is 11/20 01:00: the first block starts 11/22.
 		expect(await text('.detail .task')).toContain('11/22 07:00');

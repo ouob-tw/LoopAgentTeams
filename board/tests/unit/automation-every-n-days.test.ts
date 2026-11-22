@@ -126,6 +126,6 @@ test('one try per block: on its first day only; a success or a try ends it; an u
 test('dates: real days only', () => {
 	expect(parseDate('2026-11-22')).toBe(at(2026, 11, 22, 0));
 	expect(parseDate('2028-02-29')).toBe(at(2028, 2, 29, 0));
-	for (const bad of ['2027-02-29', '2026-13-01', '2026-11-31', '2026-00-10', '2026-1-5', '20261122', '']) expect(parseDate(bad)).toBeNull();
+	for (const bad of ['2027-02-29', '2026-13-01', '2026-11-31', '2026-00-10', '2026-1-5', '20261122', '', '0099-01-01']) expect(parseDate(bad)).toBeNull();
 	expect(dateOf(Date.UTC(2026, 10, 22, 16, 30))).toBe('2026-11-23');
 });

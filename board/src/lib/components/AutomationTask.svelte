@@ -156,6 +156,11 @@
 		</dd>
 		<dt>排程</dt>
 		<dd>{scheduleText(task.schedule, task.time)}，成功後本期不再跑</dd>
+		<!-- An every-N-days task names the day its blocks count from (#692). -->
+		{#if task.schedule.type === 'daily' && task.schedule.startDate}
+			<dt>起算日</dt>
+			<dd data-start-date>{task.schedule.startDate}</dd>
+		{/if}
 		{#if task.command}
 			<dt>指令</dt>
 			<dd class="mono">{task.command.command}</dd>

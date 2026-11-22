@@ -299,7 +299,7 @@ export const EMPTY_AUTOMATION: AutomationSnapshot = { revision: 0, timeZone: TIM
 const WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
 export const weekdayName = (day: number) => WEEKDAY_NAMES[day - 1] ?? '?';
 
-/** The run window as the list shows it: 每月 1–5 日 10:00, 每週一至三 09:00, 每天 03:00. */
+/** The run window as the list shows it: 每月 1–5 日 10:00, 每週一至三 09:00, 每天 03:00, 每 2 天 07:00. */
 export function scheduleText(schedule: AutomationSchedule, time: string): string {
 	if (schedule.type === 'daily') return everyDaysOf(schedule) > 1 ? `每 ${schedule.everyDays} 天 ${time}` : `每天 ${time}`;
 	if (schedule.type === 'weekly') {
@@ -340,19 +340,26 @@ export function parseDate(text: string): number | null {
 	const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
 	if (!match) return null;
 	const [year, month, day] = match.slice(1).map(Number);
-	if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return null;
+	// Date.UTC reads years 0–99 as 1900–1999: those are not taken.
+	if (year < 1000 || month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return null;
 	return dayStart(year, month, day);
 }
 
 /** The day `time` falls in, as YYYY-MM-DD in Asia/Taipei: a new every-N-days task's start date. */
 export const dateOf = (time: number) => dayId(dayOf(time));
 
+/** The first moment of an every-N-days schedule's start date; null for every day (N = 1). */
+function blocksStart(schedule: AutomationSchedule): number | null {
+	if (schedule.type !== 'daily' || everyDaysOf(schedule) < 2 || !schedule.startDate) return null;
+	return parseDate(schedule.startDate);
+}
+
 /** The N-day block a time falls in: its first day's first moment, and whether the block starts on
  *  or after the start date (blocks before it are counted back from it and have no run window). */
 function blockOf(schedule: DailySchedule, time: number): { first: number; started: boolean } {
 	const today = startOf(dayOf(time));
 	const every = everyDaysOf(schedule);
-	const start = every > 1 && schedule.startDate ? parseDate(schedule.startDate) : null;
+	const start = blocksStart(schedule);
 	if (start === null) return { first: today, started: true };
 	const index = Math.floor(Math.round((today - start) / DAY_MS) / every);
 	return { first: start + index * every * DAY_MS, started: index >= 0 };
@@ -496,7 +503,7 @@ export function nextAutoAt(task: AutomationTask, runs: readonly AutomationRun[],
 	const triedToday = triedOn(runs, now);
 	const today = startOf(dayOf(now));
 	// An every-N-days task with a start date still ahead looks from that day on.
-	const start = task.schedule.type === 'daily' && everyDaysOf(task.schedule) > 1 ? parseDate(task.schedule.startDate ?? '') : null;
+	const start = blocksStart(task.schedule);
 	const from = start !== null && start > today ? start : today;
 	// A month window is at most a month away, an N-day block at most a year, with periods that
 	// succeeded skipped on the way.

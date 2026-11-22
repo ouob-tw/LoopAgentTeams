@@ -1,9 +1,9 @@
 <script lang="ts">
 	// Adding or editing a task. The schedule type shows only its own fields: a month's days, a
 	// week's days (Monday to Sunday, never past Sunday) or every how many days, with the day the
-	// blocks count from once that is 2 or more (#692). A command and an
-	// agent task each show their own fields. The board checks everything on saving and answers
-	// field by field; each answer shows under its field and nothing is written.
+	// blocks count from once that is 2 or more (#692). A command and an agent task each show their
+	// own fields. The board checks everything on saving and answers field by field; each answer
+	// shows under its field and nothing is written.
 	import X from '@lucide/svelte/icons/x';
 	import Plus from '@lucide/svelte/icons/plus';
 	import {
@@ -39,7 +39,7 @@
 	// A new every-N-days schedule counts from today, as Asia/Taipei reads it.
 	let startDate = $state((from?.schedule.type === 'daily' ? from.schedule.startDate : undefined) ?? dateOf(Date.now()));
 	/** The start date box shows while N reads as 2 or more, or as anything that is not 1. */
-	const counted = $derived(everyDays.trim() !== '1');
+	const showStartDate = $derived(everyDays.trim() !== '1');
 	let time = $state(from?.time ?? '09:00');
 	let limitMinutes = $state(String(from?.limitMinutes ?? 60));
 	let kind = $state<'command' | 'agent'>(from?.kind ?? 'command');
@@ -104,7 +104,7 @@
 		event.preventDefault();
 		saving = true;
 		failure = null;
-		const schedule = type === 'monthly' ? { type, fromDay, toDay } : type === 'weekly' ? { type, fromWeekday, toWeekday } : { type, everyDays, ...(counted ? { startDate } : {}) };
+		const schedule = type === 'monthly' ? { type, fromDay, toDay } : type === 'weekly' ? { type, fromWeekday, toWeekday } : { type, everyDays, ...(showStartDate ? { startDate } : {}) };
 		const body = {
 			name,
 			schedule,
@@ -161,7 +161,7 @@
 				<input class="num" name="everyDays" type="text" inputmode="numeric" aria-label="每幾天" bind:value={everyDays} aria-invalid={!!errors.everyDays} />
 				<span>天</span>
 			</span>
-			{#if counted}
+			{#if showStartDate}
 				<span class="at apart">
 					<span>起算日</span>
 					<input class="date" name="startDate" type="text" inputmode="numeric" aria-label="從哪天起算" placeholder="2026-11-22" bind:value={startDate} aria-invalid={!!errors.startDate} />
