@@ -190,7 +190,7 @@ export function launchLink(
 }
 
 /** A controller launch the roster shows as a card of its own until the controller is bound (#689). */
-export type LaunchCard = Pick<LaunchView, 'id' | 'time' | 'client' | 'folder' | 'scope' | 'hcomName' | 'state' | 'error'>;
+export type LaunchCard = Pick<LaunchView, 'id' | 'time' | 'client' | 'folder' | 'scope' | 'hcomName' | 'state' | 'error' | 'earlierSessions'>;
 
 /** A controller launch sent and not logged yet: what its starting card is chosen and drawn from. */
 export type PendingLaunch = Pick<SentLaunch, 'id' | 'time' | 'client' | 'folder' | 'scope' | 'hcomName' | 'earlierSessions'>;
@@ -213,7 +213,7 @@ export const LAUNCH_CARD_TAG: Partial<Record<LaunchState, string>> = {
  *  name since the launch began, though the binding is not logged yet) has none, so the roster never
  *  shows a controller twice. */
 export function launchCards(
-	launches: readonly (Pick<LaunchView, keyof LaunchCard | 'earlierSessions'> & Partial<Pick<LaunchView, 'role'>>)[],
+	launches: readonly (Pick<LaunchView, keyof LaunchCard> & Partial<Pick<LaunchView, 'role'>>)[],
 	controllers: readonly Pick<Controller, 'id' | 'hcomName'>[],
 	now: number,
 	keepMs: number = LAUNCH_CARD_KEEP_MS
@@ -228,8 +228,8 @@ export function launchCards(
 		if (!newest || !(launch.state in LAUNCH_CARD_TAG)) continue;
 		if (launch.state !== 'starting' && now - Date.parse(launch.time) >= keepMs) continue;
 		if (hcomName && controllers.some((controller) => controller.hcomName === hcomName && !launch.earlierSessions.includes(controller.id))) continue;
-		const { id, time, client, folder, scope, state, error } = launch;
-		cards.push({ id, time, client, folder, scope, hcomName, state, error });
+		const { id, time, client, folder, scope, state, error, earlierSessions } = launch;
+		cards.push({ id, time, client, folder, scope, hcomName, state, error, earlierSessions });
 	}
 	return cards;
 }
