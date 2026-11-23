@@ -24,7 +24,7 @@
 
   var host, shadow, root, stage, pic, state = null, lastFocus = null, prevOverflow = '';
   var pointers = new Map(), pinch = null, drag = null, tapStart = null, lastTap = null;
-  var padUntil = 0, gesture = null;
+  var padUntil = 0, gesture = null, closedAt = 0;
 
   function box() { return root.getBoundingClientRect(); }
   function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
@@ -98,7 +98,7 @@
   function isNotch(e) {
     if (e.deltaMode !== 0) return true;
     if (Date.now() < padUntil) return false;
-    return e.deltaX === 0 && Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 50;
+    return e.deltaX === 0 && Math.abs(e.deltaY) >= 50;  // display scaling makes wheel steps fractional, e.g. 66.67
   }
 
   function onWheel(e) {
@@ -122,7 +122,8 @@
     e.preventDefault();
     if (!state) return;
     if (e.type === 'gesturestart') {
-      gesture = { s: state.s, cx: e.clientX, cy: e.clientY };
+      var c = centre();
+      gesture = { s: state.s, cx: isFinite(e.clientX) ? e.clientX : c.x, cy: isFinite(e.clientY) ? e.clientY : c.y };
     } else if (e.type === 'gesturechange' && gesture && pointers.size < 2) {
       zoomAt(gesture.s * e.scale, gesture.cx, gesture.cy);
     } else if (e.type === 'gestureend') {
@@ -221,13 +222,16 @@
     place();
   }
 
+  function blockPageZoom(e) { e.preventDefault(); }
+
   function open(img) {
     var r = img.getBoundingClientRect();
     var nw = img.naturalWidth || r.width, nh = img.naturalHeight || r.height;
     if (!host) build();
     state = { nw: nw, nh: nh, s: 1, x: 0, y: 0, base: 1, min: 1, max: 8 };
     pic.src = img.currentSrc || img.src;
-    document.body.appendChild(host);
+    document.documentElement.appendChild(host);
+    ['gesturestart', 'gesturechange'].forEach(function (n) { document.addEventListener(n, blockPageZoom, { passive: false }); });
     var fit = fitScale();
     // Fit the whole picture, but never blow a small one up past the size it had on the page.
     state.base = Math.max(1, r.width / nw);
@@ -245,8 +249,10 @@
     if (!state) return;
     state = null; pointers.clear(); pinch = drag = tapStart = lastTap = gesture = null;
     host.remove();
+    closedAt = Date.now();
+    ['gesturestart', 'gesturechange'].forEach(function (n) { document.removeEventListener(n, blockPageZoom); });
     document.documentElement.style.overflow = prevOverflow;
-    if (lastFocus && lastFocus.focus) lastFocus.focus();
+    if (lastFocus && lastFocus.focus) lastFocus.focus({ preventScroll: true });
   }
 
   function eligible(img) {
@@ -258,7 +264,7 @@
   }
 
   document.addEventListener('click', function (e) {
-    if (e.defaultPrevented || e.button !== 0 || state) return;
+    if (e.defaultPrevented || e.button !== 0 || state || Date.now() - closedAt < 400) return;  // the tap that closed must not hit the page below
     var t = e.target;
     if (eligible(t)) open(t);
   });

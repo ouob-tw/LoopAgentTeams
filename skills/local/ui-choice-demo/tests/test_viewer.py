@@ -75,7 +75,7 @@ class BrowserTests(unittest.TestCase):
     def view(self):
         """Overlay picture box, or None when closed."""
         return self.page.evaluate('''() => {
-          const h = [...document.body.children].find(e => e.shadowRoot);
+          const h = [...document.documentElement.children].find(e => e.shadowRoot);
           if (!h) return null;
           const r = h.shadowRoot.querySelector('img').getBoundingClientRect();
           return {x: r.x, y: r.y, w: r.width, h: r.height};
@@ -83,7 +83,7 @@ class BrowserTests(unittest.TestCase):
 
     def fire(self, js_event):
         self.page.evaluate('''(src) => {
-          const h = [...document.body.children].find(e => e.shadowRoot);
+          const h = [...document.documentElement.children].find(e => e.shadowRoot);
           const root = h.shadowRoot.querySelector('.root');
           window.__last = (new Function('root', src))(root);
         }''', js_event)
@@ -104,9 +104,11 @@ class BrowserTests(unittest.TestCase):
         self.assertAlmostEqual(v['w'] / v['h'], 1600 / 900, places=2)
         p.keyboard.press('Escape')
         self.assertIsNone(self.view())
+        p.wait_for_timeout(450)
         p.click('#a')
         p.mouse.click(500, 5)  # empty space above the picture
         self.assertIsNone(self.view())
+        p.wait_for_timeout(450)
         p.click('#a')
         self.fire("root.querySelector('.close').click()")
         self.assertIsNone(self.view())
@@ -175,6 +177,10 @@ class BrowserTests(unittest.TestCase):
         self.assertAlmostEqual(v1['w'] / v0['w'], 1.2, places=2)
         self.assertAlmostEqual((px - v1['x']) / v1['w'], ix, places=2)
         self.assertAlmostEqual((py - v1['y']) / v1['h'], iy, places=2)
+        self.page.wait_for_timeout(300)
+        self.wheel(-66.67)       # scaled display: fractional but still a notch
+        self.assertAlmostEqual(self.view()['w'] / v1['w'], 1.2, places=2)
+        v1 = self.view()
         self.wheel(-3, mode=1)   # Firefox-style line notch
         self.assertAlmostEqual(self.view()['w'] / v1['w'], 1.2, places=2)
 
@@ -239,6 +245,16 @@ class BrowserTests(unittest.TestCase):
         touch('touchStart', [(200, 20)])
         touch('touchEnd', [])
         self.assertIsNone(self.view())
+
+    def test_tap_that_closes_does_not_reopen_on_the_page_below(self):
+        p = self.open(IMG)
+        p.click('#a')
+        self.fire("root.querySelector('.close').click()")
+        p.click('#a')
+        self.assertIsNone(self.view())
+        p.wait_for_timeout(450)
+        p.click('#a')
+        self.assertIsNotNone(self.view())
 
     def test_clicking_the_picture_itself_does_not_close(self):
         p = self.open(IMG)
