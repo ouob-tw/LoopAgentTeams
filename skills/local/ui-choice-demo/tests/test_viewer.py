@@ -27,6 +27,9 @@ class InjectionTests(unittest.TestCase):
         self.assertLess(full.index(demo.VIEWER_MARK), full.lower().rindex('</body>'))
         self.assertTrue(bare.endswith('</script>'))
 
+    def test_injected_snippet_is_ascii_so_no_charset_page_cannot_garble_it(self):
+        self.assertTrue(demo.viewer_snippet().isascii())
+
     def test_script_cannot_close_its_own_tag(self):
         js = (SCRIPT.parent / 'viewer.js').read_text()
         self.assertNotIn('</script', js.lower())
@@ -266,6 +269,26 @@ class BrowserTests(unittest.TestCase):
           return m.length === 4 ? m[3] : 1;
         }''')
         self.assertEqual(alpha, 1)  # any see-through shows the page behind as a ghost
+
+    def test_page_without_charset_shows_the_right_glyphs(self):
+        # no <meta charset>, served as latin-1 text: the browser decodes it as windows-1252
+        page = demo.build_index(f'<!doctype html><html><body>{IMG}</body></html>', 't')
+        self.assertTrue(page.isascii())
+        f = Path(self.tmp.name) / 'nocharset.html'
+        f.write_bytes(page.encode('ascii'))
+        ctx = self.browser.new_context(viewport={'width': 1000, 'height': 700})
+        self.addCleanup(ctx.close)
+        p = ctx.new_page()
+        p.route('**/*', lambda r: r.fulfill(body=f.read_bytes(), content_type='text/html'))
+        p.goto('http://nocharset.test/')
+        p.click('#a')
+        got = p.evaluate('''() => {
+          const h = [...document.documentElement.children].find(e => e.shadowRoot);
+          const s = h.shadowRoot;
+          return [s.querySelector('.close').textContent, s.querySelector('.zout').textContent,
+                  s.querySelector('.close').getAttribute('aria-label'), s.querySelector('.root').getAttribute('aria-label')];
+        }''')
+        self.assertEqual(got, ['\u2715', '\u2212', '\u95dc\u9589', '\u5716\u7247\u6aa2\u8996'])
 
     def test_clicking_the_picture_itself_does_not_close(self):
         p = self.open(IMG)

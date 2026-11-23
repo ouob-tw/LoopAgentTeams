@@ -70,11 +70,11 @@
     shadow = host.attachShadow({ mode: 'open' });
     shadow.innerHTML =
       '<style>' + CSS + '</style>' +
-      '<div class="root" tabindex="-1" role="dialog" aria-modal="true" aria-label="圖片檢視">' +
+      '<div class="root" tabindex="-1" role="dialog" aria-modal="true" aria-label="\u5716\u7247\u6aa2\u8996">' +
       '<div class="stage"><img alt=""></div>' +
-      '<button class="close" type="button" aria-label="關閉">✕</button>' +
-      '<button class="zout" type="button" aria-label="縮小">−</button>' +
-      '<button class="zin" type="button" aria-label="放大">+</button></div>';
+      '<button class="close" type="button" aria-label="\u95dc\u9589">\u2715</button>' +
+      '<button class="zout" type="button" aria-label="\u7e2e\u5c0f">\u2212</button>' +
+      '<button class="zin" type="button" aria-label="\u653e\u5927">+</button></div>';
     root = shadow.querySelector('.root');
     stage = shadow.querySelector('.stage');
     pic = shadow.querySelector('img');
