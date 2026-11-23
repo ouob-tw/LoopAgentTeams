@@ -1,5 +1,5 @@
 import { answerHerdrList } from '../harness.ts';
-import { BOARD_STARTED, CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, shot, TEST_MS, type Browser, type Tab } from '../browser.ts';
 // The 所有 Agent tab in a real browser: headless Chrome driven over its DevTools protocol, on the
 // built board with fake data, wide and at a phone's width. Skipped when the host has no Chrome.
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -160,6 +160,7 @@ for (const saved of [0, 150]) {
 			const rights = [...document.querySelectorAll('.inbox *')].map((node) => node.getBoundingClientRect()).filter((r) => r.width > 0).map((r) => r.right);
 			return { inbox: inbox.width, detail: detail.left, reach: Math.max(...rights.map((right) => Math.min(right, inbox.right))), wide: document.documentElement.scrollWidth - window.innerWidth };
 		})()`);
+		await shot(tab, `inbox-${saved}-1280`);
 		expect(Math.round(box.inbox)).toBe(saved);
 		expect(box.reach).toBeLessThanOrEqual(box.detail + 0.5);
 		expect(box.wide).toBeLessThanOrEqual(0);
