@@ -154,18 +154,49 @@ for (const saved of [0, 150]) {
 		await tab.send('Page.navigate', { url: `${fixture.url}/` });
 		await tab.until(`!!document.querySelector('[data-middle="agents"]')`, 'the agents tab button');
 		await tab.until(`(document.querySelector('[data-middle="agents"]').click(), !!document.querySelector('.inbox [data-agent="s-plain"]'))`, 'the agent list');
-		const box = await tab.eval<{ inbox: number; detail: number; reach: number; wide: number }>(`(() => {
-			const inbox = document.querySelector('.inbox').getBoundingClientRect();
+		const box = await tab.eval<{ inbox: number; atEdge: boolean; clipped: boolean; handles: boolean; wide: number }>(`(() => {
+			const inbox = document.querySelector('.inbox');
 			const detail = document.querySelector('.detail').getBoundingClientRect();
-			const rights = [...document.querySelectorAll('.inbox *')].map((node) => node.getBoundingClientRect()).filter((r) => r.width > 0).map((r) => r.right);
-			return { inbox: inbox.width, detail: detail.left, reach: Math.max(...rights.map((right) => Math.min(right, inbox.right))), wide: document.documentElement.scrollWidth - window.innerWidth };
+			const [roster, middle] = [...document.querySelectorAll('.resize')].map((node) => node.getBoundingClientRect());
+			const hit = document.elementFromPoint(detail.left + 3, 300);
+			return {
+				inbox: inbox.getBoundingClientRect().width,
+				atEdge: !!hit && !inbox.contains(hit),
+				clipped: getComputedStyle(inbox).overflowX === 'hidden',
+				handles: middle.left >= roster.right - 0.5 || ${saved} > 0,
+				wide: document.documentElement.scrollWidth - window.innerWidth
+			};
 		})()`);
 		await shot(tab, `inbox-${saved}-1280`);
 		expect(Math.round(box.inbox)).toBe(saved);
-		expect(box.reach).toBeLessThanOrEqual(box.detail + 0.5);
+		expect(box.atEdge).toBe(true);
+		expect(box.clipped).toBe(true);
+		expect(box.handles).toBe(true);
 		expect(box.wide).toBeLessThanOrEqual(0);
 	}, TEST_MS);
 }
+
+test.skipIf(!CHROME)('1280px: dragging the middle column\'s edge past the left stops at 0, it stays after a reload, and a double click brings it back', async () => {
+	await visit(1280);
+	const mouse = (type: string, x: number, buttons = 0) => tab.send('Input.dispatchMouseEvent', { type, x, y: 300, button: 'left', buttons, clickCount: type === 'mouseReleased' ? 1 : 0, pointerType: 'mouse' });
+	const saved = () => tab.eval<string | null>(`localStorage.getItem('lat-board-inbox-width')`);
+	const edge = () => tab.eval<number>(`document.querySelector('.inbox').getBoundingClientRect().right`);
+	await tab.until(`!!document.querySelector('.resize[data-column="inbox"]')`, 'the middle edge');
+	const start = await edge();
+	await mouse('mousePressed', start, 1);
+	await mouse('mouseMoved', start - 200, 1);
+	await mouse('mouseMoved', 0, 1);
+	await mouse('mouseReleased', 0);
+	await tab.until(`document.querySelector('.inbox').getBoundingClientRect().width === 0`, 'the column at 0');
+	expect(await saved()).toBe('0');
+	await tab.send('Page.navigate', { url: `${fixture.url}/` });
+	await tab.until(`document.querySelector('.inbox')?.getBoundingClientRect().width === 0`, 'the column still at 0');
+	const at = await edge();
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at + 8, y: 300, button: 'left', buttons: 1, clickCount: 2, pointerType: 'mouse' });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at + 8, y: 300, button: 'left', clickCount: 2, pointerType: 'mouse' });
+	await tab.until(`document.querySelector('.inbox').getBoundingClientRect().width > 100`, 'the column back at its default');
+	expect(await saved()).toBeNull();
+}, TEST_MS);
 
 for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: the tab lists the agents by workspace, and an agent opens at its conversation`, async () => {

@@ -924,6 +924,8 @@
 	.resize[data-column='inbox'] {
 		bottom: var(--dock-h, 0px);
 		left: calc(var(--col-roster) + var(--col-inbox));
+		/* At 0 it moves just right of the roster's handle instead of covering it. */
+		margin-left: clamp(-5px, calc(4px - var(--col-inbox) * 9), 4px);
 	}
 	.resize:hover,
 	.resize:active {
@@ -938,8 +940,11 @@
 	}
 	.roster,
 	.inbox {
+		border-right: 1px solid var(--line);
+	}
+	.inbox {
 		/* Gone with the column at 0, so the line does not stick out over the conversation. */
-		border-right: min(1px, var(--col-inbox, 1px)) solid var(--line);
+		border-right-width: min(1px, var(--col-inbox, 1px));
 	}
 	.inbox {
 		display: flex;
