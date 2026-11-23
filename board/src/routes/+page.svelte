@@ -938,7 +938,8 @@
 	}
 	.roster,
 	.inbox {
-		border-right: 1px solid var(--line);
+		/* Gone with the column at 0, so the line does not stick out over the conversation. */
+		border-right: min(1px, var(--col-inbox, 1px)) solid var(--line);
 	}
 	.inbox {
 		display: flex;
@@ -1189,6 +1190,12 @@
 		.roster,
 		.inbox {
 			padding: 0.6rem;
+		}
+		/* The middle column can be dragged down to nothing: its side padding shrinks with it and
+		   what no longer fits is cut off, so it never spills over the conversation. */
+		.inbox {
+			padding-inline: min(0.6rem, calc(var(--col-inbox) / 4));
+			overflow-x: hidden;
 		}
 		.detail {
 			padding: 0.9rem;

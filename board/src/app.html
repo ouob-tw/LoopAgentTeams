@@ -54,7 +54,7 @@
 					if (screenFont !== null) root.style.setProperty('--screen-font', screenFont + 'px');
 					var roster = number('lat-board-roster-width', 170, 440);
 					if (roster !== null) root.style.setProperty('--roster-w', roster + 'px');
-					var inbox = number('lat-board-inbox-width', 260, 720);
+					var inbox = number('lat-board-inbox-width', 0, 720);
 					if (inbox !== null) root.style.setProperty('--inbox-w', inbox + 'px');
 				} catch (error) {
 					// Storage is blocked: the board looks the default way and does not remember.

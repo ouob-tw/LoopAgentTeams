@@ -738,8 +738,8 @@
 	<span class="facts">
 		<span class="status" class:asking={agent.asking}>{agent.asking ? ASKING_STATUS_TEXT : AGENT_STATUS_LABEL[agent.status]}</span>
 		<span>{agent.client}</span>
-		<!-- Not linked shows nothing, so the badge alone means linked; the tooltip still says it. -->
-		{#if agent.hcom !== 'none'}<HcomBadge hcom={agent.hcom} />{/if}
+		<!-- Linked shows nothing: the badge appears only when hcom does not reach the agent. -->
+		{#if agent.hcom !== 'linked'}<HcomBadge hcom={agent.hcom} />{/if}
 	</span>
 	<span class="folder">{folderName(agent.folder)}</span>
 {/snippet}

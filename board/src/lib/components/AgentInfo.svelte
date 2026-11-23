@@ -118,8 +118,8 @@
 		<span class="status"><StatusMark status={AGENT_MARK[agent.status]} decorative />{statusText}</span>
 		<h2 title={agent.name}>{shortName(agent)}</h2>
 		{#if tabShown(agent)}<span class="handle"><span class="dot" aria-hidden="true">·</span>{tabShown(agent)}</span>{/if}
-		<!-- Not linked shows no badge, as on the list. -->
-		<span class="chip">{folderName(agent.folder)}{#if agent.hcom !== 'none'}・<HcomBadge hcom={agent.hcom} />{/if}</span>
+		<!-- Linked shows no badge, as on the list. -->
+		<span class="chip">{folderName(agent.folder)}{#if agent.hcom !== 'linked'}・<HcomBadge hcom={agent.hcom} />{/if}</span>
 		{#if agent.controller}
 			<span class="tag">LAT 主控</span>
 		{/if}

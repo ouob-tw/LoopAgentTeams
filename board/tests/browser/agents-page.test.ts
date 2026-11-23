@@ -145,6 +145,27 @@ const STOP = '.dock [data-action="interrupt"]';
 const click = (selector: string) => tab.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);
 const openAgent = (id: string) => tab.eval(`document.querySelector('[data-agent="${id}"]').click()`);
 
+// The middle column has no least width: dragged to 0 or 150px it keeps what was saved across a
+// reload, and what no longer fits is cut off instead of spilling onto the conversation.
+for (const saved of [0, 150]) {
+	test.skipIf(!CHROME)(`1280px: a middle column saved at ${saved}px stays that wide and its cards do not reach the conversation`, async () => {
+		await visit(1280);
+		await tab.eval(`localStorage.setItem('lat-board-inbox-width', '${saved}')`);
+		await tab.send('Page.navigate', { url: `${fixture.url}/` });
+		await tab.until(`!!document.querySelector('[data-middle="agents"]')`, 'the agents tab button');
+		await tab.until(`(document.querySelector('[data-middle="agents"]').click(), !!document.querySelector('.inbox [data-agent="s-plain"]'))`, 'the agent list');
+		const box = await tab.eval<{ inbox: number; detail: number; reach: number; wide: number }>(`(() => {
+			const inbox = document.querySelector('.inbox').getBoundingClientRect();
+			const detail = document.querySelector('.detail').getBoundingClientRect();
+			const rights = [...document.querySelectorAll('.inbox *')].map((node) => node.getBoundingClientRect()).filter((r) => r.width > 0).map((r) => r.right);
+			return { inbox: inbox.width, detail: detail.left, reach: Math.max(...rights.map((right) => Math.min(right, inbox.right))), wide: document.documentElement.scrollWidth - window.innerWidth };
+		})()`);
+		expect(Math.round(box.inbox)).toBe(saved);
+		expect(box.reach).toBeLessThanOrEqual(box.detail + 0.5);
+		expect(box.wide).toBeLessThanOrEqual(0);
+	}, TEST_MS);
+}
+
 for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: the tab lists the agents by workspace, and an agent opens at its conversation`, async () => {
 		await visit(width);
@@ -160,9 +181,9 @@ for (const width of [1280, 390]) {
 		expect(await tab.eval(`document.querySelector('.inbox [data-agent="s-lead"] .card-name').innerText`)).toBe('分頁-s-lead');
 		expect(list).toContain('主控');
 		expect(list).toContain('等待輸入');
-		// Linked has its badge; not linked has none on its card.
-		expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-lead"] .hcom.linked')`)).toBe(true);
-		expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-plain"] .hcom')`)).toBe(false);
+		// Only not linked has a badge on its card; linked shows none.
+		expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-lead"] .hcom')`)).toBe(false);
+		expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-plain"] .hcom.none')`)).toBe(true);
 		// Listed, but nothing to open without a session ID.
 		expect(await tab.eval(`document.querySelector('[data-pane="wB:p-s-unknown"]')?.tagName`)).toBe('DIV');
 		expect(list).toContain('Herdr 還沒回報它的 session ID，暫時無法開啟');

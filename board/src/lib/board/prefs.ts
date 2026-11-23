@@ -58,7 +58,7 @@ export const LEGACY_TRANSLATE_KEY = 'lat-board-translate';
 /** Column widths of the wide layout in px. The defaults live in the page's styles. */
 export const WIDTHS = {
 	roster: { key: 'lat-board-roster-width', min: 170, max: 440 },
-	inbox: { key: 'lat-board-inbox-width', min: 260, max: 720 }
+	inbox: { key: 'lat-board-inbox-width', min: 0, max: 720 }
 } as const;
 export type Column = keyof typeof WIDTHS;
 
