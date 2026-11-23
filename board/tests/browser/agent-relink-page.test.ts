@@ -132,9 +132,9 @@ test.skipIf(!CHROME)('whatever hcom lists for it, neither the header nor the ros
 	await fixture.refresh(cookie);
 	await visit(1280);
 	await tab.until(has('relink'), 'the restart button');
-	expect(await tab.eval(`document.querySelector('.detail .profile').innerText`)).not.toContain('HCOM\n');
-	expect(await tab.eval(`[...document.querySelectorAll('.profile .chip')].some((chip) => chip.innerText.includes('HCOM'))`)).toBe(false);
-	expect(await tab.eval(`[...document.querySelectorAll('button.agent')].some((row) => row.innerText.includes('HCOM'))`)).toBe(false);
+	// A badge shows only while not linked, so both carry one, and neither a linked one.
+	expect(await tab.eval(`!!document.querySelector('.profile .chip .hcom:not(.linked)')`)).toBe(true);
+	expect(await tab.eval(`!!document.querySelector('.profile .hcom.linked, button.agent .hcom.linked')`)).toBe(false);
 	await shot('desktop-6-listed-no-hooks');
 }, TEST_MS);
 

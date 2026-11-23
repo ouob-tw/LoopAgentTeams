@@ -932,6 +932,8 @@
 	.resize[data-column='inbox'] {
 		bottom: var(--dock-h, 0px);
 		left: calc(var(--col-roster) + var(--col-inbox));
+		/* At 0 it moves just right of the roster's handle instead of covering it. */
+		margin-left: clamp(-5px, calc(4px - var(--col-inbox) * 9), 4px);
 	}
 	.resize:hover,
 	.resize:active {
@@ -947,6 +949,10 @@
 	.roster,
 	.inbox {
 		border-right: 1px solid var(--line);
+	}
+	.inbox {
+		/* Gone with the column at 0, so the line does not stick out over the conversation. */
+		border-right-width: min(1px, var(--col-inbox, 1px));
 	}
 	.inbox {
 		display: flex;
@@ -1197,6 +1203,12 @@
 		.roster,
 		.inbox {
 			padding: 0.6rem;
+		}
+		/* The middle column can be dragged down to nothing: its side padding shrinks with it and
+		   what no longer fits is cut off, so it never spills over the conversation. */
+		.inbox {
+			padding-inline: min(0.6rem, calc(var(--col-inbox) / 4));
+			overflow-x: hidden;
 		}
 		.detail {
 			padding: 0.9rem;

@@ -1,5 +1,5 @@
 import { answerHerdrList } from '../harness.ts';
-import { BOARD_STARTED, CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, shot, TEST_MS, type Browser, type Tab } from '../browser.ts';
 // The 所有 Agent tab in a real browser: headless Chrome driven over its DevTools protocol, on the
 // built board with fake data, wide and at a phone's width. Skipped when the host has no Chrome.
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -145,6 +145,59 @@ const STOP = '.dock [data-action="interrupt"]';
 const click = (selector: string) => tab.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);
 const openAgent = (id: string) => tab.eval(`document.querySelector('[data-agent="${id}"]').click()`);
 
+// The middle column has no least width: dragged to 0 or 150px it keeps what was saved across a
+// reload, and what no longer fits is cut off instead of spilling onto the conversation.
+for (const saved of [0, 150]) {
+	test.skipIf(!CHROME)(`1280px: a middle column saved at ${saved}px stays that wide and its cards do not reach the conversation`, async () => {
+		await visit(1280);
+		await tab.eval(`localStorage.setItem('lat-board-inbox-width', '${saved}')`);
+		await tab.send('Page.navigate', { url: `${fixture.url}/` });
+		await tab.until(`!!document.querySelector('[data-middle="agents"]') && document.body.dataset.hydrated !== undefined`, 'the agents tab button, started');
+		await tab.until(`(document.querySelector('[data-middle="agents"]').click(), !!document.querySelector('.inbox [data-agent="s-plain"]'))`, 'the agent list');
+		const box = await tab.eval<{ inbox: number; atEdge: boolean; clipped: boolean; handles: boolean; wide: number }>(`(() => {
+			const inbox = document.querySelector('.inbox');
+			const detail = document.querySelector('.detail').getBoundingClientRect();
+			const [roster, middle] = [...document.querySelectorAll('.resize')].map((node) => node.getBoundingClientRect());
+			const hit = document.elementFromPoint(detail.left + 3, 300);
+			return {
+				inbox: inbox.getBoundingClientRect().width,
+				atEdge: !!hit && !inbox.contains(hit),
+				clipped: getComputedStyle(inbox).overflowX === 'hidden',
+				handles: middle.left >= roster.right - 0.5 || ${saved} > 0,
+				wide: document.documentElement.scrollWidth - window.innerWidth
+			};
+		})()`);
+		await shot(tab, `inbox-${saved}-1280`);
+		expect(Math.round(box.inbox)).toBe(saved);
+		expect(box.atEdge).toBe(true);
+		expect(box.clipped).toBe(true);
+		expect(box.handles).toBe(true);
+		expect(box.wide).toBeLessThanOrEqual(0);
+	}, TEST_MS);
+}
+
+test.skipIf(!CHROME)('1280px: dragging the middle column\'s edge past the left stops at 0, it stays after a reload, and a double click brings it back', async () => {
+	await visit(1280);
+	const mouse = (type: string, x: number, buttons = 0) => tab.send('Input.dispatchMouseEvent', { type, x, y: 300, button: 'left', buttons, clickCount: type === 'mouseReleased' ? 1 : 0, pointerType: 'mouse' });
+	const saved = () => tab.eval<string | null>(`localStorage.getItem('lat-board-inbox-width')`);
+	const edge = () => tab.eval<number>(`document.querySelector('.inbox').getBoundingClientRect().right`);
+	await tab.until(`!!document.querySelector('.resize[data-column="inbox"]') && document.body.dataset.hydrated !== undefined`, 'the middle edge, started');
+	const start = await edge();
+	await mouse('mousePressed', start, 1);
+	await mouse('mouseMoved', start - 200, 1);
+	await mouse('mouseMoved', 0, 1);
+	await mouse('mouseReleased', 0);
+	await tab.until(`document.querySelector('.inbox').getBoundingClientRect().width === 0`, 'the column at 0');
+	expect(await saved()).toBe('0');
+	await tab.send('Page.navigate', { url: `${fixture.url}/` });
+	await tab.until(`document.querySelector('.inbox')?.getBoundingClientRect().width === 0 && document.body.dataset.hydrated !== undefined`, 'the column still at 0, started');
+	const at = await edge();
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at + 8, y: 300, button: 'left', buttons: 1, clickCount: 2, pointerType: 'mouse' });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at + 8, y: 300, button: 'left', clickCount: 2, pointerType: 'mouse' });
+	await tab.until(`document.querySelector('.inbox').getBoundingClientRect().width > 100`, 'the column back at its default');
+	expect(await saved()).toBeNull();
+}, TEST_MS);
+
 for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: the tab lists the agents by workspace, and an agent opens at its conversation`, async () => {
 		await visit(width);
@@ -160,9 +213,9 @@ for (const width of [1280, 390]) {
 		expect(await tab.eval(`document.querySelector('.inbox [data-agent="s-lead"] .card-name').innerText`)).toBe('分頁-s-lead');
 		expect(list).toContain('主控');
 		expect(list).toContain('等待輸入');
-		// Linked has its badge; not linked has none on its card.
-		expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-lead"] .hcom.linked')`)).toBe(true);
-		expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-plain"] .hcom')`)).toBe(false);
+		// Only not linked has a badge on its card; linked shows none.
+		expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-lead"] .hcom')`)).toBe(false);
+		expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-plain"] .hcom.none')`)).toBe(true);
 		// Listed, but nothing to open without a session ID.
 		expect(await tab.eval(`document.querySelector('[data-pane="wB:p-s-unknown"]')?.tagName`)).toBe('DIV');
 		expect(list).toContain('Herdr 還沒回報它的 session ID，暫時無法開啟');
