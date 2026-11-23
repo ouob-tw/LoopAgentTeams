@@ -18,6 +18,7 @@
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { voice } from '#lib/board/voice.svelte.ts';
 	import { folderName, lastSegment, shortName, workspaceFolders } from '#lib/board/agents.ts';
+	import { launchLink, type LaunchCard } from '#lib/board/launch.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { RELINKING_TEXT } from '#lib/board/agent-actions.ts';
@@ -432,6 +433,13 @@
 	}
 	const openLaunch = () => navigation.go({ kind: 'launch' });
 	const openAgent = (id: string) => navigation.go({ kind: 'agent', id });
+	/** The roster's starting mark or card: the launched agent's own page once the board can find it
+	 *  (listed in Herdr under the launch's HCOM name), until then the new-controller page. */
+	function openLaunchCard(card: LaunchCard) {
+		const link = launchLink({ ...card, controllerId: null }, [], controllers, agents);
+		if (link?.kind === 'agent') openAgent(link.id);
+		else openLaunch();
+	}
 	const openNewAgent = (workspace: string) => navigation.go({ kind: 'new-agent', workspace });
 
 	/** The task the 自動化 page or edit form shows; undefined once it is gone, and for a new one. */
@@ -534,7 +542,7 @@
 					{launching}
 					currentId={view?.kind === 'controller' ? view.id : null}
 					onopen={openController}
-					onlaunch={openLaunch}
+					onlaunch={openLaunchCard}
 					onexpand={() => appearance.setFolded(false)}
 				>
 					{#snippet tools()}
@@ -566,7 +574,7 @@
 						{@render openSettings()}
 					</span>
 				</header>
-				<Roster {controllers} {launching} currentId={view?.kind === 'controller' ? view.id : null} onopen={openController} onlaunch={openLaunch} />
+				<Roster {controllers} {launching} currentId={view?.kind === 'controller' ? view.id : null} onopen={openController} onlaunch={openLaunchCard} />
 			</div>
 		</nav>
 		{@render resize('roster')}

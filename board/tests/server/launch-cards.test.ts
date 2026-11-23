@@ -87,7 +87,7 @@ for (const mode of ['manual', 'unattended'] as const) {
 		const id = body.entry!.id;
 		await until(() => card(watch.latest(), id) !== undefined, 2_000);
 		expect(Date.now() - answered).toBeLessThan(2_000);
-		expect(card(watch.latest(), id)).toEqual({ id, time: body.entry!.time, client: 'claude', folder, scope: folder, hcomName: name, state: 'starting', error: null });
+		expect(card(watch.latest(), id)).toEqual({ id, time: body.entry!.time, client: 'claude', folder, scope: folder, hcomName: name, state: 'starting', error: null, earlierSessions: [] });
 
 		const from = watch.snapshots.length;
 		const controller = fixture.bound('p', name, { workspace: folder });

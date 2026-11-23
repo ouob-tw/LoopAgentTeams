@@ -29,11 +29,11 @@
 		tools
 	}: {
 		controllers: Controller[];
-		/** Controllers launched and not bound yet: a mark each above the others, opening the new-controller page. */
+		/** Controllers launched and not bound yet: a mark each above the others, opening the launched agent's page, or the new-controller page while it cannot be found. */
 		launching?: LaunchCard[];
 		currentId: string | null;
 		onopen: (id: string) => void;
-		onlaunch: () => void;
+		onlaunch: (launch: LaunchCard) => void;
 		onexpand: () => void;
 		/** Controls shown at the foot of the rail; using them does not unfold the roster. */
 		tools: Snippet;
@@ -63,7 +63,7 @@
 <div class="rail">
 	<button class="grip" onclick={onexpand} aria-label="展開主控名冊" title="展開主控名冊"><PanelLeftOpen size="1.1em" /></button>
 	{#each launches as launch (launch.id)}
-		<button class="entry" data-launch={launch.id} aria-label={launchLabel(launch)} title={launchLabel(launch)} onclick={onlaunch}>
+		<button class="entry" data-launch={launch.id} aria-label={launchLabel(launch)} title={launchLabel(launch)} onclick={() => onlaunch(launch)}>
 			<LaunchMark state={launch.state} />
 		</button>
 	{/each}

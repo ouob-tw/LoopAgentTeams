@@ -132,6 +132,65 @@ test.skipIf(!CHROME)('the card is on the roster within 2 seconds of sending, bef
 	await until(`location.search.includes('launch')`, 2_000);
 }, 40_000);
 
+test.skipIf(!CHROME)('while starting, the rail mark and the roster card open the launched agent\'s page once Herdr lists it, the new-controller page before', async () => {
+	await resize(1400);
+	await send('Page.navigate', { url: fixture.url });
+	await until(`${BOARD_STARTED} && !!${CARD}`);
+	const place = () => evaluate<string>('location.search + location.pathname');
+	const pavoAgent = {
+		agent: 'claude',
+		agent_session: { kind: 'id', value: 's-pavo' },
+		agent_status: 'idle',
+		cwd: folder,
+		pane_id: 'wA:p-pavo',
+		tab_id: 'wA:t-pavo',
+		workspace_id: 'wA'
+	};
+	const rail = `document.querySelector('.rail [data-launch]')`;
+	const fold = async (folded: boolean) => {
+		await evaluate(folded ? `document.querySelector('.summary .fold').click()` : `document.querySelector('.rail .grip').click()`);
+		await until(folded ? `!!${rail}` : `!!${CARD}`);
+	};
+
+	// Not listed yet: both open the new-controller page.
+	await evaluate(`${CARD}.querySelector('.open').click()`);
+	await until(`location.search.includes('launch')`, 2_000);
+	await send('Page.navigate', { url: fixture.url });
+	await until(`${BOARD_STARTED} && !!${CARD}`);
+	await fold(true);
+	await evaluate(`${rail}.click()`);
+	await until(`location.search.includes('launch')`, 2_000);
+
+	// Listed under its HCOM name, with no controller binding: both open that agent's page.
+	hcom({ names: ['pavo'], agents: [{ name: 'luna', session_id: luna.session_id, status: 'listening' }, { name: 'pavo', session_id: 's-pavo', status: 'listening', launch_context: { pane_id: 'wA:p-pavo' } }] });
+	writeFileSync(
+		join(fixture.dir, 'herdr.json'),
+		JSON.stringify({
+			agents: [pavoAgent],
+			panes: [{ pane_id: 'wA:p-luna', workspace_id: 'wA', cwd: luna.workspace }, { pane_id: pavoAgent.pane_id, workspace_id: 'wA', cwd: folder }],
+			workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
+			tabs: [{ tab_id: pavoAgent.tab_id, workspace_id: 'wA', label: 'pavo' }]
+		})
+	);
+	await fixture.refresh(cookie);
+	await send('Page.navigate', { url: fixture.url });
+	await until(`${BOARD_STARTED} && !!${CARD}`);
+	await fold(true);
+	await evaluate(`${rail}.click()`);
+	await until(`location.search.includes('agent=s-pavo') || location.pathname.includes('s-pavo')`, 3_000);
+	expect(await place()).not.toContain('launch');
+	await shot(browser!.tab, '1400-rail-opens-agent');
+
+	await send('Page.navigate', { url: fixture.url });
+	await until(`${BOARD_STARTED} && !!${CARD}`);
+	await evaluate(`${CARD}.querySelector('.open').click()`);
+	await until(`location.search.includes('agent=s-pavo') || location.pathname.includes('s-pavo')`, 3_000);
+	await shot(browser!.tab, '1400-card-opens-agent');
+
+	herdr([luna.workspace, folder]);
+	await fixture.refresh(cookie);
+}, 40_000);
+
 test.skipIf(!CHROME)('on a phone the card is a tag like the others, with its state word', async () => {
 	await resize(390);
 	await send('Page.navigate', { url: fixture.url });

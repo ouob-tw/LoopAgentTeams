@@ -31,7 +31,7 @@ const launch = (state: LaunchView['state'], fields: Partial<LaunchView> = {}): L
 test('a starting launch is a card with what the roster shows', () => {
 	const one = launch('starting');
 	expect(launchCards([one], [], NOW)).toEqual([
-		{ id: one.id, time: one.time, client: 'claude', folder: '/p/alpha/pkg', scope: '/p/alpha', hcomName: 'bure', state: 'starting', error: null }
+		{ id: one.id, time: one.time, client: 'claude', folder: '/p/alpha/pkg', scope: '/p/alpha', hcomName: 'bure', state: 'starting', error: null, earlierSessions: [] }
 	]);
 });
 

@@ -23,8 +23,8 @@
 		launching?: LaunchCard[];
 		currentId: string | null;
 		onopen: (id: string) => void;
-		/** Opens the new-controller page, where a launch's row leads on. */
-		onlaunch: () => void;
+		/** Opens the launched agent's page, or the new-controller page while it cannot be found. */
+		onlaunch: (launch: LaunchCard) => void;
 	} = $props();
 
 	const launches = $derived(dismissedLaunches.shown(launching));
@@ -36,7 +36,7 @@
 
 <div class="people">
 	{#each launches as launch (launch.id)}
-		<LaunchRosterCard {launch} onopen={onlaunch} ondismiss={(id) => dismissedLaunches.dismiss(id)} />
+		<LaunchRosterCard {launch} onopen={() => onlaunch(launch)} ondismiss={(id) => dismissedLaunches.dismiss(id)} />
 	{/each}
 	{#if launches.length && (parts.groups.length || parts.older.length)}<hr class="sep" />{/if}
 	{#each parts.groups as group, index (group[0].id)}
