@@ -135,7 +135,8 @@ class DemoTests(unittest.TestCase):
         self.assertIn('prefers-color-scheme', body)
         full = '<!doctype html><html><body>own</body></html>'
         u2 = self.publish(self.make(full, 'b'), 'full').stdout.strip().split('127.0.0.1:7161')[1]
-        self.assertEqual(self.get(u2)[1], full)
+        self.assertTrue(self.get(u2)[1].startswith('<!doctype html><html><body>own'))
+        self.assertIn('demo-viewer', self.get(u2)[1])
         u3 = self.publish(self.make('  <HTML><body>own</body></HTML>', 'c'), 'full2').stdout.strip().split('127.0.0.1:7161')[1]
         self.assertNotIn('viewport', self.get(u3)[1])
 

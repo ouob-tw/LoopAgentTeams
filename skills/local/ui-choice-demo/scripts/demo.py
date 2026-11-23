@@ -28,6 +28,7 @@ from pathlib import Path
 
 MAX_AGE = 14 * 86400
 NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]{0,63}$')
+VIEWER_MARK = '<!--demo-viewer-->'
 FULL_DOC = re.compile(r'\s*(<!doctype|<html)', re.I)
 
 FRAME = '''<!DOCTYPE html>
@@ -165,10 +166,25 @@ def serve():
     srv.serve_forever()
 
 
+def viewer_snippet():
+    js = (Path(__file__).resolve().parent / 'viewer.js').read_text(encoding='utf-8')
+    return (f'{VIEWER_MARK}<style>:where(img){{cursor:zoom-in}}:where(a img,button img,label img,[data-no-zoom] img)'
+            f'{{cursor:auto}}</style><script>{js}</script>')
+
+
+def add_viewer(html):
+    """Add the click-to-zoom image viewer once, just before the last </body> (or at the end)."""
+    if VIEWER_MARK in html:
+        return html
+    at = html.lower().rfind('</body>')
+    snippet = viewer_snippet()
+    return html + snippet if at < 0 else html[:at] + snippet + html[at:]
+
+
 def build_index(text, title):
     if FULL_DOC.match(text.lstrip('\ufeff')):
-        return text
-    return FRAME.replace('__TITLE__', title).replace('__BODY__', text)
+        return add_viewer(text)
+    return add_viewer(FRAME.replace('__TITLE__', title).replace('__BODY__', text))
 
 
 def publish(src, name):
