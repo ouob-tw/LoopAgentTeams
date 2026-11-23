@@ -152,7 +152,7 @@ for (const saved of [0, 150]) {
 		await visit(1280);
 		await tab.eval(`localStorage.setItem('lat-board-inbox-width', '${saved}')`);
 		await tab.send('Page.navigate', { url: `${fixture.url}/` });
-		await tab.until(`!!document.querySelector('[data-middle="agents"]')`, 'the agents tab button');
+		await tab.until(`!!document.querySelector('[data-middle="agents"]') && document.body.dataset.hydrated !== undefined`, 'the agents tab button, started');
 		await tab.until(`(document.querySelector('[data-middle="agents"]').click(), !!document.querySelector('.inbox [data-agent="s-plain"]'))`, 'the agent list');
 		const box = await tab.eval<{ inbox: number; atEdge: boolean; clipped: boolean; handles: boolean; wide: number }>(`(() => {
 			const inbox = document.querySelector('.inbox');
@@ -181,7 +181,7 @@ test.skipIf(!CHROME)('1280px: dragging the middle column\'s edge past the left s
 	const mouse = (type: string, x: number, buttons = 0) => tab.send('Input.dispatchMouseEvent', { type, x, y: 300, button: 'left', buttons, clickCount: type === 'mouseReleased' ? 1 : 0, pointerType: 'mouse' });
 	const saved = () => tab.eval<string | null>(`localStorage.getItem('lat-board-inbox-width')`);
 	const edge = () => tab.eval<number>(`document.querySelector('.inbox').getBoundingClientRect().right`);
-	await tab.until(`!!document.querySelector('.resize[data-column="inbox"]')`, 'the middle edge');
+	await tab.until(`!!document.querySelector('.resize[data-column="inbox"]') && document.body.dataset.hydrated !== undefined`, 'the middle edge, started');
 	const start = await edge();
 	await mouse('mousePressed', start, 1);
 	await mouse('mouseMoved', start - 200, 1);
@@ -190,7 +190,7 @@ test.skipIf(!CHROME)('1280px: dragging the middle column\'s edge past the left s
 	await tab.until(`document.querySelector('.inbox').getBoundingClientRect().width === 0`, 'the column at 0');
 	expect(await saved()).toBe('0');
 	await tab.send('Page.navigate', { url: `${fixture.url}/` });
-	await tab.until(`document.querySelector('.inbox')?.getBoundingClientRect().width === 0`, 'the column still at 0');
+	await tab.until(`document.querySelector('.inbox')?.getBoundingClientRect().width === 0 && document.body.dataset.hydrated !== undefined`, 'the column still at 0, started');
 	const at = await edge();
 	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at + 8, y: 300, button: 'left', buttons: 1, clickCount: 2, pointerType: 'mouse' });
 	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at + 8, y: 300, button: 'left', clickCount: 2, pointerType: 'mouse' });
