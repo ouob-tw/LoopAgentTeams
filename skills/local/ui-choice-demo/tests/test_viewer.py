@@ -256,6 +256,17 @@ class BrowserTests(unittest.TestCase):
         p.click('#a')
         self.assertIsNotNone(self.view())
 
+    def test_backdrop_is_fully_opaque(self):
+        p = self.open(IMG)
+        p.click('#a')
+        alpha = p.evaluate('''() => {
+          const h = [...document.documentElement.children].find(e => e.shadowRoot);
+          const c = getComputedStyle(h.shadowRoot.querySelector('.root')).backgroundColor;
+          const m = c.match(/rgba?\\(([^)]*)\\)/)[1].split(',').map(Number);
+          return m.length === 4 ? m[3] : 1;
+        }''')
+        self.assertEqual(alpha, 1)  # any see-through shows the page behind as a ghost
+
     def test_clicking_the_picture_itself_does_not_close(self):
         p = self.open(IMG)
         p.click('#a')

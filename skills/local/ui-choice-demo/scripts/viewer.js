@@ -9,7 +9,7 @@
   var TAP_SLOP = 6;          // px a pointer may move and still count as a tap
   var CSS =
     ':host{all:initial}' +
-    '.root{outline:0;position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.96);overflow:hidden;' +
+    '.root{outline:0;position:fixed;inset:0;z-index:2147483000;background:#000;overflow:hidden;' +
     'touch-action:none;overscroll-behavior:contain;-webkit-user-select:none;user-select:none;' +
     'font:18px/1 system-ui,-apple-system,sans-serif}' +
     '.stage{position:absolute;inset:0;cursor:grab}.stage.drag{cursor:grabbing}' +
