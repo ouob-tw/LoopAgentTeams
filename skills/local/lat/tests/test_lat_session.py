@@ -3672,6 +3672,14 @@ class SessionTests(unittest.TestCase):
                         'env -C /tmp gh issue edit 458 --body-file done.md && gh issue close 458',
                         '"cd" /tmp && gh issue edit 458 --body-file done.md && gh issue close 458',
                         'cd; gh issue edit 458 --body-file done.md && gh issue close 458',
+                        'cp half.md done.md && gh issue edit 458 --body-file done.md && gh issue close 458',
+                        'mv half.md done.md && gh issue edit 458 --body-file done.md && gh issue close 458',
+                        'gh issue edit 458 -F done.md && gh issue edit https://github.com/o/r/issues/458 '
+                        '-F half.md && gh issue close 458',
+                        "gh issue edit 458 -F done.md && gh api -X PATCH repos/o/r/issues/458 "
+                        "-f body=x && gh issue close 458",
+                        'gh issue edit 458 -F done.md && cd /tmp && gh issue close 458',
+                        'gh issue edit 458 -F done.md && GH_REPO=o/y gh issue close 458',
                         'gh issue edit 458 --body-file done.md || gh issue close 458',
                         'gh issue edit 458 --body-file done.md & gh issue close 458',
                         'gh issue edit 458 -R o/r --body-file done.md && gh issue close 458',
@@ -3682,6 +3690,10 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn('- [ ] 還沒勾', result.stderr)
                 self.assertNotIn('new body', result.stderr)
+        (self.work / '-').write_text('- [x] named dash\n')
+        result = self.close_hook('cat x | gh issue edit 458 --body-file - && gh issue close 458',
+                                 '- [ ] 還沒勾\n')
+        self.assertEqual(result.returncode, 2, result.stderr)
         # a body that is unreadable still falls back to GitHub's copy, which may be checked
         result = self.close_hook('gh issue edit 458 --body-file - && gh issue close 458',
                                  '- [x] ok\n')

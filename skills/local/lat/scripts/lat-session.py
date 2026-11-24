@@ -1393,7 +1393,8 @@ def new_body(edit, command, cwd):
     kind, value = edit
     if kind == 'text':
         return None if re.search(r'[$`]', value) else value
-    if re.search(r'>|\btee\b', command):
+    # Only a file nothing else in the command can have rewritten first: the edit leads.
+    if value == '-' or re.search(r'>|\btee\b', command) or not command.lstrip().startswith('gh'):
         return None
     path = Path(cwd) / value
     try:
@@ -1409,9 +1410,14 @@ def issue_closes(command):
     for position, (positionals, repo, comment, *_) in enumerate(found):
         if positionals[:2] == ['issue', 'close'] and positionals[2:]:
             after = len(found[position][4])
-            edits = [edit[:4] + (edit[4][:len(edit[4]) - after], edit[5])
-                     for edit in found[:position]
+            edits = [(at, edit[:4] + (edit[4][:len(edit[4]) - after], edit[5]))
+                     for at, edit in enumerate(found[:position])
                      if edit[0][:2] == ['issue', 'edit'] and edit[0][2:3] == positionals[2:3]]
+            # Anything that may change the body again, or runs the close elsewhere, makes
+            # the edit untrustworthy.
+            edits = [(at, edit[:5] + (edit[5] and found[position][5] and
+                                      not any(found[at + 1:position]),)) for at, edit in edits]
+            edits = [edit for _, edit in edits]
             closes.append((positionals[2], repo, comment, edits))
     return closes
 
