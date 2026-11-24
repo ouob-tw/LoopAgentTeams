@@ -117,6 +117,13 @@ test('the four states: 可用, 冷卻中 with a fixed note, 停用, 狀態不明
 	expect(cpaState({ status: 'something-new', status_message: 'raw status text SECRET' })).toEqual({ kind: 'cooling', note: '暫停使用' });
 	// CPA's fallback list, scanned off disk, has no runtime fields.
 	expect(cpaState({ name: 'x.json', type: 'codex', email: 'a@example.com' })).toEqual({ kind: 'unknown' });
+	// Available only when the list says so in full: any one field missing or odd leaves it unknown.
+	expect(cpaState({ status: 'active', unavailable: false })).toEqual({ kind: 'unknown' });
+	expect(cpaState({ status: 'active', disabled: false })).toEqual({ kind: 'unknown' });
+	expect(cpaState({ disabled: false, unavailable: false })).toEqual({ kind: 'unknown' });
+	expect(cpaState({ status: 'active', disabled: 'no', unavailable: false })).toEqual({ kind: 'unknown' });
+	// A field that says cooling is enough on its own.
+	expect(cpaState({ unavailable: true })).toEqual({ kind: 'cooling', note: '暫停使用' });
 });
 
 test('the four states reach the group from CPA\'s list', async () => {
@@ -149,7 +156,20 @@ test('one account unreadable: the other as ever; it keeps its last numbers and t
 	expect(first.ok && first.accounts[2]).toMatchObject({ email: 'never@example.com', windows: [], observedAt: null, unreadable: true });
 
 	// Every way an answer fails: non-200 upstream, no windows, not JSON, another shape.
-	for (const usage of [{ status: 500, body: {} }, { body: { plan_type: 'plus', rate_limit: { primary_window: null } } }, { body: 'not json' }, { body: { rate_limit: 'x' } }]) {
+	const good = (plus as { rate_limit: { primary_window: object; secondary_window: object } }).rate_limit;
+	const malformed = [
+		{ status: 500, body: {} },
+		{ body: { plan_type: 'plus', rate_limit: { primary_window: null } } },
+		{ body: 'not json' },
+		{ body: { rate_limit: 'x' } },
+		// A second window present but broken, or missing instead of null.
+		{ body: { ...plus, rate_limit: { ...good, secondary_window: { used_percent: 'bad', limit_window_seconds: 604_800, reset_at: 1 } } } },
+		{ body: { ...plus, rate_limit: { primary_window: good.primary_window } } },
+		// A window without its reset or its length.
+		{ body: { ...plus, rate_limit: { ...good, primary_window: { used_percent: 12, limit_window_seconds: 18_000 } } } },
+		{ body: { ...plus, rate_limit: { ...good, primary_window: { used_percent: 12, reset_at: 1 } } } }
+	];
+	for (const usage of malformed) {
 		fake.accounts[1].usage = usage;
 		clock.now += CODEX_USAGE_INTERVAL_MS;
 		const failed = await read();
@@ -223,6 +243,50 @@ test('a refused key is not sent again until the key file changes: five refusals 
 	expect(fixed.ok && fixed.accounts.length).toBe(1);
 	// The list and the one usage ask.
 	expect(fake.calls.length).toBe(3);
+});
+
+test('a plan the board does not know is not shown: CPA\'s or ChatGPT\'s text never becomes the label', async () => {
+	const odd = '/home/someone/auths/codex-secret-path.json';
+	const fake = await cpa([{ ...ready('a', 'odd@example.com', usageBody(odd, { used: 1, seconds: 18_000, resetAt: NOW + MIN })), plan: odd }, ready('b', 'plus@example.com')]);
+	const group = await reader(fake).read();
+	expect(group.ok && group.accounts.map((account) => account.plan?.label ?? null)).toEqual([null, 'Plus']);
+	expect(JSON.stringify(group)).not.toContain('codex-secret-path');
+});
+
+test('an account CPA leaves out of its list for a while keeps its numbers and is not asked again before 5 minutes', async () => {
+	const fake = await cpa([ready('a', 'one@example.com'), ready('b', 'two@example.com')]);
+	const { clock, read } = reader(fake);
+	await read();
+	const away = fake.accounts.splice(1, 1)[0];
+	clock.now = NOW + 30_000;
+	const without = await read();
+	expect(without.ok && without.accounts.map((account) => account.email)).toEqual(['one@example.com']);
+	fake.accounts.push({ ...away, usage: { status: 500, body: {} } });
+	clock.now = NOW + 60_000;
+	const back = await read();
+	expect(fake.usageCalls('b')).toBe(1);
+	expect(back.ok && back.accounts[1]).toMatchObject({ email: 'two@example.com', observedAt: NOW, windows: [{ used: 12 }, { used: 18 }] });
+	expect(back.ok && back.accounts[1].unreadable).toBeUndefined();
+});
+
+test('CPA refusing the usage ask itself stops the group; ChatGPT refusing it is that account\'s alone', async () => {
+	const fake = await cpa([ready('a', 'one@example.com'), { ...ready('b', 'two@example.com'), usage: { status: 403, body: { detail: 'raw status text SECRET' } } }]);
+	const { clock, read } = reader(fake);
+	const upstream = await read();
+	expect(upstream.ok && upstream.accounts.map((account) => account.unreadable ?? false)).toEqual([false, true]);
+	fake.apiCallStatus = 403;
+	clock.now += CODEX_USAGE_INTERVAL_MS;
+	expect(await read()).toEqual({ ok: false, reason: CPA_REASONS.rejected });
+	// A 403 is not a refusal of the key toward CPA's ban: the next read tries again.
+	fake.apiCallStatus = null;
+	clock.now += CODEX_USAGE_INTERVAL_MS;
+	expect((await read()).ok).toBe(true);
+	fake.apiCallStatus = 401;
+	clock.now += CODEX_USAGE_INTERVAL_MS;
+	expect(await read()).toEqual({ ok: false, reason: CPA_REASONS.rejected });
+	const calls = fake.calls.length;
+	expect(await read()).toEqual({ ok: false, reason: CPA_REASONS.rejected });
+	expect(fake.calls.length).toBe(calls);
 });
 
 const iso = (time: number) => new Date(time).toISOString();

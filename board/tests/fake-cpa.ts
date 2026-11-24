@@ -46,6 +46,8 @@ export interface FakeCpa {
 	key: string;
 	/** Answer every management request with 403 remote management disabled. */
 	remoteOff: boolean;
+	/** Answer api-call itself (not ChatGPT) with this management status, as a ban's 403. */
+	apiCallStatus: number | null;
 	calls: FakeCpaCall[];
 	/** The usage asks so far for one account. */
 	usageCalls(authIndex: string): number;
@@ -103,6 +105,7 @@ export async function startFakeCpa(accounts: FakeCpaAccount[] = []): Promise<Fak
 		accounts,
 		key: FAKE_CPA_KEY,
 		remoteOff: false,
+		apiCallStatus: null,
 		calls: [],
 		usageCalls: (authIndex) => fake.calls.filter((call) => call.authIndex === authIndex).length
 	};
@@ -122,6 +125,7 @@ export async function startFakeCpa(accounts: FakeCpaAccount[] = []): Promise<Fak
 		if (request.method === 'POST' && path === '/v8/management/requests/api-call') {
 			const asked = JSON.parse(raw) as { auth_index: string; url: string; header: Record<string, string> };
 			Object.assign(call, { authIndex: asked.auth_index, header: asked.header, url: asked.url });
+			if (fake.apiCallStatus !== null) return send(fake.apiCallStatus, { error: 'IP banned due to too many failed attempts. Try again in 29m' });
 			const account = fake.accounts.find((one) => one.authIndex === asked.auth_index);
 			if (!account) return send(404, { error: 'auth not found' });
 			// CPA swaps $TOKEN$ for the account's token; a request without it would reach ChatGPT unsigned.

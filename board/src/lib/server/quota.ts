@@ -23,8 +23,7 @@ const time = (value: unknown) => {
 };
 
 /** A window's name by its length. */
-function windowLabel(minutes: number | null, fallback: string): string {
-	if (minutes === null) return fallback;
+function windowLabel(minutes: number): string {
 	if (minutes === 7 * 24 * 60) return '7 天';
 	if (minutes % (24 * 60) === 0) return `${minutes / (24 * 60)} 天`;
 	if (minutes % 60 === 0) return `${minutes / 60} 小時`;
@@ -34,13 +33,24 @@ function windowLabel(minutes: number | null, fallback: string): string {
 /** A version as a reason may show it: a number, nothing taken from a file's text. */
 const versionText = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? String(value) : '不明');
 
-const PLAN_LABELS: Record<string, string> = { prolite: 'Pro Lite' };
-const capitalized = (value: string) => PLAN_LABELS[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
+/** ChatGPT's plan IDs the tab names; any other text from CPA or ChatGPT is not shown. */
+const PLAN_LABELS: Record<string, string> = {
+	free: 'Free',
+	go: 'Go',
+	plus: 'Plus',
+	pro: 'Pro',
+	prolite: 'Pro Lite',
+	team: 'Team',
+	business: 'Business',
+	enterprise: 'Enterprise',
+	edu: 'Edu'
+};
+const planLabel = (value: unknown) => (typeof value === 'string' && Object.hasOwn(PLAN_LABELS, value) ? PLAN_LABELS[value] : null);
 
 // CPA's management API, v8 layout. The host pins CPA v8.1.2, which serves both /v0/management and
 // /v8/management; v8 is the layout its docs build on (v0 is kept for old clients, near deprecation)
 // and the one its config file already uses, and its credentials list has every runtime field the
-// tab reads. Checked against that CPA's real answers (#711): `status` of a healthy credential is
+// tab reads. Checked against that CPA's real answers (ouob-tw/LoopAgentTeams-work#711): `status` of a healthy credential is
 // `active` (the docs' examples say `ready`), and ChatGPT's usage endpoint answers with
 // `rate_limit.primary_window` / `secondary_window`, each `used_percent`, `limit_window_seconds` and
 // `reset_at` in seconds; a plan with one window (Pro Lite: 7 days) has `secondary_window: null`.
@@ -62,6 +72,9 @@ export const CPA_REASONS = {
 	garbled: 'CPA 回應看不懂'
 } as const;
 
+/** A management request CPA answered 403: remote management off, or the key refused (banned). */
+const forbidden = (body: unknown) => (isRecord(body) && body.error === 'remote management disabled' ? CPA_REASONS.remoteOff : CPA_REASONS.rejected);
+
 /** The `status` values of a credential CPA routes to. */
 export const CPA_READY_STATUSES = new Set(['active', 'ready']);
 
@@ -69,8 +82,9 @@ export const CPA_READY_STATUSES = new Set(['active', 'ready']);
 export function cpaState(row: Json): QuotaState {
 	const status = text(row.status)?.toLowerCase() ?? null;
 	if (row.disabled === true || status === 'disabled') return { kind: 'disabled' };
-	if (status === null && typeof row.unavailable !== 'boolean') return { kind: 'unknown' };
-	if (row.unavailable !== true && (status === null || CPA_READY_STATUSES.has(status))) return { kind: 'ready' };
+	const cooling = row.unavailable === true || (status !== null && !CPA_READY_STATUSES.has(status));
+	// Available only when the list says so in full: a missing or odd field leaves it unknown.
+	if (!cooling) return status !== null && row.disabled === false && row.unavailable === false ? { kind: 'ready' } : { kind: 'unknown' };
 	const note =
 		row.requires_sign_in === true
 			? '需要重新登入'
@@ -84,22 +98,25 @@ export function cpaState(row: Json): QuotaState {
 	return { kind: 'cooling', note };
 }
 
-function usageWindow(value: unknown, fallback: string): QuotaWindow | null {
+/** A usage window with every field the tab shows; null when one is missing or not a number. */
+function usageWindow(value: unknown): QuotaWindow | null {
 	if (!isRecord(value)) return null;
 	const used = number(value.used_percent);
-	if (used === null) return null;
 	const seconds = number(value.limit_window_seconds);
 	const resetAt = number(value.reset_at);
-	return { label: windowLabel(seconds === null ? null : seconds / 60, fallback), used, resetsAt: resetAt === null ? null : resetAt * 1000 };
+	if (used === null || seconds === null || seconds <= 0 || resetAt === null) return null;
+	return { label: windowLabel(seconds / 60), used, resetsAt: resetAt * 1000 };
 }
 
-/** The windows ChatGPT's usage answer has; null when it is not one. */
+/** The windows ChatGPT's usage answer has; null when it is not one. The second window may be
+ *  `null` (a plan with one window); missing or malformed, the whole answer is unreadable. */
 function parseUsage(body: unknown): { windows: QuotaWindow[]; plan: string | null } | null {
 	if (!isRecord(body) || !isRecord(body.rate_limit)) return null;
-	const primary = usageWindow(body.rate_limit.primary_window, '主要時段');
+	const primary = usageWindow(body.rate_limit.primary_window);
 	if (!primary) return null;
-	const secondary = usageWindow(body.rate_limit.secondary_window, '次要時段');
-	return { windows: secondary ? [primary, secondary] : [primary], plan: text(body.plan_type) };
+	if (body.rate_limit.secondary_window === null) return { windows: [primary], plan: planLabel(body.plan_type) };
+	const secondary = usageWindow(body.rate_limit.secondary_window);
+	return secondary ? { windows: [primary, secondary], plan: planLabel(body.plan_type) } : null;
 }
 
 interface UsageMemory {
@@ -107,7 +124,17 @@ interface UsageMemory {
 	askedAt: number;
 	failed: boolean;
 	good: { windows: QuotaWindow[]; plan: string | null; observedAt: number } | null;
+	/** When CPA's list last had the account. An account left out for a while keeps its memory, so
+	 *  coming back within 5 minutes is not asked again and keeps its last good numbers. */
+	listedAt: number;
 }
+
+/** How long an account CPA no longer lists is remembered. */
+const FORGET_AFTER_MS = 24 * 60 * 60_000;
+
+/** What one usage ask came to: the windows, a failure of that account alone, or a management
+ *  refusal that stops the whole group. */
+type UsageRead = { ok: true; usage: { windows: QuotaWindow[]; plan: string | null } } | { ok: false; refusal?: string };
 
 interface CpaSettings {
 	/** The management API's base, as `http://127.0.0.1:8317`; null when not set. */
@@ -147,8 +174,10 @@ export function createCodexQuotaReader(settings: CpaSettings, options: { now(): 
 		}
 	}
 
-	/** One account's usage through CPA's api-call; null when it could not be read. 401 marks the key refused. */
-	async function readUsage(base: string, key: string, row: Json, authIndex: string, keyHash: string) {
+	/** One account's usage through CPA's api-call. CPA refusing the management request itself
+	 *  (401, 403) stops the group; 401 also marks the key refused. ChatGPT's own status is the
+	 *  account's alone. */
+	async function readUsage(base: string, key: string, row: Json, authIndex: string, keyHash: string): Promise<UsageRead> {
 		const idToken = isRecord(row.id_token) ? row.id_token : {};
 		const accountId = text(idToken.chatgpt_account_id);
 		const answer = await ask(base, key, API_CALL_PATH, {
@@ -158,14 +187,20 @@ export function createCodexQuotaReader(settings: CpaSettings, options: { now(): 
 			// CPA puts the account's own token in place of $TOKEN$; the board never sees it.
 			header: { Authorization: 'Bearer $TOKEN$', Accept: 'application/json', ...(accountId ? { 'Chatgpt-Account-Id': accountId } : {}) }
 		});
-		if (!answer.ok) return null;
-		if (answer.status === 401) refused = keyHash;
-		if (answer.status !== 200 || !isRecord(answer.body) || answer.body.status_code !== 200 || typeof answer.body.body !== 'string') return null;
-		try {
-			return parseUsage(JSON.parse(answer.body.body));
-		} catch {
-			return null;
+		if (!answer.ok) return { ok: false };
+		if (answer.status === 401) {
+			refused = keyHash;
+			return { ok: false, refusal: CPA_REASONS.rejected };
 		}
+		if (answer.status === 403) return { ok: false, refusal: forbidden(answer.body) };
+		if (answer.status !== 200 || !isRecord(answer.body) || answer.body.status_code !== 200 || typeof answer.body.body !== 'string') return { ok: false };
+		let usage: ReturnType<typeof parseUsage> = null;
+		try {
+			usage = parseUsage(JSON.parse(answer.body.body));
+		} catch {
+			// Not JSON: unreadable.
+		}
+		return usage ? { ok: true, usage } : { ok: false };
 	}
 
 	return async function readCodex(): Promise<QuotaGroup> {
@@ -186,43 +221,40 @@ export function createCodexQuotaReader(settings: CpaSettings, options: { now(): 
 			refused = keyHash;
 			return { ok: false, reason: CPA_REASONS.rejected };
 		}
-		if (list.status === 403) {
-			const remoteOff = isRecord(list.body) && list.body.error === 'remote management disabled';
-			return { ok: false, reason: remoteOff ? CPA_REASONS.remoteOff : CPA_REASONS.rejected };
-		}
+		// Not counted toward CPA's ban: tried again at the next read.
+		if (list.status === 403) return { ok: false, reason: forbidden(list.body) };
 		if (list.status !== 200 || !isRecord(list.body) || !Array.isArray(list.body.files)) return { ok: false, reason: CPA_REASONS.garbled };
 		refused = null;
 		const rows = list.body.files.filter((row): row is Json => isRecord(row) && (row.provider === 'codex' || row.type === 'codex'));
 		const now = options.now();
-		const seen = new Set<string>();
 		const accounts: QuotaAccount[] = [];
 		for (const row of rows) {
 			const authIndex = text(row.auth_index);
 			let memory = authIndex ? usage.get(authIndex) : undefined;
 			if (authIndex) {
-				seen.add(authIndex);
 				if (!memory || now - memory.askedAt >= CODEX_USAGE_INTERVAL_MS) {
 					const read = await readUsage(base, key, row, authIndex, keyHash);
-					if (refused === keyHash) return { ok: false, reason: CPA_REASONS.rejected };
-					memory = { askedAt: now, failed: read === null, good: read ? { ...read, observedAt: now } : (memory?.good ?? null) };
-					usage.set(authIndex, memory);
+					if (read.ok === false && read.refusal) return { ok: false, reason: read.refusal };
+					memory = { askedAt: now, failed: !read.ok, good: read.ok ? { ...read.usage, observedAt: now } : (memory?.good ?? null), listedAt: now };
 				}
+				memory.listedAt = now;
+				usage.set(authIndex, memory);
 			}
 			const good = memory?.good ?? null;
 			const idToken = isRecord(row.id_token) ? row.id_token : {};
-			const plan = text(idToken.plan_type) ?? good?.plan ?? null;
+			const plan = planLabel(idToken.plan_type) ?? good?.plan ?? null;
 			accounts.push({
 				email: text(row.email) ?? '（沒有 email）',
 				// CPA pools the accounts: none is the one in use.
 				current: false,
-				plan: plan ? { label: capitalized(plan), source: 'live', observedAt: now } : null,
+				plan: plan ? { label: plan, source: 'live', observedAt: now } : null,
 				windows: good?.windows ?? [],
 				observedAt: good?.observedAt ?? null,
 				state: cpaState(row),
 				...(!memory || memory.failed ? { unreadable: true as const } : {})
 			});
 		}
-		for (const id of usage.keys()) if (!seen.has(id)) usage.delete(id);
+		for (const [id, memory] of usage) if (now - memory.listedAt > FORGET_AFTER_MS) usage.delete(id);
 		return { ok: true, accounts };
 	};
 }
