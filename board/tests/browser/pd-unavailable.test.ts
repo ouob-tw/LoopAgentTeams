@@ -14,35 +14,54 @@ test('pd outage is visible with zero pending requests, survives pending requests
 		const tab = browser.tab;
 		await tab.send('Network.setCookie', { name, value, url: fixture.url });
 		const set = (state: unknown) => writeFileSync(join(fixture.dir, 'pd.json'), JSON.stringify(state));
-		set({ pending: [], vault: 'unavailable' });
-		await tab.send('Page.navigate', { url: fixture.url });
 		const visible = `document.querySelector('.pd-unavailable')?.checkVisibility() && document.querySelector('.pd-unavailable').textContent === 'pd 服務不可用'`;
-		await tab.until(visible, 'vault unavailable notice without requests');
-		for (const width of [360, 1280]) {
-			await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width === 360 });
-			await tab.until(visible, `notice visible at ${width}px`);
-			expect(await tab.eval(`document.documentElement.scrollWidth <= innerWidth`)).toBe(true);
-		}
-		set({ pending: [], vault: 'ok' });
-		await tab.until(`!document.querySelector('.pd-unavailable')`, 'first recovery');
-		set({ pending: [], unavailable: true });
-		await tab.until(visible, 'unreachable notice');
-		set({ pending: [], vault: 'ok' });
-		await tab.until(`!document.querySelector('.pd-unavailable')`, 'healthy hides notice');
-		set({ pending: [{ id: 1, caller: 'test', item: 'test item', fields: [], argv: [], cwd: '/' }], vault: 'unavailable' });
-		await tab.until(`${visible} && !!document.querySelector('[data-pd-request="1"]')`, 'outage preserves pending controls');
-		expect(await tab.eval(`document.querySelector('[data-pd-request="1"]').textContent.includes('拒絕')`)).toBe(true);
-		set({ pending: [], vault: 'ok' });
-		await tab.until(`!document.querySelector('.pd-unavailable')`, 'final recovery');
-		// A notice can be folded: the badge goes on saying it, and opens it again.
-		set({ pending: [], vault: 'locked' });
-		await tab.until(`document.querySelector('.pd-unavailable')?.textContent === 'pd 已鎖定'`, 'locked notice');
-		await tab.pointerClick('.pd button.later');
-		await tab.until(`!document.querySelector('.inbox .pd') && document.querySelector('.pd-badge')?.innerText === 'pd 已鎖定'`, 'locked notice folded');
+		const wide = { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false };
+		const phone = { width: 360, height: 900, deviceScaleFactor: 1, mobile: true };
+		const BADGE = (text: string) => `document.querySelector('.pd-badge')?.checkVisibility() && document.querySelector('.pd-badge').innerText === '${text}' && !document.querySelector('.inbox .pd')`;
+		// A phone is as before: the notice is open on load.
+		await tab.send('Emulation.setDeviceMetricsOverride', phone);
+		set({ pending: [], vault: 'unavailable' });
+		await tab.navigate(fixture.url);
+		await tab.boardStarted();
+		await tab.until(visible, 'phone: notice visible on load');
+		expect(await tab.eval(`document.documentElement.scrollWidth <= innerWidth`)).toBe(true);
+		// A wide screen loads with the outage already there: folded to a badge that says it, not a window over the column.
+		await tab.send('Emulation.setDeviceMetricsOverride', wide);
+		set({ pending: [], vault: 'unavailable' });
+		await tab.navigate(fixture.url);
+		await tab.boardStarted();
+		await tab.until(BADGE('pd 服務不可用'), 'wide: outage on load is a folded badge');
+		expect(await tab.eval(`document.documentElement.scrollWidth <= innerWidth`)).toBe(true);
+		// The badge opens the whole notice; 稍後 folds it again.
 		await tab.pointerClick('.pd-badge');
-		await tab.until(`document.querySelector('.pd-unavailable')?.textContent === 'pd 已鎖定' && !document.querySelector('.pd-badge')`, 'locked notice open again');
+		await tab.until(`document.querySelector('.inbox .pd .pd-unavailable')?.textContent === 'pd 服務不可用' && !document.querySelector('.pd-badge')`, 'wide: badge opens the notice');
 		await tab.pointerClick('.pd button.later');
-		await tab.until(`!!document.querySelector('.pd-badge')`, 'folded again');
+		await tab.until(BADGE('pd 服務不可用'), 'wide: later folds it back');
+		// A new request opens it, outage or not.
+		set({ pending: [{ id: 1, caller: 'test', item: 'test item', fields: [], argv: [], cwd: '/' }], vault: 'unavailable' });
+		await tab.until(`document.querySelector('.pd-unavailable')?.checkVisibility() && !!document.querySelector('[data-pd-request="1"]') && !document.querySelector('.pd-badge')`, 'wide: a request opens the folded window');
+		expect(await tab.eval(`document.querySelector('[data-pd-request="1"]').textContent.includes('拒絕')`)).toBe(true);
+		// pd turning unavailable while the board is open does not open it by itself.
+		set({ pending: [], vault: 'ok' });
+		await tab.until(`!document.querySelector('.inbox .pd, .pd-badge')`, 'wide: healthy and empty shows nothing');
+		set({ pending: [], vault: 'unavailable' });
+		await tab.until(BADGE('pd 服務不可用'), 'wide: outage while open stays a badge');
+		await new Promise((resolve) => setTimeout(resolve, 800));
+		expect(await tab.eval(`!document.querySelector('.inbox .pd')`)).toBe(true);
+		// An unreachable daemon is the same.
+		set({ pending: [], vault: 'ok' });
+		await tab.until(`!document.querySelector('.pd-badge')`, 'wide: recovery');
+		set({ pending: [], unavailable: true });
+		await tab.until(BADGE('pd 服務不可用'), 'wide: unreachable daemon is a badge');
+		set({ pending: [], vault: 'ok' });
+		await tab.until(`!document.querySelector('.inbox .pd, .pd-badge')`, 'recovery clears the badge');
+		// A locked vault is the same: a badge that says so, which opens to the notice.
+		set({ pending: [], vault: 'locked' });
+		await tab.until(BADGE('pd 已鎖定'), 'locked notice folded');
+		await tab.pointerClick('.pd-badge');
+		await tab.until(`document.querySelector('.pd-unavailable')?.textContent === 'pd 已鎖定' && !document.querySelector('.pd-badge')`, 'locked notice open');
+		await tab.pointerClick('.pd button.later');
+		await tab.until(BADGE('pd 已鎖定'), 'folded again');
 		set({ pending: [], vault: 'ok' });
 		await tab.until(`!document.querySelector('.pd-badge')`, 'recovery clears the folded notice');
 	} finally {
