@@ -6,7 +6,8 @@
 // once, and the checking agent's brief carries every question and answer. While it waits neither the
 // schedule nor 立即執行 starts the task again, also after a restart, which watches on (an agent gone by
 // then fails the run); the time it waits does not count toward the limit (#675), so it stops past the
-// limit only on its working time, and the yellow card turns into a red one; 停止這次 works while it waits. Nothing here starts a real agent.
+// limit only on its working time, and the yellow card turns into a red one; 停止這次 works while it waits. A question
+// followed, before the board looks, by another turn is still waited on, unless it was answered already (#700). Nothing here starts a real agent.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -138,6 +139,7 @@ function turn(name: string, text: string, input = '讀取並照做') {
 }
 /** Something typed into the agent's terminal, with no reply yet. */
 function typed(name: string, text: string) {
+	mkdirSync(join(dir, 'transcripts'), { recursive: true });
 	appendFileSync(join(dir, 'transcripts', `s-${name}.jsonl`), JSON.stringify({ kind: 'user', time: null, text }) + '\n');
 }
 /** An hcom delivery in the agent's conversation: another agent's message (`hcom`), or the question panel's answer (`lat-panel`, #678). */
@@ -591,4 +593,64 @@ test('a run left waiting, its answer missed, ends failed when the agent replies 
 	expect([failed.status, failed.reason]).toEqual(['failed', expect.stringContaining('合約檔打不開')]);
 	expect(failed.asks![0].answeredAt).toBeUndefined();
 	expect(listed('ask-missed-f')).toBe(false);
+});
+
+/** Replies appended with no input of the user's between them (the turns other agents' hcom messages start); the agent then listens. */
+function replies(name: string, texts: string[]) {
+	mkdirSync(join(dir, 'transcripts'), { recursive: true });
+	const file = join(dir, 'transcripts', `s-${name}.jsonl`);
+	for (const [index, text] of texts.entries()) {
+		if (index > 0) delivered(name, 'hcom');
+		appendFileSync(file, JSON.stringify({ kind: 'assistant', time: null, text }) + '\n');
+	}
+	setStatus(name, 'listening');
+}
+
+test('an unattended controller ending DECIDE: and, before the next look, another turn ending NO REPLY: still waits on the question with its yellow card; once answered, later turns do not ask it again (#700)', async () => {
+	const task = await create({ agent: unattendedAgent() });
+	hcomPlan([{ name: 'quick-decide' }]);
+	const started = await runNow(task.id);
+	await runWhen(task.id, started.id, (run) => run.sessionId === 's-quick-decide', 'quick-decide to be listed');
+	typed('quick-decide', '讀取並照做');
+	replies('quick-decide', [`授權範圍外，需要你決定。\nDECIDE: ${QUESTION}`, '等 Agent 回報。\nNO REPLY: 等 Agent 回報']);
+	const run = await waitingOn(task.id, started.id, 1);
+	expect(run.asks).toEqual([{ question: QUESTION, askedAt: START }]);
+	await sleep(500);
+	expect((await runsOf(task.id)).find((each) => each.id === run.id)!.status).toBe('running');
+	expect((await viewOf(task.id)).state).toBe('asking');
+	expect(await yellow(run.id)).toHaveLength(1);
+	expect(listed('quick-decide')).toBe(true);
+
+	expect((await reply(task.id, '2 張')).status).toBe(200);
+	await answered(task.id, run.id, 1);
+	setStatus('quick-decide', 'active');
+	await sleep(300);
+	typed('quick-decide', '2 張');
+	replies('quick-decide', ['已交給 Agent。\nNO REPLY: 等 Agent 回報', '還在等。\nNO REPLY: 等 Agent 回報']);
+	await sleep(600);
+	const going = (await runsOf(task.id)).find((each) => each.id === run.id)!;
+	expect([going.status, going.asks?.length]).toEqual(['running', 1]);
+	expect((await viewOf(task.id)).state).toBe('running');
+	setStatus('quick-decide', 'active');
+	replies('quick-decide', ['做完了，已 deactivate。\nDONE']);
+	const done = await ended(task.id, run.id);
+	expect([done.status, done.asks?.length]).toEqual(['success', 1]);
+});
+
+test('a DECIDE: already answered in the terminal before the board looked is not opened again by a later NO REPLY: turn (#700)', async () => {
+	const task = await create({ agent: unattendedAgent() });
+	hcomPlan([{ name: 'quick-answered' }]);
+	const started = await runNow(task.id);
+	await runWhen(task.id, started.id, (run) => run.sessionId === 's-quick-answered', 'quick-answered to be listed');
+	typed('quick-answered', '讀取並照做');
+	appendFileSync(join(dir, 'transcripts', 's-quick-answered.jsonl'), JSON.stringify({ kind: 'assistant', time: null, text: `DECIDE: ${QUESTION}` }) + '\n');
+	typed('quick-answered', '2 張');
+	replies('quick-answered', ['照 2 張開。\nNO REPLY: 等 Agent 回報']);
+	await sleep(800);
+	const going = (await runsOf(task.id)).find((each) => each.id === started.id)!;
+	expect([going.status, going.asks]).toEqual(['running', undefined]);
+	expect(await yellow(started.id)).toHaveLength(0);
+	setStatus('quick-answered', 'active');
+	replies('quick-answered', ['做完了。\nDONE']);
+	expect((await ended(task.id, started.id)).status).toBe('success');
 });
