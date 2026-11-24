@@ -4,6 +4,7 @@
 // said still goes into that box. Once no mic holds a recording any more, it stops, lets go of the
 // mic and is dropped.
 import { request } from './api.ts';
+import { holdsUnsent } from './build-update.ts';
 import { micConstraints, micGone } from './mic-choice.ts';
 import { micDevices } from './mic-devices.svelte.ts';
 import { toasts } from './toasts.svelte.ts';
@@ -24,6 +25,8 @@ function micFailure(error: unknown): string {
 
 /** Recordings by the box they are for, while some mic holds them. */
 const recordings = new Map<unknown, Recording>();
+// A reload would end it and lose what was said (see build-update.ts).
+holdsUnsent(() => [...recordings.values()].some((recording) => recording.phase !== 'idle'));
 
 class Recording {
 	phase = $state<Phase>('idle');

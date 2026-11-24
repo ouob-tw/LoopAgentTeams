@@ -276,6 +276,30 @@ test("a frame in a page's built script is logged with the page's source file and
 	expect(source).toMatch(/^src\/routes\/\+page\.svelte:\d+:\d+$/);
 });
 
+test('a report tells whether the page runs this build, and counts the frames of script files only another build has', async () => {
+	const own = JSON.parse(readFileSync(join(import.meta.dir, '../..', BUILD_DIR, 'client/_app/version.json'), 'utf8')).version;
+	const gone = (name: string) => `    at ${at(`/_app/immutable/nodes/2.${name}.js`)}:1:2`;
+	const device = await fixture.login('build-of-page');
+	mark = fixture.serverOutput().length;
+	for (const body of [
+		{ ...report(), version: own },
+		// A page left open across a deploy: its scripts are gone from this build.
+		{ ...report(), version: `${own}-older`, stack: `TypeError: x\n${gone('aaaa')}\n${gone('bbbb')}` },
+		{ ...report(), version: `${own}-older`, stack: `TypeError: x\n    at ${at(CHUNK!)}:1:200\n${gone('cccc')}` },
+		// A page from before pages sent their build.
+		report()
+	])
+		expect((await post('/api/client-error', body, { cookie: device })).status).toBe(204);
+
+	const [current, other, mixed, unknown] = await waitLines('client_error', 4);
+	expect(current).toMatchObject({ build: 'current', traceback: `${frame(CHUNK!, 1, 200)}\n${frame(ENTRY!, 3, 40)}` });
+	expect(other).toMatchObject({ build: 'other', traceback: '[2 frames from another build]' });
+	expect(mixed).toMatchObject({ build: 'other', traceback: `${frame(CHUNK!, 1, 200)}\n[1 frame from another build]` });
+	expect(unknown!.build ?? null).toBeNull();
+	// Only which of the two: the version itself is not logged.
+	expect(output()).not.toContain(own);
+});
+
 test('the source maps are built but never served, and no served script names one', async () => {
 	const build = join(import.meta.dir, '../..', BUILD_DIR);
 	const maps = readdirSync(join(build, 'sourcemaps/_app/immutable'), { recursive: true, encoding: 'utf8' }).filter((file) => file.endsWith('.js.map'));
@@ -345,7 +369,8 @@ test('anything a report says that the server does not recognise reaches the log 
 		kind: '[omitted]',
 		exc_type: '[omitted]',
 		exc_message: '[omitted]',
-		traceback: `${frame(CHUNK!, 1, 2)}\n${frame(ENTRY!, 7, 8)}`,
+		// The made-up chunk is a build's script file this build does not have: counted, never named.
+		traceback: `${frame(CHUNK!, 1, 2)}\n${frame(ENTRY!, 7, 8)}\n[1 frame from another build]`,
 		url: '/login',
 		route: '[omitted]'
 	});

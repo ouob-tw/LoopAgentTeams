@@ -4,6 +4,7 @@
 // They are not kept across a reload.
 import { request } from './api.ts';
 import { attachmentKind, CHUNK_BYTES, type AttachmentKind } from './attachments.ts';
+import { holdsUnsent } from './build-update.ts';
 
 export interface Attachment {
 	key: number;
@@ -106,3 +107,5 @@ class Attaching {
 }
 
 export const attaching = new Attaching();
+// A reload would drop them (see build-update.ts).
+holdsUnsent(() => Object.values(attaching.byOwner).some((files) => files.length > 0));

@@ -94,6 +94,14 @@ class Answering {
 		return this.drafts[key] ?? EMPTY;
 	}
 
+	/** Whether any of these items has an answer begun and not sent: choices, 其他 or a note. */
+	holdsDraft(keys: string[]): boolean {
+		return keys.some((key) => {
+			const draft = this.drafts[key];
+			return !!draft && (draft.select.length > 0 || draft.other || !!draft.text.trim() || !!draft.note.trim());
+		});
+	}
+
 	/** The question on screen is no longer the version the draft was filled in for: move the draft
 	 *  to the version on screen. Positions may mean other options now, so the choice is dropped;
 	 *  what was typed is still the user's. Returns whether the draft was moved. */

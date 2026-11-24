@@ -101,7 +101,7 @@
 							<td data-label="專案">
 								{#if form}
 									<div class="target">
-										<input aria-label="測試環境" bind:value={form.target} onblur={() => editor.save()} onkeydown={saveTarget} />
+										<input aria-label="測試環境" data-reload-safe bind:value={form.target} onblur={() => editor.save()} onkeydown={saveTarget} />
 										<p class="note">部署測試版需要填寫測試環境才會生效</p>
 									</div>
 								{/if}
