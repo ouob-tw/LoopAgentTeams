@@ -219,7 +219,13 @@ function transcript() {
 /** `board provider`: the latest applied thread settings' provider, else session_meta's, read from the
  *  same transcript file; the real helper's rule (tested in the helper's own tests), on the records it keeps. */
 function provider() {
-	const session = options()['session-id']?.[0] ?? '';
+	const given = options();
+	const session = given['session-id']?.[0] ?? '';
+	const client = given.client?.[0];
+	// As the real command: both are required, the client is Claude or Codex, the session ID has its form.
+	if (!client || !session) return { output: { status: 'error', reason: 'provider takes --client and --session-id' }, exit: 2 };
+	if (!['claude', 'codex'].includes(client)) return { output: { status: 'error', reason: `對話紀錄只支援 Claude 與 Codex，這個主控的 client 是 ${client}` }, exit: 1 };
+	if (!/^[A-Za-z0-9_-]{1,128}$/.test(session)) return { output: { status: 'error', reason: `不是 session ID：${session}` }, exit: 1 };
 	let text;
 	try {
 		text = readFileSync(join(dir, 'transcripts', `${session}.jsonl`), 'utf8');
@@ -238,7 +244,8 @@ function provider() {
 		if (record?.type === 'session_meta' && typeof record.payload?.model_provider === 'string' && started === null) started = record.payload.model_provider;
 		if (record?.payload?.type === 'thread_settings_applied' && typeof record.payload.thread_settings?.model_provider_id === 'string') applied = record.payload.thread_settings.model_provider_id;
 	}
-	return { output: { status: 'ok', provider: applied ?? started } };
+	// A Claude record names no provider.
+	return { output: { status: 'ok', provider: client === 'codex' ? (applied ?? started) : null } };
 }
 
 /** What <dir>/launch-args.json holds for the session. */
