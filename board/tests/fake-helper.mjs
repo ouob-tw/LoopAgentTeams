@@ -182,7 +182,8 @@ function transcript() {
 		try {
 			const item = JSON.parse(line);
 			// A line of the client's own log, there for the board to read directly: the real helper prints none.
-			if (item.type === 'system') continue;
+			// `session_meta` is Codex's first line, shaped as a real session file has it (#710).
+			if (item.type === 'system' || item.type === 'session_meta') continue;
 			items.push({ ...item, seq: items.length });
 		} catch {
 			skipped += 1;

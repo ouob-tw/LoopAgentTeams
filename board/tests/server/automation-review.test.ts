@@ -1,10 +1,10 @@
 // The checking agent (跑完後請 Agent 檢查) on the built board, against the fake hcom, Herdr, helper and
-// codex-multi-auth: a run that succeeded with the switch on opens a read-only checker (by default the
+// Codex: a run that succeeded with the switch on opens a read-only checker (by default the
 // other client than the task's agent), whose brief carries the limits, the checklist and where the run's
 // conversation or output is; its reply is judged item by item (PASS／FAIL with reasons), a FAIL makes
 // the run 檢查未過 with a red card and leaves the period not done. While it checks the task counts as
 // running: neither the schedule nor 立即執行 starts it again. A failed run opens no checker. The
-// checker has the task's limit, 停止這次, the restart and the Codex quota handled as a task's agent's.
+// checker has the task's limit, 停止這次, and the restart handled as a task's agent's; no Codex account is checked or switched.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
@@ -34,7 +34,7 @@ afterAll(async () => {
 });
 beforeEach(() => {
 	fixture.setClock(START);
-	for (const name of ['hcom-calls.jsonl', 'hcom.json', 'hcom-added.json', 'codex-auth.json', 'codex-auth-calls.jsonl', 'codex-auth-pinned.txt']) rmSync(join(dir, name), { force: true });
+	for (const name of ['hcom-calls.jsonl', 'hcom.json', 'hcom-added.json']) rmSync(join(dir, name), { force: true });
 	writeFileSync(
 		join(dir, 'herdr.json'),
 		JSON.stringify({
@@ -458,28 +458,16 @@ test('停止這次 and the limit end the checker and close it; after a restart a
 	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
 });
 
-test('a Codex checker on a pinned account at 0 switches to one with quota; none left ends the check as 額度用完 with no checker opened', async () => {
+test('a Codex checker opens at once, with no account check, and its record writes no codexAccount or accountSwitches (#710)', async () => {
 	const task = await create();
-	writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({ pinned: 0, accounts: [{ index: 0, used: 100 }, { index: 1, used: 30 }] }));
 	hcomPlan([{ name: 'auto-k' }, null, { name: 'chk-k', client: 'codex' }]);
 	const first = await doneThenChecking(task, 'auto-k', 'chk-k');
-	expect(first.review?.accountSwitches).toEqual(['帳號 1 額度用完，換到 帳號 2']);
-	expect(first.review?.codexAccount).toBe(1);
+	expect(hcomCalls().some((call) => call.args[0] === 'codex')).toBe(true);
+	expect(first.review?.accountSwitches).toBeUndefined();
+	expect(first.review?.codexAccount).toBeUndefined();
+	expect(first.codexAccount).toBeUndefined();
 	replyAndWait('chk-k', '1. PASS: a\n2. PASS: b\n3. PASS: c\nPASS');
 	expect((await checked(task.id, first.id)).review?.status).toBe('pass');
-
-	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
-	rmSync(join(dir, 'hcom-added.json'), { force: true });
-	rmSync(join(dir, 'codex-auth-pinned.txt'), { force: true });
-	writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({ pinned: 0, accounts: [{ index: 0, used: 100 }, { index: 1, used: 100 }] }));
-	hcomPlan([{ name: 'auto-n' }, null, { name: 'chk-n', client: 'codex' }]);
-	const second = await runNow(task.id);
-	await runWhen(task.id, second.id, (run) => run.sessionId === 's-auto-n', 'auto-n to be listed');
-	replyAndWait('auto-n', 'DONE');
-	const out = await checked(task.id, second.id);
-	expect(out.review).toMatchObject({ status: 'error', ended: 'quota', reason: '檢查沒有做完：額度用完：沒有其他還有額度的訂閱帳號' });
-	expect((await alerts()).find((alert) => alert.runId === second.id)?.kind).toBe('quota');
-	expect(hcomCalls().some((call) => call.args[0] === 'codex')).toBe(false);
 	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
 });
 

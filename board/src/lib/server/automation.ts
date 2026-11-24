@@ -56,7 +56,7 @@ import {
 } from '../board/automation.ts';
 import { SCOPE_KEYS, type UnattendedScope } from '../board/unattended.ts';
 import {
-	codexBeforeLaunch,
+	CONTROLLER_CONTINUE,
 	controllerGoesOn,
 	controllerMessage,
 	cutReason,
@@ -71,7 +71,7 @@ import {
 	type Cut
 } from './automation-agent.ts';
 import { appendSent, readLines, type AutomationTaskSave } from './sent-log.ts';
-import { FIX_RESUME_MESSAGE, fixMessage, judgeReview, REVIEW_RESUME_MESSAGE, reviewBrief, reviewMessage, reviewTag } from './automation-review.ts';
+import { FIX_CONTINUE_MESSAGE, fixMessage, judgeReview, REVIEW_CONTINUE_MESSAGE, reviewBrief, reviewMessage, reviewTag } from './automation-review.ts';
 
 /** How much of a command's output is kept: its last part, which says how it ended. */
 export const OUTPUT_KEEP_CHARS = 32_000;
@@ -795,7 +795,7 @@ export function createAutomation(options: {
 			adopted,
 			// An unattended controller's turn waiting on its agents goes on; one ending DECIDE:/HELP:
 			// waits for the user like a manual run's ASK: (#665).
-			...(task.agent!.unattended ? { goesOn: controllerGoesOn, ending: 'DONE、FAILED、DECIDE 或 HELP', quotaStops: true } : {}),
+			...(task.agent!.unattended ? { goesOn: controllerGoesOn, ending: 'DONE、FAILED、DECIDE 或 HELP', continueMessage: CONTROLLER_CONTINUE } : {}),
 			asking: {
 				tags: task.agent!.unattended ? ['DECIDE', 'HELP'] : undefined,
 				waiting: () => openAsk(latest(run)) !== undefined,
@@ -836,12 +836,6 @@ export function createAutomation(options: {
 		let cut: Cut | null = null;
 		stoppers.set(run.id, (why) => (cut ??= why));
 		try {
-			if (spec.client === 'codex') {
-				// A check that broke confirms nothing: nothing is switched, as when it cannot be read.
-				const ready = await codexBeforeLaunch(host.accounts, spec.model, spec.effort).catch((): { ok: true; account?: number; note?: string } => ({ ok: true }));
-				if (!ready.ok) return finish(task, run, { status: 'quota', reason: ready.reason });
-				record(run, { ...(ready.account !== undefined ? { codexAccount: ready.account } : {}), ...(ready.note ? { accountSwitches: [ready.note] } : {}) });
-			}
 			if (cut) return finish(task, run, { status: cut, reason: cutReason(cut, task.limitMinutes) });
 			const tag = runTag(task.id, run.id);
 			const report = spec.report === 'demo' ? reportNote(task.id, dateOf(now())) : '';
@@ -942,11 +936,6 @@ export function createAutomation(options: {
 					})
 				);
 				update({ brief: briefName });
-				if (spec.client === 'codex') {
-					const ready = await codexBeforeLaunch(host.accounts, spec.model, spec.effort).catch((): { ok: true; account?: number; note?: string } => ({ ok: true }));
-					if (!ready.ok) return settle({ status: 'error', ended: 'quota', reason: `檢查沒有做完：${ready.reason}` });
-					update({ ...(ready.account !== undefined ? { codexAccount: ready.account } : {}), ...(ready.note ? { accountSwitches: [ready.note] } : {}) });
-				}
 				if (cut) return settleEnd({ status: cut, reason: cutReason(cut, task.limitMinutes) });
 				const launched = await host
 					.launch({ ...spec, folder, brief: briefPath, prompt: reviewMessage(briefPath), tag: reviewTag(task.id, run.id, round), halted: () => cut ?? (now() - latest(run).review!.startedAt >= task.limitMinutes * 60_000 ? 'timeout' : null) })
@@ -977,8 +966,8 @@ export function createAutomation(options: {
 					sessionId: own.sessionId,
 					agentWorkspace: own.agentWorkspace,
 					judgeAfter: own.judgeAfter,
-					codexAccount: own.codexAccount,
-					accountSwitches: own.accountSwitches
+					quotaNotes: own.quotaNotes,
+					quotaContinue: own.quotaContinue
 				};
 			};
 			const ended = await watchAgent(host, {
@@ -997,7 +986,7 @@ export function createAutomation(options: {
 				adopted,
 				judge: judgeReview(task.review.checklist),
 				ending: 'PASS 或 FAIL',
-				resumeMessage: REVIEW_RESUME_MESSAGE
+				continueMessage: REVIEW_CONTINUE_MESSAGE
 			}).catch(async (error: Error): Promise<AgentEnd> => {
 				const own = view();
 				const closeError = await host.close({ sessionId: own.sessionId ?? null, name: own.agentName! }).catch((failed: Error) => failed.message);
@@ -1043,11 +1032,6 @@ export function createAutomation(options: {
 			const sessionId = latest(run).sessionId;
 			if (!adopted) {
 				if (!sessionId) return fail('接不回任務 Agent：看板不知道它的對話');
-				if (spec.client === 'codex') {
-					const ready = await codexBeforeLaunch(host.accounts, spec.model, spec.effort).catch((): { ok: true; account?: number; note?: string } => ({ ok: true }));
-					if (!ready.ok) return fail(ready.reason, 'quota');
-					update({ ...(ready.account !== undefined ? { codexAccount: ready.account } : {}), ...(ready.note ? { accountSwitches: [ready.note] } : {}) });
-				}
 				if (cut) return fail(cutReason(cut, limitMinutes), cut);
 				// Its replies so far say nothing about the round: only one after the resume ends it. With no
 				// position to judge after, its old DONE could pass for a reply, so it is not resumed.
@@ -1082,8 +1066,8 @@ export function createAutomation(options: {
 					launchedAt: own.resumedAt ?? own.startedAt,
 					sessionId: own.sessionId ?? current.sessionId,
 					judgeAfter: own.judgeAfter,
-					codexAccount: own.codexAccount ?? current.codexAccount,
-					accountSwitches: own.accountSwitches
+					quotaNotes: own.quotaNotes,
+					quotaContinue: own.quotaContinue
 				};
 			};
 			const ended = await watchAgent(host, {
@@ -1106,8 +1090,8 @@ export function createAutomation(options: {
 					return verdict;
 				},
 				ending: 'DONE 或 FAILED',
-				resumeMessage: FIX_RESUME_MESSAGE,
-				...(spec.unattended ? { goesOn: controllerGoesOn, quotaStops: true } : {})
+				continueMessage: FIX_CONTINUE_MESSAGE,
+				...(spec.unattended ? { goesOn: controllerGoesOn } : {})
 			}).catch(async (error: Error): Promise<AgentEnd> => {
 				const own = view();
 				const failed = await host.close({ sessionId: own.sessionId ?? null, name: own.agentName! }).catch((problem: Error) => problem.message);

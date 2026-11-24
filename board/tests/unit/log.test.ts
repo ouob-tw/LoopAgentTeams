@@ -91,7 +91,7 @@ test('an exception SvelteKit reports before the request hook ran is still logged
 // The request hook builds the board from process.env: here it gets a folder of its own and no real
 // hcom, Herdr or other command, never the real board's folder and the tasks due in it (#615).
 const BOARD_KEY = Symbol.for('lat-board');
-const COMMANDS = ['HELPER', 'INJECT', 'HCOM', 'HERDR', 'TIDY', 'TRANSLATE', 'SKILLS', 'CSWAP', 'PD', 'CODEX_MULTI_AUTH', 'CODEX_PROBE'];
+const COMMANDS = ['HELPER', 'INJECT', 'HCOM', 'HERDR', 'TIDY', 'TRANSLATE', 'SKILLS', 'CSWAP', 'PD'];
 const saved = new Map<string, string | undefined>();
 let boardDir = '';
 

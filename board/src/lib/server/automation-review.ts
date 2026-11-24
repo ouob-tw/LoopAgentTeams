@@ -19,7 +19,7 @@ export function reviewMessage(brief: string): string {
 }
 
 /** Its message when it is resumed on another Codex account. */
-export const REVIEW_RESUME_MESSAGE = '剛才額度用完，已換帳號接回。請接著把檢查做完，照說明檔的格式逐條判定，最後一行只回覆 PASS 或 FAIL';
+export const REVIEW_CONTINUE_MESSAGE = '剛才額度用完，請接著把檢查做完，照說明檔的格式逐條判定，最後一行只回覆 PASS 或 FAIL';
 
 /** What the brief says about the run checked. */
 export interface ReviewInput {
@@ -130,7 +130,7 @@ export function fixMessage(review: Pick<RunReview, 'items' | 'reason'>, { unatte
 const FIX_ENDING = '最後一行只回覆 DONE，失敗回覆 FAILED: <原因>';
 
 /** Its message when it is resumed on another Codex account during that round. */
-export const FIX_RESUME_MESSAGE = `剛才額度用完，已換帳號接回。請接著把沒過的條目逐條補做或反駁，每條寫一行，${FIX_ENDING}`;
+export const FIX_CONTINUE_MESSAGE = `剛才額度用完，請接著把沒過的條目逐條補做或反駁，每條寫一行，${FIX_ENDING}`;
 
 const ITEM = /^\s*(?:[-*]\s*)?(\d+)\s*[.、)．:：]?\s*\**\s*(PASS|FAIL)\b\**\s*[:：\-—–]?\s*(.*)$/i;
 
