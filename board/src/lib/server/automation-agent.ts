@@ -127,6 +127,8 @@ export interface AgentHost {
 	list(): Promise<{ ok: true; agents: ListedAgent[] } | { ok: false; reason: string }>;
 	/** The conversation's last reply and its position; null text when there is none yet. */
 	lastReply(client: AgentSpec['client'], sessionId: string): Promise<{ ok: true; text: string | null; seq: number } | { ok: false; reason: string }>;
+	/** Every reply after `seq`, oldest first (#700). */
+	repliesAfter(client: AgentSpec['client'], sessionId: string, seq: number): Promise<{ ok: true; replies: { text: string; seq: number }[] } | { ok: false; reason: string }>;
 	/** Where the conversation is kept on disk; null when it cannot be found. */
 	transcript(client: AgentSpec['client'], sessionId: string): Promise<string | null>;
 	/** The first input of the user's after `seq` in the conversation (typed in the terminal, or an
@@ -337,16 +339,46 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 			asking.asked(question, reply.seq);
 			continue;
 		}
+		const verdict = judge(reply.text);
+		const outOfQuota = spec.client === 'claude' && CLAUDE_USAGE_LIMIT.test(reply.text.trim());
+		if (asking && !verdict && !outOfQuota) {
+			// An earlier unjudged reply may have asked, the agent's turn going on before this look (a
+			// controller's DECIDE: then, seconds later, NO REPLY:, #700): the latest such question no
+			// input of the user's has answered yet is the one waited on. A DONE or FAILED as the latest
+			// reply ends the run instead. No input came after the question, so the answer is looked for
+			// after the latest reply, which is judged no more.
+			const earlier = await unansweredAsk(host, spec.client, sessionId, judgeAfter, reply.seq, asking.tags);
+			if (earlier) {
+				judgeAfter = reply.seq;
+				watched.note({ judgeAfter });
+				asking.asked(earlier.question, earlier.seq);
+				continue;
+			}
+		}
 		if (watched.goesOn?.(reply.text)) {
 			judgeAfter = reply.seq;
 			watched.note({ judgeAfter });
 			continue;
 		}
-		const verdict = judge(reply.text);
 		if (verdict) return end(verdict);
-		if (spec.client === 'claude' && CLAUDE_USAGE_LIMIT.test(reply.text.trim())) return end({ status: 'quota', reason: `額度用完：${clip(reply.text.trim().split('\n').at(-1)!)}（Claude 不換帳號）` });
+		if (outOfQuota) return end({ status: 'quota', reason: `額度用完：${clip(reply.text.trim().split('\n').at(-1)!)}（Claude 不換帳號）` });
 		return end({ status: 'failed', reason: `回合結束，但最後一行不是 ${watched.ending ?? 'DONE、FAILED 或 ASK'}：${clip(reply.text.trim().split('\n').at(-1) ?? '')}` });
 	}
+}
+
+/** The latest question among the replies after `after` and before `before` that no input of the
+ *  user's came after; null when there is none, or the conversation cannot be read. */
+async function unansweredAsk(host: AgentHost, client: AgentSpec['client'], sessionId: string, after: number, before: number, tags?: readonly string[]): Promise<{ question: string; seq: number } | null> {
+	const read = await host.repliesAfter(client, sessionId, after);
+	if (!read.ok) return null;
+	const asked = read.replies.flatMap((reply) => {
+		const question = reply.seq < before ? askOf(reply.text, tags) : null;
+		return question === null ? [] : [{ question, seq: reply.seq }];
+	});
+	const latest = asked.at(-1);
+	if (!latest) return null;
+	// Answered (typed in, the board's reply, or the question panel's): it is not opened again.
+	return (await host.inputAfter(client, sessionId, latest.seq)) ? null : latest;
 }
 
 /** A Codex agent stopped on its usage limit: check its own account's quota live (the one it runs

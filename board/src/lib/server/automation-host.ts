@@ -183,6 +183,11 @@ export function boardAgentHost(config: BoardConfig, board: () => Board, retry: {
 			const reply = items.findLast((item) => item.kind === 'assistant');
 			return { ok: true, text: reply && 'text' in reply ? reply.text : null, seq: reply?.seq ?? -1 };
 		},
+		async repliesAfter(client, sessionId, seq) {
+			const read = await readTranscript(config, client, sessionId);
+			if (!read.ok) return { ok: false, reason: read.reason };
+			return { ok: true, replies: read.page.items.flatMap((item) => (item.kind === 'assistant' && item.seq > seq && 'text' in item ? [{ text: item.text, seq: item.seq }] : [])) };
+		},
 		async transcript(client, sessionId) {
 			const read = await readTranscript(config, client, sessionId);
 			return read.ok ? read.path : null;
