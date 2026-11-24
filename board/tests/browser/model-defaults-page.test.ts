@@ -8,7 +8,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { DEFAULT_UNREADABLE_TEXT } from '../../src/lib/board/models.ts';
 import type { HelperController } from '../../src/lib/board/types.ts';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser } from '../browser.ts';
+import { CHROME, holdRequests, launchChrome, type Browser } from '../browser.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -155,6 +155,74 @@ test.skipIf(!CHROME)("the new-agent form names the defaults the same way", async
 	await choose('codex');
 	await shows(marked('gpt-6.1-sol'), marked('medium'));
 	await choose('claude');
+}, 30_000);
+
+/** Keep what the form sends for the next launch, and answer it as started. */
+const catchLaunch = () =>
+	evaluate(`(() => {
+		window.sentLaunch = null;
+		const real = window.fetch;
+		window.fetch = (input, init) => {
+			if (String(input).endsWith('/api/launches') && init?.method === 'POST') {
+				window.sentLaunch = JSON.parse(init.body);
+				return Promise.resolve(new Response(JSON.stringify({ ok: true, reason: null, entry: null, logError: null }), { status: 200, headers: { 'content-type': 'application/json' } }));
+			}
+			return real(input, init);
+		};
+	})()`);
+/** Send the form with this first sentence. */
+async function submitWith(text: string) {
+	await evaluate(`(() => {
+		const box = document.querySelector('.new textarea');
+		box.value = ${JSON.stringify(text)};
+		box.dispatchEvent(new Event('input', { bubbles: true }));
+	})()`);
+	// The test folders are not Git projects: say they may be initialised.
+	await until(`!!document.querySelector('.init input') || !document.querySelector('form > .primary').disabled`);
+	await evaluate(`document.querySelector('.init input:not(:checked)')?.click()`);
+	await until(`!document.querySelector('form > .primary').disabled`);
+	await evaluate(`document.querySelector('form > .primary').click()`);
+	await until('window.sentLaunch !== null');
+	return evaluate<{ model: string | null; effort: string | null }>('window.sentLaunch');
+}
+
+test.skipIf(!CHROME)('the marked default option launches with no model and no effort, like the old 預設 line; an explicit choice still sends its value', async () => {
+	await send('Page.navigate', { url: `${fixture.url}/?launch` });
+	await filledIn();
+	await pickFolder(plain);
+	await shows(marked('claude-opus-5-5'), marked('medium'));
+	await catchLaunch();
+	const byDefault = await submitWith('用預設');
+	expect([byDefault.model, byDefault.effort]).toEqual([null, null]);
+	// A model and effort other than the default are sent as chosen.
+	await send('Page.navigate', { url: `${fixture.url}/?launch` });
+	await filledIn();
+	await pickFolder(plain);
+	await shows(marked('claude-opus-5-5'), marked('medium'));
+	await pickModel('claude-sonnet-5-5');
+	await evaluate(`(() => { const s = document.querySelectorAll('.settings select')[1]; s.value = 'high'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+	await catchLaunch();
+	const chosen = await submitWith('自己選');
+	expect([chosen.model, chosen.effort]).toEqual(['claude-sonnet-5-5', 'high']);
+}, 30_000);
+
+test.skipIf(!CHROME)('while the defaults load, the single 預設：讀取中… option shows, then the marked one; a chosen model that becomes the default folds into it', async () => {
+	await send('Page.navigate', { url: `${fixture.url}/?launch` });
+	await filledIn();
+	await pickFolder(plain);
+	await shows(marked('claude-opus-5-5'), marked('medium'));
+	await evaluate(holdRequests('/api/launches/defaults'));
+	await pickFolder(own);
+	await shows('預設：讀取中…', '預設：讀取中…');
+	await evaluate('window.release()');
+	await shows(marked('claude-haiku-5-5'), marked('high'));
+	// A model chosen explicitly that becomes the default: the folder's own default is haiku.
+	await pickFolder(plain);
+	await shows(marked('claude-opus-5-5'), marked('medium'));
+	await pickModel('claude-haiku-5-5');
+	await pickFolder(own);
+	await shows(marked('claude-haiku-5-5'), marked('high'));
+	expect(await evaluate<string>(`document.querySelectorAll('.settings select')[0].value`)).toBe('');
 }, 30_000);
 
 test.skipIf(!CHROME)("the command line's label shows a new controller's settings once its first turn starts, without a reload", async () => {
