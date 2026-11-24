@@ -102,6 +102,7 @@ FAILURE_CEILING_BYTES = 2 * 1024 * 1024  # the kept file never passes this (see 
 FAILURE_LINE_BYTES = 4096
 CUT_MARKER = '[... middle of this failure block cut ...]'
 FAILURE_SPOOL_BYTES = 32 * 1024 * 1024  # the live copy of a run's output stops growing here
+FAILURE_LATE_BYTES = 64 * 1024  # what is kept of the output after that: its last bytes
 LIVE_STALE_SECONDS = 24 * 3600          # a live file this old belongs to a run that is gone
 KILL_GRACE_SECONDS = 5.0
 # Total time a test command may run: the registry's `time_limit_minutes`, else the suite's
@@ -2307,18 +2308,24 @@ class Tail:
         self.last_output = time.monotonic()
         self.spool = spool  # the live output file (spool_open()), or None
         self.spooled = 0
+        self.late = bytearray()  # the last FAILURE_LATE_BYTES of the output past the spool cap
 
     def add(self, chunk):
         with self.lock:
             self.last_output = time.monotonic()
             self.data += chunk
             del self.data[:-TAIL_BYTES]
-            if self.spool and self.spooled < FAILURE_SPOOL_BYTES:
-                try:
-                    self.spool.write(chunk[:FAILURE_SPOOL_BYTES - self.spooled])
-                    self.spool.flush()
-                except OSError:
-                    self.spool = None
+            if self.spool is not None:
+                room = FAILURE_SPOOL_BYTES - self.spooled
+                if room > 0:
+                    try:
+                        self.spool.write(chunk[:room])
+                        self.spool.flush()
+                    except OSError:
+                        self.spool = None
+                if len(chunk) > room:
+                    self.late += chunk[max(room, 0):]
+                    del self.late[:-FAILURE_LATE_BYTES]
                 self.spooled += len(chunk)
 
     def text(self):
@@ -2445,10 +2452,12 @@ class FailureBlocks:
         return self.blocks
 
 
-def cut_line(raw):
-    """A line of the output as text, at most FAILURE_LINE_BYTES bytes (cut, and marked)."""
-    cut = len(raw) > FAILURE_LINE_BYTES
-    text = raw[:FAILURE_LINE_BYTES].decode(errors='replace').rstrip('\r\n')
+def cut_line(raw, limit=None):
+    """A line of the output as text, at most `limit` bytes (default FAILURE_LINE_BYTES; cut,
+    and marked)."""
+    limit = FAILURE_LINE_BYTES if limit is None else limit
+    cut = len(raw) > limit
+    text = raw[:limit].decode(errors='replace').rstrip('\r\n')
     return text + ' [... line cut ...]' if cut else text
 
 
@@ -2462,14 +2471,16 @@ def bound_failure_output(source, target, cap=None):
         return False
     head, head_size = [], 0
     tail, tail_size = collections.deque(), 0
-    blocks, total, cut_any = FailureBlocks(), 0, False
+    blocks, total = FailureBlocks(), 0
     with open(source, 'rb') as stream:
         for number, raw in enumerate(stream, 1):
-            line = cut_line(raw)
-            cut_any = cut_any or len(raw) > FAILURE_LINE_BYTES
+            # Failure blocks see lines up to a whole block's size, so a block under the limit
+            # stays whole around a long line; the head and tail get the shorter cut.
+            full = cut_line(raw, FAILURE_BLOCK_BYTES)
+            line = full if len(raw) <= FAILURE_LINE_BYTES else cut_line(raw)
             size = len(line.encode()) + 1
             total = number
-            blocks.feed(number, line)
+            blocks.feed(number, full)
             if head_size < FAILURE_HEAD_BYTES:
                 head.append((number, line))
                 head_size += size
@@ -2586,9 +2597,11 @@ def keep_failure_output(tail, spool_path):
                               + uuid.uuid4().hex[:8] + '.log')
         truncated = bound_failure_output(spool_path, target)
         if tail.spooled > FAILURE_SPOOL_BYTES:
-            with open(target, 'a') as sink:
+            with open(target, 'a', encoding='utf-8') as sink:
                 sink.write(f'[TRUNCATED: the live copy stopped at {FAILURE_SPOOL_BYTES} bytes; '
-                           'later output is not here]\n')
+                           f'failures after that are not in this file, only the last '
+                           f'{len(tail.late)} bytes of the output follow]\n')
+                sink.write(tail.late.decode(errors='replace') + '\n')
             truncated = True
         data = target.read_bytes()
         return {'path': str(target), 'sha256': hashlib.sha256(data).hexdigest(),
