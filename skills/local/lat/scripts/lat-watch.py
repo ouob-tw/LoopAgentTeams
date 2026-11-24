@@ -2337,8 +2337,9 @@ def delivered_report(messages, card_updated_at, agent_names, orchestrator_names,
     orchestrator voids it unless it is an inform/ack or a watcher notice
     (message_releases_wait): a question from QA or a reviewer is work. A later orchestrator
     message, whatever its intent (instructions come as inform too), voids it unless the
-    agent only acknowledged it: acknowledged(ts) tells that for the first such message (see
-    acknowledged_only); without it any orchestrator message voids the report.
+    agent only acknowledged them all: acknowledged(first_ts, last_ts) tells that for the
+    orchestrator messages since the report (see acknowledged_only); without it any
+    orchestrator message voids the report.
     """
     def to(message, names):
         return bool((message_names(message, 'delivered_to') | message_names(message, 'mentions'))
@@ -2346,24 +2347,26 @@ def delivered_report(messages, card_updated_at, agent_names, orchestrator_names,
 
     ordered = sorted((message for message in messages if message.get('type') == 'message'
                       and isinstance(message.get('id'), int)), key=lambda item: item['id'])
-    report, pending = 0, None
+    report, pending, latest = 0, None, None
     for message in ordered:
         sender = message_names(message, 'from')
         if sender & agent_names:
             if (to(message, orchestrator_names)
                     and (message_time(message) or 0)
-                    > card_updated_at - CARD_REPORT_GRACE_SECONDS):
-                report, pending = message['id'], None
+                    >= card_updated_at - CARD_REPORT_GRACE_SECONDS):
+                report, pending, latest = message['id'], None, None
         elif not to(message, agent_names):
             continue
         elif sender & orchestrator_names:
-            if report and pending is None:
-                pending = message
+            if report:
+                pending = pending or message
+                latest = message
         elif message_releases_wait(message):
-            report, pending = 0, None
+            report, pending, latest = 0, None, None
     if report and pending is not None and (
             acknowledged is None or message_time(pending) is None
-            or not acknowledged(pending['ts'])):
+            or message_time(latest) is None
+            or not acknowledged(pending['ts'], latest['ts'])):
         return 0
     return report
 
@@ -2371,26 +2374,30 @@ def delivered_report(messages, card_updated_at, agent_names, orchestrator_names,
 ACK_EVENT_LIMIT = 200
 
 
-def acknowledged_only(events, orchestrator_names):
-    """Whether status events since an orchestrator message show it was only acknowledged.
+def acknowledged_only(events, orchestrator_names, latest_at):
+    """Whether status events since the first unanswered orchestrator message show that every
+    orchestrator message up to latest_at (a timestamp) was only acknowledged.
 
-    HCOM must have delivered an orchestrator message (deliver:<orchestrator>) and the agent
-    gone back to listening afterwards, with no tool call anywhere in the events: a message
-    never delivered was never answered, and a tool call means the agent took on work.
+    HCOM must have delivered an orchestrator message (deliver:<orchestrator>) no earlier than
+    the latest one was sent, and the agent gone back to listening afterwards, with no tool
+    call anywhere in the events: a message never delivered was never answered, and a tool
+    call means the agent took on work.
     """
     delivered = answered = False
     for event in sorted(events, key=lambda item: item.get('id', 0)):
         if (status_context(event) or '').startswith('tool:'):
             return False
-        if delivery_sender(event) in orchestrator_names:
+        if (delivery_sender(event) in orchestrator_names
+                and (message_time(event) or 0) >= latest_at):
             delivered = True
         elif delivered and event_value(event, 'status', 'data') == 'listening':
             answered = True
     return answered
 
 
-def acknowledged_since(orchestrator, info, after):
-    """acknowledged_only for the agent's own session since `after`; False when unknown."""
+def acknowledged_since(orchestrator, info, after, latest):
+    """acknowledged_only for the agent's own session since `after`, for orchestrator messages
+    up to the one sent at `latest`; False when unknown."""
     if not isinstance(info, dict) or not info.get('session_id'):
         return False
     try:
@@ -2400,7 +2407,8 @@ def acknowledged_since(orchestrator, info, after):
         return False
     # A full page may have lost the earliest events; a turn that long was not a bare ack.
     return (len(events) < ACK_EVENT_LIMIT
-            and acknowledged_only(events, hcom_names(orchestrator)))
+            and acknowledged_only(events, hcom_names(orchestrator),
+                                  message_time({'ts': latest}) or float('inf')))
 
 
 def find_delivered_report(orchestrator, agent, info, card):
@@ -2408,7 +2416,8 @@ def find_delivered_report(orchestrator, agent, info, card):
     if not card_closed(card) or agent == orchestrator:
         return 0
     updated_at = card.get('_updated_at', 0)
-    after = datetime.fromtimestamp(updated_at - CARD_REPORT_GRACE_SECONDS,
+    # One second of slack so a report exactly at the boundary is read.
+    after = datetime.fromtimestamp(updated_at - CARD_REPORT_GRACE_SECONDS - 1,
                                    timezone.utc).isoformat()
     base = (info or {}).get('base_name') or agent.rsplit('-', 1)[-1]
     try:
@@ -2418,7 +2427,8 @@ def find_delivered_report(orchestrator, agent, info, card):
         return 0  # unreadable messages: no exemption, the usual nudge rules apply
     return delivered_report(messages, updated_at, hcom_names(agent, info),
                             hcom_names(orchestrator),
-                            lambda after: acknowledged_since(orchestrator, info, after))
+                            lambda after, latest: acknowledged_since(
+                                orchestrator, info, after, latest))
 
 
 def observe(workspace, decisions, orchestrator, agent, info, card=None, *, processes):

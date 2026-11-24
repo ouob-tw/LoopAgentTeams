@@ -1701,6 +1701,27 @@ class DeliveredAwaitingOrchestratorTests(unittest.TestCase):
 
     def test_report_up_to_a_minute_before_the_card_save_counts(self):
         self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], -0.95)), 5)
+        self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], -1)), 5)
+
+    def test_later_undelivered_orchestrator_message_voids_an_earlier_ack(self):
+        # Review S1/R1: report, ack of one message, then a new instruction not yet delivered.
+        watch = load_watch()
+        messages = [self.message(5, 'faha', ['vonero'], 2),
+                    self.message(6, 'vonero', ['faha'], 3, 'inform', 'Stay available'),
+                    self.message(9, 'vonero', ['faha'], 6, None, 'Next: fix the test')]
+        statuses = [self.status(7, 'active', 'deliver:vonero', 3),
+                    self.status(8, 'listening', '', 3)]
+        info = {'session_id': 'abc', 'name': 'q713-faha', 'base_name': 'faha'}
+
+        def events(orchestrator, *filters):
+            return statuses if '--type' in filters and 'status' in filters else messages
+        card = {'status': 'completed', '_updated_at': self.CARD_AT}
+        with patch.object(watch, 'hcom_events', events):
+            self.assertEqual(watch.find_delivered_report('vonero', 'q713-faha', info, card), 0)
+            statuses.append(self.status(10, 'active', 'deliver:vonero', 7))
+            self.assertEqual(watch.find_delivered_report('vonero', 'q713-faha', info, card), 0)
+            statuses.append(self.status(11, 'listening', '', 7))
+            self.assertEqual(watch.find_delivered_report('vonero', 'q713-faha', info, card), 5)
 
     def test_message_to_someone_else_is_not_a_report(self):
         self.assertEqual(self.report(self.message(5, 'faha', ['badi'], 2)), 0)
@@ -1718,17 +1739,17 @@ class DeliveredAwaitingOrchestratorTests(unittest.TestCase):
                     self.message(6, 'vonero', ['faha'], 3, 'inform', 'Stay available'),
                     self.message(7, 'vonero', ['faha'], 4)]
         found = watch.delivered_report(messages, self.CARD_AT, self.AGENT, self.BOSS,
-                                       lambda after: seen.append(after) or True)
+                                       lambda after, latest: seen.append((after, latest)) or True)
         self.assertEqual(found, 5)
-        # Looked up from the first unanswered orchestrator message on.
-        self.assertEqual(seen, [messages[1]['ts']])
+        # Looked up from the first unanswered orchestrator message to the latest one.
+        self.assertEqual(seen, [(messages[1]['ts'], messages[2]['ts'])])
 
     def test_acting_on_the_orchestrator_message_voids_the_report(self):
         watch = load_watch()
         messages = [self.message(5, 'faha', ['vonero'], 2),
                     self.message(6, 'vonero', ['faha'], 3, 'inform', 'Decision: A, update tests')]
         self.assertEqual(watch.delivered_report(messages, self.CARD_AT, self.AGENT, self.BOSS,
-                                                lambda after: False), 0)
+                                                lambda after, latest: False), 0)
 
     def test_orchestrator_message_without_a_standing_report_is_not_checked(self):
         watch = load_watch()
@@ -1736,7 +1757,7 @@ class DeliveredAwaitingOrchestratorTests(unittest.TestCase):
                     self.message(6, 'badi', ['faha'], 3, 'inform')]
         self.assertEqual(watch.delivered_report(
             messages, self.CARD_AT, self.AGENT, self.BOSS,
-            lambda after: self.fail('no acknowledgment lookup without a report')), 0)
+            lambda after, latest: self.fail('no acknowledgment lookup without a report')), 0)
 
     def test_a_request_from_others_voids_even_an_acknowledged_report(self):
         watch = load_watch()
@@ -1744,34 +1765,48 @@ class DeliveredAwaitingOrchestratorTests(unittest.TestCase):
                     self.message(6, 'vonero', ['faha'], 3, 'inform'),
                     self.message(7, 'badi', ['faha'], 4, 'request')]
         self.assertEqual(watch.delivered_report(messages, self.CARD_AT, self.AGENT, self.BOSS,
-                                                lambda after: True), 0)
+                                                lambda after, latest: True), 0)
 
     @staticmethod
-    def status(event_id, status, context=''):
-        return {'id': event_id, 'type': 'status',
+    def status(event_id, status, context='', minutes=10):
+        at = datetime(2026, 11, 24, 8, 0, tzinfo=timezone.utc) + timedelta(minutes=minutes)
+        return {'id': event_id, 'type': 'status', 'ts': at.isoformat(),
                 'data': {'status': status, 'context': context, 'session': 'abc'}}
 
     def test_acknowledged_only_needs_delivery_then_listening_without_tool_calls(self):
         watch = load_watch()
         status = self.status
+        latest = self.CARD_AT + 180
         # #642 QA: delivered, a turn with no tool call, back to listening.
         self.assertTrue(watch.acknowledged_only(
-            [status(1, 'active', 'deliver:vonero'), status(2, 'listening')], self.BOSS))
+            [status(1, 'active', 'deliver:vonero'), status(2, 'listening')], self.BOSS, latest))
         # hufo: the message was never delivered before the check.
-        self.assertFalse(watch.acknowledged_only([status(1, 'listening')], self.BOSS))
+        self.assertFalse(watch.acknowledged_only([status(1, 'listening')], self.BOSS, latest))
         # Delivered but the turn has not ended yet.
         self.assertFalse(watch.acknowledged_only(
-            [status(1, 'active', 'deliver:vonero')], self.BOSS))
+            [status(1, 'active', 'deliver:vonero')], self.BOSS, latest))
         # Delivered by someone else only.
         self.assertFalse(watch.acknowledged_only(
-            [status(1, 'active', 'deliver:badi'), status(2, 'listening')], self.BOSS))
+            [status(1, 'active', 'deliver:badi'), status(2, 'listening')], self.BOSS, latest))
+        # A later orchestrator message, still undelivered, is not covered by the earlier ack.
+        self.assertFalse(watch.acknowledged_only(
+            [status(1, 'active', 'deliver:vonero', 3), status(2, 'listening', '', 3)],
+            self.BOSS, self.CARD_AT + 360))
+        # ... nor once delivered while the turn that reads it has not ended.
+        self.assertFalse(watch.acknowledged_only(
+            [status(1, 'active', 'deliver:vonero', 3), status(2, 'listening', '', 3),
+             status(3, 'active', 'deliver:vonero', 7)], self.BOSS, self.CARD_AT + 360))
+        self.assertTrue(watch.acknowledged_only(
+            [status(1, 'active', 'deliver:vonero', 3), status(2, 'listening', '', 3),
+             status(3, 'active', 'deliver:vonero', 7), status(4, 'listening', '', 7)],
+            self.BOSS, self.CARD_AT + 360))
         # rubi / bagi: a tool call after the message, even in a later turn.
         self.assertFalse(watch.acknowledged_only(
             [status(1, 'active', 'deliver:vonero'), status(2, 'active', 'tool:Bash'),
-             status(3, 'listening')], self.BOSS))
+             status(3, 'listening')], self.BOSS, latest))
         self.assertFalse(watch.acknowledged_only(
             [status(1, 'active', 'deliver:vonero'), status(2, 'listening'),
-             status(3, 'active', 'tool:Bash'), status(4, 'listening')], self.BOSS))
+             status(3, 'active', 'tool:Bash'), status(4, 'listening')], self.BOSS, latest))
 
     def test_acknowledged_since_reads_the_agents_session_and_fails_closed(self):
         watch = load_watch()
@@ -1783,18 +1818,19 @@ class DeliveredAwaitingOrchestratorTests(unittest.TestCase):
             calls.append(filters)
             return acked
         with patch.object(watch, 'hcom_events', events):
-            self.assertTrue(watch.acknowledged_since('vonero', info, '2026-11-24T08:03:00Z'))
+            self.assertTrue(watch.acknowledged_since('vonero', info, '2026-11-24T08:03:00Z',
+                                                     '2026-11-24T08:03:00Z'))
         self.assertIn('2026-11-24T08:03:00Z', calls[0])
         self.assertNotIn('tool:*', calls[0])
-        self.assertFalse(watch.acknowledged_since('vonero', {}, 'x'))
+        self.assertFalse(watch.acknowledged_since('vonero', {}, 'x', 'x'))
         full = acked + [self.status(n, 'listening') for n in range(3, 201)]
         with patch.object(watch, 'hcom_events', lambda *args: full):
-            self.assertFalse(watch.acknowledged_since('vonero', info, 'x'))
+            self.assertFalse(watch.acknowledged_since('vonero', info, 'x', 'x'))
 
         def broken(*args):
             raise ValueError('hcom events failed')
         with patch.object(watch, 'hcom_events', broken):
-            self.assertFalse(watch.acknowledged_since('vonero', info, 'x'))
+            self.assertFalse(watch.acknowledged_since('vonero', info, 'x', 'x'))
 
     def test_orchestrator_message_before_report_does_not_void_it(self):
         self.assertEqual(self.report(self.message(6, 'faha', ['vonero'], 3),
@@ -1858,7 +1894,7 @@ class DeliveredAwaitingOrchestratorTests(unittest.TestCase):
         orchestrator, filters = calls[0]
         self.assertEqual(orchestrator, 'vonero')
         self.assertEqual(filters[filters.index('--participant') + 1], 'faha')
-        self.assertEqual(filters[filters.index('--after') + 1], '2026-11-24T07:59:00+00:00')
+        self.assertEqual(filters[filters.index('--after') + 1], '2026-11-24T07:58:59+00:00')
 
     def idle(self, **changes):
         return load_watch().Observation(
