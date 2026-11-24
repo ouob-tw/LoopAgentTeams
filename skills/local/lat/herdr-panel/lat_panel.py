@@ -638,7 +638,7 @@ def _duty_reminder(decisions, question_id):
 
 
 def _preauth_recheck(questions, decisions, question_id):
-    """``(verdict, check line, sent)`` for a record with ``- action:``, else None.
+    """``(verdict, check line, sent, action)`` for a record with ``- action:``, else None.
 
     The questions file's binding names the session and workspace; unbound, the client
     session environment and the current directory do. A failed recheck warns and counts
