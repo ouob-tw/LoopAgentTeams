@@ -1346,7 +1346,7 @@ def unquoted_newlines_end_commands(command):
 
 
 def gh_issue_commands(command):
-    """`(positionals, repo, comment, body, operators, plain)` for each `gh` command.
+    """`(positionals, repo, comment, body, operators, plain, start, end)` for each `gh` command.
 
     `body` is `('text', <text>)` for `--body`, `('file', <path>)` for `--body-file`, else
     None; `operators` are the shell operators after the command, in order; `plain` is False
@@ -1381,8 +1381,9 @@ def gh_issue_commands(command):
             elif name in ('-b', '--body'):
                 body = ('text', value)
             elif name in ('-F', '--body-file'):
-                body = ('file', value)
-        found.append((positionals, repo, comment, body, [word for word in words[index + 1:] if set(word) <= SHELL_OPERATORS], plain))
+                body = ('file', value, index == 0)
+        found.append((positionals, repo, comment, body, [word for word in words[index + 1:] if set(word) <= SHELL_OPERATORS], plain,
+                      index, len(words) - len(rest)))
     return found
 
 
@@ -1390,11 +1391,11 @@ def new_body(edit, command, cwd):
     """The text a `gh issue edit` leaves in the issue, or None when the check cannot be sure
     of it: shell expansion in the text, a file that is not a plain file, or a command that
     writes files."""
-    kind, value = edit
+    kind, value, *lead = edit
     if kind == 'text':
         return None if re.search(r'[$`]', value) else value
     # Only a file nothing else in the command can have rewritten first: the edit leads.
-    if value == '-' or re.search(r'>|\btee\b', command) or not command.lstrip().startswith('gh'):
+    if value == '-' or re.search(r'>|\btee\b', command) or not lead[0]:
         return None
     path = Path(cwd) / value
     try:
@@ -1410,14 +1411,13 @@ def issue_closes(command):
     for position, (positionals, repo, comment, *_) in enumerate(found):
         if positionals[:2] == ['issue', 'close'] and positionals[2:]:
             after = len(found[position][4])
-            edits = [(at, edit[:4] + (edit[4][:len(edit[4]) - after], edit[5]))
-                     for at, edit in enumerate(found[:position])
+            # Trust an edit only when it runs right before the close, joined by `&&`, and
+            # neither command is changed by a prefix: nothing in between can alter the body.
+            edits = [edit[:4] + (edit[4][:len(edit[4]) - after],
+                                 edit[5] and found[position][5] and
+                                 edit[7] + 1 == found[position][6])
+                     for edit in found[:position]
                      if edit[0][:2] == ['issue', 'edit'] and edit[0][2:3] == positionals[2:3]]
-            # Anything that may change the body again, or runs the close elsewhere, makes
-            # the edit untrustworthy.
-            edits = [(at, edit[:5] + (edit[5] and found[position][5] and
-                                      not any(found[at + 1:position]),)) for at, edit in edits]
-            edits = [edit for _, edit in edits]
             closes.append((positionals[2], repo, comment, edits))
     return closes
 

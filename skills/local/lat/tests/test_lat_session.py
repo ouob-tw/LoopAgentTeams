@@ -3651,7 +3651,7 @@ class SessionTests(unittest.TestCase):
                 self.assertIn('new body', result.stderr)
         # the last edit that sets a body wins
         result = self.close_hook('gh issue edit 458 --body-file half.md && gh issue edit 458 '
-                                 '--body-file done.md && gh issue close 458', old)
+                                 '--body "- [x] ok" && gh issue close 458', old)
         self.assertEqual((result.returncode, result.stderr), (0, ''))
 
     def test_close_check_keeps_todays_behavior_when_the_new_body_cannot_be_read(self):
@@ -3680,6 +3680,12 @@ class SessionTests(unittest.TestCase):
                         "-f body=x && gh issue close 458",
                         'gh issue edit 458 -F done.md && cd /tmp && gh issue close 458',
                         'gh issue edit 458 -F done.md && GH_REPO=o/y gh issue close 458',
+                        'gh auth status && cp half.md done.md && gh issue edit 458 -F done.md && '
+                        'gh issue close 458',
+                        'ghq get x; cp half.md done.md && gh issue edit 458 -F done.md && '
+                        'gh issue close 458',
+                        'gh issue edit 458 -F done.md && curl -X PATCH https://x/458 && '
+                        'gh issue close 458',
                         'gh issue edit 458 --body-file done.md || gh issue close 458',
                         'gh issue edit 458 --body-file done.md & gh issue close 458',
                         'gh issue edit 458 -R o/r --body-file done.md && gh issue close 458',
