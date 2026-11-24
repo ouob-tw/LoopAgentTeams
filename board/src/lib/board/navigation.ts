@@ -57,14 +57,14 @@ export function placeIn(search: Pick<URLSearchParams, 'get' | 'has'>): Place {
 	return null;
 }
 
-/** The middle column's list: the inbox, every agent Herdr lists, the scheduled tasks or the accounts' quotas. */
-export type MiddleTab = 'inbox' | 'agents' | 'automation' | 'quota';
+/** The middle column's list: the inbox, every agent Herdr lists, the scheduled tasks, the accounts' quotas or the host's resources. */
+export type MiddleTab = 'inbox' | 'agents' | 'automation' | 'quota' | 'resource';
 
 /** The middle tab the address names; null when it names none. An agent, or a workspace's
  *  new-agent form, is on the Herdr tab and a red card on the inbox unless the address says otherwise. */
 export function tabIn(search: Pick<URLSearchParams, 'get' | 'has'>): MiddleTab | null {
 	const tab = search.get('tab');
-	if (tab === 'agents' || tab === 'inbox' || tab === 'quota' || tab === 'automation') return tab;
+	if (tab === 'agents' || tab === 'inbox' || tab === 'quota' || tab === 'automation' || tab === 'resource') return tab;
 	if (search.has('agent') || search.has('new-agent')) return 'agents';
 	// A red card opened from a push shows beside the 待辦 list it sits in.
 	if (search.has('alert')) return 'inbox';

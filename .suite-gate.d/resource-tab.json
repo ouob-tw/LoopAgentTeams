@@ -1,0 +1,18 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/resources.ts",
+        "board/src/lib/server/resources.ts",
+        "board/src/lib/components/ResourceList.svelte",
+        "board/src/routes/api/resources/+server.ts",
+        "board/tests/unit/resources.test.ts",
+        "board/tests/browser/resource-page.test.ts"
+      ],
+      "tests": [
+        "board/tests/unit/resources.test.ts",
+        "board/tests/browser/resource-page.test.ts"
+      ]
+    }
+  ]
+}

@@ -41,6 +41,7 @@
 	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
 	import { pdNotice, type PdRequest } from '#lib/board/pd.ts';
 	import QuotaList from '#lib/components/QuotaList.svelte';
+	import ResourceList from '#lib/components/ResourceList.svelte';
 	import AutomationForm from '#lib/components/AutomationForm.svelte';
 	import AutomationList from '#lib/components/AutomationList.svelte';
 	import AutomationTask from '#lib/components/AutomationTask.svelte';
@@ -598,9 +599,12 @@
 >
 				<button type="button" data-middle="quota" aria-pressed={middle === 'quota'} onclick={() => navigation.setMiddle('quota')}>額度</button>
 				<button type="button" data-middle="automation" aria-pressed={middle === 'automation'} onclick={() => navigation.setMiddle('automation')}>自動化</button>
+				<button type="button" data-middle="resource" aria-pressed={middle === 'resource'} onclick={() => navigation.setMiddle('resource')}>資源</button>
 			</div>
 			{#if middle === 'quota'}
 				<QuotaList quota={board.quota} />
+			{:else if middle === 'resource'}
+				<ResourceList onopen={openAgent} />
 			{:else if middle === 'automation'}
 				<AutomationList automation={board.automation} currentId={taskId} onopen={openTask} onnew={() => navigation.go({ kind: 'automation-edit', id: null }, true)} />
 			{:else if middle === 'agents'}

@@ -132,6 +132,8 @@ export interface BoardConfig {
 	statusAfterActionMs: number;
 	/** How often an open 終端分頁's screen is read. */
 	screenMs: number;
+	/** Where the 資源 tab reads the host's processes, memory and mounts: `/proc`, or a folder laid out like it in tests. */
+	procRoot: string;
 	/** The current time in milliseconds. Read state, archiving and the 終端分頁's recovery bookkeeping use this, never `Date.now()`. */
 	now(): number;
 }
@@ -352,6 +354,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		statusPollTimeoutMs: seconds(env.LAT_BOARD_STATUS_POLL_TIMEOUT_SECONDS, 4_000),
 		statusAfterActionMs: seconds(env.LAT_BOARD_STATUS_AFTER_ACTION_SECONDS, 2_000),
 		screenMs: seconds(env.LAT_BOARD_SCREEN_SECONDS, 100),
+		procRoot: env.LAT_BOARD_PROC_ROOT || '/proc',
 		now: clock(env)
 	};
 }
