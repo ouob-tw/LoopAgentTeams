@@ -505,11 +505,13 @@
 		observer.observe(tabBar);
 		observer.observe(tabRow);
 		measureTabs();
+		void document.fonts?.ready.then(measureTabs);
 		return () => observer.disconnect();
 	});
 	// The Herdr count widens its button.
 	$effect(() => {
-		agents.length;
+		void agents.length;
+		void middle;
 		untrack(() => tick().then(measureTabs));
 	});
 	$effect(() => {
@@ -527,7 +529,7 @@
 			if (event.target instanceof Node && !tabBar?.contains(event.target)) switchOpen = false;
 		};
 		const escape = (event: KeyboardEvent) => {
-			if (event.key !== 'Escape') return;
+			if (event.key !== 'Escape' || event.defaultPrevented) return;
 			event.preventDefault();
 			switchOpen = false;
 			switchButton?.focus({ preventScroll: true });
@@ -671,7 +673,6 @@
 						type="button"
 						class="middle-switch"
 						bind:this={switchButton}
-						aria-haspopup="true"
 						aria-expanded={switchOpen}
 						aria-controls="middle-menu"
 						onclick={() => (switchOpen = !switchOpen)}
@@ -680,7 +681,7 @@
 					{#if switchOpen}
 						<div class="middle-menu" id="middle-menu" role="group" aria-label="清單">
 							{#each middleTabs as tab (tab.id)}
-								<button type="button" data-pick={tab.id} aria-pressed={middle === tab.id} aria-current={middle === tab.id ? 'true' : undefined} onclick={() => pickTab(tab.id)}
+								<button type="button" data-pick={tab.id} aria-current={middle === tab.id ? 'true' : undefined} onclick={() => pickTab(tab.id)}
 									><span class="check" aria-hidden="true">{middle === tab.id ? '✓' : ''}</span><span class="name">{tab.label}</span>{#if tab.id === 'agents'}<small>{agents.length}</small>{/if}</button
 								>
 							{/each}
@@ -1184,7 +1185,7 @@
 		color: var(--text);
 		text-align: left;
 	}
-	.middle-menu button[aria-pressed='true'] {
+	.middle-menu button[aria-current='true'] {
 		background: color-mix(in srgb, var(--text) 10%, var(--bg));
 		color: var(--text);
 		font-weight: 700;
