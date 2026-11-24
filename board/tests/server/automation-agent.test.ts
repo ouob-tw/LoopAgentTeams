@@ -511,6 +511,12 @@ function clearScreen(name: string) {
 	writeFileSync(join(dir, 'herdr.json'), JSON.stringify({ ...plan, screens: { ...plan.screens, [`wW:p-${name}`]: ['› '] } }));
 }
 /** A kill before the run ended would be a switch; after it, closing the agent may use one. */
+/** Wait until the board has read hcom's list twice more: it has seen the status written just before. */
+async function boardPolled(reads = 2) {
+	const count = () => (existsSync(join(dir, 'hcom-list-calls.jsonl')) ? readFileSync(join(dir, 'hcom-list-calls.jsonl'), 'utf8').split('\n').filter(Boolean).length : 0);
+	const start = count();
+	await eventually(async () => count() >= start + reads, 5_000, `${reads} more reads of hcom's list`);
+}
 const KILLS_OR_RESUMES = () => hcomCalls().filter((call) => ['r', 'kill'].includes(call.args[0]));
 const RESUMES = () => hcomCalls().filter((call) => call.args[0] === 'r');
 const SECOND_LIMIT_NON_CPA = '額度用完；這次執行沒有走 CPA，未判定池內帳號用完';
@@ -545,14 +551,14 @@ test('the first Codex usage limit sends one continue message and notes it: no ki
 	expect(injected().length).toBe(1);
 	// Busy and back to listening with the old error still on screen is not a second limit either.
 	setStatus('auto-back', 'active');
-	await sleep(400);
+	await boardPolled();
 	setStatus('auto-back', 'listening');
 	await sleep(800);
 	expect((await runsOf(task.id))[0].status).toBe('running');
 	expect(injected().length).toBe(1);
 	// It works on: busy, the screen clears, and its reply ends the run as usual (old error gone from the screen).
 	setStatus('auto-back', 'active');
-	await sleep(400);
+	await boardPolled();
 	clearScreen('auto-back');
 	reply('auto-back', '續作完成\nDONE');
 	setStatus('auto-back', 'listening');
@@ -610,11 +616,11 @@ test('a new usage-limit stop after the continue was read ends the run as 額度�
 		// The continue was read, a turn ran, and it stopped on the usage limit again.
 		userSaid(each.name, CONTINUE_MESSAGE);
 		setStatus(each.name, 'active');
-		await sleep(400);
+		await boardPolled();
 		// The old error is cleared from the screen, the agent says something, then a new limit shows.
 		clearScreen(each.name);
 		reply(each.name, '先做了一部分');
-		await sleep(400);
+		await boardPolled();
 		limitOnScreen(each.name);
 		setStatus(each.name, 'listening');
 		const out = await ended(task.id, started.id);
@@ -651,9 +657,9 @@ test('a board restart after the continue went out does not send another one, and
 	// Read, then a new stop shows after the screen cleared: ends as the second.
 	userSaid('auto-rs', CONTINUE_MESSAGE);
 	setStatus('auto-rs', 'active');
-	await sleep(400);
+	await boardPolled();
 	clearScreen('auto-rs');
-	await sleep(400);
+	await boardPolled();
 	limitOnScreen('auto-rs');
 	setStatus('auto-rs', 'listening');
 	const out = await ended(task.id, started.id);
@@ -788,10 +794,10 @@ test('an unattended Codex controller gets the same one continue, then a second u
 	expect((await runsOf(task.id))[0].status).toBe('running');
 	userSaid('auto-lat-cx', CONTROLLER_CONTINUE);
 	setStatus('auto-lat-cx', 'active');
-	await sleep(400);
+	await boardPolled();
 	clearScreen('auto-lat-cx');
 	reply('auto-lat-cx', '先做一些\nNO REPLY: 等其他 Agent');
-	await sleep(400);
+	await boardPolled();
 	// A controller waiting on its agents with the old error cleared goes on; a new limit then ends it.
 	expect((await runsOf(task.id))[0].status).toBe('running');
 	limitOnScreen('auto-lat-cx');
