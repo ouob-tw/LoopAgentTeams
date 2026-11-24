@@ -654,3 +654,33 @@ test('a DECIDE: already answered in the terminal before the board looked is not 
 	replies('quick-answered', ['做完了。\nDONE']);
 	expect((await ended(task.id, started.id)).status).toBe('success');
 });
+
+test('a task agent ending ASK: then, before the board looked, a reply with no ending waits on the question; answered while it still sits idle, the run goes on, and DONE ends it (#700)', async () => {
+	const task = await create({ limitMinutes: 60 });
+	hcomPlan([{ name: 'ask-then-plain' }]);
+	const started = await runNow(task.id);
+	await runWhen(task.id, started.id, (run) => run.sessionId === 's-ask-then-plain', 'ask-then-plain to be listed');
+	typed('ask-then-plain', '讀取並照做');
+	replies('ask-then-plain', [`ASK: ${QUESTION}`, '先處理別的部分。']);
+	const run = await waitingOn(task.id, started.id, 1);
+	expect((await reply(task.id, '2 張')).status).toBe(200);
+	await answered(task.id, run.id, 1);
+	// Still listening, its turn on the answer not begun yet: the run goes on.
+	await sleep(600);
+	const going = (await runsOf(task.id)).find((each) => each.id === run.id)!;
+	expect([going.status, going.asks?.length]).toEqual(['running', 1]);
+	setStatus('ask-then-plain', 'active');
+	replies('ask-then-plain', ['照 2 張開好了。\nDONE']);
+	expect((await ended(task.id, run.id)).status).toBe('success');
+});
+
+test('an unattended controller ending DECIDE: and then DONE before the board looked ends as success, the question not waited on (#700)', async () => {
+	const task = await create({ agent: unattendedAgent() });
+	hcomPlan([{ name: 'decide-done' }]);
+	const started = await runNow(task.id);
+	await runWhen(task.id, started.id, (run) => run.sessionId === 's-decide-done', 'decide-done to be listed');
+	typed('decide-done', '讀取並照做');
+	replies('decide-done', [`DECIDE: ${QUESTION}`, '照預設做完了。\nDONE']);
+	const done = await ended(task.id, started.id);
+	expect([done.status, done.asks]).toEqual(['success', undefined]);
+});

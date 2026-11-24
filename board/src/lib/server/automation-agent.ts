@@ -344,10 +344,12 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 		if (asking && !verdict && !outOfQuota) {
 			// An earlier unjudged reply may have asked, the agent's turn going on before this look (a
 			// controller's DECIDE: then, seconds later, NO REPLY:, #700): the latest such question no
-			// input of the user's has answered yet is the one waited on.
+			// input of the user's has answered yet is the one waited on. A DONE or FAILED as the latest
+			// reply ends the run instead. No input came after the question, so the answer is looked for
+			// after the latest reply, which is judged no more.
 			const earlier = await unansweredAsk(host, spec.client, sessionId, judgeAfter, reply.seq, asking.tags);
 			if (earlier) {
-				judgeAfter = earlier.seq;
+				judgeAfter = reply.seq;
 				watched.note({ judgeAfter });
 				asking.asked(earlier.question, earlier.seq);
 				continue;
