@@ -7,10 +7,14 @@
         "board/src/lib/server/automation-host.ts",
         "board/src/lib/server/hcom.ts",
         "board/src/lib/board/automation.ts",
-        "board/tests/unit/automation-launch-blocked.test.ts"
+        "board/tests/unit/automation-launch-blocked.test.ts",
+        "board/src/lib/server/alerts.ts",
+        "board/tests/fake-hcom.mjs",
+        "board/tests/server/automation-launch-blocked.test.ts"
       ],
       "tests": [
-        "board/tests/unit/automation-launch-blocked.test.ts"
+        "board/tests/unit/automation-launch-blocked.test.ts",
+        "board/tests/server/automation-launch-blocked.test.ts"
       ]
     }
   ]
