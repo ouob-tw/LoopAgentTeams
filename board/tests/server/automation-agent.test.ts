@@ -561,12 +561,12 @@ test('a Claude usage limit ends the run as 額度用完 with no account switched
 	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
 	hcomPlan([{ name: 'auto-21st' }]);
 	await fixture.stop();
-	fixture.setClock(tpe(2026, 11, 21, 9));
+	fixture.setClock(tpe(2026, 11, 21, 13));
 	await fixture.start();
 	cookie = await fixture.login();
 	const view = await eventually(async () => (await snapshot()).tasks.find((each) => each.task.id === task.id && each.missed.length), 5_000, 'the missed day');
 	expect(view.missed.map((entry) => entry.period)).toEqual(['2026-11-20']);
-	// And on the first check after the restart, today's try starts at once.
+	// And on the first check after the restart (13:00, past the task's 12:30), today's try catches up.
 	const today = await eventually(async () => (await runsOf(task.id)).find((run) => run.period === '2026-11-21'), 5_000, 'the try at once');
 	await send(`/api/automation/${task.id}/stop`, 'POST');
 	await ended(task.id, today.id);

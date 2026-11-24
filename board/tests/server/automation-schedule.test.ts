@@ -150,6 +150,7 @@ test('a restart starts only the tries whose set time today has passed: before it
 	// The 10:00 comes with the board up: it starts then, not before.
 	await at(tpe(2026, 11, 3, 10, 5));
 	expect((await ended(before.id, 1))[0]).toMatchObject({ trigger: 'auto', status: 'success', startedAt: tpe(2026, 11, 3, 10, 5), period: '2026-11-03' });
+	await sleep(SETTLE_MS);
 	expect((await viewOf(after.id)).runs).toEqual([]);
 	// Back again after 13:00: the one whose time passed catches up; the one tried today does not run again.
 	await restartAt(tpe(2026, 11, 3, 14));
