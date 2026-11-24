@@ -109,14 +109,12 @@ LOGIN_LINE = re.compile(r'^[●⎿\s]*Login expired\s+·\s+Please run /login\b',
 LOGIN_STATUS_CONTEXT = 'failure:authentication_failed'
 CRASH_ACTION = ('inspect the agent screen, then resume the same agent or replace it and '
                 'resend its task')
+CODEX_RECOVERY = ('follow "Codex 額度與 CPA 恢復" in hcom-spawn '
+                  'references/troubleshooting.md')
 RECOVERY_ACTIONS = {
     ('codex', 'model-capacity'): 'switch to another model',
-    ('codex', 'usage-limit'): (
-        'switch to another subscribed account with quota; Do not switch to API billing; '
-        'if no subscribed account is available, the user decides how to continue'),
-    ('codex', 'rate-limit'): (
-        'switch to another subscribed account with quota; Do not switch to API billing; '
-        'if no subscribed account is available, the user decides how to continue'),
+    ('codex', 'usage-limit'): CODEX_RECOVERY,
+    ('codex', 'rate-limit'): CODEX_RECOVERY,
 }
 
 

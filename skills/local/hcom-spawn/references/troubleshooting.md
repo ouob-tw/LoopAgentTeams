@@ -71,23 +71,23 @@ HCOM 接回同一個 session 時換模型尚未驗證，所以換模型改用新
 
 恢復後從最後已處理的事件往後補讀 `hcom events` 與相關 transcript，核對哪些 Agent 還開著、哪些回報漏掉了，才繼續指揮。
 
-## Codex 額度與換帳號
+## Codex 額度與 CPA 恢復
 
-- **額度警訊**：`hcom term <名稱>` 的 Codex 畫面出現 `You've hit your usage limit`／`0% left`，只作為觸發下方即時查證的訊號，不能單獨作為換帳號依據（背景檢查看到這個畫面會通知召喚者一次，不自動換帳號）。召喚者即使自己也曾額度用完、閒置後才回來，畫面仍可能保留額度重置前的錯誤。Claude 本輪錯誤含 `usage limit` 則視為額度耗盡。
-- **確認停止**：畫面同時出現 `0% left` 與 `usage limit` 才算確認停工。只有 `0% left` 或 HCOM 顯示 idle 時，還要核對本輪與工具執行狀態；還在工作就繼續等，無法確認就不切換也不重啟。
-- **Codex 自動換帳號**：完成下方切換前查證、確認額度確實為 0 時，不必等使用者選擇，換到另一個還有額度的訂閱帳號（`status` 標為 `OAUTH`）並續接，換完再回報使用者換了哪個帳號。不換到 API 計費帳號；不執行 `resets redeem`，也不把 `resets auto` 改成自動，兌換 reset 由使用者決定。
-- **換帳號續接**（僅 Codex 外部 Agent）：本輪已明確停止、任務未完成且疑似額度造成時，依序：
-  1. 切換前先執行 `codex-multi-auth status`，確認目前 current／pinned 帳號及受影響的 Agent 使用的帳號；不能把目前的全域選擇當成它啟動時的帳號。
-  2. 再執行 `codex-multi-auth check` 即時查證該帳號的額度。步驟 1 的帳號確認與此步驟的額度為 0 兩項都成立，才可切換；無法確認就不切換也不重啟。若額度已恢復，改走「同帳號補到額度」，不換帳號。
-  3. 記下 session ID、工作目錄、未提交成果與原本的 model／effort／權限參數；`hcom kill <名稱> --name <自身名稱>` 結束舊程序並確認退出，再 `codex-multi-auth switch <n>`，核對帳號並做下方「帳號探測」，通過後依 [SKILL.md 的「接回已關閉的 Agent」](../SKILL.md#接回已關閉的-agent) 以原 session ID 續接。
-- **帳號探測**：換帳號（釘選新帳號）後，續接任何 Agent 前；以及在還沒確認跑得了該模型的帳號上啟動 Codex 前（例如帳號、釘選或額度重置後第一次啟動某個模型），先用要跑的模型與 effort 確認這個帳號跑得了它。這個帳號與模型的組合本次已確認能跑的，不必再探測。探測走 `codex-multi-auth switch` 釘選（目前使用）的帳號：
+Codex 回合因 `You've hit your usage limit` 或上游錯誤停止時，先核對是當前回合的停止，而非畫面留下的舊錯誤；仍在工作就等待。
 
-  ```bash
-  codex exec -m <模型> -c 'model_reasoning_effort="<effort>"' --skip-git-repo-check --ephemeral -s read-only 'Reply with OK only.' </dev/null
-  ```
+0. **確認 provider**：程序存活時以 `hcom list <名稱> -v --name <自身名稱>`、已退出時以 `hcom list --stopped <名稱> --name <自身名稱>` 找 session ID 和 `Transcript` 路徑，讀該紀錄最後一筆 `event_msg` 的 `payload.type=thread_settings_applied` 中 `payload.thread_settings.model_provider_id`；沒有這筆設定時才讀原始 `session_meta.payload.model_provider`。設定紀錄缺少 provider 時視為不明，不回退到舊值。provider 不明或讀不到時回報上一層，不搬移、不判定整池用完。若已確認不是 `cpa`，先記下 session ID、工作目錄、未提交成果及原本的 model、effort、權限；記下接回前 Transcript 的行數；程序仍存活時照 [回報與收尾](../SKILL.md#回報與收尾) 用 `close-agent.py` 關閉並確認退出，已退出則略過。接著執行：
 
-  結束碼 0 才算通過。非 0 時看輸出：`model is not supported` 代表這個帳號不能用於這個模型，`usage limit` 代表額度仍是 0。兩者都不用這個帳號跑這個模型，改試下一個 `OAUTH` 帳號並重新探測；全部都失敗就當作這個模型暫時不可用，不重試同一帳號。
-- **同帳號補到額度**：確認額度恢復後，不換帳號，把接續位置傳給停工的 Agent，先試直接續作。
-- 兩種恢復方式都要確認實際工作進展，不能只看額度數字。
+   ```bash
+   hcom r <名稱或session-ID> --go --name <自身名稱> -c 'model_provider="cpa"'
+   ```
+
+   照 [接回已關閉的 Agent](../SKILL.md#接回已關閉的-agent) 保持原 model、effort 與權限，重新查 `Transcript` 路徑，確認行數之後最後一筆 `thread_settings_applied` 記錄之 `model_provider_id` 是 `cpa`，且其後有新回合的 `task_started` 或 `turn_context` 紀錄，才繼續；原始 `session_meta` 不會因接回而更新，不能當作接回後的證據。接回失敗或無法確認時回報上一層，不判定整池用完。
+1. **原地續作一次**：送同一位 Agent 一則續作訊息；程序已退出時以原 session ID 接回，再讓它續作。CPA 在下一個請求處理帳號輪替。確認實際工作進展。
+2. **再次停在額度用完**：已確認 `cpa`，且續作後的新一回合又停在額度用完，才視為整池用完；續作前的舊錯誤不算。自動交接未完成工作給全新的 Claude Agent：astra 用 fable 或 opus，sol、terra 用 sonnet，事後回報使用者。Claude 也沒有額度時才由使用者決定。
+
+不兌換 reset，不使用 API 計費帳號。`model is not supported` 與其他 API 錯誤一樣直接回報錯誤內容。
+
+## Claude 額度
+
 - **Claude 額度耗盡，受影響的是後端實作任務**：不必等使用者選擇，照「換模型交接」改派 `gpt-6.1-sol` `medium` 接手，事後回報哪些任務換了。不換 Claude 帳號。
-- **全部訂閱帳號都沒額度，或其餘情況的 Claude 額度耗盡**（審查、參謀、前端、召喚者自己額度用完）：保留成果並回報使用者，由使用者決定等待、兌換 reset 或其他做法。
+- **其餘情況的 Claude 額度耗盡**（審查、參謀、前端、召喚者自己額度用完）：保留成果並回報使用者，由使用者決定等待、兌換 reset 或其他做法。

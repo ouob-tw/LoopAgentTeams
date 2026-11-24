@@ -6,7 +6,7 @@ hcom-spawn 的「自身名稱」是發起委派的那一方：主控派工時是
 
 ## 在 LAT 內與 hcom-spawn 不同之處
 
-- hcom-spawn 要求「回報使用者」的地方，執行 Agent（含再委派時）改回報召喚它的一方，最終到主控；主控在既有授權內處理，超出才依 SKILL.md 的使用者待決規則問使用者。Codex 自動換帳號依 hcom-spawn；無可用訂閱帳號時，等待或兌換 reset 等做法由使用者決定。主控依 /hcom-spawn「回報與收尾」向使用者回報，執行 Agent 的回報由主控記錄。
+- hcom-spawn 要求「回報使用者」的地方，執行 Agent（含再委派時）改回報召喚它的一方，最終到主控；主控在既有授權內處理，超出才依 SKILL.md 的使用者待決規則問使用者。Codex 依 hcom-spawn 確認 CPA 並續作一次，整池耗盡時自動改派 Claude、事後回報；Claude 也無額度才由使用者決定。主控依 /hcom-spawn「回報與收尾」向使用者回報，執行 Agent 的回報由主控記錄。
 - hcom-spawn「改呼叫 /lat」的指引不適用（已在 LAT 流程內）。
 - 關閉時機依下方「收尾」與任務收尾的門檻；執行 Agent 自報完成不能跳過。
 
@@ -22,7 +22,7 @@ hcom-spawn 的「自身名稱」是發起委派的那一方：主控派工時是
 - 派 /code-review 審查者前（實作者再委派時亦同）先跑 `uv run --no-project python <lat_dir>/scripts/review-size.py <審查基準>` 取得派一位 Standards 審查者或兩面向的建議，由主控決定；門檻見腳本說明。Standards 面向照 /hcom-spawn 預設選模型；派兩位時 Spec 面向一律派 `gpt-6-astra`、effort `medium`。使用者另行指定時照其指定。審查者每項發現須標甲乙丙級。
 - 派 Designer 寫 Spec 與拆票（/to-spec、/to-tickets）時寫明：「現有測試全部通過」只寫在 Spec 層級，全部合併後由一人做一次合併後驗證，不寫進各票驗收條件。
 - [Spec 文件審查](spec-review.md) 派給全新、與 Designer 不同家模型的 Agent：Designer 是 Claude 時派 Codex `gpt-6-astra`、effort `medium`；是 Codex 時派 Claude，模型依 /hcom-spawn 預設。它在確認前審 Spec 本身，與實作後審程式的 Spec 面向不同，不互相取代。
-- 不同家模型不可用時，先依 /hcom-spawn 的額度與恢復程序處理（如 Codex 換帳號）；仍不可用，依 SKILL.md「使用者待決事項」問使用者要等待還是改用同家全新 Agent。答覆前不改用同家模型、不略過審查，也不發 Spec 確認題。
+- 不同家模型不可用時，先依 /hcom-spawn 的額度與恢復程序處理（Codex 整池耗盡時自動改派 Claude）；仍不可用，依 SKILL.md「使用者待決事項」問使用者要等待還是改用同家全新 Agent。答覆前不改用同家模型、不略過審查，也不發 Spec 確認題。
 - 參謀的模型與同家降級例外見 [參謀](advisors.md#模型與降級)。
 - 每項任務用自己的 tag，不跨任務共用，整組關閉時才不誤關其他任務的 Agents。
 - 執行 Agent 卡住時，由召喚它的一方依 /hcom-spawn 的升級規則提高 effort 或換模型；走完仍卡住，交回主控決定新 context 或拆小任務。
