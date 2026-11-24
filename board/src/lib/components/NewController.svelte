@@ -105,8 +105,13 @@
 	}
 	/** The option that is the default, when the value is known and listed: it carries the mark itself. */
 	const markedDefault = (value: string | null | undefined, list: string[] | undefined) => (defaults && value && list?.includes(value) ? value : null);
-	const defaultModel = $derived(markedDefault(defaults?.model, options?.models));
-	const defaultEffortOption = $derived(markedDefault(defaults && defaultEffort(defaults, form.model || null), options?.efforts));
+	const defaultModelMarked = $derived(markedDefault(defaults?.model, options?.models));
+	const defaultEffortMarked = $derived(markedDefault(defaults && defaultEffort(defaults, form.model || null), options?.efforts));
+	// A value chosen explicitly that has since become the default is the marked option itself.
+	$effect(() => {
+		if (defaultModelMarked && form.model === defaultModelMarked) form.model = '';
+		if (defaultEffortMarked && form.effort === defaultEffortMarked) form.effort = '';
+	});
 	/** A model by its short name, with the ID the other options use when that differs. */
 	const named = (model: string) => (modelShort(model) === model ? model : `${modelShort(model)}（${model}）`);
 
@@ -564,18 +569,18 @@
 			<label>
 				模型
 				<select bind:value={form.model}>
-					{#if !defaultModel}<option value="">{defaultOption(defaults?.model && named(defaults.model))}</option>{/if}
+					{#if !defaultModelMarked}<option value="">{defaultOption(defaults?.model && named(defaults.model))}</option>{/if}
 					{#each options?.models ?? [] as option (option)}
-						<option value={option === defaultModel ? '' : option}>{option === defaultModel ? `${option}：預設` : option}</option>
+						<option value={option === defaultModelMarked ? '' : option}>{option === defaultModelMarked ? `${option}：預設` : option}</option>
 					{/each}
 				</select>
 			</label>
 			<label>
 				思考強度
 				<select bind:value={form.effort}>
-					{#if !defaultEffortOption}<option value="">{defaultOption(defaults && defaultEffort(defaults, form.model || null))}</option>{/if}
+					{#if !defaultEffortMarked}<option value="">{defaultOption(defaults && defaultEffort(defaults, form.model || null))}</option>{/if}
 					{#each options?.efforts ?? [] as option (option)}
-						<option value={option === defaultEffortOption ? '' : option}>{option === defaultEffortOption ? `${option}：預設` : option}</option>
+						<option value={option === defaultEffortMarked ? '' : option}>{option === defaultEffortMarked ? `${option}：預設` : option}</option>
 					{/each}
 				</select>
 			</label>

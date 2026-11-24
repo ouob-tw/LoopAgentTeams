@@ -27,7 +27,7 @@ const shows = (model: string, effort: string) => until(`${SHOWN} === ${JSON.stri
 /** A known default that is in the list is marked on its own option: `value：預設`. */
 const marked = (value: string) => `${value}：預設`;
 /** The default is not offered twice: no option other than the empty one reads this text. */
-const listedOnce = (index: number, value: string) =>
+const noDuplicateDefault = (index: number, value: string) =>
 	until(`[...document.querySelectorAll('.settings select')[${index}].options].filter((option) => option.text === ${JSON.stringify(value)} || option.text.startsWith('預設')).length === 0`);
 /** Click the radio button of the form with this value. */
 async function choose(value: string) {
@@ -94,16 +94,24 @@ test.skipIf(!CHROME)("the new-controller form names each client's defaults, the 
 	await pickFolder('');
 	await shows(marked('claude-opus-5-5'), marked('medium'));
 	// The marked option is the initial selection and the only one that reads as that value or as a 預設 line.
-	await listedOnce(0, 'claude-opus-5-5');
-	await listedOnce(1, 'medium');
+	await noDuplicateDefault(0, 'claude-opus-5-5');
+	await noDuplicateDefault(1, 'medium');
 	expect(await evaluate<string>(`JSON.stringify([...document.querySelectorAll('.settings select')].map((select) => [select.value, select.selectedOptions[0].text]))`)).toBe(
 		JSON.stringify([['', marked('claude-opus-5-5')], ['', marked('medium')]])
 	);
+	// An effort chosen explicitly that then becomes the default folds into the marked option.
+	await evaluate(`(() => { const s = document.querySelectorAll('.settings select')[1]; s.value = 'high'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+	await pickFolder(own);
+	await shows(marked('claude-haiku-5-5'), marked('high'));
+	expect(await evaluate<string>(`document.querySelectorAll('.settings select')[1].value`)).toBe('');
+	await pickFolder(plain);
+	await shows(marked('claude-opus-5-5'), marked('medium'));
 	// A default that is not in the list keeps the single first option with its own text.
 	write(join(own, '.claude/settings.local.json'), { model: 'claude-future-9', effortLevel: 'ultra' });
 	await pickFolder(own + '/');
 	await shows('預設：Future 9（claude-future-9）', '預設：ultra');
 	write(join(own, '.claude/settings.local.json'), { model: 'haiku', effortLevel: 'high' });
+	// Another folder first: a read again for the same folder is not made.
 	await pickFolder(plain);
 	await pickFolder(own);
 	await shows(marked('claude-haiku-5-5'), marked('high'));
