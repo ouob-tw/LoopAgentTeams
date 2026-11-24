@@ -239,7 +239,7 @@
 	let foldNotice = false;
 	$effect(() => {
 		const now = !pd ? 'none' : requests.length ? 'requests' : notice ? 'notice' : 'none';
-		if (now === 'notice' && shown === 'none') foldNotice = true;
+		if (now === 'notice' && shown === 'none') foldNotice = wide;
 		if (now !== 'notice' && now !== shown) foldNotice = false;
 		shown = now;
 		if (foldNotice && wide) {

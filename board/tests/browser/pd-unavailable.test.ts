@@ -37,7 +37,7 @@ test('pd outage is visible with zero pending requests, survives pending requests
 		await tab.until(`document.querySelector('.inbox .pd .pd-unavailable')?.textContent === 'pd 服務不可用' && !document.querySelector('.pd-badge')`, 'wide: badge opens the notice');
 		await tab.pointerClick('.pd button.later');
 		await tab.until(BADGE('pd 服務不可用'), 'wide: later folds it back');
-		// A new request opens it, outage or not; once it is gone the notice goes back to the badge.
+		// A new request opens it, outage or not.
 		set({ pending: [{ id: 1, caller: 'test', item: 'test item', fields: [], argv: [], cwd: '/' }], vault: 'unavailable' });
 		await tab.until(`document.querySelector('.pd-unavailable')?.checkVisibility() && !!document.querySelector('[data-pd-request="1"]') && !document.querySelector('.pd-badge')`, 'wide: a request opens the folded window');
 		expect(await tab.eval(`document.querySelector('[data-pd-request="1"]').textContent.includes('拒絕')`)).toBe(true);
