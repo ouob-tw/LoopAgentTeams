@@ -114,7 +114,7 @@ class BoundTests(unittest.TestCase):
             source.write_text('\n'.join(lines) + '\n')
             with mock.patch.multiple(gate, FAILURE_HEAD_BYTES=200, FAILURE_TAIL_BYTES=300,
                                      FAILURE_BLOCK_BYTES=800,
-                                     FAILURE_BLOCK_MIN_BYTES=100):
+                                     FAILURE_BLOCK_MIN_BYTES=200, FAILURE_BLOCK_PREFIX_BYTES=40):
                 cut = gate.bound_failure_output(source, target, cap)
             return cut, target.read_text()
 
@@ -176,14 +176,19 @@ class BoundTests(unittest.TestCase):
         self.assertTrue(cut)
         for i in range(30):
             self.assertIn(f'assert FIRST-LINE-{i}', text)
+            block = '\n'.join([f'___ test_{i} ___'] + [f'E   detail {i} ' + 'd' * 60] * 10)
+            self.assertIn(block[:40], text, 'the first bytes of every block are kept')
         self.assertIn('middle of this failure block cut', text)
-        self.assertLess(len(text.encode()), 3000 + 30 * 150, 'the total stays near the cap')
+        self.assertLess(len(text.encode()), 3000 + 30 * 250, 'the total stays near the cap')
 
     def test_first_block_is_whole_and_the_file_stays_under_the_ceiling_in_the_worst_case(self):
-        big = ['E   ' + 'z' * 3000] * 40  # ~120 KB blocks, more than the block limit
+        def body(i, count):
+            return [f'___ test_{i} ___'] + [f'E   {i:04d} ' + 'z' * 3000] * count \
+                + [f'E   assert LAST-LINE-{i}']
         lines = ['noise ' + 'x' * 100] * 3000
-        for i in range(1200):
-            lines += [f'___ test_{i} ___'] + big + [f'E   assert FIRST-LINE-{i}', '=== end ===']
+        blocks = [body(0, 20)] + [body(i, 40) for i in range(1, 1200)]  # the first is ~60 KiB
+        for block in blocks:
+            lines += block + ['=== end ===']
         lines += ['tail ' + 'y' * 100] * 3000
         with tempfile.TemporaryDirectory() as tmp:
             source, target = Path(tmp, 'in'), Path(tmp, 'out')
@@ -192,11 +197,12 @@ class BoundTests(unittest.TestCase):
             data = target.read_bytes()
         self.assertLessEqual(len(data), gate.FAILURE_CEILING_BYTES)
         text = data.decode()
-        first = text.index('___ test_0 ___')
-        self.assertGreaterEqual(text[first:first + 80000].count('z' * 3000), 10,
-                                'the first block is kept up to 64 KiB')
-        for i in (1, 500, 999):
-            self.assertIn(f'assert FIRST-LINE-{i}', text)
+        self.assertIn('\n'.join(blocks[0]), text, 'the first block is kept whole')
+        for i in (1, 2, 500, 999):
+            joined = '\n'.join(blocks[i])
+            self.assertIn(joined[:gate.FAILURE_BLOCK_PREFIX_BYTES], text,
+                          f'block {i} keeps exactly its first 1 KiB')
+            self.assertIn(f'assert LAST-LINE-{i}', text)
         self.assertIn('more were not collected', text.splitlines()[0])
 
     def test_a_long_block_keeps_its_assertion_message_at_the_end(self):

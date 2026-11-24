@@ -94,7 +94,10 @@ FAILURE_FILE_BYTES = 1024 * 1024
 FAILURE_HEAD_BYTES = 64 * 1024
 FAILURE_TAIL_BYTES = 128 * 1024
 FAILURE_BLOCK_BYTES = 64 * 1024
-FAILURE_BLOCK_MIN_BYTES = 1024  # a failure block is cut to its share of the room, not below this
+FAILURE_BLOCK_PREFIX_BYTES = 1024  # a cut failure block keeps at least its first this many bytes
+# A failure block is cut to its share of the room, not below this: its first
+# FAILURE_BLOCK_PREFIX_BYTES bytes and 512 bytes of its end (where the assertion message is).
+FAILURE_BLOCK_MIN_BYTES = 1536
 FAILURE_CEILING_BYTES = 2 * 1024 * 1024  # the kept file never passes this (see bound_failure_output)
 FAILURE_LINE_BYTES = 4096
 CUT_MARKER = '[... middle of this failure block cut ...]'
@@ -2491,14 +2494,17 @@ def bound_failure_output(source, target, cap=None):
         three quarters with a marker between (the assertion message is at the end)."""
         if sum(len(x.encode()) + 1 for x in lines) <= share:
             return lines, False
+        # The head is exactly the block's first `limit` bytes (the last line may be cut).
+        limit = min(max(FAILURE_BLOCK_PREFIX_BYTES, share // 4), share * 2 // 3)
         head, size = [], 0
         for line in lines:
-            size += len(line.encode()) + 1
-            if size > share // 4:
-                if not head:  # even the first line is long: keep its start
-                    head.append(line.encode()[:share // 4].decode(errors='ignore'))
+            raw = line.encode()
+            if size + len(raw) + 1 > limit:
+                if limit - size > 0:
+                    head.append(raw[:limit - size].decode(errors='ignore'))
                 break
             head.append(line)
+            size += len(raw) + 1
         room = share - sum(len(x.encode()) + 1 for x in head) - len(CUT_MARKER) - 1
         tail, size = [], 0
         for line in reversed(lines[len(head):]):
