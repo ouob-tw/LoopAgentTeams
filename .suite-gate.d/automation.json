@@ -12,7 +12,6 @@
         "board/src/lib/components/AutomationState.svelte",
         "board/src/lib/components/AutomationTask.svelte",
         "board/src/routes/api/automation/**",
-        "board/tests/fake-codex-multi-auth.mjs",
         "board/src/lib/server/automation-review.ts",
         "board/src/lib/components/AutomationReview.svelte",
         "board/src/lib/components/AutomationFix.svelte"

@@ -6,7 +6,7 @@
 // `archives` entry for it followed by those `board questions` would print, the latest of an ID
 // winning as the real command does. A plan entry named after the command (`answer`, `notify`,
 // `questions`, `answered`) replaces
-// that with a fixed output. `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
+// that with a fixed output. `board provider` answers from the same transcript file (the latest applied thread settings, else session_meta). `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
 // item per line, the way the real command pages a client's record, with the latest turn's settings
 // from <dir>/transcripts/<session>.current.json, its usage from <session>.usage.json and its
 // permission mode from <session>.permission.json when there are, and fails with the reason in
@@ -182,7 +182,8 @@ function transcript() {
 		try {
 			const item = JSON.parse(line);
 			// A line of the client's own log, there for the board to read directly: the real helper prints none.
-			if (item.type === 'system') continue;
+			// `session_meta` is Codex's first line, shaped as a real session file has it (#710).
+			if (item.type === 'system' || item.type === 'session_meta' || item.type === 'event_msg') continue;
 			items.push({ ...item, seq: items.length });
 		} catch {
 			skipped += 1;
@@ -213,6 +214,38 @@ function transcript() {
 		output: { status: 'ok', path, items: items.slice(start, end), before: start || null, skipped, current, usage, permission },
 		sleepMs: plan.transcriptDelayMs ?? 0
 	};
+}
+
+/** `board provider`: the latest applied thread settings' provider, else session_meta's, read from the
+ *  same transcript file; the real helper's rule (tested in the helper's own tests), on the records it keeps. */
+function provider() {
+	const given = options();
+	const session = given['session-id']?.[0] ?? '';
+	const client = given.client?.[0];
+	// As the real command: both are required, the client is Claude or Codex, the session ID has its form.
+	if (!client || !session) return { output: { status: 'error', reason: 'provider takes --client and --session-id' }, exit: 2 };
+	if (!['claude', 'codex'].includes(client)) return { output: { status: 'error', reason: `對話紀錄只支援 Claude 與 Codex，這個主控的 client 是 ${client}` }, exit: 1 };
+	if (!/^[A-Za-z0-9_-]{1,128}$/.test(session)) return { output: { status: 'error', reason: `不是 session ID：${session}` }, exit: 1 };
+	let text;
+	try {
+		text = readFileSync(join(dir, 'transcripts', `${session}.jsonl`), 'utf8');
+	} catch {
+		return { output: { status: 'not_found', reason: `找不到 session ${session} 的對話紀錄檔` }, exit: 1 };
+	}
+	let applied = null;
+	let started = null;
+	for (const line of text.split('\n')) {
+		let record;
+		try {
+			record = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (record?.type === 'session_meta' && typeof record.payload?.model_provider === 'string' && started === null) started = record.payload.model_provider;
+		if (record?.payload?.type === 'thread_settings_applied' && typeof record.payload.thread_settings?.model_provider_id === 'string') applied = record.payload.thread_settings.model_provider_id;
+	}
+	// A Claude record names no provider.
+	return { output: { status: 'ok', provider: client === 'codex' ? (applied ?? started) : null } };
 }
 
 /** What <dir>/launch-args.json holds for the session. */
@@ -316,6 +349,8 @@ const act =
 				? answered
 				: command === 'transcript'
 					? transcript
+					: command === 'provider'
+						? provider
 					: command === 'launch-args'
 						? launchArgs
 						: command === 'prune-reports'

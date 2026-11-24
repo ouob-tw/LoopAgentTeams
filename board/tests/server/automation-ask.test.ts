@@ -76,7 +76,7 @@ afterAll(async () => {
 });
 beforeEach(() => {
 	fixture.setClock(START);
-	for (const name of ['hcom-calls.jsonl', 'hcom.json', 'hcom-added.json', 'codex-auth.json', 'codex-auth-calls.jsonl', 'codex-auth-pinned.txt']) rmSync(join(dir, name), { force: true });
+	for (const name of ['hcom-calls.jsonl', 'hcom.json', 'hcom-added.json']) rmSync(join(dir, name), { force: true });
 	for (const name of ['inject-typed.jsonl', 'inject-calls.jsonl']) rmSync(join(injectDir, name), { force: true });
 	writeFileSync(
 		join(dir, 'herdr.json'),

@@ -1,22 +1,28 @@
-// Agent tasks' runs on the built board, against the fake hcom, Herdr, helper and codex-multi-auth:
+// Agent tasks' runs on the built board, against the fake hcom, Herdr, helper and input command:
 // the agent opens through the new-agent launch flow with the fixed first message and the run's tag,
 // shows in the board's agent list, and is judged by the last line of its last reply alone (DONE,
 // FAILED: <reason>, anything else); every outcome closes it the board's way. 停止這次 and the limit
 // close it too. A restart watches on while hcom lists the agent, with the limit from the original
-// start, and fails the run when it is gone. Codex: an account at 0 before launch is swapped for a
-// subscription account with quota (probed), never an API one, never a reset; a usage limit mid-run
-// is checked live, the agent killed, the account switched and probed and the same conversation
-// resumed; no account left is 額度用完. A Claude usage limit is 額度用完 with no switch. A task whose
-// run ran out of quota tries again the next day. Nothing here starts a real agent or touches a real account.
+// start, and fails the run when it is gone. Codex (CPA, #710): no account is checked or switched; a
+// usage limit on the screen gets one continue message to the same agent (no kill), and only a new
+// usage-limit stop after that message was read ends the run as 額度用完, worded by the run's own
+// provider (`cpa` or not). A Claude usage limit is 額度用完 as before. A task whose run ran out of
+// quota tries again the next day. Nothing here starts a real agent or touches a real account.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { jsonLines, sleep, startFixture, until, type Fixture } from '../harness.ts';
+import { CONTINUE_MESSAGE, CONTROLLER_CONTINUE } from '../../src/lib/server/automation-agent.ts';
 import type { AutomationRun, AutomationSnapshot, AutomationTask } from '../../src/lib/board/automation.ts';
 
 /** A wall-clock time in Asia/Taipei. */
 const tpe = (year: number, month: number, day: number, hour = 12, minute = 0) => Date.UTC(year, month - 1, day, hour - 8, minute);
 const START = tpe(2026, 11, 18, 12);
+
+// The fake input command's log lives outside the fixture directory: its command line is set before the fixture exists.
+const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-agent-inject-'));
 
 let fixture: Fixture;
 let cookie: string;
@@ -24,7 +30,7 @@ let work: string;
 let dir: string;
 
 beforeAll(async () => {
-	fixture = await startFixture({ env: { TZ: 'UTC', LAT_BOARD_AUTOMATION_TICK_SECONDS: '0.1', LAT_BOARD_AUTOMATION_AGENT_POLL_SECONDS: '0.1', LAT_BOARD_LAUNCH_WAIT_SECONDS: '3', LAT_BOARD_HCOM_TIMEOUT_SECONDS: '3' } });
+	fixture = await startFixture({ env: { TZ: 'UTC', LAT_BOARD_AUTOMATION_TICK_SECONDS: '0.1', LAT_BOARD_AUTOMATION_AGENT_POLL_SECONDS: '0.1', LAT_BOARD_LAUNCH_WAIT_SECONDS: '3', LAT_BOARD_HCOM_TIMEOUT_SECONDS: '3', LAT_BOARD_INJECT_COMMAND: JSON.stringify([process.execPath, join(import.meta.dir, '../fake-inject.mjs'), injectDir]), LAT_BOARD_INJECT_TIMEOUT_SECONDS: '2' } });
 	dir = fixture.dir;
 	fixture.setClock(START);
 	work = join(dir, 'work');
@@ -33,11 +39,14 @@ beforeAll(async () => {
 	cookie = await fixture.login();
 });
 afterAll(async () => {
+	rmSync(injectDir, { recursive: true, force: true });
 	await fixture.cleanup();
 });
 beforeEach(() => {
 	fixture.setClock(START);
-	for (const name of ['hcom-calls.jsonl', 'hcom.json', 'hcom-added.json', 'codex-auth.json', 'codex-auth-calls.jsonl', 'codex-auth-pinned.txt']) rmSync(join(dir, name), { force: true });
+	for (const name of ['hcom-calls.jsonl', 'hcom.json', 'hcom-added.json']) rmSync(join(dir, name), { force: true });
+	for (const name of ['inject-typed.jsonl', 'inject-calls.jsonl']) rmSync(join(injectDir, name), { force: true });
+	rmSync(join(dir, 'transcripts'), { recursive: true, force: true });
 	herdrPlan();
 });
 
@@ -118,7 +127,8 @@ async function eventually<T>(read: () => Promise<T | undefined | false>, timeout
 }
 
 const hcomCalls = () => jsonLines(join(dir, 'hcom-calls.jsonl')) as { args: string[]; workspace: string | null }[];
-const authCalls = () => jsonLines(join(dir, 'codex-auth-calls.jsonl')) as string[][];
+/** What the board typed into agents' input boxes. */
+const injected = () => jsonLines(join(injectDir, 'inject-typed.jsonl')) as { text: string; enter: boolean }[];
 /** Whether hcom lists the agent launched as `name` (listed as `<tag>-<name>`). */
 const listed = (name: string) =>
 	existsSync(join(dir, 'hcom-added.json')) && JSON.parse(readFileSync(join(dir, 'hcom-added.json'), 'utf8')).some((agent: { name: string; base_name?: string }) => agent.name === name || agent.base_name === name);
@@ -343,41 +353,22 @@ test('after a restart a run whose agent hcom still lists is watched on, with the
 	expect([tagged.status, tagged.agentName]).toEqual(['success', `${tag}-kiro`]);
 });
 
-test('a Codex run on a pinned account at 0 switches to a subscription account with quota and probes it first; none left is 額度用完 with no agent', async () => {
+test('a Codex run starts at once: no account check or switch before launch, the board changes no provider, and its record writes no codexAccount or accountSwitches (#710)', async () => {
 	const task = await create({}, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low' });
-	// Account 1 (pinned) is at 0, 2 is an API account, 3 at 0 too, 4 has quota.
-	writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({ pinned: 0, accounts: [{ index: 0, used: 100 }, { index: 1, used: 0, kind: 'api' }, { index: 2, used: 100 }, { index: 3, used: 40 }] }));
 	hcomPlan([{ name: 'auto-codex', client: 'codex' }]);
 	const started = await runNow(task.id);
 	const run = await launchedRun(task.id, 'auto-codex');
-	expect(authCalls()).toEqual([
-		['limits', '--json', '--refresh'],
-		['switch', '3'],
-		['limits', '--json', '--refresh'],
-		['exec', '-m', 'gpt-6.1-terra', '-c', 'model_reasoning_effort="low"', '--skip-git-repo-check', '--ephemeral', '-s', 'read-only', 'Reply with OK only.']
-	]);
-	expect(run.accountSwitches).toEqual(['帳號 1 額度用完，換到 帳號 4']);
+	expect([run.codexAccount, run.accountSwitches, run.quotaNotes]).toEqual([undefined, undefined, undefined]);
 	const launch = hcomCalls().find((call) => call.args[0] === 'codex')!;
 	expect(launch.args).toEqual(expect.arrayContaining(['-c', 'model="gpt-6.1-terra"', '-c', 'model_reasoning_effort="low"']));
+	// The provider is the host's own setting: the board passes none.
+	expect(launch.args.join(' ')).not.toContain('model_provider');
 	reply('auto-codex', 'DONE');
 	setStatus('auto-codex', 'listening');
-	expect((await ended(task.id, started.id)).status).toBe('success');
-
-	// Every subscription account at 0, or failing its probe: nothing starts.
-	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
-	rmSync(join(dir, 'codex-auth-pinned.txt'), { force: true });
-	writeFileSync(join(dir, 'codex-auth-calls.jsonl'), '');
-	writeFileSync(
-		join(dir, 'codex-auth.json'),
-		JSON.stringify({ pinned: 0, accounts: [{ index: 0, used: 100 }, { index: 1, used: 10 }, { index: 2, used: 0, kind: 'api' }], probe: { '1': { exit: 1, stdout: 'error: model is not supported' } } })
-	);
-	const second = await runNow(task.id);
-	const quota = await ended(task.id, second.id);
-	expect(quota.status).toBe('quota');
-	expect(quota.reason).toContain('額度用完');
-	expect(hcomCalls().filter((call) => call.args[0] === 'codex')).toEqual([]);
-	expect(authCalls().map((call) => call[0])).toEqual(['limits', 'switch', 'limits', 'exec']);
-	expect(authCalls().flat().join(' ')).not.toContain('reset');
+	const done = await ended(task.id, started.id);
+	expect([done.status, done.codexAccount, done.accountSwitches]).toEqual(['success', undefined, undefined]);
+	expect(RESUMES()).toEqual([]);
+	expect(injected()).toEqual([]);
 });
 
 const herdrCalls = () => jsonLines(join(dir, 'herdr-calls.jsonl')) as string[][];
@@ -472,8 +463,6 @@ function limitOnScreen(name: string) {
 	const plan = JSON.parse(readFileSync(join(dir, 'herdr.json'), 'utf8'));
 	writeFileSync(join(dir, 'herdr.json'), JSON.stringify({ ...plan, screens: { ...plan.screens, [`wW:p-${name}`]: ["■ You've hit your usage limit. Upgrade to Pro or try again at 3:00 PM.\n› "] } }));
 }
-const accounts = (pinned: number, ...used: number[]) =>
-	writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({ pinned, accounts: used.map((value, index) => ({ index, used: value })) }));
 function codexPlan(name: string) {
 	hcomPlan([{ name, client: 'codex' }]);
 }
@@ -485,93 +474,212 @@ function resumesAs(run: AutomationRun, name: string) {
 	writeFileSync(join(dir, 'hcom.json'), JSON.stringify(plan));
 }
 function freshRun() {
-	for (const name of ['hcom-calls.jsonl', 'hcom-added.json', 'codex-auth-pinned.txt', 'codex-auth-calls.jsonl']) rmSync(join(dir, name), { force: true });
+	for (const name of ['hcom-calls.jsonl', 'hcom-added.json']) rmSync(join(dir, name), { force: true });
 	herdrPlan();
 }
 
-test('a Codex usage limit mid-run is checked live on the agent\'s own account: quota back there resumes it, another pin does nothing', async () => {
+/** The conversation of `s-<name>` as Codex's own session file starts: a `session_meta` line with the
+ *  run's `model_provider` (shaped like a real one; its content is made up). */
+function sessionMeta(name: string, provider: string | null, applied?: string) {
+	mkdirSync(join(dir, 'transcripts'), { recursive: true });
+	if (provider === null) return;
+	const meta = {
+		timestamp: '2026-11-18T04:00:00.000Z',
+		ordinal: 0,
+		type: 'session_meta',
+		payload: {
+			session_id: `s-${name}`,
+			id: `s-${name}`,
+			timestamp: '2026-11-18T04:00:00.000Z',
+			cwd: work,
+			originator: 'codex_cli_rs',
+			cli_version: '0.0.0',
+			source: 'cli',
+			thread_source: 'user',
+			model_provider: provider,
+			base_instructions: { text: 'x'.repeat(40_000), provenance: { type: 'model', model: 'gpt-6.1-terra' } },
+			history_mode: 'full',
+			context_window: { window_id: 'w-1' }
+		}
+	};
+	appendFileSync(join(dir, 'transcripts', `s-${name}.jsonl`), JSON.stringify(meta) + '\n');
+	// A resume with another provider: Codex keeps session_meta and records the new one as applied settings.
+	if (applied) appendFileSync(join(dir, 'transcripts', `s-${name}.jsonl`), JSON.stringify({ timestamp: '2026-11-18T05:00:00.000Z', ordinal: 3, type: 'event_msg', payload: { type: 'thread_settings_applied', thread_id: `s-${name}`, thread_settings: { model: 'gpt-6.1-terra', model_provider_id: applied, cwd: work } } }) + '\n');
+}
+function clearScreen(name: string) {
+	const plan = JSON.parse(readFileSync(join(dir, 'herdr.json'), 'utf8'));
+	writeFileSync(join(dir, 'herdr.json'), JSON.stringify({ ...plan, screens: { ...plan.screens, [`wW:p-${name}`]: ['› '] } }));
+}
+/** A kill before the run ended would be a switch; after it, closing the agent may use one. */
+/** Wait until the board has read hcom's list twice more: it has seen the status written just before. */
+async function boardPolled(reads = 2) {
+	const count = () => (existsSync(join(dir, 'hcom-list-calls.jsonl')) ? readFileSync(join(dir, 'hcom-list-calls.jsonl'), 'utf8').split('\n').filter(Boolean).length : 0);
+	const start = count();
+	await eventually(async () => count() >= start + reads, 5_000, `${reads} more reads of hcom's list`);
+}
+const KILLS_OR_RESUMES = () => hcomCalls().filter((call) => ['r', 'kill'].includes(call.args[0]));
+const RESUMES = () => hcomCalls().filter((call) => call.args[0] === 'r');
+const SECOND_LIMIT_NON_CPA = '額度用完；這次執行沒有走 CPA，未判定池內帳號用完';
+
+test('the first Codex usage limit sends one continue message and notes it: no kill, no switch; the old limit still on screen and a continue not yet read are not a second limit', async () => {
 	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low' });
-	accounts(0, 20, 30);
 	codexPlan('auto-back');
 	const started = await runNow(task.id);
-	const back = await launchedRun(task.id, 'auto-back');
-	expect(back.codexAccount).toBe(0);
-	resumesAs(back, 'auto-back');
+	sessionMeta('auto-back', 'cpa');
+	await launchedRun(task.id, 'auto-back');
 	userSaid('auto-back', '讀取並照做');
 	reply('auto-back', '正在掃描');
 	limitOnScreen('auto-back');
-	// Someone pinned account 2 meanwhile; the agent's own account 1 is not at 0: nothing confirmed, nothing done.
-	writeFileSync(join(dir, 'codex-auth-pinned.txt'), '1');
 	setStatus('auto-back', 'listening');
-	await eventually(async () => authCalls().length >= 2, 5_000, 'the live check');
-	await sleep(500);
-	expect(authCalls()).toEqual([['limits', '--json', '--refresh'], ['limits', '--json', '--refresh']]);
-	expect(hcomCalls().filter((call) => call.args[0] !== 'codex')).toEqual([]);
+	await eventually(async () => injected().length >= 1, 5_000, 'the continue message');
+	expect(injected()).toEqual([{ text: CONTINUE_MESSAGE, enter: true }]);
+	const noted = await eventually(async () => (await runsOf(task.id))[0].quotaNotes, 5_000, 'the note');
+	expect(noted).toEqual(['額度用完，已原地續作']);
+	// Not killed, not resumed, no account touched or noted.
+	expect(KILLS_OR_RESUMES()).toEqual([]);
+	let run = (await runsOf(task.id))[0];
+	expect([run.status, run.codexAccount, run.accountSwitches]).toEqual(['running', undefined, undefined]);
+	// The message is not read yet and the old error is on screen: watched on for a while, never a second limit, no second message.
+	await sleep(800);
+	run = (await runsOf(task.id))[0];
+	expect(run.status).toBe('running');
+	expect(injected().length).toBe(1);
+	// Read (the agent's input has it), but no turn came after it: the old error still on screen is not a second limit.
+	userSaid('auto-back', CONTINUE_MESSAGE);
+	await sleep(800);
 	expect((await runsOf(task.id))[0].status).toBe('running');
-
-	// Five minutes on, account 1 is pinned again with quota: resumed on it, no switch.
-	rmSync(join(dir, 'codex-auth-pinned.txt'));
-	fixture.setClock(START + 5 * 60_000);
-	const resumed = await eventually(async () => hcomCalls().find((call) => call.args[0] === 'r'), 8_000, 'the resume');
-	expect(resumed.args.slice(0, 2)).toEqual(['r', 's-auto-back']);
-	expect(authCalls().map((call) => call[0])).toEqual(['limits', 'limits', 'limits']);
-	await sleep(300);
-	expect((await runsOf(task.id))[0].accountSwitches).toEqual(['帳號 1 額度已恢復，接回續作']);
+	expect(injected().length).toBe(1);
+	// Busy and back to listening with the old error still on screen is not a second limit either.
+	setStatus('auto-back', 'active');
+	await boardPolled();
+	setStatus('auto-back', 'listening');
+	await sleep(800);
+	expect((await runsOf(task.id))[0].status).toBe('running');
+	expect(injected().length).toBe(1);
+	// It works on: busy, the screen clears, and its reply ends the run as usual (old error gone from the screen).
+	setStatus('auto-back', 'active');
+	await boardPolled();
+	clearScreen('auto-back');
 	reply('auto-back', '續作完成\nDONE');
 	setStatus('auto-back', 'listening');
-	expect((await ended(task.id, started.id)).status).toBe('success');
+	const done = await ended(task.id, started.id);
+	expect([done.status, done.quotaNotes]).toEqual(['success', ['額度用完，已原地續作']]);
+	expect(RESUMES()).toEqual([]);
+	expect(listed('auto-back')).toBe(false);
 });
 
-test('a Codex usage limit mid-run at 0: the agent killed, another account probed, the same conversation resumed, the limit still from the start; none left is 額度用完', async () => {
+test('an agent that works on after the continue is watched as normal: a later question is asked, and its DONE still ends the run', async () => {
 	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low' });
-	freshRun();
-	accounts(0, 20, 30);
-	codexPlan('auto-limit');
+	codexPlan('auto-on');
 	const started = await runNow(task.id);
-	resumesAs(await launchedRun(task.id, 'auto-limit'), 'auto-limit');
-	userSaid('auto-limit', '讀取並照做');
-	reply('auto-limit', '正在掃描，已掃 38 / 64 頁');
-	accounts(0, 100, 30);
-	limitOnScreen('auto-limit');
-	setStatus('auto-limit', 'listening');
-
-	const resumed = await eventually(async () => hcomCalls().find((call) => call.args[0] === 'r'), 8_000, 'the resume');
-	expect(resumed.args.slice(0, 2)).toEqual(['r', 's-auto-limit']);
-	expect(resumed.args[resumed.args.indexOf('--hcom-prompt') + 1]).toBe('剛才額度用完，已換帳號接回。請接著把任務做完，完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>；需要使用者決定或補資料時，最後一行回覆 ASK: <問題> 並等待回覆，收到後接著做');
-	expect(resumed.workspace).toBe('wA');
-	const kill = hcomCalls().findIndex((call) => call.args[0] === 'kill');
-	expect(kill).toBeGreaterThan(-1);
-	expect(kill).toBeLessThan(hcomCalls().findIndex((call) => call.args[0] === 'r'));
-	expect(authCalls().map((call) => call[0])).toEqual(['limits', 'limits', 'switch', 'limits', 'exec']);
-	expect(authCalls()[2]).toEqual(['switch', '1']);
-	// The old reply is not the verdict while the resumed turn runs.
+	sessionMeta('auto-on', 'cpa');
+	await launchedRun(task.id, 'auto-on');
+	userSaid('auto-on', '讀取並照做');
+	reply('auto-on', '正在掃描');
+	limitOnScreen('auto-on');
+	setStatus('auto-on', 'listening');
+	await eventually(async () => injected().length >= 1, 5_000, 'the continue message');
+	userSaid('auto-on', CONTINUE_MESSAGE);
+	setStatus('auto-on', 'active');
+	clearScreen('auto-on');
 	await sleep(500);
-	const going = (await runsOf(task.id))[0];
-	expect(going.status).toBe('running');
-	expect(going.accountSwitches).toEqual(['帳號 1 額度用完，換到 帳號 2']);
-	expect(going.codexAccount).toBe(1);
-	// The switch does not give it more time: 30 minutes from its start, it is over.
-	fixture.setClock(START + 30 * 60_000);
-	const late = await ended(task.id, started.id);
-	expect([late.status, late.reason]).toEqual(['timeout', '超過上限 30 分鐘，已停止']);
-	expect(listed('auto-limit')).toBe(false);
-
-	// No other account left: stopped, closed, 額度用完.
-	fixture.setClock(START + 31 * 60_000);
-	freshRun();
-	accounts(0, 20, 100);
-	hcomPlan([{ name: 'auto-out', client: 'codex' }]);
-	const second = await runNow(task.id);
-	await launchedRun(task.id, 'auto-out');
-	accounts(0, 100, 100);
-	limitOnScreen('auto-out');
-	setStatus('auto-out', 'listening');
-	const out = await ended(task.id, second.id);
-	expect([out.status, out.reason]).toEqual(['quota', '額度用完：沒有其他還有額度的訂閱帳號']);
-	expect(listed('auto-out')).toBe(false);
-	expect(hcomCalls().some((call) => call.args[0] === 'r')).toBe(false);
-	expect(authCalls().flat().join(' ')).not.toContain('reset');
+	reply('auto-on', '繼續做了\nASK: 要用哪個資料夾？');
+	setStatus('auto-on', 'listening');
+	const asking = await eventually(async () => (await runsOf(task.id))[0].asks?.[0], 5_000, 'the question');
+	expect(asking.question).toBe('要用哪個資料夾？');
+	expect((await runsOf(task.id))[0].status).toBe('running');
+	void started;
 });
+
+test('a new usage-limit stop after the continue was read ends the run as 額度用完: through CPA the pool is spent; another or an unreadable provider says it did not go through CPA', async () => {
+	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low' });
+	const cases: { name: string; provider: string | null; applied?: string; reason: string }[] = [
+		{ name: 'auto-res', provider: 'openai', applied: 'cpa', reason: 'CPA 池內帳號都用完' },
+		{ name: 'auto-cpa', provider: 'cpa', reason: 'CPA 池內帳號都用完' },
+		{ name: 'auto-oai', provider: 'openai', reason: SECOND_LIMIT_NON_CPA },
+		{ name: 'auto-unk', provider: null, reason: SECOND_LIMIT_NON_CPA }
+	];
+	for (const each of cases) {
+		freshRun();
+		rmSync(join(dir, 'transcripts'), { recursive: true, force: true });
+		rmSync(join(injectDir, 'inject-typed.jsonl'), { force: true });
+		rmSync(join(injectDir, 'inject-calls.jsonl'), { force: true });
+		codexPlan(each.name);
+		const started = await runNow(task.id);
+		sessionMeta(each.name, each.provider, each.applied);
+		await launchedRun(task.id, each.name);
+		userSaid(each.name, '讀取並照做');
+		reply(each.name, '正在掃描');
+		limitOnScreen(each.name);
+		setStatus(each.name, 'listening');
+		await eventually(async () => injected().length >= 1, 5_000, `${each.name} continue message`);
+		// The continue was read, a turn ran, and it stopped on the usage limit again.
+		userSaid(each.name, CONTINUE_MESSAGE);
+		setStatus(each.name, 'active');
+		await boardPolled();
+		// The old error is cleared from the screen, the agent says something, then a new limit shows.
+		clearScreen(each.name);
+		reply(each.name, '先做了一部分');
+		await boardPolled();
+		limitOnScreen(each.name);
+		setStatus(each.name, 'listening');
+		const out = await ended(task.id, started.id);
+		expect([each.name, out.status, out.reason]).toEqual([each.name, 'quota', each.reason]);
+		expect(injected().length).toBe(1);
+		expect(RESUMES()).toEqual([]);
+		expect(listed(each.name)).toBe(false);
+		if (each.provider !== 'cpa' && !each.applied) expect(out.reason).not.toContain('池內帳號都用完');
+		// Never an account note or an account on a new record.
+		expect([out.codexAccount, out.accountSwitches]).toEqual([undefined, undefined]);
+		fixture.setClock(START + 31 * 60_000 * (cases.indexOf(each) + 1));
+	}
+});
+
+test('a board restart after the continue went out does not send another one, and the old error still on screen is not a second limit', async () => {
+	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low' });
+	codexPlan('auto-rs');
+	const started = await runNow(task.id);
+	sessionMeta('auto-rs', 'cpa');
+	await launchedRun(task.id, 'auto-rs');
+	userSaid('auto-rs', '讀取並照做');
+	reply('auto-rs', '正在掃描');
+	limitOnScreen('auto-rs');
+	setStatus('auto-rs', 'listening');
+	await eventually(async () => injected().length >= 1, 5_000, 'the continue message');
+	await eventually(async () => (await runsOf(task.id))[0].quotaContinue, 5_000, 'the record of the continue');
+	await fixture.stop();
+	await fixture.start();
+	cookie = await fixture.login();
+	await sleep(1_200);
+	const kept = (await runsOf(task.id)).find((entry) => entry.id === started.id)!;
+	expect([kept.status, kept.quotaNotes]).toEqual(['running', ['額度用完，已原地續作']]);
+	expect(injected().length).toBe(1);
+	// Read, then a new stop shows after the screen cleared: ends as the second.
+	userSaid('auto-rs', CONTINUE_MESSAGE);
+	setStatus('auto-rs', 'active');
+	await boardPolled();
+	clearScreen('auto-rs');
+	await boardPolled();
+	limitOnScreen('auto-rs');
+	setStatus('auto-rs', 'listening');
+	const out = await ended(task.id, started.id);
+	expect([out.status, out.reason]).toEqual(['quota', 'CPA 池內帳號都用完']);
+	expect(injected().length).toBe(1);
+});
+
+test('an old run record with codexAccount and accountSwitches still reads back as it was written', async () => {
+	const task = await create();
+	await fixture.stop();
+	appendFileSync(
+		join(dir, 'board-state/automation/runs', `${task.id}.jsonl`),
+		JSON.stringify({ id: 'old-1', taskId: task.id, trigger: 'manual', period: '2026-11', startedAt: START - 3_600_000, endedAt: START - 3_000_000, status: 'success', codexAccount: 1, accountSwitches: ['帳號 1 額度用完，換到 帳號 2'] }) + '\n'
+	);
+	await fixture.start();
+	cookie = await fixture.login();
+	const old = (await runsOf(task.id)).find((entry) => entry.id === 'old-1')!;
+	expect([old.codexAccount, old.accountSwitches]).toEqual([1, ['帳號 1 額度用完，換到 帳號 2']]);
+});
+
 test('a Claude usage limit ends the run as 額度用完 with no account switched, and the next day tries again by itself', async () => {
 	// Daily at 12:30; the clock is 12:00 on the 18th.
 	const task = await create({ schedule: { type: 'daily' }, time: '12:30' });
@@ -583,7 +691,7 @@ test('a Claude usage limit ends the run as 額度用完 with no account switched
 	const quota = await ended(task.id, first.id);
 	expect(quota.status).toBe('quota');
 	expect(quota.reason).toContain('Claude 不換帳號');
-	expect(authCalls()).toEqual([]);
+	expect(injected()).toEqual([]);
 	expect(listed('auto-claude')).toBe(false);
 	// Not again the same day…
 	await sleep(500);
@@ -670,21 +778,33 @@ test('an unattended task needs a goal and at least one done condition', async ()
 	expect((await response.json()).errors).toEqual({ unattendedGoal: '請填這一輪的目標', unattendedDone: '做完條件至少寫一條' });
 });
 
-test('an unattended Codex controller whose account runs out mid-run stops as 額度用完: no switch, no resume, even with another account left', async () => {
+test('an unattended Codex controller gets the same one continue, then a second usage limit ends the run (#710)', async () => {
 	const grant = { goal: '處理已知問題', done: ['挑出的票已合併到 dev'], scope: { ticket_confirmation: true, assume_defaults: true, prototype_decide: true } };
 	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low', unattended: grant });
 	freshRun();
-	accounts(0, 20, 30);
 	codexPlan('auto-lat-cx');
 	const started = await runNow(task.id);
+	sessionMeta('auto-lat-cx', 'cpa');
 	await launchedRun(task.id, 'auto-lat-cx');
 	reply('auto-lat-cx', '正在修 #12');
-	accounts(0, 100, 30);
+	limitOnScreen('auto-lat-cx');
+	setStatus('auto-lat-cx', 'listening');
+	await eventually(async () => injected().length >= 1, 5_000, 'the controller continue message');
+	expect(injected()).toEqual([{ text: CONTROLLER_CONTINUE, enter: true }]);
+	expect((await runsOf(task.id))[0].status).toBe('running');
+	userSaid('auto-lat-cx', CONTROLLER_CONTINUE);
+	setStatus('auto-lat-cx', 'active');
+	await boardPolled();
+	clearScreen('auto-lat-cx');
+	reply('auto-lat-cx', '先做一些\nNO REPLY: 等其他 Agent');
+	await boardPolled();
+	// A controller waiting on its agents with the old error cleared goes on; a new limit then ends it.
+	expect((await runsOf(task.id))[0].status).toBe('running');
 	limitOnScreen('auto-lat-cx');
 	setStatus('auto-lat-cx', 'listening');
 	const out = await ended(task.id, started.id);
-	expect([out.status, out.reason]).toEqual(['quota', '額度用完：帳號 1 用完，無人模式的主控額度用完就停，不換帳號']);
-	expect(authCalls().some((call) => call[0] === 'switch')).toBe(false);
-	expect(hcomCalls().some((call) => call.args[0] === 'r')).toBe(false);
+	expect([out.status, out.reason]).toEqual(['quota', 'CPA 池內帳號都用完']);
+	expect(injected().length).toBe(1);
+	expect(RESUMES()).toEqual([]);
 	expect(listed('auto-lat-cx')).toBe(false);
 });

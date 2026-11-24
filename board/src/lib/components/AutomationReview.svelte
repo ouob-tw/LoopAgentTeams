@@ -55,6 +55,9 @@
 	{#each review.accountSwitches ?? [] as note, index (index)}
 		<p class="hint">檢查官換帳號：{note}</p>
 	{/each}
+	{#each review.quotaNotes ?? [] as note, index (index)}
+		<p class="hint">檢查官：{note}</p>
+	{/each}
 	{#if review.closeError}
 		<p class="bad">{review.closeError}</p>
 	{/if}

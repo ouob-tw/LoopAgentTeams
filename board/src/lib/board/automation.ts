@@ -149,10 +149,14 @@ export interface AutomationRun {
 	agentWorkspace?: string;
 	/** Replies of the conversation at or before this position came before the latest resume. */
 	judgeAfter?: number;
-	/** The codex-multi-auth account a Codex run's agent runs on: pinned when it launched or switched to. */
+	/** Old records only: the codex-multi-auth account the run's agent ran on, before CPA (#710); new runs never write it. */
 	codexAccount?: number;
-	/** Each switch of Codex account the run made, in words. */
+	/** Old records only: each switch of Codex account the run made, in words; new runs never write it. */
 	accountSwitches?: string[];
+	/** What the board did on the way about the Codex usage limit, in words (額度用完，已原地續作). */
+	quotaNotes?: string[];
+	/** The continue message sent after the first usage limit (#710): see `QuotaContinue`. */
+	quotaContinue?: QuotaContinue | null;
 	/** The agent could not be closed after the run ended: why. */
 	closeError?: string;
 	checks?: CheckResult[];
@@ -172,6 +176,15 @@ export interface AutomationRun {
 	fix?: RunFix;
 	/** Once the agent replied: the first check, while `review` is the second, final one. */
 	firstReview?: RunReview;
+}
+
+/** The one continue message a run's Codex agent got after its first usage limit: the conversation's
+ *  position when it was sent, and the position of the user input that read it, once seen. */
+export interface QuotaContinue {
+	after: number;
+	/** How many times the screen showed the usage-limit text when it was sent: more later is a new stop. */
+	shown?: number;
+	read?: number;
 }
 
 /** How long the agent sent back after a failed check has, unless the task says otherwise. */
@@ -194,6 +207,8 @@ export interface RunFix {
 	resumedAt?: number;
 	codexAccount?: number;
 	accountSwitches?: string[];
+	quotaNotes?: string[];
+	quotaContinue?: QuotaContinue | null;
 	closeError?: string;
 	/** The agent's last reply: each item fixed or disputed. */
 	reply?: string;
@@ -241,6 +256,8 @@ export interface RunReview {
 	judgeAfter?: number;
 	codexAccount?: number;
 	accountSwitches?: string[];
+	quotaNotes?: string[];
+	quotaContinue?: QuotaContinue | null;
 	closeError?: string;
 	items?: ReviewItem[];
 	/** Why it ended without a verdict, or why a PASS was not taken as one. */

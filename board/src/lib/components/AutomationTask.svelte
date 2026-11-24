@@ -260,6 +260,9 @@
 			{#each run.accountSwitches ?? [] as note, index (index)}
 				<p class="hint">換帳號：{note}</p>
 			{/each}
+			{#each run.quotaNotes ?? [] as note, index (index)}
+				<p class="hint">{note}</p>
+			{/each}
 			{#if run.closeError}
 				<p class="notice">{run.closeError}</p>
 			{/if}

@@ -348,7 +348,7 @@ export interface Fixture {
 	listed(): HelperController[];
 	helperCalls(): number;
 	/** The argument list of every helper call so far that ran this `board` command. */
-	helperArgs(command: 'list' | 'questions' | 'answered' | 'answer' | 'notify' | 'transcript' | 'launch-args' | 'prune-reports' | 'ledger' | 'ledger-rounds' | 'unattended'): string[][];
+	helperArgs(command: 'list' | 'questions' | 'answered' | 'answer' | 'notify' | 'transcript' | 'provider' | 'launch-args' | 'prune-reports' | 'ledger' | 'ledger-rounds' | 'unattended'): string[][];
 	/** Rewrite the binding registry file, the way a controller binding or unbinding does. */
 	touchRegistry(): void;
 	report(sessionId: string, fields: Partial<Report> & { tag: Report['tag'] }): void;
@@ -484,9 +484,6 @@ export async function startFixture(
 		// The 額度 tab reads claude-swap's list and codex-multi-auth's files; never the real ones.
 		LAT_BOARD_CSWAP_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-cswap.mjs'), dir]),
 		CODEX_MULTI_AUTH_DIR: join(dir, 'codex-multi-auth'),
-		// An agent task's Codex account: checked, switched and probed through a fake; never the real one.
-		LAT_BOARD_CODEX_MULTI_AUTH_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-codex-multi-auth.mjs'), dir]),
-		LAT_BOARD_CODEX_PROBE_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-codex-multi-auth.mjs'), dir]),
 		// Translation and tidy fall back to Haiku through a fake Claude CLI; never the real one.
 		LAT_BOARD_HAIKU_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-claude.mjs'), dir]),
 		// The pd section reads and denies through pd; never the real one or its socket.

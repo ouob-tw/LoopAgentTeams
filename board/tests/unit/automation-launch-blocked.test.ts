@@ -144,7 +144,6 @@ test('a blocked launch ends the task run as failed, with the run-ended event tha
 	const closed: string[] = [];
 	const agents = {
 		pollMs: 1,
-		accounts: {},
 		async launch() {
 			return { ok: true as const, name: NAME, workspace: 'wA' };
 		},

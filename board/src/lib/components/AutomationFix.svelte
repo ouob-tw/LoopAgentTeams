@@ -29,6 +29,9 @@
 	{#each fix.accountSwitches ?? [] as note, index (index)}
 		<p class="hint">換帳號：{note}</p>
 	{/each}
+	{#each fix.quotaNotes ?? [] as note, index (index)}
+		<p class="hint">{note}</p>
+	{/each}
 	{#if fix.closeError}
 		<p class="bad">{fix.closeError}</p>
 	{/if}

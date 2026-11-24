@@ -8,15 +8,15 @@
 // 停止這次 it is closed too. A run the board finds still open when it starts again is watched on
 // while hcom still lists its agent.
 //
-// Quota: the board handles it itself (hcom-spawn's rules, with no controller to ask). A Codex run
-// looks at the pinned account before it launches: one at 0 is swapped for another subscription
-// account with quota, never an API (billed) account, and no reset is redeemed; the new account is
-// probed with the run's model before anything starts on it. When the Codex screen says the usage
-// limit was hit mid-run, the quota is checked live, the old process ended, the account switched and
-// probed, and the same conversation resumed. With no account left the run ends as 額度用完. A Claude
-// run is never switched: a turn that ends on the usage limit is 額度用完. The limit counts the run's
-// working time: from its start, less the time it waited on the user (#675).
-import type { AgentSpec, AutomationRun, ReviewItem, RunStatus } from '../board/automation.ts';
+// Quota (CPA, #710): Codex accounts rotate behind CLIProxyAPI, so the board neither checks nor
+// switches an account. When the Codex screen says the usage limit was hit, the first time one
+// continue message goes to the same agent (no kill, no switch) and the run notes it. Only a new
+// usage-limit stop in a turn after that message was read is the second, which ends the run as
+// 額度用完: with the run's own provider `cpa` the pool is spent; any other or unreadable provider
+// says only that the run did not go through CPA. A Claude run is never switched: a turn that ends
+// on the usage limit is 額度用完. The limit counts the run's working time: from its start, less the
+// time it waited on the user (#675).
+import type { AgentSpec, AutomationRun, QuotaContinue, ReviewItem, RunStatus } from '../board/automation.ts';
 import { pastLimit } from '../board/automation.ts';
 import { join } from 'node:path';
 import { latCommand } from '../board/launch.ts';
@@ -41,6 +41,9 @@ export function firstMessage(brief: string, report = ''): string {
  *  with no grant to decide, DECIDE:/HELP: waits for the user (#665). */
 export const CONTROLLER_ENDING = '這一輪做完並 deactivate 之後，最後一行只回覆 DONE；失敗回覆 FAILED: <原因>。中途等其他 Agent 時照 LAT 規則以 NO REPLY: 結尾。需要使用者決定或補資料時，最後一行回覆 DECIDE: <問題>（卡住要人幫忙用 HELP: <問題>）並等待回覆，收到後接著做；不要回覆 ASK:';
 
+/** What an unattended controller gets, once, after a usage limit. */
+export const CONTROLLER_CONTINUE = `剛才額度用完，請接著這一輪做完。${CONTROLLER_ENDING}`;
+
 /** The first message of an unattended task's controller: start the LAT round, turn the grant on
  *  from the task's settings (the board's record of this run), then follow the brief. The state
  *  folder is named because the agent does not inherit the board's environment; the tool is the
@@ -61,8 +64,15 @@ const shellQuote = (value: string) => (/^[\w@%+=:,./-]+$/.test(value) ? value : 
 /** A controller's turn that ended waiting on its agents (NO REPLY:): the run goes on. */
 export const controllerGoesOn = (reply: string) => /^NO REPLY\s*[:：]/.test(reply.trimEnd().split('\n').at(-1)?.trim() ?? '');
 
-/** The message a Codex agent resumed on another account gets. */
-export const RESUME_MESSAGE = `剛才額度用完，已換帳號接回。請接著把任務做完，${ENDING_RULES}`;
+/** The message a Codex agent that stopped on its usage limit gets, once, to go on where it was. */
+export const CONTINUE_MESSAGE = `剛才額度用完，請接著把任務做完，${ENDING_RULES}`;
+
+/** The note a run keeps when its Codex agent was told to go on after a usage limit. */
+export const CONTINUED_NOTE = '額度用完，已原地續作';
+/** Why a run through CPA ended on a second usage limit. */
+export const CPA_POOL_SPENT = 'CPA 池內帳號都用完';
+/** Why a run not through CPA (another provider, or none readable) ended on a second usage limit. */
+export const NOT_THROUGH_CPA = '額度用完；這次執行沒有走 CPA，未判定池內帳號用完';
 
 /** The question of a reply whose last line is `ASK: <question>` (or another of `tags`, as an
  *  unattended controller's DECIDE:/HELP:); null otherwise. */
@@ -128,22 +138,6 @@ export interface ListedAgent {
 	status: string | null;
 }
 
-/** codex-multi-auth's subscription accounts as a live check reads them. */
-export interface CodexLimits {
-	/** The account runs go through now. */
-	pinned: number | null;
-	accounts: { index: number; label: string; enabled: boolean; usedPercent: number | null }[];
-}
-
-export interface CodexAccounts {
-	/** A live read of every subscription account's quota. */
-	limits(): Promise<{ ok: true; value: CodexLimits } | { ok: false; reason: string }>;
-	/** Pin this account; why it could not, or null. */
-	switchTo(index: number): Promise<string | null>;
-	/** Whether the pinned account runs this model at this effort. */
-	probe(model: string, effort: string): Promise<{ ok: true } | { ok: false; reason: string }>;
-}
-
 /** What a run does through the board. */
 export interface AgentHost {
 	/** `halted` tells whether the run was stopped or ran out of time; a launch that waits to retry
@@ -170,56 +164,14 @@ export interface AgentHost {
 	launchBlocked(name: string, since: number): Promise<string | null>;
 	/** Close the agent the way the board closes one; why it could not, or null. */
 	close(agent: { sessionId: string | null; name: string }): Promise<string | null>;
-	/** End the agent's process (`hcom kill`) to resume it later; why it could not, or null. */
-	kill(name: string): Promise<string | null>;
 	/** Resume the conversation in its workspace with this message; why it could not, or null. */
 	resume(sessionId: string, workspace: string | null, prompt: string): Promise<string | null>;
-	accounts: CodexAccounts;
+	/** The conversation's latest position (every item, not only replies); -1 when empty. */
+	position(client: AgentSpec['client'], sessionId: string): Promise<{ ok: true; seq: number } | { ok: false; reason: string }>;
+	/** The `model_provider` of a Codex run's own session record; null when it cannot be read. */
+	provider(client: AgentSpec['client'], sessionId: string): Promise<string | null>;
 	/** How long between two looks at a running agent. */
 	pollMs: number;
-}
-
-const exhausted = (account: { usedPercent: number | null }) => account.usedPercent !== null && account.usedPercent >= 100;
-
-/** The accounts worth trying instead of `skip`, the least used first. */
-function candidates(limits: CodexLimits, skip: number | null) {
-	return limits.accounts
-		.filter((account) => account.enabled && account.index !== skip && account.usedPercent !== null && !exhausted(account))
-		.sort((a, b) => a.usedPercent! - b.usedPercent!);
-}
-
-/** Pin the first account but `from` (the one that ran out) with quota that probes fine with the
- *  model. The account and the note of the switch, or why there is none. */
-async function switchAccount(accounts: CodexAccounts, limits: CodexLimits, from: number, model: string, effort: string): Promise<{ ok: true; account: number; note: string } | { ok: false; reason: string }> {
-	const tried: string[] = [];
-	for (const account of candidates(limits, from)) {
-		const failed = await accounts.switchTo(account.index);
-		if (failed) {
-			tried.push(`${account.label}：換不過去（${failed}）`);
-			continue;
-		}
-		// The pin as codex-multi-auth now reads it, before anything runs on it.
-		const after = await accounts.limits();
-		if (!after.ok || after.value.pinned !== account.index) {
-			tried.push(`${account.label}：換完核對不到釘選`);
-			continue;
-		}
-		const probed = await accounts.probe(model, effort);
-		if (probed.ok) return { ok: true, account: account.index, note: `${limits.accounts.find((each) => each.index === from)?.label ?? '原帳號'} 額度用完，換到 ${account.label}` };
-		tried.push(`${account.label}：${probed.reason}`);
-	}
-	return { ok: false, reason: tried.length ? `額度用完：其他訂閱帳號都不能用（${tried.join('；')}）` : '額度用完：沒有其他還有額度的訂閱帳號' };
-}
-
-/** Before a Codex run launches: the pinned account as it is, or another one with quota. A check that
- *  cannot be read leaves the pin alone (nothing confirmed, nothing switched). */
-export async function codexBeforeLaunch(accounts: CodexAccounts, model: string, effort: string): Promise<{ ok: true; account?: number; note?: string } | { ok: false; reason: string }> {
-	const limits = await accounts.limits();
-	if (!limits.ok) return { ok: true };
-	const pinned = limits.value.accounts.find((account) => account.index === limits.value.pinned);
-	if (!pinned) return { ok: true };
-	if (!exhausted(pinned)) return { ok: true, account: pinned.index };
-	return switchAccount(accounts, limits.value, pinned.index, model, effort);
 }
 
 /** How a watched run ended, for its record. */
@@ -249,18 +201,15 @@ export interface Watched {
 	/** The board started again with this run open. */
 	adopted: boolean;
 	/** A checking agent's: how its reply ends it, the last lines it may end on (for the reason when it
-	 *  ends on neither), and its message after a switch of account. A task's agent by default. */
+	 *  ends on neither), and its message after a usage limit. A task's agent by default. */
 	judge?: Judge;
 	ending?: string;
-	resumeMessage?: string;
+	continueMessage?: string;
 	/** A task's agent may ask the user (ASK:); a checking agent has none of this. */
 	asking?: Asking;
 	/** A reply that ends a turn with the run going on (an unattended controller waiting on its
 	 *  agents): the next reply is judged instead. */
 	goesOn?: (reply: string) => boolean;
-	/** An unattended controller: its grant stops when quota runs out, so a Codex account confirmed
-	 *  at 0 ends the run as 額度用完, with no switch and no resume. */
-	quotaStops?: boolean;
 }
 
 /** What the watcher does with a task agent's questions, through the automation. */
@@ -277,7 +226,7 @@ export interface Asking {
 	resumed(input: string | null): void;
 }
 
-/** How long a usage limit on screen whose quota was not confirmed at 0 waits before the next live check. */
+/** How long a continue message that could not be sent (or its position not read) waits before the next try. */
 const QUOTA_RECHECK_MS = 5 * 60_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -291,8 +240,12 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 	/** Replies at or before this position were there before the latest resume: they say nothing. */
 	let judgeAfter = run.judgeAfter ?? -1;
 	let seen = false;
-	/** While the quota is not confirmed at 0, the next live check waits until then. */
+	/** After a failed send of the continue message, the next try waits until then. */
 	let quotaCheckAt = 0;
+	/** The continue message sent after a usage limit (#710), kept in the run's record. */
+	let continued: QuotaContinue | null = run.quotaContinue ?? null;
+	/** After the continue was read, the screen was seen without the usage-limit text: what shows now is new. */
+	let cleaned = false;
 
 	const end = async (result: AgentEnd): Promise<AgentEnd> => {
 		const closeError = await host.close({ sessionId, name });
@@ -353,17 +306,42 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 			}
 			continue;
 		}
+		// After the continue was read, a screen without the limit text means the old error is gone: the
+		// limit text on it later is a new stop. Looked at in a busy turn too, since the error shows then.
+		if (spec.client === 'codex' && continued && !cleaned && agent.pane && sessionId && agent.status !== 'listening') {
+			continued = await readContinue(host, watched, sessionId, continued);
+			if (continued.read !== undefined) {
+				const busy = await host.screen(agent.pane);
+				if (busy !== null && !CODEX_USAGE_LIMIT.test(busy)) cleaned = true;
+			}
+		}
 		if (agent.status !== 'listening' || !sessionId) continue;
 
 		if (spec.client === 'codex' && agent.pane) {
 			const screen = await host.screen(agent.pane);
 			if (screen !== null && CODEX_USAGE_LIMIT.test(screen)) {
-				if (watched.now() < quotaCheckAt) continue;
-				const resumed = await switchAndResume(host, watched, name, sessionId);
-				if ('status' in resumed) return end(resumed);
-				if (resumed.judgeAfter === null) quotaCheckAt = watched.now() + QUOTA_RECHECK_MS;
-				else judgeAfter = resumed.judgeAfter;
-				continue;
+				if (!continued) {
+					if (watched.now() < quotaCheckAt) continue;
+					const latest = await host.lastReply(spec.client, sessionId);
+					const sent = await continueAfterLimit(host, watched, sessionId, latest.ok ? latest.seq : -1, screen);
+					if (sent) {
+						continued = sent.continued;
+						judgeAfter = sent.judgeAfter;
+						cleaned = false;
+					} else quotaCheckAt = watched.now() + QUOTA_RECHECK_MS;
+					continue;
+				}
+				// A second stop: the continue was read, and the limit text is new (the screen had cleared of
+				// it, or it shows more times than when the continue went out). The old error still on screen
+				// is not one, whatever the agent said since: that is judged as any reply.
+				const shown = limitCount(screen);
+				continued = await readContinue(host, watched, sessionId, continued);
+				const isNew = continued.read !== undefined && (cleaned || shown > (continued.shown ?? Infinity));
+				if (isNew) {
+					const provider = await host.provider(spec.client, sessionId);
+					return end({ status: 'quota', reason: provider === 'cpa' ? CPA_POOL_SPENT : NOT_THROUGH_CPA });
+				}
+				if (continued.read === undefined) continue;
 			}
 		}
 		const reply = await host.lastReply(spec.client, sessionId);
@@ -425,41 +403,38 @@ async function stillNotStarted(host: AgentHost, name: string): Promise<boolean> 
 	return listed.ok && !listed.agents.find((each) => each.name === name)?.sessionId;
 }
 
-/** A Codex agent stopped on its usage limit: check its own account's quota live (the one it runs
- *  on, not whatever is pinned now). At 0: end the old process, switch and probe, resume the same
- *  conversation. Back above 0 while still pinned: resume on it. What to judge after, or how the
- *  run ends. */
-async function switchAndResume(host: AgentHost, watched: Watched, name: string, sessionId: string): Promise<{ judgeAfter: number | null } | AgentEnd> {
+/** How many times the screen shows the usage-limit text. */
+const limitCount = (screen: string) => screen.match(new RegExp(CODEX_USAGE_LIMIT.source, 'gi'))?.length ?? 0;
+
+/** Whether the continue message was read: the user input after its position. Kept in the record once seen. */
+async function readContinue(host: AgentHost, watched: Watched, sessionId: string, continued: QuotaContinue): Promise<QuotaContinue> {
+	if (continued.read !== undefined) return continued;
+	const input = await host.inputAfter(watched.spec.client, sessionId, continued.after);
+	if (!input) return continued;
+	const read = { ...continued, read: input.seq };
+	watched.note({ quotaContinue: read });
+	return read;
+}
+
+/** A Codex agent stopped on its usage limit the first time: send it one continue message (no kill,
+ *  no switch) and note it on the run. The intent is recorded before the message goes out, so a
+ *  restart or an uncertain delivery never sends a second one: whether it arrived is read from the
+ *  conversation. The record of the send and the reply position to judge after; null when it
+ *  certainly did not go out (tried again later). */
+async function continueAfterLimit(host: AgentHost, watched: Watched, sessionId: string, replySeq: number, screen: string): Promise<{ continued: QuotaContinue; judgeAfter: number } | null> {
 	const { spec } = watched;
-	// The reply before the kill is what the resumed turn is judged after; read first, so the
-	// quota check and the kill sit together.
-	const reply = await host.lastReply(spec.client, sessionId);
-	const limits = await host.accounts.limits();
-	if (!limits.ok) return { judgeAfter: null };
-	const ownIndex = watched.run.codexAccount ?? limits.value.pinned;
-	const own = limits.value.accounts.find((account) => account.index === ownIndex);
-	// Its account unknown, or back above 0 while another one is pinned now: nothing confirmed, nothing
-	// restarted; looked at again later, and the limit still ends the run.
-	if (!own || (!exhausted(own) && limits.value.pinned !== own.index)) return { judgeAfter: null };
-	if (watched.quotaStops) return exhausted(own) ? { status: 'quota', reason: `額度用完：${own.label} 用完，無人模式的主控額度用完就停，不換帳號` } : { judgeAfter: null };
-	let note: string;
-	if (!exhausted(own)) {
-		// Same account, quota back: nothing to switch, only the stopped turn to take up again.
-		if (await host.kill(name)) return { judgeAfter: null };
-		note = `${own.label} 額度已恢復，接回續作`;
-	} else {
-		if (!candidates(limits.value, own.index).length) return { status: 'quota', reason: '額度用完：沒有其他還有額度的訂閱帳號' };
-		const killed = await host.kill(name);
-		if (killed) return { status: 'quota', reason: `額度用完，但舊的 Agent 關不掉，沒有換帳號：${killed}` };
-		const switched = await switchAccount(host.accounts, limits.value, own.index, spec.model, spec.effort);
-		if (!switched.ok) return { status: 'quota', reason: switched.reason };
-		watched.note({ codexAccount: switched.account });
-		note = switched.note;
+	const position = await host.position(spec.client, sessionId);
+	if (!position.ok) return null;
+	// What to put back when nothing arrived: explicit values (null, not undefined), which the record keeps.
+	const before = { quotaContinue: null, judgeAfter: watched.run.judgeAfter ?? -1, quotaNotes: watched.run.quotaNotes ?? [] };
+	const continued: QuotaContinue = { after: position.seq, shown: limitCount(screen) };
+	// What the agent said before the stop is not the verdict of the turn that follows.
+	watched.note({ quotaContinue: continued, judgeAfter: replySeq, quotaNotes: [...(watched.run.quotaNotes ?? []), CONTINUED_NOTE] });
+	const failed = await host.send(sessionId, watched.continueMessage ?? CONTINUE_MESSAGE);
+	if (failed && !(await host.inputAfter(spec.client, sessionId, continued.after))) {
+		// Nothing arrived: the intent is taken back, and it is tried again later.
+		watched.note(before);
+		return null;
 	}
-	watched.note({ accountSwitches: [...(watched.run.accountSwitches ?? []), note] });
-	const judgeAfter = reply.ok ? reply.seq : -1;
-	watched.note({ judgeAfter });
-	const failed = await host.resume(sessionId, watched.run.agentWorkspace ?? null, watched.resumeMessage ?? RESUME_MESSAGE);
-	if (failed) return { status: 'failed', reason: `換帳號後接不回原本的對話：${failed}` };
-	return { judgeAfter };
+	return { continued, judgeAfter: replySeq };
 }
