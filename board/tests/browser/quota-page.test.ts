@@ -11,8 +11,8 @@ const MIN = 60_000;
 
 
 const SCREEN = `({ search: location.search, middle: document.querySelector('.inbox')?.innerText ?? '' })`;
-/** Nothing on the page reaches past the window's width, and nothing in the middle column past its own. */
-const FITS = `document.documentElement.scrollWidth <= window.innerWidth && [...document.querySelectorAll('.inbox, .inbox *')].every((node) => node.scrollWidth <= node.clientWidth + 1)`;
+/** Nothing on the page reaches past the window's width, and nothing in the middle column past its own, but the tab row, which scrolls when three buttons fit. */
+const FITS = `document.documentElement.scrollWidth <= window.innerWidth && [...document.querySelectorAll('.inbox, .inbox *')].every((node) => node.closest('.middle-tabs') || node.scrollWidth <= node.clientWidth + 1)`;
 
 let fixture: Fixture;
 let cookie: string;
