@@ -9,8 +9,8 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
-import { BUILD_DIR, logged, question, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
+import { BUILD_DIR, jsonLines, logged, NODE, question, startFixture, type Fixture } from '../harness.ts';
+import { CHROME, fakeMic, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
 
 /** Runs first in every document: counts the tab's page loads. */
 const COUNT_LOADS = `sessionStorage.setItem('test-loads', String(Number(sessionStorage.getItem('test-loads') ?? 0) + 1))`;
@@ -49,7 +49,8 @@ beforeAll(async () => {
 	const served = readFileSync(adapter, 'utf8');
 	if (!entry.test(served)) throw new Error("the build's file list no longer has version.json as this test expects");
 	writeFileSync(adapter, served.replace(entry, `$1${Buffer.byteLength(body)}$2${gz.length}$3${br.length}`));
-	fixture = await startFixture({ port: 7182 });
+	// Messages the board puts into a controller's terminal are written here instead.
+	fixture = await startFixture({ port: 7182, env: { LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, '../fake-inject.mjs'), copy]) } });
 	cookie = await fixture.login('build-update');
 }, 60_000);
 
@@ -74,12 +75,12 @@ afterAll(async () => {
 	if (copy) rmSync(copy, { recursive: true, force: true });
 });
 
-async function openBoard() {
-	browser = await launchChrome({ scripts: [COUNT_LOADS, KEEP_TIMINGS] });
+async function openBoard({ path = '/', scripts = [] as string[] } = {}) {
+	browser = await launchChrome({ scripts: [COUNT_LOADS, KEEP_TIMINGS, ...scripts] });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
-	await tab.navigate(`${fixture.url}/`);
+	await tab.navigate(`${fixture.url}${path}`);
 	await tab.boardStarted();
 	expect(await tab.eval<number>(LOADS)).toBe(1);
 }
@@ -200,4 +201,81 @@ test.skipIf(!CHROME)('an old page that keeps failing after loading the new build
 	await tab.until(`document.body.innerText.includes('Internal Error')`, 'the error page of the page loaded again');
 	await Bun.sleep(3_000);
 	expect(await tab.eval<number>(LOADS)).toBe(2);
+}, TEST_MS);
+
+/** Deployed under the page while something holds the reload: the page asks, and stays. */
+async function deployHeld() {
+	await deploy();
+	await tab.until(checked(1), 'the page asking which build the server serves');
+	await Bun.sleep(3_000);
+	expect(await tab.eval<number>(LOADS)).toBe(1);
+}
+
+/** The board on the controller's own page: its message box sends to it. */
+const openController = async (scripts: string[] = []) => {
+	fixture.list([fixture.bound('alpha', 'luna', { session_id: 's-luna' })]);
+	// Running in a Herdr pane, so a message reaches its terminal.
+	fixture.setHcom({ agents: [{ name: 'luna', session_id: 's-luna', status: 'listening', launch_context: { pane_id: 'wA:p-s-luna' } }] });
+	const agent = { agent: 'claude', agent_session: { kind: 'id', value: 's-luna' }, agent_status: 'idle', cwd: '/work/luna', pane_id: 'wA:p-s-luna', tab_id: 'wA:t-s-luna', workspace_id: 'wA' };
+	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ agents: [agent], workspaces: [{ workspace_id: 'wA', number: 1, label: 'A' }], tabs: [{ tab_id: 'wA:t-s-luna', workspace_id: 'wA', label: 's-luna' }] }));
+	await fixture.refresh(cookie);
+	await openBoard({ path: '/?controller=s-luna', scripts });
+	await tab.until(`!!document.querySelector(${JSON.stringify(BOX)})`, 'the message box');
+};
+const SEND = '.cmd .send-slot button[aria-label="送出"]';
+
+test.skipIf(!CHROME)('a message typed in the message box holds the reload until it is sent', async () => {
+	await openController();
+	await type('部署時還沒送出');
+	await deployHeld();
+	await tab.until(`!document.querySelector(${JSON.stringify(SEND)}).disabled`, 'the send button');
+	await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
+	await tab.until(`${LOADS} === 2`, 'the page loaded again once the message was sent');
+	await tab.boardStarted();
+	// Sent, not dropped: it reached the terminal, and the box loaded again has nothing left to send.
+	expect(JSON.stringify(jsonLines(join(copy, 'inject-calls.jsonl')))).toContain('部署時還沒送出');
+	await tab.until(`!!document.querySelector(${JSON.stringify(BOX)})`, 'the message box loaded again');
+	expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(BOX)}).value`)).toBe('');
+}, TEST_MS);
+
+test.skipIf(!CHROME)('a file attached in the message box holds the reload until it is removed', async () => {
+	const file = join(copy, 'note.txt');
+	writeFileSync(file, '附件內容');
+	await openController();
+	const { root } = await tab.send('DOM.getDocument');
+	const { nodeId } = await tab.send('DOM.querySelector', { nodeId: root.nodeId, selector: '.cmd input[type=file]' });
+	await tab.send('DOM.setFileInputFiles', { nodeId, files: [file] });
+	await tab.until(`document.querySelectorAll('.cmd .tray li').length === 1`, 'the attached file');
+	await deployHeld();
+	await tab.eval(`document.querySelector('.cmd .tray button.remove').click()`);
+	await tab.until(`${LOADS} === 2`, 'the page loaded again once the file was removed');
+}, TEST_MS);
+
+test.skipIf(!CHROME)('a recording in progress holds the reload until it ends', async () => {
+	await openController([`localStorage.setItem('lat-board-voice', '1')`, fakeMic('錄到的話')]);
+	const mic = '.cmd .voice-slot button.mic';
+	await tab.until(`document.querySelector(${JSON.stringify(mic)})?.dataset.voice === 'idle'`, 'the mic');
+	await tab.pointerClick(mic);
+	await tab.until(`document.querySelector(${JSON.stringify(mic)}).dataset.voice === 'recording'`, 'recording');
+	await deployHeld();
+	expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(mic)}).dataset.voice`)).toBe('recording');
+	await tab.pointerClick(mic);
+	// What was said goes into the box, which then holds the reload itself until it is cleared.
+	await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value.includes('錄到的話')`, 'the speech in the box');
+	await Bun.sleep(1_500);
+	expect(await tab.eval<number>(LOADS)).toBe(1);
+	await type('');
+	await tab.until(`${LOADS} === 2`, 'the page loaded again once the recording ended and the box was cleared');
+}, TEST_MS);
+
+test.skipIf(!CHROME)('a press held down (a drag) holds the reload until it is let go', async () => {
+	await openBoard();
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 600, y: 400 });
+	await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 600, y: 400, button: 'left', clickCount: 1 });
+	await deployHeld();
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 640, y: 420, button: 'left' });
+	await Bun.sleep(1_000);
+	expect(await tab.eval<number>(LOADS)).toBe(1);
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 640, y: 420, button: 'left', clickCount: 1 });
+	await tab.until(`${LOADS} === 2`, 'the page loaded again once the press was let go');
 }, TEST_MS);
