@@ -40,6 +40,7 @@ for `reclaim_grace_seconds`, the next gate that reads the state stops what is le
 the slot.
 """
 import argparse
+import collections
 import contextlib
 import copy
 import difflib
@@ -84,6 +85,18 @@ CPU_WINDOW_SECONDS = 10.0
 WORKTREE_PLACEHOLDER = '<worktree>'
 TAIL_LINES = 20
 TAIL_BYTES = 8192
+# A failed run's full output is kept as a file under `failures/` in the state dir (the record
+# has its path and sha256). Output past FAILURE_FILE_BYTES keeps the head, every failure block
+# (each at most FAILURE_BLOCK_BYTES) and the tail, with a note where it was cut. Files expire
+# after the cleanup window (CLEANUP_DAYS), swept whenever a failed run saves its output.
+FAILURE_DIR = 'failures'
+FAILURE_FILE_BYTES = 1024 * 1024
+FAILURE_HEAD_BYTES = 64 * 1024
+FAILURE_TAIL_BYTES = 128 * 1024
+FAILURE_BLOCK_BYTES = 64 * 1024
+FAILURE_LINE_BYTES = 4096
+FAILURE_SPOOL_BYTES = 32 * 1024 * 1024  # the live copy of a run's output stops growing here
+LIVE_STALE_SECONDS = 24 * 3600          # a live file this old belongs to a run that is gone
 KILL_GRACE_SECONDS = 5.0
 # Total time a test command may run: the registry's `time_limit_minutes`, else the suite's
 # recorded baseline x TIME_LIMIT_FACTOR (at least TIME_LIMIT_FLOOR), else TIME_LIMIT_DEFAULT.
@@ -1940,12 +1953,23 @@ class Gate:
         else:
             end_session(self.child.pid, self.child)
 
-    def _run_command(self, argv, cwd, scan=None, command=None):
+    def _run_command(self, argv, cwd, scan=None, command=None, keep=False):
+        """_run_command_inner(), removing the live output file when it ends in an error."""
+        self.live = None if keep else getattr(self, "live", None)
+        try:
+            return self._run_command_inner(argv, cwd, scan, command, keep)
+        except BaseException:
+            if self.live is not None:
+                drop_spool(self.live, self.live.spool_path)
+            raise
+
+    def _run_command_inner(self, argv, cwd, scan=None, command=None, keep=False):
         """Run argv in cwd as this gate's suite, its output passed through (and fed to scan),
         and wait for it: (exit code, output tail, profile, seconds, start, end), the start
         and end as UTC datetimes. OSError when it cannot start. Past time_limit(), or when
         its output has not grown for silence_limit(), it ends the suite's whole group (or
-        session), sets self.timed_out and exits TIMEOUT_EXIT."""
+        session), sets self.timed_out and exits TIMEOUT_EXIT. keep: also write the full output
+        to a live file (tail.spool_path) for keep_failure_output()."""
         self.child = self.group = self.sampler = self.keeper = self.keeper_pid = None
         self.finished = False
         self.timed_out = None
@@ -1955,7 +1979,10 @@ class Gate:
         started_at = datetime.now(timezone.utc).replace(microsecond=0)
         child = self._start(argv, True, cwd) if self._scope_ready() else None
         child = child or self._start(argv, False, cwd)
-        tail = Tail()
+        spool_path, spool = spool_open() if keep else (None, None)
+        tail = Tail(spool)
+        tail.spool_path = spool_path
+        self.live = tail if keep else getattr(self, "live", None)
         pumps = [threading.Thread(target=pump, args=(stream, out, tail, scan, key), daemon=True)
                  for key, stream, out in (('out', child.stdout, sys.stdout.buffer),
                                           ('err', child.stderr, sys.stderr.buffer))]
@@ -2054,10 +2081,11 @@ class Gate:
         try:
             argv = shell_argv(self.argv[0]) if len(self.argv) == 1 else self.argv
             code, tail, profile, seconds, started_at, ended_at = self._run_command(
-                argv, self.cwd, scan, self.command)
+                argv, self.cwd, scan, self.command, keep=True)
         except OSError as exc:
             warn(f'could not start the command: {exc}')
             return 127
+        first_code = code
         named = self.extra.get('selected_tests') if info and self.template else None
         timed_out = self.timed_out and self.timed_out_report(
             scan, [dir_relative(t, info['rel_cwd']) for t in named or []])
@@ -2103,6 +2131,13 @@ class Gate:
             record.update(rerun=rerun, flaky=flaky or [], rerun_only=bool(flaky))
         if timed_out:
             record['timed_out'] = timed_out
+        if first_code:  # the first run's output, whatever the rerun made of the result
+            kept = keep_failure_output(tail, tail.spool_path)
+            if kept:
+                record['failure_output'] = kept
+                warn(f"full output of the failed run: {kept['path']} (sha256 {kept['sha256']})")
+        else:
+            drop_spool(tail, tail.spool_path)
         full = not self.extra.get('kind')
         files = full and scan.file_seconds(self.cwd, info and info['repo'],
                                            pytest=pytest_durations_0(self.argv, self.cwd))
@@ -2260,21 +2295,236 @@ def cmd_light(argv):
 
 
 class Tail:
-    def __init__(self):
+    def __init__(self, spool=None):
         self.data = bytearray()
         self.lock = threading.Lock()
         self.last_output = time.monotonic()
+        self.spool = spool  # the live output file (spool_open()), or None
+        self.spooled = 0
 
     def add(self, chunk):
         with self.lock:
             self.last_output = time.monotonic()
             self.data += chunk
             del self.data[:-TAIL_BYTES]
+            if self.spool and self.spooled < FAILURE_SPOOL_BYTES:
+                try:
+                    self.spool.write(chunk[:FAILURE_SPOOL_BYTES - self.spooled])
+                    self.spool.flush()
+                except OSError:
+                    self.spool = None
+                self.spooled += len(chunk)
 
     def text(self):
         with self.lock:
             lines = self.data.decode(errors='replace').splitlines()
         return '\n'.join(lines[-TAIL_LINES:])
+
+
+# ---------------------------------------------------------------- failure output files
+
+def sweep_failure_files(directory, now=None):
+    """Remove failure outputs older than CLEANUP_DAYS and live files left by gone runs."""
+    now = time.time() if now is None else now
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    for path in entries:
+        limit = LIVE_STALE_SECONDS if path.name.startswith('live-') else CLEANUP_DAYS * 86400
+        try:
+            if now - path.stat().st_mtime > limit:
+                path.unlink()
+        except OSError:
+            pass
+
+
+def spool_open():
+    """(path, file) of this run's live output, `failures/live-<pid>-<id>.log` in the state dir;
+    (None, None) when it cannot be created. A passing run removes it."""
+    directory = state_dir() / FAILURE_DIR
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f'live-{os.getpid()}-{uuid.uuid4().hex[:8]}.log'
+        return path, open(path, 'wb')
+    except OSError:
+        return None, None
+
+
+class FailureBlocks:
+    """Finds the failure blocks of bun test, pytest and unittest output, line by line: bun's
+    lines since the last test result up to a `(fail)` line, pytest's `___ name ___` section,
+    unittest's `FAIL:`/`ERROR:` section."""
+    PYTEST = re.compile(r'_+ .+ _+')
+    PYTEST_END = re.compile(r'={3,}.*')
+    UNITTEST_RULE = re.compile(r'={20,}')
+    UNITTEST_HEAD = re.compile(r'(?:FAIL|ERROR): \S+ \(.*\)')
+    UNITTEST_END = re.compile(r'Ran \d+ tests? in .*')
+    BUN_RESET = re.compile(r'\(pass\) |\S+\.[cm]?[jt]sx?:')
+
+    def __init__(self):
+        self.blocks = []     # (first line number, [lines], cut)
+        self.bun = []        # lines since the last bun test result
+        self.open = None     # [first line number, lines, cut, kind]
+
+    def _close(self):
+        if self.open:
+            self.blocks.append(tuple(self.open[:3]))
+            self.open = None
+
+    def _add(self, lines, text):
+        size = sum(len(x.encode()) + 1 for x in lines)
+        if size < FAILURE_BLOCK_BYTES:
+            lines.append(text)
+            return False
+        return True
+
+    def feed(self, number, text):
+        plain = ANSI.sub('', text)
+        if self.open:
+            kind = self.open[3]
+            ends = (self.PYTEST.fullmatch(plain) or self.PYTEST_END.fullmatch(plain)
+                    if kind == 'pytest' else
+                    self.UNITTEST_RULE.fullmatch(plain) or self.UNITTEST_END.fullmatch(plain))
+            if ends:
+                self._close()
+            else:
+                self.open[2] |= self._add(self.open[1], text)
+                return
+        if self.PYTEST.fullmatch(plain) and not self.UNITTEST_RULE.fullmatch(plain):
+            self.open = [number, [text], False, 'pytest']
+        elif self.UNITTEST_HEAD.fullmatch(plain):
+            self.open = [number, [text], False, 'unittest']
+        elif plain.startswith('(fail) '):
+            self.blocks.append((number - len(self.bun), self.bun + [text], False))
+            self.bun = []
+        elif self.BUN_RESET.match(plain):
+            self.bun = []
+        else:
+            self.bun.append(text)
+            while len(self.bun) > 1 and sum(len(x.encode()) + 1 for x in self.bun) > FAILURE_BLOCK_BYTES:
+                del self.bun[0]
+
+    def finish(self):
+        self._close()
+        return self.blocks
+
+
+def cut_line(raw):
+    """A line of the output as text, at most FAILURE_LINE_BYTES bytes (cut, and marked)."""
+    cut = len(raw) > FAILURE_LINE_BYTES
+    text = raw[:FAILURE_LINE_BYTES].decode(errors='replace').rstrip('\r\n')
+    return text + ' [... line cut ...]' if cut else text
+
+
+def bound_failure_output(source, target, cap=None):
+    """Copy the output file `source` to `target`, within about cap bytes: whole when it fits,
+    else its head, every failure block and its tail, with a note where lines were left out
+    (a line over FAILURE_LINE_BYTES is cut). True when anything was cut."""
+    cap = FAILURE_FILE_BYTES if cap is None else cap
+    if source.stat().st_size <= cap:
+        shutil.copyfile(source, target)
+        return False
+    head, head_size = [], 0
+    tail, tail_size = collections.deque(), 0
+    blocks, total, cut_any = FailureBlocks(), 0, False
+    with open(source, 'rb') as stream:
+        for number, raw in enumerate(stream, 1):
+            line = cut_line(raw)
+            cut_any = cut_any or len(raw) > FAILURE_LINE_BYTES
+            size = len(line.encode()) + 1
+            total = number
+            blocks.feed(number, line)
+            if head_size < FAILURE_HEAD_BYTES:
+                head.append((number, line))
+                head_size += size
+                continue
+            tail.append((number, line, size))
+            tail_size += size
+            while tail and tail_size > FAILURE_TAIL_BYTES:
+                tail_size -= tail.popleft()[2]
+    found = blocks.finish()
+    out = list(head)
+    last = head[-1][0] if head else 0
+    budget = max(0, cap - head_size - tail_size)
+    tail_first = tail[0][0] if tail else total + 1
+    kept = omitted = 0
+    for first, lines, cut in found:
+        end = first + len(lines) - 1
+        if end <= last or first >= tail_first:
+            continue  # inside the head or the tail already
+        skip, lines = max(0, last + 1 - first), lines[:max(0, tail_first - first)]
+        lines, first = lines[skip:], first + skip
+        size = sum(len(x.encode()) + 1 for x in lines)
+        if not lines or size > budget:
+            omitted += bool(lines)
+            continue
+        budget -= size
+        kept += 1
+        if first > last + 1:
+            out.append((None, f'[... lines {last + 1}-{first - 1} left out ...]'))
+        out.extend((first + i, x) for i, x in enumerate(lines))
+        if cut:
+            out.append((None, f'[... this failure block was cut at {FAILURE_BLOCK_BYTES} bytes ...]'))
+        last = first + len(lines) - 1
+    if tail_first > last + 1:
+        out.append((None, f'[... lines {last + 1}-{tail_first - 1} left out ...]'))
+    out.extend((n, x) for n, x, _ in tail)
+    note = (f'[TRUNCATED: the run printed {total} lines, over the {cap} byte limit of this file. '
+            f'Kept: the first lines, {kept} failure block(s)'
+            + (f' ({omitted} more did not fit)' if omitted else '')
+            + ' and the last lines; left-out stretches are marked.]')
+    with open(target, 'w', encoding='utf-8') as sink:
+        sink.write(note + '\n')
+        for _, line in out:
+            sink.write(line + '\n')
+    return True
+
+
+def close_spool(tail):
+    with tail.lock:
+        if tail.spool:
+            try:
+                tail.spool.close()
+            except OSError:
+                pass
+            tail.spool = None
+        tail.spooled = max(tail.spooled, 0)
+
+
+def keep_failure_output(tail, spool_path):
+    """Close the live output and keep it, bounded, as the failure file: the record's
+    `failure_output` (path, sha256, bytes, truncated), or None when it cannot be kept."""
+    close_spool(tail)
+    if spool_path is None:
+        return None
+    directory = state_dir() / FAILURE_DIR
+    try:
+        sweep_failure_files(directory)
+        target = directory / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-')
+                              + uuid.uuid4().hex[:8] + '.log')
+        truncated = bound_failure_output(spool_path, target)
+        if tail.spooled > FAILURE_SPOOL_BYTES:
+            with open(target, 'a') as sink:
+                sink.write(f'[TRUNCATED: the live copy stopped at {FAILURE_SPOOL_BYTES} bytes; '
+                           'later output is not here]\n')
+            truncated = True
+        data = target.read_bytes()
+        return {'path': str(target), 'sha256': hashlib.sha256(data).hexdigest(),
+                'bytes': len(data), 'truncated': truncated}
+    except OSError as exc:
+        warn(f'the failed run\'s output could not be kept: {exc}')
+        return None
+    finally:
+        spool_path.unlink(missing_ok=True)
+
+
+def drop_spool(tail, spool_path):
+    """A passing run keeps no output file."""
+    if tail is not None:
+        close_spool(tail)
+    if spool_path is not None:
+        spool_path.unlink(missing_ok=True)
 
 
 def pump(stream, out, tail, scan=None, key=None):
@@ -4673,6 +4923,27 @@ def cmd_cleanup_done(command, baseline):
 
 # ---------------------------------------------------------------- status
 
+FAILURE_LISTED = 10  # failure outputs `status` lists
+
+
+def failure_text(output):
+    """A failure output as status shows it: the path, then size and sha256, with what is
+    missing or cut marked."""
+    path = output.get('path')
+    gone = '' if path and Path(path).is_file() else ' EXPIRED (file removed)'
+    cut = ', truncated' if output.get('truncated') else ''
+    return f"{path} ({output.get('bytes')} bytes{cut}, sha256 {output.get('sha256')}){gone}"
+
+
+def failure_outputs(records):
+    """The failure outputs of the last FAILURE_LISTED failed runs among these records, from
+    all of them (not only the shown ones), so a later pass does not hide them."""
+    found = [dict(r['failure_output'], time=r.get('time'), command=r.get('command'),
+                  fingerprint=record_fingerprint(r))
+             for r in records if isinstance(r.get('failure_output'), dict)]
+    return found[-FAILURE_LISTED:]
+
+
 def cmd_status(as_json, fp_prefix, limit):
     config = load_config()
 
@@ -4690,6 +4961,7 @@ def cmd_status(as_json, fp_prefix, limit):
     records = read_records()
     if fp_prefix:
         records = [r for r in records if (record_fingerprint(r) or '').startswith(fp_prefix)]
+    kept = failure_outputs(records)
     records = records[-limit:]
     cap, floor = config['max_slots'], min(config['min_slots'], config['max_slots'])
     unused_cpu = sum(h['unused'][0] for h in running + light)
@@ -4717,6 +4989,7 @@ def cmd_status(as_json, fp_prefix, limit):
                                                 for h in light],
                                     'cpu_budget_cores': light_budget()},
                           'locks': state['locks'], 'records': records, 'cleanup': cleanup,
+                          'failure_outputs': kept,
                           'background_failures': background,
                           'reclaims': state.get('reclaims') or []},
                          ensure_ascii=False, indent=1))
@@ -4812,6 +5085,8 @@ def cmd_status(as_json, fp_prefix, limit):
             where = r['timed_out'].get('dir')
             print(f"    not finished{' in ' + where if where else ''}: "
                   f"{', '.join(r['timed_out']['unfinished_files'])}")
+        if isinstance(r.get('failure_output'), dict):
+            print(f"    full output: {failure_text(r['failure_output'])}")
         retry = r.get('rerun')
         if isinstance(retry, dict) and retry.get('skipped'):
             print(f"    failed tests not rerun: {retry['skipped']}")
@@ -4821,6 +5096,10 @@ def cmd_status(as_json, fp_prefix, limit):
             for run in retry.get('runs') or []:
                 print(f"      {run.get('dir')}: exit {run.get('exit_code')} in "
                       f"{run.get('duration_s')}s  {run.get('command')}")
+    print(f'Failed runs with a kept full output ({len(kept)}, newest last; a later pass does '
+          'not remove them):')
+    for entry in kept:
+        print(f"  {entry['time']}  {entry['command']}  {failure_text(entry)}")
     flaky = [(r, f) for r in records for f in r.get('flaky') or []]
     print(f'Flaky tests in these records (failed first, passed on the rerun): {len(flaky)}')
     for r, f in flaky:
