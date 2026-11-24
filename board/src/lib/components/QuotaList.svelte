@@ -1,8 +1,9 @@
 <script lang="ts">
 	// The 額度 tab: the Claude and the Codex accounts one above the other, each group with when its
 	// account in use was read, in yellow once that is too old. One card per account, the one in
-	// use first and framed: its email and plan, then a line per quota window with the
-	// percent left and when it resets. Read-only: nothing here switches an account or asks for new
+	// use first and framed: its email and plan (and for Codex how CPA routes it now), then a line per
+	// quota window with the percent left and when it resets; a Codex account whose latest usage read
+	// failed keeps its last numbers with their time and says so. Read-only: nothing here switches an account or asks for new
 	// data; the server reads the sources by itself.
 	import {
 		agoText,
@@ -14,11 +15,14 @@
 		planView,
 		remaining,
 		resetText,
+		STATE_TEXT,
+		UNREADABLE_TEXT,
 		updatedText,
 		waiting,
 		type QuotaAccount,
 		type QuotaClient,
-		type QuotaSnapshot
+		type QuotaSnapshot,
+		type QuotaStateKind
 	} from '#lib/board/quota.ts';
 
 	let { quota }: { quota: QuotaSnapshot | null } = $props();
@@ -30,23 +34,34 @@
 		return () => clearInterval(timer);
 	});
 
+	/** A shape beside each state's word, so it does not rest on color alone. */
+	const STATE_MARK: Record<QuotaStateKind, string> = { ready: '●', cooling: '◐', disabled: '⊘', unknown: '?' };
+
 	const GROUPS: { client: QuotaClient; title: string }[] = [
 		{ client: 'claude', title: 'Claude' },
 		{ client: 'codex', title: 'Codex' }
 	];
 </script>
 
-{#snippet card(account: QuotaAccount, client: QuotaClient)}
+{#snippet card(account: QuotaAccount, client: QuotaClient, groupAt: number | null)}
 	{@const plan = planView(account.plan, now)}
+	<!-- An account's own age only when it is not the one the group's header shows. -->
+	{@const ownAge = !account.current && account.observedAt !== null && account.observedAt !== groupAt}
 	<li class="card" class:current={account.current}>
 		<p class="who">
 			{#if account.current}<span class="badge">使用中</span>{/if}
 			<span class="email">{account.email}</span>
 			{#if plan}<span class="plan" class:recorded={plan.recorded} title={plan.title}>{plan.text}</span>{/if}
+			{#if account.state}
+				<span class="state {account.state.kind}">
+					<span class="mark" aria-hidden="true">{STATE_MARK[account.state.kind]}</span><span>{STATE_TEXT[account.state.kind]}{account.state.note ? `・${account.state.note}` : ''}</span>
+				</span>
+			{/if}
 		</p>
-		{#if !account.current && account.observedAt !== null}
-			<p class="age" class:stale={isStale(account.observedAt, now, client)}>
-				{agoText(account.observedAt, now)}更新
+		{#if ownAge || (account.unreadable && account.windows.length)}
+			<p class="age" class:stale={ownAge && isStale(account.observedAt, now, client)}>
+				{#if ownAge}<span>{agoText(account.observedAt!, now)}更新</span>{/if}
+				{#if account.unreadable && account.windows.length}<span class="unreadable">⚠ {UNREADABLE_TEXT}</span>{/if}
 			</p>
 		{/if}
 		{#if account.windows.length}
@@ -64,6 +79,8 @@
 					</li>
 				{/each}
 			</ul>
+		{:else if account.unreadable}
+			<p class="none unreadable">⚠ {UNREADABLE_TEXT}</p>
 		{:else}
 			<p class="none">{account.note ?? '沒有紀錄'}</p>
 		{/if}
@@ -90,9 +107,10 @@
 			{:else if !group.accounts.length}
 				<p class="none">沒有帳號</p>
 			{:else}
+				{@const groupAt = groupObservedAt(group.accounts)}
 				<ul class="cards">
 					{#each ordered(group.accounts) as account, index (index)}
-						{@render card(account, client)}
+						{@render card(account, client, groupAt)}
 					{/each}
 				</ul>
 			{/if}
@@ -185,6 +203,32 @@
 	}
 	.plan {
 		font-size: max(0.8rem, var(--min-font, 0px));
+	}
+	.state {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 0.2rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
+		white-space: nowrap;
+	}
+	.state.ready {
+		color: var(--ok);
+	}
+	.state.cooling {
+		color: var(--warn);
+	}
+	.state.disabled,
+	.state.unknown {
+		color: var(--muted);
+	}
+	.age {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.2rem 0.6rem;
+	}
+	.unreadable,
+	.none.unreadable {
+		color: var(--warn);
 	}
 	.plan.recorded {
 		color: var(--muted);

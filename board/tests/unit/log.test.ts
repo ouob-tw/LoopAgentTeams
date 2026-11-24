@@ -111,7 +111,8 @@ beforeAll(() => {
 		HCOM_DIR: join(boardDir, 'hcom'),
 		HERDR_SOCKET_PATH: join(boardDir, 'herdr.sock'),
 		HERDR_CONFIG_PATH: join(boardDir, 'herdr.toml'),
-		CODEX_MULTI_AUTH_DIR: join(boardDir, 'codex-multi-auth'),
+		// Never the real CPA.
+		LAT_BOARD_CPA_URL: '',
 		...Object.fromEntries(COMMANDS.map((name) => [`LAT_BOARD_${name}_COMMAND`, JSON.stringify(['false'])]))
 	};
 	for (const [name, value] of Object.entries(env)) {

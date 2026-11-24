@@ -69,7 +69,8 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_TRANSLATE_KEEP_DAYS` | 存下的譯文多久沒用到就清掉 | `30` |
 | `LAT_BOARD_CSWAP_COMMAND` | claude-swap 指令（JSON 字串陣列），「額度」分頁讀 Claude 帳號時在後面加上 `list --json --cached-only`（只讀 claude-swap 自己的檔案，不連網、不刷新登入）；看板不會執行其他 cswap 指令 | `["cswap"]` |
 | `LAT_BOARD_CSWAP_TIMEOUT_SECONDS` | 上一項多久沒結束就放棄 | `10` |
-| `CODEX_MULTI_AUTH_DIR` | codex-multi-auth 的資料夾，「額度」分頁直接讀其中的 `openai-codex-accounts.json` 與 `quota-cache.json`，只取 email、使用中、方案、用量、重置時間與更新時間，不執行 codex-multi-auth；沒設定時用 `$CODEX_HOME/multi-auth` | `~/.codex/multi-auth` |
+| `LAT_BOARD_CPA_URL` | CPA（CLIProxyAPI）管理介面的位址，例如 `http://127.0.0.1:8317`；「額度」分頁的 Codex 帳號從這裡讀（v8 的 `credentials` 與 `requests/api-call`）。沒設定時 Codex 那組寫「CPA 未設定」 | 不設定 |
+| `LAT_BOARD_CPA_MANAGEMENT_KEY_FILE` | 只放 CPA 管理金鑰一行的檔案，權限 600、放在 repo 之外；看板只把這把金鑰送給 CPA，不讀帳號憑證。CPA 跑在 Docker 等不算本機連線的環境時，要在 CPA 設定開啟遠端管理（`management.allow-remote`，舊版設定叫 `remote-management.allow-remote`），否則寫「CPA 未開放遠端管理」。金鑰被拒後不再重送同一把，改好檔案內容才再試（CPA 連續 5 次拒絕會封鎖來源約 30 分鐘） | 不設定 |
 | `LAT_BOARD_COOKIE_NAME` | 登入 cookie 的名稱；同一個主機名稱下要並存的第二個看板（例如示意看板）才需要改 | `lat_board_device` |
 | `LAT_BOARD_QUOTA_SECONDS` | 「額度」分頁的資料多久讀一次，所有瀏覽器共用 | `30` |
 | `LAT_BOARD_PROC_ROOT` | 「資源」分頁讀主機程序、記憶體與掛載點的資料夾；只有測試會改成假的 `/proc` | `/proc` |

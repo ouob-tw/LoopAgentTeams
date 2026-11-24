@@ -199,12 +199,7 @@ Codex 重啟後在 `/hooks` 信任 command 結尾為 `host-guard.py hook` 的項
 ## 可選工具
 
 - **[HERDR](docs/hcom-herdr-setup.md)**：集中監看多個 Agent，包括透過 HCOM 啟動的外部 Agent，並以 workspace 整理工作視窗；整合方式見連結說明。LAT 問題面板（Herdr 外掛，`prefix+a`）以 A./B./C. 列選項、按字母鍵作答。Herdr 彈出通知經 SSH 送到外層終端機，需設定 `[ui.toast] delivery = "terminal"`；提示音在執行 Herdr client 的機器上播放，透過 SSH 時聽不到。
-- **[codex-multi-auth](https://github.com/ndycode/codex-multi-auth)**：管理多個 Codex 帳號與額度，以 `codex-multi-auth switch <n>` 切換帳號；額度檢查與換帳號後接續工作的方式，見 hcom-spawn 的[額度與換帳號說明](skills/local/hcom-spawn/references/troubleshooting.md#codex-額度與換帳號)。
-
-  ```bash
-  bun add --global codex-multi-auth
-  codex-multi-auth login  # 各帳號分別登入
-  ```
+- **[CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI)**：把多個 ChatGPT 訂閱帳號合成一個池子給 Codex 用，某個帳號額度用完時由 CPA 自己換到下一個，Agent 不必關掉再接回。Codex 以 `model_provider` 指向 CPA；CPA 本身的安裝與設定在 repo 之外，照 [CPA 的文件](https://help.router-for.me/)。額度停住時的處理見 hcom-spawn 的[Codex 額度與 CPA 恢復](skills/local/hcom-spawn/references/troubleshooting.md#codex-額度與-cpa-恢復)；看板「額度」分頁讀 CPA 管理介面的設定見 [board/README.md](board/README.md)。
 
 - **[cswap（claude-swap）](https://github.com/realiti4/claude-swap#automatic-switching)**：切換 Claude Code 帳號。加入帳號並啟動自動切換後，接近額度上限時會自動換到還有額度的帳號。Linux／Windows 通常不需重啟 Claude Code；macOS 須等待 Keychain 快取更新。需先安裝 [uv](https://docs.astral.sh/uv/getting-started/installation/)：
 

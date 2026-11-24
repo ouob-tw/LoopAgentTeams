@@ -4,7 +4,6 @@ import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { parseModelOptions, type ModelOptions } from '../board/models.ts';
 import { ASK_EXECUTION_WAIT_MS } from '../board/board-asks.ts';
-import { codexMultiAuthDir } from './quota.ts';
 import { connectionSettings, type AddressList } from './client-address.ts';
 import { demoAddress, type DemoSite } from './demo-address.ts';
 
@@ -101,8 +100,10 @@ export interface BoardConfig {
 	/** Command that runs claude-swap; the board appends `list --json --cached-only`, which reads its files only. */
 	cswapCommand: string[];
 	cswapTimeoutMs: number;
-	/** codex-multi-auth's folder, whose account file and quota cache the board reads. */
-	codexMultiAuthDir: string;
+	/** CPA's management API, whose Codex accounts the 額度 tab shows: its base URL
+	 *  (`LAT_BOARD_CPA_URL`) and the file holding the management key alone
+	 *  (`LAT_BOARD_CPA_MANAGEMENT_KEY_FILE`); either unset shows the Codex group as not set up. */
+	cpa: { url: string | null; keyFile: string | null };
 	/** How often the 額度 tab's sources are read. */
 	quotaIntervalMs: number;
 	/** Command that runs pd; the board appends `pending --json`, `deny <id>`, or the passkey relay (`passkey challenge <id>`, `passkey approve <id>` with the page's assertion on stdin), never a confirmation code. */
@@ -334,7 +335,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		translateKeepMs: seconds(env.LAT_BOARD_TRANSLATE_KEEP_DAYS, 30_000) * DAY_SECONDS,
 		cswapCommand: commandFrom(env, 'LAT_BOARD_CSWAP_COMMAND') ?? ['cswap'],
 		cswapTimeoutMs: seconds(env.LAT_BOARD_CSWAP_TIMEOUT_SECONDS, 10_000),
-		codexMultiAuthDir: codexMultiAuthDir(env),
+		cpa: { url: env.LAT_BOARD_CPA_URL?.trim() || null, keyFile: env.LAT_BOARD_CPA_MANAGEMENT_KEY_FILE?.trim() || null },
 		quotaIntervalMs: seconds(env.LAT_BOARD_QUOTA_SECONDS, 30_000),
 		pdCommand: commandFrom(env, 'LAT_BOARD_PD_COMMAND') ?? ['pd'],
 		pdTimeoutMs: seconds(env.LAT_BOARD_PD_TIMEOUT_SECONDS, 5_000),
