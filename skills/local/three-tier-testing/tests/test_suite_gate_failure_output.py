@@ -169,14 +169,52 @@ class BoundTests(unittest.TestCase):
         filler = ['noise ' + 'x' * 40] * 40
         lines = list(filler)
         for i in range(30):
-            lines += [f'___ test_{i} ___', f'E   assert FIRST-LINE-{i}'] \
-                + [f'E   detail {i} ' + 'd' * 60] * 10 + [f'=== end {i} ===']
+            lines += [f'___ test_{i} ___'] + [f'E   detail {i} ' + 'd' * 60] * 10 \
+                + [f'E   assert FIRST-LINE-{i}', f'=== end {i} ===']
         lines += filler * 20
         cut, text = self.bound(lines, cap=3000)
         self.assertTrue(cut)
         for i in range(30):
             self.assertIn(f'assert FIRST-LINE-{i}', text)
-        self.assertIn('cut here to fit', text)
+        self.assertIn('middle of this failure block cut', text)
+        self.assertLess(len(text.encode()), 3000 + 30 * 150, 'the total stays near the cap')
+
+    def test_first_block_is_whole_and_the_file_stays_under_the_ceiling_in_the_worst_case(self):
+        big = ['E   ' + 'z' * 3000] * 40  # ~120 KB blocks, more than the block limit
+        lines = ['noise ' + 'x' * 100] * 3000
+        for i in range(1200):
+            lines += [f'___ test_{i} ___'] + big + [f'E   assert FIRST-LINE-{i}', '=== end ===']
+        lines += ['tail ' + 'y' * 100] * 3000
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp, 'in'), Path(tmp, 'out')
+            source.write_text('\n'.join(lines) + '\n')
+            self.assertTrue(gate.bound_failure_output(source, target))
+            data = target.read_bytes()
+        self.assertLessEqual(len(data), gate.FAILURE_CEILING_BYTES)
+        text = data.decode()
+        first = text.index('___ test_0 ___')
+        self.assertGreaterEqual(text[first:first + 80000].count('z' * 3000), 10,
+                                'the first block is kept up to 64 KiB')
+        for i in (1, 500, 999):
+            self.assertIn(f'assert FIRST-LINE-{i}', text)
+        self.assertIn('more were not collected', text.splitlines()[0])
+
+    def test_a_long_block_keeps_its_assertion_message_at_the_end(self):
+        lines = ['noise ' + 'x' * 100] * 2000
+        for i in range(40):
+            lines += [f'___ test_{i} ___'] + [f'    context {i} ' + 'c' * 100] * 600 \
+                + [f'E   AssertionError: MSG-{i}', '=== end ===']
+        lines += ['tail ' + 'y' * 100] * 2000
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp, 'in'), Path(tmp, 'out')
+            source.write_text('\n'.join(lines) + '\n')
+            self.assertTrue(gate.bound_failure_output(source, target))
+            data = target.read_bytes()
+        text = data.decode()
+        for i in range(40):
+            self.assertIn(f'MSG-{i}', text)
+        self.assertIn(f'___ test_0 ___', text)
+        self.assertLessEqual(len(data), gate.FAILURE_CEILING_BYTES)
 
 
 if __name__ == '__main__':
