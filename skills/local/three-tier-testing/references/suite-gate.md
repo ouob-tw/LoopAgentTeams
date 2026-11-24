@@ -517,6 +517,8 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 
 失敗過的執行另有 `rerun`：重跑時是 `first_exit_code`（第一次的結束碼）、`exit_code`、`duration_s` 與 `runs`（每組的 `dir`、`command`、`tests`、`exit_code`、`duration_s`、`output_tail`）；沒重跑時只有 `skipped`（原因）。同時有 `flaky`：重跑通過時是第一次失敗的每個檔案（`file`，repo 相對路徑）與其失敗的測試名稱（`tests`），否則是空清單；以及 `rerun_only`：重跑才通過時為 `true`。頂層的 `duration_s` 與 `output_tail` 是第一次執行的。
 
+失敗的執行（第一次執行的結束碼不是 0，含逾時；之後重跑才通過的也算）另有 `failure_output`：`path`、`sha256`、`bytes`、`truncated`。完整輸出另存在紀錄目錄下的 `failures/`，上限 1 MiB；超過時保留開頭、每個失敗區塊（`bun test`、`pytest`、`unittest` 的格式，每塊最多 64 KiB）與結尾，檔案第一行與被省略處都註明截斷。通過的執行不留檔，`output_tail` 照舊。`status` 在失敗紀錄下印出路徑，並另列最近 10 筆有輸出檔的失敗（`status --json` 的 `failure_outputs`），之後重跑通過也查得到。檔案超過整理週期（30 天）就在下一次有執行失敗時刪除，紀錄裡的路徑保留，`status` 標 `EXPIRED`。執行中輸出同步寫在 `failures/live-<pid>-<id>.log`（最多 32 MiB），結束時刪除；超過一天的殘留一併清掉。
+
 整套實際執行時（受影響測試不記），輸出拿得到每個測試檔的耗時就另記 `file_seconds`（`{檔案: 秒數}`，由慢到快；檔案在 repo 內時是 repo 相對路徑，否則照輸出原樣）；拿不到時沒有這個欄位。失敗重跑後通過時，取第一次執行的輸出。依測試工具：
 
 - `bun test`：每個檔案標題（`<檔案>:`）下各測試 `(pass)`／`(fail)` 行的 `[…ms]` 加總為該檔耗時。只有輸出列出每一個通過與失敗的測試時才記（帶時間的行數等於總結行 `N pass` 加 `N fail`）；由 AI agent 執行時（例如 `CLAUDECODE=1`）bun 只印失敗的測試，這時不記。
