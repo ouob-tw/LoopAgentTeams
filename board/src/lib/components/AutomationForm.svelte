@@ -50,6 +50,8 @@
 	let model = $state(from?.agent?.model ?? '');
 	let effort = $state<AgentEffort>(from?.agent?.effort ?? 'medium');
 	let brief = $state(from?.agent?.brief ?? '');
+	// How the agent reports: in its final reply (口頭), or as a demo web page it links (#708).
+	let report = $state<'oral' | 'demo'>(from?.agent?.report ?? 'oral');
 	// An agent task may open a LAT controller in unattended mode, with the grant filled here (#625).
 	let unattended = $state(from?.agent?.unattended !== undefined);
 	let goal = $state(from?.agent?.unattended?.goal ?? '');
@@ -111,7 +113,7 @@
 			time,
 			limitMinutes,
 			kind,
-			...(kind === 'command' ? { command: { command, folder, checks } } : { agent: { client, model, effort, folder, brief, unattended: unattended ? { goal, done: doneText.split('\n'), scope } : null } }),
+			...(kind === 'command' ? { command: { command, folder, checks } } : { agent: { client, model, effort, folder, brief, report, unattended: unattended ? { goal, done: doneText.split('\n'), scope } : null } }),
 			review: { enabled: review, checklist: checklist.split('\n'), client: reviewClient, model: reviewModel, effort: reviewEffort }
 		};
 		const saved = await saveTask(task?.id ?? null, body);
@@ -219,6 +221,12 @@
 		<label for="automation-brief">任務說明檔（放在那個專案裡）</label>
 		<input id="automation-brief" name="brief" class="mono" type="text" bind:value={brief} aria-invalid={!!errors.brief} />
 		{@render error('brief')}
+		<span class="label" id="automation-report">回報方式</span>
+		<div class="seg" role="group" aria-labelledby="automation-report">
+			<button type="button" data-report="oral" aria-pressed={report === 'oral'} onclick={() => (report = 'oral')}>口頭</button>
+			<button type="button" data-report="demo" aria-pressed={report === 'demo'} onclick={() => (report = 'demo')}>DEMO 網頁</button>
+		</div>
+		{@render error('report')}
 	{:else}
 		<span class="label">固定檢查（便宜，不用 Agent）</span>
 		{#each checks as check, index (index)}

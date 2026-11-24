@@ -49,6 +49,7 @@ import {
 	type RunFix,
 	type RunReview,
 	type RunTrigger,
+	dateOf,
 	grantHours,
 	type TaskUnattended,
 	type Weekday
@@ -60,6 +61,7 @@ import {
 	controllerMessage,
 	cutReason,
 	firstMessage,
+	reportNote,
 	GONE_AT_RESTART,
 	runTag,
 	verdictOf,
@@ -259,7 +261,8 @@ export function validateTask(input: unknown, home = homedir(), { paths = true } 
 		if (!brief) errors.brief = '請填任務說明檔';
 		else if (paths && !errors.folder && !isFile(resolve(full, expandHome(brief, home)))) errors.brief = `資料夾裡找不到這個檔案：${brief}`;
 		const unattended = taskUnattended(given.unattended, errors);
-		agent = { client, model, effort, folder, brief, ...(unattended ? { unattended } : {}) };
+		if (given.report !== undefined && given.report !== 'oral' && given.report !== 'demo') errors.report = '請選回報方式';
+		agent = { client, model, effort, folder, brief, ...(unattended ? { unattended } : {}), ...(given.report === 'demo' ? { report: 'demo' as const } : {}) };
 	} else errors.kind = '請選這個任務是指令還是 Agent';
 
 	const reviewGiven = body.review ?? {};
@@ -841,7 +844,8 @@ export function createAutomation(options: {
 			}
 			if (cut) return finish(task, run, { status: cut, reason: cutReason(cut, task.limitMinutes) });
 			const tag = runTag(task.id, run.id);
-			let prompt = firstMessage(brief);
+			const report = spec.report === 'demo' ? reportNote(task.id, dateOf(now())) : '';
+			let prompt = firstMessage(brief, report);
 			if (spec.unattended) {
 				// The grant the controller turns on: logged before it opens, from the user's latest save.
 				const saved = grantSave(task);
@@ -851,7 +855,7 @@ export function createAutomation(options: {
 				} catch (error) {
 					return finish(task, run, { status: 'failed', reason: `操作紀錄寫不進去，沒有開主控：${(error as Error).message}` });
 				}
-				prompt = controllerMessage(spec.client, { taskName: task.name, runId: run.id, stateDir, latDir: options.latDir ?? join(home, '.agents/skills/lat'), brief });
+				prompt = controllerMessage(spec.client, { taskName: task.name, runId: run.id, stateDir, latDir: options.latDir ?? join(home, '.agents/skills/lat'), brief, report });
 			}
 			const launched = await host
 				.launch({ ...spec, folder, prompt, tag, halted: () => cut ?? (pastLimit(latest(run), task.limitMinutes, now()) ? 'timeout' : null) })

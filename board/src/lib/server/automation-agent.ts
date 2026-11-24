@@ -24,9 +24,17 @@ import { latCommand } from '../board/launch.ts';
 /** How an agent task's agent ends a turn: done, failed, or asking the user and waiting. */
 export const ENDING_RULES = '完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>；需要使用者決定或補資料時，最後一行回覆 ASK: <問題> 並等待回覆，收到後接著做';
 
-/** The first message every agent task's agent gets: the brief, and how to end. */
-export function firstMessage(brief: string): string {
-	return `讀取並照做 ${brief}，${ENDING_RULES}`;
+/** What a task set to 回報方式 DEMO 網頁 adds to its agent's task message (#708): publish the report
+ *  as a page with the ui-choice-demo tool, name it `<task>-<Taipei date>`, and give its board
+ *  address in the final reply (a line before the last one, which stays DONE/FAILED/ASK). */
+export function reportNote(taskId: string, date: string): string {
+	return `；報告寫好後，用 ui-choice-demo 技能的 publish-md 指令（\`demo.py publish-md <報告檔> --name ${taskId}-${date}\`）把報告發布成網頁，把它印出的看板網址（第二行）寫在最後回覆最後一行之前，原報告檔保留`;
+}
+
+/** The first message every agent task's agent gets: the brief, and how to end. `report` is the
+ *  task's report note, when it has one. */
+export function firstMessage(brief: string, report = ''): string {
+	return `讀取並照做 ${brief}${report}，${ENDING_RULES}`;
 }
 
 /** How a run's LAT controller in unattended mode (#625) ends: DONE only once its round is over;
@@ -37,12 +45,12 @@ export const CONTROLLER_ENDING = '這一輪做完並 deactivate 之後，最後�
  *  from the task's settings (the board's record of this run), then follow the brief. The state
  *  folder is named because the agent does not inherit the board's environment; the tool is the
  *  board's own LAT skill folder's. */
-export function controllerMessage(client: AgentSpec['client'], run: { taskName: string; runId: string; stateDir: string; latDir: string; brief: string }): string {
+export function controllerMessage(client: AgentSpec['client'], run: { taskName: string; runId: string; stateDir: string; latDir: string; brief: string; report?: string }): string {
 	const text = [
 		`這是看板自動化任務「${run.taskName}」開的主控（執行 ${run.runId}），這一輪用無人模式。`,
 		`activate 後先執行 \`LAT_BOARD_STATE_DIR=${shellQuote(run.stateDir)} uv run --no-project python ${shellQuote(join(run.latDir, 'scripts/lat-unattended.py'))} create --source board-task --evidence board-task:${run.runId}\`：目標、做完條件、代決範圍與時間上限都取自任務設定，不要另外給或改。`,
 		'建不起來就不要做事，deactivate 後最後一行回覆 FAILED: <原因>。',
-		`建好後讀取並照做 ${run.brief}。`,
+		`建好後讀取並照做 ${run.brief}${run.report ?? ''}。`,
 		CONTROLLER_ENDING
 	].join('');
 	return latCommand(client, text);

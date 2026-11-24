@@ -54,6 +54,9 @@ export interface AgentSpec {
 	/** Set: the run opens a LAT controller that starts its round in unattended mode with this grant
 	 *  (#625). The user filling it on the board is the user turning the grant on for that round. */
 	unattended?: TaskUnattended;
+	/** `demo`: the agent publishes its report as a demo web page and puts the board address in its
+	 *  final reply (#708). Absent is 口頭: it reports in its final reply, as before. */
+	report?: 'demo';
 }
 
 /** An agent task's unattended grant, as the user filled it on the form. Its time limit is the

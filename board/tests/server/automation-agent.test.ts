@@ -203,6 +203,44 @@ test('a run opens a plain agent with the fixed first message and its tag, shows 
 	expect((await snapshot()).tasks.find((view) => view.task.id === task.id)!.state).toBe('done');
 });
 
+test('回報方式 DEMO 網頁 adds the publish instruction to the first message, 口頭 adds nothing; the choice is saved and a wrong one is refused (#708)', async () => {
+	const oral = await create({}, { report: 'oral' });
+	expect(oral.agent!.report).toBeUndefined();
+	const demo = await create({ name: 'Agent 報告任務' }, { report: 'demo' });
+	expect(demo.agent!.report).toBe('demo');
+	expect((await snapshot()).tasks.find((view) => view.task.id === demo.id)!.task.agent!.report).toBe('demo');
+	const bad = await send('/api/automation', 'POST', {
+		name: 'x', schedule: { type: 'monthly', fromDay: 1, toDay: 2 }, time: '02:00', limitMinutes: 30, kind: 'agent',
+		agent: { client: 'claude', model: 'm', effort: 'low', folder: work, brief: 'docs/brief.md', report: 'email' }, review: { enabled: false, checklist: [] }
+	});
+	expect(bad.status).toBe(400);
+	expect(((await bad.json()) as { errors: Record<string, string> }).errors.report).toBeTruthy();
+
+	hcomPlan([{ name: 'auto-demo' }]);
+	const started = await runNow(demo.id);
+	await launchedRun(demo.id, 'auto-demo');
+	const launch = hcomCalls().find((call) => call.args[0] === 'claude')!;
+	const prompt = launch.args[launch.args.indexOf('--hcom-prompt') + 1];
+	const brief = join(work, 'docs/brief.md');
+	expect(prompt.startsWith(`讀取並照做 ${brief}；報告寫好後，用 ui-choice-demo 技能的 publish-md 指令（`)).toBe(true);
+	expect(prompt).toMatch(new RegExp(`--name ${demo.id}-\\d{4}-\\d{2}-\\d{2}`))
+	expect(prompt).toContain('看板網址');
+	expect(prompt.endsWith('最後一行回覆 ASK: <問題> 並等待回覆，收到後接著做')).toBe(true);
+	reply('auto-demo', '報告網址：https://board.example/demo/x/\nDONE');
+	setStatus('auto-demo', 'listening');
+	expect((await ended(demo.id, started.id)).status).toBe('success');
+
+	rmSync(join(dir, 'hcom-calls.jsonl'), { force: true });
+	hcomPlan([{ name: 'auto-oral' }]);
+	const second = await runNow(oral.id);
+	await launchedRun(oral.id, 'auto-oral');
+	const plain = hcomCalls().find((call) => call.args[0] === 'claude')!;
+	expect(plain.args[plain.args.indexOf('--hcom-prompt') + 1]).toBe(`讀取並照做 ${brief}，完成後最後一行只回覆 DONE，失敗回覆 FAILED: <原因>；需要使用者決定或補資料時，最後一行回覆 ASK: <問題> 並等待回覆，收到後接著做`);
+	reply('auto-oral', 'DONE');
+	setStatus('auto-oral', 'listening');
+	await ended(oral.id, second.id);
+});
+
 test('FAILED records its reason; a turn that ends on neither fails; only the last line of the last reply counts; each closes the agent', async () => {
 	const task = await create();
 	const cases: [string, string[], string, string][] = [

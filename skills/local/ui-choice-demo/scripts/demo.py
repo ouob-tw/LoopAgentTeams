@@ -3,12 +3,14 @@
 serve   run the server (systemd keeps it up)
 publish copy a folder or file to the server, print one verified URL, then the LAT board's
         address of the same page when the board is set
+publish-md  render a Markdown file into the shared frame and publish it like `publish`
 
 Settings come from env, then ~/.agents/demo.json: port, host (public name), data (dir), bind,
 board (the LAT board's URL, which serves <data>/site behind its login at /demo/<name>/).
 The URL key lives in <data>/.key and is created on first use.
 """
 import hmac
+import html
 import json
 import os
 import re
@@ -63,6 +65,208 @@ v.forEach(e=>{const b=document.createElement('button');b.dataset.n=e.dataset.var
 b.onclick=()=>pick(e.dataset.variant);nav.append(b)});pick(location.hash.slice(1)||v[0].dataset.variant)}
 </script></body></html>
 '''
+
+
+MD_CSS = """<style>
+.md>:is(p,h1,h2,h3,h4,ul,ol,blockquote){max-width:860px}
+.md h1,.md h2,.md h3,.md h4{line-height:1.3;margin:1.2em 0 .5em}
+.md p,.md ul,.md ol,.md blockquote{margin:.6em 0}
+.md code{font:.9em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:0 .3em}
+.md pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:.8em 0}
+.md pre code{border:0;padding:0;background:none}
+.md blockquote{border-left:4px solid var(--line);padding-left:16px;margin-left:0;opacity:.85}
+.md hr{border:0;border-top:1px solid var(--line);margin:1.5em 0}
+.md a{color:var(--accent)}
+.md .tbl{overflow-x:auto;max-width:100%;margin:.8em 0}
+.md .tbl table{display:table;border-collapse:collapse;width:max-content;min-width:100%;max-width:none;overflow:visible}
+.md th,.md td{border:1px solid var(--line);padding:6px 12px;text-align:left;vertical-align:top}
+.md th{background:var(--card)}
+.md td{min-width:5em;max-width:30em}
+</style>"""
+
+SAFE_URL = re.compile(r'^(https?://|mailto:|#|/|\./|\.\./|[\w.~%-]+(/|$))', re.I)
+FENCE = re.compile(r'^\s{0,3}(```+|~~~+)\s*([\w+#.-]*)')
+HEADING = re.compile(r'^\s{0,3}(#{1,6})\s+(.*)$')
+HRULE = re.compile(r'^\s{0,3}([-*_])(\s*\1){2,}\s*$')
+LIST_ITEM = re.compile(r'^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$')
+TABLE_SEP = re.compile(r'^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$')
+
+
+def heading_text(text):
+    """A heading's text without its optional closing run of # (which needs a space before it)."""
+    text = text.rstrip()
+    stripped = text.rstrip('#')
+    return stripped.rstrip() if stripped != text and (not stripped or stripped[-1] == ' ') else text
+
+
+def md_inline(text):
+    """Inline Markdown to HTML. Everything is escaped first; only tags built here reach the page."""
+    spans = []
+    def stash(m):
+        spans.append(f'<code>{html.escape(m.group(2).strip(), quote=False)}</code>')
+        return f'\x00{len(spans) - 1}\x00'
+    text = re.sub(r'(`+)(.+?)\1', stash, text.replace('\x00', ''))
+    text = html.escape(text, quote=True)
+    def link(m):
+        url = html.unescape(m.group(2).strip())
+        if '\x00' in url or not SAFE_URL.match(url) or re.match(r'^\s*(javascript|data|vbscript):', url, re.I):
+            return m.group(0)
+        spans.append(f'<a href="{html.escape(url)}" rel="noopener noreferrer">{m.group(1)}</a>')
+        return f'\x00{len(spans) - 1}\x00'
+    text = re.sub(r'\[([^\]\n]+)\]\(([^)\s]+)\)', link, text)
+    text = re.sub(r'\*\*(.+?)\*\*|__(.+?)__', lambda m: f'<strong>{m.group(1) or m.group(2)}</strong>', text)
+    text = re.sub(r'(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])', r'<em>\1</em>', text)
+    text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text)
+    while '\x00' in text:
+        text = re.sub(r'\x00(\d+)\x00', lambda m: spans[int(m.group(1))], text)
+    return text
+
+
+def _cells(line):
+    line = line.strip()
+    if line.startswith('|'):
+        line = line[1:]
+    if line.endswith('|') and not line.endswith('\\|'):
+        line = line[:-1]
+    return [c.strip().replace('\\|', '|') for c in re.split(r'(?<!\\)\|', line)]
+
+
+def _table(head, sep, rows):
+    aligns = []
+    for c in _cells(sep):
+        aligns.append('center' if c.startswith(':') and c.endswith(':') else 'right' if c.endswith(':') else '')
+    def cell(tag, i, text):
+        a = aligns[i] if i < len(aligns) and aligns[i] else ''
+        style = f' style="text-align:{a}"' if a else ''
+        return f'<{tag}{style}>{md_inline(text)}</{tag}>'
+    out = ['<div class="tbl" tabindex="0"><table><thead><tr>']
+    out += [cell('th', i, c) for i, c in enumerate(_cells(head))]
+    out.append('</tr></thead><tbody>')
+    for r in rows:
+        out.append('<tr>' + ''.join(cell('td', i, c) for i, c in enumerate(_cells(r))) + '</tr>')
+    out.append('</tbody></table></div>')
+    return ''.join(out)
+
+
+def _list(lines, i):
+    """Render the list starting at lines[i]; return (html, next index). Nesting follows indentation."""
+    m = LIST_ITEM.match(lines[i])
+    base = len(m.group(1).expandtabs(4))
+    tag = 'ol' if m.group(2)[0].isdigit() else 'ul'
+    out = [f'<{tag}>']
+    while i < len(lines):
+        m = LIST_ITEM.match(lines[i])
+        if not m:
+            break
+        indent = len(m.group(1).expandtabs(4))
+        if indent < base:
+            break
+        if indent > base:
+            sub, i = _list(lines, i)
+            if out[-1].endswith('</li>'):
+                out[-1] = out[-1][:-5] + sub + '</li>'
+            else:
+                out.append(sub)
+            continue
+        if ('ol' if m.group(2)[0].isdigit() else 'ul') != tag:
+            break
+        body = m.group(3)
+        box = re.match(r'^\[([ xX])\]\s+(.*)$', body)
+        if box:
+            body = ('☑ ' if box.group(1) != ' ' else '☐ ') + box.group(2)
+        out.append(f'<li>{md_inline(body)}</li>')
+        i += 1
+    out.append(f'</{tag}>')
+    return ''.join(out), i
+
+
+def md_to_html(source):
+    """Render Markdown (headings, paragraphs, lists, tables, fenced code, quotes, rules) to an HTML
+    fragment inside <div class="md">. Source text is escaped; raw HTML in it is shown as text."""
+    lines = source.lstrip('﻿').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    out, i, para = [], 0, []
+    def flush():
+        if para:
+            out.append('<p>' + '<br>'.join(md_inline(p.strip()) for p in para) + '</p>')
+            para.clear()
+    while i < len(lines):
+        line = lines[i]
+        fence = FENCE.match(line)
+        if fence:
+            flush()
+            mark, lang = fence.group(1), fence.group(2)
+            i += 1
+            code = []
+            while i < len(lines) and not (lines[i].strip().startswith(mark[0] * len(mark))
+                                          and not lines[i].strip().strip(mark[0])):
+                code.append(lines[i])
+                i += 1
+            i += 1
+            cls = f' class="language-{html.escape(lang)}"' if lang else ''
+            out.append(f'<pre><code{cls}>{html.escape(chr(10).join(code), quote=False)}</code></pre>')
+        elif not line.strip():
+            flush()
+            i += 1
+        elif HEADING.match(line):
+            flush()
+            m = HEADING.match(line)
+            n = len(m.group(1))
+            heading = heading_text(m.group(2))
+            out.append(f'<h{n}>{md_inline(heading)}</h{n}>')
+            i += 1
+        elif HRULE.match(line):
+            flush()
+            out.append('<hr>')
+            i += 1
+        elif '|' in line and i + 1 < len(lines) and '|' in lines[i + 1] and TABLE_SEP.match(lines[i + 1]) and '-' in lines[i + 1]:
+            flush()
+            head, sep = line, lines[i + 1]
+            i += 2
+            rows = []
+            while i < len(lines) and lines[i].strip() and '|' in lines[i]:
+                rows.append(lines[i])
+                i += 1
+            out.append(_table(head, sep, rows))
+        elif line.lstrip().startswith('>'):
+            flush()
+            quote = []
+            while i < len(lines) and lines[i].lstrip().startswith('>'):
+                quote.append(re.sub(r'^\s*>\s?', '', lines[i]))
+                i += 1
+            out.append('<blockquote>' + md_to_html('\n'.join(quote)).removeprefix('<div class="md">').removesuffix('</div>') + '</blockquote>')
+        elif LIST_ITEM.match(line):
+            flush()
+            block, i = _list(lines, i)
+            out.append(block)
+        else:
+            para.append(line)
+            i += 1
+    flush()
+    return '<div class="md">' + ''.join(out) + '</div>'
+
+
+def md_title(source, fallback):
+    """The first top-level heading outside fenced code, as plain text."""
+    lines = source.splitlines()
+    i = 0
+    while i < len(lines):
+        f = FENCE.match(lines[i])
+        if f:
+            mark = f.group(1)
+            i += 1
+            while i < len(lines) and not (lines[i].strip().startswith(mark[0] * len(mark)) and not lines[i].strip().strip(mark[0])):
+                i += 1
+        else:
+            m = HEADING.match(lines[i])
+            if m and len(m.group(1)) == 1:
+                return re.sub(r'[`*_]', '', heading_text(m.group(2))) or fallback
+        i += 1
+    return fallback
+
+
+def md_page(source):
+    """The fragment publish-md hands to the shared frame: styles, then the rendered report."""
+    return MD_CSS + md_to_html(source)
 
 
 def settings():
@@ -184,10 +388,10 @@ def add_viewer(html):
 def build_index(text, title):
     if FULL_DOC.match(text.lstrip('\ufeff')):
         return add_viewer(text)
-    return add_viewer(FRAME.replace('__TITLE__', title).replace('__BODY__', text))
+    return add_viewer(FRAME.replace('__TITLE__', html.escape(title)).replace('__BODY__', text))
 
 
-def publish(src, name):
+def publish(src, name, title=None):
     conf = settings()
     key = get_key(conf['data'])
     src = Path(src)
@@ -206,7 +410,7 @@ def publish(src, name):
         index = tmp / 'index.html'
         if not index.is_file():
             raise SystemExit('demo: no index.html in the published folder')
-        index.write_text(build_index(index.read_text(encoding='utf-8'), name), encoding='utf-8')
+        index.write_text(build_index(index.read_text(encoding='utf-8'), title or name), encoding='utf-8')
         dest = site / name
         old = conf['data'] / f'.old-{name}-{os.getpid()}'
         if dest.exists():
@@ -230,12 +434,25 @@ def publish(src, name):
         print(f'{conf["board"].rstrip("/")}/demo/{name}/')
 
 
+def publish_md(src, name):
+    src = Path(src)
+    if not src.is_file():
+        raise SystemExit(f'demo: {src} does not exist')
+    text = src.read_text(encoding='utf-8')
+    with tempfile.TemporaryDirectory(prefix='demo-md-') as d:
+        (Path(d) / 'index.html').write_text(md_page(text), encoding='utf-8')
+        publish(d, name, md_title(text, name))
+
+
 def main(argv):
     if argv[:1] == ['serve']:
         return serve()
     if argv[:1] == ['publish'] and len(argv) >= 4 and argv[2] == '--name':
         return publish(argv[1], argv[3])
-    raise SystemExit('usage: demo.py serve | demo.py publish <folder|file> --name <name>')
+    if argv[:1] == ['publish-md'] and len(argv) == 4 and argv[2] == '--name':
+        return publish_md(argv[1], argv[3])
+    raise SystemExit('usage: demo.py serve | demo.py publish <folder|file> --name <name> '
+                     '| demo.py publish-md <file.md> --name <name>')
 
 
 if __name__ == '__main__':
