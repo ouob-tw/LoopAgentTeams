@@ -1,0 +1,3 @@
+{"map": [
+  {"paths": ["board/tests/fake-cpa.ts"], "tests": ["board/tests/unit/quota.test.ts", "board/tests/server/quota-server.test.ts", "board/tests/browser/quota-page.test.ts", "board/tests/unit/demo-board.test.ts", "board/tests/server/demo-board.test.ts"]}
+]}
