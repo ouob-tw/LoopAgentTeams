@@ -136,6 +136,23 @@ test('the day’s one try at the set time: a quick failure waits for the next da
 	expect((await viewOf(task.id)).runs[0]).toMatchObject({ trigger: 'auto', period: '2026-12' });
 }, 60_000);
 
+test('#701 acceptance: restart at 00:10 Asia/Taipei, a 10:00 daily task waits for 10:00; restart at 11:00, an unrun 10:00 task starts on the first check', async () => {
+	await open(tpe(2026, 11, 2, 9));
+	const task = await create(commandTask({ type: 'daily' }, 'echo ok', { name: '十點每天', time: '10:00' }));
+	// Restart at 00:10 on 11/3: nothing starts, even after several checks.
+	await restartAt(tpe(2026, 11, 3, 0, 10));
+	await sleep(SETTLE_MS);
+	expect((await autoRuns(task.id)).filter((run) => run.period === '2026-11-03')).toEqual([]);
+	// Still waiting at 09:59; it starts once the clock reaches 10:00.
+	await at(tpe(2026, 11, 3, 9, 59));
+	expect((await autoRuns(task.id)).filter((run) => run.period === '2026-11-03')).toEqual([]);
+	await at(tpe(2026, 11, 3, 10, 0));
+	expect((await ended(task.id, 1))[0]).toMatchObject({ trigger: 'auto', status: 'success', period: '2026-11-03', startedAt: tpe(2026, 11, 3, 10, 0) });
+	// Restart at 11:00 on 11/4 with nothing run that day: the first check starts it.
+	await restartAt(tpe(2026, 11, 4, 11, 0));
+	expect((await ended(task.id, 2))[0]).toMatchObject({ trigger: 'auto', period: '2026-11-04', startedAt: tpe(2026, 11, 4, 11, 0) });
+}, 60_000);
+
 test('a restart starts only the tries whose set time today has passed: before it they wait, after it they catch up (#701)', async () => {
 	await open(tpe(2026, 11, 2, 7));
 	const before = await create(commandTask({ type: 'daily' }, 'echo ok', { name: '早上重啟' }));
