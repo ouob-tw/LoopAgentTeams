@@ -81,6 +81,52 @@ class ModelTestCase(unittest.TestCase):
         return self.board("transcript", "--client", "codex", "--session-id", CODEX_SESSION)[field]
 
 
+def codex_meta(provider):
+    return {"timestamp": "2026-10-14T09:00:00Z", "ordinal": 0, "type": "session_meta",
+            "payload": {"session_id": CODEX_SESSION, "id": CODEX_SESSION, "cwd": "/work", "originator": "codex_cli_rs",
+                        "source": "cli", "model_provider": provider,
+                        "base_instructions": {"text": "x"}, "history_mode": "full"}}
+
+
+def codex_applied(provider):
+    settings = {"model": "gpt-6.1-terra", "cwd": "/work"}
+    if provider is not None:
+        settings["model_provider_id"] = provider
+    return {"timestamp": "2026-10-14T10:00:00Z", "ordinal": 5, "type": "event_msg",
+            "payload": {"type": "thread_settings_applied", "thread_id": CODEX_SESSION, "thread_settings": settings}}
+
+
+class ProviderTests(ModelTestCase):
+    """`board provider`: the provider a Codex session goes through now."""
+
+    def provider(self, records, tail=""):
+        path = self.root / "codex-home/sessions/2026/10/14" / f"rollout-2026-10-14T09-00-00-{CODEX_SESSION}.jsonl"
+        self.write(path, records, tail)
+        return self.board("provider", "--client", "codex", "--session-id", CODEX_SESSION)
+
+    def test_session_meta_alone_gives_its_provider(self):
+        self.assertEqual(self.provider([codex_meta("cpa")]), {"status": "ok", "provider": "cpa"})
+
+    def test_the_latest_applied_settings_override_session_meta(self):
+        records = [codex_meta("openai"), codex_applied("cpa")]
+        self.assertEqual(self.provider(records)["provider"], "cpa")
+        self.assertEqual(self.provider([codex_meta("cpa"), codex_applied("openai"), codex_applied("cpa"), codex_applied("openai")])["provider"], "openai")
+
+    def test_an_applied_record_without_a_provider_falls_back_and_nothing_is_unknown(self):
+        self.assertEqual(self.provider([codex_meta("cpa"), codex_applied(None)])["provider"], "cpa")
+        self.assertIsNone(self.provider([{"type": "event_msg", "payload": {"type": "task_started"}}])["provider"])
+
+    def test_a_line_still_being_written_is_not_used(self):
+        tail = json.dumps(codex_applied("openai"))[:60]
+        self.assertEqual(self.provider([codex_meta("cpa")], tail)["provider"], "cpa")
+
+    def test_a_missing_record_is_not_found_and_claude_has_no_provider(self):
+        result = self.board("provider", "--client", "codex", "--session-id", CODEX_SESSION, code=1)
+        self.assertEqual(result["status"], "not_found")
+        self.write(self.root / "claude-config/projects/-work-demo" / f"{CLAUDE_SESSION}.jsonl", [claude_user("2026-10-14T09:00:00Z", "hi")])
+        self.assertEqual(self.board("provider", "--client", "claude", "--session-id", CLAUDE_SESSION), {"status": "ok", "provider": None})
+
+
 class ClaudeCurrentTests(ModelTestCase):
     def test_the_last_reply_gives_the_model_and_effort_and_its_turn_start(self):
         current = self.claude([

@@ -280,6 +280,16 @@ export async function readTranscript(
 	};
 }
 
+/** The provider a Codex session goes through now (#710), read by the helper from the client's own
+ *  record: the latest applied thread settings' provider, else the session's first one. Null when the
+ *  record names none or cannot be read. */
+export async function readProvider(config: BoardConfig, client: string, sessionId: string): Promise<string | null> {
+	const read = await run(config, ['provider', `--client=${client}`, `--session-id=${sessionId}`]);
+	const parsed = parseJsonOutput<{ status?: unknown; provider?: unknown }>(read, '輔助工具的輸出不是 JSON');
+	if (read.failure || !parsed.ok || parsed.value?.status !== 'ok') return null;
+	return typeof parsed.value.provider === 'string' && parsed.value.provider ? parsed.value.provider : null;
+}
+
 const textOrNull = (value: unknown) => (typeof value === 'string' && value ? value : null);
 
 /** The latest turn's settings as the helper printed them; null when there are none to show. */

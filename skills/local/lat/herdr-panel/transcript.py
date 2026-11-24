@@ -585,6 +585,38 @@ def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_T
     }
 
 
+def codex_provider(records):
+    """The model provider a Codex session goes through now, or None when it records none.
+
+    A resume with another provider leaves ``session_meta`` as it was and records the new
+    one only in ``thread_settings_applied`` events, so the latest of those wins and the
+    ``session_meta`` line is the fallback.
+    """
+    applied = started = None
+    for record in records:
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if record.get("type") == "session_meta":
+            provider = payload.get("model_provider")
+            if isinstance(provider, str) and provider and started is None:
+                started = provider
+        elif payload.get("type") == "thread_settings_applied":
+            settings = payload.get("thread_settings")
+            provider = settings.get("model_provider_id") if isinstance(settings, dict) else None
+            if isinstance(provider, str) and provider:
+                applied = provider
+    return applied or started
+
+
+def board_provider(client, session_id, *, env=None):
+    """The provider a Codex session goes through now (``codex_provider``); ``None`` when its record
+    names none or the client is not Codex."""
+    path = transcript_path(client, session_id, env=env)
+    records, _ = _read_records(path)
+    return {"status": "ok", "provider": codex_provider(records) if client == "codex" else None}
+
+
 def _unknown_args(reason):
     return {"status": "unknown", "reason": reason}
 

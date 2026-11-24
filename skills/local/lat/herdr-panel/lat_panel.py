@@ -89,6 +89,7 @@ LAT record; ``ask`` reads the section from standard input without ``--file``::
       --expected-section-sha256 HASH [--select N]... [--text TEXT] [--note TEXT]
   board notify --questions PATH
   board transcript --client (claude|codex) --session-id ID [--before SEQ]
+  board provider --client (claude|codex) --session-id ID
   board launch-args --session-id ID
   board ledger [--workspace ROOT --session-id ID]... [--seconds N]
   board ledger-rounds --workspace ROOT --session-id ID [--known PATH]... [--seconds N]
@@ -328,6 +329,7 @@ from transcript import (
     _transcript_root,
     _unknown_args,
     board_launch_args,
+    board_provider,
     board_transcript,
     current_settings,
     transcript_path,
@@ -383,6 +385,12 @@ def _run_board(args):
         elif args.board_command == "transcript":
             try:
                 result = board_transcript(args.client, args.session_id, before=args.before)
+                code = 0
+            except FileNotFoundError as error:
+                result, code = {"status": "not_found", "reason": str(error)}, 1
+        elif args.board_command == "provider":
+            try:
+                result = board_provider(args.client, args.session_id)
                 code = 0
             except FileNotFoundError as error:
                 result, code = {"status": "not_found", "reason": str(error)}, 1
@@ -566,6 +574,9 @@ def _build_parser():
     transcript.add_argument("--client", required=True)
     transcript.add_argument("--session-id", required=True)
     transcript.add_argument("--before", type=int)
+    provider = board_commands.add_parser("provider")
+    provider.add_argument("--client", required=True)
+    provider.add_argument("--session-id", required=True)
     launch_args = board_commands.add_parser("launch-args")
     launch_args.add_argument("--session-id", required=True)
     ledger = board_commands.add_parser("ledger")

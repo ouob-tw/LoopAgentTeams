@@ -6,7 +6,7 @@
 // `archives` entry for it followed by those `board questions` would print, the latest of an ID
 // winning as the real command does. A plan entry named after the command (`answer`, `notify`,
 // `questions`, `answered`) replaces
-// that with a fixed output. `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
+// that with a fixed output. `board provider` answers from the same transcript file (the latest applied thread settings, else session_meta). `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
 // item per line, the way the real command pages a client's record, with the latest turn's settings
 // from <dir>/transcripts/<session>.current.json, its usage from <session>.usage.json and its
 // permission mode from <session>.permission.json when there are, and fails with the reason in
@@ -216,6 +216,31 @@ function transcript() {
 	};
 }
 
+/** `board provider`: the latest applied thread settings' provider, else session_meta's, read from the
+ *  same transcript file; the real helper's rule (tested in the helper's own tests), on the records it keeps. */
+function provider() {
+	const session = options()['session-id']?.[0] ?? '';
+	let text;
+	try {
+		text = readFileSync(join(dir, 'transcripts', `${session}.jsonl`), 'utf8');
+	} catch {
+		return { output: { status: 'not_found', reason: `找不到 session ${session} 的對話紀錄檔` }, exit: 1 };
+	}
+	let applied = null;
+	let started = null;
+	for (const line of text.split('\n')) {
+		let record;
+		try {
+			record = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (record?.type === 'session_meta' && typeof record.payload?.model_provider === 'string' && started === null) started = record.payload.model_provider;
+		if (record?.payload?.type === 'thread_settings_applied' && typeof record.payload.thread_settings?.model_provider_id === 'string') applied = record.payload.thread_settings.model_provider_id;
+	}
+	return { output: { status: 'ok', provider: applied ?? started } };
+}
+
 /** What <dir>/launch-args.json holds for the session. */
 function launchArgs() {
 	if (plan.launchArgsChildMs) return waitOnChild('launch-args', plan.launchArgsChildMs);
@@ -317,6 +342,8 @@ const act =
 				? answered
 				: command === 'transcript'
 					? transcript
+					: command === 'provider'
+						? provider
 					: command === 'launch-args'
 						? launchArgs
 						: command === 'prune-reports'

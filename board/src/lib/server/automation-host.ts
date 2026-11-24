@@ -1,15 +1,13 @@
 // What an agent task's run does through the board (`automation-agent.ts`): it opens its agent by
 // the new-agent launch flow, reads hcom's list, the conversation and the Herdr screen, closes the
-// agent by the board's close flow, and reads which provider a Codex run's own session went through
-// (CPA or not, #710). It never touches a Codex account.
-import { createReadStream } from 'node:fs';
-import { createInterface } from 'node:readline';
+// agent by the board's close flow, and reads which provider a Codex run's own session goes through
+// (CPA or not, #710), through the helper. It never touches a Codex account.
 import { closeAgent, sendToAgent } from './agent-control.ts';
 import type { AgentHost, Cut } from './automation-agent.ts';
 import type { Board } from './board.ts';
 import type { BoardConfig } from './config.ts';
 import { killAgent, launchBlocked, listAgents, resumeAgent, stopAgent } from './hcom.ts';
-import { readTranscript } from './helper.ts';
+import { readProvider, readTranscript } from './helper.ts';
 import { automationWorkspace, readScreen } from './herdr.ts';
 import { startLaunch } from './launch.ts';
 
@@ -85,55 +83,6 @@ export async function closeHalfLaunched(config: BoardConfig, tag: string): Promi
 	return left ? `${left.name} 還在 hcom 的清單上` : null;
 }
 
-/** The provider a Codex session goes through now (#710): the latest `thread_settings_applied` event
- *  (`payload.thread_settings.model_provider_id`), since a resume with another provider leaves the
- *  `session_meta` line's `model_provider` as it was; with no such event, that line's. Null when
- *  neither is in `text`. */
-export function modelProviderOf(text: string): string | null {
-	const scan = providerScan();
-	for (const line of text.split('\n')) scan.line(line);
-	return scan.result();
-}
-
-/** The same reading, a line at a time, so a long session file is never held whole in memory. */
-export function providerScan(): { line(line: string): void; result(): string | null } {
-	let applied: string | null = null;
-	let started: string | null = null;
-	return {
-		line(line) {
-			const settings = line.includes('thread_settings_applied');
-			if (!settings && !(started === null && line.includes('session_meta'))) return;
-			let entry: unknown;
-			try {
-				entry = JSON.parse(line);
-			} catch {
-				return;
-			}
-			if (!isRecord(entry) || !isRecord(entry.payload)) return;
-			if (settings && entry.payload.type === 'thread_settings_applied') {
-				const id = isRecord(entry.payload.thread_settings) ? entry.payload.thread_settings.model_provider_id : undefined;
-				if (typeof id === 'string' && id) applied = id;
-			} else if (entry.type === 'session_meta') {
-				const provider = entry.payload.model_provider;
-				if (typeof provider === 'string' && provider) started = provider;
-			}
-		},
-		result: () => applied ?? started
-	};
-}
-
-/** The provider of a session file, read line by line to its end; null when it cannot be read. */
-export async function providerOfFile(path: string): Promise<string | null> {
-	try {
-		const scan = providerScan();
-		const lines = createInterface({ input: createReadStream(path, { encoding: 'utf8' }), crlfDelay: Infinity });
-		for await (const line of lines) scan.line(line);
-		return scan.result();
-	} catch {
-		return null;
-	}
-}
-
 /** The host every agent task's run goes through; `board` is read when a run first needs it. */
 export function boardAgentHost(config: BoardConfig, board: () => Board, retry: { waitsMs?: readonly number[]; pause?: (ms: number, halted: () => Cut | null) => Promise<void> } = {}): AgentHost {
 	return {
@@ -181,11 +130,7 @@ export function boardAgentHost(config: BoardConfig, board: () => Board, retry: {
 			const read = await readTranscript(config, client, sessionId);
 			return read.ok ? { ok: true, seq: read.page.items.at(-1)?.seq ?? -1 } : { ok: false, reason: read.reason };
 		},
-		async provider(client, sessionId) {
-			const read = await readTranscript(config, client, sessionId);
-			if (!read.ok) return null;
-			return providerOfFile(read.path);
-		},
+		provider: (client, sessionId) => readProvider(config, client, sessionId),
 		async transcript(client, sessionId) {
 			const read = await readTranscript(config, client, sessionId);
 			return read.ok ? read.path : null;
