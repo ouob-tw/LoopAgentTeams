@@ -2603,9 +2603,12 @@ def keep_failure_output(tail, spool_path):
                       f'kept; the last {len(tail.late)} bytes of the run follow the marker at '
                       'the end of this file]\n')
             body = target.read_bytes()
+            late = bytes(tail.late)
+            while late and 0x80 <= late[0] <= 0xBF:  # the buffer may start inside a character
+                late = late[1:]
             target.write_bytes(header.encode() + body + (
                 f'\n[... output from {FAILURE_SPOOL_BYTES} bytes on is not here, except its '
-                'last bytes: ...]\n').encode() + bytes(tail.late) + b'\n')
+                'last bytes: ...]\n').encode() + late + b'\n')
             truncated = True
         data = target.read_bytes()
         return {'path': str(target), 'sha256': hashlib.sha256(data).hexdigest(),

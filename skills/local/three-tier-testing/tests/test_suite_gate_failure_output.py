@@ -251,6 +251,7 @@ class BoundTests(unittest.TestCase):
             tail.spool_path = path
             for i in range(400):
                 tail.add(f'line {i:04d} ' .encode() + b'-' * 20 + b'\n')
+            tail.add('尾端'.encode() * 200)
             tail.add(b'LAST-FAILURE-SUMMARY\n')
             kept = gate.keep_failure_output(tail, path)
             text = Path(kept['path']).read_text()
@@ -259,7 +260,7 @@ class BoundTests(unittest.TestCase):
         self.assertIn('not examined', text.splitlines()[0])
         self.assertTrue(text.rstrip().endswith('LAST-FAILURE-SUMMARY'))
         self.assertIn('LAST-FAILURE-SUMMARY', text)
-        self.assertIn('line 0399', text)
+        self.assertIn('尾端', text)  # read_text() above also proves the file is valid UTF-8
         self.assertNotIn('line 0300', text, 'only the last bytes follow the marker')
         self.assertFalse(path.exists())
 
