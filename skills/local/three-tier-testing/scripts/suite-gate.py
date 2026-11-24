@@ -102,7 +102,7 @@ FAILURE_CEILING_BYTES = 2 * 1024 * 1024  # the kept file never passes this (see 
 FAILURE_LINE_BYTES = 4096
 CUT_MARKER = '[... middle of this failure block cut ...]'
 FAILURE_SPOOL_BYTES = 32 * 1024 * 1024  # the live copy of a run's output stops growing here
-FAILURE_LATE_BYTES = 64 * 1024  # what is kept of the output after that: its last bytes
+FAILURE_LATE_BYTES = 128 * 1024 # what is kept of the output after that: its last bytes
 LIVE_STALE_SECONDS = 24 * 3600          # a live file this old belongs to a run that is gone
 KILL_GRACE_SECONDS = 5.0
 # Total time a test command may run: the registry's `time_limit_minutes`, else the suite's
@@ -2597,11 +2597,15 @@ def keep_failure_output(tail, spool_path):
                               + uuid.uuid4().hex[:8] + '.log')
         truncated = bound_failure_output(spool_path, target)
         if tail.spooled > FAILURE_SPOOL_BYTES:
-            with open(target, 'a', encoding='utf-8') as sink:
-                sink.write(f'[TRUNCATED: the live copy stopped at {FAILURE_SPOOL_BYTES} bytes; '
-                           f'failures after that are not in this file, only the last '
-                           f'{len(tail.late)} bytes of the output follow]\n')
-                sink.write(tail.late.decode(errors='replace') + '\n')
+            # Capture stopped at the cap: say so on the first line, then the real end of the run.
+            header = (f'[CAPTURE STOPPED at {FAILURE_SPOOL_BYTES} bytes of output ({tail.spooled} '
+                      'were printed): failure blocks after that point were not examined or '
+                      f'kept; the last {len(tail.late)} bytes of the run follow the marker at '
+                      'the end of this file]\n')
+            body = target.read_bytes()
+            target.write_bytes(header.encode() + body + (
+                f'\n[... output from {FAILURE_SPOOL_BYTES} bytes on is not here, except its '
+                'last bytes: ...]\n').encode() + bytes(tail.late) + b'\n')
             truncated = True
         data = target.read_bytes()
         return {'path': str(target), 'sha256': hashlib.sha256(data).hexdigest(),
