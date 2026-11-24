@@ -1490,6 +1490,7 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(len(self.fake.sent), 1)
         self.assertIn(f'vare-review-kilo (codex) stopped on its usage limit: {USAGE_LIMIT}',
                       self.fake.sent[0])
+        self.assertIn('Codex 額度與 CPA 恢復', self.fake.sent[0])
         self.assertIn('troubleshooting.md', self.fake.sent[0])
 
     def test_usage_limit_with_a_typographic_apostrophe_is_told_once(self):

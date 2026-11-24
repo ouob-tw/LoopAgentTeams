@@ -69,9 +69,7 @@ hcom 1 claude --tag <自身名稱>-<主題> --go --name <自身名稱> \
   --hcom-prompt 'Your task from <自身名稱> is in <任務檔絕對路徑>. Read that file and follow it.'
 ```
 
-Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在任務檔裡。主機裝有派工把關 hook 時，缺這些參數的派工指令會被擋下，放行的派工會在背景自動核對，不符、無法核對或 Agent 停在確認畫面時通知你（兩者措辭不同，見 spawn-guard.md 第 5 步）；Codex 停在模型滿載時背景會先送一次 `Continue`，5 分鐘沒恢復再通知你；停在其他 API 錯誤或額度用完時直接通知你並附上錯誤內容，不自動換帳號；召喚失敗（client 立刻結束，或 3 分鐘內一直沒出現在 `hcom list`）時關掉 hcom 為它開的空 HERDR 視窗並通知你；安裝方式見 [references/spawn-guard.md](references/spawn-guard.md)。
-
-本次還沒確認帳號跑得了這個 Codex 模型時（例如換帳號或額度重置後第一次啟動它），啟動前先做 [troubleshooting 的帳號探測](references/troubleshooting.md#codex-額度與換帳號)。
+Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在任務檔裡。主機裝有派工把關 hook 時，缺這些參數的派工指令會被擋下，放行的派工會在背景自動核對，不符、無法核對或 Agent 停在確認畫面時通知你（兩者措辭不同，見 spawn-guard.md 第 5 步）；Codex 停在模型滿載時背景會先送一次 `Continue`，5 分鐘沒恢復再通知你；停在其他 API 錯誤或額度用完時直接通知你並附上錯誤內容，依通知由召喚者處理；召喚失敗（client 立刻結束，或 3 分鐘內一直沒出現在 `hcom list`）時關掉 hcom 為它開的空 HERDR 視窗並通知你；安裝方式見 [references/spawn-guard.md](references/spawn-guard.md)。
 
 使用者指定 HERDR workspace 時，先 `herdr workspace list` 查目標 ID，再 `HERDR_WORKSPACE_ID=<目標ID> hcom 1 <client> --terminal herdr ...`。未指定就照常執行，Agent 會開在呼叫端所在的 workspace。
 
@@ -143,7 +141,7 @@ Agent 確定用不到時，召喚者主動關閉，不必等使用者說「收�
 - 成果位置清楚，未提交的修改已交代位置與歸屬。
 - 使用者沒要求留著它，且是自己召喚的 Agent。
 
-閒置（listening）或單一則完成訊息不等於用不到；不設定時清理。卡住升級 effort 與額度換帳號的關閉／接回，依 troubleshooting 的恢復流程。只關 `<自身名稱>-` 開頭的 Agent，使用者自己開的或其他流程的一律保留。
+閒置（listening）或單一則完成訊息不等於用不到；不設定時清理。卡住升級 effort 與額度恢復的關閉／接回，依 troubleshooting 的恢復流程。只關 `<自身名稱>-` 開頭的 Agent，使用者自己開的或其他流程的一律保留。
 
 關閉前記下名稱、session ID、client／model／effort、工作目錄與成果位置。關閉不代表可刪除它的 transcript、worktree 或成果。關閉結果不另外回報。
 
