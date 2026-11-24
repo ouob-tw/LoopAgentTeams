@@ -145,7 +145,7 @@ for (const width of [390, 1400]) {
 			// CPU 85% warns, 92% of memory is danger, a load of 6.2 on 8 cores is fine.
 			expect(rows[0].value).toBe('85%');
 			expect(rows[0].bar).toBe('bar warn');
-			expect(rows[1].value).toBe('6.2');
+			expect(rows[1].value).toBe('6.2/8 核');
 			expect(rows[1].bar).toBe('bar');
 			expect(rows[2].value).toBe('59/64G');
 			expect(rows[2].bar).toBe('bar danger');

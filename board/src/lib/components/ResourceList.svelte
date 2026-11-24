@@ -50,6 +50,7 @@
 	});
 
 	const shown = $derived(snapshot ? (all ? snapshot.agents : snapshot.agents.slice(0, TOP)) : []);
+	const memory = $derived(snapshot ? percent(snapshot.memory.used, snapshot.memory.total) : 0);
 	const folded = $derived(snapshot ? Math.max(0, snapshot.agents.length - TOP) : 0);
 </script>
 
@@ -79,15 +80,10 @@
 				{@render meter(
 					'負載',
 					loadPercent(snapshot.load[0], snapshot.cores),
-					snapshot.load[0].toFixed(1),
+					`${snapshot.load[0].toFixed(1)}/${snapshot.cores} 核`,
 					`1、5、15 分鐘：${snapshot.load.map((load) => load.toFixed(2)).join('、')}（${snapshot.cores} 核）`
 				)}
-				{@render meter(
-					'記憶體',
-					percent(snapshot.memory.used, snapshot.memory.total),
-					usedOfText(snapshot.memory.used, snapshot.memory.total),
-					percentText(percent(snapshot.memory.used, snapshot.memory.total))
-				)}
+				{@render meter('記憶體', memory, usedOfText(snapshot.memory.used, snapshot.memory.total), percentText(memory))}
 			</ul>
 		</section>
 		<section data-part="disks">
@@ -95,7 +91,8 @@
 			{#if snapshot.disks.length}
 				<ul class="meters">
 					{#each snapshot.disks as disk (disk.mount)}
-						{@render meter(disk.mount, percent(disk.used, disk.total), usedOfText(disk.used, disk.total), `${disk.mount}：${percentText(percent(disk.used, disk.total))}`)}
+						{@const used = percent(disk.used, disk.total)}
+						{@render meter(disk.mount, used, usedOfText(disk.used, disk.total), `${disk.mount}：${percentText(used)}`)}
 					{/each}
 				</ul>
 			{:else}
@@ -121,19 +118,20 @@
 						</li>
 					{/each}
 				</ul>
-				{#if folded}
-					<button type="button" class="fold" aria-expanded={all} onclick={() => (all = !all)}>
-						{all ? '收合' : `顯示全部（再 ${folded} 個）`}
-					</button>
-				{/if}
 			{:else}
 				<p class="none">沒有找到 Agent 的程序</p>
 			{/if}
+			<!-- Right under the list, so the fold below opens the list and not a block of its own. -->
 			<p class="row other" title={snapshot.other.top.length ? `用最多的：${snapshot.other.top.join('、')}` : undefined}>
 				<span class="name">其他<small>{snapshot.other.top.join('、')}</small></span>
 				<span class="num">{percentText(snapshot.other.cpu)}</span>
 				<span class="num">{sizeText(snapshot.other.memory)}</span>
 			</p>
+			{#if folded}
+				<button type="button" class="fold" aria-expanded={all} onclick={() => (all = !all)}>
+					{all ? '收合' : `顯示全部（再 ${folded} 個）`}
+				</button>
+			{/if}
 		</section>
 	{/if}
 </div>
@@ -209,8 +207,9 @@
 	.bar.warn i {
 		background: var(--warn);
 	}
+	/* Danger is striped too, so it is told from a warning by more than a shade. */
 	.bar.danger i {
-		background: var(--danger);
+		background: repeating-linear-gradient(135deg, var(--danger) 0 0.4rem, color-mix(in srgb, var(--danger) 55%, transparent) 0.4rem 0.6rem);
 	}
 	.value {
 		display: inline-flex;
@@ -298,7 +297,9 @@
 		cursor: pointer;
 	}
 	.other {
+		min-height: 2.75rem;
 		padding: 0 0.5rem;
+		border-bottom: 1px solid var(--line);
 		color: var(--muted);
 	}
 	.other small {

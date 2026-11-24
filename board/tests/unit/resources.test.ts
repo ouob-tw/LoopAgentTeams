@@ -6,16 +6,17 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { heavier, level, loadPercent, percentText, sizeText, usedOfText } from '../../src/lib/board/resources.ts';
 import {
-	compare,
 	createResourceReader,
 	diskMounts,
-	paneIn,
+	ownerIn,
 	parseCpu,
 	parseLoad,
 	parseMemory,
 	parseStat,
 	readDisks,
 	sample,
+	snapshotOf,
+	type Owner,
 	type PaneAgent
 } from '../../src/lib/server/resources.ts';
 
@@ -41,12 +42,14 @@ describe('parsing /proc', () => {
 		expect(stat).toEqual({ comm: 'tmux: server (1)', ppid: 7, ticks: 250, start: '555', rssPages: 1000 });
 		expect(parseStat('garbage')).toBeNull();
 	});
-	test('the Herdr pane an environment names', () => {
-		expect(paneIn('PATH=/bin\0HERDR_PANE_ID=w2C:pKB\0TERM=x')).toBe('w2C:pKB');
-		expect(paneIn('HERDR_PANE_ID=w1:p1')).toBe('w1:p1');
-		expect(paneIn('XHERDR_PANE_ID=w1:p1\0PATH=/bin')).toBeNull();
+	test('the Herdr pane and the hcom agent an environment names', () => {
+		expect(ownerIn('PATH=/bin\0HERDR_PANE_ID=w2C:pKB\0TERM=x')).toEqual({ pane: 'w2C:pKB', hcom: null });
+		expect(ownerIn('HERDR_PANE_ID=w1:p1').pane).toBe('w1:p1');
+		expect(ownerIn('XHERDR_PANE_ID=w1:p1\0PATH=/bin')).toEqual({ pane: null, hcom: null });
+		expect(ownerIn('HCOM_INSTANCE_NAME=nuraze\0HCOM_TAG=lulova-i704\0HCOM_TOOL=claude').hcom).toEqual({ name: 'lulova-i704-nuraze', client: 'claude' });
+		expect(ownerIn('HCOM_INSTANCE_NAME=luna\0HCOM_TOOL=codex').hcom).toEqual({ name: 'luna', client: 'codex' });
 	});
-	test('disks: block devices once each, `/` first, no loop, overlay, tmpfs or system folders', () => {
+	test('disks: block devices and ZFS pools once each, `/` first, no loop, overlay, tmpfs or system folders', () => {
 		const mounts = [
 			'/dev/sda2 / ext4 rw 0 0',
 			'proc /proc proc rw 0 0',
@@ -57,9 +60,11 @@ describe('parsing /proc', () => {
 			'/dev/loop3 /snap/core/1 squashfs ro 0 0',
 			'overlay /var/lib/docker/overlay2/x/merged overlay rw 0 0',
 			'/dev/sdc1 /mnt/big\\040disk xfs rw 0 0',
-			'/dev/sda2 /var/lib/docker ext4 rw 0 0'
+			'/dev/sda2 /var/lib/docker ext4 rw 0 0',
+			'raid /mnt/raid zfs rw 0 0',
+			'raid/data /mnt/raid/data zfs rw 0 0'
 		].join('\n');
-		expect(diskMounts(mounts)).toEqual(['/', '/home', '/mnt/big disk']);
+		expect(diskMounts(mounts)).toEqual(['/', '/home', '/mnt/big disk', '/mnt/raid']);
 	});
 	test('disk use as df counts it: what a user may still write makes up the rest', () => {
 		const disks = readDisks(['/', '/gone'], (path) => {
@@ -83,6 +88,8 @@ interface FakeProc {
 	ticks: number;
 	rssPages: number;
 	pane?: string;
+	/** The environment's hcom name and tag, as hcom gives what it starts. */
+	hcom?: { base: string; tag: string };
 	/** No readable environment, as for another user's process. */
 	hidden?: boolean;
 }
@@ -98,7 +105,8 @@ function fakeProc(user: number, idle: number, procs: FakeProc[], dir = mkdtempSy
 	for (const proc of procs) {
 		mkdirSync(join(dir, `${proc.pid}`), { recursive: true });
 		writeFileSync(join(dir, `${proc.pid}/stat`), pidStat(proc.pid, proc.comm, proc.ppid, proc.ticks, proc.rssPages));
-		if (!proc.hidden) writeFileSync(join(dir, `${proc.pid}/environ`), proc.pane ? `PATH=/bin\0HERDR_PANE_ID=${proc.pane}\0` : 'PATH=/bin\0');
+		const hcom = proc.hcom ? `HCOM_INSTANCE_NAME=${proc.hcom.base}\0HCOM_TAG=${proc.hcom.tag}\0HCOM_TOOL=claude\0` : '';
+		if (!proc.hidden) writeFileSync(join(dir, `${proc.pid}/environ`), `PATH=/bin\0${proc.pane ? `HERDR_PANE_ID=${proc.pane}\0` : ''}${hcom}`);
 	}
 	return dir;
 }
@@ -134,10 +142,10 @@ describe('each agent summed', () => {
 		{ pid: 21, comm: 'cargo', ppid: 20, ticks: 900, rssPages: 100, pane: 'w1:pB' }
 	];
 
-	test('CPU from the change in ticks, memory from resident pages, rows heaviest first', () => {
-		const one = sample(fakeProc(1000, 9000, before), 0);
-		const two = sample(fakeProc(1500, 9500, after), 3000);
-		const snapshot = compare(one, two, AGENTS, [], 4096);
+	test('CPU from the change in ticks, memory from resident pages, rows heaviest first', async () => {
+		const one = await sample(fakeProc(1000, 9000, before), 0);
+		const two = await sample(fakeProc(1500, 9500, after), 3000);
+		const snapshot = snapshotOf(one, two, AGENTS, [], 4096);
 		expect(snapshot.cpu).toBe(50);
 		expect(snapshot.cores).toBe(2);
 		expect(snapshot.load).toEqual([1.5, 1, 0.5]);
@@ -149,23 +157,39 @@ describe('each agent summed', () => {
 		expect(snapshot.other).toEqual({ cpu: 5, memory: 3150 * 4096, top: ['chrome', 'systemd', 'bash'] });
 	});
 
-	test('a PID reused by another process counts no CPU from the old one', () => {
-		const one = sample(fakeProc(1000, 9000, [{ pid: 11, comm: 'claude', ppid: 1, ticks: 100, rssPages: 1, pane: 'w1:pA' }]), 0);
+	test('a PID reused by another process counts no CPU from the old one', async () => {
+		const one = await sample(fakeProc(1000, 9000, [{ pid: 11, comm: 'claude', ppid: 1, ticks: 100, rssPages: 1, pane: 'w1:pA' }]), 0);
 		const dir = fakeProc(1500, 9500, []);
 		mkdirSync(join(dir, '11'));
 		writeFileSync(join(dir, '11/stat'), pidStat(11, 'claude', 1, 400, 1, 999));
 		writeFileSync(join(dir, '11/environ'), 'HERDR_PANE_ID=w1:pA\0');
-		const snapshot = compare(one, sample(dir, 1), AGENTS, []);
+		const snapshot = snapshotOf(one, await sample(dir, 1), AGENTS, []);
 		expect(snapshot.agents[0].cpu).toBe(0);
 	});
 
-	test('a pane environment is read once per process', () => {
-		const cache = new Map<string, string | null>();
+	test('an environment is read once per process', async () => {
+		const cache = new Map<string, Owner | null>();
 		const dir = fakeProc(1000, 9000, before);
-		sample(dir, 0, cache);
+		await sample(dir, 0, cache);
 		writeFileSync(join(dir, '11/environ'), 'HERDR_PANE_ID=w1:pB\0');
-		expect(sample(dir, 1, cache).procs.find((proc) => proc.pid === 11)?.pane).toBe('w1:pA');
+		expect((await sample(dir, 1, cache)).procs.find((proc) => proc.pid === 11)?.owner?.pane).toBe('w1:pA');
 		expect(cache.size).toBe(before.length);
+	});
+
+	test('an hcom agent in no listed pane is its own row; one listed by its HCOM name in another pane is that agent', async () => {
+		const procs: FakeProc[] = [
+			{ pid: 1, comm: 'systemd', ppid: 0, ticks: 0, rssPages: 1 },
+			{ pid: 50, comm: 'claude', ppid: 1, ticks: 0, rssPages: 700, hcom: { base: 'nova', tag: 'x' } },
+			{ pid: 51, comm: 'node', ppid: 50, ticks: 0, rssPages: 300, hidden: true },
+			{ pid: 60, comm: 'codex', ppid: 1, ticks: 0, rssPages: 200, pane: 'w7:gone', hcom: { base: 'pe', tag: 'q' } }
+		];
+		const one = await sample(fakeProc(1000, 9000, procs), 0);
+		const listed = [...AGENTS, { pane: 'w1:pZ', name: 'q-pe', client: 'codex', id: 'sess-q', hcomName: 'q-pe' }];
+		const rows = snapshotOf(one, one, listed, [], 1).agents;
+		expect(rows).toEqual([
+			{ name: 'x-nova', client: 'claude', id: null, cpu: 0, memory: 1000, processes: 2 },
+			{ name: 'q-pe', client: 'codex', id: 'sess-q', cpu: 0, memory: 200, processes: 1 }
+		]);
 	});
 
 	test('the reader shares one reading between pages asking together, and reads nothing until asked', async () => {
