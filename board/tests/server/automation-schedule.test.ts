@@ -1,7 +1,7 @@
 // The 自動化 scheduler on the built board, driven by a clock the test sets and a check every 0.1 s,
 // with the server's own zone set to UTC so every day and set time must be read in Asia/Taipei: the
-// day's one automatic try, retry the next day, stop once the period succeeded, a try at once after a
-// restart, missed periods (one by one after a long stop, one notice per task, dismissed, not while
+// day's one automatic try, retry the next day, stop once the period succeeded, after a restart only
+// the tries whose set time has passed (#701), missed periods (one by one after a long stop, one notice per task, dismissed, not while
 // paused), the limit counted from the start, runs kept in the period they started in, 沿用原紀錄,
 // and a try that comes due while the task still runs.
 import { mkdirSync } from 'node:fs';
@@ -136,23 +136,29 @@ test('the day’s one try at the set time: a quick failure waits for the next da
 	expect((await viewOf(task.id)).runs[0]).toMatchObject({ trigger: 'auto', period: '2026-12' });
 }, 60_000);
 
-test('a restart before or after the set time tries at once when today is in the window, untried and the period not done', async () => {
+test('a restart starts only the tries whose set time today has passed: before it they wait, after it they catch up (#701)', async () => {
 	await open(tpe(2026, 11, 2, 7));
 	const before = await create(commandTask({ type: 'daily' }, 'echo ok', { name: '早上重啟' }));
 	const after = await create(commandTask({ type: 'monthly', fromDay: 1, toDay: 5 }, 'exit 1', { name: '下午重啟', time: '13:00' }));
 	const paused = await create(commandTask({ type: 'daily' }, 'echo ok', { name: '暫停中' }));
 	expect((await send(`/api/automation/${paused.id}/pause`, 'POST', { paused: true })).status).toBe(200);
-	// Down over night; back at 07:30, before the 10:00 set time: tried at once.
+	// Down over night; back at 07:30 (Asia/Taipei), before both set times (10:00, 13:00): nothing starts.
 	await restartAt(tpe(2026, 11, 3, 7, 30));
-	expect((await ended(before.id, 1))[0]).toMatchObject({ trigger: 'auto', status: 'success', startedAt: tpe(2026, 11, 3, 7, 30), period: '2026-11-03' });
-	expect((await ended(after.id, 1))[0]).toMatchObject({ trigger: 'auto', status: 'failed' });
-	expect((await viewOf(paused.id)).runs).toEqual([]);
-	// Back again the same day, after the set time: both were tried today already.
+	await sleep(SETTLE_MS);
+	expect((await viewOf(before.id)).runs).toEqual([]);
+	expect((await viewOf(after.id)).runs).toEqual([]);
+	// The 10:00 comes with the board up: it starts then, not before.
+	await at(tpe(2026, 11, 3, 10, 5));
+	expect((await ended(before.id, 1))[0]).toMatchObject({ trigger: 'auto', status: 'success', startedAt: tpe(2026, 11, 3, 10, 5), period: '2026-11-03' });
+	expect((await viewOf(after.id)).runs).toEqual([]);
+	// Back again after 13:00: the one whose time passed catches up; the one tried today does not run again.
 	await restartAt(tpe(2026, 11, 3, 14));
+	expect((await ended(after.id, 1))[0]).toMatchObject({ trigger: 'auto', status: 'failed', startedAt: tpe(2026, 11, 3, 14) });
 	await sleep(SETTLE_MS);
 	expect((await viewOf(before.id)).runs).toHaveLength(1);
 	expect((await viewOf(after.id)).runs).toHaveLength(1);
-	// The next day, after the set time: the failed one is tried at once; the daily one's new day too.
+	expect((await viewOf(paused.id)).runs).toEqual([]);
+	// The next day, after the set times: the failed one is tried at once; the daily one's new day too.
 	await restartAt(tpe(2026, 11, 4, 14));
 	expect((await ended(after.id, 2))[0]).toMatchObject({ trigger: 'auto', startedAt: tpe(2026, 11, 4, 14) });
 	expect((await ended(before.id, 2))[0]).toMatchObject({ trigger: 'auto', period: '2026-11-04' });
@@ -224,8 +230,8 @@ test('back after months: each period missed is listed, one notice per task, no c
 	await send(`/api/automation/${paused.id}/pause`, 'POST', { paused: true });
 	await sleep(SETTLE_MS);
 	const dailyBefore = (await viewOf(daily.id)).runs.length;
-	// Down from 11/7 to 2027-03-05 at 07:00.
-	await restartAt(tpe(2027, 3, 5, 7));
+	// Down from 11/7 to 2027-03-05 at 09:00, after the daily one's 08:00.
+	await restartAt(tpe(2027, 3, 5, 9));
 	const view = await eventually(async () => {
 		const found = await viewOf(monthly.id);
 		return found.missed.length ? found : undefined;
@@ -249,7 +255,7 @@ test('back after months: each period missed is listed, one notice per task, no c
 	expect(await dismissed.json()).toEqual({ dismissed: 4 });
 	expect((await viewOf(monthly.id)).missed).toEqual([]);
 	expect((await viewOf(monthly.id)).state).toBe('waiting');
-	await restartAt(tpe(2027, 3, 5, 7, 30));
+	await restartAt(tpe(2027, 3, 5, 9, 30));
 	await sleep(SETTLE_MS);
 	expect((await viewOf(monthly.id)).missed).toEqual([]);
 	expect(missedLogs(monthly.id)).toHaveLength(1);
@@ -300,12 +306,12 @@ test('a run belongs to the period it started in: ending past midnight, or cut of
 	fixture!.setClock(tpe(2026, 12, 31, 23, 30));
 	const cut = await eventually(async () => (await viewOf(monthly.id)).runs.find((run) => run.status === 'running'), 'the run to start');
 	expect(cut.period).toBe('2026-12');
-	await restartAt(tpe(2027, 1, 1, 0, 30));
+	await restartAt(tpe(2027, 1, 1, 23, 30));
 	const after = await viewOf(monthly.id);
 	expect(after.runs.find((run) => run.id === cut.id)).toMatchObject({ status: 'failed', reason: '看板重啟中斷', period: '2026-12' });
-	// December is not done; January's try starts at once after the restart.
+	// December is not done; January's try waits for its 23:00 and, the board back after it, catches up.
 	const january = await eventually(async () => (await viewOf(monthly.id)).runs.find((run) => run.id !== cut.id), 'January\'s try');
-	expect(january).toMatchObject({ trigger: 'auto', period: '2027-01', startedAt: tpe(2027, 1, 1, 0, 30) });
+	expect(january).toMatchObject({ trigger: 'auto', period: '2027-01', startedAt: tpe(2027, 1, 1, 23, 30) });
 }, 60_000);
 
 test('沿用原紀錄 makes the period done through the API, and needs the marker', async () => {

@@ -150,19 +150,19 @@ test('every N days (#692): N and the start date are checked, N = 1 is saved as p
 
 	// A task file from before #692: no N. Read as every day, listed, not broken.
 	await fixture.stop();
-	writeFileSync(join(automationDir(), 'olddaily01.json'), JSON.stringify({ ...commandTask({ name: '舊的每天', schedule: { type: 'daily' }, time: '03:00' }), id: 'olddaily01', paused: false, createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z' }));
+	writeFileSync(join(automationDir(), 'olddaily01.json'), JSON.stringify({ ...commandTask({ name: '舊的每天', schedule: { type: 'daily' }, time: '00:30' }), id: 'olddaily01', paused: false, createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z' }));
 	await fixture.start();
 	const after = await snapshot();
 	expect(after.broken.some((entry) => entry.file === 'olddaily01.json')).toBe(false);
 	expect(after.tasks.find((view) => view.task.id === 'olddaily01')!.task.schedule).toEqual({ type: 'daily' });
-	// It keeps working as every day: the first check after the restart tries today's period (11/20 by
-	// the board's clock) at once, and the next try is 11/21 03:00 in Taipei.
+	// It keeps working as every day: its 00:30 had passed by the board's clock (01:00), so the first
+	// check after the restart tries today's period (11/20) as a catch-up, and the next try is 11/21 00:30 in Taipei.
 	const old = await eventually(async () => {
 		const view = await viewOf('olddaily01');
 		return view.runs[0] && view.runs[0].status !== 'running' ? view : undefined;
 	}, 10_000, 'the old task to try today');
 	expect(old.runs[0]).toMatchObject({ trigger: 'auto', period: '2026-11-20', status: 'success' });
-	expect(old.nextAt).toBe(Date.UTC(2026, 10, 20, 19));
+	expect(old.nextAt).toBe(Date.UTC(2026, 10, 20, 16, 30));
 	for (const id of [two.id, one.id, 'olddaily01']) expect((await send(`/api/automation/${id}`, 'DELETE')).status).toBe(204);
 });
 
