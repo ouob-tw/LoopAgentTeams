@@ -32,6 +32,8 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 | Claude 畫面最後的錯誤是 `Login expired · Please run /login`，或 HCOM 為 `inactive (failure:authentication_failed)`（Codex 只看 HCOM 狀態） | 立即 | 通知上一層（主控自己則通知使用者）一次，寫明這是登入失效、只有使用者能處理（Claude 用 `/login`）；不催、不代為登入；畫面或狀態恢復後回到一般停滯判斷 |
 
 「上一層」對執行 Agent 是它的主控，對主控是使用者。背景指令還在跑時不算停住（主控只剩背景指令時見上表；要是 client 自己開在另一個 session 的指令，或帶這位 Agent 標記、已脫離 client 的另一個 session 的程序；MCP 服務底下的一切（語言伺服器與它代跑的指令分不開，代跑的指令留在背景時，仍可能被催並通知主控），以及 `lat-watch.py`、`spawn-watch.py`、HCOM 的啟動腳本都不算；MCP 這條只適用 Claude 與 Codex）；但 Codex 紀錄顯示回合已結束、之後沒有新回合或使用者輸入，狀態卻仍是 `active` 時，依上表催促與升級。晚到的同回合完成事件不會推翻回合已結束的判斷，但紀錄變動仍會讓計時歸零。紀錄讀不到或末段找不到回合邊界時，維持原本判斷；Claude 不變。
+
+執行 Agent 已交差並回報時視同等主控，上表的催促與升級都不做，紀錄寫 `delivered-awaiting-orchestrator`：任務卡狀態是 `completed`／`committed`／`merged`，卡片最後存檔前 60 秒起它傳過 HCOM 訊息給主控，之後其他人沒傳來 `inform`／`ack` 以外的訊息，主控也沒再傳訊息給它（主控的訊息已送達、它回到待命且之後沒用任何工具，視為只是收到，不算），而且它在待命、輸入框空、沒有指令在跑。任一條不成立就照上表處理。
 等核准與其他非輸入框畫面可能在 `hcom term --json` 回傳 `input_text=null`；監控會把它當成「沒有輸入文字」，不會因此略過 `blocked` 通知。
 
 額度與滿載辨識只看 `hcom term --json` 當前可見畫面的 client UI 結構，不以固定行數猜測本輪邊界。Codex 的 `■` 錯誤後若已出現更新的 `Working`、Agent 回覆、非空白新提示或另一條 `■` 錯誤（即使監控不認得它的內容），就當作舊輪。Claude 的 `● Usage limit reached` 除了畫面上完整的自動繼續時間與 `esc to cancel`，還必須對得上 Claude 紀錄檔末端未被新 user/assistant 回合取代的 system notice；畫面後面有新的回覆、非空白使用者提示或 `Working` 也會判為舊輪。最後一條輸入區分隔線下的 `⚠ Usage limit reached` 則本身就是當前狀態，不依賴模型列。當前狀態列與舊的主錯誤同時出現時，以狀態列的重置時間為準。這些條件不會把舊畫面或 Agent 回覆引用的同段文字當成錯誤。錯誤與重置時間換行時會先合併再辨識。Codex 的額度錯誤包括 `You've hit your usage limit` 與 `Quota exceeded`。
