@@ -75,13 +75,13 @@ HCOM 接回同一個 session 時換模型尚未驗證，所以換模型改用新
 
 Codex 回合因 `You've hit your usage limit` 或上游錯誤停止時，先核對是當前回合的停止，而非畫面留下的舊錯誤；仍在工作就等待。
 
-0. **確認 provider**：程序存活時以 `hcom list <名稱> -v --name <自身名稱>`、已退出時以 `hcom list --stopped <名稱> --name <自身名稱>` 找 session ID 和 `Transcript` 路徑，再讀該紀錄中最新一筆 `session_meta.payload.model_provider`；續接後重新查 `Transcript` 路徑並核對新一輪紀錄。讀不到時回報上一層，不判定整池用完。若不是 `cpa`，先記下 session ID、工作目錄、未提交成果及原本的 model、effort、權限；程序仍存活時照 [回報與收尾](../SKILL.md#回報與收尾) 用 `close-agent.py` 關閉並確認退出，已退出則略過。接著執行：
+0. **確認 provider**：程序存活時以 `hcom list <名稱> -v --name <自身名稱>`、已退出時以 `hcom list --stopped <名稱> --name <自身名稱>` 找 session ID 和 `Transcript` 路徑，讀該紀錄最後一筆 `event_msg` 的 `payload.type=thread_settings_applied` 中 `payload.thread_settings.model_provider_id`；沒有這筆設定時才讀原始 `session_meta.payload.model_provider`。設定紀錄缺少 provider 時視為不明，不回退到舊值。讀不到時回報上一層，不判定整池用完。若不是 `cpa`，先記下 session ID、工作目錄、未提交成果及原本的 model、effort、權限；程序仍存活時照 [回報與收尾](../SKILL.md#回報與收尾) 用 `close-agent.py` 關閉並確認退出，已退出則略過。接著執行：
 
    ```bash
    hcom r <名稱或session-ID> --go --name <自身名稱> -c 'model_provider="cpa"'
    ```
 
-   照 [接回已關閉的 Agent](../SKILL.md#接回已關閉的-agent) 保持原 model、effort 與權限，確認新一輪的 `session_meta.payload.model_provider` 是 `cpa` 後才繼續。接回失敗或無法確認時回報上一層，不判定整池用完。
+   照 [接回已關閉的 Agent](../SKILL.md#接回已關閉的-agent) 保持原 model、effort 與權限，重新查 `Transcript` 路徑，確認接回後新增的 `thread_settings_applied` 記錄之 `model_provider_id` 是 `cpa`，且新回合已開始，才繼續；原始 `session_meta` 不會因接回而更新，不能當作接回後的證據。接回失敗或無法確認時回報上一層，不判定整池用完。
 1. **原地續作一次**：送同一位 Agent 一則續作訊息；程序已退出時以原 session ID 接回，再讓它續作。CPA 在下一個請求處理帳號輪替。確認實際工作進展。
 2. **再次停在額度用完**：已確認 `cpa`，且續作後的新一回合又停在額度用完，才視為整池用完；續作前的舊錯誤不算。自動交接未完成工作給全新的 Claude Agent：astra 用 fable 或 opus，sol、terra 用 sonnet，事後回報使用者。Claude 也沒有額度時才由使用者決定。
 
