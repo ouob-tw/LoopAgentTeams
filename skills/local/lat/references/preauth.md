@@ -107,7 +107,7 @@ source = "<待決紀錄 ID>"
 
 - 最上層的鍵：`version`（只能是 1）、`integration_branch`（整合分支名稱；本輪工作總表沒寫整合分支時才用，哪一層都可寫，專案層優先）。
 - 動作段 `[actions.<動作>]` 的鍵：`allow`（true／false）、`branches`（字串清單）、`target`（字串，只取專案層，全域層寫了不生效）、`rollback`（字串，退回上一版的方法，只取專案層，空白算沒寫；只有 `deploy-test`、`deploy-prod` 會用到，見「固定條件」）、`runbook`（字串，部署文件位置，只取專案層，空白算沒寫；只有 `deploy-test`、`deploy-prod` 會用到，見「查詢」）、`source`（字串）、`hours` 與 `timezone`（見「時段」）。`[advisor]` 只取全域層，鍵：`extended`、`may_settle`、`must_ask`、`source`。`source` 是出處，不參與判斷，`show` 與 `check` 附在該層的值旁。
-- 動作固定五種：`merge`（合併到整合分支）、`push`（推送到遠端）、`deploy-test`、`deploy-prod`、`install-host`（更新主機上安裝的 Skills 與 hooks）。
+- 動作固定六種：`merge`（合併到整合分支）、`push`（推送到遠端）、`deploy-test`、`deploy-prod`、`install-host`（更新主機上安裝的 Skills 與 hooks）、`appearance`（外觀修改，只能寫 `allow`、`source`、`hours`、`timezone`，見[外觀修改](#外觀修改)）。
 - `[unattended]` 段是新主控一開始的模式，由 `lat-unattended.py` 讀取，見 [無人模式](unattended.md)；這段寫錯同樣讓查詢一律要問。
 - 修改或縮減已確認驗收（`change-acceptance`）、花錢或動帳號額度（`spend`）、刪使用者資料或 shred（`delete-user-data`）、開新票擴大工作量（`new-ticket`）永遠要問：查詢一律 `ask`，寫進設定算錯誤。這只限制 `check`；參謀能否定案改驗收與開新票，依 `[advisor]` 段判斷，見 [參謀](advisors.md#參謀結論)。
 
@@ -220,6 +220,17 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-i
 
 任一項不成立或拿不準，照舊發確認題。
 
+## 外觀修改
+
+外觀修改只改現有畫面的樣子：顏色、間距、字級、圖示、文字、同一頁內的排列。新增或移除功能、改顯示哪些資料、改操作流程都不算；拿不準就不算。是不是外觀由主控依此判斷。
+
+`appearance` 是常設授權，沒有東西可執行：`do` 與 `record --kind auto` 會拒絕。`check --action appearance` 為 `allow` 時：
+
+1. 只關於外觀的選擇題（從示意頁挑樣式、只談外觀的 DECIDE）待決紀錄寫 `- action: appearance`，交兩位參謀定案，不問使用者（提問工具會擋下，見[接上提問](#接上提問)）；結論引用 `check` 印的那行，下一次給使用者的回報附結果網址（ui-choice-demo 發布的頁面），讓使用者可以反對。
+2. 使用者本人提出、只動外觀的修改，照短流程開票但不發確認題；驗收條件與 `check` 印的那行都寫在票上，做完附連結給使用者看結果。
+
+`ask` 時照原本流程。
+
 ## 交付回報：report
 
 ```bash
@@ -230,12 +241,12 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" report
 
 ## 接上提問
 
-要問的是上面五種動作之一時，待決紀錄加一行 `- action: <動作> [分支] [版本]`：`merge`、`push` 先寫分支再寫版本，例如 `- action: push dev`；其他三種沒有分支，第二個字就是版本，例如 `- action: deploy-test` 或 `- action: install-host 1a2b3c4`。版本可省略，意思同 `check` 不給 `--commit`。 `merge`、`push` 沒寫分支時，`question ask` 拒絕、不改任何檔，並印出正確寫法 `- action: push <分支> [版本]`，因為少了分支一定查不出結果。
+要問的是上面六種動作之一時，待決紀錄加一行 `- action: <動作> [分支] [版本]`：`merge`、`push` 先寫分支再寫版本，例如 `- action: push dev`；其他四種沒有分支，第二個字就是版本，例如 `- action: deploy-test` 或 `- action: install-host 1a2b3c4`；外觀選擇題寫 `- action: appearance`。版本可省略，意思同 `check` 不給 `--commit`。 `merge`、`push` 沒寫分支時，`question ask` 拒絕、不改任何檔，並印出正確寫法 `- action: push <分支> [版本]`，因為少了分支一定查不出結果。
 
 面板寫題（`question ask`）與回合結束的 DECIDE／HELP 檢查遇到有 `- action:` 的紀錄，一律依當下設定與當下時間重跑 `check`，不採用紀錄裡先前寫的結論：
 
 - **已送出**：題號曾在主控自己的問題檔或其歸檔出現，或曾出現在本 session 主控回報紀錄的 `DECIDE:`／`HELP:` 訊息（聊天提問）；任一成立即算，不論版本。
-- **未送出且 `allow`**：`question ask` 拒絕寫入（結束碼 1，不改任何檔）；回合結束檢查首次擋下，同回合第二次只警告。不要提問：直接用 `do` 做，並在待決紀錄寫明改依預先授權處理。
+- **未送出且 `allow`**：`question ask` 拒絕寫入（結束碼 1，不改任何檔）；回合結束檢查首次擋下，同回合第二次只警告。不要提問：直接用 `do` 做，並在待決紀錄寫明改依預先授權處理；`appearance` 改交兩位參謀定案。
 - **已送出且 `allow`**：照常寫入與放行，只附一行提醒「此題目前已預先授權，可由使用者決定撤回」；送到使用者面前的題目仍只由真人解除。
 - **`ask`**：照常寫入與放行。
 - `question ask` 每次寫入都把當下結論寫成紀錄的 `- preauth: <check 印的那行>（重查於 <時間>）`，取代舊的那行，沒有時放在 `- action:` 下一行。這行只給人與參謀閱讀，工具不讀。

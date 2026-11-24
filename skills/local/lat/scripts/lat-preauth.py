@@ -25,7 +25,7 @@ push, which make push and deploy-prod checks ask until a human-answered decision
 `pre-push` is the global Git hook's check for them, and also refuses a push by an active
 controller of the repo that `do` did not start. The board reads and writes settings through `board_settings` and `board_write`,
 which the panel helper's `board preauth-read` and `board preauth-write` commands call. The tool runs the action
-itself only in `do`.
+itself only in `do`. `appearance` is a standing permission: `check` answers it, nothing runs it.
 """
 import argparse
 import contextlib
@@ -53,7 +53,11 @@ from lat_decision_status import read_decision_status
 ACTIONS = {'merge': 'merge into the integration branch', 'push': 'push to the remote',
            'deploy-test': 'deploy to the test environment',
            'deploy-prod': 'deploy to production',
-           'install-host': "update the host's installed skills and hooks"}
+           'install-host': "update the host's installed skills and hooks",
+           'appearance': 'change only how an existing screen looks'}
+# Standing permissions: the controller and advisors cite their check; nothing runs them.
+STANDING_ACTIONS = ('appearance',)
+STANDING_KEYS = ('allow', 'source', 'hours', 'timezone')
 # Not actions: no setting can pre-authorize these, so naming one always asks.
 ALWAYS_ASK = {'change-acceptance': 'changing or cutting confirmed acceptance criteria',
               'spend': 'spending money or account quota',
@@ -163,6 +167,10 @@ def validate(data, where):
             problems.append(f'{where}: unknown action [actions.{name}]')
         else:
             problems += section_problems(section, ACTION_KEYS, f'{where} [actions.{name}]')
+            if name in STANDING_ACTIONS and isinstance(section, dict):
+                problems += [f'{where} [actions.{name}]: `{key}` is not for {name}; it takes '
+                             f'only {", ".join(STANDING_KEYS)}'
+                             for key in section.keys() - set(STANDING_KEYS) if key in ACTION_KEYS]
             problems += window_problems(section, f'{where} [actions.{name}]')
     if 'advisor' in data:
         problems += section_problems(data['advisor'], ADVISOR_KEYS, f'{where} [advisor]')
@@ -1656,6 +1664,8 @@ def cmd_grant(args):
     if args.allow is not None:
         values['allow'] = args.allow == 'true'
     if args.branches:
+        if args.action in STANDING_ACTIONS:
+            raise Refused(f'--branches is not for {args.action}')
         values['branches'] = args.branches
     if not values:
         raise Refused('nothing to write: give --allow and/or --branches')
@@ -1949,6 +1959,8 @@ def auto_entry(args, record, top, session, round_number):
     if args.action not in ACTIONS:
         raise Refused(f'`{args.action}` is not a pre-authorizable action; known: '
                       f'{", ".join(ACTIONS)}')
+    if args.action in STANDING_ACTIONS:
+        raise standing_refusal(args.action)
     if args.action in BRANCH_ACTIONS:
         # A hand-typed basis was once recorded as allow when the check had said ask.
         raise Refused(f'{args.action} is recorded by `do`, which runs the check itself: '
@@ -2074,10 +2086,17 @@ def exit_status(status):
     return 0 if status == 0 else (status if status > 0 else 1)
 
 
+def standing_refusal(action):
+    return Refused(f'{action} is a standing permission to cite (check --action {action}), not '
+                   'an executable action')
+
+
 def cmd_do(args):
     """check -> before-notice -> command -> after-notice -> record, stopping at the first
     failing step. Once the command has run, a failed command is still noticed and recorded.
     Merge and push send no notices (do_branch_action)."""
+    if args.action in STANDING_ACTIONS:
+        raise standing_refusal(args.action)
     command = args.run[1:] if args.run[:1] == ['--'] else args.run
     if not command:
         raise Refused('give the command after `--`')

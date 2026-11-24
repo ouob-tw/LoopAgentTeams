@@ -118,6 +118,21 @@ test.skipIf(!CHROME)('results name their source; clearing deploy-test deletes it
 	expect(readFileSync(projectFile, 'utf8')).toContain('branches = ["dev", "rel"]');
 }, 60_000);
 
+test.skipIf(!CHROME)('外觀修改 offers 沿用全域 on the project layer and saves each choice to [actions.appearance]', async () => {
+	writeFileSync(globalFile, `${GLOBAL}\n[actions.appearance]\nallow = true\n`);
+	writeFileSync(projectFile, '# project notes\n');
+	const tab = await openTab();
+	await tab.until(`(${RESULT('appearance')}) === '不問直接做 來自全域'`, 'the global value');
+	expect(await tab.eval(`${allow('appearance', 'inherit')}.getAttribute('aria-pressed')`)).toBe('true');
+	await tab.eval(`${allow('appearance', 'ask')}.click()`);
+	await tab.until(`(${RESULT('appearance')}) === '會問你 來自專案'`, 'the project value');
+	expect(readFileSync(projectFile, 'utf8')).toMatch(/\[actions\.appearance\]\nallow = false\n/);
+	await tab.eval(`${allow('appearance', 'inherit')}.click()`);
+	await tab.until(`(${RESULT('appearance')}) === '不問直接做 來自全域'`, 'back to the global value');
+	expect(readFileSync(projectFile, 'utf8')).not.toContain('allow = false');
+	expect(await tab.eval(alertText)).toBe('');
+}, 60_000);
+
 test.skipIf(!CHROME)('a chosen button is filled in the colour of its meaning, readable in both themes', async () => {
 	writeFileSync(globalFile, GLOBAL);
 	writeFileSync(projectFile, '[actions.merge]\nallow = true\n\n[actions.push]\nallow = false\n');

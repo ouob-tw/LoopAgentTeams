@@ -1316,6 +1316,10 @@ def announced_questions(record):
     return announced
 
 
+# A style question under an allowed appearance check goes to the advisors, not the user.
+LOOK_NEXT_STEP = ('不要提問：交兩位參謀定案，結論引用 check 那行，下一次回報附結果網址讓使用者可以反對。')
+
+
 def preauth_module():
     spec = importlib.util.spec_from_file_location('lat_preauth', PREAUTH_SCRIPT)
     module = importlib.util.module_from_spec(spec)
@@ -1505,7 +1509,7 @@ def preauth_stop_check(record, message):
     a sent one passes with a reminder, since only the user can release it."""
     decisions = Path(record['decisions_path'])
     questions_paths = sent_question_paths(record)
-    held, notes = [], []
+    held, looks, notes = [], [], []
     for identifier in sorted({name for name, _ in question_identifiers(message)}):
         path = decisions / f'{identifier}.md'
         if not path.is_file():
@@ -1518,12 +1522,19 @@ def preauth_stop_check(record, message):
         if found[2]:
             notes.append(f'LAT 預先授權提醒：{identifier} 此題目前已預先授權，可由使用者決定撤回'
                          f'（{found[1]}）。')
+        elif found[1].split()[1:2] == ['appearance']:
+            looks.append(f'{identifier}（{found[1]}）')
         else:
             held.append(f'{identifier}（{found[1]}）')
-    reason = ('LAT 預先授權檢查未通過：' + '；'.join(held)
-              + ' 尚未送出，依當下設定可以不問直接做。不要提問：直接以 '
-              '`lat-preauth.py do` 執行（它會記一筆），並在待決紀錄寫明改依預先授權處理。') if held else None
-    return reason, notes
+    reasons = []
+    if held:
+        reasons.append('LAT 預先授權檢查未通過：' + '；'.join(held)
+                       + ' 尚未送出，依當下設定可以不問直接做。不要提問：直接以 '
+                       '`lat-preauth.py do` 執行（它會記一筆），並在待決紀錄寫明改依預先授權處理。')
+    if looks:
+        reasons.append('LAT 預先授權檢查未通過：' + '；'.join(looks) + ' 尚未送出，外觀修改已預先授權。'
+                       + LOOK_NEXT_STEP)
+    return ('\n'.join(reasons) or None), notes
 
 
 def preauth_ask_stop_check(record, message):

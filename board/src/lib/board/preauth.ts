@@ -6,7 +6,8 @@ export const PREAUTH_ACTIONS = [
 	{ name: 'push', label: '推送', branches: true, target: false },
 	{ name: 'deploy-test', label: '部署測試版', branches: false, target: true },
 	{ name: 'deploy-prod', label: '部署正式版', branches: false, target: false },
-	{ name: 'install-host', label: '更新主機技能', branches: false, target: false }
+	{ name: 'install-host', label: '更新主機技能', branches: false, target: false },
+	{ name: 'appearance', label: '外觀修改', branches: false, target: false }
 ] as const;
 
 export const ALLOW_CHOICES = [

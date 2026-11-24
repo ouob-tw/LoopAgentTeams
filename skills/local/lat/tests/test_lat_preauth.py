@@ -208,6 +208,63 @@ class LayerTests(PreauthCase):
             self.assertIn('unknown key `oops`', ' '.join(verdict['reasons']))
 
 
+class AppearanceTests(PreauthCase):
+    """`appearance` is a standing permission: allow or false only, no branch or gate conditions."""
+
+    def test_allow_unset_false_and_project_over_global(self):
+        for label, global_text, project_text, verdict, kind in (
+                ('unset', None, None, 'ask', 'unset'),
+                ('global allow', 'allow = true\n', None, 'allow', None),
+                ('global false', 'allow = false\n', None, 'ask', 'allow-false'),
+                ('project false over global allow', 'allow = true\n', 'allow = false\n',
+                 'ask', 'allow-false'),
+                ('project allow over global false', 'allow = false\n', 'allow = true\n',
+                 'allow', None)):
+            with self.subTest(label):
+                for path, text in ((self.global_file, global_text),
+                                   (self.project_file, project_text)):
+                    if text is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        self.write(path, f'[actions.appearance]\n{text}source = "S"\n')
+                result = self.check('appearance')
+                self.assertEqual(result['verdict'], verdict, result)
+                self.assertEqual(result['reason_kinds'], [kind] if kind else [])
+                if verdict == 'allow':
+                    self.assertEqual(len(result['basis']), 1)
+                    self.assertIn('allow=true from ', result['basis'][0])
+
+    def test_show_lists_it(self):
+        self.assertIn('  [actions.appearance] (not set; asks)', self.run_tool('show').stdout)
+        self.write(self.global_file, '[actions.appearance]\nallow = true\nsource = "G-9"\n')
+        self.assertIn('[actions.appearance]\n    allow = true  ← global (source G-9)',
+                      self.run_tool('show').stdout)
+
+    def test_invalid_values_ask_like_other_actions(self):
+        self.write(self.project_file, '[actions.appearance]\nallow = true\n')
+        for text, reason in (('allow = "yes"\n', '`allow` must be true or false'),
+                             ('branches = ["dev"]\n', '`branches` is not for appearance'),
+                             ('target = "x"\n', '`target` is not for appearance'),
+                             ('alow = true\n', 'unknown key `alow`')):
+            with self.subTest(text):
+                self.write(self.global_file, f'[actions.appearance]\n{text}')
+                result = self.check('appearance')
+                self.assertEqual(result['verdict'], 'ask')
+                self.assertTrue(any(reason in item for item in result['reasons']), result)
+                self.assertIn(reason, self.run_tool('show').stdout)
+
+    def test_do_and_auto_record_refuse_it(self):
+        self.write(self.global_file, '[actions.appearance]\nallow = true\n')
+        self.session()
+        for args in (('do', '--action', 'appearance', '--commit', 'x', '--', 'true'),
+                     ('record', '--action', 'appearance', '--commit', 'x', '--basis', 'b',
+                      '--result', 'succeeded')):
+            with self.subTest(args[0]):
+                result = self.run_tool(*args)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('appearance is a standing permission to cite', result.stderr)
+
+
 class ErrorTests(PreauthCase):
     def setUp(self):
         super().setUp()
