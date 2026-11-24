@@ -71,6 +71,7 @@ import {
 	type Cut
 } from './automation-agent.ts';
 import { appendSent, readLines, type AutomationTaskSave } from './sent-log.ts';
+import { createFolderTrust, type TrustFiles } from './folder-trust.ts';
 import { FIX_CONTINUE_MESSAGE, fixMessage, judgeReview, REVIEW_CONTINUE_MESSAGE, reviewBrief, reviewMessage, reviewTag } from './automation-review.ts';
 
 /** How much of a command's output is kept: its last part, which says how it ended. */
@@ -89,7 +90,10 @@ export interface SavedBy {
 	deviceId: string;
 }
 
-export type Saved = { ok: true; task: AutomationTask } | { ok: false; status: number; errors: FieldErrors };
+/** `folderUntrusted`: an agent task whose client has not trusted its folder (#703); saved all the same. */
+export type Saved = { ok: true; task: AutomationTask; folderUntrusted?: true } | { ok: false; status: number; errors: FieldErrors };
+/** A save's answer: the task, with `folderUntrusted: true` beside its fields when the form should warn. */
+export const savedBody = (saved: Extract<Saved, { ok: true }>) => (saved.folderUntrusted ? { ...saved.task, folderUntrusted: true } : saved.task);
 export type Started = { ok: true; run: AutomationRun } | { ok: false; status: number; message: string };
 
 /** What red cards and pushes are made from: a run that ended, or the periods one check found missed
@@ -443,10 +447,17 @@ export function createAutomation(options: {
 	stateDir?: string;
 	/** The LAT skill folder an unattended task's controller runs `lat-unattended.py` from. */
 	latDir?: string;
+	/** The clients' settings files an agent task's folder trust is read from, never written;
+	 *  `~/.claude.json` and `~/.codex/config.toml` under `home` unless given. */
+	trustFiles?: TrustFiles;
 }): Automation {
 	const { dir, now } = options;
 	const stateDir = options.stateDir ?? dirname(dir);
 	const home = options.home ?? homedir();
+	const trustOf = createFolderTrust(options.trustFiles ?? { claude: join(home, '.claude.json'), codex: join(home, '.codex/config.toml') });
+	/** Read again each time the list is built: trusting the folder later clears the warning, no restart. */
+	const folderUntrusted = (task: AutomationTask): true | undefined =>
+		task.agent && trustOf(task.agent.client, expandHome(task.agent.folder, home)) === 'untrusted' ? true : undefined;
 	const runsDir = join(dir, 'runs');
 	const outputDir = join(dir, 'output');
 	const missedDir = join(dir, 'missed');
@@ -537,7 +548,8 @@ export function createAutomation(options: {
 				.map((task) => {
 					const own = runs.get(task.id) ?? [];
 					const recorded = missed.get(task.id) ?? [];
-					return { task, state: taskState(task, own, at, recorded), nextAt: nextAutoAt(task, own, at), runs: own.slice(0, RUNS_SHOWN), missed: openMissed(recorded, own) };
+					const untrusted = folderUntrusted(task);
+					return { task, state: taskState(task, own, at, recorded), nextAt: nextAutoAt(task, own, at), runs: own.slice(0, RUNS_SHOWN), missed: openMissed(recorded, own), ...(untrusted ? { folderUntrusted: untrusted } : {}) };
 				}),
 			broken
 		};
@@ -1209,6 +1221,8 @@ export function createAutomation(options: {
 		check();
 	});
 
+	const savedAs = (task: AutomationTask): Saved => (folderUntrusted(task) ? { ok: true, task, folderUntrusted: true } : { ok: true, task });
+
 	return {
 		snapshot,
 		create(input, by) {
@@ -1222,7 +1236,7 @@ export function createAutomation(options: {
 			if (unlogged) return unlogged;
 			save(task);
 			publish();
-			return { ok: true, task };
+			return savedAs(task);
 		},
 		update(id, input, by) {
 			const before = tasks.get(id);
@@ -1234,7 +1248,7 @@ export function createAutomation(options: {
 			if (unlogged) return unlogged;
 			save(task);
 			publish();
-			return { ok: true, task };
+			return savedAs(task);
 		},
 		setPaused(id, paused) {
 			const before = tasks.get(id);

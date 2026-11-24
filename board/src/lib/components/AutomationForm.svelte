@@ -23,6 +23,7 @@
 	} from '#lib/board/automation.ts';
 	import { saveTask, type FieldErrors } from '#lib/board/automation-actions.ts';
 	import { SCOPE_KEYS, SCOPE_LABEL, type UnattendedScope } from '#lib/board/unattended.ts';
+	import FolderTrustWarning from './FolderTrustWarning.svelte';
 
 	let { task, onsaved, oncancel }: { task: AutomationTask | null; onsaved: (id: string) => void; oncancel: () => void } = $props();
 
@@ -83,6 +84,8 @@
 	let errors = $state<FieldErrors>({});
 	let failure = $state<string | null>(null);
 	let saving = $state(false);
+	/** Saved, but its client has not trusted the folder (#703): the form says so before it goes to the task. */
+	let untrusted = $state<{ id: string; client: AgentClient; folder: string } | null>(null);
 
 	const TYPES: { type: ScheduleType; text: string }[] = [
 		{ type: 'monthly', text: '每月' },
@@ -118,6 +121,10 @@
 		};
 		const saved = await saveTask(task?.id ?? null, body);
 		saving = false;
+		if (saved.ok && saved.value.folderUntrusted && saved.value.agent) {
+			untrusted = { id: saved.value.id, client: saved.value.agent.client, folder: saved.value.agent.folder };
+			return;
+		}
 		if (saved.ok) return onsaved(saved.value.id);
 		errors = saved.errors ?? {};
 		failure = saved.errors ? '有欄位要修正，請看標紅的地方。' : saved.message;
@@ -301,10 +308,19 @@
 
 	<p class="hint">設定存在看板的設定資料夾，只記下各專案裡說明檔的位置。</p>
 	{#if failure}<p class="error" role="alert">{failure}</p>{/if}
-	<div class="actions">
-		<button type="submit" class="primary" disabled={saving}>儲存</button>
-		<button type="button" onclick={oncancel}>取消</button>
-	</div>
+	{#if untrusted}
+		<!-- Saved already: one way on, so a second press cannot save the task twice. -->
+		<p class="saved">已儲存。</p>
+		<FolderTrustWarning client={untrusted.client} folder={untrusted.folder} />
+		<div class="actions">
+			<button type="button" class="primary" onclick={() => onsaved(untrusted!.id)}>看任務</button>
+		</div>
+	{:else}
+		<div class="actions">
+			<button type="submit" class="primary" disabled={saving}>儲存</button>
+			<button type="button" onclick={oncancel}>取消</button>
+		</div>
+	{/if}
 </form>
 
 <style>
@@ -533,5 +549,9 @@
 	}
 	.actions {
 		margin-top: 0.8rem;
+	}
+	.saved {
+		margin: 0.8rem 0 0.4rem;
+		font-weight: 700;
 	}
 </style>

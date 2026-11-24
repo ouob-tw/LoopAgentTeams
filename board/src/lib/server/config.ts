@@ -22,6 +22,9 @@ export interface BoardConfig {
 	helperCommand: string[];
 	/** The LAT skill folder (`LAT_BOARD_LAT_DIR`): an unattended automation task's controller runs its `lat-unattended.py`. */
 	latDir: string;
+	/** The clients' settings files an agent task's folder trust is read from, never written (#703):
+	 *  `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`, `$CODEX_HOME/config.toml` or `~/.codex/config.toml`. */
+	trustFiles: { claude: string; codex: string };
 	helperTimeoutMs: number;
 	/** Command that types into a controller's client; the board appends `<HCOM name> <text> --enter`. */
 	injectCommand: string[];
@@ -286,6 +289,10 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		userStylePath: join(env.LAT_BOARD_CONFIG_DIR || join(configHome(env), 'lat/board'), 'user.css'),
 		helperCommand: helperCommand(env),
 		latDir: env.LAT_BOARD_LAT_DIR || join(homedir(), '.agents/skills/lat'),
+		trustFiles: {
+			claude: join(env.CLAUDE_CONFIG_DIR || homedir(), '.claude.json'),
+			codex: join(env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml')
+		},
 		// A missed change may wait out one read and then need a second one; both must fit in the
 		// fallback deadline, and each runs the helper twice in a row (the list, then the answered
 		// questions and sent answers), so the helper never gets more than a quarter of it.

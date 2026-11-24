@@ -33,6 +33,7 @@
 	import AutomationReview from './AutomationReview.svelte';
 	import AutomationFix from './AutomationFix.svelte';
 	import AutomationState from './AutomationState.svelte';
+	import FolderTrustWarning from './FolderTrustWarning.svelte';
 	import TestDenied from './TestDenied.svelte';
 
 	let {
@@ -129,6 +130,9 @@
 				<button type="button" disabled={busy} onclick={() => act(() => dismissMissed(task.id))}>這期就算了</button>
 			</div>
 		</section>
+	{/if}
+	{#if view.folderUntrusted && task.agent}
+		<FolderTrustWarning client={task.agent.client} folder={task.agent.folder} />
 	{/if}
 	<div class="actions">
 		{#if running}

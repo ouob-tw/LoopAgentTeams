@@ -328,6 +328,7 @@ function createBoard(): Board {
 		dir: join(config.stateDir, 'automation'),
 		stateDir: config.stateDir,
 		latDir: config.latDir,
+		trustFiles: config.trustFiles,
 		now: config.now,
 		tickMs: config.automationTickMs,
 		publish: (snapshot) => {

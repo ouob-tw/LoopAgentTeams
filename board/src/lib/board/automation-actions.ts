@@ -18,9 +18,10 @@ function failed(result: { kind: string; body?: unknown }, fallback: string): { o
 const post = (method: string, body: unknown) => ({ method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
 /** Add a task (`id` null) or replace one's settings. */
-export async function saveTask(id: string | null, form: unknown): Promise<Done<AutomationTask>> {
+/** `folderUntrusted`: the board saved an agent task whose client has not trusted its folder (#703). */
+export async function saveTask(id: string | null, form: unknown): Promise<Done<AutomationTask & { folderUntrusted?: true }>> {
 	const path = id === null ? '/api/automation' : `/api/automation/${encodeURIComponent(id)}`;
-	const result = await request<AutomationTask>(path, post(id === null ? 'POST' : 'PUT', form));
+	const result = await request<AutomationTask & { folderUntrusted?: true }>(path, post(id === null ? 'POST' : 'PUT', form));
 	return result.ok ? { ok: true, value: result.value } : failed(result, '沒有存成功，請再試一次。');
 }
 

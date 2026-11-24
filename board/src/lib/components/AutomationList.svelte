@@ -3,8 +3,9 @@
 	// next automatic try and how the latest run ended, or which periods were missed. A task file the board cannot read is a red
 	// card of its own, never left out. Picking a card opens the task in the content column.
 	import Plus from '@lucide/svelte/icons/plus';
+	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import { clock } from '#lib/board/clock.svelte.ts';
-	import { kindText, lastRunText, missedText, scheduleText, timeFormat, type AutomationSnapshot } from '#lib/board/automation.ts';
+	import { clientName, kindText, lastRunText, missedText, scheduleText, timeFormat, type AutomationSnapshot } from '#lib/board/automation.ts';
 	import AutomationState from './AutomationState.svelte';
 
 	let { automation, currentId, onopen, onnew }: { automation: AutomationSnapshot; currentId: string | null; onopen: (id: string) => void; onnew: () => void } = $props();
@@ -34,6 +35,9 @@
 					<span class="state"><AutomationState state={view.state} /></span>
 					<span class="ell muted">{kindText(view.task.kind)} · {scheduleText(view.task.schedule, view.task.time)}</span>
 					<span class="ell next"><span class="muted">下次</span> {view.nextAt === null ? (view.task.paused ? '暫停中不會自動跑' : '—') : `${at.full(view.nextAt)}${view.nextAt <= clock.now ? '（已到時間）' : ''}`}</span>
+					{#if view.folderUntrusted && view.task.agent}
+						<span class="ell untrusted" data-folder-untrusted={view.task.agent.client}><TriangleAlert size="1em" aria-hidden="true" />資料夾未被 {clientName(view.task.agent.client)} 信任，執行會卡住</span>
+					{/if}
 					{#if view.missed.length}
 						<span class="ell last missed">{missedText(view.missed)}</span>
 					{:else}
@@ -108,9 +112,14 @@
 	.muted {
 		color: var(--muted);
 	}
-	.missed {
+	.missed,
+	.untrusted {
 		color: var(--warn);
 		font-weight: 700;
+	}
+	.untrusted :global(svg) {
+		vertical-align: -0.125em;
+		margin-inline-end: 0.3rem;
 	}
 	.broken {
 		display: flex;
