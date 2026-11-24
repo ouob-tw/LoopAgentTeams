@@ -71,7 +71,7 @@ MD_CSS = """<style>
 .md>:is(p,h1,h2,h3,h4,ul,ol,blockquote){max-width:860px}
 .md h1,.md h2,.md h3,.md h4{line-height:1.3;margin:1.2em 0 .5em}
 .md p,.md ul,.md ol,.md blockquote{margin:.6em 0}
-.md code{font:.9em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:0 .3em}
+.md code{font:1em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:0 .3em}
 .md pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:.8em 0}
 .md pre code{border:0;padding:0;background:none}
 .md blockquote{border-left:4px solid var(--line);padding-left:16px;margin-left:0;opacity:.85}
