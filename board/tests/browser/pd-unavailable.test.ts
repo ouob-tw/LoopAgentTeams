@@ -18,13 +18,15 @@ test('pd outage is visible with zero pending requests, survives pending requests
 		const wide = { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false };
 		const phone = { width: 360, height: 900, deviceScaleFactor: 1, mobile: true };
 		const BADGE = (text: string) => `document.querySelector('.pd-badge')?.checkVisibility() && document.querySelector('.pd-badge').innerText === '${text}' && !document.querySelector('.inbox .pd')`;
-		// A phone is as before: the notice is open on load.
+		// A phone starts folded to the badge too, which opens the notice.
 		await tab.send('Emulation.setDeviceMetricsOverride', phone);
 		set({ pending: [], vault: 'unavailable' });
 		await tab.navigate(fixture.url);
 		await tab.boardStarted();
-		await tab.until(visible, 'phone: notice visible on load');
+		await tab.until(BADGE('pd 服務不可用'), 'phone: outage on load is a folded badge');
 		expect(await tab.eval(`document.documentElement.scrollWidth <= innerWidth`)).toBe(true);
+		await tab.pointerClick('.pd-badge');
+		await tab.until(visible, 'phone: the badge opens the notice');
 		// A wide screen loads with the outage already there: folded to a badge that says it, not a window over the column.
 		await tab.send('Emulation.setDeviceMetricsOverride', wide);
 		set({ pending: [], vault: 'unavailable' });

@@ -163,8 +163,10 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	expect(await tab.eval(`document.querySelector('.inbox > .middle-bar').previousElementSibling`)).toBe(null);
 	expect(await tab.eval(`document.title`)).toBe('LAT 看板');
 	setPd({ pending: [], unavailable: true });
-	await tab.until(`${SHOWN('.inbox .pd-unavailable')} && document.querySelector('.inbox .pd-unavailable').textContent === 'pd 服務不可用'`, 'the visible unavailable notice');
-	expect(await tab.eval(SHOWN('.inbox .pd'))).toBe(true);
+	// A notice alone starts folded to the strip (a content screen) or badge, which says it and opens the whole notice.
+	await tab.until(`${SHOWN('.pd-banner')} && document.querySelector('.pd-banner').innerText.startsWith('pd 服務不可用') && !document.querySelector('.inbox .pd')`, 'the folded unavailable strip');
+	await tab.pointerClick('.pd-banner');
+	await tab.until(`${SHOWN('.inbox .pd-unavailable')} && document.querySelector('.inbox .pd-unavailable').textContent === 'pd 服務不可用'`, 'the strip opens the notice');
 }, TEST_MS);
 
 test.skipIf(!CHROME)('on a desktop the window floats over the middle column on every list, moves and resizes, keeps its place and stays on screen; 稍後 folds it to a badge, a new request opens it', async () => {
