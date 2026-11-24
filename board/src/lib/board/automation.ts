@@ -156,7 +156,7 @@ export interface AutomationRun {
 	/** What the board did on the way about the Codex usage limit, in words (額度用完，已原地續作). */
 	quotaNotes?: string[];
 	/** The continue message sent after the first usage limit (#710): see `QuotaContinue`. */
-	quotaContinue?: QuotaContinue;
+	quotaContinue?: QuotaContinue | null;
 	/** The agent could not be closed after the run ended: why. */
 	closeError?: string;
 	checks?: CheckResult[];
@@ -208,7 +208,7 @@ export interface RunFix {
 	codexAccount?: number;
 	accountSwitches?: string[];
 	quotaNotes?: string[];
-	quotaContinue?: QuotaContinue;
+	quotaContinue?: QuotaContinue | null;
 	closeError?: string;
 	/** The agent's last reply: each item fixed or disputed. */
 	reply?: string;
@@ -257,7 +257,7 @@ export interface RunReview {
 	codexAccount?: number;
 	accountSwitches?: string[];
 	quotaNotes?: string[];
-	quotaContinue?: QuotaContinue;
+	quotaContinue?: QuotaContinue | null;
 	closeError?: string;
 	items?: ReviewItem[];
 	/** Why it ended without a verdict, or why a PASS was not taken as one. */

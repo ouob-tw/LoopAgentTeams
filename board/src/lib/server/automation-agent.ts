@@ -243,7 +243,7 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 	/** After a failed send of the continue message, the next try waits until then. */
 	let quotaCheckAt = 0;
 	/** The continue message sent after a usage limit (#710), kept in the run's record. */
-	let continued = run.quotaContinue ?? null;
+	let continued: QuotaContinue | null = run.quotaContinue ?? null;
 	/** After the continue was read, the screen was seen without the usage-limit text: what shows now is new. */
 	let cleaned = false;
 
@@ -425,7 +425,8 @@ async function continueAfterLimit(host: AgentHost, watched: Watched, sessionId: 
 	const { spec } = watched;
 	const position = await host.position(spec.client, sessionId);
 	if (!position.ok) return null;
-	const before = { quotaContinue: watched.run.quotaContinue, judgeAfter: watched.run.judgeAfter, quotaNotes: watched.run.quotaNotes };
+	// What to put back when nothing arrived: explicit values (null, not undefined), which the record keeps.
+	const before = { quotaContinue: null, judgeAfter: watched.run.judgeAfter ?? -1, quotaNotes: watched.run.quotaNotes ?? [] };
 	const continued: QuotaContinue = { after: position.seq, shown: limitCount(screen) };
 	// What the agent said before the stop is not the verdict of the turn that follows.
 	watched.note({ quotaContinue: continued, judgeAfter: replySeq, quotaNotes: [...(watched.run.quotaNotes ?? []), CONTINUED_NOTE] });
