@@ -153,6 +153,9 @@ class Observation(NamedTuple):
     capacity_output: bool = False
     # hcom-spawn's spawn-watch types Continue and sends the 5-minute notice for this agent.
     capacity_covered: bool = False
+    # HCOM id of the report to the orchestrator that makes this agent "delivered, awaiting
+    # orchestrator" (#713); 0 when the card is not closed or the report rule does not hold.
+    delivered_report_id: int = 0
 
 
 class QuotaIssue(NamedTuple):
@@ -1034,6 +1037,11 @@ def decide(previous, observation, now):
     finished_active = (observation.client.lower() == 'codex'
                        and observation.codex_turn_finished is True
                        and observation.status == 'active' and observation.prompt_empty)
+    # Handed over and reported, with no newer word from the orchestrator: a valid wait (#713).
+    delivered = (observation.delivered_report_id > 0 and not observation.is_orchestrator
+                 and observation.prompt_empty is True and not observation.input_text
+                 and ((observation.status == 'listening' and not observation.command_running)
+                      or finished_active))
     orchestrator_notified_at = state.get('orchestrator_notified_at', now + 1)
     orchestrator_deadline = orchestrator_notified_at + IDLE_SECONDS
     card_handled = (observation.task_card_revision
@@ -1107,7 +1115,7 @@ def decide(previous, observation, now):
         actions = (Action(
             'recover-prompt', observation.agent, text=observation.input_text),)
         state['prompt_recovery_attempted'] = True
-    elif (stalled and not observation.wait_active and not state['nudged']
+    elif (stalled and not observation.wait_active and not delivered and not state['nudged']
             and observation.status == 'listening'
             and observation.prompt_empty and not observation.command_running):
         actions = (Action('nudge', observation.agent),)
@@ -1120,8 +1128,8 @@ def decide(previous, observation, now):
         actions = (Action('nudge', observation.agent, text=BACKGROUND_NUDGE),)
         state.update(nudged=True, nudged_at=now, nudge_fingerprint=fingerprint,
                      nudge_text=BACKGROUND_NUDGE, stall_reason=BACKGROUND_REASON)
-    elif (active_stalled and not observation.wait_active and not state['nudged']
-          and observation.status == 'active'
+    elif (active_stalled and not observation.wait_active and not delivered
+          and not state['nudged'] and observation.status == 'active'
           and observation.prompt_empty
           and (not observation.command_running or finished_active)):
         actions = (Action('nudge', observation.agent),)
@@ -1130,7 +1138,7 @@ def decide(previous, observation, now):
         state['nudge_fingerprint'] = fingerprint
         state['stall_reason'] = ('Codex turn finished but status active' if finished_active
                                  else 'active status but terminal ready at an empty prompt')
-    elif (state['nudged'] and not observation.wait_active
+    elif (state['nudged'] and not observation.wait_active and not delivered
           and observation.prompt_empty
           and (idle_prompt(observation) if state.get('stall_reason') == 'alarm rang'
                # The background command may end without a transcript change; keep escalating.
@@ -1195,6 +1203,8 @@ def decide(previous, observation, now):
         state['decision'] = 'orchestrator-handled'
     elif observation.wait_active:
         state['decision'] = 'valid-wait'
+    elif delivered:
+        state['decision'] = DELIVERED_DECISION
     elif observation.command_running:
         state['decision'] = 'command-running'
     elif queued_prompt and state.get('prompt_recovery_attempted'):
@@ -2284,6 +2294,87 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     return reason
 
 
+# The card is often saved just after the report (lat-ledger done, card close); a report up to
+# this long before the card's last save still counts (#713).
+CARD_REPORT_GRACE_SECONDS = 60
+CLOSED_CARD = re.compile(r'(?:completed|committed|merged)(?=$|[\s(（])')
+DELIVERED_DECISION = 'delivered-awaiting-orchestrator'
+
+
+def card_closed(card):
+    """A task card whose status says the agent's work is handed over (#713)."""
+    return bool(card) and CLOSED_CARD.match(card.get('status', '')) is not None
+
+
+def hcom_names(name, info=None):
+    """The names HCOM messages carry for an agent: full name and base name."""
+    names = {name, name.rsplit('-', 1)[-1]}
+    if isinstance(info, dict):
+        names |= {info.get('name'), info.get('base_name')}
+    return {item for item in names if isinstance(item, str) and item}
+
+
+def message_names(message, field):
+    value = event_value(message, field, 'data')
+    if isinstance(value, str):
+        return {value}
+    return {item for item in value if isinstance(item, str)} if isinstance(value, list) else set()
+
+
+def message_time(message):
+    try:
+        return datetime.fromisoformat(str(message.get('ts')).replace('Z', '+00:00')).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def delivered_report(messages, card_updated_at, agent_names, orchestrator_names):
+    """Id of the agent's report to its orchestrator that still stands, or 0 (#713).
+
+    The report is the agent's latest message to the orchestrator, sent after the card's last
+    save or at most CARD_REPORT_GRACE_SECONDS before it. The agent must have the last word:
+    any later message from the orchestrator to the agent voids it, whatever its intent, since
+    orchestrators send instructions as inform too. So does a later message from anyone else
+    unless it is an inform/ack or a watcher notice (message_releases_wait): a question from QA
+    or a reviewer is work.
+    """
+    def to(message, names):
+        return bool((message_names(message, 'delivered_to') | message_names(message, 'mentions'))
+                    & names)
+
+    ordered = sorted((message for message in messages if message.get('type') == 'message'
+                      and isinstance(message.get('id'), int)), key=lambda item: item['id'])
+    report = 0
+    for message in ordered:
+        sender = message_names(message, 'from')
+        if sender & agent_names:
+            if (to(message, orchestrator_names)
+                    and (message_time(message) or 0)
+                    > card_updated_at - CARD_REPORT_GRACE_SECONDS):
+                report = message['id']
+        elif to(message, agent_names) and (sender & orchestrator_names
+                                           or message_releases_wait(message)):
+            report = 0
+    return report
+
+
+def find_delivered_report(orchestrator, agent, info, card):
+    """Read HCOM messages for the delivered-awaiting-orchestrator rule (#713)."""
+    if not card_closed(card) or agent == orchestrator:
+        return 0
+    updated_at = card.get('_updated_at', 0)
+    after = datetime.fromtimestamp(updated_at - CARD_REPORT_GRACE_SECONDS,
+                                   timezone.utc).isoformat()
+    base = (info or {}).get('base_name') or agent.rsplit('-', 1)[-1]
+    try:
+        messages = hcom_events(orchestrator, '--type', 'message', '--participant', base,
+                               '--after', after, '--last', '500')
+    except (OSError, ValueError):
+        return 0  # unreadable messages: no exemption, the usual nudge rules apply
+    return delivered_report(messages, updated_at, hcom_names(agent, info),
+                            hcom_names(orchestrator))
+
+
 def observe(workspace, decisions, orchestrator, agent, info, card=None, *, processes):
     status_issue = hcom_quota_issue(info)
     login_status = hcom_login_issue(info)
@@ -2354,6 +2445,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
     ready = terminal.get('ready') is True
     background_running = background_process_running(agent, info, processes)
     quota_issue = screen_issue or status_issue
+    delivered_report_id = find_delivered_report(orchestrator, agent, info, card)
     return Observation(
         agent=agent,
         status=info.get('status', 'missing'),
@@ -2390,6 +2482,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
         capacity_covered=(client.lower() == 'codex' and quota_issue is not None
                           and quota_issue.kind == 'model-capacity'
                           and spawn_watch_covers(agent)),
+        delivered_report_id=delivered_report_id,
     )
 
 
@@ -3359,6 +3452,8 @@ def log_signature(observation, state):
     """What counts as a status change for the log; progress alone is not one."""
     signature = [observation.status, observation.wait_active, observation.command_running,
                  observation.prompt_empty, state['quota_active'], state['nudged']]
+    if state.get('decision') == DELIVERED_DECISION:
+        signature.append(DELIVERED_DECISION)  # log when the #713 exemption starts and ends
     owner = state.get('nudge_owner')
     # Log once when another watcher takes over (or gives up) nudging this agent (#682).
     return signature + [owner['pid']] if owner else signature

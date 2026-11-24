@@ -1668,6 +1668,213 @@ class WatchDecisionTests(unittest.TestCase):
         )])
 
 
+class DeliveredAwaitingOrchestratorTests(unittest.TestCase):
+    """#713: an agent that closed its card and reported is waiting on its orchestrator."""
+
+    CARD_AT = datetime(2026, 11, 24, 8, 0, tzinfo=timezone.utc).timestamp()
+    AGENT = {'q713-faha', 'faha'}
+    BOSS = {'vonero'}
+
+    @staticmethod
+    def message(event_id, sender, recipients, minutes, intent=None, text=''):
+        at = datetime(2026, 11, 24, 8, 0, tzinfo=timezone.utc) + timedelta(minutes=minutes)
+        return {'id': event_id, 'type': 'message', 'ts': at.isoformat(),
+                'data': {'from': sender, 'delivered_to': recipients, 'mentions': recipients,
+                         'intent': intent, 'text': text}}
+
+    def report(self, *messages):
+        return load_watch().delivered_report(list(messages), self.CARD_AT, self.AGENT, self.BOSS)
+
+    def test_closed_card_statuses(self):
+        watch = load_watch()
+        for status in ('completed', 'committed', 'merged', 'committed (abc123)'):
+            self.assertTrue(watch.card_closed({'status': status}), status)
+        for status in ('dispatched', 'in progress', 'done (findings F1)', 'completedx', ''):
+            self.assertFalse(watch.card_closed({'status': status}), status)
+        self.assertFalse(watch.card_closed(None))
+
+    def test_report_to_orchestrator_after_card_update_counts(self):
+        self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], 2)), 5)
+
+    def test_report_before_card_update_does_not_count(self):
+        self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], -1.05)), 0)
+
+    def test_report_up_to_a_minute_before_the_card_save_counts(self):
+        self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], -0.95)), 5)
+
+    def test_message_to_someone_else_is_not_a_report(self):
+        self.assertEqual(self.report(self.message(5, 'faha', ['badi'], 2)), 0)
+
+    def test_orchestrator_message_after_report_voids_it_whatever_its_intent(self):
+        for intent in (None, 'request', 'inform', 'ack'):
+            self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], 2),
+                                         self.message(6, 'vonero', ['faha'], 3, intent)), 0,
+                             intent)
+
+    def test_orchestrator_message_before_report_does_not_void_it(self):
+        self.assertEqual(self.report(self.message(6, 'faha', ['vonero'], 3),
+                                     self.message(5, 'vonero', ['faha'], 2)), 6)
+
+    def test_new_report_after_orchestrator_message_counts_again(self):
+        self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], 2),
+                                     self.message(6, 'vonero', ['faha'], 3),
+                                     self.message(7, 'faha', ['vonero'], 4)), 7)
+
+    def test_orchestrator_message_to_others_and_others_informs_keep_the_report(self):
+        self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], 2),
+                                     self.message(6, 'vonero', ['kosa'], 3),
+                                     self.message(7, 'badi', ['faha'], 4, 'inform'),
+                                     self.message(8, 'badi', ['faha'], 5, 'ack'),
+                                     self.message(9, 'lat-watch', ['faha'], 6)), 5)
+
+    def test_hcom_idle_notice_keeps_the_report(self):
+        notice = self.message(6, '[hcom-events]', ['faha'], 3,
+                              text='[sub:reqwatch-6-faha] faha went idle without responding')
+        self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], 2), notice), 5)
+
+    def test_a_request_from_anyone_else_after_the_report_voids_it(self):
+        for intent in (None, 'request'):
+            self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], 2),
+                                         self.message(6, 'badi', ['faha'], 3, intent)), 0,
+                             intent)
+        # Answering the question with a new report to the orchestrator restores it.
+        self.assertEqual(self.report(self.message(5, 'faha', ['vonero'], 2),
+                                     self.message(6, 'badi', ['faha'], 3, 'request'),
+                                     self.message(7, 'faha', ['badi', 'vonero'], 4)), 7)
+
+    def test_find_skips_hcom_for_open_cards_and_fails_closed(self):
+        watch = load_watch()
+        calls = []
+        with patch.object(watch, 'hcom_events', lambda *args: calls.append(args) or []):
+            self.assertEqual(watch.find_delivered_report(
+                'vonero', 'q713-faha', {}, {'status': 'in progress', '_updated_at': 1}), 0)
+            self.assertEqual(watch.find_delivered_report(
+                'vonero', 'vonero', {}, {'status': 'committed', '_updated_at': 1}), 0)
+        self.assertEqual(calls, [])
+
+        def broken(*args):
+            raise ValueError('hcom events failed')
+        with patch.object(watch, 'hcom_events', broken):
+            self.assertEqual(watch.find_delivered_report(
+                'vonero', 'q713-faha', {}, {'status': 'committed', '_updated_at': 1}), 0)
+
+    def test_find_reads_the_agents_messages_since_the_card_update(self):
+        watch = load_watch()
+        calls = []
+
+        def events(orchestrator, *filters):
+            calls.append((orchestrator, filters))
+            return [self.message(5, 'faha', ['vonero'], 2)]
+        with patch.object(watch, 'hcom_events', events):
+            found = watch.find_delivered_report(
+                'vonero', 'q713-faha', {'name': 'q713-faha', 'base_name': 'faha'},
+                {'status': 'completed', '_updated_at': self.CARD_AT})
+        self.assertEqual(found, 5)
+        orchestrator, filters = calls[0]
+        self.assertEqual(orchestrator, 'vonero')
+        self.assertEqual(filters[filters.index('--participant') + 1], 'faha')
+        self.assertEqual(filters[filters.index('--after') + 1], '2026-11-24T07:59:00+00:00')
+
+    def idle(self, **changes):
+        return load_watch().Observation(
+            'q713-faha', 'listening', True, False, 100, 1_000, 10,
+            task_card_revision='["completed", "無"]')._replace(**changes)
+
+    def test_delivered_agent_is_never_nudged_or_escalated(self):
+        watch = load_watch()
+        idle = self.idle(delivered_report_id=5)
+        state, _ = watch.decide(None, idle, now=0)
+        for now in (600, 1_200, 3_600, 7_200):
+            state, actions = watch.decide(state, idle, now=now)
+            self.assertEqual(actions, ())
+            self.assertEqual(state['decision'], 'delivered-awaiting-orchestrator')
+
+    def test_closed_card_without_a_standing_report_is_nudged(self):
+        watch = load_watch()
+        idle = self.idle()
+        state, _ = watch.decide(None, idle, now=0)
+        state, actions = watch.decide(state, idle, now=600)
+        self.assertEqual(actions, (watch.Action('nudge', 'q713-faha'),))
+
+    def test_orchestrator_message_ends_the_exemption_and_the_idle_agent_is_nudged(self):
+        watch = load_watch()
+        delivered = self.idle(delivered_report_id=5)
+        state, _ = watch.decide(None, delivered, now=0)
+        state, actions = watch.decide(state, delivered, now=900)
+        self.assertEqual(actions, ())
+        # The orchestrator's new instruction voids the report; the agent does not move.
+        state, actions = watch.decide(state, self.idle(), now=960)
+        self.assertEqual(actions, (watch.Action('nudge', 'q713-faha'),))
+
+    def test_nudged_agent_that_then_reports_is_not_escalated(self):
+        watch = load_watch()
+        idle = self.idle()
+        state, _ = watch.decide(None, idle, now=0)
+        state, actions = watch.decide(state, idle, now=600)
+        self.assertEqual(actions[0].kind, 'nudge')
+        state, actions = watch.decide(state, self.idle(delivered_report_id=5), now=1_800)
+        self.assertEqual(actions, ())
+        self.assertEqual(state['decision'], 'delivered-awaiting-orchestrator')
+
+    def test_finished_codex_turn_counts_as_waiting(self):
+        watch = load_watch()
+        idle = self.idle(status='active', client='codex', codex_turn_finished=True,
+                         command_running=True, delivered_report_id=5)
+        state, _ = watch.decide(None, idle, now=0)
+        state, actions = watch.decide(state, idle, now=3_600)
+        self.assertEqual(actions, ())
+        self.assertEqual(state['decision'], 'delivered-awaiting-orchestrator')
+        unreported = idle._replace(delivered_report_id=0)
+        state, _ = watch.decide(None, unreported, now=0)
+        state, actions = watch.decide(state, unreported, now=1_200)
+        self.assertEqual(actions[0].kind, 'nudge')
+
+    def test_exemption_needs_an_idle_empty_prompt(self):
+        watch = load_watch()
+        for changes, decision in (({'command_running': True}, 'command-running'),
+                                  ({'prompt_empty': False}, 'prompt-not-empty'),
+                                  ({'status': 'active'}, 'not-listening')):
+            observation = self.idle(delivered_report_id=5, **changes)
+            state, _ = watch.decide(None, observation, now=0)
+            state, _ = watch.decide(state, observation, now=600)
+            self.assertEqual(state['decision'], decision, changes)
+
+    def test_blocked_agent_still_reaches_the_orchestrator(self):
+        watch = load_watch()
+        blocked = self.idle(status='blocked', delivered_report_id=5)
+        state, _ = watch.decide(None, blocked, now=0)
+        state, actions = watch.decide(state, blocked, now=600)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+
+    def test_orchestrator_is_never_exempt(self):
+        watch = load_watch()
+        idle = self.idle(is_orchestrator=True, delivered_report_id=5)
+        state, _ = watch.decide(None, idle, now=0)
+        state, actions = watch.decide(state, idle, now=600)
+        self.assertEqual(actions[0].kind, 'nudge')
+
+    def test_open_card_behaviour_is_unchanged(self):
+        watch = load_watch()
+        for status in ('dispatched', 'in progress'):
+            card = {'status': status, '_updated_at': self.CARD_AT}
+            with patch.object(watch, 'hcom_events',
+                              side_effect=AssertionError('no message read')):
+                self.assertEqual(watch.find_delivered_report('vonero', 'q713-faha', {}, card), 0)
+            idle = self.idle()._replace(task_card_revision=json.dumps([status, '無']))
+            state, _ = watch.decide(None, idle, now=0)
+            state, actions = watch.decide(state, idle, now=600)
+            self.assertEqual(actions, (watch.Action('nudge', 'q713-faha'),))
+
+    def test_log_signature_marks_the_exemption(self):
+        watch = load_watch()
+        idle = self.idle(delivered_report_id=5)
+        state, _ = watch.decide(None, idle, now=0)
+        state, _ = watch.decide(state, idle, now=600)
+        self.assertIn('delivered-awaiting-orchestrator', watch.log_signature(idle, state))
+        state, _ = watch.decide(state, self.idle(), now=660)
+        self.assertNotIn('delivered-awaiting-orchestrator', watch.log_signature(idle, state))
+
+
 class AlarmDecisionTests(unittest.TestCase):
     def test_due_alarm_requests_terminal_ring_and_busy_defers(self):
         watch = load_watch()
