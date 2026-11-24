@@ -319,8 +319,9 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 			// Not started yet: hcom giving up on the launch (a prompt on its screen), or no session long
 			// after it, ends the run; the agent stuck there is closed (#702).
 			const blocked = await host.launchBlocked(name, watched.run.startedAt);
-			if (blocked) return end({ status: 'failed', reason: blockedReason(blocked) });
-			if (watched.now() - (watched.run.launchedAt ?? watched.run.startedAt) >= NO_SESSION_MINUTES * 60_000) return end({ status: 'failed', reason: NEVER_STARTED });
+			const reason = blocked ? blockedReason(blocked) : watched.now() - (watched.run.launchedAt ?? watched.run.startedAt) >= NO_SESSION_MINUTES * 60_000 ? NEVER_STARTED : null;
+			// Listed again right before closing: one that got its session meanwhile is watched on.
+			if (reason && !(await startedSince(host, name))) return end({ status: 'failed', reason });
 			continue;
 		}
 		const asking = watched.asking;
@@ -407,6 +408,12 @@ async function unansweredAsk(host: AgentHost, client: AgentSpec['client'], sessi
 	if (!latest) return null;
 	// Answered (typed in, the board's reply, or the question panel's): it is not opened again.
 	return (await host.inputAfter(client, sessionId, latest.seq)) ? null : latest;
+}
+
+/** Whether hcom lists the agent with a session now; false when the list cannot be read. */
+async function startedSince(host: AgentHost, name: string): Promise<boolean> {
+	const listed = await host.list();
+	return listed.ok && !!listed.agents.find((each) => each.name === name)?.sessionId;
 }
 
 /** A Codex agent stopped on its usage limit: check its own account's quota live (the one it runs

@@ -312,7 +312,8 @@ export async function launchBlocked(config: BoardConfig, name: string, since: nu
 		const instance = textOf(event?.instance);
 		const ts = textOf(event?.ts);
 		if (data?.action !== 'launch_blocked' || !instance || (instance !== name && !name.endsWith(`-${instance}`))) continue;
-		if (ts && Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : `${ts}Z`) < from) continue;
+		const time = ts ? Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : `${ts}Z`) : Number.NaN;
+		if (!(time >= from)) continue;
 		return textOf(data.detail) ?? textOf(data.reason) ?? 'launch_blocked';
 	}
 	return null;

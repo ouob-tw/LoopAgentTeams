@@ -83,8 +83,21 @@ test('an agent with no session NO_SESSION_MINUTES after its launch fails as neve
 	const ended = await watchAgent(host, watched(clock));
 	expect(ended).toEqual({ status: 'failed', reason: NEVER_STARTED });
 	expect(NEVER_STARTED).toContain('沒有啟動');
-	expect(clock.now - START).toBe(NO_SESSION_MINUTES * 60_000);
+	// Failed at the look that reached NO_SESSION_MINUTES, after one more list right before closing.
+	expect(clock.now - START).toBe((NO_SESSION_MINUTES + 1) * 60_000);
 	expect(closed).toEqual([{ sessionId: null, name: NAME }]);
+});
+
+test('an agent that gets its session right before it would be closed is watched on, not failed', async () => {
+	const clock = { now: START };
+	const sessionAt = START + (NO_SESSION_MINUTES + 1) * 60_000;
+	const { host, closed } = fakeHost(clock, {
+		agent: () => (clock.now >= sessionAt ? { sessionId: 's1', status: 'listening' } : {}),
+		blocked: () => (clock.now >= sessionAt - 60_000 ? TRUST_SCREEN : null),
+		reply: () => 'DONE'
+	});
+	expect(await watchAgent(host, watched(clock))).toEqual({ status: 'success' });
+	expect(closed).toEqual([{ sessionId: 's1', name: NAME }]);
 });
 
 test('the no-session wait is longer than the lock retries, counted from the launch, not the run start', async () => {
@@ -106,7 +119,7 @@ test('a run adopted at restart with no launch time counts from its start', async
 	const { host } = fakeHost(clock, { agent: () => ({}) });
 	const ended = await watchAgent(host, { ...watched(clock, { launchedAt: undefined }), adopted: true });
 	expect(ended).toEqual({ status: 'failed', reason: NEVER_STARTED });
-	expect(clock.now).toBe(START + NO_SESSION_MINUTES * 60_000);
+	expect(clock.now).toBe(START + (NO_SESSION_MINUTES + 1) * 60_000);
 });
 
 test('a blocked launch ends the task run as failed, with the run-ended event that makes the red card and push', async () => {
@@ -168,10 +181,21 @@ test('hcom launch_blocked events: the agent\'s own, since the run started; nothi
 		event('mitoza', '2026-11-24T00:01:00', 'a ready event', 'ready'),
 		event('mitoza', '2026-11-24T00:00:00', TRUST_SCREEN)
 	];
-	const printing = (text: string) => ({ hcomCommand: [NODE, '-e', `process.stdout.write(${JSON.stringify(text)})`], hcomListTimeoutMs: 10_000 }) as BoardConfig;
+	// Prints the events only when asked for the agent's launch_blocked life events after the run started (a second early), as the real hcom filters.
+	const expected = ['events', '--type', 'life', '--action', 'launch_blocked', '--agent', NAME, '--full', '--after'];
+	const printing = (text: string) =>
+		({
+			hcomCommand: [
+				NODE,
+				'-e',
+				`const a = process.argv.slice(1); const ok = ${JSON.stringify(JSON.stringify(expected))} === JSON.stringify(a.slice(0, ${expected.length})) && Date.parse(a[${expected.length}]) <= ${START}; process.stdout.write(ok ? ${JSON.stringify(text)} : '')`
+			],
+			hcomListTimeoutMs: 10_000
+		}) as BoardConfig;
 	// The event's time is whole seconds and may fall in the same second the run started.
 	expect(await launchBlocked(printing(lines.join('\n') + '\n'), NAME, START + 500)).toBe(TRUST_SCREEN);
 	expect(await launchBlocked(printing(lines.slice(0, 3).join('\n') + '\n'), NAME, START)).toBeNull();
 	expect(await launchBlocked(printing('not json\n'), NAME, START)).toBeNull();
+	expect(await launchBlocked(printing(event('mitoza', 'not a time', TRUST_SCREEN) + '\n'), NAME, START)).toBeNull();
 	expect(await launchBlocked({ hcomCommand: [NODE, '-e', 'process.exit(1)'], hcomListTimeoutMs: 10_000 } as BoardConfig, NAME, START)).toBeNull();
 });
