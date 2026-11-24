@@ -103,6 +103,15 @@
 		if (!defaults) return form.defaultsFailed ? '預設：看板讀取 client 設定失敗' : '預設：讀取中…';
 		return `預設：${value ?? DEFAULT_UNREADABLE_TEXT}`;
 	}
+	/** The option that is the default, when the value is known and listed: it carries the mark itself. */
+	const markedDefault = (value: string | null | undefined, list: string[] | undefined) => (defaults && value && list?.includes(value) ? value : null);
+	const defaultModelMarked = $derived(markedDefault(defaults?.model, options?.models));
+	const defaultEffortMarked = $derived(markedDefault(defaults && defaultEffort(defaults, form.model || null), options?.efforts));
+	// A value chosen explicitly that has since become the default is the marked option itself.
+	$effect(() => {
+		if (defaultModelMarked && form.model === defaultModelMarked) form.model = '';
+		if (defaultEffortMarked && form.effort === defaultEffortMarked) form.effort = '';
+	});
 	/** A model by its short name, with the ID the other options use when that differs. */
 	const named = (model: string) => (modelShort(model) === model ? model : `${modelShort(model)}（${model}）`);
 
@@ -560,18 +569,18 @@
 			<label>
 				模型
 				<select bind:value={form.model}>
-					<option value="">{defaultOption(defaults?.model && named(defaults.model))}</option>
+					{#if !defaultModelMarked}<option value="">{defaultOption(defaults?.model && named(defaults.model))}</option>{/if}
 					{#each options?.models ?? [] as option (option)}
-						<option value={option}>{option}</option>
+						<option value={option === defaultModelMarked ? '' : option}>{option === defaultModelMarked ? `${option}：預設` : option}</option>
 					{/each}
 				</select>
 			</label>
 			<label>
 				思考強度
 				<select bind:value={form.effort}>
-					<option value="">{defaultOption(defaults && defaultEffort(defaults, form.model || null))}</option>
+					{#if !defaultEffortMarked}<option value="">{defaultOption(defaults && defaultEffort(defaults, form.model || null))}</option>{/if}
 					{#each options?.efforts ?? [] as option (option)}
-						<option value={option}>{option}</option>
+						<option value={option === defaultEffortMarked ? '' : option}>{option === defaultEffortMarked ? `${option}：預設` : option}</option>
 					{/each}
 				</select>
 			</label>

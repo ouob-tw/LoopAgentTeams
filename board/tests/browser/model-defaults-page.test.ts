@@ -8,7 +8,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { DEFAULT_UNREADABLE_TEXT } from '../../src/lib/board/models.ts';
 import type { HelperController } from '../../src/lib/board/types.ts';
 import { sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser } from '../browser.ts';
+import { CHROME, holdRequests, launchChrome, type Browser } from '../browser.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -21,9 +21,14 @@ const send = (method: string, params: object = {}) => browser!.tab.send(method, 
 const evaluate = <T>(expression: string) => browser!.tab.eval<T>(expression);
 const until = (expression: string, timeoutMs?: number) => browser!.tab.until(expression, expression, timeoutMs);
 
-/** The first option of the form's model and effort fields, as the page shows them. */
-const SHOWN = `JSON.stringify([...document.querySelectorAll('.settings select')].map((select) => select.options[0].text))`;
-const shows = (model: string, effort: string) => until(`${SHOWN} === ${JSON.stringify(JSON.stringify([`預設：${model}`, `預設：${effort}`]))}`);
+/** The option of the form's model and effort fields that leaves the value to the client (its value is empty), as the page shows it. */
+const SHOWN = `JSON.stringify([...document.querySelectorAll('.settings select')].map((select) => [...select.options].find((option) => option.value === '').text))`;
+const shows = (model: string, effort: string) => until(`${SHOWN} === ${JSON.stringify(JSON.stringify([model, effort]))}`);
+/** A known default that is in the list is marked on its own option: `value：預設`. */
+const marked = (value: string) => `${value}：預設`;
+/** The default is not offered twice: no option other than the empty one reads this text. */
+const noDuplicateDefault = (index: number, value: string) =>
+	until(`[...document.querySelectorAll('.settings select')[${index}].options].filter((option) => option.text === ${JSON.stringify(value)} || option.text.startsWith('預設')).length === 0`);
 /** Click the radio button of the form with this value. */
 async function choose(value: string) {
 	const radio = `document.querySelector(${JSON.stringify(`input[type=radio][value="${value}"]`)})`;
@@ -87,26 +92,46 @@ test.skipIf(!CHROME)("the new-controller form names each client's defaults, the 
 	await filledIn();
 	// No folder: the user's settings alone.
 	await pickFolder('');
-	await shows('Opus 5.5（claude-opus-5-5）', 'medium');
+	await shows(marked('claude-opus-5-5'), marked('medium'));
+	// The marked option is the initial selection and the only one that reads as that value or as a 預設 line.
+	await noDuplicateDefault(0, 'claude-opus-5-5');
+	await noDuplicateDefault(1, 'medium');
+	expect(await evaluate<string>(`JSON.stringify([...document.querySelectorAll('.settings select')].map((select) => [select.value, select.selectedOptions[0].text]))`)).toBe(
+		JSON.stringify([['', marked('claude-opus-5-5')], ['', marked('medium')]])
+	);
+	// An effort chosen explicitly that then becomes the default folds into the marked option.
+	await evaluate(`(() => { const s = document.querySelectorAll('.settings select')[1]; s.value = 'high'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
 	await pickFolder(own);
-	await shows('Haiku 5.5（claude-haiku-5-5）', 'high');
+	await shows(marked('claude-haiku-5-5'), marked('high'));
+	expect(await evaluate<string>(`document.querySelectorAll('.settings select')[1].value`)).toBe('');
 	await pickFolder(plain);
-	await shows('Opus 5.5（claude-opus-5-5）', 'medium');
+	await shows(marked('claude-opus-5-5'), marked('medium'));
+	// A default that is not in the list keeps the single first option with its own text.
+	write(join(own, '.claude/settings.local.json'), { model: 'claude-future-9', effortLevel: 'ultra' });
+	await pickFolder(own + '/');
+	await shows('預設：Future 9（claude-future-9）', '預設：ultra');
+	write(join(own, '.claude/settings.local.json'), { model: 'haiku', effortLevel: 'high' });
+	// Another folder first: a read again for the same folder is not made.
+	await pickFolder(plain);
+	await pickFolder(own);
+	await shows(marked('claude-haiku-5-5'), marked('high'));
+	await pickFolder(plain);
+	await shows(marked('claude-opus-5-5'), marked('medium'));
 	// Only the model chosen: the effort it gets is what modelSettings gives that model.
 	await pickModel('claude-sonnet-5-5');
-	await shows('Opus 5.5（claude-opus-5-5）', 'low');
+	await shows(marked('claude-opus-5-5'), marked('low'));
 	await pickModel('claude-fable-5-2');
-	await shows('Opus 5.5（claude-opus-5-5）', 'medium');
+	await shows(marked('claude-opus-5-5'), marked('medium'));
 	await choose('codex');
-	await shows('GPT-6.1 Sol（gpt-6.1-sol）', 'medium');
+	await shows(marked('gpt-6.1-sol'), marked('medium'));
 
 	// Settings that cannot be read say the client's own default is used.
 	write(join(home(), '.codex/config.toml'), 'model = "gpt-6.1-sol\n');
 	await pickFolder(own);
-	await shows(DEFAULT_UNREADABLE_TEXT, DEFAULT_UNREADABLE_TEXT);
+	await shows(`預設：${DEFAULT_UNREADABLE_TEXT}`, `預設：${DEFAULT_UNREADABLE_TEXT}`);
 	write(join(home(), '.codex/config.toml'), 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "medium"\n');
 	await pickFolder(plain);
-	await shows('GPT-6.1 Sol（gpt-6.1-sol）', 'medium');
+	await shows(marked('gpt-6.1-sol'), marked('medium'));
 
 	// A read again for the same folder that fails does not keep showing what may be out of date.
 	await evaluate(`(() => {
@@ -116,7 +141,7 @@ test.skipIf(!CHROME)("the new-controller form names each client's defaults, the 
 	})()`);
 	fixture.report(luna.session_id, { tag: 'DONE', summary: '又好了', hcom_name: 'luna', workspace: own });
 	await fixture.refresh(cookie);
-	await shows('看板讀取 client 設定失敗', '看板讀取 client 設定失敗');
+	await shows('預設：看板讀取 client 設定失敗', '預設：看板讀取 client 設定失敗');
 	await evaluate('window.restoreFetch()');
 	await choose('claude');
 }, 30_000);
@@ -126,10 +151,78 @@ test.skipIf(!CHROME)("the new-agent form names the defaults the same way", async
 	await until(`document.querySelector('h2')?.textContent.includes('Alpha')`);
 	await filledIn();
 	await pickFolder(own);
-	await shows('Haiku 5.5（claude-haiku-5-5）', 'high');
+	await shows(marked('claude-haiku-5-5'), marked('high'));
 	await choose('codex');
-	await shows('GPT-6.1 Sol（gpt-6.1-sol）', 'medium');
+	await shows(marked('gpt-6.1-sol'), marked('medium'));
 	await choose('claude');
+}, 30_000);
+
+/** Keep what the form sends for the next launch, and answer it as started. */
+const catchLaunch = () =>
+	evaluate(`(() => {
+		window.sentLaunch = null;
+		const real = window.fetch;
+		window.fetch = (input, init) => {
+			if (String(input).endsWith('/api/launches') && init?.method === 'POST') {
+				window.sentLaunch = JSON.parse(init.body);
+				return Promise.resolve(new Response(JSON.stringify({ ok: true, reason: null, entry: null, logError: null }), { status: 200, headers: { 'content-type': 'application/json' } }));
+			}
+			return real(input, init);
+		};
+	})()`);
+/** Send the form with this first sentence. */
+async function submitWith(text: string) {
+	await evaluate(`(() => {
+		const box = document.querySelector('.new textarea');
+		box.value = ${JSON.stringify(text)};
+		box.dispatchEvent(new Event('input', { bubbles: true }));
+	})()`);
+	// The test folders are not Git projects: say they may be initialised.
+	await until(`!!document.querySelector('.init input') || !document.querySelector('form > .primary').disabled`);
+	await evaluate(`document.querySelector('.init input:not(:checked)')?.click()`);
+	await until(`!document.querySelector('form > .primary').disabled`);
+	await evaluate(`document.querySelector('form > .primary').click()`);
+	await until('window.sentLaunch !== null');
+	return evaluate<{ model: string | null; effort: string | null }>('window.sentLaunch');
+}
+
+test.skipIf(!CHROME)('the marked default option launches with no model and no effort, like the old 預設 line; an explicit choice still sends its value', async () => {
+	await send('Page.navigate', { url: `${fixture.url}/?launch` });
+	await filledIn();
+	await pickFolder(plain);
+	await shows(marked('claude-opus-5-5'), marked('medium'));
+	await catchLaunch();
+	const byDefault = await submitWith('用預設');
+	expect([byDefault.model, byDefault.effort]).toEqual([null, null]);
+	// A model and effort other than the default are sent as chosen.
+	await send('Page.navigate', { url: `${fixture.url}/?launch` });
+	await filledIn();
+	await pickFolder(plain);
+	await shows(marked('claude-opus-5-5'), marked('medium'));
+	await pickModel('claude-sonnet-5-5');
+	await evaluate(`(() => { const s = document.querySelectorAll('.settings select')[1]; s.value = 'high'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+	await catchLaunch();
+	const chosen = await submitWith('自己選');
+	expect([chosen.model, chosen.effort]).toEqual(['claude-sonnet-5-5', 'high']);
+}, 30_000);
+
+test.skipIf(!CHROME)('while the defaults load, the single 預設：讀取中… option shows, then the marked one; a chosen model that becomes the default folds into it', async () => {
+	await send('Page.navigate', { url: `${fixture.url}/?launch` });
+	await filledIn();
+	await pickFolder(plain);
+	await shows(marked('claude-opus-5-5'), marked('medium'));
+	await evaluate(holdRequests('/api/launches/defaults'));
+	await pickFolder(own);
+	await shows('預設：讀取中…', '預設：讀取中…');
+	await evaluate('window.release()');
+	await shows(marked('claude-haiku-5-5'), marked('high'));
+	// A model chosen explicitly that becomes the default: the folder's own default is haiku.
+	await pickFolder(plain);
+	await shows(marked('claude-opus-5-5'), marked('medium'));
+	await pickModel('claude-haiku-5-5');
+	await pickFolder(own);
+	await shows(marked('claude-haiku-5-5'), marked('high'));
+	expect(await evaluate<string>(`document.querySelectorAll('.settings select')[0].value`)).toBe('');
 }, 30_000);
 
 test.skipIf(!CHROME)("the command line's label shows a new controller's settings once its first turn starts, without a reload", async () => {
@@ -140,7 +233,7 @@ test.skipIf(!CHROME)("the command line's label shows a new controller's settings
 	// Hydrated: the form has read the defaults.
 	await filledIn();
 	await pickFolder(plain);
-	await shows('Opus 5.5（claude-opus-5-5）', 'medium');
+	await shows(marked('claude-opus-5-5'), marked('medium'));
 	await evaluate(`document.querySelector('textarea[aria-label^="指令列"]').focus()`);
 	await send('Input.insertText', { text: '@luna 你好' });
 	const parts = `JSON.stringify([...document.querySelectorAll('.picker .part')].map((part) => part.textContent.trim()))`;
