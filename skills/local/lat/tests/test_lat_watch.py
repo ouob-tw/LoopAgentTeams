@@ -2300,14 +2300,14 @@ class WaitExpiryProgressTests(unittest.TestCase):
             P(24, 23, start + 4, 'Z', 20, ('bun',), env),
         ]
 
-    def live(self, pid, age):
-        path = self.state / 'failures' / f'live-{pid}-0a1b2c3d.log'
-        path.write_text('output\n')
+    def live(self, pid, age, name='0a1b2c3d', size=7):
+        path = self.state / 'failures' / f'live-{pid}-{name}.log'
+        with open(path, 'wb') as handle:
+            handle.truncate(size)
         os.utime(path, (self.NOW - age, self.NOW - age))
 
-    def progress(self, processes, foreground=True):
-        return self.watch.command_progress('reviewer', self.info, processes,
-                                           foreground=foreground, proc_root=self.proc)
+    def progress(self, processes):
+        return self.watch.gate_progress('reviewer', self.info, processes, proc_root=self.proc)
 
     def nudge(self, progress):
         declaration = dict(agent='worker', target='reviewer', declared_at=self.NOW - 3660,
@@ -2333,57 +2333,66 @@ class WaitExpiryProgressTests(unittest.TestCase):
         text = self.nudge(self.progress([self.client, *self.gate]))
         self.assertIn('its output last grew at 1970-01-02 03:26 UTC (20 min ago)', text)
         self.assertIn('It may be stuck: no output for 20 min. Hand it back to reviewer', text)
-        self.live(22, self.watch.GATE_STALL_SECONDS - 60)  # just under the threshold
+        self.live(22, self.watch.GATE_STALL_SECONDS - 1)  # just under the threshold
         self.assertNotIn('may be stuck', self.nudge(self.progress([self.client, *self.gate])))
+        self.live(22, self.watch.GATE_STALL_SECONDS)  # exactly at it
+        self.assertIn('may be stuck', self.nudge(self.progress([self.client, *self.gate])))
+
+    def test_parallel_gates_judge_the_quietest_live_output(self):
+        self.live(22, 60)
+        self.live(22, self.watch.GATE_STALL_SECONDS + 60, name='ffff0000')
+        text = self.nudge(self.progress([self.client, *self.gate]))
+        self.assertIn('(16 min ago)', text)
+        self.assertIn('may be stuck', text)
+
+    def test_capped_live_output_is_not_called_stuck(self):
+        self.live(22, self.watch.GATE_STALL_SECONDS + 5 * 60,
+                  size=self.watch.GATE_LIVE_CAP_BYTES)
+        text = self.nudge(self.progress([self.client, *self.gate]))
+        self.assertIn('(20 min ago), where its live copy is capped', text)
+        self.assertNotIn('may be stuck', text)
 
     def test_no_running_command_keeps_the_nudge_text_unchanged(self):
         self.assertIsNone(self.progress([self.client]))
         self.assertEqual(self.nudge(None), self.LEGACY)
         self.assertEqual(self.nudge(self.progress([self.client])), self.LEGACY)
-        # A non-gate command outside a foreground turn is background work: no evidence either.
+        # Other commands get no evidence: a background dev server is not progress.
         other = self.gate[0]._replace(command=('bash', '-c', 'bun run dev'))
-        self.assertIsNone(self.progress([self.client, other], foreground=False))
+        self.assertIsNone(self.progress([self.client, other]))
 
     def test_unreadable_output_and_process_info_are_named_and_the_nudge_still_goes(self):
         (self.proc / 'stat').unlink()  # no boot time: run time unknown; no live file either
         text = self.nudge(self.progress([self.client, *self.gate]))
         self.assertIn('reviewer is running a suite-gate run;', text)
-        self.assertIn('Unavailable: run time, output file.', text)
+        self.assertIn('Unavailable: run time, live output file (none yet, or unreadable).', text)
         self.assertNotIn('may be stuck', text)
         # A live file of another run is not this gate's output.
         self.live(99, 60)
-        self.assertIn('output file', self.progress([self.client, *self.gate])['unavailable'])
+        self.assertIsNone(self.progress([self.client, *self.gate])['output_at'])
         # Any error while reading evidence becomes a note, never a failed cycle.
         declaration = dict(agent='worker', target='reviewer', declared_at=0, active=True)
         idle = self.watch.Observation('worker', 'listening', True, False, 10, 10, 1)
-        with patch.object(self.watch, 'command_progress', side_effect=PermissionError('denied')):
-            progress = self.watch.expiry_progress(declaration, idle, None,
+        with patch.object(self.watch, 'gate_progress', side_effect=PermissionError('denied')):
+            progress = self.watch.expiry_progress(declaration, idle,
                                                   {'reviewer': self.info}, [], 3600)
         text = self.nudge(progress['reviewer'])
         self.assertIn('Progress evidence for reviewer is unavailable '
                       '(PermissionError: denied).', text)
         self.assertTrue(text.endswith('declare a new wait.'))
 
-    def test_other_foreground_command_reports_run_time_without_output_growth(self):
-        command = self.gate[0]._replace(command=('bash', '-c', 'make build'))
-        text = self.nudge(self.progress([self.client, command]))
-        self.assertIn('reviewer is running a command (bash) for 42 min; '
-                      'its output growth is not tracked; 0 running and 0 zombie', text)
-        self.assertNotIn('may be stuck', text)
-
     def test_expiry_progress_reads_evidence_only_when_a_nudge_may_go_out(self):
         idle = self.watch.Observation('worker', 'listening', True, False, 10, 10, 1)
         before = dict(agent='worker', target='reviewer', declared_at=0, active=True)
         hcom = {'reviewer': self.info}
-        with patch.object(self.watch, 'command_progress', return_value=None) as read:
-            self.assertIsNone(self.watch.expiry_progress(before, idle, None, hcom, [], 3599))
+        with patch.object(self.watch, 'gate_progress', return_value=None) as read:
+            self.assertIsNone(self.watch.expiry_progress(before, idle, hcom, [], 3599))
             self.assertIsNone(self.watch.expiry_progress(
-                before, idle._replace(status='active'), None, hcom, [], 3600))
+                before, idle._replace(status='active'), hcom, [], 3600))
             self.assertEqual(read.call_count, 0)
-            self.assertEqual(self.watch.expiry_progress(before, idle, None, hcom, [], 3600),
+            self.assertEqual(self.watch.expiry_progress(before, idle, hcom, [], 3600),
                              {'reviewer': None})
             pending = dict(before, active=False, expiry_nudge_pending=True)
-            self.watch.expiry_progress(pending, idle, None, hcom, [], 9000)
+            self.watch.expiry_progress(pending, idle, hcom, [], 9000)
             self.assertEqual(read.call_count, 2)
 
 

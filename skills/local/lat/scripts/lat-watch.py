@@ -1947,9 +1947,12 @@ def foreground_running(observation):
 
 
 # Wait-expiry progress evidence (#715): a suite-gate run writes its output as it goes to
-# `<state dir>/failures/live-<pid>-<id>.log` (removed at run end); output that has not grown
-# for GATE_STALL_SECONDS marks the run as possibly stuck.
+# `<state dir>/failures/live-<pid>-<id>.log` (removed at run end, frozen once it reaches
+# GATE_LIVE_CAP_BYTES); output that has not grown for GATE_STALL_SECONDS marks the run as
+# possibly stuck. Other commands get no evidence: a turn in progress does not tell which of
+# an agent's commands is in the foreground, and background work alone is not progress.
 GATE_STALL_SECONDS = 15 * 60
+GATE_LIVE_CAP_BYTES = 32 * 1024 * 1024  # suite-gate's FAILURE_SPOOL_BYTES
 SUITE_GATE_SCRIPT = 'suite-gate.py'
 GATE_LIVE_FILE = re.compile(r'live-(\d+)-[0-9a-f]+\.log')
 
@@ -1971,61 +1974,54 @@ def gate_state_dir(process, proc_root=Path('/proc')):
     return Path(env.get('XDG_STATE_HOME') or f'{home}/.local/state') / 'suite-gate'
 
 
-def command_progress(agent, info, processes, *, foreground, proc_root=Path('/proc')):
-    """Progress evidence of the awaited agent's running command, or None when it runs none.
+def gate_progress(agent, info, processes, *, proc_root=Path('/proc')):
+    """Progress evidence of the awaited agent's running suite-gate, or None when it runs none.
 
-    A suite-gate run is always reported, with its live output's last growth; any other
-    command only while the agent is in a foreground turn. Unreadable parts are named in
-    `unavailable` instead of failing.
+    With several live outputs (parallel registered gates) the quietest one counts, so one
+    stuck suite is not hidden by another. Unreadable parts are named in `unavailable`.
     """
     commands = list(agent_command_processes(agent, info, processes))
-    parents = {process.pid: process.ppid for process in processes}
     gates = [process for process in commands
              if any(Path(part).name == SUITE_GATE_SCRIPT for part in process.command)]
-    if gates:
-        chosen = min(gates, key=lambda process: process.starttime)
-        gate_pids = {process.pid for process in gates}
-        tree = {process.pid for process in commands
-                if process.pid in gate_pids or process_ancestors(process.pid, parents) & gate_pids}
-    elif foreground and commands:
-        pids = {process.pid for process in commands}
-        roots = [process for process in commands if process.ppid not in pids]
-        chosen = max(roots, key=lambda process: process.starttime)
-        tree = {chosen.pid} | {process.pid for process in commands
-                               if chosen.pid in process_ancestors(process.pid, parents)}
-    else:
+    if not gates:
         return None
+    parents = {process.pid: process.ppid for process in processes}
+    gate_pids = {process.pid for process in gates}
+    tree = {process.pid for process in commands
+            if process.pid in gate_pids or process_ancestors(process.pid, parents) & gate_pids}
     unavailable = []
     try:
-        started_at = boot_time(proc_root) + chosen.starttime / os.sysconf('SC_CLK_TCK')
+        started_at = (boot_time(proc_root) + min(process.starttime for process in gates)
+                      / os.sysconf('SC_CLK_TCK'))
     except (OSError, ValueError):
         started_at = None
         unavailable.append('run time')
-    output_at = None
-    if gates:
-        times = []
-        for directory in {gate_state_dir(process, proc_root) for process in gates}:
-            try:
-                for path in (directory / 'failures').iterdir():
-                    match = GATE_LIVE_FILE.fullmatch(path.name)
-                    if match and int(match[1]) in gate_pids:
-                        times.append(path.stat().st_mtime)
-            except OSError:
-                continue
-        if times:
-            output_at = max(times)
-        else:
-            unavailable.append('output file')
-    return dict(gate=bool(gates), name=Path(chosen.command[0]).name if chosen.command else '?',
-                started_at=started_at, output_at=output_at, unavailable=unavailable,
+    files = []
+    for directory in {gate_state_dir(process, proc_root) for process in gates}:
+        try:
+            for path in (directory / 'failures').iterdir():
+                match = GATE_LIVE_FILE.fullmatch(path.name)
+                if match and int(match[1]) in gate_pids:
+                    stat = path.stat()
+                    files.append((stat.st_mtime, stat.st_size))
+        except OSError:
+            continue
+    output_at, capped = None, False
+    if files:
+        output_at, size = min(files)
+        capped = size >= GATE_LIVE_CAP_BYTES
+    else:
+        unavailable.append('live output file (none yet, or unreadable)')
+    return dict(started_at=started_at, output_at=output_at, capped=capped,
+                unavailable=unavailable,
                 running=sum(1 for process in commands
                             if process.pid in tree and process.state == 'R'),
                 zombies=sum(1 for process in processes
                             if process.state == 'Z' and process.ppid in tree))
 
 
-def expiry_progress(declaration, observation, target_observation, hcom, processes, now):
-    """Each outstanding target's command evidence, read only when an expiry nudge may go out."""
+def expiry_progress(declaration, observation, hcom, processes, now):
+    """Each outstanding target's gate evidence, read only when an expiry nudge may go out."""
     if (not declaration or declaration.get('kind') in ('decision', 'alarm')
             or not idle_prompt(observation)):
         return None
@@ -2039,15 +2035,8 @@ def expiry_progress(declaration, observation, target_observation, hcom, processe
         info = agent_info(hcom, name)
         if not info:
             continue
-        if target_observation is not None and target_observation.agent == info.get('name'):
-            foreground = foreground_running(target_observation)
-        else:
-            # Without a fresh observation only Claude's HCOM status tells a running turn.
-            foreground = (str(info.get('tool', '')).lower() == 'claude'
-                          and info.get('status') == 'active')
         try:
-            progress[name] = command_progress(info.get('name', name), info, processes,
-                                              foreground=foreground)
+            progress[name] = gate_progress(info.get('name', name), info, processes)
         except Exception as error:  # evidence is optional; the nudge must still go out
             progress[name] = {'error': f'{type(error).__name__}: {error}'}
     return progress
@@ -2059,18 +2048,18 @@ def progress_note(target, progress, now):
         return ''
     if progress.get('error'):
         return f' Progress evidence for {target} is unavailable ({progress["error"]}).'
-    what = 'a suite-gate run' if progress['gate'] else f'a command ({progress["name"]})'
     started_at = progress['started_at']
     run = (f' for {int((now - started_at) // 60)} min' if started_at is not None else '')
-    note = f' {target} is running {what}{run}'
+    note = f' {target} is running a suite-gate run{run}'
     output_at = progress['output_at']
     quiet = None
     if output_at is not None:
-        quiet = max(0, now - output_at)
         at = datetime.fromtimestamp(output_at, timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-        note += f'; its output last grew at {at} ({int(quiet // 60)} min ago)'
-    elif not progress['gate']:
-        note += '; its output growth is not tracked'
+        note += f'; its output last grew at {at} ({int(max(0, now - output_at) // 60)} min ago)'
+        if progress['capped']:
+            note += ', where its live copy is capped, so later output is not seen'
+        else:
+            quiet = max(0, now - output_at)
     note += f'; {progress["running"]} running and {progress["zombies"]} zombie processes.'
     if progress['unavailable']:
         note += f' Unavailable: {", ".join(progress["unavailable"])}.'
@@ -3868,7 +3857,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                         declaration, observation, met, now)
                 else:
                     target_progress = (expiry_progress(
-                        declaration, observation, target_observation, hcom, processes, now)
+                        declaration, observation, hcom, processes, now)
                         if not waits_for_orchestrator else None)
                     saved_wait, wait_actions, wait_events = decide_wait(
                         declaration, observation, target_observation, target_state, now,

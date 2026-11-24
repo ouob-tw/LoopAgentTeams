@@ -21,6 +21,7 @@ def load(name, path):
 class GateLiveFileContractTests(unittest.TestCase):
     def test_watch_resolves_the_live_file_suite_gate_opens(self):
         watch, gate = load('lat_watch_contract', WATCH), load('suite_gate_contract', GATE)
+        self.assertEqual(watch.GATE_LIVE_CAP_BYTES, gate.FAILURE_SPOOL_BYTES)
         with tempfile.TemporaryDirectory() as home:
             for env in ({'SUITE_GATE_STATE_DIR': f'{home}/gate'},
                         {'XDG_STATE_HOME': f'{home}/xdg', 'HOME': home},
