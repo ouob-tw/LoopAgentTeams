@@ -94,6 +94,7 @@ FAILURE_FILE_BYTES = 1024 * 1024
 FAILURE_HEAD_BYTES = 64 * 1024
 FAILURE_TAIL_BYTES = 128 * 1024
 FAILURE_BLOCK_BYTES = 64 * 1024
+FAILURE_LINE_BYTES = 4096
 FAILURE_SPOOL_BYTES = 32 * 1024 * 1024  # the live copy of a run's output stops growing here
 LIVE_STALE_SECONDS = 24 * 3600          # a live file this old belongs to a run that is gone
 KILL_GRACE_SECONDS = 5.0
@@ -1953,6 +1954,16 @@ class Gate:
             end_session(self.child.pid, self.child)
 
     def _run_command(self, argv, cwd, scan=None, command=None, keep=False):
+        """_run_command_inner(), removing the live output file when it ends in an error."""
+        self.live = None
+        try:
+            return self._run_command_inner(argv, cwd, scan, command, keep)
+        except BaseException:
+            if self.live is not None:
+                drop_spool(self.live, self.live.spool_path)
+            raise
+
+    def _run_command_inner(self, argv, cwd, scan=None, command=None, keep=False):
         """Run argv in cwd as this gate's suite, its output passed through (and fed to scan),
         and wait for it: (exit code, output tail, profile, seconds, start, end), the start
         and end as UTC datetimes. OSError when it cannot start. Past time_limit(), or when
@@ -1971,6 +1982,7 @@ class Gate:
         spool_path, spool = spool_open() if keep else (None, None)
         tail = Tail(spool)
         tail.spool_path = spool_path
+        self.live = tail
         pumps = [threading.Thread(target=pump, args=(stream, out, tail, scan, key), daemon=True)
                  for key, stream, out in (('out', child.stdout, sys.stdout.buffer),
                                           ('err', child.stderr, sys.stderr.buffer))]
@@ -2343,7 +2355,7 @@ class FailureBlocks:
     """Finds the failure blocks of bun test, pytest and unittest output, line by line: bun's
     lines since the last test result up to a `(fail)` line, pytest's `___ name ___` section,
     unittest's `FAIL:`/`ERROR:` section."""
-    PYTEST = re.compile(r'_{2,} .+ _{2,}')
+    PYTEST = re.compile(r'_+ .+ _+')
     PYTEST_END = re.compile(r'={3,}.*')
     UNITTEST_RULE = re.compile(r'={20,}')
     UNITTEST_HEAD = re.compile(r'(?:FAIL|ERROR): \S+ \(.*\)')
@@ -2361,7 +2373,7 @@ class FailureBlocks:
             self.open = None
 
     def _add(self, lines, text):
-        size = sum(len(x) + 1 for x in lines)
+        size = sum(len(x.encode()) + 1 for x in lines)
         if size < FAILURE_BLOCK_BYTES:
             lines.append(text)
             return False
@@ -2390,7 +2402,7 @@ class FailureBlocks:
             self.bun = []
         else:
             self.bun.append(text)
-            while len(self.bun) > 1 and sum(len(x) + 1 for x in self.bun) > FAILURE_BLOCK_BYTES:
+            while len(self.bun) > 1 and sum(len(x.encode()) + 1 for x in self.bun) > FAILURE_BLOCK_BYTES:
                 del self.bun[0]
 
     def finish(self):
@@ -2398,30 +2410,39 @@ class FailureBlocks:
         return self.blocks
 
 
+def cut_line(raw):
+    """A line of the output as text, at most FAILURE_LINE_BYTES bytes (cut, and marked)."""
+    cut = len(raw) > FAILURE_LINE_BYTES
+    text = raw[:FAILURE_LINE_BYTES].decode(errors='replace').rstrip('\r\n')
+    return text + ' [... line cut ...]' if cut else text
+
+
 def bound_failure_output(source, target, cap=None):
-    """Copy the output file `source` to `target`, within cap bytes: whole when it fits, else
-    its head, every failure block and its tail, with a note where lines were left out. True
-    when anything was cut."""
+    """Copy the output file `source` to `target`, within about cap bytes: whole when it fits,
+    else its head, every failure block and its tail, with a note where lines were left out
+    (a line over FAILURE_LINE_BYTES is cut). True when anything was cut."""
     cap = FAILURE_FILE_BYTES if cap is None else cap
     if source.stat().st_size <= cap:
         shutil.copyfile(source, target)
         return False
     head, head_size = [], 0
     tail, tail_size = collections.deque(), 0
-    blocks, total = FailureBlocks(), 0
+    blocks, total, cut_any = FailureBlocks(), 0, False
     with open(source, 'rb') as stream:
         for number, raw in enumerate(stream, 1):
-            line = raw.decode(errors='replace').rstrip('\n')
+            line = cut_line(raw)
+            cut_any = cut_any or len(raw) > FAILURE_LINE_BYTES
+            size = len(line.encode()) + 1
             total = number
             blocks.feed(number, line)
             if head_size < FAILURE_HEAD_BYTES:
                 head.append((number, line))
-                head_size += len(raw)
+                head_size += size
                 continue
-            tail.append((number, line))
-            tail_size += len(raw)
-            while tail_size > FAILURE_TAIL_BYTES:
-                tail_size -= len(tail.popleft()[1]) + 1
+            tail.append((number, line, size))
+            tail_size += size
+            while tail and tail_size > FAILURE_TAIL_BYTES:
+                tail_size -= tail.popleft()[2]
     found = blocks.finish()
     out = list(head)
     last = head[-1][0] if head else 0
@@ -2432,9 +2453,11 @@ def bound_failure_output(source, target, cap=None):
         end = first + len(lines) - 1
         if end <= last or first >= tail_first:
             continue  # inside the head or the tail already
-        size = sum(len(x) + 1 for x in lines)
-        if size > budget:
-            omitted += 1
+        skip, lines = max(0, last + 1 - first), lines[:max(0, tail_first - first)]
+        lines, first = lines[skip:], first + skip
+        size = sum(len(x.encode()) + 1 for x in lines)
+        if not lines or size > budget:
+            omitted += bool(lines)
             continue
         budget -= size
         kept += 1
@@ -2443,30 +2466,36 @@ def bound_failure_output(source, target, cap=None):
         out.extend((first + i, x) for i, x in enumerate(lines))
         if cut:
             out.append((None, f'[... this failure block was cut at {FAILURE_BLOCK_BYTES} bytes ...]'))
-        last = end
+        last = first + len(lines) - 1
     if tail_first > last + 1:
         out.append((None, f'[... lines {last + 1}-{tail_first - 1} left out ...]'))
-    out.extend(tail)
+    out.extend((n, x) for n, x, _ in tail)
     note = (f'[TRUNCATED: the run printed {total} lines, over the {cap} byte limit of this file. '
             f'Kept: the first lines, {kept} failure block(s)'
             + (f' ({omitted} more did not fit)' if omitted else '')
             + ' and the last lines; left-out stretches are marked.]')
-    with open(target, 'w') as sink:
+    with open(target, 'w', encoding='utf-8') as sink:
         sink.write(note + '\n')
         for _, line in out:
             sink.write(line + '\n')
     return True
 
 
+def close_spool(tail):
+    with tail.lock:
+        if tail.spool:
+            try:
+                tail.spool.close()
+            except OSError:
+                pass
+            tail.spool = None
+        tail.spooled = max(tail.spooled, 0)
+
+
 def keep_failure_output(tail, spool_path):
     """Close the live output and keep it, bounded, as the failure file: the record's
     `failure_output` (path, sha256, bytes, truncated), or None when it cannot be kept."""
-    if tail.spool:
-        try:
-            tail.spool.close()
-        except OSError:
-            pass
-        tail.spool = None
+    close_spool(tail)
     if spool_path is None:
         return None
     directory = state_dir() / FAILURE_DIR
@@ -2492,12 +2521,8 @@ def keep_failure_output(tail, spool_path):
 
 def drop_spool(tail, spool_path):
     """A passing run keeps no output file."""
-    if tail is not None and tail.spool:
-        try:
-            tail.spool.close()
-        except OSError:
-            pass
-        tail.spool = None
+    if tail is not None:
+        close_spool(tail)
     if spool_path is not None:
         spool_path.unlink(missing_ok=True)
 

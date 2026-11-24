@@ -145,6 +145,24 @@ class BoundTests(unittest.TestCase):
         self.assertTrue(cut)
         self.assertIn('___ test_big ___', text)
 
+    def test_multibyte_and_very_long_lines_stay_within_the_bound(self):
+        lines = ['y' * 3_000_000] + ['失敗的輸出行，內容很長很長' * 20] * 6000 + ['尾端'] * 100
+        cut, text = self.bound(lines, cap=100_000)
+        self.assertTrue(cut)
+        self.assertLess(len(text.encode()), 100_000 + 5000)
+        self.assertIn('line cut', text)
+
+    def test_long_pytest_test_name_block_is_found(self):
+        filler = ['noise ' + 'x' * 40] * 200
+        cut, text = self.bound(filler + ['_ test_a_very_long_parametrized_name[case-1] _',
+                                         'E   assert LONG-NAME-ASSERT', '=== summary ==='] + filler)
+        self.assertIn('LONG-NAME-ASSERT', text)
+
+    def test_a_block_overlapping_the_head_is_not_written_twice(self):
+        filler = ['noise ' + 'x' * 40] * 200
+        cut, text = self.bound(['___ test_early ___', 'E   assert EARLY-ASSERT'] * 1 + filler)
+        self.assertEqual(text.count('EARLY-ASSERT'), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
