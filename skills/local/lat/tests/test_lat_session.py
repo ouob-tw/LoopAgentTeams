@@ -3635,8 +3635,7 @@ class SessionTests(unittest.TestCase):
         (self.work / 'done.md').write_text('- [x] 已勾\n')
         (self.work / 'half.md').write_text('- [x] 已勾\n- [ ] 另一項沒勾\n')
         for command in ('gh issue edit 458 --body-file done.md && gh issue close 458',
-                        'gh issue edit 458 -F done.md ; gh issue close 458',
-                        'gh issue edit 458 --body-file=done.md\ngh issue close 458',
+                        'gh issue edit 458 --body-file=done.md && gh issue close 458',
                         "gh issue edit 458 --body '- [x] ok' && gh issue close 458",
                         'gh issue edit 458 -b "- [X] ok" && gh issue close 458'):
             with self.subTest(command=command):
@@ -3661,6 +3660,18 @@ class SessionTests(unittest.TestCase):
         for command in ('gh issue edit 458 --body-file - && gh issue close 458',
                         'gh issue edit 458 --body-file nope.md && gh issue close 458',
                         'cd /x && gh issue edit 458 --body-file done.md && gh issue close 458',
+                        'gh issue edit 458 -F done.md ; gh issue close 458',
+                        'gh issue edit 458 --body-file=done.md\ngh issue close 458',
+                        'gh issue edit 458 --body-file done.md && echo ok || gh issue close 458',
+                        'gh issue edit 458 --body "$(cat done.md)" && gh issue close 458',
+                        'B=$(cat done.md); gh issue edit 458 --body "$B" && gh issue close 458',
+                        "gh issue edit 458 --body $'- [x] a' && gh issue close 458",
+                        'cat done.md | gh issue edit 458 --body-file /dev/stdin && gh issue close 458',
+                        'printf x > done.md && gh issue edit 458 --body-file done.md && gh issue close 458',
+                        'GH_REPO=o/x gh issue edit 458 --body-file done.md && gh issue close 458',
+                        'env -C /tmp gh issue edit 458 --body-file done.md && gh issue close 458',
+                        '"cd" /tmp && gh issue edit 458 --body-file done.md && gh issue close 458',
+                        'cd; gh issue edit 458 --body-file done.md && gh issue close 458',
                         'gh issue edit 458 --body-file done.md || gh issue close 458',
                         'gh issue edit 458 --body-file done.md & gh issue close 458',
                         'gh issue edit 458 -R o/r --body-file done.md && gh issue close 458',

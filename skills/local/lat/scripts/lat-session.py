@@ -1346,11 +1346,12 @@ def unquoted_newlines_end_commands(command):
 
 
 def gh_issue_commands(command):
-    """`(positionals, repo, comment, body, joiner)` for each `gh` command in the shell text.
+    """`(positionals, repo, comment, body, operators, plain)` for each `gh` command.
 
     `body` is `('text', <text>)` for `--body`, `('file', <path>)` for `--body-file`, else
-    None; `joiner` is the shell operator that follows the command ('' at the end). Raises
-    ValueError when the text cannot be split."""
+    None; `operators` are the shell operators after the command, in order; `plain` is False
+    when something before it (a variable or `env` prefix, `cd`) can change what it does.
+    Raises ValueError when the text cannot be split."""
     lexer = shlex.shlex(unquoted_newlines_end_commands(command), posix=True,
                         punctuation_chars=True)
     lexer.whitespace_split = True
@@ -1359,6 +1360,8 @@ def gh_issue_commands(command):
         if Path(word).name != 'gh':
             continue
         positionals, repo, comment, body = [], None, '', None
+        plain = ((index == 0 or set(words[index - 1]) <= SHELL_OPERATORS) and
+                 not {'cd', 'pushd', 'popd'} & set(words[:index]))
         rest = words[index + 1:]
         while rest and not set(rest[0]) <= SHELL_OPERATORS:
             word, rest = rest[0], rest[1:]
@@ -1379,33 +1382,35 @@ def gh_issue_commands(command):
                 body = ('text', value)
             elif name in ('-F', '--body-file'):
                 body = ('file', value)
-        found.append((positionals, repo, comment, body, rest[0] if rest else ''))
+        found.append((positionals, repo, comment, body, [word for word in words[index + 1:] if set(word) <= SHELL_OPERATORS], plain))
     return found
 
 
 def new_body(edit, command, cwd):
-    """`(body, reason)`: the text a `gh issue edit` leaves in the issue, or `(None, reason)`
-    when the check cannot read it (stdin, a file that is missing or follows a `cd`)."""
+    """The text a `gh issue edit` leaves in the issue, or None when the check cannot be sure
+    of it: shell expansion in the text, a file that is not a plain file, or a command that
+    writes files."""
     kind, value = edit
     if kind == 'text':
-        return value, None
-    if value == '-':
-        return None, 'the edit reads its body from stdin'
-    if re.search(r'(?:^|[\s;&|(])(?:cd|pushd)\s', command):
-        return None, 'the command changes directory before the edit'
+        return None if re.search(r'[$`]', value) else value
+    if re.search(r'>|\btee\b', command):
+        return None
+    path = Path(cwd) / value
     try:
-        return (Path(cwd) / value).read_text(), None
-    except (OSError, UnicodeDecodeError) as error:
-        return None, f'cannot read {value} ({error.__class__.__name__})'
+        return path.read_text() if path.is_file() else None
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def issue_closes(command):
     """`(issue, repo, comment, edits)` for each `gh issue close` in the shell text; `edits`
     are the `gh issue edit` commands of the same issue that come earlier in the command."""
     found, closes = gh_issue_commands(command), []
-    for position, (positionals, repo, comment, _, _) in enumerate(found):
+    for position, (positionals, repo, comment, *_) in enumerate(found):
         if positionals[:2] == ['issue', 'close'] and positionals[2:]:
-            edits = [edit for edit in found[:position]
+            after = len(found[position][4])
+            edits = [edit[:4] + (edit[4][:len(edit[4]) - after], edit[5])
+                     for edit in found[:position]
                      if edit[0][:2] == ['issue', 'edit'] and edit[0][2:3] == positionals[2:3]]
             closes.append((positionals[2], repo, comment, edits))
     return closes
@@ -1434,9 +1439,11 @@ def edit_body(edits, repo, command, cwd):
     read and surely runs before the close; else `(None, None)` and the issue is read from
     GitHub as before."""
     setting = [edit for edit in edits if edit[3]]
-    if not setting or setting[-1][1] != repo or setting[-1][4] not in ('&&', ';'):
+    if not setting or setting[-1][1] != repo or not setting[-1][5]:
         return None, None
-    body, _ = new_body(setting[-1][3], command, cwd)
+    if set(setting[-1][4]) != {'&&'}:  # the close must run only if the edit succeeded
+        return None, None
+    body = new_body(setting[-1][3], command, cwd)
     return (body, EDIT_BODY) if body is not None else (None, None)
 
 
