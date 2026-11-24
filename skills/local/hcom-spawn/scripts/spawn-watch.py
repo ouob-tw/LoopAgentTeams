@@ -65,7 +65,7 @@ ERROR_CHARS = 1000         # longest error text quoted to the spawner
 STOP_NOTICE = {
     'api': ('hcom-spawn: {full} (codex) stopped on an API error: {error} It was not retried. '
             'Look at it with `hcom term {full}` and report the error; for an upstream stop '
-            'follow the Codex CPA recovery procedure in references/troubleshooting.md.'),
+            'follow "Codex 額度與 CPA 恢復" in references/troubleshooting.md.'),
     'usage': ('hcom-spawn: {full} (codex) stopped on its usage limit: {error} It was not '
               'retried. Look at it with `hcom term {full}`; follow "Codex 額度與 CPA 恢復" '
               'in the hcom-spawn skill\'s references/troubleshooting.md.'),

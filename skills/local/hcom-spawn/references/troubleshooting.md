@@ -86,5 +86,8 @@ Codex 回合因 `You've hit your usage limit` 或上游錯誤停止時，先核�
 2. **再次停在額度用完**：已確認 `cpa`，且續作後的新一回合又停在額度用完，才視為整池用完；續作前的舊錯誤不算。自動交接未完成工作給全新的 Claude Agent：astra 用 fable 或 opus，sol、terra 用 sonnet，事後回報使用者。Claude 也沒有額度時才由使用者決定。
 
 不兌換 reset，不使用 API 計費帳號。`model is not supported` 與其他 API 錯誤一樣直接回報錯誤內容。
+
+## Claude 額度
+
 - **Claude 額度耗盡，受影響的是後端實作任務**：不必等使用者選擇，照「換模型交接」改派 `gpt-6.1-sol` `medium` 接手，事後回報哪些任務換了。不換 Claude 帳號。
 - **其餘情況的 Claude 額度耗盡**（審查、參謀、前端、召喚者自己額度用完）：保留成果並回報使用者，由使用者決定等待、兌換 reset 或其他做法。

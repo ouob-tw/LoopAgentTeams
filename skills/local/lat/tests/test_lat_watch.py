@@ -472,8 +472,8 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertIn('GPT-5.6-Sol', actions[0].message)
         self.assertIn(issue.line, actions[0].message)
         self.assertIn('Reset time: Oct 10, 2026', actions[0].message)
-        self.assertIn('Codex CPA recovery procedure', actions[0].message)
-        self.assertIn('verify the provider and continue once', actions[0].message)
+        self.assertIn('Codex 額度與 CPA 恢復', actions[0].message)
+        self.assertIn('references/troubleshooting.md', actions[0].message)
         self.assertFalse(state['nudged'])
 
         state, actions = watch.decide(state, exhausted, now=600)
