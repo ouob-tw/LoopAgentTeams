@@ -1346,8 +1346,12 @@ def unquoted_newlines_end_commands(command):
 
 
 def gh_issue_commands(command):
-    """`(positionals, repo, comment)` for each `gh` command in the shell text; ValueError
-    when the text cannot be split."""
+    """`(positionals, repo, comment, body, operators, plain, start, end)` for each `gh` command.
+
+    `body` is `('text', <text>)` for `--body`, `('file', <path>)` for `--body-file`, else
+    None; `operators` are the shell operators after the command, in order; `plain` is False
+    when something before it (a variable or `env` prefix, `cd`) can change what it does.
+    Raises ValueError when the text cannot be split."""
     lexer = shlex.shlex(unquoted_newlines_end_commands(command), posix=True,
                         punctuation_chars=True)
     lexer.whitespace_split = True
@@ -1355,15 +1359,18 @@ def gh_issue_commands(command):
     for index, word in enumerate(words):
         if Path(word).name != 'gh':
             continue
-        positionals, repo, comment = [], None, ''
+        positionals, repo, comment, body = [], None, '', None
+        plain = ((index == 0 or set(words[index - 1]) <= SHELL_OPERATORS) and
+                 not {'cd', 'pushd', 'popd'} & set(words[:index]))
         rest = words[index + 1:]
         while rest and not set(rest[0]) <= SHELL_OPERATORS:
             word, rest = rest[0], rest[1:]
             name, joined, value = word.partition('=')
-            if name in ('-c', '--comment', '-R', '--repo', '-r', '--reason'):
+            if name in ('-c', '--comment', '-R', '--repo', '-r', '--reason',
+                        '-b', '--body', '-F', '--body-file'):
                 if not joined:
                     value, rest = (rest[0], rest[1:]) if rest else ('', rest)
-            elif word[:2] in ('-c', '-R', '-r') and len(word) > 2:
+            elif word[:2] in ('-c', '-R', '-r', '-b', '-F') and len(word) > 2:
                 name, value = word[:2], word[2:]
             elif not word.startswith('-'):
                 positionals.append(word)
@@ -1371,21 +1378,48 @@ def gh_issue_commands(command):
                 comment = value
             elif name in ('-R', '--repo'):
                 repo = value
-        found.append((positionals, repo, comment))
+            elif name in ('-b', '--body'):
+                body = ('text', value)
+            elif name in ('-F', '--body-file'):
+                body = ('file', value, index == 0)
+        found.append((positionals, repo, comment, body, [word for word in words[index + 1:] if set(word) <= SHELL_OPERATORS], plain,
+                      index, len(words) - len(rest)))
     return found
 
 
+def new_body(edit, command, cwd):
+    """The text a `gh issue edit` leaves in the issue, or None when the check cannot be sure
+    of it: shell expansion in the text, a file that is not a plain file, or a command that
+    writes files."""
+    kind, value, *lead = edit
+    if kind == 'text':
+        return None if re.search(r'[$`]', value) else value
+    # Only a file nothing else in the command can have rewritten first: the edit leads.
+    if value == '-' or re.search(r'>|\btee\b', command) or not lead[0]:
+        return None
+    path = Path(cwd) / value
+    try:
+        return path.read_text() if path.is_file() else None
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def issue_closes(command):
-    """`(issue, repo, comment)` for each `gh issue close` in the shell text."""
-    return [(positionals[2], repo, comment)
-            for positionals, repo, comment in gh_issue_commands(command)
-            if positionals[:2] == ['issue', 'close'] and positionals[2:]]
-
-
-def issue_edits(command):
-    """The issue numbers some `gh issue edit` in the shell text changes."""
-    return {positionals[2] for positionals, _, _ in gh_issue_commands(command)
-            if positionals[:2] == ['issue', 'edit'] and positionals[2:]}
+    """`(issue, repo, comment, edits)` for each `gh issue close` in the shell text; `edits`
+    are the `gh issue edit` commands of the same issue that come earlier in the command."""
+    found, closes = gh_issue_commands(command), []
+    for position, (positionals, repo, comment, *_) in enumerate(found):
+        if positionals[:2] == ['issue', 'close'] and positionals[2:]:
+            after = len(found[position][4])
+            # Trust an edit only when it runs right before the close, joined by `&&`, and
+            # neither command is changed by a prefix: nothing in between can alter the body.
+            edits = [edit[:4] + (edit[4][:len(edit[4]) - after],
+                                 edit[5] and found[position][5] and
+                                 edit[7] + 1 == found[position][6])
+                     for edit in found[:position]
+                     if edit[0][:2] == ['issue', 'edit'] and edit[0][2:3] == positionals[2:3]]
+            closes.append((positionals[2], repo, comment, edits))
+    return closes
 
 
 def issue_body(issue, repo, cwd):
@@ -1403,7 +1437,23 @@ def issue_body(issue, repo, cwd):
     return result.stdout, None
 
 
-def close_problem(record, issue, body, comment, edited=False):
+EDIT_BODY = 'edit body'
+
+
+def edit_body(edits, repo, command, cwd):
+    """`(body, EDIT_BODY)` when the last earlier `gh issue edit` sets a body the check can
+    read and surely runs before the close; else `(None, None)` and the issue is read from
+    GitHub as before."""
+    setting = [edit for edit in edits if edit[3]]
+    if not setting or setting[-1][1] != repo or not setting[-1][5]:
+        return None, None
+    if set(setting[-1][4]) != {'&&'}:  # the close must run only if the edit succeeded
+        return None, None
+    body = new_body(setting[-1][3], command, cwd)
+    return (body, EDIT_BODY) if body is not None else (None, None)
+
+
+def close_problem(record, issue, body, comment, edited=False, new=False):
     """Why closing is refused, or None. Unchecked items pass only when the comment cites a
     decision record holding a human answer for that revision."""
     body = re.sub(r'^[ \t]*```.*?^[ \t]*```', '', body, flags=re.MULTILINE | re.DOTALL)
@@ -1422,7 +1472,9 @@ def close_problem(record, issue, body, comment, edited=False):
     items = '\n'.join(f'  - [ ] {item}' for item in unchecked)
     why = ('；'.join(problems) if problems else
            'the close comment (-c/--comment) cites no decision record as `<ID> r<N>`')
-    note = ('\nThis command also edits the issue, but the check runs before the command, so '
+    note = ('\nThe items above come from the new body this command sets with `gh issue edit`; '
+            'check them off in that body first.' if new else
+            '\nThis command also edits the issue, but the check runs before the command, so '
             'that edit has not taken effect yet. Run the check-off edit as its own command, '
             'confirm it, then close in a separate command.' if edited else '')
     return (f'Blocked: issue {issue} still has unchecked acceptance items:\n{items}\n'
@@ -1440,7 +1492,7 @@ def close_check(record, payload):
     if not isinstance(command, str):
         return 0
     try:
-        closes, edits = issue_closes(command), issue_edits(command)
+        closes = issue_closes(command)
     except ValueError as error:
         if not re.search(r'\bgh\b.*\bissue\b.*\bclose\b', command, re.DOTALL):
             return 0
@@ -1448,12 +1500,15 @@ def close_check(record, payload):
               f'read it ({error}). Run `gh issue close` as its own command; for other text '
               'that only mentions it, pass the text from a file or with -m.', file=sys.stderr)
         return 2
-    for issue, repo, comment in closes:
-        body, error = issue_body(issue, repo, payload['cwd'])
+    for issue, repo, comment, edits in closes:
+        body, error = edit_body(edits, repo, command, payload['cwd'])
+        if body is None:
+            body, error = issue_body(issue, repo, payload['cwd'])
         if body is None:
             close_warning(f'讀不到票 {issue} 的內容（{error}）')
             continue
-        problem = close_problem(record, issue, body, comment, issue in edits)
+        problem = close_problem(record, issue, body, comment, bool(edits),
+                                new=error == EDIT_BODY)
         if problem:
             print(problem, file=sys.stderr)
             return 2
