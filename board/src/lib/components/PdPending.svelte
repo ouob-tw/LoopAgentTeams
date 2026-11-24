@@ -13,9 +13,9 @@
 	// notification through the board's service worker whose click comes back to it. With nothing
 	// waiting it stays hidden while healthy; vault outages and an unreachable daemon keep a visible
 	// notice here, on every screen, which 稍後 folds to the badge (or a phone's strip) that goes on
-	// saying it. On a wide screen a notice that appears with no request waiting starts folded to
-	// that badge (the user cannot act on it from the page, and it would cover the middle column);
-	// a request that appears still opens it.
+	// saying it. A notice that appears with no request waiting starts folded to that badge, on any
+	// screen (the user cannot act on it from the page, and it would cover the middle column); a
+	// request that appears still opens it.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import TestDenied from './TestDenied.svelte';
 	import { onMount, tick } from 'svelte';
@@ -234,18 +234,12 @@
 	});
 
 	/** What the window has to show: nothing, a notice alone, or requests. A notice that comes up from
-	 *  nothing starts folded on a wide screen (once, so opening it by hand sticks). */
+	 *  nothing starts folded to the badge, on any screen (once, so opening it by hand sticks). */
 	let shown: 'none' | 'notice' | 'requests' = 'none';
-	let foldNotice = false;
 	$effect(() => {
 		const now = !pd ? 'none' : requests.length ? 'requests' : notice ? 'notice' : 'none';
-		if (now === 'notice' && shown === 'none') foldNotice = wide;
-		if (now !== 'notice' && now !== shown) foldNotice = false;
+		if (now === 'notice' && shown === 'none') open = false;
 		shown = now;
-		if (foldNotice && wide) {
-			foldNotice = false;
-			open = false;
-		}
 	});
 
 	async function allowNotifications() {
