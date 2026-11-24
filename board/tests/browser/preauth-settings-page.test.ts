@@ -70,7 +70,7 @@ test.skipIf(!CHROME)('each change saves at once, one after another; only the off
 	const tab = await browse();
 	await loaded(tab);
 	expect(await tab.eval(`[...${SECTION}.querySelectorAll('h4')].map((h) => h.innerText)`)).toEqual([
-		'合併', '推送', '部署測試版', '部署正式版', '更新主機技能', '參謀可自行定案', '參謀仍要問'
+		'合併', '推送', '部署測試版', '部署正式版', '更新主機技能', '外觀修改', '參謀可自行定案', '參謀仍要問'
 	]);
 	expect(await tab.eval<string>(`${SECTION}.innerText`)).not.toMatch(/target|測試環境|改驗收|開新票|花錢|刪資料|沿用全域/);
 	expect(await tab.eval(`!!${button(SECTION, '儲存')}`)).toBe(false);
@@ -102,6 +102,23 @@ test.skipIf(!CHROME)('each change saves at once, one after another; only the off
 	expect(text).toContain('branches = ["rel"]');
 	expect(text).toContain('"新的一條"');
 	expect(await tab.eval(alertText)).toBe('');
+}, 60_000);
+
+test.skipIf(!CHROME)('外觀修改 saves to [actions.appearance] and reads back after a reload', async () => {
+	writeFileSync(file, FILE_TEXT);
+	const tab = await browse();
+	await loaded(tab);
+	expect(await tab.eval(pressed('外觀修改', 'ask'))).toBe(true);
+	await tab.eval(`${group('外觀修改')}.querySelector('button.allow').click()`);
+	await tab.until(SAVED, 'the saved mark');
+	expect(readFileSync(file, 'utf8')).toMatch(/\[actions\.appearance\]\nallow = true\nsource = "board:/);
+	const again = await browse();
+	await loaded(again);
+	expect(await again.eval(pressed('外觀修改', 'allow'))).toBe(true);
+	await again.eval(`${group('外觀修改')}.querySelector('button.ask').click()`);
+	await again.until(SAVED, 'the saved mark');
+	expect(readFileSync(file, 'utf8')).toMatch(/\[actions\.appearance\]\nallow = false\n/);
+	expect(await again.eval(alertText)).toBe('');
 }, 60_000);
 
 test.skipIf(!CHROME)('with voice input on, each rule has a mic that puts what was said at the cursor, saved like typing', async () => {

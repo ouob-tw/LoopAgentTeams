@@ -25,7 +25,7 @@ push, which make push and deploy-prod checks ask until a human-answered decision
 `pre-push` is the global Git hook's check for them, and also refuses a push by an active
 controller of the repo that `do` did not start. The board reads and writes settings through `board_settings` and `board_write`,
 which the panel helper's `board preauth-read` and `board preauth-write` commands call. The tool runs the action
-itself only in `do`.
+itself only in `do`. `appearance` is a standing permission: `check` answers it, nothing runs it.
 """
 import argparse
 import contextlib
@@ -53,7 +53,11 @@ from lat_decision_status import read_decision_status
 ACTIONS = {'merge': 'merge into the integration branch', 'push': 'push to the remote',
            'deploy-test': 'deploy to the test environment',
            'deploy-prod': 'deploy to production',
-           'install-host': "update the host's installed skills and hooks"}
+           'install-host': "update the host's installed skills and hooks",
+           'appearance': 'change only how an existing screen looks'}
+# Standing permissions: the controller and advisors cite their check; nothing runs them.
+STANDING_ACTIONS = ('appearance',)
+STANDING_KEYS = ('allow', 'source', 'hours', 'timezone')
 # Not actions: no setting can pre-authorize these, so naming one always asks.
 ALWAYS_ASK = {'change-acceptance': 'changing or cutting confirmed acceptance criteria',
               'spend': 'spending money or account quota',
@@ -99,7 +103,7 @@ DECISION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
 GRANT_KEYS = ('allow', 'branches')
 RESULTS = ('succeeded', 'failed')
 REPORT_GROUPS = ((('auto',), '依預先授權自動執行'), (('manual',), '人工核准（合併、推送、部署）'),
-                 (('bug-intake',), '免確認開工'), (('grant', 'board'), '設定寫入'))
+                 (('bug-intake', 'appearance-intake'), '免確認開工'), (('grant', 'board'), '設定寫入'))
 HOURS = re.compile(r'((?:[01]\d|2[0-3]):[0-5]\d)-((?:[01]\d|2[0-3]):[0-5]\d)')
 # Long free text: written one item per line.
 ADVISOR_LISTS = ('may_settle', 'must_ask')
@@ -163,6 +167,10 @@ def validate(data, where):
             problems.append(f'{where}: unknown action [actions.{name}]')
         else:
             problems += section_problems(section, ACTION_KEYS, f'{where} [actions.{name}]')
+            if name in STANDING_ACTIONS and isinstance(section, dict):
+                problems += [f'{where} [actions.{name}]: `{key}` is not for {name}; it takes '
+                             f'only {", ".join(STANDING_KEYS)}'
+                             for key in section.keys() - set(STANDING_KEYS) if key in ACTION_KEYS]
             problems += window_problems(section, f'{where} [actions.{name}]')
     if 'advisor' in data:
         problems += section_problems(data['advisor'], ADVISOR_KEYS, f'{where} [advisor]')
@@ -1656,6 +1664,8 @@ def cmd_grant(args):
     if args.allow is not None:
         values['allow'] = args.allow == 'true'
     if args.branches:
+        if args.action in STANDING_ACTIONS:
+            raise Refused(f'--branches is not for {args.action}')
         values['branches'] = args.branches
     if not values:
         raise Refused('nothing to write: give --allow and/or --branches')
@@ -1812,6 +1822,8 @@ def record_locked(args, top, session):
         repo = action_repo(args)
         if repo:
             entry['action_repo'] = str(repo)
+    elif args.kind == 'appearance-intake':
+        entry = appearance_intake_entry(args, top, session)
     else:
         conditions = dict(self_reported=args.self_reported, clear_expected=args.clear_expected,
                           single_ticket=args.single_ticket, restores_stated=args.restores_stated,
@@ -1834,6 +1846,19 @@ def record_locked(args, top, session):
                              'the next deploy check will want the full suite') from None
         print(f'recorded deploy history → {history}')
     return 0
+
+
+def appearance_intake_entry(args, top, session):
+    """An appearance-only ticket started without confirmation, under the check as it is now."""
+    missing = [flag for flag, value in (('--issue', args.issue), ('--source', args.source))
+               if not (value or '').strip()]
+    if missing:
+        raise Refused(f'an appearance-intake record needs {", ".join(missing)}')
+    result = evaluate('appearance', workspace=top, session=session)
+    if result['verdict'] != 'allow':
+        raise Refused(f'{verdict_line(result)}; ask the ticket confirmation question instead')
+    return dict(kind='appearance-intake', issue=args.issue, source=args.source,
+                basis=verdict_line(result))
 
 
 def deploy_entry(args, **extra):
@@ -1949,6 +1974,8 @@ def auto_entry(args, record, top, session, round_number):
     if args.action not in ACTIONS:
         raise Refused(f'`{args.action}` is not a pre-authorizable action; known: '
                       f'{", ".join(ACTIONS)}')
+    if args.action in STANDING_ACTIONS:
+        raise standing_refusal(args.action)
     if args.action in BRANCH_ACTIONS:
         # A hand-typed basis was once recorded as allow when the check had said ask.
         raise Refused(f'{args.action} is recorded by `do`, which runs the check itself: '
@@ -2028,6 +2055,8 @@ def report_line(entry):
                 f'{entry.get("self_reported")}；哪裡錯與應該怎樣：{entry.get("clear_expected")}；'
                 f'一張票做得完：{entry.get("single_ticket")}；回到使用者說的樣子：'
                 f'{entry.get("restores_stated")}{guard}')
+    if kind == 'appearance-intake':
+        return f'- {entry.get("issue")}；原訊息：{entry.get("source")}；外觀修改：{entry.get("basis")}'
     if 'unreadable' in entry:
         return f'- 看板紀錄 {entry["unreadable"]} 讀不懂，可能漏列一筆'
     if kind == 'board':
@@ -2074,10 +2103,17 @@ def exit_status(status):
     return 0 if status == 0 else (status if status > 0 else 1)
 
 
+def standing_refusal(action):
+    return Refused(f'{action} is a standing permission to cite (check --action {action}), not '
+                   'an executable action')
+
+
 def cmd_do(args):
     """check -> before-notice -> command -> after-notice -> record, stopping at the first
     failing step. Once the command has run, a failed command is still noticed and recorded.
     Merge and push send no notices (do_branch_action)."""
+    if args.action in STANDING_ACTIONS:
+        raise standing_refusal(args.action)
     command = args.run[1:] if args.run[:1] == ['--'] else args.run
     if not command:
         raise Refused('give the command after `--`')
@@ -2663,11 +2699,13 @@ def build_parser():
     sub.add_argument('--source', required=True, help='decision record ID with the answer')
     sub = commands.add_parser('record', parents=[common, across],
                               help='log one thing done under pre-authorization')
-    sub.add_argument('--kind', choices=('auto', 'bug-intake', 'manual', 'correction'),
+    sub.add_argument('--kind', choices=('auto', 'bug-intake', 'appearance-intake', 'manual',
+                                        'correction'),
                      default='auto',
                      help='auto: a deploy or install done under pre-authorization (default; merge '
                           'and push go through `do`); bug-intake: a short-flow bug ticket started '
-                          'without confirmation; manual: an action the user approved (a deploy '
+                          'without confirmation; appearance-intake: an appearance-only ticket started without '
+                          'confirmation while check --action appearance allows; manual: an action the user approved (a deploy '
                           'also goes to the deploy history); correction: a note on an earlier '
                           'record of the round, which may have ended (--session-id)')
     sub.add_argument('--action', help='auto: ' + ', '.join(MAIN_CHECKOUT_ACTIONS) + '; manual: '
@@ -2692,8 +2730,9 @@ def build_parser():
     sub.add_argument('--notice-after', type=notice_id, help='auto deploy/install: HCOM event ID '
                                                             'of the notice sent after '
                                                             'finishing, or a none-<n> id')
-    sub.add_argument('--source', help="bug-intake: where the user's own message is")
-    sub.add_argument('--issue', help='bug-intake: the tracker issue opened')
+    sub.add_argument('--source', help="bug-intake, appearance-intake: where the user's own "
+                                      'message is')
+    sub.add_argument('--issue', help='bug-intake, appearance-intake: the tracker issue opened')
     sub.add_argument('--self-reported', help='bug-intake: why the user reported it in person')
     sub.add_argument('--clear-expected', help='bug-intake: what is wrong and what it should be')
     sub.add_argument('--single-ticket', help='bug-intake: why one ticket finishes it')

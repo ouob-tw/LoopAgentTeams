@@ -46,7 +46,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
   - [ ] 使用者確認：以一題確認「改走短流程＋這張 issue 的驗收條件」，附 issue 連結並列出驗收條件要點；待決紀錄寫 `- advisor: exempt ticket-confirmation`，不要求 Spec 共識行。這與 Spec 確認同為正式確認點，真人答覆後才派工，授權範圍以該 issue 的驗收條件為準。
   - 已知這張票要用密碼庫項目時，確認題一併問項目的完整名稱，不留到開工後才問。
   - 合併後測試、背景整套或上線後發現的問題，主控在開修正票時記入問題紀錄：`lat-ledger.py problem --ledger <本輪總表> --stage post-merge|suite|post-deploy-user|post-deploy --ticket <造成它的票，查不出填 不明> --level <甲|乙|丙> --text '<一句話>' --finder <user、suite-gate 或發現的 Agent>`（使用者回報的用 `post-deploy-user`）（測試抓到的加 `--caught <閘門指紋>`）；處理完用 `problem-update <編號> --fixed <commit>` 等記下結果。
-  - 使用者本人回報、寫清楚哪裡錯與應該怎樣、一張票做得完、修好只回到使用者說的樣子、要改的行為沒有既有測試或文件寫明本來就該這樣的 bug，免確認開工，見 [預先授權](references/preauth.md#免確認開短流程-bug-票)。
+  - 使用者本人回報、寫清楚哪裡錯與應該怎樣、一張票做得完、修好只回到使用者說的樣子、要改的行為沒有既有測試或文件寫明本來就該這樣的 bug，免確認開工，見 [預先授權](references/preauth.md#免確認開短流程-bug-票)。使用者本人提出、只動外觀的修改，`check --action appearance` 為 `allow` 時也免確認開工，見 [外觀修改](references/preauth.md#外觀修改)。
   - 實作或驗收中發現需要多張票、改變已確認的驗收條件或新增需求時，停止受影響工作，依「使用者待決事項」交參謀判斷；參謀定案就繼續，否則提問，必要時改走完整 Spec 流程。
 - [ ] 完整流程（未走短流程時）：
   - [ ] Spec：同一位 Designer 使用 /to-spec，整理需求、範圍與驗收條件，發布前寫好最上面的 [共識](references/consensus.md)。
@@ -143,7 +143,7 @@ Matt skills 中其他流程性的使用者確認，由 Orchestrator 根據既有
 
 ### 使用者待決事項
 
-- **預先授權**：合併、推送一律用 `do`，部署或更新主機技能也用 `do`，見 [預先授權](references/preauth.md)；查詢結果 `allow` 才可不問直接做；`ask` 時先照「使用者待決事項」提問，合併、推送要等該題有真人答覆，再以 `do --question <待決 ID>` 執行。這類授權題的待決紀錄加一行 `- action:`，面板寫題與回合結束檢查會依當下設定重查。使用者選合併但不推送時，合併後立刻以 `hold add` 登記保留；推送題和部署題列出範圍內被保留的提交與原決策編號，解除只憑真人答覆，見 [保留不推送的提交](references/preauth.md#保留不推送的提交)。預定要上線的一輪，派工時就先跑一次 `check --action deploy-prod`，把它指出缺的測試排進工作，見 [預先授權](references/preauth.md#固定條件)。
+- **預先授權**：合併、推送一律用 `do`，部署或更新主機技能也用 `do`，見 [預先授權](references/preauth.md)；查詢結果 `allow` 才可不問直接做；`ask` 時先照「使用者待決事項」提問，合併、推送要等該題有真人答覆，再以 `do --question <待決 ID>` 執行。這類授權題的待決紀錄加一行 `- action:`，面板寫題與回合結束檢查會依當下設定重查。使用者選合併但不推送時，合併後立刻以 `hold add` 登記保留；推送題和部署題列出範圍內被保留的提交與原決策編號，解除只憑真人答覆，見 [保留不推送的提交](references/preauth.md#保留不推送的提交)。預定要上線的一輪，派工時就先跑一次 `check --action deploy-prod`，把它指出缺的測試排進工作，見 [預先授權](references/preauth.md#固定條件)。`check --action appearance` 為 `allow` 時，只關於外觀的選擇題交參謀定案、不問使用者，下一次回報附結果網址，見 [外觀修改](references/preauth.md#外觀修改)。
 - **無人模式**：activate 會印出本輪是人工確認還是無人模式；查詢模式與無人授權、建立／修改／關閉授權都用 `scripts/lat-unattended.py`，見 [無人模式](references/unattended.md)。activate 後先依使用者第一句話擬目標與做完條件存成草稿；使用者在聊天要求開啟時整理成一張確認題，送出才建立授權。無人授權有效時，授權勾選的幾類事由兩位參謀代決（代確認、假設、樣品決定）；其他要使用者決定的事照常以 `question ask` 發題、用 `DECIDE:`／`HELP:` 提問，只停住相依的工作，其他工作照做，見 [代決與提問](references/unattended.md#代決與提問)。
 - **先篩選**：提問前查清事實與既有授權，說明授權缺口及各選項對產品、範圍、成本或風險的影響；缺資訊／人工操作則先用手上的遠端能力（ssh、截圖、桌面操作、瀏覽器）自己試，再說明為何只有使用者能提供。明確保留的核准先準備可審閱提案。接著依 [參謀](references/advisors.md) 諮詢。
 - **先記錄再問**：在專案 `.lat/decisions/<ID>.md` 保存問題、版本、`pending` 狀態、選項、授權缺口與受阻工作；求助題（HELP）另加一行 `- kind: help` 與一行 `- tried: <試過的方法與結果>`（答案只在使用者帳號或裝置時寫明理由）；攔下規則見 [主控恢復程序](references/recovery.md)。所有 worktree／Agents 共用同一目錄，主控維護；改票號、拆票或換 Agent 仍保留阻塞關係。

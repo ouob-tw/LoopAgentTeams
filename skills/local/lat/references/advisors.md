@@ -72,7 +72,7 @@
 ## 參謀結論
 
 - **`resolved`（定案）**：選某個選項或明確做法，並引用授權來源：已確認 Spec 的具體段落，或含真人答覆證據的待決紀錄 ID 與版本，或預先授權設定（實驗，見 [預先授權](preauth.md)）。引用不到就不能定案，只能判 `needs-human`。
-  預先授權的 `- authority:` 寫 `預先授權 <層>：<段落>`，內容是 `show` 印出的設定。全域設定的 `[advisor]` 段取代使用者私人全域說明檔裡的參謀擴權實驗文字作為授權來源：`may_settle` 列參謀可定案的範圍，`must_ask` 列仍要問的範圍；引用時寫明為何屬於可定案範圍。專案層的 `[advisor]` 不生效，不能引用。動作段（如 `[actions.merge]`）只在 `check` 結果為 `allow` 時才能引用。
+  預先授權的 `- authority:` 寫 `預先授權 <層>：<段落>`，內容是 `show` 印出的設定。全域設定的 `[advisor]` 段取代使用者私人全域說明檔裡的參謀擴權實驗文字作為授權來源：`may_settle` 列參謀可定案的範圍，`must_ask` 列仍要問的範圍；引用時寫明為何屬於可定案範圍。專案層的 `[advisor]` 不生效，不能引用。動作段（如 `[actions.merge]`）只在 `check` 結果為 `allow` 時才能引用。只關於外觀的選擇題，`check --action appearance` 為 `allow` 時可以定案，`- authority:` 寫它印的那行，並把結果網址交主控附進下一次回報，見 [外觀修改](preauth.md#外觀修改)。
 - **`needs-human`（需要真人）**：寫明超出授權之處，或為何只有使用者能提供。花錢、動帳號額度、刪使用者資料一律屬此；改需求、擴大範圍（含改驗收、開新票）也屬此，除非落在全域預先授權 `[advisor]` 段的 `may_settle` 內且不屬 `must_ask`，這時可以定案。這與動作查詢是兩回事：`check --action change-acceptance`、`check --action new-ticket` 仍一律回 `ask`，也不能寫成動作設定。
 - **`self-check`（可以自己查，主要針對 HELP）**：寫明去哪裡查。求助題核對 `- tried:` 行：主控用手上的遠端能力做得到卻沒試，就回這個結論。
 

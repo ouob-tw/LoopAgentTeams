@@ -638,7 +638,7 @@ def _duty_reminder(decisions, question_id):
 
 
 def _preauth_recheck(questions, decisions, question_id):
-    """``(verdict, check line, sent)`` for a record with ``- action:``, else None.
+    """``(verdict, check line, sent, action)`` for a record with ``- action:``, else None.
 
     The questions file's binding names the session and workspace; unbound, the client
     session environment and the current directory do. A failed recheck warns and counts
@@ -705,9 +705,12 @@ def _upsert(questions, decisions, question_id, text, first_revision=1, notes=Non
     """
     preauth = _preauth_recheck(questions, decisions, question_id)
     if preauth is not None and preauth[0] == "allow" and not preauth[2]:
+        step = ("have the two advisors settle it, citing that line, and put the result link "
+                "in your next report to the user"
+                if preauth[3] == "appearance"
+                else "do it with lat-preauth.py do, which logs it")
         print(f"lat-panel: refused, nothing written: {question_id} is pre-authorized under "
-              f"the current settings ({preauth[1]}). Do not ask: do it with "
-              "lat-preauth.py do, which logs it.", file=sys.stderr)
+              f"the current settings ({preauth[1]}). Do not ask: {step}.", file=sys.stderr)
         return 1, None, False
     revision, written = upsert_question_written(
         questions, question_id, text, decisions_path=decisions, first_revision=first_revision

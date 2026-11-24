@@ -130,6 +130,19 @@ class UpsertTests(PreauthQuestionTests):
         self.assertFalse(self.questions.exists())
         self.assertEqual(self.decision.read_text(), RECORD)
 
+    def test_unsent_style_question_under_appearance_is_refused_for_the_advisors(self):
+        self.project.write_text('[actions.appearance]\nallow = true\n')
+        self.decision.write_text(RECORD.replace('merge dev', 'appearance'))
+        result = self.upsert(self.questions)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('allow appearance', result.stderr)
+        self.assertIn('have the two advisors settle it', result.stderr)
+        self.assertNotIn('lat-preauth.py do', result.stderr)
+        self.assertFalse(self.questions.exists())
+        with self.subTest('unset asks the user as before'):
+            self.project.unlink()
+            self.assertEqual(self.upsert(self.questions).returncode, 0)
+
     def test_unsent_question_that_must_be_asked_is_written_with_the_preauth_line(self):
         result = self.upsert(self.questions)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -214,6 +227,16 @@ class StopTests(PreauthQuestionTests):
                 self.assertIn(self.HELD, warning['systemMessage'])
                 self.assertIn('不再攔下', warning['systemMessage'])
                 (self.reports / f'{SESSION}.jsonl').unlink()
+
+    def test_unsent_style_question_under_appearance_is_held_for_the_advisors(self):
+        self.project.write_text('[actions.appearance]\nallow = true\n')
+        self.decision.write_text(RECORD.replace('merge dev', 'appearance'))
+        self.controller()
+        output = self.stop('問題全文\nDECIDE: LAT-P r1')
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('LAT-P（allow appearance', output['reason'])
+        self.assertIn('交兩位參謀定案', output['reason'])
+        self.assertNotIn('lat-preauth.py do', output['reason'])
 
     def test_unsent_allowed_help_question_is_held(self):
         self.project.write_text(ALLOW_MERGE)
