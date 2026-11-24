@@ -1589,18 +1589,23 @@ def tool_command_lineage(lineage, client, process_by_pid, tool):
 
 def background_process_running(agent, info, processes, current_pid=None):
     """Detect a surviving command tied to the HCOM-bound client process."""
+    return any(True for _ in agent_command_processes(agent, info, processes, current_pid))
+
+
+def agent_command_processes(agent, info, processes, current_pid=None):
+    """Yield every live process of a command the HCOM-bound client started."""
     identity = info.get('launch_context', {}).get('pid_identity', '')
     try:
         client_starttime = int(identity.rsplit(':', 1)[1])
     except (AttributeError, ValueError, IndexError):
-        return False
+        return
     process_id = info.get('launch_context', {}).get('process_id')
     process_marker = f'HCOM_PROCESS_ID={process_id}'
     clients = {process.pid for process in processes
                if process.starttime == client_starttime
                and (not process_id or process_marker in process.environment)}
     if not clients:
-        return False
+        return
     process_by_pid = {process.pid: process for process in processes}
     parents = {process.pid: process.ppid for process in processes}
     current_pid = os.getpid() if current_pid is None else current_pid
@@ -1625,13 +1630,12 @@ def background_process_running(agent, info, processes, current_pid=None):
             client, lineage = provenance
             tool = info.get('tool') if info.get('tool') in HELPER_RULE_CLIENTS else ''
             if tool_command_lineage(lineage, client, process_by_pid, tool):
-                return True
+                yield process
             continue
         # A detached tool may be reparented after its shell exits; its HCOM marker
         # and separate session retain provenance without guessing from executable names.
         if process.session not in client_sessions:
-            return True
-    return False
+            yield process
 
 
 WATCH_SENDER = 'lat-watch'
@@ -1942,8 +1946,131 @@ def foreground_running(observation):
     return observation.terminal_ready is False
 
 
+# Wait-expiry progress evidence (#715): a suite-gate run writes its output as it goes to
+# `<state dir>/failures/live-<pid>-<id>.log` (removed at run end, frozen once it reaches
+# GATE_LIVE_CAP_BYTES); output that has not grown for GATE_STALL_SECONDS marks the run as
+# possibly stuck. Other commands get no evidence: a turn in progress does not tell which of
+# an agent's commands is in the foreground, and background work alone is not progress.
+GATE_STALL_SECONDS = 15 * 60
+GATE_LIVE_CAP_BYTES = 32 * 1024 * 1024  # suite-gate's FAILURE_SPOOL_BYTES
+SUITE_GATE_SCRIPT = 'suite-gate.py'
+GATE_LIVE_FILE = re.compile(r'live-(\d+)-[0-9a-f]+\.log')
+
+
+def boot_time(proc_root=Path('/proc')):
+    for line in (proc_root / 'stat').read_text().splitlines():
+        if line.startswith('btime '):
+            return int(line.split()[1])
+    raise ValueError('no btime in /proc/stat')
+
+
+def gate_state_dir(process, proc_root=Path('/proc')):
+    """The state directory a suite-gate process resolves from its own environment."""
+    env = dict(part.split('=', 1) for part in process.environment if '=' in part)
+    if env.get('SUITE_GATE_STATE_DIR'):
+        path = Path(env['SUITE_GATE_STATE_DIR'])
+        return path if path.is_absolute() else (proc_root / str(process.pid) / 'cwd').resolve() / path
+    home = env.get('HOME') or str(Path.home())
+    return Path(env.get('XDG_STATE_HOME') or f'{home}/.local/state') / 'suite-gate'
+
+
+def gate_progress(agent, info, processes, *, proc_root=Path('/proc')):
+    """Progress evidence of the awaited agent's running suite-gate, or None when it runs none.
+
+    With several live outputs (parallel registered gates) the quietest one counts, so one
+    stuck suite is not hidden by another. Unreadable parts are named in `unavailable`.
+    """
+    commands = list(agent_command_processes(agent, info, processes))
+    gates = [process for process in commands
+             if any(Path(part).name == SUITE_GATE_SCRIPT for part in process.command)]
+    if not gates:
+        return None
+    parents = {process.pid: process.ppid for process in processes}
+    gate_pids = {process.pid for process in gates}
+    tree = {process.pid for process in commands
+            if process.pid in gate_pids or process_ancestors(process.pid, parents) & gate_pids}
+    unavailable = []
+    try:
+        started_at = (boot_time(proc_root) + min(process.starttime for process in gates)
+                      / os.sysconf('SC_CLK_TCK'))
+    except (OSError, ValueError):
+        started_at = None
+        unavailable.append('run time')
+    files = []
+    for directory in {gate_state_dir(process, proc_root) for process in gates}:
+        try:
+            for path in (directory / 'failures').iterdir():
+                match = GATE_LIVE_FILE.fullmatch(path.name)
+                if match and int(match[1]) in gate_pids:
+                    stat = path.stat()
+                    files.append((stat.st_mtime, stat.st_size))
+        except OSError:
+            continue
+    output_at, capped = None, False
+    if files:
+        output_at, size = min(files)
+        capped = size >= GATE_LIVE_CAP_BYTES
+    else:
+        unavailable.append('live output file (none yet, or unreadable)')
+    return dict(started_at=started_at, output_at=output_at, capped=capped,
+                unavailable=unavailable,
+                running=sum(1 for process in commands
+                            if process.pid in tree and process.state == 'R'),
+                zombies=sum(1 for process in processes
+                            if process.state == 'Z' and process.ppid in tree))
+
+
+def expiry_progress(declaration, observation, hcom, processes, now):
+    """Each outstanding target's gate evidence, read only when an expiry nudge may go out."""
+    if (not declaration or declaration.get('kind') in ('decision', 'alarm')
+            or not idle_prompt(observation)):
+        return None
+    deadline = declaration.get('deadline_at', declaration['declared_at'] + 60 * 60)
+    if not (declaration.get('expiry_nudge_pending')
+            or (declaration.get('active', True) and now >= deadline)):
+        return None
+    progress = {}
+    for entry in outstanding_targets(declaration):
+        name = entry['target']
+        info = agent_info(hcom, name)
+        if not info:
+            continue
+        try:
+            progress[name] = gate_progress(info.get('name', name), info, processes)
+        except Exception as error:  # evidence is optional; the nudge must still go out
+            progress[name] = {'error': f'{type(error).__name__}: {error}'}
+    return progress
+
+
+def progress_note(target, progress, now):
+    """The wait-expiry nudge's evidence sentence for one awaited agent ('' without any)."""
+    if not progress:
+        return ''
+    if progress.get('error'):
+        return f' Progress evidence for {target} is unavailable ({progress["error"]}).'
+    started_at = progress['started_at']
+    run = (f' for {int((now - started_at) // 60)} min' if started_at is not None else '')
+    note = f' {target} is running a suite-gate run{run}'
+    output_at = progress['output_at']
+    quiet = None
+    if output_at is not None:
+        at = datetime.fromtimestamp(output_at, timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+        note += f'; its output last grew at {at} ({int(max(0, now - output_at) // 60)} min ago)'
+        if progress['capped']:
+            note += ', where its live copy is capped, so later output is not seen'
+        else:
+            quiet = max(0, now - output_at)
+    note += f'; {progress["running"]} running and {progress["zombies"]} zombie processes.'
+    if progress['unavailable']:
+        note += f' Unavailable: {", ".join(progress["unavailable"])}.'
+    if quiet is not None and quiet >= GATE_STALL_SECONDS:
+        note += (f' It may be stuck: no output for {int(quiet // 60)} min. Hand it back to '
+                 f'{target} to diagnose before waiting again.')
+    return note
+
+
 def decide_wait(declaration, observation, target_observation, target_state, now,
-                *, waits_for_orchestrator=False):
+                *, waits_for_orchestrator=False, target_progress=None):
     """Return a deadline declaration, delivery requests and lifecycle log events."""
     if (not declaration or declaration.get('kind') in ('decision', 'alarm')
             or waits_for_orchestrator):
@@ -1972,9 +2099,11 @@ def decide_wait(declaration, observation, target_observation, target_state, now,
             events.append('wait-expired')
     if saved.get('expiry_nudge_pending') and idle_prompt(observation):
         minutes = int((now - saved['declared_at']) // 60)
-        names = ', '.join(entry['target'] for entry in outstanding_targets(saved))
-        text = (f"[lat-watch] Your wait for {names} expired after {minutes} minutes. "
-                'Check that agent status, continue your work or declare a new wait.')
+        targets = [entry['target'] for entry in outstanding_targets(saved)]
+        evidence = ''.join(progress_note(name, (target_progress or {}).get(name), now)
+                           for name in targets)
+        text = (f"[lat-watch] Your wait for {', '.join(targets)} expired after {minutes} minutes."
+                f"{evidence} Check that agent status, continue your work or declare a new wait.")
         actions.append(Action('nudge', observation.agent, text=text, category='wait-expiry'))
     notice = saved.get('expiry_notice')
     if saved.get('expiry_count', 0) >= 2 and not saved.get('expiry_notified') and not notice:
@@ -3729,9 +3858,13 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
                     saved_wait, wait_actions, wait_events = decide_alarm(
                         declaration, observation, met, now)
                 else:
+                    target_progress = (expiry_progress(
+                        declaration, observation, hcom, processes, now)
+                        if not waits_for_orchestrator else None)
                     saved_wait, wait_actions, wait_events = decide_wait(
                         declaration, observation, target_observation, target_state, now,
-                        waits_for_orchestrator=waits_for_orchestrator)
+                        waits_for_orchestrator=waits_for_orchestrator,
+                        target_progress=target_progress)
                 if saved_wait is not None:
                     observation = observation._replace(
                         wait_active=saved_wait.get('active', True),

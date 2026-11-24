@@ -2285,6 +2285,134 @@ class WaitDeadlineDecisionTests(unittest.TestCase):
                                           None, None, 7200)
         self.assertEqual(actions[1].kind, 'notify-user')
 
+
+class WaitExpiryProgressTests(unittest.TestCase):
+    """The wait-expiry nudge carries the awaited agent's command evidence (#715)."""
+    NOW = 100_000
+    LEGACY = ('[lat-watch] Your wait for reviewer expired after 61 minutes. '
+              'Check that agent status, continue your work or declare a new wait.')
+
+    def setUp(self):
+        self.watch = load_watch()
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.proc = self.dir / 'proc'
+        self.proc.mkdir()
+        (self.proc / 'stat').write_text('cpu 1 2 3\nbtime 50000\n')
+        self.state = self.dir / 'state'
+        (self.state / 'failures').mkdir(parents=True)
+        self.ticks = os.sysconf('SC_CLK_TCK')
+        self.info = {'name': 'reviewer', 'tool': 'claude', 'status': 'active',
+                     'launch_context': {'pid_identity': 'linux:boot:100', 'process_id': 'p1'}}
+        env = ('HCOM_PROCESS_ID=p1', f'SUITE_GATE_STATE_DIR={self.state}')
+        P = self.watch.Process
+        self.client = P(10, 1, 100, 'S', 10, ('claude',), env)
+        # A gate the agent started 42 minutes ago: shell -> uv -> python suite-gate.py -> bun.
+        start = (self.NOW - 42 * 60 - 30 - 50000) * self.ticks
+        self.gate = [
+            P(20, 10, start, 'S', 20, ('bash', '-c', 'uv run suite-gate.py affected'), env),
+            P(21, 20, start + 1, 'S', 20, ('uv', 'run', '/s/suite-gate.py', 'affected'), env),
+            P(22, 21, start + 2, 'S', 20, ('python', '/s/suite-gate.py', 'affected'), env),
+            P(23, 22, start + 3, 'R', 20, ('bun', 'test'), env),
+            P(24, 23, start + 4, 'Z', 20, ('bun',), env),
+        ]
+
+    def live(self, pid, age, name='0a1b2c3d', size=7):
+        path = self.state / 'failures' / f'live-{pid}-{name}.log'
+        with open(path, 'wb') as handle:
+            handle.truncate(size)
+        os.utime(path, (self.NOW - age, self.NOW - age))
+
+    def progress(self, processes):
+        return self.watch.gate_progress('reviewer', self.info, processes, proc_root=self.proc)
+
+    def nudge(self, progress):
+        declaration = dict(agent='worker', target='reviewer', declared_at=self.NOW - 3660,
+                           declared_at_utc='1970-01-01T00:00:00+00:00', active=True)
+        idle = self.watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        _, actions, _ = self.watch.decide_wait(
+            declaration, idle, None, None, self.NOW,
+            target_progress=None if progress is None else {'reviewer': progress})
+        self.assertEqual([action.category for action in actions], ['wait-expiry'])
+        return actions[0].text
+
+    def test_growing_gate_output_reports_run_and_output_time_without_stuck(self):
+        self.live(22, 120)
+        text = self.nudge(self.progress([self.client, *self.gate]))
+        self.assertIn('reviewer is running a suite-gate run for 42 min', text)
+        self.assertIn('its output last grew at 1970-01-02 03:44 UTC (2 min ago)', text)
+        self.assertIn('1 running and 1 zombie processes', text)
+        self.assertNotIn('may be stuck', text)
+        self.assertNotIn('Unavailable', text)
+
+    def test_quiet_gate_output_past_threshold_says_may_be_stuck(self):
+        self.live(22, self.watch.GATE_STALL_SECONDS + 5 * 60)
+        text = self.nudge(self.progress([self.client, *self.gate]))
+        self.assertIn('its output last grew at 1970-01-02 03:26 UTC (20 min ago)', text)
+        self.assertIn('It may be stuck: no output for 20 min. Hand it back to reviewer', text)
+        self.live(22, self.watch.GATE_STALL_SECONDS - 1)  # just under the threshold
+        self.assertNotIn('may be stuck', self.nudge(self.progress([self.client, *self.gate])))
+        self.live(22, self.watch.GATE_STALL_SECONDS)  # exactly at it
+        self.assertIn('may be stuck', self.nudge(self.progress([self.client, *self.gate])))
+
+    def test_parallel_gates_judge_the_quietest_live_output(self):
+        self.live(22, 60)
+        self.live(22, self.watch.GATE_STALL_SECONDS + 60, name='ffff0000')
+        text = self.nudge(self.progress([self.client, *self.gate]))
+        self.assertIn('(16 min ago)', text)
+        self.assertIn('may be stuck', text)
+
+    def test_capped_live_output_is_not_called_stuck(self):
+        self.live(22, self.watch.GATE_STALL_SECONDS + 5 * 60,
+                  size=self.watch.GATE_LIVE_CAP_BYTES)
+        text = self.nudge(self.progress([self.client, *self.gate]))
+        self.assertIn('(20 min ago), where its live copy is capped', text)
+        self.assertNotIn('may be stuck', text)
+
+    def test_no_running_command_keeps_the_nudge_text_unchanged(self):
+        self.assertIsNone(self.progress([self.client]))
+        self.assertEqual(self.nudge(None), self.LEGACY)
+        self.assertEqual(self.nudge(self.progress([self.client])), self.LEGACY)
+        # Other commands get no evidence: a background dev server is not progress.
+        other = self.gate[0]._replace(command=('bash', '-c', 'bun run dev'))
+        self.assertIsNone(self.progress([self.client, other]))
+
+    def test_unreadable_output_and_process_info_are_named_and_the_nudge_still_goes(self):
+        (self.proc / 'stat').unlink()  # no boot time: run time unknown; no live file either
+        text = self.nudge(self.progress([self.client, *self.gate]))
+        self.assertIn('reviewer is running a suite-gate run;', text)
+        self.assertIn('Unavailable: run time, live output file (none yet, or unreadable).', text)
+        self.assertNotIn('may be stuck', text)
+        # A live file of another run is not this gate's output.
+        self.live(99, 60)
+        self.assertIsNone(self.progress([self.client, *self.gate])['output_at'])
+        # Any error while reading evidence becomes a note, never a failed cycle.
+        declaration = dict(agent='worker', target='reviewer', declared_at=0, active=True)
+        idle = self.watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        with patch.object(self.watch, 'gate_progress', side_effect=PermissionError('denied')):
+            progress = self.watch.expiry_progress(declaration, idle,
+                                                  {'reviewer': self.info}, [], 3600)
+        text = self.nudge(progress['reviewer'])
+        self.assertIn('Progress evidence for reviewer is unavailable '
+                      '(PermissionError: denied).', text)
+        self.assertTrue(text.endswith('declare a new wait.'))
+
+    def test_expiry_progress_reads_evidence_only_when_a_nudge_may_go_out(self):
+        idle = self.watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        before = dict(agent='worker', target='reviewer', declared_at=0, active=True)
+        hcom = {'reviewer': self.info}
+        with patch.object(self.watch, 'gate_progress', return_value=None) as read:
+            self.assertIsNone(self.watch.expiry_progress(before, idle, hcom, [], 3599))
+            self.assertIsNone(self.watch.expiry_progress(
+                before, idle._replace(status='active'), hcom, [], 3600))
+            self.assertEqual(read.call_count, 0)
+            self.assertEqual(self.watch.expiry_progress(before, idle, hcom, [], 3600),
+                             {'reviewer': None})
+            pending = dict(before, active=False, expiry_nudge_pending=True)
+            self.watch.expiry_progress(pending, idle, hcom, [], 9000)
+            self.assertEqual(read.call_count, 2)
+
+
 class WatchCliTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
