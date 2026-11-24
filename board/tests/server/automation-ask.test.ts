@@ -7,7 +7,9 @@
 // schedule nor 立即執行 starts the task again, also after a restart, which watches on (an agent gone by
 // then fails the run); the time it waits does not count toward the limit (#675), so it stops past the
 // limit only on its working time, and the yellow card turns into a red one; 停止這次 works while it waits. A question
-// followed, before the board looks, by another turn is still waited on, unless it was answered already (#700). Nothing here starts a real agent.
+// followed, before the board looks, by another turn is still waited on, unless it was answered already, and pushed to
+// a subscribed device (a fake push service) the same as one asked in the latest reply (#700). Nothing here starts a real agent.
+import { createDecipheriv, createECDH, hkdfSync } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +21,37 @@ import type { AlertsSnapshot } from '../../src/lib/board/alerts.ts';
 const tpe = (year: number, month: number, day: number, hour = 12, minute = 0) => Date.UTC(year, month - 1, day, hour - 8, minute);
 const START = tpe(2026, 11, 18, 12);
 
+// A fake push service on this host (LAT_BOARD_PUSH_TEST_ORIGIN): what the board pushes to a subscribed device (#700).
+const pushes: Buffer[] = [];
+const pushService = Bun.serve({
+	port: 0,
+	hostname: '127.0.0.1',
+	async fetch(request) {
+		pushes.push(Buffer.from(await request.arrayBuffer()));
+		return new Response(null, { status: 201 });
+	}
+});
+const PUSH_ORIGIN = `http://127.0.0.1:${pushService.port}`;
+const pushKeys = (() => {
+	const ecdh = createECDH('prime256v1');
+	const publicKey = ecdh.generateKeys();
+	const auth = Buffer.from(crypto.getRandomValues(new Uint8Array(16)));
+	return { ecdh, auth, json: { p256dh: Buffer.from(publicKey).toString('base64url'), auth: auth.toString('base64url') } };
+})();
+/** A push as the device reads it: RFC 8291 undone with its private key. */
+function openPush(body: Buffer): Record<string, string> {
+	const salt = body.subarray(0, 16);
+	const asPublic = body.subarray(21, 21 + body[20]);
+	const sealed = body.subarray(21 + body[20]);
+	const ikm = Buffer.from(hkdfSync('sha256', pushKeys.ecdh.computeSecret(asPublic), pushKeys.auth, Buffer.concat([Buffer.from('WebPush: info\0'), pushKeys.ecdh.getPublicKey(), asPublic]), 32));
+	const cek = Buffer.from(hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: aes128gcm\0'), 16));
+	const nonce = Buffer.from(hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: nonce\0'), 12));
+	const decipher = createDecipheriv('aes-128-gcm', cek, nonce);
+	decipher.setAuthTag(sealed.subarray(sealed.length - 16));
+	const plain = Buffer.concat([decipher.update(sealed.subarray(0, sealed.length - 16)), decipher.final()]);
+	return JSON.parse(plain.subarray(0, -1).toString('utf8'));
+}
+
 // The fake input command's log lives outside the fixture directory: its command line is set before the fixture exists.
 const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-ask-inject-'));
 
@@ -28,7 +61,7 @@ let work: string;
 let dir: string;
 
 beforeAll(async () => {
-	fixture = await startFixture({ env: { TZ: 'UTC', LAT_BOARD_AUTOMATION_TICK_SECONDS: '0.1', LAT_BOARD_AUTOMATION_AGENT_POLL_SECONDS: '0.1', LAT_BOARD_LAUNCH_WAIT_SECONDS: '3', LAT_BOARD_HCOM_TIMEOUT_SECONDS: '3', LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, '../fake-inject.mjs'), injectDir]), LAT_BOARD_INJECT_TIMEOUT_SECONDS: '2' } });
+	fixture = await startFixture({ env: { TZ: 'UTC', LAT_BOARD_AUTOMATION_TICK_SECONDS: '0.1', LAT_BOARD_AUTOMATION_AGENT_POLL_SECONDS: '0.1', LAT_BOARD_LAUNCH_WAIT_SECONDS: '3', LAT_BOARD_HCOM_TIMEOUT_SECONDS: '3', LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, '../fake-inject.mjs'), injectDir]), LAT_BOARD_INJECT_TIMEOUT_SECONDS: '2', LAT_BOARD_PUSH_TEST_ORIGIN: PUSH_ORIGIN, LAT_BOARD_URL: 'https://board.example.test' } });
 	dir = fixture.dir;
 	fixture.setClock(START);
 	work = join(dir, 'work');
@@ -39,6 +72,7 @@ beforeAll(async () => {
 afterAll(async () => {
 	await fixture.cleanup();
 	rmSync(injectDir, { recursive: true, force: true });
+	pushService.stop(true);
 });
 beforeEach(() => {
 	fixture.setClock(START);
@@ -683,4 +717,30 @@ test('an unattended controller ending DECIDE: and then DONE before the board loo
 	replies('decide-done', [`DECIDE: ${QUESTION}`, '照預設做完了。\nDONE']);
 	const done = await ended(task.id, started.id);
 	expect([done.status, done.asks]).toEqual(['success', undefined]);
+});
+
+test.each([
+	['DECIDE as the latest reply', 'DECIDE', false],
+	['DECIDE then NO REPLY before the board looked', 'DECIDE', true],
+	['HELP then NO REPLY before the board looked', 'HELP', true]
+])('an unattended controller ending %s: the ask is recorded, one yellow card, and one push to the device naming the task and the card (#700)', async (_label, tag, quick) => {
+	expect((await send('/api/push/subscription', 'PUT', { endpoint: `${PUSH_ORIGIN}/push/phone`, keys: pushKeys.json })).status).toBeLessThan(300);
+	const task = await create({ name: `推播-${tag}-${quick}`, agent: unattendedAgent() });
+	const name = `push-${tag.toLowerCase()}-${quick ? 'quick' : 'single'}`;
+	hcomPlan([{ name }]);
+	const started = await runNow(task.id);
+	await runWhen(task.id, started.id, (run) => run.sessionId === `s-${name}`, `${name} to be listed`);
+	const from = pushes.length;
+	typed(name, '讀取並照做');
+	replies(name, quick ? [`需要你決定。\n${tag}: ${QUESTION}`, '等 Agent 回報。\nNO REPLY: 等 Agent 回報'] : [`需要你決定。\n${tag}: ${QUESTION}`]);
+	const run = await waitingOn(task.id, started.id, 1);
+	expect(run.asks).toEqual([{ question: QUESTION, askedAt: START }]);
+	expect((await viewOf(task.id)).state).toBe('asking');
+	const cards = await yellow(run.id);
+	expect(cards).toHaveLength(1);
+	const ours = () => pushes.slice(from).map(openPush).filter((push) => push.alert === cards[0].id);
+	await eventually(async () => ours().length > 0, 3_000, 'the push');
+	await sleep(300);
+	expect(ours()).toEqual([{ title: `${task.name} 等你回覆`, body: `${QUESTION.slice(0, 40)}…`, alert: cards[0].id }]);
+	expect((await runsOf(task.id)).find((each) => each.id === run.id)!.status).toBe('running');
 });
