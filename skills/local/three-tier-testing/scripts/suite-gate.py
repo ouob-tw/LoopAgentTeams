@@ -1955,7 +1955,7 @@ class Gate:
 
     def _run_command(self, argv, cwd, scan=None, command=None, keep=False):
         """_run_command_inner(), removing the live output file when it ends in an error."""
-        self.live = None
+        self.live = None if keep else getattr(self, "live", None)
         try:
             return self._run_command_inner(argv, cwd, scan, command, keep)
         except BaseException:
@@ -1982,7 +1982,7 @@ class Gate:
         spool_path, spool = spool_open() if keep else (None, None)
         tail = Tail(spool)
         tail.spool_path = spool_path
-        self.live = tail
+        self.live = tail if keep else getattr(self, "live", None)
         pumps = [threading.Thread(target=pump, args=(stream, out, tail, scan, key), daemon=True)
                  for key, stream, out in (('out', child.stdout, sys.stdout.buffer),
                                           ('err', child.stderr, sys.stderr.buffer))]
