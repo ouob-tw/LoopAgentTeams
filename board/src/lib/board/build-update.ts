@@ -6,7 +6,8 @@
 // nothing would be lost, else as soon as the text is sent or cleared, the answer draft or files
 // sent or dropped, the recording ended, the dialog closed or the drag let go. It loads itself again
 // only once for a build, so a page that still differs after that (a server that announces a build
-// before it serves it) does not reload over and over; the next restart allows one more.
+// before it serves it) does not reload over and over; each time the live feed comes back (a
+// restart, or the network back) allows one more.
 
 /** How often an open page asks which build the server serves. */
 export const BUILD_CHECK_MS = 60_000;
@@ -50,9 +51,11 @@ export async function servedBuild(read: typeof fetch = fetch): Promise<string | 
  *  attached files, a recording), each added by the state that holds it. */
 const holders = new Set<() => boolean>();
 
-/** Add a check of whether this state holds unsent work now; a reload waits while any says so. */
-export function holdsUnsent(check: () => boolean): void {
+/** Add a check of whether this state holds unsent work now; a reload waits while any says so.
+ *  Returns the function that removes it. */
+export function holdsUnsent(check: () => boolean): () => void {
 	holders.add(check);
+	return () => holders.delete(check);
 }
 
 /** Text boxes whose content a reload would lose. One marked `data-reload-safe` shows a value the
@@ -143,9 +146,9 @@ export function watchBuild({ own, storage = () => sessionStorage, reload = () =>
 	for (const name of ['input', 'change', 'submit', 'close', 'keyup', 'focusout']) addEventListener(name, soon, true);
 }
 
-/** Ask the server which build it serves now; nothing before `watchBuild`. After a server restart
- *  (the live feed came back) one more reload is allowed: the build the page loaded again for may
- *  have been announced before the server that serves it was started. */
+/** Ask the server which build it serves now; nothing before `watchBuild`. When the live feed came
+ *  back (`restarted`: the page cannot tell a restart from the network coming back) one more reload
+ *  is allowed: the build it loaded again for may have been announced before it was served. */
 export function checkBuild({ restarted = false }: { restarted?: boolean } = {}): void {
 	if (!watch) return;
 	if (restarted) forgetReload(watch.storage);
