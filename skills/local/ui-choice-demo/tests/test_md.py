@@ -1,6 +1,7 @@
 """Markdown rendering of publish-md: structure, escaping, safe links, and the published page."""
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -109,6 +110,17 @@ class RenderTests(unittest.TestCase):
     def test_title_from_first_heading(self):
         self.assertEqual(demo.md_title('x\n# **Hi** `a`\n', 'n'), 'Hi a')
         self.assertEqual(demo.md_title('no heading', 'n'), 'n')
+
+    def test_no_text_size_under_18px(self):
+        """The skill wants every shown text >= 18px (the frame body is 18px): no font-size or font
+        shorthand in the page styles may be smaller than 1em/18px (#708 QA: code was .9em = 16.2px)."""
+        css = demo.MD_CSS + demo.FRAME
+        sizes = re.findall(r'font-size:\s*([\d.]+)(em|rem|px|%)', css)
+        sizes += re.findall(r'font:\s*(?:[a-z]+\s+)*([\d.]+)(em|rem|px|%)', css)
+        self.assertTrue(sizes)
+        for n, unit in sizes:
+            px = float(n) * {'px': 1, 'em': 18, 'rem': 18, '%': .18}[unit]
+            self.assertGreaterEqual(px, 18, f'{n}{unit} is under 18px')
 
     def test_wide_table_scrolls_inside_its_box(self):
         page = demo.md_page(REPORT)
