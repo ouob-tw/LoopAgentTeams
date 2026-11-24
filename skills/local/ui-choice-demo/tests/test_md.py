@@ -87,6 +87,12 @@ class RenderTests(unittest.TestCase):
         demo.md_title('# a' + ' ' * 5000 + 'x', 'n')
         self.assertLess(time.time() - t, 1)
 
+    def test_trailing_hash_needs_a_space(self):
+        self.assertIn('<h1>Learn C#</h1>', self.html('# Learn C#'))
+        self.assertIn('<h2>Issue</h2>', self.html('## Issue ##'))
+        self.assertEqual(demo.md_title('# Learn C#', 'n'), 'Learn C#')
+        self.assertEqual(demo.md_title('```\n```sh\n# in code\n```\n# Real', 'n'), 'Real')
+
     def test_title_ignores_code_blocks(self):
         self.assertEqual(demo.md_title('```sh\n# run\n```\n# Real', 'n'), 'Real')
 

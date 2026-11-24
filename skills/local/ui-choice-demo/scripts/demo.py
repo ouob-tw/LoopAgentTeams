@@ -92,6 +92,13 @@ LIST_ITEM = re.compile(r'^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$')
 TABLE_SEP = re.compile(r'^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$')
 
 
+def heading_text(text):
+    """A heading's text without its optional closing run of # (which needs a space before it)."""
+    text = text.rstrip()
+    stripped = text.rstrip('#')
+    return stripped.rstrip() if stripped != text and (not stripped or stripped[-1] == ' ') else text
+
+
 def md_inline(text):
     """Inline Markdown to HTML. Everything is escaped first; only tags built here reach the page."""
     spans = []
@@ -204,7 +211,7 @@ def md_to_html(source):
             flush()
             m = HEADING.match(line)
             n = len(m.group(1))
-            heading = m.group(2).rstrip().rstrip('#').rstrip()
+            heading = heading_text(m.group(2))
             out.append(f'<h{n}>{md_inline(heading)}</h{n}>')
             i += 1
         elif HRULE.match(line):
@@ -240,15 +247,20 @@ def md_to_html(source):
 
 def md_title(source, fallback):
     """The first top-level heading outside fenced code, as plain text."""
-    fence = None
-    for line in source.splitlines():
-        f = FENCE.match(line)
+    lines = source.splitlines()
+    i = 0
+    while i < len(lines):
+        f = FENCE.match(lines[i])
         if f:
-            fence = None if fence == f.group(1)[0] else (fence or f.group(1)[0])
-        elif fence is None:
-            m = HEADING.match(line)
+            mark = f.group(1)
+            i += 1
+            while i < len(lines) and not (lines[i].strip().startswith(mark[0] * len(mark)) and not lines[i].strip().strip(mark[0])):
+                i += 1
+        else:
+            m = HEADING.match(lines[i])
             if m and len(m.group(1)) == 1:
-                return re.sub(r'[`*_]', '', m.group(2).rstrip().rstrip('#').rstrip()) or fallback
+                return re.sub(r'[`*_]', '', heading_text(m.group(2))) or fallback
+        i += 1
     return fallback
 
 
