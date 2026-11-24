@@ -18,6 +18,7 @@
       ],
       "tests": [
         "board/tests/unit/automation.test.ts",
+        "board/tests/unit/automation-provider.test.ts",
         "board/tests/server/automation.test.ts",
         "board/tests/browser/automation-page.test.ts",
         "board/tests/server/automation-schedule.test.ts",
