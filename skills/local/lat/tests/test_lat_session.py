@@ -3616,7 +3616,7 @@ class SessionTests(unittest.TestCase):
         self.activate()
         body = '- [ ] 還沒勾\n'
         for command in ('gh issue edit 458 --body-file b.md && gh issue close 458',
-                        'gh issue edit 458 -R o/r --body x\ngh issue close 458 -R o/r'):
+                        'gh issue edit 458 -R o/r --add-label x\ngh issue close 458 -R o/r'):
             with self.subTest(command=command):
                 result = self.close_hook(command, body)
                 self.assertEqual(result.returncode, 2, result.stderr)
@@ -3627,6 +3627,54 @@ class SessionTests(unittest.TestCase):
                 result = self.close_hook(command, body)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertNotIn('also edits the issue', result.stderr)
+
+    def test_close_check_judges_a_same_command_edit_on_its_new_body(self):
+        # #716: `gh issue edit N --body…` before `gh issue close N` is judged on the new body.
+        self.activate()
+        old = '- [ ] 還沒勾\n'
+        (self.work / 'done.md').write_text('- [x] 已勾\n')
+        (self.work / 'half.md').write_text('- [x] 已勾\n- [ ] 另一項沒勾\n')
+        for command in ('gh issue edit 458 --body-file done.md && gh issue close 458',
+                        'gh issue edit 458 -F done.md ; gh issue close 458',
+                        'gh issue edit 458 --body-file=done.md\ngh issue close 458',
+                        "gh issue edit 458 --body '- [x] ok' && gh issue close 458",
+                        'gh issue edit 458 -b "- [X] ok" && gh issue close 458'):
+            with self.subTest(command=command):
+                result = self.close_hook(command, old)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        for command in ('gh issue edit 458 --body-file half.md && gh issue close 458',
+                        "gh issue edit 458 --body '- [x] a\n- [ ] 另一項沒勾' && gh issue close 458"):
+            with self.subTest(command=command):
+                result = self.close_hook(command, '- [x] old\n')
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('- [ ] 另一項沒勾', result.stderr)
+                self.assertNotIn('已勾', result.stderr)
+                self.assertIn('new body', result.stderr)
+        # the last edit that sets a body wins
+        result = self.close_hook('gh issue edit 458 --body-file half.md && gh issue edit 458 '
+                                 '--body-file done.md && gh issue close 458', old)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+
+    def test_close_check_keeps_todays_behavior_when_the_new_body_cannot_be_read(self):
+        self.activate()
+        (self.work / 'done.md').write_text('- [x] 已勾\n')
+        for command in ('gh issue edit 458 --body-file - && gh issue close 458',
+                        'gh issue edit 458 --body-file nope.md && gh issue close 458',
+                        'cd /x && gh issue edit 458 --body-file done.md && gh issue close 458',
+                        'gh issue edit 458 --body-file done.md || gh issue close 458',
+                        'gh issue edit 458 --body-file done.md & gh issue close 458',
+                        'gh issue edit 458 -R o/r --body-file done.md && gh issue close 458',
+                        'gh issue edit 7 --body-file done.md && gh issue close 458',
+                        'gh issue close 458 && gh issue edit 458 --body-file done.md'):
+            with self.subTest(command=command):
+                result = self.close_hook(command, '- [ ] 還沒勾\n')
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('- [ ] 還沒勾', result.stderr)
+                self.assertNotIn('new body', result.stderr)
+        # a body that is unreadable still falls back to GitHub's copy, which may be checked
+        result = self.close_hook('gh issue edit 458 --body-file - && gh issue close 458',
+                                 '- [x] ok\n')
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
 
     def test_close_check_reads_flag_orders_and_line_breaks(self):
         self.activate()
