@@ -147,6 +147,8 @@ export function readDisks(mounts: string[], statfs: StatFs = statfsSync): DiskUs
 	});
 }
 
+const READS_AT_ONCE = 32;
+
 const text = (path: string) => readFile(path, 'latin1');
 
 /** One process's line, or null once it has ended. Its owner comes from the cache by process key:
@@ -172,13 +174,13 @@ async function readProc(root: string, name: string, ownerCache: Map<string, Owne
  *  server. Processes that end while being read are left out. */
 export async function sample(root: string, now: number, ownerCache: Map<string, Owner | null> = new Map()): Promise<Sample> {
 	const names = (await readdir(root)).filter((name) => /^\d+$/.test(name));
-	const [cpu, load, memory, ...read] = await Promise.all([
-		text(`${root}/stat`).then(parseCpu),
-		text(`${root}/loadavg`).then(parseLoad),
-		text(`${root}/meminfo`).then(parseMemory),
-		...names.map((name) => readProc(root, name, ownerCache))
-	]);
-	const procs = read.filter((proc): proc is Proc => proc !== null);
+	const [cpu, load, memory] = await Promise.all([text(`${root}/stat`).then(parseCpu), text(`${root}/loadavg`).then(parseLoad), text(`${root}/meminfo`).then(parseMemory)]);
+	// A few reads at a time, so neither file handles nor the threads other file work needs run out.
+	const procs: Proc[] = [];
+	for (let start = 0; start < names.length; start += READS_AT_ONCE) {
+		const read = await Promise.all(names.slice(start, start + READS_AT_ONCE).map((name) => readProc(root, name, ownerCache)));
+		procs.push(...read.filter((proc): proc is Proc => proc !== null));
+	}
 	const seen = new Set(procs.map((proc) => proc.key));
 	for (const key of ownerCache.keys()) if (!seen.has(key)) ownerCache.delete(key);
 	return { at: now, cpuTotal: cpu.total, cpuIdle: cpu.idle, cores: cpu.cores, load, memory, procs };
@@ -192,7 +194,9 @@ function ownersOf(procs: Proc[]): Map<number, Owner | null> {
 		if (found.has(proc.pid)) return found.get(proc.pid)!;
 		found.set(proc.pid, null); // a loop in a torn reading ends here
 		const parent = byPid.get(proc.ppid);
-		const owner = proc.owner ?? (parent && parent !== proc ? resolve(parent) : null);
+		// An environment that names neither (unreadable, or emptied as `env -i` does) takes the parent's.
+		const own = proc.owner?.pane || proc.owner?.hcom ? proc.owner : null;
+		const owner = own ?? (parent && parent !== proc ? resolve(parent) : null);
 		found.set(proc.pid, owner);
 		return owner;
 	};

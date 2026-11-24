@@ -90,6 +90,8 @@ interface FakeProc {
 	pane?: string;
 	/** The environment's hcom name and tag, as hcom gives what it starts. */
 	hcom?: { base: string; tag: string };
+	/** An environment that names nothing, as `env -i` leaves. */
+	empty?: boolean;
 	/** No readable environment, as for another user's process. */
 	hidden?: boolean;
 }
@@ -106,7 +108,8 @@ function fakeProc(user: number, idle: number, procs: FakeProc[], dir = mkdtempSy
 		mkdirSync(join(dir, `${proc.pid}`), { recursive: true });
 		writeFileSync(join(dir, `${proc.pid}/stat`), pidStat(proc.pid, proc.comm, proc.ppid, proc.ticks, proc.rssPages));
 		const hcom = proc.hcom ? `HCOM_INSTANCE_NAME=${proc.hcom.base}\0HCOM_TAG=${proc.hcom.tag}\0HCOM_TOOL=claude\0` : '';
-		if (!proc.hidden) writeFileSync(join(dir, `${proc.pid}/environ`), `PATH=/bin\0${proc.pane ? `HERDR_PANE_ID=${proc.pane}\0` : ''}${hcom}`);
+		if (proc.empty) writeFileSync(join(dir, `${proc.pid}/environ`), '');
+		else if (!proc.hidden) writeFileSync(join(dir, `${proc.pid}/environ`), `PATH=/bin\0${proc.pane ? `HERDR_PANE_ID=${proc.pane}\0` : ''}${hcom}`);
 	}
 	return dir;
 }
@@ -181,13 +184,14 @@ describe('each agent summed', () => {
 			{ pid: 1, comm: 'systemd', ppid: 0, ticks: 0, rssPages: 1 },
 			{ pid: 50, comm: 'claude', ppid: 1, ticks: 0, rssPages: 700, hcom: { base: 'nova', tag: 'x' } },
 			{ pid: 51, comm: 'node', ppid: 50, ticks: 0, rssPages: 300, hidden: true },
+			{ pid: 52, comm: 'sh', ppid: 51, ticks: 0, rssPages: 10, empty: true },
 			{ pid: 60, comm: 'codex', ppid: 1, ticks: 0, rssPages: 200, pane: 'w7:gone', hcom: { base: 'pe', tag: 'q' } }
 		];
 		const one = await sample(fakeProc(1000, 9000, procs), 0);
 		const listed = [...AGENTS, { pane: 'w1:pZ', name: 'q-pe', client: 'codex', id: 'sess-q', hcomName: 'q-pe' }];
 		const rows = snapshotOf(one, one, listed, [], 1).agents;
 		expect(rows).toEqual([
-			{ name: 'x-nova', client: 'claude', id: null, cpu: 0, memory: 1000, processes: 2 },
+			{ name: 'x-nova', client: 'claude', id: null, cpu: 0, memory: 1010, processes: 3 },
 			{ name: 'q-pe', client: 'codex', id: 'sess-q', cpu: 0, memory: 200, processes: 1 }
 		]);
 	});
