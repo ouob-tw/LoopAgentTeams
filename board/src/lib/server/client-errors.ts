@@ -4,9 +4,9 @@
 // itself writes after checking the report: a canonical message for a known kind of error (anything
 // else is [omitted]), an error type from a fixed list, locations in the script files this build
 // really has (each with the original source location its map gives, see source-maps.ts), which
-// of the board's pages and routes it was, and whether the page runs this build or another one (a
-// page left open across a deploy: its script files are gone, so its frames are only counted). One device gets only so many lines a minute, so a page
-// that keeps failing cannot flood the journal.
+// of the board's pages and routes it was, and whether the page runs this build or another (a page
+// left open across a deploy, whose script files are gone: its frames are only counted). One
+// device gets only so many lines a minute, so a page that keeps failing cannot flood the journal.
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';

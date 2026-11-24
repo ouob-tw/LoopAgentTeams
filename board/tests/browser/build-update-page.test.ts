@@ -15,6 +15,8 @@ import { CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browse
 /** Runs first in every document: counts the tab's page loads. */
 const COUNT_LOADS = `sessionStorage.setItem('test-loads', String(Number(sessionStorage.getItem('test-loads') ?? 0) + 1))`;
 const LOADS = `Number(sessionStorage.getItem('test-loads'))`;
+/** The page makes more requests than Chrome keeps timings of by default (250): the checks come late. */
+const KEEP_TIMINGS = `performance.setResourceTimingBufferSize(100000)`;
 const BOX = '.cmd textarea';
 
 let fixture: Fixture;
@@ -73,7 +75,7 @@ afterAll(async () => {
 });
 
 async function openBoard() {
-	browser = await launchChrome({ scripts: [COUNT_LOADS] });
+	browser = await launchChrome({ scripts: [COUNT_LOADS, KEEP_TIMINGS] });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
@@ -116,11 +118,34 @@ test.skipIf(!CHROME)('a deploy under an open page: it loads the new build by its
 	await tab.boardStarted();
 	expect(await tab.eval<string>('document.body.innerText')).not.toContain('Internal Error');
 	// The page loaded again still differs from the server (the same scripts): when it asks again,
-	// after the next restart, it stays.
-	await deploy();
-	await tab.until(checked(1), 'the page loaded again asking which build the server serves');
+	// it stays.
+	// Shown again, as a tab brought back is; repeated, as a page just loaded may miss the first.
+	await tab.until(`(document.dispatchEvent(new Event('visibilitychange')), ${checked(1)})`, 'the page loaded again asking which build the server serves');
 	await Bun.sleep(3_000);
 	expect(await tab.eval<number>(LOADS)).toBe(2);
+	// A restart may be the one that serves it at last: one more reload.
+	await deploy();
+	await tab.until(`${LOADS} === 3`, 'the page loaded again after the next restart');
+}, TEST_MS);
+
+test.skipIf(!CHROME)('an answer begun on a question holds the reload until it is sent', async () => {
+	const options = [
+		{ letter: 'A', label: '照做', impact: '', recommended: true },
+		{ letter: 'B', label: '先不要', impact: '', recommended: false }
+	];
+	fixture.list([fixture.bound('alpha', 'luna', { questions: [question({ id: 'D-2', title: '選一個', kind: 'single', options })] })]);
+	await fixture.refresh(cookie);
+	await openBoard();
+	await tab.eval(`[...document.querySelectorAll('button')].find((button) => button.textContent.includes('選一個'))?.click()`);
+	await tab.until(`!!document.querySelector('input[type=radio]')`, 'the question card');
+	await tab.eval(`document.querySelector('input[type=radio]').click()`);
+	await deploy();
+	await tab.until(checked(1), 'the page asking which build the server serves');
+	await Bun.sleep(3_000);
+	expect(await tab.eval<number>(LOADS)).toBe(1);
+
+	await tab.eval(`[...document.querySelectorAll('button')].find((button) => button.textContent.includes('送出答覆')).click()`);
+	await tab.until(`${LOADS} === 2`, 'the page loaded again once the answer was sent');
 }, TEST_MS);
 
 test.skipIf(!CHROME)('unsent text holds the reload until the box is cleared', async () => {

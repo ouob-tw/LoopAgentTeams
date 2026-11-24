@@ -13,6 +13,8 @@
 	import type { InboxSort } from '#lib/board/inbox.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
+	import { answering } from '#lib/board/answering.svelte.ts';
+	import { holdsUnsent } from '#lib/board/build-update.ts';
 	import { depthIn, placeIn, tabIn, viewOf, withDepth, type Place } from '#lib/board/navigation.ts';
 	import { Navigation } from '#lib/board/navigation.svelte.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
@@ -66,6 +68,8 @@
 
 	// svelte-ignore state_referenced_locally
 	const board = new LiveBoard(data.snapshot, data.pd, data.automation, data.alerts);
+	// A new build waits while a question in the inbox has an answer begun (see build-update.ts).
+	onMount(() => holdsUnsent(() => answering.holdsDraft(board.snapshot.inbox.map((item) => item.key))));
 	// The notice times read the board's calendar day.
 	$effect.pre(() => {
 		clock.timeZone = board.snapshot.closed.timeZone;
