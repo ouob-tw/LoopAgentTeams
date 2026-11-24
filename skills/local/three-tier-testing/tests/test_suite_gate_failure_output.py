@@ -222,6 +222,48 @@ class BoundTests(unittest.TestCase):
         self.assertIn(f'___ test_0 ___', text)
         self.assertLessEqual(len(data), gate.FAILURE_CEILING_BYTES)
 
+    def test_long_lines_do_not_stop_a_block_from_being_whole_or_a_prefix_from_being_exact(self):
+        first = ['___ test_first ___', 'E   ' + 'L' * 20000, 'E   assert FIRST-END']  # ~20 KB
+        lines = ['noise ' + 'x' * 100] * 3000 + first + ['=== end ===']
+        later = []
+        for i in range(200):
+            block = [f'___ test_{i} ___', 'E   ' + 'M' * 10000, f'E   assert LATE-END-{i}']
+            later.append(block)
+            lines += block + ['=== end ===']
+        lines += ['padding ' + 'p' * 100] * 12000 + ['tail ' + 'y' * 100] * 3000
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp, 'in'), Path(tmp, 'out')
+            source.write_text('\n'.join(lines) + '\n')
+            self.assertTrue(gate.bound_failure_output(source, target))
+            text = target.read_text()
+        self.assertIn('\n'.join(first), text, 'a block under 64 KiB is whole around a long line')
+        for i in (0, 100, 199):
+            joined = '\n'.join(later[i])
+            self.assertIn(joined[:gate.FAILURE_BLOCK_PREFIX_BYTES], text)
+            self.assertIn(f'LATE-END-{i}', text)
+
+    def test_output_past_the_live_copy_cap_keeps_its_last_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {'SUITE_GATE_STATE_DIR': tmp}), \
+                mock.patch.multiple(gate, FAILURE_SPOOL_BYTES=5000, FAILURE_LATE_BYTES=300):
+            path, spool = gate.spool_open()
+            tail = gate.Tail(spool)
+            tail.spool_path = path
+            for i in range(400):
+                tail.add(f'line {i:04d} ' .encode() + b'-' * 20 + b'\n')
+            tail.add('尾端'.encode() * 200)
+            tail.add(b'LAST-FAILURE-SUMMARY\n')
+            kept = gate.keep_failure_output(tail, path)
+            text = Path(kept['path']).read_text()
+        self.assertTrue(kept['truncated'])
+        self.assertTrue(text.startswith('[CAPTURE STOPPED at 5000 bytes'), text[:120])
+        self.assertIn('not examined', text.splitlines()[0])
+        self.assertTrue(text.rstrip().endswith('LAST-FAILURE-SUMMARY'))
+        self.assertIn('LAST-FAILURE-SUMMARY', text)
+        self.assertIn('尾端', text)  # read_text() above also proves the file is valid UTF-8
+        self.assertNotIn('line 0300', text, 'only the last bytes follow the marker')
+        self.assertFalse(path.exists())
+
 
 if __name__ == '__main__':
     unittest.main()
