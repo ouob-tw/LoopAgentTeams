@@ -2,7 +2,10 @@
 // `model_provider_id`, else the `model_provider` of the `session_meta` line. The lines below have the
 // shape of real ones (their content is made up).
 import { expect, test } from 'bun:test';
-import { modelProviderOf } from '../../src/lib/server/automation-host.ts';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { modelProviderOf, providerOfFile } from '../../src/lib/server/automation-host.ts';
 
 const meta = (provider: unknown) =>
 	JSON.stringify({
@@ -73,4 +76,18 @@ test('a session file with no provider, no session_meta line, a non-text provider
 	// A line cut in the middle (a file read short) is not guessed at.
 	expect(modelProviderOf(meta('cpa').slice(0, 500))).toBeNull();
 	expect(modelProviderOf(applied('cpa').slice(0, 200))).toBeNull();
+});
+
+test('a long session file is read to its end: the applied settings in the middle of 40 MB beat the session_meta, and a missing file is unknown', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'lat-provider-'));
+	try {
+		const filler = `${after}\n`.repeat(100_000);
+		const file = join(dir, 'rollout.jsonl');
+		// About 40 MB: session_meta says cpa, the settings applied past the first 1 MB say openai, then more.
+		writeFileSync(file, `${meta('cpa')}\n${filler.repeat(1)}${applied('openai')}\n${filler.repeat(2)}`);
+		expect(await providerOfFile(file)).toBe('openai');
+		expect(await providerOfFile(join(dir, 'missing.jsonl'))).toBeNull();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });

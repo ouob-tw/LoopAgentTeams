@@ -2,7 +2,8 @@
 // the new-agent launch flow, reads hcom's list, the conversation and the Herdr screen, closes the
 // agent by the board's close flow, and reads which provider a Codex run's own session went through
 // (CPA or not, #710). It never touches a Codex account.
-import { open } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { closeAgent, sendToAgent } from './agent-control.ts';
 import type { AgentHost, Cut } from './automation-agent.ts';
 import type { Board } from './board.ts';
@@ -89,32 +90,49 @@ export async function closeHalfLaunched(config: BoardConfig, tag: string): Promi
  *  `session_meta` line's `model_provider` as it was; with no such event, that line's. Null when
  *  neither is in `text`. */
 export function modelProviderOf(text: string): string | null {
-	let applied: string | null = null;
-	let started: string | null = null;
-	for (const line of text.split('\n')) {
-		const settings = line.includes('thread_settings_applied');
-		if (!settings && !(started === null && line.includes('session_meta'))) continue;
-		let entry: unknown;
-		try {
-			entry = JSON.parse(line);
-		} catch {
-			continue;
-		}
-		if (!isRecord(entry) || !isRecord(entry.payload)) continue;
-		if (settings && entry.payload.type === 'thread_settings_applied') {
-			const id = isRecord(entry.payload.thread_settings) ? entry.payload.thread_settings.model_provider_id : undefined;
-			if (typeof id === 'string' && id) applied = id;
-		} else if (entry.type === 'session_meta') {
-			const provider = entry.payload.model_provider;
-			if (typeof provider === 'string' && provider) started = provider;
-		}
-	}
-	return applied ?? started;
+	const scan = providerScan();
+	for (const line of text.split('\n')) scan.line(line);
+	return scan.result();
 }
 
-/** How much of a session file is read for its provider: all of it up to this size, else its first and last parts. */
-const SESSION_READ_BYTES = 16 * 1024 * 1024;
-const SESSION_HEAD_BYTES = 1024 * 1024;
+/** The same reading, a line at a time, so a long session file is never held whole in memory. */
+export function providerScan(): { line(line: string): void; result(): string | null } {
+	let applied: string | null = null;
+	let started: string | null = null;
+	return {
+		line(line) {
+			const settings = line.includes('thread_settings_applied');
+			if (!settings && !(started === null && line.includes('session_meta'))) return;
+			let entry: unknown;
+			try {
+				entry = JSON.parse(line);
+			} catch {
+				return;
+			}
+			if (!isRecord(entry) || !isRecord(entry.payload)) return;
+			if (settings && entry.payload.type === 'thread_settings_applied') {
+				const id = isRecord(entry.payload.thread_settings) ? entry.payload.thread_settings.model_provider_id : undefined;
+				if (typeof id === 'string' && id) applied = id;
+			} else if (entry.type === 'session_meta') {
+				const provider = entry.payload.model_provider;
+				if (typeof provider === 'string' && provider) started = provider;
+			}
+		},
+		result: () => applied ?? started
+	};
+}
+
+/** The provider of a session file, read line by line to its end; null when it cannot be read. */
+export async function providerOfFile(path: string): Promise<string | null> {
+	try {
+		const scan = providerScan();
+		const lines = createInterface({ input: createReadStream(path, { encoding: 'utf8' }), crlfDelay: Infinity });
+		for await (const line of lines) scan.line(line);
+		return scan.result();
+	} catch {
+		return null;
+	}
+}
 
 /** The host every agent task's run goes through; `board` is read when a run first needs it. */
 export function boardAgentHost(config: BoardConfig, board: () => Board, retry: { waitsMs?: readonly number[]; pause?: (ms: number, halted: () => Cut | null) => Promise<void> } = {}): AgentHost {
@@ -166,22 +184,7 @@ export function boardAgentHost(config: BoardConfig, board: () => Board, retry: {
 		async provider(client, sessionId) {
 			const read = await readTranscript(config, client, sessionId);
 			if (!read.ok) return null;
-			try {
-				const file = await open(read.path, 'r');
-				try {
-					const { size } = await file.stat();
-					const part = async (position: number, length: number) => {
-						const { bytesRead, buffer } = await file.read(Buffer.alloc(length), 0, length, position);
-						return buffer.subarray(0, bytesRead).toString('utf8');
-					};
-					const text = size <= SESSION_READ_BYTES ? await part(0, size) : `${await part(0, SESSION_HEAD_BYTES)}\n${await part(size - SESSION_READ_BYTES, SESSION_READ_BYTES)}`;
-					return modelProviderOf(text);
-				} finally {
-					await file.close();
-				}
-			} catch {
-				return null;
-			}
+			return providerOfFile(read.path);
 		},
 		async transcript(client, sessionId) {
 			const read = await readTranscript(config, client, sessionId);
