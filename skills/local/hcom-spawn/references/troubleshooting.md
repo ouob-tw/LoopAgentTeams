@@ -75,7 +75,7 @@ HCOM 接回同一個 session 時換模型尚未驗證，所以換模型改用新
 
 Codex 回合因 `You've hit your usage limit` 或上游錯誤停止時，先核對是當前回合的停止，而非畫面留下的舊錯誤；仍在工作就等待。
 
-0. **確認 provider**：以 `hcom list <名稱> -v --name <自身名稱>` 找 session ID，再在該 Codex session 紀錄的 `session_meta` 讀 `model_provider`；續接後也讀新一輪紀錄核對。讀不到時回報上一層，不判定整池用完。若不是 `cpa`，先記下 session ID、工作目錄、未提交成果及原本的 model、effort、權限；程序仍存活時照 [回報與收尾](../SKILL.md#回報與收尾) 用 `close-agent.py` 關閉並確認退出，已退出則略過。接著執行：
+0. **確認 provider**：以 `hcom list <名稱> -v --name <自身名稱>` 找 session ID 和 `Transcript` 路徑，再讀該紀錄中最新一筆 `session_meta.payload.model_provider`；續接後重新查 `Transcript` 路徑並核對新一輪紀錄。讀不到時回報上一層，不判定整池用完。若不是 `cpa`，先記下 session ID、工作目錄、未提交成果及原本的 model、effort、權限；程序仍存活時照 [回報與收尾](../SKILL.md#回報與收尾) 用 `close-agent.py` 關閉並確認退出，已退出則略過。接著執行：
 
    ```bash
    hcom r <名稱或session-ID> --go --name <自身名稱> -c 'model_provider="cpa"'
