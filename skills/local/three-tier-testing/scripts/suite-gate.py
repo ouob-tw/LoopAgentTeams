@@ -94,7 +94,10 @@ FAILURE_FILE_BYTES = 1024 * 1024
 FAILURE_HEAD_BYTES = 64 * 1024
 FAILURE_TAIL_BYTES = 128 * 1024
 FAILURE_BLOCK_BYTES = 64 * 1024
+FAILURE_BLOCK_MIN_BYTES = 1024  # a failure block is cut to its share of the room, not below this
+FAILURE_CEILING_BYTES = 2 * 1024 * 1024  # the kept file never passes this (see bound_failure_output)
 FAILURE_LINE_BYTES = 4096
+CUT_MARKER = '[... middle of this failure block cut ...]'
 FAILURE_SPOOL_BYTES = 32 * 1024 * 1024  # the live copy of a run's output stops growing here
 LIVE_STALE_SECONDS = 24 * 3600          # a live file this old belongs to a run that is gone
 KILL_GRACE_SECONDS = 5.0
@@ -2363,21 +2366,47 @@ class FailureBlocks:
     BUN_RESET = re.compile(r'\(pass\) |\S+\.[cm]?[jt]sx?:')
 
     def __init__(self):
-        self.blocks = []     # (first line number, [lines], cut)
+        self.blocks = []     # (first line number, [lines], cut, last line number)
         self.bun = []        # lines since the last bun test result
-        self.open = None     # [first line number, lines, cut, kind]
+        self.open = None     # [first line number, lines, cut, kind, bytes, last line number]
+        self.dropped = 0     # blocks past SCAN_MAX_FAILURES, not collected
 
     def _close(self):
         if self.open:
-            self.blocks.append(tuple(self.open[:3]))
+            if len(self.blocks) < SCAN_MAX_FAILURES:
+                self.blocks.append((self.open[0], self.open[1], self.open[2], self.open[5]))
+            else:
+                self.dropped += 1
             self.open = None
 
-    def _add(self, lines, text):
-        size = sum(len(x.encode()) + 1 for x in lines)
-        if size < FAILURE_BLOCK_BYTES:
-            lines.append(text)
-            return False
-        return True
+    def _add(self, number, text):
+        """Add a line to the open block; past FAILURE_BLOCK_BYTES the middle goes (a marker
+        stays), so the block keeps its start and its end, where pytest and unittest print
+        the assertion message."""
+        block = self.open
+        block[1].append(text)
+        block[4] += len(text.encode()) + 1
+        block[5] = number
+        keep = 1
+        while block[4] > FAILURE_BLOCK_BYTES and len(block[1]) > 3:
+            if not block[2]:
+                keep = max(1, self._head_lines(block[1]))
+                block[1].insert(keep, CUT_MARKER)
+                block[4] += len(CUT_MARKER) + 1
+                block[2] = True
+            keep = max(1, self._head_lines(block[1]))
+            gone = block[1].pop(keep + 1)
+            block[4] -= len(gone.encode()) + 1
+
+    @staticmethod
+    def _head_lines(lines):
+        """How many leading lines make up the first quarter of FAILURE_BLOCK_BYTES."""
+        size = 0
+        for count, line in enumerate(lines):
+            size += len(line.encode()) + 1
+            if size > FAILURE_BLOCK_BYTES // 4:
+                return count
+        return len(lines)
 
     def feed(self, number, text):
         plain = ANSI.sub('', text)
@@ -2389,14 +2418,17 @@ class FailureBlocks:
             if ends:
                 self._close()
             else:
-                self.open[2] |= self._add(self.open[1], text)
+                self._add(number, text)
                 return
         if self.PYTEST.fullmatch(plain) and not self.UNITTEST_RULE.fullmatch(plain):
-            self.open = [number, [text], False, 'pytest']
+            self.open = [number, [text], False, 'pytest', len(text.encode()) + 1, number]
         elif self.UNITTEST_HEAD.fullmatch(plain):
-            self.open = [number, [text], False, 'unittest']
+            self.open = [number, [text], False, 'unittest', len(text.encode()) + 1, number]
         elif plain.startswith('(fail) '):
-            self.blocks.append((number - len(self.bun), self.bun + [text], False))
+            if len(self.blocks) < SCAN_MAX_FAILURES:
+                self.blocks.append((number - len(self.bun), self.bun + [text], False, number))
+            else:
+                self.dropped += 1
             self.bun = []
         elif self.BUN_RESET.match(plain):
             self.bun = []
@@ -2448,31 +2480,74 @@ def bound_failure_output(source, target, cap=None):
     last = head[-1][0] if head else 0
     budget = max(0, cap - head_size - tail_size)
     tail_first = tail[0][0] if tail else total + 1
-    kept = omitted = 0
-    for first, lines, cut in found:
-        end = first + len(lines) - 1
+    todo = []
+    for first, lines, cut, end in found:
         if end <= last or first >= tail_first:
             continue  # inside the head or the tail already
-        skip, lines = max(0, last + 1 - first), lines[:max(0, tail_first - first)]
-        lines, first = lines[skip:], first + skip
-        size = sum(len(x.encode()) + 1 for x in lines)
-        if not lines or size > budget:
-            omitted += bool(lines)
-            continue
-        budget -= size
+        todo.append((first, lines, cut, end))
+
+    def take(lines, share):
+        """lines within share bytes: all of them, else the first quarter and the last
+        three quarters with a marker between (the assertion message is at the end)."""
+        if sum(len(x.encode()) + 1 for x in lines) <= share:
+            return lines, False
+        head, size = [], 0
+        for line in lines:
+            size += len(line.encode()) + 1
+            if size > share // 4:
+                if not head:  # even the first line is long: keep its start
+                    head.append(line.encode()[:share // 4].decode(errors='ignore'))
+                break
+            head.append(line)
+        room = share - sum(len(x.encode()) + 1 for x in head) - len(CUT_MARKER) - 1
+        tail, size = [], 0
+        for line in reversed(lines[len(head):]):
+            size += len(line.encode()) + 1
+            if size > room:
+                if not tail and room > 0:  # the last line alone is over: cut itself
+                    tail.append(line.encode()[-room:].decode(errors='ignore'))
+                break
+            tail.append(line)
+        return head + [CUT_MARKER] + tail[::-1], True
+
+    # Every collected failure block stays. The first one is kept whole up to
+    # FAILURE_BLOCK_BYTES; the others share the room that is left equally (a short block
+    # gives its unused part back), each at least FAILURE_BLOCK_MIN_BYTES, so the file never
+    # passes FAILURE_CEILING_BYTES.
+    kept = 0
+    left = budget
+    for index, (first, lines, cut, end) in enumerate(todo):
+        if first <= last:  # the head already holds the start of this block
+            if cut:  # its middle is gone: keep from the cut on
+                lines = lines[lines.index(CUT_MARKER):]
+            else:
+                lines = lines[last + 1 - first:]
+            first = last + 1
+            if not lines:
+                continue
+        if end >= tail_first:  # the tail already holds the end of this block
+            lines = (lines[:lines.index(CUT_MARKER) + 1] if cut
+                     else lines[:max(0, tail_first - first)])
+            if not lines:
+                continue
+        if index == 0:
+            share = FAILURE_BLOCK_BYTES
+        else:
+            share = min(FAILURE_BLOCK_BYTES, max(FAILURE_BLOCK_MIN_BYTES,
+                                                 left // (len(todo) - index)))
+        taken, _ = take(lines, share)
+        left -= sum(len(x.encode()) + 1 for x in taken)
         kept += 1
         if first > last + 1:
             out.append((None, f'[... lines {last + 1}-{first - 1} left out ...]'))
-        out.extend((first + i, x) for i, x in enumerate(lines))
-        if cut:
-            out.append((None, f'[... this failure block was cut at {FAILURE_BLOCK_BYTES} bytes ...]'))
-        last = first + len(lines) - 1
+        out.extend((None, x) for x in taken)
+        last = max(last, min(end, tail_first - 1))
     if tail_first > last + 1:
         out.append((None, f'[... lines {last + 1}-{tail_first - 1} left out ...]'))
     out.extend((n, x) for n, x, _ in tail)
     note = (f'[TRUNCATED: the run printed {total} lines, over the {cap} byte limit of this file. '
             f'Kept: the first lines, {kept} failure block(s)'
-            + (f' ({omitted} more did not fit)' if omitted else '')
+            + (f' ({blocks.dropped} more were not collected)' if blocks.dropped else '')
             + ' and the last lines; left-out stretches are marked.]')
     with open(target, 'w', encoding='utf-8') as sink:
         sink.write(note + '\n')
