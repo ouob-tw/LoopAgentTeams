@@ -321,7 +321,7 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 			const blocked = await host.launchBlocked(name, watched.run.startedAt);
 			const reason = blocked ? blockedReason(blocked) : watched.now() - (watched.run.launchedAt ?? watched.run.startedAt) >= NO_SESSION_MINUTES * 60_000 ? NEVER_STARTED : null;
 			// Listed again right before closing: one that got its session meanwhile is watched on.
-			if (reason && !(await startedSince(host, name))) return end({ status: 'failed', reason });
+			if (reason && (await stillNotStarted(host, name))) return end({ status: 'failed', reason });
 			continue;
 		}
 		const asking = watched.asking;
@@ -410,10 +410,11 @@ async function unansweredAsk(host: AgentHost, client: AgentSpec['client'], sessi
 	return (await host.inputAfter(client, sessionId, latest.seq)) ? null : latest;
 }
 
-/** Whether hcom lists the agent with a session now; false when the list cannot be read. */
-async function startedSince(host: AgentHost, name: string): Promise<boolean> {
+/** Whether hcom lists the agent with no session now; false when the list cannot be read, so nothing
+ *  is closed on a guess and the next look decides. */
+async function stillNotStarted(host: AgentHost, name: string): Promise<boolean> {
 	const listed = await host.list();
-	return listed.ok && !!listed.agents.find((each) => each.name === name)?.sessionId;
+	return listed.ok && !listed.agents.find((each) => each.name === name)?.sessionId;
 }
 
 /** A Codex agent stopped on its usage limit: check its own account's quota live (the one it runs

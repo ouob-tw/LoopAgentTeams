@@ -100,6 +100,18 @@ test('an agent that gets its session right before it would be closed is watched 
 	expect(closed).toEqual([{ sessionId: 's1', name: NAME }]);
 });
 
+test('a list that cannot be read right before closing closes nothing; the next look decides', async () => {
+	const clock = { now: START };
+	let looks = 0;
+	const { host, closed } = fakeHost(clock, { agent: () => ({}), blocked: () => TRUST_SCREEN });
+	const list = host.list.bind(host);
+	host.list = async () => (++looks === 2 ? { ok: false, reason: 'hcom 讀不到' } : list());
+	expect(await watchAgent(host, watched(clock))).toEqual({ status: 'failed', reason: blockedReason(TRUST_SCREEN) });
+	// The first close was skipped on the unreadable list; the next look (list, then the re-check) closed it.
+	expect(looks).toBe(4);
+	expect(closed).toEqual([{ sessionId: null, name: NAME }]);
+});
+
 test('the no-session wait is longer than the lock retries, counted from the launch, not the run start', async () => {
 	expect(NO_SESSION_MINUTES * 60_000).toBeGreaterThan(60_000 + 120_000 + 240_000);
 	// The launch took the whole lock-retry wait (7 minutes after the run started); the session comes 9 minutes after it.
