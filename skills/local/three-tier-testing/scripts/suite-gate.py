@@ -94,6 +94,7 @@ FAILURE_FILE_BYTES = 1024 * 1024
 FAILURE_HEAD_BYTES = 64 * 1024
 FAILURE_TAIL_BYTES = 128 * 1024
 FAILURE_BLOCK_BYTES = 64 * 1024
+FAILURE_BLOCK_MIN_BYTES = 1024  # a failure block is cut to its share of the room, not below this
 FAILURE_LINE_BYTES = 4096
 FAILURE_SPOOL_BYTES = 32 * 1024 * 1024  # the live copy of a run's output stops growing here
 LIVE_STALE_SECONDS = 24 * 3600          # a live file this old belongs to a run that is gone
@@ -2366,10 +2367,14 @@ class FailureBlocks:
         self.blocks = []     # (first line number, [lines], cut)
         self.bun = []        # lines since the last bun test result
         self.open = None     # [first line number, lines, cut, kind]
+        self.dropped = 0     # blocks past SCAN_MAX_FAILURES, not collected
 
     def _close(self):
         if self.open:
-            self.blocks.append(tuple(self.open[:3]))
+            if len(self.blocks) < SCAN_MAX_FAILURES:
+                self.blocks.append(tuple(self.open[:3]))
+            else:
+                self.dropped += 1
             self.open = None
 
     def _add(self, lines, text):
@@ -2396,7 +2401,10 @@ class FailureBlocks:
         elif self.UNITTEST_HEAD.fullmatch(plain):
             self.open = [number, [text], False, 'unittest']
         elif plain.startswith('(fail) '):
-            self.blocks.append((number - len(self.bun), self.bun + [text], False))
+            if len(self.blocks) < SCAN_MAX_FAILURES:
+                self.blocks.append((number - len(self.bun), self.bun + [text], False))
+            else:
+                self.dropped += 1
             self.bun = []
         elif self.BUN_RESET.match(plain):
             self.bun = []
@@ -2448,31 +2456,42 @@ def bound_failure_output(source, target, cap=None):
     last = head[-1][0] if head else 0
     budget = max(0, cap - head_size - tail_size)
     tail_first = tail[0][0] if tail else total + 1
-    kept = omitted = 0
+    todo = []
     for first, lines, cut in found:
-        end = first + len(lines) - 1
-        if end <= last or first >= tail_first:
+        if first + len(lines) - 1 <= last or first >= tail_first:
             continue  # inside the head or the tail already
-        skip, lines = max(0, last + 1 - first), lines[:max(0, tail_first - first)]
+        lines = lines[:max(0, tail_first - first)]
+        todo.append((first, lines, cut))
+    # Every failure block stays: each gets an equal share of the room (the whole of a small
+    # one), at least FAILURE_BLOCK_MIN_BYTES, so very many blocks can pass the cap a little.
+    share = min(FAILURE_BLOCK_BYTES, max(FAILURE_BLOCK_MIN_BYTES, budget // len(todo))) \
+        if todo else 0
+    kept = 0
+    for first, lines, cut in todo:
+        skip = max(0, last + 1 - first)
         lines, first = lines[skip:], first + skip
-        size = sum(len(x.encode()) + 1 for x in lines)
-        if not lines or size > budget:
-            omitted += bool(lines)
+        if not lines:
             continue
-        budget -= size
+        taken, size = [], 0
+        for line in lines:
+            size += len(line.encode()) + 1
+            if taken and size > share:
+                cut = True
+                break
+            taken.append(line)
         kept += 1
         if first > last + 1:
             out.append((None, f'[... lines {last + 1}-{first - 1} left out ...]'))
-        out.extend((first + i, x) for i, x in enumerate(lines))
+        out.extend((first + i, x) for i, x in enumerate(taken))
         if cut:
-            out.append((None, f'[... this failure block was cut at {FAILURE_BLOCK_BYTES} bytes ...]'))
+            out.append((None, f'[... this failure block was cut here to fit the file ...]'))
         last = first + len(lines) - 1
     if tail_first > last + 1:
         out.append((None, f'[... lines {last + 1}-{tail_first - 1} left out ...]'))
     out.extend((n, x) for n, x, _ in tail)
     note = (f'[TRUNCATED: the run printed {total} lines, over the {cap} byte limit of this file. '
             f'Kept: the first lines, {kept} failure block(s)'
-            + (f' ({omitted} more did not fit)' if omitted else '')
+            + (f' ({blocks.dropped} more were not collected)' if blocks.dropped else '')
             + ' and the last lines; left-out stretches are marked.]')
     with open(target, 'w', encoding='utf-8') as sink:
         sink.write(note + '\n')

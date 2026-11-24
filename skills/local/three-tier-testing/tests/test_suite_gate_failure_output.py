@@ -67,8 +67,9 @@ class FailureFileTests(GateCase):
         self.assertEqual(self.gate('run', '--', self.suite(code=1)).returncode, 1)
         [record] = self.records()
         self.assertFalse(record['failure_output']['truncated'])
-        self.assertEqual(Path(record['failure_output']['path']).read_text(),
-                         'suite-out\nsuite-err\n')
+        # stdout and stderr are read by two threads, so their order is not fixed
+        self.assertEqual(sorted(Path(record['failure_output']['path']).read_text().split()),
+                         ['suite-err', 'suite-out'])
 
     def test_status_still_names_the_file_after_a_passing_rerun(self):
         self.gate('run', '--', self.failing_suite())
@@ -112,7 +113,8 @@ class BoundTests(unittest.TestCase):
             source, target = Path(tmp, 'in'), Path(tmp, 'out')
             source.write_text('\n'.join(lines) + '\n')
             with mock.patch.multiple(gate, FAILURE_HEAD_BYTES=200, FAILURE_TAIL_BYTES=300,
-                                     FAILURE_BLOCK_BYTES=800):
+                                     FAILURE_BLOCK_BYTES=800,
+                                     FAILURE_BLOCK_MIN_BYTES=100):
                 cut = gate.bound_failure_output(source, target, cap)
             return cut, target.read_text()
 
@@ -162,6 +164,19 @@ class BoundTests(unittest.TestCase):
         filler = ['noise ' + 'x' * 40] * 200
         cut, text = self.bound(['___ test_early ___', 'E   assert EARLY-ASSERT'] * 1 + filler)
         self.assertEqual(text.count('EARLY-ASSERT'), 1)
+
+    def test_many_blocks_that_do_not_fit_are_all_kept_cut_to_their_share(self):
+        filler = ['noise ' + 'x' * 40] * 40
+        lines = list(filler)
+        for i in range(30):
+            lines += [f'___ test_{i} ___', f'E   assert FIRST-LINE-{i}'] \
+                + [f'E   detail {i} ' + 'd' * 60] * 10 + [f'=== end {i} ===']
+        lines += filler * 20
+        cut, text = self.bound(lines, cap=3000)
+        self.assertTrue(cut)
+        for i in range(30):
+            self.assertIn(f'assert FIRST-LINE-{i}', text)
+        self.assertIn('cut here to fit', text)
 
 
 if __name__ == '__main__':
