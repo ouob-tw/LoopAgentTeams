@@ -1,6 +1,6 @@
 // The 額度 tab's data: every Claude and Codex account with its quota windows, as the server last
-// read them from claude-swap's cached list and codex-multi-auth's files, and how the tab words them.
-// Only these fields ever reach a page: no token, no account file text.
+// read them from claude-swap's cached list and CPA's management API, and how the tab words them.
+// Only these fields ever reach a page: no token, no key, no upstream response text.
 
 export type QuotaClient = 'claude' | 'codex';
 
@@ -16,10 +16,20 @@ export interface QuotaWindow {
 export interface QuotaPlan {
 	label: string;
 	/** `live`: current (Claude's account in use, whose plan claude-swap recorded when switching to it;
-	 *  Codex's, recorded with each usage reading); `recorded`: only as last seen in use (Claude's
+	 *  Codex's, as CPA has it now); `recorded`: only as last seen in use (Claude's
 	 *  other accounts). */
 	source: 'live' | 'recorded';
 	observedAt: number | null;
+}
+
+/** A pooled account's state as CPA routes it: `ready` 可用, `cooling` 冷卻中 (skipped for now), `disabled`
+ *  停用, `unknown` 狀態不明 (CPA's list did not say). Only Codex accounts have one. */
+export type QuotaStateKind = 'ready' | 'cooling' | 'disabled' | 'unknown';
+
+export interface QuotaState {
+	kind: QuotaStateKind;
+	/** Why it is cooling, in one of the board's fixed words; never CPA's own text. */
+	note?: string;
 }
 
 export interface QuotaAccount {
@@ -33,6 +43,10 @@ export interface QuotaAccount {
 	observedAt: number | null;
 	/** Why the account has no windows, when that is not simply no record. */
 	note?: string;
+	/** Codex: how CPA routes the account now. */
+	state?: QuotaState;
+	/** Codex: the latest usage read failed; the windows, if any, are the last good ones, read at `observedAt`. */
+	unreadable?: true;
 }
 
 export type QuotaGroup = { ok: true; accounts: QuotaAccount[] } | { ok: false; reason: string };
@@ -43,6 +57,11 @@ export interface QuotaSnapshot {
 	claude: QuotaGroup;
 	codex: QuotaGroup;
 }
+
+export const STATE_TEXT: Record<QuotaStateKind, string> = { ready: '可用', cooling: '冷卻中', disabled: '停用', unknown: '狀態不明' };
+
+/** What an account whose latest usage read failed shows. */
+export const UNREADABLE_TEXT = '額度查不到';
 
 /** Past this age a reading's time turns yellow. */
 export const STALE_MS: Record<QuotaClient, number> = { claude: 3 * 60_000, codex: 15 * 60_000 };

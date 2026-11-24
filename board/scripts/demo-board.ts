@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { renderUnicodeCompact } from 'uqr';
 import { otpauthUrl } from '../src/lib/server/totp.ts';
 import { DAY, PASSWORD, question, startFixture, TOTP_SECRET } from '../tests/harness.ts';
+import { FAKE_CPA_KEY, startFakeCpa, usageBody } from '../tests/fake-cpa.ts';
 
 const ROOT = join(import.meta.dir, '..');
 
@@ -56,9 +57,21 @@ async function main() {
 		process.exit(1);
 	}
 
+	// 額度's Codex group: a fake CPA pool, one account in each state, one whose usage cannot be read.
+	const start = Date.now();
+	const plusUsage = usageBody('plus', { used: 12, seconds: 18_000, resetAt: start + 4 * 60 * MIN }, { used: 18, seconds: 604_800, resetAt: start + 6 * DAY });
+	const cpa = await startFakeCpa([
+		{ authIndex: 'a', email: 'pool-plus@example.com', plan: 'plus', status: 'active', disabled: false, unavailable: false, usage: { body: plusUsage } },
+		{ authIndex: 'b', email: 'pool-prolite@example.com', plan: 'prolite', status: 'active', disabled: false, unavailable: false, usage: { body: usageBody('prolite', { used: 76, seconds: 604_800, resetAt: start + DAY }) } },
+		{ authIndex: 'c', email: 'cooling@example.com', plan: 'plus', status: 'active', disabled: false, unavailable: true, quotaBlocked: true, usage: { body: usageBody('plus', { used: 100, seconds: 18_000, resetAt: start + 90 * MIN }, { used: 64, seconds: 604_800, resetAt: start + 3 * DAY }) } },
+		{ authIndex: 'd', email: 'disabled@example.com', plan: 'pro', status: 'disabled', disabled: true, unavailable: false, usage: { status: 401, body: {} } },
+		{ authIndex: 'e', email: 'unreadable@example.com', plan: 'plus', usage: { status: 500, body: {} } }
+	]);
+
 	// Made-up data only, opened from other machines: any address may connect, unlike the real board.
 	const fixture = await startFixture({
 		port: args.port,
+		cpa: { url: cpa.url, key: FAKE_CPA_KEY },
 		env: { HOST: args.host, LAT_BOARD_QUOTA_SECONDS: '30', LAT_BOARD_COOKIE_NAME: DEMO_COOKIE, LAT_BOARD_ALLOWED_SOURCES: '0.0.0.0/0, ::/0' }
 	});
 	const dir = fixture.dir;
@@ -69,6 +82,7 @@ async function main() {
 		stopping = true;
 		asking?.kill();
 		await fixture.cleanup();
+		await cpa.close();
 		process.exit(0);
 	};
 	process.on('SIGTERM', stop);
@@ -161,7 +175,7 @@ async function main() {
 			}
 		}, 5_000);
 
-		// 額度: claude-swap and codex-multi-auth.
+		// 額度: claude-swap; Codex's from the fake CPA above.
 		const usageWindow = (pct: number, resetsAt: number) => ({ pct, resetsAt: iso(resetsAt).replace('Z', '+00:00') });
 		writeFileSync(join(dir, 'cswap.json'), JSON.stringify({ output: {
 			schemaVersion: 1, activeAccountNumber: 2, cachedOnly: true, generatedAt: iso(now),
@@ -170,8 +184,6 @@ async function main() {
 				{ number: 2, email: 'main-account@example.com', active: true, usageStatus: 'ok', usage: { fiveHour: usageWindow(40, now + 60 * MIN), sevenDay: usageWindow(85, now + 3 * DAY), scoped: [{ name: 'Fable', ...usageWindow(96, now + 2 * DAY) }] }, usageFetchedAt: iso(now - MIN), plan: { id: 'max_5x', label: 'Max 5x', multiplier: 5, observedAt: iso(now - 10 * MIN) } }
 			]
 		} }));
-		mkdirSync(join(dir, 'codex-multi-auth'), { recursive: true });
-		writeFileSync(join(dir, 'codex-multi-auth', 'openai-codex-accounts.json'), JSON.stringify({ version: 3, activeIndex: 0, accounts: [{ accountId: 'acct-a', email: 'one@example.com' }, { accountId: 'acct-b', email: 'two@example.com' }] }));
 
 		await fixture.refresh(cookie);
 
@@ -204,6 +216,7 @@ async function main() {
 	} catch (error) {
 		asking?.kill();
 		await fixture.cleanup();
+		await cpa.close();
 		throw error;
 	}
 

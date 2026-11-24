@@ -1,13 +1,13 @@
-// The accounts' quotas for the 額度 tab, read on a timer and shared by every page. Nothing here
-// goes online or refreshes a login: Claude's come from claude-swap's cached list, which reads its
-// own files only; Codex's straight from codex-multi-auth's account file and quota cache, never
-// through its commands. Only the fields of board/quota.ts are kept from either: tokens and the
-// files' text never leave this module.
+// The accounts' quotas for the 額度 tab, read on a timer and shared by every page. Claude's come
+// from claude-swap's cached list, which reads its own files only and never goes online. Codex's
+// come from CPA (CLIProxyAPI), which pools the Codex accounts: its management API lists them, and
+// asks ChatGPT for each one's usage with the token it holds, so the board sends CPA its management
+// key and nothing else, and no token ever reaches the board. Only the fields of board/quota.ts are
+// kept from either source: no key, token, host path or upstream text leaves this module, and
+// nothing here writes a log.
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import type { QuotaAccount, QuotaGroup, QuotaSnapshot, QuotaWindow } from '../board/quota.ts';
+import type { QuotaAccount, QuotaGroup, QuotaSnapshot, QuotaState, QuotaWindow } from '../board/quota.ts';
 import { runCommand } from './external.ts';
 
 type Env = Record<string, string | undefined>;
@@ -22,17 +22,7 @@ const time = (value: unknown) => {
 	return Number.isNaN(parsed) ? null : parsed;
 };
 
-/** codex-multi-auth's folder, as it finds it: CODEX_MULTI_AUTH_DIR, else CODEX_HOME's multi-auth. */
-export function codexMultiAuthDir(env: Env = process.env): string {
-	const given = env.CODEX_MULTI_AUTH_DIR?.trim();
-	if (given) return given;
-	return join(env.CODEX_HOME?.trim() || join(homedir(), '.codex'), 'multi-auth');
-}
-
-const CODEX_ACCOUNTS_FILE = 'openai-codex-accounts.json';
-const CODEX_QUOTA_FILE = 'quota-cache.json';
-
-/** A window's name by its length; codex-multi-auth names none. */
+/** A window's name by its length. */
 function windowLabel(minutes: number | null, fallback: string): string {
 	if (minutes === null) return fallback;
 	if (minutes === 7 * 24 * 60) return '7 天';
@@ -47,109 +37,193 @@ const versionText = (value: unknown) => (typeof value === 'number' && Number.isF
 const PLAN_LABELS: Record<string, string> = { prolite: 'Pro Lite' };
 const capitalized = (value: string) => PLAN_LABELS[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
 
-/** Read a JSON file; a reason when it is missing or not JSON. */
-async function readJson(path: string, name: string): Promise<{ ok: true; value: unknown } | { ok: false; reason: string }> {
-	let content: string;
-	try {
-		content = await readFile(path, 'utf8');
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		return { ok: false, reason: code === 'ENOENT' ? `找不到 ${name}` : `${name} 讀不出來（${code ?? 'error'}）` };
-	}
-	try {
-		return { ok: true, value: JSON.parse(content) };
-	} catch {
-		return { ok: false, reason: `${name} 不是有效的 JSON` };
-	}
+// CPA's management API, v8 layout. The host pins CPA v8.1.2, which serves both /v0/management and
+// /v8/management; v8 is the layout its docs build on (v0 is kept for old clients, near deprecation)
+// and the one its config file already uses, and its credentials list has every runtime field the
+// tab reads. Checked against that CPA's real answers (#711): `status` of a healthy credential is
+// `active` (the docs' examples say `ready`), and ChatGPT's usage endpoint answers with
+// `rate_limit.primary_window` / `secondary_window`, each `used_percent`, `limit_window_seconds` and
+// `reset_at` in seconds; a plan with one window (Pro Lite: 7 days) has `secondary_window: null`.
+const CREDENTIALS_PATH = '/v8/management/credentials';
+const API_CALL_PATH = '/v8/management/requests/api-call';
+const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
+
+/** Each account's usage is asked of ChatGPT at most this often; between, its last answer stands. */
+export const CODEX_USAGE_INTERVAL_MS = 5 * 60_000;
+const CPA_TIMEOUT_MS = 15_000;
+
+/** What the Codex group says when CPA cannot be read: fixed words, never a path, key or CPA's text. */
+export const CPA_REASONS = {
+	unset: 'CPA 未設定',
+	keyFile: 'CPA 金鑰檔讀不到',
+	unreachable: 'CPA 連不上',
+	rejected: 'CPA 金鑰被拒',
+	remoteOff: 'CPA 未開放遠端管理',
+	garbled: 'CPA 回應看不懂'
+} as const;
+
+/** The `status` values of a credential CPA routes to. */
+export const CPA_READY_STATUSES = new Set(['active', 'ready']);
+
+/** How CPA routes a credential, and why not when it does not, in the board's fixed words. */
+export function cpaState(row: Json): QuotaState {
+	const status = text(row.status)?.toLowerCase() ?? null;
+	if (row.disabled === true || status === 'disabled') return { kind: 'disabled' };
+	if (status === null && typeof row.unavailable !== 'boolean') return { kind: 'unknown' };
+	if (row.unavailable !== true && (status === null || CPA_READY_STATUSES.has(status))) return { kind: 'ready' };
+	const note =
+		row.requires_sign_in === true
+			? '需要重新登入'
+			: row.quota_blocked === true
+				? '額度用完'
+				: status === 'refreshing' || status === 'pending'
+					? '正在更新登入'
+					: status === 'error'
+						? '上次請求出錯'
+						: '暫停使用';
+	return { kind: 'cooling', note };
 }
 
-/** The cache's identity of an account's workspace, as codex-multi-auth keys it; only from a stored
- *  record ID: one derived from the refresh token is never worked out here. */
-function workspaceKey(account: Json, workspaceId: string): string | null {
-	const recordId = text(account.recordId);
-	return recordId ? createHash('sha256').update(JSON.stringify(['oauth', recordId, workspaceId])).digest('hex') : null;
-}
-
-/** The workspace an account is shown with: its selected one, else its account ID. */
-function workspaceIdOf(account: Json): string | null {
-	const workspaces = Array.isArray(account.workspaces) ? account.workspaces : [];
-	if (workspaces.length) {
-		const index = number(account.currentWorkspaceIndex) ?? 0;
-		const selected = workspaces[index];
-		return isRecord(selected) ? text(selected.id) : null;
-	}
-	return text(account.accountId);
-}
-
-/** An account's cache entry, joined as codex-multi-auth's quota readiness does: the workspace's
- *  own entry, or for the stored binding the older ones by account ID or by email when they name
- *  this account alone, whichever is newer. */
-function entryFor(cache: Json, account: Json, accounts: Json[]): Json | null {
-	const map = (name: string): Json => (isRecord(cache[name]) ? cache[name] : {});
-	const workspaceId = workspaceIdOf(account);
-	const key = workspaceId && workspaceKey(account, workspaceId);
-	const scoped = key && isRecord(map('byWorkspace')[key]) ? (map('byWorkspace')[key] as Json) : null;
-	const accountId = text(account.accountId);
-	if (workspaceId !== accountId) return scoped;
-	const newer = (legacy: Json) => (scoped && (number(scoped.updatedAt) ?? 0) >= (number(legacy.updatedAt) ?? 0) ? scoped : legacy);
-	if (accountId && accounts.filter((other) => text(other.accountId) === accountId).length === 1) {
-		const legacy = map('byAccountId')[accountId];
-		if (isRecord(legacy)) return newer(legacy);
-	}
-	const email = text(account.email)?.toLowerCase();
-	if (email) {
-		const same = accounts.filter((other) => text(other.email)?.toLowerCase() === email);
-		const ids = new Set(same.flatMap((other) => (text(other.accountId) ? [text(other.accountId)] : [])));
-		const legacy = map('byEmail')[email];
-		if (same.length === 1 && ids.size <= 1 && isRecord(legacy)) return newer(legacy);
-	}
-	return scoped;
-}
-
-function codexWindow(value: unknown, fallback: string): QuotaWindow | null {
+function usageWindow(value: unknown, fallback: string): QuotaWindow | null {
 	if (!isRecord(value)) return null;
-	const used = number(value.usedPercent);
-	const resetsAt = number(value.resetAtMs);
-	const minutes = number(value.windowMinutes);
-	// A plan without a second window has one 0 minutes long.
-	if ((used === null && resetsAt === null) || minutes === 0) return null;
-	return { label: windowLabel(minutes, fallback), used, resetsAt };
+	const used = number(value.used_percent);
+	if (used === null) return null;
+	const seconds = number(value.limit_window_seconds);
+	const resetAt = number(value.reset_at);
+	return { label: windowLabel(seconds === null ? null : seconds / 60, fallback), used, resetsAt: resetAt === null ? null : resetAt * 1000 };
 }
 
-/** Every account the account file lists, with what the quota cache has for it. */
-export async function readCodexQuota(dir: string): Promise<QuotaGroup> {
-	const accountsFile = await readJson(join(dir, CODEX_ACCOUNTS_FILE), 'Codex 帳號檔');
-	if (!accountsFile.ok) return { ok: false, reason: accountsFile.reason };
-	const storage = accountsFile.value;
-	if (!isRecord(storage) || storage.version !== 3 || !Array.isArray(storage.accounts)) {
-		return { ok: false, reason: `Codex 帳號檔版本不符（是 ${versionText(isRecord(storage) ? storage.version : null)}，看板認得 3）` };
+/** The windows ChatGPT's usage answer has; null when it is not one. */
+function parseUsage(body: unknown): { windows: QuotaWindow[]; plan: string | null } | null {
+	if (!isRecord(body) || !isRecord(body.rate_limit)) return null;
+	const primary = usageWindow(body.rate_limit.primary_window, '主要時段');
+	if (!primary) return null;
+	const secondary = usageWindow(body.rate_limit.secondary_window, '次要時段');
+	return { windows: secondary ? [primary, secondary] : [primary], plan: text(body.plan_type) };
+}
+
+interface UsageMemory {
+	/** When ChatGPT was last asked for this account's usage, whatever came of it. */
+	askedAt: number;
+	failed: boolean;
+	good: { windows: QuotaWindow[]; plan: string | null; observedAt: number } | null;
+}
+
+interface CpaSettings {
+	/** The management API's base, as `http://127.0.0.1:8317`; null when not set. */
+	url: string | null;
+	/** The file holding the management key alone; null when not set. */
+	keyFile: string | null;
+}
+
+type Answer = { ok: true; status: number; body: unknown } | { ok: false };
+
+/** The Codex group from CPA. Keeps each account's last good usage, so a failed read shows it with
+ *  its time; asks ChatGPT for an account at most every CODEX_USAGE_INTERVAL_MS. A key CPA refused
+ *  is not sent again until the key file changes: five refusals in a row ban the host for 30 minutes. */
+export function createCodexQuotaReader(settings: CpaSettings, options: { now(): number; fetch?: typeof fetch }): () => Promise<QuotaGroup> {
+	const send = options.fetch ?? fetch;
+	const usage = new Map<string, UsageMemory>();
+	let refused: string | null = null;
+
+	async function ask(base: string, key: string, path: string, body?: unknown): Promise<Answer> {
+		try {
+			const response = await send(base + path, {
+				method: body === undefined ? 'GET' : 'POST',
+				headers: { authorization: `Bearer ${key}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+				body: body === undefined ? undefined : JSON.stringify(body),
+				signal: AbortSignal.timeout(CPA_TIMEOUT_MS)
+			});
+			const raw = await response.text();
+			let parsed: unknown = null;
+			try {
+				parsed = JSON.parse(raw);
+			} catch {
+				// Left null: only the status counts.
+			}
+			return { ok: true, status: response.status, body: parsed };
+		} catch {
+			return { ok: false };
+		}
 	}
-	const quotaFile = await readJson(join(dir, CODEX_QUOTA_FILE), 'Codex 額度快取');
-	if (!quotaFile.ok) return { ok: false, reason: quotaFile.reason };
-	const cache = quotaFile.value;
-	if (!isRecord(cache) || cache.version !== 1) {
-		return { ok: false, reason: `Codex 額度快取版本不符（是 ${versionText(isRecord(cache) ? cache.version : null)}，看板認得 1）` };
+
+	/** One account's usage through CPA's api-call; null when it could not be read. 401 marks the key refused. */
+	async function readUsage(base: string, key: string, row: Json, authIndex: string, keyHash: string) {
+		const idToken = isRecord(row.id_token) ? row.id_token : {};
+		const accountId = text(idToken.chatgpt_account_id);
+		const answer = await ask(base, key, API_CALL_PATH, {
+			auth_index: authIndex,
+			method: 'GET',
+			url: USAGE_URL,
+			// CPA puts the account's own token in place of $TOKEN$; the board never sees it.
+			header: { Authorization: 'Bearer $TOKEN$', Accept: 'application/json', ...(accountId ? { 'Chatgpt-Account-Id': accountId } : {}) }
+		});
+		if (!answer.ok) return null;
+		if (answer.status === 401) refused = keyHash;
+		if (answer.status !== 200 || !isRecord(answer.body) || answer.body.status_code !== 200 || typeof answer.body.body !== 'string') return null;
+		try {
+			return parseUsage(JSON.parse(answer.body.body));
+		} catch {
+			return null;
+		}
 	}
-	const rows = storage.accounts.filter(isRecord);
-	const active = number(storage.activeIndex);
-	return {
-		ok: true,
-		accounts: rows.map((account, index): QuotaAccount => {
-			const entry = entryFor(cache, account, rows);
-			const observedAt = entry ? number(entry.updatedAt) : null;
-			const planType = entry ? text(entry.planType) : null;
-			const windows = entry
-				? [codexWindow(entry.primary, '主要時段'), codexWindow(entry.secondary, '次要時段')].filter((window) => window !== null)
-				: [];
-			return {
-				email: text(account.email) ?? '（沒有 email）',
-				current: index === active,
-				// Recorded with each usage reading: as current as the usage, whose age the card shows.
-				plan: planType ? { label: capitalized(planType), source: 'live', observedAt } : null,
-				windows,
-				observedAt
-			};
-		})
+
+	return async function readCodex(): Promise<QuotaGroup> {
+		if (!settings.url || !settings.keyFile) return { ok: false, reason: CPA_REASONS.unset };
+		let key: string;
+		try {
+			key = (await readFile(settings.keyFile, 'utf8')).split('\n')[0].trim();
+		} catch {
+			return { ok: false, reason: CPA_REASONS.keyFile };
+		}
+		if (!key) return { ok: false, reason: CPA_REASONS.keyFile };
+		const keyHash = createHash('sha256').update(key).digest('hex');
+		if (refused === keyHash) return { ok: false, reason: CPA_REASONS.rejected };
+		const base = settings.url.replace(/\/+$/, '');
+		const list = await ask(base, key, CREDENTIALS_PATH);
+		if (!list.ok) return { ok: false, reason: CPA_REASONS.unreachable };
+		if (list.status === 401) {
+			refused = keyHash;
+			return { ok: false, reason: CPA_REASONS.rejected };
+		}
+		if (list.status === 403) {
+			const remoteOff = isRecord(list.body) && list.body.error === 'remote management disabled';
+			return { ok: false, reason: remoteOff ? CPA_REASONS.remoteOff : CPA_REASONS.rejected };
+		}
+		if (list.status !== 200 || !isRecord(list.body) || !Array.isArray(list.body.files)) return { ok: false, reason: CPA_REASONS.garbled };
+		refused = null;
+		const rows = list.body.files.filter((row): row is Json => isRecord(row) && (row.provider === 'codex' || row.type === 'codex'));
+		const now = options.now();
+		const seen = new Set<string>();
+		const accounts: QuotaAccount[] = [];
+		for (const row of rows) {
+			const authIndex = text(row.auth_index);
+			let memory = authIndex ? usage.get(authIndex) : undefined;
+			if (authIndex) {
+				seen.add(authIndex);
+				if (!memory || now - memory.askedAt >= CODEX_USAGE_INTERVAL_MS) {
+					const read = await readUsage(base, key, row, authIndex, keyHash);
+					if (refused === keyHash) return { ok: false, reason: CPA_REASONS.rejected };
+					memory = { askedAt: now, failed: read === null, good: read ? { ...read, observedAt: now } : (memory?.good ?? null) };
+					usage.set(authIndex, memory);
+				}
+			}
+			const good = memory?.good ?? null;
+			const idToken = isRecord(row.id_token) ? row.id_token : {};
+			const plan = text(idToken.plan_type) ?? good?.plan ?? null;
+			accounts.push({
+				email: text(row.email) ?? '（沒有 email）',
+				// CPA pools the accounts: none is the one in use.
+				current: false,
+				plan: plan ? { label: capitalized(plan), source: 'live', observedAt: now } : null,
+				windows: good?.windows ?? [],
+				observedAt: good?.observedAt ?? null,
+				state: cpaState(row),
+				...(!memory || memory.failed ? { unreadable: true as const } : {})
+			});
+		}
+		for (const id of usage.keys()) if (!seen.has(id)) usage.delete(id);
+		return { ok: true, accounts };
 	};
 }
 

@@ -139,7 +139,8 @@ beforeAll(async () => {
 		LAT_BOARD_HERDR_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-herdr.mjs'), dir]),
 		LAT_BOARD_CSWAP_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-cswap.mjs'), dir]),
 		LAT_BOARD_PD_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-pd.mjs'), dir]),
-		CODEX_MULTI_AUTH_DIR: join(dir, 'codex-multi-auth'),
+		// Never the real CPA.
+		LAT_BOARD_CPA_URL: '',
 		HERDR_PLUGIN_CONFIG_DIR: join(dir, 'herdr-config'),
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
 		HERDR_SOCKET_PATH: join(dir, 'herdr.sock')

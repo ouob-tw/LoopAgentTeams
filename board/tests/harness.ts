@@ -433,10 +433,17 @@ export async function startFixture(
 		runtime?: string;
 		/** The port to listen on; 0 (the default) lets the system pick one. */
 		port?: number;
+		/** A fake CPA for the 額度 tab's Codex group: its key goes in `<dir>/cpa-key` (mode 600).
+		 *  Without one the group reads as not set up; never the real CPA. */
+		cpa?: { url: string; key: string };
+		/** The board's clock from its first read on, as `setClock` sets it later. */
+		clock?: number;
 	} = {}
 ): Promise<Fixture> {
 	if (!existsSync(BUILD)) throw new Error(`${BUILD_DIR}/ is missing: run \`LAT_BOARD_BUILD_DIR=${BUILD_DIR} bun run build:test\` first`);
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-test-'));
+	if (options.cpa) writeFileSync(join(dir, 'cpa-key'), `${options.cpa.key}\n`, { mode: 0o600 });
+	if (options.clock !== undefined) writeFileSync(join(dir, 'clock'), new Date(options.clock).toISOString());
 	// Known once the server has said where it listens; a restart asks for the same port again.
 	let port = options.port ?? 0;
 	let url = '';
@@ -481,9 +488,9 @@ export async function startFixture(
 		LAT_BOARD_HCOM_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-hcom.mjs'), dir]),
 		// Every read lists Herdr's agents too; never the real Herdr's.
 		LAT_BOARD_HERDR_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-herdr.mjs'), dir]),
-		// The 額度 tab reads claude-swap's list and codex-multi-auth's files; never the real ones.
+		// The 額度 tab reads claude-swap's list and CPA's management API; never the real ones.
 		LAT_BOARD_CSWAP_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-cswap.mjs'), dir]),
-		CODEX_MULTI_AUTH_DIR: join(dir, 'codex-multi-auth'),
+		...(options.cpa ? { LAT_BOARD_CPA_URL: options.cpa.url, LAT_BOARD_CPA_MANAGEMENT_KEY_FILE: join(dir, 'cpa-key') } : {}),
 		// Translation and tidy fall back to Haiku through a fake Claude CLI; never the real one.
 		LAT_BOARD_HAIKU_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-claude.mjs'), dir]),
 		// The pd section reads and denies through pd; never the real one or its socket.

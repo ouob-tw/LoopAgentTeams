@@ -35,7 +35,7 @@ import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 import { HEARTBEAT_MS as ASK_HEARTBEAT_MS, isAskFile, notifyExecuted, readAsks, settleAsks, touchHeartbeat } from './board-asks.ts';
 import type { BoardAsk } from '../board/board-asks.ts';
 import type { QuotaSnapshot } from '../board/quota.ts';
-import { createQuotaPoller, readClaudeQuota, readCodexQuota } from './quota.ts';
+import { createQuotaPoller, readClaudeQuota, createCodexQuotaReader } from './quota.ts';
 import type { PdSnapshot } from '../board/pd.ts';
 import { createPdPoller, readPdPending } from './pd.ts';
 import { loadUsageStyle, saveUsageStyle } from './usage-style.ts';
@@ -288,7 +288,7 @@ function createBoard(): Board {
 	const quotaPoller = createQuotaPoller(
 		{
 			claude: () => readClaudeQuota(config.cswapCommand, config.cswapTimeoutMs),
-			codex: () => readCodexQuota(config.codexMultiAuthDir)
+			codex: createCodexQuotaReader(config.cpa, { now: config.now })
 		},
 		{
 			intervalMs: config.quotaIntervalMs,
