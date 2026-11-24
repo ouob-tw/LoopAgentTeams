@@ -78,6 +78,23 @@ export const cutReason = (cut: Cut, limitMinutes: number) => (cut === 'stopped' 
 /** Why a run whose agent was gone when the board started again failed. */
 export const GONE_AT_RESTART = '看板重啟時 Agent 已不在';
 
+/** How long a launched agent may go with no session before the run fails as never started (#702):
+ *  longer than hcom's lock retries (1 + 2 + 4 minutes, #657), so a slow launch still makes it. */
+export const NO_SESSION_MINUTES = 10;
+
+/** Why a run whose launch hcom recorded as blocked failed: the prompt the agent's screen settled on. */
+export function blockedReason(detail: string): string {
+	if (/trust this folder/i.test(detail)) return 'Agent 沒有啟動：卡在 Claude Code 的資料夾信任提示（Yes, I trust this folder），hcom 等不到它連上';
+	const screen = detail
+		.split('\n')
+		.map((line) => line.trim())
+		.filter((line) => line && !/^launch blocked:/i.test(line));
+	return `Agent 沒有啟動：卡在啟動畫面，hcom 等不到它連上${screen.length ? `：${clip(screen.join(' ／ '), 160)}` : ''}`;
+}
+
+/** Why a run whose agent never got a session failed. */
+export const NEVER_STARTED = `Agent 開了 ${NO_SESSION_MINUTES} 分鐘仍沒有啟動（hcom 一直沒有它的工作階段）`;
+
 /** How a reply ends a run: its last line alone, `DONE` or `FAILED: <reason>`. */
 export function verdictOf(reply: string): { status: 'success' } | { status: 'failed'; reason: string } | null {
 	const last = reply.trimEnd().split('\n').at(-1)?.trim() ?? '';
@@ -140,6 +157,9 @@ export interface AgentHost {
 	send(sessionId: string, text: string): Promise<string | null>;
 	/** The pane's bottom as text; null when it cannot be read. */
 	screen(pane: string): Promise<string | null>;
+	/** What hcom recorded when it gave up on this agent's launch since `since` (`launch_blocked`: the
+	 *  screen it settled on); null when nothing, or it cannot be read. */
+	launchBlocked(name: string, since: number): Promise<string | null>;
 	/** Close the agent the way the board closes one; why it could not, or null. */
 	close(agent: { sessionId: string | null; name: string }): Promise<string | null>;
 	/** End the agent's process (`hcom kill`) to resume it later; why it could not, or null. */
@@ -295,6 +315,15 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 			sessionId = agent.sessionId;
 			watched.note({ sessionId });
 		}
+		if (!sessionId) {
+			// Not started yet: hcom giving up on the launch (a prompt on its screen), or no session long
+			// after it, ends the run; the agent stuck there is closed (#702).
+			const blocked = await host.launchBlocked(name, watched.run.startedAt);
+			const reason = blocked ? blockedReason(blocked) : watched.now() - (watched.run.launchedAt ?? watched.run.startedAt) >= NO_SESSION_MINUTES * 60_000 ? NEVER_STARTED : null;
+			// Listed again right before closing: one that got its session meanwhile is watched on.
+			if (reason && (await stillNotStarted(host, name))) return end({ status: 'failed', reason });
+			continue;
+		}
 		const asking = watched.asking;
 		if (asking?.waiting() && sessionId) {
 			// Waiting on the user: only the user's own input ends it (#678). Other agents' hcom messages
@@ -379,6 +408,13 @@ async function unansweredAsk(host: AgentHost, client: AgentSpec['client'], sessi
 	if (!latest) return null;
 	// Answered (typed in, the board's reply, or the question panel's): it is not opened again.
 	return (await host.inputAfter(client, sessionId, latest.seq)) ? null : latest;
+}
+
+/** Whether hcom lists the agent with no session now; false when the list cannot be read, so nothing
+ *  is closed on a guess and the next look decides. */
+async function stillNotStarted(host: AgentHost, name: string): Promise<boolean> {
+	const listed = await host.list();
+	return listed.ok && !listed.agents.find((each) => each.name === name)?.sessionId;
 }
 
 /** A Codex agent stopped on its usage limit: check its own account's quota live (the one it runs

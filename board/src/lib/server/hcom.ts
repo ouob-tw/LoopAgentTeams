@@ -290,3 +290,31 @@ export async function listStops(config: BoardConfig, since: number): Promise<Sto
 	}
 	return { ok: true, stops };
 }
+
+/** What hcom recorded when it gave up waiting for this agent's launch (`launch_blocked`, #702): the
+ *  screen it settled on, such as Claude Code's folder trust prompt. Null when it recorded none since
+ *  `since` (board clock milliseconds), or the record cannot be read: nothing is assumed then. */
+export async function launchBlocked(config: BoardConfig, name: string, since: number): Promise<string | null> {
+	// hcom's times are whole seconds: an event in the same second as `since` still counts.
+	const from = since - 1000;
+	const args = ['events', '--type', 'life', '--action', 'launch_blocked', '--agent', name, '--full', '--after', new Date(from).toISOString(), '--last', '5'];
+	const run = await runCommand(config.hcomCommand, args, { timeoutMs: config.hcomListTimeoutMs });
+	if (run.failure) return null;
+	for (const line of run.stdout.split('\n').reverse()) {
+		if (!line.trim()) continue;
+		let event: { instance?: unknown; ts?: unknown; data?: Record<string, unknown> };
+		try {
+			event = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		const data = event?.data;
+		const instance = textOf(event?.instance);
+		const ts = textOf(event?.ts);
+		if (data?.action !== 'launch_blocked' || !instance || (instance !== name && !name.endsWith(`-${instance}`))) continue;
+		const time = ts ? Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : `${ts}Z`) : Number.NaN;
+		if (!(time >= from)) continue;
+		return textOf(data.detail) ?? textOf(data.reason) ?? 'launch_blocked';
+	}
+	return null;
+}
