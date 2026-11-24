@@ -138,6 +138,8 @@ export interface AutomationRun {
 	pid?: number;
 	/** An agent run's HCOM name, once hcom gave it. */
 	agentName?: string;
+	/** When hcom gave the name: a launch with no session long after this failed to start (#702). */
+	launchedAt?: number;
 	/** An agent run's session, once hcom listed it: its page on the board. */
 	sessionId?: string;
 	/** The Herdr workspace its agent opened in, for a resume there. */
@@ -230,6 +232,7 @@ export interface RunReview {
 	/** Its brief, relative to the board's automation folder. */
 	brief?: string;
 	agentName?: string;
+	launchedAt?: number;
 	sessionId?: string;
 	agentWorkspace?: string;
 	judgeAfter?: number;

@@ -858,7 +858,7 @@ export function createAutomation(options: {
 				.catch((error: Error) => ({ ok: false as const, reason: error.message, cut: undefined }));
 			if (!launched.ok && launched.cut) return finish(task, run, { status: launched.cut, reason: cutReason(launched.cut, task.limitMinutes) });
 			if (!launched.ok) return finish(task, run, { status: 'failed', reason: `開不了 Agent：${launched.reason}` });
-			record(run, { agentName: launched.name, ...(launched.workspace ? { agentWorkspace: launched.workspace } : {}) });
+			record(run, { agentName: launched.name, launchedAt: now(), ...(launched.workspace ? { agentWorkspace: launched.workspace } : {}) });
 			publish();
 			await watch(task, latest(run), false, () => cut);
 		} finally {
@@ -949,7 +949,7 @@ export function createAutomation(options: {
 					.catch((error: Error) => ({ ok: false as const, reason: error.message, cut: undefined }));
 				if (!launched.ok && launched.cut) return settleEnd({ status: launched.cut, reason: cutReason(launched.cut, task.limitMinutes) });
 				if (!launched.ok) return settle({ status: 'error', reason: `檢查沒有做完：開不了檢查 Agent：${launched.reason}` });
-				update({ agentName: launched.name, ...(launched.workspace ? { agentWorkspace: launched.workspace } : {}) });
+				update({ agentName: launched.name, launchedAt: now(), ...(launched.workspace ? { agentWorkspace: launched.workspace } : {}) });
 				publish();
 			} else if (!checker.agentName) {
 				// The board stopped between the launch and its name: hcom's list knows the checker's tag.
@@ -969,6 +969,7 @@ export function createAutomation(options: {
 					asks: undefined,
 					startedAt: own.startedAt,
 					agentName: own.agentName,
+					launchedAt: own.launchedAt,
 					sessionId: own.sessionId,
 					agentWorkspace: own.agentWorkspace,
 					judgeAfter: own.judgeAfter,
@@ -1074,6 +1075,7 @@ export function createAutomation(options: {
 					asks: undefined,
 					startedAt: own.startedAt,
 					agentName: own.agentName ?? current.agentName,
+					launchedAt: own.resumedAt ?? own.startedAt,
 					sessionId: own.sessionId ?? current.sessionId,
 					judgeAfter: own.judgeAfter,
 					codexAccount: own.codexAccount ?? current.codexAccount,

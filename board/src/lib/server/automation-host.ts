@@ -8,7 +8,7 @@ import type { AgentHost, CodexAccounts, CodexLimits, Cut } from './automation-ag
 import type { Board } from './board.ts';
 import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand } from './external.ts';
-import { killAgent, listAgents, resumeAgent, stopAgent } from './hcom.ts';
+import { killAgent, launchBlocked, listAgents, resumeAgent, stopAgent } from './hcom.ts';
 import { readTranscript } from './helper.ts';
 import { automationWorkspace, readScreen } from './herdr.ts';
 import { startLaunch } from './launch.ts';
@@ -209,6 +209,7 @@ export function boardAgentHost(config: BoardConfig, board: () => Board, retry: {
 			const read = await readScreen(config, pane, 'detection');
 			return 'text' in read ? read.text : null;
 		},
+		launchBlocked: (name, since) => launchBlocked(config, name, since),
 		async close({ sessionId, name }) {
 			let why = '';
 			if (sessionId) {
