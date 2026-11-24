@@ -84,25 +84,36 @@ export async function closeHalfLaunched(config: BoardConfig, tag: string): Promi
 	return left ? `${left.name} 還在 hcom 的清單上` : null;
 }
 
-/** The `model_provider` of a Codex session record (#710): the `session_meta` line, the first of the
- *  file, holds it in its payload. Null when no such line is in `head`, or it is not a text. */
-export function modelProviderOf(head: string): string | null {
-	for (const line of head.split('\n').slice(0, 20)) {
+/** The provider a Codex session goes through now (#710): the latest `thread_settings_applied` event
+ *  (`payload.thread_settings.model_provider_id`), since a resume with another provider leaves the
+ *  `session_meta` line's `model_provider` as it was; with no such event, that line's. Null when
+ *  neither is in `text`. */
+export function modelProviderOf(text: string): string | null {
+	let applied: string | null = null;
+	let started: string | null = null;
+	for (const line of text.split('\n')) {
+		const settings = line.includes('thread_settings_applied');
+		if (!settings && !(started === null && line.includes('session_meta'))) continue;
 		let entry: unknown;
 		try {
 			entry = JSON.parse(line);
 		} catch {
 			continue;
 		}
-		if (!isRecord(entry) || entry.type !== 'session_meta') continue;
-		const provider = isRecord(entry.payload) ? entry.payload.model_provider : undefined;
-		return typeof provider === 'string' && provider ? provider : null;
+		if (!isRecord(entry) || !isRecord(entry.payload)) continue;
+		if (settings && entry.payload.type === 'thread_settings_applied') {
+			const id = isRecord(entry.payload.thread_settings) ? entry.payload.thread_settings.model_provider_id : undefined;
+			if (typeof id === 'string' && id) applied = id;
+		} else if (entry.type === 'session_meta') {
+			const provider = entry.payload.model_provider;
+			if (typeof provider === 'string' && provider) started = provider;
+		}
 	}
-	return null;
+	return applied ?? started;
 }
 
-/** The first part of a file read for its session line: the line carries the agent's whole base
- *  instructions, so it can be long. */
+/** How much of a session file is read for its provider: all of it up to this size, else its first and last parts. */
+const SESSION_READ_BYTES = 16 * 1024 * 1024;
 const SESSION_HEAD_BYTES = 1024 * 1024;
 
 /** The host every agent task's run goes through; `board` is read when a run first needs it. */
@@ -158,8 +169,13 @@ export function boardAgentHost(config: BoardConfig, board: () => Board, retry: {
 			try {
 				const file = await open(read.path, 'r');
 				try {
-					const { bytesRead, buffer } = await file.read(Buffer.alloc(SESSION_HEAD_BYTES), 0, SESSION_HEAD_BYTES, 0);
-					return modelProviderOf(buffer.subarray(0, bytesRead).toString('utf8'));
+					const { size } = await file.stat();
+					const part = async (position: number, length: number) => {
+						const { bytesRead, buffer } = await file.read(Buffer.alloc(length), 0, length, position);
+						return buffer.subarray(0, bytesRead).toString('utf8');
+					};
+					const text = size <= SESSION_READ_BYTES ? await part(0, size) : `${await part(0, SESSION_HEAD_BYTES)}\n${await part(size - SESSION_READ_BYTES, SESSION_READ_BYTES)}`;
+					return modelProviderOf(text);
 				} finally {
 					await file.close();
 				}

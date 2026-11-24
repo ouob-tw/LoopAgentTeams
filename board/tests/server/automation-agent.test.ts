@@ -480,7 +480,7 @@ function freshRun() {
 
 /** The conversation of `s-<name>` as Codex's own session file starts: a `session_meta` line with the
  *  run's `model_provider` (shaped like a real one; its content is made up). */
-function sessionMeta(name: string, provider: string | null) {
+function sessionMeta(name: string, provider: string | null, applied?: string) {
 	mkdirSync(join(dir, 'transcripts'), { recursive: true });
 	if (provider === null) return;
 	const meta = {
@@ -503,6 +503,8 @@ function sessionMeta(name: string, provider: string | null) {
 		}
 	};
 	appendFileSync(join(dir, 'transcripts', `s-${name}.jsonl`), JSON.stringify(meta) + '\n');
+	// A resume with another provider: Codex keeps session_meta and records the new one as applied settings.
+	if (applied) appendFileSync(join(dir, 'transcripts', `s-${name}.jsonl`), JSON.stringify({ timestamp: '2026-11-18T05:00:00.000Z', ordinal: 3, type: 'event_msg', payload: { type: 'thread_settings_applied', thread_id: `s-${name}`, thread_settings: { model: 'gpt-6.1-terra', model_provider_id: applied, cwd: work } } }) + '\n');
 }
 function clearScreen(name: string) {
 	const plan = JSON.parse(readFileSync(join(dir, 'herdr.json'), 'utf8'));
@@ -585,7 +587,8 @@ test('an agent that works on after the continue is watched as normal: a later qu
 
 test('a new usage-limit stop after the continue was read ends the run as 額度用完: through CPA the pool is spent; another or an unreadable provider says it did not go through CPA', async () => {
 	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low' });
-	const cases: { name: string; provider: string | null; reason: string }[] = [
+	const cases: { name: string; provider: string | null; applied?: string; reason: string }[] = [
+		{ name: 'auto-res', provider: 'openai', applied: 'cpa', reason: 'CPA 池內帳號都用完' },
 		{ name: 'auto-cpa', provider: 'cpa', reason: 'CPA 池內帳號都用完' },
 		{ name: 'auto-oai', provider: 'openai', reason: SECOND_LIMIT_NON_CPA },
 		{ name: 'auto-unk', provider: null, reason: SECOND_LIMIT_NON_CPA }
@@ -597,7 +600,7 @@ test('a new usage-limit stop after the continue was read ends the run as 額度�
 		rmSync(join(injectDir, 'inject-calls.jsonl'), { force: true });
 		codexPlan(each.name);
 		const started = await runNow(task.id);
-		sessionMeta(each.name, each.provider);
+		sessionMeta(each.name, each.provider, each.applied);
 		await launchedRun(task.id, each.name);
 		userSaid(each.name, '讀取並照做');
 		reply(each.name, '正在掃描');
@@ -619,7 +622,7 @@ test('a new usage-limit stop after the continue was read ends the run as 額度�
 		expect(injected().length).toBe(1);
 		expect(RESUMES()).toEqual([]);
 		expect(listed(each.name)).toBe(false);
-		if (each.provider !== 'cpa') expect(out.reason).not.toContain('池內帳號都用完');
+		if (each.provider !== 'cpa' && !each.applied) expect(out.reason).not.toContain('池內帳號都用完');
 		// Never an account note or an account on a new record.
 		expect([out.codexAccount, out.accountSwitches]).toEqual([undefined, undefined]);
 		fixture.setClock(START + 31 * 60_000 * (cases.indexOf(each) + 1));
