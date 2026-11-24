@@ -707,7 +707,7 @@ def _upsert(questions, decisions, question_id, text, first_revision=1, notes=Non
     if preauth is not None and preauth[0] == "allow" and not preauth[2]:
         step = ("have the two advisors settle it, citing that line, and put the result link "
                 "in your next report to the user"
-                if preauth[1].split()[1:2] == ["appearance"]
+                if preauth[3] == "appearance"
                 else "do it with lat-preauth.py do, which logs it")
         print(f"lat-panel: refused, nothing written: {question_id} is pre-authorized under "
               f"the current settings ({preauth[1]}). Do not ask: {step}.", file=sys.stderr)

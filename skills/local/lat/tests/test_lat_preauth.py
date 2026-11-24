@@ -253,6 +253,12 @@ class AppearanceTests(PreauthCase):
                 self.assertTrue(any(reason in item for item in result['reasons']), result)
                 self.assertIn(reason, self.run_tool('show').stdout)
 
+    def test_grant_refuses_branches(self):
+        result = self.run_tool('grant', '--layer', 'global', '--action', 'appearance',
+                               '--branches', 'dev', '--source', 'X-1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('--branches is not for appearance', result.stderr)
+
     def test_do_and_auto_record_refuse_it(self):
         self.write(self.global_file, '[actions.appearance]\nallow = true\n')
         self.session()
@@ -670,6 +676,13 @@ class TimeWindowTests(PreauthCase):
         self.write(self.project_file, self.ALLOW + self.WINDOW)
         verdict = self.merge_at('2026-10-30T03:00:00+08:00')
         self.assertEqual(set(verdict['reason_kinds']), {'error'})
+
+    def test_an_appearance_window_asks_outside_and_allows_inside(self):
+        self.write(self.global_file, f'[actions.appearance]\nallow = true\n{self.WINDOW}')
+        for moment, verdict in (('2026-01-01T02:00:00+08:00', 'allow'),
+                                ('2026-01-01T09:00:00+08:00', 'ask')):
+            with self.subTest(moment), patch.dict(os.environ, FROZEN_NOW=moment):
+                self.assertEqual(self.check('appearance')['verdict'], verdict)
 
     def test_allow_false_stays_even_inside_the_window(self):
         self.write(self.project_file, '[actions.merge]\nallow = false\nbranches = ["dev"]\n'
@@ -1754,6 +1767,23 @@ class RecordTests(WriteCase):
         result = self.record('--kind', 'bug-intake', '--issue', '#9', '--source', 'chat 12:00')
         self.assertIn('--self-reported', result.stderr)
         self.assertEqual(self.records(), [])
+
+    def test_appearance_intake_reruns_the_check_and_shows_in_the_report(self):
+        args = ('--kind', 'appearance-intake', '--issue', '#9', '--source', 'chat 12:00')
+        self.write(self.project_file, '[actions.appearance]\nallow = false\n')
+        result = self.record(*args)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('ask appearance', result.stderr)
+        self.assertIn('ticket confirmation question', result.stderr)
+        self.assertIn('--source', self.record(*args[:4]).stderr)
+        self.assertEqual(self.records(), [])
+        self.write(self.project_file, '[actions.appearance]\nallow = true\nsource = "P-7"\n')
+        self.assertEqual(self.record(*args).returncode, 0)
+        [entry] = self.records()
+        self.assertEqual((entry['kind'], entry['issue']), ('appearance-intake', '#9'))
+        out = self.run_tool('report').stdout
+        self.assertIn('免確認開工\n- #9；原訊息：chat 12:00；外觀修改：allow appearance — basis: '
+                      'allow=true from project (source P-7)', out)
 
     def test_bug_intake_without_a_no_existing_guard_writes_nothing(self):
         conditions = ('--kind', 'bug-intake', '--issue', '#9', '--source', 'chat 12:00',

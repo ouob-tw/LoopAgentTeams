@@ -227,7 +227,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-i
 `appearance` 是常設授權，沒有東西可執行：`do` 與 `record --kind auto` 會拒絕。`check --action appearance` 為 `allow` 時：
 
 1. 只關於外觀的選擇題（從示意頁挑樣式、只談外觀的 DECIDE）待決紀錄寫 `- action: appearance`，交兩位參謀定案，不問使用者（提問工具會擋下，見[接上提問](#接上提問)）；結論引用 `check` 印的那行，下一次給使用者的回報附結果網址（ui-choice-demo 發布的頁面），讓使用者可以反對。
-2. 使用者本人提出、只動外觀的修改，照短流程開票但不發確認題；驗收條件與 `check` 印的那行都寫在票上，做完附連結給使用者看結果。
+2. 使用者本人提出、只動外觀的修改，照短流程開票但不發確認題，以 `record --kind appearance-intake --issue <票> --source '<使用者原訊息位置>'` 記下（工具當場重跑 `check`，不是 `allow` 就拒絕；`report` 列在「免確認開工」）；驗收條件寫在票上，做完附連結給使用者看結果。
 
 `ask` 時照原本流程。
 

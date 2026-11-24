@@ -1491,7 +1491,7 @@ def sent_question_paths(record):
 
 
 def question_preauth(decision_path, *, workspace, session_id, questions_paths):
-    """`(verdict, check line, sent)` rechecked under the current settings, or None when
+    """`(verdict, check line, sent, action)` rechecked under the current settings, or None when
     the record has no `- action:` line. An earlier `- preauth:` line is never read."""
     found = read_decision_action(decision_path)
     if found is None:
@@ -1501,7 +1501,7 @@ def question_preauth(decision_path, *, workspace, session_id, questions_paths):
     result = module.evaluate(action, branch=branch, commit=commit, workspace=workspace,
                              session=session_id)
     sent = question_sent(session_id, questions_paths, Path(decision_path).stem)
-    return result['verdict'], module.verdict_line(result), sent
+    return result['verdict'], module.verdict_line(result), sent, action
 
 
 def preauth_stop_check(record, message):
@@ -1522,7 +1522,7 @@ def preauth_stop_check(record, message):
         if found[2]:
             notes.append(f'LAT 預先授權提醒：{identifier} 此題目前已預先授權，可由使用者決定撤回'
                          f'（{found[1]}）。')
-        elif found[1].split()[1:2] == ['appearance']:
+        elif found[3] == 'appearance':
             looks.append(f'{identifier}（{found[1]}）')
         else:
             held.append(f'{identifier}（{found[1]}）')
