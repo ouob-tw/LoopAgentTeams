@@ -29,6 +29,13 @@ description: "Use when the user will look at something: before asking them to ch
    ```
 
    名稱用小寫英數與 `.` `_` `-`。同名再發布就覆蓋，原網址重新整理即是新版。指令會自己打開網址確認，成功印出內網網址（含密鑰）；有設定看板網址時，第二行是看板網址（`<看板>/demo/<名稱>/`，已登入看板的瀏覽器在外網也打得開）。給使用者時兩行都整行貼上；失敗會印原因，先修好再繼續。
+   報告是 Markdown 檔時，用 `publish-md` 直接發布，不必先轉成 HTML：
+
+   ```bash
+   uv run --no-project python <本技能目錄>/scripts/demo.py publish-md ./report.md --name security-2026-11-24
+   ```
+
+   標題、表格、程式碼區塊、清單、引用會排進共用外框；寬表格只在表格內左右捲。原文裡的 HTML 一律當文字顯示，不會執行；不抓外部資源。輸出與 `publish` 相同。
 3. 滿 14 天沒更新的展示會自動清掉，不必手動關。
 4. 問選擇時，網址放進題目；用 LAT 面板就交給 `question ask` 或 `question upsert` 的 `--visual`（見 `lat` 技能的 `references/question-panel.md`）。有看板網址時 `--visual` 放看板網址，使用者在外面也看得到。作答仍走面板，展示頁不收點選。
 
