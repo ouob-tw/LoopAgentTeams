@@ -183,6 +183,8 @@
 			<dd class="mono">{task.agent.folder}</dd>
 			<dt>任務說明檔</dt>
 			<dd class="mono">{task.agent.brief}</dd>
+			<dt>回報方式</dt>
+			<dd data-report>{task.agent.report === 'demo' ? 'DEMO 網頁' : '口頭'}</dd>
 			{#if task.agent.unattended}
 				{@const grant = task.agent.unattended}
 				<dt>無人模式</dt>
