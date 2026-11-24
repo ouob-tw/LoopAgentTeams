@@ -151,7 +151,7 @@
 	}
 	h2 {
 		margin: 0;
-		font-size: max(0.95rem, var(--min-font, 0px));
+		font-size: max(1rem, var(--min-font, 0px));
 	}
 	ul {
 		list-style: none;
@@ -243,7 +243,7 @@
 	}
 	.head .num {
 		color: var(--muted);
-		font-size: max(0.85rem, var(--min-font, 0px));
+		font-size: max(1rem, var(--min-font, 0px));
 	}
 	.agents {
 		display: flex;
@@ -304,7 +304,7 @@
 	}
 	.other small {
 		margin-left: 0.5rem;
-		font-size: max(0.85rem, var(--min-font, 0px));
+		font-size: max(1rem, var(--min-font, 0px));
 	}
 	.none,
 	.failed {
