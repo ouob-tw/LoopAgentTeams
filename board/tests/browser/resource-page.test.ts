@@ -14,6 +14,8 @@ const SCREEN = `({ search: location.search, middle: document.querySelector('.inb
 /** Nothing on the page reaches past the window's width, and nothing in the tab past its own, but a
  *  name cut short with an ellipsis (its full text in its title). */
 const OVERFLOWING = `[...document.querySelectorAll('.inbox .resource, .inbox .resource *')].filter((node) => node.scrollWidth > node.clientWidth + 1 && getComputedStyle(node).textOverflow !== 'ellipsis').map((node) => node.className || node.tagName)`;
+/** Elements in the tab with text of their own smaller than 16px. */
+const SMALL_TEXT = `[...document.querySelectorAll('.inbox .resource *')].filter((node) => [...node.childNodes].some((child) => child.nodeType === 3 && child.textContent.trim()) && parseFloat(getComputedStyle(node).fontSize) < 16).map((node) => node.className.replace(/svelte-\\S+/g, '').trim() + ':' + getComputedStyle(node).fontSize)`;
 const FITS = `document.documentElement.scrollWidth <= window.innerWidth && ${OVERFLOWING}.length === 0`;
 
 const CORES = 8;
@@ -162,6 +164,8 @@ for (const width of [390, 1400]) {
 			expect(await tab.eval(`document.querySelector('.resource .other').innerText`)).toContain('chrome');
 			expect(await tab.eval(OVERFLOWING)).toEqual([]);
 			expect(await tab.eval(FITS)).toBe(true);
+			// Every text in the tab is at least 16px (ui-baseline).
+			expect(await tab.eval(SMALL_TEXT)).toEqual([]);
 			await shot(tab, `${shots}-1-top5`);
 			const theme = await tab.eval<string>(`document.documentElement.dataset.theme`);
 			await tab.eval(`document.documentElement.dataset.theme = '${theme === 'dark' ? 'light' : 'dark'}'`);
