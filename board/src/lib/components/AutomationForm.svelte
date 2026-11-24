@@ -23,6 +23,7 @@
 	} from '#lib/board/automation.ts';
 	import { saveTask, type FieldErrors } from '#lib/board/automation-actions.ts';
 	import { SCOPE_KEYS, SCOPE_LABEL, type UnattendedScope } from '#lib/board/unattended.ts';
+	import FolderTrustWarning from './FolderTrustWarning.svelte';
 
 	let { task, onsaved, oncancel }: { task: AutomationTask | null; onsaved: (id: string) => void; oncancel: () => void } = $props();
 
@@ -83,6 +84,8 @@
 	let errors = $state<FieldErrors>({});
 	let failure = $state<string | null>(null);
 	let saving = $state(false);
+	/** Saved, but its client has not trusted the folder (#703): the form says so before it goes to the task. */
+	let untrusted = $state<{ id: string; client: AgentClient; folder: string } | null>(null);
 
 	const TYPES: { type: ScheduleType; text: string }[] = [
 		{ type: 'monthly', text: '每月' },
@@ -118,6 +121,10 @@
 		};
 		const saved = await saveTask(task?.id ?? null, body);
 		saving = false;
+		if (saved.ok && saved.value.folderUntrusted && saved.value.agent) {
+			untrusted = { id: saved.value.id, client: saved.value.agent.client, folder: saved.value.agent.folder };
+			return;
+		}
 		if (saved.ok) return onsaved(saved.value.id);
 		errors = saved.errors ?? {};
 		failure = saved.errors ? '有欄位要修正，請看標紅的地方。' : saved.message;
@@ -128,6 +135,18 @@
 	{#if errors[field]}<p class="error" data-error={field}>{errors[field]}</p>{/if}
 {/snippet}
 
+{#if untrusted}
+	<!-- Saved already: the fields give way to the warning and one way on, so nothing typed now is
+	     lost unsaved and a second press cannot add the task twice. -->
+	<div class="form" data-saved={untrusted.id}>
+		<h2>{task ? `編輯：${task.name}` : '新增任務'}</h2>
+		<p class="saved">已儲存。</p>
+		<FolderTrustWarning client={untrusted.client} folder={untrusted.folder} />
+		<div class="actions">
+			<button type="button" class="primary" onclick={() => onsaved(untrusted!.id)}>看任務</button>
+		</div>
+	</div>
+{:else}
 <form class="form" onsubmit={save} novalidate>
 	<h2>{task ? `編輯：${task.name}` : '新增任務'}</h2>
 
@@ -306,6 +325,7 @@
 		<button type="button" onclick={oncancel}>取消</button>
 	</div>
 </form>
+{/if}
 
 <style>
 	.form {
@@ -533,5 +553,12 @@
 	}
 	.actions {
 		margin-top: 0.8rem;
+	}
+	.form[data-saved] {
+		gap: 0.6rem;
+	}
+	.saved {
+		margin: 0;
+		font-weight: 700;
 	}
 </style>

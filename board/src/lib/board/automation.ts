@@ -294,6 +294,9 @@ export interface AutomationTaskView {
 	runs: AutomationRun[];
 	/** Missed periods still to be handled (not dismissed, no run since), oldest first. */
 	missed: MissedPeriod[];
+	/** An agent task whose client has not trusted its folder: each run stops at the client's trust
+	 *  question (#703). Absent when trusted or when the client's settings cannot tell. */
+	folderUntrusted?: true;
 }
 
 /** A task file the board could not read: shown as an error, never taken for an empty task. */

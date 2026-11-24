@@ -1,0 +1,29 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/folder-trust.ts",
+        "board/src/lib/server/automation.ts",
+        "board/src/lib/board/automation.ts",
+        "board/src/lib/board/automation-actions.ts",
+        "board/src/lib/server/config.ts",
+        "board/src/lib/server/board.ts",
+        "board/src/routes/api/automation/+server.ts",
+        "board/src/routes/api/automation/[id]/+server.ts"
+      ],
+      "tests": ["board/tests/unit/folder-trust.test.ts"]
+    },
+    {
+      "paths": [
+        "board/src/lib/components/FolderTrustWarning.svelte",
+        "board/src/lib/components/AutomationForm.svelte",
+        "board/src/lib/components/AutomationList.svelte",
+        "board/src/lib/components/AutomationTask.svelte",
+        "board/src/lib/board/automation-actions.ts",
+        "board/src/routes/api/automation/+server.ts",
+        "board/src/routes/api/automation/[id]/+server.ts"
+      ],
+      "tests": ["board/tests/browser/automation-folder-trust-page.test.ts"]
+    }
+  ]
+}
