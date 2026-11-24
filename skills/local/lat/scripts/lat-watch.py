@@ -2336,10 +2336,10 @@ def delivered_report(messages, card_updated_at, agent_names, orchestrator_names,
     save or at most CARD_REPORT_GRACE_SECONDS before it. A later message from anyone but the
     orchestrator voids it unless it is an inform/ack or a watcher notice
     (message_releases_wait): a question from QA or a reviewer is work. A later orchestrator
-    message, whatever its intent (instructions come as inform too), voids it unless the
-    agent only acknowledged them all: acknowledged(first_ts, last_ts) tells that for the
-    orchestrator messages since the report (see acknowledged_only); without it any
-    orchestrator message voids the report.
+    message with no intent or intent request voids it. One sent as inform or ack (such as
+    "stay available") voids it unless the agent only acknowledged them all:
+    acknowledged(first_ts, last_ts) tells that for the orchestrator messages since the
+    report (see acknowledged_only); without it any orchestrator message voids the report.
     """
     def to(message, names):
         return bool((message_names(message, 'delivered_to') | message_names(message, 'mentions'))
@@ -2358,7 +2358,9 @@ def delivered_report(messages, card_updated_at, agent_names, orchestrator_names,
         elif not to(message, agent_names):
             continue
         elif sender & orchestrator_names:
-            if report:
+            if event_value(message, 'intent', 'data') not in ('inform', 'ack'):
+                report, pending, latest = 0, None, None
+            elif report:
                 pending = pending or message
                 latest = message
         elif message_releases_wait(message):

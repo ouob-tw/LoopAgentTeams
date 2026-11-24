@@ -1708,7 +1708,7 @@ class DeliveredAwaitingOrchestratorTests(unittest.TestCase):
         watch = load_watch()
         messages = [self.message(5, 'faha', ['vonero'], 2),
                     self.message(6, 'vonero', ['faha'], 3, 'inform', 'Stay available'),
-                    self.message(9, 'vonero', ['faha'], 6, None, 'Next: fix the test')]
+                    self.message(9, 'vonero', ['faha'], 6, 'inform', 'Next: fix the test')]
         statuses = [self.status(7, 'active', 'deliver:vonero', 3),
                     self.status(8, 'listening', '', 3)]
         info = {'session_id': 'abc', 'name': 'q713-faha', 'base_name': 'faha'}
@@ -1737,12 +1737,29 @@ class DeliveredAwaitingOrchestratorTests(unittest.TestCase):
         seen = []
         messages = [self.message(5, 'faha', ['vonero'], 2),
                     self.message(6, 'vonero', ['faha'], 3, 'inform', 'Stay available'),
-                    self.message(7, 'vonero', ['faha'], 4)]
+                    self.message(7, 'vonero', ['faha'], 4, 'ack')]
         found = watch.delivered_report(messages, self.CARD_AT, self.AGENT, self.BOSS,
                                        lambda after, latest: seen.append((after, latest)) or True)
         self.assertEqual(found, 5)
         # Looked up from the first unanswered orchestrator message to the latest one.
         self.assertEqual(seen, [(messages[1]['ts'], messages[2]['ts'])])
+
+    def test_only_an_orchestrator_inform_or_ack_can_be_acknowledged(self):
+        # P830: an orchestrator message with no intent or intent request is an instruction;
+        # it voids the report even when the agent did nothing with it.
+        watch = load_watch()
+        for intent, expected in (('inform', 5), ('ack', 5), (None, 0), ('request', 0)):
+            messages = [self.message(5, 'faha', ['vonero'], 2),
+                        self.message(6, 'vonero', ['faha'], 3, intent, 'Stand by')]
+            self.assertEqual(watch.delivered_report(messages, self.CARD_AT, self.AGENT,
+                                                    self.BOSS, lambda after, latest: True),
+                             expected, intent)
+        # A request after an acknowledged inform voids it too.
+        messages = [self.message(5, 'faha', ['vonero'], 2),
+                    self.message(6, 'vonero', ['faha'], 3, 'inform', 'Stay available'),
+                    self.message(7, 'vonero', ['faha'], 4, 'request', 'Re-check the fix')]
+        self.assertEqual(watch.delivered_report(messages, self.CARD_AT, self.AGENT, self.BOSS,
+                                                lambda after, latest: True), 0)
 
     def test_acting_on_the_orchestrator_message_voids_the_report(self):
         watch = load_watch()
