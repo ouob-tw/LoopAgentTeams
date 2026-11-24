@@ -541,7 +541,14 @@ test('the first Codex usage limit sends one continue message and notes it: no ki
 	await sleep(800);
 	expect((await runsOf(task.id))[0].status).toBe('running');
 	expect(injected().length).toBe(1);
-	// It works on: busy, the screen clears, and its reply ends the run as usual.
+	// Busy and back to listening with the old error still on screen is not a second limit either.
+	setStatus('auto-back', 'active');
+	await sleep(400);
+	setStatus('auto-back', 'listening');
+	await sleep(800);
+	expect((await runsOf(task.id))[0].status).toBe('running');
+	expect(injected().length).toBe(1);
+	// It works on: busy, the screen clears, and its reply ends the run as usual (old error gone from the screen).
 	setStatus('auto-back', 'active');
 	await sleep(400);
 	clearScreen('auto-back');
@@ -601,6 +608,11 @@ test('a new usage-limit stop after the continue was read ends the run as 額度�
 		userSaid(each.name, CONTINUE_MESSAGE);
 		setStatus(each.name, 'active');
 		await sleep(400);
+		// The old error is cleared from the screen, the agent says something, then a new limit shows.
+		clearScreen(each.name);
+		reply(each.name, '先做了一部分');
+		await sleep(400);
+		limitOnScreen(each.name);
 		setStatus(each.name, 'listening');
 		const out = await ended(task.id, started.id);
 		expect([each.name, out.status, out.reason]).toEqual([each.name, 'quota', each.reason]);
@@ -612,6 +624,38 @@ test('a new usage-limit stop after the continue was read ends the run as 額度�
 		expect([out.codexAccount, out.accountSwitches]).toEqual([undefined, undefined]);
 		fixture.setClock(START + 31 * 60_000 * (cases.indexOf(each) + 1));
 	}
+});
+
+test('a board restart after the continue went out does not send another one, and the old error still on screen is not a second limit', async () => {
+	const task = await create({ limitMinutes: 30 }, { client: 'codex', model: 'gpt-6.1-terra', effort: 'low' });
+	codexPlan('auto-rs');
+	const started = await runNow(task.id);
+	sessionMeta('auto-rs', 'cpa');
+	await launchedRun(task.id, 'auto-rs');
+	userSaid('auto-rs', '讀取並照做');
+	reply('auto-rs', '正在掃描');
+	limitOnScreen('auto-rs');
+	setStatus('auto-rs', 'listening');
+	await eventually(async () => injected().length >= 1, 5_000, 'the continue message');
+	await eventually(async () => (await runsOf(task.id))[0].quotaContinue, 5_000, 'the record of the continue');
+	await fixture.stop();
+	await fixture.start();
+	cookie = await fixture.login();
+	await sleep(1_200);
+	const kept = (await runsOf(task.id)).find((entry) => entry.id === started.id)!;
+	expect([kept.status, kept.quotaNotes]).toEqual(['running', ['額度用完，已原地續作']]);
+	expect(injected().length).toBe(1);
+	// Read, then a new stop shows after the screen cleared: ends as the second.
+	userSaid('auto-rs', CONTINUE_MESSAGE);
+	setStatus('auto-rs', 'active');
+	await sleep(400);
+	clearScreen('auto-rs');
+	await sleep(400);
+	limitOnScreen('auto-rs');
+	setStatus('auto-rs', 'listening');
+	const out = await ended(task.id, started.id);
+	expect([out.status, out.reason]).toEqual(['quota', 'CPA 池內帳號都用完']);
+	expect(injected().length).toBe(1);
 });
 
 test('an old run record with codexAccount and accountSwitches still reads back as it was written', async () => {
@@ -742,6 +786,12 @@ test('an unattended Codex controller gets the same one continue, then a second u
 	userSaid('auto-lat-cx', CONTROLLER_CONTINUE);
 	setStatus('auto-lat-cx', 'active');
 	await sleep(400);
+	clearScreen('auto-lat-cx');
+	reply('auto-lat-cx', '先做一些\nNO REPLY: 等其他 Agent');
+	await sleep(400);
+	// A controller waiting on its agents with the old error cleared goes on; a new limit then ends it.
+	expect((await runsOf(task.id))[0].status).toBe('running');
+	limitOnScreen('auto-lat-cx');
 	setStatus('auto-lat-cx', 'listening');
 	const out = await ended(task.id, started.id);
 	expect([out.status, out.reason]).toEqual(['quota', 'CPA 池內帳號都用完']);

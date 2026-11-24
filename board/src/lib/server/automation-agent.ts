@@ -244,8 +244,8 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 	let quotaCheckAt = 0;
 	/** The continue message sent after a usage limit (#710), kept in the run's record. */
 	let continued = run.quotaContinue ?? null;
-	/** The agent was seen at work after the continue message went out: a turn followed it. */
-	let workedSince = false;
+	/** After the continue was read, the screen was seen without the usage-limit text: what shows now is new. */
+	let cleaned = false;
 
 	const end = async (result: AgentEnd): Promise<AgentEnd> => {
 		const closeError = await host.close({ sessionId, name });
@@ -306,41 +306,42 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 			}
 			continue;
 		}
-		if (continued && agent.status !== 'listening') workedSince = true;
+		// After the continue was read, a screen without the limit text means the old error is gone: the
+		// limit text on it later is a new stop. Looked at in a busy turn too, since the error shows then.
+		if (spec.client === 'codex' && continued && !cleaned && agent.pane && sessionId && agent.status !== 'listening') {
+			continued = await readContinue(host, watched, sessionId, continued);
+			if (continued.read !== undefined) {
+				const busy = await host.screen(agent.pane);
+				if (busy !== null && !CODEX_USAGE_LIMIT.test(busy)) cleaned = true;
+			}
+		}
 		if (agent.status !== 'listening' || !sessionId) continue;
 
 		if (spec.client === 'codex' && agent.pane) {
 			const screen = await host.screen(agent.pane);
 			if (screen !== null && CODEX_USAGE_LIMIT.test(screen)) {
-				// A reply after the stop means the agent went on and the error is only still on screen.
-				const latest = await host.lastReply(spec.client, sessionId);
-				const stillThere = !(latest.ok && latest.text !== null && latest.seq > judgeAfter && continued);
-				if (stillThere) {
-					if (!continued) {
-						if (watched.now() < quotaCheckAt) continue;
-						const sent = await continueAfterLimit(host, watched, sessionId, latest.ok ? latest.seq : -1);
-						if (sent) {
-							continued = sent.continued;
-							judgeAfter = sent.judgeAfter;
-							workedSince = false;
-						} else quotaCheckAt = watched.now() + QUOTA_RECHECK_MS;
-						continue;
-					}
-					// Counted as the second only once the message was read and a turn came after it.
-					if (continued.read === undefined) {
-						const input = await host.inputAfter(spec.client, sessionId, continued.after);
-						if (!input) continue;
-						continued = { ...continued, read: input.seq };
-						watched.note({ quotaContinue: continued });
-					}
-					const readAt = continued.read;
-					if (!workedSince) {
-						const position = await host.position(spec.client, sessionId);
-						if (!position.ok || readAt === undefined || position.seq <= readAt) continue;
-					}
+				if (!continued) {
+					if (watched.now() < quotaCheckAt) continue;
+					const latest = await host.lastReply(spec.client, sessionId);
+					const sent = await continueAfterLimit(host, watched, sessionId, latest.ok ? latest.seq : -1, screen);
+					if (sent) {
+						continued = sent.continued;
+						judgeAfter = sent.judgeAfter;
+						cleaned = false;
+					} else quotaCheckAt = watched.now() + QUOTA_RECHECK_MS;
+					continue;
+				}
+				// A second stop: the continue was read, and the limit text is new (the screen had cleared of
+				// it, or it shows more times than when the continue went out). The old error still on screen
+				// is not one, whatever the agent said since: that is judged as any reply.
+				const shown = limitCount(screen);
+				continued = await readContinue(host, watched, sessionId, continued);
+				const isNew = continued.read !== undefined && (cleaned || shown > (continued.shown ?? Infinity));
+				if (isNew) {
 					const provider = await host.provider(spec.client, sessionId);
 					return end({ status: 'quota', reason: provider === 'cpa' ? CPA_POOL_SPENT : NOT_THROUGH_CPA });
 				}
+				if (continued.read === undefined) continue;
 			}
 		}
 		const reply = await host.lastReply(spec.client, sessionId);
@@ -402,17 +403,37 @@ async function stillNotStarted(host: AgentHost, name: string): Promise<boolean> 
 	return listed.ok && !listed.agents.find((each) => each.name === name)?.sessionId;
 }
 
+/** How many times the screen shows the usage-limit text. */
+const limitCount = (screen: string) => screen.match(new RegExp(CODEX_USAGE_LIMIT.source, 'gi'))?.length ?? 0;
+
+/** Whether the continue message was read: the user input after its position. Kept in the record once seen. */
+async function readContinue(host: AgentHost, watched: Watched, sessionId: string, continued: QuotaContinue): Promise<QuotaContinue> {
+	if (continued.read !== undefined) return continued;
+	const input = await host.inputAfter(watched.spec.client, sessionId, continued.after);
+	if (!input) return continued;
+	const read = { ...continued, read: input.seq };
+	watched.note({ quotaContinue: read });
+	return read;
+}
+
 /** A Codex agent stopped on its usage limit the first time: send it one continue message (no kill,
- *  no switch) and note it on the run. The record of the send and the reply position to judge after;
- *  null when it did not go out (tried again later). */
-async function continueAfterLimit(host: AgentHost, watched: Watched, sessionId: string, replySeq: number): Promise<{ continued: QuotaContinue; judgeAfter: number } | null> {
+ *  no switch) and note it on the run. The intent is recorded before the message goes out, so a
+ *  restart or an uncertain delivery never sends a second one: whether it arrived is read from the
+ *  conversation. The record of the send and the reply position to judge after; null when it
+ *  certainly did not go out (tried again later). */
+async function continueAfterLimit(host: AgentHost, watched: Watched, sessionId: string, replySeq: number, screen: string): Promise<{ continued: QuotaContinue; judgeAfter: number } | null> {
 	const { spec } = watched;
 	const position = await host.position(spec.client, sessionId);
 	if (!position.ok) return null;
-	const failed = await host.send(sessionId, watched.continueMessage ?? CONTINUE_MESSAGE);
-	if (failed) return null;
-	const continued: QuotaContinue = { after: position.seq };
+	const before = { quotaContinue: watched.run.quotaContinue, judgeAfter: watched.run.judgeAfter, quotaNotes: watched.run.quotaNotes };
+	const continued: QuotaContinue = { after: position.seq, shown: limitCount(screen) };
 	// What the agent said before the stop is not the verdict of the turn that follows.
 	watched.note({ quotaContinue: continued, judgeAfter: replySeq, quotaNotes: [...(watched.run.quotaNotes ?? []), CONTINUED_NOTE] });
+	const failed = await host.send(sessionId, watched.continueMessage ?? CONTINUE_MESSAGE);
+	if (failed && !(await host.inputAfter(spec.client, sessionId, continued.after))) {
+		// Nothing arrived: the intent is taken back, and it is tried again later.
+		watched.note(before);
+		return null;
+	}
 	return { continued, judgeAfter: replySeq };
 }

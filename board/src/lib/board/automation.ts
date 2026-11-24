@@ -182,6 +182,8 @@ export interface AutomationRun {
  *  position when it was sent, and the position of the user input that read it, once seen. */
 export interface QuotaContinue {
 	after: number;
+	/** How many times the screen showed the usage-limit text when it was sent: more later is a new stop. */
+	shown?: number;
 	read?: number;
 }
 
