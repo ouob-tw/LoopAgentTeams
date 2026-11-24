@@ -13,7 +13,10 @@
         "board/tests/unit/source-maps.test.ts",
         "board/tests/browser/client-error-page.test.ts",
         "board/tests/browser/module-reload-page.test.ts",
-        "board/tests/browser/history-info-lost.test.ts"
+        "board/tests/browser/history-info-lost.test.ts",
+        "board/src/lib/board/build-update.ts",
+        "board/tests/unit/build-update.test.ts",
+        "board/tests/browser/build-update-page.test.ts"
       ],
       "tests": [
         "board/tests/unit/client-error-routes.test.ts",
@@ -22,7 +25,9 @@
         "board/tests/server/server-log.test.ts",
         "board/tests/browser/client-error-page.test.ts",
         "board/tests/browser/module-reload-page.test.ts",
-        "board/tests/browser/history-info-lost.test.ts"
+        "board/tests/browser/history-info-lost.test.ts",
+        "board/tests/unit/build-update.test.ts",
+        "board/tests/browser/build-update-page.test.ts"
       ]
     }
   ]

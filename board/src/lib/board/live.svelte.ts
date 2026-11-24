@@ -2,6 +2,7 @@
 import { appearance } from './appearance.svelte.ts';
 import { agentControl } from './agent-control.svelte.ts';
 import { reloadPage } from './api.ts';
+import { checkBuild } from './build-update.ts';
 import { connectBoard, type Connection, type LinkState } from './client.ts';
 import { messaging } from './messaging.svelte.ts';
 import { toasts } from './toasts.svelte.ts';
@@ -87,6 +88,8 @@ export class LiveBoard {
 				this.link = state;
 				toasts.setLinkDown(state === 'offline');
 				if (!back) return;
+				// A deploy restarts the server: the page may now run an older build than it serves.
+				checkBuild();
 				// What could not be read while it was down: a new snapshot may not come to read it again.
 				// Not failed until this read says so, or its notice would show meanwhile.
 				for (const owner of [agentControl, messaging]) {

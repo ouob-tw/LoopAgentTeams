@@ -383,8 +383,9 @@ export interface Fixture {
 	archivePage(cookie: string, before?: string | null): Promise<Response>;
 	watch(cookie: string): Watch;
 	/** Start the server. A restart asks for the port it had, which a page open on it needs; with
-	 *  `anyPort`, for any free one, as another process may take that port while the server is down. */
-	start(options?: { anyPort?: boolean }): Promise<void>;
+	 *  `anyPort`, for any free one, as another process may take that port while the server is down.
+	 *  `build` is another build's `index.js` to run instead of the tested one (a deploy, say). */
+	start(options?: { anyPort?: boolean; build?: string }): Promise<void>;
 	/** Stop the server: killed at once, or with `SIGTERM` as systemd stops it, waiting for it to exit. */
 	stop(signal?: 'SIGKILL' | 'SIGTERM'): Promise<void>;
 	cleanup(): Promise<void>;
@@ -688,8 +689,8 @@ export async function startFixture(
 			watches.push(watch);
 			return watch;
 		},
-		async start({ anyPort = false } = {}) {
-			server = spawn(options.runtime ?? NODE, [BUILD], { cwd: ROOT, env: { ...env, PORT: String(anyPort ? 0 : port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+		async start({ anyPort = false, build = BUILD } = {}) {
+			server = spawn(options.runtime ?? NODE, [build], { cwd: ROOT, env: { ...env, PORT: String(anyPort ? 0 : port) }, stdio: ['ignore', 'pipe', 'pipe'] });
 			const child = server;
 			let heard = '';
 			child.stderr!.on('data', (chunk) => ((output += chunk), echo('stderr', chunk)));

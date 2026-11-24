@@ -3,10 +3,11 @@
 // answer or a message, which the server cannot tell apart. So a line holds only what the server
 // itself writes after checking the report: a canonical message for a known kind of error (anything
 // else is [omitted]), an error type from a fixed list, locations in the script files this build
-// really has (each with the original source location its map gives, see source-maps.ts), and which
-// of the board's pages and routes it was. One device gets only so many lines a minute, so a page
+// really has (each with the original source location its map gives, see source-maps.ts), which
+// of the board's pages and routes it was, and whether the page runs this build or another one (a
+// page left open across a deploy: its script files are gone, so its frames are only counted). One device gets only so many lines a minute, so a page
 // that keeps failing cannot flood the journal.
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { log } from './log.ts';
@@ -121,6 +122,29 @@ function builtScripts(): Set<string> {
 	return scripts;
 }
 
+let served: string | null | undefined;
+/** The version this build serves (SvelteKit's `client/_app/version.json`); null without a build. */
+function servedVersion(): string | null {
+	if (served !== undefined) return served;
+	served = null;
+	const home = buildRoot();
+	if (!home) return served;
+	try {
+		const version: unknown = JSON.parse(readFileSync(join(home, 'client/_app/version.json'), 'utf8')).version;
+		if (typeof version === 'string' && version) served = version;
+	} catch {
+		// No version file: which build a page runs is not told.
+	}
+	return served;
+}
+
+/** Whether the page runs this build: the version it sent is compared, never logged. */
+function buildOf(value: unknown): 'current' | 'other' | null {
+	const own = servedVersion();
+	if (typeof value !== 'string' || !own) return null;
+	return value === own ? 'current' : 'other';
+}
+
 let locator: SourceLocator | undefined;
 const sourceOf: SourceLocator = (script, line, column) => {
 	locator ??= createSourceLocator(buildRoot() && join(buildRoot()!, 'sourcemaps'));
@@ -130,11 +154,14 @@ const sourceOf: SourceLocator = (script, line, column) => {
 /** Locations in this build's own scripts, one per frame: `at <source>:<line>:<column> (<script>:<line>:<column>)`
  *  where the script's map gives the original place, else `at <script>:<line>:<column>`. A frame of
  *  another host or of a file the build does not have, and every function name and message line,
- *  are left out. `host` is the board's as the request named it: the server cannot tell http from
- *  https without an ORIGIN setting, so only host and port are compared. */
+ *  are left out; frames in a build's script files this build does not have (another build's) are
+ *  counted on a last line, so a stack of only those does not look empty. `host` is the board's as
+ *  the request named it: the server cannot tell http from https without an ORIGIN setting, so only
+ *  host and port are compared. */
 function stackFrames(value: unknown, host: string, known = builtScripts(), locate = sourceOf): string | null {
 	if (typeof value !== 'string') return null;
 	const frames: string[] = [];
+	let elsewhere = 0;
 	for (const line of value.split('\n')) {
 		const location = /(https?:\/\/[^\s()@]+?):(\d+):(\d+)\)?\s*$/.exec(line);
 		if (!location) continue;
@@ -144,14 +171,22 @@ function stackFrames(value: unknown, host: string, known = builtScripts(), locat
 		} catch {
 			continue;
 		}
-		if (url.host !== host || !known.has(url.pathname)) continue;
+		if (url.host !== host) continue;
+		if (!known.has(url.pathname)) {
+			if (BUILT_SCRIPT.test(url.pathname)) elsewhere++;
+			continue;
+		}
 		const built = `${url.pathname}:${location[2]}:${location[3]}`;
 		const source = locate(url.pathname, Number(location[2]), Number(location[3]));
 		frames.push(source ? `at ${source} (${built})` : `at ${built}`);
 	}
-	if (!frames.length) return null;
-	return frames.length > MAX_FRAMES ? [...frames.slice(0, MAX_FRAMES), TRUNCATED].join('\n') : frames.join('\n');
+	const kept = frames.length > MAX_FRAMES ? [...frames.slice(0, MAX_FRAMES), TRUNCATED] : frames;
+	if (elsewhere) kept.push(`[${elsewhere} ${elsewhere === 1 ? 'frame' : 'frames'} from another build]`);
+	return kept.length ? kept.join('\n') : null;
 }
+
+/** A path SvelteKit gives a build's script files; only such frames count as another build's. */
+const BUILT_SCRIPT = /^\/_app\/immutable\/[\w./-]+\.js$/;
 
 /** Which of the board's pages it was, without its query and fragment. */
 function pagePath(value: unknown, host: string): string | null {
@@ -219,6 +254,7 @@ export async function logClientError(
 		traceback: stackFrames(report.stack, host),
 		url: pagePath(report.url, host),
 		route: routeOf(report, host),
+		build: buildOf(report.version),
 		user_agent: agent && agent.length > MAX_USER_AGENT ? agent.slice(0, MAX_USER_AGENT) + TRUNCATED : agent
 	};
 	for (const [key, value] of Object.entries(fields)) if (value) fields[key] = await redact(value);
