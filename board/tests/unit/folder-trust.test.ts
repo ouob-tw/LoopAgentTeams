@@ -66,6 +66,26 @@ test('a settings file that cannot be read or parsed cannot tell', () => {
 	expect(trust('claude', 'work')).toBe('unknown');
 });
 
+test.skipIf(process.getuid?.() === 0)('a file that stops being readable stops the warning, and one readable again brings it back, contents unchanged', () => {
+	const trust = createFolderTrust(files);
+	claudeTrusts(join(root, 'elsewhere'));
+	codexSays({ [join(root, 'elsewhere')]: 'trusted' });
+	for (const client of ['claude', 'codex'] as const) {
+		const file = files[client];
+		expect(trust(client, work)).toBe('untrusted');
+		chmodSync(file, 0o000);
+		expect(trust(client, work)).toBe('unknown');
+		chmodSync(file, 0o600);
+		expect(trust(client, work)).toBe('untrusted');
+	}
+	// Unreadable from the first check on, then readable: it warns at once.
+	const later = createFolderTrust(files);
+	chmodSync(files.claude, 0o000);
+	expect(later('claude', work)).toBe('unknown');
+	chmodSync(files.claude, 0o600);
+	expect(later('claude', work)).toBe('untrusted');
+});
+
 test('Claude honours a trusted folder above, up to the repository root, and the main checkout', () => {
 	const trust = createFolderTrust(files);
 	const repo = join(work, 'repo');

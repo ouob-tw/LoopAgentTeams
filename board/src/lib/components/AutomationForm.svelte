@@ -135,6 +135,18 @@
 	{#if errors[field]}<p class="error" data-error={field}>{errors[field]}</p>{/if}
 {/snippet}
 
+{#if untrusted}
+	<!-- Saved already: the fields give way to the warning and one way on, so nothing typed now is
+	     lost unsaved and a second press cannot add the task twice. -->
+	<div class="form" data-saved={untrusted.id}>
+		<h2>{task ? `編輯：${task.name}` : '新增任務'}</h2>
+		<p class="saved">已儲存。</p>
+		<FolderTrustWarning client={untrusted.client} folder={untrusted.folder} />
+		<div class="actions">
+			<button type="button" class="primary" onclick={() => onsaved(untrusted!.id)}>看任務</button>
+		</div>
+	</div>
+{:else}
 <form class="form" onsubmit={save} novalidate>
 	<h2>{task ? `編輯：${task.name}` : '新增任務'}</h2>
 
@@ -308,20 +320,12 @@
 
 	<p class="hint">設定存在看板的設定資料夾，只記下各專案裡說明檔的位置。</p>
 	{#if failure}<p class="error" role="alert">{failure}</p>{/if}
-	{#if untrusted}
-		<!-- Saved already: one way on, so a second press cannot save the task twice. -->
-		<p class="saved">已儲存。</p>
-		<FolderTrustWarning client={untrusted.client} folder={untrusted.folder} />
-		<div class="actions">
-			<button type="button" class="primary" onclick={() => onsaved(untrusted!.id)}>看任務</button>
-		</div>
-	{:else}
-		<div class="actions">
-			<button type="submit" class="primary" disabled={saving}>儲存</button>
-			<button type="button" onclick={oncancel}>取消</button>
-		</div>
-	{/if}
+	<div class="actions">
+		<button type="submit" class="primary" disabled={saving}>儲存</button>
+		<button type="button" onclick={oncancel}>取消</button>
+	</div>
 </form>
+{/if}
 
 <style>
 	.form {
@@ -550,8 +554,11 @@
 	.actions {
 		margin-top: 0.8rem;
 	}
+	.form[data-saved] {
+		gap: 0.6rem;
+	}
 	.saved {
-		margin: 0.8rem 0 0.4rem;
+		margin: 0;
 		font-weight: 700;
 	}
 </style>

@@ -9,7 +9,7 @@
 //   so only "no answer at all" warns; a trusted folder further up, which Codex is not known to
 //   honour, counts as "cannot tell" rather than warn falsely.
 // A settings file that is missing or cannot be read or parsed is "cannot tell": no warning.
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parse } from 'smol-toml';
 import type { AgentClient } from '../board/automation.ts';
@@ -93,21 +93,31 @@ interface Cached {
 export function createFolderTrust(files: TrustFiles): (client: AgentClient, folder: string) => FolderTrust {
 	const cache = new Map<string, Cached>();
 
-	/** The file's `projects` table; undefined when the file is missing or cannot be read or parsed. */
+	/** The file's `projects` table; undefined when the file is missing or cannot be read or parsed.
+	 *  Whether it can be read is asked every time (a change of permission alone keeps size and time);
+	 *  a read that fails is never kept, so the file counts again as soon as it can be read. */
 	function projectsOf(path: string, parseText: (text: string) => unknown): Record<string, unknown> | undefined {
 		let key: string;
 		try {
+			accessSync(path, constants.R_OK);
 			const stat = statSync(path);
-			key = `${stat.size}:${stat.mtimeMs}`;
+			key = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
 		} catch {
 			cache.delete(path);
 			return undefined;
 		}
 		const cached = cache.get(path);
 		if (cached?.key === key) return cached.projects;
+		let raw: string;
+		try {
+			raw = readFileSync(path, 'utf8');
+		} catch {
+			cache.delete(path);
+			return undefined;
+		}
 		let projects: Record<string, unknown> | undefined;
 		try {
-			const parsed = parseText(readFileSync(path, 'utf8'));
+			const parsed = parseText(raw);
 			projects = isTable(parsed) ? (isTable(parsed.projects) ? parsed.projects : {}) : undefined;
 		} catch {
 			projects = undefined;

@@ -36,7 +36,11 @@
 					<span class="ell muted">{kindText(view.task.kind)} · {scheduleText(view.task.schedule, view.task.time)}</span>
 					<span class="ell next"><span class="muted">下次</span> {view.nextAt === null ? (view.task.paused ? '暫停中不會自動跑' : '—') : `${at.full(view.nextAt)}${view.nextAt <= clock.now ? '（已到時間）' : ''}`}</span>
 					{#if view.folderUntrusted && view.task.agent}
-						<span class="ell untrusted" data-folder-untrusted={view.task.agent.client}><TriangleAlert size="1em" aria-hidden="true" />資料夾未被 {clientName(view.task.agent.client)} 信任，執行會卡住</span>
+						<!-- #703: wraps rather than cut off, so the fix is read whole on the card. -->
+						<span class="untrusted" data-folder-untrusted={view.task.agent.client}>
+							<b><TriangleAlert size="1em" aria-hidden="true" />資料夾未被 {clientName(view.task.agent.client)} 信任，執行會卡住</b>
+							<span class="fix">修法：在任務資料夾開一次 {clientName(view.task.agent.client)}，選信任。</span>
+						</span>
 					{/if}
 					{#if view.missed.length}
 						<span class="ell last missed">{missedText(view.missed)}</span>
@@ -112,10 +116,18 @@
 	.muted {
 		color: var(--muted);
 	}
-	.missed,
-	.untrusted {
+	.missed {
 		color: var(--warn);
 		font-weight: 700;
+	}
+	.untrusted {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.untrusted b {
+		color: var(--warn);
 	}
 	.untrusted :global(svg) {
 		vertical-align: -0.125em;

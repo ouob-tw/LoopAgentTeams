@@ -1,7 +1,7 @@
 // The folder-trust warning (#703) in a real browser at 1400px and 390px. The board reads the temp
 // home's `.claude.json` (the fixture's HOME), never the real one. Saving a Claude agent task whose
-// folder Claude has not trusted keeps the form open with 已儲存, the warning naming the folder and
-// the one-line fix, and 看任務 in place of 儲存; the task page and its card in the list warn too. Once
+// folder Claude has not trusted replaces the form's fields with 已儲存, the warning naming the folder
+// and the one-line fix, and only 看任務; the task page and its card in the list warn too. Once
 // the folder is trusted the warning is gone on the next read, with no restart; a trusted folder's
 // save goes straight to the task, no warning. Frames go to LAT_BOARD_SHOTS when it is set.
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -12,7 +12,7 @@ import { CHROME, launchChrome, shot, type Browser, type Tab } from '../browser.t
 
 const SCREEN = `({ search: location.search, detail: document.querySelector('.detail')?.innerText.slice(0, 400) ?? '' })`;
 /** Nothing reaches past the window's width, and nothing in the list, the task page or the form past its own box. */
-const FITS = `document.documentElement.scrollWidth <= window.innerWidth && [...document.querySelectorAll('.automation, .automation *, .detail .task, .detail .task *, .detail form, .detail form *')].filter((node) => node.tagName !== 'INPUT' && !node.closest('.ell')).every((node) => node.scrollWidth <= node.clientWidth + 1)`;
+const FITS = `document.documentElement.scrollWidth <= window.innerWidth && [...document.querySelectorAll('.automation, .automation *, .detail .task, .detail .task *, .detail form, .detail form *, .detail [data-saved], .detail [data-saved] *')].filter((node) => node.tagName !== 'INPUT' && !node.closest('.ell')).every((node) => node.scrollWidth <= node.clientWidth + 1)`;
 
 let fixture: Fixture;
 let cookie: string;
@@ -86,25 +86,25 @@ for (const width of [1400, 390]) {
 		await visit(width, '/?tab=automation');
 		const name = `主機資安檢查 ${width}`;
 		await saveNew(name, 'claude');
-		await tab.until(`!!document.querySelector('.detail form [data-folder-untrusted=claude]')`, 'the warning on the form');
-		const warning = await text('.detail form [data-folder-untrusted]');
+		await tab.until(`!!document.querySelector('.detail [data-saved] [data-folder-untrusted=claude]')`, 'the warning on the form');
+		const warning = await text('.detail [data-saved] [data-folder-untrusted]');
 		expect(warning).toContain('Claude 還沒信任這個資料夾，執行會卡在它的詢問畫面');
 		expect(warning).toContain(`修法：在 ${work} 開一次 Claude，選信任這個資料夾。`);
-		expect(await text('.detail form .saved')).toBe('已儲存。');
-		// Saved once: 儲存 is gone, so a second press cannot add the task twice.
-		expect(await has('.detail form button[type=submit]')).toBe(false);
-		expect(await text('.detail form .actions button.primary')).toBe('看任務');
+		expect(await text('.detail [data-saved] .saved')).toBe('已儲存。');
+		// Saved once: the fields and 儲存 are gone, so nothing typed now is lost and the task is not added twice.
+		expect(await has('.detail form')).toBe(false);
+		expect(await text('.detail [data-saved] .actions button.primary')).toBe('看任務');
 		// The whole folder shows: no line is cut off inside the warning.
-		expect(await tab.eval<boolean>(`(() => { const box = document.querySelector('.detail form [data-folder-untrusted]'); return [...box.querySelectorAll('*')].every((node) => node.getBoundingClientRect().right <= box.getBoundingClientRect().right + 0.5); })()`)).toBe(true);
+		expect(await tab.eval<boolean>(`(() => { const box = document.querySelector('.detail [data-saved] [data-folder-untrusted]'); return [...box.querySelectorAll('*')].every((node) => node.getBoundingClientRect().right <= box.getBoundingClientRect().right + 0.5); })()`)).toBe(true);
 		// The warning does not cover 看任務.
-		expect(await tab.eval<boolean>(`(() => { const a = document.querySelector('.detail form [data-folder-untrusted]').getBoundingClientRect(); const b = document.querySelector('.detail form .actions button.primary').getBoundingClientRect(); return a.bottom <= b.top; })()`)).toBe(true);
+		expect(await tab.eval<boolean>(`(() => { const a = document.querySelector('.detail [data-saved] [data-folder-untrusted]').getBoundingClientRect(); const b = document.querySelector('.detail [data-saved] .actions button.primary').getBoundingClientRect(); return a.bottom <= b.top; })()`)).toBe(true);
 		expect(await fits()).toBe(true);
-		await shot(tab, `${width}-1-form-warning`, { box: '.detail form [data-folder-untrusted]' });
+		await shot(tab, `${width}-1-form-warning`, { box: '.detail [data-saved] [data-folder-untrusted]' });
 		await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
-		await shot(tab, `${width}-1-form-warning-dark`, { box: '.detail form [data-folder-untrusted]' });
+		await shot(tab, `${width}-1-form-warning-dark`, { box: '.detail [data-saved] [data-folder-untrusted]' });
 		await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
 
-		await click('.detail form .actions button.primary');
+		await click('.detail [data-saved] .actions button.primary');
 		await tab.until(`!!document.querySelector('.detail .task [data-folder-untrusted=claude]')`, 'the warning on the task page');
 		expect(await text('.detail .task [data-folder-untrusted]')).toContain(`修法：在 ${work} 開一次 Claude`);
 		expect(await fits()).toBe(true);
@@ -112,7 +112,8 @@ for (const width of [1400, 390]) {
 
 		await go('/?tab=automation');
 		await tab.until(`!!document.querySelector('.automation [data-folder-untrusted=claude]')`, 'the warning on the card');
-		expect(await text('.automation [data-folder-untrusted]')).toBe('資料夾未被 Claude 信任，執行會卡住');
+		expect(await text('.automation [data-folder-untrusted]')).toBe('資料夾未被 Claude 信任，執行會卡住\n修法：在任務資料夾開一次 Claude，選信任。');
+		expect(await tab.eval<number>(`[...document.querySelectorAll('.automation .card')].filter((card) => card.querySelector('[data-folder-untrusted]')).length`)).toBe(1);
 		expect(await fits()).toBe(true);
 		await shot(tab, `${width}-3-card-warning`, { box: '.automation [data-folder-untrusted]' });
 
