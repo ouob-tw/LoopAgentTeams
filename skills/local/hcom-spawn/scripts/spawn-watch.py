@@ -64,12 +64,11 @@ USAGE_LIMIT = re.compile(r"^■\s+You['’]ve hit your usage limit\b", re.IGNORE
 ERROR_CHARS = 1000         # longest error text quoted to the spawner
 STOP_NOTICE = {
     'api': ('hcom-spawn: {full} (codex) stopped on an API error: {error} It was not retried. '
-            'Look at it with `hcom term {full}`; switch model or account, or hand the work '
-            'to another agent.'),
+            'Look at it with `hcom term {full}` and report the error; for an upstream stop '
+            'follow the Codex CPA recovery procedure in references/troubleshooting.md.'),
     'usage': ('hcom-spawn: {full} (codex) stopped on its usage limit: {error} It was not '
-              'retried and no account was switched. Look at it with `hcom term {full}`; '
-              'follow "Codex 額度與換帳號" in the hcom-spawn skill\'s '
-              'references/troubleshooting.md, which checks the account before any switch.'),
+              'retried. Look at it with `hcom term {full}`; follow "Codex 額度與 CPA 恢復" '
+              'in the hcom-spawn skill\'s references/troubleshooting.md.'),
 }
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 UNREADABLE_ARGS = 'its command line could not be read'

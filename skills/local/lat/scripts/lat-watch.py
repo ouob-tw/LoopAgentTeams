@@ -112,11 +112,11 @@ CRASH_ACTION = ('inspect the agent screen, then resume the same agent or replace
 RECOVERY_ACTIONS = {
     ('codex', 'model-capacity'): 'switch to another model',
     ('codex', 'usage-limit'): (
-        'switch to another subscribed account with quota; Do not switch to API billing; '
-        'if no subscribed account is available, the user decides how to continue'),
+        'follow the Codex CPA recovery procedure in hcom-spawn references/troubleshooting.md; '
+        'verify the provider and continue once before deciding the pool is exhausted'),
     ('codex', 'rate-limit'): (
-        'switch to another subscribed account with quota; Do not switch to API billing; '
-        'if no subscribed account is available, the user decides how to continue'),
+        'follow the Codex CPA recovery procedure in hcom-spawn references/troubleshooting.md; '
+        'verify the provider and continue once before deciding the pool is exhausted'),
 }
 
 
