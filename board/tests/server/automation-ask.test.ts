@@ -330,7 +330,7 @@ test('a restart while it waits: an agent still there waits on with its yellow ca
 	expect((await viewOf(task.id)).state).toBe('asking');
 	expect((await yellow(run.id))[0]).toMatchObject({ id: card.id });
 	expect((await yellow(run.id))[0].dismissedAt).toBeUndefined();
-	// The first check after a restart starts a due try at once: not beside one that waits.
+	// The first check after a restart starts a try whose set time has passed: not beside one that waits.
 	expect((await runsOf(task.id)).filter((each) => each.trigger === 'auto' && each.status !== 'skipped')).toHaveLength(1);
 	expect((await send(`/api/automation/${task.id}/run`, 'POST')).status).toBe(409);
 	expect(listed('ask-stay')).toBe(true);

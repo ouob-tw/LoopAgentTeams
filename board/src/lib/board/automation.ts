@@ -491,8 +491,8 @@ export function runLabel(run: Pick<AutomationRun, 'status' | 'review' | 'asks' |
 /** An automatic try made on the day `time` falls in: whatever it ended in, it is the day's one. */
 export const triedOn = (runs: readonly AutomationRun[], time: number) => runs.some((run) => run.trigger === 'auto' && sameDay(run.startedAt, time));
 
-/** When today's automatic try is due: at the set time, or at once on the board's first check after
- *  it started. Null when no try is due today: paused, outside the window, tried already, the period
+/** When today's automatic try is due: at the set time (a time already passed is due now, so a
+ *  restart catches up). Null when no try is due today: paused, outside the window, tried already, the period
  *  done. Whether the task is running now is the caller's to see. */
 export function dueToday(task: AutomationTask, runs: readonly AutomationRun[], now: number): number | null {
 	if (task.paused || !inWindow(task.schedule, now) || triedOn(runs, now)) return null;

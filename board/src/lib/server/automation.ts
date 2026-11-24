@@ -1173,9 +1173,10 @@ export function createAutomation(options: {
 		return found;
 	}
 
-	/** One check: stop runs past their limit, record missed periods, start the tries that are due. On
-	 *  the first check after the board started a try due today starts at once, not at the set time. */
-	function check(first: boolean): void {
+	/** One check: stop runs past their limit, record missed periods, start the tries that are due. A
+	 *  try whose set time today has passed starts, on the first check after a restart too (catch-up);
+	 *  one whose time has not come waits for it (#701). */
+	function check(): void {
 		if (closed) return;
 		const at = now();
 		let changed = false;
@@ -1200,7 +1201,7 @@ export function createAutomation(options: {
 		for (const task of tasks.values()) {
 			if (!runnable(task)) continue;
 			const due = dueToday(task, runs.get(task.id) ?? [], at);
-			if (due === null || (!first && at < due)) continue;
+			if (due === null || at < due) continue;
 			changed = true;
 			if (busy(task.id)) {
 				record({ ...newRun(task, 'auto', at), endedAt: at, status: 'skipped', reason: (runs.get(task.id) ?? []).some((run) => openAsk(run)) ? '上一次還在等你回覆' : '上一次還在跑' });
@@ -1209,13 +1210,13 @@ export function createAutomation(options: {
 		publish(changed);
 	}
 
-	const ticker = setInterval(() => check(false), options.tickMs ?? 60_000);
+	const ticker = setInterval(() => check(), options.tickMs ?? 60_000);
 	ticker.unref?.();
 	// Right after the board starts, once whatever builds on the automation has it: the runs it
 	// watched first, so a try due now never starts beside one still running.
 	const firstCheck = setImmediate(() => {
 		adopt();
-		check(true);
+		check();
 	});
 
 	return {
