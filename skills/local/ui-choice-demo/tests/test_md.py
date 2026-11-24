@@ -70,6 +70,26 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn('" onmouseover', h)
         self.assertNotIn('"onmouseover=', h.replace('&quot;onmouseover=', ''))
 
+    def test_code_span_in_link_url_cannot_break_out(self):
+        h = self.html('see [log](./`"autofocus tabindex=0 onfocus=alert(1) x="`)')
+        self.assertNotIn('<a href', h)
+        self.assertIn('<code>"autofocus', h)  # shown as code text, no attribute
+
+    def test_emphasis_does_not_touch_urls(self):
+        h = self.html('[init](https://github.com/o/r/blob/main/pkg/__init__.py) ~~x~~ [b](./a**b**c)')
+        self.assertIn('href="https://github.com/o/r/blob/main/pkg/__init__.py"', h)
+        self.assertNotIn('href="./a<strong>', h)
+
+    def test_long_space_runs_are_fast(self):
+        import time
+        t = time.time()
+        self.html('# a' + ' ' * 5000 + 'x')
+        demo.md_title('# a' + ' ' * 5000 + 'x', 'n')
+        self.assertLess(time.time() - t, 1)
+
+    def test_title_ignores_code_blocks(self):
+        self.assertEqual(demo.md_title('```sh\n# run\n```\n# Real', 'n'), 'Real')
+
     def test_safe_links_kept(self):
         h = self.html('[ok](https://example.com/a?b=1&c=2) [m](mailto:a@b.c) [r](docs/a.md)')
         self.assertIn('<a href="https://example.com/a?b=1&amp;c=2" rel="noopener noreferrer">ok</a>', h)
@@ -85,7 +105,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(demo.md_title('no heading', 'n'), 'n')
 
     def test_wide_table_scrolls_inside_its_box(self):
-        page = demo.md_page(REPORT, 'n')
+        page = demo.md_page(REPORT)
         self.assertIn('.md .tbl{overflow-x:auto;max-width:100%', page)
         self.assertIn('width:max-content;min-width:100%;max-width:none', page)  # the frame's table{max-width:100%} would squeeze columns
 

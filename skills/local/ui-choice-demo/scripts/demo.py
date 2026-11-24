@@ -86,7 +86,7 @@ MD_CSS = """<style>
 
 SAFE_URL = re.compile(r'^(https?://|mailto:|#|/|\./|\.\./|[\w.~%-]+(/|$))', re.I)
 FENCE = re.compile(r'^\s{0,3}(```+|~~~+)\s*([\w+#.-]*)')
-HEADING = re.compile(r'^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$')
+HEADING = re.compile(r'^\s{0,3}(#{1,6})\s+(.*)$')
 HRULE = re.compile(r'^\s{0,3}([-*_])(\s*\1){2,}\s*$')
 LIST_ITEM = re.compile(r'^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$')
 TABLE_SEP = re.compile(r'^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$')
@@ -102,14 +102,17 @@ def md_inline(text):
     text = html.escape(text, quote=True)
     def link(m):
         url = html.unescape(m.group(2).strip())
-        if not SAFE_URL.match(url) or re.match(r'^\s*(javascript|data|vbscript):', url, re.I):
+        if '\x00' in url or not SAFE_URL.match(url) or re.match(r'^\s*(javascript|data|vbscript):', url, re.I):
             return m.group(0)
-        return f'<a href="{html.escape(url)}" rel="noopener noreferrer">{m.group(1)}</a>'
+        spans.append(f'<a href="{html.escape(url)}" rel="noopener noreferrer">{m.group(1)}</a>')
+        return f'\x00{len(spans) - 1}\x00'
     text = re.sub(r'\[([^\]\n]+)\]\(([^)\s]+)\)', link, text)
     text = re.sub(r'\*\*(.+?)\*\*|__(.+?)__', lambda m: f'<strong>{m.group(1) or m.group(2)}</strong>', text)
     text = re.sub(r'(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])', r'<em>\1</em>', text)
     text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text)
-    return re.sub(r'\x00(\d+)\x00', lambda m: spans[int(m.group(1))], text)
+    while '\x00' in text:
+        text = re.sub(r'\x00(\d+)\x00', lambda m: spans[int(m.group(1))], text)
+    return text
 
 
 def _cells(line):
@@ -201,7 +204,8 @@ def md_to_html(source):
             flush()
             m = HEADING.match(line)
             n = len(m.group(1))
-            out.append(f'<h{n}>{md_inline(m.group(2))}</h{n}>')
+            heading = m.group(2).rstrip().rstrip('#').rstrip()
+            out.append(f'<h{n}>{md_inline(heading)}</h{n}>')
             i += 1
         elif HRULE.match(line):
             flush()
@@ -235,11 +239,20 @@ def md_to_html(source):
 
 
 def md_title(source, fallback):
-    m = re.search(r'^\s{0,3}#\s+(.+?)\s*#*\s*$', source, re.M)
-    return re.sub(r'[`*_]', '', m.group(1)) if m else fallback
+    """The first top-level heading outside fenced code, as plain text."""
+    fence = None
+    for line in source.splitlines():
+        f = FENCE.match(line)
+        if f:
+            fence = None if fence == f.group(1)[0] else (fence or f.group(1)[0])
+        elif fence is None:
+            m = HEADING.match(line)
+            if m and len(m.group(1)) == 1:
+                return re.sub(r'[`*_]', '', m.group(2).rstrip().rstrip('#').rstrip()) or fallback
+    return fallback
 
 
-def md_page(source, fallback_title):
+def md_page(source):
     """The fragment publish-md hands to the shared frame: styles, then the rendered report."""
     return MD_CSS + md_to_html(source)
 
@@ -415,7 +428,7 @@ def publish_md(src, name):
         raise SystemExit(f'demo: {src} does not exist')
     text = src.read_text(encoding='utf-8')
     with tempfile.TemporaryDirectory(prefix='demo-md-') as d:
-        (Path(d) / 'index.html').write_text(md_page(text, name), encoding='utf-8')
+        (Path(d) / 'index.html').write_text(md_page(text), encoding='utf-8')
         publish(d, name, md_title(text, name))
 
 
