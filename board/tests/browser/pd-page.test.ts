@@ -160,7 +160,7 @@ test.skipIf(!CHROME)('requests come up as a sheet on a phone, with their time; �
 	setPd({ pending: [] });
 	// Nothing waiting: neither the window nor its badge.
 	await tab.until(`!document.querySelector('.inbox .pd, .pd-badge')`, 'no pd window when nothing waits');
-	expect(await tab.eval(`document.querySelector('.inbox > .middle-tabs').previousElementSibling`)).toBe(null);
+	expect(await tab.eval(`document.querySelector('.inbox > .middle-bar').previousElementSibling`)).toBe(null);
 	expect(await tab.eval(`document.title`)).toBe('LAT 看板');
 	setPd({ pending: [], unavailable: true });
 	await tab.until(`${SHOWN('.inbox .pd-unavailable')} && document.querySelector('.inbox .pd-unavailable').textContent === 'pd 服務不可用'`, 'the visible unavailable notice');
@@ -225,7 +225,7 @@ test.skipIf(!CHROME)('on a desktop the window floats over the middle column on e
 	// 稍後 folds it to a badge above the tabs, which opens it again.
 	await tab.pointerClick('.pd button.later');
 	await tab.until(`!document.querySelector('.inbox .pd') && document.querySelector('.inbox .pd-badge')?.innerText === 'pd 待核准 1' && document.activeElement === document.querySelector('.pd-badge')`, 'the badge, focused');
-	expect(await tab.eval(`document.querySelector('.pd-badge').nextElementSibling.classList.contains('middle-tabs')`)).toBe(true);
+	expect(await tab.eval(`document.querySelector('.pd-badge').nextElementSibling.classList.contains('middle-bar')`)).toBe(true);
 	await tab.pointerClick('.pd-badge');
 	await tab.until(`document.activeElement === document.querySelector('.inbox .pd') && !document.querySelector('.pd-badge')`, 'the window open again, focused');
 

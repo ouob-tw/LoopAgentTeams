@@ -1,0 +1,17 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/routes/+page.svelte",
+        "board/tests/browser/middle-tabs-menu.test.ts"
+      ],
+      "tests": [
+        "board/tests/browser/middle-tabs-menu.test.ts",
+        "board/tests/browser/resource-page.test.ts",
+        "board/tests/browser/pd-page.test.ts",
+        "board/tests/browser/agents-page.test.ts",
+        "board/tests/browser/automation-page.test.ts"
+      ]
+    }
+  ]
+}

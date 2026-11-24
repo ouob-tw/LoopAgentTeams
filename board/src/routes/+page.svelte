@@ -475,6 +475,72 @@
 
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
+
+	// The middle column's tabs: one row when it fits, else one switch button and a menu.
+	const middleTabs = [
+		{ id: 'inbox', label: '待辦' },
+		{ id: 'agents', label: 'Herdr' },
+		{ id: 'quota', label: '額度' },
+		{ id: 'automation', label: '自動化' },
+		{ id: 'resource', label: '資源' }
+	] as const;
+	const currentTab = $derived(middleTabs.find((tab) => tab.id === middle) ?? middleTabs[0]);
+	let tabBar = $state<HTMLElement>();
+	let tabRow = $state<HTMLElement>();
+	let switchButton = $state<HTMLElement>();
+	let tabsCollapsed = $state(false);
+	let switchOpen = $state(false);
+	/** Fewer tab buttons than this in view: one switch button and a menu. */
+	const MIN_TABS_SHOWN = 3;
+	/** Measured, not a breakpoint: the column can be dragged. The buttons keep their size and place
+	 *  whichever form is shown (the row is only hidden), so the choice cannot flip back and forth. */
+	function measureTabs() {
+		if (!tabBar || !tabRow) return;
+		const last = tabRow.children[MIN_TABS_SHOWN - 1] as HTMLElement | undefined;
+		tabsCollapsed = last !== undefined && last.offsetLeft + last.offsetWidth > tabBar.clientWidth;
+	}
+	onMount(() => {
+		if (!tabBar || !tabRow) return;
+		const observer = new ResizeObserver(measureTabs);
+		observer.observe(tabBar);
+		observer.observe(tabRow);
+		measureTabs();
+		void document.fonts?.ready.then(measureTabs);
+		return () => observer.disconnect();
+	});
+	// The Herdr count widens its button.
+	$effect(() => {
+		void agents.length;
+		void middle;
+		untrack(() => tick().then(measureTabs));
+	});
+	$effect(() => {
+		if (!tabsCollapsed) switchOpen = false;
+	});
+	function pickTab(id: (typeof middleTabs)[number]['id']) {
+		navigation.setMiddle(id);
+		if (id === 'inbox') voice.tap();
+		switchOpen = false;
+		switchButton?.focus({ preventScroll: true });
+	}
+	$effect(() => {
+		if (!switchOpen) return;
+		const outside = (event: PointerEvent) => {
+			if (event.target instanceof Node && !tabBar?.contains(event.target)) switchOpen = false;
+		};
+		const escape = (event: KeyboardEvent) => {
+			if (event.key !== 'Escape' || event.defaultPrevented) return;
+			event.preventDefault();
+			switchOpen = false;
+			switchButton?.focus({ preventScroll: true });
+		};
+		addEventListener('pointerdown', outside);
+		addEventListener('keydown', escape);
+		return () => {
+			removeEventListener('pointerdown', outside);
+			removeEventListener('keydown', escape);
+		};
+	});
 </script>
 
 {#snippet names(owner: { project: string; hcomName: string })}
@@ -591,15 +657,37 @@
 				onlook={lookAtCaller}
 			/>
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
-			     views, as the list they switch has no panel of its own around it. -->
-			<div class="middle-tabs" role="group" aria-label="清單">
-				<button type="button" data-middle="inbox" aria-pressed={middle === 'inbox'} onclick={() => (navigation.setMiddle('inbox'), voice.tap())}>待辦</button>
-				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => navigation.setMiddle('agents')}
-					>Herdr<small>{agents.length}</small></button
->
-				<button type="button" data-middle="quota" aria-pressed={middle === 'quota'} onclick={() => navigation.setMiddle('quota')}>額度</button>
-				<button type="button" data-middle="automation" aria-pressed={middle === 'automation'} onclick={() => navigation.setMiddle('automation')}>自動化</button>
-				<button type="button" data-middle="resource" aria-pressed={middle === 'resource'} onclick={() => navigation.setMiddle('resource')}>資源</button>
+			     views, as the list they switch has no panel of its own around it. When the row does not
+			     fit the column it stays in the page, out of sight and out of the accessibility tree, only
+			     to be measured (and clicked by tests); one switch button with a menu takes its place. -->
+			<div class="middle-bar" bind:this={tabBar}>
+				<div class="middle-tabs" class:collapsed={tabsCollapsed} role="group" aria-label="清單" bind:this={tabRow}>
+					{#each middleTabs as tab (tab.id)}
+						<button type="button" data-middle={tab.id} aria-pressed={middle === tab.id} onclick={() => (navigation.setMiddle(tab.id), tab.id === 'inbox' && voice.tap())}
+							>{tab.label}{#if tab.id === 'agents'}<small>{agents.length}</small>{/if}</button
+						>
+					{/each}
+				</div>
+				{#if tabsCollapsed}
+					<button
+						type="button"
+						class="middle-switch"
+						bind:this={switchButton}
+						aria-expanded={switchOpen}
+						aria-controls="middle-menu"
+						onclick={() => (switchOpen = !switchOpen)}
+						><span class="name">{currentTab.label}</span>{#if currentTab.id === 'agents'}<small>{agents.length}</small>{/if}<span class="caret" aria-hidden="true">▾</span></button
+					>
+					{#if switchOpen}
+						<div class="middle-menu" id="middle-menu" role="group" aria-label="清單">
+							{#each middleTabs as tab (tab.id)}
+								<button type="button" data-pick={tab.id} aria-current={middle === tab.id ? 'true' : undefined} onclick={() => pickTab(tab.id)}
+									><span class="check" aria-hidden="true">{middle === tab.id ? '✓' : ''}</span><span class="name">{tab.label}</span>{#if tab.id === 'agents'}<small>{agents.length}</small>{/if}</button
+								>
+							{/each}
+						</div>
+					{/if}
+				{/if}
 			</div>
 			{#if middle === 'quota'}
 				<QuotaList quota={board.quota} />
@@ -984,16 +1072,30 @@
 		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
-	/* The middle column's two lists, as tabs like those of an information page. */
-	/* One line however narrow the column: the tabs scroll sideways rather than wrap. */
+	/* The middle column's lists, as tabs like those of an information page. */
+	.middle-bar {
+		position: relative;
+		flex: none;
+		margin-bottom: 0.4rem;
+	}
+	/* Three or more buttons in view keep the row; past the column's edge it scrolls sideways. */
 	.middle-tabs {
 		display: flex;
-		flex: none;
 		overflow-x: auto;
 		scrollbar-width: none;
 		gap: 0.2rem;
-		margin-bottom: 0.4rem;
 		border-bottom: 1px solid var(--line);
+	}
+	/* Too wide for the column: kept only to be measured, never seen or reached. */
+	.middle-tabs.collapsed {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		height: 0;
+		overflow: hidden;
+		visibility: hidden;
+		pointer-events: none;
 	}
 	.middle-tabs button {
 		display: inline-flex;
@@ -1002,12 +1104,13 @@
 		white-space: nowrap;
 		gap: 0.35rem;
 		margin-bottom: -1px;
+		min-height: 2.75rem;
 		padding: 0.4rem 0.8rem;
 		border: 0;
 		border-bottom: 2px solid transparent;
 		border-radius: 0;
 		background: none;
-		font-size: max(0.85rem, var(--min-font, 0px));
+		font-size: max(1rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	/* An underline, not the filled look of other pressed buttons. */
@@ -1016,16 +1119,92 @@
 		border-color: transparent;
 		border-bottom-color: var(--accent);
 		color: var(--text);
-		font-weight: 600;
+		font-weight: 700;
 	}
 	:global(:root[data-theme='light']) .middle-tabs button[aria-pressed='true'] {
 		border-bottom-color: var(--text);
 	}
-	.middle-tabs small {
+	/* The one button in place of the row: the current tab, its count, a caret. */
+	.middle-switch {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		width: 100%;
+		min-height: 2.75rem;
+		padding: 0.4rem 0.8rem;
+		border: 0;
+		border-bottom: 2px solid var(--accent);
+		border-radius: 0;
+		background: none;
+		font-size: max(1rem, var(--min-font, 0px));
+		font-weight: 700;
+		color: var(--text);
+		text-align: left;
+	}
+	:global(:root[data-theme='light']) .middle-switch {
+		border-bottom-color: var(--text);
+	}
+	.middle-switch .name {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.middle-switch .caret {
+		margin-left: auto;
+		color: var(--muted);
+	}
+	.middle-switch[aria-expanded='true'] .caret {
+		transform: rotate(180deg);
+	}
+	.middle-menu {
+		position: absolute;
+		top: 100%;
+		left: 0;
+		right: 0;
+		z-index: 20;
+		display: flex;
+		flex-direction: column;
+		margin-top: 0.2rem;
+		padding: 0.2rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+		box-shadow: 0 6px 18px rgb(0 0 0 / 0.3);
+	}
+	.middle-menu button {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-height: 2.75rem;
+		padding: 0.4rem 0.6rem;
+		border: 0;
+		border-radius: calc(var(--radius) - 2px);
+		background: none;
+		font-size: max(1rem, var(--min-font, 0px));
+		color: var(--text);
+		text-align: left;
+	}
+	.middle-menu button[aria-current='true'] {
+		background: color-mix(in srgb, var(--text) 10%, var(--bg));
+		color: var(--text);
+		font-weight: 700;
+	}
+	.middle-menu .check {
+		flex: none;
+		width: 1em;
+		color: var(--accent);
+	}
+	:global(:root[data-theme='light']) .middle-menu .check {
+		color: var(--text);
+	}
+	.middle-tabs small,
+	.middle-switch small,
+	.middle-menu small {
 		padding: 0 0.4rem;
 		border-radius: var(--radius-pill);
 		background: color-mix(in srgb, var(--text) 10%, var(--bg));
-		font-size: max(0.7rem, var(--min-font, 0px));
+		font-size: max(1rem, var(--min-font, 0px));
 		font-weight: 400;
 	}
 	.summary {
@@ -1256,7 +1435,7 @@
 		border-radius: 0;
 		background: color-mix(in srgb, var(--warn) 9%, var(--bg));
 		font-size: max(0.85rem, var(--min-font, 0px));
-		font-weight: 600;
+		font-weight: 700;
 		text-align: left;
 	}
 	.pd-banner::before {
