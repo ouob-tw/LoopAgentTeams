@@ -2328,15 +2328,17 @@ def message_time(message):
         return None
 
 
-def delivered_report(messages, card_updated_at, agent_names, orchestrator_names):
+def delivered_report(messages, card_updated_at, agent_names, orchestrator_names,
+                     acknowledged=None):
     """Id of the agent's report to its orchestrator that still stands, or 0 (#713).
 
     The report is the agent's latest message to the orchestrator, sent after the card's last
-    save or at most CARD_REPORT_GRACE_SECONDS before it. The agent must have the last word:
-    any later message from the orchestrator to the agent voids it, whatever its intent, since
-    orchestrators send instructions as inform too. So does a later message from anyone else
-    unless it is an inform/ack or a watcher notice (message_releases_wait): a question from QA
-    or a reviewer is work.
+    save or at most CARD_REPORT_GRACE_SECONDS before it. A later message from anyone but the
+    orchestrator voids it unless it is an inform/ack or a watcher notice
+    (message_releases_wait): a question from QA or a reviewer is work. A later orchestrator
+    message, whatever its intent (instructions come as inform too), voids it unless the
+    agent only acknowledged it: acknowledged(ts) tells that for the first such message (see
+    acknowledged_only); without it any orchestrator message voids the report.
     """
     def to(message, names):
         return bool((message_names(message, 'delivered_to') | message_names(message, 'mentions'))
@@ -2344,18 +2346,61 @@ def delivered_report(messages, card_updated_at, agent_names, orchestrator_names)
 
     ordered = sorted((message for message in messages if message.get('type') == 'message'
                       and isinstance(message.get('id'), int)), key=lambda item: item['id'])
-    report = 0
+    report, pending = 0, None
     for message in ordered:
         sender = message_names(message, 'from')
         if sender & agent_names:
             if (to(message, orchestrator_names)
                     and (message_time(message) or 0)
                     > card_updated_at - CARD_REPORT_GRACE_SECONDS):
-                report = message['id']
-        elif to(message, agent_names) and (sender & orchestrator_names
-                                           or message_releases_wait(message)):
-            report = 0
+                report, pending = message['id'], None
+        elif not to(message, agent_names):
+            continue
+        elif sender & orchestrator_names:
+            if report and pending is None:
+                pending = message
+        elif message_releases_wait(message):
+            report, pending = 0, None
+    if report and pending is not None and (
+            acknowledged is None or message_time(pending) is None
+            or not acknowledged(pending['ts'])):
+        return 0
     return report
+
+
+ACK_EVENT_LIMIT = 200
+
+
+def acknowledged_only(events, orchestrator_names):
+    """Whether status events since an orchestrator message show it was only acknowledged.
+
+    HCOM must have delivered an orchestrator message (deliver:<orchestrator>) and the agent
+    gone back to listening afterwards, with no tool call anywhere in the events: a message
+    never delivered was never answered, and a tool call means the agent took on work.
+    """
+    delivered = answered = False
+    for event in sorted(events, key=lambda item: item.get('id', 0)):
+        if (status_context(event) or '').startswith('tool:'):
+            return False
+        if delivery_sender(event) in orchestrator_names:
+            delivered = True
+        elif delivered and event_value(event, 'status', 'data') == 'listening':
+            answered = True
+    return answered
+
+
+def acknowledged_since(orchestrator, info, after):
+    """acknowledged_only for the agent's own session since `after`; False when unknown."""
+    if not isinstance(info, dict) or not info.get('session_id'):
+        return False
+    try:
+        events = session_events(orchestrator, info, '--type', 'status', '--after', after,
+                                '--last', str(ACK_EVENT_LIMIT))
+    except (OSError, ValueError):
+        return False
+    # A full page may have lost the earliest events; a turn that long was not a bare ack.
+    return (len(events) < ACK_EVENT_LIMIT
+            and acknowledged_only(events, hcom_names(orchestrator)))
 
 
 def find_delivered_report(orchestrator, agent, info, card):
@@ -2372,7 +2417,8 @@ def find_delivered_report(orchestrator, agent, info, card):
     except (OSError, ValueError):
         return 0  # unreadable messages: no exemption, the usual nudge rules apply
     return delivered_report(messages, updated_at, hcom_names(agent, info),
-                            hcom_names(orchestrator))
+                            hcom_names(orchestrator),
+                            lambda after: acknowledged_since(orchestrator, info, after))
 
 
 def observe(workspace, decisions, orchestrator, agent, info, card=None, *, processes):
