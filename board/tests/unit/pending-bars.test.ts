@@ -12,32 +12,28 @@ const none = { submitted: {} as Record<string, Submitted>, outcomes: {} as Recor
 const shown = (bars: ReturnType<typeof pendingBars>) => bars.map(({ item, problem }) => [item.question.id, problem]);
 
 test('a question waiting for an answer has a bar; one whose answer is sent has none, here or after a reload', () => {
-	expect(shown(pendingBars('waiting', [item('A', true), item('B', false)], none))).toEqual([['A', null]]);
+	expect(shown(pendingBars([item('A', true), item('B', false)], none))).toEqual([['A', null]]);
 	// Sent from this page before the board's data says so.
-	expect(shown(pendingBars('waiting', [item('A', true)], { ...none, submitted: { 'q:s1:A': sent() } }))).toEqual([]);
+	expect(shown(pendingBars([item('A', true)], { ...none, submitted: { 'q:s1:A': sent() } }))).toEqual([]);
 });
 
 test('the controller asking the same question again opens a bar for the new version', () => {
-	expect(shown(pendingBars('waiting', [item('A', true, { revision: 2 })], { ...none, submitted: { 'q:s1:A': sent(1) } }))).toEqual([['A', null]]);
+	expect(shown(pendingBars([item('A', true, { revision: 2 })], { ...none, submitted: { 'q:s1:A': sent(1) } }))).toEqual([['A', null]]);
 });
 
 test('a sent answer whose notification failed brings its bar back, saying so', () => {
-	expect(shown(pendingBars('working', [item('A', false, { notifyFailed: true })], none))).toEqual([['A', '已送出，但通知主控失敗']]);
-	expect(shown(pendingBars('working', [item('A', false)], { ...none, submitted: { 'q:s1:A': sent(1, true) } }))).toEqual([['A', '已送出，但通知主控失敗']]);
+	expect(shown(pendingBars([item('A', false, { notifyFailed: true })], none))).toEqual([['A', '已送出，但通知主控失敗']]);
+	expect(shown(pendingBars([item('A', false)], { ...none, submitted: { 'q:s1:A': sent(1, true) } }))).toEqual([['A', '已送出，但通知主控失敗']]);
 	// The board's data not caught up yet: still waiting there.
-	expect(shown(pendingBars('waiting', [item('A', true)], { ...none, submitted: { 'q:s1:A': sent(1, true) } }))).toEqual([['A', '已送出，但通知主控失敗']]);
-});
-
-test('a sent answer of a controller that went idle or closed before recording it brings its bar back', () => {
-	expect(shown(pendingBars('closed', [item('A', false)], none))).toEqual([['A', '已送出，但主控已關閉，還沒記錄']]);
-	expect(shown(pendingBars('idle', [item('A', false)], none))).toEqual([['A', '已送出，但主控閒置，還沒記錄']]);
+	expect(shown(pendingBars([item('A', true)], { ...none, submitted: { 'q:s1:A': sent(1, true) } }))).toEqual([['A', '已送出，但通知主控失敗']]);
 });
 
 test('an answer refused keeps the bar and says why', () => {
 	const refused = (status: AnswerOutcome['status']) =>
-		shown(pendingBars('waiting', [item('A', true)], { ...none, outcomes: { 'q:s1:A': { status, reason: null } } }));
+		shown(pendingBars([item('A', true)], { ...none, outcomes: { 'q:s1:A': { status, reason: null } } }));
 	expect(refused('question_changed')).toEqual([['A', '答覆被退回：題目已改版，請重新作答']]);
 	expect(refused('invalid_answer')).toEqual([['A', '答覆被退回：格式不符，請重新作答']]);
-	expect(refused('ended')).toEqual([['A', '沒有送出：主控已停用或關閉']]);
+	// Told on the answer card: the board takes an ended controller's questions out of its data.
+	expect(refused('ended')).toEqual([['A', null]]);
 	expect(refused('unknown')).toEqual([['A', null]]);
 });

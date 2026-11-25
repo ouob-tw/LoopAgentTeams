@@ -1,6 +1,10 @@
 <script lang="ts">
 	// A bar for each of a controller's questions waiting for an answer, each leading to its card. A
-	// question whose answer is sent has none, unless something went wrong with it (pendingBars).
+	// question whose answer is sent has none, unless something went wrong with it (pendingBars). A
+	// bar that goes leaves its room empty until it is scrolled out of view or the page is left, so
+	// nothing under it moves while the user reads; the room goes with the page scrolled to make up
+	// for it.
+	import { flushSync, untrack } from 'svelte';
 	import { answering } from '#lib/board/answering.svelte.ts';
 	import { pendingBars } from '#lib/board/pending-bars.ts';
 	import { summaryPlain } from '#lib/board/summary-links.ts';
@@ -19,22 +23,62 @@
 	} = $props();
 
 	const inactive = $derived(isInactive(status));
-	const bars = $derived(pendingBars(status, questions, answering));
+	const bars = $derived(pendingBars(questions, answering));
+
+	/** Each bar's height as last drawn, by key: what its empty room keeps. */
+	const heights = $state<Record<string, number>>({});
+	/** The bars in the order shown, a bar gone kept as its empty room (null) where it was. */
+	let rows = $state.raw<{ key: string; bar: (typeof bars)[number] | null }[]>([]);
+	$effect.pre(() => {
+		const now = new Map(bars.map((bar) => [bar.item.key, bar]));
+		untrack(() => {
+			const kept = rows.map((row) => ({ key: row.key, bar: now.get(row.key) ?? null })).filter((row) => row.bar || heights[row.key]);
+			rows = [...kept, ...bars.filter((bar) => !kept.some((row) => row.key === bar.item.key)).map((bar) => ({ key: bar.item.key, bar }))];
+		});
+	});
+
+	let box = $state<HTMLElement>();
+	/** The nearest box the bars scroll in; null when they scroll with the page. */
+	function scrollerOf(element: HTMLElement): HTMLElement | null {
+		let scroller = element.parentElement;
+		while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+		return scroller;
+	}
+	// The empty room goes once scrolled out of view above, what follows staying where it is on screen.
+	$effect(() => {
+		if (!box || !rows.some((row) => !row.bar)) return;
+		const element = box;
+		const drop = () => {
+			const scroller = scrollerOf(element);
+			if (element.getBoundingClientRect().bottom > (scroller ? scroller.getBoundingClientRect().top : 0)) return;
+			const next = element.nextElementSibling;
+			const was = next?.getBoundingClientRect().top;
+			flushSync(() => (rows = rows.filter((row) => row.bar)));
+			if (next && was !== undefined) (scroller ?? window).scrollBy(0, next.getBoundingClientRect().top - was);
+		};
+		addEventListener('scroll', drop, { capture: true, passive: true });
+		return () => removeEventListener('scroll', drop, true);
+	});
 </script>
 
-{#if bars.length}
-	<div class="questions">
-		{#each bars as { item, problem } (item.key)}
-			<div class="row">
-				<button type="button" class="question" onclick={() => onopen(item)}>
-					<span class="title">
-						▲ <b>待決</b>：{summaryPlain(item.title) || '（沒有標題）'}
-						{#if problem}<span class="problem">{problem}</span>{/if}
-					</span>
-					<span class="answer">{inactive || !item.unsent ? '查看' : '作答'} ›</span>
-				</button>
-				<VisualLinks urls={item.question.visuals} labels={item.question.visual_labels} />
-			</div>
+{#if rows.length}
+	<div class="questions" bind:this={box}>
+		{#each rows as { key, bar } (key)}
+			{#if !bar}
+				<div class="room" aria-hidden="true" style:height="{heights[key]}px"></div>
+			{:else}
+				{@const { item, problem } = bar}
+				<div class="row" bind:offsetHeight={heights[key]}>
+					<button type="button" class="question" onclick={() => onopen(item)}>
+						<span class="title">
+							▲ <b>待決</b>：{summaryPlain(item.title) || '（沒有標題）'}
+							{#if problem}<span class="problem">{problem}</span>{/if}
+						</span>
+						<span class="answer">{inactive || !item.unsent ? '查看' : '作答'} ›</span>
+					</button>
+					<VisualLinks urls={item.question.visuals} labels={item.question.visual_labels} />
+				</div>
+			{/if}
 		{/each}
 		{#if inactive && bars.some(({ item }) => item.unsent)}
 			<p class="none">主控{STATUS_LABEL[status]}，它的待決題不能再作答。</p>

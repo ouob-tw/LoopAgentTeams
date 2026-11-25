@@ -114,7 +114,7 @@
 	$effect(() => {
 		if (!folded) unfolded = false;
 	});
-	const pendingCount = $derived(pendingBars(controller.status, questions, answering).length);
+	const pendingCount = $derived(pendingBars(questions, answering).length);
 	const warnings = $derived([
 		...(controller.error ? ['出錯'] : []),
 		// As many as the 待決 bars: a question whose answer is sent counts only when something went wrong.

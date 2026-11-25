@@ -1,7 +1,9 @@
 // The 待決 bar under a controller's card (#724): shown while a question waits, gone once its answer
-// is sent and after a reload, back with the reason when the notification failed or the answer was
-// refused, and shown again for a new version of the question. The page in a real browser: headless
-// Chrome driven over its DevTools protocol, on the built board with fake data.
+// is sent and after a reload, its room kept empty so nothing under it moves, back with the reason
+// when the notification failed or the answer was refused, and shown again for a new version of the
+// question. A reason line coming in does not scroll the page's top away, and moves the answered
+// card by that line at most. A controller that closes is told on the answer card. The page in a
+// real browser: headless Chrome driven over its DevTools protocol, on the built board with fake data.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -36,7 +38,7 @@ const OPTIONS = [
 	{ letter: 'B', label: '乙', impact: '', recommended: false }
 ];
 
-async function open(project: string, plan: Omit<HelperPlan, 'output'> = {}) {
+async function open(project: string, plan: Omit<HelperPlan, 'output'> = {}, width = 1280) {
 	const controller = fixture.bound(project, 'rana', {
 		questions: [question({ id: 'Q-1', title: '第一題', kind: 'single', options: OPTIONS, asked_at: '2026-10-20T01:00:00.000Z' })]
 	});
@@ -45,7 +47,7 @@ async function open(project: string, plan: Omit<HelperPlan, 'output'> = {}) {
 	fixture.report(controller.session_id, { tag: 'DECIDE', summary: '等你決定', message: MESSAGE, hcom_name: 'rana', workspace: controller.workspace, time: '2026-10-20T01:00:31.000Z' });
 	fixture.setHelper({ output: { controllers: [controller] }, ...plan });
 	await fixture.refresh(cookie);
-	await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+	await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 600 });
 	await send('Page.navigate', { url: `${fixture.url}/?controller=${encodeURIComponent(controller.session_id)}` });
 	const key = `q:${controller.session_id}:Q-1`;
 	await browser!.tab.until(`!!${cardOf(key)}?.querySelector('form.answer') && !!document.querySelector('.questions .question')`);
@@ -53,6 +55,8 @@ async function open(project: string, plan: Omit<HelperPlan, 'output'> = {}) {
 }
 
 const cardOf = (key: string) => `document.querySelector('.history [data-content="${key}"]')`;
+const scrollerAt = (width: number) => (width < 761 ? 'document.scrollingElement' : `document.querySelector('.detail')`);
+const TABS = `document.querySelector('.questions').nextElementSibling.getBoundingClientRect().top`;
 const BAR = `document.querySelector('.questions .question')?.innerText.replace(/\\s+/g, ' ') ?? null`;
 
 async function answer(key: string) {
@@ -65,12 +69,17 @@ test.skipIf(!CHROME)('the bar goes once the answer is sent, stays gone after a r
 	const { controller, key } = await open('bar-sent');
 	expect(await evaluate<string>(BAR)).toContain('▲ 待決：第一題');
 	expect(await evaluate<string>(BAR)).toContain('作答 ›');
+	const tabs = await evaluate<number>(TABS);
 	await answer(key);
 	await browser!.tab.until(`!${cardOf(key)}?.querySelector('form.answer')`);
-	// From the moment the card shows the answer sent, no bar.
+	// From the moment the card shows the answer sent, no bar; its room stays, empty and out of
+	// reach, so what is under it does not move.
 	expect(await evaluate<string | null>(BAR)).toBeNull();
 	await sleep(1000);
 	expect(await evaluate<string | null>(BAR)).toBeNull();
+	expect(Math.abs((await evaluate<number>(TABS)) - tabs)).toBeLessThan(1);
+	expect(await evaluate<string>(`document.querySelector('.questions .room').getAttribute('aria-hidden')`)).toBe('true');
+	expect(await evaluate<number>(`document.querySelectorAll('.questions .room *').length`)).toBe(0);
 	await send('Page.reload');
 	await browser!.tab.until(`!!${cardOf(key)} && !${cardOf(key)}.querySelector('form.answer')`);
 	await sleep(500);
@@ -87,13 +96,22 @@ test.skipIf(!CHROME)('the bar goes once the answer is sent, stays gone after a r
 	expect(await evaluate<string>(BAR)).toContain('作答 ›');
 }, 60_000);
 
-test.skipIf(!CHROME)('a sent answer whose notification failed brings the bar back with the reason', async () => {
-	const { key } = await open('bar-notify', { notifyFails: 'hcom 沒有回應' });
-	await answer(key);
-	await browser!.tab.until(`(${BAR} ?? '').includes('通知主控失敗')`, 'the bar back with the reason');
-	expect(await evaluate<string>(BAR)).toContain('▲ 待決：第一題');
-	expect(await evaluate<string>(BAR)).toContain('查看 ›');
-}, 60_000);
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: a sent answer whose notification failed brings the bar back with the reason, the page top staying in view`, async () => {
+		const { key } = await open(`bar-notify-${width}`, { notifyFails: 'hcom 沒有回應', answerSleepMs: 800 }, width);
+		const scroller = scrollerAt(width);
+		await evaluate(`${scroller}.scrollTop = 0`);
+		const card = await evaluate<number>(`${cardOf(key)}.getBoundingClientRect().top`);
+		await answer(key);
+		await browser!.tab.until(`(${BAR} ?? '').includes('通知主控失敗')`, 'the bar back with the reason');
+		await sleep(3500);
+		expect(await evaluate<string>(BAR)).toContain('▲ 待決：第一題');
+		expect(await evaluate<string>(BAR)).toContain('查看 ›');
+		// The line coming in pushes the conversation down by itself, the page not scrolled for it.
+		expect(await evaluate<number>(`${scroller}.scrollTop`)).toBe(0);
+		expect(Math.abs((await evaluate<number>(`${cardOf(key)}.getBoundingClientRect().top`)) - card)).toBeLessThanOrEqual(24);
+	}, 60_000);
+}
 
 test.skipIf(!CHROME)('an answer refused because the question changed keeps the bar and says why', async () => {
 	const { controller, key } = await open('bar-refused');
@@ -103,4 +121,17 @@ test.skipIf(!CHROME)('an answer refused because the question changed keeps the b
 	await answer(key);
 	await browser!.tab.until(`(${BAR} ?? '').includes('答覆被退回')`, 'the refused answer on the bar');
 	expect(await evaluate<string>(BAR)).toContain('題目已改版');
+}, 60_000);
+
+test.skipIf(!CHROME)('a controller that closes before recording the answer is told so on its page, with no bar', async () => {
+	const { controller, key } = await open('bar-closed');
+	await answer(key);
+	await browser!.tab.until(`!${cardOf(key)}?.querySelector('form.answer')`);
+	// Its client is gone from hcom's list.
+	writeFileSync(join(fixture.dir, 'hcom-running.json'), JSON.stringify([]));
+	await fixture.refresh(cookie);
+	// Off the roster once it closes: the page says so where its card and bar were.
+	await browser!.tab.until(`document.querySelector('.detail')?.innerText.includes('已停用 LAT 或已關閉')`, 'the notice that it closed');
+	expect(await evaluate<string | null>(BAR)).toBeNull();
+	expect(controller.session_id).toBeTruthy();
 }, 60_000);
