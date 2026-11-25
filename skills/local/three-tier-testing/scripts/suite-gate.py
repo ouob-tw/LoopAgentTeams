@@ -38,7 +38,7 @@ it may run on the first usable one instead (see RemoteHost); its record carries 
 holds for `run`, `affected` (its full suites; its test groups and checks, which never queue,
 go when a full suite would have to wait here at their start, else run here at once), `light`
 (still no record) and background suites. The registry's `local_only` marks keep a run here
-(local_only_reason). `clean-remote [--days N]` removes this host's caches there that were
+(local_only_reason); a host entry's `local_only` paths keep a run of those files off that host. `clean-remote [--days N]` removes this host's caches there that were
 unused for over N days.
 
 Linux only: each suite runs in its own systemd user scope (cgroup v2), and slot and lock
