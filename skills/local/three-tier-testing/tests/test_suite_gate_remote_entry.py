@@ -192,6 +192,28 @@ class LocalOnlyTests(AffectedRemoteCase):
         self.assertIn('it runs tests/test_app.py, marked by local_only.paths tests/test_app.py',
                       result.stderr)
 
+    def test_a_path_a_host_entry_lists_keeps_its_runs_off_that_host_only(self):
+        self.add_host('lab')
+        self.touch('src/app.py')
+        self.touch('web/src/page.ts')
+        self.brake_here(hosts=[{'host': 's3', 'local_only': ['web/tests/**']}, 'lab',
+                               {'host': 'bad', 'local_only': 'web/tests/**'}])
+        result = self.affected()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.where(), {str(self.tree('lab') / 'web'): ['tests/page.test.ts'],
+                                        self.there(): ['tests/test_app.py']}, result.stderr)
+        self.assertIn('config hosts[2]=', result.stderr)
+        self.assertEqual({k: r['host'] for k, r in self.affected_records().items()},
+                         {'.': 's3', 'web': 'lab'})
+        self.touch('web/src/page.ts', 'again')
+        self.brake_here(hosts=[{'host': 's3', 'local_only': ['web/tests/**']}])
+        result = self.affected()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('no other host is usable, so it runs here at once: not on s3: that host '
+                      'cannot run it: it runs web/tests/page.test.ts, marked by web/tests/** in '
+                      'its hosts entry in the config', result.stderr)
+        self.assertIsNone(self.affected_records()['web']['host'])
+
     def test_checks_are_judged_by_their_paths_command_and_suite(self):
         checks = [
             {'paths': ['src/**'], 'cwd': '.',

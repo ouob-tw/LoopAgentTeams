@@ -262,10 +262,11 @@ ENV_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 def remote_hosts(value):
     """The config's `hosts`: other hosts a test run may go to when this one makes it wait,
     in order of preference. Each item is an ssh Host alias, or {"host": <alias>,
-    "max_runs": <suites this gate runs there at once, default 1>, "env": {<name>: <value>}}
-    (set in the suite's environment there, e.g. the browser a test needs). An item it cannot
-    use is warned about once and left out; none, an empty list or no usable item turns
-    offloading off."""
+    "max_runs": <suites this gate runs there at once, default 1>, "env": {<name>: <value>}
+    (set in the suite's environment there, e.g. the browser a test needs), "local_only":
+    [<repo path glob>] (test files that cannot pass there: a run that runs one never goes to
+    that host)}. An item it cannot use is warned about once and left out; none, an empty
+    list or no usable item turns offloading off."""
     if value is None:
         return []
     if not isinstance(value, list):
@@ -273,19 +274,23 @@ def remote_hosts(value):
         return []
     hosts = []
     for i, item in enumerate(value):
-        entry = {'host': item, 'max_runs': 1, 'env': {}} if isinstance(item, str) else (
-            {'host': item.get('host'), 'max_runs': item.get('max_runs', 1),
-             'env': item.get('env', {})} if isinstance(item, dict) else None)
+        entry = {'host': item, 'max_runs': 1, 'env': {}, LOCAL_ONLY_KEY: []} \
+            if isinstance(item, str) else (
+                {'host': item.get('host'), 'max_runs': item.get('max_runs', 1),
+                 'env': item.get('env', {}), LOCAL_ONLY_KEY: item.get(LOCAL_ONLY_KEY, [])}
+                if isinstance(item, dict) else None)
         ok = entry is not None and isinstance(entry['host'], str) \
             and HOST_NAME.fullmatch(entry['host']) is not None \
             and isinstance(entry['max_runs'], int) and not isinstance(entry['max_runs'], bool) \
             and entry['max_runs'] >= 1 and isinstance(entry['env'], dict) \
             and all(isinstance(k, str) and ENV_NAME.fullmatch(k) and isinstance(v, str)
-                    for k, v in entry['env'].items())
+                    for k, v in entry['env'].items()) \
+            and isinstance(entry[LOCAL_ONLY_KEY], list) \
+            and all(isinstance(g, str) and g for g in entry[LOCAL_ONLY_KEY])
         if not ok:
             warn_once(f'config hosts[{i}]={json.dumps(item)} is not usable (expected an ssh '
                       'host name or {"host": <name>, "max_runs": <1 or more>, "env": '
-                      '{<NAME>: <text>}}); that item is not used')
+                      '{<NAME>: <text>}, "local_only": [<path glob>]}); that item is not used')
         elif all(h['host'] != entry['host'] for h in hosts):
             hosts.append(entry)
     return hosts
@@ -1867,18 +1872,23 @@ def command_paths(root, cwd, text, files):
     return list(dict.fromkeys(found))
 
 
-def local_only_reason(root, cwd, argv, registry, tests=None, check=False):
+def local_only_reason(root, cwd, argv, registry, tests=None, check=False, paths_from=None):
     """Why the run of argv in cwd has to stay on this host by the registry's local_only
     marks, or None. It stays when its command matches `local_only.commands`, when it is a
     full suite marked `local_only`, or when a file it runs matches `local_only.paths` or lies
     in the directory of a marked full suite. The files are tests (repo paths, an affected
     group's) or those its words name; a full suite (registered, or by is_full_suite()) or a
     command that names none also runs its whole directory (the files no nested full suite's
-    directory holds), except a check, which runs no test file."""
+    directory holds), except a check, which runs no test file. paths_from = (globs, where
+    they are listed) judges by those path globs alone, as a host entry's local_only."""
     try:
         paths, commands, flagged = read_local_only(registry)
     except ValueError as exc:
         return f'the {LOCAL_ONLY_KEY} marks in {REGISTRY_NAME} cannot be read ({exc})'
+    listed = f'{LOCAL_ONLY_KEY}.paths {{}} in {REGISTRY_NAME}'
+    if paths_from is not None:
+        (paths, where), commands, flagged = paths_from, [], []
+        listed = f'{{}} in {where}'
     if not (paths or commands or flagged):
         return None
     text = argv[0] if len(argv) == 1 else shlex.join(argv)
@@ -1912,7 +1922,7 @@ def local_only_reason(root, cwd, argv, registry, tests=None, check=False):
     for test in tests:
         hit = next((p for p in paths if glob_match(test, p)), None)
         if hit:
-            return f'it runs {test}, marked by {LOCAL_ONLY_KEY}.paths {hit} in {REGISTRY_NAME}'
+            return f'it runs {test}, marked by {listed.format(hit)}'
         if owning_dir(suites, test) in marked:
             return (f'it runs {test}, in the directory of a full suite marked '
                     f'{LOCAL_ONLY_KEY} in {REGISTRY_NAME}')
@@ -2482,7 +2492,7 @@ class Gate:
             return None
         blocked = self.offload_blocked()
         for entry in hosts:
-            why = blocked or self.try_host(entry)
+            why = blocked or self.host_blocked(entry) or self.try_host(entry)
             if why is None:
                 return True
             reasons[entry['host']] = why
@@ -2532,16 +2542,29 @@ class Gate:
                 self.release()
                 self.acquire_slot()
 
+    def local_only(self, root, registry, paths_from=None):
+        return local_only_reason(
+            root, self.cwd, self.argv, registry,
+            tests=self.extra.get('selected_tests') if self.template else None,
+            check='check_fingerprint' in self.extra, paths_from=paths_from)
+
+    def host_blocked(self, entry):
+        """Why this run cannot go to entry's host by that entry's local_only paths, or None
+        (offload_blocked() found it in a Git work tree)."""
+        if not entry.get(LOCAL_ONLY_KEY):
+            return None
+        root = repo_root(self.cwd)
+        local = self.local_only(root, load_registry(self.cwd) or {},
+                                (entry[LOCAL_ONLY_KEY], 'its hosts entry in the config'))
+        return f'that host cannot run it: {local}' if local else None
+
     def offload_blocked(self):
         """Why this run cannot go to any other host, or None."""
         root = repo_root(self.cwd)
         if root is None:
             return 'not in a Git work tree'
         registry = load_registry(self.cwd) or {}
-        local = local_only_reason(
-            root, self.cwd, self.argv, registry,
-            tests=self.extra.get('selected_tests') if self.template else None,
-            check='check_fingerprint' in self.extra)
+        local = self.local_only(root, registry)
         if local:
             return f'it stays on this host: {local}'
         ignored = ignored_includes(root, registry)
