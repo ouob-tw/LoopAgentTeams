@@ -14,6 +14,7 @@ import {
 	parseMemory,
 	parseStat,
 	readDisks,
+	statfsFrom,
 	sample,
 	snapshotOf,
 	type Owner,
@@ -72,6 +73,13 @@ describe('parsing /proc', () => {
 			return { bsize: 4096, blocks: 1000, bfree: 300, bavail: 250 };
 		});
 		expect(disks).toEqual([{ mount: '/', used: 700 * 4096, total: 950 * 4096 }]);
+	});
+	test('a test\'s disk file stands for statfs: its mounts are read from it, one not in it is not there', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'lat-board-statfs-'));
+		dirs.push(dir);
+		const file = join(dir, 'statfs.json');
+		writeFileSync(file, JSON.stringify({ '/': { bsize: 4096, blocks: 1000, bfree: 300, bavail: 250 } }));
+		expect(readDisks(['/', '/home'], statfsFrom(file))).toEqual([{ mount: '/', used: 700 * 4096, total: 950 * 4096 }]);
 	});
 });
 

@@ -6,7 +6,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { ARCHIVE_PAGE } from '../../src/lib/board/archive.ts';
 import type { InboxReport } from '../../src/lib/board/types.ts';
 import { DAY, question, sleep, startFixture, titled, type Fixture } from '../harness.ts';
-import { BOARD_STARTED, CHROME, launchChrome, TEST_MS, type Browser, type Tab } from '../browser.ts';
+import { BOARD_STARTED, CHROME, launchChrome, TEST_MS, WHEEL_WINDOW, type Browser, type Tab } from '../browser.ts';
 
 
 /** Runs first in every document: counts the listeners for the browser's back. */
@@ -144,7 +144,7 @@ afterAll(async () => {
  *  its own about two seconds after launch, and the requests a page sent at that moment were
  *  cancelled before they left it. */
 async function startChrome() {
-	browser = await launchChrome({ scripts: [COUNT_POPSTATE], screen: SCREEN });
+	browser = await launchChrome({ scripts: [COUNT_POPSTATE], screen: SCREEN, args: WHEEL_WINDOW });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });

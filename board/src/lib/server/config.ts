@@ -134,6 +134,9 @@ export interface BoardConfig {
 	screenMs: number;
 	/** Where the 資源 tab reads the host's processes, memory and mounts: `/proc`, or a folder laid out like it in tests. */
 	procRoot: string;
+	/** For tests: a JSON file of each mount's `statfs` numbers (`{ "/": { "bsize": …, "blocks": …, "bfree": …, "bavail": … } }`)
+	 *  the 資源 tab reads instead of the disks themselves (`LAT_BOARD_STATFS_FILE`); null reads the disks. */
+	statfsFile: string | null;
 	/** The current time in milliseconds. Read state, archiving and the 終端分頁's recovery bookkeeping use this, never `Date.now()`. */
 	now(): number;
 }
@@ -357,6 +360,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		statusAfterActionMs: seconds(env.LAT_BOARD_STATUS_AFTER_ACTION_SECONDS, 2_000),
 		screenMs: seconds(env.LAT_BOARD_SCREEN_SECONDS, 100),
 		procRoot: env.LAT_BOARD_PROC_ROOT || '/proc',
+		statfsFile: env.LAT_BOARD_STATFS_FILE || null,
 		now: clock(env)
 	};
 }

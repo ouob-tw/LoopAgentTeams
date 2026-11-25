@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { NODE, question, sleep, startFixture, type Fixture } from '../harness.ts';
-import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
+import { CHROME, launchChrome, WHEEL_WINDOW, type Browser, type Tab } from '../browser.ts';
 
 const ROOT = join(import.meta.dir, '../..');
 const codexDir = mkdtempSync(join(tmpdir(), 'lat-board-codex-'));
@@ -60,7 +60,7 @@ afterAll(async () => {
 /** A new Chrome, logged in, on `path` (luna's conversation) `width` by `height`. */
 async function visit(width = 1280, path = `/?controller=${luna.session_id}`, ready = `!!(${said('閱讀標記 1：')})`, height = 800) {
 	await browser?.close();
-	browser = await launchChrome({ screen: SCREEN });
+	browser = await launchChrome({ screen: SCREEN, args: WHEEL_WINDOW });
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });

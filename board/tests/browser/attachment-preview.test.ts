@@ -460,7 +460,8 @@ test('a PDF opens in a new tab and Chrome’s viewer shows its page', async () =
 		while (state !== 'success' && Date.now() < deadline) {
 			await Bun.sleep(250);
 			const list = await targets();
-			const viewer = list.find((target) => target.type === 'webview' && target.url.startsWith('chrome-extension://'));
+			// Chrome's viewer: a `webview` target in branded Chrome, an `iframe` one in Chrome for Testing.
+			const viewer = list.find((target) => ['webview', 'iframe'].includes(target.type) && target.url.startsWith('chrome-extension://'));
 			if (!list.some((target) => target.type === 'page' && target.url === url) || !viewer) continue;
 			const socket = new WebSocket(viewer.webSocketDebuggerUrl);
 			await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
