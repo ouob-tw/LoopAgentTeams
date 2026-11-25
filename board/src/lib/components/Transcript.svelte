@@ -390,7 +390,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	 *  its question recorded it is shown again. Going on to another card keeps that one in place
 	 *  instead, so the answered one getting shorter above it does not move it, whether or not the
 	 *  browser keeps what has focus in place by itself. The room needed is made after the
-	 *  conversation. */
+	 *  conversation. What changes height above the conversation, such as a 待決 bar gaining the
+	 *  line that says its answer failed, moves the conversation and the card with it: kept in
+	 *  place, it would scroll the page's top out of view. */
 	function hold(event: SubmitEvent) {
 		const card = (event.target as Element).closest<HTMLElement>('[data-content]');
 		const sent = card?.dataset.content;
@@ -398,6 +400,17 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		stopHolding();
 		let key = (held = sent);
 		let at = card.getBoundingClientRect().top;
+		/** Where the conversation starts, apart from scrolling: it moves only with what is above it. A
+		 *  box scrolling inside the conversation does not move its start. */
+		const start = (element: HTMLElement) => {
+			const scroller = scrollerOf(element);
+			const top = list?.getBoundingClientRect().top ?? 0;
+			if (scroller && list && (scroller === list || list.contains(scroller))) return top;
+			return top + (scroller ? scroller.scrollTop : window.scrollY);
+		};
+		const screenTop = () => list?.getBoundingClientRect().top ?? 0;
+		let from = start(card);
+		let shown = screenTop();
 		let until = performance.now() + HOLD_MS;
 		let frame = 0;
 		const stop = (event?: Event) => {
@@ -407,6 +420,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 			if (next?.dataset.content) {
 				key = held = next.dataset.content;
 				at = next.getBoundingClientRect().top;
+				from = start(next);
+				shown = screenTop();
 				return;
 			}
 			holding = false;
@@ -418,6 +433,13 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 			if (answering.sending[sent] || answering.sending[key]) until = performance.now() + HOLD_MS;
 			const element = cardOf(key);
 			const top = element?.getBoundingClientRect().top;
+			if (element) {
+				// Grown above and pushed down on screen: followed, as far as it pushed. Shrinking above is
+				// made up for by what shrank (the 待決 bars) or kept as before.
+				const grew = start(element) - from;
+				const pushed = screenTop() - shown;
+				if (grew > 0 && pushed > 0) at += Math.min(grew, pushed);
+			}
 			if (element && top !== undefined && Math.abs(top - at) >= 1) {
 				makeRoom(element, at);
 				(scrollerOf(element) ?? window).scrollBy(0, element.getBoundingClientRect().top - at);
@@ -425,6 +447,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 				const short = at - element.getBoundingClientRect().top;
 				if (head && short >= 1) head.style.height = `${head.offsetHeight + short}px`;
 			}
+			const now = cardOf(key);
+			if (now) from = start(now);
+			shown = screenTop();
 			if (performance.now() < until) frame = requestAnimationFrame(step);
 			else stop();
 		};
