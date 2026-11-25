@@ -516,7 +516,7 @@ class Android:
         settle = float(os.environ.get('VM_ANDROID_SETTLE') or ANDROID_SETTLE_SECONDS)
         deadline = time.monotonic() + settle
         while True:
-            if not self.running(avd):
+            if self.running(avd) is False:  # a failed ps proves nothing either way
                 tail = log_tail(log_path)
                 return '模擬器啟動後隨即結束' + (f'：{tail}' if tail else '')
             if time.monotonic() >= deadline:
