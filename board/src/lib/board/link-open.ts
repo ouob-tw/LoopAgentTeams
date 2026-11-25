@@ -56,18 +56,29 @@ function textOf(box: HTMLElement): string {
 export function keepTypedText(doc: Document, storage: () => KeptStorage = () => sessionStorage, now = Date.now()): boolean {
 	if (unsavableBlocker(doc)) return false;
 	const texts: Record<string, string> = {};
+	const present = new Set<string>();
 	for (const [key, box] of boxKeys(doc)) {
+		present.add(key);
 		if ((box as HTMLInputElement).disabled || (box as HTMLInputElement).readOnly || box.hasAttribute('data-reload-safe')) continue;
 		const text = textOf(box);
 		if (text.trim()) texts[key] = text;
 	}
 	try {
-		if (Object.keys(texts).length) storage().setItem(KEPT_TEXT_KEY, JSON.stringify({ at: now, texts }));
+		// Text still waiting for its box to open (a reply box) stays, unless its box is on the page
+		// now: what the box shows is then the user's last word.
+		const waiting = readKept(storage, now);
+		const merged = { ...Object.fromEntries(Object.entries(waiting?.texts ?? {}).filter(([key]) => !present.has(key))), ...texts };
+		if (Object.keys(merged).length) storage().setItem(KEPT_TEXT_KEY, JSON.stringify({ at: waiting && Object.keys(texts).length === 0 ? waiting.at : now, texts: merged }));
 		else storage().removeItem(KEPT_TEXT_KEY);
 		return true;
 	} catch {
 		return false;
 	}
+}
+
+function readKept(storage: () => KeptStorage, now: number): { at: number; texts: Record<string, string> } | null {
+	const saved = JSON.parse(storage().getItem(KEPT_TEXT_KEY) ?? 'null') as { at: number; texts: Record<string, string> } | null;
+	return saved && now - saved.at <= KEPT_TEXT_MS ? saved : null;
 }
 
 /** Put the text written down by `keepTypedText` back into the empty boxes of the page, as the page
@@ -87,6 +98,7 @@ export function restoreTypedText(doc: Document, storage: () => KeptStorage = () 
 		return;
 	}
 	const fill = () => {
+		let changed = false;
 		for (const [key, box] of boxKeys(doc)) {
 			if (!(key in texts) || textOf(box).trim()) continue;
 			if (box instanceof HTMLInputElement || box instanceof HTMLTextAreaElement) box.value = texts[key]!;
@@ -94,8 +106,17 @@ export function restoreTypedText(doc: Document, storage: () => KeptStorage = () 
 			// So the page's own state (a bound value) takes it as typed.
 			box.dispatchEvent(new Event('input', { bubbles: true }));
 			delete texts[key];
+			changed = true;
 		}
 		if (!Object.keys(texts).length) stop();
+		else if (changed) {
+			// What is put back is not put back again by a later load, the expiry stays.
+			try {
+				storage().setItem(KEPT_TEXT_KEY, JSON.stringify({ at: saved!.at, texts }));
+			} catch {
+				// Nothing more to do.
+			}
+		}
 	};
 	let frame = 0;
 	const observer = new MutationObserver(() => {

@@ -101,6 +101,15 @@ class Answering {
 		return { answer: answerText(item.question, draft.select, answerTextOf(item.question, draft)), note: draft.note.trim() };
 	}
 
+	/** Whether an item whose answer box is not on the page (`shown` says so) holds text: only the
+	 *  page's memory has it, so a page left now would lose it. */
+	holdsHiddenText(keys: string[], shown: (key: string) => boolean): boolean {
+		return keys.some((key) => {
+			const draft = this.drafts[key];
+			return !!draft && (!!draft.text.trim() || !!draft.note.trim()) && !shown(key);
+		});
+	}
+
 	/** Whether any of these items has a choice picked or 其他 ticked: not text in a box. */
 	holdsChoice(keys: string[]): boolean {
 		return keys.some((key) => {

@@ -70,6 +70,15 @@
 	const board = new LiveBoard(data.snapshot, data.pd, data.automation, data.alerts);
 	// A new build waits while a question in the inbox has an answer begun (see build-update.ts).
 	onMount(() => holdsUnsent(() => answering.holdsDraft(board.snapshot.inbox.map((item) => item.key)), { inTextBox: true }));
+	// Text of an answer whose card is not on the page is in no box to write down.
+	onMount(() =>
+		holdsUnsent(() =>
+			answering.holdsHiddenText(
+				board.snapshot.inbox.map((item) => item.key),
+				(key) => !!document.querySelector(`[data-content="${CSS.escape(key)}"] textarea`)
+			)
+		)
+	);
 	// A choice picked is not text in a box: a link then keeps opening a new window (link-open.ts).
 	onMount(() => holdsUnsent(() => answering.holdsChoice(board.snapshot.inbox.map((item) => item.key))));
 	// The notice times read the board's calendar day.
