@@ -33,6 +33,9 @@ integration branch, the registered full suites whose content has no pass and who
 is over a day old; a failure opens or comments on a `suite-failure` ticket, or is listed by
 `status` without a tracker.
 
+When the host makes a `run` wait (brake or no room) and the config lists other `hosts`, the
+suite may run on the first usable one instead (see RemoteHost); its record carries `host`.
+
 Linux only: each suite runs in its own systemd user scope (cgroup v2), and slot and lock
 holders stay counted while that group has processes. Without a user scope the suite runs
 in a new session instead, which is then what counts. Once a holder's gate has been seen gone
@@ -74,10 +77,13 @@ DEFAULTS = {'min_slots': 1, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds
             'brake_cpu_high': 50.0, 'brake_cpu_low': 25.0, 'default_cores': 4.0,
             'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5,
             'reclaim_grace_seconds': 600.0, 'light_min_slots': 1, 'light_max_slots': 4,
-            'light_cores': 2.0, 'light_mem_gb': 2.0}
+            'light_cores': 2.0, 'light_mem_gb': 2.0, 'remote_connect_seconds': 5, 'remote_mem_gb': 16.0,
+            'remote_prepare_seconds': 1800.0}
 # The smallest value each key accepts; an int default takes whole numbers only.
 MINIMUMS = {'min_slots': 0, 'max_slots': 1, 'profile_history': 1, 'poll_seconds': 0.01,
-            'report_seconds': 0.01, 'sample_seconds': 0.01, 'light_max_slots': 1}
+            'report_seconds': 0.01, 'sample_seconds': 0.01, 'light_max_slots': 1,
+            'remote_connect_seconds': 1, 'remote_mem_gb': 0.5,
+            'remote_prepare_seconds': 0.01}
 BRAKE_PAIRS = (('brake_io_low', 'brake_io_high'), ('brake_cpu_low', 'brake_cpu_high'))
 GIB = 2 ** 30
 TESTS_SLICE = 'lat-tests.slice'  # the user slice that caps every suite's CPU; SUITE_GATE_SLICE overrides
@@ -204,7 +210,7 @@ def config_path():
 def load_config():
     """The config file over the defaults. A value it cannot use (wrong type, out of range, a
     brake low mark above its high mark) keeps the default with a warning; read on every poll."""
-    config = dict(DEFAULTS)
+    config = dict(DEFAULTS, hosts=[])
     path = config_path()
     try:
         data = json.loads(path.read_text())
@@ -235,7 +241,45 @@ def load_config():
             warn_once(f'config {low} ({config[low]}) is above {high} ({config[high]}); '
                       f'using {DEFAULTS[low]} and {DEFAULTS[high]}')
             config[low], config[high] = DEFAULTS[low], DEFAULTS[high]
+    config['hosts'] = remote_hosts(data.get('hosts'))
     return config
+
+
+# A host name ssh reads as a Host alias, never as an option or a second argument.
+HOST_NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.@:%+-]*')
+ENV_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+
+
+def remote_hosts(value):
+    """The config's `hosts`: other hosts a full suite run with `run` may go to when this one
+    makes it wait, in order of preference. Each item is an ssh Host alias, or {"host": <alias>,
+    "max_runs": <suites this gate runs there at once, default 1>, "env": {<name>: <value>}}
+    (set in the suite's environment there, e.g. the browser a test needs). An item it cannot
+    use is warned about once and left out; none, an empty list or no usable item turns
+    offloading off."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        warn_once(f'config hosts={json.dumps(value)} is not a list; no other host is used')
+        return []
+    hosts = []
+    for i, item in enumerate(value):
+        entry = {'host': item, 'max_runs': 1, 'env': {}} if isinstance(item, str) else (
+            {'host': item.get('host'), 'max_runs': item.get('max_runs', 1),
+             'env': item.get('env', {})} if isinstance(item, dict) else None)
+        ok = entry is not None and isinstance(entry['host'], str) \
+            and HOST_NAME.fullmatch(entry['host']) is not None \
+            and isinstance(entry['max_runs'], int) and not isinstance(entry['max_runs'], bool) \
+            and entry['max_runs'] >= 1 and isinstance(entry['env'], dict) \
+            and all(isinstance(k, str) and ENV_NAME.fullmatch(k) and isinstance(v, str)
+                    for k, v in entry['env'].items())
+        if not ok:
+            warn_once(f'config hosts[{i}]={json.dumps(item)} is not usable (expected an ssh '
+                      'host name or {"host": <name>, "max_runs": <1 or more>, "env": '
+                      '{<NAME>: <text>}}); that item is not used')
+        elif all(h['host'] != entry['host'] for h in hosts):
+            hosts.append(entry)
+    return hosts
 
 
 def warn(text):
@@ -1373,6 +1417,7 @@ def with_state(change):
             state['slots'] = [h for h in state.get('slots', []) if holder_alive(h)]
             state['light'] = [h for h in state.get('light', []) if holder_alive(h)]
             state['waiters'] = [h for h in state.get('waiters', []) if holder_alive(h)]
+            state['remote'] = [h for h in state.get('remote', []) if gate_alive(h)]
             reclaim_leftovers(state, load_config())
             result = change(state)
             tmp = path.with_suffix('.tmp')
@@ -1623,6 +1668,275 @@ def tests_slice_cores():
     return float(found[-1]) / 100 if found else None
 
 
+# ---------------------------------------------------------------- other hosts
+# When the gate would make a `run` wait because this host is braked or full, it may run the
+# suite on another host from the config's `hosts` instead: the work tree's tracked and
+# unignored new files go to a cache there kept per repo and work tree, the directory is
+# prepared as for a clean checkout, the same command runs in its own process group there
+# (in a user scope with a memory cap when that host has one) and its output streams back;
+# the record is written here as for any run, with the host in `host`. Everything that
+# touches the other host goes through RemoteHost, over the `ssh` and `rsync` on PATH.
+
+REMOTE_CACHE = '.cache/suite-gate/remote'  # under the other host's home
+REMOTE_TOOLS = ('git', 'rsync', 'setsid', 'tail', 'xargs')  # every offloaded run needs these
+REMOTE_CHECKS_KEY = 'remote_checks'  # registry: {"<dir>": ["<shell check>", ...]}
+REMOTE_GONE_EXIT = 255  # what ssh exits with when the connection fails
+
+
+def remote_checks(registry, rel):
+    """The registry's checks another host must pass to run a suite in rel: those listed under
+    rel or a directory above it ('.' for the whole repo)."""
+    found = (registry or {}).get(REMOTE_CHECKS_KEY)
+    if not isinstance(found, dict):
+        return []
+    checks = []
+    for directory, listed in found.items():
+        where = _dir_key(directory) if isinstance(directory, str) else None
+        if where is None or not isinstance(listed, list):
+            continue
+        if where in ('', '.') or rel == where or rel.startswith(where + '/'):
+            checks.extend(c for c in listed if isinstance(c, str) and c.strip())
+    return checks
+
+
+def prepare_tools(directory):
+    """The programs the preparation of directory (PREPARE_STEPS) runs."""
+    return sorted({command[0] for lockfile, command in PREPARE_STEPS
+                   if (directory / lockfile).is_file()})
+
+
+def prepare_script():
+    """Shell text that runs PREPARE_STEPS in the current directory, as prepare_dependencies()
+    does here: the first lockfile found decides."""
+    lines, word = [], 'if'
+    for lockfile, command in PREPARE_STEPS:
+        lines.append(f'{word} [ -f {shlex.quote(lockfile)} ]; then {shlex.join(command)}')
+        word = 'elif'
+    return '\n'.join(lines) + '\nfi\n' if lines else ':\n'
+
+
+def ignored_includes(root, registry):
+    """The git-ignored files the fingerprint takes in through `fingerprint_include`; they are
+    never sent to another host, so such a run stays here."""
+    found = sorted({str(p.relative_to(root)) for pattern in include_patterns(registry)
+                    for p in root.glob(pattern) if p.is_file()})
+    if not found:
+        return []
+    return _git_paths(['ls-files', '--others', '--ignored', '--exclude-standard', '--', *found],
+                      root)
+
+
+def sent_files(root):
+    """The files content_tree() counts (tracked plus unignored new, deleted ones left out):
+    what goes to another host, relative to root."""
+    listed = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard'], root)
+    if listed.returncode != 0:
+        raise RuntimeError(f'git ls-files failed: {listed.stderr.strip()}')
+    names = dict.fromkeys(n for n in listed.stdout.split('\0') if n)
+    return [n for n in names if os.path.lexists(root / n)]
+
+
+def remote_cache(root):
+    """The cache path (under the other host's home) for this work tree: one directory per
+    repository (its Git common dir on this host) and work tree, so two work trees never share
+    one and a work tree always gets its own back."""
+    common = git(['rev-parse', '--git-common-dir'], root).stdout.strip()
+    repo = (root / common).resolve() if common else root.resolve()
+    me = os.uname().nodename
+
+    def key(path, name):
+        return f"{re.sub(r'[^A-Za-z0-9_.-]', '_', name)[:40] or 'x'}-" \
+               f"{hashlib.sha256(f'{me}:{path}'.encode()).hexdigest()[:12]}"
+    return f'{REMOTE_CACHE}/{key(repo, repo.parent.name if repo.name == ".git" else repo.name)}' \
+           f'/{key(root.resolve(), root.name)}'
+
+
+class RemoteHost:
+    """The transport to one other host: short non-interactive ssh scripts, rsync for the files,
+    and jobs that run detached there in their own process group, their output, process group
+    and exit code kept as files under the cache's job/ directory (so a later gate could find
+    them again), streamed back while they run. Tests replace `ssh` on PATH."""
+
+    def __init__(self, entry, cache, config, run_id):
+        self.host, self.env, self.cache = entry['host'], entry.get('env') or {}, cache
+        self.connect = max(1, int(config['remote_connect_seconds']))
+        self.mem_gb = config['remote_mem_gb']
+        self.prepare_limit = config['remote_prepare_seconds']  # sending, and preparing
+        self.run_id = run_id
+        self.jobs = 0  # jobs started, for their names
+        self.live = False  # a job may be running there
+
+    def ssh_argv(self, command='sh -s'):
+        return ['ssh', '-T', '-o', 'BatchMode=yes', '-o', f'ConnectTimeout={self.connect}',
+                '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=4', self.host,
+                command]
+
+    def prelude(self):
+        exports = ''.join(f'export {k}={shlex.quote(v)}\n' for k, v in sorted(self.env.items()))
+        return ('export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"\n' + exports
+                + f'C="$HOME"/{shlex.quote(self.cache)}\nJ="$C/job"\n'
+                # Only the gate's own Git calls see these; jobs get the environment as is.
+                'g() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 '
+                'GIT_INDEX_FILE="$C/git/suite-gate-index" '
+                'git --git-dir="$C/git" --work-tree=. -c core.bare=false "$@"; }\n')
+
+    def script(self, body, timeout=None):
+        """(exit code, stdout, stderr) of body run there under sh; REMOTE_GONE_EXIT when ssh
+        could not run it."""
+        try:
+            done = subprocess.run(self.ssh_argv(), input=self.prelude() + body, text=True,
+                                  capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return REMOTE_GONE_EXIT, '', f'no answer within {fmt_seconds(timeout)}'
+        except OSError as exc:
+            return REMOTE_GONE_EXIT, '', str(exc)
+        return done.returncode, done.stdout, done.stderr
+
+    def probe(self, checks, tools):
+        """What this host looks like now: {'pressure': {io, cpu}, 'missing': [tools],
+        'failed': [checks]}, or a string saying why it could not be read."""
+        lines = ['P="${SUITE_GATE_PROC_ROOT:-/proc}"',
+                 'for n in io cpu; do v=$(sed -n "s/^some .*avg10=\\([0-9.]*\\).*/\\1/p" '
+                 '"$P/pressure/$n" 2>/dev/null); echo "pressure $n ${v:-?}"; done']
+        for tool in tools:
+            lines.append(f'command -v {shlex.quote(tool)} >/dev/null 2>&1 || '
+                         f'echo "missing {tool}"')
+        for i, check in enumerate(checks):
+            lines.append(f'( {check}\n) </dev/null >/dev/null 2>&1 || echo "failed {i}"')
+        lines.append('echo probe-done')
+        code, out, err = self.script('\n'.join(lines) + '\n', timeout=self.connect + 20)
+        if code != 0 or 'probe-done' not in out.split('\n'):
+            return 'cannot reach it over ssh' + (f": {err.strip().splitlines()[-1]}"
+                                                 if err.strip() else f' (exit {code})')
+        found = {'pressure': {'io': None, 'cpu': None}, 'missing': [], 'failed': []}
+        for line in out.splitlines():
+            words = line.split()
+            if len(words) == 3 and words[0] == 'pressure' and words[1] in ('io', 'cpu'):
+                try:
+                    found['pressure'][words[1]] = float(words[2])
+                except ValueError:
+                    pass
+            elif len(words) == 2 and words[0] == 'missing':
+                found['missing'].append(words[1])
+            elif len(words) == 2 and words[0] == 'failed' and words[1].isdigit() \
+                    and int(words[1]) < len(checks):
+                found['failed'].append(checks[int(words[1])])
+        return found
+
+    def sync(self, root, files):
+        """Send files (relative to root) into the cache's tree/; why not, or None."""
+        code, _, err = self.script(
+            'mkdir -p "$C/tree" "$J" || exit 1\n'
+            '[ -f "$C/git/HEAD" ] || GIT_CONFIG_GLOBAL=/dev/null git init -q --bare "$C/git" '
+            '|| exit 1\n'
+            'date -u +%Y-%m-%dT%H:%M:%SZ > "$C/used"\n', timeout=self.connect + 60)
+        if code:
+            return f'could not create its cache {self.cache}: {err.strip() or f"exit {code}"}'
+        rsh = shlex.join(self.ssh_argv()[:-2])
+        with tempfile.NamedTemporaryFile('w', prefix='suite-gate-files-') as listing:
+            listing.write(''.join(f'{name}\0' for name in files))
+            listing.flush()
+            for argv in (['rsync', '-a', '--from0', f'--files-from={listing.name}', '-e', rsh,
+                          f'{root}/', f'{self.host}:{self.cache}/tree/'],
+                         ['rsync', '-e', rsh, listing.name,
+                          f'{self.host}:{self.cache}/files.list']):
+                try:
+                    done = subprocess.run(argv, capture_output=True, text=True,
+                                          timeout=self.prepare_limit)
+                except subprocess.TimeoutExpired:
+                    return f'rsync did not finish within {fmt_seconds(self.prepare_limit)}'
+                except OSError as exc:
+                    return f'rsync could not start: {exc}'
+                if done.returncode:
+                    lines = done.stderr.strip().splitlines()
+                    return f"rsync exited {done.returncode}" + (f': {lines[-1]}' if lines else '')
+        return None
+
+    def tree(self, clean=False, entries=False):
+        """The Git tree of the cache's content as content_tree() counts it here: the sent files
+        plus unignored new ones there. clean: first remove the unignored files there that were
+        not sent (left by an earlier run). entries: (tree, its index entries in the form
+        _index_entries() gives). A string saying why not on failure."""
+        code, out, err = self.script(
+            'cd "$C/tree" || exit 1\nrm -f "$C/git/suite-gate-index"\n'
+            # The sent files still there (a run may delete some), ignored or not.
+            'xargs -0 -r sh -c \'for f; do if [ -e "$f" ] || [ -L "$f" ]; then '
+            'printf "%s\\0" "$f"; fi; done\' sh < "$C/files.list" > "$C/present.list" '
+            '|| exit 1\n'
+            'if [ -s "$C/present.list" ]; then g add -f --pathspec-from-file="$C/present.list" '
+            '--pathspec-file-nul || exit 1; fi\n'
+            + ('g ls-files -z --others --exclude-standard | xargs -0 -r rm -f -- || exit 1\n'
+               if clean else '')
+            + 'g add -A . && g write-tree'
+            + (' && g ls-files --stage -z' if entries else '') + '\n',
+            timeout=self.connect + 300)
+        tree, _, listed = out.partition('\n')
+        if code or not re.fullmatch(r'[0-9a-f]{40,64}', tree):
+            return 'could not read the content there: ' + (err.strip().splitlines()[-1]
+                                                             if err.strip() else f'exit {code}')
+        return (tree, [e for e in listed.split('\0') if e]) if entries else tree
+
+    def start(self, rel, command, stream_err=True):
+        """Start command (shell text) in tree/rel there as a detached job in its own process
+        group and stream its output back: the local ssh process (in its own session), whose
+        stdout and stderr carry the job's and whose exit code is the job's
+        (REMOTE_GONE_EXIT when the job left no exit code)."""
+        self.jobs += 1
+        name = f'job-{self.jobs}'
+        unit = f'suite-gate-remote-{self.run_id[:12]}-{self.jobs}'
+        mark = f'SUITE_GATE_{uuid.uuid4().hex}'
+        directory = shlex.quote('.' if rel in ('', '.') else rel)
+        err = '>&2' if stream_err else '>/dev/null'
+        body = (
+            f'cd "$C/tree" && cd {directory} || exit 1\n'
+            f'N="$J/{name}"; rm -f "$N".*; mkdir -p "$J"\n'
+            f"cat > \"$N.cmd\" <<'{mark}'\n{command}\n{mark}\n"
+            'S=""\n'
+            'if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --scope --quiet '
+            '--collect true >/dev/null 2>&1; then\n'
+            f'  S="systemd-run --user --scope --quiet --collect --unit={unit} '
+            f'-p MemoryMax={int(self.mem_gb * 1024)}M"; echo {unit} > "$N.unit"\nfi\n'
+            ': > "$N.out"; : > "$N.err"\n'
+            'cat > "$N.run" <<EOF\n'
+            '$S /bin/sh "$N.cmd" > "$N.out" 2> "$N.err" < /dev/null\n'
+            'echo \\$? > "$N.exit.tmp" && mv "$N.exit.tmp" "$N.exit"\nEOF\n'
+            'setsid /bin/sh "$N.run" </dev/null >/dev/null 2>&1 &\n'
+            'echo $! > "$N.pid"\n'
+            f'tail -c +1 -s 0.2 -f --pid=$! "$N.err" {err} &\n'
+            'tail -c +1 -s 0.2 -f --pid=$(cat "$N.pid") "$N.out"\nwait\n'
+            f'[ -f "$N.exit" ] && exit "$(cat "$N.exit")"\nexit {REMOTE_GONE_EXIT}\n')
+        self.live = True
+        child = subprocess.Popen(self.ssh_argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, start_new_session=True)
+        child.stdin.write((self.prelude() + body).encode())
+        child.stdin.close()
+        return child
+
+    def stop(self):
+        """End every job this run started there: each job's whole process group (TERM, then
+        KILL after the grace) and its user scope; a job whose group is gone has its .pid file renamed to .ended.
+        Why it could not, or None."""
+        if not self.live:
+            return None
+        code, _, err = self.script(
+            'for f in "$J"/job-*.pid; do [ -f "$f" ] || continue; p=$(cat "$f")\n'
+            '  kill -TERM "-$p" 2>/dev/null; u="${f%.pid}.unit"\n'
+            '  [ -f "$u" ] && systemctl --user stop "$(cat "$u")" >/dev/null 2>&1\ndone\n'
+            f'i=0; while [ $i -lt {int(KILL_GRACE_SECONDS * 5)} ]; do alive=\n'
+            '  for f in "$J"/job-*.pid; do [ -f "$f" ] && kill -0 "-$(cat "$f")" 2>/dev/null '
+            '&& alive=1; done\n  [ -z "$alive" ] && break; sleep 0.2; i=$((i+1)); done\n'
+            'for f in "$J"/job-*.pid; do [ -f "$f" ] && kill -KILL "-$(cat "$f")" '
+            '2>/dev/null; done\nsleep 0.2\n'
+            # A group seen gone is never signalled again (its number may be reused).
+            'for f in "$J"/job-*.pid; do [ -f "$f" ] || continue\n'
+            '  kill -0 "-$(cat "$f")" 2>/dev/null && exit 3; mv "$f" "${f%.pid}.ended"\n'
+            'done\nexit 0\n', timeout=self.connect + KILL_GRACE_SECONDS + 30)
+        if code:
+            return err.strip() or f'exit {code}'
+        self.live = False
+        return None
+
+
 class Gate:
     light = False  # a light-path run (LightGate) keeps its fixed reservation without a group
 
@@ -1646,6 +1960,11 @@ class Gate:
         self.ran = None  # a full suite that ran, for the cleanup check
         self.record = None  # the record this gate wrote: a run's or a reuse note
         self.reused = None  # the earlier pass this gate reused instead of running
+        self.offload = False  # may run on another host when this one makes it wait (`run`)
+        self.remote = None  # the RemoteHost it runs on, from the claim until release()
+        self.remote_root = self.remote_tree = None  # the work tree and the content tree sent
+        self.remote_scope = self.remote_entries = None  # the fingerprint's scope, if any
+        self.remote_child = None  # the local end of the job streaming from there
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
                    'start': proc_stat(os.getpid())[2], 'sid': None, 'cgroup': None,
                    'agent': agent_name(), 'command': self.command, 'cwd': str(cwd),
@@ -1654,11 +1973,15 @@ class Gate:
     def _holder(self, **extra):
         return dict(self.me, since=time.time(), **extra)
 
-    def _wait(self, attempt, describe):
+    def _wait(self, attempt, describe, between=None):
+        """Poll attempt under the state lock until it returns something; between(), when
+        given, runs outside the lock after each attempt that did not and may end the wait."""
         started = last = time.monotonic()
         while True:
             self.config = load_config()
             outcome = with_state(attempt)
+            if outcome is None and between is not None:
+                outcome = between()
             if outcome is not None:
                 return outcome
             now = time.monotonic()
@@ -1752,10 +2075,203 @@ class Gate:
             mine = next((w for w in state['waiters'] if w['id'] == self.me['id']), None)
             ahead = sum(1 for w in state['waiters'] if w.get('kind') == 'slot'
                         and mine and w['seq'] < mine['seq'])
+            others = (mine or {}).get('remote') or {}
             return (f'waiting for a host slot ({len(state["slots"])}/{self.config["max_slots"]}'
-                    f' in use: {running}; {ahead} ahead): {(mine or {}).get("reason")}')
+                    f' in use: {running}; {ahead} ahead): {(mine or {}).get("reason")}'
+                    + ''.join(f'; not on {host}: {why}' for host, why in others.items()))
 
-        self._wait(attempt, describe)
+        self._wait(attempt, describe, self.try_offload if self.offload else None)
+
+    # -------------------------------------------------- running on another host
+
+    def try_offload(self):
+        """While this host makes the suite wait: try the config's other hosts in order and
+        claim the first usable one (True), else note on the waiter why each was not used.
+        Looked at on every poll of the queue."""
+        hosts = self.config['hosts']
+        if not hosts:
+            return None
+        blocked = self.offload_blocked()
+        reasons = {}
+        for entry in hosts:
+            why = blocked or self.try_host(entry)
+            if why is None:
+                return True
+            reasons[entry['host']] = why
+
+        def note(state):
+            for waiter in state['waiters']:
+                if waiter['id'] == self.me['id']:
+                    waiter['remote'] = reasons
+        with_state(note)
+        return None
+
+    def offload_blocked(self):
+        """Why this run cannot go to any other host, or None."""
+        root = repo_root(self.cwd)
+        if root is None:
+            return 'not in a Git work tree'
+        ignored = ignored_includes(root, load_registry(self.cwd) or {})
+        if ignored:
+            return ('its fingerprint takes in git-ignored files (fingerprint_include: '
+                    + ', '.join(ignored[:3]) + (', ...' if len(ignored) > 3 else '')
+                    + '), which are never sent to another host')
+        return None
+
+    def try_host(self, entry):
+        """Claim entry's host for this run and get the content there ready; why not, or
+        None once it is claimed (self.remote set) and ready to run."""
+        host = entry['host']
+        root = repo_root(self.cwd)
+        rel = rel_cwd(root, self.cwd)
+        cache = remote_cache(root)
+
+        def busy(state):
+            there = [h for h in state['remote'] if h.get('host') == host]
+            if len(there) >= entry['max_runs']:
+                return (f"its limit is reached ({len(there)}/{entry['max_runs']} suite(s) "
+                        'from this host running there)')
+            if any(h.get('cache') == cache for h in there):
+                return 'another run of this work tree is using its cache there'
+            return None
+        why = with_state(busy)
+        if why:
+            return why
+        checks = remote_checks(load_registry(self.cwd), rel)
+        remote = RemoteHost(entry, cache, self.config, self.me['id'])
+        seen = remote.probe(checks, [*REMOTE_TOOLS, *prepare_tools(self.cwd)])
+        if isinstance(seen, str):
+            return seen
+
+        def brake(state):
+            # The same marks as here, its brake state kept per host in the shared state.
+            on = update_brake(state.setdefault('remote_hosts', {}).setdefault(host, {}),
+                              seen['pressure'], self.config, time.time())['on']
+            return brake_reason({'pressure': seen['pressure']}, self.config) if on else None
+        why = with_state(brake)
+        if why:
+            return why
+        if seen['missing']:
+            return 'missing ' + ', '.join(seen['missing'])
+        if seen['failed']:
+            return 'the project check failed: ' + '; '.join(seen['failed'])
+
+        def claim(state):
+            why = busy(state)
+            if why:
+                return why
+            state['remote'].append(self._holder(host=host, cache=cache, phase='preparing'))
+            return None
+        why = with_state(claim)
+        if why:
+            return why
+        self.remote, self.remote_root = remote, root
+        why = self.prepare_remote(rel)
+        if why:
+            self.drop_remote()
+            warn(f'not running on {host}: {why}')
+            return why
+
+        def running(state):
+            state['waiters'] = [w for w in state['waiters'] if w['id'] != self.me['id']]
+            for holder in state['remote']:
+                if holder['id'] == self.me['id']:
+                    holder.update(phase='running', since=time.time())
+        with_state(running)
+        warn(f'this host makes the suite wait, so it runs on {host} instead '
+             f'(cache ~/{cache}); its output follows')
+        return None
+
+    def prepare_remote(self, rel):
+        """Send the content, check it arrived as it is here, prepare the directory there
+        and check again; why not, or None."""
+        remote, root = self.remote, self.remote_root
+        registry = load_registry(self.cwd) or {}
+        tree = content_tree(root)
+        # A scoped fingerprint (a registered suite with depends_on) says which changes count.
+        self.remote_scope = suite_scope(root, registry, rel, self.argv)
+        if self.remote_scope is not None:
+            with tempfile.TemporaryDirectory(prefix='suite-gate-') as tmp:
+                env = _fill_index(root, Path(tmp) / 'index', include_patterns(registry))
+                self.remote_entries = self.scoped(_index_entries(root, env))
+        files = sent_files(root)
+        warn(f'sending {len(files)} file(s) to {remote.host}')
+        why = remote.sync(root, files)
+        if why:
+            return f'sending the files failed: {why}'
+        there = remote.tree(clean=True)
+        if there != tree:
+            return (f'the content there differs from this work tree after sending it ({there})'
+                    if not re.fullmatch(r'[0-9a-f]+', there) else
+                    f'the content there differs from this work tree after sending it '
+                    f'(tree {there[:12]} there, {tree[:12]} here)')
+        self.remote_child = child = remote.start(rel, prepare_script(), stream_err=True)
+        relays = [threading.Thread(target=relay_lines, args=(stream, sys.stderr.buffer,
+                                                             f'[{remote.host} prepare] '.encode()),
+                                   daemon=True) for stream in (child.stdout, child.stderr)]
+        for thread in relays:
+            thread.start()
+        try:
+            code = child.wait(timeout=remote.prepare_limit)
+        except subprocess.TimeoutExpired:
+            code = None
+        if code is None:  # drop_remote() ends it there and here
+            return (f'preparing {rel} there did not finish within '
+                    f'{fmt_seconds(remote.prepare_limit)}; this is not a test result')
+        for thread in relays:
+            thread.join(timeout=2)
+        self.remote_child = None
+        stopped = remote.stop()
+        if code:
+            return f'preparing {rel} there failed (exit {code}); this is not a test result'
+        if stopped:
+            return f'could not end what the preparation left running: {stopped}'
+        there = remote.tree()
+        if there != tree:
+            return f'the content there changed during the preparation ({there[:40]})'
+        self.remote_tree = tree
+        return None
+
+    def drop_remote(self):
+        """End whatever this run left on its other host and give the host back."""
+        remote, child = self.remote, self.remote_child or self.child
+        if remote is None:
+            return
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
+        try:
+            why = remote.stop()
+            if why:
+                warn(f'could not end the run on {remote.host}: {why}')
+            if child is not None and child.poll() is None:
+                end_session(child.pid, child)
+
+            def change(state):
+                state['remote'] = [h for h in state['remote'] if h['id'] != self.me['id']]
+            with_state(change)
+        finally:
+            self.remote = self.remote_child = None
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+
+    def scoped(self, entries):
+        return sorted(e for e in entries
+                      if any(glob_match(e.split('\t', 1)[1], p) for p in self.remote_scope))
+
+    def remote_changed(self):
+        """True when the content on the other host is no longer what was sent, within the
+        fingerprint's scope as a run here counts it."""
+        if self.remote is None:
+            return False
+        if self.remote_scope is None:
+            there = self.remote.tree()
+            same = there == self.remote_tree
+        else:
+            there = self.remote.tree(entries=True)
+            same = not isinstance(there, str) and self.scoped(there[1]) == self.remote_entries
+            there = there if isinstance(there, str) else there[0]
+        if same:
+            return False
+        warn(f'the content on {self.remote.host} changed during the run ({there[:40]})')
+        return True
 
     def set_session(self, sid, group=None):
         """Record the suite's session and group on this gate's lock and slot. Without a
@@ -1795,6 +2311,8 @@ class Gate:
                 holder['gate_done'] = True
                 return True
             return False
+
+        self.drop_remote()
 
         def change(state):
             state['waiters'] = [w for w in state['waiters'] if w['id'] != self.me['id']]
@@ -1926,6 +2444,18 @@ class Gate:
                 os.close(go_write)
             signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
+    def _start_remote(self, argv, cwd):
+        """Start argv on the other host in cwd's place in the cache; its local end counts as
+        the suite's session here."""
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
+        try:
+            child = self.remote.start(rel_cwd(self.remote_root, cwd), shlex.join(argv))
+            self.child = child
+            self.set_session(child.pid, None)
+            return child
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+
     def measure(self, duration):
         """The record's profile: the group's final counters, read before the keeper lets the
         group go. Values that cannot be read are None."""
@@ -1955,7 +2485,12 @@ class Gate:
         """End an interrupted suite: its whole group, or its session without one."""
         if self.sampler:
             self.sampler.done.set()
-        if self.group:
+        if self.remote:
+            why = self.remote.stop()
+            if why:
+                warn(f'could not end the run on {self.remote.host}: {why}')
+            end_session(self.child.pid, self.child)
+        elif self.group:
             end_group(self.group, self.child)
         else:
             end_session(self.child.pid, self.child)
@@ -1984,8 +2519,11 @@ class Gate:
         started = time.monotonic()
         # The reaper logs whole seconds; a kill in the run's first second must still count.
         started_at = datetime.now(timezone.utc).replace(microsecond=0)
-        child = self._start(argv, True, cwd) if self._scope_ready() else None
-        child = child or self._start(argv, False, cwd)
+        if self.remote:
+            child = self._start_remote(argv, cwd)
+        else:
+            child = self._start(argv, True, cwd) if self._scope_ready() else None
+            child = child or self._start(argv, False, cwd)
         spool_path, spool = spool_open() if keep else (None, None)
         tail = Tail(spool)
         tail.spool_path = spool_path
@@ -2024,6 +2562,10 @@ class Gate:
                 child.kill()
                 child.wait()
             code = TIMEOUT_EXIT
+        elif self.remote:  # whatever the suite left in its group there ends with it
+            why = self.remote.stop()
+            if why:
+                warn(f'could not end what the suite left running on {self.remote.host}: {why}')
         self.finished = True
         ended_at = datetime.now(timezone.utc)
         for thread in pumps:
@@ -2096,11 +2638,13 @@ class Gate:
         named = self.extra.get('selected_tests') if info and self.template else None
         timed_out = self.timed_out and self.timed_out_report(
             scan, [dir_relative(t, info['rel_cwd']) for t in named or []])
-        reaped = (reaped_during(self.cwd, started_at, ended_at) if code == 0
-                  else reaped_after_failure(self.cwd, started_at, ended_at))
+        reaped = ([] if self.remote else reaped_during(self.cwd, started_at, ended_at)
+                  if code == 0 else reaped_after_failure(self.cwd, started_at, ended_at))
         duration = round(seconds, 1)
+        host = self.remote.host if self.remote else None
         after = fingerprint(self.cwd, self.argv) if info else None
-        changed = info is not None and after['fingerprint'] != info['fingerprint']
+        changed = info is not None and (after['fingerprint'] != info['fingerprint']
+                                        or self.remote_changed())
         rerun = flaky = None
         if code and info is not None:
             plan = ('the run timed out' if timed_out
@@ -2113,7 +2657,8 @@ class Gate:
                 root, commands, groups, names = plan
                 rerun = self.rerun_failed(root, commands, groups, code)
                 code = rerun['exit_code']
-                changed = fingerprint(self.cwd, self.argv)['fingerprint'] != info['fingerprint']
+                changed = (fingerprint(self.cwd, self.argv)['fingerprint'] != info['fingerprint']
+                           or self.remote_changed())
                 if code == 0:
                     flaky = [{'file': path, 'tests': tests} for path, tests in names.items()]
                     warn('PASSED ONLY ON RERUN: the rerun passed, so the run counts as passed '
@@ -2132,7 +2677,7 @@ class Gate:
             'finished': now_iso(), 'rerun_reason': self.rerun, 'content_changed': changed,
             'reusable': info is not None and code == 0 and not changed,
             'purpose': None, 'purpose_reason': None, 'profile': profile,
-            'profile_key': info and info['profile_key'], 'reaped': reaped,
+            'profile_key': info and info['profile_key'], 'reaped': reaped, 'host': host,
         }
         if rerun is not None:
             record.update(rerun=rerun, flaky=flaky or [], rerun_only=bool(flaky))
@@ -2171,7 +2716,8 @@ class Gate:
                  f'connection refused may come from that rather than the change; details in '
                  f'{reaper_log()}')
         warn(f"recorded exit {code} in {duration}s"
-             + (f" for fingerprint {info['fingerprint'][:12]}" if info else ''))
+             + (f" for fingerprint {info['fingerprint'][:12]}" if info else '')
+             + (f' (ran on {host})' if host else ''))
         return code
 
 
@@ -3223,6 +3769,8 @@ def print_reuse(record, command):
           f"({record.get('duration_s')}s, exit {record.get('exit_code')})")
     print(f"  command:     {record.get('command')}")
     print(f"  cwd:         {record.get('cwd')}")
+    if record.get('host'):
+        print(f"  ran on:      {record['host']} (another host)")
     if record.get('purpose'):
         print(f"  purpose:     {describe_purpose(record)}")
     if failed_first(record):
@@ -3384,6 +3932,7 @@ def cmd_run(rerun, purpose, reason, argv):
              '--purpose <purpose>')
     extra = {'purpose': purpose, 'purpose_reason': reason.strip() if reason else None}
     gate = Gate(argv, Path.cwd(), rerun.strip() if rerun else None, load_config(), extra)
+    gate.offload = True
     return _guarded(lambda: _drive(gate, gate.run))
 
 
@@ -5089,6 +5638,7 @@ def cmd_status(as_json, fp_prefix, limit):
                           'light': {'running': [{k: v for k, v in h.items() if k != 'unused'}
                                                 for h in light],
                                     'cpu_budget_cores': light_budget()},
+                          'remote': state.get('remote') or [],
                           'locks': state['locks'], 'records': records, 'cleanup': cleanup,
                           'failure_outputs': kept,
                           'background_failures': background,
@@ -5127,6 +5677,16 @@ def cmd_status(as_json, fp_prefix, limit):
               f"{h['command']}{note}")
     if not running:
         print('  none')
+    remote = state.get('remote') or []
+    if remote or config['hosts']:
+        print(f"On other hosts ({len(remote)} running; hosts: "
+              f"{', '.join(h['host'] for h in config['hosts']) or 'none usable'}):")
+        for h in remote:
+            print(f"  {h.get('host')}  {h.get('phase')}  {h['agent']}  "
+                  f"{fmt_seconds(now - h['since'])}  fp {(h.get('fingerprint') or '-')[:12]}  "
+                  f"{h['cwd']}  {h['command']}")
+        if not remote:
+            print('  none')
     print('Waiting:')
     for h in sorted(waiting, key=lambda w: w['since']):
         if h.get('kind') == 'light':
@@ -5137,6 +5697,8 @@ def cmd_status(as_json, fp_prefix, limit):
             why = 'same content running'
         print(f"  {h['agent']}  {fmt_seconds(now - h['since'])}  {why}  "
               f"fp {(h.get('fingerprint') or '-')[:12]}  {h['cwd']}  {h['command']}")
+        for host, reason in (h.get('remote') or {}).items():
+            print(f'    not on {host}: {reason}')
     if not [h for h in waiting if h.get('kind') != 'light']:
         print('  none')
     reserved = sum(h['reservation']['cpu_cores'] for h in light)
