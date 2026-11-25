@@ -1701,6 +1701,7 @@ REMOTE_GONE_EXIT = 255  # what ssh exits with when the connection fails
 # The phase of a holder in state['remote'] whose job there was not seen ended: it keeps its
 # share of that host's max_runs and its cache until a gate reaches the host and ends it.
 UNCONFIRMED = 'unconfirmed'
+REMOTE_ACK = b'SUITE-GATE-ACK'  # the answer to a heartbeat, on the following ssh's stderr
 # The watchdog a job runs under there (sh; args: job path prefix, time limit, silence limit,
 # heartbeat limit in whole seconds, memory cap in KiB or 0 when a user scope caps it). It
 # starts the job in its own process group and ends that whole group when the job has run
@@ -1840,6 +1841,7 @@ class RemoteHost:
         self.jobs = 0  # jobs started, for their names
         self.tag = uuid.uuid4().hex[:8]  # in this claim's job names: no older job's files match
         self.live = False  # a job may be running there
+        self.followers = []  # the local ssh processes following a job now
 
     def ssh_argv(self, command='sh -s'):
         return ['ssh', '-T', '-o', 'BatchMode=yes', '-o', f'ConnectTimeout={self.connect}',
@@ -1996,26 +1998,36 @@ class RemoteHost:
             return err.strip().splitlines()[-1] if err.strip() else f'exit {code}'
         return None
 
-    def attach(self, name, offsets):
-        """The local ssh process (in its own session) that streams job name's output from
-        offsets ({'out': bytes, 'err': bytes} already shown) on, until the job's watchdog
-        ends. A line on its stdin is a heartbeat the watchdog sees."""
-        out, err = offsets['out'] + 1, offsets['err'] + 1
+    def attach(self, name, key, offset):
+        """A local ssh process (in its own session) whose stdout carries job name's `key`
+        file ('out' or 'err') from byte offset on, until the job's watchdog ends; only the
+        file's bytes, so ssh's own messages (on its stderr) never shift an offset. A line on
+        its stdin is a heartbeat the watchdog sees; each is answered with REMOTE_ACK on its
+        stderr."""
         body = (
             f'N="$J/{name}"\n[ -f "$N.cmd" ] || exit 3\n'
             # A background list reads /dev/null unless told otherwise.
             'exec 3<&0\n'
-            '( while IFS= read -r _; do date +%s > "$N.alive"; done ) <&3 >/dev/null 2>&1 &\n'
-            'R=$!; exec 3<&-; date +%s > "$N.alive"\n'
+            '( while IFS= read -r _; do date +%s > "$N.alive"; '
+            f'echo {REMOTE_ACK.decode()} >&2; done ) <&3 >/dev/null &\n'
+            f'R=$!; exec 3<&-; date +%s > "$N.alive"; echo {REMOTE_ACK.decode()} >&2\n'
             'if [ -f "$N.result" ] || ! W=$(cat "$N.wpid" 2>/dev/null); then\n'
-            f'  tail -c +{err} "$N.err" >&2; tail -c +{out} "$N.out"\nelse\n'
-            f'  tail -c +{err} -s 0.2 -f --pid="$W" "$N.err" >&2 & T=$!\n'
-            f'  tail -c +{out} -s 0.2 -f --pid="$W" "$N.out"\n  wait "$T"\nfi\n'
+            f'  tail -c +{offset + 1} "$N.{key}"\nelse\n'
+            f'  tail -c +{offset + 1} -s 0.2 -f --pid="$W" "$N.{key}"\nfi\n'
             'kill "$R" 2>/dev/null\nexit 0\n')
-        return subprocess.Popen(
+        child = subprocess.Popen(
             self.ssh_argv('sh -c ' + shlex.quote(self.prelude() + body)), bufsize=0,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True)
+        self.followers.append(child)
+        return child
+
+    def hang_up(self):
+        """End the local ssh processes following a job (the job there runs on)."""
+        for child in self.followers:
+            if child.poll() is None:
+                end_session(child.pid, child)
+        self.followers = []
 
     def job_state(self, name):
         """('result', [words of job name's result file]), ('running',), ('gone',) for a
@@ -2036,27 +2048,32 @@ class RemoteHost:
         """Stream job_name(job)'s output to consume(key, chunk) until it ends there and return
         its result words (REMOTE_WATCHDOG). When the connection drops the job runs on: this
         reconnects every self.retry seconds and goes on from the byte it got to, so nothing
-        is shown twice or run again. RemoteLost when it cannot reach the host for self.lost
-        seconds or the job ended there without a result. attached(child) gets each local
-        ssh process as it starts."""
+        is shown twice or run again. RemoteLost when self.lost seconds pass after the last
+        answer from the host (REMOTE_ACK for a heartbeat, or a job_state() reply) without
+        getting it back, or the job ended there without a result. attached(child) gets each
+        local ssh process streaming its stdout as it starts."""
         name, offsets = self.job_name(job), {'out': 0, 'err': 0}
-        lost_since, idle = None, 0
+        contact = {'at': time.monotonic()}  # the last answer from the host
+        lost, idle = False, 0
+
+        def gone_too_long(why):
+            if time.monotonic() - contact['at'] >= self.lost:
+                raise RemoteLost(f'no answer from {self.host} for {fmt_seconds(self.lost)} '
+                                 f'({why})')
         while True:
-            if lost_since is not None:
+            if lost:
+                gone_too_long('the connection is down')
                 seen = self.job_state(name)
+                gone_too_long(seen[1] if seen[0] == 'unreachable' else 'it came back too late')
                 if seen[0] == 'unreachable':
-                    left = self.lost - (time.monotonic() - lost_since)
-                    if left <= 0:
-                        raise RemoteLost(f'could not reach {self.host} for '
-                                         f'{fmt_seconds(self.lost)} ({seen[1]})')
-                    time.sleep(min(self.retry, left))
+                    time.sleep(max(0.0, min(self.retry,
+                                            self.lost - (time.monotonic() - contact['at']))))
                     continue
-                warn(f'reconnected to {self.host} after '
-                     f'{fmt_seconds(time.monotonic() - lost_since)}; the output goes on from '
-                     'where it stopped')
-                lost_since = None
-            child = self.attach(name, offsets)
-            attached(child)
+                contact['at'] = time.monotonic()
+                warn(f'reconnected to {self.host}; the output goes on from where it stopped')
+                lost = False
+            children = {key: self.attach(name, key, offsets[key]) for key in offsets}
+            attached(children['out'])
             before = dict(offsets)
             done = threading.Event()
 
@@ -2069,34 +2086,57 @@ class RemoteHost:
                     offsets[key] += len(chunk)
                     consume(key, chunk)
 
-            def beat(pipe=child.stdin):
-                while not done.wait(self.heartbeat):
-                    try:
-                        pipe.write(b'\n')
-                    except (OSError, ValueError):
+            def acks(stream):
+                fd, rest = stream.fileno(), b''
+                while True:
+                    chunk = os.read(fd, 4096)
+                    if not chunk:
                         return
-            readers = [threading.Thread(target=read, args=(key, stream), daemon=True)
-                       for key, stream in (('out', child.stdout), ('err', child.stderr))]
+                    rest += chunk
+                    if REMOTE_ACK in rest:
+                        contact['at'] = time.monotonic()
+                    rest = rest[-len(REMOTE_ACK):]
+
+            def beat(pipes=[c.stdin for c in children.values()]):
+                while not done.wait(self.heartbeat):
+                    if time.monotonic() - contact['at'] >= self.lost:  # a stalled connection
+                        for child in children.values():
+                            if child.poll() is None:
+                                end_session(child.pid, child)
+                        return
+                    for pipe in pipes:
+                        try:
+                            pipe.write(b'\n')
+                        except (OSError, ValueError):
+                            pass
+            readers = [threading.Thread(target=read, args=(key, child.stdout), daemon=True)
+                       for key, child in children.items()]
+            readers += [threading.Thread(target=acks, args=(child.stderr,), daemon=True)
+                        for child in children.values()]
             for thread in [*readers, threading.Thread(target=beat, daemon=True)]:
                 thread.start()
-            code = child.wait()
+            code = max(child.wait() for child in children.values())
             done.set()
             for thread in readers:
                 thread.join(timeout=10)
-            for stream in (child.stdin, child.stdout, child.stderr):
-                try:
-                    stream.close()
-                except OSError:
-                    pass
+            for child in children.values():
+                for stream in (child.stdin, child.stdout, child.stderr):
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            self.followers = []
             seen = self.job_state(name)
+            if seen[0] != 'unreachable':
+                contact['at'] = time.monotonic()
             if seen[0] == 'result' and code == 0:
                 return seen[1]
             if seen[0] == 'gone':
                 raise RemoteLost(f'the job on {self.host} ended without leaving its result')
             if seen[0] == 'unreachable':
-                lost_since = time.monotonic()
+                lost = True
                 warn(f'lost the connection to {self.host} ({seen[1]}); the run goes on there; '
-                     f'reconnecting for up to {fmt_seconds(self.lost)}')
+                     f'reconnecting until {fmt_seconds(self.lost)} after its last answer')
                 continue
             idle = 0 if offsets != before else idle + 1
             if idle >= 5:
@@ -2157,7 +2197,6 @@ class Gate:
         self.remote = None  # the RemoteHost it runs on, from the claim until release()
         self.remote_root = self.remote_tree = None  # the work tree and the content tree sent
         self.remote_scope = self.remote_entries = None  # the fingerprint's scope, if any
-        self.remote_child = None  # the local end of the job streaming from there
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
                    'start': proc_stat(os.getpid())[2], 'sid': None, 'cgroup': None,
                    'agent': agent_name(), 'command': self.command, 'cwd': str(cwd),
@@ -2381,23 +2420,41 @@ class Gate:
 
     def confirm_ended(self, entry):
         """End the jobs of the unconfirmed holders on entry's host (a gate that died or lost
-        its connection left them) and drop the holders whose cache is then seen empty."""
+        its connection left them) and drop the holders whose cache is then seen empty. Each
+        such holder is taken under the state lock first (`confirming`: this gate), so only
+        one gate at a time ends what is in its cache, and the holder keeps the cache from
+        being claimed until that is done."""
         host = entry['host']
-        caches = with_state(lambda state: sorted({
-            h['cache'] for h in state['remote']
-            if h.get('host') == host and h.get('phase') == UNCONFIRMED}))
-        for cache in caches:
+        owner = {k: self.me[k] for k in ('id', 'pid', 'start')}
+
+        def ours(h, cache=None):
+            return (h.get('host') == host and h.get('phase') == UNCONFIRMED
+                    and (cache is None or h.get('cache') == cache))
+
+        def take(state):
+            caches = set()
+            for holder in filter(ours, state['remote']):
+                other = holder.get('confirming')
+                if other and other['id'] != owner['id'] and gate_alive(other):
+                    continue
+                holder['confirming'] = owner
+                caches.add(holder['cache'])
+            return sorted(caches)
+        for cache in with_state(take):
             remote = RemoteHost(entry, cache, self.config, self.me['id'])
             remote.live = True
-            if remote.stop() is not None:
-                continue
+            ended = remote.stop() is None
 
-            def change(state, cache=cache):
-                state['remote'] = [h for h in state['remote'] if not (
-                    h.get('host') == host and h.get('cache') == cache
-                    and h.get('phase') == UNCONFIRMED)]
+            def change(state, cache=cache, ended=ended):
+                mine = [h for h in state['remote'] if ours(h, cache)
+                        and (h.get('confirming') or {}).get('id') == owner['id']]
+                if ended:
+                    state['remote'] = [h for h in state['remote'] if h not in mine]
+                for holder in mine:
+                    holder.pop('confirming', None)
             with_state(change)
-            warn(f'an earlier run on {host} (cache ~/{cache}) is confirmed ended')
+            if ended:
+                warn(f'an earlier run on {host} (cache ~/{cache}) is confirmed ended')
 
     def prepare_remote(self, rel):
         """Send the content, check it arrived as it is here, prepare the directory there
@@ -2426,16 +2483,12 @@ class Gate:
         if why:
             return f'could not start preparing {rel} there: {why}'
         relay = LinePrefix(sys.stderr.buffer, f'[{remote.host} prepare] '.encode())
-
-        def attached(child):
-            self.remote_child = child
         try:
-            result = remote.follow(remote.jobs, relay.add, attached)
+            result = remote.follow(remote.jobs, relay.add, lambda child: None)
         except RemoteLost as exc:
             return f'preparing {rel} there was cut off: {exc}; this is not a test result'
         finally:
             relay.finish()
-        self.remote_child = None
         if result[0] in ('limit', 'silence'):
             return (f'preparing {rel} there did not finish within '
                     f'{fmt_seconds(remote.prepare_limit)}; this is not a test result')
@@ -2455,7 +2508,7 @@ class Gate:
 
     def drop_remote(self):
         """End whatever this run left on its other host and give the host back."""
-        remote, child = self.remote, self.remote_child or self.child
+        remote = self.remote
         if remote is None:
             return
         old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
@@ -2464,8 +2517,7 @@ class Gate:
             if why:
                 warn(f'could not end the run on {remote.host} ({why}): until a later gate '
                      'confirms it ended there, that host is not used for this work tree')
-            if child is not None and child.poll() is None:
-                end_session(child.pid, child)
+            remote.hang_up()
 
             def change(state):
                 def mine(h):
@@ -2477,7 +2529,7 @@ class Gate:
                     state['remote'] = [h for h in state['remote'] if not mine(h)]
             with_state(change)
         finally:
-            self.remote = self.remote_child = None
+            self.remote = None
             signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
     def scoped(self, entries):
@@ -2761,8 +2813,7 @@ class Gate:
             why = self.remote.stop()
             if why:
                 warn(f'could not end the run on {self.remote.host}: {why}')
-            if self.child is not None:
-                end_session(self.child.pid, self.child)
+            self.remote.hang_up()
         elif self.group:
             end_group(self.group, self.child)
         else:

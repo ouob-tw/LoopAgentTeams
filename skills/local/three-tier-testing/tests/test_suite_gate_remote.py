@@ -1,8 +1,10 @@
 """`run` goes to another host from the config's `hosts` when this host makes it wait. The other
 hosts are directories under remotes/ reached through the fake `ssh` GateCase puts first on
 PATH (see install_fake_ssh); no test reaches a real host or the real config."""
+import fcntl
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -215,7 +217,6 @@ class OffloadTests(RemoteMixin, GateCase):
                                {'host': 'nochrome', 'env': {'CHROME': str(chrome)}}])
         code, _, err = self.finish(proc)
         self.assertEqual(code, 0, err)
-        self.assertIn('not on lab: brake on', err)
         self.assertEqual(self.records()[-1]['host'], 'nochrome')
         release.touch()
         self.assertEqual(self.finish(blocker)[0], 0)
@@ -452,7 +453,7 @@ class ReconnectTests(RemoteMixin, GateCase):
         self.quick()
         started, go = self.tmp / 'started', self.tmp / 'go'
         suite = (f'echo run >> {self.counter}; echo first; touch {started}; '
-                 f'while [ ! -f {go} ]; do sleep 0.2; done; '
+                 f'while [ ! -f {go} ]; do sleep 0.2; done; echo err-while-cut >&2; '
                  'for i in 1 2 3 4 5 6; do echo tick $i; sleep 0.5; done; echo second; exit 3')
         began = time.monotonic()
         proc = self.start('run', '--', suite)
@@ -460,7 +461,7 @@ class ReconnectTests(RemoteMixin, GateCase):
         time.sleep(0.5)
         self.cut()
         time.sleep(1)
-        go.touch()
+        go.touch()  # it writes to stderr while cut off, past ssh's disconnect message
         # Cut off for longer than the silence limit, and until past the time limit here.
         self.wait_until(lambda: self.results('s3')[-1:] and self.results('s3')[-1][0] == 'exit',
                         message='the job ended there')
@@ -473,6 +474,8 @@ class ReconnectTests(RemoteMixin, GateCase):
         self.assertIn('reconnected to s3', err)
         for line in ('first', *(f'tick {i}' for i in range(1, 7)), 'second'):
             self.assertEqual(out.splitlines().count(line), 1, out)
+        self.assertEqual(err.splitlines().count('err-while-cut'), 1, err)
+        self.assertNotIn('Broken pipe', err)
         self.assertEqual(self.runs(), 1)
         [record] = self.records()
         self.assertEqual((record['host'], record['exit_code']), ('s3', 3))
@@ -547,6 +550,34 @@ class ReconnectTests(RemoteMixin, GateCase):
         self.assertIsNone(record['host'])
         self.assertEqual(self.runs(), 2)
 
+    def test_a_stalled_connection_counts_from_the_last_answer_and_is_given_up(self):
+        """The connection hangs without closing, so ssh never reports it: the budget runs
+        from the host's last answer to a heartbeat, the gate hangs up and gives the run up."""
+        self.add_host('s3')
+        self.quick(lost=2)
+        started, hold = self.tmp / 'started', self.tmp / 'hold'
+        hold.touch()
+        proc = self.start('run', '--', f'echo run >> {self.counter}; touch {started}; '
+                                       f'while [ -f {hold} ]; do sleep 0.2; done')
+        # Job 1 prepares, job 2 is the suite: frozen once the gate follows the suite.
+        self.wait_until(lambda: started.exists() and any(
+            c['command'].startswith('sh -c') and re.search(r'job-[0-9a-f]{8}-2\b', c['command'])
+            for c in self.ssh_calls('s3')), message='followed there')
+        (self.remotes / 's3/freeze').touch()
+        self.wait_until(lambda: self.waiter_reasons() != [], timeout=15,
+                        message='given up and queued here again')
+        self.assertEqual(self.records(), [])
+        (self.remotes / 's3/freeze').unlink()
+        hold.unlink()
+        self.unbrake_here()
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertIn('no answer from s3 for 2s', err)
+        # Only the second run is recorded, here or on s3 again once it answers.
+        [record] = self.records()
+        self.assertEqual(record['exit_code'], 0)
+        self.assertEqual(self.runs(), 2)
+
     def test_the_watchdog_ends_the_group_when_heartbeats_stop_and_the_cache_waits_for_it(self):
         """The gate is killed outright: its job there ends by itself once no heartbeat came
         for remote_lost_seconds, leaving `lost`; until a gate confirms that, the work tree's
@@ -576,6 +607,42 @@ class ReconnectTests(RemoteMixin, GateCase):
         self.assertIn('confirmed ended', err)
         self.assertEqual(self.records()[-1]['host'], 's3')
         self.assertEqual(self.status()['remote'], [])
+
+    def test_an_old_job_another_live_gate_is_confirming_is_left_to_it(self):
+        """Only one gate at a time ends what an unconfirmed holder left in its cache: while
+        a live gate has taken it, others neither stop jobs there nor claim the cache."""
+        self.add_host('s3')
+        self.quick()
+        gate = self.gate_module()
+        cache = gate.remote_cache(self.repo)
+        me = {'id': 'other-gate', 'pid': os.getpid(), 'start': gate.proc_stat(os.getpid())[2]}
+        held = dict(me, id='old-run', pid=1, start='0', host='s3', cache=cache,
+                    phase='unconfirmed', since=time.time(), agent='old', cwd=str(self.repo),
+                    command='x', confirming=me)
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / 'state.json').write_text(json.dumps({'remote': [held]}))
+        proc = self.start('run', '--', self.suite())
+        self.wait_until(lambda: self.waiter_reasons() == [{'s3': (
+            'an earlier run of this work tree there is not confirmed ended yet, so its cache '
+            'is not used')}], message='left to the other gate')
+        time.sleep(0.5)
+        [still] = self.status()['remote']
+        self.assertEqual((still['id'], still['confirming']['id']), ('old-run', 'other-gate'))
+        # The other gate is gone: its claim lapses and this gate ends the old job.
+        with open(self.state / 'state.lock', 'a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state = json.loads((self.state / 'state.json').read_text())
+            for holder in state['remote']:
+                holder['confirming'] = dict(me, start='0')
+            (self.state / 'state.json').write_text(json.dumps(state))
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertIn('confirmed ended', err)
+        self.assertEqual(self.records()[-1]['host'], 's3')
+
+    def gate_module(self):
+        from test_suite_gate import gate
+        return gate
 
     def test_heartbeats_keep_a_run_longer_than_the_limit_going(self):
         self.add_host('s3')

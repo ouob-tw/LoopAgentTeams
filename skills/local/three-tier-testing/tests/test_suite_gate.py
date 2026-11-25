@@ -146,7 +146,10 @@ elif sys.argv[1:3] == ['issue', 'create']:
         with HOME=remotes/<host>/home, the host's own pressure files
         (SUITE_GATE_PROC_ROOT=remotes/<host>/proc) and remotes/<host>/bin first on PATH; a
         `down` that shows up while it runs cuts the connection (its group is killed, ssh
-        exits 255), as does a signal to this ssh. Every call is logged to
+        prints a disconnect message and exits 255), as does a signal to this ssh; a `freeze`
+        stalls the connections open then (their commands stop until it goes, ssh stays) and
+        new ones fail. The
+        command gets a fresh environment (the basics, not this machine's). Every call is logged to
         remotes/calls.jsonl. rsync reaches the hosts through it."""
         self.remotes = self.tmp / 'remotes'
         self.remotes.mkdir()
@@ -162,12 +165,16 @@ host, command = args[i], ' '.join(args[i + 1:])
 with open(remotes / 'calls.jsonl', 'a') as log:
     log.write(json.dumps({{'host': host, 'command': command, 'options': args[:i]}}) + '\\n')
 base = remotes / host
-if not base.is_dir() or (base / 'down').exists():
+if not base.is_dir() or (base / 'down').exists() or (base / 'freeze').exists():
     print(f'ssh: connect to host {{host}} port 22: Connection timed out', file=sys.stderr)
     sys.exit(255)
 home = base / 'home'
 home.mkdir(exist_ok=True)
-env = dict(os.environ, HOME=str(home), SUITE_GATE_PROC_ROOT=str(base / 'proc'),
+# A fresh login there: none of this machine's environment (a profile's CHROME, say) but
+# the basics, so what a host entry's `env` sets is all the suite sees beyond them.
+env = {{k: v for k, v in os.environ.items()
+       if k in ('LANG', 'LC_ALL', 'TMPDIR', 'USER', 'LOGNAME', 'SHELL')}}
+env.update(HOME=str(home), SUITE_GATE_PROC_ROOT=str(base / 'proc'),
            PATH=f"{{base / 'bin'}}:{{os.environ['PATH']}}")
 os.chdir(home)
 import signal, subprocess, time
@@ -178,9 +185,11 @@ def cut(*_):
         os.killpg(child.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    os.write(2, f'client_loop: send disconnect: Broken pipe ({{host}})\\n'.encode())
     os._exit(255)
 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(sig, cut)
+frozen = False
 while True:
     try:
         code = child.wait(timeout=0.1)
@@ -188,6 +197,9 @@ while True:
     except subprocess.TimeoutExpired:
         if (base / 'down').exists():
             cut()
+        if frozen != (base / 'freeze').exists():  # a stalled link: nothing moves
+            frozen = not frozen
+            os.killpg(child.pid, signal.SIGSTOP if frozen else signal.SIGCONT)
 sys.exit(code if code >= 0 else 128 - code)
 """)
         fake.chmod(0o755)
