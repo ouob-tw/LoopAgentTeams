@@ -203,6 +203,8 @@ uv run --no-project python <skill>/scripts/suite-gate.py light -- '<指令>'
 
 **送出前後**：只傳 Git 追蹤的檔案與沒被忽略的新檔（`.env` 等被忽略的檔案不傳），增量同步到那台的 `~/.cache/suite-gate/remote/<repo>/<工作區>/`。指紋若含 `fingerprint_include` 列的被忽略檔案，這次不分流。同步後與準備後都在那台重算內容，對不上就不在那台跑。有 `bun.lock` 的目錄在那台先跑 `bun install --frozen-lockfile`（輸出前面標 `[<主機> prepare]`），套件留在快取重用。所以每次分流開頭會多幾秒到幾十秒傳檔與核對；第一次在某台跑某目錄時要先裝套件，會更久。傳檔與準備超過 `remote_prepare_seconds` 或失敗時不算測試結果，那台這次當作不可用。
 
+那台的複本是一個 Git 工作區（有 `.git` 與這些檔案的索引，`git ls-files`、`git rev-parse` 照常可用），但沒有任何提交：要讀舊提交（`git show <提交>:<檔案>`、`git log`）的測試在別台會失敗，把要比對的舊檔存成進版控的 fixture。測試裡的 `git commit` 要自己設作者（或由主機清單的 `env` 設 `EMAIL`），沒有網域名稱的主機猜不出信箱。
+
 **執行與紀錄**：在那台同一個相對目錄跑同一個指令，在自己的程序群組裡（那台能開 systemd 使用者 scope 就加記憶體上限 `remote_mem_gb`，否則由看守程序量記憶體）。輸出即時傳回。紀錄寫在這台，多一欄 `host`（在這台跑的是 `null`），指紋算法不變，所以通過紀錄照常沿用，也照常算合併證據；`light` 仍不寫紀錄，結束時印的 `light run exited` 那行帶上主機名。`status` 的 `On other hosts` 列出正在別台跑的測試、主機與時間。
 
 **斷線與失聯**：
