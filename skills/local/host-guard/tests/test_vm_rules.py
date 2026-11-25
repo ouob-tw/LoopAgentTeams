@@ -425,6 +425,7 @@ class EmulatorTests(VmCase):
                 'adb -s emulator-5554 install app.apk', 'adb -s emulator-5554 shell input tap 1 2',
                 'adb -s emulator-5554 emu kill', 'adb devices',
                 'qemu-system-x86_64 -name windows -m 16G -enable-kvm',
+                'qemu-system-x86_64 -name @win', 'emulator -list-avds @pixel',
                 'grep -rn "emulator -avd" docs', 'git commit -m "emulator -avd pixel"',
                 'uv run --no-project python ~/.agents/skills/vm/scripts/vm.py borrow android '
                 '"login test" --avd pixel']:

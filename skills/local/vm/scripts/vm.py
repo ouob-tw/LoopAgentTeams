@@ -19,6 +19,7 @@ Replaceable for tests (environment variables):
   VM_ANDROID_AVD_DIRS  AVD folders to search, separated by `:` (default: see avd_dirs)
   VM_ANDROID_SDKS      Android SDK roots to search, separated by `:` (default: see sdk_roots)
   VM_ANDROID_STOP_WAIT seconds to wait for a graceful emulator stop (default 120)
+  VM_ANDROID_SETTLE    seconds a new emulator must keep running to count as started (default 5)
 
 Safety: with a data root in a temporary folder (tests, trials), a program whose variable
 above is unset is never run; the call fails instead, so a test can never reach the host's
@@ -74,9 +75,13 @@ ANDROID_PORTS = range(5554, 5684, 2)  # emulator console ports; adb serial emula
 ANDROID_OVERHEAD_GB = 2.0  # emulator process memory on top of the AVD's hw.ramSize
 ANDROID_DEFAULT_GB = 4.0  # need when the AVD's hw.ramSize cannot be read
 ANDROID_START_WAIT_SECONDS = 30
+ANDROID_SETTLE_SECONDS = 5  # an emulator must still run this long after it appears
 ANDROID_TERM_WAIT_SECONDS = 15
 ANDROID_UNLEASED_GRACE = dt.timedelta(minutes=10)
+GRACE_MINUTES = int(ANDROID_UNLEASED_GRACE.total_seconds() // 60)
 ANDROID_BOOT_ARGS = ['-no-window', '-no-audio', '-no-boot-anim', '-gpu', 'swiftshader_indirect']
+ANDROID_FIELDS = ('kind', 'avd', 'avd_home', 'sdk', 'memory_gb', 'port', 'serial',
+                  'emulator_args')
 ANDROID_RESERVED_ARGS = {'-avd', '-port', '-ports', '-no-window'}
 
 STATUS_OFF = '關機'
@@ -309,18 +314,20 @@ def available_gb():
 
 def emulator_avd(argv):
     """The AVD name an emulator process runs, or None when argv is not an Android emulator.
-    Only the SDK's `emulator` launcher or its `qemu-system-*` engine given an AVD (`-avd NAME`
-    or `@NAME`) counts, so Docker VMs' qemu (no AVD) and other programs are never matched."""
+    Only the SDK's `emulator` launcher or its `qemu-system-*` engine given an AVD (`-avd NAME`,
+    `-avd=NAME`, or the launcher's first argument `@NAME`) counts, so Docker VMs' qemu (no AVD) and other programs are never matched."""
     if not argv:
         return None
     program = os.path.basename(argv[0])
     if program != 'emulator' and not program.startswith('qemu-system-'):
         return None
+    if program == 'emulator' and len(argv) > 1 and argv[1].startswith('@') and len(argv[1]) > 1:
+        return argv[1][1:]
     for i, word in enumerate(argv[1:], 1):
         if word == '-avd' and i + 1 < len(argv):
             return argv[i + 1]
-        if word.startswith('@') and len(word) > 1:
-            return word[1:]
+        if word.startswith('-avd=') and len(word) > len('-avd='):
+            return word[len('-avd='):]
     return None
 
 
@@ -488,11 +495,11 @@ class Android:
             return f'無法執行模擬器程式：{exc}'
         deadline = time.monotonic() + ANDROID_START_WAIT_SECONDS
         while True:
-            if self.running(info['avd']):
-                return None
             code = child.poll()
+            if self.running(info['avd']):
+                return self._settled(info['avd'], log_path)
             if code is not None and self.running(info['avd']):
-                return None  # the launcher handed over to the engine and exited
+                return self._settled(info['avd'], log_path)  # the launcher handed over
             if code is not None or time.monotonic() >= deadline:
                 if code is None:
                     child.kill()
@@ -503,11 +510,29 @@ class Android:
                 return what + (f'：{tail}' if tail else '')
             time.sleep(0.2)
 
-    def stop(self, avd, port):
+    def _settled(self, avd, log_path):
+        """None when the emulator still runs after the settle time, else why it died: a
+        broken image or busy KVM shows up as an engine that exits right after it starts."""
+        settle = float(os.environ.get('VM_ANDROID_SETTLE') or ANDROID_SETTLE_SECONDS)
+        deadline = time.monotonic() + settle
+        while True:
+            if not self.running(avd):
+                tail = log_tail(log_path)
+                return '模擬器啟動後隨即結束' + (f'：{tail}' if tail else '')
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.5)
+
+    def stop(self, avd):
         """Graceful stop (`adb emu kill`, then SIGTERM), SIGKILL as the last step. None once no
-        process of this AVD is left, else the reason."""
+        process of this AVD is left, else the reason. The adb port is read from this AVD's own
+        process right before the kill, never from a lease, so a stale port cannot reach
+        another emulator."""
         wait = float(os.environ.get('VM_ANDROID_STOP_WAIT') or STOP_GRACE_SECONDS)
         notes = []
+        procs = self.processes()
+        ports = {p['port'] for p in procs or () if p['avd'] == avd and p['port']}
+        port = ports.pop() if len(ports) == 1 else None
         if port:
             result = self._run('VM_ADB', 'adb', ['-s', f'emulator-{port}', 'emu', 'kill'])
             if result.returncode:
@@ -579,11 +604,7 @@ class AndroidUnit:
         return self.android.running(self.avd)
 
     def stop(self):
-        port = (self.lease or {}).get('port')
-        if port is None:
-            port = next((p['port'] for p in self.android.processes() or []
-                         if p['avd'] == self.avd and p['port']), None)
-        return self.android.stop(self.avd, port)
+        return self.android.stop(self.avd)
 
 
 # ---------------------------------------------------------------- shared rules
@@ -683,6 +704,11 @@ def hours_or_refuse(hours):
     return hours
 
 
+def docker_only(emulator_args):
+    if emulator_args:
+        raise Refused('--emulator-args 只用在 Android 模擬器。拿掉後再試。')
+
+
 def emulator_args_or_refuse(text):
     """Extra emulator arguments from --emulator-args; vm sets the AVD, port and window."""
     words = shlex.split(text or '')
@@ -700,6 +726,7 @@ def new_lease(who, purpose, current, hours, powered_on_at):
 
 
 def android_fields(info, port, extra):
+    """The lease fields of an emulator lease, keyed by ANDROID_FIELDS."""
     return {'kind': ANDROID, 'avd': info['avd'], 'avd_home': info['avd_home'],
             'sdk': info['sdk'], 'memory_gb': info['memory_gb'], 'port': port,
             'serial': f'emulator-{port}' if port else None, 'emulator_args': extra}
@@ -908,7 +935,7 @@ class Vm:
                     f"看守不會因此關機；{take}）")
         if r['unleased']:
             return (f"{r['machine']}：{r['status']}｜沒有人借用（看守程式 "
-                    f"{ANDROID_UNLEASED_GRACE.seconds // 60} 分鐘後會關機；{take}）")
+                    f"{GRACE_MINUTES} 分鐘後會關機；{take}）")
         return f"{r['machine']}：{r['status']}｜沒有人借用"
 
     def borrow(self, name, purpose, hours, human, avd=None, emulator_args=None):
@@ -922,8 +949,7 @@ class Vm:
         if is_android(key):
             return self.borrow_android(key, purpose, hours, who,
                                        emulator_args_or_refuse(emulator_args))
-        if emulator_args:
-            raise Refused('--emulator-args 只用在 Android 模擬器。拿掉後再試。')
+        docker_only(emulator_args)
         with self.store.locked():
             machines, leases, current = self.store.machines(), self.store.leases(), now()
             machine = machine_or_refuse(machines, name)
@@ -1037,8 +1063,8 @@ class Vm:
     def start(self, name, human, avd=None, emulator_args=None):
         who = caller(human)
         key = target(name, avd)
-        if emulator_args and not is_android(key):
-            raise Refused('--emulator-args 只用在 Android 模擬器。拿掉後再試。')
+        if not is_android(key):
+            docker_only(emulator_args)
         extra = emulator_args_or_refuse(emulator_args) if emulator_args else None
         with self.store.locked():
             machines, leases, current = self.store.machines(), self.store.leases(), now()
@@ -1048,12 +1074,18 @@ class Vm:
             unit = self.unit(key, lease, machines)
             if is_android(key):
                 procs = self.processes_or_refuse()
-                if any(p['avd'] == unit.avd for p in procs):
+                ports = {p['port'] for p in procs if p['avd'] == unit.avd}
+                if ports:
+                    port = ports.pop() if len(ports) == 1 else None
+                    if port and port != lease.get('port'):  # restarted elsewhere: follow it
+                        lease.update(port=port, serial=f'emulator-{port}')
+                        self.store.save_leases(leases)
                     return f'{key} 已經在執行。'
                 admit(self.store, self.units(machines, leases, procs), leases, key,
                       unit.memory_gb, current)
                 port = self.free_port(leases, procs, key, prefer=lease.get('port'))
-                extra = lease.get('emulator_args') or [] if extra is None else extra
+                if extra is None:
+                    extra = lease.get('emulator_args') or []
                 error = self.android.start(lease, port, extra, self.log_path(unit.avd))
                 if error:
                     self.store.log('start-failed', key, who, error, who)
@@ -1128,9 +1160,7 @@ class Vm:
                                f'機器將{what}。請停止使用這台機器。')
             self.store.log('reclaim', key, lease['borrower'], what, HUMAN)
             if to_human:
-                kept = {k: v for k, v in lease.items() if k in (
-                    'kind', 'avd', 'avd_home', 'sdk', 'memory_gb', 'port', 'serial',
-                    'emulator_args')}
+                kept = {k: v for k, v in lease.items() if k in ANDROID_FIELDS}
                 leases[key] = {**new_lease(HUMAN, purpose or '強制收回', current, hours,
                                            lease.get('powered_on_at')), **kept}
                 expires = parse(leases[key]['expires_at'])
@@ -1247,7 +1277,7 @@ class Vm:
         if not since:
             since = iso(current)
             self.store.log('unleased', name, None,
-                           f'沒有借用卻在執行，{ANDROID_UNLEASED_GRACE.seconds // 60} 分鐘內'
+                           f'沒有借用卻在執行，{GRACE_MINUTES} 分鐘內'
                            '沒人借用就關機', 'watch')
         if current - parse(since) >= ANDROID_UNLEASED_GRACE and stop_machine(
                 self.store, unit, name, None, self.hcom, '沒有借用卻在執行', False, 'watch'):

@@ -1310,13 +1310,13 @@ def emulator_start(rest):
     name = os.path.basename(program)
     if name != 'emulator' and not name.startswith('qemu-system-'):
         return None
+    if name == 'emulator' and len(rest) > 1 and rest[1].startswith('@') and len(rest[1]) > 1:
+        return rest[1][1:]
     for i, word in enumerate(rest[1:], 1):
         if word == '-avd':
             return rest[i + 1] if i + 1 < len(rest) else '<name>'
         if word.startswith('-avd='):
             return word[len('-avd='):] or '<name>'
-        if word.startswith('@') and len(word) > 1:
-            return word[1:]
     if name.startswith('qemu-system-') and '/emulator/' in program:
         return '<name>'
     return None

@@ -125,6 +125,7 @@ class VmCase(unittest.TestCase):
                    FAKE_HCOM_LIST=str(self.hcom_list), VM_NOW=when or at(),
                    VM_ANDROID_AVD_DIRS=':'.join(map(str, self.avd_dirs)),
                    VM_ANDROID_SDKS=str(self.sdk), VM_ANDROID_STOP_WAIT='0',
+                   VM_ANDROID_SETTLE='0',
                    FAKE_ANDROID_STATE=str(self.android_state))
         for var, role in (('VM_PS', 'ps'), ('VM_ADB', 'adb'), ('VM_KILL', 'kill'),
                           ('VM_EMULATOR', 'emulator')):
@@ -778,6 +779,30 @@ class AndroidBorrowTests(AndroidCase):
         self.assertIn('emulator-5554', self.ok('start', 'android', '--avd', 'pixel'))
         self.assertEqual(self.calls('emulator')[-1][-2:], ['-cores', '2'])
         self.assertIn('已經在執行', self.ok('start', 'android', '--avd', 'pixel'))
+
+
+    def test_an_emulator_that_dies_right_after_it_appears_is_not_a_borrow(self):
+        self.update_android(crash_after_start=['pixel'])
+        self.assertIn('隨即結束', self.refused('borrow', 'android', 'x', '--avd', 'pixel'))
+        self.assertEqual(self.leases(), {})
+
+    def test_stop_uses_the_port_the_avd_runs_on_not_a_stale_lease_port(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        state = self.android()  # pixel crashed and came back on 5562; tablet now sits on 5554
+        state['procs'] = {'700': [ENGINE, '-avd', 'pixel', '-port', '5562'],
+                          '701': [ENGINE, '-avd', 'tablet', '-port', '5554']}
+        self.android_state.write_text(json.dumps(state))
+        self.ok('start', 'android', '--avd', 'pixel')
+        self.assertEqual(self.leases()['android:pixel']['serial'], 'emulator-5562')
+        self.ok('return', 'android', '--avd', 'pixel')
+        self.assertEqual(self.adb(), [['adb', '-s', 'emulator-5562', 'emu', 'kill']])
+        self.assertEqual(self.emulators(), {'tablet': 5554})
+
+    def test_at_words_and_avd_equals_are_read_like_the_emulator_reads_them(self):
+        self.assertEqual(vm.emulator_avd(['/sdk/emulator/emulator', '@pixel']), 'pixel')
+        self.assertEqual(vm.emulator_avd([ENGINE, '-avd=pixel']), 'pixel')
+        self.assertIsNone(vm.emulator_avd(['/usr/bin/qemu-system-x86_64', '-name', '@win']))
+        self.assertIsNone(vm.emulator_avd(['/sdk/emulator/emulator', '-x', '@pixel']))
 
 
 class AndroidMemoryTests(AndroidCase):

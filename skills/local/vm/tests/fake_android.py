@@ -1,7 +1,8 @@
 """Stand-in for `ps`, `adb`, `kill` and the Android `emulator` in the vm tests.
 
 Called as `fake_android.py <role> <args...>`. FAKE_ANDROID_STATE holds
-{"procs": {pid: argv}, "next_pid": int, "fail_start": [avd], "ignore_emu_kill": [avd],
+{"procs": {pid: argv}, "next_pid": int, "fail_start": [avd], "crash_after_start": [avd]
+ (the process is gone after the next ps), "ignore_emu_kill": [avd],
  "ignore_term": [avd], "ignore_kill": [avd], "ps_fail": bool, "adb_fail": bool}.
 Every call except ps is appended to FAKE_EVENTS. Only the exact call shapes vm.py may use
 are accepted; anything else fails like a wrong call to the real program."""
@@ -44,6 +45,9 @@ with open(state_path.with_suffix('.lock'), 'a') as lock:
             fail('ps: cannot read /proc')
         for pid, argv in sorted(procs.items(), key=lambda item: int(item[0])):
             print(f'{int(pid):>7} {" ".join(argv)}')
+        for pid in state.pop('crashing', []):  # an engine that dies right after it shows up
+            procs.pop(pid, None)
+        state_path.write_text(json.dumps(state))
         sys.exit(0)
     if role == 'adb':
         if state.get('adb_fail'):
@@ -100,6 +104,8 @@ with open(state_path.with_suffix('.lock'), 'a') as lock:
         pid = str(state.get('next_pid', 4000))
         state['next_pid'] = int(pid) + 1
         procs[pid] = [ENGINE, *args]
+        if avd in state.get('crash_after_start', []):
+            state.setdefault('crashing', []).append(pid)
         print(f'INFO | started {avd} on {port}')
     else:
         fail(f'fake android: unknown role {role}', 2)
