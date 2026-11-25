@@ -18,6 +18,8 @@
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import { withAnswered } from '#lib/board/question-message.ts';
+	import { answering } from '#lib/board/answering.svelte.ts';
+	import { pendingBars } from '#lib/board/pending-bars.ts';
 	import { isInactive, STATUS_LABEL, type Controller, type InboxItem, type InboxQuestion, type InboxReport, type KnownAgent } from '#lib/board/types.ts';
 	import type { Translation } from '#lib/board/translate.ts';
 	import type { PlacedTarget } from '#lib/board/transcript.ts';
@@ -112,9 +114,11 @@
 	$effect(() => {
 		if (!folded) unfolded = false;
 	});
+	const pendingCount = $derived(pendingBars(controller.status, questions, answering).length);
 	const warnings = $derived([
 		...(controller.error ? ['出錯'] : []),
-		...(questions.length ? [`${questions.length} 題待決`] : []),
+		// As many as the 待決 bars: a question whose answer is sent counts only when something went wrong.
+		...(pendingCount ? [`${pendingCount} 題待決`] : []),
 		...(paneAgent ? agentWarnings(paneAgent) : [])
 	]);
 	/** The tab shows only while the latest round has a review file; its count is what still needs the user (reviewTabCount). */

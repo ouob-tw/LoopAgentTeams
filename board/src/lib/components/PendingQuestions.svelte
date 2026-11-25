@@ -1,5 +1,8 @@
 <script lang="ts">
-	// A bar for each of a controller's questions waiting for an answer, each leading to its card.
+	// A bar for each of a controller's questions waiting for an answer, each leading to its card. A
+	// question whose answer is sent has none, unless something went wrong with it (pendingBars).
+	import { answering } from '#lib/board/answering.svelte.ts';
+	import { pendingBars } from '#lib/board/pending-bars.ts';
 	import { summaryPlain } from '#lib/board/summary-links.ts';
 	import { isInactive, STATUS_LABEL, type Controller, type InboxItem, type InboxQuestion } from '#lib/board/types.ts';
 	import VisualLinks from './VisualLinks.svelte';
@@ -16,20 +19,24 @@
 	} = $props();
 
 	const inactive = $derived(isInactive(status));
+	const bars = $derived(pendingBars(status, questions, answering));
 </script>
 
-{#if questions.length}
+{#if bars.length}
 	<div class="questions">
-		{#each questions as item (item.key)}
+		{#each bars as { item, problem } (item.key)}
 			<div class="row">
-				<button type="button" class="question" onclick={() => onopen(item)}>
-					<span class="title">▲ <b>待決</b>：{summaryPlain(item.title) || '（沒有標題）'}</span>
+				<button type="button" class="question" data-problem={problem ? '' : undefined} onclick={() => onopen(item)}>
+					<span class="title">
+						▲ <b>待決</b>：{summaryPlain(item.title) || '（沒有標題）'}
+						{#if problem}<span class="problem">{problem}</span>{/if}
+					</span>
 					<span class="answer">{inactive || !item.unsent ? '查看' : '作答'} ›</span>
 				</button>
 				<VisualLinks urls={item.question.visuals} labels={item.question.visual_labels} />
 			</div>
 		{/each}
-		{#if inactive}
+		{#if inactive && bars.some(({ item }) => item.unsent)}
 			<p class="none">主控{STATUS_LABEL[status]}，它的待決題不能再作答。</p>
 		{/if}
 	</div>
@@ -71,6 +78,13 @@
 	.answer {
 		flex: none;
 		color: var(--accent);
+	}
+	/* What went wrong with the answer sent: its own line under the title. */
+	.problem {
+		display: block;
+		margin-top: 0.2rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
+		color: var(--danger);
 	}
 
 	/* Light theme: no tints; the bar is framed in the text colour. */
