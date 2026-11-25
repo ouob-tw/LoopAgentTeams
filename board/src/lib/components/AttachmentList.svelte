@@ -57,7 +57,9 @@
 
 	async function openTab(event: MouseEvent, path: string) {
 		event.preventDefault();
-		if (await present(path)) openOwn(attachmentUrl(path));
+		// Taken before the wait: the event has no target after it.
+		const link = event.currentTarget as Element;
+		if (await present(path)) openOwn(attachmentUrl(path), { from: link });
 		else gone[path] = true;
 	}
 </script>

@@ -21,6 +21,7 @@
       "tests": [
         "board/tests/unit/link-open.test.ts",
         "board/tests/browser/link-open-app.test.ts",
+        "board/tests/browser/link-open-place.test.ts",
         "board/tests/unit/build-update.test.ts",
         "board/tests/unit/build-update-watch.test.ts",
         "board/tests/browser/build-update-page.test.ts",
