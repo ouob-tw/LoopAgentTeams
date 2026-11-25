@@ -801,6 +801,7 @@ function createBoard(): Board {
 					launching: [],
 					inbox: [],
 					recordedKeys: [],
+					recordedAnswers: {},
 					processedCount: 0,
 					agents: [],
 					workspaces: [],

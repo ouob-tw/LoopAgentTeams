@@ -114,7 +114,9 @@ function answer() {
 		Object.assign(output, { notified: false, reason: plan.notifyFails });
 	}
 	save();
-	return { output };
+	// `answerSleepMs`: the answer is written at once and its output comes back late, as the real
+	// command's record and notification can take a while.
+	return { output, sleepMs: plan.answerSleepMs ?? 0 };
 }
 
 function notify() {

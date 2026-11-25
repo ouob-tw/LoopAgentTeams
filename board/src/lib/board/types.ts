@@ -219,6 +219,9 @@ export interface BoardSnapshot {
 	inbox: InboxItem[];
 	/** Keys of the active controllers' questions that are recorded, and so no longer in the inbox. */
 	recordedKeys: string[];
+	/** The answer and note each of `recordedKeys` was recorded with, by key: a question that has
+	 *  just left the inbox shows them before the answered list is read again. */
+	recordedAnswers: Record<string, { answer: string; note: string }>;
 	/** How many items are processed: read or archived reports and answered questions. They are
 	 *  fetched separately. */
 	processedCount: number;

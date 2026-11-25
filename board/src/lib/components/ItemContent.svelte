@@ -79,15 +79,17 @@
 	const notifying = $derived(answering.notifying[item.key] ?? false);
 	const answerable = $derived(item.kind === 'question' && listed && item.unsent);
 	/** The answer to show on a question that can no longer be answered: as its data has it, or as
-	 *  it was sent from this page when the data does not carry it yet. */
+	 *  it was sent from this page when the data does not carry it yet, or as it is being sent: the
+	 *  board may have the answer written before the page has the server's reply. */
 	const shownAnswer = $derived.by(() => {
 		if (item.kind !== 'question') return null;
 		if (!item.unsent && item.question.answer) return { answer: item.question.answer, note: item.question.note };
-		return !answerable && submitted ? { answer: submitted.answer, note: submitted.note } : null;
+		if (answerable) return null;
+		return submitted ? { answer: submitted.answer, note: submitted.note } : answering.sendingAnswer(item);
 	});
 	/** The answer is settled: sent from here or elsewhere, answered, or recorded. A question gone
 	 *  from the page with no answer sent is not. */
-	const decided = $derived(item.kind === 'question' && !answerable && (isAnswered(item) || recorded || !item.unsent || !!submitted));
+	const decided = $derived(item.kind === 'question' && !answerable && (isAnswered(item) || recorded || !item.unsent || !!shownAnswer));
 	const chosen = $derived(item.kind === 'question' && shownAnswer ? chosenIn(item.question, shownAnswer.answer) : null);
 
 	function choose(position: number, single: boolean) {
