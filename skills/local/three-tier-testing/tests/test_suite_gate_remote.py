@@ -301,6 +301,34 @@ class OffloadTests(RemoteMixin, GateCase):
         self.assertTrue(self.records()[-1]['reusable'])
         self.assertTrue((self.tree('s3') / 'node_modules/dep').exists())
 
+    def test_a_preparation_that_never_ends_is_stopped_and_the_next_host_is_tried(self):
+        self.add_host('slow')
+        self.add_host('s3')
+        (self.repo / 'bun.lock').write_text('{}\n')
+        pids = self.tmp / 'bun-pid'
+        self.host_tool('slow', 'bun', f'echo $$ > {pids}; exec sleep 60')
+        self.host_tool('s3', 'bun', 'exit 0')
+        self.brake_here(hosts=['slow', 's3'], remote_prepare_seconds=1)
+        result = self.gate('run', '--', self.suite())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('did not finish within 1s; this is not a test result', result.stderr)
+        self.assertEqual(self.records()[-1]['host'], 's3')
+        self.assertFalse(self.pid_alive(int(pids.read_text())))
+
+    def test_the_suite_sees_no_git_setting_of_the_gate_there(self):
+        self.add_host('s3')
+        self.brake_here()
+        result = self.gate('run', '--', f'env > {self.tmp}/env; d=$(mktemp -d); cd "$d" && '
+                           'git init -q && echo a > a && git add a && '
+                           'git -c user.name=t -c user.email=t@t commit -qm x && '
+                           f'git ls-files > {self.tmp}/listed')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.records()[-1]['host'], 's3')
+        self.assertEqual((self.tmp / 'listed').read_text(), 'a\n')
+        env = (self.tmp / 'env').read_text()
+        self.assertNotIn('GIT_INDEX_FILE=', env)
+        self.assertNotIn('suite-gate-index', env)
+
     def test_a_missing_tool_the_preparation_needs_keeps_the_suite_off_that_host(self):
         self.add_host('s3')
         (self.repo / 'bun.lock').write_text('{}\n')

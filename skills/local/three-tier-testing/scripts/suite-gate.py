@@ -78,11 +78,13 @@ DEFAULTS = {'min_slots': 1, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds
             'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5,
             'reclaim_grace_seconds': 600.0, 'light_min_slots': 1, 'light_max_slots': 4,
             'light_cores': 2.0, 'light_mem_gb': 2.0, 'remote_poll_seconds': 5.0,
-            'remote_connect_seconds': 5, 'remote_mem_gb': 16.0}
+            'remote_connect_seconds': 5, 'remote_mem_gb': 16.0,
+            'remote_prepare_seconds': 1800.0}
 # The smallest value each key accepts; an int default takes whole numbers only.
 MINIMUMS = {'min_slots': 0, 'max_slots': 1, 'profile_history': 1, 'poll_seconds': 0.01,
             'report_seconds': 0.01, 'sample_seconds': 0.01, 'light_max_slots': 1,
-            'remote_poll_seconds': 0.01, 'remote_connect_seconds': 1, 'remote_mem_gb': 0.5}
+            'remote_poll_seconds': 0.01, 'remote_connect_seconds': 1, 'remote_mem_gb': 0.5,
+            'remote_prepare_seconds': 0.01}
 BRAKE_PAIRS = (('brake_io_low', 'brake_io_high'), ('brake_cpu_low', 'brake_cpu_high'))
 GIB = 2 ** 30
 TESTS_SLICE = 'lat-tests.slice'  # the user slice that caps every suite's CPU; SUITE_GATE_SLICE overrides
@@ -1760,6 +1762,7 @@ class RemoteHost:
         self.host, self.env, self.cache = entry['host'], entry.get('env') or {}, cache
         self.connect = max(1, int(config['remote_connect_seconds']))
         self.mem_gb = config['remote_mem_gb']
+        self.prepare_limit = config['remote_prepare_seconds']  # sending, and preparing
         self.run_id = run_id
         self.jobs = 0  # jobs started, for their names
         self.live = False  # a job may be running there
@@ -1773,9 +1776,10 @@ class RemoteHost:
         exports = ''.join(f'export {k}={shlex.quote(v)}\n' for k, v in sorted(self.env.items()))
         return ('export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"\n' + exports
                 + f'C="$HOME"/{shlex.quote(self.cache)}\nJ="$C/job"\n'
-                'export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 '
-                'GIT_INDEX_FILE="$C/git/suite-gate-index"\n'
-                'g() { git --git-dir="$C/git" --work-tree=. -c core.bare=false "$@"; }\n')
+                # Only the gate's own Git calls see these; jobs get the environment as is.
+                'g() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 '
+                'GIT_INDEX_FILE="$C/git/suite-gate-index" '
+                'git --git-dir="$C/git" --work-tree=. -c core.bare=false "$@"; }\n')
 
     def script(self, body, timeout=None):
         """(exit code, stdout, stderr) of body run there under sh; REMOTE_GONE_EXIT when ssh
@@ -1824,7 +1828,8 @@ class RemoteHost:
         """Send files (relative to root) into the cache's tree/; why not, or None."""
         code, _, err = self.script(
             'mkdir -p "$C/tree" "$J" || exit 1\n'
-            '[ -f "$C/git/HEAD" ] || git init -q --bare "$C/git" || exit 1\n'
+            '[ -f "$C/git/HEAD" ] || GIT_CONFIG_GLOBAL=/dev/null git init -q --bare "$C/git" '
+            '|| exit 1\n'
             'date -u +%Y-%m-%dT%H:%M:%SZ > "$C/used"\n', timeout=self.connect + 60)
         if code:
             return f'could not create its cache {self.cache}: {err.strip() or f"exit {code}"}'
@@ -1837,7 +1842,10 @@ class RemoteHost:
                          ['rsync', '-e', rsh, listing.name,
                           f'{self.host}:{self.cache}/files.list']):
                 try:
-                    done = subprocess.run(argv, capture_output=True, text=True)
+                    done = subprocess.run(argv, capture_output=True, text=True,
+                                          timeout=self.prepare_limit)
+                except subprocess.TimeoutExpired:
+                    return f'rsync did not finish within {fmt_seconds(self.prepare_limit)}'
                 except OSError as exc:
                     return f'rsync could not start: {exc}'
                 if done.returncode:
@@ -1850,7 +1858,7 @@ class RemoteHost:
         plus unignored new ones there. clean: first remove the unignored files there that were
         not sent (left by an earlier run). A string saying why not on failure."""
         code, out, err = self.script(
-            'cd "$C/tree" || exit 1\nrm -f "$GIT_INDEX_FILE"\n'
+            'cd "$C/tree" || exit 1\nrm -f "$C/git/suite-gate-index"\n'
             'if [ -s "$C/files.list" ]; then g add -f --pathspec-from-file="$C/files.list" '
             '--pathspec-file-nul || exit 1; fi\n'
             + ('g ls-files -z --others --exclude-standard | xargs -0 -r rm -f -- || exit 1\n'
@@ -2192,7 +2200,13 @@ class Gate:
                                    daemon=True) for stream in (child.stdout, child.stderr)]
         for thread in relays:
             thread.start()
-        code = child.wait()
+        try:
+            code = child.wait(timeout=remote.prepare_limit)
+        except subprocess.TimeoutExpired:
+            code = None
+        if code is None:  # drop_remote() ends it there and here
+            return (f'preparing {rel} there did not finish within '
+                    f'{fmt_seconds(remote.prepare_limit)}; this is not a test result')
         for thread in relays:
             thread.join(timeout=2)
         self.remote_child = None
