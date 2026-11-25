@@ -75,10 +75,16 @@ test('a question that left the inbox as recorded stays, recorded, until the answ
 	const other = asked('B-1', 2, message, 's2');
 	const removed = asked('C-1', 1);
 	const kept = asked('D-1', 1);
-	const left = justRecorded([sent, other, removed, kept], { inbox: [kept], recordedKeys: [sent.key, other.key] }, 's1');
+	const left = justRecorded([sent, other, removed, kept], { inbox: [kept], recordedKeys: [sent.key, other.key], recordedAnswers: {} }, 's1');
 	// Only this controller's, only the recorded ones: a question removed for another reason goes.
 	expect(left.map((item) => [item.key, item.question.status, item.question.answer])).toEqual([[sent.key, 'recorded', 'A. 甲']]);
-	expect(justRecorded([sent], { inbox: [sent], recordedKeys: [] }, 's1')).toEqual([]);
+	expect(justRecorded([sent], { inbox: [sent], recordedKeys: [], recordedAnswers: {} }, 's1')).toEqual([]);
+});
+
+test('a question written and recorded at once leaves the inbox still waiting: it shows the answer it was recorded with', () => {
+	const waiting = { ...asked('A-1', 1), unsent: true, question: { id: 'A-1', revision: 1, status: 'pending', answer: '', note: '' } } as unknown as InboxQuestion;
+	const [left] = justRecorded([waiting], { inbox: [], recordedKeys: [waiting.key], recordedAnswers: { [waiting.key]: { answer: 'B. 乙', note: '晚點再說' } } }, 's1');
+	expect([left!.unsent, left!.question.status, left!.question.answer, left!.question.note]).toEqual([false, 'recorded', 'B. 乙', '晚點再說']);
 });
 
 test('an asking message shows what it says above its tag line, and nothing when it is only the tag line', () => {

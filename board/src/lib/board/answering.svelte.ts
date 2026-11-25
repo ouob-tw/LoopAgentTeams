@@ -94,6 +94,13 @@ class Answering {
 		return this.drafts[key] ?? EMPTY;
 	}
 
+	/** The answer on its way to the server, while it is: the draft, which is kept until it is written. */
+	sendingAnswer(item: InboxQuestion): { answer: string; note: string } | null {
+		if (!this.sending[item.key]) return null;
+		const draft = this.draft(item.key);
+		return { answer: answerText(item.question, draft.select, answerTextOf(item.question, draft)), note: draft.note.trim() };
+	}
+
 	/** Whether any of these items has an answer begun and not sent: choices, 其他 or a note. */
 	holdsDraft(keys: string[]): boolean {
 		return keys.some((key) => {

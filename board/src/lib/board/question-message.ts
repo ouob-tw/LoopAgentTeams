@@ -49,15 +49,19 @@ export function withAnswered<T extends InboxItem>(inbox: T[], answered: InboxQue
 	return [...inbox, ...answered.filter((item) => !keys.has(item.key))];
 }
 
+/** A recorded answer, unless it is empty: a question recorded with none keeps what the inbox had. */
+const recordedWith = (recorded: { answer: string; note: string } | undefined) => (recorded?.answer ? recorded : {});
+
 /**
  * The controller's questions that this snapshot took out of the inbox because they are recorded, as
- * the inbox last had them and marked recorded. The answered list is read again only after the inbox
- * changed, so until then they are shown among the answered ones: their cards stay where they are
- * instead of going and coming back.
+ * the inbox last had them, marked recorded with the answer they were recorded with. The answered
+ * list is read again only after the inbox changed, so until then they are shown among the answered
+ * ones: their cards stay where they are instead of going and coming back. The inbox may last have
+ * had one still waiting, with no answer: one written and recorded at once.
  */
 export function justRecorded(
 	before: InboxItem[],
-	after: { inbox: InboxItem[]; recordedKeys: string[] },
+	after: { inbox: InboxItem[]; recordedKeys: string[]; recordedAnswers: Record<string, { answer: string; note: string }> },
 	controllerId: string
 ): InboxQuestion[] {
 	return before.flatMap((item) =>
@@ -65,7 +69,7 @@ export function justRecorded(
 		item.controllerId === controllerId &&
 		after.recordedKeys.includes(item.key) &&
 		!after.inbox.some((entry) => entry.key === item.key)
-			? [{ ...item, unsent: false, question: { ...item.question, status: 'recorded' as const } }]
+			? [{ ...item, unsent: false, question: { ...item.question, ...recordedWith(after.recordedAnswers[item.key]), status: 'recorded' as const } }]
 			: []
 	);
 }

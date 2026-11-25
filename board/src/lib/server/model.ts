@@ -522,6 +522,13 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		recordedKeys: live.flatMap((binding) =>
 			binding.questions.filter((question) => question.status === 'recorded').map((question) => questionKey(binding, question))
 		),
+		recordedAnswers: Object.fromEntries(
+			live.flatMap((binding) =>
+				binding.questions
+					.filter((question) => question.status === 'recorded')
+					.map((question) => [questionKey(binding, question), { answer: question.answer, note: question.note }])
+			)
+		),
 		processedCount: (state ? processedItems(sources, state, now) : answeredItems(sources, now)).length,
 		// A controller on the roster or off it is one on the Herdr tab too: bound, as the agent list
 		// already tells, or ended with a report not yet archived.
