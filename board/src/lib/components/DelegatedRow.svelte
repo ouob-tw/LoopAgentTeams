@@ -76,6 +76,7 @@
 					<label for="{detailId}-text">你想怎麼改？</label>
 					<textarea
 						id="{detailId}-text"
+						data-kept
 						rows="3"
 						value={box.text}
 						disabled={box.sending}

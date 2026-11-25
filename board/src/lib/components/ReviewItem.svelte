@@ -66,6 +66,7 @@
 			<label for="review-text-{item.id}">{word === '回覆' ? '你的回覆' : '你想怎麼改？'}</label>
 			<textarea
 				id="review-text-{item.id}"
+				data-kept
 				rows="3"
 				value={box.text}
 				disabled={box.sending}

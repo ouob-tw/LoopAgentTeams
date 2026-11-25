@@ -13,8 +13,6 @@
 import { TEXT_BOXES } from './build-update.ts';
 
 export const KEPT_TEXT_KEY = 'lat-board:kept-text';
-/** A written-down text is put back only if the user comes back within this long. */
-export const KEPT_TEXT_MS = 30 * 60_000;
 
 type KeptStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 interface Kept {
@@ -48,7 +46,7 @@ const loose = new Set<Loose>();
 function read(storage: () => KeptStorage, now = Date.now()): Kept | null {
 	try {
 		const kept = JSON.parse(storage().getItem(KEPT_TEXT_KEY) ?? 'null') as Kept | null;
-		if (!kept || now - kept.at > KEPT_TEXT_MS) return null;
+		if (!kept) return null;
 		return { at: kept.at, texts: kept.texts ?? {}, states: kept.states ?? {} };
 	} catch {
 		return null;
@@ -99,11 +97,12 @@ export function isSameOrigin(href: string, win: Window = window): boolean {
 	}
 }
 
-/** What names a box across two loads of the page: its id (or label) and its place among the boxes
+/** The page's boxes the keepers do not own (`data-kept` marks the ones they do: a second copy of
+ *  their text would be put back where it was cleared or sent). What names a box across two loads of the page: its id (or label) and its place among the boxes
  *  of that name. */
 function boxKeys(doc: Document): [string, HTMLElement][] {
 	const seen = new Map<string, number>();
-	return [...doc.querySelectorAll<HTMLElement>(TEXT_BOXES)].map((box) => {
+	return [...doc.querySelectorAll<HTMLElement>(TEXT_BOXES)].filter((box) => !box.hasAttribute('data-kept')).map((box) => {
 		// An id names the box for good (the review item's, the answer's); a label or placeholder
 		// can be shared by several boxes.
 		const name = box.id ? `#${box.id}` : (box.getAttribute('aria-label') ?? box.getAttribute('name') ?? box.getAttribute('placeholder') ?? '');
@@ -187,7 +186,6 @@ export function restoreTypedText(doc: Document, storage: () => KeptStorage = () 
 		persist();
 	}
 	observer.observe(doc.body, { childList: true, subtree: true });
-	setTimeout(stop, Math.max(0, saved.at + KEPT_TEXT_MS - now));
 	fill();
 }
 

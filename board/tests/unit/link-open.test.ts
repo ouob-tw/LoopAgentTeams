@@ -149,6 +149,18 @@ test('a keeper writes its text down before the page is left and gets it back whe
 	held = null;
 });
 
+test('text is kept until it is put back, however long the user is away', async () => {
+	const { win, store, storage } = windowOf({ standalone: true });
+	const held = { 'ask-1': ['寫了很久前的字'] };
+	releases.push(keepsText({ name: 'unit-long', save: () => held, restore: () => {} }, storage, 1_000));
+	await leaveTo(`${ORIGIN}/f`, { win, storage, ask: async () => true });
+	const got: unknown[] = [];
+	// Three days later.
+	keepsText({ name: 'unit-long', save: () => null, restore: (data) => got.push(data) }, storage, 1_000 + 3 * 86_400_000);
+	expect(got).toEqual([held]);
+	expect(store.has(KEPT_TEXT_KEY)).toBe(false);
+});
+
 test('openOwn: the installed app leaves in this window; a tab or another site opens a new one, isolated', async () => {
 	const app = windowOf({ standalone: true });
 	openOwn(`${ORIGIN}/f.pdf`, { win: app.win, storage: app.storage, ask: async () => true });

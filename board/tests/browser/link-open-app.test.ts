@@ -222,6 +222,18 @@ test.skipIf(!CHROME)('installed app: text waiting for its box survives a second 
 	expect(await tab.eval(`document.getElementById('review-text-A').value`)).toBe('');
 }, TEST_MS);
 
+test.skipIf(!CHROME)('installed app: a box a state owns (data-kept) is not copied from the page, so cleared text is not put back there', async () => {
+	const ADD = `(() => { const box = document.createElement('textarea'); box.id = 'owned'; box.setAttribute('data-kept', ''); document.body.append(box); })()`;
+	await visit(true);
+	await tab.eval(ADD);
+	await type('#owned', '狀態自己保管的字');
+	await tab.eval(`${LINK(OWN)}.click()`);
+	await away();
+	await tab.eval(ADD);
+	await new Promise((resolve) => setTimeout(resolve, 600));
+	expect(await tab.eval(`document.getElementById('owned').value`)).toBe('');
+}, TEST_MS);
+
 test.skipIf(!CHROME)('a normal tab keeps nothing written down', async () => {
 	await visit(false);
 	await tab.until(`!!document.querySelector('${BOX}')`, 'the message box');

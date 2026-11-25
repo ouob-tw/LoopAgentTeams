@@ -1,5 +1,6 @@
 <script module lang="ts">
-	import type { AskPick } from '#lib/board/board-asks.ts';
+	import { EMPTY_PICK, type AskPick } from '#lib/board/board-asks.ts';
+	import { holdsLoose, keepsText } from '#lib/board/link-open.ts';
 
 	/** What the user picked and has not sent, by ask ID then question: kept while the page is open,
 	 *  so it survives opening something else and a send that failed. */
@@ -7,6 +8,31 @@
 	/** Asks someone else answered first, as this page was told when it sent: read-only, and saying
 	 *  so, whatever the board's data says of them since. */
 	const takenHere = $state<Record<string, boolean>>({});
+
+	// A page left through a link in the installed app loads again (link-open.ts): the text of every
+	// question is written down by ask, shown or not, and put back; the options picked cannot be.
+	keepsText({
+		name: 'ask-picks',
+		save() {
+			const kept: Record<string, string[]> = {};
+			for (const [id, list] of Object.entries(picks)) if (list.some((pick) => pick.text.trim())) kept[id] = list.map((pick) => pick.text);
+			return Object.keys(kept).length ? kept : null;
+		},
+		restore(data) {
+			for (const [id, texts] of Object.entries(data as Record<string, string[]>)) {
+				const now = picks[id] ?? texts.map(() => EMPTY_PICK);
+				picks[id] = texts.map((text, at) => (now[at]?.text.trim() ? now[at]! : { ...(now[at] ?? EMPTY_PICK), text }));
+			}
+		}
+	});
+	holdsLoose({
+		label: '已選的選項',
+		present: () => Object.values(picks).some((list) => list.some((pick) => pick.select.length > 0 || pick.other)),
+		discard() {
+			for (const [id, list] of Object.entries(picks)) picks[id] = list.map((pick) => ({ ...pick, select: [], other: false }));
+			return true;
+		}
+	});
 </script>
 
 <script lang="ts">
@@ -19,7 +45,7 @@
 	// A permission request has its own card.
 	import { testDevice } from '#lib/board/test-device.svelte.ts';
 	import TestDenied from './TestDenied.svelte';
-	import { ASK_TAKEN_REASON, askAnswerable, BOARD_ASK_STATE_TEXT, EMPTY_PICK, RESEND_NOTE, pickComplete, type AskAnswerResponse, type AskQuestion, type BoardAsk } from '#lib/board/board-asks.ts';
+	import { ASK_TAKEN_REASON, askAnswerable, BOARD_ASK_STATE_TEXT, RESEND_NOTE, pickComplete, type AskAnswerResponse, type AskQuestion, type BoardAsk } from '#lib/board/board-asks.ts';
 	import { request } from '#lib/board/api.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
@@ -146,6 +172,7 @@
 							<VoiceField disabled={sending} key="ask-{ask.id}-{index}-other">
 								<textarea
 									rows="2"
+									data-kept
 									aria-label="其他的內容"
 									placeholder="其他：請寫下你的答案"
 									disabled={sending}
