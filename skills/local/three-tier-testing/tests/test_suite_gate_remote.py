@@ -54,12 +54,20 @@ class RemoteMixin:
                       .glob(f'*/*/job/job-*{suffix}'))
 
     def end_jobs(self, name):
-        """Kill the process groups of the jobs and watchdogs this test left on name."""
+        """Kill the process groups of the jobs and watchdogs this test left on name: only a
+        group whose leader runs a job file of that host (a pid file a test planted is not
+        followed)."""
         for path in [*self.job_files(name, '.pid'), *self.job_files(name, '.wpid')]:
             try:
-                os.killpg(int(path.read_text()), signal.SIGKILL)
+                pid = int(path.read_text())
+                command = Path(f'/proc/{pid}/cmdline').read_bytes()
             except (ValueError, OSError):
-                pass
+                continue
+            if str(self.remotes / name).encode() in command:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except OSError:
+                    pass
 
     def results(self, name):
         return [path.read_text().split() for path in self.job_files(name, '.result')]
