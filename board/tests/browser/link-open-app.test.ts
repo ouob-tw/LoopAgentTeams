@@ -69,7 +69,7 @@ const taken = (at: number) => tab.eval<boolean>(`(() => {
 test.skipIf(!CHROME)('installed app: a link to the board\'s own address opens in this window, one to another site is left to the browser', async () => {
 	await visit(true);
 	expect(await taken(OTHER)).toBe(false);
-	await tab.eval(`${LINK(OWN)}.click()`);
+	await tab.eval(`window.__old = true; ${LINK(OWN)}.click()`);
 	await tab.until(`location.pathname === '/manifest.webmanifest'`, 'this window to show the file');
 }, TEST_MS);
 
@@ -83,7 +83,7 @@ test.skipIf(!CHROME)('installed app: text typed and not sent is still in the box
 	await visit(true);
 	await tab.until(`!!document.querySelector('${BOX}')`, 'the message box');
 	await tab.eval(`(() => { const box = document.querySelector('${BOX}'); box.value = '還沒送出的字'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-	await tab.eval(`${LINK(OWN)}.click()`);
+	await tab.eval(`window.__old = true; ${LINK(OWN)}.click()`);
 	await tab.until(`location.pathname === '/manifest.webmanifest'`, 'this window to show the file');
 	await tab.eval(`history.back()`);
 	await tab.boardStarted();
@@ -111,7 +111,7 @@ test.skipIf(!CHROME)('installed app: a box that only opens later (a review reply
 	const ADD = (id: string) => `(() => { const box = document.createElement('textarea'); box.id = ${JSON.stringify(id)}; box.placeholder = '寫下你的決定'; document.body.append(box); return box; })()`;
 	await visit(true);
 	await tab.eval(`(() => { const box = ${ADD('review-text-A')}; box.value = '回覆 A'; })()`);
-	await tab.eval(`${LINK(OWN)}.click()`);
+	await tab.eval(`window.__old = true; ${LINK(OWN)}.click()`);
 	await tab.until(`location.pathname === '/manifest.webmanifest'`, 'this window to show the file');
 	await tab.eval(`history.back()`);
 	await tab.boardStarted();
@@ -135,13 +135,13 @@ const openCard = async (id: string) => {
 const PROMPT = `[role="alertdialog"]`;
 /** Follow the card's own link and wait for the file page. */
 const follow = async (id: string) => {
-	await tab.eval(`document.querySelector('${cardOf(id)} a.visual').click()`);
+	await tab.eval(`window.__old = true; document.querySelector('${cardOf(id)} a.visual').click()`);
 };
 const away = async () => {
 	await tab.until(`location.pathname === '/manifest.webmanifest'`, 'this window to show the file');
 	await tab.eval(`history.back()`);
 	await tab.boardStarted();
-	await tab.until(`document.querySelectorAll('.questions .row a.visual').length === 4`, 'the board again');
+	await tab.until(`!window.__old && document.querySelectorAll('.questions .row a.visual').length === 4`, 'the board again');
 };
 
 test.skipIf(!CHROME)('installed app: an answer typed on a card no longer shown goes along and is there after coming back', async () => {
@@ -161,9 +161,11 @@ test.skipIf(!CHROME)('installed app: text in an open dialog is kept, and the dia
 	await visit(true);
 	await tab.eval(`(() => { const dialog = document.createElement('dialog'); dialog.setAttribute('open', ''); dialog.innerHTML = '<textarea id="note-in-dialog"></textarea>'; document.body.append(dialog); })()`);
 	await type('#note-in-dialog', '對話框裡的字');
-	await tab.eval(`${LINK(OWN)}.click()`);
+	await tab.eval(`window.__old = true; ${LINK(OWN)}.click()`);
 	await away();
-	await tab.until(`!document.getElementById('note-in-dialog')`, 'the page loaded again');
+	await tab.until(`!window.__old && document.readyState === 'complete'`, 'the page loaded again');
+	// Chrome puts form text back by itself while a page finishes loading; what the test checks comes after that.
+	await new Promise((resolve) => setTimeout(resolve, 400));
 	await tab.eval(`(() => { const dialog = document.createElement('dialog'); dialog.setAttribute('open', ''); dialog.innerHTML = '<textarea id="note-in-dialog"></textarea>'; document.body.append(dialog); })()`);
 	await tab.until(`document.getElementById('note-in-dialog').value === '對話框裡的字'`, 'the text back in the dialog');
 }, TEST_MS);
@@ -203,12 +205,14 @@ test.skipIf(!CHROME)('installed app: "放棄並開啟" drops the picked option, 
 test.skipIf(!CHROME)('installed app: text waiting for its box survives a second round trip before the box opens, and is not put back once restored', async () => {
 	const ADD = (id: string) => `(() => { const box = document.createElement('textarea'); box.id = ${JSON.stringify(id)}; document.body.append(box); })()`;
 	const away = async () => {
-		await tab.eval(`${LINK(OWN)}.click()`);
+		await tab.eval(`window.__old = true; ${LINK(OWN)}.click()`);
 		await tab.until(`location.pathname === '/manifest.webmanifest'`, 'this window to show the file');
 		await tab.eval(`history.back()`);
 		await tab.boardStarted();
 		// The page may first show from the browser's memory of it, then load again.
-		await tab.until(`!document.getElementById('review-text-A') && !document.getElementById('review-text-B')`, 'the page loaded again');
+		await tab.until(`!window.__old && document.readyState === 'complete'`, 'the page loaded again');
+	// Chrome puts form text back by itself while a page finishes loading; what the test checks comes after that.
+	await new Promise((resolve) => setTimeout(resolve, 400));
 	};
 	await visit(true);
 	await tab.eval(`${ADD('review-text-A')}; ${ADD('review-text-B')}; document.getElementById('review-text-A').value = '回覆 A'; document.getElementById('review-text-B').value = '回覆 B';`);
@@ -228,10 +232,12 @@ test.skipIf(!CHROME)('installed app: a box a state owns (data-kept) is not copie
 	await visit(true);
 	await tab.eval(ADD);
 	await type('#owned', '狀態自己保管的字');
-	await tab.eval(`${LINK(OWN)}.click()`);
+	await tab.eval(`window.__old = true; ${LINK(OWN)}.click()`);
 	await away();
 	// The page may first show from the browser's memory of it, then load again.
-	await tab.until(`!document.getElementById('owned')`, 'the page loaded again');
+	await tab.until(`!window.__old && document.readyState === 'complete'`, 'the page loaded again');
+	// Chrome puts form text back by itself while a page finishes loading; what the test checks comes after that.
+	await new Promise((resolve) => setTimeout(resolve, 400));
 	await tab.eval(ADD);
 	await new Promise((resolve) => setTimeout(resolve, 600));
 	expect(await tab.eval(`document.getElementById('owned').value`)).toBe('');
