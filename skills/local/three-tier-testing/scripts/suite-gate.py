@@ -33,8 +33,13 @@ integration branch, the registered full suites whose content has no pass and who
 is over a day old; a failure opens or comments on a `suite-failure` ticket, or is listed by
 `status` without a tracker.
 
-When the host makes a `run` wait (brake or no room) and the config lists other `hosts`, the
-suite may run on the first usable one instead (see RemoteHost); its record carries `host`.
+When the host makes a run wait (brake, cap or no room) and the config lists other `hosts`,
+it may run on the first usable one instead (see RemoteHost); its record carries `host`. That
+holds for `run`, `affected` (its full suites; its test groups and checks, which never queue,
+go when a full suite would have to wait here at their start, else run here at once), `light`
+(still no record) and background suites. The registry's `local_only` marks keep a run here
+(local_only_reason). `clean-remote [--days N]` removes this host's caches there that were
+unused for over N days.
 
 Linux only: each suite runs in its own systemd user scope (cgroup v2), and slot and lock
 holders stay counted while that group has processes. Without a user scope the suite runs
@@ -78,12 +83,12 @@ DEFAULTS = {'min_slots': 1, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds
             'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5,
             'reclaim_grace_seconds': 600.0, 'light_min_slots': 1, 'light_max_slots': 4,
             'light_cores': 2.0, 'light_mem_gb': 2.0, 'remote_connect_seconds': 5, 'remote_mem_gb': 16.0,
-            'remote_prepare_seconds': 1800.0}
+            'remote_prepare_seconds': 1800.0, 'remote_cache_days': 14}
 # The smallest value each key accepts; an int default takes whole numbers only.
 MINIMUMS = {'min_slots': 0, 'max_slots': 1, 'profile_history': 1, 'poll_seconds': 0.01,
             'report_seconds': 0.01, 'sample_seconds': 0.01, 'light_max_slots': 1,
             'remote_connect_seconds': 1, 'remote_mem_gb': 0.5,
-            'remote_prepare_seconds': 0.01}
+            'remote_prepare_seconds': 0.01, 'remote_cache_days': 1}
 BRAKE_PAIRS = (('brake_io_low', 'brake_io_high'), ('brake_cpu_low', 'brake_cpu_high'))
 GIB = 2 ** 30
 TESTS_SLICE = 'lat-tests.slice'  # the user slice that caps every suite's CPU; SUITE_GATE_SLICE overrides
@@ -251,8 +256,8 @@ ENV_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 
 
 def remote_hosts(value):
-    """The config's `hosts`: other hosts a full suite run with `run` may go to when this one
-    makes it wait, in order of preference. Each item is an ssh Host alias, or {"host": <alias>,
+    """The config's `hosts`: other hosts a test run may go to when this one makes it wait,
+    in order of preference. Each item is an ssh Host alias, or {"host": <alias>,
     "max_runs": <suites this gate runs there at once, default 1>, "env": {<name>: <value>}}
     (set in the suite's environment there, e.g. the browser a test needs). An item it cannot
     use is warned about once and left out; none, an empty list or no usable item turns
@@ -1726,6 +1731,106 @@ def ignored_includes(root, registry):
                       root)
 
 
+LOCAL_ONLY_KEY = 'local_only'  # registry: {"paths": [<glob>], "commands": [<pattern>]}
+
+
+def read_local_only(registry):
+    """(path globs, command patterns, directories of the full suites marked `local_only`)
+    from the registry: what must run on this host because it needs a service only this host
+    has. ValueError when a mark cannot be read, so nothing is sent on a mark it misreads."""
+    marks = registry.get(LOCAL_ONLY_KEY, {})
+    if not isinstance(marks, dict) or set(marks) - {'paths', 'commands'}:
+        raise ValueError(f'{LOCAL_ONLY_KEY} must be {{"paths": [...], "commands": [...]}}')
+    paths = _strings(marks.get('paths', []), f'{LOCAL_ONLY_KEY}.paths')
+    commands = _strings(marks.get('commands', []), f'{LOCAL_ONLY_KEY}.commands')
+    suites = registry.get('full_suites')
+    flagged = []
+    for i, suite in enumerate(suites if isinstance(suites, list) else []):
+        flag = suite.get(LOCAL_ONLY_KEY, False) if isinstance(suite, dict) else False
+        if not isinstance(flag, bool):
+            raise ValueError(f'full_suites[{i}].{LOCAL_ONLY_KEY} must be true or false')
+        if flag:
+            flagged.append({'command': str(suite.get('command', '')).strip(),
+                            'cwd': _dir_key(str(suite.get('cwd', '.')))})
+    return paths, commands, flagged
+
+
+def suite_dirs(registry):
+    """The directories of the registry's full suites, a bad list read as none."""
+    suites = registry.get('full_suites')
+    return [{'cwd': _dir_key(s.get('cwd', '.'))} for s in (suites if isinstance(suites, list)
+                                                           else [])
+            if isinstance(s, dict) and isinstance(s.get('cwd', '.'), str)]
+
+
+def command_paths(root, cwd, text, files):
+    """The repo files (of files, repo-relative) that the words of a shell command name, as a
+    file or a directory holding them, relative to cwd; [] when it names none. Words of text
+    commands (echo, cat) count too: naming a marked file keeps a run here."""
+    try:
+        commands = split_commands(text)
+    except UnreadableShellInput:
+        return []
+    found = []
+    for words in commands:
+        for word in _strip_assignments(words)[1:]:
+            word = word.split('=', 1)[1] if word.startswith('-') and '=' in word else word
+            if not word or word.startswith('-'):
+                continue
+            target = os.path.normpath(os.path.join(rel_cwd(root, cwd), word))
+            if target == '.' or target.startswith('..'):
+                continue
+            found += [f for f in files if f == target or f.startswith(target + '/')]
+    return list(dict.fromkeys(found))
+
+
+def local_only_reason(root, cwd, argv, registry, tests=None, check=False):
+    """Why the run of argv in cwd has to stay on this host by the registry's local_only
+    marks, or None. It stays when its command matches `local_only.commands`, when it is a
+    full suite marked `local_only`, or when a file it runs matches `local_only.paths` or lies
+    in the directory of a marked full suite. The files are tests (repo paths, an affected
+    group's) or those its words name; a command that names none runs its whole directory
+    (the files no nested full suite's directory holds), except a check, which runs no test
+    file."""
+    try:
+        paths, commands, flagged = read_local_only(registry)
+    except ValueError as exc:
+        return f'the {LOCAL_ONLY_KEY} marks in {REGISTRY_NAME} cannot be read ({exc})'
+    if not (paths or commands or flagged):
+        return None
+    text = argv[0] if len(argv) == 1 else shlex.join(argv)
+    try:
+        if commands and _matches_patterns(split_commands(text), commands):
+            return f'its command matches {LOCAL_ONLY_KEY}.commands in {REGISTRY_NAME}'
+    except UnreadableShellInput:
+        return 'its command cannot be read to check the local_only marks'
+    rel = rel_cwd(root, cwd)
+    command = normalize_command(argv)
+    if any(s['cwd'] == rel and s['command'] == command for s in flagged):
+        return f'it is a full suite marked {LOCAL_ONLY_KEY} in {REGISTRY_NAME}'
+    suites = suite_dirs(registry)
+    marked = {s['cwd'] for s in flagged}
+    if check:
+        if owning_dir(suites, rel) in marked:
+            return (f'it runs in {rel}, in the directory of a full suite marked '
+                    f'{LOCAL_ONLY_KEY}')
+    if tests is None:
+        files = _git_paths(['ls-files', '-co', '--exclude-standard'], root)
+        tests = command_paths(root, cwd, text, files)
+        if not tests and not check:
+            mine = owning_dir(suites, rel)
+            tests = [f for f in files if (rel == '.' or f.startswith(rel + '/'))
+                     and owning_dir(suites, f) == mine]
+    for test in tests:
+        hit = next((p for p in paths if glob_match(test, p)), None)
+        if hit:
+            return f'it runs {test}, marked by {LOCAL_ONLY_KEY}.paths {hit} in {REGISTRY_NAME}'
+        if owning_dir(suites, test) in marked:
+            return (f'it runs {test}, in the directory of a full suite marked '
+                    f'{LOCAL_ONLY_KEY} in {REGISTRY_NAME}')
+    return None
+
+
 def sent_files(root):
     """The files content_tree() counts (tracked plus unignored new, deleted ones left out):
     what goes to another host, relative to root."""
@@ -1829,7 +1934,10 @@ class RemoteHost:
             'mkdir -p "$C/tree" "$J" || exit 1\n'
             '[ -f "$C/git/HEAD" ] || GIT_CONFIG_GLOBAL=/dev/null git init -q --bare "$C/git" '
             '|| exit 1\n'
-            'date -u +%Y-%m-%dT%H:%M:%SZ > "$C/used"\n', timeout=self.connect + 60)
+            'date -u +%Y-%m-%dT%H:%M:%SZ > "$C/used"\n'
+            # Who made it, so `clean-remote` removes only this host's caches.
+            f'printf "%s\\n" {shlex.quote(os.uname().nodename)} > "$C/owner"\n',
+            timeout=self.connect + 60)
         if code:
             return f'could not create its cache {self.cache}: {err.strip() or f"exit {code}"}'
         rsh = shlex.join(self.ssh_argv()[:-2])
@@ -1960,7 +2068,10 @@ class Gate:
         self.ran = None  # a full suite that ran, for the cleanup check
         self.record = None  # the record this gate wrote: a run's or a reuse note
         self.reused = None  # the earlier pass this gate reused instead of running
-        self.offload = False  # may run on another host when this one makes it wait (`run`)
+        # May run on another host when this one makes it wait (every entry point but a run
+        # inside a gate's group); see try_offload() and place_unqueued().
+        self.offload = True
+        self.offload_reasons = {}  # {host: why not used} of the last look at the other hosts
         self.remote = None  # the RemoteHost it runs on, from the claim until release()
         self.remote_root = self.remote_tree = None  # the work tree and the content tree sent
         self.remote_scope = self.remote_entries = None  # the fingerprint's scope, if any
@@ -2089,10 +2200,10 @@ class Gate:
         claim the first usable one (True), else note on the waiter why each was not used.
         Looked at on every poll of the queue."""
         hosts = self.config['hosts']
+        self.offload_reasons = reasons = {}
         if not hosts:
             return None
         blocked = self.offload_blocked()
-        reasons = {}
         for entry in hosts:
             why = blocked or self.try_host(entry)
             if why is None:
@@ -2106,12 +2217,50 @@ class Gate:
         with_state(note)
         return None
 
+    def place_unqueued(self):
+        """For an affected test group or check, which takes no slot and never queues: when a
+        full suite would have to wait here now (suites queued, the cap, the brake or no room),
+        claim the first usable other host as try_offload() does; otherwise, or when none is
+        usable, it runs here at once as before."""
+        self.config = load_config()
+        if not self.offload or not self.config['hosts']:
+            return
+
+        def busy(state):
+            queued = sum(1 for w in state['waiters'] if w.get('kind') == 'slot')
+            if queued:
+                return f'{queued} suite(s) queued'
+            running = [unused_reservation(h, self.config) for h in state['slots']]
+            light = [unused_reservation(h, self.config) for h in state['light']]
+            admit, reason = admission(self.config, running, reservation_of({}, self.config)[:2],
+                                      host_view(state, self.config), light)
+            return None if admit else reason
+        why = with_state(busy)
+        if why is None or self.try_offload():
+            return
+        warn(f'this host is busy ({why}) and no other host is usable, so it runs here at once: '
+             + '; '.join(f'not on {host}: {reason}'
+                         for host, reason in self.offload_reasons.items()))
+
+    def execute_unqueued(self, info):
+        """execute() for an affected test group or check, on another host when this one is
+        busy (place_unqueued())."""
+        self.place_unqueued()
+        return self.execute(info)
+
     def offload_blocked(self):
         """Why this run cannot go to any other host, or None."""
         root = repo_root(self.cwd)
         if root is None:
             return 'not in a Git work tree'
-        ignored = ignored_includes(root, load_registry(self.cwd) or {})
+        registry = load_registry(self.cwd) or {}
+        local = local_only_reason(
+            root, self.cwd, self.argv, registry,
+            tests=self.extra.get('selected_tests') if self.template else None,
+            check='check_fingerprint' in self.extra)
+        if local:
+            return f'it stays on this host: {local}'
+        ignored = ignored_includes(root, registry)
         if ignored:
             return ('its fingerprint takes in git-ignored files (fingerprint_include: '
                     + ', '.join(ignored[:3]) + (', ...' if len(ignored) > 3 else '')
@@ -2811,10 +2960,12 @@ class LightGate(Gate):
 
         def describe(state):
             mine = next((w for w in state['waiters'] if w['id'] == self.me['id']), None)
+            others = (mine or {}).get('remote') or {}
             return (f"waiting for a light-path slot ({len(state['light'])}/"
-                    f"{self.config['light_max_slots']} in use): {(mine or {}).get('reason')}")
+                    f"{self.config['light_max_slots']} in use): {(mine or {}).get('reason')}"
+                    + ''.join(f'; not on {host}: {why}' for host, why in others.items()))
 
-        self._wait(attempt, describe)
+        self._wait(attempt, describe, self.try_offload if self.offload else None)
 
     def run(self):
         self.acquire_slot()
@@ -2824,7 +2975,8 @@ class LightGate(Gate):
         except OSError as exc:
             warn(f'could not start the command: {exc}')
             return 127
-        warn(f'light run exited {code} in {fmt_seconds(seconds)} (not recorded)')
+        host = f' on {self.remote.host}' if self.remote else ''
+        warn(f'light run exited {code}{host} in {fmt_seconds(seconds)} (not recorded)')
         return code
 
 
@@ -3932,7 +4084,6 @@ def cmd_run(rerun, purpose, reason, argv):
              '--purpose <purpose>')
     extra = {'purpose': purpose, 'purpose_reason': reason.strip() if reason else None}
     gate = Gate(argv, Path.cwd(), rerun.strip() if rerun else None, load_config(), extra)
-    gate.offload = True
     return _guarded(lambda: _drive(gate, gate.run))
 
 
@@ -5001,7 +5152,7 @@ def _run_left(root, amap, selected, groups, checks, extra, prepared, via, result
             check_fingerprint=MapContent(root, amap).check(check),
             **({'via': via} if via else {})))
         result = drive_group(results, 'check', check['cwd'], check['command'], gate,
-                             lambda: gate.execute(fingerprint(cwd, [check['command']])))
+                             lambda: gate.execute_unqueued(fingerprint(cwd, [check['command']])))
         if result:
             failed.append((check['cwd'], check['command'], ['check']))
         code = code or result
@@ -5024,7 +5175,7 @@ def _run_left(root, amap, selected, groups, checks, extra, prepared, via, result
             **({'via': via} if via else {})), template=True)
         info = fingerprint(cwd, [text])
         result = drive_group(results, 'affected', directory, text, gate,
-                             lambda: gate.execute(info), tests)
+                             lambda: gate.execute_unqueued(info), tests)
         if result:
             failed.append((directory, text, tests))
         code = code or result
@@ -5713,6 +5864,8 @@ def cmd_status(as_json, fp_prefix, limit):
     for h in sorted((w for w in waiting if w.get('kind') == 'light'), key=lambda w: w['seq']):
         print(f"  waiting  {h['agent']}  {fmt_seconds(now - h['since'])}  "
               f"{h.get('reason') or 'not checked yet'}  {h['cwd']}  {h['command']}")
+        for host, reason in (h.get('remote') or {}).items():
+            print(f'    not on {host}: {reason}')
     if not light and not any(w.get('kind') == 'light' for w in waiting):
         print('  none')
     print(f'Recent records ({len(records)}):')
@@ -6935,12 +7088,78 @@ def cmd_background_configure(action, repo, preview):
 
 # ---------------------------------------------------------------- entry
 
+# ---------------------------------------------------------------- other hosts' caches
+
+def clean_remote_script(me, days, keep):
+    """Shell text for one other host: remove the caches under REMOTE_CACHE that this host
+    (me) made, whose `used` stamp is older than days and that no live job and no run here
+    (keep: their cache paths) uses; print `removed <cache> <used>` for each, `kept <cache>
+    <why>` for the others of this host."""
+    skip = ''.join(f'{shlex.quote(c)}) echo "kept $r a run from this host uses it"; continue;; '
+                   for c in keep)
+    return (f'R="$HOME"/{shlex.quote(REMOTE_CACHE)}\n[ -d "$R" ] || exit 0\n'
+            f'now=$(date +%s); limit={int(days) * 86400}\n'
+            'for c in "$R"/*/*; do\n'
+            '  [ -d "$c" ] && [ -f "$c/owner" ] || continue\n'
+            f'  [ "$(cat "$c/owner")" = {shlex.quote(me)} ] || continue\n'
+            f'  r=${{c#"$HOME"/}}\n  case "$r" in {skip}esac\n'
+            '  used=$(stat -c %Y "$c/used" 2>/dev/null || echo 0)\n'
+            '  if [ $((now - used)) -le $limit ]; then echo "kept $r used within the limit"; '
+            'continue; fi\n'
+            '  live=\n  for f in "$c"/job/job-*.pid; do [ -f "$f" ] && '
+            'kill -0 "-$(cat "$f")" 2>/dev/null && live=1; done\n'
+            '  if [ -n "$live" ]; then echo "kept $r a job there is still running"; continue; fi\n'
+            '  stamp=$(cat "$c/used" 2>/dev/null)\n'
+            '  gone="${c%/*}/.removing-${c##*/}-$$"\n'
+            '  mv "$c" "$gone" && rm -rf "$gone" && echo "removed $r ${stamp:-?}" '
+            '|| echo "failed $r"\n'
+            '  rmdir "${c%/*}" 2>/dev/null\ndone\nexit 0\n')
+
+
+def cmd_clean_remote(days):
+    """Remove, on each host of the config's `hosts`, the caches this host's gate made there
+    that were last used more than days ago (default: the config's remote_cache_days) and
+    that nothing uses now, listing what was removed. 1 when a host could not be cleaned."""
+    config = load_config()
+    days = config['remote_cache_days'] if days is None else days
+    if days < 1:
+        warn('clean-remote: --days must be 1 or more')
+        return 2
+    if not config['hosts']:
+        print('suite-gate clean-remote: the config lists no other hosts; nothing to clean')
+        return 0
+    keep = with_state(lambda state: [h.get('cache') for h in state['remote'] if h.get('cache')])
+    me, code = os.uname().nodename, 0
+    for entry in config['hosts']:
+        remote = RemoteHost(entry, '', config, 'clean')
+        status, out, err = remote.script(clean_remote_script(me, days, keep),
+                                         timeout=remote.connect + 600)
+        lines = out.splitlines()
+        if status:
+            warn(f"clean-remote: {entry['host']}: " + (err.strip().splitlines()[-1]
+                                                       if err.strip() else f'exit {status}'))
+            code = 1
+        removed = [line.split(' ', 2)[1:] for line in lines if line.startswith('removed ')]
+        kept = [line.split(' ', 2)[1:] for line in lines if line.startswith('kept ')]
+        failed = [line.split(' ', 1)[1] for line in lines if line.startswith('failed ')]
+        print(f"{entry['host']}: removed {len(removed)} cache(s) unused for over {days} day(s), "
+              f'kept {len(kept)}')
+        for path, *used in removed:
+            print(f"  removed ~/{path} (last used {used[0] if used else '?'})")
+        for path, *why in kept:
+            print(f"  kept ~/{path} ({why[0] if why else ''})")
+        for path in failed:
+            print(f'  could not remove ~/{path}')
+            code = 1
+    return code
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     # A hook that exits 2 would block every command, so the hook does not check this.
     if not sys.platform.startswith('linux') and argv[:1] in (
             ['run'], ['light'], ['status'], ['affected'], ['cleanup-done'], ['pre-commit'],
-            ['background'],
+            ['background'], ['clean-remote'],
             ['install-background']):
         warn('only Linux is supported')
         return 2
@@ -6991,6 +7210,10 @@ def main(argv=None):
     pre_push.add_argument('remote', nargs='*', help='remote name and URL, as Git passes them')
     sub.add_parser('pre-commit', help='Git pre-commit hook: on the integration branch, run '
                    'the tests the affected-test map selects on the staged content')
+    clean = sub.add_parser('clean-remote', help="remove this host's test caches on the "
+                           "config's other hosts that were not used for some days")
+    clean.add_argument('--days', type=int, metavar='N', help='unused for more than N days '
+                       '(default: the config\'s remote_cache_days, 14)')
     background = sub.add_parser('background', help='run the registered full suites the local '
                                 'integration branch lacks a recent pass of (the hourly timer '
                                 'runs this)')
@@ -7040,6 +7263,8 @@ def main(argv=None):
         return cmd_pre_commit()
     if args.action == 'background':
         return cmd_background(args.repo)
+    if args.action == 'clean-remote':
+        return cmd_clean_remote(args.days)
     if args.action in ('install-background', 'uninstall-background'):
         try:
             return cmd_background_configure(args.action.split('-')[0], args.repo, args.preview)
