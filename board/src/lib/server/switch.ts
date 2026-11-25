@@ -45,6 +45,7 @@ import { addHcomDir, withoutPermissionFlags } from '../board/permissions.ts';
 import type { Controller } from '../board/types.ts';
 import { WAKE_UNKNOWN_REASON, type SentWake } from '../board/wake.ts';
 import type { Board } from './board.ts';
+import { isOwnPane } from './config.ts';
 import { modelLock, readCurrent, readLaunchArgs, readTranscript } from './helper.ts';
 import { hasHoldTerminal, killAgent, listAgents, type HcomAgent } from './hcom.ts';
 import { closePane, listHerdrAgents, paneExists, paneTab, splitPane } from './herdr.ts';
@@ -283,7 +284,7 @@ async function recheck(board: Board, controller: SwitchTarget, name: string, hel
 	if (agent.status !== 'listening') return { refuse: busyReason(controller) };
 	if (heldBeside !== undefined && agent.pane !== heldBeside) return { refuse: `${noun(controller)}的 Herdr 窗格剛剛變了，沒有切換，請再試一次` };
 	// Stopping closes the pane hcom has for the client; never the one the board itself runs in.
-	if (agent.pane !== null && agent.pane === board.config.ownPane) return { refuse: OWN_PANE_REASON };
+	if (isOwnPane(board.config, agent.pane)) return { refuse: OWN_PANE_REASON };
 	return { agent };
 }
 

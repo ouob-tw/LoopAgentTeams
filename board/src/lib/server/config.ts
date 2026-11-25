@@ -141,6 +141,12 @@ export interface BoardConfig {
 	now(): number;
 }
 
+/** Whether `pane` is the board's own pane. A pane nobody reported (null) is never it, and neither is
+ *  a board that does not know its own pane: two unknowns must not count as the same pane. */
+export function isOwnPane(config: Pick<BoardConfig, 'ownPane'>, pane: string | null | undefined): boolean {
+	return pane != null && config.ownPane !== null && pane === config.ownPane;
+}
+
 export interface PasskeySite {
 	/** The only page origin a passkey is used from, such as `https://lat.ouob.net`; always https. */
 	origin: string;

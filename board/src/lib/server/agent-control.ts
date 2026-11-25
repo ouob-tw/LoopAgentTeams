@@ -18,6 +18,7 @@ import {
 } from '../board/agent-actions.ts';
 import type { Agent } from '../board/types.ts';
 import type { Board } from './board.ts';
+import { isOwnPane } from './config.ts';
 import type { ExternalResult } from './external.ts';
 import { killAgent, listAgents, stopAgent } from './hcom.ts';
 import { countKeys, type KeyCounts, type KeyInput, type KeyResult, type KeysResponse } from '../board/screen.ts';
@@ -193,7 +194,7 @@ export async function sendKeysToAgent(board: Board, agentId: string, inputs: Key
 	const done = await queued(agentId, () =>
 		attempt(board, agentId, 'keys', null, async (agent) => {
 			const pane = agent.herdr.pane;
-			if (pane === board.config.ownPane) return { route: null, reason: AGENT_OWN_PANE_KEYS_REASON };
+			if (isOwnPane(board.config, pane)) return { route: null, reason: AGENT_OWN_PANE_KEYS_REASON };
 			for (const [index, input] of inputs.entries()) {
 				const act = await sendPaneInput(board.config, pane, input);
 				if (act.ok) {
@@ -225,7 +226,7 @@ async function hcomTarget(board: Board, name: string, pane: string): Promise<{ p
 	if (!list.ok) return { reason: `讀不到 hcom 的 Agent 清單，無法確認 hcom kill 會關哪個窗格，沒有關閉：${list.reason}` };
 	const target = list.agents.find((candidate) => candidate.name === name);
 	if (!target) return { reason: `hcom 的 Agent 清單裡已經沒有 @${name}，沒有關閉。` };
-	if (target.pane === board.config.ownPane) return { reason: AGENT_OWN_PANE_REASON };
+	if (isOwnPane(board.config, target.pane)) return { reason: AGENT_OWN_PANE_REASON };
 	return { pane: target.pane ?? pane };
 }
 
@@ -242,7 +243,7 @@ export function closeAgent(board: Board, agentId: string) {
 		attempt(board, agentId, 'close', null, async (agent) => {
 			const pane = agent.herdr.pane;
 			// Neither the pane Herdr lists it in nor the one hcom has for it may be the board's own.
-			if (pane === board.config.ownPane) return { route: null, reason: AGENT_OWN_PANE_REASON };
+			if (isOwnPane(board.config, pane)) return { route: null, reason: AGENT_OWN_PANE_REASON };
 			if (agent.hcom === 'unknown') return { route: null, reason: AGENT_HCOM_UNKNOWN_CLOSE_REASON };
 			// `hcom kill` reads `all` and `tag:…` as many agents, never one name.
 			const name = agent.hcom === 'linked' ? agent.hcomName! : null;
@@ -336,7 +337,7 @@ export function pauseAgent(board: Board, agentId: string) {
 	return queued(agentId, () =>
 		attempt(board, agentId, 'pause', null, async (agent) => {
 			const { config } = board;
-			if (agent.herdr.pane === config.ownPane) return { route: null, reason: AGENT_OWN_PANE_PAUSE_REASON };
+			if (isOwnPane(config, agent.herdr.pane)) return { route: null, reason: AGENT_OWN_PANE_PAUSE_REASON };
 			if (agent.noHooks) return { route: null, reason: AGENT_NO_HOOKS_PAUSE_REASON };
 			if (agent.hcom !== 'linked') {
 				const why = { paused: '它已經暫停通訊', none: '它沒有接 HCOM', unknown: 'hcom 的清單讀不到，不知道它有沒有接 HCOM' }[agent.hcom];
@@ -349,7 +350,7 @@ export function pauseAgent(board: Board, agentId: string) {
 			const target = list.agents.find((candidate) => candidate.name === name);
 			if (!target || target.sessionId !== agent.id) return { route: null, reason: `hcom 的 Agent 清單裡已經沒有這個 Agent 的 @${name}，沒有暫停通訊。` };
 			// hcom's pane for it may not be the one Herdr lists it in; one hcom does not know is not the board's.
-			if (target.pane !== null && target.pane === config.ownPane) return { route: null, reason: AGENT_OWN_PANE_PAUSE_REASON };
+			if (isOwnPane(config, target.pane)) return { route: null, reason: AGENT_OWN_PANE_PAUSE_REASON };
 			const record: PauseRecord = { session_id: agent.id!, hcom_name: name, client: agent.client, pane: agent.herdr.pane, paused_at: new Date().toISOString() };
 			pausing.add(record.session_id);
 			try {
