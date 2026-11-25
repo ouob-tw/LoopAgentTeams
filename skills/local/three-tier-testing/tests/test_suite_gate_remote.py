@@ -276,21 +276,25 @@ class OffloadTests(RemoteMixin, GateCase):
         self.assertFalse(record['reusable'])
 
     def test_a_scoped_suite_there_counts_only_changes_in_its_scope_as_here(self):
-        """A registered suite with depends_on: an edit outside its scope during the run there
-        leaves the result reusable, as it would here; one inside does not."""
+        """A registered suite with depends_on: an edit, deletion or rename outside its scope
+        during the run there leaves the result reusable, as it would here; one inside does
+        not."""
         (self.repo / 'web').mkdir()
         (self.repo / 'web/t.py').write_text('t = 1\n')
         (self.repo / 'docs').mkdir()
         (self.repo / 'docs/x.md').write_text('x\n')
-        outside, inside = 'echo z >> ../docs/x.md', 'echo z >> t.py'
+        (self.repo / 'docs/y.md').write_text('y\n')
+        (self.repo / 'web/u.py').write_text('u = 1\n')
+        cases = (('echo z >> ../docs/x.md', False), ('rm ../docs/y.md', False),
+                 ('mv ../docs/x.md ../docs/moved.md', False), ('echo z >> t.py', True),
+                 ('rm u.py', True))
         (self.repo / '.suite-gate.json').write_text(json.dumps({'full_suites': [
-            {'command': outside, 'cwd': 'web', 'depends_on': []},
-            {'command': inside, 'cwd': 'web', 'depends_on': []}]}))
+            {'command': command, 'cwd': 'web', 'depends_on': []} for command, _ in cases]}))
         git(self.repo, 'add', '-A')
         self.commit(self.repo, 'suites')
         self.add_host('s3')
         self.brake_here()
-        for command, changed in ((outside, False), (inside, True)):
+        for command, changed in cases:
             with self.subTest(command=command):
                 result = self.gate('run', '--reason', 'scope', '--', command,
                                    cwd=self.repo / 'web')

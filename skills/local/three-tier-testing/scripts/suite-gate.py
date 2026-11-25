@@ -1859,7 +1859,11 @@ class RemoteHost:
         _index_entries() gives). A string saying why not on failure."""
         code, out, err = self.script(
             'cd "$C/tree" || exit 1\nrm -f "$C/git/suite-gate-index"\n'
-            'if [ -s "$C/files.list" ]; then g add -f --pathspec-from-file="$C/files.list" '
+            # The sent files still there (a run may delete some), ignored or not.
+            'xargs -0 -r sh -c \'for f; do if [ -e "$f" ] || [ -L "$f" ]; then '
+            'printf "%s\\0" "$f"; fi; done\' sh < "$C/files.list" > "$C/present.list" '
+            '|| exit 1\n'
+            'if [ -s "$C/present.list" ]; then g add -f --pathspec-from-file="$C/present.list" '
             '--pathspec-file-nul || exit 1; fi\n'
             + ('g ls-files -z --others --exclude-standard | xargs -0 -r rm -f -- || exit 1\n'
                if clean else '')
