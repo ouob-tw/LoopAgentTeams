@@ -88,6 +88,7 @@ class GateCase(unittest.TestCase):
         self.env.pop('CLAUDE_CODE_SESSION_ID', None)
         self.env.pop('SUITE_GATE_TEST_TODAY', None)
         self.install_fake_gh()
+        self.install_fake_ssh()
         # Scopes this test starts share its unique prefix; whatever is left of them is killed.
         self.env['SUITE_GATE_UNIT_PREFIX'] = self.tmp.name
         if not SCOPE_SKIP:
@@ -137,6 +138,45 @@ elif sys.argv[1:3] == ['issue', 'create']:
 """)
         fake.chmod(0o755)
         self.env['PATH'] = f"{fake.parent}{os.pathsep}{self.env['PATH']}"
+
+    def install_fake_ssh(self):
+        """An `ssh` first on PATH, so no test ever reaches a real host: a host is a directory
+        remotes/<host> (absent or holding `down`: it fails like an unreachable host). The
+        command runs here under /bin/sh with HOME=remotes/<host>/home, the host's own
+        pressure files (SUITE_GATE_PROC_ROOT=remotes/<host>/proc) and remotes/<host>/bin
+        first on PATH; every call is logged to remotes/calls.jsonl. rsync reaches the hosts
+        through it."""
+        self.remotes = self.tmp / 'remotes'
+        self.remotes.mkdir()
+        fake = self.tmp / 'bin/ssh'
+        fake.write_text(f"""#!{sys.executable}
+import json, os, sys
+from pathlib import Path
+remotes = Path({str(self.remotes)!r})
+args, i = sys.argv[1:], 0
+while i < len(args) and args[i].startswith('-'):
+    i += 2 if args[i] in ('-o', '-p', '-l', '-i', '-F', '-E', '-c', '-m', '-b') else 1
+host, command = args[i], ' '.join(args[i + 1:])
+with open(remotes / 'calls.jsonl', 'a') as log:
+    log.write(json.dumps({{'host': host, 'command': command, 'options': args[:i]}}) + '\\n')
+base = remotes / host
+if not base.is_dir() or (base / 'down').exists():
+    print(f'ssh: connect to host {{host}} port 22: Connection timed out', file=sys.stderr)
+    sys.exit(255)
+home = base / 'home'
+home.mkdir(exist_ok=True)
+env = dict(os.environ, HOME=str(home), SUITE_GATE_PROC_ROOT=str(base / 'proc'),
+           PATH=f"{{base / 'bin'}}:{{os.environ['PATH']}}")
+os.chdir(home)
+os.execve('/bin/sh', ['/bin/sh', '-c', command], env)
+""")
+        fake.chmod(0o755)
+
+    def ssh_calls(self, host=None):
+        path = self.remotes / 'calls.jsonl'
+        calls = [json.loads(line) for line in path.read_text().splitlines()] \
+            if path.exists() else []
+        return [c for c in calls if host is None or c['host'] == host]
 
     def gh_calls(self):
         path = self.gh_dir / 'calls.jsonl'
@@ -2560,7 +2600,7 @@ class ConfigTests(GateCase):
         self.config.unlink()
         status, _ = self.status_of()
         self.assertEqual((status['min_slots'], status['max_slots']), (1, 8))
-        self.assertEqual(status['config'], gate.DEFAULTS)
+        self.assertEqual(status['config'], dict(gate.DEFAULTS, hosts=[]))
         self.config.write_text('{"max_slots": 1}')
         status, _ = self.status_of()
         self.assertEqual((status['min_slots'], status['max_slots']), (1, 1))
@@ -2570,7 +2610,7 @@ class ConfigTests(GateCase):
             'max_slots': 'x', 'min_slots': -1, 'profile_history': 2.5, 'brake_io_low': 50,
             'brake_cpu_high': 20, 'mem_reserve_gb': 3, 'default_cores': 1.5}))
         status, err = self.status_of()
-        self.assertEqual(status['config'], dict(gate.DEFAULTS, mem_reserve_gb=3.0,
+        self.assertEqual(status['config'], dict(gate.DEFAULTS, hosts=[], mem_reserve_gb=3.0,
                                                 default_cores=1.5))
         for text in ('config max_slots="x" is not usable; using 8',
                      'config min_slots=-1 is not usable; using 1',
