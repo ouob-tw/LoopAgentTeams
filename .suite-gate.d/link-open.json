@@ -6,7 +6,12 @@
         "board/src/lib/board/build-update.ts",
         "board/src/hooks.client.ts",
         "board/src/lib/components/AttachmentList.svelte",
-        "board/src/lib/board/answering.svelte.ts"
+        "board/src/lib/board/answering.svelte.ts",
+        "board/src/lib/components/LeavePrompt.svelte",
+        "board/src/routes/+layout.svelte",
+        "board/src/lib/board/review-ui.svelte.ts",
+        "board/src/lib/board/attaching.svelte.ts",
+        "board/src/lib/board/voice-recording.svelte.ts"
       ],
       "tests": [
         "board/tests/unit/link-open.test.ts",

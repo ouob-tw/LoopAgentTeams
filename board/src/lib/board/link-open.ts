@@ -2,19 +2,86 @@
 // Chrome hands such a window back to the app itself, which replaces the running board screen with
 // one that holds only the link's page: closing it (X or Back) then closes the whole app (#725).
 // So in the installed app these links open in the same window and Back returns to the board; in a
-// browser tab, and for any other site's link, nothing changes.
+// browser tab, and for any other site's link, nothing changes. They never open a new window there.
 //
-// The board loads itself again when the user comes back, so what is typed and not sent is written
-// down first and put back (as the new-build reload waits for it, build-update.ts). Where something
-// cannot be put back (an open dialog, answer choices, attached files, a recording) the link keeps
-// opening a new window.
-import { TEXT_BOXES, unsavableBlocker } from './build-update.ts';
+// The board loads itself again when the user comes back, so first:
+// - what is typed and not sent is written down (every state that holds text registers a keeper,
+//   `keepsText`; text in any other box on the page is written down from the page), and put back
+//   when the board starts again. If it cannot be written down the user stays and is told.
+// - what cannot be put back (picked options, files waiting to be sent, a recording) is asked about:
+//   the default is to stay; only "放棄並開啟" lets it go, and the text is kept all the same.
+import { TEXT_BOXES } from './build-update.ts';
 
 export const KEPT_TEXT_KEY = 'lat-board:kept-text';
 /** A written-down text is put back only if the user comes back within this long. */
 export const KEPT_TEXT_MS = 30 * 60_000;
 
 type KeptStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+interface Kept {
+	at: number;
+	/** Text of the boxes on the page, by what names a box. */
+	texts: Record<string, string>;
+	/** What the keepers wrote, by their name. */
+	states: Record<string, unknown>;
+}
+
+/** A state that holds text no box on the page may show (an answer of a card not on screen, a reply
+ *  box not open): it writes it down and puts it back, in this page and the one after the load. */
+export interface TextKeeper {
+	name: string;
+	/** What to write down, or null when there is no text. Must be JSON. */
+	save(): unknown | null;
+	restore(data: unknown): void;
+}
+/** A state that cannot be put back. */
+export interface Loose {
+	/** What the user sees named in the prompt, shown only while `present()`. */
+	label: string;
+	present(): boolean;
+	/** Let it go; false when that cannot be done reliably (the user then stays). */
+	discard(): boolean;
+}
+
+const keepers = new Map<string, TextKeeper>();
+const loose = new Set<Loose>();
+
+function read(storage: () => KeptStorage, now = Date.now()): Kept | null {
+	try {
+		const kept = JSON.parse(storage().getItem(KEPT_TEXT_KEY) ?? 'null') as Kept | null;
+		if (!kept || now - kept.at > KEPT_TEXT_MS) return null;
+		return { at: kept.at, texts: kept.texts ?? {}, states: kept.states ?? {} };
+	} catch {
+		return null;
+	}
+}
+
+function write(storage: () => KeptStorage, kept: Kept): void {
+	if (Object.keys(kept.texts).length || Object.keys(kept.states).length) storage().setItem(KEPT_TEXT_KEY, JSON.stringify(kept));
+	else storage().removeItem(KEPT_TEXT_KEY);
+}
+
+/** Register a keeper; what was written down for it before the last load is put back now. */
+export function keepsText(keeper: TextKeeper, storage: () => KeptStorage = () => sessionStorage, now = Date.now()): () => void {
+	keepers.set(keeper.name, keeper);
+	try {
+		const kept = read(storage, now);
+		if (kept && keeper.name in kept.states) {
+			const data = kept.states[keeper.name];
+			delete kept.states[keeper.name];
+			write(storage, kept);
+			keeper.restore(data);
+		}
+	} catch {
+		// Storage not available: nothing was written down.
+	}
+	return () => void keepers.delete(keeper.name);
+}
+
+/** Register a state that cannot be put back. Returns the function that removes it. */
+export function holdsLoose(state: Loose): () => void {
+	loose.add(state);
+	return () => void loose.delete(state);
+}
 
 /** Whether the board runs as an installed app: the standard media query, or iOS's own flag. */
 export function inInstalledApp(win: Window = window): boolean {
@@ -32,8 +99,8 @@ export function isSameOrigin(href: string, win: Window = window): boolean {
 	}
 }
 
-/** What names a box across two loads of the page: its kind, its label and its place among the
- *  boxes of that name. */
+/** What names a box across two loads of the page: its id (or label) and its place among the boxes
+ *  of that name. */
 function boxKeys(doc: Document): [string, HTMLElement][] {
 	const seen = new Map<string, number>();
 	return [...doc.querySelectorAll<HTMLElement>(TEXT_BOXES)].map((box) => {
@@ -51,52 +118,42 @@ function textOf(box: HTMLElement): string {
 	return box instanceof HTMLInputElement || box instanceof HTMLTextAreaElement ? box.value : (box.textContent ?? '');
 }
 
-/** Write down what is typed and not sent. False when the page holds something that cannot be put
- *  back, or the text cannot be written down: the page must then not be left this way. */
+/** Write down all unsent text: the keepers' and the page's boxes'. What is still waiting for its
+ *  box or state to appear (from an earlier trip) stays, unless that box is on the page now: what it
+ *  shows is the user's last word. False when it could not be written down. */
 export function keepTypedText(doc: Document, storage: () => KeptStorage = () => sessionStorage, now = Date.now()): boolean {
-	if (unsavableBlocker(doc)) return false;
-	const texts: Record<string, string> = {};
-	const present = new Set<string>();
-	for (const [key, box] of boxKeys(doc)) {
-		present.add(key);
-		if ((box as HTMLInputElement).disabled || (box as HTMLInputElement).readOnly || box.hasAttribute('data-reload-safe')) continue;
-		const text = textOf(box);
-		if (text.trim()) texts[key] = text;
-	}
 	try {
-		// Text still waiting for its box to open (a reply box) stays, unless its box is on the page
-		// now: what the box shows is then the user's last word.
-		const waiting = readKept(storage, now);
+		const texts: Record<string, string> = {};
+		const present = new Set<string>();
+		for (const [key, box] of boxKeys(doc)) {
+			present.add(key);
+			if ((box as HTMLInputElement).disabled || (box as HTMLInputElement).readOnly || box.hasAttribute('data-reload-safe')) continue;
+			const text = textOf(box);
+			if (text.trim()) texts[key] = text;
+		}
+		const waiting = read(storage, now);
+		const states: Record<string, unknown> = { ...waiting?.states };
+		for (const keeper of keepers.values()) {
+			const data = keeper.save();
+			if (data === null || data === undefined) delete states[keeper.name];
+			else states[keeper.name] = data;
+		}
 		const merged = { ...Object.fromEntries(Object.entries(waiting?.texts ?? {}).filter(([key]) => !present.has(key))), ...texts };
-		if (Object.keys(merged).length) storage().setItem(KEPT_TEXT_KEY, JSON.stringify({ at: waiting && Object.keys(texts).length === 0 ? waiting.at : now, texts: merged }));
-		else storage().removeItem(KEPT_TEXT_KEY);
+		write(storage, { at: now, texts: merged, states });
 		return true;
 	} catch {
 		return false;
 	}
 }
 
-function readKept(storage: () => KeptStorage, now: number): { at: number; texts: Record<string, string> } | null {
-	const saved = JSON.parse(storage().getItem(KEPT_TEXT_KEY) ?? 'null') as { at: number; texts: Record<string, string> } | null;
-	return saved && now - saved.at <= KEPT_TEXT_MS ? saved : null;
-}
-
-/** Put the text written down by `keepTypedText` back into the empty boxes of the page, as the page
- *  draws them (a box a click opens, such as a review reply, gets its text when it opens), for as
- *  long as the text is kept. */
+/** Put the text of the page's boxes written down by `keepTypedText` back into the empty boxes, as
+ *  the page draws them (a box a click opens gets its text when it opens), for as long as it is
+ *  kept. */
 export function restoreTypedText(doc: Document, storage: () => KeptStorage = () => sessionStorage, now = Date.now()): void {
-	let texts: Record<string, string>;
-	let saved: { at: number; texts: Record<string, string> } | null;
-	try {
-		saved = JSON.parse(storage().getItem(KEPT_TEXT_KEY) ?? 'null') as { at: number; texts: Record<string, string> } | null;
-		if (!saved || now - saved.at > KEPT_TEXT_MS) {
-			storage().removeItem(KEPT_TEXT_KEY);
-			return;
-		}
-		texts = { ...saved.texts };
-	} catch {
-		return;
-	}
+	const saved = read(storage, now);
+	if (!saved) return;
+	let texts = { ...saved.texts };
+	if (!Object.keys(texts).length) return;
 	const fill = () => {
 		let changed = false;
 		for (const [key, box] of boxKeys(doc)) {
@@ -109,13 +166,15 @@ export function restoreTypedText(doc: Document, storage: () => KeptStorage = () 
 			changed = true;
 		}
 		if (!Object.keys(texts).length) stop();
-		else if (changed) {
-			// What is put back is not put back again by a later load, the expiry stays.
-			try {
-				storage().setItem(KEPT_TEXT_KEY, JSON.stringify({ at: saved!.at, texts }));
-			} catch {
-				// Nothing more to do.
-			}
+		else if (changed) persist();
+	};
+	/** What is put back is not put back again by a later load; the keepers' part and the expiry stay. */
+	const persist = () => {
+		try {
+			const now = read(storage);
+			if (now) write(storage, { at: now.at, texts, states: now.states });
+		} catch {
+			// Nothing more to do.
 		}
 	};
 	let frame = 0;
@@ -124,43 +183,66 @@ export function restoreTypedText(doc: Document, storage: () => KeptStorage = () 
 	});
 	function stop() {
 		observer.disconnect();
-		try {
-			storage().removeItem(KEPT_TEXT_KEY);
-		} catch {
-			// Nothing more to do.
-		}
+		texts = {};
+		persist();
 	}
 	observer.observe(doc.body, { childList: true, subtree: true });
-	setTimeout(stop, Math.max(0, saved!.at + KEPT_TEXT_MS - now));
+	setTimeout(stop, Math.max(0, saved.at + KEPT_TEXT_MS - now));
 	fill();
+}
+
+/** Asks the user what the page cannot put back: `labels` are the items present (named in the
+ *  prompt), `blocked` the reason the text could not be written down. Answers whether to go on. */
+export type Prompter = (ask: { labels: string[]; blocked: boolean }) => Promise<boolean>;
+let prompter: Prompter = async () => false;
+/** The prompt the page shows (LeavePrompt.svelte); without one the user always stays. */
+export function setPrompter(next: Prompter): void {
+	prompter = next;
 }
 
 interface Leave {
 	win?: Window;
 	storage?: () => KeptStorage;
+	ask?: Prompter;
 }
 
-/** Open a board address in a new window, or, in the installed app, in this one. Returns whether
- *  the page is being left in this window. */
-export function openOwn(href: string, { win = window, storage }: Leave = {}): boolean {
-	if (inInstalledApp(win) && isSameOrigin(href, win) && keepTypedText(win.document, storage)) {
-		win.location.assign(href);
-		return true;
+/** Leave for a board address in this window. Unsent text goes along as written down; what cannot be
+ *  put back asks first, and the user stays unless they say so. Resolves whether the page left. */
+export async function leaveTo(href: string, { win = window, storage, ask = prompter }: Leave = {}): Promise<boolean> {
+	const present = [...loose].filter((state) => state.present());
+	if (present.length && !(await ask({ labels: present.map((state) => state.label), blocked: false }))) return false;
+	for (const state of present) {
+		// Only the ones still there: a state another answer let go of is not asked about again.
+		if (state.present() && !state.discard()) {
+			await ask({ labels: [state.label], blocked: true });
+			return false;
+		}
 	}
-	win.open(href, '_blank', 'noopener');
-	return false;
+	if (!keepTypedText(win.document, storage)) {
+		await ask({ labels: [], blocked: true });
+		return false;
+	}
+	win.location.assign(href);
+	return true;
+}
+
+/** Open a board address in a new window, or, in the installed app, in this one (`leaveTo`). */
+export function openOwn(href: string, options: Leave = {}): void {
+	const win = options.win ?? window;
+	if (inInstalledApp(win) && isSameOrigin(href, win)) void leaveTo(href, options);
+	else win.open(href, '_blank', 'noopener');
 }
 
 /** The click on a link that would open a new window to the board's own address, in the installed
- *  app: make it open here. Anything else is left to the browser. */
-export function leaveOnClick(event: MouseEvent, { win = window, storage }: Leave = {}): void {
+ *  app: open it here instead. Anything else is left to the browser. */
+export function leaveOnClick(event: MouseEvent, options: Leave = {}): void {
+	const win = options.win ?? window;
 	if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
 	const link = (event.target as Element | null)?.closest?.<HTMLAnchorElement>('a[href]');
 	if (!link || link.target !== '_blank' || link.hasAttribute('download')) return;
 	if (!inInstalledApp(win) || !isSameOrigin(link.href, win)) return;
-	if (!keepTypedText(win.document, storage)) return;
 	event.preventDefault();
-	win.location.assign(link.href);
+	void leaveTo(link.href, options);
 }
 
 /** Start: put back what was written down, and watch the clicks. */

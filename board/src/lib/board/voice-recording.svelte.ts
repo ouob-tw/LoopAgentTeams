@@ -5,6 +5,7 @@
 // mic and is dropped.
 import { request } from './api.ts';
 import { holdsUnsent } from './build-update.ts';
+import { holdsLoose } from './link-open.ts';
 import { micConstraints, micGone } from './mic-choice.ts';
 import { micDevices } from './mic-devices.svelte.ts';
 import { toasts } from './toasts.svelte.ts';
@@ -27,6 +28,12 @@ function micFailure(error: unknown): string {
 const recordings = new Map<unknown, Recording>();
 // A reload would end it and lose what was said (see build-update.ts).
 holdsUnsent(() => [...recordings.values()].some((recording) => recording.phase !== 'idle'));
+
+holdsLoose({
+	label: '錄音中（離開會中斷）',
+	present: () => [...recordings.values()].some((recording) => recording.phase !== 'idle'),
+	discard: () => [...recordings.values()].every((recording) => recording.abandon())
+});
 
 class Recording {
 	phase = $state<Phase>('idle');
@@ -106,6 +113,20 @@ class Recording {
 			this.phase = 'idle';
 			if (!this.#gone) toasts.show('failed', micFailure(error));
 		}
+	}
+
+	/** Drop a recording in progress without sending it. False when it is not simply recording (the
+	 *  mic is being asked for, or what was said is on its way): that cannot be dropped reliably. */
+	abandon(): boolean {
+		if (this.phase === 'idle') return true;
+		const current = this.#recorder;
+		if (this.phase !== 'recording' || !current) return false;
+		this.#recorder = null;
+		clearTimeout(this.#limit);
+		clearInterval(this.#tick);
+		current.stop();
+		this.phase = 'idle';
+		return true;
 	}
 
 	stop() {

@@ -50,19 +50,12 @@ export async function servedBuild(read: typeof fetch = fetch): Promise<string | 
 /** Checks of what the page holds that a reload would lose and no text box shows (answer drafts,
  *  attached files, a recording), each added by the state that holds it. */
 const holders = new Set<() => boolean>();
-/** The checks of `holders` whose work is text in a box on the page, which can be written down and put back. */
-const textHolders = new Set<() => boolean>();
 
 /** Add a check of whether this state holds unsent work now; a reload waits while any says so.
- *  `inTextBox`: the work is only text in a box (its box is then written down by link-open.ts when
- *  the page is left by a link). Returns the function that removes it. */
-export function holdsUnsent(check: () => boolean, { inTextBox = false }: { inTextBox?: boolean } = {}): () => void {
+ *  Returns the function that removes it. */
+export function holdsUnsent(check: () => boolean): () => void {
 	holders.add(check);
-	if (inTextBox) textHolders.add(check);
-	return () => {
-		holders.delete(check);
-		textHolders.delete(check);
-	};
+	return () => holders.delete(check);
 }
 
 /** Text boxes whose content a reload would lose. One marked `data-reload-safe` shows a value the
@@ -74,18 +67,8 @@ const DIALOGS = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-moda
 /** Why a reload has to wait now, or null when nothing would be lost. */
 export function reloadBlocker(document: Document, pressed: boolean): 'text' | 'unsent' | 'dialog' | 'drag' | null {
 	if (pressed) return 'drag';
-	return unsavableBlocker(document) ?? ([...textHolders].some((holds) => holds()) ? 'unsent' : null) ?? textBlocker(document);
-}
-
-/** What a reload would lose that cannot be written down and put back: an open dialog, or work a
- *  state holds (answer choices, attached files, a recording). */
-export function unsavableBlocker(document: Document): 'unsent' | 'dialog' | null {
 	if (document.querySelector(DIALOGS)) return 'dialog';
-	if ([...holders].some((holds) => !textHolders.has(holds) && holds())) return 'unsent';
-	return null;
-}
-
-function textBlocker(document: Document): 'text' | null {
+	if ([...holders].some((holds) => holds())) return 'unsent';
 	for (const box of document.querySelectorAll<HTMLElement>(TEXT_BOXES)) {
 		if ((box as HTMLInputElement).disabled || (box as HTMLInputElement).readOnly) continue;
 		if (box.hasAttribute('data-reload-safe') && box !== document.activeElement) continue;
