@@ -184,6 +184,36 @@ class LocalOnlyTests(AffectedRemoteCase):
         self.assertIn(f'{self.there()} plain', lines)
         self.assertIn('its command matches local_only.commands', result.stderr)
 
+    def test_a_full_suite_run_through_a_runner_script_covers_its_directory(self):
+        self.touch('tools/run_tests.sh', f'echo root >> {self.counter}\n')
+        suites = [{'command': 'sh tools/run_tests.sh', 'cwd': '.'},
+                  dict(self.registry['full_suites'][1])]
+        self.mark(full_suites=suites, local_only={'paths': ['tests/test_util.py']})
+        self.brake_here()
+        proc = self.start('run', '--reason', 'wrapper', '--', 'sh tools/run_tests.sh')
+        self.wait_until(lambda: any('it runs tests/test_util.py, marked by' in (r.get('s3') or '')
+                                    for r in self.waiter_reasons()), message='kept here')
+        self.unbrake_here()
+        self.assertEqual(self.finish(proc)[0], 0)
+        self.assertIsNone(self.records()[-1]['host'])
+
+    def test_a_marked_file_run_as_the_program_or_by_absolute_path_stays_here(self):
+        self.touch('tests/live.sh', 'true\n')
+        self.mark(local_only={'paths': ['tests/live.sh', 'tests/test_util.py']})
+        self.brake_here(light_min_slots=0)
+        for command in ('./tests/live.sh tests/test_app.py',
+                        f'cat {self.repo}/tests/test_util.py tests/test_app.py'):
+            with self.subTest(command=command):
+                proc = self.start('light', '--', command)
+                self.wait_until(lambda: any(
+                    'it stays on this host' in ((w.get('remote') or {}).get('s3') or '')
+                    for w in self.status()['waiting'] if w.get('kind') == 'light'),
+                    message='kept here')
+                self.unbrake_here()
+                self.finish(proc)
+                self.brake_here(light_min_slots=0)
+        self.assertEqual(self.trees('s3'), [])
+
     def test_an_unreadable_mark_keeps_every_run_here(self):
         self.mark(local_only={'paths': 'tests/**'})
         self.touch('src/app.py')
@@ -372,6 +402,29 @@ class CleanRemoteTests(RemoteMixin, GateCase):
         self.set_config(hosts=['s3'], remote_cache_days=30)
         self.assertEqual(self.cache_dirs('s3'), sorted([foreign, fresh, busy]))
         self.assertIn('removed 0 cache(s)', self.gate('clean-remote').stdout)
+
+    def test_no_run_claims_a_cache_on_a_host_while_it_is_cleaned(self):
+        self.add_host('s3')
+        started = self.tmp / 'cleaning'
+        self.host_tool('s3', 'stat', f'touch {started}; sleep 2; exec /usr/bin/stat "$@"')
+        self.brake_here()
+        first = self.gate('run', '--', 'true')
+        self.assertEqual(first.returncode, 0, first.stderr)
+        [mine] = self.cache_dirs('s3')
+        self.age(mine, 20)
+        started.unlink(missing_ok=True)
+        cleaner = self.start('clean-remote', '--days', '7')
+        self.wait_until(started.exists, message='cleaning')
+        proc = self.start('run', '--', self.suite())
+        self.wait_until(lambda: self.waiter_reasons() == [
+            {'s3': 'clean-remote is removing old caches there'}], message='refused meanwhile')
+        code, out, err = self.finish(cleaner)
+        self.assertEqual(code, 0, err)
+        self.assertIn('removed 1 cache(s)', out)
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.records()[-1]['host'], 's3')
+        self.assertEqual(len(self.cache_dirs('s3')), 1)
 
     def test_a_cache_a_run_here_holds_is_kept_and_a_host_that_is_down_fails(self):
         self.add_host('s3')

@@ -1755,6 +1755,14 @@ def read_local_only(registry):
     return paths, commands, flagged
 
 
+def _registered_suites(registry):
+    suites = registry.get('full_suites')
+    return [{'command': s['command'].strip(), 'cwd': _dir_key(s.get('cwd', '.'))}
+            for s in (suites if isinstance(suites, list) else [])
+            if isinstance(s, dict) and isinstance(s.get('command'), str)
+            and isinstance(s.get('cwd', '.'), str)]
+
+
 def suite_dirs(registry):
     """The directories of the registry's full suites, a bad list read as none."""
     suites = registry.get('full_suites')
@@ -1765,19 +1773,19 @@ def suite_dirs(registry):
 
 def command_paths(root, cwd, text, files):
     """The repo files (of files, repo-relative) that the words of a shell command name, as a
-    file or a directory holding them, relative to cwd; [] when it names none. Words of text
+    file or a directory holding them, relative to cwd or absolute; [] when it names none. Words of text
     commands (echo, cat) count too: naming a marked file keeps a run here."""
     try:
         commands = split_commands(text)
     except UnreadableShellInput:
         return []
-    found = []
+    found, base = [], Path(cwd).resolve()
     for words in commands:
-        for word in _strip_assignments(words)[1:]:
+        for word in _strip_assignments(words):  # the program too: ./tests/live.sh
             word = word.split('=', 1)[1] if word.startswith('-') and '=' in word else word
             if not word or word.startswith('-'):
                 continue
-            target = os.path.normpath(os.path.join(rel_cwd(root, cwd), word))
+            target = os.path.relpath(os.path.normpath(base / word), root.resolve())
             if target == '.' or target.startswith('..'):
                 continue
             found += [f for f in files if f == target or f.startswith(target + '/')]
@@ -1789,9 +1797,9 @@ def local_only_reason(root, cwd, argv, registry, tests=None, check=False):
     marks, or None. It stays when its command matches `local_only.commands`, when it is a
     full suite marked `local_only`, or when a file it runs matches `local_only.paths` or lies
     in the directory of a marked full suite. The files are tests (repo paths, an affected
-    group's) or those its words name; a command that names none runs its whole directory
-    (the files no nested full suite's directory holds), except a check, which runs no test
-    file."""
+    group's) or those its words name; a full suite (registered, or by is_full_suite()) or a
+    command that names none also runs its whole directory (the files no nested full suite's
+    directory holds), except a check, which runs no test file."""
     try:
         paths, commands, flagged = read_local_only(registry)
     except ValueError as exc:
@@ -1817,10 +1825,15 @@ def local_only_reason(root, cwd, argv, registry, tests=None, check=False):
     if tests is None:
         files = _git_paths(['ls-files', '-co', '--exclude-standard'], root)
         tests = command_paths(root, cwd, text, files)
-        if not tests and not check:
+        # A full suite runs its directory whatever files its command names (a runner
+        # script, a config).
+        whole = not check and (not tests or is_full_suite(text, cwd, registry) or any(
+            s['cwd'] == rel and s['command'] == command
+            for s in _registered_suites(registry)))
+        if whole:
             mine = owning_dir(suites, rel)
-            tests = [f for f in files if (rel == '.' or f.startswith(rel + '/'))
-                     and owning_dir(suites, f) == mine]
+            tests = tests + [f for f in files if (rel == '.' or f.startswith(rel + '/'))
+                             and owning_dir(suites, f) == mine]
     for test in tests:
         hit = next((p for p in paths if glob_match(test, p)), None)
         if hit:
@@ -2276,6 +2289,9 @@ class Gate:
         cache = remote_cache(root)
 
         def busy(state):
+            if any(c.get('host') == host and gate_alive(c)
+                   for c in state.get('remote_cleaning', [])):
+                return 'clean-remote is removing old caches there'
             there = [h for h in state['remote'] if h.get('host') == host]
             if len(there) >= entry['max_runs']:
                 return (f"its limit is reached ({len(there)}/{entry['max_runs']} suite(s) "
@@ -7103,13 +7119,13 @@ def clean_remote_script(me, days, keep):
             '  [ -d "$c" ] && [ -f "$c/owner" ] || continue\n'
             f'  [ "$(cat "$c/owner")" = {shlex.quote(me)} ] || continue\n'
             f'  r=${{c#"$HOME"/}}\n  case "$r" in {skip}esac\n'
-            '  used=$(stat -c %Y "$c/used" 2>/dev/null || echo 0)\n'
+            '  used=$(stat -c %Y "$c/used" 2>/dev/null || echo 0); stamp=$(cat "$c/used" '
+            '2>/dev/null)\n'
             '  if [ $((now - used)) -le $limit ]; then echo "kept $r used within the limit"; '
             'continue; fi\n'
             '  live=\n  for f in "$c"/job/job-*.pid; do [ -f "$f" ] && '
             'kill -0 "-$(cat "$f")" 2>/dev/null && live=1; done\n'
             '  if [ -n "$live" ]; then echo "kept $r a job there is still running"; continue; fi\n'
-            '  stamp=$(cat "$c/used" 2>/dev/null)\n'
             '  gone="${c%/*}/.removing-${c##*/}-$$"\n'
             '  mv "$c" "$gone" && rm -rf "$gone" && echo "removed $r ${stamp:-?}" '
             '|| echo "failed $r"\n'
@@ -7119,7 +7135,8 @@ def clean_remote_script(me, days, keep):
 def cmd_clean_remote(days):
     """Remove, on each host of the config's `hosts`, the caches this host's gate made there
     that were last used more than days ago (default: the config's remote_cache_days) and
-    that nothing uses now, listing what was removed. 1 when a host could not be cleaned."""
+    that nothing uses now, listing what was removed. While a host is cleaned no gate here
+    claims a cache on it (it tries the next host). 1 when a host could not be cleaned."""
     config = load_config()
     days = config['remote_cache_days'] if days is None else days
     if days < 1:
@@ -7128,12 +7145,30 @@ def cmd_clean_remote(days):
     if not config['hosts']:
         print('suite-gate clean-remote: the config lists no other hosts; nothing to clean')
         return 0
-    keep = with_state(lambda state: [h.get('cache') for h in state['remote'] if h.get('cache')])
     me, code = os.uname().nodename, 0
+    mark = {'id': uuid.uuid4().hex, 'pid': os.getpid(), 'start': proc_stat(os.getpid())[2]}
+
+    def cleaning(host):
+        """Mark host as being cleaned, so no gate claims a cache there meanwhile (try_host's
+        busy()); the caches runs from here hold at that moment are kept."""
+        def change(state):
+            state['remote_cleaning'] = [c for c in state.get('remote_cleaning', [])
+                                        if gate_alive(c) and c['id'] != mark['id']]
+            if host is not None:
+                state['remote_cleaning'].append(dict(mark, host=host))
+            return [h.get('cache') for h in state['remote']
+                    if h.get('host') == host and h.get('cache')]
+        return with_state(change)
     for entry in config['hosts']:
         remote = RemoteHost(entry, '', config, 'clean')
-        status, out, err = remote.script(clean_remote_script(me, days, keep),
-                                         timeout=remote.connect + 600)
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
+        try:
+            keep = cleaning(entry['host'])
+            status, out, err = remote.script(clean_remote_script(me, days, keep),
+                                             timeout=remote.connect + 600)
+        finally:
+            cleaning(None)
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
         lines = out.splitlines()
         if status:
             warn(f"clean-remote: {entry['host']}: " + (err.strip().splitlines()[-1]
