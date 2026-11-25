@@ -394,5 +394,49 @@ class MissingDataTests(VmCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class EmulatorTests(VmCase):
+    """Android emulators start only through `vm borrow android` (#721)."""
+
+    def test_direct_emulator_starts_are_blocked_with_the_vm_borrow_usage(self):
+        engine = '~/Android/Sdk/emulator/qemu/linux-x86_64/qemu-system-x86_64-headless'
+        for command, avd in [
+                ('emulator -avd pixel', 'pixel'),
+                ('~/Android/Sdk/emulator/emulator -avd pixel -no-window -port 5570', 'pixel'),
+                ('$ANDROID_HOME/emulator/emulator @pixel', 'pixel'),
+                ('"$ANDROID_SDK_ROOT/emulator/emulator" -avd=pixel', 'pixel'),
+                ('nohup emulator -avd pixel -no-window > /tmp/emu.log 2>&1 &', 'pixel'),
+                ('ANDROID_AVD_HOME=~/Android/qa88-avd setsid emulator -avd qa88 &', 'qa88'),
+                ("bash -c 'emulator -avd pixel'", 'pixel'),
+                ('cd /tmp && emulator -no-snapshot -avd pixel', 'pixel'),
+                ('x=$(emulator -avd pixel &)', 'pixel'),
+                ('timeout 600 emulator -avd pixel', 'pixel'),
+                (f'{engine} -avd pixel -port 5570', 'pixel'),
+                (f'{engine} -no-window', '<name>')]:
+            with self.subTest(command):
+                result = self.blocked(command, 'vm borrow android')
+                self.assertIn(f'--avd {avd}', result.stderr)
+                self.assertIn('vm.py', result.stderr)
+
+    def test_creating_listing_and_adb_pass(self):
+        for command in [
+                'avdmanager create avd -n pixel -k "system-images;android-35;default;x86_64"',
+                'emulator -list-avds', 'emulator -version', 'emulator -accel-check',
+                '~/Android/Sdk/emulator/emulator -help',
+                'adb -s emulator-5554 install app.apk', 'adb -s emulator-5554 shell input tap 1 2',
+                'adb -s emulator-5554 emu kill', 'adb devices',
+                'qemu-system-x86_64 -name windows -m 16G -enable-kvm',
+                'grep -rn "emulator -avd" docs', 'git commit -m "emulator -avd pixel"',
+                'uv run --no-project python ~/.agents/skills/vm/scripts/vm.py borrow android '
+                '"login test" --avd pixel']:
+            with self.subTest(command):
+                self.allowed(command)
+
+    def test_codex_shell_lists_are_checked_too(self):
+        result = self.hook({'tool_name': 'Bash', 'cwd': str(self.work),
+                            'tool_input': {'command': ['bash', '-lc', 'emulator -avd pixel']}})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('vm borrow android', result.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()

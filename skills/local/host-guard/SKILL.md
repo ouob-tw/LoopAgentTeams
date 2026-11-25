@@ -1,6 +1,6 @@
 ---
 name: host-guard
-description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench), running tests without a memory limit, searching for files across the whole filesystem, deleting a path built from a variable, or killing a process by name on a host shared with other agents, or before starting, stopping or creating a host VM container or touching ~/vm or ~/vm-busi. Covers how to pin load to a few cores, how to cap test memory, how to search narrowly, how to write heredocs that stay literal, how to delete safely, how to kill by PID, how to use host VMs through the vm command, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
+description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench), running tests without a memory limit, searching for files across the whole filesystem, deleting a path built from a variable, or killing a process by name on a host shared with other agents, or before starting, stopping or creating a host VM container, starting an Android emulator, or touching ~/vm or ~/vm-busi. Covers how to pin load to a few cores, how to cap test memory, how to search narrowly, how to write heredocs that stay literal, how to delete safely, how to kill by PID, how to use host VMs and Android emulators through the vm command, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
 ---
 
 # 共用主機保護（host-guard）
@@ -77,7 +77,7 @@ kill <PID>
 
 ## 繞過虛擬機借用
 
-主機的虛擬機一律經 vm 技能借用（`vm` 指 `uv run --no-project python <vm 技能>/scripts/vm.py`，用法見 vm 技能）。下列動作擋下，訊息會寫出對應的 `vm` 用法；包在 `sudo`、`timeout`、`bash -c '…'`、`$(…)` 裡同樣擋：
+主機的虛擬機與 Android 模擬器一律經 vm 技能借用（`vm` 指 `uv run --no-project python <vm 技能>/scripts/vm.py`，用法見 vm 技能）。下列動作擋下，訊息會寫出對應的 `vm` 用法；包在 `sudo`、`timeout`、`bash -c '…'`、`$(…)` 裡同樣擋：
 
 | 擋下的動作 | 改用 |
 |---|---|
@@ -87,11 +87,12 @@ kill <PID>
 | 掛 `/dev/kvm` 的 `docker run`（含 `docker compose up` 的設定檔有 `/dev/kvm`），一律擋 | `vm add` → `docker create` → `vm start` |
 | 掛 `/dev/kvm` 的 `docker create`：容器名稱不在清單上、呼叫者（`HCOM_INSTANCE_NAME`）不是這台目前的借用者，或掛載不在 `~/vm/<機器>/` 底下（`/dev/…` 裝置除外） | 先 `vm add` 登記，以借用者身分照 vm 技能的「新增機器」建立 |
 | `vm` 的使用者專用旗標 `--human` 與 `vm reclaim` | 問借用者或使用者 |
+| 直接啟動 Android 模擬器：`emulator -avd <名稱>`、`emulator @<名稱>`、`-avd=<名稱>`，或直接執行 SDK 的 `qemu-system-*`（帶 `-avd`，或路徑在 SDK 的 `emulator/` 底下）。`avdmanager create avd`、`emulator -list-avds` 等不開機的用法、adb 安裝與操作、Docker 的 `qemu-system-*` 照常放行 | `vm borrow android "<用途>" --avd <名稱>` |
 | 指向舊資料夾 `~/vm-busi/` 的任何路徑（`ssh -F ~/vm-busi/ssh-config`、`vmctl`、`deadline`、`guard.py` 等）；`grep`、`rg` 的搜尋字串不算 | 訊息列出 `~/vm` 下的新位置或 `vm` 用法 |
 
-`~/vm` 依 `VM_HOME` 決定，沒設時是家目錄的 `vm`；機器清單與借用紀錄的格式見 vm 技能的 `FORMATS.md`。清單或借用紀錄不存在或讀不懂時，只擋狀態檔寫入、`/dev/kvm` 建立與舊資料夾，其他指令照常放行。`vm-watch` 服務是唯一允許的虛擬機服務。
+`~/vm` 依 `VM_HOME` 決定，沒設時是家目錄的 `vm`；機器清單與借用紀錄的格式見 vm 技能的 `FORMATS.md`。清單或借用紀錄不存在或讀不懂時，只擋狀態檔寫入、`/dev/kvm` 建立、直接啟動模擬器與舊資料夾，其他指令照常放行。`vm-watch` 服務是唯一允許的虛擬機服務。
 
-已知限制：這是接住 Agent 不小心繞過的保護，不是資安防線。只看指令文字，`eval`、腳本檔或自己寫程式改紀錄都擋不住；Codex 的檔案編輯工具不經過 hook，只擋得住 Codex 下的 shell 指令。以下也不檢查：`find` 的 `-o`、`-regex` 等其他條件；用容器 ID、`$(docker ps -q)` 或 `xargs` 指定容器；`docker run --privileged`（沒寫 `/dev/kvm`）；停掉 `vm-watch` 服務；`docker create` 的連線埠是否只綁 `127.0.0.1`。
+已知限制：這是接住 Agent 不小心繞過的保護，不是資安防線。只看指令文字，`eval`、腳本檔或自己寫程式改紀錄都擋不住；Codex 的檔案編輯工具不經過 hook，只擋得住 Codex 下的 shell 指令。以下也不檢查：`find` 的 `-o`、`-regex` 等其他條件；用容器 ID、`$(docker ps -q)` 或 `xargs` 指定容器；模擬器程式路徑放在變數裡（`"$EMU" -avd …`）或由其他程式代為啟動；`docker run --privileged`（沒寫 `/dev/kvm`）；停掉 `vm-watch` 服務；`docker create` 的連線埠是否只綁 `127.0.0.1`。
 
 ## 直接從 LoopAgentTeams 安裝技能
 

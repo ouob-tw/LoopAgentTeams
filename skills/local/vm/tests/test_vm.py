@@ -947,7 +947,9 @@ class PackagingTests(unittest.TestCase):
                        'vm list', 'reclaim', 'docker create', '127.0.0.1', 'ssh', '遠端桌面',
                        '網頁畫面', '~/vm/browser/', 'host-guard', '不是資安防線', 'Codex',
                        'https://github.com/dockur/windows',
-                       'https://github.com/sickcodes/Docker-OSX'):
+                       'https://github.com/sickcodes/Docker-OSX', 'vm borrow android',
+                       '--avd', 'vm list android', 'emulator-5554', 'avdmanager create avd',
+                       'hw.ramSize', '~/Android/qa88-avd', 'android_baseline', 'adb emu kill'):
             self.assertIn(needle, text)
         self.assertNotRegex(text, r'\]\((\.\./)+docs/|\(docs/')
         self.assertNotRegex(text, r'\b(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+')
