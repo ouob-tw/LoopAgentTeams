@@ -27,18 +27,23 @@
 
 	/** Each bar's height as last drawn, by key: what its empty room keeps. */
 	const heights = $state<Record<string, number>>({});
-	/** The bars in the order shown, a bar gone kept as its empty room (null) where it was. */
-	let rows = $state.raw<{ key: string; bar: (typeof bars)[number] | null }[]>([]);
-	$effect.pre(() => {
+	type Row = { key: string; bar: (typeof bars)[number] | null };
+	/** The rows as last shown: what a bar gone leaves its room in. Not state: only `rows` reads it. */
+	let shownRows: Row[] = [];
+	/** Bumped when the rooms are let go. */
+	let dropped = $state(0);
+	/** The bars in their own order, each bar gone kept as its empty room (null) where it was. */
+	const rows = $derived.by(() => {
+		void dropped;
 		const now = new Map(bars.map((bar) => [bar.item.key, bar]));
+		const next: Row[] = bars.map((bar) => ({ key: bar.item.key, bar }));
 		untrack(() => {
-			// The bars in their own order; each room put back where it was among them.
-			const next: typeof rows = bars.map((bar) => ({ key: bar.item.key, bar }));
-			rows.forEach((row, at) => {
+			shownRows.forEach((row, at) => {
 				if (!now.has(row.key) && heights[row.key]) next.splice(Math.min(at, next.length), 0, { key: row.key, bar: null });
 			});
-			rows = next;
 		});
+		shownRows = next;
+		return next;
 	});
 
 	let box = $state<HTMLElement>();
@@ -57,7 +62,10 @@
 			if (element.getBoundingClientRect().bottom > (scroller ? scroller.getBoundingClientRect().top : 0)) return;
 			const next = element.nextElementSibling;
 			const was = next?.getBoundingClientRect().top;
-			flushSync(() => (rows = rows.filter((row) => row.bar)));
+			flushSync(() => {
+				shownRows = shownRows.filter((row) => row.bar);
+				dropped++;
+			});
 			if (next && was !== undefined) (scroller ?? window).scrollBy(0, next.getBoundingClientRect().top - was);
 		};
 		addEventListener('scroll', drop, { capture: true, passive: true });
