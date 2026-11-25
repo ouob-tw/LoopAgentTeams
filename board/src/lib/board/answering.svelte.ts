@@ -37,6 +37,8 @@ export interface NotifyOutcome {
 
 /** What a submitted answer looked like, for when the board's data does not carry it. */
 export interface Submitted {
+	/** The version of the question the answer was sent for. */
+	revision: number;
 	answer: string;
 	note: string;
 	/** The notification failed and the board's data did not show one waiting to be resent, so it
@@ -161,6 +163,7 @@ class Answering {
 		this.outcomes[key] = { status: body.status, reason: body.reason };
 		if (body.status === 'submitted') {
 			this.submitted[key] = {
+				revision: request.revision,
 				answer: answerText(question, draft.select, text),
 				note: draft.note.trim(),
 				notifyFailed: body.notified !== true && !body.pendingListed,
