@@ -2521,14 +2521,16 @@ class Gate:
 
     def execute_unqueued(self, info):
         """execute() for an affected test group or check, on another host when this one is
-        busy (place_unqueued())."""
+        busy (place_unqueued()). One cut off from that host queues here as a suite does."""
         self.place_unqueued()
-        try:
-            return self.execute(info)
-        except RemoteLost as exc:
-            self.cut_off(exc, 'it runs here at once')
-            self.drop_remote()
-            return self.execute(info)
+        while True:
+            try:
+                return self.execute(info)
+            except RemoteLost as exc:
+                # Like a suite: into the queue here, where another usable host may take it.
+                self.cut_off(exc, 'it queues here again')
+                self.release()
+                self.acquire_slot()
 
     def offload_blocked(self):
         """Why this run cannot go to any other host, or None."""

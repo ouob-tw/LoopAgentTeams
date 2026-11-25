@@ -102,7 +102,7 @@ class AffectedOffloadTests(AffectedRemoteCase):
 
 class CutOffEntryTests(AffectedRemoteCase):
     """A run another host cannot be followed to its end is no result on any entry point:
-    an affected group runs here at once, a light run queues here again."""
+    an affected group and a light run queue here again."""
 
     def test_an_affected_group_cut_off_there_runs_here_at_once(self):
         hold = self.tmp / 'hold'
@@ -118,12 +118,16 @@ class CutOffEntryTests(AffectedRemoteCase):
         self.wait_until(lambda: self.log.exists() and self.there() in self.log.read_text(),
                         message='running there')
         (self.remotes / 's3/down').touch()
-        self.wait_until(lambda: str(self.repo) + ' ' in self.log.read_text(), timeout=20,
-                        message='running here after the cut')
+        # This host is still braked: the group waits in its queue, not run here at once.
+        self.wait_until(lambda: self.waiter_reasons() != [], timeout=20,
+                        message='queued here after the cut')
+        self.assertNotIn(str(self.repo) + ' ', self.log.read_text())
         hold.unlink()
+        self.unbrake_here()
         code, _, err = self.finish(proc)
         self.assertEqual(code, 0, err)
-        self.assertIn('nothing is recorded and it runs here at once', err)
+        self.assertIn(str(self.repo) + ' ', self.log.read_text())
+        self.assertIn('nothing is recorded and it queues here again', err)
         record = self.affected_records()['.']
         self.assertIsNone(record['host'])
         self.assertEqual(record['exit_code'], 0)
