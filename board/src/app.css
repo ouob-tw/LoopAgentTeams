@@ -60,6 +60,12 @@
 	color-scheme: light;
 }
 
+/* Selected text in the light theme is white on black, in inputs and textareas too. */
+:root[data-theme='light'] ::selection {
+	background: #000;
+	color: #fff;
+}
+
 * {
 	box-sizing: border-box;
 }

@@ -89,3 +89,10 @@ test('the four statuses keep four different colour variables, so a user styleshe
 	expect(new Set(names.map((name) => resolve(dark, name))).size).toBe(4);
 	expect(new Set(names.map((name) => resolve(light, name))).size).toBe(4);
 });
+
+test('selected text is white on black in the light theme only', () => {
+	const rule = /:root\[data-theme='light'\] ::selection \{([^}]*)\}/.exec(css)?.[1] ?? '';
+	expect(rule).toMatch(/background:\s*#000;/);
+	expect(rule).toMatch(/color:\s*#fff;/);
+	expect(css.match(/::selection/g)?.length).toBe(1);
+});
