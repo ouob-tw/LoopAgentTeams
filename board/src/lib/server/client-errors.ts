@@ -154,7 +154,7 @@ const sourceOf: SourceLocator = (script, line, column) => {
 
 /** Locations in the board's scripts, one per frame: `at <source>:<line>:<column> (<script>:<line>:<column>)`
  *  where the script's map gives the original place, else `at <script>:<line>:<column>`. A frame of
- *  another host or of a file the build does not have, and every function name and message line,
+ *  another host or of a file no build of the board has, and every function name and message line,
  *  are left out. A page left open across a deploy runs an earlier build's scripts, which this build
  *  does not have: their frames are kept by their original place while the deploy kept their maps
  *  (see scripts/deploy.sh), marked `another build`, and the rest are counted on a last line, so a
@@ -208,7 +208,9 @@ function boardHosts(page: unknown, host: string): Set<string> {
 /** A path SvelteKit gives a build's script files; only such frames count as another build's. */
 const BUILT_SCRIPT = /^\/_app\/immutable\/[\w./-]+\.js$/;
 
-/** Which of the board's pages it was, without its query and fragment. */
+/** Which of the board's pages it was, without its query and fragment. Only on the host the request
+ *  named: here the page's own address is what is checked, so it cannot vouch for itself as stack
+ *  frames' does (`boardHosts`). Behind a proxy that sends its own Host this is [omitted]. */
 function pagePath(value: unknown, host: string): string | null {
 	if (typeof value !== 'string') return null;
 	try {

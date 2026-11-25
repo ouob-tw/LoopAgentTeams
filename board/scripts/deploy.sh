@@ -29,6 +29,7 @@ build_cmd=${LAT_DEPLOY_BUILD:-bun run build}
 port=${PORT:-7100}
 wait_seconds=${LAT_DEPLOY_WAIT:-60}
 maps_days=${LAT_DEPLOY_MAPS_DAYS:-30}
+case $maps_days in '' | *[!0-9]*) printf 'deploy: LAT_DEPLOY_MAPS_DAYS must be a whole number of days, not "%s"\n' "$maps_days" >&2; exit 1 ;; esac
 worktree=
 swapped=
 moving=
@@ -90,7 +91,8 @@ ln -s "$board/node_modules" "$worktree/${prefix}node_modules"
 # older than $maps_days days are dropped, as no page stays open that long.
 if [ -d "$board/build/sourcemaps" ] && [ -d "$board/build-new/sourcemaps" ]; then
 	cp -a -n "$board/build/sourcemaps/." "$board/build-new/sourcemaps/" || say "could not keep the earlier builds' source maps"
-	find "$board/build-new/sourcemaps" -name '*.map' -mtime +"$maps_days" -exec trash {} + 2>/dev/null
+	# A map's age counts from the build that made it: `cp -a` keeps its time.
+	find "$board/build-new/sourcemaps" -name '*.map' -mtime +"$maps_days" -exec trash {} + || say "could not drop the source maps older than $maps_days days"
 fi
 
 moving=1

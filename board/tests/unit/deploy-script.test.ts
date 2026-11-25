@@ -274,3 +274,13 @@ test("the earlier builds' browser source maps stay beside the new build's, the n
 	expect(readFileSync(join(maps('build'), '2.earlier.js.map'), 'utf8')).toBe('earlier');
 	expect(leftovers()).toEqual([]);
 });
+
+test('a number of days to keep source maps that is not a whole number stops before anything is built', async () => {
+	fresh();
+	const r = await deploy({ LAT_DEPLOY_MAPS_DAYS: 'thirty' });
+	expect(r.status).toBe(1);
+	expect(r.stderr).toContain('LAT_DEPLOY_MAPS_DAYS');
+	expect(readFileSync(join(board, 'build/index.js'), 'utf8')).toBe('old');
+	expect(restarts()).toBe(0);
+	expect(worktrees()).toBe(1);
+});

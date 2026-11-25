@@ -17,21 +17,22 @@ function sourceName(source: string): string | null {
 }
 
 /** Reads the map of a script under `mapsDir` (`<mapsDir>/_app/immutable/…/X.js.map`) once, the
- *  first time one of its locations is asked for. Without a folder every answer is null. */
+ *  first time one of its locations is asked for. Without a folder every answer is null. A script
+ *  with no map is not remembered: a page may name any number of scripts that never existed. */
 export function createSourceLocator(mapsDir: string | null): SourceLocator {
-	const maps = new Map<string, SourceMap | null>();
+	const maps = new Map<string, SourceMap>();
 	const mapOf = (script: string): SourceMap | null => {
 		if (!mapsDir) return null;
-		if (maps.has(script)) return maps.get(script)!;
-		let map: SourceMap | null = null;
+		const kept = maps.get(script);
+		if (kept) return kept;
 		try {
-			const payload = JSON.parse(readFileSync(join(mapsDir, `${script}.map`), 'utf8')) as SourceMapPayload;
-			map = new SourceMap(payload);
+			const map = new SourceMap(JSON.parse(readFileSync(join(mapsDir, `${script}.map`), 'utf8')) as SourceMapPayload);
+			maps.set(script, map);
+			return map;
 		} catch {
 			// No map, or none that can be read: the location stays as built.
+			return null;
 		}
-		maps.set(script, map);
-		return map;
 	};
 	return (script, line, column) => {
 		const map = mapOf(script);
