@@ -2,10 +2,10 @@
 // `board list` prints whatever <dir>/helper.json tells it to. `board answer` and `board notify`
 // behave like the real commands against the controllers that file lists, and write the result back
 // into it; `board answer` replies as the real one does, after the board has read the question file
-// it touched (see `late`); `board questions` prints a listed controller's questions, or the plan's `files` entry
-// for that path; `board answered` prints, for each path, the answered questions of the plan's
-// `archives` entry for it followed by those `board questions` would print, the latest of an ID
-// winning as the real command does. A plan entry named after the command (`answer`, `notify`,
+// it touched (see `late`); `board questions` prints a listed controller's questions, or the plan's
+// `files` entry for that path; `board answered` prints, for each path, the answered questions of
+// the plan's `archives` entry for it followed by those `board questions` would print, the latest
+// of an ID winning as the real command does. A plan entry named after the command (`answer`, `notify`,
 // `questions`, `answered`) replaces
 // that with a fixed output. `board provider` answers from the same transcript file (the latest applied thread settings, else session_meta). `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
 // item per line, the way the real command pages a client's record, with the latest turn's settings
@@ -145,10 +145,11 @@ async function late(path) {
 		const until = Date.now() + ms;
 		while (Date.now() < until && !done()) await new Promise((resolve) => setTimeout(resolve, 20));
 	};
-	// A read starts with `board list`; a board that is not watching the file reads it later.
-	await wait(() => called('list'), 2000);
+	// A read starts with `board list`, some 200 ms after the change is seen. A board not watching the
+	// file yet (one just bound) reads it later: not waited for long.
+	await wait(() => called('list'), 800);
 	// Then its answered questions, when it has any to read, and the page is told after that.
-	await wait(() => called('answered'), 300);
+	if (called('list')) await wait(() => called('answered'), 300);
 	return Math.max(least - (Date.now() - started), 150);
 }
 
