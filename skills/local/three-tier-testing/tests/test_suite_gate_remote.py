@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import re
+import select
 import signal
 import sys
 import time
@@ -83,6 +84,19 @@ class RemoteMixin:
         return [w.get('remote') or {} for w in self.status()['waiting']
                 if w.get('kind') == 'slot']
 
+    def read_until(self, proc, stream, text, timeout=20):
+        """What proc's stdout/stderr (`stream`) has shown once it holds `text`, read while
+        the process still runs: fails when it ends or the time is out first. It reads the
+        pipe itself, so what it returned is not in finish()'s output."""
+        fd, seen = getattr(proc, stream).fileno(), b''
+        deadline = time.monotonic() + timeout
+        while text.encode() not in seen:
+            self.assertIsNone(proc.poll(), f'ended before showing {text!r}: {seen!r}')
+            self.assertLess(time.monotonic(), deadline, f'{text!r} never shown: {seen!r}')
+            if select.select([fd], [], [], 0.1)[0]:
+                seen += os.read(fd, 4096)
+        return seen.decode()
+
     def pid_alive(self, pid):
         try:
             os.kill(pid, 0)
@@ -122,6 +136,153 @@ class OffloadTests(RemoteMixin, GateCase):
                     self.assertEqual(err.count('config hosts[0]=5 is not usable'), 1)
                     self.assertEqual(err.count('config hosts[1]='), 1)
                     self.assertEqual(err.count('config hosts[2]='), 1)
+
+    def test_a_run_stays_here_when_this_host_is_free_though_another_host_is_listed(self):
+        self.add_host('s3')
+        self.fake_host(io=0.0)
+        self.set_config(min_slots=0, max_slots=2, remote_connect_seconds=1, hosts=['s3'])
+        result = self.gate('run', '--', self.suite())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('instead', result.stderr)
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual(self.ssh_calls(), [])
+        self.assertEqual(self.trees('s3'), [])
+        self.assertIsNone(self.records()[-1]['host'])
+
+    def test_output_reaches_this_host_while_the_suite_still_runs_there_on_either_brake(self):
+        for brake in ('disk', 'CPU'):
+            with self.subTest(brake=brake):
+                self.add_host(f's3-{brake}')
+                if brake == 'disk':
+                    self.brake_here(hosts=[f's3-{brake}'])
+                else:
+                    self.fake_host(cpu=90.0)
+                    self.set_config(min_slots=0, max_slots=2, remote_connect_seconds=1,
+                                    hosts=[f's3-{brake}'])
+                release = self.tmp / f'release-{brake}'
+                proc = self.start('run', '--', f'echo early-{brake}; echo early-err-{brake} >&2; '
+                                  f'while [ ! -f {release} ]; do sleep 0.05; done; '
+                                  f'echo late-{brake}')
+                self.assertIn(f'early-{brake}', self.read_until(proc, 'stdout',
+                                                                f'early-{brake}'))
+                self.assertIsNone(proc.poll(), 'the suite there has not ended yet')
+                self.assertEqual([h['host'] for h in self.status()['remote']], [f's3-{brake}'])
+                release.touch()
+                code, out, err = self.finish(proc)
+                self.assertEqual(code, 0, err)
+                self.assertIn(f'late-{brake}', out)
+                self.assertEqual(self.records()[-1]['host'], f's3-{brake}')
+
+    def test_the_second_sending_makes_the_copy_there_match_this_tree_again(self):
+        self.add_host('s3')
+        self.brake_here()
+        (self.repo / 'stable.py').write_text('s = 1\n')
+        (self.repo / 'gone.py').write_text('g = 1\n')
+        git(self.repo, 'add', 'stable.py', 'gone.py')
+        self.commit(self.repo, 'more files')
+        listing = ('find . -type f -not -path "./.git/*" | sort > {out}; '
+                   'cat app.py new.py > {out}.text')
+
+        def run(name):
+            result = self.gate('run', '--', listing.format(out=self.tmp / name) + f' # {name}')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return (self.tmp / name).read_text().split(), (self.tmp / f'{name}.text').read_text()
+        first, _ = run('first')
+        self.assertEqual(self.records()[-1]['host'], 's3')
+        for name in ('./app.py', './stable.py', './gone.py', './new.py'):
+            self.assertIn(name, first)
+        stable = (self.tree('s3') / 'stable.py').stat().st_ino
+        (self.repo / 'app.py').write_text('x = 2  # changed tracked file\n')
+        (self.repo / 'added.py').write_text('a = 1\n')  # new, not ignored
+        (self.repo / 'gone.py').unlink()
+        (self.repo / 'ignored/more.txt').write_text('still not sent\n')
+        second, text = run('second')
+        self.assertEqual(self.records()[-1]['host'], 's3')
+        here = sorted(f'./{p.relative_to(self.repo)}' for p in self.repo.rglob('*')
+                      if p.is_file() and '.git' not in p.relative_to(self.repo).parts
+                      and p.relative_to(self.repo).parts[0] != 'ignored'
+                      and p.name != '.env.test')
+        self.assertEqual(sorted(second), here)
+        self.assertIn('./added.py', second)
+        self.assertNotIn('./gone.py', second)
+        self.assertNotIn('./.env.test', second)
+        self.assertFalse(any(name.startswith('./ignored') for name in second))
+        self.assertIn('x = 2  # changed tracked file', text)
+        # Only what changed was sent again: the unchanged file there was not rewritten.
+        self.assertEqual((self.tree('s3') / 'stable.py').stat().st_ino, stable)
+
+    def test_the_second_run_on_the_same_host_reuses_the_first_preparation(self):
+        self.add_host('s3')
+        (self.repo / 'bun.lock').write_text('{}\n')
+        (self.repo / '.gitignore').write_text('ignored/\n.env.test\nnode_modules/\n')
+        log = self.tmp / 'bun-log'
+        # Installs only into a directory without node_modules, as a real install is a no-op there.
+        self.host_tool('s3', 'bun', f'if [ -d node_modules ]; then echo reuse >> {log}; else '
+                       f'mkdir node_modules && echo dep > node_modules/dep && '
+                       f'echo install >> {log}; fi')
+        self.brake_here()
+        for number in (1, 2):
+            result = self.gate('run', '--', f'cat node_modules/dep > {self.tmp}/dep-{number}; '
+                                            f'echo {number} > {self.tmp}/n; # run {number}')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.records()[-1]['host'], 's3')
+            if number == 1:
+                marker = (self.tree('s3') / 'node_modules/dep').stat().st_ino
+        self.assertEqual(log.read_text().split(), ['install', 'reuse'])
+        self.assertEqual((self.tmp / 'dep-2').read_text(), 'dep\n')
+        self.assertEqual((self.tree('s3') / 'node_modules/dep').stat().st_ino, marker)
+        self.assertEqual(len(self.trees('s3')), 1)
+
+    def test_status_shows_how_long_the_suite_has_run_there_and_it_grows(self):
+        self.add_host('s3')
+        self.brake_here()
+        release = self.tmp / 'release'
+        proc = self.start('run', '--', f'while [ ! -f {release} ]; do sleep 0.05; done')
+        self.wait_until(lambda: [h.get('phase') for h in self.status()['remote']] == ['running'],
+                        message='running on s3')
+
+        def elapsed():
+            line = next(line for line in self.gate('status').stdout.splitlines()
+                        if line.startswith('  s3  running  t-tester  '))
+            seconds = re.match(r'  s3  running  t-tester  (\d+)s ', line)
+            self.assertTrue(seconds, line)
+            return int(seconds.group(1))
+        first = elapsed()
+        self.wait_until(lambda: elapsed() >= first + 2, timeout=10, message='the time grew')
+        release.touch()
+        self.assertEqual(self.finish(proc)[0], 0)
+
+    def test_two_work_trees_on_one_host_each_use_their_own_cache_at_once(self):
+        self.add_host('s3')
+        self.brake_here(hosts=[{'host': 's3', 'max_runs': 2}])
+        other = self.tmp / 'other-tree'
+        other.mkdir()
+        git(other, 'init', '-q', '-b', 'main')
+        (other / 'app.py').write_text('x = "other"\n')
+        git(other, 'add', '-A')
+        self.commit(other, 'init')
+        release = self.tmp / 'release'
+        procs = {}
+        for name, cwd in (('mine', self.repo), ('other', other)):
+            procs[name] = self.start(
+                'run', '--', f'cp app.py {self.tmp}/seen-{name}; pwd -P > {self.tmp}/where-{name}; '
+                             f'while [ ! -f {release} ]; do sleep 0.05; done; echo done-{name}',
+                cwd=cwd)
+        self.wait_until(lambda: len(self.status()['remote']) == 2
+                        and all(h['phase'] == 'running' for h in self.status()['remote']),
+                        message='both run on s3 at once')
+        self.assertEqual(len({h['cache'] for h in self.status()['remote']}), 2)
+        release.touch()
+        for name in procs:
+            code, out, err = self.finish(procs[name])
+            self.assertEqual(code, 0, err)
+            self.assertIn(f'done-{name}', out)
+        self.assertEqual((self.tmp / 'seen-mine').read_text(), 'x = 1\n')
+        self.assertEqual((self.tmp / 'seen-other').read_text(), 'x = "other"\n')
+        wheres = {(self.tmp / f'where-{n}').read_text().strip() for n in procs}
+        self.assertEqual(len(wheres), 2)
+        self.assertEqual(wheres, {os.path.realpath(t) for t in self.trees('s3')})
+        self.assertEqual({r['host'] for r in self.records()}, {'s3'})
 
     def test_a_braked_host_runs_the_suite_on_the_first_usable_host(self):
         self.add_host('s3')
