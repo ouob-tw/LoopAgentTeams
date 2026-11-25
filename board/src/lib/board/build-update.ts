@@ -60,15 +60,25 @@ export function holdsUnsent(check: () => boolean): () => void {
 
 /** Text boxes whose content a reload would lose. One marked `data-reload-safe` shows a value the
  *  page has saved already, and holds the reload only while it is being typed in. */
-const TEXT_BOXES = 'textarea, input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="tel"], [contenteditable]:not([contenteditable="false"])';
+export const TEXT_BOXES = 'textarea, input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="tel"], [contenteditable]:not([contenteditable="false"])';
 /** What a reload would close under the user's hands. */
 const DIALOGS = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
 
 /** Why a reload has to wait now, or null when nothing would be lost. */
 export function reloadBlocker(document: Document, pressed: boolean): 'text' | 'unsent' | 'dialog' | 'drag' | null {
 	if (pressed) return 'drag';
+	return unsavableBlocker(document) ?? textBlocker(document);
+}
+
+/** What a reload would lose that cannot be written down and put back: an open dialog, or work a
+ *  state holds (answer choices, attached files, a recording). */
+export function unsavableBlocker(document: Document): 'unsent' | 'dialog' | null {
 	if (document.querySelector(DIALOGS)) return 'dialog';
 	if ([...holders].some((holds) => holds())) return 'unsent';
+	return null;
+}
+
+function textBlocker(document: Document): 'text' | null {
 	for (const box of document.querySelectorAll<HTMLElement>(TEXT_BOXES)) {
 		if ((box as HTMLInputElement).disabled || (box as HTMLInputElement).readOnly) continue;
 		if (box.hasAttribute('data-reload-safe') && box !== document.activeElement) continue;

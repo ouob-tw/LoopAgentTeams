@@ -6,6 +6,7 @@
 	import FileIcon from '@lucide/svelte/icons/file';
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
 	import { attachmentKind, attachmentUrl, fileName, uploadedName } from '#lib/board/attachments.ts';
+	import { openOwn } from '#lib/board/link-open.ts';
 	import AttachmentPreview from './AttachmentPreview.svelte';
 
 	let { paths }: { paths: string[] } = $props();
@@ -56,7 +57,7 @@
 
 	async function openTab(event: MouseEvent, path: string) {
 		event.preventDefault();
-		if (await present(path)) open(attachmentUrl(path), '_blank', 'noopener');
+		if (await present(path)) openOwn(attachmentUrl(path));
 		else gone[path] = true;
 	}
 </script>

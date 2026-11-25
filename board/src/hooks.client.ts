@@ -7,10 +7,13 @@ import { version } from '$app/env';
 import { page } from '$app/state';
 import type { HandleClientError } from '@sveltejs/kit/hooks';
 import { claimReloadForFailure, watchBuild } from '#lib/board/build-update.ts';
+import { watchLinks } from '#lib/board/link-open.ts';
 import { claimModuleReload, isModuleLoadFailure } from '#lib/board/module-reload.ts';
 
 // A page left open across a deploy loads the new build once it is safe (build-update.ts).
 watchBuild({ own: version });
+// Links to the board's own address open in this window when installed as an app (link-open.ts).
+watchLinks();
 
 // Errors in the browser never reach the server by themselves: the page shows "Internal Error" and
 // the journal says nothing. Each one is sent to the board's log; the server decides what of it is

@@ -1,0 +1,134 @@
+// Links to the board's own address that would open a new window. Installed as an app on Android,
+// Chrome hands such a window back to the app itself, which replaces the running board screen with
+// one that holds only the link's page: closing it (X or Back) then closes the whole app (#725).
+// So in the installed app these links open in the same window and Back returns to the board; in a
+// browser tab, and for any other site's link, nothing changes.
+//
+// The board loads itself again when the user comes back, so what is typed and not sent is written
+// down first and put back (as the new-build reload waits for it, build-update.ts). Where something
+// cannot be put back (an open dialog, answer choices, attached files, a recording) the link keeps
+// opening a new window.
+import { TEXT_BOXES, unsavableBlocker } from './build-update.ts';
+
+export const KEPT_TEXT_KEY = 'lat-board:kept-text';
+/** A written-down text is put back only if the user comes back within this long. */
+export const KEPT_TEXT_MS = 30 * 60_000;
+/** How long a page still looks for a box to put the text in (boxes appear as the page loads). */
+const RESTORE_WAIT_MS = 10_000;
+
+type KeptStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
+/** Whether the board runs as an installed app: the standard media query, or iOS's own flag. */
+export function inInstalledApp(win: Window = window): boolean {
+	const forced = (win as { __latStandalone?: boolean }).__latStandalone;
+	if (typeof forced === 'boolean') return forced;
+	return win.matchMedia?.('(display-mode: standalone)').matches === true || (win.navigator as { standalone?: boolean }).standalone === true;
+}
+
+/** Whether the address is on this page's own origin. */
+export function isSameOrigin(href: string, win: Window = window): boolean {
+	try {
+		return new URL(href, win.location.href).origin === win.location.origin;
+	} catch {
+		return false;
+	}
+}
+
+/** What names a box across two loads of the page: its kind, its label and its place among the
+ *  boxes of that name. */
+function boxKeys(doc: Document): [string, HTMLElement][] {
+	const seen = new Map<string, number>();
+	return [...doc.querySelectorAll<HTMLElement>(TEXT_BOXES)].map((box) => {
+		const name = box.getAttribute('aria-label') ?? box.getAttribute('placeholder') ?? box.getAttribute('name') ?? box.id;
+		const base = `${box.tagName.toLowerCase()}|${name}`;
+		const at = seen.get(base) ?? 0;
+		seen.set(base, at + 1);
+		return [`${base}|${at}`, box];
+	});
+}
+
+function textOf(box: HTMLElement): string {
+	return box instanceof HTMLInputElement || box instanceof HTMLTextAreaElement ? box.value : (box.textContent ?? '');
+}
+
+/** Write down what is typed and not sent. False when the page holds something that cannot be put
+ *  back, or the text cannot be written down: the page must then not be left this way. */
+export function keepTypedText(doc: Document, storage: () => KeptStorage = () => sessionStorage, now = Date.now()): boolean {
+	if (unsavableBlocker(doc)) return false;
+	const texts: Record<string, string> = {};
+	for (const [key, box] of boxKeys(doc)) {
+		if ((box as HTMLInputElement).disabled || (box as HTMLInputElement).readOnly || box.hasAttribute('data-reload-safe')) continue;
+		const text = textOf(box);
+		if (text.trim()) texts[key] = text;
+	}
+	try {
+		if (Object.keys(texts).length) storage().setItem(KEPT_TEXT_KEY, JSON.stringify({ at: now, texts }));
+		else storage().removeItem(KEPT_TEXT_KEY);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Put the text written down by `keepTypedText` back into the empty boxes of the page, as the page
+ *  draws them, once. */
+export function restoreTypedText(doc: Document, storage: () => KeptStorage = () => sessionStorage, now = Date.now(), waitMs = RESTORE_WAIT_MS): void {
+	let texts: Record<string, string>;
+	try {
+		const saved = JSON.parse(storage().getItem(KEPT_TEXT_KEY) ?? 'null') as { at: number; texts: Record<string, string> } | null;
+		storage().removeItem(KEPT_TEXT_KEY);
+		if (!saved || now - saved.at > KEPT_TEXT_MS) return;
+		texts = { ...saved.texts };
+	} catch {
+		return;
+	}
+	const fill = () => {
+		for (const [key, box] of boxKeys(doc)) {
+			if (!(key in texts) || textOf(box).trim()) continue;
+			if (box instanceof HTMLInputElement || box instanceof HTMLTextAreaElement) box.value = texts[key]!;
+			else box.textContent = texts[key]!;
+			// So the page's own state (a bound value) takes it as typed.
+			box.dispatchEvent(new Event('input', { bubbles: true }));
+			delete texts[key];
+		}
+		if (!Object.keys(texts).length) observer.disconnect();
+	};
+	const observer = new MutationObserver(fill);
+	observer.observe(doc.body, { childList: true, subtree: true });
+	setTimeout(() => observer.disconnect(), waitMs);
+	fill();
+}
+
+interface Leave {
+	win?: Window;
+	storage?: () => KeptStorage;
+}
+
+/** Open a board address in a new window, or, in the installed app, in this one. Returns whether
+ *  the page is being left in this window. */
+export function openOwn(href: string, { win = window, storage }: Leave = {}): boolean {
+	if (inInstalledApp(win) && isSameOrigin(href, win) && keepTypedText(win.document, storage)) {
+		win.location.assign(href);
+		return true;
+	}
+	win.open(href, '_blank', 'noopener');
+	return false;
+}
+
+/** The click on a link that would open a new window to the board's own address, in the installed
+ *  app: make it open here. Anything else is left to the browser. */
+export function leaveOnClick(event: MouseEvent, { win = window, storage }: Leave = {}): void {
+	if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+	const link = (event.target as Element | null)?.closest?.<HTMLAnchorElement>('a[href]');
+	if (!link || link.target !== '_blank' || link.hasAttribute('download')) return;
+	if (!inInstalledApp(win) || !isSameOrigin(link.href, win)) return;
+	if (!keepTypedText(win.document, storage)) return;
+	event.preventDefault();
+	win.location.assign(link.href);
+}
+
+/** Start: put back what was written down, and watch the clicks. */
+export function watchLinks(win: Window = window): void {
+	if (inInstalledApp(win)) restoreTypedText(win.document);
+	win.document.addEventListener('click', (event) => leaveOnClick(event, { win }));
+}
