@@ -101,6 +101,17 @@ test('what cannot be put back is asked about: staying changes nothing, leaving l
 	expect(asked).toEqual([['已選的選項'], ['已選的選項']]);
 });
 
+test('two states with the same name are named once in the prompt, and both are let go', async () => {
+	const log: string[] = [];
+	releases.push(holdsLoose({ label: '已選的選項', present: () => true, discard: () => (log.push('a'), true) }));
+	releases.push(holdsLoose({ label: '已選的選項', present: () => true, discard: () => (log.push('b'), true) }));
+	const asked: string[][] = [];
+	const { win, storage } = windowOf({ standalone: true });
+	await leaveTo(`${ORIGIN}/f`, { win, storage, ask: async ({ labels }) => (asked.push(labels), true) });
+	expect(asked).toEqual([['已選的選項']]);
+	expect(log).toEqual(['a', 'b']);
+});
+
 test('a state that cannot be let go reliably (a recording being started) keeps the user on the board and says so', async () => {
 	releases.push(holdsLoose({ label: '錄音中', present: () => true, discard: () => false }));
 	const asked: { labels: string[]; blocked: boolean }[] = [];
@@ -155,8 +166,9 @@ test('text is kept until it is put back, however long the user is away', async (
 	releases.push(keepsText({ name: 'unit-long', save: () => held, restore: () => {} }, storage, 1_000));
 	await leaveTo(`${ORIGIN}/f`, { win, storage, ask: async () => true });
 	const got: unknown[] = [];
-	// Three days later.
-	keepsText({ name: 'unit-long', save: () => null, restore: (data) => got.push(data) }, storage, 1_000 + 3 * 86_400_000);
+	// Three days after it was written down.
+	const writtenAt = JSON.parse(store.get(KEPT_TEXT_KEY)!).at as number;
+	keepsText({ name: 'unit-long', save: () => null, restore: (data) => got.push(data) }, storage, writtenAt + 3 * 86_400_000);
 	expect(got).toEqual([held]);
 	expect(store.has(KEPT_TEXT_KEY)).toBe(false);
 });

@@ -27,6 +27,8 @@
 	});
 
 	function close(go: boolean) {
+		// Closed, not removed: the browser then gives focus back to what had it.
+		box?.close();
 		answer?.(go);
 		answer = null;
 		ask = null;

@@ -208,7 +208,7 @@ interface Leave {
  *  put back asks first, and the user stays unless they say so. Resolves whether the page left. */
 export async function leaveTo(href: string, { win = window, storage, ask = prompter }: Leave = {}): Promise<boolean> {
 	const present = [...loose].filter((state) => state.present());
-	if (present.length && !(await ask({ labels: present.map((state) => state.label), blocked: false }))) return false;
+	if (present.length && !(await ask({ labels: [...new Set(present.map((state) => state.label))], blocked: false }))) return false;
 	for (const state of present) {
 		// Only the ones still there: a state another answer let go of is not asked about again.
 		if (state.present() && !state.discard()) {

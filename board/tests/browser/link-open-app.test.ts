@@ -163,6 +163,7 @@ test.skipIf(!CHROME)('installed app: text in an open dialog is kept, and the dia
 	await type('#note-in-dialog', '對話框裡的字');
 	await tab.eval(`${LINK(OWN)}.click()`);
 	await away();
+	await tab.until(`!document.getElementById('note-in-dialog')`, 'the page loaded again');
 	await tab.eval(`(() => { const dialog = document.createElement('dialog'); dialog.setAttribute('open', ''); dialog.innerHTML = '<textarea id="note-in-dialog"></textarea>'; document.body.append(dialog); })()`);
 	await tab.until(`document.getElementById('note-in-dialog').value === '對話框裡的字'`, 'the text back in the dialog');
 }, TEST_MS);
@@ -229,6 +230,8 @@ test.skipIf(!CHROME)('installed app: a box a state owns (data-kept) is not copie
 	await type('#owned', '狀態自己保管的字');
 	await tab.eval(`${LINK(OWN)}.click()`);
 	await away();
+	// The page may first show from the browser's memory of it, then load again.
+	await tab.until(`!document.getElementById('owned')`, 'the page loaded again');
 	await tab.eval(ADD);
 	await new Promise((resolve) => setTimeout(resolve, 600));
 	expect(await tab.eval(`document.getElementById('owned').value`)).toBe('');
