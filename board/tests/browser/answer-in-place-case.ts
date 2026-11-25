@@ -114,18 +114,20 @@ export async function sendAnswer(key: string, option = 0) {
 }
 
 /** From the next send on, or from now with `now`, how far the card's top moves at most from where
- *  it is now, frame by frame as painted, and whether it was shown all along, never taken out and
- *  shown again. Read after anything the page does in the same frame. */
+ *  it is now, frame by frame as painted, whether it was shown all along, never taken out and
+ *  shown again, and whether in some frame it had no answer form and no answer ticked either: a
+ *  blank card. Read after anything the page does in the same frame. */
 export async function watch(key: string, now = false) {
 	await evaluate(`(() => {
 		const card = ${cardOf(key)};
-		const held = (window.__held = { from: card.getBoundingClientRect().top, moved: 0, replaced: false });
+		const held = (window.__held = { from: card.getBoundingClientRect().top, moved: 0, replaced: false, blank: false });
 		let started;
 		let frame;
 		const step = () => {
 			const now = ${cardOf(key)};
 			if (now !== card) held.replaced = true;
 			if (now) held.moved = Math.max(held.moved, Math.abs(now.getBoundingClientRect().top - held.from));
+			if (now && !now.querySelector('form.answer') && !now.querySelector('.picked')) held.blank = true;
 			if (performance.now() - started < 6000) frame = requestAnimationFrame(step);
 		};
 		// Read again from every send, so as to read after what the page starts on it.
@@ -145,7 +147,7 @@ export async function settled(key: string) {
 	await browser!.tab.until(`!${cardOf(key)}?.querySelector('form.answer')`);
 	// Past the 2.5 s an answered card is kept in place, so a move after it would show too.
 	await sleep(4200);
-	return evaluate<{ from: number; moved: number; replaced: boolean }>(`window.__held`);
+	return evaluate<Held>(`window.__held`);
 }
 
 /** Answer the card with its top where `place` puts it; what `watch` saw. */
@@ -156,8 +158,12 @@ export async function answer(width: number, key: string, place: (height: number,
 	return settled(key);
 }
 
-export function expectStayed(held: { from: number; moved: number; replaced: boolean }, id?: string) {
-	expect({ id, ...held, moved: held.moved <= LINE }).toEqual({ id, from: held.from, moved: true, replaced: false });
+/** What `watch` saw. */
+export type Held = { from: number; moved: number; replaced: boolean; blank: boolean };
+
+/** The card stayed within a line of where it was, was never taken out, and never showed blank. */
+export function expectStayed(held: Held, id?: string) {
+	expect({ id, ...held, moved: held.moved <= LINE }).toEqual({ id, from: held.from, moved: true, replaced: false, blank: false });
 }
 
 /** Near the top of the screen, and low on it with its send button just above the command line. */

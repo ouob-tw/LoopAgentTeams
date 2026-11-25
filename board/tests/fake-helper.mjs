@@ -1,10 +1,11 @@
 // Stands in for the LAT panel helper, so tests never run the real helper or touch real data.
 // `board list` prints whatever <dir>/helper.json tells it to. `board answer` and `board notify`
 // behave like the real commands against the controllers that file lists, and write the result back
-// into it; `board questions` prints a listed controller's questions, or the plan's `files` entry
-// for that path; `board answered` prints, for each path, the answered questions of the plan's
-// `archives` entry for it followed by those `board questions` would print, the latest of an ID
-// winning as the real command does. A plan entry named after the command (`answer`, `notify`,
+// into it; `board answer` replies as the real one does, after the board has read the question file
+// it touched (see `late`); `board questions` prints a listed controller's questions, or the plan's
+// `files` entry for that path; `board answered` prints, for each path, the answered questions of
+// the plan's `archives` entry for it followed by those `board questions` would print, the latest
+// of an ID winning as the real command does. A plan entry named after the command (`answer`, `notify`,
 // `questions`, `answered`) replaces
 // that with a fixed output. `board provider` answers from the same transcript file (the latest applied thread settings, else session_meta). `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
 // item per line, the way the real command pages a client's record, with the latest turn's settings
@@ -29,7 +30,7 @@
 // <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, renameSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [dir, ...args] = process.argv.slice(2);
@@ -65,7 +66,7 @@ function save() {
 /** @param {string} status @param {string | undefined} id @param {string} reason */
 const refused = (status, id, reason) => ({ output: { status, id, reason }, exit: 1 });
 
-function answer() {
+async function answer() {
 	const given = options();
 	const id = given.id?.[0];
 	const controller = listed(given.questions?.[0]);
@@ -114,9 +115,42 @@ function answer() {
 		Object.assign(output, { notified: false, reason: plan.notifyFails });
 	}
 	save();
-	// `answerSleepMs`: the answer is written at once and its output comes back late, as the real
-	// command's record and notification can take a while.
-	return { output, sleepMs: plan.answerSleepMs ?? 0 };
+	return { output, sleepMs: await late(controller.questions_path) };
+}
+
+/** How long `board answer` waits, after writing, before it prints: as with the real command, which
+ *  records the answer and tells the controller first, the board has read the new question file by
+ *  then. Its file is touched, as the real write does, and the reply waits for the board's read to
+ *  start and get through its helper calls, and a moment more; at least `answerSleepMs` (300 ms
+ *  unless the plan says; 0 replies at once, with no wait for the board).
+ *  @param {string} path */
+async function late(path) {
+	const least = plan.answerSleepMs ?? 300;
+	if (least <= 0) return 0;
+	const started = Date.now();
+	const log = join(dir, 'helper-calls.jsonl');
+	const from = readFileSync(log, 'utf8').length;
+	try {
+		if (existsSync(path)) utimesSync(path, new Date(), new Date());
+		else {
+			writeFileSync(path, '');
+			unlinkSync(path);
+		}
+	} catch {
+		// A file the test cannot have touched: the board reads on its own schedule.
+	}
+	/** @param {string} call */
+	const called = (call) => readFileSync(log, 'utf8').slice(from).includes(`"${call}"`);
+	const wait = async (/** @type {() => boolean} */ done, /** @type {number} */ ms) => {
+		const until = Date.now() + ms;
+		while (Date.now() < until && !done()) await new Promise((resolve) => setTimeout(resolve, 20));
+	};
+	// A read starts with `board list`, some 200 ms after the change is seen. A board not watching the
+	// file yet (one just bound) reads it later: not waited for long.
+	await wait(() => called('list'), 800);
+	// Then its answered questions, when it has any to read, and the page is told after that.
+	if (called('list')) await wait(() => called('answered'), 300);
+	return Math.max(least - (Date.now() - started), 150);
 }
 
 function notify() {
@@ -362,7 +396,7 @@ const act =
 								: command === 'ledger-rounds'
 									? ledgerRounds
 									: notify;
-const result = command === 'list' ? plan : (plan[command] ?? act());
+const result = command === 'list' ? plan : (plan[command] ?? (await act()));
 if (result.barrier) {
 	writeFileSync(result.barrier.ready, 'ready');
 	while (!existsSync(result.barrier.release)) await new Promise((resolve) => setTimeout(resolve, 10));
