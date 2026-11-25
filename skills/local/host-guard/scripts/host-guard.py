@@ -21,7 +21,8 @@ Eight rules, for Claude Code (Bash, Grep, Glob, Write, Edit, NotebookEdit) and C
   a listed VM container, writes to the vm state files under $VM_HOME (default ~/vm, also
   through Claude's file tools), VM power schedules (systemd, at, crontab), docker run with
   /dev/kvm, docker create with /dev/kvm except by the machine's borrower, the vm user-only
-  flags, and any path into the old ~/vm-busi folder.
+  flags, any path into the old ~/vm-busi folder, and starting an Android emulator directly
+  (`emulator -avd NAME`, `emulator @NAME`, the SDK's qemu-system-* engine).
 """
 import argparse
 import copy
@@ -872,6 +873,14 @@ VM_OLD_HINTS = (
                                       '`ssh -F {root}/ssh/config <ssh host>`.'),
     (('browser',), 'Browser data for VM screens is in {root}/browser{rest}.'),
 )
+VM_EMULATOR_MESSAGE = ('Blocked: this starts the Android emulator {avd} directly, which goes around '
+                       'vm borrowing: nobody can see who uses it, it skips the memory check, it '
+                       'never stops at an expiry, and the vm watcher stops emulators that run '
+                       'without a lease. Borrow it instead: `vm borrow android "<purpose>" --avd '
+                       '{avd} [--hours N] [--emulator-args "<extra args>"]` starts it without a '
+                       'window and prints its adb name (emulator-<port>); `vm list android` lists '
+                       'the AVDs and `vm return android --avd {avd}` stops it. Creating an AVD '
+                       '(`avdmanager create avd`) and adb stay allowed. ' + VM_USAGE)
 VM_OLD_MOVED = 'The same data is under {root}{rest} after the move. ' + VM_USAGE
 VM_OLD_FALLBACK = 'Each machine has its folder {root}/<machine>/. ' + VM_USAGE
 
@@ -1293,6 +1302,26 @@ def find_problem(rest, folder, place):
                  and all(matches(p, state) for p in paths)), None)
 
 
+def emulator_start(rest):
+    """The AVD name (or a placeholder) when a simple command starts an Android emulator:
+    the SDK `emulator` launcher given an AVD, or a `qemu-system-*` engine given an AVD or run
+    from an SDK emulator folder. None otherwise (`emulator -list-avds`, Docker's qemu...)."""
+    program = rest[0] if rest else ''
+    name = os.path.basename(program)
+    if name != 'emulator' and not name.startswith('qemu-system-'):
+        return None
+    if name == 'emulator' and len(rest) > 1 and rest[1].startswith('@') and len(rest[1]) > 1:
+        return rest[1][1:]
+    for i, word in enumerate(rest[1:], 1):
+        if word == '-avd':
+            return rest[i + 1] if i + 1 < len(rest) else '<name>'
+        if word.startswith('-avd='):
+            return word[len('-avd='):] or '<name>'
+    if name.startswith('qemu-system-') and '/emulator/' in program:
+        return '<name>'
+    return None
+
+
 def vm_statement_problem(words, folder, command, place):
     """(message, fields) for one simple command that goes around vm borrowing, or None."""
     plain, targets = split_redirections(words)
@@ -1301,6 +1330,9 @@ def vm_statement_problem(words, folder, command, place):
     found = old_folder_problem(words, folder, place, search_patterns(rest))
     if found:
         return found
+    avd = emulator_start(rest)
+    if avd:
+        return VM_EMULATOR_MESSAGE, {'avd': avd}
     if name == 'vmctl':
         return VM_OLD_MESSAGE, {**old_folder_fields(os.path.join(place.old, 'vmctl'), place),
                                 'path': 'vmctl'}

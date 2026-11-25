@@ -56,8 +56,44 @@ class VmCase(unittest.TestCase):
                     'ports': {'vnc': 5999, 'ssh': 50922}, 'ssh_host': 'vm-mac',
                     'folder': 'mac'}}
         (self.root / 'machines.json').write_text(json.dumps({'machines': machines}))
+        self.android_state = self.tmp / 'android.json'
+        self.set_android({})
+        self.sdk = self.tmp / 'sdk'
+        (self.sdk / 'emulator').mkdir(parents=True)
+        (self.sdk / 'emulator/emulator').touch()
+        (self.sdk / 'system-images/android-35/default/x86_64').mkdir(parents=True)
+        self.avd_dirs = [self.tmp / 'avd-a', self.tmp / 'avd-b']
+        self.make_avd('pixel', self.avd_dirs[0], 'hw.ramSize=2G')
+        self.make_avd('tablet', self.avd_dirs[1], 'hw.ramSize=3072M')
+        self.make_avd('bare', self.avd_dirs[1], '')
 
     # ------------------------------------------------------------ fixtures
+
+    def make_avd(self, name, folder, ram, image='system-images/android-35/default/x86_64/'):
+        (folder / f'{name}.avd').mkdir(parents=True)
+        (folder / f'{name}.ini').write_text(f'avd.ini.encoding=UTF-8\n'
+                                            f'path={folder / (name + ".avd")}\n')
+        (folder / f'{name}.avd/config.ini').write_text(f'{ram}\nimage.sysdir.1={image}\n')
+
+    def set_android(self, procs, **extra):
+        self.android_state.write_text(json.dumps({'procs': procs, **extra}))
+
+    def android(self):
+        return json.loads(self.android_state.read_text())
+
+    def update_android(self, **extra):
+        state = self.android()
+        state.update(extra)
+        self.android_state.write_text(json.dumps(state))
+
+    def emulators(self):
+        """{AVD: port} of the fake emulators running now."""
+        found = {}
+        for argv in self.android()['procs'].values():
+            if '-avd' in argv:
+                found[argv[argv.index('-avd') + 1]] = (int(argv[argv.index('-port') + 1])
+                                                       if '-port' in argv else None)
+        return found
 
     def set_memory(self, gb):
         self.meminfo.write_text(f'MemTotal: 150000000 kB\nMemAvailable: {int(gb * 1024 * 1024)} kB\n')
@@ -86,7 +122,14 @@ class VmCase(unittest.TestCase):
                    VM_DOCKER=shlex.join([sys.executable, str(TESTS / 'fake_docker.py')]),
                    VM_HCOM=shlex.join([sys.executable, str(TESTS / 'fake_hcom.py')]),
                    FAKE_DOCKER_STATE=str(self.docker_state), FAKE_EVENTS=str(self.events),
-                   FAKE_HCOM_LIST=str(self.hcom_list), VM_NOW=when or at())
+                   FAKE_HCOM_LIST=str(self.hcom_list), VM_NOW=when or at(),
+                   VM_ANDROID_AVD_DIRS=':'.join(map(str, self.avd_dirs)),
+                   VM_ANDROID_SDKS=str(self.sdk), VM_ANDROID_STOP_WAIT='0',
+                   VM_ANDROID_SETTLE='0',
+                   FAKE_ANDROID_STATE=str(self.android_state))
+        for var, role in (('VM_PS', 'ps'), ('VM_ADB', 'adb'), ('VM_KILL', 'kill'),
+                          ('VM_EMULATOR', 'emulator')):
+            env[var] = shlex.join([sys.executable, str(TESTS / 'fake_android.py'), role])
         if who:
             env['HCOM_INSTANCE_NAME'] = who
         return env
@@ -141,6 +184,54 @@ class VmCase(unittest.TestCase):
 
     def starts(self):
         return [r for r in self.calls('docker') if r[1] == 'start']
+
+
+class SafetyTests(VmCase):
+    """No test may reach the host's real programs (see the #721 incident)."""
+
+    def test_the_test_environment_fakes_every_outside_program(self):
+        source = SCRIPT.read_text()
+        used = set(re.findall(r"command\('(VM_[A-Z]+)'", source))
+        self.assertTrue(used <= set(vm.PROGRAM_VARS), used - set(vm.PROGRAM_VARS))
+        env = self.env()
+        for var in vm.PROGRAM_VARS:
+            self.assertIn('fake_', env.get(var, ''), var)
+
+    def trap_env(self, **extra):
+        trap = self.tmp / 'trap'
+        trap.mkdir(exist_ok=True)
+        self.trapped = self.tmp / 'trapped.txt'
+        for name in ('ps', 'adb', 'kill', 'docker', 'hcom', 'emulator'):
+            program = trap / name
+            program.write_text(f'#!/bin/sh\necho "{name} $*" >> {shlex.quote(str(self.trapped))}'
+                               '\nexit 1\n')
+            program.chmod(0o755)
+        (self.sdk / 'emulator/emulator').write_text((trap / 'emulator').read_text())
+        (self.sdk / 'emulator/emulator').chmod(0o755)
+        env = {k: v for k, v in self.env().items() if k not in vm.PROGRAM_VARS
+               and k != 'VM_REAL_HOST'}
+        env['PATH'] = f"{trap}:{os.environ.get('PATH', '')}"
+        env.update(extra)
+        return env
+
+    def run_trapped(self, env):
+        self.set_docker({'busi-vm-win': {'running': True}, 'busi-vm-mac': {'running': False}})
+        for args in (['list'], ['list', 'android'], ['watch', '--once'],
+                     ['borrow', 'android', 'x', '--avd', 'pixel'], ['return', 'win'],
+                     ['watch', '--once']):
+            subprocess.run([sys.executable, str(SCRIPT), *args], env=env, capture_output=True,
+                           text=True, timeout=60)
+        return self.trapped.read_text() if self.trapped.exists() else ''
+
+    def test_a_temporary_data_root_never_runs_the_real_programs(self):
+        self.assertTrue(vm.temporary(self.root))
+        self.assertEqual(self.run_trapped(self.trap_env()), '')
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.leases(), {})
+
+    def test_the_guard_is_what_keeps_them_out(self):
+        # With the explicit opt-in the same commands reach the (trap) programs on PATH.
+        self.assertIn('ps -ww -eo pid=,args=', self.run_trapped(self.trap_env(VM_REAL_HOST='1')))
 
 
 class ListTests(VmCase):
@@ -575,6 +666,298 @@ class FailureMessageTests(VmCase):
         self.assertIn('vm start', err)
 
 
+ENGINE = '/fake-sdk/emulator/qemu/linux-x86_64/qemu-system-x86_64-headless'
+
+
+class AndroidCase(VmCase):
+    def running_emulator(self, pid, avd, port=None):
+        """A fake emulator process the vm did not start."""
+        state = self.android()
+        state['procs'][str(pid)] = [ENGINE, '-avd', avd] + (['-port', str(port)] if port else [])
+        self.android_state.write_text(json.dumps(state))
+
+    def adb(self):
+        return [r for r in self.calls('adb') if r[1:2] != ['devices']]
+
+    def kills(self):
+        return self.calls('kill')
+
+
+class AndroidBorrowTests(AndroidCase):
+    def test_borrow_starts_the_avd_headless_on_a_vm_chosen_port_and_lists_it(self):
+        out = self.ok('borrow', 'android', '測試登入', '--avd', 'pixel')
+        self.assertIn('emulator-5554', out)
+        start = self.calls('emulator')
+        self.assertEqual(start, [['emulator', '-avd', 'pixel', '-port', '5554', '-no-window',
+                                  '-no-audio', '-no-boot-anim', '-gpu', 'swiftshader_indirect']])
+        self.assertEqual(self.emulators(), {'pixel': 5554})
+        lease = self.leases()['android:pixel']
+        self.assertEqual((lease['borrower'], lease['purpose'], lease['serial'], lease['kind']),
+                         ('aaaa', '測試登入', 'emulator-5554', 'android'))
+        self.assertEqual(lease['expires_at'], '2026-11-17T03:00:00Z')
+        self.assertEqual(lease['avd_home'], str(self.avd_dirs[0]))
+        self.assertEqual(lease['sdk'], str(self.sdk))
+        self.assertIn('android:pixel：開機中', self.ok('list', when=at(minutes=5)))
+        out = self.ok('list', when=at(minutes=20))
+        self.assertIn('android:pixel：執行中｜借用者 aaaa｜用途 測試登入｜到期 2026-11-17 11:00（台北）'
+                      '（剩 2 小時 40 分）｜adb emulator-5554', out)
+        out = self.ok('status', 'android', '--avd', 'pixel', when=at(minutes=20))
+        self.assertIn('adb -s emulator-5554', out)
+        self.assertNotIn('win', out)
+
+    def test_one_borrower_per_emulator_and_different_emulators_for_different_agents(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        err = self.refused('borrow', 'android', 'y', '--avd', 'pixel', who='bebe')
+        self.assertIn('aaaa 借用中', err)
+        self.assertIn('用途：x', err)
+        self.ok('borrow', 'android', 'y', '--avd', 'tablet', who='bebe')
+        self.assertEqual(self.emulators(), {'pixel': 5554, 'tablet': 5556})
+        self.assertEqual(self.leases()['android:tablet']['borrower'], 'bebe')
+        self.assertIn('你已經借了', self.refused('borrow', 'android', 'z', '--avd', 'pixel'))
+
+    def test_ports_in_use_by_other_emulators_or_adb_are_skipped(self):
+        self.running_emulator(900, 'tablet', 5554)
+        self.update_android(devices=[5556])
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel', who='bebe')
+        self.assertEqual(self.emulators()['pixel'], 5558)
+
+    def test_unknown_avd_is_refused_with_the_borrowable_names(self):
+        err = self.refused('borrow', 'android', 'x', '--avd', 'nexus')
+        self.assertIn('找不到模擬器「nexus」', err)
+        self.assertIn('bare、pixel、tablet', err)
+        self.assertIn(str(self.avd_dirs[0]), err)
+        self.assertIn('--avd', self.refused('borrow', 'android', 'x'))
+        self.assertEqual(self.leases(), {})
+        out = self.ok('list', 'android')
+        for name in ('android:bare：關機｜沒有人借用', 'android:pixel：關機', 'android:tablet：關機'):
+            self.assertIn(name, out)
+
+    def test_an_avd_in_two_folders_or_without_its_image_is_refused(self):
+        self.make_avd('pixel', self.avd_dirs[1], 'hw.ramSize=2G')
+        self.assertIn('分不出', self.refused('borrow', 'android', 'x', '--avd', 'pixel'))
+        self.make_avd('old', self.avd_dirs[0], '', image='system-images/android-29/x/')
+        err = self.refused('borrow', 'android', 'x', '--avd', 'old')
+        self.assertIn('system-images/android-29/x/', err)
+        self.assertIn('sdkmanager', err)
+        self.assertEqual(self.calls('emulator'), [])
+
+    def test_start_failure_leaves_no_lease_and_shows_the_emulator_output(self):
+        self.update_android(fail_start=['pixel'])
+        err = self.refused('borrow', 'android', 'x', '--avd', 'pixel')
+        self.assertIn('借用沒有成立', err)
+        self.assertIn('broken system image', err)
+        self.assertEqual(self.leases(), {})
+
+    def test_extra_emulator_args_are_passed_but_vm_owned_ones_are_refused(self):
+        err = self.refused('borrow', 'android', 'x', '--avd', 'pixel',
+                           '--emulator-args', '-port 5600')
+        self.assertIn('-port', err)
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel', '--emulator-args', '-cores 2')
+        self.assertEqual(self.calls('emulator')[-1][-2:], ['-cores', '2'])
+        self.assertEqual(self.leases()['android:pixel']['emulator_args'], ['-cores', '2'])
+
+    def test_the_lease_key_form_works_for_extend_and_return(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        self.ok('extend', 'android:pixel', '--hours', '1')
+        self.assertEqual(self.leases()['android:pixel']['expires_at'], '2026-11-17T04:00:00Z')
+        self.assertIn('只有借用者', self.refused('return', 'android', '--avd', 'pixel', who='bebe'))
+        self.ok('return', 'android', '--avd', 'pixel')
+        self.assertEqual(self.adb(), [['adb', '-s', 'emulator-5554', 'emu', 'kill']])
+        self.assertEqual(self.emulators(), {})
+        self.assertEqual(self.leases(), {})
+
+    def test_return_of_an_emulator_that_already_exited_just_clears_the_lease(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        self.set_android({})
+        self.ok('return', 'android', '--avd', 'pixel')
+        self.assertEqual(self.adb(), [])
+        self.assertEqual(self.leases(), {})
+
+    def test_start_reboots_a_borrowed_emulator_that_is_off(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel', '--emulator-args', '-cores 2')
+        self.set_android({})
+        self.assertIn('emulator-5554', self.ok('start', 'android', '--avd', 'pixel'))
+        self.assertEqual(self.calls('emulator')[-1][-2:], ['-cores', '2'])
+        self.assertIn('已經在執行', self.ok('start', 'android', '--avd', 'pixel'))
+
+
+    def test_an_emulator_that_dies_right_after_it_appears_is_not_a_borrow(self):
+        self.update_android(crash_after_start=['pixel'])
+        self.assertIn('隨即結束', self.refused('borrow', 'android', 'x', '--avd', 'pixel'))
+        self.assertEqual(self.leases(), {})
+
+    def test_stop_uses_the_port_the_avd_runs_on_not_a_stale_lease_port(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        state = self.android()  # pixel crashed and came back on 5562; tablet now sits on 5554
+        state['procs'] = {'700': [ENGINE, '-avd', 'pixel', '-port', '5562'],
+                          '701': [ENGINE, '-avd', 'tablet', '-port', '5554']}
+        self.android_state.write_text(json.dumps(state))
+        self.ok('start', 'android', '--avd', 'pixel')
+        self.assertEqual(self.leases()['android:pixel']['serial'], 'emulator-5562')
+        self.ok('return', 'android', '--avd', 'pixel')
+        self.assertEqual(self.adb(), [['adb', '-s', 'emulator-5562', 'emu', 'kill']])
+        self.assertEqual(self.emulators(), {'tablet': 5554})
+
+    def test_at_words_and_avd_equals_are_read_like_the_emulator_reads_them(self):
+        self.assertEqual(vm.emulator_avd(['/sdk/emulator/emulator', '@pixel']), 'pixel')
+        self.assertEqual(vm.emulator_avd([ENGINE, '-avd=pixel']), 'pixel')
+        self.assertIsNone(vm.emulator_avd(['/usr/bin/qemu-system-x86_64', '-name', '@win']))
+        self.assertIsNone(vm.emulator_avd(['/sdk/emulator/emulator', '-x', '@pixel']))
+
+
+class AndroidMemoryTests(AndroidCase):
+    def test_need_is_the_avd_ram_plus_overhead_or_a_default(self):
+        self.set_memory(11.9)  # pixel: 2G + 2G overhead + 8G reserve = 12G
+        err = self.refused('borrow', 'android', 'x', '--avd', 'pixel')
+        self.assertIn('需要 4G＋保留 8G', err)
+        self.assertIn('需要 4G＋保留 8G', self.refused('borrow', 'android', 'x', '--avd', 'bare'))
+        self.set_memory(12.9)
+        self.assertIn('需要 5G＋保留 8G', self.refused('borrow', 'android', 'x', '--avd', 'tablet'))
+        self.assertEqual(self.calls('emulator'), [])
+
+    def test_a_booting_emulator_counts_against_the_next_start(self):
+        self.set_memory(20)
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        err = self.refused('borrow', 'win', 'y', who='bebe')  # 20 - 4 booting < 16 + 8
+        self.assertIn('已扣掉開機中機器的 4G', err)
+        self.set_memory(17)
+        self.ok('borrow', 'android', 'y', '--avd', 'tablet', who='bebe',
+                when=at(minutes=11))  # pixel is past its boot window
+
+    def test_low_memory_stops_emulators_keeps_the_lease_and_tells_the_borrower(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        self.set_memory(7)
+        self.watch(at(minutes=30))
+        self.assertEqual(self.emulators(), {})
+        self.assertIn('android:pixel', self.leases())
+        self.assertIn('記憶體不足', self.sends('aaaa')[0][-1])
+        self.assertIn('vm start android --avd pixel', self.sends('aaaa')[0][-1])
+        self.assertIn('可用記憶體不足', self.refused('start', 'android', '--avd', 'pixel',
+                                              when=at(minutes=31)))
+        self.set_memory(100)
+        self.watch(at(minutes=32))
+        self.ok('start', 'android', '--avd', 'pixel', when=at(minutes=32))
+        self.assertEqual(self.emulators(), {'pixel': 5554})
+
+
+class AndroidWatchTests(AndroidCase):
+    def test_reminder_then_expiry_stops_gracefully_and_clears(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        self.watch(at(minutes=170))
+        self.assertIn('vm extend android --avd pixel', self.sends('aaaa')[0][-1])
+        self.watch(at(hours=3))
+        self.assertEqual(self.adb(), [['adb', '-s', 'emulator-5554', 'emu', 'kill']])
+        self.assertEqual(self.kills(), [])
+        self.assertEqual(self.leases(), {})
+
+    def test_borrower_gone_from_hcom_loses_the_emulator(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        self.set_present('bebe')
+        self.watch(at(minutes=10))
+        self.watch(at(minutes=41))
+        self.assertEqual(self.emulators(), {})
+        self.assertEqual(self.leases(), {})
+
+    def test_an_emulator_that_ignores_the_graceful_stop_is_terminated(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        self.update_android(ignore_emu_kill=['pixel'])
+        self.ok('return', 'android', '--avd', 'pixel')
+        self.assertEqual([k[1] for k in self.kills()], ['-TERM'])
+        self.update_android(ignore_emu_kill=['tablet'], ignore_term=['tablet'])
+        self.ok('borrow', 'android', 'x', '--avd', 'tablet')
+        self.ok('return', 'android', '--avd', 'tablet')
+        self.assertEqual([k[1] for k in self.kills()], ['-TERM', '-TERM', '-KILL'])
+        self.assertEqual(self.emulators(), {})
+
+    def test_an_emulator_that_cannot_be_stopped_follows_the_stop_failed_flow(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        self.update_android(ignore_emu_kill=['pixel'], ignore_term=['pixel'],
+                            ignore_kill=['pixel'])
+        self.watch(at(hours=3))
+        lease = self.leases()['android:pixel']
+        self.assertEqual(lease['stop_failed']['reason'], '到期')
+        self.assertIn('結束不了', lease['stop_failed']['error'])
+        self.assertIn('android:pixel：關機失敗', self.ok('list', when=at(hours=3)))
+        self.assertEqual(len(self.sends('aaaa')), 1)
+        self.watch(at(hours=3, minutes=1))
+        self.assertIn('retry-stop', [e['action'] for e in self.log()])
+        self.update_android(ignore_kill=[])
+        self.watch(at(hours=3, minutes=2))
+        self.assertEqual(self.leases(), {})
+        self.assertEqual(self.emulators(), {})
+
+    def test_emulators_running_at_the_first_watcher_round_are_never_stopped_for_no_lease(self):
+        self.running_emulator(900, 'pixel', 5570)
+        out = self.ok('list')
+        self.assertIn('android:pixel：執行中｜沒有人借用（vm 管理模擬器之前就在執行', out)
+        self.watch(at())
+        self.watch(at(hours=5))
+        self.assertEqual(self.emulators(), {'pixel': 5570})
+        self.assertEqual(self.adb() + self.kills(), [])
+        baseline = [e for e in self.log() if e['action'] == 'baseline']
+        self.assertEqual([(e['machine'], e['by']) for e in baseline], [('android:pixel', 'watch')])
+        # Its owner takes it over; from then on it follows the lease like any other.
+        out = self.ok('borrow', 'android', '我的測試', '--avd', 'pixel', when=at(hours=5))
+        self.assertIn('emulator-5570', out)
+        self.assertEqual(self.calls('emulator'), [])
+        self.assertEqual(self.leases()['android:pixel']['serial'], 'emulator-5570')
+        self.watch(at(hours=8))
+        self.assertEqual(self.adb(), [['adb', '-s', 'emulator-5570', 'emu', 'kill']])
+        self.assertEqual(self.leases(), {})
+
+    def test_an_emulator_started_later_without_a_lease_is_stopped_after_the_grace(self):
+        self.watch(at())  # the rollout baseline: nothing was running
+        self.running_emulator(901, 'tablet', 5560)
+        self.watch(at(minutes=1))
+        self.assertIn('unleased', [e['action'] for e in self.log()])
+        self.assertIn('10 分鐘後會關機', self.ok('list', when=at(minutes=2)))
+        self.watch(at(minutes=10))
+        self.assertEqual(self.emulators(), {'tablet': 5560})
+        self.watch(at(minutes=11))
+        self.assertEqual(self.emulators(), {})
+        self.assertEqual(self.adb(), [['adb', '-s', 'emulator-5560', 'emu', 'kill']])
+        stop = [e for e in self.log() if e['action'] == 'stop'][-1]
+        self.assertEqual((stop['machine'], stop['reason'], stop['by']),
+                         ('android:tablet', '沒有借用卻在執行', 'watch'))
+        self.assertNotIn('android_unleased', {k for k, v in json.loads(
+            (self.root / 'watch-state.json').read_text()).items() if v})
+
+    def test_an_unleased_emulator_without_a_port_is_terminated(self):
+        self.watch(at())
+        self.running_emulator(902, 'bare')
+        self.watch(at(minutes=1))
+        self.watch(at(minutes=12))
+        self.assertEqual(self.adb(), [])
+        self.assertEqual(self.kills(), [['kill', '-TERM', '902']])
+
+    def test_only_real_avd_emulators_are_touched(self):
+        self.watch(at())
+        state = self.android()
+        state['procs'].update({
+            '950': ['/usr/bin/qemu-system-x86_64', '-name', 'windows', '-m', '16G'],
+            '951': ['/fake-sdk/emulator/crashpad_handler', '--database=/tmp/x'],
+            '952': ['/usr/bin/python3', 'notes.py', '-avd', 'pixel'],
+            '953': ['/fake-sdk/emulator/netsimd', '--host-dns=1.1.1.1']})
+        self.android_state.write_text(json.dumps(state))
+        self.set_memory(4)
+        self.watch(at(minutes=1))
+        self.watch(at(minutes=30))
+        self.assertEqual(self.adb() + self.kills(), [])
+        self.assertEqual(len(self.android()['procs']), 4)
+        self.assertNotIn('android', self.ok('list').split('Android 模擬器')[0])
+
+    def test_a_failed_process_list_stops_nothing_and_return_waits(self):
+        self.ok('borrow', 'android', 'x', '--avd', 'pixel')
+        self.update_android(ps_fail=True)
+        self.watch(at(hours=4))
+        self.assertIn('android:pixel', self.leases())
+        self.assertEqual(self.adb() + self.kills(), [])
+        self.assertIn('ps 失敗', self.refused('return', 'android', '--avd', 'pixel'))
+        self.update_android(ps_fail=False)
+        self.watch(at(hours=4, minutes=1))
+        self.assertEqual(self.leases(), {})
+
+
 class PackagingTests(unittest.TestCase):
     def test_programs_live_in_the_skill_and_the_unit_runs_the_installed_copy(self):
         unit = (SKILL / 'scripts/vm-watch.service').read_text()
@@ -589,7 +972,9 @@ class PackagingTests(unittest.TestCase):
                        'vm list', 'reclaim', 'docker create', '127.0.0.1', 'ssh', '遠端桌面',
                        '網頁畫面', '~/vm/browser/', 'host-guard', '不是資安防線', 'Codex',
                        'https://github.com/dockur/windows',
-                       'https://github.com/sickcodes/Docker-OSX'):
+                       'https://github.com/sickcodes/Docker-OSX', 'vm borrow android',
+                       '--avd', 'vm list android', 'emulator-5554', 'avdmanager create avd',
+                       'hw.ramSize', '~/Android/qa88-avd', 'android_baseline', 'adb emu kill'):
             self.assertIn(needle, text)
         self.assertNotRegex(text, r'\]\((\.\./)+docs/|\(docs/')
         self.assertNotRegex(text, r'\b(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+')
