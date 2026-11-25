@@ -77,13 +77,12 @@ DEFAULTS = {'min_slots': 1, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds
             'brake_cpu_high': 50.0, 'brake_cpu_low': 25.0, 'default_cores': 4.0,
             'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5,
             'reclaim_grace_seconds': 600.0, 'light_min_slots': 1, 'light_max_slots': 4,
-            'light_cores': 2.0, 'light_mem_gb': 2.0, 'remote_poll_seconds': 5.0,
-            'remote_connect_seconds': 5, 'remote_mem_gb': 16.0,
+            'light_cores': 2.0, 'light_mem_gb': 2.0, 'remote_connect_seconds': 5, 'remote_mem_gb': 16.0,
             'remote_prepare_seconds': 1800.0}
 # The smallest value each key accepts; an int default takes whole numbers only.
 MINIMUMS = {'min_slots': 0, 'max_slots': 1, 'profile_history': 1, 'poll_seconds': 0.01,
             'report_seconds': 0.01, 'sample_seconds': 0.01, 'light_max_slots': 1,
-            'remote_poll_seconds': 0.01, 'remote_connect_seconds': 1, 'remote_mem_gb': 0.5,
+            'remote_connect_seconds': 1, 'remote_mem_gb': 0.5,
             'remote_prepare_seconds': 0.01}
 BRAKE_PAIRS = (('brake_io_low', 'brake_io_high'), ('brake_cpu_low', 'brake_cpu_high'))
 GIB = 2 ** 30
@@ -1853,22 +1852,25 @@ class RemoteHost:
                     return f"rsync exited {done.returncode}" + (f': {lines[-1]}' if lines else '')
         return None
 
-    def tree(self, clean=False):
+    def tree(self, clean=False, entries=False):
         """The Git tree of the cache's content as content_tree() counts it here: the sent files
         plus unignored new ones there. clean: first remove the unignored files there that were
-        not sent (left by an earlier run). A string saying why not on failure."""
+        not sent (left by an earlier run). entries: (tree, its index entries in the form
+        _index_entries() gives). A string saying why not on failure."""
         code, out, err = self.script(
             'cd "$C/tree" || exit 1\nrm -f "$C/git/suite-gate-index"\n'
             'if [ -s "$C/files.list" ]; then g add -f --pathspec-from-file="$C/files.list" '
             '--pathspec-file-nul || exit 1; fi\n'
             + ('g ls-files -z --others --exclude-standard | xargs -0 -r rm -f -- || exit 1\n'
                if clean else '')
-            + 'g add -A . && g write-tree\n', timeout=self.connect + 300)
-        tree = out.strip().splitlines()[-1] if out.strip() else ''
+            + 'g add -A . && g write-tree'
+            + (' && g ls-files --stage -z' if entries else '') + '\n',
+            timeout=self.connect + 300)
+        tree, _, listed = out.partition('\n')
         if code or not re.fullmatch(r'[0-9a-f]{40,64}', tree):
             return 'could not read the content there: ' + (err.strip().splitlines()[-1]
                                                              if err.strip() else f'exit {code}')
-        return tree
+        return (tree, [e for e in listed.split('\0') if e]) if entries else tree
 
     def start(self, rel, command, stream_err=True):
         """Start command (shell text) in tree/rel there as a detached job in its own process
@@ -1957,7 +1959,7 @@ class Gate:
         self.offload = False  # may run on another host when this one makes it wait (`run`)
         self.remote = None  # the RemoteHost it runs on, from the claim until release()
         self.remote_root = self.remote_tree = None  # the work tree and the content tree sent
-        self.remote_next = 0.0  # when the other hosts are looked at again
+        self.remote_scope = self.remote_entries = None  # the fingerprint's scope, if any
         self.remote_child = None  # the local end of the job streaming from there
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
                    'start': proc_stat(os.getpid())[2], 'sid': None, 'cgroup': None,
@@ -2081,12 +2083,10 @@ class Gate:
     def try_offload(self):
         """While this host makes the suite wait: try the config's other hosts in order and
         claim the first usable one (True), else note on the waiter why each was not used.
-        Looked at every remote_poll_seconds."""
-        now = time.monotonic()
+        Looked at on every poll of the queue."""
         hosts = self.config['hosts']
-        if not hosts or now < self.remote_next:
+        if not hosts:
             return None
-        self.remote_next = now + self.config['remote_poll_seconds']
         blocked = self.offload_blocked()
         reasons = {}
         for entry in hosts:
@@ -2182,7 +2182,14 @@ class Gate:
         """Send the content, check it arrived as it is here, prepare the directory there
         and check again; why not, or None."""
         remote, root = self.remote, self.remote_root
+        registry = load_registry(self.cwd) or {}
         tree = content_tree(root)
+        # A scoped fingerprint (a registered suite with depends_on) says which changes count.
+        self.remote_scope = suite_scope(root, registry, rel, self.argv)
+        if self.remote_scope is not None:
+            with tempfile.TemporaryDirectory(prefix='suite-gate-') as tmp:
+                env = _fill_index(root, Path(tmp) / 'index', include_patterns(registry))
+                self.remote_entries = self.scoped(_index_entries(root, env))
         files = sent_files(root)
         warn(f'sending {len(files)} file(s) to {remote.host}')
         why = remote.sync(root, files)
@@ -2241,12 +2248,23 @@ class Gate:
             self.remote = self.remote_child = None
             signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
+    def scoped(self, entries):
+        return sorted(e for e in entries
+                      if any(glob_match(e.split('\t', 1)[1], p) for p in self.remote_scope))
+
     def remote_changed(self):
-        """True when the content on the other host is no longer what was sent."""
+        """True when the content on the other host is no longer what was sent, within the
+        fingerprint's scope as a run here counts it."""
         if self.remote is None:
             return False
-        there = self.remote.tree()
-        if there == self.remote_tree:
+        if self.remote_scope is None:
+            there = self.remote.tree()
+            same = there == self.remote_tree
+        else:
+            there = self.remote.tree(entries=True)
+            same = not isinstance(there, str) and self.scoped(there[1]) == self.remote_entries
+            there = there if isinstance(there, str) else there[0]
+        if same:
             return False
         warn(f'the content on {self.remote.host} changed during the run ({there[:40]})')
         return True

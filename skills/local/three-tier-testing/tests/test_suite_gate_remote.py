@@ -19,8 +19,8 @@ class RemoteMixin:
 
     def brake_here(self, hosts=('s3',), **config):
         self.fake_host(io=90.0)
-        self.set_config(min_slots=0, max_slots=2, remote_poll_seconds=0.05,
-                        remote_connect_seconds=1, hosts=list(hosts), **config)
+        self.set_config(min_slots=0, max_slots=2, remote_connect_seconds=1, hosts=list(hosts),
+                        **config)
 
     def unbrake_here(self):
         self.fake_host(io=0.0)
@@ -170,8 +170,8 @@ class OffloadTests(RemoteMixin, GateCase):
         git(other, 'add', '-A')
         self.commit(other, 'init')
         release = self.tmp / 'release'
-        self.set_config(min_slots=0, max_slots=2, remote_poll_seconds=0.05,
-                        remote_connect_seconds=1, hosts=[{'host': 'full', 'max_runs': 1}])
+        self.set_config(min_slots=0, max_slots=2, remote_connect_seconds=1,
+                        hosts=[{'host': 'full', 'max_runs': 1}])
         blocker = self.start('run', '--', f'while [ ! -f {release} ]; do sleep 0.05; done',
                              cwd=other)
         self.wait_until(lambda: [h.get('phase') for h in self.status()['remote']] == ['running'],
@@ -275,6 +275,31 @@ class OffloadTests(RemoteMixin, GateCase):
         self.assertTrue(record['content_changed'])
         self.assertFalse(record['reusable'])
 
+    def test_a_scoped_suite_there_counts_only_changes_in_its_scope_as_here(self):
+        """A registered suite with depends_on: an edit outside its scope during the run there
+        leaves the result reusable, as it would here; one inside does not."""
+        (self.repo / 'web').mkdir()
+        (self.repo / 'web/t.py').write_text('t = 1\n')
+        (self.repo / 'docs').mkdir()
+        (self.repo / 'docs/x.md').write_text('x\n')
+        outside, inside = 'echo z >> ../docs/x.md', 'echo z >> t.py'
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'full_suites': [
+            {'command': outside, 'cwd': 'web', 'depends_on': []},
+            {'command': inside, 'cwd': 'web', 'depends_on': []}]}))
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'suites')
+        self.add_host('s3')
+        self.brake_here()
+        for command, changed in ((outside, False), (inside, True)):
+            with self.subTest(command=command):
+                result = self.gate('run', '--reason', 'scope', '--', command,
+                                   cwd=self.repo / 'web')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                record = self.records()[-1]
+                self.assertEqual(record['host'], 's3')
+                self.assertEqual(record['content_changed'], changed)
+                self.assertEqual(record['reusable'], not changed)
+
     def test_preparation_runs_there_and_a_failed_or_changing_one_is_no_test_result(self):
         self.add_host('s3')
         (self.repo / 'bun.lock').write_text('{}\n')
@@ -375,8 +400,7 @@ class OffloadTests(RemoteMixin, GateCase):
     def test_the_light_path_and_affected_runs_stay_here(self):
         self.add_host('s3')
         self.brake_here()
-        self.set_config(min_slots=0, max_slots=2, light_min_slots=1, hosts=['s3'],
-                        remote_poll_seconds=0.05)
+        self.set_config(min_slots=0, max_slots=2, light_min_slots=1, hosts=['s3'])
         result = self.gate('light', '--', 'true')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.ssh_calls(), [])
