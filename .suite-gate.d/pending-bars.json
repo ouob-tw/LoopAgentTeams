@@ -1,0 +1,19 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/pending-bars.ts",
+        "board/src/lib/board/answering.svelte.ts",
+        "board/src/lib/components/PendingQuestions.svelte",
+        "board/src/lib/components/ControllerInfo.svelte",
+        "board/src/lib/components/Transcript.svelte",
+        "board/tests/unit/pending-bars.test.ts",
+        "board/tests/browser/pending-bar-after-answer.test.ts"
+      ],
+      "tests": [
+        "board/tests/unit/pending-bars.test.ts",
+        "board/tests/browser/pending-bar-after-answer.test.ts"
+      ]
+    }
+  ]
+}
