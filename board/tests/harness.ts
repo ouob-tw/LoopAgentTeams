@@ -318,8 +318,10 @@ export interface HelperPlan extends FixedOutput {
 	launchArgsChildMs?: number;
 	/** The controller records an answer the moment it is written. */
 	recordOnAnswer?: boolean;
-	/** `board answer` prints its result this long after the answer is written, as the real one does
-	 *  while it records the answer and tells the controller. */
+	/** `board answer` prints its result at least this long after the answer is written (300 ms when
+	 *  not given), and not before the board has read the question file it touched, as with the real
+	 *  one, which records the answer and tells the controller first. 0 prints at once: a test that
+	 *  needs the reply before the board reads again says so. */
 	answerSleepMs?: number;
 	/** The Python interpreter that runs the real helper's `board prune-reports` instead of
 	 *  deleting nothing; see `uvPython`. */
