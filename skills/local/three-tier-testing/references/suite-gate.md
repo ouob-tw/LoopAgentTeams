@@ -176,14 +176,14 @@ uv run --no-project python <skill>/scripts/suite-gate.py light -- '<指令>'
 ```json
 {"hosts": [
   {"host": "s3-swy", "max_runs": 1,
-   "env": {"CHROME": "/home/swy/opt/chrome/chrome", "PATH": "/home/swy/opt/node/bin:/usr/bin:/bin"},
+   "env": {"CHROME": "/home/swy/opt/chrome/chrome", "PATH": "/home/swy/opt/node/bin:/home/swy/.local/bin:/home/swy/.bun/bin:/usr/bin:/bin"},
    "local_only": ["skills/x/tests/test_needs_new_kernel.py"]},
   "lab"
 ]}
 ```
 
 - `max_runs`：這台閘門同時送去那台的數量上限，預設 1。
-- `env`：在那台執行時設的環境變數，值照字面設定、不展開 `$PATH`，要改 `PATH` 就寫完整內容。那台的 `~/.local/bin`、`~/.bun/bin` 會先加到 `PATH` 前面。
+- `env`：在那台執行時設的環境變數，值照字面設定、不展開 `$PATH`。沒寫 `PATH` 時，閘門在那台登入時的 `PATH` 前面加上 `~/.local/bin`、`~/.bun/bin`（`uv`、`bun` 常裝在那裡）；寫了 `PATH` 就整個換成這個值，所以要自己列進這兩個目錄與系統目錄。
 - `local_only`：那台跑不過的測試檔（repo 相對路徑的 glob）。一次執行會跑到其中任一檔就不送那台，其他台照常。整套測試涵蓋整個目錄，所以列一個檔就讓那套不去那台。
 - 寫錯的項目印一次警告後略過。
 
