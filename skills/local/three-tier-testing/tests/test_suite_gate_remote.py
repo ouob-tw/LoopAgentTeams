@@ -126,7 +126,9 @@ class OffloadTests(RemoteMixin, GateCase):
     def test_a_braked_host_runs_the_suite_on_the_first_usable_host(self):
         self.add_host('s3')
         self.brake_here()
-        suite = f'pwd > {self.tmp}/where; ls -a > {self.tmp}/files; {self.suite(code=3)}'
+        suite = (f'pwd > {self.tmp}/where; ls -a > {self.tmp}/files; '
+                 f'git ls-files > {self.tmp}/listed; git rev-parse --show-toplevel > '
+                 f'{self.tmp}/top; {self.suite(code=3)}')
         result = self.gate('run', '--', suite)
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn('suite-out', result.stdout)
@@ -138,8 +140,14 @@ class OffloadTests(RemoteMixin, GateCase):
         sent = (self.tmp / 'files').read_text().split()
         self.assertIn('new.py', sent)
         self.assertIn('app.py', sent)
-        for name in ('ignored', '.env.test', '.git'):
+        for name in ('ignored', '.env.test'):
             self.assertNotIn(name, sent)
+        # A Git work tree there of the sent files, for tests that run `git` in the repo.
+        listed = (self.tmp / 'listed').read_text().split()
+        self.assertIn('new.py', listed)
+        self.assertIn('app.py', listed)
+        self.assertNotIn('ignored/secret.txt', listed)
+        self.assertEqual((self.tmp / 'top').read_text().strip(), str(tree))
         self.assertFalse((tree / 'ignored').exists())
         [record] = self.records()
         self.assertEqual(record['host'], 's3')

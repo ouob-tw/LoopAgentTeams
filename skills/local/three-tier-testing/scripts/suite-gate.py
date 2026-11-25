@@ -2066,7 +2066,10 @@ class RemoteHost:
     def tree(self, clean=False, entries=False):
         """The Git tree of the cache's content as content_tree() counts it here: the sent files
         plus unignored new ones there. clean: first remove the unignored files there that were
-        not sent (left by an earlier run). entries: (tree, its index entries in the form
+        not sent (left by an earlier run), and make tree/ a Git work tree of its own
+        (tree/.git, its index holding that content, no commits) so a test that runs `git` in
+        it (`git ls-files`, `git rev-parse --show-toplevel`) finds the repository as here; the
+        gate's own Git calls never look at it. entries: (tree, its index entries in the form
         _index_entries() gives). A string saying why not on failure."""
         code, out, err = self.script(
             'cd "$C/tree" || exit 1\nrm -f "$C/git/suite-gate-index"\n'
@@ -2077,6 +2080,11 @@ class RemoteHost:
             'if [ -s "$C/present.list" ]; then g add -f --pathspec-from-file="$C/present.list" '
             '--pathspec-file-nul || exit 1; fi\n'
             + ('g ls-files -z --others --exclude-standard | xargs -0 -r rm -f -- || exit 1\n'
+               't() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"; }\n'
+               '{ [ -d .git ] || t init -q; } && rm -f .git/index || exit 1\n'
+               'if [ -s "$C/present.list" ]; then t add -f --pathspec-from-file="$C/present.list" '
+               '--pathspec-file-nul || exit 1; fi\n'
+               't add -A . || exit 1\n'
                if clean else '')
             + 'g add -A . && g write-tree'
             + (' && g ls-files --stage -z' if entries else '') + '\n',
