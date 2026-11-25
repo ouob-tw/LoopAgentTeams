@@ -1,0 +1,21 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/link-open.ts",
+        "board/src/lib/board/build-update.ts",
+        "board/src/hooks.client.ts",
+        "board/src/lib/components/AttachmentList.svelte",
+        "board/src/lib/board/answering.svelte.ts"
+      ],
+      "tests": [
+        "board/tests/unit/link-open.test.ts",
+        "board/tests/browser/link-open-app.test.ts",
+        "board/tests/unit/build-update.test.ts",
+        "board/tests/unit/build-update-watch.test.ts",
+        "board/tests/browser/build-update-page.test.ts",
+        "board/tests/browser/attachment-preview.test.ts"
+      ]
+    }
+  ]
+}
