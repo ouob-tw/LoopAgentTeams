@@ -9,6 +9,7 @@ import {
 	type NotifyStatus
 } from './answers.ts';
 import { request as ask } from './api.ts';
+import { holdsLoose, keepsText } from './link-open.ts';
 import { messaging } from './messaging.svelte.ts';
 import type { HelperQuestion, InboxQuestion } from './types.ts';
 
@@ -201,3 +202,32 @@ class Answering {
 }
 
 export const answering = new Answering();
+
+// A page left through a link in the installed app loads again (link-open.ts): the text of every
+// answer is written down by item, whether its card is on the page or not, and put back; the
+// options picked cannot be, and are let go only when the user says so.
+keepsText({
+	name: 'answers',
+	save() {
+		const kept: Record<string, Pick<Draft, 'text' | 'note' | 'base'>> = {};
+		for (const [key, draft] of Object.entries(answering.drafts)) if (draft.text.trim() || draft.note.trim()) kept[key] = { text: draft.text, note: draft.note, base: draft.base };
+		return Object.keys(kept).length ? kept : null;
+	},
+	restore(data) {
+		for (const [key, draft] of Object.entries(data as Record<string, Pick<Draft, 'text' | 'note' | 'base'>>)) {
+			const now = answering.drafts[key];
+			if (!now || (!now.text.trim() && !now.note.trim())) answering.drafts[key] = { select: now?.select ?? [], other: now?.other ?? false, text: draft.text, note: draft.note, base: now?.base ?? draft.base };
+		}
+	}
+});
+holdsLoose({
+	label: '已選的選項',
+	present: () => Object.values(answering.drafts).some((draft) => draft.select.length > 0 || draft.other),
+	discard() {
+		for (const key of Object.keys(answering.drafts)) {
+			const draft = answering.drafts[key]!;
+			if (draft.select.length || draft.other) answering.drafts[key] = { ...draft, select: [], other: false };
+		}
+		return true;
+	}
+});

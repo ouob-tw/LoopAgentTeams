@@ -1,9 +1,23 @@
 <script module lang="ts">
+	import { keepsText } from '#lib/board/link-open.ts';
 	/** The deny reasons written and not sent, by ask ID: kept while the page is open, so they survive
 	 *  opening something else and a send that failed. */
 	const reasons = $state<Record<string, string>>({});
 	/** Asks someone else answered first, as this page was told when it sent. */
 	const takenHere = $state<Record<string, boolean>>({});
+
+	// A page left through a link in the installed app loads again (link-open.ts): the reasons are
+	// written down by ask, shown or not, and put back.
+	keepsText({
+		name: 'deny-reasons',
+		save() {
+			const kept = Object.fromEntries(Object.entries(reasons).filter(([, text]) => text.trim()));
+			return Object.keys(kept).length ? kept : null;
+		},
+		restore(data) {
+			for (const [id, text] of Object.entries(data as Record<string, string>)) if (!reasons[id]?.trim()) reasons[id] = text;
+		}
+	});
 </script>
 
 <script lang="ts">
@@ -115,7 +129,7 @@
 
 	{#if answerable}
 		<VoiceField disabled={sending || testDevice.view !== null} key="permission-{ask.id}">
-			<textarea rows="2" aria-label="拒絕理由" placeholder="拒絕理由（選填，拒絕時會告訴它）" disabled={sending || testDevice.view !== null} bind:value={() => reasons[ask.id] ?? '', (text) => (reasons[ask.id] = text)}></textarea>
+			<textarea rows="2" data-kept aria-label="拒絕理由" placeholder="拒絕理由（選填，拒絕時會告訴它）" disabled={sending || testDevice.view !== null} bind:value={() => reasons[ask.id] ?? '', (text) => (reasons[ask.id] = text)}></textarea>
 		</VoiceField>
 		<TestDenied />
 		<div class="actions">

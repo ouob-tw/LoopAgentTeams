@@ -240,6 +240,7 @@
 							<VoiceField disabled={sending} key="answer-{item.key}-other">
 								<textarea
 									rows="2"
+									data-kept
 									aria-label="其他的內容"
 									placeholder="其他：請寫下你的答覆"
 									disabled={sending}
@@ -283,6 +284,7 @@
 						<VoiceField disabled={sending} key="answer-{item.key}-text">
 							<textarea
 								id="{fieldId}-text"
+								data-kept
 								rows="3"
 								disabled={sending}
 								bind:value={() => draft.text, (text) => answering.edit(item, { text })}
@@ -295,6 +297,7 @@
 					<VoiceField disabled={sending} key="answer-{item.key}-note">
 						<textarea
 							id="{fieldId}-note"
+							data-kept
 							rows="2"
 							disabled={sending}
 							bind:value={() => draft.note, (note) => answering.edit(item, { note })}

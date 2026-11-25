@@ -1,0 +1,32 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/link-open.ts",
+        "board/src/lib/board/build-update.ts",
+        "board/src/hooks.client.ts",
+        "board/src/lib/components/AttachmentList.svelte",
+        "board/src/lib/board/answering.svelte.ts",
+        "board/src/lib/components/LeavePrompt.svelte",
+        "board/src/routes/+layout.svelte",
+        "board/src/lib/board/review-ui.svelte.ts",
+        "board/src/lib/board/attaching.svelte.ts",
+        "board/src/lib/board/voice-recording.svelte.ts",
+        "board/src/lib/components/ItemContent.svelte",
+        "board/src/lib/components/ReviewItem.svelte",
+        "board/src/lib/components/DelegatedRow.svelte",
+        "board/src/lib/components/BoardAskCard.svelte",
+        "board/src/lib/components/PermissionAskCard.svelte"
+      ],
+      "tests": [
+        "board/tests/unit/link-open.test.ts",
+        "board/tests/browser/link-open-app.test.ts",
+        "board/tests/unit/build-update.test.ts",
+        "board/tests/unit/build-update-watch.test.ts",
+        "board/tests/browser/build-update-page.test.ts",
+        "board/tests/browser/attachment-preview.test.ts",
+        "board/tests/browser/board-ask.test.ts"
+      ]
+    }
+  ]
+}

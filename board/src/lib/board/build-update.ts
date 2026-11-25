@@ -60,7 +60,7 @@ export function holdsUnsent(check: () => boolean): () => void {
 
 /** Text boxes whose content a reload would lose. One marked `data-reload-safe` shows a value the
  *  page has saved already, and holds the reload only while it is being typed in. */
-const TEXT_BOXES = 'textarea, input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="tel"], [contenteditable]:not([contenteditable="false"])';
+export const TEXT_BOXES = 'textarea, input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="tel"], [contenteditable]:not([contenteditable="false"])';
 /** What a reload would close under the user's hands. */
 const DIALOGS = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
 

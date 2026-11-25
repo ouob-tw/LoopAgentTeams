@@ -5,6 +5,7 @@
 import { request } from './api.ts';
 import { attachmentKind, CHUNK_BYTES, type AttachmentKind } from './attachments.ts';
 import { holdsUnsent } from './build-update.ts';
+import { holdsLoose } from './link-open.ts';
 
 export interface Attachment {
 	key: number;
@@ -109,3 +110,13 @@ class Attaching {
 export const attaching = new Attaching();
 // A reload would drop them (see build-update.ts).
 holdsUnsent(() => Object.values(attaching.byOwner).some((files) => files.length > 0));
+// A page left through a link in the installed app loads again; files waiting to be sent cannot be
+// put back, so the user is asked first (link-open.ts).
+holdsLoose({
+	label: '待送的附件',
+	present: () => Object.values(attaching.byOwner).some((files) => files.length > 0),
+	discard() {
+		for (const [owner, files] of Object.entries(attaching.byOwner)) for (const file of [...files]) attaching.remove(owner, file.key);
+		return true;
+	}
+});

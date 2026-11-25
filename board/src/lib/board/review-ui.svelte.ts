@@ -1,6 +1,7 @@
 // What the review tab keeps while the page lives: for each item, whether its comment box is open,
 // what was typed and how the last send ended. Kept by controller and item ID, so a review read
 // again, or an item moving between the sections, never drops a half-written reply.
+import { keepsText } from './link-open.ts';
 import { messaging, type Outcome } from './messaging.svelte.ts';
 import { reviewMessage, type ReviewItem } from './review.ts';
 
@@ -45,3 +46,19 @@ class ReviewUi {
 }
 
 export const reviewUi = new ReviewUi();
+
+// What was typed in a reply box is written down when the page is left through a link in the
+// installed app, and put back with the box open (link-open.ts).
+keepsText({
+	name: 'review-replies',
+	save() {
+		const kept: Record<string, string> = {};
+		for (const [key, box] of Object.entries(reviewUi.boxes)) if (box.text.trim() && !box.sending) kept[key] = box.text;
+		return Object.keys(kept).length ? kept : null;
+	},
+	restore(data) {
+		for (const [key, text] of Object.entries(data as Record<string, string>)) {
+			if (!reviewUi.boxes[key]?.text.trim()) reviewUi.boxes[key] = { ...(reviewUi.boxes[key] ?? EMPTY), open: true, text };
+		}
+	}
+});
