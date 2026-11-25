@@ -296,7 +296,8 @@ export function restorePlace(win: Window, storage: () => KeptStorage = () => ses
 		frame = 0;
 		if (stopped) return;
 		const box = kept.scroller ? doc.querySelector<HTMLElement>(kept.scroller) : null;
-		const element = kept.anchor ? doc.querySelector(kept.anchor) : null;
+		// Not the inert stand-in the page shows while the real message is still on its way.
+		const element = kept.anchor ? ([...doc.querySelectorAll(kept.anchor)].find((found) => !found.closest('.placeholder, [inert]')) ?? null) : null;
 		if (kept.anchor && !element) {
 			// A message in an older part of the conversation: load the next part until it comes.
 			const more = doc.querySelector<HTMLButtonElement>('button.earlier:not([disabled])');
