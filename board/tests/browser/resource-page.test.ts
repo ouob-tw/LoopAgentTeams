@@ -70,9 +70,11 @@ beforeAll(async () => {
 	procDir = mkdtempSync(join(tmpdir(), 'lat-board-proc-'));
 	mkdirSync(join(procDir, 'self'), { recursive: true });
 	writeFileSync(join(procDir, 'self/mounts'), '/dev/root / ext4 rw 0 0\n');
+	// The disk as the test sets it, not the host's own `/`: half of 1 TiB used, a fine level.
+	writeFileSync(join(procDir, 'statfs.json'), JSON.stringify({ '/': { bsize: 4096, blocks: 2 ** 28, bfree: 2 ** 27, bavail: 2 ** 27 } }));
 	writeProc(0);
 	ticker = setInterval(() => writeProc((Date.now() - started) / 1000), 100);
-	fixture = await startFixture({ env: { LAT_BOARD_PROC_ROOT: procDir } });
+	fixture = await startFixture({ env: { LAT_BOARD_PROC_ROOT: procDir, LAT_BOARD_STATFS_FILE: join(procDir, 'statfs.json') } });
 	cookie = await fixture.login();
 	writeFileSync(
 		join(fixture.dir, 'herdr.json'),
@@ -151,6 +153,8 @@ for (const width of [390, 1400]) {
 			expect(rows[1].bar).toBe('bar');
 			expect(rows[2].value).toBe('59/64G');
 			expect(rows[2].bar).toBe('bar danger');
+			// The test's disk, half used, is fine.
+			expect(rows[3].bar).toBe('bar');
 			// Every bar starts and ends in the same place.
 			expect(new Set(rows.map((row) => row.width)).size).toBe(1);
 			// Each level has its own shape besides its colour.

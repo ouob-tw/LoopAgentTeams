@@ -1,6 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import { getBoard } from '#lib/server/board.ts';
-import { createResourceReader, paneAgents } from '#lib/server/resources.ts';
+import { createResourceReader, paneAgents, statfsFrom } from '#lib/server/resources.ts';
 import type { RequestHandler } from './$types';
 
 let reader: ReturnType<typeof createResourceReader> | null = null;
@@ -11,6 +11,7 @@ export const GET: RequestHandler = async () => {
 	const board = getBoard();
 	reader ??= createResourceReader({
 		root: board.config.procRoot,
+		statfs: board.config.statfsFile ? statfsFrom(board.config.statfsFile) : undefined,
 		// The board's clock may stand still in tests; readings are timed on the real one.
 		now: Date.now,
 		agents: async () => paneAgents((await board.current()).agents)

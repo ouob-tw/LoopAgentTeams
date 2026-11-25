@@ -5,7 +5,7 @@
 // started (HCOM_INSTANCE_NAME, with HCOM_TAG before it) is that hcom agent's, as a headless one is.
 // CPU is the change in ticks between two readings, so a reading keeps the one before it. Memory is
 // each process's resident size summed, so pages processes share count once for each of them.
-import { statfsSync } from 'node:fs';
+import { readFileSync, statfsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { heavier, type AgentUse, type DiskUse, type ResourceSnapshot, type ResourceUse } from '../board/resources.ts';
 import type { Agent } from '../board/types.ts';
@@ -147,6 +147,15 @@ export function readDisks(mounts: string[], statfs: StatFs = statfsSync): DiskUs
 	});
 }
 
+/** `statfs` from a JSON file of each mount's numbers, read at each call; a mount not in it is not there. */
+export function statfsFrom(file: string): StatFs {
+	return (path) => {
+		const fs = JSON.parse(readFileSync(file, 'utf8'))[path];
+		if (!fs) throw new Error(`${path} is not in ${file}`);
+		return fs;
+	};
+}
+
 const READS_AT_ONCE = 32;
 
 const text = (path: string) => readFile(path, 'latin1');
@@ -270,8 +279,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Readings for the open 資源 tabs. Pages asking together share one; a reading is taken only when
  *  a page asks, so nothing is read while no tab is open. With no reading in the last `freshMs`, a
  *  first one is taken `gapMs` before the one compared with it. */
-export function createResourceReader(options: { root: string; now: () => number; agents: () => Promise<PaneAgent[]>; gapMs?: number; freshMs?: number; reuseMs?: number }) {
-	const { root, now, agents, gapMs = 500, freshMs = 15_000, reuseMs = 1_000 } = options;
+export function createResourceReader(options: { root: string; now: () => number; agents: () => Promise<PaneAgent[]>; gapMs?: number; freshMs?: number; reuseMs?: number; statfs?: StatFs }) {
+	const { root, now, agents, gapMs = 500, freshMs = 15_000, reuseMs = 1_000, statfs } = options;
 	const ownerCache = new Map<string, Owner | null>();
 	let last: Sample | null = null;
 	let shown: ResourceSnapshot | null = null;
@@ -284,7 +293,7 @@ export function createResourceReader(options: { root: string; now: () => number;
 			await sleep(gapMs);
 		}
 		const after = await sample(root, now(), ownerCache);
-		const disks = readDisks(diskMounts(await text(`${root}/self/mounts`)));
+		const disks = readDisks(diskMounts(await text(`${root}/self/mounts`)), statfs);
 		last = after;
 		shown = snapshotOf(before, after, await agents(), disks);
 		return shown;
