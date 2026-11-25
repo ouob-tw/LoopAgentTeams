@@ -40,6 +40,8 @@ test.skipIf(!CHROME)('a page that renders into Internal Error logs the error cod
 	await send('Page.navigate', { url: `${fixture.url}/?from=test` });
 	const [line] = await waitFor(() => reports(from).length > 0 && reports(from), 10_000, 'the browser error in the log');
 
+	// The page reports the error as it fails, so its log line can come before the error page is drawn.
+	await until(`document.body.innerText.includes('Internal Error')`);
 	expect(await evaluate<string>('document.body.innerText')).toContain('Internal Error');
 	expect(line).toMatchObject({ level: 'ERROR', logger: 'board.client', kind: 'handleError', exc_type: 'Error', exc_message: 'svelte:each_key_duplicate', url: '/', route: '/' });
 	// Each frame is the built script's place, with the source file it came from where its map says.
