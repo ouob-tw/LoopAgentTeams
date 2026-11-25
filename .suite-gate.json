@@ -544,5 +544,11 @@
       "skills/local/lat/tests/fixtures/**"
     ]
   },
-  "cleanup": {"github_repo": "ouob-tw/LoopAgentTeams-work", "label": "test-cleanup"}
+  "cleanup": {"github_repo": "ouob-tw/LoopAgentTeams-work", "label": "test-cleanup"},
+  "remote_checks": {
+    "board": [
+      "if [ -n \"${CHROME:-}\" ]; then [ -x \"$CHROME\" ]; else [ -x /usr/bin/google-chrome ] || [ -x /usr/bin/chromium ] || [ -x /usr/bin/chromium-browser ]; fi",
+      "command -v node"
+    ]
+  }
 }

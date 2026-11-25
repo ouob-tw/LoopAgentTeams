@@ -41,6 +41,12 @@ print(json.dumps({'state': 'open', 'labels': [], 'title': title}))
 LEDGER = in_process.load(SCRIPT, 'lat_ledger_cli')
 
 
+def old_ledger(commit):
+    """lat-ledger.py as it was at commit, checked in under fixtures/ so a test needs no Git
+    history (a copy sent to another host has none)."""
+    return (Path(__file__).resolve().parent / f'fixtures/lat-ledger-{commit}.py.txt').read_text()
+
+
 def git(cwd, *args):
     return subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True,
                           text=True).stdout.strip()
@@ -981,8 +987,7 @@ class QaCoverageTests(LedgerCase):
         baseline = self.root / 'baseline'
         baseline.mkdir()
         old = baseline / 'lat-ledger.py'
-        old.write_text(git(Path(__file__).resolve().parents[3], 'show',
-                           'e8aa8075:skills/local/lat/scripts/lat-ledger.py') + '\n')
+        old.write_text(old_ledger('e8aa8075'))
         (baseline / '_lat_common.py').write_text((SCRIPT.parent / '_lat_common.py').read_text())
         for path in (self.ledger, self.seal, self.journal):
             path.unlink()
@@ -1005,8 +1010,7 @@ class QaCoverageTests(LedgerCase):
         baseline = self.root / 'baseline'
         baseline.mkdir()
         old = baseline / 'lat-ledger.py'
-        old.write_text(git(Path(__file__).resolve().parents[3], 'show',
-                           '2f203072:skills/local/lat/scripts/lat-ledger.py') + '\n')
+        old.write_text(old_ledger('2f203072'))
         (baseline / '_lat_common.py').write_text((SCRIPT.parent / '_lat_common.py').read_text())
         for path in (self.ledger, self.seal, self.journal):
             path.unlink()
@@ -1559,8 +1563,7 @@ class TicketTests(LedgerCase):
         baseline = self.root / 'baseline'
         baseline.mkdir()
         old = baseline / 'lat-ledger.py'
-        old.write_text(git(Path(__file__).resolve().parents[3], 'show',
-                           '729723b0:skills/local/lat/scripts/lat-ledger.py') + '\n')
+        old.write_text(old_ledger('729723b0'))
         (baseline / '_lat_common.py').write_text((SCRIPT.parent / '_lat_common.py').read_text())
         for path in (self.ledger, self.seal, self.journal):
             path.unlink()

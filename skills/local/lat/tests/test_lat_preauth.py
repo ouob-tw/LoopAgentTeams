@@ -37,7 +37,10 @@ def load_script(path):
 
 # Fixture Git ignores the host's Git config and hooks, so pushes to the temp remote run no
 # installed hook.
-GIT_ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+# Its own author too: a host without a global identity or a domain name has none to guess.
+GIT_ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
+               GIT_COMMITTER_EMAIL='t@t')
 
 
 def git(cwd, *args):

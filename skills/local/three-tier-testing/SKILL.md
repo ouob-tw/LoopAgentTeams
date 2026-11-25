@@ -147,6 +147,7 @@ docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --
 - **背景整套**：裝了背景計時器的專案，每小時對本機整合分支最新內容補跑缺通過紀錄、且距該套上次通過超過一天的整套（用途 `background`），不擋任何人；推送 main 時直接沿用同內容的通過紀錄。真的失敗時在 tracker 開 `suite-failure` 票（同一套只開一張，之後留言）；沒設 tracker 時由 `status` 列出。詳見 [references/suite-gate.md](references/suite-gate.md#背景整套background)。
 - **確有必要另跑整套**（環境改變、查偶發失敗等）：用 `run --reason "<原因>"` 放行，原因會記進紀錄。
 - **失敗重跑**：經閘門的整套與受影響測試失敗時，閘門能確定只是幾個測試檔失敗（指令是單一測試指令、不超過 10 個檔案、沒有遇錯即停選項、輸出完整、沒有載入或建置錯誤）就自動用對照表的樣板只重跑那些檔案一次；通過就記為通過，但標為重跑才通過（`rerun_only`，輸出與 `status` 寫 `PASSED ONLY ON RERUN` 和第一次失敗的檔案），可能是真的退步，審查者看過才能合併；紀錄的 `flaky` 與 `status` 也列出這些時好時壞的測試，留待整理，不要當成已修好。不重跑時照原結果算失敗，原因印在輸出與紀錄。詳見 [references/suite-gate.md](references/suite-gate.md#失敗重跑)。
+- **別台主機**：這台忙到測試要排隊時，若閘門設定檔列了其他主機，測試會自動送到可用的那台跑，結果與沿用規則不變，開頭多出傳檔與準備的時間。要用本機服務（hcom、Herdr、運行中的看板、Android 模擬器、本機 Docker）的測試在專案登記檔標成本機專用；只在某台跑不過的檔案寫在那台的主機清單項目。觸發條件、主機清單格式、斷線接回與快取清理見 [references/suite-gate.md](references/suite-gate.md#送到別台主機跑分流)。
 - **時間上限**：閘門執行的每個測試指令都有總時間上限（登記檔 `time_limit_minutes`，沒設時取基準時間 × 4、至少 30 分鐘，再沒有就 2 小時），超過就停掉整個測試程序群組並記為逾時失敗，不重跑也不沿用；輸出連續 15 分鐘沒有增長也一樣處理。詳見 [references/suite-gate.md](references/suite-gate.md#時間上限)。
 
 閘門跑整套時會記下每個測試檔的耗時（支援 bun 與帶 `--durations=0` 的 pytest；不含 unittest，也不含在 AI 代理人內執行的 bun，因為那時通過的測試不會顯示）；整理票會列出最慢的測試檔和時好時壞的測試。

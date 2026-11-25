@@ -16,8 +16,9 @@ import unittest
 
 SKILL = Path(__file__).resolve().parents[1]
 PANEL = SKILL / 'herdr-panel'
-BASE = '12d0149'
-SOURCE = 'skills/local/lat/herdr-panel/lat_panel.py'
+# skills/local/lat/herdr-panel/lat_panel.py at the ticket's pinned pre-refactor commit
+# 12d0149, checked in so the test needs no Git history (a copy sent to another host has none).
+BASELINE = Path(__file__).resolve().parent / 'fixtures/lat_panel-12d0149.py.txt'
 TEXT = '## Choose?\nQ1 · r1 · 待答\n\nA. Yes\nB. Later\n\n答覆：\n\n- [ ] 送出\n'
 
 
@@ -74,8 +75,7 @@ assert not {{'questions', 'bindings', 'board', 'lat_panel'}} & sys.modules.keys(
             self.run_code(f"import sys; sys.path.insert(0, {str(installed / 'herdr-panel')!r}); import panel", cwd=temp)
 
     def test_all_22_parser_commands_match_pre_split_bytes_and_exit_codes(self):
-        baseline = subprocess.run(['git', 'show', f'{BASE}:{SOURCE}'], cwd=SKILL,
-                                  capture_output=True, check=True).stdout
+        baseline = BASELINE.read_bytes()
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             old = root / 'old/lat'

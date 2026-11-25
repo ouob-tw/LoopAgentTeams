@@ -8,6 +8,8 @@
 
 本機整合分支最新內容缺整套通過紀錄、且距該套上次通過超過一天時，每小時的背景執行會補跑那幾套，不擋任何人；推送前檢查直接沿用它同內容的通過紀錄（見[背景整套](#背景整套background)）。
 
+這台忙到要排隊時，閘門可能把測試送到設定檔列出的其他主機跑，結果照樣記在這台（見[送到別台主機跑](#送到別台主機跑分流)）。
+
 直接在整合分支上提交時，可以用 Git pre-commit 檢查先跑這次暫存改動影響到的測試（見[提交前把關](#提交前把關pre-commit)）。
 
 整套跑完後，距上次整理太久或整套明顯變慢時，閘門會開整理票或提醒（見[定期整理觸發](#定期整理觸發)）。
@@ -160,6 +162,66 @@ uv run --no-project python <skill>/scripts/suite-gate.py light -- '<指令>'
 超過上限就停掉整個測試程序群組（同一個 scope，沒有 scope 時是同一個 session），結束碼記 124，紀錄另有 `timed_out`：`limit_s`、`limit_source`、`unfinished_files`（還沒跑完的測試檔）與 `unfinished_basis`（怎麼看出來的，或為什麼看不出來）。逾時算失敗，不自動重跑（`rerun.skipped` 為 `the run timed out`），不能沿用，也不會標成重跑才通過。只有 bun 印出每個測試結果時看得出還沒跑完的檔案：依序執行時是正在跑的那個檔；平行執行時只列指令點名、卻沒有任何結果的檔案。AI Agent 執行時 bun 只印失敗的測試，就看不出來。`status` 在結果後寫 `TIMED OUT after <上限>`。
 
 另有沒有輸出的上限：測試指令的輸出連續 15 分鐘沒有增長（環境變數 `SUITE_GATE_SILENCE_SECONDS` 可改秒數，測試用），就照上面的方式停掉並記為逾時失敗，`timed_out` 另有 `reason`（如 `no output for 15m00s`），`status` 寫 `TIMED OUT after <已跑時間> (no output for 15m00s)`。持續有輸出的指令不受影響；AI Agent 執行時 bun 只印失敗的測試，所以單一測試檔若安靜跑超過 15 分鐘也會被停掉。
+
+## 送到別台主機跑（分流）
+
+這台主機設定檔列了其他主機（`hosts`）時，原本要因這台忙而等的測試會改送到別台跑，用法不變：`run`、`run --registered`、`affected`、`light`、背景整套都照常下指令。沒列主機、清單為空或每一項都寫錯時完全不分流。
+
+**何時送出**：只在這台的煞車開著、已達上限或預約放不下而要排隊時才看別台；這台有空就在這台跑。排隊中每次檢查都重看一次，任何一台可用就送出。`affected` 選出的測試組與檢查清單不排隊：開始那一刻若整套測試在這台會要等，就試一次別台，沒有可用的就照舊立刻在這台跑，並印出各台沒用上的原因。
+
+**別台可用的條件**（依清單順序取第一台）：ssh 以非互動模式在 `remote_connect_seconds` 內連得上；那台的硬碟與 CPU 等待用這台同一組煞車門檻判斷沒在煞車；這台送去還在跑的數量低於 `max_runs`；有 `git`、`rsync`、`setsid`、`tail`、`xargs`、`ps`、`awk` 與準備步驟要用的工具（例如有 `bun.lock` 的目錄要 `bun`）；專案登記的檢查（`remote_checks`）都通過。沒用上的原因寫在等待訊息與 `status` 的 `not on <主機>:`。
+
+**主機清單**寫在這台的閘門設定檔（不是專案登記檔），每項是 ssh 設定的 Host 別名，或寫成物件：
+
+```json
+{"hosts": [
+  {"host": "s3-swy", "max_runs": 1,
+   "env": {"CHROME": "/home/swy/opt/chrome/chrome", "PATH": "/home/swy/opt/node/bin:/home/swy/.local/bin:/home/swy/.bun/bin:/usr/bin:/bin"},
+   "local_only": ["skills/x/tests/test_needs_new_kernel.py"]},
+  "lab"
+]}
+```
+
+- `max_runs`：這台閘門同時送去那台的數量上限，預設 1。
+- `env`：在那台執行時設的環境變數，值照字面設定、不展開 `$PATH`。沒寫 `PATH` 時，閘門在那台登入時的 `PATH` 前面加上 `~/.local/bin`、`~/.bun/bin`（`uv`、`bun` 常裝在那裡）；寫了 `PATH` 就整個換成這個值，所以要自己列進這兩個目錄與系統目錄。
+- `local_only`：那台跑不過的測試檔（repo 相對路徑的 glob）。一次執行會跑到其中任一檔就不送那台，其他台照常。整套測試涵蓋整個目錄，所以列一個檔就讓那套不去那台。
+- 寫錯的項目印一次警告後略過。
+
+**本機專用標記**寫在專案登記檔，給要用這台才有的服務（hcom、Herdr、正在跑的看板、Android 模擬器、本機 Docker）的測試，這些測試永遠在這台跑：
+
+```json
+{"local_only": {"paths": ["web/tests/live/**"], "commands": ["*bun run test:live*"]},
+ "full_suites": [{"cwd": "web", "command": "bun run test:live", "local_only": true}]}
+```
+
+- `paths` 比對這次會跑的測試檔：`affected` 看選出的測試，其他看指令裡寫到的檔案；整套測試看它目錄下所有檔案（巢狀整套的目錄除外）。所以標了某目錄的一個檔，整個那套也留在這台。
+- `commands` 比對指令文字，寫法同 `suites`。標了 `local_only` 的整套，連同從它選出的受影響測試與在它目錄跑的檢查都留在這台。
+- 標記讀不懂時一律留在這台。失敗重跑在第一次執行的那台跑。
+- 只因某台缺工具或系統限制而跑不過的檔案，寫在那台的 `local_only`，不要寫在這裡。
+
+**別台工具檢查**：專案登記檔的 `remote_checks` 依目錄列出別台要先通過的 shell 檢查，在那台以主機清單的 `env` 執行，失敗就不送那台。例如看板瀏覽器測試需要 Chrome：`{"remote_checks": {"board": ["[ -x \"$CHROME\" ]"]}}`。
+
+**送出前後**：只傳 Git 追蹤的檔案與沒被忽略的新檔（`.env` 等被忽略的檔案不傳），增量同步到那台的 `~/.cache/suite-gate/remote/<repo>/<工作區>/`。指紋若含 `fingerprint_include` 列的被忽略檔案，這次不分流。同步後與準備後都在那台重算內容，對不上就不在那台跑。有 `bun.lock` 的目錄在那台先跑 `bun install --frozen-lockfile`（輸出前面標 `[<主機> prepare]`），套件留在快取重用。所以每次分流開頭會多幾秒到幾十秒傳檔與核對；第一次在某台跑某目錄時要先裝套件，會更久。傳檔與準備超過 `remote_prepare_seconds` 或失敗時不算測試結果，那台這次當作不可用。
+
+那台的複本是一個 Git 工作區（有 `.git` 與這些檔案的索引，`git ls-files`、`git rev-parse` 照常可用），但沒有任何提交：要讀舊提交（`git show <提交>:<檔案>`、`git log`）的測試在別台會失敗，把要比對的舊檔存成進版控的 fixture。測試裡的 `git commit` 要自己設作者（例如 `GIT_AUTHOR_NAME`、`GIT_AUTHOR_EMAIL`、`GIT_COMMITTER_NAME`、`GIT_COMMITTER_EMAIL`）：別台可能沒有全域身分，沒有網域名稱的主機也猜不出信箱。
+
+**執行與紀錄**：在那台同一個相對目錄跑同一個指令，在自己的程序群組裡（那台能開 systemd 使用者 scope 就加記憶體上限 `remote_mem_gb`，否則由看守程序量記憶體）。輸出即時傳回。紀錄寫在這台，多一欄 `host`（在這台跑的是 `null`），指紋算法不變，所以通過紀錄照常沿用，也照常算合併證據；`light` 仍不寫紀錄，結束時印的 `light run exited` 那行帶上主機名。`status` 的 `On other hosts` 列出正在別台跑的測試、主機與時間。
+
+**斷線與失聯**：
+
+- 連線斷掉時那台的測試繼續跑。這台每 `remote_retry_seconds`（30 秒）重連一次，距上次收到回應 `remote_lost_seconds`（600 秒）內接回就接著顯示輸出、取回結果，不重跑。
+- 超過時限沒接回：記為基礎環境中斷，不寫通過或失敗紀錄，回到這台排隊（之後別台可用時也可能再送出）。
+- 總時間上限與沒有輸出的上限由那台依實際執行時間判斷，斷線期間不算沒有輸出；接回後以那台的結果為準。
+- 這台的閘門被強制結束或當機時，那台的看守程序超過 `remote_lost_seconds` 沒收到存活訊號就停掉整個程序群組，所以最晚約 11 分鐘內停掉。Ctrl-C 或終止訊號時閘門會主動停掉那台的程序群組。
+- 這台還沒確認那台的舊工作已結束前，它佔著那台的名額與那份快取，同一工作區不會再送到同一份快取；下次連上確認結束後才放開。
+
+**清理別台快取**：
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py clean-remote [--days N]
+```
+
+對清單上每台，只刪這台建立、超過 N 天（預設設定檔 `remote_cache_days`，14 天）沒用過、也沒有工作在跑的快取目錄，印出刪了哪些；連不上或刪除失敗時以 1 結束。
 
 ## 查狀態與紀錄
 
@@ -554,6 +616,14 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 | `light_min_slots`、`light_max_slots` | 1、4 | 輕量路徑的下限與上限，與整套分開算。整數，上限至少 1 |
 | `light_cores`、`light_mem_gb` | 2、2 | 每個輕量執行的預約量（核、GiB） |
 | `reclaim_grace_seconds` | 600 | 閘門不在後殘留程序可以佔著名額多久（秒），超過就收回。可為 0（第二次看到時收回） |
+| `hosts` | 無 | 可以送測試去跑的其他主機，格式見[送到別台主機跑](#送到別台主機跑分流) |
+| `remote_connect_seconds` | 5 | 連別台的 ssh 逾時（秒），整數，至少 1 |
+| `remote_prepare_seconds` | 1800 | 傳檔與準備步驟的時限（秒） |
+| `remote_mem_gb` | 16 | 別台一次執行的記憶體上限（GiB） |
+| `remote_lost_seconds` | 600 | 斷線多久沒接回就算失聯；看守程序同樣以此判斷這台不在（秒） |
+| `remote_retry_seconds` | 30 | 斷線後多久重連一次（秒） |
+| `remote_heartbeat_seconds` | 30 | 多久送一次存活訊號（秒，最多 `remote_lost_seconds` 的三分之一） |
+| `remote_cache_days` | 14 | `clean-remote` 預設刪除多少天沒用的快取。整數，至少 1 |
 
 設定檔每次檢查都重讀。檔案讀不到或不是 JSON 物件時全部用預設；個別欄位型別不對、是負數（或低於上面寫的最小值）、整數欄位給了小數時，那一欄用預設；同一組煞車門檻的關閉門檻大於開啟門檻時，那一組兩欄都用預設。以上都印出警告（同一個警告每個閘門程序只印一次），閘門照常運作。
 
