@@ -559,10 +559,8 @@ class ReconnectTests(RemoteMixin, GateCase):
         hold.touch()
         proc = self.start('run', '--', f'echo run >> {self.counter}; touch {started}; '
                                        f'while [ -f {hold} ]; do sleep 0.2; done')
-        # Job 1 prepares, job 2 is the suite: frozen once the gate follows the suite.
-        self.wait_until(lambda: started.exists() and any(
-            c['command'].startswith('sh -c') and re.search(r'job-[0-9a-f]{8}-2\b', c['command'])
-            for c in self.ssh_calls('s3')), message='followed there')
+        self.wait_until(lambda: started.exists() and self.following_suite(),
+                        message='followed there')
         (self.remotes / 's3/freeze').touch()
         self.wait_until(lambda: self.waiter_reasons() != [], timeout=15,
                         message='given up and queued here again')
@@ -577,6 +575,59 @@ class ReconnectTests(RemoteMixin, GateCase):
         [record] = self.records()
         self.assertEqual(record['exit_code'], 0)
         self.assertEqual(self.runs(), 2)
+
+    def test_a_host_that_answers_again_only_after_the_limit_is_given_up(self):
+        """The open connection stalls, new ones work: once remote_lost_seconds have passed
+        since the last answer, an answer that comes after does not take the run back."""
+        self.add_host('s3')
+        self.quick(lost=2)
+        started, hold = self.tmp / 'started', self.tmp / 'hold'
+        hold.touch()
+        proc = self.start('run', '--', f'echo run >> {self.counter}; touch {started}; '
+                                       f'while [ -f {hold} ]; do sleep 0.2; done')
+        self.wait_until(lambda: started.exists() and self.following_suite(),
+                        message='followed there')
+        (self.remotes / 's3/stall').touch()
+        self.wait_until(lambda: self.waiter_reasons() != [] or self.runs() > 1, timeout=15,
+                        message='given up')
+        hold.unlink()
+        (self.remotes / 's3/stall').unlink()
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertIn('it answered again too late', err)
+        [record] = self.records()
+        self.assertEqual(self.runs(), 2)
+
+    def test_one_dropped_stream_is_followed_again_while_the_other_holds(self):
+        """Only the connection carrying stdout drops: it is followed again while the job
+        still runs, not when the job ends, and no output is lost or doubled."""
+        self.add_host('s3')
+        self.quick()
+        started, go = self.tmp / 'started', self.tmp / 'go'
+        proc = self.start('run', '--', f'touch {started}; echo before; echo e1 >&2; '
+                                       f'while [ ! -f {go} ]; do sleep 0.2; done; '
+                                       'echo after; echo e2 >&2')
+        self.wait_until(lambda: started.exists() and self.following_suite(),
+                        message='followed there')
+        follows = len(self.ssh_calls('s3'))
+        (self.remotes / 's3/cut-if').write_text('.out"')
+        self.wait_until(lambda: not (self.remotes / 's3/cut-if').exists(), message='cut')
+        self.wait_until(lambda: any('.out"' in c['command'] for c in
+                                    self.ssh_calls('s3')[follows:]), timeout=15,
+                        message='stdout followed again while the job runs')
+        go.touch()
+        code, out, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines().count('before'), 1, out)
+        self.assertEqual(out.splitlines().count('after'), 1, out)
+        self.assertEqual(err.splitlines().count('e1'), 1, err)
+        self.assertEqual(err.splitlines().count('e2'), 1, err)
+
+    def following_suite(self):
+        """The gate follows job 2 (job 1 prepares): its ssh is open."""
+        return any(c['command'].startswith('sh -c')
+                   and re.search(r'job-[0-9a-f]{8}-2\b', c['command'])
+                   for c in self.ssh_calls('s3'))
 
     def test_the_watchdog_ends_the_group_when_heartbeats_stop_and_the_cache_waits_for_it(self):
         """The gate is killed outright: its job there ends by itself once no heartbeat came

@@ -1701,6 +1701,7 @@ REMOTE_GONE_EXIT = 255  # what ssh exits with when the connection fails
 # The phase of a holder in state['remote'] whose job there was not seen ended: it keeps its
 # share of that host's max_runs and its cache until a gate reaches the host and ends it.
 UNCONFIRMED = 'unconfirmed'
+FOLLOW_GRACE_SECONDS = 2.0  # a job's other stream may still finish after one has ended
 REMOTE_ACK = b'SUITE-GATE-ACK'  # the answer to a heartbeat, on the following ssh's stderr
 # The watchdog a job runs under there (sh; args: job path prefix, time limit, silence limit,
 # heartbeat limit in whole seconds, memory cap in KiB or 0 when a user scope caps it). It
@@ -2022,6 +2023,29 @@ class RemoteHost:
         self.followers.append(child)
         return child
 
+    @staticmethod
+    def wait_followers(children):
+        """Wait for the ssh processes following one job; once one has ended (its stream done,
+        or its connection dropped) the others get FOLLOW_GRACE_SECONDS, then are hung up, so
+        a dropped stream is followed again at once. Their exit codes."""
+        ended = None
+        while True:
+            codes = [child.poll() for child in children.values()]
+            if None not in codes:
+                return codes
+            if ended is None and any(c is not None for c in codes):
+                ended = time.monotonic()
+            if ended is not None and time.monotonic() - ended >= FOLLOW_GRACE_SECONDS:
+                for child in children.values():
+                    if child.poll() is None:
+                        end_session(child.pid, child)
+            live = [child for child in children.values() if child.poll() is None]
+            if live:
+                try:
+                    live[0].wait(timeout=0.1)
+                except subprocess.TimeoutExpired:
+                    pass
+
     def hang_up(self):
         """End the local ssh processes following a job (the job there runs on)."""
         for child in self.followers:
@@ -2054,6 +2078,8 @@ class RemoteHost:
         local ssh process streaming its stdout as it starts."""
         name, offsets = self.job_name(job), {'out': 0, 'err': 0}
         contact = {'at': time.monotonic()}  # the last answer from the host
+        # A stream with no answer to this many heartbeats is taken for a stalled link.
+        stall = min(self.lost, 4 * self.heartbeat + self.connect)
         lost, idle = False, 0
 
         def gone_too_long(why):
@@ -2064,7 +2090,7 @@ class RemoteHost:
             if lost:
                 gone_too_long('the connection is down')
                 seen = self.job_state(name)
-                gone_too_long(seen[1] if seen[0] == 'unreachable' else 'it came back too late')
+                gone_too_long(seen[1] if seen[0] == 'unreachable' else 'it answered again too late')
                 if seen[0] == 'unreachable':
                     time.sleep(max(0.0, min(self.retry,
                                             self.lost - (time.monotonic() - contact['at']))))
@@ -2086,7 +2112,9 @@ class RemoteHost:
                     offsets[key] += len(chunk)
                     consume(key, chunk)
 
-            def acks(stream):
+            acked = dict.fromkeys(children, time.monotonic())
+
+            def acks(key, stream):
                 fd, rest = stream.fileno(), b''
                 while True:
                     chunk = os.read(fd, 4096)
@@ -2094,28 +2122,29 @@ class RemoteHost:
                         return
                     rest += chunk
                     if REMOTE_ACK in rest:
-                        contact['at'] = time.monotonic()
+                        contact['at'] = acked[key] = time.monotonic()
                     rest = rest[-len(REMOTE_ACK):]
 
-            def beat(pipes=[c.stdin for c in children.values()]):
+            def beat():
                 while not done.wait(self.heartbeat):
-                    if time.monotonic() - contact['at'] >= self.lost:  # a stalled connection
-                        for child in children.values():
-                            if child.poll() is None:
-                                end_session(child.pid, child)
-                        return
-                    for pipe in pipes:
+                    for key, child in children.items():
+                        if child.poll() is not None:
+                            continue
+                        if time.monotonic() - acked[key] >= stall:  # a stalled connection
+                            end_session(child.pid, child)
+                            continue
                         try:
-                            pipe.write(b'\n')
+                            child.stdin.write(b'\n')
                         except (OSError, ValueError):
                             pass
             readers = [threading.Thread(target=read, args=(key, child.stdout), daemon=True)
                        for key, child in children.items()]
-            readers += [threading.Thread(target=acks, args=(child.stderr,), daemon=True)
-                        for child in children.values()]
+            readers += [threading.Thread(target=acks, args=(key, child.stderr), daemon=True)
+                        for key, child in children.items()]
             for thread in [*readers, threading.Thread(target=beat, daemon=True)]:
                 thread.start()
-            code = max(child.wait() for child in children.values())
+            codes = self.wait_followers(children)
+            code = next((c for c in codes if c), 0)
             done.set()
             for thread in readers:
                 thread.join(timeout=10)
@@ -2128,6 +2157,7 @@ class RemoteHost:
             self.followers = []
             seen = self.job_state(name)
             if seen[0] != 'unreachable':
+                gone_too_long('it answered again too late')  # a stalled link hung up
                 contact['at'] = time.monotonic()
             if seen[0] == 'result' and code == 0:
                 return seen[1]

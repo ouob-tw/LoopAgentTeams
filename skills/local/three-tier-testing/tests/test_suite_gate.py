@@ -148,7 +148,8 @@ elif sys.argv[1:3] == ['issue', 'create']:
         `down` that shows up while it runs cuts the connection (its group is killed, ssh
         prints a disconnect message and exits 255), as does a signal to this ssh; a `freeze`
         stalls the connections open then (their commands stop until it goes, ssh stays) and
-        new ones fail. The
+        new ones fail; a `stall` stalls only the connections already open; a `cut-if`
+        holding a text cuts the first connection whose command contains it, once. The
         command gets a fresh environment (the basics, not this machine's). Every call is logged to
         remotes/calls.jsonl. rsync reaches the hosts through it."""
         self.remotes = self.tmp / 'remotes'
@@ -189,7 +190,7 @@ def cut(*_):
     os._exit(255)
 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(sig, cut)
-frozen = False
+frozen, stalled = False, (base / 'stall').exists()
 while True:
     try:
         code = child.wait(timeout=0.1)
@@ -197,8 +198,17 @@ while True:
     except subprocess.TimeoutExpired:
         if (base / 'down').exists():
             cut()
-        if frozen != (base / 'freeze').exists():  # a stalled link: nothing moves
-            frozen = not frozen
+        drop = base / 'cut-if'
+        try:
+            if drop.read_text() in command:
+                drop.unlink()
+                cut()
+        except OSError:
+            pass
+        # A stalled link: nothing moves. `stall` only stalls connections open before it.
+        stuck = (base / 'freeze').exists() or (not stalled and (base / 'stall').exists())
+        if frozen != stuck:
+            frozen = stuck
             os.killpg(child.pid, signal.SIGSTOP if frozen else signal.SIGCONT)
 sys.exit(code if code >= 0 else 128 - code)
 """)
