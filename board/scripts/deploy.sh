@@ -18,6 +18,7 @@
 #   LAT_DEPLOY_BUILD      build command run in the worktree's board directory (default: bun run build)
 #   PORT                  port of the running board (default: 7100); HOST is always 127.0.0.1
 #   LAT_DEPLOY_WAIT       seconds to wait for the login page to answer 200, and for the inbox (default: 60)
+#   LAT_DEPLOY_MAPS_DAYS  days an earlier build's browser source maps are kept (default: 30)
 
 set -u
 
@@ -27,6 +28,7 @@ restart=${LAT_DEPLOY_RESTART:-systemctl --user restart $unit}
 build_cmd=${LAT_DEPLOY_BUILD:-bun run build}
 port=${PORT:-7100}
 wait_seconds=${LAT_DEPLOY_WAIT:-60}
+maps_days=${LAT_DEPLOY_MAPS_DAYS:-30}
 worktree=
 swapped=
 moving=
@@ -81,6 +83,15 @@ ln -s "$board/node_modules" "$worktree/${prefix}node_modules"
 (cd "$worktree/$prefix" && LAT_BOARD_BUILD_DIR="$board/build-new" sh -c "$build_cmd" >&2) \
 	|| die "the build failed; build/ is untouched"
 [ -f "$board/build-new/index.js" ] || die "the build left no build-new/index.js; build/ is untouched"
+
+# A page left open across the deploy still runs the earlier builds' scripts: their source maps stay
+# beside the new build's, so its errors are still logged by source file and line (client-errors.ts).
+# Script names carry their content's hash, so no earlier map takes the place of a new one. Maps
+# older than $maps_days days are dropped, as no page stays open that long.
+if [ -d "$board/build/sourcemaps" ] && [ -d "$board/build-new/sourcemaps" ]; then
+	cp -a -n "$board/build/sourcemaps/." "$board/build-new/sourcemaps/" || say "could not keep the earlier builds' source maps"
+	find "$board/build-new/sourcemaps" -name '*.map' -mtime +"$maps_days" -exec trash {} + 2>/dev/null
+fi
 
 moving=1
 if [ -d "$board/build" ]; then

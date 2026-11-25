@@ -5,8 +5,9 @@
 // else is [omitted]), an error type from a fixed list, locations in the script files this build
 // really has (each with the original source location its map gives, see source-maps.ts), which
 // of the board's pages and routes it was, and whether the page runs this build or another (a page
-// left open across a deploy, whose script files are gone: its frames are only counted). One
-// device gets only so many lines a minute, so a page that keeps failing cannot flood the journal.
+// left open across a deploy, whose script files are gone: its frames are mapped by the maps the
+// deploy kept, else only counted). One device gets only so many lines a minute, so a page that
+// keeps failing cannot flood the journal.
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -151,14 +152,16 @@ const sourceOf: SourceLocator = (script, line, column) => {
 	return locator(script, line, column);
 };
 
-/** Locations in this build's own scripts, one per frame: `at <source>:<line>:<column> (<script>:<line>:<column>)`
+/** Locations in the board's scripts, one per frame: `at <source>:<line>:<column> (<script>:<line>:<column>)`
  *  where the script's map gives the original place, else `at <script>:<line>:<column>`. A frame of
  *  another host or of a file the build does not have, and every function name and message line,
- *  are left out; frames in a build's script files this build does not have (another build's) are
- *  counted on a last line, so a stack of only those does not look empty. `host` is the board's as
- *  the request named it: the server cannot tell http from https without an ORIGIN setting, so only
- *  host and port are compared. */
-function stackFrames(value: unknown, host: string, known = builtScripts(), locate = sourceOf): string | null {
+ *  are left out. A page left open across a deploy runs an earlier build's scripts, which this build
+ *  does not have: their frames are kept by their original place while the deploy kept their maps
+ *  (see scripts/deploy.sh), marked `another build`, and the rest are counted on a last line, so a
+ *  stack of only those does not look empty. `hosts` are the board's as the request and the page
+ *  named it: a proxy may send another Host than the address the page was opened at. The server
+ *  cannot tell http from https without an ORIGIN setting, so only host and port are compared. */
+function stackFrames(value: unknown, hosts: Set<string>, known = builtScripts(), locate = sourceOf): string | null {
 	if (typeof value !== 'string') return null;
 	const frames: string[] = [];
 	let elsewhere = 0;
@@ -171,18 +174,35 @@ function stackFrames(value: unknown, host: string, known = builtScripts(), locat
 		} catch {
 			continue;
 		}
-		if (url.host !== host) continue;
+		if (!hosts.has(url.host)) continue;
+		const built = `${url.pathname}:${location[2]}:${location[3]}`;
 		if (!known.has(url.pathname)) {
-			if (BUILT_SCRIPT.test(url.pathname)) elsewhere++;
+			if (!BUILT_SCRIPT.test(url.pathname)) continue;
+			const source = locate(url.pathname, Number(location[2]), Number(location[3]));
+			if (source) frames.push(`at ${source} (${built}, another build)`);
+			else elsewhere++;
 			continue;
 		}
-		const built = `${url.pathname}:${location[2]}:${location[3]}`;
 		const source = locate(url.pathname, Number(location[2]), Number(location[3]));
 		frames.push(source ? `at ${source} (${built})` : `at ${built}`);
 	}
 	const kept = frames.length > MAX_FRAMES ? [...frames.slice(0, MAX_FRAMES), TRUNCATED] : frames;
 	if (elsewhere) kept.push(`[${elsewhere} ${elsewhere === 1 ? 'frame' : 'frames'} from another build]`);
 	return kept.length ? kept.join('\n') : null;
+}
+
+/** The hosts the board's own scripts come from: the request's, and the address the page itself
+ *  says it was opened at. Trusting the page here names nothing new: a frame is kept only in a
+ *  script the board built. */
+function boardHosts(page: unknown, host: string): Set<string> {
+	const hosts = new Set([host]);
+	if (typeof page !== 'string') return hosts;
+	try {
+		hosts.add(new URL(page).host);
+	} catch {
+		// No address: the request's host alone.
+	}
+	return hosts;
 }
 
 /** A path SvelteKit gives a build's script files; only such frames count as another build's. */
@@ -251,7 +271,7 @@ export async function logClientError(
 		kind: listed(report.kind, KINDS),
 		exc_type: listed(report.type, TYPES),
 		exc_message: knownMessage(report.message),
-		traceback: stackFrames(report.stack, host),
+		traceback: stackFrames(report.stack, boardHosts(report.url, host)),
 		url: pagePath(report.url, host),
 		route: routeOf(report, host),
 		build: buildOf(report.version),

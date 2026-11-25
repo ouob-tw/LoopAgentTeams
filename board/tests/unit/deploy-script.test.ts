@@ -2,7 +2,7 @@
 // copy, the restart command appends to a log and the "board" is a stand-in server on a free
 // port. Nothing here touches the live service, its unit or port 7100.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -252,4 +252,25 @@ test('a commit that does not exist stops before touching build/ or restarting', 
 	expect(restarts()).toBe(0);
 	expect(leftovers()).toEqual([]);
 	expect(worktrees()).toBe(1);
+});
+
+test("the earlier builds' browser source maps stay beside the new build's, the new one's winning, until they are a month old", async () => {
+	fresh();
+	const maps = (build: string) => join(board, build, 'sourcemaps/_app/immutable/nodes');
+	mkdirSync(maps('build'), { recursive: true });
+	writeFileSync(join(maps('build'), '2.earlier.js.map'), 'earlier');
+	writeFileSync(join(maps('build'), '2.both.js.map'), 'earlier');
+	writeFileSync(join(maps('build'), '2.ancient.js.map'), 'ancient');
+	const old = new Date(Date.now() - 40 * 24 * 3600_000);
+	utimesSync(join(maps('build'), '2.ancient.js.map'), old, old);
+	const build = 'mkdir -p "$LAT_BOARD_BUILD_DIR/sourcemaps/_app/immutable/nodes" && cp source.txt "$LAT_BOARD_BUILD_DIR/index.js"';
+	const write = (name: string) => ` && echo new > "$LAT_BOARD_BUILD_DIR/sourcemaps/_app/immutable/nodes/${name}"`;
+
+	const r = await deploy({ LAT_DEPLOY_BUILD: build + write('2.new.js.map') + write('2.both.js.map') });
+
+	expect(r.status).toBe(0);
+	expect(readdirSync(maps('build')).sort()).toEqual(['2.both.js.map', '2.earlier.js.map', '2.new.js.map']);
+	expect(readFileSync(join(maps('build'), '2.both.js.map'), 'utf8')).toBe('new\n');
+	expect(readFileSync(join(maps('build'), '2.earlier.js.map'), 'utf8')).toBe('earlier');
+	expect(leftovers()).toEqual([]);
 });
