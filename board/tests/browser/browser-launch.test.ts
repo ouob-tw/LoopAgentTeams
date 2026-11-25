@@ -16,8 +16,11 @@ test('a Chrome without the flag waits on the secret service; launchChrome does n
 	const dir = import.meta.dir;
 	// The Secret Service first, then the case; the paths come in as arguments, so the script stays literal.
 	// The system Python, whose D-Bus bindings are the distribution's: a `python3` on PATH may be a venv's.
+	// A host whose system Python lacks dbus-python or PyGObject names one that has them in
+	// LAT_TEST_DBUS_PYTHON; only this stand-in runs with it.
+	const python = process.env.LAT_TEST_DBUS_PYTHON || '/usr/bin/python3';
 	const script = [
-		'/usr/bin/python3 "$1" & blackhole=$!',
+		'"$4" "$1" & blackhole=$!',
 		'owned() { dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null | grep -q true; }',
 		'for i in $(seq 50); do owned && break; sleep 0.1; done',
 		'owned || { echo "the Secret Service stand-in did not start"; kill $blackhole; exit 70; }',
@@ -26,7 +29,7 @@ test('a Chrome without the flag waits on the secret service; launchChrome does n
 	].join('\n');
 	const run = spawnSync(
 		'dbus-run-session',
-		[`--config-file=${join(dir, 'private-bus.conf')}`, '--', 'bash', '-c', script, 'launch-case', join(dir, 'secret-service-blackhole.py'), process.execPath, join(dir, 'launch-case.ts')],
+		[`--config-file=${join(dir, 'private-bus.conf')}`, '--', 'bash', '-c', script, 'launch-case', join(dir, 'secret-service-blackhole.py'), process.execPath, join(dir, 'launch-case.ts'), python],
 		{ encoding: 'utf8', timeout: 90_000 }
 	);
 	const output = run.stdout + run.stderr;
