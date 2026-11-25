@@ -1,0 +1,27 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/config.ts",
+        "board/src/lib/server/agent-control.ts",
+        "board/src/lib/server/agent-switch.ts",
+        "board/src/lib/server/permission-switch.ts",
+        "board/src/lib/server/relink.ts",
+        "board/src/lib/server/switch.ts",
+        "board/tests/unit/own-pane.test.ts",
+        "board/tests/server/own-pane-unknown.test.ts"
+      ],
+      "tests": [
+        "board/tests/unit/own-pane.test.ts",
+        "board/tests/server/own-pane-unknown.test.ts",
+        "board/tests/server/agent-close.test.ts",
+        "board/tests/server/agent-pause.test.ts",
+        "board/tests/server/agent-permission.test.ts",
+        "board/tests/server/agent-relink.test.ts",
+        "board/tests/server/agent-switch.test.ts",
+        "board/tests/server/screen-keys.test.ts",
+        "board/tests/server/model.test.ts"
+      ]
+    }
+  ]
+}
