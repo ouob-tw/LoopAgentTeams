@@ -346,12 +346,12 @@ export const CHROME_FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', 
 
 /**
  * More flags for a test that scrolls with the mouse wheel on a screen it sets with
- * `Emulation.setDeviceMetricsOverride` (up to 1400 by 800): a real window larger than that screen.
+ * `Emulation.setDeviceMetricsOverride` (up to 1400 by 1400): a real window larger than that screen.
  * Headless Chrome's own window is 780 by about 440; Chrome for Testing 144 drops a wheel over a point
  * of the set screen outside that window, so nothing scrolls (branded Chrome 144 and Chrome for
  * Testing 158 deliver it). With this window every point of the set screen is inside it.
  */
-export const WHEEL_WINDOW = ['--window-size=1600,1200'];
+export const WHEEL_WINDOW = ['--window-size=1600,1600'];
 
 /** What every test Chrome's profile folder in the temporary folder is called, before its random end. */
 export const PROFILE_PREFIX = 'lat-board-test-chrome-';

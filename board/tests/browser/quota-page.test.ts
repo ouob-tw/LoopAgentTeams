@@ -178,6 +178,8 @@ const colorOf = (value: string) =>
 test.skipIf(!CHROME)('an old reading turns its group header yellow', async () => {
 	setClaude(Date.now(), 4 * MIN);
 	await visit(1280);
+	// The board reads the file again every second, so the page may first show the reading before it.
+	await tab.until(`document.querySelector('.quota [data-client="claude"] header')?.innerText.includes('4 分鐘前更新')`, 'the 4-minute-old reading');
 	expect(await header('claude')).toBe('Claude 4 分鐘前更新');
 	expect(await tab.eval(`getComputedStyle(document.querySelector('.quota [data-client="claude"] .updated')).color`)).toBe(await tab.eval(colorOf('var(--warn)')));
 }, TEST_MS);
