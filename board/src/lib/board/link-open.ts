@@ -10,6 +10,9 @@
 //   when the board starts again. If it cannot be written down the user stays and is told.
 // - what cannot be put back (picked options, files waiting to be sent, a recording) is asked about:
 //   the default is to stay; only "放棄並開啟" lets it go, and the text is kept all the same.
+// - where the user was reading (#735): the message the link is in and how far down the screen it
+//   was is written down, and after the board loads again and draws that message the page is scrolled
+//   until it is where it was, however many messages came meanwhile.
 import { TEXT_BOXES } from './build-update.ts';
 
 export const KEPT_TEXT_KEY = 'lat-board:kept-text';
@@ -202,11 +205,124 @@ interface Leave {
 	win?: Window;
 	storage?: () => KeptStorage;
 	ask?: Prompter;
+	/** The element the user used to leave (the link): the place to come back to is the message it is in. */
+	from?: Element | null;
+}
+
+export const KEPT_PLACE_KEY = 'lat-board:kept-place';
+/** How long after leaving the place is still put back. */
+const PLACE_LIFE_MS = 30 * 60_000;
+/** How long after the page starts the place is held, unless the user scrolls first. */
+const PLACE_HOLD_MS = 6_000;
+/** What names a message on the page across two loads, nearest to the link first. */
+const ANCHORS = ['data-content', 'data-report-key', 'data-seq', 'data-item'];
+const USER_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+
+interface Place {
+	at: number;
+	/** The address of the page, so another page's load does not use it. */
+	page: string;
+	/** Selector of the message the link was in, or null when it was in none. */
+	anchor: string | null;
+	/** Selector of the box that scrolled, or null when the page itself did. */
+	scroller: string | null;
+	/** Where the message's top was on the screen; without a message, how far the box was scrolled. */
+	top: number;
+}
+
+function scrollerOf(element: Element, win: Window): HTMLElement | null {
+	for (let at = element.parentElement; at; at = at.parentElement) {
+		if (/(auto|scroll)/.test(win.getComputedStyle(at).overflowY) && at.scrollHeight > at.clientHeight) return at;
+	}
+	return null;
+}
+
+function selectorOf(element: Element | null): string | null {
+	if (!element) return null;
+	if (element.id) return `#${CSS.escape(element.id)}`;
+	const [first] = element.classList;
+	return first ? `.${CSS.escape(first)}` : null;
+}
+
+/** Write down where `from` is on the page. Never stops the leaving: without a place the board
+ *  simply opens at the top as before. */
+export function keepPlace(win: Window, from: Element | null | undefined, storage: () => KeptStorage = () => sessionStorage, now = Date.now()): void {
+	try {
+		const link = from ?? win.document.activeElement;
+		if (!link || link === win.document.body) return;
+		let anchor: Element | null = null;
+		let selector: string | null = null;
+		for (let at: Element | null = link; at && !selector; at = at.parentElement) {
+			const name = ANCHORS.find((attribute) => at!.hasAttribute(attribute));
+			if (name) [anchor, selector] = [at, `[${name}="${CSS.escape(at.getAttribute(name)!)}"]`];
+		}
+		const scroller = scrollerOf(anchor ?? link, win);
+		const place: Place = {
+			at: now,
+			page: win.location.pathname + win.location.search,
+			anchor: selector,
+			scroller: selectorOf(scroller),
+			top: anchor ? anchor.getBoundingClientRect().top : (scroller?.scrollTop ?? win.scrollY)
+		};
+		storage().setItem(KEPT_PLACE_KEY, JSON.stringify(place));
+	} catch {
+		// Storage not available: the board opens at the top.
+	}
+}
+
+/** Put the written-down place back: scroll until the message is where it was on screen, again each
+ *  time the page changes (messages came, a card grew), until the user scrolls or touches the page,
+ *  or the page has had its time. */
+export function restorePlace(win: Window, storage: () => KeptStorage = () => sessionStorage, now = Date.now()): void {
+	let place: Place | null = null;
+	try {
+		place = JSON.parse(storage().getItem(KEPT_PLACE_KEY) ?? 'null') as Place | null;
+		storage().removeItem(KEPT_PLACE_KEY);
+	} catch {
+		return;
+	}
+	if (!place || now - place.at > PLACE_LIFE_MS || place.page !== win.location.pathname + win.location.search) return;
+	const doc = win.document;
+	const kept = place;
+	let frame = 0;
+	const align = () => {
+		frame = 0;
+		const box = kept.scroller ? doc.querySelector<HTMLElement>(kept.scroller) : null;
+		const element = kept.anchor ? doc.querySelector(kept.anchor) : null;
+		if (element) {
+			const moved = element.getBoundingClientRect().top - kept.top;
+			if (Math.abs(moved) >= 1) (box ?? win).scrollBy(0, moved);
+		} else if (!kept.anchor) {
+			// No message to find: the distance scrolled, once the page is long enough.
+			const to = kept.top;
+			if (box && box.scrollHeight - box.clientHeight >= to) box.scrollTop = to;
+			else if (!box && doc.documentElement.scrollHeight - win.innerHeight >= to) win.scrollTo(0, to);
+		}
+	};
+	const schedule = () => {
+		if (!frame) frame = win.requestAnimationFrame(align);
+	};
+	const mutations = new MutationObserver(schedule);
+	const sizes = new ResizeObserver(schedule);
+	const stop = () => {
+		mutations.disconnect();
+		sizes.disconnect();
+		win.removeEventListener('scroll', schedule, true);
+		for (const type of USER_INPUT) win.removeEventListener(type, stop, true);
+		win.clearTimeout(timer);
+	};
+	const timer = win.setTimeout(stop, PLACE_HOLD_MS);
+	mutations.observe(doc.body, { childList: true, subtree: true });
+	sizes.observe(doc.body);
+	// The page's own scrolling while it starts (to the end of a conversation) is put right too.
+	win.addEventListener('scroll', schedule, { capture: true, passive: true });
+	for (const type of USER_INPUT) win.addEventListener(type, stop, { capture: true, passive: true });
+	align();
 }
 
 /** Leave for a board address in this window. Unsent text goes along as written down; what cannot be
  *  put back asks first, and the user stays unless they say so. Resolves whether the page left. */
-export async function leaveTo(href: string, { win = window, storage, ask = prompter }: Leave = {}): Promise<boolean> {
+export async function leaveTo(href: string, { win = window, storage, ask = prompter, from }: Leave = {}): Promise<boolean> {
 	const present = [...loose].filter((state) => state.present());
 	if (present.length && !(await ask({ labels: [...new Set(present.map((state) => state.label))], blocked: false }))) return false;
 	for (const state of present) {
@@ -220,6 +336,7 @@ export async function leaveTo(href: string, { win = window, storage, ask = promp
 		await ask({ labels: [], blocked: true });
 		return false;
 	}
+	keepPlace(win, from, storage);
 	win.location.assign(href);
 	return true;
 }
@@ -240,11 +357,14 @@ export function leaveOnClick(event: MouseEvent, options: Leave = {}): void {
 	if (!link || link.target !== '_blank' || link.hasAttribute('download')) return;
 	if (!inInstalledApp(win) || !isSameOrigin(link.href, win)) return;
 	event.preventDefault();
-	void leaveTo(link.href, options);
+	void leaveTo(link.href, { ...options, from: link });
 }
 
 /** Start: put back what was written down, and watch the clicks. */
 export function watchLinks(win: Window = window): void {
-	if (inInstalledApp(win)) restoreTypedText(win.document);
+	if (inInstalledApp(win)) {
+		restoreTypedText(win.document);
+		restorePlace(win);
+	}
 	win.document.addEventListener('click', (event) => leaveOnClick(event, { win }));
 }

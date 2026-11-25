@@ -1,0 +1,132 @@
+// Coming back to the board after an own-address link in the installed app (display-mode standalone,
+// forced by the test): the page loads again, and the message the link was in is where it was on
+// screen, also when messages came meanwhile. In a normal tab nothing is kept (#735). A phone's
+// width, where the page itself scrolls; headless Chrome over its DevTools protocol, fake data.
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
+import { question, sleep, startFixture, type Fixture } from '../harness.ts';
+import { CHROME, launchChrome, shot, TEST_MS, type Browser, type Tab } from '../browser.ts';
+
+const KEY = 'lat-board:kept-place';
+const ASKED_AT = '2026-10-20T01:00:00.000Z';
+const minute = (n: number) => new Date(Date.parse(ASKED_AT) + n * 60_000).toISOString();
+/** How far the message may move, in CSS pixels. */
+const STILL = 3;
+
+let fixture: Fixture;
+let cookie: string;
+let browser: Browser | undefined;
+let tab: Tab;
+let controller: ReturnType<Fixture['bound']>;
+let record: string;
+let own: string;
+
+const said = (text: string, at: number) => JSON.stringify({ kind: 'assistant', time: minute(at), text }) + '\n';
+const filler = (index: number) => said(`第 ${index} 則回覆。` + '這是一段長長的中文回覆，讓每則訊息佔掉好幾行的高度。'.repeat(3), index);
+const ASKING = 'li.asking';
+
+beforeAll(async () => {
+	if (!CHROME) return;
+	fixture = await startFixture();
+	fixture.setClock(Date.parse('2026-10-20T02:00:00.000Z'));
+	cookie = await fixture.login('link-open-place');
+	own = `${fixture.url}/manifest.webmanifest`;
+	controller = fixture.bound('place', 'rana', {
+		questions: [question({ id: 'P-1', title: '有示意', kind: 'single', options: [{ letter: 'A', label: '甲', impact: '', recommended: true }, { letter: 'B', label: '乙', impact: '', recommended: false }], visuals: [own], asked_at: ASKED_AT, section_sha256: 'a'.repeat(64) })]
+	});
+	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
+	record = join(fixture.dir, 'transcripts', `${controller.session_id}.jsonl`);
+	const lines = Array.from({ length: 41 }, (_, index) => (index === 20 ? said('請決定。\n\nDECIDE: P-1 r1 · 標題', 20) : filler(index)));
+	writeFileSync(record, lines.join(''));
+	fixture.report(controller.session_id, { tag: 'DECIDE', summary: '等你決定', message: '請決定。\n\nDECIDE: P-1 r1 · 標題', hcom_name: 'rana', workspace: controller.workspace, time: minute(20) });
+	fixture.setHelper({ output: { controllers: [controller] } });
+	await fixture.refresh(cookie);
+}, 30_000);
+afterEach(async () => {
+	await browser?.close();
+	browser = undefined;
+});
+afterAll(async () => {
+	await fixture?.cleanup();
+});
+
+async function visit(standalone: boolean) {
+	browser = await launchChrome({ scripts: standalone ? ['window.__latStandalone = true'] : [] });
+	tab = browser.tab;
+	const [name, value] = cookie.split('=');
+	await tab.send('Network.setCookie', { name, value, url: fixture.url });
+	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+	await tab.navigate(`${fixture.url}/?controller=${encodeURIComponent(controller.session_id)}`);
+	await tab.boardStarted();
+	await tab.until(`!!document.querySelector('${ASKING} a.visual')`, 'the question message with its link');
+}
+
+const top = () => tab.eval<number>(`document.querySelector('${ASKING}').getBoundingClientRect().top`);
+/** The page scrolled so the message with the link sits near the middle of the screen. */
+async function readAtMessage() {
+	await tab.eval(`document.querySelector('${ASKING}').scrollIntoView({ block: 'center' })`);
+	await sleep(400);
+	expect(await tab.eval<number>('window.scrollY')).toBeGreaterThan(300);
+	return top();
+}
+async function leaveAndBack() {
+	await tab.eval(`window.__old = true; document.querySelector('${ASKING} a.visual').click()`);
+	await tab.until(`location.pathname === '/manifest.webmanifest'`, 'this window to show the file');
+}
+async function back() {
+	await tab.eval(`history.back()`);
+	await tab.boardStarted();
+	await tab.until(`!window.__old && !!document.querySelector('${ASKING} a.visual')`, 'the board again');
+	await sleep(1_500);
+}
+
+test.skipIf(!CHROME)('installed app: back from the link, the message is where it was on screen, not at the top', async () => {
+	await visit(true);
+	const before = await readAtMessage();
+	await shot(tab, 'before-leaving');
+	await leaveAndBack();
+	await back();
+	expect(await tab.eval<number>('window.scrollY')).toBeGreaterThan(300);
+	expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(STILL);
+	await shot(tab, 'after-back');
+}, TEST_MS);
+
+test.skipIf(!CHROME)('installed app: messages that came while away do not push the message away', async () => {
+	await visit(true);
+	const before = await readAtMessage();
+	await leaveAndBack();
+	for (let index = 0; index < 3; index++) appendFileSync(record, said(`新來的 ${index}。` + '主控在你離開時又回報了一則很長的訊息。'.repeat(6), 100 + index));
+	await fixture.refresh(cookie);
+	await back();
+	await tab.until(`document.body.innerText.includes('新來的 2。')`, 'the new messages');
+	expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(STILL);
+	await shot(tab, 'after-back-with-new-messages');
+}, TEST_MS);
+
+test.skipIf(!CHROME)('installed app: a user who scrolls after coming back is not pulled back', async () => {
+	await visit(true);
+	await readAtMessage();
+	await leaveAndBack();
+	await tab.eval(`history.back()`);
+	await tab.boardStarted();
+	await tab.until(`!!document.querySelector('${ASKING} a.visual')`, 'the board again');
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 200, y: 400 }] });
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	await tab.eval(`window.scrollTo(0, 0)`);
+	await sleep(1_000);
+	expect(await tab.eval<number>('window.scrollY')).toBe(0);
+}, TEST_MS);
+
+test.skipIf(!CHROME)('a normal tab: nothing is written down and the link is left to the browser', async () => {
+	await visit(false);
+	await readAtMessage();
+	const taken = await tab.eval<boolean>(`(() => {
+		let prevented;
+		window.addEventListener('click', (event) => { prevented = event.defaultPrevented; event.preventDefault(); }, { once: true });
+		document.querySelector('${ASKING} a.visual').click();
+		return prevented;
+	})()`);
+	expect(taken).toBe(false);
+	expect(await tab.eval(`sessionStorage.getItem('${KEY}')`)).toBe(null);
+}, TEST_MS);
