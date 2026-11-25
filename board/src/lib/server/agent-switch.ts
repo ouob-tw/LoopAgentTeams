@@ -20,6 +20,7 @@ import {
 import type { Agent } from '../board/types.ts';
 import { AGENT_GONE_REASON, listedNow } from './agent-control.ts';
 import type { Board } from './board.ts';
+import { isOwnPane } from './config.ts';
 import { switchPlace } from './agents.ts';
 import { modelLock } from './helper.ts';
 import { queued } from './send.ts';
@@ -107,7 +108,7 @@ async function attempt(board: Board, agentId: string, choice: ModelChoice): Prom
 	if (agent.hcom === 'none') return refused(AGENT_NOT_LINKED_SWITCH_REASON);
 	if (agent.hcom === 'paused') return refused(agent.noHooks ? AGENT_NO_HOOKS_SWITCH_REASON : AGENT_PAUSED_SWITCH_REASON);
 	// Stopping closes its pane; never the one the board itself runs in (hcom's is checked before the stop).
-	if (agent.herdr.pane === config.ownPane) return refused(AGENT_SWITCH_OWN_PANE_REASON);
+	if (isOwnPane(config, agent.herdr.pane)) return refused(AGENT_SWITCH_OWN_PANE_REASON);
 	const client = agent.client;
 	if (!isLaunchClient(client)) return refused(`看板不會切換 ${client || '這個 client'} 的模型與思考強度。`);
 	if (!offered(config.modelOptions[client], choice, client)) return refused(NOT_OFFERED_REASON);

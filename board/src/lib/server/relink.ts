@@ -14,6 +14,7 @@ import { AGENT_OWN_PANE_RELINK_REASON, type AgentAction } from '../board/agent-a
 import type { Agent } from '../board/types.ts';
 import { attempt, ONE_AGENT_NAME } from './agent-control.ts';
 import type { Board } from './board.ts';
+import { isOwnPane } from './config.ts';
 import { readLaunchArgs, readTranscript } from './helper.ts';
 import { hasHoldTerminal, listAgents, resumeAgent, stopAgent, storedLaunchArgs } from './hcom.ts';
 import { agentCommand, listHerdrAgents, paneProcess, readScreen, type PaneProcess } from './herdr.ts';
@@ -143,7 +144,7 @@ async function whyNotEmpty(board: Board, client: string, pane: string): Promise<
 async function prepare(board: Board, agent: Agent & { id: string }): Promise<{ refuse: string } | { keep: KeepMode; name: string | null; listed: boolean }> {
 	const { config } = board;
 	const pane = agent.herdr.pane;
-	if (pane === config.ownPane) return { refuse: AGENT_OWN_PANE_RELINK_REASON };
+	if (isOwnPane(config, pane)) return { refuse: AGENT_OWN_PANE_RELINK_REASON };
 	if (!relinkable(agent.client)) return { refuse: `看板不會重新啟動 ${agent.client || '這個 client'}。` };
 	const info = await paneProcess(config, pane);
 	if ('reason' in info) return { refuse: `${info.reason}，沒有重新啟動。` };

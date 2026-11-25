@@ -25,6 +25,7 @@ import {
 import { AGENT_GONE_REASON, attempt } from './agent-control.ts';
 import { switchAgentModel } from './agent-switch.ts';
 import type { Board } from './board.ts';
+import { isOwnPane } from './config.ts';
 import { readLaunchArgs, readTranscript } from './helper.ts';
 import { bypassTurnedOff } from './permission.ts';
 import { agentCommand, readScreen, scrollToBottom, type ScreenSource } from './herdr.ts';
@@ -83,7 +84,7 @@ async function bypassOff(board: Board, agentId: string): Promise<boolean> {
 export async function agentPermissionStatus(board: Board, agentId: string): Promise<PermissionStatus | null> {
 	const agent = (await board.current()).agents.find((candidate) => candidate.id === agentId);
 	if (!agent) return null;
-	const blocked = agent.inHerdr && agent.herdr.pane === board.config.ownPane ? OWN_PANE_REASON : null;
+	const blocked = agent.inHerdr && isOwnPane(board.config, agent.herdr.pane) ? OWN_PANE_REASON : null;
 	if (agent.client === 'claude') {
 		// Its bottom: the page reads this whenever it opens, which must not move a pane being read.
 		const screen = agent.inHerdr ? await screenOf(board, agent.herdr.pane, 'detection') : { mode: null, reason: AGENT_GONE_REASON };
@@ -123,7 +124,7 @@ export function switchClaudePermission(board: Board, agentId: string, target: Cl
 			const refuse = (reason: string, fields: Partial<PermissionSwitch> = {}) => ({ route: null, reason, permission: record(fields) });
 			if (agent.client !== 'claude') return refuse(`這個 Agent 是 ${agent.client || '不明的 client'}，不是 Claude，沒有按鍵。`);
 			const pane = agent.herdr.pane;
-			if (pane === board.config.ownPane) return refuse(OWN_PANE_REASON);
+			if (isOwnPane(board.config, pane)) return refuse(OWN_PANE_REASON);
 			if (agent.status === 'blocked') return refuse(BLOCKED_REASON);
 			if (target === 'bypassPermissions' && agent.hcom === 'linked' && (await bypassOff(board, agentId))) return refuse(BYPASS_TURNED_OFF_REASON);
 			// Not scrolled, the screen may be scrollback, and an old input box there would read as the mode now.
