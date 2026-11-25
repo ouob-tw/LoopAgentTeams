@@ -100,6 +100,39 @@ class AffectedOffloadTests(AffectedRemoteCase):
         self.assertTrue(all(r['reusable'] for r in fallback))
 
 
+class CutOffEntryTests(AffectedRemoteCase):
+    """A run another host cannot be followed to its end is no result on any entry point:
+    an affected group and a light run queue here again."""
+
+    def test_an_affected_group_cut_off_there_runs_here_at_once(self):
+        hold = self.tmp / 'hold'
+        hold.touch()
+        self.mark(affected=dict(self.registry['affected'], commands=dict(
+            self.registry['affected']['commands'],
+            **{'.': f'echo "$PWD {{tests}}" >> {self.log}; '
+                    f'while [ -f {hold} ]; do sleep 0.2; done'})))
+        self.touch('src/app.py')
+        self.brake_here(remote_lost_seconds=2, remote_retry_seconds=0.2,
+                        remote_heartbeat_seconds=0.3)
+        proc = self.start('affected', '--base', 'HEAD')
+        self.wait_until(lambda: self.log.exists() and self.there() in self.log.read_text(),
+                        message='running there')
+        (self.remotes / 's3/down').touch()
+        # This host is still braked: the group waits in its queue, not run here at once.
+        self.wait_until(lambda: self.waiter_reasons() != [], timeout=20,
+                        message='queued here after the cut')
+        self.assertNotIn(str(self.repo) + ' ', self.log.read_text())
+        hold.unlink()
+        self.unbrake_here()
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertIn(str(self.repo) + ' ', self.log.read_text())
+        self.assertIn('nothing is recorded and it queues here again', err)
+        record = self.affected_records()['.']
+        self.assertIsNone(record['host'])
+        self.assertEqual(record['exit_code'], 0)
+
+
 class LocalOnlyTests(AffectedRemoteCase):
     def test_a_test_picked_from_a_marked_suite_stays_here(self):
         suites = [dict(s) for s in self.registry['full_suites']]
@@ -248,6 +281,27 @@ class LightOffloadTests(RemoteMixin, GateCase):
         self.assertIn('light run exited 4 on s3', result.stderr)
         self.assertEqual(self.records(), [])
         self.assertEqual(self.status()['remote'], [])
+
+    def test_a_light_run_cut_off_there_queues_here_again(self):
+        self.brake_here(light_min_slots=0, remote_lost_seconds=2, remote_retry_seconds=0.2,
+                        remote_heartbeat_seconds=0.3)
+        started, hold = self.tmp / 'started', self.tmp / 'hold'
+        hold.touch()
+        proc = self.start('light', '--', f'cat tests/test_a.py; echo run >> {self.counter}; '
+                                         f'touch {started}; '
+                                         f'while [ -f {hold} ]; do sleep 0.2; done')
+        self.wait_until(started.exists, message='running there')
+        (self.remotes / 's3/down').touch()
+        self.wait_until(lambda: self.light_waiters() != [], timeout=20,
+                        message='queued here again')
+        hold.unlink()
+        self.unbrake_here()
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertIn('nothing is recorded and it queues here again', err)
+        self.assertIn('light run exited 0 in', err)
+        self.assertEqual(self.runs(), 2)
+        self.assertEqual(self.records(), [])
 
     def test_a_light_run_of_a_marked_test_file_stays_here(self):
         self.brake_here(light_min_slots=0)
