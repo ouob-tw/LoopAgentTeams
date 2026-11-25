@@ -212,8 +212,12 @@ interface Leave {
 export const KEPT_PLACE_KEY = 'lat-board:kept-place';
 /** How long after leaving the place is still put back. */
 const PLACE_LIFE_MS = 30 * 60_000;
-/** How long after the page starts the place is held, unless the user scrolls first. */
-const PLACE_HOLD_MS = 6_000;
+/** How long the page is given to draw the message (slow connection, older parts to load). */
+const PLACE_FIND_MS = 30_000;
+/** How long the place is held once the message is on screen, unless the user scrolls first. */
+const PLACE_SETTLE_MS = 6_000;
+/** How many older parts of a conversation are loaded to reach the message. */
+const PLACE_MAX_PARTS = 40;
 /** What names a message on the page across two loads, nearest to the link first. */
 const ANCHORS = ['data-content', 'data-report-key', 'data-seq', 'data-item'];
 const USER_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
@@ -285,11 +289,25 @@ export function restorePlace(win: Window, storage: () => KeptStorage = () => ses
 	const doc = win.document;
 	const kept = place;
 	let frame = 0;
+	let parts = 0;
+	let settling = false;
+	let stopped = false;
 	const align = () => {
 		frame = 0;
+		if (stopped) return;
 		const box = kept.scroller ? doc.querySelector<HTMLElement>(kept.scroller) : null;
 		const element = kept.anchor ? doc.querySelector(kept.anchor) : null;
+		if (kept.anchor && !element) {
+			// A message in an older part of the conversation: load the next part until it comes.
+			const more = doc.querySelector<HTMLButtonElement>('button.earlier:not([disabled])');
+			if (more && parts < PLACE_MAX_PARTS) (parts++, more.click());
+		}
 		if (element) {
+			if (!settling) {
+				settling = true;
+				win.clearTimeout(timer);
+				timer = win.setTimeout(stop, PLACE_SETTLE_MS);
+			}
 			const moved = element.getBoundingClientRect().top - kept.top;
 			if (Math.abs(moved) >= 1) (box ?? win).scrollBy(0, moved);
 		} else if (!kept.anchor) {
@@ -304,14 +322,18 @@ export function restorePlace(win: Window, storage: () => KeptStorage = () => ses
 	};
 	const mutations = new MutationObserver(schedule);
 	const sizes = new ResizeObserver(schedule);
+	let timer = 0;
 	const stop = () => {
+		stopped = true;
+		if (frame) win.cancelAnimationFrame(frame);
+		frame = 0;
 		mutations.disconnect();
 		sizes.disconnect();
 		win.removeEventListener('scroll', schedule, true);
 		for (const type of USER_INPUT) win.removeEventListener(type, stop, true);
 		win.clearTimeout(timer);
 	};
-	const timer = win.setTimeout(stop, PLACE_HOLD_MS);
+	timer = win.setTimeout(stop, PLACE_FIND_MS);
 	mutations.observe(doc.body, { childList: true, subtree: true });
 	sizes.observe(doc.body);
 	// The page's own scrolling while it starts (to the end of a conversation) is put right too.
