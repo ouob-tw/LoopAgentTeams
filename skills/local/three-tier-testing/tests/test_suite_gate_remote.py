@@ -31,6 +31,7 @@ class RemoteMixin:
         base = self.remotes / name
         (base / 'home').mkdir(parents=True, exist_ok=True)
         (base / 'bin').mkdir(exist_ok=True)
+        self.addCleanup(self.end_jobs, name)
         self.host_tool(name, 'systemd-run', 'exit 1')
         self.host_pressure(name, io, cpu)
         return base
@@ -45,6 +46,21 @@ class RemoteMixin:
         path = self.remotes / name / 'bin' / tool
         path.write_text(f'#!/bin/sh\n{body}\n')
         path.chmod(0o755)
+
+    def job_files(self, name, suffix):
+        return sorted((self.remotes / name / 'home/.cache/suite-gate/remote')
+                      .glob(f'*/*/job/job-*{suffix}'))
+
+    def end_jobs(self, name):
+        """Kill the process groups of the jobs and watchdogs this test left on name."""
+        for path in [*self.job_files(name, '.pid'), *self.job_files(name, '.wpid')]:
+            try:
+                os.killpg(int(path.read_text()), signal.SIGKILL)
+            except (ValueError, OSError):
+                pass
+
+    def results(self, name):
+        return [path.read_text().split() for path in self.job_files(name, '.result')]
 
     def trees(self, name):
         return list((self.remotes / name / 'home/.cache/suite-gate/remote').glob('*/*/tree'))
@@ -408,6 +424,179 @@ class OffloadTests(RemoteMixin, GateCase):
         result = self.gate('light', '--', 'true')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.ssh_calls(), [])
+
+
+class ReconnectTests(RemoteMixin, GateCase):
+    """A run there outlives a cut connection: the gate reconnects and goes on, the limits are
+    judged there, and a host it cannot get back is no test result."""
+
+    def cut(self, name='s3'):
+        (self.remotes / name / 'down').touch()
+
+    def mend(self, name='s3'):
+        (self.remotes / name / 'down').unlink()
+
+    def limit_minutes(self, minutes):
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'time_limit_minutes': minutes}))
+
+    def quick(self, lost=20, **config):
+        self.brake_here(remote_lost_seconds=lost, remote_retry_seconds=0.2,
+                        remote_heartbeat_seconds=0.3, **config)
+
+    def test_a_cut_connection_is_resumed_where_it_stopped_and_not_judged_here(self):
+        """The job goes on there while this gate gets nothing: no silence or time limit is
+        judged here, the output goes on from where it stopped, the run is not repeated."""
+        self.add_host('s3')
+        self.limit_minutes(0.15)  # 9s of running there
+        self.env['SUITE_GATE_SILENCE_SECONDS'] = '3'
+        self.quick()
+        started, go = self.tmp / 'started', self.tmp / 'go'
+        suite = (f'echo run >> {self.counter}; echo first; touch {started}; '
+                 f'while [ ! -f {go} ]; do sleep 0.2; done; '
+                 'for i in 1 2 3 4 5 6; do echo tick $i; sleep 0.5; done; echo second; exit 3')
+        began = time.monotonic()
+        proc = self.start('run', '--', suite)
+        self.wait_until(started.exists, message='the suite started there')
+        time.sleep(0.5)
+        self.cut()
+        time.sleep(1)
+        go.touch()
+        # Cut off for longer than the silence limit, and until past the time limit here.
+        self.wait_until(lambda: self.results('s3')[-1:] and self.results('s3')[-1][0] == 'exit',
+                        message='the job ended there')
+        while time.monotonic() - began < 11:
+            time.sleep(0.2)
+        self.mend()
+        code, out, err = self.finish(proc)
+        self.assertEqual(code, 3, err)
+        self.assertIn('lost the connection to s3', err)
+        self.assertIn('reconnected to s3', err)
+        for line in ('first', *(f'tick {i}' for i in range(1, 7)), 'second'):
+            self.assertEqual(out.splitlines().count(line), 1, out)
+        self.assertEqual(self.runs(), 1)
+        [record] = self.records()
+        self.assertEqual((record['host'], record['exit_code']), ('s3', 3))
+        self.assertNotIn('timed_out', record)
+        self.assertEqual(self.status()['remote'], [])
+
+    def test_a_pass_there_while_cut_off_is_taken_back_as_a_pass(self):
+        self.add_host('s3')
+        self.limit_minutes(0.05)  # 3s
+        self.quick()
+        started = self.tmp / 'started'
+        proc = self.start('run', '--', f'echo run >> {self.counter}; touch {started}; '
+                                       f'sleep 1; echo done-there; touch {self.tmp}/passed')
+        self.wait_until(started.exists, message='started there')
+        self.cut()
+        self.wait_until((self.tmp / 'passed').exists, message='passed')
+        time.sleep(3)  # past the time limit here
+        self.mend()
+        code, out, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.count('done-there'), 1)
+        self.assertEqual(self.runs(), 1)
+        record = self.records()[-1]
+        self.assertTrue(record['reusable'])
+        self.assertNotIn('timed_out', record)
+
+    def test_a_run_past_its_limit_there_while_cut_off_is_timed_out(self):
+        self.add_host('s3')
+        self.limit_minutes(0.05)  # 3s
+        self.quick()
+        started, pids = self.tmp / 'started', self.tmp / 'pids'
+        proc = self.start('run', '--', f'sleep 60 & echo $! > {pids}; touch {started}; '
+                                       'while :; do echo still; sleep 0.3; done')
+        self.wait_until(started.exists, message='started there')
+        self.cut()
+        self.wait_until(lambda: self.results('s3')[-1:] and self.results('s3')[-1][0] == 'limit',
+                        message='stopped there at its limit')
+        self.assertFalse(self.pid_alive(int(pids.read_text())))
+        self.mend()
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 124, err)
+        record = self.records()[-1]
+        self.assertEqual(record['host'], 's3')
+        self.assertEqual(record['timed_out']['limit_source'],
+                         'time_limit_minutes in .suite-gate.json')
+        self.assertFalse(record['reusable'])
+
+    def test_a_host_not_back_within_the_limit_is_no_result_and_the_suite_queues_here(self):
+        self.add_host('s3')
+        self.quick(lost=2)
+        started, hold = self.tmp / 'started', self.tmp / 'hold'
+        hold.touch()
+        proc = self.start('run', '--', f'echo run >> {self.counter}; touch {started}; '
+                                       f'while [ -f {hold} ]; do sleep 0.2; done')
+        self.wait_until(started.exists, message='started there')
+        self.cut()
+        # The watchdog there gets no heartbeat and stops the job; this gate gives up.
+        self.wait_until(lambda: ['lost'] in [r[:1] for r in self.results('s3')], timeout=15,
+                        message='the watchdog stopped the job there')
+        self.wait_until(lambda: self.waiter_reasons() == [{'s3': (
+            'an earlier run of this work tree there is not confirmed ended yet, so its cache '
+            'is not used')}], timeout=15, message='queued here again, s3 held')
+        self.assertEqual(self.records(), [])
+        [held] = self.status()['remote']
+        self.assertEqual(held['phase'], 'unconfirmed')
+        hold.unlink()
+        self.unbrake_here()
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertIn('not a test result', err)
+        [record] = self.records()
+        self.assertIsNone(record['host'])
+        self.assertEqual(self.runs(), 2)
+
+    def test_the_watchdog_ends_the_group_when_heartbeats_stop_and_the_cache_waits_for_it(self):
+        """The gate is killed outright: its job there ends by itself once no heartbeat came
+        for remote_lost_seconds, leaving `lost`; until a gate confirms that, the work tree's
+        cache there is not used again."""
+        self.add_host('s3')
+        self.quick(lost=3)
+        pids = self.tmp / 'pids'
+        first = self.start('run', '--', f'sleep 60 & echo $! > {pids}; sleep 60')
+        self.wait_until(lambda: pids.exists() and pids.read_text().strip(), message='started')
+        leftover = int(pids.read_text())
+        first.kill()
+        first.communicate()
+        self.wait_until(lambda: [h['phase'] for h in self.status()['remote']] == ['unconfirmed'],
+                        message='held as unconfirmed')
+        self.cut()
+        second = self.start('run', '--', self.suite())
+        self.wait_until(lambda: self.waiter_reasons() == [{'s3': (
+            'an earlier run of this work tree there is not confirmed ended yet, so its cache '
+            'is not used')}], message='not sent to the same cache')
+        self.wait_until(lambda: not self.pid_alive(leftover)
+                        and ['lost'] in [r[:1] for r in self.results('s3')], timeout=15,
+                        message='the watchdog ended the group and left `lost`')
+        self.assertEqual(self.runs(), 0)
+        self.mend()
+        code, _, err = self.finish(second)
+        self.assertEqual(code, 0, err)
+        self.assertIn('confirmed ended', err)
+        self.assertEqual(self.records()[-1]['host'], 's3')
+        self.assertEqual(self.status()['remote'], [])
+
+    def test_heartbeats_keep_a_run_longer_than_the_limit_going(self):
+        self.add_host('s3')
+        self.quick(lost=2)
+        result = self.gate('run', '--', f'{self.suite(sleep=4)}')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.records()[-1]['host'], 's3')
+
+    def test_a_suite_killed_by_a_signal_or_over_the_memory_cap_there_fails_as_usual(self):
+        self.add_host('s3')  # its systemd-run fails, so the watchdog caps the memory
+        self.quick(remote_mem_gb=0.03)
+        result = self.gate('run', '--', 'kill -9 $$')
+        self.assertEqual(result.returncode, 137, result.stderr)
+        self.assertNotIn('timed_out', self.records()[-1])
+        hog = f'{sys.executable} -c "b = bytearray(200 * 2**20); import time; time.sleep(30)"'
+        result = self.gate('run', '--', hog)
+        self.assertEqual(result.returncode, 137, result.stderr)
+        self.assertIn('used more than', result.stderr)
+        record = self.records()[-1]
+        self.assertEqual((record['host'], record['exit_code']), ('s3', 137))
+        self.assertNotIn('timed_out', record)
 
 
 class RemoteRerunTests(RemoteMixin, RerunCase):

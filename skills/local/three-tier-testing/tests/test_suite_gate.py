@@ -142,10 +142,12 @@ elif sys.argv[1:3] == ['issue', 'create']:
     def install_fake_ssh(self):
         """An `ssh` first on PATH, so no test ever reaches a real host: a host is a directory
         remotes/<host> (absent or holding `down`: it fails like an unreachable host). The
-        command runs here under /bin/sh with HOME=remotes/<host>/home, the host's own
-        pressure files (SUITE_GATE_PROC_ROOT=remotes/<host>/proc) and remotes/<host>/bin
-        first on PATH; every call is logged to remotes/calls.jsonl. rsync reaches the hosts
-        through it."""
+        command runs here under /bin/sh, in its own process group as a session there would,
+        with HOME=remotes/<host>/home, the host's own pressure files
+        (SUITE_GATE_PROC_ROOT=remotes/<host>/proc) and remotes/<host>/bin first on PATH; a
+        `down` that shows up while it runs cuts the connection (its group is killed, ssh
+        exits 255), as does a signal to this ssh. Every call is logged to
+        remotes/calls.jsonl. rsync reaches the hosts through it."""
         self.remotes = self.tmp / 'remotes'
         self.remotes.mkdir()
         fake = self.tmp / 'bin/ssh'
@@ -168,7 +170,25 @@ home.mkdir(exist_ok=True)
 env = dict(os.environ, HOME=str(home), SUITE_GATE_PROC_ROOT=str(base / 'proc'),
            PATH=f"{{base / 'bin'}}:{{os.environ['PATH']}}")
 os.chdir(home)
-os.execve('/bin/sh', ['/bin/sh', '-c', command], env)
+import signal, subprocess, time
+child = subprocess.Popen(['/bin/sh', '-c', command], env=env, start_new_session=True)
+
+def cut(*_):
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    os._exit(255)
+for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(sig, cut)
+while True:
+    try:
+        code = child.wait(timeout=0.1)
+        break
+    except subprocess.TimeoutExpired:
+        if (base / 'down').exists():
+            cut()
+sys.exit(code if code >= 0 else 128 - code)
 """)
         fake.chmod(0o755)
 

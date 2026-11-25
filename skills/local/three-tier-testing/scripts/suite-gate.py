@@ -78,12 +78,14 @@ DEFAULTS = {'min_slots': 1, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds
             'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5,
             'reclaim_grace_seconds': 600.0, 'light_min_slots': 1, 'light_max_slots': 4,
             'light_cores': 2.0, 'light_mem_gb': 2.0, 'remote_connect_seconds': 5, 'remote_mem_gb': 16.0,
-            'remote_prepare_seconds': 1800.0}
+            'remote_prepare_seconds': 1800.0, 'remote_lost_seconds': 600.0,
+            'remote_retry_seconds': 30.0, 'remote_heartbeat_seconds': 30.0}
 # The smallest value each key accepts; an int default takes whole numbers only.
 MINIMUMS = {'min_slots': 0, 'max_slots': 1, 'profile_history': 1, 'poll_seconds': 0.01,
             'report_seconds': 0.01, 'sample_seconds': 0.01, 'light_max_slots': 1,
-            'remote_connect_seconds': 1, 'remote_mem_gb': 0.5,
-            'remote_prepare_seconds': 0.01}
+            'remote_connect_seconds': 1, 'remote_mem_gb': 0.01,
+            'remote_prepare_seconds': 0.01, 'remote_lost_seconds': 1,
+            'remote_retry_seconds': 0.01, 'remote_heartbeat_seconds': 0.01}
 BRAKE_PAIRS = (('brake_io_low', 'brake_io_high'), ('brake_cpu_low', 'brake_cpu_high'))
 GIB = 2 ** 30
 TESTS_SLICE = 'lat-tests.slice'  # the user slice that caps every suite's CPU; SUITE_GATE_SLICE overrides
@@ -1417,7 +1419,10 @@ def with_state(change):
             state['slots'] = [h for h in state.get('slots', []) if holder_alive(h)]
             state['light'] = [h for h in state.get('light', []) if holder_alive(h)]
             state['waiters'] = [h for h in state.get('waiters', []) if holder_alive(h)]
-            state['remote'] = [h for h in state.get('remote', []) if gate_alive(h)]
+            state['remote'] = state.get('remote', [])
+            for holder in state['remote']:  # its job there may run on: held until confirmed
+                if holder.get('phase') != UNCONFIRMED and not gate_alive(holder):
+                    holder.update(phase=UNCONFIRMED, since=time.time())
             reclaim_leftovers(state, load_config())
             result = change(state)
             tmp = path.with_suffix('.tmp')
@@ -1676,11 +1681,77 @@ def tests_slice_cores():
 # (in a user scope with a memory cap when that host has one) and its output streams back;
 # the record is written here as for any run, with the host in `host`. Everything that
 # touches the other host goes through RemoteHost, over the `ssh` and `rsync` on PATH.
+#
+# A job there runs under a watchdog (REMOTE_WATCHDOG) and keeps its output and result in
+# files, so a dropped connection does not stop it: the gate reconnects every
+# `remote_retry_seconds` and goes on from where the output stopped. The time and silence
+# limits are judged there, on the job's own running time and output. With no connection for
+# `remote_lost_seconds` the gate gives up (no record: an interruption of the infrastructure,
+# not a test result) and queues here again; the watchdog likewise ends the job's group once
+# no heartbeat came for that long (the gate sends one every `remote_heartbeat_seconds`).
+# A host without a working `systemd-run --user` gets no scope with MemoryMax: the watchdog
+# then sums the resident memory of the job's session (`ps`) and ends it past `remote_mem_gb`,
+# a failure like an out-of-memory kill. Until the gate sees a job's groups gone there, that
+# job keeps its place in the host's `max_runs` and its cache (holder phase UNCONFIRMED).
 
 REMOTE_CACHE = '.cache/suite-gate/remote'  # under the other host's home
-REMOTE_TOOLS = ('git', 'rsync', 'setsid', 'tail', 'xargs')  # every offloaded run needs these
+REMOTE_TOOLS = ('git', 'rsync', 'setsid', 'tail', 'xargs', 'ps', 'awk')  # every offloaded run needs these
 REMOTE_CHECKS_KEY = 'remote_checks'  # registry: {"<dir>": ["<shell check>", ...]}
 REMOTE_GONE_EXIT = 255  # what ssh exits with when the connection fails
+# The phase of a holder in state['remote'] whose job there was not seen ended: it keeps its
+# share of that host's max_runs and its cache until a gate reaches the host and ends it.
+UNCONFIRMED = 'unconfirmed'
+# The watchdog a job runs under there (sh; args: job path prefix, time limit, silence limit,
+# heartbeat limit in whole seconds, memory cap in KiB or 0 when a user scope caps it). It
+# starts the job in its own process group and ends that whole group when the job has run
+# past its time limit, its output (the .out and .err files) has not grown for the silence
+# limit, no heartbeat (the .alive stamp an attached gate refreshes) came for the heartbeat
+# limit, or the group uses more memory than the cap; a job that exits by itself has what it
+# left in its group ended too. Then it writes <job>.result: `exit <code>`, `limit`,
+# `silence`, `lost` (no heartbeat: the gate here is gone or cut off) or `memory`, followed
+# by the seconds the job ran. The times are that host's, so a gate cut off from it never
+# judges them.
+REMOTE_WATCHDOG = r'''N=$1 LIMIT=$2 SILENCE=$3 LOST=$4 MEM=$5
+start=$(date +%s)
+echo "$start" > "$N.alive"
+( setsid /bin/sh "$N.run" </dev/null >/dev/null 2>&1 & echo $! > "$N.pid.tmp" )
+mv "$N.pid.tmp" "$N.pid"
+P=$(cat "$N.pid") size=-1 changed=$start why=
+while [ ! -f "$N.exit" ]; do
+  t=$(date +%s)
+  s=$(( $(wc -c < "$N.out") + $(wc -c < "$N.err") ))
+  if [ "$s" != "$size" ]; then size=$s changed=$t; fi
+  a=$(cat "$N.alive" 2>/dev/null)
+  case $a in ''|*[!0-9]*) a=$start ;; esac
+  if [ $((t - start)) -ge "$LIMIT" ]; then why=limit
+  elif [ $((t - changed)) -ge "$SILENCE" ]; then why=silence
+  elif [ $((t - a)) -ge "$LOST" ]; then why=lost
+  elif [ "$MEM" -gt 0 ] && [ "$(ps -o rss= -s "$P" 2>/dev/null | awk '{s += $1} END {print s + 0}')" -gt "$MEM" ]; then why=memory
+  fi
+  [ -n "$why" ] && break
+  sleep 0.5
+done
+kill -TERM -"$P" 2>/dev/null
+[ -f "$N.unit" ] && systemctl --user stop "$(cat "$N.unit")" >/dev/null 2>&1
+i=0; while [ $i -lt 25 ] && kill -0 -"$P" 2>/dev/null; do sleep 0.2; i=$((i+1)); done
+kill -KILL -"$P" 2>/dev/null
+[ "$why" = memory ] && echo "suite-gate: stopped on this host: its processes used more than $((MEM / 1024)) MiB" >> "$N.err"
+if [ -n "$why" ]; then r=$why; else r="exit $(cat "$N.exit")"; fi
+echo "$r $(( $(date +%s) - start ))" > "$N.result.tmp" && mv "$N.result.tmp" "$N.result"
+sleep 0.2
+kill -0 -"$P" 2>/dev/null || mv "$N.pid" "$N.pid.ended"
+mv "$N.wpid" "$N.wpid.ended"
+'''
+
+
+def remote_seconds(value):
+    """value as the whole seconds the watchdog counts in, at least 1."""
+    return max(1, math.ceil(value))
+
+
+class RemoteLost(Exception):
+    """The run on another host could not be followed to its end (the connection stayed down
+    for remote_lost_seconds, or the job there left no result): not a test result."""
 
 
 def remote_checks(registry, rel):
@@ -1762,8 +1833,12 @@ class RemoteHost:
         self.connect = max(1, int(config['remote_connect_seconds']))
         self.mem_gb = config['remote_mem_gb']
         self.prepare_limit = config['remote_prepare_seconds']  # sending, and preparing
+        self.lost = config['remote_lost_seconds']  # no heartbeat / no connection this long
+        self.retry = config['remote_retry_seconds']  # between reconnect attempts
+        self.heartbeat = min(config['remote_heartbeat_seconds'], self.lost / 3)
         self.run_id = run_id
         self.jobs = 0  # jobs started, for their names
+        self.tag = uuid.uuid4().hex[:8]  # in this claim's job names: no older job's files match
         self.live = False  # a job may be running there
 
     def ssh_argv(self, command='sh -s'):
@@ -1876,60 +1951,178 @@ class RemoteHost:
                                                              if err.strip() else f'exit {code}')
         return (tree, [e for e in listed.split('\0') if e]) if entries else tree
 
-    def start(self, rel, command, stream_err=True):
-        """Start command (shell text) in tree/rel there as a detached job in its own process
-        group and stream its output back: the local ssh process (in its own session), whose
-        stdout and stderr carry the job's and whose exit code is the job's
-        (REMOTE_GONE_EXIT when the job left no exit code)."""
+    def job_name(self, job):
+        return f'job-{self.tag}-{job}'
+
+    def start(self, rel, command, limit, silence):
+        """Start command (shell text) in tree/rel there as job_name(self.jobs) (counted up
+        first) under the watchdog (REMOTE_WATCHDOG); why it could not, or None, also when
+        the connection dropped meanwhile (follow() then finds out whether it runs). The job
+        runs in its own process group, in a user scope with MemoryMax when that host has one
+        (else the watchdog caps the group's memory), and keeps running when the connection
+        drops. The files of ended jobs in the cache go first."""
         self.jobs += 1
-        name = f'job-{self.jobs}'
+        name = self.job_name(self.jobs)
         unit = f'suite-gate-remote-{self.run_id[:12]}-{self.jobs}'
         mark = f'SUITE_GATE_{uuid.uuid4().hex}'
         directory = shlex.quote('.' if rel in ('', '.') else rel)
-        err = '>&2' if stream_err else '>/dev/null'
+        mem_kb = int(self.mem_gb * 1024 * 1024)
         body = (
             f'cd "$C/tree" && cd {directory} || exit 1\n'
+            'for f in "$J"/job-*.cmd; do b=${f%.cmd}\n'
+            '  [ -f "$b.pid" ] || [ -f "$b.wpid" ] || rm -f "$b".*; done\n'
             f'N="$J/{name}"; rm -f "$N".*; mkdir -p "$J"\n'
             f"cat > \"$N.cmd\" <<'{mark}'\n{command}\n{mark}\n"
-            'S=""\n'
+            f'S=""; M={mem_kb}\n'
             'if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --scope --quiet '
             '--collect true >/dev/null 2>&1; then\n'
             f'  S="systemd-run --user --scope --quiet --collect --unit={unit} '
-            f'-p MemoryMax={int(self.mem_gb * 1024)}M"; echo {unit} > "$N.unit"\nfi\n'
+            f'-p MemoryMax={int(self.mem_gb * 1024)}M"; echo {unit} > "$N.unit"; M=0\nfi\n'
             ': > "$N.out"; : > "$N.err"\n'
             'cat > "$N.run" <<EOF\n'
             '$S /bin/sh "$N.cmd" > "$N.out" 2> "$N.err" < /dev/null\n'
             'echo \\$? > "$N.exit.tmp" && mv "$N.exit.tmp" "$N.exit"\nEOF\n'
-            'setsid /bin/sh "$N.run" </dev/null >/dev/null 2>&1 &\n'
-            'echo $! > "$N.pid"\n'
-            f'tail -c +1 -s 0.2 -f --pid=$! "$N.err" {err} &\n'
-            'tail -c +1 -s 0.2 -f --pid=$(cat "$N.pid") "$N.out"\nwait\n'
-            f'[ -f "$N.exit" ] && exit "$(cat "$N.exit")"\nexit {REMOTE_GONE_EXIT}\n')
+            f"cat > \"$N.watch\" <<'{mark}'\n{REMOTE_WATCHDOG}{mark}\n"
+            f'setsid /bin/sh "$N.watch" "$N" {remote_seconds(limit)} {remote_seconds(silence)} '
+            f'{remote_seconds(self.lost)} "$M" </dev/null >/dev/null 2>&1 &\n'
+            'echo $! > "$N.wpid"\n'
+            'i=0; while [ ! -f "$N.pid" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done\n'
+            '[ -f "$N.pid" ] && echo started\n')
         self.live = True
-        child = subprocess.Popen(self.ssh_argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, start_new_session=True)
-        child.stdin.write((self.prelude() + body).encode())
-        child.stdin.close()
-        return child
+        code, out, err = self.script(body, timeout=self.connect + 60)
+        if code == REMOTE_GONE_EXIT:
+            return None
+        if code or 'started' not in out.split('\n'):
+            return err.strip().splitlines()[-1] if err.strip() else f'exit {code}'
+        return None
+
+    def attach(self, name, offsets):
+        """The local ssh process (in its own session) that streams job name's output from
+        offsets ({'out': bytes, 'err': bytes} already shown) on, until the job's watchdog
+        ends. A line on its stdin is a heartbeat the watchdog sees."""
+        out, err = offsets['out'] + 1, offsets['err'] + 1
+        body = (
+            f'N="$J/{name}"\n[ -f "$N.cmd" ] || exit 3\n'
+            # A background list reads /dev/null unless told otherwise.
+            'exec 3<&0\n'
+            '( while IFS= read -r _; do date +%s > "$N.alive"; done ) <&3 >/dev/null 2>&1 &\n'
+            'R=$!; exec 3<&-; date +%s > "$N.alive"\n'
+            'if [ -f "$N.result" ] || ! W=$(cat "$N.wpid" 2>/dev/null); then\n'
+            f'  tail -c +{err} "$N.err" >&2; tail -c +{out} "$N.out"\nelse\n'
+            f'  tail -c +{err} -s 0.2 -f --pid="$W" "$N.err" >&2 & T=$!\n'
+            f'  tail -c +{out} -s 0.2 -f --pid="$W" "$N.out"\n  wait "$T"\nfi\n'
+            'kill "$R" 2>/dev/null\nexit 0\n')
+        return subprocess.Popen(
+            self.ssh_argv('sh -c ' + shlex.quote(self.prelude() + body)), bufsize=0,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True)
+
+    def job_state(self, name):
+        """('result', [words of job name's result file]), ('running',), ('gone',) for a
+        job whose watchdog ended without a result, or ('unreachable', why)."""
+        code, out, err = self.script(
+            f'N="$J/{name}"\n'
+            'if [ -f "$N.result" ]; then echo "result $(cat "$N.result")"\n'
+            'elif W=$(cat "$N.wpid" 2>/dev/null) && kill -0 "$W" 2>/dev/null; then echo running\n'
+            'else echo gone; fi\n', timeout=self.connect + 20)
+        words = out.split('\n', 1)[0].split()
+        if code == 0 and words[:1] == ['result'] and len(words) >= 2:
+            return ('result', words[1:])
+        if code == 0 and words in (['running'], ['gone']):
+            return (words[0],)
+        return ('unreachable', err.strip().splitlines()[-1] if err.strip() else f'exit {code}')
+
+    def follow(self, job, consume, attached):
+        """Stream job_name(job)'s output to consume(key, chunk) until it ends there and return
+        its result words (REMOTE_WATCHDOG). When the connection drops the job runs on: this
+        reconnects every self.retry seconds and goes on from the byte it got to, so nothing
+        is shown twice or run again. RemoteLost when it cannot reach the host for self.lost
+        seconds or the job ended there without a result. attached(child) gets each local
+        ssh process as it starts."""
+        name, offsets = self.job_name(job), {'out': 0, 'err': 0}
+        lost_since, idle = None, 0
+        while True:
+            if lost_since is not None:
+                seen = self.job_state(name)
+                if seen[0] == 'unreachable':
+                    left = self.lost - (time.monotonic() - lost_since)
+                    if left <= 0:
+                        raise RemoteLost(f'could not reach {self.host} for '
+                                         f'{fmt_seconds(self.lost)} ({seen[1]})')
+                    time.sleep(min(self.retry, left))
+                    continue
+                warn(f'reconnected to {self.host} after '
+                     f'{fmt_seconds(time.monotonic() - lost_since)}; the output goes on from '
+                     'where it stopped')
+                lost_since = None
+            child = self.attach(name, offsets)
+            attached(child)
+            before = dict(offsets)
+            done = threading.Event()
+
+            def read(key, stream):
+                fd = stream.fileno()
+                while True:
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        return
+                    offsets[key] += len(chunk)
+                    consume(key, chunk)
+
+            def beat(pipe=child.stdin):
+                while not done.wait(self.heartbeat):
+                    try:
+                        pipe.write(b'\n')
+                    except (OSError, ValueError):
+                        return
+            readers = [threading.Thread(target=read, args=(key, stream), daemon=True)
+                       for key, stream in (('out', child.stdout), ('err', child.stderr))]
+            for thread in [*readers, threading.Thread(target=beat, daemon=True)]:
+                thread.start()
+            code = child.wait()
+            done.set()
+            for thread in readers:
+                thread.join(timeout=10)
+            for stream in (child.stdin, child.stdout, child.stderr):
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+            seen = self.job_state(name)
+            if seen[0] == 'result' and code == 0:
+                return seen[1]
+            if seen[0] == 'gone':
+                raise RemoteLost(f'the job on {self.host} ended without leaving its result')
+            if seen[0] == 'unreachable':
+                lost_since = time.monotonic()
+                warn(f'lost the connection to {self.host} ({seen[1]}); the run goes on there; '
+                     f'reconnecting for up to {fmt_seconds(self.lost)}')
+                continue
+            idle = 0 if offsets != before else idle + 1
+            if idle >= 5:
+                raise RemoteLost(f'cannot follow the output of the job on {self.host} '
+                                 f'(ssh exited {code})')
+            time.sleep(min(self.retry, 1.0))
 
     def stop(self):
-        """End every job this run started there: each job's whole process group (TERM, then
-        KILL after the grace) and its user scope; a job whose group is gone has its .pid file renamed to .ended.
-        Why it could not, or None."""
+        """End every job this cache has there: each watchdog's and job's process group (TERM,
+        then KILL after the grace) and its user scope; a group seen gone has its pid file
+        renamed to <name>.ended, so it is never signalled again (its number may be reused).
+        Why it could not, or None (everything there confirmed ended)."""
         if not self.live:
             return None
+        files = '"$J"/job-*.wpid "$J"/job-*.pid'
         code, _, err = self.script(
-            'for f in "$J"/job-*.pid; do [ -f "$f" ] || continue; p=$(cat "$f")\n'
-            '  kill -TERM "-$p" 2>/dev/null; u="${f%.pid}.unit"\n'
-            '  [ -f "$u" ] && systemctl --user stop "$(cat "$u")" >/dev/null 2>&1\ndone\n'
+            f'for f in {files}; do [ -f "$f" ] && kill -TERM "-$(cat "$f")" 2>/dev/null; done\n'
+            'for u in "$J"/job-*.unit; do [ -f "$u" ] && [ -f "${u%.unit}.pid" ] && '
+            'systemctl --user stop "$(cat "$u")" >/dev/null 2>&1; done\n'
             f'i=0; while [ $i -lt {int(KILL_GRACE_SECONDS * 5)} ]; do alive=\n'
-            '  for f in "$J"/job-*.pid; do [ -f "$f" ] && kill -0 "-$(cat "$f")" 2>/dev/null '
+            f'  for f in {files}; do [ -f "$f" ] && kill -0 "-$(cat "$f")" 2>/dev/null '
             '&& alive=1; done\n  [ -z "$alive" ] && break; sleep 0.2; i=$((i+1)); done\n'
-            'for f in "$J"/job-*.pid; do [ -f "$f" ] && kill -KILL "-$(cat "$f")" '
-            '2>/dev/null; done\nsleep 0.2\n'
-            # A group seen gone is never signalled again (its number may be reused).
-            'for f in "$J"/job-*.pid; do [ -f "$f" ] || continue\n'
-            '  kill -0 "-$(cat "$f")" 2>/dev/null && exit 3; mv "$f" "${f%.pid}.ended"\n'
+            f'for f in {files}; do [ -f "$f" ] && kill -KILL "-$(cat "$f")" 2>/dev/null; done\n'
+            'sleep 0.2\n'
+            f'for f in {files}; do [ -f "$f" ] || continue\n'
+            '  kill -0 "-$(cat "$f")" 2>/dev/null && exit 3; mv "$f" "$f.ended"\n'
             'done\nexit 0\n', timeout=self.connect + KILL_GRACE_SECONDS + 30)
         if code:
             return err.strip() or f'exit {code}'
@@ -2128,12 +2321,16 @@ class Gate:
 
         def busy(state):
             there = [h for h in state['remote'] if h.get('host') == host]
+            if any(h.get('cache') == cache and h.get('phase') == UNCONFIRMED for h in there):
+                return ('an earlier run of this work tree there is not confirmed ended yet, '
+                        'so its cache is not used')
             if len(there) >= entry['max_runs']:
                 return (f"its limit is reached ({len(there)}/{entry['max_runs']} suite(s) "
                         'from this host running there)')
             if any(h.get('cache') == cache for h in there):
                 return 'another run of this work tree is using its cache there'
             return None
+        self.confirm_ended(entry)
         why = with_state(busy)
         if why:
             return why
@@ -2175,12 +2372,32 @@ class Gate:
         def running(state):
             state['waiters'] = [w for w in state['waiters'] if w['id'] != self.me['id']]
             for holder in state['remote']:
-                if holder['id'] == self.me['id']:
+                if holder['id'] == self.me['id'] and holder.get('phase') != UNCONFIRMED:
                     holder.update(phase='running', since=time.time())
         with_state(running)
         warn(f'this host makes the suite wait, so it runs on {host} instead '
              f'(cache ~/{cache}); its output follows')
         return None
+
+    def confirm_ended(self, entry):
+        """End the jobs of the unconfirmed holders on entry's host (a gate that died or lost
+        its connection left them) and drop the holders whose cache is then seen empty."""
+        host = entry['host']
+        caches = with_state(lambda state: sorted({
+            h['cache'] for h in state['remote']
+            if h.get('host') == host and h.get('phase') == UNCONFIRMED}))
+        for cache in caches:
+            remote = RemoteHost(entry, cache, self.config, self.me['id'])
+            remote.live = True
+            if remote.stop() is not None:
+                continue
+
+            def change(state, cache=cache):
+                state['remote'] = [h for h in state['remote'] if not (
+                    h.get('host') == host and h.get('cache') == cache
+                    and h.get('phase') == UNCONFIRMED)]
+            with_state(change)
+            warn(f'an earlier run on {host} (cache ~/{cache}) is confirmed ended')
 
     def prepare_remote(self, rel):
         """Send the content, check it arrived as it is here, prepare the directory there
@@ -2205,22 +2422,26 @@ class Gate:
                     if not re.fullmatch(r'[0-9a-f]+', there) else
                     f'the content there differs from this work tree after sending it '
                     f'(tree {there[:12]} there, {tree[:12]} here)')
-        self.remote_child = child = remote.start(rel, prepare_script(), stream_err=True)
-        relays = [threading.Thread(target=relay_lines, args=(stream, sys.stderr.buffer,
-                                                             f'[{remote.host} prepare] '.encode()),
-                                   daemon=True) for stream in (child.stdout, child.stderr)]
-        for thread in relays:
-            thread.start()
+        why = remote.start(rel, prepare_script(), remote.prepare_limit, remote.prepare_limit)
+        if why:
+            return f'could not start preparing {rel} there: {why}'
+        relay = LinePrefix(sys.stderr.buffer, f'[{remote.host} prepare] '.encode())
+
+        def attached(child):
+            self.remote_child = child
         try:
-            code = child.wait(timeout=remote.prepare_limit)
-        except subprocess.TimeoutExpired:
-            code = None
-        if code is None:  # drop_remote() ends it there and here
+            result = remote.follow(remote.jobs, relay.add, attached)
+        except RemoteLost as exc:
+            return f'preparing {rel} there was cut off: {exc}; this is not a test result'
+        finally:
+            relay.finish()
+        self.remote_child = None
+        if result[0] in ('limit', 'silence'):
             return (f'preparing {rel} there did not finish within '
                     f'{fmt_seconds(remote.prepare_limit)}; this is not a test result')
-        for thread in relays:
-            thread.join(timeout=2)
-        self.remote_child = None
+        if result[0] != 'exit':
+            return f'preparing {rel} there was stopped ({result[0]}); this is not a test result'
+        code = int(result[1]) if result[1:2] and result[1].isdigit() else 1
         stopped = remote.stop()
         if code:
             return f'preparing {rel} there failed (exit {code}); this is not a test result'
@@ -2241,12 +2462,19 @@ class Gate:
         try:
             why = remote.stop()
             if why:
-                warn(f'could not end the run on {remote.host}: {why}')
+                warn(f'could not end the run on {remote.host} ({why}): until a later gate '
+                     'confirms it ended there, that host is not used for this work tree')
             if child is not None and child.poll() is None:
                 end_session(child.pid, child)
 
             def change(state):
-                state['remote'] = [h for h in state['remote'] if h['id'] != self.me['id']]
+                def mine(h):
+                    return h['id'] == self.me['id'] and h.get('phase') != UNCONFIRMED
+                if why:
+                    for holder in filter(mine, state['remote']):
+                        holder.update(phase=UNCONFIRMED, since=time.time())
+                else:
+                    state['remote'] = [h for h in state['remote'] if not mine(h)]
             with_state(change)
         finally:
             self.remote = self.remote_child = None
@@ -2347,7 +2575,13 @@ class Gate:
                     warn('content changed while queued; starting over with the new content')
                     self.release()
                     continue
-            return self.execute(info)
+            try:
+                return self.execute(info)
+            except RemoteLost as exc:
+                warn(f'the run on another host was cut off: {exc}. This is an interruption of '
+                     'the infrastructure, not a test result: nothing is recorded and the suite '
+                     'queues here again')
+                self.release()
 
     def reuse(self, record, info):
         """Report the earlier pass; a run with a purpose also notes the reuse in the ledger.
@@ -2444,17 +2678,55 @@ class Gate:
                 os.close(go_write)
             signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
-    def _start_remote(self, argv, cwd):
-        """Start argv on the other host in cwd's place in the cache; its local end counts as
-        the suite's session here."""
+    def _run_remote(self, argv, cwd, tail, scan, limit, source):
+        """Run argv on the other host in cwd's place in the cache and follow it to its end
+        (RemoteHost.follow), its output passed through: its exit code. The limits are judged
+        there, on the time it ran and the output it wrote (a gate cut off from it sees none);
+        past one it sets self.timed_out and gives TIMEOUT_EXIT. RemoteLost when it could not
+        be followed to its end."""
+        remote, silence = self.remote, silence_limit()
         old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
         try:
-            child = self.remote.start(rel_cwd(self.remote_root, cwd), shlex.join(argv))
-            self.child = child
-            self.set_session(child.pid, None)
-            return child
+            why = remote.start(rel_cwd(self.remote_root, cwd), shlex.join(argv), limit, silence)
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        if why:
+            raise RemoteLost(f'could not start the suite on {remote.host}: {why}')
+        outs = {'out': sys.stdout.buffer, 'err': sys.stderr.buffer}
+
+        def consume(key, chunk):
+            tail.add(chunk)
+            if scan:
+                scan.add(key, chunk)
+            outs[key].write(chunk)
+            outs[key].flush()
+
+        def attached(child):
+            self.child = child
+            self.set_session(child.pid, None)
+        result = remote.follow(remote.jobs, consume, attached)
+        kind, ran = result[0], result[-1]
+        ran = float(ran) if ran.isdigit() else None
+        if kind == 'exit' and len(result) == 3 and result[1].isdigit():
+            return int(result[1])
+        if kind == 'memory':
+            warn(f'the suite used more than {fmt_num(remote.mem_gb)} GiB on {remote.host} and '
+                 'was stopped there: it counts as failed')
+            return 128 + signal.SIGKILL
+        if kind == 'limit':
+            warn(f'TIMED OUT: still running on {remote.host} after its {fmt_seconds(limit)} '
+                 f'limit ({source}); stopped there with every process it started')
+            self.timed_out = {'limit_s': round(limit, 1), 'limit_source': source}
+            return TIMEOUT_EXIT
+        if kind == 'silence':
+            reason = f'no output for {fmt_seconds(silence)}'
+            warn(f'TIMED OUT on {remote.host}: {reason}; stopped there with every process it '
+                 'started')
+            self.timed_out = {'limit_s': ran, 'limit_source': reason, 'reason': reason}
+            return TIMEOUT_EXIT
+        raise RemoteLost(f'the job on {remote.host} was stopped there ({kind}): '
+                         + ('its watchdog got no heartbeat from this gate for '
+                            f'{fmt_seconds(remote.lost)}' if kind == 'lost' else 'no exit code'))
 
     def measure(self, duration):
         """The record's profile: the group's final counters, read before the keeper lets the
@@ -2489,7 +2761,8 @@ class Gate:
             why = self.remote.stop()
             if why:
                 warn(f'could not end the run on {self.remote.host}: {why}')
-            end_session(self.child.pid, self.child)
+            if self.child is not None:
+                end_session(self.child.pid, self.child)
         elif self.group:
             end_group(self.group, self.child)
         else:
@@ -2520,10 +2793,24 @@ class Gate:
         # The reaper logs whole seconds; a kill in the run's first second must still count.
         started_at = datetime.now(timezone.utc).replace(microsecond=0)
         if self.remote:
-            child = self._start_remote(argv, cwd)
-        else:
-            child = self._start(argv, True, cwd) if self._scope_ready() else None
-            child = child or self._start(argv, False, cwd)
+            spool_path, spool = spool_open() if keep else (None, None)
+            tail = Tail(spool)
+            tail.spool_path = spool_path
+            self.live = tail if keep else getattr(self, "live", None)
+            try:
+                code = self._run_remote(argv, cwd, tail, scan, limit, source)
+            finally:
+                self.finished = True
+            why = self.remote.stop()  # confirms the group there ended
+            if why:
+                warn(f'could not confirm the suite left nothing running on {self.remote.host}: '
+                     f'{why}')
+            if scan:
+                scan.finish()
+            return (code, tail, dict(PROFILE_UNMEASURED), time.monotonic() - started,
+                    started_at, datetime.now(timezone.utc))
+        child = self._start(argv, True, cwd) if self._scope_ready() else None
+        child = child or self._start(argv, False, cwd)
         spool_path, spool = spool_open() if keep else (None, None)
         tail = Tail(spool)
         tail.spool_path = spool_path
@@ -2562,10 +2849,6 @@ class Gate:
                 child.kill()
                 child.wait()
             code = TIMEOUT_EXIT
-        elif self.remote:  # whatever the suite left in its group there ends with it
-            why = self.remote.stop()
-            if why:
-                warn(f'could not end what the suite left running on {self.remote.host}: {why}')
         self.finished = True
         ended_at = datetime.now(timezone.utc)
         for thread in pumps:
@@ -4044,6 +4327,25 @@ def start_registered(suite, cwd, flags, started, relay):
 
 
 RELAY_LOCK = threading.Lock()
+
+
+class LinePrefix:
+    """Chunks of two streams written to out line by line, each line with prefix."""
+
+    def __init__(self, out, prefix):
+        self.out, self.prefix, self.partial = out, prefix, {}
+
+    def add(self, key, chunk):
+        *lines, self.partial[key] = (self.partial.get(key, b'') + chunk).split(b'\n')
+        with RELAY_LOCK:
+            for line in lines:
+                self.out.write(self.prefix + line + b'\n')
+            self.out.flush()
+
+    def finish(self):
+        for key, rest in self.partial.items():
+            if rest:
+                self.add(key, b'\n')
 
 
 def relay_lines(stream, out, prefix):
