@@ -1,7 +1,8 @@
 // A sent answer stays on its card, its choice ticked, from the moment it is sent until the
 // controller has recorded it and after: when the board has it written and recorded before the
 // page has the server's reply, when it was answered from the Herdr panel and the answered list is
-// read late, and on a reload while it waits to be recorded (#723). The page in a real browser:
+// read late, while one answered there waits to be recorded and once it is, and on a reload while it
+// waits (#723). The page in a real browser:
 // headless Chrome driven over its DevTools protocol, on the built board with fake data.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -141,6 +142,48 @@ test.skipIf(!CHROME)('answered in the Herdr panel and recorded, the answered lis
 	const seen = (await frames()).filter((frame) => !frame.form);
 	expect(seen.length).toBeGreaterThan(0);
 	expectKept(seen);
+	expect(seen.every((frame) => frame.text?.includes('你的備註：晚點再說'))).toBe(true);
+}, 60_000);
+
+test.skipIf(!CHROME)('answered in the Herdr panel, waiting, then recorded without a reload: the answer stays ticked throughout', async () => {
+	const { controller, key } = await open('kept-herdr-waiting');
+	await evaluate(`(() => {
+		const fetch = window.fetch;
+		window.fetch = async (input, init) => {
+			if (String(input instanceof Request ? input.url : input).includes('/api/answered')) await new Promise((resolve) => setTimeout(resolve, 2000));
+			return fetch(input, init);
+		};
+	})()`);
+	await watch(key);
+	const as = (status: 'submitted' | 'recorded'): HelperController => ({
+		...controller,
+		questions: controller.questions.map((entry) => ({
+			...entry,
+			status,
+			answer: 'B. 乙',
+			note: '晚點再說',
+			recorded_at: status === 'recorded' ? '2026-10-20T01:30:00.000Z' : null
+		}))
+	});
+	// Written in the panel, not recorded yet: the page has only the board's data, no send of its own.
+	fixture.setHelper({ output: { controllers: [as('submitted')] } });
+	await fixture.refresh(cookie);
+	await browser!.tab.until(`!${cardOf(key)}?.querySelector('form.answer')`);
+	await sleep(1000);
+	const waiting = (await frames()).filter((frame) => !frame.form);
+	expectKept(waiting);
+	expect(waiting.every((frame) => frame.text?.includes('已送出，等主控記錄') && frame.text.includes('你的備註：晚點再說'))).toBe(true);
+	// Then recorded, the page left open.
+	await watch(key);
+	fixture.setHelper({ output: { controllers: [as('recorded')] } });
+	await fixture.refresh(cookie);
+	await browser!.tab.until(`${cardOf(key)}?.innerText.includes('已回答')`);
+	await sleep(3000);
+	const seen = await frames();
+	expect(seen.some((frame) => frame.form)).toBe(false);
+	expectKept(seen);
+	expect(seen.at(-1)!.text).toContain('已回答');
+	expect(seen.at(-1)!.text).not.toContain('等主控記錄');
 	expect(seen.every((frame) => frame.text?.includes('你的備註：晚點再說'))).toBe(true);
 }, 60_000);
 
