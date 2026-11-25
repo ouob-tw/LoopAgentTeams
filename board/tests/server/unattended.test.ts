@@ -191,8 +191,11 @@ test('a read of the controller alone that comes back after a newer mode was appl
 	for (const path of Object.values(hold)) rmSync(path, { force: true });
 	// A second controller: the full read asks for both, the write's own read for luna alone, which is the one held.
 	const nova = fixture.bound('alpha', 'nova');
-	fixture.setHelper({ output: { controllers: [luna, nova] }, realUnattended: uvPython(), holdOneUnattended: hold });
+	fixture.setHelper({ output: { controllers: [luna, nova] }, realUnattended: uvPython() });
 	await fixture.refresh(cookie);
+	// The hold only once the board lists both: a full read begun before then listed luna alone, and its
+	// read of luna would take the hold meant for the write's own read.
+	fixture.setHelper({ output: { controllers: [luna, nova] }, realUnattended: uvPython(), holdOneUnattended: hold });
 	try {
 		let answered = false;
 		const first = grant({ op: 'create', ...FORM }).then((response) => ((answered = true), response));
