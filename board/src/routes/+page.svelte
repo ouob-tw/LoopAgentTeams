@@ -69,7 +69,9 @@
 	// svelte-ignore state_referenced_locally
 	const board = new LiveBoard(data.snapshot, data.pd, data.automation, data.alerts);
 	// A new build waits while a question in the inbox has an answer begun (see build-update.ts).
-	onMount(() => holdsUnsent(() => answering.holdsDraft(board.snapshot.inbox.map((item) => item.key))));
+	onMount(() => holdsUnsent(() => answering.holdsDraft(board.snapshot.inbox.map((item) => item.key)), { inTextBox: true }));
+	// A choice picked is not text in a box: a link then keeps opening a new window (link-open.ts).
+	onMount(() => holdsUnsent(() => answering.holdsChoice(board.snapshot.inbox.map((item) => item.key))));
 	// The notice times read the board's calendar day.
 	$effect.pre(() => {
 		clock.timeZone = board.snapshot.closed.timeZone;

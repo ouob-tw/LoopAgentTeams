@@ -83,6 +83,39 @@ test.skipIf(!CHROME)('installed app: text typed and not sent is still in the box
 	await tab.until(`document.querySelector('${BOX}')?.value === '還沒送出的字'`, 'the typed text back in the box');
 }, TEST_MS);
 
+/** The question card's own answer box, whose text only the page's memory holds. */
+const CARD = () => `[data-content="q:${controller.session_id}:L-1"]`;
+
+test.skipIf(!CHROME)('installed app: a plain-text answer is no reason to open a new window, and it is back after returning', async () => {
+	await visit(true);
+	await tab.navigate(`${fixture.url}/?item=${encodeURIComponent(`q:${controller.session_id}:L-1`)}`);
+	await tab.boardStarted();
+	await tab.until(`!!document.querySelector('${CARD()} textarea[id$="-text"]')`, 'the answer box');
+	await tab.eval(`(() => { const box = document.querySelector('${CARD()} textarea[id$="-text"]'); box.value = '寫了一半的答案'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+	expect(await tab.eval(`sessionStorage.getItem('lat-board:kept-text')`)).toBe(null);
+	await tab.eval(`document.querySelector('${CARD()} a.visual').click()`);
+	await tab.until(`location.pathname === '/manifest.webmanifest'`, 'this window to show the file');
+	await tab.eval(`history.back()`);
+	await tab.boardStarted();
+	await tab.until(`document.querySelector('${CARD()} textarea[id$="-text"]')?.value === '寫了一半的答案'`, 'the answer text back in its box');
+}, TEST_MS);
+
+test.skipIf(!CHROME)('installed app: a box that only opens later (a review reply) gets its text when it opens, and only its own', async () => {
+	const ADD = (id: string) => `(() => { const box = document.createElement('textarea'); box.id = ${JSON.stringify(id)}; box.placeholder = '寫下你的決定'; document.body.append(box); return box; })()`;
+	await visit(true);
+	await tab.eval(`(() => { const box = ${ADD('review-text-A')}; box.value = '回覆 A'; })()`);
+	await tab.eval(`document.querySelectorAll('.questions .row a.visual')[${OWN}].click()`);
+	await tab.until(`location.pathname === '/manifest.webmanifest'`, 'this window to show the file');
+	await tab.eval(`history.back()`);
+	await tab.boardStarted();
+	// Longer than a page takes to settle: the box opens when the user opens it.
+	await new Promise((resolve) => setTimeout(resolve, 11_000));
+	await tab.eval(`${ADD('review-text-B')}`);
+	await tab.eval(`${ADD('review-text-A')}`);
+	await tab.until(`document.getElementById('review-text-A').value === '回覆 A'`, 'the text in its own box');
+	expect(await tab.eval(`document.getElementById('review-text-B').value`)).toBe('');
+}, TEST_MS);
+
 test.skipIf(!CHROME)('a normal tab keeps nothing written down', async () => {
 	await visit(false);
 	await tab.until(`!!document.querySelector('${BOX}')`, 'the message box');

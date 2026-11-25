@@ -13,8 +13,6 @@ import { TEXT_BOXES, unsavableBlocker } from './build-update.ts';
 export const KEPT_TEXT_KEY = 'lat-board:kept-text';
 /** A written-down text is put back only if the user comes back within this long. */
 export const KEPT_TEXT_MS = 30 * 60_000;
-/** How long a page still looks for a box to put the text in (boxes appear as the page loads). */
-const RESTORE_WAIT_MS = 10_000;
 
 type KeptStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
@@ -39,7 +37,9 @@ export function isSameOrigin(href: string, win: Window = window): boolean {
 function boxKeys(doc: Document): [string, HTMLElement][] {
 	const seen = new Map<string, number>();
 	return [...doc.querySelectorAll<HTMLElement>(TEXT_BOXES)].map((box) => {
-		const name = box.getAttribute('aria-label') ?? box.getAttribute('placeholder') ?? box.getAttribute('name') ?? box.id;
+		// An id names the box for good (the review item's, the answer's); a label or placeholder
+		// can be shared by several boxes.
+		const name = box.id ? `#${box.id}` : (box.getAttribute('aria-label') ?? box.getAttribute('name') ?? box.getAttribute('placeholder') ?? '');
 		const base = `${box.tagName.toLowerCase()}|${name}`;
 		const at = seen.get(base) ?? 0;
 		seen.set(base, at + 1);
@@ -71,13 +71,17 @@ export function keepTypedText(doc: Document, storage: () => KeptStorage = () => 
 }
 
 /** Put the text written down by `keepTypedText` back into the empty boxes of the page, as the page
- *  draws them, once. */
-export function restoreTypedText(doc: Document, storage: () => KeptStorage = () => sessionStorage, now = Date.now(), waitMs = RESTORE_WAIT_MS): void {
+ *  draws them (a box a click opens, such as a review reply, gets its text when it opens), for as
+ *  long as the text is kept. */
+export function restoreTypedText(doc: Document, storage: () => KeptStorage = () => sessionStorage, now = Date.now()): void {
 	let texts: Record<string, string>;
+	let saved: { at: number; texts: Record<string, string> } | null;
 	try {
-		const saved = JSON.parse(storage().getItem(KEPT_TEXT_KEY) ?? 'null') as { at: number; texts: Record<string, string> } | null;
-		storage().removeItem(KEPT_TEXT_KEY);
-		if (!saved || now - saved.at > KEPT_TEXT_MS) return;
+		saved = JSON.parse(storage().getItem(KEPT_TEXT_KEY) ?? 'null') as { at: number; texts: Record<string, string> } | null;
+		if (!saved || now - saved.at > KEPT_TEXT_MS) {
+			storage().removeItem(KEPT_TEXT_KEY);
+			return;
+		}
 		texts = { ...saved.texts };
 	} catch {
 		return;
@@ -91,11 +95,22 @@ export function restoreTypedText(doc: Document, storage: () => KeptStorage = () 
 			box.dispatchEvent(new Event('input', { bubbles: true }));
 			delete texts[key];
 		}
-		if (!Object.keys(texts).length) observer.disconnect();
+		if (!Object.keys(texts).length) stop();
 	};
-	const observer = new MutationObserver(fill);
+	let frame = 0;
+	const observer = new MutationObserver(() => {
+		if (!frame) frame = requestAnimationFrame(() => ((frame = 0), fill()));
+	});
+	function stop() {
+		observer.disconnect();
+		try {
+			storage().removeItem(KEPT_TEXT_KEY);
+		} catch {
+			// Nothing more to do.
+		}
+	}
 	observer.observe(doc.body, { childList: true, subtree: true });
-	setTimeout(() => observer.disconnect(), waitMs);
+	setTimeout(stop, Math.max(0, saved!.at + KEPT_TEXT_MS - now));
 	fill();
 }
 

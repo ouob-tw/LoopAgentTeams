@@ -101,6 +101,14 @@ class Answering {
 		return { answer: answerText(item.question, draft.select, answerTextOf(item.question, draft)), note: draft.note.trim() };
 	}
 
+	/** Whether any of these items has a choice picked or 其他 ticked: not text in a box. */
+	holdsChoice(keys: string[]): boolean {
+		return keys.some((key) => {
+			const draft = this.drafts[key];
+			return !!draft && (draft.select.length > 0 || draft.other);
+		});
+	}
+
 	/** Whether any of these items has an answer begun and not sent: choices, 其他 or a note. */
 	holdsDraft(keys: string[]): boolean {
 		return keys.some((key) => {

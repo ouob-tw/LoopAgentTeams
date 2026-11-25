@@ -85,6 +85,16 @@ test('what cannot be put back (an open dialog, work a state holds) keeps the lin
 	expect(held.calls).toEqual([`open ${ORIGIN}/f _blank noopener`]);
 });
 
+test('work a state holds as text in a box does not stop the page being left; a choice does', () => {
+	release = holdsUnsent(() => true, { inTextBox: true });
+	const text = windowOf({ standalone: true });
+	expect(openOwn(`${ORIGIN}/f`, { win: text.win, storage: text.storage })).toBe(true);
+	release();
+	release = holdsUnsent(() => true);
+	const choice = windowOf({ standalone: true });
+	expect(openOwn(`${ORIGIN}/f`, { win: choice.win, storage: choice.storage })).toBe(false);
+});
+
 test('openOwn: the installed app leaves in this window; a tab or another site opens a new one, isolated', () => {
 	const app = windowOf({ standalone: true });
 	expect(openOwn(`${ORIGIN}/f.pdf`, { win: app.win, storage: app.storage })).toBe(true);
