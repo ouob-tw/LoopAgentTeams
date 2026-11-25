@@ -12,7 +12,10 @@ import uuid
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-unattended.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
-GIT_ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+# Its own author too: a host without a global identity or a domain name has none to guess.
+GIT_ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
+               GIT_COMMITTER_EMAIL='t@t')
 FULL = ['--goal', '修好登入頁', '--done', '登入成功跳到首頁', '--done', '錯誤密碼顯示提示',
         '--scope', 'ticket-confirmation', 'assume-defaults', '--max-hours', '6']
 SETTINGS_SCOPE = ('ticket-confirmation', 'assume-defaults', 'prototype')
