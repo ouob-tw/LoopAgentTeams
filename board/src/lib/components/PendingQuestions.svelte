@@ -26,7 +26,7 @@
 	<div class="questions">
 		{#each bars as { item, problem } (item.key)}
 			<div class="row">
-				<button type="button" class="question" data-problem={problem ? '' : undefined} onclick={() => onopen(item)}>
+				<button type="button" class="question" onclick={() => onopen(item)}>
 					<span class="title">
 						▲ <b>待決</b>：{summaryPlain(item.title) || '（沒有標題）'}
 						{#if problem}<span class="problem">{problem}</span>{/if}

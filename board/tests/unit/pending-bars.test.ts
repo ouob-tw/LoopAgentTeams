@@ -24,6 +24,8 @@ test('the controller asking the same question again opens a bar for the new vers
 test('a sent answer whose notification failed brings its bar back, saying so', () => {
 	expect(shown(pendingBars('working', [item('A', false, { notifyFailed: true })], none))).toEqual([['A', '已送出，但通知主控失敗']]);
 	expect(shown(pendingBars('working', [item('A', false)], { ...none, submitted: { 'q:s1:A': sent(1, true) } }))).toEqual([['A', '已送出，但通知主控失敗']]);
+	// The board's data not caught up yet: still waiting there.
+	expect(shown(pendingBars('waiting', [item('A', true)], { ...none, submitted: { 'q:s1:A': sent(1, true) } }))).toEqual([['A', '已送出，但通知主控失敗']]);
 });
 
 test('a sent answer of a controller that went idle or closed before recording it brings its bar back', () => {

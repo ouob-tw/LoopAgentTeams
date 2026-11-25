@@ -24,6 +24,8 @@ export function pendingBars(
 ): PendingBar[] {
 	return questions.flatMap((item): PendingBar[] => {
 		const sent = page.submitted[item.key];
+		// Known here as soon as the reply comes, before the board's data says the answer is in.
+		if (sent?.notifyFailed && sent.revision === item.question.revision) return [{ item, problem: '已送出，但通知主控失敗' }];
 		if (item.unsent) {
 			// Sent from this page and the board has not caught up yet; a new version asked again is open.
 			if (sent && sent.revision === item.question.revision) return [];
