@@ -124,7 +124,7 @@ test.skipIf(!CHROME)('an answer refused because the question changed keeps the b
 }, 60_000);
 
 test.skipIf(!CHROME)('a controller that closes before recording the answer is told so on its page, with no bar', async () => {
-	const { controller, key } = await open('bar-closed');
+	const { key } = await open('bar-closed');
 	await answer(key);
 	await browser!.tab.until(`!${cardOf(key)}?.querySelector('form.answer')`);
 	// Its client is gone from hcom's list.
@@ -133,5 +133,26 @@ test.skipIf(!CHROME)('a controller that closes before recording the answer is to
 	// Off the roster once it closes: the page says so where its card and bar were.
 	await browser!.tab.until(`document.querySelector('.detail')?.innerText.includes('已停用 LAT 或已關閉')`, 'the notice that it closed');
 	expect(await evaluate<string | null>(BAR)).toBeNull();
-	expect(controller.session_id).toBeTruthy();
+}, 60_000);
+
+test.skipIf(!CHROME)("the empty room of a sent bar stays with its controller: another one opened next has none; bars keep their order", async () => {
+	const { controller: first, key } = await open('bar-room-a');
+	const second = fixture.bound('bar-room-b', 'tavi', {
+		questions: [
+			question({ id: 'Q-7', title: '舊的一題', asked_at: '2026-10-20T01:10:00.000Z' }),
+			question({ id: 'Q-8', title: '新的一題', asked_at: '2026-10-20T01:20:00.000Z', section_sha256: 'e'.repeat(64) })
+		]
+	});
+	fixture.setHelper({ output: { controllers: [first, second] } });
+	await fixture.refresh(cookie);
+	await answer(key);
+	await browser!.tab.until(`!!document.querySelector('.questions .room')`, 'the room of the sent bar');
+	await evaluate(`[...document.querySelectorAll('.roster button')].find((button) => button.innerText.includes('bar-room-b')).click()`);
+	await browser!.tab.until(`(document.querySelector('.questions')?.innerText ?? '').includes('新的一題')`, "the other controller's bars");
+	expect(await evaluate<number>(`document.querySelectorAll('.questions .room').length`)).toBe(0);
+	// Newest first, as the inbox lists them.
+	expect(await evaluate<string[]>(`[...document.querySelectorAll('.questions .question .title')].map((title) => title.innerText.trim())`)).toEqual([
+		'▲ 待決：新的一題',
+		'▲ 待決：舊的一題'
+	]);
 }, 60_000);

@@ -32,8 +32,12 @@
 	$effect.pre(() => {
 		const now = new Map(bars.map((bar) => [bar.item.key, bar]));
 		untrack(() => {
-			const kept = rows.map((row) => ({ key: row.key, bar: now.get(row.key) ?? null })).filter((row) => row.bar || heights[row.key]);
-			rows = [...kept, ...bars.filter((bar) => !kept.some((row) => row.key === bar.item.key)).map((bar) => ({ key: bar.item.key, bar }))];
+			// The bars in their own order; each room put back where it was among them.
+			const next: typeof rows = bars.map((bar) => ({ key: bar.item.key, bar }));
+			rows.forEach((row, at) => {
+				if (!now.has(row.key) && heights[row.key]) next.splice(Math.min(at, next.length), 0, { key: row.key, bar: null });
+			});
+			rows = next;
 		});
 	});
 

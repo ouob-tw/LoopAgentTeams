@@ -189,7 +189,8 @@
 	<AgentClose agent={idleAgent} {before} />
 {/if}
 
-<PendingQuestions status={controller.status} {questions} {onopen} />
+<!-- Another controller opened in the same place starts with no room left by this one's bars. -->
+{#key controller.id}<PendingQuestions status={controller.status} {questions} {onopen} />{/key}
 <DelegatedCards {controller} />
 
 {#if agent}
