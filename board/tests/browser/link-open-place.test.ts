@@ -152,3 +152,29 @@ test.skipIf(!CHROME)('a normal tab: nothing is written down and the link is left
 	expect(taken).toBe(false);
 	expect(await tab.eval(`sessionStorage.getItem('${KEY}')`)).toBe(null);
 }, TEST_MS);
+
+test.skipIf(!CHROME)('installed app: the inert stand-in of a message still loading does not end the search for it', async () => {
+	// A place waiting for message "late-card"; its stand-in shows at once, the real one after 8 s (longer than the 6 s the page holds a place once found).
+	const script = `window.__latStandalone = true;
+		sessionStorage.setItem('${KEY}', JSON.stringify({ at: Date.now(), page: location.pathname + location.search, anchor: '[data-content="late-card"]', scroller: null, top: 300 }));
+		addEventListener('DOMContentLoaded', () => {
+			const standIn = Object.assign(document.createElement('div'), { className: 'placeholder', inert: true, innerHTML: '<article data-content="late-card">stand-in</article>' });
+			document.body.append(standIn);
+			setTimeout(() => {
+				const real = Object.assign(document.createElement('article'), { textContent: 'real' });
+				real.dataset.content = 'late-card';
+				real.style.cssText = 'height: 200px; margin-top: 3000px';
+				document.body.append(real, Object.assign(document.createElement('div'), { style: 'height: 3000px' }));
+			}, 8000);
+		});`;
+	browser = await launchChrome({ scripts: [script] });
+	tab = browser.tab;
+	const [name, value] = cookie.split('=');
+	await tab.send('Network.setCookie', { name, value, url: fixture.url });
+	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+	await tab.navigate(`${fixture.url}/?controller=${encodeURIComponent(controller.session_id)}`);
+	await tab.boardStarted();
+	await tab.until(`!!document.querySelector('article[data-content="late-card"]:not(.placeholder *)')`, 'the real message', );
+	await sleep(500);
+	expect(Math.abs((await tab.eval<number>(`document.querySelector('article[data-content="late-card"]:not(.placeholder *)').getBoundingClientRect().top`)) - 300)).toBeLessThanOrEqual(STILL);
+}, TEST_MS);
