@@ -2,7 +2,8 @@
 // exceptions nothing caught, and errors pages report from the browser. Never the user's password,
 // device token, answers or messages.
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { CLIENT_ERRORS_PER_WINDOW, MAX_CLIENT_ERROR_CHARS, MAX_FRAMES, MAX_USER_AGENT } from '../../src/lib/server/client-errors.ts';
@@ -248,22 +249,23 @@ test('a browser error from a logged-in device is one line of what the server che
 	expect(output()).not.toContain(cookie.split('=')[1]);
 });
 
-test("a frame in a page's built script is logged with the page's source file and line; one its map does not explain stays as built", async () => {
-	// Some place in the built pages that came from the main page's own component.
+/** Some place in the built pages that came from the main page's own component. */
+function pagePlace(): { script: string; line: number; column: number; source: string } {
 	const client = join(import.meta.dir, '../..', BUILD_DIR, 'client');
-	let found: { script: string; line: number; column: number; source: string } | undefined;
 	for (const name of readdirSync(join(client, '_app/immutable/nodes'))) {
 		const script = `/_app/immutable/nodes/${name}`;
 		const lines = readFileSync(join(client, script), 'utf8').split('\n');
-		for (let line = 1; line <= lines.length && !found; line++)
-			for (let column = 1; column <= lines[line - 1]!.length && !found; column += 97) {
+		for (let line = 1; line <= lines.length; line++)
+			for (let column = 1; column <= lines[line - 1]!.length; column += 97) {
 				const source = locate(script, line, column);
-				if (source?.startsWith('src/routes/+page.svelte:')) found = { script, line, column, source };
+				if (source?.startsWith('src/routes/+page.svelte:')) return { script, line, column, source };
 			}
-		if (found) break;
 	}
-	if (!found) throw new Error('no place in the built pages maps to src/routes/+page.svelte');
-	const { script, line, column, source } = found;
+	throw new Error('no place in the built pages maps to src/routes/+page.svelte');
+}
+
+test("a frame in a page's built script is logged with the page's source file and line; one its map does not explain stays as built", async () => {
+	const { script, line, column, source } = pagePlace();
 
 	const stack = `TypeError: x\n    at render (${at(script)}:${line}:${column})\n    at ${at(script)}:99999:1`;
 	// A device of its own: this file's main device has only so many reports a minute.
@@ -298,6 +300,50 @@ test('a report tells whether the page runs this build, and counts the frames of 
 	expect(unknown!.build ?? null).toBeNull();
 	// Only which of the two: the version itself is not logged.
 	expect(output()).not.toContain(own);
+});
+
+test('a page opened at an address other than the one its requests name (a proxy that sends its own Host) keeps its script locations', async () => {
+	const proxied = (path: string) => `https://s5.ouob.tw${path}`;
+	const device = await fixture.login('proxied-host');
+	mark = fixture.serverOutput().length;
+	const stack = [
+		'Error: https://svelte.dev/e/each_key_duplicate',
+		`    at Pe (${proxied(CHUNK!)}:1:200)`,
+		`    at ${proxied(ENTRY!)}:3:40`,
+		// Another host's script, even of the same name, is still not the board's.
+		`    at render (https://elsewhere.example${CHUNK}:5:6)`
+	].join('\n');
+	expect((await post('/api/client-error', { ...report(), url: proxied('/'), stack }, { cookie: device })).status).toBe(204);
+
+	const [line] = await waitLines('client_error');
+	expect(line!.traceback).toBe(`${frame(CHUNK!, 1, 200)}\n${frame(ENTRY!, 3, 40)}`);
+});
+
+test("a page left open across a deploy has its frames logged by source file and line while the deploy kept its build's maps", async () => {
+	// The deploy keeps the earlier builds' maps beside the new one's (scripts/deploy.sh): here a copy
+	// of the tested build holds one more map, of a page script it does not serve.
+	const { script, line, column, source } = pagePlace();
+	const earlier = '/_app/immutable/nodes/2.earlier-build.js';
+	const copy = mkdtempSync(join(tmpdir(), 'lat-board-kept-maps-'));
+	cpSync(join(import.meta.dir, '../..', BUILD_DIR), join(copy, 'build'), { recursive: true });
+	symlinkSync(join(import.meta.dir, '../../node_modules'), join(copy, 'node_modules'));
+	cpSync(join(import.meta.dir, '../../package.json'), join(copy, 'package.json'));
+	cpSync(join(copy, 'build/sourcemaps', `${script}.map`), join(copy, 'build/sourcemaps', `${earlier}.map`));
+	await fixture.stop();
+	try {
+		await fixture.start({ build: join(copy, 'build/index.js') });
+		const device = await fixture.login('kept-maps');
+		mark = fixture.serverOutput().length;
+		const stack = `TypeError: x\n    at render (${at(earlier)}:${line}:${column})\n    at ${at('/_app/immutable/nodes/2.no-map-kept.js')}:1:2`;
+		expect((await post('/api/client-error', { ...report(), type: 'TypeError', stack }, { cookie: device })).status).toBe(204);
+
+		const [logged] = await waitLines('client_error');
+		expect(logged!.traceback).toBe(`at ${source} (${earlier}:${line}:${column}, another build)\n[1 frame from another build]`);
+	} finally {
+		await fixture.stop();
+		await fixture.start();
+		rmSync(copy, { recursive: true, force: true });
+	}
 });
 
 test('the source maps are built but never served, and no served script names one', async () => {
