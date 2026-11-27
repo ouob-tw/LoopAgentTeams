@@ -44,6 +44,25 @@ async function rightClick(element: string): Promise<boolean> {
 const longPress = (element: string) =>
 	evaluate<boolean>(`${element}.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch' }))`);
 
+const MENU = `document.querySelector('.launch-menu')`;
+/** Right-click `element`: the board's menu opens, the card stays, Escape closes the menu without
+ *  removing anything; then right-click again and pick 關閉. */
+async function closeFromMenu(element: string) {
+	expect(await rightClick(element)).toBe(true);
+	await until(`!!${MENU}`, 2_000);
+	expect(await evaluate(`${MENU}.textContent.trim()`)).toBe('關閉');
+	expect(await evaluate(`!!${element}`)).toBe(true);
+	await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+	await until(`!${MENU}`, 2_000);
+	expect(await evaluate(`!!${element}`)).toBe(true);
+	expect(await rightClick(element)).toBe(true);
+	await until(`!!${MENU}`, 2_000);
+	await shot(browser!.tab, `1400-menu-${(await evaluate<boolean>(`!!${element}.closest('.rail')`)) ? 'rail' : 'card'}`);
+	const item = await evaluate<{ x: number; y: number }>(`(() => { const r = ${MENU}.querySelector('button').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+	for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, ...item, button: 'left', clickCount: 1 });
+	await until(`!${MENU}`, 2_000);
+}
+
 const resize = (width: number) => send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 700 });
 const herdr = (paths: string[]) =>
 	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ panes: paths.map((cwd) => ({ workspace_id: 'wA', cwd })), workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }] }));
@@ -292,7 +311,7 @@ test.skipIf(!CHROME)('a failed launch\'s card says it failed and can be removed'
 	await until(`${BOARD_STARTED} && !!${LUNA} && !${CARD}`, 3_000);
 }, 30_000);
 
-test.skipIf(!CHROME)('a right click removes just that failed launch, on its card and on its folded mark, also after a reload', async () => {
+test.skipIf(!CHROME)('a right click opens a menu whose 關閉 removes just that failed launch, on its card and on its folded mark, also after a reload', async () => {
 	/** The launches shown in `place`, by ID. */
 	const ids = (place: string) => evaluate<string[]>(`[...document.querySelectorAll('${place} [data-launch]')].map((element) => element.dataset.launch)`);
 	const one = (place: string, id: string) => `document.querySelector('${place} [data-launch="${id}"]')`;
@@ -320,12 +339,13 @@ test.skipIf(!CHROME)('a right click removes just that failed launch, on its card
 	await fail(2);
 	const [kept, removed] = await ids('.unfolded .people');
 	const card = one('.unfolded .people', removed);
-	expect(await evaluate(`${card}.title.endsWith('（按右鍵移除）')`)).toBe(true);
+	expect(await evaluate(`${card}.title.endsWith('（按右鍵可關閉）')`)).toBe(true);
 	await shot(browser!.tab, '1400-rightclick-card-before');
 	// A long press is not a right click: the card stays.
 	expect(await longPress(card)).toBe(true);
 	expect(await ids('.unfolded .people')).toEqual([kept, removed]);
-	expect(await rightClick(card)).toBe(true);
+	expect(await evaluate(`!${MENU}`)).toBe(true);
+	await closeFromMenu(card);
 	await until(`!${card}`, 2_000);
 	expect(await ids('.unfolded .people')).toEqual([kept]);
 	await shot(browser!.tab, '1400-rightclick-card-after');
@@ -339,11 +359,12 @@ test.skipIf(!CHROME)('a right click removes just that failed launch, on its card
 	await evaluate(`document.querySelector('.summary .fold').click()`);
 	const mark = one('.rail', second);
 	await until(`!!${mark}`);
-	expect(await evaluate(`${mark}.title.endsWith('（按右鍵移除）')`)).toBe(true);
+	expect(await evaluate(`${mark}.title.endsWith('（按右鍵可關閉）')`)).toBe(true);
 	await shot(browser!.tab, '1400-rightclick-rail-before');
 	expect(await longPress(mark)).toBe(true);
 	expect((await ids('.rail')).sort()).toEqual([kept, second].sort());
-	expect(await rightClick(mark)).toBe(true);
+	expect(await evaluate(`!${MENU}`)).toBe(true);
+	await closeFromMenu(mark);
 	await until(`!${mark}`, 2_000);
 	// Only that mark went, and the roster stays folded.
 	expect(await ids('.rail')).toEqual([kept]);

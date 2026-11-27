@@ -14,6 +14,7 @@
 	import ExplainTip from './ExplainTip.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import LaunchMark from './LaunchMark.svelte';
+	import LaunchMenu from './LaunchMenu.svelte';
 	import { onMount } from 'svelte';
 	import { dismissedLaunches } from '#lib/board/launch-cards.svelte.ts';
 	import { folderName } from '#lib/board/folder-search.ts';
@@ -49,6 +50,10 @@
 	const delegated = $derived(new Map(controllers.map((controller) => [controller.id, unseenCount(controller)])));
 
 	const launches = $derived(dismissedLaunches.shown(launching));
+	/** The launch whose right-click menu is open, and where. */
+	let menu = $state<{ id: string; x: number; y: number } | null>(null);
+	/** That launch while it is still shown and over; gone with it, the menu closes. */
+	const menuLaunch = $derived(menu && launches.find((launch) => launch.id === menu?.id && launch.state !== 'starting'));
 	onMount(() => dismissedLaunches.load());
 	const launchLabel = (launch: LaunchCard) =>
 		`${folderName(launch.scope ?? launch.folder)}${launch.hcomName ? ` @${lastSegment(launch.hcomName)}` : ''}：${LAUNCH_STATE_TEXT[launch.state]}`;
@@ -67,14 +72,19 @@
 			class="entry"
 			data-launch={launch.id}
 			aria-label={launchLabel(launch)}
-			title={launch.state === 'starting' ? launchLabel(launch) : `${launchLabel(launch)}（按右鍵移除）`}
+			title={launch.state === 'starting' ? launchLabel(launch) : `${launchLabel(launch)}（按右鍵可關閉）`}
 			onclick={() => onlaunch(launch)}
 			oncontextmenu={(event) => {
-				// One that is over (failed, overdue, uncertain) is removed, as its card's corner button does;
-				// not by a touch screen's long press, which explains the other marks here.
+				// One that is over (failed, overdue, uncertain) gets a menu whose 關閉 removes it, as its
+				// card's corner button does; not on a touch screen's long press, which explains the other marks here.
 				if (launch.state === 'starting' || ('pointerType' in event && event.pointerType === 'touch')) return;
 				event.preventDefault();
-				dismissedLaunches.dismiss(launch.id);
+				// Opened from the keyboard: by the mark, not where the pointer happens to be.
+				const box = event.currentTarget.getBoundingClientRect();
+				menu =
+					event.clientX === 0 && event.clientY === 0
+						? { id: launch.id, x: box.right + 4, y: box.top }
+						: { id: launch.id, x: event.clientX, y: event.clientY };
 			}}
 		>
 			<LaunchMark state={launch.state} />
@@ -116,6 +126,10 @@
 	{/if}
 	<div class="tools">{@render tools()}</div>
 </div>
+
+{#if menu && menuLaunch}
+	<LaunchMenu x={menu.x} y={menu.y} onpick={() => dismissedLaunches.dismiss(menuLaunch.id)} onclose={() => (menu = null)} />
+{/if}
 
 {#if explainer.tip && explained}
 	<ExplainTip id="rail-tip" place={explainer.tip} {explainer}>

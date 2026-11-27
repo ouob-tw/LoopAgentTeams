@@ -3,12 +3,13 @@
 	// card takes its place (#689): its project, a dashed mark and its HCOM name, and where the launch
 	// stands, each cut to one line like a controller's card, framed dashed. It opens the launched agent's page once the board finds it, else the new-controller page, whose
 	// launch row leads on; one that is over (failed, overdue, uncertain) can be removed, with its
-	// corner button or a right click; a touch screen's long press removes nothing.
+	// corner button or the 關閉 of the menu a right click opens; a touch screen's long press opens nothing.
 	import X from '@lucide/svelte/icons/x';
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { folderName } from '#lib/board/folder-search.ts';
 	import { CLIENT_LABEL, LAUNCH_CARD_TAG, LAUNCH_STATE_TEXT, type LaunchCard } from '#lib/board/launch.ts';
 	import LaunchMark from './LaunchMark.svelte';
+	import LaunchMenu from './LaunchMenu.svelte';
 
 	let { launch, onopen, ondismiss }: { launch: LaunchCard; onopen: () => void; ondismiss: (id: string) => void } = $props();
 
@@ -18,6 +19,8 @@
 	const text = $derived(LAUNCH_STATE_TEXT[launch.state]);
 	const label = $derived(`${project} ${launch.hcomName ? `@${launch.hcomName}` : ''}：${text}${launch.error ? `（${launch.error}）` : ''}`);
 	const over = $derived(launch.state !== 'starting');
+	/** Where the right-click menu is open, if it is. */
+	let menu = $state<{ x: number; y: number } | null>(null);
 </script>
 
 <div
@@ -25,12 +28,14 @@
 	class:over
 	data-launch={launch.id}
 	data-state={launch.state}
-	title={over ? `${label}（按右鍵移除）` : label}
+	title={over ? `${label}（按右鍵可關閉）` : label}
 	role="group"
 	oncontextmenu={(event) => {
 		if (!over || ('pointerType' in event && event.pointerType === 'touch')) return;
 		event.preventDefault();
-		ondismiss(launch.id);
+		// Opened from the keyboard: by the card, not where the pointer happens to be.
+		const box = event.currentTarget.getBoundingClientRect();
+		menu = event.clientX === 0 && event.clientY === 0 ? { x: box.left + 16, y: box.top + 16 } : { x: event.clientX, y: event.clientY };
 	}}
 >
 	<button class="open" aria-label={label} onclick={onopen}></button>
@@ -45,6 +50,10 @@
 		<button class="dismiss" aria-label="移除這張卡" title="移除這張卡" onclick={() => ondismiss(launch.id)}><X size="1em" aria-hidden="true" /></button>
 	{/if}
 </div>
+
+{#if menu && over}
+	<LaunchMenu x={menu.x} y={menu.y} onpick={() => ondismiss(launch.id)} onclose={() => (menu = null)} />
+{/if}
 
 <style>
 	/* Framed and spaced like a controller's card (RosterCard), which is a button. */
