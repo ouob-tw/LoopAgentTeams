@@ -2,7 +2,8 @@
 	// A controller launched from the board and not bound yet, as the roster shows it until the real
 	// card takes its place (#689): its project, a dashed mark and its HCOM name, and where the launch
 	// stands, each cut to one line like a controller's card, framed dashed. It opens the launched agent's page once the board finds it, else the new-controller page, whose
-	// launch row leads on; one that is over (failed, overdue, uncertain) can be removed.
+	// launch row leads on; one that is over (failed, overdue, uncertain) can be removed, with its
+	// corner button or a right click.
 	import X from '@lucide/svelte/icons/x';
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { folderName } from '#lib/board/folder-search.ts';
@@ -19,7 +20,19 @@
 	const over = $derived(launch.state !== 'starting');
 </script>
 
-<div class="person launch" class:over data-launch={launch.id} data-state={launch.state} title={label}>
+<div
+	class="person launch"
+	class:over
+	data-launch={launch.id}
+	data-state={launch.state}
+	title={over ? `${label}（按右鍵移除）` : label}
+	role="group"
+	oncontextmenu={(event) => {
+		if (!over) return;
+		event.preventDefault();
+		ondismiss(launch.id);
+	}}
+>
 	<button class="open" aria-label={label} onclick={onopen}></button>
 	<strong class="project">{project}</strong>
 	<span class="who">

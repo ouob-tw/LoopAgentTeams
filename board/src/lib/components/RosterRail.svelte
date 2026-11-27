@@ -63,7 +63,19 @@
 <div class="rail">
 	<button class="grip" onclick={onexpand} aria-label="展開主控名冊" title="展開主控名冊"><PanelLeftOpen size="1.1em" /></button>
 	{#each launches as launch (launch.id)}
-		<button class="entry" data-launch={launch.id} aria-label={launchLabel(launch)} title={launchLabel(launch)} onclick={() => onlaunch(launch)}>
+		<button
+			class="entry"
+			data-launch={launch.id}
+			aria-label={launchLabel(launch)}
+			title={launch.state === 'starting' ? launchLabel(launch) : `${launchLabel(launch)}（按右鍵移除）`}
+			onclick={() => onlaunch(launch)}
+			oncontextmenu={(event) => {
+				// One that is over (failed, overdue, uncertain) is removed, as its card's corner button does.
+				if (launch.state === 'starting') return;
+				event.preventDefault();
+				dismissedLaunches.dismiss(launch.id);
+			}}
+		>
 			<LaunchMark state={launch.state} />
 		</button>
 	{/each}
