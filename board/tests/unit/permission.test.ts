@@ -1,6 +1,6 @@
-// What a resume adds to the arguments hcom stored, to keep a Claude session's permission mode.
+// What a resume adds to the arguments hcom stored: to keep a Claude or Codex session's permission mode, or, for the board's restart, to bring a Claude session back in bypass permissions.
 import { expect, test } from 'bun:test';
-import { codexKeepArgs, permissionArgs } from '../../src/lib/server/permission.ts';
+import { bypassArgs, codexKeepArgs, permissionArgs } from '../../src/lib/server/permission.ts';
 
 test('the mode is added when the stored arguments leave it to the default or give another', () => {
 	expect(permissionArgs([], 'bypassPermissions')).toEqual(['--permission-mode', 'bypassPermissions']);
@@ -54,4 +54,24 @@ test("a Codex session's mode is given again on a resume, with hcom's folder for 
 	expect(codexKeepArgs({ approval: 'on-request', sandbox: 'read-only', reviewer: 'user' }, [], '/h/.hcom')).toEqual([]);
 	expect(codexKeepArgs({ approval: 'on-request', sandbox: 'workspace-write' }, [], '/h/.hcom')).toEqual([]);
 	expect(codexKeepArgs(null, [], '/h/.hcom')).toEqual([]);
+});
+
+test('a Claude restart comes back in bypass permissions whatever the stored arguments narrow it to', () => {
+	expect(bypassArgs([])).toEqual(['--dangerously-skip-permissions']);
+	expect(bypassArgs(['--permission-mode', 'manual'])).toEqual(['--dangerously-skip-permissions']);
+	expect(bypassArgs(['--dangerously-skip-permissions'])).toEqual([]);
+	// The last settings win: given again without the key that turns bypass permissions off, the rest kept.
+	expect(bypassArgs(['--settings', DISABLE_BYPASS, '--dangerously-skip-permissions'])).toEqual(['--settings', '{"permissions":{}}']);
+	expect(bypassArgs(['--settings={"model":"opus","permissions":{"disableBypassPermissionsMode":"disable","deny":["Bash(rm:*)"]}}'])).toEqual([
+		'--settings',
+		'{"model":"opus","permissions":{"deny":["Bash(rm:*)"]}}',
+		'--dangerously-skip-permissions'
+	]);
+	expect(bypassArgs(['--settings', DISABLE_BYPASS, '--settings', '{}'])).toEqual(['--dangerously-skip-permissions']);
+});
+
+test('a Claude restart that cannot come back in bypass permissions is refused', () => {
+	expect(bypassArgs(['--restricted'])).toMatchObject({ refuse: expect.stringContaining('--restricted') });
+	expect(bypassArgs(['--settings', 'locked.json'])).toMatchObject({ refuse: expect.stringContaining('locked.json') });
+	expect(bypassArgs(['--settings', '[1]'])).toMatchObject({ refuse: expect.stringContaining('[1]') });
 });

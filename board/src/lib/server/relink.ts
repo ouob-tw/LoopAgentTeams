@@ -2,14 +2,15 @@
 // `hcom stop`, `/exit` typed in its input box, a wait for its pane to be back at its shell, then
 // `hcom r <session>` in that same pane (`HOLD_TERMINAL`). Session, HCOM name and tab stay. Everything
 // that can refuse does so before `/exit`, its status looked at again just before, and no new process
-// starts unless the old one is seen gone, so there are never two. A restart must never widen the
-// permission mode: it is read from what runs now and given explicitly, because `hcom r` repeats
-// whatever arguments hcom holds after the stop, which is when they are read. A Codex mode changed
-// with `/permissions` since its last turn cannot be seen. Only by the user's press, one agent at a
-// time, queued like a send.
+// starts unless the old one is seen gone, so there are never two. The permission mode is given
+// explicitly, because `hcom r` repeats whatever arguments hcom holds after the stop, which is when
+// they are read. A Claude session comes back in bypass permissions, whatever mode it was in (the
+// user chose that, #740: Herdr's own restore leaves it out), and its screen is read afterwards to
+// see that it did. A Codex session keeps its mode; one changed with `/permissions` since its last
+// turn cannot be seen. Only by the user's press, one agent at a time, queued like a send.
 import { readFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { codexMode, inputBoxEmpty, permissionFixedBy, readClaudeScreen } from '../board/permissions.ts';
+import { CLAUDE_MODE_LABEL, codexMode, inputBoxEmpty, permissionFixedBy, readClaudeScreen } from '../board/permissions.ts';
 import { AGENT_OWN_PANE_RELINK_REASON, type AgentAction } from '../board/agent-actions.ts';
 import type { Agent } from '../board/types.ts';
 import { attempt, ONE_AGENT_NAME } from './agent-control.ts';
@@ -19,7 +20,7 @@ import { readLaunchArgs, readTranscript } from './helper.ts';
 import { hasHoldTerminal, listAgents, resumeAgent, stopAgent, storedLaunchArgs } from './hcom.ts';
 import { agentCommand, listHerdrAgents, paneProcess, readScreen, type PaneProcess } from './herdr.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause } from './paused.ts';
-import { codexKeepArgs, permissionArgs } from './permission.ts';
+import { bypassArgs, codexKeepArgs } from './permission.ts';
 import { isClient, isIdleShell, judgeHooks, relinkable, relinking } from './process-hooks.ts';
 import { queued } from './send.ts';
 
@@ -27,9 +28,6 @@ const EXIT_WAIT_MS = 15_000;
 const POLL_MS = 500;
 /** How much of a session log is read at a time, from its end, for its last finished turn. */
 const LOG_CHUNK = 4 * 1024 * 1024;
-
-/** Stored Claude options that give more than the mode does; `hcom r` would repeat them. */
-const WIDENING_CLAUDE = ['--allowedTools', '--allowed-tools', '--allow-dangerously-skip-permissions'];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -82,13 +80,13 @@ function startedAt(pid: number): number {
 	return (boot + ticks / 100) * 1000;
 }
 
-/** The arguments that keep the mode, given the arguments hcom holds after the stop; or why a restart
- *  with those would widen it. */
+/** The arguments that give the mode the restart starts in, given the arguments hcom holds after the
+ *  stop; or why a restart with those would not start in it. */
 type KeepMode = (stored: string[]) => string[] | { refuse: string };
 
-/** What keeps a Claude session's mode: the one its screen shows now, which a Shift+Tab since its
- *  last turn has changed too. Also refuses while a dialog is open or background subagents run. */
-async function claudeKeep(board: Board, agent: Agent, read: { path: string }, info: PaneProcess): Promise<KeepMode | { refuse: string }> {
+/** What brings a Claude session back in bypass permissions. Refuses while background subagents run,
+ *  or while its screen cannot be read or has a dialog open, which `/exit` could answer. */
+async function claudeBypass(board: Board, agent: Agent, read: { path: string }, info: PaneProcess): Promise<KeepMode | { refuse: string }> {
 	let pending: number;
 	try {
 		const client = info.foreground.find((running) => isClient(running.argv, 'claude'))!;
@@ -98,13 +96,10 @@ async function claudeKeep(board: Board, agent: Agent, read: { path: string }, in
 	}
 	if (pending > 0) return { refuse: `它還有 ${pending} 個背景 subagent 在跑，沒有重新啟動；等它們跑完再按。` };
 	const screen = await readScreen(board.config, agent.herdr.pane, 'detection');
-	if ('reason' in screen) return { refuse: `${screen.reason}，不知道它現在的權限模式，沒有重新啟動。` };
+	if ('reason' in screen) return { refuse: `${screen.reason}，不知道它是不是停在輸入框，沒有重新啟動。` };
 	const shown = readClaudeScreen(screen.text);
-	if (shown.mode === null) return { refuse: `讀不出它現在的權限模式，沒有重新啟動：${shown.reason.replace(/，沒有按鍵$/, '')}。` };
-	return (stored) => {
-		const widening = stored.find((arg) => WIDENING_CLAUDE.some((name) => arg === name || arg.startsWith(`${name}=`)));
-		return widening ? { refuse: `hcom 記著它舊的啟動參數 ${widening}，重新啟動會放寬它現在的權限，沒有重新啟動。` } : permissionArgs(stored, shown.mode);
-	};
+	if (shown.mode === null) return { refuse: `讀不出它的畫面是不是停在輸入框（可能開著對話框，/exit 會答到它），沒有重新啟動：${shown.reason.replace(/，沒有按鍵$/, '')}。` };
+	return bypassArgs;
 }
 
 /** What keeps a Codex session's mode: its latest turn's, given explicitly, and the profile its
@@ -165,7 +160,7 @@ async function prepare(board: Board, agent: Agent & { id: string }): Promise<{ r
 	if (!(await hasHoldTerminal(config))) return { refuse: '這台的 hcom 沒有 herdr-reuse 這組開窗設定，重新啟動會離開原本的分頁，沒有重新啟動；設定方式見看板的 README。' };
 	const read = await readTranscript(config, agent.client, agent.id);
 	if (!read.ok) return { refuse: read.missing ? '它還沒有對話紀錄，重新啟動也接不回這段對話，沒有重新啟動。' : `讀不到它的對話紀錄，沒有重新啟動：${read.reason}` };
-	const keep = agent.client === 'claude' ? await claudeKeep(board, agent, read, info) : codexKeep(board, read.page.usage?.permission, info);
+	const keep = agent.client === 'claude' ? await claudeBypass(board, agent, read, info) : codexKeep(board, read.page.usage?.permission, info);
 	if ('refuse' in keep) return keep;
 	// What hcom could repeat: its last stop's arguments, and a listed one's own, which a stop would
 	// record. What would be refused is refused untouched; read again after the stop all the same.
@@ -211,6 +206,24 @@ async function waitForLink(board: Board, sessionId: string, pane: string): Promi
 		else if (!hcom.ok) why = `讀不到 hcom 的清單，無法確認是否接回：${hcom.reason}`;
 		else why = `${seconds} 秒內它沒有連上 HCOM`;
 		if (Date.now() >= until) return { why };
+		await sleep(POLL_MS);
+	}
+}
+
+/** Null once its screen shows bypass permissions within the wait for a resume; otherwise why not,
+ *  from its last read. */
+async function whyNotBypass(board: Board, pane: string): Promise<string | null> {
+	const until = Date.now() + board.config.unpauseWaitMs;
+	for (;;) {
+		const screen = await readScreen(board.config, pane, 'detection');
+		const shown = 'reason' in screen ? { mode: null, reason: screen.reason } : readClaudeScreen(screen.text);
+		if (shown.mode === 'bypassPermissions') return null;
+		// The old process's footer may still be in view: another mode is the answer only at the end.
+		if (Date.now() >= until) {
+			return shown.mode !== null
+				? `畫面上是 ${CLAUDE_MODE_LABEL[shown.mode]}，不是 bypass permissions（可能是設定檔關掉了 bypass permissions）`
+				: `讀不出它畫面上的權限模式：${shown.reason.replace(/，沒有按鍵$/, '')}`;
+		}
 		await sleep(POLL_MS);
 	}
 }
@@ -280,6 +293,8 @@ export function relinkAgent(board: Board, agentId: string) {
 				} catch {
 					// On its link, so a later read removes it.
 				}
+				const notBypass = agent.client === 'claude' ? await whyNotBypass(board, pane) : null;
+				if (notBypass) return { route: 'hcom', reason: `它重新啟動並接回 HCOM 了，但${notBypass}。`, text };
 				return { route: 'hcom', reason: null, text };
 			} finally {
 				relinking.delete(agentId);

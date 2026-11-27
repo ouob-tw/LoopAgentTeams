@@ -82,6 +82,16 @@
         "board/tests/server/agent-relink.test.ts",
         "board/tests/browser/agent-relink-page.test.ts"
       ]
+    },
+    {
+      "paths": [
+        "board/src/lib/server/permission.ts",
+        "board/tests/fake-hcom.mjs"
+      ],
+      "tests": [
+        "board/tests/server/agent-relink.test.ts",
+        "board/tests/browser/agent-relink-page.test.ts"
+      ]
     }
   ]
 }

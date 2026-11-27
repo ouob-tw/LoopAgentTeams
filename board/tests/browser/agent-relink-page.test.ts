@@ -47,7 +47,7 @@ function setHerdr(fields: object = {}) {
 	);
 }
 const back = { name: 'modi', session_id: SESSION, status: 'listening', tool: 'claude', process_bound: true, launch_context: { pane_id: PANE } };
-const hcomPlan = (fields: object = {}) => ({ holdTerminal: true, agents: [], resumed: back, resumedHerdr: herdrAgent(), resumedProcess: processOf(hooked), names: ['modi'], ...fields });
+const hcomPlan = (fields: object = {}) => ({ holdTerminal: true, agents: [], resumed: back, resumedHerdr: herdrAgent(), resumedProcess: processOf(hooked), resumedScreen: [SCREEN.replace('auto mode', 'bypass permissions')], names: ['modi'], ...fields });
 
 async function visit(width: number) {
 	browser = await launchChrome({});
