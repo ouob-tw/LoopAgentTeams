@@ -3,7 +3,7 @@
 	// card takes its place (#689): its project, a dashed mark and its HCOM name, and where the launch
 	// stands, each cut to one line like a controller's card, framed dashed. It opens the launched agent's page once the board finds it, else the new-controller page, whose
 	// launch row leads on; one that is over (failed, overdue, uncertain) can be removed, with its
-	// corner button or a right click.
+	// corner button or a right click; a touch screen's long press removes nothing.
 	import X from '@lucide/svelte/icons/x';
 	import { lastSegment } from '#lib/board/agents.ts';
 	import { folderName } from '#lib/board/folder-search.ts';
@@ -28,7 +28,7 @@
 	title={over ? `${label}（按右鍵移除）` : label}
 	role="group"
 	oncontextmenu={(event) => {
-		if (!over) return;
+		if (!over || ('pointerType' in event && event.pointerType === 'touch')) return;
 		event.preventDefault();
 		ondismiss(launch.id);
 	}}

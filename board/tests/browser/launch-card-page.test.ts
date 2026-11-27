@@ -39,6 +39,11 @@ async function rightClick(element: string): Promise<boolean> {
 	return evaluate<boolean>('window.menuTaken');
 }
 
+/** The context menu event a touch screen's long press raises, dispatched here since headless Chrome
+ *  raises none for an emulated finger; true when the board left it alone. */
+const longPress = (element: string) =>
+	evaluate<boolean>(`${element}.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch' }))`);
+
 const resize = (width: number) => send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 700 });
 const herdr = (paths: string[]) =>
 	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ panes: paths.map((cwd) => ({ workspace_id: 'wA', cwd })), workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }] }));
@@ -317,6 +322,9 @@ test.skipIf(!CHROME)('a right click removes just that failed launch, on its card
 	const card = one('.unfolded .people', removed);
 	expect(await evaluate(`${card}.title.endsWith('（按右鍵移除）')`)).toBe(true);
 	await shot(browser!.tab, '1400-rightclick-card-before');
+	// A long press is not a right click: the card stays.
+	expect(await longPress(card)).toBe(true);
+	expect(await ids('.unfolded .people')).toEqual([kept, removed]);
 	expect(await rightClick(card)).toBe(true);
 	await until(`!${card}`, 2_000);
 	expect(await ids('.unfolded .people')).toEqual([kept]);
@@ -333,6 +341,8 @@ test.skipIf(!CHROME)('a right click removes just that failed launch, on its card
 	await until(`!!${mark}`);
 	expect(await evaluate(`${mark}.title.endsWith('（按右鍵移除）')`)).toBe(true);
 	await shot(browser!.tab, '1400-rightclick-rail-before');
+	expect(await longPress(mark)).toBe(true);
+	expect((await ids('.rail')).sort()).toEqual([kept, second].sort());
 	expect(await rightClick(mark)).toBe(true);
 	await until(`!${mark}`, 2_000);
 	// Only that mark went, and the roster stays folded.

@@ -70,8 +70,9 @@
 			title={launch.state === 'starting' ? launchLabel(launch) : `${launchLabel(launch)}（按右鍵移除）`}
 			onclick={() => onlaunch(launch)}
 			oncontextmenu={(event) => {
-				// One that is over (failed, overdue, uncertain) is removed, as its card's corner button does.
-				if (launch.state === 'starting') return;
+				// One that is over (failed, overdue, uncertain) is removed, as its card's corner button does;
+				// not by a touch screen's long press, which explains the other marks here.
+				if (launch.state === 'starting' || ('pointerType' in event && event.pointerType === 'touch')) return;
 				event.preventDefault();
 				dismissedLaunches.dismiss(launch.id);
 			}}
