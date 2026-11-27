@@ -34,7 +34,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_CONFIG_DIR` | 看板的設定目錄，放使用者樣式檔 `user.css` | `$XDG_CONFIG_HOME/lat/board` |
 | `LAT_BOARD_INJECT_COMMAND` | 傳話用的輸入指令（JSON 字串陣列），看板會在後面加上 `<HCOM 名稱> <文字> --enter`；文字剛好是 `--help`、`-h`、`--name`、`--go`、`--enter` 這五個之一時，輸入指令會當成自己的選項，所以改分兩次呼叫（第一個字元，再接其餘字元與 `--enter`），輸入框收到的字元不變（這種訊息送出最多慢約 2 秒） | `["hcom","term","inject"]` |
 | `LAT_BOARD_INJECT_TIMEOUT_SECONDS` | 輸入指令多久沒結束就放棄 | `15` |
-| `LAT_BOARD_HCOM_COMMAND` | hcom 指令（JSON 字串陣列）。新建時看板在後面加上 `<client> --dir <資料夾> --terminal herdr --go --hcom-prompt <第一則訊息>`，喚醒接回時加上 `r <session ID> --terminal herdr --go --hcom-prompt <第一則訊息>`（切換 Codex 模型的接回沒有第一則訊息），兩者之後再接選定的模型與思考強度參數；判斷 client 是否還在（每次讀取資料與喚醒前）時加上 `list --json`，切換模型與在「Herdr」分頁關閉有接 HCOM 的 Agent 時加上 `kill <HCOM 名稱>`，切換模型停止前加上 `config terminal --info`（查有沒有 `herdr-reuse`，見「接回」一段） | `["hcom"]` |
+| `LAT_BOARD_HCOM_COMMAND` | hcom 指令（JSON 字串陣列）。新建時看板在後面加上 `<client> --dir <資料夾> --terminal herdr --go --hcom-prompt <第一則訊息>`，喚醒接回時加上 `r <session ID> --terminal herdr --go --hcom-prompt <第一則訊息>`（切換 Codex 模型的接回沒有第一則訊息），兩者之後再接選定的模型與思考強度參數；判斷 client 是否還在（每次讀取資料與喚醒前）、以及查傳話對象目前的名字（每次傳話前）時加上 `list --json`，切換模型與在「Herdr」分頁關閉有接 HCOM 的 Agent 時加上 `kill <HCOM 名稱>`，切換模型停止前加上 `config terminal --info`（查有沒有 `herdr-reuse`，見「接回」一段） | `["hcom"]` |
 | `LAT_BOARD_HCOM_TIMEOUT_SECONDS` | hcom 啟動或接回指令多久沒結束就不再等（含 hcom 自己等 client 就緒的時間）；逾時算「仍在啟動」，不算失敗 | `60` |
 | `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS` | `hcom list --json` 多久沒結束就當成讀不到（此時喚醒不送出，名冊沿用上次的清單）；`hcom kill` 也用這個時間，逾時算「停止結果不明」（關閉 Agent 時算結果不明） | `15` |
 | `LAT_BOARD_MODEL_OPTIONS` | 表單提供的模型與思考強度（JSON），例如 `{"codex":{"models":["gpt-6.1-sol"]}}`；只取代有寫到的 client 與清單，其餘用內建清單 | 內建清單 |

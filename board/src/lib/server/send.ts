@@ -103,6 +103,8 @@ async function closedNow(board: Board, controllerId: string): Promise<boolean> {
 }
 
 async function attempt(board: Board, controllerId: string, rawText: string) {
+	// Read first, so the slow list adds no wait between the checks below and the typing.
+	const list = await listAgents(board.config);
 	// Ask the binding registry now: the target must still be bound at this moment, whatever the
 	// board's last snapshot says. A registry that cannot be read confirms nothing.
 	const registry = await listControllers(board.config);
@@ -134,7 +136,6 @@ async function attempt(board: Board, controllerId: string, rawText: string) {
 	} else {
 		// A session that rejoined hcom is listed under a new name; the bound one only stands in
 		// when the list has no entry for the session, or cannot be read.
-		const list = await listAgents(board.config);
 		hcomName = (list.ok && findAgent(list.agents, controllerId, [])?.name) || hcomName;
 		reason = await inject(board.config, hcomName, text);
 		status = reason ? 502 : 200;
