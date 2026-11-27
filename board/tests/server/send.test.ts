@@ -31,6 +31,7 @@ beforeEach(() => {
 	rmSync(callLog, { force: true });
 	rmSync(typedLog, { force: true });
 	plan({});
+	fixture.setHcom({});
 });
 
 type Plan = Record<string, { exit?: number; failFrom?: number; stdout?: string; stderr?: string; sleepMs?: number }>;
@@ -134,6 +135,59 @@ test('a closed pane: the reason comes back, the failure is logged, nobody else g
 	expect(await sentTo(nova.session_id)).toEqual([]);
 });
 
+test('a session that rejoined hcom under another name is typed into by that name', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	fixture.setHcom({ agents: [{ name: 'vezi', session_id: luna.session_id }] });
+
+	const { status, body } = await send(luna.session_id, '還在嗎');
+
+	expect(status).toBe(200);
+	expect(calls()).toEqual([['vezi', '還在嗎', '--enter']]);
+	expect(body.entry?.hcomName).toBe('vezi');
+	expect(await sentTo(luna.session_id)).toMatchObject([{ hcomName: 'vezi', ok: true }]);
+});
+
+test('a failure after a rename reports and logs the name that was used', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	fixture.setHcom({ agents: [{ name: 'vezi', session_id: luna.session_id }] });
+	plan({ vezi: { exit: 1, stdout: "No agent named 'vezi'\n" } });
+
+	const { status, body } = await send(luna.session_id, '還在嗎');
+
+	expect(status).toBe(502);
+	expect(body.reason).toContain('@vezi ');
+	expect(await sentTo(luna.session_id)).toMatchObject([{ hcomName: 'vezi', ok: false, error: body.reason }]);
+});
+
+test("while hcom's list cannot be read, the bound name is typed into", async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	fixture.setHcom({ listFail: { exit: 1, stderr: 'database is locked' } });
+
+	const { status, body } = await send(luna.session_id, '你好');
+
+	expect(status).toBe(200);
+	expect(calls()).toEqual([['luna', '你好', '--enter']]);
+	expect(body.entry?.hcomName).toBe('luna');
+});
+
+test('a session hcom\'s list has no entry for is typed into by the bound name', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	await fixture.refresh(cookie);
+	// Not a watched change: the board's last read still has the controller running, so it is not
+	// refused as closed, while the list read for this send has only another session.
+	fixture.setHcom({ agents: [{ name: 'vezi', session_id: 'another-session' }] });
+
+	const { status, body } = await send(luna.session_id, '你好');
+
+	expect(status).toBe(200);
+	expect(calls()).toEqual([['luna', '你好', '--enter']]);
+	expect(body.entry?.hcomName).toBe('luna');
+});
+
 test('an input command that hangs is cut off and reported as a failure', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.list([luna]);
@@ -144,7 +198,7 @@ test('an input command that hangs is cut off and reported as a failure', async (
 
 	expect(Date.now() - started).toBeLessThan(5_000);
 	expect(status).toBe(502);
-	expect(body.reason).toContain('逾時');
+	expect(body.reason).toContain('輸入到 @luna 的分頁逾時');
 	expect(calls()).toHaveLength(1);
 });
 

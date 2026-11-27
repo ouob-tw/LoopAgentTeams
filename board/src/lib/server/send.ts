@@ -8,6 +8,7 @@ import type { Board } from './board.ts';
 import type { BoardConfig } from './config.ts';
 import { runCommand } from './external.ts';
 import { listControllers } from './helper.ts';
+import { findAgent, listAgents } from './hcom.ts';
 import { agentCommand } from './herdr.ts';
 import { isClosed, isPaused, runsWithoutHooks } from './model.ts';
 import { appendSent } from './sent-log.ts';
@@ -55,7 +56,7 @@ async function runInject(config: BoardConfig, hcomName: string, args: string[]):
 	// The command prints its reason on standard output; standard error may only hold notices.
 	const run = await runCommand(config.injectCommand, [hcomName, ...args], { timeoutMs: timeout, failureFrom: 'stdout-first' });
 	if (run.failure === null) return null;
-	if (run.timedOut) return `輸入指令逾時（${timeout / 1000} 秒），文字可能已經打進輸入框但沒有送出。`;
+	if (run.timedOut) return `輸入到 @${hcomName} 的分頁逾時（${timeout / 1000} 秒），文字可能已經打進輸入框但沒有送出。`;
 	return `輸入到 @${hcomName} 的分頁失敗：${run.failure}`;
 }
 
@@ -102,6 +103,8 @@ async function closedNow(board: Board, controllerId: string): Promise<boolean> {
 }
 
 async function attempt(board: Board, controllerId: string, rawText: string) {
+	// Read first, so the slow list adds no wait between the checks below and the typing.
+	const list = await listAgents(board.config);
 	// Ask the binding registry now: the target must still be bound at this moment, whatever the
 	// board's last snapshot says. A registry that cannot be read confirms nothing.
 	const registry = await listControllers(board.config);
@@ -131,6 +134,9 @@ async function attempt(board: Board, controllerId: string, rawText: string) {
 		reason = act.ok ? null : `${listed?.noHooks ? '它沒有經 hcom 啟動' : 'HCOM 通訊暫停中'}，改由 Herdr 輸入也沒有送出：${act.reason}`;
 		status = reason ? 502 : 200;
 	} else {
+		// A session that rejoined hcom is listed under a new name; the bound one only stands in
+		// when the list has no entry for the session, or cannot be read.
+		hcomName = (list.ok && findAgent(list.agents, controllerId, [])?.name) || hcomName;
 		reason = await inject(board.config, hcomName, text);
 		status = reason ? 502 : 200;
 	}

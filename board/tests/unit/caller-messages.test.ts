@@ -105,5 +105,5 @@ test('the input command', async () => {
 	const typing = (injectCommand: string[]) => inject(config({ injectCommand }), 'rufe', 'hello');
 	expect(await typing(FAILS)).toBe('輸入到 @rufe 的分頁失敗：out one');
 	expect(await typing(node(`process.stderr.write('notice\\nboom\\n'); process.exit(1)`))).toBe('輸入到 @rufe 的分頁失敗：boom');
-	expect(await typing(HANGS)).toBe('輸入指令逾時（0.3 秒），文字可能已經打進輸入框但沒有送出。');
+	expect(await typing(HANGS)).toBe('輸入到 @rufe 的分頁逾時（0.3 秒），文字可能已經打進輸入框但沒有送出。');
 });
