@@ -2,14 +2,15 @@
 // `hcom stop`, `/exit` typed in its input box, a wait for its pane to be back at its shell, then
 // `hcom r <session>` in that same pane (`HOLD_TERMINAL`). Session, HCOM name and tab stay. Everything
 // that can refuse does so before `/exit`, its status looked at again just before, and no new process
-// starts unless the old one is seen gone, so there are never two. A restart must never widen the
-// permission mode: it is read from what runs now and given explicitly, because `hcom r` repeats
-// whatever arguments hcom holds after the stop, which is when they are read. A Codex mode changed
-// with `/permissions` since its last turn cannot be seen. Only by the user's press, one agent at a
-// time, queued like a send.
+// starts unless the old one is seen gone, so there are never two. The permission mode is given
+// explicitly, because `hcom r` repeats whatever arguments hcom holds after the stop, which is when
+// they are read. A Claude session comes back in bypass permissions, whatever mode it was in (the
+// user chose that, #740: Herdr's own restore leaves it out), and its screen is read afterwards to
+// see that it did. A Codex session keeps its mode; one changed with `/permissions` since its last
+// turn cannot be seen. Only by the user's press, one agent at a time, queued like a send.
 import { readFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { codexMode, inputBoxEmpty, permissionFixedBy, readClaudeScreen } from '../board/permissions.ts';
+import { CLAUDE_MODE_LABEL, codexMode, inputBoxEmpty, permissionFixedBy, readClaudeScreen } from '../board/permissions.ts';
 import { AGENT_OWN_PANE_RELINK_REASON, type AgentAction } from '../board/agent-actions.ts';
 import type { Agent } from '../board/types.ts';
 import { attempt, ONE_AGENT_NAME } from './agent-control.ts';
@@ -19,7 +20,7 @@ import { readLaunchArgs, readTranscript } from './helper.ts';
 import { hasHoldTerminal, listAgents, resumeAgent, stopAgent, storedLaunchArgs } from './hcom.ts';
 import { agentCommand, listHerdrAgents, paneProcess, readScreen, type PaneProcess } from './herdr.ts';
 import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause } from './paused.ts';
-import { codexKeepArgs, permissionArgs } from './permission.ts';
+import { bypassArgs, codexKeepArgs } from './permission.ts';
 import { isClient, isIdleShell, judgeHooks, relinkable, relinking } from './process-hooks.ts';
 import { queued } from './send.ts';
 
@@ -27,9 +28,6 @@ const EXIT_WAIT_MS = 15_000;
 const POLL_MS = 500;
 /** How much of a session log is read at a time, from its end, for its last finished turn. */
 const LOG_CHUNK = 4 * 1024 * 1024;
-
-/** Stored Claude options that give more than the mode does; `hcom r` would repeat them. */
-const WIDENING_CLAUDE = ['--allowedTools', '--allowed-tools', '--allow-dangerously-skip-permissions'];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -82,12 +80,12 @@ function startedAt(pid: number): number {
 	return (boot + ticks / 100) * 1000;
 }
 
-/** The arguments that keep the mode, given the arguments hcom holds after the stop; or why a restart
- *  with those would widen it. */
+/** The arguments that give the mode the restart starts in, given the arguments hcom holds after the
+ *  stop; or why a restart with those would not start in it. */
 type KeepMode = (stored: string[]) => string[] | { refuse: string };
 
-/** What keeps a Claude session's mode: the one its screen shows now, which a Shift+Tab since its
- *  last turn has changed too. Also refuses while a dialog is open or background subagents run. */
+/** What brings a Claude session back in bypass permissions. Refuses while background subagents run,
+ *  or while its screen cannot be read or has a dialog open, which `/exit` could answer. */
 async function claudeKeep(board: Board, agent: Agent, read: { path: string }, info: PaneProcess): Promise<KeepMode | { refuse: string }> {
 	let pending: number;
 	try {
@@ -101,10 +99,7 @@ async function claudeKeep(board: Board, agent: Agent, read: { path: string }, in
 	if ('reason' in screen) return { refuse: `${screen.reason}，不知道它現在的權限模式，沒有重新啟動。` };
 	const shown = readClaudeScreen(screen.text);
 	if (shown.mode === null) return { refuse: `讀不出它現在的權限模式，沒有重新啟動：${shown.reason.replace(/，沒有按鍵$/, '')}。` };
-	return (stored) => {
-		const widening = stored.find((arg) => WIDENING_CLAUDE.some((name) => arg === name || arg.startsWith(`${name}=`)));
-		return widening ? { refuse: `hcom 記著它舊的啟動參數 ${widening}，重新啟動會放寬它現在的權限，沒有重新啟動。` } : permissionArgs(stored, shown.mode);
-	};
+	return bypassArgs;
 }
 
 /** What keeps a Codex session's mode: its latest turn's, given explicitly, and the profile its
@@ -215,6 +210,19 @@ async function waitForLink(board: Board, sessionId: string, pane: string): Promi
 	}
 }
 
+/** Null once its screen shows bypass permissions within the wait for a resume; otherwise why not. */
+async function whyNotBypass(board: Board, pane: string): Promise<string | null> {
+	const until = Date.now() + board.config.unpauseWaitMs;
+	for (;;) {
+		const screen = await readScreen(board.config, pane, 'detection');
+		const shown = 'reason' in screen ? { mode: null, reason: screen.reason } : readClaudeScreen(screen.text);
+		if (shown.mode === 'bypassPermissions') return null;
+		if (shown.mode !== null) return `畫面上是 ${CLAUDE_MODE_LABEL[shown.mode]}，不是 bypass permissions（可能是設定檔關掉了 bypass permissions）`;
+		if (Date.now() >= until) return `讀不出它畫面上的權限模式：${shown.reason.replace(/，沒有按鍵$/, '')}`;
+		await sleep(POLL_MS);
+	}
+}
+
 /** An argument as typed into a shell. */
 const quoted = (arg: string) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`);
 
@@ -280,6 +288,8 @@ export function relinkAgent(board: Board, agentId: string) {
 				} catch {
 					// On its link, so a later read removes it.
 				}
+				const notBypass = agent.client === 'claude' ? await whyNotBypass(board, pane) : null;
+				if (notBypass) return { route: 'hcom', reason: `它重新啟動並接回 HCOM 了，但${notBypass}。`, text };
 				return { route: 'hcom', reason: null, text };
 			} finally {
 				relinking.delete(agentId);

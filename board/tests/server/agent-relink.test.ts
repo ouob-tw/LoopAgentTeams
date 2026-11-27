@@ -82,6 +82,7 @@ const hcomPlan = (fields: object = {}, client = 'claude', session = SESSION) => 
 	resumed: back('modi', session),
 	resumedHerdr: herdrAgent('idle', client, session),
 	resumedProcess: clientProcess(hooked),
+	...(client === 'claude' && { resumedScreen: [screen('bypass permissions')] }),
 	names: ['modi'],
 	...fields
 });
@@ -146,7 +147,7 @@ test('by its process: no hcom in its environment means no hooks, whatever hcom l
 	expect(await listed()).toMatchObject({ noHooks: false });
 });
 
-test('restarting keeps session, name and pane, reads the mode off the screen and clears the pause record', async () => {
+test('restarting keeps session, name and pane, comes back in bypass permissions and clears the pause record', async () => {
 	pauseRecord('modi');
 	expect(await listed()).toMatchObject({ noHooks: true, hcom: 'paused', hcomName: 'modi' });
 	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }] }));
@@ -157,7 +158,9 @@ test('restarting keeps session, name and pane, reads the mode off the screen and
 	expect(calls[0]).toEqual(['stop', 'modi']);
 	expect(calls[1].slice(0, 2)).toEqual(['r', SESSION]);
 	expect(calls[1]).toContain('herdr-reuse');
-	expect(calls[1].slice(-2)).toEqual(['--permission-mode', 'auto']);
+	// The screen showed auto mode: a restart brings it back in bypass permissions all the same.
+	expect(calls[1].at(-1)).toBe('--dangerously-skip-permissions');
+	expect(calls[1]).not.toContain('--permission-mode');
 	expect(calls).toHaveLength(2);
 	// Never `!hcom start`: only `/exit` was typed.
 	expect(prompts()).toEqual([['agent', 'prompt', PANE, '/exit']]);
@@ -166,11 +169,25 @@ test('restarting keeps session, name and pane, reads the mode off the screen and
 	expect(await listed()).toMatchObject({ hcom: 'linked', hcomName: 'modi', noHooks: false, herdr: { pane: PANE } });
 });
 
-test('hcom r would replay a bypass flag: a mode narrower than it stays narrower', async () => {
-	storedArgs(['--dangerously-skip-permissions']);
-	expect((await act('relink')).body.ok).toBe(true);
+const DISABLE_BYPASS = '{"permissions":{"disableBypassPermissionsMode":"disable"}}';
+
+test('stored arguments that keep bypass permissions off are overridden: the last settings win, the bypass flag beats any mode', async () => {
+	setHerdr({ screens: { [PANE]: [screen('manual mode').replace('⏵⏵ manual mode on (shift+tab to cycle)', '⏸ manual mode on')] } });
+	storedArgs(['--model', 'opus', '--settings', DISABLE_BYPASS, '--permission-mode', 'manual']);
+	expect((await act('relink')).body).toMatchObject({ ok: true, reason: null });
 	const args = hcomCalls().at(-1)!;
-	expect(args.slice(-4)).toEqual(['--settings', '{"permissions":{"disableBypassPermissionsMode":"disable"}}', '--permission-mode', 'auto']);
+	expect(args.slice(-3)).toEqual(['--settings', '{"permissions":{}}', '--dangerously-skip-permissions']);
+});
+
+test('back on its link but not in bypass permissions is told, not called a success', async () => {
+	pauseRecord('modi');
+	fixture.setHcom(hcomPlan({ resumedScreen: [screen('auto mode')] }));
+	const result = await act('relink');
+	expect(result.status).toBe(502);
+	expect(result.body.ok).toBe(false);
+	expect(result.body.reason).toContain('auto mode，不是 bypass permissions');
+	// It is linked, so its pause record goes all the same.
+	expect(hasRecord()).toBe(false);
 });
 
 const refusals: [string, () => void | Promise<void>, string][] = [
@@ -254,11 +271,11 @@ test('text typed during the checks stops it before /exit', async () => {
 });
 
 test('a stored option seen before the stop leaves the link alone too', async () => {
-	storedArgs(['--allowedTools', 'Bash(*)']);
+	storedArgs(['--restricted']);
 	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }] }));
 	const result = await act('relink');
 	expect(result.status).toBe(409);
-	expect(result.body.reason).toContain('--allowedTools');
+	expect(result.body.reason).toContain('--restricted');
 	expect(hcomCalls()).toEqual([]);
 	expect(prompts()).toEqual([]);
 });
@@ -352,11 +369,11 @@ test('a controller being restarted does not read as closed while it is off Herdr
 });
 
 test('a listed one\'s own launch arguments are seen before the stop', async () => {
-	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ [SESSION]: ['--allowedTools', 'Bash(*)'] }));
+	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify({ [SESSION]: ['--restricted'] }));
 	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }] }));
 	const result = await act('relink');
 	expect(result.status).toBe(409);
-	expect(result.body.reason).toContain('--allowedTools');
+	expect(result.body.reason).toContain('--restricted');
 	expect(hcomCalls()).toEqual([]);
 });
 
@@ -380,12 +397,17 @@ test('resuming a paused one started through hcom still types the line', async ()
 	expect(prompts()).toEqual([['agent', 'prompt', PANE, '!hcom start --as modi']]);
 });
 
-test('a stored option that gives more than the mode is refused', async () => {
-	storedArgs(['--allowedTools', 'Bash(*)']);
-	const result = await act('relink');
-	expect(result.status).toBe(409);
-	expect(result.body.reason).toContain('--allowedTools');
+test('stored options that bypass permissions cannot win over are refused; ones that give more are not', async () => {
+	for (const [stored, says] of [[['--restricted'], '--restricted'], [['--settings', '/etc/claude/locked.json'], '/etc/claude/locked.json']] as const) {
+		storedArgs([...stored]);
+		const result = await act('relink');
+		expect(result.status).toBe(409);
+		expect(result.body.reason).toContain(says);
+		expect(result.body.reason).toContain('bypass permissions');
+	}
 	expect(prompts()).toEqual([]);
+	storedArgs(['--allowedTools', 'Bash(*)']);
+	expect((await act('relink')).body.ok).toBe(true);
 });
 
 test('`hcom start` in a process with no hooks does not end its pause record', async () => {
@@ -397,11 +419,10 @@ test('`hcom start` in a process with no hooks does not end its pause record', as
 });
 
 test('the way back in a failure gives the mode too', async () => {
-	storedArgs(['--dangerously-skip-permissions']);
-	fixture.setHcom(hcomPlan({ exit: 1, stderr: 'cannot resume\n', resumed: undefined, resumedHerdr: undefined, resumedProcess: undefined }));
+	storedArgs(['--settings', DISABLE_BYPASS]);
+	fixture.setHcom(hcomPlan({ exit: 1, stderr: 'cannot resume\n', resumed: undefined, resumedHerdr: undefined, resumedProcess: undefined, resumedScreen: undefined }));
 	const result = await act('relink');
-	expect(result.body.reason).toContain('--permission-mode auto');
-	expect(result.body.reason).toContain(`'{"permissions":{"disableBypassPermissionsMode":"disable"}}'`);
+	expect(result.body.reason).toContain(`--settings '{"permissions":{}}' --dangerously-skip-permissions`);
 });
 
 test('a client that does not exit is left running and no second one starts', async () => {
@@ -550,4 +571,10 @@ test('Codex in a mode not known, or with a stored flag that would override it, i
 	expect(forced.body.reason).toContain('--yolo');
 	expect(hcomCalls()).toEqual([]);
 	expect(prompts()).toEqual([]);
+});
+
+test('Claude: settings that a stop brings to light are overridden too', async () => {
+	fixture.setHcom(hcomPlan({ agents: [{ name: 'modi', session_id: SESSION, status: 'inactive', tool: 'adhoc', process_bound: false }], stop: { launchArgs: ['--settings', DISABLE_BYPASS] } }));
+	expect((await act('relink')).body).toMatchObject({ ok: true, reason: null });
+	expect(hcomCalls().at(-1)!.slice(-3)).toEqual(['--settings', '{"permissions":{}}', '--dangerously-skip-permissions']);
 });

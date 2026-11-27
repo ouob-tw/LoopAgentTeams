@@ -14,6 +14,7 @@
 //   - `resumeDelayMs`: a resume waits this long before anything it adds shows.
 //   - `resumedElsewhere`: a resume with `--terminal herdr-reuse` ends up in the pane `resumedHerdr` names anyway.
 //   - `resumedProcess`: what the fake Herdr's `processes` then has for the pane a resume ran in.
+//   - `resumedScreen`: what the fake Herdr's `screens` then has for the pane a resume ran in.
 //   - `readOnly`: a file a resume makes read-only while it runs, so the board cannot write it.
 //   - `launched`, `launchedHerdr`: per launch in turn (not a resume), the agent it adds to the
 //     agent list like `resumed`, and the Herdr agent (or a list of them) it adds to the fake
@@ -237,6 +238,12 @@ if (args[0] === 'stop') {
 		const herdrFile = join(dir, 'herdr.json');
 		const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
 		herdr.processes = { ...herdr.processes, [process.env.HCOM_REUSE_PANE ?? '']: plan.resumedProcess };
+		write(herdrFile, JSON.stringify(herdr));
+	}
+	if (args[0] === 'r' && plan.resumedScreen) {
+		const herdrFile = join(dir, 'herdr.json');
+		const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
+		herdr.screens = { ...herdr.screens, [process.env.HCOM_REUSE_PANE ?? '']: plan.resumedScreen };
 		write(herdrFile, JSON.stringify(herdr));
 	}
 	if (args[0] === 'r' && plan.readOnly) chmodSync(plan.readOnly, 0o444);

@@ -7,7 +7,8 @@
 // `--permission-mode`, wherever it comes, and hcom has no way to leave a stored argument out: a
 // session stored with it that was in another mode gets a setting that turns bypass permissions
 // off as well (`DISABLE_BYPASS`; the user chose that, TOSE-262-AC4), so it cannot be switched
-// into it in that session either (Claude Code 2.1.308).
+// into it in that session either (Claude Code 2.1.308). The board's restart (`relink.ts`) does
+// not keep the mode: it brings a Claude session back in bypass permissions (`bypassArgs`).
 import { addHcomDir, codexMode, codexPermissionArgs } from '../board/permissions.ts';
 import type { Usage } from '../board/usage.ts';
 import type { BoardConfig } from './config.ts';
@@ -44,6 +45,34 @@ export function permissionArgs(stored: readonly string[], mode: string | null): 
 	if (forced && mode === 'bypassPermissions') return [];
 	const disable = forced && lastValue(stored, '--settings') !== DISABLE_BYPASS ? ['--settings', DISABLE_BYPASS] : [];
 	return lastValue(stored, '--permission-mode') === mode && !disable.length ? [] : [...disable, '--permission-mode', mode];
+}
+
+/**
+ * What to add to the stored arguments so a restart of a Claude session starts in bypass permissions
+ * and Shift+Tab can come back to it; or why it cannot. `--dangerously-skip-permissions` does both
+ * and wins over any `--permission-mode`. Of several `--settings`, Claude takes the last, so stored
+ * settings that turn bypass permissions off are given again without that key (Claude Code
+ * 2.1.332). `--restricted` refuses bypass permissions, and a settings file cannot be read here.
+ */
+export function bypassArgs(stored: readonly string[]): string[] | { refuse: string } {
+	if (stored.includes('--restricted')) return { refuse: 'hcom 記著它舊的啟動參數 --restricted，Claude 在這個模式下不允許 bypass permissions，沒有重新啟動。' };
+	const settings = lastValue(stored, '--settings');
+	let given: unknown = null;
+	if (settings !== null) {
+		try {
+			given = JSON.parse(settings);
+		} catch {
+			// A file's path.
+		}
+		if (!given || typeof given !== 'object' || Array.isArray(given)) {
+			return { refuse: `hcom 記著它舊的啟動參數 --settings ${settings}，看板看不出裡面有沒有關掉 bypass permissions，也蓋不掉它而不丟掉其他設定，沒有重新啟動。` };
+		}
+	}
+	const permissions = (given as { permissions?: unknown } | null)?.permissions;
+	const off = !!permissions && typeof permissions === 'object' && 'disableBypassPermissionsMode' in permissions;
+	const { disableBypassPermissionsMode: _, ...rest } = off ? (permissions as Record<string, unknown>) : {};
+	const lifted = off ? ['--settings', JSON.stringify({ ...(given as object), permissions: rest })] : [];
+	return [...lifted, ...(stored.includes('--dangerously-skip-permissions') ? [] : ['--dangerously-skip-permissions'])];
 }
 
 /**
