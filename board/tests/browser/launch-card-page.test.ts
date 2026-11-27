@@ -2,7 +2,7 @@
 // the new-controller form puts a 啟動中 card on the roster within 2 seconds of the launch answering,
 // framed and sized like a controller's card on a wide screen and like its tag on a phone, a long
 // project name cut short; once the controller binds its own card takes the place, never both; a
-// failed launch's card says so and can be removed. hcom and Herdr are the fixture's fakes, so
+// failed launch's card says so and can be removed, with its button or a right click. hcom and Herdr are the fixture's fakes, so
 // nothing is started. Frames go to LAT_BOARD_SHOTS when it is set. Skipped when the host has no Chrome.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,6 +24,25 @@ const LONG = 'a-project-with-a-name-far-too-long-for-any-roster-card';
 const CARD = `document.querySelector('.unfolded .people [data-launch]')`;
 const LUNA = `document.querySelector('.unfolded .people [data-controller="luna"]')`;
 const box = (element: string) => `(() => { const r = ${element}.getBoundingClientRect(); return { x: r.x, width: r.width, height: r.height }; })()`;
+
+/** A real right click on the middle of `element`; true when the board took it, so the browser's own
+ *  menu does not open. */
+async function rightClick(element: string): Promise<boolean> {
+	const middle = await evaluate<{ x: number; y: number }>(`(() => {
+		window.menuTaken = null;
+		window.addEventListener('contextmenu', (event) => { window.menuTaken = event.defaultPrevented; }, { once: true });
+		const r = ${element}.getBoundingClientRect();
+		return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+	})()`);
+	for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, ...middle, button: 'right', clickCount: 1 });
+	await until('window.menuTaken !== null', 2_000);
+	return evaluate<boolean>('window.menuTaken');
+}
+
+/** The context menu event a touch screen's long press raises, dispatched here since headless Chrome
+ *  raises none for an emulated finger; true when the board left it alone. */
+const longPress = (element: string) =>
+	evaluate<boolean>(`${element}.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch' }))`);
 
 const resize = (width: number) => send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 700 });
 const herdr = (paths: string[]) =>
@@ -120,8 +139,14 @@ test.skipIf(!CHROME)('the card is on the roster within 2 seconds of sending, bef
 	await until(`!!document.querySelector('.rail [data-launch]')`);
 	expect(await evaluate(`document.querySelector('.rail [data-launch]').getAttribute('aria-label')`)).toBe(`${LONG} @pavo：啟動中，等主控啟用`);
 	await shot(browser!.tab, '1400-rail-starting');
+	// Still starting: a right click is left to the browser and removes nothing.
+	expect(await rightClick(`document.querySelector('.rail [data-launch]')`)).toBe(false);
+	expect(await evaluate(`!!document.querySelector('.rail [data-launch]')`)).toBe(true);
 	await evaluate(`document.querySelector('.rail .grip').click()`);
 	await until(`!!${CARD}`);
+	expect(await rightClick(CARD)).toBe(false);
+	expect(await evaluate(`!!${CARD}`)).toBe(true);
+	expect(await evaluate(`localStorage.getItem('lat-board-launch-cards-dismissed')`)).toBe(null);
 	await dark(async () => shot(browser!.tab, '1400-dark-starting'));
 
 	// A real click on the middle of the card, away from the new-controller page, opens it.
@@ -266,3 +291,67 @@ test.skipIf(!CHROME)('a failed launch\'s card says it failed and can be removed'
 	// The server's first render does not know this device removed it: gone once the page runs.
 	await until(`${BOARD_STARTED} && !!${LUNA} && !${CARD}`, 3_000);
 }, 30_000);
+
+test.skipIf(!CHROME)('a right click removes just that failed launch, on its card and on its folded mark, also after a reload', async () => {
+	/** The launches shown in `place`, by ID. */
+	const ids = (place: string) => evaluate<string[]>(`[...document.querySelectorAll('${place} [data-launch]')].map((element) => element.dataset.launch)`);
+	const one = (place: string, id: string) => `document.querySelector('${place} [data-launch="${id}"]')`;
+	const reload = async () => {
+		// Through a blank page: loading the same address again keeps its history state, and
+		// BOARD_STARTED would hold before the new page runs.
+		await send('Page.navigate', { url: 'about:blank' });
+		await until(`location.href === 'about:blank'`);
+		await send('Page.navigate', { url: fixture.url });
+		await until(`${BOARD_STARTED} && !!${LUNA}`);
+		// An earlier step may have left the roster folded: a real click needs the card on screen.
+		await evaluate(`${LUNA}.getBoundingClientRect().width || document.querySelector('.rail .grip').click()`);
+		await until(`${LUNA}.getBoundingClientRect().width > 0`);
+	};
+	/** One more failed launch, until the unfolded roster shows `count` of them. */
+	const fail = async (count: number) => {
+		await sendForm();
+		await reload();
+		await until(`document.querySelectorAll('.unfolded .people [data-launch][data-state="failed"]').length === ${count}`);
+	};
+	hcom({ exit: 1, stdout: '', stderr: 'Error: claude not found on PATH\n' });
+	browser!.tab.errors.length = 0;
+
+	await fail(1);
+	await fail(2);
+	const [kept, removed] = await ids('.unfolded .people');
+	const card = one('.unfolded .people', removed);
+	expect(await evaluate(`${card}.title.endsWith('（按右鍵移除）')`)).toBe(true);
+	await shot(browser!.tab, '1400-rightclick-card-before');
+	// A long press is not a right click: the card stays.
+	expect(await longPress(card)).toBe(true);
+	expect(await ids('.unfolded .people')).toEqual([kept, removed]);
+	expect(await rightClick(card)).toBe(true);
+	await until(`!${card}`, 2_000);
+	expect(await ids('.unfolded .people')).toEqual([kept]);
+	await shot(browser!.tab, '1400-rightclick-card-after');
+	await reload();
+	// The server's first render does not know this device removed it: gone once the page runs.
+	await until(`!${card}`, 3_000);
+	expect(await ids('.unfolded .people')).toEqual([kept]);
+
+	await fail(2);
+	const second = (await ids('.unfolded .people')).find((id) => id !== kept)!;
+	await evaluate(`document.querySelector('.summary .fold').click()`);
+	const mark = one('.rail', second);
+	await until(`!!${mark}`);
+	expect(await evaluate(`${mark}.title.endsWith('（按右鍵移除）')`)).toBe(true);
+	await shot(browser!.tab, '1400-rightclick-rail-before');
+	expect(await longPress(mark)).toBe(true);
+	expect((await ids('.rail')).sort()).toEqual([kept, second].sort());
+	expect(await rightClick(mark)).toBe(true);
+	await until(`!${mark}`, 2_000);
+	// Only that mark went, and the roster stays folded.
+	expect(await ids('.rail')).toEqual([kept]);
+	expect(await evaluate(`document.querySelector('.rail .grip').getBoundingClientRect().width > 0`)).toBe(true);
+	await shot(browser!.tab, '1400-rightclick-rail-after');
+	await reload();
+	await until(`!${one('.unfolded .people', second)}`, 3_000);
+	expect(await ids('.unfolded .people')).toEqual([kept]);
+	// The launches sent here fail on purpose (502); nothing else may reach the console.
+	expect(browser!.tab.errors.filter((error) => !error.includes('502'))).toEqual([]);
+}, 60_000);
