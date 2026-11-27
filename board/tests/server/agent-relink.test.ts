@@ -195,7 +195,7 @@ const refusals: [string, () => void | Promise<void>, string][] = [
 	['at a prompt', () => setHerdr({ agents: [herdrAgent('blocked')] }), '確認畫面'],
 	['status not known', () => setHerdr({ agents: [herdrAgent('unknown')] }), '狀態'],
 	['background subagents running', () => conversation(SESSION, [turnEnd(), turnEnd(2)]), '2 個背景 subagent'],
-	['a dialog on its screen', () => setHerdr({ screens: { [PANE]: ['╭\n  ❯ 1. Yes\n    2. No\n'] } }), '權限模式'],
+	['a dialog on its screen', () => setHerdr({ screens: { [PANE]: ['╭\n  ❯ 1. Yes\n    2. No\n'] } }), '對話框'],
 	['text in its input box', () => setHerdr({ screens: { [PANE]: [screen('auto mode').replace('❯ ', '❯ half a thought')] } }), '輸入框'],
 	['no saved conversation', () => rmSync(join(transcripts(), `${SESSION}.jsonl`)), '對話紀錄'],
 	['no reuse preset', () => fixture.setHcom(hcomPlan({ holdTerminal: false })), 'herdr-reuse'],

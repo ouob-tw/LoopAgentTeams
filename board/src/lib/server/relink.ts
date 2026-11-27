@@ -86,7 +86,7 @@ type KeepMode = (stored: string[]) => string[] | { refuse: string };
 
 /** What brings a Claude session back in bypass permissions. Refuses while background subagents run,
  *  or while its screen cannot be read or has a dialog open, which `/exit` could answer. */
-async function claudeKeep(board: Board, agent: Agent, read: { path: string }, info: PaneProcess): Promise<KeepMode | { refuse: string }> {
+async function claudeBypass(board: Board, agent: Agent, read: { path: string }, info: PaneProcess): Promise<KeepMode | { refuse: string }> {
 	let pending: number;
 	try {
 		const client = info.foreground.find((running) => isClient(running.argv, 'claude'))!;
@@ -96,9 +96,9 @@ async function claudeKeep(board: Board, agent: Agent, read: { path: string }, in
 	}
 	if (pending > 0) return { refuse: `它還有 ${pending} 個背景 subagent 在跑，沒有重新啟動；等它們跑完再按。` };
 	const screen = await readScreen(board.config, agent.herdr.pane, 'detection');
-	if ('reason' in screen) return { refuse: `${screen.reason}，不知道它現在的權限模式，沒有重新啟動。` };
+	if ('reason' in screen) return { refuse: `${screen.reason}，不知道它是不是停在輸入框，沒有重新啟動。` };
 	const shown = readClaudeScreen(screen.text);
-	if (shown.mode === null) return { refuse: `讀不出它現在的權限模式，沒有重新啟動：${shown.reason.replace(/，沒有按鍵$/, '')}。` };
+	if (shown.mode === null) return { refuse: `讀不出它的畫面是不是停在輸入框（可能開著對話框，/exit 會答到它），沒有重新啟動：${shown.reason.replace(/，沒有按鍵$/, '')}。` };
 	return bypassArgs;
 }
 
@@ -160,7 +160,7 @@ async function prepare(board: Board, agent: Agent & { id: string }): Promise<{ r
 	if (!(await hasHoldTerminal(config))) return { refuse: '這台的 hcom 沒有 herdr-reuse 這組開窗設定，重新啟動會離開原本的分頁，沒有重新啟動；設定方式見看板的 README。' };
 	const read = await readTranscript(config, agent.client, agent.id);
 	if (!read.ok) return { refuse: read.missing ? '它還沒有對話紀錄，重新啟動也接不回這段對話，沒有重新啟動。' : `讀不到它的對話紀錄，沒有重新啟動：${read.reason}` };
-	const keep = agent.client === 'claude' ? await claudeKeep(board, agent, read, info) : codexKeep(board, read.page.usage?.permission, info);
+	const keep = agent.client === 'claude' ? await claudeBypass(board, agent, read, info) : codexKeep(board, read.page.usage?.permission, info);
 	if ('refuse' in keep) return keep;
 	// What hcom could repeat: its last stop's arguments, and a listed one's own, which a stop would
 	// record. What would be refused is refused untouched; read again after the stop all the same.
@@ -210,15 +210,20 @@ async function waitForLink(board: Board, sessionId: string, pane: string): Promi
 	}
 }
 
-/** Null once its screen shows bypass permissions within the wait for a resume; otherwise why not. */
+/** Null once its screen shows bypass permissions within the wait for a resume; otherwise why not,
+ *  from its last read. */
 async function whyNotBypass(board: Board, pane: string): Promise<string | null> {
 	const until = Date.now() + board.config.unpauseWaitMs;
 	for (;;) {
 		const screen = await readScreen(board.config, pane, 'detection');
 		const shown = 'reason' in screen ? { mode: null, reason: screen.reason } : readClaudeScreen(screen.text);
 		if (shown.mode === 'bypassPermissions') return null;
-		if (shown.mode !== null) return `畫面上是 ${CLAUDE_MODE_LABEL[shown.mode]}，不是 bypass permissions（可能是設定檔關掉了 bypass permissions）`;
-		if (Date.now() >= until) return `讀不出它畫面上的權限模式：${shown.reason.replace(/，沒有按鍵$/, '')}`;
+		// The old process's footer may still be in view: another mode is the answer only at the end.
+		if (Date.now() >= until) {
+			return shown.mode !== null
+				? `畫面上是 ${CLAUDE_MODE_LABEL[shown.mode]}，不是 bypass permissions（可能是設定檔關掉了 bypass permissions）`
+				: `讀不出它畫面上的權限模式：${shown.reason.replace(/，沒有按鍵$/, '')}`;
+		}
 		await sleep(POLL_MS);
 	}
 }
