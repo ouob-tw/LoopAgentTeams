@@ -56,7 +56,7 @@ async function runInject(config: BoardConfig, hcomName: string, args: string[]):
 	// The command prints its reason on standard output; standard error may only hold notices.
 	const run = await runCommand(config.injectCommand, [hcomName, ...args], { timeoutMs: timeout, failureFrom: 'stdout-first' });
 	if (run.failure === null) return null;
-	if (run.timedOut) return `輸入指令逾時（${timeout / 1000} 秒），文字可能已經打進輸入框但沒有送出。`;
+	if (run.timedOut) return `輸入到 @${hcomName} 的分頁逾時（${timeout / 1000} 秒），文字可能已經打進輸入框但沒有送出。`;
 	return `輸入到 @${hcomName} 的分頁失敗：${run.failure}`;
 }
 

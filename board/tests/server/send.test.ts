@@ -173,6 +173,21 @@ test("while hcom's list cannot be read, the bound name is typed into", async () 
 	expect(body.entry?.hcomName).toBe('luna');
 });
 
+test('a session hcom\'s list has no entry for is typed into by the bound name', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	await fixture.refresh(cookie);
+	// Not a watched change: the board's last read still has the controller running, so it is not
+	// refused as closed, while the list read for this send has only another session.
+	fixture.setHcom({ agents: [{ name: 'vezi', session_id: 'another-session' }] });
+
+	const { status, body } = await send(luna.session_id, '你好');
+
+	expect(status).toBe(200);
+	expect(calls()).toEqual([['luna', '你好', '--enter']]);
+	expect(body.entry?.hcomName).toBe('luna');
+});
+
 test('an input command that hangs is cut off and reported as a failure', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.list([luna]);
@@ -183,7 +198,7 @@ test('an input command that hangs is cut off and reported as a failure', async (
 
 	expect(Date.now() - started).toBeLessThan(5_000);
 	expect(status).toBe(502);
-	expect(body.reason).toContain('逾時');
+	expect(body.reason).toContain('輸入到 @luna 的分頁逾時');
 	expect(calls()).toHaveLength(1);
 });
 
