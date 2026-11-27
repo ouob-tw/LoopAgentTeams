@@ -8,6 +8,7 @@ import type { Board } from './board.ts';
 import type { BoardConfig } from './config.ts';
 import { runCommand } from './external.ts';
 import { listControllers } from './helper.ts';
+import { findAgent, listAgents } from './hcom.ts';
 import { agentCommand } from './herdr.ts';
 import { isClosed, isPaused, runsWithoutHooks } from './model.ts';
 import { appendSent } from './sent-log.ts';
@@ -131,6 +132,10 @@ async function attempt(board: Board, controllerId: string, rawText: string) {
 		reason = act.ok ? null : `${listed?.noHooks ? '它沒有經 hcom 啟動' : 'HCOM 通訊暫停中'}，改由 Herdr 輸入也沒有送出：${act.reason}`;
 		status = reason ? 502 : 200;
 	} else {
+		// A session that rejoined hcom is listed under a new name; the bound one only stands in
+		// when the list has no entry for the session, or cannot be read.
+		const list = await listAgents(board.config);
+		hcomName = (list.ok && findAgent(list.agents, controllerId, [])?.name) || hcomName;
 		reason = await inject(board.config, hcomName, text);
 		status = reason ? 502 : 200;
 	}
