@@ -16,6 +16,8 @@ worktree and task branch are gone.
 prints the `hcom send` command; its `--name` values are the base names HCOM records for tagged
 senders. For a card still waiting for `card bind` the brief names the agent as
 "$HCOM_INSTANCE_NAME", opens with the bind step and prints the `--hcom-prompt` launch argument.
+For a card whose ledger row is stage `qa`, the four sections must also hold the `###` blocks
+named in QA_BLOCKS, each with text under it (無 counts); `brief` adds the finish-every-item rule.
 `brief` refuses a card with a newer `-2`, `-3`… continuation card or a closed ledger row and names
 the card to use; `card` prints `card: <path>` as its last line.
 It never launches agents and never sends anything. Hand-written cards and briefs stay allowed.
@@ -141,6 +143,20 @@ TINY_REVIEW_RESULT = '''- Record each review round's result before you close its
 - When a finding is settled: `{cmd} problem-update <id> --ledger {ledger_arg} --by {agent} --fixed <commit>` (or `--known-limit`, `--wontfix '<why>'`, `--new-ticket <#N>`).
 '''
 QA_FINDINGS = '''- Record each problem you find when you find it: `{cmd} problem --row {row} --ledger {ledger_arg} --by {agent} --stage qa --level <甲|乙|丙> --text '<one line>'` (add `--caught <gate fingerprint>` when an automatic test caught it). `done` is refused until you recorded one in this round; when you found none, add `--no-findings` to `done`.
+'''
+# `###` blocks a first-round QA brief input must carry, with the example lines a refusal shows.
+QA_BLOCKS = {
+    '測試環境做法': ('啟動：<怎麼啟動待測版本，例如 HTTPS 代理與虛擬認證器>',
+                     '假物件與資料：<可沿用的假資料、測試輔助程式，要先準備哪些資料>'),
+    '真實資料與身分授權': ('可唯讀的真實紀錄：<哪些，或 無>',
+                           '用自己的 Agent 身分：<可否>；呼叫真實模型：<可否與次數>',
+                           '（完全不需要時整段只寫 無）'),
+}
+QA_FINISH = '''
+## Finish every item (逐項做完)
+
+- Give every acceptance item its own PASS, FAIL or UNPROVEN verdict with evidence.
+- For an item you did not run, name the specific blocker; never close the remaining items together as "not executed".
 '''
 SPEC_COVERAGE = '''
 ## Spec coverage
@@ -436,20 +452,27 @@ def read_card(path):
     return fields
 
 
-def split_sections(text):
-    """Return ({title: body}, problems) for the four required `##` sections."""
-    bodies, problems, current, seen_fence = {}, [], None, None
-    for line in text.splitlines():
-        stripped = line.strip()
-        fence = re.match(r'(`{3,}|~{3,})(.*)', stripped)
+def mark_fences(lines):
+    """Yield (line, fenced): whether the line sits in, or opens, a fenced code block."""
+    opened = None
+    for line in lines:
+        fence = re.match(r'(`{3,}|~{3,})(.*)', line.strip())
         if fence:
             marker = fence.group(1)
-            if seen_fence is None:
-                seen_fence = marker
-            elif (marker[0] == seen_fence[0] and len(marker) >= len(seen_fence)
+            if opened is None:
+                opened = marker
+            elif (marker[0] == opened[0] and len(marker) >= len(opened)
                   and not fence.group(2).strip()):
-                seen_fence = None
-        match = None if seen_fence else re.fullmatch(r'##[ \t]+(.+?)[ \t]*#*[ \t]*', line)
+                opened = None
+        yield line, opened is not None
+
+
+def split_sections(text):
+    """Return ({title: body}, problems) for the four required `##` sections."""
+    bodies, problems, current = {}, [], None
+    for line, fenced in mark_fences(text.splitlines()):
+        stripped = line.strip()
+        match = None if fenced else re.fullmatch(r'##[ \t]+(.+?)[ \t]*#*[ \t]*', line)
         title = match.group(1).strip() if match else None
         if title in SECTIONS:
             if title in bodies:
@@ -470,6 +493,29 @@ def split_sections(text):
         elif not '\n'.join(bodies[title]).strip():
             problems.append(f'empty section: ## {title}')
     return {title: '\n'.join(lines).strip('\n') for title, lines in bodies.items()}, problems
+
+
+def check_qa_blocks(source, bodies):
+    """Refuse a QA brief input that lacks a QA_BLOCKS block or leaves one empty. Only presence
+    is checked, never how good the text is."""
+    filled = set()
+    for body in bodies.values():
+        block = None
+        for line, fenced in mark_fences(body.splitlines()):
+            heading = None if fenced else re.fullmatch(
+                r'(#{1,3})[ \t]+(.+?)[ \t]*#*[ \t]*', line)
+            if heading:
+                block = heading.group(2) if heading.group(1) == '###' else None
+            elif block and line.strip():
+                filled.add(block)
+    missing = [title for title in QA_BLOCKS if title not in filled]
+    if missing:
+        examples = '\n\n'.join('\n'.join([f'### {title}', *QA_BLOCKS[title]])
+                               for title in missing)
+        names = ', '.join(f'### {title}' for title in missing)
+        raise Failure(f'{source} is a QA brief input that lacks {names} (a `###` heading with '
+                      f'text under it, inside any of the four sections). Add:\n\n{examples}\n\n'
+                      'The finish-every-item rule needs no input; the brief adds it.')
 
 
 def load_script(name):
@@ -611,6 +657,9 @@ def make_brief(args):
     if problems:
         raise Failure(f'{source} is not a valid brief input: ' + '; '.join(dict.fromkeys(problems)))
     card_path = Path(args.card).resolve()
+    stage = row_stage(card['ledger row'][1], card['ledger row'][0]) if card['ledger row'] else None
+    if stage == 'qa':
+        check_qa_blocks(source, bodies)
     workspace = args.workspace
     if workspace is None:
         if card_path.parent.name == 'done':
@@ -681,7 +730,6 @@ def make_brief(args):
                         cmd='uv run --no-project python ' + shlex.quote(
                             str(args.lat_dir.resolve() / 'scripts' / 'lat-ledger.py')))
         fixed += LEDGER_FIXED.format(**commands)
-        stage = row_stage(ledger, row)
         if stage == 'impl':
             tiny = row_tiny(ledger, row)
             if tiny is None:
@@ -695,7 +743,7 @@ def make_brief(args):
                                                 / 'review-size.py')),
                     base=base, integration=shlex.quote(tiny), **commands)
         if stage == 'qa':
-            fixed += QA_FINDINGS.format(**commands)
+            fixed += QA_FINDINGS.format(**commands) + QA_FINISH
         if stage == 'qa-draft':
             fixed += SPEC_COVERAGE.format(orchestrator=card['orchestrator'])
     else:
@@ -722,7 +770,8 @@ def row_stage(ledger, row):
         return next(item['stage'] for item in items if str(item['id']) == str(row))
     except (OSError, UnicodeError, ValueError, KeyError, TypeError, StopIteration) as error:
         print(f'lat-dispatch: warning: cannot read the stage of ledger row {row} in {ledger} '
-              f'({error!r}); the brief carries no spec coverage section', file=sys.stderr)
+              f'({error!r}); the brief carries no spec coverage section and is not checked '
+              'as a QA brief', file=sys.stderr)
         return None
 
 
