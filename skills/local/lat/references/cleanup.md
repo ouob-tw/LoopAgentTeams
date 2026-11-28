@@ -96,3 +96,10 @@ when evaluating service keeps. A paused full HCOM name counts as a present orche
 including when another orchestrator's watcher triggers periodic reaping. Its unexpired
 keeps remain valid. Explicit release and expiration still take precedence; removing
 the pause record restores the ordinary absent-orchestrator rule on the next reap.
+
+An ended agent whose name has an event-wait record (`reason: "event-task"`) also counts as
+present as an owner: processes it left behind, such as a log collector started before
+`away`, are not closed as leftovers, and no `keep` is needed. Once the record is removed,
+the next reap applies the ordinary ended-owner rule. That includes a
+resumed controller's processes from before `away`, which belong to the ended launch: `keep`
+any that must keep running.

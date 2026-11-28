@@ -661,6 +661,41 @@ class UnknownOwnerTests(ReapTestCase):
         self.assertEqual({record['result'] for record in self.log()}, {'aborted'})
 
 
+class EventWaitTests(ReapTestCase):
+    def pause(self, name, **fields):
+        directory = self.root / 'paused'
+        directory.mkdir(exist_ok=True)
+        path = directory / f'session-{name}.json'
+        path.write_text(json.dumps(dict(
+            session_id=path.stem, hcom_name=name, client='claude', pane=None,
+            paused_at='2026-11-28T17:30:00Z', **fields)))
+        return path
+
+    def test_owner_in_an_event_wait_keeps_its_processes_until_the_record_is_removed(self):
+        # The controller closed itself for its event task; its log collector keeps running.
+        collector = self.dead_agent('ctl')
+        other = self.dead_agent('other')
+        record = self.pause('test-ctl', reason='event-task', task_id='task-1')
+        self.reap('--trigger', 'periodic')
+        self.assertTrue(self.gone(other))
+        self.reap('--agent', 'test-ctl', '--trigger', 'deactivate')
+        self.assertTrue(self.alive(collector))
+        self.assertEqual(self.closed_pids(), [other])
+        scan = self.run_reaper('scan').stdout
+        self.assertIn(f'PID {collector}', scan.split('Event wait:')[1].split('Unknown owner:')[0])
+        record.unlink()
+        self.reap('--trigger', 'periodic')
+        self.assertTrue(self.gone(collector))
+        self.assertEqual(self.closed_pids(), [other, collector])
+        self.assertEqual(self.log()[-1]['why'], 'owner agent ended')
+
+    def test_an_ordinary_pause_record_does_not_keep_an_ended_owners_processes(self):
+        service = self.dead_agent('plain')
+        self.pause('test-plain')
+        self.reap()
+        self.assertTrue(self.gone(service))
+
+
 class SignalTimeIdentityTests(ReapTestCase):
     # Exception to the CLI-only entry point (orchestrator decision): an unprivileged test
     # cannot force a real PID reuse between scan and signal, so close() is called directly.

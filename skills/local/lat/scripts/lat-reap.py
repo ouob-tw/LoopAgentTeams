@@ -5,6 +5,8 @@ A process belongs to the agent whose HCOM_PROCESS_ID it inherited. It is a lefto
 that agent has ended: HCOM no longer lists it, no client process of it is running, an
 earlier reap saw HCOM list that id under the inherited name, and HCOM recorded the agent it
 inherited (name and launch batch) as stopped. Other owners are unknown and never closed.
+An ended owner with an event-wait pause record (事件等待) still counts as present until
+that record is removed.
 Keeps, the close log and the lock live in one user-level folder shared by every project.
 See docs/adr/0008-lat-service-reaper.md.
 """
@@ -357,6 +359,8 @@ class World(NamedTuple):
     protected: dict
     unreadable: dict
     ended: set
+    # Processes of ended owners that are in an event wait; not closed as leftovers.
+    waiting: frozenset = frozenset()
 
 
 def read_seen(directory):
@@ -388,7 +392,8 @@ def observe(seen):
 
     A process counts as ended only when its id is not the nil UUID that test harnesses use,
     an earlier reap saw HCOM list that id under the name it inherited, and HCOM recorded that
-    name and launch batch as stopped.
+    name and launch batch as stopped. One whose name has an event-wait pause record is
+    waiting instead: the board closed that controller until its event.
     """
     agents = hcom_agents()
     processes, unreadable = read_processes()
@@ -407,6 +412,11 @@ def observe(seen):
              and seen.get(process.env[MARKER]) == launch_owner(process)[0]]
     stopped = stopped_owners({launch_owner(process) for process in known})
     ended = {process.pid for process in known if launch_owner(process) in stopped}
+    # Read after the stop records: the board writes the pause before it stops the controller.
+    event_waits = [name for name, record in read_hcom_pauses().items()
+                   if record.get('reason') == 'event-task']
+    waiting = frozenset(pid for pid in ended
+                        if any(name_matches(processes[pid], name) for name in event_waits))
     protected = {}
     ports = listening_pids(processes, protected_ports())
     for process in processes.values():
@@ -428,7 +438,7 @@ def observe(seen):
             reason = 'LAT process'
         if reason:
             protected[process.pid] = reason
-    return World(processes, agents, alive, protected, unreadable, ended)
+    return World(processes, agents, alive, protected, unreadable, ended - waiting, waiting)
 
 
 def parse_time(value):
@@ -526,7 +536,7 @@ def unknown_owner(world, targets, kept, only=None):
             if process.env.get(MARKER) and process.env[MARKER] not in world.alive
             and (only is None or process.env[MARKER] in only) and process.state != 'Z'
             and process.pid not in targets and process.pid not in kept
-            and process.pid not in world.protected}
+            and process.pid not in world.protected and process.pid not in world.waiting}
 
 
 def describe(process, world):
@@ -828,8 +838,8 @@ def scan(args):
         return 1
     targets, kept, _live, _released = plan(world, keeps, moment)
     unknown = unknown_owner(world, targets, kept)
-    rows = {'Agent still running': [], 'Leftover': [], 'Kept': [], 'Unknown owner': [],
-            'Never handled': []}
+    rows = {'Agent still running': [], 'Leftover': [], 'Kept': [], 'Event wait': [],
+            'Unknown owner': [], 'Never handled': []}
     for process in sorted(world.processes.values(), key=lambda item: item.pid):
         process_id = process.env.get(MARKER)
         if not process_id:
@@ -842,6 +852,8 @@ def scan(args):
             keep_record = kept[process.pid]
             rows['Kept'].append(f'{line} (until {keep_record["until"]} by {keep_record["by"]}: '
                                 f'{keep_record["reason"]})')
+        elif process.pid in world.waiting and process.pid not in world.protected:
+            rows['Event wait'].append(f'{line} (owner waits for its event task)')
         elif process.pid in unknown:
             rows['Unknown owner'].append(f'{line} (owner not recorded as stopped; never closed)')
         elif process.pid in world.protected:
