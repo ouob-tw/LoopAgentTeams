@@ -37,17 +37,19 @@ function saveShares(stateDir: string, shares: Shares): void {
 	renameSync(temporary, path);
 }
 
-/** The names shared right now: each one's folder is still the one that was shared. */
+/** Whether a share is in force: the demo's folder is still the one that was shared. */
+const inForce = (siteDir: string, name: string, folder: string | undefined) => folder !== undefined && demoFolderId(siteDir, name) === folder;
+
+/** The names shared right now. */
 function sharedNow(stateDir: string, siteDir: string): Set<string> {
-	return new Set([...loadShares(stateDir)].filter(([name, folder]) => demoFolderId(siteDir, name) === folder).map(([name]) => name));
+	return new Set([...loadShares(stateDir)].filter(([name, folder]) => inForce(siteDir, name, folder)).map(([name]) => name));
 }
 
 /** Whether `rest` (as the address has it, after the demo base) is inside a shared demo. */
 export function isSharedDemo(stateDir: string, siteDir: string, rest: string): boolean {
 	const name = demoName(rest);
 	if (name === null) return false;
-	const folder = loadShares(stateDir).get(name);
-	return folder !== undefined && demoFolderId(siteDir, name) === folder;
+	return inForce(siteDir, name, loadShares(stateDir).get(name));
 }
 
 /** Each published demo with whether it is shared: shared ones first, then the newest. */
@@ -61,11 +63,12 @@ export function sharedDemoList(stateDir: string, siteDir: string): { name: strin
  *  (their folder gone or replaced) are dropped at each change. False, with nothing written, when
  *  sharing a demo that is not published. Throws when the file cannot be written. */
 export function setDemoShared(stateDir: string, siteDir: string, name: string, shared: boolean): boolean {
-	const folder = demoFolderId(siteDir, name);
-	if (shared && folder === null) return false;
-	const shares: Shares = new Map([...loadShares(stateDir)].filter(([each, was]) => demoFolderId(siteDir, each) === was));
-	if (shared) shares.set(name, folder!);
-	else shares.delete(name);
+	const shares: Shares = new Map([...loadShares(stateDir)].filter(([each, folder]) => inForce(siteDir, each, folder)));
+	if (shared) {
+		const folder = demoFolderId(siteDir, name);
+		if (folder === null) return false;
+		shares.set(name, folder);
+	} else shares.delete(name);
 	saveShares(stateDir, shares);
 	return true;
 }
