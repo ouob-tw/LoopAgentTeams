@@ -72,3 +72,15 @@ export async function deleteTask(id: string): Promise<Done> {
 	const result = await request(`/api/automation/${encodeURIComponent(id)}`, post('DELETE', {}), () => Promise.resolve(null));
 	return result.ok ? { ok: true, value: null } : failed(result, '沒有刪除成功，請再試一次。');
 }
+
+/** 立即觸發 (#763): an event task waiting for its event hands over now. */
+export async function triggerTask(id: string): Promise<Done> {
+	const result = await request(`/api/automation/${encodeURIComponent(id)}/trigger`, post('POST', {}));
+	return result.ok ? { ok: true, value: null } : failed(result, '沒有觸發，請再試一次。');
+}
+
+/** 重試接手 (#763): the last failed or unknown handoff of an event task tried again. */
+export async function retryHandoff(id: string): Promise<Done> {
+	const result = await request(`/api/automation/${encodeURIComponent(id)}/retry`, post('POST', {}));
+	return result.ok ? { ok: true, value: null } : failed(result, '沒有重試，請再試一次。');
+}

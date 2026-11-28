@@ -131,8 +131,8 @@ for (const width of [1280, 390]) {
 		await visit(width);
 		await tab.until(`document.querySelectorAll('.automation .card').length >= 4`, 'the tasks');
 		expect(await tab.eval(`document.querySelector('[data-middle="automation"]').getAttribute('aria-pressed')`)).toBe('true');
-		// One tab more in the bar, all on one line.
-		expect(await tab.eval(`[...document.querySelectorAll('.middle-tabs button')].map((b) => b.innerText.replace(/\\d+/g, '').trim())`)).toEqual(['待辦', 'Herdr', '額度', '自動化', '資源']);
+		// 週期任務 beside 事件任務 (#765), all on one line.
+		expect(await tab.eval(`[...document.querySelectorAll('.middle-tabs button')].map((b) => b.innerText.replace(/\\d+/g, '').trim())`)).toEqual(['待辦', 'Herdr', '額度', '週期任務', '事件任務', '資源']);
 		expect(await tab.eval(`new Set([...document.querySelectorAll('.middle-tabs button')].map((b) => Math.round(b.getBoundingClientRect().top))).size`)).toBe(1);
 
 		const agent = await card(ids.agent);
@@ -153,7 +153,7 @@ for (const width of [1280, 390]) {
 		expect(await fits()).toBe(true);
 		await frame(width, '1-list');
 		if (width < 761) expect(await tab.eval(`getComputedStyle(document.querySelector('.detail')).display`)).toBe('none');
-		else expect(await text('.detail')).toContain('從自動化選一項看內容。');
+		else expect(await text('.detail')).toContain('從清單選一個任務看內容。');
 	});
 
 	test.skipIf(!CHROME)(`${width}px: a task's page shows its settings and every run's record; the phone's back returns to the list`, async () => {

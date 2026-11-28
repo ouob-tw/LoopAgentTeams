@@ -49,6 +49,27 @@
         "board/tests/unit/event-tasks.test.ts",
         "board/tests/server/event-resume.test.ts"
       ]
+    },
+    {
+      "paths": [
+        "board/src/lib/board/event-tasks.ts",
+        "board/src/lib/board/event-task-view.ts",
+        "board/src/lib/board/automation-actions.ts",
+        "board/src/lib/board/navigation.ts",
+        "board/src/lib/board/navigation.svelte.ts",
+        "board/src/lib/components/EventTask.svelte",
+        "board/src/lib/components/EventTaskList.svelte",
+        "board/src/lib/components/EventMark.svelte",
+        "board/src/lib/components/TaskProposals.svelte",
+        "board/src/routes/+page.svelte",
+        "board/tests/event-task-fixture.ts",
+        "board/tests/browser/event-tasks-page.test.ts"
+      ],
+      "tests": [
+        "board/tests/unit/event-task-view.test.ts",
+        "board/tests/unit/navigation.test.ts",
+        "board/tests/browser/event-tasks-page.test.ts"
+      ]
     }
   ]
 }

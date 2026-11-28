@@ -53,7 +53,7 @@ test.skipIf(!CHROME)(
 		const sizes = await tab.eval<{ font: number; height: number; width: number }[]>(
 			`[...document.querySelectorAll('.middle-tabs button')].map((b) => ({ font: parseFloat(getComputedStyle(b).fontSize), height: b.getBoundingClientRect().height, width: b.getBoundingClientRect().width }))`
 		);
-		expect(sizes.length).toBe(5);
+		expect(sizes.length).toBe(6);
 		for (const size of sizes) {
 			expect(size.font).toBeGreaterThanOrEqual(16);
 			expect(size.height).toBeGreaterThanOrEqual(44);
@@ -74,7 +74,7 @@ test.skipIf(!CHROME)(
 		await visit(1400);
 		expect(await tab.eval(ROW)).toBe(true);
 		expect(await tab.eval(SWITCH)).toBe(null);
-		expect(await tab.eval(`[...document.querySelectorAll('.middle-tabs button')].map((b) => b.dataset.middle)`)).toEqual(['inbox', 'agents', 'quota', 'automation', 'resource']);
+		expect(await tab.eval(`[...document.querySelectorAll('.middle-tabs button')].map((b) => b.dataset.middle)`)).toEqual(['inbox', 'agents', 'quota', 'automation', 'events', 'resource']);
 		await shot(tab, 'tabs-1400-row');
 
 		// Dragged to a width where fewer than three buttons fit: the row is replaced, nothing scrolls sideways.
@@ -107,8 +107,8 @@ test.skipIf(!CHROME)(
 		await tab.pointerClick('.middle-switch');
 		await tab.until(`!!${MENU}`, 'the menu');
 		expect(await tab.eval(`${SWITCH}.getAttribute('aria-expanded')`)).toBe('true');
-		expect(await tab.eval(`[...${MENU}.querySelectorAll('button')].map((b) => b.innerText.replace(/\\s+/g, ' ').trim())`)).toEqual(['✓ 待辦', 'Herdr 0', '額度', '自動化', '資源']);
-		expect(await tab.eval(`[...${MENU}.querySelectorAll('button')].map((b) => b.getAttribute('aria-current'))`)).toEqual(['true', null, null, null, null]);
+		expect(await tab.eval(`[...${MENU}.querySelectorAll('button')].map((b) => b.innerText.replace(/\\s+/g, ' ').trim())`)).toEqual(['✓ 待辦', 'Herdr 0', '額度', '週期任務', '事件任務', '資源']);
+		expect(await tab.eval(`[...${MENU}.querySelectorAll('button')].map((b) => b.getAttribute('aria-current'))`)).toEqual(['true', null, null, null, null, null]);
 		const items = await tab.eval<{ font: number; height: number }[]>(
 			`[...${MENU}.querySelectorAll('button')].map((b) => ({ font: parseFloat(getComputedStyle(b).fontSize), height: b.getBoundingClientRect().height }))`
 		);
@@ -142,7 +142,7 @@ test.skipIf(!CHROME)(
 		expect(await tab.eval(`${SWITCH}.innerText.replace(/\\s+/g, ' ').trim()`)).toBe('額度 ▾');
 		await tab.pointerClick('.middle-switch');
 		await tab.until(`!!${MENU}`, 'the menu on 額度');
-		expect(await tab.eval(`[...${MENU}.querySelectorAll('button')].map((b) => b.getAttribute('aria-current'))`)).toEqual([null, null, 'true', null, null]);
+		expect(await tab.eval(`[...${MENU}.querySelectorAll('button')].map((b) => b.getAttribute('aria-current'))`)).toEqual([null, null, 'true', null, null, null]);
 		await shot(tab, 'tabs-menu-quota-current');
 
 		// Wide again while open: the menu goes with the switch button.
