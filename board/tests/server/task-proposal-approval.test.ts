@@ -456,9 +456,11 @@ test('a damaged saved approval ends 核准失敗 with no task and a push; a task
 	expect(resultOf(board, id)).toEqual({ version: 1, id, status: 'approve-failed', at: expect.any(String), reason: '核准紀錄損壞，請 Agent 重新提案' });
 	expect(await tasksOf(board, cookie)).toHaveLength(0);
 	// The user hears of it: one push, with no task content; a task that just could not be made pushes nothing.
-	const push = await until(() => pushed.find((entry) => entry.path === '/push/phone'), 10_000, 'the push');
-	expect(decrypt(push.body, keys)).toEqual({ title: '任務提案核准失敗', body: '核准紀錄損壞，沒有建立任務；請 Agent 重新提案', alert: `task-proposal-${id}` });
-	expect(pushed.filter((entry) => entry.path === '/push/phone')).toHaveLength(1);
+	// Each new proposal also pushes that one waits (#761); only the failure pushes are counted here.
+	const failurePushes = () => pushed.filter((entry) => entry.path === '/push/phone').map((entry) => decrypt(entry.body, keys) as Record<string, string>).filter((message) => message.title !== '任務提案待核准');
+	const [push] = await until(() => failurePushes().length > 0 && failurePushes(), 10_000, 'the push');
+	expect(push).toEqual({ title: '任務提案核准失敗', body: '核准紀錄損壞，沒有建立任務；請 Agent 重新提案', alert: `task-proposal-${id}` });
+	expect(failurePushes()).toHaveLength(1);
 	expect((await asAgent(board, luna, ['status', id])).stdout.trim()).toBe(`核准失敗：${id}\n原因：核准紀錄損壞，請 Agent 重新提案`);
 
 	// Damaged after its task was made: that task came from the approval as it was, so it stands.
@@ -494,7 +496,7 @@ test('a damaged saved approval ends 核准失敗 with no task and a push; a task
 	expect((await card(board, cookie, retried)).result).toMatchObject({ status: 'approved', taskId: `proposal-${retried}` });
 	expect((await tasksOf(board, cookie)).map((task) => task.id)).toEqual([`proposal-${retried}`]);
 	// Still the one push, from the damaged record alone.
-	expect(pushed.filter((entry) => entry.path === '/push/phone')).toHaveLength(1);
+	expect(failurePushes()).toHaveLength(1);
 });
 
 test('a proposal-made agent task runs from the approved brief, after the original changes and the proposal is cleared; a new brief path makes it a plain task', async () => {

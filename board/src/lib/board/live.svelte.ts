@@ -8,6 +8,7 @@ import { messaging } from './messaging.svelte.ts';
 import { toasts } from './toasts.svelte.ts';
 import { reaches, withEarlier, withNewest, type ArchivePage } from './archive.ts';
 import type { PdSnapshot } from './pd.ts';
+import type { ProposalsSnapshot } from './task-proposals.ts';
 import { EMPTY_AUTOMATION, type AutomationSnapshot } from './automation.ts';
 import { readAutomation } from './automation-actions.ts';
 import { EMPTY_ALERTS, type AlertsSnapshot } from './alerts.ts';
@@ -36,6 +37,8 @@ export class LiveBoard {
 	/** pd's waiting requests as the server last read them, and when this page got them (their
 	 *  times count on from then); null until it sends them. */
 	pd = $state.raw<{ snapshot: PdSnapshot; at: number } | null>(null);
+	/** The 任務提案 waiting for the user as the server last sent them; null until it sends them. */
+	proposals = $state.raw<ProposalsSnapshot | null>(null);
 	/** The 自動化 tab's tasks as the server last sent them. */
 	automation = $state.raw<AutomationSnapshot>(EMPTY_AUTOMATION);
 	/** The automation red cards. */
@@ -103,6 +106,7 @@ export class LiveBoard {
 			onTabMoved: () => this.tabMoves++,
 			onQuota: (quota) => (this.quota = quota),
 			onPd: (snapshot) => (this.pd = { snapshot, at: Date.now() }),
+			onProposals: (proposals) => (this.proposals = proposals),
 			onUsageStyle: (style) => (appearance.usageStyle = style),
 			onAlerts: (alerts) => {
 				if (alerts.revision > this.alerts.revision) this.alerts = alerts;

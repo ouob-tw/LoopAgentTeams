@@ -6,6 +6,7 @@ import type { ArchivePage } from './archive.ts';
 import type { AutomationSnapshot } from './automation.ts';
 import type { AlertsSnapshot } from './alerts.ts';
 import type { PdSnapshot } from './pd.ts';
+import type { ProposalsSnapshot } from './task-proposals.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import type { TranslateMode } from './translate-mode.ts';
 import type { UsageStyle } from './usage.ts';
@@ -26,6 +27,8 @@ export interface ConnectionOptions {
 	onQuota?(quota: QuotaSnapshot): void;
 	/** pd's waiting requests as the server last read them; not part of the snapshot. */
 	onPd?(pd: PdSnapshot): void;
+	/** The 任務提案 waiting, sent on connecting and whenever the list changes. */
+	onProposals?(proposals: ProposalsSnapshot): void;
 	/** How the usage line reads, the same on every device; sent on connecting and at every change. */
 	onUsageStyle?(style: UsageStyle): void;
 	/** The 自動化 tab's tasks, sent on connecting and at every change; only a newer revision is passed on. */
@@ -131,6 +134,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		else if (event === 'agent-action') options.onAgentAction?.(JSON.parse(data).agentId);
 		else if (event === 'quota') options.onQuota?.(JSON.parse(data));
 		else if (event === 'pd') options.onPd?.(JSON.parse(data));
+		else if (event === 'proposals') options.onProposals?.(JSON.parse(data));
 		else if (event === 'usage-style') hearStyle(JSON.parse(data));
 		else if (event === 'automation') hearAutomation(JSON.parse(data));
 		else if (event === 'alerts') hearAlerts(JSON.parse(data));

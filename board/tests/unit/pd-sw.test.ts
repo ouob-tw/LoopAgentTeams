@@ -1,6 +1,7 @@
 // The board's service worker (static/pd-sw.js) run against a fake worker scope: a click on a pd
 // notification closes it and brings the board tab to the front with a `pd-open` message; with no
-// board tab it opens one at /. Once active it claims the open tabs.
+// board tab it opens one at /; a 任務提案's push does the same with `proposals-open`. Once active it
+// claims the open tabs.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from 'bun:test';
@@ -22,11 +23,11 @@ const tab = (url: string): Tab => ({
 });
 
 /** Load the worker with `tabs` open and click a notification; what it did. */
-async function click(tabs: Tab[]) {
+async function click(tabs: Tab[], data?: { alert: string }) {
 	const { listeners, opened, asked } = load(tabs);
 	let closed = false;
 	let work: Promise<unknown> = Promise.resolve();
-	listeners.get('notificationclick')!({ notification: { close: () => (closed = true) }, waitUntil: (promise: Promise<unknown>) => (work = promise) });
+	listeners.get('notificationclick')!({ notification: { close: () => (closed = true), data }, waitUntil: (promise: Promise<unknown>) => (work = promise) });
 	await work;
 	return { closed, opened, asked };
 }
@@ -65,6 +66,13 @@ test('with no board tab a click opens one', async () => {
 	const result = await click([tab('https://lat.example/login')]);
 	expect(result.closed).toBe(true);
 	expect(result.opened).toEqual(['/']);
+});
+
+test("a 任務提案's push brings the board tab to the front with the proposal window, or opens the board", async () => {
+	const board = tab('https://lat.example/');
+	expect((await click([board], { alert: 'task-proposal-0123456789ab' })).opened).toEqual([]);
+	expect(board.messages).toEqual([{ type: 'proposals-open' }]);
+	expect((await click([], { alert: 'task-proposal-0123456789ab' })).opened).toEqual(['/']);
 });
 
 test('once active it takes over the open tabs, so the tab that registered it gets the click', async () => {

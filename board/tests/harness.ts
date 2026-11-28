@@ -10,6 +10,7 @@ import type { ArchivePage } from '../src/lib/board/archive.ts';
 import type { AutomationSnapshot } from '../src/lib/board/automation.ts';
 import { connectBoard, type LinkState } from '../src/lib/board/client.ts';
 import type { PdSnapshot } from '../src/lib/board/pd.ts';
+import type { ProposalsSnapshot } from '../src/lib/board/task-proposals.ts';
 import type { QuotaSnapshot } from '../src/lib/board/quota.ts';
 import type { TranslateMode } from '../src/lib/board/translate-mode.ts';
 import type { UsageStyle } from '../src/lib/board/usage.ts';
@@ -415,6 +416,8 @@ export interface Watch {
 	quotas: QuotaSnapshot[];
 	/** The pd readings the server sent, in order. */
 	pds: PdSnapshot[];
+	/** The 任務提案 lists the server sent, in order. */
+	proposals: ProposalsSnapshot[];
 	/** The 自動化 snapshots the server sent, in order. */
 	automations: AutomationSnapshot[];
 	/** The usage line styles the server sent, in order. */
@@ -679,6 +682,7 @@ export async function startFixture(
 				agentActions: [],
 				quotas: [],
 				pds: [],
+				proposals: [],
 				usageStyles: [],
 				automations: [],
 				translateModes: [],
@@ -694,6 +698,7 @@ export async function startFixture(
 				onAgentAction: (agentId) => watch.agentActions.push(agentId),
 				onQuota: (quota) => watch.quotas.push(quota),
 				onPd: (pd) => watch.pds.push(pd),
+				onProposals: (proposals) => watch.proposals.push(proposals),
 				onUsageStyle: (style) => watch.usageStyles.push(style),
 				onAutomation: (automation) => watch.automations.push(automation),
 				onTranslateMode: (mode) => watch.translateModes.push(mode),

@@ -46,6 +46,7 @@ import { createAutomation, eventNoticeText, type Automation, type AutomationEven
 import { closeAgent } from './agent-control.ts';
 import type { EventAway } from '../board/event-tasks.ts';
 import { createTaskProposals, type TaskProposals } from './task-proposals.ts';
+import { proposalPush, type ProposalsSnapshot } from '../board/task-proposals.ts';
 import { boardAgentHost } from './automation-host.ts';
 import { createAlerts, type Alerts } from './alerts.ts';
 import { createPush, type Push } from './push.ts';
@@ -110,6 +111,8 @@ export interface Board {
 	readonly automation: Automation;
 	/** 任務提案: agents' proposals for new automation tasks, brought in by the acceptor on the local socket. */
 	readonly taskProposals: TaskProposals;
+	/** The 任務提案 waiting and the board's address; every change goes to the open pages as a `proposals` event. */
+	proposals(): ProposalsSnapshot;
 	/** The automation red cards; every change goes to the open pages as an `alerts` event. */
 	readonly alerts: Alerts;
 	/** The devices' Web Push subscriptions and the board's VAPID key. */
@@ -406,8 +409,31 @@ function createBoard(): Board {
 			push
 				.send({ title: '任務提案核准失敗', body: '核准紀錄損壞，沒有建立任務；請 Agent 重新提案', alert: `task-proposal-${id}` })
 				.catch((error) => log('ERROR', 'board.push', 'push_send_failed', { proposal_id: id, ...exceptionFields(error) }));
-		}
+		},
+		changed: () => announceProposals()
 	});
+
+	/** The waiting proposals as the pages were last told, and their IDs: one not among them is new. */
+	let proposalsSent = '';
+	let proposalsKnown: Set<string> | null = null;
+	const proposalsNow = (): ProposalsSnapshot => ({ proposals: taskProposals.pending(), origin: config.passkeySite?.origin ?? null });
+	/** Tell the open pages when the waiting list changed, and push each new proposal to every
+	 *  subscribed device with a set sentence and its proposer only. The first reading only learns
+	 *  what waits. */
+	function announceProposals() {
+		const now = proposalsNow();
+		const fresh = proposalsKnown ? now.proposals.filter((proposal) => !proposalsKnown!.has(proposal.id)) : [];
+		proposalsKnown = new Set(now.proposals.map((proposal) => proposal.id));
+		for (const proposal of fresh)
+			push.send(proposalPush(proposal)).catch((error) => log('ERROR', 'board.push', 'push_send_failed', { proposal_id: proposal.id, ...exceptionFields(error) }));
+		const text = JSON.stringify(now);
+		if (text === proposalsSent) return;
+		proposalsSent = text;
+		// A login that ran out since the last heartbeat must not hear of a proposal: its page goes first.
+		dropRevoked();
+		for (const stream of streams) stream.send('proposals', text);
+	}
+	announceProposals();
 
 	/** Close a controller that went away for its event task, as the board's 關閉 Agent does; its
 	 *  事件等待 record stays. One that cannot be closed is pushed to the user, the record kept: the
@@ -956,6 +982,7 @@ function createBoard(): Board {
 		pd: () => pdPoller.current(),
 		automation,
 		taskProposals,
+		proposals: proposalsNow,
 		alerts,
 		push,
 		refreshPd: () => pdPoller.refresh(),

@@ -4,6 +4,8 @@
 // with no board tab open it opens one, which opens the window itself for a waiting request.
 // Automation red cards: the board sends a Web Push (the task's name and one sentence) even when no
 // board tab is open; a click opens that card, in a board tab already open or in a new one.
+// 任務提案: the board pushes each new one (a set sentence and its proposer); a click brings a board tab
+// to the front with the proposal window open, or opens one.
 self.addEventListener('install', () => self.skipWaiting());
 // Taken over at once, so a click reaches the tab that registered it before it ever reloads.
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
@@ -24,13 +26,15 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
 	event.notification.close();
 	const given = event.notification.data?.alert;
-	const alert = typeof given === 'string' && given ? given : null;
+	// A 任務提案's push opens the board, where its window shows what waits.
+	const proposal = typeof given === 'string' && given.startsWith('task-proposal-');
+	const alert = typeof given === 'string' && given && !proposal ? given : null;
 	const target = alert ? `/?alert=${encodeURIComponent(alert)}` : '/';
 	event.waitUntil(
 		self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((tabs) => {
 			const board = tabs.find((tab) => new URL(tab.url).pathname === '/');
 			if (!board) return self.clients.openWindow(target);
-			board.postMessage(alert ? { type: 'alert-open', alert } : { type: 'pd-open' });
+			board.postMessage(alert ? { type: 'alert-open', alert } : { type: proposal ? 'proposals-open' : 'pd-open' });
 			return board.focus();
 		})
 	);
