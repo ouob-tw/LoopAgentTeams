@@ -1322,7 +1322,25 @@ def write_wait(path, value, *, expected):
 
 
 def run_command(command, failure=None):
-    return run_cli(command, timeout=COMMAND_TIMEOUT_SECONDS, failure=failure)
+    """Run a command; an HCOM read or terminal input whose caller left HCOM runs without it.
+
+    Real HCOM refuses `--name` for an agent that is gone, such as an orchestrator that closed
+    itself to wait for an event task (#771). It refuses before doing anything, so running the
+    command again cannot type twice. A send is not repeated: its notice stays undelivered and
+    is retried until the orchestrator is back.
+    """
+    try:
+        return run_cli(command, timeout=COMMAND_TIMEOUT_SECONDS, failure=failure)
+    except ValueError as error:
+        if command[0] != 'hcom' or command[1] == 'send' or '--name' not in command:
+            raise
+        at = command.index('--name')
+        caller = command[at + 1]
+        if not any(refusal in str(error) for refusal in (
+                f"Invalid instance name '{caller}'", f"Instance '{caller}' not found")):
+            raise
+    return run_cli([*command[:at], *command[at + 2:]],
+                   timeout=COMMAND_TIMEOUT_SECONDS, failure=failure)
 
 
 def run_json(command):

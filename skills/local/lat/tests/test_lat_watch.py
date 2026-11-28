@@ -7786,6 +7786,17 @@ class KeepaliveCycleTests(PinnedEnvironment):
         hcom = binary / 'hcom'
         hcom.write_text(f'''#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_HCOM_LOG"
+# Like real HCOM: a --name that left the list fails before the command does anything.
+if [ -f "$FAKE_HCOM_LOG.absent" ]; then
+  absent=$(cat "$FAKE_HCOM_LOG.absent")
+  case " $* " in *" --name $absent "*)
+    case "$absent" in
+    *-*) echo "Error: Invalid instance name '$absent'. Use base name only (lowercase letters, numbers, underscore)." >&2;;
+    *) echo "Error: Instance '$absent' not found. Run 'hcom start --as $absent' to reclaim your identity." >&2;;
+    esac
+    exit 1;;
+  esac
+fi
 case "$1" in
 list) if [ -f "$FAKE_HCOM_LOG.agents" ]; then cat "$FAKE_HCOM_LOG.agents";
       else printf '%s\\n' '{agents}'; fi;;
@@ -7828,6 +7839,43 @@ esac
         self.assertNotIn('missing_since', self.state()['worker'])
         self.assertFalse(any(line.startswith('term inject worker')
                              for line in self.hcom_log.read_text().splitlines()))
+
+    def test_closed_orchestrator_name_rejected_by_hcom_does_not_fail_the_cycle(self):
+        # Real HCOM refuses --name for an agent that is gone (#771).
+        for orchestrator in ('lat-ctl-worker', 'worker'):
+            with self.subTest(orchestrator=orchestrator):
+                (self.tasks / 'open.md').write_text(
+                    f'- agent：helper (Claude)\n- orchestrator：{orchestrator}\n'
+                    '- status：in progress\n- live actions：無\n- preflight：無\n'
+                    '- 視覺驗收：無\n- next step：\n')
+                self.pause(orchestrator, reason='event-task', task_id='proposal-0123456789ab')
+                Path(f'{self.hcom_log}.agents').write_text(json.dumps(self.agents[:1]))
+                Path(f'{self.hcom_log}.absent').write_text(orchestrator)
+                self.hcom_log.write_text('')
+                for now in (self.start, self.start + 600, self.start + 7200):
+                    self.assertIsNone(self.watch.run_cycle(
+                        self.work, self.tasks, self.decisions, orchestrator, now=now))
+                calls = self.hcom_log.read_text().splitlines()
+                self.assertTrue(any(line.startswith('term inject helper ') for line in calls))
+                self.assertFalse(any(line.startswith(f'term inject {orchestrator} ')
+                                     for line in calls))
+                state = self.watch.read_object(
+                    self.watch.state_path(self.work, orchestrator), {})
+                self.assertNotIn('missing_since', state[orchestrator])
+                self.assertNotIn('missing_cycles', state[orchestrator])
+                log = self.watch.state_path(self.work, orchestrator).with_name('watch.jsonl')
+                decisions = [json.loads(line).get('decision')
+                             for line in log.read_text().splitlines()]
+                for unwanted in ('cycle-failed', 'observation-failed', 'agent-disappeared'):
+                    self.assertNotIn(unwanted, decisions)
+
+    def test_notice_to_a_closed_orchestrator_is_not_resent_without_its_name(self):
+        self.pause('worker', reason='event-task', task_id='proposal-0123456789ab')
+        Path(f'{self.hcom_log}.absent').write_text('worker')
+        with self.assertRaisesRegex(ValueError, 'not found'):
+            self.watch.send_notification(
+                self.watch.Action('notify-orchestrator', 'helper', 'notice'), 'worker', 'request')
+        self.assertEqual(len(self.hcom_log.read_text().splitlines()), 1)
 
     def test_paused_missing_agents_do_not_notify_or_stop_and_resume_next_cycle(self):
         paths = [self.pause(agent) for agent in ('worker', 'helper')]
