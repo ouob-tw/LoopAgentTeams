@@ -167,6 +167,7 @@ test.skipIf(!CHROME)('a value from the global file opens the dialog at its actio
 	expect(await tab.eval(`!!${row('push')}.querySelector('.to-global')`)).toBe(false);
 	await tab.eval(`${row('deploy-test')}.querySelector('.to-global').click()`);
 	await tab.until(`!!${DIALOG}?.querySelector('[data-anchor="deploy-test"].highlight')`, 'the marked action');
+	expect(await tab.eval(`document.querySelector('dialog[open] [role="tab"][aria-selected="true"]').textContent.trim()`)).toBe('自動化');
 	const inView = await tab.eval(`(() => { const r = ${DIALOG}.querySelector('[data-anchor="deploy-test"]').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()`);
 	expect(inView).toBe(true);
 	await tab.until(`!${DIALOG}.querySelector('.highlight')`, 'the mark gone');

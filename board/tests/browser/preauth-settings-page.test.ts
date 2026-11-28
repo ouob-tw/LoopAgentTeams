@@ -61,6 +61,7 @@ async function browse({ voice = false } = {}): Promise<Tab> {
 		`document.querySelector('dialog[aria-labelledby="settings-title"]')?.open || void [...document.querySelectorAll('[aria-label="設定"]')].find((b) => b.offsetParent !== null)?.click()`,
 		'the settings dialog'
 	);
+	await tab.pointerClick('#settings-tab-automation');
 	return tab;
 }
 const loaded = (tab: Tab) => tab.until(`!!${group('推送')}`, 'the loaded form');

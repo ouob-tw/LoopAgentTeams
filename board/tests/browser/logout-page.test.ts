@@ -1,4 +1,4 @@
-// 登出 in the settings dialog's header, left of 關閉, in a real browser (headless Chrome, the built board), wide and at a
+// 登出 in the settings dialog's 帳號與分享, in a real browser (headless Chrome, the built board), wide and at a
 // phone's width: the button looks like the dialog's other buttons and fits; a logout that gets no
 // answer says so and leaves the device logged in; one that goes through lands on the login screen,
 // where going back or reloading stays, and the host no longer lists the device. With LAT_BOARD_SHOTS
@@ -15,8 +15,8 @@ const SIZES = [
 	{ width: 390, height: 844 }
 ];
 const BUTTON = `document.querySelector('dialog[open] button.logout')`;
-/** The dialog's 關閉 button, a plain one to compare with, and the one 登出 must sit directly left of. */
-const OTHER = `document.querySelector('dialog[open] header .actions button:last-child')`;
+/** The dialog's 關閉 button, a plain one to compare with. */
+const OTHER = `document.querySelector('dialog[open] header button.close')`;
 
 let fixture: Fixture;
 let config: string | undefined;
@@ -54,9 +54,7 @@ const lookProblems = `(() => {
 	if (r.height < 44 && width < 761) problems.push('shorter than 44px on a phone: ' + r.height);
 	const close = ${OTHER}.getBoundingClientRect();
 	if (close.height < 44 && width < 761) problems.push('關閉 shorter than 44px on a phone: ' + close.height);
-	if (Math.abs(r.top + r.height / 2 - (close.top + close.height / 2)) > 2) problems.push('not on the same row as 關閉');
-	if (r.right > close.left || close.left - r.right > 16) problems.push('not directly left of 關閉: gap ' + (close.left - r.right));
-	if (${BUTTON}.closest('header') === null) problems.push('not in the header');
+	if (${BUTTON}.closest('#settings-panel-account') === null) problems.push('not in 帳號與分享');
 	if (document.querySelector('dialog[open] #settings-title').getBoundingClientRect().height > 40) problems.push('title wrapped');
 	const mine = getComputedStyle(button);
 	const theirs = getComputedStyle(${OTHER});
@@ -75,6 +73,7 @@ async function openSettings() {
 			if (tries === 3) throw error;
 		}
 	}
+	await tab.pointerClick('#settings-tab-account');
 	await tab.eval(`${BUTTON}.scrollIntoView({ block: 'center', behavior: 'instant' })`);
 }
 
