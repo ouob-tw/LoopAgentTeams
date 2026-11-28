@@ -1,0 +1,16 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/server/claude-background.ts",
+        "board/src/lib/server/automation-agent.ts",
+        "board/src/lib/server/automation-host.ts",
+        "board/tests/unit/automation-background.test.ts",
+        "board/tests/fake-helper.mjs"
+      ],
+      "tests": [
+        "board/tests/unit/automation-background.test.ts"
+      ]
+    }
+  ]
+}

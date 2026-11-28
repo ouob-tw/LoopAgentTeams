@@ -6,7 +6,8 @@
 // as a plain message, or is typed in its terminal; either way, once its conversation has new input
 // or a new turn starts, it is taken as going on, and its next reply is judged the same way. Past the limit or on
 // 停止這次 it is closed too. A run the board finds still open when it starts again is watched on
-// while hcom still lists its agent.
+// while hcom still lists its agent. A Claude turn that ends on no verdict while its background work
+// or a Monitor still runs is no end: the run goes on to the next turn (#750).
 //
 // Quota (CPA, #710): Codex accounts rotate behind CLIProxyAPI, so the board neither checks nor
 // switches an account. When the Codex screen says the usage limit was hit, the first time one
@@ -149,6 +150,9 @@ export interface AgentHost {
 	lastReply(client: AgentSpec['client'], sessionId: string): Promise<{ ok: true; text: string | null; seq: number; time?: number | null } | { ok: false; reason: string }>;
 	/** Every reply after `seq`, oldest first (#700). */
 	repliesAfter(client: AgentSpec['client'], sessionId: string, seq: number): Promise<{ ok: true; replies: { text: string; seq: number }[] } | { ok: false; reason: string }>;
+	/** Whether a Claude conversation still has background work going, or was woken by its end after
+	 *  the last reply (`claude-background.ts`, #750); false when it cannot be read. */
+	backgroundGoesOn(sessionId: string): Promise<boolean>;
 	/** Where the conversation is kept on disk; null when it cannot be found. */
 	transcript(client: AgentSpec['client'], sessionId: string): Promise<string | null>;
 	/** The first input of the user's after `seq` in the conversation (typed in the terminal, or an
@@ -378,6 +382,16 @@ export async function watchAgent(host: AgentHost, watched: Watched): Promise<Age
 		}
 		if (verdict) return end(verdict);
 		if (outOfQuota) return end({ status: 'quota', reason: `額度用完：${clip(reply.text.trim().split('\n').at(-1)!)}（Claude 不換帳號）` });
+		// A Claude agent that ended its turn with background work or a Monitor still going is woken
+		// when that work is done (#750): the run goes on, its next reply judged, the limit as always.
+		// The same reply is looked at again each time, so with the work over and no new turn it fails.
+		if (spec.client === 'claude') {
+			if (await host.backgroundGoesOn(sessionId)) continue;
+			// Looked at again after that read, right before closing: a newer reply meanwhile (the woken
+			// turn's DONE) is judged on the next look instead.
+			const latest = await host.lastReply(spec.client, sessionId);
+			if (!latest.ok || latest.seq !== reply.seq) continue;
+		}
 		return end({ status: 'failed', reason: `回合結束，但最後一行不是 ${watched.ending ?? 'DONE、FAILED 或 ASK'}：${clip(reply.text.trim().split('\n').at(-1) ?? '')}` });
 	}
 }

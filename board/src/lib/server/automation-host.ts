@@ -2,9 +2,11 @@
 // the new-agent launch flow, reads hcom's list, the conversation and the Herdr screen, closes the
 // agent by the board's close flow, and reads which provider a Codex run's own session goes through
 // (CPA or not, #710), through the helper. It never touches a Codex account.
+import { readFile } from 'node:fs/promises';
 import { closeAgent, sendToAgent } from './agent-control.ts';
 import type { AgentHost, Cut } from './automation-agent.ts';
 import type { Board } from './board.ts';
+import { backgroundGoesOn } from './claude-background.ts';
 import type { BoardConfig } from './config.ts';
 import { killAgent, launchBlocked, listAgents, resumeAgent, stopAgent } from './hcom.ts';
 import { readProvider, readTranscript } from './helper.ts';
@@ -132,6 +134,15 @@ export function boardAgentHost(config: BoardConfig, board: () => Board, retry: {
 			return read.ok ? { ok: true, seq: read.page.items.at(-1)?.seq ?? -1 } : { ok: false, reason: read.reason };
 		},
 		provider: (client, sessionId) => readProvider(config, client, sessionId),
+		async backgroundGoesOn(sessionId) {
+			const read = await readTranscript(config, 'claude', sessionId);
+			if (!read.ok) return false;
+			try {
+				return backgroundGoesOn(await readFile(read.path, 'utf8'));
+			} catch {
+				return false;
+			}
+		},
 		async transcript(client, sessionId) {
 			const read = await readTranscript(config, client, sessionId);
 			return read.ok ? read.path : null;
