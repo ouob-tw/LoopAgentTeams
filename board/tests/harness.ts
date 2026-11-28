@@ -185,10 +185,15 @@ export function checkRunHere(commandDir: string): void {
 /** The interpreter `uv run --no-project python` picks, found with the test's own home directory:
  *  the board's helper runs with a temporary one. */
 export function uvPython(): string {
+	if (foundPython) return foundPython;
 	const found = spawnSync('uv', ['run', '--no-project', 'python', '-c', 'import sys; print(sys.executable)'], { encoding: 'utf8' });
 	if (found.status !== 0) throw new Error(`uv cannot run Python: ${found.stderr}`);
-	return found.stdout.trim();
+	return (foundPython = found.stdout.trim());
 }
+let foundPython = '';
+
+/** The board's task-proposal acceptor (hooks/task-proposal-acceptor.py). */
+export const PROPOSAL_ACCEPTOR = join(ROOT, 'hooks/task-proposal-acceptor.py');
 
 /** The board password every fixture sets unless told not to. A test value, not a real password. */
 export const PASSWORD = 'test-password-一二三';
@@ -499,6 +504,10 @@ export async function startFixture(
 		...(options.cpa ? { LAT_BOARD_CPA_URL: options.cpa.url, LAT_BOARD_CPA_MANAGEMENT_KEY_FILE: join(dir, 'cpa-key') } : {}),
 		// Translation and tidy fall back to Haiku through a fake Claude CLI; never the real one.
 		LAT_BOARD_HAIKU_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-claude.mjs'), dir]),
+		// 任務提案: the folder, the socket agents send to and the acceptor on it; never the real ones.
+		LAT_BOARD_PROPOSALS_DIR: join(dir, 'task-proposals'),
+		LAT_BOARD_PROPOSAL_SOCKET: join(dir, 'task-proposal.sock'),
+		LAT_BOARD_PROPOSAL_ACCEPTOR_COMMAND: JSON.stringify([uvPython(), PROPOSAL_ACCEPTOR]),
 		// The pd section reads and denies through pd; never the real one or its socket.
 		LAT_BOARD_PD_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-pd.mjs'), dir]),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,

@@ -46,6 +46,9 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_LAUNCH_WAIT_SECONDS` | 新建後多久還沒出現綁定，就在新建紀錄提示「已開分頁，但主控尚未啟用」；喚醒接回後多久還沒在 hcom 清單出現，就在送出紀錄提示「接回後仍未出現」 | `180` |
 | `LAT_HCOM_PAUSED_DIR` | 暫停通訊紀錄的目錄（絕對路徑；不是絕對路徑時當成沒設），LAT 停住監控與程序回收讀同一個目錄 | `$XDG_STATE_HOME/lat/hcom-paused` |
 | `LAT_BOARD_ASKS_DIR` | 看板提問的共用目錄（絕對路徑；不是絕對路徑時當成沒設），hook 與看板讀寫同一個目錄，兩邊要一致 | `$XDG_STATE_HOME/lat/board-asks` |
+| `LAT_BOARD_PROPOSALS_DIR` | 任務提案資料夾（絕對路徑；不是絕對路徑時當成沒設），每筆提案一個提案檔與一個結果檔；Agent 的提案指令讀同一個目錄，兩邊要一致 | `$XDG_STATE_HOME/lat/task-proposals` |
+| `LAT_BOARD_PROPOSAL_SOCKET` | Agent 送出與撤回提案的本機 socket（絕對路徑），提案指令連同一個 | 任務提案資料夾裡的 `board.sock` |
+| `LAT_BOARD_PROPOSAL_ACCEPTOR_COMMAND` | 執行提案接收程式的指令（JSON 字串陣列），看板會在後面加 socket 路徑 | `["uv","run","--no-project","python","<board>/hooks/task-proposal-acceptor.py"]` |
 | `LAT_BOARD_ASK_EXECUTION_WAIT_SECONDS` | Codex 回合結束後才允許的權限確認，等看到它執行的最長時間（秒），測試用 | `604800`（7 天） |
 | `LAT_BOARD_ASK_OBSERVE_SECONDS` | hook 讀的：看板的權限確認答案送出後，在 Claude 對話紀錄裡等它實際結果的秒數，測試用來縮短 | `60` |
 | `LAT_BOARD_ASK_WAIT_SECONDS` | hook 讀的：問完原地等多久（秒），測試用來縮短 | `600` |
@@ -284,6 +287,14 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 中斷與清理：每次重讀前 `settleAsks` 檢查等待中的提問，hook 程序（提問檔的 `hook_pid`）已不在、結果檔也沒有內容時，看板以同樣的互斥方式寫 `{"kind": "interrupted"}`（「已在終端機中斷」），並在它的操作紀錄記一筆沒有作答的「看板提問」；`ENDED_ASK_STATES` 裡的提問（已填回、已逾時、傳話中、已傳話、結果不明、已中斷、已失效，以及權限確認的已交回終端機、已在終端機回答、已在終端機拒絕、已通知、7 天沒看到執行、對不出執行）結束滿 7 天（`ASK_RETENTION_MS`）刪掉它的所有檔案，傳話中的除外。逾時的提問從逾時那一刻算起，仍可作答（`askAnswerable`），答案當訊息傳出。之後新增的結束狀態加進 `ENDED_ASK_STATES` 並給 `endedAt` 就會一起清理。
 - 待辦：`snapshot.asks` 在頁面轉成 `AskRow`（`src/lib/board/ask-inbox.ts`），沒結束的（不在 `ENDED_ASK_STATES`）是待辦的一筆，與項目一起排序（`sortEntries`、`groupEntriesByProject`，專案取 Agent 的工作資料夾，Agent 已不在清單時取提問檔的 `cwd`）；結束的併進已處理清單（`mergeProcessed`，依結束時間，還有更早的項目沒載入時，比已載入最舊一筆更早的提問等它那一頁）。點開走 `openAsk`：一般 Agent 到 Agent 頁面，主控的權限確認到主控資訊頁，然後捲到 `[data-ask]` 的題目卡。
 - 測試：待辦在 `tests/unit/ask-inbox.test.ts` 與 `tests/browser/ask-inbox.test.ts`；hook 在 `tests/unit/board-ask-hook.test.ts`（暫存共用目錄與假心跳，主控判斷用真的輔助工具讀暫存綁定登記，含兩個程序同時搶結果檔、答案與截止同時發生），安裝在 `tests/unit/board-ask-install.test.ts`（只用暫存設定檔），伺服器端在 `tests/server/board-asks.test.ts`（含重啟）與 `tests/server/board-ask-late.test.ts`（逾時後傳話、失效、讀不到 Herdr 清單、中斷、7 天清理），瀏覽器端在 `tests/browser/board-ask.test.ts`（真的 hook 程序對測試看板提問，含兩個瀏覽器同時送出、逾時後兩個瀏覽器同時作答）。權限確認：hook 在 `tests/unit/board-ask-permission-hook.test.ts`（#284 的 Claude 與 Codex 輸入樣本、假的對話紀錄延遲寫入結果、Stop 與 PostToolUse），伺服器端在 `tests/server/board-ask-permission.test.ts`（逾時後傳話、Codex 已執行才通知、縮短的 7 天），瀏覽器端在 `tests/browser/board-ask-permission.test.ts`（含主控頁）。
+
+## 任務提案
+
+Agent 用 `skills/local/task-proposal/scripts/task-proposal.py` 提出新的自動化任務（#699；核准與畫面是 #760、#761）。
+
+- 送出與撤回：指令經本機 socket（`LAT_BOARD_PROPOSAL_SOCKET`，0600）交給看板啟動並看管的接收程式 `hooks/task-proposal-acceptor.py`。它對每一條已接受的連線用 SO_PEERCRED 取得對方程序，帳號不同就拒收；從那個程序往上找第一個 `claude` 或 `codex` 程序，讀它的 `HCOM_INSTANCE_NAME`、`HCOM_TOOL`、`HCOM_PROCESS_ID`，以 `hcom list --json`（看板的 `LAT_BOARD_HCOM_COMMAND`）裡同一個程序 ID 的紀錄為準取 HCOM 名稱，前後各快照一次程序樹，任一步不成立就拒收並回原因，不進看板。角色從提案者工作資料夾所屬 repo 的 `.lat/sessions/<session>.json` 判斷：active 且名稱與 session 相符是 `controller`，沒有相符紀錄是 `agent`，紀錄讀不出是 `unknown`（照收）；LAT 資料夾（`LAT_BOARD_LAT_DIR`）的 `scripts/_lat_common.py` 載入不了時看板記 `proposal_roles_unknown`，角色一律 `unknown`。撤回要查證到同一個 HCOM 名稱、client 與 HCOM 程序 ID，之後拿到同名的別的 Agent 不能撤回。查證結果經接收程式的標準輸出交給看板（一行一筆 JSON），看板回在它的標準輸入；接收程式結束時看板記 `proposal_acceptor_exited` 並重開（`proposal_acceptor_restarted`），看板結束時關它的標準輸入，它就刪掉 socket 結束。
+- 資料夾（`LAT_BOARD_PROPOSALS_DIR`，0700，檔案 0600；格式見 `src/lib/board/task-proposals.ts`）：`<id>.json` 是提案（查證過的提案者、送來的欄位、通過「新增任務」檢查後的任務、Agent 任務說明檔的全文與雜湊），`<id>.result.json` 是結果，先寫暫存檔再 hard link 到位、已存在就失敗，只有第一個結果算數。不通過檢查的提案先寫「無效」結果再寫提案檔，所以不會出現在等待清單。24 小時沒結果寫「已過期」，有結果滿 7 天連同提案檔刪掉（每分鐘與每次讀清單時檢查；「核准中」不刪）。查詢與等待只讀這個資料夾，不需要看板在執行。
+- API：`GET /api/task-proposals` 列出等待中的提案（含提案檔的 SHA-256 `contentHash`），`GET /api/task-proposals/<id>` 回單筆與結果；編號格式不對回 `400 {"error":"bad-request"}`。兩者和其他 API 一樣要登入，未登入、登入過期或被撤銷只拿到 `401 {"error":"unpaired"}`。
 
 ## 用量與快取
 

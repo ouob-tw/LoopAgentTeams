@@ -14,6 +14,7 @@ import type { SentWake } from '../../src/lib/board/wake.ts';
 import type { Board } from '../../src/lib/server/board.ts';
 import { settleAnswers } from '../../src/lib/server/answer.ts';
 import * as sentLog from '../../src/lib/server/sent-log.ts';
+import { PROPOSAL_ACCEPTOR, uvPython } from '../harness.ts';
 
 const ROOT = join(import.meta.dir, '../..');
 const NODE = Bun.which('node') ?? process.execPath;
@@ -139,6 +140,10 @@ beforeAll(async () => {
 		LAT_BOARD_HERDR_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-herdr.mjs'), dir]),
 		LAT_BOARD_CSWAP_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-cswap.mjs'), dir]),
 		LAT_BOARD_PD_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-pd.mjs'), dir]),
+		// 任務提案: never the real folder, socket or acceptor.
+		LAT_BOARD_PROPOSALS_DIR: join(dir, 'task-proposals'),
+		LAT_BOARD_PROPOSAL_SOCKET: join(dir, 'task-proposal.sock'),
+		LAT_BOARD_PROPOSAL_ACCEPTOR_COMMAND: JSON.stringify([uvPython(), PROPOSAL_ACCEPTOR]),
 		// Never the real CPA.
 		LAT_BOARD_CPA_URL: '',
 		HERDR_PLUGIN_CONFIG_DIR: join(dir, 'herdr-config'),

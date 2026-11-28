@@ -1,11 +1,12 @@
 // The log line format and the browser-report limit on their own.
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLIENT_ERROR_WINDOW_MS, CLIENT_ERRORS_PER_WINDOW, createClientErrorLimit } from '../../src/lib/server/client-errors.ts';
 import { exceptionFields, logLine, withRequestId } from '../../src/lib/server/log.ts';
 import { redact, secretsOf } from '../../src/lib/server/redact.ts';
+import * as taskProposals from '../../src/lib/server/task-proposals.ts';
 import { PASSWORD } from '../harness.ts';
 
 const NOW = new Date('2026-10-20T09:34:12.225Z');
@@ -91,7 +92,7 @@ test('an exception SvelteKit reports before the request hook ran is still logged
 // The request hook builds the board from process.env: here it gets a folder of its own and no real
 // hcom, Herdr or other command, never the real board's folder and the tasks due in it (#615).
 const BOARD_KEY = Symbol.for('lat-board');
-const COMMANDS = ['HELPER', 'INJECT', 'HCOM', 'HERDR', 'TIDY', 'TRANSLATE', 'SKILLS', 'CSWAP', 'PD'];
+const COMMANDS = ['HELPER', 'INJECT', 'HCOM', 'HERDR', 'TIDY', 'TRANSLATE', 'SKILLS', 'CSWAP', 'PD', 'PROPOSAL_ACCEPTOR'];
 const saved = new Map<string, string | undefined>();
 let boardDir = '';
 
@@ -108,6 +109,8 @@ beforeAll(() => {
 		LAT_BOARD_UPLOAD_DIR: join(boardDir, 'uploads'),
 		LAT_HCOM_PAUSED_DIR: join(boardDir, 'hcom-paused'),
 		LAT_BOARD_ASKS_DIR: join(boardDir, 'board-asks'),
+		LAT_BOARD_PROPOSALS_DIR: join(boardDir, 'task-proposals'),
+		LAT_BOARD_PROPOSAL_SOCKET: join(boardDir, 'task-proposal.sock'),
 		HCOM_DIR: join(boardDir, 'hcom'),
 		HERDR_SOCKET_PATH: join(boardDir, 'herdr.sock'),
 		HERDR_CONFIG_PATH: join(boardDir, 'herdr.toml'),
@@ -119,6 +122,8 @@ beforeAll(() => {
 		saved.set(name, process.env[name]);
 		process.env[name] = value;
 	}
+	// No acceptor: its start would write log lines into the ones these tests read.
+	spyOn(taskProposals, 'createTaskProposals').mockReturnValue({ pending: () => [], detail: () => null, submit: () => ({ ok: false, error: 'board', reason: '' }), withdraw: () => ({ ok: false, error: 'board', reason: '' }), sweep() {}, close() {} });
 });
 
 afterAll(() => {

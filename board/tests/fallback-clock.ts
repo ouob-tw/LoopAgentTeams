@@ -11,6 +11,7 @@ import * as herdr from '../src/lib/server/herdr.ts';
 import * as watchers from '../src/lib/server/watch.ts';
 import * as quota from '../src/lib/server/quota.ts';
 import * as pd from '../src/lib/server/pd.ts';
+import * as taskProposals from '../src/lib/server/task-proposals.ts';
 import * as sources from '../src/lib/server/sources.ts';
 import * as closed from '../src/lib/server/closed-agents.ts';
 import { EMPTY_CLOSED } from '../src/lib/board/closed-agents.ts';
@@ -31,6 +32,7 @@ spyOn(watchers, 'createSourceWatcher').mockReturnValue({ sync() {}, close() {} }
 spyOn(sources, 'helperDirectories').mockResolvedValue({ config: join(dir, 'config'), state: join(dir, 'helper-state') });
 spyOn(quota, 'createQuotaPoller').mockReturnValue({ current: () => null, close() {} });
 spyOn(pd, 'createPdPoller').mockReturnValue({ current: () => null, refresh: async () => {}, close() {} });
+spyOn(taskProposals, 'createTaskProposals').mockReturnValue({ pending: () => [], detail: () => null, submit: () => ({ ok: false, error: 'board', reason: '' }), withdraw: () => ({ ok: false, error: 'board', reason: '' }), sweep() {}, close() {} });
 spyOn(hcom, 'listAgents').mockResolvedValue({ ok: true, agents: [{ name: 'missed', sessionId: 'session-missed', pane: null, status: 'listening' }] });
 spyOn(herdr, 'listHerdrAgents').mockResolvedValue({ ok: true, agents: [], workspaces: [], places: {} });
 spyOn(closed, 'createClosedRoster').mockReturnValue({

@@ -1,0 +1,25 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/hooks/task-proposal-acceptor.py",
+        "board/src/lib/server/task-proposals.ts",
+        "board/src/lib/board/task-proposals.ts",
+        "board/src/routes/api/task-proposals/**",
+        "skills/local/task-proposal/**"
+      ],
+      "tests": [
+        "board/tests/server/task-proposals.test.ts",
+        "board/tests/unit/task-proposal-cli.test.ts"
+      ]
+    },
+    {
+      "paths": ["board/src/lib/server/automation.ts"],
+      "tests": ["board/tests/server/task-proposals.test.ts"]
+    },
+    {
+      "paths": ["board/src/lib/server/task-proposals.ts"],
+      "tests": ["board/tests/unit/log.test.ts", "board/tests/unit/test-state-guard.test.ts"]
+    }
+  ]
+}

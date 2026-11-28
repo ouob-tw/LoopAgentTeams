@@ -43,6 +43,7 @@ import { loadUsageStyle, saveUsageStyle } from './usage-style.ts';
 import type { UsageStyle } from '../board/usage.ts';
 import { loadTranslateMode, saveTranslateMode } from './translate-mode.ts';
 import { createAutomation, type Automation } from './automation.ts';
+import { createTaskProposals, type TaskProposals } from './task-proposals.ts';
 import { boardAgentHost } from './automation-host.ts';
 import { createAlerts, type Alerts } from './alerts.ts';
 import { createPush, type Push } from './push.ts';
@@ -105,6 +106,8 @@ export interface Board {
 	pd(): PdSnapshot | null;
 	/** The 自動化 tab's tasks and runs; every change goes to the open pages as an `automation` event. */
 	readonly automation: Automation;
+	/** 任務提案: agents' proposals for new automation tasks, brought in by the acceptor on the local socket. */
+	readonly taskProposals: TaskProposals;
 	/** The automation red cards; every change goes to the open pages as an `alerts` event. */
 	readonly alerts: Alerts;
 	/** The devices' Web Push subscriptions and the board's VAPID key. */
@@ -355,6 +358,16 @@ function createBoard(): Board {
 		onChange: (pd) => {
 			for (const stream of streams) stream.send('pd', JSON.stringify(pd));
 		}
+	});
+
+	// Agents' proposals come in on the local socket; the acceptor that listens there is started now.
+	const taskProposals = createTaskProposals({
+		dir: config.proposalsDir,
+		socket: config.proposalSocket,
+		now: config.now,
+		acceptorCommand: config.proposalAcceptorCommand,
+		hcomCommand: config.hcomCommand,
+		latDir: config.latDir
 	});
 
 	// Tells the board-ask hook a board runs: without it the hook leaves the client's own menu.
@@ -884,6 +897,7 @@ function createBoard(): Board {
 		quota: () => quotaPoller.current(),
 		pd: () => pdPoller.current(),
 		automation,
+		taskProposals,
 		alerts,
 		push,
 		refreshPd: () => pdPoller.refresh(),
@@ -913,6 +927,7 @@ function createBoard(): Board {
 			quotaPoller.close();
 			pdPoller.close();
 			automation.close();
+			taskProposals.close();
 			clearTimeout(debounce);
 			clearTimeout(fallback);
 			clearTimeout(pollTimer);
