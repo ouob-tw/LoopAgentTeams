@@ -193,7 +193,8 @@ export interface RunPrecheck {
 }
 
 /** Run statuses that a rerun of the period is checked before (#751): the agent may have been taken
- *  back and finished the work after the board judged it. */
+ *  back and finished the work after the board judged it. A success whose check ended without a pass
+ *  is one too. */
 export const PRECHECKED: readonly RunStatus[] = ['failed', 'timeout', 'quota', 'stopped'];
 
 /** The one continue message a run's Codex agent got after its first usage limit: the conversation's
@@ -526,7 +527,7 @@ export const reviewFailed = (run: Pick<AutomationRun, 'status' | 'review' | 'fix
 export function runLabel(run: Pick<AutomationRun, 'status' | 'review' | 'asks' | 'fix' | 'firstReview' | 'precheck'>): { text: string; key: string } {
 	if (openAsk(run)) return { text: STATE_TEXT.asking, key: 'asking' };
 	if (run.precheck && run.review?.status === 'checking') return { text: '▶ 重跑前核對中', key: 'running' };
-	if (run.precheck && run.status === 'skipped') return { text: '↻ 核對沒過，重跑', key: 'skipped' };
+	if (run.precheck && run.status === 'skipped') return { text: run.review?.status === 'fail' ? '↻ 核對沒過，重跑' : '↻ 核對沒做完，重跑', key: 'skipped' };
 	const review = run.status === 'success' ? run.review : undefined;
 	if (!review || review.status === 'pass') return { text: RUN_STATUS_TEXT[run.status], key: run.status };
 	if (run.fix?.status === 'fixing') return { text: '↻ 交回修正中', key: 'running' };
@@ -535,8 +536,9 @@ export function runLabel(run: Pick<AutomationRun, 'status' | 'review' | 'asks' |
 	return { text: STATE_TEXT['check-failed'], key: 'check-failed' };
 }
 /** An automatic try made on the day `time` falls in: whatever it ended in, it is the day's one. */
-/** A check before a rerun (#751) counts only when the user stopped it: the rerun then waits for the next day. */
-export const triedOn = (runs: readonly AutomationRun[], time: number) => runs.some((run) => run.trigger === 'auto' && (!run.precheck || run.status === 'stopped') && sameDay(run.startedAt, time));
+/** A check before a rerun (#751) counts while it is open or when the user stopped it: the rerun then
+ *  waits for the next day, which checks again. */
+export const triedOn = (runs: readonly AutomationRun[], time: number) => runs.some((run) => run.trigger === 'auto' && (!run.precheck || run.status === 'stopped' || isOpen(run)) && sameDay(run.startedAt, time));
 
 /** The failed run of the period at `now` whose results are to be checked before a rerun (#751): the
  *  period's latest run, when it failed and no check of it was made since. Null on a first try. */
@@ -544,8 +546,11 @@ export function precheckDue(task: AutomationTask, runs: readonly AutomationRun[]
 	const period = periodOf(task.schedule, now);
 	const own = runs.filter((run) => run.period === period && run.trigger !== 'preview' && run.trigger !== 'carried');
 	const latest = own.filter((run) => !run.precheck && run.status !== 'skipped').reduce<AutomationRun | undefined>((last, run) => (!last || run.startedAt > last.startedAt ? run : last), undefined);
-	if (!latest || !PRECHECKED.includes(latest.status)) return null;
-	return own.some((run) => run.precheck?.of === latest.id) ? null : latest;
+	if (!latest || isOpen(latest)) return null;
+	const checkEnded = latest.status === 'success' && latest.review !== undefined && latest.review.status !== 'pass';
+	if (!PRECHECKED.includes(latest.status) && !checkEnded) return null;
+	// One the user stopped did not look: the next day's rerun is checked again.
+	return own.some((run) => run.precheck?.of === latest.id && run.status !== 'stopped') ? null : latest;
 }
 
 /** When today's automatic try is due: at the set time (a time already passed is due now, so a
@@ -714,7 +719,7 @@ export function precheckText(run: Pick<AutomationRun, 'status' | 'review' | 'pre
 		if (run.precheck?.repliedAt !== undefined) return `重跑前核對通過：判失敗後 Agent 在 ${timeFormat(TIME_ZONE).full(run.precheck.repliedAt)} 回覆 DONE，這期不重跑`;
 		return '重跑前核對通過：這期的成果已在，不重跑';
 	}
-	if (run.status === 'stopped') return '重跑前核對被停止，今天不重跑';
+	if (run.status === 'stopped') return '重跑前核對被停止，今天不重跑，明天重跑前再核對';
 	return run.review?.status === 'fail' ? '重跑前核對沒過，照常重跑' : '重跑前核對沒有做完，照常重跑';
 }
 

@@ -289,3 +289,27 @@ test('a period’s first try opens no checker', async () => {
 	expect(launches('claude')).toHaveLength(1);
 	await stopAndSettle(task.id);
 });
+
+test('a run that finished but whose check ended without a pass is checked again before its rerun', async () => {
+	const task = await create({ name: '檢查沒過的那次' });
+	hcomPlan([{ name: 'auto-g' }, null, { name: 'chk-g', client: 'codex' }, null, { name: 'chk-g2', client: 'codex' }, null, { name: 'auto-never' }]);
+	const response = await send(`/api/automation/${task.id}/run`, 'POST');
+	const started: AutomationRun = await response.json();
+	await runWhere(task.id, (run) => run.id === started.id && run.sessionId === 's-auto-g', 'auto-g to be listed');
+	replyAndWait('auto-g', '掃描開始了\nDONE');
+	await runWhere(task.id, (run) => run.id === started.id && run.review?.sessionId === 's-chk-g', 'the first checker');
+	replyAndWait('chk-g', '報告還沒產生，我等一下再看');
+	const unchecked = await runWhere(task.id, (run) => run.id === started.id && run.review?.status === 'error', 'the check to end with no verdict');
+	expect(unchecked.status).toBe('success');
+
+	fixture.setClock(DUE(18));
+	const checking = await precheckOf(task.id, unchecked, (run) => run.review?.sessionId === 's-chk-g2', 'the checker before the rerun');
+	const brief = readFileSync(join(dir, 'board-state/automation', checking.review!.brief!), 'utf8');
+	expect(brief).toContain('看板判它跑完，但檢查沒有做完');
+	replyAndWait('chk-g2', PASS);
+	await precheckOf(task.id, unchecked, (run) => run.status === 'success' && run.review?.status === 'pass', 'the PASS');
+	expect((await viewOf(task.id)).state).toBe('done');
+	await sleep(500);
+	expect(launches('claude')).toHaveLength(1);
+	await send(`/api/automation/${task.id}/pause`, 'POST', { paused: true });
+});

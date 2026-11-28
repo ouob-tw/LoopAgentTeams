@@ -234,12 +234,22 @@ test('a rerun is checked first only when the period’s latest run failed and wa
 	// A check that did not pass leaves today's try due; one the user stopped takes it.
 	expect(nextAutoAt(task(), [checked, failed], now)).toBe(at(2026, 11, 3, 10));
 	expect(nextAutoAt(task(), [{ ...checked, status: 'stopped' }, failed], now)).toBe(at(2026, 11, 4, 10));
+	// A stopped check looked at nothing: the next day checks again. An open one is today's try meanwhile.
+	expect(precheckDue(task(), [{ ...checked, status: 'stopped' }, failed], at(2026, 11, 4, 10))).toBe(failed);
+	const open = { ...checked, status: 'success' as const, review: { status: 'checking' as const, startedAt: now, client: 'codex' as const, model: 'm', effort: 'medium' as const } };
+	expect(nextAutoAt(task(), [open, failed], now)).toBe(at(2026, 11, 4, 10));
+	// A success whose check ended without a pass is checked too; one still being fixed is not.
+	const checkFailed = run({ id: 'h', status: 'success', review: { ...open.review, status: 'fail' } });
+	expect(precheckDue(task(), [checkFailed], now)).toBe(checkFailed);
+	expect(precheckDue(task(), [{ ...checkFailed, review: { ...open.review, status: 'error' } }], now)?.id).toBe('h');
+	expect(precheckDue(task(), [{ ...checkFailed, fix: { status: 'fixing', startedAt: now, limitMinutes: 30 } }], now)).toBeNull();
 	// Its PASS settles the period.
 	const passed = { ...checked, status: 'success' as const, review: { status: 'pass' as const, startedAt: now, client: 'codex' as const, model: 'm', effort: 'medium' as const, items: [] } };
 	expect(taskState(task(), [passed, failed], now)).toBe('done');
 
 	expect(runLabel({ ...checked, status: 'success', review: { ...passed.review, status: 'checking' } }).text).toBe('▶ 重跑前核對中');
-	expect(runLabel(checked).text).toBe('↻ 核對沒過，重跑');
+	expect(runLabel(checked).text).toBe('↻ 核對沒做完，重跑');
+	expect(runLabel({ ...checked, review: { ...passed.review, status: 'fail' } }).text).toBe('↻ 核對沒過，重跑');
 	expect(runLabel(passed).text).toBe('✓ 成功');
 	expect(runReason(passed)).toBe('重跑前核對通過：這期的成果已在，不重跑');
 	expect(runReason({ ...passed, review: undefined, precheck: { of: 'f', by: 'reply', repliedAt: at(2026, 11, 2, 15, 21) } })).toBe('重跑前核對通過：判失敗後 Agent 在 11/02 15:21 回覆 DONE，這期不重跑');

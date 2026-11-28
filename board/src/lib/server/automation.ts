@@ -479,6 +479,9 @@ export function createAutomation(options: {
 	const children = new Map<string, Promise<void>>();
 	/** Tasks whose failed run's last reply is being read before a rerun (#751). */
 	const prechecking = new Set<string>();
+	/** Failed runs whose last reply was read and did not settle their period: their rerun is the
+	 *  scheduler's next try, with its usual rules (#751). */
+	const probed = new Set<string>();
 	/** Their process groups: a command ends with the board, as the spec has it. */
 	const groups = new Set<number>();
 	const endGroups = () => {
@@ -1160,24 +1163,23 @@ export function createAutomation(options: {
 			return true;
 		}
 		const { sessionId, endedAt } = failed;
-		if (task.kind !== 'agent' || !task.agent || !sessionId || endedAt === undefined) return false;
+		if (task.kind !== 'agent' || !task.agent || !sessionId || endedAt === undefined || probed.has(failed.id)) return false;
 		prechecking.add(task.id);
+		// The period and settings as the check started: the read may end after the period does.
+		const at = now();
 		const probe = host
 			.lastReply(task.agent.client, sessionId)
 			.catch(() => null)
 			.then((reply) => {
 				prechecking.delete(task.id);
 				children.delete(task.id);
-				const current = tasks.get(task.id);
-				if (closed || !current || current.paused) return;
+				if (closed || !tasks.has(task.id)) return;
 				const repliedAt = reply?.ok && reply.text !== null && typeof reply.time === 'number' && reply.time > endedAt && verdictOf(reply.text)?.status === 'success' ? reply.time : null;
-				if (repliedAt === null) start(current, 'auto');
-				else {
-					const at = now();
-					const passed = record({ ...newRun(current, 'auto', at), endedAt: at, status: 'success', sessionId, precheck: { of: failed.id, by: 'reply', repliedAt } });
-					options.notify?.({ type: 'run-ended', task: current, run: passed });
-				}
+				// Not settled: the next check starts the rerun if it is still due then.
+				if (repliedAt === null) return void probed.add(failed.id);
+				const passed = record({ ...newRun(task, 'auto', at), period: failed.period, endedAt: now(), status: 'success', sessionId, precheck: { of: failed.id, by: 'reply', repliedAt } });
 				publish();
+				options.notify?.({ type: 'run-ended', task, run: passed });
 			});
 		children.set(task.id, probe);
 		return true;

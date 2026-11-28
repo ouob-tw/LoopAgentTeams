@@ -44,6 +44,17 @@ const fence = (text: string) => {
 	return `${ticks}\n${text}\n${ticks}`;
 };
 
+/** How the board judged the failed run a check before a rerun is about (#751): as it ended, or a
+ *  success whose check did not pass, with the reason. */
+function failedText(run: AutomationRun): string {
+	const review = run.status === 'success' ? run.review : undefined;
+	// A check that did not finish says so in its reason already.
+	if (review?.status === 'error') return `跑完，但${review.reason ?? '檢查沒有做完'}`;
+	const verdict = review ? '跑完，但檢查沒過' : RUN_STATUS_TEXT[run.status].slice(2);
+	const why = review ? review.reason : run.reason;
+	return why ? `${verdict}：${why}` : verdict;
+}
+
 /** The checking agent's brief. */
 export function reviewBrief({ task, run, folder, taskBrief, output, transcript, recheck, precheck }: ReviewInput): string {
 	const at = timeFormat(TIME_ZONE);
@@ -72,7 +83,7 @@ export function reviewBrief({ task, run, folder, taskBrief, output, transcript, 
 		'',
 		`- 任務：${task.name}（${task.kind === 'agent' ? 'Agent 任務' : '指令任務'}）`,
 		`- 時間：${when}`,
-		...(precheck ? [`- 看板判它${RUN_STATUS_TEXT[run.status].slice(2)}${run.reason ? `：${run.reason}` : ''}`, '- 判失敗之後的事（使用者接回 Agent 的後續對話、手動做的成果）也算這期的成果，請一併查證。'] : []),
+		...(precheck ? [`- 看板判它${failedText(run)}`, '- 判失敗之後的事（使用者接回 Agent 的後續對話、手動做的成果）也算這期的成果，請一併查證。'] : []),
 		`- 工作資料夾：${folder}`
 	];
 	if (task.kind === 'agent') {
