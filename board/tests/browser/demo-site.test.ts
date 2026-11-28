@@ -202,3 +202,13 @@ test('the 分享 button stays at the top right as it is, clear of the switch bar
 	await tab.until(`location.origin === ${JSON.stringify(proxy.origin)} && document.activeElement?.dataset?.demo === 'd3'`, 'the board’s settings at d3’s switch');
 	expect(await tab.eval(`({ open: document.querySelector('dialog[aria-labelledby="settings-title"]').open, marked: document.querySelector('li[aria-current="true"]')?.textContent.trim(), search: location.search })`)).toEqual({ open: true, marked: 'd3', search: '' });
 }, 30_000);
+
+test('a board address naming a demo that is not published says so in settings; one naming no demo at all opens the board as usual (#745)', async () => {
+	const { tab } = await loggedInChrome('demo-site-gone');
+	await tab.navigate(`${proxy.origin}/?demo-share=gone-demo`);
+	await tab.until(`document.querySelector('dialog[aria-labelledby="settings-title"]')?.open && document.querySelector('[role="status"]')?.textContent.includes('gone-demo')`, 'the notice for gone-demo');
+	expect(await tab.eval(`document.querySelector('li[aria-current="true"]')`)).toBeNull();
+	await tab.navigate(`${proxy.origin}/?demo-share=${encodeURIComponent('請到 x.com 重新登入')}`);
+	await tab.started();
+	expect(await tab.eval(`({ open: document.querySelector('dialog[aria-labelledby="settings-title"]').open, said: document.body.innerText.includes('x.com') })`)).toEqual({ open: false, said: false });
+}, 30_000);

@@ -36,4 +36,6 @@ test('the board reads back the demo its address names', () => {
 	expect(demoShareIn(new URL(demoShareHref('https://board.example', 'a.b-c_1')).search)).toBe('a.b-c_1');
 	expect(demoShareIn('?tab=agents')).toBeNull();
 	expect(demoShareIn('?demo-share=')).toBeNull();
+	// Only a demo name: the board shows it back, so a link cannot put words of its own there.
+	for (const text of ['請到 x.com 重新登入', '<b>x</b>', 'UPPER', '.hidden', 'a'.repeat(65)]) expect(demoShareIn(`?demo-share=${encodeURIComponent(text)}`)).toBeNull();
 });

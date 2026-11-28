@@ -4,12 +4,16 @@
 // fragment, and the board's first history entry drops the query once it is read.
 const PARAM = 'demo-share';
 
+/** A demo's name, as `demo.py publish` accepts it; demo.ts serves only these. */
+export const DEMO_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
 /** The board's address that opens settings at `name`'s switch; `board` is its origin, or '' for
  *  the board's own. */
 export const demoShareHref = (board: string, name: string) => `${board}/?${PARAM}=${encodeURIComponent(name)}`;
 
-/** The demo the address's query names for its share switch, or null. */
+/** The demo the address's query names for its share switch, or null: anything that is no demo
+ *  name, since the board shows the name back (a link from anywhere must not put its words there). */
 export function demoShareIn(search: string): string | null {
-	const name = new URLSearchParams(search).get(PARAM)?.trim();
-	return name || null;
+	const name = new URLSearchParams(search).get(PARAM);
+	return name && DEMO_NAME.test(name) ? name : null;
 }

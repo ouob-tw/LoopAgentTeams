@@ -7,10 +7,9 @@
 import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
+import { DEMO_NAME as NAME } from '#lib/board/demo-share-link.ts';
 import { withShareButton, type ShareButton } from './demo-share-button.ts';
 
-/** The same names `demo.py publish` accepts. */
-const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 const TYPES: Record<string, string> = {
 	html: 'text/html; charset=utf-8',
