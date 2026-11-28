@@ -79,6 +79,9 @@ export interface BoardConfig {
 	uploadDir: string;
 	/** Where `demo.py publish` puts demo pages (`<data>/site`), served under `/demo/<name>/`. May not exist. */
 	demoSiteDir: string;
+	/** Where `demo.py share` leaves an agent's request to share a demo (`<data>/share-requests`), one
+	 *  file per demo; only a passkey confirmation on the board shares it (demo-share-requests.ts). */
+	demoRequestsDir: string;
 	/** The demo pages' own address (`LAT_BOARD_DEMO_URL`), another origin than the board's; null serves
 	 *  them sandboxed under the board's `/demo/` instead. */
 	demoSite: DemoSite | null;
@@ -338,6 +341,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),
 		uploadDir: env.LAT_BOARD_UPLOAD_DIR || '/tmp/lat-board-uploads',
 		demoSiteDir: join(demoDataDir(env), 'site'),
+		demoRequestsDir: join(demoDataDir(env), 'share-requests'),
 		uploadMaxBytes: (Number(env.LAT_BOARD_UPLOAD_MAX_MB) > 0 ? Number(env.LAT_BOARD_UPLOAD_MAX_MB) : 250) * 1024 * 1024,
 		tidyCommand: commandFrom(env, 'LAT_BOARD_TIDY_COMMAND') ?? [...TEXT_ONLY_CODEX],
 		tidyTimeoutMs: seconds(env.LAT_BOARD_TIDY_TIMEOUT_SECONDS, 30_000),

@@ -3,7 +3,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ArchivePage } from '../board/archive.ts';
-import { everyController, type BoardSnapshot, type HelperController, type InboxQuestion } from '../board/types.ts';
+import { everyController, type BoardSnapshot, type DemoShareRequest, type HelperController, type InboxQuestion } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice, findDeviceById } from './devices.ts';
 import { listControllers, pruneReports, readAnswered, readLedgers, readQuestions, readUnattended, type AnsweredFile, type LedgerEntry } from './helper.ts';
@@ -34,6 +34,7 @@ import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 import { HEARTBEAT_MS as ASK_HEARTBEAT_MS, isAskFile, notifyExecuted, readAsks, settleAsks, touchHeartbeat } from './board-asks.ts';
 import type { BoardAsk } from '../board/board-asks.ts';
+import { isRequestFile, openRequests } from './demo-share-requests.ts';
 import type { QuotaSnapshot } from '../board/quota.ts';
 import { createQuotaPoller, readClaudeQuota, createCodexQuotaReader } from './quota.ts';
 import type { PdSnapshot } from '../board/pd.ts';
@@ -216,6 +217,8 @@ function createBoard(): Board {
 	let lastSwitches: SwitchView[] = [];
 	/** The board asks as last read from the shared folder. */
 	let lastAsks: BoardAsk[] = [];
+	/** The agents' demo share requests as last read. */
+	let lastShareRequests: DemoShareRequest[] = [];
 	/** The sent log's launch lines as last read, with the launches logged since: the roster's
 	 *  launch cards are worked out from them at every publish. Kept when the log cannot be read. */
 	let launchLines: Line[] = [];
@@ -265,6 +268,7 @@ function createBoard(): Board {
 		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
 		// Not the heartbeat the board itself touches.
 		targets.set(config.asksDir, isAskFile);
+		targets.set(config.demoRequestsDir, isRequestFile);
 		if (helperDirs) {
 			addFile(targets, join(helperDirs.config, 'bindings.json'));
 			addFile(targets, join(helperDirs.state, 'pending-notifications.json'));
@@ -500,6 +504,7 @@ function createBoard(): Board {
 		const allAgents = rosterNow();
 		settleAsks(config, allAgents.agents);
 		lastAsks = readAsks(config.asksDir, { executionWaitMs: config.askExecutionWaitMs });
+		lastShareRequests = openRequests(config);
 		// Telling Codex an allowed tool ran goes through the relay, which reads the lists again.
 		if (lastAsks.some((ask) => ask.state === 'executed')) void notifyExecuted(board);
 		herdrRead ||= herdrAgents.ok;
@@ -600,6 +605,7 @@ function createBoard(): Board {
 				now
 			),
 			asks: lastAsks,
+			demoShareRequests: lastShareRequests,
 			revision: ++revision
 		};
 		for (const controller of [...next.controllers, ...next.offRoster]) {
@@ -807,6 +813,7 @@ function createBoard(): Board {
 					workspaces: [],
 					closed: EMPTY_CLOSED,
 					asks: [],
+					demoShareRequests: [],
 					errors: [`讀取資料失敗：${error.message}`]
 				};
 				for (const stream of streams) stream.send('board', JSON.stringify(snapshot));

@@ -4,6 +4,8 @@ serve   run the server (systemd keeps it up)
 publish copy a folder or file to the server, print one verified URL, then the LAT board's
         address of the same page when the board is set
 publish-md  render a Markdown file into the shared frame and publish it like `publish`
+share   ask the user to share a published demo without the board's login: writes a request the
+        board shows; only the user's passkey confirmation there shares it
 
 Settings come from env, then ~/.agents/demo.json: port, host (public name), data (dir), bind,
 board (the LAT board's URL, which serves <data>/site behind its login at /demo/<name>/).
@@ -444,6 +446,37 @@ def publish_md(src, name):
         publish(d, name, md_title(text, name))
 
 
+def asker():
+    """Who asks, by the agent's HCOM name (`<tag>-<name>` as hcom shows it); empty outside hcom."""
+    name = os.environ.get('HCOM_INSTANCE_NAME', '')
+    tag = os.environ.get('HCOM_TAG', '')
+    return f'{tag}-{name}' if tag and name else name
+
+
+def share(name):
+    """Leave a request to share the published demo `name` without the board's login, for the
+    board to show. It names the folder published now (as the board reads it: device, inode and
+    modified time in ns), so publishing again or a reused name drops the request. A new request for
+    the same demo replaces the old one. It shares nothing by itself."""
+    conf = settings()
+    if not NAME_RE.match(name):
+        raise SystemExit('demo: the name must be lowercase letters, digits, . _ - (max 64)')
+    site = (conf['data'] / 'site').resolve()
+    dest = (site / name).resolve()
+    if dest.parent != site or not dest.is_dir():
+        raise SystemExit(f'demo: {name} is not published; publish it first')
+    st = dest.stat()
+    requests = conf['data'] / 'share-requests'
+    requests.mkdir(parents=True, exist_ok=True)
+    tmp = requests / f'.{name}.{os.getpid()}.tmp'
+    tmp.write_text(json.dumps({'name': name, 'by': asker(), 'folder': f'{st.st_dev}:{st.st_ino}:{st.st_mtime_ns}',
+                               'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}) + '\n', encoding='utf-8')
+    os.replace(tmp, requests / f'{name}.json')
+    print(f'demo: asked to share {name}; it stays behind the login until the user confirms it with a passkey on the board')
+    if conf['board']:
+        print(conf['board'].rstrip('/') + '/')
+
+
 def main(argv):
     if argv[:1] == ['serve']:
         return serve()
@@ -451,8 +484,10 @@ def main(argv):
         return publish(argv[1], argv[3])
     if argv[:1] == ['publish-md'] and len(argv) == 4 and argv[2] == '--name':
         return publish_md(argv[1], argv[3])
+    if argv[:1] == ['share'] and len(argv) == 2:
+        return share(argv[1])
     raise SystemExit('usage: demo.py serve | demo.py publish <folder|file> --name <name> '
-                     '| demo.py publish-md <file.md> --name <name>')
+                     '| demo.py publish-md <file.md> --name <name> | demo.py share <name>')
 
 
 if __name__ == '__main__':

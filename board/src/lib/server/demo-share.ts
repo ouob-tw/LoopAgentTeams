@@ -59,13 +59,15 @@ export function sharedDemoList(stateDir: string, siteDir: string): { name: strin
 	return [...listed.filter((name) => shared.has(name)), ...listed.filter((name) => !shared.has(name))].map((name) => ({ name, shared: shared.has(name) }));
 }
 
-/** Share the demo `name` as it is published now, or stop sharing it. Shares no longer in force
- *  (their folder gone or replaced) are dropped at each change. False, with nothing written, when
- *  sharing a demo that is not published. Throws when the file cannot be written. */
-export function setDemoShared(stateDir: string, siteDir: string, name: string, shared: boolean): boolean {
+/** Share the demo `name` as it is published now, or stop sharing it. `as` pins the share to a
+ *  folder (demoFolderId) the caller read before checking that version; a folder put in place since
+ *  is then not shared. Shares no longer in force (their folder gone or replaced) are dropped at
+ *  each change. False, with nothing written, when sharing a demo that is not published. Throws
+ *  when the file cannot be written. */
+export function setDemoShared(stateDir: string, siteDir: string, name: string, shared: boolean, as?: string | null): boolean {
 	const shares: Shares = new Map([...loadShares(stateDir)].filter(([each, folder]) => inForce(siteDir, each, folder)));
 	if (shared) {
-		const folder = demoFolderId(siteDir, name);
+		const folder = as === undefined ? demoFolderId(siteDir, name) : as;
 		if (folder === null) return false;
 		shares.set(name, folder);
 	} else shares.delete(name);

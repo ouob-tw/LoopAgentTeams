@@ -16,6 +16,7 @@ export type AuthEvent =
 	| 'login_passwordless'
 	| 'passkey_enroll'
 	| 'passkey_delete'
+	| 'demo_share_confirm'
 	| 'logout';
 
 type AuthResult = 'start' | 'success' | 'failure';
@@ -112,7 +113,8 @@ export const BROWSER_FLOWS = {
 	second_step: { event: 'login_passkey' },
 	alone: { event: 'login_passwordless' },
 	host_code: { event: 'passkey_enroll', via: 'host_code' },
-	settings: { event: 'passkey_enroll', via: 'settings' }
+	settings: { event: 'passkey_enroll', via: 'settings' },
+	demo_share: { event: 'demo_share_confirm' }
 } as const satisfies Record<PasskeyFlow, { event: AuthEvent; via?: string }>;
 
 /** Reports of the browser's refusal logged in a minute from every address together, so changing
