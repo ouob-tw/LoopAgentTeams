@@ -10,7 +10,6 @@ import { join, sep } from 'node:path';
 import { DEMO_NAME as NAME } from '#lib/board/demo-share-link.ts';
 import { withShareButton, type ShareButton } from './demo-share-button.ts';
 
-
 const TYPES: Record<string, string> = {
 	html: 'text/html; charset=utf-8',
 	htm: 'text/html; charset=utf-8',
