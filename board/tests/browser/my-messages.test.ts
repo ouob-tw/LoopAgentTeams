@@ -383,6 +383,8 @@ for (const [page, path] of PAGES) {
 
 		await tapBar();
 		await tab.until(`${SHOWN} && document.querySelectorAll('${ROWS}').length === 130`, 'the list');
+		// The list moves beside the shrunken handle once the bar's new width is measured, a frame or two after it opens.
+		await tab.until(`document.querySelector('${BLOCK}').getBoundingClientRect().right === ${bar.right - 12}`, 'the list beside the handle');
 		const box = await boxOf();
 		expect(box.right).toBe(bar.right - 12);
 		expect(box.left).toBeGreaterThan(30);
@@ -412,6 +414,7 @@ test.skipIf(!CHROME)('390px: the bar is 22px wide to a finger; a tap 30px left o
 	expect(await tab.eval(`!(${SHOWN})`)).toBe(true);
 	await tab.swipe(bar.right - 10, bar.y, 0, { steps: 1, ms: 50 });
 	await tab.until(`${SHOWN}`, 'the list opened by a tap 10px in');
+	await tab.until(`document.querySelector('${BLOCK}').getBoundingClientRect().right === ${bar.right - 12}`, 'the list beside the handle');
 	const listed = await boxOf();
 	expect(listed.right).toBe(bar.right - 12);
 	expect((await barBox()).left).toBe(listed.right);
@@ -425,6 +428,39 @@ test.skipIf(!CHROME)('390px: a touch outside the open list closes it', async () 
 	await tab.until(`!(${SHOWN})`, 'the list closed by the outside touch');
 	expect(await tab.eval(FITS)).toBe(true);
 }, TEST_MS);
+
+// #747: open, the bar shrinks from 22px to its 12px handle and the list takes the freed strip, so the click the
+// browser sends after a tap there landed on a row: it got focus, was picked and closed the list it had just opened.
+test.skipIf(!CHROME)('390px: a tap anywhere on the bar, the strip left of the handle too, opens the list and it stays open', async () => {
+	await visit(390);
+	const bar = await barBox();
+	const search = await tab.eval<string>('location.search');
+	for (let x = Math.ceil(bar.left); x < bar.right; x += 3) {
+		await tab.swipe(x, bar.y, 0, { steps: 1, ms: 50 });
+		await sleep(300);
+		expect({ x: x - bar.left, shown: await tab.eval<boolean>(SHOWN), picked: await tab.eval<boolean>(`!!document.querySelector('${CHIP}') || location.search !== ${JSON.stringify(search)} || !!document.activeElement?.closest('${BLOCK}')`) }).toEqual({ x: x - bar.left, shown: true, picked: false });
+		if (x === Math.ceil(bar.left)) await shot(tab, 'my-messages-390-tapped-left-of-handle');
+		await tab.swipe(40, 300, 0, { steps: 1 });
+		await tab.until(`!(${SHOWN})`, 'the list closed by the outside touch');
+	}
+	expect(tab.errors).toEqual([]);
+}, 60_000);
+
+test.skipIf(!CHROME)('1280px: a mouse click anywhere on the bar leaves the list open', async () => {
+	await visit(1280);
+	const bar = await barBox();
+	for (let x = Math.ceil(bar.left); x < bar.right; x += 3) {
+		await mouse(100, bar.y);
+		await tab.until(`!(${SHOWN})`, 'the list closed with the mouse away');
+		await mouse(x, bar.y);
+		await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y: bar.y, button: 'left', buttons: 1, clickCount: 1 });
+		await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y: bar.y, button: 'left', clickCount: 1 });
+		await sleep(200);
+		expect({ x: x - bar.left, shown: await tab.eval<boolean>(SHOWN) }).toEqual({ x: x - bar.left, shown: true });
+		if (x === Math.ceil(bar.left)) await shot(tab, 'my-messages-1280-clicked-bar');
+	}
+	expect(tab.errors).toEqual([]);
+}, 60_000);
 
 test.skipIf(!CHROME)('1280px: the conversation is read once on load for the bar, and a closed or open list stops reading while nothing changes', async () => {
 	const start = fixture.helperArgs('transcript').length;
