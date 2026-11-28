@@ -57,6 +57,35 @@
         "board/tests/unit/test-state-guard.test.ts",
         "board/tests/server/fallback.test.ts"
       ]
+    },
+    {
+      "paths": [
+        "board/src/lib/components/TaskProposals.svelte",
+        "board/src/lib/board/task-proposals.ts",
+        "board/src/lib/server/task-proposals.ts",
+        "board/src/lib/server/board.ts",
+        "board/src/routes/api/events/+server.ts",
+        "board/src/lib/board/client.ts",
+        "board/src/lib/board/live.svelte.ts",
+        "board/src/routes/+page.svelte",
+        "board/src/lib/components/AutomationTask.svelte",
+        "board/tests/fake-push.ts",
+        "board/tests/browser/task-proposals-page.test.ts",
+        "board/tests/server/task-proposal-live.test.ts"
+      ],
+      "tests": [
+        "board/tests/browser/task-proposals-page.test.ts",
+        "board/tests/server/task-proposal-live.test.ts",
+        "board/tests/unit/task-proposal-text.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/tests/fake-push.ts"
+      ],
+      "tests": [
+        "board/tests/server/automation-alerts.test.ts"
+      ]
     }
   ]
 }

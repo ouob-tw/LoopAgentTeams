@@ -131,3 +131,34 @@ export const APPROVAL_CHALLENGE_MS = 5 * 60 * 1000;
 export const PROPOSAL_EXPIRY_MS = 24 * 60 * 60 * 1000;
 export const PROPOSAL_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 export const PROPOSAL_ID = /^[a-f0-9]{12}$/;
+
+/** What a page holds of the 任務提案 waiting: the list, and the board's own address, where alone
+ *  its passkey works (null when the board has none set). Sent on the event stream as `proposals`. */
+export interface ProposalsSnapshot {
+	proposals: PendingProposal[];
+	origin: string | null;
+}
+
+/** The proposer's name and client: <名稱>（<client>）. */
+export const proposerName = (proposer: Pick<Proposer, 'name' | 'client'>) => `${proposer.name}（${proposer.client === 'codex' ? 'Codex' : 'Claude'}）`;
+/** The verified proposer as a card and a push name them: 已查證：<名稱>（<client>）. */
+export const VERIFIED = '已查證：';
+export const proposerText = (proposer: Pick<Proposer, 'name' | 'client'>) => VERIFIED + proposerName(proposer);
+
+/** The push for a new proposal: a set sentence and who proposed it, never the task, its command or a
+ *  path, as it may show on a locked screen. Its click opens the board at the proposals. */
+export function proposalPush(proposal: Pick<PendingProposal, 'id' | 'proposer'>) {
+	const role = proposal.proposer.role === 'controller' ? ` · ${ROLE_LABELS.controller}` : '';
+	return { title: '任務提案待核准', body: `有一筆新的任務提案等你核准\n${proposerText(proposal.proposer)}${role}`, alert: `task-proposal-${proposal.id}` };
+}
+
+/** How long a proposal has before it expires, as its card says it: 剩 23 時 12 分, 剩 8 分. */
+export function timeLeftText(expiresAt: string, now: number): string {
+	const minutes = Math.max(0, Math.floor((Date.parse(expiresAt) - now) / 60_000));
+	if (minutes < 1) return '即將過期';
+	const hours = Math.floor(minutes / 60);
+	return hours ? `剩 ${hours} 時 ${String(minutes % 60).padStart(2, '0')} 分` : `剩 ${minutes} 分`;
+}
+
+/** Where the proposal window was moved to on a wide screen, kept in this browser. */
+export const PROPOSALS_WINDOW_KEY = 'lat-board-proposals-window';

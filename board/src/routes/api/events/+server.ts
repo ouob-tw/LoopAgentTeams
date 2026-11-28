@@ -3,7 +3,7 @@ import { getBoard } from '#lib/server/board.ts';
 import type { RequestHandler } from './$types';
 
 /** Event stream: `board` carries a full snapshot, `quota` the 額度 tab's reading, `pd` pd's
- *  waiting requests, `usage-style` how the usage line reads, `translate-mode` whether
+ *  waiting requests, `proposals` the 任務提案 waiting, `usage-style` how the usage line reads, `translate-mode` whether
  *  conversations open translated, `automation` the 自動化 tab's tasks, `alerts` its red cards, `unattended-settings` that
  *  an unattended setting or grant changed, `ping` keeps the
  *  connection alive, `unpaired` tells a revoked device to go back to the login screen. */
@@ -37,6 +37,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			if (quota) send('quota', JSON.stringify(quota));
 			const pd = board.pd();
 			if (pd) send('pd', JSON.stringify(pd));
+			send('proposals', JSON.stringify(board.proposals()));
 			send('usage-style', JSON.stringify(board.usageStyle()));
 			send('translate-mode', JSON.stringify(board.translateMode()));
 			send('automation', JSON.stringify(board.automation.snapshot()));

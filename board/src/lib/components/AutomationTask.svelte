@@ -138,6 +138,10 @@
 			詳細資料<span class="chevron" class:open={details}><ChevronDown size="1em" /></span>
 		</button>
 	</header>
+	{#if task.source}
+		<!-- An agent's 任務提案 the user approved with the board's passkey: where the task came from. -->
+		<p class="source" data-source>由 {task.source.proposer.name} 提出、{at.full(Date.parse(task.source.approvedAt))} 以 passkey 核准</p>
+	{/if}
 	{#if view.missed.length}
 		<section class="missed" data-missed={view.missed.length}>
 			<b>{task.name}：{view.missed.length === 1 ? '本期錯過' : `錯過 ${view.missed.length} 期`}</b>
@@ -207,7 +211,7 @@
 				<dt>資料夾</dt>
 				<dd class="mono">{task.agent.folder}</dd>
 				<dt>任務說明檔</dt>
-				<dd class="mono">{task.agent.brief}</dd>
+				<dd class="mono">{task.agent.brief}{#if task.source?.brief && task.source.brief.path === task.agent.brief}<span class="approved-copy">（核准時的版本）</span>{/if}</dd>
 				<dt>回報方式</dt>
 				<dd data-report>{task.agent.report === 'demo' ? 'DEMO 網頁' : '口頭'}</dd>
 				{#if task.agent.unattended}
@@ -447,6 +451,15 @@
 		align-items: center;
 		color: var(--accent);
 		font-weight: 700;
+	}
+	.source {
+		margin: 0;
+		color: var(--muted);
+		overflow-wrap: anywhere;
+	}
+	.approved-copy {
+		font-family: var(--sans);
+		color: var(--muted);
 	}
 	.notice {
 		margin: 0;

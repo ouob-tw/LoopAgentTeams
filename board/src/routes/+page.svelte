@@ -40,6 +40,7 @@
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
 	import PdPending from '#lib/components/PdPending.svelte';
+	import TaskProposals from '#lib/components/TaskProposals.svelte';
 	import { pdLooking } from '#lib/board/pd-look.svelte.ts';
 	import { pdNotice, type PdRequest } from '#lib/board/pd.ts';
 	import QuotaList from '#lib/components/QuotaList.svelte';
@@ -237,9 +238,16 @@
 	/** The pd requests waiting, in the window's title too while there are any. */
 	const pdWaiting = $derived(board.pd?.snapshot.ok ? board.pd.snapshot.requests.length : 0);
 	const pdTrouble = $derived(board.pd ? pdNotice(board.pd.snapshot) : null);
+	/** The 任務提案 waiting for the user's passkey: counted in the window's title with pd's. */
+	const proposalsWaiting = $derived(board.proposals?.proposals.length ?? 0);
 	$effect(() => {
-		document.title = (pdWaiting ? `(${pdWaiting}) ` : '') + 'LAT 看板';
+		const waiting = pdWaiting + proposalsWaiting;
+		document.title = (waiting ? `(${waiting}) ` : '') + 'LAT 看板';
 	});
+	let taskProposals = $state<ReturnType<typeof TaskProposals>>();
+	/** Whether the proposal window is open rather than folded to its badge. */
+	let proposalsOpen = $state(true);
+	let proposalsBanner = $state<HTMLElement>();
 	let pdPending = $state<ReturnType<typeof PdPending>>();
 	/** Whether the pd window is open rather than folded to its badge. */
 	let pdOpen = $state(true);
@@ -667,6 +675,18 @@
 				lookable={(item) => pdCaller(item) !== null}
 				onlook={lookAtCaller}
 			/>
+			<!-- The 任務提案 window: the same place and sheet as pd's, a step lower when both are open. -->
+			<TaskProposals
+				bind:this={taskProposals}
+				bind:open={proposalsOpen}
+				proposals={board.proposals}
+				onaway={() => (proposalsBanner ?? detail).focus({ preventScroll: true })}
+				onopentask={(id) => {
+					navigation.setMiddle('automation');
+					openTask(id);
+					if (!matchMedia('(min-width: 761px)').matches) proposalsOpen = false;
+				}}
+			/>
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
 			     views, as the list they switch has no panel of its own around it. When the row does not
 			     fit the column it stays in the page, out of sight and out of the accessibility tree, only
@@ -790,6 +810,15 @@
 					{#if (pdWaiting || pdTrouble) && !pdOpen}
 						<button type="button" class="pd-banner" bind:this={pdBanner} onclick={() => void pdPending?.reveal()}
 							>{pdTrouble ?? 'pd 待核准'}{#if pdWaiting}{' '}<span class="count">{pdWaiting}</span>{/if}<span class="see">查看 ›</span></button
+						>
+					{/if}
+					{#if proposalsWaiting && !proposalsOpen}
+						<button
+							type="button"
+							class="pd-banner proposals-banner"
+							class:second={(pdWaiting || pdTrouble) && !pdOpen}
+							bind:this={proposalsBanner}
+							onclick={() => void taskProposals?.reveal()}>任務提案待核准 <span class="count">{proposalsWaiting}</span><span class="see">查看 ›</span></button
 						>
 					{/if}
 				</div>
@@ -1066,7 +1095,8 @@
 	/* The pd window floats over the middle column at first, from its top to the command line, and is
 	   never narrower than its smallest width; once dragged or resized it carries its own place. It
 	   stays clear of the roster's and the command line's pop-ups and of the toasts. */
-	.inbox > :global(.pd) {
+	.inbox > :global(.pd),
+	.inbox > :global(.tp) {
 		position: fixed;
 		top: 0.5rem;
 		bottom: calc(var(--dock-h, 0px) + 0.5rem);
@@ -1074,8 +1104,15 @@
 		width: max(360px, calc(var(--col-inbox) - 1rem));
 		z-index: 25;
 	}
+	/* Both open: the proposal window a step lower and to the right, so pd's heading still shows. */
+	.inbox:has(> :global(.pd)) > :global(.tp) {
+		top: 3.5rem;
+		left: calc(var(--col-roster) + 1.5rem);
+		z-index: 26;
+	}
 	@media (min-width: 761px) {
-		.testing .inbox > :global(.pd) {
+		.testing .inbox > :global(.pd),
+		.testing .inbox > :global(.tp) {
 			top: 2.4rem;
 		}
 	}
@@ -1474,6 +1511,10 @@
 		font-weight: 400;
 		color: var(--muted);
 	}
+	/* Under pd's strip when both are folded. */
+	.pd-banner.second {
+		top: calc(100% + var(--pd-banner-h));
+	}
 	:global(:root[data-theme='light']) .pd-banner {
 		background: var(--bg);
 		border-bottom-width: 2px;
@@ -1670,7 +1711,9 @@
 			display: flex;
 		}
 		/* A sheet over whatever screen is shown, full width above the command line. */
-		.inbox > :global(.pd) {
+		.inbox > :global(.pd),
+		.inbox > :global(.tp),
+		.inbox:has(> :global(.pd)) > :global(.tp) {
 			top: auto;
 			left: 0;
 			right: 0;
@@ -1680,15 +1723,18 @@
 			border-radius: calc(var(--radius) + 4px) calc(var(--radius) + 4px) 0 0;
 		}
 		/* A content screen hides the middle column: its box goes, so the sheet in it still shows. */
-		.viewing .inbox:has(> :global(.pd)) {
+		.viewing .inbox:has(> :global(:is(.pd, .tp))) {
 			display: contents;
 		}
-		.viewing .inbox:has(> :global(.pd)) > :global(:not(.pd)) {
+		.viewing .inbox:has(> :global(:is(.pd, .tp))) > :global(:not(.pd, .tp)) {
 			display: none;
 		}
-		/* Room under the bar for the strip that hangs from it. */
+		/* Room under the bar for the strips that hang from it. */
 		.topbar:has(.pd-banner) {
 			margin-bottom: var(--pd-banner-h);
+		}
+		.topbar:has(.pd-banner.second) {
+			margin-bottom: calc(2 * var(--pd-banner-h));
 		}
 		/* Under the test device's band, which stays on top. */
 		.testing .topbar {

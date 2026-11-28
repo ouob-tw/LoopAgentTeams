@@ -533,6 +533,9 @@ export function createTaskProposals(options: {
 	taskExists?(taskId: string): boolean;
 	/** An approval was found damaged and ended 核准失敗: the user is told (a push). */
 	damaged?(id: string): void;
+	/** The waiting list may have changed: a proposal came, was withdrawn, decided or swept. The pages
+	 *  are told from this (`proposals` on the event stream). */
+	changed?(): void;
 	sweepMs?: number;
 }): TaskProposals {
 	const notifier = createProposalNotifier({ dir: options.dir, now: options.now, config: options });
@@ -543,8 +546,21 @@ export function createTaskProposals(options: {
 	let restarts = 0;
 	let restartTimer: ReturnType<typeof setTimeout> | undefined;
 
-	/** The board's reply to one verified request from the acceptor. */
+	const changed = () => {
+		try {
+			options.changed?.();
+		} catch (error) {
+			log('ERROR', 'board.proposals', 'task_proposal_publish_failed', exceptionFields(error));
+		}
+	};
+
+	/** The board's reply to one verified request from the acceptor; the pages hear of it after. */
 	function replyTo(request: any): AcceptorReply {
+		const reply = answer(request);
+		changed();
+		return reply;
+	}
+	function answer(request: any): AcceptorReply {
 		try {
 			if (request.op === 'submit') return store.submit(request.proposer, request.proposal);
 			if (request.op === 'withdraw') return store.withdraw(request.proposer, request.id);
@@ -606,7 +622,10 @@ export function createTaskProposals(options: {
 	// Before anything new is sent: a message the last board was sending is not known to have gone.
 	notifier.settleInterrupted();
 	store.sweep();
-	const sweeper = setInterval(() => store.sweep(), options.sweepMs ?? 60_000);
+	const sweeper = setInterval(() => {
+		store.sweep();
+		changed();
+	}, options.sweepMs ?? 60_000);
 	sweeper.unref?.();
 
 	return {
@@ -615,11 +634,17 @@ export function createTaskProposals(options: {
 		submit: store.submit,
 		withdraw: store.withdraw,
 		challenge: approvals.challenge,
-		approve: approvals.approve,
+		async approve(id, input, device, https) {
+			const reply = await approvals.approve(id, input, device, https);
+			changed();
+			return reply;
+		},
 		reject(id, input, device) {
 			if (device.test) return TEST_DEVICE_REFUSED;
 			if (input !== null && input !== undefined && (typeof input !== 'object' || Array.isArray(input))) return { status: 400, body: { error: 'bad-request' } };
-			return answerOf(store.reject(id, (input as { reason?: unknown } | null)?.reason, device.id));
+			const reply = answerOf(store.reject(id, (input as { reason?: unknown } | null)?.reason, device.id));
+			changed();
+			return reply;
 		},
 		sweep: store.sweep,
 		idle: notifier.idle,
