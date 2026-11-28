@@ -3,12 +3,13 @@
 // is taken (linked into place, like a result) as 通知中 before anything is sent, then rewritten to
 // 已通知 or 通知失敗; a board that restarts and finds 通知中 never sends again and records 通知結果不明.
 // The result file stays what counts; the agent's query command reads it whatever happened here.
+// Once the 7-day cleanup has removed it, nothing more is recorded (#767).
 //
 // The proposer is found by the HCOM session the acceptor verified, not by its name: hcom's list must
 // have exactly one agent with that session, and the message goes to that agent's name now (so a
 // rename still reaches it). None, several, or no session kept, and nothing is sent: a name alone may
 // belong to another agent by now.
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { NOTIFIED, PROPOSAL_ID, RESULT_LABELS, type NotifyFile, type ResultFile } from '../board/task-proposals.ts';
 import { writeAtomic, writeFirst } from './automation.ts';
@@ -36,6 +37,7 @@ export interface ProposalNotifier {
 const SENDER = 'lat-board';
 
 export const notifyPath = (dir: string, id: string) => join(dir, `${id}.notify.json`);
+export const resultPath = (dir: string, id: string) => join(dir, `${id}.result.json`);
 
 /** The message: the proposal, its result and the task or reason, and how to look it up; never the
  *  brief or the task's command. */
@@ -61,6 +63,11 @@ export function createProposalNotifier(options: { dir: string; now(): number; co
 
 	function record(id: string, fields: Pick<NotifyFile, 'status' | 'to' | 'reason'>) {
 		const file: NotifyFile = { version: 1, id, attempt: 1, at: stamp(), ...fields };
+		// The cleanup and this run without a pause, so it cannot clear between the check and the write.
+		if (!existsSync(resultPath(dir, id))) {
+			log('INFO', 'board.proposals', 'task_proposal_notify_unrecorded', { proposal_id: id, status: fields.status });
+			return;
+		}
 		try {
 			writeAtomic(notifyPath(dir, id), JSON.stringify(file, null, '\t') + '\n');
 		} catch (error) {

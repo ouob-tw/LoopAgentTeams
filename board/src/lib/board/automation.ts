@@ -4,6 +4,7 @@
 // Asia/Taipei whatever the host's zone, times are kept as UTC milliseconds, and the page only words
 // what the server sent.
 import type { UnattendedScope } from './unattended.ts';
+import type { EventSettings, EventTaskView, RunHandoff } from './event-tasks.ts';
 
 /** Monday is 1, Sunday 7: a week runs Monday to Sunday and a weekly window never wraps past Sunday. */
 export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -102,6 +103,12 @@ export interface AutomationTaskInput {
 	command?: CommandSpec;
 	agent?: AgentSpec;
 	review: ReviewSpec;
+	/** 觸發方式: absent is 週期 (every task before #763, read as it is); `event` is a 事件任務, made only
+	 *  from an approved controller's proposal. An event task is an agent task whose run is its 開新
+	 *  Agent handoff; its `schedule` and `time` are fixed fillers nothing schedules by. */
+	trigger?: 'event';
+	/** Set exactly when `trigger` is `event`. */
+	event?: EventSettings;
 }
 
 /** Where a task came from when it was not the user's own 新增任務: an agent's 任務提案 the user
@@ -130,8 +137,9 @@ export interface AutomationTask extends AutomationTaskInput {
 	source?: TaskSource;
 }
 
-/** 自動、手動、預覽、沿用原紀錄. */
-export type RunTrigger = 'auto' | 'manual' | 'preview' | 'carried';
+/** 自動、手動、預覽、沿用原紀錄、事件: `event` is an event task's handoff, whatever caused it (its
+ *  `handoff.event.cause`). */
+export type RunTrigger = 'auto' | 'manual' | 'preview' | 'carried' | 'event';
 
 /** `skipped`: an automatic try came due while the task still ran; it is recorded and counts as the day's try. */
 export type RunStatus = 'running' | 'success' | 'failed' | 'timeout' | 'stopped' | 'config-error' | 'quota' | 'skipped';
@@ -195,6 +203,8 @@ export interface AutomationRun {
 	fix?: RunFix;
 	/** Once the agent replied: the first check, while `review` is the second, final one. */
 	firstReview?: RunReview;
+	/** An event task's handoff attempt (#763): written before its agent is launched. */
+	handoff?: RunHandoff;
 	/** A check made before the schedule runs a period again after a run of it failed (#751): it
 	 *  starts no task agent. Success once it found the period's results there; skipped otherwise,
 	 *  and the rerun follows. */
@@ -335,6 +345,8 @@ export interface AutomationTaskView {
 	/** An agent task whose client has not trusted its folder: each run stops at the client's trust
 	 *  question (#703). Absent when trusted or when the client's settings cannot tell. */
 	folderUntrusted?: true;
+	/** An event task's wait and what it offers; absent for a 週期 task. */
+	event?: EventTaskView;
 }
 
 /** A task file the board could not read: shown as an error, never taken for an empty task. */
@@ -687,7 +699,8 @@ export const TRIGGER_TEXT: Record<RunTrigger, string> = {
 	auto: '自動',
 	manual: '手動',
 	preview: '預覽',
-	carried: '沿用原紀錄'
+	carried: '沿用原紀錄',
+	event: '事件'
 };
 
 /** Formats a time in the given zone (Asia/Taipei for the board): 11/05 09:00, or 09:00 alone. */

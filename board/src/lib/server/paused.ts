@@ -3,6 +3,11 @@
 // files to leave a paused agent alone, so the format is shared: `session_id`, `hcom_name`, `client`,
 // `pane` (its Herdr pane, or null) and `paused_at` (UTC ISO 8601). A record is the only way back to
 // the agent's HCOM name, so the board removes one only when it knows the pause is over.
+//
+// 事件等待 (#764) is a second kind in the same folder and format, with `reason: "event-task"` and the
+// event task's `task_id`: a 接回原主控 task's controller the board closed until its event. The
+// watcher reads it as any pause. The reads' cleanup here (the session on its link again, its pane
+// gone) leaves it alone, and so does closing the agent: only the event task removes it.
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HerdrAgentList } from './agents.ts';
@@ -16,7 +21,16 @@ export interface PauseRecord {
 	client: string;
 	pane: string | null;
 	paused_at: string;
+	/** Set on a 事件等待 record only. */
+	reason?: typeof EVENT_TASK_REASON;
+	task_id?: string;
 }
+
+export const EVENT_TASK_REASON = 'event-task';
+
+/** A 事件等待 record: removed by its event task alone. */
+export const isEventWait = (record: PauseRecord | undefined): record is PauseRecord & { reason: typeof EVENT_TASK_REASON; task_id: string } =>
+	record?.reason === EVENT_TASK_REASON && typeof record.task_id === 'string';
 
 /** A session ID as a file name: nothing that leaves the folder. */
 const safeId = (sessionId: string) => /^[\w-]+$/.test(sessionId);
@@ -29,7 +43,8 @@ function isRecord(value: unknown): value is PauseRecord {
 		typeof record.client === 'string' &&
 		(record.pane === null || typeof record.pane === 'string') &&
 		typeof record.paused_at === 'string' &&
-		!Number.isNaN(Date.parse(record.paused_at))
+		!Number.isNaN(Date.parse(record.paused_at)) &&
+		(record.reason === undefined || (record.reason === EVENT_TASK_REASON && typeof record.task_id === 'string'))
 	);
 }
 
@@ -69,6 +84,11 @@ export function clearPause(dir: string, sessionId: string): void {
 	if (safeId(sessionId)) rmSync(join(dir, `${sessionId}.json`), { force: true });
 }
 
+/** Remove an ordinary pause record; a 事件等待 one stays. */
+export function clearOrdinaryPause(dir: string, sessionId: string): void {
+	if (!isEventWait(readPauses(dir).get(sessionId))) clearPause(dir, sessionId);
+}
+
 /** hcom's statuses of an agent whose link works; `launching` and `inactive` are not one yet, or no
  *  longer (a Codex `!hcom start` registers, then fails to bind). */
 const CONNECTED = new Set(['listening', 'active', 'blocked']);
@@ -92,13 +112,14 @@ export const pausing = new Set<string>();
  * (asked of Herdr's pane list only when its agent list no longer has it). A list that cannot be read
  * ends nothing, nor does one asked for before the record was written (`listedAt`, real clock
  * milliseconds) or while its pause is under way. A record that cannot be removed stays, to be tried
- * again at the next read.
+ * again at the next read. A 事件等待 record is never ended here: its controller is closed on purpose,
+ * and is resumed by its event task, which removes it.
  */
 export async function settlePauses(config: BoardConfig, hcom: AgentList, herdr: HerdrAgentList, listedAt: number, askHerdr = true, hookless: Set<string> = new Set()): Promise<Map<string, PauseRecord>> {
 	const records = readPauses(config.pausedDir);
 	for (const record of [...records.values()]) {
 		const id = record.session_id;
-		if (pausing.has(id) || !(Date.parse(record.paused_at) < listedAt)) continue;
+		if (isEventWait(record) || pausing.has(id) || !(Date.parse(record.paused_at) < listedAt)) continue;
 		let over = hcom.ok && linkedAgain(hcom.agents, id) !== undefined && !(record.pane && hookless.has(record.pane));
 		if (!over && askHerdr && herdr.ok && record.pane && !herdr.agents.some((agent) => agent.sessionId === id || agent.pane === record.pane)) {
 			const pane = await paneExists(config, record.pane);

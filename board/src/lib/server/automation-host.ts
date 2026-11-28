@@ -8,10 +8,13 @@ import type { AgentHost, Cut } from './automation-agent.ts';
 import type { Board } from './board.ts';
 import { backgroundGoesOn } from './claude-background.ts';
 import type { BoardConfig } from './config.ts';
-import { killAgent, launchBlocked, listAgents, resumeAgent, stopAgent } from './hcom.ts';
+import { killAgent, launchBlocked, listAgents, resumeAgent, sendMessage, stopAgent } from './hcom.ts';
 import { readProvider, readTranscript } from './helper.ts';
 import { automationWorkspace, readScreen } from './herdr.ts';
 import { startLaunch } from './launch.ts';
+
+/** The sender an event task's message to its controller carries (#764). */
+export const EVENT_SENDER = 'lat-board';
 
 /** hcom's launch failed on its own database lock (#657): the wait before each retry, so at most three. */
 export const LAUNCH_LOCK_WAITS_MS: readonly number[] = [60_000, 120_000, 240_000];
@@ -175,6 +178,15 @@ export function boardAgentHost(config: BoardConfig, board: () => Board, retry: {
 			// Not closable from the Herdr tab (not listed there): hcom ends it.
 			const killed = await killAgent(config, name);
 			return killed.failure ? `關不掉這個 Agent：${why ? `${why}；` : ''}hcom kill ${killed.failure}` : null;
+		},
+		async resumeController(sessionId, workspace, prompt) {
+			if (!workspace) return { outcome: 'failed', name: null, reason: '不知道原主控開在哪個 Herdr 工作區' };
+			const resumed = await resumeAgent(config, { sessionId, herdrWorkspace: workspace, prompt, extraArgs: [] });
+			return { outcome: resumed.outcome === 'started' ? 'started' : resumed.outcome === 'failed' ? 'failed' : 'pending', name: resumed.hcomName, reason: resumed.reason };
+		},
+		async message(name, text) {
+			const sent = await sendMessage(config, name, text, EVENT_SENDER);
+			return sent.ok ? sent : { ok: false, reason: sent.reason, unsure: sent.timedOut };
 		},
 		async resume(sessionId, workspace, prompt) {
 			if (!workspace) return '不知道它原本開在哪個 Herdr 工作區';

@@ -190,6 +190,21 @@ export function killAgent(config: BoardConfig, name: string): Promise<ExternalRe
 	return runCommand(config.hcomCommand, ['kill', name], { timeoutMs: config.hcomListTimeoutMs });
 }
 
+/** Send one HCOM message as `from` to the agent with this exact name, the text on standard input;
+ *  hcom's receipt (`--json`) gives the message's event ID, the evidence it was sent. A send whose
+ *  receipt has no ID did go out, so it is not taken for a failure: `messageId` is null then. */
+export async function sendMessage(config: Pick<BoardConfig, 'hcomCommand' | 'hcomListTimeoutMs'>, name: string, text: string, from: string): Promise<{ ok: true; messageId: string | null } | { ok: false; reason: string; timedOut: boolean }> {
+	const run = await runCommand(config.hcomCommand, ['send', `@${name}`, '--json', '--intent', 'inform', '--from', from], { input: text, env: ownEnv(), timeoutMs: config.hcomListTimeoutMs });
+	if (run.failure) return { ok: false, reason: `hcom 傳送失敗：${run.failure}`, timedOut: run.timedOut };
+	let id: unknown = null;
+	try {
+		id = (JSON.parse(run.stdout.trim().split('\n').at(-1) ?? '') as { event_id?: unknown })?.event_id;
+	} catch {
+		// No receipt to read: sent all the same.
+	}
+	return { ok: true, messageId: typeof id === 'number' || (typeof id === 'string' && id) ? String(id) : null };
+}
+
 /** Take one agent off hcom without closing it: its process and Herdr pane stay. Whether it left
  *  hcom's list is for the caller to check. */
 export function stopAgent(config: BoardConfig, name: string): Promise<ExternalResult> {

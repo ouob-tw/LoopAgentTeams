@@ -42,7 +42,9 @@ import { createPdPoller, readPdPending } from './pd.ts';
 import { loadUsageStyle, saveUsageStyle } from './usage-style.ts';
 import type { UsageStyle } from '../board/usage.ts';
 import { loadTranslateMode, saveTranslateMode } from './translate-mode.ts';
-import { createAutomation, type Automation } from './automation.ts';
+import { createAutomation, eventNoticeText, type Automation, type AutomationEvent } from './automation.ts';
+import { closeAgent } from './agent-control.ts';
+import type { EventAway } from '../board/event-tasks.ts';
 import { createTaskProposals, type TaskProposals } from './task-proposals.ts';
 import { proposalPush, type ProposalsSnapshot } from '../board/task-proposals.ts';
 import { boardAgentHost } from './automation-host.ts';
@@ -334,11 +336,26 @@ function createBoard(): Board {
 		}
 	}
 
+	/** An event task's push: the task's name and one sentence, never the event's details. */
+	async function pushEventNotice(event: Extract<AutomationEvent, { type: 'event-notice' }>) {
+		const body = eventNoticeText(event.notice, event.controller);
+		try {
+			const devices = await push.send({ title: event.task.name, body, alert: `event-task-${event.task.id}` });
+			log('INFO', 'board.push', 'event_task_pushed', { task_id: event.task.id, notice: event.notice, devices, ...(event.controller ? { controller: event.controller } : {}) });
+		} catch (error) {
+			log('ERROR', 'board.push', 'push_send_failed', { task_id: event.task.id, notice: event.notice, ...exceptionFields(error) });
+		}
+	}
+
 	const automation = createAutomation({
 		dir: join(config.stateDir, 'automation'),
 		stateDir: config.stateDir,
 		latDir: config.latDir,
 		trustFiles: config.trustFiles,
+		// Event tasks look their process up where the 資源 tab reads processes.
+		procDir: config.procRoot,
+		// 事件等待 records go where the board's own pauses and LAT's stall watcher are (#764).
+		pausedDir: config.pausedDir,
 		now: config.now,
 		tickMs: config.automationTickMs,
 		publish: (snapshot) => {
@@ -346,6 +363,8 @@ function createBoard(): Board {
 		},
 		// A run that ended badly, or periods found missed, make a red card and a push.
 		notify: (event) => {
+			// An event task's notice is a push of its own, with no red card (#763).
+			if (event.type === 'event-notice') return void pushEventNotice(event);
 			if (event.type === 'missed')
 				log('WARNING', 'automation', 'automation periods missed', { task_id: event.task.id, periods: event.periods.map((entry) => entry.period), count: event.periods.length });
 			const alert = alerts.record(event);
@@ -374,8 +393,17 @@ function createBoard(): Board {
 		latDir: config.latDir,
 		stateDir: config.stateDir,
 		passkeySite: config.passkeySite,
+		// Event tasks look their process up where the 資源 tab reads processes.
+		procDir: config.procRoot,
 		// An approved proposal becomes a task through the automation's own checks and files.
 		createTask: (approval) => automation.createApproved(approval),
+		// 為事件任務暫停並關閉自己 (#764): the record now, the client closed once the answer is back.
+		away: (proposer, taskId) => {
+			const agent = sources?.agents.find((entry) => entry.id !== null && entry.id === proposer.sessionId);
+			const went = automation.away(proposer, taskId, { pane: agent?.herdr.pane ?? null, workspace: agent?.herdr.workspace ?? null, closeAfterMs: config.eventAwayCloseMs, close: closeAway });
+			if (!went.ok) return { ok: false, error: went.error, reason: went.message };
+			return { ok: true, id: went.task.id, status: 'away', existed: went.existed };
+		},
 		taskExists: (taskId) => automation.snapshot().tasks.some((entry) => entry.task.id === taskId),
 		damaged: (id) => {
 			push
@@ -406,6 +434,24 @@ function createBoard(): Board {
 		for (const stream of streams) stream.send('proposals', text);
 	}
 	announceProposals();
+
+	/** Close a controller that went away for its event task, as the board's 關閉 Agent does; its
+	 *  事件等待 record stays. One that cannot be closed is pushed to the user, the record kept: the
+	 *  event still reaches it, by an HCOM message while it runs. */
+	async function closeAway(away: EventAway) {
+		let reason: string | null = null;
+		try {
+			const closed = await closeAgent(board, away.sessionId);
+			reason = closed.body.ok ? null : (closed.body.reason ?? '原因不明');
+		} catch (error) {
+			reason = (error as Error).message;
+		}
+		if (reason === null) return void log('INFO', 'automation', 'event_task_away_closed', { task_id: away.taskId, controller: away.hcomName });
+		log('ERROR', 'automation', 'event_task_away_unclosed', { task_id: away.taskId, controller: away.hcomName, reason });
+		push
+			.send({ title: '事件任務', body: `主控 ${away.hcomName} 要為事件任務關閉自己，但看板沒能關掉它：${reason}`, alert: `event-task-${away.taskId}` })
+			.catch((error) => log('ERROR', 'board.push', 'push_send_failed', { task_id: away.taskId, ...exceptionFields(error) }));
+	}
 
 	// Tells the board-ask hook a board runs: without it the hook leaves the client's own menu.
 	touchHeartbeat(config.asksDir);
@@ -594,7 +640,8 @@ function createBoard(): Board {
 			ledgers: ledgers.ok ? new Map([...ledgers.ledgers].map(([id, read]) => [id, read.view])) : new Map(),
 			ledgersError: ledgers.ok ? null : ledgers.reason,
 			unattended: unattended.ok ? keptUnattended(listedAt, new Map([...unattended.views].map(([id, read]) => [id, read.view]))) : new Map(),
-			unattendedError: unattended.ok ? null : unattended.reason
+			unattendedError: unattended.ok ? null : unattended.reason,
+			aways: automation.aways()
 		};
 
 		if (!closed) sourceWatcher.sync(watchTargets());

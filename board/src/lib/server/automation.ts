@@ -53,6 +53,7 @@ import {
 	dateOf,
 	grantHours,
 	type TaskSource,
+	type TaskState,
 	type TaskUnattended,
 	type Weekday
 } from '../board/automation.ts';
@@ -76,6 +77,10 @@ import {
 import { appendSent, readLines, type AutomationTaskSave } from './sent-log.ts';
 import { createFolderTrust, type TrustFiles } from './folder-trust.ts';
 import { FIX_CONTINUE_MESSAGE, fixMessage, judgeReview, REVIEW_CONTINUE_MESSAGE, reviewBrief, reviewMessage, reviewTag } from './automation-review.ts';
+import { closingOf, deadlineOf, EVENT_STATE_TEXT, eventState, latestHandoff, type EventEnd, type EventOccurrence, type EventTaskState, type EventTaskView, type EventWait, type EventAway, type RunHandoff } from '../board/event-tasks.ts';
+import { clearPause, EVENT_TASK_REASON, isConnected, isEventWait, readPauses, writePause } from './paused.ts';
+import { checkEvent, handoffNote, lookAt, resumeNote, startWait, taipeiText } from './event-tasks.ts';
+import { log } from './log.ts';
 
 /** How much of a command's output is kept: its last part, which says how it ended. */
 export const OUTPUT_KEEP_CHARS = 32_000;
@@ -109,7 +114,31 @@ export type AutomationEvent =
 	| { type: 'asked'; task: AutomationTask; run: AutomationRun; index: number }
 	/** The question the run's agent waited on was answered: it goes on. */
 	| { type: 'answered'; task: AutomationTask; run: AutomationRun }
-	| { type: 'missed'; task: AutomationTask; periods: MissedPeriod[] };
+	| { type: 'missed'; task: AutomationTask; periods: MissedPeriod[] }
+	/** An event task's push (#763): a timeout handoff began, a handoff failed or its outcome is not
+	 *  known after a restart, or the task expired while paused. No red card. */
+	| { type: 'event-notice'; task: AutomationTask; notice: EventNotice; run?: AutomationRun; controller?: string };
+
+/** `controller-waiting` (#764): a 接回原主控 task ended or was deleted with its controller still
+ *  away; `expired-paused` names the controller too when it was. */
+export type EventNotice = 'deadline' | 'handoff-failed' | 'handoff-unknown' | 'expired-paused' | 'controller-waiting';
+/** An event task's push sentence. */
+export const EVENT_NOTICE_TEXT: Record<EventNotice, string> = {
+	deadline: '等到期限，事件沒有發生；看板照樣接手',
+	'handoff-failed': '接手失敗，請到任務頁按重試接手',
+	'handoff-unknown': '接手結果不明：看板在接手途中停止，請到任務頁確認',
+	'expired-paused': '已到期（暫停中），沒有接手',
+	'controller-waiting': '事件任務已結束'
+};
+
+/** The words a controller still away adds: the user decides whether to resume it or end its round. */
+export const controllerWaitingText = (name: string) => `主控 ${name} 仍在等待，事件任務已結束`;
+
+/** An event task's push sentence, with the away controller when there was one. */
+export function eventNoticeText(notice: EventNotice, controller?: string): string {
+	if (!controller) return EVENT_NOTICE_TEXT[notice];
+	return notice === 'controller-waiting' ? controllerWaitingText(controller) : `${EVENT_NOTICE_TEXT[notice]}；${controllerWaitingText(controller)}`;
+}
 
 export interface Automation {
 	snapshot(): AutomationSnapshot;
@@ -124,8 +153,15 @@ export interface Automation {
 	 *  written, a 500, which a later try may get past. */
 	createApproved(approval: Approval): { ok: true; task: AutomationTask; existed: boolean } | { ok: false; status: number; errors: FieldErrors };
 	setPaused(id: string, paused: boolean): AutomationTask | null;
-	/** 立即執行: refused while the same task runs. Resolves once the run has started, not ended. */
+	/** 立即執行: refused while the same task runs. Resolves once the run has started, not ended.
+	 *  An event task has 立即觸發 instead. */
 	runNow(id: string): Started;
+	/** 立即觸發: an event task waiting for its event hands over now, as on the event, recorded as
+	 *  使用者手動觸發. Refused in any other state. */
+	triggerNow(id: string): Started;
+	/** 重試接手: the event task's last handoff, 接手失敗 or 接手結果不明, tried again with the same
+	 *  event, as a new attempt. Refused while a handoff or its run is going. */
+	retryHandoff(id: string): Started;
 	/** 送出回覆: the answer to the question the task's run waits on, sent to its agent as a message
 	 *  from the user and kept in the run's record. Refused when nothing waits or it cannot be sent. */
 	reply(id: string, text: unknown): Promise<Started>;
@@ -139,12 +175,39 @@ export interface Automation {
 	/** 刪除任務: the task and everything kept for it (runs, missed periods, outputs, checker briefs).
 	 *  Refused while a run of it is unfinished (running, waiting on an answer, being checked). */
 	remove(id: string): { ok: true } | { ok: false; status: number; message: string };
+	/** 為事件任務暫停並關閉自己 (#764): the verified controller that proposed this 接回原主控 task goes
+	 *  away until its event: its away file and 事件等待 record are written (again, when it is away
+	 *  already: `existed`). `where.close` closes its client `closeAfterMs` later, unless by then it is
+	 *  no longer away or its event is already being handed to it; a delivery waits for that close. */
+	away(controller: AwayController, taskId: unknown, where: AwayPlace): Away;
+	/** The controllers away now, by session: the task each waits for. */
+	aways(): Map<string, { taskId: string; taskName: string }>;
 	/** The kept output of one run; null when there is none. */
 	output(taskId: string, runId: string): string | null;
 	/** Resolves once every run started so far has ended (tests and closing). */
 	idle(): Promise<void>;
 	close(): void;
 }
+
+/** The controller asking to go away, as the task-proposal acceptor verified it. */
+export interface AwayController {
+	name: string;
+	client: string;
+	role: string;
+	sessionId: string | null;
+}
+
+/** Where the controller ran when it went away, and how to close it. */
+export interface AwayPlace {
+	pane: string | null;
+	workspace: string | null;
+	closeAfterMs: number;
+	close(away: EventAway): Promise<void>;
+}
+
+export type Away =
+	| { ok: true; task: AutomationTask; away: EventAway; existed: boolean }
+	| { ok: false; status: number; error: 'not-found' | 'not-yours' | 'not-resume' | 'ended' | 'busy' | 'other-wait' | 'no-place' | 'board'; message: string };
 
 const ID = /^[a-z0-9-]{1,64}$/;
 const newId = () => randomBytes(5).toString('hex');
@@ -214,9 +277,21 @@ function taskUnattended(given: unknown, errors: FieldErrors): TaskUnattended | u
 	return { goal, done, scope };
 }
 
+/** How a task's fields are checked beyond the form's rules: `paths` checks folders and briefs
+ *  exist; an event task's `submit` and `approve` are its proposal arriving and its approval
+ *  (`checkEvent`). */
+export interface CheckMode {
+	paths?: boolean;
+	submit?: { at: number; procDir: string };
+	approve?: { at: number };
+}
+
 /** Check a form's fields; the task as it will be saved, or every field that is wrong. */
-export function validateTask(input: unknown, home = homedir(), { paths = true } = {}): { task: AutomationTaskInput } | { errors: FieldErrors } {
+export function validateTask(input: unknown, home = homedir(), mode: CheckMode = {}): { task: AutomationTaskInput } | { errors: FieldErrors } {
+	const { paths = true } = mode;
 	const body = (input && typeof input === 'object' ? input : {}) as Record<string, any>;
+	if (body.trigger === 'event') return validateEventTask(body, home, mode);
+	if (body.trigger !== undefined) return { errors: { trigger: '觸發方式要是週期（不填）或 event' } };
 	const errors: FieldErrors = {};
 
 	const name = text(body.name);
@@ -327,6 +402,78 @@ export function validateTask(input: unknown, home = homedir(), { paths = true } 
 	};
 }
 
+/** An event task's fields (#763): an agent task's name, limit and agent, which its 開新 Agent
+ *  handoff runs with, beside its event settings. No schedule, no unattended grant, no checker. */
+function validateEventTask(body: Record<string, any>, home: string, mode: CheckMode): { task: AutomationTaskInput } | { errors: FieldErrors } {
+	const errors: FieldErrors = {};
+	if (body.handoff === 'resume') return validateResumeTask(body, errors, mode);
+	const { trigger: _trigger, event: _event, deadlineMinutes: _deadline, repeat: _repeat, handoff: _handoff, ...fields } = body;
+	const base = validateTask({ ...fields, schedule: EVENT_SCHEDULE, time: EVENT_TIME, review: undefined }, home, { paths: mode.paths });
+	if ('errors' in base) Object.assign(errors, base.errors);
+	if (body.kind !== 'agent') errors.kind = '事件任務由開新 Agent 接手：kind 要是 agent';
+	if (body.agent?.unattended !== undefined && body.agent?.unattended !== null) errors.unattended = '事件任務開新 Agent 接手時不附無人模式授權';
+	if (body.review?.enabled === true) errors.review = '事件任務開新 Agent 接手時不附跑完後的檢查';
+	const event = checkEvent(body, errors, mode);
+	if (Object.keys(errors).length || !event || 'errors' in base) return { errors };
+	return { task: { ...base.task, trigger: 'event', event } };
+}
+
+/** A 接回原主控 event task (#764): its name and event settings only. The controller that proposed
+ *  it is the one handed back to, so there is no Agent to set up, no brief and no limit. */
+function validateResumeTask(body: Record<string, any>, errors: FieldErrors, mode: CheckMode): { task: AutomationTaskInput } | { errors: FieldErrors } {
+	const name = text(body.name);
+	if (!name) errors.name = '請填名稱';
+	else if (name.length > 80) errors.name = '名稱最多 80 個字';
+	if (body.kind !== undefined && body.kind !== 'agent') errors.kind = '接回原主控不用填 kind';
+	if (body.command !== undefined || body.agent !== undefined) errors.agent = '接回原主控接手的是提案的主控自己，不用填 agent 或 command';
+	if (body.review?.enabled === true) errors.review = '事件任務不附跑完後的檢查';
+	const event = checkEvent(body, errors, mode);
+	if (Object.keys(errors).length || !event) return { errors };
+	const review = { enabled: false, checklist: [], client: defaultReviewClient('agent'), model: DEFAULT_REVIEW_MODEL[defaultReviewClient('agent')], effort: 'medium' as const };
+	return { task: { name, schedule: EVENT_SCHEDULE, time: EVENT_TIME, limitMinutes: RESUME_LIMIT_MINUTES, kind: 'agent', review, trigger: 'event', event } };
+}
+
+/** What a 接回原主控 task keeps in the limit every task has: its handoff ends at the delivery, so
+ *  nothing is ever cut by it. */
+const RESUME_LIMIT_MINUTES = 1440;
+
+/** A saved event task as its proposal sent it: the event settings, kept together on the task
+ *  (`event: { event, deadlineMinutes, … }`), beside the other fields again, so it is checked as
+ *  one. Any other task as it is. */
+export function asProposed(task: AutomationTaskInput): Record<string, unknown> {
+	if (task?.trigger !== 'event' || !task.event || typeof task.event !== 'object') return task as unknown as Record<string, unknown>;
+	return { ...task, ...task.event };
+}
+
+/** What an event task keeps in the schedule fields every task has: nothing schedules by them. */
+const EVENT_SCHEDULE: AutomationSchedule = { type: 'daily' };
+const EVENT_TIME = '00:00';
+
+/** An event task cannot be edited (#758): deleted and proposed again instead. */
+export const EVENT_UNCHANGEABLE = '事件任務建立後不能修改；要改請刪除，讓主控重新提案，再用 passkey 核准';
+
+/** An event task's state as the pill every task has reads it. */
+const EVENT_TASK_STATE: Record<EventTaskState, TaskState> = {
+	waiting: 'waiting',
+	paused: 'paused',
+	handing: 'running',
+	running: 'running',
+	failed: 'failed',
+	unknown: 'failed',
+	done: 'done',
+	expired: 'done',
+	'expired-paused': 'done'
+};
+
+/** A 接回原主控 task (#764): it hands back to the controller that proposed it. */
+const resumes = (task: AutomationTask) => task.event?.handoff === 'resume';
+
+/** When an event task's wait and deadline start: its approval. */
+const waitStart = (task: AutomationTask) => {
+	const approved = task.source ? Date.parse(task.source.approvedAt) : NaN;
+	return Number.isNaN(approved) ? Date.parse(task.createdAt) : approved;
+};
+
 /** A task file as read back: every field as a saved task has it, or why it cannot be used. Folders
  *  and briefs that went missing since are not checked here: that is the run's settings error. */
 function parseTask(raw: string, file: string, home: string): AutomationTask | string {
@@ -339,7 +486,7 @@ function parseTask(raw: string, file: string, home: string): AutomationTask | st
 	if (!value || typeof value !== 'object') return '內容不是一個任務';
 	if (value.id !== file.replace(/\.json$/, '')) return '檔名和裡面的任務編號不一致';
 	for (const key of ['createdAt', 'updatedAt']) if (typeof value[key] !== 'string') return `少了 ${key}`;
-	const checked = validateTask(value, home, { paths: false });
+	const checked = validateTask(asProposed(value), home, { paths: false });
 	if ('errors' in checked) return `欄位不對：${Object.keys(checked.errors).join('、')}`;
 	return { ...checked.task, id: value.id, paused: value.paused === true, createdAt: value.createdAt, updatedAt: value.updatedAt, ...(isSource(value.source) ? { source: value.source } : {}) };
 }
@@ -485,6 +632,11 @@ export function createAutomation(options: {
 	/** The clients' settings files an agent task's folder trust is read from, never written;
 	 *  `~/.claude.json` and `~/.codex/config.toml` under `home` unless given. */
 	trustFiles?: TrustFiles;
+	/** Where an event task's process is looked up (`/proc` unless a test gives its own). */
+	procDir?: string;
+	/** The pause folder the board and LAT's stall watcher share: a 接回原主控 task's controller that
+	 *  closed itself to wait has its 事件等待 record there (#764). Without it none can. */
+	pausedDir?: string;
 }): Automation {
 	const { dir, now } = options;
 	const stateDir = options.stateDir ?? dirname(dir);
@@ -499,14 +651,26 @@ export function createAutomation(options: {
 	const approvedDir = join(dir, 'approved');
 	const approvedBrief = (taskId: string) => join(approvedDir, `${taskId}.md`);
 	const missedDir = join(dir, 'missed');
+	/** Event tasks' waits, one file each (`EventWait`). */
+	const eventsDir = join(dir, 'events');
+	const waitFile = (taskId: string) => join(eventsDir, `${taskId}.json`);
+	const procDir = options.procDir ?? '/proc';
+	/** 接回原主控 tasks' controllers away until their event, one file each (`EventAway`). */
+	const awayDir = join(dir, 'away');
+	const awayFile = (taskId: string) => join(awayDir, `${taskId}.json`);
+	/** The away controllers as their files say, by task: read once at the start, then kept here. */
+	const awayCache = new Map<string, EventAway>();
+	/** Closes of controllers that just went away, by task: a delivery waits for its task's. */
+	const closings = new Map<string, Promise<void>>();
 	/** When the scheduler last checked: periods that ended after it and by now are looked at for missed. */
 	const checkedFile = join(dir, 'checked-at.txt');
-	for (const folder of [runsDir, outputDir, missedDir]) mkdirSync(folder, { recursive: true, mode: 0o700 });
+	for (const folder of [runsDir, outputDir, missedDir, eventsDir, awayDir]) mkdirSync(folder, { recursive: true, mode: 0o700 });
 
 	const tasks = new Map<string, AutomationTask>();
 	let broken: BrokenTask[] = [];
 	const runs = new Map<string, AutomationRun[]>();
 	const missed = new Map<string, MissedPeriod[]>();
+	const waits = new Map<string, EventWait>();
 	/** Runs whose answer the board is sending now: what their agent's conversation shows meanwhile is
 	 *  that answer, not one typed in its terminal. */
 	const replying = new Set<string>();
@@ -555,8 +719,66 @@ export function createAutomation(options: {
 				tasks.set(task.id, task);
 				runs.set(task.id, readRuns(runsFile(task.id)));
 				missed.set(task.id, readMissed(missedFile(task.id)));
+				if (task.event) waits.set(task.id, readWait(task));
 			}
 		}
+	}
+
+	/** An event task's wait as its file says; one missing or unreadable starts again from now, so
+	 *  nothing before it counts. */
+	function readWait(task: AutomationTask): EventWait {
+		try {
+			const wait = JSON.parse(readFileSync(waitFile(task.id), 'utf8')) as EventWait;
+			if (wait?.version === 1 && typeof wait.since === 'number') return wait;
+		} catch {
+			// Started again below.
+		}
+		const fresh = startWait(task.event!.event, Math.max(now(), waitStart(task)));
+		writeWait(task.id, fresh);
+		return fresh;
+	}
+
+	function writeWait(taskId: string, wait: EventWait): void {
+		writeAtomic(waitFile(taskId), JSON.stringify(wait) + '\n');
+		waits.set(taskId, wait);
+	}
+
+	/** The controller away for this task, as its file says; null when there is none (or it cannot be read). */
+	function loadAway(taskId: string): EventAway | null {
+		try {
+			const away = JSON.parse(readFileSync(awayFile(taskId), 'utf8')) as EventAway;
+			if (away?.version === 1 && away.taskId === taskId && typeof away.sessionId === 'string' && typeof away.hcomName === 'string') return away;
+		} catch {
+			// None.
+		}
+		return null;
+	}
+	const readAway = (taskId: string): EventAway | null => awayCache.get(taskId) ?? null;
+
+	function writeAway(away: EventAway): void {
+		mkdirSync(awayDir, { recursive: true, mode: 0o700 });
+		writeAtomic(awayFile(away.taskId), JSON.stringify(away) + '\n');
+		awayCache.set(away.taskId, away);
+	}
+
+	/** The 事件等待 record of an away controller, written whole into the shared pause folder. */
+	function writeAwayPause(away: EventAway): void {
+		writePause(options.pausedDir!, { session_id: away.sessionId, hcom_name: away.hcomName, client: away.client, pane: away.pane, paused_at: away.pausedAt, reason: EVENT_TASK_REASON, task_id: away.taskId });
+	}
+
+	/** The controller is back or will not be: its away file and its 事件等待 record go (a record of
+	 *  another kind, or another task's, is left). The away it was, or null. */
+	function endAway(taskId: string, why: string): EventAway | null {
+		const away = readAway(taskId);
+		if (!away) return null;
+		if (options.pausedDir) {
+			const record = readPauses(options.pausedDir).get(away.sessionId);
+			if (isEventWait(record) && record.task_id === taskId) clearPause(options.pausedDir, away.sessionId);
+		}
+		rmSync(awayFile(taskId), { force: true });
+		awayCache.delete(taskId);
+		log('INFO', 'automation', 'event_task_away_ended', { task_id: taskId, controller: away.hcomName, why });
+		return away;
 	}
 
 	function record(run: AutomationRun, fields: Partial<AutomationRun> = run): AutomationRun {
@@ -592,9 +814,27 @@ export function createAutomation(options: {
 					const own = runs.get(task.id) ?? [];
 					const recorded = missed.get(task.id) ?? [];
 					const untrusted = folderUntrusted(task);
+					const event = eventView(task, own);
+					if (event) return { task, state: EVENT_TASK_STATE[event.state], nextAt: null, runs: own.slice(0, RUNS_SHOWN), missed: [], event, ...(untrusted ? { folderUntrusted: untrusted } : {}) };
 					return { task, state: taskState(task, own, at, recorded), nextAt: nextAutoAt(task, own, at), runs: own.slice(0, RUNS_SHOWN), missed: openMissed(recorded, own), ...(untrusted ? { folderUntrusted: untrusted } : {}) };
 				}),
 			broken
+		};
+	}
+
+	/** An event task's wait as the pages show it; undefined for a 週期 task. */
+	function eventView(task: AutomationTask, own: AutomationRun[]): EventTaskView | undefined {
+		const wait = task.event && waits.get(task.id);
+		if (!wait) return undefined;
+		const state = eventState(task.paused, wait, own, isOpen);
+		return {
+			state,
+			since: wait.since,
+			deadlineAt: deadlineOf(waitStart(task), task.event!),
+			...(wait.readError ? { readError: wait.readError } : {}),
+			...(wait.ended ? { ended: wait.ended } : {}),
+			canTrigger: state === 'waiting' && !busy(task.id),
+			canRetry: (state === 'failed' || state === 'unknown') && !busy(task.id)
 		};
 	}
 
@@ -621,7 +861,24 @@ export function createAutomation(options: {
 	const adoptedFixes: [AutomationTask, AutomationRun][] = [];
 	for (const [taskId, list] of runs) {
 		const task = tasks.get(taskId);
-		for (const run of list) {
+		for (let run of list) {
+			if (run.handoff?.status === 'handing' && task) {
+				// Stopped halfway through a handoff: never sent again. This attempt's own delivery
+				// evidence makes it 已接手; without it the outcome is not known, whatever hcom shows now.
+				const evidence = run.handoff.evidence ?? (run.sessionId ? { sessionId: run.sessionId } : undefined);
+				if (evidence && resumes(task)) {
+					// A delivery to the controller is its whole run: ended with its evidence.
+					run = record(run, { handoff: { ...run.handoff, status: 'handed', evidence, settledAt: now(), next: startWait(task.event!.event, now()) }, ...(run.status === 'running' ? { status: 'success', endedAt: now() } : {}) });
+					continue;
+				}
+				if (evidence) run = record(run, { handoff: { ...run.handoff, status: 'handed', evidence, settledAt: now() } });
+				else {
+					const reason = '看板在接手途中停止，查不到這一次已送到的證據';
+					const unknown = record(run, { handoff: { ...run.handoff, status: 'unknown', reason, settledAt: now() }, ...(run.status === 'running' ? { status: 'failed', endedAt: now(), reason } : {}) });
+					options.notify?.({ type: 'event-notice', task, notice: 'handoff-unknown', run: unknown });
+					continue;
+				}
+			}
 			if (run.fix?.status === 'fixing' && task) {
 				if (options.agents && task.agent) adoptedFixes.push([task, run]);
 				else {
@@ -647,7 +904,54 @@ export function createAutomation(options: {
 			options.notify?.({ type: 'run-ended', task, run: cut });
 		}
 	}
+	rebuildAways();
 	lastSent = JSON.stringify({ ...snapshot(), revision: 0 });
+
+	/**
+	 * At the start, before anything else reads the pause folder again: each away controller's
+	 * 事件等待 record written again from its away file, so one the board was handing back when it
+	 * stopped is not taken for gone. One already handed back since it went away (the board stopped
+	 * before removing it) is ended instead; so is one whose task is gone or no longer waits.
+	 */
+	function rebuildAways(): void {
+		let names: string[] = [];
+		try {
+			names = readdirSync(awayDir).filter((name) => name.endsWith('.json'));
+		} catch {
+			return;
+		}
+		for (const name of names) {
+			const taskId = name.slice(0, -'.json'.length);
+			const task = tasks.get(taskId);
+			const away = loadAway(taskId);
+			if (!away) {
+				rmSync(awayFile(taskId), { force: true });
+				continue;
+			}
+			awayCache.set(taskId, away);
+			if (!task || !resumes(task)) {
+				endAwaySafely(taskId, 'task-gone');
+				continue;
+			}
+			const last = latestHandoff(runs.get(taskId) ?? []);
+			if (last?.handoff.status === 'handed' && (last.handoff.settledAt ?? 0) >= Date.parse(away.pausedAt)) {
+				endAwaySafely(taskId, 'handed');
+				continue;
+			}
+			// Ended while it was away (the board stopped before removing it): the user hears now.
+			if (waits.get(taskId)?.ended) {
+				if (endAwaySafely(taskId, 'ended')) options.notify?.({ type: 'event-notice', task, notice: 'controller-waiting', controller: away.hcomName });
+				continue;
+			}
+			if (!options.pausedDir) continue;
+			try {
+				writeAwayPause(away);
+				log('INFO', 'automation', 'event_task_away_rebuilt', { task_id: taskId, controller: away.hcomName });
+			} catch (error) {
+				log('ERROR', 'automation', 'event_task_away_unsaved', { task_id: taskId, controller: away.hcomName, error: (error as Error).message });
+			}
+		}
+	}
 
 	/** A task's unattended grant as its saves and runs log it: the form's fields and the hours. */
 	const grantOf = (task: AutomationTask) => (task.agent?.unattended ? { ...task.agent.unattended, maxHours: grantHours(task.limitMinutes) } : null);
@@ -784,7 +1088,11 @@ export function createAutomation(options: {
 	/** Which tasks the board can run: agent tasks need the agents' host. Tasks it cannot run are
 	 *  neither started by the schedule nor counted as missed. */
 	const runnable = (task: AutomationTask) => (task.kind === 'command' ? task.command !== undefined : task.agent !== undefined && options.agents !== undefined);
-	const busy = (taskId: string) => children.has(taskId) || (runs.get(taskId) ?? []).some(isOpen);
+	/** A 週期 task: the schedule starts its tries and counts its missed periods. */
+	const scheduled = (task: AutomationTask) => !task.event;
+	function busy(taskId: string): boolean {
+		return children.has(taskId) || (runs.get(taskId) ?? []).some(isOpen);
+	}
 
 	/** A run of the task beginning at `at`, in the period that time falls in. */
 	const newRun = (task: AutomationTask, trigger: RunTrigger, at: number): AutomationRun => ({
@@ -796,13 +1104,14 @@ export function createAutomation(options: {
 		status: 'running'
 	});
 
-	/** Start a run now and record it; a folder or brief gone since saving is a settings error, not a crash. */
-	function start(task: AutomationTask, trigger: RunTrigger): AutomationRun {
+	/** Start a run now and record it; a folder or brief gone since saving is a settings error, not a crash.
+	 *  An event task's handoff attempt is written with the run's first line, before anything is launched. */
+	function start(task: AutomationTask, trigger: RunTrigger, handoff?: RunHandoff, id?: string): AutomationRun {
 		const at = now();
-		const base = newRun(task, trigger, at);
+		const base: AutomationRun = { ...newRun(task, trigger, at), ...(id ? { id } : {}), ...(handoff ? { handoff } : {}) };
 		const configError = (reason: string) => {
 			const run = record(base, { ...base, endedAt: at, status: 'config-error', reason });
-			options.notify?.({ type: 'run-ended', task, run });
+			ended(task, run);
 			return run;
 		};
 		const folder = expandHome((task.command ?? task.agent)!.folder, home);
@@ -816,7 +1125,7 @@ export function createAutomation(options: {
 			const brief = resolve(folder, expandHome(task.agent!.brief, home));
 			if (!isFile(brief)) return configError(`資料夾裡找不到任務說明檔：${task.agent!.brief}`);
 			run = record(base);
-			job = runAgent(task, run, folder, brief);
+			job = runAgent(task, run, folder, brief, handoff && handoffNote(task, handoff.event));
 		}
 		children.set(task.id, job.then(() => review(task, run, false)).finally(() => children.delete(task.id)));
 		return run;
@@ -827,9 +1136,36 @@ export function createAutomation(options: {
 
 	/** End an agent run: its record, the pages, red cards and pushes. */
 	function finish(task: AutomationTask, run: AutomationRun, end: AgentEnd): void {
-		const finished = record(run, { endedAt: now(), ...end, ...reviewStart(task, end.status) });
+		const at = now();
+		// A handed-over event task waits again from this end: the wait it starts, Log position and
+		// all, goes in the same record line, so a board stopped before it is saved loses nothing.
+		const handoff = latest(run).handoff;
+		const next = task.event && handoff?.status === 'handed' ? { handoff: { ...handoff, next: startWait(task.event.event, at) } } : {};
+		const finished = record(run, { endedAt: at, ...end, ...next, ...reviewStart(task, end.status) });
 		publish();
-		options.notify?.({ type: 'run-ended', task, run: finished });
+		ended(task, finished);
+	}
+
+	/** A run ended. A handoff attempt still 接手中 never got its delivery evidence: 接手失敗, with
+	 *  the run's reason and a push, and no red card for the run; any other run makes its card and
+	 *  push as before. An event task then moves on (收尾規則, waiting again). */
+	function ended(task: AutomationTask, run: AutomationRun): void {
+		if (run.handoff?.status === 'handing') {
+			const failed = record(run, { handoff: { ...run.handoff, status: 'failed', reason: run.reason ?? '原因不明', settledAt: now() } });
+			publish();
+			options.notify?.({ type: 'event-notice', task, notice: 'handoff-failed', run: failed });
+		} else options.notify?.({ type: 'run-ended', task, run });
+		if (task.event) advance(task, now());
+	}
+
+	/** Note fields an agent run's watch learned. A handoff attempt's first session is this attempt's
+	 *  delivery evidence: 已接手 in the same record line. */
+	function noted(task: AutomationTask, run: AutomationRun, fields: Partial<AutomationRun>): void {
+		const handoff = latest(run).handoff;
+		const handed = handoff?.status === 'handing' && fields.sessionId ? { handoff: { ...handoff, status: 'handed' as const, evidence: { sessionId: fields.sessionId }, settledAt: now() } } : {};
+		record(run, { ...fields, ...handed });
+		if ('handoff' in handed) advance(task, now());
+		publish();
 	}
 
 	/** Watch an agent run's agent to its end; a run the board took over when it started is `adopted`. */
@@ -851,10 +1187,7 @@ export function createAutomation(options: {
 			limitMinutes: task.limitMinutes,
 			now,
 			cut,
-			note: (fields) => {
-				record(run, fields);
-				publish();
-			},
+			note: (fields) => noted(task, run, fields),
 			closing: () => closed,
 			adopted,
 			// An unattended controller's turn waiting on its agents goes on; one ending DECIDE:/HELP:
@@ -894,7 +1227,7 @@ export function createAutomation(options: {
 	}
 
 	/** An agent run: the Codex account first, then the agent, watched to its end. */
-	async function runAgent(task: AutomationTask, run: AutomationRun, folder: string, brief: string): Promise<void> {
+	async function runAgent(task: AutomationTask, run: AutomationRun, folder: string, brief: string, note?: string): Promise<void> {
 		const host = options.agents!;
 		const spec = task.agent!;
 		let cut: Cut | null = null;
@@ -903,7 +1236,8 @@ export function createAutomation(options: {
 			if (cut) return finish(task, run, { status: cut, reason: cutReason(cut, task.limitMinutes) });
 			const tag = runTag(task.id, run.id);
 			const report = spec.report === 'demo' ? reportNote(task.id, dateOf(now())) : '';
-			let prompt = firstMessage(brief, report);
+			// An event task's handoff: what happened comes before the brief (#763).
+			let prompt = note ? `${note}\n\n${firstMessage(brief, report)}` : firstMessage(brief, report);
 			if (spec.unattended) {
 				// The grant the controller turns on: logged before it opens, from the user's latest save.
 				const saved = grantSave(task);
@@ -1245,6 +1579,186 @@ export function createAutomation(options: {
 		for (const [task, run] of adoptedFixes) children.set(task.id, fix(task, run, true).finally(() => children.delete(task.id)));
 	}
 
+	/** Hand an event task over: a run of its own (trigger `event`) with the attempt written first as
+	 *  接手中, then its new Agent opened as an agent task's run is. A retry passes the attempt it
+	 *  follows: same occurrence and event, the next attempt number. */
+	function handOff(task: AutomationTask, event: EventOccurrence, after?: RunHandoff): AutomationRun {
+		const at = now();
+		const id = `${at.toString(36)}-${newId()}`;
+		const handoff: RunHandoff = { occurrence: after?.occurrence ?? id, attempt: (after?.attempt ?? 0) + 1, event, status: 'handing' };
+		log('INFO', 'automation', 'event_task_handoff', { task_id: task.id, cause: event.cause, attempt: handoff.attempt });
+		if (event.cause === 'deadline' && !after) options.notify?.({ type: 'event-notice', task, notice: 'deadline' });
+		if (!options.agents) {
+			// Not reachable from the board, which always has the agents' host: failed, not lost.
+			const run = record({ ...newRun(task, 'event', at), id, handoff, endedAt: at, status: 'failed', reason: '看板沒有開 Agent 的能力' });
+			ended(task, run);
+			return latest(run);
+		}
+		if (resumes(task)) {
+			// 接回原主控: the attempt's run is its delivery, written before anything is sent.
+			const run = record({ ...newRun(task, 'event', at), id, handoff });
+			children.set(task.id, deliver(task, run).finally(() => children.delete(task.id)));
+			return latest(run);
+		}
+		return start(task, 'event', handoff, id);
+	}
+
+	/**
+	 * 接回原主控 (#764): the event message to the controller that proposed the task. One hcom lists on
+	 * its link gets it as an HCOM message, never a second copy; otherwise its conversation is resumed
+	 * in its Herdr workspace with it. hcom's message ID, or the session hcom reported started, is this
+	 * attempt's evidence, written with 已接手 and the run's end in one line: the delivery is the whole
+	 * handoff, so a reusable task waits again from it. A list that cannot be read sends nothing
+	 * (接手失敗); a send or resume that may have gone out is 接手結果不明. The 事件等待 record goes
+	 * only once it is 已接手.
+	 */
+	async function deliver(task: AutomationTask, run: AutomationRun): Promise<void> {
+		const host = options.agents!;
+		const handoffOf = () => latest(run).handoff!;
+		const fail = (reason: string) => {
+			const failed = record(run, { endedAt: now(), status: 'failed', reason });
+			publish();
+			ended(task, failed);
+		};
+		const unsure = (reason: string) => {
+			const at = now();
+			const unknown = record(run, { endedAt: at, status: 'failed', reason, handoff: { ...handoffOf(), status: 'unknown', reason, settledAt: at } });
+			publish();
+			options.notify?.({ type: 'event-notice', task, notice: 'handoff-unknown', run: unknown });
+			advance(task, now());
+		};
+		const handed = (evidence: NonNullable<RunHandoff['evidence']>) => {
+			const at = now();
+			const done = record(run, { endedAt: at, status: 'success', handoff: { ...handoffOf(), status: 'handed', evidence, settledAt: at, next: startWait(task.event!.event, at) } });
+			try {
+				endAway(task.id, 'handed');
+			} catch (error) {
+				// Left for the next start, which ends an away handed back since.
+				log('ERROR', 'automation', 'event_task_away_unremoved', { task_id: task.id, error: (error as Error).message });
+			}
+			publish();
+			ended(task, done);
+		};
+		try {
+			// A controller the board is closing now is resumed once it is closed, not messaged as it goes.
+			await closings.get(task.id);
+			const sessionId = task.source?.proposer.sessionId;
+			if (!sessionId) return fail('不知道原主控的 session，沒辦法接回');
+			const text = resumeNote(task, handoffOf().event);
+			const listed = await host.list();
+			if (!listed.ok) return fail(`讀不到 hcom 的 Agent 清單，不確定原主控是否還開著，沒有接回也沒有傳訊：${listed.reason}`);
+			const own = listed.agents.filter((agent) => agent.sessionId === sessionId);
+			const running = own.find((agent) => isConnected(agent));
+			if (running) {
+				const sent = await host.message(running.name, text);
+				if (sent.ok) return handed({ ...(sent.messageId ? { messageId: sent.messageId } : {}), to: running.name });
+				return sent.unsure ? unsure(`HCOM 訊息可能已經送到：${sent.reason}`) : fail(`HCOM 訊息沒有送到 @${running.name}：${sent.reason}`);
+			}
+			// Listed but not on its link (still starting, or going): a resume could make a second one.
+			if (own.length) return fail(`原主控在 hcom 的清單上是「${own[0].status ?? '狀態不明'}」，不確定它是否還開著，沒有接回也沒有傳訊`);
+			// Its HCOM link paused from the board: it still runs in Herdr, so a resume would make a second one.
+			const pause = options.pausedDir ? readPauses(options.pausedDir).get(sessionId) : undefined;
+			if (pause && !isEventWait(pause)) return fail('原主控的 HCOM 通訊被暫停了，它還開著；請先在看板恢復它的通訊，再按重試接手');
+			const resumed = await host.resumeController(sessionId, readAway(task.id)?.workspace ?? null, text);
+			if (resumed.outcome === 'started') return handed({ sessionId, resumed: { name: resumed.name } });
+			if (resumed.outcome === 'pending') return unsure(`接回還沒確定：${resumed.reason ?? '原因不明'}`);
+			return fail(`接回失敗：${resumed.reason ?? '原因不明'}`);
+		} catch (error) {
+			// What broke may have sent it already.
+			return unsure(`看板接回時出錯：${(error as Error).message}`);
+		}
+	}
+
+	/** End an event task for good. */
+	function endWait(task: AutomationTask, wait: EventWait, status: EventEnd, at: number): void {
+		writeWait(task.id, { ...wait, ended: { status, at } });
+		log('INFO', 'automation', 'event_task_ended', { task_id: task.id, status });
+		// A controller still away is no longer handed back: its 事件等待 record goes, and the user hears.
+		const away = endAwaySafely(task.id, status);
+		if (status === 'expired-paused') options.notify?.({ type: 'event-notice', task, notice: 'expired-paused', ...(away ? { controller: away.hcomName } : {}) });
+		else if (away) options.notify?.({ type: 'event-notice', task, notice: 'controller-waiting', controller: away.hcomName });
+	}
+
+	/** `endAway` that never throws: a record that cannot be removed now is tried again at the next start. */
+	function endAwaySafely(taskId: string, why: string): EventAway | null {
+		try {
+			return endAway(taskId, why);
+		} catch (error) {
+			log('ERROR', 'automation', 'event_task_away_unremoved', { task_id: taskId, error: (error as Error).message });
+			return readAway(taskId);
+		}
+	}
+
+	/**
+	 * Move an event task on at `at`; true when something changed. In order: an ended task stays
+	 * ended; the latest attempt 接手中, 接手失敗 or 接手結果不明 waits (for its run, for 重試接手);
+	 * one 已接手 ends the task when the 收尾規則 says so, else waits for its run to end and then
+	 * waits again from that end (past the deadline it is 已到期, with no timeout handoff). Paused at
+	 * the deadline is 已到期（暫停中）. Then the event is looked at; seen, it is handed over, even
+	 * past the deadline; otherwise a deadline passed hands over as 等到期限，事件沒有發生.
+	 */
+	function advance(task: AutomationTask, at: number): boolean {
+		let wait = waits.get(task.id);
+		if (!wait || wait.ended || closed) return false;
+		const settings = task.event!;
+		const deadlineAt = deadlineOf(waitStart(task), settings);
+		const last = latestHandoff(runs.get(task.id) ?? []);
+		if (last && last.handoff.status !== 'handed') return false;
+		if (last) {
+			const closing = closingOf(settings, last.handoff, deadlineAt);
+			if (closing) {
+				endWait(task, wait, closing, at);
+				return true;
+			}
+			if (isOpen(last)) return false;
+			const runEnd = last.endedAt ?? at;
+			if (wait.since < runEnd) {
+				// Waiting again from the end of the run: what happened while it ran does not count.
+				wait = last.handoff.next ?? startWait(settings.event, runEnd);
+				// The run went on past the deadline: no timeout handoff. Only a board that was off
+				// when the run ended still looks once for an event between that end and the deadline.
+				if (runEnd >= deadlineAt || task.paused) {
+					if (at >= deadlineAt || runEnd >= deadlineAt) {
+						endWait(task, wait, task.paused ? 'expired-paused' : 'expired', at);
+						return true;
+					}
+				} else if (at >= deadlineAt) {
+					// The run's job is still finishing: looked at on the next check.
+					if (busy(task.id)) return false;
+					// The Log position is the one marked at the run's end, so lines written since are seen.
+					const look = lookAt(settings.event, wait, at, procDir);
+					if (look.occurred) {
+						handOff(task, look.occurred);
+						writeWait(task.id, look.wait);
+					} else endWait(task, wait, 'expired', at);
+					return true;
+				}
+				writeWait(task.id, wait);
+			}
+		}
+		if (busy(task.id)) return false;
+		if (task.paused) {
+			if (at < deadlineAt) return false;
+			endWait(task, wait, 'expired-paused', at);
+			return true;
+		}
+		const look = lookAt(settings.event, wait, at, procDir);
+		const changed = JSON.stringify(look.wait) !== JSON.stringify(wait);
+		if (look.occurred) {
+			// The handoff's run is on record before a Log offset past the matched line is: a board
+			// stopped in between never loses the event.
+			handOff(task, look.occurred);
+			if (changed) writeWait(task.id, look.wait);
+			return true;
+		}
+		if (changed) writeWait(task.id, look.wait);
+		if (at >= deadlineAt) {
+			handOff(task, { cause: 'deadline', at, details: [`期限：${taipeiText(deadlineAt)}（台灣時間）`] });
+			return true;
+		}
+		return changed;
+	}
+
 	function readChecked(): number | null {
 		try {
 			const time = Date.parse(readFileSync(checkedFile, 'utf8').trim());
@@ -1288,7 +1802,7 @@ export function createAutomation(options: {
 		const checked = readChecked();
 		if (checked !== null && checked < at) {
 			for (const task of tasks.values()) {
-				if (task.paused || !runnable(task)) continue;
+				if (task.paused || !runnable(task) || !scheduled(task)) continue;
 				const found = findMissed(task, checked, at);
 				if (!found.length) continue;
 				changed = true;
@@ -1298,6 +1812,10 @@ export function createAutomation(options: {
 		// Follows the clock back too, so a later check never starts from a time that has not come.
 		if (checked !== at) writeAtomic(checkedFile, new Date(at).toISOString() + '\n');
 		for (const task of tasks.values()) {
+			if (task.event) {
+				if (advance(task, at)) changed = true;
+				continue;
+			}
 			if (!runnable(task)) continue;
 			const own = runs.get(task.id) ?? [];
 			// A check before a rerun is not the day's try: the rerun waits for its verdict (#751).
@@ -1339,6 +1857,8 @@ export function createAutomation(options: {
 	return {
 		snapshot,
 		create(input, by) {
+			// 新增任務 offers no event task: one is made only from a controller's approved proposal.
+			if ((input as { trigger?: unknown } | null)?.trigger === 'event') return { ok: false, status: 400, errors: { trigger: '事件任務只能由 LAT 主控提案、在看板核准後建立' } };
 			const checked = validateTask(input, home);
 			if ('errors' in checked) return { ok: false, status: 400, errors: checked.errors };
 			const at = new Date(now()).toISOString();
@@ -1354,6 +1874,7 @@ export function createAutomation(options: {
 		update(id, input, by) {
 			const before = tasks.get(id);
 			if (!before) return { ok: false, status: 404, errors: { task: '這個任務已不存在' } };
+			if (before.event || (input as { trigger?: unknown } | null)?.trigger === 'event') return { ok: false, status: 409, errors: { task: EVENT_UNCHANGEABLE } };
 			const checked = validateTask(input, home);
 			if ('errors' in checked) return { ok: false, status: 400, errors: checked.errors };
 			const { source, dropped } = keptSource(before.source, checked.task);
@@ -1384,7 +1905,9 @@ export function createAutomation(options: {
 				return { ok: false, status: 500, errors: { brief: `核准的說明檔寫不進看板：${(error as Error).message}` } };
 			}
 			const dropCopy = () => brief && rmSync(brief.path, { force: true });
-			const checked = validateTask(input, home);
+			// An event task's time must still be ahead of the approval and within its deadline.
+			const approvedAt = Date.parse(approval.source.approvedAt);
+			const checked = validateTask(asProposed(input), home, { approve: { at: Number.isNaN(approvedAt) ? now() : approvedAt } });
 			if ('errors' in checked) {
 				dropCopy();
 				return { ok: false, status: 400, errors: checked.errors };
@@ -1397,11 +1920,16 @@ export function createAutomation(options: {
 				return unlogged;
 			}
 			try {
+				// The wait first: a task file is never there without its wait. It starts at the approval.
+				if (task.event) writeWait(id, startWait(task.event.event, waitStart(task)));
 				save(task);
 			} catch (error) {
 				dropCopy();
+				rmSync(waitFile(id), { force: true });
+				waits.delete(id);
 				return { ok: false, status: 500, errors: { task: `任務檔寫不進去：${(error as Error).message}` } };
 			}
+			if (task.event) advance(task, now());
 			publish();
 			return { ok: true, task, existed: false };
 		},
@@ -1410,12 +1938,40 @@ export function createAutomation(options: {
 			if (!before) return null;
 			const task = { ...before, paused, updatedAt: new Date(now()).toISOString() };
 			save(task);
+			const wait = waits.get(id);
+			// Resumed: the event counts from now; what happened while paused does not.
+			if (task.event && wait && !wait.ended && before.paused && !paused) writeWait(id, startWait(task.event.event, now()));
+			if (task.event) advance(task, now());
 			publish();
 			return task;
+		},
+		triggerNow(id) {
+			const task = tasks.get(id);
+			if (!task) return { ok: false, status: 404, message: '這個任務已不存在' };
+			if (!task.event) return { ok: false, status: 409, message: '立即觸發只給事件任務；週期任務請按立即執行' };
+			const view = eventView(task, runs.get(id) ?? []);
+			if (view?.state === 'failed' || view?.state === 'unknown') return { ok: false, status: 409, message: '上一次接手沒有成功，請按重試接手' };
+			if (!view?.canTrigger) return { ok: false, status: 409, message: `只有等待中的事件任務能立即觸發；現在是${EVENT_STATE_TEXT[view?.state ?? 'waiting']}` };
+			const run = handOff(task, { cause: 'manual', at: now(), details: [] });
+			publish();
+			return { ok: true, run: latest(run) };
+		},
+		retryHandoff(id) {
+			const task = tasks.get(id);
+			if (!task) return { ok: false, status: 404, message: '這個任務已不存在' };
+			if (!task.event) return { ok: false, status: 409, message: '只有事件任務能重試接手' };
+			const last = latestHandoff(runs.get(id) ?? []);
+			const view = eventView(task, runs.get(id) ?? []);
+			if (!last || !view?.canRetry) return { ok: false, status: 409, message: busy(id) ? '接手正在進行，等它結束' : '只有接手失敗或接手結果不明時能重試接手' };
+			log('INFO', 'automation', 'event_task_retry', { task_id: id, occurrence: last.handoff.occurrence, after: last.handoff.status });
+			const run = handOff(task, last.handoff.event, last.handoff);
+			publish();
+			return { ok: true, run: latest(run) };
 		},
 		runNow(id) {
 			const task = tasks.get(id);
 			if (!task) return { ok: false, status: 404, message: '這個任務已不存在' };
+			if (task.event) return { ok: false, status: 409, message: '事件任務請按立即觸發' };
 			const running = (runs.get(id) ?? []).find(isOpen);
 			if (running && openAsk(running)) return { ok: false, status: 409, message: '這個任務正在等你回覆，回覆或停止這次之後再執行' };
 			if (running || children.has(id)) {
@@ -1469,13 +2025,18 @@ export function createAutomation(options: {
 		remove(id) {
 			if (!tasks.has(id)) return { ok: false, status: 404, message: '這個任務已不存在' };
 			if (busy(id)) return { ok: false, status: 409, message: '這個任務還有一次沒跑完，等它結束或按停止這次之後再刪除' };
+			const task = tasks.get(id)!;
+			// A controller away for it is no longer handed back: its 事件等待 record goes, and the user hears.
+			const away = endAwaySafely(id, 'removed');
+			if (away) options.notify?.({ type: 'event-notice', task, notice: 'controller-waiting', controller: away.hcomName });
 			// The task file first: should the rest fail, what is left is never read as a task.
 			rmSync(taskFile(id), { force: true });
 			tasks.delete(id);
 			runs.delete(id);
 			missed.delete(id);
+			waits.delete(id);
 			try {
-				for (const path of [runsFile(id), missedFile(id), join(outputDir, id), join(dir, 'review', id), approvedBrief(id)]) rmSync(path, { recursive: true, force: true });
+				for (const path of [runsFile(id), missedFile(id), join(outputDir, id), join(dir, 'review', id), approvedBrief(id), waitFile(id), awayFile(id)]) rmSync(path, { recursive: true, force: true });
 			} finally {
 				// The pages hear the task is gone even when a record of it could not be removed.
 				publish();
@@ -1489,6 +2050,69 @@ export function createAutomation(options: {
 			for (const entry of open) recordMissed(id, { ...entry, dismissedAt: at });
 			if (open.length) publish();
 			return open.length;
+		},
+		away(controller, taskId, where) {
+			const refuse = (status: number, error: Extract<Away, { ok: false }>['error'], message: string): Away => {
+				log('WARNING', 'automation', 'event_task_away_refused', { task_id: typeof taskId === 'string' ? taskId : null, controller: controller.name, error });
+				return { ok: false, status, error, message };
+			};
+			if (!options.pausedDir) return refuse(500, 'board', '看板沒有暫停紀錄資料夾，不能寫事件等待');
+			const task = typeof taskId === 'string' && ID.test(taskId) ? tasks.get(taskId) : undefined;
+			if (!task?.event) return refuse(404, 'not-found', '找不到這個事件任務');
+			const proposer = task.source?.proposer;
+			if (controller.role !== 'controller' || !controller.sessionId || proposer?.sessionId !== controller.sessionId) return refuse(403, 'not-yours', '只有註冊這個事件任務的主控能為它暫停並關閉自己');
+			if (!resumes(task)) return refuse(409, 'not-resume', '這個事件任務由開新 Agent 接手：請照一般方式結束本輪再關掉自己，不寫事件等待');
+			const view = eventView(task, runs.get(task.id) ?? []);
+			if (view?.ended) return refuse(409, 'ended', `這個事件任務已經結束：${EVENT_STATE_TEXT[view.state]}`);
+			if (view?.state === 'handing' || busy(task.id)) return refuse(409, 'busy', '這個事件任務正在接手，看板正把事件交給你；不用關掉自己');
+			// One pause record per session: a controller waits for one task at a time, and one whose link is paused waits for nothing.
+			const other = [...awayCache.values()].find((entry) => entry.sessionId === controller.sessionId && entry.taskId !== task.id);
+			if (other) return refuse(409, 'other-wait', `你已經在等事件任務 ${other.taskId}；一個主控一次只等一個事件任務`);
+			const record = readPauses(options.pausedDir).get(controller.sessionId);
+			if (record && !(isEventWait(record) && record.task_id === task.id)) return refuse(409, 'other-wait', '看板記著你的 HCOM 通訊已暫停，不能再寫事件等待');
+			if (!where.workspace) return refuse(409, 'no-place', '看板的 Herdr 清單上找不到你，不知道之後要在哪個工作區接回你；不要關掉自己，稍後再試');
+			const before = readAway(task.id);
+			const away: EventAway = { version: 1, taskId: task.id, sessionId: controller.sessionId, hcomName: controller.name, client: controller.client, pane: where.pane, workspace: where.workspace, pausedAt: new Date(now()).toISOString() };
+			try {
+				// The away file first: a record is always written again from it at the next start.
+				writeAway(away);
+				writeAwayPause(away);
+			} catch (error) {
+				// As it was: the controller is told not to close, so nothing says it is away.
+				try {
+					if (before) writeAway(before);
+					else {
+						rmSync(awayFile(task.id), { force: true });
+						awayCache.delete(task.id);
+					}
+				} catch {
+					// Read again at the next start.
+				}
+				return refuse(500, 'board', `事件等待寫不進去，不要關掉自己：${(error as Error).message}`);
+			}
+			log('INFO', 'automation', 'event_task_away', { task_id: task.id, controller: away.hcomName, existed: before !== null });
+			const closing = new Promise<void>((done) => setTimeout(done, where.closeAfterMs).unref?.())
+				.then(async () => {
+					const still = readAway(task.id);
+					// Handed back, deleted or ended meanwhile, or its event is on its way to it now: left open.
+					if (closed || still?.pausedAt !== away.pausedAt || busy(task.id)) return void log('INFO', 'automation', 'event_task_away_left_open', { task_id: task.id, controller: away.hcomName });
+					await where.close(away);
+				})
+				.catch((error: Error) => log('ERROR', 'automation', 'event_task_away_unclosed', { task_id: task.id, controller: away.hcomName, reason: error.message }))
+				.finally(() => {
+					if (closings.get(task.id) === closing) closings.delete(task.id);
+				});
+			closings.set(task.id, closing);
+			publish();
+			return { ok: true, task, away, existed: before !== null };
+		},
+		aways() {
+			const found = new Map<string, { taskId: string; taskName: string }>();
+			for (const away of awayCache.values()) {
+				const task = tasks.get(away.taskId);
+				if (task) found.set(away.sessionId, { taskId: task.id, taskName: task.name });
+			}
+			return found;
 		},
 		output(taskId, runId) {
 			if (!ID.test(taskId)) return null;

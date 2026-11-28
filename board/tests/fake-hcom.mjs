@@ -49,7 +49,8 @@
 // { exit, stderr }` makes every list after it fail that way, as `listFail` does.
 // `send` (the board's 任務提案 result messages) is logged to <dir>/hcom-send-calls.jsonl with its
 // arguments, the text it read from standard input and the names of any HCOM_* variables (but
-// HCOM_DIR) it got; `send: { exit, stderr, sleepMs }` makes it fail or wait before exiting.
+// HCOM_DIR) it got; `send: { exit, stderr, sleepMs }` makes it fail or wait before exiting. With
+// `--json` it prints a receipt as hcom does, `{"delivered_to": [name], "event_id": 9000 + n}`.
 // `config terminal --info` is logged to <dir>/hcom-config-calls.jsonl and lists the presets, with
 // `herdr-reuse` among them only when `holdTerminal` is set. A launch or resume with
 // `--terminal herdr-reuse` runs in the pane HCOM_REUSE_PANE names, and its tab, of the fake
@@ -160,6 +161,11 @@ if (args[0] === 'send') {
 	const send = plan.send ?? {};
 	if (send.sleepMs) await new Promise((resolve) => setTimeout(resolve, send.sleepMs));
 	process.stderr.write(send.stderr ?? '');
+	// `--json` prints hcom's receipt, its event ID counted from 9000 by the sends so far.
+	if (args.includes('--json') && !send.exit) {
+		const count = readFileSync(join(dir, 'hcom-send-calls.jsonl'), 'utf8').trim().split('\n').length;
+		process.stdout.write(JSON.stringify({ delivered_to: [args[1].slice(1)], event_id: 9000 + count }) + '\n');
+	}
 	process.exit(send.exit ?? 0);
 }
 

@@ -117,7 +117,8 @@ export function createAlerts(options: { file: string; now(): number; publish(sna
 				save();
 				return alert;
 			}
-			if (!event.periods.length) return null;
+			// An event task's notice is pushed by the board itself, with no card (#763).
+			if (event.type !== 'missed' || !event.periods.length) return null;
 			// The periods join the task's open missed card, so one task never has two.
 			const open = alerts.find((alert) => alert.taskId === task.id && alert.kind === 'missed' && alert.dismissedAt === undefined);
 			const known = new Set(open?.periods?.map((entry) => entry.period));

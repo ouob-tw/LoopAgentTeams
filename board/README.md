@@ -81,6 +81,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_PD_TIMEOUT_SECONDS` | 上一項多久沒結束就放棄 | `5` |
 | `LAT_BOARD_PD_SECONDS` | pd 待核准請求多久讀一次，所有瀏覽器共用 | `5` |
 | `LAT_BOARD_AUTOMATION_TICK_SECONDS` | 「自動化」排程多久檢查一次（到點的任務、結束的期別、執行上限）；測試用較短的值 | `60` |
+| `LAT_BOARD_EVENT_AWAY_CLOSE_SECONDS` | 主控執行「為事件任務暫停並關閉自己」後，看板回覆完隔多久關掉它；測試用較短的值 | `3` |
 | `LAT_BOARD_AUTOMATION_AGENT_POLL_SECONDS` | 執行中的 Agent 任務多久看一次（hcom 清單、最後一則回覆、Codex 畫面）；測試用較短的值 | `10` |
 | `LAT_BOARD_PUSH_TEST_ORIGIN` | 只給測試用：把這個來源（例如 `http://127.0.0.1:9000`）也當成推播服務，測試用假的推播端點；正式環境不設 | 無 |
 

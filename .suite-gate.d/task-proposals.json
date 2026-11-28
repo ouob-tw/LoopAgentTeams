@@ -13,6 +13,7 @@
         "board/tests/server/task-proposals.test.ts",
         "board/tests/server/task-proposal-approval.test.ts",
         "board/tests/unit/task-proposal-cli.test.ts",
+        "board/tests/unit/task-proposal-notify.test.ts",
         "board/tests/unit/task-proposal-race.test.ts"
       ]
     },
@@ -27,7 +28,8 @@
       ],
       "tests": [
         "board/tests/server/task-proposal-approval.test.ts",
-        "board/tests/unit/task-proposal-approval.test.ts"
+        "board/tests/unit/task-proposal-approval.test.ts",
+        "board/tests/unit/task-proposal-notify.test.ts"
       ]
     },
     {
