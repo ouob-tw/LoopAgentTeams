@@ -485,7 +485,7 @@ test.skipIf(!CHROME)('1280px, coarse pointer with a mouse: a press without movin
 		await press(x, bar.y);
 		await sleep(300);
 		expect({ x: x - bar.left, ...(await tab.eval<object>(PICKED)) }).toEqual({ x: x - bar.left, ...untouched });
-		if (x === Math.ceil(bar.left) + 2) await shot(tab, 'my-messages-1280-coarse-mouse-stationary-press');
+		if (x === Math.ceil(bar.left)) await shot(tab, 'my-messages-1280-coarse-mouse-stationary-press');
 		await awayAndClosed(bar.y);
 	}
 	// Some of the places across the bar ended up on a row, or nothing here was at risk.
