@@ -1,11 +1,18 @@
 // A Claude agent that ends its turn on no verdict while its background work or a Monitor still runs
 // (#750): the run goes on and its next reply is judged; past the limit it ends as a timeout; with no
-// such work it fails as before. The records are shaped after the 2026-11-25 TAiHakka monthly scan's
+// such work, or a record that cannot be read, it fails as before. The records are shaped after the 2026-11-25 TAiHakka monthly scan's
 // (background ZAP and ClamAV commands and a Monitor, then a turn ending "我等它們跑完再繼續").
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { expect, test } from 'bun:test';
 import type { AutomationRun } from '../../src/lib/board/automation.ts';
 import { watchAgent, type AgentHost, type Watched } from '../../src/lib/server/automation-agent.ts';
+import { boardAgentHost } from '../../src/lib/server/automation-host.ts';
+import type { Board } from '../../src/lib/server/board.ts';
 import { backgroundGoesOn } from '../../src/lib/server/claude-background.ts';
+import type { BoardConfig } from '../../src/lib/server/config.ts';
+import { NODE } from '../harness.ts';
 
 const line = (record: object) => JSON.stringify(record);
 const said = (text: string) => line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
@@ -86,6 +93,31 @@ test('a record that is empty, or has lines that are not JSON, says nothing', () 
 	expect(backgroundGoesOn('not json\n{"type":"user","toolUseResult":\n')).toBe(false);
 	// The readable lines still count.
 	expect(backgroundGoesOn(record('{"broken', ...INCIDENT))).toBe(true);
+});
+
+test('the board host reads the record the helper names; one it cannot find or read is no background work', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'automation-background-'));
+	try {
+		mkdirSync(join(dir, 'transcripts'));
+		writeFileSync(join(dir, 'helper.json'), '{}');
+		const config = { helperCommand: [NODE, join(import.meta.dir, '../fake-helper.mjs'), dir], helperTimeoutMs: 10_000 } as BoardConfig;
+		const host = boardAgentHost(config, () => ({}) as Board);
+		writeFileSync(join(dir, 'transcripts', 's-going.jsonl'), record(...INCIDENT));
+		expect(await host.backgroundGoesOn('s-going')).toBe(true);
+		// Not found by the helper.
+		expect(await host.backgroundGoesOn('s-missing')).toBe(false);
+		// The helper's error reading it.
+		writeFileSync(join(dir, 'transcripts', 's-broken.jsonl'), record(...INCIDENT));
+		writeFileSync(join(dir, 'transcripts', 's-broken.fail'), '對話紀錄讀不出來');
+		expect(await host.backgroundGoesOn('s-broken')).toBe(false);
+		// Empty, or nothing but lines that are not JSON.
+		writeFileSync(join(dir, 'transcripts', 's-empty.jsonl'), '');
+		expect(await host.backgroundGoesOn('s-empty')).toBe(false);
+		writeFileSync(join(dir, 'transcripts', 's-garbled.jsonl'), 'not json\n{"type":"user","toolUseResult":{"backgroundTaskId":\n');
+		expect(await host.backgroundGoesOn('s-garbled')).toBe(false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 const START = Date.UTC(2026, 10, 24, 18);
