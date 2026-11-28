@@ -9,12 +9,25 @@ import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import { afterEach, expect, test } from 'bun:test';
 import { DAY, jsonLines, logged, until, type Fixture } from '../harness.ts';
+import { decrypt, deviceKeys } from '../push-keys.ts';
 import { SoftPasskey } from '../soft-passkey.ts';
 import { agentTask, asAgent, commandTask, listed, parsed, proposalsDir, stored, submit, withAgents, type AgentDouble } from '../task-proposal-fixture.ts';
 
 const ORIGIN = 'https://lat.ouob.net';
 const RP_ID = 'lat.ouob.net';
 const T0 = Date.parse('2026-11-28T01:00:00.000Z');
+
+/** A push service on this host: every push the board sends to it. */
+const pushed: { path: string; body: Buffer }[] = [];
+const pushService = Bun.serve({
+	port: 0,
+	hostname: '127.0.0.1',
+	async fetch(request) {
+		pushed.push({ path: new URL(request.url).pathname, body: Buffer.from(await request.arrayBuffer()) });
+		return new Response(null, { status: 201 });
+	}
+});
+const PUSH_ORIGIN = `http://127.0.0.1:${pushService.port}`;
 
 let fixture: Fixture | undefined;
 afterEach(async () => {
@@ -289,6 +302,26 @@ test('approval against rejection, withdrawal and expiry: whichever result lands 
 	);
 });
 
+test('a proposal never changes a task already there, whatever its fields say; the board\'s own 新增任務 needs no passkey', async () => {
+	const s = await setup();
+	const { board, cookie, agents } = s;
+	const [luna] = agents;
+	// 新增任務 on the board: no challenge, no passkey.
+	const created = await call(board, 'POST', '/api/automation', { cookie, body: commandTask(luna.folder, { name: '自己建的' }) });
+	expect(created.status).toBe(201);
+	const own = await created.json();
+	expect(logged(board.serverOutput(), 'task_proposal_challenge')).toHaveLength(0);
+	const [before] = await tasksOf(board, cookie);
+
+	// A proposal naming that task, paused, under the same name, makes a task of its own.
+	const id = await proposalOf(board, luna, { ...commandTask(luna.folder, { name: '自己建的' }), id: own.id, paused: true, source: { kind: 'proposal' } });
+	expect(await (await approveWith(s, id)).json()).toMatchObject({ status: 'approved', taskId: `proposal-${id}` });
+	const after = await tasksOf(board, cookie);
+	expect(after.find((task) => task.id === own.id)).toEqual(before);
+	expect(after.find((task) => task.id === `proposal-${id}`)).toMatchObject({ name: '自己建的', paused: false, source: { proposalId: id } });
+	expect(after).toHaveLength(2);
+});
+
 test('a rejection keeps the optional reason, which the proposer\'s query and wait return; a reason too long or not text is a 400', async () => {
 	const s = await setup();
 	const { board, cookie, agents } = s;
@@ -381,11 +414,13 @@ test('a board stopped after 核准中, or after the task and before 已核准, f
 	expect(sends(board)).toHaveLength(2);
 });
 
-test('a damaged saved approval ends 核准失敗 with no task; a task that cannot be made ends 核准失敗 and is told; a 已核准 that cannot be written is retried with no second task', async () => {
-	const s = await setup();
+test('a damaged saved approval ends 核准失敗 with no task and a push; a task that cannot be made ends 核准失敗 and is told; a 已核准 that cannot be written is retried with no second task', async () => {
+	const s = await setup(undefined, { LAT_BOARD_PUSH_TEST_ORIGIN: PUSH_ORIGIN });
 	const { board, cookie, agents } = s;
 	const [luna] = agents;
 	const automationDir = join(board.dir, 'board-state', 'automation');
+	const keys = deviceKeys();
+	expect((await call(board, 'PUT', '/api/push/subscription', { cookie, body: { endpoint: `${PUSH_ORIGIN}/push/phone`, keys: keys.json } })).status).toBe(200);
 
 	// The task cannot be made: its folder went after the proposal came in.
 	const gone = join(board.dir, 'gone-folder');
@@ -409,6 +444,10 @@ test('a damaged saved approval ends 核准失敗 with no task; a task that canno
 	await board.start();
 	expect(resultOf(board, id)).toEqual({ version: 1, id, status: 'approve-failed', at: expect.any(String), reason: '核准紀錄損壞，請 Agent 重新提案' });
 	expect(await tasksOf(board, cookie)).toHaveLength(0);
+	// The user hears of it: one push, with no task content; a task that just could not be made pushes nothing.
+	const push = await until(() => pushed.find((entry) => entry.path === '/push/phone'), 10_000, 'the push');
+	expect(decrypt(push.body, keys)).toEqual({ title: '任務提案核准失敗', body: '核准紀錄損壞，沒有建立任務；請 Agent 重新提案', alert: `task-proposal-${id}` });
+	expect(pushed.filter((entry) => entry.path === '/push/phone')).toHaveLength(1);
 	expect((await asAgent(board, luna, ['status', id])).stdout.trim()).toBe(`核准失敗：${id}\n原因：核准紀錄損壞，請 Agent 重新提案`);
 
 	// Damaged after its task was made: that task came from the approval as it was, so it stands.

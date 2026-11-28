@@ -68,8 +68,11 @@ function signedChallenge(response: any): string | null {
 	}
 }
 
-export function createApprovals(options: { store: Store; stateDir: string; site: PasskeySite | null; now(): number }) {
+/** `verify` checks the signature (`verifyLogin` unless a test steps in while it runs: the passkey
+ *  and login checks after it are what make a removal meanwhile count). */
+export function createApprovals(options: { store: Store; stateDir: string; site: PasskeySite | null; now(): number; verify?: typeof verifyLogin }) {
 	const { store, stateDir, site, now } = options;
+	const verify = options.verify ?? verifyLogin;
 	const challenges = new Map<string, Challenge>();
 
 	function readPasskeys(): Passkey[] | Answer {
@@ -124,7 +127,7 @@ export function createApprovals(options: { store: Store; stateDir: string; site:
 			const passkey = passkeys.find((candidate) => candidate.credentialId === response.id);
 			if (!passkey) return refuse('不是看板登記的 passkey：請用看板的 passkey 核准', 'unknown-passkey');
 			passkeyId = passkey.id;
-			const counter = await verifyLogin(site, challenge!, response, passkey, 'alone');
+			const counter = await verify(site, challenge!, response, passkey, 'alone');
 			if (counter === null) return refuse('passkey 簽章沒有通過：要用指紋、臉部或裝置 PIN 確認，並從看板的網址核准', 'signature');
 			// Signed: the passkey must still be listed, and the login still valid, now.
 			let used: boolean;
