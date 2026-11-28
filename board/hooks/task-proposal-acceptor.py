@@ -7,8 +7,9 @@ the JSON array in `LAT_PROPOSAL_HCOM_COMMAND` (`["hcom"]` when not set), and the
 whose `scripts/_lat_common.py` gives LAT's own rules for its session records is
 `LAT_PROPOSAL_LAT_DIR` (the board's `latDir`).
 
-Each connection to the socket sends one JSON line, `{"op": "submit", "proposal": {...}}` or
-`{"op": "withdraw", "id": "..."}`, and gets one JSON line back. Before anything reaches the board
+Each connection to the socket sends one JSON line, `{"op": "submit", "proposal": {...}}`,
+`{"op": "withdraw", "id": "..."}` or `{"op": "away", "task": "..."}` (a controller's
+為事件任務暫停並關閉自己), and gets one JSON line back. Before anything reaches the board
 the sender is verified, starting from SO_PEERCRED of this accepted connection, never from a PID or
 name the sender gives:
 
@@ -348,7 +349,7 @@ def handle(connection, board, command, lat):
             return reply_to_sender(connection, dict(ok=False, error='refused', reason=str(refused)))
         request = read_request(connection)
         op = request.get('op') if request else None
-        if op not in ('submit', 'withdraw'):
+        if op not in ('submit', 'withdraw', 'away'):
             return reply_to_sender(connection, dict(ok=False, error='bad-request', reason='看不懂這個請求'))
         try:
             proposer = verify(peer, command, lat)
@@ -357,6 +358,8 @@ def handle(connection, board, command, lat):
             return reply_to_sender(connection, dict(ok=False, error='refused', reason=str(refused)))
         if op == 'submit':
             forwarded = dict(op='submit', proposer=proposer, proposal=request.get('proposal'))
+        elif op == 'away':
+            forwarded = dict(op='away', proposer=proposer, task=request.get('task'))
         else:
             forwarded = dict(op='withdraw', proposer=proposer, id=request.get('id'))
         reply_to_sender(connection, board.forward(forwarded))

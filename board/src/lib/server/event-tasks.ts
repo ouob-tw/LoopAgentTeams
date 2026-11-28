@@ -95,8 +95,7 @@ export function checkEvent(
 	const repeat = body.repeat === undefined ? false : body.repeat;
 	if (typeof repeat !== 'boolean') errors.repeat = 'repeat 要是 true（可重複）或 false（一次性）';
 	const handoff = body.handoff;
-	if (handoff === 'resume') errors.handoff = '接回原主控還沒開放，請選開新 Agent（new-agent）';
-	else if (handoff !== 'new-agent') errors.handoff = '請選接手方式：new-agent（開新 Agent）';
+	if (handoff !== 'new-agent' && handoff !== 'resume') errors.handoff = '請選接手方式：resume（接回原主控）或 new-agent（開新 Agent）';
 
 	const given = body.event && typeof body.event === 'object' ? body.event : {};
 	let event: EventSpec | undefined;
@@ -150,7 +149,7 @@ export function checkEvent(
 	} else errors.event = '請選事件：process（程序結束）、file（檔案出現或更新）、log（Log 檔出現指定文字）或 time（到達時間）';
 
 	if (!event || Object.keys(errors).length) return undefined;
-	return { event, deadlineMinutes, repeat: repeat === true, handoff: 'new-agent' };
+	return { event, deadlineMinutes, repeat: repeat === true, handoff: handoff === 'resume' ? 'resume' : 'new-agent' };
 }
 
 /** A Log file's identity and length now; null when it is not there. Other errors are thrown. */
@@ -279,4 +278,9 @@ export function handoffNote(task: { id: string; name: string; event?: EventSetti
 		...occurrence.details,
 		`觸發時間：${taipeiText(occurrence.at)}（台灣時間）`
 	].join('\n');
+}
+
+/** 接回原主控 (#764): the message the controller is resumed with, or sent while it runs. */
+export function resumeNote(task: { id: string; name: string; event?: EventSettings }, occurrence: EventOccurrence): string {
+	return `${handoffNote(task, occurrence)}\n照平常的恢復程序繼續：重讀規則、進度、待決與授權，必要時重啟停住監控。`;
 }

@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from 'bun:test';
 import { closingOf, type RunHandoff } from '../../src/lib/board/event-tasks.ts';
+import { phaseText } from '../../src/lib/board/types.ts';
+import { eventNoticeText } from '../../src/lib/server/automation.ts';
 import { lookAt, parseTaipei, processStart } from '../../src/lib/server/event-tasks.ts';
 
 test('a running process has a start time in /proc; a PID with no process has none', () => {
@@ -44,4 +46,12 @@ test('a Log line longer than one read still matches text that crosses the read b
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test('事件等待 in words (#764): the roster says which task the controller waits for; a push names a controller still away', () => {
+	expect(phaseText({ phase: '收 Log 中', eventWait: { taskId: 'proposal-0123456789ab', taskName: '收 Log 後整理' } })).toBe('等待事件任務：收 Log 後整理');
+	expect(phaseText({ phase: '收 Log 中', eventWait: null })).toBe('收 Log 中');
+	expect(eventNoticeText('controller-waiting', 'grp-ctrl')).toBe('主控 grp-ctrl 仍在等待，事件任務已結束');
+	expect(eventNoticeText('expired-paused', 'grp-ctrl')).toBe('已到期（暫停中），沒有接手；主控 grp-ctrl 仍在等待，事件任務已結束');
+	expect(eventNoticeText('expired-paused')).toBe('已到期（暫停中），沒有接手');
 });

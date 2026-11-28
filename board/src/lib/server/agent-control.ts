@@ -24,7 +24,7 @@ import { killAgent, listAgents, stopAgent } from './hcom.ts';
 import { countKeys, type KeyCounts, type KeyInput, type KeyResult, type KeysResponse } from '../board/screen.ts';
 import { agentCommand, closePane, HERDR_CLOSES, keepWorkspaceOpen, listHerdrAgents, paneExists, paneProcess, sendPaneInput, type HerdrAct } from './herdr.ts';
 import { recover, readScreenSoon } from './screen.ts';
-import { clearPause, isConnected, linkedAgain, pausing, readPauses, writePause, type PauseRecord } from './paused.ts';
+import { clearOrdinaryPause, clearPause, isConnected, linkedAgain, pausing, readPauses, writePause, type PauseRecord } from './paused.ts';
 import { judgeHooks, relinkable } from './process-hooks.ts';
 import { inject, queued, typedText } from './send.ts';
 import { appendSent } from './sent-log.ts';
@@ -275,8 +275,9 @@ export function closeAgent(board: Board, agentId: string) {
 				const closed = await paneGone(board, pane);
 				if (closed !== true) return { route, reason: `已送出關閉指令，但無法確認已關閉：${closed}；請到 Herdr 查看。${cmdTabNote}` };
 				// A paused one is over: nothing is left to resume. One that cannot be removed now goes at a read, its pane gone.
+				// A 事件等待 record stays: its controller is closed to wait for its event task (#764).
 				try {
-					clearPause(board.config.pausedDir, agentId);
+					clearOrdinaryPause(board.config.pausedDir, agentId);
 				} catch {}
 				await board.refresh();
 				return { route, reason: null };

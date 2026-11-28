@@ -7807,14 +7807,27 @@ esac
         self.agents = json.loads(agents)
         self.start = taipei(10)
 
-    def pause(self, agent):
+    def pause(self, agent, **extra):
         directory = self.root / 'paused'
         directory.mkdir(exist_ok=True)
         path = directory / f'{agent}-session.json'
         path.write_text(json.dumps(dict(session_id=f'{agent}-session', hcom_name=agent,
                                         client='claude', pane=None,
-                                        paused_at='2026-10-23T00:00:00Z')))
+                                        paused_at='2026-10-23T00:00:00Z', **extra)))
         return path
+
+    def test_event_wait_record_is_an_ordinary_pause_for_a_closed_orchestrator(self):
+        # The board's 事件等待 record (#764): the same format plus reason and task ID.
+        self.pause('worker', reason='event-task', task_id='proposal-0123456789ab')
+        Path(f'{self.hcom_log}.agents').write_text('[]')
+        for now in (self.start, self.start + 7200, self.start + 10800):
+            self.assertIsNone(self.watch.run_cycle(
+                self.work, self.tasks, self.decisions, 'worker', now=now))
+        self.assertEqual(len(self.records('paused')), 1)
+        self.assertEqual(self.records('pause-record-invalid'), [])
+        self.assertNotIn('missing_since', self.state()['worker'])
+        self.assertFalse(any(line.startswith('term inject worker')
+                             for line in self.hcom_log.read_text().splitlines()))
 
     def test_paused_missing_agents_do_not_notify_or_stop_and_resume_next_cycle(self):
         paths = [self.pause(agent) for agent in ('worker', 'helper')]

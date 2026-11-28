@@ -54,9 +54,11 @@ const STARTED_WELL_MS = 60_000;
 
 /** Why a request was not taken; the acceptor itself adds `refused` (sender not verified) and
  *  `board-timeout` (no reply in 30 s). */
-export type RefusalCode = 'bad-request' | 'not-found' | 'not-yours' | 'ended' | 'board' | 'not-controller';
+export type RefusalCode = 'bad-request' | 'not-found' | 'not-yours' | 'ended' | 'board' | 'not-controller' | 'not-resume' | 'busy';
 export type AcceptorReply =
 	| { ok: true; id: string; status: 'pending' | 'invalid' | 'withdrawn'; errors?: Record<string, string> }
+	/** 為事件任務暫停並關閉自己 (#764): `id` is the event task's; the board closes the controller next. */
+	| { ok: true; id: string; status: 'away'; existed: boolean }
 	| { ok: false; error: RefusalCode; reason: string; status?: string };
 
 export interface TaskProposals {
@@ -543,6 +545,8 @@ export function createTaskProposals(options: {
 	taskExists?(taskId: string): boolean;
 	/** An approval was found damaged and ended 核准失敗: the user is told (a push). */
 	damaged?(id: string): void;
+	/** A verified controller's 為事件任務暫停並關閉自己 (the acceptor's `away`, #764). */
+	away?(proposer: Proposer, taskId: unknown): AcceptorReply;
 	procDir?: string;
 	sweepMs?: number;
 }): TaskProposals {
@@ -559,6 +563,10 @@ export function createTaskProposals(options: {
 		try {
 			if (request.op === 'submit') return store.submit(request.proposer, request.proposal);
 			if (request.op === 'withdraw') return store.withdraw(request.proposer, request.id);
+			if (request.op === 'away') {
+				if (!isProposer(request.proposer)) return { ok: false, error: 'bad-request', reason: '看板沒收到查證過的主控' };
+				return options.away ? options.away(request.proposer, request.task) : { ok: false, error: 'board', reason: '看板不能寫事件等待' };
+			}
 			return { ok: false, error: 'bad-request', reason: '看不懂這個請求' };
 		} catch (error) {
 			log('ERROR', 'board.proposals', 'task_proposal_failed', { op: request.op, ...exceptionFields(error) });

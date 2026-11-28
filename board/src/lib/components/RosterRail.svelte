@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { awayText } from '#lib/board/event-tasks.ts';
 	// The folded roster of the wide layout: one status mark per controller. A mark opens its
 	// controller and leaves the roster folded; the grip unfolds it. Hovering a
 	// mark, or pressing and holding it on a touch screen, explains it.
@@ -60,7 +61,7 @@
 
 	const label = (controller: Controller) =>
 		`${controller.project} @${lastSegment(controller.hcomName)}：${STATUS_LABEL[controller.status]}` +
-		(controller.paused ? '，暫停通訊' : '') +
+		(controller.eventWait ? `，${awayText(controller.eventWait.taskName)}` : controller.paused ? '，暫停通訊' : '') +
 		(controller.pendingCount ? `，待決 ${controller.pendingCount} 題` : '') +
 		(delegated.get(controller.id) ? `，代決 ${delegated.get(controller.id)} 項` : '');
 </script>

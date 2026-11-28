@@ -126,6 +126,9 @@ export interface BoardConfig {
 	pdIntervalMs: number;
 	/** How often the 自動化 scheduler checks for tasks due, ended periods and run limits. */
 	automationTickMs: number;
+	/** How long after answering 為事件任務暫停並關閉自己 the board closes the controller (#764), so the
+	 *  answer reaches its command first. */
+	eventAwayCloseMs: number;
 	/** How often a running agent task's agent is looked at (hcom's list, its last reply). */
 	automationAgentPollMs: number;
 	/** Waits before each retry of a launch hcom failed on its database lock; null for the fixed 1, 2, 4 minutes. Only tests set it. */
@@ -390,6 +393,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		pdTimeoutMs: seconds(env.LAT_BOARD_PD_TIMEOUT_SECONDS, 5_000),
 		pdIntervalMs: seconds(env.LAT_BOARD_PD_SECONDS, 5_000),
 		automationTickMs: seconds(env.LAT_BOARD_AUTOMATION_TICK_SECONDS, 60_000),
+		eventAwayCloseMs: seconds(env.LAT_BOARD_EVENT_AWAY_CLOSE_SECONDS, 3_000),
 		automationAgentPollMs: seconds(env.LAT_BOARD_AUTOMATION_AGENT_POLL_SECONDS, 10_000),
 		automationLaunchRetryWaitsMs: env.LAT_BOARD_AUTOMATION_LAUNCH_RETRY_WAITS_SECONDS ? env.LAT_BOARD_AUTOMATION_LAUNCH_RETRY_WAITS_SECONDS.split(',').map((value) => seconds(value, 0)) : null,
 		pushTestOrigin: env.LAT_BOARD_PUSH_TEST_ORIGIN?.trim() || null,
