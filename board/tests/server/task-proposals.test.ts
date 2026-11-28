@@ -226,13 +226,21 @@ test('the role comes from LAT session records: LAT 主控 for an active match, �
 	record(done, { status: 'ended' });
 	record(other, { hcom_name: 'someone-else' });
 	writeFileSync(join(broken.folder, '.lat/sessions', 'session-broken.json'), '{"status": "act');
+	// A controller working in a subfolder of its git checkout: its record is at the checkout's top.
+	const checkout = join(board.dir, 'checkout');
+	mkdirSync(join(checkout, 'board'), { recursive: true });
+	expect(Bun.spawnSync(['git', 'init', '-q', checkout]).exitCode).toBe(0);
+	const sub: AgentDouble = { name: 'sub', client: 'claude', processId: 'process-sub', folder: join(checkout, 'board') };
+	board.setHcom({ agents: [...agents, sub].map((agent) => listed(agent)) });
+	mkdirSync(join(checkout, '.lat/sessions'), { recursive: true });
+	writeFileSync(join(checkout, '.lat/sessions/session-sub.json'), JSON.stringify({ client: 'claude', session_id: 'session-sub', role: 'orchestrator', workspace: checkout, hcom_name: 'sub', status: 'active' }));
 	const roles: Record<string, string> = {};
-	for (const agent of agents) {
+	for (const agent of [...agents, sub]) {
 		const reply = parsed(await submit(board, agent, commandTask(agent.folder)));
 		expect(reply).toMatchObject({ ok: true, status: 'pending' });
 		roles[agent.name] = stored(board, reply.id).proposer.role;
 	}
-	expect(roles).toEqual({ ctrl: 'controller', done: 'agent', other: 'agent', plain: 'agent', broken: 'unknown' });
+	expect(roles).toEqual({ ctrl: 'controller', done: 'agent', other: 'agent', plain: 'agent', broken: 'unknown', sub: 'controller' });
 	void plain;
 });
 

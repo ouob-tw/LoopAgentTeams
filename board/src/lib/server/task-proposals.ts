@@ -361,6 +361,7 @@ export function createTaskProposals(options: {
 				return;
 			}
 			if (request?.event === 'ready') log('INFO', 'board.proposals', 'proposal_acceptor_ready', { pid: request.pid });
+			else if (request?.event === 'lat-rules-unavailable') log('WARNING', 'board.proposals', 'proposal_roles_unknown', { lat_dir: request.lat_dir });
 			else if (request?.event === 'refused') log('WARNING', 'board.proposals', 'task_proposal_refused', { reason: request.reason, peer_pid: request.peer_pid });
 			else if (Number.isInteger(request?.seq) && !started.stdin!.destroyed) started.stdin!.write(JSON.stringify({ seq: request.seq, reply: replyTo(request) }) + '\n');
 		});

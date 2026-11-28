@@ -33,7 +33,8 @@ Verified requests go to the board on standard output, one JSON line each with a 
 (`{"seq": 1, "op": ..., "proposer": {...}, ...}`); the board answers on standard input
 (`{"seq": 1, "reply": {...}}`) and the reply goes back to the sender as is; a board that does not
 answer in 30 seconds gets the sender `{"ok": false, "error": "board-timeout", ...}`. Lines with `event`
-(`ready`, `refused`) are for the board's log only. Standard
+(`ready`, `refused`, and `lat-rules-unavailable`, after which every role is `unknown`) are for the
+board's log only. Standard
 input closing (the board ended) ends this program and removes the socket. The socket is bound
 under umask 0177, so it is 0600 from the start; by default it is in the task-proposal folder (0700).
 
@@ -56,6 +57,7 @@ import threading
 AGENT_NAMES = ('claude', 'codex')
 MAX_REQUEST_BYTES = 1024 * 1024
 HCOM_TIMEOUT_SECONDS = 5
+GIT_TIMEOUT_SECONDS = 5
 # How long one sender may take to send its request, and the board to answer it.
 REQUEST_TIMEOUT_SECONDS = 10
 BOARD_TIMEOUT_SECONDS = 30
@@ -206,6 +208,18 @@ def lat_rules():
         return None
 
 
+def checkout_top(folder):
+    """The top of the git checkout or worktree `folder` is in, as LAT's records name workspaces;
+    the folder itself outside git."""
+    try:
+        result = subprocess.run(['git', '-C', folder, 'rev-parse', '--show-toplevel'], stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return folder
+    top = result.stdout.strip()
+    return top if result.returncode == 0 and top else folder
+
+
 def role(proposer, lat):
     """`controller`, `agent` or `unknown` from LAT's session record of the proposer's session, found
     the way LAT finds it (the shared .lat, then an older one in the folder's own .lat)."""
@@ -214,11 +228,12 @@ def role(proposer, lat):
         return 'agent'
     if lat is None or '/' in session_id or session_id in ('.', '..'):
         return 'unknown'
+    top = checkout_top(proposer['folder'])
     try:
-        shared = Path(lat.shared_lat_dir(proposer['folder']))
+        shared = Path(lat.shared_lat_dir(top))
     except Exception:  # noqa: BLE001 - git failing in an unexpected way
         return 'unknown'
-    paths = [shared / 'sessions' / f'{session_id}.json', Path(proposer['folder']) / '.lat/sessions' / f'{session_id}.json']
+    paths = [shared / 'sessions' / f'{session_id}.json', Path(top) / '.lat/sessions' / f'{session_id}.json']
     found = None
     for path in paths:
         try:
@@ -397,6 +412,8 @@ def main():
 
     threading.Thread(target=accept, daemon=True).start()
     board.emit(dict(event='ready', pid=os.getpid()))
+    if lat is None:
+        board.emit(dict(event='lat-rules-unavailable', lat_dir=os.environ.get('LAT_PROPOSAL_LAT_DIR', '')))
     board.closed.wait()
     server.close()
     try:
