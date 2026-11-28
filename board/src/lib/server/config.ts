@@ -1,7 +1,7 @@
 // Board settings, read from the environment. No SvelteKit imports: the host command uses this too.
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { parseModelOptions, type ModelOptions } from '../board/models.ts';
 import { ASK_EXECUTION_WAIT_MS } from '../board/board-asks.ts';
 import { connectionSettings, type AddressList } from './client-address.ts';
@@ -53,6 +53,13 @@ export interface BoardConfig {
 	pausedDir: string;
 	/** The folder the board-ask hook and the board share: the asks, their results and the board's heartbeat. */
 	asksDir: string;
+	/** The task-proposal folder (`LAT_BOARD_PROPOSALS_DIR`): one proposal file and one result file per
+	 *  任務提案. The agent's command reads the results here too, so it works the folder out the same way. */
+	proposalsDir: string;
+	/** The local socket agents send proposals and withdrawals to (`LAT_BOARD_PROPOSAL_SOCKET`). */
+	proposalSocket: string;
+	/** What runs the acceptor that listens on it (`LAT_BOARD_PROPOSAL_ACCEPTOR_COMMAND`); the board appends the socket's path. */
+	proposalAcceptorCommand: string[];
 	/** How long a permission Codex was allowed after its turn ended waits to be seen run before the
 	 *  board stops waiting: 7 days. */
 	askExecutionWaitMs: number;
@@ -293,6 +300,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		Math.min(seconds(env.LAT_BOARD_FALLBACK_SECONDS, MAX_FALLBACK_MS), MAX_FALLBACK_MS)
 	);
 	const board = passkeySite(env);
+	const proposalsDir = env.LAT_BOARD_PROPOSALS_DIR && isAbsolute(env.LAT_BOARD_PROPOSALS_DIR) ? env.LAT_BOARD_PROPOSALS_DIR : join(stateHome(env), 'lat/task-proposals');
 	return {
 		stateDir: env.LAT_BOARD_STATE_DIR || join(stateHome(env), 'lat/board'),
 		// 須與 `skills/local/lat/scripts/_lat_common.py` 一致
@@ -327,6 +335,11 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		pausedDir: env.LAT_HCOM_PAUSED_DIR && isAbsolute(env.LAT_HCOM_PAUSED_DIR) ? env.LAT_HCOM_PAUSED_DIR : join(stateHome(env), 'lat/hcom-paused'),
 		// Next to the pause records; `hooks/board-ask.py` works it out the same way.
 		asksDir: env.LAT_BOARD_ASKS_DIR && isAbsolute(env.LAT_BOARD_ASKS_DIR) ? env.LAT_BOARD_ASKS_DIR : join(stateHome(env), 'lat/board-asks'),
+		// Next to them too; `skills/local/task-proposal/scripts/task-proposal.py` works both out the same way.
+		proposalsDir,
+		// Inside the folder, which only the board's account can enter.
+		proposalSocket: env.LAT_BOARD_PROPOSAL_SOCKET && isAbsolute(env.LAT_BOARD_PROPOSAL_SOCKET) ? env.LAT_BOARD_PROPOSAL_SOCKET : join(proposalsDir, 'board.sock'),
+		proposalAcceptorCommand: commandFrom(env, 'LAT_BOARD_PROPOSAL_ACCEPTOR_COMMAND') ?? ['uv', 'run', '--no-project', 'python', resolve('hooks/task-proposal-acceptor.py')],
 		askExecutionWaitMs: seconds(env.LAT_BOARD_ASK_EXECUTION_WAIT_SECONDS, ASK_EXECUTION_WAIT_MS),
 		// A Codex agent runs one short turn to reconnect.
 		unpauseWaitMs: seconds(env.LAT_BOARD_UNPAUSE_WAIT_SECONDS, 60_000),

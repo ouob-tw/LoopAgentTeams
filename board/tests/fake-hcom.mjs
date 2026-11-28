@@ -32,6 +32,9 @@
 // the next lists after it was written in turn, before `agents` takes over; an entry
 // `{ fail: { exit, stderr } }` in it acts out a failure of that one list. Without either, <dir>/hcom-running.json is listed: the
 // test fixture keeps every controller it ever bound there, so none is closed unless a test says so.
+// `acceptorListKill: <pid>`: the next list the board's task-proposal acceptor asks for (its parent
+// runs task-proposal-acceptor.py) first kills that process (one the test started) and waits for it
+// to be gone, as an agent ending while the acceptor checks it; the field is then taken off the plan.
 // `kill.closes` names panes the kill closes besides the agent's own (an agent whose list entry has no pane).
 // `kill <name>` is logged to hcom-calls.jsonl like a launch and follows `kill`: `exit`, `stderr`,
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
@@ -89,6 +92,28 @@ if (args[0] === 'list') {
 	if (listed.fail) {
 		process.stderr.write(listed.fail.stderr ?? '');
 		process.exit(listed.fail.exit ?? 1);
+	}
+	if (plan.acceptorListKill) {
+		let parent = '';
+		try {
+			parent = readFileSync(`/proc/${process.ppid}/cmdline`, 'utf8');
+		} catch {
+			// No parent to read: not the acceptor.
+		}
+		if (parent.includes('task-proposal-acceptor.py')) {
+			const pid = plan.acceptorListKill;
+			delete plan.acceptorListKill;
+			write(planFile, JSON.stringify(plan));
+			process.kill(pid, 'SIGKILL');
+			const gone = () => {
+				try {
+					return /^State:\s+Z/m.test(readFileSync(`/proc/${pid}/status`, 'utf8'));
+				} catch {
+					return true;
+				}
+			};
+			while (!gone()) await new Promise((resolve) => setTimeout(resolve, 10));
+		}
 	}
 	if (plan.listDelayMs) await new Promise((resolve) => setTimeout(resolve, plan.listDelayMs));
 	process.stdout.write(JSON.stringify([...listed, ...added()]));
