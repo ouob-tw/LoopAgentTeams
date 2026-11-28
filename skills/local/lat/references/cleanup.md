@@ -104,5 +104,7 @@ the next reap applies the ordinary ended-owner rule.
 
 That includes a resumed controller's processes from before `away`: they belong to the
 ended launch and can be closed before the controller has recovered. Only when one must
-keep running after the controller is resumed, `keep` it before `away`, with an expiry that
+keep running after the controller is resumed, keep it before `away`
+(`uv run --no-project python <lat_dir>/scripts/lat-reap.py keep --pid <PID> --reason <why>
+--until <ISO 8601> --by <your HCOM name> --session <LAT session ID>`), with an expiry that
 also covers the work after the resume; the keep stays valid during the wait.
