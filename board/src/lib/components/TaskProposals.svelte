@@ -248,7 +248,7 @@
 								<button type="button" class="close" aria-label="關閉這張卡" onclick={() => dismiss(proposal.id)}><X size="1.1em" aria-hidden="true" /></button>
 							</p>
 							<p class="outcome" class:good={said.good} role="status">
-								<span aria-hidden="true">{said.good ? '✓' : '✕'}</span>{said.text}
+								<span aria-hidden="true">{said.good ? '✓' : '✕'}</span><span class="said">{said.text}</span>
 								{#if outcome.taskId && outcome.status === 'approved'}
 									<button type="button" class="link" onclick={() => onopentask(outcome.taskId!)}>打開任務 ›</button>
 								{/if}
@@ -706,10 +706,11 @@
 		color: var(--danger);
 		overflow-wrap: anywhere;
 	}
+	/* The mark beside the first line of what came of it; a long reason wraps beside the mark. */
 	.outcome {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: baseline;
 		gap: 0.2rem 0.45rem;
 		margin: 0;
 		padding: 0.5rem 0.7rem;
@@ -724,7 +725,7 @@
 		color: var(--ok);
 	}
 	.link {
-		margin-left: auto;
+		align-self: center;
 		min-height: 44px;
 		padding: 0.2rem 0.6rem;
 		background: none;

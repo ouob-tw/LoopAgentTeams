@@ -9,7 +9,7 @@
 // set, each state is saved as a frame, light and dark.
 import { afterEach, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { sleep, type Fixture } from '../harness.ts';
 import { BOARD_STARTED, CHROME, holdRequests, launchChrome, shot, type Browser, type Tab } from '../browser.ts';
 import { httpsProxy, PROXY_CHROME_ARGS } from '../https-proxy.ts';
@@ -203,8 +203,10 @@ for (const size of SIZES) {
 		for (const text of ['指令任務', 'bun run clean:cache', '⚠ 固定檢查', '輸出含「cleaned」', '檔案存在：', '已查證：grp-zomona（Codex）']) expect(checks).toContain(text);
 		expect(checks).not.toContain('LAT 主控');
 		expect(await tab.eval(`[...${card(checksId)}.querySelectorAll('[data-flag]')].map((flag) => flag.dataset.flag)`)).toEqual(['checks']);
-		await frames(`${size.width}-1-cards`);
+		// The sheet has just risen: measured once it has settled.
+		await tab.until(`${LAYOUT}.length === 0`, 'the window laid out', 3_000).catch(() => {});
 		expect(await tab.eval(LAYOUT)).toEqual([]);
+		await frames(`${size.width}-1-cards`);
 
 		// The brief, folded until opened.
 		expect(await tab.eval(`${card(grantId)}.querySelector('details').open`)).toBe(false);
@@ -267,6 +269,18 @@ for (const size of SIZES) {
 		await tab.pointerClick(folded);
 		await tab.until(`document.querySelectorAll('section.tp [data-proposal]').length === 1`, 'only the waiting card after folding');
 		expect(await tab.eval(`${card(checksId)}.dataset.state`)).toBe('pending');
+
+		// A task that cannot be made (its folder went): 核准失敗 with the reason beside its mark.
+		rmSync(started.agents[1].folder, { recursive: true });
+		await press(`[data-proposal="${checksId}"] button.approve`);
+		await tab.until(`${card(checksId)}?.dataset.state === 'approve-failed'`, 'the card failed');
+		expect(await tab.eval(`${card(checksId)}.querySelector('.outcome').innerText`)).toContain('核准失敗：建立任務失敗：');
+		const lines = await tab.eval<{ mark: number; text: number; line: number }>(
+			`(() => { const outcome = ${card(checksId)}.querySelector('.outcome'); const range = document.createRange(); range.selectNodeContents(outcome.querySelector('.said')); return { mark: outcome.firstElementChild.getBoundingClientRect().top, text: range.getClientRects()[0].top, line: parseFloat(getComputedStyle(outcome).lineHeight) }; })()`
+		);
+		expect(Math.abs(lines.text - lines.mark)).toBeLessThan(lines.line / 2);
+		expect(await tab.eval(LAYOUT)).toEqual([]);
+		await frames(`${size.width}-8-approve-failed`);
 
 		if (size.width < 761) return;
 		// On a wide screen its heading drags it and its corner resizes it; the place is kept here.

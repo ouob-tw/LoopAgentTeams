@@ -401,6 +401,8 @@ function createBoard(): Board {
 		const text = JSON.stringify(now);
 		if (text === proposalsSent) return;
 		proposalsSent = text;
+		// A login that ran out since the last heartbeat must not hear of a proposal: its page goes first.
+		dropRevoked();
 		for (const stream of streams) stream.send('proposals', text);
 	}
 	announceProposals();

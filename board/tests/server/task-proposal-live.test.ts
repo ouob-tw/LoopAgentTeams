@@ -80,3 +80,21 @@ test('a new proposal reaches open pages at once and pushes a set sentence with i
 		watch.close();
 	}
 });
+
+test('a page whose login ran out hears no proposal sent after it: its stream ends first', async () => {
+	const { board, agents } = await withAgents([{ name: 'luna', client: 'codex' }], { clock: Date.parse('2026-11-28T01:00:00Z') }, (started) => (fixture = started));
+	const cookie = await board.login('phone');
+	const watch = board.watch(cookie);
+	try {
+		await until(() => watch.proposals.length > 0, 10_000, 'the list on connecting');
+		// Past the 30-day login, before the next heartbeat would notice.
+		board.setClock(Date.parse('2026-12-29T01:00:00Z'));
+		const reply = parsed(await submit(board, agents[0], commandTask(agents[0].folder, { name: '登入失效後的提案' })));
+		expect(reply).toMatchObject({ ok: true, status: 'pending' });
+		await until(() => watch.unpaired, 10_000, 'the stream told it is unpaired');
+		expect(JSON.stringify(watch.proposals)).not.toContain(reply.id);
+		expect(JSON.stringify(watch.proposals)).not.toContain('登入失效後的提案');
+	} finally {
+		watch.close();
+	}
+});
