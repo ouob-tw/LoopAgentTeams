@@ -682,12 +682,37 @@ class EventWaitTests(ReapTestCase):
         self.assertTrue(self.alive(collector))
         self.assertEqual(self.closed_pids(), [other])
         scan = self.run_reaper('scan').stdout
-        self.assertIn(f'PID {collector}', scan.split('Event wait:')[1].split('Unknown owner:')[0])
+        self.assertIn(f'PID {collector}', scan.split('Owner still present:')[1].split('Unknown owner:')[0])
         record.unlink()
         self.reap('--trigger', 'periodic')
         self.assertTrue(self.gone(collector))
         self.assertEqual(self.closed_pids(), [other, collector])
         self.assertEqual(self.log()[-1]['why'], 'owner agent ended')
+
+    def test_resumed_controller_keeps_its_earlier_processes_until_it_really_ends(self):
+        collector = self.dead_agent('ctl')
+        record = self.pause('test-ctl', reason='event-task', task_id='task-1')
+        # The board resumes the same name as a new launch, then removes the record.
+        env = {**self.agent_env('ctl', 'claude'), 'HCOM_PROCESS_ID': self.scope + 'ctl-again',
+               'HCOM_LAUNCH_BATCH_ID': 'batch-ctl-again'}
+        client = self.spawn(self.node('ctl-client'), env)['ctl-client']
+        self.set_hcom([('ctl', 'ctl-again', client)])
+        record.unlink()
+        self.reap('--trigger', 'periodic')
+        self.assertTrue(self.alive(collector))
+        self.assertEqual(self.log(), [])
+        scan = self.run_reaper('scan').stdout
+        self.assertIn(f'PID {collector}',
+                      scan.split('Owner still present:')[1].split('Unknown owner:')[0])
+        # The resumed controller ends for good.
+        os.kill(client, signal.SIGKILL)
+        self.assertTrue(self.gone(client))
+        self.set_hcom([])
+        self.record_life('batch_launched', 'ctl', batch_id='batch-ctl-again', instances=['ctl'])
+        self.record_life('stopped', 'ctl', reason='killed')
+        self.reap('--trigger', 'periodic')
+        self.assertTrue(self.gone(collector))
+        self.assertEqual(self.closed_pids(), [collector])
 
     def test_an_ordinary_pause_record_does_not_keep_an_ended_owners_processes(self):
         service = self.dead_agent('plain')

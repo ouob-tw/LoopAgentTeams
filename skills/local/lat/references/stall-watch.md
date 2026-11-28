@@ -157,7 +157,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
    - 其他情況（含工作總表還有未結案項目）：`resume`（接回原主控）。
 2. 提案要使用者核准。結束回合等待前，以 `alarm --file` 加結果檔的絕對路徑聲明等待（預設 `~/.local/state/lat/task-proposals/<提案編號>.result.json`；有設 `LAT_BOARD_PROPOSALS_DIR` 或 `XDG_STATE_HOME` 時，資料夾照 task-proposal 指令檔開頭的說明）；結果以該技能的 `status` 為準。
 3. 核准後收尾：
-   - `resume`：更新進度索引，寫下事件任務編號、在等什麼、接回後的下一步；向使用者說完後，最後執行該技能的 `away <任務編號>`，看板幾秒後關閉你。等待期間你開的背景程式不會被收尾程式關閉；接回後還要繼續跑的，`away` 前先依[服務收尾](cleanup.md#paused-orchestrators-and-retained-services)做 `keep`。維持 active，不 deactivate，也不自行關閉：沒經 `away` 就關掉，看板接不回你。指令被拒時照它印的原因處理，保持開著。
+   - `resume`：更新進度索引，寫下事件任務編號、在等什麼、接回後的下一步；向使用者說完後，最後執行該技能的 `away <任務編號>`，看板幾秒後關閉你。維持 active，不 deactivate，也不自行關閉：沒經 `away` 就關掉，看板接不回你。指令被拒時照它印的原因處理，保持開著。
    - `new-agent`：照一般交付結束本輪（deactivate，工作總表 `check` 通過，不用 `--force-unfinished`），再關掉自己；過不了就代表本輪沒做完，撤掉這個選擇，請使用者刪除任務後改提 `resume`。
 
 被接回（或開著時收到看板的事件訊息）：照 [主控恢復程序](recovery.md) 重讀，從進度索引找回任務編號與下一步。訊息寫明原因；「等到期限，事件沒有發生」時先查那件事實際到哪裡再決定。看板接回成功後已移除事件等待紀錄；可重複且未過期限的任務此時已重新開始等，要再關掉自己就再執行一次 `away`；到期接手後任務已結束，還要等就重新提案。

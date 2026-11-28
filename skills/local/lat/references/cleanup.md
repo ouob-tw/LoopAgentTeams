@@ -97,14 +97,8 @@ including when another orchestrator's watcher triggers periodic reaping. Its une
 keeps remain valid. Explicit release and expiration still take precedence; removing
 the pause record restores the ordinary absent-orchestrator rule on the next reap.
 
-An ended agent whose name has an event-wait record (`reason: "event-task"`) also counts as
-present as an owner: processes it left behind, such as a log collector started before
-`away`, are not closed as leftovers, and no `keep` is needed. Once the record is removed,
-the next reap applies the ordinary ended-owner rule.
-
-That includes a resumed controller's processes from before `away`: they belong to the
-ended launch and can be closed before the controller has recovered. Only when one must
-keep running after the controller is resumed, keep it before `away`
-(`uv run --no-project python <lat_dir>/scripts/lat-reap.py keep --pid <PID> --reason <why>
---until <ISO 8601> --by <your HCOM name> --session <LAT session ID>`), with an expiry that
-also covers the work after the resume; the keep stays valid during the wait.
+An ended launch's owner also counts as present while its name has an event-wait record
+(`reason: "event-task"`) or HCOM lists that name again, as it does once the board resumes
+the controller. Processes it started before `away`, such as a log collector, stay through
+the wait and after the resume with no `keep` needed. When neither holds, the next reap
+applies the ordinary ended-owner rule.
