@@ -1,5 +1,5 @@
 <script lang="ts">
-	// 示意頁分享 in the settings dialog's 全局設置: which published demos open without the board's
+	// 示意頁分享 in the settings dialog's 帳號與分享: which published demos open without the board's
 	// login, one switch each (lib/server/demo-share.ts). Shared ones are listed first, then the
 	// newest, as of when the dialog opened. Read again each time it opens. Opened from a demo page's
 	// 分享 button (demo-share-button.ts), it scrolls to that demo's switch and marks its row.

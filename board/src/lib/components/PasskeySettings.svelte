@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The board's passkeys in the settings dialog's 全局設置: each registered one, a new one made by
+	// The board's passkeys in the settings dialog's 帳號與分享: each registered one, a new one made by
 	// this browser with no code from the host, and deleting one after a confirmation. Only at the
 	// board's https address; a test device sees them and changes nothing.
 	import KeyRound from '@lucide/svelte/icons/key-round';

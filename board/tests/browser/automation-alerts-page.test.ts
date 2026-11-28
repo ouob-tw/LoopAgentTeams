@@ -232,6 +232,7 @@ for (const width of [1280, 390]) {
 		await tab.eval(`localStorage.setItem('lat-board-push-off', '1')`);
 		await click('button[aria-label="設定"]');
 		await tab.until(`document.querySelector('[data-push]')?.dataset.push === 'off'`, 'pushes off');
+		await click('#settings-tab-push');
 		expect(await text('[data-push]')).toContain('這台裝置：未開啟');
 		expect(await tab.eval<boolean>(FITS)).toBe(true);
 		await tab.eval(`document.querySelector('[data-push]').scrollIntoView({ block: 'center' })`);
@@ -258,6 +259,7 @@ test.skipIf(!CHROME)('390px: on plain http under a LAN name the setting says why
 	expect(await tab.eval(`window.isSecureContext`)).toBe(false);
 	await click('button[aria-label="設定"]');
 	await tab.until(`document.querySelector('[data-push]')?.dataset.push === 'unsupported'`, 'the reason');
+	await click('#settings-tab-push');
 	expect(await text('[data-push]')).toContain(NOT_HTTPS);
 	expect(await tab.eval(`document.querySelectorAll('[data-push] button').length`)).toBe(0);
 	expect(await tab.eval<boolean>(FITS)).toBe(true);
@@ -277,6 +279,7 @@ const openSettings = async (label = 'the push state') => {
 	await tab.eval(`document.querySelector('dialog[open]')?.close()`);
 	await click('button[aria-label="設定"]');
 	await tab.until(`['on', 'off'].includes(document.querySelector('[data-push]')?.dataset.push)`, label);
+	await click('#settings-tab-push');
 	await tab.until(`document.querySelector('[data-push]')?.dataset.push === 'on' || !${button('[data-push]', '允許通知')}?.disabled`, 'the push state settled');
 };
 
